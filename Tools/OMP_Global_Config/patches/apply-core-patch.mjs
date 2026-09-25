@@ -4688,6 +4688,40 @@ export function hostNextServerEnvUnsets(
 		anchor: "\t\tcontent: [{ type: \"text\", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],\n",
 		patched: "\t\t// HANSE: skipped reason stands alone\n\t\tcontent: [{ type: \"text\", text: reason === \"skipped\" && errorMessage ? errorMessage : errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],\n",
 	},
+	{
+		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
+		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
+		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).
+		// 회수 결과에 원문 id 를 싣는다. 소비자는 아래 recallEnhanced 항목이다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: fact origin id",
+		anchor: "\t\t`SELECT rowid, fact_id, subject, predicate, object, timestamp, confidence\n",
+		patched: "\t\t// HANSE: fact origin id\n\t\t`SELECT rowid, fact_id, subject, predicate, object, timestamp, confidence, source_msg_id\n",
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "source_memory_id: asNullableString(row.source_msg_id),",
+		anchor: "\t\t\t\tfact_id: asString(row.fact_id),\n",
+		patched: "\t\t\t\tfact_id: asString(row.fact_id),\n\t\t\t\tsource_memory_id: asNullableString(row.source_msg_id),\n",
+	},
+	{
+		// 원문 기억이 최종 결과에 이미 있으면 그 기억에서 파생된 fact 는 뺀다. 원문이 없는 fact 는 남긴다.
+		// 순위 확정(rerank) 뒤에 거른다: 앞에서 거르면 원문이 순위에서 잘릴 때 그 내용이 결과에서 통째로
+		// 사라진다. 결과 수가 topK 보다 줄 수 있는데, 빠지는 것은 이미 실린 원문의 사본뿐이다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: drop facts whose origin memory is recalled",
+		anchor: "\tconst finalResults = rerankRecallResults(results, options.mmrLambda ?? 0.7, topK);\n",
+		patched: `	// HANSE: drop facts whose origin memory is recalled
+	const rerankedResults = rerankRecallResults(results, options.mmrLambda ?? 0.7, topK);
+	const recalledOrigins = new Set(rerankedResults.filter(result => result.tier !== "fact").map(result => result.id));
+	const finalResults = rerankedResults.filter(
+		result =>
+			result.tier !== "fact" ||
+			typeof result.source_memory_id !== "string" ||
+			!recalledOrigins.has(result.source_memory_id),
+	);
+`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
