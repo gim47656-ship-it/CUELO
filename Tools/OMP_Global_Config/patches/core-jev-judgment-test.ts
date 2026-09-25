@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { settingsLike } from "./core-test-settings";
 
 function resolveCore(): string {
 	const override = process.env.OMP_CORE_PATCH_TARGET;
@@ -233,9 +234,9 @@ const successPayload = {
 /** explicit vercel 선택과 후보 pool 호출 수를 함께 세는 registry stub. */
 function vercelHarness(options: { fetch: typeof fetch; onUsage?: (usage: unknown) => void }) {
 	const counters = { fetch: 0, pool: 0 };
-	const settings = {
+	const settings = settingsLike({
 		get: (path: string) => (path === "providers.judgmentProvider" ? "vercel" : undefined),
-	};
+	});
 	const registry = {
 		authStorage: {
 			keys: {
@@ -328,7 +329,7 @@ function vercelHarness(options: { fetch: typeof fetch; onUsage?: (usage: unknown
 	// adapter 는 fetch 를 한 번도 부르지 않는다.
 	let fetchCalls = 0;
 	const judge = resolveJudge({
-		settings: { get: (path: string) => (path === "providers.judgmentProvider" ? "auto" : undefined) } as never,
+		settings: settingsLike({ get: (path: string) => (path === "providers.judgmentProvider" ? "auto" : undefined) }) as never,
 		registry: { getAvailable: () => [] } as never,
 		fetch: async () => {
 			fetchCalls += 1;
