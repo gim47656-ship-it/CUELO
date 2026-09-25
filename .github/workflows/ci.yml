@@ -97,6 +97,14 @@ jobs:
           "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # The setup transaction refuses to install when the app source differs from
+      # files/source-integrity.json (git-tracked files, hashed with LF line endings).
+      - name: Setup source manifest
+        working-directory: Tools/CUELO_Setup
+        run: |
+          node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
