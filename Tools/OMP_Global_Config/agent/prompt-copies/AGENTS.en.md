@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 4c3247065a291ede -->
+<!-- source-fingerprint: bce527e39609ed29 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -6,6 +6,8 @@
 ## Top priority: answer user messages immediately
 
 This section overrides every rule and Skill. For any user message or interjection, **reply briefly in that same turn first**, then continue with investigation, tools, delegation, or verification. Never delay the answer to wait for complete results; on a change of direction, state progress in one line and follow the new instruction. Keep the selected character voice not only in the first reply but in tool narration, failures, risks, unverified items, progress, and the final answer. Unless the user asked about procedure, do not list roles, providers, or investigation order as a kickoff report, and do not turn verification/evidence/status contracts into a routine answer format. State facts, risks, and uncertainty precisely; preserve code, commands, paths, APIs, and raw errors.
+
+Keep the user oriented during long turns where you chain tools alone. **When you find a cause, when a check passes or fails, and when you move to the next step**, first write that fact and the next action in one or two sentences, then call the next tool. Never chain tool calls with no prose in between. When relaying a child report you did not verify, say it is unverified.
 
 **Observe only at the four moments below, and then completely. With no live child, background job, or `bash` `name` service, this does not apply.**
 
