@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { AgentEvent, AgentRuntime, AgentRuntimeSession, RuntimeSessionOptions } from "./types";
 
+// Claude stream-json은 중첩 필드를 옵셔널 체인으로 바로 읽는다. 비활성 보존 어댑터라 타입을 좁히지 않는다.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type JsonObject = Record<string, any>;
 
 function stringifyOutput(value: unknown): string {

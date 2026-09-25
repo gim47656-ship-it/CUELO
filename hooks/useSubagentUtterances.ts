@@ -346,7 +346,7 @@ export function useSubagentUtterances(context: InlineUtteranceContext): readonly
       }
     }
     return anchorCharacterSummonChildren(context.turns, [...context.subagents, ...synthesized]);
-  }, [context.subagents, context.turns, archive]);
+  }, [context.subagents, context.turns, context.sessionId, archive]);
 
   const targets = useMemo(
     () => children.map(({ snapshot }) => {

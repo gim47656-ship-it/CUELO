@@ -6,6 +6,7 @@ import type { UsageSnapshotController } from "@/hooks/useUsageSnapshot";
 import { accountIdentities, type UsageLimit, type UsageReport } from "@/lib/hanse-resource-client";
 import { AccountAvatar } from "./workspace/AccountAvatar";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useNow } from "@/hooks/useNow";
 
 /**
  * The account usage the resource panel shows, kept permanently in view above the settings action and
@@ -19,6 +20,8 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 
 /** The limit rows the strip draws before the reader opens the rest. */
 const MAX_ROWS = 2;
+/** 자동 차단 해제 시각을 판정할 시계의 갱신 간격. 사용량 폴링(60초)보다 촘촘하다. */
+const NOW_TICK_MS = 10_000;
 
 /**
  * 좁은 화면에서 이 스트립이 접혀 있는지. 드로어 안에서는 세션 목록과 같은 세로 공간을
@@ -148,8 +151,9 @@ export function SidebarUsage({ usage, onOpen }: { usage: UsageSnapshotController
   }, []);
   const bai = usage.bai;
   const reports = usage.state.data?.reports ?? [];
+  const now = useNow(NOW_TICK_MS);
   // 별칭은 헬퍼가 패널과 같은 목록(꺼둔 계정 포함)에서 배정하므로 두 화면의 이름이 어긋나지 않는다.
-  const all = usageStripRows(reports, Date.now());
+  const all = usageStripRows(reports, now);
   const rows = expanded ? all : all.slice(0, MAX_ROWS);
   const hidden = all.length - rows.length;
 

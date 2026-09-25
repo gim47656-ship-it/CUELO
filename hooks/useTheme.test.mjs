@@ -95,7 +95,7 @@ mock.module("react", () => ({
 const { useTheme } = await import("./useTheme.ts");
 
 /** What a consumer can observe: the applied DOM mode and the stored preference. */
-function observe() {
+function useObservedTheme() {
   const api = useTheme();
   const root = document.documentElement;
   return {
@@ -122,14 +122,14 @@ for (const [index, row] of rows.entries()) {
 
     // Drive the store onto this row's preference (and system scheme).
     useTheme().setPreference(row.preference);
-    const before = observe();
+    const before = useObservedTheme();
     // The card that names the other mode is the one showing its button.
     assert.notEqual(before.ompThemeMode, row.request);
     assert.equal(before.preference, row.preference);
 
     // The press: the button that names `row.request` is pressed.
     useTheme().setPreference(row.request);
-    const after = observe();
+    const after = useObservedTheme();
     assert.equal(after.ompThemeMode, row.expect, "applied mode matches the named mode");
     assert.equal(after.seedMode, row.expect === "dark" ? "dark-only" : "light-only");
     assert.equal(after.darkClass, row.expect === "dark");
@@ -140,28 +140,28 @@ for (const [index, row] of rows.entries()) {
 test("the menu-item cycle still walks light → dark → auto and applies each step", () => {
   makeFakeDom({ systemDark: false });
   useTheme().setPreference("auto");
-  let observed = observe();
+  let observed = useObservedTheme();
   assert.deepEqual(
     { preference: observed.preference, ompThemeMode: observed.ompThemeMode, seedMode: observed.seedMode, darkClass: observed.darkClass },
     { preference: "auto", ompThemeMode: "light", seedMode: "light-only", darkClass: false },
   );
 
   useTheme().toggleTheme(); // auto → light
-  observed = observe();
+  observed = useObservedTheme();
   assert.deepEqual(
     { preference: observed.preference, ompThemeMode: observed.ompThemeMode, seedMode: observed.seedMode, darkClass: observed.darkClass },
     { preference: "light", ompThemeMode: "light", seedMode: "light-only", darkClass: false },
   );
 
   useTheme().toggleTheme(); // light → dark
-  observed = observe();
+  observed = useObservedTheme();
   assert.deepEqual(
     { preference: observed.preference, ompThemeMode: observed.ompThemeMode, seedMode: observed.seedMode, darkClass: observed.darkClass },
     { preference: "dark", ompThemeMode: "dark", seedMode: "dark-only", darkClass: true },
   );
 
   useTheme().toggleTheme(); // dark → auto
-  observed = observe();
+  observed = useObservedTheme();
   assert.deepEqual(
     { preference: observed.preference, ompThemeMode: observed.ompThemeMode, seedMode: observed.seedMode, darkClass: observed.darkClass },
     { preference: "auto", ompThemeMode: "light", seedMode: "light-only", darkClass: false },

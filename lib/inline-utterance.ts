@@ -119,9 +119,8 @@ export interface InlineUtteranceContext {
 /**
  * 발화 출처 하나. 자기 발화를 돌려주는 훅이다.
  *
- * 훅이므로 `INLINE_UTTERANCE_SOURCES` 는 반드시 모듈 상수 배열이어야 한다 — 출처의 수와
- * 순서가 렌더마다 같아야 훅 순서가 지켜진다. 새 화자를 붙이는 일은 이 계약을 구현한
- * 어댑터 하나를 만들어 그 배열에 더하는 것으로 끝난다.
+ * 훅이므로 `useInlineUtterances` 가 렌더마다 같은 순서로 직접 부른다. 새 화자를 붙이는 일은
+ * 이 계약을 구현한 어댑터 하나를 만들어 그 훅에서 부르는 것으로 끝난다.
  */
 export interface InlineUtteranceSource {
   /** 출처를 가리키는 이름. 진단과 키에 쓴다. */
