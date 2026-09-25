@@ -48,14 +48,14 @@ large에는 별도 검수를 요구하지 않는다. material/high-risk는 모�
 
 검수는 Main이 중간과 최종 두 단계로 소유한다. 아래는 Main이 검수할 때 적용하는 기준이다.
 
-Maker 보고를 받은 뒤 Main 검수에 들어가기 직전, `routing.typedJudgmentRouting`의 `pre-review` 질문을
-한 번의 batched `judge()` 호출로 판정한다. 최소 structured summary로 요구-증거 정합, 미확인 수용
-조건, 증거를 넘는 보고 주장을 묻고 확률형 bool은 `>= 0.5`일 때 true로 적용한다. 요구-증거 정합이
-false이거나 나머지 둘 중 하나라도 true면 PASS를 닫지 않고 정확히 빠진 증거를 보충하거나 rework로
-보낸다. 모두 깨끗해도 자동 PASS가 아니라 아래의 결정론적 검수를 계속한다. 판정이 결정론 증거와
-모순되면 적용하지 않으며, 실패·timeout·credential 없음도 판단 불가로 두고 일반 모델 fallback 없이
-기존 검수 절차를 계속한다. exit status·파일·경로 소유권·권한·test result·배포 승인은 결정론 증거가
-정본이고, high-risk 분류·승인과 최종 판정은 Main만 소유한다.
+Maker 보고를 받은 뒤 Main 검수에 들어가기 직전의 `pre-review`는 런타임(`jev-runtime`)이 로컬 구조 관측으로
+처리한다(`harness-policy.json` `routing.typedJudgmentRouting.batching`·`observation.localStructuralPlacements`).
+metadata 유효성·검증 증거 존재·권한 충돌 같은 셀 수 있는 신호만 `[JevRuntime:pre-review]` advisory로 싣고
+`judge()`를 호출하지 않는다. Main도 같은 보고에 수동 `judge()`를 따로 부르지 않는다. 요구-증거 정합,
+미확인 수용 조건, 증거를 넘는 보고 주장은 advisory가 판정하지 않는 의미 판단이므로 아래 결정론적
+검수에서 Main이 원본 증거로 직접 확인한다. 관측할 수 없는 의미는 unknown으로 두고 개수나 키워드로
+추정하지 않는다. exit status·파일·경로 소유권·권한·test result·배포 승인은 결정론 증거가 정본이고,
+high-risk 분류·승인과 최종 판정은 Main만 소유한다.
 
 - **증거 요구사항.** 판정 전에 검수 대상과 계약, 변경 경로, 최종 Diff, 영향 경계, raw 출력이
   있는 검증 증거, 알려진 미검증 항목을 갖춘다. `TARGET`·`CHANGED PATHS`·`FINAL DIFF`·

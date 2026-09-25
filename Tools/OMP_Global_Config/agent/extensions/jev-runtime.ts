@@ -59,7 +59,7 @@ interface JudgeLike {
 }
 
 interface JudgeSettingsLike {
-  get(path: string): unknown;
+  getModelRoles(): Readonly<Record<string, string>>;
 }
 
 interface JudgeDepsLike {

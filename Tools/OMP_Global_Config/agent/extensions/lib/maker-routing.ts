@@ -73,7 +73,7 @@ export type QuotaSnapshot =
   | { state: "unavailable"; observedAt: number; reason: string };
 export interface RoutingDeps {
   judge: (ctx: ExtensionContext, request: { state: unknown; questions: Record<string, RoutingQuestion> }, signal?: AbortSignal) => Promise<{ answers: Record<string, RoutingAnswer> }>;
-  settings: (ctx: ExtensionContext) => Promise<{ get(path: string): unknown } | undefined>;
+  settings: (ctx: ExtensionContext) => Promise<{ getModelRoles(): Readonly<Record<string, string>> } | undefined>;
   owners: () => Owner[];
   policy?: () => RoutingPolicy;
   candidates?: (ctx: ExtensionContext, policy: RoutingPolicy) => Promise<Candidate[]>;
@@ -512,8 +512,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     };
     const settings = await deps.settings(ctx);
     if (!settings) throw new Error("Maker 라우팅 설정을 읽을 수 없습니다.");
-    // Settings.get은 schema key만 받는다. 임의 slot은 modelRoles record에서 읽는다.
-    const modelRoles = settings.get("modelRoles") as Record<string, string>;
+    // 임의 slot은 modelRoles record에서 읽는다(OMP 18.3.1은 Settings.get을 없앴고 getModelRoles만 남겼다).
+    const modelRoles = settings.getModelRoles();
     const profiles = Object.entries(current.modelSelection.profiles);
     // 후보 하나의 장애는 그 후보만 unavailable로 표시한다. 선택하지 않을 후보 때문에 발주 전체를 막지 않는다.
     // 자리(slot)는 profile 순서를 지킨다. 강도 확인은 registry에서 찾은 뒤 그 자리에서 한 번만 한다.
