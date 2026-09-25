@@ -89,6 +89,14 @@ jobs:
         with:
           bun-version: "1.4.2"
 
+      # The runner's default TEMP is an 8.3 path (RUNNER~1). command-guard treats
+      # any `~` in a `git -C` target as shell expansion and blocks it, which breaks
+      # its repository-matching fixture. RUNNER_TEMP is a long path.
+      - name: Use long-path TEMP
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
