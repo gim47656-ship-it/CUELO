@@ -358,7 +358,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const ctx = { sessionManager: { getSessionId: () => sessionId }, modelRegistry: registry } as never;
     const route = registerMakerRouting({} as never, {
       policy: () => policy,
-      settings: async () => ({ get: () => modelRoles }),
+      settings: async () => ({ getModelRoles: () => modelRoles }),
       owners: () => [],
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test" }),
       judge: async () => ({ answers: { workClass: { choice: "NORMAL" }, effort0: { choice: "high" }, effort1: { choice: "medium" }, effort2: { choice: "high" }, effort3: { choice: "high" }, effort4: { choice: "max" } } }),
@@ -985,7 +985,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     } as never;
     const route = registerMakerRouting({} as never, {
       policy: () => routingPolicy,
-      settings: async () => ({ get: () => modelRoles }),
+      settings: async () => ({ getModelRoles: () => modelRoles }),
       owners: () => [],
       // useSidecar면 실제 readSidecarQuota가 OMP_USAGE_PORT로 돈다.
       ...(options.useSidecar ? {} : { quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test harness" }) }),

@@ -77,14 +77,14 @@ function createHarness(options: HarnessOptions = {}) {
   const settings = options.noSettings
     ? undefined
     : {
-        get: (path: string) => options.settings?.[path] ?? (path === "modelRoles" ? {
+        getModelRoles: () => (options.settings?.modelRoles as Record<string, string> | undefined) ?? {
           impl: "test/local:high",
           implDeepSeek: "test/broad:medium",
           implSol: "test/language:medium",
           makerHardUi: "test/interaction:high",
           makerHardCode: "test/invariants:high",
           makerHardCodeAlternate: "test/alternate:high",
-        } : undefined),
+        },
       };
 
   // 실제 프로필의 routing-ledger.jsonl을 건드리지 않도록 harness마다 임시 경로를 준다.
