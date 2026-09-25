@@ -180,9 +180,56 @@ const EDITS = [
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "const startedForSteering = await SpeculativeOperationCoordinator.take(message)?.settleStartedForSteering(",
+		marker: "18.3.0 keeps the run-loop tool result branch inline",
 		anchor: "\t\t\t\tconst toolResults: ToolResultMessage[] = [];\n\t\t\t\tif (softNonCompliant && softRequiredTool !== undefined) {",
 		patched: `				const toolResults: ToolResultMessage[] = [];
+				if (hasNewUserSteering() && toolCalls.length > 0) {
+					// Do not dispatch the stale response. A speculative call
+					// that already started is real work, however: wait for it and
+					// keep its result; only untouched calls receive placeholders.
+					// 18.3.0 keeps the run-loop tool result branch inline.
+					const startedForSteering = await SpeculativeOperationCoordinator.take(message)?.settleStartedForSteering(
+						new Set(toolCalls.map(call => call.id)),
+					);
+					for (const toolCall of toolCalls) {
+						const actual = startedForSteering?.get(toolCall.id);
+						if (actual) {
+							const coerced = coerceToolResult(actual.result);
+							const result = coerced.result;
+							const isError = actual.isError || coerced.malformed || result.isError === true;
+							stream.push({ type: "tool_execution_start", toolCallId: toolCall.id, toolName: toolCall.name, args: toolCall.arguments, intent: toolCall.intent });
+							stream.push({ type: "tool_execution_end", toolCallId: toolCall.id, toolName: toolCall.name, result, isError });
+							const toolResult: ToolResultMessage = {
+								role: "toolResult", toolCallId: toolCall.id, toolName: toolCall.name,
+								content: result.content, details: result.details, providerMetadata: result.providerMetadata,
+								isError, timestamp: Date.now(),
+							};
+							stream.push({ type: "message_start", message: toolResult });
+							stream.push({ type: "message_end", message: toolResult });
+							currentContext.messages.push(toolResult);
+							newMessages.push(toolResult);
+							toolResults.push(toolResult);
+						} else {
+							const result = createAbortedToolResult(
+								toolCall, stream, "skipped", "A user message is pending. Answer it in 1-2 sentences, then in the SAME response immediately re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
+							);
+							currentContext.messages.push(result);
+							newMessages.push(result);
+							toolResults.push(result);
+							recordSkippedTool(telemetry, { toolCallId: toolCall.id, toolName: toolCall.name, status: "skipped" });
+						}
+					}
+					hasMoreToolCalls = true;
+				} else if (softNonCompliant && softRequiredTool !== undefined) {`,
+		alternates: [{
+			file: "../pi-agent-core/src/agent-loop.ts",
+			marker: "// 18.3.1 tool results are settled in the outer run loop.",
+			anchor: `				const toolResults: ToolResultMessage[] = [];
+				const additionalMessages: AgentMessage[] = [];
+				if (softNonCompliant && softRequiredTool !== undefined) {`,
+			patched: `				const toolResults: ToolResultMessage[] = [];
+				const additionalMessages: AgentMessage[] = [];
+				// 18.3.1 tool results are settled in the outer run loop.
 				if (hasNewUserSteering() && toolCalls.length > 0) {
 					// Do not dispatch the stale response. A speculative call
 					// that already started is real work, however: wait for it and
@@ -220,6 +267,7 @@ const EDITS = [
 					}
 					hasMoreToolCalls = true;
 				} else if (softNonCompliant && softRequiredTool !== undefined) {`,
+			}],
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
@@ -3614,6 +3662,30 @@ class LocalTextBackend implements TextBackend {`,
 		},
 	},
 	"providers.autoThinkingMaxEffort": {`,
+		alternates: [{
+			file: "src/config/model-settings.ts",
+			marker: 'id: "providers.judgmentProvider"',
+			anchor: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
+			patched: `export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });
+
+export const cfgJudgmentProvider = register({
+	id: "providers.judgmentProvider",
+	type: "enum",
+	values: ["auto", "vercel"] as const,
+	default: "auto",
+	ui: {
+		tab: "providers",
+		group: "Judgment",
+		label: "Judgment Provider",
+		description:
+			"Backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). \`auto\` uses the judge model role chain (native judgment APIs, then chat/local candidates). \`vercel\` runs one fixed Vercel AI Gateway evaluation request and never falls back to a chat or local model.",
+		options: [
+			{ value: "auto", label: "Auto", description: "Judge model role chain (default)" },
+			{ value: "vercel", label: "Vercel Jev", description: "One fixed evaluation request; failures never fall back" },
+		],
+	},
+});`,
+		}],
 	},
 	{
 		// 18.2.7 은 `providers.judgmentProvider` 를 legacy selector 로 보고 값을 읽은 뒤 키를
@@ -4240,6 +4312,12 @@ function staticInstructions(autoRetain: boolean): string {
 		"",
 	].join("\\n");
 }`,
+		alternates: [{
+			file: "src/prompts/system/mnemopi-instructions.md",
+			marker: "Completed turns are not stored automatically",
+			anchor: "- Durable project facts, preferences, and decisions are retained automatically from completed turns.",
+			patched: "{{#if autoRetain}}- Durable project facts, preferences, and decisions are retained automatically from completed turns.{{else}}- Completed turns are not stored automatically; durable facts persist only through explicit `retain` or `learn` calls.{{/if}}",
+		}],
 	},
 	{
 		// 위 항목의 소비자. 안내가 실제로 참조하는 값은 그 세션 state 의 config 다 - child alias 는
@@ -4248,6 +4326,17 @@ function staticInstructions(autoRetain: boolean): string {
 		marker: `staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))`,
 		anchor: `		const parts = [STATIC_INSTRUCTIONS];`,
 		patched: `		const parts = [staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))];`,
+		alternates: [{
+			file: "src/mnemopi/backend.ts",
+			marker: "autoRetain: primary?.config.autoRetain ?? settings.get(\"mnemopi.autoRetain\")",
+			anchor: `		const parts = [prompt.render(mnemopiInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];`,
+			patched: `		const parts = [
+			prompt.render(mnemopiInstructions, {
+				toolRefs: memoryToolRefs(session?.getXdevToolEntries()),
+				autoRetain: primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"),
+			}),
+		];`,
+		}],
 	},
 	{
 		// 같은 정적 블록을 recall 스테이징과 함께 예산에 넣는 두 번째 소비자다. 블록 길이가
@@ -4267,6 +4356,17 @@ function staticInstructions(autoRetain: boolean): string {
 				truncateApproxTokens(rendered, session.settings.get("mnemopi.injectionTokenLimit"))
 					.slice(instructions.length)
 					.trim() || undefined;`,
+		alternates: [{
+			file: "src/mnemopi/backend.ts",
+			marker: "autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? session.settings.get(\"mnemopi.autoRetain\")",
+			anchor: `			const instructions = prompt.render(mnemopiInstructions, {
+				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
+			});`,
+			patched: `			const instructions = prompt.render(mnemopiInstructions, {
+				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
+				autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? session.settings.get("mnemopi.autoRetain"),
+			});`,
+		}],
 	},
 	{
 		// read 실패의 절반 이상이 경로 추측이었다(2026-09-23 실측: 7일 read 경로 오류 126건 중
@@ -4309,19 +4409,39 @@ function staticInstructions(autoRetain: boolean): string {
 		// skill:// 로 rule 이름을 읽으면 skill 목록만 보여 줘 모델이 헛읽기를 반복한다(2026-09-24 Luna Maker가 skill://task-guard로 시작).
 		// 같은 이름의 rule 이 있으면 정확한 경로를 알려 준다.
 		file: "src/internal-urls/skill-protocol.ts",
-		marker: "is a rule, not a skill",
+		marker: "18.3.0 rule lookup uses the process active-rule snapshot.",
 		anchor: "\t\t\tthrow new Error(`Unknown skill: ${skillName}\\nAvailable: ${availableStr}`);",
-		patched: `			const ruleHint = (context?.rules ?? getActiveRules()).some(r => r.name === skillName)
+		patched: `			// 18.3.0 rule lookup uses the process active-rule snapshot.
+			const ruleHint = (context?.rules ?? getActiveRules()).some(r => r.name === skillName)
 				? \`\\n\${skillName} is a rule, not a skill: read rule://\${skillName}\`
 				: "";
 			throw new Error(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
+		alternates: [{
+			file: "src/internal-urls/skill-protocol.ts",
+			marker: "// 18.3.1 resolves the current rule context from the active session.",
+			anchor: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
+		throw new Error(\`Unknown skill: \${skillName}\\nAvailable: \${availableStr}\`);`,
+			patched: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
+		// 18.3.1 resolves the current rule context from the active session.
+		const ruleHint = (context?.rules ?? getActiveRules()).some(r => r.name === skillName)
+			? \`\\n\${skillName} is a rule, not a skill: read rule://\${skillName}\`
+			: "";
+		throw new Error(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
+		}],
 	},
 	{
 		file: "src/internal-urls/skill-protocol.ts",
-		marker: 'import { getActiveRules } from "../capability/rule";',
+		marker: "import { getActiveSkills } from \"../extensibility/skills\";\nimport { getActiveRules } from \"../capability/rule\";",
 		anchor: 'import { getActiveSkills } from "../extensibility/skills";',
 		patched: `import { getActiveSkills } from "../extensibility/skills";
 import { getActiveRules } from "../capability/rule";`,
+		alternates: [{
+			file: "src/internal-urls/skill-protocol.ts",
+			marker: 'import { getActiveSkills, type Skill } from "../extensibility/skills";\nimport { getActiveRules } from "../capability/rule";',
+			anchor: 'import { getActiveSkills, type Skill } from "../extensibility/skills";',
+			patched: `import { getActiveSkills, type Skill } from "../extensibility/skills";
+import { getActiveRules } from "../capability/rule";`,
+		}],
 	},
 	{
 		// --- IRC wake 턴의 missing-yield 가 완료된 SubAgent 를 failed 로 뒤집는 결함 ---

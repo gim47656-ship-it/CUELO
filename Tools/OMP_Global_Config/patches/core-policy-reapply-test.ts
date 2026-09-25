@@ -8,6 +8,7 @@
 import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSettingsTestScope } from "./core-test-settings";
 
 /** 전역 npm 위치는 PC마다 다르다. apply-core-patch.mjs 와 같은 순서로 찾는다. */
 function resolveCore(): string {
@@ -88,23 +89,25 @@ function modelsYmlText(extraModel: boolean): string {
 }
 
 function makeSettings(revertPolicy: string | undefined) {
-	return {
-		getGroup: (name: string) =>
-			name === "retry"
-				? {
-						enabled: true,
-						maxRetries: 2,
-						baseDelayMs: 1,
-						maxDelayMs: 0,
-						modelFallback: true,
-						waitForUsageReset: false,
-					}
-				: {},
-		get: (key: string) => (key === "retry.fallbackRevertPolicy" ? revertPolicy : undefined),
-		getModelRole: () => undefined,
-		getModelRoles: () => ({}),
-		getStorage: () => undefined,
-	} as never;
+	return Object.assign(
+		createSettingsTestScope(key => (key === "retry.fallbackRevertPolicy" ? revertPolicy : undefined)),
+		{
+			getGroup: (name: string) =>
+				name === "retry"
+					? {
+							enabled: true,
+							maxRetries: 2,
+							baseDelayMs: 1,
+							maxDelayMs: 0,
+							modelFallback: true,
+							waitForUsageReset: false,
+						}
+					: {},
+			getModelRole: () => undefined,
+			getModelRoles: () => ({}),
+			getStorage: () => undefined,
+		},
+	) as never;
 }
 
 // fixture 파일의 mtime 을 고정 정수 초로 둔다. 정수 초는 FS 가 그대로 저장하므로 쓰기 뒤 같은

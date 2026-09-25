@@ -28,7 +28,24 @@ const {
 	VercelJudge,
 	resolveJudge,
 } = await import(`${CORE}/judgment/index.ts`);
-const { SETTINGS_SCHEMA } = await import(`${CORE}/config/settings-schema.ts`);
+// The pinned core source changed its settings registry between 18.3.0 and 18.3.1.
+// Keep the same semantic contract check while importing only the module present in the staged revision.
+let judgmentProviderValues: readonly string[] | undefined;
+let judgmentProviderDefault: unknown;
+// 18.3.0은 settings.get(path), 18.3.1은 registry handle(lookup(id).get(settings))로 값을 읽는다.
+let readSetting: (settings: { get?: (path: string) => unknown }, id: string) => any = (settings, id) =>
+	settings.get!(id);
+if (existsSync(join(CORE, "config/settings-schema.ts"))) {
+	const { SETTINGS_SCHEMA } = await import(`${CORE}/config/settings-schema.ts`);
+	judgmentProviderValues = SETTINGS_SCHEMA["providers.judgmentProvider"].values;
+	judgmentProviderDefault = SETTINGS_SCHEMA["providers.judgmentProvider"].default;
+} else {
+	const { lookup } = await import(`${CORE}/config/registry.ts`);
+	const judgmentProviderSetting = lookup("providers.judgmentProvider");
+	judgmentProviderValues = judgmentProviderSetting?.enumValues;
+	judgmentProviderDefault = judgmentProviderSetting?.default;
+	readSetting = (settings, id) => lookup(id)!.get(settings);
+}
 const { Settings } = await import(`${CORE}/config/settings.ts`);
 
 let pass = 0;
@@ -37,8 +54,8 @@ function ok(name: string): void {
 	console.log(`  PASS  ${name}`);
 }
 
-assert.deepEqual(SETTINGS_SCHEMA["providers.judgmentProvider"].values, ["auto", "vercel"]);
-assert.equal(SETTINGS_SCHEMA["providers.judgmentProvider"].default, "auto");
+assert.deepEqual(judgmentProviderValues, ["auto", "vercel"]);
+assert.equal(judgmentProviderDefault, "auto");
 ok("settings schema는 auto/vercel 두 값만 노출한다");
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -345,21 +362,21 @@ function vercelHarness(options: { fetch: typeof fetch; onUsage?: (usage: unknown
 	};
 
 	const vercel = await load("vercel");
-	assert.equal(vercel.get("providers.judgmentProvider"), "vercel");
-	assert.equal(vercel.get("modelRoles").judge, undefined);
-	assert.equal(vercel.get("retry.fallbackChains").judge, undefined);
+	assert.equal(readSetting(vercel, "providers.judgmentProvider"), "vercel");
+	assert.equal(readSetting(vercel, "modelRoles").judge, undefined);
+	assert.equal(readSetting(vercel, "retry.fallbackChains").judge, undefined);
 	ok("실제 Settings 로딩에서 vercel이 남고 legacy judge role이 주입되지 않는다");
 
 	const typesafe = await load("typesafe");
-	assert.equal(typesafe.get("providers.judgmentProvider"), "auto");
-	assert.equal(typesafe.get("modelRoles").judge, "typesafe/jev-latest");
-	assert.deepEqual(typesafe.get("retry.fallbackChains").judge, ["@tiny", "@smol", "@default"]);
+	assert.equal(readSetting(typesafe, "providers.judgmentProvider"), "auto");
+	assert.equal(readSetting(typesafe, "modelRoles").judge, "typesafe/jev-latest");
+	assert.deepEqual(readSetting(typesafe, "retry.fallbackChains").judge, ["@tiny", "@smol", "@default"]);
 	ok("upstream migration은 typesafe 입력에서 그대로 동작한다");
 
 	const auto = await load("auto");
-	assert.equal(auto.get("providers.judgmentProvider"), "auto");
-	assert.equal(auto.get("modelRoles").judge, undefined);
-	assert.equal(auto.get("retry.fallbackChains").judge, undefined);
+	assert.equal(readSetting(auto, "providers.judgmentProvider"), "auto");
+	assert.equal(readSetting(auto, "modelRoles").judge, undefined);
+	assert.equal(readSetting(auto, "retry.fallbackChains").judge, undefined);
 	ok("auto 입력은 키 유지도 legacy judge 주입도 하지 않는다");
 
 	rmSync(root, { recursive: true, force: true });

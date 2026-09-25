@@ -9,6 +9,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSettingsTestScope } from "./core-test-settings";
 
 /** 전역 npm 위치는 PC마다 다르다. apply-core-patch.mjs 와 같은 순서로 찾는다. */
 function resolveCore(): string {
@@ -82,24 +83,26 @@ const mockFetch = (async () => ({
 })) as never;
 
 function makeSettings(maxRetries: number) {
-	return {
-		getGroup: (name: string) =>
-			name === "retry"
-				? {
-						enabled: true,
-						maxRetries,
-						baseDelayMs: 1,
-						maxDelayMs: 0,
-						modelFallback: true,
-						waitForUsageReset: false,
-					}
-				: {},
-		get: (key: string) =>
-			key === "retry.fallbackChains" ? CHAINS : key === "retry.usageAwareFallback" ? false : undefined,
-		getModelRole: (role: string) => (ROLES as Record<string, string>)[role],
-		getModelRoles: () => ROLES,
-		getStorage: () => undefined,
-	} as never;
+	const retry: Record<string, unknown> = {
+		enabled: true,
+		maxRetries,
+		baseDelayMs: 1,
+		maxDelayMs: 0,
+		modelFallback: true,
+		waitForUsageReset: false,
+		fallbackChains: CHAINS,
+		usageAwareFallback: false,
+	};
+	return Object.assign(
+		// 18.3.1은 retry.* 를 개별 설정 키로 읽고(retry.maxRetries 기본 10), 18.3.0은 getGroup("retry")로 읽는다.
+		createSettingsTestScope(key => (key.startsWith("retry.") ? retry[key.slice("retry.".length)] : undefined)),
+		{
+			getGroup: (name: string) => (name === "retry" ? retry : {}),
+			getModelRole: (role: string) => (ROLES as Record<string, string>)[role],
+			getModelRoles: () => ROLES,
+			getStorage: () => undefined,
+		},
+	) as never;
 }
 
 function makeRegistry(tag: string) {

@@ -120,7 +120,7 @@ check("--check 는 대상 경로를 밝힌다", checkBefore.out.includes(fixture
 check("--check 는 아무것도 쓰지 않는다", fixtureUnchanged());
 
 const applied = run([]);
-check("기본 실행은 적용하고 0 으로 끝난다", applied.code === 0 && applied.out.includes("적용 완료"), `code=${applied.code} out=${applied.out.slice(-300)}`);
+check("기본 실행은 적용하고 0 으로 끝난다", applied.code === 0 && applied.out.includes("적용 완료"), `code=${applied.code} out=${applied.out.slice(-2_000)}`);
 check("적용은 실제로 파일을 바꾼다", !fixtureUnchanged());
 check("적용은 백업을 임시 홈에 남긴다", existsSync(join(fakeHome, ".omp/core-patch-backup")));
 const completionBridgeAfterApply = readFileSync(join(fixture, "src/eval/completion-bridge.ts"), "utf8");
@@ -140,7 +140,7 @@ const again = run([]);
 check("이미 적용된 대상의 재실행은 SKIP 과 0 이다", again.code === 0 && again.out.includes("SKIP"), `code=${again.code} out=${again.out.slice(-200)}`);
 
 const reverted = run(["--revert"]);
-check("--revert 는 복원 완료와 0 으로 끝난다", reverted.code === 0 && reverted.out.includes("복원 완료"), `code=${reverted.code} out=${reverted.out.slice(-300)}`);
+check("--revert 는 복원 완료와 0 으로 끝난다", reverted.code === 0 && reverted.out.includes("복원 완료"), `code=${reverted.code} out=${reverted.out.slice(-2_000)}`);
 check("--revert 는 원본 바이트로 되돌린다", fixtureUnchanged());
 
 const notFound = run(["--check"], { env: { ...baseEnv, OMP_CORE_PATCH_TARGET: emptyTarget } });
