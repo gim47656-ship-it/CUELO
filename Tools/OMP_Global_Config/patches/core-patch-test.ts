@@ -2155,7 +2155,38 @@ console.log("\nCUELO Next 서버 env 를 자식 셸에 넘기지 않는다");
 	check("런처 기준값이 있으면 NODE_ENV·PORT 를 그 값으로 되돌린다", restored.NODE_ENV === "test" && restored.PORT === "4000", `NODE_ENV=${restored.NODE_ENV} PORT=${restored.PORT}`);
 	const plain = filterChildShellEnv({ KEEP_ME: "1", NODE_ENV: "development", PORT: "5173" }, envCwd);
 	check("Next 서버 밖(TUI)에서는 NODE_ENV·PORT 를 그대로 둔다", plain.NODE_ENV === "development" && plain.PORT === "5173", `NODE_ENV=${plain.NODE_ENV} PORT=${plain.PORT}`);
+	// native 셸은 sessionEnv 를 부모 env 위에 덧씌우기만 한다. 배포 뒤에도 셸에 값이 남았던 것이 그
+	// 때문이라, 실제 executeBash 를 서버 env 를 가진 별도 프로세스에서 돌려 셸 안의 값을 본다.
+	// 셸 설정은 프로세스 수명 동안 캐시되므로 이 테스트 프로세스에서 env 를 바꿔서는 볼 수 없다.
+	const probeHome = mkdtempSync(join(tmpdir(), "hanse-shell-home-"));
+	const probe = `const { executeBash } = await import(${JSON.stringify(`${CORE}/exec/bash-executor.ts`)});
+const result = await executeBash('echo "NODE_ENV=\${NODE_ENV-unset} PORT=\${PORT-unset} NEXT_RUNTIME=\${NEXT_RUNTIME-unset} ORIGIN=\${__NEXT_PRIVATE_ORIGIN-unset} KEEP_ME=\${KEEP_ME-unset}"', { cwd: ${JSON.stringify(envCwd)} });
+console.log(result.output.trim());
+process.exit(0);`;
+	const child = Bun.spawnSync([process.execPath, "-e", probe], {
+		cwd: envCwd,
+		env: { ...process.env, ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}", HOME: probeHome, USERPROFILE: probeHome },
+	});
+	const shellLine = child.stdout.toString().trim().split(/\r?\n/).pop() ?? "";
+	check(
+		"실제 bash 도구 셸에 서버 변수가 새지 않는다",
+		shellLine === "NODE_ENV=unset PORT=unset NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1",
+		`shell=${shellLine} stderr=${child.stderr.toString().trim().slice(0, 300)}`,
+	);
+	rmSync(probeHome, { recursive: true, force: true });
 	rmSync(envCwd, { recursive: true, force: true });
+}
+
+// 사용자 메시지로 보류한 호출의 결과가 "the assistant ended its turn" 으로 시작해 턴이 끝난 것처럼
+// 읽혔다. 사유가 있는 skipped 는 그 문장만, 사유 없는 skipped(턴이 실제로 끝남)는 upstream 문구다.
+console.log("\n사유가 있는 skipped 결과는 턴 종료 문구를 붙이지 않는다");
+{
+	const { createSyntheticToolResultMessage } = await import(`${CORE}/../../pi-agent-core/src/agent-loop.ts`);
+	const call = { type: "toolCall", id: "call-skip", name: "read", arguments: {} } as never;
+	const steered = createSyntheticToolResultMessage(call, "skipped", "Not executed: a user message arrived before this call ran.").content[0]?.text;
+	check("보류 사유가 있으면 그 문장만 남는다", steered === "Not executed: a user message arrived before this call ran.", `text=${steered}`);
+	const ended = String(createSyntheticToolResultMessage(call, "skipped").content[0]?.text);
+	check("사유 없는 skipped 는 턴 종료 문구를 유지한다", ended.includes("ended its turn"), `text=${ended}`);
 }
 
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
