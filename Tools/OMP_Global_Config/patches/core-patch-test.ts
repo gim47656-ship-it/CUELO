@@ -2189,5 +2189,39 @@ console.log("\n사유가 있는 skipped 결과는 턴 종료 문구를 붙이지
 	check("사유 없는 skipped 는 턴 종료 문구를 유지한다", ended.includes("ended its turn"), `text=${ended}`);
 }
 
+// `learn`/`retain` 원문 1건에서 파생된 fact 가 원문과 함께 `<memories>`·`recall` 에 실렸다(2026-09-26 CUELO
+// 은행 `sed` 교훈 1건이 3줄). 원문이 결과에 있으면 파생 fact 는 빠지고, 원문이 없는 fact 는 남아야 한다.
+// 파생 fact 는 LLM 추출 대신 추출기가 쓰는 것과 같은 행(facts.source_msg_id = 원문 id)으로 넣는다.
+console.log("\n[23] Mnemopi 회수 — 원문이 실린 기억의 파생 fact 는 중복으로 싣지 않는다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/index.ts`);
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-"));
+	const bank = "dedupe";
+	const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, embeddings: false, llm: false, reconcile: false });
+	try {
+		const origin = memory.remember(
+			"omp bash 도구의 `sed`는 셸 내장 `sed 0.1.1`이다. `\\b`(단어 경계)를 지원하지 않는데 오류 없이 매치 0으로 끝난다.",
+			{ source: "coding-agent-learn", importance: 0.8, scope: "bank" },
+		);
+		const addFact = (factId: string, object: string, sourceId: string) =>
+			memory.beam.db.run(
+				"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, source_msg_id, confidence) VALUES (?, ?, 'fact', 'entity', ?, ?, ?, 0.8)",
+				[factId, bank, object, new Date().toISOString(), sourceId],
+			);
+		addFact("derived-1", "omp bash 도구의 `sed`는 셸 내장 `sed 0.1.1`이다", origin);
+		addFact("derived-2", "셸 내장 `sed 0.1.1`은 `\\b`(단어 경계)를 지원하지 않는다", origin);
+		addFact("orphan", "sed 단어 경계 대신 perl 을 쓸 수 있다", "gone-origin");
+		const results = (await memory.recallEnhanced("sed 단어 경계", 8, { includeFacts: true, channelId: bank })) as Array<{ id: string; source_memory_id?: unknown }>;
+		const ids = results.map(result => result.id);
+		check("원문 기억은 그대로 실린다", ids.includes(origin), `ids=${ids.join(",")}`);
+		check("원문이 실린 기억의 파생 fact 는 빠진다", !ids.includes("derived-1") && !ids.includes("derived-2"), `ids=${ids.join(",")}`);
+		const orphan = results.find(result => result.id === "orphan");
+		check("원문이 결과에 없는 fact 는 남고 원문 id 를 싣는다", orphan?.source_memory_id === "gone-origin", `ids=${ids.join(",")}`);
+	} finally {
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
