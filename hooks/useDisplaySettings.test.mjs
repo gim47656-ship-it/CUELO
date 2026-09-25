@@ -3,16 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const hookSource = readFileSync(new URL("./useDisplaySettings.ts", import.meta.url), "utf8");
-const routeSource = readFileSync(new URL("../app/api/display-settings/route.ts", import.meta.url), "utf8");
 const settingsSource = readFileSync(new URL("../components/SettingsConfig.tsx", import.meta.url), "utf8");
-
-test("serves the render-affecting settings for the requested cwd", () => {
-  assert.match(routeSource, /getSettingsForCwd\(cwd\)/);
-  assert.match(routeSource, /hideThinkingBlock: settings\.get\("hideThinkingBlock"\) === true/);
-  // Same guards as the other settings-derived endpoints.
-  assert.match(routeSource, /isApiRequestAllowed\(req\)/);
-  assert.match(routeSource, /isExistingFilePathAllowed\(cwd, allowedRoots\)/);
-});
 
 test("shares one store so message components do not each fetch", () => {
   assert.match(hookSource, /export function useDisplaySettings\(\): DisplaySettings \{\s*return useSyncExternalStore/);

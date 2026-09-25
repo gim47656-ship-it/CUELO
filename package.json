@@ -20,7 +20,7 @@
   "ompWebBuild": {
     "distribution": "hanse-responsive",
     "upstreamCommit": "0acce6240b27eb7d44d5c9b78187bd95e01270f8",
-    "coreVersion": "18.3.0"
+    "coreVersion": "18.3.1"
   },
   "engines": {
     "node": ">=22.19.0",
@@ -56,11 +56,11 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@oh-my-pi/pi-agent-core": "18.3.0",
-    "@oh-my-pi/pi-ai": "18.3.0",
-    "@oh-my-pi/pi-coding-agent": "18.3.0",
-    "@oh-my-pi/pi-tui": "18.3.0",
-    "@oh-my-pi/pi-utils": "18.3.0",
+    "@oh-my-pi/pi-agent-core": "18.3.1",
+    "@oh-my-pi/pi-ai": "18.3.1",
+    "@oh-my-pi/pi-coding-agent": "18.3.1",
+    "@oh-my-pi/pi-tui": "18.3.1",
+    "@oh-my-pi/pi-utils": "18.3.1",
     "@seed-design/css": "2.8.0",
     "@seed-design/react": "2.4.1",
     "@seed-design/tailwind4-theme": "2.4.0",

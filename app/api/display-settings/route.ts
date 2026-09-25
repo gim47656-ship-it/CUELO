@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cfgHideThinkingBlock } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { getSettingsForCwd } from "@/lib/omp-runtime";
 import { isApiRequestAllowed } from "@/lib/request-security";
@@ -25,7 +26,7 @@ export async function GET(req: Request) {
     }
     const settings = await getSettingsForCwd(cwd);
     const payload: DisplaySettings = {
-      hideThinkingBlock: settings.get("hideThinkingBlock") === true,
+      hideThinkingBlock: cfgHideThinkingBlock.get(settings) === true,
     };
     return NextResponse.json(payload);
   } catch (error) {
