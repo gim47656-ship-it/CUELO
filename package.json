@@ -53,7 +53,8 @@
     "desktop:fetch-bun": "bun scripts/fetch-bun.mjs",
     "desktop:signer": "tauri signer",
     "desktop:sync-version": "bun scripts/sync-version.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin"
   },
   "dependencies": {
     "@oh-my-pi/pi-agent-core": "18.3.1",
