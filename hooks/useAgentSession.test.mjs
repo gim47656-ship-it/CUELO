@@ -265,7 +265,7 @@ export const useLayoutEffect = () => {};
       model: null,
     },
   };
-  const renderHook = () => {
+  const useRenderedSession = () => {
     stateIndex = 0;
     reducerIndex = 0;
     refIndex = 0;
@@ -286,7 +286,7 @@ export const useLayoutEffect = () => {};
     );
   };
 
-  let hook = renderHook();
+  let hook = useRenderedSession();
   const oldRequest = {
     type: "extension_ui_request",
     id: "old-dialog",
@@ -295,23 +295,23 @@ export const useLayoutEffect = () => {};
   };
   const newRequest = { ...oldRequest, id: "new-dialog" };
   hook.handleAgentEventRef.current(oldRequest);
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionDialog.id, oldRequest.id);
 
   const response = hook.respondToExtensionUi(oldRequest, { value: JSON.stringify({ kind: "chat" }) });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.deepEqual(hook.extensionResponse, { id: oldRequest.id, status: "sending" });
   hook.handleAgentEventRef.current(newRequest);
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionDialog.id, newRequest.id);
 
   hook.handleAgentEventRef.current({ ...oldRequest, closed: true });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionDialog.id, newRequest.id);
   assert.equal(hook.extensionResponse, null);
 
   hook.handleAgentEventRef.current({ ...newRequest, closed: true });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionDialog, null);
   const customRequest = {
     type: "extension_ui_request",
@@ -320,10 +320,10 @@ export const useLayoutEffect = () => {};
     lines: ["Custom content"],
   };
   hook.handleAgentEventRef.current(customRequest);
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionCustomUi.id, customRequest.id);
   hook.handleAgentEventRef.current({ ...customRequest, lines: [], closed: true });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.extensionCustomUi, null);
 
   const completed = {
@@ -353,7 +353,7 @@ export const useLayoutEffect = () => {};
       entryIds: ["assistant-1", "shion-1"],
     },
   });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.deepEqual(
     hook.messages,
     [completed, shionReply],
@@ -378,7 +378,7 @@ export const useLayoutEffect = () => {};
       entryIds: ["assistant-1", "shion-2"],
     },
   });
-  hook = renderHook();
+  hook = useRenderedSession();
   assert.equal(hook.streamState.isStreaming, true);
   assert.deepEqual(
     hook.streamState.streamingMessage,

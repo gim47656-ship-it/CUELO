@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { ActionButton, Tabs } from "@seed-design/react";
 import type { UsageSnapshotController } from "@/hooks/useUsageSnapshot";
+import { useNow } from "@/hooks/useNow";
 import type { ApiKeyProviderListing, OAuthProviderListing } from "@/lib/provider-listing";
 import {
   accountIdentities,
@@ -828,7 +829,8 @@ export function UsageView({
   onToggle: (report: UsageReport) => void;
   onReset: (report: UsageReport, creditId: string) => Promise<void>;
 }) {
-  const now = Date.now();
+  // 리셋·만료 카운트다운은 분 단위라 10초 시계로 충분하다.
+  const now = useNow(10_000);
   const data = state.data;
   const activeCredentialId = currentCredentialId(accountState);
   // 별칭·얼굴은 화면에 뜬 계정 전체를 한 번에 보고 배정해야 서로 겹치지 않는다.
