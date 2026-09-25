@@ -777,7 +777,10 @@ function createEffectRenderer() {
 
 // 2026-09-23 사용자 관측: Wake로 세션은 재개됐는데 보고 있던 탭에는 응답이 안 떠 F5가 필요했다.
 // 복귀 화면은 idle transcript를 읽은 뒤 붙고, Wake run은 그 뒤 서버에서 시작된다.
-test("업데이트 복귀 신호를 받은 유휴 화면은 새로고침 없이 Wake 응답을 한 번만 보여 준다", async (t) => {
+// 평소 30~70ms지만 CI 러너가 느린 순간(옆 테스트까지 70~125배 느려진 run 36149916815)에는 기본 5초를
+// 넘겼다. 시간이 지나면 t.after가 돌지 않아 바꿔 둔 window가 남고 useAudio 테스트까지 연달아 깨지므로
+// 제한을 넉넉히 둔다.
+test("업데이트 복귀 신호를 받은 유휴 화면은 새로고침 없이 Wake 응답을 한 번만 보여 준다", { timeout: 30_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-wake-"));
   const rendererKey = "__ompUseAgentSessionEffectRenderer";
   const fakeReactPath = join(directory, "react.mjs");
