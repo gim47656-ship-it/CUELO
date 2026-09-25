@@ -45,3 +45,6 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/resources/
 src-tauri/server/
+
+# npm lockfile (bun.lock이 정본)
+package-lock.json
