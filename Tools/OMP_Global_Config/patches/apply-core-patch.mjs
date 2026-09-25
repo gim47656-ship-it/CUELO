@@ -215,7 +215,7 @@ const EDITS = [
 							toolResults.push(toolResult);
 						} else {
 							const result = createAbortedToolResult(
-								toolCall, stream, "skipped", "Not executed: a user message arrived before this call ran. The turn is still going. Answer the user in 1-2 sentences, then in the SAME response re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
+								toolCall, stream, "skipped", "실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지가 도착했다. 턴은 끝나지 않았다. 먼저 사용자에게 한두 문장으로 답하고, 같은 응답에서 아직 필요한 도구 호출을 다시 낸다. 사용자의 승인이나 결정이 필요할 때만 글만 남기고 턴을 끝낸다.",
 							);
 							currentContext.messages.push(result);
 							newMessages.push(result);
@@ -261,7 +261,7 @@ const EDITS = [
 							toolResults.push(toolResult);
 						} else {
 							const result = createAbortedToolResult(
-								toolCall, stream, "skipped", "Not executed: a user message arrived before this call ran. The turn is still going. Answer the user in 1-2 sentences, then in the SAME response re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
+								toolCall, stream, "skipped", "실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지가 도착했다. 턴은 끝나지 않았다. 먼저 사용자에게 한두 문장으로 답하고, 같은 응답에서 아직 필요한 도구 호출을 다시 낸다. 사용자의 승인이나 결정이 필요할 때만 글만 남기고 턴을 끝낸다.",
 							);
 							currentContext.messages.push(result);
 							newMessages.push(result);
