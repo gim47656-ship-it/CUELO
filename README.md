@@ -140,6 +140,7 @@ bun run dev          # http://127.0.0.1:30141
 bun run typecheck
 bun run lint
 bun run test         # 앱 테스트
+bun run test:coverage  # 앱 테스트 + 커버리지 표
 ```
 
 개발 서버를 쓰는 동안에는 `bun run build`를 돌리지 마세요. `.next/`를 덮어써서 개발 서버가 깨집니다(`bun run desktop:build`는 별도 디렉터리에 빌드하므로 괜찮습니다).
