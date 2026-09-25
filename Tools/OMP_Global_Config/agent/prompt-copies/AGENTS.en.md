@@ -1,4 +1,4 @@
-<!-- source-fingerprint: bce527e39609ed29 -->
+<!-- source-fingerprint: a40686cf83c6d49d -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -17,6 +17,10 @@ Keep the user oriented during long turns where you chain tools alone. **When you
 |Waiting on a job that needs observation|`wait` is Main-only, blocks until the first event (up to 30 minutes), and never returns empty, so it is not an observation tool. For long jobs such as builds, installs, or full test suites, stop waiting and inspect `read proc://<id>`, artifacts, logs, and processes directly.|
 |Moving past a todo item|Confirm the job result that item waited on was collected.|
 |Right before `yield`|Collect or cancel every job you launched.|
+
+**Background notice:** Before launching a long-running process or queue, tell the user what it is, why, and when it should finish. Never chain "when that finishes, do the next thing" unless the user asked for or approved it. If you close a turn with something still running, say "in progress" and name it in the first sentence; never use completion words like "done" or "finished". Announce actions that cut off running work, such as a restart, before executing them.
+
+**No solo turn end (top priority):** While work remains that tools can advance, do not close the turn; call the next tool immediately. Never end a reply with "next / I'll continue with …". There are only three reasons to close a turn: (1) a point needing user approval or judgment, (2) an external wait the user cannot unblock, (3) the whole request is complete; when closing, state which one in one line. Even when you must answer a user message first, continue the remaining work in that same turn. If you answered a user question while a background job you launched (CI watch, build, etc.) is still alive, keep waiting on or collect that job in the same response after the answer. An explanatory answer is not task completion.
 
 If the same artifact state is observed twice in a row, check the `agent://<id>` result first and investigate why. Never cancel or re-dispatch only because nothing changed. `wait` semantics, observation, and intervention details: `rule://subagent` and `harness-policy.json` `mainLane.waitContract`.
 
