@@ -5,7 +5,7 @@ import {
   type WebAuthStoreOptions,
 } from "../bin/web-auth-store.js";
 
-export const OMP_WEB_AUTH_USERNAME = "omp";
+export const CUELO_AUTH_USERNAME = "omp";
 
 /**
  * Outcome of checking one request's credentials.
@@ -25,7 +25,7 @@ function secretsEqual(actual: string, expected: string): boolean {
 }
 
 export function isWebPasswordEnabled(
-  password: string | undefined = process.env.OMP_WEB_PASSWORD,
+  password: string | undefined = process.env.CUELO_PASSWORD,
 ): password is string {
   return typeof password === "string" && password.length > 0;
 }
@@ -59,22 +59,22 @@ export function parseBasicCredentials(
 
 export function isValidBasicAuthorization(
   authorization: string | null,
-  password = process.env.OMP_WEB_PASSWORD,
+  password = process.env.CUELO_PASSWORD,
 ): boolean {
   if (!isWebPasswordEnabled(password)) return false;
 
   const credentials = parseBasicCredentials(authorization);
   if (!credentials) return false;
 
-  const usernameMatches = secretsEqual(credentials.username, OMP_WEB_AUTH_USERNAME);
+  const usernameMatches = secretsEqual(credentials.username, CUELO_AUTH_USERNAME);
   const passwordMatches = secretsEqual(credentials.password, password);
   return usernameMatches && passwordMatches;
 }
 
 /**
  * Authorize one request against whichever credential is in force — the
- * `OMP_WEB_PASSWORD` environment variable, or the hashed credential written by
- * the settings panel and `omp-web --authenticated`.
+ * `CUELO_PASSWORD` environment variable, or the hashed credential written by
+ * the settings panel and `cuelo --authenticated`.
  */
 export function authorizeWebRequest(
   authorization: string | null,
@@ -85,7 +85,7 @@ export function authorizeWebRequest(
   if (policy.mode === "unavailable") return "unavailable";
 
   const credentials = parseBasicCredentials(authorization);
-  if (!credentials || !secretsEqual(credentials.username, OMP_WEB_AUTH_USERNAME)) {
+  if (!credentials || !secretsEqual(credentials.username, CUELO_AUTH_USERNAME)) {
     return "unauthorized";
   }
   return verifyWebPassword(credentials.password, { ...options, policy }) ? "allow" : "unauthorized";

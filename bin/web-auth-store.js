@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Credential store for omp-web's password lock.
+ * Credential store for CUELO's password lock.
  *
  * The password protects a server that can run a high-privilege agent, so it is
  * never written to disk in a recoverable form: the file keeps a `scrypt` digest
@@ -9,7 +9,7 @@
  * the digest. Recovery codes are stored the same way.
  *
  * This module lives in `bin/` rather than `lib/` on purpose. Both halves of
- * omp-web need it — the launcher (`bin/omp-web.js`, plain Node CommonJS, before
+ * CUELO need it — the launcher (`bin/cuelo.js`, plain Node CommonJS, before
  * Bun is even resolved) and the server (`proxy.ts` and the `/api/web-access`
  * routes) — and only `bin/` is part of the published npm `files` list. It
  * therefore stays dependency-free CommonJS that both runtimes can load.
@@ -18,17 +18,20 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } = require("node:crypto");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
+const { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } = require("node:fs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { homedir } = require("node:os");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { basename, dirname, join, resolve } = require("node:path");
 
-/** Basic Auth username omp-web accepts. The password is the only secret. */
+/** Basic Auth username CUELO accepts. The password is the only secret. */
 const WEB_AUTH_USERNAME = "omp";
 
 /** Credential filename, kept next to the agent configuration. */
-const WEB_AUTH_FILENAME = "omp-web-auth.json";
+const WEB_AUTH_FILENAME = "cuelo-auth.json";
+
+/** Pre-rename credential filename (omp-web). Adopted once by `adoptLegacyStateFile`. */
+const LEGACY_WEB_AUTH_FILENAME = "omp-web-auth.json";
 
 /** Current on-disk schema version. */
 const WEB_AUTH_VERSION = 1;
@@ -68,7 +71,7 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
  * launcher cannot load it, and `proxy.ts` must not pull the SDK into its bundle.
  * This mirrors omp's default layout: an explicit `PI_CODING_AGENT_DIR` wins,
  * otherwise `~/.omp/agent` with `PI_CONFIG_DIR` and the active profile applied.
- * Anything more exotic (an XDG migration) is addressed with `OMP_WEB_AUTH_FILE`.
+ * Anything more exotic (an XDG migration) is addressed with `CUELO_AUTH_FILE`.
  */
 function resolveAgentDir(env = process.env) {
   if (env.PI_CODING_AGENT_DIR) return resolve(env.PI_CODING_AGENT_DIR);
@@ -84,10 +87,10 @@ function normalizeProfileName(profile) {
   return PROFILE_NAME_RE.test(normalized) && !normalized.endsWith(".") ? normalized : undefined;
 }
 
-/** Absolute path of the credential file. `OMP_WEB_AUTH_FILE` overrides the location entirely. */
+/** Absolute path of the credential file. `CUELO_AUTH_FILE` overrides the location entirely. */
 function resolveWebAuthFile(env = process.env) {
-  return env.OMP_WEB_AUTH_FILE
-    ? resolve(env.OMP_WEB_AUTH_FILE)
+  return env.CUELO_AUTH_FILE
+    ? resolve(env.CUELO_AUTH_FILE)
     : join(resolveAgentDir(env), WEB_AUTH_FILENAME);
 }
 
@@ -173,7 +176,46 @@ function digestFingerprint(digest) {
  * that — `proxy.ts` refuses every request in the `unreadable` case rather than
  * silently unlocking a server whose credential it cannot parse.
  */
+function statusOf(path) {
+  try {
+    statSync(path);
+    return "present";
+  } catch (error) {
+    if (error && error.code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+
+/**
+ * One-time adoption of a state file written under the pre-rename (omp-web) name.
+ *
+ * When `file` is missing and `<dir>/<legacyName>` exists, the legacy file is
+ * renamed onto `file` in the same directory (atomic). Returns without doing
+ * anything when `file` already exists or there is nothing to adopt. Any other
+ * failure throws: a caller guarding a lock must fail closed instead of reading
+ * "no file" and unlocking the server.
+ */
+function adoptLegacyStateFile(file, legacyName) {
+  if (statusOf(file) === "present") return;
+  const legacy = join(dirname(file), legacyName);
+  if (statusOf(legacy) === "missing") return;
+  try {
+    renameSync(legacy, file);
+  } catch (error) {
+    // A concurrent process may have adopted it first.
+    if (statusOf(file) === "present") return;
+    throw error;
+  }
+}
+
 function readWebAuthState(file = resolveWebAuthFile()) {
+  if (basename(file) === WEB_AUTH_FILENAME) {
+    try {
+      adoptLegacyStateFile(file, LEGACY_WEB_AUTH_FILENAME);
+    } catch {
+      return { status: "unreadable", config: null };
+    }
+  }
   let contents;
   try {
     contents = readFileSync(file, "utf8");
@@ -229,19 +271,19 @@ function writeWebAuthConfig(config, file = resolveWebAuthFile()) {
  * mutation that dropped a credential it could not parse would unlock the
  * server. `setWebPassword` is the deliberate exception (`replaceUnreadable`):
  * it writes a complete config, so nothing is lost, and it is the escape hatch
- * `omp-web --reset-password` needs when the file has been corrupted.
+ * `cuelo --reset-password` needs when the file has been corrupted.
  */
 function currentConfig(file, { replaceUnreadable = false } = {}) {
   const state = readWebAuthState(file);
   if (state.status === "unreadable") {
     if (replaceUnreadable) return { version: WEB_AUTH_VERSION };
-    throw new Error(`The omp-web credential file at ${file} could not be read. Run \`omp-web --reset-password\` to replace it.`);
+    throw new Error(`The CUELO credential file at ${file} could not be read. Run \`cuelo --reset-password\` to replace it.`);
   }
   return state.config ?? { version: WEB_AUTH_VERSION };
 }
 
 function environmentPassword(env = process.env) {
-  const password = env.OMP_WEB_PASSWORD;
+  const password = env.CUELO_PASSWORD;
   return typeof password === "string" && password.length > 0 ? password : null;
 }
 
@@ -531,6 +573,7 @@ module.exports = {
   RECOVERY_MAX_ATTEMPTS,
   WEB_AUTH_FILENAME,
   WEB_AUTH_USERNAME,
+  adoptLegacyStateFile,
   clearVerificationCache,
   clearWebPassword,
   consumeRecoveryCode,

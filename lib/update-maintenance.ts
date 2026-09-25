@@ -102,7 +102,7 @@ function asRecord(value: unknown): JsonRecord | null {
 }
 
 function externalUpdateRoot(): string {
-  const configured = process.env.OMPWEB_EXTERNAL_UPDATE_ROOT?.trim();
+  const configured = process.env.CUELO_EXTERNAL_UPDATE_ROOT?.trim();
   return resolve(configured || join(homedir(), ".omp", "external-update"));
 }
 
@@ -299,13 +299,13 @@ function normalizeDeploymentCompletion(
   const rollbackRoot = dirname(rollbackTransactionPath);
   const rollbackPackagePath = resolve(String(rollback.packagePath ?? ""));
   const rollbackShimDirectory = resolve(String(rollback.shimDirectory ?? ""));
-  const requiredShims = ["omp-web", "omp-web.cmd", "omp-web.ps1"];
+  const requiredShims = ["cuelo", "cuelo.cmd", "cuelo.ps1"];
   const backedUpShims = Array.isArray(rollback.backedUpShims)
     ? rollback.backedUpShims.map((value) => String(value))
     : [];
   if (
     rollbackTransactionPath !== join(rollbackRoot, "transaction.json")
-    || rollbackPackagePath !== join(rollbackRoot, "omp-web")
+    || rollbackPackagePath !== join(rollbackRoot, "cuelo")
     || rollbackShimDirectory !== join(rollbackRoot, "shims")
     || !existsSync(rollbackTransactionPath)
     || !existsSync(rollbackPackagePath)
@@ -768,9 +768,9 @@ export function getDeployedServiceIdentity(): {
   stageHash: string | null;
   transactionId: string | null;
 } {
-  const requestId = process.env.OMPWEB_DEPLOY_REQUEST_ID?.trim() || null;
-  const stageHash = process.env.OMPWEB_DEPLOY_STAGE_HASH?.trim().toLowerCase() || null;
-  const markerPath = process.env.OMPWEB_DEPLOY_MARKER_PATH?.trim() || null;
+  const requestId = process.env.CUELO_DEPLOY_REQUEST_ID?.trim() || null;
+  const stageHash = process.env.CUELO_DEPLOY_STAGE_HASH?.trim().toLowerCase() || null;
+  const markerPath = process.env.CUELO_DEPLOY_MARKER_PATH?.trim() || null;
   if (!requestId || !stageHash || !markerPath || !REQUEST_ID_PATTERN.test(requestId) || !SHA256_PATTERN.test(stageHash)) {
     return { ready: false, requestId, stageHash, transactionId: null };
   }

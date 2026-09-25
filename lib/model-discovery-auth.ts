@@ -24,7 +24,7 @@ export async function resolveModelDiscoveryAuth(
 ): Promise<ModelDiscoveryAuth> {
   let tempDir: string | undefined;
   try {
-    tempDir = mkdtempSync(join(tmpdir(), "omp-web-model-discovery-"));
+    tempDir = mkdtempSync(join(tmpdir(), "cuelo-model-discovery-"));
     const modelsPath = join(tempDir, "models.json");
     // 모델 목록 조회에는 가짜 모델을 등록하지 않는다. provider 단위 resolver가
     // 저장된 AuthStorage 키와 명시된 config/header 인증을 그대로 해석한다.

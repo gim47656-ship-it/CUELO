@@ -240,7 +240,7 @@ body {
 }
 
 :root {
-  /* System monospace stack. omp-web is a local tool: it must not depend on a
+  /* System monospace stack. CUELO is a local tool: it must not depend on a
      font CDN at build or at runtime, and the terminal-native faces below are
      already what omp users read code in. CJK fallbacks stay last. */
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Noto Sans Mono', 'DejaVu Sans Mono', Consolas, 'Liberation Mono', 'PingFang SC', 'Microsoft YaHei', monospace;

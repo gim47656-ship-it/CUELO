@@ -1,7 +1,7 @@
 // @oh-my-pi/pi-coding-agent 교차 세션 IRC 라우팅 패치.
 //
-// 대상은 이 저장소 밖의 전역 npm 패키지다. omp-web을 재설치하거나 업데이트하면 사라지므로
-// 그때마다 다시 실행한다. 적용 후 omp-web 재시작이 필요하다.
+// 대상은 이 저장소 밖의 전역 npm 패키지다. CUELO를 재설치하거나 업데이트하면 사라지므로
+// 그때마다 다시 실행한다. 적용 후 CUELO 재시작이 필요하다.
 //
 //   node apply-core-patch.mjs           적용
 //   node apply-core-patch.mjs --check   적용 여부만 확인
@@ -32,6 +32,8 @@ function resolveTarget() {
 
 	const roots = [join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules")];
 	for (const root of roots) {
+		add(join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
+		add(join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(root, "@oh-my-pi/pi-coding-agent"));
 	}
@@ -40,6 +42,8 @@ function resolveTarget() {
 
 	try {
 		const npmRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf8", shell: true }).trim();
+		add(join(npmRoot, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
+		add(join(npmRoot, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(npmRoot, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(npmRoot, "@oh-my-pi/pi-coding-agent"));
 	} catch {
@@ -574,7 +578,7 @@ const EDITS = [
 	{
 		// Relay는 사용자의 실제 Chrome이다. target 없이 여는 기본 경로가
 		// pickElectronTarget(preferVisible)로 "지금 보고 있는 탭"을 채택한 뒤
-		// 요청 URL로 goto 해서, 사용자가 작업 중이던 탭(OMPWEB 포함)을 통째로
+		// 요청 URL로 goto 해서, 사용자가 작업 중이던 탭(CUELO 포함)을 통째로
 		// 덮어썼다. 새 탭을 하나 만들어 거기서 일하도록 바꾼다.
 		// Target.createTarget은 relay bridge가 chrome.tabs.create로 이미 구현해
 		// 두었으므로 확장/프로토콜을 넓힐 필요가 없다.
@@ -2976,7 +2980,7 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	}`,
 	},
 	{
-		// 공개 SessionsApi 계약. 확장(character-voice)·OMPWEB 이 이 이름으로 부른다.
+		// 공개 SessionsApi 계약. 확장(character-voice)·CUELO 이 이 이름으로 부른다.
 		file: "../pi-ai/src/auth/types.ts",
 		marker: "exactLabel(provider: string, sessionId: string | undefined): string | undefined;",
 		anchor: `	pin(provider: string, sessionId: string, credentialId: number, options?: { restoredAtMs?: number }): boolean;`,
@@ -4647,11 +4651,11 @@ function main() {
 	const BACKUP = join(homedir(), ".omp/core-patch-backup");
 	const mode = args.includes("--revert") ? "revert" : args.includes("--check") ? "check" : "apply";
 
-	// 종료 코드: 0 정상, 1 적용 필요 또는 앵커 상실, 2 omp-web 미설치.
+	// 종료 코드: 0 정상, 1 적용 필요 또는 앵커 상실, 2 CUELO 미설치.
 	// setup.ps1 은 2를 실패가 아니라 SKIP 으로 처리한다.
 	if (!existsSync(join(TARGET, "src/registry/agent-registry.ts"))) {
-		console.error(`NOTFOUND  omp-web 전역 설치를 찾지 못했다: ${TARGET}`);
-		console.error("          npm i -g omp-web 후 다시 실행하거나, OMP_CORE_PATCH_TARGET 로 경로를 지정한다.");
+		console.error(`NOTFOUND  CUELO 전역 설치를 찾지 못했다: ${TARGET}`);
+		console.error("          CUELO_Setup\\update.ps1 후 다시 실행하거나, OMP_CORE_PATCH_TARGET 로 경로를 지정한다.");
 		process.exit(2);
 	}
 	console.log(`  대상 ${TARGET}`);
@@ -4697,7 +4701,7 @@ function main() {
 			console.error(`  실패 ${s.file} - 패치 본문이 바뀌었고 쓸 수 있는 백업도 없다. 손으로 되돌려야 한다.`);
 			failed = true;
 		}
-		console.log(failed ? "복원 미완료." : "복원 완료. omp-web을 재시작한다.");
+		console.log(failed ? "복원 미완료." : "복원 완료. CUELO를 재시작한다.");
 		process.exit(failed ? 1 : 0);
 	}
 
@@ -4726,7 +4730,7 @@ function main() {
 		writeFileSync(s.path, current.replace(s.anchor, s.patched), "utf8");
 		console.log(`  적용 ${s.file}`);
 	}
-	console.log("적용 완료. omp-web을 재시작해야 반영된다.");
+	console.log("적용 완료. CUELO를 재시작해야 반영된다.");
 	console.log(`검증: bun run ${join(homedir(), ".omp/core-patch-test.ts")}`);
 }
 

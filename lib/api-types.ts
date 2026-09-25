@@ -152,7 +152,7 @@ export interface ModelRoleAssignment {
   /** Resolver complaint, e.g. a selector that matches nothing available. */
   warning?: string;
 }
-export interface OmpWebReleaseInfo {
+export interface CueloReleaseInfo {
   version: string;
   tagName: string;
   name: string;
@@ -166,15 +166,15 @@ export interface OmpWebReleaseInfo {
  * the check only announces a newer CUELO GitHub release — it never installs.
  * `latestRelease` is null while the repository has no published release.
  */
-export interface OmpWebUpdateResponse {
+export interface CueloUpdateResponse {
   currentAppVersion: string;
-  latestRelease: OmpWebReleaseInfo | null;
+  latestRelease: CueloReleaseInfo | null;
   updateAvailable: boolean;
   checkedAt: string;
 }
 
 /**
- * State of omp-web's password lock, as served by `GET /api/web-access`.
+ * State of CUELO's password lock, as served by `GET /api/web-access`.
  *
  * Re-exported from the credential store so the settings panel and the store
  * cannot drift; the import is type-only, so nothing from `bin/` reaches the

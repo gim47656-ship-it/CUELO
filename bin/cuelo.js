@@ -29,7 +29,7 @@ const path = require("path");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require("fs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { parseLaunchOptions } = require("./omp-web-options");
+const { parseLaunchOptions } = require("./cuelo-options");
 const {
   getWebAuthStatus,
   resolveWebAuthFile,
@@ -85,17 +85,17 @@ if (!bunPath) {
 function requireTerminal(flag) {
   if (isInteractive()) return;
   throw new Error([
-    `${flag} has to ask for a password, but omp-web is not attached to a terminal.`,
-    "Run omp-web once interactively to set the password, or pass OMP_WEB_PASSWORD in the environment.",
+    `${flag} has to ask for a password, but CUELO is not attached to a terminal.`,
+    "Run CUELO once interactively to set the password, or pass CUELO_PASSWORD in the environment.",
   ].join("\n"));
 }
 
 async function setPasswordInteractively(intro) {
   console.log(intro);
-  console.log(`It is stored as a scrypt hash in ${webAuthFile} — omp-web never keeps the password itself.`);
+  console.log(`It is stored as a scrypt hash in ${webAuthFile} — CUELO never keeps the password itself.`);
   const password = await readNewPassword();
   const status = setWebPassword(password, { file: webAuthFile });
-  console.log(`Password saved. omp-web now asks for the username "${status.username}" and this password.`);
+  console.log(`Password saved. CUELO now asks for the username "${status.username}" and this password.`);
 }
 
 /**
@@ -110,18 +110,18 @@ async function configurePasswordAccess() {
   if (resetPassword) {
     if (status.managedByEnvironment) {
       console.warn(
-        "Warning: OMP_WEB_PASSWORD is set and takes precedence over the stored password. Unset it for this reset to have any effect.",
+        "Warning: CUELO_PASSWORD is set and takes precedence over the stored password. Unset it for this reset to have any effect.",
       );
     }
     requireTerminal("--reset-password");
-    await setPasswordInteractively("Setting a new omp-web password.");
+    await setPasswordInteractively("Setting a new CUELO password.");
     return;
   }
 
   if (!authenticated) return;
 
   if (status.managedByEnvironment) {
-    console.log("Password access is already required: OMP_WEB_PASSWORD is set.");
+    console.log("Password access is already required: CUELO_PASSWORD is set.");
     return;
   }
   if (status.stored) {
@@ -133,18 +133,18 @@ async function configurePasswordAccess() {
   }
 
   requireTerminal("--authenticated");
-  await setPasswordInteractively("--authenticated was requested and no omp-web password has been set yet.");
+  await setPasswordInteractively("--authenticated was requested and no CUELO password has been set yet.");
 }
 
 function warnAboutExposure() {
   if (loopbackHostnames.has(hostname)) return;
   if (getWebAuthStatus({ file: webAuthFile }).enabled) {
     console.warn(
-      `Warning: omp-web is listening on ${hostname} with Basic Auth over HTTP. Use HTTPS or a trusted VPN to protect the password in transit.`,
+      `Warning: CUELO is listening on ${hostname} with Basic Auth over HTTP. Use HTTPS or a trusted VPN to protect the password in transit.`,
     );
   } else {
     console.warn(
-      `Warning: omp-web is listening on ${hostname} without authentication. Only use this on a trusted network, or start it with --authenticated.`,
+      `Warning: CUELO is listening on ${hostname} without authentication. Only use this on a trusted network, or start it with --authenticated.`,
     );
   }
 }
@@ -160,16 +160,16 @@ function startServer() {
     stdio: ["inherit", "pipe", "inherit"],
     env: withLoopbackNoProxy({
       ...process.env,
-      OMP_WEB_HOSTNAME: hostname,
-      OMP_WEB_AUTH_FILE: webAuthFile,
-      // Preserve the directory from which `omp-web` was launched so relative
+      CUELO_HOSTNAME: hostname,
+      CUELO_AUTH_FILE: webAuthFile,
+      // Preserve the directory from which `cuelo` was launched so relative
       // project paths in the browser resolve against the user's shell cwd.
-      OMP_WEB_LAUNCH_CWD: process.cwd(),
+      CUELO_LAUNCH_CWD: process.cwd(),
     }),
   });
 
   child.on("error", (error) => {
-    console.error(`Failed to launch omp-web through Bun (${bunPath}): ${error.message}`);
+    console.error(`Failed to launch CUELO through Bun (${bunPath}): ${error.message}`);
     process.exit(1);
   });
 

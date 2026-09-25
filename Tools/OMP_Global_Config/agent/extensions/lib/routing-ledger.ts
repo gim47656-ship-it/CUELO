@@ -74,7 +74,7 @@ export interface RoutingLedger {
   read(): LedgerRecord[];
 }
 
-/** 실행 프로필의 agent 루트. prompt-compact의 AGENT_DIR과 같은 관례이며 OMPWEB의 steering-received.jsonl과 같은 자리다. */
+/** 실행 프로필의 agent 루트. prompt-compact의 AGENT_DIR과 같은 관례이며 CUELO의 steering-received.jsonl과 같은 자리다. */
 export const DEFAULT_LEDGER_PATH = join(import.meta.dir, "..", "..", "routing-ledger.jsonl");
 
 // 요약은 최근 기록만 쓴다. 파일 전체를 매 route마다 읽지 않도록 꼬리만 읽는다.

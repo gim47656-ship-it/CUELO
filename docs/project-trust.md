@@ -23,6 +23,6 @@ Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`는 이 신�
 
 ## 저장 위치와 범위
 
-결정은 `~/.omp/agent/omp-web-trusted-projects.json`에 프로젝트의 real path를 기준으로 저장됩니다. 신뢰 승인은 CUELO의 브라우저 상태에만 적용되며, 터미널에서 `omp` CLI가 프로젝트를 읽는 동작은 바꾸지 않습니다. 파일에서 프로젝트 항목을 지우면 해당 승인이 취소되고, 파일을 지우면 저장된 승인이 모두 없어집니다.
+결정은 `~/.omp/agent/cuelo-trusted-projects.json`에 프로젝트의 real path를 기준으로 저장됩니다. 신뢰 승인은 CUELO의 브라우저 상태에만 적용되며, 터미널에서 `omp` CLI가 프로젝트를 읽는 동작은 바꾸지 않습니다. 파일에서 프로젝트 항목을 지우면 해당 승인이 취소되고, 파일을 지우면 저장된 승인이 모두 없어집니다.
 
 근거 코드: `lib/project-trust.ts`, `lib/session-system-prompt.ts`, `app/api/`의 세션 초기화 경로.

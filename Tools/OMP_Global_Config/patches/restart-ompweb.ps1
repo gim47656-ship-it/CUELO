@@ -1,15 +1,15 @@
-﻿# omp-web 서버를 껐다 켠다.
+﻿# CUELO 서버를 껐다 켠다.
 #
-# 반드시 omp-web 트리 밖에서 실행한다. 프로세스 계보가 이렇게 물려 있어서,
-# omp-web 안의 터미널에서 돌리면 자기 자신이 kill 대상에 포함된다.
+# 반드시 CUELO 트리 밖에서 실행한다. 프로세스 계보가 이렇게 물려 있어서,
+# CUELO 안의 터미널에서 돌리면 자기 자신이 kill 대상에 포함된다.
 #
-#   cmd.exe (omp-web.cmd)
-#    └─ node.exe (omp-web.js)
+#   cmd.exe (cuelo.cmd)
+#    └─ node.exe (cuelo.js)
 #        └─ bun.exe (next 서버, :30141)  <- 세션이 여기서 돈다
 #
 # 실행 방법은 두 가지다.
 #   1) Win+R  ->  %USERPROFILE%\.omp\restart-ompweb.cmd
-#   2) schtasks /run /tn OMPWEB-Restart   (작업 스케줄러가 띄우므로 계보가 분리된다)
+#   2) schtasks /run /tn CUELO-Restart   (작업 스케줄러가 띄우므로 계보가 분리된다)
 #
 # -InitiatorSessionId <id>: READY 뒤 그 세션에 재개 메시지를 prompt로 넣는다(업그레이드 배포의 자동 재개와 같은 목적).
 # 스케줄 작업으로 넘길 때는 인자가 사라지므로 id를 resume 파일로 넘긴다.
@@ -69,7 +69,7 @@ function Test-WebAlive($p) {
 	}
 }
 
-# 포트 소유자에서 위로 걸어올라가 omp-web 계보의 최상위를 찾는다.
+# 포트 소유자에서 위로 걸어올라가 CUELO 계보의 최상위를 찾는다.
 # 최상위 cmd 부터 트리째 끝내야 node 가 next 서버를 되살리지 않는다.
 $roots = @()
 foreach ($conn in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
@@ -79,7 +79,7 @@ foreach ($conn in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAc
 	while ($cur.ParentProcessId) {
 		$parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)" -ErrorAction SilentlyContinue
 		if (-not $parent) { break }
-		if ($parent.CommandLine -notmatch 'omp-web') { break }
+		if ($parent.CommandLine -notmatch '(?i)(omp-web|node_modules[\\/]cuelo[\\/]|[\\/]cuelo\.(?:cmd|ps1)\b)') { break }
 		$cur = $parent
 	}
 	$roots += $cur.ProcessId
@@ -91,9 +91,9 @@ if ($roots) {
 	$cur = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
 	while ($cur) {
 		if ($roots -contains $cur.ProcessId) {
-			Log "현재 프로세스가 omp-web 트리(pid=$($cur.ProcessId)) 안에 있다. OMPWEB-Restart 작업으로 넘긴다."
-			schtasks /run /tn OMPWEB-Restart 2>&1 | Out-Null
-			if ($LASTEXITCODE -ne 0) { Log "FAILED: OMPWEB-Restart 실행 실패(exit $LASTEXITCODE). omp-web 밖에서 restart-ompweb.cmd를 실행한다."; exit 1 }
+			Log "현재 프로세스가 CUELO 트리(pid=$($cur.ProcessId)) 안에 있다. CUELO-Restart 작업으로 넘긴다."
+			schtasks /run /tn CUELO-Restart 2>&1 | Out-Null
+			if ($LASTEXITCODE -ne 0) { Log "FAILED: CUELO-Restart 실행 실패(exit $LASTEXITCODE). CUELO 밖에서 restart-ompweb.cmd를 실행한다."; exit 1 }
 			exit 0
 		}
 		if (-not $cur.ParentProcessId) { break }
@@ -102,9 +102,9 @@ if ($roots) {
 }
 
 if (-not $roots) {
-	Log "실행 중인 omp-web 없음. 그대로 띄운다."
+	Log "실행 중인 CUELO 없음. 그대로 띄운다."
 } else {
-	# 턴이 도는 세션을 서버가 목록에 적고 abort하게 한다(omp-web lib/update-interrupt.ts). 새 서버가 그 세션을 재개한다.
+	# 턴이 도는 세션을 서버가 목록에 적고 abort하게 한다(CUELO lib/update-interrupt.ts). 새 서버가 그 세션을 재개한다.
 	# 이 스크립트를 부른 세션은 턴을 끝낸 뒤라 목록에 없고, 아래 resume 파일로 따로 깨운다.
 	$interruptDir = Join-Path $env:USERPROFILE '.omp\external-update\interrupts'
 	$interruptId = 'restart-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmssfff')
@@ -130,7 +130,7 @@ if (-not (Test-PortFree $port)) {
 }
 Log "포트 해제 확인."
 
-# OMPWEB 재기동과 무관하게 browser relay도 먼저 살아 있어야 브라우저 연결이 즉시 복구된다.
+# CUELO 재기동과 무관하게 browser relay도 먼저 살아 있어야 브라우저 연결이 즉시 복구된다.
 $ensureBrowserRelay = Join-Path $env:USERPROFILE '.omp\ensure-browser-relay.ps1'
 if (Test-Path -LiteralPath $ensureBrowserRelay) {
 	foreach ($line in @(& $ensureBrowserRelay 6>&1)) { Log "browser relay: $line" }
@@ -151,7 +151,7 @@ if (Test-WebAlive $port) {
 		try {
 			$r = Get-Content -LiteralPath $resumeFile -Raw -Encoding UTF8 | ConvertFrom-Json
 			Remove-Item -LiteralPath $resumeFile -Force
-			$msg = "[자동 재개] OMPWEB 재시작이 끝났다(READY). 재시작 직전 작업을 이어서 진행한다."
+			$msg = "[자동 재개] CUELO 재시작이 끝났다(READY). 재시작 직전 작업을 이어서 진행한다."
 			# 세션이 이미 턴을 돌고 있으면 streamingBehavior 없는 prompt는 AgentBusyError로 거절된다. followUp으로 큐잉한다.
 			$body = @{ type = 'prompt'; message = $msg; streamingBehavior = 'followUp'; internalPrompt = $true } | ConvertTo-Json -Compress
 			$resp = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:$port/api/agent/$($r.sessionId)" `

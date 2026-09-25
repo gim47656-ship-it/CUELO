@@ -1,6 +1,6 @@
 import type { LocalePlugin } from "../types";
 
-/** omp-web 内置英语语言包。 */
+/** CUELO 内置英语语言包。 */
 export const enLocale = {
   id: "en",
   label: "English",
@@ -295,7 +295,7 @@ export const enLocale = {
     "chat.allModels": "All models",
     "chat.mainPreset": "Main preset",
     "roles.title": "Model roles",
-    "roles.description": "omp routes work by role, not by one current model. Assign a model to each role and both omp-web and the omp CLI use it.",
+    "roles.description": "omp routes work by role, not by one current model. Assign a model to each role and both CUELO and the omp CLI use it.",
     "roles.scope": "Save to",
     "roles.scopeGlobal": "Global",
     "roles.scopeProject": "This project",

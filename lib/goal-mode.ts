@@ -11,7 +11,7 @@ const GOAL_SUBCOMMANDS = new Set<GoalSubcommand>(["set", "show", "pause", "resum
 
 /**
  * Run modes whose name in `goal.continuationModes` enables auto-continuation
- * here. omp-web is an interactive host, so it honours the shipped default
+ * here. CUELO is an interactive host, so it honours the shipped default
  * (`["interactive"]`); `web` lets an operator turn continuation on for the
  * browser alone.
  */

@@ -49,7 +49,7 @@ export function normalizeDirectory(directory: string): string {
     || directory.startsWith("\\\\")
     || directory.startsWith("//");
   const pathApi = isWindowsPath ? path.win32 : path;
-  const launchCwd = process.env.OMP_WEB_LAUNCH_CWD;
+  const launchCwd = process.env.CUELO_LAUNCH_CWD;
   const baseDirectory = launchCwd ? pathApi.resolve(launchCwd) : process.cwd();
   return pathApi.resolve(baseDirectory, directory);
 }

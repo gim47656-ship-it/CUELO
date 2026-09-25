@@ -59,7 +59,7 @@ export async function POST(req: Request) {
       id: rpc.id ?? null,
       error: {
         code: -32000,
-        message: `OMPWEB update ${maintenance.phase}`,
+        message: `CUELO update ${maintenance.phase}`,
         data: { code: "update_draining", requestId: maintenance.requestId },
       },
     }, { status: 503 });

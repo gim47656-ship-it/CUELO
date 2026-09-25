@@ -1,15 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
 import { getAgentDir } from "@/lib/session-reader";
 
 // Frontend-only session archive: a flat registry of session ids kept outside
 // the session files themselves. Archiving never moves or edits a session, so
 // the omp CLI and --resume are unaffected; restoring is a flag flip.
-const REGISTRY_FILE = "omp-web-archived.json";
+const REGISTRY_FILE = "cuelo-archived.json";
+const LEGACY_REGISTRY_FILE = "omp-web-archived.json";
 
 export function readArchivedIds(): Set<string> {
   try {
     const file = join(getAgentDir(), REGISTRY_FILE);
+    adoptLegacyStateFile(file, LEGACY_REGISTRY_FILE);
     if (!existsSync(file)) return new Set();
     const data = JSON.parse(readFileSync(file, "utf8")) as { archived?: unknown };
     if (!data || !Array.isArray(data.archived)) return new Set();

@@ -11,7 +11,7 @@ import { hasJsonContentType } from "@/lib/request-security";
  * Password recovery, and the only endpoint `proxy.ts` lets through unauthenticated.
  *
  * It hands out nothing: `request` mints a one-time code and prints it on the
- * server's own console — the terminal running omp-web — so completing the flow
+ * server's own console — the terminal running CUELO — so completing the flow
  * proves the caller can see that machine. A port scanner that finds this route
  * can make the server print codes it will never read.
  */
@@ -25,7 +25,7 @@ function announceRecoveryCode(code: string, expiresAt: number): void {
   process.stdout.write([
     "",
     RECOVERY_BANNER,
-    "omp-web password recovery",
+    "CUELO password recovery",
     "",
     `  Recovery code: ${code}`,
     `  Valid until:   ${new Date(expiresAt).toLocaleTimeString()} (${minutes} minutes)`,
@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   const status = getWebAuthStatus();
   if (status.managedByEnvironment) {
     return NextResponse.json({
-      error: "Password access comes from the OMP_WEB_PASSWORD environment variable, which omp-web cannot reset."
+      error: "Password access comes from the CUELO_PASSWORD environment variable, which CUELO cannot reset."
         + " Change the variable on the server and restart it.",
     }, { status: 409 });
   }
@@ -62,7 +62,7 @@ export async function POST(req: Request) {
   if (status.unreadable) {
     return NextResponse.json({
       error: `The credential file at ${status.file} could not be read.`
-        + " Run `omp-web --reset-password` on the server to replace it.",
+        + " Run `cuelo --reset-password` on the server to replace it.",
     }, { status: 409 });
   }
   if (!status.stored) {

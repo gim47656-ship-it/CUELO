@@ -1,5 +1,5 @@
 {
-  "name": "omp-web",
+  "name": "cuelo",
   "version": "0.4.4",
   "description": "Browser workspace for omp (oh-my-pi) — continue terminal omp sessions in the browser",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
@@ -17,8 +17,8 @@
     "web-ui"
   ],
   "license": "MIT",
-  "ompWebBuild": {
-    "distribution": "hanse-responsive",
+  "cueloBuild": {
+    "distribution": "cuelo",
     "upstreamCommit": "0acce6240b27eb7d44d5c9b78187bd95e01270f8",
     "coreVersion": "18.3.1"
   },
@@ -27,7 +27,7 @@
     "bun": ">=1.4.2"
   },
   "bin": {
-    "omp-web": "bin/omp-web.js"
+    "cuelo": "bin/cuelo.js"
   },
   "files": [
     "bin",

@@ -28,9 +28,9 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
 
   return {
     port: cliArgs.port ?? env.PORT ?? "30141",
-    hostname: cliArgs.hostname ?? env.OMP_WEB_HOSTNAME ?? "127.0.0.1",
-    openBrowser: !cliArgs["no-open"] && !isEnabled(env.OMP_WEB_NO_OPEN),
-    authenticated: Boolean(cliArgs.authenticated) || isEnabled(env.OMP_WEB_AUTHENTICATED),
+    hostname: cliArgs.hostname ?? env.CUELO_HOSTNAME ?? "127.0.0.1",
+    openBrowser: !cliArgs["no-open"] && !isEnabled(env.CUELO_NO_OPEN),
+    authenticated: Boolean(cliArgs.authenticated) || isEnabled(env.CUELO_AUTHENTICATED),
     resetPassword: Boolean(cliArgs["reset-password"]),
   };
 }

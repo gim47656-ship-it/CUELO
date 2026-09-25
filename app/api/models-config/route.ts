@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  *
  * omp reads `models.yml` first and falls back to `models.yaml`; a legacy
  * `models.json` is migrated to YAML on first load. Read whichever exists, but
- * always write back to `models.yml` so the CLI and omp-web agree on one file.
+ * always write back to `models.yml` so the CLI and CUELO agree on one file.
  */
 const CANONICAL_FILE = "models.yml";
 const READ_CANDIDATES = ["models.yml", "models.yaml", "models.json"] as const;

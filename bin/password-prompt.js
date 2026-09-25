@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Terminal password entry for `omp-web --authenticated` and `--reset-password`.
+ * Terminal password entry for `cuelo --authenticated` and `--reset-password`.
  *
  * Reads in raw mode and echoes nothing rather than going through readline's
  * private output hook, so the same code works under Node and under Bun.

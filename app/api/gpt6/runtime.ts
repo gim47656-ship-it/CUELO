@@ -182,7 +182,7 @@ export function gpt6TunnelTargetUrl(): string {
  * (`x-forwarded-host`·`Host` 등)는 쓰지 않고 서버가 아는 값만 쓴다.
  *
  * 1순위는 운영자가 지정한 노출 호스트다. `launch.ps1`이 Tailscale HTTPS 앞단이 보내는
- * 테일넷 이름을 `OMP_WEB_ALLOWED_HOSTS`에 넣고, 그 이름은 https(443)로 열린다. 그 값이
+ * 테일넷 이름을 `CUELO_ALLOWED_HOSTS`에 넣고, 그 이름은 https(443)로 열린다. 그 값이
  * 없으면(로컬에서만 쓰는 배치) 로컬 기준값 `http://127.0.0.1:<port>`로 만든다.
  * 어느 쪽이든 이 URL은 서버 기준 주소이고, 폰·다른 PC에서 쓰는 주소가 따로 있으면
  * 사용자가 직접 확인해야 한다 — 그 사실을 패널이 함께 안내한다.
@@ -193,9 +193,9 @@ export function gpt6McpUrl(): string {
   return gpt6TunnelTargetUrl();
 }
 
-/** `OMP_WEB_ALLOWED_HOSTS`에서 외부 노출 호스트명 하나를 고른다. IP 리터럴은 노출 주소가 아니다. */
+/** `CUELO_ALLOWED_HOSTS`에서 외부 노출 호스트명 하나를 고른다. IP 리터럴은 노출 주소가 아니다. */
 function configuredExposureHost(): string | null {
-  for (const entry of process.env.OMP_WEB_ALLOWED_HOSTS?.split(",") ?? []) {
+  for (const entry of process.env.CUELO_ALLOWED_HOSTS?.split(",") ?? []) {
     const value = entry.trim().replace(/\.$/, "").toLowerCase();
     if (!value || isIP(value) !== 0 || value === "localhost" || value.endsWith(".localhost")) continue;
     return value;

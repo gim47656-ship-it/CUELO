@@ -36,7 +36,7 @@ const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const MAX_ERROR_CHARS = 200;
 
 export const INTERRUPT_RESUME_MESSAGE =
-  "[자동 재개] OMPWEB 업데이트·재시작 때문에 이 세션의 진행 중 작업이 중단(abort)됐다. 서버가 새 버전으로 다시 떴다. "
+  "[자동 재개] CUELO 업데이트·재시작 때문에 이 세션의 진행 중 작업이 중단(abort)됐다. 서버가 새 버전으로 다시 떴다. "
   + "중단 직전에 돌던 명령·도구 결과는 사라졌을 수 있으니 파일·프로세스 상태를 먼저 확인하고, 하던 작업을 이어서 진행한다.";
 
 interface PendingFailure {
@@ -57,7 +57,7 @@ interface PendingResume {
 }
 
 function interruptsRoot(): string {
-  const configured = process.env.OMPWEB_EXTERNAL_UPDATE_ROOT?.trim();
+  const configured = process.env.CUELO_EXTERNAL_UPDATE_ROOT?.trim();
   return join(resolve(configured || join(homedir(), ".omp", "external-update")), "interrupts");
 }
 

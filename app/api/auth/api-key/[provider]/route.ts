@@ -34,7 +34,7 @@ export async function POST(req: Request, { params }: Params) {
       return NextResponse.json({ error: `Unknown provider: ${provider}` }, { status: 400 });
     }
     // omp stores one row per credential in `agent.db`; writing through
-    // AuthStorage keeps the CLI and omp-web on the same store and lock.
+    // AuthStorage keeps the CLI and CUELO on the same store and lock.
     await authStorage.credentials.set(provider, { type: "api_key", key: apiKey.trim(), source: "login" });
     invalidateModelsCache();
     return NextResponse.json({ success: true });

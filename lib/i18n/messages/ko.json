@@ -287,7 +287,7 @@
  "chat.allModels": "전체 모델",
  "chat.mainPreset": "Main 프리셋",
  "roles.title": "모델 역할",
- "roles.description": "omp는 하나의 현재 모델이 아니라 역할별로 작업을 라우팅합니다. 각 역할에 모델을 지정하면 omp-web과 omp CLI 모두에서 사용됩니다.",
+ "roles.description": "omp는 하나의 현재 모델이 아니라 역할별로 작업을 라우팅합니다. 각 역할에 모델을 지정하면 CUELO과 omp CLI 모두에서 사용됩니다.",
  "roles.scope": "저장 위치",
  "roles.scopeGlobal": "전역",
  "roles.scopeProject": "이 프로젝트",

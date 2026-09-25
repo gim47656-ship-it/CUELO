@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 /** 예: "사무실" -> "CUELO(사무실)". 비어 있으면 접미사 없이 "CUELO". */
 function installName(): string {
-  const label = process.env.OMPWEB_INSTANCE_LABEL?.trim();
+  const label = process.env.CUELO_INSTANCE_LABEL?.trim();
   return label ? `CUELO(${label})` : "CUELO";
 }
 

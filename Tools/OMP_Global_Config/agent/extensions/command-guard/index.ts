@@ -48,7 +48,7 @@ function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, "/").toLowerCase();
 }
 
-/** 이벤트 컨텍스트의 세션 cwd. OMPWEB처럼 process.cwd()가 세션 cwd가 아닐 수 있어 우선한다. */
+/** 이벤트 컨텍스트의 세션 cwd. CUELO처럼 process.cwd()가 세션 cwd가 아닐 수 있어 우선한다. */
 function eventSessionCwd(ctx: { cwd?: string } | undefined): string {
   return typeof ctx?.cwd === "string" && ctx.cwd ? resolve(ctx.cwd) : process.cwd();
 }
@@ -117,7 +117,7 @@ async function gitCommonDirectory(directory: string): Promise<string | undefined
   }
 }
 
-// common-dir 조회 promise는 디렉터리별로 공유한다. OMPWEB처럼 한 프로세스가 여러 세션을 띄우면
+// common-dir 조회 promise는 디렉터리별로 공유한다. CUELO처럼 한 프로세스가 여러 세션을 띄우면
 // process.cwd()는 세션 cwd가 아니므로, 세션 저장소는 이벤트마다 ctx.cwd로 판정한다.
 // 실패는 현재 판정에서 보수적으로 차단하되 영구 negative cache로 남기지 않는다.
 const commonDirectoryCache = new Map<string, Promise<string | undefined>>();
@@ -621,7 +621,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
   });
 
   // 실제 사용자 입력 하나를 budget 단위로 본다. extension 내부 주입은 같은 요청의
-  // 연속이므로 reset하지 않는다. OMPWEB은 RPC 입력이므로 interactive와 rpc를 모두 포함한다.
+  // 연속이므로 reset하지 않는다. CUELO은 RPC 입력이므로 interactive와 rpc를 모두 포함한다.
   pi.on("input", (event) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
     ownershipGeneration += 1;

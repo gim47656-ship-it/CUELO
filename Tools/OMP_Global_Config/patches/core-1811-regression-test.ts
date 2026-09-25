@@ -24,7 +24,7 @@
 // 해석한다. omp-web 이 실제로 적재하는 사본만 검증해야 하므로 디스크 경로를 고정한다
 // (core-patch-test.ts 와 같은 모듈 로딩 경계 이유).
 //
-// 종료 코드: 0 통과, 1 실패, 2 omp-web 전역 설치 없음. setup.ps1 / verify.ps1 은
+// 종료 코드: 0 통과, 1 실패, 2 CUELO 전역 설치 없음. setup.ps1 / verify.ps1 은
 // 2 를 실패가 아니라 SKIP 으로 읽는다.
 import { existsSync } from "node:fs";
 import * as fsp from "node:fs/promises";
@@ -74,7 +74,7 @@ function resolveCorePackage(): string | undefined {
 	const candidates = override
 		? [override]
 		: [
-				join(NPM_MODULES, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
+				join(NPM_MODULES, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(NPM_MODULES, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
 				join(NPM_MODULES, "@oh-my-pi/pi-coding-agent"),
 			];
 	return candidates.find(directory => existsSync(join(directory, "src/registry/agent-registry.ts")));
@@ -92,7 +92,7 @@ function resolveScopePackage(corePackage: string, name: string, probe: string): 
 
 const CORE_PACKAGE = resolveCorePackage();
 if (CORE_PACKAGE === undefined) {
-	console.log("omp-web 전역 설치를 찾지 못했다. 18.0.11 회귀 검증을 건너뛴다.");
+	console.log("CUELO 전역 설치를 찾지 못했다. 18.0.11 회귀 검증을 건너뛴다.");
 	process.exit(2);
 }
 const CORE = `${importBase(CORE_PACKAGE)}/src`;

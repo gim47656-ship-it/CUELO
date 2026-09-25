@@ -50,7 +50,7 @@ export async function GET(req: Request): Promise<Response> {
       headers: noStoreHeaders({
         "Content-Type": "text/html; charset=utf-8",
         Connection: "close",
-        "X-OMPWEB-Maintenance": "parked",
+        "X-CUELO-Maintenance": "parked",
       }),
     });
   } catch (error) {
@@ -114,7 +114,7 @@ export async function POST(req: Request): Promise<Response> {
       try {
         wake = await wakeUpdateInitiatorSession({ requestId, stageHash, clientId, sessionId });
       } catch (error) {
-        console.warn(`[omp-web] 업데이트 자동 재개에 실패했습니다 (${requestId}):`, error);
+        console.warn(`[cuelo] 업데이트 자동 재개에 실패했습니다 (${requestId}):`, error);
       }
       return NextResponse.json({ schemaVersion: 2, resumed: true, wake }, { headers: noStoreHeaders({ Connection: "close" }) });
     }
@@ -130,7 +130,7 @@ export async function POST(req: Request): Promise<Response> {
       try {
         notice = await notifyUpdateFailureToInitiator({ requestId, stageHash, clientId, sessionId });
       } catch (error) {
-        console.warn(`[omp-web] 업데이트 실패 통지에 실패했습니다 (${requestId}):`, error);
+        console.warn(`[cuelo] 업데이트 실패 통지에 실패했습니다 (${requestId}):`, error);
       }
       return NextResponse.json({ schemaVersion: 2, notice }, { headers: noStoreHeaders({ Connection: "close" }) });
     }

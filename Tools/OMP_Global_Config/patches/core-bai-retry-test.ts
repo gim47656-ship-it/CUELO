@@ -17,7 +17,7 @@ function resolveCore(): string {
 	const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 	const candidates = env
 		? [env]
-		: [join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
+		: [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
 	const hit = candidates.find(p => existsSync(join(p, "src/session/turn-recovery.ts")));
 	if (!hit) throw new Error(`core 사본을 찾지 못했다: ${candidates.join(", ")}`);
 	// 동적 import 는 URL 로 해석되므로 역슬래시를 쓰면 안 된다.

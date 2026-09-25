@@ -32,8 +32,8 @@ function isLoopbackHostname(hostname: string): boolean {
 
 function configuredHostnamesFromEnvironment(): string[] {
   return [
-    process.env.OMP_WEB_HOSTNAME,
-    ...(process.env.OMP_WEB_ALLOWED_HOSTS?.split(",") ?? []),
+    process.env.CUELO_HOSTNAME,
+    ...(process.env.CUELO_ALLOWED_HOSTS?.split(",") ?? []),
   ].filter((value): value is string => Boolean(value?.trim()));
 }
 

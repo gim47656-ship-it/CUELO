@@ -1,4 +1,4 @@
-# omp-web serves its API on Bun, not Node: the omp SDK (`@oh-my-pi/pi-*`) is
+# CUELO serves its API on Bun, not Node: the omp SDK (`@oh-my-pi/pi-*`) is
 # published as TypeScript sources that import `bun:` builtins, so both stages
 # start from the Bun release that package.json's `engines.bun` floor requires.
 ARG BUN_VERSION=1.4.2
@@ -53,14 +53,14 @@ COPY --from=build --chown=omp:omp /app/public ./public
 COPY --from=build --chown=omp:omp /app/bin ./bin
 COPY --from=build --chown=omp:omp /app/next.config.ts /app/package.json ./
 
-# OMP_WEB_HOSTNAME binds every interface because a container is only reachable
+# CUELO_HOSTNAME binds every interface because a container is only reachable
 # from outside when it does; publish the port to 127.0.0.1 on the host to keep
-# it local. OMP_WEB_NO_OPEN because there is no browser in here to open.
+# it local. CUELO_NO_OPEN because there is no browser in here to open.
 ENV HOME=/home/omp \
     NODE_ENV=production \
     PORT=30141 \
-    OMP_WEB_HOSTNAME=0.0.0.0 \
-    OMP_WEB_NO_OPEN=1
+    CUELO_HOSTNAME=0.0.0.0 \
+    CUELO_NO_OPEN=1
 
 # `~/.omp/agent` is the directory the omp CLI writes: mount the host's copy here
 # and a terminal session continues in the browser. `/workspace` is the default
@@ -69,7 +69,7 @@ VOLUME ["/home/omp/.omp"]
 EXPOSE 30141
 
 USER omp
-# Not /app: the launcher records its own cwd as OMP_WEB_LAUNCH_CWD so relative
+# Not /app: the launcher records its own cwd as CUELO_LAUNCH_CWD so relative
 # project paths in the browser resolve against it.
 WORKDIR /workspace
 
@@ -77,5 +77,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD bun --eval 'const r = await fetch(`http://127.0.0.1:${process.env.PORT ?? 30141}/`); process.exit(r.status < 500 ? 0 : 1)'
 
 # The published CLI, so the container honours the same flags and environment
-# variables as a local `omp-web` — including `--authenticated`.
-ENTRYPOINT ["bun", "/app/bin/omp-web.js"]
+# variables as a local `cuelo` — including `--authenticated`.
+ENTRYPOINT ["bun", "/app/bin/cuelo.js"]

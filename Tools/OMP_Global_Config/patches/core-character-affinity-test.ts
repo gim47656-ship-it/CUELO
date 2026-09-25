@@ -16,7 +16,7 @@ function resolveCore(): string {
 	const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 	const candidates = env
 		? [env]
-		: [join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
+		: [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
 	const hit = candidates.find(candidate => existsSync(join(candidate, "src/session/turn-recovery.ts")));
 	if (!hit) throw new Error(`core 사본을 찾지 못했다: ${candidates.join(", ")}`);
 	return join(hit, "src").replace(/\\/g, "/");

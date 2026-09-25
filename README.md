@@ -80,7 +80,7 @@ git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 bun install
 bun run build
-bun bin/omp-web.js
+bun bin/cuelo.js
 ```
 
 서버가 준비되면 브라우저가 [http://127.0.0.1:30141](http://127.0.0.1:30141)로 열립니다. 기본은 `127.0.0.1`에만 열립니다.
@@ -88,11 +88,11 @@ bun bin/omp-web.js
 실행기 옵션:
 
 ```bash
-bun bin/omp-web.js --port 8080           # 포트 변경
-bun bin/omp-web.js --hostname 0.0.0.0    # 신뢰하는 네트워크에만 노출
-bun bin/omp-web.js --no-open             # 브라우저 자동 열기 끄기
-bun bin/omp-web.js --authenticated       # 비밀번호 잠금 켜기
-bun bin/omp-web.js --reset-password      # 비밀번호 재설정
+bun bin/cuelo.js --port 8080           # 포트 변경
+bun bin/cuelo.js --hostname 0.0.0.0    # 신뢰하는 네트워크에만 노출
+bun bin/cuelo.js --no-open             # 브라우저 자동 열기 끄기
+bun bin/cuelo.js --authenticated       # 비밀번호 잠금 켜기
+bun bin/cuelo.js --reset-password      # 비밀번호 재설정
 ```
 
 원격에서 쓸 때는 평문 HTTP를 인터넷에 열지 말고, 신뢰할 수 있는 HTTPS 리버스 프록시나 VPN 뒤에 두세요. CUELO는 권한이 큰 에이전트를 실행합니다.

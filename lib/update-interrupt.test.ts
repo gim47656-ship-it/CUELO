@@ -5,10 +5,10 @@
  * 케이스마다 자기 자신을 자식 프로세스(`bun run <이 파일>`)로 띄워 그 안에서만 mock을 쓴다.
  * 그래서 `bun test` 전체 실행에서 다른 테스트가 real export를 import해도 이 mock이 새지 않는다.
  *  - 부모(`bun test`): 케이스 이름마다 자식 하나를 실행하고 exit status와 `CASE OK`를 확인한다.
- *  - 자식(`UPDATE_INTERRUPT_CASE=<name>`): 임시 OMPWEB_EXTERNAL_UPDATE_ROOT에서 케이스 하나만
+ *  - 자식(`UPDATE_INTERRUPT_CASE=<name>`): 임시 CUELO_EXTERNAL_UPDATE_ROOT에서 케이스 하나만
  *    실행하고, 성공/실패와 무관하게 자기 root를 지우고 env를 되돌린다.
  *
- * vendor(omp-web)는 exact input이라 그 폴더에서 직접 실행하지 않는다. 변경 파일만 격리 경로로
+ * vendor(CUELO)는 exact input이라 그 폴더에서 직접 실행하지 않는다. 변경 파일만 격리 경로로
  * 복사한 사본에서 `bun test lib/update-interrupt.test.ts`를 돌린다.
  */
 import { expect, mock, test } from "bun:test";
@@ -355,11 +355,11 @@ if (process.env.UPDATE_INTERRUPT_CASE) {
   mock.module("./session-reader", () => ({ resolveSessionPath: async (sessionId: string) => `/fake/sessions/${sessionId}` }));
 
   const caseName = process.env.UPDATE_INTERRUPT_CASE;
-  const savedRoot = process.env.OMPWEB_EXTERNAL_UPDATE_ROOT;
+  const savedRoot = process.env.CUELO_EXTERNAL_UPDATE_ROOT;
   const childRoot = mkdtempSync(join(tmpdir(), "update-interrupt-case-"));
   try {
     root = childRoot;
-    process.env.OMPWEB_EXTERNAL_UPDATE_ROOT = childRoot;
+    process.env.CUELO_EXTERNAL_UPDATE_ROOT = childRoot;
     const runCase = CASES[caseName];
     if (!runCase) throw new Error(`unknown case: ${caseName}`);
     const mod = await import("./update-interrupt");
@@ -370,8 +370,8 @@ if (process.env.UPDATE_INTERRUPT_CASE) {
     process.exitCode = 1;
   } finally {
     // 실패해도 자기 임시 root를 지우고 env를 되돌린다.
-    if (savedRoot === undefined) delete process.env.OMPWEB_EXTERNAL_UPDATE_ROOT;
-    else process.env.OMPWEB_EXTERNAL_UPDATE_ROOT = savedRoot;
+    if (savedRoot === undefined) delete process.env.CUELO_EXTERNAL_UPDATE_ROOT;
+    else process.env.CUELO_EXTERNAL_UPDATE_ROOT = savedRoot;
     rmSync(childRoot, { recursive: true, force: true });
   }
 } else {

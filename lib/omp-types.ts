@@ -177,7 +177,7 @@ export interface SessionOAuthAccountList {
 }
 
 /**
- * Structural view of omp's `AgentSession`, narrowed to what omp-web drives.
+ * Structural view of omp's `AgentSession`, narrowed to what CUELO drives.
  *
  * Keeping this structural (rather than importing the class) means an SDK bump
  * that widens an unrelated signature does not ripple through the app; only the
@@ -308,7 +308,7 @@ export interface AgentSessionLike {
   getContextUsage(): { tokens: number; contextWindow: number; percent: number } | undefined;
   dispose?(options?: { keepAlive?: boolean }): Promise<void>;
 
-  // Goal mode. omp drives these from the TUI only, so omp-web reproduces that
+  // Goal mode. omp drives these from the TUI only, so CUELO reproduces that
   // half itself (see lib/goal-mode.ts) on top of the same GoalRuntime.
   readonly goalRuntime: GoalRuntimeLike;
   getGoalModeState?(): GoalModeState | undefined;
@@ -320,7 +320,7 @@ export interface AgentSessionLike {
   ): Promise<void>;
 }
 
-/** The subset of omp's `GoalRuntime` omp-web drives. */
+/** The subset of omp's `GoalRuntime` CUELO drives. */
 export interface GoalRuntimeLike {
   createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState>;
   replaceGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState>;

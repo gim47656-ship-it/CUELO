@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
-const core = process.env.OMP_CORE_PATCH_TARGET ?? join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent");
+const core = process.env.OMP_CORE_PATCH_TARGET ?? [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent")].find(dir => existsSync(dir)) ?? join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent");
 const script = resolve(import.meta.dirname, "apply-core-patch.mjs");
 const source = readFileSync(script, "utf8");
 const temp = mkdtempSync(join(tmpdir(), "omp-rin-priority-"));

@@ -15,7 +15,7 @@ export interface SidecarTarget {
 const RESOURCE_ORIGIN = "http://127.0.0.1:30142";
 const SIDECHAT_ORIGIN = "http://127.0.0.1:30143";
 const SUBAGENT_ORIGIN = "http://127.0.0.1:30144";
-const OMP_WEB_LOOPBACK_ORIGIN = "http://127.0.0.1:30141";
+const CUELO_LOOPBACK_ORIGIN = "http://127.0.0.1:30141";
 const SAFE_RESPONSE_HEADERS = [
   "content-type",
   "cache-control",
@@ -57,7 +57,7 @@ export function resolveSidecarTarget(
         url: `${RESOURCE_ORIGIN}/credential/${credentialId}/${segments[2]}`,
         body: segments[2] === "reset" ? "json" : "none",
         accept: "application/json",
-        origin: OMP_WEB_LOOPBACK_ORIGIN,
+        origin: CUELO_LOOPBACK_ORIGIN,
       };
     }
     return null;
