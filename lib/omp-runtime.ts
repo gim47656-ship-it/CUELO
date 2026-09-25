@@ -16,7 +16,7 @@ import {
  * Process-wide omp services.
  *
  * The `omp` CLI builds `Settings` + `AuthStorage` + `ModelRegistry` once per
- * process and hands them to every session. omp-web serves many requests from
+ * process and hands them to every session. CUELO serves many requests from
  * one process, so it builds them once too and re-scopes `Settings` per project
  * instead of re-opening SQLite for every route.
  *

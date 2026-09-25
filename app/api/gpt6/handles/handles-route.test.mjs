@@ -23,9 +23,9 @@ function handlesRequest(headers) {
  */
 test("handles GET gives tunnel-client a loopback target that request headers cannot move", async () => {
   const previousPort = process.env.PORT;
-  const previousHosts = process.env.OMP_WEB_ALLOWED_HOSTS;
+  const previousHosts = process.env.CUELO_ALLOWED_HOSTS;
   process.env.PORT = "30141";
-  process.env.OMP_WEB_ALLOWED_HOSTS = "home-pc.tailnet.ts.net";
+  process.env.CUELO_ALLOWED_HOSTS = "home-pc.tailnet.ts.net";
 
   try {
     const direct = await GET(handlesRequest({}));
@@ -45,7 +45,7 @@ test("handles GET gives tunnel-client a loopback target that request headers can
   } finally {
     if (previousPort === undefined) delete process.env.PORT;
     else process.env.PORT = previousPort;
-    if (previousHosts === undefined) delete process.env.OMP_WEB_ALLOWED_HOSTS;
-    else process.env.OMP_WEB_ALLOWED_HOSTS = previousHosts;
+    if (previousHosts === undefined) delete process.env.CUELO_ALLOWED_HOSTS;
+    else process.env.CUELO_ALLOWED_HOSTS = previousHosts;
   }
 });

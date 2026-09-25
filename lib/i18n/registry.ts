@@ -37,7 +37,7 @@ export function resolveLocalePreference(stored: string | null, languages: readon
 }
 
 /**
- * 将浏览器语言列表解析为 omp-web 内置语言。
+ * 将浏览器语言列表解析为 CUELO 内置语言。
  * @param languages 浏览器按优先级排列的语言列表
  * @returns 匹配的内置语言，无法匹配时返回韩语
  */

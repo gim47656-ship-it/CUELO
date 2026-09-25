@@ -2,12 +2,12 @@ import { findConfigFile } from "@oh-my-pi/pi-coding-agent/config";
 import { resolvePromptInput } from "@oh-my-pi/pi-coding-agent/system-prompt";
 
 /**
- * `SYSTEM.md` / `APPEND_SYSTEM.md` resolution for omp-web sessions.
+ * `SYSTEM.md` / `APPEND_SYSTEM.md` resolution for CUELO sessions.
  *
  * The `omp` CLI resolves both files before it creates a session — project-local
  * first (`.omp/`, `.claude/`, `.codex/`, `.gemini/`), then user-level
  * (`~/.omp/agent/`, …) — and hands the text to `createAgentSession` as
- * `customSystemPrompt` / `appendSystemPrompt`. omp-web builds its own session
+ * `customSystemPrompt` / `appendSystemPrompt`. CUELO builds its own session
  * options in `lib/rpc-manager.ts`, so a browser session used to silently drop
  * every prompt file the same user gets in the terminal (issue #28).
  *

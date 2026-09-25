@@ -1,7 +1,7 @@
 // 매직 키워드(`ultrathink`, `orchestrate`, `workflowz`) 알림 문구에 내 규칙을 덧붙인다.
 //
 // 대상은 이 저장소 밖의 전역 npm 패키지 `@oh-my-pi/pi-coding-agent` 의
-// `src/prompts/system/*-notice.md` 다. omp-web 은 이 소스를 그대로 실행하므로 파일을
+// `src/prompts/system/*-notice.md` 다. CUELO는 이 소스를 그대로 실행하므로 파일을
 // 고치면 다음 세션부터 반영된다. `omp.exe`(TUI)는 컴파일된 바이너리라 영향이 없다.
 //
 //   node apply-notices.mjs           적용
@@ -9,7 +9,7 @@
 //   node apply-notices.mjs --revert  덧붙인 블록 제거(업스트림 원문으로)
 //
 // 업스트림 문구는 손대지 않는다. `</system-notice>` 바로 앞에 마커로 감싼 블록만
-// 넣거나 갱신한다. 그래서 omp-web 을 업데이트해 문구가 바뀌어도 병합 충돌이 없고,
+// 넣거나 갱신한다. 그래서 CUELO를 업데이트해 문구가 바뀌어도 병합 충돌이 없고,
 // 업스트림 개선을 조용히 덮어쓰지도 않는다. 내용은 미러의 `notices/<키워드>.md` 다.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -45,6 +45,8 @@ function resolveTarget() {
 
 	const roots = [join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules")];
 	for (const root of roots) {
+		add(join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
+		add(join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(root, "@oh-my-pi/pi-coding-agent"));
 	}
@@ -53,6 +55,8 @@ function resolveTarget() {
 
 	try {
 		const npmRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf8", shell: true }).trim();
+		add(join(npmRoot, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
+		add(join(npmRoot, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(npmRoot, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"));
 		add(join(npmRoot, "@oh-my-pi/pi-coding-agent"));
 	} catch {
@@ -94,7 +98,7 @@ function merge(original, block) {
 const mode = process.argv.includes("--check") ? "check" : process.argv.includes("--revert") ? "revert" : "apply";
 const target = resolveTarget();
 if (!target) {
-	console.log("SKIP  omp-web 전역 설치를 찾지 못했다 (알림 문구 대상 없음).");
+	console.log("SKIP  CUELO 전역 설치를 찾지 못했다 (알림 문구 대상 없음).");
 	process.exit(2);
 }
 console.log(`  대상 ${target}`);
@@ -127,5 +131,5 @@ for (const notice of NOTICES) {
 
 if (missing > 0) process.exit(1);
 if (mode === "check") process.exit(drift > 0 ? 1 : 0);
-console.log(changed > 0 ? "완료. omp-web 을 재시작하면 새 세션에 반영된다." : "이미 적용돼 있다.");
+console.log(changed > 0 ? "완료. CUELO를 재시작하면 새 세션에 반영된다." : "이미 적용돼 있다.");
 process.exit(0);

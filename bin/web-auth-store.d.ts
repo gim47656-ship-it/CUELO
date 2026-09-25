@@ -3,7 +3,7 @@
  *
  * The store itself is plain CommonJS because the launcher loads it before Bun
  * is resolved (see the module header); this declaration is what the TypeScript
- * half of omp-web — `proxy.ts`, `lib/web-auth.ts`, `/api/web-access` — reads.
+ * half of CUELO — `proxy.ts`, `lib/web-auth.ts`, `/api/web-access` — reads.
  */
 
 export type WebAuthSource = "environment" | "stored" | "none";
@@ -26,11 +26,11 @@ export interface WebAuthStatus {
   /** Whether a usable digest exists in the credential file. */
   stored: boolean;
   source: WebAuthSource;
-  /** `OMP_WEB_PASSWORD` is set and overrides the stored credential. */
+  /** `CUELO_PASSWORD` is set and overrides the stored credential. */
   managedByEnvironment: boolean;
   /** The credential file exists but could not be parsed. */
   unreadable: boolean;
-  /** Basic Auth username omp-web accepts. */
+  /** Basic Auth username CUELO accepts. */
   username: string;
   updatedAt: string | null;
   file: string;
@@ -38,7 +38,7 @@ export interface WebAuthStatus {
 
 /**
  * `open` — no credentials required. `environment` / `stored` — credentials
- * required, from `OMP_WEB_PASSWORD` or the credential file. `unavailable` —
+ * required, from `CUELO_PASSWORD` or the credential file. `unavailable` —
  * the credential is unusable and every request must be refused.
  */
 export type WebAuthPolicy =
@@ -77,6 +77,8 @@ export declare const RECOVERY_MAX_ATTEMPTS: number;
 export declare const WEB_AUTH_FILENAME: string;
 export declare const WEB_AUTH_USERNAME: string;
 
+/** Rename `<dir of file>/<legacyName>` onto `file` once, when only the legacy file exists. Throws on any other failure. */
+export declare function adoptLegacyStateFile(file: string, legacyName: string): void;
 export declare function clearVerificationCache(): void;
 export declare function clearWebPassword(options?: WebAuthStoreOptions): WebAuthStatus;
 export declare function consumeRecoveryCode(

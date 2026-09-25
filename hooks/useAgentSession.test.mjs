@@ -186,7 +186,7 @@ test("routes blocking extension requests through deduplicated browser attention 
 });
 
 test("server close events remove only the matching dialog and delivery state", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "omp-web-hook-"));
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-"));
   const fakeReactPath = join(directory, "react.mjs");
   const harnessSubjectPath = join(directory, "useAgentSession.ts");
   const harnessKey = "__ompUseAgentSessionHarness";
@@ -576,7 +576,7 @@ test("distinguishes an ambiguous transport failure from an explicit maintenance 
         maintenanceRejectionsRemaining -= 1;
         return new Response(
           JSON.stringify({
-            error: "OMPWEB update CUTOVER",
+            error: "CUELO update CUTOVER",
             code: "update_draining",
             accepted: false,
           }),
@@ -778,7 +778,7 @@ function createEffectRenderer() {
 // 2026-09-23 사용자 관측: Wake로 세션은 재개됐는데 보고 있던 탭에는 응답이 안 떠 F5가 필요했다.
 // 복귀 화면은 idle transcript를 읽은 뒤 붙고, Wake run은 그 뒤 서버에서 시작된다.
 test("업데이트 복귀 신호를 받은 유휴 화면은 새로고침 없이 Wake 응답을 한 번만 보여 준다", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "omp-web-hook-wake-"));
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-wake-"));
   const rendererKey = "__ompUseAgentSessionEffectRenderer";
   const fakeReactPath = join(directory, "react.mjs");
   await writeFile(fakeReactPath, [

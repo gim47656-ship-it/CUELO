@@ -1,7 +1,7 @@
 /**
  * Bounded single-flight recovery for a model the shared registry is missing.
  *
- * omp-web builds one `ModelRegistry` per process and discovers models once, at
+ * CUELO builds one `ModelRegistry` per process and discovers models once, at
  * startup (`lib/omp-runtime.ts`). When that pass fails, or when the cached
  * discovery row is one the loader discards because its credential headers were
  * stripped, the provider stays empty for the whole process lifetime and every

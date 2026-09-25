@@ -50,11 +50,11 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   }
 
-  // `OMP_WEB_PASSWORD` overrides the stored credential, so editing the store
+  // `CUELO_PASSWORD` overrides the stored credential, so editing the store
   // while it is set would change nothing a user could observe.
   if (getWebAuthStatus().managedByEnvironment) {
     return NextResponse.json(
-      { error: "Password access is managed by the OMP_WEB_PASSWORD environment variable. Unset it to manage the password here." },
+      { error: "Password access is managed by the CUELO_PASSWORD environment variable. Unset it to manage the password here." },
       { status: 409 },
     );
   }

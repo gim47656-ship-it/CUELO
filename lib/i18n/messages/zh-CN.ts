@@ -1,6 +1,6 @@
 import type { LocalePlugin } from "../types";
 
-/** omp-web 内置简体中文语言包。 */
+/** CUELO 内置简体中文语言包。 */
 export const zhCNLocale: LocalePlugin = {
   id: "zh-CN",
   label: "简体中文",
@@ -295,7 +295,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.allModels": "全部模型",
     "chat.mainPreset": "Main 预设",
     "roles.title": "模型角色",
-    "roles.description": "omp 按角色分派任务，而非只用一个当前模型。为每个角色分配模型后，omp-web 与 omp 命令行都会使用该配置。",
+    "roles.description": "omp 按角色分派任务，而非只用一个当前模型。为每个角色分配模型后，CUELO 与 omp 命令行都会使用该配置。",
     "roles.scope": "保存到",
     "roles.scopeGlobal": "全局",
     "roles.scopeProject": "当前项目",

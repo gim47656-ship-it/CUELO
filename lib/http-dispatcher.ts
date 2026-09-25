@@ -5,8 +5,8 @@ export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000;
 type UndiciModule = typeof Undici;
 
 type DispatcherGlobal = typeof globalThis & {
-  __ompWebHttpDispatcherConfigured?: boolean;
-  __ompWebHttpDispatcherConfiguring?: Promise<void>;
+  __cueloHttpDispatcherConfigured?: boolean;
+  __cueloHttpDispatcherConfiguring?: Promise<void>;
 };
 
 const dispatcherGlobal = globalThis as DispatcherGlobal;
@@ -73,7 +73,7 @@ function createUndiciOriginDispatcher(
  * `fetch`, and `install` does not exist. Bun's native `fetch` already honors
  * `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` read at process start, so the
  * dispatcher dance is both ineffective and unnecessary under Bun — which is the
- * runtime `omp-web` actually serves on.
+ * runtime `cuelo` actually serves on.
  */
 export function isBunRuntime(): boolean {
   return typeof process.versions.bun === "string";
@@ -82,7 +82,7 @@ export function isBunRuntime(): boolean {
 export function configureHttpDispatcher(
   timeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS,
 ): void | Promise<void> {
-  if (dispatcherGlobal.__ompWebHttpDispatcherConfigured) return;
+  if (dispatcherGlobal.__cueloHttpDispatcherConfigured) return;
 
   const normalizedTimeoutMs = parseHttpIdleTimeoutMs(timeoutMs);
   if (normalizedTimeoutMs === undefined) {
@@ -90,12 +90,12 @@ export function configureHttpDispatcher(
   }
 
   if (isBunRuntime()) {
-    dispatcherGlobal.__ompWebHttpDispatcherConfigured = true;
+    dispatcherGlobal.__cueloHttpDispatcherConfigured = true;
     return;
   }
 
-  if (dispatcherGlobal.__ompWebHttpDispatcherConfiguring) {
-    return dispatcherGlobal.__ompWebHttpDispatcherConfiguring;
+  if (dispatcherGlobal.__cueloHttpDispatcherConfiguring) {
+    return dispatcherGlobal.__cueloHttpDispatcherConfiguring;
   }
 
   const configuring = import("undici")
@@ -119,11 +119,11 @@ export function configureHttpDispatcher(
         undici.install?.();
       }
 
-      dispatcherGlobal.__ompWebHttpDispatcherConfigured = true;
+      dispatcherGlobal.__cueloHttpDispatcherConfigured = true;
     })
     .finally(() => {
-      delete dispatcherGlobal.__ompWebHttpDispatcherConfiguring;
+      delete dispatcherGlobal.__cueloHttpDispatcherConfiguring;
     });
-  dispatcherGlobal.__ompWebHttpDispatcherConfiguring = configuring;
+  dispatcherGlobal.__cueloHttpDispatcherConfiguring = configuring;
   return configuring;
 }

@@ -23,11 +23,11 @@ function resolveCore(): string {
 	if (env) return join(env, "src").replace(/\\/g, "/");
 	const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 	const candidates = [
-		join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
+		join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
 		join(root, "@oh-my-pi/pi-coding-agent"),
 	];
 	const hit = candidates.find(p => existsSync(join(p, "src/registry/agent-registry.ts")));
-	if (!hit) throw new Error(`omp-web 전역 설치를 찾지 못했다: ${candidates.join(", ")}`);
+	if (!hit) throw new Error(`CUELO 전역 설치를 찾지 못했다: ${candidates.join(", ")}`);
 	return join(hit, "src").replace(/\\/g, "/");
 }
 

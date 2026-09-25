@@ -6,7 +6,7 @@ type MessageKey = keyof typeof enLocale.messages;
 
 const koMessages: Record<MessageKey, string> = koMessagesJson;
 
-/** omp-web 내장 한국어 언어 팩. */
+/** CUELO 내장 한국어 언어 팩. */
 export const koLocale = {
   id: "ko",
   label: "한국어",

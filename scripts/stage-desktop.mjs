@@ -6,7 +6,7 @@
 // too — see the install and PRUNE steps below.
 //
 // Layout produced (src-tauri/server is gitignored):
-//   server/.next            production build, distDir via OMP_WEB_DIST_DIR
+//   server/.next            production build, distDir via CUELO_DIST_DIR
 //   server/node_modules     bun install --production --frozen-lockfile
 //   server/bin public next.config.ts package.json bun.lock
 //   server/bun-<triple>     Bun runtime(s) for this platform only
@@ -51,7 +51,7 @@ if (!skipBuild) {
   const build = spawnSync("bun", ["run", "build"], {
     cwd: root,
     stdio: "inherit",
-    env: { ...process.env, OMP_WEB_DIST_DIR: "src-tauri/server/.next" },
+    env: { ...process.env, CUELO_DIST_DIR: "src-tauri/server/.next" },
   });
   if (build.status !== 0) {
     console.error("[stage-desktop] next build failed");

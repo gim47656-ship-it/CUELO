@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   const maintenance = getUpdateMutationBlock();
   if (maintenance) {
     return NextResponse.json({
-      error: `OMPWEB update ${maintenance.phase}`,
+      error: `CUELO update ${maintenance.phase}`,
       code: "update_draining",
       accepted: false,
       requestId: maintenance.requestId,

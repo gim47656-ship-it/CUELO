@@ -15,7 +15,7 @@ const RECOVERY_API = "/api/web-access/recovery";
 
 const AUTHENTICATE_HEADERS = {
   "Cache-Control": "no-store",
-  "WWW-Authenticate": 'Basic realm="omp-web", charset="UTF-8"',
+  "WWW-Authenticate": 'Basic realm="cuelo", charset="UTF-8"',
 };
 
 function unauthorizedPage(): string {
@@ -24,7 +24,7 @@ function unauthorizedPage(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>omp-web · authentication required</title>
+<title>CUELO · authentication required</title>
 <style>
   :root { color-scheme: dark light; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #14161a; color: #e6e8ea;
@@ -39,9 +39,9 @@ function unauthorizedPage(): string {
 <body>
 <main>
   <h1>Authentication required</h1>
-  <p>omp-web is locked. Reload the page and sign in with the username <code>omp</code> and your password.</p>
+  <p>CUELO is locked. Reload the page and sign in with the username <code>omp</code> and your password.</p>
   <p>Forgot it? <a href="${RECOVERY_PAGE}">Recover access</a> — you will need to read a one-time code off the console
-     of the machine running omp-web.</p>
+     of the machine running CUELO.</p>
 </main>
 </body>
 </html>
@@ -69,8 +69,8 @@ export function proxy(request: NextRequest) {
   const decision = authorizeWebRequest(request.headers.get("authorization"));
 
   if (decision === "unavailable") {
-    const message = "Password access is enabled but the omp-web credential file could not be read."
-      + " Run `omp-web --reset-password` on the server to set a new password.";
+    const message = "Password access is enabled but the CUELO credential file could not be read."
+      + " Run `cuelo --reset-password` on the server to set a new password.";
     return isApiRequest
       ? NextResponse.json({ error: message }, { status: 503, headers: { "Cache-Control": "no-store" } })
       : new NextResponse(message, { status: 503, headers: { "Cache-Control": "no-store" } });

@@ -35,7 +35,7 @@ test("all active-session transitions share one persistence effect", () => {
 });
 
 test("workspace restoration stays within the cross-project flow", () => {
-  // omp-web returns early on same-project moves before the restore call.
+  // CUELO returns early on same-project moves before the restore call.
   assert.match(
     callbackBody("handleCwdChange", "handleSelectSession"),
     /if \(currentProject === newProject\) \{\s*return;\s*\}[\s\S]*?restoreWorkspaceContext\(newProject\);/,

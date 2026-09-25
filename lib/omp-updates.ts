@@ -1,4 +1,4 @@
-import type { OmpWebReleaseInfo, OmpWebUpdateResponse } from "@/lib/api-types";
+import type { CueloReleaseInfo, CueloUpdateResponse } from "@/lib/api-types";
 
 export const CUELO_RELEASES_URL = "https://github.com/gim47656-ship-it/CUELO/releases";
 export const CUELO_GITHUB_RELEASE_API_URL = "https://api.github.com/repos/gim47656-ship-it/CUELO/releases/latest";
@@ -89,7 +89,7 @@ function isNewerVersion(latest: string | null, current: string | null): boolean 
   return Boolean(latest && current && compareVersions(latest, current) > 0);
 }
 
-function releaseFromPayload(payload: GitHubReleasePayload): OmpWebReleaseInfo {
+function releaseFromPayload(payload: GitHubReleasePayload): CueloReleaseInfo {
   const version = canonicalVersion(payload.tag_name);
   if (!version) throw new Error("The CUELO release did not contain a valid version tag");
 
@@ -134,7 +134,7 @@ async function fetchLatestRelease(fetcher: Fetcher): Promise<GitHubReleasePayloa
   }
 }
 
-export async function getOmpWebUpdateStatus(options: UpdateStatusOptions = {}): Promise<OmpWebUpdateResponse> {
+export async function getCueloUpdateStatus(options: UpdateStatusOptions = {}): Promise<CueloUpdateResponse> {
   const fetcher = options.fetcher ?? fetch;
   const currentAppVersion = canonicalVersion(options.currentAppVersion ?? process.env.NEXT_PUBLIC_APP_VERSION) ?? "unknown";
 

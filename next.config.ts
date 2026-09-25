@@ -31,7 +31,7 @@ const BUN_BUILTIN_REQUEST = /^bun:/;
 const nextConfig: NextConfig = {
   // Desktop builds (scripts/stage-desktop.mjs) redirect the production build
   // into src-tauri/server/.next so packaging never touches the dev `.next/`.
-  distDir: process.env.OMP_WEB_DIST_DIR || ".next",
+  distDir: process.env.CUELO_DIST_DIR || ".next",
   // Keep Windows output tracing inside the pinned source tree. Without this,
   // junctions under the user profile (for example "My Documents") can be
   // traversed and fail the build with EPERM.

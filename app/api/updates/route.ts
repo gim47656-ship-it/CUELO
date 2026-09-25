@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
-import { getOmpWebUpdateStatus } from "@/lib/omp-updates";
+import { getCueloUpdateStatus } from "@/lib/omp-updates";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const status = await getOmpWebUpdateStatus();
+    const status = await getCueloUpdateStatus();
     return NextResponse.json(status, {
       headers: { "Cache-Control": "private, no-store" },
     });

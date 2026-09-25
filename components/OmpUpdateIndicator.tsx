@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
-import type { OmpWebUpdateResponse } from "@/lib/api-types";
+import type { CueloUpdateResponse } from "@/lib/api-types";
 import { MarkdownBody } from "./MarkdownBody";
 
 type LoadState = "idle" | "loading" | "ready";
@@ -17,7 +17,7 @@ function displayVersion(version: string): string {
 
 export function OmpUpdateIndicator() {
   const { locale, t } = useI18n();
-  const [status, setStatus] = useState<OmpWebUpdateResponse | null>(null);
+  const [status, setStatus] = useState<CueloUpdateResponse | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export function OmpUpdateIndicator() {
     try {
       const response = await fetch("/api/updates", { cache: "no-store", signal });
       if (!response.ok) return;
-      const next = await response.json() as OmpWebUpdateResponse;
+      const next = await response.json() as CueloUpdateResponse;
       setStatus(next);
       setLoadState("ready");
     } catch {

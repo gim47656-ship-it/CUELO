@@ -77,7 +77,7 @@ export interface RoutingDeps {
   owners: () => Owner[];
   policy?: () => RoutingPolicy;
   candidates?: (ctx: ExtensionContext, policy: RoutingPolicy) => Promise<Candidate[]>;
-  /** 후보 provider별 계정 잔량. 생략하면 OMPWEB usage 사이드카(`OMP_USAGE_PORT`, 기본 30142)를 읽는다. */
+  /** 후보 provider별 계정 잔량. 생략하면 CUELO usage 사이드카(`OMP_USAGE_PORT`, 기본 30142)를 읽는다. */
   quota?: (providers: string[], signal?: AbortSignal) => Promise<QuotaSnapshot>;
   /** 발주 이력. 생략하면 기록·history 요약을 하지 않는다. 실패는 발주를 막지 않는다. */
   ledger?: RoutingLedger;
@@ -90,7 +90,7 @@ export interface RoutingDeps {
 const QUOTA_ADVISORY_BUDGET_MS = 2_000;
 const finiteOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
-/** OMPWEB usage 사이드카의 `/usage`를 후보 provider만 남겨 요약한다. 실패는 unavailable로 두고 발주를 막지 않는다. */
+/** CUELO usage 사이드카의 `/usage`를 후보 provider만 남겨 요약한다. 실패는 unavailable로 두고 발주를 막지 않는다. */
 export async function readSidecarQuota(providers: string[], signal?: AbortSignal): Promise<QuotaSnapshot> {
   const observedAt = Date.now();
   const port = Number(process.env.OMP_USAGE_PORT || 30142);

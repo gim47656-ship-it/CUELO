@@ -15,9 +15,9 @@ function resolveCore(): string {
 	const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 	const candidates = env
 		? [env]
-		: [join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
+		: [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
 	const hit = candidates.find(p => existsSync(join(p, "src/registry/agent-registry.ts")));
-	if (!hit) throw new Error(`omp-web 전역 설치를 찾지 못했다: ${candidates.join(", ")}`);
+	if (!hit) throw new Error(`CUELO 전역 설치를 찾지 못했다: ${candidates.join(", ")}`);
 	// 동적 import 는 URL 로 해석되므로 역슬래시를 쓰면 안 된다.
 	return join(hit, "src").replace(/\\/g, "/");
 }
@@ -191,7 +191,7 @@ function makeFakePage(id: string, url: string, title: string, visible: boolean) 
 	return page;
 }
 
-const ompweb = makeFakePage("user-ompweb", "http://127.0.0.1:5199/session", "OMPWEB", true);
+const ompweb = makeFakePage("user-ompweb", "http://127.0.0.1:5199/session", "CUELO", true);
 const erp = makeFakePage("user-erp", "https://erp.example.com/work", "ERP 작업", false);
 const fakeBrowser = {
 	connected: false,

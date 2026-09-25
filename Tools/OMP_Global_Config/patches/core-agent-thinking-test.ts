@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 const candidates = process.env.OMP_CORE_PATCH_TARGET
 	? [process.env.OMP_CORE_PATCH_TARGET]
-	: [join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
+	: [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "@oh-my-pi/pi-coding-agent")];
 const core = candidates.find(candidate => existsSync(join(candidate, "src/task/executor.ts")));
 if (!core) throw new Error(`core 사본을 찾지 못했다: ${candidates.join(", ")}`);
 const packages = resolve(core, "..").replace(/\\/g, "/");

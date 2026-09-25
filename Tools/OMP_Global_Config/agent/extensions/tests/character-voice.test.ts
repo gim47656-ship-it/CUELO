@@ -5,10 +5,11 @@ import { join, resolve } from "node:path";
 
 // 이 회귀는 설치된(또는 격리 패치된) core가 실제로 조립하는 system prompt를 검사한다.
 // 대상 경로가 runtime fixture이므로 이 boundary만 동적 import를 사용한다.
-const coreRoot = process.env.OMP_CORE_PATCH_TARGET ?? join(
-  process.env.APPDATA ?? join(homedir(), "AppData/Roaming"),
-  "npm/node_modules/omp-web/node_modules/@oh-my-pi/pi-coding-agent",
-);
+const npmModules = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
+const coreRoot = process.env.OMP_CORE_PATCH_TARGET
+  ?? ["cuelo", "omp-web"].map((name) => join(npmModules, name, "node_modules/@oh-my-pi/pi-coding-agent"))
+    .find((dir) => existsSync(dir))
+  ?? join(npmModules, "cuelo/node_modules/@oh-my-pi/pi-coding-agent");
 const systemPromptModule = join(coreRoot, "src/system-prompt.ts").replace(/\\/gu, "/");
 if (!existsSync(systemPromptModule)) {
   throw new Error(`system prompt core를 찾지 못했다: ${systemPromptModule}`);
