@@ -14,6 +14,103 @@ export interface SideChatTurn {
   at: number;
 }
 
+export interface SideChatAssistantIdentity {
+  provider: string;
+  credentialId?: number;
+}
+
+/** 최근 main assistant 메시지의 실제 provider/credential 근거만 사이드챗에 전달한다. */
+export function latestSideChatAssistantIdentity(value: unknown): SideChatAssistantIdentity | null {
+  if (!value || typeof value !== "object" || !("context" in value)) return null;
+  const context = value.context;
+  if (!context || typeof context !== "object" || !("messages" in context)) return null;
+  const messages = context.messages;
+  if (!Array.isArray(messages)) return null;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object" || !("role" in message) || message.role !== "assistant") continue;
+    if (!("provider" in message) || typeof message.provider !== "string" || !message.provider) return null;
+    const credentialId = "credentialId" in message ? message.credentialId : undefined;
+    return {
+      provider: message.provider,
+      ...(typeof credentialId === "number" && Number.isSafeInteger(credentialId) && credentialId > 0
+        ? { credentialId }
+        : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * /api/agent/[id] 의 `running`은 wrapper 생존 여부이므로 실행 중 판단에는 state를 쓴다.
+ * `state.subagents`는 끝난 자식도 담으므로 판단에 쓰지 않는다(메인 턴이 없으면 prompt가 맞다).
+ */
+export function isMainSessionBusy(value: unknown): boolean | null {
+  if (!value || typeof value !== "object" || !("running" in value) || typeof value.running !== "boolean") {
+    return null;
+  }
+  if (!value.running) return false;
+  if (!("state" in value) || !value.state || typeof value.state !== "object") return null;
+  const state = value.state;
+  if (
+    !("isStreaming" in state) || typeof state.isStreaming !== "boolean"
+    || !("isPromptRunning" in state) || typeof state.isPromptRunning !== "boolean"
+    || !("isBashRunning" in state) || typeof state.isBashRunning !== "boolean"
+    || !("isCompacting" in state) || typeof state.isCompacting !== "boolean"
+    || !("isHandoffRunning" in state) || typeof state.isHandoffRunning !== "boolean"
+  ) return null;
+  return state.isStreaming
+    || state.isPromptRunning
+    || state.isBashRunning
+    || state.isCompacting
+    || state.isHandoffRunning;
+}
+
+export function buildSideChatForwardMessage(question: string, answer: string, instruction: string): string {
+  const trimmedInstruction = instruction.trim();
+  return [
+    "사이드채팅 문답을 메인 대화에서 이어서 처리해 주세요.",
+    "",
+    "[사이드채팅 질문]",
+    question,
+    "",
+    "[사이드채팅 답변]",
+    answer,
+    ...(trimmedInstruction ? ["", "[추가 지시]", trimmedInstruction] : []),
+  ].join("\n");
+}
+
+export function sideChatForwardCommand(isRunning: boolean, message: string): { type: "steer" | "prompt"; message: string } {
+  return { type: isRunning ? "steer" : "prompt", message };
+}
+
+export interface SideChatForwardRegistry {
+  claim(key: string): boolean;
+  markSent(key: string): void;
+  release(key: string): void;
+}
+
+/** 동기 claim으로 렌더 사이의 더블 클릭도 막고, 실패 시 명시적으로 재시도할 수 있다. */
+export function createSideChatForwardRegistry(): SideChatForwardRegistry {
+  const sending = new Set<string>();
+  const sent = new Set<string>();
+  return {
+    claim(key) {
+      if (!key || sending.has(key) || sent.has(key)) return false;
+      sending.add(key);
+      return true;
+    },
+    markSent(key) {
+      sending.delete(key);
+      sent.add(key);
+    },
+    release(key) {
+      sending.delete(key);
+    },
+  };
+}
+
 export interface SideChatHistoryTurn {
   q: string;
   a: string;

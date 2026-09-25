@@ -2,9 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  buildSideChatForwardMessage,
   createHanseSideChatClient,
+  createSideChatForwardRegistry,
+  isMainSessionBusy,
+  latestSideChatAssistantIdentity,
   SideChatRequestError,
+  sideChatForwardCommand,
   type HanseSideChatClient,
+  type SideChatAssistantIdentity,
   type SideChatErrorKind,
   type SideChatFlightOutcome,
   type SideChatFlightRegistry,
@@ -12,6 +18,11 @@ import {
   type SideChatSessionCensus,
   type SideChatTurn,
 } from "@/lib/hanse-sidechat-client";
+import { sendAgentCommand } from "@/lib/agent-client";
+import { useAccountFace } from "@/hooks/useAccountFaces";
+import { AccountAvatar } from "@/components/workspace/AccountAvatar";
+import { inlineStickerFor } from "@/lib/inline-sticker";
+import { MarkdownBody } from "@/components/MarkdownBody";
 
 export interface SideChatPanelProps {
   /** Header label, supplied by the host surface so it matches the view switcher's locale. */
@@ -28,6 +39,7 @@ export interface SideChatPanelProps {
   onClose?: () => void;
   onReturnFocus?: () => void;
 }
+
 
 type SideChatErrorEntry = {
   question: string;
@@ -64,9 +76,47 @@ function QuestionBlock({ children }: { children: string }) {
 
 function AnswerBlock({ children, streaming = false }: { children: string; streaming?: boolean }) {
   return (
-    <div className={`side-chat-answer${streaming ? " is-streaming" : ""}`} style={{ alignSelf: "flex-start", maxWidth: "100%", padding: "8px 10px", border: "1px solid var(--border)", color: "var(--text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.58 }}>
-      {children || (streaming ? "응답을 기다리는 중…" : "")}
+    <div className={`side-chat-answer${streaming ? " is-streaming" : ""}`} style={{ alignSelf: "flex-start", maxWidth: "100%", padding: "8px 10px", border: "1px solid var(--border)", color: "var(--text)", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.58 }}>
+      {children
+        ? <MarkdownBody isStreaming={streaming}>{children}</MarkdownBody>
+        : streaming ? "응답을 기다리는 중…" : null}
       {streaming && <span aria-hidden="true" style={{ marginLeft: 2, color: "var(--accent)" }}>▍</span>}
+    </div>
+  );
+}
+function SideChatReply({
+  identity,
+  status,
+  utteranceKey,
+  children,
+}: {
+  identity: (SideChatAssistantIdentity & { sessionId: string }) | null;
+  status: "streaming" | "settled" | "failed";
+  utteranceKey: string;
+  children: React.ReactNode;
+}) {
+  const face = useAccountFace(identity?.sessionId, identity?.provider, identity?.credentialId);
+  const sticker = inlineStickerFor(face?.alias, status, utteranceKey);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 5 }}>
+      {face && identity?.provider && (
+        <div style={{ display: "flex", alignItems: "center", gap: 9, minHeight: 40, marginBottom: 2 }}>
+          <AccountAvatar seed={face.seed} size={40} provider={identity.provider} />
+          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)" }}>{face.alias}</span>
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 7, minWidth: 0, maxWidth: "100%" }}>
+        {children}
+        {sticker && (
+          <img
+            src={sticker.src}
+            alt={sticker.alt}
+            width={52}
+            height={52}
+            style={{ flex: "0 0 auto", objectFit: "contain" }}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -110,6 +160,12 @@ export function SideChatPanel({
   const [errorsBySession, setErrorsBySession] = useState<Record<string, SideChatErrorEntry[]>>({});
   const [noticesBySession, setNoticesBySession] = useState<Record<string, string>>({});
   const [modelsBySession, setModelsBySession] = useState<Record<string, string>>({});
+  const [assistantIdentity, setAssistantIdentity] = useState<(SideChatAssistantIdentity & { sessionId: string }) | null>(null);
+  const [expandedForwardKey, setExpandedForwardKey] = useState<string | null>(null);
+  const [forwardInstructions, setForwardInstructions] = useState<Record<string, string>>({});
+  const [forwardStatus, setForwardStatus] = useState<Record<string, "sending" | "sent">>({});
+  const [forwardErrors, setForwardErrors] = useState<Record<string, string>>({});
+  const forwardRegistryRef = useRef(createSideChatForwardRegistry());
   const mountedRef = useRef(true);
   const currentSessionIdRef = useRef(normalizedSessionId);
   const visibleRef = useRef(visible);
@@ -131,6 +187,26 @@ export function SideChatPanel({
   useEffect(() => {
     setTurns(normalizedSessionId ? historyStore.read(normalizedSessionId) : []);
   }, [historyStore, normalizedSessionId]);
+  useEffect(() => {
+    setAssistantIdentity(null);
+    if (!normalizedSessionId) return;
+    let current = true;
+    const sid = normalizedSessionId;
+    void fetch(`/api/sessions/${encodeURIComponent(sid)}?deferThinking=1&deferMedia=1`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return latestSideChatAssistantIdentity(await response.json());
+      })
+      .then((identity) => {
+        if (current) setAssistantIdentity(identity ? { ...identity, sessionId: sid } : null);
+      })
+      .catch(() => {
+        if (current) setAssistantIdentity(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, [normalizedSessionId]);
   // 레지스트리의 flight에 재부착한다. 종료 결과(중단 notice·오류 entry·
   // 실패 질문 복원·완료 모델)는 시작한 인스턴스가 아니라 현재 마운트된
   // 패널이 outcome으로 받아 처리하므로, 닫힘·재부모화 뒤에도 유실되지
@@ -266,6 +342,50 @@ export function SideChatPanel({
       if (mountedRef.current && visibleRef.current) inputRef.current?.focus();
     }
   };
+  const forwardAnswer = async (turn: SideChatTurn, answerKey: string, instruction: string) => {
+    if (!normalizedSessionId) return;
+    const sid = normalizedSessionId;
+    const forwardKey = `${sid}:${answerKey}`;
+    if (!forwardRegistryRef.current.claim(forwardKey)) return;
+    setForwardStatus((current) => ({ ...current, [forwardKey]: "sending" }));
+    setForwardErrors((current) => {
+      const next = { ...current };
+      delete next[forwardKey];
+      return next;
+    });
+    try {
+      const response = await fetch(`/api/agent/${encodeURIComponent(sid)}`, { cache: "no-store" });
+      let result: unknown = null;
+      try {
+        result = await response.json();
+      } catch {
+        // 오류 본문이 JSON이 아니면 상태 코드로 원인을 표시한다.
+      }
+      if (!response.ok) {
+        if (result && typeof result === "object" && "error" in result && typeof result.error === "string") {
+          throw new Error(result.error);
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const isRunning = isMainSessionBusy(result);
+      if (isRunning === null) throw new Error("메인 세션 실행 상태를 확인할 수 없습니다.");
+      const message = buildSideChatForwardMessage(turn.q, turn.a, instruction);
+      await sendAgentCommand(sid, sideChatForwardCommand(isRunning, message));
+      forwardRegistryRef.current.markSent(forwardKey);
+      setForwardStatus((current) => ({ ...current, [forwardKey]: "sent" }));
+    } catch (error) {
+      forwardRegistryRef.current.release(forwardKey);
+      setForwardStatus((current) => {
+        const next = { ...current };
+        delete next[forwardKey];
+        return next;
+      });
+      setForwardErrors((current) => ({
+        ...current,
+        [forwardKey]: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
 
   const submitOrAbort = () => {
     // 레지스트리가 소유권을 쥐고 있어, 닫혔다 다시 열린 패널에서도 같은
@@ -310,6 +430,9 @@ export function SideChatPanel({
   const streaming = visibleRequest !== null;
   const canSend = !streaming && !unavailable && input.trim().length > 0;
   const clearDisabled = !normalizedSessionId || streaming;
+  const replyIdentity = assistantIdentity?.sessionId === normalizedSessionId
+    ? assistantIdentity
+    : null;
 
   return (
     <section
@@ -343,25 +466,94 @@ export function SideChatPanel({
           </div>
         ) : (
           <>
-            {turns.map((turn, index) => (
-              <div key={`${turn.at}:${index}`} style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 5 }}>
-                <QuestionBlock>{turn.q}</QuestionBlock>
-                <AnswerBlock>{turn.a}</AnswerBlock>
-              </div>
-            ))}
+            {turns.map((turn, index) => {
+              const answerKey = `${turn.at}:${index}`;
+              const forwardKey = `${normalizedSessionId}:${answerKey}`;
+              const status = forwardStatus[forwardKey];
+              const expanded = expandedForwardKey === forwardKey;
+              return (
+                <div key={answerKey} style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 5 }}>
+                  <QuestionBlock>{turn.q}</QuestionBlock>
+                  <SideChatReply identity={replyIdentity} status="settled" utteranceKey={answerKey}>
+                    <AnswerBlock>{turn.a}</AnswerBlock>
+                  </SideChatReply>
+                  {status === "sent" ? (
+                    <span role="status" style={{ color: "var(--text-muted)", fontSize: 10.5 }}>보냄</span>
+                  ) : (
+                    <>
+                      {!expanded && (
+                        <button
+                          type="button"
+                          aria-expanded="false"
+                          onClick={() => setExpandedForwardKey(forwardKey)}
+                          style={{ ...panelButtonStyle(), alignSelf: "flex-start" }}
+                        >
+                          메인에 보내기
+                        </button>
+                      )}
+                      {expanded && (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+                          <label htmlFor={`side-chat-forward-${index}`} style={{ color: "var(--text-muted)", fontSize: 10.5 }}>
+                            메인에 덧붙일 지시 (선택)
+                          </label>
+                          <textarea
+                            id={`side-chat-forward-${index}`}
+                            rows={2}
+                            value={forwardInstructions[forwardKey] ?? ""}
+                            onChange={(event) => setForwardInstructions((current) => ({
+                              ...current,
+                              [forwardKey]: event.target.value,
+                            }))}
+                            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", resize: "vertical", padding: "7px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--seed-font-family)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
+                          />
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => void forwardAnswer(turn, answerKey, forwardInstructions[forwardKey] ?? "")}
+                              disabled={status === "sending"}
+                              style={panelButtonStyle(status === "sending")}
+                            >
+                              {status === "sending" ? "보내는 중…" : "메인으로 전송"}
+                            </button>
+                            {status !== "sending" && (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedForwardKey(null)}
+                                style={panelButtonStyle()}
+                              >
+                                취소
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {forwardErrors[forwardKey] && (
+                        <div role="alert" style={{ color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                          {forwardErrors[forwardKey]}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
             {sessionErrors.map((entry, index) => (
               <div key={`${entry.question}:${index}`} style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 5 }}>
                 <QuestionBlock>{entry.question}</QuestionBlock>
-                {entry.partialAnswer && <AnswerBlock>{entry.partialAnswer}</AnswerBlock>}
-                <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-                  {entry.message}
-                </div>
+                <SideChatReply identity={replyIdentity} status="failed" utteranceKey={`failed:${entry.question}:${index}`}>
+                  {entry.partialAnswer && <AnswerBlock>{entry.partialAnswer}</AnswerBlock>}
+                  <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                    {entry.message}
+                  </div>
+                </SideChatReply>
               </div>
             ))}
             {visibleRequest && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 5 }}>
                 <QuestionBlock>{visibleRequest.question}</QuestionBlock>
-                <AnswerBlock streaming>{visibleRequest.text}</AnswerBlock>
+                <SideChatReply identity={replyIdentity} status="streaming" utteranceKey={`stream:${visibleRequest.question}`}>
+                  <AnswerBlock streaming>{visibleRequest.text}</AnswerBlock>
+                </SideChatReply>
               </div>
             )}
             {!hasConversation && (
