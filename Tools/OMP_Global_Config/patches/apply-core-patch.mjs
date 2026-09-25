@@ -215,7 +215,7 @@ const EDITS = [
 							toolResults.push(toolResult);
 						} else {
 							const result = createAbortedToolResult(
-								toolCall, stream, "skipped", "A user message is pending. Answer it in 1-2 sentences, then in the SAME response immediately re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
+								toolCall, stream, "skipped", "Not executed: a user message arrived before this call ran. The turn is still going. Answer the user in 1-2 sentences, then in the SAME response re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
 							);
 							currentContext.messages.push(result);
 							newMessages.push(result);
@@ -261,7 +261,7 @@ const EDITS = [
 							toolResults.push(toolResult);
 						} else {
 							const result = createAbortedToolResult(
-								toolCall, stream, "skipped", "A user message is pending. Answer it in 1-2 sentences, then in the SAME response immediately re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
+								toolCall, stream, "skipped", "Not executed: a user message arrived before this call ran. The turn is still going. Answer the user in 1-2 sentences, then in the SAME response re-issue the tool calls you still need. Do not end the turn with text only unless the user must approve or decide.",
 							);
 							currentContext.messages.push(result);
 							newMessages.push(result);
@@ -4599,12 +4599,27 @@ import { getActiveRules } from "../capability/rule";`,
 		// NODE_ENV=production·PORT·NEXT_* 가 bash 도구 자식 셸에 그대로 새어, 셸에서 띄운 `next dev`가
 		// production 모드로 CSS 파싱에 실패하고 라이브 포트를 잡으려 했다. git 위치 변수를 지우는 자리에서
 		// 함께 걸러 내고, NODE_ENV·PORT는 런처(bin/cuelo.js)가 넘긴 `next start` 이전 값으로 되돌린다.
+		// native 셸의 sessionEnv 는 부모 env 위에 덧씌우기만 하므로 지운 이름은 bash-executor 가
+		// hostNextServerEnvUnsets 로 받아 `unset -v` 로 뺀다(아래 항목).
 		file: "../pi-utils/src/env.ts",
-		marker: "stripHostNextServerEnv(result); // HANSE: CUELO next server env",
+		marker: "export function hostNextServerEnvUnsets(",
 		anchor: "\tstripGitRepoLocationEnv(result);\n\treturn result;\n}\n",
 		patched: `	stripGitRepoLocationEnv(result);
 	stripHostNextServerEnv(result); // HANSE: CUELO next server env
 	return result;
+}
+
+/** HANSE: \`next start\`가 CUELO 서버 프로세스에 넣은 이름과, 런처가 넘긴 기준값 운반 변수. */
+function isHostNextServerEnvName(key: string): boolean {
+	return (
+		key === "NEXT_RUNTIME" ||
+		key === "NEXT_DEPLOYMENT_ID" ||
+		key.startsWith("NEXT_PRIVATE_") ||
+		key.startsWith("__NEXT_PRIVATE_") ||
+		key === "NODE_ENV" ||
+		key === "PORT" ||
+		key === "CUELO_SHELL_ENV_BASELINE"
+	);
 }
 
 /**
@@ -4621,18 +4636,57 @@ function stripHostNextServerEnv(env: Record<string, string>): void {
 		if (parsed !== null && typeof parsed === "object") baseline = parsed as Record<string, unknown>;
 	} catch {}
 	for (const key of Object.keys(env)) {
-		if (key === "NEXT_RUNTIME" || key === "NEXT_DEPLOYMENT_ID" || key.startsWith("NEXT_PRIVATE_") || key.startsWith("__NEXT_PRIVATE_")) {
-			delete env[key];
-		}
+		if (isHostNextServerEnvName(key)) delete env[key];
 	}
 	for (const key of ["NODE_ENV", "PORT"]) {
 		const value = baseline[key];
 		if (typeof value === "string") env[key] = value;
-		else delete env[key];
 	}
-	delete env.CUELO_SHELL_ENV_BASELINE;
+}
+
+/**
+ * HANSE: native 셸은 sessionEnv 를 부모 프로세스 env 위에 덧씌우기만 하므로, 걸러 낸 env 에서 빠진
+ * 서버 변수가 부모에게서 그대로 새어 든다. 부모에는 있고 자식 env 에는 없는 서버 변수 이름을
+ * 돌려준다 — 실행기가 \`unset -v\` 로 뺄 대상이다.
+ */
+export function hostNextServerEnvUnsets(
+	parent: Record<string, string | undefined>,
+	child: Record<string, string>,
+): string[] {
+	if (parent.NEXT_RUNTIME === undefined) return [];
+	return Object.keys(parent).filter(key => isHostNextServerEnvName(key) && !(key in child));
 }
 `,
+	},
+	{
+		file: "src/exec/bash-executor.ts",
+		marker: "import { $env, hostNextServerEnvUnsets } from \"@oh-my-pi/pi-utils/env\";",
+		anchor: "import { $env } from \"@oh-my-pi/pi-utils/env\";",
+		patched: "import { $env, hostNextServerEnvUnsets } from \"@oh-my-pi/pi-utils/env\";",
+	},
+	{
+		// 위 env.ts 항목의 짝. 걸러 낸 shellEnv 에 없는 서버 변수를 명령 앞 `unset -v` 로 뺀다 — direnv
+		// preflight 가 .envrc 가 지운 변수를 빼는 upstream 방식과 같다. 호출자가 직접 준 이름은 둔다.
+		// PTY 경로는 zsh/fish 를 띄우므로(fish 에는 unset 이 없다) 건드리지 않는다.
+		file: "src/exec/bash-executor.ts",
+		marker: "// HANSE: CUELO next server env unset",
+		anchor: "\tconst commandEnv = buildNonInteractiveEnv(preflight.env);\n",
+		patched: `	// HANSE: CUELO next server env unset
+	const hostEnvUnsets = usePty
+		? []
+		: hostNextServerEnvUnsets(process.env, shellEnv).filter(name => !(options?.env && name in options.env));
+	if (hostEnvUnsets.length > 0) preflight.command = \`unset -v \${hostEnvUnsets.join(" ")}; \${preflight.command}\`;
+	const commandEnv = buildNonInteractiveEnv(preflight.env);
+`,
+	},
+	{
+		// 2026-09-25: 사유를 직접 준 skipped 결과(user steering 보류, soft-required 도구 안내)에도 core 가
+		// "the assistant ended its turn" 을 앞에 붙여, 턴이 이어지는데 끝난 것처럼 읽혔다. 사유가 있으면
+		// 그 문장만 쓴다. 사유 없는 skipped(턴이 실제로 끝나 남은 호출)는 upstream 문구를 그대로 둔다.
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "// HANSE: skipped reason stands alone",
+		anchor: "\t\tcontent: [{ type: \"text\", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],\n",
+		patched: "\t\t// HANSE: skipped reason stands alone\n\t\tcontent: [{ type: \"text\", text: reason === \"skipped\" && errorMessage ? errorMessage : errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],\n",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
