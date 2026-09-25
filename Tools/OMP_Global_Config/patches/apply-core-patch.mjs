@@ -1338,7 +1338,7 @@ function resolveSubagentApprovedFallbackCandidates(args: {
 	const requested = args.modelPatterns[0];
 	if (!requested) return [];
 	const requestedModel = resolveModelOverride([requested], args.modelRegistry, args.settings).model;
-	const configured = args.settings.get("retry.fallbackChains") ?? {};
+	const configured = cfgRetryFallbackChains.get(args.settings);
 	const context: RetryFallbackResolutionContext = {
 		chains: configured,
 		getModelRole: role => args.settings.getModelRole(role),
@@ -3621,7 +3621,7 @@ class LocalTextBackend implements TextBackend {`,
 		// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate
 		// chain so a failure, abort, or missing credential reaches the caller instead of
 		// falling back to a chat or local model. Every other value keeps the upstream chain.
-		if (this.#deps.settings.get("providers.judgmentProvider") === VERCEL_JUDGMENT_PROVIDER) {
+		if (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {
 			const vercel = new VercelJudge({
 				apiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {
 					sessionId: this.#deps.sessionId,
@@ -3631,6 +3631,14 @@ class LocalTextBackend implements TextBackend {`,
 			return run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native");
 		}
 		const signal = options.signal;`,
+	},
+	{
+		// 18.3.1 에는 `Settings.get` 이 없다. 위 분기는 typed handle 로 읽으므로 그 import 를 넣는다.
+		file: "src/judgment/index.ts",
+		marker: 'import type { Settings } from "../config/settings";\nimport { cfgJudgmentProvider } from "../config/model-settings";',
+		anchor: 'import type { Settings } from "../config/settings";',
+		patched: `import type { Settings } from "../config/settings";
+import { cfgJudgmentProvider } from "../config/model-settings";`,
 	},
 	{
 		// 18.2.7 에는 `providers.judgmentProvider` schema 항목 자체가 없다(legacy key 목록에만
@@ -4328,12 +4336,12 @@ function staticInstructions(autoRetain: boolean): string {
 		patched: `		const parts = [staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))];`,
 		alternates: [{
 			file: "src/mnemopi/backend.ts",
-			marker: "autoRetain: primary?.config.autoRetain ?? settings.get(\"mnemopi.autoRetain\")",
+			marker: "autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings)",
 			anchor: `		const parts = [prompt.render(mnemopiInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];`,
 			patched: `		const parts = [
 			prompt.render(mnemopiInstructions, {
 				toolRefs: memoryToolRefs(session?.getXdevToolEntries()),
-				autoRetain: primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"),
+				autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings),
 			}),
 		];`,
 		}],
@@ -4358,15 +4366,22 @@ function staticInstructions(autoRetain: boolean): string {
 					.trim() || undefined;`,
 		alternates: [{
 			file: "src/mnemopi/backend.ts",
-			marker: "autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? session.settings.get(\"mnemopi.autoRetain\")",
+			marker: "autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? cfgMnemopiAutoRetain.get(session.settings)",
 			anchor: `			const instructions = prompt.render(mnemopiInstructions, {
 				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
 			});`,
 			patched: `			const instructions = prompt.render(mnemopiInstructions, {
 				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
-				autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? session.settings.get("mnemopi.autoRetain"),
+				autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? cfgMnemopiAutoRetain.get(session.settings),
 			});`,
 		}],
+	},
+	{
+		// 18.3.1 에는 `Settings.get` 이 없다. 위 두 소비자가 쓰는 typed handle 을 import 한다.
+		file: "src/mnemopi/backend.ts",
+		marker: 'import { cfgMnemopiAutoRetain, cfgMnemopiInjectionTokenLimit } from "./settings";',
+		anchor: 'import { cfgMnemopiInjectionTokenLimit } from "./settings";',
+		patched: 'import { cfgMnemopiAutoRetain, cfgMnemopiInjectionTokenLimit } from "./settings";',
 	},
 	{
 		// read 실패의 절반 이상이 경로 추측이었다(2026-09-23 실측: 7일 read 경로 오류 126건 중
