@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "omp-web",
+  "version": "0.4.4",
+  "repository": "https://github.com/ddallabenetta/omp-web",
+  "tag": "v0.4.4",
+  "commit": "0acce6240b27eb7d44d5c9b78187bd95e01270f8",
+  "sourceArchive": {
+    "format": "git archive --format=tar",
+    "sha512": "9ffa5ad1cfedf036bc26fb6d09b5b010d91c6fa07081a5ff230e2740c9144ae2ff334777310bbafc064c67a3021ac8f6f87194f88199af4302eb8d332e265fd3"
+  },
+  "npmBaseline": {
+    "package": "omp-web@0.4.4",
+    "tarball": "https://registry.npmjs.org/omp-web/-/omp-web-0.4.4.tgz",
+    "integrity": "sha512-FkpqDTMUyjUc+wTzFwThr8El5gZrIN9UewpoDbrIcH3twx+FZTVKt4DxNG3JgPmEpxu8AeRBAOT2IKt90lMJIw=="
+  },
+  "license": "MIT",
+  "snapshotFileCountBeforeDownstreamFiles": 462,
+  "notes": [
+    "The tag is not treated as immutable; the 40-character commit is authoritative.",
+    "The nested upstream .git directory is intentionally excluded.",
+    "Generated build outputs and dependency directories are not committed."
+  ]
+}

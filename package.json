@@ -1,0 +1,105 @@
+{
+  "name": "omp-web",
+  "version": "0.4.4",
+  "description": "Browser workspace for omp (oh-my-pi) — continue terminal omp sessions in the browser",
+  "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gim47656-ship-it/CUELO.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gim47656-ship-it/CUELO/issues"
+  },
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "coding-agent",
+    "web-ui"
+  ],
+  "license": "MIT",
+  "ompWebBuild": {
+    "distribution": "hanse-responsive",
+    "upstreamCommit": "0acce6240b27eb7d44d5c9b78187bd95e01270f8",
+    "coreVersion": "18.3.0"
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "bun": ">=1.4.2"
+  },
+  "bin": {
+    "omp-web": "bin/omp-web.js"
+  },
+  "files": [
+    "bin",
+    ".next",
+    "!.next/cache",
+    "!.next/dev",
+    "!.next/**/*.js.map",
+    "public",
+    "next.config.ts",
+    "package.json"
+  ],
+  "scripts": {
+    "dev": "bun --bun next dev --webpack -H 127.0.0.1 -p 30141",
+    "dev:lan": "bun --bun next dev --webpack -H 0.0.0.0 -p 30141",
+    "build": "bun --bun next build --webpack",
+    "start": "bun --bun next start -H 127.0.0.1 -p 30141",
+    "start:lan": "bun --bun next start -H 0.0.0.0 -p 30141",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./app ./components ./hooks ./lib ./public ./bin",
+    "desktop:build": "bun scripts/stage-desktop.mjs && bun scripts/build-desktop.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:fetch-bun": "bun scripts/fetch-bun.mjs",
+    "desktop:signer": "tauri signer",
+    "desktop:sync-version": "bun scripts/sync-version.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@oh-my-pi/pi-agent-core": "18.3.0",
+    "@oh-my-pi/pi-ai": "18.3.0",
+    "@oh-my-pi/pi-coding-agent": "18.3.0",
+    "@oh-my-pi/pi-tui": "18.3.0",
+    "@oh-my-pi/pi-utils": "18.3.0",
+    "@seed-design/css": "2.8.0",
+    "@seed-design/react": "2.4.1",
+    "@seed-design/tailwind4-theme": "2.4.0",
+    "js-yaml": "^5.4.1",
+    "next": "16.2.12",
+    "proper-lockfile": "4.1.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "remark-frontmatter": "^5.0.0",
+    "undici": "8.5.0",
+    "unpdf": "1.8.1",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@lobehub/icons": "^5.16.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/bun": "^1.4.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.9.5",
+    "@types/proper-lockfile": "4.1.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "16.2.12",
+    "jiti": "^2.7.0",
+    "katex": "^0.16.47",
+    "mammoth": "^1.12.2",
+    "mermaid": "^11.17.2",
+    "postcss": "^8.5.26",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,32 @@
+# Turnkey local deployment. See docs/docker.md for what each setting does.
+#
+#   OMP_WEB_PASSWORD='a-long-random-password' \
+#   OMP_UID=$(id -u) OMP_GID=$(id -g) docker compose up --build
+#
+# OMP_UID/OMP_GID rather than UID/GID because UID is readonly in bash and
+# cannot be set inline.
+services:
+  omp-web:
+    build:
+      context: .
+      args:
+        # Bind mounts keep host ownership; build the image for the user that
+        # owns ~/.omp and the checkouts under OMP_WEB_WORKSPACE.
+        UID: ${OMP_UID:-1000}
+        GID: ${OMP_GID:-1000}
+    image: omp-web:local
+    # Loopback only. omp-web can run a high-privilege agent, so read
+    # docs/docker.md before publishing this on 0.0.0.0.
+    ports:
+      - "127.0.0.1:${OMP_WEB_PORT:-30141}:30141"
+    environment:
+      OMP_WEB_AUTHENTICATED: "1"
+      OMP_WEB_PASSWORD: ${OMP_WEB_PASSWORD:?set OMP_WEB_PASSWORD to the password the browser should ask for}
+    volumes:
+      # The same directory the omp CLI writes: sessions, config and model roles
+      # are shared with the terminal.
+      - ${OMP_HOME:-${HOME}/.omp}:/home/omp/.omp
+      # The projects omp-web may open. Narrow this to the tree you want the
+      # agent to reach.
+      - ${OMP_WEB_WORKSPACE:-.}:/workspace
+    restart: unless-stopped

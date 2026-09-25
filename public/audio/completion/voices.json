@@ -1,0 +1,1195 @@
+{
+  "engine": "AivisSpeech",
+  "engineVersion": "1.1.0-dev",
+  "language": "ja-JP",
+  "notice": "CUELO 개인용 비공식 합성 음성. 원 화자 또는 음성 모델 제작자의 공식 발화가 아닙니다.",
+  "characters": [
+    {
+      "id": "yuki",
+      "speaker": "まお",
+      "style": "からかい",
+      "styleId": 888753764,
+      "modelId": "a59cb814-0083-4369-8542-f51a29e72af7",
+      "modelVersion": "1.2.0",
+      "source": "https://hub.aivis-project.com/aivm-models/a59cb814-0083-4369-8542-f51a29e72af7",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [
+        "オズチャット -Oz Chat- <cs@tr1ppy.com> (https://0z.chat)",
+        "Trippy <cs@tr1ppy.com> (https://tr1ppy.com)",
+        "ねゆたろ (https://x.com/___neyu_zzz)"
+      ],
+      "speedScale": 1.04,
+      "tempoDynamicsScale": 1.05,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "yuki/01.wav",
+          "tag": "done",
+          "text": "終わったよ。確認してね。",
+          "ko": "끝났어. 확인해 봐.",
+          "bytes": 210338
+        },
+        {
+          "file": "yuki/02.wav",
+          "tag": "done",
+          "text": "できたよ。待たせたね。",
+          "ko": "다 됐어. 기다렸지.",
+          "bytes": 204034
+        },
+        {
+          "file": "yuki/03.wav",
+          "tag": "done",
+          "text": "はい、完了。次も任せて。",
+          "ko": "자, 완료. 다음도 맡겨.",
+          "bytes": 246376
+        },
+        {
+          "file": "yuki/04.wav",
+          "tag": "done",
+          "text": "お待たせ。仕上がったよ。",
+          "ko": "기다렸지. 마무리됐어.",
+          "bytes": 197226
+        },
+        {
+          "file": "yuki/05.wav",
+          "tag": "done",
+          "text": "終わったよ。ちゃんと見てね。",
+          "ko": "끝났어. 잘 봐줘.",
+          "bytes": 212584
+        },
+        {
+          "file": "yuki/06.wav",
+          "tag": "done",
+          "text": "できた。さあ、見てみて。",
+          "ko": "됐어. 자, 한번 봐.",
+          "bytes": 207036
+        },
+        {
+          "file": "yuki/approval/01.wav",
+          "tag": "approval",
+          "text": "ねえ、確認して。待ってるよ。",
+          "ko": "저기, 확인해 줘. 기다리고 있어.",
+          "bytes": 245350
+        },
+        {
+          "file": "yuki/approval/02.wav",
+          "tag": "approval",
+          "text": "ちょっと止まってる。見てくれる?",
+          "ko": "잠깐 멈췄어. 봐줄래?",
+          "bytes": 233066
+        },
+        {
+          "file": "yuki/approval/03.wav",
+          "tag": "approval",
+          "text": "承認待ちだよ。お願いね。",
+          "ko": "승인 대기야. 부탁해.",
+          "bytes": 235114
+        },
+        {
+          "file": "yuki/failed/01.wav",
+          "tag": "failed",
+          "text": "ごめん、失敗しちゃった。確認して。",
+          "ko": "미안, 실패했어. 확인해 줘.",
+          "bytes": 288362
+        },
+        {
+          "file": "yuki/failed/02.wav",
+          "tag": "failed",
+          "text": "うまくいかなかった。見てくれる?",
+          "ko": "잘 안 됐어. 봐줄래?",
+          "bytes": 248424
+        },
+        {
+          "file": "yuki/failed/03.wav",
+          "tag": "failed",
+          "text": "ダメだったみたい。ごめんね。",
+          "ko": "안 됐나 봐. 미안.",
+          "bytes": 216764
+        },
+        {
+          "file": "yuki/choice/01.wav",
+          "tag": "choice",
+          "text": "どっちがいい?決めて。",
+          "ko": "어느 쪽이 좋아? 정해 줘.",
+          "bytes": 176358
+        },
+        {
+          "file": "yuki/choice/02.wav",
+          "tag": "choice",
+          "text": "選択肢、出したよ。選んで。",
+          "ko": "선택지 냈어. 골라 줘.",
+          "bytes": 262760
+        },
+        {
+          "file": "yuki/choice/03.wav",
+          "tag": "choice",
+          "text": "君が決めて。待ってる。",
+          "ko": "네가 정해. 기다릴게.",
+          "bytes": 202344
+        },
+        {
+          "file": "yuki/working/01.wav",
+          "tag": "working",
+          "text": "よし、始めるよ。任せて。",
+          "ko": "좋아, 시작할게. 맡겨.",
+          "bytes": 259686
+        },
+        {
+          "file": "yuki/working/02.wav",
+          "tag": "working",
+          "text": "取りかかるね。ちょっと待ってて。",
+          "ko": "착수할게. 잠깐 기다려.",
+          "bytes": 232044
+        },
+        {
+          "file": "yuki/working/03.wav",
+          "tag": "working",
+          "text": "今やってるよ。見ててね。",
+          "ko": "지금 하고 있어. 지켜봐.",
+          "bytes": 223308
+        }
+      ],
+      "stickers": [
+        {
+          "file": "yuki/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "yuki/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "yuki/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "yuki/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "yuki/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "yuki/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "yuki/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "yuki/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "yuki/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "yuki/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "yuki/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "yuki/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "yuki/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    },
+    {
+      "id": "isana",
+      "speaker": "凛音エル",
+      "style": "Happy",
+      "styleId": 1388823427,
+      "modelId": "f5017410-fbb5-49e1-97cb-e785f42e15f5",
+      "modelVersion": "1.0.0",
+      "source": "https://hub.aivis-project.com/aivm-models/f5017410-fbb5-49e1-97cb-e785f42e15f5",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [
+        "kokuren",
+        "電脳天使工業"
+      ],
+      "speedScale": 1.05,
+      "tempoDynamicsScale": 1.08,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "isana/01.wav",
+          "tag": "done",
+          "text": "できたよ！見てみて。",
+          "ko": "다 됐어! 한번 봐.",
+          "bytes": 164588
+        },
+        {
+          "file": "isana/02.wav",
+          "tag": "done",
+          "text": "終わったよ！結果、見てね。",
+          "ko": "끝났어! 결과 봐줘.",
+          "bytes": 234154
+        },
+        {
+          "file": "isana/03.wav",
+          "tag": "done",
+          "text": "お待たせ！できあがり。",
+          "ko": "기다렸지! 완성이야.",
+          "bytes": 167070
+        },
+        {
+          "file": "isana/04.wav",
+          "tag": "done",
+          "text": "はい、できた！確認してね。",
+          "ko": "자, 다 됐어! 확인해 봐.",
+          "bytes": 230118
+        },
+        {
+          "file": "isana/05.wav",
+          "tag": "done",
+          "text": "作業、終わったよ！",
+          "ko": "작업 끝났어!",
+          "bytes": 144740
+        },
+        {
+          "file": "isana/06.wav",
+          "tag": "done",
+          "text": "できあがったよ。一緒に見よう！",
+          "ko": "다 완성됐어. 같이 보자!",
+          "bytes": 195500
+        },
+        {
+          "file": "isana/approval/01.wav",
+          "tag": "approval",
+          "text": "ねえねえ、確認お願い!止まってるよ。",
+          "ko": "있잖아, 확인 부탁해! 멈춰 있어.",
+          "bytes": 271498
+        },
+        {
+          "file": "isana/approval/02.wav",
+          "tag": "approval",
+          "text": "入力が要るみたい。見てみて!",
+          "ko": "입력이 필요한 것 같아. 한번 봐!",
+          "bytes": 204364
+        },
+        {
+          "file": "isana/approval/03.wav",
+          "tag": "approval",
+          "text": "ここで待ってるよ。承認してね!",
+          "ko": "여기서 기다릴게. 승인해 줘!",
+          "bytes": 214800
+        },
+        {
+          "file": "isana/failed/01.wav",
+          "tag": "failed",
+          "text": "ごめん、失敗しちゃった!見てみて。",
+          "ko": "미안, 실패했어! 한번 봐.",
+          "bytes": 250810
+        },
+        {
+          "file": "isana/failed/02.wav",
+          "tag": "failed",
+          "text": "うまくいかなかったよ。確認お願い!",
+          "ko": "잘 안 됐어. 확인 부탁해!",
+          "bytes": 229886
+        },
+        {
+          "file": "isana/failed/03.wav",
+          "tag": "failed",
+          "text": "エラーみたい。ごめんね!",
+          "ko": "오류인 것 같아. 미안!",
+          "bytes": 176594
+        },
+        {
+          "file": "isana/choice/01.wav",
+          "tag": "choice",
+          "text": "どっちにする?選んでみて!",
+          "ko": "어느 쪽으로 할래? 골라 봐!",
+          "bytes": 187294
+        },
+        {
+          "file": "isana/choice/02.wav",
+          "tag": "choice",
+          "text": "ふたつあるよ。どっちがいい?",
+          "ko": "두 개 있어. 어느 쪽이 좋아?",
+          "bytes": 192780
+        },
+        {
+          "file": "isana/choice/03.wav",
+          "tag": "choice",
+          "text": "決めてくれたら進むよ!",
+          "ko": "정해 주면 진행할게!",
+          "bytes": 138054
+        },
+        {
+          "file": "isana/working/01.wav",
+          "tag": "working",
+          "text": "よーし、始めるね！",
+          "ko": "좋아, 시작할게!",
+          "bytes": 144362
+        },
+        {
+          "file": "isana/working/02.wav",
+          "tag": "working",
+          "text": "今やってるよ！待っててね。",
+          "ko": "지금 하는 중이야! 기다려 줘.",
+          "bytes": 193944
+        },
+        {
+          "file": "isana/working/03.wav",
+          "tag": "working",
+          "text": "どれどれ、取りかかるね！",
+          "ko": "어디 보자, 착수할게!",
+          "bytes": 177218
+        }
+      ],
+      "stickers": [
+        {
+          "file": "isana/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "isana/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "isana/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "isana/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "isana/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "isana/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "isana/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "isana/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "isana/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "isana/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "isana/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "isana/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "isana/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    },
+    {
+      "id": "mio",
+      "speaker": "コハク",
+      "style": "ノーマル",
+      "styleId": 1878365376,
+      "modelId": "22e8ed77-94fe-4ef2-871f-a86f94e9a579",
+      "modelVersion": "1.1.0",
+      "source": "https://hub.aivis-project.com/aivm-models/22e8ed77-94fe-4ef2-871f-a86f94e9a579",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [
+        "オズチャット -Oz Chat- <cs@tr1ppy.com> (https://0z.chat)",
+        "Trippy <cs@tr1ppy.com> (https://tr1ppy.com) ",
+        "ねゆたろ (https://x.com/___neyu_zzz)"
+      ],
+      "speedScale": 0.98,
+      "tempoDynamicsScale": 0.95,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "mio/01.wav",
+          "tag": "done",
+          "text": "終わりました。ゆっくり見てね。",
+          "ko": "끝났어요. 천천히 봐주세요.",
+          "bytes": 268876
+        },
+        {
+          "file": "mio/02.wav",
+          "tag": "done",
+          "text": "お待たせしました。できましたよ。",
+          "ko": "기다리셨죠. 다 됐어요.",
+          "bytes": 287720
+        },
+        {
+          "file": "mio/03.wav",
+          "tag": "done",
+          "text": "できました。確認をお願いします。",
+          "ko": "다 됐어요. 확인 부탁드려요.",
+          "bytes": 300440
+        },
+        {
+          "file": "mio/04.wav",
+          "tag": "done",
+          "text": "作業が終わりました。お疲れさま。",
+          "ko": "작업이 끝났어요. 수고했어요.",
+          "bytes": 292930
+        },
+        {
+          "file": "mio/05.wav",
+          "tag": "done",
+          "text": "まとまりました。一緒に見ましょう。",
+          "ko": "정리됐어요. 함께 봐요.",
+          "bytes": 274472
+        },
+        {
+          "file": "mio/06.wav",
+          "tag": "done",
+          "text": "お待たせ。準備ができましたよ。",
+          "ko": "기다리셨죠. 준비됐어요.",
+          "bytes": 281644
+        },
+        {
+          "file": "mio/approval/01.wav",
+          "tag": "approval",
+          "text": "すみません、確認をお願いします。",
+          "ko": "죄송해요, 확인 부탁드려요.",
+          "bytes": 283804
+        },
+        {
+          "file": "mio/approval/02.wav",
+          "tag": "approval",
+          "text": "ここで止まっています。ご確認ください。",
+          "ko": "여기서 멈춰 있어요. 확인해 주세요.",
+          "bytes": 308480
+        },
+        {
+          "file": "mio/approval/03.wav",
+          "tag": "approval",
+          "text": "承認をお待ちしています。",
+          "ko": "승인을 기다리고 있어요.",
+          "bytes": 180650
+        },
+        {
+          "file": "mio/failed/01.wav",
+          "tag": "failed",
+          "text": "申し訳ありません。失敗しました。",
+          "ko": "죄송해요. 실패했어요.",
+          "bytes": 288564
+        },
+        {
+          "file": "mio/failed/02.wav",
+          "tag": "failed",
+          "text": "うまくいきませんでした。ご確認ください。",
+          "ko": "잘 되지 않았어요. 확인해 주세요.",
+          "bytes": 336578
+        },
+        {
+          "file": "mio/failed/03.wav",
+          "tag": "failed",
+          "text": "エラーのようです。すみません。",
+          "ko": "오류인 것 같아요. 죄송해요.",
+          "bytes": 245502
+        },
+        {
+          "file": "mio/choice/01.wav",
+          "tag": "choice",
+          "text": "どちらにしますか?選んでください。",
+          "ko": "어느 쪽으로 할까요? 골라 주세요.",
+          "bytes": 303592
+        },
+        {
+          "file": "mio/choice/02.wav",
+          "tag": "choice",
+          "text": "選択肢を用意しました。ご判断を。",
+          "ko": "선택지를 준비했어요. 판단해 주세요.",
+          "bytes": 310244
+        },
+        {
+          "file": "mio/choice/03.wav",
+          "tag": "choice",
+          "text": "決めていただけますか。待っています。",
+          "ko": "정해 주시겠어요? 기다리고 있어요.",
+          "bytes": 293298
+        },
+        {
+          "file": "mio/working/01.wav",
+          "tag": "working",
+          "text": "始めますね。少し待っていてください。",
+          "ko": "시작할게요. 조금만 기다려 주세요.",
+          "bytes": 312764
+        },
+        {
+          "file": "mio/working/02.wav",
+          "tag": "working",
+          "text": "今、進めていますよ。",
+          "ko": "지금 진행하고 있어요.",
+          "bytes": 209132
+        },
+        {
+          "file": "mio/working/03.wav",
+          "tag": "working",
+          "text": "ゆっくり進めますね。",
+          "ko": "차근차근 진행할게요.",
+          "bytes": 184654
+        }
+      ],
+      "stickers": [
+        {
+          "file": "mio/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "mio/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "mio/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "mio/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "mio/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "mio/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "mio/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "mio/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "mio/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "mio/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "mio/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "mio/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "mio/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    },
+    {
+      "id": "rin",
+      "speaker": "るな",
+      "style": "ノーマル",
+      "styleId": 345585728,
+      "modelId": "4f281e78-eba6-495a-8e50-5c322d02b5b1",
+      "modelVersion": "1.0.0",
+      "source": "https://hub.aivis-project.com/aivm-models/4f281e78-eba6-495a-8e50-5c322d02b5b1",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [],
+      "speedScale": 1,
+      "tempoDynamicsScale": 0.9,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "rin/01.wav",
+          "tag": "done",
+          "text": "完了。確認して。",
+          "ko": "완료. 확인해.",
+          "bytes": 205632
+        },
+        {
+          "file": "rin/02.wav",
+          "tag": "done",
+          "text": "終わった。結果を見て。",
+          "ko": "끝났어. 결과를 봐.",
+          "bytes": 231076
+        },
+        {
+          "file": "rin/03.wav",
+          "tag": "done",
+          "text": "できた。報告を読んで。",
+          "ko": "됐어. 보고를 읽어.",
+          "bytes": 232980
+        },
+        {
+          "file": "rin/04.wav",
+          "tag": "done",
+          "text": "作業は終了。以上。",
+          "ko": "작업 종료. 이상.",
+          "bytes": 197254
+        },
+        {
+          "file": "rin/05.wav",
+          "tag": "done",
+          "text": "まとめた。目を通して。",
+          "ko": "정리했어. 읽어봐.",
+          "bytes": 231224
+        },
+        {
+          "file": "rin/06.wav",
+          "tag": "done",
+          "text": "待たせたね。完了した。",
+          "ko": "기다렸지. 완료했어.",
+          "bytes": 232686
+        },
+        {
+          "file": "rin/approval/01.wav",
+          "tag": "approval",
+          "text": "確認を求む。止まっている。",
+          "ko": "확인 요청. 멈춰 있어.",
+          "bytes": 244260
+        },
+        {
+          "file": "rin/approval/02.wav",
+          "tag": "approval",
+          "text": "承認待ち。応答を。",
+          "ko": "승인 대기. 응답해.",
+          "bytes": 214186
+        },
+        {
+          "file": "rin/approval/03.wav",
+          "tag": "approval",
+          "text": "入力が必要だ。見てくれ。",
+          "ko": "입력이 필요해. 봐줘.",
+          "bytes": 272164
+        },
+        {
+          "file": "rin/failed/01.wav",
+          "tag": "failed",
+          "text": "失敗した。すまない。",
+          "ko": "실패했어. 미안.",
+          "bytes": 210190
+        },
+        {
+          "file": "rin/failed/02.wav",
+          "tag": "failed",
+          "text": "うまくいかなかった。確認してくれ。",
+          "ko": "잘 안 됐어. 확인해 줘.",
+          "bytes": 288590
+        },
+        {
+          "file": "rin/failed/03.wav",
+          "tag": "failed",
+          "text": "エラーだ。報告する。",
+          "ko": "오류야. 보고한다.",
+          "bytes": 189730
+        },
+        {
+          "file": "rin/choice/01.wav",
+          "tag": "choice",
+          "text": "どちらを選ぶ?判断を。",
+          "ko": "어느 쪽을 고를래? 판단을.",
+          "bytes": 195532
+        },
+        {
+          "file": "rin/choice/02.wav",
+          "tag": "choice",
+          "text": "選択肢は出した。決めて。",
+          "ko": "선택지는 냈어. 정해 줘.",
+          "bytes": 252774
+        },
+        {
+          "file": "rin/choice/03.wav",
+          "tag": "choice",
+          "text": "君の判断で決まる。",
+          "ko": "네 판단으로 정해져.",
+          "bytes": 164870
+        },
+        {
+          "file": "rin/working/01.wav",
+          "tag": "working",
+          "text": "開始する。",
+          "ko": "시작한다.",
+          "bytes": 111022
+        },
+        {
+          "file": "rin/working/02.wav",
+          "tag": "working",
+          "text": "作業中。待って。",
+          "ko": "작업 중. 기다려.",
+          "bytes": 190990
+        },
+        {
+          "file": "rin/working/03.wav",
+          "tag": "working",
+          "text": "順に進める。",
+          "ko": "차례로 진행한다.",
+          "bytes": 133492
+        }
+      ],
+      "stickers": [
+        {
+          "file": "rin/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "rin/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "rin/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "rin/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "rin/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "rin/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "rin/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "rin/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "rin/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "rin/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "rin/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "rin/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "rin/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    },
+    {
+      "id": "nova",
+      "speaker": "わかな(現実20代女子AIボイチェン@リアボVC公式モデル)",
+      "style": "嬉しい",
+      "styleId": 1138003202,
+      "modelId": "f83c385c-829b-40c4-8c11-639027e61636",
+      "modelVersion": "1.0.0",
+      "source": "https://hub.aivis-project.com/aivm-models/f83c385c-829b-40c4-8c11-639027e61636",
+      "license": "# Aivis Common Model License (ACML) 1.0; AivisHub credit request: 声は(x.com/dopoiro)のAI音声",
+      "creators": ["ぽいロード（リアボVC公式） (https://x.com/dopoiro)"],
+      "speedScale": 1.12,
+      "tempoDynamicsScale": 1.15,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "nova/01.wav",
+          "tag": "done",
+          "text": "ひらめいた！これで完成だ！",
+          "ko": "번뜩였어! 이걸로 완성이야!",
+          "bytes": 167344
+        },
+        {
+          "file": "nova/02.wav",
+          "tag": "done",
+          "text": "試作成功！次もいけるよ！",
+          "ko": "시제품 성공! 다음도 해보자!",
+          "bytes": 188848
+        },
+        {
+          "file": "nova/03.wav",
+          "tag": "done",
+          "text": "できた！この仕組み、いい感じ！",
+          "ko": "됐다! 이 구조, 느낌 좋아!",
+          "bytes": 201136
+        },
+        {
+          "file": "nova/04.wav",
+          "tag": "done",
+          "text": "完成！さっそく確かめよう！",
+          "ko": "완성! 바로 확인해 보자!",
+          "bytes": 174512
+        },
+        {
+          "file": "nova/05.wav",
+          "tag": "done",
+          "text": "よし、組み上がった！見てみて！",
+          "ko": "좋아, 조립 끝! 어서 봐!",
+          "bytes": 187824
+        },
+        {
+          "file": "nova/06.wav",
+          "tag": "done",
+          "text": "いけた！ひらめきが形になった！",
+          "ko": "됐다! 번뜩임이 형태가 됐어!",
+          "bytes": 219568
+        },
+        {
+          "file": "nova/working/01.wav",
+          "tag": "working",
+          "text": "ひらめき検証中！ちょっと待ってて！",
+          "ko": "번뜩인 아이디어 시험 중! 잠깐만!",
+          "bytes": 205232
+        },
+        {
+          "file": "nova/working/02.wav",
+          "tag": "working",
+          "text": "いま組み立ててるよ！もう少し！",
+          "ko": "지금 조립 중이야! 조금만!",
+          "bytes": 202160
+        },
+        {
+          "file": "nova/working/03.wav",
+          "tag": "working",
+          "text": "よし、試作スタート！動かしてみるね！",
+          "ko": "좋아, 시제품 시작! 움직여 볼게!",
+          "bytes": 217520
+        },
+        {
+          "file": "nova/approval/01.wav",
+          "tag": "approval",
+          "text": "ここで確認！どっちに進める？",
+          "ko": "여기서 확인! 어느 쪽으로 갈까?",
+          "bytes": 201136
+        },
+        {
+          "file": "nova/approval/02.wav",
+          "tag": "approval",
+          "text": "この案で進む？決めてくれる？",
+          "ko": "이 안으로 갈까? 정해 줄래?",
+          "bytes": 187824
+        },
+        {
+          "file": "nova/approval/03.wav",
+          "tag": "approval",
+          "text": "ひらめき待ち！選んでくれたら再開！",
+          "ko": "번뜩임 대기 중! 골라 주면 다시 시작할게!",
+          "bytes": 230832
+        },
+        {
+          "file": "nova/failed/01.wav",
+          "tag": "failed",
+          "text": "ごめん、失敗！原因見てもう一回！",
+          "ko": "미안, 실패! 원인 보고 다시 해볼게!",
+          "bytes": 225712
+        },
+        {
+          "file": "nova/failed/02.wav",
+          "tag": "failed",
+          "text": "おっと失敗！これもデータ、次いこう！",
+          "ko": "어라, 실패! 이것도 데이터야, 다음 가자!",
+          "bytes": 212400
+        },
+        {
+          "file": "nova/failed/03.wav",
+          "tag": "failed",
+          "text": "ごめんね、うまくいかなかった！すぐ直す！",
+          "ko": "미안, 잘 안 됐어! 바로 고칠게!",
+          "bytes": 232880
+        },
+        {
+          "file": "nova/choice/01.wav",
+          "tag": "choice",
+          "text": "ひらめき二択！どっちを試そう？",
+          "ko": "번뜩이는 두 안! 어느 걸 시험할까?",
+          "bytes": 208304
+        },
+        {
+          "file": "nova/choice/02.wav",
+          "tag": "choice",
+          "text": "案が二つ！選んだ方を組み立てるよ！",
+          "ko": "안이 둘이야! 고른 쪽으로 만들어볼게!",
+          "bytes": 224688
+        },
+        {
+          "file": "nova/choice/03.wav",
+          "tag": "choice",
+          "text": "どっちも面白そう！選んで進めよう！",
+          "ko": "둘 다 재밌어 보여! 골라서 진행하자!",
+          "bytes": 228784
+        }
+      ],
+      "stickers": [
+        {
+          "file": "nova/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "nova/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "nova/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "nova/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "nova/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "nova/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "nova/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "nova/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "nova/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "nova/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "nova/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "nova/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "nova/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    },
+    {
+      "id": "shion",
+      "speaker": "まい",
+      "style": "ノーマル",
+      "styleId": 1431611904,
+      "modelId": "e9339137-2ae3-4d41-9394-fb757a7e61e6",
+      "modelVersion": "1.0.0",
+      "source": "https://hub.aivis-project.com/aivm-models/e9339137-2ae3-4d41-9394-fb757a7e61e6",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [],
+      "speedScale": 0.98,
+      "tempoDynamicsScale": 0.95,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "shion/01.wav",
+          "tag": "done",
+          "text": "お待たせ。まとまりましたよ。",
+          "ko": "기다리셨죠. 정리됐어요.",
+          "bytes": 266876
+        },
+        {
+          "file": "shion/02.wav",
+          "tag": "done",
+          "text": "終わりました。ご覧ください。",
+          "ko": "끝났어요. 확인해 주세요.",
+          "bytes": 260732
+        },
+        {
+          "file": "shion/03.wav",
+          "tag": "done",
+          "text": "できましたよ。さて、見てみましょう。",
+          "ko": "다 됐어요. 자, 함께 볼까요.",
+          "bytes": 335484
+        },
+        {
+          "file": "shion/04.wav",
+          "tag": "done",
+          "text": "準備は整いました。どうぞ。",
+          "ko": "준비가 됐어요. 보시죠.",
+          "bytes": 261534
+        },
+        {
+          "file": "shion/05.wav",
+          "tag": "done",
+          "text": "お待たせしました。確認してね。",
+          "ko": "기다리셨죠. 확인해 주세요.",
+          "bytes": 295546
+        },
+        {
+          "file": "shion/06.wav",
+          "tag": "done",
+          "text": "まとまりました。続きはご一緒に。",
+          "ko": "정리됐어요. 다음은 함께해요.",
+          "bytes": 313978
+        },
+        {
+          "file": "shion/approval/01.wav",
+          "tag": "approval",
+          "text": "お待ちしています。ご確認を。",
+          "ko": "기다리고 있어요. 확인해 주세요.",
+          "bytes": 253562
+        },
+        {
+          "file": "shion/approval/02.wav",
+          "tag": "approval",
+          "text": "ここで止めておきました。ご覧ください。",
+          "ko": "여기서 멈춰 두었어요. 봐 주세요.",
+          "bytes": 332412
+        },
+        {
+          "file": "shion/approval/03.wav",
+          "tag": "approval",
+          "text": "承認をいただけますか。",
+          "ko": "승인해 주시겠어요.",
+          "bytes": 196218
+        },
+        {
+          "file": "shion/failed/01.wav",
+          "tag": "failed",
+          "text": "申し訳ありません。失敗いたしました。",
+          "ko": "죄송해요. 실패했어요.",
+          "bytes": 322170
+        },
+        {
+          "file": "shion/failed/02.wav",
+          "tag": "failed",
+          "text": "うまく参りませんでした。ご確認を。",
+          "ko": "잘 되지 않았어요. 확인해 주세요.",
+          "bytes": 317052
+        },
+        {
+          "file": "shion/failed/03.wav",
+          "tag": "failed",
+          "text": "エラーのようです。失礼しました。",
+          "ko": "오류인 것 같아요. 실례했어요.",
+          "bytes": 282234
+        },
+        {
+          "file": "shion/choice/01.wav",
+          "tag": "choice",
+          "text": "どちらがお好みかしら。",
+          "ko": "어느 쪽이 취향이실까요.",
+          "bytes": 204410
+        },
+        {
+          "file": "shion/choice/02.wav",
+          "tag": "choice",
+          "text": "選択肢を並べたわ。決めて。",
+          "ko": "선택지를 늘어놨어요. 정해 줘요.",
+          "bytes": 288378
+        },
+        {
+          "file": "shion/choice/03.wav",
+          "tag": "choice",
+          "text": "あなたの判断を待つわ。",
+          "ko": "당신의 판단을 기다릴게요.",
+          "bytes": 203386
+        },
+        {
+          "file": "shion/working/01.wav",
+          "tag": "working",
+          "text": "では、始めますね。",
+          "ko": "그럼, 시작할게요.",
+          "bytes": 221820
+        },
+        {
+          "file": "shion/working/02.wav",
+          "tag": "working",
+          "text": "ただいま進めています。お待ちくださいね。",
+          "ko": "지금 진행하고 있어요. 기다려 주세요.",
+          "bytes": 332410
+        },
+        {
+          "file": "shion/working/03.wav",
+          "tag": "working",
+          "text": "順に整えていきますね。",
+          "ko": "차례로 정리해 갈게요.",
+          "bytes": 206210
+        }
+      ],
+      "stickers": [
+        {
+          "file": "shion/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "shion/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "shion/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "shion/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "shion/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "shion/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "shion/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "shion/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "shion/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "shion/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "shion/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "shion/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "shion/working/01.webp",
+          "tag": "working"
+        }
+      ]
+    }
+  ]
+}

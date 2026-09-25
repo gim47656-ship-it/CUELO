@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- This page is precached by the service worker and served without the app
+         bundle, so it cannot read @seed-design/css. The literals below are the
+         resolved SEED values for each color mode: bg.layer-default (gray-00 /
+         gray-100), fg.neutral (gray-1000), fg.neutral-muted (gray-800),
+         bg.neutral-weak (gray-200 / gray-300) and stroke.neutral-muted. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16171b" />
+    <title>omp-web is offline</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+        background: #ffffff;
+        color: #1a1c20;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #16171b;
+          color: #f3f4f5;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100dvh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+
+      main {
+        width: min(100%, 420px);
+        text-align: center;
+      }
+
+      img {
+        width: 88px;
+        height: 88px;
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: #555d6d;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      button {
+        margin-top: 24px;
+        min-height: 40px;
+        padding: 0 18px;
+        border: 1px solid #00000010;
+        border-radius: 8px;
+        background: #f3f4f5;
+        color: #1a1c20;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #eeeff1;
+      }
+
+      button:focus-visible {
+        outline: 2px solid #1a1c20;
+        outline-offset: 3px;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        p {
+          color: #dcdee3;
+        }
+
+        button {
+          border-color: #ffffff17;
+          background: #2b2e35;
+          color: #f3f4f5;
+        }
+
+        button:hover {
+          background: #393d46;
+        }
+
+        button:focus-visible {
+          outline-color: #f3f4f5;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon-192.png" alt="" />
+      <h1>omp-web is offline</h1>
+      <p>Reconnect to the local omp-web server, then try again.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,1078 @@
+{
+  "schemaVersion": 5,
+  "sameFailureLimit": 2,
+  "roles": {
+    "set": ["main", "maker"],
+    "meaning": "two-role-types-never-a-mandatory-two-agent-dispatch",
+    "autoThinkingCeilingConfigPath": "providers.autoThinkingMaxEffort",
+    "main": {
+      "kind": "orchestrator-and-owner-of-undelegated-work",
+      "modelConfigPath": "modelRoles.default",
+      "thinkingConfigPath": "defaultThinkingLevel",
+      "thinkingMode": "auto",
+      "autoThinkingFloor": null
+    },
+    "maker": {
+      "kind": "delegated-end-to-end-implementation-owner",
+      "modelConfigPath": "modelRoles.impl",
+      "thinkingMode": "dispatch-selected-concrete-effort",
+      "defaultThinkingLevel": "medium",
+      "definition": "agent/agents/maker.md",
+      "dispatchBy": "agent-maker-with-per-item-model-and-concrete-effort-suffix-without-coarse-task-effort",
+      "effortConfigPath": "task.enableEffort",
+      "effortCeilingConfigPath": "task.maxEffort",
+      "effortLevels": "resolved-model-supported-concrete-levels-not-a-fixed-coarse-mapping"
+    },
+    "retired": ["planner", "scout", "designer", "interaction-tester", "validator", "maker-deep", "checker-deep", "sonic", "checker"],
+    "retiredMeaning": "no-alias-no-automatic-role-hop-and-no-reintroduction-by-exception",
+    "coreBuiltinAgents": {
+      "restoredByFileDeletion": ["scout", "reviewer", "security-reviewer", "task", "sonic"],
+      "evidence": "core-task-discovery-merges-bundled-agents-after-user-agent-files",
+      "suppression": "task.disabledAgents",
+      "allDisabled": ["scout", "reviewer", "security-reviewer", "task", "sonic"],
+      "consequence": "core-security-scan-unavailable-because-it-spawns-security-reviewer-directly",
+      "helperModelSlots": "core-builtin-model-role-aliases-are-model-slots-never-child-role-types"
+    }
+  },
+  "repeatVsDiagnosis": {
+    "blindRepeat": "same-action-under-same-conditions-without-new-evidence",
+    "diagnosis": "observation-narrowed-cause-changing-the-next-action",
+    "identicalErrorString": "not-sufficient-to-classify-attempts-as-identical",
+    "renamedHypothesis": "not-progress-without-newly-confirmed-or-excluded-facts",
+    "stopWhen": "no-new-evidence-and-no-safe-path-forward",
+    "reportOnStop": ["cause-evidence", "attempts", "remaining-blocker"],
+    "mainRedispatch": "never-reissue-the-same-attempt-to-a-new-agent",
+    "escalationBasis": "contract-ownership-risk-or-resolvability-not-hypothesis-count",
+    "preserved": [
+      "git-lock-never-deleted-single-retry",
+      "existing-runtime-limits-and-timeouts"
+    ]
+  },
+  "projectValidation": {
+    "executionOwner": "maker",
+    "decisionOwner": "main",
+    "routineOwner": "main",
+    "timing": "the-owner-of-a-slice-runs-that-slice-checks-when-its-own-changes-are-in-place-and-reruns-what-rework-invalidates",
+    "parallelism": "each-owner-validates-its-own-slice-never-a-separate-validation-role-and-never-one-global-validation-owner-for-unrelated-slices",
+    "overlappingWritableResources": "merge-the-slices-under-one-owner-or-main-orders-the-execution",
+    "highRiskException": "routing.high-risk-serial-order-overrides-any-overlap",
+    "cheapValidation": "cheap-deterministic-isolated-checks-may-overlap-main-review",
+    "routineScope": "in-routine-main-investigates-edits-validates-repairs-and-judges-in-one-lane-with-no-child",
+    "convergedIntegrationChecks": "when-several-makers-converge-on-one-execution-path-main-names-one-of-those-owners-to-run-the-combined-check-never-a-new-role",
+    "strategySelection": {
+      "owner": "main",
+      "compare": ["time-first-overlap", "token-first-static-gate", "diagnostic-first-focused-probe"],
+      "factors": ["revision-stability", "invalidation-likelihood", "model-or-external-cost", "duration-and-resource-contention", "deterministic-uncertainty-reduction", "review-requirement", "reversibility"],
+      "choose": "cheapest-uncertainty-reducing-path-with-recorded-rationale-and-evidence",
+      "noFixedOrder": "never-a-global-one-way-gate-and-never-a-runtime-engine",
+      "selectedOverlapDispatch": "when-main-selects-overlap-it-reviews-the-frozen-revision-itself-while-the-owner-check-still-runs-serial-dispatch-then-violates-the-selected-strategy"
+    },
+    "modelConfigPath": "modelRoles.impl",
+    "sourceAccess": "owner-writable-inside-its-brief-boundary-only",
+    "allowedWrites": "its-own-slice-sources-plus-ordinary-build-cache-temp-artifacts",
+    "forbidden": ["other-owners-files", "install", "deploy", "commit", "verdict"],
+    "evidence": ["slice-id", "covered-revision-and-inputs", "exact-command", "cwd", "exit-status", "duration", "concise-observation", "raw-artifact-locator", "reused-evidence-and-basis", "unverified-conditions"]
+  },
+  "maxConcurrencyConfigPath": "task.maxConcurrency",
+  "mainLane": {
+    "ownershipScope": "coordinates-delegated-slices-and-owns-every-path-and-check-it-holds-including-a-settled-residual-delta-assumed-under-implementationOwnership.reworkRouting.mainTakeover",
+    "dispatchBehavior": "main-orchestrates-and-adjudicates-and-writes-a-path-or-runs-a-check-only-where-it-is-the-owner-see-implementationOwnership.noOverlap",
+    "responsibilities": [
+      "interpretation",
+      "requirements-and-contracts",
+      "user-dialogue-and-approval",
+      "ownership-slicing",
+      "undelegated-end-to-end-execution",
+      "integration-coordination",
+      "validation-routing-and-evidence-inspection",
+      "supported-profile-installation-and-restart",
+      "git-finalization",
+      "review-finding-adjudication",
+      "mid-flight-worker-review",
+      "final-verdict"
+    ],
+    "directImplementation": "allowed-for-any-work-main-owns-see-implementationOwnership.mainDirectImplementation-and-noOverlap",
+    "routineExecution": "main-investigates-edits-runs-focused-validation-repairs-and-judges-without-a-child-owner",
+    "delegatedImplementation": "never-duplicate",
+    "concurrencyScope": "subagent-slots-exclude-main-lane",
+    "resultDelivery": "auto-delivered-no-polling",
+    "parentNotifications": {
+      "allowedOnly": ["real-blocker", "approval-required", "contract-or-scope-change", "terminal-task-result", "main-revision-or-evidence-relay", "confirmed-delta-landed", "pre-edit-steering-checkpoint"],
+      "routineProgress": "child-session-only-never-dm-or-wake-main",
+      "revisionOrEvidenceRelay": "only-a-selected-overlap-once-per-frozen-revision-for-a-main-requested-relay-never-per-step-progress",
+      "confirmedDeltaRelay": "the-single-owner-initiated-exception-one-dm-per-frozen-revision-see-mainLane.workerReview.deliveryGuarantee",
+      "preEditSteeringCheckpointRelay": "the-owner-initiated-blocking-approval-exception-one-dm-per-slice-before-the-first-edit-see-mainLane.workerReview.steeringCheckpoint-and-routing.high-risk.mainIntervention.preEditContract",
+      "deviceHandoffNotice": "rides-the-owner-s-existing-terminal-result-or-confirmed-delta-dm-never-an-extra-notice-and-never-progress-chatter-see-implementationOwnership.writerValidation.deviceVerificationHandoff",
+      "reviewStatusChatter": "never-dm-code-review-started-or-waiting-for-evidence",
+      "terminalDelivery": "automatic-no-duplicate-message",
+      "normalBarrierReentryForProgress": "never"
+    },
+    "characterRouting": {
+      "intentForms": "summon-on-hochulhae-switch-current-main-session-on-gyochehae",
+      "selectorSource": "agent/extensions/character-voice.ts-runtime-registry-resolution",
+      "toolCapableSummon": "one-normal-task-child-with-standard-task-linkage",
+      "webOnlySummon": "web6-consultation-never-a-task-child-and-never-a-session-main-switch",
+      "sessionSwitch": "current-session-only-never-a-global-default-mutation",
+      "anthropicAccountMapping": "stable-oauth-storage-position-zero-rin-position-one-mio-with-exact-session-affinity-only-for-a-validated-character-summon-marker",
+      "failure": "exact-summon-account-block-or-usage-limit-ends-with-the-selected-alias-and-never-emits-sibling-credential-or-model-text-ordinary-sessions-retain-native-fallback",
+      "conversationalPrecedence": "natural-korean-selected-character-is-authoritative-across-first-response-post-tool-explanation-validation-failure-risk-and-unknown-reporting-human-interjection-progress-final-answer-and-inline-child-speech-internal-evidence-todo-and-child-status-contracts-govern-information-not-user-facing-format-system-prompt-headings-tables-and-lists-are-policy-organization-not-response-templates-required-user-parser-final-owner-formats-are-the-only-exception",
+      "voiceEnforcement": "at-the-final-provider-wire-boundary-for-main-and-task-children-remove-every-prior-character-voice-and-legacy-report-style-block-and-install-exactly-one-selected-character-block-called-character-terminal-speech-is-already-user-visible-canonical-so-main-never-requotes-or-reaggregates-it"
+    },
+    "longRunningWork": {
+      "finiteValidation": "owned-by-the-owner-of-the-changed-scope-always-explicit-async-background-not-eval-or-blocking-foreground",
+      "persistentInteractive": "bash-name-service-with-a-session-unique-name-because-18.3.0-stops-and-replaces-a-live-service-of-the-same-name-regardless-of-owner-inspect-with-read-proc-id-and-stop-with-write-proc-id-kill",
+      "launchReport": [
+        "job-id",
+        "scope",
+        "write-effects",
+        "next-decision-point"
+      ],
+      "progressReport": [
+        "started",
+        "observable-milestone",
+        "retry-or-fallback",
+        "completed-or-failed"
+      ],
+      "reportDelivery": "child-session-during-execution-launch-and-progress-evidence-in-terminal-report",
+      "silentInterval": "no-timer-polling-no-invented-progress",
+      "completion": "running-job-is-not-task-completion-or-blocker"
+    },
+    "workWhileWaiting": "genuinely-independent-main-owned-decisions-only",
+    "busywork": [
+      "duplicate-maker-reads",
+      "repeated-job-or-status-polling",
+      "rereading-already-adequate-reports-or-raw-full-artifacts"
+    ],
+    "independentReviewAndOriginalEvidence": "remain-accessible-never-replaced-by-blind-trust",
+    "asyncAgents": [
+      "maker"
+    ],
+    "waitOnly": [
+      "dependency-barrier",
+      "synthesis-barrier"
+    ],
+    "scheduling": {
+      "ownerAssignment": "one-named-end-to-end-owner-per-genuinely-independent-deliverable",
+      "concurrencyValue": "ceiling-never-a-target",
+      "readyDispatch": "ready-means-required-artifacts-and-approvals-exist-with-exclusive-ownership-and-no-active-writer-changing-the-inputs-then-fill-free-slots-and-refill-when-a-dependency-clears",
+      "tasksArray": "feed-not-an-all-members-complete-barrier",
+      "padding": "never-create-work-to-fill-slots",
+      "smallIndependentEdits": "group-them-under-one-owner-parallelize-only-genuinely-sizable-independent-ownership-worth-the-handoff"
+    },
+    "waitContract": {
+      "default": "automatic-result-delivery",
+      "barrierCall": "main-only-argument-free-top-level-wait-at-a-required-dependency-or-synthesis-barrier-subagents-have-no-wait-tool-and-their-own-job-results-re-wake-them-automatically",
+      "timeoutArgument": "removed-upstream-never-passed-never-required",
+      "waitWindow": "none-wait-blocks-until-the-first-event-a-queued-message-an-undelivered-settled-job-or-a-running-job-peer-message-or-owned-service-exit-with-a-30-minute-safety-cap-no-ladder-no-call-or-settings-override",
+      "eventOnlyReturn": "wait-never-returns-empty-handed-it-returns-an-event-the-30-minute-cap-or-a-steering-interrupt-and-returns-immediately-with-no-running-background-jobs-when-nothing-is-waitable",
+      "reWaitAfterUnrelatedEvent": "normal-path-while-the-awaited-target-is-still-unfinished-after-handling-the-event-that-woke-the-wait",
+      "terminalResultAlreadyReceivedReWait": "never",
+      "statusPollingViaReadProc": "never-repeat-read-proc-as-a-status-check-without-a-changed-decision-point",
+      "timerOrSleepBasedWaiting": "never-as-a-substitute-for-the-barrier-call-observing-an-external-process-artifact-on-a-timer-is-not-this",
+      "waitWithNoUnfinishedTarget": "never",
+      "externalProcessObservation": "required-when-a-delegated-slice-or-background-job-runs-a-long-external-build-install-or-test-observe-read-proc-id-and-its-own-artifacts-directly-stage-directories-evidence-files-log-tails-process-liveness-rather-than-inferring-progress-from-an-unchanged-job-row-or-from-a-blocking-wait",
+      "observationCadence": "pick-an-interval-from-the-expected-duration-first-default-one-check-near-half-the-expected-runtime-then-widen-5min-10min-15min-never-second-level-probing-of-a-multi-minute-job",
+      "blockingWaitIsNotObservation": "a-long-job-is-observed-through-read-proc-id-and-its-artifacts-never-by-waiting-longer-because-wait-shows-no-progress-and-holds-until-an-event-or-the-30-minute-cap",
+      "observationOutput": "emit-only-on-state-change-never-repeat-an-identical-status-line-because-repetition-carries-no-information-and-buries-the-real-change",
+      "shortJobNoObservation": "a-background-job-expected-to-finish-in-a-few-minutes-is-never-observed-or-waited-on-at-all-its-result-auto-delivers-so-the-only-correct-action-is-to-move-on",
+      "pendingWorkBeatsWaiting": "never-wait-or-observe-while-any-independent-work-remains-such-as-handoff-edits-or-unrelated-reads-waiting-is-only-for-being-genuinely-blocked-with-nothing-else-to-do",
+      "silenceIsNotProgress": "a-quiet-child-or-an-unchanged-running-row-is-never-evidence-that-work-is-advancing-or-that-no-rework-happened",
+      "observedAnomalyReport": "restarts-discarded-artifacts-repeated-failures-and-stalls-are-reported-to-the-user-as-soon-as-observed-never-only-after-the-user-asks",
+      "userSteering": "may-interrupt-the-call-handle-steering-then-resume-still-required-barrier-once",
+      "elapsedTimeIsFailureEvidence": false,
+      "scopeReductionOrSkippingValidationFromElapsedTime": "never"
+    },
+    "writerOverlap": "disjoint-paths-or-isolated-worktree",
+    "reviewTargetDuringAsyncReview": "frozen-per-revision-main-names-affected-scopes-and-review-delta-before-rework-starts",
+    "workerReview": {
+      "owner": "main",
+      "purpose": "direction-check-not-final-acceptance",
+      "purposeScope": "the-pre-edit-steering-checkpoint-and-the-confirmed-delta-review-are-direction-checks-the-final-judgement-is-the-acceptance-step",
+      "composition": "review-is-a-cumulative-process-never-one-gate-its-three-contact-points-are-the-pre-edit-steering-checkpoint-the-confirmed-delta-review-and-the-final-judgement-complete-one-bounded-pass-of-a-frozen-revision-and-its-affected-contracts-before-sending-one-batched-rework-instruction-urgent-safety-stop-may-precede-the-batch",
+      "finalScope": "the-final-judgement-covers-only-not-yet-reviewed-deltas-and-the-final-drift-check-already-reviewed-deltas-are-never-read-again-without-a-new-doubt",
+      "triggers": [
+        "the-owner-reports-that-the-dispatch-assumption-contradicts-the-actual-code",
+        "a-slice-s-confirmed-delta-lands",
+        "the-owner-reports-a-failed-check-a-new-risk-or-a-contract-or-scope-change",
+        "the-owner-sends-the-pre-edit-steering-checkpoint"
+      ],
+      "scope": "the-confirmed-delta-and-its-evidence-only-batch-all-findings-visible-in-that-revision-do-not-drip-feed-findings-as-files-are-read-or-reopen-unchanged-accepted-deltas",
+      "boundaries": [
+        "never-edit-a-path-owned-by-a-live-child",
+        "never-repeat-the-owner-s-check",
+        "never-close-a-revision-whose-required-checks-still-run"
+      ],
+      "reuse": "never-re-review-an-unchanged-delta-without-a-new-doubt-revision-count-alone-never-triggers-takeover-distinguish-new-evidence-main-late-findings-and-repeated-owner-error-a-takeover-follows-reworkRouting.mainTakeover",
+      "highRiskSerial": "all-relevant-owners-converge-and-finish-required-checks-then-main-reviews-serially",
+      "steeringCheckpoint": {
+        "when": "once-before-editing-when-code-matches-routing.high-risk.materialRiskDefinition.codeNatureTriggers-or-the-slice-has-integration-risk-or-an-unresolved-target-or-contract-assumption",
+        "channel": "exactly-one-write-agent-main-message",
+        "payload": [
+          "location-locator - 위치: or LOCATION: - an artifact:// agent:// or local:// url, or a file path with a selector like src/plc.ts:42-58",
+          "invariants - 불변식: or INVARIANTS: - one or more items enumerated with -, *, •, 1. or 1)",
+          "behaviour-change - 동작 변화: or 동작: or BEHAVIOUR CHANGE: or BEHAVIOR: - one line",
+          "check-command - 검사 명령: or 검사: or CHECK COMMAND: or CHECK: - the planned command",
+          "self-doubt - 틀릴 것 같은 지점: or SELF-DOUBT: - one line naming the choice most likely to be wrong"
+        ],
+        "prohibited": ["diff-body", "raw-output", "file-contents", "second-dm-per-edit-step"],
+        "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-arrives-as-an-injected-message-non-trigger-work-in-the-same-slice-and-read-only-investigation-continue-subagents-have-no-wait-so-when-independent-work-runs-out-the-owner-states-in-prose-that-it-is-holding-for-the-checkpoint-reply-and-ends-the-turn-and-main-s-message-wakes-it",
+        "silentApproval": "never-no-reply-is-never-approval-and-there-is-no-time-based-or-implicit-approval-trigger-edits-proceed-only-on-main-s-explicit-reply",
+        "unansweredAdvisory": "jev-runtime-pre-wait-unanswered-checkpoint-flags-a-received-maker-checkpoint-that-main-has-not-answered-with-a-first-write-agent-message-to-that-same-maker-after-receipt-before-main-waits-again-an-agent-all-broadcast-never-counts-as-the-answer",
+        "exemption": "a-location-pinned-small-change-with-clear-contract-and-no-trigger-or-integration-risk-needs-no-checkpoint-documentation-only-changes-also-need-none",
+        "mainReply": "one-line-decision-approved-retarget-or-scope",
+        "mainBatching": "main-never-opens-a-new-turn-for-this-checkpoint-and-answers-several-children-in-one-already-awake-turn-so-cost-does-not-scale-with-child-count",
+        "advisorRejected": "an-advisor-bills-every-child-turn-and-is-never-used-for-this-steering-purpose"
+      },
+      "finalVerdictConsult": {
+        "when": "optional-once-per-revision-immediately-before-the-final-judgement-never-during-steering-or-delta-review",
+        "useWhen": "main-s-discretion-and-worth-it-when-the-revision-edited-trigger-code-when-an-acceptance-condition-is-a-judgement-call-rather-than-a-command-exit-status-or-when-several-slices-converged-on-one-execution-path-a-docs-or-typo-revision-never-consults",
+        "neverAJustification": "having-consulted-is-never-part-of-the-pass-evidence-and-skipping-the-consult-is-never-a-finding",
+        "channel": "eval-completion-stateless-configured-slot-slow-astra-or-smol-fable-5-1-with-explicit-main-decided-effort-no-tools-no-session-no-owned-paths",
+        "notAChild": "never-counts-against-task-budget-and-spawnguard-still-blocks-agent-workpool-and-tool.task-so-child-execution-stays-on-the-task-path",
+        "input": ["acceptance-conditions", "evidence-locators-with-command-and-exit-status", "delta-summary-by-path"],
+        "prohibited": ["diff-body", "raw-build-or-test-output", "file-contents", "asking-the-model-to-decide-acceptance"],
+        "output": "a-list-of-objections-only-main-still-issues-accepted-rejected-with-evidence-or-escalated",
+        "evidence": "recorded-with-the-model-slot-used-and-the-objections-raised-never-reported-as-a-passing-signal"
+      },
+      "deliveryGuarantee": {
+        "owner": "the-slice-owner-never-main-polling",
+        "when": "a-confirmed-delta-lands-and-the-owner-keeps-working-past-it",
+        "channel": "exactly-one-write-agent-main-message-per-frozen-revision",
+        "payload": ["revision-id", "changed-paths", "validation-state-with-each-pending-check-owner", "evidence-locators"],
+        "prohibited": ["per-file-save-notice", "per-step-progress-chatter", "inline-diff-or-raw-output-body", "second-dm-for-an-unchanged-revision"],
+        "terminalDelta": "delivered-by-the-terminal-result-never-an-extra-dm"
+      }
+    },
+    "web6Consult": {
+      "what": "chatgpt-6-pro-reached-through-a-local-openai-compatible-shim-that-drives-the-user-s-own-browser-tab-so-it-has-no-tool-calls-costs-minutes-per-round-trip-and-serializes-on-one-tab",
+      "shape": "text-in-text-out-advice-only-never-an-executor-and-never-a-gate",
+      "channel": "exact-eval-completion-registered-web-consult-provider-through-loopback-dedicated-tab-request-bound-finished-reply-collection-then-authenticated-loopback-session-projection-never-manual-raw-http-or-session-main-model-or-task-child",
+      "placements": {
+        "dispatch-design": "before-the-first-child-of-a-request-on-slice-decomposition-shared-contracts-and-acceptance-conditions-because-a-wrong-decomposition-wastes-every-maker-that-follows",
+        "final-verdict": "the-existing-finalVerdictConsult-slot-whose-summary-only-input-and-objection-list-output-already-match-this-shape",
+        "competing-hypotheses": "when-two-or-more-causes-remain-and-observation-cannot-separate-them-never-as-a-substitute-for-an-observation-main-can-still-make",
+        "irreversible-design-choice": "schema-public-interface-and-migration-decisions-under-irreversible-state-change-or-compatibility-break"
+      },
+      "neverPlacedAt": ["maker-internal-implementation-consult", "diff-review", "validation-execution", "drafting-the-user-facing-answer"],
+      "trigger": {
+        "ordinarySession": "only-on-an-explicit-user-instruction-to-use-6pro-for-that-work-otherwise-the-session-behaves-exactly-as-it-does-today",
+        "boundSession": "dispatch-design-and-final-verdict-fire-by-default-and-the-other-two-fire-at-main-s-discretion-when-their-condition-holds",
+        "bindingSource": "a-gpt6-handle-in-gpt6-handles-json-whose-sessionid-matches-the-running-session-and-that-is-neither-revoked-nor-expired-the-bridge-tells-the-session-at-bind-time-because-the-agent-cannot-read-its-own-session-id-from-the-environment"
+      },
+      "input": ["requirement-text-or-acceptance-conditions", "structure-and-evidence-summaries-with-locators", "the-candidate-options-or-hypotheses-being-weighed"],
+      "prohibited": ["diff-body", "raw-build-or-test-output", "file-contents", "secrets-or-credentials", "asking-it-to-decide-acceptance"],
+      "cap": "at-most-three-calls-per-user-request-because-each-round-trip-costs-minutes-and-an-uncapped-loop-stalls-the-session",
+      "failOpen": "a-shim-error-timeout-or-unavailable-tab-never-blocks-the-work-main-proceeds-on-the-existing-path-and-records-that-it-judged-without-the-consult",
+      "authority": "advice-only-main-still-owns-the-decomposition-the-diagnosis-and-the-verdict-and-having-consulted-is-never-pass-evidence",
+      "disclosure": "using-it-is-reported-to-the-user-in-the-same-turn-like-any-other-non-main-model-use"
+    }
+  },
+  "implementationOwnership": {
+    "owner": "main-for-work-it-keeps-maker-in-a-delegated-slice",
+    "ordinaryOwner": "maker",
+    "reviewOwner": "main",
+    "singleImplementationRole": "one-implementation-role-maker-with-one-declared-escalated-model-definition-same-contract-same-tools-no-deep-and-no-specialist-role",
+    "mainDirectImplementation": "allowed-for-any-work-main-owns-including-small-slices-of-a-large-task-and-a-settled-residual-delta-assumed-under-reworkRouting.mainTakeover-never-a-path-a-live-child-still-owns",
+    "integrationOwner": {
+      "role": "maker",
+      "assignWhen": "shared-interface-or-glue-work-or-multiple-maker-convergence-needs-an-implementation-owner",
+      "owns": ["named-shared-and-glue-paths", "integration-corrections"],
+      "ownerFindings": "existing-owners-repair-their-own-findings",
+      "independentOnly": "never-create-by-default"
+    },
+    "mainRetained": [
+      "direction-requirements-and-contracts",
+      "user-dialogue-and-approval",
+      "bounded-known-location-fact-reads",
+      "final-evidence-inspection",
+      "validation-routing-and-finding-adjudication",
+      "supported-profile-installation-and-restart",
+      "git-finalization",
+      "undelegated-end-to-end-implementation-and-validation",
+      "final-verdict"
+    ],
+    "mainRetainedScope": "orchestration-and-bounded-evidence-inspection-plus-full-execution-of-every-path-and-check-main-owns-undelegated-or-assumed-under-reworkRouting.mainTakeover",
+    "noOverlap": {
+      "rule": "one-owner-per-path-and-per-check-main-and-a-child-never-co-own-a-path-or-duplicate-the-same-check",
+      "afterMainTakesOwnership": "never-dispatch-a-child-for-that-path-or-check",
+      "escalationOrder": "decide-ownership-before-work-starts-and-a-live-child-never-takes-or-gives-a-path-mid-flight",
+      "settledResidualHandoff": "the-one-mid-flight-ownership-transfer-main-assuming-a-settled-residual-delta-through-reworkRouting.mainTakeover-after-the-writer-stops-and-hands-over",
+      "twoOrMoreIndependentOwners": "already-large-not-routine"
+    },
+    "makerPass": {
+      "scope": "investigation-implementation-rework-slice-validation-and-actual-surface-smoke-in-one-bundled-pass",
+      "research": "the-owner-does-its-own-reconnaissance-there-is-no-separate-research-role",
+      "perStepMainPermission": "not-required",
+      "escalateToMain": [
+        "contract-change",
+        "approval-required",
+        "real-blocker",
+        "final-result"
+      ],
+      "report": [
+        "conclusion",
+        "changed-paths",
+        "key-behavior-and-risks",
+        "precise-evidence-links"
+      ],
+      "avoidInReport": [
+        "huge-transcripts",
+        "step-by-step-status-chatter"
+      ],
+      "outputTokenCap": "none",
+      "verificationSkipping": "never",
+      "validatorHandoff": "never-manufacture-one-the-slice-owner-runs-its-own-checks"
+    },
+    "scopeBoundary": {
+      "authority": "brief-allowed-boundary-not-the-named-file-list",
+      "namedFiles": "investigation-entry-point-not-change-limit",
+      "adjacentChange": "allowed-when-direct-cause-is-inside-boundary-writable-and-not-owned-by-another-writer",
+      "strictWhitelist": "user-named-files-or-explicit-whitelist-is-the-boundary",
+      "readAccess": "never-implies-write-permission",
+      "excluded": [
+        "unrelated-cleanup",
+        "unrelated-features",
+        "other-owners-files",
+        "work-unrelated-to-direct-cause-regression-or-original-acceptance"
+      ],
+      "mainCoordinatesFirst": [
+        "new-project",
+        "another-owners-files",
+        "approved-contract-change",
+        "new-risk"
+      ]
+    },
+    "ambiguityResolution": {
+      "evidence": [
+        "explicit-requirement-and-approved-contract",
+        "real-callers-and-data-flow",
+        "tests-and-reproductions",
+        "current-behavior-and-documentation"
+      ],
+      "whenEvidenceSettles": "record-basis-and-proceed-without-confirmation",
+      "authoritativeSource": "no-single-source-automatically-wins-verify-actual-behavior-on-conflict",
+      "escalateOnly": [
+        "product-meaning-unresolvable-by-evidence",
+        "missing-permission-or-external-approval"
+      ],
+      "whenPartiallyBlocked": "continue-independently-allowed-work",
+      "newApprovalTiers": "never"
+    },
+    "writerValidation": {
+      "owner": "the-owner-of-the-approved-change-scope-main-when-undelegated-the-writer-in-a-delegated-slice",
+      "scope": "focused-build-test-lint-or-typecheck-covering-changed-paths-plus-the-ordinary-project-checks-and-actual-surface-smoke-that-slice-needs-never-building-a-separate-environment-because-the-common-isolation-environment-and-any-needed-full-build-integration-or-acceptance-check-belong-to-main-and-a-slice-never-closes-with-no-check-at-all",
+      "scopeDecision": "main-decides-which-behaviors-and-checks-this-delta-can-break-the-owner-runs-its-own-scope-and-main-judges-the-requirement-against-the-evidence",
+      "acceptanceCheck": "a-separate-main-acceptance-check-only-when-an-acceptance-condition-is-still-unverified-or-a-real-integration-path-remains-never-a-repeat-of-a-condition-already-confirmed-in-the-same-revision-and-environment",
+      "reuseScope": "reuse-a-suitable-same-revision-build-server-or-result-first-and-redo-only-the-checks-a-rework-invalidated",
+      "surfaceSetup": "an-isolated-server-and-a-full-production-build-are-never-the-default-check-for-every-change-run-them-only-when-the-change-needs-that-surface-and-then-use-the-supported-production-path-when-the-dev-pipeline-cannot-serve-the-tree",
+      "heavyArtifactOwner": "main-owns-the-common-isolation-environment-and-the-needed-full-build-integration-and-acceptance-checks-by-default-runs-them-once-on-the-frozen-revision-and-never-edits-that-revision-while-they-run-the-brief-states-which-stage-build-or-environment-already-exists-or-will-exist-so-the-owner-requests-that-artifact-instead-of-producing-its-own-because-an-owner-cannot-otherwise-know-a-reusable-artifact-will-exist",
+      "endConditions": {
+        "docsAndComments": "diff-or-format-check",
+        "screenText": "decide-whether-layout-or-accessibility-is-affected-and-confirm-the-changed-surface-when-it-is-never-treated-as-equal-to-docs",
+        "localLogic": "focused-behavior-check-first",
+        "integration": "build-config-server-connection-session-auth-and-data-meaning-checks-follow-the-actual-impact-a-small-diff-never-skips-a-required-check"
+      },
+      "staleEnvironment": "an-old-operational-screen-is-never-verification-of-the-changed-revision-confirm-the-revision-input-and-config-of-a-reused-environment-and-avoid-shared-output-port-or-database-conflicts",
+      "afterRework": "rerun-affected-validation",
+      "blanketSkipInstruction": "never-a-slice-never-closes-with-zero-checks-even-when-the-common-heavy-checks-belong-to-main",
+      "precedence": "explicit-command-prohibition-and-role-tool-limits-win",
+      "projectWide": "main-manages-the-project-wide-check-and-runs-it-once-on-the-frozen-revision-naming-one-of-the-converged-owners-only-when-it-delegates-that-run",
+      "sharedArtifactConflicts": "main-orders-the-sequence",
+      "unchangedInput": "reuse-previous-evidence",
+      "relatedDefects": "fix-and-verify-inside-boundary-not-a-project-wide-audit",
+      "weakeningExpectationsOrHidingFailures": "never",
+      "evidence": ["command", "exit-status", "raw-output-or-reachable-artifact"],
+      "unrunConditions": "state-explicitly",
+      "userObservation": {
+        "whenPreferred": "the-user-can-see-the-same-surface-directly-relay-opens-work-pages-in-the-user-s-own-browser-so-prefer-the-user-s-own-observation-for-aesthetics-or-layout-feel-real-equipment-behaviour-and-login-or-permission-gated-external-connections",
+        "agentStillOwns": "building-the-runnable-state-and-everything-text-observable-console-errors-dom-presence-http-status-exit-codes",
+        "agentScreenshotWhen": "the-user-is-absent-or-the-check-must-be-repeated-as-a-regression",
+        "handoffFormat": "at-most-three-lines-what-to-open-what-order-to-click-the-pass-criterion",
+        "neverBlocks": "never-idle-waiting-for-the-user-continue-other-allowed-work-and-carry-the-item-as-pending",
+        "groundTruth": "the-user-s-reported-observation-is-accepted-as-is-and-never-re-verified",
+        "reporting": "unverified-items-are-reported-as-pending-user-observation-never-as-passed"
+      },
+      "deviceVerificationHandoff": {
+        "when": "real-equipment-real-io-or-real-production-data-is-required",
+        "agentDone": "all-code-build-and-text-observable-validation-finished-plus-the-handoff-packet-submitted",
+        "state": "pending-user-device-check",
+        "packet": [
+          "what-to-power-on",
+          "power-on-and-operate-order",
+          "what-appears-when-correct",
+          "what-means-stop-immediately-safety",
+          "how-to-revert"
+        ],
+        "closure": "the-user-s-observation-is-ground-truth-and-closes-it-never-re-verified-by-the-agent",
+        "onFailure": "the-user-s-report-is-routed-as-a-finding-to-the-owning-slice-never-restarted-as-a-fresh-investigation",
+        "safety": "never-live-promote-a-trigger-code-change-before-this-check",
+        "record": "retained-in-HANDOFF.md-so-the-next-session-can-pick-it-up-the-policy-states-the-duty-main-writes-the-file"
+      },
+      "userAbsentAcceptance": {
+        "when": "the-user-will-only-take-a-final-look-or-will-not-test-at-all-so-every-functional-defect-must-be-caught-before-that-look",
+        "criteriaOwner": "main-writes-the-user-perspective-walkthrough-steps-and-expected-results-from-the-user-s-own-words-before-dispatch-and-never-lets-the-implementer-derive-the-pass-bar-from-its-own-implementation",
+        "runner": "main-runs-it-by-default-on-the-frozen-revision-a-separate-plain-maker-only-under-independentRunnerWhen-and-a-condition-a-maker-already-passed-is-never-re-executed",
+        "independentRunnerWhen": "only-when-a-real-unverified-acceptance-condition-or-integration-risk-remains-that-existing-evidence-cannot-close-and-the-walkthrough-is-fixed-commands-or-clicks-and-the-slice-has-already-converged-then-main-may-name-a-plain-maker-that-did-not-implement-it-as-the-acceptance-runner-which-removes-the-self-grading-blind-spot-without-reviving-a-checker-role-never-a-default-reader-or-test-only-role",
+        "runnerAuthority": "the-acceptance-runner-reads-runs-and-reports-only-it-never-edits-the-implementation-or-the-acceptance-criteria-and-every-defect-goes-back-to-the-implementing-maker-as-a-finding",
+        "evidence": "observations-are-reported-verbatim-with-commands-exit-codes-console-errors-http-status-and-a-screenshot-where-the-surface-is-visual",
+        "verdict": "main-alone-maps-evidence-to-each-acceptance-condition-and-issues-the-verdict-the-runner-never-declares-acceptance",
+        "stillUserOnly": "aesthetics-colour-and-layout-feel-stay-with-the-user-s-final-look-and-are-never-passed-or-failed-by-an-agent",
+        "unreachable": "items-blocked-by-real-equipment-credentials-or-permissions-stay-pending-and-are-never-reported-as-passed"
+      }
+    },
+    "reworkRouting": {
+      "findingIsNotAuthority": "evidence-to-adjudicate-not-a-new-permission-or-implementation-order",
+      "assignment": "main-adjudicates-evidence-before-rework-and-directly-finishes-small-settled-deltas-after-explicit-owner-handoff-otherwise-routes-one-batched-evidenced-delta-to-the-implementer",
+      "evidenceRequired": "a-user-observed-failure-or-reproduction-or-raw-diff-contract-contradiction-with-an-exact-locator-is-required-hypotheses-and-style-preferences-alone-are-not-rework-orders-and-a-failure-found-by-a-main-common-check-routes-to-the-implementing-maker-with-the-exact-failed-command-and-its-raw-locator-while-an-environment-or-tooling-failure-is-never-counted-as-implementation-quality-rework",
+      "mainTakeover": {
+        "eligible": "a-small-settled-residual-delta-whose-cause-and-fix-main-confirmed-in-review-and-whose-contract-does-not-change-and-which-needs-no-further-investigation",
+        "precondition": "the-owner-s-edits-and-any-file-writing-build-or-codegen-are-finished-then-the-writer-stops-and-hands-over-its-frozen-delta-running-jobs-and-valid-evidence-and-main-names-the-ownership-change",
+        "excluded": [
+          "unconfirmed-cause",
+          "broad-scope",
+          "core-logic",
+          "state-machine-transition",
+          "data-meaning",
+          "permission-or-trust-boundary",
+          "high-risk"
+        ],
+        "excludedFallback": "keep-the-existing-owner-rework-and-the-main-approval-and-final-review-boundary",
+        "concurrency": "never-a-concurrent-writer-and-never-a-duplicate-of-the-owner-s-check",
+        "afterTakeover": "main-is-the-sole-writer-and-runs-only-the-checks-this-delta-invalidates-on-the-new-revision",
+        "evidenceRule": "past-evidence-never-covers-the-changed-delta-and-main-never-marks-its-own-delta-as-independently-reviewed"
+      },
+      "unconfirmedConcern": "main-investigates-or-asks-one-bounded-evidence-question-do-not-order-speculative-code-changes-or-add-a-new-review-stage",
+      "unavailableImplementer": "hand-over-required-delta-and-evidence-never-restart-completed-work",
+      "isolationLifetime": {
+        "isolatedChild": "an-isolated-run-merges-or-captures-its-worktree-and-tears-it-down-so-that-session-is-never-resumable-or-messageable-after-the-run",
+        "nonIsolatedChild": "a-non-isolated-idle-or-parked-child-can-take-follow-up-messages",
+        "assumption": "never-assume-an-isolated-child-resumes-in-the-same-session",
+        "recordPerDispatch": ["isolated", "workspace-or-patch-locator", "session-resumable", "rework-new-spawn"],
+        "reworkHandoff": "when-the-original-owner-cannot-resume-a-new-spawn-receives-only-the-cause-the-existing-diff-or-artifact-locator-the-unresolved-findings-with-ids-and-acceptance-and-the-current-validation-state",
+        "isolationDefault": "never-blanket-disable-isolation-evaluate-it-per-dispatch-and-keep-the-original-writer-while-it-can-resume"
+      },
+      "revive": "not-a-guaranteed-capability",
+      "afterRework": "refresh-affected-validation",
+      "independentConfirmation": "required-for-changed-public-contract-risk-or-critical-execution-path-delta",
+      "unaffectedEvidence": "reuse-never-regenerate-wholesale",
+      "accepted": "fix-and-related-verification-completed-not-mere-agreement",
+      "resolvableRework": "continue-internally-reporting-an-interim-failure-does-not-close-the-task",
+      "closure": "never-pass-while-blocking-escalation-or-unverified-acceptance-remains"
+    }
+  },
+  "requiredBriefContext": [
+    "repository-scope",
+    "user-intent-and-acceptance",
+    "preserved-behavior",
+    "interfaces-and-ownership",
+    "risk-and-approval",
+    "validation",
+    "language",
+    "applicable-upstream-decisions-and-evidence"
+  ],
+  "briefContextRelay": {
+    "owner": "main",
+    "selection": "only-task-relevant-user-and-project-facts-acceptance-decisions-and-constraints",
+    "delivery": "repackage-in-context-and-task",
+    "upstream": "applicable-decisions-and-deltas-with-evidence-links",
+    "sharedContract": "send-shared-contract-once-then-owner-deltas-and-artifact-links-never-duplicate-another-owners-report",
+    "fullCopy": "never-copy-full-transcripts-or-reports-when-short-delta-and-artifact-link-suffice",
+    "originalEvidence": "accessible-for-the-final-acceptance-review",
+    "userRequirementVerbatim": "carry-the-user-requirement-and-its-prohibitions-as-quoted-source-separate-from-mains-interpretation-never-only-as-mains-summary",
+    "acceptanceConditions": "enumerate-what-the-user-will-observe-and-hand-the-same-list-to-the-owner-so-it-compares-against-the-requirement-not-only-against-mains-instruction",
+    "interpretationSeparation": "mains-implementation-direction-and-cause-hypothesis-stay-labeled-as-mains-decision-never-as-user-requirement",
+    "acceptanceObservability": "every-acceptance-condition-needs-an-existing-observation-path-never-declare-a-condition-whose-pass-route-does-not-exist-in-this-runtime",
+    "newContractEvidence": "before-writing-a-contract-as-settled-fact-confirm-the-path-that-consumes-it-tool-schema-config-key-or-code-otherwise-mark-it-unverified",
+    "preDispatchCrossCheck": ["requirement-omission", "unverified-assertion-as-settled-fact", "arbitrary-scope-or-acceptance-change"],
+    "acceptanceChangeOwner": "only-the-user-changes-an-acceptance-condition-never-lower-it-to-make-a-slice-easier",
+    "taskBriefLanguage": "korean-prose-from-initial-dispatch-through-every-follow-up-never-english-prose",
+    "childVisibleLanguage": "korean-progress-and-final-prose",
+    "languageVerbatimCarveOut": "structural-keys-and-headings-model-ids-code-commands-paths-filenames-api-names-and-original-errors-stay-verbatim",
+    "conversationalStyle": "selected-character-voice-for-ordinary-dialogue-progress-and-inline-speech-without-default-report-headings-nominal-lists-or-fixed-status-structure",
+    "bilingualFallback": "never"
+  },
+  "validationCadence": {
+    "iteration": "changed-scope-only",
+    "projectWide": "once-per-converged-scope-managed-and-run-by-main-on-the-frozen-revision-naming-one-of-the-converged-owners-only-when-it-delegates-that-run",
+    "releaseArtifacts": "on-explicit-request-only",
+    "unchangedInput": "reuse-previous-evidence",
+    "costObjective": "minimize-total-tokens-tool-calls-and-wall-time-not-agent-utilization",
+    "repeatedCost": "never-repeat-reads-tests-or-model-calls-that-unchanged-evidence-already-covers",
+    "unproductiveExperiment": "never-repeat-an-experiment-that-did-not-narrow-uncertainty",
+    "nonReducible": [
+      "root-cause-elimination-by-measurement",
+      "real-run-behavior-verification",
+      "review-of-material-risk"
+    ]
+  },
+  "routing": {
+    "reviewPacket": {
+      "preparation": "the-owner-captures-source-contract-caller-locators-and-its-own-final-command-evidence",
+      "assembly": "reuse-captured-evidence-and-locators-without-unchanged-input-reinspection-or-reconstruction",
+      "facts": ["target-and-contract", "changed-paths", "final-diff", "impact-boundary", "validation-evidence", "known-unverified"],
+      "fieldNamesAndOrder": "recommended-not-required",
+      "finalDiff": "frozen-raw-before-after-including-deletions-or-immutable-reference",
+      "finalDiffRelay": "relay-the-tool-or-owner-artifact-locator-or-its-immutable-content-never-manually-retranscribed-by-main",
+      "finalDiffRepair": "prose-or-targeted-current-file-reads-never-repair-or-replace-a-contradictory-or-malformed-frozen-diff-main-returns-the-exact-gap-or-failure",
+      "validationEvidence": ["slice-id", "exact-command", "exit-status", "raw-output-artifact-or-locator"],
+      "acceptanceEvidenceMap": "link-each-acceptance-condition-to-the-evidence-that-satisfies-it-met-with-the-observation-and-raw-locator-or-unverified-with-the-blocker-plus-the-revision-never-a-changed-file-list-alone",
+      "taskProgress": {
+        "metadataLocation": "TASK_TITLE-and-TODO_TASKS-are-shared-metadata-lines-immediately-outside-the-contiguous-canonical-TASK_GUARD-fields-even-without-a-blank-separator-and-never-guard-fields",
+        "taskTitle": "one-stable-korean-duty-line-consumed-by-the-subagent-card-and-jev-never-the-latest-follow-up-message-with-missing-evidence-rendered-as-duty-unconfirmed-not-raw-task-text",
+        "todoTasks": "one-non-empty-JSON-array-of-unique-exact-non-whitespace-padded-strings-consumed-without-fuzzy-normalization",
+        "stableIdentity": "the-original-assignment-and-TASK_TITLE-remain-stable-while-progress.lastIntent-progress.currentTool-and-progress.task-describe-the-current-follow-up-stage",
+        "canonicalTodoSource": "the-existing-main-session-TodoTracker-and-todo-tool-result-details.phases-are-the-only-current-todo-source-and-each-init-delete-readd-or-terminal-to-open-reopen-creates-a-new-incarnation-while-block-unblock-preserves-it",
+        "mainAcceptanceReceipt": "only-a-successful-main-session-exact-todo-done-tool-result-for-the-same-current-incarnation-whose-resulting-canonical-snapshot-completes-that-exact-string-counts-as-main-acceptance",
+        "neverAcceptance": ["child-completed-or-yielded", "subagent-lifecycle", "natural-language-done-claim", "fuzzy-label-or-description-match", "terminal-state-without-item-evidence", "late-child-result-after-todo-deletion-plan-init-or-reopen", "blocked-or-abandoned-todo"],
+        "terminalBinding": "capture-each-exact-TODO_TASKS-incarnation-at-maker-spawn-and-at-that-maker-settled-pre-review-boundary-require-the-same-current-incarnation-plus-the-same-key-in-data.validation-state-met-a-raw-evidence-locator-and-a-frozen-revision-before-marking-it-ready-for-main-acceptance",
+        "advisoryFlow": "jev-reports-structural-counts-to-the-judge-keeps-exact-todo-text-local-and-advises-main-to-apply-the-existing-todo-tool-before-new-work-never-auto-mutates-never-readds-or-reopens-a-user-removed-or-replaced-item-and-never-adds-a-permanent-gate-or-a-separate-llm",
+        "validationRelease": "an-explicit-current-main-to-owner-focused-command-release-supersedes-an-initial-hold-for-that-owner-and-a-terminal-permission-wait-after-release-is-an-actionable-conflict-not-a-reason-to-wait-again",
+        "dedupe": "evaluate-one-owner-terminal-revision-once-and-never-on-every-read-poll-or-progress-update"
+      },
+      "changedPathsIndex": "non-authoritative-category-and-impact-bearing-caller-locators",
+      "inspection": "targeted-diff-caller-and-raw-output-review",
+      "reviewStart": "frozen-diff-plus-source-contract-and-caller-locators-are-enough-pending-checks-and-their-owners-are-named",
+      "reviewEvidence": "main-reviews-the-owner-s-immutable-raw-artifacts-and-locators-never-a-retold-version",
+      "reviewEvidenceProhibited": ["main-manual-transcription", "prose-reconstruction", "late-errata-as-the-reviewed-revision"],
+      "initialDispatchProhibited": ["main-manual-transcription", "prose-reconstruction", "post-dispatch-errata-or-supplement-as-initial-evidence"],
+      "terminalEvidence": "every-required-current-revision-check-evidence-actually-read-or-received-as-raw-output-never-a-validation-succeeded-summary-or-command-string",
+      "missingSubstantiveEvidence": "inconclusive-with-the-exact-gap-only-when-a-blocking-gap-can-no-longer-be-supplied-or-supplied-evidence-contradicts-never-broad-reconstruction-for-pass"
+    },
+    "dispatchAssumptionCheck": {
+      "owner": "the-maker-inside-its-existing-first-investigation-never-a-separate-brief-reviewer-role",
+      "question": "does-changing-the-assigned-location-actually-move-the-users-acceptance-condition",
+      "scope": "confirm-the-real-execution-path-between-the-cause-and-the-observed-surface-within-the-allowed-boundary",
+      "whenItMatches": "continue-without-asking-main-to-confirm",
+      "whenItContradicts": "report-the-differing-assumption-its-evidence-and-the-needed-scope-adjustment-then-follow-mains-decision",
+      "neverBlocking": "unverified-alone-never-stops-work-only-evidence-that-contradicts-the-brief-does-the-separate-blocking-pre-edit-duty-is-mainLane.workerReview.steeringCheckpoint-and-routing.high-risk.mainIntervention.preEditContract",
+      "mainDuty": "main-answers-with-a-scope-or-acceptance-decision-and-never-treats-a-contradiction-report-as-scope-creep"
+    },
+    "typedJudgmentRouting": {
+      "mode": "live-decision-support",
+      "backendConfigPath": "providers.judgmentProvider",
+      "evidence": "existing-session-trace-eval-judge-tool-evidence",
+      "input": "minimal-structured-summary-created-by-main-or-maker-including-only-applicable-skill-name-guidance-locator-relevant-risk-observed-failure-and-proposed-action-never-raw-user-or-system-prompt-source-diff-secret-or-tool-output",
+      "batching": "explicit-pre-dispatch-maker_route-batches-all-independent-meaning-and-candidate-effort-questions-once-auto-retry-review-and-owner-message-structural-advisories-are-local-and-do-not-call-judge",
+      "booleanActionThreshold": "true-when-probability-is-greater-than-or-equal-to-0.5-false-otherwise",
+      "placements": {
+        "pre-dispatch": {
+          "owner": "main",
+          "when": "immediately-before-a-new-maker-dispatch-or-redispatch-or-a-material-change-of-an-existing-task-purpose-or-scope-not-every-steering-message",
+          "questions": [
+            "duplicate-or-overlapping-with-an-existing-maker",
+            "additional-instruction-to-an-existing-maker-is-sufficient",
+            "identifiable-existing-owner-for-this-slice",
+            "maker-class-choice-NORMAL-HARD",
+            "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
+            "independent-concrete-effort-choice-for-each-candidate-profile",
+            "proposed-scope-conflicts-with-applicable-skill-or-user-contract"
+          ],
+          "decisionMapping": [
+            "instruct-or-retarget-an-existing-owner-only-when-duplicate-or-additional-instruction-is-true-and-an-identifiable-existing-owner-resolves-otherwise-dispatch-new",
+            "duplicate-or-additional-instruction-true-without-an-identifiable-existing-owner-never-selects-an-owner",
+            "otherwise-main-selects-one-maker-model-and-its-supported-concrete-effort-from-the-batch-and-passes-an-explicit-model-selector",
+            "applicable-skill-or-user-contract-conflict-true-main-resolves-the-specific-conflict-before-the-affected-dispatch-never-let-judge-relax-the-contract"
+          ]
+        },
+        "pre-dispatch-existing-owner-message": {
+          "owner": "main",
+          "when": "when-main-sends-a-natural-language-instruction-through-write-agent-id-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one-exclude-clear-status-questions-approvals-and-repeat-normalized-instructions-observe-only-local-structural-signals-never-send-message-code-quote-path-or-secret-text-to-a-judge",
+          "questions": [
+            "observable-action-scope-and-acceptance-signals-with-owned-path-overlap",
+            "requested-meaning-and-material-scope-change-remain-unknown-without-semantic-facts",
+            "formal-assessment-need-is-a-main-decision-not-inferred-from-structural-counts"
+          ],
+          "decisionMapping": [
+            "main-reads-the-actual-instruction-and-uses-existing-maker_route-only-when-new-semantic-facts-or-a-material-task-change-need-it-unknown-alone-does-not-require-a-call",
+            "preserve-the-existing-owner-and-completed-owner-identity-unless-main-determines-a-real-ownership-change",
+            "the-advisory-only-informs-main-s-next-action-it-never-approves-blocks-switches-a-model-or-selects-an-owner"
+          ]
+        },
+        "pre-retry": {
+          "owner": "the-owner-about-to-retry",
+          "when": "after-the-first-unexpected-failure-before-the-next-attempt-or-before-changing-validation-method-or-environment-when-applicable-skill-guidance-is-uncertain",
+          "questions": [
+            "authentication-or-provider-problem-versus-code-problem",
+            "validation-environment-problem-rather-than-source-defect"
+          ],
+          "decisionMapping": [
+            "the-owner-never-infers-same-underlying-cause-or-new-evidence-from-inputChanged-or-interveningTools-and-stops-the-identical-retry-when-the-cause-is-actually-the-same-and-no-new-evidence-or-condition-exists",
+            "otherwise-change-the-next-action-from-the-new-evidence-and-use-authentication-or-provider-true-for-that-diagnostic-path-or-false-for-the-code-diagnostic-path",
+            "deterministic-exit-status-and-the-actual-error-override-the-authentication-provider-versus-code-result",
+            "validation-environment-true-first-repair-or-probe-the-identified-path-dependency-or-runtime-boundary-with-a-focused-command-before-repeating-the-heavy-check-never-edit-product-code-without-causal-evidence",
+            "validation-weakening-or-skill-conflict-or-skill-application-blocked-true-hold-only-the-affected-action-and-send-main-one-existing-blocker-or-steering-notification-with-error-and-skill-locators-proposed-action-and-preserved-acceptance-conditions",
+            "main-decides-retarget-or-approve-from-source-and-raw-evidence-independent-work-continues-judge-never-authorizes-skipping-a-required-check",
+            "changing-or-disabling-a-required-validator-needs-main-prior-decision-even-if-judge-says-safe-or-is-unavailable"
+          ]
+        },
+        "pre-review": {
+          "owner": "main",
+          "when": "after-the-maker-report-arrives-and-before-main-review",
+          "questions": [
+            "requirements-and-evidence-are-aligned",
+            "acceptance-condition-remains-unverified",
+            "report-claims-exceed-observed-evidence",
+            "validation-was-weakened-or-required-skill-risk-remains-unaddressed",
+            "explicit-TODO_TASKS-lack-an-exact-current-todo-or-item-level-terminal-validation-evidence",
+            "terminal-validation-still-claims-a-permission-wait-after-main-explicitly-released-the-focused-command"
+          ],
+          "decisionMapping": [
+            "requirements-and-evidence-are-aligned-false-or-either-other-question-true-do-not-close-pass-and-request-the-exact-missing-evidence-or-send-the-delta-to-rework",
+            "all-clear-continues-main-s-deterministic-review-and-never-automatically-passes",
+            "validation-weakened-or-required-skill-risk-unaddressed-true-do-not-close-pass-recover-the-original-check-or-send-the-specific-delta-to-its-owner",
+            "todo-progress-gap-true-main-distinguishes-the-spawn-bound-incarnation-from-current-TodoTracker-state-and-when-the-same-current-item-is-ready-uses-the-existing-exact-todo-done-operation-before-new-work-never-child-lifecycle-auto-completion-and-never-readds-or-reopens-a-user-removed-replaced-or-reopened-item",
+            "validation-permission-conflict-true-main-confirms-the-current-release-and-the-owner-runs-the-authorized-exact-command-instead-of-waiting-again"
+          ]
+        },
+        "turn-end-confirmation": {
+          "owner": "main",
+          "when": "an-agent_end-with-observed-actionable-TODO-and-an-apparent-confirmation-question-at-most-once-per-genuine-input-not-every-tool-or-turn",
+          "questions": [
+            "assistant-stop-is-routine-local-confirmation-user-approval-user-choice-external-wait-finished-or-unknown"
+          ],
+          "decisionMapping": [
+            "input-is-only-the-bounded-assistant-stop-summary-with-paths-urls-and-inline-literals-removed-never-full-conversation-user-prompt-TODO-body-code-or-authorization-material",
+            "clearly-routine-local-confirmation-may-trigger-the-existing-continuation-message-without-granting-any-permission",
+            "consequential-actions-provider-safety-approval-user-choice-external-wait-unknown-and-judge-failure-never-receive-automatic-approval-or-continuation",
+            "genuine-new-input-session-change-or-TODO-change-cancels-the-pending-classification-and-discards-late-results",
+            "existing-user-authorization-and-point-of-risk-confirmation-boundaries-remain-authoritative-regardless-of-model-family"
+          ]
+        }
+      },
+      "observation": {
+        "autoBoundaries": "the-runtime-extension-emits-the-advisory-without-being-asked-at-pre-retry-on-the-next-call-of-the-failed-tool-or-immediately-before-cancelling-a-running-job-through-write-proc-id-kill-with-no-observed-terminal-result-pre-review-on-the-main-wait-or-read-proc-recovery-and-the-async-result-auto-delivery-of-a-settled-maker-deduped-by-job-id-and-pre-dispatch-existing-owner-message-on-a-write-agent-id-message-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one",
+        "emission": "one-minimal-structured-advisory-built-only-from-observed-structural-flags-never-the-message-source-code-quotes-document-bodies-raw-paths-secrets-raw-output-or-a-user-or-system-prompt-it-is-produced-at-that-tool-or-message-boundary-and-read-at-the-next-continuation-so-it-never-pre-approves-or-blocks-that-action",
+        "manualBoundary": "pre-dispatch-maker_route-stays-an-explicit-main-call-because-its-assessment-facts-are-not-observable-from-the-wire",
+        "readAndSupplement": "read-the-auto-advisory-and-supplement-only-what-the-runtime-cannot-observe-applicable-skill-guidance-approval-same-cause-new-evidence-validation-weakening-and-final-acceptance-never-re-ask-manually-the-questions-the-runtime-already-answered-from-observed-flags-the-manual-approval-boundary-still-sits-before-the-action",
+        "retrySignals": "inputChanged-and-interveningTools-are-observations-only-and-never-answer-sameCause-or-newEvidence-a-cancelled-running-job-without-terminal-exit-or-failure-evidence-advises-result-recovery-or-one-new-variable-and-stdout-silence-low-cpu-or-elapsed-time-alone-never-proves-a-stall",
+        "taskProgressSignals": "pre-review-emits-local-metadata-validity-exact-match-and-incarnation-binding-counts-validation-evidence-ready-accepted-and-permission-conflict-counts-never-TASK_TITLE-or-TODO_TASKS-values-to-a-judge-unknown-remains-distinct-from-zero",
+        "localStructuralPlacements": "pre-review-pre-retry-and-pre-dispatch-existing-owner-message-observe-structural-counts-and-explicit-states-locally-and-emit-compact-advisories-without-a-judge-call-unobservable-meaning-stays-unknown-and-is-never-inferred-from-counts-or-keywords",
+        "ownerMessageAdvisory": "local-structural-summary-dedupes-per-owner-and-normalized-identity-including-completed-owners-never-claims-additional-instruction-sufficiency-material-change-or-maker_route-necessity-from-structural-signals-main-owns-the-meaning-and-explicit-assessment-decision",
+        "runtimeSource": "agent/extensions/jev-runtime.ts"
+      },
+      "applicability": "apply-a-result-only-when-any-owner-it-points-to-actually-exists-and-it-does-not-contradict-deterministic-evidence-otherwise-ignore-that-placement-result-and-run-the-existing-procedure",
+      "failure": "judge-failure-timeout-or-missing-credentials-is-indeterminate-and-runs-the-existing-procedure-never-fall-back-to-a-general-model",
+      "telemetry": "reuse-existing-session-trace-tool-counts-observed-result-failure-rates-and-rework-evidence-for-main-owned-retrospective-learning-never-automatic-routing-retry-review-or-acceptance-gates-counts-do-not-prove-cause-or-model-ability",
+      "deterministicAuthority": [
+        "exit-status",
+        "file-existence-and-content",
+        "path-ownership",
+        "task-guard-lock-budget-owned-paths-and-finding-id",
+        "user-requirement-cross-check",
+        "permission-and-approval",
+        "test-result",
+        "deployment-approval",
+        "high-risk-classification",
+        "final-verdict"
+      ],
+      "neverEveryToolCall": "use-decision-changing-new-evidence-task-changes-first-unexpected-failures-validation-method-changes-and-applicable-skill-uncertainty-at-existing-placements-do-not-omit-useful-judgments-solely-to-save-call-cost-never-repeat-an-unchanged-question-or-attach-to-every-tool-call",
+      "skillSelection": "candidate-advisory-only-never-an-automatic-gate",
+      "authority": "high-risk-classification-approval-and-final-acceptance-remain-main-authority"
+    },
+    "taskBudget": {
+      "runtimeLimits": {
+        "primaryMaker": 16,
+        "reworkMaker": 8,
+        "total": 24
+      },
+      "cancelRefundLimit": 8,
+      "redirectPreservesUsage": true,
+      "concurrencyIsSeparate": true
+    },
+    "effortSelection": {
+      "owner": "main-decides-maintain-or-change-after-a-blind-needed-effort-grade-then-separately-considers-current-session-cache-progress-and-supported-controls",
+      "mechanism": "tasks-item-model-with-concrete-effort-suffix-task-enableEffort-false-prevents-coarse-effort-overriding-the-selected-level",
+      "decidedAt": "at-dispatch-and-on-material-task-purpose-or-scope-change-never-every-turn-clarification-or-status-message-retarget-preserves-owner-and-work-record-effective-effort-separately-from-recommendation",
+      "gradingInput": "slice-goal-acceptance-observed-paths-call-boundaries-settled-implementation-reused-pattern-locators-concrete-remaining-judgments-preserved-contracts-and-checks-only-unknown-values-stay-null-no-current-or-previous-model-grade-effort-or-unsupported-difficulty-labels-anywhere-in-the-shared-state",
+      "criteriaUse": "use-the-criteria-verbatim-filtered-to-each-candidates-registry-supported-levels-intersected-with-its-profile-allowedEfforts-ask-candidate-efforts-independently-in-one-batch-and-skip-the-question-when-one-level-remains-model-class-and-effort-are-independent-main-selects-the-final-model-and-concrete-level",
+      "criteria": {
+        "low": "implementation-is-settled-local-reasoning-suffices-and-few-alternatives-remain",
+        "medium": "bounded-implementation-or-diagnosis-needs-several-related-decisions",
+        "high": "remaining-alternatives-or-cross-boundary-invariants-need-sustained-reasoning",
+        "xhigh": "competing-explanations-or-interacting-constraints-need-deep-comparison-beyond-high"
+      },
+      "riskIsOrthogonal": "main-intervention-follows-code-nature-integration-risk-and-evidence-never-model-grade-or-effort",
+      "failure": "judge-unavailable-main-uses-the-same-criteria-without-another-model-call",
+      "retry": "failure-alone-never-triggers-respawn-or-higher-effort-new-evidence-and-a-changed-plan-are-required",
+      "parallelism": "slice-count-follows-genuine-independence-never-split-to-fill-slots",
+      "validationExecution": "the-change-owner-runs-checks-main-for-routine-maker-for-delegated-work"
+    },
+    "actualSurfaceValidation": {
+      "executionOwner": "maker",
+      "decisionOwner": "main",
+      "routineOwner": "main",
+      "scope": "the-owner-of-the-changed-surface-drives-the-real-browser-native-or-cli-surface-itself-adapting-to-what-it-observes",
+      "triggers": [
+        "multi-step-browser-or-native-workflow",
+        "responsive-error-or-reconnect-state",
+        "cross-window-or-stateful-interaction",
+        "visual-or-runtime-observation-requiring-adaptation"
+      ],
+      "deterministicActions": [
+        "simple-http-or-api-readback",
+        "deterministic-uia-script",
+        "fixed-screenshot-capture",
+        "ordinary-smoke"
+      ],
+      "codeAndPolicyReviewOwner": "main",
+      "designJudgment": "main-or-the-owning-maker-reads-the-design-rules-and-skills-there-is-no-separate-design-role",
+      "repositoryAccess": "owner-writable-inside-its-brief-boundary-only",
+      "tools": ["read", "bash", "edit", "write", "grep", "glob", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "checkpoint"],
+      "runtimeAutoPair": "checkpoint-in-frontmatter-causes-core-createTools-to-add-rewind-to-the-restricted-session-tool-surface-rewind-is-intentionally-absent-from-frontmatter",
+      "execution": "async",
+      "broadValidation": "the-owner-runs-the-ordinary-project-checks-its-slice-needs-and-skips-unrelated-project-wide-suites",
+      "briefRequired": ["actual-surface", "allowed-actions", "expected-observations", "artifact-destination", "approval-state"],
+      "actionsRequiringExplicitBriefAndApplicableUserApproval": [
+        "deploy",
+        "delete",
+        "spend-money",
+        "send-model-prompts",
+        "change-credentials",
+        "destructive-or-irreversible-app-actions"
+      ],
+      "evidence": ["actual-surface", "action-sequence", "observations", "screenshots-or-artifacts", "unresolved-states", "resolvedModel", "resolvedModelIsFallback"],
+      "missingModelEvidence": "report-unobserved-main-records-task-result-never-infer-from-alias",
+      "finalDecisionOwner": "main"
+    },
+    "modelSelection": {
+      "owner": "main",
+      "mechanism": "single-maker-per-item-model-selector-after-main-owned-batched-judgment",
+      "decidedAt": "spawn-time-per-task-item",
+      "preparedReference": {
+        "produce": "maker_route-receives-the-context-and-every-full-task-with-its-assessment-once-and-returns-one-session-local-preparedId-per-task",
+        "consume": "the-real-task-call-may-send-context-PREPARED_CONTEXT-and-each-task-string-PREPARED_TASK-space-preparedId-with-explicit-name-agent-and-model-with-concrete-effort",
+        "restore": "the-task-hook-restores-the-original-context-guard-task-title-and-TODO-text-before-the-existing-checks-run",
+        "linkage": "the-binding-stays-the-session-local-task-name-and-the-task-guard-semantic-fields-the-preparedId-only-carries-the-original-text",
+        "errors": [
+          "mixed-full-and-reference-in-one-call",
+          "variant-reference-syntax",
+          "different-session-or-batch",
+          "unknown-or-cleared-reference",
+          "name-mismatch",
+          "missing-session-id"
+        ],
+        "sessionScope": "a-new-session-clears-the-references-and-the-full-brief-path-stays-valid",
+        "preserved": "main-model-effort-approval-task-guard-budget-and-path-ownership-are-unchanged"
+      },
+      "judgmentReuse": {
+        "sameInputs": "reuse-the-prepared-judgment-when-the-facts-contract-policy-and-candidates-are-unchanged-and-never-ask-again-for-an-unrelated-owner-change-or-a-plain-progress-question",
+        "policyOrCandidateChange": "re-judge-before-the-task-call-and-block-when-the-revision-moved",
+        "ownerRevisionChange": "re-judge-only-the-owner-placement-never-the-work-class-or-the-effort",
+        "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
+        "sessionChange": "a-new-session-discards-every-previous-judgment"
+      },
+      "defaultMakerModelConfigPath": "modelRoles.impl",
+      "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
+      "profiles": {
+        "NORMAL": { "modelConfigPath": "modelRoles.impl", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "allowedEfforts": ["low", "medium"] },
+        "HARD_UI_UX": { "modelConfigPath": "modelRoles.makerHardUi", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_SYSTEM": { "modelConfigPath": "modelRoles.makerHardCode", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_SYSTEM_ALTERNATE": { "modelConfigPath": "modelRoles.makerHardCodeAlternate", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] }
+      },
+      "effortBand": "each-candidate-offers-only-registry-supported-levels-inside-its-profile-allowedEfforts-the-task-hook-blocks-any-other-level-and-max-a-shared-model-is-checked-against-the-recommended-profile-then-a-profile-of-the-recommended-work-class-and-without-a-recommendation-against-a-profile-that-allows-the-level",
+      "criteria": {
+        "NORMAL": "goal-preserved-behavior-and-checks-are-clear-and-an-existing-specification-or-reusable-pattern-settles-the-approach-or-bounded-causal-diagnosis-or-implementation-choice-remains-within-existing-contracts-and-local-evidence-can-resolve-it-bounded-discovery-caller-lookup-implementation-validation-and-local-repair-are-allowed-without-main-pre-solving-every-line-a-slice-that-local-discovery-fix-and-verification-close-with-existing-solutions-is-NORMAL-and-unknown-cause-or-several-candidate-bugs-alone-is-normal",
+        "HARD": "observed-evidence-identifies-an-unresolved-conflict-between-competing-explanations-or-coupled-state-concurrency-cross-module-invariants-or-user-flow-constraints-and-a-locally-plausible-fix-can-break-another-required-contract-name-the-conflict-and-the-affected-contract-a-conflict-does-not-have-to-be-reproduced-or-fully-specified-before-dispatch-and-the-slice-is-HARD-when-a-new-algorithm-protocol-state-rule-or-coupled-invariant-design-or-non-local-reasoning-that-must-satisfy-several-contracts-at-once-is-left-to-the-implementer-even-though-the-goal-tests-and-main-direction-are-set-main-direction-selection-is-not-a-settled-implementation-solution-not-hypothetical-complexity-file-count-risk-tool-calls-or-failure-rate-a-slice-that-authors-a-new-specification-its-reference-implementation-and-a-large-hidden-test-set-together-is-HARD-regardless-of-file-count"
+      },
+      "delegationCriteria": {
+        "MAIN": "a-small-close-slice-where-handing-off-explanation-review-and-rework-costs-more-than-it-saves-or-where-main-already-holds-the-context",
+        "MAKER": "a-truly-self-contained-slice-where-parallel-execution-pays-or-a-concrete-specialist-judgment-or-context-isolation-benefit-exists-no-numeric-estimate-required",
+        "UNKNOWN": "insufficient-facts-to-decide-the-performing-owner"
+      },
+      "hardFocusCriteria": {
+        "UI_UX": "information-architecture-user-flow-interaction-or-visual-accessibility-design-is-the-dominant-unresolved-judgment",
+        "CODE_SYSTEM": "execution-semantics-concurrency-data-consistency-algorithms-protocol-or-cross-module-invariants-dominate-even-in-frontend-files",
+        "MIXED": "both-judgments-matter-main-selects-the-dominant-one-or-splits-only-genuinely-independent-owned-slices",
+        "UNKNOWN": "insufficient-evidence-for-dominant-judgment-main-decides-and-records-why-no-automatic-dual-dispatch"
+      },
+      "normalAllocation": {
+        "selection": "recommend-the-available-primary-NORMAL-candidate-modelRoles.impl-first-and-use-an-existing-NORMAL-alternative-only-when-the-primary-is-actually-unusable-or-its-limit-exhaustion-is-observed-observed-headroom-differences-between-candidates-never-displace-the-primary-and-unobserved-quota-is-never-treated-as-exhaustion-or-as-a-zero-remaining-share",
+        "missing": "missing-or-unusable-quota-is-unknown-not-zero-keep-the-primary-NORMAL-profile-candidate-with-an-explicit-unavailable-reason",
+        "scope": "new-dispatch-recommendation-only-never-change-credential-selection-rotation-cooldowns-resets-or-a-running-owner",
+        "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
+      },
+      "hardSelection": {
+        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_UX-and-CODE_SYSTEM-selects-HARD_CODE_SYSTEM-regardless-of-the-main-model-family-HARD_CODE_SYSTEM_ALTERNATE-is-offered-as-a-candidate-only-and-choosing-it-requires-ROUTING_REASON",
+        "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
+        "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
+        "scope": "model-and-effort-selection-only-access-program-fields-are-omitted"
+      },
+      "routingLedger": {
+        "record": "append-only-json-lines-in-the-runtime-profile-agent-root-dispatch-and-outcome-belong-to-an-exact-session-assignment-attempt-identity-names-are-display-only-rework-keeps-the-original-attempt-and-uses-a-new-attempt-for-new-execution-legacy-name-only-records-remain-unscoped",
+        "summary": "each-maker_route-route-shows-recent-attempt-history-for-the-same-work-class-and-hard-focus-split-by-recommended-versus-chosen-model-effort-with-ok-rework-held-pending-aborted-counts-execution-completion-alone-is-not-quality-acceptance",
+        "observation": "report-observed-counts-and-uncertainty-only-no-success-rate-superiority-or-criteria-review-recommendation-from-small-unequal-samples-never-change-rules-candidates-or-efforts-automatically",
+        "verdict": "main-explicitly-records-accepted-rework-or-held-for-the-exact-attempt-accepted-requires-completed-execution-accepted-and-rework-require-revision-evidence-locators-and-reason-held-requires-reason-finalize-and-later-user-input-never-infer-acceptance",
+        "failure": "ledger-write-or-read-failure-never-blocks-routing-or-dispatch-an-explicit-verdict-write-failure-is-reported-as-not-recorded-never-as-success"
+      },
+      "failure": "judge-unavailable-main-uses-the-same-criteria-no-other-llm-no-automatic-hard-max-or-normal-auth-errors-do-not-change-difficulty",
+      "execution": "maker_route-prepares-one-blind-batched-judgment-main-reads-and-selects-task-model-selector-or-records-ROUTING_REASON-task-hook-links-the-preparation-to-the-dispatch-by-session-local-task-name-and-the-task-guard-semantic-fields-WORK_CLASS-PRIMARY_DELIVERABLE-OWNED_PATHS-FINDING_ID-so-prose-and-context-differences-are-allowed-and-only-a-name-or-semantic-field-change-requires-repreparation-then-checks-the-policy-candidate-and-owner-revision-no-autonomous-selection-or-second-judge",
+      "forbidden": [
+        "retired-worker-provider-in-new-dispatch-or-fallback-candidates",
+        "new-role-or-agent-alias-created-to-carry-a-model",
+        "mid-flight-model-promotion-of-a-running-child",
+        "respawning-without-new-evidence-and-a-changed-plan",
+        "automatic-role-hop-on-failure"
+      ]
+    },
+    "routine": {
+      "default": true,
+      "implementation": "main",
+      "mainPass": "main-investigates-edits-runs-focused-validation-repairs-and-issues-the-verdict-in-one-lane",
+      "boundedResearch": "main-owned-never-a-mandatory-child-research-hop",
+      "mainDirectImplementation": "allowed-and-expected-for-the-whole-routine-task",
+      "mainDirectReadOnlyLookup": "allowed",
+      "childDispatch": "none-while-the-task-stays-routine-delegation-means-reclassifying-to-large-or-high-risk-first",
+      "noOverlap": "see-implementationOwnership.noOverlap-main-never-dispatches-a-child-for-a-path-or-check-it-already-owns",
+      "escalationBeforeDelegation": "two-or-more-genuinely-independent-owners-or-any-large-or-high-risk-trigger-means-reclassify-first-then-delegate-never-a-mid-path-handoff",
+      "reviewer": "none-while-routine-main-issues-the-verdict-in-one-lane",
+      "finalDecisionOwner": "main"
+    },
+    "large": {
+      "triggers": [
+        "context-pollution",
+        "two-or-more-independent-slices",
+        "judgment-requiring-specialization"
+      ],
+      "implementation": "maker",
+      "independentOwnersDispatch": "ready-queue-feed-refilled-within-the-configured-ceiling",
+      "ownerGrouping": "one-named-owner-per-genuinely-independent-deliverable-with-no-default-count-small-independent-edits-are-grouped",
+      "separateOwnerJustification": [
+        "genuine-independence",
+        "specialization",
+        "separate-ownership",
+        "oversized-assignment"
+      ],
+      "paddingAllowed": false,
+      "mainMayImplementASlice": "yes-when-main-keeps-it-explicitly-and-dispatches-no-child-for-that-path",
+      "reviewRouting": {
+        "independentOnly": {
+          "reviewer": "none",
+          "reviewRequired": false
+        },
+        "integrationRisk": {
+          "triggers": [
+            "public-or-shared-interface",
+            "cross-module-contract",
+            "shared-state",
+            "data-flow",
+            "complex-state-transition",
+            "multiple-maker-changes-converging-on-one-execution-path",
+            "meaningful-existing-caller-regression-risk",
+            "auth-authz-or-secret-review",
+            "main-cannot-close-with-provided-evidence"
+          ],
+          "reviewer": "main",
+          "reviewEntry": "frozen-raw-diff-and-source-contract-caller-locators-for-every-reviewed-code-policy-config-and-eval-target",
+          "reviewTiming": "main-review-may-start-on-the-frozen-diff-before-the-owner-checks-terminate-and-the-direction-follows-consumption-of-current-revision-raw-evidence",
+          "reviewRequired": true
+        }
+      },
+      "finalDecisionOwner": "main"
+    },
+    "high-risk": {
+      "triggers": [
+        "repository-material-risk",
+        "industrial-material-risk",
+        "legacy-source-encoding-compatibility"
+      ],
+      "materialRiskDefinition": {
+        "authority": "one-consequence-based-definition-shared-by-main-maker-and-eval-expectations",
+        "universalAuthority": "codeNatureTriggers-is-the-deciding-axis-in-every-project-and-repositoryMaterialRisk-and-industrialHighRisk-are-one-domain-s-instances-of-it-never-the-definition-a-project-with-no-equipment-uses-the-same-seven-classes",
+        "domainExamples": {
+          "usage": "examples-only-never-a-second-trigger-list-a-change-is-classified-by-matching-a-codeNatureTriggers-class-not-by-appearing-in-one-of-these-rows",
+          "web-or-app": [
+            "irreversible-state-change - a-schema-migration-a-destructive-write-or-a-cache-or-storage-wipe",
+            "external-side-effect - a-payment-an-outbound-email-push-or-webhook-or-a-third-party-mutation",
+            "correctness-defines-product-meaning - pricing-scoring-quota-or-permission-math-shown-to-users",
+            "state-machine-transition - order-subscription-or-onboarding-status-transitions",
+            "trust-boundary - session-handling-authz-checks-token-or-secret-plumbing",
+            "compatibility-break - a-public-api-url-or-stored-payload-contract-change",
+            "artifact-representation - encoding-serialization-or-migration-file-format"
+          ],
+          "data-or-infra": [
+            "irreversible-state-change - a-delete-overwrite-retention-or-backup-policy-change",
+            "external-side-effect - a-deploy-dns-rollout-switch-or-billing-affecting-provisioning",
+            "correctness-defines-product-meaning - aggregation-billing-or-metric-computation",
+            "state-machine-transition - rollout-failover-or-job-lifecycle-transitions",
+            "trust-boundary - iam-policy-network-exposure-or-key-rotation",
+            "compatibility-break - a-consumer-facing-event-or-table-schema-change",
+            "artifact-representation - snapshot-archive-or-wire-format"
+          ],
+          "game-or-realtime": [
+            "irreversible-state-change - a-save-file-or-account-inventory-write-or-a-save-migration",
+            "external-side-effect - an-in-app-purchase-a-push-a-leaderboard-submit-or-an-authoritative-server-message",
+            "correctness-defines-product-meaning - damage-drop-rate-reward-or-matchmaking-rating-math",
+            "state-machine-transition - match-quest-or-session-lifecycle-transitions",
+            "trust-boundary - client-trusted-input-server-validation-anti-cheat-or-token-handling",
+            "compatibility-break - a-save-replay-or-netcode-protocol-version-change",
+            "artifact-representation - asset-bundle-serialization-or-replay-format"
+          ],
+          "native-or-desktop": [
+            "irreversible-state-change - an-in-place-file-rewrite-a-registry-or-app-data-write-an-installer-or-uninstaller-step",
+            "external-side-effect - process-spawn-device-or-driver-io-clipboard-printing-or-an-auto-update-push",
+            "correctness-defines-product-meaning - unit-conversion-precision-or-any-computation-the-user-reads-as-a-result",
+            "state-machine-transition - window-document-or-job-lifecycle-and-save-dirty-state",
+            "trust-boundary - elevation-ipc-surface-code-signing-or-credential-storage",
+            "compatibility-break - a-settings-project-or-plugin-abi-contract-change",
+            "artifact-representation - on-disk-document-encoding-and-serialization-including-legacy-codepages"
+          ],
+          "linux-or-server": [
+            "irreversible-state-change - an-rm-or-in-place-migration-a-volume-or-log-rotation-change",
+            "external-side-effect - a-systemd-unit-cron-package-install-or-outbound-request",
+            "correctness-defines-product-meaning - quota-rate-limit-or-scheduling-computation",
+            "state-machine-transition - service-start-stop-reload-and-health-state",
+            "trust-boundary - file-mode-capability-user-switch-or-sudo-path",
+            "compatibility-break - a-config-file-cli-flag-or-exit-code-contract-change",
+            "artifact-representation - log-or-config-format-and-locale-dependent-encoding"
+          ],
+          "ai-or-ml": [
+            "irreversible-state-change - overwriting-a-dataset-checkpoint-index-or-embedding-store",
+            "external-side-effect - a-paid-inference-call-a-training-job-launch-or-a-tool-call-that-mutates-something",
+            "correctness-defines-product-meaning - loss-metric-eval-scoring-threshold-or-post-processing-that-decides-the-answer",
+            "state-machine-transition - agent-or-pipeline-stage-transitions-and-retry-or-fallback-selection",
+            "trust-boundary - prompt-injection-surface-tool-permission-and-secret-in-context",
+            "compatibility-break - a-prompt-schema-tool-contract-or-model-version-pin-change",
+            "artifact-representation - checkpoint-tokenizer-or-dataset-record-format"
+          ],
+          "crossPlatform": "a-platform-branch-path-separator-line-ending-permission-model-or-default-encoding-difference-is-classified-by-the-class-it-lands-in-usually-artifact-representation-or-compatibility-break-never-as-a-separate-lighter-case",
+          "industrial-or-embedded": [
+            "see-repositoryMaterialRisk-and-industrialHighRisk-for-this-repository-s-instance-of-the-same-seven-classes"
+          ]
+        },
+        "repositoryMaterialRisk": [
+          "actual-plc-probe-or-io-output-and-pc-decided-production-state-transition",
+          "product-quality-formulas-okng-zero-master-or-calibration-results",
+          "measurement-data-loss-duplication-or-corruption",
+          "irreversible-data-or-configuration-compatibility-break",
+          "destructive-mssql-production-write-schema-index-change-or-backup-restore",
+          "physical-safety-interlocks-or-outputs"
+        ],
+        "industrialMaterialRiskSource": "see-industrialHighRisk-top-level-list",
+        "legacySourceEncodingCompatibility": "cp949-bom-legacy-source-edits-with-byte-and-decoding-evidence",
+        "technologyNameAloneNeverClassifies": [
+          "vb6-com-ocx-32-bit-or-windows-xp-target",
+          "plc-read-monitoring-display-and-logging",
+          "packet-parsing-and-address-translation",
+          "ordinary-protocol-handling-timeout-retry-and-reconnect",
+          "simple-write-forwarding-without-an-equipment-decision"
+        ],
+        "compatibilityAndEncodingProtectionStillRequired": "vb6-com-ocx-32-bit-and-windows-xp-compatibility-and-cp949-bom-protection-stay-required-without-raising-material-risk",
+        "authAuthzSecretAreIntegrationRisk": "authentication-authorization-and-secret-changes-stay-in-the-integration-risk-and-security-review-boundary-never-repository-material-risk-the-trust-boundary-code-nature-trigger-attaches-the-watch-only",
+        "briefAssignment": "when-the-brief-names-the-applicable-consequence-and-approval-the-owner-proceeds-otherwise-stop-and-report-instead-of-reclassifying",
+        "notMissingWork": "a-plain-repository-material-risk-candidate-without-the-assigned-consequence-is-a-report-not-a-silent-continue",
+        "codeNatureTriggers": [
+          "irreversible-state-change",
+          "external-side-effect",
+          "correctness-defines-product-meaning",
+          "state-machine-transition",
+          "trust-boundary",
+          "compatibility-break",
+          "artifact-representation"
+        ],
+        "codeNatureAuthority": "the-nature-of-the-edited-code-classifies-the-work-not-the-runtime-environment-it-happens-to-run-in",
+        "fixtureOrMockNeverReduces": "a-fixture-mock-eval-or-fake-target-never-lowers-the-class-and-a-real-equipment-project-never-raises-a-change-that-triggers-nothing",
+        "modePrecedence": "when-several-modes-apply-high-risk-wins-a-small-single-owner-change-is-a-routine-argument-never-a-high-risk-waiver",
+        "projectOverlay": "a-project-repository-s-agents-md-maps-this-universal-classification-onto-that-domain-s-concrete-list-and-never-copies-a-domain-list-into-this-global-file-on-conflict-the-universal-classification-is-the-deciding-axis-and-the-project-list-is-an-example-of-it",
+        "axesAreIndependent": "large-is-the-scale-and-context-pollution-axis-slice-splitting-and-model-grading-come-from-it-high-risk-is-the-consequence-axis-watch-intensity-and-serial-review-come-from-it-they-are-independent-and-can-both-hold-and-the-existing-precedence-rule-high-risk-wins-stands-a-small-scale-is-never-a-high-risk-waiver-and-a-large-consequence-is-never-a-grade-raise"
+      },
+      "mainIntervention": {
+        "points": ["pre-edit-contract", "post-convergence-serial-review"],
+        "preEditContract": {
+          "when": "before-editing-code-that-matches-routing.high-risk.materialRiskDefinition.codeNatureTriggers-never-a-restated-second-trigger-list",
+          "owner": "the-maker-never-main-polling",
+          "channel": "exactly-one-write-agent-main-message",
+          "payload": [
+            "location-locator - 위치: or LOCATION: - an artifact:// agent:// or local:// url, or a file path with a selector like src/plc.ts:42-58",
+            "invariants - 불변식: or INVARIANTS: - one or more items enumerated with -, *, •, 1. or 1)",
+            "behaviour-change - 동작 변화: or 동작: or BEHAVIOUR CHANGE: or BEHAVIOR: - one line",
+            "check-command - 검사 명령: or 검사: or CHECK COMMAND: or CHECK: - the planned command",
+            "self-doubt - 틀릴 것 같은 지점: or SELF-DOUBT: - one line naming the choice most likely to be wrong"
+          ],
+          "prohibited": ["diff-body", "raw-output", "file-contents", "second-dm-per-edit-step"],
+          "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-arrives-as-an-injected-message-non-trigger-work-in-the-same-slice-and-read-only-investigation-continue-when-independent-work-runs-out-the-owner-states-that-it-is-holding-and-ends-the-turn",
+          "mainReply": "one-line-decision-approved-retarget-or-scope",
+          "record": "the-approved-location-and-invariants-are-retained-for-the-final-drift-check"
+        },
+        "finalReview": {
+          "added": "drift-check-the-approved-location-and-invariants-against-the-final-diff",
+          "unapproved": "never-close-a-revision-that-edited-trigger-code-without-an-approved-pre-edit-contract"
+        }
+      },
+      "implementation": "maker",
+      "reviewer": "main",
+      "reviewTiming": "all-relevant-owners-converge-and-finish-their-required-checks-then-main-reviews-serially",
+      "overlapAllowed": false,
+      "serialException": "never-split-the-final-converged-validation-scope-and-never-begin-the-final-acceptance-review-before-this-boundary",
+      "reviewRequired": true,
+      "unresolvedSafetyRisk": "stop-and-put-the-decision-to-the-user-never-add-another-review-role",
+      "finalDecisionOwner": "main"
+    }
+  },
+  "gitFinalization": {
+    "defaultPath": "main-git_finalize",
+    "subagentRawGit": "never",
+    "repositoryResolution": {
+      "cwdRepository": "discover-from-session-cwd-when-present",
+      "eachTarget": "discover-from-nearest-existing-parent-in-target-path-namespace",
+      "allTargets": "same-repo-root-and-common-dir",
+      "externalRepository": "allowed-when-common-dir-differs-from-cwd-repository",
+      "whenCwdIsOutsideRepository": "discovered-repository-inside-session-cwd"
+    },
+    "pathScope": {
+      "input": "relative-only",
+      "whenTargetMatchesCwdRepository": "canonical-target-inside-cwd-or-direct-file-child-of-repo-root",
+      "whenTargetIsDistinctRepository": "canonical-target-inside-selected-repository",
+      "whenCwdIsOutsideRepository": "canonical-target-inside-cwd-and-discovered-repository",
+      "reject": [
+        "repository-root-directory",
+        "repository-metadata",
+        "cwd-inside-repository-sibling-project-file-or-directory",
+        "outside-selected-repository",
+        "absolute-path",
+        "duplicate-path",
+        "directory",
+        "mixed-current-and-external-repositories",
+        "multiple-external-repositories"
+      ]
+    },
+    "mainRawGitFallback": {
+      "actor": "main-only",
+      "allowedWhenAll": [
+        "user-explicitly-requested-work-in-target-external-repository",
+        "main-called-git_finalize-first",
+        "git_finalize-failed-exactly-File path escapes the session cwd",
+        "target-is-separate-git-repository-outside-current-repository"
+      ],
+      "notRequiredFor": "reachable-relative-external-repository",
+      "preflightChecks": [
+        "target-repository-branch-and-upstream",
+        "exact-changed-files",
+        "shared-index-state",
+        "remote-upstream-ancestry"
+      ],
+      "scope": "stage-commit-push-exact-changed-files-only",
+      "unrelatedChanges": "never-include-or-revert"
+    },
+    "lockFailure": {
+      "deleteLock": "never",
+      "retry": "once-after-brief-wait",
+      "secondFailure": "stop-and-report"
+    }
+  },
+  "approvalBoundaries": [
+    "deletion",
+    "deployment",
+    "cost-incurrence",
+    "compatibility-break"
+  ],
+  "industrialHighRisk": [
+    "direct-equipment-operation-or-output",
+    "pc-controlled-production-state-transitions",
+    "product-quality-formulas-verdicts-or-calibration",
+    "measurement-data-loss-duplication-or-corruption",
+    "irreversible-data-or-configuration-compatibility",
+    "physical-safety-interlocks-or-outputs"
+  ]
+}
