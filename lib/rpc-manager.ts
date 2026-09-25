@@ -1,3 +1,4 @@
+import { cfgEnabledModels } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import {
   applyResolvedSystemPromptInputs,
@@ -2377,7 +2378,7 @@ export async function startRpcSession(
         ...readConfiguredModelRoleRefs(settings),
         ...(initialModel ? [initialModel] : []),
       ]);
-      const scope = await resolveVisibleModels(modelRegistry, settings.get("enabledModels"), settings);
+      const scope = await resolveVisibleModels(modelRegistry, cfgEnabledModels.get(settings), settings);
       const defaultRole = readDefaultModelRole(settings);
       // 역할 selector의 effort(`default: anthropic/claude-opus-5:xhigh`)가 새 세션 초기
       // thinking level의 정본이다. 호출자가 모델이나 level을 직접 넘겼으면 그쪽이 이기고,

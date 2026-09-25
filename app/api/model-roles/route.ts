@@ -1,3 +1,4 @@
+import { cfgEnabledModels } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { NextResponse } from "next/server";
 import { resolve } from "path";
 import { invalidateModelsCache } from "@/lib/models-cache";
@@ -28,7 +29,7 @@ export async function GET(req: Request) {
     const { modelRegistry } = await getOmpRuntime();
     const settings = await getSettingsForCwd(result.cwd);
     await recoverMissingModelRefs(modelRegistry, readConfiguredModelRoleRefs(settings));
-    const { visible } = await resolveVisibleModels(modelRegistry, settings.get("enabledModels"), settings);
+    const { visible } = await resolveVisibleModels(modelRegistry, cfgEnabledModels.get(settings), settings);
     return NextResponse.json({ roles: listModelRoles(settings, [...visible]) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
@@ -80,7 +81,7 @@ export async function PUT(req: Request) {
     const settings = await getSettingsForCwd(result.cwd);
     const { modelRegistry } = runtime;
     await recoverMissingModelRefs(modelRegistry, readConfiguredModelRoleRefs(settings));
-    const { visible } = await resolveVisibleModels(modelRegistry, settings.get("enabledModels"), settings);
+    const { visible } = await resolveVisibleModels(modelRegistry, cfgEnabledModels.get(settings), settings);
     return NextResponse.json({ roles: listModelRoles(settings, [...visible]) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });

@@ -4,6 +4,7 @@ import {
   REPORT_FRESHNESS_MS,
   WINDOW_EXHAUSTED_MIN_FRACTION,
 } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
+import { cfgCodexResets } from "@oh-my-pi/pi-coding-agent/session/settings";
 import type { AgentSessionLike } from "./omp-types";
 
 const ANTHROPIC_RESET_SCOPE_LABELS: Record<string, string> = {
@@ -123,7 +124,7 @@ export async function getSessionAccountState(
         && health.accounts.every(account => account.state === "depleted")
         && listing.accounts.every(account => health.accounts.some(value => value.credentialId === account.credentialId));
     }
-    const cfg = session.settings.getGroup("codexResets");
+    const cfg = cfgCodexResets.get(session.settings);
     const plan = planCodexResetRedemptions({
       nowMs, trigger: blocked ? "blocked" : "sweep", provider: model.provider, modelId: model.id,
       settings: {
