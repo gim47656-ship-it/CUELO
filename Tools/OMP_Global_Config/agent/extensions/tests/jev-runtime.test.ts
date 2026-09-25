@@ -80,7 +80,6 @@ function createHarness(options: HarnessOptions = {}) {
         getModelRoles: () => (options.settings?.modelRoles as Record<string, string> | undefined) ?? {
           impl: "test/local:high",
           implDeepSeek: "test/broad:medium",
-          implSol: "test/language:medium",
           makerHardUi: "test/interaction:high",
           makerHardCode: "test/invariants:high",
           makerHardCodeAlternate: "test/alternate:high",
@@ -110,7 +109,10 @@ function createHarness(options: HarnessOptions = {}) {
               options.judgeAnswers?.[id] ??
               (question.type === "noul"
                 ? { type: "noul", noul: 0.1 }
-                : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
+                // 강도 질문은 픽스처가 실제로 발주하는 high로 답한다.
+                : id.startsWith("effort")
+                  ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }
+                  : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
           }
           return { answers, provider: "fake", model: "jev" };
         },
@@ -268,9 +270,9 @@ describe("jev-runtime pre-dispatch", () => {
     });
     await harness.prepare();
     const reasoned = GUARDED_TASK.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 한도 참고로 대안 후보를 선택함\nOWNED_PATHS:");
-    expect(await harness.emit("tool_call", taskCall("call-alternate", reasoned, { name: "Next", model: "test/language:medium" }))).toBeUndefined();
-    expect(await harness.emit("tool_call", taskCall("call-alternate-high", reasoned, { name: "Next", model: "test/language:high" })))
-      .toMatchObject({ block: true, reason: expect.stringContaining("NORMAL_SOL") });
+    expect(await harness.emit("tool_call", taskCall("call-alternate", reasoned, { name: "Next", model: "test/broad:high" }))).toBeUndefined();
+    expect(await harness.emit("tool_call", taskCall("call-alternate-low", reasoned, { name: "Next", model: "test/broad:low" })))
+      .toMatchObject({ block: true, reason: expect.stringContaining("NORMAL_DEEPSEEK") });
   });
   test("session reset은 prepared ref와 준비 판단을 함께 끊는다", async () => {
     const harness = createHarness();
