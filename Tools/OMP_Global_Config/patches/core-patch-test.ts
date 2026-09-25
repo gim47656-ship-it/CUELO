@@ -2133,5 +2133,30 @@ const abortedStatus = await driveNovaWakeTurn({ content: [{ type: "text", text: 
 check("중단된 wake 턴은 여전히 aborted 다", abortedStatus === "aborted", `status=${abortedStatus}`);
 rmSync(artifactsDir, { recursive: true, force: true });
 
+// 2026-09-25 실장애: CUELO 셸이 `next start`의 NODE_ENV=production·PORT=30141·NEXT_* 를 물려받아
+// 셸에서 띄운 `next dev`가 CSS 파싱에 실패했다. 자식 셸 env 를 만드는 실제 함수로 확인한다.
+console.log("\nCUELO Next 서버 env 를 자식 셸에 넘기지 않는다");
+{
+	const { filterChildShellEnv } = await import(`${CORE}/../../pi-utils/src/env.ts`);
+	const envCwd = mkdtempSync(join(tmpdir(), "hanse-shell-env-"));
+	const serverEnv = {
+		KEEP_ME: "1",
+		NODE_ENV: "production",
+		PORT: "30141",
+		NEXT_RUNTIME: "nodejs",
+		NEXT_DEPLOYMENT_ID: "",
+		NEXT_PRIVATE_START_TIME: "1790334741693",
+		__NEXT_PRIVATE_ORIGIN: "http://localhost:30141",
+	};
+	const stripped = filterChildShellEnv({ ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, envCwd);
+	const leaked = ["NODE_ENV", "PORT", "NEXT_RUNTIME", "NEXT_DEPLOYMENT_ID", "NEXT_PRIVATE_START_TIME", "__NEXT_PRIVATE_ORIGIN", "CUELO_SHELL_ENV_BASELINE"].filter(key => key in stripped);
+	check("Next 서버 안: 서버 변수를 지우고 무관한 변수는 둔다", leaked.length === 0 && stripped.KEEP_ME === "1", `leaked=${leaked.join(",")}`);
+	const restored = filterChildShellEnv({ ...serverEnv, CUELO_SHELL_ENV_BASELINE: JSON.stringify({ NODE_ENV: "test", PORT: "4000" }) }, envCwd);
+	check("런처 기준값이 있으면 NODE_ENV·PORT 를 그 값으로 되돌린다", restored.NODE_ENV === "test" && restored.PORT === "4000", `NODE_ENV=${restored.NODE_ENV} PORT=${restored.PORT}`);
+	const plain = filterChildShellEnv({ KEEP_ME: "1", NODE_ENV: "development", PORT: "5173" }, envCwd);
+	check("Next 서버 밖(TUI)에서는 NODE_ENV·PORT 를 그대로 둔다", plain.NODE_ENV === "development" && plain.PORT === "5173", `NODE_ENV=${plain.NODE_ENV} PORT=${plain.PORT}`);
+	rmSync(envCwd, { recursive: true, force: true });
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

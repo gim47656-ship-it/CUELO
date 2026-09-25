@@ -165,6 +165,9 @@ function startServer() {
       // Preserve the directory from which `cuelo` was launched so relative
       // project paths in the browser resolve against the user's shell cwd.
       CUELO_LAUNCH_CWD: process.cwd(),
+      // `next start` overwrites NODE_ENV and PORT inside the server; the agent's child shells get
+      // these launch-time values back instead (core patch `stripHostNextServerEnv`).
+      CUELO_SHELL_ENV_BASELINE: JSON.stringify({ NODE_ENV: process.env.NODE_ENV, PORT: process.env.PORT }),
     }),
   });
 
