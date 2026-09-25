@@ -1,7 +1,9 @@
 name: CI
 
-# Verifies that the app installs from the committed bun.lock, type-checks, passes
-# its tests and builds. `bun run test` covers the app only (not the private Tools/).
+# Verifies that the app installs from the committed bun.lock, type-checks, lints,
+# passes its tests and builds. `bun run test` covers the app only; the `harness`
+# job checks the private Tools/OMP_Global_Config harness and runs only in the
+# private repository, because the public mirror does not carry its config or evals.
 on:
   pull_request:
   push:
@@ -43,6 +45,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Lint
+        run: bun run lint
+
       - name: Test
         run: bun run test
 
@@ -61,3 +66,81 @@ jobs:
           $env:NEXT_TELEMETRY_DISABLED = '1'
           bun run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  harness:
+    name: Verify harness
+    if: github.repository == 'gim47656-ship-it/CUELO-private'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: Tools/OMP_Global_Config
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      # A fresh copy of the core version the app pins, patched in RUNNER_TEMP so
+      # the repository's node_modules stay unpatched. Core and extension tests
+      # read it through OMP_CORE_PATCH_TARGET.
+      - name: Prepare patched core
+        run: |
+          $version = (Get-Content ../../package.json -Raw | ConvertFrom-Json).dependencies.'@oh-my-pi/pi-coding-agent'
+          $core = Join-Path $env:RUNNER_TEMP 'core'
+          New-Item -ItemType Directory -Path $core -Force | Out-Null
+          Set-Content -Path (Join-Path $core 'package.json') -Value '{"name":"ci-core","private":true}'
+          Push-Location $core
+          bun add "@oh-my-pi/pi-coding-agent@$version"
+          $installExit = $LASTEXITCODE
+          Pop-Location
+          if ($installExit -ne 0) { exit $installExit }
+          $env:OMP_CORE_PATCH_TARGET = Join-Path $core 'node_modules/@oh-my-pi/pi-coding-agent'
+          node patches/apply-core-patch.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "OMP_CORE_PATCH_TARGET=$env:OMP_CORE_PATCH_TARGET" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Policy and generated agents
+        run: |
+          node patches/validate-harness-policy.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node patches/build-agents.mjs --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node patches/check-extension-duplicates.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Extension, guard and finalizer tests
+        run: |
+          bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./patches/content-scan.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # `bun test ./evals` would also pick up the graders' hidden task tests.
+      - name: Eval analyzer tests
+        run: |
+          node --test (Get-ChildItem evals -Filter *.test.mjs).FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Core patch regression tests
+        run: |
+          $failed = @()
+          $tests = @(Get-ChildItem patches -Filter 'core-*-test.ts') + @(Get-Item patches/apply-core-patch-cli-test.ts)
+          foreach ($test in $tests) {
+            Write-Host "::group::$($test.Name)"
+            bun run $test.FullName
+            $code = $LASTEXITCODE
+            Write-Host '::endgroup::'
+            if ($code -ne 0) { $failed += "$($test.Name) (exit $code)" }
+          }
+          if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }

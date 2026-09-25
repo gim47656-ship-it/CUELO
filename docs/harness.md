@@ -43,7 +43,7 @@ Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증
 
 ## omp core 패치
 
-[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 예를 들어 `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*.test.ts`가 패치와 관련 회귀 검사를 담습니다. 구체적인 적용 명령은 각 패치 도구와 설치 환경에 따라 확인하세요. 이 문서는 CUELO 앱이 core 패치를 자동 설치한다고 뜻하지 않습니다.
+[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 예를 들어 `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 패치와 관련 회귀 검사를 담습니다. 구체적인 적용 명령은 각 패치 도구와 설치 환경에 따라 확인하세요. 이 문서는 CUELO 앱이 core 패치를 자동 설치한다고 뜻하지 않습니다. 원본 저장소의 CI는 앱이 고정한 core 버전을 새로 설치해 이 패치를 적용하고 회귀 검사를 실행합니다. 공개 미러에는 그 검사에 필요한 설정·eval 자료가 없어서 해당 job을 건너뜁니다.
 
 ## 정본 자료
 
