@@ -12,7 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{32}$/;
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
@@ -71,7 +71,7 @@ interface CleanupProgress {
   requestId: string;
   stageHash: string;
   phase: "ARTIFACT_CLEANUP";
-  status: "running" | "succeeded" | "failed" | "skipped";
+  status: "running" | "succeeded" | "failed" | "skipped" | "pending-approval";
   reason: string | null;
   startedAtUtc: string;
   updatedAtUtc: string;
@@ -203,7 +203,10 @@ function normalizeCleanupProgress(
     || raw.phase !== "ARTIFACT_CLEANUP"
   ) return null;
   const status = raw.status;
-  if (status !== "running" && status !== "succeeded" && status !== "failed" && status !== "skipped") return null;
+  if (
+    status !== "running" && status !== "succeeded" && status !== "failed"
+    && status !== "skipped" && status !== "pending-approval"
+  ) return null;
   const ownerPid = Number(raw.ownerPid);
   const completedCount = Number(raw.completedCount);
   const totalCount = Number(raw.totalCount);
@@ -299,13 +302,16 @@ function normalizeDeploymentCompletion(
   const rollbackRoot = dirname(rollbackTransactionPath);
   const rollbackPackagePath = resolve(String(rollback.packagePath ?? ""));
   const rollbackShimDirectory = resolve(String(rollback.shimDirectory ?? ""));
-  const requiredShims = ["cuelo", "cuelo.cmd", "cuelo.ps1"];
+  // rename 전 설치에서 올라온 첫 배포는 옛 `omp-web` 패키지와 shim을 rollback으로 백업한다.
+  const packageName = basename(rollbackPackagePath);
+  if (packageName !== "cuelo" && packageName !== "omp-web") return null;
+  const requiredShims = [packageName, `${packageName}.cmd`, `${packageName}.ps1`];
   const backedUpShims = Array.isArray(rollback.backedUpShims)
     ? rollback.backedUpShims.map((value) => String(value))
     : [];
   if (
     rollbackTransactionPath !== join(rollbackRoot, "transaction.json")
-    || rollbackPackagePath !== join(rollbackRoot, "cuelo")
+    || rollbackPackagePath !== join(rollbackRoot, packageName)
     || rollbackShimDirectory !== join(rollbackRoot, "shims")
     || !existsSync(rollbackTransactionPath)
     || !existsSync(rollbackPackagePath)
