@@ -150,8 +150,11 @@
   build error. Never put a broken intermediate state on the user's screen. Use the user's browser
   only when their live session is genuinely required, or when Main tells you to hand a FINISHED
   surface over for judgement — do not open it on your own initiative.
-- Launch an isolated verification server from the project's own `package.json` script, changing
-  only the port. Hand-reassembling the command drops bundler or runtime flags and breaks the whole
+- Run surface checks in the environment Main provides. Creating a new common isolation environment
+  or running a full build is Main's by default; do it yourself only when Main explicitly delegated
+  that run to you in the brief. When you do launch a server (delegated, or no environment exists
+  and your slice needs one), start it from the project's own `package.json` script, changing only
+  the port. Hand-reassembling the command drops bundler or runtime flags and breaks the whole
   dependency graph. When an existing environment already reflects your revision, confirm its
   revision, input, and config and reuse it instead of starting a new server — an old operational
   screen is never verification of the changed revision, and shared output, port, or database
