@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
 const tempRoots: string[] = [];
-const TEST_TIMEOUT_MS = 15_000;
+// 각 테스트는 PowerShell 5.1 기동과 bare remote push를 실제로 한다. GitHub Windows 러너에서 평소 2~7초지만
+// 느린 순간 20초까지 걸려 15초 제한을 넘긴 적이 있다(run 36151513593).
+const TEST_TIMEOUT_MS = 60_000;
 
 interface CommandResult {
   code: number;
