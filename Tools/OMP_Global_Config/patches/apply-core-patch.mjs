@@ -4594,6 +4594,46 @@ import { getActiveRules } from "../capability/rule";`,
 		anchor: "\t\t\t\ttype: \"tool_call\",\n\t\t\t\ttoolName: ctx.tool.name,\n\t\t\t\ttoolCallId: ctx.toolCall.id,\n",
 		patched: "\t\t\t\ttype: \"tool_call\",\n\t\t\t\ttoolName: ctx.tool.name,\n\t\t\t\ttoolCallId: ctx.toolCall.id,\n\t\t\t\tassistantMessage: ctx.assistantMessage, // HANSE: steering gate\n",
 	},
+	{
+		// 2026-09-25: CUELO는 Next 서버 프로세스 안에서 에이전트를 돌린다. `next start`가 그 프로세스에 넣은
+		// NODE_ENV=production·PORT·NEXT_* 가 bash 도구 자식 셸에 그대로 새어, 셸에서 띄운 `next dev`가
+		// production 모드로 CSS 파싱에 실패하고 라이브 포트를 잡으려 했다. git 위치 변수를 지우는 자리에서
+		// 함께 걸러 내고, NODE_ENV·PORT는 런처(bin/cuelo.js)가 넘긴 `next start` 이전 값으로 되돌린다.
+		file: "../pi-utils/src/env.ts",
+		marker: "stripHostNextServerEnv(result); // HANSE: CUELO next server env",
+		anchor: "\tstripGitRepoLocationEnv(result);\n\treturn result;\n}\n",
+		patched: `	stripGitRepoLocationEnv(result);
+	stripHostNextServerEnv(result); // HANSE: CUELO next server env
+	return result;
+}
+
+/**
+ * HANSE: CUELO는 Next 서버 안에서 에이전트를 돌린다. \`next start\`가 그 프로세스에 넣은 값은 서버
+ * 자신의 것이지 사용자 셸의 것이 아니므로 자식 셸에 넘기지 않는다. NODE_ENV·PORT는 런처가
+ * \`CUELO_SHELL_ENV_BASELINE\`(JSON)으로 넘긴 시작 전 값으로 되돌리고, 그 값이 없으면 지운다.
+ * Next 서버 밖(NEXT_RUNTIME 없음)에서는 아무것도 바꾸지 않는다.
+ */
+function stripHostNextServerEnv(env: Record<string, string>): void {
+	if (env.NEXT_RUNTIME === undefined) return;
+	let baseline: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(env.CUELO_SHELL_ENV_BASELINE ?? "{}");
+		if (parsed !== null && typeof parsed === "object") baseline = parsed as Record<string, unknown>;
+	} catch {}
+	for (const key of Object.keys(env)) {
+		if (key === "NEXT_RUNTIME" || key === "NEXT_DEPLOYMENT_ID" || key.startsWith("NEXT_PRIVATE_") || key.startsWith("__NEXT_PRIVATE_")) {
+			delete env[key];
+		}
+	}
+	for (const key of ["NODE_ENV", "PORT"]) {
+		const value = baseline[key];
+		if (typeof value === "string") env[key] = value;
+		else delete env[key];
+	}
+	delete env.CUELO_SHELL_ENV_BASELINE;
+}
+`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
