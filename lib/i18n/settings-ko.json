@@ -1,0 +1,1325 @@
+{
+	"tabs": {
+		"appearance": "외관",
+		"model": "모델",
+		"interaction": "상호작용",
+		"context": "컨텍스트",
+		"memory": "메모리",
+		"files": "파일",
+		"shell": "Shell",
+		"tools": "도구",
+		"tasks": "작업",
+		"providers": "제공자"
+	},
+	"groups": {
+		"Theme": "테마",
+		"Status Line": "상태 표시줄",
+		"Display": "표시",
+		"Images": "이미지",
+		"Thinking": "사고",
+		"Sampling": "샘플링",
+		"Prompt": "프롬프트",
+		"Retry & Fallback": "재시도 및 폴백",
+		"Advisor": "어드바이저",
+		"Prewalk": "Prewalk",
+		"Vision": "비전",
+		"Input": "입력",
+		"Approvals": "승인",
+		"Notifications": "알림",
+		"Speech": "음성",
+		"Collab": "협업",
+		"Magic Keywords": "매직 키워드",
+		"Startup & Updates": "시작 및 업데이트",
+		"Power (macOS)": "전원 (macOS)",
+		"Agent": "에이전트",
+		"Git": "Git",
+		"General": "일반",
+		"Compaction": "압축",
+		"Rules (TTSR)": "규칙 (TTSR)",
+		"Experimental": "실험적 기능",
+		"Auto-Learn": "자동 학습",
+		"Mnemopi": "Mnemopi",
+		"Hindsight": "Hindsight",
+		"Editing": "편집",
+		"Reading": "읽기",
+		"Read Summaries": "읽기 요약",
+		"LSP": "LSP",
+		"Bash": "Bash",
+		"Eval & Runtimes": "평가 및 런타임",
+		"Available Tools": "사용 가능한 도구",
+		"Todos": "할 일",
+		"Grep & Browser": "Grep 및 브라우저",
+		"Computer": "컴퓨터",
+		"GitHub": "GitHub",
+		"Output Limits": "출력 제한",
+		"Execution": "실행",
+		"Discovery & MCP": "탐색 및 MCP",
+		"Developer": "개발자",
+		"Modes": "모드",
+		"Subagents": "서브에이전트",
+		"Isolation": "격리",
+		"Commands & Skills": "명령 및 스킬",
+		"Services": "서비스",
+		"Fireworks": "Fireworks",
+		"Tiny Model": "Tiny Model",
+		"Protocol": "프로토콜",
+		"Timeouts": "타임아웃",
+		"Privacy": "개인정보"
+	},
+	"shell": {
+		"Loading omp settings…": "omp 설정을 불러오는 중…",
+		"Settings unavailable": "설정을 사용할 수 없음",
+		"Matching canonical /settings entries across every category.": "모든 카테고리에서 표준 /settings 항목을 일치시킨다.",
+		"Canonical omp /settings values. Changes are saved immediately to the shared agent configuration.": "표준 omp /settings 값이다. 변경 사항은 공유 에이전트 설정에 즉시 저장된다.",
+		"Saved. Reload the active session to apply runtime settings.": "저장됨. 런타임 설정을 적용하려면 활성 세션을 다시 불러온다.",
+		"Reloading…": "다시 불러오는 중…",
+		"Reload session": "세션 다시 불러오기",
+		"No settings match this search.": "이 검색과 일치하는 설정이 없다.",
+		"Search /settings": "/settings 검색",
+		"Configuration": "구성",
+		"OMP settings": "OMP 설정",
+		"Close settings": "설정 닫기",
+		"Global configuration": "전역 구성",
+		"Settings": "설정",
+		"Search": "검색",
+		"Models": "모델",
+		"Themes": "테마",
+		"Skills": "스킬",
+		"Plugins": "플러그인",
+		"MCP": "MCP",
+		"Loading themes…": "테마를 불러오는 중…",
+		"Themes unavailable": "테마를 사용할 수 없음",
+		"Active on web": "웹에서 활성",
+		"Preview ": "미리보기 ",
+		"The web interface uses the same dark and light theme mappings as omp. Changes are persisted to ": "웹 인터페이스는 omp와 동일한 다크 및 라이트 테마 매핑을 사용한다. 변경 사항은 다음에 저장된다: ",
+		" and applied here immediately.": " 그리고 여기에 즉시 적용된다.",
+		" mapping": " 매핑",
+		"requires a project": "프로젝트가 필요하다"
+	},
+	"fields": {
+		"theme.dark": {
+			"label": "다크 테마",
+			"description": "터미널 배경이 어두울 때 사용하는 테마이다"
+		},
+		"theme.light": {
+			"label": "라이트 테마",
+			"description": "터미널 배경이 밝을 때 사용하는 테마이다"
+		},
+		"symbolPreset": {
+			"label": "심볼 프리셋",
+			"description": "아이콘과 기호에 사용하는 글리프 세트이다 (Unicode, Nerd Font, ASCII)"
+		},
+		"colorBlindMode": {
+			"label": "색맹 모드",
+			"description": "diff 추가 표시에 초록색 대신 파란색을 사용한다"
+		},
+		"statusLine.preset": {
+			"label": "상태 표시줄 프리셋",
+			"description": "미리 구성된 상태 표시줄 설정이다"
+		},
+		"statusLine.separator": {
+			"label": "상태 표시줄 구분자",
+			"description": "세그먼트 사이 구분자의 스타일이다"
+		},
+		"statusLine.sessionAccent": {
+			"label": "세션 강조색",
+			"description": "에디터 테두리와 상태 표시줄 여백에 세션 이름 색상을 사용한다"
+		},
+		"statusLine.transparent": {
+			"label": "투명 상태 표시줄",
+			"description": "상태 표시줄에 테마의 `statusLineBg` 대신 터미널 기본 배경을 사용한다. Powerline 끝 캡은 주변 터미널로 이어지려면 대비되는 채움색이 필요하므로 제거된다."
+		},
+		"statusLine.compactThinkingLevel": {
+			"label": "간결한 thinking 레벨",
+			"description": "thinking 레벨을 별도의 ` · <level>` 접미사 대신 모델 이름에 아이콘 하나로 표시한다."
+		},
+		"statusLine.showHookStatus": {
+			"label": "hook 상태 표시",
+			"description": "상태 표시줄 아래에 hook 상태 메시지를 표시한다"
+		},
+		"terminal.showImages": {
+			"label": "인라인 이미지 표시",
+			"description": "터미널에 이미지를 인라인으로 렌더링한다"
+		},
+		"images.autoResize": {
+			"label": "이미지 자동 크기 조정",
+			"description": "모델 호환성을 높이기 위해 큰 이미지를 최대 2000x2000으로 축소한다"
+		},
+		"images.blockImages": {
+			"label": "이미지 차단",
+			"description": "이미지가 LLM 제공자에게 전송되지 않도록 한다"
+		},
+		"terminal.showProgress": {
+			"label": "네이티브 터미널 진행 표시",
+			"description": "에이전트나 컨텍스트 유지 작업이 실행되는 동안 OSC 9;4 부정형 진행 표시를 내보낸다"
+		},
+		"tui.textSizing": {
+			"label": "큰 제목 (Kitty)",
+			"description": "Kitty의 OSC 66 text-sizing 프로토콜을 사용해 Markdown H1 제목을 2배 크기로 렌더링한다. Kitty 터미널에서만 적용되며 그 외에서는 무시된다. 기본값은 꺼짐이다."
+		},
+		"tui.renderMermaid": {
+			"label": "Mermaid 다이어그램 렌더링",
+			"description": "Mermaid 코드 블록을 ASCII 다이어그램으로 렌더링한다"
+		},
+		"tui.codexResetFireworks": {
+			"label": "Codex 리셋 불꽃놀이",
+			"description": "예정에 없던 Codex 주간 사용량 리셋과 새로 적립된 저장 리셋을 화면 상단 1/3의 불꽃놀이 오버레이로 축하하며, Escape를 누를 때까지 유지된다"
+		},
+		"tui.titleState": {
+			"label": "터미널 제목 실행 상태",
+			"description": "터미널 제목의 구분자에 에이전트 실행 상태를 표시한다 — 작업 중에는 애니메이션 스피너(Windows에서는 고정된 ':'), 사용자 차례일 때는 '>', 에이전트가 사용자를 기다릴 때는 '!'이다"
+		},
+		"tui.hyperlinks": {
+			"label": "터미널 하이퍼링크",
+			"description": "터미널 자체의 클릭 열기를 위해 경로와 URL을 OSC 8 하이퍼링크로 감싼다 (auto: 지원 여부 감지, off: 사용 안 함, always: 무조건 사용)"
+		},
+		"tui.tight": {
+			"label": "조밀한 레이아웃",
+			"description": "터미널 출력 좌우의 1문자 가로 여백을 제거한다"
+		},
+		"tui.scrollbackRebuild": {
+			"label": "스크롤백 다시 쓰기",
+			"description": "블록의 최종 형태가 실시간 미리보기를 대체할 때 터미널 스크롤백을 지우고 다시 출력한다. 꺼짐(기본값)일 때는 오래된 미리보기 사본이 기록에 남고 최종 내용이 그 아래에 추가된다."
+		},
+		"display.shimmer": {
+			"label": "셔머",
+			"description": "작업/로딩 메시지의 애니메이션 스타일이다"
+		},
+		"display.smoothStreaming": {
+			"label": "부드러운 스트리밍",
+			"description": "청크가 도착하는 동안 어시스턴트 텍스트와 스트리밍되는 도구 입력을 부드럽게 표시한다"
+		},
+		"display.hideToolActivity": {
+			"label": "도구 활동 숨김",
+			"description": "모델이 시작한 도구 호출과 결과를 대화 기록에서 숨긴다"
+		},
+		"display.showTokenUsage": {
+			"label": "토큰 사용량 표시",
+			"description": "어시스턴트 메시지에 턴별 토큰 사용량을 표시한다"
+		},
+		"display.cacheMissMarker": {
+			"label": "캐시 미스 표시",
+			"description": "요청이 프롬프트 캐시를 놓친(miss) 어시스턴트 턴 위에 구분선을 표시한다"
+		},
+		"display.collapseCompacted": {
+			"label": "압축 히스토리 접기",
+			"description": "라이브 트랜스크립트에서 compaction 이전 히스토리를 요약 구분선 뒤로 접는다. 비활성화하면 각 compaction 지점에 구분선을 둔 채 전체 트랜스크립트를 인라인으로 유지한다"
+		},
+		"showHardwareCursor": {
+			"label": "하드웨어 커서 표시",
+			"description": "IME 지원을 위해 터미널 커서를 표시한다"
+		},
+		"tui.imeSafeCursor": {
+			"label": "IME 안전 프롬프트 레이아웃",
+			"description": "macOS IME preedit가 프롬프트 하단 테두리를 밀어내지 못하도록 테두리를 별도 행으로 옮긴다"
+		},
+		"task.showResolvedModelBadge": {
+			"label": "확정 모델 배지 표시",
+			"description": "task 위젯 상태줄에 각 subagent가 실제로 사용한 모델 ID를 표시한다"
+		},
+		"advisor.enabled": {
+			"label": "Advisor 활성화",
+			"description": "'advisor' 역할에 배정된 두 번째 모델을 함께 두어 각 턴을 수동적으로 검토하고 메모를 주입한다."
+		},
+		"prewalk.enabled": {
+			"label": "Prewalk 활성화",
+			"description": "활성 모델로 시작한 뒤, plan nudge의 todo 목록이 생성된 이후 첫 edit/write 시점에 빠르고 저렴한 모델(기본값은 'smol' 역할)로 전환한다 — 강한 모델이 계획하고 todo를 확정하며 구현을 시작한 후 인계한다. 세션별로 --prewalk / --no-prewalk로 재정의할 수 있다."
+		},
+		"advisor.syncBacklog": {
+			"label": "Advisor 동기화 백로그",
+			"description": "advisor가 이 턴 수만큼 뒤처지면 메인 에이전트를 최대 30초 동안 멈춘다. Off로 두면 따라잡기 지연을 비활성화한다."
+		},
+		"advisor.immuneTurns": {
+			"label": "Advisor 면역 턴",
+			"description": "advisor의 concern 또는 blocker가 한 번 인터럽트한 뒤에는, 이 primary 턴 수 동안 이후 concern/blocker를 인터럽트 없이 전달한다."
+		},
+		"modelRoleStorage": {
+			"label": "모델 역할 저장소",
+			"description": "모델 선택기의 역할 배정이 저장되는 위치이다"
+		},
+		"images.describeForTextModels": {
+			"label": "텍스트 모델용 이미지 설명",
+			"description": "vision을 지원하지 않는 모델에 이미지가 첨부되면, 이미지를 버리지 않고 local:// 아래에 저장한 뒤 vision 지원 모델이 만든 설명을 주입한다"
+		},
+		"defaultThinkingLevel": {
+			"label": "Thinking 레벨",
+			"description": "thinking을 지원하는 모델의 추론 깊이이다"
+		},
+		"hideThinkingBlock": {
+			"label": "Thinking 블록 숨김",
+			"description": "어시스턴트 응답에서 thinking 블록을 숨긴다"
+		},
+		"proseOnlyThinking": {
+			"label": "산문 전용 Thinking",
+			"description": "thinking 요약에서 코드 블록을 제외하고 생략 부호로 대체한다"
+		},
+		"omitThinking": {
+			"label": "Thinking 요약 생략",
+			"description": "응답에서 thinking 요약을 완전히 생략하도록 업스트림 provider에 지시한다(지원되는 경우)"
+		},
+		"externalThinking": {
+			"label": "외부 Thinking",
+			"description": "사용자에게 표시되지 않는 비공개 스크래치패드이다. 지원되는 GPT, Claude, Gemini의 reasoning을 비활성화한다"
+		},
+		"model.loopGuard.enabled": {
+			"label": "Loop Guard",
+			"description": "모델 reasoning과 산문에 대한 자동 스트림 루프 감지를 활성화한다"
+		},
+		"model.loopGuard.checkAssistantContent": {
+			"label": "Loop Guard 산문 검사",
+			"description": "thinking 로그 외에 어시스턴트 산문 메시지에도 loop guard를 적용한다"
+		},
+		"model.loopGuard.toolCallReminder": {
+			"label": "Loop Guard 도구 호출 알림",
+			"description": "Gemini reasoning 스트림이 도구를 호출하지 않고 계획 헤더를 연속으로 다수 출력하면 중단하고 도구 호출을 요구하는 알림을 주입한다(Loop Guard 필요)"
+		},
+		"model.toolCallLoopGuard.enabled": {
+			"label": "도구 호출 Loop Guard",
+			"description": "여러 턴에 걸친 동일한 연속 도구 호출을 감지하고 교정용 steer를 주입한다"
+		},
+		"inlineToolDescriptors": {
+			"label": "인라인 도구 디스크립터",
+			"description": "시스템 프롬프트에 전체 도구 디스크립터를 렌더링하고 provider 도구 스키마에서 최상위/중첩 description을 제거해 디스크립터 텍스트를 한 번만 전송한다. Auto는 Gemini 모델에서 이를 활성화하고 그 외에는 비활성화한다"
+		},
+		"includeModelInPrompt": {
+			"label": "프롬프트에 모델 포함",
+			"description": "에이전트가 자신이 어떤 모델인지 알 수 있도록 시스템 프롬프트에 활성 모델 식별자를 노출한다"
+		},
+		"includeWorkspaceTree": {
+			"label": "워크스페이스 트리 포함",
+			"description": "시스템 프롬프트에 워크스페이스 디렉터리 트리를 렌더링한다. 경고: 파일이 수정되면 세션 간 프롬프트 캐싱이 깨질 수 있다."
+		},
+		"personality": {
+			"label": "성격",
+			"description": "시스템 프롬프트의 personality 블록에 렌더링되는 의사소통 스타일이다"
+		},
+		"temperature": {
+			"label": "Temperature",
+			"description": "샘플링 temperature이다(0 = 결정적, 1 = 창의적, -1 = provider 기본값)"
+		},
+		"topP": {
+			"label": "Top P",
+			"description": "Nucleus 샘플링 컷오프이다(0-1, -1 = provider 기본값)"
+		},
+		"topK": {
+			"label": "Top K",
+			"description": "상위 K개 토큰에서 샘플링한다(-1 = provider 기본값)"
+		},
+		"minP": {
+			"label": "Min P",
+			"description": "최소 확률 임계값 (0-1, -1 = provider 기본값)"
+		},
+		"presencePenalty": {
+			"label": "Presence Penalty",
+			"description": "이미 등장한 토큰을 도입하는 데 대한 페널티 (-1 = provider 기본값)"
+		},
+		"repetitionPenalty": {
+			"label": "Repetition Penalty",
+			"description": "반복된 토큰에 대한 페널티 (-1 = provider 기본값)"
+		},
+		"textVerbosity": {
+			"label": "텍스트 상세도",
+			"description": "OpenAI Responses 및 Codex 응답의 상세도 (low, medium, high)"
+		},
+		"tier.openai": {
+			"label": "서비스 티어 — OpenAI",
+			"description": "OpenAI / OpenAI-Codex 요청 및 OpenRouter를 경유하는 OpenAI 계열 모델의 처리 티어 (none = 생략). `service_tier`로 전송한다."
+		},
+		"tier.anthropic": {
+			"label": "서비스 티어 — Anthropic",
+			"description": "Claude 요청의 처리 티어. `priority`는 지원되는 직접 Anthropic 모델에서 fast 모드(`speed: \"fast\"`)를 활성화하며, Bedrock/Vertex Claude 및 OpenRouter 경유에서는 무시된다."
+		},
+		"tier.google": {
+			"label": "서비스 티어 — Google",
+			"description": "Gemini(Google AI Studio + Vertex) 요청 및 OpenRouter를 경유하는 Google 계열 모델의 처리 티어 (none = 생략). 최상위 `serviceTier` 필드로 전송한다."
+		},
+		"tier.subagent": {
+			"label": "서비스 티어 — 서브에이전트",
+			"description": "생성된 task/eval 서브에이전트의 서비스 티어. Inherit = 메인 에이전트의 실시간 계열별 티어를 따른다(/fast를 추적한다). 값을 지정하면 서브에이전트 모델이 속한 계열에 그 값을 적용한다."
+		},
+		"tier.advisor": {
+			"label": "서비스 티어 — Advisor",
+			"description": "advisor 모델의 서비스 티어. None = 표준 처리, Inherit = 메인 에이전트의 실시간 계열별 티어를 따른다. 값을 지정하면 advisor 모델의 계열에 그 값을 적용한다."
+		},
+		"retry.maxRetries": {
+			"label": "재시도 횟수",
+			"description": "API 오류 시 최대 재시도 횟수"
+		},
+		"retry.modelFallback": {
+			"label": "재시도 모델 폴백",
+			"description": "재시도 복구 시 설정된 폴백 모델로 전환하도록 허용한다"
+		},
+		"retry.usageAwareFallback": {
+			"label": "사용량 인식 폴백",
+			"description": "신뢰할 수 있는 coding-plan 할당량 보고를 활용해, 하드 사용량 한도에 도달하기 전에 동일 provider 계정을 먼저 사용하고 그다음 설정된 폴백 모델을 사용한다. 일반 설정 API 키는 제외한다."
+		},
+		"retry.usageReservePct": {
+			"label": "예비 마진",
+			"description": "남은 비율이 이 값 미만이면 coding-plan 모델이 한도에 근접한 것으로 간주한다. 사용량을 알 수 없거나 매핑되지 않은 경우 주 모델을 유지한다."
+		},
+		"retry.usageReservePolicy": {
+			"label": "예비 정책",
+			"description": "동일 provider의 모든 coding-plan 계정이 예비 마진 안에 들어왔을 때의 동작이다."
+		},
+		"retry.fallbackChains": {
+			"label": "재시도 폴백 체인",
+			"description": "모델 역할, 모델 선택자(\"provider/model-id\"), 또는 provider 와일드카드(\"provider/*\")를 순서가 있는 폴백 선택자에 매핑하는 JSON 객체이다. 예: {\"default\":[\"openai/gpt-4o-mini\"],\"google-antigravity/*\":[\"google/*\",\"google-vertex/*\"]}. 모델 지향 키는 역할과 무관하게 해당 모델/provider가 활성일 때마다 적용되며, \"provider/*\" 항목은 실패한 모델의 id를 유지한 채 provider만 교체한다. id 접두사 와일드카드(\"openrouter/google/*\")는 실패한 모델의 순수 id에 접두사를 다시 붙이고(google-antigravity/gemini-x -> openrouter/google/gemini-x), 키로 사용될 때는 해당 접두사 아래의 그 provider id에만 매칭된다."
+		},
+		"retry.fallbackRevertPolicy": {
+			"label": "폴백 복귀 정책",
+			"description": "폴백 이후 주 모델로 되돌아가는 시점이다"
+		},
+		"providers.anthropic.serverSideFallback": {
+			"label": "Anthropic 서버 사이드 폴백 (Fable 5)",
+			"description": "Claude Fable 5 / Mythos 5 요청이 Anthropic의 안전 분류기에 의해 차단되면 서버 사이드에서 Claude Opus 4.8로 재시도한다(Anthropic `server-side-fallback-2026-06-01` 베타). 옵트인 방식이며, 끄면 모든 요청에 대해 폴백 이전 동작이 유지된다."
+		},
+		"providers.autoThinkingModel": {
+			"label": "Auto Thinking 모델",
+			"description": "`auto` thinking 레벨의 난이도 분류기이다. 기본값은 온라인(/models의 TINY 역할, 없으면 smol)이며, 로컬 온디바이스 모델도 사용할 수 있다"
+		},
+		"providers.autoThinkingMaxEffort": {
+			"label": "Auto Thinking 상한",
+			"description": "`auto` 분류기가 도달할 수 있는 최고 effort이다. `xhigh`는 분류기를 최상위보다 한 단계 아래로 유지해 명시적인 `ultrathink`만 `max`에 도달하게 하며, `max`는 분류기가 예외적이라고 판단한 턴이 이를 노출하는 모델에서 최상위 티어로 과금되도록 허용한다."
+		},
+		"autoResume": {
+			"label": "자동 재개",
+			"description": "현재 디렉터리의 가장 최근 세션을 자동으로 재개한다"
+		},
+		"power.sleepPrevention": {
+			"label": "절전 방지",
+			"description": "활성 세션 동안 macOS 절전을 방지한다. 각 레벨은 누적되며, 하위 레벨의 플래그를 모두 포함한다."
+		},
+		"git.enabled": {
+			"label": "Git 통합 활성화",
+			"description": "TUI에 git 브랜치, 상태, PR 정보를 표시하고 저장소 메타데이터를 감시한다."
+		},
+		"steeringMode": {
+			"label": "Steering 모드",
+			"description": "에이전트가 작업하는 동안 대기 중인 메시지를 처리하는 방식이다"
+		},
+		"followUpMode": {
+			"label": "후속 메시지 모드",
+			"description": "턴이 완료된 후 후속 메시지를 처리하는 방식이다"
+		},
+		"interruptMode": {
+			"label": "인터럽트 모드",
+			"description": "steering 메시지가 도구 실행을 중단하는 시점이다"
+		},
+		"loop.mode": {
+			"label": "Loop 모드",
+			"description": "/loop 반복 사이에 프롬프트를 다시 제출하기 전에 일어나는 동작이다"
+		},
+		"doubleEscapeAction": {
+			"label": "이중 Escape 동작",
+			"description": "편집기가 비어 있는 상태에서 Escape를 두 번 누를 때의 동작이다"
+		},
+		"treeFilterMode": {
+			"label": "세션 트리 필터",
+			"description": "세션 트리를 열 때의 기본 필터 모드이다"
+		},
+		"autocompleteMaxVisible": {
+			"label": "자동완성 항목 수",
+			"description": "자동완성 드롭다운에 표시되는 최대 항목 수이다 (3-20)"
+		},
+		"emojiAutocomplete": {
+			"label": "이모지 자동완성",
+			"description": "`:name:` 숏코드로 이모지를 제안하고 `:D` 또는 `:-)` 같은 텍스트 이모티콘을 확장한다"
+		},
+		"paste.largeMenuThreshold": {
+			"label": "대용량 붙여넣기 메뉴",
+			"description": "붙여넣기가 이 줄 수에 도달하면 코드 블록으로 감싸기, XML 태그로 감싸기, 파일로 저장하기 메뉴를 제공한다. 0은 메뉴를 비활성화한다(대용량 붙여넣기는 여전히 [Paste] 마커로 축약된다)."
+		},
+		"startup.quiet": {
+			"label": "조용한 시작",
+			"description": "환영 화면과 시작 상태 메시지를 건너뛴다"
+		},
+		"startup.showSplash": {
+			"label": "시작 스플래시 표시",
+			"description": "설정을 다시 실행하지 않고 일반 대화형 시작 시 전체 애니메이션 설정 스플래시를 표시한다. 조용한 시작은 여전히 이를 억제한다."
+		},
+		"startup.setupWizard": {
+			"label": "설정 위저드",
+			"description": "새로 추가된 온보딩 단계를 설정 버전마다 한 번 표시한다"
+		},
+		"startup.checkUpdate": {
+			"label": "업데이트 확인",
+			"description": "시작 시 omp 업데이트를 확인한다"
+		},
+		"marketplace.autoUpdate": {
+			"label": "마켓플레이스 자동 업데이트",
+			"description": "시작 시 플러그인 업데이트를 확인한다"
+		},
+		"startup.changelogMode": {
+			"label": "시작 변경 내역",
+			"description": "업데이트 노트를 요약으로 시작할지, 전체 상세로 시작할지, 숨긴 상태로 둘지 선택한다"
+		},
+		"magicKeywords.enabled": {
+			"label": "매직 키워드",
+			"description": "단독으로 쓰인 ultrathink, orchestrate, workflowz 키워드에 대한 숨겨진 공지를 활성화한다"
+		},
+		"magicKeywords.ultrathink": {
+			"label": "Ultrathink 키워드",
+			"description": "단독으로 쓰인 ultrathink가 최대 자동 사고를 요청하고 숨겨진 공지를 덧붙이도록 한다"
+		},
+		"magicKeywords.orchestrate": {
+			"label": "Orchestrate 키워드",
+			"description": "단독으로 쓰인 orchestrate가 숨겨진 멀티 에이전트 오케스트레이션 공지를 덧붙이도록 한다"
+		},
+		"magicKeywords.workflow": {
+			"label": "Workflow 키워드",
+			"description": "단독으로 쓰인 workflowz가 숨겨진 eval 워크플로 공지를 덧붙이도록 한다"
+		},
+		"completion.notify": {
+			"label": "완료 알림",
+			"description": "에이전트가 턴을 마쳤을 때 알린다"
+		},
+		"error.notify": {
+			"label": "오류 알림",
+			"description": "에이전트가 오류로 중단되었을 때 알린다"
+		},
+		"ask.timeout": {
+			"label": "Ask 타임아웃",
+			"description": "이 초가 지나면 권장 ask 옵션을 자동 선택한다 (0은 비활성화)"
+		},
+		"ask.notify": {
+			"label": "Ask 알림",
+			"description": "ask 도구가 입력을 기다릴 때 알린다"
+		},
+		"recap.enabled": {
+			"label": "유휴 요약",
+			"description": "터미널이 유휴 상태가 된 후 현재 상황에 대한 간단한 LLM 요약을 생성한다"
+		},
+		"recap.idleSeconds": {
+			"label": "유휴 요약 지연",
+			"description": "요약을 표시하기 전 유휴 상태로 대기하는 초이다"
+		},
+		"collab.relayUrl": {
+			"label": "Relay URL",
+			"description": "/collab에서 사용하는 relay이다 (wss://host[:port])"
+		},
+		"collab.webUrl": {
+			"label": "웹 UI URL",
+			"description": "/collab 링크에 사용되는 브라우저 UI이다. 비어 있으면 collab.relayUrl에서 파생되며, 명시적인 http://는 localhost에서만 사용된다"
+		},
+		"collab.displayName": {
+			"label": "표시 이름",
+			"description": "다른 collab 참가자에게 표시되는 이름이다 (기본값: OS 사용자 이름)"
+		},
+		"share.serverUrl": {
+			"label": "Share 서버",
+			"description": "/share에서 사용하는 공유 뷰어/업로드 기준 주소이다 (암호화된 blob 업로드 + 뷰어, 링크는 <base>/<id>#<key> 형식이다)"
+		},
+		"share.store": {
+			"label": "Share 저장소",
+			"description": "/share가 암호화된 세션 blob을 업로드하는 위치이다"
+		},
+		"share.redactSecrets": {
+			"label": "공유 시 비밀정보 삭제",
+			"description": "업로드 전에 /share 스냅샷에 대해 secret obfuscator를 실행한다(secrets.* 설정을 사용한다)"
+		},
+		"stt.enabled": {
+			"label": "음성 인식",
+			"description": "마이크를 통한 speech-to-text 입력을 활성화한다"
+		},
+		"stt.modelName": {
+			"label": "음성 모델",
+			"description": "로컬 온디바이스 음성 모델이다. Parakeet TDT v3(sherpa-onnx)가 SoTA 기본값이며, Whisper base/small/large-v3-turbo 등급(transformers.js)은 크기를 다국어 지원과 맞바꾼다. 첫 사용 시 다운로드된다."
+		},
+		"stt.submitTrigger": {
+			"label": "음성 입력 전송 트리거",
+			"description": "음성 받아쓰기가 자동으로 전송되는 시점을 선택한다: Never, Release(2단어 이상), 완전한 문장으로 Release, 또는 When I Say Submit."
+		},
+		"tools.approval": {
+			"label": "도구 승인 정책",
+			"description": "도구별 승인 정책이다. 'allow'는 자동 승인, 'prompt'는 확인 요구, 'deny'는 차단으로 설정한다. 재정의는 모든 승인 모드에서 적용된다."
+		},
+		"tools.approvalMode": {
+			"label": "도구 승인",
+			"description": "도구 호출의 기본 승인 동작이다. 'Always ask'는 읽기 전용 도구만 자동 승인한다. 'Write'는 읽기 및 workspace-write 도구를 자동 승인한다. 'Yolo'는 모든 등급을 자동 승인하지만, 사용자 정책에 따라 확인이나 차단이 발생할 수 있다."
+		},
+		"features.unexpectedStopDetection": {
+			"label": "예상치 못한 중단",
+			"description": "어시스턴트가 예상치 못하게 멈추면 자동으로 복구한다. '기계적'(기본값)은 표시할 답변 없이 끝난 경우를 재시도하고 도구 호출이 있었던 중단은 제외한다. '스마트'는 기계적 감지에 더해 작은 모델로 텍스트만 남긴 중단도 판별하며, '사용 안 함'은 감지를 끈다."
+		},
+		"contextPromotion.enabled": {
+			"label": "컨텍스트 자동 승격",
+			"description": "컨텍스트 초과 시 compaction 대신 더 큰 컨텍스트 모델로 승격한다"
+		},
+		"compaction.enabled": {
+			"label": "자동 Compact",
+			"description": "컨텍스트가 너무 커지면 자동으로 compact한다"
+		},
+		"compaction.midTurnEnabled": {
+			"label": "턴 중간 Compaction",
+			"description": "다음 provider 요청 전에 안전한 턴 중간 tool-loop 경계에서 임계값을 확인한다"
+		},
+		"compaction.strategy": {
+			"label": "Compaction 전략",
+			"description": "제자리 context-full 유지, auto-handoff, surgical shake(무거운 콘텐츠 제거), snapcompact(히스토리를 밀집 이미지로 보관) 중에서 선택하거나 자동 유지를 비활성화(off)한다"
+		},
+		"compaction.thresholdPercent": {
+			"label": "Compaction 임계값",
+			"description": "컨텍스트 유지의 퍼센트 임계값이다. Default로 설정하면 기존 reserve 기반 동작을 사용한다"
+		},
+		"compaction.thresholdTokens": {
+			"label": "Compaction 토큰 한도",
+			"description": "컨텍스트 유지의 고정 토큰 한도이다. 설정하면 퍼센트 값을 재정의한다"
+		},
+		"compaction.handoffSaveToDisk": {
+			"label": "Handoff 문서 저장",
+			"description": "auto-handoff 흐름에서 생성된 handoff 문서를 markdown 파일로 저장한다"
+		},
+		"compaction.remoteEnabled": {
+			"label": "원격 Compaction",
+			"description": "가능한 경우 로컬 요약 대신 원격 compaction 엔드포인트를 사용한다"
+		},
+		"compaction.remoteStreamingV2Enabled": {
+			"label": "원격 Compaction V2",
+			"description": "호환되는 원격 compaction 모델에 대해 Responses 스트리밍 compaction을 사용한다"
+		},
+		"compaction.idleEnabled": {
+			"label": "유휴 Compaction",
+			"description": "토큰 수가 임계값을 넘으면 유휴 상태에서 컨텍스트를 compact한다"
+		},
+		"compaction.idleThresholdTokens": {
+			"label": "유휴 Compaction 임계값",
+			"description": "유휴 compaction이 트리거되는 토큰 수 기준이다"
+		},
+		"compaction.idleTimeoutSeconds": {
+			"label": "유휴 Compaction 지연",
+			"description": "compact하기 전 유휴 상태로 대기하는 초이다"
+		},
+		"compaction.supersedeReads": {
+			"label": "오래된 읽기 대체",
+			"description": "같은 파일을 다시 읽으면 이전 읽기 결과를 정리한다(캐시 인식, 매 턴 실행)"
+		},
+		"compaction.dropUseless": {
+			"label": "무의미한 결과 제거",
+			"description": "컨텍스트상 무용하다고 표시된 도구 결과(일치 없음, 시간 초과된 대기)를 소비된 후 정리한다(캐시 인식)"
+		},
+		"snapcompact.systemPrompt": {
+			"label": "Snapcompact 시스템 프롬프트",
+			"description": "실험적 기능이다: 선택한 시스템 프롬프트 텍스트를 밀집 PNG 이미지로 렌더링해 첫 사용자 메시지에 첨부한다(비전 모델 전용). 토큰을 절약하지만 이미지화된 텍스트의 prompt caching을 잃는다."
+		},
+		"snapcompact.toolResults": {
+			"label": "Snapcompact 도구 결과",
+			"description": "실험적 기능이다: 큰 과거 도구 결과를 텍스트 대신 밀집 PNG 이미지로 렌더링한다(비전 모델 전용). 누적된 읽기/검색 출력의 토큰을 절약한다."
+		},
+		"tools.format": {
+			"label": "도구 호출 모드",
+			"description": "도구가 모델에 노출되는 방식을 제어한다. Auto는 provider-native 도구 호출을 사용하지만, 선택된 모델이 이를 지원하지 않는다고 표시된 경우 GLM owned dialect로 대체한다. Native는 provider-native 도구를 강제하고, 나머지 값은 지정된 owned dialect를 강제한다. 세션 시작 시 적용된다."
+		},
+		"snapcompact.shape": {
+			"label": "Snapcompact 형태",
+			"description": "snapcompact가 텍스트를 출력하는 프레임 형태이다(compaction 보관 및 인라인 이미지화). Auto는 현재 모델에 맞게 조정된 형태를 선택한다."
+		},
+		"branchSummary.enabled": {
+			"label": "브랜치 요약",
+			"description": "브랜치를 떠날 때 요약을 요청한다"
+		},
+		"ttsr.enabled": {
+			"label": "TTSR",
+			"description": "출력이 규칙 패턴과 일치하면 스트리밍 도중에 에이전트를 중단한다(Time-Traveling Stream Rules)"
+		},
+		"ttsr.contextMode": {
+			"label": "TTSR 컨텍스트 모드",
+			"description": "TTSR이 발동할 때 부분 출력을 어떻게 처리할지 정한다"
+		},
+		"ttsr.interruptMode": {
+			"label": "TTSR 인터럽트 모드",
+			"description": "스트리밍 도중에 중단할지, 완료 후 경고를 주입할지 정한다"
+		},
+		"ttsr.repeatMode": {
+			"label": "TTSR 반복 모드",
+			"description": "규칙이 반복되는 방식을 정한다: 세션당 한 번 또는 메시지 간격 이후"
+		},
+		"ttsr.repeatGap": {
+			"label": "TTSR 반복 간격",
+			"description": "규칙이 다시 발동할 수 있기까지의 메시지 수이다"
+		},
+		"ttsr.builtinRules": {
+			"label": "기본 제공 규칙",
+			"description": "에이전트에 기본 포함된 규칙을 로드한다(ttsr.disabledRules로 개별 해제 가능)"
+		},
+		"memory.backend": {
+			"label": "메모리 백엔드",
+			"description": "끄기, 로컬 요약 파이프라인, Mnemopi SQLite, 또는 Hindsight 원격 메모리 중에서 선택한다"
+		},
+		"autolearn.enabled": {
+			"label": "자동 학습 (실험적)",
+			"description": "에이전트가 멈춘 뒤 교훈을 메모리에 기록하고 격리된 관리형 skill을 생성/보강하도록 유도한다"
+		},
+		"autolearn.autoContinue": {
+			"label": "중지 시 캡처 자동 실행",
+			"description": "켜면 중지 시 비공개 캡처 턴을 한 번 자동 실행한다(추가 토큰을 사용한다). 끄면 상시 자동 학습 안내만 남는다."
+		},
+		"mnemopi.dbPath": {
+			"label": "Mnemopi DB 경로",
+			"description": "선택적 SQLite DB 경로이다. 기본값은 에이전트 memories 디렉터리이다."
+		},
+		"mnemopi.bank": {
+			"label": "Mnemopi 뱅크",
+			"description": "선택적 공유 뱅크 기본 이름이다. per-project 모드는 이를 기반으로 프로젝트 로컬 뱅크를 파생한다."
+		},
+		"mnemopi.scoping": {
+			"label": "Mnemopi 스코핑",
+			"description": "global = 공유 뱅크 하나, per-project = cwd별 격리 뱅크, per-project-tagged = 프로젝트 로컬 쓰기에 global recall 가시성을 더한 방식이다"
+		},
+		"mnemopi.embeddingVariant": {
+			"label": "임베딩 variant",
+			"description": "로컬 임베딩 모델 계열이다. en = 더 강력한 영어 모델, multilingual = 교차 언어 모델이다. 이를 변경하면 다음 시작 시 기존 메모리 임베딩을 다시 생성한다."
+		},
+		"mnemopi.autoRecall": {
+			"label": "Mnemopi 자동 recall",
+			"description": "각 세션의 첫 턴에 로컬 메모리를 recall한다"
+		},
+		"mnemopi.autoRetain": {
+			"label": "Mnemopi 자동 retain",
+			"description": "완료된 대화 턴을 로컬 Mnemopi 메모리에 retain한다"
+		},
+		"mnemopi.polyphonicRecall": {
+			"label": "Mnemopi 폴리포닉 recall",
+			"description": "reciprocal rank fusion으로 융합한 4-voice recall(vector, graph, fact, temporal)을 활성화한다"
+		},
+		"mnemopi.enhancedRecall": {
+			"label": "Mnemopi 향상된 recall",
+			"description": "반복되거나 유사한 recall 쿼리를 위한 계층형 쿼리 결과 캐시를 활성화한다"
+		},
+		"mnemopi.proactiveLinking": {
+			"label": "Mnemopi 선제적 링킹",
+			"description": "새 메모리를 저장하는 즉시 episodic 그래프에 수집해 관련 엔터티 및 메모리와 연결한다"
+		},
+		"mnemopi.noEmbeddings": {
+			"label": "Mnemopi 임베딩 비활성화",
+			"description": "vector 임베딩 대신 결정적인 FTS 전용 recall을 강제한다"
+		},
+		"mnemopi.embeddingModel": {
+			"label": "Mnemopi 임베딩 모델",
+			"description": "고급: variant를 재정의하는 명시적 임베딩 모델 id이다. 비워 두면 mnemopi.embeddingVariant를 사용한다."
+		},
+		"mnemopi.embeddingApiUrl": {
+			"label": "Mnemopi 임베딩 API URL",
+			"description": "Mnemopi에 전달하는 선택적 OpenAI 호환 임베딩 엔드포인트이다"
+		},
+		"mnemopi.embeddingApiKey": {
+			"label": "Mnemopi 임베딩 API 키",
+			"description": "Mnemopi에 전달하는 선택적 임베딩 API 키이다"
+		},
+		"mnemopi.llmMode": {
+			"label": "Mnemopi LLM 모드",
+			"description": "LLM 미사용, 온라인 tiny 모델(/models의 TINY 역할, 없으면 @smol), 또는 원격 OpenAI 호환 엔드포인트를 사용한다"
+		},
+		"mnemopi.llmBaseUrl": {
+			"label": "Mnemopi LLM Base URL",
+			"description": "Mnemopi 원격 모드를 위한 선택적 OpenAI 호환 LLM 엔드포인트이다"
+		},
+		"mnemopi.llmApiKey": {
+			"label": "Mnemopi LLM API 키",
+			"description": "Mnemopi 원격 모드를 위한 선택적 LLM API 키이다"
+		},
+		"mnemopi.llmModel": {
+			"label": "Mnemopi LLM 모델",
+			"description": "Mnemopi 원격 모드를 위한 선택적 LLM 모델 이름이다"
+		},
+		"hindsight.apiUrl": {
+			"label": "Hindsight API URL",
+			"description": "Hindsight 서버 URL(Cloud 또는 self-hosted)이다"
+		},
+		"hindsight.apiToken": {
+			"label": "Hindsight API 토큰",
+			"description": "인증이 필요한 Hindsight 서버용 Bearer 토큰이다"
+		},
+		"hindsight.bankId": {
+			"label": "Hindsight Bank ID",
+			"description": "메모리 뱅크 식별자다(기본값: 프로젝트 이름)"
+		},
+		"hindsight.scoping": {
+			"label": "Hindsight 범위",
+			"description": "global = 하나의 공유 뱅크, per-project = cwd별로 격리된 뱅크, per-project-tagged = 프로젝트 태그가 붙은 공유 뱅크로 recall 시 global 메모리와 프로젝트 메모리가 병합된다"
+		},
+		"hindsight.autoRecall": {
+			"label": "Hindsight 자동 recall",
+			"description": "각 세션의 첫 턴에 메모리를 recall한다"
+		},
+		"hindsight.autoRetain": {
+			"label": "Hindsight 자동 retain",
+			"description": "N턴마다 그리고 세션 경계에서 대화 기록을 retain한다"
+		},
+		"hindsight.retainMode": {
+			"label": "Hindsight retain 모드",
+			"description": "full-session = 세션당 문서 하나를 upsert하고, last-turn = 청크 단위로 저장한다"
+		},
+		"hindsight.mentalModelsEnabled": {
+			"label": "Hindsight 멘탈 모델",
+			"description": "부팅 시 정리된 reflect 요약(멘탈 모델)을 developer instructions로 읽어들인다. 뱅크에 있는 기존 모델을 로드하며 쓰기는 하지 않는다. 내장 seed 세트를 자동 생성하려면 hindsight.mentalModelAutoSeed와 함께 사용한다."
+		},
+		"hindsight.mentalModelAutoSeed": {
+			"label": "Hindsight 멘탈 모델 자동 seed",
+			"description": "세션 시작 시 뱅크에 아직 없는 내장 멘탈 모델(project-conventions, project-decisions, user-preferences)을 생성한다."
+		},
+		"providers.memoryModel": {
+			"label": "메모리 모델",
+			"description": "사실 추출 및 통합에 사용하는 Mnemopi LLM이다: 기본값은 online(/models의 TINY 역할, 없으면 smol/remote)이며, 로컬 on-device 모델도 사용할 수 있다"
+		},
+		"edit.mode": {
+			"label": "편집 모드",
+			"description": "edit 도구 변형을 선택한다(replace, patch, hashline, apply_patch)"
+		},
+		"edit.fuzzyMatch": {
+			"label": "퍼지 매치",
+			"description": "공백 차이에 대해 신뢰도가 높은 퍼지 매치를 허용한다"
+		},
+		"edit.fuzzyThreshold": {
+			"label": "퍼지 매치 임계값",
+			"description": "퍼지 매치를 허용하는 유사도 임계값(0-1)이다"
+		},
+		"edit.streamingAbort": {
+			"label": "프리뷰 실패 시 중단",
+			"description": "패치 프리뷰가 실패하면 스트리밍 edit 도구 호출을 중단한다"
+		},
+		"edit.blockAutoGenerated": {
+			"label": "자동 생성 파일 차단",
+			"description": "자동 생성된 것으로 보이는 파일(protoc, sqlc, swagger 등)의 편집을 막는다"
+		},
+		"edit.enforceSeenLines": {
+			"label": "확인된 줄 가드 적용",
+			"description": "이전 read/search가 전체를 표시하지 않은 줄을 기준으로 하는 편집을 거부한다"
+		},
+		"readLineNumbers": {
+			"label": "줄 번호",
+			"description": "기본적으로 read 도구 출력에 줄 번호를 앞에 붙인다"
+		},
+		"read.defaultLimit": {
+			"label": "기본 read 제한",
+			"description": "에이전트가 limit 없이 read를 호출할 때 반환하는 기본 줄 수다"
+		},
+		"read.renderMarkdown": {
+			"label": "Markdown 프리뷰",
+			"description": "Markdown read 결과를 원본 소스가 아니라 서식이 적용된 터미널 Markdown 프리뷰로 렌더링한다"
+		},
+		"read.summarize.enabled": {
+			"label": "read 요약",
+			"description": "명시적 selector 없이 read가 호출되면 구조적 코드 요약을 반환한다"
+		},
+		"read.summarize.prose": {
+			"label": "산문 요약",
+			"description": "Markdown 및 일반 텍스트 read에 대해 구조적 요약을 반환한다"
+		},
+		"read.toolResultPreview": {
+			"label": "인라인 read 프리뷰",
+			"description": "read 도구 결과를 요약 행이 아니라 대화 기록에 인라인으로 렌더링한다"
+		},
+		"lsp.enabled": {
+			"label": "LSP",
+			"description": "코드 인텔리전스(정의, 참조, 진단, 이름 변경)를 위한 lsp 도구를 활성화한다"
+		},
+		"lsp.lazy": {
+			"label": "LSP 지연 시작",
+			"description": "세션 시작 시점이 아니라 처음 사용할 때(lsp 도구 호출 또는 해당 파일 타입 편집) language server를 시작한다"
+		},
+		"lsp.shared": {
+			"label": "공유 language server",
+			"description": "daemon broker를 통해 프로젝트당 하나의 language server를 omp 인스턴스 간에 공유한다(사용할 수 없으면 개별 서버로 대체된다)"
+		},
+		"lsp.formatOnWrite": {
+			"label": "쓰기 시 포맷",
+			"description": "파일을 쓴 후 LSP로 코드 파일을 자동 포맷한다"
+		},
+		"lsp.diagnosticsOnWrite": {
+			"label": "쓰기 시 진단",
+			"description": "코드 파일을 쓴 후 LSP 진단을 반환한다"
+		},
+		"lsp.diagnosticsOnEdit": {
+			"label": "편집 시 진단",
+			"description": "코드 파일을 편집한 후 LSP 진단을 반환한다"
+		},
+		"lsp.diagnosticsDeduplicate": {
+			"label": "진단 중복 제거",
+			"description": "파일에 대해 이미 표시된 편집 후 LSP 진단을 억제하고, 새롭거나 변경된 것만 표시한다"
+		},
+		"bash.enabled": {
+			"label": "Bash",
+			"description": "셸 명령 실행을 위한 bash 도구를 활성화한다"
+		},
+		"bash.autoBackground.enabled": {
+			"label": "Bash 자동 백그라운드",
+			"description": "오래 실행되는 bash 명령을 자동으로 백그라운드로 보내고 결과를 나중에 전달한다"
+		},
+		"bashInterceptor.enabled": {
+			"label": "Bash 인터셉터",
+			"description": "전용 도구가 있는 셸 명령을 차단한다"
+		},
+		"bash.direnv": {
+			"label": "direnv 자동 로드",
+			"description": "저장소의 direnv/devenv `.envrc`를 bash 세션에 자동으로 로드해 수동 `direnv exec` 없이 devenv 도구와 환경 변수를 사용할 수 있게 한다. direnv의 허용 목록을 따르며, `direnv allow`하지 않은 `.envrc`는 절대 실행되지 않는다"
+		},
+		"shellMinimizer.enabled": {
+			"label": "셸 출력 축소",
+			"description": "장황한 셸 출력(git, npm, cargo 등)을 에이전트에 반환하기 전에 압축한다"
+		},
+		"shellMinimizer.sourceOutlineLevel": {
+			"label": "셸 축소 소스 아웃라인",
+			"description": "소스 파일의 cat/read에 대한 소스 아웃라인 모드: default 또는 aggressive"
+		},
+		"eval.py": {
+			"label": "Python Eval 백엔드",
+			"description": "eval 도구가 Python 셀을 IPython 커널로 보내도록 허용한다"
+		},
+		"eval.js": {
+			"label": "JavaScript Eval 백엔드",
+			"description": "eval 도구가 JavaScript 셀을 인프로세스 런타임으로 보내도록 허용한다"
+		},
+		"eval.rb": {
+			"label": "Ruby Eval 백엔드",
+			"description": "eval 도구가 Ruby 셀을 상시 유지되는 Ruby 커널로 보내도록 허용한다"
+		},
+		"eval.jl": {
+			"label": "Julia Eval 백엔드",
+			"description": "eval 도구가 Julia 셀을 상시 유지되는 Julia 커널로 보내도록 허용한다"
+		},
+		"python.kernelMode": {
+			"label": "Python 커널 모드",
+			"description": "eval 호출 간에 IPython 커널을 유지할지 매번 새로 시작할지 정한다"
+		},
+		"python.interpreter": {
+			"label": "Python 인터프리터",
+			"description": "정확한 Python 실행 파일의 선택적 경로이다. 설정하면 자동 Python 런타임 탐색을 건너뛴다."
+		},
+		"ruby.interpreter": {
+			"label": "Ruby 인터프리터",
+			"description": "정확한 Ruby 실행 파일의 선택적 경로이다. 설정하면 자동 Ruby 런타임 탐색을 건너뛴다."
+		},
+		"julia.interpreter": {
+			"label": "Julia 인터프리터",
+			"description": "정확한 Julia 실행 파일의 선택적 경로이다. 설정하면 자동 Julia 런타임 탐색을 건너뛴다."
+		},
+		"tools.artifactSpillThreshold": {
+			"label": "아티팩트 분리 임계값(KB)",
+			"description": "이 크기를 넘는 도구 출력은 아티팩트로 저장되고, 끝부분은 인라인으로 유지된다"
+		},
+		"tools.artifactTailBytes": {
+			"label": "아티팩트 끝부분 크기(KB)",
+			"description": "출력이 아티팩트로 넘어갈 때 인라인으로 유지되는 끝부분 내용의 양이다"
+		},
+		"tools.artifactHeadBytes": {
+			"label": "아티팩트 앞부분 크기(KB)",
+			"description": "출력이 아티팩트로 넘어갈 때 끝부분과 함께 인라인으로 유지되는 앞부분 내용의 양이다(중간 생략). 0이면 비활성화되어 끝부분만 유지한다."
+		},
+		"tools.outputMaxColumns": {
+			"label": "출력 열 제한",
+			"description": "스트리밍 도구 출력(bash, python, js eval)과 `read`에 대한 줄당 바이트 제한이다. 이보다 긴 줄은 말줄임표로 잘리고, 다음 줄바꿈까지 남은 바이트는 버려진다. 0이면 비활성화된다."
+		},
+		"tools.artifactTailLines": {
+			"label": "아티팩트 끝부분 줄 수",
+			"description": "출력이 아티팩트로 넘어갈 때 인라인으로 유지되는 끝부분 내용의 최대 줄 수이다"
+		},
+		"todo.enabled": {
+			"label": "할 일 목록",
+			"description": "작업 추적을 위한 todo 도구를 활성화한다"
+		},
+		"todo.reminders": {
+			"label": "할 일 알림",
+			"description": "중지하기 전에 할 일을 완료하도록 에이전트에 상기시킨다"
+		},
+		"todo.remindersMax": {
+			"label": "할 일 알림 제한",
+			"description": "포기하기 전까지의 최대 할 일 알림 횟수이다"
+		},
+		"todo.eager": {
+			"label": "할 일 자동 생성",
+			"description": "첫 메시지 이후 자동 할 일 목록 생성을 얼마나 강하게 유도할지 정한다"
+		},
+		"glob.enabled": {
+			"label": "Glob",
+			"description": "glob 기반 파일 조회를 위한 glob 도구를 활성화한다"
+		},
+		"grep.enabled": {
+			"label": "Grep",
+			"description": "정규식 내용 검색을 위한 grep 도구를 활성화한다"
+		},
+		"grep.contextBefore": {
+			"label": "Grep 앞 컨텍스트",
+			"description": "각 grep 일치 항목 앞에 표시할 컨텍스트 줄 수이다"
+		},
+		"grep.contextAfter": {
+			"label": "Grep 뒤 컨텍스트",
+			"description": "각 grep 일치 항목 뒤에 표시할 컨텍스트 줄 수이다"
+		},
+		"astGrep.enabled": {
+			"label": "AST Grep",
+			"description": "구조적 AST 검색을 위한 ast_grep 도구를 활성화한다"
+		},
+		"astEdit.enabled": {
+			"label": "AST Edit",
+			"description": "구조적 AST 재작성을 위한 ast_edit 도구를 활성화한다"
+		},
+		"debug.enabled": {
+			"label": "디버그",
+			"description": "DAP 기반 디버깅을 위한 debug 도구를 활성화한다"
+		},
+		"launch.enabled": {
+			"label": "Launch",
+			"description": "공유되는 장기 실행 프로젝트 프로세스를 감독하는 launch 도구를 활성화한다"
+		},
+		"speechgen.enabled": {
+			"label": "음성 생성",
+			"description": "온디바이스(Kokoro) 또는 xAI Grok Voice 음성 파일 합성을 위한 tts 도구를 활성화한다"
+		},
+		"generate_image.enabled": {
+			"label": "이미지 생성",
+			"description": "generate_image 도구(텍스트-이미지 생성 및 편집)를 활성화한다. tools.xdev가 켜져 있으면 xd:// 장치로 노출된다."
+		},
+		"inspect_image.mode": {
+			"label": "이미지 분석",
+			"description": "이미지 이해를 비전 지원 모델에 위임하는 inspect_image 도구를 제어한다. 'auto'는 활성 모델이 네이티브 이미지 입력을 지원하지 않을 때만 노출하고, 'on'은 항상 노출하며, 'off'는 노출하지 않는다."
+		},
+		"computer.enabled": {
+			"label": "컴퓨터",
+			"description": "스크립트 가능한 호스트 데스크톱 제어 도구(스크린샷, 입력, 접근성)를 활성화한다"
+		},
+		"computer.display": {
+			"label": "컴퓨터 디스플레이",
+			"description": "모든 디스플레이를 합성하거나 네이티브 display id를 선택한다"
+		},
+		"inspect_image.timeoutMs": {
+			"label": "이미지 분석 타임아웃",
+			"description": "inspect_image 비전 모델 호출의 요청당 타임아웃이며 단위는 milliseconds이다. 응답이 멈춘 제공자는 수동 중단까지 차단되지 않고 타임아웃 오류로 빠르게 실패한다. 0으로 설정하면 타임아웃을 비활성화한다."
+		},
+		"checkpoint.enabled": {
+			"label": "체크포인트/되돌리기",
+			"description": "컨텍스트 체크포인팅을 위한 checkpoint 및 rewind 도구를 활성화한다"
+		},
+		"fetch.enabled": {
+			"label": "URL 읽기",
+			"description": "read 도구가 URL을 가져와 처리하도록 허용한다"
+		},
+		"vault.enabled": {
+			"label": "Obsidian Vault",
+			"description": "Obsidian CLI를 통해 Obsidian vault 내용을 읽고 편집하는 vault:// 내부 URL을 활성화한다. 비활성화하면 vault:// 해석이 거부되고 시스템 프롬프트에서 vault:// 항목이 생략된다."
+		},
+		"github.enabled": {
+			"label": "GitHub CLI",
+			"description": "github 도구(리포지터리, 이슈, pull request, diff, 검색, checkout, push, Actions watch 워크플로에 대한 op 기반 디스패치)를 활성화한다"
+		},
+		"github.cache.enabled": {
+			"label": "GitHub 뷰 캐시",
+			"description": "렌더링된 이슈/PR 뷰 출력을 ~/.omp/cache/github-cache.db에 캐시해 반복 읽기 비용을 없앤다"
+		},
+		"web_search.enabled": {
+			"label": "웹 검색",
+			"description": "실시간 웹 결과를 위한 web_search 도구를 활성화한다"
+		},
+		"security.enabled": {
+			"label": "보안",
+			"description": "OMP 네이티브 보안 스캔 계획과 실행, 그리고 읽기 전용 security:// 리소스 네임스페이스를 활성화한다"
+		},
+		"ask.enabled": {
+			"label": "Ask",
+			"description": "대화형 사용자 질문을 위한 ask 도구를 활성화한다"
+		},
+		"browser.enabled": {
+			"label": "브라우저",
+			"description": "스크립트 기반 Chromium 자동화(puppeteer)를 위한 browser 도구를 활성화한다"
+		},
+		"browser.cdpUrl": {
+			"label": "브라우저 CDP URL",
+			"description": "브라우저를 실행하는 대신 연결할 기본 HTTP CDP 디스커버리 엔드포인트이다(예: http://127.0.0.1:9222). 도구 호출에 명시된 app.cdp_url 또는 app.path가 우선한다."
+		},
+		"browser.relay": {
+			"label": "브라우저 릴레이",
+			"description": "omp browser relay를 통해 사용자의 Chrome 탭을 제어한다. 확장 프로그램을 한 번 설치하면(`omp browser-relay install`) browser 도구가 필요할 때 릴레이 서버가 자동으로 시작된다. Browser CDP URL보다 우선하며, PI_BROWSER_RELAY=0 또는 PI_BROWSER_RELAY=1로 재정의한다."
+		},
+		"browser.relayUrl": {
+			"label": "브라우저 릴레이 URL",
+			"description": "omp browser relay 엔드포인트이다(기본값 http://127.0.0.1:9224)."
+		},
+		"browser.headless": {
+			"label": "헤드리스 브라우저",
+			"description": "브라우저를 headless 모드로 실행한다(비활성화하면 브라우저 UI를 표시한다)"
+		},
+		"browser.cmux": {
+			"label": "cmux 브라우저",
+			"description": "cmux 소켓을 사용할 수 있을 때 브라우저 자동화에 cmux WKWebView 서피스를 사용한다. PI_BROWSER_CMUX=0 또는 PI_BROWSER_CMUX=1로 재정의한다."
+		},
+		"browser.screenshotDir": {
+			"label": "스크린샷 디렉터리",
+			"description": "스크린샷을 저장할 디렉터리이다. 설정하지 않으면 스크린샷은 임시 파일로 저장된다. ~를 지원한다. 예: ~/Downloads, ~/Desktop, /sdcard/Download (Android)"
+		},
+		"tools.intentTracing": {
+			"label": "인텐트 트레이싱",
+			"description": "각 도구 호출을 실행하기 전에 그 의도를 설명하도록 에이전트에 요청한다"
+		},
+		"tools.abortOnFabricatedResult": {
+			"label": "조작된 도구 결과 시 중단",
+			"description": "in-band 도구 호출에서 모델이 턴 중간에 도구 결과를 환각하기 시작하면 즉시 중단한다. 비활성화하면 모델이 생성을 끝내도록 두고 조작된 이어쓰기를 폐기한다."
+		},
+		"tools.maxTimeout": {
+			"label": "최대 도구 타임아웃",
+			"description": "에이전트가 임의의 도구에 설정할 수 있는 최대 타임아웃(초, 0 = 무제한)"
+		},
+		"async.enabled": {
+			"label": "비동기 실행",
+			"description": "비동기 bash 명령과 백그라운드 작업 실행을 활성화한다"
+		},
+		"tools.xdev": {
+			"label": "xd:// 도구",
+			"description": "드물게 쓰이는(탐색 가능한) 도구의 스키마를 매 요청마다 보내는 대신 read/write로 구동되는 xd:// 디바이스 URL 아래에 마운트한다. write 도구가 허용되지 않은 세션은 마운트를 건너뛰고 모든 도구를 최상위로 노출한다. 비활성화하면 활성화된 모든 도구를 최상위로 노출한다."
+		},
+		"tools.xdevDocs": {
+			"label": "xd:// 프롬프트 문서",
+			"description": "시스템 프롬프트에 인라인으로 포함할 마운트된 디바이스 문서와 스키마를 선택한다. Built-ins는 핵심 도구를 인라인으로 유지하고 MCP 및 확장 도구는 on-demand로 남긴다."
+		},
+		"mcp.enableProjectConfig": {
+			"label": "MCP 프로젝트 설정",
+			"description": "프로젝트 루트에서 .mcp.json/mcp.json을 로드한다"
+		},
+		"mcp.renderMarkdownResults": {
+			"label": "MCP Markdown 결과",
+			"description": "JSON이 아닌 MCP 텍스트 결과를 트랜스크립트에서 Markdown으로 렌더링한다"
+		},
+		"mcp.notifications": {
+			"label": "MCP 업데이트 주입",
+			"description": "MCP 리소스 업데이트를 에이전트 대화에 주입한다"
+		},
+		"tasks.todoClearDelay": {
+			"label": "Todo 자동 정리 지연",
+			"description": "완료되거나 중단된 todo가 todo 위젯에서 제거되기까지의 지연 시간이다"
+		},
+		"dev.autoqa": {
+			"label": "Auto QA",
+			"description": "자동 도구 이슈 보고(xd://report_issue)이다. 기본적으로 켜져 있으며, 첫 보고 시 동의를 요청하고 거부하면 명시적으로 다시 활성화할 때까지 보고를 비활성화한다"
+		},
+		"dev.autoqaPush.endpoint": {
+			"label": "Auto QA 푸시 엔드포인트",
+			"description": "Auto QA JSON 보고를 수신하는 전체 URL이다(기본값 https://qa.omp.sh/v1/grievances)"
+		},
+		"plan.enabled": {
+			"label": "Plan 모드",
+			"description": "실행 전 읽기 전용 탐색과 계획 수립을 위한 plan 모드를 활성화한다"
+		},
+		"plan.defaultOnStartup": {
+			"label": "Plan 모드로 시작",
+			"description": "모든 새 세션 시작 시 자동으로 plan 모드로 진입한다"
+		},
+		"goal.enabled": {
+			"label": "Goal 모드",
+			"description": "세션별 goal 모드와 숨겨진 goal 도구를 활성화한다"
+		},
+		"goal.statusInFooter": {
+			"label": "푸터의 Goal 상태",
+			"description": "상태 표시줄에서 goal 표시기와 함께 토큰 예산을 표시한다"
+		},
+		"title.refreshOnReplan": {
+			"label": "재계획 시 제목 갱신",
+			"description": "사용자가 제목을 설정한 경우가 아니면 todo init 재계획 이후 생성된 세션 제목을 갱신한다"
+		},
+		"task.isolation.mode": {
+			"label": "격리 모드",
+			"description": "서브에이전트의 격리 백엔드이다. \"auto\"는 네이티브 PAL이 사용 가능한 최적 백엔드를 선택하게 한다(CoW를 지원하는 파일시스템, 그다음 overlayfs/ProjFS, 그다음 git worktree / 재귀 복사 폴백)."
+		},
+		"task.isolation.apply": {
+			"label": "격리 변경 적용",
+			"description": "성공한 격리 작업의 변경을 부모 체크아웃에 자동으로 적용한다. 비활성화하면 patch 또는 branch 아티팩트를 유지한다"
+		},
+		"task.isolation.merge": {
+			"label": "격리 병합 전략",
+			"description": "격리 작업의 변경을 통합하는 방식이다(patch apply 또는 branch merge)"
+		},
+		"task.isolation.commits": {
+			"label": "격리 커밋 스타일",
+			"description": "중첩 저장소 변경의 커밋 메시지 스타일이다(generic 또는 AI 생성)"
+		},
+		"worktree.base": {
+			"label": "Worktree 기본 디렉터리",
+			"description": "에이전트가 관리하는 worktree의 기본 디렉터리로, 작업 격리 사본, `github` PR 체크아웃, `omp worktree` 정리가 모두 여기에 위치한다. 설정하지 않으면 ~/.omp/wt를 사용한다. 절대 경로 또는 ~ 기준 경로여야 하며, 상대 경로는 무시된다. OMP_WORKTREE_DIR 환경 변수가 이 값을 재정의한다."
+		},
+		"task.eager": {
+			"label": "작업 위임 선호도",
+			"description": "서브에이전트에 작업을 위임하도록 얼마나 강하게 유도할지를 정한다"
+		},
+		"task.batch": {
+			"label": "작업 호출 배치",
+			"description": "task 도구를 배치 형태로 전환한다: 한 번의 호출이 { context, tasks[] }를 전달하며, 항목당 서브에이전트 하나가 실행되고, 항목별 agent(기본값은 세션 spawn-policy 에이전트)와 항목별 격리를 지정할 수 있으며, 공유 context는 모든 assignment 앞에 필수로 붙는다. async.enabled=true인 경우 각 spawn은 일반적인 idle/parked 수명 주기를 갖는 독립 백그라운드 에이전트로 실행되고, 그렇지 않으면 호출은 병합된 결과를 기다리며 블로킹된다. 비활성화하면 평면적인 단일 spawn 스키마로 되돌아간다."
+		},
+		"task.enableEffort": {
+			"label": "작업별 effort",
+			"description": "task spawn에서 선택적 effort 파라미터를 노출해, 호출자가 각 서브에이전트의 thinking 레벨을 재정의할 수 있게 한다"
+		},
+		"task.maxConcurrency": {
+			"label": "최대 동시 작업 수",
+			"description": "동시에 실행되는 서브에이전트의 최대 개수이다"
+		},
+		"task.enableLsp": {
+			"label": "서브에이전트 LSP",
+			"description": "task 도구로 생성된 서브에이전트가 lsp 도구를 사용할 수 있게 한다. 서브에이전트 비용을 낮게 유지하기 위해 기본적으로 꺼져 있으며, LSP를 활용한 위임이 추가 토큰만큼 가치가 있을 때 활성화한다."
+		},
+		"task.maxRecursionDepth": {
+			"label": "최대 작업 재귀 깊이",
+			"description": "서브에이전트가 자신의 서브에이전트를 생성할 수 있는 최대 깊이이다"
+		},
+		"task.maxRuntimeMs": {
+			"label": "서브에이전트 최대 실행 시간",
+			"description": "서브에이전트당 절대 실행 시간 제한(ms)이다. 0이면 비활성화된다. 추론 계층 워치독을 빠져나가는 프로바이더 측 스트림 정지에 대한 심층 방어 수단이며, 'timed out' 사유로 일반적인 서브에이전트 중단을 발생시킨다."
+		},
+		"task.softRequestBudget": {
+			"label": "서브에이전트 소프트 요청 예산",
+			"description": "서브에이전트당 소프트 요청 예산(실행당 assistant 요청 수)이다. 이를 초과하면 마무리를 유도하는 steering 알림이 주입되며(task.softRequestBudgetNotice 참고), 예산의 1.5배에 도달하면 실행이 강제 중단되고 에이전트는 부분 결과를 내놓아야 한다. 0이면 이 보호 장치가 비활성화된다. 번들된 scout/sonic 에이전트는 더 낮은 내장 예산이 상한이므로, 그 상한보다 낮은 값은 이들에게도 적용된다."
+		},
+		"task.softRequestBudgetNotice": {
+			"label": "소프트 요청 예산 알림",
+			"description": "서브에이전트가 소프트 요청 예산을 초과할 때 steering 알림을 한 번 주입해, 1.5배 강제 중단 전에 마무리하도록 요청한다."
+		},
+		"task.maxEffort": {
+			"label": "spawn당 최대 effort",
+			"description": "task 도구의 spawn별 effort 힌트에 허용되는 최대 추론 effort이다. 값을 낮추면 호출자가 서브에이전트를 이 상한 이상으로 올릴 수 없으며, 기본값은 모델의 전체 범위를 유지한다."
+		},
+		"task.prewalk": {
+			"label": "일반 작업 prewalk",
+			"description": "번들된 일반 `task` 서브에이전트에 prewalk를 적용한다: 해석된 모델로 시작해 계획을 세우고 구현을 시작한 뒤, 첫 편집/쓰기 시점에 'smol' 역할로 넘긴다. 에이전트별 재정의(/agents 허브에서 설정하는 task.agentPrewalk)와 사용자 에이전트의 `prewalk` frontmatter는 이 토글과 무관하게 적용된다."
+		},
+		"skills.enableSkillCommands": {
+			"label": "스킬 명령",
+			"description": "스킬을 /skill:name 명령으로 등록한다"
+		},
+		"commands.enableClaudeUser": {
+			"label": "Claude 사용자 명령",
+			"description": "~/.claude/commands/에서 명령을 로드한다"
+		},
+		"commands.enableClaudeProject": {
+			"label": "Claude 프로젝트 명령",
+			"description": ".claude/commands/에서 명령을 로드한다"
+		},
+		"commands.enableOpencodeUser": {
+			"label": "OpenCode 사용자 명령",
+			"description": "~/.config/opencode/commands/에서 명령을 로드한다"
+		},
+		"commands.enableOpencodeProject": {
+			"label": "OpenCode 프로젝트 명령",
+			"description": ".opencode/commands/에서 명령을 로드한다"
+		},
+		"providers.maxInFlightRequests": {
+			"label": "최대 동시 요청 수",
+			"description": "프로바이더 id별(예: \"openai\" 또는 \"anthropic\") 최대 동시 LLM 요청 수로, 같은 config root를 쓰는 로컬 OMP 프로세스 간에 공유된다. 명시되지 않은 프로바이더는 제한이 없다."
+		},
+		"secrets.enabled": {
+			"label": "시크릿 숨김",
+			"description": "AI 프로바이더로 전송하기 전에 설정된 시크릿을 난독화하고 자격 증명 형태의 토큰을 마스킹한다"
+		},
+		"providers.webSearchOrder": {
+			"label": "웹 검색 프로바이더 순서",
+			"description": "web_search 도구에 사용할 프로바이더의 우선순위이며, 목록에 없는 프로바이더는 그 뒤에 기본 순서를 유지한다"
+		},
+		"providers.webSearchExclude": {
+			"label": "제외할 웹 검색 프로바이더",
+			"description": "web_search가 폴백으로도 절대 사용하지 않을 프로바이더이다"
+		},
+		"providers.webSearchTimeoutSeconds": {
+			"label": "웹 검색 타임아웃",
+			"description": "web_search가 다음 폴백으로 넘어가기 전 각 프로바이더 검색 전송에 적용되는 절대 타임아웃이며 단위는 초이다(최대 300)"
+		},
+		"providers.webSearchGeminiModel": {
+			"label": "Gemini web_search 모델",
+			"description": "Gemini Google Search grounding에 사용할 모델 ID이다. 기본값은 gemini-2.5-flash이다."
+		},
+		"providers.antigravityEndpoint": {
+			"label": "Antigravity 엔드포인트 모드",
+			"description": "google-antigravity 프로바이더의 엔드포인트 라우팅 전략이다(chat, search, image, discovery)"
+		},
+		"providers.imageOrder": {
+			"label": "이미지 프로바이더 순서",
+			"description": "이미지 생성에 사용할 프로바이더의 우선순위이며, 목록에 없는 프로바이더는 활성 세션 프로바이더와 내장 순서를 따른다"
+		},
+		"providers.fireworksTier": {
+			"label": "Fireworks 티어",
+			"description": "Fireworks 요청의 서빙 경로이다. Priority는 `service_tier: \"priority\"`를 전송해 트래픽이 몰릴 때 더 높은 신뢰성을 더 높은 가격에 제공하고, Standard는 이를 생략한다. Fast(`-fast`) 모델은 이 설정을 무시하며, Fast는 별도의 서빙 경로이다."
+		},
+		"live.voice": {
+			"label": "Live 음성",
+			"description": "Codex 기반 realtime 음성 세션에서 사용하는 음성이다"
+		},
+		"providers.tts": {
+			"label": "TTS 제공자",
+			"description": "tts 도구의 백엔드이다: 로컬 온디바이스 신경망 TTS(Kokoro-82M) 또는 xAI Grok Voice 중 하나이다"
+		},
+		"tts.localModel": {
+			"label": "로컬 TTS 모델",
+			"description": "로컬 TTS 백엔드가 사용하는 온디바이스 신경망 TTS 모델(Kokoro-82M)이다"
+		},
+		"tts.localVoice": {
+			"label": "로컬 TTS 음성",
+			"description": "로컬 TTS 백엔드가 사용하는 Kokoro 음성이다(미국/영국, 여성/남성)"
+		},
+		"speech.enabled": {
+			"label": "음성 출력",
+			"description": "어시스턴트의 출력을 스트리밍되는 대로 스피커로 소리내어 읽는다"
+		},
+		"speech.mode": {
+			"label": "음성 출력 모드",
+			"description": "읽을 대상이다: all = 어시스턴트 메시지 + 사고 과정, assistant = 메시지만, yield = 턴 종료 시 마지막 메시지만이다"
+		},
+		"speech.enhanced": {
+			"label": "향상된 음성 재작성",
+			"description": "합성 전에 tiny/smol 모델로 어시스턴트 출력을 자연스러운 구어체 산문으로 재작성한다(코드는 설명으로 바꾸고 링크와 markdown은 제거한다). 실패하면 기계적 정리로 대체된다"
+		},
+		"speech.voice": {
+			"label": "음성 출력 목소리",
+			"description": "어시스턴트의 출력을 소리내어 읽을 때 사용하는 Kokoro 음성이다"
+		},
+		"providers.tinyModel": {
+			"label": "Tiny 모델",
+			"description": "세션 제목 생성 모델이다: 기본값은 온라인(/models의 TINY 역할, 없으면 @smol)이며, 로컬 온디바이스 모델도 가능하다"
+		},
+		"providers.tinyModelDevice": {
+			"label": "Tiny 모델 디바이스",
+			"description": "로컬 tiny 모델(제목 + 메모리)에 사용하는 ONNX 실행 제공자이다. 기본값은 CPU 전용 추론을 사용한다. PI_TINY_DEVICE 환경 변수가 이 값을 덮어쓴다."
+		},
+		"providers.tinyModelDtype": {
+			"label": "Tiny 모델 정밀도",
+			"description": "로컬 tiny 모델의 ONNX 양자화/정밀도이다. 기본값은 각 모델에 포함된 dtype(q4)을 사용하며, 정밀도가 낮으면 더 빠르고 높으면 원본에 더 충실하다. PI_TINY_DTYPE 환경 변수가 이 값을 덮어쓴다."
+		},
+		"providers.unexpectedStopModel": {
+			"label": "예기치 않은 중단 모델",
+			"description": "예기치 않은 중단 감지용 분류기이다: 기본값은 온라인(/models의 TINY 역할, 없으면 smol)이며, 로컬 온디바이스 모델도 가능하다."
+		},
+		"providers.kimiApiFormat": {
+			"label": "Kimi API 형식",
+			"description": "Kimi Code 제공자의 API 형식이다(auto는 라이브 모델 메타데이터를 따른다)"
+		},
+		"providers.openaiWebsockets": {
+			"label": "OpenAI WebSockets",
+			"description": "OpenAI Codex 모델의 websocket 정책이다(auto는 모델 기본값을 사용하고, on은 강제하며, off는 비활성화한다)"
+		},
+		"providers.streamFirstEventTimeoutSeconds": {
+			"label": "스트림 첫 이벤트 타임아웃",
+			"description": "모델 스트림의 첫 이벤트를 기다리는 초이다. -1은 provider/env 기본값을 사용하고, 0은 워치독을 비활성화한다"
+		},
+		"providers.streamIdleTimeoutSeconds": {
+			"label": "스트림 유휴 타임아웃",
+			"description": "모델 스트림이 이벤트 사이에 무응답 상태로 있을 수 있는 초이다. -1은 provider/env 기본값을 사용하고, 0은 워치독을 비활성화한다"
+		},
+		"providers.openrouterVariant": {
+			"label": "OpenRouter 라우팅",
+			"description": "OpenRouter 모델 ID에 덧붙이는 기본 라우팅 variant 접미사이다(선택기에서 이미 variant를 지정한 경우 무시된다)"
+		},
+		"providers.fetch": {
+			"label": "Fetch 제공자",
+			"description": "fetch/read URL 도구의 리더 백엔드 우선순위이다"
+		},
+		"codexResets.autoRedeem": {
+			"label": "Codex 리셋 자동 사용",
+			"description": "저장된 Codex rate-limit 리셋을 자동으로 사용한다: 턴이 멈추고 다른 계정이 대체할 수 없을 때 5h 또는 weekly 창을 소진해 차단된 계정을 복구하고, 곧 만료될 크레딧을 회수한다. unset은 첫 사용 전에 확인하고, yes는 확인 없이 사용하며, no는 두 검사 모두 비활성화한다."
+		},
+		"provider.appendOnlyContext": {
+			"label": "추가 전용 컨텍스트",
+			"description": "시스템 프롬프트 + 도구 명세를 캐시하고 추가 전용 메시지 로그를 유지해 provider prefix 캐시(DeepSeek, Xiaomi/SGLang, Anthropic) 적중률을 최대화한다. auto는 prefix 캐시가 알려진 제공자에 대해 활성화한다."
+		},
+		"exa.enabled": {
+			"label": "Exa",
+			"description": "Exa 웹 검색 제공자를 활성화한다"
+		},
+		"searxng.endpoint": {
+			"label": "SearXNG 엔드포인트",
+			"description": "웹 검색에 사용하는 자체 호스팅 SearXNG 인스턴스의 기본 URL이다"
+		}
+	}
+}

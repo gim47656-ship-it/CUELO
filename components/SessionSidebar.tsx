@@ -1,0 +1,3585 @@
+"use client";
+
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
+import type { SessionInfo } from "@/lib/types";
+import {
+  LEGACY_PRIORITY_MODE_STORAGE_KEY,
+  NAVIGATOR_MODES,
+  NAVIGATOR_MODE_STORAGE_KEY,
+  PRIORITY_REFRESH_MS,
+  buildPrioritySessionGroups,
+  isTemporaryProjectPath,
+  parseStoredNavigatorMode,
+  prioritySessionProjectName,
+  prioritySessionTitle,
+  type NavigatorMode,
+} from "@/lib/navigator-modes";
+import { ambiguousProjectNames, mergeProjectOrder, normalizeProjectKey, projectParentPath, recentProjectPaths } from "@/lib/project-ordering";
+import type { ProjectRegistryFile, ProjectRegistryUpdate } from "@/lib/project-registry";
+import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
+import { skillExpansionToCommand } from "@/lib/slash-display";
+import { useI18n } from "@/hooks/useI18n";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { DirectoryPicker } from "./DirectoryPicker";
+import { OmpWordmark } from "./OmpWordmark";
+
+declare global {
+  interface Window {
+    piDesktop?: {
+      selectDirectory: () => Promise<string | null>;
+    };
+  }
+}
+
+interface Props {
+  selectedSessionId: string | null;
+  optimisticSession?: SessionInfo | null;
+  onSelectSession: (session: SessionInfo, isRestore?: boolean) => void;
+  onNewSession?: (sessionId: string, cwd: string) => void;
+  initialSessionId?: string | null;
+  skipInitialProjectSelection?: boolean;
+  onInitialRestoreDone?: () => void;
+  refreshKey?: number;
+  onSessionDeleted?: (sessionId: string) => void;
+  selectedCwd?: string | null;
+  onCwdChange?: (cwd: string | null, projectRoot?: string | null) => void;
+  /** Fired when a session that is not currently selected stops running.
+   *  The running snapshot has no outcome or Main identity, so consumers use a neutral tone. */
+  onBackgroundTaskDone?: () => void;
+}
+
+interface WorktreeEntry {
+  path: string;
+  branch: string | null;
+  isMain: boolean;
+}
+
+interface WorktreeState {
+  /** The cwd this data was fetched for — guards against stale responses */
+  forCwd: string;
+  projectRoot: string;
+  isGit: boolean;
+  /** False when forCwd is a repo subdirectory — the switcher is hidden there
+   *  because subdir sessions keep their own project identity */
+  isTopLevel: boolean;
+  worktrees: WorktreeEntry[];
+}
+
+const UNREAD_SESSIONS_STORAGE_KEY = "omp-web:unread-session-ids";
+const PINNED_SESSIONS_STORAGE_KEY = "omp-web:pinned-session-ids";
+const RUNNING_SESSIONS_POLL_MS = 2500;
+const PROJECT_SESSION_LIMIT = 5;
+// Superseded by the server-side project registry. Kept only to migrate the
+// client-only list of projects a user had removed from the sidebar.
+const LEGACY_REMOVED_PROJECTS_STORAGE_KEY = "omp-web:removed-projects";
+const PROJECT_REGISTRY_UPDATE_BATCH_SIZE = 500;
+const BULK_CLEAR_FOCUSABLES = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** 무엇을 지우는지가 곧 사용자 확인 문구이므로 범위를 값으로 들고 다닌다. */
+type BulkClearScope =
+  | { kind: "project"; project: string; label: string }
+  | { kind: "priority" };
+
+function bulkClearButtonStyle(disabled: boolean, isMobile: boolean): CSSProperties {
+  return {
+    minHeight: isMobile ? 36 : 30,
+    padding: "3px 10px",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-control)",
+    background: "transparent",
+    color: disabled ? "var(--text-dim)" : "var(--text-muted)",
+    cursor: disabled ? "default" : "pointer",
+    fontSize: "var(--seed-font-size-t2-static)",
+    lineHeight: 1.3,
+    textAlign: "left",
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
+  };
+}
+
+function loadPinnedSessionIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(PINNED_SESSIONS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((id): id is string => typeof id === "string"))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function savePinnedSessionIds(ids: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (ids.size === 0) window.localStorage.removeItem(PINNED_SESSIONS_STORAGE_KEY);
+    else window.localStorage.setItem(PINNED_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Keep the current-tab pins when browser storage is unavailable.
+  }
+}
+function loadUnreadSessionIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(UNREAD_SESSIONS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUnreadSessionIds(ids: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (ids.size === 0) window.localStorage.removeItem(UNREAD_SESSIONS_STORAGE_KEY);
+    else window.localStorage.setItem(UNREAD_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // ignore storage quota / privacy-mode errors
+  }
+}
+
+
+/** Substitute the home dir prefix with ~ (no path truncation — see PathLabel) */
+function displayCwd(cwd: string, homeDir?: string): string {
+  return (homeDir && cwd.startsWith(homeDir)) ? "~" + cwd.slice(homeDir.length) : cwd;
+}
+
+
+/**
+ * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
+ * segments visible: "…orkspace/omp-web". Shows as much of the path as fits
+ * instead of a fixed number of segments. The rtl container moves the ellipsis
+ * to the left edge; the inner plaintext bidi isolation keeps the path itself
+ * rendered strictly left-to-right (no punctuation reordering).
+ */
+function PathLabel({ text, style }: { text: string; style?: CSSProperties }) {
+  return (
+    <span
+      style={{
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        display: "block",
+        minWidth: 0,
+        lineHeight: 1.35,
+        direction: "rtl",
+        textAlign: "left",
+        ...style,
+      }}
+    >
+      <span style={{ unicodeBidi: "plaintext" }}>{text}</span>
+    </span>
+  );
+}
+
+const DROPDOWN_ANIMATION_MS = 140;
+
+function AnimatedDropdown({ open, children, style }: { open: boolean; children: ReactNode; style: CSSProperties }) {
+  const [mounted, setMounted] = useState(open);
+  const [visible, setVisible] = useState(open);
+
+  useEffect(() => {
+    let frame: number | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    if (open) {
+      setMounted(true);
+      setVisible(false);
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => setVisible(true));
+      });
+    } else {
+      setVisible(false);
+      timeout = setTimeout(() => setMounted(false), DROPDOWN_ANIMATION_MS);
+    }
+
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [open]);
+
+  if (!mounted) return null;
+
+  return (
+    <div
+      style={{
+        ...style,
+        opacity: visible ? 1 : 0,
+        transform: visible ? "translateY(0) scale(1)" : "translateY(-8px) scale(0.96)",
+        transformOrigin: "top center",
+        transition: `opacity ${DROPDOWN_ANIMATION_MS}ms ease, transform ${DROPDOWN_ANIMATION_MS}ms ease`,
+        pointerEvents: open ? "auto" : "none",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+
+
+interface SessionTreeNode {
+  session: SessionInfo;
+  children: SessionTreeNode[];
+}
+
+function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
+  const byId = new Map<string, SessionTreeNode>();
+  for (const s of sessions) {
+    byId.set(s.id, { session: s, children: [] });
+  }
+
+  // Build a map of parentSessionId chains so we can resolve missing ancestors
+  const parentOf = new Map<string, string>();
+  for (const s of sessions) {
+    if (s.parentSessionId) parentOf.set(s.id, s.parentSessionId);
+  }
+
+  // Walk up the parentSessionId chain to find the nearest ancestor that exists in byId
+  function resolveAncestor(id: string): string | null {
+    let cur = parentOf.get(id);
+    const visited = new Set<string>();
+    while (cur) {
+      if (visited.has(cur)) return null; // cycle guard
+      visited.add(cur);
+      if (byId.has(cur)) return cur;
+      cur = parentOf.get(cur);
+    }
+    return null;
+  }
+
+  const roots: SessionTreeNode[] = [];
+  for (const node of byId.values()) {
+    const ancestor = resolveAncestor(node.session.id);
+    if (ancestor) {
+      byId.get(ancestor)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  // Sort each level by modified desc
+  const sort = (nodes: SessionTreeNode[]) => {
+    nodes.sort((a, b) => b.session.modified.localeCompare(a.session.modified));
+    nodes.forEach((n) => sort(n.children));
+  };
+  sort(roots);
+  return roots;
+}
+
+const SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+
+function useScramble(target: string, running: boolean): string {
+  const [display, setDisplay] = useState(target);
+  const frameRef = useRef<number | null>(null);
+  const iterRef = useRef(0);
+
+  useEffect(() => {
+    if (!running) {
+      setDisplay(target);
+      return;
+    }
+    iterRef.current = 0;
+    const totalFrames = target.length * 4;
+
+    const step = () => {
+      iterRef.current += 1;
+      const progress = iterRef.current / totalFrames;
+      const resolved = Math.floor(progress * target.length);
+
+      setDisplay(
+        target
+          .split("")
+          .map((char, i) => {
+            if (char === " ") return " ";
+            if (i < resolved) return char;
+            return SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+          })
+          .join("")
+      );
+
+      if (iterRef.current < totalFrames) {
+        frameRef.current = requestAnimationFrame(step);
+      } else {
+        setDisplay(target);
+      }
+    };
+
+    frameRef.current = requestAnimationFrame(step);
+    return () => { if (frameRef.current) cancelAnimationFrame(frameRef.current); };
+  }, [target, running]);
+
+  return display;
+}
+
+function PiWebTitle() {
+  const [showVersion, setShowVersion] = useState(false);
+  const [scrambling, setScrambling] = useState(false);
+  const revertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const target = showVersion ? `${process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}/${process.env.NEXT_PUBLIC_OMP_VERSION ?? "0.0.0"}` : "CUELO";
+  const display = useScramble(target, scrambling);
+
+  const triggerScramble = useCallback((toVersion: boolean) => {
+    setShowVersion(toVersion);
+    setScrambling(true);
+    setTimeout(() => setScrambling(false), (toVersion ? 6 : 8) * 4 * (1000 / 60) + 100);
+  }, []);
+
+  const handleClick = useCallback(() => {
+    if (revertTimerRef.current) clearTimeout(revertTimerRef.current);
+
+    const next = !showVersion;
+    triggerScramble(next);
+
+    if (next) {
+      revertTimerRef.current = setTimeout(() => triggerScramble(false), 3000);
+    }
+  }, [showVersion, triggerScramble]);
+
+  useEffect(() => () => { if (revertTimerRef.current) clearTimeout(revertTimerRef.current); }, []);
+
+  return (
+    <button
+      className="navigator-brand"
+      onClick={handleClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        background: "none",
+        border: "none",
+        padding: 0,
+        cursor: "default",
+        color: showVersion ? "var(--accent)" : "var(--text)",
+        minWidth: "6ch",
+      }}
+    >
+      <OmpWordmark
+        label={display}
+        labelStyle={showVersion ? { fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" } : undefined}
+      />
+    </button>
+  );
+}
+
+async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): Promise<void> {
+  const response = await fetch("/api/projects", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone }: Props) {
+  const { t, locale } = useI18n();
+  const isMobile = useIsMobile();
+  const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
+  const sessionsForDisplay = optimisticSession && !allSessions.some((session) => session.id === optimisticSession.id)
+    ? [optimisticSession, ...allSessions]
+    : allSessions;
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
+  const [homeDir, setHomeDir] = useState<string>("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [navigatorMode, setNavigatorMode] = useState<NavigatorMode>("projects");
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
+  // Every project starts collapsed on each load: only a click in this view opens one, and nothing
+  // - selecting a session, a finished answer, a refresh - opens one on the user's behalf.
+  const [openProjects, setOpenProjects] = useState<Set<string>>(() => new Set());
+  const [hoveredProject, setHoveredProject] = useState<string | null>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
+  const [projectRegistry, setProjectRegistry] = useState<ProjectRegistryFile>({ version: 1, projects: [] });
+  const [projectRegistryLoaded, setProjectRegistryLoaded] = useState(false);
+  const [showHiddenProjects, setShowHiddenProjects] = useState(false);
+  // 임시·시스템 경로 프로젝트는 별도 그룹으로만 분리한다: 기본 접힘, 검색 중에는 결과를 노출한다.
+  const [temporaryProjectsOpen, setTemporaryProjectsOpen] = useState(false);
+  const [editingProjectAlias, setEditingProjectAlias] = useState<string | null>(null);
+  const [projectAliasDraft, setProjectAliasDraft] = useState("");
+  const [projectMutationBusy, setProjectMutationBusy] = useState(false);
+  const [projectMutationError, setProjectMutationError] = useState<string | null>(null);
+  const [wtFilter, setWtFilter] = useState("");
+  const [customPathOpen, setCustomPathOpen] = useState(false);
+  const [customPathError, setCustomPathError] = useState<string | null>(null);
+  const [customPathValidating, setCustomPathValidating] = useState(false);
+  // Worktree switcher state
+  const [worktreeState, setWorktreeState] = useState<WorktreeState | null>(null);
+  const [wtDropdownOpen, setWtDropdownOpen] = useState(false);
+  const [wtNewOpen, setWtNewOpen] = useState(false);
+  const [wtNewBranch, setWtNewBranch] = useState("");
+  const [wtError, setWtError] = useState<string | null>(null);
+  const [wtBusy, setWtBusy] = useState(false);
+  const [wtConfirmRemove, setWtConfirmRemove] = useState<string | null>(null);
+  const wtDropdownRef = useRef<HTMLDivElement>(null);
+  const wtNewInputRef = useRef<HTMLInputElement>(null);
+  const projectAliasInputRef = useRef<HTMLInputElement>(null);
+  const projectAliasCancelRef = useRef(false);
+  const projectMutationBusyRef = useRef(false);
+  const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
+  const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
+  // Once polling has delivered a snapshot it is the source of truth for
+  // running state; late /api/sessions responses must not overwrite it.
+  const runningPollAuthoritativeRef = useRef(false);
+  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    setPinnedSessionIds(loadPinnedSessionIds());
+  }, []);
+
+  const loadProjectRegistry = useCallback(async () => {
+    try {
+      const response = await fetch("/api/projects", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setProjectRegistry(await response.json() as ProjectRegistryFile);
+    } catch {
+      // Registry failures are fail-open: keep every discovered project visible
+      // with the existing activity-based ordering.
+      setProjectRegistry({ version: 1, projects: [] });
+    } finally {
+      setProjectRegistryLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProjectRegistry();
+  }, [loadProjectRegistry, refreshKey]);
+
+  // The legacy "remove from sidebar" list lived only in localStorage. Fold it
+  // into hidden registry entries once so previously removed projects stay out
+  // of the sidebar, then drop the client-only key. A failed PATCH keeps the key
+  // so the migration retries on the next mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage.getItem(LEGACY_REMOVED_PROJECTS_STORAGE_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    let legacyKeys: string[] = [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) legacyKeys = parsed.filter((value): value is string => typeof value === "string");
+    } catch {
+      legacyKeys = [];
+    }
+    void (async () => {
+      try {
+        for (
+          let index = 0;
+          index < legacyKeys.length;
+          index += PROJECT_REGISTRY_UPDATE_BATCH_SIZE
+        ) {
+          const batch = legacyKeys.slice(index, index + PROJECT_REGISTRY_UPDATE_BATCH_SIZE);
+          await patchProjectRegistry(batch.map((path) => ({
+            key: normalizeProjectKey(path),
+            path,
+            hidden: true,
+          })));
+        }
+      } catch {
+        return;
+      }
+      try {
+        window.localStorage.removeItem(LEGACY_REMOVED_PROJECTS_STORAGE_KEY);
+      } catch {
+        // A cleared-but-unwritable store simply retries next mount.
+      }
+      await loadProjectRegistry();
+    })();
+  }, [loadProjectRegistry]);
+
+  const applyProjectRegistryUpdates = useCallback(async (
+    updates: readonly ProjectRegistryUpdate[],
+  ): Promise<void> => {
+    if (projectMutationBusyRef.current) throw new Error("Project update in progress");
+    projectMutationBusyRef.current = true;
+    setProjectMutationBusy(true);
+    try {
+      await patchProjectRegistry(updates);
+      await loadProjectRegistry();
+    } finally {
+      projectMutationBusyRef.current = false;
+      setProjectMutationBusy(false);
+    }
+  }, [loadProjectRegistry]);
+  useEffect(() => {
+    if (!editingProjectAlias) return;
+    projectAliasInputRef.current?.select();
+  }, [editingProjectAlias]);
+
+
+  const loadSessions = useCallback(async (showLoading = false, force = false) => {
+    try {
+      if (showLoading) setLoading(true);
+      const res = await fetch(force ? "/api/sessions?force=1" : "/api/sessions", {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as { sessions: SessionInfo[]; runningSessionIds?: string[] };
+      setAllSessions(data.sessions);
+      // Treat the fetched running set as an initial fallback only. Once the
+      // lightweight poll is live, a slow session-list fetch cannot overwrite it.
+      if (!runningPollAuthoritativeRef.current) {
+        setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+      }
+      setError(null);
+      if (!showLoading) {
+        setSessionRefreshDone(true);
+        if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
+        sessionRefreshTimerRef.current = setTimeout(() => setSessionRefreshDone(false), 2000);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  }, []);
+
+  // Local markers belong to a session's identity, so drop them only when the
+  // session itself is deleted.
+  const handleSessionDeleted = useCallback((sessionId: string) => {
+    setUnreadSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setPinnedSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    onSessionDeleted?.(sessionId);
+    void loadSessions();
+  }, [loadSessions, onSessionDeleted]);
+
+  // 일괄 삭제는 대화 기록을 실제로 지운다(숨김이 아니다). 화면의 실행 표시는 안내일 뿐이고,
+  // 삭제 여부를 정하는 실행 여부 판정은 서버(DELETE ?skipRunning=1, 409)가 맡는다.
+  const [bulkClearScope, setBulkClearScope] = useState<BulkClearScope | null>(null);
+  const [bulkClearBusy, setBulkClearBusy] = useState(false);
+  const [bulkClearError, setBulkClearError] = useState<string | null>(null);
+
+  const closeBulkClear = useCallback(() => {
+    if (bulkClearBusy) return;
+    setBulkClearScope(null);
+    setBulkClearError(null);
+  }, [bulkClearBusy]);
+
+  const runBulkClear = useCallback(async (targets: readonly SessionInfo[]) => {
+    setBulkClearBusy(true);
+    setBulkClearError(null);
+
+    const deleted: string[] = [];
+    const skippedRunning: string[] = [];
+    const failed: string[] = [];
+    for (const session of targets) {
+      if (session.transient) continue;
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(session.id)}?skipRunning=1`, { method: "DELETE" });
+        if (response.status === 409) {
+          skippedRunning.push(session.id);
+          continue;
+        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        deleted.push(session.id);
+      } catch {
+        failed.push(session.name?.trim() || session.id.slice(0, 8));
+      }
+    }
+
+    if (skippedRunning.length > 0) {
+      // 서버가 실행 중이라고 판정한 세션은 화면 표시에도 즉시 반영한다.
+      runningPollAuthoritativeRef.current = true;
+      setRunningSessionIds((current) => {
+        if (skippedRunning.every((id) => current.has(id))) return current;
+        const next = new Set(current);
+        for (const id of skippedRunning) next.add(id);
+        return next;
+      });
+    }
+
+    if (deleted.length > 0) {
+      const removed = new Set(deleted);
+      const dropRemoved = (current: Set<string>) => {
+        if (!deleted.some((id) => current.has(id))) return current;
+        return new Set([...current].filter((id) => !removed.has(id)));
+      };
+      setUnreadSessionIds(dropRemoved);
+      setPinnedSessionIds(dropRemoved);
+      // 선택 중이던 세션이 사라지면 상위 화면이 스스로 정리하도록 알린다.
+      for (const id of deleted) onSessionDeleted?.(id);
+    }
+    await loadSessions();
+    setBulkClearBusy(false);
+    if (failed.length > 0) {
+      setBulkClearError(t("sidebar.clearSessionsFailed", { count: failed.length, names: failed.join(", ") }));
+      return;
+    }
+    // 서버가 지켜낸 실행 중 세션이 남았으면 그 사실을 보여준 채로 창을 유지한다.
+    if (skippedRunning.length > 0) return;
+    setBulkClearScope(null);
+  }, [loadSessions, onSessionDeleted, t]);
+
+  // Bumped whenever a session is archived/restored so the Archived section
+  // refetches; the main list simply reloads (archived rows are now hidden).
+  const [archiveRefreshKey, setArchiveRefreshKey] = useState(0);
+  const handleSessionArchived = useCallback(() => {
+    setArchiveRefreshKey((k) => k + 1);
+    loadSessions();
+  }, [loadSessions]);
+
+  const initialLoadDone = useRef(false);
+  useEffect(() => {
+    const isFirst = !initialLoadDone.current;
+    initialLoadDone.current = true;
+    loadSessions(isFirst, !isFirst);
+  }, [loadSessions, refreshKey]);
+
+  // Browser storage is unavailable during server rendering. Restore the native
+  // navigator mode after hydration and migrate the former priority toggle.
+  useEffect(() => {
+    try {
+      setNavigatorMode(parseStoredNavigatorMode(
+        window.localStorage.getItem(NAVIGATOR_MODE_STORAGE_KEY),
+        window.localStorage.getItem(LEGACY_PRIORITY_MODE_STORAGE_KEY),
+      ));
+    } catch {
+      // Keep the projects mode when browser storage is unavailable.
+    }
+  }, []);
+
+  const selectNavigatorMode = useCallback((mode: NavigatorMode) => {
+    setNavigatorMode(mode);
+    try {
+      window.localStorage.setItem(NAVIGATOR_MODE_STORAGE_KEY, mode);
+      window.localStorage.setItem(
+        LEGACY_PRIORITY_MODE_STORAGE_KEY,
+        mode === "priority" ? "1" : "0",
+      );
+    } catch {
+      // Keep the current-tab mode when browser storage is unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (navigatorMode !== "priority") return;
+    const refreshPriority = () => {
+      if (document.visibilityState === "visible") void loadSessions(false, true);
+    };
+    refreshPriority();
+    const timer = window.setInterval(refreshPriority, PRIORITY_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [loadSessions, navigatorMode]);
+
+  // Persist unread markers so they survive a browser refresh before the user
+  // has actually opened the completed session.
+  useEffect(() => {
+    saveUnreadSessionIds(unreadSessionIds);
+  }, [unreadSessionIds]);
+
+  useEffect(() => {
+    savePinnedSessionIds(pinnedSessionIds);
+  }, [pinnedSessionIds]);
+
+  const togglePinnedSession = useCallback((sessionId: string) => {
+    setPinnedSessionIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+
+    const schedule = () => {
+      clearTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = setTimeout(() => void poll(), RUNNING_SESSIONS_POLL_MS);
+    };
+
+    const poll = async () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      const current = new AbortController();
+      controller?.abort();
+      controller = current;
+      try {
+        const res = await fetch("/api/agent/running", {
+          cache: "no-store",
+          signal: current.signal,
+        });
+        if (!res.ok) return;
+        const data = await res.json() as { runningSessionIds?: string[] };
+        if (stopped || controller !== current) return;
+        runningPollAuthoritativeRef.current = true;
+        setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+      } catch {
+        // Keep the last known state; the next visible-tab poll retries.
+      } finally {
+        if (controller === current) controller = null;
+        schedule();
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void poll();
+        return;
+      }
+      clearTimer();
+      controller?.abort();
+      controller = null;
+    };
+
+    void poll();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stopped = true;
+      clearTimer();
+      controller?.abort();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = previousRunningSessionIdsRef.current;
+    const completedInBackground = [...previous].filter((id) => !runningSessionIds.has(id) && id !== selectedSessionId);
+    const newlyRunning = [...runningSessionIds].filter((id) => !previous.has(id));
+
+    if (completedInBackground.length > 0 || newlyRunning.length > 0) {
+      setUnreadSessionIds((prev) => {
+        const next = new Set(prev);
+        runningSessionIds.forEach((id) => next.delete(id));
+        completedInBackground.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+    const hasUnlistedRunningSession = newlyRunning.some(
+      (id) => !allSessions.some((session) => session.id === id),
+    );
+    if (completedInBackground.length > 0 || hasUnlistedRunningSession) {
+      loadSessions(false, true);
+    }
+    if (completedInBackground.length > 0) {
+      onBackgroundTaskDone?.();
+    }
+
+    previousRunningSessionIdsRef.current = runningSessionIds;
+  }, [runningSessionIds, selectedSessionId, allSessions, loadSessions, onBackgroundTaskDone]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    setUnreadSessionIds((prev) => {
+      if (!prev.has(selectedSessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(selectedSessionId);
+      return next;
+    });
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
+      if (d.home) setHomeDir(d.home);
+    }).catch(() => {});
+  }, []);
+
+  const restoredRef = useRef(false);
+
+  /** Resolve the project root for a cwd from the freshest data available */
+  const projectRootFor = useCallback((cwd: string | null): string | null => {
+    if (!cwd) return null;
+    if (worktreeState && worktreeState.forCwd === cwd) return worktreeState.projectRoot;
+    // Any path in the loaded worktree list belongs to that project — covers
+    // worktrees without sessions, so switching to them keeps the row mounted.
+    if (worktreeState?.worktrees.some((w) => w.path === cwd)) return worktreeState.projectRoot;
+    const match = sessionsForDisplay.find((s) => s.cwd === cwd);
+    return match?.projectRoot ?? cwd;
+  }, [worktreeState, sessionsForDisplay]);
+
+  // Notify parent only when the effective cwd actually changes (not when
+  // projectRootFor identity changes due to session/worktree refreshes).
+  const lastNotifiedCwdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastNotifiedCwdRef.current === selectedCwd) return;
+    lastNotifiedCwdRef.current = selectedCwd;
+    onCwdChange?.(selectedCwd, projectRootFor(selectedCwd));
+  }, [selectedCwd, onCwdChange, projectRootFor]);
+
+  // Sync the worktree switcher to the selected session's cwd. Sessions of all
+  // worktrees in a project share one list, so clicking a session from another
+  // worktree should move the effective cwd there. Only fires when the prop
+  // value changes, so a manual switcher change is not snapped back.
+  const lastSyncedCwdPropRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedCwdProp && selectedCwdProp !== lastSyncedCwdPropRef.current) {
+      lastSyncedCwdPropRef.current = selectedCwdProp;
+      setSelectedCwd(selectedCwdProp);
+    }
+  }, [selectedCwdProp]);
+
+  // Load worktrees for the current effective cwd
+  const [wtRefreshKey, setWtRefreshKey] = useState(0);
+  useLayoutEffect(() => {
+    if (!selectedCwd) {
+      setWorktreeState(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
+      .then((r) => r.json())
+      .then((d: { projectRoot?: string; isGit?: boolean; isTopLevel?: boolean; worktrees?: WorktreeEntry[]; error?: string }) => {
+        if (cancelled) return;
+        if (d.error || !d.projectRoot) {
+          setWorktreeState(null);
+          return;
+        }
+        setWorktreeState({
+          forCwd: selectedCwd,
+          projectRoot: d.projectRoot,
+          isGit: d.isGit ?? false,
+          isTopLevel: d.isTopLevel ?? false,
+          worktrees: d.worktrees ?? [],
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWorktreeState(null);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [selectedCwd, wtRefreshKey, refreshKey]);
+
+  // Auto-select cwd and restore session from URL on first load
+  useEffect(() => {
+    if (allSessions.length === 0 || skipInitialProjectSelection) return;
+
+    if (selectedCwd === null) {
+      // If restoring a session, set cwd to match that session
+      if (initialSessionId && !restoredRef.current) {
+        restoredRef.current = true;
+        const target = allSessions.find((s) => s.id === initialSessionId);
+        if (target) {
+          setSelectedCwd(target.cwd);
+          onSelectSession(target, true);
+          return;
+        }
+        // Session not found — notify parent so it can show the placeholder
+        onInitialRestoreDone?.();
+      }
+      if (!projectRegistryLoaded) return;
+      const registryByKey = new Map(projectRegistry.projects.map((entry) => [entry.key, entry]));
+      const projects = mergeProjectOrder(allSessions.length > 0 ? recentProjectPaths(allSessions) : [], projectRegistry.projects)
+        .filter((project) => !registryByKey.get(normalizeProjectKey(project))?.hidden);
+      if (projects.length > 0) setSelectedCwd(projects[0]);
+    }
+  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, projectRegistry, projectRegistryLoaded]);
+
+  const commitCustomPath = useCallback(async (candidate: string) => {
+    const path = candidate.trim();
+    if (!path || customPathValidating) return;
+
+    setCustomPathValidating(true);
+    setCustomPathError(null);
+    try {
+      const res = await fetch("/api/cwd/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: path }),
+      });
+      const data = await res.json().catch(() => ({})) as { cwd?: string; error?: string };
+      if (!res.ok || data.error) {
+        setCustomPathError(data.error ?? t("workspace.unable"));
+        return;
+      }
+      const selectedPath = data.cwd ?? path;
+      const projectKey = normalizeProjectKey(selectedPath);
+      const registryEntry = projectRegistry.projects.find((entry) => entry.key === projectKey);
+      if (registryEntry?.hidden === true) {
+        try {
+          await applyProjectRegistryUpdates([{
+            key: projectKey,
+            path: selectedPath,
+            hidden: false,
+          }]);
+        } catch {
+          // Displaying a validated project must not depend on metadata storage.
+        }
+      }
+      setSelectedCwd(selectedPath);
+      setCustomPathOpen(false);
+    } catch {
+      setCustomPathError(t("workspace.unable"));
+    } finally {
+      setCustomPathValidating(false);
+    }
+  }, [applyProjectRegistryUpdates, customPathValidating, projectRegistry.projects, t]);
+
+  const handleCustomPathClick = useCallback(() => {
+    setCustomPathOpen(true);
+    setCustomPathError(null);
+  }, []);
+
+  const handleCreateWorktree = useCallback(async () => {
+    const branch = wtNewBranch.trim();
+    if (!branch || wtBusy || !worktreeState) return;
+    setWtBusy(true);
+    setWtError(null);
+    try {
+      const res = await fetch("/api/worktrees", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: worktreeState.projectRoot, branch }),
+      });
+      const data = await res.json().catch(() => ({})) as { path?: string; error?: string };
+      if (!res.ok || data.error || !data.path) {
+        setWtError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setWtNewOpen(false);
+      setWtNewBranch("");
+      setWtDropdownOpen(false);
+      // Optimistically register the new worktree so projectRootFor() resolves
+      // it to the main repo before the refetch lands (keeps AppShell from
+      // treating the new cwd as a different project).
+      setWorktreeState((prev) => prev ? {
+        ...prev,
+        forCwd: data.path!,
+        worktrees: [...prev.worktrees, { path: data.path!, branch, isMain: false }],
+      } : prev);
+      setSelectedCwd(data.path);
+      setWtRefreshKey((k) => k + 1);
+    } catch (e) {
+      setWtError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWtBusy(false);
+    }
+  }, [wtNewBranch, wtBusy, worktreeState]);
+
+  const handleRemoveWorktree = useCallback(async (path: string, force: boolean) => {
+    if (!worktreeState || wtBusy) return;
+    setWtBusy(true);
+    setWtError(null);
+    try {
+      const res = await fetch("/api/worktrees", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: worktreeState.projectRoot, path, force }),
+      });
+      const data = await res.json().catch(() => ({})) as { error?: string; dirty?: boolean };
+      if (!res.ok) {
+        if (data.dirty && !force) {
+          // Dirty worktree — ask the user to confirm a force removal
+          setWtConfirmRemove(path);
+          return;
+        }
+        setWtError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setWtConfirmRemove(null);
+      if (selectedCwd === path) setSelectedCwd(worktreeState.projectRoot);
+      setWtRefreshKey((k) => k + 1);
+    } catch (e) {
+      setWtError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWtBusy(false);
+    }
+  }, [worktreeState, wtBusy, selectedCwd]);
+
+  // Close the project actions menu on outside click.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wtDropdownRef.current && !wtDropdownRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(null);
+        setWtDropdownOpen(false);
+        setWtNewOpen(false);
+        setWtNewBranch("");
+        setWtError(null);
+        setWtConfirmRemove(null);
+        setWtFilter("");
+        setHoveredProject(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  // Clicking a session moves the effective cwd to that session's worktree.
+  // Done on the click path (not via the selectedCwd prop sync) so it also
+  // works when the prop value won't change — e.g. re-clicking the already
+  // open session after manually switching worktrees.
+  const handleSelectSessionFromList = useCallback((s: SessionInfo) => {
+    if (s.cwd) setSelectedCwd(s.cwd);
+    onSelectSession(s);
+  }, [onSelectSession]);
+
+  const handleNewSession = useCallback((project = selectedCwd) => {
+    if (!project) return;
+    // Generate a temporary UUID client-side — no backend call needed.
+    // Pi will be spawned lazily when the user sends the first message.
+    const tempId = typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    setSelectedCwd(project);
+    onNewSession?.(tempId, project);
+  }, [selectedCwd, onNewSession]);
+
+  const toggleProjectCollapsed = useCallback((project: string) => {
+    setOpenProjects((current) => {
+      const next = new Set(current);
+      if (next.has(project)) next.delete(project);
+      else next.add(project);
+      return next;
+    });
+  }, []);
+
+  const selectedProject = projectRootFor(selectedCwd);
+  const selectedProjectKey = selectedProject === null ? null : normalizeProjectKey(selectedProject);
+  const projectRegistryByKey = useMemo(
+    () => new Map(projectRegistry.projects.map((entry) => [entry.key, entry])),
+    [projectRegistry.projects],
+  );
+  const discoveredProjectPaths = recentProjectPaths(sessionsForDisplay);
+  // 선택된 프로젝트가 이미 목록에 있으면 그대로 둔다. 표기만 다른 같은 폴더를 다시 넣으면
+  // 정규화 키로 합쳐 둔 행이 하나 더 생긴다.
+  if (selectedProject !== null) {
+    const selectedKey = normalizeProjectKey(selectedProject);
+    if (!discoveredProjectPaths.some((project) => normalizeProjectKey(project) === selectedKey)) {
+      discoveredProjectPaths.unshift(selectedProject);
+    }
+  }
+  const orderedProjectPaths = mergeProjectOrder(discoveredProjectPaths, projectRegistry.projects);
+  const projectPaths = orderedProjectPaths.filter((project) => (
+    showHiddenProjects || !projectRegistryByKey.get(normalizeProjectKey(project))?.hidden
+  ));
+  const hasHiddenProjects = orderedProjectPaths.some(
+    (project) => projectRegistryByKey.get(normalizeProjectKey(project))?.hidden,
+  );
+
+  const resetProjectMenu = () => {
+    setProjectMenuOpen(null);
+    setWtDropdownOpen(false);
+    setWtNewOpen(false);
+    setWtNewBranch("");
+    setWtError(null);
+    setWtConfirmRemove(null);
+    setWtFilter("");
+  };
+
+  const handleProjectHidden = async (project: string, hidden: boolean) => {
+    resetProjectMenu();
+    try {
+      await applyProjectRegistryUpdates([{ key: normalizeProjectKey(project), path: project, hidden }]);
+      if (hidden && selectedProjectKey && selectedProjectKey === normalizeProjectKey(project)) {
+        setSelectedCwd(null);
+      }
+      if (!hidden && !orderedProjectPaths.some((path) => (
+        normalizeProjectKey(path) !== normalizeProjectKey(project)
+        && projectRegistryByKey.get(normalizeProjectKey(path))?.hidden
+      ))) {
+        setShowHiddenProjects(false);
+      }
+    } catch {
+      // Keep the current registry-backed row state when the update fails.
+    }
+  };
+
+  const startProjectAliasEdit = (project: string) => {
+    const alias = projectRegistryByKey.get(normalizeProjectKey(project))?.alias ?? "";
+    projectAliasCancelRef.current = false;
+    setProjectMutationError(null);
+    setProjectAliasDraft(alias);
+    setEditingProjectAlias(project);
+    resetProjectMenu();
+  };
+
+  const commitProjectAliasEdit = async (project: string) => {
+    if (projectAliasCancelRef.current) {
+      projectAliasCancelRef.current = false;
+      setEditingProjectAlias(null);
+      return;
+    }
+    const alias = projectAliasDraft.trim();
+    const currentAlias = projectRegistryByKey.get(normalizeProjectKey(project))?.alias ?? "";
+    if (alias === currentAlias) {
+      setEditingProjectAlias(null);
+      return;
+    }
+    setProjectMutationError(null);
+    try {
+      await applyProjectRegistryUpdates([{
+        key: normalizeProjectKey(project),
+        path: project,
+        alias: alias || null,
+      }]);
+      setEditingProjectAlias(null);
+    } catch {
+      setProjectMutationError(t("sidebar.projectUpdateFailed"));
+    }
+  };
+
+  const handleMoveProject = async (project: string, delta: -1 | 1) => {
+    if (projectFilter) return;
+    const visibleIndex = projectPaths.indexOf(project);
+    const targetIndex = visibleIndex + delta;
+    if (visibleIndex < 0 || targetIndex < 0 || targetIndex >= projectPaths.length) return;
+
+    const visibleProjects = new Set(projectPaths);
+    const visibleSlots = orderedProjectPaths
+      .map((path, index) => visibleProjects.has(path) ? index : -1)
+      .filter((index) => index >= 0);
+    const nextOrder = [...orderedProjectPaths];
+    const sourceSlot = visibleSlots[visibleIndex];
+    const targetSlot = visibleSlots[targetIndex];
+    [nextOrder[sourceSlot], nextOrder[targetSlot]] = [nextOrder[targetSlot], nextOrder[sourceSlot]];
+    resetProjectMenu();
+    try {
+      await applyProjectRegistryUpdates(nextOrder.map((path, order) => ({
+        key: normalizeProjectKey(path),
+        path,
+        order,
+      })));
+    } catch {
+      // Keep the current order when the update fails.
+    }
+  };
+
+  // 프로젝트 정체성은 정규화 키다. 같은 폴더의 두 표기가 각각의 행을 만들면 세션도 그 둘로
+  // 갈라져 한쪽 세션이 화면에서 사라진다.
+  const sessionsByProject = new Map<string, SessionInfo[]>();
+  for (const session of sessionsForDisplay) {
+    const project = session.projectRoot ?? session.cwd;
+    if (!project) continue;
+    const key = normalizeProjectKey(project);
+    const projectSessions = sessionsByProject.get(key);
+    if (projectSessions) projectSessions.push(session);
+    else sessionsByProject.set(key, [session]);
+  }
+
+  // Per-project activity counts (running / unread) for the project rows, keyed
+  // the same way as recentProjectPaths (normalized projectRoot ?? cwd). Small
+  // data set — cheap to recompute.
+  const projectActivity = useMemo(() => {
+    const counts = new Map<string, { running: number; unread: number }>();
+    for (const session of sessionsForDisplay) {
+      const project = session.projectRoot ?? session.cwd;
+      if (!project) continue;
+      const key = normalizeProjectKey(project);
+      let entry = counts.get(key);
+      if (!entry) { entry = { running: 0, unread: 0 }; counts.set(key, entry); }
+      if (runningSessionIds.has(session.id)) entry.running++;
+      if (unreadSessionIds.has(session.id)) entry.unread++;
+    }
+    return counts;
+  }, [sessionsForDisplay, runningSessionIds, unreadSessionIds]);
+
+  const normalizedProjectFilter = projectFilter.trim().toLowerCase();
+  const projectFilterActive = projectFilter.length > 0;
+  const projectGroups = projectPaths.flatMap((project) => {
+    const segments = project.replace(/[\\/]+$/, "").split(/[\\/]/);
+    const pathName = segments.at(-1) || project;
+    const key = normalizeProjectKey(project);
+    const registryEntry = projectRegistryByKey.get(key);
+    const name = registryEntry?.alias ?? pathName;
+    const sessions = (sessionsByProject.get(key) ?? []).slice().sort((left, right) => {
+      const pinnedDelta = Number(pinnedSessionIds.has(right.id)) - Number(pinnedSessionIds.has(left.id));
+      if (pinnedDelta !== 0) return pinnedDelta;
+      return right.modified.localeCompare(left.modified);
+    });
+    if (!normalizedProjectFilter) {
+      return [{ project, key, name, sessions, hidden: registryEntry?.hidden === true }];
+    }
+
+    const projectMatches = name.toLowerCase().includes(normalizedProjectFilter)
+      || pathName.toLowerCase().includes(normalizedProjectFilter);
+    const matchingSessions = sessions.filter((session) => {
+      const title = session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
+      return title.toLowerCase().includes(normalizedProjectFilter);
+    });
+    if (!projectMatches && matchingSessions.length === 0) return [];
+    return [{
+      project,
+      key,
+      name,
+      sessions: projectMatches ? sessions : matchingSessions,
+      hidden: registryEntry?.hidden === true,
+    }];
+  });
+  // 선택된 프로젝트와 실행 중 세션이 있는 프로젝트는 접힌 그룹이 아니라 항상 보이는
+  // 기본 영역에 남긴다. 나머지 임시·시스템 경로만 별도 접힘 그룹으로 내린다.
+  const defaultProjectGroups: typeof projectGroups = [];
+  const temporaryProjectGroups: typeof projectGroups = [];
+  for (const group of projectGroups) {
+    const staysVisible = group.key === selectedProjectKey
+      || (projectActivity.get(group.key)?.running ?? 0) > 0;
+    if (isTemporaryProjectPath(group.project) && !staysVisible) temporaryProjectGroups.push(group);
+    else defaultProjectGroups.push(group);
+  }
+  const temporaryProjectActivity = { running: 0, unread: 0 };
+  for (const group of temporaryProjectGroups) {
+    const activity = projectActivity.get(group.key);
+    if (!activity) continue;
+    temporaryProjectActivity.running += activity.running;
+    temporaryProjectActivity.unread += activity.unread;
+  }
+  // 검색은 접힌 그룹 안의 항목까지 계속 찾는다.
+  const temporaryProjectsVisible = projectFilterActive || temporaryProjectsOpen;
+  // 접힌 그룹의 머리글도 같은 목록에 넣어 순서와 key를 한 곳에서 관리한다.
+  const projectSections: (
+    | { kind: "project"; group: (typeof projectGroups)[number] }
+    | { kind: "temporary" }
+  )[] = [
+    ...defaultProjectGroups.map((group) => ({ kind: "project" as const, group })),
+    ...(temporaryProjectGroups.length > 0 ? [{ kind: "temporary" as const }] : []),
+    ...(temporaryProjectsVisible
+      ? temporaryProjectGroups.map((group) => ({ kind: "project" as const, group }))
+      : []),
+  ];
+  // 화면에 뜬 이름이 겹치는 프로젝트만 부모 경로를 함께 보여 준다. 이름이 같아도 폴더가
+  // 다르면 사용자가 둘을 구분할 수 있어야 한다. 겹치지 않는 이름은 한 줄로 남는다.
+  const ambiguousNames = ambiguousProjectNames(
+    projectSections.flatMap((section) => (section.kind === "project" ? [section.group.name] : [])),
+  );
+  const priorityGroups = useMemo(
+    () => buildPrioritySessionGroups(
+      sessionsForDisplay,
+      runningSessionIds,
+      new Date(),
+      locale,
+      t("navigator.priority"),
+      pinnedSessionIds,
+      t("sidebar.pinned"),
+    ),
+    [locale, pinnedSessionIds, runningSessionIds, sessionsForDisplay, t],
+  );
+
+
+  const showWorktreeSwitcher = Boolean(
+    worktreeState?.isGit
+    && worktreeState.isTopLevel
+    && selectedCwd
+    && selectedProject === worktreeState.projectRoot
+  );
+  const currentWt = worktreeState?.worktrees.find((worktree) => worktree.path === selectedCwd)
+    ?? worktreeState?.worktrees.find((worktree) => worktree.isMain);
+  const showWtFilter = (worktreeState?.worktrees.length ?? 0) >= 8;
+  const visibleWorktrees = showWtFilter && wtFilter.trim()
+    ? (worktreeState?.worktrees ?? []).filter((worktree) =>
+        (worktree.branch ?? displayCwd(worktree.path, homeDir)).toLowerCase().includes(wtFilter.trim().toLowerCase()))
+    : (worktreeState?.worktrees ?? []);
+
+  // 프로젝트 범위는 화면에 보이는 5개나 검색 결과가 아니라 그 프로젝트의 전체 세션이다.
+  const bulkClearTargets: SessionInfo[] = (() => {
+    if (!bulkClearScope) return [];
+    const source = bulkClearScope.kind === "project"
+      ? sessionsByProject.get(normalizeProjectKey(bulkClearScope.project)) ?? []
+      : priorityGroups.flatMap((group) => group.sessions);
+    const seen = new Set<string>();
+    return source.filter((session) => {
+      if (session.transient || seen.has(session.id)) return false;
+      seen.add(session.id);
+      return true;
+    });
+  })();
+  const bulkClearEligible = bulkClearTargets.filter((session) => !runningSessionIds.has(session.id));
+  const countClearableSessions = (sessions: readonly SessionInfo[]) => {
+    const seen = new Set<string>();
+    for (const session of sessions) {
+      if (session.transient || runningSessionIds.has(session.id) || seen.has(session.id)) continue;
+      seen.add(session.id);
+    }
+    return seen.size;
+  };
+
+
+  return (
+    // tabIndex -1: 탭 순서에 끼지 않되, 모달을 띄운 트리거가 메뉴와 함께
+    // 사라졌을 때 초점을 돌려줄 수 있는 대상은 남겨 둔다.
+    <div className="session-navigator" tabIndex={-1} style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", outline: "none" }}>
+      {customPathOpen && (
+        <DirectoryPicker
+          busy={customPathValidating}
+          error={customPathError}
+          onCancel={() => {
+            setCustomPathOpen(false);
+            setCustomPathError(null);
+          }}
+          onSelect={(path) => void commitCustomPath(path)}
+        />
+      )}
+      {bulkClearScope && (
+        <BulkClearDialog
+          scope={bulkClearScope}
+          eligible={bulkClearEligible.length}
+          runningExcluded={bulkClearTargets.length - bulkClearEligible.length}
+          busy={bulkClearBusy}
+          error={bulkClearError}
+          onCancel={closeBulkClear}
+          onConfirm={() => void runBulkClear(bulkClearEligible)}
+        />
+      )}
+
+
+      <div
+        className="session-navigator-header"
+        style={{
+          padding: "4px 10px",
+          borderBottom: "1px solid var(--border)",
+          flexShrink: 0,
+        }}
+      >
+        <div className="session-navigator-titlebar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <PiWebTitle />
+          {/* 12px: 모바일에서 두 아이콘 버튼의 확장된 터치 표적이 서로 겹치지 않는 간격. */}
+          <div style={{ display: "flex", gap: 12 }}>
+            {/* 옆 새로고침 버튼과 같은 계열의 아이콘 버튼. 의미는 title/aria-label이
+                그대로 들고 있고, 기능·위치·비활성 조건은 바뀌지 않는다. */}
+            <button
+              className="navigator-icon-action"
+              onClick={() => handleNewSession()}
+              disabled={!selectedCwd}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "var(--bg-hover)",
+                border: "1px solid var(--border)",
+                color: selectedCwd ? "var(--text-muted)" : "var(--text-dim)",
+                cursor: selectedCwd ? "pointer" : "not-allowed",
+                width: 32, height: 32,
+                padding: 0,
+                borderRadius: 7,
+                fontSize: 12,
+                flexShrink: 0,
+                transition: "background 0.12s, color 0.12s, border-color 0.12s",
+              }}
+              title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+              aria-label={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+              onMouseEnter={(event) => {
+                if (!selectedCwd) return;
+                event.currentTarget.style.background = "var(--bg-selected)";
+                event.currentTarget.style.color = "var(--accent)";
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.background = "var(--bg-hover)";
+                event.currentTarget.style.color = selectedCwd ? "var(--text-muted)" : "var(--text-dim)";
+                event.currentTarget.style.borderColor = "var(--border)";
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                <line x1="6" y1="1" x2="6" y2="11" />
+                <line x1="1" y1="6" x2="11" y2="6" />
+              </svg>
+            </button>
+            <button
+              className={`navigator-icon-action${sessionRefreshDone ? " is-success" : ""}`}
+              onClick={() => loadSessions(false, true)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)",
+                cursor: "pointer",
+                width: 32, height: 32,
+                borderRadius: 7,
+                padding: 0,
+                flexShrink: 0,
+                transition: "background 0.3s, color 0.3s, border-color 0.3s",
+              }}
+              onMouseEnter={(event) => {
+                if (sessionRefreshDone) return;
+                event.currentTarget.style.background = "var(--bg-selected)";
+                event.currentTarget.style.color = "var(--accent)";
+              }}
+              onMouseLeave={(event) => {
+                if (sessionRefreshDone) return;
+                event.currentTarget.style.background = "var(--bg-hover)";
+                event.currentTarget.style.color = "var(--text-muted)";
+                event.currentTarget.style.borderColor = "var(--border)";
+              }}
+              title={t("sidebar.refresh")}
+            >
+              {sessionRefreshDone ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                  <path d="M3 3v5h5" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+
+      <div
+        className="navigator-mode-bar"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          minHeight: 42,
+          padding: "6px 8px 4px",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          className="navigator-mode-switcher"
+          role="toolbar"
+          aria-label={t("navigator.toolbar")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+            flex: 1,
+            minWidth: 0,
+            padding: 2,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            background: "var(--bg-panel)",
+          }}
+        >
+          {NAVIGATOR_MODES.map((mode) => {
+            const label = mode === "projects"
+              ? t("sidebar.projects")
+              : t("navigator.priority");
+            const active = navigatorMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                aria-label={t("navigator.view", { label })}
+                aria-pressed={active}
+                aria-controls={`navigator-${mode}-panel`}
+                data-navigator-mode={mode}
+                onClick={() => selectNavigatorMode(mode)}
+                style={{
+                  minWidth: 0,
+                  minHeight: 26,
+                  flex: 1,
+                  padding: "3px 4px",
+                  border: "none",
+                  borderRadius: 4,
+                  background: active ? "var(--bg-selected)" : "transparent",
+                  color: active ? "var(--text)" : "var(--text-dim)",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  fontWeight: active ? 600 : 500,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {navigatorMode === "projects" && (
+          <button
+            type="button"
+            onClick={() => setShowHiddenProjects((show) => !show)}
+            disabled={!hasHiddenProjects}
+            title={t("sidebar.projectShowHidden")}
+            aria-label={t("sidebar.projectShowHidden")}
+            aria-pressed={showHiddenProjects}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              padding: 0,
+              border: "none",
+              borderRadius: 5,
+              background: showHiddenProjects ? "var(--bg-selected)" : "transparent",
+              color: showHiddenProjects ? "var(--accent)" : "var(--text-dim)",
+              cursor: hasHiddenProjects ? "pointer" : "default",
+              opacity: hasHiddenProjects ? 1 : 0.45,
+              flexShrink: 0,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+              <circle cx="12" cy="12" r="2.5" />
+              {!showHiddenProjects && <path d="m4 4 16 16" />}
+            </svg>
+          </button>
+        )}
+        {navigatorMode === "projects" && (
+          <button
+            className="navigator-add-project"
+            type="button"
+            onClick={handleCustomPathClick}
+            title={t("sidebar.addProject")}
+            aria-label={t("sidebar.addProject")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              padding: 0,
+              border: "none",
+              borderRadius: 6,
+              background: "var(--bg-hover)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              transition: "background 0.12s, color 0.12s",
+            }}
+            onMouseEnter={(event) => {
+              event.currentTarget.style.background = "var(--bg-hover)";
+              event.currentTarget.style.color = "var(--text)";
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.background = "var(--bg-hover)";
+              event.currentTarget.style.color = "var(--text-muted)";
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
+              <path d="M15.5 10.5v5M13 13h5" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {navigatorMode === "projects" && (
+        <label className="navigator-search" style={{ position: "relative", display: "block", margin: "0 8px 8px" }}>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            aria-hidden="true"
+            style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-dim)", pointerEvents: "none" }}
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input
+            className="navigator-search-input"
+            type="search"
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setProjectFilter("");
+                event.currentTarget.blur();
+              }
+            }}
+            placeholder={t("sidebar.searchProjectsAndSessions")}
+            aria-label={t("sidebar.searchProjectsAndSessions")}
+            style={{
+              width: "100%",
+              height: 34,
+              padding: "0 10px 0 32px",
+              border: "1px solid var(--border)",
+              borderRadius: 7,
+              outline: "none",
+              background: "var(--bg-hover)",
+              color: "var(--text)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+            }}
+          />
+        </label>
+      )}
+
+      {navigatorMode === "projects" && (
+      <div
+        id="navigator-projects-panel"
+        className="navigator-session-list"
+        style={{ flex: "1 1 auto", overflowY: "auto", minHeight: 80, padding: "0 6px 10px" }}
+      >
+        {(loading || !projectRegistryLoaded) && (
+          <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
+            {t("sidebar.loading")}
+          </div>
+        )}
+        {error && (
+          <div style={{ padding: "10px 8px", color: "var(--danger)", fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+        {projectMutationError && (
+          <div style={{ padding: "10px 8px", color: "var(--danger)", fontSize: 12 }}>
+            {projectMutationError}
+          </div>
+        )}
+        {!loading && projectRegistryLoaded && !error && projectGroups.length === 0 && (
+          <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
+            {normalizedProjectFilter ? t("sidebar.noMatchingProjects") : t("sidebar.noSessions")}
+          </div>
+        )}
+        {!loading && projectRegistryLoaded && !error && projectSections.map((entry) => {
+          if (entry.kind === "temporary") {
+            return (
+              <div className="navigator-project-group" key="navigator-temporary-projects">
+                <button
+                  type="button"
+                  className="navigator-project-row"
+                  aria-expanded={temporaryProjectsVisible}
+                  title={t("sidebar.temporaryProjects")}
+                  onClick={() => setTemporaryProjectsOpen((open) => !open)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                    minHeight: 34,
+                    padding: "0 6px 0 2px",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    fontSize: "var(--seed-font-size-t2-static)",
+                    fontWeight: 600,
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 24,
+                      height: 28,
+                      flexShrink: 0,
+                      color: "var(--text-dim)",
+                    }}
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                      style={{
+                        transform: temporaryProjectsVisible ? "rotate(0deg)" : "rotate(-90deg)",
+                        transition: "transform 0.12s",
+                      }}
+                    >
+                      <polyline points="2.5 4 6 7.5 9.5 4" />
+                    </svg>
+                  </span>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t("sidebar.temporaryProjects")}
+                  </span>
+                  <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 10, flexShrink: 0 }}>
+                    {temporaryProjectGroups.length}
+                  </span>
+                  {showProjectActivity(temporaryProjectActivity, t)}
+                </button>
+              </div>
+            );
+          }
+          const { project, key: projectKey, name, sessions, hidden } = entry.group;
+          const isSelectedProject = projectKey === selectedProjectKey;
+          // 이름이 겹치는 행만 부모 경로를 함께 그린다. 홈 디렉터리 아래는 ~로 줄여 쓴다.
+          const parentPath = ambiguousNames.has(name.toLowerCase())
+            ? displayCwd(projectParentPath(project), homeDir) || null
+            : null;
+          const isCollapsed = !openProjects.has(project) && !normalizedProjectFilter;
+          const isExpanded = expandedProjects.has(project);
+          const isEditingAlias = editingProjectAlias === project;
+          const projectIndex = projectPaths.indexOf(project);
+          const moveUpDisabled = projectMutationBusy || projectFilterActive || projectIndex <= 0;
+          const moveDownDisabled = (
+            projectMutationBusy
+            || projectFilterActive
+            || projectIndex >= projectPaths.length - 1
+          );
+          const visibleSessionsForProject = isExpanded ? sessions : sessions.slice(0, PROJECT_SESSION_LIMIT);
+          const sessionTree = buildSessionTree(visibleSessionsForProject);
+          const showMore = sessions.length > PROJECT_SESSION_LIMIT;
+
+          return (
+            <section className="navigator-project-group" key={project} style={{ marginBottom: isCollapsed ? 3 : 9 }}>
+              <div
+                className={`navigator-project-row${isSelectedProject ? " is-selected" : ""}`}
+                ref={projectMenuOpen === project ? wtDropdownRef : undefined}
+                onMouseEnter={() => setHoveredProject(project)}
+                onMouseLeave={() => setHoveredProject((current) => current === project && projectMenuOpen !== project ? null : current)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  minHeight: 34,
+                  position: "relative",
+                  borderRadius: 6,
+                  background: isSelectedProject ? "var(--bg-hover)" : "transparent",
+                  opacity: hidden ? 0.55 : 1,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleProjectCollapsed(project)}
+                  title={isCollapsed ? t("sidebar.expandProject") : t("sidebar.collapseProject")}
+                  aria-label={isCollapsed ? t("sidebar.expandProject") : t("sidebar.collapseProject")}
+                  aria-expanded={!isCollapsed}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 24,
+                    height: 28,
+                    marginLeft: 2,
+                    padding: 0,
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-dim)",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                    style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
+                  >
+                    <polyline points="2.5 4 6 7.5 9.5 4" />
+                  </svg>
+                </button>
+                {isEditingAlias ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flex: 1,
+                      minWidth: 0,
+                      height: 34,
+                      padding: "0 4px",
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--accent)" }}>
+                      <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
+                    </svg>
+                    <input
+                      ref={projectAliasInputRef}
+                      value={projectAliasDraft}
+                      onChange={(event) => setProjectAliasDraft(event.target.value)}
+                      onBlur={() => void commitProjectAliasEdit(project)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          projectAliasCancelRef.current = true;
+                          setEditingProjectAlias(null);
+                        }
+                      }}
+                      aria-label={t("sidebar.projectAlias")}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        height: 24,
+                        padding: "2px 6px",
+                        border: "1px solid var(--accent)",
+                        borderRadius: 5,
+                        outline: "none",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <button
+                    className="navigator-project-name"
+                    type="button"
+                    onClick={() => setSelectedCwd(project)}
+                    title={project}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flex: 1,
+                      minWidth: 0,
+                      height: 34,
+                      padding: "0 4px",
+                      border: "none",
+                      background: "transparent",
+                      color: isSelectedProject ? "var(--text)" : "var(--text-muted)",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      fontSize: 12.5,
+                      fontWeight: isSelectedProject ? 600 : 500,
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: isSelectedProject ? "var(--accent)" : "var(--text-dim)" }}>
+                      <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
+                    </svg>
+                    <span style={{ flexShrink: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                    {parentPath === null ? null : (
+                      // 같은 이름의 다른 폴더를 가르는 값. 호버 title 이 아니라 화면에 남긴다 —
+                      // 터치 화면에는 title 이 닿지 않고 사이드바는 늘 열려 있다.
+                      <span
+                        style={{
+                          flexShrink: 2,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          color: "var(--text-dim)",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 10,
+                        }}
+                      >
+                        {parentPath}
+                      </span>
+                    )}
+                    {showProjectActivity(projectActivity.get(projectKey), t)}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleNewSession(project)}
+                  title={t("sidebar.newSessionTitle", { path: project })}
+                  aria-label={t("sidebar.newSessionTitle", { path: project })}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 28,
+                    height: 28,
+                    padding: 0,
+                    border: "none",
+                    borderRadius: 5,
+                    background: "transparent",
+                    color: "var(--text-dim)",
+                    cursor: "pointer",
+                    // 터치 기기에는 hover가 없다. 바로 아래 프로젝트 동작 메뉴와 같은
+                    // 규약으로, 모바일에서는 이 새 세션 버튼도 항상 노출한다.
+                    opacity: isMobile || hoveredProject === project ? 1 : 0,
+                    pointerEvents: isMobile || hoveredProject === project ? "auto" : "none",
+                    transition: "opacity 0.12s, background 0.12s, color 0.12s",
+                    flexShrink: 0,
+                  }}
+                  onFocus={() => setHoveredProject(project)}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.background = "var(--bg-selected)";
+                    event.currentTarget.style.color = "var(--accent)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = "transparent";
+                    event.currentTarget.style.color = "var(--text-dim)";
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                    <line x1="6" y1="1.5" x2="6" y2="10.5" />
+                    <line x1="1.5" y1="6" x2="10.5" y2="6" />
+                  </svg>
+                </button>
+                {(
+                  <div style={{ position: "static", flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextOpen = projectMenuOpen === project ? null : project;
+                        setProjectMenuOpen(nextOpen);
+                        setWtDropdownOpen(false);
+                        setWtNewOpen(false);
+                        setWtError(null);
+                        if (!isSelectedProject) setSelectedCwd(project);
+                      }}
+                      title={t("sidebar.projectActions")}
+                      aria-label={t("sidebar.projectActions")}
+                      aria-expanded={projectMenuOpen === project}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 26,
+                        height: 26,
+                        marginRight: 3,
+                        padding: 0,
+                        border: "none",
+                        borderRadius: 5,
+                        background: projectMenuOpen === project ? "var(--bg-selected)" : "transparent",
+                        color: isSelectedProject && currentWt && !currentWt.isMain ? "var(--accent)" : "var(--text-dim)",
+                        cursor: "pointer",
+                        // 터치 기기에는 hover가 없으므로 프로젝트 동작 메뉴는 항상 노출한다.
+                        opacity: isMobile || hoveredProject === project || projectMenuOpen === project ? 1 : 0,
+                        pointerEvents: isMobile || hoveredProject === project || projectMenuOpen === project ? "auto" : "none",
+                        transition: "opacity 0.12s, background 0.12s, color 0.12s",
+                      }}
+                      onFocus={() => setHoveredProject(project)}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+                        <circle cx="3" cy="7" r="1.1" />
+                        <circle cx="7" cy="7" r="1.1" />
+                        <circle cx="11" cy="7" r="1.1" />
+                      </svg>
+                    </button>
+                    <AnimatedDropdown
+                      open={projectMenuOpen === project}
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 4px)",
+                        right: 3,
+                        width: "min(260px, calc(100vw - 24px))",
+                        zIndex: 110,
+                        background: "var(--bg)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        boxShadow: "var(--shadow-float)",
+                        boxSizing: "border-box",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {showWorktreeSwitcher && worktreeState && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setWtDropdownOpen((open) => !open)}
+                            title={currentWt ? t("sidebar.switchWorktreeTitle", { path: currentWt.path }) : t("sidebar.switchWorktree")}
+                            aria-label={t("sidebar.worktrees")}
+                            aria-expanded={wtDropdownOpen}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              width: "100%",
+                              minHeight: 34,
+                              padding: "0 10px",
+                              border: "none",
+                              borderBottom: wtDropdownOpen ? "1px solid var(--border)" : "none",
+                              background: wtDropdownOpen ? "var(--bg-selected)" : "transparent",
+                              color: "var(--text-muted)",
+                              cursor: "pointer",
+                              textAlign: "left",
+                              fontSize: 11,
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <line x1="6" y1="3" x2="6" y2="15" />
+                              <circle cx="18" cy="6" r="3" />
+                              <circle cx="6" cy="18" r="3" />
+                              <path d="M18 9a9 9 0 0 1-9 9" />
+                            </svg>
+                            <span style={{ flex: 1 }}>{t("sidebar.worktrees")}</span>
+                            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <polyline points="4 2.5 8 6 4 9.5" />
+                            </svg>
+                          </button>
+                          <AnimatedDropdown
+                open={wtDropdownOpen}
+                            style={{
+                              position: "static",
+                              width: "auto",
+                              zIndex: 100,
+                              background: "var(--bg)",
+                              border: "none",
+                              borderTop: "1px solid var(--border)",
+                              borderRadius: 0,
+                              boxShadow: "none",
+                              boxSizing: "border-box",
+                              overflow: "hidden",
+                            }}
+              >
+                  {showWtFilter && (
+                    <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                      <input
+                        value={wtFilter}
+                        onChange={(e) => setWtFilter(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            setWtFilter("");
+                            setWtDropdownOpen(false);
+                          }
+                        }}
+                        placeholder={t("sidebar.filterWorktrees")}
+                        autoFocus
+                        style={{
+                          width: "100%",
+                          fontSize: 11,
+                          fontFamily: "var(--font-mono)",
+                          padding: "5px 8px",
+                          border: "1px solid var(--border)",
+                          borderRadius: 5,
+                          outline: "none",
+                          background: "var(--bg)",
+                          color: "var(--text)",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div style={{ maxHeight: "min(40vh, 300px)", overflowY: "auto" }}>
+                    {visibleWorktrees.map((wt) => {
+                      const isCurrent = wt.path === selectedCwd || (wt.isMain && !worktreeState.worktrees.some((w) => w.path === selectedCwd));
+                      if (wtConfirmRemove === wt.path) {
+                        return (
+                          <div key={wt.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--border)", background: "rgba(239,68,68,0.06)" }}>
+                            <span style={{ flex: 1, fontSize: 11, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {t("sidebar.forceRemoveCheckout")}
+                            </span>
+                            <button
+                              onClick={() => void handleRemoveWorktree(wt.path, true)}
+                              disabled={wtBusy}
+                              style={{ padding: "3px 9px", background: "var(--danger)", border: "none", borderRadius: 5, color: "var(--bg)", fontSize: 11, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}
+                            >
+                              {t("sidebar.force")}
+                            </button>
+                            <button
+                              onClick={() => setWtConfirmRemove(null)}
+                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+                            >
+                              {t("sidebar.cancel")}
+                            </button>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div
+                          key={wt.path}
+                          className="wt-row"
+                          style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)" }}
+                        >
+                          <button
+                            onClick={() => {
+                              setSelectedCwd(wt.path);
+                              setWtDropdownOpen(false);
+                              setWtError(null);
+                              setWtFilter("");
+                            }}
+                            title={wt.path}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 7,
+                              padding: "8px 10px",
+                              background: "var(--bg)",
+                              border: "none",
+                              color: isCurrent ? "var(--text)" : "var(--text-muted)",
+                              cursor: "pointer",
+                              textAlign: "left",
+                              fontSize: 11,
+                              fontFamily: "var(--font-mono)",
+                            }}
+                          >
+                            {isCurrent ? (
+                              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                <polyline points="1.5 5 4 7.5 8.5 2.5" />
+                              </svg>
+                            ) : (
+                              <span style={{ width: 10, flexShrink: 0 }} />
+                            )}
+                            <PathLabel text={wt.branch ?? displayCwd(wt.path, homeDir)} style={{ flex: 1 }} />
+                            {wt.isMain && <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>{t("sidebar.main")}</span>}
+                          </button>
+                          {!wt.isMain && (
+                            <button
+                              onClick={() => void handleRemoveWorktree(wt.path, false)}
+                              disabled={wtBusy}
+                               title={t("sidebar.removeWorktreeTitle", { path: wt.path })}
+                              style={{
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                width: 34, height: 28, padding: 0, marginRight: 4,
+                                background: "none", border: "none",
+                                color: "var(--text-dim)", cursor: "pointer",
+                                borderRadius: 5, flexShrink: 0,
+                                transition: "color 0.12s, background 0.12s",
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                <path d="M10 11v6M14 11v6" />
+                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {showWtFilter && visibleWorktrees.length === 0 && wtFilter.trim() && (
+                      <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-dim)" }}>{t("sidebar.noMatchingWorktrees")}</div>
+                    )}
+                  </div>
+
+                  {!wtNewOpen ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setWtNewOpen(true);
+                        setWtError(null);
+                        setTimeout(() => wtNewInputRef.current?.focus(), 0);
+                      }}
+                      title={t("sidebar.createWorktreeTitle")}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 7,
+                        width: "100%",
+                        padding: "8px 10px",
+                        background: "none",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        fontSize: 11,
+                      }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" style={{ flexShrink: 0 }}>
+                        <line x1="5" y1="1" x2="5" y2="9" />
+                        <line x1="1" y1="5" x2="9" y2="5" />
+                      </svg>
+                       <span>{t("sidebar.newWorktree")}</span>
+                    </button>
+                  ) : (
+                    <div style={{ padding: "6px 8px" }}>
+                      <input
+                        ref={wtNewInputRef}
+                        value={wtNewBranch}
+                        onChange={(e) => {
+                          setWtNewBranch(e.target.value);
+                          setWtError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleCreateWorktree();
+                          }
+                          if (e.key === "Escape") {
+                            setWtNewOpen(false);
+                            setWtNewBranch("");
+                            setWtError(null);
+                          }
+                        }}
+                         placeholder={t("sidebar.branchName")}
+                        style={{
+                          width: "100%",
+                          fontSize: 11,
+                          fontFamily: "var(--font-mono)",
+                          padding: "5px 8px",
+                          border: "1px solid var(--accent)",
+                          borderRadius: 5,
+                          outline: "none",
+                          background: "var(--bg)",
+                          color: "var(--text)",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                      <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
+                        <button
+                          onClick={() => void handleCreateWorktree()}
+                          disabled={wtBusy || !wtNewBranch.trim()}
+                          style={{
+                            flex: 1,
+                            padding: "4px 0",
+                            background: "var(--accent)",
+                            border: "none",
+                            borderRadius: 5,
+                            color: "var(--bg)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: wtBusy || !wtNewBranch.trim() ? "not-allowed" : "pointer",
+                            opacity: wtBusy || !wtNewBranch.trim() ? 0.65 : 1,
+                          }}
+                        >
+                           {wtBusy ? t("sidebar.creating") : t("sidebar.create")}
+                        </button>
+                        <button
+                          onClick={() => { setWtNewOpen(false); setWtNewBranch(""); setWtError(null); }}
+                          style={{
+                            flex: 1,
+                            padding: "4px 0",
+                            background: "var(--bg-hover)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 5,
+                            color: "var(--text-muted)",
+                            fontSize: 11,
+                            cursor: "pointer",
+                          }}
+                        >
+                           {t("sidebar.cancel")}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {wtError && (
+                    <div style={{
+                      padding: "5px 10px 8px",
+                      color: "var(--danger)",
+                      fontSize: 11,
+                      lineHeight: 1.35,
+                      overflowWrap: "anywhere",
+                    }}>
+                      {wtError}
+                    </div>
+                  )}
+              </AnimatedDropdown>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          disabled={projectMutationBusy}
+                          onClick={() => startProjectAliasEdit(project)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            width: "100%",
+                            minHeight: 34,
+                            padding: "0 10px",
+                            border: "none",
+                            borderTop: "1px solid var(--border)",
+                            background: "transparent",
+                            color: "var(--text-muted)",
+                            cursor: projectMutationBusy ? "default" : "pointer",
+                            textAlign: "left",
+                            fontSize: 11,
+                            opacity: projectMutationBusy ? 0.55 : 1,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
+                            <path d="m13.5 8 3 3" />
+                          </svg>
+                          {t(projectRegistryByKey.get(normalizeProjectKey(project))?.alias ? "sidebar.projectAliasEdit" : "sidebar.projectAlias")}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={moveUpDisabled}
+                          title={projectFilterActive ? t("sidebar.projectMoveDisabledWhileFiltering") : undefined}
+                          onClick={() => void handleMoveProject(project, -1)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            width: "100%",
+                            minHeight: 34,
+                            padding: "0 10px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text-muted)",
+                            cursor: moveUpDisabled ? "default" : "pointer",
+                            textAlign: "left",
+                            fontSize: 11,
+                            opacity: moveUpDisabled ? 0.55 : 1,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m6 15 6-6 6 6" />
+                          </svg>
+                          {t("sidebar.projectMoveUp")}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={moveDownDisabled}
+                          title={projectFilterActive ? t("sidebar.projectMoveDisabledWhileFiltering") : undefined}
+                          onClick={() => void handleMoveProject(project, 1)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            width: "100%",
+                            minHeight: 34,
+                            padding: "0 10px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text-muted)",
+                            cursor: moveDownDisabled ? "default" : "pointer",
+                            textAlign: "left",
+                            fontSize: 11,
+                            opacity: moveDownDisabled ? 0.55 : 1,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m6 9 6 6 6-6" />
+                          </svg>
+                          {t("sidebar.projectMoveDown")}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={projectMutationBusy}
+                          onClick={() => void handleProjectHidden(project, !hidden)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            width: "100%",
+                            minHeight: 34,
+                            padding: "0 10px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text-muted)",
+                            cursor: projectMutationBusy ? "default" : "pointer",
+                            textAlign: "left",
+                            fontSize: 11,
+                            opacity: projectMutationBusy ? 0.55 : 1,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                            <circle cx="12" cy="12" r="2.5" />
+                            {!hidden && <path d="m4 4 16 16" />}
+                          </svg>
+                          {t(hidden ? "sidebar.projectUnhide" : "sidebar.projectHide")}
+                        </button>
+                        {(() => {
+                          const projectSessions = sessionsByProject.get(projectKey) ?? [];
+                          const clearable = countClearableSessions(projectSessions);
+                          const disabled = clearable === 0 || bulkClearBusy;
+                          return (
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => {
+                                resetProjectMenu();
+                                setBulkClearError(null);
+                                setBulkClearScope({ kind: "project", project, label: name });
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                width: "100%",
+                                minHeight: 34,
+                                padding: "0 10px",
+                                border: "none",
+                                borderTop: "1px solid var(--border)",
+                                background: "transparent",
+                                color: "var(--text-muted)",
+                                cursor: disabled ? "default" : "pointer",
+                                textAlign: "left",
+                                fontSize: 11,
+                                opacity: disabled ? 0.55 : 1,
+                              }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+                              </svg>
+                              {t("sidebar.clearProjectSessions")}
+                            </button>
+                          );
+                        })()}
+                      </AnimatedDropdown>
+                  </div>
+                )}
+              </div>
+
+              {!isCollapsed && sessions.length === 0 && isSelectedProject && (
+                <div style={{ padding: "6px 12px 7px 32px", color: "var(--text-dim)", fontSize: 11 }}>
+                  {t("sidebar.noSessions")}
+                </div>
+              )}
+              {!isCollapsed && sessionTree.length > 0 && (
+                <div style={{ paddingLeft: 12 }}>
+                  {sessionTree.map((node) => (
+                    <SessionTreeItem
+                      key={node.session.id}
+                      node={node}
+                      selectedSessionId={selectedSessionId}
+                      runningSessionIds={runningSessionIds}
+                      unreadSessionIds={unreadSessionIds}
+                      pinnedSessionIds={pinnedSessionIds}
+                      onSelectSession={handleSelectSessionFromList}
+                      onTogglePinnedSession={togglePinnedSession}
+                      onRenamed={loadSessions}
+                      onSessionDeleted={handleSessionDeleted}
+                      onSessionArchived={handleSessionArchived}
+                      depth={0}
+                    />
+                  ))}
+                </div>
+              )}
+              {!isCollapsed && showMore && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedProjects((current) => {
+                      const next = new Set(current);
+                      if (next.has(project)) next.delete(project);
+                      else next.add(project);
+                      return next;
+                    });
+                  }}
+                  style={{
+                    display: "block",
+                    margin: "3px 0 3px 32px",
+                    padding: "5px 8px",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    textAlign: "left",
+                  }}
+                >
+                  {isExpanded ? t("sidebar.showLess") : t("sidebar.showMore")}
+                </button>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      )}
+
+      <ArchivedSessionsSection
+        refreshKey={archiveRefreshKey}
+        selectedSessionId={selectedSessionId}
+        onSelectSession={handleSelectSessionFromList}
+        onRestored={handleSessionArchived}
+      />
+
+      {navigatorMode === "priority" && (
+        <div
+          id="navigator-priority-panel"
+          style={{ flex: "1 1 auto", minHeight: 80, overflowY: "auto", padding: "0 6px 10px" }}
+        >
+          {loading && (
+            <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
+              {t("sidebar.loading")}
+            </div>
+          )}
+          {error && (
+            <div role="alert" style={{ padding: "10px 8px", color: "var(--danger)", fontSize: 12 }}>
+              {error}
+            </div>
+          )}
+          {!loading && !error && priorityGroups.length === 0 && (
+            <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
+              {t("sidebar.noSessions")}
+            </div>
+          )}
+          {!loading && !error && priorityGroups.length > 0 && (() => {
+            const clearable = countClearableSessions(priorityGroups.flatMap((group) => group.sessions));
+            return (
+              <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 2px 2px" }}>
+                <button
+                  type="button"
+                  disabled={clearable === 0 || bulkClearBusy}
+                  onClick={() => {
+                    setBulkClearError(null);
+                    setBulkClearScope({ kind: "priority" });
+                  }}
+                  style={bulkClearButtonStyle(clearable === 0 || bulkClearBusy, isMobile)}
+                >
+                  {t("sidebar.clearPriorityList")}
+                </button>
+              </div>
+            );
+          })()}
+          {!loading && !error && priorityGroups.map((group, index) => (
+            <section key={group.key} aria-labelledby={`priority-group-${group.key}`}>
+              <h2
+                id={`priority-group-${group.key}`}
+                style={{
+                  margin: 0,
+                  padding: index === 0 ? "2px 8px 4px" : "14px 8px 4px",
+                  color: "var(--text-muted)",
+                  fontSize: "var(--seed-font-size-t2-static)",
+                  fontWeight: 600,
+                }}
+              >
+                {group.label}
+              </h2>
+              {group.sessions.map((session) => (
+                <PrioritySessionRow
+                  key={session.id}
+                  session={session}
+                  selected={session.id === selectedSessionId}
+                  running={runningSessionIds.has(session.id)}
+                  unread={unreadSessionIds.has(session.id)}
+                  pinned={pinnedSessionIds.has(session.id)}
+                  onSelect={handleSelectSessionFromList}
+                  onTogglePin={togglePinnedSession}
+                />
+              ))}
+            </section>
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+/** 되돌릴 수 없는 삭제이므로 범위와 건수를 문장으로 확인받는다. */
+function BulkClearDialog({
+  scope,
+  eligible,
+  runningExcluded,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  scope: BulkClearScope;
+  eligible: number;
+  runningExcluded: number;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useI18n();
+  const confirmDisabled = busy || eligible === 0;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+
+  // aria-modal 선언만으로는 초점이 옮겨지지 않는다. 파괴적 확인이므로 안전한
+  // 쪽인 취소 버튼에서 시작하고, 배경은 키보드로 조작되지 않게 Tab을 가둔다.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    // 트리거가 드롭다운과 함께 사라진 뒤 열리는 경우가 많아, 이 시점의
+    // activeElement는 body인 것이 보통이다. body/html은 "돌아갈 곳"이 아니므로
+    // 보관하지 않고 아래의 사이드바 루트 fallback이 쓰이게 둔다.
+    const active = document.activeElement;
+    const opener = active instanceof HTMLElement
+      && active !== document.body
+      && active !== document.documentElement
+      && !dialog.contains(active)
+      ? active
+      : null;
+    (cancelRef.current ?? dialog).focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // 삭제가 진행 중일 때는 되돌릴 수 없으므로 Escape로 닫지 않는다.
+        if (busyRef.current) return;
+        event.preventDefault();
+        onCancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = Array.from(dialog.querySelectorAll<HTMLElement>(BULK_CLEAR_FOCUSABLES))
+        .filter((element) => element.getClientRects().length > 0);
+      const active = document.activeElement as HTMLElement | null;
+      if (items.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", onKeyDown);
+    return () => {
+      dialog.removeEventListener("keydown", onKeyDown);
+      // 드롭다운 안의 트리거는 닫히면서 사라질 수 있다. 살아 있는 요소에만
+      // 초점을 돌려주고, 사라졌으면 사이드바 루트로 되돌린다.
+      const restore = opener?.isConnected
+        ? opener
+        : dialog.closest<HTMLElement>(".session-navigator");
+      restore?.focus();
+    };
+  }, []);
+
+  return (
+    <div
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1100,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        background: "var(--scrim)",
+      }}
+      onClick={(event) => {
+        if (!busy && event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="bulk-clear-title"
+        aria-describedby="bulk-clear-body"
+        tabIndex={-1}
+        style={{
+          width: 420,
+          maxWidth: "100%",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-surface)",
+          background: "var(--bg-panel)",
+          boxShadow: "var(--shadow-float)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ padding: "18px 18px 14px" }}>
+          <div id="bulk-clear-title" style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>
+            {t("sidebar.clearSessionsTitle")}
+          </div>
+          <div id="bulk-clear-body" style={{ marginTop: 8, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.6, overflowWrap: "anywhere" }}>
+            {scope.kind === "project"
+              ? t("sidebar.clearSessionsProjectBody", { project: scope.label, count: eligible })
+              : t("sidebar.clearSessionsPriorityBody", { count: eligible })}
+            {runningExcluded > 0 && (
+              <div style={{ marginTop: 6 }}>{t("sidebar.clearSessionsRunningExcluded", { count: runningExcluded })}</div>
+            )}
+            {eligible === 0 && (
+              <div style={{ marginTop: 6 }}>{t("sidebar.clearSessionsNone")}</div>
+            )}
+          </div>
+          {error && (
+            <div role="alert" style={{ marginTop: 10, color: "var(--danger)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5, overflowWrap: "anywhere" }}>
+              {error}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)" }}>
+          <button
+            ref={cancelRef}
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              minHeight: 36,
+              padding: "0 12px",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-control)",
+              background: "transparent",
+              color: "var(--text-muted)",
+              cursor: busy ? "default" : "pointer",
+              fontSize: "var(--seed-font-size-t3-static)",
+            }}
+          >
+            {t("sidebar.clearSessionsCancel")}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={confirmDisabled}
+            aria-busy={busy}
+            style={{
+              minHeight: 36,
+              padding: "0 14px",
+              border: "1px solid var(--danger)",
+              borderRadius: "var(--radius-control)",
+              background: "transparent",
+              color: confirmDisabled ? "var(--text-dim)" : "var(--danger)",
+              cursor: confirmDisabled ? "default" : "pointer",
+              fontSize: "var(--seed-font-size-t3-static)",
+              fontWeight: 600,
+            }}
+          >
+            {busy ? t("sidebar.clearSessionsBusy") : t("sidebar.clearSessionsConfirm")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PinIcon({ filled = false }: { filled?: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 17v5" />
+      <path d="M5 17h14" />
+      <path d="M6 3h12l-1 8 2 3H5l2-3-1-8z" />
+    </svg>
+  );
+}
+
+function PrioritySessionRow({
+  session,
+  selected,
+  running,
+  unread,
+  pinned,
+  onSelect,
+  onTogglePin,
+}: {
+  session: SessionInfo;
+  selected: boolean;
+  running: boolean;
+  unread: boolean;
+  pinned: boolean;
+  onSelect: (session: SessionInfo) => void;
+  onTogglePin: (sessionId: string) => void;
+}) {
+  const { t } = useI18n();
+  const title = prioritySessionTitle(session);
+  const project = prioritySessionProjectName(session.cwd);
+
+  return (
+    <div
+      className={`priority-session-row${selected ? " is-selected" : ""}${running ? " is-running" : ""}${unread ? " is-unread" : ""}`}
+      style={{
+        display: "flex",
+        alignItems: "stretch",
+        borderRadius: 5,
+        background: selected ? "var(--bg-selected)" : "transparent",
+      }}
+    >
+      <button
+        type="button"
+        aria-current={selected ? "page" : undefined}
+        onClick={() => onSelect(session)}
+        title={`${title}\n${session.cwd}\n${new Date(session.modified).toLocaleString()}`}
+        style={{
+          minWidth: 0,
+          flex: 1,
+          display: "block",
+          padding: "7px 8px",
+          border: "none",
+          background: "transparent",
+          color: "var(--text)",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "var(--text)",
+              fontSize: 12.5,
+              fontWeight: 500,
+              lineHeight: 1.4,
+            }}
+          >
+            {title}
+          </span>
+          {running && <RunningSessionIndicator />}
+          {!running && unread && <UnreadSessionIndicator />}
+        </span>
+        <span
+          style={{
+            display: "block",
+            marginTop: 2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            color: "var(--text-dim)",
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {project}
+        </span>
+      </button>
+      <button
+        type="button"
+        aria-pressed={pinned}
+        aria-label={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
+        title={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
+        onClick={() => onTogglePin(session.id)}
+        style={{
+          width: 30,
+          border: "none",
+          background: "transparent",
+          color: pinned ? "var(--accent)" : "var(--text-dim)",
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+      >
+        <PinIcon filled={pinned} />
+      </button>
+    </div>
+  );
+}
+
+function ArchivedSessionsSection({
+  refreshKey,
+  selectedSessionId,
+  onSelectSession,
+  onRestored,
+}: {
+  refreshKey: number;
+  selectedSessionId: string | null;
+  onSelectSession: (s: SessionInfo) => void;
+  onRestored: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/sessions?archived=1", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { sessions: SessionInfo[] };
+        if (!cancelled) setSessions(data.sessions);
+      } catch {
+        // Archived section is best-effort; a failed fetch just leaves it stale.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  const restore = useCallback(async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: false }),
+      });
+      onRestored(id);
+    } catch {
+      // ignore
+    }
+  }, [onRestored]);
+
+  if (sessions.length === 0 && !open) return null;
+
+  return (
+    <section style={{ borderTop: "1px solid var(--border)", marginTop: 4 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          width: "100%", padding: "7px 12px",
+          background: "transparent", border: "none",
+          color: "var(--text-muted)", cursor: "pointer",
+          fontSize: 12, fontWeight: 600, textAlign: "left",
+        }}
+      >
+        <svg
+          width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s" }}
+        >
+          <polyline points="2 3.5 5 6.5 8 3.5" />
+        </svg>
+        {t("sidebar.archived")} ({sessions.length})
+      </button>
+      {open && (
+        <div style={{ paddingLeft: 12 }}>
+          {sessions.length === 0 && (
+            <div style={{ padding: "4px 12px 8px 20px", color: "var(--text-dim)", fontSize: 11 }}>
+              {t("sidebar.noArchivedSessions")}
+            </div>
+          )}
+          {sessions.map((s) => {
+            const firstMessage = skillExpansionToCommand(s.firstMessage) ?? s.firstMessage;
+            const title = s.name || firstMessage.slice(0, 50) || s.id.slice(0, 12);
+            return (
+              <div
+                key={s.id}
+                onClick={() => onSelectSession(s)}
+                style={{
+                  height: 40, display: "flex", alignItems: "center",
+                  paddingLeft: 20, paddingRight: 4, gap: 4,
+                  cursor: "pointer", overflow: "hidden",
+                  borderLeft: s.id === selectedSessionId ? "2px solid var(--accent)" : "2px solid transparent",
+                  background: s.id === selectedSessionId ? "var(--bg-selected)" : "transparent",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {title}
+                </div>
+                <button
+                  onClick={(e) => restore(e, s.id)}
+                  title={t("sidebar.restore")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    height: 24, padding: "0 8px", flexShrink: 0,
+                    background: "var(--bg)", border: "1px solid var(--border)",
+                    borderRadius: 5, color: "var(--text-muted)",
+                    cursor: "pointer", fontSize: 11, fontWeight: 500,
+                  }}
+                >
+                  {t("sidebar.restore")}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SessionTreeItem({
+  node,
+  selectedSessionId,
+  runningSessionIds,
+  unreadSessionIds,
+  pinnedSessionIds,
+  onSelectSession,
+  onRenamed,
+  onSessionDeleted,
+  onTogglePinnedSession,
+  onSessionArchived,
+  depth,
+}: {
+  node: SessionTreeNode;
+  selectedSessionId: string | null;
+  runningSessionIds: Set<string>;
+  unreadSessionIds: Set<string>;
+  pinnedSessionIds: Set<string>;
+  onSelectSession: (s: SessionInfo) => void;
+  onTogglePinnedSession: (sessionId: string) => void;
+  onRenamed?: () => void;
+  onSessionDeleted?: (id: string) => void;
+  onSessionArchived?: (id: string) => void;
+  depth: number;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <div>
+      <div style={{ position: "relative" }}>
+        {/* Indent line for child sessions */}
+        {depth > 0 && (
+          <div style={{
+            position: "absolute",
+            left: depth * 10 + 6,
+            top: 0, bottom: 0,
+            width: 1,
+            background: "var(--border)",
+            pointerEvents: "none",
+          }} />
+        )}
+        <SessionItem
+          session={node.session}
+          isSelected={node.session.id === selectedSessionId}
+          isRunning={runningSessionIds.has(node.session.id)}
+          isUnread={unreadSessionIds.has(node.session.id)}
+          isPinned={pinnedSessionIds.has(node.session.id)}
+          onClick={() => onSelectSession(node.session)}
+          onTogglePin={() => onTogglePinnedSession(node.session.id)}
+          onRenamed={onRenamed}
+          onDeleted={(id) => onSessionDeleted?.(id)}
+          onArchived={(id) => onSessionArchived?.(id)}
+          depth={depth}
+          hasChildren={hasChildren}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((v) => !v)}
+        />
+      </div>
+      {hasChildren && !collapsed && (
+        <div>
+          {node.children.map((child) => (
+            <SessionTreeItem
+              key={child.session.id}
+              node={child}
+              selectedSessionId={selectedSessionId}
+              runningSessionIds={runningSessionIds}
+              unreadSessionIds={unreadSessionIds}
+              pinnedSessionIds={pinnedSessionIds}
+              onSelectSession={onSelectSession}
+              onTogglePinnedSession={onTogglePinnedSession}
+              onRenamed={onRenamed}
+              onSessionDeleted={onSessionDeleted}
+              onSessionArchived={onSessionArchived}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RunningSessionIndicator() {
+  const { t } = useI18n();
+  return (
+    <span
+      title={t("sidebar.agentRunning")}
+      aria-label={t("sidebar.agentRunning")}
+      style={{
+        width: 14,
+        height: 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: "var(--accent)",
+      }}
+    >
+      <svg
+        className="session-running-spinner"
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+        style={{ display: "block" }}
+      >
+        <path
+          d="M21 12a9 9 0 1 1-3.8-7.4"
+          stroke="currentColor"
+          strokeWidth="2.8"
+          strokeLinecap="round"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function UnreadSessionIndicator() {
+  const { t } = useI18n();
+  return (
+    <span
+      title={t("sidebar.newActivity")}
+      aria-label={t("sidebar.newSessionActivity")}
+      style={{
+        width: 14,
+        height: 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: "var(--accent)",
+      }}
+    >
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ display: "block" }}>
+        <circle cx="7" cy="7" r="2.5" fill="currentColor" />
+        <circle
+          className="session-unread-ring"
+          cx="7"
+          cy="7"
+          r="3"
+          stroke="currentColor"
+          strokeWidth="1.4"
+        />
+      </svg>
+    </span>
+  );
+}
+
+/**
+ * Compact per-project activity badges for the workspace selector dropdown items:
+ * a spinning running icon + count and an unread dot + count. Renders nothing
+ * when the project has no activity. Counts share the accent / unread colors of
+ * the per-session indicators so the two stay visually consistent.
+ */
+function showProjectActivity(
+  activity: { running: number; unread: number } | undefined,
+  t: (key: string) => string,
+): ReactNode {
+  if (!activity || (activity.running === 0 && activity.unread === 0)) return null;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, marginLeft: 6 }}>
+      {activity.running > 0 && (
+        <span
+          title={t("sidebar.agentRunning")}
+          aria-label={`${t("sidebar.agentRunning")} (${activity.running})`}
+          style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+        >
+          <svg
+            className="session-running-spinner"
+            width="10"
+            height="10"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+            style={{ display: "block" }}
+          >
+            <path d="M21 12a9 9 0 1 1-3.8-7.4" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
+          </svg>
+          {activity.running}
+        </span>
+      )}
+      {activity.unread > 0 && (
+        <span
+          title={t("sidebar.newSessionActivity")}
+          aria-label={`${t("sidebar.newSessionActivity")} (${activity.unread})`}
+          style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
+          {activity.unread}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function SessionItem({
+  session,
+  isSelected,
+  isRunning,
+  isUnread,
+  isPinned,
+  onClick,
+  onTogglePin,
+  onRenamed,
+  onDeleted,
+  onArchived,
+  depth = 0,
+  hasChildren = false,
+  collapsed = false,
+  onToggleCollapse,
+}: {
+  session: SessionInfo;
+  isSelected: boolean;
+  isRunning?: boolean;
+  isUnread?: boolean;
+  isPinned?: boolean;
+  onClick: () => void;
+  onTogglePin?: () => void;
+  onRenamed?: () => void;
+  onDeleted?: (id: string) => void;
+  onArchived?: (id: string) => void;
+  depth?: number;
+  hasChildren?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+}) {
+  const { t } = useI18n();
+  const [hovered, setHovered] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Select the whole name once the rename input is mounted (startRename's
+  // immediate setTimeout can fire before the input exists).
+  useEffect(() => {
+    if (renaming) {
+      const id = requestAnimationFrame(() => inputRef.current?.select());
+      return () => cancelAnimationFrame(id);
+    }
+  }, [renaming]);
+
+  // A stored first message may be an SDK-expanded <skill> block; collapse it
+  // back to the compact /skill:name args command the user typed before using
+  // it as the auto-name fallback, mirroring MessageView's rendering.
+  const displayFirstMessage = skillExpansionToCommand(session.firstMessage) ?? session.firstMessage;
+  const title = session.name || displayFirstMessage.slice(0, 50) || session.id.slice(0, 12);
+
+  const startRename = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Transient sessions have no file yet, so renaming would fail.
+    if (session.transient) return;
+    setRenameValue(session.name || displayFirstMessage.slice(0, 50) || session.id.slice(0, 12));
+    setRenaming(true);
+  }, [session.name, session.transient, displayFirstMessage, session.id]);
+
+  const commitRename = useCallback(async () => {
+    const name = renameValue.trim();
+    setRenaming(false);
+    // No-op when unchanged: the fallback title (first message / id) isn't a
+    // real stored name, so don't persist it as one. (The rename input seeds
+    // from the same collapsed displayFirstMessage, so an untouched rename of
+    // a skill-invoked session stays a no-op instead of persisting raw XML.)
+    if (renameValue === title || name === (session.name ?? "")) return;
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      onRenamed?.();
+    } catch {
+      // ignore
+    }
+  }, [renameValue, session.id, session.name, onRenamed, title]);
+
+  const performDelete = useCallback(async () => {
+    if (session.transient) return;
+    setConfirmDelete(false);
+    setDeleting(true);
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      onDeleted?.(session.id);
+    } catch {
+      setDeleting(false);
+    }
+  }, [session.id, session.transient, onDeleted]);
+
+  const performArchive = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (session.transient) return;
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+      onArchived?.(session.id);
+    } catch {
+      // ignore
+    }
+  }, [session.id, session.transient, onArchived]);
+
+  const handleDeleteClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (e.shiftKey) {
+      void performDelete();
+    } else {
+      setConfirmDelete(true);
+    }
+  }, [performDelete]);
+
+  const handleDeleteConfirm = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    void performDelete();
+  }, [performDelete]);
+
+  const handleDeleteCancel = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmDelete(false);
+  }, []);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const handled = dispatchSessionRowContextMenu({
+      id: session.id,
+      path: session.path,
+      cwd: session.cwd,
+      name: session.name,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      refresh: () => { onRenamed?.(); },
+    });
+    if (!handled) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, [onRenamed, session.cwd, session.id, session.name, session.path]);
+
+  // Fixed height keeps hover and confirmation states from reflowing the list.
+  const ITEM_HEIGHT = 40;
+
+  return (
+    <div
+      className={`navigator-session-row${isSelected ? " is-selected" : ""}${isRunning ? " is-running" : ""}${isUnread ? " is-unread" : ""}${confirmDelete ? " is-confirming" : ""}`}
+      onClick={confirmDelete || renaming ? undefined : onClick}
+      onContextMenu={confirmDelete || renaming ? undefined : handleContextMenu}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); }}
+      style={{
+        height: ITEM_HEIGHT,
+        display: "flex",
+        alignItems: "center",
+        paddingLeft: depth > 0 ? depth * 10 + 8 : 8,
+        paddingRight: 4,
+        cursor: confirmDelete || renaming ? "default" : "pointer",
+        background: isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
+        borderLeft: "2px solid transparent",
+        transition: "background 0.1s",
+        opacity: deleting ? 0.5 : 1,
+        gap: 4,
+        overflow: "hidden",
+      }}
+    >
+      {confirmDelete ? (
+        /* ── Delete confirmation: same height, two flat buttons ── */
+        <>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {t("sidebar.deleteSession", { title: title.slice(0, 22) + (title.length > 22 ? "…" : "") })}
+          </div>
+          <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+            <button
+              onClick={handleDeleteConfirm}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                height: 30, padding: "0 11px",
+                background: "var(--danger)", border: "none",
+                borderRadius: "var(--radius-control)", color: "var(--bg)",
+                cursor: "pointer", fontSize: 12, fontWeight: 600,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6M14 11v6" />
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+              </svg>
+              {t("sidebar.delete")}
+            </button>
+            <button
+              onClick={handleDeleteCancel}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                height: 30, padding: "0 11px",
+                background: "var(--bg)", border: "1px solid var(--border)",
+                borderRadius: "var(--radius-control)", color: "var(--text-muted)",
+                cursor: "pointer", fontSize: 12, fontWeight: 500,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t("sidebar.cancel")}
+            </button>
+          </div>
+        </>
+      ) : renaming ? (
+        /* ── Rename: input fills the same row ── */
+        <input
+          ref={inputRef}
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            if (e.key === "Escape") setRenaming(false);
+          }}
+          autoFocus
+          style={{
+            flex: 1,
+            fontSize: 12,
+            padding: "5px 8px",
+            border: "1px solid var(--accent)",
+            borderRadius: 5,
+            outline: "none",
+            background: "var(--bg)",
+            color: "var(--text)",
+            height: 30,
+          }}
+        />
+      ) : (
+        /* ── Normal view ── */
+        <>
+          {/* Fork indicator for child sessions */}
+          {depth > 0 && (
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+          )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClick(); }}
+            aria-current={isSelected ? "page" : undefined}
+            title={title}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flex: 1,
+              minWidth: 0,
+              color: "var(--text)",
+              fontSize: 12.5,
+              fontWeight: isSelected ? 500 : 400,
+              lineHeight: 1.35,
+              padding: 0,
+              border: "none",
+              background: "transparent",
+              fontFamily: "inherit",
+              textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {title}
+            </span>
+            {isRunning && <RunningSessionIndicator />}
+            {!isRunning && isUnread && <UnreadSessionIndicator />}
+            {session.worktreeBranch && (
+              <span title={t("sidebar.worktreePath", { path: session.cwd })} style={{ display: "flex", color: "var(--accent)", flexShrink: 0 }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="6" y1="3" x2="6" y2="15" />
+                  <circle cx="18" cy="6" r="3" />
+                  <circle cx="6" cy="18" r="3" />
+                  <path d="M18 9a9 9 0 0 1-9 9" />
+                </svg>
+              </span>
+            )}
+          </button>
+
+          {/* Collapse toggle — always visible when has children */}
+          {hasChildren && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
+              title={collapsed ? t("sidebar.expandForks") : t("sidebar.collapseForks")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 20, height: 20, padding: 0, flexShrink: 0,
+                background: "none", border: "none",
+                color: "var(--text-dim)", cursor: "pointer",
+                transform: collapsed ? "rotate(-90deg)" : "none",
+                transition: "transform 0.15s",
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="2 3.5 5 6.5 8 3.5" />
+              </svg>
+            </button>
+          )}
+
+          {/* Pin stays visible while active; rename/delete remain hover actions. */}
+          {!session.transient && (
+            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePin?.();
+                }}
+                title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+                aria-label={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+                aria-pressed={isPinned}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 26, height: 26, padding: 0,
+                  background: isPinned ? "var(--bg-selected)" : "transparent",
+                  border: "none",
+                  borderRadius: 5,
+                  color: isPinned ? "var(--accent)" : "var(--text-muted)",
+                  cursor: "pointer", flexShrink: 0,
+                  opacity: hovered || isPinned ? 1 : 0,
+                  pointerEvents: hovered || isPinned ? "auto" : "none",
+                  transition: "opacity 0.12s, background 0.12s, color 0.12s",
+                }}
+                onFocus={() => setHovered(true)}
+              >
+                <PinIcon filled={isPinned} />
+              </button>
+              <button
+                onClick={startRename}
+                title={t("sidebar.rename")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 26, height: 26, padding: 0,
+                  background: "transparent", border: "none",
+                  borderRadius: 5, color: "var(--text-muted)",
+                  cursor: "pointer", flexShrink: 0,
+                  opacity: hovered ? 1 : 0,
+                  pointerEvents: hovered ? "auto" : "none",
+                  transition: "opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s",
+                }}
+                onFocus={() => setHovered(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--bg-selected)";
+                  e.currentTarget.style.color = "var(--accent)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--text-muted)";
+                  e.currentTarget.style.borderColor = "transparent";
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+              <button
+                onClick={performArchive}
+                title={t("sidebar.archive")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 26, height: 26, padding: 0,
+                  background: "transparent", border: "none",
+                  borderRadius: 5, color: "var(--text-muted)",
+                  cursor: "pointer", flexShrink: 0,
+                  transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--bg-selected)";
+                  e.currentTarget.style.color = "var(--accent)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--text-muted)";
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="4" rx="1" />
+                  <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
+                  <path d="M10 12h4" />
+                </svg>
+              </button>
+              <button
+                onClick={handleDeleteClick}
+                title={t("sidebar.deleteWithShiftClick")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 26, height: 26, padding: 0,
+                  background: "transparent", border: "none",
+                  borderRadius: 5, color: "var(--text-muted)",
+                  cursor: "pointer", flexShrink: 0,
+                  opacity: hovered ? 1 : 0,
+                  pointerEvents: hovered ? "auto" : "none",
+                  transition: "opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s",
+                }}
+                onFocus={() => setHovered(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(239,68,68,0.08)";
+                  e.currentTarget.style.color = "#ef4444";
+                  e.currentTarget.style.borderColor = "rgba(239,68,68,0.35)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--text-muted)";
+                  e.currentTarget.style.borderColor = "transparent";
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6M14 11v6" />
+                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,34 @@
+# The image builds omp-web from source, so the context is the repository minus
+# everything the Next.js build does not read: local artifacts, secrets, and the
+# Tauri desktop tree (a Rust target directory that dwarfs the rest of the repo).
+.git
+.gitignore
+.github
+.claude
+.factory
+
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+src-tauri
+
+docs
+*.md
+
+.env*
+*.pem
+.vercel
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+Dockerfile
+.dockerignore
+docker-compose.yml

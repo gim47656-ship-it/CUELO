@@ -1,0 +1,4288 @@
+/* ---------------------------------------------------------------------------
+   @seed-design/css is the single source of colour, radius, dimension and type
+   scale for this app. The default (unlayered) SEED build is used, not the
+   experimental Cascade Layers one.
+
+   Cascade note: Tailwind v4 emits its utilities inside `@layer utilities`, and
+   unlayered author rules always win over layered ones no matter what order the
+   imports are in. So a Tailwind utility cannot override a SEED recipe
+   declaration here; local corrections have to be plain rules (see the domain
+   selectors below) and any real conflict should be judged from computed style,
+   not assumed from import order.
+   --------------------------------------------------------------------------- */
+@import "@seed-design/css/base.css";
+/* Recipe CSS is not imported by @seed-design/react itself, so the app loads
+   exactly the recipes it consumes: ActionButton, ToggleButton, Menu(+item),
+   Tabs, Badge. Adding a SEED component means adding its recipe here. */
+@import "@seed-design/css/recipes/action-button.css";
+@import "@seed-design/css/recipes/toggle-button.css";
+@import "@seed-design/css/recipes/menu.css";
+@import "@seed-design/css/recipes/menu-item.css";
+@import "@seed-design/css/recipes/tabs.css";
+@import "@seed-design/css/recipes/badge.css";
+@import "tailwindcss" source("../");
+@import "@seed-design/tailwind4-theme";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-selected: var(--bg-selected);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-metric: var(--metric);
+  --color-metric-recent: var(--metric-recent);
+  --color-metric-track: var(--metric-track);
+  --color-user-bg: var(--user-bg);
+  --color-assistant-bg: var(--assistant-bg);
+  --color-tool-bg: var(--tool-bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-bg-raised: var(--bg-raised);
+  --font-mono-font: var(--font-mono);
+  --text-xs: var(--seed-font-size-t3-static);
+  --text-sm: var(--seed-font-size-t4-static);
+}
+
+/* ---------------------------------------------------------------------------
+   Domain names → SEED semantic tokens
+   ---------------------------------------------------------------------------
+   This block is a mapping, not a palette: every value on the right is a SEED
+   semantic token, so light/dark comes entirely from `data-seed-color-mode` on
+   <html> and there is nothing to keep in sync. The names on the left are the
+   vocabulary this app's components already speak (`var(--bg)`, `var(--text)`,
+   …); they stay so a redesign does not have to rewrite 490 files, and new
+   code should reference `--seed-*` directly.
+
+   Only three variables in this app are not SEED's: `--omp-md-heading`,
+   `--omp-md-link` and `--omp-md-code`, which lib/omp-theme.ts resolves from
+   the active core theme and writes onto <html>.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg: var(--seed-color-bg-layer-default);
+  --bg-panel: var(--seed-color-bg-layer-basement);
+  --bg-hover: var(--seed-color-bg-layer-default-pressed);
+  --bg-selected: var(--seed-color-bg-transparent-selected);
+  --bg-raised: var(--seed-color-bg-layer-fill);
+  --border: var(--seed-color-stroke-neutral-weak);
+  --border-strong: var(--seed-color-stroke-neutral-solid);
+  --text: var(--seed-color-fg-neutral);
+  --text-muted: var(--seed-color-fg-neutral-muted);
+  --text-dim: var(--seed-color-fg-neutral-subtle);
+  /* accent is state ink, not branding: selection spines, tab underlines and
+     focus rings all read as neutral ink so colour stays for meaning only. */
+  --accent: var(--seed-color-fg-neutral);
+  --accent-hover: var(--seed-color-fg-neutral);
+  --user-bg: var(--seed-color-bg-layer-fill);
+  --assistant-bg: var(--seed-color-bg-layer-default);
+  --tool-bg: var(--seed-color-bg-neutral-weak);
+  --bg-subtle: var(--seed-color-bg-neutral-weak-alpha);
+  --success: var(--seed-color-fg-positive);
+  --danger: var(--seed-color-fg-critical);
+  --warning: var(--seed-color-fg-warning);
+  /* gauges: informative carries the normal band, warning the recent slice */
+  --metric: var(--seed-color-fg-informative);
+  --metric-recent: var(--seed-color-fg-warning);
+  --metric-track: var(--seed-color-bg-neutral-weak);
+  /* the brushed-panel bevel is retired; these two remain only so the few
+     shadow declarations that still reference them resolve to SEED strokes */
+  --bevel-light: transparent;
+  --bevel-shade: var(--seed-color-stroke-neutral-subtle);
+}
+
+html.dark {
+  /* SEED dark: basement is pure black and the solid stroke is near-white; on a
+     long-read dark UI both halate, so the dark scheme steps each one notch in.
+     Light keeps SEED's defaults. */
+  --bg-panel: var(--seed-color-bg-layer-fill);
+  --border-strong: var(--seed-color-palette-gray-600);
+}
+
+/* Nord 선택에만 적용하는 SEED 역할 토큰. 밝은 청회색 층과 청록 강조로
+   긴 작업 화면의 밝기·구분을 높이고 다른 테마와 light mode는 보존한다. */
+html.dark[data-omp-theme-name="dark-nord"] {
+  --seed-color-bg-layer-default: #2e3440;
+  --seed-color-bg-layer-basement: #292f3a;
+  --seed-color-bg-layer-fill: #3b4252;
+  --seed-color-bg-layer-floating: #434c5e;
+  --seed-color-bg-layer-default-pressed: #434c5e;
+  --seed-color-bg-neutral-weak: #3b4252;
+  --seed-color-bg-transparent-selected: #3b5363;
+  --seed-color-fg-neutral: #eceff4;
+  --seed-color-fg-neutral-muted: #c4cdd9;
+  --seed-color-fg-neutral-subtle: #b0bdce;
+  --seed-color-fg-informative: #88c0d0;
+  --seed-color-stroke-neutral-weak: #4c566a;
+  --seed-color-stroke-focus-ring: #88c0d0;
+  --accent: var(--seed-color-fg-informative);
+  --accent-hover: #a3d3df;
+  --border-strong: #718099;
+}
+
+/* anthracite 선택에만 적용하는 개발자용 무채색 다크(Graphite). SEED 기본 다크는
+   accent 가 neutral 잉크이고 basement/fill 이 dark 에서 같은 층으로 접혀 사이드바·카드·
+   본문이 구분되지 않으며 본문 대비(16:1)가 장시간 읽기에 과하다. 표면을 한 단계씩
+   벌리고 informative 하나만 인터랙션 색으로 두며 텍스트 대비를 편집기 수준(≈11:1)으로
+   낮춘다. 다른 테마와 light mode 는 보존한다. */
+html.dark[data-omp-theme-name="anthracite"] {
+  --seed-color-bg-layer-basement: #181818;
+  --seed-color-bg-layer-default: #1f1f1f;
+  --seed-color-bg-layer-fill: #262626;
+  --seed-color-bg-layer-floating: #2b2b2b;
+  --seed-color-bg-layer-default-pressed: #2a2d2e;
+  --seed-color-bg-neutral-weak: #262626;
+  --seed-color-bg-transparent-selected: rgba(77, 170, 252, 0.16);
+  --seed-color-fg-neutral: #d4d4d4;
+  --seed-color-fg-neutral-muted: #a6a6a6;
+  --seed-color-fg-neutral-subtle: #7f7f7f;
+  --seed-color-fg-informative: #4daafc;
+  --seed-color-stroke-neutral-weak: #333333;
+  --seed-color-stroke-focus-ring: #4daafc;
+  --bg-panel: var(--seed-color-bg-layer-basement);
+  --accent: var(--seed-color-fg-informative);
+  --accent-hover: #7cc3ff;
+  --border-strong: #454545;
+}
+
+.catppuccin-file-icon {
+  display: block;
+  flex-shrink: 0;
+  background: center / contain no-repeat var(--catppuccin-icon-light);
+}
+html.dark .catppuccin-file-icon {
+  background-image: var(--catppuccin-icon-dark);
+}
+
+
+/* Theme toggle: circular wipe via View Transitions API.
+   Disable the UA cross-fade; the actual clip-path animation is driven by
+   Element.animate() in hooks/useTheme.ts after transition.ready resolves. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  height: var(--app-viewport-height, 100dvh);
+  margin: 0;
+  padding: 0;
+  overflow: clip;
+  background: var(--bg);
+  color: var(--text);
+  /* `--seed-font-family` only names faces — SEED downloads nothing, so the
+     no-font-CDN rule still holds. Korean prose reads at t5 (16px); chrome and
+     controls step down to t4/t3 locally. */
+  font-family: var(--seed-font-family);
+  font-size: var(--seed-font-size-t5-static);
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+.chat-session-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-gutter: stable;
+}
+
+.chat-session-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-session-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-dim) 65%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.chat-session-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text);
+}
+
+:root {
+  /* System monospace stack. omp-web is a local tool: it must not depend on a
+     font CDN at build or at runtime, and the terminal-native faces below are
+     already what omp users read code in. CJK fallbacks stay last. */
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Noto Sans Mono', 'DejaVu Sans Mono', Consolas, 'Liberation Mono', 'PingFang SC', 'Microsoft YaHei', monospace;
+}
+
+pre, code {
+  font-family: var(--font-mono);
+}
+
+/* react-markdown output styles */
+.markdown-body {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  font-size: 16px;
+  line-height: 1.72;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.markdown-body p { margin: 0 0 8px; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.update-changelog .markdown-body p { margin-bottom: 6px; }
+.update-changelog .markdown-body h1,
+.update-changelog .markdown-body h2,
+.update-changelog .markdown-body h3,
+.update-changelog .markdown-body h4,
+.update-changelog .markdown-body h5,
+.update-changelog .markdown-body h6 {
+  margin: 7px 0 4px;
+}
+.update-changelog .markdown-body ul,
+.update-changelog .markdown-body ol {
+  margin: 4px 0 7px;
+}
+.update-changelog .markdown-body li { margin: 2px 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  font-weight: 600;
+  margin: 10px 0 5px;
+  color: var(--text);
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.markdown-body h1 { font-size: 1.16em; }
+.markdown-body h2 { font-size: 1.08em; }
+.markdown-body h3 { font-size: 0.98em; color: color-mix(in srgb, var(--text) 88%, var(--text-muted)); }
+.markdown-body ul, .markdown-body ol {
+  padding-left: 22px;
+  margin: 5px 0 8px;
+  list-style-position: outside;
+}
+.markdown-body li { margin: 3px 0; padding-left: 2px; }
+.markdown-body ul > li { list-style-type: disc; }
+.markdown-body ol > li { list-style-type: decimal; }
+.markdown-body li > p { margin: 0; }
+.markdown-body li::marker {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.markdown-body strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.markdown-body em { color: var(--text-muted); }
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.markdown-body a:hover { text-decoration-color: var(--accent); }
+.markdown-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  border-radius: var(--radius-surface);
+}
+.markdown-body .markdown-inline-code {
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+  padding: 1px 5px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.markdown-body .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+.markdown-body .task-list-item {
+  display: block;
+  position: relative;
+  padding-left: 25px;
+}
+.markdown-body .task-list-item::marker { content: ""; }
+.markdown-body .task-list-item > input[type="checkbox"],
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child {
+  appearance: none;
+  position: absolute;
+  left: 0;
+  top: 0.35em;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  display: inline-grid;
+  place-content: center;
+}
+.markdown-body .task-list-item > input[type="checkbox"]:checked,
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+.markdown-body .task-list-item > input[type="checkbox"]:checked::before,
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked::before {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid var(--accent);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg) translateY(-1px);
+}
+.markdown-body blockquote {
+  border-left: 3px solid color-mix(in srgb, var(--border) 75%, var(--text-muted));
+  border-radius: 0 var(--radius-surface) var(--radius-surface) 0;
+  margin: 6px 0;
+  padding: 6px 11px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+.markdown-table-wrap {
+  width: 100%;
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+}
+.markdown-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 100%;
+  font-size: 13px;
+}
+.markdown-body th, .markdown-body td {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body tr:last-child td { border-bottom: 0; }
+.markdown-body th {
+  background: var(--bg-panel);
+  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
+  font-weight: 650;
+}
+.markdown-body tbody tr:nth-child(even) td { background: var(--bg-subtle); }
+.markdown-body hr {
+  border: none;
+  height: 1px;
+  margin: 12px 0;
+  background: var(--border);
+}
+.markdown-body .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+.markdown-user-message p {
+  white-space: pre-wrap;
+}
+
+.markdown-custom-message {
+  line-height: 1.32;
+}
+.markdown-custom-message p { margin: 0; }
+.markdown-custom-message h1,
+.markdown-custom-message h2,
+.markdown-custom-message h3,
+.markdown-custom-message h4,
+.markdown-custom-message h5,
+.markdown-custom-message h6 {
+  margin: 4px 0 2px;
+  line-height: 1.18;
+}
+.markdown-custom-message ul,
+.markdown-custom-message ol {
+  margin: 2px 0 3px;
+}
+.markdown-custom-message li { margin: 0; }
+.markdown-custom-message blockquote {
+  margin: 3px 0;
+  padding: 4px 8px;
+}
+.markdown-custom-message .markdown-table-wrap,
+.markdown-custom-message .markdown-code-block {
+  margin: 4px 0;
+}
+
+.markdown-compaction-message {
+  line-height: 1.5;
+}
+.markdown-compaction-message p { margin: 0 0 7px; }
+.markdown-compaction-message h1,
+.markdown-compaction-message h2,
+.markdown-compaction-message h3,
+.markdown-compaction-message h4,
+.markdown-compaction-message h5,
+.markdown-compaction-message h6 {
+  margin: 8px 0 3px;
+  line-height: 1.25;
+}
+.markdown-compaction-message ul,
+.markdown-compaction-message ol {
+  margin: 4px 0 8px;
+}
+.markdown-compaction-message li { margin: 2px 0; }
+.markdown-compaction-message .markdown-table-wrap,
+.markdown-compaction-message .markdown-code-block {
+  margin: 6px 0;
+}
+
+.compaction-file-details {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.compaction-file-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.compaction-file-section {
+  margin-top: 8px;
+}
+.compaction-file-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+.compaction-file-list {
+  max-height: 180px;
+  margin: 0;
+  padding: 7px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  list-style: none;
+}
+.compaction-file-list li {
+  overflow-wrap: anywhere;
+}
+.compaction-file-list li + li {
+  margin-top: 3px;
+}
+
+.markdown-code-block {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  overflow: hidden;
+  background: var(--bg);
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+.markdown-code-header {
+  padding: 5px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.markdown-code-lang {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-weight: 650;
+}
+.markdown-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.markdown-code-action {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 2px 7px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.markdown-code-action:hover:not(:disabled) {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--border) 70%, var(--text-muted));
+}
+.markdown-code-action:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.markdown-code-action.is-active {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+.markdown-thinking {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 1px 0 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.65;
+  font-style: italic;
+}
+.markdown-thinking-content {
+  min-width: 0;
+  flex: 1;
+}
+.markdown-thinking-body {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.markdown-thinking-body p {
+  margin: 0 0 8px;
+}
+.markdown-thinking-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-thinking-body strong {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.markdown-thinking-body em {
+  color: var(--text-muted);
+}
+.markdown-thinking-status,
+.markdown-thinking-error {
+  color: var(--text-dim);
+}
+.markdown-thinking-error {
+  color: var(--danger);
+}
+.markdown-thinking-duration {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-output-preview {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--text-muted));
+  border-radius: var(--radius-surface);
+  background: var(--tool-bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+.shell-output-preview.is-error {
+  border-color: var(--danger-line);
+}
+.shell-command-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 13px 9px;
+  background: color-mix(in srgb, var(--tool-bg) 80%, var(--bg-panel));
+}
+.shell-command-prompt {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.55;
+  user-select: none;
+}
+.shell-command-line > span[style] {
+  flex: 1;
+  min-width: 0;
+}
+.shell-command-line code {
+  font-family: var(--font-mono) !important;
+}
+.shell-command-code {
+  flex: 1;
+  min-width: 0;
+  overflow: visible !important;
+}
+.shell-command-code code {
+  font-family: var(--font-mono) !important;
+}
+.shell-local-label {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: var(--radius-control);
+  padding: 1px 5px;
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.shell-output-panel {
+  padding: 0 0 8px;
+  background: var(--tool-bg);
+}
+.shell-output-divider {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.shell-output-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, var(--text-muted));
+}
+.shell-output-label {
+  flex: 0 0 auto;
+  margin-top: -1px;
+  padding-right: 2px;
+  background: var(--tool-bg);
+}
+.shell-output-status {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+}
+.shell-output-status.is-pending {
+  color: var(--accent);
+}
+.shell-output-status.is-error {
+  color: var(--danger);
+}
+.shell-output-body {
+  max-height: 420px;
+  overflow: auto;
+  padding: 8px 13px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-output-line {
+  min-height: 1.55em;
+}
+.shell-output-line.is-success {
+  color: var(--success);
+}
+.shell-output-line.is-warning {
+  color: var(--warning);
+}
+.shell-output-line.is-error {
+  color: var(--danger);
+}
+.shell-output-empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.shell-output-pending {
+  display: inline-block;
+  color: var(--accent);
+  animation: pulse 1.2s infinite;
+}
+.shell-output-footer {
+  padding: 0 13px 8px;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-checklist-preview {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  padding: 0 11px 10px;
+  background: var(--bg);
+  color: var(--text-muted);
+}
+.todo-checklist-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: max-content;
+  max-width: 100%;
+  margin: -9px 0 7px -5px;
+  padding: 0 6px;
+  overflow: hidden;
+  background: var(--bg);
+  font-size: 14px;
+  line-height: 1.2;
+}
+.todo-checklist-icon {
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+.todo-checklist-title {
+  color: var(--warning);
+  font-weight: 700;
+}
+.todo-checklist-count {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.todo-checklist-progress {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.todo-checklist-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.todo-checklist-phase + .todo-checklist-phase {
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+.todo-checklist-phase-name {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.todo-checklist-row {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.todo-checklist-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.todo-checklist-row.is-completed {
+  color: var(--success);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.todo-checklist-row.is-completed .todo-checklist-marker {
+  border-color: var(--success);
+  background: var(--success);
+  color: var(--bg);
+}
+/* 버림은 실패가 아니라 의도적으로 접은 항목이다: 빨강 대신 흐린 색으로 둔다. */
+.todo-checklist-row.is-abandoned {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+.todo-checklist-row.is-abandoned .todo-checklist-marker {
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+}
+.todo-checklist-row.is-active {
+  color: var(--text);
+}
+.todo-checklist-row.is-active .todo-checklist-marker {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.todo-checklist-row.is-blocked .todo-checklist-marker {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+.todo-checklist-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.todo-checklist-blocker {
+  color: var(--warning);
+}
+
+/* The composer's goal line. One row when collapsed: it must not eat the composer's space. */
+.todo-strip {
+  margin-bottom: 8px;
+  border-block-end: 1px solid var(--hairline);
+}
+.todo-strip-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  /* The goal line is prose, not telemetry: it reads at the same step as the labels around it. */
+  font-size: var(--seed-font-size-t4-static);
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.todo-strip-summary:hover {
+  color: var(--text);
+}
+.todo-strip-marker {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 700;
+}
+.todo-strip.is-done .todo-strip-marker {
+  color: var(--success);
+}
+.todo-strip-phase {
+  flex: 0 0 auto;
+  max-width: 34%;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-strip-task {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-strip-count {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--readout-size);
+}
+
+/* Narrow shells cannot fit the goal and the numbers on one row. Rather than shrink the task name
+   away until only a percent is left, phase and numbers keep the first row and the task drops to
+   its own row below them, where it may run to two lines. */
+@media (max-width: 640px) {
+  .todo-strip-task {
+    display: -webkit-box;
+    flex: 1 1 100%;
+    order: 1;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+}
+.todo-strip-body {
+  max-height: 38vh;
+  padding: 2px 2px 8px;
+  overflow-y: auto;
+}
+.todo-strip-completed-toggle {
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.todo-strip-completed-toggle:hover {
+  color: var(--text-muted);
+}
+
+.mermaid-block {
+  padding: 12px;
+  overflow-x: auto;
+  background: color-mix(in srgb, var(--bg) 92%, var(--bg-panel));
+}
+.mermaid-block svg {
+  display: block;
+  max-width: none;
+}
+.mermaid-block-loading {
+  min-height: 120px;
+}
+.mermaid-block-error {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.mermaid-preview-button {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  cursor: zoom-in;
+  text-align: left;
+}
+.mermaid-preview-button:hover {
+  opacity: 0.85;
+}
+.mermaid-preview-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.mermaid-zoom-dialog {
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+.mermaid-zoom-dialog::backdrop {
+  background: var(--seed-color-bg-overlay);
+}
+.mermaid-zoom-layout {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+}
+.mermaid-zoom-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 7px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.mermaid-zoom-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mermaid-zoom-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mermaid-zoom-stepper {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}
+.mermaid-zoom-stepper button,
+.mermaid-zoom-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mermaid-zoom-stepper button {
+  height: 22px;
+}
+.mermaid-zoom-stepper button + .mermaid-zoom-value,
+.mermaid-zoom-value + button {
+  border-left: 1px solid var(--border);
+}
+.mermaid-zoom-icon-button {
+  flex: 0 0 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.mermaid-zoom-stepper button:hover:not(:disabled),
+.mermaid-zoom-icon-button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.mermaid-zoom-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.mermaid-zoom-stepper button:focus-visible,
+.mermaid-zoom-icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.mermaid-zoom-value {
+  min-width: 48px;
+  height: 22px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+  user-select: none;
+}
+.mermaid-zoom-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg);
+  -webkit-overflow-scrolling: touch;
+}
+.mermaid-zoom-canvas {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  margin: 0 auto;
+  transition: width 0.15s ease;
+}
+.mermaid-zoom-canvas svg {
+  display: block;
+  width: 100% !important;
+  height: auto;
+  max-width: none !important;
+}
+
+@media (max-width: 480px) {
+  .mermaid-zoom-toolbar {
+    padding-inline: 8px;
+  }
+
+  .mermaid-zoom-title {
+    font-size: 10px;
+  }
+
+  .mermaid-zoom-viewport {
+    padding: 12px;
+  }
+}
+
+/* File viewer toolbar */
+.file-viewer-toolbar {
+  min-width: 0;
+  min-height: 35px;
+}
+
+.file-viewer-path {
+  flex: 1 1 auto;
+  min-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer-live-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 7px;
+}
+
+.file-viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-viewer-actions {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  gap: 4px;
+  flex-shrink: 0;
+  order: -1;
+}
+
+.file-viewer-mode-switch {
+  display: flex;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.file-viewer-mode-button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.file-viewer-mode-button:first-child {
+  border-left: 0;
+}
+
+.file-viewer-mode-button:hover {
+  filter: brightness(1.08);
+}
+
+.file-viewer-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  box-sizing: border-box;
+  flex: 0 0 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.file-viewer-icon-button:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text);
+}
+
+.file-viewer-icon-button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.file-viewer-icon-button:disabled:hover {
+  background: transparent !important;
+  color: var(--text-dim);
+}
+
+.file-viewer-mode-button:focus-visible,
+.file-viewer-icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.directory-picker-path:focus-visible {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+@media (max-width: 640px) {
+  .file-viewer-meta {
+    display: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .file-viewer-toolbar {
+    gap: 6px !important;
+    padding-inline: 8px !important;
+  }
+
+  .file-viewer-mode-button {
+    padding-inline: 6px;
+  }
+}
+
+/* File viewer markdown preview — larger headings */
+.markdown-file-preview h1 { font-size: 1.8em; }
+.markdown-file-preview h2 { font-size: 1.4em; }
+.markdown-file-preview h3 { font-size: 1.15em; }
+.markdown-file-preview p { margin: 0 0 12px; }
+.markdown-file-preview pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin: 12px 0;
+}
+.markdown-file-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-panel);
+  padding: 1px 5px;
+  border-radius: var(--radius-control);
+}
+.markdown-file-preview pre code {
+  background: none;
+  padding: 0;
+}
+
+/* YAML frontmatter metadata card (file preview) */
+.markdown-frontmatter {
+  margin-bottom: 20px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+}
+.markdown-frontmatter-title {
+  font-size: 1.3em;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+}
+.markdown-frontmatter-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.markdown-frontmatter-tag {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 0 10px;
+}
+.markdown-frontmatter-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.markdown-frontmatter-row {
+  display: contents;
+}
+.markdown-frontmatter-row dt {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+.markdown-frontmatter-row dd {
+  margin: 0;
+  color: var(--text);
+  min-width: 0;
+  word-break: break-word;
+}
+.markdown-frontmatter-row dd a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* syntax highlighter line numbers */
+.markdown-body span.linenumber,
+span.linenumber {
+  color: var(--text-dim) !important;
+  font-style: normal !important;
+}
+
+@keyframes drop-zone-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* 캐릭터 알림 — 스티커와 한국어 자막 말풍선. 대화 흐름 안, 방금 말한 캐릭터 메시지 아래
+   캐릭터 쪽(왼쪽)에 붙고 잠시 뒤 사라진다.
+   글자는 이미지가 아니라 여기서 그리므로 테마·글자 크기·줄바꿈이 나머지 UI를 따른다. */
+.cue-bubble-dock {
+  display: flex;
+  /* 말풍선은 스티커 세로 가운데에 붙는다 — 상반신 스티커에서 발치가 아니라 얼굴 옆이다. */
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  margin: 4px 0 12px;
+  pointer-events: none;
+  animation: cue-bubble-in 200ms ease-out;
+}
+
+.cue-bubble {
+  position: relative;
+  /* 가운데보다 조금 위(입 높이)로 올리고, 스티커 가장자리의 투명 여백만큼 겹쳐 붙인다. */
+  margin: 0 0 min(28px, 6vw) -4px;
+  min-width: 0;
+  max-width: min(320px, 58vw);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  /* 한국어는 어절 단위로 끊어야 읽힌다. 한 어절이 폭보다 길 때만 글자에서 자른다. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+}
+
+/* 왼쪽 스티커의 얼굴을 가리키는 꼬리. 테두리용·배경용 삼각형을 겹쳐 테두리가 끊기지 않게 한다. */
+.cue-bubble::before,
+.cue-bubble::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-right: 7px solid var(--border);
+  transform: translateY(-50%);
+}
+
+.cue-bubble::after {
+  border-right-color: var(--bg-panel);
+}
+
+.cue-bubble::before { left: -8px; }
+.cue-bubble::after { left: -6px; }
+
+/* 스티커 없이 말풍선만 뜰 때는 가리킬 대상이 없으므로 꼬리와 겹침을 없앤다. */
+.cue-bubble--solo { margin: 0; }
+.cue-bubble--solo::before,
+.cue-bubble--solo::after { display: none; }
+
+.cue-bubble-sticker {
+  flex: none;
+  width: min(148px, 34vw);
+  height: auto;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.35));
+}
+
+@keyframes cue-bubble-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cue-bubble-dock { animation: none; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes notice-shelf-in {
+  from {
+    opacity: 0;
+    height: 0;
+    max-height: 0;
+    min-height: 0;
+    margin-bottom: 0;
+    transform: translateY(-6px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    height: 60px;
+    max-height: 60px;
+    min-height: 60px;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes notice-shelf-out {
+  from {
+    opacity: 1;
+    height: 60px;
+    max-height: 60px;
+    min-height: 60px;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    height: 0;
+    max-height: 0;
+    min-height: 0;
+    margin-bottom: 0;
+    transform: translateY(-5px) scale(0.995);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice-shelf-item {
+    animation-duration: 0.001ms !important;
+  }
+}
+
+@keyframes saved-pop {
+  0%   { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
+  40%  { transform: scale(1.08); box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 25%, transparent); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent); }
+}
+
+@keyframes saved-check-draw {
+  from { stroke-dashoffset: 18; opacity: 0; }
+  to   { stroke-dashoffset: 0;  opacity: 1; }
+}
+
+/* Workspace shell: content priorities drive pinning; media queries below are
+   retained only for browsers without inline-size container queries. */
+.workspace-shell {
+  --workspace-min-transcript: 550px;
+  --workspace-min-navigator: 240px;
+  --workspace-min-deck: 384px;
+  /* Transcript measure stays 43em; 550px is only the pinning floor. */
+  container-name: workspace-shell;
+  container-type: inline-size;
+  isolation: isolate;
+  position: relative;
+  display: flex;
+  inline-size: 100%;
+  block-size: var(--app-viewport-height, 100dvh);
+  min-inline-size: 0;
+  overflow: hidden;
+  padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
+  background: var(--bg);
+}
+
+.workspace-session-region {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-inline-size: min(var(--workspace-min-transcript), 100%);
+  min-block-size: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.workspace-header-stack {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  min-inline-size: 0;
+  background: var(--bg-panel);
+}
+
+.workspace-header-seam {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+  block-size: calc(48px + env(safe-area-inset-top));
+  min-inline-size: 0;
+  overflow: hidden;
+  padding-block-start: env(safe-area-inset-top);
+  padding-inline: var(--seed-dimension-x2);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  background: var(--seed-color-bg-layer-default);
+}
+
+/* 업데이트 복귀 상태 줄: 페이지 상단 한 줄, 대화를 막지 않고 좁은 화면에서 줄바꿈한다. */
+.workspace-update-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  min-inline-size: 0;
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.workspace-update-banner[data-tone="positive"] {
+  border-block-end-color: var(--success-line);
+  background: var(--success-soft);
+}
+
+.workspace-update-banner[data-tone="warning"] {
+  border-block-end-color: var(--warning-line);
+  background: var(--warning-soft);
+}
+
+.workspace-update-banner-title {
+  flex: 0 0 auto;
+  font-weight: 650;
+}
+
+.workspace-update-banner-detail {
+  flex: 1 1 240px;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.workspace-update-banner-dismiss {
+  flex: 0 0 auto;
+  min-block-size: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: none;
+  padding-inline: var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t2-static);
+  cursor: pointer;
+}
+
+.workspace-update-banner-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.workspace-update-banner-dismiss:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: 2px;
+}
+.workspace-session-identity {
+  display: flex;
+  flex: 1 1 160px;
+  flex-direction: column;
+  min-inline-size: 0;
+  padding-inline: 12px;
+  line-height: 1.2;
+}
+
+.workspace-session-identity strong,
+.workspace-session-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-session-identity strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace-session-identity span {
+  margin-block-start: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+
+/* One header row. SEED owns the control surfaces; only placement lives here. */
+.workspace-header-nav-toggle,
+.workspace-header-more {
+  flex: none;
+}
+
+.workspace-header-action,
+.workspace-panel-toggle {
+  flex: none;
+  max-inline-size: 45cqi;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.workspace-context-usage {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+}
+
+.workspace-context-meter {
+  position: relative;
+  flex: 0 1 96px;
+  min-inline-size: 40px;
+  block-size: var(--seed-dimension-x1_5);
+  overflow: hidden;
+  border-radius: var(--seed-radius-full);
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.workspace-context-meter-fill {
+  display: block;
+  block-size: 100%;
+  background: var(--seed-color-fg-neutral);
+}
+
+.workspace-context-meter-fill[data-level="warning"] {
+  background: var(--seed-color-fg-warning);
+}
+
+.workspace-context-meter-fill[data-level="critical"] {
+  background: var(--seed-color-fg-critical);
+}
+
+/* The figure is the signal; level colour only reinforces it. */
+.workspace-context-readout {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-context-readout[data-level="warning"] {
+  color: var(--seed-color-fg-warning);
+}
+
+.workspace-context-readout[data-level="critical"] {
+  color: var(--seed-color-fg-critical);
+}
+
+/* Secondary session surfaces (session info, system prompt, branches) drop
+   from the header row as one sheet, so they share one frame. */
+.workspace-top-panel {
+  padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  background: var(--seed-color-bg-layer-default);
+}
+
+.branch-navigator-tree {
+  max-block-size: 260px;
+  overflow-y: auto;
+}
+
+.branch-navigator-empty {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+.chat-content-layout {
+  display: flex;
+  flex: 1 1 0%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.chat-session-column {
+  position: relative;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.chat-session-column .chat-session-scroll {
+  scroll-padding-block: 40px calc(var(--omp-dock-h, 204px) + 8px);
+}
+
+.chat-session-column .chat-session-scroll > div {
+  inline-size: 100%;
+  max-inline-size: calc(43em + 32px);
+  margin-inline: auto;
+}
+
+.chat-session-column .chat-session-scroll > div > div {
+  max-inline-size: 43em !important;
+}
+
+.workspace-auxiliary-deck-slot {
+  display: none;
+  min-block-size: 0;
+  overflow: hidden;
+  border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
+  background: var(--seed-color-bg-layer-default);
+}
+.workspace-auxiliary-deck-slot.is-replacement {
+  display: flex;
+  flex: 1 1 auto;
+  block-size: 100%;
+  inline-size: 100%;
+  min-inline-size: 0;
+  border-inline-start: 0;
+}
+
+.workspace-file-view {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.workspace-file-tabs {
+  flex: none;
+  min-inline-size: 0;
+  block-size: 36px;
+  overflow: hidden;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.workspace-file-content {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.workspace-file-empty {
+  display: grid;
+  block-size: 100%;
+  place-items: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.workspace-command-layer {
+  position: fixed;
+  inset-block: calc(68px + env(safe-area-inset-top))
+    calc(var(--omp-dock-h, 204px) + env(safe-area-inset-bottom));
+  inset-inline: 0;
+  z-index: 270;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--scrim);
+}
+
+.workspace-command-palette {
+  inline-size: min(520px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.workspace-command-palette > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-block-size: 42px;
+  padding-inline: 14px;
+  border-block-end: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workspace-command-palette kbd {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.workspace-command-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  padding: 1px;
+  background: var(--border);
+}
+
+.workspace-command-list button {
+  display: flex;
+  min-block-size: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-inline: 12px;
+  border: 0;
+  background: var(--bg);
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.workspace-command-list button:hover {
+  background: var(--bg-hover);
+}
+
+.workspace-command-list small {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.sidebar-overlay-backdrop {
+  position: fixed;
+  z-index: 199;
+  inset-block: 0 calc(var(--omp-dock-h, 204px) + env(safe-area-inset-bottom));
+  inset-inline: 0;
+  display: block;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease-out;
+}
+
+
+.sidebar-overlay-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-overlay-backdrop.sidebar-mobile-pending {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.sidebar-container {
+  position: fixed !important;
+  z-index: 200;
+  inset-block: 0 calc(var(--omp-dock-h, 204px) + env(safe-area-inset-bottom));
+  inset-inline-start: env(safe-area-inset-left);
+  display: flex;
+  flex-direction: column;
+  inline-size: min(280px, calc(100vw - 48px));
+  min-inline-size: min(var(--workspace-min-navigator), 100vw);
+  overflow: hidden;
+  padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+  border-inline-end: 1px solid var(--border);
+  background: var(--bg-panel);
+  transition: transform 160ms ease-out, visibility 0s linear 160ms;
+}
+
+.sidebar-container.sidebar-open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 160ms ease-out, visibility 0s;
+}
+
+/* 닫힘이 끝난 드로어는 화면 밖에 두는 것으로 끝내지 않고 그리지 않는다. 전환 프레임이
+   멈추거나 합성이 늦어도 좌측 끝에 사용량 줄의 띠가 남지 않는다. */
+.sidebar-container.sidebar-closed,
+.sidebar-container.sidebar-mobile-pending.sidebar-open {
+  transform: translateX(calc(-100% - env(safe-area-inset-left)));
+  visibility: hidden;
+  pointer-events: none;
+}
+
+
+.panel-resize-handle {
+  position: relative;
+  z-index: 220;
+  display: none;
+  inline-size: 12px;
+  margin-inline: -6px;
+  flex: 0 0 12px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.panel-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 5px;
+  inline-size: 2px;
+  background: transparent;
+  pointer-events: none;
+  transition: background 120ms ease-out;
+}
+
+.panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after,
+.panel-resize-handle.is-resizing::after {
+  background: var(--text-muted);
+}
+
+.sidebar-container.sidebar-resizing,
+.sidebar-container.sidebar-resizing > * {
+  transition: none !important;
+}
+
+/* A pin-boundary crossing swaps the navigator between pinned and drawer
+   geometry in one style change. Animating that swap paints a half-slid drawer
+   over the header and the transcript, so the shell marks the crossing and the
+   transition only runs for an actual toggle. */
+.sidebar-container.sidebar-mode-shift,
+.sidebar-container.sidebar-mode-shift > *,
+.sidebar-overlay-backdrop.sidebar-mode-shift {
+  transition: none !important;
+}
+
+
+.markdown-table-wrap,
+.markdown-code-block,
+.markdown-body pre {
+  max-inline-size: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.markdown-table-wrap,
+.markdown-code-block pre,
+.markdown-body pre {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown-body table {
+  inline-size: max-content;
+  min-inline-size: 100%;
+}
+
+.markdown-code-block pre,
+.markdown-code-block code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+:where(
+  button,
+  a[href],
+  input,
+  textarea,
+  select,
+  summary,
+  [role="button"],
+  [role="tab"],
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: 1px;
+}
+
+:where(button, a[href], input, textarea, select, summary, [tabindex]):focus-visible {
+  scroll-margin-block: 8px;
+}
+
+/* ===========================================================================
+   Surface language
+   ===========================================================================
+   Chat first: the transcript is the plane, and everything else is either a
+   hairline seam on it or one panel beside it. Two rules carry the system:
+
+   1. PLANES  — structural seams use --border, framed content --border-strong.
+      Radius, spacing and type all come from SEED scales (r1 for controls, r2
+      for surfaces, x1…x4 for the 4px grid, t3/t4/t5 for type). The old 2/3px
+      brushed-panel seam language and its bevel catch are gone.
+   2. STATE   — colour is spent sparingly: a --spine on the inline-start edge
+      for selected / running / unread / confirming, and the named
+      *-soft / *-line tints for everything else. No colour literal belongs
+      below this comment — every value resolves to a SEED token.
+
+   Machine-state bands keep a quieter ground and tabular numerals so telemetry
+   still reads apart from prose, but they no longer shout in uppercase mono.
+   =========================================================================== */
+:root {
+  --radius-control: var(--seed-radius-r1);
+  --radius-surface: var(--seed-radius-r2);
+  --spine: 2px;
+
+  /* readout type — machine-state bands. t3 is SEED's label step; Korean
+     labels keep normal casing and tracking. */
+  --readout-size: var(--seed-font-size-t3-static);
+  --readout-track: normal;
+
+  /* derived state roles. Declared once: var() resolves against the SEED
+     semantic tokens mapped at the top of this file. */
+  --accent-soft: color-mix(in srgb, var(--accent) 11%, var(--bg-panel));
+  --accent-line: color-mix(in srgb, var(--accent) 46%, var(--border-strong));
+  --accent-ring: color-mix(in srgb, var(--accent) 55%, transparent);
+  --success-soft: color-mix(in srgb, var(--success) 11%, var(--bg-panel));
+  --success-line: color-mix(in srgb, var(--success) 46%, var(--border-strong));
+  --warning-soft: color-mix(in srgb, var(--warning) 11%, var(--bg-panel));
+  --warning-line: color-mix(in srgb, var(--warning) 46%, var(--border-strong));
+  --danger-soft: color-mix(in srgb, var(--danger) 11%, var(--bg-panel));
+  --danger-line: color-mix(in srgb, var(--danger) 46%, var(--border-strong));
+  --metric-soft: color-mix(in srgb, var(--metric) 11%, var(--bg));
+  --hairline: color-mix(in srgb, var(--border) 55%, transparent);
+
+  /* material */
+  --scrim: var(--seed-color-bg-overlay-muted);
+  --shadow-float: 0 8px 24px color-mix(in srgb, var(--seed-color-bg-overlay) 22%, transparent);
+  --channel-bg: var(--bg-panel);
+  --channel-ink: var(--text-muted);
+}
+
+/* --- machine-state bands --------------------------------------------------- */
+.navigator-mode-bar,
+.navigator-footer,
+.navigator-project-row,
+.tool-call-header,
+.todo-checklist-header,
+.shell-command-line,
+.workspace-file-tabs,
+.file-viewer-toolbar,
+.side-chat-panel > header,
+section[aria-label="Subagent 기록"] > header,
+.resource-panel h2 {
+  background: var(--channel-bg) !important;
+}
+
+/* readout voice — tabular numerals, no tracking, no uppercase */
+.navigator-mode-bar,
+.navigator-project-row,
+.todo-checklist-header,
+.resource-panel h2,
+.message-assistant-role,
+.resource-account-state,
+.workspace-session-identity span {
+  font-size: var(--readout-size);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--readout-track);
+}
+
+/* --- planes ---------------------------------------------------------------- */
+.workspace-shell,
+.workspace-session-region,
+.chat-window,
+.chat-session-scroll {
+  background: var(--bg);
+}
+
+.sidebar-container {
+  border-inline-end-color: var(--border);
+  background: var(--bg-panel);
+  box-shadow: inset -1px 0 0 var(--bevel-shade);
+}
+
+.session-navigator {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.session-navigator-header {
+  border-block-end-color: var(--border) !important;
+  background: var(--bg-panel);
+}
+
+.navigator-brand {
+  border-radius: var(--radius-control);
+}
+
+.navigator-brand:hover {
+  background: var(--bg-hover) !important;
+}
+
+.navigator-icon-action,
+.navigator-add-project,
+.navigator-settings-action,
+.navigator-toolbar-icon {
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+  color: var(--text-muted) !important;
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+
+.navigator-icon-action.is-success {
+  border-color: var(--success-line) !important;
+  background: var(--success-soft) !important;
+  color: var(--success) !important;
+}
+
+.navigator-icon-action:hover:not(:disabled),
+.navigator-add-project:hover:not(:disabled),
+.navigator-settings-action:hover:not(:disabled),
+.navigator-toolbar-icon:hover:not(:disabled) {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.navigator-mode-bar {
+  border-block-end: 1px solid var(--border);
+}
+
+.navigator-mode-switcher {
+  overflow: hidden;
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+}
+
+.navigator-mode-switcher button {
+  border-radius: 0 !important;
+  color: var(--text-muted) !important;
+}
+
+.navigator-mode-switcher button:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.navigator-mode-switcher button[aria-pressed="true"] {
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.navigator-search-input {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+  color: var(--text) !important;
+}
+
+.navigator-search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.navigator-search-input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.navigator-session-list {
+  background: var(--bg-panel);
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.navigator-project-group {
+  background: var(--bg-panel);
+}
+
+.navigator-project-row {
+  border-radius: 0 !important;
+  border-block-end: 1px solid var(--hairline);
+  color: var(--channel-ink);
+}
+
+.navigator-project-row:hover {
+  background: var(--bg-hover) !important;
+}
+
+.navigator-project-row.is-selected {
+  background: var(--bg-selected) !important;
+  box-shadow: inset var(--spine) 0 var(--accent);
+}
+
+.navigator-project-row.is-selected .navigator-project-name {
+  color: var(--text) !important;
+}
+
+/* session rows stay on the open ground; the spine alone carries state */
+.navigator-session-row,
+.priority-session-row {
+  border-radius: 0 !important;
+  border-block-end: 1px solid var(--hairline);
+  background: transparent !important;
+}
+
+.navigator-session-row:hover,
+.priority-session-row:hover {
+  background: var(--bg-hover) !important;
+}
+
+.navigator-session-row.is-selected,
+.priority-session-row.is-selected {
+  background: var(--bg-selected) !important;
+  box-shadow: inset var(--spine) 0 var(--accent);
+}
+
+.navigator-session-row.is-running:not(.is-selected),
+.priority-session-row.is-running:not(.is-selected) {
+  box-shadow: inset var(--spine) 0 var(--metric);
+}
+
+.navigator-session-row.is-unread:not(.is-selected):not(.is-running),
+.priority-session-row.is-unread:not(.is-selected):not(.is-running) {
+  box-shadow: inset var(--spine) 0 var(--border-strong);
+}
+
+.navigator-session-row.is-confirming {
+  background: var(--danger-soft) !important;
+  box-shadow: inset var(--spine) 0 var(--danger);
+}
+
+.session-running-spinner {
+  animation: spin 0.9s linear infinite;
+  transform-origin: center;
+  will-change: transform;
+}
+
+.session-unread-ring {
+  opacity: 0.32;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-running-spinner {
+    animation: none;
+  }
+}
+
+.navigator-footer {
+  border-block-start: 1px solid var(--border);
+}
+
+.navigator-settings-action {
+  box-shadow: none;
+}
+
+/* The always-visible account usage readout above the settings action. Plain
+   surface: no frame, no fill - the bars carry the only ink. */
+.navigator-usage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x2);
+  inline-size: 100%;
+  margin-block-end: var(--seed-dimension-x2);
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x1);
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: start;
+}
+
+.navigator-usage:hover {
+  background: var(--bg-hover);
+}
+
+.navigator-usage-row {
+  display: block;
+  inline-size: 100%;
+}
+
+.navigator-usage-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--seed-dimension-x2);
+  margin-block-end: 3px;
+}
+
+.navigator-usage-label {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--readout-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 그 한도가 어느 계정의 것인지, 좁은 스트립에서도 한 줄로. 주소 대신 얼굴과 별칭이라
+   두 줄까지 늘어날 일이 없어졌고, 넘치면 말줄임으로 끊는다. */
+.navigator-usage-account {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+  margin-block-end: 3px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--readout-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navigator-usage-value {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--readout-size);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 쓸 수 없는 계정의 한도 행에만 붙는 상태. 쓸 수 있는 행에는 아무 표시도 없다. */
+.navigator-usage-state {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--readout-size);
+}
+
+.navigator-usage-empty {
+  color: var(--text-dim);
+  font-size: var(--readout-size);
+}
+
+.navigator-usage-track {
+  display: block;
+  block-size: 4px;
+  overflow: hidden;
+  border-radius: var(--seed-radius-full);
+  background: var(--metric-track);
+}
+
+.navigator-usage-fill {
+  display: block;
+  block-size: 100%;
+}
+
+/* The limits the first two rows did not fit. A real button, because it now opens the rest of the
+   list in place; the whole strip still opens the full usage view behind it. */
+.navigator-usage-more {
+  align-self: flex-end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--readout-size);
+}
+
+.navigator-usage-more:hover {
+  color: var(--text);
+}
+
+.navigator-usage-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 좁은 화면에서만 나타나는 접기 줄. 드로어 안에서 사용량 스트립이 세션 목록의 세로 공간을
+   계속 누르던 것을 사용자가 스스로 접을 수 있게 한다. */
+.navigator-usage-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x1);
+}
+
+.navigator-usage-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  inline-size: 100%;
+  padding: 0 var(--seed-dimension-x1);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--readout-size);
+  text-align: start;
+}
+
+.navigator-usage-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.navigator-usage-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.navigator-usage-toggle svg {
+  margin-inline-start: auto;
+  transition: transform 0.12s;
+}
+
+/* --- workspace header + instrument seam ------------------------------------ */
+.workspace-header-stack {
+  border-block-end: 0;
+  background: var(--bg-panel);
+  box-shadow: 0 1px 0 var(--bevel-shade);
+}
+
+.workspace-session-identity strong {
+  font-size: 12.5px;
+  letter-spacing: -0.004em;
+}
+
+.workspace-session-identity span {
+  text-transform: none;
+}
+
+.navigator-icon-action:disabled,
+.navigator-toolbar-icon:disabled {
+  opacity: 0.48 !important;
+  box-shadow: none;
+  cursor: not-allowed !important;
+}
+
+/* --- floating surfaces ----------------------------------------------------- */
+.workspace-command-palette {
+  border-color: var(--border-strong);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-float);
+}
+
+/* --- transcript ------------------------------------------------------------ */
+.message-user-bubble {
+  border: 1px solid var(--border) !important;
+  border-inline-start: var(--spine) solid var(--accent-line) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--user-bg) !important;
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+
+.message-user-bubble .markdown-body {
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.message-assistant-role {
+  color: var(--text-dim) !important;
+  font-size: var(--readout-size) !important;
+}
+
+.message-assistant > div:last-child button,
+.message-user > div:last-child button {
+  border-radius: var(--radius-control) !important;
+}
+
+.message-assistant > div:last-child button:hover,
+.message-user > div:last-child button:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.tool-call-card {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--bg-panel) !important;
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+
+.tool-call-card.is-error {
+  border-color: var(--danger-line) !important;
+}
+
+.tool-call-name {
+  color: var(--success) !important;
+}
+
+.tool-call-card.is-error .tool-call-name {
+  color: var(--danger) !important;
+}
+
+.tool-call-header {
+  min-block-size: 28px;
+  border-radius: 0 !important;
+  color: var(--channel-ink) !important;
+}
+
+.tool-call-header[aria-expanded="true"] {
+  border-block-end: 1px solid var(--border) !important;
+}
+
+.tool-call-header:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.tool-call-input {
+  border-block-start: 1px solid var(--border) !important;
+  background: var(--tool-bg) !important;
+}
+
+.shell-output-preview {
+  border-color: var(--border-strong);
+  background: var(--tool-bg);
+  box-shadow: inset 0 1px 0 var(--bevel-light);
+}
+
+.shell-command-line {
+  color: var(--text);
+}
+
+.todo-checklist-preview {
+  overflow: hidden;
+  padding: 0;
+  border-color: var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+}
+
+.todo-checklist-header {
+  width: 100%;
+  min-height: 26px;
+  margin: 0;
+  padding: 0 10px;
+  border-block-end: 1px solid var(--border);
+  letter-spacing: var(--readout-track);
+}
+
+.todo-checklist-title {
+  font-size: var(--readout-size);
+}
+
+.todo-checklist-count,
+.todo-checklist-progress {
+  font-size: var(--readout-size);
+  font-weight: 400;
+}
+
+.todo-checklist-body {
+  gap: 4px;
+  padding: 6px 10px 8px;
+}
+
+.todo-checklist-row {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.todo-checklist-row.is-active .todo-checklist-marker {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--bg-panel);
+}
+
+/* --- composer -------------------------------------------------------------- */
+.chat-composer-dock {
+  border-block-start: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: 0 -1px 0 var(--bevel-shade);
+}
+
+/* The agent's request for a response: a panel in the conversation column just
+   above the composer, never a sheet over the transcript. */
+.chat-response-surface {
+  display: flex;
+  flex-direction: column;
+  margin-block: var(--seed-dimension-x2);
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-surface);
+  background: var(--bg);
+}
+
+.chat-response-delivery {
+  margin: 0;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--border);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+.chat-response-delivery[data-state="failed"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.chat-composer {
+  background: var(--bg-panel) !important;
+}
+
+.chat-composer-field {
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--bg) !important;
+  box-shadow: inset 0 1px 0 var(--bevel-light) !important;
+}
+
+.chat-composer-field:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-ring) !important;
+}
+
+.chat-composer-field.is-bash {
+  border-color: var(--accent-line) !important;
+  background: var(--tool-bg) !important;
+}
+
+.chat-composer-field.is-streaming {
+  border-color: var(--warning-line) !important;
+}
+
+.chat-composer-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+/* one solid control per surface: SEED neutralSolid pair, never a tint fill */
+.chat-composer-send {
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--seed-color-bg-neutral-inverted) !important;
+  color: var(--seed-color-fg-neutral-inverted) !important;
+  box-shadow: none !important;
+}
+
+.chat-composer-send:hover:not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted-pressed) !important;
+  color: var(--seed-color-fg-neutral-inverted) !important;
+}
+
+.chat-composer-send:disabled {
+  border-color: transparent !important;
+  background: var(--seed-color-bg-disabled) !important;
+  color: var(--seed-color-fg-disabled) !important;
+}
+
+/* composer controls are square controls in the same family, not pills */
+.composer-chip,
+.composer-icon-button,
+.composer-stream-action {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-control) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+}
+
+/* 아이콘만 있는 컴포저 버튼은 자기 상자를 가진다. 이 클래스 하나로 끝나는 마이크와
+   완료음 버튼은 상자가 없어 아이콘(12px)만큼으로 줄어 손가락이 닿지 않았다. */
+.composer-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  inline-size: 32px;
+  block-size: 32px;
+  padding: 0;
+}
+
+.composer-chip:hover:not(:disabled),
+.composer-icon-button:hover:not(:disabled),
+.composer-stream-action:hover:not(:disabled) {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.composer-chip.is-active,
+.composer-icon-button.is-active {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}
+
+.composer-chip.is-danger {
+  border-color: var(--danger-line) !important;
+  background: var(--danger-soft) !important;
+  color: var(--danger) !important;
+  box-shadow: inset 0 -2px var(--danger) !important;
+}
+
+.composer-stream-action.is-warning {
+  border-color: var(--warning-line) !important;
+  background: var(--warning-soft) !important;
+  color: var(--warning) !important;
+}
+
+.composer-stream-action.is-followup {
+  border-color: var(--accent-line) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent-hover) !important;
+}
+
+.composer-chip:disabled,
+.composer-icon-button:disabled,
+.composer-stream-action:disabled {
+  opacity: 0.48 !important;
+  cursor: not-allowed !important;
+}
+
+/* --- auxiliary panel, files, resources, side chat -------------------------- */
+.auxiliary-deck {
+  background: var(--seed-color-bg-layer-default);
+  color: var(--seed-color-fg-neutral);
+}
+
+
+/* The auxiliary panel is SEED Tabs; only its frame and the close seam are
+   local, so the tab surfaces keep SEED's own states. */
+.auxiliary-deck,
+.auxiliary-deck-tabs {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
+  overflow: hidden;
+}
+
+.auxiliary-deck-tabbar {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  min-inline-size: 0;
+}
+
+.auxiliary-deck-tabbar .seed-tabs__list {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.auxiliary-deck-close {
+  flex: none;
+  align-self: center;
+  margin-inline: var(--seed-dimension-x1);
+}
+
+.auxiliary-deck-tabs .seed-tabs__content {
+  flex: 1 1 auto;
+  min-block-size: 0;
+}
+
+.auxiliary-deck-panel {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+}
+
+/* --- process view: the work log behind the conversation ------------------- */
+.process-log {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.process-log-header {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+}
+
+.process-log-header h2 {
+  margin: 0;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+  font-weight: 600;
+}
+
+.process-log-count {
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t3-static);
+  font-variant-numeric: tabular-nums;
+}
+
+.process-log-body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  overflow-y: auto;
+}
+
+.process-log-empty {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+/* Live run state inside the work log: agent phase or the running command. */
+.process-log-status {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5);
+  margin: 0 0 var(--seed-dimension-x2);
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+.process-log-status-pulse {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: var(--seed-radius-full);
+  background: var(--accent);
+  animation: pulse 1.5s infinite;
+}
+
+.process-log-turn {
+  padding-block-end: var(--seed-dimension-x2);
+}
+
+.process-log-turn + .process-log-turn {
+  border-block-start: 1px solid var(--seed-color-stroke-neutral-muted);
+  padding-block-start: var(--seed-dimension-x2);
+}
+
+.process-log-turn-toggle {
+  inline-size: 100%;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+}
+
+.process-log-turn-title {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-log-turn-meta {
+  flex: none;
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+}
+
+.process-log-entries {
+  padding-block-start: var(--seed-dimension-x1);
+}
+
+.workspace-file-tabs,
+.file-tab-list {
+  background: var(--channel-bg) !important;
+}
+
+.file-tab {
+  position: relative;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+}
+
+.file-tab:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.file-tab.is-active {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.file-tab.is-active .catppuccin-file-icon {
+  background: var(--accent);
+}
+
+.file-tab-close {
+  border-radius: var(--radius-control) !important;
+}
+
+.file-viewer-toolbar {
+  border-block-end-color: var(--border) !important;
+  color: var(--text-muted) !important;
+}
+
+.file-viewer-mode-switch {
+  border-color: var(--border-strong);
+  border-radius: var(--radius-control);
+}
+
+.file-viewer-mode-button[aria-pressed="true"] {
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.file-viewer-content,
+.file-source-view {
+  background: var(--bg) !important;
+}
+
+.file-source-line:hover {
+  background: var(--bg-subtle);
+}
+
+.file-source-line ::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.resource-panel {
+  min-inline-size: 0;
+  background: var(--bg-panel) !important;
+}
+
+.resource-view-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.resource-view-tabs > .seed-tabs__list {
+  flex: none;
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  background: var(--seed-color-bg-layer-basement);
+}
+
+.resource-view-tabs .seed-tabs__indicator {
+  border-block-end-color: var(--accent);
+}
+
+.resource-view-tabs .seed-tabs__trigger {
+  min-block-size: 44px;
+}
+
+.resource-view-tabs .seed-tabs__trigger:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: -4px;
+}
+
+.resource-view-tabs > .seed-tabs__content,
+.resource-view-content {
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow-x: clip;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.character-roster-intro {
+  padding: var(--seed-dimension-x4);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.character-roster-intro h2,
+.resource-panel h2.resource-group-heading {
+  margin: 0;
+  background: transparent !important;
+  color: var(--seed-color-fg-neutral) !important;
+  font-size: var(--seed-font-size-t5-static) !important;
+  font-weight: 700;
+  letter-spacing: 0 !important;
+  line-height: var(--seed-line-height-t5-static);
+  text-transform: none;
+}
+
+.character-roster-intro p {
+  margin: var(--seed-dimension-x1_5) 0 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t4-static);
+  line-height: var(--seed-line-height-t5-static);
+}
+
+.character-roster-intro strong {
+  color: var(--seed-color-fg-neutral);
+  font-weight: 700;
+}
+
+.character-roster {
+  container: character-roster / inline-size;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  column-gap: 1px;
+  row-gap: 0;
+  min-inline-size: 0;
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  background: var(--seed-color-stroke-neutral-weak);
+}
+
+.character-roster-item {
+  display: grid;
+  grid-row: span 5;
+  grid-template-rows: subgrid;
+  gap: 0;
+  min-inline-size: 0;
+  padding: var(--seed-dimension-x4);
+  background: var(--seed-color-bg-layer-basement);
+}
+
+@container character-roster (max-width: 640px) {
+  .character-roster-item:not(:first-child) {
+    border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+  }
+}
+
+@container character-roster (min-width: 641px) {
+  .character-roster-item:nth-child(n + 3) {
+    border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+  }
+}
+
+.character-roster-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--seed-dimension-x3);
+  min-inline-size: 0;
+  padding-block-end: var(--seed-dimension-x3);
+}
+
+.character-roster-identity > div {
+  min-inline-size: 0;
+}
+
+.character-roster-identity h3 {
+  margin: 0;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t5-static);
+  font-weight: 700;
+  line-height: var(--seed-line-height-t5-static);
+}
+
+.character-roster-identity p {
+  margin: var(--seed-dimension-x0_5) 0 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: var(--seed-line-height-t4-static);
+}
+.character-roster-availability {
+  display: inline-flex;
+  inline-size: fit-content;
+  margin-block-start: var(--seed-dimension-x1);
+  padding-inline: var(--seed-dimension-x1_5);
+  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  border-radius: var(--seed-radius-full);
+  background: var(--seed-color-bg-layer-fill);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: 700;
+  line-height: var(--seed-line-height-t4-static);
+}
+
+.character-roster-item.is-unavailable {
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.character-roster-item.is-unavailable .account-avatar {
+  filter: grayscale(1) saturate(0.35);
+  opacity: 0.72;
+}
+
+.character-roster-item.is-unavailable .character-roster-identity h3,
+.character-roster-item.is-unavailable .character-roster-model dd,
+.character-roster-item.is-unavailable .character-roster-examples code,
+.character-roster-item.is-unavailable .character-roster-examples strong {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+.character-roster-item.is-unavailable .character-roster-identity p,
+.character-roster-item.is-unavailable .character-roster-examples span {
+  color: var(--seed-color-fg-neutral-subtle);
+}
+
+
+.character-roster-model,
+.character-roster-examples {
+  display: grid;
+  gap: 0;
+  min-inline-size: 0;
+  margin: 0;
+}
+
+.character-roster-model {
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+}
+
+.character-roster-model > div,
+.character-roster-examples > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+}
+
+.character-roster-model > div {
+  padding-block-end: var(--seed-dimension-x3);
+}
+
+.character-roster-model > div:not(:last-child) {
+  padding-block-end: var(--seed-dimension-x2);
+}
+
+.character-roster-model dt,
+.character-roster-examples dt {
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: var(--seed-line-height-t4-static);
+}
+
+.character-roster-model dd,
+.character-roster-examples dd {
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: var(--seed-line-height-t4-static);
+  overflow-wrap: anywhere;
+}
+
+.character-roster-model dd {
+  font-family: var(--font-mono);
+}
+
+.character-roster-examples {
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+  padding-block-start: var(--seed-dimension-x3);
+  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.character-roster-examples dd {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x1);
+}
+
+.character-roster-examples > div:first-child {
+  padding-block-end: var(--seed-dimension-x2);
+}
+
+.character-roster-examples code,
+.character-roster-examples strong {
+  color: var(--seed-color-fg-neutral);
+  font-size: inherit;
+  font-weight: 700;
+}
+
+.character-roster-examples span {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+.resource-usage-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x3);
+  min-block-size: 40px;
+  padding-inline: var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  background: var(--seed-color-bg-layer-basement);
+}
+
+.resource-panel h2.resource-group-heading {
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  background: var(--seed-color-bg-layer-fill) !important;
+  font-size: var(--seed-font-size-t3-static) !important;
+}
+
+.resource-panel > header {
+  border-block-end-color: var(--border) !important;
+  background: var(--bg-panel) !important;
+}
+
+.resource-panel > header button {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control);
+  background: var(--bg) !important;
+}
+
+.resource-panel > header button:hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.resource-panel button:not([role="tab"]) {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+  color: var(--text-muted) !important;
+}
+
+.resource-panel button:not([role="tab"]):hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.resource-panel button[aria-pressed="true"]:not([role="tab"]),
+.resource-panel button[aria-checked="true"]:not([role="tab"]) {
+  background: var(--metric-soft) !important;
+  color: var(--text) !important;
+  box-shadow: inset var(--spine) 0 var(--metric);
+}
+
+.resource-panel button:not([role="tab"]):active:not(:disabled) {
+  background: var(--bg-selected) !important;
+}
+
+.resource-account[data-account-state="active"] {
+  box-shadow: inset var(--spine) 0 var(--metric);
+}
+
+.resource-account[data-account-state="off"] {
+  box-shadow: inset var(--spine) 0 var(--border-strong);
+}
+
+.resource-account[data-account-state="auto-blocked"] {
+  box-shadow: inset var(--spine) 0 var(--warning);
+}
+
+/* --- 사용량 패널: 계정 정체성과 한도 행 ------------------------------------- */
+
+/* 계정 얼굴. 계정을 구별하는 일을 주소 대신 얼굴과 별칭이 맡는다.
+   테두리는 장식이 아니다 — 어두운 그림(rin)이 거의 검은 패널 위에서 20px 로 줄면
+   경계가 사라져 얼굴이 아니라 얼룩으로 보인다. 그 한 겹이 윤곽을 세운다. */
+.account-avatar {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--text) 40%, transparent);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.account-avatar-mono {
+  display: inline-grid;
+  place-items: center;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+
+/* 타일 색은 구별용이지 상태가 아니다. 그래서 의미가 붙은 semantic 토큰이 아니라
+   SEED 팔레트에서 고르고, danger 계열 빨강은 쓰지 않는다. */
+.account-avatar-mono[data-tone="0"] { background: color-mix(in srgb, var(--seed-color-palette-blue-500) 30%, var(--bg-raised)); }
+.account-avatar-mono[data-tone="1"] { background: color-mix(in srgb, var(--seed-color-palette-purple-500) 30%, var(--bg-raised)); }
+.account-avatar-mono[data-tone="2"] { background: color-mix(in srgb, var(--seed-color-palette-green-500) 30%, var(--bg-raised)); }
+.account-avatar-mono[data-tone="3"] { background: color-mix(in srgb, var(--seed-color-palette-carrot-500) 30%, var(--bg-raised)); }
+.account-avatar-mono[data-tone="4"] { background: color-mix(in srgb, var(--seed-color-palette-gray-500) 34%, var(--bg-raised)); }
+.account-avatar-mono[data-tone="5"] { background: color-mix(in srgb, var(--seed-color-palette-yellow-500) 26%, var(--bg-raised)); }
+
+/* 얼굴을 눌러 원본을 확인하는 자리. 화면에 박힌 얼굴은 24~48px 이라 누구인지 애매할 때가
+   있는데, 그 확인에 필요한 것은 원본 한 장이지 배율 조작이 아니다. 버튼 자체는 그림만
+   담는 껍데기라 색도 테두리도 갖지 않는다 — 윤곽은 안쪽 `.account-avatar` 가 이미 세운다. */
+.account-avatar-button {
+  display: inline-flex;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.account-avatar-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.account-avatar-dialog {
+  max-width: none;
+  max-height: none;
+  /* Tailwind preflight 가 모든 요소의 margin 을 0 으로 지우므로 dialog 의 기본 가운데
+     정렬(margin: auto)도 함께 사라진다. 여기서 되돌려 놓지 않으면 창이 왼쪽 위에 붙는다. */
+  margin: auto;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+  text-align: center;
+}
+
+.account-avatar-dialog::backdrop {
+  background: var(--seed-color-bg-overlay);
+}
+
+/* 원본이 256px 이다. 그보다 키우면 뭉개지므로 원본 크기가 곧 상한이고, 좁은 화면에서만
+   줄어든다. */
+.account-avatar-full {
+  display: block;
+  inline-size: min(256px, 70vw);
+  block-size: auto;
+  border: 1px solid color-mix(in srgb, var(--text) 40%, transparent);
+  border-radius: 50%;
+}
+
+.account-avatar-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.account-avatar-caption-alias {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.account-avatar-caption-provider {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.account-avatar-close {
+  margin-block-start: 10px;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.account-avatar-close:hover {
+  background: var(--bg-hover);
+}
+
+/* 상태 배지는 「지금 쓸 수 있는가」라는 런타임 사실이고, 오른쪽 스위치는 「쓸 것인가」라는
+   사용자 의사다. 두 축이 다르므로 생김새도 갈라놓는다. */
+.resource-account-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.resource-account-badge[data-tone="active"] {
+  border-color: var(--metric);
+  background: var(--metric-soft);
+  color: var(--text);
+}
+
+.resource-account-badge[data-tone="blocked"] {
+  border-color: var(--warning-line);
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+.resource-account-badge[data-tone="off"] {
+  color: var(--text-dim);
+}
+
+.resource-account-badge[data-tone="pending"] {
+  border-style: dashed;
+}
+
+.resource-account-toggle {
+  display: inline-flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.resource-account-toggle-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.resource-account-switch {
+  inline-size: 3.25rem;
+}
+
+.resource-account-limits {
+  margin-block-start: 8px;
+}
+
+/* 한도 행의 짧은 꼬리표: 과속·여유·한도. 숫자 옆에서 읽히도록 좁고 단단하게. */
+.usage-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.usage-chip[data-tone="warning"] {
+  border-color: var(--warning-line);
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+.usage-chip[data-tone="danger"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--text);
+}
+
+/* 「자세히」와 「이메일 보기」는 상자가 아니라 글이다. 패널의 공통 버튼 상자 규칙을
+   여기서만 벗겨낸다. */
+.resource-panel button.resource-account-more,
+.resource-panel button.resource-account-reveal,
+.resource-panel button.resource-account-reveal[aria-pressed] {
+  padding: 0;
+  border: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-muted) !important;
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.resource-panel button.resource-account-more:hover:not(:disabled),
+.resource-panel button.resource-account-reveal:hover:not(:disabled) {
+  color: var(--text) !important;
+}
+
+.resource-account-more {
+  margin-block-start: 6px;
+}
+
+.resource-reset {
+  min-inline-size: 0;
+}
+
+.resource-reset-confirm-group[data-reset-state="confirming"],
+.resource-reset-confirm-group[data-reset-state="pending"] {
+  margin-block-start: 12px;
+  padding: 10px 12px 8px;
+  border-block-start: 1px solid var(--border);
+  background: var(--danger-soft);
+  box-shadow: inset var(--spine) 0 var(--danger);
+}
+
+.resource-panel button.resource-reset-confirm {
+  border-color: var(--danger) !important;
+  background: var(--danger) !important;
+  color: var(--bg) !important;
+}
+
+.resource-panel button.resource-reset-confirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, var(--text)) !important;
+}
+
+.resource-panel > div[role="tablist"] {
+  background: var(--bg-panel) !important;
+}
+
+.resource-panel button[role="tab"] {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+}
+
+.resource-panel button[role="tab"]:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.resource-panel button[role="tab"][aria-selected="true"] {
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
+  box-shadow: none;
+}
+
+.resource-panel [role="tabpanel"] {
+  background: var(--bg-panel);
+}
+
+.resource-panel [role="tabpanel"] > section,
+.resource-panel [aria-labelledby^="resource-"] {
+  background: var(--bg-panel);
+}
+
+.resource-panel h2 {
+  color: var(--channel-ink) !important;
+  letter-spacing: var(--readout-track) !important;
+}
+
+/* --- efficiency panel: run history + config comparison -------------------- */
+/* 390px 폭에서도 가로 overflow가 나지 않게 모든 행은 minmax(0, 1fr)로 줄고,
+   긴 모델명은 두 줄까지 흘린 뒤 자른다. 숫자 열은 tabular-nums를 쓴다. */
+.efficiency-panel {
+  min-inline-size: 0;
+  background: var(--bg-panel) !important;
+}
+
+.efficiency-panel > header {
+  border-block-end-color: var(--border) !important;
+  background: var(--bg-panel) !important;
+}
+
+.efficiency-panel > header button {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control);
+  background: var(--bg) !important;
+}
+
+.efficiency-panel > header button:hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.efficiency-panel button[role="tab"] {
+  background: transparent !important;
+  color: var(--text-muted) !important;
+}
+
+.efficiency-panel button[role="tab"]:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.efficiency-panel button[role="tab"][aria-selected="true"] {
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.efficiency-panel [role="tabpanel"] {
+  background: var(--bg-panel);
+}
+
+.efficiency-section-title {
+  margin: 0;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-raised);
+  padding: 6px 16px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.efficiency-empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-note {
+  margin: 0;
+  padding: 6px 16px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-dim {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.efficiency-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 12px;
+  min-inline-size: 0;
+}
+
+ul.efficiency-stack {
+  list-style: none;
+}
+
+.efficiency-governor {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.efficiency-run-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.efficiency-run-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: 8px 16px;
+  border: 0;
+  border-block-end: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.efficiency-run-item:hover {
+  background: var(--bg-hover);
+}
+
+.efficiency-run-item.is-selected {
+  background: var(--bg-selected);
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.efficiency-run-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.efficiency-run-index {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.efficiency-run-title {
+  min-inline-size: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.efficiency-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-detail-pane {
+  border-block-start: 1px solid var(--border);
+  min-inline-size: 0;
+}
+
+.efficiency-detail {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  padding-block-end: 12px;
+}
+
+.efficiency-dual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 16px;
+  min-inline-size: 0;
+}
+
+.efficiency-dual-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg);
+}
+
+.efficiency-dual-label {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.efficiency-dual-value {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.efficiency-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+
+.efficiency-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.efficiency-card-title {
+  margin: 0;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+/* 긴 모델명(`provider/model…` 한 토큰)은 ellipsis로 자르지 않고 두 줄까지 흘린다. */
+.efficiency-model-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.efficiency-bottleneck {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-inline-size: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg);
+}
+
+.efficiency-bottleneck-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.efficiency-bottleneck-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+/* 비율 막대: 숫자를 함께 적으므로 색만으로 의미를 전달하지 않는다. */
+.efficiency-bar {
+  position: relative;
+  block-size: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  min-inline-size: 0;
+}
+
+.efficiency-bar-fill {
+  block-size: 100%;
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+.efficiency-bar-value {
+  position: absolute;
+  inset-inline-end: 4px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.efficiency-folderbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  align-items: center;
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-panel);
+  min-inline-size: 0;
+}
+
+.efficiency-folder-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.efficiency-folder-select,
+.efficiency-folder-input {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-folder-input {
+  grid-column: 1 / -1;
+}
+
+.side-chat-panel,
+section[aria-label="Subagent 기록"] {
+  background: var(--bg-panel) !important;
+}
+
+.side-chat-panel > header,
+section[aria-label="Subagent 기록"] > header {
+  border-block-end-color: var(--border) !important;
+}
+
+.side-chat-question {
+  border-color: var(--border-strong) !important;
+  border-inline-start: var(--spine) solid var(--accent-line) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--bg) !important;
+}
+
+.side-chat-answer {
+  border-color: var(--border) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--bg-panel) !important;
+}
+
+.side-chat-answer.is-streaming {
+  border-inline-start: var(--spine) solid var(--accent) !important;
+}
+
+/* the composer is a form element so submit works from the keyboard */
+.side-chat-panel > form {
+  border-block-start-color: var(--border) !important;
+  background: var(--bg-raised) !important;
+}
+
+.side-chat-panel > form textarea {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+}
+
+.side-chat-panel > form textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.side-chat-panel > form button,
+section[aria-label="Subagent 기록"] button {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--radius-control) !important;
+  background: var(--bg) !important;
+  color: var(--text-muted) !important;
+}
+
+.side-chat-panel > form button:hover:not(:disabled),
+section[aria-label="Subagent 기록"] button:hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+section[aria-label="Subagent 기록"] [role="listitem"] {
+  border-color: var(--border) !important;
+  border-radius: var(--radius-surface) !important;
+  background: var(--bg) !important;
+}
+
+section[aria-label="Subagent 기록"] [role="listitem"]:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-hover) !important;
+}
+
+/*
+ * 역할 명판: 어떤 상태에서도 톤과 폭이 같다. 색은 상태(status)만 쓴다.
+ * flex-shrink 0 + 형제와 무관한 ch 기준 상한이라 status 길이(running/completed)나
+ * 이름 길이가 배지 폭을 바꾸지 못한다. 남는 폭의 ellipsis는 이름만 담당한다.
+ */
+section[aria-label="Subagent 기록"] .subagent-role {
+  flex: 0 0 auto;
+  max-inline-size: 26ch;
+  overflow: hidden;
+  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  border-radius: var(--seed-radius-r1);
+  padding: 0 var(--seed-dimension-x1_5);
+  background: var(--seed-color-bg-neutral-weak);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t1-static);
+  font-weight: 500;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 카드 2행: 실제 모델 id 는 `anthropic/claude-…` 처럼 긴 한 토큰이라
+   ellipsis 로 자르지 않고 두 줄까지 흘린다. 원문은 title 속성이 보존한다.
+   1행(역할 + 작업)보다 한 단계 작은 보조 줄이다. */
+section[aria-label="Subagent 기록"] .subagent-model-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+section[aria-label="Subagent 기록"] .subagent-model-line .subagent-effort,
+section[aria-label="Subagent 기록"] .subagent-model-line[data-observed="none"] {
+  color: var(--seed-color-fg-neutral-subtle);
+}
+
+/* 카드 1행: 이 실행이 맡은 일. 카드에서 가장 먼저 읽히는 줄이다. */
+section[aria-label="Subagent 기록"] .subagent-task-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  min-inline-size: 0;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+@container workspace-shell (min-width: 791px) {
+  .sidebar-overlay-backdrop {
+    display: none !important;
+  }
+
+  .sidebar-container {
+    position: relative !important;
+    z-index: auto;
+    inset: auto;
+    block-size: 100%;
+    min-inline-size: 0;
+    padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+    transform: none !important;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .sidebar-container.sidebar-open {
+    inline-size: clamp(
+      var(--workspace-min-navigator),
+      var(--sidebar-width, 260px),
+      min(300px, calc(100cqi - var(--workspace-min-transcript) - 1px))
+    );
+    min-inline-size: clamp(
+      var(--workspace-min-navigator),
+      var(--sidebar-width, 260px),
+      min(300px, calc(100cqi - var(--workspace-min-transcript) - 1px))
+    );
+  }
+
+  .sidebar-container.sidebar-closed {
+    inline-size: 0;
+    min-inline-size: 0;
+    border-inline-end: 0;
+    overflow: hidden;
+  }
+
+  .sidebar-container > * {
+    inline-size: 100%;
+    min-inline-size: var(--workspace-min-navigator);
+  }
+
+  .sidebar-resize-handle {
+    display: block;
+  }
+}
+
+@container workspace-shell (min-width: 1176px) {
+  .workspace-shell[data-deck-visible="true"] .sidebar-container.sidebar-open {
+    inline-size: clamp(
+      var(--workspace-min-navigator),
+      var(--sidebar-width, 260px),
+      min(300px, calc(50cqi - 348px))
+    );
+    min-inline-size: clamp(
+      var(--workspace-min-navigator),
+      var(--sidebar-width, 260px),
+      min(300px, calc(50cqi - 348px))
+    );
+  }
+
+  .workspace-auxiliary-deck-slot {
+    display: flex;
+    flex: 0 1 clamp(
+      var(--workspace-min-deck),
+      32cqi,
+      min(420px, calc(50cqi - 204px))
+    );
+    inline-size: clamp(
+      var(--workspace-min-deck),
+      32cqi,
+      min(420px, calc(50cqi - 204px))
+    );
+    min-inline-size: var(--workspace-min-deck);
+  }
+  .workspace-auxiliary-deck-slot.is-pinned {
+    border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
+  }
+
+}
+
+/* Content-derived media fallbacks for browsers without container queries. */
+@supports not (container-type: inline-size) {
+  @media (min-width: 791px) {
+    .sidebar-overlay-backdrop {
+      display: none !important;
+    }
+
+    .sidebar-container {
+      position: relative !important;
+      inset: auto;
+      block-size: 100%;
+      transform: none !important;
+      pointer-events: auto;
+    }
+
+    .sidebar-container.sidebar-open {
+      inline-size: var(--sidebar-width, 260px);
+      min-inline-size: var(--sidebar-width, 260px);
+    }
+
+    .sidebar-container.sidebar-closed {
+      inline-size: 0;
+      min-inline-size: 0;
+      border-inline-end: 0;
+    }
+
+    .sidebar-resize-handle {
+      display: block;
+    }
+  }
+
+  @media (min-width: 1176px) {
+    .workspace-auxiliary-deck-slot {
+      display: flex;
+      flex: 0 0 var(--workspace-min-deck);
+      inline-size: var(--workspace-min-deck);
+      min-inline-size: var(--workspace-min-deck);
+    }
+
+  }
+
+
+}
+
+@media (max-width: 640px) {
+  .chat-stats-center {
+    display: none !important;
+  }
+  .workspace-session-identity {
+    flex-basis: 72px;
+    padding-inline: var(--seed-dimension-x1);
+  }
+
+  /* Phone: the status line and the numeric readout yield to the controls, but
+     the meter and its accessible name stay. */
+  .workspace-session-identity span,
+  .workspace-context-readout {
+    display: none !important;
+  }
+
+  .workspace-context-meter {
+    flex-basis: 56px;
+  }
+
+  .workspace-command-list {
+    grid-template-columns: 1fr;
+  }
+
+  .directory-picker-back,
+  .directory-picker-entry,
+  .directory-picker-action {
+    min-height: 44px !important;
+  }
+
+  .directory-picker-back {
+    min-width: 44px !important;
+  }
+
+  .directory-picker-footer {
+    flex-wrap: wrap;
+    padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
+  }
+
+  /* 손가락 표적의 세로는 모두 44px로 맞춘다. */
+  .composer-icon-button,
+  .composer-chip,
+  .composer-stream-action,
+  .chat-composer-send,
+  .composer-action-bar button,
+  .workspace-header-seam button,
+  .workspace-update-banner-dismiss {
+    min-block-size: 44px;
+  }
+
+  /* 가로 44px은 아이콘만 있는 정사각 버튼에만 건다. 글자가 있는 칩까지 가로를 고정하면
+     좁은 폭에서 더 줄어들지 못해 옆 묶음을 밀고 실제로 겹친다 — 칩의 가로는 내용에 맡긴다. */
+  .composer-icon-button,
+  .workspace-header-seam button,
+  .workspace-update-banner-dismiss {
+    min-inline-size: 44px;
+  }
+
+  /* 최소 크기로도 한 줄에 못 담을 만큼 좁으면 겹치는 대신 둘째 줄로 내린다. */
+  .composer-action-bar {
+    flex-wrap: wrap;
+  }
+
+  /* 업데이트 줄이 두세 줄로 흐를 때 헤더 아래 대화가 받는 압박을 줄인다. */
+  .workspace-update-banner {
+    padding: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  }
+
+  /* 드로어 안의 조작도 같은 표적 크기를 갖는다. 프로젝트 행의 새 세션·동작 버튼은
+     터치에서 항상 보이므로 실제로 눌릴 크기여야 한다. 이 버튼들은 인라인 style로
+     26~34px를 직접 지정하고 있어 !important로만 덮인다. */
+  .navigator-add-project,
+  .navigator-settings-action,
+  .navigator-toolbar-icon,
+  .navigator-brand,
+  .navigator-search-input,
+  .navigator-usage-more,
+  .navigator-usage-toggle,
+  .navigator-mode-bar button,
+  .navigator-project-row,
+  .navigator-project-row button,
+  .navigator-session-row {
+    min-inline-size: 44px !important;
+    min-block-size: 44px !important;
+  }
+
+  /* 사이드바 머리줄의 아이콘 버튼은 데스크톱과 같은 32px 상자를 유지한다. 상자를 키우는
+     대신 표적만 넓혀, 옆 새로고침 버튼과 계열이 어긋나지 않게 한다. 두 버튼 사이 간격이
+     12px이므로 좌우 6px씩 넓힌 표적은 서로 겹치지 않는다. */
+  .navigator-icon-action {
+    position: relative;
+  }
+
+  .navigator-icon-action::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+
+  /* 드로어가 열리면 뒤 레이어는 확실히 뒤로 물러나야 한다. 기본 --scrim은 검정 17%라
+     어두운 테마의 조밀한 보조 패널을 가리지 못해, 드로어 오른쪽으로 다른 화면이
+     비집고 나온 것처럼 읽혔다. */
+  .sidebar-overlay-backdrop.is-open {
+    background: rgba(0, 0, 0, 0.78);
+  }
+
+  /* 드로어를 조금 넓혀 뒤 레이어가 남기는 띠를 줄인다. 닫기용 여백은 남긴다. */
+  .sidebar-container {
+    inline-size: min(320px, calc(100vw - 44px));
+  }
+
+  textarea,
+  input,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* 340px 아래에서는 최소 표적 크기의 합이 한 줄을 넘는다. 왼쪽 묶음의 basis를 내용 폭으로
+   되돌려 위의 줄바꿈이 실제로 일어나게 한다 — 그보다 좁으면 두 줄이 정답이다.
+   basis는 인라인 style이 들고 있어 !important로만 덮인다. */
+@media (max-width: 340px) {
+  .composer-action-bar > :first-child {
+    flex-basis: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* 재시작 대기 화면: heartbeat가 연속 실패하면 AppShell이 띄우고, 서버가 돌아오면 새로고침한다. */
+.server-restart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+.server-restart-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+}
+.server-restart-card span { color: var(--text-muted); font-size: 13px; }
+.server-restart-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: server-restart-spin 0.9s linear infinite;
+}
+@keyframes server-restart-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .server-restart-spinner { animation: none; } }
