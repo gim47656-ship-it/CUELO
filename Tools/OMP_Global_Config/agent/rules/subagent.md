@@ -33,8 +33,8 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 - 단일 정의 `agent/sop/maker.md`는 `model:"@impl"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 후보마다 허용 강도 구간이 따로 있다. NORMAL은
-  `impl` Luna(high~xhigh)·`implDeepSeek` DeepSeek V4 Flash(high, 이 모델은 xhigh 미지원)·`implSol` Sol(low~medium)이고,
-  사용 가능한 primary(`impl` Luna)를 먼저 추천한다. 대안은 primary가 실제로 사용 불가이거나 한도 소진이
+  `impl` Sol(medium~high, 기본 medium)·`implDeepSeek` DeepSeek V4 Flash(high, 이 모델은 xhigh 미지원)이고,
+  사용 가능한 primary(`impl` Sol)를 먼저 추천한다. 대안은 primary가 실제로 사용 불가이거나 한도 소진이
   관측됐을 때만 쓰고, 후보 간 관측 한도 여유 차이만으로 primary를 밀지 않는다. HARD는 UI·UX면 `makerHardUi`, 코드·시스템이면
   `makerHardCode`(Opus, 대체 `makerHardCodeAlternate` Astra)로 모두 high~xhigh다. 허용 구간 밖
   강도와 공급자가 지원하지 않는 강도·max는 쓰지 않는다. HARD는 Main 모델 계열 때문에 분야별 후보를

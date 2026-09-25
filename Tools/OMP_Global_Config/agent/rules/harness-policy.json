@@ -764,9 +764,8 @@
       "defaultMakerModelConfigPath": "modelRoles.impl",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
       "profiles": {
-        "NORMAL": { "modelConfigPath": "modelRoles.impl", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL": { "modelConfigPath": "modelRoles.impl", "workClass": "NORMAL", "allowedEfforts": ["medium", "high"] },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
-        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "allowedEfforts": ["low", "medium"] },
         "HARD_UI_UX": { "modelConfigPath": "modelRoles.makerHardUi", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
         "HARD_CODE_SYSTEM": { "modelConfigPath": "modelRoles.makerHardCode", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
         "HARD_CODE_SYSTEM_ALTERNATE": { "modelConfigPath": "modelRoles.makerHardCodeAlternate", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] }
