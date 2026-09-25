@@ -5,6 +5,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSettingsTestScope } from "./core-test-settings";
 
 function resolveCore(): string {
 	const env = process.env.OMP_CORE_PATCH_TARGET;
@@ -50,11 +51,13 @@ const CHAINS = {
 	"opencode-go/muse-spark-1.3-contributor": [],
 };
 const ROLES = { impl: "b-ai/deepseek-v4.1-flash:max" };
-const settingsStub = {
-	get: (key: string) => (key === "retry.fallbackChains" ? CHAINS : undefined),
-	getModelRoles: () => ROLES,
-	getModelRole: (role: string) => (ROLES as Record<string, string>)[role],
-} as never;
+const settingsStub = Object.assign(
+	createSettingsTestScope(key => (key === "retry.fallbackChains" ? CHAINS : undefined)),
+	{
+		getModelRoles: () => ROLES,
+		getModelRole: (role: string) => (ROLES as Record<string, string>)[role],
+	},
+) as never;
 // 더미 키(비밀 아님). mock fetch·scratch registry 전용이며 네트워크에 나가지 않는다.
 const fixtureApiKey = "example";
 

@@ -2,6 +2,7 @@
 // bun run patches/core-stall-test.ts (OMP_CORE_PATCH_TARGET is required)
 import { strict as assert } from "node:assert";
 import { resolve } from "node:path";
+import { createSettingsTestScope } from "./core-test-settings";
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required; never test the live registry");
 const core = resolve(target, "src");
@@ -84,7 +85,7 @@ await test("bare wait recovers settled result despite another running job; no du
  const receipt = Promise.withResolvers<void>();
  const deliveryStarted = Promise.withResolvers<void>();
  manager.registerDeliverySink("owner-A", async () => { deliveryStarted.resolve(); await receipt.promise; });
- const settings = { get: (key: string) => key === "async.enabled" ? true : undefined };
+ const settings = createSettingsTestScope(key => key === "async.enabled" ? true : undefined);
  const session = { settings, asyncJobManager: manager, getAgentId: () => "owner-A" };
  const waitTool = new WaitTool(session);
  const gate = Promise.withResolvers<string>();
@@ -139,7 +140,7 @@ await test("cold revival and nested parked descendants stay released; replacemen
 });
 await test("bare wait with only a failed job recovers the error and then stops replaying", async () => {
  const manager = new AsyncJobManager({});
- const session = { settings: { get: () => undefined }, asyncJobManager: manager, getAgentId: () => "owner" };
+ const session = { settings: createSettingsTestScope(() => undefined), asyncJobManager: manager, getAgentId: () => "owner" };
  const waitTool = new WaitTool(session);
  const id = manager.register("bash", "failed", async () => { throw new Error("STALL-FAILURE"); }, { ownerId: "owner" });
  await manager.getJob(id).promise;
@@ -151,14 +152,12 @@ await test("bare wait with only a failed job recovers the error and then stops r
  } finally { await manager.dispose({ timeoutMs: 0 }); }
 });
 await test("queued steering interrupts a running ask, skips a later ask, and reaches the next model step", async () => {
- const settings = {
-  get: (key: string) => {
-   if (key === "ask.notify") return "off";
-   if (key === "ask.timeout") return 0;
-   if (key === "speech.enabled") return false;
-   return undefined;
-  },
- };
+ const settings = createSettingsTestScope(key => {
+  if (key === "ask.notify") return "off";
+  if (key === "ask.timeout") return 0;
+  if (key === "speech.enabled") return false;
+  return undefined;
+ });
  const ask = new AskTool({ hasUI: true, settings } as never);
  const askStarted = Promise.withResolvers<void>();
  let askSignal: AbortSignal | undefined;
@@ -289,14 +288,12 @@ await test("queued steering interrupts a running ask, skips a later ask, and rea
  }
 });
 await test("ordinary ask completion still returns the selected answer", async () => {
- const settings = {
-  get: (key: string) => {
-   if (key === "ask.notify") return "off";
-   if (key === "ask.timeout") return 0;
-   if (key === "speech.enabled") return false;
-   return undefined;
-  },
- };
+ const settings = createSettingsTestScope(key => {
+  if (key === "ask.notify") return "off";
+  if (key === "ask.timeout") return 0;
+  if (key === "speech.enabled") return false;
+  return undefined;
+ });
  const ask = new AskTool({ hasUI: true, settings } as never);
  const result = await ask.execute(
   "ordinary-ask",

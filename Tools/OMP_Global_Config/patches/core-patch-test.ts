@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
+import { createSettingsTestScope, settingsLike } from "./core-test-settings";
 
 /** 전역 npm 위치는 PC마다 다르다. apply-core-patch.mjs 와 같은 순서로 찾는다. */
 function resolveCore(): string {
@@ -143,7 +144,7 @@ const runPromise = runInTab(deadWorkerTab.name, {
 	code: "await wait(60_000)",
 	timeoutMs: 60_000,
 	signal: abortController.signal,
-	session: { settings: { get: () => undefined } } as never,
+	session: { settings: settingsLike({ get: () => undefined }) } as never,
 });
 await runDispatched;
 const pendingRun = [...pendingRuns.values()][0]!;
@@ -314,7 +315,7 @@ let adoptRequests = 0;
 const host = {
 	agent: { steer: (m: unknown) => steered.push(m) },
 	sessionManager: { appendCustomMessageEntry: () => {} },
-	settings: { get: () => false },
+	settings: settingsLike({ get: () => false }),
 	isDisposed: () => false,
 	isStreaming: () => streaming,
 	planModeEnabled: () => false,
@@ -740,7 +741,7 @@ const waitSession = {
 	agentRegistry: reg,
 	getAgentId: () => "A1",
 	asyncJobManager: waitManager,
-	settings: { get: () => undefined },
+	settings: settingsLike({ get: () => undefined }),
 } as never;
 const waitPending = new WaitTool(waitSession).execute("t", {} as never);
 setTimeout(() => jobGate.resolve(), 50);
@@ -867,7 +868,7 @@ console.log("\n[12] wait 대기 근거 — 남의 트리 실행 중 에이전트
 const lonelyRoot = new RoundTripSession("Main#3");
 registerRoundTrip(lonelyRoot, "main");
 const lonelyOut = await Promise.race([
-	new WaitTool({ agentRegistry: reg11, getAgentId: () => "Main#3", asyncJobManager: undefined, settings: { get: () => undefined } } as never).execute(
+	new WaitTool({ agentRegistry: reg11, getAgentId: () => "Main#3", asyncJobManager: undefined, settings: settingsLike({ get: () => undefined }) } as never).execute(
 		"t",
 		{} as never,
 	),
@@ -904,11 +905,11 @@ function mrSelectionArgs({ chains, authed, requestedModel, authFallbackUsed = fa
 		parentActiveModelPattern: "anthropic/claude-opus-4-6:xhigh",
 		modelPatterns: patterns,
 		role: "impl",
-		settings: {
+		settings: settingsLike({
 			get: key => (key === "retry.fallbackChains" ? chains : undefined),
 			getModelRoles: () => MR_ROLES,
 			getModelRole: role => MR_ROLES[role],
-		},
+		}),
 		modelRegistry: {
 			getAvailable: () => mrCatalog,
 			find: (provider, id) => mrCatalog.find(model => model.provider === provider && model.id === id),
@@ -1040,7 +1041,7 @@ const todoBranch: unknown[] = [];
 const todoHost = {
 	agent: { state: { messages: [] } },
 	sessionManager: { getBranch: () => todoBranch },
-	settings: { get: () => undefined },
+	settings: settingsLike({ get: () => undefined }),
 	model: () => undefined,
 	agentKind: () => "main",
 	emitSessionEvent: async (event: { type: string; phases?: TodoPhaseShape[] }) => {
@@ -1649,7 +1650,7 @@ const csCompletionFallbackChains = {
 	smol: ["tier/smol-fallback"],
 	"web6/gpt-6-pro": ["tier/web6-fallback"],
 };
-const csCompletionSettings = {
+const csCompletionSettings = settingsLike({
 	get(key: string) {
 		if (key === "disabledProviders") return [];
 		if (key === "retry.fallbackChains") return csCompletionFallbackChains;
@@ -1666,7 +1667,7 @@ const csCompletionSettings = {
 	getModelRoles() {
 		return csCompletionRoles;
 	},
-};
+});
 const csCompletionRegistry = {
 	getAvailable: () => csAvailableCompletionModels,
 	find: (provider: string, id: string) =>
@@ -1813,7 +1814,7 @@ console.log("\n[19] Mnemopi 안내 — effective autoRetain 과 모델 안내 �
 const { mnemopiBackend } = await import(`${CORE}/mnemopi/backend.ts`);
 const { setMnemopiSessionState } = await import(`${CORE}/mnemopi/state.ts`);
 const mnemopiSettings = (autoRetain: boolean, injectionTokenLimit = 5000) =>
-	({
+	settingsLike({
 		get: (key: string) =>
 			key === "mnemopi.autoRetain"
 				? autoRetain
@@ -1823,7 +1824,8 @@ const mnemopiSettings = (autoRetain: boolean, injectionTokenLimit = 5000) =>
 	}) as never;
 /** 실제 state 는 `config` 를 항상 들고 있다. 세션 symbol 슬롯에 꽂아 두 소비자만 태운다. */
 const mnemopiSession = (options: { stateAutoRetain?: boolean; settingsAutoRetain: boolean; context?: string }) => {
-	const session = { settings: mnemopiSettings(options.settingsAutoRetain) } as never;
+	// 18.3.1 backend는 안내 문구의 도구 참조를 session.getXdevToolEntries()에서 만든다(xdev 없으면 []).
+	const session = { settings: mnemopiSettings(options.settingsAutoRetain), getXdevToolEntries: () => [] } as never;
 	if (options.stateAutoRetain === undefined) return session;
 	setMnemopiSessionState(session, {
 		config: { autoRetain: options.stateAutoRetain },

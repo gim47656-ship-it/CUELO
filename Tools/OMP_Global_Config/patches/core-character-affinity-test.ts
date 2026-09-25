@@ -9,6 +9,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSettingsTestScope } from "./core-test-settings";
 
 function resolveCore(): string {
 	const env = process.env.OMP_CORE_PATCH_TARGET;
@@ -79,24 +80,27 @@ function makeSettings() {
 		"anthropic/claude-opus-5": [fallbackSelector],
 		"anthropic/claude-opus-5:high": [fallbackSelector],
 	};
-	return {
-		getGroup: (name: string) =>
-			name === "retry"
-				? {
-						enabled: true,
-						maxRetries: 2,
-						baseDelayMs: 1,
-						maxDelayMs: 100,
-						modelFallback: true,
-						waitForUsageReset: false,
-					}
-				: {},
-		get: (key: string) =>
+	return Object.assign(
+		createSettingsTestScope(key =>
 			key === "retry.fallbackChains" ? chains : key === "retry.usageAwareFallback" ? false : undefined,
-		getModelRole: () => undefined,
-		getModelRoles: () => ({}),
-		getStorage: () => undefined,
-	} as never;
+		),
+		{
+			getGroup: (name: string) =>
+				name === "retry"
+					? {
+							enabled: true,
+							maxRetries: 2,
+							baseDelayMs: 1,
+							maxDelayMs: 100,
+							modelFallback: true,
+							waitForUsageReset: false,
+						}
+					: {},
+			getModelRole: () => undefined,
+			getModelRoles: () => ({}),
+			getStorage: () => undefined,
+		},
+	) as never;
 }
 
 function makeRegistry(auth: Auth, tag: string) {
