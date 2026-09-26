@@ -257,7 +257,7 @@ describe("turn-end guard", () => {
     await h.emit("input", { source: "rpc", text: "lint는 뭐?" });
     await h.end("민감한 응답", { messages: [
       { role: "user", content: "lint는 뭐?" },
-      { role: "assistant", content: [{ type: "text", text: "Authorization:Bearer real-credential-value" }] },
+      { role: "assistant", content: [{ type: "text", text: "Authorization:Bearer short-value" }] },
     ] });
     expect(seen).toHaveLength(1);
   });
