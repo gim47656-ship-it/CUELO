@@ -72,7 +72,7 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 ## omp core 패치
 
-[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 원본 저장소의 CI는 앱이 고정한 core 버전을 새로 설치해 검사하며, 공개 미러에는 그 검사에 필요한 설정·eval 자료가 없어 해당 job을 건너뜁니다.
+[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. CI의 `Verify harness`는 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌리며, 공개 저장소에서도 실행됩니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 실행합니다.
 
 ## 정본 자료
 

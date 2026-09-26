@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 13a662daf067abc8 -->
+<!-- source-fingerprint: 801a1e62a1bcc7f8 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
