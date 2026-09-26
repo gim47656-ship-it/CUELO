@@ -58,8 +58,10 @@ export async function GET(
 
       const coalescer = createMessageUpdateCoalescer(encode);
       const unsubscribe = session.onEvent((event) => {
+        // The entries stream stays open for the selected view after the main stream's idle
+        // grace, so it also carries a bare run start that lets that view re-attach.
         const clientEvent = entriesOnly
-          ? (event.type === "session_snapshot" ? event : null)
+          ? (event.type === "session_snapshot" ? event : event.type === "agent_start" ? { type: "agent_start" } : null)
           : (event.type === "session_snapshot" ? null : toClientEvent(event));
         if (!clientEvent) return;
         if (entriesOnly) {

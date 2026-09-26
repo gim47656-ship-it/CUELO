@@ -8,7 +8,15 @@ export interface ProcessEntry {
 }
 
 export type TranscriptRenderItem =
-  | { kind: "message"; idx: number }
+  | {
+      kind: "message";
+      idx: number;
+      /**
+       * Set only for a slash command result that sits inside a turn: the turn it
+       * belongs to, so it never opens a turn of its own.
+       */
+      anchorIdx?: number;
+    }
   | {
       kind: "process";
       anchorIdx: number;
@@ -30,13 +38,76 @@ export type TranscriptRenderItem =
     };
 
 /**
- * The conversation itself: user turns and assistant answer runs. Process items
- * are never part of it, so consumers do not have to re-check for them.
+ * The conversation itself: user turns, assistant answer runs and the slash
+ * command results the user asked for. Process items are never part of it, so
+ * consumers do not have to re-check for them.
  */
 export type ConversationRenderItem = Extract<
   TranscriptRenderItem,
   { kind: "message" } | { kind: "answer" }
 >;
+
+/**
+ * A slash command result the reader asked for in this tab. It is part of the
+ * conversation, not the agent's work log.
+ */
+export const COMMAND_OUTPUT_CUSTOM_TYPE = "command";
+
+/** Synthetic entry ids of tab-local command results. They are never server entries. */
+export const LOCAL_COMMAND_ENTRY_PREFIX = "local-command:";
+
+export function isLocalCommandEntryId(entryId: string | undefined): boolean {
+  return entryId?.startsWith(LOCAL_COMMAND_ENTRY_PREFIX) === true;
+}
+
+export interface LocalCommandOutput {
+  /** `LOCAL_COMMAND_ENTRY_PREFIX` id that keeps `messages` and `entryIds` index-aligned. */
+  entryId: string;
+  /** Last persisted entry when the result arrived; a transcript without it is another branch. */
+  baseEntryId: string | null;
+  message: CustomMessage;
+}
+
+/**
+ * Re-applies tab-local command results to a transcript that was just replaced
+ * from the server. Each result goes after its base entry and after every
+ * message that is not newer than it, in the order the results arrived; results
+ * already present are removed first, so repeated merges never duplicate them.
+ * The results are never persisted and never reach the model.
+ */
+export function withLocalCommandOutputs(
+  messages: readonly AgentMessage[],
+  entryIds: readonly string[],
+  outputs: readonly LocalCommandOutput[],
+): { messages: AgentMessage[]; entryIds: string[] } {
+  const local = new Set<AgentMessage>(outputs.map((output) => output.message));
+  const nextMessages: AgentMessage[] = [];
+  const nextEntryIds: string[] = [];
+  for (let idx = 0; idx < messages.length; idx++) {
+    const tracked = idx < entryIds.length;
+    if (local.has(messages[idx]) || (tracked && isLocalCommandEntryId(entryIds[idx]))) continue;
+    nextMessages.push(messages[idx]);
+    if (tracked) nextEntryIds.push(entryIds[idx]);
+  }
+  for (const output of outputs) {
+    let at = 0;
+    if (output.baseEntryId !== null) {
+      const base = nextEntryIds.indexOf(output.baseEntryId);
+      if (base === -1) continue;
+      at = base + 1;
+    }
+    const timestamp = output.message.timestamp ?? 0;
+    while (at < nextMessages.length) {
+      const existing = nextMessages[at];
+      if (!local.has(existing) && typeof existing.timestamp === "number" && existing.timestamp > timestamp) break;
+      at += 1;
+    }
+    nextMessages.splice(at, 0, output.message);
+    // Past the tracked range the result stays untracked like the live tail around it.
+    if (at <= nextEntryIds.length) nextEntryIds.splice(at, 0, output.entryId);
+  }
+  return { messages: nextMessages, entryIds: nextEntryIds };
+}
 
 export interface TranscriptPlanOptions {
   sessionBusy?: boolean;
@@ -100,11 +171,17 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
   for (let idx = anchorIdx + 1; idx < endIdx; idx++) {
     const message = messages[idx];
     if (message.role !== "assistant") {
-      // The conversation is the user's turns and the agent's answers; every
-      // other settled message - compaction notices and the shell commands the
-      // user ran - is work log. A `toolResult` is not its own item: the
-      // renderer shows it with the `toolCall` block it answers. User messages
-      // never reach here because each one anchors its own turn.
+      // The conversation is the user's turns, the agent's answers and the slash
+      // command results the user asked for; every other settled message -
+      // compaction notices and the shell commands the user ran - is work log.
+      // A `toolResult` is not its own item: the renderer shows it with the
+      // `toolCall` block it answers. User messages never reach here because
+      // each one anchors its own turn.
+      if (message.role === "custom" && message.customType === COMMAND_OUTPUT_CUSTOM_TYPE) {
+        flushProcess();
+        items.push({ kind: "message", idx, anchorIdx });
+        continue;
+      }
       if (message.role !== "toolResult") entries.push({ idx });
       continue;
     }
@@ -236,6 +313,10 @@ export function partitionTranscriptPlan(
     if (message.role === "user") {
       anchorIdx = item.idx;
       main.push(item);
+      continue;
+    }
+    if (message.role === "custom" && message.customType === COMMAND_OUTPUT_CUSTOM_TYPE) {
+      main.push(item.anchorIdx !== undefined || anchorIdx < 0 ? item : { ...item, anchorIdx });
       continue;
     }
     if (message.role !== "assistant") {

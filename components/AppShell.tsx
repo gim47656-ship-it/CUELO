@@ -39,7 +39,7 @@ import {
 } from "@/lib/browser-notifications";
 import { getInitialNavigation } from "@/lib/initial-navigation";
 import { clearLastOpen, getLastOpenSession, setLastOpenSession } from "@/lib/workspace-memory";
-import { createSideChatFlightRegistry, createSideChatHistoryStore, type SideChatSessionCensus } from "@/lib/hanse-sidechat-client";
+import { createSideChatFlightRegistry, createSideChatHistoryStore, resolveSidePanelSessionPath, type SideChatSessionCensus } from "@/lib/hanse-sidechat-client";
 import {
   DEFAULT_WORKSPACE_LAYOUT_STATE,
   getNavigatorPresentation,
@@ -70,6 +70,9 @@ import {
   heartbeatUpdateClient,
   readUpdateResumeIntent,
   readUpdateReturn,
+  recordServerRestartReturn,
+  SETTLED_CLEANUP_AUTO_HIDE_MS,
+  takeServerRestartReturn,
   updateCleanupAutoHideMs,
   type UpdateReturnRecord,
   type UpdateReturnStatus,
@@ -189,6 +192,10 @@ export function AppShell({
   const serverRestartingRef = useRef(false);
   const heartbeatOkRef = useRef(false);
   const heartbeatFailuresRef = useRef(0);
+  // 재시작이 스크립트의 최대 대기(포트 회수 30초 + 준비 90초)를 넘기면 대기 화면에 지연을 알린다.
+  const [serverRestartSlow, setServerRestartSlow] = useState(false);
+  // 재시작 뒤 다시 열린 같은 세션 화면에 복귀를 알리는 상단 상태 줄.
+  const [restartReturned, setRestartReturned] = useState(false);
   // 처음 본 서버 식별값. 세션 전환으로 effect가 다시 돌아도 유지해야 재시작만 골라낸다.
   const serverBootIdRef = useRef<string | null>(null);
   // 복귀한 탭이 가리키는 직전 업데이트와 그 정리 상태. 별도 polling을 만들지 않고
@@ -243,6 +250,8 @@ export function AppShell({
         const bootChanged = Boolean(state.serverBootId && serverBootIdRef.current && state.serverBootId !== serverBootIdRef.current);
         if (serverRestartingRef.current || bootChanged) {
           // 재시작이 짧아 대기 화면이 뜨지 않았어도 서버가 바뀌었으면 새 빌드·새 연결로 다시 연다.
+          // 코어 배포 복귀처럼 draft를 먼저 남기고, 다시 열린 같은 세션 화면이 복귀를 알린다.
+          recordServerRestartReturn(selectedSession?.id ?? null);
           window.location.reload();
           return;
         }
@@ -280,6 +289,22 @@ export function AppShell({
       window.removeEventListener("ompweb:update-maintenance", onMaintenance);
     };
   }, [selectedSession?.id]);
+
+  useEffect(() => {
+    if (!serverRestarting) return;
+    const timer = window.setTimeout(() => setServerRestartSlow(true), 120_000);
+    return () => window.clearTimeout(timer);
+  }, [serverRestarting]);
+
+  useEffect(() => {
+    if (takeServerRestartReturn(selectedSession?.id ?? null)) setRestartReturned(true);
+  }, [selectedSession?.id]);
+
+  useEffect(() => {
+    if (!restartReturned) return;
+    const timer = window.setTimeout(() => setRestartReturned(false), SETTLED_CLEANUP_AUTO_HIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [restartReturned]);
 
   // 정리가 끝난 상태 줄은 스스로 사라진다. 실패 줄도 예외가 아니며, 실패 증거는 배포
   // receipt에 남으므로 화면에서 사라져도 유실되지 않는다. 진행 중에는 타이머를 걸지 않는다.
@@ -1518,6 +1543,7 @@ export function AppShell({
       onOpenFile={handleOpenLinkedFile}
     />
   );
+  const selectedSessionPath = resolveSidePanelSessionPath(selectedSession, sessionStats);
   // The app's one side-chat surface. The store and the flight registry stay
   // at this level so an in-flight /btw request outlives the panel: closing
   // it or moving the deck only unmounts this slot, while the registry keeps
@@ -1529,7 +1555,7 @@ export function AppShell({
     <SideChatPanel
       title={viewLabels.sidechat}
       sessionId={selectedSession?.id ?? null}
-      sessionPath={selectedSession?.path ?? null}
+      sessionPath={selectedSessionPath}
       sessionName={selectedSession?.name}
       historyStore={sideChatStore}
       flights={sideChatFlights}
@@ -1543,7 +1569,7 @@ export function AppShell({
       onViewChange={(view) => selectWorkspaceView(view)}
       viewLabels={viewLabels}
       sessionId={selectedSession?.id ?? null}
-      sessionPath={selectedSession?.path ?? null}
+      sessionPath={selectedSessionPath}
       sessionName={selectedSession?.name}
       sessionCwd={selectedSession?.cwd ?? effectiveNewSessionCwd ?? undefined}
       liveSubagents={subagents}
@@ -1632,7 +1658,7 @@ export function AppShell({
         <div className="server-restart-card">
           <div className="server-restart-spinner" aria-hidden="true" />
           <strong>{translate("restart.title")}</strong>
-          <span>{translate("restart.body")}</span>
+          <span>{translate(serverRestartSlow ? "restart.slow" : "restart.body")}</span>
         </div>
       </div>
     ) : null}
@@ -1700,6 +1726,20 @@ export function AppShell({
                   닫기
                 </button>
               )}
+            </div>
+          )}
+          {restartReturned && !(updateBanner && updateReturn) && (
+            <div className="workspace-update-banner" data-tone="positive" role="status" aria-live="polite">
+              <span className="workspace-update-banner-title">{translate("restart.returnedTitle")}</span>
+              <span className="workspace-update-banner-detail">{translate("restart.returnedBody")}</span>
+              <button
+                type="button"
+                className="workspace-update-banner-dismiss"
+                onClick={() => setRestartReturned(false)}
+                aria-label={translate("restart.returnedDismiss")}
+              >
+                {translate("i18n.close")}
+              </button>
             </div>
           )}
           <NotificationPermission variant="banner" locale={locale} {...notificationPermission} />

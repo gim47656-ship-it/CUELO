@@ -79,12 +79,12 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
   },
   "MIO(미오)": {
     model: "anthropic/claude-opus-5-5",
-    oauthPosition: N,
+    oauthPosition: 1,
     toolCapable: true,
   },
   "RIN(린)": {
     model: "anthropic/claude-opus-5-5",
-    oauthPosition: N,
+    oauthPosition: 0,
     toolCapable: true,
   },
   "NOVA(노바)": {
@@ -120,8 +120,8 @@ const NAME_TO_ALIAS: Readonly<Record<string, CharacterAlias>> = {
 };
 
 const ANTHROPIC_POSITION_CHARACTER: Readonly<Record<number, CharacterAlias>> = {
-  N: "RIN(린)",
-  N: "MIO(미오)",
+  0: "RIN(린)",
+  1: "MIO(미오)",
 };
 const VOICE_OPEN = "<character-voice";
 const VOICE_CLOSE = "</character-voice>";

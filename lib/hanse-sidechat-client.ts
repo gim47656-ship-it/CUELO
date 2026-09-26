@@ -19,6 +19,21 @@ export interface SideChatAssistantIdentity {
   credentialId?: number;
 }
 
+/**
+ * The session file the side panels read. A session created or forked in this tab is selected
+ * before the session list knows its file, and the one list lookup at that moment can miss it;
+ * the chat's own loaded session data carries the file path, so it fills in for the same session
+ * until the list catches up. Another session's loaded file is never used.
+ */
+export function resolveSidePanelSessionPath(
+  selected: { id: string; path?: string } | null,
+  loaded: { sessionId: string; sessionFile?: string } | null,
+): string | null {
+  if (!selected) return null;
+  if (selected.path) return selected.path;
+  return loaded?.sessionId === selected.id && loaded.sessionFile ? loaded.sessionFile : null;
+}
+
 /** 최근 main assistant 메시지의 실제 provider/credential 근거만 사이드챗에 전달한다. */
 export function latestSideChatAssistantIdentity(value: unknown): SideChatAssistantIdentity | null {
   if (!value || typeof value !== "object" || !("context" in value)) return null;

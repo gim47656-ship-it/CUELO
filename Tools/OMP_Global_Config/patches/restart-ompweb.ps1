@@ -137,9 +137,20 @@ if (Test-Path -LiteralPath $ensureBrowserRelay) {
 }
 
 Log "런처 실행."
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:USERPROFILE '.omp\ompweb-launcher\launch.ps1')
-if ($LASTEXITCODE -ne 0) {
-	Log "FAILED: 런처가 exit $LASTEXITCODE 로 종료됐다."
+# 코어 배포(runtime-transaction.ps1 Invoke-CueloLauncherNonInteractive)와 같이 브라우저를 새로 열지 않는다.
+# 열려 있던 탭은 heartbeat로 서버 교체를 알아채고 같은 ?session= 주소로 다시 열린다. 새 탭은 세션 없는 첫 화면이다.
+$hadNonInteractive = Test-Path Env:CUELO_NONINTERACTIVE
+$oldNonInteractive = $env:CUELO_NONINTERACTIVE
+try {
+	$env:CUELO_NONINTERACTIVE = '1'
+	& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:USERPROFILE '.omp\ompweb-launcher\launch.ps1')
+	$launcherExit = $LASTEXITCODE
+} finally {
+	if ($hadNonInteractive) { $env:CUELO_NONINTERACTIVE = $oldNonInteractive }
+	else { Remove-Item Env:CUELO_NONINTERACTIVE -ErrorAction SilentlyContinue }
+}
+if ($launcherExit -ne 0) {
+	Log "FAILED: 런처가 exit $launcherExit 로 종료됐다."
 	exit 1
 }
 
@@ -151,7 +162,7 @@ if (Test-WebAlive $port) {
 		try {
 			$r = Get-Content -LiteralPath $resumeFile -Raw -Encoding UTF8 | ConvertFrom-Json
 			Remove-Item -LiteralPath $resumeFile -Force
-			$msg = "[자동 재개] CUELO 재시작이 끝났다(READY). 재시작 직전 작업을 이어서 진행한다."
+			$msg = "[자동 재개] CUELO 재시작이 끝났다(READY). 먼저 이 대화에서 사용자에게 재시작이 끝나 같은 세션으로 돌아왔다고 한 줄로 알리고, 재시작 직전 작업을 이어서 진행한다."
 			# 세션이 이미 턴을 돌고 있으면 streamingBehavior 없는 prompt는 AgentBusyError로 거절된다. followUp으로 큐잉한다.
 			$body = @{ type = 'prompt'; message = $msg; streamingBehavior = 'followUp'; internalPrompt = $true } | ConvertTo-Json -Compress
 			$resp = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:$port/api/agent/$($r.sessionId)" `

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUELO — AI coding agent workspace and harness for omp (oh-my-pi)</title>
+<meta name="description" content="CUELO is an open-source AI coding agent workspace and harness for omp (oh-my-pi). Continue omp sessions in the browser and use its public multi-agent rules.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/">
+<link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
+<link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/">
+<link rel="alternate" hreflang="x-default" href="https://gim47656-ship-it.github.io/CUELO/">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="CUELO">
+<meta property="og:title" content="CUELO — AI coding agent workspace and harness for omp">
+<meta property="og:description" content="Open-source browser workspace that shares omp's sessions and settings, plus the public multi-agent harness CUELO works with.">
+<meta property="og:url" content="https://gim47656-ship-it.github.io/CUELO/">
+<meta property="og:image" content="https://gim47656-ship-it.github.io/CUELO/assets/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="CUELO wordmark between the six CUELO characters at their desks">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="ko_KR">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="assets/icon-64.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="assets/site.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "CUELO",
+  "description": "Open-source AI coding agent workspace and harness for omp (oh-my-pi). The web app runs the omp SDK in-process and shares the ~/.omp/agent sessions, credentials and model settings with the omp CLI.",
+  "url": "https://gim47656-ship-it.github.io/CUELO/",
+  "codeRepository": "https://github.com/gim47656-ship-it/CUELO",
+  "programmingLanguage": "TypeScript",
+  "runtimePlatform": "Bun",
+  "license": "https://github.com/gim47656-ship-it/CUELO/blob/main/LICENSE",
+  "image": "https://gim47656-ship-it.github.io/CUELO/assets/og.jpg",
+  "inLanguage": ["ko", "en"],
+  "isBasedOn": "https://github.com/ddallabenetta/omp-web",
+  "keywords": ["AI coding agent", "agent harness", "multi-agent orchestration", "omp", "oh-my-pi", "model routing", "developer tools"]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="./">CUELO</a>
+    <nav class="site-nav" aria-label="Primary">
+      <ul>
+        <li class="nav-run"><a href="#run">Run from source</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">Harness docs</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO">GitHub</a></li>
+        <li><a href="ko/" hreflang="ko" lang="ko">한국어</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero">
+    <div class="wrap">
+      <h1>
+        <span class="word">CUELO</span>
+        <span class="what">An AI coding agent workspace and harness for omp (oh-my-pi)</span>
+      </h1>
+      <p class="lede">CUELO runs <a href="https://github.com/can1357/oh-my-pi">omp</a>'s own SDK inside a local web server and reads the same <code>~/.omp/agent</code> directory as the <code>omp</code> CLI. <strong>Start a session in the terminal, continue it in the browser, and go back</strong> — history, accounts and model settings stay in one place.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">View source on GitHub</a>
+        <a class="btn" href="#run">Run from source</a>
+      </div>
+      <p class="status">Current distribution: GitHub source. An npm package has not been published.</p>
+      <figure class="hero-figure">
+        <img src="assets/hero-1600.webp" srcset="assets/hero-900.webp 900w, assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="The CUELO wordmark between six anime-style characters working at laptops: RIN, MIO, YUKI, ISANA, NOVA and SHION.">
+        <figcaption>In the app, accounts appear as these character faces and aliases instead of email addresses.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section aria-labelledby="purpose">
+    <div class="wrap">
+      <h2 id="purpose">What CUELO is for</h2>
+      <p>CUELO aims to turn the failures and blockers found during real work into memory, working rules and procedures, so the next task avoids the same mistake without someone having to point it out again.</p>
+      <ol class="loop">
+        <li><strong>Record what happened</strong><p>A failure or blocker is written down from what was actually observed.</p></li>
+        <li><strong>Change only the cause</strong><p>The part that caused it is updated: a memory, a rule, or a procedure.</p></li>
+        <li><strong>Carry it into the next task</strong><p>The next task starts with that change in its context.</p></li>
+        <li><strong>Check that it stopped</strong><p>It counts only if the problem does not come back. If it does, start again at step&nbsp;1.</p></li>
+      </ol>
+      <p class="note">Saving a record is not treated as the improvement itself. This is the goal the project works toward, not a measured result.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="parts">
+    <div class="wrap">
+      <h2 id="parts">Two parts in one repository</h2>
+      <div class="parts">
+        <div>
+          <h3>The workspace</h3>
+          <p class="where">Web app · repository root</p>
+          <ul>
+            <li>Find and continue past omp sessions per project, with live streaming of tool calls, cost and context use.</li>
+            <li>Branch from an earlier message or fork into a separate session.</li>
+            <li>Assign models to roles (<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> …) using the same <code>config.yml</code> as the TUI.</li>
+            <li>Manage providers, <code>models.yml</code>, plugins and skills; preview files; switch Git worktrees.</li>
+            <li>Password lock, browser notifications and PWA install. The interface is Korean-first, with English and Simplified Chinese available.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>The harness</h3>
+          <p class="where">Public rules · <a href="https://github.com/gim47656-ship-it/CUELO/tree/main/Tools/OMP_Global_Config/agent">Tools/OMP_Global_Config/agent</a></p>
+          <ul>
+            <li>How CUELO's agents work: a Main role that owns requirements, review and final judgement, and Maker roles that implement and verify delegated slices.</li>
+            <li>Dispatch and review contracts, a task guard, a routing advisor (Jev) and a command guard, as rules, SOPs and extensions.</li>
+            <li><a href="https://github.com/gim47656-ship-it/CUELO/tree/main/Tools/OMP_Global_Config/patches">Patches</a> for the omp core.</li>
+            <li><code>node install.mjs setup</code> copies it into your <code>~/.omp/agent</code>, adding only missing files. You set your own <code>modelRoles</code> in <code>config.yml</code>. The web app works without it.</li>
+          </ul>
+          <p><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">Read the harness documentation</a> (Korean).</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="scope">
+    <div class="wrap">
+      <h2 id="scope">What this repository covers, and what it does not</h2>
+      <div class="scroll" role="region" aria-labelledby="scope" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">Part</th><th scope="col">Details</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Works from this repository</th><td>The whole web app: session browsing, live chat, branch and fork, model roles, provider, plugin and skill management, file preview, worktrees, password lock, character notifications, and an efficiency panel that reads <code>~/.omp/stats.db</code>.</td></tr>
+            <tr><th scope="row">Needs provider sign-in</th><td>Sessions, credentials and model settings live in <code>~/.omp/agent</code>, the same profile the <code>omp</code> CLI uses. You sign in to your providers yourself, in CUELO under Settings › Models.</td></tr>
+            <tr><th scope="row">Separate local services</th><td>The account usage card, side chat (<code>/btw</code>) and SubAgent archive get their data from three local services (<code>usage</code>, <code>btw</code>, <code>subagent</code>). <code>node install.mjs start</code> runs them next to the app on <code>127.0.0.1</code>. Credentials and records stay on your machine. If a service is not running, only its panel shows “not connected”.</td></tr>
+            <tr><th scope="row">Public harness</th><td>Rules, SOPs, extensions and omp core patches under <code>Tools/OMP_Global_Config</code>, described above.</td></tr>
+            <tr><th scope="row">Not included</th><td>Logins and API keys, personal provider, account and model choices (<code>config.yml</code>, <code>models.yml</code>), personal skills, work records, and the maintainer's private PC deployment tooling.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="run" aria-labelledby="run-h">
+    <div class="wrap">
+      <h2 id="run-h">Install and run from source</h2>
+      <p>You need <strong>Node.js 22.19.0 or newer</strong>, <strong>Bun 1.4.2 or newer</strong> and Git. The installer has been checked on Windows only; macOS and Linux use the same code paths but have not been tested.</p>
+<pre tabindex="0" aria-label="Install and start commands"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
+cd CUELO
+node install.mjs setup     <span class="c"># install, build, patch the SDK, copy the public harness</span>
+node install.mjs start     <span class="c"># app + usage, btw, subagent in the foreground</span>
+
+<span class="c"># in another terminal</span>
+node install.mjs health    <span class="c"># checks that all four services answer</span></code></pre>
+      <p>Then open <code>http://127.0.0.1:30141</code> yourself; the browser does not open automatically. Sign in to the providers you want to use under <strong>Settings › Models</strong>: browser OAuth or an API key, done by you. If the official omp CLI (<code>@oh-my-pi/pi-coding-agent</code>) is already installed, <code>omp login</code> works too; this guide does not install it. Every service listens on <code>127.0.0.1</code> only, and Ctrl+C stops all four. <code>health</code> only checks that each service answers; it does not sign in or call a model provider.</p>
+      <p><code>setup</code> copies the public harness into <code>~/.omp/agent</code> but only adds missing files; it never changes or deletes existing ones. When no <code>config.yml</code> exists, it creates one with safe default operating settings (for example, provider-calling automatic features stay off). These defaults ship with the installer; no one's personal configuration is copied, and an existing <code>config.yml</code> is left untouched. Choosing your models also stays with you: pass <code>--model</code>/<code>--role</code> to <code>setup</code>, or pick them later in Settings › Model roles. The installer does not guess models for you.</p>
+      <p>CUELO runs agents with broad permissions: do not expose plain HTTP to the internet — put it behind a trusted HTTPS reverse proxy or a VPN. The full guide, including other port sets and troubleshooting, is in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a> (Korean).</p>
+      <p>An npm package for CUELO has not been published. The <code>omp-web</code> package on npm is the upstream project, not CUELO. Releases are listed on <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>; container use is covered in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="bench">
+    <div class="wrap">
+      <h2 id="bench">Harness comparison</h2>
+      <p>A separate page by the CUELO maintainer compares tools on the same coding tasks with the same model, changing only the tool (CUELO, Claude Code and Codex). Its conditions, caveats and weak spots are stated on that page.</p>
+      <p><a href="https://gim47656-ship-it.github.io/cuelo-benchmark/" hreflang="ko">Open the CUELO harness benchmark</a> (Korean).</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>CUELO is based on <a href="https://github.com/ddallabenetta/omp-web">omp-web</a> by @ddallabenetta, which forked <a href="https://github.com/agegr/pi-web">pi-web</a> by @agegr. The agent engine is <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a>, used through the <code>@oh-my-pi/*</code> npm packages.</p>
+    <p>Code: <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/LICENSE">MIT License</a>. The characters RIN, MIO, YUKI, ISANA, NOVA and SHION, with their art, voices and stickers, are CUELO's own assets.</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -7,7 +7,7 @@ const {
   DEFAULT_WORKSPACE_LAYOUT_STATE,
   reduceWorkspaceLayout,
 } = await jiti.import("../lib/workspace-layout.ts");
-const { createSideChatHistoryStore } = await jiti.import("../lib/hanse-sidechat-client.ts");
+const { createSideChatHistoryStore, resolveSidePanelSessionPath } = await jiti.import("../lib/hanse-sidechat-client.ts");
 const {
   handleGlobalKeyboardShortcut,
   registerAbortHandler,
@@ -87,6 +87,21 @@ test("side-chat cleanup waits for a complete census", () => {
 
   store.cleanup({ sessions: [], complete: true });
   assert.equal(store.read("missing-session").length, 0);
+});
+
+test("a session created in this tab gives the side panels its loaded file before the list has it", () => {
+  // handleSessionCreated/handleSessionForked select the session with an empty path; the list
+  // lookup at that moment can run before the session file exists.
+  const created = { id: "01a0dc45-0000-7000-8000-000000000001", path: "" };
+  const loaded = { sessionId: created.id, sessionFile: "C:/profile/sessions/created.jsonl" };
+  assert.equal(resolveSidePanelSessionPath(created, loaded), "C:/profile/sessions/created.jsonl");
+  assert.equal(resolveSidePanelSessionPath(created, { ...loaded, sessionId: "another-session" }), null);
+  assert.equal(resolveSidePanelSessionPath(created, { sessionId: created.id }), null);
+  assert.equal(
+    resolveSidePanelSessionPath({ ...created, path: "C:/profile/sessions/listed.jsonl" }, loaded),
+    "C:/profile/sessions/listed.jsonl",
+  );
+  assert.equal(resolveSidePanelSessionPath(null, loaded), null);
 });
 
 test("Escape dismisses the top application layer before abort", () => {
