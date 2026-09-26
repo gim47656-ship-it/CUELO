@@ -2,8 +2,8 @@ name: CI
 
 # Verifies that the app installs from the committed bun.lock, type-checks, lints,
 # passes its tests and builds. `bun run test` covers the app only; the `harness`
-# job checks the private Tools/OMP_Global_Config harness and runs only in the
-# private repository, because the public mirror does not carry its config or evals.
+# job checks Tools/OMP_Global_Config. Its steps that read private config,
+# evidence or evals run only in the private repository.
 on:
   pull_request:
   push:
@@ -38,6 +38,15 @@ jobs:
           # engines.bun requires >=1.4.2: the omp SDK ships TypeScript that
           # imports `bun:` builtins, and Bun 1.4 changed loopback proxy handling.
           bun-version: "1.4.2"
+
+      # Restores Bun's global package cache (bun pm cache); `bun install` still links
+      # from bun.lock, so only the downloads are skipped.
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~\.bun\install\cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -102,6 +111,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+
+      # Same cache as the build job; the patched-core `bun add` below reads it too.
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~\.bun\install\cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       # The runner's default TEMP is an 8.3 path (RUNNER~1). command-guard treats
       # any `~` in a `git -C` target as shell expansion and blocks it, which breaks
