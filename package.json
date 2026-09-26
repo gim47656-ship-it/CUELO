@@ -82,8 +82,8 @@
     "start:lan": "bun bin/cuelo.js --no-open -H 0.0.0.0 -p 30141",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "bun test ./app ./components ./hooks ./lib ./public ./bin",
-    "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin"
+    "test": "bun test ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs",
+    "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs"
   },
   "dependencies": {
     "@oh-my-pi/pi-agent-core": "18.3.2",

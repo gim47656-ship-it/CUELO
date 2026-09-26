@@ -155,8 +155,8 @@ bun install
 bun run dev          # http://127.0.0.1:30141
 bun run typecheck
 bun run lint
-bun run test         # 앱 테스트
-bun run test:coverage  # 앱 테스트 + 커버리지 표
+bun run test         # 앱·설치기 테스트
+bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 ```
 
 개발 서버를 쓰는 동안 같은 출력 경로에 `bun run build`를 돌리지 마세요. `.next/`를 덮어써서 개발 서버가 깨집니다. 검증용 production 빌드는 별도 소스 복사본이나 격리된 `CUELO_DIST_DIR`에서 실행하세요.
