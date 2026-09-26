@@ -463,9 +463,13 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }, []);
 
   /** 지금 화면의 마지막 메시지 뒤를 자리로 잡고, 캐릭터를 정한 뒤 큐를 낸다. */
-  const requestCue = useCallback((tag: CueTag | null, trigger: CueTrigger, provider: string | undefined, credentialId: number | undefined) => {
+  const requestCue = useCallback((tag: CueTag | null, trigger: CueTrigger, provider: string | undefined, credentialId: number | undefined, source: string) => {
     const capture = captureCueAnchor(cueMessagesRef.current, cueEntryIdsRef.current);
-    void resolveCueAlias(trigger.sessionId, provider, credentialId).then((alias) => playCue(alias, tag, trigger, capture));
+    void resolveCueAlias(trigger.sessionId, provider, credentialId).then((alias) => {
+      // TEMP(2026-09-26): MIO 턴에 YUKI 착수 스티커가 뜨는 원인 추적용. 원인을 찾으면 지운다.
+      console.info(`[cue] tag=${tag} alias=${alias} provider=${provider} credentialId=${credentialId} source=${source} session=${trigger.sessionId} turn=${trigger.turn}`);
+      playCue(alias, tag, trigger, capture);
+    });
   }, [playCue, resolveCueAlias]);
 
   // 턴 종료는 이벤트 처리 중에 불려 화면이 아직 마지막 메시지를 받기 전일 수 있다. 여기서는
@@ -487,7 +491,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     for (const { completion, trigger } of pendingCompletionsRef.current.splice(0)) {
       const outcomeCue = cueForOutcome(completion.outcome);
       const tag = outcomeCue === "neutral" ? null : outcomeCue;
-      if (trigger) requestCue(tag, trigger, completion.provider, completion.credentialId);
+      if (trigger) requestCue(tag, trigger, completion.provider, completion.credentialId, "completion");
       else void playCueSoundRef.current(null, tag).catch(() => {});
     }
   }, [completionTick, requestCue]);
@@ -635,7 +639,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     if (!trigger) return;
     // 사용자가 지금 할 행동으로 나눈다 — 선택지를 내밀면 고르는 일, 그 밖의 확인·입력은 답하는 일.
     priorityCueTurnRef.current = trigger.turn;
-    requestCue(cueTagForDialog(extensionDialog.method), trigger, displayModelValue?.provider, undefined);
+    requestCue(cueTagForDialog(extensionDialog.method), trigger, displayModelValue?.provider, undefined, "dialog:session-model");
   }, [extensionDialog, displayModelValue?.provider, currentCueTrigger, requestCue]);
 
   // Register the abort handler for the global Esc shortcut
@@ -933,13 +937,17 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   );
   const progressProvider = streamingAssistant?.provider ?? displayModelValue?.provider;
   const progressCredentialId = streamingAssistant?.credentialId;
+  // TEMP(2026-09-26): 착수 큐 provider 가 어디서 왔는지. 위 `[cue]` 진단과 함께 지운다.
+  const progressSource = streamingAssistant?.provider
+    ? `stream:${streamingAssistant.provider}/${streamingAssistant.model}`
+    : `session-model:${displayModelValue?.provider}/${displayModelValue?.modelId}`;
   useEffect(() => {
     if (!progressStarted) return;
     const trigger = currentCueTrigger();
     if (!trigger || workingCueTurnRef.current === trigger.turn || priorityCueTurnRef.current === trigger.turn) return;
     workingCueTurnRef.current = trigger.turn;
-    requestCue("working", trigger, progressProvider, progressCredentialId);
-  }, [progressStarted, progressProvider, progressCredentialId, currentCueTrigger, requestCue]);
+    requestCue("working", trigger, progressProvider, progressCredentialId, progressSource);
+  }, [progressStarted, progressProvider, progressCredentialId, progressSource, currentCueTrigger, requestCue]);
   const [settledLog, setSettledLog] = useState<ProcessLogData | null>(null);
   const publishProcessLog = useCallback((data: ProcessLogData) => {
     setSettledLog(data);
