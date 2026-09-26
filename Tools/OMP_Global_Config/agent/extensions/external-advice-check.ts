@@ -9,7 +9,7 @@ const MAX_SUMMARY_LENGTH = 2000;
 const JUDGE_TIMEOUT_MS = 2500;
 const SOURCE = /(?:ChatGPT|GPT(?:[- ]?\d+(?:\.\d+)?)?|6\s*Pro|SHION|샤이온)/i;
 const VERIFY = /(?:맞[어아나](?:요)?\s*[?？]?|검증|확인해|사실이야|사실인가|verify|fact.?check)/i;
-const SECRET = /(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|private[_ -]?key|authorization|cookie|credential|token|비밀번호|비밀키|인증정보|자격증명|bearer\s+\S+|https?:\/\/[^\s/@]+:[^\s/@]+@|(?:sk|ghp|gho|github_pat)_[A-Za-z0-9_-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i;
+const SECRET_PATTERN = /(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|private[_ -]?key|authorization|cookie|credential|token|비밀번호|비밀키|인증정보|자격증명|bearer\s+\S+|https?:\/\/[^\s/@]+:[^\s/@]+@|(?:sk|ghp|gho|github_pat)_[A-Za-z0-9_-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i;
 const CHECK: Record<ClaimKind, string> = {
   파일: "실제 파일과 관련 호출부를 읽어 확인",
   테스트: "해당 테스트의 실행 결과와 수용 조건을 대조",
@@ -98,7 +98,7 @@ export function createExternalAdviceCheck(classify: ClassifyClaims = classifyCla
       const hasStructure = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/m.test(text);
       const hasSeveralSentences = (text.match(/[.!?。！？](?:\s|$)/g)?.length ?? 0) >= 3;
       if (text.length < 180 || (!hasStructure && !(hasSource && hasSeveralSentences))) return;
-      const hasSecret = SECRET.test(text);
+      const hasSecret = SECRET_PATTERN.test(text);
       const candidates = hasSecret ? [] : candidatesFrom(text);
       if (!hasSecret && candidates.length === 0) return;
       const expected = generation;

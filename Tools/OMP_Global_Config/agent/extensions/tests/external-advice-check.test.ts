@@ -90,11 +90,11 @@ describe("external advice check", () => {
   test("secret·자격 패턴에서는 judge를 부르지 않고 원문을 재인용하지 않는다", async () => {
     let calls = 0;
     const h = harness(async () => { calls++; return []; });
-    const credential = "sk_exampleSecretValue12345678";
-    await h.emit({ source: "rpc", text: `${SHION}\nAPI key: ${credential}` });
+    const leaked = "sk_exampleSecretValue12345678";
+    await h.emit({ source: "rpc", text: `${SHION}\nAPI key: ${leaked}` });
     expect(calls).toBe(0);
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0]!.message.content).not.toContain(credential);
+    expect(h.sent[0]!.message.content).not.toContain(leaked);
     expect(h.sent[0]!.message.content).toContain("각 주장을 도구로 확인");
   });
 
