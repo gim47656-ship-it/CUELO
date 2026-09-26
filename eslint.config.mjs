@@ -5,7 +5,7 @@ const eslintConfig = [
   ...coreWebVitals,
   ...typescript,
   {
-    ignores: ["Tools/**"],
+    ignores: ["Tools/**", ".omp/**", ".runtime-patch-home/**", ".gitnexus/**"],
   },
   {
     rules: {
