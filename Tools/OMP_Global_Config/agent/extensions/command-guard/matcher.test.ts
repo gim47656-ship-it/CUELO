@@ -229,6 +229,55 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
     expect(callbackCalled).toBeFalse();
   });
 
+  const tildeExpansionCases = [
+    ["단어 맨 앞 ~/", "git -C ~/other push"],
+    ["단독 ~", "git -C ~ push"],
+    ["assignment 꼴 =~", "git -C a=~/x push"],
+    ["assignment 꼴 :~", "git -C x:~/y push"],
+    ["붙여 쓴 -C~/", "git -C~/x push"],
+    ["--git-dir=~/", "git --git-dir=~/x/.git push"],
+    ["따옴표로 감싼 ~/도 보수적으로", "git -C '~/other' push"],
+  ] as const;
+  for (const [name, command] of tildeExpansionCases) {
+    test(`tilde 확장 가능 값은 callback 없이 차단한다: ${name}`, () => {
+      let callbackCalled = false;
+      const reason = matchBlockedCommand(command, {
+        cwd: sessionDirectory,
+        isSessionRepository: () => {
+          callbackCalled = true;
+          return false;
+        },
+      });
+      expect(reason).toBeDefined();
+      expect(callbackCalled).toBeFalse();
+    });
+  }
+
+  const shortNamePath = "C:/Users/RUNNER~1/AppData/Local/Temp/ext";
+  const shortNameCases = [
+    ["-C 값", `git -C ${shortNamePath} push origin main`, shortNamePath],
+    ["따옴표 -C 값", `git -C '${shortNamePath}' commit -m x`, shortNamePath],
+    ["붙여 쓴 -C 값", `git -C${shortNamePath} push`, shortNamePath],
+    ["--git-dir 값", `git --git-dir=${shortNamePath}/.git push`, `${shortNamePath}/.git`],
+  ] as const;
+  for (const [name, command, target] of shortNameCases) {
+    test(`경로 중간 literal ~(8.3 이름)는 저장소 판정에 맡긴다: ${name}`, () => {
+      const targets: string[] = [];
+      const external = matchBlockedCommand(command, {
+        cwd: sessionDirectory,
+        isSessionRepository: (directory) => {
+          targets.push(normalizePath(directory));
+          return false;
+        },
+      });
+      expect(external).toBeUndefined();
+      expect(targets).toEqual([normalizePath(resolve(target))]);
+      expect(
+        matchBlockedCommand(command, { cwd: sessionDirectory, isSessionRepository: () => true }),
+      ).toBeDefined();
+    });
+  }
+
   test("context cwd가 다른 저장소면 인자 없는 push를 허용한다", () => {
     expect(
       matchBlockedCommand("git push origin main", contextFor(externalDirectory)),

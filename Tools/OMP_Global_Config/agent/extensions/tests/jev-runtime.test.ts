@@ -45,6 +45,8 @@ interface HarnessOptions {
   noSettings?: boolean;
   resolveError?: string;
   asyncJobs?: Array<Record<string, unknown>>;
+  /** getAsyncJobSnapshot().recent 행. core 실제형태처럼 settled row의 startTime·endTime을 싣는다. */
+  recentJobs?: Array<Record<string, unknown>>;
   sessionEntries?: unknown[];
   judgeGate?: Promise<void>;
   ledgerPath?: string;
@@ -141,7 +143,7 @@ function createHarness(options: HarnessOptions = {}) {
       getSessionId: () => "session-1",
       getBranch: () => options.sessionEntries ?? [],
     },
-    getAsyncJobSnapshot: () => ({ running: asyncJobs, recent: [] }),
+    getAsyncJobSnapshot: () => ({ running: asyncJobs, recent: options.recentJobs ?? [] }),
   };
 
   const pi = {
@@ -594,6 +596,127 @@ describe("jev-runtime pre-dispatch", () => {
     });
     expect(of("outcome").map((record) => record.attemptId))
       .toEqual(["session-1#call-a#0#a1", "session-1#call-b#0#a1", "session-1#call-b#0#a2", "session-1#call-b#0#a3"]);
+  });
+
+  test("core 실제형태: 재개 job이 원 jobId(=agentId)를 재사용하고 async-result에 agentId가 없어도 REWORK attempt를 잇는다", async () => {
+    // core 18.3.2: spawn job과 IRC wake job 모두 `id: agentId`로 등록되고, 소비된 row는 30초 뒤 evict되어 같은 id가 다시 쓰인다.
+    // async-result details.jobs에는 agentId가 없고, 실행 구분은 snapshot row의 startTime뿐이다.
+    const running: Array<Record<string, unknown>> = [];
+    const recent: Array<Record<string, unknown>> = [];
+    const harness = createHarness({
+      asyncJobs: running,
+      recentJobs: recent,
+      judgeAnswers: { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } },
+    });
+    const records = () => readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const of = (type: string) => records().filter((record) => record.type === type);
+    const assignmentId = "session-1#call-real#0";
+    const settleRow = (startTime: number) => {
+      running.length = 0;
+      recent.length = 0;
+      recent.push({ id: "agent-r", agentId: "agent-r", type: "task", status: "completed", startTime, endTime: startTime + 50 });
+    };
+    const deliver = () => harness.emit("message_start", {
+      type: "message_start",
+      message: {
+        role: "custom", customType: "async-result", attribution: "agent",
+        details: { jobs: [{ jobId: "agent-r", type: "task", label: "Fix", durationMs: 50 }] },
+      },
+    });
+    const rework = async (callId: string, previous: string, next: string) => {
+      const call = {
+        type: "tool_call", toolCallId: callId, toolName: "write",
+        input: { path: "agent://agent-r", content: `REWORK task_id=Fix role=maker previous_revision=${previous} next_revision=${next}\n범위 유지.` },
+      };
+      await harness.emit("tool_call", call);
+      await harness.emit("tool_result", { ...call, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+    };
+
+    await harness.prepare(GUARDED_TASK, "Fix");
+    const input = taskCall("call-real", GUARDED_TASK, { name: "Fix", model: "test/local:high" });
+    await harness.emit("tool_call", input);
+    running.push({ id: "agent-r", agentId: "agent-r", type: "task", status: "running", startTime: Date.now() - 120_000 });
+    await harness.emit("tool_result", {
+      ...input, type: "tool_result", content: [{ type: "text", text: "spawned" }], isError: false,
+      details: { async: { jobId: "agent-r" }, progress: [{ index: 0, id: "agent-r", status: "running" }] },
+    });
+    settleRow(Date.now() - 120_000);
+    await deliver();
+    expect(of("outcome").map((record) => record.attemptId)).toEqual([`${assignmentId}#a1`]);
+    expect((await harness.verdict({
+      sessionId: fixtureSession, assignmentId, attemptId: `${assignmentId}#a1`,
+      verdict: "rework", revision: "r1", reason: "재작업 근거", evidenceLocators: ["artifact://a1"],
+    })).details).toMatchObject({ ok: true });
+
+    // 원 row가 아직 retained인 동안 보낸 REWORK: 그 row를 다시 보여 주는 wait는 옛 실행이므로 새 attempt가 아니다.
+    await rework("call-rew-real-1", "r1", "r2");
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "wait-old", toolName: "wait", input: {}, isError: false,
+      content: [{ type: "text", text: "done" }], details: { jobs: [{ id: "agent-r", type: "task", status: "completed" }] },
+    });
+    expect(of("dispatch")).toHaveLength(1);
+
+    // 원 row evict 뒤 wake job이 같은 id로 등록·완료된다.
+    settleRow(Date.now() + 1);
+    await deliver();
+    expect(of("dispatch").at(-1)).toMatchObject({ assignmentId, attempt: 2, attemptId: `${assignmentId}#a2`, agentId: "agent-r", jobId: "agent-r", name: "Fix" });
+    expect(of("outcome").map((record) => record.attemptId)).toEqual([`${assignmentId}#a1`, `${assignmentId}#a2`]);
+    expect((await harness.verdict({
+      sessionId: fixtureSession, assignmentId, attemptId: `${assignmentId}#a2`,
+      verdict: "rework", revision: "r2", reason: "두 번째 재작업", evidenceLocators: ["artifact://a2"],
+    })).details).toMatchObject({ ok: true });
+
+    // 두 번째 REWORK도 같은 id를 다시 쓰는 새 실행에만 a3을 연다. 같은 결과의 중복 관측은 a4를 만들지 않는다.
+    recent.length = 0;
+    await rework("call-rew-real-2", "r2", "r3");
+    settleRow(Date.now() + 2);
+    await deliver();
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "wait-dup", toolName: "wait", input: {}, isError: false,
+      content: [{ type: "text", text: "done" }], details: { jobs: [{ id: "agent-r", type: "task", status: "completed" }] },
+    });
+    expect(of("dispatch").map((record) => record.attemptId))
+      .toEqual([`${assignmentId}#a1`, `${assignmentId}#a2`, `${assignmentId}#a3`]);
+    expect(of("outcome").map((record) => record.attemptId))
+      .toEqual([`${assignmentId}#a1`, `${assignmentId}#a2`, `${assignmentId}#a3`]);
+    expect((await harness.verdict({
+      sessionId: fixtureSession, assignmentId, attemptId: `${assignmentId}#a3`,
+      verdict: "accepted", revision: "r3", reason: "최종 수용", evidenceLocators: ["artifact://a3"],
+    })).details).toMatchObject({ ok: true });
+  });
+
+  test("평문 후속 지시로 재개한 결과는 새 attempt를 만들지 않는다", async () => {
+    const running: Array<Record<string, unknown>> = [];
+    const recent: Array<Record<string, unknown>> = [];
+    const harness = createHarness({
+      asyncJobs: running,
+      recentJobs: recent,
+      judgeAnswers: { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } },
+    });
+    const records = () => readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    await harness.prepare(GUARDED_TASK, "Fix");
+    const input = taskCall("call-plain", GUARDED_TASK, { name: "Fix", model: "test/local:high" });
+    await harness.emit("tool_call", input);
+    running.push({ id: "agent-p", agentId: "agent-p", type: "task", status: "running", startTime: Date.now() - 120_000 });
+    await harness.emit("tool_result", {
+      ...input, type: "tool_result", content: [{ type: "text", text: "spawned" }], isError: false,
+      details: { async: { jobId: "agent-p" }, progress: [{ index: 0, id: "agent-p", status: "running" }] },
+    });
+    const deliver = () => harness.emit("message_start", {
+      type: "message_start",
+      message: { role: "custom", customType: "async-result", attribution: "agent", details: { jobs: [{ jobId: "agent-p", type: "task", label: "Fix" }] } },
+    });
+    running.length = 0;
+    recent.push({ id: "agent-p", agentId: "agent-p", type: "task", status: "completed", startTime: Date.now() - 120_000 });
+    await deliver();
+    const call = { type: "tool_call", toolCallId: "plain-1", toolName: "write", input: { path: "agent://agent-p", content: "이 부분도 고쳐줘." } };
+    await harness.emit("tool_call", call);
+    await harness.emit("tool_result", { ...call, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+    recent.length = 0;
+    recent.push({ id: "agent-p", agentId: "agent-p", type: "task", status: "completed", startTime: Date.now() + 1 });
+    await deliver();
+    expect(records().filter((record) => record.type === "dispatch").map((record) => record.attemptId)).toEqual(["session-1#call-plain#0#a1"]);
+    expect(records().filter((record) => record.type === "outcome").map((record) => record.attemptId)).toEqual(["session-1#call-plain#0#a1"]);
   });
 
   test("배치 두 child가 같은 label로 역순 완료돼도 각 실제 job에 수용이 귀속된다", async () => {

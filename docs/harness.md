@@ -30,6 +30,7 @@ UI/UX 전문성 경계가 새로 확인되면 비-Opus owner의 미완 변경·�
 Main이 실제 재작업을 지시할 때는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md#검수와-수용)의
 `REWORK task_id=... role=maker previous_revision=... next_revision=...`와
 `finding_id=... source=...`를 후속 메시지에 넣어야 합니다. 평문 지시만으로 새 attempt가 기록되지는 않습니다.
+REWORK 전송 뒤 시작된 재개 실행은 코어가 같은 job id를 다시 써도 그 실행 하나만 다음 attempt(`#a2` 등)로 기록됩니다.
 `maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
 모델·강도 자동 조정 근거가 아닙니다.
 

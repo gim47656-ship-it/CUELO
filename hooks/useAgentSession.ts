@@ -220,6 +220,19 @@ function completionOutcomeFor(message: { stopReason?: string; errorMessage?: str
   return message.stopReason ? "completed" : "unknown";
 }
 
+/** 탭 로컬 명령 결과를 건너뛴 마지막 기록 메시지와 그 id. 라이브로 붙어 아직 id가 없으면 null이다. */
+function lastTranscriptMessage(
+  messages: readonly AgentMessage[],
+  entryIds: readonly string[],
+): { message: AgentMessage; entryId: string | null } | null {
+  for (let idx = messages.length - 1; idx >= 0; idx--) {
+    const entryId = entryIds[idx] ?? null;
+    if (isLocalCommandEntryId(entryId ?? undefined)) continue;
+    return { message: messages[idx], entryId };
+  }
+  return null;
+}
+
 export type AgentCompletionOutcome = "completed" | "failed" | "aborted" | "unknown";
 
 export interface AgentCompletionResult {
@@ -614,6 +627,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const notifiedPromptRunIdRef = useRef(-1);
   const completionOutcomeRef = useRef<AgentCompletionOutcome>("unknown");
   const completionAssistantRef = useRef<{ provider: string; credentialId?: number } | null>(null);
+  // run이 시작될 때 이미 있던 마지막 기록 메시지. 그 메시지는 이 run의 응답이 아니다.
+  // 라이브로 붙어 아직 id가 없을 수 있으므로 id와 함께 메시지 열쇠도 둔다.
+  const completionBaselineRef = useRef<{ entryId: string | null; key: string } | null>(null);
+  // 완료 판정을 초기화할 때마다 오른다. 늦게 끝난 재판정이 다음 run의 값을 읽지 않게 한다.
+  const completionGenerationRef = useRef(0);
   const bashRunningRef = useRef(false);
   const bashRecoveryIdRef = useRef(0);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
@@ -1245,18 +1263,36 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return wasRunning;
   }, []);
 
+  /** 새 run의 완료 판정을 시작한다. 지금 기록된 마지막 항목은 이 run의 응답 후보에서 뺀다. */
+  const resetCompletion = useCallback(() => {
+    completionOutcomeRef.current = "unknown";
+    completionAssistantRef.current = null;
+    const baseline = lastTranscriptMessage(messagesRef.current, entryIdsRef.current);
+    completionBaselineRef.current = baseline ? { entryId: baseline.entryId, key: snapshotMessageKey(baseline.message) } : null;
+    completionGenerationRef.current += 1;
+  }, []);
+
   const readCompletionResult = useCallback((): AgentCompletionResult => {
     let outcome = completionOutcomeRef.current;
     let assistant = completionAssistantRef.current;
     // 마지막 응답의 message_end를 못 받은 턴(스트림 재연결·스냅샷 병합·재개 발화)은 여기서 "unknown"이라
-    // 캐릭터 큐 대신 중립음만 났다. 화면에 이미 반영된 마지막 응답이 끝을 알고 있으면 그것으로 판정한다.
+    // 캐릭터 큐 대신 중립음만 났다. 이 run이 남긴 마지막 응답이 끝을 알고 있으면 그것으로 판정한다.
+    // run 시작 때 이미 기록돼 있던 응답(응답 없이 끝난 명령 앞의 지난 턴)은 이 run의 결과가 아니다.
     if (outcome === "unknown") {
-      const last = messagesRef.current[messagesRef.current.length - 1];
-      if (last?.role === "assistant" && last.stopReason) {
-        outcome = completionOutcomeFor(last);
+      const last = lastTranscriptMessage(messagesRef.current, entryIdsRef.current);
+      const message = last?.message;
+      const baseline = completionBaselineRef.current;
+      const fromThisRun = last !== null && (
+        baseline === null
+        || (last.entryId !== null && baseline.entryId !== null
+          ? last.entryId !== baseline.entryId
+          : snapshotMessageKey(last.message) !== baseline.key)
+      );
+      if (fromThisRun && message?.role === "assistant" && message.stopReason) {
+        outcome = completionOutcomeFor(message);
         assistant ??= {
-          provider: last.provider,
-          ...(last.credentialId !== undefined ? { credentialId: last.credentialId } : {}),
+          provider: message.provider,
+          ...(message.credentialId !== undefined ? { credentialId: message.credentialId } : {}),
         };
       }
     }
@@ -1270,14 +1306,28 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
   }, []);
 
-  const notifyAgentEnd = useCallback(() => {
-    onAgentEnd?.(readCompletionResult());
+  /**
+   * 턴 종료를 한 번 알린다. 판정이 아직 "unknown"이고 방금 세션 재로드를 요청했으면, 그 재로드가
+   * 끝난 뒤 기록된 마지막 응답으로 다시 판정한다 — 재로드 전의 화면에는 message_end를 놓친 응답이
+   * 아직 없다. 그사이 세션이 바뀌었거나 새 run이 시작됐으면 처음 판정을 그대로 알린다.
+   */
+  const notifyAgentEnd = useCallback((reload?: Promise<unknown>) => {
+    const result = readCompletionResult();
+    if (result.outcome !== "unknown" || !reload) {
+      onAgentEnd?.(result);
+      return;
+    }
+    const generation = completionGenerationRef.current;
+    void reload.catch(() => undefined).then(() => {
+      const current = sessionIdRef.current === result.sessionId && completionGenerationRef.current === generation;
+      onAgentEnd?.(current ? readCompletionResult() : result);
+    });
   }, [onAgentEnd, readCompletionResult]);
 
-  const notifyPromptStage = useCallback((runId: number) => {
+  const notifyPromptStage = useCallback((runId: number, reload?: Promise<unknown>) => {
     if (notifiedPromptRunIdRef.current === runId) return false;
     notifiedPromptRunIdRef.current = runId;
-    notifyAgentEnd();
+    notifyAgentEnd(reload);
     return true;
   }, [notifyAgentEnd]);
 
@@ -1633,10 +1683,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "agent_start": {
         const startingNewRun = !agentRunningRef.current;
         cancelEventStreamGrace();
-        if (startingNewRun) {
-          completionOutcomeRef.current = "unknown";
-          completionAssistantRef.current = null;
-        }
+        if (startingNewRun) resetCompletion();
         sdkAgentActiveRef.current = true;
         agentRunningRef.current = true;
         setAgentRunning(true);
@@ -1683,11 +1730,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const sid = sessionIdRef.current;
         const wasRunning = settleUiStage();
         setIsCompacting(false);
-        if (sid) {
-          void loadSession(sid);
-          scheduleEventStreamClose(sid);
-        }
-        if (wasRunning) notifyAgentEnd();
+        const reload = sid ? loadSession(sid) : undefined;
+        if (sid) scheduleEventStreamClose(sid);
+        if (wasRunning) notifyAgentEnd(reload);
         break;
       }
       case "prompt_done":
@@ -1696,11 +1741,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const promptWasPending = rpcPromptPendingRef.current;
           rpcPromptPendingRef.current = false;
           optimisticUserMessageKeyRef.current = null;
-          const firstNotification = notifyPromptStage(runId);
+          const firstNotification = notifiedPromptRunIdRef.current !== runId;
           if (!promptWasPending && !firstNotification) break;
 
           const sid = sessionIdRef.current;
-          if (sid) void loadSession(sid);
+          const reload = sid ? loadSession(sid) : undefined;
+          notifyPromptStage(runId, reload);
           // An extension-injected agent may already have started before the
           // command's prompt_done. Keep that active stage visible and let its
           // agent_settled event perform the next completion transition.
@@ -1927,7 +1973,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         handleExtensionUiRequest(event as ExtensionUiRequest);
         break;
     }
-  }, [addNotice, applyTodoChange, applyTodoSnapshot, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, refreshContextUsage, scheduleEventStreamClose, settleUiStage, updateEntryIds, updateMessages]);
+  }, [addNotice, applyTodoChange, applyTodoSnapshot, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, refreshContextUsage, resetCompletion, scheduleEventStreamClose, settleUiStage, updateEntryIds, updateMessages]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (
@@ -1952,8 +1998,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       return;
     }
 
-    completionOutcomeRef.current = "unknown";
-    completionAssistantRef.current = null;
+    resetCompletion();
     const promptRunId = promptRunIdRef.current + 1;
     cancelEventStreamGrace();
     rpcPromptPendingRef.current = true;
@@ -2055,7 +2100,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, opts.chatInputRef, updateMessages]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, opts.chatInputRef, resetCompletion, updateMessages]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;

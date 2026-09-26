@@ -659,8 +659,10 @@ function parseGitInvocation(tokens: ShellToken[], invocation: Invocation): GitIn
   };
 }
 
+// `~`는 단어 맨 앞이나 assignment 꼴의 `=`·`:` 뒤에서만 셸이 확장한다. 경로 중간의 literal
+// `~`(8.3 짧은 이름 `RUNNER~1` 등)는 확장이 아니므로 저장소 판정으로 넘긴다.
 function hasShellExpansion(value: string): boolean {
-  return /[$%`~*?]/.test(value);
+  return /[$%`*?]|(?:^|[=:])~/.test(value);
 }
 
 function finalizerTargetDirectory(
