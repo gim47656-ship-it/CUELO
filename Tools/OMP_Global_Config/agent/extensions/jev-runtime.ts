@@ -210,12 +210,13 @@ function serializeInput(value: unknown): string {
 // ---------------------------------------------------------------------------
 
 const ERROR_CATEGORY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/ENOENT|no such file|cannot find|not found|존재하지 않/iu, "missing-path"],
-  [/EACCES|EPERM|permission denied|access is denied|권한/iu, "permission"],
-  [/401|403|unauthorized|forbidden|invalid[_ ]?grant|api[_ ]?key|authentication|인증/iu, "auth"],
+  [/foreach\s*\(\s*in\b|식이 없|값 식|빈 파이프|ParserError|unterminated backquote|C:Users(?:[\\/]|$)|-File parameter does not exist|['"]\.[\w.-]+\.ps1['"]|pi-natives:command:\s*syntax error|command not found:\s*(?:del|copy|findstr)\b/iu, "windows-shell"],
+  [/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?: code)?\s*[=:]?\s*)(?:401|403)\b|\b(?:unauthorized|forbidden|authentication)\b|\b(?:invalid[_ ]?grant|(?:invalid|missing|incorrect|expired)\s+api[_ ]?key|api[_ ]?key\s+(?:invalid|missing|expired))\b|인증/iu, "auth"],
+  [/\bENOENT\b|no such file|cannot find|not found|존재하지 않/iu, "missing-path"],
+  [/\b(?:EACCES|EPERM)\b|permission denied|access is denied|권한/iu, "permission"],
   [/command (?:aborted|cancelled)|작업 취소|명령 취소/iu, "cancelled"],
-  [/ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|network|socket|fetch failed|timed? ?out/iu, "network"],
-  [/exit code|exit status|command failed|failed with|exit1|exit 1/iu, "exit-status"],
+  [/\b(?:ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN)\b|\b(?:network|socket)\b|fetch failed|timed? ?out/iu, "network"],
+  [/exit code|exit status|command failed|failed with|\bexit\s*1\b/iu, "exit-status"],
 ];
 
 function textContent(content: unknown): string {
@@ -239,6 +240,46 @@ function classifyError(content: unknown): string {
     if (pattern.test(text)) return category;
   }
   return "other";
+}
+
+// 정리 대상과 자기 명령의 경로 leaf 또는 glob prefix만 비교한다. 범용 자연어 유사성은 차단 근거가 아니다.
+function cleanupTargets(command: string): string[] {
+  const artifactCleanup = command.split(/[;&|\r\n]+/u).some((segment) =>
+    /^\s*(?:(?:powershell|pwsh)(?:\.exe)?\b.*?-File\s+)?["']?(?:\S*[/\\])?deploy-live\.ps1\b/iu.test(segment)
+    && /-CleanupArtifacts\b/iu.test(segment) && /-ConfirmCleanup\b/iu.test(segment));
+  if (artifactCleanup) return [".cuelo-", ".omp-web-"];
+  const targets: string[] = [];
+  for (const segment of command.split(/[;&|\r\n]+/u)) {
+    const invocation = /^\s*(?:(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b.*?-Command\s+["']?\s*|cmd(?:\.exe)?\s+\/c\s+)?(rm|Remove-Item|rd|rmdir)\b/iu.exec(segment);
+    if (!invocation) continue;
+    const verb = invocation[1]!.toLowerCase();
+    const args = segment.slice(invocation[0].length).match(/"[^"]*"|'[^']*'|[^\s]+/gu)
+      ?.map((token) => token.replace(/^['"]|['"]$/gu, "")) ?? [];
+    const recursive = verb === "remove-item" || verb === "rd" || verb === "rmdir"
+      || args.some((arg) => /^-[a-z]*r[a-z]*$/iu.test(arg));
+    if (!recursive) continue;
+    const pathFlag = args.findIndex((arg) => /^-(?:LiteralPath|Path)$/iu.test(arg));
+    const paths = pathFlag >= 0 ? [args[pathFlag + 1]] : args.filter((arg) => !/^(?:-|\/[sq]\b)/iu.test(arg));
+    for (const path of paths) {
+      const leaf = path?.replace(/\\/gu, "/").replace(/\/+$/u, "").split("/").at(-1)?.split(/[*?[]/u)[0]?.toLowerCase();
+      if (leaf && leaf.length >= 3) targets.push(leaf);
+    }
+  }
+  return targets;
+}
+
+function jobMentionsTarget(command: string, target: string): boolean {
+  if (target === ".cuelo-" || target === ".omp-web-") {
+    return new RegExp(`(?:^|[^\\w.-])\\${target}(?:\\*|(?:stage|rollback)-)`, "iu").test(command);
+  }
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  if (new RegExp(`(?:^|[^\\w.-])${escaped}(?=$|[^\\w.-])`, "iu").test(command)) return true;
+  // 진행 중인 du -sh .cuelo-stage-*처럼 명령 쪽이 더 넓은 glob인 경우.
+  for (const match of command.matchAll(/(?:^|[^\w.-])([\w.-]+)\*/gu)) {
+    const prefix = match[1]?.toLowerCase();
+    if (prefix && prefix.length >= 3 && target.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 interface FailureObservation {
@@ -743,6 +784,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     let todoProgressState: TodoProgressState = createTodoProgressState();
     /** 같은 owner+frozen revision의 TODO coverage는 한 번만 판정한다. */
     const reviewedTodoRevisions = new Set<string>();
+    /** 원래 bash tool_call 명령과 성공한 비동기 결과 id 또는 서비스 이름의 연결. */
+    const pendingBashCommands = new Map<string, string>();
+    const bashJobs = new Map<string, string>();
+    const bashServices = new Map<string, string>();
     /** running job 취소 직전의 근거 공백 advisory 중복 방지. */
     const advisedRunningCancellations = new Set<string>();
 
@@ -1204,6 +1249,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       pendingCheckpoints.clear();
       advisedCheckpoints.clear();
       pendingFailures.clear();
+      pendingBashCommands.clear();
+      bashJobs.clear();
+      bashServices.clear();
       todoProgressState = readPersistedTodoProgress(ctx.sessionManager.getBranch());
       reviewedTodoRevisions.clear();
       advisedRunningCancellations.clear();
@@ -1277,6 +1325,31 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ),
           );
         }
+      }
+
+      if (event.toolName === "bash") {
+        const input = event.input as Record<string, unknown>;
+        const command = typeof input.command === "string" ? input.command : "";
+        const targets = cleanupTargets(command);
+        if (targets.length > 0) {
+          const running = new Set((ctx.getAsyncJobSnapshot?.()?.running ?? [])
+            .filter((job) => job.type === "bash" && job.status === "running").map((job) => job.id));
+          for (const [id, jobCommand] of bashJobs) {
+            if (!running.has(id)) {
+              bashJobs.delete(id);
+              continue;
+            }
+            if (targets.some((target) => jobMentionsTarget(jobCommand, target))) {
+              return { block: true, reason: `[JevRuntime:pre-cleanup] 자기 실행 중 bash job ${id}의 명령에 정리 대상이 들어 있습니다. 먼저 그 job을 끝내거나 write proc://${id}/kill하라. 정리 호출은 실행하지 않았습니다.` };
+            }
+          }
+          for (const [name, serviceCommand] of bashServices) {
+            if (targets.some((target) => jobMentionsTarget(serviceCommand, target))) {
+              return { block: true, reason: `[JevRuntime:pre-cleanup] 자기 실행 중 bash 서비스 ${name}의 명령에 정리 대상이 들어 있습니다. 먼저 그 job을 끝내거나 write proc://${name}/kill하라. 정리 호출은 실행하지 않았습니다.` };
+            }
+          }
+        }
+        pendingBashCommands.set(event.toolCallId, command);
       }
 
       if (event.toolName === "write") {
@@ -1379,9 +1452,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       pendingFailures.delete(event.toolName);
       const inputChanged = serializeInput(event.input) !== failure.inputSerialized;
       const observation = failure.observation;
-      const nextAction = observation.cancelled && !observation.deterministicExitObserved
-        ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
-        : "sameCause/newEvidence를 inputChanged·interveningTools로 추정하지 않는다. 실제 오류·exit를 근거로 다음 한 변수를 확인한 뒤 조치를 바꾼다.";
+      const nextAction = failure.category === "windows-shell"
+        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다."
+        : observation.cancelled && !observation.deterministicExitObserved
+          ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
+          : "sameCause/newEvidence를 inputChanged·interveningTools로 추정하지 않는다. 실제 오류·exit를 근거로 다음 한 변수를 확인한 뒤 조치를 바꾼다.";
       sendAdvisory(
         "pre-retry",
         renderAdvisory(
@@ -1395,6 +1470,59 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
 
 
     pi.on("tool_result", async (event, ctx) => {
+      if (event.toolName === "bash") {
+        const command = pendingBashCommands.get(event.toolCallId);
+        pendingBashCommands.delete(event.toolCallId);
+        if (!event.isError && command !== undefined) {
+          const async = fieldOf(event.details, "async");
+          const jobId = fieldOf(async, "jobId");
+          if (fieldOf(async, "state") === "running" && typeof jobId === "string" && jobId) {
+            bashJobs.set(jobId, command);
+          }
+          const service = fieldOf(event.details, "service");
+          const name = fieldOf(service, "name");
+          const state = fieldOf(service, "state");
+          if (typeof name === "string" && name) {
+            if (state === "running" || state === "ready" || state === "starting" || state === "restarting") {
+              bashServices.set(name, command);
+            } else {
+              bashServices.delete(name);
+            }
+          }
+        }
+      }
+      if ((event.toolName === "read" || event.toolName === "write") && !event.isError) {
+        const path = fieldOf(event.input, "path");
+        if (typeof path === "string" && /^proc:\/\//u.test(path)) {
+          const proc = fieldOf(event.details, "proc");
+          const daemon = fieldOf(proc, "daemon");
+          const name = fieldOf(daemon, "name");
+          if (typeof name === "string" && /^(?:exited|failed)$/u.test(String(fieldOf(daemon, "state")))) {
+            bashServices.delete(name);
+          }
+          if (event.toolName === "read" && /^proc:\/\/\/?$/u.test(path)) {
+            const daemons = fieldOf(proc, "daemons");
+            if (Array.isArray(daemons)) {
+              const active = new Set(daemons.flatMap((item) => {
+                const state = fieldOf(item, "state");
+                const serviceName = fieldOf(item, "name");
+                return typeof serviceName === "string" && /^(?:running|ready|starting|restarting|stopping)$/u.test(String(state))
+                  ? [serviceName] : [];
+              }));
+              for (const serviceName of bashServices.keys()) {
+                if (!active.has(serviceName)) bashServices.delete(serviceName);
+              }
+            }
+          }
+          const cancelled = fieldOf(proc, "cancelled");
+          if (Array.isArray(cancelled)) {
+            for (const item of cancelled) {
+              const id = fieldOf(item, "id");
+              if (typeof id === "string") bashJobs.delete(id);
+            }
+          }
+        }
+      }
       // 명시 REWORK의 write 전송이 실제로 성공했고 그 agentId의 이전 attempt가 끝났을 때만 같은 assignment의 새 재개를 연다.
       // 실행 중 attempt에 대한 DM은 그 attempt의 조향이므로 새 attempt를 만들지 않는다. 두 번째 DM도 바인딩을 덮지 않는다.
       const beforeWrite = event.toolName === "write" ? preWriteJobs.get(event.toolCallId) : undefined;

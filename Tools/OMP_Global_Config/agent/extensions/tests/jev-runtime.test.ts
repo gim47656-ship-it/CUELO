@@ -1091,6 +1091,148 @@ describe("jev-runtime pre-retry", () => {
     expect(String(harness.sent[0]!.message.content)).not.toContain("secret-token-xyz");
     expect(String(harness.sent[0]!.message.content)).toContain("errorCategory=exit-status");
   });
+  test("숫자 부분문자열은 auth가 아니고 HTTP 상태만 auth다", async () => {
+    for (const [error, category] of [
+      ["ENOENT: C:/missing (wall time 1401ms, pid=4039)", "missing-path"],
+      ["HTTP 403 Forbidden", "auth"],
+      ["exit code 1401", "exit-status"],
+      ["path /tmp/4010-not-found", "other"],
+      ["HTTP 403 response not found", "auth"],
+      ["pid=403", "other"],
+    ]) {
+      const harness = createHarness();
+      await harness.emit("tool_result", bashError("c1", "probe", error));
+      await harness.emit("tool_call", bashCall("c2", "probe"));
+      expect(String(harness.sent[0]!.message.content)).toContain(`errorCategory=${category}`);
+    }
+  });
+
+  test("Windows 셸 오류는 일반 경로·exit 오류보다 먼저 분류하고 로컬 교정을 안내한다", async () => {
+    for (const error of [
+      "ParserError: foreach( in $items) 식이 없습니다. exit code 1",
+      "값 식이 없고 빈 파이프",
+      "unterminated backquote",
+      "C:Users\\name\\run.ps1 not found",
+      "The argument '.cleanup.ps1' to the -File parameter does not exist",
+      "pi-natives:command: syntax error",
+      "command not found: del",
+      "command not found: copy",
+      "command not found: findstr",
+    ]) {
+      const harness = createHarness();
+      await harness.emit("tool_result", bashError("c1", "probe", error));
+      await harness.emit("tool_call", bashCall("c2", "probe"));
+      const advisory = String(harness.sent[0]!.message.content);
+      expect(advisory).toContain("errorCategory=windows-shell");
+      expect(advisory).toContain("write");
+      expect(advisory).toContain("-File");
+      expect(advisory).toContain("Remove-Item -LiteralPath");
+      expect(advisory).not.toContain(error);
+      expect(harness.judgments).toHaveLength(0);
+    }
+  });
+
+  test("자기 async job이 삭제 leaf 또는 glob prefix를 쥐고 있을 때만 차단한다", async () => {
+    const jobs = [{ id: "bash-1", type: "bash", status: "running" }];
+    const harness = createHarness({ asyncJobs: jobs });
+    const command = "du -sh .cuelo-stage-20260927-*";
+    await harness.emit("tool_call", { ...bashCall("run-1", command), input: { command, async: true } });
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "run-1", toolName: "bash",
+      input: { command, async: true }, isError: false,
+      details: { async: { state: "running", jobId: "bash-1", type: "bash" } },
+    });
+    expect(await harness.emit("tool_call", bashCall("del-1", "rm -rf .cuelo-stage-20260927-145500-1234")))
+      .toMatchObject({ block: true, reason: expect.stringContaining("proc://bash-1/kill") });
+    expect(await harness.emit("tool_call", bashCall("echo-only", "echo rm -rf .cuelo-stage-20260927-145500-1234")))
+      .toBeUndefined();
+    expect(await harness.emit("tool_call", bashCall("ps-delete", "powershell -Command \"Remove-Item -LiteralPath '.cuelo-stage-20260927-145500-1234' -Recurse -Force\"")))
+      .toMatchObject({ block: true });
+    expect(await harness.emit("tool_call", bashCall("del-2", "rm -rf .cuelo-rollback-20260927-145500-1234")))
+      .toBeUndefined();
+    expect(await harness.emit("tool_call", bashCall("del-3", "powershell -File /tmp/deploy-live.ps1 -CleanupArtifacts -ConfirmCleanup")))
+      .toMatchObject({ block: true, reason: expect.stringContaining("bash-1") });
+    expect(await harness.emit("tool_call", bashCall("echo-cleanup", "echo deploy-live.ps1 -CleanupArtifacts -ConfirmCleanup")))
+      .toBeUndefined();
+    expect(await harness.emit("tool_call", bashCall("del-3b", "rm -rf .omp-web-rollback-20260927-145500-1234")))
+      .toBeUndefined();
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "kill-1", toolName: "write",
+      input: { path: "proc://bash-1/kill" }, isError: false,
+      details: { proc: { op: "cancel", cancelled: [{ id: "bash-1", status: "cancelled" }] } },
+    });
+    expect(await harness.emit("tool_call", bashCall("del-after-kill", "rm -rf .cuelo-stage-20260927-145500-1234")))
+      .toBeUndefined();
+    jobs.splice(0);
+    expect(await harness.emit("tool_call", bashCall("del-4", "rm -rf .cuelo-stage-20260927-145500-1234")))
+      .toBeUndefined();
+    expect(harness.judgments).toHaveLength(0);
+  });
+
+  test("실제 du stage·rollback glob이 승인 정리와 겹치고 무관 폴더는 막지 않는다", async () => {
+    const harness = createHarness({ asyncJobs: [{ id: "bash-du", type: "bash", status: "running" }] });
+    const command = "du -sh .cuelo-* .omp-web-*";
+    await harness.emit("tool_call", { ...bashCall("du", command), input: { command, async: true } });
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "du", toolName: "bash",
+      input: { command, async: true }, isError: false,
+      details: { async: { state: "running", jobId: "bash-du", type: "bash" } },
+    });
+    expect(await harness.emit("tool_call", bashCall("cleanup", "powershell -File F:/CUELO/Tools/CUELO_Setup/deploy-live.ps1 -CleanupArtifacts -ConfirmCleanup")))
+      .toMatchObject({ block: true, reason: expect.stringContaining("bash-du") });
+    expect(await harness.emit("tool_call", bashCall("other", "rm -rf /tmp/independent")))
+      .toBeUndefined();
+  });
+
+  test("name 서비스의 점유는 종료 관측 뒤 풀고 unrelated·dry-run은 통과한다", async () => {
+    const harness = createHarness();
+    const command = "bun run dev --dir /tmp/build-assets";
+    await harness.emit("tool_call", {
+      ...bashCall("svc-1", command), input: { command, name: "my-dev" },
+    });
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "svc-1", toolName: "bash",
+      input: { command, name: "my-dev" }, isError: false,
+      details: { service: { name: "my-dev", state: "ready" } },
+    });
+    expect(await harness.emit("tool_call", bashCall("del-a", "Remove-Item -LiteralPath /tmp/build-assets -Recurse -Force")))
+      .toMatchObject({ block: true, reason: expect.stringContaining("proc://my-dev/kill") });
+    expect(await harness.emit("tool_call", bashCall("del-b", "rmdir /tmp/build-other")))
+      .toBeUndefined();
+    expect(await harness.emit("tool_call", bashCall("dry", "powershell -File /tmp/deploy-live.ps1 -CleanupArtifacts")))
+      .toBeUndefined();
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "read-stopping", toolName: "read",
+      input: { path: "proc://my-dev" }, isError: false,
+      details: { proc: { daemon: { name: "my-dev", state: "stopping" } } },
+    });
+    expect(await harness.emit("tool_call", bashCall("del-stopping", "rd /s /q /tmp/build-assets")))
+      .toMatchObject({ block: true });
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: "read-svc", toolName: "read",
+      input: { path: "proc://my-dev" }, isError: false,
+      details: { proc: { daemon: { name: "my-dev", state: "exited" } } },
+    });
+    expect(await harness.emit("tool_call", bashCall("del-c", "rd /s /q /tmp/build-assets")))
+      .toBeUndefined();
+  });
+
+  test("proc:// 목록에서 서비스 종료가 관측되면 점유 기록을 푼다", async () => {
+    const harness = createHarness();
+    const command = "bun run dev --dir /tmp/build-assets";
+    await harness.emit("tool_call", { ...bashCall("svc", command), input: { command, name: "my-dev" } });
+    await harness.emit("tool_result", {
+      toolCallId: "svc", toolName: "bash", isError: false,
+      details: { service: { name: "my-dev", state: "ready" } },
+    });
+    const removal = bashCall("del", "rm -rf /tmp/build-assets");
+    expect(await harness.emit("tool_call", removal)).toMatchObject({ block: true });
+    await harness.emit("tool_result", {
+      toolCallId: "list", toolName: "read", isError: false,
+      input: { path: "proc://" }, details: { proc: { daemons: [] } },
+    });
+    expect(await harness.emit("tool_call", removal)).toBeUndefined();
+  });
 
   test("취소 원문만 있고 terminal exit 근거가 없으면 회수 또는 한 변수 확인을 지시한다", async () => {
     const harness = createHarness();

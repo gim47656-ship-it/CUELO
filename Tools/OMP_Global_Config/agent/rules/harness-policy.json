@@ -603,7 +603,8 @@
             "validation-environment-true-first-repair-or-probe-the-identified-path-dependency-or-runtime-boundary-with-a-focused-command-before-repeating-the-heavy-check-never-edit-product-code-without-causal-evidence",
             "validation-weakening-or-skill-conflict-or-skill-application-blocked-true-hold-only-the-affected-action-and-send-main-one-existing-blocker-or-steering-notification-with-error-and-skill-locators-proposed-action-and-preserved-acceptance-conditions",
             "main-decides-retarget-or-approve-from-source-and-raw-evidence-independent-work-continues-judge-never-authorizes-skipping-a-required-check",
-            "changing-or-disabling-a-required-validator-needs-main-prior-decision-even-if-judge-says-safe-or-is-unavailable"
+            "changing-or-disabling-a-required-validator-needs-main-prior-decision-even-if-judge-says-safe-or-is-unavailable",
+            "a-windows-shell-boundary-failure-powershell-dollar-variable-loss-backslash-path-loss-cmd-quoting-or-a-missing-cmd-builtin-is-classified-locally-before-auth-and-the-owner-rewrites-the-command-as-a-ps1-file-run-by-slash-absolute-path-instead-of-retrying-it-unchanged"
           ]
         },
         "pre-review": {
@@ -638,16 +639,40 @@
             "genuine-new-input-session-change-or-TODO-change-cancels-the-pending-classification-and-discards-late-results",
             "existing-user-authorization-and-point-of-risk-confirmation-boundaries-remain-authoritative-regardless-of-model-family"
           ]
+        },
+        "turn-end-unanswered-question": {
+          "owner": "main",
+          "when": "an-agent_end-after-a-genuine-user-input-or-running-steering-that-contained-questions-including-korean-questions-without-a-question-mark-at-most-once-per-genuine-input",
+          "questions": [
+            "each-bounded-user-question-was-actually-answered-by-later-assistant-body-text"
+          ],
+          "decisionMapping": [
+            "input-is-at-most-five-user-questions-of-300-characters-and-a-bounded-later-assistant-excerpt-with-paths-urls-literals-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+            "an-unanswered-question-adds-one-aside-asking-main-to-answer-in-body-text-first-merged-with-any-todo-continuation-message-never-an-approval-or-tool-block",
+            "judge-failure-unknown-or-a-new-input-or-session-change-produces-no-notice-and-discards-late-results"
+          ]
+        },
+        "external-advice-claims": {
+          "owner": "main",
+          "when": "a-genuine-user-input-that-pastes-a-long-structured-external-model-answer-and-asks-to-verify-it-at-most-once-per-input",
+          "questions": [
+            "each-bounded-claim-candidate-is-a-file-test-ci-version-behavior-opinion-or-unverifiable-claim"
+          ],
+          "decisionMapping": [
+            "input-is-at-most-twelve-claim-candidates-of-160-characters-with-paths-urls-literals-code-and-secrets-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+            "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
+            "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction"
+          ]
         }
       },
       "observation": {
         "autoBoundaries": "the-runtime-extension-emits-the-advisory-without-being-asked-at-pre-retry-on-the-next-call-of-the-failed-tool-or-immediately-before-cancelling-a-running-job-through-write-proc-id-kill-with-no-observed-terminal-result-pre-review-on-the-main-wait-or-read-proc-recovery-and-the-async-result-auto-delivery-of-a-settled-maker-deduped-by-job-id-and-pre-dispatch-existing-owner-message-on-a-write-agent-id-message-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one",
-        "emission": "one-minimal-structured-advisory-built-only-from-observed-structural-flags-never-the-message-source-code-quotes-document-bodies-raw-paths-secrets-raw-output-or-a-user-or-system-prompt-it-is-produced-at-that-tool-or-message-boundary-and-read-at-the-next-continuation-so-it-never-pre-approves-or-blocks-that-action",
+        "emission": "one-minimal-structured-advisory-built-only-from-observed-structural-flags-never-the-message-source-code-quotes-document-bodies-raw-paths-secrets-raw-output-or-a-user-or-system-prompt-it-is-produced-at-that-tool-or-message-boundary-and-read-at-the-next-continuation-so-it-never-pre-approves-or-blocks-that-action-the-only-blocking-exception-is-pre-cleanup-where-a-recursive-delete-or-deploy-live-cleanup-whose-target-leaf-or-glob-prefix-appears-in-the-command-of-a-still-running-bash-job-or-named-service-started-by-this-session-is-held-until-that-job-ends-or-is-killed",
         "manualBoundary": "pre-dispatch-maker_route-stays-an-explicit-main-call-because-its-assessment-facts-are-not-observable-from-the-wire",
         "readAndSupplement": "read-the-auto-advisory-and-supplement-only-what-the-runtime-cannot-observe-applicable-skill-guidance-approval-same-cause-new-evidence-validation-weakening-and-final-acceptance-never-re-ask-manually-the-questions-the-runtime-already-answered-from-observed-flags-the-manual-approval-boundary-still-sits-before-the-action",
         "retrySignals": "inputChanged-and-interveningTools-are-observations-only-and-never-answer-sameCause-or-newEvidence-a-cancelled-running-job-without-terminal-exit-or-failure-evidence-advises-result-recovery-or-one-new-variable-and-stdout-silence-low-cpu-or-elapsed-time-alone-never-proves-a-stall",
         "taskProgressSignals": "pre-review-emits-local-metadata-validity-exact-match-and-incarnation-binding-counts-validation-evidence-ready-accepted-and-permission-conflict-counts-never-TASK_TITLE-or-TODO_TASKS-values-to-a-judge-unknown-remains-distinct-from-zero",
-        "localStructuralPlacements": "pre-review-pre-retry-and-pre-dispatch-existing-owner-message-observe-structural-counts-and-explicit-states-locally-and-emit-compact-advisories-without-a-judge-call-unobservable-meaning-stays-unknown-and-is-never-inferred-from-counts-or-keywords",
+        "localStructuralPlacements": "pre-review-pre-retry-pre-cleanup-and-pre-dispatch-existing-owner-message-observe-structural-counts-and-explicit-states-locally-and-emit-compact-advisories-without-a-judge-call-unobservable-meaning-stays-unknown-and-is-never-inferred-from-counts-or-keywords",
         "ownerMessageAdvisory": "local-structural-summary-dedupes-per-owner-and-normalized-identity-including-completed-owners-a-completed-exact-session-assignment-attempt-with-no-recorded-verdict-receives-one-missing-verdict-reminder-per-attempt-held-rework-and-accepted-are-recorded-verdicts-never-infer-rework-from-message-keywords-never-claims-additional-instruction-sufficiency-material-change-or-maker_route-necessity-from-structural-signals-main-owns-the-meaning-and-explicit-assessment-decision",
         "runtimeSource": "agent/extensions/jev-runtime.ts"
       },

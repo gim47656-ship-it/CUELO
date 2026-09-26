@@ -60,13 +60,15 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 `maker_route`는 Jev 판정과 후보 제공자 사용량 조회를 함께 시작하고, 빠른 판정에도 조회를 조기 취소하지 않습니다. 사용량 조회는 기존 2초 제한 안의 결과를 기다리며 실패·timeout은 미측정으로 표시합니다. 사용량은 배정 참고 정보이지 Jev 판단 입력이 아닙니다.
 
+턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만듭니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다.
+
 ## 캐릭터 음성과 확장
 
 [`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
 
 ## Git 마감 도구
 
-[`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
+[`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
 ## omp core 패치
 

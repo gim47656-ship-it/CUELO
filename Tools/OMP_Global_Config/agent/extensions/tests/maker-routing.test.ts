@@ -776,6 +776,21 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await expect(h.prepare("", [inheritedTask], {} as never)).rejects.toThrow();
     expect(h.requests).toHaveLength(1);
   });
+  test("TaskGuard 계약을 못 만들면 빠진 필드와 양식을 짚고 판정을 호출하지 않는다", async () => {
+    const h = harness();
+    const noBlock = { ...h.task, task: "브리프 본문만 있고 guard가 없다." };
+    await expect(h.prepare("", [noBlock], {} as never)).rejects.toThrow("`TASK_GUARD:` 블록이 없습니다");
+    const pathsOnly = { ...h.task, task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts\n\n첫 child인데 lock 필드가 없다." };
+    const error = await h.prepare("", [pathsOnly], {} as never).then(() => undefined, (e: Error) => e.message);
+    expect(error).toContain("빠진 필드: WORK_CLASS");
+    expect(error).toContain("PRIMARY_DELIVERABLE");
+    expect(error).not.toContain("OWNED_PATHS(모든 child 필수)");
+    expect(error).toContain("rule://task-guard");
+    expect(error).not.toContain("첫 child인데");
+    const noPaths = { ...h.task, task: brief.replace("OWNED_PATHS: src/view.ts\n", "") };
+    await expect(h.prepare("", [noPaths], {} as never)).rejects.toThrow("빠진 필드: OWNED_PATHS(모든 child 필수)");
+    expect(h.requests).toHaveLength(0);
+  });
   test("prepared 참조는 실제 beforeTask에서 canonical context와 brief로 복원한다", async () => {
     const h = harness();
     const routes = await h.prepare("원래 batch context", [h.task], {} as never);
