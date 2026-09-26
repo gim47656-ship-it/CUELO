@@ -800,12 +800,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const settledAttempts = new Set<string>();
     /** settle로 이미 소비한 async jobId. 채널(via)과 무관하게 중복 소비하지 않는다. */
     const consumedJobs = new Set<string>();
-    /** 명시 REWORK 전송이 성공해 열린 재개 attempt. agentId → 그 전송 직후 관측한 정확한 새 jobId. */
-    const resumeByAgent = new Map<string, { attemptId: string; jobId: string }>();
+    /** 명시 REWORK 전송이 성공해 열린 재개 attempt. agentId → 그 전송 직후 관측한 정확한 새 jobId와 전송 시각. */
+    const resumeByAgent = new Map<string, { attemptId: string; jobId: string; sentAt: number }>();
     /** 전송별 snapshot을 보존해 같은 actor로 겹친 DM도 서로의 기준선을 덮지 않는다. */
-    const preWriteJobs = new Map<string, Set<string>>();
+    const preWriteJobs = new Map<string, { known: Set<string>; sentAt: number }>();
     /** 성공한 REWORK receipt. 새 job이 실제 snapshot에 나타나기 전에는 attempt를 만들지 않는다. */
-    const pendingResume = new Map<string, { priorJobs: ReadonlySet<string>; sourceAttemptId: string }>();
+    const pendingResume = new Map<string, { priorJobs: ReadonlySet<string>; sourceAttemptId: string; sentAt: number }>();
+    /** 재사용 jobId로 온 재개 실행 중 이미 검수한 실행(`jobId@startTime`). 같은 실행은 채널과 무관하게 한 번만 본다. */
+    const judgedResumeRuns = new Set<string>();
     const VERDICTS = ["accepted", "rework", "held"] as const;
     type VerdictInput = {
       sessionId: string; assignmentId: string; attemptId: string; verdict: string;
@@ -953,6 +955,36 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         else liveMakers.delete(ref.callId);
       }
     }
+    /**
+     * core는 task job을 `id: agentId`로 등록하고 소비된 row를 곧 evict하므로 재개(IRC wake) 실행이 같은 jobId를 다시 받는다.
+     * async-result에는 agentId도 없다. 그래서 agentId는 현재 snapshot row(id 정확 일치)에서만 읽고, 열린 REWORK receipt의
+     * 전송 시각 이후 시작된 row만 재개 실행(resumeKey)으로 본다. row가 없거나(evict) 전송 전 row면 재개가 아니다.
+     */
+    function settledRun(job: SettledJobMeta, ctx: ExtensionContext): { agentId?: string; resumeKey?: string } {
+      const snapshot = ctx.getAsyncJobSnapshot?.();
+      const row = [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])].find((entry) => entry.id === job.jobId);
+      const agentId = job.agentId ?? row?.agentId;
+      if (!row || !agentId || row.agentId !== agentId || typeof row.startTime !== "number") return { agentId };
+      const sentAt = pendingResume.get(agentId)?.sentAt ?? resumeByAgent.get(agentId)?.sentAt;
+      return sentAt !== undefined && row.startTime >= sentAt
+        ? { agentId, resumeKey: `${job.jobId}@${row.startTime}` }
+        : { agentId };
+    }
+    /** 처음 보는 jobId이거나, 재사용 jobId라도 아직 검수하지 않은 재개 실행이면 검수 대상이다. */
+    function takeUnjudged(jobs: SettledJobMeta[], ctx: ExtensionContext): SettledJobMeta[] {
+      return jobs.filter((job) => {
+        if (!judgedReviews.has(job.jobId)) {
+          judgedReviews.add(job.jobId);
+          const { resumeKey } = settledRun(job, ctx);
+          if (resumeKey) judgedResumeRuns.add(resumeKey);
+          return true;
+        }
+        const { resumeKey } = settledRun(job, ctx);
+        if (!resumeKey || judgedResumeRuns.has(resumeKey)) return false;
+        judgedResumeRuns.add(resumeKey);
+        return true;
+      });
+    }
     async function runPreReview(
       ctx: ExtensionContext,
       via: "async-result" | "wait" | "read proc://",
@@ -968,15 +1000,21 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           : undefined;
         const todoMetadata = spawned?.guard.progress;
         // 재개 바인딩은 그 전송 직후 관측한 정확한 새 jobId에만 소비된다. 다른 job(늦은 원 실행·stale)은 소비하지 않는다.
-        const binding = job.agentId ? resumeByAgent.get(job.agentId) : undefined;
-        let resumeAttemptId = binding && binding.jobId === job.jobId ? binding.attemptId : undefined;
+        // 이미 소비한 jobId의 재사용은 전송 뒤 시작된 snapshot row(resumeKey)일 때만 새 실행으로 본다.
+        const run = settledRun(job, ctx);
+        const agentId = run.agentId;
+        const newRun = !consumedJobs.has(job.jobId) || run.resumeKey !== undefined;
+        const binding = agentId ? resumeByAgent.get(agentId) : undefined;
+        let resumeAttemptId = binding && binding.jobId === job.jobId && newRun ? binding.attemptId : undefined;
         // 늦은 이벤트 자체를 새 실행으로 간주하지 않는다. 현재 snapshot에서 확인한 유일한 새 job만 잇는다.
-        if (!resumeAttemptId && job.agentId && !spawned?.identity && !consumedJobs.has(job.jobId)) {
-          const pending = pendingResume.get(job.agentId);
+        if (!resumeAttemptId && agentId && !spawned?.identity && newRun) {
+          const pending = pendingResume.get(agentId);
           const source = pending ? observedAttempts.get(pending.sourceAttemptId) : undefined;
           const snapshot = pending ? ctx.getAsyncJobSnapshot?.() : undefined;
           const candidates = new Set([...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])]
-            .filter((entry) => entry.agentId === job.agentId && !pending!.priorJobs.has(entry.id) && !consumedJobs.has(entry.id))
+            .filter((entry) => entry.agentId === agentId && (
+              (typeof entry.startTime === "number" && entry.startTime >= pending!.sentAt)
+              || (!pending!.priorJobs.has(entry.id) && !consumedJobs.has(entry.id))))
             .map((entry) => entry.id));
           if (pending && source && candidates.size === 1 && candidates.has(job.jobId)) {
             const attempt = source.attempt + 1;
@@ -985,7 +1023,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               assignmentId: source.assignmentId,
               attempt,
               attemptId: `${source.assignmentId}#a${attempt}`,
-              agentId: job.agentId,
+              agentId,
               jobId: job.jobId,
             };
             const sourceDispatch = baseLedger.read()
@@ -1007,20 +1045,20 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               purpose: sourceDispatch?.purpose ?? null,
             });
             observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running" });
-            pendingResume.delete(job.agentId);
+            pendingResume.delete(agentId);
             resumeAttemptId = identity.attemptId;
           }
         }
         // session_start에서 복원한 in-flight dispatch도 실제 jobId·agentId로 정산한다.
         const identity = resumeAttemptId ? observedAttempts.get(resumeAttemptId)
           : spawned?.identity ?? [...observedAttempts.values()].find((entry) =>
-            entry.status === "running" && entry.jobId === job.jobId && entry.agentId === job.agentId);
+            entry.status === "running" && entry.jobId === job.jobId && entry.agentId === agentId);
         // 채널과 무관하게 이미 소비한 jobId는 다시 처리하지 않고, 같은 attempt도 한 번만 소비한다.
-        if (identity && !consumedJobs.has(job.jobId) && !settledAttempts.has(identity.attemptId)
+        if (identity && (!consumedJobs.has(job.jobId) || resumeAttemptId !== undefined) && !settledAttempts.has(identity.attemptId)
           && (spawned?.agent === undefined || spawned.agent === "maker")) {
           consumedJobs.add(job.jobId);
           settledAttempts.add(identity.attemptId);
-          if (resumeAttemptId && job.agentId) resumeByAgent.delete(job.agentId);
+          if (resumeAttemptId && agentId) resumeByAgent.delete(agentId);
           const status: OutcomeRecord["status"] = job.status === "cancelled" ? "cancelled" : job.hasError ? "failed" : "completed";
           baseLedger.append({
             type: "outcome",
@@ -1160,6 +1198,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       knownMakers.clear();
       routing.reset();
       judgedReviews.clear();
+      judgedResumeRuns.clear();
       advisedOwnerMessages.clear();
       advisedMissingVerdicts.clear();
       pendingCheckpoints.clear();
@@ -1211,11 +1250,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // pre-review: async-result 자동 전달이 Main에 도착하는 가장 이른 경계.
       // async-result는 attribution:"agent"로 오므로 attribution 필터보다 먼저 본다.
       if (message.role !== "custom" || message.customType !== "async-result") return;
-      const settled = readSettledTaskJobs(message.details, message.content).filter(
-        (job) => !judgedReviews.has(job.jobId),
-      );
+      const settled = takeUnjudged(readSettledTaskJobs(message.details, message.content), ctx);
       if (settled.length === 0) return;
-      for (const job of settled) judgedReviews.add(job.jobId);
       await runPreReview(
         ctx,
         "async-result",
@@ -1275,7 +1311,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           for (const entry of observedAttempts.values()) {
             if (entry.agentId === target && entry.jobId) known.add(entry.jobId);
           }
-          preWriteJobs.set(event.toolCallId, known);
+          preWriteJobs.set(event.toolCallId, { known, sentAt: Date.now() });
         }
         // canonical child id가 agent:// 대상이다. 표시용 task name으로 판정 대상을 추측하지 않는다.
         const owner = target ? knownMakerForTarget(target) : undefined;
@@ -1373,12 +1409,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         if (targetAgentId && previous && /(?:^|\n)\s*REWORK\s+task_id=\S+/i.test(message)
           && previous.status !== "running" && !resumeByAgent.has(targetAgentId) && !pendingResume.has(targetAgentId) && beforeWrite) {
           // 성공 receipt와 전송 전 snapshot이 있는 경우에만 실제 새 job을 바인딩한다.
-          const prior = beforeWrite;
+          const { known: prior, sentAt } = beforeWrite;
           const snapshot = ctx.getAsyncJobSnapshot?.();
           const fresh = [...new Set([...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])]
             .flatMap((job) => {
-              const record = job as { id?: unknown; agentId?: unknown };
-              if (typeof record.id !== "string" || !record.id || prior.has(record.id)) return [];
+              const record = job as { id?: unknown; agentId?: unknown; startTime?: unknown };
+              if (typeof record.id !== "string" || !record.id) return [];
+              // 전송 전 집합의 id라도 전송 뒤 시작된 row면 같은 id를 재사용한 새 실행이다.
+              if (prior.has(record.id) && !(typeof record.startTime === "number" && record.startTime >= sentAt)) return [];
               // 관측된 canonical agentId가 정확히 같은 job만 후보다. agentId 없는 낯선 job은 승격하지 않는다.
               if (record.agentId !== targetAgentId) return [];
               return [record.id];
@@ -1414,7 +1452,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           });
           observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running" });
           // 바인딩에 전송 직후 관측한 정확한 새 jobId를 둔다. 다른 job이 먼저 정산돼도 이 attempt를 소비하지 않는다.
-          resumeByAgent.set(targetAgentId, { attemptId: identity.attemptId, jobId: fresh[0]! });
+          resumeByAgent.set(targetAgentId, { attemptId: identity.attemptId, jobId: fresh[0]!, sentAt });
           sendAdvisory(
             "rework-attempt",
             renderAdvisory(
@@ -1426,7 +1464,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           );
           } else if (fresh.length === 0) {
             // 새 job이 아직 스냅샷에 없다. 성공 receipt를 보관하고 다음 기존 관측(settle)에서 실제 새 job을 묶는다.
-            pendingResume.set(targetAgentId, { priorJobs: prior, sourceAttemptId: previous.attemptId });
+            pendingResume.set(targetAgentId, { priorJobs: prior, sourceAttemptId: previous.attemptId, sentAt });
           }
         }
       }
@@ -1549,11 +1587,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       } else {
         return;
       }
-      const settled = readSettledTaskJobs(jobDetails, event.content).filter(
-        (job) => !judgedReviews.has(job.jobId),
-      );
+      const settled = takeUnjudged(readSettledTaskJobs(jobDetails, event.content), ctx);
       if (settled.length === 0) return;
-      for (const job of settled) judgedReviews.add(job.jobId);
       await runPreReview(
         ctx,
         via,

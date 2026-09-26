@@ -872,3 +872,234 @@ test("서버에서 시작된 run을 유휴 화면이 새로고침 없이 한 번
   assert.equal(mainStreams(SESSION).length, 0);
   renderer.unmount();
 });
+
+// 2026-09-26: 마지막 응답의 message_end를 놓친 턴은 prompt_done·agent_settled가 세션 재로드를 기다리지
+// 않고 판정해 "unknown"(캐릭터 큐 대신 중립음)이 됐다. 재로드 뒤 이 run이 남긴 응답으로 한 번만 알린다.
+test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번만 완료를 알린다", { timeout: 30_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-completion-"));
+  const rendererKey = "__ompUseAgentSessionEffectRenderer";
+  const fakeReactPath = join(directory, "react.mjs");
+  await writeFile(fakeReactPath, [
+    `const react = () => globalThis.${rendererKey}.react;`,
+    ...["useState", "useReducer", "useRef", "useCallback", "useMemo", "useEffect"]
+      .map((name) => `export const ${name} = (...args) => react().${name}(...args);`),
+    "export const useLayoutEffect = (...args) => react().useEffect(...args);",
+  ].join("\n"));
+  const sourceRoot = new URL("../", import.meta.url);
+  const subjectPath = join(directory, "useAgentSession.ts");
+  await writeFile(subjectPath, source
+    .replace('from "react";', `from ${JSON.stringify(pathToFileURL(fakeReactPath).href)};`)
+    .replace(/from "@\/([^"]+)";/g, (_match, path) => `from ${JSON.stringify(new URL(path, sourceRoot).href)};`)
+    .replace(/await import\("@\/([^"]+)"\)/g, (_match, path) => `await import(${JSON.stringify(new URL(`${path}.ts`, sourceRoot).href)})`));
+  const harnessJiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, moduleCache: false, tsconfigPaths: true });
+  const { useAgentSession: useHarnessedAgentSession } = await harnessJiti.import(subjectPath);
+
+  const globalKeys = ["window", "document", "sessionStorage", "EventSource", "fetch", "setTimeout", "setInterval", rendererKey];
+  const originals = Object.fromEntries(globalKeys.map((key) => [key, globalThis[key]]));
+  t.after(async () => {
+    for (const key of globalKeys) {
+      if (originals[key] === undefined) delete globalThis[key];
+      else globalThis[key] = originals[key];
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  globalThis.setTimeout = (callback, ms, ...args) => {
+    const timer = originals.setTimeout(callback, ms, ...args);
+    timer.unref?.();
+    return timer;
+  };
+  globalThis.setInterval = (callback, ms, ...args) => {
+    const timer = originals.setInterval(callback, ms, ...args);
+    timer.unref?.();
+    return timer;
+  };
+  const sources = [];
+  globalThis.EventSource = class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      sources.push(this);
+    }
+    emit(event) {
+      if (event.type === "connected") this.readyState = 1;
+      this.onmessage?.({ data: JSON.stringify(event) });
+    }
+    close() {
+      this.readyState = 2;
+    }
+  };
+  globalThis.window = Object.assign(new EventTarget(), { location: { pathname: "/", search: "", hash: "" } });
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: "visible", title: "" });
+  const storage = new Map();
+  globalThis.sessionStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+
+  const SESSION = "11111111-2222-4333-8444-555555555555";
+  const OTHER_SESSION = "99999999-8888-4777-8666-555555555555";
+  const sessionData = (id, messages) => ({
+    sessionId: id,
+    filePath: `/tmp/${id}.jsonl`,
+    totalActiveMs: 0,
+    tree: [],
+    leafId: messages.length ? `${id}-${messages.length}` : null,
+    context: { messages, entryIds: messages.map((_message, index) => `${id}-${index + 1}`), thinkingLevel: "off", model: null },
+  });
+  const server = { transcript: [], state: { running: false }, gate: null, failReload: false, slashOutput: [] };
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const transcript = url.match(/^\/api\/sessions\/([^/?]+)\?deferThinking=1&deferMedia=1$/);
+    if (transcript) {
+      const id = decodeURIComponent(transcript[1]);
+      await server.gate;
+      if (server.failReload) return json({ error: "reload failed" }, 500);
+      return json(sessionData(id, id === SESSION ? server.transcript : []));
+    }
+    if (init.method === "POST" && url === `/api/agent/${SESSION}`) {
+      const command = JSON.parse(String(init.body));
+      if (command.type === "execute_slash_command") return json({ success: true, data: { handled: true, output: server.slashOutput } });
+      return json({ success: true, data: {} });
+    }
+    if (/^\/api\/(?:sessions\/[^/?]+\/state|agent\/[^/?]+)$/.test(url)) return json(server.state);
+    return json({ success: true, data: {} });
+  };
+
+  const renderer = createEffectRenderer();
+  globalThis[rendererKey] = renderer;
+  const settle = async () => {
+    for (let round = 0; round < 30; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const running = (flags) => ({
+    running: true,
+    state: { isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, isHandoffRunning: false, ...flags },
+  });
+  const user = { role: "user", content: "폰에서 눌러 봐", timestamp: 1 };
+  const toolTurn = {
+    role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: {} }],
+    provider: "anthropic", model: "claude-opus-5-5", credentialId: 11, stopReason: "toolUse", timestamp: 2,
+  };
+  const toolResult = { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 };
+  const finalReply = {
+    role: "assistant", content: [{ type: "text", text: "확인했어요." }],
+    provider: "anthropic", model: "claude-opus-5-5", credentialId: 11, stopReason: "stop", timestamp: 4,
+  };
+  const MIO_DONE = { outcome: "completed", sessionId: SESSION, provider: "anthropic", credentialId: 11 };
+
+  let props;
+  let hook;
+  let completions;
+  const mount = (transcript, state) => {
+    sources.length = 0;
+    completions = [];
+    server.transcript = transcript;
+    server.state = state;
+    props = {
+      session: { id: SESSION, name: "Test", cwd: "/tmp" },
+      newSessionCwd: null,
+      initialData: sessionData(SESSION, transcript),
+      onAgentEnd: (completion) => completions.push(completion),
+    };
+    renderer.mount(() => {
+      hook = useHarnessedAgentSession(props);
+    });
+  };
+  const mainStream = () => sources.find((source) => source.url === `/api/agent/${SESSION}/events`);
+  // 탭이 실행 중인 run에 붙은 뒤 마지막 응답의 조각만 받고 message_end는 받지 못한다.
+  const adoptAndStreamWithoutEnd = async (state) => {
+    mount([user, toolTurn, toolResult], state);
+    await settle();
+    assert.equal(hook.agentRunning, true);
+    mainStream().emit({ type: "connected", sessionId: SESSION });
+    mainStream().emit({ type: "message_update", message: { ...finalReply, stopReason: undefined } });
+    await settle();
+  };
+
+  // 1) 새로고침 중 이어받은 prompt run: prompt_done이 판정한다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true, isPromptRunning: true }));
+  server.transcript = [user, toolTurn, toolResult, finalReply];
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled", "prompt_done"]) mainStream().emit({ type });
+  await settle();
+  assert.deepEqual(completions, [MIO_DONE], "이어받은 prompt run");
+  renderer.unmount();
+
+  // 2) 서버가 시작한 run(prompt_done 없음): agent_settled가 판정한다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true }));
+  server.transcript = [user, toolTurn, toolResult, finalReply];
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled"]) mainStream().emit({ type });
+  await settle();
+  assert.deepEqual(completions, [MIO_DONE], "서버가 시작한 run");
+  renderer.unmount();
+
+  // 3) run 중 탭 로컬 명령 결과가 끼어든 뒤 정상 응답이 온다. 로컬 결과는 이 run의 응답을 가리지 않는다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true, isPromptRunning: true }));
+  server.slashOutput = ["Fast mode is on."];
+  assert.deepEqual(await hook.handleBuiltinSlashCommand("/fast status"), { handled: true });
+  assert.equal(hook.messages.at(-1).role, "custom", "로컬 명령 결과가 대화에 붙는다");
+  server.transcript = [user, toolTurn, toolResult, finalReply];
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled", "prompt_done"]) mainStream().emit({ type });
+  await settle();
+  assert.equal(hook.messages.filter((message) => message.role === "custom").length, 1, "재로드 뒤에도 로컬 결과는 한 번 남는다");
+  assert.deepEqual(completions, [MIO_DONE], "로컬 명령 결과 뒤 정상 응답");
+  renderer.unmount();
+
+  // 4) 응답 없이 끝나는 명령 run: 지난 턴의 응답으로 완료를 판정하지 않는다.
+  mount([user, toolTurn, toolResult, finalReply], { running: false });
+  await settle();
+  const send = hook.handleSend("/fast status");
+  mainStream().emit({ type: "connected", sessionId: SESSION });
+  await send;
+  mainStream().emit({ type: "prompt_done" });
+  await settle();
+  assert.deepEqual(completions, [{ outcome: "unknown", sessionId: SESSION }], "응답 없는 명령 run");
+  renderer.unmount();
+
+  // 5) 재로드가 실패하면 처음 판정으로 한 번 알린다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true, isPromptRunning: true }));
+  server.failReload = true;
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled", "prompt_done"]) mainStream().emit({ type });
+  await settle();
+  server.failReload = false;
+  assert.deepEqual(completions, [{ outcome: "unknown", sessionId: SESSION }], "재로드 실패");
+  renderer.unmount();
+
+  // 6) 재로드를 기다리는 사이 새 run이 시작되면 늦은 재판정이 그 run의 값을 읽지 않는다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true, isPromptRunning: true }));
+  let release;
+  server.gate = new Promise((resolve) => { release = resolve; });
+  server.transcript = [user, toolTurn, toolResult, finalReply];
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled", "prompt_done"]) mainStream().emit({ type });
+  await settle();
+  assert.deepEqual(completions, [], "재로드 전에는 알리지 않는다");
+  const nextReply = { ...finalReply, content: [{ type: "text", text: "다음 run" }], timestamp: 5 };
+  mainStream().emit({ type: "agent_start" });
+  mainStream().emit({ type: "message_end", message: nextReply });
+  server.gate = null;
+  release();
+  await settle();
+  assert.deepEqual(completions, [{ outcome: "unknown", sessionId: SESSION }], "새 run 시작");
+  renderer.unmount();
+
+  // 7) 재로드를 기다리는 사이 다른 세션으로 옮기면 처음 판정을 원래 세션으로 한 번 알린다.
+  await adoptAndStreamWithoutEnd(running({ isStreaming: true, isPromptRunning: true }));
+  server.gate = new Promise((resolve) => { release = resolve; });
+  server.transcript = [user, toolTurn, toolResult, finalReply];
+  server.state = { running: false };
+  for (const type of ["agent_end", "agent_settled", "prompt_done"]) mainStream().emit({ type });
+  await settle();
+  props = { ...props, session: { id: OTHER_SESSION, name: "Other", cwd: "/tmp" }, initialData: sessionData(OTHER_SESSION, []) };
+  renderer.rerender();
+  await settle();
+  server.gate = null;
+  release();
+  await settle();
+  assert.deepEqual(completions, [{ outcome: "unknown", sessionId: SESSION }], "세션 전환");
+  renderer.unmount();
+});
