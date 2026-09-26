@@ -1,24 +1,29 @@
 # CUELO 웹 릴리스와 npm 준비
 
-CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소스를, npm의 [`cuelo`](https://www.npmjs.com/package/cuelo)로 설치형 웹 패키지를 배포합니다. 데스크톱 설치 파일은 게시하지 않습니다.
+CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소스를, npm의 [`cuelo`](https://www.npmjs.com/package/cuelo)로 설치형 웹 패키지를 배포합니다. 둘 다 공개 `main`의 CI가 성공하면 자동으로 게시됩니다. 데스크톱 설치 파일은 게시하지 않습니다.
 
 ## 릴리스 준비
 
 1. `package.json`의 CUELO 버전과 `CHANGELOG.md`의 해당 버전 항목을 함께 갱신합니다. OMP SDK 버전은 별도입니다.
 2. 웹 실행·설치 호환 코드의 버전 계약도 맞추고, 타입·lint·테스트·production 빌드 및 실제 웹 동작을 검증합니다.
-3. 공개 미러 게시와 공개 저장소의 `CI` 성공을 확인합니다. 릴리스에는 검증한 공개 커밋을 사용합니다.
+3. 변경을 공개 `main`에 올립니다. 게시할 버전만 올리면 되고, 따로 실행할 명령은 없습니다.
 
 ## 게시
 
-공개 저장소의 Actions에서 **Publish CUELO web release**를 수동 실행합니다. `target_sha`에는 CI가 성공한 현재 공개 `main` 커밋의 전체 SHA를 넣습니다. CLI로 실행할 때도 공개 저장소를 명시합니다.
+공개 저장소의 `CI`가 `main` push에서 성공하면 **Publish CUELO web release**(`release.yml`)가 자동으로 실행됩니다.
+
+1. 그 커밋이 여전히 공개 `main`의 최신 커밋인지, CI가 성공했는지 확인합니다.
+2. `package.json` 버전으로 `v<version>` 태그를 정합니다. 그 태그가 이미 다른 커밋에 있으면 버전을 올리지 않은 커밋으로 보고 아무것도 게시하지 않습니다. 기존 태그를 옮기거나 기존 릴리스 내용을 덮어쓰지 않습니다.
+3. `CHANGELOG.md`의 같은 버전 항목으로 GitHub 릴리스를 만듭니다. GitHub의 Source code 다운로드가 릴리스 소스입니다.
+4. CI와 같은 Windows 환경에서 production 빌드를 만들고 native/core/notices 패치를 적용·검증한 뒤 `npm publish`로 `cuelo`를 게시합니다. 그 버전이 이미 npm에 있으면 건너뜁니다.
+
+npm 게시는 [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)(OIDC)을 씁니다. 저장소에 npm 토큰을 두지 않습니다. 처음 한 번 npmjs.com의 `cuelo` 패키지 **Settings → Trusted Publisher**에 GitHub Actions, 저장소 `gim47656-ship-it/CUELO`, workflow `release.yml`을 등록해야 합니다.
+
+같은 revision을 다시 게시하려면 수동 실행에 전체 SHA를 넣습니다.
 
 ```bash
 gh workflow run release.yml --repo gim47656-ship-it/CUELO --ref main -f target_sha=<public-main-commit-sha>
 ```
-
-workflow는 지정한 커밋이 현재 공개 main인지, 그 커밋의 CI가 성공했는지 확인합니다. 패키지 버전으로 `v<version>` 태그를 정하고 `CHANGELOG.md`에서 같은 버전의 내용을 가져옵니다. 기존 태그를 다른 커밋으로 옮기거나 기존 릴리스 내용을 덮어쓰지 않습니다.
-
-GitHub의 Source code 다운로드가 릴리스 소스입니다. 빌드된 데스크톱 파일이나 별도 실행 엔진은 포함하지 않습니다.
 
 ## npm `cuelo` 준비 경계
 
@@ -30,7 +35,7 @@ npm global 설치에서는 SDK가 `cuelo` 패키지 **자체의** `node_modules/
 
 `cuelo [options]`는 앱만 실행합니다. `cuelo setup [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>]`은 사용자가 명시했을 때 공개 하네스를 자신의 프로필에 새 파일만 복사하며, 기존 설정·계정·스킬은 덮어쓰지 않습니다. npm 설치본은 이미 준비된 빌드와 SDK를 검사한 뒤 복사하고 소스 체크아웃은 빌드·패치를 수행합니다. `cuelo start [--home <dir>]`는 앱과 세 sidecar를 전경에서 함께 실행하고 Ctrl+C로 종료합니다. `cuelo health`는 localhost 네 서비스만 조회하며 provider를 호출하지 않습니다.
 
-게시 전에 별도 production 빌드 트리에서 기존 native/core/notices 패치를 적용·검증하고 `npm pack --dry-run --json --ignore-scripts`로 포함 파일을 살핍니다. 실제 `npm pack --ignore-scripts` tarball을 격리된 global prefix에 `npm install --global --prefix <isolated-prefix> --omit=dev --foreground-scripts <tarball>`로 설치해야 합니다. 설치된 `cuelo --help`, `cuelo --no-open -H 127.0.0.1 -p <unused-port>` 및 HTTP 응답을 확인하고, 설치된 OMP SDK의 패치와 모듈 해석도 검증합니다. 앱만 별도 포트로 검사할 때는 `PORT`와 `OMP_USAGE_PORT`, `OMP_BTW_PORT`, `OMP_SUBAGENT_PORT`를 모두 미사용 포트로 지정해야 기존 실행 중인 sidecar를 읽지 않습니다. tarball 생성·설치 검증은 **게시가 아니며** `npm publish`, npm 로그인·권한 변경, 자동 게시 workflow는 별도 승인 전에는 수행하지 않습니다. npm registry에서 이름 조회의 404만으로 등록 가능 여부나 게시 권한을 확인했다고 주장하지 않습니다.
+게시 전에 확인하려면 별도 production 빌드 트리에서 기존 native/core/notices 패치를 적용·검증하고 `npm pack --dry-run --json --ignore-scripts`로 포함 파일을 살핍니다. 실제 `npm pack --ignore-scripts` tarball을 격리된 global prefix에 `npm install --global --prefix <isolated-prefix> --omit=dev --foreground-scripts <tarball>`로 설치합니다. 설치된 `cuelo --help`, `cuelo --no-open -H 127.0.0.1 -p <unused-port>` 및 HTTP 응답을 확인하고, 설치된 OMP SDK의 패치와 모듈 해석도 검증합니다. 앱만 별도 포트로 검사할 때는 `PORT`와 `OMP_USAGE_PORT`, `OMP_BTW_PORT`, `OMP_SUBAGENT_PORT`를 모두 미사용 포트로 지정해야 기존 실행 중인 sidecar를 읽지 않습니다. npm registry에서 이름 조회의 404만으로 등록 가능 여부나 게시 권한을 확인했다고 주장하지 않습니다.
 
 ## 소개 페이지 게시
 
