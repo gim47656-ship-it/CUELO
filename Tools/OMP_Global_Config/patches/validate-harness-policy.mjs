@@ -339,6 +339,7 @@ const requiredPolicyMembers = [
     "validation-weakening-or-skill-conflict-or-skill-application-blocked-true-hold-only-the-affected-action-and-send-main-one-existing-blocker-or-steering-notification-with-error-and-skill-locators-proposed-action-and-preserved-acceptance-conditions",
     "main-decides-retarget-or-approve-from-source-and-raw-evidence-independent-work-continues-judge-never-authorizes-skipping-a-required-check",
     "changing-or-disabling-a-required-validator-needs-main-prior-decision-even-if-judge-says-safe-or-is-unavailable",
+    "a-windows-shell-boundary-failure-powershell-dollar-variable-loss-backslash-path-loss-cmd-quoting-or-a-missing-cmd-builtin-is-classified-locally-before-auth-and-the-owner-rewrites-the-command-as-a-ps1-file-run-by-slash-absolute-path-instead-of-retrying-it-unchanged",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-review.questions", [
     "requirements-and-evidence-are-aligned",
@@ -364,6 +365,22 @@ const requiredPolicyMembers = [
     "consequential-actions-provider-safety-approval-user-choice-external-wait-unknown-and-judge-failure-never-receive-automatic-approval-or-continuation",
     "genuine-new-input-session-change-or-TODO-change-cancels-the-pending-classification-and-discards-late-results",
     "existing-user-authorization-and-point-of-risk-confirmation-boundaries-remain-authoritative-regardless-of-model-family",
+  ]],
+  ["routing.typedJudgmentRouting.placements.turn-end-unanswered-question.questions", [
+    "each-bounded-user-question-was-actually-answered-by-later-assistant-body-text",
+  ]],
+  ["routing.typedJudgmentRouting.placements.turn-end-unanswered-question.decisionMapping", [
+    "input-is-at-most-five-user-questions-of-300-characters-and-a-bounded-later-assistant-excerpt-with-paths-urls-literals-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "an-unanswered-question-adds-one-aside-asking-main-to-answer-in-body-text-first-merged-with-any-todo-continuation-message-never-an-approval-or-tool-block",
+    "judge-failure-unknown-or-a-new-input-or-session-change-produces-no-notice-and-discards-late-results",
+  ]],
+  ["routing.typedJudgmentRouting.placements.external-advice-claims.questions", [
+    "each-bounded-claim-candidate-is-a-file-test-ci-version-behavior-opinion-or-unverifiable-claim",
+  ]],
+  ["routing.typedJudgmentRouting.placements.external-advice-claims.decisionMapping", [
+    "input-is-at-most-twelve-claim-candidates-of-160-characters-with-paths-urls-literals-code-and-secrets-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
+    "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction",
   ]],
   // 실장비 인계 한 통에 들어가야 하는 것. 이 항목이 줄면 "무엇을 켜고 무엇이 정상이며 언제 멈추는가"가
   // 빠진 인계가 되어, 사용자가 장비 앞에서 판단할 근거를 잃는다.
@@ -668,7 +685,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "external-advice-claims"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1224,7 +1241,9 @@ if (policy !== null) {
       typedJudgmentPlacements["pre-dispatch-existing-owner-message"]?.owner === "main" &&
       typedJudgmentPlacements["pre-retry"]?.owner === "the-owner-about-to-retry" &&
       typedJudgmentPlacements["pre-review"]?.owner === "main" &&
-      typedJudgmentPlacements["turn-end-confirmation"]?.owner === "main",
+      typedJudgmentPlacements["turn-end-confirmation"]?.owner === "main" &&
+      typedJudgmentPlacements["turn-end-unanswered-question"]?.owner === "main" &&
+      typedJudgmentPlacements["external-advice-claims"]?.owner === "main",
     "typed judgment placement의 실행 주체가 다르다.",
   );
   check(

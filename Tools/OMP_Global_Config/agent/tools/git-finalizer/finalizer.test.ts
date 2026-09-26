@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import factory from "./index";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
+
 const tempRoots: string[] = [];
 // 각 테스트는 PowerShell 5.1 기동과 bare remote push를 실제로 한다. GitHub Windows 러너에서 평소 2~7초지만
 // 느린 순간 20초까지 걸려 15초 제한을 넘긴 적이 있다(run 36151513593).
@@ -82,6 +85,49 @@ async function createAdditionalRepository(
   return { remote, work };
 }
 
+async function createManifestRepository() {
+  const repository = await createRepository();
+  const { work } = repository;
+  const helper = join(work, "Tools", "CUELO_Setup", "files");
+  await mkdir(helper, { recursive: true });
+  await writeFile(join(helper, "source-build-helper.js"), "// fixture helper\n");
+  await writeFile(join(work, "package.json"), JSON.stringify({ files: ["Tools/runtime/entry.js"] }));
+  await mkdir(join(work, "Tools", "runtime"), { recursive: true });
+  await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime\n");
+  const sourceHash = (text: string) =>
+    createHash("sha256").update(text.replace(/\r\n/g, "\n")).digest("hex");
+  const manifestPath = join(helper, "source-integrity.json");
+  await writeFile(manifestPath, JSON.stringify({
+    files: {
+      "a.txt": sourceHash("base-a\n"),
+      "b.txt": sourceHash("base-b\n"),
+      "package.json": sourceHash(JSON.stringify({ files: ["Tools/runtime/entry.js"] })),
+      "Tools/runtime/entry.js": sourceHash("runtime\n"),
+    },
+  }));
+  git(work, ["add", "--", "package.json", "Tools"]);
+  git(work, ["commit", "-m", "manifest fixture"]);
+  git(work, ["push"]);
+  return { ...repository, manifestPath };
+}
+
+async function startTool(
+  work: string,
+  files: string[],
+): Promise<{ error?: Error; output?: unknown }> {
+  const pi = {
+    cwd: work,
+    zod: { object: () => ({}), array: () => ({}), string: () => ({}) },
+    exec: async (command: string, args: string[], options: { cwd: string }) => run(command, args, options.cwd),
+  };
+  const tool = factory(pi as never);
+  try {
+    return { output: await tool.execute("fixture", { files, message: "manifest case" }, undefined, {} as never, new AbortController().signal) };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
 async function getUnusedDriveLetter(): Promise<string> {
   for (let code = "Z".charCodeAt(0); code >= "T".charCodeAt(0); code -= 1) {
     const drive = `${String.fromCharCode(code)}:`;
@@ -138,6 +184,84 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(output.commitSha!);
     expect(git(work, ["status", "--short"])).toBe("?? unrelated.txt");
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test("keeps ordinary repositories without a source helper unchanged", async () => {
+    const { work, remote } = await createRepository();
+    await writeFile(join(work, "a.txt"), "changed-without-helper\n");
+
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(error).toBeUndefined();
+    expect(output).toBeDefined();
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
+  }, TEST_TIMEOUT_MS);
+
+  test("rejects a changed source without the manifest before invoking finalizer", async () => {
+    const { work, remote } = await createManifestRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "a.txt"), "changed-a\r\n");
+
+    const { error } = await startTool(work, ["a.txt"]);
+    expect(error?.message).toContain("source-integrity.json");
+    expect(error?.message).toContain("node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json");
+    expect(error?.message).toContain("node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json");
+    expect(error?.message).toContain("Tools/CUELO_Setup");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+  }, TEST_TIMEOUT_MS);
+
+  test("allows a source and its manifest in the same commit", async () => {
+    const { work, manifestPath } = await createManifestRepository();
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+    await writeFile(manifestPath, JSON.stringify({ files: { "a.txt": "changed" } }));
+
+    const { error, output } = await startTool(work, ["a.txt", "Tools/CUELO_Setup/files/source-integrity.json"]);
+    expect(error).toBeUndefined();
+    expect(output).toBeDefined();
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).split(/\r?\n/).sort()).toEqual([
+      "Tools/CUELO_Setup/files/source-integrity.json", "a.txt",
+    ]);
+  }, TEST_TIMEOUT_MS);
+
+  test("compares source hashes after CRLF normalization", async () => {
+    const { work, manifestPath } = await createManifestRepository();
+    const manifest = JSON.parse(await Bun.file(manifestPath).text()) as { files: Record<string, string> };
+    manifest.files["a.txt"] = createHash("sha256").update("updated-a\n").digest("hex");
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    git(work, ["add", "--", "Tools/CUELO_Setup/files/source-integrity.json"]);
+    git(work, ["commit", "-m", "prepare normalized source hash"]);
+    git(work, ["push"]);
+    await writeFile(join(work, "a.txt"), "updated-a\r\n");
+
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(error).toBeUndefined();
+    expect(output).toBeDefined();
+  }, TEST_TIMEOUT_MS);
+
+  test("ignores mismatched source files outside the requested list", async () => {
+    const { work } = await createManifestRepository();
+    await writeFile(join(work, "a.txt"), "another-writer\n");
+    await writeFile(join(work, "Tools", "CUELO_Setup", "notes.txt"), "repository-only\n");
+
+    const { error, output } = await startTool(work, ["Tools/CUELO_Setup/notes.txt"]);
+    expect(error).toBeUndefined();
+    expect(output).toBeDefined();
+    expect(git(work, ["status", "--short"])).toContain("M a.txt");
+  }, TEST_TIMEOUT_MS);
+
+  test("detects a packaged Tools source path but permits repository-only Tools", async () => {
+    const { work, remote } = await createManifestRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "Tools", "runtime", "entry.js"), "changed-runtime\n");
+    const blocked = await startTool(work, ["Tools/runtime/entry.js"]);
+    expect(blocked.error?.message).toContain("source-integrity.json");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+
+    await writeFile(join(work, "Tools", "CUELO_Setup", "notes.txt"), "repository-only\n");
+    const allowed = await startTool(work, ["Tools/CUELO_Setup/notes.txt"]);
+    expect(allowed.error).toBeUndefined();
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
   }, TEST_TIMEOUT_MS);
 
   test("accepts a direct repository-root file from a nested cwd and preserves unrelated dirty state", async () => {

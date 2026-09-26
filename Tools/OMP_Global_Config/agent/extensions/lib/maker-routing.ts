@@ -262,6 +262,24 @@ function dispatchContract(task: string, lock: DispatchContractLock | undefined):
   };
 }
 
+const GUARD_TEMPLATE =
+  "양식: 브리프 첫머리에 `TASK_GUARD:` 줄, 그 다음 줄부터 빈 줄 없이 `WORK_CLASS: feature|maintenance|diagnostic`(요청의 첫 child만 필수)·`PRIMARY_DELIVERABLE: <완료물 한 줄>`(첫 child만 필수)·`OWNED_PATHS: <cwd 상대경로, 콤마 구분>`, 그 뒤 `TASK_TITLE`·`TODO_TASKS`. 정본 rule://task-guard.";
+
+/** 계약을 완성하지 못한 이유를 필드 단위로 짚는다. 브리프 본문은 싣지 않는다. */
+export function contractGapReason(task: string, lock: DispatchContractLock | undefined, name: string): string {
+  const label = name.trim() ? `'${name.trim().slice(0, 60)}'` : "(이름 없음)";
+  const field = guardFields(task);
+  if (!field) return `task ${label}: \`TASK_GUARD:\` 블록이 없습니다. ${GUARD_TEMPLATE}`;
+  const missing: string[] = [];
+  if (!field("WORK_CLASS") && !lock?.workClass) missing.push("WORK_CLASS(아직 lock이 없어 이 child에 필요)");
+  if (!field("PRIMARY_DELIVERABLE") && !lock?.primaryDeliverable) missing.push("PRIMARY_DELIVERABLE(아직 lock이 없어 이 child에 필요)");
+  if (parseOwnedPaths(field("OWNED_PATHS")).length === 0) missing.push("OWNED_PATHS(모든 child 필수)");
+  const detail = missing.length > 0
+    ? `빠진 필드: ${missing.join(", ")}`
+    : "필드가 블록 안에서 읽히지 않습니다(`TASK_GUARD:` 뒤 빈 줄이나 guard 필드 사이에 끼어든 줄이 있는지 확인)";
+  return `task ${label}: ${detail}. ${GUARD_TEMPLATE}`;
+}
+
 /**
  * 소유 경로는 집합 의미다. 중복을 제거하고 결정적 순서로 정렬한 정규형을 만들며, 문자열 자체는
  * `parseOwnedPaths`가 이미 한 정규화 범위 밖으로 바꾸지 않는다.
@@ -633,7 +651,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     let candidateLock = contractLock;
     const contracts = tasks.map((task) => {
       const contract = dispatchContract(task.task, candidateLock);
-      if (!contract) throw new Error("maker_route와 task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다.");
+      if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
@@ -848,8 +866,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // online provider 시도만 재사용하고, 이 task 호출에서 새로 필요한 provider도 함께 공유한다.
     const refreshAttempts: RefreshAttempts = new Map();
     let candidateLock = contractLock;
+    const locksBefore: (DispatchContractLock | undefined)[] = [];
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
+      locksBefore.push(candidateLock);
       const contract = dispatchContract(task, candidateLock);
       if (!contract) return null;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
@@ -863,7 +883,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // 명시적 캐릭터 summon은 일반 구현 발주가 아니며 기존 summon guard가 검증한다.
       if (/\[character-summon alias="[^"]+" model="[^"]+"/.test(task)) continue;
       const contract = contracts[itemIndex];
-      if (!contract) return { block: true, reason: "task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다." };
+      if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
       const name = String(item.name ?? "").trim();
       const key = briefKey(String(item.name ?? ""), contract);
       const pending = bindings.get(key);

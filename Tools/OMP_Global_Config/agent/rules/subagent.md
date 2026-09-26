@@ -190,6 +190,21 @@ provider 안전 확인·실제 의미 선택·외부 대기·판정 불가는 �
 본문은 보내지 않고, 새 입력·TODO 변경으로 늦어진 판정을 폐기한다. Codex/Claude를 별도 정책으로
 나누지 않으며 실제 승인 경계와 Main 수용 판정은 그대로 유지한다.
 
+2026-09-27 실제 막힘에서 네 자리를 더했다. 모두 조언이거나 좁은 사전 차단이며 승인·권한을 만들지 않는다.
+- **미답 중간 질문(`turn-end-guard`, JEV):** 사용자 입력·실행 중 steering의 질문(물음표 없는 한국어 의문형 포함)을
+  턴 끝에서 이후 본문이 답했는지 입력당 한 번 판정한다. 질문 최대 5개·300자와 이후 본문 발췌만 경로·URL·literal·
+  코드를 지워 보내고 secret 패턴이면 부르지 않는다. 미답이면 본문으로 먼저 답하라는 aside를 TODO 안내와 합쳐 한 번 낸다.
+- **외부 조언 검증(`external-advice-check`, JEV):** 외부 모델 답을 길게 붙여 검증을 요청한 입력에서 주장 후보
+  최대 12개(160자)를 종류로 분류해 주장별 확인 목록을 준다. Main은 각 주장을 도구로 확인/반박/미확인으로 답한다.
+- **정리 전 자기 job 점유(`jev-runtime`, 로컬):** 재귀 삭제나 `deploy-live.ps1 -CleanupArtifacts -ConfirmCleanup`의
+  대상 leaf·glob prefix가 이 세션이 띄운 실행 중 bash job·`name` 서비스 명령에 있으면 그 호출만 막고 job id를 알린다.
+  job이 끝나거나 kill되면 풀린다. 유일한 차단 예외다.
+- **Windows 셸 경계 재시도(`jev-runtime`, 로컬):** PowerShell `$` 소실·역슬래시 경로 소실·cmd 인용·없는 cmd 내장을
+  auth보다 먼저 분류하고 `.ps1` 파일 + 슬래시 절대경로 `-File`로 고치라고 안내한다. `401`·`403`은 HTTP·status 문맥에서만 auth다.
+
+JEV 밖의 결정론 검사 두 가지도 같은 날 넣었다. `git_finalize`는 source manifest 대상 파일을 manifest 없이 커밋하려 하면
+commit 전에 재생성 명령과 함께 멈추고, `maker_route`·`task`의 TaskGuard 계약 오류는 빠진 필드와 양식을 짚는다.
+
 Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·승인, test 결과, 배포 승인 같은
 결정론 검사가 우선한다. high-risk 분류·승인·최종 수용은 Main authority이고 judgment가 대신하지
 않는다. Skill selection은 후보 advisory만 허용하며 automatic gate로 쓰지 않는다.
