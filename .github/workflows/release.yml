@@ -1,6 +1,15 @@
 name: Publish CUELO web release
 
+# A public `main` push whose CI succeeds publishes its `package.json` version: the
+# GitHub source release first, then the npm `cuelo` package built the same way CI
+# builds it. A commit that keeps an already-released version is skipped. The npm
+# step uses Trusted Publishing (OIDC), so no npm token is stored in the repository.
+# `workflow_dispatch` re-runs the same steps for one explicit revision.
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       target_sha:
@@ -17,33 +26,57 @@ concurrency:
 
 jobs:
   release:
-    if: github.repository == 'gim47656-ship-it/CUELO'
+    if: >-
+      github.repository == 'gim47656-ship-it/CUELO' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
+      - name: Resolve the revision to release
+        id: target
+        env:
+          INPUT_SHA: ${{ inputs.target_sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: echo "sha=${INPUT_SHA:-$RUN_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Check out the selected public revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
 
       - name: Publish the verified web source release
+        id: release
         uses: actions/github-script@v7
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         with:
           script: |
             const fs = require('node:fs');
             const repo = context.repo;
             const sha = process.env.TARGET_SHA;
+            const manual = process.env.MANUAL === 'true';
+            // An automatic run that has nothing new to publish ends quietly; a manual run
+            // was asked for one revision, so the same condition is an error there.
+            const skip = (message) => {
+              if (manual) throw new Error(message);
+              core.notice(message);
+              core.setOutput('publish', 'false');
+            };
             if (!/^[0-9a-f]{40}$/.test(sha)) {
               throw new Error('target_sha must be a full lowercase commit SHA');
             }
             const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: 'main' });
             if (branch.commit.sha !== sha) {
-              throw new Error('Only the current public main revision can be released');
+              return skip(`${sha} is no longer the public main revision; the newer push releases instead`);
             }
             const { data: runs } = await github.rest.actions.listWorkflowRuns({
               ...repo, workflow_id: 'ci.yml', branch: 'main', head_sha: sha,
@@ -57,12 +90,6 @@ jobs:
               throw new Error('Expected a stable CUELO package version');
             }
             const tag = `v${pkg.version}`;
-            const lines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
-            const start = lines.findIndex(line => line.startsWith(`## [${pkg.version}]`));
-            if (start < 0) throw new Error(`Missing CHANGELOG entry for ${tag}`);
-            const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
-            const body = lines.slice(start + 1, next < 0 ? undefined : next).join('\n').trim();
-            if (!body) throw new Error(`Empty CHANGELOG entry for ${tag}`);
 
             let ref;
             try {
@@ -77,9 +104,13 @@ jobs:
                 target = annotated.object;
               }
               if (target.type !== 'commit' || target.sha !== sha) {
-                throw new Error(`${tag} already identifies another revision; tags are never moved`);
+                return skip(`${tag} already identifies another revision; bump package.json to release this one`);
               }
             }
+            core.setOutput('sha', sha);
+            core.setOutput('version', pkg.version);
+            core.setOutput('publish', 'true');
+
             let existing;
             try {
               ({ data: existing } = await github.rest.repos.getReleaseByTag({ ...repo, tag }));
@@ -93,9 +124,95 @@ jobs:
               core.info(`Already published: ${existing.html_url}`);
               return;
             }
+            const lines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+            const start = lines.findIndex(line => line.startsWith(`## [${pkg.version}]`));
+            if (start < 0) throw new Error(`Missing CHANGELOG entry for ${tag}`);
+            const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+            const body = lines.slice(start + 1, next < 0 ? undefined : next).join('\n').trim();
+            if (!body) throw new Error(`Empty CHANGELOG entry for ${tag}`);
             const { data: release } = await github.rest.repos.createRelease({
               ...repo, tag_name: tag, target_commitish: sha, name: `CUELO ${tag}`,
               body, draft: false, prerelease: false, generate_release_notes: false,
               make_latest: 'legacy',
             });
             core.info(`Published: ${release.html_url}`);
+
+  npm:
+    needs: release
+    if: needs.release.outputs.publish == 'true'
+    # Same platform and build steps as the public CI that verified this revision.
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the released revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+
+      # npm Trusted Publishing needs npm 11.5.1 or newer.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Skip a version npm already has
+        id: registry
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          $published = npm view "cuelo@$env:VERSION" version 2>$null
+          if ($published -eq $env:VERSION) {
+            Write-Host "::notice::cuelo@$env:VERSION is already on npm"
+            "exists=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+          # `npm view` exits 1 for an unpublished version; the runner's pwsh wrapper would fail the step on it.
+          $global:LASTEXITCODE = 0
+
+      - name: Install dependencies
+        if: steps.registry.outputs.exists != 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Build package
+        if: steps.registry.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $buildHome = Join-Path $env:RUNNER_TEMP 'build-home'
+          New-Item -ItemType Directory -Path $buildHome -Force | Out-Null
+          $root = [IO.Path]::GetPathRoot($buildHome)
+          $env:USERPROFILE = $buildHome
+          $env:HOME = $buildHome
+          $env:HOMEDRIVE = $root.TrimEnd('\')
+          $env:HOMEPATH = $buildHome.Substring($root.Length - 1)
+          $env:NEXT_TELEMETRY_DISABLED = '1'
+          bun run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Apply and verify web runtime compatibility
+        if: steps.registry.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node Tools/CUELO_Setup/files/native-runtime-patch.js --target . --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish to npm
+        if: steps.registry.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          npm install --global npm@latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm publish --access public --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
