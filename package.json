@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Browser workspace for omp (oh-my-pi) — continue terminal omp sessions in the browser",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -19,8 +19,7 @@
   "license": "MIT",
   "cueloBuild": {
     "distribution": "cuelo",
-    "upstreamCommit": "0acce6240b27eb7d44d5c9b78187bd95e01270f8",
-    "coreVersion": "18.3.1"
+    "coreVersion": "18.3.2"
   },
   "engines": {
     "node": ">=22.19.0",
@@ -48,41 +47,34 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./app ./components ./hooks ./lib ./public ./bin",
-    "desktop:build": "bun scripts/stage-desktop.mjs && bun scripts/build-desktop.mjs",
-    "desktop:dev": "tauri dev",
-    "desktop:fetch-bun": "bun scripts/fetch-bun.mjs",
-    "desktop:signer": "tauri signer",
-    "desktop:sync-version": "bun scripts/sync-version.mjs",
-    "tauri": "tauri",
     "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin"
   },
   "dependencies": {
-    "@oh-my-pi/pi-agent-core": "18.3.1",
-    "@oh-my-pi/pi-ai": "18.3.1",
-    "@oh-my-pi/pi-coding-agent": "18.3.1",
-    "@oh-my-pi/pi-tui": "18.3.1",
-    "@oh-my-pi/pi-utils": "18.3.1",
+    "@oh-my-pi/pi-agent-core": "18.3.2",
+    "@oh-my-pi/pi-ai": "18.3.2",
+    "@oh-my-pi/pi-coding-agent": "18.3.2",
+    "@oh-my-pi/pi-tui": "18.3.2",
+    "@oh-my-pi/pi-utils": "18.3.2",
     "@seed-design/css": "2.8.0",
     "@seed-design/react": "2.4.1",
     "@seed-design/tailwind4-theme": "2.4.0",
     "js-yaml": "^5.4.1",
     "next": "16.2.12",
-    "proper-lockfile": "4.1.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "remark-frontmatter": "^5.0.0",
-    "undici": "8.5.0",
     "unpdf": "1.8.1",
     "yaml": "^2.9.0"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.21.0"
   },
   "devDependencies": {
     "@lobehub/icons": "^5.16.0",
     "@tailwindcss/postcss": "^4.3.3",
-    "@tauri-apps/cli": "^2.11.4",
     "@types/bun": "^1.4.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.9.5",
-    "@types/proper-lockfile": "4.1.4",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/react-syntax-highlighter": "^15.5.13",

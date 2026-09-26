@@ -37,6 +37,7 @@ interface RoutingPolicy {
     profiles: Record<string, { modelConfigPath: string; workClass: string; allowedEfforts: string[] }>;
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
+    uiUxBoundaryCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
   };
@@ -182,6 +183,10 @@ function decisionQuestions(policy: RoutingPolicy, candidates: Candidate[]) {
     hardFocus: {
       type: "choice", criteria: policy.modelSelection.hardFocusCriteria,
       instructions: "남은 판단의 지배적 성격을 분류한다. 프론트엔드 경로라도 실행·동시성·상태 불변식이면 CODE_SYSTEM이다. 다른 질문의 답을 가정하지 않는다.",
+    },
+    uiUxBoundary: {
+      type: "noul",
+      instructions: `${policy.modelSelection.uiUxBoundaryCriteria}. 남은 UI/UX 판단의 존재를 난이도·지배 분야와 독립적으로 판단한다. 혼합 작업의 UI/UX 경계도 포함하고 파일 확장자만으로 추정하지 않는다.`,
     },
   };
   // 위임 판정은 정책 정본(delegationCriteria = MAIN·MAKER·UNKNOWN)을 그대로 choice 선택지로 쓴다.
@@ -410,18 +415,18 @@ const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(mo
 
 /** Jev hardFocus 답과 HARD 후보 profile의 대응. 값은 `modelSelection.profiles`의 profile 이름이다. */
 const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
-  UI_UX: "HARD_UI_UX",
-  CODE_SYSTEM: "HARD_CODE_SYSTEM",
+  UI_UX: "HARD_UI_OPUS",
+  CODE_SYSTEM: "HARD_CODE_OPUS",
 };
 
 /**
- * 등급이 NORMAL인 후보 중 primary(NORMAL = modelRoles.impl)를 우선한다.
+ * 비-UI NORMAL은 primary(NORMAL_SOL = modelRoles.implSol)를 우선한다.
  * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. 계정 사용 가능성은 core 신호
  * (disabled·limitReached·autoBlockedUntil)로만 보고, 미관측은 소진으로 간주하지 않는다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
-  const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL");
-  const primary = normal.find((candidate) => candidate.profile === "NORMAL");
+  const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && candidate.profile !== "NORMAL_OPUS");
+  const primary = normal.find((candidate) => candidate.profile === "NORMAL_SOL");
   const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
   if (quota.state !== "observed") return unavailable(quota.reason);
   /** 그 후보 provider의 관측된 계정이 모두 사용 불가할 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
@@ -454,7 +459,7 @@ function recommendedProfile(answers: Record<string, RoutingAnswer> | null, candi
   const workClass = answers?.workClass?.choice;
   const profile = workClass === "HARD"
     ? HARD_FOCUS_PROFILES[answers?.hardFocus?.choice ?? ""] ?? null
-    : workClass ?? null;
+    : null;
   return candidates.some((candidate) => candidate.profile === profile) ? profile : null;
 }
 
@@ -617,7 +622,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main이 route의 profile·normalAllocation·placement·history를 확인한 뒤 task의 model에 후보와 concrete effort를 지정합니다. 후보별 efforts가 그 profile의 허용 강도 구간이며 구간 밖 강도와 max는 task hook이 막습니다. NORMAL은 primary NORMAL(modelRoles.impl)을 우선 추천하고, 그 계정이 실제로 소진·사용 불가일 때만 다른 NORMAL 후보를 추천하며 한도 미관측은 소진으로 간주하지 않습니다. 계정 내부 전환 기준은 바꾸지 않습니다. HARD는 Main 계열과 무관하게 hardFocus를 따르고(UI_UX→HARD_UI_UX, CODE_SYSTEM→HARD_CODE_SYSTEM) HARD_CODE_SYSTEM_ALTERNATE는 후보로만 둡니다. 같은 모델이 여러 profile에 있으면 추천 profile, 이어서 같은 등급 profile의 구간으로 검사하므로 NORMAL 조각에 NORMAL_DEEPSEEK 구간 밖 강도를 쓸 수 없습니다. 허용 강도가 하나뿐이면 그 값을 쓰고 Jev 질문은 생략합니다. 접근 모드는 명시하지 않습니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. history는 같은 등급(HARD는 분야 포함) 최근 attempt의 추천 따름·대체 관측 건수이며 observation은 건수와 불확실성만 적는 중립 안내일 뿐 후보·규칙을 바꾸지 않습니다. 각 route의 identity(sessionId·assignmentId·attemptId)를 task 발주 뒤 routing_verdict로 그대로 넘겨 Main 수용 판정을 남깁니다. context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용할 수 있습니다. 같은 브리프에 judge를 다시 호출하지 않습니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. NORMAL UI/UX 경계는 NORMAL_OPUS, 비-UI는 NORMAL_SOL 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지합니다. HARD는 UI_UX→HARD_UI_OPUS, CODE_SYSTEM→HARD_CODE_OPUS이며 HARD_CODE_ASTRA는 명시적 대안입니다. 후보별 허용·registry 지원 강도만 쓰고 max나 coarse effort는 쓰지 않습니다. 작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인하고, 비-Opus의 미완 변경·증거를 freeze해 소유권을 넘깁니다. active writer와 겹치거나 실행 중 모델·effort를 바꾸지 않습니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. Opus unavailable을 다른 후보로 숨기지 않습니다. 계정 warm/exact pin·전환·쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. history는 같은 등급 최근 attempt의 중립 건수이며 후보·규칙을 자동 변경하지 않습니다. routing_verdict에는 실제 spawn identity를 씁니다. context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용하며 같은 브리프에 judge를 중복 호출하지 않습니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -796,9 +801,13 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
       for (const publication of publications) {
-        publication.prepared.profile = publication.prepared.answers?.workClass?.choice === "NORMAL"
-          ? allocation.profile
-          : recommendedProfile(publication.prepared.answers, candidates);
+        const answers = publication.prepared.answers;
+        const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
+        publication.prepared.profile = answers?.workClass?.choice === "NORMAL"
+          ? uiUxBoundary
+            ? candidates.find((candidate) => candidate.profile === "NORMAL_OPUS")?.profile ?? null
+            : allocation.profile
+          : recommendedProfile(answers, candidates);
       }
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (typeof sessionId !== "string" || !sessionId.trim()) {
@@ -818,7 +827,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         routes: publications.map((publication, index) => ({
           ...publication.route,
           profile: publication.prepared.profile,
-          normalAllocation: publication.prepared.answers?.workClass?.choice === "NORMAL" ? allocation : null,
+          normalAllocation: publication.prepared.answers?.workClass?.choice === "NORMAL"
+            && (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) < 0.5 ? allocation : null,
+          uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
+            ? "기존 owner가 Opus인지 확인하세요. 비-Opus면 미완 변경·증거를 freeze하고 소유권을 넘깁니다. active owner를 동시에 새 발주하거나 실행 중 모델을 바꾸지 않습니다."
+            : null,
           history: historyOf(publication.prepared.answers),
           preparedId: preparedIds[index],
           plan: plans[index] ?? { sessionId, planId: null },
@@ -909,6 +922,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (!selected || item.effort !== undefined) return { block: true, reason: "maker_route가 확인한 후보와 concrete effort를 model selector에 지정하세요. coarse effort는 전달하지 않습니다." };
       if (!selected.efforts.includes(effort)) return { block: true, reason: `${selected.profile}(${selected.model})의 허용 강도는 ${selected.efforts.join("·")}입니다. 구간 밖 강도('${effort || "<없음>"}')로는 발주하지 않습니다.` };
       const answers = prepared.answers;
+      if (answers?.workClass?.choice === "NORMAL" && (answers.uiUxBoundary?.noul ?? 0) >= 0.5
+        && selected.profile !== "NORMAL_OPUS") {
+        return { block: true, reason: "NORMAL UI/UX 경계는 NORMAL_OPUS로 배정합니다. Opus가 없으면 unavailable로 보고하며 다른 후보로 조용히 대체하지 않습니다." };
+      }
       const profile = prepared.profile;
       const index = candidates.findIndex((candidate) => candidate.profile === selected.profile);
       const recommendedEffort = selected.efforts.length === 1 ? selected.efforts[0] : answers?.[`effort${index}`]?.choice;
@@ -1004,7 +1021,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성(MAIN·MAKER·UNKNOWN)·NORMAL/HARD 등급·HARD 지배 분야·후보별 concrete effort·기존 owner 중복을 한 배치에서 각각 판단한다. 위임 적합성과 난이도는 별개이며 Main이 조언을 보고 직접 수행할지 발주할지 결정한다. NORMAL은 사용 가능한 primary NORMAL(modelRoles.impl)을 우선하고 실제 소진·사용 불가일 때만 대안을 쓴다. 한도 미관측은 소진이 아니다. HARD는 분야를 따르며 HARD_CODE_SYSTEM_ALTERNATE는 후보로만 제공한다. profile별 허용 강도와 기존 owner 경계를 지킨다. history는 같은 등급 최근 attempt의 관측 건수·불확실성만 보여 준다. 준비 plan은 실행 identity가 아니며 routing_verdict에는 실제 spawn/pre-review의 sessionId·assignmentId·attemptId를 쓴다. task 원문은 Jev에 보내지 않고 같은 브리프에 eval judge를 중복 호출하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SOL 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_ASTRA는 명시적 대안이다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

@@ -23,14 +23,6 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { OmpWordmark } from "./OmpWordmark";
 
-declare global {
-  interface Window {
-    piDesktop?: {
-      selectDirectory: () => Promise<string | null>;
-    };
-  }
-}
-
 interface Props {
   selectedSessionId: string | null;
   optimisticSession?: SessionInfo | null;

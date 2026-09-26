@@ -29,15 +29,14 @@ const UNPDF_REQUEST = /^unpdf(?:\/.*)?$/;
 const BUN_BUILTIN_REQUEST = /^bun:/;
 
 const nextConfig: NextConfig = {
-  // Desktop builds (scripts/stage-desktop.mjs) redirect the production build
-  // into src-tauri/server/.next so packaging never touches the dev `.next/`.
+  // Isolated web verification builds can redirect output away from the dev
+  // `.next/` directory without changing the production default.
   distDir: process.env.CUELO_DIST_DIR || ".next",
   // Keep Windows output tracing inside the pinned source tree. Without this,
   // junctions under the user profile (for example "My Documents") can be
   // traversed and fail the build with EPERM.
   outputFileTracingRoot: __dirname,
   serverExternalPackages: [
-    "undici",
     "unpdf",
     "@oh-my-pi/pi-coding-agent",
     "@oh-my-pi/pi-agent-core",
@@ -47,13 +46,7 @@ const nextConfig: NextConfig = {
     "@oh-my-pi/pi-utils",
   ],
   webpack: (config, { isServer, nextRuntime }) => {
-    if (!isServer || nextRuntime === "edge") {
-      // instrumentation.ts has a Node-only dynamic import guarded by
-      // NEXT_RUNTIME. Webpack still traces it for the browser fallback unless
-      // the server-only module is explicitly excluded.
-      config.resolve.alias["@/lib/http-dispatcher"] = false;
-      return config;
-    }
+    if (!isServer || nextRuntime === "edge") return config;
     const externals = Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean);
     config.externals = [
       ({ request }: { request?: string }, callback: (error?: unknown, result?: string) => void) => {

@@ -18,7 +18,7 @@ export const enLocale = {
     "updates.current": "Running CUELO {version}",
     "updates.changelog": "Changelog",
     "updates.viewRelease": "View release",
-    "updates.manual": "Running from source? Update with this command, then restart. Desktop builds are on the release page.",
+    "updates.manual": "Running from source? Update with this command, then restart.",
     "updates.copyCommand": "Copy command",
     "updates.commandCopied": "Command copied",
     "updates.copyFailed": "Unable to copy the command",

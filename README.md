@@ -10,9 +10,11 @@
 
 # CUELO
 
-> 터미널에서 시작한 omp 세션을 브라우저에서 그대로 이어 가는 작업 공간.
+> 작업에서 얻은 교훈이 다음 작업의 행동으로 이어지는 코딩 작업 공간.
 
 CUELO는 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) 코딩 에이전트를 위한 브라우저 작업 공간입니다. 별도 에이전트가 아니라 omp SDK를 서버 안에서 그대로 돌리고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 그래서 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정이 하나로 유지됩니다.
+
+CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다. 원인을 확인하고 필요한 부분만 바꾸며, 다음 작업에서 적용과 효과를 확인하는 것까지를 지향합니다. 기록을 저장했다는 이유만으로 자동 개선이 끝났다고 보지는 않습니다.
 
 *English: CUELO is a Korean-first browser workspace for omp. It runs omp's own SDK in-process against `~/.omp/agent`, so terminal and browser share one set of sessions, credentials and model settings.*
 
@@ -46,6 +48,7 @@ CUELO는 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) 코딩 에이전�
 
 - SubAgent 아카이브: 진행 중·완료된 자식 에이전트의 기록을 열어 봅니다.
 - 자식 에이전트의 발화가 해당 턴 아래 대화 흐름에 끼어들어 누가 무슨 말을 했는지 이어서 읽힙니다.
+- 공개 하네스는 완료된 Maker의 미기록 Main 판정을 후속 지시 때 안내하고, 재작업 이력과 최종 수용을 구분합니다. 모델별 허용 추론 강도와 적용 경계는 [하네스 안내](./docs/harness.md#발주와-검수-계약)를 따릅니다.
 - 사이드 챗(`/btw`): 본 대화를 끊지 않고 옆 패널에서 따로 묻습니다. 답변은 본 대화와 같은 캐릭터 얼굴·스티커·마크다운으로 보이고, 세션마다 초안이 따로 보관됩니다. 사이드 챗 문답은 본 대화에 남지 않으며, 답변의 「메인에 보내기」를 누를 때만 문답과 추가 지시가 본 대화로 전달됩니다(본 대화가 실행 중이면 steer, 아니면 새 요청).
 - ChatGPT 6 Pro(SHION) 상담 브리지: 6 Pro가 MCP로 omp 세션에 붙어 상담하고, 상담 기록과 실패 기록이 대화창에 표시됩니다.
 - 실시간 음성: 브라우저 마이크로 Codex live 음성 세션을 엽니다. 자격 증명은 서버에만 두고 페이지에는 넘기지 않습니다.
@@ -59,6 +62,7 @@ CUELO는 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) 코딩 에이전�
 **omp-web에서 이어받은 기반 기능**
 
 - 모델 역할(`default`, `smol`, `slow`, `plan`, `commit`, `task` 등)별 모델 지정·전환 — TUI의 `/model`과 같은 `config.yml`을 씁니다.
+- 입력창의 `/` 명령은 대기 중뿐 아니라 실행 중에도 Enter·Steer·Follow-up으로 실행할 수 있습니다. 내장 명령은 즉시 처리하고, 발견된 확장·스킬·프롬프트 템플릿 명령은 해당 명령 경로로 전달합니다. 사용할 수 없거나 실행 중 허용되지 않는 명령은 안내하며 일반 채팅으로 전송하지 않습니다.
 - provider 로그인·API 키, `models.yml`, 플러그인, 스킬을 웹에서 관리합니다.
 - 프로젝트 파일 탐색과 소스·문서·이미지·오디오·PDF 미리보기, Git worktree 전환.
 - 프로젝트 신뢰: 신뢰하지 않은 저장소의 확장·훅·도구·MCP는 실행하지 않습니다([docs/project-trust.md](./docs/project-trust.md)).
@@ -69,6 +73,7 @@ CUELO는 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) 코딩 에이전�
 CUELO는 npm에 배포하지 않습니다. npm의 `omp-web` 패키지는 upstream이고 CUELO가 아닙니다. 소스에서 실행하세요.
 
 omp SDK가 TypeScript 소스와 `bun:` 내장 모듈을 쓰기 때문에 서버는 **Bun 1.4.2 이상**에서만 돕니다.
+메모리 패키지가 선언한 선택적 ONNX peer는 `onnxruntime-node:1.21.0`으로 제공합니다. Transformers가 요구하는 별도 버전은 자체 의존성으로 유지하며, 설치 오류를 피하려고 peer 검증을 끄지 않습니다.
 
 ```bash
 # Bun 설치
@@ -80,6 +85,7 @@ git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 bun install
 bun run build
+node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
 bun bin/cuelo.js
 ```
 
@@ -103,11 +109,14 @@ bun bin/cuelo.js --reset-password      # 비밀번호 재설정
 
 ```bash
 git pull && bun install && bun run build
+node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
 ```
+
+공개 웹 소스 릴리스와 변경 내용은 [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases)에서 확인하세요. [릴리스 절차](./docs/release.md)는 CUELO의 수동 게시 흐름을 설명합니다.
 
 ### 사이드카 서비스
 
-사용량 카드, 사이드 챗, SubAgent 아카이브는 로컬 사이드카 서비스에서 데이터를 받습니다. 이 서비스들은 이 저장소에 포함되어 있지 않습니다.
+사용량 카드, 사이드 챗, SubAgent 아카이브는 로컬 사이드카 서비스에서 데이터를 받습니다. 이 서비스들은 공개 미러에 포함되어 있지 않습니다.
 
 | 기능 | 주소 |
 | --- | --- |
@@ -116,17 +125,6 @@ git pull && bun install && bun run build
 | SubAgent 아카이브 | `http://127.0.0.1:30144` |
 
 사이드카가 없으면 해당 패널은 「연결 안 됨」으로 표시되고, 나머지 기능은 그대로 동작합니다.
-
-### 데스크톱 앱 (Tauri)
-
-`src-tauri/`는 같은 앱을 데스크톱 창으로 감싸는 Tauri v2 셸입니다. Next.js 서버를 번들된 Bun 사이드카로 띄우고 CLI와 같은 `~/.omp`를 씁니다. Rust 도구 체인이 필요합니다.
-
-```bash
-bun run desktop:dev      # 개발 창
-bun run desktop:build    # 설치 파일 빌드 (개발용 .next/는 건드리지 않음)
-```
-
-자동 업데이트는 CUELO 릴리스만 봅니다. 아직 공개된 데스크톱 릴리스는 없습니다.
 
 ### Docker
 
@@ -143,15 +141,15 @@ bun run test         # 앱 테스트
 bun run test:coverage  # 앱 테스트 + 커버리지 표
 ```
 
-개발 서버를 쓰는 동안에는 `bun run build`를 돌리지 마세요. `.next/`를 덮어써서 개발 서버가 깨집니다(`bun run desktop:build`는 별도 디렉터리에 빌드하므로 괜찮습니다).
+개발 서버를 쓰는 동안 같은 출력 경로에 `bun run build`를 돌리지 마세요. `.next/`를 덮어써서 개발 서버가 깨집니다. 검증용 production 빌드는 별도 소스 복사본이나 격리된 `CUELO_DIST_DIR`에서 실행하세요.
 
 참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md)
 
 ## 계보와 라이선스
 
-CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https://github.com/ddallabenetta/omp-web)을 기반으로 하고, omp-web은 [@agegr](https://github.com/agegr)의 [pi-web](https://github.com/agegr/pi-web)에서 갈라져 나왔습니다. 기반으로 삼은 upstream 버전은 [`UPSTREAM.json`](./UPSTREAM.json)에 기록되어 있습니다.
+CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https://github.com/ddallabenetta/omp-web)을 기반으로 하고, omp-web은 [@agegr](https://github.com/agegr)의 [pi-web](https://github.com/agegr/pi-web)에서 갈라져 나왔습니다. CUELO 앱은 독립적으로 개발·배포하며 upstream 앱의 릴리스를 자동으로 따르지 않습니다. 기반 소스의 출처는 [`UPSTREAM.json`](./UPSTREAM.json)에 기록되어 있습니다.
 
-CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있고, 데스크톱 번들에도 그대로 포함됩니다.
+CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
 캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION)의 그림·음성·스티커와 `docs/hero.png`는 CUELO 고유 자산입니다.
 

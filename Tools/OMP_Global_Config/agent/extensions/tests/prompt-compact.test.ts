@@ -28,6 +28,8 @@ describe("prompt-compact", () => {
     const out = handler!({ systemPrompt: system })!.systemPrompt;
     expect(out[0]).toContain("# Global Agent Instructions");
     expect(out[0]).not.toContain("# 한국어 원문");
+    expect(out[0]).toMatch(/\b(?:before|prior to)\b[^\n]*\b(?:long-running process|background job|queue)\b[^\n]*\b(?:tell|inform|notify)\b[^\n]*\buser\b/i);
+    expect(out[0]).toMatch(/\banswer(?:ed|ing)?\b[^\n]*\buser\b[^\n]*\bbackground job\b[^\n]*\b(?:still alive|in progress|active)\b[^\n]*\b(?:wait(?:ing)?|collect)\b[^\n]*\bsame (?:response|turn)\b/i);
     expect(out[0]).toContain("프로젝트 규칙");
     expect(out[1]).toContain("# Global Rules");
     expect(out[1]).not.toContain("# 한국어 전역 규칙");

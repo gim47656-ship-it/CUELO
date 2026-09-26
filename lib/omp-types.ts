@@ -5,6 +5,9 @@ import type {
   SlashCommandInfo as OmpSlashCommandInfo,
   Theme,
 } from "@oh-my-pi/pi-coding-agent";
+import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import type { SkillsSettings } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
@@ -90,12 +93,6 @@ interface PromptTemplateLike {
   source?: string;
 }
 
-interface SkillLike {
-  name: string;
-  description?: string;
-  source?: string;
-  filePath?: string;
-}
 
 interface ExtensionRunnerLike {
   getRegisteredCommands(reserved?: ReadonlySet<string>): Array<{
@@ -221,7 +218,8 @@ export interface AgentSessionLike {
   };
   readonly extensionRunner: ExtensionRunnerLike | undefined;
   readonly promptTemplates: readonly PromptTemplateLike[];
-  readonly skills: readonly SkillLike[];
+  readonly skills: readonly Skill[];
+  readonly skillsSettings: SkillsSettings | undefined;
 
   readonly bindExtensions?: unknown;
   listCurrentProviderOAuthAccounts?(): Promise<SessionOAuthAccountList | undefined>;
@@ -314,10 +312,7 @@ export interface AgentSessionLike {
   getGoalModeState?(): GoalModeState | undefined;
   setGoalModeState?(state: GoalModeState | undefined): void;
   sendGoalModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;
-  promptCustomMessage(
-    message: { customType: string; content: string; display?: boolean; attribution?: "user" | "agent" },
-    options?: { streamingBehavior?: "steer" | "followUp" },
-  ): Promise<void>;
+  promptCustomMessage: AgentSession["promptCustomMessage"];
 }
 
 /** The subset of omp's `GoalRuntime` CUELO drives. */

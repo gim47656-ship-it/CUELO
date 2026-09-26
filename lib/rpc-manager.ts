@@ -13,6 +13,9 @@ import {
 import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
 import { executeAcpBuiltinSlashCommand, type AcpBuiltinSlashCommandResult } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { buildSkillPromptMessage } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
+import { resolveRpcSkillInvocation } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
@@ -1240,13 +1243,27 @@ export class AgentSessionWrapper {
           promptImages = applied.images;
           if (!promptMessage && !promptImages?.length) return null;
         }
+        const skill = resolveRpcSkillInvocation(this.inner, promptMessage);
+        const promptRun = skill
+          ? buildSkillPromptMessage(skill.skill, skill, "user").then((built) =>
+              this.inner.promptCustomMessage({
+                customType: SKILL_PROMPT_MESSAGE_TYPE,
+                content: promptImages?.length
+                  ? [{ type: "text" as const, text: built.message }, ...promptImages]
+                  : built.message,
+                display: true,
+                details: built.details,
+                attribution: "user",
+              }, { ...(streamingBehavior ? { streamingBehavior } : {}), queueChipText: promptMessage })
+            )
+          : this.inner.prompt(promptMessage, {
+              ...(promptImages?.length ? { images: promptImages } : {}),
+              ...(streamingBehavior ? { streamingBehavior } : {}),
+              userInitiated: true,
+            });
         this.promptRunning = true;
         notifyRunningChange();
-        this.inner.prompt(promptMessage, {
-          ...(promptImages?.length ? { images: promptImages } : {}),
-          ...(streamingBehavior ? { streamingBehavior } : {}),
-          userInitiated: true,
-        }).then(() => {
+        promptRun.then(() => {
           this.promptRunning = false;
           this.resetIdleTimer();
           if (!streamingBehavior) this.emit({ type: "prompt_done" });
@@ -2063,7 +2080,6 @@ declare global {
   var __ompSessions: Map<string, AgentSessionWrapper> | undefined;
   var __ompStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __ompStartingSessionCwds: Map<string, number> | undefined;
-  var __ompRunningListeners: Set<(ids: string[]) => void> | undefined;
   // 삭제가 진행 중인 세션 id. 프로세스 메모리에만 존재하고 삭제가 끝나거나
   // 실패하면 즉시 비워진다(영속 tombstone이 아니다).
   var __ompClosingSessionIds: Set<string> | undefined;
@@ -2250,49 +2266,10 @@ export function getRunningRpcSessionIds(): string[] {
   return [...ids];
 }
 
-// ----------------------------------------------------------------------------
-// Running-status broadcaster
-//
-// Pushes the current set of running session ids to subscribers whenever any
-// session's running state may have changed. This lets the sidebar receive live
-// updates over SSE instead of polling. Listeners live on globalThis so they
-// survive Next.js hot-reload.
-// ----------------------------------------------------------------------------
-
-function getRunningListeners(): Set<(ids: string[]) => void> {
-  if (!globalThis.__ompRunningListeners) globalThis.__ompRunningListeners = new Set();
-  return globalThis.__ompRunningListeners;
-}
-
-/** Subscribe to running-session-id changes. Returns an unsubscribe function. */
-export function subscribeRunningSessions(listener: (ids: string[]) => void): () => void {
-  const listeners = getRunningListeners();
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
-let lastRunningSnapshot = "";
-
-/**
- * Recompute the running-session-id set and, if it changed since the last
- * notification, broadcast it to subscribers.
- */
+/** 실행 중인 세션 목록을 업데이트·롤백 복구용 영수증에 기록한다. */
 export function notifyRunningChange(): void {
   const ids = getRunningRpcSessionIds();
   recordRuntimeActivity(ids);
-  const listeners = getRunningListeners();
-  if (listeners.size === 0) {
-    // A future subscriber receives its own initial snapshot. Clear this one so
-    // its first state transition cannot match stale state from an old listener.
-    lastRunningSnapshot = "";
-    return;
-  }
-  const snapshot = JSON.stringify([...ids].sort());
-  if (snapshot === lastRunningSnapshot) return;
-  lastRunningSnapshot = snapshot;
-  for (const listener of listeners) {
-    try { listener(ids); } catch { /* ignore listener errors */ }
-  }
 }
 
 /**

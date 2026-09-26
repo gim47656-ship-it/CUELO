@@ -1,6 +1,5 @@
 # The image builds CUELO from source, so the context is the repository minus
-# everything the Next.js build does not read: local artifacts, secrets, and the
-# Tauri desktop tree (a Rust target directory that dwarfs the rest of the repo).
+# everything the Next.js build does not read: local artifacts and secrets.
 .git
 .gitignore
 .github
@@ -14,8 +13,6 @@ build
 coverage
 *.tsbuildinfo
 next-env.d.ts
-
-src-tauri
 
 docs
 *.md

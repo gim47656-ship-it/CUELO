@@ -1,0 +1,101 @@
+name: Publish CUELO web release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "CI가 성공한 공개 main 커밋의 전체 SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-web-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'gim47656-ship-it/CUELO'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out the selected public revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+
+      - name: Publish the verified web source release
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const repo = context.repo;
+            const sha = process.env.TARGET_SHA;
+            if (!/^[0-9a-f]{40}$/.test(sha)) {
+              throw new Error('target_sha must be a full lowercase commit SHA');
+            }
+            const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: 'main' });
+            if (branch.commit.sha !== sha) {
+              throw new Error('Only the current public main revision can be released');
+            }
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              ...repo, workflow_id: 'ci.yml', branch: 'main', head_sha: sha,
+              event: 'push', per_page: 1,
+            });
+            if (runs.workflow_runs[0]?.conclusion !== 'success') {
+              throw new Error('The selected public revision must pass CI before release');
+            }
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            if (pkg.name !== 'cuelo' || !/^\d+\.\d+\.\d+$/.test(pkg.version)) {
+              throw new Error('Expected a stable CUELO package version');
+            }
+            const tag = `v${pkg.version}`;
+            const lines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+            const start = lines.findIndex(line => line.startsWith(`## [${pkg.version}]`));
+            if (start < 0) throw new Error(`Missing CHANGELOG entry for ${tag}`);
+            const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+            const body = lines.slice(start + 1, next < 0 ? undefined : next).join('\n').trim();
+            if (!body) throw new Error(`Empty CHANGELOG entry for ${tag}`);
+
+            let ref;
+            try {
+              ({ data: ref } = await github.rest.git.getRef({ ...repo, ref: `tags/${tag}` }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (ref) {
+              let target = ref.object;
+              if (target.type === 'tag') {
+                const { data: annotated } = await github.rest.git.getTag({ ...repo, tag_sha: target.sha });
+                target = annotated.object;
+              }
+              if (target.type !== 'commit' || target.sha !== sha) {
+                throw new Error(`${tag} already identifies another revision; tags are never moved`);
+              }
+            }
+            let existing;
+            try {
+              ({ data: existing } = await github.rest.repos.getReleaseByTag({ ...repo, tag }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (existing) {
+              if (!ref || existing.draft || existing.prerelease) {
+                throw new Error('Existing release needs an explicit maintainer decision');
+              }
+              core.info(`Already published: ${existing.html_url}`);
+              return;
+            }
+            const { data: release } = await github.rest.repos.createRelease({
+              ...repo, tag_name: tag, target_commitish: sha, name: `CUELO ${tag}`,
+              body, draft: false, prerelease: false, generate_release_notes: false,
+              make_latest: 'legacy',
+            });
+            core.info(`Published: ${release.html_url}`);

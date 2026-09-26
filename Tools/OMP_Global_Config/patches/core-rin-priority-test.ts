@@ -1,6 +1,7 @@
-// Anthropic position N policy at the real AuthStorage selection path (OMP 18.3.0 namespaced auth).
-// The patch runs against a throwaway source fixture; Bun loads only its patched
-// pi-ai auth modules (auth-storage.ts, auth/*.ts) in place of the installed ones. No real credentials/network.
+// Anthropic 주간 reset 우선 정책을 실제 AuthStorage 선택 경로에서 본다(OMP 18.3.x namespaced auth).
+// patch는 임시 source fixture에만 적용하고, Bun은 그 fixture의 patched pi-ai auth 모듈(auth-storage.ts,
+// auth/*.ts)만 설치본 대신 읽는다. 실제 credential·네트워크는 쓰지 않는다.
+// 이미 patch된 target이면 OMP_CORE_PATCH_BACKUP(그 target의 core-patch-backup)에서 pristine 사본을 복사한다.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -25,8 +26,10 @@ function check(label: string, ok: boolean, detail: string): void {
 try {
 	if (!existsSync(aiSource)) throw new Error(`코어 원본을 찾지 못했다: ${aiSource}`);
 	// Copy only declared patch targets. The source install and its credentials stay untouched.
+	const pristine = process.env.OMP_CORE_PATCH_BACKUP;
 	for (const path of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(match => match[1]!))) {
-		const original = join(core, path);
+		const backup = pristine ? join(pristine, path) : undefined;
+		const original = backup && existsSync(backup) ? backup : join(core, path);
 		if (!existsSync(original)) continue;
 		const target = join(fixture, path);
 		mkdirSync(dirname(target), { recursive: true });
@@ -73,15 +76,26 @@ try {
 					remainingFraction: 1 - fraction,
 					unit: "percent" as const,
 				},
-		status: fraction === undefined || Number.isNaN(fraction) ? "unknown" as const : "ok" as const,
+		status: fraction === undefined || Number.isNaN(fraction)
+			? "unknown" as const
+			: fraction >= 1 ? "exhausted" as const : "ok" as const,
 	});
-	type Fractions = { five?: number; weekly?: number; tier?: number; report?: boolean };
-	const makeReport = (provider: string, values: Fractions, quickReset: boolean, noFiveReset = false) => ({
+	type Fractions = {
+		five?: number;
+		weekly?: number;
+		tier?: number;
+		report?: boolean;
+		/** Hours until the shared 7d window resets; null = no reset clock. */
+		weeklyReset?: number | null;
+		/** Hours until the 5h window resets; null = no reset clock (parser shape for an idle 0% window). */
+		fiveReset?: number | null;
+	};
+	const makeReport = (provider: string, values: Fractions) => ({
 		provider,
 		fetchedAt: Date.now(),
 		limits: [
-			window(provider, "5h", values.five, noFiveReset ? null : 4),
-			window(provider, "7d", values.weekly, quickReset ? 1 : 150),
+			window(provider, "5h", values.five, values.fiveReset === undefined ? 4 : values.fiveReset),
+			window(provider, "7d", values.weekly, values.weeklyReset === undefined ? 150 : values.weeklyReset),
 			...(values.tier === undefined ? [] : [window(provider, "7d", values.tier, 130, "fable")]),
 		],
 	});
@@ -92,16 +106,18 @@ try {
 		modelId?: string;
 		pin?: "warm" | "cold" | "exact";
 		block?: boolean;
-		noFiveReset?: boolean;
+		rinReservePct?: number;
 	}) {
 		const provider = opts.provider ?? "anthropic";
-		const rin = opts.rin ?? { five: 0, weekly: 0.23 };
-		const mio = opts.mio ?? { five: 0.1, weekly: 0.45 };
+		// 2026-09-26 Main 관측 모양: RIN 7d 81%·약 2일 뒤 reset, MIO 7d 3%·약 7일 뒤 reset.
+		// upstream required-drain은 MIO(0.97/160h)를 RIN(0.19/46h)보다 앞에 둔다.
+		const rin: Fractions = { five: 0, weekly: 0.81, weeklyReset: 46, ...opts.rin };
+		const mio: Fractions = { five: 0.1, weekly: 0.03, weeklyReset: 160, ...opts.mio };
 		const reports = {
-			[`rin-${tag}`]: makeReport(provider, rin, false, opts.noFiveReset),
-			[`mio-${tag}`]: makeReport(provider, mio, true),
+			[`rin-${tag}`]: makeReport(provider, rin),
+			[`mio-${tag}`]: makeReport(provider, mio),
 		};
-		if (opts.noFiveReset) {
+		if (rin.fiveReset === null) {
 			const fiveHour = reports[`rin-${tag}`].limits[0]!;
 			check(
 				"0% 5h fixture는 parser처럼 status ok, amount 0, resetsAt 필드 부재",
@@ -121,6 +137,9 @@ try {
 				},
 			} : undefined,
 			rankingStrategyResolver: (current: string) => current === provider ? claudeRankingStrategy : undefined,
+			...(opts.rinReservePct === undefined
+				? {}
+				: { accountPolicies: [{ provider, account: { accountId: `rin-${tag}` }, reservePct: opts.rinReservePct }] }),
 		});
 		try {
 			for (const identity of ["rin", "mio"]) await auth.credentials.upsert(provider, {
@@ -148,21 +167,27 @@ try {
 	}
 
 	const cases = [
-		["RIN 5h 0%, 7d 23%이면 MIO의 빠른 리셋보다 RIN 우선", "rin", {}],
-		["RIN 5h 0%·리셋시각 없음, 7d 23%이면 RIN 우선", "rin", { noFiveReset: true }],
-		["cold MIO pin은 RIN 여유 시 재선택", "rin", { pin: "cold" }],
+		["관측 재현: RIN 7d 81%·46h 뒤 reset이 MIO 3%·160h보다 빠르면 RIN", "rin", {}],
+		["MIO 주간 reset이 더 빠르면 RIN 사용량이 낮아도 MIO", "mio", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
+		["RIN 5h 0%·리셋시각 없음이어도 주간 reset 빠른 RIN", "rin", { rin: { fiveReset: null } }],
+		["reset 동률이면 남은 quota가 큰 MIO", "mio", { rin: { weekly: 0.3, weeklyReset: 46 }, mio: { weekly: 0.1, weeklyReset: 46 } }],
+		["reset이 30초라도 빠르면 동률 허용 없이 RIN", "rin", { rin: { weekly: 0.5, weeklyReset: 46 }, mio: { weekly: 0.2, weeklyReset: 46 + 30 / 3600 } }],
+		["완전 동률이면 기존 순서 RIN", "rin", { rin: { five: 0.1, weekly: 0.3, weeklyReset: 46 }, mio: { five: 0.1, weekly: 0.3, weeklyReset: 46 } }],
+		["RIN 7d 소진이면 제외하고 MIO", "mio", { rin: { weekly: 1 } }],
+		["RIN 5h 소진(hard limit)이면 MIO", "mio", { rin: { five: 1 } }],
+		["RIN 5h 90%(upstream hot guard)면 기존 랭킹 MIO", "mio", { rin: { five: 0.9 } }],
+		["RIN 차단이면 MIO", "mio", { block: true }],
+		["RIN이 reserve 정책 안이면 MIO", "mio", { rinReservePct: 25 }],
+		["RIN 7d 미측정이면 재배열 없이 upstream 순서(RIN) 그대로", "rin", { rin: { weekly: undefined } }],
+		["RIN 7d reset 시각 없음이면 추정 없이 기존 랭킹 MIO", "mio", { rin: { weeklyReset: null } }],
+		["RIN 5h 미측정이면 기존 랭킹 MIO", "mio", { rin: { five: undefined } }],
+		["RIN 사용량 조회 실패면 기존 랭킹 MIO", "mio", { rin: { report: false } }],
+		["MIO 사용량 조회 실패면 기존 랭킹 그대로 RIN", "rin", { mio: { report: false } }],
+		["Fable tier 7d 미측정이면 기존 랭킹 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: Number.NaN }, mio: { tier: 0.4 } }],
+		["Fable tier 7d 소진이면 제외하고 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
+		["cold MIO pin은 주간 reset 빠른 RIN으로 재선택", "rin", { pin: "cold" }],
 		["warm MIO pin은 그대로 유지", "mio", { pin: "warm" }],
 		["exact MIO summon은 그대로 유지", "mio", { pin: "exact" }],
-		["RIN 5h·7d 79%는 엄격한 경계 아래", "rin", { rin: { five: 0.79, weekly: 0.79 } }],
-		["RIN 5h 80%에서는 기존 랭킹 MIO", "mio", { rin: { five: 0.8, weekly: 0.23 } }],
-		["RIN 7d 80%에서는 기존 랭킹 MIO", "mio", { rin: { five: 0, weekly: 0.8 } }],
-		["Fable tier 7d 79%이면 RIN 여유로 선택", "rin", { modelId: "claude-fable-5", rin: { five: 0, weekly: 0.23, tier: 0.79 }, mio: { five: 0.1, weekly: 0.45, tier: 0.4 } }],
-		["Fable tier 7d 80%에서는 기존 랭킹 MIO", "mio", { modelId: "claude-fable-5", rin: { five: 0, weekly: 0.23, tier: 0.8 }, mio: { five: 0.1, weekly: 0.45, tier: 0.4 } }],
-		["Fable tier 7d 미측정이면 기존 랭킹 MIO", "mio", { modelId: "claude-fable-5", rin: { five: 0, weekly: 0.23, tier: Number.NaN }, mio: { five: 0.1, weekly: 0.45, tier: 0.4 } }],
-		["RIN 7d 미측정이면 기존 랭킹 MIO", "mio", { rin: { five: 0, weekly: undefined } }],
-		["RIN 5h 미측정이면 기존 랭킹 MIO", "mio", { rin: { five: undefined, weekly: 0.23 } }],
-		["RIN 사용량 조회 실패면 기존 랭킹 MIO", "mio", { rin: { five: 0, weekly: 0.23, report: false } }],
-		["RIN 차단 시 기존 랭킹 MIO", "mio", { block: true }],
 		["타 provider는 기존 랭킹 MIO", "mio", { provider: "openai-codex", modelId: undefined }],
 	] as const;
 	for (let index = 0; index < cases.length; index++) {

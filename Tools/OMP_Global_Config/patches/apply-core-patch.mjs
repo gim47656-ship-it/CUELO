@@ -2827,7 +2827,7 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	//   sticky 자료형·record·persisted cache 읽기 → auth/affinity.ts (SessionCredential·record·get)
 	//   pinSessionOAuthAccount·getExact…·release → auth/affinity.ts pin·exactLabel·release (+types.ts SessionsApi)
 	//   usage health exact 필터 → auth/health.ts model
-	//   exact 선택·Anthropic position N 우선 → auth/select.ts resolveOAuth
+	//   exact 선택·Anthropic 주간 reset 우선 → auth/select.ts resolveOAuth (+rank.ts hot 상수 export)
 	//   OAuth 실패 시 API 키 대체 금지 → auth/cascade.ts get
 	//   usage-limit switched 보고·auth 실패 회전 금지 → auth/rotation.ts markReached·rotate
 	// upstream 18.3.0이 스스로 한 것: `pin()` 기본값이 explicit pin이 되어 ranking·reserve가 더는
@@ -3023,7 +3023,7 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		}`,
 	},
 	{
-		// 아래 position N 우선 규칙이 쓰는 helper.
+		// 아래 주간 reset 우선 규칙이 쓰는 helper.
 		file: "../pi-ai/src/auth/select.ts",
 		marker: `import { resolveUsedFraction } from "../usage";`,
 		anchor: `	remainingUsageFraction,
@@ -3086,49 +3086,82 @@ import { resolveUsedFraction } from "../usage";`,
 		// When ranking, seed the pinned credential first in the evaluation order so it wins genuine`,
 	},
 	{
-		// RIN(Anthropic position N) 우선: 모든 해당 사용량 창이 80% 미만일 때만 ranking 결과 앞에
-		// 세운다. 미측정·부분 보고·차단·refresh 불가면 upstream ranking 그대로 둔다. 아래 upstream 의
-		// warm/explicit pin 우선 처리가 이 뒤에 오므로 pin 된 세션은 그대로 유지된다.
+		// 아래 주간 reset 우선 규칙은 upstream ranking 의 5h hot guard 상수를 그대로 재사용한다.
+		// 같은 값을 복제하지 않도록 rank.ts 의 상수를 export 만 한다(값·비교 로직 불변).
+		file: "../pi-ai/src/auth/rank.ts",
+		marker: "export const PRIMARY_WINDOW_HOT_FRACTION = 0.85;",
+		anchor: "const PRIMARY_WINDOW_HOT_FRACTION = 0.85;",
+		patched: "export const PRIMARY_WINDOW_HOT_FRACTION = 0.85;",
+	},
+	{
 		file: "../pi-ai/src/auth/select.ts",
-		marker: "// Prefer Anthropic position N only while every applicable usage window is below 80%.",
-		anchor: `		const preflightFailures = new Set<OAuthCandidate>();`,
-		patched: `		// Prefer Anthropic position N only while every applicable usage window is below 80%.
-		// Leave unknown/partial reports to the existing ranking rather than assuming headroom.
+		marker: "\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n",
+		anchor: "import {\n\torderUsageRankedCandidates,\n\tplanPriority,\n",
+		patched: "import {\n\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n\tplanPriority,\n",
+	},
+	{
+		// 2026-09-26 사용자 정책: Anthropic 새/cold 재선택은 주간 reset 이 더 빠른 건강한 계정을 먼저 쓴다
+		// (옛 "position N 이 80% 미만이면 맨 앞" 규칙을 대체). 사용량 그림이 완전하고 건강한 후보만,
+		// upstream ranking 에서 이미 차지한 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·
+		// plan 부적격·5h hot 후보는 upstream 자리 그대로다. 동률: 정확히 같은 reset 이면 남은 주간 quota
+		// 가 큰 쪽, 그다음 upstream 순서. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin
+		// 재승격은 이 뒤에 오므로 그대로 유지된다.
+		// anchor 는 pristine 전용이다. 옛 80% 본문이 적용된 target 에서는 anchor-lost 로 멈춰 이중 적용되지 않는다.
+		file: "../pi-ai/src/auth/select.ts",
+		marker: "// Prefer the healthy Anthropic account whose weekly window resets first.",
+		anchor: "\t\t\t\t\t}));\n\t\tconst preflightFailures = new Set<OAuthCandidate>();",
+		patched: `					}));
+		// Prefer the healthy Anthropic account whose weekly window resets first.
+		// Only candidates with a complete, healthy usage picture move, and only among the slots they
+		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
+		// 5h-hot candidates keep their place. Ties: larger remaining weekly quota, then upstream order.
 		if (provider === "anthropic" && shouldRank && strategy) {
-			const primaryPos = candidates.findIndex(candidate => candidate.selection.index === 0);
-			if (primaryPos > 0) {
-				const primary = candidates[primaryPos]!;
-				const usage = primary.usage;
-				if (
-					primary.usageChecked &&
-					usage &&
-					(primary.selection.credential.refresh.trim().length > 0 ||
-						Date.now() + OAUTH_REFRESH_SKEW_MS < primary.selection.credential.expires) &&
-					!this.#deps.blocks.isBlocked(provider, providerKey, 0, blockScopes)
-				) {
-					const limits = reserveUsageLimits(strategy, usage, rankingContext);
-					const windows = strategy.findWindowLimits(usage, rankingContext);
-					if (
-						windows.primary &&
-						windows.secondary &&
-						limits.length > 0 &&
-						!isUsageLimitReached(limits) &&
-						limits.every(limit => {
-							const fraction = resolveUsedFraction(limit);
-							return (
-								limit.status !== "unknown" &&
-								typeof fraction === "number" &&
-								Number.isFinite(fraction) &&
-								fraction >= 0 &&
-								fraction < 0.8
-							);
-						})
-					) {
-						candidates.splice(primaryPos, 1);
-						candidates.unshift(primary);
-					}
+			const nowMs = Date.now();
+			const weekly = candidates.map(candidate => {
+				const usage = candidate.usage;
+				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
+				const credential = candidate.selection.credential;
+				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
+					return undefined;
 				}
-			}
+				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
+					return undefined;
+				}
+				if (planGate && planGate(usage) !== true) return undefined;
+				const limits = reserveUsageLimits(strategy, usage, rankingContext);
+				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
+				const measured = limits.every(limit => {
+					const fraction = resolveUsedFraction(limit);
+					return (
+						limit.status !== "unknown" &&
+						typeof fraction === "number" &&
+						Number.isFinite(fraction) &&
+						fraction >= 0 &&
+						fraction < 1
+					);
+				});
+				if (!measured) return undefined;
+				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
+				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
+					return undefined;
+				}
+				const resetAt = secondary.window?.resetsAt;
+				const used = resolveUsedFraction(secondary);
+				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
+				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+				return { resetAt, remaining: 1 - used };
+			});
+			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
+			const preferred = [...slots]
+				.sort((left, right) => {
+					const leftWeekly = weekly[left]!;
+					const rightWeekly = weekly[right]!;
+					return leftWeekly.resetAt - rightWeekly.resetAt || rightWeekly.remaining - leftWeekly.remaining || left - right;
+				})
+				.map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => {
+				candidates[pos] = preferred[order]!;
+			});
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`,
 	},
@@ -4721,6 +4754,101 @@ export function hostNextServerEnvUnsets(
 			!recalledOrigins.has(result.source_memory_id),
 	);
 `,
+	},
+	{
+		// Main auto 추론 하한(2026-09-26 사용자 결정: Main 최소 medium, 상한 xhigh 유지).
+		// 기존 ceiling 설정 옆에 typed 하한을 둔다. 기본 low 는 upstream 과 같다(classifier·provisional
+		// 모두 이미 low 아래로 내려가지 않는다). Main 설정 값은 mirror config 가 정한다.
+		file: "src/session/settings.ts",
+		marker: 'id: "providers.autoThinkingMinEffort"',
+		anchor: `			{ value: "max", label: "max", description: "Classifier may resolve max where the model supports it" },
+		],
+	},
+});
+`,
+		patched: `			{ value: "max", label: "max", description: "Classifier may resolve max where the model supports it" },
+		],
+	},
+});
+
+export const cfgProvidersAutoThinkingMinEffort = register({
+	id: "providers.autoThinkingMinEffort",
+	type: "enum",
+	values: ["low", "medium", "high"] as const,
+	default: "low",
+	ui: {
+		tab: "model",
+		group: "Thinking",
+		label: "Auto Thinking Floor",
+		description:
+			"Lowest effort \`auto\` applies to a new user turn, including the fallback when classification fails. Raises to the lowest supported effort at or above the floor within the auto ceiling; the session effort ceiling still wins. Explicit thinking levels are unaffected.",
+		condition: "autoThinkingActive",
+		options: [
+			{ value: "low", label: "low", description: "Classifier may resolve low (default)" },
+			{ value: "medium", label: "medium", description: "Auto never resolves below medium" },
+			{ value: "high", label: "high", description: "Auto never resolves below high" },
+		],
+	},
+});
+`,
+	},
+	{
+		// 하한 계산은 genuine user turn 의 기존 auto 적용 지점(applyAutoThinkingLevel)에서만 쓴다.
+		// 생성자·restore·setter provisional 은 건드리지 않아 진행 중 active effort 는 바뀌지 않는다.
+		file: "src/session/model-controls.ts",
+		marker: "function raiseToAutoThinkingFloor(",
+		anchor: `import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+`,
+		patched: `import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import {
+	cfgDefaultThinkingLevel,
+	cfgProvidersAutoThinkingMaxEffort,
+	cfgProvidersAutoThinkingMinEffort,
+	cfgProvidersFireworksTier,
+} from "./settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+
+/**
+ * Raise an auto-resolved effort to \`providers.autoThinkingMinEffort\`: the lowest
+ * supported effort at or above the floor that the auto ceiling
+ * (\`providers.autoThinkingMaxEffort\`) still allows. A level already at the floor,
+ * no level, or a ladder without such an effort stays unchanged, so a sparse ladder
+ * never snaps up to a tier auto may not pick. The caller's session ceiling still wins.
+ */
+function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, settings: Settings): Effort | undefined {
+	if (level === undefined) return undefined;
+	const floor = cfgProvidersAutoThinkingMinEffort.get(settings);
+	const floorIndex = THINKING_EFFORTS.findIndex(effort => effort === floor);
+	if (THINKING_EFFORTS.indexOf(level) >= floorIndex) return level;
+	const ceiling = cfgProvidersAutoThinkingMaxEffort.get(settings) === Effort.Max ? Effort.Max : Effort.XHigh;
+	const ceilingIndex = THINKING_EFFORTS.indexOf(ceiling);
+	return (
+		getSupportedEfforts(model).find(effort => {
+			const index = THINKING_EFFORTS.indexOf(effort);
+			return index >= floorIndex && index <= ceilingIndex;
+		}) ?? level
+	);
+}
+`,
+	},
+	{
+		file: "src/session/model-controls.ts",
+		marker: "raiseToAutoThinkingFloor(\n\t\t\t\tmodel,",
+		anchor: `		const effort = clampThinkingLevelToCeiling(
+			model,
+			resolved ?? this.#autoResolvedLevel ?? resolveProvisionalAutoLevel(model),
+			this.#thinkingLevelCeiling,
+		);`,
+		patched: `		const effort = clampThinkingLevelToCeiling(
+			model,
+			raiseToAutoThinkingFloor(
+				model,
+				resolved ?? this.#autoResolvedLevel ?? resolveProvisionalAutoLevel(model),
+				this.#host.settings,
+			),
+			this.#thinkingLevelCeiling,
+		);`,
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

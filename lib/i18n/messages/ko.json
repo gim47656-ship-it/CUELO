@@ -12,7 +12,7 @@
  "updates.current": "현재 CUELO {version}",
  "updates.changelog": "변경 사항",
  "updates.viewRelease": "릴리스 보기",
- "updates.manual": "소스에서 실행 중이면 아래 명령으로 갱신한 뒤 다시 시작하세요. 데스크톱 앱은 릴리스 페이지에서 받으세요.",
+ "updates.manual": "소스에서 실행 중이면 아래 명령으로 갱신한 뒤 다시 시작하세요.",
  "updates.copyCommand": "명령어 복사",
  "updates.commandCopied": "명령어 복사됨",
  "updates.copyFailed": "명령어를 복사할 수 없습니다",
