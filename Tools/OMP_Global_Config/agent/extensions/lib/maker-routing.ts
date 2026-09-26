@@ -671,36 +671,28 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const { available: candidates, unavailable: unavailableCandidates } = await candidateSet(ctx, current, refreshAttempts);
       requireLatest();
       // 잔량은 시각마다 바뀌므로 revision·identity·Jev state 밖의 참고 정보로만 붙인다.
-      // Jev 판단과 함께 시작하되 판단이 끝났을 때 아직 진행 중이면 취소하고 unavailable로 반환한다.
-      // quota API는 AbortSignal을 지원하며 rejection은 여기서 흡수해 background unhandled를 남기지 않는다.
+      // Jev 판단과 함께 시작하고, 이번 계정 잔량 조회가 끝난 뒤 배정 결과를 반환한다.
+      // 기존 조회 시간 제한과 사용자 AbortSignal은 유지한다.
       const quotaProviders = [...new Set(candidates.map((candidate) => candidate.model.slice(0, candidate.model.indexOf("/"))))];
       quotaAbort = new AbortController();
       const quotaSignal = signal
         ? AbortSignal.any([signal, quotaAbort.signal])
         : quotaAbort.signal;
-      let settledQuota: QuotaSnapshot | undefined;
-      let quotaPending: Promise<void>;
+      let quotaPending: Promise<QuotaSnapshot>;
       try {
-        const quotaRequest = (deps.quota ?? readSidecarQuota)(quotaProviders, quotaSignal);
-        quotaPending = quotaRequest.then(
-          (snapshot) => {
-            settledQuota = snapshot;
-          },
-          (error) => {
-            settledQuota = {
-              state: "unavailable",
-              observedAt: Date.now(),
-              reason: error instanceof Error ? error.message : String(error),
-            };
-          },
+        quotaPending = (deps.quota ?? readSidecarQuota)(quotaProviders, quotaSignal).catch(
+          (error): QuotaSnapshot => ({
+            state: "unavailable",
+            observedAt: Date.now(),
+            reason: error instanceof Error ? error.message : String(error),
+          }),
         );
       } catch (error) {
-        settledQuota = {
+        quotaPending = Promise.resolve({
           state: "unavailable",
           observedAt: Date.now(),
           reason: error instanceof Error ? error.message : String(error),
-        };
-        quotaPending = Promise.resolve();
+        });
       }
       const publications = await Promise.all(tasks.map(async (task, index) => {
         const contract = contracts[index]!;
@@ -783,14 +775,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           },
         };
       }));
-      const quota: QuotaSnapshot = settledQuota ?? {
-        state: "unavailable",
-        observedAt: Date.now(),
-        reason: "route 판단 완료 시 quota 조회가 아직 진행 중이어서 사용할 수 없습니다.",
-      };
-      if (!settledQuota) quotaAbort.abort();
-      // 위 rejection handler가 모든 종료를 흡수한다. 취소를 존중하는 quota 구현은 여기서 종료된다.
-      void quotaPending;
+      const quota = await quotaPending;
       requireLatest();
       const allocation = normalAllocation(current, candidates, quota);
       // 이력은 advisory다. revision·identity·Jev state 밖에 두며 읽기 실패는 빈 이력이다.

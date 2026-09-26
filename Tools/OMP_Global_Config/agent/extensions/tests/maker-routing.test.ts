@@ -272,10 +272,11 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(reason.reason).toContain("…");
     expect(reason.reason).not.toContain("구현 원문");
   });
-  test("quota는 판단 완료 때 준비된 값만 붙이고 진행 중 조회는 취소한 뒤 unavailable로 반환한다", async () => {
+  test("판정이 먼저 끝나도 이번 quota 조회를 기다리고 최신 잔량으로 반환한다", async () => {
     let calls = 0;
+    let returned = false;
     const quotaStarted = Promise.withResolvers<void>();
-    const quotaStopped = Promise.withResolvers<void>();
+    const quotaRelease = Promise.withResolvers<void>();
     const judgeReached = Promise.withResolvers<void>();
     const h = harness({
       onJudge: () => judgeReached.resolve(),
@@ -283,12 +284,8 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         calls += 1;
         if (calls === 1) {
           quotaStarted.resolve();
-          await new Promise<void>((resolve) => {
-            if (signal?.aborted) resolve();
-            else signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          quotaStopped.resolve();
-          return { state: "unavailable", observedAt: 1_001, reason: "aborted" };
+          await quotaRelease.promise;
+          expect(signal?.aborted).toBe(false);
         }
         return {
           state: "observed", observedAt: 1_000 + calls,
@@ -301,9 +298,15 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         };
       },
     });
-    const pending = h.prepareBatch("같은 계약", [h.task], {} as never);
+    const pending = h.prepareBatch("같은 계약", [h.task], {} as never).then((result) => {
+      returned = true;
+      return result;
+    });
     await Promise.all([judgeReached.promise, quotaStarted.promise]);
     expect(h.requests.length).toBe(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(returned).toBe(false);
+    quotaRelease.resolve();
     const first = await pending;
     const allowed = (profile: string) => h.policy.modelSelection.profiles[profile]!.allowedEfforts;
     expect(first).toMatchObject({
@@ -313,11 +316,11 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       })),
       unavailableCandidates: [],
       quota: {
-        state: "unavailable",
-        reason: expect.stringContaining("route 판단 완료"),
+        state: "observed",
+        observedAt: 1_001,
       },
     });
-    await quotaStopped.promise;
+    expect(calls).toBe(1);
     expect(first.routes).toHaveLength(1);
     expect(first.routes[0]).not.toHaveProperty("quota");
     expect(first.routes[0]).not.toHaveProperty("candidates");
@@ -1104,28 +1107,6 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     expect(Object.keys(asked.effort4!.criteria)).toEqual(batch.candidates.find((c) => c.profile === "HARD_CODE_ASTRA")!.efforts);
   });
 
-  test("느린 잔량 사이드카는 route 판단 뒤 즉시 취소하고 배치를 붙잡지 않는다", async () => {
-    // 응답하지 않는 실제 HTTP 응답에 fetch abort가 걸리는지 보는 검사다. 가짜 timer로는
-    // abort 경로와 실측 시간을 대신할 수 없어 이 한 건만 platform clock을 쓴다.
-    const stalled = Promise.withResolvers<Response>();
-    const server = Bun.serve({ port: 0, fetch: () => stalled.promise });
-    const previous = process.env.OMP_USAGE_PORT;
-    process.env.OMP_USAGE_PORT = String(server.port);
-    try {
-      const registry = { find: () => ({ thinking: { efforts: strengths } }), refreshProvider: async () => {} };
-      const h = registryHarness({ registry, useSidecar: true });
-      const started = Date.now();
-      const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-      expect(batch.quota.state).toBe("unavailable");
-      if (batch.quota.state !== "unavailable") throw new Error("느린 quota가 observed로 반환됨");
-      expect(batch.quota.reason).toContain("route 판단 완료");
-      expect(Date.now() - started).toBeLessThan(1_000);
-    } finally {
-      if (previous === undefined) delete process.env.OMP_USAGE_PORT;
-      else process.env.OMP_USAGE_PORT = previous;
-      await server.stop(true);
-    }
-  });
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {

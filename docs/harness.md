@@ -4,9 +4,9 @@ OMP 하네스는 코딩 에이전트가 요구를 작업으로 나누고, 변경
 
 ## 설치와 공개 범위
 
-공개된 `agent/`는 [설치 안내](installation.md)의 `node install.mjs setup`이 사용자의 `~/.omp/agent`에 복사합니다. 이미 있는 파일은 바꾸거나 지우지 않고, 없는 파일만 추가합니다. `config.yml`이 없는 프로필에는 기본 운영 설정(학습·메모리·요청 예산)으로 새 파일을 만들고, 제공자 요청을 스스로 쓰는 자동 기능은 꺼 둡니다. 이 저장소에는 사용자별 모델 설정이 없으므로 `modelRoles`는 사용자가 정합니다. 설치 때 `--model`(core `default`)과 `--role <이름>=<provider/model>`을 직접 넘기면 그 새 파일에 그 값만 적고, 나중에는 CUELO 설정의 Model roles 화면에서 바꿉니다. 지정하지 않은 하네스 역할은 `maker_route`에서 해당 후보만 사용 불가로 표시됩니다. CUELO 앱 자체는 이 하네스를 설치하지 않아도 동작합니다.
+공개된 `agent/`는 [설치 안내](installation.md)의 `setup`이 사용자의 `~/.omp/agent`에 복사합니다. 이미 있는 파일은 바꾸거나 지우지 않고, 없는 파일만 추가합니다. `config.yml`이 없는 프로필에는 기본 운영 설정(학습·메모리·요청 예산)으로 새 파일을 만들고, 제공자 요청을 스스로 쓰는 자동 기능은 꺼 둡니다. 이 저장소에는 사용자별 모델 설정이 없으므로 `modelRoles`는 사용자가 정합니다. 설치 때 `--model`(core `default`)과 `--role <이름>=<provider/model>`을 직접 넘기면 그 새 파일에 그 값만 적고, 나중에는 CUELO 설정의 Model roles 화면에서 바꿉니다. 기존 `config.yml`은 보존되어 플래그를 다시 줘도 역할·Jev 설정이 채워지지 않습니다. [기존 프로필 보완 절차](installation.md#기존-프로필의-역할과-jev-보완)를 따르세요. 지정하지 않은 하네스 역할은 `maker_route`에서 해당 후보만 사용 불가로 표시됩니다. CUELO 앱 자체는 이 하네스를 설치하지 않아도 기본 대화가 가능합니다.
 
-공개 저장소에는 역할·검수 절차와 런타임 확장, 정책 규칙, core 패치가 포함됩니다. 반면 계정이나 모델 선택 정보를 담는 `config.yml`·`models.yml`, 개인 skills, 작업 기록, PC 설치 파이프라인은 공개하지 않습니다. 실제 공개 제외 경계는 private 저장소의 `.publicignore`가 정합니다.
+공개 저장소에는 역할·검수 절차와 런타임 확장, 정책 규칙, core 패치가 포함됩니다. 반면 계정이나 모델 선택 정보를 담는 `config.yml`·`models.yml`, 개인 skills, 작업 기록은 공개하지 않습니다. npm 패키지도 해당 개인 파일과 제공자 API 키, 독립 `omp` CLI를 동봉하지 않습니다. 설치에 필요한 Node/Bun/Git과 기능별 CLI·메모리 모델의 경계는 [설치 안내](installation.md#새-windows-pc에서-먼저-준비할-것)를 따릅니다.
 
 캐릭터 확장(`character-voice.ts`)의 RIN·MIO는 Anthropic OAuth 저장 목록의 0번·1번 자리를 기본으로 씁니다. 이 번호는 저장 순서일 뿐 계정 ID·이메일 같은 개인 정보가 아니며, 공개본에서도 코드 그대로 동작합니다. 해당 자리에 쓸 자기 계정은 `omp`로 직접 로그인해 준비합니다. 계정이 하나뿐인 상태에서 MIO로 전환하면 1번 자리 계정을 찾지 못했다고 알리고 현재 세션 모델을 유지합니다.
 
@@ -53,6 +53,10 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 정식 신규 발주나 의미 있는 과제 변경 때 `maker_route`는 작업 분류·등급의 중심 난제·기존 owner 중복 등을 한 번에 판단하도록 사용됩니다. 첫 예상 밖 실패나 보고 검수처럼 다른 경계에서는 [`jev-runtime.ts`](../Tools/OMP_Global_Config/agent/extensions/jev-runtime.ts)가 런타임 advisory로 관측 가능한 사실을 제공하고, Main/owner가 그 사실에 담기지 않은 의미와 승인을 판단합니다. 같은 질문을 반복하거나 Jev 결과를 결정론적 권한·검수로 취급하지 않습니다. 정본은 [subagent 규칙](../Tools/OMP_Global_Config/agent/rules/subagent.md)의 “Typed judgment routing”과 policy `routing.typedJudgmentRouting`입니다.
 
+Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로젝트 설정을 읽고 SDK의 `resolveJudge`를 호출합니다. 이 확장은 API 키 파일이나 비공개 `models.yml`을 복사해서 활성화되지 않습니다. 패치된 SDK의 `providers.judgmentProvider: vercel` 모드는 **Vercel AI Gateway**에 저장된 `vercel-ai-gateway` API 키로 `typesafe-ai/jev` 한 경로만 호출하며 실패 시 chat 모델로 대체하지 않습니다. 설정 기본값 `auto`는 자격 있는 `modelRoles.judge` 체인으로 해석됩니다. Maker 후보 여섯 개는 이 Jev 역할과 별도로 `modelRoles.implSol` 등에서 읽습니다. 가입·키 입력·역할 지정은 [기존 프로필의 역할과 Jev 보완](installation.md#기존-프로필의-역할과-jev-보완)에서 사용자가 직접 마칩니다. 실제 판정의 외부 요청/과금과 미검증 경계는 `setup`·`health` 성공으로 넘기지 않습니다.
+
+`maker_route`는 Jev 판정과 후보 제공자 사용량 조회를 함께 시작하고, 빠른 판정에도 조회를 조기 취소하지 않습니다. 사용량 조회는 기존 2초 제한 안의 결과를 기다리며 실패·timeout은 미측정으로 표시합니다. 사용량은 배정 참고 정보이지 Jev 판단 입력이 아닙니다.
+
 ## 캐릭터 음성과 확장
 
 [`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
@@ -63,7 +67,7 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 ## omp core 패치
 
-[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 예를 들어 `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 패치와 관련 회귀 검사를 담습니다. 구체적인 적용 명령은 각 패치 도구와 설치 환경에 따라 확인하세요. 이 문서는 CUELO 앱이 core 패치를 자동 설치한다고 뜻하지 않습니다. 원본 저장소의 CI는 앱이 고정한 core 버전을 새로 설치해 이 패치를 적용하고 회귀 검사를 실행합니다. 설치 도구가 요구하는 앱 source 해시 목록이 커밋된 소스와 맞는지도 같이 확인합니다. 공개 미러에는 그 검사에 필요한 설정·eval 자료가 없어서 해당 job을 건너뜁니다.
+[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 원본 저장소의 CI는 앱이 고정한 core 버전을 새로 설치해 검사하며, 공개 미러에는 그 검사에 필요한 설정·eval 자료가 없어 해당 job을 건너뜁니다.
 
 ## 정본 자료
 

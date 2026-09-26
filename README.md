@@ -24,10 +24,10 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 | 구분 | 내용 |
 | --- | --- |
-| 이 저장소만으로 동작 | 웹 앱 전체: 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, worktree, 비밀번호 잠금, 캐릭터 알림, 효율 패널(`~/.omp/stats.db` 읽기) |
-| 사용자가 준비할 것 | 자신의 모델 제공자 계정과 모델 선택. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
-| 로컬 사이드카 (공개) | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브의 실행 소스도 포함합니다. `node install.mjs start`가 앱과 함께 실행합니다 |
-| OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 음성, 명령 가드의 규칙·SOP·확장과 core 패치입니다. `node install.mjs setup`으로 설치하며, 자세한 설명은 [docs/harness.md](./docs/harness.md)에 있습니다 |
+| 앱·런타임 설치 뒤 동작 | 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, 비밀번호 잠금, 캐릭터 알림 등. 대화에는 별도 제공자 인증이 필요합니다 |
+| 사용자가 준비할 것 | Node.js·Bun과 자신의 모델 제공자 계정·모델 선택. 소스 checkout/전체 Git 기능에는 Git for Windows도 필요합니다. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
+| 로컬 사이드카 (공개) | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브의 실행 소스도 포함합니다. `start`가 앱과 함께 실행합니다. usage의 CLI fallback·`stats`에는 별도 `omp` CLI가 필요합니다 |
+| OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 음성, 명령 가드의 규칙·SOP·확장과 앱 SDK core 패치입니다. `setup`으로 설치합니다. [하네스 안내](./docs/harness.md)에 Jev의 외부 자격 경계가 있습니다 |
 | 포함하지 않는 것 | 개발자의 로그인 정보·API 키·개인 계정 및 모델 설정·개인 skill·대화와 작업 기록·PC별 운영 자료. 공개 설치는 필요한 비개인 운영 기본값만 제공하고 모델은 사용자가 고릅니다 |
 
 ## CUELO에서 할 수 있는 것
@@ -72,15 +72,16 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 ## 실행하기
 
-CUELO의 현재 배포 경로는 GitHub 소스입니다. npm 패키지는 아직 게시하지 않았습니다. npm의 `omp-web`은 upstream 프로젝트이며 CUELO와 별개입니다.
+CUELO는 GitHub 소스와 npm 패키지 [`cuelo`](https://www.npmjs.com/package/cuelo)로 설치합니다. npm의 `omp-web`은 upstream 프로젝트이며 CUELO와 별개입니다. **기존 `omp` CLI만 설치한 PC에도 `omp-web` 없이 CUELO를 추가할 수 있습니다.** 기존 `config.yml`·계정·세션을 보존하는 순서는 [대표 설치 경로](./docs/installation.md#대표-경로-omp만-있는-windows-pc-omp-web-없음)에 있습니다.
 
-omp SDK가 TypeScript 소스와 `bun:` 내장 모듈을 쓰기 때문에 서버는 **Bun 1.4.2 이상**에서만 돕니다.
-메모리 패키지가 선언한 선택적 ONNX peer는 `onnxruntime-node:1.21.0`으로 제공합니다. Transformers가 요구하는 별도 버전은 자체 의존성으로 유지하며, 설치 오류를 피하려고 peer 검증을 끄지 않습니다.
+> **개발·검증 환경은 Windows입니다.** macOS·Linux는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다.
+
+서버는 **Bun 1.4.2 이상**에서만 실행됩니다(omp SDK가 TypeScript 소스와 `bun:` 내장 모듈을 사용). Node.js 22.19.0 이상도 `install.mjs`와 npm에 필요합니다. Git은 소스 checkout과 Git 작업(worktree·commit 등)에 필요하지만 npm 설치와 기본 대화에는 필요하지 않습니다.
+메모리 패키지가 선언한 선택적 ONNX peer는 `onnxruntime-node:1.21.0`으로 제공합니다. Transformers가 요구하는 별도 버전은 자체 의존성으로 유지하며, 설치 오류를 피하려고 peer 검증을 끄지 않습니다. Mnemopi의 로컬 임베딩은 별도 `fastembed`와 모델을 첫 사용 때 내려받을 수 있습니다.
 
 ```bash
 # Bun 설치
 powershell -c "irm bun.sh/install.ps1 | iex"    # Windows
-curl -fsSL https://bun.sh/install | bash        # macOS / Linux
 
 # CUELO 받기와 실행
 git clone https://github.com/gim47656-ship-it/CUELO.git
@@ -89,11 +90,23 @@ node install.mjs setup
 node install.mjs start
 ```
 
+소스 빌드 없이 npm으로 설치하려면 Node.js 22.19.0 이상과 Bun 1.4.2 이상을 준비한 뒤 실행합니다.
+
+```bash
+npm install -g cuelo
+cuelo setup
+cuelo start
+# 다른 터미널에서 서비스 확인
+cuelo health
+```
+
+`setup`은 공개 하네스의 없는 파일만 추가합니다. npm 설치본에는 production 빌드가 포함되어 있어 다시 빌드하지 않습니다. 실행 중인 CUELO가 있다면 종료하거나 `cuelo start --port-base 31141`로 별도 포트를 사용하세요.
+
 앱과 세 사이드카가 같은 터미널에서 실행됩니다. 브라우저에서 [http://127.0.0.1:30141](http://127.0.0.1:30141)을 열고 본인 계정으로 로그인한 뒤 모델을 선택하세요. 기본은 `127.0.0.1` 전용이며, Ctrl+C로 실행한 서비스를 종료합니다.
 
-다른 터미널에서 `node install.mjs health`로 네 서비스의 응답을 확인합니다. 기존 설치와 다른 포트가 필요하면 `start`와 `health` 양쪽에 `--port-base 31141`처럼 지정합니다. Node.js 22.19.0 이상과 Git도 필요합니다.
+다른 터미널에서 `node install.mjs health`(npm 설치는 `cuelo health`)로 네 서비스의 응답을 확인합니다. 기존 설치와 다른 포트가 필요하면 `start`와 `health` 양쪽에 `--port-base 31141`처럼 지정합니다. 이 검사는 제공자 인증·Jev 판정·사용량 응답을 검증하지 않습니다.
 
-처음 설치하거나 Claude·Codex에 설치를 맡길 때는 **[설치와 실행 안내](./docs/installation.md)**를 기준으로 하세요. 기존 프로필 파일은 자동으로 덮어쓰지 않으며, 제공자 로그인·권한 승인·모델 선택은 사용자 단계입니다. Windows에서 검증하며 다른 OS의 실사용 검증 범위는 설치 안내에 구분합니다.
+처음 설치하거나 Claude·Codex에 설치를 맡길 때는 **[새 Windows 설치와 실행 안내](./docs/installation.md)**를 기준으로 하세요. 포함 파일과 외부 필수 항목, Jev 제공자 키·역할 설정, 기능별 CLI/Git 요구사항이 따로 적혀 있습니다. 기존 프로필 파일은 자동으로 덮어쓰지 않으며, 제공자 로그인·권한 승인·모델 선택은 사용자 단계입니다. 빈 Windows PC 전체를 실제 검증한 것은 아닙니다.
 
 앱만 따로 실행하는 기존 실행기 옵션:
 

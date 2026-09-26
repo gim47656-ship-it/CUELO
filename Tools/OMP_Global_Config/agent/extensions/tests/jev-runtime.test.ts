@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,18 @@ import { join } from "node:path";
 import { createJevRuntime, type JevRuntimeDeps } from "../jev-runtime";
 
 const fixtureSession = "session-1";
+const fixtureDirs = new Set<string>();
+function fixtureDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  fixtureDirs.add(dir);
+  return dir;
+}
+afterEach(() => {
+  for (const dir of fixtureDirs) {
+    rmSync(dir, { recursive: true, force: true });
+    fixtureDirs.delete(dir);
+  }
+});
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -88,7 +100,7 @@ function createHarness(options: HarnessOptions = {}) {
       };
 
   // 실제 프로필의 routing-ledger.jsonl을 건드리지 않도록 harness마다 임시 경로를 준다.
-  const ledgerPath = options.ledgerPath ?? join(mkdtempSync(join(tmpdir(), "jev-ledger-")), "routing-ledger.jsonl");
+  const ledgerPath = options.ledgerPath ?? join(fixtureDir("jev-ledger-"), "routing-ledger.jsonl");
   const deps: JevRuntimeDeps = {
     ledgerPath,
     findScopedSettings: () => settings,
@@ -625,7 +637,7 @@ describe("jev-runtime pre-dispatch", () => {
       .toMatchObject({ attempts: 2, followed: { ok: 1, pending: 1 } });
   });
   test("명시 판정 저장 실패는 성공으로 넘기지 않고 기록되지 않았음을 알린다", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "jev-verdict-fail-"));
+    const dir = fixtureDir("jev-verdict-fail-");
     const ledgerPath = join(dir, "routing-ledger.jsonl");
     const harness = createHarness({
       ledgerPath,
@@ -642,13 +654,12 @@ describe("jev-runtime pre-dispatch", () => {
       verdict: "accepted", revision: "rev", reason: "검수", evidenceLocators: ["artifact://e"],
     });
     expect(result.details).toMatchObject({ ok: false, error: expect.stringContaining("원장 기록에 실패") });
-    rmSync(ledgerPath, { recursive: true, force: true });
   });
 
   test("ledger 쓰기 실패는 경고만 남기고 발주와 settle을 막지 않는다", async () => {
     // 디렉터리를 파일 경로로 주면 append가 실패한다.
     const harness = createHarness({
-      ledgerPath: mkdtempSync(join(tmpdir(), "jev-ledger-dir-")),
+      ledgerPath: fixtureDir("jev-ledger-dir-"),
       judgeAnswers: {
         workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
       },

@@ -74,7 +74,7 @@
         <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">View source on GitHub</a>
         <a class="btn" href="#run">Run from source</a>
       </div>
-      <p class="status">Current distribution: GitHub source. An npm package has not been published.</p>
+      <p class="status">Install from GitHub source or the <a href="https://www.npmjs.com/package/cuelo">cuelo package on npm</a>. Node.js and Bun are required.</p>
       <figure class="hero-figure">
         <img src="assets/hero-1600.webp" srcset="assets/hero-900.webp 900w, assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="The CUELO wordmark between six anime-style characters working at laptops: RIN, MIO, YUKI, ISANA, NOVA and SHION.">
         <figcaption>In the app, accounts appear as these character faces and aliases instead of email addresses.</figcaption>
@@ -147,7 +147,7 @@
   <section id="run" aria-labelledby="run-h">
     <div class="wrap">
       <h2 id="run-h">Install and run from source</h2>
-      <p>You need <strong>Node.js 22.19.0 or newer</strong>, <strong>Bun 1.4.2 or newer</strong> and Git. The installer has been checked on Windows only; macOS and Linux use the same code paths but have not been tested.</p>
+      <p><strong>CUELO is developed and tested on Windows.</strong> macOS and Linux are not development or test environments for this project; operation and support on those platforms are not guaranteed. You need <strong>Node.js 22.19.0 or newer</strong>, <strong>Bun 1.4.2 or newer</strong> and Git for a source installation.</p>
 <pre tabindex="0" aria-label="Install and start commands"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 node install.mjs setup     <span class="c"># install, build, patch the SDK, copy the public harness</span>
@@ -158,7 +158,7 @@ node install.mjs health    <span class="c"># checks that all four services answe
       <p>Then open <code>http://127.0.0.1:30141</code> yourself; the browser does not open automatically. Sign in to the providers you want to use under <strong>Settings › Models</strong>: browser OAuth or an API key, done by you. If the official omp CLI (<code>@oh-my-pi/pi-coding-agent</code>) is already installed, <code>omp login</code> works too; this guide does not install it. Every service listens on <code>127.0.0.1</code> only, and Ctrl+C stops all four. <code>health</code> only checks that each service answers; it does not sign in or call a model provider.</p>
       <p><code>setup</code> copies the public harness into <code>~/.omp/agent</code> but only adds missing files; it never changes or deletes existing ones. When no <code>config.yml</code> exists, it creates one with safe default operating settings (for example, provider-calling automatic features stay off). These defaults ship with the installer; no one's personal configuration is copied, and an existing <code>config.yml</code> is left untouched. Choosing your models also stays with you: pass <code>--model</code>/<code>--role</code> to <code>setup</code>, or pick them later in Settings › Model roles. The installer does not guess models for you.</p>
       <p>CUELO runs agents with broad permissions: do not expose plain HTTP to the internet — put it behind a trusted HTTPS reverse proxy or a VPN. The full guide, including other port sets and troubleshooting, is in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a> (Korean).</p>
-      <p>An npm package for CUELO has not been published. The <code>omp-web</code> package on npm is the upstream project, not CUELO. Releases are listed on <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>; container use is covered in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>.</p>
+      <p>To use the prepared npm build, run <code>npm install -g cuelo</code>, then <code>cuelo setup</code> and <code>cuelo start</code>. Check the services with <code>cuelo health</code>. The <code>omp-web</code> package is the upstream project, not CUELO. Releases are listed on <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>; container use is covered in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>.</p>
     </div>
   </section>
 
