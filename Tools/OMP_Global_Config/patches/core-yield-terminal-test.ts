@@ -3,15 +3,54 @@
 // 모델 호출은 fake stream transport 로 대체한다. real YieldTool, Agent loop, AgentSession
 // settle/IRC aside 경계를 그대로 타며 설치본과 외부 provider 는 건드리지 않는다.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+
+// SDK DB 핸들이 열려 있는 자식에서 삭제하지 않고, 종료를 기다린 부모가
+// 이 실행에서 만든 fixture만 지운다. HOME/TEMP도 import 전에 격리된다.
+if (!process.env.OMP_YIELD_FIXTURE_ROOT) {
+	const root = mkdtempSync(join(tmpdir(), "omp-yield-fixture-"));
+	const home = join(root, "home");
+	const temp = join(root, "temp");
+	mkdirSync(home);
+	mkdirSync(temp);
+	let exitCode = 1;
+	try {
+		const child = Bun.spawnSync([process.execPath, import.meta.path], {
+			cwd: process.cwd(),
+			env: {
+				...process.env,
+				HOME: home,
+				USERPROFILE: home,
+				TEMP: temp,
+				TMP: temp,
+				TMPDIR: temp,
+				PI_CODING_AGENT_DIR: join(home, ".omp", "agent"),
+				OMP_PROFILE: "",
+				PI_PROFILE: "",
+				OMP_YIELD_FIXTURE_ROOT: root,
+			},
+			stdout: "inherit",
+			stderr: "inherit",
+		});
+		exitCode = child.exitCode ?? 1;
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+	process.exit(exitCode);
+}
 
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required; never test the live core");
 const CORE = resolve(target, "src").replace(/\\/g, "/");
 if (!existsSync(join(CORE, "session/agent-session.ts"))) throw new Error(`core 사본을 찾지 못했다: ${CORE}`);
 const PACKAGES = resolve(dirname(CORE), "..").replace(/\\/g, "/");
+// options.agentDir만 바꾸면 session-paths의 전역 registry는 실제 프로필을 가리킨다.
+// 부모가 SDK import 전에 정한 독립 홈과 같은 resolver를 사용한다.
+const fixtureRoot = process.env.OMP_YIELD_FIXTURE_ROOT!;
+const { setAgentDir } = await import(`${CORE}/../../pi-utils/src/dirs.ts`);
+setAgentDir(join(fixtureRoot, "home", ".omp", "agent"));
 
 // Module roots are runtime-selected by OMP_CORE_PATCH_TARGET so the test can compare
 // isolated unpatched/patched copies without ever importing the live installation.
@@ -102,7 +141,7 @@ async function createSession(
 	asideOnTerminal = false,
 	queueSteerOnTerminal = false,
 ) {
-	const root = mkdtempSync(join(tmpdir(), `omp-yield-terminal-${name}-`));
+	const root = mkdtempSync(join(fixtureRoot, `omp-yield-terminal-${name}-`));
 	const work = join(root, "work");
 	const agentDir = join(root, "agent");
 	let calls = 0;
@@ -163,11 +202,6 @@ async function createSession(
 		calls: () => calls,
 		cleanup: async () => {
 			await created.session.dispose();
-			try {
-				rmSync(root, { recursive: true, force: true });
-			} catch {
-				// Windows may keep the isolated models.db handle until process exit.
-			}
 		},
 	};
 }

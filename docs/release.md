@@ -1,6 +1,6 @@
 # CUELO 웹 릴리스와 npm 준비
 
-CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소스를 배포합니다. 별도의 npm 패키지명은 `cuelo`이며 현재 게시하지 않았습니다. 데스크톱 설치 파일도 게시하지 않습니다.
+CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소스를, npm의 [`cuelo`](https://www.npmjs.com/package/cuelo)로 설치형 웹 패키지를 배포합니다. 데스크톱 설치 파일은 게시하지 않습니다.
 
 ## 릴리스 준비
 

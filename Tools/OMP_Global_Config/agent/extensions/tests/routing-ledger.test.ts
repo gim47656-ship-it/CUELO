@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,21 +48,31 @@ const switchedTo = (assignment: string, model = ASTRA, effort = "high") =>
 
 describe("routing ledger 파일", () => {
   test("append한 기록을 순서대로 읽고 깨진 줄은 건너뛴다", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "routing-ledger-")), "nested", "routing-ledger.jsonl");
-    const ledger = createRoutingLedger(path);
-    expect(ledger.read()).toEqual([]);
-    ledger.append(dispatch("A"));
-    appendFileSync(path, "{깨진 줄\n");
-    ledger.append(outcome("A", "completed"));
-    expect(ledger.read()).toEqual([dispatch("A"), outcome("A", "completed")]);
+    const dir = mkdtempSync(join(tmpdir(), "routing-ledger-"));
+    try {
+      const path = join(dir, "nested", "routing-ledger.jsonl");
+      const ledger = createRoutingLedger(path);
+      expect(ledger.read()).toEqual([]);
+      ledger.append(dispatch("A"));
+      appendFileSync(path, "{깨진 줄\n");
+      ledger.append(outcome("A", "completed"));
+      expect(ledger.read()).toEqual([dispatch("A"), outcome("A", "completed")]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   test("쓰기·읽기 실패는 던지지 않고 onError로만 알린다", () => {
     const errors: unknown[] = [];
     // 디렉터리를 파일 경로로 주면 append와 read가 모두 실패한다.
-    const ledger = createRoutingLedger(mkdtempSync(join(tmpdir(), "routing-ledger-dir-")), (error) => errors.push(error));
-    expect(ledger.append(dispatch("A"))).toBe(false);
-    expect(ledger.read()).toEqual([]);
-    expect(errors.length).toBeGreaterThanOrEqual(1);
+    const dir = mkdtempSync(join(tmpdir(), "routing-ledger-dir-"));
+    try {
+      const ledger = createRoutingLedger(dir, (error) => errors.push(error));
+      expect(ledger.append(dispatch("A"))).toBe(false);
+      expect(ledger.read()).toEqual([]);
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

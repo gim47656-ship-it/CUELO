@@ -3,11 +3,45 @@
 // 동적 import 예외: 정적 import는 `@oh-my-pi/pi-coding-agent`를 bun 전역 캐시의
 // 미패치 사본으로 해석한다. 이 테스트는 omp-web이 실제로 적재하는 사본만 검증해야
 // 하므로 디스크 경로를 고정한다(모듈 로딩 경계 테스트).
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
 import { createSettingsTestScope, settingsLike } from "./core-test-settings";
+
+// SQLite/model cache의 Windows 핸들은 세션 dispose 뒤에도 프로세스가 살아 있는 동안
+// 잠길 수 있다. 자식 종료 후 부모가 자기 fixture 전체를 지워 잔류물을 남기지 않는다.
+if (!process.env.OMP_CORE_PATCH_FIXTURE_ROOT) {
+	const root = mkdtempSync(join(tmpdir(), "omp-core-patch-fixture-"));
+	const home = join(root, "home");
+	const temp = join(root, "temp");
+	mkdirSync(home);
+	mkdirSync(temp);
+	let exitCode = 1;
+	try {
+		const child = Bun.spawnSync([process.execPath, import.meta.path], {
+			cwd: process.cwd(),
+			env: {
+				...process.env,
+				HOME: home,
+				USERPROFILE: home,
+				TEMP: temp,
+				TMP: temp,
+				TMPDIR: temp,
+				PI_CODING_AGENT_DIR: join(home, ".omp", "agent"),
+				OMP_PROFILE: "",
+				PI_PROFILE: "",
+				OMP_CORE_PATCH_FIXTURE_ROOT: root,
+			},
+			stdout: "inherit",
+			stderr: "inherit",
+		});
+		exitCode = child.exitCode ?? 1;
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+	process.exit(exitCode);
+}
 
 /** 전역 npm 위치는 PC마다 다르다. apply-core-patch.mjs 와 같은 순서로 찾는다. */
 function resolveCore(): string {
@@ -23,6 +57,11 @@ function resolveCore(): string {
 }
 
 const CORE = resolveCore();
+// session-paths는 options.agentDir와 별도로 전역 resolver의 sessions/registry를 읽는다.
+// 부모가 SDK import 이전에 고정한 홈·프로필을 이 자식의 resolver에도 명시한다.
+const fixtureRoot = process.env.OMP_CORE_PATCH_FIXTURE_ROOT!;
+const { setAgentDir } = await import(`${CORE}/../../pi-utils/src/dirs.ts`);
+setAgentDir(join(fixtureRoot, "home", ".omp", "agent"));
 console.log(`대상 ${CORE}`);
 const { AgentRegistry, MAIN_AGENT_ID } = await import(`${CORE}/registry/agent-registry.ts`);
 const { IrcBus } = await import(`${CORE}/irc/bus.ts`);
@@ -1396,10 +1435,8 @@ const {
 	mkdtempSync: csMkdtemp,
 	readFileSync: csReadFile,
 	writeFileSync: csWriteFile,
-	rmSync: csRmSync,
 } = await import("node:fs");
 const { dirname: csDirname, join: csJoin } = await import("node:path");
-const { tmpdir: csTmpdir } = await import("node:os");
 
 // `../pi-ai/src` 는 EDITS 가 이미 쓰는 것과 같은 상대 위치다.
 const CS_AI = csJoin(csDirname(csDirname(CORE)), "pi-ai/src").replace(/\\/g, "/");
@@ -1412,7 +1449,7 @@ const { loadSessionFile: csLoadSessionFile } = await import(`${CORE}/session/ses
 const { createAgentSession: csCreateAgentSession } = await import(`${CORE}/sdk.ts`);
 csRegisterMockApi();
 
-const csRoot = csMkdtemp(csJoin(csTmpdir(), "omp-credential-stamp-"));
+const csRoot = csMkdtemp(csJoin(fixtureRoot, "omp-credential-stamp-"));
 const csAgentDir = csJoin(csRoot, "agent");
 const csCwd = csJoin(csRoot, "work");
 csMkdir(csAgentDir, { recursive: true });
@@ -1511,14 +1548,11 @@ const csLegacyAssistants = csAssistantMessages(csLegacyPath);
 check("이 필드 이전에 기록된 세션도 그대로 파싱된다", csLegacy.entries.length === 3 && (csLegacy.malformedRecords ?? 0) === 0 && csLegacy.invalidHeader === false, `entries=${csLegacy.entries.length} malformed=${csLegacy.malformedRecords} invalidHeader=${csLegacy.invalidHeader}`);
 check("옛 항목은 credentialId 없이 읽힌다", csLegacyAssistants.length === 1 && !("credentialId" in csLegacyAssistants[0]!), `keys=${JSON.stringify(Object.keys(csLegacyAssistants[0] ?? {}))}`);
 
-// SQLite·세션 파일 핸들이 아직 열려 있을 수 있다. 임시 디렉터리 청소 실패가 검사
-// 결과를 뒤집어서는 안 된다.
+// 세션 파일 writer와 외부 인증 저장소를 닫는다. 부모가 자식 종료 뒤
+// 공유 agent.db까지 핸들이 풀린 이번 실행의 fixture 전체를 지운다.
+await csSession.dispose();
+await csUnknownSession.dispose();
 csAuth.close?.();
-try {
-	csRmSync(csRoot, { recursive: true, force: true });
-} catch {
-	// 남은 임시 파일은 OS 가 정리한다.
-}
 
 console.log("\n[17] WEB6 provider 요청은 현재 OMP sessionId를 전용 헤더로 운반한다");
 const csWeb6Model = csBuildModel({

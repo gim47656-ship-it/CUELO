@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,12 +40,16 @@ describe("prompt-compact", () => {
 
   test("a copy made from an older source is not used", () => {
     const dir = mkdtempSync(join(tmpdir(), "prompt-compact-"));
-    mkdirSync(join(dir, "prompt-copies"));
-    const target = { source: "RULES.md", copy: "prompt-copies/RULES.en.md", open: "<generic-rules>", close: "</generic-rules>" };
-    writeFileSync(join(dir, "RULES.md"), "원문 v1");
-    writeFileSync(join(dir, target.copy), `<!-- source-fingerprint: ${sourceFingerprint("원문 v1")} -->\nEnglish v1\n`);
-    expect(loadSwaps(dir, [target]).map((swap) => swap.body)).toEqual(["English v1"]);
-    writeFileSync(join(dir, "RULES.md"), "원문 v2");
-    expect(loadSwaps(dir, [target])).toEqual([]);
+    try {
+      mkdirSync(join(dir, "prompt-copies"));
+      const target = { source: "RULES.md", copy: "prompt-copies/RULES.en.md", open: "<generic-rules>", close: "</generic-rules>" };
+      writeFileSync(join(dir, "RULES.md"), "원문 v1");
+      writeFileSync(join(dir, target.copy), `<!-- source-fingerprint: ${sourceFingerprint("원문 v1")} -->\nEnglish v1\n`);
+      expect(loadSwaps(dir, [target]).map((swap) => swap.body)).toEqual(["English v1"]);
+      writeFileSync(join(dir, "RULES.md"), "원문 v2");
+      expect(loadSwaps(dir, [target])).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
