@@ -1,5 +1,13 @@
 # 변경 기록
 
+## [0.5.2] - 2026-09-26
+
+### 변경 사항
+
+- thinking 요약을 생략하는 설정(`omitThinking`)에서도 Claude Opus 5.5가 도구 앞에 쓴 사용자용 문장이 화면과 세션에 본문으로 남습니다. Anthropic은 이 문장을 `narration` 서명이 붙은 thinking 블록으로 보내는데, 생략 설정이 그 내용까지 지웠습니다. 일반 thinking 내용은 계속 숨깁니다.
+- WEB6(ChatGPT 6 Pro) 상담에 첨부한 이미지가 새 ChatGPT 화면에서 업로드가 끝났는데도 0장으로 판정돼 전송 전에 멈추던 문제를 고쳤습니다.
+- 공개 저장소의 CI가 성공하면 새 `package.json` 버전의 GitHub 릴리스와 npm `cuelo` 게시가 자동으로 실행됩니다. npm 게시는 Trusted Publishing(OIDC)을 씁니다.
+
 ## [0.5.1] - 2026-09-26
 
 ### 변경 사항
