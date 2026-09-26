@@ -130,7 +130,7 @@ node install.mjs setup
 node install.mjs start
 ```
 
-공개 웹 소스 릴리스와 변경 내용은 [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases)에서 확인하세요. [릴리스 절차](./docs/release.md)는 CUELO의 수동 게시 흐름을 설명합니다.
+공개 웹 소스 릴리스와 변경 내용은 [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases)에서 확인하세요. 새 `package.json` 버전이 공개 `main`에 올라가 CI가 성공하면 GitHub 릴리스와 npm `cuelo` 게시가 자동으로 실행됩니다([릴리스 절차](./docs/release.md)).
 
 ### 사이드카 서비스
 
