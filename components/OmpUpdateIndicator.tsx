@@ -1,15 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { copyText } from "@/lib/clipboard";
 import type { CueloUpdateResponse } from "@/lib/api-types";
+import { computePopupPlacement, preferredPopupHeight } from "@/lib/popup-placement";
 import { MarkdownBody } from "./MarkdownBody";
 
 type LoadState = "idle" | "loading" | "ready";
 
-/** Refreshes a source checkout; desktop users take the bundle from the release page instead. */
-const SOURCE_UPDATE_COMMAND = "git pull && bun install && bun run build";
+/** 소스 체크아웃에서 수동으로 갱신할 때 안내하는 명령. */
+const SOURCE_UPDATE_COMMAND = "git pull && bun install && bun run build && node Tools/CUELO_Setup/files/native-runtime-patch.js --target .";
 
 function displayVersion(version: string): string {
   return version === "unknown" ? version : `v${version}`;
@@ -17,6 +20,7 @@ function displayVersion(version: string): string {
 
 export function OmpUpdateIndicator() {
   const { locale, t } = useI18n();
+  const isMobile = useIsMobile();
   const [status, setStatus] = useState<CueloUpdateResponse | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [open, setOpen] = useState(false);
@@ -24,17 +28,30 @@ export function OmpUpdateIndicator() {
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const [panelPosition, setPanelPosition] = useState<{ left: number; bottom: number; width: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [panelPosition, setPanelPosition] = useState<{ left: number; width: number; maxHeight: number; top?: number; bottom?: number } | null>(null);
 
   const updatePanelPosition = useCallback(() => {
     const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const { side, maxHeight } = computePopupPlacement(
+      rect.top,
+      rect.bottom,
+      viewportHeight,
+      preferredPopupHeight(viewportHeight, 0.72, 620),
+      { margin: 12, minHeight: 0 },
+    );
     const width = Math.min(430, window.innerWidth - 24);
     const maxLeft = Math.max(12, window.innerWidth - width - 12);
     setPanelPosition({
       left: Math.min(rect.right + 8, maxLeft),
-      bottom: Math.max(12, window.innerHeight - rect.top + 8),
       width,
+      maxHeight,
+      ...(side === "above"
+        ? { bottom: viewportHeight - rect.top + 8 }
+        : { top: rect.bottom + 8 }),
     });
   }, []);
 
@@ -46,9 +63,13 @@ export function OmpUpdateIndicator() {
     updatePanelPosition();
     window.addEventListener("resize", updatePanelPosition);
     window.addEventListener("scroll", updatePanelPosition, true);
+    window.visualViewport?.addEventListener("resize", updatePanelPosition);
+    window.visualViewport?.addEventListener("scroll", updatePanelPosition);
     return () => {
       window.removeEventListener("resize", updatePanelPosition);
       window.removeEventListener("scroll", updatePanelPosition, true);
+      window.visualViewport?.removeEventListener("resize", updatePanelPosition);
+      window.visualViewport?.removeEventListener("scroll", updatePanelPosition);
     };
   }, [open, updatePanelPosition]);
 
@@ -80,10 +101,14 @@ export function OmpUpdateIndicator() {
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node) && !panelRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus({ preventScroll: true });
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -112,8 +137,9 @@ export function OmpUpdateIndicator() {
   };
 
   return (
-    <div ref={rootRef} style={{ position: "relative", width: "100%" }}>
+    <div ref={rootRef} data-dismissible-layer={open ? "" : undefined} style={{ position: "relative", width: "100%" }}>
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -124,7 +150,7 @@ export function OmpUpdateIndicator() {
         title={t("updates.availableTitle", { version: displayVersion(release.version) })}
         style={{
           width: "100%",
-          minHeight: 34,
+          minHeight: isMobile ? 44 : 34,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -153,17 +179,20 @@ export function OmpUpdateIndicator() {
         <span style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>{displayVersion(release.version)}</span>
       </button>
 
-      {open && panelPosition && (
+      {open && panelPosition && createPortal(
         <div
+          ref={panelRef}
+          data-dismissible-layer=""
           role="dialog"
           aria-label={t("updates.dialogTitle")}
           style={{
             position: "fixed",
             left: panelPosition.left,
+            top: panelPosition.top,
             bottom: panelPosition.bottom,
             zIndex: 700,
             width: panelPosition.width,
-            maxHeight: "min(72vh, 620px)",
+            maxHeight: panelPosition.maxHeight,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -216,7 +245,7 @@ export function OmpUpdateIndicator() {
                   onClick={() => void copyCommand(SOURCE_UPDATE_COMMAND)}
                   title={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
                   aria-label={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
-                  style={{ flex: "0 0 auto", width: 24, height: 24, padding: 0, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-panel)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
+                  style={{ flex: "0 0 auto", width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, padding: 0, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-panel)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
                 >
                   {copiedCommand === SOURCE_UPDATE_COMMAND ? (
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -237,7 +266,8 @@ export function OmpUpdateIndicator() {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

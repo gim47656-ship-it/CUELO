@@ -22,8 +22,28 @@ OMP 하네스는 코딩 에이전트가 요구를 작업으로 나누고, 변경
 ## 발주와 검수 계약
 
 Main은 작업을 발주할 때 목표·사용자 수용 조건·보존 동작·허용 경로·검증 범위를 정합니다. [`maker_route`](../Tools/OMP_Global_Config/agent/rules/subagent.md)는 작업 분류와 남은 판단, 후보 적합성·노력 수준, 기존 owner와 중복되는지를 돕는 발주 전 판단입니다. 결과는 Main의 조언이지 자동 승인이나 자동 배정이 아닙니다.
+Main이 완료된 Maker에게 `write agent://<id>`로 후속 지시를 보내면 런타임 advisory는 같은 session의
+실제 attempt에 `routing_verdict`가 아직 기록되지 않았는지 알려줍니다. Main은 증거를 보고
+`accepted`·`rework`·`held`를 직접 기록합니다. 증거 보충 요청은 자동 재작업 판정이 아닙니다.
+사용자 요구로 목적·범위·수용 조건이 바뀌면 변경된 사실로 `maker_route`를 다시 판단합니다.
+UI/UX 전문성 경계가 새로 확인되면 비-Opus owner의 미완 변경·증거를 보존해 명시적으로 이관하며, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다.
+Main이 실제 재작업을 지시할 때는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md#검수와-수용)의
+`REWORK task_id=... role=maker previous_revision=... next_revision=...`와
+`finding_id=... source=...`를 후속 메시지에 넣어야 합니다. 평문 지시만으로 새 attempt가 기록되지는 않습니다.
+`maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
+모델·강도 자동 조정 근거가 아닙니다.
+
+등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SOL`, `NORMAL_OPUS`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_ASTRA`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sol을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다.
+
+후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. Sol과 Opus는 `high`~`xhigh`, DeepSeek는 `high`를 사용합니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
+
+CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중인 요청·Steer·도구 후속 실행·수동 선택의 강도는 이 설정으로 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 하한이 적용되지는 않습니다.
+
+패치된 내장 코어의 Anthropic 계정 재선택은 사용량·주간 리셋을 확인할 수 있는 건강한 후보끼리 리셋 시각이 빠른 계정을 우선합니다. 리셋 시각이 정확히 같으면 남은 주간 한도가 큰 쪽, 그것도 같으면 기존 순서를 유지합니다. 조회 실패·부분 정보는 추정하지 않으며 기존 한도·예비량·5시간 보호를 유지합니다. 사용 중인 warm pin과 명시적으로 지정한 캐릭터 계정은 이 선호로 전환하지 않습니다.
 
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
+
+Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발주보다 필요한 확인과 회신을 먼저 처리합니다. 승인과 완료 보고가 엇갈렸을 때는 이미 끝난 검사를 반복하지 않고 최신 승인과 남은 동작을 대조해 이어갑니다. 실패를 기록하는 데서 끝내지 않고 기존 규칙의 실행 위반과 실제 누락을 구분해 다음 작업에 반영하며, 효과를 관측하기 전에는 개선됐다고 단정하지 않습니다.
 
 ## Task Guard와 command guard
 

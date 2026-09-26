@@ -28,6 +28,7 @@ import { useAudio } from "@/hooks/useAudio";
 import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
 import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage } from "./SidebarUsage";
+import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
@@ -1574,7 +1575,7 @@ export function AppShell({
         onCwdChange={handleCwdChange}
         onBackgroundTaskDone={handleBackgroundTaskDone}
       />
-      {/* Managed builds disable upstream update polling; updates are promoted by CUELO_Setup. */}
+      {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. */}
       <div className="navigator-footer" style={{ padding: "8px", flexShrink: 0 }}>
         <SidebarUsage
           usage={usage}
@@ -1583,6 +1584,7 @@ export function AppShell({
             selectWorkspaceView("resource", false);
           }}
         />
+        <OmpUpdateIndicator />
         <button
           className="navigator-settings-action"
           onClick={() => {

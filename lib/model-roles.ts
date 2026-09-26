@@ -167,12 +167,3 @@ export function writeModelRole(
   }
   settings.setModelRole(role, selector);
 }
-
-/** Format a model plus optional thinking level back into a role selector. */
-export function formatRoleSelector(
-  model: { provider: string; modelId: string },
-  thinkingLevel?: string,
-): string {
-  const base = `${model.provider}/${model.modelId}`;
-  return thinkingLevel && thinkingLevel !== "off" ? `${base}:${thinkingLevel}` : base;
-}

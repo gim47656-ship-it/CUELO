@@ -2,7 +2,7 @@
 //
 // 손으로 관리하던 역할 파일에는 같은 문장이 반복돼 있었다. 한 곳만 고치고 나머지를
 // 잊는 사고가 실제로 났으므로, 공통 문장은 `agent/sop/_common.md` 같은 조각에 한 번만
-// 쓰고 여기서 합친다. 단일 Maker의 모델은 @impl, 기본 추론은 medium이다.
+// 쓰고 여기서 합친다. 단일 Maker의 모델은 @implSol, 기본 추론은 medium이다.
 // 발주 전 Main이 고른 tasks[].model의 concrete effort suffix가 생성 기본값보다 우선한다.
 //
 //   node patches/build-agents.mjs           조각에서 다시 만들어 덮어쓴다

@@ -10,11 +10,12 @@
       "modelConfigPath": "modelRoles.default",
       "thinkingConfigPath": "defaultThinkingLevel",
       "thinkingMode": "auto",
-      "autoThinkingFloor": null
+      "autoThinkingFloor": "medium",
+      "autoThinkingFloorConfigPath": "providers.autoThinkingMinEffort"
     },
     "maker": {
       "kind": "delegated-end-to-end-implementation-owner",
-      "modelConfigPath": "modelRoles.impl",
+      "modelConfigPath": "modelRoles.implSol",
       "thinkingMode": "dispatch-selected-concrete-effort",
       "defaultThinkingLevel": "medium",
       "definition": "agent/agents/maker.md",
@@ -67,7 +68,7 @@
       "noFixedOrder": "never-a-global-one-way-gate-and-never-a-runtime-engine",
       "selectedOverlapDispatch": "when-main-selects-overlap-it-reviews-the-frozen-revision-itself-while-the-owner-check-still-runs-serial-dispatch-then-violates-the-selected-strategy"
     },
-    "modelConfigPath": "modelRoles.impl",
+    "modelConfigPath": "modelRoles.implSol",
     "sourceAccess": "owner-writable-inside-its-brief-boundary-only",
     "allowedWrites": "its-own-slice-sources-plus-ordinary-build-cache-temp-artifacts",
     "forbidden": ["other-owners-files", "install", "deploy", "commit", "verdict"],
@@ -576,7 +577,7 @@
         },
         "pre-dispatch-existing-owner-message": {
           "owner": "main",
-          "when": "when-main-sends-a-natural-language-instruction-through-write-agent-id-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one-exclude-clear-status-questions-approvals-and-repeat-normalized-instructions-observe-only-local-structural-signals-never-send-message-code-quote-path-or-secret-text-to-a-judge",
+          "when": "when-main-sends-a-natural-language-instruction-through-write-agent-id-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one-after-reload-exact-session-scoped-dispatch-and-outcome-may-identify-a-completed-owner-for-missing-verdict-reminder-exclude-clear-status-questions-approvals-and-repeat-normalized-instructions-from-structural-advisory-never-send-message-code-quote-path-or-secret-text-to-a-judge",
           "questions": [
             "observable-action-scope-and-acceptance-signals-with-owned-path-overlap",
             "requested-meaning-and-material-scope-change-remain-unknown-without-semantic-facts",
@@ -647,7 +648,7 @@
         "retrySignals": "inputChanged-and-interveningTools-are-observations-only-and-never-answer-sameCause-or-newEvidence-a-cancelled-running-job-without-terminal-exit-or-failure-evidence-advises-result-recovery-or-one-new-variable-and-stdout-silence-low-cpu-or-elapsed-time-alone-never-proves-a-stall",
         "taskProgressSignals": "pre-review-emits-local-metadata-validity-exact-match-and-incarnation-binding-counts-validation-evidence-ready-accepted-and-permission-conflict-counts-never-TASK_TITLE-or-TODO_TASKS-values-to-a-judge-unknown-remains-distinct-from-zero",
         "localStructuralPlacements": "pre-review-pre-retry-and-pre-dispatch-existing-owner-message-observe-structural-counts-and-explicit-states-locally-and-emit-compact-advisories-without-a-judge-call-unobservable-meaning-stays-unknown-and-is-never-inferred-from-counts-or-keywords",
-        "ownerMessageAdvisory": "local-structural-summary-dedupes-per-owner-and-normalized-identity-including-completed-owners-never-claims-additional-instruction-sufficiency-material-change-or-maker_route-necessity-from-structural-signals-main-owns-the-meaning-and-explicit-assessment-decision",
+        "ownerMessageAdvisory": "local-structural-summary-dedupes-per-owner-and-normalized-identity-including-completed-owners-a-completed-exact-session-assignment-attempt-with-no-recorded-verdict-receives-one-missing-verdict-reminder-per-attempt-held-rework-and-accepted-are-recorded-verdicts-never-infer-rework-from-message-keywords-never-claims-additional-instruction-sufficiency-material-change-or-maker_route-necessity-from-structural-signals-main-owns-the-meaning-and-explicit-assessment-decision",
         "runtimeSource": "agent/extensions/jev-runtime.ts"
       },
       "applicability": "apply-a-result-only-when-any-owner-it-points-to-actually-exists-and-it-does-not-contradict-deterministic-evidence-otherwise-ignore-that-placement-result-and-run-the-existing-procedure",
@@ -761,14 +762,15 @@
         "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
         "sessionChange": "a-new-session-discards-every-previous-judgment"
       },
-      "defaultMakerModelConfigPath": "modelRoles.impl",
+      "defaultMakerModelConfigPath": "modelRoles.implSol",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
       "profiles": {
-        "NORMAL": { "modelConfigPath": "modelRoles.impl", "workClass": "NORMAL", "allowedEfforts": ["medium", "high"] },
-        "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
-        "HARD_UI_UX": { "modelConfigPath": "modelRoles.makerHardUi", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
-        "HARD_CODE_SYSTEM": { "modelConfigPath": "modelRoles.makerHardCode", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
-        "HARD_CODE_SYSTEM_ALTERNATE": { "modelConfigPath": "modelRoles.makerHardCodeAlternate", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] }
+        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high"] }
       },
       "effortBand": "each-candidate-offers-only-registry-supported-levels-inside-its-profile-allowedEfforts-the-task-hook-blocks-any-other-level-and-max-a-shared-model-is-checked-against-the-recommended-profile-then-a-profile-of-the-recommended-work-class-and-without-a-recommendation-against-a-profile-that-allows-the-level",
       "criteria": {
@@ -786,21 +788,22 @@
         "MIXED": "both-judgments-matter-main-selects-the-dominant-one-or-splits-only-genuinely-independent-owned-slices",
         "UNKNOWN": "insufficient-evidence-for-dominant-judgment-main-decides-and-records-why-no-automatic-dual-dispatch"
       },
+      "uiUxBoundaryCriteria": "remaining-UI-or-UX-judgment-in-layout-responsive-behavior-information-hierarchy-visual-design-accessibility-focus-touch-targets-or-user-interaction-including-mixed-code-and-design-work-even-when-code-is-dominant-not-file-extension-alone-or-copying-already-settled-wording",
       "normalAllocation": {
-        "selection": "recommend-the-available-primary-NORMAL-candidate-modelRoles.impl-first-and-use-an-existing-NORMAL-alternative-only-when-the-primary-is-actually-unusable-or-its-limit-exhaustion-is-observed-observed-headroom-differences-between-candidates-never-displace-the-primary-and-unobserved-quota-is-never-treated-as-exhaustion-or-as-a-zero-remaining-share",
-        "missing": "missing-or-unusable-quota-is-unknown-not-zero-keep-the-primary-NORMAL-profile-candidate-with-an-explicit-unavailable-reason",
-        "scope": "new-dispatch-recommendation-only-never-change-credential-selection-rotation-cooldowns-resets-or-a-running-owner",
+        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-available-primary-NORMAL_SOL-first-and-use-NORMAL_DEEPSEEK-only-when-primary-is-actually-unusable-or-observed-exhausted-headroom-differences-and-unobserved-quota-never-displace-primary",
+        "missing": "UI-UX-Opus-unavailable-is-explicit-no-silent-model-substitution-otherwise-missing-quota-is-unknown-not-zero-keep-primary-NORMAL_SOL-with-unavailable-reason",
+        "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-newly-observed-UI-UX-boundary-requires-main-to-check-existing-owner-model-freeze-unfinished-delta-and-evidence-and-transfer-non-Opus-ownership-never-change-a-running-model-in-place-or-repeat-completed-non-UI-work",
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
       },
       "hardSelection": {
-        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_UX-and-CODE_SYSTEM-selects-HARD_CODE_SYSTEM-regardless-of-the-main-model-family-HARD_CODE_SYSTEM_ALTERNATE-is-offered-as-a-candidate-only-and-choosing-it-requires-ROUTING_REASON",
+        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_ASTRA-is-offered-only-as-an-alternative-and-requires-ROUTING_REASON",
         "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-and-effort-selection-only-access-program-fields-are-omitted"
       },
       "routingLedger": {
         "record": "append-only-json-lines-in-the-runtime-profile-agent-root-dispatch-and-outcome-belong-to-an-exact-session-assignment-attempt-identity-names-are-display-only-rework-keeps-the-original-attempt-and-uses-a-new-attempt-for-new-execution-legacy-name-only-records-remain-unscoped",
-        "summary": "each-maker_route-route-shows-recent-attempt-history-for-the-same-work-class-and-hard-focus-split-by-recommended-versus-chosen-model-effort-with-ok-rework-held-pending-aborted-counts-execution-completion-alone-is-not-quality-acceptance",
+        "summary": "after-jev-classification-each-maker_route-route-shows-main-only-advisory-recent-attempt-history-for-the-same-work-class-and-hard-focus-split-by-recommended-versus-chosen-model-effort-with-ok-rework-held-pending-aborted-counts-history-is-outside-jev-state-and-never-changes-the-classification-execution-completion-alone-is-not-quality-acceptance",
         "observation": "report-observed-counts-and-uncertainty-only-no-success-rate-superiority-or-criteria-review-recommendation-from-small-unequal-samples-never-change-rules-candidates-or-efforts-automatically",
         "verdict": "main-explicitly-records-accepted-rework-or-held-for-the-exact-attempt-accepted-requires-completed-execution-accepted-and-rework-require-revision-evidence-locators-and-reason-held-requires-reason-finalize-and-later-user-input-never-infer-acceptance",
         "failure": "ledger-write-or-read-failure-never-blocks-routing-or-dispatch-an-explicit-verdict-write-failure-is-reported-as-not-recorded-never-as-success"

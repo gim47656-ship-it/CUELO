@@ -711,14 +711,25 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const judgedReviews = new Set<string>();
     /** 같은 known owner에게 같은 정규화 지시를 반복할 때 local advisory를 한 번만 만든다. */
     const advisedOwnerMessages = new Set<string>();
+    /** 완료된 동일 attempt의 미기록 Main 판정은 owner 후속 지시에서 한 번만 알린다. */
+    const advisedMissingVerdicts = new Set<string>();
     /** 수신했지만 그 뒤 같은 Maker에게 아직 답하지 않은 체크포인트: sender → messageId. */
     const pendingCheckpoints = new Map<string, string>();
     /** 미회신 advisory를 이미 낸 체크포인트 id. */
     const advisedCheckpoints = new Set<string>();
 
+    function knownMakerForTarget(target: string): SpawnedTaskMeta | undefined {
+      for (const owner of knownMakers.values()) {
+        if (owner.agentId === target) return owner;
+      }
+      return knownMakers.get(target);
+    }
+
     function noteCheckpoint(record: unknown): void {
       const checkpoint = readIncomingCheckpoint(record);
-      if (checkpoint && knownMakers.has(checkpoint.from)) pendingCheckpoints.set(checkpoint.from, checkpoint.id);
+      if (checkpoint && knownMakerForTarget(checkpoint.from)) {
+        pendingCheckpoints.set(checkpoint.from, checkpoint.id);
+      }
     }
     /**
      * 도구별 직전 실패. 같은 도구의 다음 호출이 재시도 경계다.
@@ -1150,6 +1161,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       routing.reset();
       judgedReviews.clear();
       advisedOwnerMessages.clear();
+      advisedMissingVerdicts.clear();
       pendingCheckpoints.clear();
       advisedCheckpoints.clear();
       pendingFailures.clear();
@@ -1265,12 +1277,34 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           }
           preWriteJobs.set(event.toolCallId, known);
         }
+        // canonical child id가 agent:// 대상이다. 표시용 task name으로 판정 대상을 추측하지 않는다.
+        const owner = target ? knownMakerForTarget(target) : undefined;
         // 체크포인트 수신 뒤 같은 Maker로 가는 첫 DM이 그 체크포인트의 답이다. agent://all은 치지 않는다.
         const answersCheckpoint = target !== "" && pendingCheckpoints.delete(target);
         const message = typeof input.content === "string" ? input.content : "";
-        const owner = target && message ? knownMakers.get(target) : undefined;
-        if (owner) {
-          const summary = summarizeOwnerMessage(message, answersCheckpoint, owner);
+        const currentSessionId = ctx.sessionManager?.getSessionId?.();
+        let attempt: ObservedAttempt | undefined;
+        if (target && typeof currentSessionId === "string") {
+          for (const entry of observedAttempts.values()) {
+            if (entry.agentId === target && entry.sessionId === currentSessionId) attempt = entry;
+          }
+        }
+        // reload 후 knownMakers의 원문 guard는 복원할 수 없어 경로 중복 구조는 알리지 않는다.
+        // 다만 durable dispatch/outcome으로 확인한 canonical owner의 누락 판정은 여전히 확인할 수 있다.
+        const summary = message && (owner || attempt)
+          ? summarizeOwnerMessage(message, answersCheckpoint, owner ?? { guard: { ownedPaths: [] } } as SpawnedTaskMeta)
+          : undefined;
+        const missingVerdict = summary?.shouldAdvise && attempt?.status === "completed"
+          && !advisedMissingVerdicts.has(attempt.attemptId)
+          && !baseLedger.read().some((record) => record.type === "verdict"
+            && record.sessionId === attempt.sessionId
+            && record.assignmentId === attempt.assignmentId
+            && record.attemptId === attempt.attemptId);
+        const reminder = missingVerdict
+          ? ` 명시 판정 미기록(읽은 원장 기준): ${attempt.sessionId}|${attempt.assignmentId}|${attempt.attemptId}. 완료 보고와 해당 수용 조건·증거를 Main이 대조한 뒤 routing_verdict로 accepted/rework/held를 직접 기록한다. 증거 보충·추가 요구만으로 rework를 추정하지 않는다.`
+          : "";
+        if (missingVerdict) advisedMissingVerdicts.add(attempt.attemptId);
+        if (owner && summary?.shouldAdvise) {
           const dedupeKey = JSON.stringify([
             target,
             owner.guard.workClass ?? null,
@@ -1278,7 +1312,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             owner.guard.ownedPaths,
             summary.localIdentity,
           ]);
-          if (summary.shouldAdvise && !advisedOwnerMessages.has(dedupeKey)) {
+          if (!advisedOwnerMessages.has(dedupeKey)) {
             advisedOwnerMessages.add(dedupeKey);
             const detail = summary.detail;
             sendAdvisory(
@@ -1287,10 +1321,18 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
                 "pre-dispatch-existing-owner-message",
                 undefined,
                 ["requestedMeaning", "exactScopeDelta", "acceptanceSemantics", "workClass", "candidateEfforts"],
-                `known owner에게 보내는 지시의 로컬 구조만 관측했다: detailLocator=tool_call:${event.toolCallId}, targetOwner=${target}, actionSignal=${detail.actionSignal}, scopeSignal=${detail.scopeSignal}, acceptanceSignal=${detail.acceptanceSignal}, hasTaskGuard=${detail.hasTaskGuard}, ownerPathCount=${detail.ownerPathCount}, mentionedPathCount=${detail.mentionedPathCount}, ownedPathOverlap=${detail.ownedPathOverlap}, excludedSensitiveDetail=${detail.excludedSensitiveDetail}. 원문 의미·정확한 범위 delta·수용 의미는 unknown이며 원문·코드·경로·secret은 advisory에 싣지 않았다. Main이 실제 지시를 읽고 필요할 때만 현재 조각 사실과 관련 owner로 기존 maker_route assessment를 구성한다. unknown 자체는 maker_route 호출 의무가 아니며 별도 JEV 판단을 호출하지 않는다.`,
+                `known owner에게 보내는 지시의 로컬 구조만 관측했다: detailLocator=tool_call:${event.toolCallId}, targetOwner=${target}, actionSignal=${detail.actionSignal}, scopeSignal=${detail.scopeSignal}, acceptanceSignal=${detail.acceptanceSignal}, hasTaskGuard=${detail.hasTaskGuard}, ownerPathCount=${detail.ownerPathCount}, mentionedPathCount=${detail.mentionedPathCount}, ownedPathOverlap=${detail.ownedPathOverlap}, excludedSensitiveDetail=${detail.excludedSensitiveDetail}. 원문 의미·정확한 범위 delta·수용 의미는 unknown이며 원문·코드·경로·secret은 advisory에 싣지 않았다. Main이 실제 지시와 원 수용 조건을 대조해 실질 목적·범위·수용 조건이 변경됐으면 기존 owner를 보존하며 변경된 사실로 maker_route를 다시 판단한다. 실제 재작업이라 판단했다면 rule://subagent 「검수와 수용」의 REWORK task_id=... role=maker previous_revision=... next_revision=... finding_id=... source=... 계약을 적용한다. 구조 문자열 일치만으로 변경을 확정하거나 unknown만으로 호출하지 않으며 별도 JEV 판단을 호출하지 않는다.${reminder}`,
               ),
             );
+          } else if (missingVerdict) {
+            sendAdvisory("pre-dispatch-existing-owner-message", renderAdvisory(
+              "pre-dispatch-existing-owner-message", undefined, [], reminder.trim(),
+            ));
           }
+        } else if (missingVerdict) {
+          sendAdvisory("pre-dispatch-existing-owner-message", renderAdvisory(
+            "pre-dispatch-existing-owner-message", undefined, [], reminder.trim(),
+          ));
         }
       }
 

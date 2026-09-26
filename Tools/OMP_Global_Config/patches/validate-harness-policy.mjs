@@ -1164,7 +1164,7 @@ if (policy !== null) {
     'roles.main.thinkingConfigPath는 "defaultThinkingLevel"이어야 한다.',
   );
   check(valueAt(policy, "roles.main.thinkingMode") === "auto", 'roles.main.thinkingMode는 "auto"여야 한다.');
-  check(valueAt(policy, "roles.main.autoThinkingFloor") === null, "roles.main.autoThinkingFloor는 null이어야 한다.");
+  check(valueAt(policy, "roles.main.autoThinkingFloor") === "medium", "roles.main.autoThinkingFloor는 medium이어야 한다.");
   check(
     valueAt(policy, "roles.maker.thinkingMode") === "dispatch-selected-concrete-effort",
     'roles.maker.thinkingMode는 "dispatch-selected-concrete-effort"여야 한다.',
@@ -1784,6 +1784,10 @@ if (rawConfig === "") {
         check(false, `${locator}가 가리키는 ${reference}를 ${configPath}에서 해석하지 못했다: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    check(
+      readYamlScalarAtPath(rawConfig, valueAt(policy, "roles.main.autoThinkingFloorConfigPath")) === valueAt(policy, "roles.main.autoThinkingFloor"),
+      "Main Auto 하한 설정은 roles.main.autoThinkingFloor와 일치해야 한다.",
+    );
     // 위임 역할의 모델 정본은 config.yml 이다. 위 `*ConfigPath` 해석 검사가 그것을 덮는다.
   }
 

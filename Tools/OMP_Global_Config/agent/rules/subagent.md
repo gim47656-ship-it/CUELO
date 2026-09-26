@@ -31,23 +31,24 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 ## 발주 시점 추론 선택
 
-- 단일 정의 `agent/sop/maker.md`는 `model:"@impl"`를 기본으로 하며 발주별 `tasks[].model`로
-  `config.yml` `modelRoles`의 slot을 고른다. 후보마다 허용 강도 구간이 따로 있다. NORMAL은
-  `impl` Sol(medium~high, 기본 medium)·`implDeepSeek` DeepSeek V4 Flash(high, 이 모델은 xhigh 미지원)이고,
-  사용 가능한 primary(`impl` Sol)를 먼저 추천한다. 대안은 primary가 실제로 사용 불가이거나 한도 소진이
-  관측됐을 때만 쓰고, 후보 간 관측 한도 여유 차이만으로 primary를 밀지 않는다. HARD는 UI·UX면 `makerHardUi`, 코드·시스템이면
-  `makerHardCode`(Opus, 대체 `makerHardCodeAlternate` Astra)로 모두 high~xhigh다. 허용 구간 밖
-  강도와 공급자가 지원하지 않는 강도·max는 쓰지 않는다. HARD는 Main 모델 계열 때문에 분야별 후보를
-  뒤집지 않는다. 혼합·미확인은 Main이 근거를 남긴다. 전문성 우선, 독립성 보조다. Main과 다른
-  관점의 독립 판단이 구체적으로 필요한 경우만 `ROUTING_REASON`에 그 필요를 적고 Opus로
-  cross-frontier를 선택한다. 단순히 Main과 계열이 같다는 이유로 바꾸지 않고 구현 Maker를 독립
-  검수자로 취급하지 않는다.
-  NORMAL 후보 선택은 관측 한도 여유 비교가 아니라 primary 우선이다. primary가 사용 가능하면 그대로
-  추천하고, 실제 사용 불가이거나 한도 소진이 관측된 경우에만 기존 NORMAL 대안을 쓴다. 한도 미관측은
-  0%나 소진으로 가정하지 않고 primary를 유지하며 unavailable 사유를 남긴다. 80%처럼 새 고정 임계값을
-  만들지 않는다. 계정 내부 전환·쿨다운·리셋과 실행 중 owner·HARD 배정은 기존 core 기준 그대로다.
-  준비한 추천을 발주까지 유지하며 새 준비에서 한도만 다시
-  읽는다. 모델 이름은 slot을 정본으로 두며 새 역할을 만들지 않는다. 접근 모드는 아예 생략한다.
+- 단일 정의 `agent/sop/maker.md`는 `model:"@implSol"`를 기본으로 하며 발주별 `tasks[].model`로
+  `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 실제 모델 계열을 담는다.
+  `NORMAL_SOL`(`implSol`)·`NORMAL_OPUS`(`implOpus`)는 high~xhigh, `NORMAL_DEEPSEEK`(`implDeepSeek`)는 high다.
+  **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
+  접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
+  파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
+  비-UI NORMAL은 사용 가능한 `NORMAL_SOL`을 우선하고, 실제 사용 불가·한도 소진이 관측됐을 때만
+  `NORMAL_DEEPSEEK`를 추천한다. 한도 여유 크기나 미관측을 이유로 primary를 밀지 않는다.
+  기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
+  다른 모델로 조용히 대체하지 않는다.
+  HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
+  `HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
+  후보별 허용 강도·registry 지원 구간을 지키며 max나 별도 접근 모드를 쓰지 않는다. Main 계열만으로
+  배정을 뒤집지 않고, 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
+  작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인한다. 비-Opus owner의 미완 변경·증거를
+  freeze하고 소유권을 명시적으로 넘긴 뒤 Opus가 이어간다. active owner와 새 writer를 겹치거나 실행 중
+  모델·effort를 바꾸지 않는다. 같은 Opus owner와 완료된 비-UI 작업은 재사용한다.
+  계정 내부 전환·warm/exact pin·쿨다운·리셋은 기존 core 계약을 유지한다.
 - Jev는 Main이 분할한 뒤 Maker에게 남은 판단을 분류한다.
   - NORMAL: 목표·보존 동작·검사가 명확하고 기존 명세나 재사용 패턴이 방법을 정하는 경우부터,
     기존 계약 안에서 원인 추적이나 구현 선택이 남아도 국소 증거로 좁힐 수 있는 경우까지 포함한다.
@@ -85,12 +86,20 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   바뀌면 다시 준비하고 owner 조건만 바뀌면 placement만 다시 판단한다. active owner가 그 경로를
   소유하면 dispatch-new가 막히고 오래된 owner index로 자동 배정하지 않는다
   (`routing.modelSelection.preparedReference`·`judgmentReuse`).
-  이 session에서 성공한 spawn으로 식별된 Maker(완료·parked 포함)에게 `write agent://<id>`로 자연어 지시를
-  보내는 경계는 런타임이 `pre-dispatch-existing-owner-message` advisory를 낸다. 그 판정은
-  background에서 생성되어 전송을 기다리게 하지 않고, owner·identity 단위로 중복 제거되며 stale
-  generation·abort·실패는 폐기 또는 indeterminate로 처리된다. advisory는 그 전송을
-  차단하지 않고 다음 continuation에 읽히므로, 실질 변경·정보 부족이면 정식 `maker_route`
-  assessment를 다시 넣는다.
+  이 session에서 성공한 spawn의 canonical child id(`agent://<id>`)로 Maker(완료·parked 포함)에게
+  자연어 지시를 보내는 경계에 런타임은 `pre-dispatch-existing-owner-message` advisory를 낸다.
+  전송을 기다리게 하거나 차단하지 않고, 구조 신호만 owner·지시별로 중복 제거해 다음 continuation에
+  보여 준다. 완료 attempt의 `routing_verdict`가 읽은 원장에 없으면 해당 session·assignment·attempt
+  triple을 후속 지시에서 한 번 더 알린다. reload 뒤에는 같은 session의 durable identity와 outcome만
+  복원해 확인하며, `held`도 이미 기록된 판정이다. Main이 보고와 원 수용 조건·증거를 검수해
+  `accepted`·`rework`·`held` 중 하나를 **직접** 기록한다. 증거 보충·추가 요구·지시 문자열만으로
+  재작업을 추정하지 않는다. Main은 원 지시와 사용자의 새 요구를 대조해 목적·범위 또는 사용자가
+  승인한 수용 조건이 실질적으로 달라졌으면 변경된 사실과 기존 owner를 담아 `maker_route`
+  assessment를 다시 판단한다. 구조 신호가 같거나 `unknown`이라는 이유만으로 재평가를 강제하지 않으며,
+  재평가 결과도 실행 중 owner를 자동 교체하지 않는다.
+  실제 재작업이면 Main은 아래 「검수와 수용」의 `REWORK task_id=... role=maker previous_revision=... next_revision=...`
+  및 `finding_id=... source=...`를 후속 DM에 붙인다.
+  평문 재작업 주문만으로 새 실행 attempt를 식별하거나 수용 판정을 만들지 않는다.
 - `task.enableEffort:false`로 coarse 매핑을 끄고 명시 `tasks[].model` suffix로 강도를 전달한다.
   실제 core 우선순위는 coarse effort > selector suffix > agent 기본 > pattern-derived다.
   생성 기본 medium은 유지하되 발주 suffix가 덮는다. Auto를 suffix의 `auto`나 기본값 적용으로
@@ -100,6 +109,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   쉬움/복잡함을 공유 state 전체에서 제외한다. 원문·소스·diff·로그·비밀은 보내지 않는다.
   목적·범위의 실질 변경이나 판단을 바꾸는 새 증거에서만 다시 분류하고 기존 owner를 보존한다.
   실행 중 변경 API를 지어내거나 강도 때문에 재발주하지 않으며 추천과 실제 적용값을 구분한다.
+  미사용으로 판단한 코드에서 루트 framework entry·동적 로딩·별도 스크립트 소비자가 발견되어
+  구현 방향이나 보존 계약이 달라지면, 누락된 소비자와 남은 계약 충돌을 평가서에 넣어 재평가한다.
+  기존 계약으로 해소된 조사 정정과 새 비국소 판단을 구분하며, 오류 건수만으로 HARD나 모델 교체를 결정하지 않는다.
 - 조사에서 확인한 계약 충돌(예: 새 upstream 구조와 보존할 patch 의미, 경로 이관과 설치 검증 계약)은
   `facts`·`remainingJudgments`에 충돌하는 양쪽 계약과 함께 그대로 적는다. 확정 방향·재사용 패턴만 적고
   충돌을 빼면 Jev는 NORMAL로 기운다 — 등급 정답 corpus 13/13 일치와 달리 실제 발주는 31/31 NORMAL이었다
@@ -119,6 +131,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   산문으로 밝히고 턴을 끝내고, Main의 메시지가 wake 턴으로 깨운다. 회신 없음은 승인이 아니며 시간
   기반 암묵 승인도 없다. Main은 받은 체크포인트마다 그 Maker에게 가는 첫 `write agent://<id>`로
   한 줄(approved·retarget·scope)을 답한다.
+  Main 승인 때문에 owner가 막힌 경우, 다음 도구 행동은 승인에 필요한 좁은 확인과 회신이다.
+  관계없는 문서·부수 조사·새 발주를 먼저 처리해 대기를 늘리지 않는다. 승인 메시지와 terminal
+  보고가 엇갈리면 최신 승인과 보고의 미완 항목을 대조하고, 실제 미처리 동작만 한 통으로 재개시킨다.
 - 검증은 변경 owner가 실행한다. routine은 Main, 위임 조각은 Maker가 담당한다.
   Maker는 자기 조각의 집중 검사와 실제 표면 확인을 별도 환경 구축 없이 가능한 최소 범위로 끝낸다.
   공통 격리 환경과 필요한 전체 빌드·통합·수용 검사는 Main이 소유·실행하며, Main은 그 조각의
@@ -392,8 +407,9 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 명시적으로 다시 판정할 수 있다. 저장 실패는 미기록으로 보고하며 발주 자체를 차단하지 않는다.
 준비 참조 재사용과 실행 attempt 재사용은 다르다. 재작업 후 수용은 새 attempt에 붙여 원래
 재작업 판정을 보존한다. 옛 name-only 기록은 보존하되 품질 집계에서 제외한다.
-`maker_route`의 history는 실행 중단과 품질 판정을 구분한 관측 건수일 뿐, 작은 불균형 표본의
-성공률 우열이나 모델·기준 자동 변경을 제안하지 않는다.
+`maker_route`의 history는 **Jev가 분류를 끝낸 뒤** Main에게 붙는 관측 건수 advisory다
+(`maker-routing.ts`의 `historyOf`). Jev state·입력에 들어가지 않고 작업 등급·노력·모델을
+자동 조정하지 않는다. 실행 중단과 품질 판정은 구분하며, 작은 불균형 표본의 성공률 우열을 제안하지 않는다.
 
 - 검수 대상은 owner가 남긴 **불변 raw artifact와 locator**다: 원문 그대로의 tool 출력, frozen
   Diff, 검증 명령의 raw 출력, impact-bearing caller locator. 손으로 옮겨 적은 diff, 산문 재구성,

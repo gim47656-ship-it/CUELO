@@ -80,6 +80,42 @@ export function prepareQueuedSubmission(
   };
 }
 
+export async function dispatchSlashSubmission(
+  message: string,
+  commands: SlashCommandInfo[] | undefined,
+  onBuiltinCommand: Props["onBuiltinCommand"],
+  sendPrompt: (message: string) => void,
+  showError: (message: string) => void,
+  hasAttachments: boolean,
+  loadCommands?: Props["onLoadSlashCommands"],
+): Promise<boolean> {
+  const name = message.slice(1).split(/\s/, 1)[0];
+  try {
+    const discovered = commands?.length ? commands : await loadCommands?.() ?? [];
+    const command = [...BUILTIN_SLASH_COMMANDS, ...discovered]
+      .find((entry) => entry.name === name || ("aliases" in entry && entry.aliases?.includes(name)));
+    if (hasAttachments && (!command || command.source === "builtin")) {
+      showError(`/${name} cannot run with attachments. Remove them and retry.`);
+      return false;
+    }
+    const result = await onBuiltinCommand?.(message);
+    if (result?.handled) {
+      if (result.error) return false;
+      if (result.prompt) sendPrompt(result.prompt);
+      return true;
+    }
+    if (command && command.source !== "builtin") {
+      sendPrompt(message);
+      return true;
+    }
+    showError(`/${name} is not available in this web session.`);
+    return false;
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
 interface ComposerDocument extends AttachedDocument {
   id: number;
   status: "extracting" | "ready";
@@ -1030,17 +1066,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!msg && !attachedImages.length && !readyDocuments.length) return;
     if (isStreaming || isExtractingDocument) return;
     onAudioUnlock?.();
-    if (!attachedImages.length && !readyDocuments.length && msg.startsWith("/") && onBuiltinCommand) {
-      const result = await onBuiltinCommand(msg);
-      if (result.handled) {
-        if (!result.error) {
-          clearInput();
-          if (result.prompt) {
-            onSend(result.prompt);
-          }
-        }
-        return;
-      }
+    if (msg.startsWith("/")) {
+      const handled = await dispatchSlashSubmission(
+        msg,
+        slashCommands,
+        onBuiltinCommand,
+        (prompt) => onSend(prompt, attachedImages.length ? attachedImages : undefined, readyDocuments.length ? readyDocuments : undefined),
+        setAttachmentError,
+        Boolean(attachedImages.length || readyDocuments.length),
+        onLoadSlashCommands,
+      );
+      if (handled) clearInput();
+      return;
     }
     clearInput();
     onSend(
@@ -1056,6 +1093,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     isExtractingDocument,
     isStreaming,
     onBuiltinCommand,
+    slashCommands,
+    onLoadSlashCommands,
     onSend,
     clearInput,
     onAudioUnlock,
@@ -1294,7 +1333,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, []);
 
-  const sendQueued = useCallback((mode: "steer" | "followup") => {
+  const sendQueued = useCallback(async (mode: "steer" | "followup") => {
     const rawMessage = value.trim();
     const commandMessage = commandValue.trim();
     const msg = commandMessage.startsWith("/") || commandMessage.startsWith("!")
@@ -1304,14 +1343,20 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!submission) return;
     onAudioUnlock?.();
     const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
-      clearInput();
-      onPromptWithStreamingBehavior(
-        submission.message,
-        streamingBehavior,
-        submission.images,
-        submission.documents,
+    if (msg.startsWith("/")) {
+      const handled = await dispatchSlashSubmission(
+        msg,
+        slashCommands,
+        onBuiltinCommand,
+        (prompt) => {
+          if (!onPromptWithStreamingBehavior) throw new Error("Cannot queue this command while the session is busy.");
+          onPromptWithStreamingBehavior(prompt, streamingBehavior, submission.images, submission.documents);
+        },
+        setAttachmentError,
+        Boolean(submission.images?.length || submission.documents?.length),
+        onLoadSlashCommands,
       );
+      if (handled) clearInput();
       return;
     }
     clearInput();
@@ -1326,6 +1371,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     attachedImages,
     readyDocuments,
     isExtractingDocument,
+    slashCommands,
+    onLoadSlashCommands,
+    onBuiltinCommand,
     onPromptWithStreamingBehavior,
     onSteer,
     onFollowUp,

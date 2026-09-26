@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -9,10 +8,9 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canRestoreUserMessage, filterModelOptions, getUserMessageText, getUserMessageDraftImages, prepareQueuedSubmission } = await jiti.import("./ChatInput.tsx");
+const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canRestoreUserMessage, dispatchSlashSubmission, filterModelOptions, getUserMessageText, getUserMessageDraftImages, prepareQueuedSubmission } = await jiti.import("./ChatInput.tsx");
 const { clearDraft, getDraft, mergeRestoredQueuedMessages, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("../lib/draft-store.ts");
 const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
-const chatInputSource = await readFile(new URL("./ChatInput.tsx", import.meta.url), "utf8");
 
 test("renders the upstream model error", () => {
   const html = renderToStaticMarkup(
@@ -253,16 +251,79 @@ test("recalls queued steering text and images into one recoverable draft", () =>
   );
 });
 
-test("wires queued images to busy slash, steer, and follow-up callbacks", () => {
-  const sendQueuedSource = chatInputSource.slice(
-    chatInputSource.indexOf('const sendQueued = useCallback'),
-    chatInputSource.indexOf('const getNextSlashIndex'),
+test("executes a busy builtin instead of queuing its slash text", async () => {
+  const calls = [];
+  const accepted = await dispatchSlashSubmission(
+    "/fast status",
+    [{ name: "fast", source: "builtin" }],
+    async (text) => { calls.push(["command", text]); return { handled: true }; },
+    (text) => calls.push(["prompt", text]),
+    (error) => calls.push(["error", error]),
+    false,
   );
+  assert.equal(accepted, true);
+  assert.deepEqual(calls, [["command", "/fast status"]]);
+});
 
-  assert.match(sendQueuedSource, /prepareQueuedSubmission\(msg, attachedImages, readyDocuments, isExtractingDocument\)/);
-  assert.match(sendQueuedSource, /onPromptWithStreamingBehavior\([\s\S]*?submission\.images[\s\S]*?submission\.documents/);
-  assert.match(sendQueuedSource, /onSteer\(submission\.message, submission\.images, submission\.documents\)/);
-  assert.match(sendQueuedSource, /onFollowUp\(submission\.message, submission\.images, submission\.documents\)/);
+test("keeps discovered extension, template, and skill commands in the SDK prompt path", async () => {
+  for (const [name, source] of [["review", "extension"], ["review", "prompt"], ["skill:review", "skill"]]) {
+    const calls = [];
+    const accepted = await dispatchSlashSubmission(
+      `/${name} draft`,
+      [{ name, source }],
+      async () => ({ handled: false }),
+      (text) => calls.push(text),
+      (error) => calls.push(error),
+      true,
+    );
+    assert.equal(accepted, true);
+    assert.deepEqual(calls, [`/${name} draft`]);
+  }
+});
+
+test("does not queue unknown, rejected, or attached builtin commands", async () => {
+  for (const [commands, builtin, attached] of [
+    [[], async () => ({ handled: false }), false],
+    [[{ name: "fast", source: "builtin" }], async () => ({ handled: true, error: "Busy" }), false],
+    [[{ name: "fast", source: "builtin" }], async () => ({ handled: true }), true],
+  ]) {
+    const calls = [];
+    const accepted = await dispatchSlashSubmission(
+      "/fast status",
+      commands,
+      builtin,
+      (text) => calls.push(["prompt", text]),
+      (error) => calls.push(["error", error]),
+      attached,
+    );
+    assert.equal(accepted, false);
+    assert.equal(calls.some(([type]) => type === "prompt"), false);
+    if (attached || commands.length === 0) assert.equal(calls[0][0], "error");
+  }
+});
+
+test("only sends a builtin's residual prompt and retains input when discovery fails", async () => {
+  const calls = [];
+  assert.equal(await dispatchSlashSubmission(
+    "/goal set task",
+    [{ name: "goal", source: "builtin" }],
+    async () => ({ handled: true, prompt: "task" }),
+    (text) => calls.push(text),
+    (error) => calls.push(error),
+    false,
+  ), true);
+  assert.deepEqual(calls, ["task"]);
+  calls.length = 0;
+  assert.equal(await dispatchSlashSubmission(
+    "/unknown",
+    undefined,
+    async () => ({ handled: false }),
+    (text) => calls.push(text),
+    (error) => calls.push(error),
+    false,
+    async () => { throw new Error("Command list unavailable"); },
+  ), false);
+  assert.deepEqual(calls, ["Command list unavailable"]);
 });
 
 test("moves a provisional new-session draft to the real session key", () => {
