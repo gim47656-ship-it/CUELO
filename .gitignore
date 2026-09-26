@@ -3,6 +3,7 @@
 # dependencies
 /node_modules
 /.omp/
+/.runtime-patch-home/
 /.pnp
 .pnp.*
 .yarn/*

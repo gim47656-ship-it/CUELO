@@ -762,7 +762,7 @@ describe("TASK_GUARD 파생", () => {
     const state = lockedState();
     const suffix = [
       "ROUTING_REASON: exact 캐릭터 모델을 일반 분류보다 우선한다",
-      '[character-summon alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="N"]',
+      '[character-summon alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="0"]',
       "# Target",
       "린이 사용자에게 직접 인사한다.",
     ].join("\n");

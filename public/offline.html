@@ -111,7 +111,35 @@
       <img src="/icons/icon-192.png" alt="" />
       <h1>CUELO is offline</h1>
       <p>Reconnect to the local CUELO server, then try again.</p>
+      <p id="offline-status" role="status" aria-live="polite">This page reopens the same address automatically when the server answers.</p>
       <button type="button" onclick="location.reload()">Try again</button>
     </main>
+    <script>
+      // Served by the service worker in place of a failed navigation, so the
+      // address bar still holds the original URL (session, query and hash).
+      // Reload only when the server itself answers with its maintenance payload
+      // and no update is draining; a failed fetch or any other body keeps waiting.
+      (function () {
+        var status = document.getElementById("offline-status");
+        function check() {
+          var controller = typeof AbortController === "function" ? new AbortController() : null;
+          var timer = setTimeout(function () { if (controller) controller.abort(); }, 4000);
+          fetch("/api/update-maintenance", { cache: "no-store", signal: controller ? controller.signal : undefined })
+            .then(function (response) { return response.ok ? response.json() : null; })
+            .then(function (body) {
+              if (body && body.schemaVersion === 2 && body.mutationBlocked === false) {
+                status.textContent = "The server is back. Reopening...";
+                location.reload();
+                return;
+              }
+              if (body && body.mutationBlocked === true) status.textContent = "CUELO is updating. This page reopens when the update finishes.";
+              setTimeout(check, 3000);
+            })
+            .catch(function () { setTimeout(check, 3000); })
+            .finally(function () { clearTimeout(timer); });
+        }
+        setTimeout(check, 3000);
+      })();
+    </script>
   </body>
 </html>

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUELO — omp(oh-my-pi)를 위한 AI 코딩 에이전트 작업 공간과 하네스</title>
+<meta name="description" content="CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 터미널의 omp 세션을 브라우저에서 이어 가고, 공개 멀티 에이전트 하네스 규칙을 씁니다.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/ko/">
+<link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
+<link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/">
+<link rel="alternate" hreflang="x-default" href="https://gim47656-ship-it.github.io/CUELO/">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="CUELO">
+<meta property="og:title" content="CUELO — omp를 위한 AI 코딩 에이전트 작업 공간과 하네스">
+<meta property="og:description" content="omp의 세션·계정·모델 설정을 그대로 쓰는 오픈소스 브라우저 작업 공간과, CUELO가 쓰는 공개 멀티 에이전트 하네스.">
+<meta property="og:url" content="https://gim47656-ship-it.github.io/CUELO/ko/">
+<meta property="og:image" content="https://gim47656-ship-it.github.io/CUELO/assets/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="책상에 앉은 CUELO 캐릭터 여섯 명 사이의 CUELO 로고">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="../assets/icon-64.png">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/site.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "CUELO",
+  "description": "omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스. 웹 앱은 omp SDK를 서버 안에서 실행하고 omp CLI와 같은 ~/.omp/agent의 세션·계정·모델 설정을 공유합니다.",
+  "url": "https://gim47656-ship-it.github.io/CUELO/ko/",
+  "codeRepository": "https://github.com/gim47656-ship-it/CUELO",
+  "programmingLanguage": "TypeScript",
+  "runtimePlatform": "Bun",
+  "license": "https://github.com/gim47656-ship-it/CUELO/blob/main/LICENSE",
+  "image": "https://gim47656-ship-it.github.io/CUELO/assets/og.jpg",
+  "inLanguage": ["ko", "en"],
+  "isBasedOn": "https://github.com/ddallabenetta/omp-web",
+  "keywords": ["AI 코딩 에이전트", "에이전트 하네스", "멀티 에이전트", "omp", "oh-my-pi", "모델 라우팅", "개발 도구"]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="./">CUELO</a>
+    <nav class="site-nav" aria-label="주요 메뉴">
+      <ul>
+        <li class="nav-run"><a href="#run">소스에서 실행</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">하네스 문서</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO">GitHub</a></li>
+        <li><a href="../" hreflang="en" lang="en">English</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero">
+    <div class="wrap">
+      <h1>
+        <span class="word">CUELO</span>
+        <span class="what">omp(oh-my-pi)를 위한 AI 코딩 에이전트 작업 공간과 하네스</span>
+      </h1>
+      <p class="lede">CUELO는 <a href="https://github.com/can1357/oh-my-pi">omp</a> SDK를 로컬 웹 서버 안에서 그대로 실행하고, <code>omp</code> CLI와 같은 <code>~/.omp/agent</code> 디렉터리를 씁니다. <strong>터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도</strong> 기록·계정·모델 설정이 하나로 유지됩니다.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">GitHub에서 소스 보기</a>
+        <a class="btn" href="#run">소스에서 실행하기</a>
+      </div>
+      <p class="status">현재 배포 경로는 GitHub 소스입니다. npm 패키지는 아직 게시하지 않았습니다.</p>
+      <figure class="hero-figure">
+        <img src="../assets/hero-1600.webp" srcset="../assets/hero-900.webp 900w, ../assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="노트북 앞에 앉은 애니메이션풍 캐릭터 여섯 명(RIN, MIO, YUKI, ISANA, NOVA, SHION) 사이의 CUELO 로고">
+        <figcaption>앱에서는 계정을 이메일 대신 이 캐릭터 얼굴과 별칭으로 구별합니다.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section aria-labelledby="purpose">
+    <div class="wrap">
+      <h2 id="purpose">CUELO의 목적</h2>
+      <p>작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다.</p>
+      <ol class="loop">
+        <li><strong>실제로 일어난 일을 기록</strong><p>관측한 실패와 막힘을 있는 그대로 남깁니다.</p></li>
+        <li><strong>원인인 부분만 수정</strong><p>기억·규칙·절차 가운데 원인이 된 곳만 바꿉니다.</p></li>
+        <li><strong>다음 작업에 반영</strong><p>다음 작업이 그 변경을 알고 시작합니다.</p></li>
+        <li><strong>재발했는지 확인</strong><p>문제가 다시 나오지 않아야 개선으로 봅니다. 다시 나오면 1단계로 돌아갑니다.</p></li>
+      </ol>
+      <p class="note">기록을 저장했다는 이유만으로 개선이 끝났다고 보지 않습니다. 이 흐름은 프로젝트가 지향하는 목표이며, 측정된 성과를 뜻하지 않습니다.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="parts">
+    <div class="wrap">
+      <h2 id="parts">한 저장소의 두 부분</h2>
+      <div class="parts">
+        <div>
+          <h3>작업 공간</h3>
+          <p class="where">웹 앱 · 저장소 루트</p>
+          <ul>
+            <li>프로젝트별로 지난 omp 세션을 찾아 이어 가고, 실시간 대화에서 도구 호출·비용·컨텍스트 사용량을 봅니다.</li>
+            <li>이전 메시지에서 갈래를 나누거나 별도 세션으로 fork합니다.</li>
+            <li>역할(<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> 등)별 모델을 TUI와 같은 <code>config.yml</code>로 지정·전환합니다.</li>
+            <li>provider·<code>models.yml</code>·플러그인·스킬 관리, 파일 미리보기, Git worktree 전환.</li>
+            <li>비밀번호 잠금, 브라우저 알림, PWA 설치. 한국어가 기본이고 영어·중국어 간체도 고를 수 있습니다.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>하네스</h3>
+          <p class="where">공개 규칙 · <a href="https://github.com/gim47656-ship-it/CUELO/tree/main/Tools/OMP_Global_Config/agent">Tools/OMP_Global_Config/agent</a></p>
+          <ul>
+            <li>CUELO가 쓰는 작업 방식입니다. Main은 요구·검수·최종 판정을, Maker는 위임받은 조각의 구현과 검증을 맡습니다.</li>
+            <li>발주·검수 계약, task guard, 판단 라우팅(Jev), 명령 가드를 규칙·SOP·확장으로 제공합니다.</li>
+            <li>omp core용 <a href="https://github.com/gim47656-ship-it/CUELO/tree/main/Tools/OMP_Global_Config/patches">패치</a>.</li>
+            <li><code>node install.mjs setup</code>이 자기 <code>~/.omp/agent</code>에 없는 파일만 복사합니다. 역할별 모델(<code>modelRoles</code>)은 자기 <code>config.yml</code>에 지정합니다. 웹 앱은 하네스 없이도 동작합니다.</li>
+          </ul>
+          <p><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">하네스 문서 읽기</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="scope">
+    <div class="wrap">
+      <h2 id="scope">이 저장소로 되는 것과 따로 필요한 것</h2>
+      <div class="scroll" role="region" aria-labelledby="scope" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">구분</th><th scope="col">내용</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">이 저장소만으로 동작</th><td>웹 앱 전체: 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, worktree, 비밀번호 잠금, 캐릭터 알림, 효율 패널(<code>~/.omp/stats.db</code> 읽기).</td></tr>
+            <tr><th scope="row">provider 로그인이 필요함</th><td>세션·인증·모델 설정은 <code>omp</code> CLI와 같이 쓰는 프로필 <code>~/.omp/agent</code>에 있습니다. provider 로그인은 사용자가 CUELO의 설정 › Models에서 직접 합니다.</td></tr>
+            <tr><th scope="row">별도 로컬 서비스</th><td>계정 사용량 카드, 사이드 챗(<code>/btw</code>), SubAgent 아카이브는 로컬 서비스 세 개(<code>usage</code>, <code>btw</code>, <code>subagent</code>)에서 데이터를 받습니다. <code>node install.mjs start</code>가 앱과 함께 <code>127.0.0.1</code>에 띄웁니다. 자격 증명과 기록은 자기 PC에 남습니다. 서비스가 떠 있지 않으면 해당 패널만 「연결 안 됨」으로 표시됩니다.</td></tr>
+            <tr><th scope="row">OMP 하네스 (공개)</th><td><code>Tools/OMP_Global_Config</code>의 규칙·SOP·확장과 omp core 패치. 위 설명 참고.</td></tr>
+            <tr><th scope="row">포함하지 않는 것</th><td>로그인 정보·API 키, 어떤 provider·계정·모델을 쓰는지 정한 개인 설정(<code>config.yml</code>·<code>models.yml</code>), 개인 skill, 작업 기록, 관리자 개인 PC의 배포 도구.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="run" aria-labelledby="run-h">
+    <div class="wrap">
+      <h2 id="run-h">소스에서 설치하고 실행하기</h2>
+      <p><strong>Node.js 22.19.0 이상</strong>, <strong>Bun 1.4.2 이상</strong>, Git이 필요합니다. 설치 스크립트는 Windows에서만 검증했습니다. macOS·Linux는 같은 코드 경로를 쓰지만 실제로 검증하지는 않았습니다.</p>
+<pre tabindex="0" aria-label="설치와 실행 명령"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
+cd CUELO
+node install.mjs setup     <span class="c"># 설치·빌드·SDK 패치·공개 하네스 복사</span>
+node install.mjs start     <span class="c"># 앱 + usage·btw·subagent를 포그라운드로 실행</span>
+
+<span class="c"># 다른 터미널에서</span>
+node install.mjs health    <span class="c"># 네 서비스가 응답하는지 확인</span></code></pre>
+      <p>그다음 <code>http://127.0.0.1:30141</code>을 직접 엽니다. 브라우저는 자동으로 열리지 않습니다. <strong>설정 › Models</strong>에서 쓸 provider의 로그인 버튼을 눌러 브라우저 OAuth나 API 키로 직접 로그인합니다. 공식 omp CLI(<code>@oh-my-pi/pi-coding-agent</code>)를 이미 설치해 두었다면 <code>omp login</code>을 써도 됩니다. 이 안내는 CLI를 따로 설치하지 않습니다. 모든 서비스는 <code>127.0.0.1</code>에서만 열리고, Ctrl+C를 누르면 네 개가 함께 종료됩니다. <code>health</code>는 각 서비스가 응답하는지만 확인하며, 로그인하거나 모델 provider를 호출하지 않습니다.</p>
+      <p><code>setup</code>은 공개 하네스를 <code>~/.omp/agent</code>에 복사하되 없는 파일만 추가합니다. 이미 있는 파일은 바꾸거나 지우지 않습니다. <code>config.yml</code>이 없을 때만 안전한 기본 운영 설정으로 새로 만듭니다(예: provider를 스스로 호출하는 자동 기능은 꺼 둠). 이 기본값은 설치 스크립트에 들어 있는 것이며 누군가의 개인 설정을 복사하지 않습니다. 이미 있는 <code>config.yml</code>은 그대로 둡니다. 사용할 모델 선택도 사용자가 합니다. <code>setup</code>의 <code>--model</code>/<code>--role</code>로 지정하거나 나중에 설정 › Model roles에서 고릅니다. 설치 스크립트가 모델을 추측해 채우지 않습니다.</p>
+      <p>CUELO는 권한이 큰 에이전트를 실행하므로, 평문 HTTP를 인터넷에 열지 말고 신뢰할 수 있는 HTTPS 리버스 프록시나 VPN 뒤에 두세요. 다른 포트 세트와 문제 해결을 포함한 전체 안내는 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a>에 있습니다.</p>
+      <p>CUELO npm 패키지는 아직 게시하지 않았습니다. npm의 <code>omp-web</code>은 upstream 프로젝트이며 CUELO와 별개입니다. 릴리스는 <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>에, 컨테이너 실행은 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>에 있습니다.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="bench">
+    <div class="wrap">
+      <h2 id="bench">하네스 비교</h2>
+      <p>CUELO 관리자가 따로 게시한 페이지에서 같은 AI 모델·같은 코딩 과제로 도구(CUELO, Claude Code, Codex)만 바꿔 비교한 결과를 볼 수 있습니다. 측정 조건과 주의 사항, 약한 부분도 그 페이지에 적혀 있습니다.</p>
+      <p><a href="https://gim47656-ship-it.github.io/cuelo-benchmark/">CUELO 하네스 벤치마크 열기</a></p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>CUELO는 @ddallabenetta의 <a href="https://github.com/ddallabenetta/omp-web">omp-web</a>을 기반으로 하고, omp-web은 @agegr의 <a href="https://github.com/agegr/pi-web">pi-web</a>에서 갈라져 나왔습니다. 에이전트 엔진은 <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a>이며 <code>@oh-my-pi/*</code> npm 패키지로 씁니다.</p>
+    <p>코드: <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/LICENSE">MIT License</a>. 캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION)의 그림·음성·스티커는 CUELO 고유 자산입니다.</p>
+  </div>
+</footer>
+</body>
+</html>

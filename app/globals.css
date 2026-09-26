@@ -3899,6 +3899,38 @@ section[aria-label="Subagent 기록"] > header {
   border-inline-start: var(--spine) solid var(--accent) !important;
 }
 
+/* The side chat is read at a glance in a narrow panel, so a long table cell or code line wraps
+   inside the panel instead of pushing it sideways. The main transcript keeps its scrolling
+   tables and code. `anywhere` also lowers the cells' min-content width, so the automatic table
+   layout can fit every column into the panel. The code rules override the highlighter's inline
+   `white-space: pre` and the streaming block's inline `overflow-x`. */
+.side-chat-answer .markdown-table-wrap,
+.side-chat-answer .markdown-code-block pre,
+.side-chat-answer .markdown-body pre {
+  overflow-x: visible !important;
+}
+
+.side-chat-answer .markdown-body table {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.side-chat-answer .markdown-body :is(th, td) {
+  overflow-wrap: anywhere;
+}
+
+/* A header names its column: keep Korean words whole (`단계`, not `단/계`) and break at spaces. */
+.side-chat-answer .markdown-body th {
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+
+.side-chat-answer .markdown-body :is(pre, code) {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+}
+
 /* the composer is a form element so submit works from the keyboard */
 .side-chat-panel > form {
   border-block-start-color: var(--border) !important;

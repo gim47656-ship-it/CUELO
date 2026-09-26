@@ -3101,7 +3101,7 @@ import { resolveUsedFraction } from "../usage";`,
 	},
 	{
 		// 2026-09-26 사용자 정책: Anthropic 새/cold 재선택은 주간 reset 이 더 빠른 건강한 계정을 먼저 쓴다
-		// (옛 "position N 이 80% 미만이면 맨 앞" 규칙을 대체). 사용량 그림이 완전하고 건강한 후보만,
+		// (옛 "position 0 이 80% 미만이면 맨 앞" 규칙을 대체). 사용량 그림이 완전하고 건강한 후보만,
 		// upstream ranking 에서 이미 차지한 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·
 		// plan 부적격·5h hot 후보는 upstream 자리 그대로다. 동률: 정확히 같은 reset 이면 남은 주간 quota
 		// 가 큰 쪽, 그다음 upstream 순서. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin

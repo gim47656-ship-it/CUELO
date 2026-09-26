@@ -53,8 +53,8 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     { provider: "opencode-go", id: "muse-spark-1.3-contributor" },
   ];
   const accounts = [
-    { position: N, credentialId: 11, active: false },
-    { position: N, credentialId: 13, active: true },
+    { position: 0, credentialId: 11, active: false },
+    { position: 1, credentialId: 13, active: true },
   ];
   let currentModel = models[0]!;
   let discovered = false;
@@ -157,8 +157,8 @@ describe("character voice identity", () => {
     expect(CHARACTER_TARGETS).toEqual({
       "YUKI(유키)": { model: "openai-codex/gpt-6-astra", toolCapable: true },
       "ISANA(이사나)": { model: "b-ai/deepseek-v4.1-flash", toolCapable: true },
-      "MIO(미오)": { model: "anthropic/claude-opus-5-5", oauthPosition: N, toolCapable: true },
-      "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: N, toolCapable: true },
+      "MIO(미오)": { model: "anthropic/claude-opus-5-5", oauthPosition: 1, toolCapable: true },
+      "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
       "NOVA(노바)": { model: "opencode-go/muse-spark-1.3-contributor", toolCapable: true },
       "SHION(시온)": { model: "web6/gpt-6-pro", toolCapable: false },
     });
@@ -168,14 +168,14 @@ describe("character voice identity", () => {
     expect(characterForProvider("web6")).toBe("SHION(시온)");
   });
 
-  test("Anthropic stable storage positions map N to RIN and N to MIO", () => {
+  test("Anthropic stable storage positions map 0 to RIN and 1 to MIO", () => {
     expect(anthropicCharacterForAccounts([
-      { position: N, credentialId: 11, active: true },
-      { position: N, credentialId: 13, active: false },
+      { position: 0, credentialId: 11, active: true },
+      { position: 1, credentialId: 13, active: false },
     ])).toBe("RIN(린)");
     expect(anthropicCharacterForAccounts([
-      { position: N, credentialId: 11, active: false },
-      { position: N, credentialId: 13, active: true },
+      { position: 0, credentialId: 11, active: false },
+      { position: 1, credentialId: 13, active: true },
     ])).toBe("MIO(미오)");
   });
 
@@ -250,7 +250,7 @@ describe("character voice identity", () => {
     expect(routing).toContain('[character-summon-intent alias="MIO(미오)"]');
     expect(routing).toContain('[character-summon-intent alias="SHION(시온)"]');
     expect(routing).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]');
-    expect(routing).toContain('[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="N"]');
+    expect(routing).toContain('[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]');
     expect(routing).toContain("web6/gpt-6-pro");
     expect(routing).toContain("WEB6");
     expect(parseCharacterSummonDirectives(routing)).toEqual(["YUKI(유키)", "MIO(미오)", "SHION(시온)"]);
@@ -258,7 +258,7 @@ describe("character voice identity", () => {
 
   test("multi-summon rewrite claims marked tasks and rejects unmarked or partial dispatch", () => {
     const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]';
-    const mioMarker = '[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="N"]';
+    const mioMarker = '[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]';
     const pending = ["YUKI(유키)", "MIO(미오)"] as const;
 
     const unmarked = rewriteTaskInputForCharacterSummon(
@@ -277,7 +277,7 @@ describe("character voice identity", () => {
       {
         tasks: [
           { agent: "maker", task: `${yukiMarker}\n인사` },
-          { agent: "maker", task: '[character-summon alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="N"]\n인사' },
+          { agent: "maker", task: '[character-summon alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="0"]\n인사' },
         ],
       },
       pending,
@@ -325,7 +325,7 @@ describe("character voice identity", () => {
     if (!rewritten.ok) return;
     const task = rewritten.input.task;
     expect(typeof task).toBe("string");
-    expect(task).toContain('alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="N"');
+    expect(task).toContain('alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="0"');
     expect(task).toContain("task brief의 산문과 사용자 화면에 표시하는 모든 진행·최종 산문은 한국어");
     expect(task).toContain('alias="RIN(린)"');
     expect(task).not.toContain('alias="MIO(미오)"');
@@ -350,7 +350,7 @@ describe("character voice identity", () => {
     expect(rewriteTaskInputForCharacterSummon({ task: "상담" }, "SHION(시온)").ok).toBe(false);
   });
 
-  test("RIN switch pins OAuth position N before changing only the live session model", async () => {
+  test("RIN switch pins OAuth position 0 before changing only the live session model", async () => {
     const harness = createRuntimeHarness();
     const result = await harness.emit("input", {
       type: "input",
@@ -389,7 +389,7 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("Problem / Decision / Check / Next를 항상 쓴다");
   });
 
-  test("MIO switch pins OAuth position N for a conversational switch command", async () => {
+  test("MIO switch pins OAuth position 1 for a conversational switch command", async () => {
     const harness = createRuntimeHarness();
     await harness.emit("input", {
       type: "input",
@@ -617,7 +617,7 @@ describe("character voice identity", () => {
     expect(JSON.stringify(result)).toContain("discovery unavailable");
   });
 
-  test("MIO summon pins OAuth position N as the only exact identity", async () => {
+  test("MIO summon pins OAuth position 1 as the only exact identity", async () => {
     const harness = createRuntimeHarness();
     await harness.emit("before_agent_start", {
       type: "before_agent_start",

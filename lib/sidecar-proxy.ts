@@ -12,10 +12,19 @@ export interface SidecarTarget {
   origin?: string;
 }
 
-const RESOURCE_ORIGIN = "http://127.0.0.1:30142";
-const SIDECHAT_ORIGIN = "http://127.0.0.1:30143";
-const SUBAGENT_ORIGIN = "http://127.0.0.1:30144";
-const CUELO_LOOPBACK_ORIGIN = "http://127.0.0.1:30141";
+// The host is always loopback. Only the port follows the same variables the app (`PORT`, as in
+// bin/cuelo-options.js) and each sidecar listen on, so a second CUELO on other ports stays paired
+// with its own sidecars. Anything but a plain port number keeps the default.
+function loopbackOrigin(variable: string, fallback: number): string {
+  const raw = process.env[variable]?.trim() ?? "";
+  const port = /^\d{1,5}$/.test(raw) ? Number(raw) : 0;
+  return `http://127.0.0.1:${port >= 1 && port <= 65535 ? port : fallback}`;
+}
+
+export const RESOURCE_ORIGIN = loopbackOrigin("OMP_USAGE_PORT", 30142);
+const SIDECHAT_ORIGIN = loopbackOrigin("OMP_BTW_PORT", 30143);
+const SUBAGENT_ORIGIN = loopbackOrigin("OMP_SUBAGENT_PORT", 30144);
+const CUELO_LOOPBACK_ORIGIN = loopbackOrigin("PORT", 30141);
 const SAFE_RESPONSE_HEADERS = [
   "content-type",
   "cache-control",

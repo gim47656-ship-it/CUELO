@@ -244,7 +244,7 @@ try {
 			credentialId: target.credentialId,
 			retryAfterMs: 60 * 60 * 1000,
 		});
-		check("RIN position N exact pin이 성립한다", ok && activeCredentialId(auth, sessionId) === target.credentialId);
+		check("RIN position 0 exact pin이 성립한다", ok && activeCredentialId(auth, sessionId) === target.credentialId);
 		check(
 			"blocked RIN은 sibling을 usable switch로 보고하지 않는다",
 			outcome.switched === false && outcome.retryAtMs === undefined,
@@ -381,10 +381,10 @@ try {
 			).result();
 			return result.credentialId as number | undefined;
 		};
-		const rin = await stamp("RIN(린)", accounts[N]!.credentialId);
-		const mio = await stamp("MIO(미오)", accounts[N]!.credentialId);
-		check("정상 RIN summon 결과는 position N credentialId 를 싣는다", rin === accounts[N]!.credentialId, `got=${rin}`);
-		check("정상 MIO summon 결과는 position N credentialId 를 싣는다", mio === accounts[N]!.credentialId, `got=${mio}`);
+		const rin = await stamp("RIN(린)", accounts[0]!.credentialId);
+		const mio = await stamp("MIO(미오)", accounts[1]!.credentialId);
+		check("정상 RIN summon 결과는 position 0 credentialId 를 싣는다", rin === accounts[0]!.credentialId, `got=${rin}`);
+		check("정상 MIO summon 결과는 position 1 credentialId 를 싣는다", mio === accounts[1]!.credentialId, `got=${mio}`);
 	}
 } finally {
 	for (const auth of opened) auth.close?.();

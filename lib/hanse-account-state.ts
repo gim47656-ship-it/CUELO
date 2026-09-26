@@ -6,6 +6,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
 import { cfgCodexResets } from "@oh-my-pi/pi-coding-agent/session/settings";
 import type { AgentSessionLike } from "./omp-types";
+import { RESOURCE_ORIGIN } from "./sidecar-proxy";
 
 const ANTHROPIC_RESET_SCOPE_LABELS: Record<string, string> = {
   "anthropic:5h": "5시간",
@@ -60,7 +61,7 @@ type AccountReport = UsageReport & {
 type UsageSnapshot = { brokerOk?: boolean; reports: AccountReport[] };
 
 async function loadUsage(): Promise<UsageSnapshot> {
-  const response = await fetch("http://127.0.0.1:30142/usage", {
+  const response = await fetch(`${RESOURCE_ORIGIN}/usage`, {
     cache: "no-store", redirect: "error", signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error("usage_unavailable");

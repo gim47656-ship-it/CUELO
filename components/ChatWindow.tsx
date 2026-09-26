@@ -17,7 +17,7 @@ import type {
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
-import { buildTranscriptRenderPlan, isGroupAnchor, partitionTranscriptPlan } from "@/lib/transcript-plan";
+import { buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan } from "@/lib/transcript-plan";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
@@ -265,9 +265,13 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   const { startIndex, hasMore } = getVisibleRenderWindow(main.length, visibleCount);
   const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
+    // A tab-local command result between the answer and the next prompt does
+    // not take away the prompt's "edit from here" target.
+    let prevIdx = idx - 1;
+    while (prevIdx >= 0 && isLocalCommandEntryId(entryIds[prevIdx])) prevIdx -= 1;
     const prevAssistantEntryId =
-      msg.role === "user" && idx > 0 && messages[idx - 1].role === "assistant"
-        ? entryIds[idx - 1]
+      msg.role === "user" && prevIdx >= 0 && messages[prevIdx].role === "assistant"
+        ? entryIds[prevIdx]
         : undefined;
     const keyPrefix = options.keyPrefix ?? "message";
     let showTimestamp = false;
@@ -316,9 +320,9 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
       {main.slice(startIndex).map((item, offset) => {
         // 이 턴의 발화는 그 턴의 마지막 항목 뒤에 붙는다. 어느 항목이 턴의 끝인지는
         // 작업 로그가 턴을 묶는 자리(anchorIdx)와 같은 규칙이라 두 화면이 어긋나지 않는다.
-        const turnIndex = item.kind === "message" ? item.idx : item.anchorIdx;
+        const turnIndex = item.kind === "message" ? item.anchorIdx ?? item.idx : item.anchorIdx;
         const next = main[startIndex + offset + 1];
-        const nextTurn = next ? (next.kind === "message" ? next.idx : next.anchorIdx) : null;
+        const nextTurn = next ? (next.kind === "message" ? next.anchorIdx ?? next.idx : next.anchorIdx) : null;
         // 이 항목부터 다음 항목 직전까지의 메시지에 묶인 스티커를 이 항목 뒤에 붙인다.
         const upper = next ? next.idx : Number.POSITIVE_INFINITY;
         const itemCues = cues.filter((cue) => {

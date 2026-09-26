@@ -5,6 +5,9 @@ import { persistDraftsForReload } from "./draft-store";
 const CLIENT_ID_KEY = "ompweb-update-client-id";
 const RESUME_INTENT_KEY = "ompweb-update-resume-intent-v2";
 const RETURN_KEY = "ompweb-update-return-v1";
+const RESTART_RETURN_KEY = "cuelo-restart-return-v1";
+/** 이보다 오래된 재시작 복귀 기록은 이번 화면의 복귀가 아니다. */
+const RESTART_RETURN_MAX_AGE_MS = 60_000;
 
 /**
  * 업데이트 복귀 확인 결과, 서버에서 이 세션의 run이 시작됐거나 이미 돌고 있음을 알리는 window
@@ -240,6 +243,47 @@ export function dismissUpdateReturn(requestId: string): UpdateReturnRecord | nul
     // 닫힘을 저장하지 못해도 이번 화면에서는 닫힌 상태로 유지한다.
   }
   return record;
+}
+
+/**
+ * 서버 재시작 뒤 이 탭을 다시 열기 직전에 draft와 복귀 기록을 남긴다. 다시 열린 같은 세션
+ * 화면이 그 기록을 읽어 현재 창에 복귀를 알린다. 저장이 막히면 알림만 빠지고 새로고침은 한다.
+ */
+export function recordServerRestartReturn(sessionId: string | null): void {
+  persistDraftsForReload();
+  try {
+    sessionStorage.setItem(RESTART_RETURN_KEY, JSON.stringify({ schemaVersion: 1, sessionId, at: Date.now() }));
+  } catch {
+    // 복귀 알림은 부가 정보다.
+  }
+}
+
+/**
+ * 재시작 복귀 기록을 현재 세션 화면이 한 번만 가져간다. 세션 복원이 끝나기 전(다른 세션)에는
+ * 기록을 남겨 두고, 오래됐거나 손상된 기록은 버린다.
+ */
+export function takeServerRestartReturn(sessionId: string | null, now = Date.now()): boolean {
+  const raw = sessionStorage.getItem(RESTART_RETURN_KEY);
+  if (!raw) return false;
+  let record: Partial<{ schemaVersion: number; sessionId: string | null; at: number }> | null;
+  try {
+    record = JSON.parse(raw) as Partial<{ schemaVersion: number; sessionId: string | null; at: number }> | null;
+  } catch {
+    record = null;
+  }
+  if (
+    !record
+    || record.schemaVersion !== 1
+    || typeof record.at !== "number"
+    || now - record.at > RESTART_RETURN_MAX_AGE_MS
+    || (record.sessionId !== null && typeof record.sessionId !== "string")
+  ) {
+    sessionStorage.removeItem(RESTART_RETURN_KEY);
+    return false;
+  }
+  if (record.sessionId !== sessionId) return false;
+  sessionStorage.removeItem(RESTART_RETURN_KEY);
+  return true;
 }
 
 export async function heartbeatUpdateClient(input: {

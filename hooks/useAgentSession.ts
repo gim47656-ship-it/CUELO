@@ -27,6 +27,13 @@ import { mergeRestoredQueuedMessages } from "@/lib/draft-store";
 import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
+import {
+  COMMAND_OUTPUT_CUSTOM_TYPE,
+  isLocalCommandEntryId,
+  LOCAL_COMMAND_ENTRY_PREFIX,
+  withLocalCommandOutputs,
+  type LocalCommandOutput,
+} from "@/lib/transcript-plan";
 
 export interface SessionData {
   sessionId: string;
@@ -594,6 +601,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const entryIdsRef = useRef<string[]>(entryIds);
   messagesRef.current = messages;
   entryIdsRef.current = entryIds;
+  // 이 탭에서 실행한 슬래시 명령 결과. 서버 transcript에 없으므로 transcript를 다시 받을 때마다
+  // 같은 자리에 다시 끼운다. 한 세션의 결과만 들고, 세션이 바뀌면 비운다.
+  const localCommandOutputsRef = useRef<{ sessionId: string | null; outputs: LocalCommandOutput[]; seq: number }>({
+    sessionId: session?.id ?? null,
+    outputs: [],
+    seq: 0,
+  });
   const agentRunningRef = useRef(false);
   const sdkAgentActiveRef = useRef(false);
   const rpcPromptPendingRef = useRef(false);
@@ -603,6 +617,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const bashRunningRef = useRef(false);
   const bashRecoveryIdRef = useRef(0);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
+  // A run the server starts after the main stream's idle grace closed it (a background result
+  // or an extension-injected follow-up) reaches this view only through the entries stream.
+  const serverRunStartRef = useRef<((sid: string) => void) | null>(null);
+  const serverRunAdoptRef = useRef<Promise<void> | null>(null);
   const initialScrollDoneRef = useRef(false);
   const completionScrollAllowedRef = useRef(true);
   const [autoFollowPaused, setAutoFollowPaused] = useState(false);
@@ -748,8 +766,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setData(d);
       setActiveLeafId(d.leafId);
       sessionSnapshotEntryIdRef.current = d.leafId ?? null;
-      updateMessages(d.context.messages);
-      updateEntryIds(d.context.entryIds ?? []);
+      const transcript = withLocalCommandOutputs(
+        d.context.messages,
+        d.context.entryIds ?? [],
+        localCommandOutputsRef.current.sessionId === sid ? localCommandOutputsRef.current.outputs : [],
+      );
+      updateMessages(transcript.messages);
+      updateEntryIds(transcript.entryIds);
       setContextUsage(d.contextUsage ?? null);
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
@@ -822,8 +845,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         contextUsage?: ContextUsage;
       };
       sessionSnapshotEntryIdRef.current = leafId;
-      updateMessages(d.context.messages);
-      updateEntryIds(d.context.entryIds ?? []);
+      const transcript = withLocalCommandOutputs(
+        d.context.messages,
+        d.context.entryIds ?? [],
+        localCommandOutputsRef.current.sessionId === sid ? localCommandOutputsRef.current.outputs : [],
+      );
+      updateMessages(transcript.messages);
+      updateEntryIds(transcript.entryIds);
       setContextUsage(d.contextUsage ?? null);
     } catch (e) {
       console.error("Failed to load context:", e);
@@ -967,6 +995,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       try {
         const event = JSON.parse(message.data) as AgentEvent;
         if (event.type === "session_snapshot") handleAgentEventRef.current?.(event);
+        else if (event.type === "agent_start") serverRunStartRef.current?.(sid);
       } catch {
         // EventSource reconnect와 다음 persisted snapshot이 복구를 맡는다.
       }
@@ -1118,11 +1147,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const content = stripAnsi(text).trim();
     const message: CustomMessage = {
       role: "custom",
-      customType: "command",
+      customType: COMMAND_OUTPUT_CUSTOM_TYPE,
       content,
       display: true,
       timestamp: Date.now(),
     };
+    const store = localCommandOutputsRef.current;
+    const sid = sessionIdRef.current;
+    if (store.sessionId !== sid) {
+      store.sessionId = sid;
+      store.outputs = [];
+    }
+    // 결과가 나온 시점의 마지막 기록 entry. 그 entry가 없는 branch로는 결과가 따라가지 않는다.
+    const tracked = entryIdsRef.current.slice(0, messagesRef.current.length);
+    let baseEntryId: string | null = null;
+    for (let idx = tracked.length - 1; idx >= 0; idx--) {
+      if (isLocalCommandEntryId(tracked[idx])) continue;
+      baseEntryId = tracked[idx];
+      break;
+    }
+    store.seq += 1;
+    store.outputs.push({ entryId: `${LOCAL_COMMAND_ENTRY_PREFIX}${store.seq}`, baseEntryId, message });
     updateMessages((previous) => [...previous, message]);
   }, [updateMessages]);
 
@@ -1537,6 +1582,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       window.removeEventListener(UPDATE_WAKE_EVENT, onUpdateWake);
     };
   }, [agentRunning, adoptRunningSession, loadSession]);
+  // The main stream handles every run it is open for: this view's own prompts (they mark the
+  // view running before sending) and runs inside the idle grace. Past the grace only the entries
+  // stream still hears the server, so its run start re-attaches here the way F5 would: adopt a
+  // run that is still going, or read the transcript of one that already finished.
+  serverRunStartRef.current = (sid) => {
+    if (
+      sessionIdRef.current !== sid
+      || agentRunningRef.current
+      || eventSourceRef.current
+      || serverRunAdoptRef.current
+    ) return;
+    const adopting = adoptRunningSession(sid)
+      .then(async (attached) => {
+        if (!attached && sessionIdRef.current === sid && !agentRunningRef.current) await loadSession(sid);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (serverRunAdoptRef.current === adopting) serverRunAdoptRef.current = null;
+      });
+    serverRunAdoptRef.current = adopting;
+  };
 
 
   useEffect(() => {
@@ -1555,8 +1621,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         );
         if (!merged) break;
         sessionSnapshotEntryIdRef.current = merged.entryId;
-        updateMessages(merged.messages);
-        updateEntryIds(merged.entryIds);
+        const transcript = withLocalCommandOutputs(
+          merged.messages,
+          merged.entryIds,
+          localCommandOutputsRef.current.sessionId === sessionIdRef.current ? localCommandOutputsRef.current.outputs : [],
+        );
+        updateMessages(transcript.messages);
+        updateEntryIds(transcript.entryIds);
         break;
       }
       case "agent_start": {
@@ -2704,6 +2775,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Load session on mount
   useEffect(() => {
     sessionIdRef.current = session?.id ?? null;
+    if (localCommandOutputsRef.current.sessionId !== sessionIdRef.current) {
+      localCommandOutputsRef.current = { sessionId: sessionIdRef.current, outputs: [], seq: 0 };
+    }
     if (session) {
       loadSession(session.id, !seededData, true, seededData).then((agentState) => {
         if (sessionIdRef.current !== session.id) return;

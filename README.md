@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/hero.png" alt="CUELO — Browser workspace for omp" width="100%">
+  <img src="./docs/hero.png" alt="CUELO — AI coding agent workspace and harness for omp" width="100%">
 </p>
 
 <p align="center">
@@ -8,25 +8,27 @@
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
 </p>
 
-# CUELO
+# CUELO — AI Coding Agent Workspace & Harness for omp (oh-my-pi)
 
-> 작업에서 얻은 교훈이 다음 작업의 행동으로 이어지는 코딩 작업 공간.
+**CUELO** is an open-source AI coding agent workspace and harness for **[omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)**.
 
-CUELO는 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi) 코딩 에이전트를 위한 브라우저 작업 공간입니다. 별도 에이전트가 아니라 omp SDK를 서버 안에서 그대로 돌리고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 그래서 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정이 하나로 유지됩니다.
+Use the same `~/.omp/agent` sessions, credentials and model configuration from the terminal and browser. The web workspace provides session management, model configuration, skills, worktrees, usage views and PWA access. The public harness provides multi-agent orchestration and model-routing rules; some integrations require separately configured services, as detailed below.
+
+**한국어:** CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 웹 앱은 omp SDK를 서버 안에서 실행하고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정을 공유합니다.
 
 CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다. 원인을 확인하고 필요한 부분만 바꾸며, 다음 작업에서 적용과 효과를 확인하는 것까지를 지향합니다. 기록을 저장했다는 이유만으로 자동 개선이 끝났다고 보지는 않습니다.
 
-*English: CUELO is a Korean-first browser workspace for omp. It runs omp's own SDK in-process against `~/.omp/agent`, so terminal and browser share one set of sessions, credentials and model settings.*
+**Keywords:** AI coding agent · agent harness · multi-agent orchestration · omp · oh-my-pi · model routing · developer tools
 
 ## 이 저장소로 되는 것과 따로 필요한 것
 
 | 구분 | 내용 |
 | --- | --- |
 | 이 저장소만으로 동작 | 웹 앱 전체: 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, worktree, 비밀번호 잠금, 캐릭터 알림, 효율 패널(`~/.omp/stats.db` 읽기) |
-| omp가 따로 있어야 함 | `~/.omp/agent`의 세션·인증·모델 설정. 보통 `omp` CLI를 한 번 이상 써서 만들어진 상태를 전제로 합니다 |
-| 사이드카 서비스가 필요함 | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브 — 아래 [사이드카 서비스](#사이드카-서비스) 참고. 없으면 해당 패널만 「연결 안 됨」 |
-| OMP 하네스 (공개) | CUELO가 쓰는 작업 방식 — Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 음성, 명령 가드 같은 규칙·SOP·확장과 omp core 패치 — 는 [`Tools/OMP_Global_Config/agent`](./Tools/OMP_Global_Config/agent)와 [`patches`](./Tools/OMP_Global_Config/patches)에 있습니다. `~/.omp/agent`에 복사해 쓰는 구조이고, 설명은 [docs/harness.md](./docs/harness.md)에 있습니다 |
-| 포함하지 않는 것 | 로그인 정보·API 키, 어떤 provider·계정·모델을 쓰는지 정한 개인 설정(`config.yml`·`models.yml`), 개인 skill, 작업 기록, PC 설치 파이프라인. CUELO 앱은 이것들 없이 동작하고, 하네스를 쓰려면 자기 `config.yml`에 역할별 모델(`modelRoles`)을 지정해야 합니다 |
+| 사용자가 준비할 것 | 자신의 모델 제공자 계정과 모델 선택. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
+| 로컬 사이드카 (공개) | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브의 실행 소스도 포함합니다. `node install.mjs start`가 앱과 함께 실행합니다 |
+| OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 음성, 명령 가드의 규칙·SOP·확장과 core 패치입니다. `node install.mjs setup`으로 설치하며, 자세한 설명은 [docs/harness.md](./docs/harness.md)에 있습니다 |
+| 포함하지 않는 것 | 개발자의 로그인 정보·API 키·개인 계정 및 모델 설정·개인 skill·대화와 작업 기록·PC별 운영 자료. 공개 설치는 필요한 비개인 운영 기본값만 제공하고 모델은 사용자가 고릅니다 |
 
 ## CUELO에서 할 수 있는 것
 
@@ -70,7 +72,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 ## 실행하기
 
-CUELO는 npm에 배포하지 않습니다. npm의 `omp-web` 패키지는 upstream이고 CUELO가 아닙니다. 소스에서 실행하세요.
+CUELO의 현재 배포 경로는 GitHub 소스입니다. npm 패키지는 아직 게시하지 않았습니다. npm의 `omp-web`은 upstream 프로젝트이며 CUELO와 별개입니다.
 
 omp SDK가 TypeScript 소스와 `bun:` 내장 모듈을 쓰기 때문에 서버는 **Bun 1.4.2 이상**에서만 돕니다.
 메모리 패키지가 선언한 선택적 ONNX peer는 `onnxruntime-node:1.21.0`으로 제공합니다. Transformers가 요구하는 별도 버전은 자체 의존성으로 유지하며, 설치 오류를 피하려고 peer 검증을 끄지 않습니다.
@@ -83,15 +85,17 @@ curl -fsSL https://bun.sh/install | bash        # macOS / Linux
 # CUELO 받기와 실행
 git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
-bun install
-bun run build
-node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
-bun bin/cuelo.js
+node install.mjs setup
+node install.mjs start
 ```
 
-서버가 준비되면 브라우저가 [http://127.0.0.1:30141](http://127.0.0.1:30141)로 열립니다. 기본은 `127.0.0.1`에만 열립니다.
+앱과 세 사이드카가 같은 터미널에서 실행됩니다. 브라우저에서 [http://127.0.0.1:30141](http://127.0.0.1:30141)을 열고 본인 계정으로 로그인한 뒤 모델을 선택하세요. 기본은 `127.0.0.1` 전용이며, Ctrl+C로 실행한 서비스를 종료합니다.
 
-실행기 옵션:
+다른 터미널에서 `node install.mjs health`로 네 서비스의 응답을 확인합니다. 기존 설치와 다른 포트가 필요하면 `start`와 `health` 양쪽에 `--port-base 31141`처럼 지정합니다. Node.js 22.19.0 이상과 Git도 필요합니다.
+
+처음 설치하거나 Claude·Codex에 설치를 맡길 때는 **[설치와 실행 안내](./docs/installation.md)**를 기준으로 하세요. 기존 프로필 파일은 자동으로 덮어쓰지 않으며, 제공자 로그인·권한 승인·모델 선택은 사용자 단계입니다. Windows에서 검증하며 다른 OS의 실사용 검증 범위는 설치 안내에 구분합니다.
+
+앱만 따로 실행하는 기존 실행기 옵션:
 
 ```bash
 bun bin/cuelo.js --port 8080           # 포트 변경
@@ -105,18 +109,19 @@ bun bin/cuelo.js --reset-password      # 비밀번호 재설정
 
 ### 업데이트
 
-새 CUELO 릴리스가 나오면 사이드바 아래에 알림이 뜹니다. CUELO는 스스로 설치하지 않습니다. 소스에서 실행 중이면 이렇게 갱신한 뒤 다시 시작하세요.
+새 CUELO 릴리스가 나오면 사이드바 아래에 알림이 뜹니다. CUELO는 스스로 설치하지 않습니다. 소스에서 실행 중이면 서비스를 종료한 뒤 소스를 갱신하고 다시 설치·시작하세요. 실행 중인 개발 서버의 `.next/`에 빌드를 겹쳐 쓰지 마세요.
 
 ```bash
-git pull && bun install && bun run build
-node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
+git pull --ff-only
+node install.mjs setup
+node install.mjs start
 ```
 
 공개 웹 소스 릴리스와 변경 내용은 [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases)에서 확인하세요. [릴리스 절차](./docs/release.md)는 CUELO의 수동 게시 흐름을 설명합니다.
 
 ### 사이드카 서비스
 
-사용량 카드, 사이드 챗, SubAgent 아카이브는 로컬 사이드카 서비스에서 데이터를 받습니다. 이 서비스들은 공개 미러에 포함되어 있지 않습니다.
+사용량 카드, 사이드 챗, SubAgent 아카이브는 로컬 사이드카 서비스에서 데이터를 받습니다. 실행 소스는 공개 저장소의 `Tools/CUELO_Setup/files/`에 있고, `node install.mjs start`가 함께 실행합니다. 개발자의 인증정보나 대화 기록을 제공하는 서비스가 아니라, 각 사용자 PC의 데이터를 읽는 서비스입니다.
 
 | 기능 | 주소 |
 | --- | --- |

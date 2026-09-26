@@ -573,7 +573,7 @@ function createEffectRenderer() {
 // 평소 30~70ms지만 CI 러너가 느린 순간(옆 테스트까지 70~125배 느려진 run 36149916815)에는 기본 5초를
 // 넘겼다. 시간이 지나면 t.after가 돌지 않아 바꿔 둔 window가 남고 useAudio 테스트까지 연달아 깨지므로
 // 제한을 넉넉히 둔다.
-test("업데이트 복귀 신호를 받은 유휴 화면은 새로고침 없이 Wake 응답을 한 번만 보여 준다", { timeout: 30_000 }, async (t) => {
+test("서버에서 시작된 run을 유휴 화면이 새로고침 없이 한 번만 보여 준다 (업데이트 복귀·grace 뒤 후속 run)", { timeout: 30_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-wake-"));
   const rendererKey = "__ompUseAgentSessionEffectRenderer";
   const fakeReactPath = join(directory, "react.mjs");
@@ -788,5 +788,87 @@ test("업데이트 복귀 신호를 받은 유휴 화면은 새로고침 없이 
   assert.deepEqual(hook.messages, otherHistory, "이전 세션의 늦은 Wake 응답이 새 세션 화면을 덮지 않는다");
   assert.equal(hook.agentRunning, false);
   assert.equal(mainStream(SESSION), undefined);
+  renderer.unmount();
+
+  // 2026-09-26 사용자 관측: 턴이 끝나고(스티커가 뜬 뒤) 서버가 이어서 시작한 run이 F5 전까지 안 보였다.
+  // 주 스트림은 idle grace 뒤 닫히고, 선택된 화면에 남는 것은 entries 스트림뿐이다.
+  const entriesStream = (id) => sources.find((source) => source.url === `/api/agent/${id}/events?entries=1`);
+  const mainStreams = (id) => sources.filter((source) => source.url === `/api/agent/${id}/events`);
+  const followPrompt = { role: "user", content: "[백그라운드 결과] 작업이 끝났습니다.", timestamp: 6 };
+  const followReply = {
+    role: "assistant", content: [{ type: "text", text: "결과를 받아 이어서 정리할게요" }], provider: "openai-codex", model: "gpt", stopReason: "stop", timestamp: 7,
+  };
+
+  // 4) 오래 도는 후속 run: 그 run에 붙고, 같은 시작 신호가 더 와도 주 스트림은 하나다.
+  sources.length = 0;
+  server.wake = null;
+  server.transcripts.set(SESSION, history);
+  server.states.set(SESSION, { running: false });
+  mount(SESSION, history);
+  await settle();
+  const entries = entriesStream(SESSION);
+  assert.ok(entries, "선택된 화면은 entries 스트림을 열어 둔다");
+  assert.equal(mainStreams(SESSION).length, 0, "유휴 화면에는 주 스트림이 없다");
+  server.transcripts.set(SESSION, [...history, followPrompt]);
+  server.states.set(SESSION, liveState({ isStreaming: true }));
+  entries.emit({ type: "connected", sessionId: SESSION });
+  entries.emit({ type: "agent_start" });
+  entries.emit({ type: "agent_start" });
+  await settle();
+  assert.equal(hook.agentRunning, true, "F5 없이 서버가 시작한 후속 run에 붙는다");
+  assert.equal(mainStreams(SESSION).length, 1, "겹친 시작 신호가 주 스트림을 두 번 열지 않는다");
+  entries.emit({ type: "agent_start" });
+  await settle();
+  assert.equal(mainStreams(SESSION).length, 1, "이미 붙은 run의 시작 신호는 무시한다");
+  const follow = mainStreams(SESSION)[0];
+  follow.emit({ type: "connected", sessionId: SESSION });
+  server.transcripts.set(SESSION, [...history, followPrompt, followReply]);
+  server.states.set(SESSION, liveState());
+  follow.emit({ type: "message_end", message: followReply });
+  follow.emit({ type: "agent_end" });
+  follow.emit({ type: "agent_settled" });
+  follow.emit({ type: "prompt_done" });
+  await settle();
+  assert.deepEqual(hook.messages, [...history, followPrompt, followReply], "후속 응답이 한 번만 보인다");
+  assert.equal(hook.agentRunning, false);
+  renderer.unmount();
+
+  // 5) 짧은 후속 run: 붙기 전에 끝났다. 먼저 읽힌 transcript가 끝나기 전 것이어도 끝난 내용을 보인다.
+  sources.length = 0;
+  const shortFollow = { ...followReply, content: [{ type: "text", text: "짧게 끝난 후속 응답" }], timestamp: 8 };
+  server.transcripts.set(SESSION, history);
+  server.states.set(SESSION, { running: false });
+  mount(SESSION, history);
+  await settle();
+  server.staleTranscripts.set(SESSION, [[...history, followPrompt]]);
+  server.transcripts.set(SESSION, [...history, followPrompt, shortFollow]);
+  server.states.set(SESSION, liveState());
+  entriesStream(SESSION).emit({ type: "agent_start" });
+  await settle();
+  assert.deepEqual(hook.messages, [...history, followPrompt, shortFollow], "이미 끝난 짧은 후속 응답도 F5 없이 보인다");
+  assert.equal(hook.agentRunning, false);
+  assert.equal(mainStreams(SESSION).length, 0, "끝난 run에는 주 스트림을 붙이지 않는다");
+  renderer.unmount();
+
+  // 6) 다른 세션으로 옮긴 뒤 이전 세션의 늦은 시작 신호는 새 화면을 건드리지 않는다.
+  sources.length = 0;
+  server.transcripts.set(SESSION, history);
+  server.states.set(SESSION, { running: false });
+  server.transcripts.set(OTHER_SESSION, otherHistory);
+  server.states.set(OTHER_SESSION, { running: false });
+  mount(SESSION, history);
+  await settle();
+  const previousEntries = entriesStream(SESSION);
+  props = sessionProps(OTHER_SESSION, otherHistory);
+  renderer.rerender();
+  await settle();
+  assert.equal(previousEntries.readyState, 2, "화면을 옮기면 이전 세션의 entries 스트림을 닫는다");
+  server.transcripts.set(SESSION, [...history, followPrompt]);
+  server.states.set(SESSION, liveState({ isStreaming: true }));
+  previousEntries.emit({ type: "agent_start" });
+  await settle();
+  assert.deepEqual(hook.messages, otherHistory, "이전 세션의 run이 새 세션 화면을 덮지 않는다");
+  assert.equal(hook.agentRunning, false);
+  assert.equal(mainStreams(SESSION).length, 0);
   renderer.unmount();
 });

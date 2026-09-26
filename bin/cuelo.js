@@ -23,7 +23,7 @@ if (!process.versions.bun && !isNodeVersionSupported(process.versions.node)) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const path = require("path");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -43,6 +43,46 @@ const {
   readNewPassword,
   // eslint-disable-next-line @typescript-eslint/no-require-imports
 } = require("./password-prompt");
+
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(`CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)
+
+Usage: cuelo [options]
+       cuelo setup [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>]
+       cuelo start [--home <dir>]
+       cuelo health
+
+Options:
+  -p, --port <port>         Server port (default: 30141)
+  -H, --hostname <host>     Listen address (default: 127.0.0.1)
+      --no-open             Do not open a browser
+      --authenticated       Enable password access
+      --reset-password      Replace the stored web password
+  -h, --help                Show this help
+
+Requires Bun >=1.4.2 to run the server. Node >=22.19.0 may launch the CLI.
+If install scripts did not run, use \"npm run prepare:runtime\" from the installed package before starting.`);
+  process.exit(0);
+}
+
+// 설치·서비스 묶음 명령은 공개 install.mjs가 소유한다. 인자·신호·종료 코드를 전달한다.
+if (["setup", "start", "health"].includes(process.argv[2])) {
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "install.mjs"), ...process.argv.slice(2)], {
+    cwd: path.join(__dirname, ".."),
+    stdio: "inherit",
+  });
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => child.kill(signal));
+  }
+  child.on("error", (error) => {
+    console.error(`CUELO installer failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+  child.on("exit", (code, signal) => {
+    process.exitCode = code ?? (signal === "SIGINT" ? 130 : 1);
+  });
+  return;
+}
 
 const pkgDir = path.join(__dirname, "..");
 const nextDir = path.join(pkgDir, ".next");
@@ -73,6 +113,23 @@ const webAuthFile = resolveWebAuthFile();
 if (!fs.existsSync(nextDir)) {
   console.error("Build artifacts not found. Please report this issue.");
   process.exit(1);
+}
+
+// 소스 실행은 README의 별도 native patch 경로를 유지한다. tarball에는
+// 소스와 bun.lock이 없으므로 기존 patch --check로 실행 준비를 판정한다.
+const sourceCheckout = fs.existsSync(path.join(pkgDir, "bun.lock")) &&
+  fs.existsSync(path.join(pkgDir, "app", "layout.tsx"));
+if (!sourceCheckout) {
+  const ready = spawnSync(process.execPath, [path.join(__dirname, "prepare-runtime.js"), "--check"], {
+    cwd: pkgDir,
+    encoding: "utf8",
+  });
+  if (ready.error || ready.status !== 0) {
+    if (ready.stdout) process.stderr.write(ready.stdout);
+    if (ready.stderr) process.stderr.write(ready.stderr);
+    if (ready.error) console.error(ready.error.message);
+    process.exit(1);
+  }
 }
 
 const bunPath = resolveBunPath();

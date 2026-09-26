@@ -2,8 +2,9 @@ const CACHE_PREFIX = "pi-web";
 // The `v` parameter carries the app version; this revision is bumped whenever
 // a precached shell file changes without a version change, so the activate
 // handler drops the previous cache instead of serving the stale shell. The
-// SEED surface cutover rewrote /offline.html and /manifest.webmanifest.
-const SHELL_REVISION = "2";
+// SEED surface cutover rewrote /offline.html and /manifest.webmanifest; r3
+// added the offline page's automatic return to the original address.
+const SHELL_REVISION = "3";
 const CACHE_VERSION = `${new URL(self.location.href).searchParams.get("v") || "dev"}-r${SHELL_REVISION}`;
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline.html";
