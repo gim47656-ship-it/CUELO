@@ -2395,5 +2395,51 @@ console.log("\n[28] edit — 성공한 edit 뒤에도 전에 읽은 바뀌지 �
 	else process.env.PI_EDIT_VARIANT = savedVariant;
 }
 
+// 2026-09-28 도구 오류 집계: 숫자 창 id가 모든 창과 일치했고, 정규식 title은 TypeError로 죽었다. 실제 worker run 경로로 본다.
+console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열이 아닌 필터 값은 이유를 대며 거절한다");
+{
+	const { ComputerWorkerCore } = await import(`${CORE}/tools/computer/worker.ts`);
+	const realConsole = globalThis.console; // worker run 이 전역 console 을 run 출력으로 돌려놓는다
+	const windows = [
+		{ id: "65822", app: "Windows 탐색기", title: "", x: 0, y: 0, width: 1, height: 1, focused: false },
+		{ id: "131644", app: "Whale", title: "CUELO - Whale", x: 0, y: 0, width: 1, height: 1, focused: true },
+		{ id: "329350", app: "STAR PLUTO", title: "STAR PLUTO", x: 0, y: 0, width: 1, height: 1, focused: false },
+	];
+	const session = { capabilities: {}, listDisplays: async () => [], listWindows: async () => windows, close: async () => {} };
+	type RunResult = { ok: boolean; payload?: { returnValue: unknown }; error?: { message: string } };
+	const waiters = new Map<string, (result: RunResult) => void>();
+	let deliver: (message: unknown) => void = () => {};
+	const transport = {
+		send: (message: { type: string; id?: string } & RunResult) => {
+			if (message.type === "result" && message.id) waiters.get(message.id)?.(message);
+		},
+		onMessage: (handler: (message: unknown) => void) => {
+			deliver = handler;
+			return () => {};
+		},
+		close: () => {},
+	};
+	new ComputerWorkerCore(transport, () => session);
+	const snapshot = { cwd: fixtureRoot, sessionId: "computer-filter", captureMaxWidth: 100, captureMaxHeight: 100, display: "", readOnly: true };
+	let runs = 0;
+	const keepAlive = setInterval(() => {}, 1000); // run 결과를 기다리는 동안 이벤트 루프가 비어 프로세스가 끝나지 않게 한다
+	const run = (code: string) =>
+		new Promise<RunResult>(resolve => {
+			const id = `filter-${++runs}`;
+			waiters.set(id, resolve);
+			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot });
+		});
+	const numeric = await run("return (await desktop.window(65822)).id;");
+	const regex = await run("return (await desktop.windows({ title: /PLUTO/ })).length;");
+	const regexOne = await run("return (await desktop.window({ app: /PLUTO/ })).id;");
+	const substring = await run('return (await desktop.windows({ app: "pluto" })).map(w => w.id);');
+	clearInterval(keepAlive);
+	globalThis.console = realConsole;
+	check("숫자 id 는 그 창 하나를 찾는다", numeric.ok && numeric.payload?.returnValue === "65822", JSON.stringify(numeric));
+	check("windows() 의 정규식 title 은 문자열이 필요하다고 거절한다", !regex.ok && /window filter title must be a string.*RegExp/.test(regex.error?.message ?? ""), JSON.stringify(regex));
+	check("window() 의 정규식 app 도 같은 이유로 거절한다", !regexOne.ok && /window filter app must be a string/.test(regexOne.error?.message ?? ""), JSON.stringify(regexOne));
+	check("문자열 필터는 전처럼 대소문자 무시 부분 일치다", substring.ok && JSON.stringify(substring.payload?.returnValue) === '["329350"]', JSON.stringify(substring));
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

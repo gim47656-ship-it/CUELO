@@ -5173,6 +5173,58 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 			this.#thinkingLevelCeiling,
 		);`,
 	},
+	{
+		// 2026-09-28 도구 오류 집계: `computer.window(65822)`처럼 숫자 id를 넘기면 필터 객체로 해석돼
+		// 조건이 하나도 걸리지 않아 모든 창이 일치했고("multiple windows match 65822"), `title: /정규식/`은
+		// 안내 없이 TypeError로 죽었다. 필터 값은 문자열만 받고, 아니면 무엇이 틀렸는지 말하는 ToolError를 낸다.
+		file: "src/tools/computer/worker.ts",
+		marker: "function assertWindowFilter(filter: unknown)",
+		anchor: `function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
+	if (!filter) return true;`,
+		patched: `/** A filter is a plain \`{ id?, app?, title? }\` of strings; anything else used to match every window. */
+function assertWindowFilter(filter: unknown): asserts filter is WindowFilter | undefined {
+	if (filter === undefined) return;
+	if (filter === null || typeof filter !== "object" || Array.isArray(filter)) {
+		throw new ToolError(\`window filter must be an object like { app?, title?, id? }; got \${filter === null ? "null" : typeof filter}\`);
+	}
+	for (const key of ["id", "app", "title"] as const) {
+		const value = (filter as Record<string, unknown>)[key];
+		if (value !== undefined && typeof value !== "string") {
+			const got = value instanceof RegExp ? \`RegExp \${value}\` : typeof value;
+			throw new ToolError(\`window filter \${key} must be a string (\${key === "id" ? "exact window id" : "case-insensitive substring"}); got \${got}\`);
+		}
+	}
+}
+
+function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
+	if (!filter) return true;`,
+	},
+	{
+		// 숫자 id는 창 id(숫자 문자열)와 뜻이 하나뿐이라 문자열로 바꿔 id로 찾는다. 그 밖의 값은 위에서 거절한다.
+		file: "src/tools/computer/worker.ts",
+		marker: "const byId = typeof selector === \"number\"",
+		anchor: `				const windows = await nativeCall(signal, () => session.listWindows());
+				const matches =
+					typeof selector === "string"
+						? windows.filter(window => window.id === selector)
+						: windows.filter(window => matchesFilter(window, selector));`,
+		patched: `				const byId = typeof selector === "number" && Number.isSafeInteger(selector) ? String(selector) : selector;
+				if (typeof byId !== "string") assertWindowFilter(byId);
+				const windows = await nativeCall(signal, () => session.listWindows());
+				const matches =
+					typeof byId === "string"
+						? windows.filter(window => window.id === byId)
+						: windows.filter(window => matchesFilter(window, byId));`,
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {\n\t\t\t\tassertWindowFilter(filter);",
+		anchor: `			windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {
+				const { signal } = getContext();`,
+		patched: `			windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {
+				assertWindowFilter(filter);
+				const { signal } = getContext();`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
