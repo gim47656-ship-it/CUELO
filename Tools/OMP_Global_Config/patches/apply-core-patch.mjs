@@ -4911,6 +4911,52 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\tif (!context) return;\n\t\tthis.lastRecallSnippet = context;\n\t\t// HANSE: background recall delivery is recorded\n\t\tconst deliveredIds = [...context.matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
 	},
 	{
+		// 2026-09-27 도구 오류 집계(최근 7일 2,372건): `bash` 에 service 이름 없이 `env` 를 주면 거절돼
+		// 헛턴 하나를 썼다(사흘간 12건). 일반 명령에서는 env 를 명령 앞 `export` 로 바꿔 모든 실행
+		// 경로(셸·PTY·client terminal)에 같게 적용한다. ready 는 service 전용으로 그대로 둔다.
+		file: "src/tools/bash.ts",
+		marker: "// HANSE: env without a service name exports into the command",
+		anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\tthrow new ToolError(\"ready and env require a service name.\");\n",
+		patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(\"ready requires a service name.\");\n",
+	},
+	{
+		// 위 항목의 짝. 명령 검사(interceptor)·승인·worktree 재작성이 끝난 원래 명령 앞에만 붙인다.
+		file: "src/tools/bash.ts",
+		marker: "// HANSE: non-service env becomes a leading export",
+		anchor: "\t\tinvalidateGithubCacheForBashCommand(command);\n",
+		patched: `		invalidateGithubCacheForBashCommand(command);
+		// HANSE: non-service env becomes a leading export
+		if (name === undefined && env) {
+			const exports: string[] = [];
+			for (const [key, value] of Object.entries(env)) {
+				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ToolError("Invalid env name: " + key);
+				exports.push("export " + key + "='" + value.replaceAll("'", "'\\\\''") + "'");
+			}
+			if (exports.length > 0) command = exports.join("; ") + "; " + command;
+		}
+`,
+	},
+	{
+		file: "src/prompts/tools/bash.md",
+		marker: "ready requires name; no async/timeout. env adds variables (without name: exported before the command)",
+		anchor: "unique name; ready/env require name; no async/timeout. env adds variables;",
+		patched: "unique name; ready requires name; no async/timeout. env adds variables (without name: exported before the command);",
+	},
+	{
+		// 같은 집계: `todo` append 에 phase 를 빠뜨리면 거절됐다(사흘간 9건). phase 가 없으면 아직 안 끝난
+		// 일이 있는 첫 phase, 없으면 마지막 phase, phase 가 없으면 init 기본 이름에 붙인다.
+		file: "src/tools/todo.ts",
+		marker: "// HANSE: append without phase targets the active phase",
+		anchor: "\tif (!entry.phase) {\n\t\terrors.push(\"Missing phase name for append operation\");\n\t\treturn phases;\n\t}\n",
+		patched: "\t// HANSE: append without phase targets the active phase\n\tconst targetPhase =\n\t\tentry.phase ||\n\t\tphases.find(phase => phase.tasks.some(task => task.status === \"in_progress\" || task.status === \"pending\" || task.status === \"blocked\"))?.name ||\n\t\tphases.at(-1)?.name ||\n\t\tDEFAULT_INIT_PHASE;\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "phase = { name: targetPhase, tasks: [] };",
+		anchor: "\tlet phase = findPhaseByName(phases, entry.phase);\n\tif (!phase) {\n\t\tphase = { name: entry.phase, tasks: [] };\n",
+		patched: "\tlet phase = findPhaseByName(phases, targetPhase);\n\tif (!phase) {\n\t\tphase = { name: targetPhase, tasks: [] };\n",
+	},
+	{
 		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
 		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
 		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).

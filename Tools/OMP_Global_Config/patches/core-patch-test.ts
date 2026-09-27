@@ -2342,5 +2342,37 @@ console.log("\n[25] learn — 저장한 기억 id 를 결과에 싣는다");
 	check("learn 결과가 저장된 기억 id 를 알린다", learnedText === "Lesson stored (id: mem-42).", `text=${learnedText}`);
 }
 
+// 2026-09-27 도구 오류 집계: 호출 형식 함정 두 가지가 매번 헛턴을 썼다. 실제 세션의 bash 도구와 todo 적용 함수로 본다.
+console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로 들어간다");
+{
+	const agentDir = csMkdtemp(csJoin(fixtureRoot, "omp-bash-env-agent-"));
+	const cwd = csMkdtemp(csJoin(fixtureRoot, "omp-bash-env-work-"));
+	const { session } = await csCreateAgentSession({ ...csSessionOptions("anthropic"), agentDir, cwd, tools: undefined, toolNames: ["bash"] });
+	const bash = session.getToolByName("bash");
+	const run = await bash.execute("env-1", { command: 'echo "A=[$A] B=[$B]"', env: { A: "x y", B: "it's $HOME" } });
+	const line = String(run.content?.[0]?.text ?? "").split("\n")[0];
+	check("값의 공백·따옴표·$ 가 글자 그대로 들어간다", line === "A=[x y] B=[it's $HOME]", `line=${line}`);
+	const rejected = async (args: Record<string, unknown>) => bash.execute("env-2", args).then(() => "no error", (error: Error) => error.message);
+	check("잘못된 변수 이름은 거절한다", (await rejected({ command: "echo hi", env: { "BAD-NAME": "1" } })) === "Invalid env name: BAD-NAME");
+	check("ready 는 여전히 service 이름이 필요하다", (await rejected({ command: "echo hi", ready: { port: 1 } })) === "ready requires a service name.");
+	await session.dispose();
+}
+
+console.log("\n[27] todo — phase 없는 append 는 아직 안 끝난 일이 있는 phase 에 붙는다");
+{
+	const { applyOpsToPhases } = await import(`${CORE}/tools/todo.ts`);
+	const phaseOf = (phases: TodoPhaseShape[], content: string) => phases.find(phase => phase.tasks.some(task => task.content === content))?.name;
+	const active = applyOpsToPhases(
+		[{ name: "P1", tasks: [{ content: "a", status: "completed" }] }, { name: "P2", tasks: [{ content: "b", status: "in_progress" }] }, { name: "P3", tasks: [{ content: "c", status: "pending" }] }],
+		[{ op: "append", items: ["new"] }],
+	);
+	check("진행 중인 phase 에 붙고 오류가 없다", active.errors.length === 0 && phaseOf(active.phases, "new") === "P2", JSON.stringify(active));
+	const done = applyOpsToPhases([{ name: "D1", tasks: [{ content: "a", status: "completed" }] }, { name: "D2", tasks: [{ content: "b", status: "completed" }] }], [{ op: "append", items: ["new"] }]);
+	check("모두 끝났으면 마지막 phase 에 붙는다", phaseOf(done.phases, "new") === "D2");
+	check("빈 목록이면 init 기본 phase 를 만든다", JSON.stringify(applyOpsToPhases([], [{ op: "append", items: ["new"] }]).phases.map((phase: TodoPhaseShape) => phase.name)) === '["Tasks"]');
+	const explicit = applyOpsToPhases([{ name: "P1", tasks: [] }, { name: "P2", tasks: [{ content: "b", status: "pending" }] }], [{ op: "append", phase: "P1", items: ["x"] }]);
+	check("phase 를 주면 그 phase 에 붙는다", phaseOf(explicit.phases, "x") === "P1");
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
