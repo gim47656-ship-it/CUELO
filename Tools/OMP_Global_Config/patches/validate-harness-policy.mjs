@@ -1850,6 +1850,7 @@ if (rawConfig === "") {
   for (const [path, label] of [
     ["async.enabled", "SubAgent·async job 배경 실행"],
     ["bash.autoBackground.enabled", "긴 bash 명령 자동 background"],
+    ["eval.autoBackground.enabled", "긴 eval 셀 자동 background·스티어링 조기 전환"],
   ]) {
     try {
       check(readYamlScalarAtPath(rawConfig, path) === true, `${configPath}의 ${path}는 true여야 한다(${label}).`);
