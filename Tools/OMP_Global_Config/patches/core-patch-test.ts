@@ -2298,11 +2298,12 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 		},
 		lastRecallSnippet: "PARENT-FIRST-TURN-SNIPPET",
 	};
+	const recorded: Array<{ customType: string; data: unknown }> = [];
 	const childSession = {
 		sessionId: "child-session",
 		settings: mnemopiSettings(false),
 		getXdevToolEntries: () => [],
-		sessionManager: { getEntries: () => [] },
+		sessionManager: { getEntries: () => [], appendCustomEntry: (customType: string, data: unknown) => { recorded.push({ customType, data }); return "entry"; } },
 	} as never;
 	await mnemopiBackend.start({ session: childSession, settings: mnemopiSettings(false), agentDir: "", taskDepth: 1, parentMnemopiSessionState: parentState } as never);
 	const brief = "Tools/CUELO_Setup 에서 PowerShell 스크립트를 bash 로 실행한다";
@@ -2310,6 +2311,11 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 	check("child 첫 턴은 작업 brief 로 회상한다", recallQueries.length === 1 && recallQueries[0]!.includes(brief), `queries=${JSON.stringify(recallQueries)}`);
 	check("회상 줄에 기억 id 가 실린다", staged?.context?.includes("(id: lesson-ps-dollar)") === true, `context=${JSON.stringify(staged?.context ?? null)}`);
 	check("commit 이 적용된다", staged?.commit() === true);
+	check(
+		"전달한 기억 id 가 세션 파일 custom entry 로 남는다(Main 단독 세션도 같은 경로)",
+		JSON.stringify(recorded) === JSON.stringify([{ customType: "mnemopi-recall", data: { ids: ["lesson-ps-dollar"] } }]),
+		`recorded=${JSON.stringify(recorded)}`,
+	);
 	const childGuidance = (await mnemopiBackend.buildDeveloperInstructions("", mnemopiSettings(false), childSession)) ?? "";
 	check(
 		"child 안내에는 자기 회상이 실리고 부모 첫 턴 회상은 빠진다",

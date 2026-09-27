@@ -178,6 +178,8 @@ Main은 근거가 있는 finding을 각각 다음 중 하나로 닫는다.
   실행 방식에 반영한다. 이미 문맥에 있는 내용을 또 조회하지 않는다. Maker 첫 턴에는 그 작업 brief로
   회상한 `<memories>`가 `(id: …)`와 함께 실린다. 위임 attempt가 실제로 적용한 교훈은
   `routing_verdict`의 `appliedLessons`에 기억 id로, 적용 근거는 `evidenceLocators`에 남긴다.
+  Main 단독 작업은 원장에 attempt가 없다. 대신 Main·Maker 모든 세션의 첫 턴 전달 기억 id가 세션 파일
+  `mnemopi-recall` 기록으로 남고, 세션 중 `recall` 결과의 id와 함께 전달 뒤 같은 실패의 재발을 센다.
   같은 실패가 재발하면 교훈이 없었는지, 조건이 달랐는지, 실행에서 누락했는지, 적용했지만 교훈
   자체가 틀렸거나 불충분했는지를 가르고 같은 규칙을 하나 더 쓰지 않는다. 마지막 경우는 그 교훈을
   `memory_edit`로 고치거나 무효화한다.

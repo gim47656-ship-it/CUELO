@@ -82,14 +82,33 @@ async function classifyClaims(candidates: readonly string[], ctx: ExtensionConte
 
 const INSTRUCTION = "외부 조언은 증거가 아니다. 각 주장을 도구로 확인해 확인/반박/미확인으로 답하고, 의견은 사실과 구분하라. 이 안내는 승인이나 도구 차단이 아니다.";
 
+/** 분류는 최대 JUDGE_TIMEOUT_MS만 기다리고, 판단 불가(인증·설정·시간 초과)는 미분류 안내로 남긴다. */
+async function adviceContent(candidates: readonly string[], hasSecret: boolean, classify: ClassifyClaims, ctx: ExtensionContext, controller: AbortController): Promise<string> {
+  if (hasSecret) return INSTRUCTION;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeout = Promise.withResolvers<never>();
+    timer = setTimeout(() => { controller.abort(); timeout.reject(new Error("JEV timeout")); }, JUDGE_TIMEOUT_MS);
+    const kinds = await Promise.race([classify(candidates, ctx, controller.signal), timeout.promise]);
+    return `${candidates.map((candidate, index) => `${index + 1}. [${kinds[index] ?? "미확인"}] ${candidate} — ${CHECK[kinds[index] ?? "미확인"]}`).join("\n")}\n${INSTRUCTION}`;
+  } catch {
+    return INSTRUCTION;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 안내는 그 사용자 prompt의 `before_agent_start` 메시지로만 붙는다. idle 세션에 aside를 보내면
+ * 안내만으로 자율 턴이 먼저 열리고, 뒤따르는 사용자 prompt는 실행 중 턴과 부딪혀 거절된다.
+ */
 export function createExternalAdviceCheck(classify: ClassifyClaims = classifyClaims) {
   return function externalAdviceCheck(pi: ExtensionAPI): void {
-    let generation = 0;
-    let pending: AbortController | undefined;
-    const invalidate = () => { generation += 1; pending?.abort(); pending = undefined; };
+    let pending: { text: string; controller: AbortController; content: Promise<string> } | undefined;
+    const invalidate = () => { pending?.controller.abort(); pending = undefined; };
     pi.on("session_start", invalidate);
     pi.on("session_shutdown", invalidate);
-    pi.on("input", async (event, ctx) => {
+    pi.on("input", (event, ctx) => {
       invalidate();
       if (event.source !== "interactive" && event.source !== "rpc") return;
       const text = event.text;
@@ -101,29 +120,17 @@ export function createExternalAdviceCheck(classify: ClassifyClaims = classifyCla
       const hasSecret = SECRET_PATTERN.test(text);
       const candidates = hasSecret ? [] : candidatesFrom(text);
       if (!hasSecret && candidates.length === 0) return;
-      const expected = generation;
       const controller = new AbortController();
-      pending = controller;
-      let content = INSTRUCTION;
-      if (!hasSecret) {
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          const timeout = Promise.withResolvers<never>();
-          timer = setTimeout(() => { controller.abort(); timeout.reject(new Error("JEV timeout")); }, JUDGE_TIMEOUT_MS);
-          const kinds = await Promise.race([classify(candidates, ctx, controller.signal), timeout.promise]);
-          content = `${candidates.map((candidate, index) => `${index + 1}. [${kinds[index] ?? "미확인"}] ${candidate} — ${CHECK[kinds[index] ?? "미확인"]}`).join("\n")}\n${INSTRUCTION}`;
-        } catch {
-          // 인증·설정·시간 초과 등 판단 불가는 미분류 안내로만 남긴다.
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-      if (pending === controller) pending = undefined;
-      if (controller.signal.aborted || expected !== generation) return;
-      pi.sendMessage(
-        { customType: "external-advice-check", content, display: false, attribution: "agent" },
-        { deliverAs: "aside" },
-      );
+      pending = { text: text.trim(), controller, content: adviceContent(candidates, hasSecret, classify, ctx, controller) };
+    });
+    // 정책 경합으로 같은 prompt의 준비가 다시 불릴 수 있으므로 다음 입력 전까지 결과를 지우지 않는다.
+    // 입력 뒤에 prompt가 열리지 않았으면 이후 내부 prompt는 본문이 달라 안내를 받지 않는다.
+    pi.on("before_agent_start", async (event) => {
+      const current = pending;
+      if (!current || !event.prompt.includes(current.text)) return;
+      const content = await current.content;
+      if (pending !== current) return;
+      return { message: { customType: "external-advice-check", content, display: false, attribution: "agent" } };
     });
   };
 }

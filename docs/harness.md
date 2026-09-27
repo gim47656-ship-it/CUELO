@@ -48,7 +48,7 @@ edit 도구가 이전 read·검색에서 온전히 보이지 않은 줄을 기�
 
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
 
-교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다.
+교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다. Main이 혼자 끝낸 작업은 원장에 attempt가 없으므로, 패치된 코어가 Main·Maker 모든 세션에서 첫 턴에 실제로 전달한 기억 id를 LLM 문맥에 들어가지 않는 세션 기록(`mnemopi-recall`)으로 남깁니다. 이 기록과 세션 중 `recall` 결과의 id로 교훈이 전달된 세션과 그 뒤 같은 실패가 다시 났는지를 셀 수 있습니다.
 
 Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발주보다 필요한 확인과 회신을 먼저 처리합니다. 승인과 완료 보고가 엇갈렸을 때는 이미 끝난 검사를 반복하지 않고 최신 승인과 남은 동작을 대조해 이어갑니다. 실패를 기록하는 데서 끝내지 않고 기존 규칙의 실행 위반과 실제 누락을 구분해 다음 작업에 반영하며, 효과를 관측하기 전에는 개선됐다고 단정하지 않습니다.
 
@@ -64,7 +64,7 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 `maker_route`는 Jev 판정과 후보 제공자 사용량 조회를 함께 시작하고, 빠른 판정에도 조회를 조기 취소하지 않습니다. 사용량 조회는 기존 2초 제한 안의 결과를 기다리며 실패·timeout은 미측정으로 표시합니다. 사용량은 배정 참고 정보이지 Jev 판단 입력이 아닙니다.
 
-턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만듭니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다.
+턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만들어 그 사용자 메시지와 같은 턴에 숨김 메시지로 붙입니다. 별도 턴을 열지 않으므로 긴 첫 메시지가 밀려나지 않습니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다.
 
 ## 캐릭터 음성과 확장
 

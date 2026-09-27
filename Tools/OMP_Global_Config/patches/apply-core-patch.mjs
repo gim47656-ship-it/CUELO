@@ -4895,6 +4895,22 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\t\t\t\tmemoryType: \"fact\",\n\t\t\t\t});\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
 	},
 	{
+		// 2026-09-27: 자동 주입 <memories> 는 세션 파일에 남지 않아, Main 단독 세션에서 어떤 교훈이 전달됐는지
+		// 셀 수 없었다(위임 attempt 만 routing_verdict appliedLessons 로 연결됨). 첫 턴 회상이 확정될 때 전달한
+		// 기억 id 를 LLM context 에 들어가지 않는 custom entry 로 남긴다. 소비자는 evals/analyze-lesson-recurrence.mjs.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: first-turn recall delivery is recorded",
+		anchor: "\t\t\t\tthis.hasRecalledForFirstTurn = true;\n\t\t\t\tif (context) this.lastRecallSnippet = context;\n",
+		patched: "\t\t\t\tthis.hasRecalledForFirstTurn = true;\n\t\t\t\tif (context) this.lastRecallSnippet = context;\n\t\t\t\t// HANSE: first-turn recall delivery is recorded\n\t\t\t\tconst deliveredIds = [...(context ?? \"\").matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\t\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
+	},
+	{
+		// 위 항목의 짝. 백그라운드 첫 턴 회상(maybeRecallOnAgentStart)도 같은 기록을 남긴다.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: background recall delivery is recorded",
+		anchor: "\t\tif (!context) return;\n\t\tthis.lastRecallSnippet = context;\n",
+		patched: "\t\tif (!context) return;\n\t\tthis.lastRecallSnippet = context;\n\t\t// HANSE: background recall delivery is recorded\n\t\tconst deliveredIds = [...context.matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
+	},
+	{
 		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
 		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
 		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).
