@@ -4818,6 +4818,42 @@ export function hostNextServerEnvUnsets(
 		patched: "\t\t// HANSE: skipped reason stands alone\n\t\tcontent: [{ type: \"text\", text: reason === \"skipped\" && errorMessage ? errorMessage : errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],\n",
 	},
 	{
+		// 2026-09-25·27 실측: edit 거부 안내(seen-line guard)는 native 가 만든 영어 문장이라, Main 이 바로 다음
+		// 진행 문장을 영어로 이어 썼다. 문구는 pi-natives 바이너리 안에 있어 직접 못 고치지만 모델에는 이 파일의
+		// 오류 반환을 거쳐 간다. 알려진 문장 틀만 한국어로 바꾸고, 틀이 다르면 원문을 그대로 둔다.
+		file: "src/edit/index.ts",
+		marker: "// HANSE: localized seen-line rejection",
+		anchor: "function operationFromNative(op: string): Operation | undefined {\n",
+		patched: `// HANSE: localized seen-line rejection
+const SEEN_LINE_HEAD =
+	/^This edit anchors to lines (.+?) of (.+?) that (\\[[^\\]\\n]+\\]) never displayed \\(it showed a partial range, a search hit, or a folded summary\\)\\. (?:Actual file content at those lines|Preview of the actual file content at the first (\\d+) unseen line\\(s\\)):$/gm;
+const SEEN_LINE_TAIL =
+	/^Verify the content matches what you intend to touch, then re-issue the edit with the same \\[path#tag\\] header — a straight retry now succeeds without a re-read\\. If the content does NOT match, fix your line numbers\\.$/gm;
+export function localizeSeenLineRejection(text: string): string {
+	return text
+		.replace(
+			SEEN_LINE_HEAD,
+			(_match, lines: string, file: string, tag: string, preview: string | undefined) =>
+				"이 edit는 " + file + "의 " + lines + "번 줄을 기준으로 했지만, " + tag +
+				" 스냅샷은 그 줄을 온전히 보여 준 적이 없다(부분 범위·검색 결과·접힌 요약만 보였다). " +
+				(preview ? "보지 않은 줄 중 앞쪽 " + preview + "줄의 실제 내용:" : "그 줄의 실제 내용:"),
+		)
+		.replace(
+			SEEN_LINE_TAIL,
+			"건드리려던 내용과 맞는지 확인한 뒤 같은 [path#tag] 헤더로 edit를 다시 보낸다. 다시 읽지 않고 그대로 재시도해도 이제 성공한다. 내용이 다르면 줄 번호를 고친다.",
+		);
+}
+
+function operationFromNative(op: string): Operation | undefined {
+`,
+	},
+	{
+		file: "src/edit/index.ts",
+		marker: "text: localizeSeenLineRejection(outcome.text) }], isError: true };",
+		anchor: "\t\t\treturn { content: [{ type: \"text\", text: outcome.text }], isError: true };\n",
+		patched: "\t\t\treturn { content: [{ type: \"text\", text: localizeSeenLineRejection(outcome.text) }], isError: true };\n",
+	},
+	{
 		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
 		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
 		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).

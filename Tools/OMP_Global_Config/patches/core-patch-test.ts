@@ -2223,6 +2223,32 @@ console.log("\n사유가 있는 skipped 결과는 턴 종료 문구를 붙이지
 	check("사유 없는 skipped 는 턴 종료 문구를 유지한다", ended.includes("ended its turn"), `text=${ended}`);
 }
 
+// native seen-line guard 거부 안내가 영어라 Main 이 다음 문장을 영어로 이어 썼다(2026-09-25·27).
+// 실제 세션에 남은 두 문장 틀을 그대로 넣는다. 파일 내용 줄은 건드리지 않고, 틀이 다르면 원문을 둔다.
+console.log("\nedit 거부 안내(seen-line guard)는 한국어로 모델에 간다");
+{
+	const { localizeSeenLineRejection } = await import(`${CORE}/edit/index.ts`);
+	const tail = "Verify the content matches what you intend to touch, then re-issue the edit with the same [path#tag] header — a straight retry now succeeds without a re-read. If the content does NOT match, fix your line numbers.";
+	const actual = localizeSeenLineRejection(
+		`This edit anchors to lines 132 of README.md that [README.md#2D6B] never displayed (it showed a partial range, a search hit, or a folded summary). Actual file content at those lines:\n  132:bun test\n${tail}`,
+	);
+	check(
+		"Actual 형식은 파일·줄·태그를 보존한 한국어가 된다",
+		actual === "이 edit는 README.md의 132번 줄을 기준으로 했지만, [README.md#2D6B] 스냅샷은 그 줄을 온전히 보여 준 적이 없다(부분 범위·검색 결과·접힌 요약만 보였다). 그 줄의 실제 내용:\n  132:bun test\n건드리려던 내용과 맞는지 확인한 뒤 같은 [path#tag] 헤더로 edit를 다시 보낸다. 다시 읽지 않고 그대로 재시도해도 이제 성공한다. 내용이 다르면 줄 번호를 고친다.",
+		`text=${actual}`,
+	);
+	const preview = localizeSeenLineRejection(
+		`This edit anchors to lines 504-530, 532-560 of app/Review Screen.kt that [app/Review Screen.kt#D6E8] never displayed (it showed a partial range, a search hit, or a folded summary). Preview of the actual file content at the first 40 unseen line(s):\n  504:            Column(Modifier.weight(1f)) {\n${tail}`,
+	);
+	check(
+		"Preview 형식은 줄 수를 싣고 파일 내용 줄은 그대로 둔다",
+		preview.startsWith("이 edit는 app/Review Screen.kt의 504-530, 532-560번 줄을") && preview.includes("보지 않은 줄 중 앞쪽 40줄의 실제 내용:\n  504:            Column(Modifier.weight(1f)) {\n") && !preview.includes("Verify the content"),
+		`text=${preview}`,
+	);
+	const other = "Unknown internal URL: foo://bar";
+	check("다른 edit 오류는 원문 그대로다", localizeSeenLineRejection(other) === other);
+}
+
 // `learn`/`retain` 원문 1건에서 파생된 fact 가 원문과 함께 `<memories>`·`recall` 에 실렸다(2026-09-26 CUELO
 // 은행 `sed` 교훈 1건이 3줄). 원문이 결과에 있으면 파생 fact 는 빠지고, 원문이 없는 fact 는 남아야 한다.
 // 파생 fact 는 LLM 추출 대신 추출기가 쓰는 것과 같은 행(facts.source_msg_id = 원문 id)으로 넣는다.
