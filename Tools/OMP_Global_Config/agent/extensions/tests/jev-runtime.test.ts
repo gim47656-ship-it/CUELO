@@ -1133,6 +1133,56 @@ describe("jev-runtime pre-retry", () => {
     }
   });
 
+  test("테스트·CI 실패는 로컬 분류와 원인별 다음 행동만 안내한다", async () => {
+    const cases = [
+      ["test timed out after 5000ms (exit code 1)", "test-timeout", "부하·환경", "격리 재실행"],
+      ["Test exceeded timeout of 5000ms", "test-timeout", "부하·환경", "격리 재실행"],
+      ["timeout of 5000ms exceeded", "test-timeout", "부하·환경", "격리 재실행"],
+      ["source hash mismatch: secret-token-xyz (exit code 1)", "source-manifest", "create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json", "verify-source"],
+      ["SOURCE VERIFY FAIL: secret-token-xyz", "source-manifest", "Tools/CUELO_Setup", "verify-source"],
+      ["SOURCE VERIFY FAILED: manifest differs", "source-manifest", "Tools/CUELO_Setup", "verify-source"],
+      ["Cannot find module 'secret-token-xyz' (exit code 1)", "module-environment", "부하·환경", "격리 재실행"],
+      ["ERR_MODULE_NOT_FOUND: secret-token-xyz", "module-environment", "부하·환경", "격리 재실행"],
+      ["ReferenceError: Bun is not defined", "module-environment", "부하·환경", "격리 재실행"],
+      ["expect(received).toBe(expected): secret-token-xyz", "assertion", "재시도 말고 코드·기대", "수정"],
+      ["AssertionError: expected 1 to equal 2", "assertion", "재시도 말고 코드·기대", "수정"],
+      ["1 fail (exit code 1)", "assertion", "재시도 말고 코드·기대", "수정"],
+      ["2 fails (exit code 1)", "assertion", "재시도 말고 코드·기대", "수정"],
+    ] as const;
+    for (const [error, category, firstAction, secondAction] of cases) {
+      const harness = createHarness();
+      await harness.emit("tool_result", bashError("c1", "bun test", error, { exitCode: 1 }));
+      expect(await harness.emit("tool_call", bashCall("c2", "bun test"))).toBeUndefined();
+      expect(harness.sent).toHaveLength(1);
+      const advisory = String(harness.sent[0]!.message.content);
+      expect(advisory).toContain(`errorCategory=${category}`);
+      expect(advisory).toContain(firstAction);
+      expect(advisory).toContain(secondAction);
+      expect(advisory).not.toContain("secret-token-xyz");
+      expect(harness.judgments).toHaveLength(0);
+    }
+  });
+
+  test("기존 오류 우선순위와 일반 실패의 기본 안내를 보존한다", async () => {
+    for (const [error, category] of [
+      ["ParserError: Cannot find module 'x' (exit code 1)", "windows-shell"],
+      ["HTTP 403: Cannot find module 'x'", "auth"],
+      ["ENOENT: no such file (exit code 1)", "missing-path"],
+      ["permission denied (exit code 1)", "permission"],
+      ["fetch failed (exit code 1)", "network"],
+      ["fetch failed: timed out after 5000ms", "network"],
+      ["0 fail (exit code 1)", "exit-status"],
+    ]) {
+      const harness = createHarness();
+      await harness.emit("tool_result", bashError("c1", "probe", error));
+      await harness.emit("tool_call", bashCall("c2", "probe"));
+      const advisory = String(harness.sent[0]!.message.content);
+      expect(advisory).toContain(`errorCategory=${category}`);
+      if (category === "exit-status") expect(advisory).toContain("다음 한 변수를 확인");
+      expect(harness.judgments).toHaveLength(0);
+    }
+  });
+
   test("자기 async job이 삭제 leaf 또는 glob prefix를 쥐고 있을 때만 차단한다", async () => {
     const jobs = [{ id: "bash-1", type: "bash", status: "running" }];
     const harness = createHarness({ asyncJobs: jobs });

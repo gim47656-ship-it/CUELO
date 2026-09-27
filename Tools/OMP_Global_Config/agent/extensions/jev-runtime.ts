@@ -212,10 +212,15 @@ function serializeInput(value: unknown): string {
 const ERROR_CATEGORY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/foreach\s*\(\s*in\b|식이 없|값 식|빈 파이프|ParserError|unterminated backquote|C:Users(?:[\\/]|$)|-File parameter does not exist|['"]\.[\w.-]+\.ps1['"]|pi-natives:command:\s*syntax error|command not found:\s*(?:del|copy|findstr)\b/iu, "windows-shell"],
   [/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?: code)?\s*[=:]?\s*)(?:401|403)\b|\b(?:unauthorized|forbidden|authentication)\b|\b(?:invalid[_ ]?grant|(?:invalid|missing|incorrect|expired)\s+api[_ ]?key|api[_ ]?key\s+(?:invalid|missing|expired))\b|인증/iu, "auth"],
+  [/\bsource hash mismatch\b|\bSOURCE\s+VERIFY\b[^\r\n]{0,80}\bFAIL(?:ED|URE)?\b/iu, "source-manifest"],
+  [/\b(?:Cannot find module|ERR_MODULE_NOT_FOUND|Bun is not defined)\b/iu, "module-environment"],
   [/\bENOENT\b|no such file|cannot find|not found|존재하지 않/iu, "missing-path"],
   [/\b(?:EACCES|EPERM)\b|permission denied|access is denied|권한/iu, "permission"],
   [/command (?:aborted|cancelled)|작업 취소|명령 취소/iu, "cancelled"],
-  [/\b(?:ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN)\b|\b(?:network|socket)\b|fetch failed|timed? ?out/iu, "network"],
+  [/\b(?:ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN)\b|\b(?:network|socket)\b|fetch failed/iu, "network"],
+  [/\btimed out after\s+\d+\s*m?s\b|\b(?:exceeded\s+(?:the\s+)?timeout(?:\s+of)?|timeout(?:\s+of)?)\s+\d+\s*m?s(?:\s+exceeded)?\b/iu, "test-timeout"],
+  [/timed? ?out/iu, "network"],
+  [/\bAssertionError\b|\bassert(?:ion)?(?:\.[\w]+)?\s*(?:failed|error|mismatch)\b|\bexpected\b.{0,80}\b(?:received|actual|equal|to be)\b|\bexpect\([^)]*\)\.to\w+\(|\b[1-9]\d*\s+fails?\b/iu, "assertion"],
   [/exit code|exit status|command failed|failed with|\bexit\s*1\b/iu, "exit-status"],
 ];
 
@@ -241,6 +246,13 @@ function classifyError(content: unknown): string {
   }
   return "other";
 }
+
+const RETRY_CATEGORY_NEXT_ACTION: Readonly<Record<string, string>> = {
+  "test-timeout": "부하·환경을 확인한 뒤 격리 재실행 대상을 정한다. 시간 초과만으로 timeout 값을 변경하지 않는다.",
+  "module-environment": "모듈 해석·런타임 등 부하·환경을 확인한 뒤 격리 재실행 대상을 정한다. 같은 명령을 맹목적으로 반복하지 않는다.",
+  "source-manifest": "Tools/CUELO_Setup에서 node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json 실행 후 node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json로 확인한다.",
+  assertion: "재시도 말고 코드·기대 불일치를 확인해 수정한다.",
+};
 
 // 정리 대상과 자기 명령의 경로 leaf 또는 glob prefix만 비교한다. 범용 자연어 유사성은 차단 근거가 아니다.
 function cleanupTargets(command: string): string[] {
@@ -1459,7 +1471,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다."
         : observation.cancelled && !observation.deterministicExitObserved
           ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
-          : "sameCause/newEvidence를 inputChanged·interveningTools로 추정하지 않는다. 실제 오류·exit를 근거로 다음 한 변수를 확인한 뒤 조치를 바꾼다.";
+          : RETRY_CATEGORY_NEXT_ACTION[failure.category]
+            ?? "sameCause/newEvidence를 inputChanged·interveningTools로 추정하지 않는다. 실제 오류·exit를 근거로 다음 한 변수를 확인한 뒤 조치를 바꾼다.";
       sendAdvisory(
         "pre-retry",
         renderAdvisory(

@@ -340,6 +340,7 @@ const requiredPolicyMembers = [
     "main-decides-retarget-or-approve-from-source-and-raw-evidence-independent-work-continues-judge-never-authorizes-skipping-a-required-check",
     "changing-or-disabling-a-required-validator-needs-main-prior-decision-even-if-judge-says-safe-or-is-unavailable",
     "a-windows-shell-boundary-failure-powershell-dollar-variable-loss-backslash-path-loss-cmd-quoting-or-a-missing-cmd-builtin-is-classified-locally-before-auth-and-the-owner-rewrites-the-command-as-a-ps1-file-run-by-slash-absolute-path-instead-of-retrying-it-unchanged",
+    "a-test-or-ci-failure-is-classified-locally-without-a-judge-call-test-timeout-or-module-environment-means-check-load-and-environment-then-rerun-isolated-never-a-reason-to-change-the-timeout-source-manifest-mismatch-means-regenerate-the-manifest-then-verify-source-assertion-failure-means-fix-code-or-expectation-instead-of-retrying-explicit-network-signals-keep-the-network-category",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-review.questions", [
     "requirements-and-evidence-are-aligned",
@@ -373,6 +374,36 @@ const requiredPolicyMembers = [
     "input-is-at-most-five-user-questions-of-300-characters-and-a-bounded-later-assistant-excerpt-with-paths-urls-literals-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
     "an-unanswered-question-adds-one-aside-asking-main-to-answer-in-body-text-first-merged-with-any-todo-continuation-message-never-an-approval-or-tool-block",
     "judge-failure-unknown-or-a-new-input-or-session-change-produces-no-notice-and-discards-late-results",
+  ]],
+  ["routing.typedJudgmentRouting.placements.turn-end-solo-stop.questions", [
+    "the-final-assistant-body-left-work-it-could-do-now-with-tools-without-approval-continue-now-needs-user-done-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.turn-end-solo-stop.decisionMapping", [
+    "input-is-a-bounded-final-assistant-excerpt-with-paths-urls-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "when-an-unanswered-question-is-also-pending-both-are-judged-in-one-call-and-only-the-unanswered-question-aside-is-sent",
+    "continue-now-with-no-unanswered-question-sends-the-existing-continuation-aside-once-never-an-approval",
+    "consequential-actions-user-choice-external-wait-needs-user-done-unknown-and-judge-failure-never-receive-continuation",
+    "a-new-input-session-change-or-TODO-change-discards-late-results",
+  ]],
+  ["routing.typedJudgmentRouting.placements.steering-reply-answered.questions", [
+    "the-assistant-body-before-the-tool-actually-gave-the-result-explanation-or-conclusion-the-steering-asked-for-answered-unanswered-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.steering-reply-answered.decisionMapping", [
+    "input-is-a-bounded-steering-excerpt-and-assistant-excerpt-with-paths-urls-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "unanswered-adds-one-aside-asking-main-to-answer-the-interjection-in-body-text-first-and-continue-in-the-same-response-never-a-tool-block",
+    "the-tool-call-handler-returns-immediately-and-the-judgment-runs-in-the-background-so-the-tool-is-never-held",
+    "no-body-text-keeps-the-existing-deterministic-reply-reminder-a-signature-only-narration-counts-as-a-reply-without-a-call",
+    "answered-unknown-judge-failure-or-a-new-input-produces-no-notice-and-discards-late-results",
+  ]],
+  ["routing.typedJudgmentRouting.placements.todo-nudge-multistep.questions", [
+    "the-user-request-asks-for-several-items-or-three-or-more-steps",
+  ]],
+  ["routing.typedJudgmentRouting.placements.todo-nudge-multistep.decisionMapping", [
+    "input-is-a-bounded-request-excerpt-with-paths-urls-and-code-removed",
+    "at-or-above-0.5-sends-the-existing-todo-aside-once-per-request-below-0.5-sends-none",
+    "not-yet-arrived-failure-timeout-or-no-credential-falls-back-to-the-existing-three-tool-call-rule",
+    "a-result-from-an-older-input-generation-or-after-the-third-call-decision-is-discarded-and-never-applied-retroactively",
+    "child-sessions-an-existing-todo-use-or-an-active-todo-list-are-never-nudged",
   ]],
   ["routing.typedJudgmentRouting.placements.external-advice-claims.questions", [
     "each-bounded-claim-candidate-is-a-file-test-ci-version-behavior-opinion-or-unverifiable-claim",
@@ -685,7 +716,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "external-advice-claims"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1243,6 +1274,9 @@ if (policy !== null) {
       typedJudgmentPlacements["pre-review"]?.owner === "main" &&
       typedJudgmentPlacements["turn-end-confirmation"]?.owner === "main" &&
       typedJudgmentPlacements["turn-end-unanswered-question"]?.owner === "main" &&
+      typedJudgmentPlacements["turn-end-solo-stop"]?.owner === "main" &&
+      typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
+      typedJudgmentPlacements["todo-nudge-multistep"]?.owner === "main" &&
       typedJudgmentPlacements["external-advice-claims"]?.owner === "main",
     "typed judgment placement의 실행 주체가 다르다.",
   );

@@ -7,12 +7,16 @@ function harness(
   branch: unknown[] = [],
   classify?: Parameters<typeof createTurnEndGuard>[0],
   classifyAnswers?: NonNullable<Parameters<typeof createTurnEndGuard>[1]>,
+  classifySolo?: NonNullable<Parameters<typeof createTurnEndGuard>[2]>,
 ) {
   const handlers: Record<string, Handler[]> = {};
   const sent: unknown[] = [];
   const deliveries: unknown[] = [];
   const ctx = { sessionManager: { getBranch: () => branch, getSessionId: () => "main-session" } };
-  (classify || classifyAnswers ? createTurnEndGuard(classify, classifyAnswers) : turnEndGuard)({
+  createTurnEndGuard(classify, classifyAnswers, classifySolo ?? (async (summary, _excerpt, context, signal) => ({
+    answered: summary && classifyAnswers ? await classifyAnswers(summary, context, signal) : [],
+    solo: "unknown",
+  })))({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: unknown, options: unknown) => { sent.push(message); deliveries.push(options); },
   } as unknown as Parameters<typeof turnEndGuard>[0]);
@@ -381,5 +385,151 @@ describe("turn-end guard", () => {
       await oldEnd;
       expect(h.sent).toHaveLength(0);
     }
+  });
+  test("TODO 없는 직접 입력의 continue-now만 한 번 aside로 안내하고 발췌를 제한한다", async () => {
+    const seen: string[] = [];
+    const h = harness([], undefined, undefined, async (_summary, excerpt) => {
+      seen.push(excerpt);
+      return { answered: [], solo: "continue-now" };
+    });
+    await h.emit("input", { source: "rpc", text: "검사까지 마쳐 줘" });
+    await h.end("`F:/private/file.ts` 검사와 https://example.org/proof 확인은 다음에 하겠습니다.");
+    await h.end("같은 요청은 다음에 이어갑니다.");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toMatch(/private|example\.org/);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]).toMatchObject({ customType: "turn-end-guard", content: expect.stringContaining("지금 이어서 수행하라") });
+    expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
+    await h.emit("input", { source: "rpc", text: "이어서 진행" });
+    await h.todo(["completed"]);
+    await h.end("기존 로컬 검사는 다음에 진행하겠습니다.");
+    expect(seen).toHaveLength(2);
+    expect(h.sent).toHaveLength(2);
+  });
+
+  test("needs-user·done·unknown·judge 실패는 TODO 없이 재개하지 않는다", async () => {
+    const choices = ["needs-user", "done", "unknown"] as const;
+    let calls = 0;
+    const h = harness([], undefined, undefined, async () => {
+      const current = calls++;
+      if (current === choices.length) throw new Error("judge unavailable");
+      return { answered: [], solo: choices[current]! };
+    });
+    for (const text of ["사용자 판단을 받겠습니다.", "작업을 완료했습니다.", "다음 조치는 불명확합니다.", "검사는 다음에 하겠습니다."]) {
+      await h.emit("input", { source: "interactive", text: "작업 진행" });
+      await h.end(text);
+      await h.end("다음에 하겠습니다.");
+    }
+    expect(calls).toBe(4);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test.each([
+    "승인해 주세요. 내일 처리하겠습니다.",
+    "GitHub에 push한 뒤 알려 드리겠습니다.",
+    "공개 게시·배포·삭제·비용 발생은 다음에 하겠습니다.",
+    "계정 권한 변경과 provider 안전 확인은 다음에 진행하겠습니다.",
+    "제품 의미의 방향을 정해 주세요.",
+    "다른 서비스 결과를 기다리고 있습니다.",
+    "password=unsafe 검사는 다음에 하겠습니다.",
+  ])("승인·의미 선택·외부 대기·secret은 낙관 판정 전에 차단한다: %s", async (text) => {
+    let calls = 0;
+    const h = harness([], undefined, undefined, async () => { calls++; return { answered: [], solo: "continue-now" }; });
+    await h.emit("input", { source: "rpc", text: "지금 작업" });
+    await h.end(text);
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("미답 질문과 solo 종료 후보는 같은 판정 한 번·aside 한 통이며 미답을 우선한다", async () => {
+    let calls = 0;
+    let separateCalls = 0;
+    const h = harness([], undefined, async () => { separateCalls++; return [false]; }, async (summary, excerpt) => {
+      calls++;
+      expect(summary?.questions).toEqual([{ question: "lint는 뭐?", assistant: "로컬 검사는 다음에 하겠습니다." }]);
+      expect(excerpt).toBe("로컬 검사는 다음에 하겠습니다.");
+      return { answered: [false], solo: "continue-now" };
+    });
+    await h.emit("input", { source: "rpc", text: "lint는 뭐?" });
+    const messages = [
+      { role: "user", content: "lint는 뭐?" },
+      { role: "assistant", content: [{ type: "text", text: "로컬 검사는 다음에 하겠습니다." }] },
+    ];
+    await h.end("로컬 검사는 다음에 하겠습니다.", { messages });
+    await h.end("로컬 검사는 다음에 하겠습니다.", { messages });
+    expect(calls).toBe(1);
+    expect(separateCalls).toBe(0);
+    expect(h.sent).toHaveLength(1);
+    const message = h.sent[0];
+    if (!message || typeof message !== "object" || !("content" in message) || typeof message.content !== "string") {
+      throw new Error("aside content missing");
+    }
+    expect(message.content).toContain("사용자 중간 질문 1건");
+    expect(message.content).not.toContain("미완 TODO는 없지만");
+  });
+
+  test("질문 판정을 먼저 끝낸 입력에서는 뒤의 solo 판정을 추가 호출하지 않는다", async () => {
+    let questionCalls = 0;
+    let soloCalls = 0;
+    const h = harness([], undefined, async () => { questionCalls++; return [true]; }, async () => {
+      soloCalls++;
+      return { answered: [], solo: "continue-now" };
+    });
+    await h.emit("input", { source: "rpc", text: "lint는 뭐?" });
+    const messages = [
+      { role: "user", content: "lint는 뭐?" },
+      { role: "assistant", content: [{ type: "toolCall", name: "read" }] },
+    ];
+    await h.end("", { messages });
+    await h.end("기존 로컬 검사는 다음에 하겠습니다.");
+    expect(questionCalls).toBe(1);
+    expect(soloCalls).toBe(0);
+    expect(h.sent).toHaveLength(0);
+  });
+  test("solo 판정 도중 새 입력이나 TODO 변경은 늦은 aside를 폐기한다", async () => {
+    for (const eventName of ["input", "tool_result"]) {
+      const pending = Promise.withResolvers<{ answered: boolean[]; solo: "continue-now" }>();
+      let signal: AbortSignal | undefined;
+      const h = harness([], undefined, undefined, async (_summary, _excerpt, _ctx, requestedSignal) => {
+        signal = requestedSignal;
+        return pending.promise;
+      });
+      await h.emit("input", { source: "rpc", text: "검사 마쳐 줘" });
+      const oldEnd = h.end("로컬 검사는 다음에 하겠습니다.");
+      if (eventName === "input") await h.emit("input", { source: "rpc", text: "새 작업" });
+      else await h.todo(["completed"]);
+      expect(signal?.aborted).toBe(true);
+      pending.resolve({ answered: [], solo: "continue-now" });
+      await oldEnd;
+      expect(h.sent).toHaveLength(0);
+    }
+  });
+
+  test("미완 TODO가 있으면 solo 판정을 호출하지 않고 기존 재개 안내만 쓴다", async () => {
+    let calls = 0;
+    const h = harness([], undefined, undefined, async () => { calls++; return { answered: [], solo: "continue-now" }; });
+    await h.emit("input", { source: "rpc", text: "검사 마쳐 줘" });
+    await h.todo(["pending"]);
+    await h.end("로컬 검사는 다음에 하겠습니다.");
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(1);
+    const message = h.sent[0];
+    if (!message || typeof message !== "object" || !("content" in message) || typeof message.content !== "string") {
+      throw new Error("aside content missing");
+    }
+    expect(message.content).toContain("현재 TODO에 pending");
+  });
+
+  test("직접 입력 없는 Maker와 extension 출처에는 solo 판정을 하지 않는다", async () => {
+    let calls = 0;
+    const h = harness([], undefined, undefined, async () => { calls++; return { answered: [], solo: "continue-now" }; });
+    await h.end("체크포인트 회신을 기다립니다.", { messages: [
+      { role: "user", content: "위임된 작업" },
+      { role: "assistant", content: [{ type: "text", text: "체크포인트 회신을 기다립니다." }] },
+    ] });
+    await h.emit("input", { source: "extension", text: "자동 continuation" });
+    await h.end("로컬 검사는 다음에 하겠습니다.");
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(0);
   });
 });
