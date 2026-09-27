@@ -1,9 +1,11 @@
 name: CI
 
-# Verifies that the app installs from the committed bun.lock, type-checks, lints,
-# passes its tests and builds. `bun run test` covers the app only; the `harness`
-# job checks Tools/OMP_Global_Config. Its steps that read private config,
-# evidence or evals run only in the private repository.
+# Actions minutes are free only for the public mirror, so the heavy checks run
+# there: `verify` (install, typecheck, lint, app tests, production build) and
+# `harness` (extension, guard, finalizer and core patch tests). CUELO-private
+# runs only `private`, the checks that read files the mirror does not carry.
+# It needs no dependency install. A build or test break therefore shows up in
+# the public CI right after the mirror is published, not on the private push.
 on:
   pull_request:
   push:
@@ -22,6 +24,7 @@ jobs:
     name: Verify build
     # CUELO runs on Windows PCs, and several tests (run X-Ray session paths)
     # assume Windows paths.
+    if: github.repository == 'gim47656-ship-it/CUELO'
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -38,15 +41,6 @@ jobs:
           # engines.bun requires >=1.4.2: the omp SDK ships TypeScript that
           # imports `bun:` builtins, and Bun 1.4 changed loopback proxy handling.
           bun-version: "1.4.2"
-
-      # Restores Bun's global package cache (bun pm cache); `bun install` still links
-      # from bun.lock, so only the downloads are skipped.
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~\.bun\install\cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -87,12 +81,9 @@ jobs:
           bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # The public mirror carries agent/, patches/ and the extension tests but not
-  # agent/config.yml, models.yml, evals/, the setup source manifest or the
-  # frozen review evidence. Steps that read those run only in CUELO-private;
-  # everything else runs in both repositories.
   harness:
     name: Verify harness
+    if: github.repository == 'gim47656-ship-it/CUELO'
     runs-on: windows-latest
     defaults:
       run:
@@ -112,14 +103,6 @@ jobs:
         with:
           bun-version: "1.4.2"
 
-      # Same cache as the build job; the patched-core `bun add` below reads it too.
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~\.bun\install\cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-
       # The runner's default TEMP is an 8.3 path (RUNNER~1). command-guard treats
       # any `~` in a `git -C` target as shell expansion and blocks it, which breaks
       # its repository-matching fixture. RUNNER_TEMP is a long path.
@@ -127,15 +110,6 @@ jobs:
         run: |
           "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # The setup transaction refuses to install when the app source differs from
-      # files/source-integrity.json (git-tracked files, hashed with LF line endings).
-      - name: Setup source manifest
-        if: github.repository == 'gim47656-ship-it/CUELO-private'
-        working-directory: Tools/CUELO_Setup
-        run: |
-          node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install dependencies
         working-directory: .
@@ -160,14 +134,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "OMP_CORE_PATCH_TARGET=$env:OMP_CORE_PATCH_TARGET" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Policy and generated agents
-        if: github.repository == 'gim47656-ship-it/CUELO-private'
-        run: |
-          node patches/validate-harness-policy.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node patches/build-agents.mjs --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Extension duplicate declarations
         run: |
           node patches/check-extension-duplicates.mjs
@@ -176,20 +142,6 @@ jobs:
       - name: Extension, guard and finalizer tests
         run: |
           bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # content-scan.test.ts replays the committed review evidence and setup.ps1/verify.ps1.
-      - name: Content scan tests
-        if: github.repository == 'gim47656-ship-it/CUELO-private'
-        run: |
-          bun test ./patches/content-scan.test.ts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # `bun test ./evals` would also pick up the graders' hidden task tests.
-      - name: Eval analyzer tests
-        if: github.repository == 'gim47656-ship-it/CUELO-private'
-        run: |
-          node --test (Get-ChildItem evals -Filter *.test.mjs).FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Core patch regression tests
@@ -204,3 +156,55 @@ jobs:
             if ($code -ne 0) { $failed += "$($test.Name) (exit $code)" }
           }
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }
+
+  # The mirror has no agent/config.yml, models.yml, evals/, setup source manifest
+  # or frozen review evidence. These checks use only Node/Bun built-ins, so there
+  # is no `bun install`. content-scan.test.ts calls powershell.exe, hence Windows.
+  private:
+    name: Verify private files
+    if: github.repository == 'gim47656-ship-it/CUELO-private'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: Tools/OMP_Global_Config
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # The setup transaction refuses to install when the app source differs from
+      # files/source-integrity.json (git-tracked files, hashed with LF line endings).
+      - name: Setup source manifest
+        working-directory: Tools/CUELO_Setup
+        run: |
+          node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Policy and generated agents
+        run: |
+          node patches/validate-harness-policy.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node patches/build-agents.mjs --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # content-scan.test.ts replays the committed review evidence and setup.ps1/verify.ps1.
+      - name: Content scan tests
+        run: |
+          bun test ./patches/content-scan.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # `bun test ./evals` would also pick up the graders' hidden task tests.
+      - name: Eval analyzer tests
+        run: |
+          node --test (Get-ChildItem evals -Filter *.test.mjs).FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
