@@ -302,3 +302,76 @@ function Resolve-Omp1Command {
     Write-Omp1CommandPin $pinPath $candidate.Path $candidate.Sha256
     return $candidate.Path
 }
+
+# omp 18.3.3+ one-shot commands (`plugin list`, `models`) exit 1 on Windows with a fixed
+# "event loop drained" diagnostic even though they finish. Its bundled Bun 1.4.2 does not
+# keep the loop alive while awaiting Bun.file(<missing path>).json()/.text(), so
+# `beforeExit` fires with the entry still pending; the diagnostic's own log write wakes
+# the loop and the command then completes and prints. Only that exact line for the
+# invoked subcommand counts as DrainOnly; every caller must still prove completion
+# from the output itself.
+function Invoke-Omp1OneShot([string]$Command, [string]$Arguments) {
+    $subcommand = ($Arguments -split ' ')[0]
+    $drainDiagnostic = 'omp: `omp ' + $subcommand + '` ended before completing: the event loop drained while it was still pending (rerun with PI_DEBUG_STARTUP=1 to see the last phase reached)'
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Command
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $startInfo.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw "Could not start omp $Arguments." }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(60000)) {
+            try { $process.Kill() } catch {}
+            throw "omp $Arguments timed out."
+        }
+        $process.WaitForExit()
+        $outputTasks = [Threading.Tasks.Task[]]@($stdoutTask, $stderrTask)
+        if (-not [Threading.Tasks.Task]::WaitAll($outputTasks, 5000)) {
+            throw "omp $Arguments output stalled."
+        }
+        $stderr = ([string]$stderrTask.Result).Trim()
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = [string]$stdoutTask.Result
+            Stderr = $stderr
+            DrainOnly = ($process.ExitCode -eq 1 -and $stderr -ceq $drainDiagnostic)
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+# --json is written only after every await in the list path, so a complete JSON
+# document is the completion proof for a DrainOnly run.
+function Get-Omp1UserPluginIdentifiers([string]$Command) {
+    $result = Invoke-Omp1OneShot $Command 'plugin list --json'
+    if (-not ($result.ExitCode -eq 0 -or $result.DrainOnly)) {
+        throw "Could not read OMP plugin list (exit $($result.ExitCode)): $($result.Stderr)"
+    }
+    $stdout = $result.Stdout
+    try {
+        $document = $stdout | ConvertFrom-Json
+    } catch {
+        throw 'OMP plugin list did not return complete JSON.'
+    }
+    $names = @($document.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names -notcontains 'npm' -or $names -notcontains 'marketplace') {
+        throw 'OMP plugin list JSON is missing npm or marketplace.'
+    }
+    return @(
+        foreach ($plugin in @($document.marketplace)) {
+            if ($plugin.scope -ceq 'user' -and $plugin.id -match '^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$') {
+                ([string]$plugin.id).ToLowerInvariant()
+            }
+        }
+    ) | Sort-Object -Unique
+}
