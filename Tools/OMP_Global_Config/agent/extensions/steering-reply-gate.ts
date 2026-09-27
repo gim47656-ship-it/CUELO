@@ -41,11 +41,6 @@ function introText(message: Message): string {
   for (const block of message.content) {
     if (block?.type === "toolCall") break;
     if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
-    if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()
-      && typeof block.thinkingSignature === "string"
-      && Buffer.from(block.thinkingSignature, "base64").toString("latin1").includes("narration")) {
-      parts.push(block.thinking);
-    }
   }
   return parts.join("\n").trim();
 }
@@ -83,17 +78,14 @@ async function classifySteeringReply(
 }
 
 /**
- * 첫 도구 호출 앞에 사용자에게 보인 본문이 있었는지 본다. 실제 답변 여부는 별도로 판정한다. Anthropic은 도구 앞 문장을 서명된
- * `narration` 블록으로 보내고 core는 이를 본문이 빈 `thinking` 블록으로 저장한다(2026-09-25 실측).
- * 서명 안의 블록 종류 이름으로 구분한다.
+ * 첫 도구 호출 앞에 사용자에게 보인 본문이 있었는지 본다. 실제 답변 여부는 별도로 판정한다. 도구 앞 progress update는
+ * core가 본문 text 사본으로 싣는다(`display: "updates"`). thinking 서명은 불투명 값이라 해석하지 않는다.
  */
 function hasIntroText(message: Message): boolean {
   if (!Array.isArray(message.content)) return false;
   for (const block of message.content) {
     if (block?.type === "toolCall") return false;
     if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) return true;
-    if (block?.type === "thinking" && typeof block.thinkingSignature === "string"
-      && Buffer.from(block.thinkingSignature, "base64").toString("latin1").includes("narration")) return true;
   }
   return false;
 }

@@ -2079,18 +2079,6 @@ for (const content of [[], [{ type: "thinking", thinking: "진행" }], [{ type: 
 	gate.emit("tool_call", { toolName: "read", toolCallId: "second", input: {} });
 	check("답 없이 시작한 도구도 막지 않고 안내를 한 번만 끼운다", first?.block !== true && gate.sent.length === 1);
 }
-// 2026-09-25 실사례: 도구 앞 답은 서명에 "narration"이 든 빈 thinking 블록으로 온다. 이걸 답으로 인정해야 한다.
-const narrated = replyGateHarness();
-narrated.emit("message_start", { message: { role: "user", content: "방향 바꿔", steering: true, attribution: "user" } });
-narrated.emit("tool_call", {
-	toolName: "read", toolCallId: "first", input: {},
-	assistantMessage: { role: "assistant", content: [
-		{ type: "thinking", thinking: "", thinkingSignature: Buffer.from("\u0008thinking").toString("base64") },
-		{ type: "thinking", thinking: "", thinkingSignature: Buffer.from("\u0008narration").toString("base64") },
-		{ type: "toolCall" },
-	] },
-});
-check("서명된 narration 블록을 앞선 답으로 인정한다", narrated.sent.length === 0);
 const replied = replyGateHarness();
 replied.emit("message_start", { message: { role: "user", content: "방향 바꿔", steering: true, attribution: "user" } });
 replied.emit("message_start", { message: { role: "assistant", content: [] } });

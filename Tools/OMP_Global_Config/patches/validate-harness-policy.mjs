@@ -392,7 +392,7 @@ const requiredPolicyMembers = [
     "input-is-a-bounded-steering-excerpt-and-assistant-excerpt-with-paths-urls-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
     "unanswered-adds-one-aside-asking-main-to-answer-the-interjection-in-body-text-first-and-continue-in-the-same-response-never-a-tool-block",
     "the-tool-call-handler-returns-immediately-and-the-judgment-runs-in-the-background-so-the-tool-is-never-held",
-    "no-body-text-keeps-the-existing-deterministic-reply-reminder-a-signature-only-narration-counts-as-a-reply-without-a-call",
+    "no-body-text-keeps-the-existing-deterministic-reply-reminder-a-progress-update-counts-as-a-reply-only-through-its-body-text-copy-never-by-signature",
     "answered-unknown-judge-failure-or-a-new-input-produces-no-notice-and-discards-late-results",
   ]],
   ["routing.typedJudgmentRouting.placements.todo-nudge-multistep.questions", [

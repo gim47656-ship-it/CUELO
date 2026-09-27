@@ -59,17 +59,6 @@ describe("steering reply gate", () => {
     expect(h.sent[0]!.content).toContain("아직 답하지 않고 도구를 시작했다");
   });
 
-  test("narration 서명만 있고 복원할 문장이 없으면 기존 본문 인식을 유지한다", async () => {
-    let calls = 0;
-    const h = harness(async () => { calls++; return "unanswered"; });
-    await h.steer("측정 결과는 줘야지");
-    const signed = [{ type: "thinking", thinkingSignature: Buffer.from("narration").toString("base64") }, { type: "toolCall" }];
-    await h.answer(signed);
-    await h.tool(signed);
-    expect(calls).toBe(0);
-    expect(h.sent).toHaveLength(0);
-  });
-
   test("본문이 도구 이벤트에만 실려도 판정하고 민감 경로·URL·코드를 전달하지 않는다", async () => {
     const seen: unknown[] = [];
     const h = harness(async (summary) => { seen.push(summary); return "unanswered"; });
