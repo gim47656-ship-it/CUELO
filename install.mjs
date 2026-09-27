@@ -29,7 +29,7 @@ export const HARNESS_ROLES = [
   "implDeepSeek",
   "makerHardUiOpus",
   "makerHardCodeOpus",
-  "makerHardCodeAstra",
+  "makerHardCodeSol",
 ];
 const SELECTOR = /^[^/\s:]+\/[^\s:]+(?::[a-z]+)?$/;
 

@@ -97,7 +97,7 @@ function createHarness(options: HarnessOptions = {}) {
           implDeepSeek: "test/deepseek:high",
           makerHardUiOpus: "test/interaction:high",
           makerHardCodeOpus: "test/invariants:high",
-          makerHardCodeAstra: "test/alternate:high",
+          makerHardCodeSol: "test/alternate:high",
         },
       };
 
@@ -1119,6 +1119,7 @@ describe("jev-runtime pre-retry", () => {
       "command not found: del",
       "command not found: copy",
       "command not found: findstr",
+      "line 14: syntax error near unexpected token `$'{\\r''",
     ]) {
       const harness = createHarness();
       await harness.emit("tool_result", bashError("c1", "probe", error));
@@ -1128,6 +1129,7 @@ describe("jev-runtime pre-retry", () => {
       expect(advisory).toContain("write");
       expect(advisory).toContain("-File");
       expect(advisory).toContain("Remove-Item -LiteralPath");
+      expect(advisory).toContain("C:/Program Files/Git/bin/bash.exe");
       expect(advisory).not.toContain(error);
       expect(harness.judgments).toHaveLength(0);
     }

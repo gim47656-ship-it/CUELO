@@ -837,7 +837,7 @@
         "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high"] },
         "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
         "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
-        "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_SOL": { "modelConfigPath": "modelRoles.makerHardCodeSol", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high"] }
       },
       "effortBand": "each-candidate-offers-only-registry-supported-levels-inside-its-profile-allowedEfforts-the-task-hook-blocks-any-other-level-and-max-a-shared-model-is-checked-against-the-recommended-profile-then-a-profile-of-the-recommended-work-class-and-without-a-recommendation-against-a-profile-that-allows-the-level",
@@ -864,7 +864,7 @@
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
       },
       "hardSelection": {
-        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_ASTRA-is-offered-only-as-an-alternative-and-requires-ROUTING_REASON",
+        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_SOL-is-offered-only-as-an-alternative-and-requires-ROUTING_REASON",
         "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-and-effort-selection-only-access-program-fields-are-omitted"

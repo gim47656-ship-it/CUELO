@@ -34,9 +34,9 @@ REWORK 전송 뒤 시작된 재개 실행은 코어가 같은 job id를 다시 �
 `maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
 모델·강도 자동 조정 근거가 아닙니다.
 
-등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SOL`, `NORMAL_OPUS`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_ASTRA`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sol을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다.
+등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SOL`, `NORMAL_OPUS`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SOL`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sol을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다. HARD 코드의 기본은 Opus이고, `HARD_CODE_SOL`은 `ROUTING_REASON`을 남길 때만 고르는 대안입니다.
 
-후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. Sol·Astra 후보는 `high`~`xhigh`, Opus 후보 셋과 DeepSeek는 `high`만 사용합니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
+후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. Sol 후보 둘(`NORMAL_SOL`·`HARD_CODE_SOL`)은 `high`~`xhigh`, Opus 후보 셋과 DeepSeek는 `high`만 사용합니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
 
 CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중인 요청·Steer·도구 후속 실행·수동 선택의 강도는 이 설정으로 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 하한이 적용되지는 않습니다.
 
@@ -66,7 +66,7 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 `maker_route`는 Jev 판정과 후보 제공자 사용량 조회를 함께 시작하고, 빠른 판정에도 조회를 조기 취소하지 않습니다. 사용량 조회는 기존 2초 제한 안의 결과를 기다리며 실패·timeout은 미측정으로 표시합니다. 사용량은 배정 참고 정보이지 Jev 판단 입력이 아닙니다.
 
-턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만들어 그 사용자 메시지와 같은 턴에 숨김 메시지로 붙입니다. 별도 턴을 열지 않으므로 긴 첫 메시지가 밀려나지 않습니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다.
+턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만들어 그 사용자 메시지와 같은 턴에 숨김 메시지로 붙입니다. 별도 턴을 열지 않으므로 긴 첫 메시지가 밀려나지 않습니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실, PATH 첫 `bash`인 WSL이 CRLF `.sh`를 읽어 낸 `$'\r'` 구문 오류 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다. `verify.ps1`은 PATH 첫 `bash`가 WSL 실행기이면 판정에 넣지 않는 경고 한 줄을 출력합니다.
 
 같은 판정을 세 곳에 더 씁니다. [`steering-reply-gate.ts`](../Tools/OMP_Global_Config/agent/extensions/steering-reply-gate.ts)는 작업 중 끼어든 말 뒤 첫 도구 앞 본문이 요청한 결과나 결론을 실제로 줬는지 판정해, 진행 안내만 했으면 먼저 답하라고 안내합니다. 판정은 뒤에서 돌아 도구 실행을 붙잡지 않습니다. `turn-end-guard.ts`는 미완 TODO가 없어도 승인 없이 지금 할 수 있는 일을 "다음에 하겠다"로 남기고 끝낸 턴을 잡아 이어 가라고 안내합니다. 배포·삭제·비용·사용자 선택·외부 대기는 자동으로 이어 가지 않고, 체크포인트 회신을 기다리는 child 세션은 제외합니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 요청이 들어올 때 여러 항목·단계 요청인지 한 번 판정해, 그럴 때만 TODO 목록 안내를 냅니다. 판정이 없거나 실패하면 도구 세 번 규칙으로 돌아갑니다. `jev-runtime.ts`의 재시도 경계는 judge 없이 로컬에서 테스트·CI 실패를 시간 초과·모듈/환경·source manifest 불일치·assertion으로 나눠, 다시 돌릴 일인지 고칠 일인지 알려 줍니다.
 

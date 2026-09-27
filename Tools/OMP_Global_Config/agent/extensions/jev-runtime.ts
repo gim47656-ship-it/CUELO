@@ -210,7 +210,7 @@ function serializeInput(value: unknown): string {
 // ---------------------------------------------------------------------------
 
 const ERROR_CATEGORY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/foreach\s*\(\s*in\b|식이 없|값 식|빈 파이프|ParserError|unterminated backquote|C:Users(?:[\\/]|$)|-File parameter does not exist|['"]\.[\w.-]+\.ps1['"]|pi-natives:command:\s*syntax error|command not found:\s*(?:del|copy|findstr)\b/iu, "windows-shell"],
+  [/foreach\s*\(\s*in\b|식이 없|값 식|빈 파이프|ParserError|unterminated backquote|C:Users(?:[\\/]|$)|-File parameter does not exist|['"]\.[\w.-]+\.ps1['"]|pi-natives:command:\s*syntax error|command not found:\s*(?:del|copy|findstr)\b|\$'[^'\r\n]*\\r'/iu, "windows-shell"],
   [/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?: code)?\s*[=:]?\s*)(?:401|403)\b|\b(?:unauthorized|forbidden|authentication)\b|\b(?:invalid[_ ]?grant|(?:invalid|missing|incorrect|expired)\s+api[_ ]?key|api[_ ]?key\s+(?:invalid|missing|expired))\b|인증/iu, "auth"],
   [/\bsource hash mismatch\b|\bSOURCE\s+VERIFY\b[^\r\n]{0,80}\bFAIL(?:ED|URE)?\b/iu, "source-manifest"],
   [/\b(?:Cannot find module|ERR_MODULE_NOT_FOUND|Bun is not defined)\b/iu, "module-environment"],
@@ -1468,7 +1468,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const inputChanged = serializeInput(event.input) !== failure.inputSerialized;
       const observation = failure.observation;
       const nextAction = failure.category === "windows-shell"
-        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다."
+        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다."
         : observation.cancelled && !observation.deterministicExitObserved
           ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
           : RETRY_CATEGORY_NEXT_ACTION[failure.category]
