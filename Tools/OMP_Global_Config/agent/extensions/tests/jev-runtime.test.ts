@@ -448,8 +448,8 @@ describe("jev-runtime pre-dispatch", () => {
     expect((await harness.prepare(GUARDED_TASK, "AfterInput")).details.routes[0]!.history)
       .toMatchObject({ attempts: 1, followed: { ok: 0, held: 1 } });
 
-    // 완료 뒤에는 accepted가 기록된다.
-    expect((await judge({ verdict: "accepted", revision: "rev-1", evidenceLocators: ["artifact://focused"] })).details)
+    // 완료 뒤에는 accepted가 기록되고, 적용한 교훈 id는 중복·공백 없이 함께 남는다.
+    expect((await judge({ verdict: "accepted", revision: "rev-1", evidenceLocators: ["artifact://focused"], appliedLessons: ["mem-1", " mem-1 ", ""] })).details)
       .toMatchObject({ ok: true });
     // git_finalize 성공은 수용을 추정하지 않는다.
     await harness.emit("tool_result", {
@@ -470,9 +470,10 @@ describe("jev-runtime pre-dispatch", () => {
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
       { type: "outcome", status: "completed", durationSec: 61, ...identity },
-      { type: "verdict", verdict: "accepted", revision: "rev-1", evidenceLocators: ["artifact://focused"], reason: "검수", ...identity },
+      { type: "verdict", verdict: "accepted", revision: "rev-1", evidenceLocators: ["artifact://focused"], reason: "검수", appliedLessons: ["mem-1"], ...identity },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
     ]);
+    expect(records.filter((record) => "appliedLessons" in record)).toHaveLength(1);
   });
 
   test("같은 이름의 새 발주는 새 assignment이고, 성공한 REWORK write가 실제 새 jobId로만 재개 attempt를 연다", async () => {

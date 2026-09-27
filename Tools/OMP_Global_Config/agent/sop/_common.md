@@ -54,13 +54,16 @@
 - After a failure is resolved, compare the failed and successful evidence and identify the cause:
   invocation/path/argument error, environment/dependency, authorization/provider, product defect,
   or an expected negative probe. Counts do not establish that classification. Before terminal
-  delivery, consolidate only reusable lessons from those confirmed pairs using the existing
-  `learn`/memory path; use an applicable existing Skill or rule only where guidance is missing.
-  If an existing rule was sufficient, record the execution correction instead of duplicating it.
-  Do not promote unresolved guesses or edit policy automatically from a failure-rate threshold.
-  On the next matching task, retrieve the relevant lesson before repeating that operation. Keep
-  evidence locators and the changed action, not private raw output; route lessons outside your
-  owned paths to Main in the existing terminal report, never an extra reporting hop.
+  delivery, report only reusable lessons from those confirmed pairs in the existing terminal
+  report as lesson candidates (applicable condition, cause, changed action, success evidence
+  locator); Main decides whether to store them with `learn`, link an existing lesson, or reject
+  them. Maker sessions have no `learn` tool. Use an applicable existing Skill or rule only where
+  guidance is missing, and if an existing rule was sufficient, report the execution correction
+  instead of a duplicate. Do not promote unresolved guesses or edit policy automatically from a
+  failure-rate threshold. Your first turn receives memories recalled for this task in
+  `<memories>` with `(id: …)`; apply the matching ones before repeating that operation, and list
+  the ids you actually applied with their evidence locators in the terminal report. Keep evidence
+  locators and the changed action, not private raw output.
 - Rework invalidates only what it touched. Redo the check it invalidates, review the diff, inputs,
   impact-bearing callers, and domain evidence Main marks invalidated, and reuse the unaffected
   source, caller, and raw evidence.

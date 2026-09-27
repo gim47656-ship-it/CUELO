@@ -856,7 +856,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const VERDICTS = ["accepted", "rework", "held"] as const;
     type VerdictInput = {
       sessionId: string; assignmentId: string; attemptId: string; verdict: string;
-      reason: string; revision?: string; evidenceLocators?: string[];
+      reason: string; revision?: string; evidenceLocators?: string[]; appliedLessons?: string[];
     };
     /**
      * Main 명시 수용 판정 기록. advisory 원장에 한 줄 append할 뿐 gate도 LLM 호출도 아니다.
@@ -871,6 +871,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const reason = request.reason.trim();
       const revision = (request.revision ?? "").trim();
       const evidenceLocators = (request.evidenceLocators ?? []).map((value) => value.trim()).filter(Boolean);
+      const appliedLessons = [...new Set((request.appliedLessons ?? []).map((value) => value.trim()).filter(Boolean))];
       if (!sessionId || !assignmentId || !attemptId) {
         return { ok: false, error: "sessionId·assignmentId·attemptId가 모두 필요합니다. maker_route 결과가 아니라 spawn advisory의 실제 triple을 쓰세요.", knownAttemptIds: [] };
       }
@@ -910,6 +911,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         revision: revision || null,
         evidenceLocators,
         reason,
+        ...(appliedLessons.length > 0 ? { appliedLessons } : {}),
       };
       if (!baseLedger.append(record)) {
         return { ok: false, error: "원장 기록에 실패했습니다(저장 오류). 판정은 남지 않았습니다.", knownAttemptIds: [] };
@@ -956,7 +958,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const z = pi.zod;
       pi.registerTool({
         name: "routing_verdict", label: "Routing Verdict", loadMode: "essential", approval: "read",
-        description: "Main 전용 발주 수용 판정 기록(advisory). 실행 상태와 분리해 accepted·rework·held만 남기며 gate도 LLM 호출도 아니다. identity는 spawn/pre-review advisory와 maker_route 결과의 plan이 아니라 실제 spawn triple(sessionId·assignmentId·attemptId)을 쓴다. accepted·rework는 비어 있지 않은 revision과 evidenceLocators 최소 1개, reason이 필요하고 held는 revision·evidence를 생략할 수 있다. accepted는 완료가 관측된 attempt에만 쓸 수 있다. spawn으로 관측되지 않은 attempt, stale identity, 현재 session이 아닌 identity는 기록하지 않고 오류와 알려진 attemptId 목록으로 알린다.",
+        description: "Main 전용 발주 수용 판정 기록(advisory). 실행 상태와 분리해 accepted·rework·held만 남기며 gate도 LLM 호출도 아니다. identity는 spawn/pre-review advisory와 maker_route 결과의 plan이 아니라 실제 spawn triple(sessionId·assignmentId·attemptId)을 쓴다. accepted·rework는 비어 있지 않은 revision과 evidenceLocators 최소 1개, reason이 필요하고 held는 revision·evidence를 생략할 수 있다. accepted는 완료가 관측된 attempt에만 쓸 수 있다. 선택 appliedLessons에는 그 attempt가 실제로 적용한 교훈의 기억 id(`<memories>`·recall·learn 결과의 `id:`)를 넣으며, 적용 근거는 evidenceLocators로 남긴다. spawn으로 관측되지 않은 attempt, stale identity, 현재 session이 아닌 identity는 기록하지 않고 오류와 알려진 attemptId 목록으로 알린다.",
         parameters: z.object({
           sessionId: z.string(),
           assignmentId: z.string(),
@@ -965,6 +967,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           reason: z.string(),
           revision: z.string().optional(),
           evidenceLocators: z.array(z.string()).optional(),
+          appliedLessons: z.array(z.string()).optional(),
         }) as never,
         async execute(_id: unknown, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) {
           const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";

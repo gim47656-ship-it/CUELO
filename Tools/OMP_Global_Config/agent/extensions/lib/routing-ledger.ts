@@ -63,6 +63,8 @@ export interface VerdictRecord extends AttemptIdentity {
   revision: string | null;
   evidenceLocators: string[];
   reason: string;
+  /** 그 attempt가 실제로 적용한 교훈의 Mnemopi 기억 id. Main이 적용 근거(evidenceLocators)와 함께 남긴다. */
+  appliedLessons?: string[];
 }
 
 export type LedgerRecord = DispatchRecord | OutcomeRecord | VerdictRecord;

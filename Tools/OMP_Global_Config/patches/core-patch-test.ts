@@ -2283,5 +2283,58 @@ console.log("\n[23] Mnemopi 회수 — 원문이 실린 기억의 파생 fact �
 	}
 }
 
+// 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 자기 작업 brief 로 회상하지 않고 부모의 첫 턴
+// 회상만 물려받았다. 실제 backend.start(taskDepth 1) → beforeAgentStartPrompt → buildDeveloperInstructions
+// 경로를 태운다. 부모 state 는 구조만 맞춘 fixture 이며 회상 저장소(scoped)는 child 가 그대로 공유한다.
+console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 회상하고 기억 id 를 싣는다");
+{
+	const recallQueries: string[] = [];
+	const lessonRow = { id: "lesson-ps-dollar", content: "PowerShell -Command 안의 $변수는 바깥 셸에 먹힌다", source: "coding-agent-learn", timestamp: "2026-09-25T00:00:00Z", score: 1 };
+	const parentState = {
+		config: { autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 2, recallMaxQueryChars: 2000 },
+		scoped: {
+			recall: [{ bank: "bank", memory: { recallEnhanced: async (query: string) => { recallQueries.push(query); return [lessonRow]; } } }],
+			retain: { bank: "bank" },
+		},
+		lastRecallSnippet: "PARENT-FIRST-TURN-SNIPPET",
+	};
+	const childSession = {
+		sessionId: "child-session",
+		settings: mnemopiSettings(false),
+		getXdevToolEntries: () => [],
+		sessionManager: { getEntries: () => [] },
+	} as never;
+	await mnemopiBackend.start({ session: childSession, settings: mnemopiSettings(false), agentDir: "", taskDepth: 1, parentMnemopiSessionState: parentState } as never);
+	const brief = "Tools/CUELO_Setup 에서 PowerShell 스크립트를 bash 로 실행한다";
+	const staged = await mnemopiBackend.beforeAgentStartPrompt(childSession, brief);
+	check("child 첫 턴은 작업 brief 로 회상한다", recallQueries.length === 1 && recallQueries[0]!.includes(brief), `queries=${JSON.stringify(recallQueries)}`);
+	check("회상 줄에 기억 id 가 실린다", staged?.context?.includes("(id: lesson-ps-dollar)") === true, `context=${JSON.stringify(staged?.context ?? null)}`);
+	check("commit 이 적용된다", staged?.commit() === true);
+	const childGuidance = (await mnemopiBackend.buildDeveloperInstructions("", mnemopiSettings(false), childSession)) ?? "";
+	check(
+		"child 안내에는 자기 회상이 실리고 부모 첫 턴 회상은 빠진다",
+		childGuidance.includes("lesson-ps-dollar") && !childGuidance.includes("PARENT-FIRST-TURN-SNIPPET"),
+		`tail=${JSON.stringify(childGuidance.slice(-200))}`,
+	);
+	const again = await mnemopiBackend.beforeAgentStartPrompt(childSession, "두 번째 턴");
+	check("child 회상은 첫 턴 한 번뿐이다", again === undefined && recallQueries.length === 1, `queries=${recallQueries.length}`);
+}
+
+console.log("\n[25] learn — 저장한 기억 id 를 결과에 싣는다");
+{
+	const { LearnTool } = await import(`${CORE}/tools/learn.ts`);
+	const learnSession = {
+		settings: settingsLike({ get: (key: string) => (key === "memory.backend" ? "mnemopi" : key === "autolearn.enabled" ? true : undefined) }),
+		getMnemopiSessionState: () => ({
+			sessionId: "learn-session",
+			session: { sessionManager: { getCwd: () => "F:/CUELO" } },
+			rememberScoped: () => "mem-42",
+		}),
+	} as never;
+	const learned = await new LearnTool(learnSession).execute("learn-1", { memory: "manifest 는 Tools 파일도 포함한다" });
+	const learnedText = String(learned.content[0]?.text);
+	check("learn 결과가 저장된 기억 id 를 알린다", learnedText === "Lesson stored (id: mem-42).", `text=${learnedText}`);
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

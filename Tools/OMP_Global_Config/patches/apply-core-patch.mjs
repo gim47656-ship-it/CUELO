@@ -4854,6 +4854,47 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\t\treturn { content: [{ type: \"text\", text: localizeSeenLineRejection(outcome.text) }], isError: true };\n",
 	},
 	{
+		// 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 부모 state 의 alias 로 만들어지면서
+		// hasRecalledForFirstTurn=true 로 시작해, 자기 작업 brief 로는 한 번도 회상하지 않았다(작업 직전
+		// 교훈 적용 연결이 끊김). 첫 턴 회상 경로(beforeAgentStartPrompt)는 child 자기 state 를 쓰고, alias 는
+		// 부모와 같은 scoped 저장소를 공유하므로 이 값만 풀면 작업 brief 로 한 번 회상한다. 쓰기(retain)는
+		// 기존대로 alias 에서 막힌다.
+		file: "src/mnemopi/backend.ts",
+		marker: "// HANSE: child recalls its own task",
+		anchor: "\t\t\t\t\taliasOf: parent,\n\t\t\t\t\thasRecalledForFirstTurn: true,\n",
+		patched: "\t\t\t\t\taliasOf: parent,\n\t\t\t\t\t// HANSE: child recalls its own task\n\t\t\t\t\thasRecalledForFirstTurn: false,\n",
+	},
+	{
+		// 위 항목의 짝. child 는 부모의 첫 턴 회상(부모 첫 요청 기준)이 아니라 자기 작업 회상만 싣는다.
+		// 부모 snippet 을 계속 붙이면 child 첫 요청에 서로 다른 <memories> 두 벌이 실린다.
+		file: "src/mnemopi/backend.ts",
+		marker: "const recallSnippet = state?.aliasOf ? state.lastRecallSnippet : primary?.lastRecallSnippet;",
+		anchor: "\t\tif (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);\n",
+		patched: "\t\tconst recallSnippet = state?.aliasOf ? state.lastRecallSnippet : primary?.lastRecallSnippet;\n\t\tif (recallSnippet) parts.push(recallSnippet);\n",
+	},
+	{
+		// 주입되는 <memories> 줄에 기억 id 를 싣는다. recall 도구 결과에는 id 가 있지만 자동 주입 블록에는
+		// 없어서, 작업에 전달된 교훈을 routing_verdict appliedLessons 로 가리킬 수 없었다.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: recall line carries memory id",
+		anchor: "\t\treturn `- ${content}${source}${date}`;\n",
+		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
+	},
+	{
+		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
+		// 가리킬 식별자가 없으면 적용·결과를 연결할 수 없다. mnemopi 경로에서만 id 를 싣는다.
+		file: "src/tools/learn.ts",
+		marker: "// HANSE: learn reports memory id",
+		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(params.memory, {\n",
+		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(params.memory, {\n",
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: "memoryMessage = `Lesson stored (id: ${memoryId})`;",
+		anchor: "\t\t\t\t\tmemoryType: \"fact\",\n\t\t\t\t});\n\t\t\t} catch (error) {\n",
+		patched: "\t\t\t\t\tmemoryType: \"fact\",\n\t\t\t\t});\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
+	},
+	{
 		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
 		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
 		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).
