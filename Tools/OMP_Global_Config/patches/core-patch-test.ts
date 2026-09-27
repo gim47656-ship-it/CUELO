@@ -2374,5 +2374,38 @@ console.log("\n[27] todo — phase 없는 append 는 아직 안 끝난 일이 �
 	check("phase 를 주면 그 phase 에 붙는다", phaseOf(explicit.phases, "x") === "P1");
 }
 
+// 2026-09-27 edit 거절 조사: edit 뒤 새 스냅샷이 전에 읽은 줄의 '본 줄' 기록을 잃어, 바뀌지 않은 줄 수정이 거절됐다.
+console.log("\n[28] edit — 성공한 edit 뒤에도 전에 읽은 바뀌지 않은 줄은 '본 줄' 로 남는다");
+{
+	const savedVariant = process.env.PI_EDIT_VARIANT;
+	process.env.PI_EDIT_VARIANT = "hashline"; // fixture 모델(mock)은 hashline 이 아닌 모드로 떨어진다
+	const agentDir = csMkdtemp(csJoin(fixtureRoot, "omp-seen-agent-"));
+	const cwd = csMkdtemp(csJoin(fixtureRoot, "omp-seen-work-"));
+	const { session } = await csCreateAgentSession({ ...csSessionOptions("anthropic"), agentDir, cwd, tools: undefined, toolNames: ["read", "edit"] });
+	const read = session.getToolByName("read");
+	const edit = session.getToolByName("edit");
+	const textOf = (result: { content?: { text?: string }[] }) => (result.content ?? []).map(part => part.text ?? "").join("\n");
+	const tagOf = (text: string) => text.match(/#([0-9A-F]{4})\]/)?.[1];
+	const tryEdit = async (input: string) => edit.execute(`seen-${Math.random()}`, { input }).then(
+		(result: { isError?: boolean; content?: { text?: string }[] }) => ({ error: result.isError === true, text: textOf(result) }),
+		(error: Error) => ({ error: true, text: error.message }),
+	);
+	for (const [name, eol] of [["lf.txt", "\n"], ["crlf.txt", "\r\n"]] as const) {
+		const file = csJoin(cwd, name);
+		await Bun.write(file, Array.from({ length: 200 }, (_, i) => `line ${i + 1}`).join(eol) + eol);
+		const readTag = tagOf(textOf(await read.execute("seen-read", { path: `${name}:1-40` })));
+		const first = await tryEdit(`[${name}#${readTag}]\nPUT 5.=5:\n+line 5 changed\n+inserted a\n+inserted b\n`);
+		const shifted = await tryEdit(`[${name}#${tagOf(first.text)}]\nPUT 32.=32:\n+line 30 changed\n`);
+		check(`${name}: 줄이 밀린 뒤에도 전에 읽은 줄(원래 30줄) 수정이 통과한다`, !first.error && !shifted.error, `first=${first.text.slice(0, 120)} shifted=${shifted.text.slice(0, 160)}`);
+		const unseen = await tryEdit(`[${name}#${tagOf(shifted.text) ?? tagOf(first.text)}]\nPUT 100.=100:\n+line 98 changed\n`);
+		check(`${name}: 한 번도 읽지 않은 줄 수정은 여전히 거절된다`, unseen.error, unseen.text.slice(0, 120));
+		const lines = (await Bun.file(file).text()).split(eol);
+		check(`${name}: 파일에는 의도한 줄만 바뀐다`, lines[31] === "line 30 changed" && lines[99] === "line 98", JSON.stringify([lines[31], lines[99]]));
+	}
+	await session.dispose();
+	if (savedVariant === undefined) delete process.env.PI_EDIT_VARIANT;
+	else process.env.PI_EDIT_VARIANT = savedVariant;
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

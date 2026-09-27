@@ -4957,6 +4957,57 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\tlet phase = findPhaseByName(phases, targetPhase);\n\tif (!phase) {\n\t\tphase = { name: targetPhase, tasks: [] };\n",
 	},
 	{
+		// 2026-09-27 edit 거절 조사: 7일 거절 174건 중 68건이 직전 edit 응답의 새 태그를 기준으로 했다. edit 가
+		// 성공하면 새 스냅샷은 응답에 보인 몇 줄만 '본 줄' 로 갖고, 전에 읽은 바뀌지 않은 줄은 잃었다(1~43줄 read →
+		// 5줄 edit → 30줄 edit 거절로 재현). 이전 태그의 본 줄을 두 스냅샷 사이 줄 대응으로 옮겨 새 태그에 더한다.
+		// 바뀐 줄은 옮기지 않으므로 '보지 않은 줄은 고치지 않는다' 는 가드 취지는 그대로다.
+		file: "src/edit/index.ts",
+		marker: "\tdiffLineRuns, // HANSE: seen-line carry\n",
+		anchor: "\tEditSession,\n\teditDescription,\n",
+		patched: "\tEditSession,\n\tdiffLineRuns, // HANSE: seen-line carry\n\teditDescription,\n",
+	},
+	{
+		file: "src/edit/index.ts",
+		marker: "// HANSE: carry seen lines across the edit",
+		anchor: "\t\tconst details = aggregateDetails(outcome.files, this.mode);\n",
+		patched: `		// HANSE: carry seen lines across the edit
+		const editInput = (params as { input?: unknown }).input;
+		if (this.mode === "hashline" && typeof editInput === "string") {
+			const store = getEditStore(this.session);
+			const pathKey = (value: string) => (process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value));
+			const baseTags = new Map<string, string>();
+			for (const match of editInput.matchAll(/^\\[([^\\]\\n#]+)#([0-9A-Fa-f]{4})\\]/gm)) {
+				baseTags.set(pathKey(path.resolve(this.session.cwd, match[1].trim())), match[2].toUpperCase());
+			}
+			for (const file of outcome.files) {
+				if (file.op !== "update" || file.moveTo) continue;
+				const baseTag = baseTags.get(pathKey(file.path));
+				const newTag = store.headHash(file.path);
+				if (!baseTag || !newTag || newTag.toUpperCase() === baseTag) continue;
+				const seen = store.seenLines(file.path, baseTag);
+				const baseText = store.byHashText(file.path, baseTag);
+				const newText = store.headText(file.path);
+				if (!seen || seen.length === 0 || baseText === null || newText === null) continue;
+				const seenSet = new Set(seen);
+				const carried: number[] = [];
+				let oldLine = 1;
+				let newLine = 1;
+				for (const run of diffLineRuns(baseText.replace(/\\r\\n/g, "\\n"), newText.replace(/\\r\\n/g, "\\n"))) {
+					if (run.added) newLine += run.count;
+					else if (run.removed) oldLine += run.count;
+					else {
+						for (let offset = 0; offset < run.count; offset++) if (seenSet.has(oldLine + offset)) carried.push(newLine + offset);
+						oldLine += run.count;
+						newLine += run.count;
+					}
+				}
+				if (carried.length > 0) store.recordSeenLines(file.path, newTag, carried);
+			}
+		}
+		const details = aggregateDetails(outcome.files, this.mode);
+`,
+	},
+	{
 		// 2026-09-26 실측: `learn`/`retain` 은 `extract: true` 로 저장돼 원문 기억 1건에서 문장 단위 fact 가
 		// 파생된다(facts.source_msg_id = 원문 working id). fact 회수 결과에는 그 연결이 빠져 있어서, 세션 첫
 		// 턴 `<memories>` 와 `recall` 결과에 원문과 그 조각이 함께 실렸다(CUELO 은행 `sed` 교훈 1건이 3줄).
