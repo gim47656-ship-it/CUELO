@@ -44,6 +44,8 @@ CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용�
 
 패치된 내장 코어는 thinking 요약을 생략하는 설정(`omitThinking`)에서도 Claude Opus 5.5가 도구 호출 앞에 쓴 사용자용 문장을 본문으로 보여 줍니다. Anthropic은 이 문장을 `narration` 서명이 붙은 thinking 블록으로 보내기 때문에, 생략 설정이 그대로 적용되면 화면과 세션 기록에서 사라집니다. 코어는 이 경우에도 요약을 받아 일반 thinking 내용은 계속 버리고 narration만 본문 text로 내보내며, 다음 요청에는 서명된 원래 thinking 블록을 그대로 돌려보냅니다. 이 동작도 standalone `omp` 실행 파일에는 포함되지 않습니다.
 
+edit 도구가 이전 read·검색에서 온전히 보이지 않은 줄을 기준으로 한 편집을 거부할 때, 패치된 내장 코어는 그 안내를 한국어로 바꿔 모델에 전달합니다. 안내 원문은 native 모듈이 영어로 만들며, 영어 안내 바로 뒤에 Main이 진행 문장을 영어로 이어 쓰는 일이 있었습니다. 알려진 문장 틀만 바꾸고 파일·줄·태그와 파일 내용 줄은 그대로 두며, 틀이 다른 오류는 원문을 유지합니다.
+
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
 
 교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다.
