@@ -68,6 +68,8 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 턴 경계에는 JEV를 두 곳 더 씁니다. [`turn-end-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/turn-end-guard.ts)는 작업 중 사용자가 던진 질문에 이후 본문이 실제로 답했는지 입력당 한 번 판정하고, 미답이면 먼저 답하라고 안내합니다. [`external-advice-check.ts`](../Tools/OMP_Global_Config/agent/extensions/external-advice-check.ts)는 다른 모델의 긴 답을 붙여 검증을 요청하면 주장별 확인 목록을 만들어 그 사용자 메시지와 같은 턴에 숨김 메시지로 붙입니다. 별도 턴을 열지 않으므로 긴 첫 메시지가 밀려나지 않습니다. 두 곳 모두 경로·URL·코드·secret을 지운 짧은 발췌만 보내고, 승인이나 도구 차단이 아닙니다. `jev-runtime.ts`는 Windows 셸 경계 실패(PowerShell 변수 소실, 역슬래시 경로 소실 등)를 따로 분류해 고치는 방법을 알리고, 이 세션이 띄운 실행 중 작업이 쥔 폴더를 지우려는 호출은 그 작업이 끝날 때까지 막습니다.
 
+화면 확인에도 JEV를 씁니다. [RULES.md](../Tools/OMP_Global_Config/agent/RULES.md)의 화면 확인 규칙은 Main과 Maker 모두에 적용됩니다. 웹은 `browser`, 네이티브 데스크톱 창은 `computer`, 로직은 테스트로 확인합니다. 조작·대기·확인 여러 단계를 한 `eval` 셀에 묶고, DOM 텍스트·AX 트리는 문자열 비교로 먼저 확인합니다. 문자열로 가를 수 없는 판정만 같은 셀에서 `judge()`(JEV)에 텍스트로 넘기므로, 단계마다 모델 턴을 거치지 않습니다. 스크린샷은 모양을 봐야 할 때만 찍고, `judge()` 결과는 참고 신호일 뿐 최종 수용 근거가 아닙니다. `computer`는 실제 데스크톱을 조작하므로 자기가 띄운 창만 다루고, 되돌릴 수 없는 버튼은 누르지 않습니다.
+
 ## 캐릭터 음성과 확장
 
 [`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
