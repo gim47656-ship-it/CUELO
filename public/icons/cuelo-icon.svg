@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">
+  <!-- CUELO 앱 아이콘 원본. icon-192/512·apple-touch-icon·favicon.ico는 이 파일에서 뽑는다. -->
+  <rect width="100" height="100" rx="22" fill="#16171b"/>
+  <g transform="translate(15 15) scale(0.7)">
+    <path d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50" fill="none" stroke="#eceef2" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="42" cy="50" r="8.5" fill="#f5a524"/>
+  </g>
+</svg>

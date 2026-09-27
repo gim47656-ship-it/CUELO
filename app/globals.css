@@ -95,6 +95,8 @@
      shadow declarations that still reference them resolve to SEED strokes */
   --bevel-light: transparent;
   --bevel-shade: var(--seed-color-stroke-neutral-subtle);
+  /* 로고 나선의 램프. 앱에서 유일한 브랜드 색이며 라이트 배경에서는 한 단계 진하게 쓴다. */
+  --brand-lamp: #e08c00;
 }
 
 html.dark {
@@ -103,6 +105,7 @@ html.dark {
      Light keeps SEED's defaults. */
   --bg-panel: var(--seed-color-bg-layer-fill);
   --border-strong: var(--seed-color-palette-gray-600);
+  --brand-lamp: #f5a524;
 }
 
 /* Nord 선택에만 적용하는 SEED 역할 토큰. 밝은 청회색 층과 청록 강조로
