@@ -634,7 +634,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await expect(stale).rejects.toThrow("더 최신");
     expect(await h.beforeTask({
       ...h.input,
-      tasks: [{ ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:xhigh" }],
+      tasks: [{ ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:high" }],
     }, {} as never)).toBeUndefined();
     expect(h.requests).toHaveLength(2);
   });
@@ -945,22 +945,21 @@ describe("블라인드 입력과 독립 질문", () => {
     expect(JSON.stringify(state)).not.toContain("desiredGrade");
     expect(state.facts).toEqual(["일반 단어와 gpt-5.6-terra 설정명을 문서에서 확인했다"]);
     const policy = loadRoutingPolicy();
-    // registry 지원 강도를 profile 허용 구간으로 거른다. HARD_UI_OPUS는 지원 강도가 하나뿐인 경우다.
+    // registry 지원 강도를 profile 허용 구간으로 거른다.
     const banded = candidates.map((candidate) => ({
       ...candidate,
-      efforts: candidate.profile === "HARD_UI_OPUS"
-        ? ["high"]
-        : candidate.efforts.filter((level) => policy.modelSelection.profiles[candidate.profile]!.allowedEfforts.includes(level)),
+      efforts: candidate.efforts.filter((level) => policy.modelSelection.profiles[candidate.profile]!.allowedEfforts.includes(level)),
     }));
     const questions = routingQuestions(policy, banded, []);
     expect(questions.workClass!.criteria).toEqual(policy.modelSelection.criteria);
     expect(questions).not.toHaveProperty("easyFocus");
     expect(Object.keys(policy.modelSelection.criteria)).toEqual(["NORMAL", "HARD"]);
     expect(Object.keys(questions.effort0!.criteria!)).toEqual(banded[0]!.efforts);
-    // 강도 질문은 그 후보의 좁혀진 허용 구간만 묻는다. 정책 리터럴을 복사해 결합하지 않는다.
-    const opusBand = banded.find((candidate) => candidate.profile === "NORMAL_OPUS")!.efforts;
-    expect(Object.keys(questions.effort1!.criteria!).sort()).toEqual([...opusBand].sort());
-    expect(questions).not.toHaveProperty("effort2");
+    // 강도 질문은 그 후보의 좁혀진 허용 구간만 묻는다. 구간이 하나뿐인 Opus 후보(1~3)는 묻지 않는다.
+    for (const index of [1, 2, 3]) {
+      expect(banded[index]!.efforts).toHaveLength(1);
+      expect(questions).not.toHaveProperty(`effort${index}`);
+    }
     expect(questions.effort4!.criteria).not.toHaveProperty("max");
     const ownerQuestions = routingQuestions(policy, banded, [{ name: "Existing", primaryDeliverable: "x", ownedPaths: ["x.ts"] }]);
     expect(ownerQuestions.duplicate!.type).toBe("noul");
@@ -1118,7 +1117,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     const asked = h.questions[0] as Record<string, { criteria: Record<string, string> }>;
     // 허용 강도가 하나뿐인 후보는 묻지 않고, 둘 이상인 후보만 그 구간을 묻는다.
     expect(asked).not.toHaveProperty("effort0");
-    expect(Object.keys(asked.effort1!.criteria)).toEqual(batch.candidates.find((c) => c.profile === "NORMAL_OPUS")!.efforts);
+    for (const index of [1, 2, 3]) expect(asked).not.toHaveProperty(`effort${index}`);
     expect(Object.keys(asked.effort4!.criteria)).toEqual(batch.candidates.find((c) => c.profile === "HARD_CODE_ASTRA")!.efforts);
   });
 
@@ -1143,10 +1142,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         ...opusOutside.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, false]),
         ["openai-codex/gpt-6-astra:high", true],
       ],
-      // HARD 조각: Opus는 HARD 구간(high·xhigh)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
+      // HARD 조각: Opus는 HARD 구간(high)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
       HARD: [
         ["anthropic/claude-opus-5-5:medium", false], ["anthropic/claude-opus-5-5:high", true],
-        ["anthropic/claude-opus-5-5:max", false], ["openai-codex/gpt-6-astra:xhigh", true],
+        ["anthropic/claude-opus-5-5:xhigh", false], ["anthropic/claude-opus-5-5:max", false],
+        ["openai-codex/gpt-6-astra:xhigh", true],
         ...solSelections,
       ],
     };
@@ -1164,7 +1164,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 대체 후보를 선택함\nOWNED_PATHS:");
     const hard = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
     await hard.prepare("HARD 대체", [hard.task], {} as never);
-    expect(await hard.dispatch("anthropic/claude-opus-5-5:xhigh")).toBeUndefined();
+    expect(await hard.dispatch("anthropic/claude-opus-5-5:high")).toBeUndefined();
     expect(await hard.dispatch("openai-codex/gpt-6-astra:high")).toMatchObject({ block: true });
     expect(await hard.dispatch("openai-codex/gpt-6-astra:high", reasoned)).toBeUndefined();
     const normal = harness({ workClass: "NORMAL" });
@@ -1173,15 +1173,15 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const unavailable = harness({ fail: true });
     await unavailable.prepare("Jev 불가", [unavailable.task], {} as never);
     expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high")).toMatchObject({ block: true });
-    for (const model of ["anthropic/claude-opus-5-5:high", "anthropic/claude-opus-5-5:xhigh"]) {
-      expect(await unavailable.dispatch(model, reasoned)).toBeUndefined();
+    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toBeUndefined();
+    for (const model of ["anthropic/claude-opus-5-5:xhigh", "anthropic/claude-opus-5-5:max"]) {
+      expect(await unavailable.dispatch(model, reasoned)).toMatchObject({ block: true });
     }
-    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:max", reasoned)).toMatchObject({ block: true });
   });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [
       ["UI_UX", "HARD_UI_OPUS", "anthropic/claude-opus-5-5:high"],
-      ["CODE_SYSTEM", "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:xhigh"],
+      ["CODE_SYSTEM", "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:high"],
     ]) {
       const h = harness({ workClass: "HARD", hardFocuses: [focus!], main: CODEX_MAIN });
       const routes = await h.prepare("분야별 선택", [h.task], {} as never);
@@ -1303,7 +1303,7 @@ describe("발주 이력 기록과 history advisory", () => {
     expect(ledger.records).toHaveLength(before + 1);
     expect(ledger.records.at(-1)).toMatchObject({
       type: "dispatch", name: "ViewFix", workClass: "HARD", focus: "CODE_SYSTEM",
-      recommendedProfile: "HARD_CODE_OPUS", recommendedModel: "anthropic/claude-opus-5-5", recommendedEffort: "xhigh",
+      recommendedProfile: "HARD_CODE_OPUS", recommendedModel: "anthropic/claude-opus-5-5", recommendedEffort: "high",
       chosenModel: "openai-codex/gpt-6-astra", chosenEffort: "high", routingReason: true, purpose: null,
       sessionId: h.sessionId, assignmentId: `${h.sessionId}#task-call#0`, attempt: 1, attemptId: `${h.sessionId}#task-call#0#a1`,
       agentId: "agent-viewfix", jobId: "job-viewfix",

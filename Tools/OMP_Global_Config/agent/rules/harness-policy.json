@@ -834,9 +834,9 @@
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
       "profiles": {
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
-        "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
-        "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
-        "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high"] },
+        "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
+        "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
         "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high"] }
       },
