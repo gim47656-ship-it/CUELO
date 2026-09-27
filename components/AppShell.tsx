@@ -930,11 +930,10 @@ export function AppShell({
   }, [router]);
 
   const handleCwdChange = useCallback((cwd: string | null, projectRoot?: string | null) => {
-    sessionPreloadRequestRef.current += 1;
-    sessionPreloadAbortRef.current?.abort();
-    sessionPreloadAbortRef.current = null;
-    setPendingSession(null);
-    setPreloadedSessionData(null);
+    // A pending session preload is aborted only when the project really changes
+    // (below). Selecting a session in another cwd — common in the priority view —
+    // moves the sidebar cwd right after the preload starts; aborting here left the
+    // chat on the previous session.
     invalidateWorkspaceRestore();
     setActiveCwd(cwd);
     // Skip if cwd is null (initial mount).
@@ -956,6 +955,11 @@ export function AppShell({
     if (currentProject === newProject) {
       return;
     }
+    sessionPreloadRequestRef.current += 1;
+    sessionPreloadAbortRef.current?.abort();
+    sessionPreloadAbortRef.current = null;
+    setPendingSession(null);
+    setPreloadedSessionData(null);
     // Close any session that belongs to a different project — it no longer
     // matches the selected project directory.
     setSelectedSession(null);
