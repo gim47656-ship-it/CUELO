@@ -1135,6 +1135,20 @@ describe("jev-runtime pre-retry", () => {
     }
   });
 
+  test("Windows curl 의 -o /dev/null exit 23 은 windows-shell 로 분류하고 -o NUL 을 안내한다", async () => {
+    const command = 'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:30141/';
+    const harness = createHarness();
+    await harness.emit("tool_result", bashError("c1", command, "200\n\nWall time: 0.1 seconds\n\nCommand exited with code 23"));
+    await harness.emit("tool_call", bashCall("c2", command));
+    const advisory = String(harness.sent[0]!.message.content);
+    expect(advisory).toContain("errorCategory=windows-shell");
+    expect(advisory).toContain("-o NUL");
+    const other = createHarness();
+    await other.emit("tool_result", bashError("c1", "curl -s -o out.bin http://x/", "Command exited with code 23"));
+    await other.emit("tool_call", bashCall("c2", "curl -s -o out.bin http://x/"));
+    expect(String(other.sent[0]!.message.content)).not.toContain("errorCategory=windows-shell");
+  });
+
   test("테스트·CI 실패는 로컬 분류와 원인별 다음 행동만 안내한다", async () => {
     const cases = [
       ["test timed out after 5000ms (exit code 1)", "test-timeout", "부하·환경", "격리 재실행"],

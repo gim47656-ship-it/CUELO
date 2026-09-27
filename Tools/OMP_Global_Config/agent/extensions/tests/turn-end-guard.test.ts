@@ -80,6 +80,15 @@ describe("turn-end guard", () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  test("정지·업데이트 interrupt 로 abort 된 턴은 남은 TODO 가 있어도 다시 깨우지 않는다", () => {
+    const h = harness();
+    h.todo(["in_progress"]);
+    h.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+    expect(h.sent).toHaveLength(0);
+    h.end("원인은 확인했습니다.");
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("세션 복원은 durable todo를 사용하고 다른 세션 상태를 가져오지 않는다", () => {
     const branch: unknown[] = [{ type: "custom", customType: "user_todo_edit", data: {
       phases: [{ tasks: [{ content: "복원 작업", status: "in_progress" }] }],

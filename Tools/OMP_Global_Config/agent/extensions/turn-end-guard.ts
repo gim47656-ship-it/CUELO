@@ -313,6 +313,10 @@ export function createTurnEndGuard(
   });
   pi.on("agent_end", async (event, ctx) => {
     if (event.willContinue || nudgedThisInput || pendingJudge) return;
+    // 사용자 정지·업데이트/재시작 interrupt 가 끊은 턴이다. 여기서 이어 가게 하면 drain 뒤 옛 서버에서 도구가 다시 돈다.
+    const lastAssistant = [...event.messages].reverse().find((message) => (message as Message)?.role === "assistant") as
+      (Message & { stopReason?: string }) | undefined;
+    if (lastAssistant?.stopReason === "aborted") return;
     const hasTodo = todos.some((item) => item.status === "pending" || item.status === "in_progress");
     const last = lastAssistantText(event.messages);
     const soloText = activeInput && !hasTodo && last && !last.hasToolCall && !classifiedSoloThisInput

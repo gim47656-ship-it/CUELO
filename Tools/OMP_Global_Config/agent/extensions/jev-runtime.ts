@@ -239,8 +239,15 @@ function textContent(content: unknown): string {
       : "";
 }
 
-function classifyError(content: unknown): string {
+// Windows 기본 curl.exe 는 `-o /dev/null` 을 파일 경로로 받아 쓰지 못하고 응답을 받은 뒤 exit 23 으로 끝난다.
+const WINDOWS_CURL_DEVNULL = /\bcurl(?:\.exe)?\b[^\n;|&]*\s-o\s*\/dev\/null\b/u;
+
+function classifyError(content: unknown, input?: unknown): string {
   const text = textContent(content);
+  const command = input && typeof input === "object" && "command" in input ? input.command : undefined;
+  if (/exited with code 23\b/u.test(text) && typeof command === "string" && WINDOWS_CURL_DEVNULL.test(command)) {
+    return "windows-shell";
+  }
   for (const [pattern, category] of ERROR_CATEGORY_PATTERNS) {
     if (pattern.test(text)) return category;
   }
@@ -1468,7 +1475,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const inputChanged = serializeInput(event.input) !== failure.inputSerialized;
       const observation = failure.observation;
       const nextAction = failure.category === "windows-shell"
-        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다."
+        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다. `curl -o /dev/null`의 exit 23은 Windows curl.exe가 /dev/null에 쓰지 못한 것이라 응답은 이미 받았다. `-o NUL`이나 셸 리디렉션 `>/dev/null`로 바꾼다."
         : observation.cancelled && !observation.deterministicExitObserved
           ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
           : RETRY_CATEGORY_NEXT_ACTION[failure.category]
@@ -1698,7 +1705,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         if (!EXPLORATION_TOOLS[event.toolName]) {
           pendingFailures.set(event.toolName, {
             inputSerialized: serializeInput(event.input),
-            category: classifyError(event.content),
+            category: classifyError(event.content, event.input),
             interveningTools: [],
             observation: readFailureObservation(event.details, event.content),
           });
