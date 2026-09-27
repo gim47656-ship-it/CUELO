@@ -73,21 +73,23 @@ function firstTaskModel(value: unknown): { found: boolean; model: unknown } {
 }
 
 const MODEL = "b-ai/deepseek-v4.1-flash:max";
+// 18.3.4 upstream 은 모든 task schema 에서 `solutionSpace` 를 필수로 받는다. 이 검사는 model 전달만 본다.
+const SPACE = "one fix: forward model";
 
 // 1. batch flat(static): model 보존, 생략 시 부재.
 {
 	const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-	const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", model: MODEL }] });
+	const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, model: MODEL }] });
 	const keptModel = kept.ok ? firstTaskModel(kept.value) : { found: false, model: undefined };
 	check("batch flat: model 보존", kept.ok && keptModel.found && keptModel.model === MODEL);
-	const omitted = parse(schema, { context: "ctx", tasks: [{ task: "do" }] });
+	const omitted = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE }] });
 	check("batch flat: 생략 시 부재", omitted.ok && !firstTaskModel(omitted.value).found);
 }
 
 // 2. batch isolation(static): model 보존.
 {
 	const schema = getTaskSchema({ isolationEnabled: true, batchEnabled: true });
-	const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", model: MODEL }] });
+	const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, model: MODEL }] });
 	const keptModel = kept.ok ? firstTaskModel(kept.value) : { found: false, model: undefined };
 	check("batch isolation: model 보존", kept.ok && keptModel.found && keptModel.model === MODEL);
 }
@@ -96,7 +98,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 {
 	for (const isolationEnabled of [true, false]) {
 		const schema = getTaskSchema({ isolationEnabled, batchEnabled: true, defaultAgent: "maker" });
-		const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", model: MODEL }] });
+		const kept = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, model: MODEL }] });
 		const keptModel = kept.ok ? firstTaskModel(kept.value) : { found: false, model: undefined };
 		check(`dynamic ${isolationEnabled ? "iso" : "flat"}: model 보존`, kept.ok && keptModel.found && keptModel.model === MODEL);
 	}
@@ -105,7 +107,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 // 4. single flat: 최상위 model 보존, 생략 시 부재.
 {
 	const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: false });
-	const kept = parse(schema, { task: "do", model: MODEL });
+	const kept = parse(schema, { task: "do", solutionSpace: SPACE, model: MODEL });
 	let found = false;
 	let model: unknown;
 	if (kept.ok && kept.value && typeof kept.value === "object" && "model" in kept.value) {
@@ -113,7 +115,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 		model = kept.value.model;
 	}
 	check("single flat: model 보존", kept.ok && found && model === MODEL);
-	const omitted = parse(schema, { task: "do" });
+	const omitted = parse(schema, { task: "do", solutionSpace: SPACE });
 	const omittedHas =
 		omitted.ok && omitted.value && typeof omitted.value === "object" && "model" in omitted.value;
 	check("single flat: 생략 시 부재", omitted.ok && !omittedHas);
@@ -122,7 +124,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 // 5. delete 유지: 미지 키는 여전히 삭제된다.
 {
 	const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-	const parsed = parse(schema, { context: "ctx", tasks: [{ task: "do", model: MODEL, nope: 1 }] });
+	const parsed = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, model: MODEL, nope: 1 }] });
 	let stripped = false;
 	if (parsed.ok && parsed.value && typeof parsed.value === "object" && "tasks" in parsed.value) {
 		const tasks = parsed.value.tasks;
@@ -135,7 +137,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 // 6. effort 게이트 불변: 꺼지면 삭제, 켜지면 보존.
 {
 	const off = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-	const offParsed = parse(off, { context: "ctx", tasks: [{ task: "do", effort: "lo" }] });
+	const offParsed = parse(off, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, effort: "lo" }] });
 	let offHas = false;
 	if (offParsed.ok && offParsed.value && typeof offParsed.value === "object" && "tasks" in offParsed.value) {
 		const tasks = offParsed.value.tasks;
@@ -144,7 +146,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 	}
 	check("effort 게이트 불변: off면 삭제", offParsed.ok && !offHas);
 	const on = getTaskSchema({ isolationEnabled: false, batchEnabled: true, effortEnabled: true });
-	const onParsed = parse(on, { context: "ctx", tasks: [{ task: "do", effort: "lo", model: MODEL }] });
+	const onParsed = parse(on, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, effort: "lo", model: MODEL }] });
 	let onEffort: unknown;
 	let onModel: unknown;
 	if (onParsed.ok && onParsed.value && typeof onParsed.value === "object" && "tasks" in onParsed.value) {
@@ -160,7 +162,7 @@ const MODEL = "b-ai/deepseek-v4.1-flash:max";
 // 7. 타입 거부: model이 문자열이 아니면 파싱 실패.
 {
 	const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-	const bad = parse(schema, { context: "ctx", tasks: [{ task: "do", model: 123 }] });
+	const bad = parse(schema, { context: "ctx", tasks: [{ task: "do", solutionSpace: SPACE, model: 123 }] });
 	check("타입 거부: model 비문자열 실패", !bad.ok, bad.ok ? "파싱됨" : "");
 }
 

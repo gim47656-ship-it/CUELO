@@ -199,24 +199,10 @@ function characterAliasForContext(ctx: ExtensionContext, selectedAlias: Characte
   return provider ? characterForProvider(provider, activeAccounts(ctx, provider)) : undefined;
 }
 
-function restoreAnthropicAccount(
-  ctx: ExtensionContext,
-  sessionId: string,
-  previousCredentialId: number | undefined,
-): void {
-  const authStorage = ctx.modelRegistry.authStorage;
-  if (previousCredentialId !== undefined) {
-    authStorage.sessions.pin("anthropic", sessionId, previousCredentialId);
-    return;
-  }
-  authStorage.sessions.release("anthropic", sessionId);
-}
-
 async function switchCharacterForSession(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   alias: CharacterAlias,
-  exactSummon = false,
 ): Promise<CharacterSwitchResult> {
   const target = CHARACTER_TARGETS[alias];
   if (!target.toolCapable) {
@@ -247,39 +233,34 @@ async function switchCharacterForSession(
 
   const previousModel = ctx.model;
   const sessionId = ctx.sessionManager.getSessionId();
-  let previousCredentialId: number | undefined;
-  let accountPinned = false;
+  let targetCredentialId: number | undefined;
+  if (target.oauthPosition !== undefined) {
+    await ctx.modelRegistry.authStorage.credentials.reload();
+    const accounts = ctx.modelRegistry.authStorage.oauth.accounts("anthropic", sessionId);
+    const targetAccount = accounts.find(
+      (account, index) => accountPosition(account, index) === target.oauthPosition,
+    );
+    if (!targetAccount) {
+      return {
+        ok: false,
+        reason: `Anthropic OAuth 저장 위치 ${target.oauthPosition}의 계정을 찾지 못했습니다. 현재 세션 모델은 유지했습니다.`,
+      };
+    }
+    targetCredentialId = targetAccount.credentialId;
+  }
 
   try {
-    if (target.oauthPosition !== undefined) {
-      await ctx.modelRegistry.authStorage.credentials.reload();
-      const accounts = ctx.modelRegistry.authStorage.oauth.accounts("anthropic", sessionId);
-      const targetAccount = accounts.find(
-        (account, index) => accountPosition(account, index) === target.oauthPosition,
-      );
-      if (!targetAccount) {
-        return {
-          ok: false,
-          reason: `Anthropic OAuth 저장 위치 ${target.oauthPosition}의 계정을 찾지 못했습니다. 현재 세션 모델은 유지했습니다.`,
-        };
-      }
-      previousCredentialId = accounts.find((account) => account.active)?.credentialId;
-      if (!ctx.modelRegistry.authStorage.sessions.pin(
-        "anthropic",
-        sessionId,
-        targetAccount.credentialId,
-        exactSummon ? { exactLabel: alias } : undefined,
-      )) {
-        return {
-          ok: false,
-          reason: `Anthropic OAuth 저장 위치 ${target.oauthPosition} 계정을 현재 세션에 pin하지 못했습니다. 현재 세션 모델은 유지했습니다.`,
-        };
-      }
-      accountPinned = true;
-    }
-
     const switched = await pi.setModel(model);
     if (!switched) throw new Error(`${target.model} 인증을 사용할 수 없습니다.`);
+    // 교체와 summon 모두 exact pin이다. 일반 explicit pin은 다음 요청의 계정 랭킹(RIN 우선·주간
+    // 리셋 우선)이 다른 계정으로 되돌릴 수 있어 교체 완료 보고와 실제 계정이 어긋났다.
+    // exact pin은 sessions.release로 풀 수 없으므로 뒤에 실패할 단계가 없도록 마지막에 건다.
+    if (
+      targetCredentialId !== undefined &&
+      !ctx.modelRegistry.authStorage.sessions.pin("anthropic", sessionId, targetCredentialId, { exactLabel: alias })
+    ) {
+      throw new Error(`Anthropic OAuth 저장 위치 ${target.oauthPosition} 계정을 현재 세션에 pin하지 못했습니다.`);
+    }
     return { ok: true, target };
   } catch (error) {
     let rollbackProblem = "";
@@ -291,7 +272,7 @@ async function switchCharacterForSession(
         rollbackProblem = ` 이전 모델 복원 실패: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
       }
     }
-    if (accountPinned) restoreAnthropicAccount(ctx, sessionId, previousCredentialId);
+    // pin은 마지막 단계라 실패 경로에는 되돌릴 계정 변경이 없다.
     const message = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
@@ -693,7 +674,7 @@ export default function characterVoice(pi: ExtensionAPI): void {
     const summonedAlias = parseCharacterSummonMarker(event.prompt);
     pendingInputIntentFingerprint = undefined;
     if (summonedAlias) {
-      const switched = await switchCharacterForSession(pi, ctx, summonedAlias, true);
+      const switched = await switchCharacterForSession(pi, ctx, summonedAlias);
       if (!switched.ok) {
         const failure = `[CharacterSummonRuntime] ${switched.reason} 이 실패를 사용자에게 한국어로 명확히 알리고 다른 캐릭터나 모델로 가장하지 않는다.`;
         return {

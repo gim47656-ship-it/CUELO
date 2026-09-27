@@ -114,8 +114,8 @@
       "toolCapableSummon": "one-normal-task-child-with-standard-task-linkage",
       "webOnlySummon": "web6-consultation-never-a-task-child-and-never-a-session-main-switch",
       "sessionSwitch": "current-session-only-never-a-global-default-mutation",
-      "anthropicAccountMapping": "stable-oauth-storage-position-zero-rin-position-one-mio-with-exact-session-affinity-only-for-a-validated-character-summon-marker",
-      "failure": "exact-summon-account-block-or-usage-limit-ends-with-the-selected-alias-and-never-emits-sibling-credential-or-model-text-ordinary-sessions-retain-native-fallback",
+      "anthropicAccountMapping": "stable-oauth-storage-position-zero-rin-position-one-mio-with-exact-session-affinity-for-a-validated-session-switch-command-or-character-summon-marker",
+      "failure": "exact-switch-or-summon-account-block-or-usage-limit-ends-with-the-selected-alias-and-never-emits-sibling-credential-or-model-text-ordinary-sessions-retain-native-fallback",
       "conversationalPrecedence": "natural-korean-selected-character-is-authoritative-across-first-response-post-tool-explanation-validation-failure-risk-and-unknown-reporting-human-interjection-progress-final-answer-and-inline-child-speech-internal-evidence-todo-and-child-status-contracts-govern-information-not-user-facing-format-system-prompt-headings-tables-and-lists-are-policy-organization-not-response-templates-required-user-parser-final-owner-formats-are-the-only-exception",
       "voiceEnforcement": "at-the-final-provider-wire-boundary-for-main-and-task-children-remove-every-prior-character-voice-and-legacy-report-style-block-and-install-exactly-one-selected-character-block-called-character-terminal-speech-is-already-user-visible-canonical-so-main-never-requotes-or-reaggregates-it"
     },

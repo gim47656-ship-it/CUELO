@@ -64,15 +64,17 @@ const EDITS = [
 		patched: "\thasSteeringMessages?: () => boolean | SteeringQueueState | Promise<boolean | SteeringQueueState>;\n\t/** Non-consuming full queue snapshot for generation-time user steering. */\n\tpeekSteeringMessages?: () => readonly AgentMessage[];\n\t/** Notify an active response before newly queued user steering can race speculative admission. */\n\tonUserSteeringQueued?: (listener: () => void) => () => void;",
 	},
 	{
+		// 18.3.3은 hasSteeringMessages 본문을 `steeringQueueState(...)` 호출 한 줄로 바꿨다
+		// (agent.ts:1772). 두 속성(peek·listener)은 그 속성 바로 앞에 붙는 의미 그대로다.
 		file: "../pi-agent-core/src/agent.ts",
 		marker: "onUserSteeringQueued: listener => {",
-		anchor: "\t\t\thasSteeringMessages: () => {",
+		anchor: "\t\t\thasSteeringMessages: () =>",
 		patched: `			peekSteeringMessages: () => this.peekSteeringQueue(),
 			onUserSteeringQueued: listener => {
 				this.#userSteeringListeners.add(listener);
 				return () => this.#userSteeringListeners.delete(listener);
 			},
-			hasSteeringMessages: () => {`,
+			hasSteeringMessages: () =>`,
 	},
 	{
 		// A speculative read may have physically started before the steer
@@ -2401,13 +2403,17 @@ async function loadExternalMakerRuntime(
 		patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (flat form), e.g. \"provider/model-id:max\".\n\t * Same forwarding and fall-through semantics as the batch item field.\n\t */\n\tmodel?: string;",
 	},
 	{
+		// 18.3.4는 모든 task schema에 필수 `solutionSpace: "string"` 을 `task` 바로 뒤에 넣었다
+		// (types.ts:52-185). per-spawn `model?` 은 그 필수 필드 뒤에 둔다. 의미는 18.3.2와 같다.
 		file: "src/task/types.ts",
 		marker: `task: "string",
+	solutionSpace: "string",
 	"model?": "string",`,
 		anchor: `export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -2417,6 +2423,7 @@ const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -2427,6 +2434,7 @@ const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
@@ -2437,6 +2445,7 @@ const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
@@ -2447,43 +2456,45 @@ const taskItemSchemaIsolated = type({
 	},
 	{
 		file: "src/task/types.ts",
-		marker: `	task: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"isolated?": "boolean",`,
+		marker: `export const taskSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string",`,
 		anchor: `export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,`,
 		patched: `export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,`,
 	},
 	{
 		file: "src/task/types.ts",
-		marker: `	task: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"+": "delete",
-});
-const taskSchemaBatch = type({`,
+		marker: `const taskSchemaNoIsolation = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string",`,
 		anchor: `const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,`,
 		patched: `const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
+	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,`,
 	},
@@ -2502,6 +2513,7 @@ const taskSchemaBatch = type({`,
 				"name?": "string",
 				agent,
 				task: "string",
+				solutionSpace: "string",
 				...effortField,
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
@@ -2514,6 +2526,7 @@ const taskSchemaBatch = type({`,
 				"name?": "string",
 				agent,
 				task: "string",
+				solutionSpace: "string",
 				"model?": "string",
 				...effortField,
 				"outputSchema?": outputSchemaInputSchema,
@@ -2536,6 +2549,7 @@ const taskSchemaBatch = type({`,
 			"name?": "string",
 			agent,
 			task: "string",
+			solutionSpace: "string",
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
@@ -2546,6 +2560,7 @@ const taskSchemaBatch = type({`,
 			"name?": "string",
 			agent,
 			task: "string",
+			solutionSpace: "string",
 			"model?": "string",
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
@@ -2582,11 +2597,41 @@ const taskSchemaBatch = type({`,
 		file: "src/task/index.ts",
 		marker: `...(params.model !== undefined ? { model: params.model } : {}),
 				...(params.tools?.length`,
+		// 18.3.4는 effort 다음 줄에 `solutionSpace: params.solutionSpace,` 를 넣었다(index.ts:1506).
 		anchor: `				...(params.effort !== undefined ? { effort: params.effort } : {}),
+				solutionSpace: params.solutionSpace,
 				...(params.tools?.length`,
 		patched: `				...(params.effort !== undefined ? { effort: params.effort } : {}),
+				solutionSpace: params.solutionSpace,
 				...(params.model !== undefined ? { model: params.model } : {}),
 				...(params.tools?.length`,
+	},
+	{
+		// 18.3.3 BLOCK: upstream 은 `task`·`bash` 를 가진 SubAgent 정의에 `wait` 를 자동으로 더한다
+		// (executor.ts:3505-3516). CUELO 계약은 Main 전용 wait 다(harness-policy
+		// `mainLane.waitContract.barrierCall`: subagents have no wait tool, 자기 job 결과는 자동으로
+		// 다시 깨운다). Maker 정의는 bash 를 가지므로 이 확장이 곧 모든 Maker 에 wait 를 준다
+		// (격리 18.3.4 probe: maker[read,bash] → [read,bash,wait,yield]). 자동 확장만 막고, agent
+		// 정의가 `wait` 를 직접 적은 경우(upstream 의 "explicitly requested" 경로)는 그대로 받는다.
+		file: "src/task/executor.ts",
+		marker: "// HANSE: wait stays Main-only; a subagent gets it only from its own definition.",
+		anchor: `	// Agents that can start background work (\`task\`, \`bash\`) need \`wait\` to block on it;
+	// without it they \`sleep\`. Runs after \`exec\` expansion and the max-depth \`task\` strip.
+	// \`createTools\` still drops it when no wake source (async/IRC/services) is enabled.
+	// Restricted sessions own their explicit list and are never widened.
+	if (
+		toolNames &&
+		!options.restrictToolNames &&
+		!toolNames.includes("wait") &&
+		(toolNames.includes("task") || toolNames.includes("bash"))
+	) {
+		toolNames = [...toolNames, "wait"];
+	}
+`,
+		patched: `	// HANSE: wait stays Main-only; a subagent gets it only from its own definition.
+	// Upstream widened every task/bash subagent here; CUELO subagents are re-woken by
+	// their own job results instead of blocking on \`wait\`.
+`,
 	},
 	// --- BAI socket/stream-read fallback 회귀 수리 (ArenaInterface 제안 inline, proposal 파일로 분리하지 않음) ---
 	// 범위: unexpected socket close / stream-read 이송 오류만 같은 모델 재시도 우선. 그 외 network 오류·
@@ -4565,60 +4610,14 @@ import { getActiveRules } from "../capability/rule";`,
 				: rawOutput;
 	}`,
 	},
-	{
-		// 2026-09-25 사용자 결정: OAuth 요청의 64K 출력 상한(Claude Code fingerprint)을 풀고
-		// 모델 상한(Opus 5.5 128K)을 쓴다. high thinking이 64K에 걸려 본문 없이 `length`로
-		// 끊긴 실측(Tools/OMP_Global_Config/doc/history/2026/09/25-mega-timing/main.md).
-		file: "../pi-ai/src/providers/anthropic.ts",
-		marker: "const maxOutputTokens = modelMaxTokens; // HANSE: OAuth 64K clamp removed",
-		anchor: "\tconst maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, modelMaxTokens) : modelMaxTokens;",
-		patched: "\tconst maxOutputTokens = modelMaxTokens; // HANSE: OAuth 64K clamp removed",
-	},
-	{
-		// 2026-09-25 사용자 결정: 문맥이 작은데 thinking만 하다 `length`로 끊기면 upstream은
-		// recovery compaction을 돌려 그 사고를 통째로 버린다(mega-six Markdown Maker: 59K 문맥,
-		// 요약 "No prior history" 뒤 421초 재사고). 입력 문맥이 창의 절반 미만이면 compaction 대신
-		// 죽은 턴만 버리고 짧게 결론 내라는 developer 안내를 넣어 이어 간다. 기존 재시도 상한을 공유한다.
-		file: "src/session/session-maintenance.ts",
-		marker: "source: \"hanse-length-nudge\"",
-		anchor: "\t\t\tconst promoted = await this.#tryContextPromotion(assistantMessage);\n\t\t\tif (promoted) {\n\t\t\t\tawait this.#host.dropPersistedAssistantTurn(assistantMessage);\n\t\t\t\tthis.#incompleteRecoveryAttempts = 0;\n\t\t\t\tlogger.debug(\"Context promotion triggered by response.incomplete (length stop)\", {",
-		patched: `			const hanseUsage = assistantMessage.usage;
-			const hanseInputTokens = (hanseUsage?.input ?? 0) + (hanseUsage?.cacheRead ?? 0) + (hanseUsage?.cacheWrite ?? 0);
-			const hanseWindow = this.#host.model()?.contextWindow ?? 0;
-			const hanseReasoningOnly = !assistantMessage.content.some(
-				c => c.type === "toolCall" || (c.type === "text" && c.text.trim().length > 0),
-			);
-			if (
-				hanseReasoningOnly &&
-				hanseWindow > 0 &&
-				hanseInputTokens < hanseWindow * 0.5 &&
-				this.#incompleteRecoveryAttempts < INCOMPLETE_RECOVERY_MAX_RETRIES
-			) {
-				this.#incompleteRecoveryAttempts++;
-				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				this.#host.agent.appendMessage({
-					role: "developer",
-					content: [
-						{
-							type: "text",
-							text: "Your previous response hit the output token limit while still reasoning and produced no text or tool call; that reasoning was lost. Do not re-derive the whole design. Reason briefly, then immediately make the next concrete tool call (write/edit the code in small steps).",
-						},
-					],
-					attribution: "agent",
-					timestamp: Date.now(),
-					synthetic: true,
-				});
-				logger.debug("HANSE length nudge instead of compaction", { inputTokens: hanseInputTokens, window: hanseWindow });
-				this.#host.scheduleAgentContinue({ source: "hanse-length-nudge", delayMs: 100, generation });
-				return COMPACTION_CHECK_CONTINUATION;
-			}
-
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (promoted) {
-				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				this.#incompleteRecoveryAttempts = 0;
-				logger.debug("Context promotion triggered by response.incomplete (length stop)", {`,
-	},
+	// 18.3.4 RETIRE: OAuth 64K 출력 상한 해제(옛 2026-09-25 항목). pi-ai 18.3.4 anthropic.ts:4743 이
+	// OAuth·API key 모두 `model.maxTokens ?? 64_000` 을 요청한다(CHANGELOG 18.3.4 "Fixed Anthropic OAuth
+	// requests capping output at 64k tokens"; Opus 5.5 128k).
+	// 18.3.4 RETIRE: reasoning-only `length` 뒤 compaction 대신 짧게 이어 가라는 nudge(옛 hanse-length-nudge).
+	// session-maintenance.ts:3104-3134 가 창 여유(compaction 임계 90% 미만)에서 죽은 턴만 버리고
+	// `length-stop-retry.md` 안내를 넣어 재시도하며, 상한 도달 시 3083-3101 이 retainTerminalFailure 로
+	// 실패를 남긴다. 옛 조건(입력 < 창 50%)의 상위집합이다. 유일한 차이였던 context promotion 선행은
+	// `contextPromotion.enabled` 기본 false·CUELO 미설정이라 동작 차이가 없다.
 	{
 		// 2026-09-25: steering-reply gate가 스트리밍 이벤트 순서에 기대면, 도구가 미리 실행될 때 같은 응답의
 		// 앞선 답 텍스트를 보지 못해 잘못 막는다. 판정 대상 assistant 메시지를 tool_call 이벤트에 싣는다.
@@ -4883,16 +4882,18 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
 		// 가리킬 식별자가 없으면 적용·결과를 연결할 수 없다. mnemopi 경로에서만 id 를 싣는다.
+		// 18.3.3은 호출을 `rememberScoped(memory, {...}, target)` 3인자로 펼쳤다(learn.ts:110-134,
+		// global scope 지원). 반환값(기억 id)은 그대로 string 이다.
 		file: "src/tools/learn.ts",
 		marker: "// HANSE: learn reports memory id",
-		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(params.memory, {\n",
-		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(params.memory, {\n",
+		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
+		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
 	},
 	{
 		file: "src/tools/learn.ts",
 		marker: "memoryMessage = `Lesson stored (id: ${memoryId})`;",
-		anchor: "\t\t\t\t\tmemoryType: \"fact\",\n\t\t\t\t});\n\t\t\t} catch (error) {\n",
-		patched: "\t\t\t\t\tmemoryType: \"fact\",\n\t\t\t\t});\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
+		anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
+		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
 	},
 	{
 		// 2026-09-27: 자동 주입 <memories> 는 세션 파일에 남지 않아, Main 단독 세션에서 어떤 교훈이 전달됐는지

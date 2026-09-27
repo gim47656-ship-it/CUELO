@@ -350,14 +350,14 @@ describe("character voice identity", () => {
     expect(rewriteTaskInputForCharacterSummon({ task: "상담" }, "SHION(시온)").ok).toBe(false);
   });
 
-  test("RIN switch pins OAuth position 0 before changing only the live session model", async () => {
+  test("RIN switch pins OAuth position 0 as an exact identity after changing only the live session model", async () => {
     const harness = createRuntimeHarness();
     const result = await harness.emit("input", {
       type: "input",
       text: "린으로 교체해",
       source: "rpc",
     });
-    expect(harness.calls).toEqual(["reload", "pin:11", "set:anthropic/claude-opus-5-5"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "pin:11:exact:RIN(린)"]);
     expect(result).toEqual({
       text: "[CharacterSwitchRuntime] 현재 세션만 RIN(린)(anthropic/claude-opus-5-5)로 교체했다. 전역 기본값은 바꾸지 않았다. 사용자에게 선택된 character voice를 살린 자연스러운 한국어로 교체 완료를 짧게 알린다.",
     });
@@ -396,7 +396,7 @@ describe("character voice identity", () => {
       text: "장난치지말고 교체해봐 미오로",
       source: "interactive",
     });
-    expect(harness.calls).toEqual(["reload", "pin:13", "set:anthropic/claude-opus-5-5"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "pin:13:exact:MIO(미오)"]);
   });
 
   test("genuine steering switch changes the current Main session before continuation", async () => {
@@ -409,7 +409,7 @@ describe("character voice identity", () => {
         steering: true,
       },
     });
-    expect(harness.calls).toEqual(["reload", "pin:13", "set:anthropic/claude-opus-5-5"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "pin:13:exact:MIO(미오)"]);
     expect(harness.ctx.model).toEqual({ provider: "anthropic", id: "claude-opus-5-5" });
     expect(harness.sent).toEqual([{
       message: {
@@ -477,7 +477,7 @@ describe("character voice identity", () => {
       type: "message_start",
       message: { role: "user", content: text, steering: true },
     });
-    expect(harness.calls).toEqual(["reload", "pin:13", "set:anthropic/claude-opus-5-5"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "pin:13:exact:MIO(미오)"]);
     expect(harness.sent).toEqual([]);
   });
 
@@ -498,18 +498,18 @@ describe("character voice identity", () => {
   test("pin이 거부되면 다른 계정·모델로 조용히 대체하지 않고 실패를 알린다", async () => {
     const harness = createRuntimeHarness({ pinRefused: true });
     const result = await harness.emit("input", { type: "input", text: "린으로 교체해", source: "rpc" });
-    expect(harness.calls).toEqual(["reload"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "set:openai-codex/gpt-6-astra"]);
     expect(result).toEqual({
-      text: "[CharacterSwitchRuntime] 교체를 실행하지 못했다. 도구를 호출하지 말고 사용자에게 다음 이유를 그대로 한국어로 알린다: Anthropic OAuth 저장 위치 0 계정을 현재 세션에 pin하지 못했습니다. 현재 세션 모델은 유지했습니다.",
+      text: "[CharacterSwitchRuntime] 교체를 실행하지 못했다. 도구를 호출하지 말고 사용자에게 다음 이유를 그대로 한국어로 알린다: RIN(린) 교체 실패: Anthropic OAuth 저장 위치 0 계정을 현재 세션에 pin하지 못했습니다. 현재 세션 모델은 전환 전 상태로 유지했습니다.",
     });
     expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
     expect(harness.accounts.find((account) => account.active)?.credentialId).toBe(13);
   });
 
-  test("pin 뒤 모델 교체가 실패하면 이전 계정 pin과 이전 모델을 되돌린다", async () => {
+  test("모델 교체가 거부되면 계정 pin을 건드리지 않고 이전 모델을 유지한다", async () => {
     const harness = createRuntimeHarness({ refusedModelSelector: "anthropic/claude-opus-5-5" });
     const result = await harness.emit("input", { type: "input", text: "린으로 교체해", source: "rpc" }) as { text: string };
-    expect(harness.calls).toEqual(["reload", "pin:11", "set-refused:anthropic/claude-opus-5-5", "pin:13"]);
+    expect(harness.calls).toEqual(["reload", "set-refused:anthropic/claude-opus-5-5"]);
     expect(result.text).toContain("RIN(린) 교체 실패");
     expect(result.text).toContain("현재 세션 모델은 전환 전 상태로 유지했습니다.");
     expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
@@ -569,8 +569,8 @@ describe("character voice identity", () => {
     });
     expect(harness.calls).toEqual([
       "reload",
-      "pin:11:exact:RIN(린)",
       "set:anthropic/claude-opus-5-5",
+      "pin:11:exact:RIN(린)",
     ]);
     const result = await harness.emit("before_provider_request", {
       type: "before_provider_request",
@@ -626,8 +626,8 @@ describe("character voice identity", () => {
     });
     expect(harness.calls).toEqual([
       "reload",
-      "pin:13:exact:MIO(미오)",
       "set:anthropic/claude-opus-5-5",
+      "pin:13:exact:MIO(미오)",
     ]);
   });
 });

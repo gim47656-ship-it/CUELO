@@ -600,7 +600,7 @@ describe("jev-runtime pre-dispatch", () => {
   });
 
   test("core 실제형태: 재개 job이 원 jobId(=agentId)를 재사용하고 async-result에 agentId가 없어도 REWORK attempt를 잇는다", async () => {
-    // core 18.3.2: spawn job과 IRC wake job 모두 `id: agentId`로 등록되고, 소비된 row는 30초 뒤 evict되어 같은 id가 다시 쓰인다.
+    // core 18.3.4(18.3.2와 동일): spawn job과 IRC wake job 모두 `id: agentId`로 등록되고, 소비된 row는 30초 뒤 evict되어 같은 id가 다시 쓰인다.
     // async-result details.jobs에는 agentId가 없고, 실행 구분은 snapshot row의 startTime뿐이다.
     const running: Array<Record<string, unknown>> = [];
     const recent: Array<Record<string, unknown>> = [];
