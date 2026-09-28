@@ -3873,6 +3873,83 @@ export const cfgJudgmentProvider = register({
 			}
 			const reports = results.filter((report): report is UsageReport => report !== null);`,
 	},
+	// --- 응답 헤더 usage 의 요청 계정 귀속 ---
+	// upstream `usage.ingestHeaders` 는 응답이 도착한 시점의 세션 활성 계정(`affinity.activeOAuth`)을
+	// 다시 골라 그 캐시 항목에 헤더 사용률을 쓴다(auth/usage.ts:466). 요청이 도는 사이 pin 이 바뀌면
+	// (RIN↔MIO 교체) 보낸 계정의 5시간·7일 사용률이 새 계정 이름으로 기록돼, 다음 전체 조회 전까지
+	// 사용량 패널이 두 계정을 섞어 보인다(2026-09-28 실장애). 요청을 처리한 행 id 는 resolver 경로가
+	// 이미 알고 있으므로(stream.ts runAttempt) 응답 메타데이터로 실어 그 행에 귀속한다. 행을 모르는
+	// 호출자(정적 키 등)는 기존 세션 fallback 을 그대로 쓴다. 회귀: patches/core-usage-header-attribution-test.ts
+	{
+		file: "../pi-ai/src/stream.ts",
+		marker: "// Response headers carry this attempt's account quota.",
+		anchor: `				const attemptOptions = { ...requestOptions, apiKey, credentialId };`,
+		patched: `				const attemptOptions = { ...requestOptions, apiKey, credentialId };
+				// Response headers carry this attempt's account quota. Name the row that
+				// actually sent it so usage ingest never re-resolves the session's current
+				// account, which a mid-request pin switch may already have moved.
+				const onResponse = requestOptions?.onResponse;
+				if (credentialId !== undefined && onResponse) {
+					attemptOptions.onResponse = (response, responseModel, responseSignal) =>
+						onResponse({ ...response, metadata: { ...response.metadata, credentialId } }, responseModel, responseSignal);
+				}`,
+	},
+	{
+		file: "src/session/session-stats.ts",
+		marker: `...(typeof credentialId === "number" ? { credentialId } : {}),`,
+		anchor: `		this.#host.modelRegistry.authStorage.usage.ingestHeaders(provider, response.headers, {
+			sessionId: this.#host.agent.sessionId,
+			baseUrl: this.#host.modelRegistry.getProviderBaseUrl?.(provider),
+			responseStatus: response.status,
+		});`,
+		patched: `		const credentialId = response.metadata?.credentialId;
+		this.#host.modelRegistry.authStorage.usage.ingestHeaders(provider, response.headers, {
+			sessionId: this.#host.agent.sessionId,
+			baseUrl: this.#host.modelRegistry.getProviderBaseUrl?.(provider),
+			responseStatus: response.status,
+			...(typeof credentialId === "number" ? { credentialId } : {}),
+		});`,
+	},
+	{
+		file: "../pi-ai/src/auth/usage.ts",
+		marker: "// The row that sent the request owns its headers.",
+		anchor: `		options?: { sessionId?: string; baseUrl?: string; responseStatus?: number },
+	): boolean {
+		const parseHeaders = this.providerFor(provider)?.parseRateLimitHeaders;
+		if (!parseHeaders) return false;
+
+		const credential = this.#deps.affinity.activeOAuth(provider, options?.sessionId);
+		if (!credential) return false;`,
+		patched: `		options?: { sessionId?: string; baseUrl?: string; responseStatus?: number; credentialId?: number },
+	): boolean {
+		const parseHeaders = this.providerFor(provider)?.parseRateLimitHeaders;
+		if (!parseHeaders) return false;
+
+		// The row that sent the request owns its headers. Session affinity is only
+		// the fallback for callers that cannot name one: re-resolving it here books
+		// an in-flight response onto whichever account a pin switch just selected.
+		const sentBy =
+			options?.credentialId === undefined
+				? undefined
+				: this.#deps.pool.entries(provider).find(entry => entry.id === options.credentialId)?.credential;
+		const credential =
+			options?.credentialId === undefined
+				? this.#deps.affinity.activeOAuth(provider, options?.sessionId)
+				: sentBy?.type === "oauth"
+					? sentBy
+					: undefined;
+		if (!credential) return false;`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "responseStatus?: number; credentialId?: number },",
+		anchor: `		headers: Record<string, string>,
+		options?: { sessionId?: string; baseUrl?: string; responseStatus?: number },
+	): boolean;`,
+		patched: `		headers: Record<string, string>,
+		options?: { sessionId?: string; baseUrl?: string; responseStatus?: number; credentialId?: number },
+	): boolean;`,
+	},
 	{
 		// eval completion의 공개 tier 계약은 default|smol|slow 그대로 두되 SHION 상담만
 		// provider/model exact selector로 연다. schema에서 다른 임의 selector는 계속 거부한다.
