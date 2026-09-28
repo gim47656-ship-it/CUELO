@@ -10,6 +10,7 @@ import {
   acquireCredentialAction,
   createSessionAccountPoller,
   CHARACTER_ROSTER,
+  limitExhausted,
   loadModelStats,
   providerDisplayName,
   redeemCredentialReset,
@@ -710,7 +711,11 @@ export function UsageAccount({
       {report.disabled ? (
         <div className="mt-2 text-xs text-text-muted">다른 계정이 있으면 이 계정을 사용하지 않습니다.</div>
       ) : autoBlocked ? (
-        <div className="mt-2 text-xs text-text-muted">한도를 다 써서 코어가 자동으로 차단했습니다.</div>
+        <div className="mt-2 text-xs text-text-muted">
+          {(report.limits ?? []).some(limitExhausted)
+            ? "한도를 다 써서 코어가 자동으로 차단했습니다."
+            : "한도는 남아 있지만 토큰 갱신 실패나 일시 오류로 코어가 잠시 막았습니다. 해제 시각이 지나면 다시 씁니다."}
+        </div>
       ) : null}
       {feedback ? (
         <div className="mt-2 text-xs text-text" role={feedback.tone === "error" ? "alert" : "status"}>

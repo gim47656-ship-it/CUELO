@@ -60,6 +60,32 @@ export interface UsageLimit {
   [key: string]: unknown;
 }
 
+/**
+ * 한도가 소진됐는지. 코어와 같은 순서로 본다 — 브로커가 매긴 `status` 를 먼저 믿고, 그 값이
+ * 없거나 `unknown` 일 때만 실측값으로 판단한다(`@oh-my-pi/pi-ai` 의 isUsageLimitExhausted 와
+ * 같은 규칙). 표시용 백분율로 판단하지 않는 이유는 반올림이 99.6%를 100%로 만들기 때문이다.
+ */
+export function limitExhausted(limit: UsageLimit): boolean {
+  if (typeof limit.status === "string" && limit.status !== "unknown") {
+    return limit.status === "exhausted";
+  }
+  const amount = limit.amount ?? {};
+  const measured = (key: string): number | null => {
+    const value = amount[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+  const used = measured("usedFraction");
+  if (used !== null && used >= 1) return true;
+  const remainingFraction = measured("remainingFraction");
+  if (remainingFraction !== null && remainingFraction <= 0) return true;
+  const amountUsed = measured("used");
+  const amountLimit = measured("limit");
+  if (amountUsed !== null && amountLimit !== null && amountUsed >= amountLimit) return true;
+  const remaining = measured("remaining");
+  if (remaining !== null && remaining <= 0) return true;
+  return amount.unit === "percent" && amountUsed !== null && amountUsed >= 100;
+}
+
 export interface SavedResetCredit {
   id: string;
   expiresAt: string | null;

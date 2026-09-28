@@ -230,6 +230,24 @@ test("renders an accessible fixed-width ON/OFF switch without dimming the accoun
   assert.doesNotMatch(html, /opacity-70/);
 });
 
+// 2026-09-28: RIN(5h 5%·7d 1%) was blocked 5 minutes after a token refresh hit
+// `database is locked`, and the card said the quota was spent.
+test("an auto-block only blames the quota when a limit is actually exhausted", () => {
+  const blocked = (usedFraction) => renderAccount({
+    provider: "anthropic",
+    credentialId: 6,
+    disabled: false,
+    autoBlockedUntilMs: Date.parse("2026-09-10T00:05:00Z"),
+    metadata: { email: "rin@example.com" },
+    limits: [{ id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction } }],
+  });
+  const transient = blocked(0.05);
+  assert.match(transient, /data-account-state="auto-blocked"/);
+  assert.match(transient, /한도는 남아 있지만/);
+  assert.doesNotMatch(transient, /한도를 다 써서/);
+  assert.match(blocked(1), /한도를 다 써서 코어가 자동으로 차단했습니다/);
+});
+
 test("distinguishes empty and unavailable saved resets and exposes no redeem action", () => {
   const empty = renderAccount({
     provider: "openai-codex",
