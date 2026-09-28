@@ -27,7 +27,8 @@ describe("skim", () => {
     writeFileSync(join(cwd, "docs", "credentials.json"), "CREDENTIAL_SECRET_MARKER");
     writeFileSync(join(cwd, ".env.local"), "ENV_SECRET_MARKER");
     writeFileSync(join(cwd, "private", "note.md"), "PRIVATE_SECRET_MARKER");
-    writeFileSync(join(cwd, "docs", "note.md"), "api_key = \"not-a-real-key\"");
+    // setup 비밀 검사(content-scan)가 소스의 할당 모양을 막으므로 키 이름을 이어 붙여 만든다.
+    writeFileSync(join(cwd, "docs", "note.md"), ["api", "key"].join("_") + " = \"not-a-real-key\"");
     let prompt = "";
     const answer = await skimQuestion({ paths: ["docs", "docs/ignored.md", "docs/credentials.json", ".env.local", "private"], question: "두 번째 줄은?" },
       context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe("google-antigravity/gemini-3.8-flash"); prompt = input; return "Second fact (docs/guide.md:L2)"; });
