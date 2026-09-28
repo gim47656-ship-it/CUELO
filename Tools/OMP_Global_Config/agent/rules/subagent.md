@@ -217,12 +217,13 @@ provider 안전 확인·실제 의미 선택·외부 대기·판정 불가는 �
 JEV 밖의 결정론 검사 두 가지도 같은 날 넣었다. `git_finalize`는 source manifest 대상 파일을 manifest 없이 커밋하려 하면
 commit 전에 재생성 명령과 함께 멈추고, `maker_route`·`task`의 TaskGuard 계약 오류는 빠진 필드와 양식을 짚는다.
 
-2026-09-28 사용자 결정으로 좁은 사전 차단 한 자리를 더했다.
-- **이미지 직접 읽기 전환(`image-question-router`, JEV):** Main·Maker가 이미지(png·jpg·gif·webp·bmp)를 `?q=` 없이
-  `read`하려 하면 이미지가 컨텍스트에 실리기 전에 파일명과 경로·코드를 지운 assistant·최근 요청 발췌로 "텍스트 추출·
-  사실 확인이면 충분한가"를 판정한다. `question`이면 그 read만 막고 `경로?q=<질문>`으로 다시 읽게 해 `modelRoles.vision`이
-  답한다. 같은 경로를 다시 읽으면 통과하고, `direct`·`unknown`·실패·8초 timeout·발췌 없음·secret 패턴·이미지 입력 불가
-  모델은 그대로 둔다. 승인이나 권한을 만들지 않는다.
+2026-09-28 사용자 결정으로 좁은 사전 차단 한 자리를 더했다(JEV 밖의 결정론 규칙).
+- **이미지 직접 읽기 전환(`image-question-router`, 로컬):** Main·Maker가 이미지(png·jpg·gif·webp·bmp)를 `?q=` 없이
+  `read`하려 하면 이미지가 컨텍스트에 실리기 전에 그 경로의 첫 read를 막고 `경로?q=<질문>`으로 다시 읽게 해
+  `modelRoles.vision`이 답한다. 글자·값 확인뿐 아니라 레이아웃·간격·색·정렬·잘림 같은 형태 판단도 먼저 `?q=`로 묻는다
+  (처음에는 JEV가 용도를 판정해 글자 확인만 돌렸지만, 같은 날 사용자가 형태 판단도 vision이 맡도록 바꿨다). vision 답으로
+  판단할 수 없을 때만 같은 경로를 한 번 더 읽으면 통과한다. 이미지 입력 불가 모델과 `browser`·`computer` 스크린샷은 대상이
+  아니다. 승인이나 권한을 만들지 않는다.
 
 Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·승인, test 결과, 배포 승인 같은
 결정론 검사가 우선한다. high-risk 분류·승인·최종 수용은 Main authority이고 judgment가 대신하지
