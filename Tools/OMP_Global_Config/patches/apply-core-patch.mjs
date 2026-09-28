@@ -5214,6 +5214,63 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 `,
 	},
 	{
+		// 2026-09-29 실측: 기억 임베딩 재구축(모델 변경·중단 뒤 재개)이 128건 묶음을 한꺼번에 worker 에
+		// 올렸다. worker 는 요청을 하나씩 처리하는데 요청마다 120초 타이머가 보낸 순간부터 흘러,
+		// CPU multilingual-e5-large 로 긴 기억 102건이 한 묶음이 되자 매 세션 2분 뒤 시간 초과로 worker 가
+		// 죽고 재구축이 끝나지 않았다. 그동안 첫 턴 회상도 같은 worker 줄 뒤에서 최대 2분을 기다렸다.
+		// 묶음을 하나씩 차례로 embed 해 회상이 길어야 묶음 하나만 기다리게 한다. 추적(pendingExtractions)과
+		// 실패 처리(runEmbedding 은 던지지 않고 기록)는 scheduleEmbedding 과 같다.
+		file: "../pi-mnemopi/src/core/beam/helpers.ts",
+		marker: "// HANSE: sequential embedding batches",
+		anchor: "export function scheduleEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): void {\n",
+		patched: `// HANSE: sequential embedding batches
+export function scheduleEmbeddingBatches(beam: BeamMemoryState, items: readonly EmbedItem[], batchSize: number): void {
+	const cleaned = items.filter(item => item.content.trim() !== "");
+	if (cleaned.length === 0) return;
+	const runtimeOptions = getMnemopiRuntimeOptions();
+	const task = withMnemopiRuntimeOptions(runtimeOptions, async () => {
+		for (let offset = 0; offset < cleaned.length; offset += batchSize) {
+			await runEmbedding(beam, cleaned.slice(offset, offset + batchSize));
+		}
+	});
+	const pending = beam.pendingExtractions;
+	if (pending !== undefined) {
+		pending.add(task);
+		void task.finally(() => pending.delete(task));
+	}
+}
+
+export function scheduleEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): void {
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/store.ts",
+		marker: "scheduleEmbeddingBatches, vecAvailable",
+		anchor: 'import { type EmbedItem, scheduleEmbedding, vecAvailable, vecInsert } from "./helpers";\n',
+		patched: 'import { type EmbedItem, scheduleEmbedding, scheduleEmbeddingBatches, vecAvailable, vecInsert } from "./helpers";\n',
+	},
+	{
+		// 묶음 하나가 120초 제한보다 훨씬 짧도록 16건으로 줄인다(긴 기억은 8192자에서 잘린다).
+		file: "../pi-mnemopi/src/core/beam/store.ts",
+		marker: "// HANSE: rebuild batch 16",
+		anchor: "const EMBED_REBUILD_BATCH = 128;\n",
+		patched: "// HANSE: rebuild batch 16\nconst EMBED_REBUILD_BATCH = 16;\n",
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/store.ts",
+		marker: "scheduleEmbeddingBatches(beam, items, EMBED_REBUILD_BATCH);",
+		anchor: `	const rebuild = (items: readonly EmbedItem[]): void => {
+		for (let offset = 0; offset < items.length; offset += EMBED_REBUILD_BATCH) {
+			scheduleEmbedding(beam, items.slice(offset, offset + EMBED_REBUILD_BATCH));
+		}
+	};
+`,
+		patched: `	const rebuild = (items: readonly EmbedItem[]): void => {
+		scheduleEmbeddingBatches(beam, items, EMBED_REBUILD_BATCH);
+	};
+`,
+	},
+	{
 		// Main auto 추론 하한(2026-09-26 사용자 결정: Main 최소 medium, 상한 xhigh 유지).
 		// 기존 ceiling 설정 옆에 typed 하한을 둔다. 기본 low 는 upstream 과 같다(classifier·provisional
 		// 모두 이미 low 아래로 내려가지 않는다). Main 설정 값은 mirror config 가 정한다.

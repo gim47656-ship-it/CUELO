@@ -545,6 +545,43 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("Problem / Decision / Check / Next를 항상 쓴다");
   });
 
+  // core는 system 맨 끝의 `<memories>`만 변동 구간으로 보고 그 앞에 cache breakpoint를 건다.
+  // voice가 recall 뒤에 오거나 옛 voice 블록의 cache_control이 사라지면 첫 요청마다 system 전체가 재기록된다.
+  test("voice stays ahead of trailing recall and keeps the system cache breakpoint", async () => {
+    const memories = "<memories>\nrecalled facts\n</memories>";
+    const harness = createRuntimeHarness();
+    const started = await harness.emit("before_agent_start", {
+      type: "before_agent_start",
+      prompt: "안녕",
+      systemPrompt: ["base contract", memories],
+    }) as { systemPrompt: string[] };
+    expect(started.systemPrompt).toEqual(["base contract", renderCharacterVoice("YUKI(유키)"), memories]);
+
+    const payload = {
+      system: [
+        { type: "text", text: "base contract" },
+        { type: "text", text: renderCharacterVoice("MIO(미오)"), cache_control: { type: "ephemeral", ttl: "1h" } },
+        { type: "text", text: memories },
+      ],
+      messages: [],
+    };
+    const replaced = injectCharacterVoice(payload, "RIN(린)") as typeof payload;
+    expect(replaced.system).toEqual([
+      { type: "text", text: "base contract" },
+      { type: "text", text: renderCharacterVoice("RIN(린)"), cache_control: { type: "ephemeral", ttl: "1h" } },
+      { type: "text", text: memories },
+    ]);
+  });
+
+  test("a system array without a voice block gets the voice before the trailing recall", () => {
+    const memories = "<memories>\nrecalled facts\n</memories>";
+    const replaced = injectCharacterVoice(
+      { system: [{ type: "text", text: "base contract" }, { type: "text", text: memories }], messages: [] },
+      "RIN(린)",
+    ) as { system: Array<{ text: string }> };
+    expect(replaced.system.map((part) => part.text)).toEqual(["base contract", renderCharacterVoice("RIN(린)"), memories]);
+  });
+
   test("Main OpenAI payload receives the same final selected-character boundary", async () => {
     const harness = createRuntimeHarness();
     const result = await harness.emit("before_provider_request", {

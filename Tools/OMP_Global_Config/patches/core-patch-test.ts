@@ -2370,6 +2370,42 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 	} finally { memory.close(); }
 }
 
+// 2026-09-29 실측: 재구축 묶음이 한꺼번에 worker 줄에 서서 뒤 묶음·첫 턴 회상이 120초 제한에 걸렸다.
+console.log("\n[25b] mnemopi — 중단된 임베딩 재구축은 16건 묶음을 하나씩 차례로 보낸다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { setEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+	const { reconcileEmbeddingModel } = await import(`${CORE}/../../pi-mnemopi/src/core/beam/store.ts`);
+	const batches: number[] = [];
+	let inFlight = 0;
+	let maxInFlight = 0;
+	setEmbeddingProviderForTests({
+		embed: async (texts: readonly string[]) => {
+			batches.push(texts.length);
+			maxInFlight = Math.max(maxInFlight, ++inFlight);
+			await null;
+			inFlight--;
+			return texts.map(() => [1, 0, 0]);
+		},
+	});
+	const memory = new Mnemopi({ dbPath: csJoin(fixtureRoot, "rebuild-batches.db"), bank: "rebuild-bank", sessionId: "rebuild-bank", reconcile: false });
+	try {
+		for (let i = 0; i < 40; i++) memory.remember(`rebuild lesson ${i}: distinct content number ${i * 7919}`);
+		await memory.beam.flushExtractions();
+		memory.conn.run("DELETE FROM memory_embeddings");
+		batches.length = 0;
+		maxInFlight = 0;
+		reconcileEmbeddingModel(memory.beam);
+		await memory.beam.flushExtractions();
+		const stored = Number((memory.conn.query("SELECT COUNT(*) n FROM memory_embeddings").get() as { n: number }).n);
+		check("묶음은 16건씩이고 동시에 하나만 보낸다", JSON.stringify(batches) === "[16,16,8]" && maxInFlight === 1, `batches=${JSON.stringify(batches)} max=${maxInFlight}`);
+		check("재구축 뒤 모든 기억이 임베딩을 다시 갖는다", stored === 40, `stored=${stored}`);
+	} finally {
+		setEmbeddingProviderForTests(null);
+		memory.close();
+	}
+}
+
 // 2026-09-27 도구 오류 집계: 호출 형식 함정 두 가지가 매번 헛턴을 썼다. 실제 세션의 bash 도구와 todo 적용 함수로 본다.
 console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로 들어간다");
 {

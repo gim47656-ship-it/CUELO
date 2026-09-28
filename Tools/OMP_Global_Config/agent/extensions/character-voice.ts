@@ -191,9 +191,47 @@ function cleanPayloadTextContainer(value: unknown): unknown {
   return cleaned;
 }
 
-function installCharacterVoice(systemPrompt: readonly string[], alias: CharacterAlias): string[] {
+// core(pi-ai anthropic.ts `stableSystemSuffixStart`)는 system 배열 맨 끝의 `<memories>` 블록만 변동 구간으로
+// 보고 그 앞 안정 블록에 cache breakpoint를 건다. voice를 그 뒤에 붙이면 recall이 배열 중간에 끼어
+// 세션마다 다른 기억 목록이 system prompt 전체의 캐시를 깬다(2026-09-29 실측: 첫 요청 4만 토큰 재기록).
+const VOLATILE_SYSTEM_PREFIX = "<memories>";
+
+function trailingVolatileStart(texts: readonly string[]): number {
+  let start = texts.length;
+  while (start > 0 && texts[start - 1]!.startsWith(VOLATILE_SYSTEM_PREFIX)) start--;
+  return start;
+}
+
+function installCharacterVoice(systemPrompt: readonly string[], alias: CharacterAlias, ...extra: string[]): string[] {
   const preserved = systemPrompt.map(stripPromptStyleBlocks).filter((block) => block.length > 0);
-  return [...preserved, renderCharacterVoice(alias)];
+  const at = trailingVolatileStart(preserved);
+  return [...preserved.slice(0, at), renderCharacterVoice(alias), ...extra, ...preserved.slice(at)];
+}
+
+// Anthropic 배열 system: 순수 voice 블록은 제자리에서 텍스트만 바꿔 cache_control 등 필드를 보존한다.
+// 없으면 맨 끝 `<memories>` 앞에 넣는다.
+function injectVoiceIntoSystemBlocks(parts: readonly unknown[], block: string): unknown[] {
+  const next: unknown[] = [];
+  let placed = false;
+  for (const part of parts) {
+    if (!part || typeof part !== "object" || !("text" in part) || typeof part.text !== "string") {
+      next.push(part);
+      continue;
+    }
+    const text = stripPromptStyleBlocks(part.text);
+    if (text) {
+      next.push({ ...part, text });
+    } else if (!placed && part.text.includes(VOICE_OPEN)) {
+      next.push({ ...part, text: block });
+      placed = true;
+    }
+  }
+  if (placed) return next;
+  const texts = next.map((part) =>
+    part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : "",
+  );
+  const at = trailingVolatileStart(texts);
+  return [...next.slice(0, at), { type: "text", text: block }, ...next.slice(at)];
 }
 
 function characterAliasForContext(ctx: ExtensionContext, selectedAlias: CharacterAlias | undefined): CharacterAlias | undefined {
@@ -541,7 +579,7 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
 
   const next: Record<string, unknown> = { ...record };
   if ("instructions" in next) next.instructions = cleanPayloadTextContainer(next.instructions);
-  if ("system" in next) next.system = cleanPayloadTextContainer(next.system);
+  if ("system" in next && !Array.isArray(next.system)) next.system = cleanPayloadTextContainer(next.system);
   if (Array.isArray(next.messages)) {
     const messages: unknown[] = [];
     for (const message of next.messages) {
@@ -567,7 +605,7 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
     return next;
   }
   if (Array.isArray(next.system)) {
-    next.system = [...next.system, { type: "text", text: block }];
+    next.system = injectVoiceIntoSystemBlocks(next.system, block);
     return next;
   }
   if (typeof next.instructions === "string") {
@@ -690,7 +728,7 @@ export default function characterVoice(pi: ExtensionAPI): void {
       if (!switched.ok) {
         const failure = `[CharacterSummonRuntime] ${switched.reason} 이 실패를 사용자에게 한국어로 명확히 알리고 다른 캐릭터나 모델로 가장하지 않는다.`;
         return {
-          systemPrompt: [...installCharacterVoice(event.systemPrompt, summonedAlias), failure],
+          systemPrompt: installCharacterVoice(event.systemPrompt, summonedAlias, failure),
         };
       }
       selectedAlias = summonedAlias;
