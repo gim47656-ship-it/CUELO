@@ -4,7 +4,8 @@
  * 흐름(파일 계약, 모두 `<externalUpdateRoot>/interrupts/` 아래):
  * - `request.json` {id, reason}: 외부(업데이트 worker의 drain 시간 초과, `restart-ompweb.ps1`)가 쓴다.
  * - 이 프로세스가 처음 보는 id면 돌고 있는 세션 id를 `pending-resume.json`에 합쳐 적고,
- *   각 세션에 `abort`를 보낸 뒤 `<id>.ack.json`을 쓴다. 외부는 ack 또는 running 0을 보고 진행한다.
+ *   각 세션에 `abort`를 보내고 background task child·bash까지 멈춘 뒤 `<id>.ack.json`을 쓴다.
+ *   외부는 ack(`unsettled`에 든 세션 제외) 또는 running 0을 보고 진행한다.
  * - 다른 프로세스가 쓴 `pending-resume.json`은 새 서버가 읽어 세션마다 재개 prompt를 넣는다.
  *
  * 목록을 abort보다 먼저 적는다. abort 뒤 서버가 바로 죽어도 재개 대상은 남는다.
@@ -34,6 +35,9 @@ const RESUME_DELAY_MS = 3000;
 const ID_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const MAX_ERROR_CHARS = 200;
+// drain ack 전에 child 작업이 끝나기를 기다리는 상한. worker는 interrupt request 뒤 10초만 ack를
+// 기다리고, 이 감시는 1초 간격이라 그 안에 들어가야 한다.
+const CHILD_SETTLE_MS = 5000;
 
 export const INTERRUPT_RESUME_MESSAGE =
   "[자동 재개] CUELO 업데이트·재시작 때문에 이 세션의 진행 중 작업이 중단(abort)됐다. 서버가 새 버전으로 다시 떴다. "
@@ -162,12 +166,26 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
         failed.push({ sessionId, error: minimalError(error) });
       }
     }
+    // 턴 abort는 부모만 멈춘다. background task child와 bash는 계속 돌아 cutover 중에 설치 폴더를
+    // 잡는다(2026-09-28). 세션마다 그것까지 멈추고 실제로 끝났는지 본 뒤에 ack를 쓴다. 시간 안에
+    // 끝나지 않은 세션은 `unsettled`로 알려 worker가 그 세션을 통과시키지 않게 한다.
+    const unsettled: string[] = [];
+    await Promise.all(running.map(async (sessionId) => {
+      try {
+        const settled = await getRpcSession(sessionId)?.stopBackgroundWorkForDrain(CHILD_SETTLE_MS) ?? true;
+        if (!settled) unsettled.push(sessionId);
+      } catch (error) {
+        unsettled.push(sessionId);
+        failed.push({ sessionId, error: minimalError(error) });
+      }
+    }));
     writeJsonAtomic(join(root, `${id}.ack.json`), {
       schemaVersion: 1,
       id,
       processId: process.pid,
       aborted,
       failed,
+      unsettled: unsettled.sort(),
       atUtc: new Date().toISOString(),
     });
     // 여기까지 왔을 때만 완료로 표시한다. 앞에서 표시하면 pending 쓰기 실패가 재처리를 막는다.

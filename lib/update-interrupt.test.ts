@@ -24,6 +24,7 @@ type FakeSession = {
   isRunning: () => boolean;
   send: (message: unknown) => Promise<void>;
   sendInternalPrompt: (message: string) => Promise<void>;
+  stopBackgroundWorkForDrain: (timeoutMs: number) => Promise<boolean>;
 };
 
 const control = {
@@ -32,6 +33,10 @@ const control = {
   failStart: new Set<string>(),
   failAbort: new Set<string>(),
   alive: new Set<string>(),
+  /** child 작업이 시간 안에 끝나지 않는 세션. */
+  unsettledChildren: new Set<string>(),
+  /** 세션별 drain 호출 순서(`abort:<id>`·`stop:<id>`). */
+  drainCalls: [] as string[],
   prompts: [] as string[],
   startCalls: [] as string[],
   gate: null as Promise<void> | null,
@@ -45,10 +50,15 @@ function sessionFor(sessionId: string): FakeSession {
     isAlive: () => control.alive.has(sessionId),
     isRunning: () => control.runningSessions.has(sessionId),
     send: async () => {
+      control.drainCalls.push(`abort:${sessionId}`);
       if (control.failAbort.has(sessionId)) throw new Error(`abort failed: ${sessionId}`);
     },
     sendInternalPrompt: async (message: string) => {
       control.prompts.push(`${sessionId}:${message.slice(0, 4)}`);
+    },
+    stopBackgroundWorkForDrain: async () => {
+      control.drainCalls.push(`stop:${sessionId}`);
+      return !control.unsettledChildren.has(sessionId);
     },
   };
 }
@@ -332,6 +342,24 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     expect(ack.failed.length).toBe(1);
     expect(ack.failed[0].sessionId).toBe(SID(15));
     expect(readPendingFile()?.sessionIds).toEqual([SID(15)]);
+  },
+
+  "abort 뒤 child 작업까지 멈춘 다음 ack를 쓰고, 멈추지 못한 세션은 unsettled로 남긴다": async (mod) => {
+    seedPending([]);
+    control.running = [SID(18), SID(19)];
+    control.alive.add(SID(18));
+    control.alive.add(SID(19));
+    control.unsettledChildren.add(SID(19));
+    seedRequest("probe-children");
+
+    expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(true);
+
+    // 두 세션 모두 abort가 먼저, child 정지가 그 뒤다.
+    expect(control.drainCalls.slice(0, 2)).toEqual([`abort:${SID(18)}`, `abort:${SID(19)}`]);
+    expect(control.drainCalls.slice(2).sort()).toEqual([`stop:${SID(18)}`, `stop:${SID(19)}`]);
+    const ack = JSON.parse(readFileSync(ackPath("probe-children"), "utf8")) as { aborted: string[]; unsettled: string[] };
+    expect(ack.aborted).toEqual([SID(18), SID(19)]);
+    expect(ack.unsettled).toEqual([SID(19)]);
   },
 };
 

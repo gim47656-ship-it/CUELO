@@ -19,6 +19,7 @@ import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/mes
 import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import {
   readRpcSubagentTranscript,
   RpcSubagentRegistry,
@@ -584,6 +585,44 @@ export async function getAvailableSlashCommands(session: AgentSessionLike): Prom
   }
 
   return commands;
+}
+
+/**
+ * 세션이 소유한 async job manager의 drain용 좁은 모양. 코어 `AgentSession.asyncJobManager`다.
+ * CUELO는 top-level 세션마다 자기 manager를 갖고 child는 그것을 상속하므로
+ * (native-runtime-patch `resolveSessionAsyncJobManager`), manager 전체가 곧 이 세션 트리다.
+ */
+interface DrainableJobManager {
+  cancelAll(): void;
+  waitForAll(): Promise<void>;
+}
+
+const DRAIN_SETTLE_POLL_MS = 100;
+
+function drainJobManagerOf(inner: object): DrainableJobManager | undefined {
+  const manager = "asyncJobManager" in inner ? inner.asyncJobManager : undefined;
+  if (!manager || typeof manager !== "object" || !("cancelAll" in manager) || !("waitForAll" in manager)) return undefined;
+  if (typeof manager.cancelAll !== "function" || typeof manager.waitForAll !== "function") return undefined;
+  // 두 메서드를 위에서 확인했다. AgentSessionLike는 이 코어 멤버를 계약에 두지 않는다.
+  const checked = manager as DrainableJobManager;
+  return checked;
+}
+
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+/** `work`가 `deadline` 전에 끝나면 true. 늦으면 기다리지 않고 false다. */
+async function settlesBefore(work: Promise<unknown>, deadline: number): Promise<boolean> {
+  const { promise: expired, resolve } = Promise.withResolvers<boolean>();
+  const timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+  try {
+    return await Promise.race([work.then(() => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ============================================================================
@@ -1747,6 +1786,27 @@ export class AgentSessionWrapper {
       }
     })();
     return this.shutdownPromise;
+  }
+
+  /**
+   * 업데이트 drain 전용. 턴 `abort`만으로는 이 세션이 띄운 background task child와 bash가
+   * 계속 돈다(2026-09-28 사무실 배포: drain 뒤에도 child가 bash를 새로 띄웠고 cutover가 설치
+   * 폴더 잠금으로 실패했다). async job(task child·bash·eval)을 모두 취소하고, job이 아닌 child
+   * 턴(IRC wake)은 child 세션을 직접 abort한다. 취소된 job은 결과를 배달하지 않으므로 이
+   * 세션의 턴을 다시 깨우지 않는다. 시간 안에 job과 child가 모두 끝났으면 true.
+   */
+  async stopBackgroundWorkForDrain(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    const manager = drainJobManagerOf(this.inner);
+    manager?.cancelAll();
+    for (const child of this.subagents.getSubagents()) {
+      void AgentRegistry.global().get(child.id)?.session?.abort().catch(() => {});
+    }
+    const jobsSettled = manager ? await settlesBefore(manager.waitForAll(), deadline) : true;
+    while (this.subagents.getSubagents().length > 0 && Date.now() < deadline) {
+      await delay(DRAIN_SETTLE_POLL_MS);
+    }
+    return jobsSettled && this.subagents.getSubagents().length === 0;
   }
 
   private resolveExtensionUiResponse(response: ExtensionUiResponse): void {
