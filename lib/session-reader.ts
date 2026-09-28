@@ -5,11 +5,12 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { Tokenizer, type AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
-import { closeSync, existsSync, openSync, readSync } from "fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "fs";
 import { normalize as normalizePath } from "path";
 import type { AgentMessage, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
 import type { ContextUsage } from "./omp-types";
 import type { SessionEntry as OmpSessionEntry, SessionInfo as OmpSessionInfo } from "@oh-my-pi/pi-coding-agent";
+import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
@@ -48,6 +49,84 @@ export function mergeSessionLists(
   return [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
 }
 
+const ACTIVITY_TAIL_CHUNK_BYTES = 64 * 1024;
+const ACTIVITY_TAIL_MAX_BYTES = 8 * 1024 * 1024;
+
+declare global {
+  var __ompSessionActivityCache: Map<string, { mtimeMs: number; size: number; at: string | null }> | undefined;
+}
+
+/**
+ * The time of the last transcript record when a file ends in `session_exit` diagnostics.
+ *
+ * Opening a session in the browser starts an AgentSession, and disposing it (idle timeout,
+ * restart) appends a `session_exit` line. That line alone moves the file mtime — which the SDK
+ * reports as `modified` — so a session untouched for days jumped into "today". Only trailing
+ * exit lines are skipped; any other tail means real activity and returns `null` so the caller
+ * keeps the SDK mtime. Before the first exit line is found the walk stops at one chunk and at
+ * any line that does not name `session_exit`, so an active session costs one small read; it only
+ * grows past a large record in front of the exit lines.
+ */
+export function readActivityBeforeSessionExit(filePath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    let position = fstatSync(fd).size;
+    let tail = Buffer.alloc(0);
+    let end = 0;
+    let skippedExit = false;
+    for (;;) {
+      const newline = end > 0 ? tail.lastIndexOf(0x0a, end - 1) : -1;
+      if (newline < 0 && position > 0) {
+        // Exit diagnostics are small: a last line longer than one chunk is real activity.
+        if (!skippedExit && tail.length >= ACTIVITY_TAIL_CHUNK_BYTES) return null;
+        if (tail.length >= ACTIVITY_TAIL_MAX_BYTES) return null;
+        const length = Math.min(ACTIVITY_TAIL_CHUNK_BYTES, position);
+        const chunk = Buffer.alloc(length);
+        position -= length;
+        readSync(fd, chunk, 0, length, position);
+        tail = Buffer.concat([chunk, tail]);
+        end += length;
+        continue;
+      }
+      const line = tail.toString("utf8", newline + 1, end).trim();
+      end = Math.max(newline, 0);
+      if (line) {
+        if (!skippedExit && !line.includes(SESSION_EXIT_CUSTOM_TYPE)) return null;
+        const entry: unknown = JSON.parse(line);
+        if (!entry || typeof entry !== "object") return null;
+        if ("type" in entry && entry.type === "custom" && "customType" in entry
+          && entry.customType === SESSION_EXIT_CUSTOM_TYPE) {
+          skippedExit = true;
+        } else {
+          if (!skippedExit) return null;
+          const timestamp = "timestamp" in entry ? entry.timestamp : undefined;
+          return typeof timestamp === "string" && Number.isFinite(Date.parse(timestamp))
+            ? new Date(timestamp).toISOString()
+            : null;
+        }
+      }
+      if (newline < 0) return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function sessionActivityTime(session: OmpSessionInfo): string {
+  const mtime = session.modified instanceof Date ? session.modified : new Date(String(session.modified));
+  const fallback = Number.isFinite(mtime.getTime()) ? mtime.toISOString() : String(session.modified);
+  const cache = globalThis.__ompSessionActivityCache ??= new Map();
+  const key = sessionPathKey(session.path);
+  const cached = cache.get(key);
+  if (cached && cached.mtimeMs === mtime.getTime() && cached.size === session.size) return cached.at ?? fallback;
+  const at = readActivityBeforeSessionExit(session.path);
+  cache.set(key, { mtimeMs: mtime.getTime(), size: session.size, at });
+  return at ?? fallback;
+}
+
 async function loadAllSessions(): Promise<SessionInfo[]> {
   // Property access (not a bound import) so tests can stub SessionManager.listAll.
   const ompSessions: OmpSessionInfo[] = await SessionManager.listAll();
@@ -62,7 +141,7 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       cwd: s.cwd,
       name: s.title,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
-      modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
+      modified: sessionActivityTime(s),
       messageCount: s.messageCount,
       firstMessage: getDocumentPromptUserMessage(s.firstMessage) || "(no messages)",
       parentSessionId: s.parentSessionPath ? pathToId.get(sessionPathKey(s.parentSessionPath)) : undefined,
