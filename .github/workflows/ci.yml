@@ -3,14 +3,18 @@ name: CI
 # Actions minutes are free only for the public mirror, so the heavy checks run
 # there: `verify` (install, typecheck, lint, app tests, production build) and
 # `harness` (extension, guard, finalizer and core patch tests). CUELO-private
-# runs only `private`, the checks that read files the mirror does not carry.
-# It needs no dependency install. A build or test break therefore shows up in
-# the public CI right after the mirror is published, not on the private push.
+# is billed per minute (Windows at twice the Linux rate), so its `private` job
+# (the checks that read files the mirror does not carry) runs only when started
+# by hand (`workflow_dispatch`). The same checks run locally before a commit,
+# and the setup transaction re-verifies the source manifest at deploy time.
+# A build or test break shows up in the public CI right after the mirror is
+# published, not on the private push.
 on:
   pull_request:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -162,7 +166,7 @@ jobs:
   # is no `bun install`. content-scan.test.ts calls powershell.exe, hence Windows.
   private:
     name: Verify private files
-    if: github.repository == 'gim47656-ship-it/CUELO-private'
+    if: github.repository == 'gim47656-ship-it/CUELO-private' && github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     defaults:
       run:
