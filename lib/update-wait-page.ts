@@ -9,8 +9,11 @@ export type UpdateWaitPageInput = {
 /**
  * 업데이트 대기 탭이 그리는 화면 전체. 이 화면은 서버가 새 버전으로 바뀌는 동안에도
  * 보여야 하므로 외부 CSS·폰트·이미지·스크립트를 하나도 참조하지 않고 스타일·로고·동작을
- * 모두 inline으로 둔다. 색은 `@seed-design/css` 다크 역할 토큰의 실제 리터럴이고,
- * 심볼 path와 그라디언트는 `components/OmpWordmark.tsx`의 CUELO 워드마크와 같다.
+ * 모두 inline으로 둔다. 색은 `@seed-design/css` 다크 역할 토큰과 앱 아이콘의 실제 리터럴이고,
+ * 나선 고리 path와 램프 색은 `components/OmpWordmark.tsx`·`public/icons/cuelo-icon.svg`와 같다.
+ * 큰 심볼이 이 화면의 진행 표시다: 램프는 진행 중에 대기 신호처럼 숨 쉬고 실패면 붉게 바뀌며,
+ * 고리는 관측한 완료 단계만큼만 채운다. 둘 다 스크립트가 이미 쓰는 `#state`의 tone과 단계의
+ * `data-state`를 CSS `:has()`로 읽을 뿐 판정은 더하지 않는다.
  *
  * 표시 규칙:
  * - 화면에 쓰는 진행 정보는 `/api/update-maintenance` 응답에서 실제로 관측한 값뿐이다.
@@ -43,30 +46,30 @@ export function renderUpdateWaitPage(input: UpdateWaitPageInput): string {
 <style>
 :root{
   color-scheme:dark;
-  /* SEED 다크 역할 토큰의 리터럴. SEED CSS를 내려받을 수 없는 구간이라 값을 직접 쓴다. */
+  /* SEED 다크 역할 토큰과 CUELO 앱 아이콘의 리터럴. 이 구간에서는 외부 CSS를 받을 수 없어 값을 직접 쓴다. */
   --bg:#16171b;
-  --panel:#1d2025;
-  --line:#393d46;
-  --line-strong:#868b94;
-  --text:#f3f4f5;
+  --panel:#1b1d22;
+  --line:#2a2d34;
+  --line-strong:#393d46;
+  --text:#eceef2;
   --text-muted:#dcdee3;
   --text-dim:#b0b3ba;
   --text-faint:#868b94;
+  --lamp:#f5a524;
   --ok:#22b27f;
   --warn:#ca901c;
   --stop:#ff6e60;
-  --info:#41a2f9;
   --font:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard Variable",Pretendard,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji";
   --wordmark:"Plus Jakarta Sans",Geist,ui-sans-serif,system-ui,sans-serif;
   --mono:ui-monospace,"SF Mono","JetBrains Mono","Fira Code","Cascadia Code","Noto Sans Mono","DejaVu Sans Mono",Consolas,"Liberation Mono","PingFang SC","Microsoft YaHei",monospace;
-  --brand:linear-gradient(135deg,oklch(0.7 0.24 340),oklch(0.62 0.21 295) 50%,oklch(0.81 0.14 200));
-  --surface-radius:8px;
-  --control-radius:4px;
+  --surface-radius:10px;
+  --control-radius:6px;
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0;padding:0}
 body{
+  word-break:keep-all;
   background:var(--bg);
   color:var(--text);
   font-family:var(--font);
@@ -77,107 +80,111 @@ body{
 }
 .shell{
   width:100%;
-  max-width:640px;
+  max-width:600px;
+  min-height:100vh;
   margin:0 auto;
-  padding:40px 24px 32px;
+  padding:64px 24px 48px;
   display:flex;
   flex-direction:column;
-  gap:20px;
+  justify-content:center;
+  gap:28px;
 }
-.brand{display:flex;align-items:center;gap:10px;min-width:0}
-.brand-mark{width:22px;height:22px;flex:none;display:block}
+.hero{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:24px;align-items:center}
+.mark{width:104px;height:104px;display:block;overflow:visible}
+.ring{fill:none;stroke-width:10;stroke-linecap:round}
+.ring-base{stroke:var(--line-strong)}
+.ring-fill{
+  stroke:var(--text);
+  stroke-dasharray:100;
+  stroke-dashoffset:100;
+  opacity:0;
+  transition:stroke-dashoffset .7s cubic-bezier(.2,.7,.2,1),opacity .2s,stroke .3s;
+}
+.lamp{fill:var(--lamp);opacity:.35;transition:fill .3s,opacity .3s}
+.halo{fill:var(--lamp);opacity:0;transform-box:fill-box;transform-origin:center}
+/* 고리는 관측한 완료 단계만큼만 채운다(4단계 = 25씩). 없는 퍼센트를 만들지 않는다. */
+.shell:has(.step:nth-child(1)[data-state="done"]) .ring-fill{opacity:1;stroke-dashoffset:75}
+.shell:has(.step:nth-child(2)[data-state="done"]) .ring-fill{stroke-dashoffset:50}
+.shell:has(.step:nth-child(3)[data-state="done"]) .ring-fill{stroke-dashoffset:25}
+.shell:has(.step:nth-child(4)[data-state="done"]) .ring-fill{stroke-dashoffset:0}
+.shell:has(#state[data-tone="info"]) .lamp,
+.shell:has(#state[data-tone="warn"]) .lamp{opacity:1}
+.shell:has(#state[data-tone="info"]) .halo{opacity:.2}
+.shell:has(#state[data-tone="stop"]) .lamp{fill:var(--stop);opacity:1}
+.shell:has(#state[data-tone="stop"]) .ring-fill{stroke:var(--text-dim)}
+@media (prefers-reduced-motion:no-preference){
+  .shell:has(#state[data-tone="info"]) .halo{animation:cue-standby 2.4s ease-in-out infinite}
+  @keyframes cue-standby{
+    0%,100%{opacity:.06;transform:scale(.75)}
+    50%{opacity:.3;transform:scale(1.25)}
+  }
+}
+.brand-line{display:flex;align-items:baseline;gap:8px;margin:0 0 14px;min-width:0}
 .brand-name{
   font-family:var(--wordmark);
   font-size:15px;
-  font-weight:700;
+  font-weight:800;
   letter-spacing:-0.025em;
   white-space:nowrap;
 }
-.brand-tag{
-  font-size:13px;
-  font-weight:500;
-  color:var(--text-faint);
-  border-left:1px solid var(--line);
-  padding-left:10px;
-  white-space:nowrap;
-}
-.work,.cleanup{
-  background:var(--panel);
-  border:1px solid var(--line);
-  border-radius:var(--surface-radius);
-}
-.work{padding:24px}
-.state{margin:0 0 8px;font-size:13px;font-weight:600}
-.state[data-tone="neutral"]{color:var(--text-dim)}
-.state[data-tone="info"]{color:var(--info)}
+.brand-tag{font-size:12px;color:var(--text-faint);white-space:nowrap}
+.state{margin:0 0 4px;font-size:13px;font-weight:600}
+.state[data-tone="neutral"]{color:var(--text-faint)}
+.state[data-tone="info"]{color:var(--lamp)}
 .state[data-tone="warn"]{color:var(--warn)}
 .state[data-tone="stop"]{color:var(--stop)}
-h1{margin:0 0 8px;font-size:20px;font-weight:700;line-height:1.35;letter-spacing:-0.01em}
-.status{margin:0;font-size:14px;line-height:1.6;color:var(--text-muted)}
-.steps{list-style:none;margin:20px 0 0;padding:0;display:flex;flex-direction:column}
+h1{
+  margin:0;
+  font-family:var(--wordmark),var(--font);
+  font-size:25px;
+  font-weight:700;
+  line-height:1.3;
+  letter-spacing:-0.02em;
+  text-wrap:balance;
+}
+.status{margin:0;max-width:52ch;font-size:14px;line-height:1.7;color:var(--text-dim)}
+.sheet{background:var(--panel);border:1px solid var(--line);border-radius:var(--surface-radius);overflow:hidden}
+.steps{list-style:none;margin:0;padding:0}
 .step{
+  position:relative;
   display:grid;
-  grid-template-columns:14px minmax(0,1fr) auto;
+  grid-template-columns:32px minmax(0,1fr) auto;
   column-gap:12px;
   align-items:center;
-  padding:7px 0;
+  padding:12px 20px;
+  transition:background .3s;
 }
-.tick{
-  grid-column:1;
-  justify-self:center;
-  position:relative;
-  z-index:1;
-  width:11px;
-  height:11px;
-  border-radius:50%;
-  background:var(--bg);
-  border:1.5px solid var(--line);
-}
-.step+.step .tick::before{
-  content:"";
-  position:absolute;
-  left:50%;
-  transform:translateX(-50%);
-  bottom:100%;
-  width:1.5px;
-  height:15px;
-  background:var(--line);
-}
-.step-name{grid-column:2;min-width:0;font-size:14px;font-weight:500;color:var(--text-dim)}
-.step-state{grid-column:3;font-size:12px;font-weight:500;color:var(--text-faint);white-space:nowrap}
-.step[data-state="done"] .tick{background:var(--line-strong);border-color:var(--line-strong)}
-.step[data-state="done"] .step-name{color:var(--text)}
-.step[data-state="done"]+.step .tick::before{background:var(--line-strong)}
-.step[data-state="current"] .tick{
-  background:var(--brand);
-  border-color:transparent;
-  box-shadow:0 0 0 3px color-mix(in srgb,var(--info) 18%,transparent);
-}
+.step+.step{border-top:1px solid var(--line)}
+.step::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent}
+.cue{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.step-name{min-width:0;font-size:14px;font-weight:500;color:var(--text-faint)}
+.step-state{font-size:12px;font-weight:500;color:var(--text-faint);white-space:nowrap}
+.step[data-state="done"] .cue{color:var(--text-dim)}
+.step[data-state="done"] .step-name{color:var(--text-muted)}
+.step[data-state="done"] .step-state{color:var(--text-dim)}
+.step[data-state="current"]{background:color-mix(in srgb,var(--lamp) 7%,transparent)}
+.step[data-state="current"]::before{background:var(--lamp)}
+.step[data-state="current"] .cue,
+.step[data-state="current"] .step-state{color:var(--lamp)}
 .step[data-state="current"] .step-name{color:var(--text)}
-.step[data-state="current"] .step-state{color:var(--info)}
-.step[data-state="stopped"] .tick{background:var(--stop);border-color:var(--stop)}
-.step[data-state="stopped"] .step-name{color:var(--text)}
+.step[data-state="stopped"]{background:color-mix(in srgb,var(--stop) 8%,transparent)}
+.step[data-state="stopped"]::before{background:var(--stop)}
+.step[data-state="stopped"] .cue,
 .step[data-state="stopped"] .step-state{color:var(--stop)}
-@media (prefers-reduced-motion:no-preference){
-  .step[data-state="current"] .tick{animation:cuelo-tick 2s ease-in-out infinite}
-  @keyframes cuelo-tick{
-    0%,100%{box-shadow:0 0 0 3px color-mix(in srgb,var(--info) 18%,transparent)}
-    50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--info) 6%,transparent)}
-  }
-}
-.meta{display:flex;flex-wrap:wrap;gap:6px 24px;min-width:0}
+.step[data-state="stopped"] .step-name{color:var(--text)}
+.meta{display:flex;flex-wrap:wrap;gap:6px 24px;min-width:0;margin-top:-12px;padding:0 4px}
 .meta-item{display:flex;align-items:baseline;gap:8px;min-width:0}
 .meta-label{font-size:12px;color:var(--text-faint)}
-.meta-value{font-size:13px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.meta-value{font-size:13px;color:var(--text-dim);font-variant-numeric:tabular-nums}
 .meta-value[data-tone="warn"]{color:var(--warn)}
 .meta-value[data-tone="stop"]{color:var(--stop)}
-.cleanup{padding:20px 24px 18px}
+.cleanup{padding:18px 20px 16px}
 .cleanup-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .cleanup h2{margin:0;font-size:14px;font-weight:600}
 .chip{
-  border:1px solid var(--line);
-  border-radius:var(--control-radius);
-  padding:2px 8px;
+  border:1px solid var(--line-strong);
+  border-radius:999px;
+  padding:1px 10px;
   font-size:12px;
   font-weight:600;
   color:var(--text-dim);
@@ -190,58 +197,67 @@ h1{margin:0 0 8px;font-size:20px;font-weight:700;line-height:1.35;letter-spacing
 .cleanup-rows dt{margin:0;font-size:12px;color:var(--text-faint)}
 .cleanup-rows dd{margin:0;min-width:0;font-size:13px;color:var(--text-muted)}
 .mono{font-family:var(--mono);font-size:12px}
-.actions{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin:20px 0 0}
+.actions{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin:-8px 0 0}
 .actions button{
   font:inherit;
   font-size:14px;
   font-weight:600;
-  color:var(--text);
-  background:var(--bg);
-  border:1px solid var(--line-strong);
+  color:var(--bg);
+  background:var(--text);
+  border:0;
   border-radius:var(--control-radius);
-  padding:9px 16px;
+  padding:10px 18px;
   cursor:pointer;
 }
-.actions button:hover{border-color:var(--text-dim)}
-.actions button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+.actions button:hover{background:#ffffff}
+.actions button:focus-visible{outline:2px solid var(--lamp);outline-offset:3px}
 .actions .hint{margin:0;font-size:13px;line-height:1.6;color:var(--text-dim)}
-.foot{margin:0;display:flex;gap:6px;font-size:11px;color:var(--text-faint)}
+.foot{margin:0;padding:0 4px;display:flex;gap:6px;font-size:11px;color:var(--text-faint)}
 .foot .mono{font-size:11px}
-@media (max-width:400px){
-  .shell{padding:28px 20px 24px;gap:16px}
-  .work{padding:20px}
-  .cleanup{padding:16px 20px 14px}
-  h1{font-size:18px}
+@media (max-width:480px){
+  .shell{padding:36px 20px 24px;gap:22px}
+  .hero{column-gap:16px}
+  .mark{width:68px;height:68px}
+  .brand-line{margin-bottom:8px}
+  h1{font-size:20px}
+  .step{padding:11px 16px;grid-template-columns:28px minmax(0,1fr) auto}
+  .cleanup{padding:16px}
 }
 </style>
 </head>
 <body>
 <main class="shell">
-<header class="brand">
-<svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><defs><linearGradient id="cuelo-mark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"></stop><stop offset=".5" stop-color="oklch(0.62 0.21 295)"></stop><stop offset="1" stop-color="oklch(0.81 0.14 200)"></stop></linearGradient></defs><path fill="url(#cuelo-mark)" d="M4 6 C7.5 1.8 15.5 2 19 6.2 L22.5 12 L19.3 16.2 C16.4 21.3 8.5 22.2 4.2 17.8 L7 15.2 C10 19.7 15.3 18.7 17 14.2 L19 12 L16.2 9 C14.1 6.4 9.8 6.1 6.8 9.1 Z"></path></svg>
-<span class="brand-name">CUELO</span>
-<span class="brand-tag">업데이트</span>
-</header>
-<section class="work">
+<header class="hero">
+<svg class="mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+<path class="ring ring-base" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
+<path class="ring ring-fill" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
+<circle class="halo" cx="42" cy="50" r="16"></circle>
+<circle class="lamp" cx="42" cy="50" r="8.5"></circle>
+</svg>
+<div>
+<p class="brand-line"><span class="brand-name">CUELO</span><span class="brand-tag">업데이트</span></p>
 <p class="state" id="state" data-tone="neutral">상태 확인 중</p>
 <h1 id="task-title">업데이트 상태를 확인하고 있습니다</h1>
+</div>
+</header>
 <p class="status" id="status" role="status" aria-live="polite">이 탭은 업데이트가 끝나면 같은 작업 화면으로 자동 복귀합니다.</p>
-<ol class="steps" id="steps">
-<li class="step" data-state="pending"><span class="tick" aria-hidden="true"></span><span class="step-name">세션 정지</span><span class="step-state">대기</span></li>
-<li class="step" data-state="pending"><span class="tick" aria-hidden="true"></span><span class="step-name">교체 준비</span><span class="step-state">대기</span></li>
-<li class="step" data-state="pending"><span class="tick" aria-hidden="true"></span><span class="step-name">패키지 교체</span><span class="step-state">대기</span></li>
-<li class="step" data-state="pending"><span class="tick" aria-hidden="true"></span><span class="step-name">새 버전 확인</span><span class="step-state">대기</span></li>
-</ol>
 <div class="actions" id="failure-actions" hidden>
 <button type="button" id="return-button">작업 화면으로 돌아가기</button>
 <p class="hint" id="failure-hint" hidden></p>
 </div>
+<section class="sheet" aria-label="업데이트 단계">
+<ol class="steps" id="steps">
+<li class="step" data-state="pending"><span class="cue" aria-hidden="true">Q1</span><span class="step-name">세션 정지</span><span class="step-state">대기</span></li>
+<li class="step" data-state="pending"><span class="cue" aria-hidden="true">Q2</span><span class="step-name">교체 준비</span><span class="step-state">대기</span></li>
+<li class="step" data-state="pending"><span class="cue" aria-hidden="true">Q3</span><span class="step-name">패키지 교체</span><span class="step-state">대기</span></li>
+<li class="step" data-state="pending"><span class="cue" aria-hidden="true">Q4</span><span class="step-name">새 버전 확인</span><span class="step-state">대기</span></li>
+</ol>
 </section>
 <div class="meta">
 <span class="meta-item"><span class="meta-label">화면 경과</span><span class="meta-value" id="elapsed">0초</span></span>
 <span class="meta-item"><span class="meta-label">연결</span><span class="meta-value" id="link" data-tone="neutral">확인 중</span></span>
 </div>
-<section class="cleanup" id="cleanup" aria-labelledby="cleanup-title" hidden>
+<section class="sheet cleanup" id="cleanup" aria-labelledby="cleanup-title" hidden>
 <div class="cleanup-head"><h2 id="cleanup-title">임시 산출물 정리</h2><span class="chip" id="cleanup-phase" data-tone="neutral">대기</span></div>
 <dl class="cleanup-rows">
 <div><dt>현재 대상</dt><dd class="mono" id="cleanup-target">대상 선택 중</dd></div>
