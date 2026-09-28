@@ -3145,17 +3145,16 @@ import { resolveUsedFraction } from "../usage";`,
 		patched: "import {\n\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n\tplanPriority,\n",
 	},
 	{
-		// 2026-09-26 사용자 정책: Anthropic 새/cold 재선택은 주간 reset 이 더 빠른 건강한 계정을 먼저 쓴다
-		// (옛 "position 0 이 80% 미만이면 맨 앞" 규칙을 대체). 사용량 그림이 완전하고 건강한 후보만,
-		// upstream ranking 에서 이미 차지한 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·
-		// plan 부적격·5h hot 후보는 upstream 자리 그대로다. 동률: 정확히 같은 reset 이면 남은 주간 quota
-		// 가 큰 쪽, 그다음 upstream 순서. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin
-		// 재승격은 이 뒤에 오므로 그대로 유지된다.
-		// anchor 는 pristine 전용이다. 옛 80% 본문이 적용된 target 에서는 anchor-lost 로 멈춰 이중 적용되지 않는다.
+		// 2026-09-29 사용자 정책: Anthropic 새/cold 재선택은 RIN(저장 순서 0)을 먼저 쓰고, RIN 이 주간 한도의
+		// 하루 구간(사용량 패널 paceOf 와 같은 기준: 지난 날 수 + 1 일치)을 넘으면 MIO 로 넘긴다. 날이 바뀌어
+		// 허용치가 늘면 다시 RIN 이다. 둘 다 넘었으면 덜 넘은 쪽. 옛 "주간 reset 이 빠른 계정 우선"(2026-09-26)을
+		// 대체한다(legacyPatched). 사용량 그림이 완전하고 건강한 후보만, upstream ranking 에서 이미 차지한
+		// 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·plan 부적격·5h hot 후보는 upstream 자리
+		// 그대로다. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin 재승격은 이 뒤에 온다.
 		file: "../pi-ai/src/auth/select.ts",
-		marker: "// Prefer the healthy Anthropic account whose weekly window resets first.",
+		marker: "// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.",
 		anchor: "\t\t\t\t\t}));\n\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-		patched: `					}));
+		legacyPatched: `					}));
 		// Prefer the healthy Anthropic account whose weekly window resets first.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
@@ -3202,6 +3201,66 @@ import { resolveUsedFraction } from "../usage";`,
 					const leftWeekly = weekly[left]!;
 					const rightWeekly = weekly[right]!;
 					return leftWeekly.resetAt - rightWeekly.resetAt || rightWeekly.remaining - leftWeekly.remaining || left - right;
+				})
+				.map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => {
+				candidates[pos] = preferred[order]!;
+			});
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`,
+		patched: `					}));
+		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
+		// Only candidates with a complete, healthy usage picture move, and only among the slots they
+		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
+		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
+		// Inside the slice: storage order. Over it: smaller overshoot first, then storage order.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const dayMs = 86_400_000;
+			const weekly = candidates.map(candidate => {
+				const usage = candidate.usage;
+				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
+				const credential = candidate.selection.credential;
+				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
+					return undefined;
+				}
+				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
+					return undefined;
+				}
+				if (planGate && planGate(usage) !== true) return undefined;
+				const limits = reserveUsageLimits(strategy, usage, rankingContext);
+				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
+				const measured = limits.every(limit => {
+					const fraction = resolveUsedFraction(limit);
+					return (
+						limit.status !== "unknown" &&
+						typeof fraction === "number" &&
+						Number.isFinite(fraction) &&
+						fraction >= 0 &&
+						fraction < 1
+					);
+				});
+				if (!measured) return undefined;
+				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
+				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
+					return undefined;
+				}
+				const resetAt = secondary.window?.resetsAt;
+				const durationMs = secondary.window?.durationMs;
+				const used = resolveUsedFraction(secondary);
+				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
+				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
+				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
+				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
+				return { overshoot: Math.max(0, used - allowance), index: candidate.selection.index };
+			});
+			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
+			const preferred = [...slots]
+				.sort((left, right) => {
+					const a = weekly[left]!;
+					const b = weekly[right]!;
+					return Number(a.overshoot > 0) - Number(b.overshoot > 0) || a.overshoot - b.overshoot || a.index - b.index;
 				})
 				.map(pos => candidates[pos]!);
 			slots.forEach((pos, order) => {

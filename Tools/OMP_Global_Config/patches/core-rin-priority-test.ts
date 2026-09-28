@@ -1,4 +1,4 @@
-// Anthropic 주간 reset 우선 정책을 실제 AuthStorage 선택 경로에서 본다(OMP 18.3.x namespaced auth).
+// Anthropic RIN 우선·하루 구간 폴백 정책을 실제 AuthStorage 선택 경로에서 본다(OMP 18.3.x namespaced auth).
 // patch는 임시 source fixture에만 적용하고, Bun은 그 fixture의 patched pi-ai auth 모듈(auth-storage.ts,
 // auth/*.ts)만 설치본 대신 읽는다. 실제 credential·네트워크는 쓰지 않는다.
 // 이미 patch된 target이면 OMP_CORE_PATCH_BACKUP(그 target의 core-patch-backup)에서 pristine 사본을 복사한다.
@@ -166,13 +166,17 @@ try {
 		}
 	}
 
+	// 하루 구간 허용치 = (지난 날 수 + 1) / 7. 7d 창 168h 기준: reset 150h 뒤 → 18h 경과 → 1/7(14.3%),
+	// 143h 뒤 → 25h 경과 → 2/7(28.6%), 46h 뒤 → 122h 경과 → 6/7(85.7%), 20h 뒤 → 148h 경과 → 7/7.
 	const cases = [
-		["관측 재현: RIN 7d 81%·46h 뒤 reset이 MIO 3%·160h보다 빠르면 RIN", "rin", {}],
-		["MIO 주간 reset이 더 빠르면 RIN 사용량이 낮아도 MIO", "mio", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
-		["RIN 5h 0%·리셋시각 없음이어도 주간 reset 빠른 RIN", "rin", { rin: { fiveReset: null } }],
-		["reset 동률이면 남은 quota가 큰 MIO", "mio", { rin: { weekly: 0.3, weeklyReset: 46 }, mio: { weekly: 0.1, weeklyReset: 46 } }],
-		["reset이 30초라도 빠르면 동률 허용 없이 RIN", "rin", { rin: { weekly: 0.5, weeklyReset: 46 }, mio: { weekly: 0.2, weeklyReset: 46 + 30 / 3600 } }],
-		["완전 동률이면 기존 순서 RIN", "rin", { rin: { five: 0.1, weekly: 0.3, weeklyReset: 46 }, mio: { five: 0.1, weekly: 0.3, weeklyReset: 46 } }],
+		["관측 모양: RIN 7d 81%가 6일째 허용치 85.7% 안이면 RIN", "rin", {}],
+		["MIO 주간 reset이 더 빨라도 RIN이 하루 구간 안이면 RIN", "rin", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
+		["RIN이 하루 구간(첫날 14.3%)을 넘으면 MIO", "mio", { rin: { weekly: 0.2, weeklyReset: 145 }, mio: { weekly: 0.03, weeklyReset: 160 } }],
+		["날이 바뀌어 허용치가 28.6%가 되면 같은 20%의 RIN으로 복귀", "rin", { rin: { weekly: 0.2, weeklyReset: 143 }, mio: { weekly: 0.03, weeklyReset: 160 } }],
+		["둘 다 넘으면 덜 넘은 MIO", "mio", { rin: { weekly: 0.5, weeklyReset: 150 }, mio: { weekly: 0.3, weeklyReset: 160 } }],
+		["둘 다 넘으면 덜 넘은 RIN", "rin", { rin: { weekly: 0.2, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 160 } }],
+		["둘 다 구간 안이면 사용량이 많아도 저장 순서 RIN", "rin", { rin: { weekly: 0.8, weeklyReset: 20 }, mio: { weekly: 0.01, weeklyReset: 20 } }],
+		["RIN 5h 0%·리셋시각 없음이어도 하루 구간 안인 RIN", "rin", { rin: { fiveReset: null } }],
 		["RIN 7d 소진이면 제외하고 MIO", "mio", { rin: { weekly: 1 } }],
 		["RIN 5h 소진(hard limit)이면 MIO", "mio", { rin: { five: 1 } }],
 		["RIN 5h 90%(upstream hot guard)면 기존 랭킹 MIO", "mio", { rin: { five: 0.9 } }],
@@ -185,7 +189,7 @@ try {
 		["MIO 사용량 조회 실패면 기존 랭킹 그대로 RIN", "rin", { mio: { report: false } }],
 		["Fable tier 7d 미측정이면 기존 랭킹 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: Number.NaN }, mio: { tier: 0.4 } }],
 		["Fable tier 7d 소진이면 제외하고 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
-		["cold MIO pin은 주간 reset 빠른 RIN으로 재선택", "rin", { pin: "cold" }],
+		["cold MIO pin은 하루 구간 안인 RIN으로 재선택", "rin", { pin: "cold" }],
 		["warm MIO pin은 그대로 유지", "mio", { pin: "warm" }],
 		["exact MIO summon은 그대로 유지", "mio", { pin: "exact" }],
 		["타 provider는 기존 랭킹 MIO", "mio", { provider: "openai-codex", modelId: undefined }],
