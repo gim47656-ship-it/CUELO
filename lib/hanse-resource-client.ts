@@ -201,11 +201,13 @@ export const ACCOUNT_FACES = [
   { alias: "MIO(미오)", file: "mio.webp" },
   // Codex 모델은 계정·모델과 무관하게 YUKI, OpenCode Go는 NOVA로 표시한다. b-ai는 API 키
   // 하나를 AuthStorage에 넣는 custom provider이고 web6는 `auth: none`이라 credential 개념이
-  // 없다. 반면 Anthropic은 실제 계정이 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
+  // 없다. Antigravity(Gemini)는 보조 계정 하나라 HIKARI 고정이다. 반면 Anthropic은 실제 계정이
+  // 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
   { alias: "NOVA(노바)", file: "nova.webp", provider: "opencode-go" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "b-ai" },
   { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
+  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-antigravity" },
 ] as const;
 
 export interface CharacterRosterEntry {
@@ -595,11 +597,19 @@ async function requestJson<T>(
 }
 
 /**
- * 사용량 화면에서 빼는 provider. Antigravity 부계정은 채팅 계정이 아니라 vision·thinking 번역에만
- * 쓰는 보조 계정이라 카드가 필요 없다(2026-09-28 사용자 결정). 여기서 빼야 얼굴 배정 풀에도
- * 들어가지 않는다.
+ * Antigravity 카드에 남길 한도 줄. 이 계정은 채팅 계정이 아니라 vision·이미지 확인용 Gemini
+ * 보조 계정이라, 같은 계정을 거치는 Claude·GPT 공유 한도 줄은 카드에 필요 없다(2026-09-28
+ * 사용자 결정). 코어 사용량 제공자는 한도 id를 `<provider>:<counter>:<tier>:<window>`로 짓고
+ * Gemini 카운터는 `google`이다(`pi-ai/src/usage/google-antigravity.ts`).
  */
-const HIDDEN_USAGE_PROVIDERS: ReadonlySet<string> = new Set(["google-antigravity"]);
+const ANTIGRAVITY_PROVIDER = "google-antigravity";
+const GEMINI_LIMIT_PREFIX = `${ANTIGRAVITY_PROVIDER}:google:`;
+
+function usageReportForDisplay(report: UsageReport): UsageReport {
+  if (report.provider !== ANTIGRAVITY_PROVIDER || !Array.isArray(report.limits)) return report;
+  const limits = report.limits.filter((limit) => typeof limit.id === "string" && limit.id.startsWith(GEMINI_LIMIT_PREFIX));
+  return limits.length === report.limits.length ? report : { ...report, limits };
+}
 
 export async function loadUsage(
   options: ResourceRequestOptions<UsageSnapshot> = {},
@@ -609,8 +619,8 @@ export async function loadUsage(
     if (!data || !Array.isArray(data.reports)) {
       throw new ResourceClientError("사용량 응답 형식이 올바르지 않습니다.", "invalid-response");
     }
-    const reports = data.reports.filter((report) => !HIDDEN_USAGE_PROVIDERS.has(report.provider));
-    return { status: "fresh", data: reports.length === data.reports.length ? data : { ...data, reports }, error: null };
+    const reports = data.reports.map(usageReportForDisplay);
+    return { status: "fresh", data: reports.every((report, index) => report === data.reports[index]) ? data : { ...data, reports }, error: null };
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }

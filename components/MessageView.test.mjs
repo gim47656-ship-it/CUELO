@@ -224,3 +224,45 @@ test("renders thinking markdown directly without a collapsible card", () => {
   assert.match(html, /<strong>Direct thought<\/strong>/);
   assert.doesNotMatch(html, /aria-expanded/);
 });
+
+test("shows the images a tool produced as thumbnails in the answer", async () => {
+  const { loadToolImageCount, toolImageBlock } = await jiti.import("../lib/message-display.ts");
+  const previousFetch = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    const toolCallId = new URL(String(url), "http://localhost").searchParams.get("toolCallId");
+    return new Response(JSON.stringify({ count: toolCallId === "gen-1" ? 2 : 0 }), { status: 200 });
+  };
+  try {
+    // 화면이 그리기 전에 라우트가 센 개수를 받아 둔 상태 — 실제 화면에서는 effect 가 같은 함수를 부른다.
+    assert.equal(await loadToolImageCount("s-1", "gen-1"), 2);
+    assert.equal(await loadToolImageCount("s-1", "empty"), 0);
+    assert.equal(await loadToolImageCount("s-1", "gen-1"), 2);
+    assert.equal(asked.length, 2, "한 호출의 개수는 한 번만 묻는다");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+
+  const html = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(MessageView, {
+        sessionId: "s-1",
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-test",
+          content: [toolImageBlock("gen-1"), toolImageBlock("empty"), { type: "text", text: "Here it is." }],
+        },
+      }),
+    ),
+  );
+
+  assert.equal(html.match(/class="tool-image-strip"/g)?.length, 1, "이미지가 없는 호출은 자리를 만들지 않는다");
+  assert.match(html, /src="\/api\/tool-image\?sessionId=s-1&amp;toolCallId=gen-1&amp;index=0"/);
+  assert.match(html, /src="\/api\/tool-image\?sessionId=s-1&amp;toolCallId=gen-1&amp;index=1"/);
+  assert.equal(html.match(/class="tool-image-thumb"/g)?.length, 2);
+  assert.ok(html.indexOf("tool-image-strip") < html.indexOf("Here it is."), "그림이 답 글 앞에 온다");
+});

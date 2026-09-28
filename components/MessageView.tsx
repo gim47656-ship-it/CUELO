@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useState, useRef, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { MarkdownBody } from "./MarkdownBody";
@@ -8,7 +9,14 @@ import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
-import { getAssistantErrorMessage, isHiddenAssistantBlock } from "@/lib/message-display";
+import {
+  getAssistantErrorMessage,
+  isHiddenAssistantBlock,
+  isToolImageBlock,
+  knownToolImageCount,
+  loadToolImageCount,
+  toolImageUrl,
+} from "@/lib/message-display";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
 import { providerDisplayName } from "@/lib/hanse-resource-client";
@@ -20,9 +28,11 @@ import { normalizeCustomPanelLines, parseAnsiLine, stripAnsi } from "@/lib/ansi"
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import {
+  attachedDocumentKind,
   formatAttachmentSize,
   getDocumentPromptDisplayText,
   parseDocumentPrompt,
+  type AttachedDocumentKind,
 } from "@/lib/document-attachments";
 import { getFileIcon } from "./FileIcons";
 import type {
@@ -102,6 +112,14 @@ function formatMessageBytes(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
   if (n >= 1_000) return `${Math.round(n / 1_000)} KB`;
   return `${n} B`;
+}
+
+function attachedDocumentLabel(kind: AttachedDocumentKind, t: (key: string) => string): string {
+  if (kind === "pdf") return "PDF";
+  if (kind === "markdown") return "Markdown";
+  if (kind === "audio") return t("chat.attachKindAudio");
+  if (kind === "file") return t("chat.attachKindFile");
+  return "Text";
 }
 
 /**
@@ -397,7 +415,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     {document.name}
                   </span>
                   <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>
-                    {document.mimeType === "application/pdf" ? "PDF" : "Markdown"} · {formatAttachmentSize(document.size)}
+                    {attachedDocumentLabel(attachedDocumentKind(document), t)} · {formatAttachmentSize(document.size)}
                   </span>
                 </div>
               ))}
@@ -847,6 +865,9 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     return <ToolCallBlock block={tc} result={result} duration={duration} />;
   }
   if (block.type === "image") {
+    if (isToolImageBlock(block)) {
+      return sessionId ? <ToolImageStrip sessionId={sessionId} toolCallId={block.toolImage.toolCallId} /> : null;
+    }
     return <ImageBlock block={block as ImageContent} />;
   }
   return null;
@@ -874,6 +895,96 @@ function ImageBlock({ block }: { block: ImageContent }) {
         border: "1px solid var(--border)",
       }}
     />
+  );
+}
+
+/**
+ * 도구가 만들거나 확인한 이미지의 썸네일 줄. 개수와 바이트는 세션 기록에서 라우트가 꺼내 준다
+ * (초기 기록에는 도구 결과 base64 가 없다). 누르면 원본 크기로 연다.
+ */
+function ToolImageStrip({ sessionId, toolCallId }: { sessionId: string; toolCallId: string }) {
+  const { t } = useI18n();
+  const [count, setCount] = useState(() => knownToolImageCount(sessionId, toolCallId));
+  const [zoomed, setZoomed] = useState<number | null>(null);
+  const [failed, setFailed] = useState<ReadonlySet<number>>(() => new Set());
+
+  useEffect(() => {
+    if (count !== undefined) return;
+    let current = true;
+    void loadToolImageCount(sessionId, toolCallId).then((loaded) => {
+      if (current) setCount(loaded);
+    });
+    return () => {
+      current = false;
+    };
+  }, [count, sessionId, toolCallId]);
+
+  if (!count) return null;
+  const indexes = Array.from({ length: count }, (_, index) => index).filter((index) => !failed.has(index));
+  if (indexes.length === 0) return null;
+  return (
+    <div className="tool-image-strip" data-tool-call-id={toolCallId}>
+      {indexes.map((index) => (
+        <button
+          key={index}
+          type="button"
+          className="tool-image-thumb"
+          aria-label={t("i18n.zoomIn")}
+          onClick={() => setZoomed(index)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={toolImageUrl(sessionId, toolCallId, index)}
+            alt=""
+            loading="lazy"
+            draggable={false}
+            // 임시 폴더의 생성 파일은 지워질 수 있다. 깨진 그림 아이콘 대신 자리를 비운다.
+            onError={() => setFailed((previous) => new Set(previous).add(index))}
+          />
+        </button>
+      ))}
+      {zoomed !== null && (
+        <ToolImageDialog src={toolImageUrl(sessionId, toolCallId, zoomed)} onClose={() => setZoomed(null)} />
+      )}
+    </div>
+  );
+}
+
+function ToolImageDialog({ src, onClose }: { src: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.showModal();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      className="tool-image-dialog"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img className="tool-image-full" src={src} alt="" draggable={false} />
+      <button type="button" className="tool-image-close" onClick={onClose}>
+        {t("i18n.close")}
+      </button>
+    </dialog>,
+    document.body,
   );
 }
 

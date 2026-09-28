@@ -39,6 +39,8 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 - 작업 공간(프로젝트·worktree)을 바꾸면 그곳에서 마지막으로 열어 둔 세션으로 돌아갑니다.
 - goal 모드의 자동 이어 가기와 todo 진행 상황을 대화창 위에서 확인합니다.
 - 작업 로그 패널에서 이번 턴의 과정 항목과 턴마다 쓴 파일을 따로 봅니다.
+- 입력창에 이미지·문서 외에 음성(받아쓰기), 코드·설정 파일(본문 첨부), 그 밖의 파일(저장 후 경로 첨부)을 붙여넣기·드롭·선택으로 넣습니다. 음성 받아쓰기에는 Google Antigravity(Gemini) 계정이 필요합니다.
+- 에이전트가 생성하거나 확인한 이미지가 그 턴의 대화 흐름에 썸네일로 보이고, 누르면 크게 열립니다.
 
 **계정과 자원**
 
@@ -57,7 +59,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 **알림과 표현**
 
-- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · NOVA · SHION).
+- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI).
 - 브라우저 알림과 PWA 설치를 지원합니다.
 - 한국어가 기본인 인터페이스입니다(영어·중국어 간체도 선택 가능).
 
@@ -169,6 +171,6 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
-캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION)의 그림·음성·스티커와 `docs/hero.png`는 CUELO 고유 자산입니다.
+캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.png`는 CUELO 고유 자산입니다.
 
 코드: [MIT License](./LICENSE)

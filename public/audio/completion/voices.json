@@ -1190,6 +1190,204 @@
           "tag": "working"
         }
       ]
+    },
+    {
+      "id": "hikari",
+      "speaker": "花音",
+      "style": "ノーマル",
+      "styleId": 1325133120,
+      "modelId": "a670e6b8-0852-45b2-8704-1bc9862f2fe6",
+      "modelVersion": "1.0.0",
+      "source": "https://hub.aivis-project.com/aivm-models/a670e6b8-0852-45b2-8704-1bc9862f2fe6",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": [
+        "魔法プログラム (https://hub.aivis-project.com/@MAHOPROGRAM)"
+      ],
+      "speedScale": 1.08,
+      "tempoDynamicsScale": 1.1,
+      "pitchScale": 0,
+      "clips": [
+        {
+          "file": "hikari/01.wav",
+          "tag": "done",
+          "text": "見えた！ほら、ちゃんとできてるよ。",
+          "ko": "보였다! 봐, 제대로 됐어.",
+          "bytes": 257818
+        },
+        {
+          "file": "hikari/02.wav",
+          "tag": "done",
+          "text": "はい、完了。見ればわかるでしょ？",
+          "ko": "자, 완료. 보면 알지?",
+          "bytes": 251490
+        },
+        {
+          "file": "hikari/03.wav",
+          "tag": "done",
+          "text": "しーっ、もう終わってるよ。見てみて。",
+          "ko": "쉿, 벌써 끝났어. 봐 봐.",
+          "bytes": 286392
+        },
+        {
+          "file": "hikari/04.wav",
+          "tag": "done",
+          "text": "できた！いいとこ、ちゃんと撮っといた。",
+          "ko": "됐다! 좋은 장면, 제대로 찍어 뒀어.",
+          "bytes": 272062
+        },
+        {
+          "file": "hikari/05.wav",
+          "tag": "done",
+          "text": "終わったよ。ここ、見逃さないでね。",
+          "ko": "끝났어. 여기, 놓치지 마.",
+          "bytes": 264772
+        },
+        {
+          "file": "hikari/06.wav",
+          "tag": "done",
+          "text": "ばっちり！全部見えてるよ。",
+          "ko": "완벽! 다 보여.",
+          "bytes": 201148
+        },
+        {
+          "file": "hikari/working/01.wav",
+          "tag": "working",
+          "text": "よーく見てるから、ちょっと待ってて。",
+          "ko": "잘 보고 있으니까 잠깐 기다려.",
+          "bytes": 244800
+        },
+        {
+          "file": "hikari/working/02.wav",
+          "tag": "working",
+          "text": "いま確かめてる。すぐわかるよ。",
+          "ko": "지금 확인 중이야. 금방 알 거야.",
+          "bytes": 231660
+        },
+        {
+          "file": "hikari/working/03.wav",
+          "tag": "working",
+          "text": "ふむふむ、見えてきた。もう少し！",
+          "ko": "흠흠, 보이기 시작했어. 조금만!",
+          "bytes": 269712
+        },
+        {
+          "file": "hikari/approval/01.wav",
+          "tag": "approval",
+          "text": "ねえ、ここ見て。確認してくれる？",
+          "ko": "저기, 여기 봐. 확인해 줄래?",
+          "bytes": 270474
+        },
+        {
+          "file": "hikari/approval/02.wav",
+          "tag": "approval",
+          "text": "ちょっとストップ。いいか決めて？",
+          "ko": "잠깐 스톱. 괜찮은지 정해 줄래?",
+          "bytes": 207236
+        },
+        {
+          "file": "hikari/approval/03.wav",
+          "tag": "approval",
+          "text": "承認待ちだよ。見たらオーケーしてね。",
+          "ko": "승인 대기야. 보고 OK 해 줘.",
+          "bytes": 272668
+        },
+        {
+          "file": "hikari/failed/01.wav",
+          "tag": "failed",
+          "text": "あっ、見落としてた。ごめん、直すね。",
+          "ko": "앗, 놓쳤어. 미안, 고칠게.",
+          "bytes": 297650
+        },
+        {
+          "file": "hikari/failed/02.wav",
+          "tag": "failed",
+          "text": "失敗しちゃった。原因はもう見えてるよ。",
+          "ko": "실패했어. 원인은 벌써 보여.",
+          "bytes": 279660
+        },
+        {
+          "file": "hikari/failed/03.wav",
+          "tag": "failed",
+          "text": "ごめん、外れた！次はちゃんと当てる。",
+          "ko": "미안, 빗나갔어! 다음엔 제대로 맞힐게.",
+          "bytes": 278654
+        },
+        {
+          "file": "hikari/choice/01.wav",
+          "tag": "choice",
+          "text": "どっちにする？私はもう見当ついてるけど。",
+          "ko": "어느 쪽으로 할래? 난 벌써 짐작 가는데.",
+          "bytes": 311870
+        },
+        {
+          "file": "hikari/choice/02.wav",
+          "tag": "choice",
+          "text": "二つ並べたよ。好きな方を選んで。",
+          "ko": "둘 나란히 놨어. 좋은 쪽 골라.",
+          "bytes": 264296
+        },
+        {
+          "file": "hikari/choice/03.wav",
+          "tag": "choice",
+          "text": "君ならどっち？選んだら教えて。",
+          "ko": "너라면 어느 쪽? 고르면 알려 줘.",
+          "bytes": 243854
+        }
+      ],
+      "stickers": [
+        {
+          "file": "hikari/done/01.webp",
+          "tag": "done"
+        },
+        {
+          "file": "hikari/done/02.webp",
+          "tag": "done"
+        },
+        {
+          "file": "hikari/done/03.webp",
+          "tag": "done"
+        },
+        {
+          "file": "hikari/approval/01.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "hikari/approval/02.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "hikari/approval/03.webp",
+          "tag": "approval"
+        },
+        {
+          "file": "hikari/choice/01.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "hikari/choice/02.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "hikari/choice/03.webp",
+          "tag": "choice"
+        },
+        {
+          "file": "hikari/failed/01.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "hikari/failed/02.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "hikari/failed/03.webp",
+          "tag": "failed"
+        },
+        {
+          "file": "hikari/working/01.webp",
+          "tag": "working"
+        }
+      ]
     }
   ]
 }

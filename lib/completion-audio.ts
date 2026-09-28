@@ -16,6 +16,7 @@ export const COMPLETION_AUDIO_ALIASES = [
   "RIN(린)",
   "NOVA(노바)",
   "SHION(시온)",
+  "HIKARI(히카리)",
 ] as const;
 
 export type CompletionAudioAlias = (typeof COMPLETION_AUDIO_ALIASES)[number];
@@ -28,6 +29,7 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "RIN(린)": "rin",
   "NOVA(노바)": "nova",
   "SHION(시온)": "shion",
+  "HIKARI(히카리)": "hikari",
 };
 
 /**

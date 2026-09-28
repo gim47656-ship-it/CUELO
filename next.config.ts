@@ -64,6 +64,13 @@ const nextConfig: NextConfig = {
   // Allow the dev server to be reached over the loopback interface (the
   // browser tab connects to http://127.0.0.1:30141) and from LAN devices.
   allowedDevOrigins: ["127.0.0.1", "192.168.*.*"],
+  experimental: {
+    // `proxy.ts` matches every `/api/*` request, and Next hands a route only the
+    // first `proxyClientMaxBodySize` bytes of a body that passed through the proxy
+    // (default 10MB). `/api/files` accepts 100MB per upload and `/api/attachments`
+    // 25MB per file, so the proxy must let a full upload through.
+    proxyClientMaxBodySize: 101 * 1024 * 1024,
+  },
   async headers() {
     return [
       {

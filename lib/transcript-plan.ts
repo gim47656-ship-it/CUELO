@@ -1,4 +1,4 @@
-import { countToolCallBlocks, getAssistantErrorMessage, splitAssistantBlockRuns, type DisplayOptions } from "./message-display";
+import { countToolCallBlocks, createToolImageCollector, getAssistantErrorMessage, splitAssistantBlockRuns, type DisplayOptions } from "./message-display";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage } from "./types";
 
 export interface ProcessEntry {
@@ -138,6 +138,8 @@ function hasAssistantMessage(messages: AgentMessage[], from: number, to: number)
 // renders standalone in transcript order while tool calls, thinking and
 // process-only messages fold. A turn that concludes twice therefore shows both
 // conclusions; folding by "last answer wins" used to hide the earlier one.
+// Images a tool produced or inspected are part of what the reader came for too:
+// they ride on the next answer, or close the turn on their own.
 function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, options: DisplayOptions): TranscriptRenderItem[] {
   const items: TranscriptRenderItem[] = [];
   let entries: ProcessEntry[] = [];
@@ -145,6 +147,7 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
   let precedingBlocks: AssistantContentBlock[] = [];
   let runIndex = 0;
   let groupIndex = 0;
+  const toolImages = createToolImageCollector(messages.slice(anchorIdx + 1, endIdx));
 
   const flushProcess = (): void => {
     if (entries.length === 0) return;
@@ -164,7 +167,7 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
 
   const pushAnswer = (idx: number, blocks: AssistantContentBlock[]): void => {
     flushProcess();
-    items.push({ kind: "answer", anchorIdx, idx, runIndex: runIndex++, blocks, precedingBlocks });
+    items.push({ kind: "answer", anchorIdx, idx, runIndex: runIndex++, blocks: toolImages.attach(blocks), precedingBlocks });
     precedingBlocks = [];
   };
 
@@ -198,12 +201,17 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
       // so only its process blocks fold and the entry carries them explicitly.
       entries.push(answerRuns > 0 ? { idx, blocks: run.blocks } : { idx });
       toolCallCount += countToolCallBlocks(run.blocks);
+      toolImages.collect(idx, run.blocks);
       for (const block of run.blocks) precedingBlocks.push(block);
     }
     // A provider error is the outcome of the turn even with no answer content.
     if (answerRuns === 0 && getAssistantErrorMessage(assistant, options)) pushAnswer(idx, []);
   }
   flushProcess();
+  // Images no later answer picked up still belong to this turn's conversation.
+  // The trailing work's written-file summary is not moved onto them.
+  const remaining = toolImages.takeRemaining();
+  if (remaining) items.push({ kind: "answer", anchorIdx, idx: remaining.idx, runIndex: runIndex++, blocks: remaining.blocks, precedingBlocks: [] });
 
   const turnHasAnswer = items.some((item) => item.kind === "answer");
   for (const item of items) {
@@ -298,6 +306,20 @@ export function partitionTranscriptPlan(
     target.toolCallCount += toolCalls;
   };
 
+  // The live tail is flat, so its tool images are gathered here with the same
+  // rule a settled turn uses; a settled turn's plan items already carry theirs.
+  const toolImages = createToolImageCollector(messages);
+  const nextRunIndex = new Map<number, number>();
+  const pushAnswer = (idx: number, blocks: AssistantContentBlock[]): void => {
+    const runIndex = nextRunIndex.get(idx) ?? 0;
+    nextRunIndex.set(idx, runIndex + 1);
+    main.push({ kind: "answer", anchorIdx, idx, runIndex, blocks: toolImages.attach(blocks), precedingBlocks: [] });
+  };
+  const flushToolImages = (): void => {
+    const remaining = toolImages.takeRemaining();
+    if (remaining) pushAnswer(remaining.idx, remaining.blocks);
+  };
+
   for (const item of plan) {
     if (item.kind === "answer") {
       main.push(item);
@@ -311,6 +333,7 @@ export function partitionTranscriptPlan(
     const message = messages[item.idx];
     if (!message) continue;
     if (message.role === "user") {
+      flushToolImages();
       anchorIdx = item.idx;
       main.push(item);
       continue;
@@ -332,21 +355,20 @@ export function partitionTranscriptPlan(
     // turn is classified instead of leaking tool calls into the conversation.
     const assistant = message as AssistantMessage;
     const runs = splitAssistantBlockRuns(assistant, options);
-    let runIndex = 0;
     let answered = false;
     for (const run of runs) {
       if (run.kind === "answer") {
-        main.push({ kind: "answer", anchorIdx, idx: item.idx, runIndex: runIndex++, blocks: run.blocks, precedingBlocks: [] });
+        pushAnswer(item.idx, run.blocks);
         answered = true;
         continue;
       }
       addEntries(anchorIdx, [{ idx: item.idx, blocks: run.blocks }], countToolCallBlocks(run.blocks));
+      toolImages.collect(item.idx, run.blocks);
     }
     // A provider error is the outcome of the turn; it must stay visible.
-    if (!answered && getAssistantErrorMessage(assistant, options)) {
-      main.push({ kind: "answer", anchorIdx, idx: item.idx, runIndex, blocks: [], precedingBlocks: [] });
-    }
+    if (!answered && getAssistantErrorMessage(assistant, options)) pushAnswer(item.idx, []);
   }
+  flushToolImages();
 
   return { main, process };
 }

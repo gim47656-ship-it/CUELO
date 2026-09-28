@@ -54,6 +54,12 @@ Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증
 
 Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발주보다 필요한 확인과 회신을 먼저 처리합니다. 승인과 완료 보고가 엇갈렸을 때는 이미 끝난 검사를 반복하지 않고 최신 승인과 남은 동작을 대조해 이어갑니다. 실패를 기록하는 데서 끝내지 않고 기존 규칙의 실행 위반과 실제 누락을 구분해 다음 작업에 반영하며, 효과를 관측하기 전에는 개선됐다고 단정하지 않습니다.
 
+## 다중 파일 조사 `skim`
+
+Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `opencode-go/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 OpenCode Go로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
+
+`modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `openai-codex/gpt-6-sol`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sol을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
+
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.

@@ -31,15 +31,19 @@ import {
   MAX_ATTACHED_DOCUMENT_TEXT_CHARS,
   MAX_ATTACHED_DOCUMENTS,
   MAX_ATTACHED_PDF_PAGES,
+  MAX_STORED_ATTACHMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS,
   classifyAttachmentFiles,
+  decodeTextAttachment,
+  describeStoredAttachment,
   extractAttachedDocument,
   formatAttachmentSize,
   getClipboardFiles,
   getSupportedDocumentKind,
   normalizeAttachedDocuments,
   parseDocumentPrompt,
+  uploadChatAttachment,
   type AttachedDocument,
 } from "@/lib/document-attachments";
 import {
@@ -118,7 +122,12 @@ export async function dispatchSlashSubmission(
 
 interface ComposerDocument extends AttachedDocument {
   id: number;
-  status: "extracting" | "ready";
+  status: "extracting" | "uploading" | "transcribing" | "ready";
+  /** Saved on the server and attached by path; audio also carries its transcript. */
+  stored?: "audio" | "file";
+  /** Bytes of the pasted file; `size` is the attached text once a stored file becomes a path note. */
+  sourceSize?: number;
+  transcriptFailed?: boolean;
 }
 
 interface ModelOption {
@@ -562,7 +571,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     () => attachedDocuments.filter((document) => document.status === "ready"),
     [attachedDocuments],
   );
-  const isExtractingDocument = attachedDocuments.some((document) => document.status === "extracting");
+  const isExtractingDocument = attachedDocuments.some((document) => document.status !== "ready");
   const commandValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && attachedDocuments.length === 0 && commandValue.startsWith("!");
   const bashExcluded = bashMode && commandValue.startsWith("!!");
@@ -945,19 +954,105 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [t]);
 
+  const replaceComposerDocument = useCallback((id: number, next: ComposerDocument | null): boolean => {
+    if (!attachedDocumentsRef.current.some((document) => document.id === id)) return false;
+    const documents = next
+      ? attachedDocumentsRef.current.map((document) => (document.id === id ? next : document))
+      : attachedDocumentsRef.current.filter((document) => document.id !== id);
+    attachedDocumentsRef.current = documents;
+    setAttachedDocuments(documents);
+    return true;
+  }, []);
+
+  /**
+   * Audio and every other file: text that decodes and fits is inlined like a document; the rest is
+   * saved in the session attachment folder and attached as its path (audio with its transcript).
+   */
+  const processFileAttachments = useCallback(async (files: File[], kind: "audio" | "file") => {
+    for (const file of files) {
+      if (attachedDocumentsRef.current.length >= MAX_ATTACHED_DOCUMENTS) {
+        setAttachmentError(t("chat.attachLimit", { count: MAX_ATTACHED_DOCUMENTS }));
+        continue;
+      }
+      if (file.size > MAX_STORED_ATTACHMENT_BYTES) {
+        setAttachmentError(t("chat.attachStoredTooLarge", {
+          name: file.name,
+          limit: formatAttachmentSize(MAX_STORED_ATTACHMENT_BYTES),
+        }));
+        continue;
+      }
+      const pending: ComposerDocument = {
+        id: ++nextDocumentAttachmentId,
+        name: file.name,
+        mimeType: "text/plain",
+        size: file.size,
+        text: "",
+        status: kind === "audio" ? "transcribing" : "extracting",
+        sourceSize: file.size,
+      };
+      const withPending = [...attachedDocumentsRef.current, pending];
+      attachedDocumentsRef.current = withPending;
+      setAttachedDocuments(withPending);
+      const fitsBesideOthers = (textLength: number, bytes: number) => {
+        const others = attachedDocumentsRef.current.filter((document) => document.id !== pending.id);
+        return textLength <= MAX_ATTACHED_DOCUMENT_TEXT_CHARS
+          && others.reduce((total, document) => total + document.text.length, 0) + textLength <= MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS
+          && others.reduce((total, document) => total + document.size, 0) + bytes <= MAX_TOTAL_ATTACHED_DOCUMENT_BYTES;
+      };
+
+      if (kind === "file" && file.size <= MAX_ATTACHED_DOCUMENT_BYTES) {
+        const text = await file.arrayBuffer().then((buffer) => decodeTextAttachment(new Uint8Array(buffer)), () => null);
+        if (text !== null && fitsBesideOthers(text.length, file.size)) {
+          replaceComposerDocument(pending.id, { ...pending, text, status: "ready" });
+          continue;
+        }
+      }
+      const storing: ComposerDocument = { ...pending, stored: kind, status: kind === "audio" ? "transcribing" : "uploading" };
+      if (!replaceComposerDocument(pending.id, storing)) continue;
+      try {
+        const stored = await uploadChatAttachment(file, sessionId);
+        const othersText = attachedDocumentsRef.current
+          .filter((document) => document.id !== pending.id)
+          .reduce((total, document) => total + document.text.length, 0);
+        const text = describeStoredAttachment(
+          stored,
+          Math.min(MAX_ATTACHED_DOCUMENT_TEXT_CHARS, MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS - othersText),
+        );
+        const size = new TextEncoder().encode(text).byteLength;
+        if (!fitsBesideOthers(text.length, size)) {
+          if (replaceComposerDocument(pending.id, null)) {
+            setAttachmentError(t("chat.attachTotalTooLarge", {
+              limit: formatAttachmentSize(MAX_TOTAL_ATTACHED_DOCUMENT_BYTES),
+            }));
+          }
+          continue;
+        }
+        const transcriptFailed = kind === "audio" && stored.transcript === undefined;
+        const settled = replaceComposerDocument(pending.id, { ...storing, text, size, status: "ready", transcriptFailed });
+        if (settled && transcriptFailed) {
+          setAttachmentError(t("chat.attachTranscribeFailedNotice", { name: file.name, error: stored.transcriptError ?? "" }));
+        }
+      } catch (error) {
+        if (replaceComposerDocument(pending.id, null)) {
+          setAttachmentError(t("chat.attachUploadFailed", {
+            name: file.name,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      }
+    }
+  }, [replaceComposerDocument, sessionId, t]);
+
   const processAttachmentFiles = useCallback(async (files: File[]) => {
     setAttachmentError(null);
-    const { images, documents, unsupported } = classifyAttachmentFiles(files);
-    if (unsupported.length > 0) {
-      setAttachmentError(t("chat.attachUnsupported", {
-        names: unsupported.map((file) => file.name).join(", "),
-      }));
-    }
+    const { images, documents, audio, files: others } = classifyAttachmentFiles(files);
     await Promise.all([
       processImageFiles(images),
       processDocumentFiles(documents),
+      processFileAttachments(audio, "audio"),
+      processFileAttachments(others, "file"),
     ]);
-  }, [processDocumentFiles, processImageFiles, t]);
+  }, [processDocumentFiles, processFileAttachments, processImageFiles]);
 
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
@@ -1730,7 +1825,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,.md,.markdown,.pdf,.txt,.csv,.tsv,.json,.log,text/markdown,text/plain,text/csv,application/json,application/pdf"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {
@@ -1938,7 +2032,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <div
                 className="composer-chip"
                 role="listitem"
-                aria-busy={document.status === "extracting" || undefined}
+                aria-busy={document.status !== "ready" || undefined}
                 key={document.id}
                 style={{
                   display: "flex",
@@ -1950,7 +2044,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   padding: "0 7px 0 9px",
                 }}
               >
-                {document.status === "extracting" ? (
+                {document.status !== "ready" ? (
                   <span
                     aria-hidden="true"
                     style={{
@@ -1969,8 +2063,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     {document.name}
                   </span>
                   <span style={{ color: "var(--text-dim)", fontSize: 10 }}>
-                    {DOCUMENT_KIND_LABEL[document.mimeType]} · {formatAttachmentSize(document.size)}
+                    {document.stored === "audio"
+                      ? t("chat.attachKindAudio")
+                      : document.stored === "file"
+                        ? t("chat.attachKindFile")
+                        : DOCUMENT_KIND_LABEL[document.mimeType]}
+                    {" · "}{formatAttachmentSize(document.sourceSize ?? document.size)}
                     {document.status === "extracting" ? ` · ${t("chat.attachExtracting")}` : ""}
+                    {document.status === "uploading" ? ` · ${t("chat.attachUploading")}` : ""}
+                    {document.status === "transcribing" ? ` · ${t("chat.attachTranscribing")}` : ""}
+                    {document.transcriptFailed && (
+                      <span style={{ color: "var(--danger)" }}>{` · ${t("chat.attachTranscribeFailed")}`}</span>
+                    )}
                   </span>
                 </span>
                 <button

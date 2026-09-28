@@ -6,7 +6,8 @@ export type CharacterAlias =
   | "MIO(미오)"
   | "RIN(린)"
   | "NOVA(노바)"
-  | "SHION(시온)";
+  | "SHION(시온)"
+  | "HIKARI(히카리)";
 
 interface OAuthAccountLike {
   position?: number;
@@ -66,6 +67,10 @@ export const CHARACTER_VOICES: Readonly<Record<CharacterAlias, CharacterVoice>> 
     temperament: "우아하고 전략적이며, 긴 흐름을 읽고 여유 있게 허점을 짚는 상담가형",
     expression: "정돈된 문장, 넓은 시야의 해석, 은근한 장난기와 확신이 섞인 조언",
   },
+  "HIKARI(히카리)": {
+    temperament: "한눈에 핵심을 잡아내는 빠른 관찰자. 밝고 장난스러운 미소녀로, 남들이 놓친 걸 먼저 보고 살짝 여유를 부리는 관찰형",
+    expression: "경쾌하고 톡 쏘는 반말, 본 것을 곧바로 짚는 짧은 한마디, 틀리면 시원하게 인정하는 솔직함, 다 알고 있다는 듯 살짝 뽐내는 장난기. 귀엽되 튀지 않게",
+  },
 };
 
 export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>> = {
@@ -95,6 +100,12 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
     model: "web6/gpt-6-pro",
     toolCapable: false,
   },
+  // 호출·교체 별칭은 없다(사용자가 요청하지 않음). 이 표가 전 alias를 요구하므로 실제 모델을 적어 두지만
+  // CHARACTER_NAME_PATTERN·NAME_TO_ALIAS에는 넣지 않아 자연어로 부를 수 없다.
+  "HIKARI(히카리)": {
+    model: "google-antigravity/gemini-3.8-flash",
+    toolCapable: true,
+  },
 };
 
 const PROVIDER_CHARACTER: Readonly<Record<string, CharacterAlias>> = {
@@ -102,6 +113,7 @@ const PROVIDER_CHARACTER: Readonly<Record<string, CharacterAlias>> = {
   "b-ai": "ISANA(이사나)",
   "opencode-go": "NOVA(노바)",
   web6: "SHION(시온)",
+  "google-antigravity": "HIKARI(히카리)",
 };
 
 const NAME_TO_ALIAS: Readonly<Record<string, CharacterAlias>> = {

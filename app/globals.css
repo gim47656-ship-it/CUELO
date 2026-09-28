@@ -3359,6 +3359,77 @@ section[aria-label="Subagent 기록"] > header,
   background: var(--bg-hover);
 }
 
+/* 도구가 만들거나 확인한 이미지. 대화 흐름에서는 답 사이의 썸네일이고, 누르면 원본을 연다.
+   첨부 이미지(사용자 말풍선)와 같은 240px 상한을 쓴다. */
+.tool-image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-image-thumb {
+  display: inline-flex;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+  cursor: zoom-in;
+  line-height: 0;
+  overflow: hidden;
+}
+
+.tool-image-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tool-image-thumb img {
+  display: block;
+  max-inline-size: min(240px, 100%);
+  max-block-size: 240px;
+  object-fit: contain;
+}
+
+.tool-image-dialog {
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+  text-align: center;
+}
+
+.tool-image-dialog::backdrop {
+  background: var(--seed-color-bg-overlay);
+}
+
+.tool-image-full {
+  display: block;
+  max-inline-size: min(1024px, 90vw);
+  max-block-size: 80vh;
+  object-fit: contain;
+  border-radius: var(--radius-control);
+}
+
+.tool-image-close {
+  margin-block-start: 10px;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tool-image-close:hover {
+  background: var(--bg-hover);
+}
+
 /* 상태 배지는 「지금 쓸 수 있는가」라는 런타임 사실이고, 오른쪽 스위치는 「쓸 것인가」라는
    사용자 의사다. 두 축이 다르므로 생김새도 갈라놓는다. */
 .resource-account-badge {

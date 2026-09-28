@@ -161,11 +161,13 @@ describe("character voice identity", () => {
       "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
       "NOVA(노바)": { model: "opencode-go/muse-spark-1.3-contributor", toolCapable: true },
       "SHION(시온)": { model: "web6/gpt-6-pro", toolCapable: false },
+      "HIKARI(히카리)": { model: "google-antigravity/gemini-3.8-flash", toolCapable: true },
     });
     expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
     expect(characterForProvider("b-ai")).toBe("ISANA(이사나)");
     expect(characterForProvider("opencode-go")).toBe("NOVA(노바)");
     expect(characterForProvider("web6")).toBe("SHION(시온)");
+    expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
   });
 
   test("Anthropic stable storage positions map 0 to RIN and 1 to MIO", () => {
@@ -221,6 +223,9 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("메인을 MIO로 지금 교체해 주세요.")).toEqual({ kind: "switch", alias: "MIO(미오)" });
     expect(parseCharacterIntent("시온 호출해")).toEqual({ kind: "summon", aliases: ["SHION(시온)"] });
     expect(parseCharacterIntent("미오와 린을 교체해")).toBeUndefined();
+    // HIKARI는 Gemini 계정의 얼굴일 뿐 호출·교체 별칭이 없다.
+    expect(parseCharacterIntent("히카리 불러와")).toBeUndefined();
+    expect(parseCharacterIntent("hikari로 교체해")).toBeUndefined();
   });
 
   test("explicit multi-character summon carries every named alias in mention order", () => {

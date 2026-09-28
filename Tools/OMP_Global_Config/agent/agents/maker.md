@@ -3,10 +3,10 @@ name: maker
 description: Delegated end-to-end implementation agent that investigates, edits, repairs, validates its own slice, and verifies the actual surface it changed.
 model: "@implSol"
 thinking-level: medium
-tools: [read, bash, edit, write, grep, glob, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
+tools: [read, bash, edit, write, grep, glob, skim, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=cf5a49d73640
+<!-- omp-global-config:generated source-hash=99a91afed197
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check

@@ -5,6 +5,8 @@ export const MAX_TOTAL_ATTACHED_DOCUMENT_BYTES = 16 * 1024 * 1024;
 export const MAX_ATTACHED_DOCUMENT_TEXT_CHARS = 120_000;
 export const MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS = 240_000;
 export const MAX_ATTACHED_PDF_PAGES = 250;
+/** Same per-file cap as the file browser upload (`app/api/files` MAX_UPLOAD_FILE_BYTES). */
+export const MAX_STORED_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 export type SupportedDocumentKind = "markdown" | "text" | "pdf";
 
@@ -92,23 +94,70 @@ export function isSupportedDocumentFile(file: Pick<FileIdentity, "name" | "type"
   return getSupportedDocumentKind(file) !== null;
 }
 
-export function isSupportedAttachmentFile(file: Pick<FileIdentity, "name" | "type">): boolean {
-  return file.type.startsWith("image/") || isSupportedDocumentFile(file);
+const AUDIO_MIME_BY_EXTENSION: Record<string, string> = {
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".wave": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".flac": "audio/flac",
+  ".webm": "audio/webm",
+  ".aac": "audio/aac",
+  ".aif": "audio/aiff",
+  ".aiff": "audio/aiff",
+};
+
+/** The audio MIME type to send for transcription, or null when the file is not audio. */
+export function getAudioMimeType(file: Pick<FileIdentity, "name" | "type">): string | null {
+  const lowerName = file.name.toLocaleLowerCase();
+  const dot = lowerName.lastIndexOf(".");
+  const byExtension = dot > 0 ? AUDIO_MIME_BY_EXTENSION[lowerName.slice(dot)] : undefined;
+  if (byExtension) return byExtension;
+  const mimeType = file.type.toLocaleLowerCase().split(";", 1)[0]?.trim();
+  return mimeType?.startsWith("audio/") ? mimeType : null;
 }
 
-/** Classify each candidate exactly once; image files win over the document extensions. */
+/**
+ * Classify each candidate exactly once: images win, then the extracted document kinds, then audio.
+ * Everything else is a generic file that is inlined when it decodes as text and stored otherwise.
+ */
 export function classifyAttachmentFiles<T extends Pick<FileIdentity, "name" | "type">>(
   files: readonly T[],
-): { images: T[]; documents: T[]; unsupported: T[] } {
+): { images: T[]; documents: T[]; audio: T[]; files: T[] } {
   const images: T[] = [];
   const documents: T[] = [];
-  const unsupported: T[] = [];
+  const audio: T[] = [];
+  const others: T[] = [];
   for (const file of files) {
     if (file.type.startsWith("image/")) images.push(file);
     else if (isSupportedDocumentFile(file)) documents.push(file);
-    else unsupported.push(file);
+    else if (getAudioMimeType(file)) audio.push(file);
+    else others.push(file);
   }
-  return { images, documents, unsupported };
+  return { images, documents, audio, files: others };
+}
+
+function decodeStrict(label: string, bytes: Uint8Array): string | null {
+  try {
+    const text = new TextDecoder(label, { fatal: true }).decode(bytes);
+    return text.includes("\0") ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Text for a code or config file, or null when the bytes are binary. A UTF-16 BOM selects UTF-16;
+ * otherwise strict UTF-8 (BOM dropped), then EUC-KR/CP949 for legacy Korean sources. NUL bytes
+ * mark binary formats (zip-based office files, executables).
+ */
+export function decodeTextAttachment(bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return decodeStrict("utf-16le", bytes.subarray(2));
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return decodeStrict("utf-16be", bytes.subarray(2));
+  if (bytes.includes(0)) return null;
+  return decodeStrict("utf-8", bytes) ?? decodeStrict("euc-kr", bytes);
 }
 
 /**
@@ -284,6 +333,67 @@ export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** `POST /api/attachments` result: where the server saved the file, plus the audio transcript. */
+export interface StoredAttachment {
+  path: string;
+  size: number;
+  mimeType: string;
+  transcript?: string;
+  transcriptError?: string;
+}
+
+const TRANSCRIPT_TRUNCATED_NOTE = "\n[transcript truncated to fit the attachment limit]";
+const STORED_REFERENCE_PREFIX = "File saved at: ";
+
+/** What a sent attachment chip calls the document. Stored files and audio are text references to a saved file. */
+export type AttachedDocumentKind = "pdf" | "markdown" | "audio" | "file" | "text";
+
+export function attachedDocumentKind(document: Pick<AttachedDocument, "name" | "mimeType" | "text">): AttachedDocumentKind {
+  if (document.mimeType === "application/pdf") return "pdf";
+  if (document.mimeType === "text/markdown") return "markdown";
+  if (!document.text.startsWith(STORED_REFERENCE_PREFIX)) return "text";
+  return getAudioMimeType({ name: document.name, type: "" }) ? "audio" : "file";
+}
+
+/**
+ * The document text that tells the agent where a stored file is, with the transcript for audio.
+ * The transcript is cut to `maxChars` so the reference never falls out of the attachment limits.
+ */
+export function describeStoredAttachment(
+  stored: StoredAttachment,
+  maxChars = MAX_ATTACHED_DOCUMENT_TEXT_CHARS,
+): string {
+  const reference = `${STORED_REFERENCE_PREFIX}${stored.path}\n(${stored.mimeType}, ${stored.size} bytes) Open it with a tool when its contents are needed.`;
+  if (stored.transcript !== undefined) {
+    const header = `${reference}\n\nTranscript of the audio (speech-to-text by Gemini; may contain recognition errors):\n`;
+    const full = header + stored.transcript;
+    if (full.length <= maxChars) return full;
+    return header + stored.transcript.slice(0, Math.max(0, maxChars - header.length - TRANSCRIPT_TRUNCATED_NOTE.length)) + TRANSCRIPT_TRUNCATED_NOTE;
+  }
+  return stored.transcriptError
+    ? `${reference}\nThe audio could not be transcribed: ${stored.transcriptError}`
+    : reference;
+}
+
+/** Saves one file in this session's attachment folder; audio also comes back transcribed. */
+export async function uploadChatAttachment(file: File, sessionId: string | undefined): Promise<StoredAttachment> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  if (sessionId) body.append("sessionId", sessionId);
+  const response = await fetch("/api/attachments", { method: "POST", body });
+  const payload = await response.json().catch(() => null) as (Partial<StoredAttachment> & { error?: unknown }) | null;
+  if (!response.ok || typeof payload?.path !== "string" || typeof payload.size !== "number" || typeof payload.mimeType !== "string") {
+    throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`);
+  }
+  return {
+    path: payload.path,
+    size: payload.size,
+    mimeType: payload.mimeType,
+    ...(typeof payload.transcript === "string" ? { transcript: payload.transcript } : {}),
+    ...(typeof payload.transcriptError === "string" ? { transcriptError: payload.transcriptError } : {}),
+  };
 }
 
 async function extractPdfText(file: File): Promise<string> {
