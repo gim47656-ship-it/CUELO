@@ -34,6 +34,7 @@ import {
   MAX_STORED_ATTACHMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS,
+  attachedDocumentKind,
   classifyAttachmentFiles,
   decodeTextAttachment,
   describeStoredAttachment,
@@ -370,12 +371,17 @@ function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined): Atta
     .slice(0, MAX_ATTACHED_IMAGES)
     .map(draftImageToAttachedImage);
 }
+/** Drafts keep only the attached text, so the saved-file/audio chip kind is read back from it. */
 function draftDocumentsToComposerDocuments(documents: ChatDraftDocument[] | undefined): ComposerDocument[] {
-  return normalizeAttachedDocuments(documents).map((document) => ({
-    ...document,
-    id: ++nextDocumentAttachmentId,
-    status: "ready",
-  }));
+  return normalizeAttachedDocuments(documents).map((document) => {
+    const kind = attachedDocumentKind(document);
+    return {
+      ...document,
+      id: ++nextDocumentAttachmentId,
+      status: "ready",
+      ...(kind === "audio" || kind === "file" ? { stored: kind } : {}),
+    };
+  });
 }
 
 

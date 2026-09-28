@@ -10,6 +10,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canRestoreUserMessage, dispatchSlashSubmission, filterModelOptions, getUserMessageText, getUserMessageDraftImages, prepareQueuedSubmission } = await jiti.import("./ChatInput.tsx");
 const { clearDraft, getDraft, mergeRestoredQueuedMessages, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("../lib/draft-store.ts");
+const { describeStoredAttachment } = await jiti.import("../lib/document-attachments.ts");
 const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
 
 test("renders the upstream model error", () => {
@@ -390,4 +391,34 @@ test("renders compact errors above the input as a wrapping alert", () => {
   assert.match(html, /&lt;html&gt;request forbidden&lt;\/html&gt;/);
   assert.match(html, /white-space:pre-wrap/);
   assert.ok(html.indexOf('role="alert"') < html.indexOf("<textarea"));
+});
+
+test("a restored draft keeps the saved-file and audio chip kinds", () => {
+  const key = "draft-chip-kind";
+  const storedDocument = (name, mimeType) => {
+    const text = describeStoredAttachment({ path: `C:/Users/me/.omp/agent/cuelo-attachments/new/${name}`, size: 5000, mimeType });
+    return { name, mimeType: "text/plain", size: text.length, text };
+  };
+  setDraft(key, {
+    value: "",
+    images: [],
+    documents: [
+      storedDocument("report.zip", "application/zip"),
+      storedDocument("memo.mp3", "audio/mpeg"),
+      { name: "notes.txt", mimeType: "text/plain", size: 5, text: "hello" },
+    ],
+  });
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        I18nProvider,
+        null,
+        React.createElement(ChatInput, { onSend() {}, onAbort() {}, onCompact() {}, isStreaming: false, draftKey: key }),
+      ),
+    );
+    const labels = [...html.matchAll(/>(Text|File|Audio) · /g)].map((match) => match[1]);
+    assert.deepEqual(labels, ["File", "Audio", "Text"]);
+  } finally {
+    clearDraft(key);
+  }
 });
