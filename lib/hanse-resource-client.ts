@@ -594,6 +594,13 @@ async function requestJson<T>(
   }
 }
 
+/**
+ * 사용량 화면에서 빼는 provider. Antigravity 부계정은 채팅 계정이 아니라 vision·thinking 번역에만
+ * 쓰는 보조 계정이라 카드가 필요 없다(2026-09-28 사용자 결정). 여기서 빼야 얼굴 배정 풀에도
+ * 들어가지 않는다.
+ */
+const HIDDEN_USAGE_PROVIDERS: ReadonlySet<string> = new Set(["google-antigravity"]);
+
 export async function loadUsage(
   options: ResourceRequestOptions<UsageSnapshot> = {},
 ): Promise<ResourceLoadState<UsageSnapshot>> {
@@ -602,7 +609,8 @@ export async function loadUsage(
     if (!data || !Array.isArray(data.reports)) {
       throw new ResourceClientError("사용량 응답 형식이 올바르지 않습니다.", "invalid-response");
     }
-    return { status: "fresh", data, error: null };
+    const reports = data.reports.filter((report) => !HIDDEN_USAGE_PROVIDERS.has(report.provider));
+    return { status: "fresh", data: reports.length === data.reports.length ? data : { ...data, reports }, error: null };
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }

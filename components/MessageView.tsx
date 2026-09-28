@@ -9,6 +9,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isHiddenAssistantBlock } from "@/lib/message-display";
+import { needsKoreanTranslation } from "@/lib/thinking-korean";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
 import { providerDisplayName } from "@/lib/hanse-resource-client";
@@ -184,6 +185,33 @@ function loadThinkingContent(sessionId: string, entryId: string, blockIndex: num
   if (thinkingContentCache.size > MAX_THINKING_CACHE_ENTRIES) {
     const oldestKey = thinkingContentCache.keys().next().value;
     if (oldestKey) thinkingContentCache.delete(oldestKey);
+  }
+  return request;
+}
+
+const MAX_THINKING_TRANSLATIONS = 200;
+const thinkingTranslationCache = new Map<string, Promise<string | null>>();
+
+/** Korean display copy of a finished English thinking block, or null when it needs none. */
+function translateThinking(text: string): Promise<string | null> {
+  const cached = thinkingTranslationCache.get(text);
+  if (cached) return cached;
+  const request = fetch("/api/thinking-translate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json() as { ko?: unknown };
+    return typeof data.ko === "string" && data.ko.trim() ? data.ko : null;
+  }).catch((error) => {
+    thinkingTranslationCache.delete(text);
+    throw error;
+  });
+  thinkingTranslationCache.set(text, request);
+  if (thinkingTranslationCache.size > MAX_THINKING_TRANSLATIONS) {
+    const oldest = thinkingTranslationCache.keys().next().value;
+    if (oldest !== undefined) thinkingTranslationCache.delete(oldest);
   }
   return request;
 }
@@ -838,7 +866,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
   }
   if (block.type === "thinking") {
-    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
+    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} isStreaming={isStreaming} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
   }
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
@@ -881,14 +909,15 @@ function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent
   return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
 }
 
-function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
+function ThinkingBlock({ block, duration, isStreaming, sessionId, entryId, blockIndex }: {
   block: ThinkingContent;
   duration?: number;
+  isStreaming?: boolean;
   sessionId?: string;
   entryId?: string;
   blockIndex: number;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(block.deferred === true);
   const [error, setError] = useState<string | null>(null);
@@ -930,6 +959,29 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
 
   const text = block.deferred ? content : block.thinking;
   const hasText = typeof text === "string" && text.trim().length > 0;
+  const [translation, setTranslation] = useState<{ source: string; ko: string } | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const wantsTranslation = locale === "ko" && !isStreaming && hasText && needsKoreanTranslation(text);
+
+  useEffect(() => {
+    if (!wantsTranslation || !text) {
+      setTranslating(false);
+      return;
+    }
+    let cancelled = false;
+    setTranslating(true);
+    void translateThinking(text)
+      .then((ko) => { if (!cancelled) setTranslation(ko ? { source: text, ko } : null); })
+      .catch(() => { if (!cancelled) setTranslation(null); })
+      .finally(() => { if (!cancelled) setTranslating(false); });
+    return () => {
+      cancelled = true;
+    };
+  }, [text, wantsTranslation]);
+
+  const ko = wantsTranslation && translation?.source === text ? translation.ko : null;
+  const shown = (ko && !showOriginal ? ko : text) ?? "";
 
   return (
     <div className="markdown-thinking" aria-label={t("i18n.thinking")}>
@@ -938,12 +990,24 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
           <span className="markdown-thinking-status">{t("i18n.loadingThinking")}</span>
         ) : error ? (
           <span className="markdown-thinking-error">{error}</span>
+        ) : translating && !ko ? (
+          <span className="markdown-thinking-status">{t("i18n.translatingThinking")}</span>
         ) : hasText ? (
-          <MarkdownBody className="markdown-thinking-body">{text}</MarkdownBody>
+          <MarkdownBody className="markdown-thinking-body">{shown}</MarkdownBody>
         ) : (
           <span className="markdown-thinking-status">{t("chat.thinking")}</span>
         )}
       </div>
+      {ko && (
+        <button
+          type="button"
+          className="markdown-thinking-toggle"
+          aria-pressed={showOriginal}
+          onClick={() => setShowOriginal((value) => !value)}
+        >
+          {showOriginal ? t("i18n.showTranslatedThinking") : t("i18n.showOriginalThinking")}
+        </button>
+      )}
       {duration !== undefined && hasText && (
         <span className="markdown-thinking-duration">{duration}s</span>
       )}

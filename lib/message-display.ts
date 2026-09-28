@@ -55,10 +55,11 @@ export interface AssistantBlockRun {
 }
 
 /**
- * Assistant prose is answer content wherever it sits in the message; tool calls
- * and thinking are process. Runs keep transcript order, so a message that
- * narrates, calls a tool and then concludes exposes both prose runs instead of
- * only the trailing one.
+ * Assistant prose and visible thinking are answer content wherever they sit in the message; tool
+ * calls are process. Runs keep transcript order, so a message that narrates, calls a tool and then
+ * concludes exposes both prose runs instead of only the trailing one. Thinking reaches this point
+ * only when `hideThinkingBlock` is off and the block has text (or loads it lazily); it then reads
+ * inline as the agent's monologue instead of folding into the work log.
  */
 export function splitAssistantBlockRuns(
   message: AssistantMessage,
@@ -67,6 +68,7 @@ export function splitAssistantBlockRuns(
   const runs: AssistantBlockRun[] = [];
   for (const block of getDisplayableAssistantBlocks(message, options)) {
     const kind: AssistantBlockRunKind = block.type === "image"
+      || block.type === "thinking"
       || (block.type === "text" && block.text.trim().length > 0)
       ? "answer"
       : "process";

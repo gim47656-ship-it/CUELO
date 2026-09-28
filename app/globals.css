@@ -619,6 +619,26 @@ pre, code {
   font-style: normal;
   font-variant-numeric: tabular-nums;
 }
+.markdown-thinking-toggle {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.markdown-thinking-toggle:hover {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+.markdown-thinking-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 .shell-output-preview {
   margin: 0;

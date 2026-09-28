@@ -39,6 +39,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 - 작업 공간(프로젝트·worktree)을 바꾸면 그곳에서 마지막으로 열어 둔 세션으로 돌아갑니다.
 - goal 모드의 자동 이어 가기와 todo 진행 상황을 대화창 위에서 확인합니다.
 - 작업 로그 패널에서 이번 턴의 과정 항목과 턴마다 쓴 파일을 따로 봅니다.
+- 모델의 영어 thinking을 한국어 혼잣말로 옮겨 대화 흐름에 보여 줍니다. 블록이 끝나면 Google Antigravity의 Gemini 3.8 Flash로 번역하고, 「원문」 버튼으로 원래 글을 볼 수 있습니다. 번역은 화면에만 쓰이며 세션 기록과 모델 문맥은 바꾸지 않습니다. thinking 원문이 Google로 전송되고, 본인 Antigravity 로그인이 필요합니다.
 
 **계정과 자원**
 
@@ -168,6 +169,8 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https://github.com/ddallabenetta/omp-web)을 기반으로 하고, omp-web은 [@agegr](https://github.com/agegr)의 [pi-web](https://github.com/agegr/pi-web)에서 갈라져 나왔습니다. CUELO 앱은 독립적으로 개발·배포하며 upstream 앱의 릴리스를 자동으로 따르지 않습니다. 기반 소스의 출처는 [`UPSTREAM.json`](./UPSTREAM.json)에 기록되어 있습니다.
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
+
+thinking 번역의 프롬프트·말투·요청 튜닝은 [@hvvsdcm](https://github.com/hvvsdcm)의 [omp-thinking-ko](https://github.com/hvvsdcm/omp-thinking-ko)(MIT, Copyright (c) 2026 hvvsdcm)에서 가져왔습니다. 라이선스 고지는 `lib/thinking-translate.ts`에 있습니다.
 
 캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION)의 그림·음성·스티커와 `docs/hero.png`는 CUELO 고유 자산입니다.
 

@@ -44,6 +44,8 @@ CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용�
 
 패치된 내장 코어는 thinking 요약을 생략하는 설정(`omitThinking`)에서도 Claude Opus 5.5 같은 최신 모델이 도구 호출 사이에 쓴 사용자용 진행 문장(progress update)을 본문으로 보여 줍니다. Anthropic은 이 문장을 별도 thinking 블록으로 보내므로, 생략 설정(`display: "omitted"`)을 그대로 쓰면 화면과 세션 기록에서 사라집니다. 코어는 공식 Anthropic API로 가는 이 요청을 `display: "updates"`(beta 헤더 `thinking-display-updates-2026-08-18`)로 보냅니다. 그러면 reasoning은 비어서 오고, 텍스트가 온 진행 문장만 본문 text로 내보냅니다. thinking 서명은 공식 문서대로 불투명 값으로 다루고 해석하지 않으며, 다음 요청에는 서명된 원래 thinking 블록을 그대로 돌려보냅니다. 공식 API가 아닌 주소는 upstream 동작을 따릅니다. 이 동작도 standalone `omp` 실행 파일에는 포함되지 않습니다.
 
+thinking을 보이게 설정하면(`omitThinking: false`, `hideThinkingBlock: false`) Anthropic은 `summarized`로 reasoning 요약과 진행 문장을 둘 다 thinking 블록으로 보내고, 블록 종류로는 둘을 가를 수 없습니다. 영어 reasoning 요약은 CUELO가 한국어 혼잣말로 옮겨 보이고, 한국어로 쓴 진행 문장은 그대로 보입니다. 사용자 답변 여부를 보는 가드(`steering-reply-gate`, `turn-end-guard`)는 [`lib/visible-text.ts`](../Tools/OMP_Global_Config/agent/extensions/lib/visible-text.ts)로 text 블록과 **한국어 thinking 블록**을 본문으로 셉니다. 영어 reasoning 요약만 있고 본문이 없으면 여전히 "답하지 않고 도구를 시작했다"고 안내합니다.
+
 edit 도구가 이전 read·검색에서 온전히 보이지 않은 줄을 기준으로 한 편집을 거부할 때, 패치된 내장 코어는 그 안내를 한국어로 바꿔 모델에 전달합니다. 안내 원문은 native 모듈이 영어로 만들며, 영어 안내 바로 뒤에 Main이 진행 문장을 영어로 이어 쓰는 일이 있었습니다. 알려진 문장 틀만 바꾸고 파일·줄·태그와 파일 내용 줄은 그대로 두며, 틀이 다른 오류는 원문을 유지합니다.
 
 upstream 18.3.3부터 코어는 `task`·`bash`를 가진 SubAgent에 `wait`를 자동으로 붙입니다. CUELO에서 `wait`는 Main 전용이므로 패치된 내장 코어는 이 자동 부여만 막고, agent 정의가 `wait`를 직접 적은 경우에는 그대로 줍니다. SubAgent는 자기 background job 결과를 기다리지 않고 자동 재개로 받습니다.

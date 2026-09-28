@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
+import { visibleBlockText } from "./lib/visible-text";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
 // 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, blocked·승인 경계는 진행을 강제하지 않는다.
@@ -54,8 +55,8 @@ function messageText(message: Message): string {
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return "";
   return (message.content as Block[])
-    .filter(block => block?.type === "text" && typeof block.text === "string")
-    .map(block => block.text as string).join("\n");
+    .flatMap(block => { const text = visibleBlockText(block); return text === undefined ? [] : [text]; })
+    .join("\n");
 }
 
 function unansweredSummary(messages: readonly unknown[], sources: readonly UserSource[]): QuestionSummary | undefined {
@@ -217,8 +218,7 @@ function lastAssistantText(messages: readonly unknown[]): { text: string; hasToo
     const blocks = Array.isArray(message.content) ? (message.content as Block[]) : [];
     const hasToolCall = blocks.some((block) => block?.type === "toolCall");
     const text = blocks
-      .filter((block) => block?.type === "text" && typeof block.text === "string")
-      .map((block) => block.text as string)
+      .flatMap((block) => { const visible = visibleBlockText(block); return visible === undefined ? [] : [visible]; })
       .join("\n");
     return { text, hasToolCall };
   }

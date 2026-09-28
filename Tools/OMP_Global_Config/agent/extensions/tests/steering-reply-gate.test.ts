@@ -59,6 +59,24 @@ describe("steering reply gate", () => {
     expect(h.sent[0]!.content).toContain("아직 답하지 않고 도구를 시작했다");
   });
 
+  test("thinking 표시 모드에서 한국어 진행 문장은 본문으로, 영어 reasoning 요약은 본문 없음으로 본다", async () => {
+    const seen: { assistant: string }[] = [];
+    const korean = harness(async (summary) => { seen.push(summary); return "answered"; });
+    await korean.steer("결과는 줘야지");
+    await korean.tool([
+      { type: "thinking", thinking: "Checking the report before answering the user." },
+      { type: "thinking", thinking: "측정 결과는 38%예요. 이어서 로그를 볼게요." },
+      { type: "toolCall" },
+    ]);
+    expect(korean.sent).toHaveLength(0);
+    expect(seen[0]!.assistant).toBe("측정 결과는 38%예요. 이어서 로그를 볼게요.");
+
+    const english = harness(async () => "answered");
+    await english.steer("결과는 줘야지");
+    await english.tool([{ type: "thinking", thinking: "Checking the report before answering the user." }, { type: "toolCall" }]);
+    expect(english.sent[0]!.content).toContain("아직 답하지 않고 도구를 시작했다");
+  });
+
   test("본문이 도구 이벤트에만 실려도 판정하고 민감 경로·URL·코드를 전달하지 않는다", async () => {
     const seen: unknown[] = [];
     const h = harness(async (summary) => { seen.push(summary); return "unanswered"; });

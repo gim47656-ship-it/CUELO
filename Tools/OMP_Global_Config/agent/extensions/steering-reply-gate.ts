@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { visibleBlockText } from "./lib/visible-text";
 
 type Message = {
   role?: string;
@@ -40,7 +41,8 @@ function introText(message: Message): string {
   const parts: string[] = [];
   for (const block of message.content) {
     if (block?.type === "toolCall") break;
-    if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
+    const text = visibleBlockText(block);
+    if (text !== undefined) parts.push(text);
   }
   return parts.join("\n").trim();
 }
@@ -79,13 +81,14 @@ async function classifySteeringReply(
 
 /**
  * 첫 도구 호출 앞에 사용자에게 보인 본문이 있었는지 본다. 실제 답변 여부는 별도로 판정한다. 도구 앞 progress update는
- * core가 본문 text 사본으로 싣는다(`display: "updates"`). thinking 서명은 불투명 값이라 해석하지 않는다.
+ * omitThinking이면 core가 본문 text 사본으로 싣고(`display: "updates"`), 아니면 한국어 thinking 블록으로 온다
+ * (`lib/visible-text.ts`). thinking 서명은 불투명 값이라 해석하지 않는다.
  */
 function hasIntroText(message: Message): boolean {
   if (!Array.isArray(message.content)) return false;
   for (const block of message.content) {
     if (block?.type === "toolCall") return false;
-    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) return true;
+    if (visibleBlockText(block)?.trim()) return true;
   }
   return false;
 }
