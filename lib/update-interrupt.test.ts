@@ -251,9 +251,11 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
   "성공 prompt 뒤 저장이 실패해도 다음 시도는 제거만 재시도한다": async (mod) => {
     seedPending([SID(16), SID(17)]);
     control.failStart.add(SID(17));
-    // 남은 세션이 있어 저장 경로(rename)를 타야 실패가 재현된다. 읽기는 되고 rename만 실패하도록
-    // 원자 저장 대상을 읽기전용으로 만든다.
+    // 남은 세션이 있어 저장 경로를 타야 실패가 재현된다. 읽기는 되고 저장만 실패하게 한다.
+    // Windows는 읽기전용 파일로 rename을 막고, POSIX는 파일 권한과 무관하게 rename하므로
+    // 폴더 쓰기를 막는다(임시 파일 생성에서 실패한다).
     chmodSync(pendingPath(), 0o444);
+    if (process.platform !== "win32") chmodSync(interruptDir(), 0o555);
     const logged: string[] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => {
@@ -270,9 +272,10 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
       expect(logged.some((line) => line.includes("pending save failed"))).toBe(true);
     } finally {
       console.error = originalError;
+      if (process.platform !== "win32") chmodSync(interruptDir(), 0o755);
+      chmodSync(pendingPath(), 0o666);
     }
 
-    chmodSync(pendingPath(), 0o666);
     const second = await mod.resumeInterruptedSessions();
 
     // 완료 기억이 있어 같은 세션에 prompt를 다시 보내지 않고, 제거와 남은 실패 기록만 갱신한다.
