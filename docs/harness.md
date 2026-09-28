@@ -80,6 +80,20 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
+## 스킬 비용 리포트
+
+omp는 세션마다 스킬의 이름과 짧은 설명만 system prompt에 넣고, `SKILL.md` 본문은 `skill://<name>`을 읽을 때마다 컨텍스트에 들어갑니다. [`skill-cost.mjs`](../Tools/OMP_Global_Config/skill-cost/skill-cost.mjs)는 설치된 스킬(`skills`, `managed-skills`)마다 설명·본문·참조 파일의 추정 토큰과, 최근 세션 기록에서 실제로 읽은 횟수·세션 수를 세어 **본문 토큰 × 읽은 횟수** 순으로 보여 줍니다. 한 번도 읽지 않은 스킬은 `[never read]`로 표시하고, 이 PC에 없는 스킬을 읽은 기록도 따로 남깁니다. 읽기 전용이며 네트워크나 모델을 호출하지 않습니다.
+
+```sh
+bun Tools/OMP_Global_Config/skill-cost/skill-cost.mjs [--days 30] [--json] [--agent-dir <dir>]
+```
+
+토큰은 토크나이저 없이 ASCII 4자당 1, 그 밖의 문자는 1자당 1로 추정하므로 순위 비교용입니다. 실제로 주입되는 짧은 설명의 합계는 `skill-descriptions.db` 기준으로 마지막 줄에 따로 나옵니다.
+
+## 기억 주제 갱신
+
+`learn`에 선택 인자 `topic`을 주면 같은 프로젝트 bank에서 그 주제의 기억 한 행을 새로 쌓지 않고 갱신하며, 결과에 기억 id와 revision을 보여 줍니다. 동시 실행 한도처럼 값이 바뀌는 사실이 여러 버전으로 쌓여 회상 자리(기본 8건)를 서로 차지하지 않게 하려는 것입니다. `topic` 없는 `learn`은 이전과 같습니다.
+
 ## omp core 패치
 
 [`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 이 공개 저장소의 CI는 앱 빌드·테스트와 함께 `Verify harness`에서 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌립니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 가볍게 실행합니다.

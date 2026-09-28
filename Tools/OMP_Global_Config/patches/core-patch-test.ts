@@ -2330,6 +2330,46 @@ console.log("\n[25] learn — 저장한 기억 id 를 결과에 싣는다");
 	check("learn 결과가 저장된 기억 id 를 알린다", learnedText === "Lesson stored (id: mem-42).", `text=${learnedText}`);
 }
 
+console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일반 learn 유지");
+{
+	const { LearnTool } = await import(`${CORE}/tools/learn.ts`);
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const dbPath = csJoin(fixtureRoot, "learn-topic.db");
+	const memory = new Mnemopi({ dbPath, bank: "test-bank", sessionId: "test-bank", reconcile: false });
+	const target = { bank: "test-bank", memory };
+	const state = {
+		sessionId: "topic-session",
+		session: { sessionManager: { getCwd: () => "F:/CUELO" } },
+		getScopedRetainTarget: () => target,
+		rememberScoped: (content: string, options: Parameters<typeof memory.remember>[1]) => memory.remember(content, options),
+	};
+	const session = {
+		settings: settingsLike({ get: (key: string) => (key === "memory.backend" ? "mnemopi" : key === "autolearn.enabled" ? true : undefined) }),
+		getMnemopiSessionState: () => state,
+	} as never;
+	try {
+		const tool = new LearnTool(session);
+		const first = await tool.execute("topic-1", { memory: "old topic lesson", topic: "  Deploy  " });
+		const fakeCredential = "gh" + "p_" + "1".repeat(36);
+		const second = await tool.execute("topic-2", { memory: "new topic lesson", topic: "deploy", context: fakeCredential });
+		const rows = memory.conn.query("SELECT id, content, metadata_json FROM working_memory ORDER BY id").all() as Array<{ id: string; content: string; metadata_json: string }>;
+		check("같은 topic은 단일 행에서 내용과 revision 2로 갱신한다",
+			rows.length === 1 && rows[0]?.content === "new topic lesson" &&
+			JSON.parse(rows[0]!.metadata_json).revision === 2 &&
+			String(first.content[0]?.text).includes(`id: ${rows[0]?.id}`) &&
+			String(second.content[0]?.text).includes(`id: ${rows[0]?.id}, revision: 2`));
+		check("topic 수정의 context는 기억 비밀 제거 규칙을 지킨다",
+			JSON.parse(rows[0]!.metadata_json).context === "[REDACTED]");
+		const unsafeTopic = await tool.execute("topic-unsafe", { memory: "should not store", topic: fakeCredential })
+			.then(() => "stored", (error: Error) => error.message);
+		check("credential 형태 topic은 저장 전에 거절한다", unsafeTopic.includes("contains a credential"));
+		const plain = await tool.execute("plain-1", { memory: "plain lesson" });
+		check("topic 없는 learn 결과/추가는 기존과 같다",
+			String(plain.content[0]?.text).startsWith("Lesson stored (id: ") &&
+			Number((memory.conn.query("SELECT COUNT(*) n FROM working_memory").get() as { n: number }).n) === 2);
+	} finally { memory.close(); }
+}
+
 // 2026-09-27 도구 오류 집계: 호출 형식 함정 두 가지가 매번 헛턴을 썼다. 실제 세션의 bash 도구와 todo 적용 함수로 본다.
 console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로 들어간다");
 {

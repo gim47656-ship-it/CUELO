@@ -139,9 +139,9 @@ jobs:
           node patches/check-extension-duplicates.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Extension, guard and finalizer tests
+      - name: Extension, guard, finalizer and skill-cost tests
         run: |
-          bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer
+          bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./skill-cost
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Core patch regression tests

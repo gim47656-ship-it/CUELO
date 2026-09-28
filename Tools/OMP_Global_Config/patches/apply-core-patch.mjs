@@ -4916,6 +4916,62 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
 	},
 	{
+		file: "src/tools/learn.ts",
+		marker: 'import { redactMemorySecrets } from "../memory-backend/redact";',
+		anchor: 'import { localBackend } from "../memory-backend/local-backend";',
+		patched: 'import { localBackend } from "../memory-backend/local-backend";\nimport { redactMemorySecrets } from "../memory-backend/redact";\nimport type { MnemopiSessionState } from "../mnemopi/state";',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: '"topic?": type("string").describe("stable topic key',
+		anchor: '\t"context?": type("string").describe("optional source context for the lesson"),',
+		patched: '\t"context?": type("string").describe("optional source context for the lesson"),\n\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: '"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),\n\t"scope?"',
+		anchor: '\t"scope?": type("\'project\' | \'global\'").describe(',
+		patched: '\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),\n\t"scope?": type("\'project\' | \'global\'").describe(',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: "// HANSE: topic-key learn upsert",
+		anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
+		patched: `// HANSE: topic-key learn upsert
+function upsertLearnTopic(
+	state: MnemopiSessionState,
+	params: LearnParams,
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
+): { id: string; revision: number } {
+	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
+	if (!topic) throw new Error("Learn topic must not be blank.");
+	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
+	const db = target.memory.conn;
+	const existing = db.query(
+		"SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+	).get(topic) as { id: string; metadata_json: string } | null;
+	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
+	if (existing) return db.transaction(() => {
+		const content = redactMemorySecrets(params.memory);
+		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
+			content, new Date().toISOString(),
+			JSON.stringify({ ...JSON.parse(existing.metadata_json), context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision }),
+			existing.id,
+		);
+		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		return { id: existing.id, revision };
+	})();
+	const id = state.rememberScoped(params.memory, {
+		source: "coding-agent-learn", importance: 0.8,
+		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
+		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
+	}, target);
+	return { id, revision };
+}
+
+export class LearnTool implements AgentTool<LearnSchema> {`,
+	},
+	{
 		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
 		// 가리킬 식별자가 없으면 적용·결과를 연결할 수 없다. mnemopi 경로에서만 id 를 싣는다.
 		// 18.3.3은 호출을 `rememberScoped(memory, {...}, target)` 3인자로 펼쳤다(learn.ts:110-134,
@@ -4923,13 +4979,15 @@ function operationFromNative(op: string): Operation | undefined {
 		file: "src/tools/learn.ts",
 		marker: "// HANSE: learn reports memory id",
 		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
-		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
+		legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
+		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget()) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
 	},
 	{
 		file: "src/tools/learn.ts",
-		marker: "memoryMessage = `Lesson stored (id: ${memoryId})`;",
+		marker: "memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ?",
 		anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
-		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
+		legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
+		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t} catch (error) {\n",
 	},
 	{
 		// 2026-09-27: 자동 주입 <memories> 는 세션 파일에 남지 않아, Main 단독 세션에서 어떤 교훈이 전달됐는지
@@ -5230,7 +5288,7 @@ function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
 for (const entry of EDITS) {
 	for (const candidate of [entry, ...(entry.alternates ?? [])]) {
-		for (const key of ["anchor", "marker", "patched"]) {
+		for (const key of ["anchor", "marker", "patched", "legacyPatched"]) {
 			if (typeof candidate[key] === "string") candidate[key] = candidate[key].replaceAll("\r\n", "\n");
 		}
 	}
@@ -5252,6 +5310,7 @@ function resolveEdit(entry, target) {
 	const live = present
 		.map(candidate => {
 			const text = readFileSync(join(target, candidate.file), "utf8");
+			if (candidate.legacyPatched && text.includes(candidate.legacyPatched)) return { ...candidate, path: join(target, candidate.file), text, status: "legacy" };
 			if (text.includes(candidate.marker)) return { ...candidate, path: join(target, candidate.file), text, status: "applied" };
 			if (text.includes(candidate.anchor)) return { ...candidate, path: join(target, candidate.file), text, status: "appliable" };
 			return undefined;
@@ -5310,7 +5369,7 @@ function main() {
 		// 적용의 역연산이므로 역순으로 되돌린다. 뒤 항목이 앞 항목의 patched 안쪽을 앵커로
 		// 쓰는 중첩 편집(completion-bridge.ts)은 정순이면 앞 항목의 patched 가 이미 달라져 있다.
 		for (const s of [...state].reverse()) {
-			if (s.status !== "applied") {
+			if (s.status !== "applied" && s.status !== "legacy") {
 				console.log(`  건너뜀 ${s.file} (적용 상태가 아니다)`);
 				continue;
 			}
@@ -5321,6 +5380,11 @@ function main() {
 			if (current.includes(s.patched)) {
 				writeFileSync(s.path, current.replace(s.patched, s.anchor), "utf8");
 				console.log(`  복원 ${s.file}`);
+				continue;
+			}
+			if (s.legacyPatched && current.includes(s.legacyPatched)) {
+				writeFileSync(s.path, current.replace(s.legacyPatched, s.anchor), "utf8");
+				console.log(`  복원 ${s.file} (옛 패치)`);
 				continue;
 			}
 			const bak = join(BACKUP, s.file);
@@ -5358,7 +5422,9 @@ function main() {
 		// 위와 같은 이유로 스냅샷이 아니라 현재 내용에 얹는다. 앵커 상실 검사는 위에서
 		// 스냅샷 전체를 보고 이미 끝났으므로 preflight 의 원자성은 그대로다.
 		const current = readFileSync(s.path, "utf8");
-		writeFileSync(s.path, current.replace(s.anchor, s.patched), "utf8");
+		const from = s.status === "legacy" ? s.legacyPatched : s.anchor;
+		if (!current.includes(from)) throw new Error(`적용 중 앵커가 사라졌다: ${s.file}`);
+		writeFileSync(s.path, current.replace(from, s.patched), "utf8");
 		console.log(`  적용 ${s.file}`);
 	}
 	console.log("적용 완료. CUELO를 재시작해야 반영된다.");

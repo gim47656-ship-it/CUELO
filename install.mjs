@@ -155,9 +155,10 @@ export function copyHarness(sourceDir, agentDir, entries) {
 /**
  * What a new profile's `config.yml` starts with, so the public harness runs the way it is used:
  * local learning and project-scoped memory, the harness's Maker routing (isolated task runs,
- * its roles instead of the bundled agents) and request budget, and nothing that spends
- * provider requests on its own (`autoContinue`, `autoRetain` stay off). Values equal to the
- * omp defaults are left out.
+ * its roles instead of the bundled agents) and request budget, long `eval` cells that yield
+ * to steering (`eval.autoBackground`, off in omp), and nothing that spends provider requests
+ * on its own (`autoContinue`, `autoRetain` stay off). Values equal to the omp defaults are
+ * left out.
  */
 export const PROFILE_DEFAULTS = {
   defaultThinkingLevel: "auto",
@@ -172,6 +173,7 @@ export const PROFILE_DEFAULTS = {
     isolation: { enabled: true },
     disabledAgents: ["scout", "sonic", "task", "reviewer", "security-reviewer"],
   },
+  eval: { autoBackground: { enabled: true } },
 };
 
 /**
