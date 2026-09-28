@@ -204,8 +204,8 @@ test("renders every todo task in an integrated checklist", () => {
   assert.doesNotMatch(html, /… 1/);
 });
 
-test("renders thinking markdown directly without a collapsible card", () => {
-  const html = renderToStaticMarkup(
+function renderThinking(thinking) {
+  return renderToStaticMarkup(
     React.createElement(
       I18nProvider,
       null,
@@ -214,13 +214,20 @@ test("renders thinking markdown directly without a collapsible card", () => {
           role: "assistant",
           provider: "openai",
           model: "gpt-test",
-          content: [{ type: "thinking", thinking: "**Direct thought**" }],
+          content: [{ type: "thinking", thinking }],
         },
       }),
     ),
   );
+}
 
-  assert.match(html, /class="markdown-thinking"/);
-  assert.match(html, /<strong>Direct thought<\/strong>/);
-  assert.doesNotMatch(html, /aria-expanded/);
+test("folds the English monologue to one line and keeps Korean thinking open", () => {
+  const english = renderThinking("**Direct thought** about the session reader before editing.");
+  assert.match(english, /class="markdown-thinking"/);
+  assert.match(english, /class="markdown-thinking-fold"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(english, /Direct thought/);
+
+  const korean = renderThinking("**세션 리더**부터 확인할게요.");
+  assert.match(korean, /<strong>세션 리더<\/strong>/);
+  assert.doesNotMatch(korean, /aria-expanded/);
 });

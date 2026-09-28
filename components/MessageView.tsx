@@ -9,7 +9,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isHiddenAssistantBlock } from "@/lib/message-display";
-import { needsKoreanTranslation } from "@/lib/thinking-korean";
+import { isKoreanThinking, needsKoreanTranslation } from "@/lib/thinking-korean";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
 import { providerDisplayName } from "@/lib/hanse-resource-client";
@@ -919,8 +919,16 @@ function ThinkingBlock({ block, duration, isStreaming, sessionId, entryId, block
 }) {
   const { t, locale } = useI18n();
   const [content, setContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(block.deferred === true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState(false);
+
+  const text = block.deferred ? content : block.thinking;
+  const hasText = typeof text === "string" && text.trim().length > 0;
+  // Korean thinking is a progress sentence meant for the user and stays open. The English monologue
+  // folds to one line in place; loading and translation wait until it is opened.
+  const korean = hasText && isKoreanThinking(text);
+  const expanded = korean || opened;
 
   useEffect(() => {
     if (!block.deferred) {
@@ -929,6 +937,7 @@ function ThinkingBlock({ block, duration, isStreaming, sessionId, entryId, block
       setError(null);
       return;
     }
+    if (!expanded || content !== null) return;
 
     let cancelled = false;
     if (!sessionId || !entryId) {
@@ -955,14 +964,12 @@ function ThinkingBlock({ block, duration, isStreaming, sessionId, entryId, block
     return () => {
       cancelled = true;
     };
-  }, [block.deferred, block.thinking, blockIndex, entryId, sessionId, t]);
+  }, [block.deferred, block.thinking, blockIndex, content, entryId, expanded, sessionId, t]);
 
-  const text = block.deferred ? content : block.thinking;
-  const hasText = typeof text === "string" && text.trim().length > 0;
   const [translation, setTranslation] = useState<{ source: string; ko: string } | null>(null);
   const [translating, setTranslating] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
-  const wantsTranslation = locale === "ko" && !isStreaming && hasText && needsKoreanTranslation(text);
+  const wantsTranslation = expanded && locale === "ko" && !isStreaming && hasText && needsKoreanTranslation(text);
 
   useEffect(() => {
     if (!wantsTranslation || !text) {
@@ -982,34 +989,53 @@ function ThinkingBlock({ block, duration, isStreaming, sessionId, entryId, block
 
   const ko = wantsTranslation && translation?.source === text ? translation.ko : null;
   const shown = (ko && !showOriginal ? ko : text) ?? "";
+  const durationLabel = duration !== undefined && (hasText || !expanded) && (
+    <span className="markdown-thinking-duration">{duration}s</span>
+  );
 
   return (
     <div className="markdown-thinking" aria-label={t("i18n.thinking")}>
-      <div className="markdown-thinking-content">
-        {loading ? (
-          <span className="markdown-thinking-status">{t("i18n.loadingThinking")}</span>
-        ) : error ? (
-          <span className="markdown-thinking-error">{error}</span>
-        ) : translating && !ko ? (
-          <span className="markdown-thinking-status">{t("i18n.translatingThinking")}</span>
-        ) : hasText ? (
-          <MarkdownBody className="markdown-thinking-body">{shown}</MarkdownBody>
-        ) : (
-          <span className="markdown-thinking-status">{t("chat.thinking")}</span>
-        )}
-      </div>
-      {ko && (
+      {!korean && (
         <button
           type="button"
-          className="markdown-thinking-toggle"
-          aria-pressed={showOriginal}
-          onClick={() => setShowOriginal((value) => !value)}
+          className="markdown-thinking-fold"
+          aria-expanded={expanded}
+          onClick={() => setOpened((value) => !value)}
         >
-          {showOriginal ? t("i18n.showTranslatedThinking") : t("i18n.showOriginalThinking")}
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transform: expanded ? "none" : "rotate(-90deg)", transition: "transform 0.15s" }}>
+            <polyline points="2 3.5 5 6.5 8 3.5" />
+          </svg>
+          {isStreaming ? t("chat.thinking") : t("i18n.thinking")}
+          {!expanded && durationLabel}
         </button>
       )}
-      {duration !== undefined && hasText && (
-        <span className="markdown-thinking-duration">{duration}s</span>
+      {expanded && (
+        <div className="markdown-thinking-row">
+          <div className="markdown-thinking-content">
+            {loading ? (
+              <span className="markdown-thinking-status">{t("i18n.loadingThinking")}</span>
+            ) : error ? (
+              <span className="markdown-thinking-error">{error}</span>
+            ) : translating && !ko ? (
+              <span className="markdown-thinking-status">{t("i18n.translatingThinking")}</span>
+            ) : hasText ? (
+              <MarkdownBody className="markdown-thinking-body">{shown}</MarkdownBody>
+            ) : (
+              <span className="markdown-thinking-status">{t("chat.thinking")}</span>
+            )}
+          </div>
+          {ko && (
+            <button
+              type="button"
+              className="markdown-thinking-toggle"
+              aria-pressed={showOriginal}
+              onClick={() => setShowOriginal((value) => !value)}
+            >
+              {showOriginal ? t("i18n.showTranslatedThinking") : t("i18n.showOriginalThinking")}
+            </button>
+          )}
+          {durationLabel}
+        </div>
       )}
     </div>
   );

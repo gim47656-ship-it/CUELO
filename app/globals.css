@@ -575,14 +575,38 @@ pre, code {
   color: var(--text);
 }
 .markdown-thinking {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
   margin: 1px 0 12px;
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.65;
   font-style: italic;
+}
+.markdown-thinking-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.markdown-thinking-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-style: normal;
+  cursor: pointer;
+}
+.markdown-thinking-fold:hover {
+  color: var(--text-muted);
+}
+.markdown-thinking-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
 }
 .markdown-thinking-content {
   min-width: 0;
