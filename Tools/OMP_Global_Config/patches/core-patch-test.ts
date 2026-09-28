@@ -2071,8 +2071,7 @@ function replyGateHarness() {
 	const emit = (name: string, event: unknown) => listeners.get(name)?.map(listener => listener(event)).at(-1);
 	return { emit, sent };
 }
-// 한국어 thinking은 본문으로 친다(extensions/lib/visible-text.ts, 2026-09-28). 영어 thinking만 답이 아니다.
-for (const content of [[], [{ type: "thinking", thinking: "Let me check the file first." }], [{ type: "text", text: "   " }]]) {
+for (const content of [[], [{ type: "thinking", thinking: "진행" }], [{ type: "text", text: "   " }]]) {
 	const gate = replyGateHarness();
 	gate.emit("message_start", { message: { role: "user", content: "방향 바꿔", steering: true, attribution: "user" } });
 	gate.emit("message_start", { message: { role: "assistant", content } });
