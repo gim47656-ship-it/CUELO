@@ -413,6 +413,15 @@ const requiredPolicyMembers = [
     "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
     "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction",
   ]],
+  ["routing.typedJudgmentRouting.placements.image-read-question-route.questions", [
+    "the-read-only-needs-text-extraction-or-a-factual-check-the-vision-model-can-answer-as-text-question-direct-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.image-read-question-route.decisionMapping", [
+    "input-is-the-file-basename-and-bounded-assistant-and-latest-request-excerpts-with-paths-urls-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "question-blocks-that-read-once-and-asks-to-reissue-it-as-path-q-question-answered-by-modelRoles-vision",
+    "a-second-read-of-the-same-path-in-the-session-passes-so-a-model-that-needs-visual-judgment-can-still-look-directly",
+    "direct-unknown-judge-failure-an-eight-second-timeout-or-no-excerpt-lets-the-read-run-unchanged",
+  ]],
   // 실장비 인계 한 통에 들어가야 하는 것. 이 항목이 줄면 "무엇을 켜고 무엇이 정상이며 언제 멈추는가"가
   // 빠진 인계가 되어, 사용자가 장비 앞에서 판단할 근거를 잃는다.
   ["implementationOwnership.writerValidation.deviceVerificationHandoff.packet", [
@@ -716,7 +725,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims", "image-read-question-route"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1277,7 +1286,8 @@ if (policy !== null) {
       typedJudgmentPlacements["turn-end-solo-stop"]?.owner === "main" &&
       typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
       typedJudgmentPlacements["todo-nudge-multistep"]?.owner === "main" &&
-      typedJudgmentPlacements["external-advice-claims"]?.owner === "main",
+      typedJudgmentPlacements["external-advice-claims"]?.owner === "main" &&
+      typedJudgmentPlacements["image-read-question-route"]?.owner === "the-session-about-to-read-the-image",
     "typed judgment placement의 실행 주체가 다르다.",
   );
   check(

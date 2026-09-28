@@ -72,6 +72,8 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 화면 확인에도 JEV를 씁니다. [RULES.md](../Tools/OMP_Global_Config/agent/RULES.md)의 화면 확인 규칙은 Main과 Maker 모두에 적용됩니다. 웹은 `browser`, 네이티브 데스크톱 창은 `computer`, 로직은 테스트로 확인합니다. 조작·대기·확인 여러 단계를 한 `eval` 셀에 묶고, DOM 텍스트·AX 트리는 문자열 비교로 먼저 확인합니다. 문자열로 가를 수 없는 판정만 같은 셀에서 `judge()`(JEV)에 텍스트로 넘기므로, 단계마다 모델 턴을 거치지 않습니다. 스크린샷은 모양을 봐야 할 때만 찍고, `judge()` 결과는 참고 신호일 뿐 최종 수용 근거가 아닙니다. `computer`는 실제 데스크톱을 조작하므로 자기가 띄운 창만 다루고, 되돌릴 수 없는 버튼은 누르지 않습니다. 같은 순서를 여러 문서·기록·로그를 분류할 때(정해진 문구로 거른 뒤 남은 것만 `judge_batch`)와 긴 작업을 감시할 때(종료 문구는 문자열, "멈췄나"만 `judge()`)도 씁니다. 기준선과 비교하는 재측정은 기준선과 같은 방법으로 셉니다.
 
+이미지를 읽을 때도 JEV가 먼저 봅니다. [`image-question-router.ts`](../Tools/OMP_Global_Config/agent/extensions/image-question-router.ts)는 Main이나 Maker가 이미지 파일을 `?q=` 없이 `read`하려 하면, 이미지가 컨텍스트에 실리기 전에 "글자·값 확인 질문 하나로 충분한가"를 판정합니다. 그렇다면 그 읽기를 막고 `경로?q=<질문>`으로 다시 읽게 해, 이미지는 `modelRoles.vision` 모델이 보고 답만 텍스트로 돌아옵니다. 레이아웃·색·정렬처럼 직접 봐야 하는 일이면 같은 경로를 한 번 더 읽으면 통과하고, 판정 실패나 시간 초과는 그대로 읽게 둡니다.
+
 ## 캐릭터 음성과 확장
 
 [`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
