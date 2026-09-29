@@ -113,6 +113,38 @@ describe("steering reply gate", () => {
     }
   });
 
+  test.each(["agent_end", "후속 본문", "빈 시작 뒤 본문"] as const)("%s 뒤에 도착한 늦은 판정은 버린다", async (stage) => {
+    const pending = Promise.withResolvers<"unanswered">();
+    const h = harness(() => pending.promise);
+    await h.steer("결과는 줘야지");
+    await h.answer(text("결과를 확인하겠습니다."));
+    await h.tool();
+    if (stage === "agent_end") await h.emit("agent_end", { willContinue: false, messages: [] });
+    else {
+      if (stage === "빈 시작 뒤 본문") await h.emit("message_start", { message: { role: "assistant", content: [] } });
+      await h.answer([{ type: "text", text: "측정 결과는 38%입니다." }]);
+    }
+    pending.resolve("unanswered");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("빈 시작이나 본문 없는 도구 메시지는 판정 대기 중인 안내를 지우지 않는다", async () => {
+    const pending = Promise.withResolvers<"unanswered">();
+    const h = harness(() => pending.promise);
+    await h.steer("결과는 줘야지");
+    await h.answer(text("결과를 확인하겠습니다."));
+    await h.tool();
+    await h.emit("message_start", { message: { role: "assistant", content: [] } });
+    await h.answer([{ type: "toolCall" }]);
+    await h.emit("agent_end", { willContinue: true, messages: [] });
+    pending.resolve("unanswered");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("합성·agent steering에는 개입하지 않는다", async () => {
     let calls = 0;
     const h = harness(async () => { calls++; return "unanswered"; });

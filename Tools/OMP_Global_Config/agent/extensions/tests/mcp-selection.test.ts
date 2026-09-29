@@ -112,9 +112,18 @@ describe("mcp-selection", () => {
     const h = harness({ decide: (name) => (name === "figma-stub" ? "unknown" : "not-needed"), userMcp: noCatalog });
     expect((await h.select("docs-stub 써서 요약해줘", [figma, docs]))!.connect).toEqual([]);
     const content = (await h.notice())!.content;
+    expect(content).not.toContain("figma-stub");
+    expect(content).toContain("요청에 이름이 있지만 불필요 판정: `docs-stub`");
+  });
+
+  test("이름 없는 unknown deferred는 매 요청 안내하지 않고, 이름을 부르면 판단 보류와 수동 경로를 안내한다", async () => {
+    const h = harness({ decide: () => "unknown", userMcp: noCatalog });
+    expect((await h.select("README 오타만 고쳐줘", [figma]))!.connect).toEqual([]);
+    expect(await h.notice()).toBeUndefined();
+    await h.select("figma-stub 다시 봐줘", [figma]);
+    const content = (await h.notice())!.content;
     expect(content).toContain("판단 보류, 연결 안 함: `figma-stub`");
     expect(content).toContain("/mcp reconnect figma-stub");
-    expect(content).toContain("요청에 이름이 있지만 불필요 판정: `docs-stub`");
   });
 
   test("꺼진 서버는 /mcp enable, 미설치 카탈로그는 프로젝트 단서로 고른 범위의 설치 명령을 안내만 하고 연결하지 않는다", async () => {

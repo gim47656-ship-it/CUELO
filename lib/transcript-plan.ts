@@ -53,6 +53,19 @@ export type ConversationRenderItem = Extract<
  */
 export const COMMAND_OUTPUT_CUSTOM_TYPE = "command";
 
+/**
+ * 자동 학습 저장 통지. 사용자가 읽어야 하는 결과라 작업 로그로 접지 않고
+ * 대화에 남긴다. 숨김(display:false) 기록은 제외한다.
+ */
+export const AUTOLEARN_SAVED_CUSTOM_TYPE = "autolearn-saved";
+
+function isConversationCustomMessage(message: AgentMessage): boolean {
+  if (message.role !== "custom") return false;
+  const custom = message as CustomMessage;
+  return custom.customType === COMMAND_OUTPUT_CUSTOM_TYPE
+    || (custom.customType === AUTOLEARN_SAVED_CUSTOM_TYPE && custom.display !== false);
+}
+
 /** Synthetic entry ids of tab-local command results. They are never server entries. */
 export const LOCAL_COMMAND_ENTRY_PREFIX = "local-command:";
 
@@ -180,7 +193,7 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
       // A `toolResult` is not its own item: the renderer shows it with the
       // `toolCall` block it answers. User messages never reach here because
       // each one anchors its own turn.
-      if (message.role === "custom" && message.customType === COMMAND_OUTPUT_CUSTOM_TYPE) {
+      if (isConversationCustomMessage(message)) {
         flushProcess();
         items.push({ kind: "message", idx, anchorIdx });
         continue;
@@ -338,7 +351,7 @@ export function partitionTranscriptPlan(
       main.push(item);
       continue;
     }
-    if (message.role === "custom" && message.customType === COMMAND_OUTPUT_CUSTOM_TYPE) {
+    if (isConversationCustomMessage(message)) {
       main.push(item.anchorIdx !== undefined || anchorIdx < 0 ? item : { ...item, anchorIdx });
       continue;
     }

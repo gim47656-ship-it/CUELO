@@ -303,10 +303,12 @@ export function planSelection(input: {
     switch (candidate.kind) {
       case "deferred":
         if (need === "needed") connect.push(candidate.name);
-        else if (need === "unknown") {
-          lines.push(`- 판단 보류, 연결 안 함: \`${candidate.name}\` — 필요하면 \`/mcp reconnect ${candidate.name}\`로 직접 연결`);
-        } else if (named) {
-          lines.push(`- 요청에 이름이 있지만 불필요 판정: \`${candidate.name}\` — 쓰려면 \`/mcp reconnect ${candidate.name}\`로 직접 연결`);
+        else if (named) {
+          lines.push(
+            need === "unknown"
+              ? `- 판단 보류, 연결 안 함: \`${candidate.name}\` — 필요하면 \`/mcp reconnect ${candidate.name}\`로 직접 연결`
+              : `- 요청에 이름이 있지만 불필요 판정: \`${candidate.name}\` — 쓰려면 \`/mcp reconnect ${candidate.name}\`로 직접 연결`,
+          );
         }
         break;
       case "connected":
