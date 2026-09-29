@@ -54,6 +54,7 @@ const ACTIVITY_TAIL_MAX_BYTES = 8 * 1024 * 1024;
 
 declare global {
   var __ompSessionActivityCache: Map<string, { mtimeMs: number; size: number; at: string | null }> | undefined;
+  var __ompSessionFirstMessageCache: Map<string, { mtimeMs: number; size: number; text: string | null }> | undefined;
 }
 
 /**
@@ -115,6 +116,83 @@ export function readActivityBeforeSessionExit(filePath: string): string | null {
   }
 }
 
+const NO_MESSAGES = "(no messages)";
+/** The SDK's session listing reads only this much of each file (`SESSION_LIST_PREFIX_BYTES`). */
+const SDK_LIST_PREFIX_BYTES = 4096;
+const FIRST_MESSAGE_SCAN_CHUNK_BYTES = 64 * 1024;
+const FIRST_MESSAGE_SCAN_MAX_BYTES = 1024 * 1024;
+
+function userMessageText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part
+      && typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+/**
+ * The first user message of a session file, read past the SDK's 4 KB listing window.
+ *
+ * The SDK builds `firstMessage` and `messageCount` from the first 4 KB only. A session whose
+ * head carries bulky records before the first prompt (title slot padding, memory recall, the
+ * xd:// device notice) is then listed as "(no messages)" with zero messages, which also blocks
+ * auto-naming. Reads forward line by line and stops at the first user message or 1 MB.
+ */
+export function readFirstUserMessage(filePath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const decoder = new TextDecoder();
+    const chunk = Buffer.alloc(FIRST_MESSAGE_SCAN_CHUNK_BYTES);
+    let pending = "";
+    let read = 0;
+    while (read < FIRST_MESSAGE_SCAN_MAX_BYTES) {
+      const length = readSync(fd, chunk, 0, chunk.length, read);
+      if (length <= 0) break;
+      read += length;
+      pending += decoder.decode(chunk.subarray(0, length), { stream: true });
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.includes('"role":"user"')) continue;
+        let entry: unknown;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!entry || typeof entry !== "object" || !("type" in entry) || entry.type !== "message"
+          || !("message" in entry)) continue;
+        const message = entry.message;
+        if (!message || typeof message !== "object" || !("role" in message) || message.role !== "user") continue;
+        const text = userMessageText("content" in message ? message.content : undefined);
+        if (text) return text;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function sessionFirstMessage(session: OmpSessionInfo): string | null {
+  if (session.firstMessage && session.firstMessage !== NO_MESSAGES) return session.firstMessage;
+  if (!(session.size > SDK_LIST_PREFIX_BYTES)) return null;
+  const mtime = session.modified instanceof Date ? session.modified : new Date(String(session.modified));
+  const cache = globalThis.__ompSessionFirstMessageCache ??= new Map();
+  const key = sessionPathKey(session.path);
+  const cached = cache.get(key);
+  if (cached && cached.mtimeMs === mtime.getTime() && cached.size === session.size) return cached.text;
+  const text = readFirstUserMessage(session.path);
+  cache.set(key, { mtimeMs: mtime.getTime(), size: session.size, text });
+  return text;
+}
+
 function sessionActivityTime(session: OmpSessionInfo): string {
   const mtime = session.modified instanceof Date ? session.modified : new Date(String(session.modified));
   const fallback = Number.isFinite(mtime.getTime()) ? mtime.toISOString() : String(session.modified);
@@ -135,6 +213,7 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
 
   const sessions = ompSessions.map((s) => {
     cacheSessionPath(s.id, s.path);
+    const firstMessage = sessionFirstMessage(s);
     return {
       path: s.path,
       id: s.id,
@@ -142,8 +221,9 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       name: s.title,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: sessionActivityTime(s),
-      messageCount: s.messageCount,
-      firstMessage: getDocumentPromptUserMessage(s.firstMessage) || "(no messages)",
+      // A user message found past the SDK window proves the session is not empty.
+      messageCount: firstMessage ? Math.max(s.messageCount, 1) : s.messageCount,
+      firstMessage: getDocumentPromptUserMessage(firstMessage ?? "") || NO_MESSAGES,
       parentSessionId: s.parentSessionPath ? pathToId.get(sessionPathKey(s.parentSessionPath)) : undefined,
       transient: false,
     };

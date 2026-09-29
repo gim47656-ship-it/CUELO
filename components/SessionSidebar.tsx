@@ -1038,6 +1038,25 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     onNewSession?.(tempId, project);
   }, [selectedCwd, onNewSession]);
 
+  // The priority view has no project context, so a session started from it runs in the
+  // dated scratch folder that `/api/default-cwd` creates (and allow-lists) on demand.
+  const [scratchSessionBusy, setScratchSessionBusy] = useState(false);
+  const [scratchSessionError, setScratchSessionError] = useState<string | null>(null);
+  const handleNewScratchSession = useCallback(async () => {
+    setScratchSessionBusy(true);
+    setScratchSessionError(null);
+    try {
+      const res = await fetch("/api/default-cwd", { method: "POST" });
+      const data = await res.json().catch(() => ({})) as { cwd?: string; error?: string };
+      if (!res.ok || !data.cwd) throw new Error(data.error ?? `HTTP ${res.status}`);
+      handleNewSession(data.cwd);
+    } catch (err) {
+      setScratchSessionError(t("sidebar.newScratchSessionFailed", { error: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setScratchSessionBusy(false);
+    }
+  }, [handleNewSession, t]);
+
   const toggleProjectCollapsed = useCallback((project: string) => {
     setOpenProjects((current) => {
       const next = new Set(current);
@@ -2476,29 +2495,45 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               {error}
             </div>
           )}
+          {!loading && !error && (() => {
+            const clearable = countClearableSessions(priorityGroups.flatMap((group) => group.sessions));
+            return (
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 2px 2px" }}>
+                <button
+                  type="button"
+                  disabled={scratchSessionBusy}
+                  onClick={() => void handleNewScratchSession()}
+                  title={t("sidebar.newScratchSessionTitle")}
+                  style={bulkClearButtonStyle(scratchSessionBusy, isMobile)}
+                >
+                  {t("sidebar.newScratchSession")}
+                </button>
+                {priorityGroups.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={clearable === 0 || bulkClearBusy}
+                    onClick={() => {
+                      setBulkClearError(null);
+                      setBulkClearScope({ kind: "priority" });
+                    }}
+                    style={bulkClearButtonStyle(clearable === 0 || bulkClearBusy, isMobile)}
+                  >
+                    {t("sidebar.clearPriorityList")}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          {scratchSessionError && (
+            <div role="alert" style={{ padding: "6px 8px", color: "var(--danger)", fontSize: 12 }}>
+              {scratchSessionError}
+            </div>
+          )}
           {!loading && !error && priorityGroups.length === 0 && (
             <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
               {t("sidebar.noSessions")}
             </div>
           )}
-          {!loading && !error && priorityGroups.length > 0 && (() => {
-            const clearable = countClearableSessions(priorityGroups.flatMap((group) => group.sessions));
-            return (
-              <div style={{ display: "flex", justifyContent: "flex-end", padding: "8px 2px 2px" }}>
-                <button
-                  type="button"
-                  disabled={clearable === 0 || bulkClearBusy}
-                  onClick={() => {
-                    setBulkClearError(null);
-                    setBulkClearScope({ kind: "priority" });
-                  }}
-                  style={bulkClearButtonStyle(clearable === 0 || bulkClearBusy, isMobile)}
-                >
-                  {t("sidebar.clearPriorityList")}
-                </button>
-              </div>
-            );
-          })()}
           {!loading && !error && priorityGroups.map((group, index) => (
             <section key={group.key} aria-labelledby={`priority-group-${group.key}`}>
               <h2
