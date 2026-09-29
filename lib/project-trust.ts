@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
-import { join, relative, resolve, sep } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import type { ProjectTrustStatus } from "./api-types";
@@ -131,7 +131,7 @@ export function listProjectTrustDecisions(agentDir: string): Record<string, bool
 export function isInsideProject(candidate: string, root: string): boolean {
   const rel = relative(resolve(root), resolve(candidate));
   if (rel === "") return true;
-  return rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../");
+  return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../");
 }
 
 /** Shape shared by omp's discovered custom-tool entries. */

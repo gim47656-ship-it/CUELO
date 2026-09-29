@@ -6,12 +6,12 @@ import type { LoungeMessage, LoungePace } from "./types";
  * 같은 입력이면 항상 같은 순서가 나온다.
  */
 
-/** 사용자 메시지 한 건(또는 자동 발언 한 건)에 대한 최대 호출 수: 응답 1~2명 + 후속 1명. */
-export const PER_TURN_LIMIT = 3;
+/** 사용자 메시지 한 건(또는 자동 발언 한 건)에 대한 최대 호출 수: 응답 최대 6명 + 후속 발언을 합쳐 6회. */
+export const PER_TURN_LIMIT = 6;
 /** '전원' 요청은 참여자 순서대로 한 번씩, 이 수를 넘지 않는다. */
 export const EVERYONE_LIMIT = 6;
 
-const RESPONDERS_BY_PACE: Record<LoungePace, number> = { slow: 1, normal: 1, active: 2 };
+const RESPONDERS_BY_PACE: Record<LoungePace, number> = { slow: 1, normal: 2, active: 3 };
 
 /** 자동 발언 사이 최소 간격. 잠들기(기본 10분) 전까지만 동작한다. */
 export const AUTO_TALK_INTERVAL_MS: Record<LoungePace, number> = {
@@ -111,7 +111,7 @@ export function planReply(input: {
   // 명시한 멤버가 offline/미참여면 다른 멤버로 조용히 대체하지 않는다.
   const mentioned = detectMentions(text, LOUNGE_MEMBERS);
   if (mentioned.length > 0) {
-    const memberIds = mentioned.filter((id) => candidateIds.has(id)).slice(0, 2);
+    const memberIds = mentioned.filter((id) => candidateIds.has(id)).slice(0, PER_TURN_LIMIT);
     return { memberIds, everyone: false, allowFollowUp: true, perTurnLimit: PER_TURN_LIMIT };
   }
   if (replyToMemberId) {

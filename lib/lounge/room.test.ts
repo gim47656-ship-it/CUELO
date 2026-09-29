@@ -113,7 +113,7 @@ test("시간당 상한은 재시작 후에도 유지되고 조회는 호출하�
   f.room.snapshot(); f.room.subscribe(() => {}); f.room.currentDelta();
   const result = f.dispatch({ action: "send", text: "@린" });
   expect(result.status).toBe(200);
-  expect(f.room.snapshot().run.calls.used).toBe(20);
+  expect(f.room.snapshot().run.calls.used).toBe(HOURLY_CALL_LIMIT);
   expect(f.calls).toHaveLength(0); f.room.dispose();
 });
 
@@ -152,14 +152,17 @@ test("자동 발언은 명시 opt-in·사용자 재개 후만, 작업중/잠든 
   f.advance(AUTO_TALK_INTERVAL_MS.normal);
   expect(f.calls).toHaveLength(0);
   f.dispatch({ action: "send", text: "안녕" }); f.calls[0].resolve("반가워"); await flush();
+  f.calls[1].resolve("나도 반가워"); await flush();
+  const afterReply = f.calls.length;
+  expect(afterReply).toBe(2);
   f.setBusy(true); f.advance(AUTO_TALK_INTERVAL_MS.normal);
-  expect(f.calls).toHaveLength(1);
+  expect(f.calls).toHaveLength(afterReply);
   expect(f.room.snapshot().room.autoTalkPausedReason).toBe("작업중");
   f.setBusy(false); f.advance(AUTO_TALK_INTERVAL_MS.normal);
-  expect(f.calls).toHaveLength(2);
-  f.calls[1].resolve("이어서"); await flush();
+  expect(f.calls).toHaveLength(afterReply + 1);
+  f.calls[afterReply].resolve("이어서"); await flush();
   f.advance(20 * 60_000);
-  expect(f.calls).toHaveLength(2); expect(f.room.snapshot().room.asleep).toBe(true);
+  expect(f.calls).toHaveLength(afterReply + 1); expect(f.room.snapshot().room.asleep).toBe(true);
   const restarted = new LoungeRoomEngine(f.deps);
   expect(restarted.snapshot().room.asleep).toBe(true);
   restarted.dispose(); f.room.dispose();
@@ -191,7 +194,30 @@ test.each([
 ])("F-LOUNGE-EVERYONE 서술/애매한 말은 전원 호출하지 않는다: %s", (text) => {
   const plan = planReply({ text, candidates: LOUNGE_MEMBERS, messages: [], pace: "normal" });
   expect(plan.everyone).toBe(false);
-  expect(plan.memberIds).toEqual(["rin"]);
+  expect(plan.memberIds).toEqual(["rin", "mio"]);
+});
+
+test("응답 수는 속도별 1/2/3명, 명시 멘션은 참여 멤버 6명까지, 한 차례 호출 상한은 6이다", () => {
+  const base = { text: "안녕", candidates: LOUNGE_MEMBERS, messages: [] };
+  expect(planReply({ ...base, pace: "slow" }).memberIds).toHaveLength(1);
+  expect(planReply({ ...base, pace: "normal" }).memberIds).toHaveLength(2);
+  expect(planReply({ ...base, pace: "active" }).memberIds).toHaveLength(3);
+  const all = LOUNGE_MEMBERS.map((member) => `@${member.id}`).join(" ");
+  const plan = planReply({ ...base, text: `${all} 안녕`, pace: "normal" });
+  expect(plan.memberIds).toEqual(LOUNGE_MEMBERS.slice(0, 6).map((member) => member.id));
+  expect(plan.perTurnLimit).toBe(6);
+});
+
+test("기존 20회 사용 기록에서도 21번째 명시 멘션 응답을 시작한다", () => {
+  const record = emptyLoungeRecord();
+  record.settings = { ...record.settings, enabled: true, participants: ["rin"] };
+  record.callTimestamps = Array(20).fill(1_790_000_000_000);
+  const f = fixture(record);
+  f.room.snapshot(); f.room.subscribe(() => {}); f.room.currentDelta();
+  expect(f.dispatch({ action: "send", text: "@린" }).status).toBe(200);
+  expect(f.calls).toHaveLength(1);
+  expect(f.room.snapshot().run.calls.used).toBe(21);
+  f.room.dispose();
 });
 
 test.each([

@@ -30,7 +30,7 @@ import {
 } from "./types";
 
 /** 시간당 provider 호출 상한. 호출 시각은 기록 파일에 남아 재시작해도 이어서 센다. */
-export const HOURLY_CALL_LIMIT = 20;
+export const HOURLY_CALL_LIMIT = 120;
 export const CALL_WINDOW_MS = 60 * 60_000;
 /** 호출이 실패한 멤버를 다시 부르지 않는 시간. 그 동안 `offline`과 사유로 보인다. */
 export const FAILURE_COOLDOWN_MS = 5 * 60_000;

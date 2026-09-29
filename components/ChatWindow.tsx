@@ -6,6 +6,7 @@ import type {
   AssistantContentBlock,
   AssistantMessage,
   BashExecutionMessage,
+  CustomMessage,
   BlockingExtensionUiRequest,
   ExtensionUiRequest,
   SessionInfo,
@@ -17,7 +18,8 @@ import type {
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
-import { buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan } from "@/lib/transcript-plan";
+import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan } from "@/lib/transcript-plan";
+import { collectTurnSavedLessons } from "@/lib/turn-saved-lessons";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
@@ -261,6 +263,26 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     });
   }, [onProcessLogChange, process, messages, entryIds, toolResultsMap, modelNames, messageCwd, sessionId]);
 
+  // A save the agent made itself folds with its tool call into the work log;
+  // it surfaces at the turn's end as the card the auto-learn capture posts.
+  const savedLessonNotices = useMemo(() => {
+    const notices = new Map<number, CustomMessage>();
+    for (const [anchorIdx, lessons] of collectTurnSavedLessons(process, messages, toolResultsMap)) {
+      const lines = lessons.map((lesson) => {
+        if (lesson.kind === "skill") return t("chat.savedSkill", { action: lesson.action, name: lesson.name });
+        const line = t("chat.savedLesson", { memory: lesson.memory });
+        return lesson.skill ? `${line} (${t("chat.savedSkill", lesson.skill)})` : line;
+      });
+      notices.set(anchorIdx, {
+        role: "custom",
+        customType: AUTOLEARN_SAVED_CUSTOM_TYPE,
+        content: [t("chat.lessonsSaved"), ...lines.map((line) => `- ${line}`)].join("\n"),
+        display: true,
+      });
+    }
+    return notices;
+  }, [process, messages, toolResultsMap, t]);
+
   // Window the lightweight ordered items, not an already-built JSX transcript.
   const { startIndex, hasMore } = getVisibleRenderWindow(main.length, visibleCount);
   const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
@@ -335,7 +357,12 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         const cueNodes = itemCues.map((cue) => (
           <CueBubble key={`cue-${cue.id}`} sticker={cue.sticker} text={cue.text} tag={cue.tag} followRef={cueFollowRef} />
         ));
-        const thread = nextTurn === turnIndex ? null : (
+        const turnEnds = nextTurn !== turnIndex;
+        const savedNotice = turnEnds ? savedLessonNotices.get(turnIndex) : undefined;
+        const savedLessons = savedNotice ? (
+          <MessageView key={`saved-lessons-${turnIndex}`} message={savedNotice} cwd={messageCwd} onOpenFile={onOpenFile} />
+        ) : null;
+        const thread = !turnEnds ? null : (
           <InlineTurnThreads
             turnIndex={turnIndex}
             turnEntryId={entryIds[turnIndex]}
@@ -348,6 +375,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
           return (
             <Fragment key={`message-${item.idx}`}>
               {renderMessage(item.idx)}
+              {savedLessons}
               {thread}
               {cueNodes}
             </Fragment>
@@ -363,6 +391,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
               messageOverride: withAssistantBlocks(messages[item.idx] as AssistantMessage, item.blocks),
               writtenFiles,
             })}
+            {savedLessons}
             {thread}
             {cueNodes}
           </Fragment>

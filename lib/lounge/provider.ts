@@ -2,8 +2,12 @@ import { randomUUID } from "node:crypto";
 import { streamSimple, type AuthStorage, type OAuthAccountSummary, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent";
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { LoungeUnavailableError, type LoungeInvoker } from "./room";
 import type { LoungeMemberSpec } from "./roster";
+
+/** SDK `Effort`는 ambient const enum이라 isolatedModules에서 멤버를 직접 못 쓴다. 고정 SDK의 THINKING_EFFORTS가 low를 포함한다. */
+const LOUNGE_EFFORT = THINKING_EFFORTS.find((effort) => String(effort) === "low")!;
 
 export interface LoungeProviderDeps {
   authStorage: AuthStorage;
@@ -148,7 +152,7 @@ export function createLoungeInvoker({ authStorage, modelRegistry, fetch: transpo
           tools: [],
         }, {
           apiKey, credentialId, headers, signal, sessionId: invocationId,
-          maxTokens: 512, disableReasoning: true, cacheRetention: "none", statefulResponses: false,
+          maxTokens: 512, reasoning: LOUNGE_EFFORT, cacheRetention: "none", statefulResponses: false,
           codexSseMaxAttempts: 1, acceptEmptyResponse: true, maxRetryDelayMs: 1,
           ...(transport ? { fetch: transport } : {}),
           onResponse(response) {
