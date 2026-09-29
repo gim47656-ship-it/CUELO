@@ -34,9 +34,9 @@ REWORK 전송 뒤 시작된 재개 실행은 코어가 같은 job id를 다시 �
 `maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
 모델·강도 자동 조정 근거가 아닙니다.
 
-등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SOL`, `NORMAL_OPUS`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SOL`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sol을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다. HARD 코드의 기본은 Opus이고, `HARD_CODE_SOL`은 `ROUTING_REASON`을 남길 때만 고르는 대안입니다.
+등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sonnet을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다. HARD 코드의 기본은 Opus이고, `HARD_CODE_SONNET`은 `ROUTING_REASON`을 남길 때만 고르는 대안입니다.
 
-후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. Sol 후보 둘(`NORMAL_SOL`·`HARD_CODE_SOL`)은 `high`~`xhigh`, Opus 후보 셋과 DeepSeek는 `high`만 사용합니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
+후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. Sonnet 후보 둘(`NORMAL_SONNET`·`HARD_CODE_SONNET`)은 `high`~`xhigh`, Opus 후보 셋과 DeepSeek는 `high`만 사용합니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
 
 CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중인 요청·Steer·도구 후속 실행·수동 선택의 강도는 이 설정으로 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 하한이 적용되지는 않습니다.
 
@@ -58,7 +58,7 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `opencode-go/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 OpenCode Go로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
 
-`modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `openai-codex/gpt-6-sol`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sol을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
+`modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `anthropic/claude-sonnet-5-5`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sonnet을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
 
 ## Task Guard와 command guard
 
@@ -68,7 +68,7 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 정식 신규 발주나 의미 있는 과제 변경 때 `maker_route`는 작업 분류·등급의 중심 난제·기존 owner 중복 등을 한 번에 판단하도록 사용됩니다. 첫 예상 밖 실패나 보고 검수처럼 다른 경계에서는 [`jev-runtime.ts`](../Tools/OMP_Global_Config/agent/extensions/jev-runtime.ts)가 런타임 advisory로 관측 가능한 사실을 제공하고, Main/owner가 그 사실에 담기지 않은 의미와 승인을 판단합니다. 같은 질문을 반복하거나 Jev 결과를 결정론적 권한·검수로 취급하지 않습니다. 정본은 [subagent 규칙](../Tools/OMP_Global_Config/agent/rules/subagent.md)의 “Typed judgment routing”과 policy `routing.typedJudgmentRouting`입니다.
 
-Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로젝트 설정을 읽고 SDK의 `resolveJudge`를 호출합니다. 이 확장은 API 키 파일이나 비공개 `models.yml`을 복사해서 활성화되지 않습니다. 설정 기본값 `auto`는 자격 있는 `modelRoles.judge` 체인으로 해석되고, 첫 native 판정 후보 뒤로는 chat/local 후보와 세션 모델을 붙이지 않습니다. CUELO는 `judge`에 OpenRouter의 `typesafe/jev-1.13`(판정 전용 `openrouter-decisions` API)을 두며, 판정 한 번은 1초 안에 끝납니다. 패치된 SDK의 `providers.judgmentProvider: vercel` 모드는 **Vercel AI Gateway**에 저장된 `vercel-ai-gateway` API 키로 `typesafe-ai/jev` 한 경로만 호출하며 실패 시 chat 모델로 대체하지 않습니다. 이 모드는 Vercel 유료 크레딧이 필요합니다(무료 등급은 HTTP 403). Maker 후보 여섯 개는 이 Jev 역할과 별도로 `modelRoles.implSol` 등에서 읽습니다. 가입·키 입력·역할 지정은 [기존 프로필의 역할과 Jev 보완](installation.md#기존-프로필의-역할과-jev-보완)에서 사용자가 직접 마칩니다. 실제 판정의 외부 요청/과금과 미검증 경계는 `setup`·`health` 성공으로 넘기지 않습니다.
+Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로젝트 설정을 읽고 SDK의 `resolveJudge`를 호출합니다. 이 확장은 API 키 파일이나 비공개 `models.yml`을 복사해서 활성화되지 않습니다. 설정 기본값 `auto`는 자격 있는 `modelRoles.judge` 체인으로 해석되고, 첫 native 판정 후보 뒤로는 chat/local 후보와 세션 모델을 붙이지 않습니다. CUELO는 `judge`에 OpenRouter의 `typesafe/jev-1.13`(판정 전용 `openrouter-decisions` API)을 두며, 판정 한 번은 1초 안에 끝납니다. 패치된 SDK의 `providers.judgmentProvider: vercel` 모드는 **Vercel AI Gateway**에 저장된 `vercel-ai-gateway` API 키로 `typesafe-ai/jev` 한 경로만 호출하며 실패 시 chat 모델로 대체하지 않습니다. 이 모드는 Vercel 유료 크레딧이 필요합니다(무료 등급은 HTTP 403). Maker 후보 여섯 개는 이 Jev 역할과 별도로 `modelRoles.implSonnet` 등에서 읽습니다. 가입·키 입력·역할 지정은 [기존 프로필의 역할과 Jev 보완](installation.md#기존-프로필의-역할과-jev-보완)에서 사용자가 직접 마칩니다. 실제 판정의 외부 요청/과금과 미검증 경계는 `setup`·`health` 성공으로 넘기지 않습니다.
 
 `maker_route`는 Jev 판정과 후보 제공자 사용량 조회를 함께 시작하고, 빠른 판정에도 조회를 조기 취소하지 않습니다. 사용량 조회는 기존 2초 제한 안의 결과를 기다리며 실패·timeout은 미측정으로 표시합니다. 사용량은 배정 참고 정보이지 Jev 판단 입력이 아닙니다.
 

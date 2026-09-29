@@ -89,9 +89,9 @@ test("a new profile gets the safe defaults and exactly the named model roles; an
     assert.deepEqual(plain.missing, ["default", ...HARNESS_ROLES]);
 
     const before = fs.readFileSync(result.configPath);
-    const again = createProfileConfig(agentDir, { implSol: "openai-codex/gpt-6-sol:high" });
+    const again = createProfileConfig(agentDir, { implSonnet: "openai-codex/gpt-6-sol:high" });
     assert.equal(again.written, false);
-    assert.deepEqual(again.ignored, ["implSol"]);
+    assert.deepEqual(again.ignored, ["implSonnet"]);
     assert.deepEqual(fs.readFileSync(result.configPath), before, "an existing config.yml is never rewritten");
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });

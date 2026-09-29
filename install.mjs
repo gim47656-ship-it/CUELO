@@ -24,12 +24,12 @@ const require = createRequire(path.join(ROOT, "package.json"));
 
 /** The model slots the public harness routes Makers to; `--model` sets omp's core `default` separately. */
 export const HARNESS_ROLES = [
-  "implSol",
+  "implSonnet",
   "implOpus",
   "implDeepSeek",
   "makerHardUiOpus",
   "makerHardCodeOpus",
-  "makerHardCodeSol",
+  "makerHardCodeSonnet",
 ];
 const SELECTOR = /^[^/\s:]+\/[^\s:]+(?::[a-z]+)?$/;
 

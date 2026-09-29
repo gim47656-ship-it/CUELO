@@ -15,7 +15,7 @@
     },
     "maker": {
       "kind": "delegated-end-to-end-implementation-owner",
-      "modelConfigPath": "modelRoles.implSol",
+      "modelConfigPath": "modelRoles.implSonnet",
       "thinkingMode": "dispatch-selected-concrete-effort",
       "defaultThinkingLevel": "medium",
       "definition": "agent/agents/maker.md",
@@ -68,7 +68,7 @@
       "noFixedOrder": "never-a-global-one-way-gate-and-never-a-runtime-engine",
       "selectedOverlapDispatch": "when-main-selects-overlap-it-reviews-the-frozen-revision-itself-while-the-owner-check-still-runs-serial-dispatch-then-violates-the-selected-strategy"
     },
-    "modelConfigPath": "modelRoles.implSol",
+    "modelConfigPath": "modelRoles.implSonnet",
     "sourceAccess": "owner-writable-inside-its-brief-boundary-only",
     "allowedWrites": "its-own-slice-sources-plus-ordinary-build-cache-temp-artifacts",
     "forbidden": ["other-owners-files", "install", "deploy", "commit", "verdict"],
@@ -830,14 +830,14 @@
         "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
         "sessionChange": "a-new-session-discards-every-previous-judgment"
       },
-      "defaultMakerModelConfigPath": "modelRoles.implSol",
+      "defaultMakerModelConfigPath": "modelRoles.implSonnet",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
       "profiles": {
-        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
         "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high"] },
         "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
         "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
-        "HARD_CODE_SOL": { "modelConfigPath": "modelRoles.makerHardCodeSol", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high"] }
       },
       "effortBand": "each-candidate-offers-only-registry-supported-levels-inside-its-profile-allowedEfforts-the-task-hook-blocks-any-other-level-and-max-a-shared-model-is-checked-against-the-recommended-profile-then-a-profile-of-the-recommended-work-class-and-without-a-recommendation-against-a-profile-that-allows-the-level",
@@ -858,13 +858,13 @@
       },
       "uiUxBoundaryCriteria": "remaining-UI-or-UX-judgment-in-layout-responsive-behavior-information-hierarchy-visual-design-accessibility-focus-touch-targets-or-user-interaction-including-mixed-code-and-design-work-even-when-code-is-dominant-not-file-extension-alone-or-copying-already-settled-wording",
       "normalAllocation": {
-        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-available-primary-NORMAL_SOL-first-and-use-NORMAL_DEEPSEEK-only-when-primary-is-actually-unusable-or-observed-exhausted-headroom-differences-and-unobserved-quota-never-displace-primary",
-        "missing": "UI-UX-Opus-unavailable-is-explicit-no-silent-model-substitution-otherwise-missing-quota-is-unknown-not-zero-keep-primary-NORMAL_SOL-with-unavailable-reason",
+        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-available-primary-NORMAL_SONNET-first-and-use-NORMAL_DEEPSEEK-only-when-primary-is-actually-unusable-or-observed-exhausted-headroom-differences-and-unobserved-quota-never-displace-primary",
+        "missing": "UI-UX-Opus-unavailable-is-explicit-no-silent-model-substitution-otherwise-missing-quota-is-unknown-not-zero-keep-primary-NORMAL_SONNET-with-unavailable-reason",
         "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-newly-observed-UI-UX-boundary-requires-main-to-check-existing-owner-model-freeze-unfinished-delta-and-evidence-and-transfer-non-Opus-ownership-never-change-a-running-model-in-place-or-repeat-completed-non-UI-work",
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
       },
       "hardSelection": {
-        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_SOL-is-offered-only-as-an-alternative-and-requires-ROUTING_REASON",
+        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_SONNET-is-offered-only-as-an-alternative-and-requires-ROUTING_REASON",
         "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-and-effort-selection-only-access-program-fields-are-omitted"

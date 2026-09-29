@@ -438,13 +438,13 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 };
 
 /**
- * 비-UI NORMAL은 primary(NORMAL_SOL = modelRoles.implSol)를 우선한다.
+ * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
  * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. 계정 사용 가능성은 core 신호
  * (disabled·limitReached·autoBlockedUntil)로만 보고, 미관측은 소진으로 간주하지 않는다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
   const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && candidate.profile !== "NORMAL_OPUS");
-  const primary = normal.find((candidate) => candidate.profile === "NORMAL_SOL");
+  const primary = normal.find((candidate) => candidate.profile === "NORMAL_SONNET");
   const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
   if (quota.state !== "observed") return unavailable(quota.reason);
   /** 그 후보 provider의 관측된 계정이 모두 사용 불가할 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
@@ -640,7 +640,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. NORMAL UI/UX 경계는 NORMAL_OPUS, 비-UI는 NORMAL_SOL 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지합니다. HARD는 UI_UX→HARD_UI_OPUS, CODE_SYSTEM→HARD_CODE_OPUS이며 HARD_CODE_SOL는 명시적 대안입니다. 후보별 허용·registry 지원 강도만 쓰고 max나 coarse effort는 쓰지 않습니다. 작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인하고, 비-Opus의 미완 변경·증거를 freeze해 소유권을 넘깁니다. active writer와 겹치거나 실행 중 모델·effort를 바꾸지 않습니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. Opus unavailable을 다른 후보로 숨기지 않습니다. 계정 warm/exact pin·전환·쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. history는 같은 등급 최근 attempt의 중립 건수이며 후보·규칙을 자동 변경하지 않습니다. routing_verdict에는 실제 spawn identity를 씁니다. context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용하며 같은 브리프에 judge를 중복 호출하지 않습니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. NORMAL UI/UX 경계는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지합니다. HARD는 UI_UX→HARD_UI_OPUS, CODE_SYSTEM→HARD_CODE_OPUS이며 HARD_CODE_SONNET는 명시적 대안입니다. 후보별 허용·registry 지원 강도만 쓰고 max나 coarse effort는 쓰지 않습니다. 작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인하고, 비-Opus의 미완 변경·증거를 freeze해 소유권을 넘깁니다. active writer와 겹치거나 실행 중 모델·effort를 바꾸지 않습니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. Opus unavailable을 다른 후보로 숨기지 않습니다. 계정 warm/exact pin·전환·쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. history는 같은 등급 최근 attempt의 중립 건수이며 후보·규칙을 자동 변경하지 않습니다. routing_verdict에는 실제 spawn identity를 씁니다. context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용하며 같은 브리프에 judge를 중복 호출하지 않습니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1026,7 +1026,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SOL 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_SOL는 명시적 대안이다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_SONNET는 명시적 대안이다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

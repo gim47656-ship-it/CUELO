@@ -105,7 +105,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 ```
 
 - `--model`은 core의 `default` 역할만 설정합니다.
-- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. 사용할 수 있는 이름은 `implSol`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSol`입니다.
+- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. 사용할 수 있는 이름은 `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`입니다.
 - 역할은 `config.yml`을 새로 만들 때만 기본값과 함께 기록됩니다. 파일이 이미 있으면 절대 고치지 않고, 무시한 역할과 아직 지정되지 않은 역할을 출력합니다.
 - 지정하지 않은 역할은 나중에 CUELO 설정의 Model roles 화면에서 고릅니다. 설치 스크립트는 모델을 추측해서 채우지 않습니다.
 
@@ -118,12 +118,12 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSol` | NORMAL 비-UI 우선 | 해당 Sol 모델 및 `high`/`xhigh` 지원 |
+   | `implSonnet` | NORMAL 비-UI 우선 | Sonnet 모델 및 `high`/`xhigh` 지원 |
    | `implOpus` | NORMAL UI/UX | Opus 모델 및 `high` 지원 |
-   | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sol이 실제 불가할 때만 사용 |
+   | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sonnet이 실제 불가할 때만 사용 |
    | `makerHardUiOpus` | HARD UI/UX | Opus 모델 지원 |
    | `makerHardCodeOpus` | HARD 코드 | Opus 모델 지원 |
-   | `makerHardCodeSol` | HARD 코드 대안 | Sol 모델 및 `high`/`xhigh` 지원 |
+   | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `high`/`xhigh` 지원 |
 
    일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 여섯 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 권장 경로는 OpenRouter입니다. 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **Settings > Models > OpenRouter > API Key**에 입력하고, 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.

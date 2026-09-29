@@ -12,11 +12,11 @@ const facts: RoutingFacts = {
 const brief = "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: 표시 오류 수정\nOWNED_PATHS: src/view.ts\n\n구현 원문은 Jev에 보내지 않는다.";
 const allStrengths = ["low", "medium", "high", "xhigh", "max"];
 const candidates = [
-  { profile: "NORMAL_SOL", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
+  { profile: "NORMAL_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
   { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
-  { profile: "HARD_CODE_SOL", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
+  { profile: "HARD_CODE_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
   { profile: "NORMAL_DEEPSEEK", model: "opencode-go/deepseek-v4-flash", efforts: allStrengths },
 ];
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
@@ -106,7 +106,7 @@ function harness(options: {
         workClass: { choice: options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL" },
         hardFocus: { choice: options.hardFocuses?.[call - 1] ?? "CODE_SYSTEM" },
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
-        // 후보 순서: NORMAL_SOL·NORMAL_OPUS·HARD_UI_OPUS·HARD_CODE_OPUS·HARD_CODE_SOL·NORMAL_DEEPSEEK.
+        // 후보 순서: NORMAL_SONNET·NORMAL_OPUS·HARD_UI_OPUS·HARD_CODE_OPUS·HARD_CODE_SONNET·NORMAL_DEEPSEEK.
         effort0: { choice: "high" }, effort1: { choice: "high" }, effort2: { choice: "high" },
         effort3: { choice: "xhigh" }, effort4: { choice: "high" },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
@@ -499,7 +499,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: "ViewFix",
         task: reasonTask,
         agent: "maker",
-        model: `openai-codex/gpt-6-sol:${loadRoutingPolicy().modelSelection.profiles.NORMAL_SOL!.allowedEfforts[0]}`,
+        model: `openai-codex/gpt-6-sol:${loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts[0]}`,
       }],
     };
     const owner = {
@@ -665,7 +665,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ fail });
       const prepared = await h.prepare("같은 계약", [h.task], {} as never);
       expect(prepared[0]!.status).toBe(fail ? "unavailable" : "judged");
-      // 추천 등급의 다른 후보(같은 모델의 HARD_CODE_SOL)는 그 후보 구간으로 보고 추천 변경이라 근거를 요구한다.
+      // 추천 등급의 다른 후보(같은 모델의 HARD_CODE_SONNET)는 그 후보 구간으로 보고 추천 변경이라 근거를 요구한다.
       const item = { ...h.input.tasks[0], model: "openai-codex/gpt-6-sol:xhigh" };
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
       item.task = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 두 경합 불변식이 새로 확인되어 Main이 결정함\nOWNED_PATHS:");
@@ -722,7 +722,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived }] }, {} as never)).toBeUndefined();
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived.replace("src/view.ts", "src/other.ts") }] }, {} as never)).toMatchObject({ block: true });
   });
-  test("NORMAL 기본 Sol은 허용 구간 밖 강도의 발주를 차단한다", async () => {
+  test("NORMAL 기본 Sonnet은 허용 구간 밖 강도의 발주를 차단한다", async () => {
     const ordinary = harness({ workClass: "NORMAL" });
     await ordinary.prepare("일반 발주", [ordinary.task], {} as never);
     expect(await ordinary.beforeTask({
@@ -734,10 +734,10 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       tasks: [{ ...ordinary.input.tasks[0], model: "openai-codex/gpt-6-sol:low" }],
     }, {} as never)).toMatchObject({ block: true });
   });
-  test("NORMAL 한도를 모르면 기본 Sol 후보와 unavailable 사유를 유지한다", async () => {
+  test("NORMAL 한도를 모르면 기본 Sonnet 후보와 unavailable 사유를 유지한다", async () => {
     const h = harness({ workClass: "NORMAL" });
     const batch = await h.prepareBatch("확정 문장 작업", [h.task], {} as never);
-    expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SOL", normalAllocation: { state: "unavailable", profile: "NORMAL_SOL" } });
+    expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
     expect(await h.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
   });
   test("TaskGuard lock이 확립된 뒤 WORK_CLASS와 PRIMARY_DELIVERABLE을 생략한 child도 연결한다", async () => {
@@ -972,11 +972,11 @@ describe("블라인드 입력과 독립 질문", () => {
 describe("후보 provider 갱신 공유와 잔량 예산", () => {
   // registry 경로를 실제로 도는 하네스. deps.candidates를 주입하지 않는다.
   const profileModels: Record<string, string> = {
-    NORMAL_SOL: "openai-codex/gpt-6-sol",
+    NORMAL_SONNET: "openai-codex/gpt-6-sol",
     NORMAL_OPUS: "anthropic/claude-opus-5-5",
     HARD_UI_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_OPUS: "anthropic/claude-opus-5-5",
-    HARD_CODE_SOL: "openai-codex/gpt-6-sol",
+    HARD_CODE_SONNET: "openai-codex/gpt-6-sol",
     NORMAL_DEEPSEEK: "opencode-go/deepseek-v4-flash",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
@@ -1089,7 +1089,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SOL", "HARD_CODE_SOL", "NORMAL_DEEPSEEK"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1098,8 +1098,8 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
   });
 
   test("후보 강도는 registry 지원과 profile 허용 구간의 교집합이고 Jev는 그 안에서만, 하나뿐이면 묻지 않는다", async () => {
-    // Sol은 registry가 허용 구간 밖 강도(low)도 지원한다고 답한다. 교집합에서 빠져야 한다.
-    const supportedSol = ["low", ...loadRoutingPolicy().modelSelection.profiles.NORMAL_SOL!.allowedEfforts];
+    // Sonnet은 registry가 허용 구간 밖 강도(low)도 지원한다고 답한다. 교집합에서 빠져야 한다.
+    const supportedSol = ["low", ...loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts];
     const registry = {
       find: (provider: string, id: string) => ({
         thinking: { efforts: `${provider}/${id}` === "openai-codex/gpt-6-sol" ? supportedSol : strengths },
@@ -1118,7 +1118,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     }
     const asked = h.questions[0] as Record<string, { criteria: Record<string, string> }>;
     // 허용 강도가 하나뿐인 후보는 묻지 않고, 둘 이상인 후보만 그 구간을 묻는다.
-    for (const [index, profile] of [[0, "NORMAL_SOL"], [4, "HARD_CODE_SOL"]] as const) {
+    for (const [index, profile] of [[0, "NORMAL_SONNET"], [4, "HARD_CODE_SONNET"]] as const) {
       expect(Object.keys(asked[`effort${index}`]!.criteria)).toEqual(batch.candidates.find((c) => c.profile === profile)!.efforts);
     }
     expect(asked.effort0!.criteria).not.toHaveProperty("low");
@@ -1132,7 +1132,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 후보 구간 안에서 선택함\nOWNED_PATHS:");
     // NORMAL_OPUS 구간 안/밖을 실제 발주 경계에서 검사한다.
     const opusBand = loadRoutingPolicy().modelSelection.profiles.NORMAL_OPUS!.allowedEfforts;
-    const solBand = loadRoutingPolicy().modelSelection.profiles.NORMAL_SOL!.allowedEfforts;
+    const solBand = loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts;
     const solSelections = allStrengths.map((level): [string, boolean] => [
       `openai-codex/gpt-6-sol:${level}`, solBand.includes(level),
     ]);
@@ -1196,7 +1196,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(h.requests).toHaveLength(1);
     }
   });
-  test("NORMAL은 사용 가능한 primary Sol을 우선하고, Sol 소진일 때만 대안을 추천하며 미관측은 소진으로 보지 않는다", async () => {
+  test("NORMAL은 사용 가능한 primary Sonnet을 우선하고, Sonnet 소진일 때만 대안을 추천하며 미관측은 소진으로 보지 않는다", async () => {
     const account = (usedFraction: number, extra: Record<string, unknown> = {}) => ({
       credentialId: 1, disabled: false, autoBlockedUntilMs: null, limitReached: false, fetchedAt: 1,
       limits: [{ id: "limit", usedFraction, resetsAt: null, daySlot: null }],
@@ -1212,7 +1212,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 1) Luna가 사용 가능하면 대안 여유가 더 커도(0.8 대 0.2) primary NORMAL을 유지한다.
     const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], "opencode-go": [account(0.2)] });
     const first = await usable.prepareBatch("한도 배분", [usable.task], {} as never);
-    expect(first.routes[0]).toMatchObject({ profile: "NORMAL_SOL", normalAllocation: { state: "observed", profile: "NORMAL_SOL" } });
+    expect(first.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "observed", profile: "NORMAL_SONNET" } });
     expect(await usable.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
     expect(await usable.dispatch("openai-codex/gpt-6-sol:low")).toMatchObject({ block: true });
     expect(usable.requests).toHaveLength(1);
@@ -1231,7 +1231,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "관측 실패" }),
     });
     const third = await blind.prepareBatch("한도 배분", [blind.task], {} as never);
-    expect(third.routes[0]).toMatchObject({ profile: "NORMAL_SOL", normalAllocation: { state: "unavailable", profile: "NORMAL_SOL" } });
+    expect(third.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
     expect(await blind.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
 
     // 4) HARD 배정은 계정 상태와 무관하게 분야를 따른다.
@@ -1255,8 +1255,8 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(main.route.recommendations).toMatchObject({ delegation: { choice: "MAIN" } });
     expect(maker.route.recommendations).toMatchObject({ delegation: { choice: "MAKER" } });
     // 등급·profile·placement는 위임 답과 무관하게 같다.
-    expect(main.route.profile).toBe("NORMAL_SOL");
-    expect(maker.route.profile).toBe("NORMAL_SOL");
+    expect(main.route.profile).toBe("NORMAL_SONNET");
+    expect(maker.route.profile).toBe("NORMAL_SONNET");
     expect(main.route.normalAllocation).toEqual(maker.route.normalAllocation);
     expect(main.route.placement).toEqual(maker.route.placement);
   });
