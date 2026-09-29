@@ -48,7 +48,7 @@ function sharedLimit(id, label, windowId, status, usedFraction) {
   return { id, label, status, scope: { provider: "anthropic", windowId, shared: true }, amount: { usedFraction } };
 }
 
-test("가용 계정 한도가 자동차단·소진 계정보다 먼저 그려진다", () => {
+test("가용 계정의 주간 한도가 차단 계정보다 먼저 그려지고, 여유 있는 5시간 창은 접힌다", () => {
   const now = Date.now();
   const reports = [
     anthropicAccount("cld1@example.test", [
@@ -65,9 +65,36 @@ test("가용 계정 한도가 자동차단·소진 계정보다 먼저 그려진
   const html = renderStrip(reports);
   const rows = drawnRows(html);
 
-  assert.deepEqual(rows.map((row) => `${row.label} ${row.percent}`), ["Claude 5 Hour 1%", "Claude 7 Day 27%"]);
-  assert.deepEqual(rows.map((row) => row.account), [aliases[1], aliases[1]]);
-  // 차단 계정의 두 행은 사라지지 않고 개수에 남는다.
+  assert.deepEqual(rows.map((row) => `${row.account} ${row.label} ${row.percent}`), [
+    `${aliases[1]} Claude 7 Day 27%`,
+    `${aliases[0]} Claude 7 Day 100%`,
+  ]);
+  assert.deepEqual(drawnStates(html), ["auto-blocked"]);
+  // 접힌 5시간 창은 「더 보기」로 세지 않는다. 자세한 창은 사용량 보기가 그대로 보여 준다.
+  assert.doesNotMatch(html, /Show \d+ more/);
+});
+
+test("주간이 있어도 90% 이상이거나 소진된 5시간 창은 접지 않는다", () => {
+  const reports = [
+    anthropicAccount("hot@example.test", [
+      { id: "anthropic:5h", label: "Claude 5 Hour", amount: { usedFraction: 0.93 } },
+      { id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction: 0.4 } },
+    ], { credentialId: 12 }),
+    anthropicAccount("spent@example.test", [
+      sharedLimit("anthropic:5h", "Claude 5 Hour", "5h", "exhausted", 1),
+      sharedLimit("anthropic:7d", "Claude 7 Day", "7d", "ok", 0.3),
+    ], { credentialId: 6 }),
+  ];
+  const aliases = accountIdentities(reports).map((identity) => identity.alias);
+
+  const html = renderStrip(reports);
+  const rows = drawnRows(html);
+
+  assert.deepEqual(rows.map((row) => `${row.account} ${row.label} ${row.percent}`), [
+    `${aliases[0]} Claude 5 Hour 93%`,
+    `${aliases[0]} Claude 7 Day 40%`,
+  ]);
+  // 소진된 공유 5시간 창을 가진 계정은 뒤로 가되 개수로 남는다.
   assert.match(html, /Show 2 more/);
 });
 
@@ -92,7 +119,7 @@ test("자동차단은 아니어도 소진된 한도는 가용한 한도 뒤로 �
   assert.deepEqual(drawnStates(renderStrip(reports)), ["limit used up"]);
 });
 
-test("공유 주간 한도가 소진된 계정은 5시간이 남아 있어도 가용 계정 뒤로 간다", () => {
+test("공유 주간 한도가 소진된 계정은 가용 계정 뒤로 가고, 여유 있는 5시간 창은 접힌다", () => {
   const reports = [
     anthropicAccount("weekly-spent@example.test", [
       sharedLimit("anthropic:5h", "Claude 5 Hour", "5h", "ok", 0),
@@ -107,11 +134,11 @@ test("공유 주간 한도가 소진된 계정은 5시간이 남아 있어도 �
   const html = renderStrip(reports);
   const rows = drawnRows(html);
 
+  // 5시간 창만 보고한 계정은 그 창을 그대로 보여 준다.
   assert.deepEqual(rows.map((row) => `${row.account} ${row.label} ${row.percent}`), [
     `${aliases[1]} Claude 5 Hour 10%`,
-    `${aliases[0]} Claude 5 Hour 0%`,
+    `${aliases[0]} Claude 7 Day 100%`,
   ]);
-  // 계정 전체 창이 소진됐으므로 그 계정의 남은 5시간 행도 가용으로 취급하지 않는다.
   assert.deepEqual(drawnStates(html), ["account limit used up"]);
 });
 
@@ -128,8 +155,9 @@ test("티어 전용 한도 소진은 계정 전체 차단과 구분한다", () =
   const html = renderStrip(reports);
   const rows = drawnRows(html);
 
-  // 공유 창에 여유가 있으면 계정은 가용하다. 소진된 것은 그 티어 한도 행 하나뿐이다.
-  assert.deepEqual(rows.map((row) => `${row.label} ${row.percent}`), ["Claude 5 Hour 10%", "Claude 7 Day (Fable) 100%"]);
+  // 공유 창에 여유가 있어 계정은 가용하다. 소진된 것은 그 티어 한도 행 하나뿐이고, 계정 전체
+  // 소진으로 표시하지 않는다.
+  assert.deepEqual(rows.map((row) => `${row.label} ${row.percent}`), ["Claude 7 Day (Fable) 100%"]);
   assert.deepEqual(drawnStates(html), ["limit used up"]);
 });
 
@@ -156,6 +184,9 @@ test("남은 한도는 스트립 안에서 펼칠 수 있는 버튼으로 남는
       { id: "anthropic:5h", label: "Claude 5 Hour", amount: { usedFraction: 0.1 } },
       { id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction: 0.2 } },
     ], { credentialId: 12 }),
+    anthropicAccount("half@example.test", [
+      { id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction: 0.5 } },
+    ], { credentialId: 13 }),
     anthropicAccount("full@example.test", [
       { id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction: 1 } },
     ], { credentialId: 6 }),

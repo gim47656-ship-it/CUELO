@@ -26,14 +26,15 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
 import { randomUUID } from "crypto";
-import { appendFileSync, existsSync, realpathSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { appendFileSync, existsSync, writeFileSync } from "fs";
+import { join } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
-import { untrustedProjectSessionOptions } from "./project-trust";
+import { canonicalProjectKey, untrustedProjectSessionOptions } from "./project-trust";
+import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
 import { readConfiguredModelRoleRefs, readDefaultModelRole } from "./model-roles";
 import { findModelWithRecovery, getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "./omp-runtime";
@@ -608,6 +609,23 @@ function drainJobManagerOf(inner: object): DrainableJobManager | undefined {
   return checked;
 }
 
+/** 안전 idle 판정에 쓰는 async job manager의 좁은 모양(같은 코어 `asyncJobManager`). */
+interface BackgroundJobManager {
+  getRunningJobs(): unknown[];
+  hasPendingDeliveries(): boolean;
+  waitForAll(): Promise<void>;
+}
+
+function backgroundJobManagerOf(inner: object): BackgroundJobManager | undefined {
+  const manager = "asyncJobManager" in inner ? inner.asyncJobManager : undefined;
+  if (!manager || typeof manager !== "object") return undefined;
+  if (!("getRunningJobs" in manager) || typeof manager.getRunningJobs !== "function") return undefined;
+  if (!("hasPendingDeliveries" in manager) || typeof manager.hasPendingDeliveries !== "function") return undefined;
+  if (!("waitForAll" in manager) || typeof manager.waitForAll !== "function") return undefined;
+  // 세 메서드를 위에서 확인했다. AgentSessionLike는 이 코어 멤버를 계약에 두지 않는다.
+  return manager as BackgroundJobManager;
+}
+
 function delay(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -667,6 +685,12 @@ export class AgentSessionWrapper {
   // 삭제 경로가 건 닫힘 예약. 세션 파일을 건드리기 전에 세워지고, 이후
   // 도착한 새 작업 명령은 거부된다.
   private closing = false;
+  /**
+   * 이 세션이 시작할 때 프로젝트 자체 코드(`.omp/extensions`·tools·MCP)를 실었는지.
+   * 신뢰 저장소는 시작 때 한 번만 읽히므로, 저장된 승인과 실제 실행 상태를 가르는 값이다.
+   */
+  projectCodeLoaded = false;
+  private backgroundSettleWatch: Promise<void> | null = null;
 
   constructor(
     public readonly inner: AgentSessionLike,
@@ -788,6 +812,39 @@ export class AgentSessionWrapper {
       || this.inner.isBashRunning
       || this.subagents.getSubagents().length > 0
     );
+  }
+
+  /**
+   * 지금 종료해도 잃을 작업이 없는지. `isRunning()`에 더해, 턴이 끝난 뒤에도 남는
+   * background job·배달 대기 결과, 응답을 기다리는 확장 UI, 다음 연속 턴을 걸어 둔
+   * active goal, 이미 걸린 닫힘 예약을 모두 진행 중인 작업으로 본다.
+   */
+  isSafelyIdle(): boolean {
+    if (!this._alive || this.closing || this.isRunning() || this.pendingUiResponses.size > 0) return false;
+    const manager = backgroundJobManagerOf(this.inner);
+    if (manager && (manager.getRunningJobs().length > 0 || manager.hasPendingDeliveries())) return false;
+    // 배달됐지만 아직 턴에 주입되지 않은 결과(코어 yield queue)도 곧 턴을 다시 깨운다.
+    const pendingWake = "hasPendingAsyncWork" in this.inner ? this.inner.hasPendingAsyncWork : undefined;
+    if (typeof pendingWake === "function" && pendingWake.call(this.inner) === true) return false;
+    const goal = this.inner.getGoalModeState?.();
+    return !(goal?.enabled && goal.goal.status === "active");
+  }
+
+  /**
+   * 실행 중 job이 모두 끝나면 실행 상태 알림을 한 번 다시 보낸다. 배달이 억제된 job은
+   * 끝나도 턴을 깨우지 않아 다른 전이 이벤트가 없으므로, 보류된 신뢰 변경이 그 끝을
+   * 놓치지 않게 한다. 타이머 없이 job promise에만 걸며 한 번에 하나만 둔다.
+   */
+  watchBackgroundWork(): void {
+    if (this.backgroundSettleWatch || !this._alive) return;
+    const manager = backgroundJobManagerOf(this.inner);
+    if (!manager || manager.getRunningJobs().length === 0) return;
+    this.backgroundSettleWatch = manager.waitForAll()
+      .catch(() => {})
+      .finally(() => {
+        this.backgroundSettleWatch = null;
+        if (this._alive) notifyRunningChange();
+      });
   }
 
   /**
@@ -2204,15 +2261,6 @@ export function beginGuardedSessionDeletion(
   };
 }
 
-function normalizeRpcCwd(cwd: string): string {
-  const resolvedCwd = resolve(cwd);
-  try {
-    return realpathSync(resolvedCwd);
-  } catch {
-    return resolvedCwd;
-  }
-}
-
 function getStartingSessionCwds(): Map<string, number> {
   if (!globalThis.__ompStartingSessionCwds) globalThis.__ompStartingSessionCwds = new Map();
   return globalThis.__ompStartingSessionCwds;
@@ -2220,7 +2268,8 @@ function getStartingSessionCwds(): Map<string, number> {
 
 function trackStartingSession(cwd: string): () => void {
   const startingCwds = getStartingSessionCwds();
-  const key = normalizeRpcCwd(cwd);
+  // 신뢰 저장소와 같은 키여야 신뢰 적용이 시작 중인 세션을 정확히 기다린다.
+  const key = canonicalProjectKey(cwd);
   startingCwds.set(key, (startingCwds.get(key) ?? 0) + 1);
   return () => {
     const remaining = (startingCwds.get(key) ?? 1) - 1;
@@ -2301,22 +2350,14 @@ export function getRpcSessionInfos(): SessionInfo[] {
   return sessions;
 }
 
-export function hasBusyRpcSessionForCwd(cwd: string): boolean {
-  const targetCwd = normalizeRpcCwd(cwd);
-  if (getStartingSessionCwds().has(targetCwd)) return true;
-  return Array.from(getRegistry().values()).some(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd && session.isRunning(),
-  );
-}
-
-export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
-  const targetCwd = normalizeRpcCwd(cwd);
-  const sessions = Array.from(getRegistry().values()).filter(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd,
-  );
-  await Promise.all(sessions.map((session) => session.shutdown()));
-  return sessions.length;
-}
+/**
+ * 프로젝트 신뢰 변경이 보는 세션 집합. 등록된 wrapper와, 신뢰를 읽은 뒤 아직 등록되지 않은
+ * 시작 중 세션(같은 canonical key)을 그대로 넘긴다.
+ */
+export const projectTrustHost: ProjectTrustHost = {
+  sessions: () => getRegistry().values(),
+  isStarting: (key) => getStartingSessionCwds().has(key),
+};
 
 export function getRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
@@ -2330,6 +2371,8 @@ export function getRunningRpcSessionIds(): string[] {
 export function notifyRunningChange(): void {
   const ids = getRunningRpcSessionIds();
   recordRuntimeActivity(ids);
+  // 보류된 신뢰 변경이 없으면 map 크기만 보고 돌아온다.
+  reconcileProjectTrust(projectTrustHost);
 }
 
 /**
@@ -2459,6 +2502,7 @@ export async function startRpcSession(
       }
 
       const wrapper = new AgentSessionWrapper(session, eventBus);
+      wrapper.projectCodeLoaded = untrusted === undefined;
       wrapper.bindToolUiContext(
         setToolUIContext as unknown as (uiContext: ExtensionUiContextLike, hasUI: boolean) => void,
       );
@@ -2493,6 +2537,12 @@ export async function startRpcSession(
       if (closing.has(sessionId) || closing.has(realSessionId)) {
         wrapper.destroy();
         throw new Error("Session is closing");
+      }
+      // 이 세션이 신뢰를 읽은 뒤 해제가 저장됐다면 프로젝트 코드를 실은 채로 등록하지 않는다.
+      // 해제 직후의 변경 기록이 있을 때만 저장소를 다시 읽는다.
+      if (wrapper.projectCodeLoaded && isProjectTrustRevokedFor(sessionCwd)) {
+        wrapper.destroy();
+        throw new Error("Project trust was revoked while this session was starting. Please try again.");
       }
       wrapper.start();
 

@@ -5,6 +5,7 @@ import { useI18n } from "@/hooks/useI18n";
 import type { UsageSnapshotController } from "@/hooks/useUsageSnapshot";
 import { accountIdentities, limitExhausted, type UsageLimit, type UsageReport } from "@/lib/hanse-resource-client";
 import { AccountAvatar } from "./workspace/AccountAvatar";
+import { shortWindowAlert, usageWindowKind } from "./lounge/member-usage";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useNow } from "@/hooks/useNow";
 
@@ -15,7 +16,9 @@ import { useNow } from "@/hooks/useNow";
  * aggregate recorded for that provider, with the span that total covers. It reads the app's single
  * usage subscription, so it adds no polling of its own. The whole strip opens the full usage view,
  * where errors are explained. The rows it has room for lead with the limits an account can still
- * serve with; the rest open in place, counted rather than dropped.
+ * serve with; the rest open in place, counted rather than dropped. An account that reports a weekly
+ * (or longer) window keeps its short windows (5h) folded unless that window itself is used up, flagged
+ * by the broker, or at 90% or more — folding is display only; the core's blocking is unchanged.
  */
 
 /** The limit rows the strip draws before the reader opens the rest. */
@@ -75,9 +78,16 @@ function usageStripRows(reports: readonly UsageReport[], now: number): UsageStri
     const spentAccount = (report.limits ?? []).some(
       (limit) => limit.scope?.shared === true && limitExhausted(limit),
     );
+    // 주간(또는 더 긴) 창을 보고한 계정은 5시간 같은 짧은 창을 평소 접는다. 그 창 자체가
+    // 소진·경고·90% 이상일 때만 올린다. 짧은 창만 보고하는 provider는 그 창을 그대로 보여 준다.
+    // 접는 것은 표시뿐이고, 차단 판단은 코어가 그대로 한다.
+    const hasLongWindow = (report.limits ?? []).some(
+      (limit) => usedFraction(limit) !== null && usageWindowKind(limit) !== "short",
+    );
     for (const limit of report.limits ?? []) {
       const fraction = usedFraction(limit);
       if (fraction === null) continue;
+      if (hasLongWindow && usageWindowKind(limit) === "short" && !shortWindowAlert(limit)) continue;
       const state: UsageStripRow["state"] = autoBlocked
         ? "blocked"
         : spentAccount ? "account-spent" : limitExhausted(limit) ? "spent" : "usable";

@@ -22,6 +22,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { OmpWordmark } from "./OmpWordmark";
+import { useLoungeText } from "./lounge/i18n";
 
 interface Props {
   selectedSessionId: string | null;
@@ -38,6 +39,11 @@ interface Props {
   /** Fired when a session that is not currently selected stops running.
    *  The running snapshot has no outcome or Main identity, so consumers use a neutral tone. */
   onBackgroundTaskDone?: () => void;
+  /** 「단톡방」 보기의 내용(멤버 패널). 주어질 때만 보기 전환에 단톡방이 생긴다. */
+  loungePanel?: ReactNode;
+  /** 단톡방 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모가 들고 있다. */
+  loungeActive?: boolean;
+  onLoungeActiveChange?: (active: boolean) => void;
 }
 
 interface WorktreeEntry {
@@ -369,7 +375,8 @@ async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): 
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone }: Props) {
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, loungePanel, loungeActive = false, onLoungeActiveChange }: Props) {
+  const { lt } = useLoungeText();
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -1323,7 +1330,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     }
     return seen.size;
   };
-
+  // 단톡방 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
+  // 단톡방에서 돌아오면 떠나기 전 보기로 돌아간다.
+  const loungeOn = loungePanel !== undefined && loungeActive;
 
   return (
     // tabIndex -1: 탭 순서에 끼지 않되, 모달을 띄운 트리거가 메뉴와 함께
@@ -1478,7 +1487,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             const label = mode === "projects"
               ? t("sidebar.projects")
               : t("navigator.priority");
-            const active = navigatorMode === mode;
+            const active = !loungeOn && navigatorMode === mode;
             return (
               <button
                 key={mode}
@@ -1487,7 +1496,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 aria-pressed={active}
                 aria-controls={`navigator-${mode}-panel`}
                 data-navigator-mode={mode}
-                onClick={() => selectNavigatorMode(mode)}
+                onClick={() => {
+                  selectNavigatorMode(mode);
+                  if (loungeOn) onLoungeActiveChange?.(false);
+                }}
                 style={{
                   minWidth: 0,
                   minHeight: 26,
@@ -1507,8 +1519,34 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               </button>
             );
           })}
+          {loungePanel !== undefined && (
+            <button
+              type="button"
+              aria-label={t("navigator.view", { label: lt("lounge.tab") })}
+              aria-pressed={loungeOn}
+              aria-controls="navigator-lounge-panel"
+              data-navigator-mode="lounge"
+              onClick={() => onLoungeActiveChange?.(!loungeOn)}
+              style={{
+                minWidth: 0,
+                minHeight: 26,
+                flex: 1,
+                padding: "3px 4px",
+                border: "none",
+                borderRadius: 4,
+                background: loungeOn ? "var(--bg-selected)" : "transparent",
+                color: loungeOn ? "var(--text)" : "var(--text-dim)",
+                cursor: "pointer",
+                fontSize: 10,
+                fontWeight: loungeOn ? 600 : 500,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {lt("lounge.tab")}
+            </button>
+          )}
         </div>
-        {navigatorMode === "projects" && (
+        {!loungeOn && navigatorMode === "projects" && (
           <button
             type="button"
             onClick={() => setShowHiddenProjects((show) => !show)}
@@ -1539,7 +1577,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             </svg>
           </button>
         )}
-        {navigatorMode === "projects" && (
+        {!loungeOn && navigatorMode === "projects" && (
           <button
             className="navigator-add-project"
             type="button"
@@ -1576,7 +1614,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           </button>
         )}
       </div>
-      {navigatorMode === "projects" && (
+      {loungeOn && loungePanel}
+      {!loungeOn && navigatorMode === "projects" && (
         <label className="navigator-search" style={{ position: "relative", display: "block", margin: "0 8px 8px" }}>
           <svg
             width="14"
@@ -1622,7 +1661,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </label>
       )}
 
-      {navigatorMode === "projects" && (
+      {!loungeOn && navigatorMode === "projects" && (
       <div
         id="navigator-projects-panel"
         className="navigator-session-list"
@@ -2473,14 +2512,16 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       )}
 
-      <ArchivedSessionsSection
-        refreshKey={archiveRefreshKey}
-        selectedSessionId={selectedSessionId}
-        onSelectSession={handleSelectSessionFromList}
-        onRestored={handleSessionArchived}
-      />
+      {!loungeOn && (
+        <ArchivedSessionsSection
+          refreshKey={archiveRefreshKey}
+          selectedSessionId={selectedSessionId}
+          onSelectSession={handleSelectSessionFromList}
+          onRestored={handleSessionArchived}
+        />
+      )}
 
-      {navigatorMode === "priority" && (
+      {!loungeOn && navigatorMode === "priority" && (
         <div
           id="navigator-priority-panel"
           style={{ flex: "1 1 auto", minHeight: 80, overflowY: "auto", padding: "0 6px 10px" }}

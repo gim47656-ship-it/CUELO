@@ -47,7 +47,12 @@ function trustFilePath(agentDir: string): string {
   return join(agentDir, TRUST_FILE);
 }
 
-function canonicalProjectKey(cwd: string): string {
+/**
+ * The one key both the trust store and the session registry use for a project:
+ * `rpc-manager` groups live and starting sessions by it, so a decision written
+ * here always names the same sessions the lifecycle checks before applying it.
+ */
+export function canonicalProjectKey(cwd: string): string {
   const resolved = resolve(cwd);
   try {
     return realpathSync(resolved);
@@ -103,11 +108,23 @@ export function getProjectTrustStatus(cwd: string, agentDir: string): ProjectTru
 export function trustProject(cwd: string, agentDir: string): ProjectTrustStatus {
   const status = getProjectTrustStatus(cwd, agentDir);
   if (!status.requiresTrust) return status;
-
-  const trusted = readTrustedProjects(agentDir);
-  trusted[canonicalProjectKey(cwd)] = true;
-  writeTrustedProjects(agentDir, trusted);
+  setProjectTrust(cwd, agentDir, true);
   return { requiresTrust: true, trusted: true };
+}
+
+/**
+ * Record an explicit decision. A revoke is stored as `false` rather than a
+ * removed key so the project stays listed and can be trusted again from settings.
+ */
+export function setProjectTrust(cwd: string, agentDir: string, trusted: boolean): void {
+  const decisions = readTrustedProjects(agentDir);
+  decisions[canonicalProjectKey(cwd)] = trusted;
+  writeTrustedProjects(agentDir, decisions);
+}
+
+/** Every recorded decision, keyed by canonical project path. */
+export function listProjectTrustDecisions(agentDir: string): Record<string, boolean> {
+  return readTrustedProjects(agentDir);
 }
 
 /** True when `candidate` lives inside `root` (or is `root` itself). */

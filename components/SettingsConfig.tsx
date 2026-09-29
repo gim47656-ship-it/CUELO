@@ -5,6 +5,7 @@ import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { PluginsConfig } from "./PluginsConfig";
 import { AccessConfig } from "./AccessConfig";
+import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { SearchableSelect } from "./SearchableSelect";
 import { refreshOmpTheme, useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
@@ -23,7 +24,7 @@ import type {
 } from "@/lib/settings-api";
 import styles from "./SettingsConfig.module.css";
 
-type SettingsSection = "models" | "themes" | "skills" | "plugins" | "mcp" | "access" | `settings:${string}`;
+type SettingsSection = "models" | "themes" | "skills" | "plugins" | "mcp" | "access" | "trust" | `settings:${string}`;
 
 interface SettingsConfigProps {
   cwd?: string | null;
@@ -34,13 +35,16 @@ interface SettingsConfigProps {
   onReloaded?: () => void;
 }
 
-const CORE_SECTIONS: Array<{ id: SettingsSection; label: string; icon: string; requiresCwd?: boolean }> = [
+// `labelKey` names an app message for sections whose copy lives with the feature
+// rather than in the settings shell dictionary.
+const CORE_SECTIONS: Array<{ id: SettingsSection; label: string; labelKey?: string; icon: string; requiresCwd?: boolean }> = [
   { id: "models", label: "Models", icon: "model" },
   { id: "themes", label: "Themes", icon: "theme" },
   { id: "skills", label: "Skills", icon: "skill", requiresCwd: true },
   { id: "plugins", label: "Plugins", icon: "plugin", requiresCwd: true },
   { id: "mcp", label: "MCP", icon: "mcp" },
   { id: "access", label: "Access", icon: "access" },
+  { id: "trust", label: "Project trust", labelKey: "trust.settingsNav", icon: "trust" },
 ];
 
 const ICON_PATHS: Record<string, React.ReactNode> = {
@@ -50,6 +54,7 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
   plugin: <><path d="M8 3v5m8-5v5M6 8h12v5a6 6 0 0 1-12 0V8Zm6 11v3"/></>,
   mcp: <><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.5 11 16m5-8.5L13 16M8 6h8"/></>,
   access: <><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></>,
+  trust: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></>,
   appearance: <><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></>,
   interaction: <><path d="M4 5h16v11H9l-5 4V5Z"/><path d="M8 9h8m-8 3h5"/></>,
   context: <><path d="M5 3h11l3 3v15H5z"/><path d="M15 3v4h4M8 11h8m-8 4h8"/></>,
@@ -208,7 +213,7 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
   const [needsReload, setNeedsReload] = useState(false);
   const [reloading, setReloading] = useState(false);
   const { theme, setPreference } = useTheme();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
   const shellText = (source: string) => (
     locale === "ko" ? koreanSettingsMetadata.shell[source] ?? source : source
@@ -449,7 +454,7 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
           <nav className={styles.nav}>
             <div className={styles.navLabel}>{shellText("Configuration")}</div>
             {CORE_SECTIONS.map((item) => {
-              const label = shellText(item.label);
+              const label = item.labelKey ? t(item.labelKey) : shellText(item.label);
               return (
                 <button
                   key={item.id}
@@ -507,7 +512,9 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
                       ? <McpSettings cwd={cwd} sessionId={sessionId} onReloaded={onReloaded} />
                       : section === "access"
                         ? <AccessConfig />
-                        : renderGenericSettings()}
+                        : section === "trust"
+                          ? <ProjectTrustSettings cwd={cwd} />
+                          : renderGenericSettings()}
         </main>
       </div>
     </div>

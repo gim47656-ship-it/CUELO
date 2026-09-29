@@ -609,6 +609,22 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
 
 
   const next: Record<string, unknown> = { ...record };
+  // Cloud Code Assist는 Google 지시를 request.systemInstruction.parts에 담는다.
+  // 바깥 system 필드를 추가하면 Antigravity/Gemini CLI가 HTTP 400으로 거부한다.
+  if (next.request && typeof next.request === "object") {
+    const request = next.request as Record<string, unknown>;
+    if (Array.isArray(request.contents)) {
+      const instruction = request.systemInstruction as { role?: string; parts?: unknown[] } | undefined;
+      next.request = {
+        ...request,
+        systemInstruction: {
+          ...instruction,
+          parts: [...(cleanPayloadTextContainer(instruction?.parts ?? []) as unknown[]), { text: block }],
+        },
+      };
+      return next;
+    }
+  }
   if ("instructions" in next) next.instructions = cleanPayloadTextContainer(next.instructions);
   if ("system" in next && !Array.isArray(next.system)) next.system = cleanPayloadTextContainer(next.system);
   if (Array.isArray(next.messages)) {

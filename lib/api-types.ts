@@ -61,7 +61,29 @@ export interface SkillsResponse {
 
 export interface ProjectTrustStatus {
   requiresTrust: boolean;
+  /** The stored approval new sessions load with — not what live sessions are running. */
   trusted: boolean;
+}
+
+export type ProjectTrustAction = "grant" | "revoke" | "cancel";
+
+/**
+ * `grant`: approved but not applied yet — the project stays restricted until
+ * every session in it reaches a safe idle. `revoke`: the approval is already
+ * withdrawn; only sessions that loaded project code before it are still running.
+ */
+export type ProjectTrustPending = "grant" | "revoke";
+
+export interface ProjectTrustState extends ProjectTrustStatus {
+  pending: ProjectTrustPending | null;
+  /** What live sessions actually run with, separate from the stored approval. */
+  runtime: { sessions: number; running: number; projectCodeLoaded: number };
+  /** Why the last scheduled grant was not applied. Nothing was trusted. */
+  error?: string;
+}
+
+export interface ProjectTrustEntry extends ProjectTrustState {
+  cwd: string;
 }
 
 export type PluginScope = "global" | "project";

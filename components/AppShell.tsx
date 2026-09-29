@@ -28,6 +28,9 @@ import { useAudio } from "@/hooks/useAudio";
 import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
 import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage } from "./SidebarUsage";
+import { useLounge } from "@/hooks/useLounge";
+import { LoungeMemberPanel } from "./lounge/LoungeMemberPanel";
+import { LoungeView } from "./lounge/LoungeView";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
@@ -58,7 +61,7 @@ import {
   SIDEBAR_MIN_WIDTH,
 } from "@/lib/panel-layout";
 import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSnapshot } from "@/lib/types";
-import type { ProjectTrustStatus } from "@/lib/api-types";
+import type { ProjectTrustState } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/omp-types";
 import type { AgentCompletionResult, SessionData } from "@/hooks/useAgentSession";
@@ -129,6 +132,12 @@ export function AppShell({
   // 대화 기록의 계정 얼굴은 사용량 탭과 같은 목록에서 배정돼야 같은 계정이 같은 얼굴로
   // 보인다. 앱의 단일 사용량 구독을 여기서 한 번 흘려 넣고, 메시지들은 읽기만 한다.
   useSyncedAccountFaces(usage.state.data?.reports);
+  // 단톡방은 작업 대화와 따로 도는 방이다. 컨트롤러는 여기서 한 번만 만들고 사이드바 멤버
+  // 패널과 가운데 대화 화면이 같이 쓴다(SSE 연결 하나). 처음 열 때 연결하고, 그 뒤로는 작업
+  // 화면으로 돌아가도 연결을 유지해 말하던 본문이 끊기지 않는다.
+  const [loungeOpen, setLoungeOpen] = useState(false);
+  const [loungeVisited, setLoungeVisited] = useState(false);
+  const lounge = useLounge(loungeVisited);
   const notifiedAttentionRequestIdsRef = useRef(new Set<string>());
   const handleBackgroundTaskDone = useCallback(() => {
     // 다른 workspace에서 끝난 작업은 어느 계정이 했는지 알 수 없다 — 캐릭터 없이 「결과 확인」
@@ -152,7 +161,11 @@ export function AppShell({
   const [gitRefreshKey, setGitRefreshKey] = useState(0);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [settingsConfigOpen, setSettingsConfigOpen] = useState(false);
-  const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
+  const [projectTrust, setProjectTrust] = useState<ProjectTrustState | null>(null);
+  // 보류된 신뢰 변경을 다시 읽을 때(턴 종료·설정 닫힘)만 올린다. 주기적 조회는 하지 않는다.
+  const [projectTrustRefreshKey, setProjectTrustRefreshKey] = useState(0);
+  const projectTrustRef = useRef<ProjectTrustState | null>(null);
+  const projectTrustCwdRef = useRef<string | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
@@ -182,6 +195,13 @@ export function AppShell({
   const requestComposerFocus = useCallback(() => {
     setComposerFocusRequest((request) => request + 1);
   }, []);
+  // 단톡방을 열고 닫는다. 작업 ChatWindow는 그대로 마운트된 채 가려질 뿐이라 선택 세션·초안·
+  // 실행 중인 작업이 그대로 남고, 닫으면 작업 입력창으로 초점을 돌려준다.
+  const setLoungeActive = useCallback((active: boolean) => {
+    if (active) setLoungeVisited(true);
+    setLoungeOpen(active);
+    if (!active) requestComposerFocus();
+  }, [requestComposerFocus]);
   const registerComposerFocus = useCallback((focus: (() => void) | null) => {
     composerFocusRef.current = focus;
   }, []);
@@ -1194,6 +1214,7 @@ export function AppShell({
 
   const handleAgentEnd = useCallback((completion: AgentCompletionResult) => {
     setRefreshKey((k) => k + 1);
+    if (projectTrustRef.current?.pending) setProjectTrustRefreshKey((k) => k + 1);
     setGitRefreshKey((k) => k + 1);
     if (selectedSession) hydrateSelectedSession(selectedSession.id);
 
@@ -1361,29 +1382,52 @@ export function AppShell({
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
+  // Settings와 서버 예약 적용이 바꾼 상태를 반영한다. 서버가 이 프로젝트의 세션을 실제로
+  // 닫은 경우 — 저장 승인이 바뀐 채 대기가 없거나(즉시 적용·예약 grant 적용), 해제 뒤 남아
+  // 있던 세션이 퇴역한 경우 — 에만 즉시 신뢰 때처럼 모델 목록과 세션 뷰를 다시 붙인다.
+  // 예약 취소·적용 실패는 세션을 닫지 않으므로 다시 붙이지 않는다.
+  const applyProjectTrust = useCallback((next: ProjectTrustState, previous: ProjectTrustState | null) => {
+    projectTrustRef.current = next;
+    setProjectTrust(next);
+    setProjectTrustError(next.error ? translate("trust.applyFailed", { error: next.error }) : null);
+    const replaced = previous !== null
+      && next.pending === null
+      && (previous.trusted !== next.trusted || previous.pending === "revoke");
+    if (!replaced) return;
+    if (next.trusted) setProjectTrustDialogOpen(false);
+    setModelsRefreshKey((key) => key + 1);
+    setSessionKey((key) => key + 1);
+  }, [translate]);
+
   useEffect(() => {
-    setProjectTrust(null);
-    setProjectTrustDialogOpen(false);
-    setProjectTrustError(null);
+    const cwdChanged = projectTrustCwdRef.current !== projectTrustCwd;
+    projectTrustCwdRef.current = projectTrustCwd;
+    if (cwdChanged) {
+      projectTrustRef.current = null;
+      setProjectTrust(null);
+      setProjectTrustDialogOpen(false);
+      setProjectTrustError(null);
+    }
     if (!projectTrustCwd) return;
+    const previous = projectTrustRef.current;
 
     const controller = new AbortController();
     fetch(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
-        const data = await response.json() as ProjectTrustStatus & { error?: string };
-        if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
-        setProjectTrust(data);
+        const data = await response.json() as ProjectTrustState & { error?: string };
+        if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+        applyProjectTrust(data, previous);
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.error("Failed to load project trust:", error);
       });
     return () => controller.abort();
-  }, [projectTrustCwd]);
+  }, [applyProjectTrust, projectTrustCwd, projectTrustRefreshKey]);
 
-  const handleTrustProject = useCallback(async () => {
+  const sendProjectTrustAction = useCallback(async (action: "grant" | "cancel") => {
     if (!projectTrustCwd || projectTrustBusy) return;
     setProjectTrustBusy(true);
     setProjectTrustError(null);
@@ -1391,21 +1435,23 @@ export function AppShell({
       const response = await fetch("/api/project-trust", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: projectTrustCwd }),
+        body: JSON.stringify({ cwd: projectTrustCwd, action }),
       });
-      const data = await response.json() as ProjectTrustStatus & { error?: string };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
-      setProjectTrust(data);
-      setProjectTrustDialogOpen(false);
-      requestComposerFocus();
-      setModelsRefreshKey((key) => key + 1);
-      setSessionKey((key) => key + 1);
+      const data = await response.json() as ProjectTrustState & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+      const previous = projectTrustRef.current;
+      applyProjectTrust(data, previous);
+      // 적용되면 위에서 세션을 다시 붙인다. 예약이면 dialog가 예약 상태로 남는다.
+      if (data.trusted || action === "cancel") {
+        setProjectTrustDialogOpen(false);
+        requestComposerFocus();
+      }
     } catch (error) {
       setProjectTrustError(error instanceof Error ? error.message : String(error));
     } finally {
       setProjectTrustBusy(false);
     }
-  }, [projectTrustBusy, projectTrustCwd, requestComposerFocus]);
+  }, [applyProjectTrust, projectTrustBusy, projectTrustCwd, requestComposerFocus]);
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
@@ -1604,16 +1650,32 @@ export function AppShell({
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onBackgroundTaskDone={handleBackgroundTaskDone}
+        loungePanel={(
+          <LoungeMemberPanel
+            lounge={lounge}
+            usage={usage}
+            loungeOpen={loungeOpen}
+            // 넓은 화면에서는 보기를 고르는 순간 가운데가 이미 단톡방이다. 드로어에서만 드로어를
+            // 닫고 뒤의 대화 화면을 보여 주는 버튼이 필요하다.
+            onOpenLounge={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined}
+          />
+        )}
+        loungeActive={loungeOpen}
+        onLoungeActiveChange={setLoungeActive}
       />
       {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. */}
       <div className="navigator-footer" style={{ padding: "8px", flexShrink: 0 }}>
-        <SidebarUsage
-          usage={usage}
-          onOpen={() => {
-            setResourceTab("usage");
-            selectWorkspaceView("resource", false);
-          }}
-        />
+        {/* 단톡방 보기에서는 멤버 패널이 멤버별 주간·한도 경고를 이미 보여 준다. 같은 사용량을
+            아래에 한 번 더 쌓으면 멤버 목록의 세로 공간만 줄어든다. 작업 보기에서는 그대로 둔다. */}
+        {loungeOpen ? null : (
+          <SidebarUsage
+            usage={usage}
+            onOpen={() => {
+              setResourceTab("usage");
+              selectWorkspaceView("resource", false);
+            }}
+          />
+        )}
         <OmpUpdateIndicator />
         <button
           className="navigator-settings-action"
@@ -1797,13 +1859,15 @@ export function AppShell({
                 color="fg.warning"
                 type="button"
                 onClick={() => {
-                  setProjectTrustError(null);
+                  setProjectTrustError(projectTrust.error ? translate("trust.applyFailed", { error: projectTrust.error }) : null);
                   setActiveTopPanel(null);
                   dispatchWorkspaceLayout({ type: "close-layer" });
                   setProjectTrustDialogOpen(true);
+                  // 예약은 다른 탭·외부 실행이 끝날 때 적용될 수 있어, 열 때 한 번 다시 읽는다.
+                  if (projectTrust.pending) setProjectTrustRefreshKey((key) => key + 1);
                 }}
-                title={translate("trust.resourcesNotLoaded")}
-                aria-label={translate("trust.resourcesNotLoaded")}
+                title={translate(projectTrust.pending === "grant" ? "trust.pendingBadge" : "trust.resourcesNotLoaded")}
+                aria-label={translate(projectTrust.pending === "grant" ? "trust.pendingBadge" : "trust.resourcesNotLoaded")}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
@@ -2172,7 +2236,7 @@ export function AppShell({
 
         {/* Chat content */}
         <div className="chat-content-layout">
-          <div id="workspace-transcript" className="chat-session-column">
+          <div id="workspace-transcript" className="chat-session-column" data-lounge-open={loungeOpen ? "true" : undefined}>
           {showChat ? (
             <ChatWindow
               key={sessionKey}
@@ -2256,6 +2320,11 @@ export function AppShell({
               </div>
             )
           ) : null}
+          {/* 단톡방은 작업 화면 위에 덮인다. 작업 쪽은 visibility로만 가려 ChatWindow·초안·스크롤·
+              실행 상태가 그대로 살아 있고, 닫으면 떠나기 전 그대로 돌아온다. */}
+          {loungeVisited ? (
+            <LoungeView lounge={lounge} visible={loungeOpen} onBack={() => setLoungeActive(false)} />
+          ) : null}
           </div>
           {pinDecision.deck === "pinned" && showAuxiliaryDeck && (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
@@ -2329,6 +2398,8 @@ export function AppShell({
         sessionId={selectedSession?.id ?? null}
         onClose={() => {
           setSettingsConfigOpen(false);
+          // 설정에서 신뢰를 바꿨을 수 있으니 열린 프로젝트의 상태를 다시 읽는다.
+          setProjectTrustRefreshKey((key) => key + 1);
           requestComposerFocus();
         }}
         onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
@@ -2339,13 +2410,15 @@ export function AppShell({
       <ProjectTrustDialog
         cwd={projectTrustCwd}
         busy={projectTrustBusy}
+        scheduled={projectTrust?.pending === "grant"}
         error={projectTrustError}
         onCancel={() => {
           if (projectTrustBusy) return;
           setProjectTrustDialogOpen(false);
           requestComposerFocus();
         }}
-        onConfirm={() => void handleTrustProject()}
+        onConfirm={() => void sendProjectTrustAction("grant")}
+        onCancelSchedule={() => void sendProjectTrustAction("cancel")}
       />
     )}
     </>

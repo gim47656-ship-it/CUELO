@@ -3,11 +3,28 @@ import { resolve } from "path";
 import { NextResponse } from "next/server";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
-import { invalidateModelsCache } from "@/lib/models-cache";
-import { getProjectTrustStatus, trustProject } from "@/lib/project-trust";
-import { destroyRpcSessionsForCwd, hasBusyRpcSessionForCwd } from "@/lib/rpc-manager";
+import { canonicalProjectKey, getProjectTrustStatus, listProjectTrustDecisions } from "@/lib/project-trust";
+import {
+  ProjectTrustNotRequiredError,
+  describeProjectTrust,
+  requestProjectTrustChange,
+} from "@/lib/project-trust-lifecycle";
+import { hasJsonContentType } from "@/lib/request-security";
+import { projectTrustHost } from "@/lib/rpc-manager";
+import type { ProjectTrustAction, ProjectTrustEntry } from "@/lib/api-types";
 
 export const dynamic = "force-dynamic";
+
+const ACTIONS: Record<ProjectTrustAction, true> = { grant: true, revoke: true, cancel: true };
+
+async function isAllowedDirectory(cwd: string, allowedRoots: Set<string>): Promise<boolean> {
+  try {
+    if (!(await stat(cwd)).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  return isExistingFilePathAllowed(cwd, allowedRoots);
+}
 
 async function validateCwd(value: unknown): Promise<
   { cwd: string } | { response: NextResponse }
@@ -32,32 +49,67 @@ async function validateCwd(value: unknown): Promise<
   return { cwd };
 }
 
+/**
+ * Projects with a recorded decision, plus projects live sessions or the caller
+ * (`include`, e.g. the project open in settings) have open that need one. Paths
+ * that no longer exist or sit outside the allowed roots are left out rather
+ * than disclosed.
+ */
+async function listProjects(agentDir: string, include: string[]): Promise<ProjectTrustEntry[]> {
+  const candidates = new Set(Object.keys(listProjectTrustDecisions(agentDir)));
+  const open = [...include.map((path) => resolve(path)), ...[...projectTrustHost.sessions()].map((session) => session.cwd)];
+  for (const path of open) {
+    const key = canonicalProjectKey(path);
+    if (getProjectTrustStatus(key, agentDir).requiresTrust) candidates.add(key);
+  }
+  const allowedRoots = await getAllowedFileRoots();
+  const entries: ProjectTrustEntry[] = [];
+  for (const cwd of candidates) {
+    if (!(await isAllowedDirectory(cwd, allowedRoots))) continue;
+    entries.push({ cwd, ...describeProjectTrust(projectTrustHost, cwd, agentDir) });
+  }
+  return entries.sort((left, right) => left.cwd.localeCompare(right.cwd));
+}
+
 export async function GET(req: Request) {
-  const result = await validateCwd(new URL(req.url).searchParams.get("cwd"));
+  const agentDir = getAgentDir();
+  const params = new URL(req.url).searchParams;
+  const cwdParam = params.get("cwd");
+  if (cwdParam === null) {
+    return NextResponse.json({ projects: await listProjects(agentDir, params.getAll("include")) });
+  }
+
+  const result = await validateCwd(cwdParam);
   if ("response" in result) return result.response;
-  return NextResponse.json(getProjectTrustStatus(result.cwd, getAgentDir()));
+  return NextResponse.json(describeProjectTrust(projectTrustHost, result.cwd, agentDir));
 }
 
 export async function POST(req: Request) {
+  if (!hasJsonContentType(req)) {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
   try {
-    const body = await req.json() as { cwd?: unknown };
+    const body = await req.json() as { cwd?: unknown; action?: unknown };
+    const action = body.action ?? "grant";
+    if (typeof action !== "string" || !Object.hasOwn(ACTIONS, action)) {
+      return NextResponse.json({ error: "action must be grant, revoke, or cancel" }, { status: 400 });
+    }
     const result = await validateCwd(body.cwd);
     if ("response" in result) return result.response;
 
-    const agentDir = getAgentDir();
-    const current = getProjectTrustStatus(result.cwd, agentDir);
-    if (!current.requiresTrust) {
-      return NextResponse.json({ error: "This project has no resources that require trust" }, { status: 409 });
-    }
-    if (hasBusyRpcSessionForCwd(result.cwd)) {
-      return NextResponse.json({ error: "Wait for the active session to finish before trusting this project" }, { status: 409 });
-    }
-
-    const status = trustProject(result.cwd, agentDir);
-    invalidateModelsCache();
-    await destroyRpcSessionsForCwd(result.cwd);
-    return NextResponse.json(status);
+    const state = requestProjectTrustChange(
+      projectTrustHost,
+      result.cwd,
+      getAgentDir(),
+      action as ProjectTrustAction,
+    );
+    // 202: accepted but not fully applied — a grant waits for the project's
+    // sessions to go idle, a revoke for sessions still running project code.
+    return NextResponse.json(state, { status: state.pending ? 202 : 200 });
   } catch (error) {
+    if (error instanceof ProjectTrustNotRequiredError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 500 },

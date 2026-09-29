@@ -609,6 +609,31 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("Problem / Decision / Check / Next를 항상 쓴다");
   });
 
+  test.each([true, false])("Cloud Code Assist keeps voice inside systemInstruction (existing=%s)", (existing) => {
+    const payload = {
+      project: "fixture-project",
+      model: "gemini-test",
+      request: {
+        contents: [{ role: "user", parts: [{ text: "hello" }] }],
+        generationConfig: { maxOutputTokens: 100 },
+        ...(existing ? { systemInstruction: { role: "user", parts: [
+          { text: `base contract\n${renderCharacterVoice("YUKI(유키)")}` },
+        ] } } : {}),
+      },
+    };
+    const before = JSON.stringify(payload);
+    const once = injectCharacterVoice(payload, "HIKARI(히카리)") as typeof payload;
+    const twice = injectCharacterVoice(once, "HIKARI(히카리)") as typeof payload;
+    expect(twice).not.toHaveProperty("system");
+    expect(twice.request.contents).toEqual(payload.request.contents);
+    expect(twice.request.generationConfig).toEqual(payload.request.generationConfig);
+    expect(twice.request.systemInstruction).toEqual({
+      ...(existing ? { role: "user" } : {}),
+      parts: [...(existing ? [{ text: "base contract" }] : []), { text: renderCharacterVoice("HIKARI(히카리)") }],
+    });
+    expect(JSON.stringify(payload)).toBe(before);
+  });
+
   // core는 system 맨 끝의 `<memories>`만 변동 구간으로 보고 그 앞에 cache breakpoint를 건다.
   // voice가 recall 뒤에 오거나 옛 voice 블록의 cache_control이 사라지면 첫 요청마다 system 전체가 재기록된다.
   test("voice stays ahead of trailing recall and keeps the system cache breakpoint", async () => {
