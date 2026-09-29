@@ -14,7 +14,7 @@ CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소
 
 1. 그 커밋이 여전히 공개 `main`의 최신 커밋인지, CI가 성공했는지 확인합니다.
 2. `package.json` 버전으로 `v<version>` 태그를 정합니다. 그 태그가 이미 다른 커밋에 있으면 버전을 올리지 않은 커밋으로 보고 아무것도 게시하지 않습니다. 기존 태그를 옮기거나 기존 릴리스 내용을 덮어쓰지 않습니다.
-3. `CHANGELOG.md`의 같은 버전 항목으로 GitHub 릴리스를 만듭니다. GitHub의 Source code 다운로드가 릴리스 소스입니다.
+3. `CHANGELOG.md`의 같은 버전 항목으로 GitHub 릴리스를 만듭니다. GitHub의 Source code 다운로드가 릴리스 소스입니다. 변경 기록과 README는 사용자에게 보이는 변화만 적고, 공개 미러 게시 때 내부 구현 흔적·개발용 모델 배정·계정 운영 방식이 들어 있으면 게시가 막힙니다(로컬 확인: `python .github/scripts/public-notes-scan.py .`).
 4. CI와 같은 Windows 환경에서 production 빌드를 만들고 native/core/notices 패치를 적용·검증한 뒤 `npm publish`로 `cuelo`를 게시합니다. 그 버전이 이미 npm에 있으면 건너뜁니다.
 
 npm 게시는 [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)(OIDC)을 씁니다. 저장소에 npm 토큰을 두지 않습니다. 처음 한 번 npmjs.com의 `cuelo` 패키지 **Settings → Trusted Publisher**에 GitHub Actions, 저장소 `gim47656-ship-it/CUELO`, workflow `release.yml`을 등록해야 합니다.
