@@ -2416,9 +2416,20 @@ console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로
 	const run = await bash.execute("env-1", { command: 'echo "A=[$A] B=[$B]"', env: { A: "x y", B: "it's $HOME" } });
 	const line = String(run.content?.[0]?.text ?? "").split("\n")[0];
 	check("값의 공백·따옴표·$ 가 글자 그대로 들어간다", line === "A=[x y] B=[it's $HOME]", `line=${line}`);
+	// 18.4.2 upstream 은 service 없는 env 를 "Ignored env" 알림과 함께 버린다. 우리 export 가 대신 적용돼야 한다.
+	check("env 를 무시했다는 알림이 붙지 않는다", !JSON.stringify(run).includes("Ignored"), JSON.stringify(run).slice(0, 300));
 	const rejected = async (args: Record<string, unknown>) => bash.execute("env-2", args).then(() => "no error", (error: Error) => error.message);
 	check("잘못된 변수 이름은 거절한다", (await rejected({ command: "echo hi", env: { "BAD-NAME": "1" } })) === "Invalid env name: BAD-NAME");
-	check("ready 는 여전히 service 이름이 필요하다", (await rejected({ command: "echo hi", ready: { port: 1 } })) === "ready requires a service name.");
+	const readyRun = await bash.execute("env-3", { command: "echo hi", ready: { port: 1 } }).then(
+		result => JSON.stringify(result),
+		(error: Error) => error.message,
+	);
+	// 18.3.5 는 거절, 18.4.2 는 upstream 대로 명령만 실행하고 무시 알림을 남긴다. 어느 쪽도 ready 를 기다리지 않는다.
+	check(
+		"ready 는 service 없이 쓰이지 않는다(18.3 거절, 18.4 무시 알림)",
+		readyRun === "ready requires a service name." || (readyRun.includes("Ignored ready:") && !readyRun.includes("Ignored ready and env")),
+		readyRun.slice(0, 300),
+	);
 	await session.dispose();
 }
 

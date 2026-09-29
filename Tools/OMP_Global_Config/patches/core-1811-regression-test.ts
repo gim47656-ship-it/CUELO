@@ -97,6 +97,13 @@ if (CORE_PACKAGE === undefined) {
 }
 const CORE = `${importBase(CORE_PACKAGE)}/src`;
 console.log(`대상 ${CORE}`);
+// pi-ai 18.4.2(18.4 계열로 판정)의 `limits.rotate()` 는 boolean 이 아니라 `{ switched }` 를 돌려준다. 가짜 풀도 대상 core 의 계약을 따른다.
+const piAiManifest: unknown = JSON.parse(await fsp.readFile(join(CORE_PACKAGE, "../pi-ai/package.json"), "utf8"));
+const piAiVersion =
+	typeof piAiManifest === "object" && piAiManifest !== null && "version" in piAiManifest ? String(piAiManifest.version) : "0.0.0";
+const [piAiMajor = 0, piAiMinor = 0] = piAiVersion.split(".").map(Number);
+const rotationReturnsObject = piAiMajor > 18 || (piAiMajor === 18 && piAiMinor >= 4);
+const rotationResult = (switched: boolean) => (rotationReturnsObject ? { switched } : switched);
 
 // ---------------------------------------------------------------------------
 // [1] HTTP 402 — 청구 캡 본문 분류와 모델 폴백 전 형제 자격 회전
@@ -165,12 +172,12 @@ await section("[1] HTTP 402 청구 캡 분류와 형제 자격 회전", async ()
 						_provider: string,
 						_session: string | undefined,
 						request: Record<string, unknown>,
-					): Promise<boolean> => {
+					): Promise<boolean | { switched: boolean }> => {
 						state.rotations += 1;
 						state.lastRotation = request;
-						if (!options.hasSibling) return false;
+						if (!options.hasSibling) return rotationResult(false);
 						state.active = SIBLING_SLOT;
-						return true;
+						return rotationResult(true);
 					},
 				},
 			},

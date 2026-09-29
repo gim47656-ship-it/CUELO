@@ -2646,6 +2646,14 @@ const taskItemSchemaIsolated = type({
 		anchor: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
 		patched: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
 import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";`,
+		// 18.4.2: upstream 이 같은 helper 를 `@oh-my-pi/pi-utils` 에서 직접 import 한다(text stream stall 판별).
+		// 아래 BAI 재시도 항목이 쓰는 이름이 이미 들어와 있으므로 더할 것이 없다.
+		alternates: [{
+			file: "src/session/turn-recovery.ts",
+			marker: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
+			anchor: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
+			patched: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
+		}],
 	},
 	{
 		file: "src/session/turn-recovery.ts",
@@ -3349,6 +3357,22 @@ import { resolveUsedFraction } from "../usage";`,
 		if (exactAccountLabel) return false;
 
 		const deniedModel = AIError.codexChatGPTAccountPolicyModel(error);`,
+		// 18.4.2: rotate() 는 `{ switched }` 를 돌려주고 usage-limit 분기는 `awaitSiblingUnblock` 으로 끝난다.
+		// exact 대상은 markReached(#usage-limit 항목)가 switched·retryAtMs 를 비우므로 sibling 대기 없이
+		// `{ switched: false }` 가 된다. 같은 자리에서 끊어 계정 정책 분기의 두 번째 대기도 타지 않는다.
+		alternates: [{
+			file: "../pi-ai/src/auth/rotation.ts",
+			marker: "\t\t}\n\t\tif (exactAccountLabel) return { switched: false };\n",
+			anchor: `			return awaitSiblingUnblock(mark, options?.signal);
+		}
+
+		const deniedModel = AIError.codexChatGPTAccountPolicyModel(error);`,
+			patched: `			return awaitSiblingUnblock(mark, options?.signal);
+		}
+		if (exactAccountLabel) return { switched: false };
+
+		const deniedModel = AIError.codexChatGPTAccountPolicyModel(error);`,
+		}],
 	},
 	{
 		file: "src/session/turn-recovery.ts",
@@ -3417,61 +3441,40 @@ import { resolveUsedFraction } from "../usage";`,
 		if (accountPolicyDenial && currentModel) {`,
 	},
 	{
-		// 18.3.0 재앵커: upstream 이 `tokenUsage` 를 직접 import 하게 됐다(judgment/index.ts:24).
-		// Vercel adapter 가 쓰는 나머지 이름만 더한다.
+		// 18.4.2 재앵커: import 블록 전체를 앵커로 쓰면 버전마다 upstream 이 한두 이름을 더해(18.3.0 `tokenUsage`,
+		// 18.4.2 `Answer`) 매번 깨지고, 적용 결과가 버전 사이에 같아져 alternates 로는 ambiguous 가 된다.
+		// 두 버전에 공통인 이웃 줄에 Vercel adapter 가 쓰는 두 이름만 넣는다. `Answer` 는 adapter 본문에서
+		// `import("@oh-my-pi/pi-ai").Answer` 로 직접 참조해 import 가 필요 없다.
+		// 옛 전체 블록 patched 가 적용된 라이브(18.3.5)에서도 두 marker 가 모두 들어 있어 applied 로 읽힌다.
 		file: "src/judgment/index.ts",
-		marker: "VERCEL_JUDGMENT_PROVIDER",
-		anchor: `import {
-	type AssistantMessage,
-	chatTextBackend,
-	isJudgmentApi,
-	type Judge,
-	type JudgeOptions,
-	type JudgmentRequest,
-	type JudgmentResult,
-	type Model,
-	type Questions,
-	type TextBackend,
-	type TextCompletion,
-	type TextPrompt,
-	TextJudge,
-	TYPESAFE_PROVIDER,
-	TypeSafeJudge,
-	tokenUsage,
-	type Usage,
-} from "@oh-my-pi/pi-ai";`,
-		patched: `import {
-	type Answer,
-	type ApiKey,
-	type AssistantMessage,
-	chatTextBackend,
-	isJudgmentApi,
-	type Judge,
-	type JudgeOptions,
-	type JudgmentRequest,
-	type JudgmentResult,
-	type Model,
-	type Questions,
-	resolveApiKeyOnce,
-	type TextBackend,
-	type TextCompletion,
-	type TextPrompt,
-	TextJudge,
-	TYPESAFE_PROVIDER,
-	TypeSafeJudge,
-	tokenUsage,
-	type Usage,
-} from "@oh-my-pi/pi-ai";`,
+		marker: "\ttype ApiKey,\n\ttype AssistantMessage,\n",
+		anchor: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
+		patched: "\ttype ApiKey,\n\ttype AssistantMessage,\n\tchatTextBackend,\n",
 	},
 	{
 		file: "src/judgment/index.ts",
-		marker: "fetch?: typeof fetch;",
+		marker: "\ttype Questions,\n\tresolveApiKeyOnce,\n",
+		anchor: "\ttype Questions,\n\ttype TextBackend,\n",
+		patched: "\ttype Questions,\n\tresolveApiKeyOnce,\n\ttype TextBackend,\n",
+	},
+	{
+		file: "src/judgment/index.ts",
+		// marker 는 버전 형태별로 좁힌다. `fetch?: typeof fetch;` 만으로는 Vercel adapter 옵션(아래 항목)에도
+		// 걸리고 18.4.2 후보와도 겹쳐 ambiguous 가 된다. 18.3.5 에서는 interface 끝(`}`) 바로 앞이다.
+		marker: "backend tests. */\n\tfetch?: typeof fetch;\n}",
 		anchor: `	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
 	onUsage?: (usage: JudgmentUsage) => void;`,
 		patched: `	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
 	onUsage?: (usage: JudgmentUsage) => void;
 	/** Injectable transport for deterministic judgment backend tests. */
 	fetch?: typeof fetch;`,
+		// 18.4.2: onUsage 위에 doc 주석이 생겼고 바로 아래에 telemetry 가 온다.
+		alternates: [{
+			file: "src/judgment/index.ts",
+			marker: "backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
+			anchor: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
+			patched: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Injectable transport for deterministic judgment backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
+		}],
 	},
 	// RETIRE (2026-09-21, 18.2.7): `JudgeKind` 에 `"vercel"` 을 더하던 항목은 없앴다.
 	// 18.2.7 은 `export type JudgeKind = "native" | "local" | "online"` 이고 분류는 모델 API 로만
@@ -3613,7 +3616,7 @@ function parseVercelAnswers<Q extends Questions>(
 	if (!isRecord(value)) throw responseError("answers must be an object");
 	const questionIds = Object.keys(request.questions);
 	exactKeys(value, questionIds, "answer");
-	const answers: Record<string, Answer> = {};
+	const answers: Record<string, import("@oh-my-pi/pi-ai").Answer> = {};
 	for (const id of questionIds) {
 		const question = request.questions[id];
 		const answer = value[id];
@@ -4758,9 +4761,16 @@ import { getActiveRules } from "../capability/rule";`,
 		// 2026-09-25: steering-reply gate가 스트리밍 이벤트 순서에 기대면, 도구가 미리 실행될 때 같은 응답의
 		// 앞선 답 텍스트를 보지 못해 잘못 막는다. 판정 대상 assistant 메시지를 tool_call 이벤트에 싣는다.
 		file: "src/session/agent-session.ts",
-		marker: "assistantMessage: ctx.assistantMessage, // HANSE: steering gate",
+		marker: "\n\t\t\t\tassistantMessage: ctx.assistantMessage, // HANSE: steering gate",
 		anchor: "\t\t\t\ttype: \"tool_call\",\n\t\t\t\ttoolName: ctx.tool.name,\n\t\t\t\ttoolCallId: ctx.toolCall.id,\n",
 		patched: "\t\t\t\ttype: \"tool_call\",\n\t\t\t\ttoolName: ctx.tool.name,\n\t\t\t\ttoolCallId: ctx.toolCall.id,\n\t\t\t\tassistantMessage: ctx.assistantMessage, // HANSE: steering gate\n",
+		// 18.4.2: 이벤트에 정규화한 `input` 줄이 붙었다. 그 앞에 넣는다.
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			marker: "\n\t\t\t\t\tassistantMessage: ctx.assistantMessage, // HANSE: steering gate",
+			anchor: "\t\t\t\t\ttoolCallId: ctx.toolCall.id,\n\t\t\t\t\tinput: normalizeToolEventInput(",
+			patched: "\t\t\t\t\ttoolCallId: ctx.toolCall.id,\n\t\t\t\t\tassistantMessage: ctx.assistantMessage, // HANSE: steering gate\n\t\t\t\t\tinput: normalizeToolEventInput(",
+		}],
 	},
 	// 2026-09-27: Opus 5.5는 도구 앞 사용자용 문장(progress update)을 별도 서명의 thinking 블록으로 보낸다.
 	// omitThinking(`display: "omitted"`)은 그 문장까지 비운다(2026-09-26 세션 79개 중 25개 메시지의 답 소실).
@@ -5146,9 +5156,17 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 		// 헛턴 하나를 썼다(사흘간 12건). 일반 명령에서는 env 를 명령 앞 `export` 로 바꿔 모든 실행
 		// 경로(셸·PTY·client terminal)에 같게 적용한다. ready 는 service 전용으로 그대로 둔다.
 		file: "src/tools/bash.ts",
-		marker: "// HANSE: env without a service name exports into the command",
+		marker: "// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(",
 		anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\tthrow new ToolError(\"ready and env require a service name.\");\n",
 		patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(\"ready requires a service name.\");\n",
+		// 18.4.2: upstream 이 거절 대신 "Ignored ready and env" 알림으로 바꿨다. ready 는 upstream 대로 알림만
+		// 남기고, env 는 무시하지 않고 아래 항목이 명령 앞 export 로 넣는다.
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(",
+			anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\t// Nothing can honour ready/env without a service to attach them to;\n\t\t\t// running the command the caller did ask for beats failing the call.\n\t\t\tconst ignored = [ready && \"ready\", env && \"env\"].filter(Boolean).join(\" and \");\n\t\t\tpendingNotices.push(`Ignored ${ignored}: service-only, and no service name was given.`);\n",
+			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(\"Ignored ready: service-only, and no service name was given.\");\n",
+		}],
 	},
 	{
 		// 위 항목의 짝. 명령 검사(interceptor)·승인·worktree 재작성이 끝난 원래 명령 앞에만 붙인다.

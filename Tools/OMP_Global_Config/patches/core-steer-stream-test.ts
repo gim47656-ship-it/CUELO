@@ -70,6 +70,9 @@ writeFileSync(
 	].join("\n"),
 	"utf8",
 );
+// 18.4.2 는 기본 모델을 고를 때 환경 변수 키가 있는 provider(OPENAI_API_KEY 등)를 fixture 보다 앞에 둔다.
+// 운영자 환경이 끼지 않도록 fixture 모델을 기본 역할로 고정한다.
+writeFileSync(join(agentDir, "config.yml"), `modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\n`, "utf8");
 
 const created = await sdk.createAgentSession({ cwd: workdir, agentDir, disableExtensionDiscovery: true });
 const session = created.session;

@@ -94,6 +94,9 @@ writeFileSync(
 	].join("\n"),
 	"utf8",
 );
+// 18.4.2 는 기본 모델을 고를 때 환경 변수 키가 있는 provider(OPENAI_API_KEY 등)를 fixture 보다 앞에 둔다.
+// 운영자 환경이 끼지 않도록 fixture 모델을 기본 역할로 고정한다.
+writeFileSync(join(agentDir, "config.yml"), `modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\n`, "utf8");
 
 /** 부모는 진짜 세션이 필요 없다. 관심사는 "무엇이, 어느 turn 에 도착했는가" 뿐이다.
  *  `turnSeq` 는 도착 시점까지 실제로 시작된 agent turn 수다(`agent_start` 이벤트).

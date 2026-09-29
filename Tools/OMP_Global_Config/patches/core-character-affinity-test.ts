@@ -262,6 +262,11 @@ try {
 		);
 	}
 
+	// 18.3.5 는 boolean, 18.4.2 는 `{ switched, afterSiblingWait? }` 를 돌려준다. 두 라이브 버전을 함께 검사한다.
+	const switchedOf = (rotation: unknown): unknown =>
+		typeof rotation === "object" && rotation !== null && "switched" in rotation ? rotation.switched : rotation;
+	const siblingWaitOf = (rotation: unknown): boolean =>
+		typeof rotation === "object" && rotation !== null && "afterSiblingWait" in rotation && rotation.afterSiblingWait === true;
 	console.log("\n[2] usage-limit — limits.rotate 의 usage-limit 분기는 exact pin 을 sibling 으로 넘기지 않는다");
 	{
 		const exact = await pinned("rotate-usage-exact", true);
@@ -270,7 +275,8 @@ try {
 			credentialId: exact.target.credentialId,
 		});
 		const exactKeyError = await keyError(() => exact.auth.keys.get("anthropic", exact.sessionId, { modelId: "claude-opus-5" }));
-		check("exact: rotate 는 false 다", exactRotated === false, `rotated=${exactRotated}`);
+		check("exact: rotate 는 false 다", switchedOf(exactRotated) === false, `rotated=${JSON.stringify(exactRotated)}`);
+		check("exact: sibling 차단 해제를 기다리지 않는다", !siblingWaitOf(exactRotated), `rotated=${JSON.stringify(exactRotated)}`);
 		check(
 			"exact: 다음 선택은 sibling 이 아니라 alias 실패다",
 			exactKeyError.includes("RIN(린)") && !exactKeyError.includes(exact.sibling.credentialId.toString()),
@@ -282,7 +288,7 @@ try {
 			credentialId: ordinary.target.credentialId,
 		});
 		const ordinaryKey = await ordinary.auth.keys.get("anthropic", ordinary.sessionId, { modelId: "claude-opus-5" });
-		check("비교(upstream 그대로): 일반 pin 은 usage-limit 에서 sibling 으로 회전한다", ordinaryRotated === true && ordinaryKey === "fixture-access-rotate-usage-ordinary-1", `rotated=${ordinaryRotated} key=${ordinaryKey}`);
+		check("비교(upstream 그대로): 일반 pin 은 usage-limit 에서 sibling 으로 회전한다", switchedOf(ordinaryRotated) === true && ordinaryKey === "fixture-access-rotate-usage-ordinary-1", `rotated=${JSON.stringify(ordinaryRotated)} key=${ordinaryKey}`);
 	}
 
 	console.log("\n[3] 인증 실패 — resolver 의 lastChance 회전(stream.ts auth-retry step c)이 exact 계정을 바꾸지 않는다");
@@ -317,7 +323,7 @@ try {
 			credentialId: exact.target.credentialId,
 		});
 		const exactKey = await exact.auth.keys.get("anthropic", exact.sessionId, { modelId: "claude-opus-5" });
-		check("exact: transport 오류 rotate 는 false 다", exactRotated === false, `rotated=${exactRotated}`);
+		check("exact: transport 오류 rotate 는 false 다", switchedOf(exactRotated) === false, `rotated=${JSON.stringify(exactRotated)}`);
 		check("exact: 지정 계정이 suspect/block 되지 않고 그대로 선택된다", exactKey === "fixture-access-transport-exact-0", `key=${exactKey}`);
 		const exactRecovery = makeRecoveryHarness(makeRegistry(exact.auth, "transport-exact"), exact.sessionId);
 		const exactMessage = seedError(exactRecovery, TRANSPORT_TEXT, AIError.create(AIError.Flag.Transient));
