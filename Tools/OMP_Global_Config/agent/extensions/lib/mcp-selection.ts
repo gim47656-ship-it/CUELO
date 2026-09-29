@@ -34,7 +34,7 @@ export interface CatalogEntry {
   capability: string;
   source: string;
   url: string;
-  auth: string;
+  authDescription: string;
 }
 
 /**
@@ -47,21 +47,21 @@ export const VERIFIED_CATALOG: readonly CatalogEntry[] = [
     capability: "Official Microsoft documentation and code sample search (.NET, C#, VB.NET, WinForms, SQL Server, Azure, Windows APIs).",
     source: "https://github.com/MicrosoftDocs/mcp",
     url: "https://learn.microsoft.com/api/mcp",
-    auth: "인증 없음(공식 README)",
+    authDescription: "인증 없음(공식 README)",
   },
   {
     name: "github",
     capability: "GitHub repositories, issues, pull requests, and Actions workflow runs: read and manage.",
     source: "https://github.com/github/github-mcp-server",
     url: "https://api.githubcopilot.com/mcp/",
-    auth: "GitHub OAuth 또는 PAT 필요 — 토큰 발급·권한 범위는 승인 요청 대상, 본인 로그인·제공자 동의는 사용자",
+    authDescription: "GitHub OAuth 또는 PAT 필요 — 토큰 발급·권한 범위는 승인 요청 대상, 본인 로그인·제공자 동의는 사용자",
   },
   {
     name: "cloudflare-docs",
     capability: "Up-to-date Cloudflare reference documentation (Workers, Pages, KV, D1, R2, wrangler).",
     source: "https://github.com/cloudflare/mcp-server-cloudflare",
     url: "https://docs.mcp.cloudflare.com/mcp",
-    auth: "공식 README에 인증 요구가 명시돼 있지 않다 — 연결 시 로그인을 요구하면 그 로그인만 사용자 본인",
+    authDescription: "공식 README에 인증 요구가 명시돼 있지 않다 — 연결 시 로그인을 요구하면 그 로그인만 사용자 본인",
   },
 ];
 
@@ -330,7 +330,7 @@ export function planSelection(input: {
               ? `이 프로젝트 권장: \`${installCommand(entry, "project")}\``
               : `범위 판단 보류 — 전역 \`${installCommand(entry, "user")}\` 또는 프로젝트 \`${installCommand(entry, "project")}\` 중 선택`;
         lines.push(
-          `- 설치 제안(아직 실행 안 함): \`${entry.name}\` — 공식 출처 ${entry.source}. 설치·인증·권한은 먼저 사용자 승인을 요청하고 승인 후 Main 에이전트가 실행: ${where} (${entry.auth})`,
+          `- 설치 제안(아직 실행 안 함): \`${entry.name}\` — 공식 출처 ${entry.source}. 설치·인증·권한은 먼저 사용자 승인을 요청하고 승인 후 Main 에이전트가 실행: ${where} (${entry.authDescription})`,
         );
         break;
       }
