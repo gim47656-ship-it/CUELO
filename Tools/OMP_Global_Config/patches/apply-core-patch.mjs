@@ -2844,6 +2844,24 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		}
 	}`,
 	},
+	{
+		// 시작 시 fallback 체인 검사는 조회 provider가 `idle`(캐시 없음)일 때만 "조회 중"으로 보고
+		// 경고를 미룬다(#10048). 캐시 행이 있어도 모든 모델이 복원 불가 헤더로 걸러지면 상태는
+		// `cached`인데 모델이 0개라, 곧 온라인 조회가 채울 모델을 unknown model로 경고한다.
+		// 2026-09-29 실측: b-ai 57개 전부 header_omitted·unrestorable, 키는 agent.db에만 있어
+		// models.yml로 헤더 복원 조건(authHeader+apiKey)을 만들 수 없다. 이 경우도 조회 중으로 본다.
+		file: "src/config/model-registry.ts",
+		marker: "// A cached row that restored no model is still pending",
+		anchor: `	isProviderDiscoveryPending(provider: string): boolean {
+		return this.#providerDiscoveryStates.get(provider)?.status === "idle";
+	}`,
+		patched: `	isProviderDiscoveryPending(provider: string): boolean {
+		const state = this.#providerDiscoveryStates.get(provider);
+		// A cached row that restored no model is still pending: every entry was
+		// dropped for unrestorable headers, so only online discovery can supply it.
+		return state?.status === "idle" || (state?.status === "cached" && state.models.length === 0);
+	}`,
+	},
 	// --- WEB6 요청의 현재 OMP 세션 귀속 ---
 	// OpenAI 호환 transport까지 내려온 StreamOptions.sessionId가 유일한 현재 세션 정본이다.
 	// prompt marker나 전역 시작 시각으로 복원하지 않고, WEB6 provider의 loopback 요청에만
