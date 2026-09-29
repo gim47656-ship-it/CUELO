@@ -118,12 +118,12 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSonnet` | NORMAL 비-UI 우선 | Sonnet 모델 및 `high`/`xhigh` 지원 |
+   | `implSonnet` | NORMAL 비-UI 우선 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
    | `implOpus` | NORMAL UI/UX | Opus 모델 및 `high` 지원 |
    | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sonnet이 실제 불가할 때만 사용 |
    | `makerHardUiOpus` | HARD UI/UX | Opus 모델 지원 |
    | `makerHardCodeOpus` | HARD 코드 | Opus 모델 지원 |
-   | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `high`/`xhigh` 지원 |
+   | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
 
    일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 여섯 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 권장 경로는 OpenRouter입니다. 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **Settings > Models > OpenRouter > API Key**에 입력하고, 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
@@ -139,6 +139,15 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    Vercel AI Gateway 고정 모드(`providers.judgmentProvider: vercel`)는 SDK의 `vercel-ai-gateway` 자격으로 `typesafe-ai/jev` endpoint를 호출하며 `modelRoles.judge`를 읽지 않습니다. Vercel 무료 등급 계정은 이 모델에 접근할 수 없어 HTTP 403(`RestrictedModelsError`)으로 거절되므로 유료 크레딧이 필요합니다. 어느 경로든 판정 요청은 외부 전송·과금 대상이므로 본인 승인과 요금 확인 없이 시험 호출하지 않습니다.
 4. `cuelo health` 또는 하네스 파일 복사 성공은 Jev 성공 증거가 아닙니다. 실제 로그인 상태, 모델 후보 해석, 첫 판정/응답은 사용자가 준비한 자격으로 별도 확인해야 합니다. 키가 없거나 실패하면 Jev가 무언가를 조용히 대체해 설치 성공으로 만드는 계약도 없습니다.
+
+### 0.6.1로 기존 하네스 갱신
+
+앱 버전만 올려서는 기존 프로필의 하네스 파일과 역할 설정이 바뀌지 않습니다. `setup`은 같은 이름의 파일과 기존 `config.yml`을 덮어쓰지 않습니다.
+
+- 프로필을 백업하고, 기존 하네스 파일을 새 배포본과 대조해 사용자 수정은 보존하면서 변경 사항을 반영하세요.
+- `modelRoles.implSol`을 쓰던 설정은 `implSonnet`으로, `makerHardCodeSol`은 `makerHardCodeSonnet`으로 바꾸고, 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요. 옛 키를 별칭으로 읽지는 않습니다.
+- CUELO와 `omp`를 다시 시작한 뒤 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
+
 
 ### 다른 프로필에 설치(`--home`)
 

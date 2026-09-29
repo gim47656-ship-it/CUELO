@@ -3,7 +3,7 @@
 // 동적 import 예외: 정적 import는 `@oh-my-pi/pi-coding-agent`를 bun 전역 캐시의
 // 미패치 사본으로 해석한다. 이 테스트는 omp-web이 실제로 적재하는 사본만 검증해야
 // 하므로 디스크 경로를 고정한다(모듈 로딩 경계 테스트).
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
@@ -2197,6 +2197,205 @@ process.exit(0);`;
 	);
 	rmSync(probeHome, { recursive: true, force: true });
 	rmSync(envCwd, { recursive: true, force: true });
+}
+
+// 2026-09-29: 이름 있는 bash service 는 bash-executor 가 아니라 daemon broker 가 띄운다. CUELO 가 띄운
+// broker 는 Next 서버 env 를 물려받아 service 로 띄운 `next dev` 에 NODE_ENV=production 이 샜다(pipe·pty).
+// 실제 broker 를 별도 프로세스로 띄워 service 셸 안의 값을 본다. broker 는 cwd(프로젝트)마다 하나이고
+// 셸 설정은 프로세스 수명 동안 캐시되므로 경우마다 cwd·프로세스를 나눈다.
+console.log("\nCUELO Next 서버 env 를 이름 있는 service 에도 넘기지 않는다");
+{
+	const serviceProbe = `const { Settings } = await import(${JSON.stringify(`${CORE}/config/settings.ts`)});
+const { startService, stopService } = await import(${JSON.stringify(`${CORE}/launch/services.ts`)});
+const { closeDaemonClients } = await import(${JSON.stringify(`${CORE}/launch/client.ts`)});
+const session = { cwd: process.cwd(), settings: Settings.isolated({ "launch.enabled": true }), getSessionId: () => "hanse-service-env" };
+const lines = [];
+for (const pty of JSON.parse(process.env.HANSE_PROBE_PTY ?? "[false]")) {
+	const name = pty ? "hanse-env-pty" : "hanse-env-pipe";
+	const started = await startService(session, {
+		name,
+		command: 'echo "PROBE NODE_ENV=\${NODE_ENV-unset} PORT=\${PORT-unset} NEXT_RUNTIME=\${NEXT_RUNTIME-unset} ORIGIN=\${__NEXT_PRIVATE_ORIGIN-unset} KEEP_ME=\${KEEP_ME-unset} EXPLICIT=\${EXPLICIT-unset}"',
+		cwd: process.cwd(),
+		pty,
+		env: JSON.parse(process.env.HANSE_PROBE_SERVICE_ENV ?? "{}"),
+		ready: { log: "PROBE NODE_ENV", timeout: 20 },
+	});
+	lines.push((started.log.split(/\\r?\\n/).find(line => line.includes("PROBE NODE_ENV")) ?? "<none>").trim());
+	await stopService(session, name).catch(() => {});
+}
+console.log(JSON.stringify(lines));
+// HANSE_PROBE_HOLD: 결과를 그 파일에 쓰고 stdin 이 닫힐 때까지 broker client 연결을 쥐고 있다(오래 떠 있는 standalone omp 역할).
+if (process.env.HANSE_PROBE_HOLD) {
+	await Bun.write(process.env.HANSE_PROBE_HOLD, JSON.stringify(lines));
+	await Bun.stdin.text();
+}
+await closeDaemonClients();
+process.exit(0);`;
+	// 이 테스트를 CUELO 안에서 돌려도 운영자 프로세스의 서버 변수가 plain 경우에 끼지 않게 뺀다.
+	const operatorEnv = Object.fromEntries(
+		Object.entries(process.env).filter(
+			([key]) =>
+				!(
+					key === "NEXT_RUNTIME" || key === "NEXT_DEPLOYMENT_ID" || key.startsWith("NEXT_PRIVATE_") || key.startsWith("__NEXT_PRIVATE_") ||
+					key === "NODE_ENV" || key === "PORT" || key === "CUELO_SHELL_ENV_BASELINE" || key === "OMP_DAEMON_IDLE_GRACE_MS"
+				),
+		),
+	);
+	const serverEnv = {
+		KEEP_ME: "1",
+		NODE_ENV: "production",
+		PORT: "30141",
+		NEXT_RUNTIME: "nodejs",
+		NEXT_DEPLOYMENT_ID: "",
+		NEXT_PRIVATE_START_TIME: "1790334741693",
+		__NEXT_PRIVATE_ORIGIN: "http://localhost:30141",
+	};
+	const serviceHome = mkdtempSync(join(tmpdir(), "hanse-service-home-"));
+	const runService = (cwd: string, env: Record<string, string>, pty: boolean[], serviceEnv: Record<string, string>): string[] => {
+		const child = Bun.spawnSync([process.execPath, "-e", serviceProbe], {
+			cwd,
+			env: {
+				...operatorEnv,
+				HOME: serviceHome,
+				USERPROFILE: serviceHome,
+				HANSE_PROBE_PTY: JSON.stringify(pty),
+				HANSE_PROBE_SERVICE_ENV: JSON.stringify(serviceEnv),
+				...env,
+			},
+			timeout: 120_000,
+		});
+		const out = child.stdout.toString().trim().split(/\r?\n/).pop() ?? "";
+		try {
+			return JSON.parse(out) as string[];
+		} catch {
+			return [`<no result> ${out.slice(0, 200)} ${child.stderr.toString().trim().slice(0, 300)}`];
+		}
+	};
+	const cleanLine = "PROBE NODE_ENV=unset PORT=unset NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1";
+	const cueloCwd = mkdtempSync(join(tmpdir(), "hanse-service-cuelo-"));
+	const cuelo = runService(cueloCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false, true], { EXPLICIT: "1" });
+	check(
+		"CUELO 가 띄운 broker 의 service(pipe·pty)에 서버 변수가 새지 않고 명시 env 는 남는다",
+		cuelo.length === 2 && cuelo.every(line => line === cleanLine),
+		`lines=${JSON.stringify(cuelo)}`,
+	);
+	const baselineCwd = mkdtempSync(join(tmpdir(), "hanse-service-baseline-"));
+	const [baselined] = runService(
+		baselineCwd,
+		{ ...serverEnv, CUELO_SHELL_ENV_BASELINE: JSON.stringify({ NODE_ENV: "test", PORT: "4000" }) },
+		[false],
+		{ EXPLICIT: "1", PORT: "5555" },
+	);
+	check(
+		"런처 기준 NODE_ENV 는 되돌리고, service 에 명시한 PORT 가 기준값보다 이긴다",
+		baselined === "PROBE NODE_ENV=test PORT=5555 NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1",
+		`line=${baselined}`,
+	);
+	// Next 서버 밖에서 먼저 뜬 broker 는 자기 env 를 그대로 쓴다. 그 broker 를 CUELO 쪽 client 가 재사용해도
+	// client 가 보내는 spec.env 는 이미 걸러진 셸 env 라 서버 변수가 새지 않는다. 재사용은 결과 줄이 plain
+	// broker 의 NODE_ENV·PORT 를 보이는 것으로 드러난다(새 broker 였다면 둘 다 unset).
+	// standalone omp 처럼 plain broker 의 client 연결을 쥐고 있는 holder 를 띄운다. 프로세스가 끝나면 broker 도
+	// 함께 정리돼 다음 client 가 새 broker 를 띄우므로(2026-09-29 실측), 재사용 경우는 holder 가 살아 있는 동안 본다.
+	const plainCwd = mkdtempSync(join(tmpdir(), "hanse-service-plain-"));
+	const plainLine = "PROBE NODE_ENV=development PORT=5173 NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1";
+	const holdFile = join(serviceHome, "plain-result.json");
+	const holder = Bun.spawn([process.execPath, "-e", serviceProbe], {
+		cwd: plainCwd,
+		env: {
+			...operatorEnv,
+			HOME: serviceHome,
+			USERPROFILE: serviceHome,
+			HANSE_PROBE_PTY: "[false]",
+			HANSE_PROBE_SERVICE_ENV: JSON.stringify({ EXPLICIT: "1" }),
+			HANSE_PROBE_HOLD: holdFile,
+			KEEP_ME: "1",
+			NODE_ENV: "development",
+			PORT: "5173",
+		},
+		stdin: "pipe",
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	let plain = `<no result> holder exit=${holder.exitCode}`;
+	for (const deadline = Date.now() + 120_000; Date.now() < deadline && holder.exitCode === null; await Bun.sleep(200)) {
+		try {
+			plain = (JSON.parse(readFileSync(holdFile, "utf8")) as string[])[0] ?? "<none>";
+			break;
+		} catch {
+			// holder 가 아직 결과를 쓰지 않았다.
+		}
+	}
+	check("Next 서버 밖에서 뜬 broker 의 service 는 NODE_ENV·PORT 를 그대로 둔다", plain === plainLine, `line=${plain}`);
+	const [reused] = runService(plainCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false], { EXPLICIT: "1" });
+	holder.stdin.end();
+	await holder.exited;
+	check("plain broker 를 CUELO client 가 재사용해도 서버 변수가 새지 않는다", reused === plainLine, `line=${reused}`);
+	for (const dir of [cueloCwd, baselineCwd, plainCwd, serviceHome]) {
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+		} catch {
+			// 유휴 대기 중인 broker 가 runtime 파일을 잠시 쥐고 있을 수 있다. fixture root 정리가 뒤를 맡는다.
+		}
+	}
+}
+
+// 18.4.3 task speculative launch: 사용자 steering 이 큐에 들어간 뒤에는 아직 시작 안 한 조기 launch 를
+// 시작하지 않는다(기존 steering freeze 의 새 진입 경로). 실제 coordinator 와 TaskLaunchSession 으로 본다.
+console.log("\nsteering freeze 뒤에는 task 조기 launch 를 시작하지 않는다");
+if (!existsSync(`${CORE}/task/speculative-launch.ts`)) {
+	console.log("  SKIP  이 core 에는 task speculative launch 가 없다(18.4.3 이전)");
+} else {
+	const { SpeculativeOperationCoordinator } = await import(`${CORE}/../../pi-agent-core/src/speculative-execution.ts`);
+	const { TaskLaunchSession } = await import(`${CORE}/task/speculative-launch.ts`);
+	const spawnsOf = (args: { context?: string; tasks?: { task?: string }[] }) =>
+		args.tasks?.map(item => ({ agent: "maker", context: args.context, task: item.task }));
+	const launchWith = async (freeze: boolean) => {
+		let hostAsked = 0;
+		let started = 0;
+		const coordinator = new SpeculativeOperationCoordinator({
+			enabled: true,
+			host: {
+				authorizeLaunch: () => {
+					hostAsked++;
+					return { allowed: true };
+				},
+			},
+		});
+		if (freeze) coordinator.freezeForSteering();
+		const session = new TaskLaunchSession({
+			sink: coordinator,
+			tool: { name: "task" },
+			launcher: {
+				spawns: spawnsOf,
+				start: async () => {
+					started++;
+					return { discard: () => {} };
+				},
+			},
+			onClose: () => {},
+		});
+		session.update({ type: "toolCall", id: "task-1", name: "task", arguments: {} }, '{"context":"c","tasks":[{"task":"a"},{"task":"b"}');
+		const adopted = await session.adopt(spawnsOf({ context: "c", tasks: [{ task: "a" }, { task: "b" }] }) ?? []);
+		await coordinator.close("test done");
+		return { hostAsked, started, adopted: adopted.size };
+	};
+	const open = await launchWith(false);
+	check("freeze 전에는 streamed item 마다 host 승인 뒤 launch 한다", open.hostAsked === 2 && open.started === 2 && open.adopted === 2, JSON.stringify(open));
+	const frozen = await launchWith(true);
+	check("steering freeze 뒤에는 host 에 묻지도 launch 하지도 않는다", frozen.hostAsked === 0 && frozen.started === 0 && frozen.adopted === 0, JSON.stringify(frozen));
+}
+
+// 2026-09-29 jevgrep 비교: jfind 비밀 파일 제외가 대소문자 구분이라 Windows 에서 같은 파일인
+// `Credentials.json`·`ID_RSA` 가 검색·read·Jev 전송 후보에 들어갔다. 후보를 고르는 실제 gate 로 본다.
+console.log("\njfind 는 대소문자와 무관하게 비밀 파일을 후보에서 뺀다");
+{
+	const { eligibleFile } = await import(`${CORE}/tools/jfind/tree.ts`);
+	const blocked = ["Credentials.json", "CREDENTIALS.JSON", "Credentials", "ID_RSA", "Id_Ed25519", "Client_Secret.json", "secrets.json", "secrets.yaml", "config/Secrets.yml", ".ENV.local"];
+	const kept = ["README.md", "src/secrets.ts", "docs/secrets.md", "src/secretsManager.ts", ".env.example", "config/app.yml"];
+	const leaked = blocked.filter(rel => eligibleFile(rel, 10, true));
+	const dropped = kept.filter(rel => !eligibleFile(rel, 10, true));
+	check("대소문자만 다른 비밀 이름과 secrets.json/yaml/yml 은 후보가 아니다", leaked.length === 0, `leaked=${leaked.join(",")}`);
+	check("비밀처럼 보이는 일반 소스·문서·.env 템플릿은 그대로 후보다", dropped.length === 0, `dropped=${dropped.join(",")}`);
 }
 
 // 사용자 메시지로 보류한 호출의 결과가 "the assistant ended its turn" 으로 시작해 턴이 끝난 것처럼

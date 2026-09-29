@@ -9,12 +9,12 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.6.0',
+    version: '0.6.1',
     distribution: 'cuelo',
-    coreVersion: '18.4.2',
+    coreVersion: '18.4.3',
 };
 
-// OMP core 18.4.2 `src/sdk.ts`: session-scoped AsyncJobManager for a process
+// OMP core 18.4.3 `src/sdk.ts`: session-scoped AsyncJobManager for a process
 // that hosts several top-level sessions (CUELO opens one per browser session).
 // Upstream lets only the first top-level session construct a manager; every
 // later one got `asyncJobManager: undefined`, so its `task` calls logged
@@ -23,7 +23,7 @@ const EXPECTED = {
 // fix: it is disposed with its owning session (CUELO idle-shuts sessions
 // after 10 minutes) and would cancel every other session's jobs, and a
 // disposed manager throws on the next register(). Each edit is an exact text
-// anchor of the pristine 18.4.2 source (also present after core patch) and fails closed when it drifts.
+// anchor of the pristine 18.4.3 source (also present after core patch) and fails closed when it drifts.
 // `insertBefore` edits keep their anchor (the helper is inserted in front of
 // it), so their anchor count stays 1 after patching.
 const SDK_FILE = path.join('node_modules', '@oh-my-pi', 'pi-coding-agent', 'src', 'sdk.ts');
@@ -177,7 +177,7 @@ function readNativePackage(target) {
         throw new Error(`unexpected native package ${packageJson.name}@${packageJson.version}`);
     }
     if (!build || build.distribution !== EXPECTED.distribution || build.coreVersion !== EXPECTED.coreVersion) {
-        throw new Error('native cueloBuild metadata does not match cuelo / core 18.4.2');
+        throw new Error('native cueloBuild metadata does not match cuelo / core 18.4.3');
     }
     return packageJson;
 }

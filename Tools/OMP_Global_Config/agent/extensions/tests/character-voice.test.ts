@@ -229,6 +229,44 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("아까 유키로 교체됐었어")).toBeUndefined();
     expect(parseCharacterIntent("유키로 바로교체됬었어..")).toBeUndefined();
     expect(parseCharacterIntent("린으로 교체된 거 맞아?")).toBeUndefined();
+    // 부정·설명 요청은 교체 명령이 아니다(2026-09-29 사용자 반례).
+    expect(parseCharacterIntent("유키로 교체하지 마")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체하는 방법만 설명해줘")).toBeUndefined();
+    expect(parseCharacterIntent("린으로 교체해야 할까?")).toBeUndefined();
+    expect(parseCharacterIntent("미오로 교체 좀 해줘")).toEqual({ kind: "switch", alias: "MIO(미오)" });
+    expect(parseCharacterIntent("미오로 교체!")).toEqual({ kind: "switch", alias: "MIO(미오)" });
+    expect(parseCharacterIntent("유키로 교체해 달라는 말이 아니야")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체해 라는 문장을 설명해줘")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체해도 돼?")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체해 주는 방법 알려줘")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체해 주지 마")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체해 줘야 하는지 설명해줘")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 안 교체해")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 못 교체해")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 교체 안 해")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 절대 교체해 주지 마")).toBeUndefined();
+    expect(parseCharacterIntent("린으로 교체해줘 지금")).toEqual({ kind: "switch", alias: "RIN(린)" });
+    expect(parseCharacterIntent("미오로 교체 좀 부탁해")).toEqual({ kind: "switch", alias: "MIO(미오)" });
+    expect(parseCharacterIntent("린으로 교체하자")).toEqual({ kind: "switch", alias: "RIN(린)" });
+  });
+
+  test("review paragraphs that quote switch sentences never become a switch command", () => {
+    // 반례를 인용한 리뷰 단락이 실제 Main 교체를 일으켰다(2026-09-29).
+    const review = [
+      "리뷰: parseCharacterIntent가 '유키로 교체하지 마', '유키로 교체하는 방법만 설명해줘'를 교체로 읽었다.",
+      "기존 긍정 \"린으로 교체해\"와 `미오로 교체해`는 보존한다.",
+      "> 유키로 교체해",
+      "```",
+      "parseCharacterIntent(\"hikari로 교체해\")",
+      "```",
+    ].join("\n");
+    expect(parseCharacterIntent(review)).toBeUndefined();
+    expect(parseCharacterIntent("「유키로 교체해」라고 쓰면 교체돼?")).toBeUndefined();
+    // 인용 속 이름과 인용 밖 명령어는 결합하지 않는다.
+    expect(parseCharacterIntent("'유키로 바꿔' 말고 그냥 교체해")).toBeUndefined();
+    expect(parseCharacterIntent("'유키' 말고 린으로 교체해")).toEqual({ kind: "switch", alias: "RIN(린)" });
+    // 인용 밖의 직접 명령은 그대로 실행한다.
+    expect(parseCharacterIntent("'교체하지 마'는 무시하고 린으로 교체해")).toEqual({ kind: "switch", alias: "RIN(린)" });
   });
 
   test("explicit multi-character summon carries every named alias in mention order", () => {
@@ -475,6 +513,29 @@ describe("character voice identity", () => {
     }
     expect(harness.calls).toEqual([]);
     expect(harness.sent).toEqual([]);
+  });
+
+  test("negation, explanation, and quoted review text never call setModel or pin on input or steering", async () => {
+    const texts = [
+      "유키로 교체하지 마",
+      "유키로 교체하는 방법만 설명해줘",
+      "리뷰: '유키로 교체하지 마', '유키로 교체하는 방법만 설명해줘'가 재현됐고 \"린으로 교체해\"는 보존한다.",
+      "유키로 교체해 주지 마",
+      "유키로 교체해 줘야 하는지 설명해줘",
+      "유키로 안 교체해",
+      "유키로 절대 교체해 주지 마",
+    ];
+    for (const text of texts) {
+      const harness = createRuntimeHarness();
+      expect(await harness.emit("input", { type: "input", source: "interactive", text })).toBeUndefined();
+      await harness.emit("message_start", {
+        type: "message_start",
+        message: { role: "user", content: [{ type: "text", text }], steering: true },
+      });
+      expect(harness.calls).toEqual([]);
+      expect(harness.sent).toEqual([]);
+      expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    }
   });
 
   test("the same user command seen by input and steering hooks switches exactly once", async () => {

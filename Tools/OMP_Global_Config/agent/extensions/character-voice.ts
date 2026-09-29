@@ -148,8 +148,17 @@ const CHARACTER_NAME_IN_COMMAND = new RegExp(
   "giu",
 );
 const SUMMON_ACTION = /(?:호출|불러|소환)/u;
-// "유키로 교체됐었어"처럼 이미 일어난 전환을 설명하는 과거·수동형은 교체 명령이 아니다.
-const SWITCH_ACTION = /교체(?!\s*(?:되|돼|됐|됬|된|될|됨))/u;
+// 교체 명령은 명령·청유형 어미 뒤에서 절이 끝나는 직접 발화만 인정한다. 어미 뒤에는 문장 부호·줄 끝이나
+// 대상·강조 단어("…교체해봐 미오로", "…교체해 메인을", "…교체해 지금")만 올 수 있다. 그래서
+// "교체됐었어"(과거·수동), "안 교체해"·"못 교체해"·"교체하지 마"·"교체해 주지 마"(부정), "교체하는 방법"·
+// "교체해 줘야 하는지 설명해줘"(설명), "교체해도 돼?"(허가 질문), "교체해 달라는 말"(인용)은 명령이 아니다.
+const SWITCH_CLAUSE_END = `(?:\\s+(?:${CHARACTER_NAME_PATTERN}|메인|main|지금|바로|당장|좀|빨리|제발|[ㄱ-ㅎㅏ-ㅣ]+)(?:으로|로|을|를)?)*\\s*(?:[.!?~…,\\n]|$)`;
+const SWITCH_COMMAND = new RegExp(
+  `(?<!(?:^|[^가-힣])(?:안|못)\\s*)(?:교체(?:를|\\s*좀)?\\s*(?:해(?:\\s*(?:주세요|줘요|줘|줄래|주라|봐요|봐|라|요))?|하자|하라|하세요|합시다|부탁(?:해요|해|합니다|드려요|드립니다)?)(?=${SWITCH_CLAUSE_END})|교체(?=\\s*(?:[.!]|$)))`,
+  "iu",
+);
+// 리뷰·설명이 인용한 문장(따옴표·백틱·코드 펜스·`>` 인용줄)은 교체 명령 판정에서 뺀다.
+const QUOTED_SPAN = /```[\s\S]*?```|`[^`\n]*`|'[^'\n]*'|"[^"\n]*"|‘[^’\n]*’|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|^[ \t]*>.*$/gmu;
 const SUMMON_MARKER_PREFIX = /\[character-summon\s/u;
 
 function aliasFromName(name: string): CharacterAlias | undefined {
@@ -338,8 +347,11 @@ export function parseCharacterIntent(text: string): CharacterIntent | undefined 
   const aliases = aliasesFromCommand(text);
   if (aliases.length === 0) return undefined;
   if (text.includes("교체")) {
-    if (!SWITCH_ACTION.test(text) || aliases.length !== 1) return undefined;
-    return { kind: "switch", alias: aliases[0]! };
+    // alias도 인용 밖에서만 뽑아 인용 속 이름과 인용 밖 명령어가 결합되지 않게 한다.
+    const command = text.replace(QUOTED_SPAN, " ");
+    const switchAliases = aliasesFromCommand(command);
+    if (!SWITCH_COMMAND.test(command) || switchAliases.length !== 1) return undefined;
+    return { kind: "switch", alias: switchAliases[0]! };
   }
   return SUMMON_ACTION.test(text) ? { kind: "summon", aliases } : undefined;
 }

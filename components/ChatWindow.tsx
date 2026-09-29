@@ -848,15 +848,26 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     const dock = composerDockRef.current;
     const shell = dock?.closest<HTMLElement>(".workspace-shell");
     if (!dock || !shell) return;
+    let transcriptHeight = scrollContainerRef.current?.clientHeight ?? 0;
     const syncDockHeight = () => {
       const height = Math.ceil(dock.getBoundingClientRect().height);
       if (height > 0) shell.style.setProperty("--omp-dock-h", `${height}px`);
+      // 입력창이 커지면 대화 영역이 아래에서 줄어든다. 바닥에 붙어 있던 대화는
+      // 다음 스크롤까지 마지막 줄을 가리지 않도록 그대로 바닥에 두고, 위로
+      // 스크롤한 대화는 건드리지 않는다.
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const shrink = transcriptHeight - container.clientHeight;
+      transcriptHeight = container.clientHeight;
+      if (shrink <= 0) return;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distanceFromBottom - shrink <= 1) container.scrollTop += shrink;
     };
     syncDockHeight();
     const observer = new ResizeObserver(syncDockHeight);
     observer.observe(dock);
     return () => observer.disconnect();
-  }, [loading]);
+  }, [loading, scrollContainerRef]);
 
 
 

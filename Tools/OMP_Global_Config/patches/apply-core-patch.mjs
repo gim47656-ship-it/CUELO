@@ -310,6 +310,30 @@ const EDITS = [
 		patched: "\tfreezeForSteering(): void {\n\t\tthis.#steeringFreeze = true;\n\t}\n\n\tasync settleAdmissions(): Promise<void> {",
 	},
 	{
+		// 18.4.3 ADAPT: 새 `authorizeLaunch`(task speculative launch)가 위 steering freeze 를 보지 않아, hook 없는
+		// 세션에서는 user steering 이 큐에 들어간 뒤에도 subagent 조기 launch 가 시작될 수 있었다. 기존 freeze 의
+		// "큐잉 이후 아직 시작 안 한 speculative 작업은 시작하지 않는다" 를 이 진입 경로에도 적용한다.
+		// launch 가 거부되면 dispatch 가 평소대로 띄우므로 기능은 줄지 않는다.
+		file: "../pi-agent-core/src/speculative-execution.ts",
+		marker: "// HANSE: queued user steering freezes speculative launches",
+		anchor: `	async authorizeLaunch(context: SpeculativeLaunchContext): Promise<SpeculativeAuthorization> {
+		if (this.#closed) return { allowed: false, reason: "speculation coordinator is closed" };
+`,
+		patched: `	async authorizeLaunch(context: SpeculativeLaunchContext): Promise<SpeculativeAuthorization> {
+		if (this.#closed) return { allowed: false, reason: "speculation coordinator is closed" };
+		// HANSE: queued user steering freezes speculative launches
+		if (this.#steeringFreeze) return { allowed: false, reason: "user steering is queued" };
+`,
+		// 18.4.2 이하에는 authorizeLaunch 가 없다(launch 경로 자체가 없음). 18.4.3 이 import 사이에
+		// `SpeculativeLaunchContext` 를 넣기 전의 이웃 두 줄로 식별하고 아무것도 바꾸지 않는다.
+		alternates: [{
+			file: "../pi-agent-core/src/speculative-execution.ts",
+			marker: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
+			anchor: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
+			patched: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
+		}],
+	},
+	{
 		file: "../pi-agent-core/src/agent.ts",
 		marker: "#userSteeringListeners = new Set<() => void>();",
 		anchor: "\t#steeringWaiters = new Set<() => void>();",
@@ -5008,6 +5032,106 @@ export function hostNextServerEnvUnsets(
 `,
 	},
 	{
+		// 2026-09-29: 이름 있는 bash service 는 bash-executor 를 거치지 않는다. daemon broker 가
+		// `workerEnvFromParent(spec.env)` 로 띄우는데, 이 함수는 broker 자신의 env 위에 overlay 를 덧씌우기만
+		// 한다. CUELO 가 띄운 broker 는 Next 서버 env 를 물려받으므로, shell.env 에서 지운 서버 변수가 그대로
+		// 되살아나 service 로 띄운 `next dev` 가 production 모드로 CSS 파싱에 실패했다(pipe·pty 모두 재현).
+		// PTY 는 native 가 넘긴 env 를 다시 OS env 위에 덧씌우므로 map 에서 지우는 것으로는 막히지 않는다
+		// (실측: map 삭제 leak, `delete process.env` 는 native 에도 반영). 그래서 broker 가 시작할 때 자기
+		// env 에서 서버 변수를 한 번 지운다 — 바로 위 idle grace 변수를 지우는 자리다. 서버 변수는 broker
+		// 자신이 아니라 CUELO 서버의 것이고, 호출자가 준 service env 와 런처 기준값(NODE_ENV·PORT)은
+		// client 가 보내는 spec.env 에 있으므로 남는다. Next 서버 밖(NEXT_RUNTIME 없음)에서 뜬 broker 는 그대로다.
+		file: "src/launch/broker.ts",
+		marker: 'import { hostNextServerEnvUnsets } from "@oh-my-pi/pi-utils/env";',
+		anchor: 'import { workerEnvFromParent } from "../subprocess/worker-client";\n',
+		patched: 'import { workerEnvFromParent } from "../subprocess/worker-client";\nimport { hostNextServerEnvUnsets } from "@oh-my-pi/pi-utils/env";\n',
+	},
+	{
+		file: "src/launch/broker.ts",
+		marker: "// HANSE: broker env drops inherited CUELO next server env",
+		anchor: "\tdelete process.env[DAEMON_IDLE_GRACE_ENV];\n",
+		patched: `	delete process.env[DAEMON_IDLE_GRACE_ENV];
+	// HANSE: broker env drops inherited CUELO next server env
+	for (const name of hostNextServerEnvUnsets(process.env, {})) delete process.env[name];
+`,
+	},
+	{
+		// 2026-09-29 jevgrep 비교(.omp/jevgrep-comparison/SUMMARY.md §4): jfind 의 비밀 파일 제외는 이름을
+		// 대소문자 구분으로 비교해, Windows(NTFS 대소문자 무시)에서 같은 파일인 `Credentials.json`·`ID_RSA`
+		// 가 검색·read·Jev 전송 후보에 들어갔다. secrets.json/yaml/yml 도 없었다. 이름을 한 번 소문자로 바꿔
+		// 모든 비교에 쓰고 세 이름을 더한다. `.env.example` 등 템플릿 예외와 확장자 규칙은 그대로다.
+		file: "src/tools/jfind/tree.ts",
+		marker: '\t"secrets.json": true,',
+		anchor: '\t"credentials.json": true,\n\t"client_secret.json": true,\n',
+		patched: '\t"credentials.json": true,\n\t"secrets.json": true,\n\t"secrets.yaml": true,\n\t"secrets.yml": true,\n\t"client_secret.json": true,\n',
+	},
+	{
+		file: "src/tools/jfind/tree.ts",
+		marker: "// HANSE: secret names compare case-insensitively",
+		anchor: `function secret(name: string): boolean {
+	if (Object.hasOwn(SECRET_FILES, name)) return true;
+	if (name.startsWith(".env.")) return !Object.hasOwn(ENV_TEMPLATES, name);
+	return hasExt(name.toLowerCase(), SECRET_EXT);
+}`,
+		patched: `function secret(name: string): boolean {
+	// HANSE: secret names compare case-insensitively
+	const lower = name.toLowerCase();
+	if (Object.hasOwn(SECRET_FILES, lower)) return true;
+	if (lower.startsWith(".env.")) return !Object.hasOwn(ENV_TEMPLATES, lower);
+	return hasExt(lower, SECRET_EXT);
+}`,
+	},
+	// --- find 폴더 탐색 보완(B), search owner JevgrepComparison r2 proposal(.omp/jevgrep-comparison/find-hierarchy-edits.mjs) 그대로 ---
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "// HANSE: find hierarchy imports (folder request builder)",
+		anchor: "import { type HeatRange, mergeHeat, type Passage, plainContent, selectWindows, sketch, windows } from \"./passages\";\nimport { nameBatch, passageBatch, passageKey, entryKey, type Request, type SketchCard, sketchBatch } from \"./questions\";\nimport { lines, readText, ReadTextError, takeChars } from \"./text\";\n",
+		patched: "import { type HeatRange, mergeHeat, type Passage, plainContent, selectWindows, sketch, windows } from \"./passages\";\n// HANSE: find hierarchy imports (folder request builder)\nimport {\n\ttype DirCard,\n\tdirBatch,\n\tentryKey,\n\tnameBatch,\n\tpassageBatch,\n\tpassageKey,\n\ttype Request,\n\ttype SketchCard,\n\tsketchBatch,\n} from \"./questions\";\nimport { lines, readText, ReadTextError, takeChars } from \"./text\";\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "// HANSE: find hierarchy directory pass limits (fixed by the jevgrep comparison experiment)",
+		anchor: "const FAILURES_KEPT = 5;\n\n",
+		patched: "const FAILURES_KEPT = 5;\n// HANSE: find hierarchy directory pass limits (fixed by the jevgrep comparison experiment)\n/** Folder probability at or above which a folder is expanded and its capped-out files are admitted. */\nconst DIR_P = 0.5;\n/** Folders per folder-judgment request. */\nconst DIR_BATCH = 64;\n/** Child names shown per folder card. */\nconst DIR_SAMPLE = 32;\n/** Capped-out files that receive a filename judgment. */\nconst EXTRA_CANDIDATES = 128;\n/** Capped-out files whose content is read and sketched. */\nconst EXTRA_FILES = 10;\n\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "// HANSE: find hierarchical directory pass methods",
+		anchor: "\n\tasync run(): Promise<CascadeResult> {\n\t\tconst { root, filesystem, query, includeHidden, signal, onProgress } = this.#options;\n\t\tconst keywords = deriveKeywords(query, this.#options.extraKeywords);\n\n\t\tonProgress?.(\"lexical scan\");\n\t\tconst native = filesystem.shellFilesystem();\n\t\tconst [entries, index] = await Promise.all([\n\t\t\tlistFiles(root, { includeHidden, filesystem: native, signal }),\n\t\t\tgrepIndex(root.path, keywords, { includeHidden, filesystem: native, signal, timeoutMs: SCAN_TIMEOUT_MS }),\n\t\t]);\n\t\tthis.stats.listed = entries.length;\n\t\tconst weights = idf(index);\n\t\tconst noCounts = Array.from({ length: keywords.length }, () => 0);\n\t\tconst ranked = entries\n\t\t\t.map((entry, node) => ({\n\t\t\t\tnode,\n\t\t\t\tlex: fileScore(index.perFileKw.get(entry.rel) ?? noCounts, weights, entry.rel, keywords),\n\t\t\t}))\n\t\t\t.sort((a, b) => b.lex - a.lex || compareRel(entries[a.node]!, entries[b.node]!))\n\t\t\t.slice(0, CANDIDATES);\n\t\tconst nameScore = Array.from<number | undefined>({ length: entries.length });\n\n\t\t// Wave 1: filename ranking over the lexical shortlist.\n\t\tconst project = path.basename(root.path);\n\t\tconst nameJobs = chunks(\n\t\t\tranked.map(candidate => candidate.node),\n\t\t\tNAME_BATCH,\n\t\t).map(batch => ({\n\t\t\tbatch,\n",
+		patched: "\n\t// HANSE: find hierarchical directory pass methods\n\t/**\n\t * Hierarchical directory pass, run after the lexical cascade has produced its hits. Files past the\n\t * lexical candidate cap are otherwise never judged: folders judged relevant admit their capped-out\n\t * files to a filename judgment and a few reads through the same sketch and verify stages. The\n\t * baseline `hits` are never changed. A provider failure or the overall timeout keeps them and is\n\t * reported in `stats.failures`; a user cancel keeps its existing meaning and throws.\n\t */\n\tasync #hierarchy(\n\t\tentries: readonly FileEntry[],\n\t\toutside: readonly { node: number }[],\n\t\tnameScore: (number | undefined)[],\n\t\tkeywords: readonly string[],\n\t\tweights: readonly number[],\n\t\thits: FindHit[],\n\t): Promise<void> {\n\t\tif (outside.length === 0) return;\n\t\tconst { signal } = this.#options;\n\t\ttry {\n\t\t\thits.push(...(await this.#extraHits(entries, outside, nameScore, keywords, weights)));\n\t\t} catch (error) {\n\t\t\tconst timedOut = signal?.reason instanceof DOMException && signal.reason.name === \"TimeoutError\";\n\t\t\tif (signal?.aborted && !timedOut) throw error;\n\t\t\tthis.#fail(\"hierarchy\", error);\n\t\t}\n\t}\n\n\tasync #extraHits(\n\t\tentries: readonly FileEntry[],\n\t\toutside: readonly { node: number }[],\n\t\tnameScore: (number | undefined)[],\n\t\tkeywords: readonly string[],\n\t\tweights: readonly number[],\n\t): Promise<FindHit[]> {\n\t\tconst { root, query } = this.#options;\n\t\tconst project = path.basename(root.path);\n\n\t\t// Folder model over the eligible files: eligibility, gitignore, hidden and secret rules already applied.\n\t\tinterface Folder {\n\t\t\tfiles: number[];\n\t\t\tsubdirs: Set<string>;\n\t\t\ttotal: number;\n\t\t}\n\t\tconst folders = new Map<string, Folder>();\n\t\tconst folder = (dir: string): Folder => {\n\t\t\tlet found = folders.get(dir);\n\t\t\tif (!found) {\n\t\t\t\tfound = { files: [], subdirs: new Set(), total: 0 };\n\t\t\t\tfolders.set(dir, found);\n\t\t\t}\n\t\t\treturn found;\n\t\t};\n\t\tentries.forEach((entry, node) => {\n\t\t\tconst segments = entry.rel.split(\"/\");\n\t\t\tsegments.pop();\n\t\t\tlet dir = \"\";\n\t\t\tfolder(\"\").total++;\n\t\t\tfor (const segment of segments) {\n\t\t\t\tconst child = dir ? `${dir}/${segment}` : segment;\n\t\t\t\tfolder(dir).subdirs.add(child);\n\t\t\t\tfolder(child).total++;\n\t\t\t\tdir = child;\n\t\t\t}\n\t\t\tfolder(dir).files.push(node);\n\t\t});\n\t\tconst baseName = (rel: string) => rel.slice(rel.lastIndexOf(\"/\") + 1);\n\t\tconst card = (dir: string): DirCard => {\n\t\t\tconst found = folder(dir);\n\t\t\tconst names = [...found.subdirs]\n\t\t\t\t.map(sub => `${baseName(sub)}/`)\n\t\t\t\t.sort()\n\t\t\t\t.concat(found.files.map(node => baseName(entries[node]!.rel)).sort());\n\t\t\tconst step = Math.max(1, names.length / DIR_SAMPLE);\n\t\t\tconst sample = Array.from({ length: Math.min(DIR_SAMPLE, names.length) }, (_, i) => names[Math.floor(i * step)]!);\n\t\t\tconst extensions: Record<string, number> = {};\n\t\t\tfor (const node of found.files) {\n\t\t\t\tconst ext = /\\.[^./]+$/.exec(entries[node]!.rel)?.[0] ?? \"(none)\";\n\t\t\t\textensions[ext] = (extensions[ext] ?? 0) + 1;\n\t\t\t}\n\t\t\tconst counts = Object.entries(extensions)\n\t\t\t\t.sort((a, b) => b[1] - a[1])\n\t\t\t\t.slice(0, 6)\n\t\t\t\t.map(([ext, n]) => `${ext} ${n}`)\n\t\t\t\t.join(\", \");\n\t\t\treturn {\n\t\t\t\tpath: dir,\n\t\t\t\tsummary: `${found.total} files under it, ${found.files.length} direct, ${found.subdirs.size} subfolders; extensions: ${counts || \"none\"}; sample: ${sample.join(\", \")}`,\n\t\t\t};\n\t\t};\n\n\t\t// Level by level: a folder judged relevant is expanded and admits its direct files. An unusable\n\t\t// or failed judgment admits nothing, so a failure can only lose extra coverage, never baseline hits.\n\t\tconst admitted = new Set<string>([\"\"]);\n\t\tlet frontier = [...folder(\"\").subdirs].sort();\n\t\twhile (frontier.length > 0) {\n\t\t\tconst next: string[] = [];\n\t\t\tconst jobs = chunks(frontier, DIR_BATCH).map(batch => ({ batch, request: dirBatch(project, query, batch.map(card)) }));\n\t\t\tawait this.#dispatch(jobs, (job, outcome) => {\n\t\t\t\tif (!outcome.ok) this.#fail(\"folders\", outcome.error);\n\t\t\t\tjob.batch.forEach((dir, k) => {\n\t\t\t\t\tconst p = noul(outcome, entryKey(k));\n\t\t\t\t\tif (p === undefined) {\n\t\t\t\t\t\tif (outcome.ok) this.stats.errors++;\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (p >= DIR_P) {\n\t\t\t\t\t\tadmitted.add(dir);\n\t\t\t\t\t\tnext.push(...folder(dir).subdirs);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t});\n\t\t\tfrontier = next.sort();\n\t\t}\n\n\t\t// `outside` is already in lexical order, so the first admitted ones are the strongest.\n\t\tconst dirOf = (rel: string) => rel.slice(0, Math.max(0, rel.lastIndexOf(\"/\")));\n\t\tconst extra: number[] = [];\n\t\tfor (const { node } of outside) {\n\t\t\tif (extra.length >= EXTRA_CANDIDATES) break;\n\t\t\tif (admitted.has(dirOf(entries[node]!.rel))) extra.push(node);\n\t\t}\n\t\tif (extra.length === 0) return [];\n\n\t\tconst nameJobs = chunks(extra, NAME_BATCH).map(batch => ({\n\t\t\tbatch,\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "if (!outcome.ok) this.#fail(\"extra filenames\", outcome.error);",
+		anchor: "\t\t}));\n\t\tlet named = 0;\n\t\tonProgress?.(`filename ranking 0/${ranked.length}`);\n\t\tawait this.#dispatch(nameJobs, (job, outcome) => {\n\t\t\tnamed += job.batch.length;\n\t\t\tif (!outcome.ok) this.#fail(\"filenames\", outcome.error);\n\t\t\tjob.batch.forEach((node, k) => {\n",
+		patched: "\t\t}));\n\t\tawait this.#dispatch(nameJobs, (job, outcome) => {\n\t\t\tif (!outcome.ok) this.#fail(\"extra filenames\", outcome.error);\n\t\t\tjob.batch.forEach((node, k) => {\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "// Stable sort: ties keep the lexical order of `extra`.",
+		anchor: "\t\t\t});\n\t\t\tonProgress?.(`filename ranking ${named}/${ranked.length}`);\n\t\t});\n\n\t\t// The two strongest lexical candidates are read regardless of the name\n\t\t// judgment; the rest of the budget follows name score, then lexical rank.\n\t\tconst selected = ranked.slice(0, Math.min(FILES, 2)).map(candidate => candidate.node);\n\t\tranked.sort((a, b) => (nameScore[b.node] ?? 0) - (nameScore[a.node] ?? 0) || b.lex - a.lex);\n\t\tfor (const candidate of ranked) {\n\t\t\tif (selected.length >= FILES) break;\n\t\t\tif (!selected.includes(candidate.node)) selected.push(candidate.node);\n\t\t}\n\t\tonProgress?.(`reading ${selected.length} files`);\n",
+		patched: "\t\t\t});\n\t\t});\n\t\t// Stable sort: ties keep the lexical order of `extra`.\n\t\tconst selected = [...extra].sort((a, b) => (nameScore[b] ?? 0) - (nameScore[a] ?? 0)).slice(0, EXTRA_FILES);\n\t\treturn this.#readAndVerify(selected, entries, nameScore, keywords, weights);\n\t}\n\n\t/**\n\t * Read, sketch and verify the `selected` files: sketch routing over mixed-file cards, then verification\n\t * of the complete passages that survive. Shared by the lexical cascade and the hierarchical pass.\n\t */\n\tasync #readAndVerify(\n\t\tselected: readonly number[],\n\t\tentries: readonly FileEntry[],\n\t\tnameScore: readonly (number | undefined)[],\n\t\tkeywords: readonly string[],\n\t\tweights: readonly number[],\n\t): Promise<FindHit[]> {\n\t\tconst { filesystem, query, onProgress } = this.#options;\n\t\tonProgress?.(`reading ${selected.length} files`);\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/cascade.ts",
+		marker: "// HANSE: lexRanked keeps the capped-out tail for the hierarchical directory pass",
+		anchor: "\t\tthis.stats.filesRead += files.length - results.size;\n\t\thits.sort((a, b) => b.contentScore - a.contentScore);\n",
+		patched: "\t\tthis.stats.filesRead += files.length - results.size;\n\t\treturn hits;\n\t}\n\n\tasync run(): Promise<CascadeResult> {\n\t\tconst { root, filesystem, query, includeHidden, signal, onProgress } = this.#options;\n\t\tconst keywords = deriveKeywords(query, this.#options.extraKeywords);\n\n\t\tonProgress?.(\"lexical scan\");\n\t\tconst native = filesystem.shellFilesystem();\n\t\tconst [entries, index] = await Promise.all([\n\t\t\tlistFiles(root, { includeHidden, filesystem: native, signal }),\n\t\t\tgrepIndex(root.path, keywords, { includeHidden, filesystem: native, signal, timeoutMs: SCAN_TIMEOUT_MS }),\n\t\t]);\n\t\tthis.stats.listed = entries.length;\n\t\tconst weights = idf(index);\n\t\tconst noCounts = Array.from({ length: keywords.length }, () => 0);\n\t\t// HANSE: lexRanked keeps the capped-out tail for the hierarchical directory pass\n\t\tconst lexRanked = entries\n\t\t\t.map((entry, node) => ({\n\t\t\t\tnode,\n\t\t\t\tlex: fileScore(index.perFileKw.get(entry.rel) ?? noCounts, weights, entry.rel, keywords),\n\t\t\t}))\n\t\t\t.sort((a, b) => b.lex - a.lex || compareRel(entries[a.node]!, entries[b.node]!));\n\t\tconst ranked = lexRanked.slice(0, CANDIDATES);\n\t\tconst nameScore = Array.from<number | undefined>({ length: entries.length });\n\n\t\t// Wave 1: filename ranking over the lexical shortlist.\n\t\tconst project = path.basename(root.path);\n\t\tconst nameJobs = chunks(\n\t\t\tranked.map(candidate => candidate.node),\n\t\t\tNAME_BATCH,\n\t\t).map(batch => ({\n\t\t\tbatch,\n\t\t\trequest: nameBatch(\n\t\t\t\tproject,\n\t\t\t\tquery,\n\t\t\t\tbatch.map(node => entries[node]!),\n\t\t\t),\n\t\t}));\n\t\tlet named = 0;\n\t\tonProgress?.(`filename ranking 0/${ranked.length}`);\n\t\tawait this.#dispatch(nameJobs, (job, outcome) => {\n\t\t\tnamed += job.batch.length;\n\t\t\tif (!outcome.ok) this.#fail(\"filenames\", outcome.error);\n\t\t\tjob.batch.forEach((node, k) => {\n\t\t\t\tconst p = noul(outcome, entryKey(k));\n\t\t\t\tnameScore[node] = p;\n\t\t\t\tif (p === undefined) {\n\t\t\t\t\tif (outcome.ok) this.stats.errors++;\n\t\t\t\t} else {\n\t\t\t\t\tthis.stats.judged++;\n\t\t\t\t}\n\t\t\t});\n\t\t\tonProgress?.(`filename ranking ${named}/${ranked.length}`);\n\t\t});\n\n\t\t// The two strongest lexical candidates are read regardless of the name\n\t\t// judgment; the rest of the budget follows name score, then lexical rank.\n\t\tconst selected = ranked.slice(0, Math.min(FILES, 2)).map(candidate => candidate.node);\n\t\tranked.sort((a, b) => (nameScore[b.node] ?? 0) - (nameScore[a.node] ?? 0) || b.lex - a.lex);\n\t\tfor (const candidate of ranked) {\n\t\t\tif (selected.length >= FILES) break;\n\t\t\tif (!selected.includes(candidate.node)) selected.push(candidate.node);\n\t\t}\n\t\tconst hits = await this.#readAndVerify(selected, entries, nameScore, keywords, weights);\n\t\t// HANSE: hierarchical directory pass over the capped-out files; baseline hits are kept\n\t\tawait this.#hierarchy(entries, lexRanked.slice(CANDIDATES), nameScore, keywords, weights, hits);\n\t\thits.sort((a, b) => b.contentScore - a.contentScore);\n",
+	},
+	{
+		// find: hierarchical directory pass admits files past the lexical candidate cap (jevgrep comparison, .omp/jevgrep-comparison/REPORT.md)
+		file: "src/tools/jfind/questions.ts",
+		marker: "// HANSE: find hierarchy directory pass request",
+		anchor: "\n/** One sketch card: the file it came from and its budgeted verbatim lines. */\n",
+		patched: "\n// HANSE: find hierarchy directory pass request\n/** One folder card of the hierarchical directory pass: its path and the metadata shown after its tag. */\nexport interface DirCard {\n\tpath: string;\n\tsummary: string;\n}\n\nconst DIR_FORMAT =\n\t\"`tree` lists folders. Each line starts with `#` and a tag like e017, then the folder path, its file count, subfolders, extension counts and a sample of child names.\";\n\n/** One noul per folder over a shared listing of folder metadata (counts, extensions, sampled child names). */\nexport function dirBatch(project: string, query: string, cards: readonly DirCard[]): Request {\n\tconst questions: Record<string, NoulQuestion> = {};\n\tconst tree: string[] = [];\n\tcards.forEach((card, i) => {\n\t\tconst key = entryKey(i);\n\t\ttree.push(`# ${key} ${card.path}/ — ${card.summary}`);\n\t\tquestions[key] = {\n\t\t\ttype: \"noul\",\n\t\t\tinstructions: `Is the folder tagged ${key} (\"${card.path}/\") likely to hold, at any depth, a file matching this search: \"${query}\"? Judge by its name, counts and sampled names in \\`tree\\`; apply \\`criteria.folder\\`.`,\n\t\t};\n\t});\n\treturn {\n\t\tstate: { criteria: { folder: FOLDER_CRITERIA }, format: DIR_FORMAT, project, search: query, task: TASK, tree: tree.join(\"\\n\") },\n\t\tquestions,\n\t};\n}\n\n/** One sketch card: the file it came from and its budgeted verbatim lines. */\n",
+	},
+	{
 		// 2026-09-25: 사유를 직접 준 skipped 결과(user steering 보류, soft-required 도구 안내)에도 core 가
 		// "the assistant ended its turn" 을 앞에 붙여, 턴이 이어지는데 끝난 것처럼 읽혔다. 사유가 있으면
 		// 그 문장만 쓴다. 사유 없는 skipped(턴이 실제로 끝나 남은 호출)는 upstream 문구를 그대로 둔다.
@@ -5511,6 +5635,791 @@ function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 		patched: `			windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {
 				assertWindowFilter(filter);
 				const { signal } = getContext();`,
+	},
+	{
+		// MCP 선택 연결: 요청별 MCP 선택(opt-in). all이 기본이며 per-request면 시작 시 연결하지 않고 요청마다 확장이 고른다.
+		file: "src/mcp/settings.ts",
+		marker: `			"all: connect every enabled server at startup. per-request: connect nothing at startup; before each request an extension selects which enabled servers to connect (new sessions)",`,
+		anchor: `		description: "Wait this many milliseconds for initial MCP tool discovery; 0 waits until connections settle",
+	},`,
+		patched: `		description: "Wait this many milliseconds for initial MCP tool discovery; 0 waits until connections settle",
+	},
+});
+
+export const cfgMcpSelection = register({
+	id: "mcp.selection",
+	type: "enum",
+	values: ["all", "per-request"] as const,
+	default: "all",
+	ui: {
+		tab: "tools",
+		group: "Discovery & MCP",
+		label: "MCP Connection Selection",
+		description:
+			"all: connect every enabled server at startup. per-request: connect nothing at startup; before each request an extension selects which enabled servers to connect (new sessions)",
+	},`,
+	},
+	{
+		// MCP 선택 연결: per-request: discovery·설정 reconcile은 허용된 config를 deferred 후보로만 적재하고, 선택된 이름만 connectDeferred로 연결한다. 수동 /mcp reconnect는 deferred 후보를 바로 연결한다.
+		file: "src/mcp/manager.ts",
+		marker: `	/** Tool names/descriptions from the last successful connect with the same config, if cached. Untrusted server text. */`,
+		anchor: `
+/** Handles an MCP \`WWW-Authenticate\` challenge and returns refreshed config. */`,
+		patched: `
+/**
+ * Public metadata of an enabled, allowed MCP server whose connection is
+ * deferred until a per-request selection (\`mcp.selection: per-request\`).
+ * Carries no headers, env, args, URLs, or credentials.
+ */
+export interface MCPDeferredServer {
+	name: string;
+	/** Config level the server was loaded from. */
+	level: SourceMeta["level"] | "unknown";
+	/** Discovery provider id (native, mcp-json, plugin providers, ...). */
+	provider: string;
+	transport: "stdio" | "http" | "sse";
+	/** Tool names/descriptions from the last successful connect with the same config, if cached. Untrusted server text. */
+	cachedTools: Array<{ name: string; description?: string }>;
+}
+
+/** Handles an MCP \`WWW-Authenticate\` challenge and returns refreshed config. */`,
+	},
+	{
+		// MCP 선택 연결 r3: 선택이 연결한 서버 소유를 추적한다(수동 reconnect·disconnect가 지운다). legacyPatched는 r2 적용본을 r3로 올린다.
+		file: "src/mcp/manager.ts",
+		marker: `	/** Connected by per-request selection; a manual reconnect or disconnect clears it. */`,
+		anchor: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
+	#discoveryInFlight: Promise<unknown> = Promise.resolve();
+	/**
+	 * Timestamps of recent reconnectServer invocations per server, used by the`,
+		legacyPatched: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
+	#discoveryInFlight: Promise<unknown> = Promise.resolve();
+	/** When set, discovery records allowed configs as deferred instead of connecting them. */
+	#deferConnect = false;
+	#deferred = new Map<string, { config: MCPServerConfig; source?: SourceMeta }>();
+	/**
+	 * Timestamps of recent reconnectServer invocations per server, used by the`,
+		patched: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
+	#discoveryInFlight: Promise<unknown> = Promise.resolve();
+	/** When set, discovery records allowed configs as deferred instead of connecting them. */
+	#deferConnect = false;
+	#deferred = new Map<string, { config: MCPServerConfig; source?: SourceMeta }>();
+	/** Connected by per-request selection; a manual reconnect or disconnect clears it. */
+	#selectionConnected = new Set<string>();
+	/**
+	 * Timestamps of recent reconnectServer invocations per server, used by the`,
+	},
+	{
+		file: "src/mcp/manager.ts",
+		marker: `		const result = await this.#connectOrDefer(configs, sources, options?.onStatus, options?.startupTimeoutMs);`,
+		anchor: `		const { configs, exaApiKeys, sources } = loadedConfigs;
+		const result = await this.connectServers(configs, sources, options?.onStatus, options?.startupTimeoutMs);
+		result.exaApiKeys = exaApiKeys;`,
+		patched: `		const { configs, exaApiKeys, sources } = loadedConfigs;
+		const result = await this.#connectOrDefer(configs, sources, options?.onStatus, options?.startupTimeoutMs);
+		result.exaApiKeys = exaApiKeys;`,
+	},
+	{
+		// MCP 선택 연결 r3: 이미 취소된 요청은 아무것도 시작하지 않고, handshake 중 취소는 미연결 서버를 해제해 deferred 후보로 되돌린다(늦은 연결 없음). legacyPatched는 r2 적용본.
+		file: "src/mcp/manager.ts",
+		marker: `	 * are ignored. An already-aborted signal starts nothing; an abort mid-handshake drops the servers`,
+		anchor: `		return result;
+	}`,
+		legacyPatched: `		return result;
+	}
+
+	/**
+	 * Opt into per-request selection: discovery and config reconciles record
+	 * allowed servers as deferred candidates instead of connecting them.
+	 * Explicit connects (\`connectServers\`, \`/mcp enable\`, \`/mcp reconnect\`) still connect.
+	 */
+	setDeferConnect(enabled: boolean): void {
+		this.#deferConnect = enabled;
+	}
+
+	async #connectOrDefer(
+		configs: Record<string, MCPServerConfig>,
+		sources: Record<string, SourceMeta>,
+		onStatus?: (event: McpConnectionStatusEvent) => void,
+		startupTimeoutMs?: number,
+	): Promise<MCPLoadResult> {
+		if (!this.#deferConnect) return this.connectServers(configs, sources, onStatus, startupTimeoutMs);
+		for (const [name, config] of Object.entries(configs)) {
+			if (this.#connections.has(name) || this.#pendingConnections.has(name)) continue;
+			const source = sources[name];
+			this.#deferred.set(name, { config, source });
+			if (source) this.#sources.set(name, source);
+		}
+		return { tools: this.#tools, errors: new Map(), connectedServers: this.getConnectedServers(), exaApiKeys: [] };
+	}
+
+	/** Deferred candidates after the in-flight discovery settles. */
+	async getDeferredServers(): Promise<MCPDeferredServer[]> {
+		await this.#discoveryInFlight;
+		return Promise.all(
+			Array.from(this.#deferred, async ([name, { config, source }]) => {
+				const cached = (await this.toolCache?.get(name, config).catch(() => null)) ?? [];
+				return {
+					name,
+					level: source?.level ?? "unknown",
+					provider: source?.provider ?? "unknown",
+					transport: config.type ?? "stdio",
+					cachedTools: cached.map(tool => ({ name: tool.name, description: tool.description })),
+				};
+			}),
+		);
+	}
+
+	/**
+	 * Connect only the named deferred servers and wait until their handshakes
+	 * settle (or \`signal\` aborts). Unknown names are ignored.
+	 */
+	async connectDeferred(names: readonly string[], signal?: AbortSignal): Promise<MCPLoadResult> {
+		const configs: Record<string, MCPServerConfig> = {};
+		const sources: Record<string, SourceMeta> = {};
+		for (const name of names) {
+			const entry = this.#deferred.get(name);
+			if (!entry) continue;
+			configs[name] = entry.config;
+			if (entry.source) sources[name] = entry.source;
+		}
+		const connect = this.connectServers(configs, sources, this.#discoverOptions?.onStatus, 0);
+		if (!signal) return connect;
+		const { promise: aborted, resolve } = Promise.withResolvers<MCPLoadResult>();
+		const onAbort = () =>
+			resolve({ tools: this.#tools, errors: new Map(), connectedServers: this.getConnectedServers(), exaApiKeys: [] });
+		if (signal.aborted) onAbort();
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			return await Promise.race([connect, aborted]);
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+	}`,
+		patched: `		return result;
+	}
+
+	/**
+	 * Opt into per-request selection: discovery and config reconciles record
+	 * allowed servers as deferred candidates instead of connecting them.
+	 * Explicit connects (\`connectServers\`, \`/mcp enable\`, \`/mcp reconnect\`) still connect.
+	 */
+	setDeferConnect(enabled: boolean): void {
+		this.#deferConnect = enabled;
+	}
+
+	async #connectOrDefer(
+		configs: Record<string, MCPServerConfig>,
+		sources: Record<string, SourceMeta>,
+		onStatus?: (event: McpConnectionStatusEvent) => void,
+		startupTimeoutMs?: number,
+	): Promise<MCPLoadResult> {
+		if (!this.#deferConnect) return this.connectServers(configs, sources, onStatus, startupTimeoutMs);
+		for (const [name, config] of Object.entries(configs)) {
+			if (this.#connections.has(name) || this.#pendingConnections.has(name)) continue;
+			const source = sources[name];
+			this.#deferred.set(name, { config, source });
+			if (source) this.#sources.set(name, source);
+		}
+		return { tools: this.#tools, errors: new Map(), connectedServers: this.getConnectedServers(), exaApiKeys: [] };
+	}
+
+	/** Deferred candidates after the in-flight discovery settles. */
+	async getDeferredServers(): Promise<MCPDeferredServer[]> {
+		await this.#discoveryInFlight;
+		return Promise.all(
+			Array.from(this.#deferred, async ([name, { config, source }]) => {
+				const cached = (await this.toolCache?.get(name, config).catch(() => null)) ?? [];
+				return {
+					name,
+					level: source?.level ?? "unknown",
+					provider: source?.provider ?? "unknown",
+					transport: config.type ?? "stdio",
+					cachedTools: cached.map(tool => ({ name: tool.name, description: tool.description })),
+				};
+			}),
+		);
+	}
+
+	/** Whether per-request selection (not the user) connected this server. */
+	isSelectionConnected(name: string): boolean {
+		return this.#selectionConnected.has(name);
+	}
+
+	/**
+	 * Connect only the named deferred servers and wait until their handshakes settle. Unknown names
+	 * are ignored. An already-aborted signal starts nothing; an abort mid-handshake drops the servers
+	 * not yet connected and restores them as deferred candidates, so no late connection survives.
+	 */
+	async connectDeferred(names: readonly string[], signal?: AbortSignal): Promise<MCPLoadResult> {
+		const snapshot = (): MCPLoadResult => ({
+			tools: this.#tools,
+			errors: new Map(),
+			connectedServers: this.getConnectedServers(),
+			exaApiKeys: [],
+		});
+		if (signal?.aborted) return snapshot();
+		const entries = new Map<string, { config: MCPServerConfig; source?: SourceMeta }>();
+		const configs: Record<string, MCPServerConfig> = {};
+		const sources: Record<string, SourceMeta> = {};
+		for (const name of names) {
+			const entry = this.#deferred.get(name);
+			if (!entry) continue;
+			entries.set(name, entry);
+			configs[name] = entry.config;
+			if (entry.source) sources[name] = entry.source;
+			this.#selectionConnected.add(name);
+		}
+		const connect = this.connectServers(configs, sources, this.#discoverOptions?.onStatus, 0);
+		if (!signal) return connect;
+		const { promise: aborted, resolve } = Promise.withResolvers<"aborted">();
+		const onAbort = () => resolve("aborted");
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			const outcome = await Promise.race([connect, aborted]);
+			if (outcome !== "aborted") return outcome;
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+		for (const [name, entry] of entries) {
+			if (this.#connections.has(name)) continue;
+			await this.disconnectServer(name);
+			this.#deferred.set(name, entry);
+			if (entry.source) this.#sources.set(name, entry.source);
+		}
+		return snapshot();
+	}`,
+	},
+	{
+		file: "src/mcp/manager.ts",
+		marker: `		await this.#connectOrDefer(configs, sources, options.onStatus, options.startupTimeoutMs);`,
+		anchor: `		if (!reconnect) return;
+		await this.connectServers(configs, sources, options.onStatus, options.startupTimeoutMs);
+	}`,
+		patched: `		if (!reconnect) return;
+		await this.#connectOrDefer(configs, sources, options.onStatus, options.startupTimeoutMs);
+	}`,
+	},
+	{
+		file: "src/mcp/manager.ts",
+		marker: `			await this.#connectOrDefer(browserConfigs, browserSources, options?.onStatus, options?.startupTimeoutMs);`,
+		anchor: `		if (!enabled) {
+			await this.connectServers(browserConfigs, browserSources, options?.onStatus, options?.startupTimeoutMs);
+			this.#discoverOptions = { ...options, filterBrowser: false };`,
+		patched: `		if (!enabled) {
+			await this.#connectOrDefer(browserConfigs, browserSources, options?.onStatus, options?.startupTimeoutMs);
+			this.#discoverOptions = { ...options, filterBrowser: false };`,
+	},
+	{
+		file: "src/mcp/manager.ts",
+		marker: `			this.#deferred.delete(name);`,
+		anchor: `		for (const [name, config] of Object.entries(configs)) {
+			this.#startupServers.add(name);`,
+		patched: `		for (const [name, config] of Object.entries(configs)) {
+			this.#deferred.delete(name);
+			this.#startupServers.add(name);`,
+	},
+	{
+		// MCP 선택 연결 r3: 해제한 서버의 선택 소유 표시를 지운다. legacyPatched는 r2 적용본.
+		file: "src/mcp/manager.ts",
+		marker: `		this.#selectionConnected.delete(name);`,
+		anchor: `		this.#sources.delete(name);
+		this.#serverConfigs.delete(name);`,
+		legacyPatched: `		this.#sources.delete(name);
+		this.#deferred.delete(name);
+		this.#serverConfigs.delete(name);`,
+		patched: `		this.#sources.delete(name);
+		this.#deferred.delete(name);
+		this.#selectionConnected.delete(name);
+		this.#serverConfigs.delete(name);`,
+	},
+	{
+		// MCP 선택 연결 r3: 전체 해제 때 선택 소유 표시를 비운다. legacyPatched는 r2 적용본.
+		file: "src/mcp/manager.ts",
+		marker: `		this.#selectionConnected.clear();`,
+		anchor: `		this.#sources.clear();
+		this.#serverConfigs.clear();`,
+		legacyPatched: `		this.#sources.clear();
+		this.#deferred.clear();
+		this.#serverConfigs.clear();`,
+		patched: `		this.#sources.clear();
+		this.#deferred.clear();
+		this.#selectionConnected.clear();
+		this.#serverConfigs.clear();`,
+	},
+	{
+		// MCP 선택 연결 r3: 수동 /mcp reconnect는 소유를 사용자로 넘겨 이후 선택이 숨기지 않게 한다. legacyPatched는 r2 적용본.
+		file: "src/mcp/manager.ts",
+		marker: `		if (options?.manual) this.#selectionConnected.delete(name);`,
+		anchor: `	): Promise<MCPServerConnection | null> {
+		if (options?.manual) {`,
+		legacyPatched: `	): Promise<MCPServerConnection | null> {
+		const deferred = this.#deferred.get(name);
+		if (deferred) {
+			// A manual reconnect of a never-connected deferred candidate is an explicit user connect.
+			await this.connectServers({ [name]: deferred.config }, deferred.source ? { [name]: deferred.source } : {}, undefined, 0);
+			return this.#connections.get(name) ?? null;
+		}
+		if (options?.manual) {`,
+		patched: `	): Promise<MCPServerConnection | null> {
+		if (options?.manual) this.#selectionConnected.delete(name);
+		const deferred = this.#deferred.get(name);
+		if (deferred) {
+			// A manual reconnect of a never-connected deferred candidate is an explicit user connect.
+			await this.connectServers({ [name]: deferred.config }, deferred.source ? { [name]: deferred.source } : {}, undefined, 0);
+			return this.#connections.get(name) ?? null;
+		}
+		if (options?.manual) {`,
+	},
+	{
+		// MCP 선택 연결: 비UI 경로(loader)도 같은 deferConnect를 manager에 전달한다.
+		file: "src/mcp/loader.ts",
+		marker: `	/** Record allowed servers as deferred candidates instead of connecting them (\`mcp.selection: per-request\`). */`,
+		anchor: `	authStorage?: AuthStorage;
+}`,
+		patched: `	authStorage?: AuthStorage;
+	/** Record allowed servers as deferred candidates instead of connecting them (\`mcp.selection: per-request\`). */
+	deferConnect?: boolean;
+}`,
+	},
+	{
+		file: "src/mcp/loader.ts",
+		marker: `	manager.setDeferConnect(options?.deferConnect ?? false);`,
+		anchor: `		manager.setAuthStorage(options.authStorage);
+	}
+
+	let result: MCPLoadResult;`,
+		patched: `		manager.setAuthStorage(options.authStorage);
+	}
+	manager.setDeferConnect(options?.deferConnect ?? false);
+
+	let result: MCPLoadResult;`,
+	},
+	{
+		// MCP 선택 연결: 소유 세션의 새 manager만 defer하고 선택기를 배선한다. child(options.mcpManager)는 부모 연결을 상속만 한다.
+		file: "src/sdk.ts",
+		marker: `	cfgMcpSelection,`,
+		anchor: `	cfgMcpNotifications,
+	cfgMcpStartupTimeoutMs,`,
+		patched: `	cfgMcpNotifications,
+	cfgMcpSelection,
+	cfgMcpStartupTimeoutMs,`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: `		// Per-request selection (opt-in): only the owning session's fresh manager defers connects.`,
+		anchor: `			}));
+		const mcpDiscoverOptions = {`,
+		patched: `			}));
+		// Per-request selection (opt-in): only the owning session's fresh manager defers connects.
+		const mcpSelectionPerRequest = cfgMcpSelection.get(settings) === "per-request";
+		const mcpDiscoverOptions = {`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: `				mcpManager.setDeferConnect(mcpSelectionPerRequest);`,
+		anchor: `				mcpManager.setAuthStorage(authStorage);
+				toolSession.mcpManager = mcpManager;`,
+		patched: `				mcpManager.setAuthStorage(authStorage);
+				mcpManager.setDeferConnect(mcpSelectionPerRequest);
+				toolSession.mcpManager = mcpManager;`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: `					deferConnect: mcpSelectionPerRequest,`,
+		anchor: `					authStorage,
+				});`,
+		patched: `					authStorage,
+					deferConnect: mcpSelectionPerRequest,
+				});`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: `			if (mcpSelectionPerRequest) owningSession.setMCPSelectionManager(ownedMCPManager);`,
+		anchor: `				await owningSession.refreshMCPTools(ownedMCPManager.getTools());
+			});
+		}
+`,
+		patched: `				await owningSession.refreshMCPTools(ownedMCPManager.getTools());
+			});
+			// Only the owning session selects deferred servers; subagents reuse the parent's
+			// manager and inherit its connections without connecting or disconnecting.
+			if (mcpSelectionPerRequest) owningSession.setMCPSelectionManager(ownedMCPManager);
+		}
+`,
+	},
+	{
+		// MCP 선택 연결: 매 사용자 요청의 system prompt 전에 mcp_select를 보내 고른 deferred 서버만 연결하고 노출 subset을 적용한다. 실패는 새 연결 0.
+		file: "src/session/agent-session.ts",
+		marker: `import type { MCPManager } from "../mcp/manager";`,
+		anchor: `} from "@oh-my-pi/pi-utils";
+import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
+		patched: `} from "@oh-my-pi/pi-utils";
+import type { MCPManager } from "../mcp/manager";
+import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: `	/** Owned MCP manager whose deferred servers are selected per request (\`mcp.selection: per-request\`). */`,
+		anchor: `	#extensionRunner: ExtensionRunner | undefined = undefined;
+	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;`,
+		patched: `	#extensionRunner: ExtensionRunner | undefined = undefined;
+	/** Owned MCP manager whose deferred servers are selected per request (\`mcp.selection: per-request\`). */
+	#mcpSelectionManager: MCPManager | undefined = undefined;
+	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;`,
+	},
+	{
+		// MCP 선택 연결 r3: 이벤트에 취소 signal과 실제 연결 결과 outcome(connected/failed)을 싣고, 연결 목록에 선택 소유 여부를 붙인다. outcome은 항상 settle된다. legacyPatched는 r2 적용본.
+		file: "src/session/agent-session.ts",
+		marker: `						.map(name => ({ name, error: result.errors.get(name) ?? (signal?.aborted ? "cancelled" : "not connected") })),`,
+		anchor: `
+	/** Replaces host-owned RPC tools before the next model call. */`,
+		legacyPatched: `
+	/** Enables per-request MCP selection for the session that owns \`manager\`. */
+	setMCPSelectionManager(manager: MCPManager | undefined): void {
+		this.#mcpSelectionManager = manager;
+	}
+
+	/**
+	 * Per-request MCP selection before the system prompt is built: extensions pick deferred servers
+	 * to connect (core connects only those) and which connected servers stay active. No handler, a
+	 * failing handler, or an empty answer connects nothing.
+	 */
+	async #selectMCPServersForPrompt(
+		prompt: string,
+		isCurrent: () => boolean,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		const manager = this.#mcpSelectionManager;
+		const runner = this.#extensionRunner;
+		if (!manager || !runner?.hasHandlers("mcp_select")) return;
+		const deferred = await manager.getDeferredServers();
+		if (!isCurrent()) return;
+		const connectedByServer = new Map<string, Array<{ name: string; description?: string }>>();
+		for (const tool of manager.getTools()) {
+			if (!tool.mcpServerName) continue;
+			let tools = connectedByServer.get(tool.mcpServerName);
+			if (!tools) connectedByServer.set(tool.mcpServerName, (tools = []));
+			tools.push({ name: tool.mcpToolName ?? tool.name, description: tool.description });
+		}
+		const connected = Array.from(connectedByServer, ([name, tools]) => {
+			const source = manager.getSource(name);
+			return {
+				name,
+				level: source?.level ?? ("unknown" as const),
+				provider: source?.provider ?? "unknown",
+				transport: manager.getServerConfig(name)?.type ?? ("stdio" as const),
+				tools,
+			};
+		});
+		const decision = await runner.emitMcpSelect(
+			{
+				type: "mcp_select",
+				prompt,
+				deferred: deferred.map(({ cachedTools, ...server }) => ({ ...server, tools: cachedTools })),
+				connected,
+			},
+			signal,
+		);
+		if (!decision || !isCurrent()) return;
+		const deferredNames = new Set(deferred.map(server => server.name));
+		const connect = (decision.connect ?? []).filter(name => deferredNames.has(name));
+		if (connect.length > 0) {
+			const result = await manager.connectDeferred(connect, signal);
+			for (const [name, error] of result.errors) {
+				logger.warn("Selected MCP server failed to connect", { path: \`mcp:\${name}\`, error });
+			}
+			if (!isCurrent()) return;
+			await this.refreshMCPTools(manager.getTools());
+		}
+		if (!decision.expose || !isCurrent()) return;
+		const keep = new Set([...decision.expose, ...connect]);
+		const hidden = new Set<string>();
+		const shown: string[] = [];
+		for (const tool of manager.getTools()) {
+			if (!tool.mcpServerName) continue;
+			if (keep.has(tool.mcpServerName)) shown.push(tool.name);
+			else hidden.add(tool.name);
+		}
+		await this.setActiveToolsByName([
+			...new Set([...this.getEnabledToolNames().filter(name => !hidden.has(name)), ...shown]),
+		]);
+	}
+
+	/** Replaces host-owned RPC tools before the next model call. */`,
+		patched: `
+	/** Enables per-request MCP selection for the session that owns \`manager\`. */
+	setMCPSelectionManager(manager: MCPManager | undefined): void {
+		this.#mcpSelectionManager = manager;
+	}
+
+	/**
+	 * Per-request MCP selection before the system prompt is built: extensions pick deferred servers
+	 * to connect (core connects only those) and which connected servers stay active. No handler, a
+	 * failing handler, or an empty answer connects nothing. \`outcome\` always settles.
+	 */
+	async #selectMCPServersForPrompt(
+		prompt: string,
+		isCurrent: () => boolean,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		const manager = this.#mcpSelectionManager;
+		const runner = this.#extensionRunner;
+		if (!manager || !runner?.hasHandlers("mcp_select")) return;
+		const { promise: outcome, resolve: settleOutcome } = Promise.withResolvers<{
+			connected: string[];
+			failed: Array<{ name: string; error: string }>;
+		}>();
+		try {
+			const deferred = await manager.getDeferredServers();
+			if (!isCurrent()) return;
+			const connectedByServer = new Map<string, Array<{ name: string; description?: string }>>();
+			for (const tool of manager.getTools()) {
+				if (!tool.mcpServerName) continue;
+				let tools = connectedByServer.get(tool.mcpServerName);
+				if (!tools) connectedByServer.set(tool.mcpServerName, (tools = []));
+				tools.push({ name: tool.mcpToolName ?? tool.name, description: tool.description });
+			}
+			const connected = Array.from(connectedByServer, ([name, tools]) => {
+				const source = manager.getSource(name);
+				return {
+					name,
+					level: source?.level ?? ("unknown" as const),
+					provider: source?.provider ?? "unknown",
+					transport: manager.getServerConfig(name)?.type ?? ("stdio" as const),
+					tools,
+					selected: manager.isSelectionConnected(name),
+				};
+			});
+			const decision = await runner.emitMcpSelect(
+				{
+					type: "mcp_select",
+					prompt,
+					deferred: deferred.map(({ cachedTools, ...server }) => ({ ...server, tools: cachedTools })),
+					connected,
+					signal,
+					outcome,
+				},
+				signal,
+			);
+			if (!decision || !isCurrent()) return;
+			const deferredNames = new Set(deferred.map(server => server.name));
+			const connect = (decision.connect ?? []).filter(name => deferredNames.has(name));
+			if (connect.length > 0) {
+				const result = await manager.connectDeferred(connect, signal);
+				const live = new Set(manager.getConnectedServers());
+				settleOutcome({
+					connected: connect.filter(name => live.has(name)),
+					failed: connect
+						.filter(name => !live.has(name))
+						.map(name => ({ name, error: result.errors.get(name) ?? (signal?.aborted ? "cancelled" : "not connected") })),
+				});
+				for (const [name, error] of result.errors) {
+					logger.warn("Selected MCP server failed to connect", { path: \`mcp:\${name}\`, error });
+				}
+				if (!isCurrent()) return;
+				await this.refreshMCPTools(manager.getTools());
+			}
+			if (!decision.expose || !isCurrent()) return;
+			const keep = new Set([...decision.expose, ...connect]);
+			const hidden = new Set<string>();
+			const shown: string[] = [];
+			for (const tool of manager.getTools()) {
+				if (!tool.mcpServerName) continue;
+				if (keep.has(tool.mcpServerName)) shown.push(tool.name);
+				else hidden.add(tool.name);
+			}
+			await this.setActiveToolsByName([
+				...new Set([...this.getEnabledToolNames().filter(name => !hidden.has(name)), ...shown]),
+			]);
+		} finally {
+			settleOutcome({ connected: [], failed: [] });
+		}
+	}
+
+	/** Replaces host-owned RPC tools before the next model call. */`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: `		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {`,
+		anchor: `		const cancelled = { baseXdevCatalogDelivered: false, commit: () => undefined };
+		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
+		patched: `		const cancelled = { baseXdevCatalogDelivered: false, commit: () => undefined };
+		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {
+			logger.warn("MCP per-request selection failed; no new server connected", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		if (!isCurrent()) return cancelled;
+		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
+	},
+	{
+		// MCP 선택 연결: mcp_select 이벤트: 공개 metadata(이름·scope·provider·transport·도구명/설명)만 싣고 결과는 이름 목록뿐이다.
+		// MCP 선택 연결 r3: selected 소유 표시·McpSelectOutcome·signal/outcome 필드. legacyPatched는 r2 적용본.
+		file: "src/extensibility/extensions/types.ts",
+		marker: `	/** Connected servers only: true when per-request selection connected it; manual connects are false. */`,
+		anchor: `}
+
+export type {
+	AgentEndEvent,`,
+		legacyPatched: `}
+
+/** One MCP server the owning session may connect or expose for the current request. Public metadata only. */
+export interface McpSelectServer {
+	name: string;
+	level: "user" | "project" | "native" | "unknown";
+	provider: string;
+	transport: "stdio" | "http" | "sse";
+	/** Tool names/descriptions (cached for deferred servers, live for connected ones). Untrusted server text. */
+	tools: Array<{ name: string; description?: string }>;
+}
+
+/**
+ * Fired in the session owning its MCP manager when \`mcp.selection\` is \`per-request\`, before each
+ * ordinary prompt or dequeued user batch builds its system prompt. Deferred servers are enabled,
+ * allowed configs not yet connected; handlers return names only and core performs the connect.
+ */
+export interface McpSelectEvent {
+	type: "mcp_select";
+	/** Same transformed text as \`before_agent_start\`. */
+	prompt: string;
+	deferred: McpSelectServer[];
+	connected: McpSelectServer[];
+}
+
+export type {
+	AgentEndEvent,`,
+		patched: `}
+
+/** One MCP server the owning session may connect or expose for the current request. Public metadata only. */
+export interface McpSelectServer {
+	name: string;
+	level: "user" | "project" | "native" | "unknown";
+	provider: string;
+	transport: "stdio" | "http" | "sse";
+	/** Tool names/descriptions (cached for deferred servers, live for connected ones). Untrusted server text. */
+	tools: Array<{ name: string; description?: string }>;
+	/** Connected servers only: true when per-request selection connected it; manual connects are false. */
+	selected?: boolean;
+}
+
+/** What core actually connected for the handlers' \`connect\` names. */
+export interface McpSelectOutcome {
+	connected: string[];
+	failed: Array<{ name: string; error: string }>;
+}
+
+/**
+ * Fired in the session owning its MCP manager when \`mcp.selection\` is \`per-request\`, before each
+ * ordinary prompt or dequeued user batch builds its system prompt. Deferred servers are enabled,
+ * allowed configs not yet connected; handlers return names only and core performs the connect.
+ */
+export interface McpSelectEvent {
+	type: "mcp_select";
+	/** Same transformed text as \`before_agent_start\`. */
+	prompt: string;
+	deferred: McpSelectServer[];
+	connected: McpSelectServer[];
+	/** Aborts when the prompt is cancelled or the session is torn down. */
+	signal?: AbortSignal;
+	/** Settles after core's connect step, before \`before_agent_start\` of the same request. */
+	outcome: Promise<McpSelectOutcome>;
+}
+
+export type {
+	AgentEndEvent,`,
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: `	| McpSelectEvent`,
+		anchor: `	| BeforeSubagentSpawnEvent
+	| AgentStartEvent`,
+		patched: `	| BeforeSubagentSpawnEvent
+	| McpSelectEvent
+	| AgentStartEvent`,
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: `	/** Deferred server names to connect before this request (union across handlers; unknown names ignored). */`,
+		anchor: `	note?: string;
+}`,
+		patched: `	note?: string;
+}
+
+export interface McpSelectEventResult {
+	/** Deferred server names to connect before this request (union across handlers; unknown names ignored). */
+	connect?: string[];
+	/**
+	 * Connected servers whose tools stay active for this request (union across handlers). Connected
+	 * servers outside it stay connected but their tools are deactivated. Omit to leave activation unchanged.
+	 */
+	expose?: string[];
+}`,
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: `	on(event: "mcp_select", handler: ExtensionHandler<McpSelectEvent, McpSelectEventResult>): void;`,
+		anchor: `	): void;
+	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;`,
+		patched: `	): void;
+	on(event: "mcp_select", handler: ExtensionHandler<McpSelectEvent, McpSelectEventResult>): void;
+	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;`,
+	},
+	{
+		// MCP 선택 연결: mcp_select handler의 connect/expose 합집합. 실패·timeout handler는 아무것도 보태지 않는다.
+		file: "src/extensibility/extensions/runner.ts",
+		marker: `	McpSelectEventResult,`,
+		anchor: `	BeforeSubagentSpawnEventResult,
+	CompactOptions,`,
+		patched: `	BeforeSubagentSpawnEventResult,
+	McpSelectEvent,
+	McpSelectEventResult,
+	CompactOptions,`,
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: `	async emitMcpSelect(event: McpSelectEvent, signal?: AbortSignal): Promise<McpSelectEventResult | undefined> {`,
+		anchor: `		return chosen;
+	}
+}
+`,
+		patched: `		return chosen;
+	}
+
+	/**
+	 * Runs \`mcp_select\` handlers; \`connect\` and \`expose\` are unions across handlers. A throwing or
+	 * timed-out handler contributes nothing, so no handler means no new connection.
+	 */
+	async emitMcpSelect(event: McpSelectEvent, signal?: AbortSignal): Promise<McpSelectEventResult | undefined> {
+		if (!this.hasHandlers("mcp_select")) return undefined;
+		const ctx = this.createContext();
+		const connect = new Set<string>();
+		let expose: Set<string> | undefined;
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("mcp_select");
+			if (!handlers || handlers.length === 0) continue;
+			for (const handler of handlers) {
+				const handlerResult = (await this.#runHandlerWithTimeout(
+					handler,
+					event,
+					ctx,
+					ext,
+					extensionHandlerTimeoutMs,
+					undefined,
+					signal,
+				)) as McpSelectEventResult | undefined;
+				if (!handlerResult) continue;
+				for (const name of handlerResult.connect ?? []) connect.add(name);
+				if (handlerResult.expose) {
+					expose ??= new Set();
+					for (const name of handlerResult.expose) expose.add(name);
+				}
+			}
+		}
+		return { connect: [...connect], expose: expose ? [...expose] : undefined };
+	}
+}
+`,
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

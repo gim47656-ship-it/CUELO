@@ -1069,6 +1069,10 @@
 			"label": "xd:// 프롬프트 문서",
 			"description": "시스템 프롬프트에 인라인으로 포함할 마운트된 디바이스 문서와 스키마를 선택한다. Built-ins는 핵심 도구를 인라인으로 유지하고 MCP 및 확장 도구는 on-demand로 남긴다."
 		},
+		"mcp.selection": {
+			"label": "MCP 연결 선택",
+			"description": "all은 시작 시 기존 설정대로 연결한다. per-request는 JEV가 요청에 필요한 서버를 선택해 연결하며, 설치·인증·권한은 자동 승인하지 않는다. 변경 후 새 세션에서 적용된다."
+		},
 		"mcp.enableProjectConfig": {
 			"label": "MCP 프로젝트 설정",
 			"description": "프로젝트 루트에서 .mcp.json/mcp.json을 로드한다"
