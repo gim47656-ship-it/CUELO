@@ -17,7 +17,7 @@ const candidates = [
   { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
-  { profile: "NORMAL_DEEPSEEK", model: "opencode-go/deepseek-v4-flash", efforts: allStrengths },
+  { profile: "NORMAL_DEEPSEEK", model: "opencode-go/deepseek-v4.1-flash", efforts: allStrengths },
 ];
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
 const families: Record<string, string> = {
@@ -977,7 +977,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_UI_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_SONNET: "openai-codex/gpt-6-sol",
-    NORMAL_DEEPSEEK: "opencode-go/deepseek-v4-flash",
+    NORMAL_DEEPSEEK: "opencode-go/deepseek-v4.1-flash",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
   const normalAnswers = {
@@ -1144,13 +1144,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         ...solSelections,
         ...opusBand.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, true]),
         ...opusOutside.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, false]),
-        ["opencode-go/deepseek-v4-flash:high", true],
+        ["opencode-go/deepseek-v4.1-flash:high", true],
       ],
       // HARD 조각: Opus는 HARD 구간(high)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
       HARD: [
         ["anthropic/claude-opus-5-5:medium", false], ["anthropic/claude-opus-5-5:high", true],
         ["anthropic/claude-opus-5-5:xhigh", false], ["anthropic/claude-opus-5-5:max", false],
-        ["opencode-go/deepseek-v4-flash:xhigh", false],
+        ["opencode-go/deepseek-v4.1-flash:xhigh", false],
         ...solSelections,
       ],
     };
@@ -1205,7 +1205,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const deepseek = candidates;
     const build = (providers: Record<string, unknown[]>) => harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "opencode-go/deepseek-v4-flash": "deepseek" },
+      families: { ...families, "opencode-go/deepseek-v4.1-flash": "deepseek" },
       quota: async () => ({ state: "observed", observedAt: 1, providers }),
     });
 
@@ -1227,7 +1227,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 3) 미관측은 소진으로 간주하지 않는다. primary를 유지한다.
     const blind = harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "opencode-go/deepseek-v4-flash": "deepseek" },
+      families: { ...families, "opencode-go/deepseek-v4.1-flash": "deepseek" },
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "관측 실패" }),
     });
     const third = await blind.prepareBatch("한도 배분", [blind.task], {} as never);
