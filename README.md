@@ -16,6 +16,8 @@ Use the same `~/.omp/agent` sessions, credentials and model configuration from t
 
 **한국어:** CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 웹 앱은 omp SDK를 서버 안에서 실행하고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정을 공유합니다.
 
+내장 OMP 코어는 **18.4.4**입니다. 모델 탐색·서비스 등급 처리와 기억 검색 개선을 포함하며, 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적입니다.
+
 CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다. 원인을 확인하고 필요한 부분만 바꾸며, 다음 작업에서 적용과 효과를 확인하는 것까지를 지향합니다. 기록을 저장했다는 이유만으로 자동 개선이 끝났다고 보지는 않습니다.
 
 **Keywords:** AI coding agent · agent harness · multi-agent orchestration · omp · oh-my-pi · model routing · developer tools

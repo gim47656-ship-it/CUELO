@@ -341,7 +341,7 @@ const EDITS = [
 	},
 	{
 		file: "../pi-agent-core/src/agent.ts",
-		marker: "for (const listener of this.#userSteeringListeners) listener();",
+		marker: "for (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t}",
 		anchor: `	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
@@ -353,6 +353,25 @@ const EDITS = [
 		}
 		this.#notifySteeringWaiters();
 	}`,
+		// 18.4.4(#11872): steer() 가 큐 mutator 마다 `#emitQueueChanged()` 를 정확히 한 번 부른다. 사용자 steer 리스너는
+		// 큐 push 직후·notifyWaiters 이전이라는 위치만 그대로 두고 upstream 의 emit 은 건드리지 않는다.
+		alternates: [{
+			file: "../pi-agent-core/src/agent.ts",
+			marker: "for (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t\tthis.#emitQueueChanged();",
+			anchor: `	steer(m: AgentMessage) {
+		this.#steeringQueue.push(m);
+		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
+	}`,
+			patched: `	steer(m: AgentMessage) {
+		this.#steeringQueue.push(m);
+		if (m.role === "user" && ("attribution" in m ? m.attribution !== "agent" : true) && !("synthetic" in m && m.synthetic === true)) {
+			for (const listener of this.#userSteeringListeners) listener();
+		}
+		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
+	}`,
+		}],
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
@@ -5308,6 +5327,12 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 			marker: "// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(",
 			anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\t// Nothing can honour ready/env without a service to attach them to;\n\t\t\t// running the command the caller did ask for beats failing the call.\n\t\t\tconst ignored = [ready && \"ready\", env && \"env\"].filter(Boolean).join(\" and \");\n\t\t\tpendingNotices.push(`Ignored ${ignored}: service-only, and no service name was given.`);\n",
 			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(\"Ignored ready: service-only, and no service name was given.\");\n",
+		}, {
+			// 18.4.4: upstream 이 env 파라미터를 지우면서 알림은 ready 만 남았다. 이미 우리가 바라는 형태라 적용할 것이 없다.
+			file: "src/tools/bash.ts",
+			marker: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
+			anchor: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
+			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
 		}],
 	},
 	{
@@ -5316,8 +5341,8 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 		marker: "// HANSE: non-service env becomes a leading export",
 		anchor: "\t\tinvalidateGithubCacheForBashCommand(command);\n",
 		patched: `		invalidateGithubCacheForBashCommand(command);
-		// HANSE: non-service env becomes a leading export
-		if (name === undefined && env) {
+		// HANSE: non-service env becomes a leading export (18.4.4: service env too — upstream dropped launch env)
+		if (env) {
 			const exports: string[] = [];
 			for (const [key, value] of Object.entries(env)) {
 				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ToolError("Invalid env name: " + key);
@@ -5327,11 +5352,94 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 		}
 `,
 	},
+	// 18.4.4 는 bash 도구의 `env` 파라미터를 통째로 지웠다(pi-coding-agent CHANGELOG "Removed"). env 는 사용자의 기존 도구
+	// 계약이라 upstream 삭제 hunk 를 되돌린다(아래 여섯 항목). 각 항목의 본 후보는 18.4.4 원문에 `// HANSE: env restored` 를
+	// 붙여 복원하고, alternate 는 env 가 원래 있는 18.4.3 원문의 no-op 이다. 18.4.3 에서 --revert 가 upstream 의
+	// env 코드를 지우지 않도록 두 후보의 marker 가 서로의 결과에 들어 있지 않게 나눴다.
+	// service 는 launch 가 env 를 받지 않으므로 위 export 항목이 service·일반 명령 모두 명령 앞 export 로 넣는다.
+	{
+		file: "src/tools/bash.ts",
+		marker: "\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+		anchor: "\t}),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+		patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+			anchor: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+			patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
+		}],
+	},
+	{
+		file: "src/tools/bash.ts",
+		marker: "\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\ntype BashToolSchema =",
+		anchor: "\t}),\n});\n\ntype BashToolSchema =",
+		patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\ntype BashToolSchema =",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
+			anchor: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
+			patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
+		}],
+	},
+	{
+		file: "src/tools/bash.ts",
+		marker: "\tenv?: Record<string, string>; // HANSE: env restored\n",
+		anchor: "\tready?: ServiceReady;\n\tasync?: boolean;",
+		patched: "\tready?: ServiceReady;\n\tenv?: Record<string, string>; // HANSE: env restored\n\tasync?: boolean;",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
+			anchor: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
+			patched: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
+		}],
+	},
+	{
+		file: "src/tools/bash.ts",
+		marker: "/** HANSE: env restored. Drops a record with no keys",
+		anchor: "\treturn { log, host, port, timeout };\n}\n\nexport interface BashToolOptions {}",
+		patched: "\treturn { log, host, port, timeout };\n}\n\n/** HANSE: env restored. Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined): Record<string, string> | undefined {\n\tif (!record) return undefined;\n\tfor (const _key in record) return record;\n\treturn undefined;\n}\n\nexport interface BashToolOptions {}",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
+			anchor: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
+			patched: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
+		}],
+	},
+	{
+		file: "src/tools/bash.ts",
+		marker: "\t\t\tenv: rawEnv, // HANSE: env restored\n",
+		anchor: "\t\t\tready: rawReady,\n\t\t\tasync: rawAsync,",
+		patched: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv, // HANSE: env restored\n\t\t\tasync: rawAsync,",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
+			anchor: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
+			patched: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
+		}],
+	},
+	{
+		file: "src/tools/bash.ts",
+		marker: "\t\tconst env = nonEmptyRecord(rawEnv); // HANSE: env restored\n",
+		anchor: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst asyncRequested = rawAsync === true;\n",
+		patched: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv); // HANSE: env restored\n\t\tconst asyncRequested = rawAsync === true;\n",
+		alternates: [{
+			file: "src/tools/bash.ts",
+			marker: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
+			anchor: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
+			patched: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
+		}],
+	},
 	{
 		file: "src/prompts/tools/bash.md",
 		marker: "ready requires name; no async/timeout. env adds variables (without name: exported before the command)",
 		anchor: "unique name; ready/env require name; no async/timeout. env adds variables;",
 		patched: "unique name; ready requires name; no async/timeout. env adds variables (without name: exported before the command);",
+		alternates: [{
+			file: "src/prompts/tools/bash.md",
+			marker: "env adds variables (exported before the command)",
+			anchor: "unique name; ready requires name; no async/timeout; pty defaults true.",
+			patched: "unique name; ready requires name; no async/timeout. env adds variables (exported before the command); pty defaults true.",
+		}],
 	},
 	{
 		// 같은 집계: `todo` append 에 phase 를 빠뜨리면 거절됐다(사흘간 9건). phase 가 없으면 아직 안 끝난
@@ -5589,9 +5697,15 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 		// 조건이 하나도 걸리지 않아 모든 창이 일치했고("multiple windows match 65822"), `title: /정규식/`은
 		// 안내 없이 TypeError로 죽었다. 필터 값은 문자열만 받고, 아니면 무엇이 틀렸는지 말하는 ToolError를 낸다.
 		file: "src/tools/computer/worker.ts",
-		marker: "function assertWindowFilter(filter: unknown)",
+		// 18.4.3: matchesFilter 가 `window.id === filter.id` 라 숫자 id 필터는 어떤 창과도 일치하지 않는다.
+		// 그래서 이 버전에서는 숫자 id 필터도 거절하는 원래 검사를 유지한다(아래 alternate 는 18.4.4 전용).
+		marker: "\"exact window id\" : \"case-insensitive substring\"",
 		anchor: `function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
-	if (!filter) return true;`,
+	if (!filter) return true;
+	const app = filter.app?.toLocaleLowerCase();
+	const title = filter.title?.toLocaleLowerCase();
+	return (
+		(filter.id === undefined || window.id === filter.id) &&`,
 		patched: `/** A filter is a plain \`{ id?, app?, title? }\` of strings; anything else used to match every window. */
 function assertWindowFilter(filter: unknown): asserts filter is WindowFilter | undefined {
 	if (filter === undefined) return;
@@ -5608,7 +5722,45 @@ function assertWindowFilter(filter: unknown): asserts filter is WindowFilter | u
 }
 
 function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
-	if (!filter) return true;`,
+	if (!filter) return true;
+	const app = filter.app?.toLocaleLowerCase();
+	const title = filter.title?.toLocaleLowerCase();
+	return (
+		(filter.id === undefined || window.id === filter.id) &&`,
+		// 18.4.4(#13649): matchesFilter 가 `String(filter.id)` 로 정규화한다. 안전한 정수 id 는 문자열 id 와 같은 창이라
+		// 허용하고, 그 밖의 값(정규식·객체·소수 등)만 거절한다.
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			marker: "Number.isSafeInteger(value)) continue;",
+			anchor: `function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
+	if (!filter) return true;
+	const app = filter.app?.toLocaleLowerCase();
+	const title = filter.title?.toLocaleLowerCase();
+	return (
+		(filter.id === undefined || window.id === String(filter.id)) &&`,
+			patched: `/** A filter is a plain \`{ id?, app?, title? }\`; string app/title and a string or integer id. Anything else used to match every window. */
+function assertWindowFilter(filter: unknown): asserts filter is WindowFilter | undefined {
+	if (filter === undefined) return;
+	if (filter === null || typeof filter !== "object" || Array.isArray(filter)) {
+		throw new ToolError(\`window filter must be an object like { app?, title?, id? }; got \${filter === null ? "null" : typeof filter}\`);
+	}
+	for (const key of ["id", "app", "title"] as const) {
+		const value = (filter as Record<string, unknown>)[key];
+		if (key === "id" && typeof value === "number" && Number.isSafeInteger(value)) continue;
+		if (value !== undefined && typeof value !== "string") {
+			const got = value instanceof RegExp ? \`RegExp \${value}\` : typeof value;
+			throw new ToolError(\`window filter \${key} must be a string (\${key === "id" ? "exact window id, or an integer" : "case-insensitive substring"}); got \${got}\`);
+		}
+	}
+}
+
+function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
+	if (!filter) return true;
+	const app = filter.app?.toLocaleLowerCase();
+	const title = filter.title?.toLocaleLowerCase();
+	return (
+		(filter.id === undefined || window.id === String(filter.id)) &&`,
+		}],
 	},
 	{
 		// 숫자 id는 창 id(숫자 문자열)와 뜻이 하나뿐이라 문자열로 바꿔 id로 찾는다. 그 밖의 값은 위에서 거절한다.
@@ -5626,6 +5778,23 @@ function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 					typeof byId === "string"
 						? windows.filter(window => window.id === byId)
 						: windows.filter(window => matchesFilter(window, byId));`,
+		// 18.4.4: upstream(#13649)이 숫자 id 를 `String(selector)` 로 직접 푼다. 숫자 변환은 upstream 것을 쓰고, 우리는
+		// 객체 필터(null·배열·정규식 값)를 거절하는 검사만 남긴다.
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			marker: "if (typeof selector !== \"string\" && typeof selector !== \"number\") assertWindowFilter(selector);",
+			anchor: `				const windows = await nativeCall(signal, () => session.listWindows());
+				const matches =
+					typeof selector === "string" || typeof selector === "number"
+						? windows.filter(window => window.id === String(selector))
+						: windows.filter(window => matchesFilter(window, selector));`,
+			patched: `				if (typeof selector !== "string" && typeof selector !== "number") assertWindowFilter(selector);
+				const windows = await nativeCall(signal, () => session.listWindows());
+				const matches =
+					typeof selector === "string" || typeof selector === "number"
+						? windows.filter(window => window.id === String(selector))
+						: windows.filter(window => matchesFilter(window, selector));`,
+		}],
 	},
 	{
 		file: "src/tools/computer/worker.ts",

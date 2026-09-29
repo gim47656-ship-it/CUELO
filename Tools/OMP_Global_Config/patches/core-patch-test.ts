@@ -1929,7 +1929,7 @@ const steeringUsage = () => ({
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 async function runGenerationSteer(
-	queued: "user" | "agent" | "none" | "agent-then-user",
+	queued: "user" | "agent" | "none" | "agent-then-user" | "synthetic",
 	speculative = false,
 	trailing = false,
 	capturePending = false,
@@ -2027,6 +2027,7 @@ async function runGenerationSteer(
 	});
 	if (queued === "user") steer("user", "사용자-새 지시");
 	if (queued === "agent") steer("agent", "에이전트-알림");
+	if (queued === "synthetic") agent.steer({ role: "user", content: "합성-알림", steering: true, attribution: "user", synthetic: true, timestamp: Date.now() });
 	if (queued === "agent-then-user") {
 		agent.setSteeringMode("one-at-a-time");
 		steer("agent", "에이전트-알림");
@@ -2057,6 +2058,19 @@ const captureResults = generatedCapturePending.agent.state.messages.filter((m: {
 check("증거 캡처 중 실제 실행 전 steer는 speculative 도구를 시작하지 않는다", generatedCapturePending.speculativeCalls.length === 0 && captureResults.length === 2 && captureResults.every(m => m.details?.__synthetic === true));
 const generatedTrailing = await runGenerationSteer("user", false, true);
 check("terminal done 이벤트 없이 끝난 응답도 사용자 steer보다 도구를 앞세우지 않는다", generatedTrailing.executed.length === 0 && generatedTrailing.seenContexts.some((context, i) => i > 0 && context.includes("사용자-새 지시")));
+const generatedSynthetic = await runGenerationSteer("synthetic");
+check("synthetic user steer는 사용자 steering 으로 세지 않아 기존 도구 실행을 유지한다", generatedSynthetic.executed.length === 2, `executed=${generatedSynthetic.executed}`);
+// 18.4.4(#11872): steer() 는 큐 mutator 마다 onQueueChange 를 정확히 한 번 알린다. 우리 사용자 steering 리스너 삽입이 그 횟수를 바꾸면 안 된다.
+const queueProbe = new SteeringAgent({ initialState: { systemPrompt: [], model: steeringModel, tools: [], messages: [] }, streamFn: (() => { throw new Error("unused"); }) as never });
+let queueEmits = 0;
+queueProbe.onQueueChange(() => { queueEmits++; });
+const probeSteer = (attribution: "agent" | "user", extra: Record<string, unknown> = {}) =>
+	queueProbe.steer({ role: "user", content: "큐 확인", steering: true, attribution, timestamp: Date.now(), ...extra });
+probeSteer("user");
+check("사용자 steer 한 번은 큐 변경을 정확히 한 번 알린다", queueEmits === 1, `emits=${queueEmits}`);
+probeSteer("agent");
+probeSteer("user", { synthetic: true });
+check("agent·synthetic steer 도 각각 정확히 한 번 알린다", queueEmits === 3, `emits=${queueEmits}`);
 
 console.log("\n[21] steering reply extension — 답 없이 시작한 도구는 막지 않고 안내만 끼운다");
 function replyGateHarness() {
@@ -2214,10 +2228,10 @@ for (const pty of JSON.parse(process.env.HANSE_PROBE_PTY ?? "[false]")) {
 	const name = pty ? "hanse-env-pty" : "hanse-env-pipe";
 	const started = await startService(session, {
 		name,
-		command: 'echo "PROBE NODE_ENV=\${NODE_ENV-unset} PORT=\${PORT-unset} NEXT_RUNTIME=\${NEXT_RUNTIME-unset} ORIGIN=\${__NEXT_PRIVATE_ORIGIN-unset} KEEP_ME=\${KEEP_ME-unset} EXPLICIT=\${EXPLICIT-unset}"',
+		command: Object.entries(JSON.parse(process.env.HANSE_PROBE_SERVICE_ENV ?? "{}")).map(([key, value]) => "export " + key + "='" + value + "'; ").join("") + 'echo "PROBE NODE_ENV=\${NODE_ENV-unset} PORT=\${PORT-unset} NEXT_RUNTIME=\${NEXT_RUNTIME-unset} ORIGIN=\${__NEXT_PRIVATE_ORIGIN-unset} KEEP_ME=\${KEEP_ME-unset} EXPLICIT=\${EXPLICIT-unset}"',
 		cwd: process.cwd(),
 		pty,
-		env: JSON.parse(process.env.HANSE_PROBE_SERVICE_ENV ?? "{}"),
+		// 18.4.4 는 launch 가 env 를 받지 않는다. bash 도구 패치가 하는 것과 같이 명시 env 는 명령 앞 export 로 넣는다.
 		ready: { log: "PROBE NODE_ENV", timeout: 20 },
 	});
 	lines.push((started.log.split(/\\r?\\n/).find(line => line.includes("PROBE NODE_ENV")) ?? "<none>").trim());
@@ -2681,6 +2695,24 @@ console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로
 		readyRun === "ready requires a service name." || (readyRun.includes("Ignored ready:") && !readyRun.includes("Ignored ready and env")),
 		readyRun.slice(0, 300),
 	);
+	// 18.4.4 는 launch 가 env 를 받지 않는다. 공개 도구 경로(BashTool.execute name+env+ready)가 service 에도 env 를 명령 앞
+	// export 로 넣는지, 같은 키 검증·escaping 을 쓰는지 실제 broker service 로 본다.
+	const { closeDaemonClients: csCloseDaemonClients } = await import(`${CORE}/launch/client.ts`);
+	const svc = await bash.execute("env-svc", {
+		command: 'echo "SVC A=[$A] B=[$B]"',
+		name: "hanse-env-svc",
+		pty: false,
+		env: { A: "x y", B: "it's $HOME" },
+		ready: { log: "SVC A=", timeout: 20 },
+	});
+	const svcText = String(svc.content?.[0]?.text ?? "");
+	check("service 에도 env 값이 공백·따옴표·$ 그대로 들어간다", svcText.includes("SVC A=[x y] B=[it's $HOME]"), svcText.slice(0, 300));
+	const svcRejected = await bash.execute("env-svc-2", { command: "echo hi", name: "hanse-env-svc-2", env: { "BAD-NAME": "1" } }).then(
+		() => "no error",
+		(error: Error) => error.message,
+	);
+	check("service 의 잘못된 변수 이름도 같은 이유로 거절한다", svcRejected === "Invalid env name: BAD-NAME", svcRejected);
+	await csCloseDaemonClients();
 	await session.dispose();
 }
 
@@ -2768,12 +2800,18 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot });
 		});
 	const numeric = await run("return (await desktop.window(65822)).id;");
+	const numericFilter = await run("return (await desktop.window({ id: 65822 })).id;");
+	const numericList = await run("return (await desktop.windows({ id: 131644 })).map(w => w.id);");
+	const fractionalId = await run("return (await desktop.window({ id: 1.5 })).id;");
 	const regex = await run("return (await desktop.windows({ title: /PLUTO/ })).length;");
 	const regexOne = await run("return (await desktop.window({ app: /PLUTO/ })).id;");
 	const substring = await run('return (await desktop.windows({ app: "pluto" })).map(w => w.id);');
 	clearInterval(keepAlive);
 	globalThis.console = realConsole;
 	check("숫자 id 는 그 창 하나를 찾는다", numeric.ok && numeric.payload?.returnValue === "65822", JSON.stringify(numeric));
+	check("숫자 id 필터도 문자열 id 와 같은 창이다(upstream #13649)", numericFilter.ok && numericFilter.payload?.returnValue === "65822", JSON.stringify(numericFilter));
+	check("windows() 의 숫자 id 필터도 그 창 하나다", numericList.ok && JSON.stringify(numericList.payload?.returnValue) === '["131644"]', JSON.stringify(numericList));
+	check("정수가 아닌 id 는 이유를 대며 거절한다", !fractionalId.ok && /window filter id must be a string.*integer/.test(fractionalId.error?.message ?? ""), JSON.stringify(fractionalId));
 	check("windows() 의 정규식 title 은 문자열이 필요하다고 거절한다", !regex.ok && /window filter title must be a string.*RegExp/.test(regex.error?.message ?? ""), JSON.stringify(regex));
 	check("window() 의 정규식 app 도 같은 이유로 거절한다", !regexOne.ok && /window filter app must be a string/.test(regexOne.error?.message ?? ""), JSON.stringify(regexOne));
 	check("문자열 필터는 전처럼 대소문자 무시 부분 일치다", substring.ok && JSON.stringify(substring.payload?.returnValue) === '["329350"]', JSON.stringify(substring));

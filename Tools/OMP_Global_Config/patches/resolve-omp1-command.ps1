@@ -19,6 +19,9 @@
 # omp/18.4.3 "omp-windows-x64.exe" (release v18.4.3) SHA-256
 # 8fc59c4c2550cd3c4f44515ac46778cebfeadc4e2f7415220e78938d4ff96216, matching the
 # GitHub release asset digest and updater verification (checked 2026-09-29).
+# omp/18.4.4 "omp-windows-x64.exe" (release v18.4.4) SHA-256
+# 5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54, matching both
+# the GitHub release asset digest and SHA256SUMS.txt (checked 2026-09-30).
 # omp/18.3.2 "omp-windows-x64.exe" (release v18.3.2) SHA-256
 # 5d99fe5c11ec3ff1792e427c0e61eeb5a6c84670cadb65d023dd2f5eb8705f40, matching both
 # the GitHub release asset digest and SHA256SUMS.txt (checked 2026-09-26).
@@ -46,7 +49,7 @@
 # 128df4420e9778a9a0712e7969919b782ab47aed04d000efe28ac4cb3e04b071). This file
 # only approves the identity; the absolute path and SHA-256 pin live in ~/.omp/omp1-command.json
 # and are written by setup.ps1 -RefreshOmp1Pin after it verifies the executable.
-$script:AllowedOmp1VersionOutputs = @('omp/18.1.17', 'omp/18.1.18', 'omp/18.1.21', 'omp/18.1.22', 'omp/18.2.0', 'omp/18.2.1', 'omp/18.2.6', 'omp/18.2.7', 'omp/18.2.8', 'omp/18.2.9', 'omp/18.2.10', 'omp/18.2.11', 'omp/18.3.0', 'omp/18.3.1', 'omp/18.3.2', 'omp/18.3.4', 'omp/18.3.5', 'omp/18.4.2', 'omp/18.4.3')
+$script:AllowedOmp1VersionOutputs = @('omp/18.1.17', 'omp/18.1.18', 'omp/18.1.21', 'omp/18.1.22', 'omp/18.2.0', 'omp/18.2.1', 'omp/18.2.6', 'omp/18.2.7', 'omp/18.2.8', 'omp/18.2.9', 'omp/18.2.10', 'omp/18.2.11', 'omp/18.3.0', 'omp/18.3.1', 'omp/18.3.2', 'omp/18.3.4', 'omp/18.3.5', 'omp/18.4.2', 'omp/18.4.3', 'omp/18.4.4')
 
 function Get-Omp1CommandPinPath {
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
