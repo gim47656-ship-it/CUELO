@@ -5637,6 +5637,988 @@ function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 				const { signal } = getContext();`,
 	},
 	{
+		// 2026-09-29 computer 행동 결과 표준화와 stale ref 재획득. 행동은 void 대신 표준 결과
+		// {action, status, suggestedNext, escalation?, evidence?, ref, reacquired?}를 돌려준다. 참고 설계:
+		// Cua action-result 계약(https://github.com/trycua/cua/blob/main/libs/cua-driver/docs/action-result-contract.md
+		// — 전달은 효과의 증거가 아니다, readback만 verified 근거)과 browser-use의 단계별 요소 재식별
+		// (https://github.com/browser-use/browser-use/blob/main/browser_use/agent/service.py
+		// — EXACT→STABLE→XPATH→AX_NAME→ATTRIBUTE). 발급한 ref마다 지문(role·nativeRole·title·description·
+		// bounds·AutomationId·RuntimeId·창 안 이름 있는 조상 경로)을 세션 등록부에 두고, stale이면 axQuery
+		// (ref 세대를 올리지 않는다, 실측)로 같은 요소를 찾는다. 후보 0개·경로 불일치·동점·지문 없음이면 다른
+		// 요소를 건드리지 않고 원래 StaleRef로 실패하며 사유를 error.computerAction에 남긴다.
+		// readback은 행동 전·후 1회씩이고, readback 실패는 행동 실패가 아니라 unverified다.
+		file: "src/tools/computer/worker.ts",
+		marker: "class RefBook {",
+		anchor: `class El {
+	readonly ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	readonly #session: NativeDesktopSession;
+	readonly #getContext: RunContextAccessor;
+
+	constructor(session: NativeDesktopSession, getContext: RunContextAccessor, node: AxNode) {
+		this.#session = session;
+		this.#getContext = getContext;
+		this.ref = node.ref;
+		this.role = node.role;
+		this.nativeRole = node.nativeRole;
+		this.title = node.title;
+		this.description = node.description;
+		this.enabled = node.enabled;
+		this.focused = node.focused;
+		this.childCount = node.childCount;
+	}
+
+	async value(): Promise<string | undefined> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).value;
+	}
+
+	async setValue(value: string): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "setValue");
+		await nativeCall(context.signal, () => this.#session.axSetValue(this.ref, value));
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axNode(this.ref));
+		if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+			return null;
+		return { x: node.x, y: node.y, width: node.width, height: node.height };
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		const { signal } = this.#getContext();
+		return Object.fromEntries(await nativeCall(signal, () => this.#session.axAttributes(this.ref)));
+	}
+
+	async actions(): Promise<string[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).actions ?? [];
+	}
+
+	async perform(action: string): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "perform");
+		await nativeCall(context.signal, () => this.#session.axPerform(this.ref, action));
+	}
+
+	async press(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "press");
+		await nativeCall(context.signal, () => this.#session.axPerform(this.ref, "press"));
+	}
+
+	async click(options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "click");
+		await nativeCall(context.signal, () => this.#session.axClick(this.ref, pointerOptions(options)));
+	}
+
+	async focus(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "focus");
+		await nativeCall(context.signal, () => this.#session.axFocus(this.ref));
+	}
+
+	async parent(): Promise<El | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axParent(this.ref));
+		return node ? new El(this.#session, this.#getContext, node) : null;
+	}
+
+	async children(): Promise<El[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axChildren(this.ref))).map(
+			node => new El(this.#session, this.#getContext, node),
+		);
+	}
+}`,
+		patched: `type AxBounds = { x: number; y: number; width: number; height: number };
+
+/** Outcome of one computer action. Delivery is not proof of effect: only an AX readback makes it \`verified\`. */
+interface ComputerActionResult {
+	action: string;
+	/** verified: a readback shows the change. unverified: delivered, effect not observed. suspected_noop: the readback contradicts the intended change. */
+	status: "verified" | "unverified" | "suspected_noop";
+	suggestedNext: "continue" | "reobserve" | "escalate";
+	escalation?: { target: "pixel" | "takeover"; reason: string };
+	evidence?: string;
+	ref?: string;
+	reacquired?: ComputerReacquired;
+}
+
+interface ComputerReacquired {
+	from: string;
+	to: string;
+	matchedBy: string;
+}
+
+type ReacquireRefusal = "no-fingerprint" | "no-window" | "no-candidate" | "parent-mismatch" | "ambiguous";
+
+interface ComputerRefCandidate {
+	ref: string;
+	role: string;
+	title?: string;
+	bounds?: AxBounds;
+}
+
+/** Facts attached to a failed action as \`error.computerAction\`; the error type and first message line stay unchanged. */
+interface ComputerActionRefusal {
+	action: string;
+	status: "refused";
+	suggestedNext: "reobserve" | "escalate";
+	escalation?: { target: "takeover"; reason: string };
+	ref?: string;
+	reacquire?: { outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] };
+}
+
+/** Identity kept for an issued ref so a stale ref can be found again with a fresh AX query. */
+interface AxFingerprint {
+	windowId?: string;
+	role: string;
+	/** Undefined when the source (an ax() text line) does not carry the field. */
+	nativeRole?: string;
+	title: string;
+	description?: string;
+	bounds?: AxBounds;
+	automationId?: string;
+	runtimeId?: string;
+	/** Named ancestors inside the window, nearest first, ending with "window" when the window is reached. */
+	parentPath?: string[];
+}
+
+type IdentityAttributes = Pick<AxFingerprint, "automationId" | "runtimeId">;
+type Judged = Pick<ComputerActionResult, "status" | "suggestedNext" | "escalation" | "evidence">;
+type ReacquireOutcome =
+	| { node: AxNode; matchedBy: string; print: AxFingerprint }
+	| { node?: undefined; outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] };
+
+const REF_BOOK_LIMIT = 4000;
+const PARENT_WALK_LIMIT = 12;
+const PARENT_NAMED_LIMIT = 3;
+/** Walking parents costs a native call per level, so bulk issues (large find results) skip it. */
+const PARENT_WALK_BATCH = 8;
+const REACQUIRE_QUERY_LIMIT = 500;
+const CANDIDATE_REPORT_LIMIT = 5;
+/** Element fields whose change after press/click/perform counts as readback evidence; focus alone does not. */
+const ELEMENT_STATE_KEYS = ["value", "title", "enabled", "childCount", "x", "y", "width", "height"] as const;
+/** One ax() text line: indentation, role, optional quoted title, ref. */
+const SNAPSHOT_LINE = /^( *)- ([^ ]+)(?: "(.*?)")? [[]ref=(e[0-9]+)/;
+
+const refBooks = new WeakMap<NativeDesktopSession, RefBook>();
+
+function refBook(session: NativeDesktopSession): RefBook {
+	let book = refBooks.get(session);
+	if (!book) {
+		book = new RefBook();
+		refBooks.set(session, book);
+	}
+	return book;
+}
+
+function trimOldest(map: Map<string, unknown>): void {
+	if (map.size > REF_BOOK_LIMIT) map.delete(map.keys().next().value as string);
+}
+
+function boundsOf(node: AxNode): AxBounds | undefined {
+	if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+		return undefined;
+	return { x: node.x, y: node.y, width: node.width, height: node.height };
+}
+
+function nodePrint(node: AxNode): AxFingerprint {
+	return {
+		role: node.role,
+		nativeRole: node.nativeRole,
+		title: node.title ?? "",
+		description: node.description ?? "",
+		bounds: boundsOf(node),
+	};
+}
+
+function decodeTitle(raw: string | undefined): string {
+	if (raw === undefined) return "";
+	try {
+		const decoded: unknown = JSON.parse('"' + raw + '"');
+		return typeof decoded === "string" ? decoded : raw;
+	} catch {
+		return raw;
+	}
+}
+
+/** Nearest named ancestors, stopping at the enclosing window; unnamed containers are skipped because ax() text may hide them. */
+function namedPath(ancestors: Iterable<{ role: string; title?: string }>): string[] {
+	const path: string[] = [];
+	for (const ancestor of ancestors) {
+		if (ancestor.role === "window") {
+			path.push("window");
+			break;
+		}
+		if (ancestor.title) path.push(ancestor.role + ":" + ancestor.title);
+		if (path.length === PARENT_NAMED_LIMIT) break;
+	}
+	return path;
+}
+
+function samePath(left: string[], right: string[]): boolean {
+	return left.length === right.length && left.every((entry, index) => entry === right[index]);
+}
+
+function attributeText(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	const value = /^[A-Z0-9_]+[(](.*)[)]$/s.exec(raw)?.[1] ?? raw;
+	return value === "" ? undefined : value;
+}
+
+function isStaleRef(error: unknown): error is ToolError {
+	return error instanceof ToolError && error.message.startsWith("StaleRef:");
+}
+
+function candidateOf(node: AxNode): ComputerRefCandidate {
+	return { ref: node.ref, role: node.role, title: node.title, bounds: boundsOf(node) };
+}
+
+function nearBounds(node: AxNode, bounds: AxBounds): boolean {
+	const now = boundsOf(node);
+	if (!now) return false;
+	const dx = Math.abs(now.x + now.width / 2 - (bounds.x + bounds.width / 2));
+	const dy = Math.abs(now.y + now.height / 2 - (bounds.y + bounds.height / 2));
+	return dx <= Math.max(8, bounds.width / 2) && dy <= Math.max(8, bounds.height / 2);
+}
+
+/** Session-scoped fingerprints of issued refs and where reacquired stale refs now point. Bounded; oldest entries drop first. */
+class RefBook {
+	readonly #prints = new Map<string, AxFingerprint>();
+	readonly #moved = new Map<string, ComputerReacquired>();
+
+	get(ref: string): AxFingerprint | undefined {
+		return this.#prints.get(ref);
+	}
+
+	remember(ref: string, print: AxFingerprint): void {
+		const merged: Record<string, unknown> = { ...this.#prints.get(ref) };
+		for (const [key, value] of Object.entries(print)) {
+			if (value !== undefined) merged[key] = value;
+		}
+		this.#prints.delete(ref);
+		this.#prints.set(ref, merged as unknown as AxFingerprint);
+		trimOldest(this.#prints);
+	}
+
+	movedTo(ref: string): ComputerReacquired | undefined {
+		return this.#moved.get(ref);
+	}
+
+	move(reacquired: ComputerReacquired): void {
+		this.#moved.delete(reacquired.from);
+		this.#moved.set(reacquired.from, reacquired);
+		trimOldest(this.#moved);
+	}
+
+	/** Every ax() line carries role, title, and ancestry; refs picked from the text keep a fingerprint without extra native calls. */
+	noteSnapshot(windowId: string, text: string): void {
+		const ancestors: Array<{ depth: number; role: string; title: string }> = [];
+		for (const line of text.split("\\n")) {
+			const match = SNAPSHOT_LINE.exec(line);
+			if (!match) continue;
+			const depth = match[1]!.length;
+			while (ancestors.length > 0 && ancestors[ancestors.length - 1]!.depth >= depth) ancestors.pop();
+			const role = match[2]!;
+			const title = decodeTitle(match[3]);
+			this.remember(match[4]!, { windowId, role, title, parentPath: namedPath([...ancestors].reverse()) });
+			ancestors.push({ depth, role, title });
+		}
+	}
+}
+
+async function identityAttributes(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+): Promise<IdentityAttributes> {
+	try {
+		const attributes = new Map(await nativeCall(signal, () => session.axAttributes(ref)));
+		return {
+			automationId: attributeText(attributes.get("AutomationId") ?? attributes.get("AXIdentifier")),
+			runtimeId: attributeText(attributes.get("RuntimeId")),
+		};
+	} catch (error) {
+		if (error instanceof ToolAbortError) throw error;
+		return {};
+	}
+}
+
+async function walkParentPath(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+): Promise<string[] | undefined> {
+	const ancestors: AxNode[] = [];
+	let current = ref;
+	for (let level = 0; level < PARENT_WALK_LIMIT; level++) {
+		let parent: AxNode | null | undefined;
+		try {
+			parent = await nativeCall(signal, () => session.axParent(current));
+		} catch (error) {
+			if (error instanceof ToolAbortError) throw error;
+			return undefined;
+		}
+		if (!parent) return namedPath(ancestors);
+		ancestors.push(parent);
+		const path = namedPath(ancestors);
+		if (parent.role === "window" || path.length === PARENT_NAMED_LIMIT) return path;
+		current = parent.ref;
+	}
+	return undefined;
+}
+
+/**
+ * Finds the element a stale fingerprint names, narrowing like browser-use's re-identification:
+ * exact instance (RuntimeId), then role+name, AutomationId, named parent path, and position only to
+ * break ties. Anything short of exactly one candidate is refused, never guessed.
+ */
+async function reacquire(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	print: AxFingerprint | undefined,
+): Promise<ReacquireOutcome> {
+	if (!print) return { outcome: "no-fingerprint", candidates: [] };
+	const windowId = print.windowId;
+	if (!windowId) return { outcome: "no-window", candidates: [] };
+	const report = (nodes: AxNode[]): ComputerRefCandidate[] => nodes.slice(0, CANDIDATE_REPORT_LIMIT).map(candidateOf);
+	const sameRole = (
+		await nativeCall(signal, () => session.axQuery(windowId, { role: print.role, limit: REACQUIRE_QUERY_LIMIT }))
+	).filter(node => node.role === print.role && (print.nativeRole === undefined || node.nativeRole === print.nativeRole));
+	let pool = sameRole.filter(
+		node =>
+			(node.title ?? "") === print.title &&
+			(print.description === undefined || (node.description ?? "") === print.description),
+	);
+	if (pool.length === 0) return { outcome: "no-candidate", candidates: report(sameRole) };
+	const attributes = new Map<string, IdentityAttributes>();
+	for (const node of pool) attributes.set(node.ref, await identityAttributes(session, signal, node.ref));
+	const matched = (node: AxNode, matchedBy: string[]): ReacquireOutcome => ({
+		node,
+		matchedBy: matchedBy.join("+"),
+		print: { ...print, ...nodePrint(node), ...attributes.get(node.ref), parentPath: print.parentPath },
+	});
+	if (print.runtimeId) {
+		const exact = pool.filter(node => attributes.get(node.ref)?.runtimeId === print.runtimeId);
+		if (exact.length === 1) return matched(exact[0]!, ["runtimeId"]);
+	}
+	const matchedBy = ["role", "name"];
+	if (print.automationId) {
+		const named = pool;
+		pool = pool.filter(node => attributes.get(node.ref)?.automationId === print.automationId);
+		if (pool.length === 0) return { outcome: "no-candidate", candidates: report(named) };
+		matchedBy.push("automationId");
+	}
+	if (print.parentPath && pool.length <= PARENT_WALK_BATCH) {
+		const expected = print.parentPath;
+		const kept: AxNode[] = [];
+		for (const node of pool) {
+			const path = await walkParentPath(session, signal, node.ref);
+			if (path && samePath(path, expected)) kept.push(node);
+		}
+		if (kept.length === 0) return { outcome: "parent-mismatch", candidates: report(pool) };
+		pool = kept;
+		matchedBy.push("parent");
+	}
+	const weak = !print.title && !print.description && !print.automationId && !matchedBy.includes("parent");
+	if (pool.length === 1 && !weak) return matched(pool[0]!, matchedBy);
+	if (print.bounds) {
+		const bounds = print.bounds;
+		const near = pool.filter(node => nearBounds(node, bounds));
+		if (near.length === 1) return matched(near[0]!, [...matchedBy, "position"]);
+	}
+	return { outcome: "ambiguous", candidates: report(pool) };
+}
+
+function attachRefusal(error: ToolError, refusal: ComputerActionRefusal): ToolError {
+	(error as ToolError & { computerAction?: ComputerActionRefusal }).computerAction = refusal;
+	return error;
+}
+
+function refuseStale(
+	error: ToolError,
+	ref: string,
+	refusal: { outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] },
+): ToolError {
+	const detail = refusal.candidates
+		.map(candidate => candidate.ref + " " + candidate.role + (candidate.title ? " " + JSON.stringify(candidate.title) : ""))
+		.join(", ");
+	const refused = new ToolError(error.message + "\\nreacquire refused (" + refusal.outcome + ")" + (detail ? ": " + detail : ""));
+	return attachRefusal(refused, {
+		action: "ref",
+		status: "refused",
+		suggestedNext: "reobserve",
+		ref,
+		reacquire: { outcome: refusal.outcome, candidates: refusal.candidates },
+	});
+}
+
+/** Keeps the thrown error and adds structured facts; aborts and non-tool errors pass through untouched. */
+function refuseAction(error: unknown, action: string, ref?: string, takeover?: boolean): unknown {
+	if (!(error instanceof ToolError)) return error;
+	const previous = (error as ToolError & { computerAction?: ComputerActionRefusal }).computerAction;
+	const routeUnavailable = !takeover && error.message.startsWith("BackgroundUnavailable:");
+	return attachRefusal(error, {
+		...previous,
+		action,
+		status: "refused",
+		suggestedNext: routeUnavailable ? "escalate" : "reobserve",
+		...(routeUnavailable ? { escalation: { target: "takeover" as const, reason: "route_unavailable" } } : {}),
+		...(ref ? { ref } : {}),
+	});
+}
+
+/** Resolves a ref, following an earlier reacquisition or reacquiring a stale ref from its fingerprint. */
+async function resolveNode(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+	windowHint?: string,
+): Promise<{ node: AxNode; reacquired?: ComputerReacquired }> {
+	const book = refBook(session);
+	const moved = book.movedTo(ref);
+	const live = moved?.to ?? ref;
+	try {
+		const node = await nativeCall(signal, () => session.axNode(live));
+		return moved ? { node, reacquired: moved } : { node };
+	} catch (error) {
+		if (!isStaleRef(error)) throw error;
+		const known = book.get(live) ?? book.get(ref);
+		const print = known && !known.windowId && windowHint ? { ...known, windowId: windowHint } : known;
+		const outcome = await reacquire(session, signal, print);
+		if (outcome.node === undefined) throw refuseStale(error, live, outcome);
+		const reacquired = { from: ref, to: outcome.node.ref, matchedBy: outcome.matchedBy };
+		book.move(reacquired);
+		book.remember(outcome.node.ref, outcome.print);
+		return { node: outcome.node, reacquired };
+	}
+}
+
+/** Wraps nodes as elements and records their fingerprints; attributes are cheap, parent walks only for small batches. */
+async function issueElements(
+	session: NativeDesktopSession,
+	getContext: RunContextAccessor,
+	nodes: AxNode[],
+	windowId?: string,
+	reacquired?: ComputerReacquired,
+): Promise<El[]> {
+	const { signal } = getContext();
+	const book = refBook(session);
+	for (const node of nodes) {
+		const known = book.get(node.ref);
+		const parentPath =
+			known?.parentPath === undefined && nodes.length <= PARENT_WALK_BATCH
+				? await walkParentPath(session, signal, node.ref)
+				: undefined;
+		book.remember(node.ref, {
+			...nodePrint(node),
+			windowId: known?.windowId ?? windowId,
+			...(await identityAttributes(session, signal, node.ref)),
+			parentPath,
+		});
+	}
+	return nodes.map(node => new El(session, getContext, node, reacquired));
+}
+
+async function resolveElement(
+	session: NativeDesktopSession,
+	getContext: RunContextAccessor,
+	ref: string,
+	windowHint?: string,
+): Promise<El> {
+	const { signal } = getContext();
+	const { node, reacquired } = await resolveNode(session, signal, ref, windowHint);
+	const [element] = await issueElements(session, getContext, [node], windowHint, reacquired);
+	return element!;
+}
+
+function verified(evidence: string): Judged {
+	return { status: "verified", suggestedNext: "continue", evidence };
+}
+
+function unverified(evidence: string): Judged {
+	return { status: "unverified", suggestedNext: "reobserve", evidence };
+}
+
+function suspectedNoop(evidence: string, reason: string): Judged {
+	return { status: "suspected_noop", suggestedNext: "escalate", escalation: { target: "pixel", reason }, evidence };
+}
+
+function judgeStateChange(before: AxNode | undefined, after: AxNode | undefined): Judged {
+	if (!before || !after) return unverified("element could not be read back around the action");
+	const changed = ELEMENT_STATE_KEYS.filter(key => before[key] !== after[key]);
+	return changed.length > 0
+		? verified("element " + changed.join(", ") + " changed")
+		: unverified("element state unchanged; the effect may be elsewhere");
+}
+
+function windowInputResult(action: string, target: string, options?: InputOptions): ComputerActionResult {
+	const route = target === "desktop" ? "desktop" : options?.takeover ? "takeover" : "background";
+	return { action, ...unverified("input accepted via the " + route + " route; application effect not observed") };
+}
+
+class El {
+	/** Updated when an action reacquires this element after its ref went stale. */
+	ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	/** Stale ref this element was reacquired from; present only after a reacquisition. */
+	declare reacquiredFrom?: string;
+	readonly #session: NativeDesktopSession;
+	readonly #getContext: RunContextAccessor;
+	#reacquired?: ComputerReacquired;
+
+	constructor(session: NativeDesktopSession, getContext: RunContextAccessor, node: AxNode, reacquired?: ComputerReacquired) {
+		this.#session = session;
+		this.#getContext = getContext;
+		this.ref = node.ref;
+		this.role = node.role;
+		this.nativeRole = node.nativeRole;
+		this.title = node.title;
+		this.description = node.description;
+		this.enabled = node.enabled;
+		this.focused = node.focused;
+		this.childCount = node.childCount;
+		if (reacquired) this.#noteReacquired(reacquired);
+	}
+
+	#noteReacquired(reacquired: ComputerReacquired): void {
+		this.#reacquired = this.#reacquired ? { ...reacquired, from: this.#reacquired.from } : reacquired;
+		this.reacquiredFrom = this.#reacquired.from;
+	}
+
+	/**
+	 * One readback before and one after the delivery, no polling. The before read doubles as the stale
+	 * check that may reacquire; once input reaches the native layer nothing is retried. A failed
+	 * readback never turns a delivered action into an error; it leaves the result unverified.
+	 */
+	async #act(
+		action: string,
+		deliver: (ref: string) => Promise<void>,
+		judge: (before: AxNode | undefined, after: AxNode | undefined) => Judged,
+		takeover?: boolean,
+	): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, action);
+		let before: AxNode | undefined;
+		try {
+			const live = await resolveNode(this.#session, context.signal, this.ref);
+			before = live.node;
+			if (live.reacquired) {
+				this.ref = live.node.ref;
+				this.#noteReacquired(live.reacquired);
+			}
+		} catch (error) {
+			if (isStaleRef(error)) throw refuseAction(error, action, this.ref, takeover);
+			if (error instanceof ToolAbortError) throw error;
+		}
+		try {
+			await nativeCall(context.signal, () => deliver(this.ref));
+		} catch (error) {
+			throw refuseAction(error, action, this.ref, takeover);
+		}
+		let after: AxNode | undefined;
+		try {
+			after = await nativeCall(context.signal, () => this.#session.axNode(this.ref));
+		} catch (error) {
+			if (error instanceof ToolAbortError) throw error;
+		}
+		return {
+			action,
+			...judge(before, after),
+			ref: this.ref,
+			...(this.#reacquired ? { reacquired: this.#reacquired } : {}),
+		};
+	}
+
+	async value(): Promise<string | undefined> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).value;
+	}
+
+	setValue(value: string): Promise<ComputerActionResult> {
+		return this.#act(
+			"setValue",
+			ref => this.#session.axSetValue(ref, value),
+			(_before, after) => {
+				if (after?.value === undefined) return unverified("value could not be read back");
+				return after.value === value
+					? verified("value read back as requested")
+					: suspectedNoop("value read back as " + JSON.stringify(after.value), "value_mismatch");
+			},
+		);
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axNode(this.ref));
+		if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+			return null;
+		return { x: node.x, y: node.y, width: node.width, height: node.height };
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		const { signal } = this.#getContext();
+		return Object.fromEntries(await nativeCall(signal, () => this.#session.axAttributes(this.ref)));
+	}
+
+	async actions(): Promise<string[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).actions ?? [];
+	}
+
+	perform(action: string): Promise<ComputerActionResult> {
+		return this.#act("perform", ref => this.#session.axPerform(ref, action), judgeStateChange);
+	}
+
+	press(): Promise<ComputerActionResult> {
+		return this.#act("press", ref => this.#session.axPerform(ref, "press"), judgeStateChange);
+	}
+
+	click(options?: InputOptions): Promise<ComputerActionResult> {
+		return this.#act(
+			"click",
+			ref => this.#session.axClick(ref, pointerOptions(options)),
+			judgeStateChange,
+			options?.takeover,
+		);
+	}
+
+	focus(): Promise<ComputerActionResult> {
+		return this.#act(
+			"focus",
+			ref => this.#session.axFocus(ref),
+			(_before, after) => {
+				if (!after) return unverified("focus could not be read back");
+				return after.focused
+					? verified("element reports focus")
+					: suspectedNoop("element does not report focus", "focus_not_observed");
+			},
+		);
+	}
+
+	async parent(): Promise<El | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axParent(this.ref));
+		if (!node) return null;
+		const [parent] = await issueElements(this.#session, this.#getContext, [node], refBook(this.#session).get(this.ref)?.windowId);
+		return parent!;
+	}
+
+	async children(): Promise<El[]> {
+		const { signal } = this.#getContext();
+		const nodes = await nativeCall(signal, () => this.#session.axChildren(this.ref));
+		return issueElements(this.#session, this.#getContext, nodes, refBook(this.#session).get(this.ref)?.windowId);
+	}
+}`,
+	},
+	{
+		// 창 좌표·키 입력은 앱 쪽 효과를 읽어 올 방법이 없다: 결과는 늘 unverified/reobserve다. ax()는 텍스트의
+		// 모든 ref에 지문을 남기고, find()/ref()는 발급하는 요소에 지문을 남긴다.
+		file: "src/tools/computer/worker.ts",
+		marker: "return windowInputResult(action, this.id, options);",
+		anchor: `	async click(x: number, y: number, options?: ClickOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "click");
+		await nativeCall(context.signal, () => this.#session.click(this.id, x, y, pointerOptions(options)));
+	}
+
+	async doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "doubleClick");
+		await nativeCall(context.signal, () =>
+			this.#session.click(this.id, x, y, pointerOptions({ ...options, count: 2 })),
+		);
+	}
+
+	async move(x: number, y: number): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "move");
+		await nativeCall(context.signal, () => this.#session.moveMouse(this.id, x, y));
+	}
+
+	async drag(points: Array<[number, number]>, options?: DragOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "drag");
+		await nativeCall(context.signal, () =>
+			this.#session.drag(
+				this.id,
+				points.map(([x, y]) => ({ x, y })),
+				pointerOptions(options),
+			),
+		);
+	}
+
+	async scroll(x: number, y: number, options: ScrollOptions = {}): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "scroll");
+		await nativeCall(context.signal, () =>
+			this.#session.scroll(this.id, x, y, options.dx ?? 0, options.dy ?? 0, pointerOptions(options)),
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "type");
+		await nativeCall(context.signal, () => this.#session.typeText(this.id, text, pointerOptions(options)));
+	}
+
+	async press(chord: string | string[], options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "press");
+		await nativeCall(context.signal, () =>
+			this.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),
+		);
+	}
+
+	async raise(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "raise");
+		await nativeCall(context.signal, () => this.#session.raiseWindow(this.id));
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(
+			node => new El(this.#session, this.#getContext, node),
+		);
+	}
+
+	async ref(ref: string): Promise<El> {
+		const { signal } = this.#getContext();
+		return new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));
+	}`,
+		patched: `	async #input(action: string, options: InputOptions | undefined, call: () => Promise<void>): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, action);
+		try {
+			await nativeCall(context.signal, call);
+		} catch (error) {
+			throw refuseAction(error, action, undefined, options?.takeover);
+		}
+		return windowInputResult(action, this.id, options);
+	}
+
+	click(x: number, y: number, options?: ClickOptions): Promise<ComputerActionResult> {
+		return this.#input("click", options, () => this.#session.click(this.id, x, y, pointerOptions(options)));
+	}
+
+	doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {
+		return this.#input("doubleClick", options, () =>
+			this.#session.click(this.id, x, y, pointerOptions({ ...options, count: 2 })),
+		);
+	}
+
+	move(x: number, y: number): Promise<ComputerActionResult> {
+		return this.#input("move", undefined, () => this.#session.moveMouse(this.id, x, y));
+	}
+
+	drag(points: Array<[number, number]>, options?: DragOptions): Promise<ComputerActionResult> {
+		return this.#input("drag", options, () =>
+			this.#session.drag(
+				this.id,
+				points.map(([x, y]) => ({ x, y })),
+				pointerOptions(options),
+			),
+		);
+	}
+
+	scroll(x: number, y: number, options: ScrollOptions = {}): Promise<ComputerActionResult> {
+		return this.#input("scroll", options, () =>
+			this.#session.scroll(this.id, x, y, options.dx ?? 0, options.dy ?? 0, pointerOptions(options)),
+		);
+	}
+
+	type(text: string, options?: InputOptions): Promise<ComputerActionResult> {
+		return this.#input("type", options, () => this.#session.typeText(this.id, text, pointerOptions(options)));
+	}
+
+	press(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {
+		return this.#input("press", options, () =>
+			this.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),
+		);
+	}
+
+	raise(): Promise<ComputerActionResult> {
+		return this.#input("raise", undefined, () => this.#session.raiseWindow(this.id));
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		const text = (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+		refBook(this.#session).noteSnapshot(this.id, text);
+		return text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		const nodes = await nativeCall(signal, () => this.#session.axQuery(this.id, query));
+		return issueElements(this.#session, this.#getContext, nodes, this.id);
+	}
+
+	ref(ref: string): Promise<El> {
+		return resolveElement(this.#session, this.#getContext, ref, this.id);
+	}`,
+	},
+	{
+		// Python·JS 직접 헬퍼는 win.ref(ref)도 매번 desktop.ref(ref)로 푼다. 재획득은 이 경로에서도 일어나야 한다.
+		file: "src/tools/computer/worker.ts",
+		marker: "ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),",
+		anchor: `			ref: async (ref: string): Promise<El> => {
+				const { signal } = getContext();
+				return el(await nativeCall(signal, () => session.axNode(ref)));
+			},`,
+		patched: `			ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),`,
+	},
+	{
+		// 모델이 보는 타입: 행동 결과·거절 필드와 재획득 규칙을 적는다.
+		file: "src/tools/computer/declarations.d.ts",
+		marker: "interface ComputerActionResult {",
+		anchor: `/** Live accessibility element resolved from a snapshot ref; expired refs throw \`StaleRef\`. */
+interface ComputerElement {
+	/** Snapshot ref tag, e.g. \`e5\`. */
+	readonly ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	value(): Promise<string | undefined>;
+	setValue(value: string): Promise<void>;
+	/** Bounds in global desktop coordinates, or null when the element has none. */
+	bounds(): Promise<ComputerBounds | null>;
+	attributes(): Promise<Record<string, string>>;
+	actions(): Promise<string[]>;
+	perform(action: string): Promise<void>;
+	/** Perform the element's native press action; needs no screenshot. */
+	press(): Promise<void>;
+	/** Click the element's center with native input. */
+	click(options?: ComputerInputOptions): Promise<void>;
+	focus(): Promise<void>;
+	parent(): Promise<ComputerElement | null>;
+	children(): Promise<ComputerElement[]>;
+}
+
+/** Native input helpers shared by the desktop root and window handles; \`x\`/\`y\` are pixels in the most recent screenshot of the same target. */
+interface ComputerInputTarget {
+	screenshot(options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	click(x: number, y: number, options?: ComputerClickOptions): Promise<void>;
+	doubleClick(x: number, y: number, options?: Omit<ComputerClickOptions, "count">): Promise<void>;
+	move(x: number, y: number): Promise<void>;
+	drag(points: Array<[number, number]>, options?: ComputerDragOptions): Promise<void>;
+	scroll(x: number, y: number, options?: ComputerScrollOptions): Promise<void>;
+	type(text: string, options?: ComputerInputOptions): Promise<void>;
+	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
+	press(chord: string | string[], options?: ComputerInputOptions): Promise<void>;
+}`,
+		patched: `/** Result of an input or element action. Delivery is not proof of effect. */
+interface ComputerActionResult {
+	action: string;
+	/** \`verified\`: an AX readback shows the change. \`unverified\`: delivered, effect not observed. \`suspected_noop\`: the readback contradicts the intended change. */
+	status: "verified" | "unverified" | "suspected_noop";
+	/** \`reobserve\`: screenshot or AX before relying on the effect. \`escalate\`: follow \`escalation\`. */
+	suggestedNext: "continue" | "reobserve" | "escalate";
+	escalation?: { target: "pixel" | "takeover"; reason: string };
+	/** Readback the status rests on. */
+	evidence?: string;
+	ref?: string;
+	/** Present when the action ran on an element reacquired from a stale ref. */
+	reacquired?: { from: string; to: string; matchedBy: string };
+}
+
+/** Attached to a failed action's error as \`error.computerAction\` (visible inside \`computer.run\`); the error message is unchanged. */
+interface ComputerActionRefusal {
+	action: string;
+	status: "refused";
+	suggestedNext: "reobserve" | "escalate";
+	escalation?: { target: "takeover"; reason: string };
+	ref?: string;
+	/** Why a stale ref was not reacquired, with up to five candidates. */
+	reacquire?: {
+		outcome: "no-fingerprint" | "no-window" | "no-candidate" | "parent-mismatch" | "ambiguous";
+		candidates: Array<{ ref: string; role: string; title?: string; bounds?: ComputerBounds }>;
+	};
+}
+
+/** Live accessibility element resolved from a snapshot ref. A stale ref is reacquired only when its fingerprint matches exactly one element; otherwise it throws \`StaleRef\`. */
+interface ComputerElement {
+	/** Snapshot ref tag, e.g. \`e5\`; the new ref after a reacquisition. */
+	readonly ref: string;
+	/** Stale ref this element was reacquired from. */
+	readonly reacquiredFrom?: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	value(): Promise<string | undefined>;
+	setValue(value: string): Promise<ComputerActionResult>;
+	/** Bounds in global desktop coordinates, or null when the element has none. */
+	bounds(): Promise<ComputerBounds | null>;
+	attributes(): Promise<Record<string, string>>;
+	actions(): Promise<string[]>;
+	perform(action: string): Promise<ComputerActionResult>;
+	/** Perform the element's native press action; needs no screenshot. */
+	press(): Promise<ComputerActionResult>;
+	/** Click the element's center with native input. */
+	click(options?: ComputerInputOptions): Promise<ComputerActionResult>;
+	focus(): Promise<ComputerActionResult>;
+	parent(): Promise<ComputerElement | null>;
+	children(): Promise<ComputerElement[]>;
+}
+
+/** Native input helpers shared by the desktop root and window handles; \`x\`/\`y\` are pixels in the most recent screenshot of the same target. Input results are always \`unverified\`. */
+interface ComputerInputTarget {
+	screenshot(options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	click(x: number, y: number, options?: ComputerClickOptions): Promise<ComputerActionResult>;
+	doubleClick(x: number, y: number, options?: Omit<ComputerClickOptions, "count">): Promise<ComputerActionResult>;
+	move(x: number, y: number): Promise<ComputerActionResult>;
+	drag(points: Array<[number, number]>, options?: ComputerDragOptions): Promise<ComputerActionResult>;
+	scroll(x: number, y: number, options?: ComputerScrollOptions): Promise<ComputerActionResult>;
+	type(text: string, options?: ComputerInputOptions): Promise<ComputerActionResult>;
+	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
+	press(chord: string | string[], options?: ComputerInputOptions): Promise<ComputerActionResult>;
+}`,
+	},
+	{
+		file: "src/tools/computer/declarations.d.ts",
+		marker: "\traise(): Promise<ComputerActionResult>;",
+		anchor: "\traise(): Promise<void>;",
+		patched: "\traise(): Promise<ComputerActionResult>;",
+	},
+	{
+		// 모델 지시: 재획득 규칙과 결과 필드를 읽는 법. 기존 takeover 규칙(다음 줄)은 그대로 둔다.
+		file: "src/prompts/tools/computer.md",
+		marker: "Actions return `{ action, status, suggestedNext",
+		anchor: "- Each window `.ax()` starts a ref generation. Current/previous snapshot refs remain valid; older refs throw `StaleRef`. Re-snapshot; NEVER guess.\n",
+		patched: "- Each window `.ax()` starts a ref generation. Current/previous snapshot refs remain valid. An older ref is reacquired only when its saved fingerprint (role, name, AutomationId, named parents, position) matches exactly one element; the element's `ref` changes and the action result carries `reacquired`. Otherwise it throws `StaleRef` naming why and the candidates: re-snapshot; NEVER guess.\n- Actions return `{ action, status, suggestedNext, evidence?, escalation?, reacquired? }`. `verified` rests on an AX readback; `unverified` (all pointer/keyboard input) means delivered but unobserved: `reobserve` before relying on it; `suspected_noop` → follow `escalation`. Inside `computer.run`, a thrown action error carries `error.computerAction`.\n",
+	},
+	{
 		// MCP 선택 연결: 요청별 MCP 선택(opt-in). all이 기본이며 per-request면 시작 시 연결하지 않고 요청마다 확장이 고른다.
 		file: "src/mcp/settings.ts",
 		marker: `			"all: connect every enabled server at startup. per-request: connect nothing at startup; before each request an extension selects which enabled servers to connect (new sessions)",`,

@@ -2779,5 +2779,214 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 	check("문자열 필터는 전처럼 대소문자 무시 부분 일치다", substring.ok && JSON.stringify(substring.payload?.returnValue) === '["329350"]', JSON.stringify(substring));
 }
 
+// 2026-09-29 computer 행동 결과·stale ref 재획득. 가짜 native session 은 실측한 ref 세대 규칙을 따른다:
+// axSnapshot 만 세대를 올리고, 현재·직전 세대 ref 만 살아 있으며, 그보다 오래된 ref 는 "StaleRef: eN expired" 로 실패한다.
+console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale ref 는 지문이 한 요소만 가리킬 때만 재획득한다");
+{
+	const { ComputerWorkerCore } = await import(`${CORE}/tools/computer/worker.ts`);
+	const realConsole = globalThis.console;
+	type Item = { id: string; role: string; title?: string; parent?: string; x: number; y: number; automationId?: string; runtimeId?: string; value?: string; ignoresValue?: boolean };
+	const items = new Map<string, Item>();
+	const put = (item: Item) => items.set(item.id, item);
+	put({ id: "win", role: "window", title: "Fixture", x: 0, y: 0 });
+	put({ id: "panel", role: "group", title: "Main", parent: "win", x: 0, y: 0 });
+	put({ id: "alpha", role: "button", title: "Alpha", parent: "panel", x: 10, y: 10, automationId: "alphaButton", runtimeId: "42, 1" });
+	put({ id: "toggle", role: "button", title: "Toggle", parent: "panel", x: 10, y: 40, value: "off" });
+	put({ id: "field", role: "textfield", title: "Name", parent: "panel", x: 10, y: 70, value: "" });
+	put({ id: "locked", role: "textfield", title: "Locked", parent: "panel", x: 10, y: 100, value: "fixed", ignoresValue: true });
+	put({ id: "ok1", role: "button", title: "OK", parent: "panel", x: 200, y: 10 });
+	put({ id: "ok2", role: "button", title: "OK", parent: "panel", x: 200, y: 40 });
+	put({ id: "save", role: "button", title: "Save", parent: "panel", x: 300, y: 10 });
+	let nextRef = 0;
+	let generation = 0;
+	let snapshots = 0;
+	let readbackBroken = false;
+	let breakReadbackAfterAction = false;
+	let backgroundUnavailable = false;
+	const onSnapshot: Array<() => void> = [];
+	const acted: string[] = [];
+	const refs = new Map<string, { item: string; generation: number }>();
+	const issue = (item: Item) => {
+		const ref = `e${++nextRef}`;
+		refs.set(ref, { item: item.id, generation });
+		return ref;
+	};
+	const nodeOf = (item: Item, ref = issue(item)) => ({ ref, role: item.role, nativeRole: item.role, title: item.title, value: item.value, enabled: true, focused: false, childCount: 0, x: item.x, y: item.y, width: 80, height: 20, actions: ["press"] });
+	const live = (ref: string): Item => {
+		const entry = refs.get(ref);
+		if (!entry || entry.generation < generation - 1) throw new Error(`StaleRef: ${ref} expired; re-run ax()/find()`);
+		return items.get(entry.item)!;
+	};
+	const childrenOf = (id: string) => [...items.values()].filter(item => item.parent === id);
+	const act = (ref: string) => {
+		const item = live(ref);
+		acted.push(item.id);
+		if (breakReadbackAfterAction) readbackBroken = true;
+		return item;
+	};
+	const session = {
+		capabilities: {},
+		listDisplays: async () => [],
+		listWindows: async () => [{ id: "w1", app: "Fixture", title: "Fixture", x: 0, y: 0, width: 400, height: 300, focused: false }],
+		close: async () => {},
+		axSnapshot: async () => {
+			snapshots++;
+			generation++;
+			for (const change of onSnapshot.splice(0)) change();
+			const lines: string[] = [];
+			const visit = (item: Item, depth: number) => {
+				lines.push(`${"  ".repeat(depth)}- ${item.role}${item.title ? ` "${item.title}"` : ""} [ref=${issue(item)}]`);
+				for (const child of childrenOf(item.id)) visit(child, depth + 1);
+			};
+			visit(items.get("win")!, 0);
+			return { text: lines.join("\n") };
+		},
+		axQuery: async (_target: string, query: { role?: string; title?: string }) =>
+			[...items.values()]
+				.filter(item => item.role !== "window" && (!query.role || item.role === query.role) && (!query.title || (item.title ?? "").toLowerCase().includes(query.title.toLowerCase())))
+				.map(item => nodeOf(item)),
+		axNode: async (ref: string) => {
+			if (readbackBroken) throw new Error("Internal: readback failed");
+			return nodeOf(live(ref), ref);
+		},
+		axAttributes: async (ref: string) => {
+			const item = live(ref);
+			return [["AutomationId", `STRING(${item.automationId ?? ""})`], ["RuntimeId", `ARRAY(${item.runtimeId ?? ""})`]];
+		},
+		axParent: async (ref: string) => {
+			const parent = items.get(live(ref).parent ?? "");
+			return parent ? nodeOf(parent) : null;
+		},
+		axChildren: async (ref: string) => childrenOf(live(ref).id).map(item => nodeOf(item)),
+		axPerform: async (ref: string) => {
+			const item = act(ref);
+			if (item.id === "toggle") item.value = item.value === "off" ? "on" : "off";
+		},
+		axSetValue: async (ref: string, value: string) => {
+			const item = act(ref);
+			if (!item.ignoresValue) item.value = value;
+		},
+		axClick: async (ref: string) => void act(ref),
+		axFocus: async (ref: string) => void act(ref),
+		keyChord: async () => {
+			if (backgroundUnavailable) throw new Error("BackgroundUnavailable: window keyboard input needs takeover");
+			acted.push("keys");
+		},
+	};
+	type RunResult = { ok: boolean; payload?: { returnValue: unknown }; error?: { message: string } };
+	type ActionOut = { action?: string; status?: string; suggestedNext?: string; evidence?: string; escalation?: { target?: string }; reacquired?: { from?: string; to?: string; matchedBy?: string } };
+	type Refused = { ok?: boolean; message: string; name?: string; info?: { action?: string; suggestedNext?: string; escalation?: { target?: string }; reacquire?: { outcome?: string; candidates?: unknown[] } } };
+	type Reacquired = { old?: string; now?: string; ref?: string; from?: string; result?: ActionOut };
+	const waiters = new Map<string, (result: RunResult) => void>();
+	let deliver: (message: unknown) => void = () => {};
+	const transport = {
+		send: (message: { type: string; id?: string } & RunResult) => {
+			if (message.type === "result" && message.id) waiters.get(message.id)?.(message);
+		},
+		onMessage: (handler: (message: unknown) => void) => {
+			deliver = handler;
+			return () => {};
+		},
+		close: () => {},
+	};
+	new ComputerWorkerCore(transport, () => session);
+	const snapshot = { cwd: fixtureRoot, sessionId: "computer-action", captureMaxWidth: 100, captureMaxHeight: 100, display: "", readOnly: false };
+	let runs = 0;
+	const keepAlive = setInterval(() => {}, 1000);
+	const run = (code: string) =>
+		new Promise<RunResult>(resolve => {
+			const id = `action-${++runs}`;
+			waiters.set(id, resolve);
+			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot });
+		});
+	const caught = "catch (e) { return { ok: false, message: e.message, name: e.name, info: e.computerAction }; }";
+
+	const results = await run(`
+		const win = await desktop.window("w1");
+		const [toggle] = await win.find({ role: "button", title: "Toggle" });
+		await toggle.press();
+		const toggled = await toggle.press();
+		const [save] = await win.find({ role: "button", title: "Save" });
+		const unchanged = await save.press();
+		const [field] = await win.find({ role: "textfield", title: "Name" });
+		const typed = await field.setValue("kim");
+		const [locked] = await win.find({ role: "textfield", title: "Locked" });
+		const ignored = await locked.setValue("x");
+		const keys = await win.press("ctrl+s");
+		return { toggled, unchanged, typed, ignored, keys };`);
+	const r = (results.payload?.returnValue ?? {}) as Record<string, ActionOut | undefined>;
+	backgroundUnavailable = true;
+	const refusedKeys = await run(`try { await (await desktop.window("w1")).press("ctrl+s"); return { ok: true }; } ${caught}`);
+	backgroundUnavailable = false;
+
+	const snapshotsBefore = snapshots;
+	const actedBefore = acted.length;
+	const elementPath = await run(`
+		const win = await desktop.window("w1");
+		const [alpha] = await win.find({ role: "button", title: "Alpha" });
+		const old = alpha.ref;
+		await win.ax();
+		await win.ax();
+		const result = await alpha.press();
+		return { old, now: alpha.ref, from: alpha.reacquiredFrom, result };`);
+	const e = (elementPath.payload?.returnValue ?? {}) as Reacquired;
+	const elementActed = acted.slice(actedBefore);
+	const elementSnapshots = snapshots - snapshotsBefore;
+
+	const tree = await run(`return await (await desktop.window("w1")).ax();`);
+	const textRef = /- button "Alpha" \[ref=(e\d+)\]/.exec(String(tree.payload?.returnValue))?.[1];
+	await run(`const win = await desktop.window("w1"); await win.ax(); await win.ax(); return 0;`);
+	const actedBeforeDirect = acted.length;
+	const direct = await run(`const el = await desktop.ref(${JSON.stringify(textRef)}); return { ref: el.ref, from: el.reacquiredFrom, result: await el.press() };`);
+	const d = (direct.payload?.returnValue ?? {}) as Reacquired;
+	const directActed = acted.slice(actedBeforeDirect);
+
+	const refusal = async (title: string, change: () => void) => {
+		onSnapshot.push(change);
+		const before = acted.length;
+		const outcome = await run(`
+			const win = await desktop.window("w1");
+			const [target] = await win.find({ role: "button", title: ${JSON.stringify(title)} });
+			await win.ax();
+			await win.ax();
+			try { await target.press(); return { ok: true }; } ${caught}`);
+		return { value: (outcome.payload?.returnValue ?? {}) as Refused, acted: acted.slice(before) };
+	};
+	const none = await refusal("Save", () => (items.get("save")!.title = "Store"));
+	const tie = await refusal("OK", () => {
+		items.get("ok1")!.y = 200;
+		items.get("ok2")!.y = 230;
+	});
+	const moved = await refusal("Toggle", () => {
+		put({ id: "other", role: "group", title: "Other", parent: "win", x: 0, y: 0 });
+		items.get("toggle")!.parent = "other";
+	});
+	const unknown = await run(`return await desktop.ref("e99999");`);
+
+	breakReadbackAfterAction = true;
+	const unread = await run(`const [field] = await (await desktop.window("w1")).find({ role: "textfield", title: "Name" }); return await field.setValue("z");`);
+	breakReadbackAfterAction = false;
+	readbackBroken = false;
+	clearInterval(keepAlive);
+	globalThis.console = realConsole;
+
+	check("행동 결과: 값이 바뀐 press 는 verified/continue 다", r.toggled?.status === "verified" && r.toggled?.suggestedNext === "continue" && /value/.test(r.toggled?.evidence ?? ""), JSON.stringify(results));
+	check("행동 결과: 요소 상태가 그대로인 press 는 추측하지 않고 unverified/reobserve 다", r.unchanged?.status === "unverified" && r.unchanged?.suggestedNext === "reobserve", JSON.stringify(r.unchanged));
+	check("행동 결과: setValue 는 읽어 온 값이 같을 때만 verified 다", r.typed?.status === "verified", JSON.stringify(r.typed));
+	check("행동 결과: 값이 안 바뀐 setValue 는 suspected_noop 이고 pixel 로 올리라고 한다", r.ignored?.status === "suspected_noop" && r.ignored?.suggestedNext === "escalate" && r.ignored?.escalation?.target === "pixel", JSON.stringify(r.ignored));
+	check("행동 결과: 창 키 입력은 관측이 없어 unverified/reobserve 다", r.keys?.status === "unverified" && r.keys?.suggestedNext === "reobserve" && r.keys?.action === "press", JSON.stringify(r.keys));
+	const rk = (refusedKeys.payload?.returnValue ?? {}) as Refused;
+	check("호환: BackgroundUnavailable 은 그대로 ToolError 로 던지고 computerAction 이 takeover 로 올리라고 한다", rk.ok === false && rk.name === "ToolError" && rk.message.startsWith("BackgroundUnavailable: ") && rk.info?.suggestedNext === "escalate" && rk.info?.escalation?.target === "takeover", JSON.stringify(rk));
+	check("재획득(유일 후보): stale 된 요소 핸들의 press 가 같은 요소에 한 번만 닿는다", elementPath.ok && JSON.stringify(elementActed) === '["alpha"]' && e.result?.reacquired?.from === e.old && e.result?.reacquired?.to === e.now && e.from === e.old && e.now !== e.old, JSON.stringify({ elementPath, elementActed }));
+	check("재획득은 axSnapshot 을 부르지 않아 다른 ref 세대를 밀어내지 않는다", elementSnapshots === 2, `snapshots=${elementSnapshots}`);
+	check("재획득(직접 헬퍼 경로): ax() 텍스트에서 고른 stale ref 도 desktop.ref 에서 같은 요소로 풀린다", direct.ok && textRef !== undefined && d.from === textRef && d.result?.reacquired?.matchedBy?.includes("parent") && JSON.stringify(directActed) === '["alpha"]', JSON.stringify({ textRef, direct, directActed }));
+	check("후보 0개: 이름이 바뀐 요소는 누르지 않고 원래 StaleRef 로 실패하며 사유를 남긴다", none.value.ok === false && none.value.message.startsWith("StaleRef: ") && none.value.name === "ToolError" && none.value.info?.reacquire?.outcome === "no-candidate" && none.value.info?.action === "press" && none.acted.length === 0, JSON.stringify(none));
+	check("모호 후보: 같은 이름·같은 부모 둘이 모두 자리를 옮기면 어느 쪽도 누르지 않는다", tie.value.ok === false && tie.value.message.startsWith("StaleRef: ") && tie.value.info?.reacquire?.outcome === "ambiguous" && tie.value.info?.reacquire?.candidates?.length === 2 && tie.acted.length === 0, JSON.stringify(tie));
+	check("부모 경로 불일치: 이름이 같아도 다른 부모 아래로 옮겨 간 요소는 누르지 않는다", moved.value.ok === false && moved.value.info?.reacquire?.outcome === "parent-mismatch" && moved.acted.length === 0, JSON.stringify(moved));
+	check("지문 없음: 발급한 적 없는 ref 는 첫 줄이 그대로인 StaleRef 로 실패하고 사유를 붙인다", !unknown.ok && (unknown.error?.message ?? "").startsWith("StaleRef: e99999 expired") && /reacquire refused \(no-fingerprint\)/.test(unknown.error?.message ?? ""), JSON.stringify(unknown));
+	const unreadOut = (unread.payload?.returnValue ?? {}) as ActionOut;
+	check("readback 실패는 전달된 행동을 오류로 바꾸지 않고 unverified/reobserve 로 남긴다", unread.ok && unreadOut.status === "unverified" && unreadOut.suggestedNext === "reobserve", JSON.stringify(unread));
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
