@@ -90,6 +90,7 @@ SHION은 역할이 아니라 선택적 상담이다. 사용자가 명시했을 �
 | **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **NOVA(노바)** | `opencode-go/muse-spark-1.3-contributor` | 이 모델의 task child | 현재 세션만 전환 |
+| **HIKARI(히카리)** | `google-antigravity/gemini-3.8-flash` | 이 모델의 task child | 현재 세션만 전환 |
 | **SHION(시온)** | `web6/gpt-6-pro` | `rule://web6-consult` 상담(비 child) | 금지 |
 
 tool-capable 호출은 일반 task child 하나와 정상 linkage를 사용한다. 사용자가 캐릭터의 얼굴·말투로 인사나 발화를 요청하면 summon 동사가 없어도 인라인 summon으로 처리하고, 해당 child 요청과 호출 입력에 정확한 summon marker를 싣는다. RIN/MIO의 지정 OAuth 계정은 session-scoped exact pin이며 사용 불가 시 다른 credential/model로 조용히 대체하지 않는다. `교체` 실패는 이전 session model을 보존하고 전역 default를 바꾸지 않는다. Main·child의 최종 provider 요청에서는 기존 character voice·legacy report-style을 제거하고 선택 voice block 하나만 적용한다. 사용자에게 그 턴에 child·다른 모델 호출의 역할·개수·이유를 알린다. child의 terminal 발화는 인라인 linkage가 확인될 때만 화면 완료로 본다. SHION은 기존 WEB6 상담 경로만 사용한다. 파서·selector 정본은 `harness-policy.json` `characterRouting`과 `extensions/character-voice.ts`다.

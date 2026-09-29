@@ -33,17 +33,17 @@ function render(props = {}) {
   }));
 }
 
-test("캐릭터가 기본 선택되고 여섯 얼굴·한글 이름·말투·호출 의미가 보인다", () => {
+test("캐릭터가 기본 선택되고 일곱 얼굴·한글 이름·말투·호출 의미가 보인다", () => {
   const html = render();
   assert.match(html, /class="[^"]*resource-panel/);
   assert.match(html, /role="tablist"/);
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>캐릭터</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>계정 한도</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>모델 통계</);
-  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "NOVA(노바)", "SHION(시온)"]) {
+  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "NOVA(노바)", "HIKARI(히카리)", "SHION(시온)"]) {
     assert.match(html, new RegExp(alias.replace(/[()]/g, "\\$&")));
   }
-  assert.equal(html.match(/class="account-avatar"/g)?.length, 6);
+  assert.equal(html.match(/class="account-avatar"/g)?.length, 7);
   assert.match(html, /호출·불러·소환/);
   assert.match(html, /SubAgent로 이 대화에 부릅니다/);
   assert.match(html, /미오 불러와/);

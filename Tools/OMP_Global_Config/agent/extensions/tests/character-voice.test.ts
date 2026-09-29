@@ -223,9 +223,8 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("메인을 MIO로 지금 교체해 주세요.")).toEqual({ kind: "switch", alias: "MIO(미오)" });
     expect(parseCharacterIntent("시온 호출해")).toEqual({ kind: "summon", aliases: ["SHION(시온)"] });
     expect(parseCharacterIntent("미오와 린을 교체해")).toBeUndefined();
-    // HIKARI는 Gemini 계정의 얼굴일 뿐 호출·교체 별칭이 없다.
-    expect(parseCharacterIntent("히카리 불러와")).toBeUndefined();
-    expect(parseCharacterIntent("hikari로 교체해")).toBeUndefined();
+    expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
+    expect(parseCharacterIntent("hikari로 교체해")).toEqual({ kind: "switch", alias: "HIKARI(히카리)" });
   });
 
   test("explicit multi-character summon carries every named alias in mention order", () => {

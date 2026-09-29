@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 801a1e62a1bcc7f8 -->
+<!-- source-fingerprint: 1e89b0f38c9ee8be -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -93,6 +93,7 @@ Alias + `교체` switches the current Main session; alias + `호출`·`불러`·
 |**RIN(린)**|`anthropic/claude-opus-5-5`, 지정 계정|task child pinned to its account|pin its account, then switch current session|
 |**MIO(미오)**|`anthropic/claude-opus-5-5`, 지정 계정|task child pinned to its account|pin its account, then switch current session|
 |**NOVA(노바)**|`opencode-go/muse-spark-1.3-contributor`|task child on this model|switch current session only|
+|**HIKARI(히카리)**|`google-antigravity/gemini-3.8-flash`|task child on this model|switch current session only|
 |**SHION(시온)**|`web6/gpt-6-pro`|`rule://web6-consult` consult (not a child)|forbidden|
 
 Tool-capable calls use one ordinary task child with normal linkage. If the user asks for a greeting or line in a character's face/voice, treat it as an inline summon even without a summon verb, and put the exact summon marker in that child request and call input. RIN/MIO's designated OAuth account is a session-scoped exact pin; if unavailable, never silently substitute another credential/model. A failed `교체` keeps the previous session model and never changes the global default. In the final provider request of Main and children, strip existing character voice and legacy report-style and apply exactly one selected voice block. Tell the user, in that turn, the role, count, and reason of each child/other-model call. A child's terminal line counts as shown only once inline linkage is confirmed. SHION uses only the existing WEB6 consult path. Parser/selector source of truth: `harness-policy.json` `characterRouting` and `extensions/character-voice.ts`.

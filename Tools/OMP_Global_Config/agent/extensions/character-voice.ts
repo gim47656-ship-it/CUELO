@@ -100,8 +100,6 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
     model: "web6/gpt-6-pro",
     toolCapable: false,
   },
-  // 호출·교체 별칭은 없다(사용자가 요청하지 않음). 이 표가 전 alias를 요구하므로 실제 모델을 적어 두지만
-  // CHARACTER_NAME_PATTERN·NAME_TO_ALIAS에는 넣지 않아 자연어로 부를 수 없다.
   "HIKARI(히카리)": {
     model: "google-antigravity/gemini-3.8-flash",
     toolCapable: true,
@@ -129,6 +127,8 @@ const NAME_TO_ALIAS: Readonly<Record<string, CharacterAlias>> = {
   노바: "NOVA(노바)",
   shion: "SHION(시온)",
   시온: "SHION(시온)",
+  hikari: "HIKARI(히카리)",
+  히카리: "HIKARI(히카리)",
 };
 
 const ANTHROPIC_POSITION_CHARACTER: Readonly<Record<number, CharacterAlias>> = {
@@ -142,7 +142,7 @@ const REPORT_STYLE_BLOCK = /\n?<report-style\b[^>]*>[\s\S]*?<\/report-style>\n?/
 const SUMMON_MARKER = /\[character-summon\s+alias="([^"]+)"\s+model="([^"]+)"(?:\s+oauth-position="(\d+)")?\]/u;
 const SUMMON_MARKER_GLOBAL = /\n?\[character-summon\s+alias="[^"]+"\s+model="[^"]+"(?:\s+oauth-position="\d+")?\]\n?/gu;
 const SUMMON_DIRECTIVE = /^\[character-summon-intent alias="([^"]+)"\]/gmu;
-const CHARACTER_NAME_PATTERN = "(유키|yuki|이사나|isana|미오|mio|린|rin|노바|nova|시온|shion)";
+const CHARACTER_NAME_PATTERN = "(유키|yuki|이사나|isana|미오|mio|린|rin|노바|nova|시온|shion|히카리|hikari)";
 const CHARACTER_NAME_IN_COMMAND = new RegExp(
   `(?<![가-힣A-Za-z0-9])${CHARACTER_NAME_PATTERN}(?=(?:으로|로|을|를|와|과|랑|이랑|하고|이|가|은|는|도)?(?:\\s|$|[.!?,]|교체|호출|불러|소환|${CHARACTER_NAME_PATTERN}))`,
   "giu",

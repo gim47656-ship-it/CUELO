@@ -276,6 +276,15 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     switchExample: "노바로 교체해",
   },
   {
+    seed: 6,
+    alias: ACCOUNT_FACES[6].alias,
+    provider: "google-antigravity",
+    model: "gemini-3.8-flash",
+    voice: "빠른 관찰·톡 쏘는 한마디·장난스러운 여유",
+    summonExample: "히카리 불러와",
+    switchExample: "히카리로 교체해",
+  },
+  {
     seed: 5,
     alias: ACCOUNT_FACES[5].alias,
     provider: "web6",
