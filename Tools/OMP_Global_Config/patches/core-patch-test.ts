@@ -2569,6 +2569,58 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 	} finally { memory.close(); }
 }
 
+console.log("\n[25a-1] autolearn capture — 성공한 저장만 onCaptured 로 알리고, 도중 실패해도 알린다");
+{
+	const { createAutoLearnCaptureRunner } = await import(`${CORE}/sdk.ts`);
+	const call = (id: string, name: string, args: Record<string, unknown>) => ({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] });
+	const result = (id: string, name: string, isError: boolean) => ({ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: "" }], isError });
+	const runCapture = async (failAfterSave: boolean) => {
+		const reports: string[][] = [];
+		const sourceAgent = {
+			state: { model: { id: "m" }, messages: [{ role: "user", content: "앞 턴" }], systemPrompt: [], thinkingLevel: "off", disableReasoning: false },
+			getApiKey: () => undefined,
+			metadataForProvider: () => undefined,
+		};
+		const runner = createAutoLearnCaptureRunner({
+			sourceAgent: sourceAgent as never,
+			captureTools: () => [{ name: "learn" }] as never,
+			onCaptured: saved => reports.push(saved),
+			createAgent: options => {
+				const messages = [...(options.initialState?.messages ?? [])] as unknown[];
+				return {
+					state: { messages },
+					setMetadataResolver: () => {},
+					abort: () => {},
+					prompt: async (nudge: unknown) => {
+						messages.push(nudge);
+						messages.push(call("c1", "learn", { memory: "배포 뒤   CUELO 재시작이\n필요하다" }));
+						messages.push(result("c1", "learn", false));
+						messages.push(call("c2", "learn", { memory: "거절된 교훈" }));
+						messages.push(result("c2", "learn", true));
+						if (failAfterSave) throw new Error("provider 끊김");
+						messages.push(call("c3", "manage_skill", { action: "create", name: "deploy-check" }));
+						messages.push(result("c3", "manage_skill", false));
+					},
+				} as never;
+			},
+		});
+		const error = await runner("nudge").then(() => undefined, (err: Error) => err.message);
+		return { reports, error };
+	};
+	const ok = await runCapture(false);
+	check(
+		"성공한 learn·manage_skill만 한 번 알리고 실패한 learn은 뺀다",
+		JSON.stringify(ok.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다", "스킬 create: deploy-check"]]) && ok.error === undefined,
+		`reports=${JSON.stringify(ok.reports)} error=${ok.error}`,
+	);
+	const failed = await runCapture(true);
+	check(
+		"capture 가 도중에 실패해도 이미 저장된 교훈은 알리고 오류는 그대로 던진다",
+		JSON.stringify(failed.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다"]]) && failed.error === "provider 끊김",
+		`reports=${JSON.stringify(failed.reports)} error=${failed.error}`,
+	);
+}
+
 // 2026-09-29 실측: 재구축 묶음이 한꺼번에 worker 줄에 서서 뒤 묶음·첫 턴 회상이 120초 제한에 걸렸다.
 console.log("\n[25b] mnemopi — 중단된 임베딩 재구축은 16건 묶음을 하나씩 차례로 보낸다");
 {

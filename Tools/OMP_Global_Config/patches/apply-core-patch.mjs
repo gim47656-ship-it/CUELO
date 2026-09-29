@@ -6421,6 +6421,83 @@ export interface McpSelectEventResult {
 }
 `,
 	},
+	{
+		// 교훈 자동 저장 표시(2026-09-29 사용자 지적 "교훈 저장이 안 뜬다"): autolearn capture Agent는 본 대화와
+		// 분리돼 저장해도 화면·다음 턴 문맥에 아무것도 남지 않았다. 성공한 learn·manage_skill만 요약해 돌려준다.
+		file: "src/sdk.ts",
+		marker: `export function summarizeAutoLearnSaved(`,
+		anchor: `	createSessionId?: () => string;
+}
+
+/** Build a private capture runner over a detached message snapshot and provider session. */`,
+		patched: `	createSessionId?: () => string;
+	/** Receives the capture run's successful \`learn\`/\`manage_skill\` saves so the session can show them. */
+	onCaptured?: (saved: string[]) => void;
+}
+
+/**
+ * Summarize a capture run's successful \`learn\`/\`manage_skill\` calls. Each call is paired with its
+ * result, so a rejected or failed save is never reported as stored.
+ */
+export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from: number): string[] {
+	const text = (value: unknown): string => (typeof value === "string" ? value.replace(/\\s+/g, " ").trim() : "");
+	const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
+	const saved: string[] = [];
+	for (const message of messages.slice(from)) {
+		if (message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") {
+					calls.set(block.id, { name: block.name, args: (block.arguments ?? {}) as Record<string, unknown> });
+				}
+			}
+			continue;
+		}
+		if (message.role !== "toolResult" || message.isError) continue;
+		const call = calls.get(message.toolCallId);
+		if (!call) continue;
+		if (call.name === "learn") {
+			const memory = text(call.args.memory);
+			const skill = call.args.skill as { action?: unknown; name?: unknown } | undefined;
+			const skillNote = skill ? " (스킬 " + text(skill.action) + " " + text(skill.name) + ")" : "";
+			saved.push("교훈: " + (memory.length > 160 ? memory.slice(0, 160) + "…" : memory) + skillNote);
+		} else if (call.name === "manage_skill") {
+			saved.push("스킬 " + text(call.args.action) + ": " + text(call.args.name));
+		}
+	}
+	return saved;
+}
+
+/** Build a private capture runner over a detached message snapshot and provider session. */`,
+	},
+	{
+		// capture가 중간에 실패·중단돼도 이미 저장된 항목은 알린다(finally).
+		file: "src/sdk.ts",
+		marker: `			const saved = summarizeAutoLearnSaved(captureAgent.state.messages, captureMessages.length);`,
+		anchor: `		} finally {
+			signal?.removeEventListener("abort", abortCapture);`,
+		patched: `		} finally {
+			signal?.removeEventListener("abort", abortCapture);
+			const saved = summarizeAutoLearnSaved(captureAgent.state.messages, captureMessages.length);
+			if (saved.length > 0) options.onCaptured?.(saved);`,
+	},
+	{
+		// 저장 결과를 보이는 custom 메시지로 남긴다. idle이면 턴을 시작하지 않고 붙이고, 진행 중이면 aside로 끼운다.
+		file: "src/sdk.ts",
+		marker: `						{ customType: "autolearn-saved", content, display: true, attribution: "agent" },`,
+		anchor: `		const runAutoLearnCapture = createAutoLearnCaptureRunner({
+			sourceAgent: agent,`,
+		patched: `		const runAutoLearnCapture = createAutoLearnCaptureRunner({
+			sourceAgent: agent,
+			onCaptured: saved => {
+				const content = ["[교훈 자동 저장] 이번 턴이 끝난 뒤 별도 capture가 저장했다.", ...saved.map(line => "- " + line)].join("\\n");
+				void session
+					.sendCustomMessage(
+						{ customType: "autolearn-saved", content, display: true, attribution: "agent" },
+						session.isStreaming ? { deliverAs: "aside" } : undefined,
+					)
+					.catch(error => logger.warn("Failed to show auto-learn capture result", { error: String(error) }));
+			},`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
