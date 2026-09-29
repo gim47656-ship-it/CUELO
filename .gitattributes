@@ -1,0 +1,4 @@
+# The deploy pipeline hashes bun.lock byte-for-byte against the committed (LF) blob.
+# With core.autocrlf=true a CRLF checkout breaks that check ("frozen install 뒤 bun.lock
+# SHA-256이 변경되었다"), so the lockfile is always checked out with LF.
+bun.lock text eol=lf

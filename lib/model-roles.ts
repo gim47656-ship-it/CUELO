@@ -3,8 +3,10 @@ import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import {
   getKnownRoleIds,
   getRoleInfo,
+  isKindRole,
   MODEL_ROLES,
   MODEL_ROLE_IDS,
+  roleCandidatePool,
   type ModelRole,
 } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
@@ -109,17 +111,24 @@ export function readConfiguredModelRoleRefs(settings: Settings): { provider: str
 /**
  * Every role omp knows about, with its configured selector and what that
  * selector resolves to against the currently available models.
+ *
+ * Chat roles resolve against the visible chat models. Model-kind roles (image, speech,
+ * dictation, web, judge) resolve against the core's own per-role candidate pool — the pool the
+ * image tool and friends actually draw from — because an image model is never in the chat list,
+ * so a working `image` assignment used to be reported as matching no model.
  */
 export function listModelRoles(
   settings: Settings,
   availableModels: Model<Api>[],
+  registry: Parameters<typeof roleCandidatePool>[2],
 ): ModelRoleAssignment[] {
   const builtinIds = new Set<string>(MODEL_ROLE_IDS);
   return getKnownRoleIds(settings).map((role) => {
     const info = getRoleInfo(role, settings);
     const selector = settings.getModelRole(role);
+    const candidates = isKindRole(role) ? roleCandidatePool(role, settings, registry) : availableModels;
     const resolution = selector
-      ? resolveModelRoleValue(selector, availableModels, { settings })
+      ? resolveModelRoleValue(selector, candidates, { settings })
       : undefined;
     // Core `config/model-resolver.ts` warns only about a malformed thinking
     // suffix, so a selector that matches no model resolves silently. Without

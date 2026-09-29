@@ -77,6 +77,7 @@
     "prepare:runtime": "node bin/prepare-runtime.js",
     "dev": "bun --bun next dev --webpack -H 127.0.0.1 -p 30141",
     "dev:lan": "bun --bun next dev --webpack -H 0.0.0.0 -p 30141",
+    "dev:verify": "CUELO_DIST_DIR=.next-verify NODE_ENV=development bun --bun next dev --webpack -H 127.0.0.1 -p 30163",
     "build": "bun --bun next build --webpack",
     "start": "bun bin/cuelo.js --no-open -H 127.0.0.1 -p 30141",
     "start:lan": "bun bin/cuelo.js --no-open -H 0.0.0.0 -p 30141",

@@ -60,7 +60,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
 
   // omp assigns a model per scope of work; ship the whole role table so the
   // browser's selector can group models the same way `/model` does.
-  const roles = listModelRoles(settings, [...visible]);
+  const roles = listModelRoles(settings, [...visible], modelRegistry);
 
   return withModelRuntimeError(
     {
