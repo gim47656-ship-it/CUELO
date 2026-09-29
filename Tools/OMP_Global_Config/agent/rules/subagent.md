@@ -35,7 +35,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 - 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 실제 모델 계열을 담는다.
-  `NORMAL_SONNET`(`implSonnet`)·`HARD_CODE_SONNET`(`makerHardCodeSonnet`)는 high~xhigh, Opus 세 후보(`implOpus`·`makerHardUiOpus`·`makerHardCodeOpus`)와 `NORMAL_DEEPSEEK`(`implDeepSeek`)는 high다.
+  `NORMAL_SONNET`(`implSonnet`)·`HARD_CODE_SONNET`(`makerHardCodeSonnet`)은 medium~xhigh, Opus 세 후보(`implOpus`·`makerHardUiOpus`·`makerHardCodeOpus`)와 `NORMAL_DEEPSEEK`(`implDeepSeek`)는 high다.
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.

@@ -833,11 +833,11 @@
       "defaultMakerModelConfigPath": "modelRoles.implSonnet",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort",
       "profiles": {
-        "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL", "allowedEfforts": ["high", "xhigh"] },
+        "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL", "allowedEfforts": ["medium", "high", "xhigh"] },
         "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "allowedEfforts": ["high"] },
         "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
         "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "allowedEfforts": ["high"] },
-        "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD", "allowedEfforts": ["high", "xhigh"] },
+        "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD", "allowedEfforts": ["medium", "high", "xhigh"] },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "allowedEfforts": ["high"] }
       },
       "effortBand": "each-candidate-offers-only-registry-supported-levels-inside-its-profile-allowedEfforts-the-task-hook-blocks-any-other-level-and-max-a-shared-model-is-checked-against-the-recommended-profile-then-a-profile-of-the-recommended-work-class-and-without-a-recommendation-against-a-profile-that-allows-the-level",
