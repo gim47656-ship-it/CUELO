@@ -28,15 +28,13 @@ import { getRpcSession, startRpcSession, type AgentSessionWrapper } from "@/lib/
 import { buildSessionContext, resolveSessionPath } from "@/lib/session-reader";
 
 export const GPT6_HANDLE_STORE_FILE = "gpt6-handles.json";
-/** MCP 경로. 호스트는 서버가 아는 값에서 정하고 경로는 고정한다. */
-export const GPT6_MCP_PATH = "/api/gpt6/mcp";
 export function gpt6StorePath(): string {
   return join(getAgentDir(), GPT6_HANDLE_STORE_FILE);
 }
 
 /**
  * 살아 있는 런타임 세션 하나를 브리지가 요구하는 최소 표면으로 감싼다.
- * `cwd`는 매번 세션에서 읽는다 — 스냅샷과 비교해야 하므로 캐시하면 안 된다.
+ * `cwd`는 매번 세션에서 읽는다 — 세션이 다른 폴더로 옮겨졌을 수 있으므로 캐시하지 않는다.
  */
 function wrap(session: AgentSessionWrapper): Gpt6SessionHandle {
   return {
@@ -45,8 +43,6 @@ function wrap(session: AgentSessionWrapper): Gpt6SessionHandle {
     },
     isAlive: () => session.isAlive(),
     isRunning: () => session.isRunning(),
-    send: (command) => session.send(command),
-    entries: () => session.inner.sessionManager.getEntries(),
     appendCustomMessage: (customType, content, display, details) => {
       const manager = session.inner.sessionManager;
       const entryId = manager.appendCustomMessageEntry(customType, content, display, details);
@@ -66,13 +62,13 @@ function wrap(session: AgentSessionWrapper): Gpt6SessionHandle {
 }
 
 /**
- * 이 프로세스에 없는 세션을 세션 기록(JSONL)에서 되살린다. 6PRO 탭에서 발급한 연결번호는
+ * 이 프로세스에 없는 세션을 세션 기록(JSONL)에서 되살린다. 연결번호와 상담 답변 게시는
  * 사용자가 그 탭을 닫아도 살아 있어야 하므로, 브리지가 세션을 찾지 못하면 여기로 온다.
  *
  * `app/api/agent/[id]/route.ts`의 재개 경로와 같은 순서다: 기록 경로를 찾고(`resolveSessionPath`),
  * 그 파일로 런타임을 띄운다(`startRpcSession`). 기록이 없으면 `undefined`로 알리고, 삭제가
  * 진행 중인 세션처럼 띄울 수 없는 경우는 `startRpcSession`의 오류를 그대로 올린다.
- * cwd는 세션 기록에서 오므로, 발급 스냅샷과 다르면 브리지가 cwd_mismatch로 끊는다.
+ * cwd는 세션 기록에서 온다 — WEB6 발급은 이 cwd를 연결번호 스냅샷으로 쓴다.
  */
 async function resumeSession(sessionId: string): Promise<Gpt6SessionHandle | undefined> {
   const filePath = await resolveSessionPath(sessionId);
@@ -84,7 +80,7 @@ async function resumeSession(sessionId: string): Promise<Gpt6SessionHandle | und
 /**
  * 연결번호가 묶였다는 사실을 그 세션에 남긴다. **최선 노력**이다 — 실패해도 발급은 성공한다.
  *
- * 살아 있는 세션이면 그대로 쓰고, 없으면 기록에서 되살린다(브리지의 도구 호출과 같은 순서).
+ * 살아 있는 세션이면 그대로 쓰고, 없으면 기록에서 되살린다(답변 게시와 같은 순서).
  * 발급마다 새 연결번호가 나오므로 통지도 발급당 하나다.
  *
  * 모델은 실행되지 않는다. `appendCustomMessageEntry`는 entry만 남기고, 그 entry는 다음 턴의
@@ -154,53 +150,7 @@ export function getGpt6Bridge(): Gpt6Bridge {
       return session ? wrap(session) : undefined;
     },
     resumeSession,
-    wait: (ms) => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, ms);
-      return promise;
-    },
   });
-}
-
-/**
- * ChatGPT 커넥터에 넣는 것은 URL이 아니라 OpenAI Platform에서 받은 `tunnel_id`다. 그 터널의
- * 요청을 이 서버로 넘기는 것은 집 PC에서 도는 `tunnel-client`이고, 그 프로세스는 같은 기계의
- * 루프백으로 붙는다. 그래서 이 주소는 노출 호스트와 무관하게 **언제나** loopback이다 —
- * `gpt6McpUrl()`이 폰·다른 PC의 직접 접속용 주소를 계속 내주는 것과 별개다.
- * 요청 헤더(`x-forwarded-host`·`Host` 등)는 여기서도 쓰지 않는다.
- *
- * `PORT`는 Next가 실제 바인딩한 포트로 채운다(`start-server.js`가 `process.env.PORT`에
- * listen 결과를 넣는다).
- */
-export function gpt6TunnelTargetUrl(): string {
-  return `http://127.0.0.1:${process.env.PORT?.trim() || "30141"}${GPT6_MCP_PATH}`;
-}
-
-/**
- * 화면에 보여 줄 MCP URL — 터널을 거치지 않고 이 서버에 직접 붙을 때 쓰는 주소.
- * 폰·다른 PC는 여기에 bearer 토큰을 실어 부르므로, 요청자가 정하는 헤더
- * (`x-forwarded-host`·`Host` 등)는 쓰지 않고 서버가 아는 값만 쓴다.
- *
- * 1순위는 운영자가 지정한 노출 호스트다. `launch.ps1`이 Tailscale HTTPS 앞단이 보내는
- * 테일넷 이름을 `CUELO_ALLOWED_HOSTS`에 넣고, 그 이름은 https(443)로 열린다. 그 값이
- * 없으면(로컬에서만 쓰는 배치) 로컬 기준값 `http://127.0.0.1:<port>`로 만든다.
- * 어느 쪽이든 이 URL은 서버 기준 주소이고, 폰·다른 PC에서 쓰는 주소가 따로 있으면
- * 사용자가 직접 확인해야 한다 — 그 사실을 패널이 함께 안내한다.
- */
-export function gpt6McpUrl(): string {
-  const exposed = configuredExposureHost();
-  if (exposed) return `https://${exposed}${GPT6_MCP_PATH}`;
-  return gpt6TunnelTargetUrl();
-}
-
-/** `CUELO_ALLOWED_HOSTS`에서 외부 노출 호스트명 하나를 고른다. IP 리터럴은 노출 주소가 아니다. */
-function configuredExposureHost(): string | null {
-  for (const entry of process.env.CUELO_ALLOWED_HOSTS?.split(",") ?? []) {
-    const value = entry.trim().replace(/\.$/, "").toLowerCase();
-    if (!value || isIP(value) !== 0 || value === "localhost" || value.endsWith(".localhost")) continue;
-    return value;
-  }
-  return null;
 }
 
 /** `Authorization: Bearer <token>`. 다른 인증 경로는 쓰지 않는다. */
@@ -219,7 +169,7 @@ export function gpt6BearerToken(request: Request): string {
  * (`next/dist/server/base-server.js:577`: `req.headers['x-forwarded-for'] ??= originalRequest.socket.remoteAddress`).
  * 클라이언트가 같은 헤더를 보내면 Next는 덮어쓰지 않으므로(`??=`), 이 값은 "원격에서 온
  * 평범한 요청"을 끊는 심층 방어이지 인증 근거가 아니다. 그래서 이 검사는 실제 자격증명
- * (전역 토큰 + 핸들 키)을 대체하지 않고 그 앞에 한 겹 더 놓는다.
+ * (답변 게시의 bearer 토큰)을 대체하지 않고 그 앞에 한 겹 더 놓는다.
  *
  * 홉이 여럿이면 가장 오른쪽 값을 쓴다. 앞은 클라이언트가 넣은 값일 수 있고, 우리 앞의
  * 프록시(로컬 tailscaled·Next 서버 자신)가 마지막에 실제 피어를 덧붙이기 때문이다.
@@ -244,7 +194,7 @@ function isTrustedPeerAddress(value: string): boolean {
 }
 
 /**
- * 연결번호 관리 라우트(`/api/gpt6/handles`·`/api/gpt6/token`)의 입구. 이 라우트들은
+ * 관리 라우트(`/api/gpt6/handles`·`/api/gpt6/token`·`/api/gpt6/web6-session`)의 입구. 이 라우트들은
  * 평문 토큰과 전 핸들 목록을 내주므로, 기존 브라우저 가드 위에 로컬 전용 검사를 더한다.
  * 통과면 null, 아니면 그대로 돌려줄 403 응답이다.
  */

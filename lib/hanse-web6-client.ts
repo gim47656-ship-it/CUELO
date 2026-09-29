@@ -1,7 +1,7 @@
 /**
  * 6 Pro(SHION) 상담 기록을 읽는 쪽.
  *
- * 브라우저 자동 상담의 성공 답변은 `omp_publish_reply`가 session-native custom entry로
+ * 브라우저 자동 상담의 성공 답변은 `/api/gpt6/reply`가 session-native custom entry로
  * 남기는 것이 정본이다. 이 JSONL은 sessionId가 붙은 실패·운영 기록이고, 화면은 현재
  * sessionId와 정확히 일치하는 실패만 보조 발화로 읽는다.
  *

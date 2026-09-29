@@ -1,5 +1,5 @@
 /**
- * 저장소 토큰 회전 — WEB 6PRO 탭이 쓰는 쪽.
+ * 저장소 토큰 회전 — WEB6 상담 답변 게시(`/api/gpt6/reply`)의 bearer 토큰을 바꾼다.
  *
  * 지금 쓰는 토큰을 제시한 호출만 회전한다. 회전 응답이 새 평문 토큰을 담으므로, 증명 없는
  * 회전을 허용하면 그 자체가 토큰 탈취 경로가 된다. 교체 뒤 저장소에는 새 해시만 남아 이전
@@ -9,11 +9,11 @@
  */
 import { NextResponse } from "next/server";
 import { hasJsonContentType } from "@/lib/request-security";
-import { getGpt6Bridge, gpt6AdminGuard, gpt6ErrorResponse, gpt6McpUrl } from "../runtime";
+import { getGpt6Bridge, gpt6AdminGuard, gpt6ErrorResponse } from "../runtime";
 
 export const dynamic = "force-dynamic";
 
-// POST /api/gpt6/token — {token} 은 지금 커넥터에 넣어 둔 토큰. 응답의 token이 새 토큰이다.
+// POST /api/gpt6/token — {token} 은 지금 쓰는 토큰. 응답의 token이 새 토큰이다.
 export async function POST(req: Request) {
   const denied = gpt6AdminGuard(req);
   if (denied) return denied;
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json() as { token?: unknown };
     const rotated = getGpt6Bridge().rotateToken(typeof body.token === "string" ? body.token.trim() : "");
-    return NextResponse.json({ token: rotated.token, rotatedAt: rotated.rotatedAt, mcpUrl: gpt6McpUrl() });
+    return NextResponse.json({ token: rotated.token, rotatedAt: rotated.rotatedAt });
   } catch (error) {
     return gpt6ErrorResponse(error);
   }

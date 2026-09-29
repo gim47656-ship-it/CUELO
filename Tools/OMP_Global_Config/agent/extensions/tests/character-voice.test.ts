@@ -345,7 +345,7 @@ describe("character voice identity", () => {
     expect(routing).toContain("WEB6");
     expect(routing).toContain("task child를 만들거나 세션 Main 모델을 바꾸지 않는다");
     expect(routing).toContain("현재 OMP sessionId를 자동 운반");
-    expect(routing).toContain("OMP TOOL rich 멘션");
+    expect(routing).toContain("relay 답 수집·/api/gpt6/reply 투영");
     expect(routing).toContain("raw HTTP·clipboard·수동 붙여넣기·탭 이동을 요구하지 않는다");
     expect(routing).toContain("실제 전송 전에 fail closed");
     expect(routing).toContain('<character-voice alias="SHION(시온)">');

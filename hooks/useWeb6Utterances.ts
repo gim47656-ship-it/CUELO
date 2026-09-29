@@ -73,7 +73,7 @@ export function anchorTurnIndex(
 }
 
 /**
- * 현재 세션의 실패 기록만 보조 발화로 만든다. 성공 답변은 `omp_publish_reply`가 남긴
+ * 현재 세션의 실패 기록만 보조 발화로 만든다. 성공 답변은 `/api/gpt6/reply`가 남긴
  * session-native custom entry가 화면 정본이므로 JSONL에서 다시 투영하지 않는다.
  *
  * `label` 은 비운다. 화면 이름은 예약 얼굴이 주는 별칭(SHION)이다.

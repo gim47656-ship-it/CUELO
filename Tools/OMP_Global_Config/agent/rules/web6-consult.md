@@ -5,10 +5,10 @@ description: ChatGPT 6 Pro(별칭 SHION) 상담을 쓸 때 자리·발동 조건
 # ChatGPT 6 Pro 상담
 
 6 Pro는 로컬 OpenAI 호환 shim이 사용자 브라우저의 전용 탭을 몰아서 쓴다. 세션 바인딩은
-로컬에서 유지하되 새 자동 상담은 순수 프롬프트만 보내고, relay가 해당 대화·요청의 완성 답을
-수집해 인증된 로컬 reply 경로로 현재 세션에 투영한다. 모델이 MCP 게시 도구를 호출하기를
-기다리지 않는다. 왕복은 직렬이며 역할이 아니라 **상담**이다. 정본은 `harness-policy.json`의
-`mainLane.web6Consult`이고 별칭 `SHION`이 이 대상을 가리킨다.
+로컬에서 유지하고 상담은 순수 프롬프트만 보내며, relay가 해당 대화·요청의 완성 답을
+수집해 인증된 로컬 reply 경로로 현재 세션에 투영한다. 왕복은 직렬이며 역할이 아니라
+**상담**이다. 정본은 `harness-policy.json`의 `mainLane.web6Consult`이고 별칭 `SHION`이 이
+대상을 가리킨다.
 
 ## 들어가는 자리
 
@@ -35,7 +35,7 @@ description: ChatGPT 6 Pro(별칭 SHION) 상담을 쓸 때 자리·발동 조건
 호출은 exact `completion(model="web6/gpt-6-pro")` 경로다. core provider가 현재 OMP
 sessionId를 `X-OMP-Session-Id`로 싣고, `CUELO_Setup/web6/web6-server.js`가 세션을 확인하고
 바인딩 통지를 남긴다. 발급된 handleKey는 로컬 요청 메모리에만 두고 브라우저 프롬프트에
-넣지 않는다. 자동 상담에 `@OMP TOOL` 멘션이나 `omp_publish_reply` 지시를 추가하지 않는다.
+넣지 않는다. 상담 프롬프트에 도구 멘션이나 게시 지시를 추가하지 않는다.
 
 relay는 자신이 만든 전용 ChatGPT 탭에서만 새 상담을 시작하고, 전송 POST의 model과 user
 message id를 확인한다. 답 수집 전에도 현재 경로가 exact conversationId인지 확인한 뒤 그
@@ -50,9 +50,8 @@ text여야 한다. 다른 모델·다른 대화·중간 답을 성공으로 채�
 수집한 답은 같은 세션의 기존 `/api/gpt6/reply`에 Bearer 인증으로 한 번만 게시한다. 이 토큰과
 본문은 loopback HTTP(S)에만 보내고 redirect를 따르지 않는다. 게시 확인 뒤에만 provider 응답을
 성공으로 끝낸다. session-native `gpt6-reply` entry가 화면 정본이고 전역 JSONL 성공 기록을
-다시 투영하지 않는다. 기존 수동 MCP handle/publish/dispatch의 인증·세션 기록·dedupe는 유지한다.
-옛 `/mcp/replies` callback과 그 소비자는 제거했으므로 WEB6와 vendor 변경은 같은 revision으로
-배포한다. Main의 raw HTTP·clipboard·수동 붙여넣기로 이 경로를 대체하지 않는다.
+다시 투영하지 않는다. 6 Pro가 MCP 도구로 세션을 조회·지시하던 원격 제어 경로는 제거했다.
+Main의 raw HTTP·clipboard·수동 붙여넣기로 이 경로를 대체하지 않는다.
 
 task child를 만들거나 Main 모델을 바꾸지 않는다. shim·relay·로그인·수집·투영이 실패하면
 상담 없이 기존 경로로 진행하고 실패 사실만 남긴다.

@@ -5,9 +5,8 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { createJiti } from "jiti";
 
-// 이 라우트는 `/api/gpt6/mcp`와 같은 배선(runtime → rpc-manager → SDK)을 쓴다. 그 SDK는
-// `Bun`을 요구하므로 이 파일은 저장소의 다른 SDK 의존 테스트와 같은 러너로 돈다 —
-// `node --test`에서는 형제 `handles-route.test.mjs`와 같이 import 단계에서 죽는다.
+// 이 라우트는 runtime → rpc-manager → SDK 배선을 쓴다. 그 SDK는 `Bun`을 요구하므로 이 파일은
+// 저장소의 다른 SDK 의존 테스트와 같은 러너로 돈다 — `node --test`에서는 import 단계에서 죽는다.
 const jiti = createJiti(import.meta.url, {
   alias: { "@": process.cwd() },
   interopDefault: true,
@@ -146,8 +145,8 @@ test("POST /api/gpt6/reply는 entry 하나만 남기고 모델을 돌리지 않�
     assert.deepEqual(entry.details, { source: GPT6_REPLY_SOURCE, model: GPT6_REPLY_SOURCE });
     assert.equal(entries.some((item) => item.type === "message"), false, "모델 턴은 돌지 않는다");
 
-    // 대화창 투영: 이 경로로 남긴 entry도 omp_publish_reply와 같은 얼굴(assistant + web6)로
-    // 올라가야 한다 — SHION은 web6 예약 얼굴이다.
+    // 대화창 투영: 이 경로로 남긴 entry는 assistant + web6 얼굴로 올라가야 한다 —
+    // SHION은 web6 예약 얼굴이다.
     assert.deepEqual(buildSessionContext(entries).messages.at(-1), {
       role: "assistant",
       content: [{ type: "text", text: TEXT }],

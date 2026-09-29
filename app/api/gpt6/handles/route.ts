@@ -1,16 +1,14 @@
 /**
- * 연결번호 API — WEB 6PRO 탭이 쓰는 쪽.
+ * 연결번호 API — 세션을 6PRO 상담에 묶는 관리 경로.
  *
- * `POST`는 연결번호와 함께 그 연결번호 전용 `handleKey`를 돌려준다. 토큰 평문은 저장소에
- * 아직 토큰이 없을 때(최초 발급)만 이 응답에 실린다 — 그 뒤로는 `/api/gpt6/token` 회전
- * 응답에서만 나간다. 조회(`GET`)는 발급 현황과 화면이 안내할 주소 두 개(직접 접속용
- * `mcpUrl`과 tunnel-client 대상 `tunnelTargetUrl`), 토큰 유무, 실패 집계를 주고,
- * 폐기(`DELETE`)는 상태만 바꾼다.
+ * `POST`는 연결번호와 함께 그 연결번호 전용 `handleKey`를 돌려준다. 묶인 세션에서는
+ * `mainLane.web6Consult`의 기본 발동 자리가 켜진다. 토큰 평문은 저장소에 아직 토큰이 없을 때
+ * (최초 발급)만 이 응답에 실린다 — 그 뒤로는 `/api/gpt6/token` 회전 응답에서만 나간다.
+ * 조회(`GET`)는 발급 현황과 토큰 유무를 주고(입력창 배지가 읽는다), 폐기(`DELETE`)는 상태만
+ * 바꾼다.
  *
  * 이 라우트들은 평문 토큰과 전 핸들 목록을 내주므로 `gpt6AdminGuard`를 건다 — 기존 브라우저
- * 가드에 더해 로컬·테일넷에서 온 요청만 통과시킨다. MCP 라우트는 6 Pro가 부르는 곳이 아니라
- * 집 PC의 `tunnel-client`가 브라우저가 아닌 클라이언트로 부르는 곳이므로 그 가드를 걸지 않는다
- * (`app/api/gpt6/mcp/route.ts` 주석 참조).
+ * 가드에 더해 로컬·테일넷에서 온 요청만 통과시킨다.
  */
 import { NextResponse } from "next/server";
 import { existsSync } from "node:fs";
@@ -18,14 +16,7 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 import { getRpcSession } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { hasJsonContentType } from "@/lib/request-security";
-import {
-  announceGpt6Binding,
-  getGpt6Bridge,
-  gpt6AdminGuard,
-  gpt6ErrorResponse,
-  gpt6McpUrl,
-  gpt6TunnelTargetUrl,
-} from "../runtime";
+import { announceGpt6Binding, getGpt6Bridge, gpt6AdminGuard, gpt6ErrorResponse } from "../runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -94,7 +85,6 @@ export async function POST(req: Request) {
       expiresAt: issued.expiresAt,
       startSentence: issued.startSentence,
       handleKey: issued.handleKey,
-      mcpUrl: gpt6McpUrl(),
       // 최초 발급에서만 평문 토큰이 실린다. 이미 토큰이 있으면 이 키 자체가 없다.
       ...(issued.token === null ? {} : { token: issued.token }),
     });
@@ -109,10 +99,8 @@ export async function GET(req: Request) {
   if (denied) return denied;
 
   try {
-    const { handles, tokenPresent, failedAuthCount, lastFailedAt } = getGpt6Bridge().listHandles();
+    const { handles, tokenPresent } = getGpt6Bridge().listHandles();
     return NextResponse.json({
-      // 화면이 두 주소를 함께 안내한다 — `mcpUrl`은 직접 접속용, `tunnelTargetUrl`은
-      // 집 PC의 tunnel-client가 향할 loopback 주소다.
       handles: handles.map((handle) => ({
         handle: handle.handle,
         cwd: handle.cwd,
@@ -120,22 +108,16 @@ export async function GET(req: Request) {
         createdAt: handle.createdAt,
         expiresAt: handle.expiresAt,
         revokedAt: handle.revokedAt,
-        lastCallAt: handle.lastCallAt,
-        callCount: handle.callCount,
         status: handle.status,
       })),
-      mcpUrl: gpt6McpUrl(),
-      tunnelTargetUrl: gpt6TunnelTargetUrl(),
       tokenPresent,
-      failedAuthCount,
-      lastFailedAt,
     });
   } catch (error) {
     return gpt6ErrorResponse(error);
   }
 }
 
-// DELETE /api/gpt6/handles?handle=H-1042 — 폐기. 이후 그 연결번호는 어떤 도구도 통과시키지 않는다.
+// DELETE /api/gpt6/handles?handle=H-1042 — 폐기. 이후 그 연결번호는 목록에서 revoked로 보인다.
 export async function DELETE(req: Request) {
   const denied = gpt6AdminGuard(req);
   if (denied) return denied;
