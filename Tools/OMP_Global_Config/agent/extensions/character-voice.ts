@@ -148,6 +148,9 @@ const CHARACTER_NAME_IN_COMMAND = new RegExp(
   "giu",
 );
 const SUMMON_ACTION = /(?:호출|불러|소환)/u;
+// "유키로 교체됐었어"처럼 이미 일어난 전환을 설명하는 과거·수동형은 교체 명령이 아니다.
+const SWITCH_ACTION = /교체(?!\s*(?:되|돼|됐|됬|된|될|됨))/u;
+const SUMMON_MARKER_PREFIX = /\[character-summon\s/u;
 
 function aliasFromName(name: string): CharacterAlias | undefined {
   return NAME_TO_ALIAS[name.toLocaleLowerCase("en-US")];
@@ -335,7 +338,7 @@ export function parseCharacterIntent(text: string): CharacterIntent | undefined 
   const aliases = aliasesFromCommand(text);
   if (aliases.length === 0) return undefined;
   if (text.includes("교체")) {
-    if (aliases.length !== 1) return undefined;
+    if (!SWITCH_ACTION.test(text) || aliases.length !== 1) return undefined;
     return { kind: "switch", alias: aliases[0]! };
   }
   return SUMMON_ACTION.test(text) ? { kind: "summon", aliases } : undefined;
@@ -568,6 +571,22 @@ export function parseCharacterSummonMarker(prompt: string): CharacterAlias | und
   if (target.model !== match[2]) return undefined;
   const position = match[3] === undefined ? undefined : Number(match[3]);
   return target.oauthPosition === position ? alias : undefined;
+}
+
+/**
+ * marker처럼 보이지만 exact target과 맞지 않는 task를 찾는다. 틀린 marker는 캐릭터 모델로
+ * 전환되지 않고 maker 기본 모델로 조용히 실행되므로, summon 입력이 인식되지 않은 요청에서도 막는다.
+ */
+export function malformedSummonMarkerReason(task: string): string | undefined {
+  if (!SUMMON_MARKER_PREFIX.test(task) || parseCharacterSummonMarker(task) !== undefined) return undefined;
+  const expected = (Object.keys(CHARACTER_TARGETS) as CharacterAlias[])
+    .filter((alias) => CHARACTER_TARGETS[alias].toolCapable)
+    .map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``);
+  return [
+    "[CharacterSummonGuard] task의 character-summon marker가 exact target과 맞지 않습니다. " +
+      "틀린 marker는 캐릭터 모델로 전환되지 않고 maker 기본 모델로 실행됩니다. 아래 marker 중 하나를 그대로 쓰세요.",
+    ...expected,
+  ].join("\n");
 }
 
 /** 최종 wire payload에서 이전 voice/report style을 걷어내고 선택된 voice를 정확히 한 번 설치한다. */

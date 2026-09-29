@@ -332,6 +332,21 @@ describe("command guard runtime gates", () => {
     })).toBeUndefined();
   });
 
+  test("summon 입력이 인식되지 않아도 exact target과 다른 marker의 task는 막는다", async () => {
+    const task =
+      '[character-summon alias="HIKARI" model="google-antigravity/gemini-3.8-flash"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.';
+    const harness = createGuardHarness();
+    await harness.emit("input", { type: "input", text: "인사 부탁해", source: "rpc" });
+    const blocked = await harness.emit("tool_call", {
+      type: "tool_call",
+      toolName: "task",
+      toolCallId: "task-bad-marker",
+      input: { tasks: [{ agent: "maker", task }] },
+    }) as { block?: boolean; reason?: string } | undefined;
+    expect(blocked).toMatchObject({ block: true });
+    expect(blocked?.reason).toContain('[character-summon alias="HIKARI(히카리)" model="google-antigravity/gemini-3.8-flash"]');
+  });
+
   test("무공백 TASK_GUARD 뒤 marker와 원래 캐릭터 과제를 함께 보존한다", async () => {
     const harness = createGuardHarness();
     await harness.emit("input", { type: "input", text: "린 불러와", source: "rpc" });

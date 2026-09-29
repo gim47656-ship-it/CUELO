@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
   CHARACTER_TARGETS,
+  malformedSummonMarkerReason,
   parseCharacterIntent,
   parseCharacterSummonDirectives,
   rewriteTaskInputForCharacterSummon,
@@ -705,6 +706,15 @@ export default function commandGuard(pi: ExtensionAPI): void {
               ? error.message
               : "[SpawnGuard] prepared task 입력을 복원할 수 없습니다.",
         };
+      }
+
+      // summon 입력 인식 여부와 무관하게, marker를 쓴 task는 exact target이어야 한다.
+      const taskTexts = Array.isArray(canonicalInput.tasks)
+        ? canonicalInput.tasks.map((item) => (item && typeof item.task === "string" ? item.task : ""))
+        : [typeof canonicalInput.task === "string" ? canonicalInput.task : ""];
+      for (const text of taskTexts) {
+        const malformed = malformedSummonMarkerReason(text);
+        if (malformed) return { block: true, reason: malformed };
       }
 
       let guardedInput = canonicalInput;

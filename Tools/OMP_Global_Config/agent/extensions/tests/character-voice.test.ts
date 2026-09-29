@@ -225,6 +225,10 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("미오와 린을 교체해")).toBeUndefined();
     expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
     expect(parseCharacterIntent("hikari로 교체해")).toEqual({ kind: "switch", alias: "HIKARI(히카리)" });
+    // 이미 일어난 전환을 설명하는 과거·수동형은 명령이 아니다(2026-09-29 오전환 재현 문장 포함).
+    expect(parseCharacterIntent("아까 유키로 교체됐었어")).toBeUndefined();
+    expect(parseCharacterIntent("유키로 바로교체됬었어..")).toBeUndefined();
+    expect(parseCharacterIntent("린으로 교체된 거 맞아?")).toBeUndefined();
   });
 
   test("explicit multi-character summon carries every named alias in mention order", () => {
