@@ -137,6 +137,8 @@ export interface ExtensionAskDialogResultItem {
   selectedOptions: string[];
   customInput?: string;
   note?: string;
+  /** The deadline passed with no answer and the recommendation was picked; not a user choice. */
+  timedOut?: boolean;
 }
 
 export type ExtensionAskDialogResult =

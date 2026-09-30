@@ -187,6 +187,8 @@ function RoleRow({ role, t }: {
 }) {
   const models = role.models.length > 0 ? role.models.join(", ") : t("efficiency.unmeasuredShort");
   const efforts = role.efforts.length > 0 ? role.efforts.join(", ") : t("efficiency.unmeasuredShort");
+  // 역할 `outputTokens`는 보조 호출을 포함한 합계다. 답 길이·왕복 판단용 칸에는 대화 요청 몫만 보인다.
+  const conversationOutputTokens = role.outputTokens - role.helpers.reduce((sum, helper) => sum + helper.outputTokens, 0);
   return (
     <section className="efficiency-card">
       <div className="efficiency-card-top">
@@ -207,7 +209,20 @@ function RoleRow({ role, t }: {
         <Metric label={t("efficiency.estimatedCost")} value={formatMoney(role.estimatedCostUsd)} />
         <Metric label={t("efficiency.tokens")} value={formatTokens(role.totalTokens)} />
         <Metric label={t("efficiency.unpricedRequests")} value={formatNumber(role.unpricedRequests)} />
+        {/* 요청 시작→첫 토큰 평균. 각 요청 생성시간의 일부라 경과와 더하지 않고, 미기록은 0이 아니라 미측정이다. */}
+        <Metric
+          label={t("efficiency.firstTokenAvg")}
+          value={role.ttftMs !== null && role.ttftRequests > 0
+            ? formatDurationMs(role.ttftMs / role.ttftRequests)
+            : t("efficiency.unmeasuredShort")}
+        />
+        <Metric label={t("efficiency.outputTokens")} value={formatTokens(conversationOutputTokens)} />
       </dl>
+      {role.ttftRequests > 0 && role.ttftRequests < role.requestCount ? (
+        <p className="efficiency-note">
+          {t("efficiency.firstTokenPartial", { recorded: role.ttftRequests, total: role.requestCount })}
+        </p>
+      ) : null}
       {role.untimedRequests > 0 ? (
         <p className="efficiency-note">
           {t("efficiency.untimedLowerBound").replace("{value}", formatNumber(role.untimedRequests))}
@@ -215,6 +230,26 @@ function RoleRow({ role, t }: {
       ) : null}
       {role.unpricedRequests > 0 ? (
         <p className="efficiency-note">{t("efficiency.unpricedLowerBound")}</p>
+      ) : null}
+      {role.helpers.length > 0 ? (
+        <section aria-label={t("efficiency.helpersTitle")}>
+          <p className="efficiency-dim">{t("efficiency.helpersTitle")}</p>
+          <dl className="m-0">
+            {role.helpers.map((helper) => (
+              <Metric
+                key={`${helper.purpose}:${helper.role ?? ""}:${helper.model}`}
+                label={`${helper.purpose} · ${helper.model}`}
+                value={t("efficiency.helperCallsValue", {
+                  count: helper.requestCount,
+                  output: formatTokens(helper.outputTokens),
+                  tokens: formatTokens(helper.totalTokens),
+                  cost: formatMoney(helper.estimatedCostUsd),
+                })}
+              />
+            ))}
+          </dl>
+          <p className="efficiency-note">{t("efficiency.helpersIncludedNote")}</p>
+        </section>
       ) : null}
     </section>
   );
@@ -239,7 +274,7 @@ function BottleneckRow({ item, t }: {
   );
 }
 
-function GovernorDetail({ detail, t }: {
+export function GovernorDetail({ detail, t }: {
   detail: RunDetail;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {

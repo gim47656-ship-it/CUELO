@@ -63,16 +63,43 @@ export type RunUnmeasuredReason = (typeof RUN_UNMEASURED_REASONS)[number];
 export const EXPERIMENT_SCOPES = ["all", "attributed"] as const;
 export type ExperimentScope = (typeof EXPERIMENT_SCOPES)[number];
 
+/**
+ * 역할이 대화 밖에서 부른 보조 모델 호출(`model_usage` 기록: find·auto-thinking·skim 등) 묶음.
+ * `purpose`·`role`·`model`이 같은 호출을 합친다. 토큰·비용은 호출한 역할의 합계에 **이미 들어 있는
+ * 내역**이므로 역할·run 합계에 다시 더하지 않는다.
+ */
+export interface RunHelperUsage {
+  /** 기록된 호출 목적(예: `skim`, `find`). */
+  purpose: string;
+  /** 호출이 거친 model role(예: `skim`, `tiny`). 기록에 없으면 `null`. */
+  role: string | null;
+  /** `provider/model` 실측값. */
+  model: string;
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  unpricedRequests: number;
+  errorCount: number;
+}
+
 /** 한 역할(부모 본인 또는 자식 하나)이 이 run 안에서 남긴 기록. */
 export interface RunRoleSegment {
   /** 부모는 `"main"`, 자식은 transcript 파일 이름(예: `"Web6Shim"`). */
   id: string;
   kind: RunRoleKind;
   purpose: RunRolePurpose | null;
-  /** 실제 관측된 모델 ID. 기록 순서를 유지하며 중복은 제거한다. */
+  /**
+   * 대화 요청에서 실제 관측된 모델 ID. 기록 순서를 유지하며 중복은 제거한다. 보조 호출
+   * 모델은 `helpers`에만 있다.
+   */
   models: string[];
   /** 실제 관측된 effort. 기록이 없으면 빈 배열이고 추정하지 않는다. */
   efforts: string[];
+  /** 대화 요청(모델 왕복) 수. 보조 호출은 `helpers[].requestCount`로 따로 센다. */
   requestCount: number;
   /** 생성시간 합(ms). `wallClockMs`와 더하지 않는다. */
   busyMs: number;
@@ -80,6 +107,7 @@ export interface RunRoleSegment {
   spanMs: number;
   startedAt: number;
   endedAt: number;
+  /** 토큰·비용 합계는 대화 요청과 `helpers`를 모두 한 번씩 포함한다. */
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -93,6 +121,15 @@ export interface RunRoleSegment {
    * 들어가므로 `busyMs`는 하한이다. 0이 아니면 화면이 그 사실을 밝혀야 한다.
    */
   untimedRequests: number;
+  /**
+   * 첫 토큰까지 기다린 시간(ttft)의 합(ms). 요청 시작부터 재므로 각 요청 `duration`의 일부이며
+   * `wallClockMs`와 더하지 않는다. 기록된 대화 요청이 하나도 없으면 `null`이고, 기록된 0은 0이다.
+   */
+  ttftMs: number | null;
+  /** ttft가 기록된 대화 요청 수. 평균 첫 응답 대기 = `ttftMs / ttftRequests`. */
+  ttftRequests: number;
+  /** 이 역할이 부른 보조 모델 호출 내역. 합계에 다시 더하지 않는다. */
+  helpers: RunHelperUsage[];
   errorCount: number;
   abortedCount: number;
   toolCalls: number;

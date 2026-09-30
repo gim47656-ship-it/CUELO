@@ -1135,7 +1135,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setExtensionDialog((current) => current?.id === request.id ? null : current);
   }, []);
 
-  const sendExtensionCustomInput = useCallback(async (request: ExtensionUiCustomRequest, data: string) => {
+  const sendExtensionCustomInput = useCallback(async (request: { id: string }, data: string) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {

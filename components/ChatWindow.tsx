@@ -1273,6 +1273,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
               <ExtensionDialog
                 request={extensionDialog}
                 onRespond={respondToExtensionUi}
+                onActivity={(request) => void sendExtensionCustomInput(request, "activity")}
                 delivery={extensionResponse}
               />
             </div>
@@ -1541,10 +1542,13 @@ function ResponseSurface({
 function ExtensionDialog({
   request,
   onRespond,
+  onActivity,
   delivery,
 }: {
   request: ExtensionDialogRequest;
   onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => void;
+  /** Reports choosing/typing in a timed ask so the server restarts its wait (lib/rpc-manager.ts EXTENSION_UI_ACTIVITY). */
+  onActivity?: (request: ExtensionDialogRequest) => void;
   /** Non-null while this request's answer is in flight or after it failed. */
   delivery?: ExtensionResponseState | null;
 }) {
@@ -1553,6 +1557,15 @@ function ExtensionDialog({
   const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>({});
   const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
   const [planFeedback, setPlanFeedback] = useState("");
+  const lastActivityRef = useRef(0);
+  // Only a timed ask auto-selects; one report per second is enough to keep a 120s wait open.
+  const reportActivity = useCallback(() => {
+    if (request.method !== "ask" || !request.timeout || !onActivity) return;
+    const now = Date.now();
+    if (now - lastActivityRef.current < 1_000) return;
+    lastActivityRef.current = now;
+    onActivity(request);
+  }, [request, onActivity]);
 
   useEffect(() => {
     setValue(request.method === "editor" ? request.prefill ?? "" : "");
@@ -1584,6 +1597,7 @@ function ExtensionDialog({
       (selectedOptions[question.id]?.length ?? 0) > 0
       || (customAnswers[question.id]?.trim().length ?? 0) > 0);
     const toggleOption = (questionId: string, optionIndex: number, multi: boolean) => {
+      reportActivity();
       setSelectedOptions((current) => {
         const selected = current[questionId] ?? [];
         const next = multi
@@ -1628,6 +1642,11 @@ function ExtensionDialog({
             <div style={{ minWidth: 0 }}>
               <div style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>{t("chat.agentQuestion")}</div>
               <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)" }}>{t("chat.agentQuestionHint")}</div>
+              {request.timeout ? (
+                <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)" }}>
+                  {t("chat.askAutoSelectHint", { seconds: Math.round(request.timeout / 1000) })}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -1737,7 +1756,10 @@ function ExtensionDialog({
                     </div>
                     <input
                       value={customAnswers[question.id] ?? ""}
-                      onChange={(event) => setCustomAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                      onChange={(event) => {
+                        reportActivity();
+                        setCustomAnswers((current) => ({ ...current, [question.id]: event.target.value }));
+                      }}
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submitAnswers();
                       }}

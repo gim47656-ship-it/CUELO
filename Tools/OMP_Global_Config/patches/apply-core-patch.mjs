@@ -6788,6 +6788,193 @@ interface ComputerInputTarget {
 		patched: "- Each window `.ax()` starts a ref generation. Current/previous snapshot refs remain valid. An older ref is reacquired only when its saved fingerprint (role, name, AutomationId, named parents, position) matches exactly one element; the element's `ref` changes and the action result carries `reacquired`. Otherwise it throws `StaleRef` naming why and the candidates: re-snapshot; NEVER guess.\n- Actions return `{ action, status, suggestedNext, evidence?, escalation?, reacquired? }`. `verified` rests on an AX readback; `unverified` (all pointer/keyboard input) means delivered but unobserved: `reobserve` before relying on it; `suspected_noop` → follow `escalation`. Inside `computer.run`, a thrown action error carries `error.computerAction`.\n",
 	},
 	{
+		// 2026-09-30 computer 목표 대기(사용자 요청 0.6.6): 행동은 사용자 코드에서 한 번, 목표는 wait(predicate)가 로컬 읽기로만 확인한다.
+		// 이 편집부터 worker.ts 7개는 한 묶음이다. probe 는 run context 를 복제해 goalProbe 를 켜고, 그 signal 은 deadline·wait 종료에도 끝난다.
+		// 간격은 Playwright pollAgainstDeadline 기본값(https://github.com/microsoft/playwright/blob/main/packages/isomorphic/timeoutRunner.ts)을 따른다.
+		file: "src/tools/computer/worker.ts",
+		marker: "import { untilAborted } from \"@oh-my-pi/pi-utils/abortable\";",
+		anchor: `import * as postmortem from "@oh-my-pi/pi-utils/postmortem";`,
+		patched: `import { untilAborted } from "@oh-my-pi/pi-utils/abortable";
+import * as postmortem from "@oh-my-pi/pi-utils/postmortem";`,
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "	goalProbe?: boolean;",
+		anchor: `interface ComputerRunContext {
+	signal: AbortSignal;
+	readOnly: boolean;
+	snapshot: ComputerSessionSnapshot;
+	output: RunOutput;
+	screenshots: ComputerScreenshot[];
+}`,
+		patched: `interface ComputerRunContext {
+	signal: AbortSignal;
+	readOnly: boolean;
+	/** Set while a \`wait(predicate)\` probe runs; \`signal\` then also ends at the wait's deadline and when it settles. */
+	goalProbe?: boolean;
+	snapshot: ComputerSessionSnapshot;
+	output: RunOutput;
+	screenshots: ComputerScreenshot[];
+}
+
+/** Pauses between goal probes when \`interval\` is not given: Playwright's \`pollAgainstDeadline\` default; the last one repeats. */
+const GOAL_POLL_INTERVALS = [100, 250, 500, 1000] as const;
+
+/** A goal probe only reads: desktop input, clipboard writes, and tool-bridge calls would repeat on every probe. */
+function goalProbeRefusal(method: string): ToolError {
+	return new ToolError(
+		\`wait(predicate) probe cannot run '\${method}': probes only read desktop state (windows, ax, find, value); act once before wait()\`,
+	);
+}`,
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "	if (context.goalProbe) throw goalProbeRefusal(method);",
+		anchor: `function guardRun(context: ComputerRunContext, method: string): void {
+	if (context.readOnly)`,
+		patched: `function guardRun(context: ComputerRunContext, method: string): void {
+	if (context.goalProbe) throw goalProbeRefusal(method);
+	if (context.readOnly)`,
+	},
+	{
+		// probe 안 screenshot 은 로컬 읽기로 허용하되, 기존 silent 경로로 probe 마다 이미지가 붙지 않게 한다.
+		file: "src/tools/computer/worker.ts",
+		marker: "	if (!options?.silent && !context.goalProbe) {",
+		anchor: "	if (!options?.silent) {",
+		patched: "	if (!options?.silent && !context.goalProbe) {",
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "this.#waitForGoal(",
+		anchor: `				wait: (msOrPredicate: number | (() => unknown), options?: WaitPredicateOptions): Promise<unknown> => {
+					const resolved =
+						typeof msOrPredicate === "number"
+							? undefined
+							: {
+									timeout: resolvePredicateTimeout(message.timeoutMs, options?.timeout),
+									interval: options?.interval,
+								};
+					return markHandled(waitForRun(msOrPredicate, signal, resolved));
+				},`,
+		patched: `				wait: (msOrPredicate: number | (() => unknown), options?: WaitPredicateOptions): Promise<unknown> => {
+					if (typeof msOrPredicate !== "function") return markHandled(waitForRun(msOrPredicate, signal));
+					return markHandled(
+						this.#waitForGoal(
+							this.#runContexts.getStore() ?? runContext,
+							msOrPredicate,
+							resolvePredicateTimeout(message.timeoutMs, options?.timeout),
+							options?.interval,
+						),
+					);
+				},`,
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "if (this.#runContexts.getStore()?.goalProbe) throw goalProbeRefusal(`tool:${name}`);",
+		anchor: `			callTool: (name, args) => {
+				throwIfAborted(active.signal);
+				return this.#callTool(active, name, args);`,
+		patched: `			callTool: (name, args) => {
+				throwIfAborted(active.signal);
+				if (this.#runContexts.getStore()?.goalProbe) throw goalProbeRefusal(\`tool:\${name}\`);
+				return this.#callTool(active, name, args);`,
+	},
+	{
+		file: "src/tools/computer/worker.ts",
+		marker: "	async #waitForGoal(",
+		anchor: `	#createDesktopScope(session: NativeDesktopSession): object {`,
+		patched: `	/**
+	 * \`wait(predicate)\` for the goal state after an action. The first probe runs at once, then after
+	 * Playwright's back-off (or the fixed \`interval\`), each pause capped at the time left; no probe starts
+	 * after the deadline. Every probe runs in a derived context whose signal also ends at the deadline and
+	 * when the wait settles, and whose input, clipboard writes, and tool calls refuse, so a native read that
+	 * returns late cannot continue into further reads or input. Predicate errors propagate on first
+	 * occurrence; an unmet deadline is the named timeout; run cancellation stays an abort.
+	 */
+	async #waitForGoal(base: ComputerRunContext, predicate: () => unknown, timeout: number, interval?: number): Promise<unknown> {
+		throwIfAborted(base.signal);
+		const deadline = new AbortController();
+		const timer = setTimeout(
+			() => deadline.abort(postmortem.markExpectedCleanupError(new ToolAbortError("wait(predicate) deadline"))),
+			timeout,
+		);
+		const signal = AbortSignal.any([base.signal, deadline.signal]);
+		const probe: ComputerRunContext = { ...base, signal, goalProbe: true };
+		const started = performance.now();
+		let probes = 0;
+		let probing = false;
+		try {
+			for (let step = 0; performance.now() - started < timeout; step++) {
+				probes++;
+				probing = true;
+				const value = await untilAborted(signal, async () => await this.#runContexts.run(probe, predicate));
+				// A probe that ends past the deadline never counts, even when truthy (a synchronous predicate can outrun the timer).
+				if (performance.now() - started > timeout) break;
+				probing = false;
+				if (value) return value;
+				const pause = interval === undefined ? GOAL_POLL_INTERVALS[Math.min(step, GOAL_POLL_INTERVALS.length - 1)]! : Math.max(interval, 10);
+				const left = Math.max(0, timeout - (performance.now() - started));
+				await untilAborted(signal, async () => await Bun.sleep(Math.min(pause, left)));
+			}
+		} catch (error) {
+			// Only a rejection caused by this wait's own signal is remapped; predicate, native, and permission errors pass through as thrown.
+			const aborted = signal.aborted && error instanceof Error && (error === signal.reason || error.cause === signal.reason);
+			if (!aborted) throw error;
+			throwIfAborted(base.signal);
+		} finally {
+			clearTimeout(timer);
+			deadline.abort(postmortem.markExpectedCleanupError(new ToolAbortError("wait(predicate) ended")));
+		}
+		throw new ToolError(
+			\`wait(predicate) timed out after \${timeout}ms — predicate never returned truthy (\${probes} probe\${probes === 1 ? "" : "s"}\${probing ? "; the probe still running at the deadline was abandoned" : ""})\`,
+		);
+	}
+
+	#createDesktopScope(session: NativeDesktopSession): object {`,
+	},
+	{
+		// 모델이 보는 타입: 목표 대기 규칙.
+		file: "src/tools/computer/declarations.d.ts",
+		marker: "or poll a goal predicate until truthy and resolve with its value.",
+		anchor: `	/** Sleep for milliseconds or poll a predicate until truthy. */
+	readonly wait: (
+		msOrPredicate: number | (() => unknown),
+		options?: {
+			/** Maximum polling time in milliseconds. */
+			timeout?: number;
+			/** Delay between predicate calls in milliseconds. */
+			interval?: number;
+		},
+	) => Promise<unknown>;`,
+		patched: `	/**
+	 * Sleep for milliseconds, or poll a goal predicate until truthy and resolve with its value.
+	 * Act once before \`wait\`; inside the predicate, desktop input, \`clipboard.write\`, and tool calls throw, and screenshots stay silent.
+	 * An unmet goal throws \`wait(predicate) timed out after …\`; predicate errors propagate unretried; cancel stays cancel.
+	 */
+	readonly wait: (
+		msOrPredicate: number | (() => unknown),
+		options?: {
+			/** Maximum polling time in milliseconds (default 30s, kept below the run budget). */
+			timeout?: number;
+			/** Fixed delay between predicate calls in milliseconds; by default 100, 250, 500, then 1000. */
+			interval?: number;
+		},
+	) => Promise<unknown>;`,
+	},
+	{
+		// 모델 지시: 행동은 한 번, 목표는 wait(predicate)로 읽고, 미달이면 다시 누르지 않는다.
+		file: "src/prompts/tools/computer.md",
+		marker: "- Goal after an action: act ONCE",
+		anchor: "Plain data, functions, and `RegExp` values are supported in `args`.\n",
+		patched: "Plain data, functions, and `RegExp` values are supported in `args`.\n- Goal after an action: act ONCE, then `await wait(async () => …read…, { timeout })` for the row, text, or value the user asked for; it resolves with that value. Inside the predicate, desktop input, `clipboard.write`, and tool calls throw and screenshots stay silent; probes back off 100→1000 ms, and a late read cannot continue past the deadline. The predicate is still unsandboxed Bun/Node code. On `wait(predicate) timed out` NEVER re-click, take over, or switch windows: reobserve and report. A button state change alone does not prove a save.\n",
+	},
+	{
+		file: "src/prompts/tools/computer.md",
+		marker: "return await wait(async () => (await orders.find(",
+		anchor: "\treturn await target.ax();\n}, { timeout: 30 });\n",
+		patched: "\treturn await target.ax();\n}, { timeout: 30 });\nawait computer.run(async ({ desktop, wait }) => {\n\tconst orders = await desktop.window({ title: \"Orders\" });\n\tconst [save] = await orders.find({ role: \"button\", title: \"Save\" });\n\tawait save.press();\n\treturn await wait(async () => (await orders.find({ title: \"Saved row 1\" }))[0]?.title, { timeout: 5000 });\n}, { timeout: 30 });\n",
+	},
+	{
 		// MCP 선택 연결: 요청별 MCP 선택(opt-in). all이 기본이며 per-request면 시작 시 연결하지 않고 요청마다 확장이 고른다.
 		file: "src/mcp/settings.ts",
 		marker: `			"all: connect every enabled server at startup. per-request: connect nothing at startup; before each request an extension selects which enabled servers to connect (new sessions)",`,
@@ -7719,6 +7906,156 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 		marker: "Begin each `learn` memory with one short headline sentence",
 		anchor: "remember with `learn` when memory enabled. If nothing worth keeping, do nothing.",
 		patched: "remember with `learn` when memory enabled. Begin each `learn` memory with one short headline sentence (under 80 characters) that states the lesson, then give the details. If nothing worth keeping, do nothing.",
+	},
+	// Codex native turn lane 는 실행 중 `response.steer`를 `response.steer.failed`가 아니라 일반
+	// error 프레임(code=unsupported_native_inflight_message)으로 거절한다(2026-09-30 사용자 보고).
+	// 그 프레임은 steer 제출자가 아니라 응답 스트림으로 들어가 진행 중 턴이 죽었다. steer 대기자가
+	// 있을 때만 이 정확한 코드를 거절 ack 로 돌려 기존 claim.reject() → 다음 경계 일반 전달 경로를
+	// 타게 하고, 같은 소켓은 이후 steer 를 전송하지 않는다(새 소켓은 다시 한 번 시도한다).
+	// 대기자가 없거나 다른 코드인 error 프레임은 그대로 스트림에 push 한다.
+	{
+		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		marker: "#steerUnsupported = false;",
+		anchor: `	/** Steering whose automatic successor the active attach request is reading. */
+	#attachSteerIds?: ReadonlySet<string>;`,
+		patched: `	/** Steering whose automatic successor the active attach request is reading. */
+	#attachSteerIds?: ReadonlySet<string>;
+	/** The server answered a steer with unsupported_native_inflight_message; this socket no longer submits steers. */
+	#steerUnsupported = false;`,
+	},
+	{
+		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		marker: "this.#steerWaiters.shift()?.resolve({",
+		anchor: `				// Steering acknowledgements belong to the submitter, not to the
+				// response stream they interleave with.
+				if (typeof parsed.type === "string" && parsed.type.startsWith("response.steer.")) {`,
+		patched: `				// The native turn lane refuses steering with a bare error frame. It answers the
+				// pending steer, not the response stream, so settle that waiter as rejected.
+				if (
+					parsed.type === "error" &&
+					parsed.code === "unsupported_native_inflight_message" &&
+					this.#steerWaiters.length > 0
+				) {
+					this.#steerUnsupported = true;
+					this.#steerWaiters.shift()?.resolve({
+						accepted: false,
+						code: parsed.code,
+						message: typeof parsed.message === "string" ? parsed.message : undefined,
+					});
+					return;
+				}
+				// Steering acknowledgements belong to the submitter, not to the
+				// response stream they interleave with.
+				if (typeof parsed.type === "string" && parsed.type.startsWith("response.steer.")) {`,
+	},
+	{
+		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		marker: "code: \"unsupported_native_inflight_message\", message: undefined",
+		anchor: `			return Promise.reject(new CodexWebSocketTransportError(\`websocket connection is unavailable\`));
+		}
+		const event = { type: "response.steer", previous_response_id: previousResponseId, input };`,
+		patched: `			return Promise.reject(new CodexWebSocketTransportError(\`websocket connection is unavailable\`));
+		}
+		if (this.#steerUnsupported) {
+			return Promise.resolve({ accepted: false, code: "unsupported_native_inflight_message", message: undefined });
+		}
+		const event = { type: "response.steer", previous_response_id: previousResponseId, input };`,
+	},
+	// 2026-09-30 사용자 요청(0.6.6): 일반 구현 선택 질문만 `ask.timeout` 무응답 시 추천안으로 진행한다.
+	// 자동선택은 긍정 opt-in(`autoSelectRecommended: true`)이고 유효한 `recommended`가 필수다. 한 호출의
+	// 모든 질문이 조건을 채울 때만 timeout 을 넘기고, 나머지(기존 호출·승인 질문·plan mode)는 무기한 기다린다.
+	// 타임아웃 결과는 사용자 응답·승인이 아니라고 결과 문구에 적는다. 키워드 판정은 두지 않는다.
+	{
+		file: "src/tools/ask.ts",
+		marker: `"autoSelectRecommended?": arkType("boolean")`,
+		anchor: `	"recommended?": arkType("number").describe("0-based default index"),
+}).narrow((question, ctx) => {`,
+		patched: `	"recommended?": arkType("number").describe("0-based default index"),
+	"autoSelectRecommended?": arkType("boolean").describe(
+		"opt-in: pick recommended after ask.timeout with no answer; reversible implementation choices only",
+	),
+}).narrow((question, ctx) => {`,
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "never guess the first option on the user's behalf",
+		anchor: `		return [options[recommended]!.label];
+	}
+	return [options[0]!.label];
+}`,
+		patched: `		return [options[recommended]!.label];
+	}
+	// No valid recommendation: never guess the first option on the user's behalf.
+	return [];
+}`,
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "no user response, not user approval",
+		anchor: `		const suffix = \`\${result.timedOut ? " (auto-selected after timeout)" : ""}\${noteSuffix}\`;`,
+		patched: `		const suffix = \`\${result.timedOut ? " (auto-selected recommended option after timeout; no user response, not user approval)" : ""}\${noteSuffix}\`;`,
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "No user response: auto-selected the recommended option after timeout",
+		anchor: `		responseParts.push(result.timedOut ? \`\${selectedText} (auto-selected after timeout)\` : selectedText);`,
+		patched: `		responseParts.push(
+			result.timedOut
+				? \`No user response: auto-selected the recommended option after timeout: \${result.selectedOptions.join(", ")} (not user approval)\`
+				: selectedText,
+		);`,
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "Auto-selection is a positive opt-in",
+		anchor: `		const timeout = planModeEnabled ? null : settingsTimeout;`,
+		patched: `		// Auto-selection is a positive opt-in: every question must ask for it and carry a valid
+		// recommendation. Legacy calls, approvals, and questions without one wait indefinitely.
+		const autoSelectable = params.questions.every(
+			q =>
+				q.autoSelectRecommended === true &&
+				typeof q.recommended === "number" &&
+				Number.isInteger(q.recommended) &&
+				q.recommended >= 0 &&
+				q.recommended < q.options.length,
+		);
+		const timeout = planModeEnabled || !autoSelectable ? null : settingsTimeout;`,
+	},
+	{
+		file: "src/prompts/tools/ask.md",
+		marker: "`autoSelectRecommended: true`",
+		anchor: `- \`recommended\` auto-adds " (Recommended)"; \`multi: true\` permits multiple selections.`,
+		patched: `- \`recommended\` auto-adds " (Recommended)"; \`multi: true\` permits multiple selections.
+- \`autoSelectRecommended: true\` (requires a valid \`recommended\`): if nobody answers before \`ask.timeout\`, the recommended option is picked. Use ONLY for reversible implementation choices; NEVER for deployment, deletion, cost, account/permission, provider safety, or other high-impact confirmations. A timed-out pick is not user approval.`,
+	},
+	// 2026-09-30 사용자 요청(0.6.6): Main 의 Fast(OpenAI `priority`)만 새 child 에 상속한다.
+	// `tier.subagent: inherit` 해석(및 agentServiceTierOverrides 의 inherit)이 부모 map 전체를 넘기면
+	// Main 이 Anthropic Fast 일 때 Sonnet child 까지 `speed: "fast"` 로 과금된다. 상속 결과를
+	// openai=priority 하나로 좁힌다. 명시 concrete tier·override·revive persist 경로는 그대로다.
+	{
+		file: "src/task/executor.ts",
+		marker: "function parentSubagentServiceTiers(",
+		anchor: `function inheritedSubagentServiceTiers(
+	baseSettings: Settings,
+	inheritedServiceTier?: ServiceTierByFamily | null,
+): ServiceTierByFamily {
+	if (inheritedServiceTier === undefined) {`,
+		patched: `function inheritedSubagentServiceTiers(
+	baseSettings: Settings,
+	inheritedServiceTier?: ServiceTierByFamily | null,
+): ServiceTierByFamily {
+	// CUELO: inheritance carries only the parent's OpenAI Fast (\`priority\`). Anthropic/Google
+	// tiers and other OpenAI tiers (ultrafast, flex, ...) stay with the parent; an explicit
+	// concrete \`tier.subagent\` or per-agent override still applies on its own path.
+	const parent = parentSubagentServiceTiers(baseSettings, inheritedServiceTier);
+	return parent.openai === "priority" ? { openai: "priority" } : {};
+}
+
+function parentSubagentServiceTiers(
+	baseSettings: Settings,
+	inheritedServiceTier?: ServiceTierByFamily | null,
+): ServiceTierByFamily {
+	if (inheritedServiceTier === undefined) {`,
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

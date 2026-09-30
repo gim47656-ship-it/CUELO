@@ -51,6 +51,10 @@ edit 도구가 이전 read·검색에서 온전히 보이지 않은 줄을 기�
 
 upstream 18.3.3부터 코어는 `task`·`bash`를 가진 SubAgent에 `wait`를 자동으로 붙입니다. CUELO에서 `wait`는 Main 전용이므로 패치된 내장 코어는 이 자동 부여만 막고, agent 정의가 `wait`를 직접 적은 경우에는 그대로 줍니다. SubAgent는 자기 background job 결과를 기다리지 않고 자동 재개로 받습니다.
 
+에이전트의 `ask` 질문은 추천안(`recommended`)과 자동 선택 허용(`autoSelectRecommended: true`)을 모두 단 질문만 설정한 대기 시간(이 프로필은 `ask.timeout: 120`, 2분) 뒤 추천안으로 진행합니다. 그 밖의 질문과 plan mode 질문은 답할 때까지 기다립니다. 웹 질문 창은 이 안내를 보여 주고, 옵션을 고르거나 답을 입력하면 대기 시간을 다시 시작합니다. 타임아웃으로 고른 답은 결과에 "사용자 응답·승인이 아님"으로 표시되고, 규칙상 배포·삭제·비용·계정·권한·provider 안전 확인 질문에는 자동 선택을 켜지 않습니다.
+
+SubAgent의 service tier는 `tier.subagent: inherit`으로 Main을 따르되, 패치된 내장 코어는 Main의 OpenAI Fast(`priority`)만 새 SubAgent에 넘깁니다. Main의 Anthropic·Google Fast와 Ultrafast·flex는 SubAgent로 자동 상속하지 않습니다. `tier.subagent`에 값을 직접 적거나 agent별 override를 두면 그 값이 그대로 적용됩니다. Fast를 지원하지 않는 모델에는 요청에 싣지 않습니다.
+
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
 
 교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다. Main이 혼자 끝낸 작업은 원장에 attempt가 없으므로, 패치된 코어가 Main·Maker 모든 세션에서 첫 턴에 실제로 전달한 기억 id를 LLM 문맥에 들어가지 않는 세션 기록(`mnemopi-recall`)으로 남깁니다. 이 기록과 세션 중 `recall` 결과의 id로 교훈이 전달된 세션과 그 뒤 같은 실패가 다시 났는지를 셀 수 있습니다.
@@ -86,6 +90,14 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 화면 확인에도 JEV를 씁니다. [RULES.md](../Tools/OMP_Global_Config/agent/RULES.md)의 화면 확인 규칙은 Main과 Maker 모두에 적용됩니다. 웹은 `browser`, 네이티브 데스크톱 창은 `computer`, 로직은 테스트로 확인합니다. 조작·대기·확인 여러 단계를 한 `eval` 셀에 묶고, DOM 텍스트·AX 트리는 문자열 비교로 먼저 확인합니다. 문자열로 가를 수 없는 판정만 같은 셀에서 `judge()`(JEV)에 텍스트로 넘기므로, 단계마다 모델 턴을 거치지 않습니다. 스크린샷은 모양을 봐야 할 때만 찍고, `judge()` 결과는 참고 신호일 뿐 최종 수용 근거가 아닙니다. `computer`는 실제 데스크톱을 조작하므로 자기가 띄운 창만 다루고, 되돌릴 수 없는 버튼은 누르지 않습니다. 같은 순서를 여러 문서·기록·로그를 분류할 때(정해진 문구로 거른 뒤 남은 것만 `judge_batch`)와 긴 작업을 감시할 때(종료 문구는 문자열, "멈췄나"만 `judge()`)도 씁니다. 기준선과 비교하는 재측정은 기준선과 같은 방법으로 셉니다.
 
 패치된 내장 코어의 `computer` 행동(`press`·`click`·`setValue`·`focus`·창 좌표 입력 등)은 `{ action, status, suggestedNext, evidence?, reacquired? }`를 돌려줍니다. `status`는 `verified`·`unverified`·`suspected_noop`이고, `verified`는 행동 전후 접근성 readback에서 값·포커스·상태 변화를 읽었을 때만 붙습니다. 좌표·키 입력은 읽을 대상이 없어 늘 `unverified`와 `reobserve`입니다. `ax()`·`find()`가 준 ref가 화면 갱신으로 만료되면 발급 때 저장한 지문(role·이름·RuntimeId·AutomationId·이름 있는 부모 경로·위치)으로 후보를 좁혀, 하나로 특정될 때만 그 요소를 다시 잡습니다. 후보가 없거나 여럿이면 다른 요소를 조작하지 않고 기존 `StaleRef`로 실패하며, 오류의 `computerAction` 필드에 거절 이유와 후보를 싣습니다. 설계는 [Cua의 행동 결과 계약](https://github.com/trycua/cua/blob/main/libs/cua-driver/docs/action-result-contract.md)과 [browser-use의 요소 재식별](https://github.com/browser-use/browser-use/blob/main/browser_use/agent/service.py)을 참고했습니다.
+
+행동 뒤 목표 상태는 `computer.run` 안에서 행동을 한 번 부른 다음 `wait(predicate, { timeout })`으로 확인합니다. 예: `await save.press(); const row = await wait(async () => (await win.find({ title: "Saved row 1" }))[0], { timeout: 5000 });`. `wait(predicate)`는 upstream에 이미 있던 기능이고, 새 API나 도구는 추가하지 않았습니다. 기존에는 predicate를 100ms 고정 간격으로 다시 불렀고, 그 안의 클릭·도구 호출도 매번 그대로 실행했습니다. 늦게 끝난 읽기의 나머지 코드도 deadline 뒤에 계속 돌았습니다. 패치된 코어는 다음처럼 바꿉니다.
+
+- predicate를 바로 한 번 읽고, 이후 100·250·500·1000ms 간격으로 다시 읽습니다(마지막 간격 반복). `interval`을 주면 그 고정 간격(최소 10ms)을 씁니다. 대기는 남은 시간을 넘지 않고, deadline이나 취소 뒤에는 새 읽기를 시작하지 않습니다. 참이 되면 그 값만 돌려줍니다.
+- predicate 안에서 데스크톱 입력·`clipboard.write`·도구 호출은 실행 전에 거절됩니다. 그래서 목표가 늦거나 끝내 나오지 않아도 다시 클릭하거나 takeover하거나 다른 창을 고르지 않습니다. 스크린샷은 읽기로 허용하되 probe마다 이미지를 대화에 붙이지 않습니다.
+- 제한 시간 안에 목표가 없으면 `wait(predicate) timed out after …` 오류로 끝나고, 취소는 취소로 끝납니다. predicate 안의 native·프로그래밍 오류는 재시도하지 않고 그 오류를 그대로 올립니다. 제한 시간·취소·성공 뒤에는 늦게 끝난 읽기의 나머지 코드가 데스크톱을 더 읽거나 조작하지 못합니다.
+
+predicate는 여전히 샌드박스가 아닌 Bun/Node 코드입니다. 위 거절은 데스크톱 facade와 도구 bridge에만 적용되고, 임의 I/O를 모두 막지는 않습니다. 어떤 행·문구·값이 목표인지는 호출하는 쪽이 정해야 하고, 버튼 모양 변화만으로 저장이 성공했다고 보지 않습니다. 이 대기는 행동의 승인 등급을 바꾸지 않으므로, 저장·전송처럼 결과가 남는 클릭은 전처럼 사용자 승인이 필요합니다. 간격과 deadline 처리는 [Playwright `pollAgainstDeadline`](https://github.com/microsoft/playwright/blob/main/packages/isomorphic/timeoutRunner.ts)과 [`expect.poll`](https://playwright.dev/docs/test-assertions#expectpoll)을 참고했고, 코드를 가져오거나 의존성을 추가하지 않았습니다.
 
 이미지를 읽을 때는 vision 모델에게 먼저 묻습니다. [`image-question-router.ts`](../Tools/OMP_Global_Config/agent/extensions/image-question-router.ts)는 Main이나 Maker가 이미지 파일을 `?q=` 없이 `read`하려 하면, 이미지가 컨텍스트에 실리기 전에 그 경로의 첫 읽기를 막고 `경로?q=<질문>`으로 다시 읽게 합니다. 글자·값 확인뿐 아니라 레이아웃·간격·색·정렬·잘림 같은 형태 판단도 `modelRoles.vision` 모델이 보고 답만 텍스트로 돌아옵니다. JEV 판정 없이 동작하는 로컬 규칙이며, vision 답으로 부족하면 같은 경로를 한 번 더 읽어 직접 볼 수 있습니다. `browser`·`computer` 스크린샷은 `read`가 아니라서 대상이 아닙니다.
 
@@ -143,6 +155,8 @@ bun Tools/OMP_Global_Config/skill-cost/skill-cost.mjs [--days 30] [--json] [--ag
 ## omp core 패치
 
 [`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 이 공개 저장소의 CI는 앱 빌드·테스트와 함께 `Verify harness`에서 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌립니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 가볍게 실행합니다.
+
+Codex WebSocket에서 실행 중 끼어든 메시지(live steering)를 서버가 `unsupported_native_inflight_message`로 거절하면, 패치된 코어는 이를 응답 오류로 올리지 않고 그 입력을 현재 응답이 끝난 뒤 일반 요청으로 한 번 전달합니다. 같은 연결에서는 끼어들기를 다시 보내지 않고, 대기 중인 끼어들기가 없을 때 오는 같은 코드나 다른 오류는 그대로 표시합니다. 서버가 거절 뒤 현재 응답을 계속하는지는 실제 서비스에서 확인하지 않았습니다(`core-native-inflight-test.ts`는 로컬 WebSocket fixture).
 
 ## 정본 자료
 

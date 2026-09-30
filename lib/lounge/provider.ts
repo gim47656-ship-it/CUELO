@@ -171,7 +171,9 @@ export function createLoungeInvoker({ authStorage, modelRegistry, fetch: transpo
             text += event.delta;
             request.onText(text);
           } else if (event.type === "error") {
-            throw new LoungeUnavailableError("모델 응답을 받지 못했습니다. 인증·사용량·연결 상태를 확인하세요.");
+            // provider 원문을 사유에 남긴다. 고정 문구만 남기면 라이브에서만 나는 실패를 진단할 수 없다.
+            const detail = event.error.errorMessage?.trim().slice(0, 300);
+            throw new LoungeUnavailableError(`모델 응답을 받지 못했습니다${detail ? `: ${detail}` : ". 인증·사용량·연결 상태를 확인하세요."}`);
           } else if (event.type === "done") {
             authStorage.usage.observe({ provider: member.provider, model: model.id, usage: event.message.usage, costUsd: event.message.usage.cost.total });
             text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("");

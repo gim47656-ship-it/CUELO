@@ -56,6 +56,7 @@ import type {
   ToolInfo,
 } from "./omp-types";
 import type {
+  ExtensionAskDialogQuestion,
   ExtensionAskDialogResult,
   ExtensionUiRequest,
   ExtensionUiResponse,
@@ -66,6 +67,31 @@ import type {
   SubagentSnapshot,
 } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
+
+/** `extension_ui_input` data a timed ask dialog sends while the user is choosing or typing (components/ChatWindow.tsx). */
+const EXTENSION_UI_ACTIVITY = "activity";
+
+/**
+ * Result for an ask whose deadline passed with no answer: each question takes its recommended option,
+ * marked `timedOut` so the tool reports an auto-selection rather than a user choice. The SDK only arms
+ * the deadline when every question carries a valid recommendation; anything else stays a cancellation.
+ */
+function timedOutAskResult(questions: ExtensionAskDialogQuestion[]): ExtensionAskDialogResult | undefined {
+  const results = [];
+  for (const question of questions) {
+    const recommended = question.recommended === undefined ? undefined : question.options[question.recommended];
+    if (!recommended) return undefined;
+    results.push({
+      id: question.id,
+      question: question.question,
+      options: question.options.map((option) => option.label),
+      multi: question.multi ?? false,
+      selectedOptions: [recommended.label],
+      timedOut: true,
+    });
+  }
+  return { kind: "submit", results };
+}
 
 /**
  * 서버가 받은 사용자 스티어링을 한 줄씩 남긴다. 세션 기록(steering:true)과 대조해
@@ -171,6 +197,8 @@ export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdate
 type PendingUiResponse = {
   resolve: (response: ExtensionUiResponse) => void;
   cancel: () => void;
+  /** Restart the timeout on user activity; only timed asks that auto-select a recommendation have it. */
+  activity?: () => void;
 };
 
 type CustomUiComponent = {
@@ -1942,8 +1970,13 @@ export class AgentSessionWrapper {
   }
 
   private handleExtensionUiInput(id: string, data: string): void {
+    if (typeof data !== "string") return;
     const custom = this.activeCustomUis.get(id);
-    if (!custom || typeof data !== "string") return;
+    if (!custom) {
+      // A timed ask dialog reports choosing/typing so the recommendation never overwrites an answer in progress.
+      if (data === EXTENSION_UI_ACTIVITY) this.pendingUiResponses.get(id)?.activity?.();
+      return;
+    }
     try {
       custom.component.handleInput?.(data);
       if (this.activeCustomUis.has(id)) this.emitCustomUiRender(id, custom);
@@ -2032,6 +2065,8 @@ export class AgentSessionWrapper {
     parseResponse: (response: ExtensionUiResponse) => T,
     timeout?: number,
     signal?: AbortSignal,
+    /** Value to settle with when the timeout fires; also lets user activity restart the timeout. */
+    timeoutValue?: () => T,
   ): Promise<T> {
     if (signal?.aborted) return Promise.resolve(defaultValue);
 
@@ -2043,31 +2078,51 @@ export class AgentSessionWrapper {
       ...(timeout ? { timeout, expiresAt: Date.now() + timeout } : {}),
     };
 
-    return new Promise((resolve) => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      const cleanup = () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        signal?.removeEventListener("abort", onAbort);
-        this.pendingUiRequests.delete(id);
-        this.pendingUiResponses.delete(id);
-      };
-      const settle = (value: T, notifyClosed = false) => {
-        cleanup();
-        if (notifyClosed) this.emit({ ...fullRequest, closed: true } as AgentEvent);
-        resolve(value);
-      };
-      const onAbort = () => settle(defaultValue, true);
+    const { promise, resolve } = Promise.withResolvers<T>();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onAbort);
+      this.pendingUiRequests.delete(id);
+      this.pendingUiResponses.delete(id);
+    };
+    // Submit, cancel, abort and timeout can race; only the first one settles.
+    const settle = (value: T, notifyClosed = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (notifyClosed) this.emit({ ...fullRequest, closed: true } as AgentEvent);
+      resolve(value);
+    };
+    const onAbort = () => settle(defaultValue, true);
+    // The server stops waiting at the deadline, so the browser surface is closed with it.
+    const armTimeout = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => settle(timeoutValue ? timeoutValue() : defaultValue, true), timeout);
+    };
 
-      if (timeout) timeoutId = setTimeout(() => settle(defaultValue), timeout);
-      signal?.addEventListener("abort", onAbort, { once: true });
+    if (timeout) armTimeout();
+    signal?.addEventListener("abort", onAbort, { once: true });
 
-      this.pendingUiRequests.set(id, fullRequest as AgentEvent);
-      this.pendingUiResponses.set(id, {
-        resolve: (response) => settle(parseResponse(response)),
-        cancel: () => settle(defaultValue),
-      });
-      this.emit(fullRequest as AgentEvent);
+    this.pendingUiRequests.set(id, fullRequest as AgentEvent);
+    this.pendingUiResponses.set(id, {
+      resolve: (response) => settle(parseResponse(response)),
+      cancel: () => settle(defaultValue),
+      ...(timeout && timeoutValue
+        ? {
+          activity: () => {
+            armTimeout();
+            // Replays after a reconnect carry the extended deadline; the live surface is not re-sent,
+            // so its in-progress selection and typing stay intact.
+            const stored = this.pendingUiRequests.get(id);
+            if (stored) this.pendingUiRequests.set(id, { ...stored, expiresAt: Date.now() + timeout } as AgentEvent);
+          },
+        }
+        : {}),
     });
+    this.emit(fullRequest as AgentEvent);
+    return promise;
   }
 
   private createExtensionUiContext(): ExtensionUiContextLike {
@@ -2086,6 +2141,7 @@ export class AgentSessionWrapper {
         },
         opts?.timeout,
         opts?.signal,
+        () => timedOutAskResult(questions),
       ),
       select: (title, options, opts) => this.requestExtensionUi(
         { method: "select", title, options, ...(opts?.timeout ? { timeout: opts.timeout } : {}) },

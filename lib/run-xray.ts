@@ -34,6 +34,7 @@ import {
   type RunOutcome,
   type RunRoleKind,
   type RunRolePurpose,
+  type RunHelperUsage,
   type RunRoleSegment,
   type RunToolTotal,
   type RunUnmeasuredReason,
@@ -230,10 +231,15 @@ interface TranscriptScan {
   effortTimeline: EffortMark[];
   /** 부모의 `task` 호출에서 뽑은 자식 이름 → 역할 맵. */
   roleMap: Map<string, { agent: string; purpose: RunRolePurpose | null }>;
+  /**
+   * 대화 밖 보조 호출(`model_usage`) entry id → 목적·role. stats.db는 이 행을 대화 응답과 같은
+   * `messages` 표에 넣고 구분 열을 남기지 않으므로 transcript의 id로만 가려낸다.
+   */
+  helperEntries: Map<string, { purpose: string; role: string | null }>;
 }
 
 function emptyScan(): TranscriptScan {
-  return { titles: new Map(), effortTimeline: [], roleMap: new Map() };
+  return { titles: new Map(), effortTimeline: [], roleMap: new Map(), helperEntries: new Map() };
 }
 
 /** 스캔 캐시 상한. 오래된 것부터 버린다. */
@@ -290,6 +296,19 @@ function readTranscriptFile(file: string): TranscriptScan {
     } else if (line.startsWith('{"type":"model_change"') || line.startsWith('{"type":"session"')) {
       // 모델 표기는 DB 실측값을 쓰므로 여기서는 파싱만 통과시키고 버린다.
       continue;
+    } else if (line.startsWith('{"type":"model_usage"')) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const record = parsed as { id?: unknown; purpose?: unknown; role?: unknown };
+      if (typeof record.id !== "string" || !record.id) continue;
+      scan.helperEntries.set(record.id, {
+        purpose: typeof record.purpose === "string" && record.purpose ? record.purpose : "?",
+        role: typeof record.role === "string" && record.role ? record.role : null,
+      });
     } else if (line.startsWith('{"type":"message"')) {
       if (line.includes('"role":"user"')) {
         let parsed: unknown;
@@ -332,6 +351,8 @@ interface MessageRow {
   provider: string;
   timestamp: number;
   duration: number | null;
+  /** 첫 토큰까지(ms). 코어가 부동소수로 남긴다. 미기록은 `null`이며 0과 구분한다. */
+  ttft: number | null;
   stop_reason: string;
   input_tokens: number;
   output_tokens: number;
@@ -456,7 +477,7 @@ function loadSessionDataByParent(db: Database, sessionId: string, parentFile: st
   const placeholders = files.map(() => "?").join(",");
   const messages = db
     .query<MessageRow, string[]>(
-      `SELECT session_file, entry_id, folder, model, provider, timestamp, duration,
+      `SELECT session_file, entry_id, folder, model, provider, timestamp, duration, ttft,
               stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
               total_tokens, cost_total, cost_unpriced, agent_type
        FROM messages WHERE session_file IN (${placeholders}) ORDER BY timestamp ASC, id ASC`,
@@ -523,16 +544,25 @@ function outcomeFromStopReason(stopReason: string): RunOutcome {
   return "running";
 }
 
+/**
+ * 한 역할의 기록을 모은다. `helperEntries`에 있는 행은 대화 밖 보조 호출이다. 토큰·비용·가격 미기록
+ * 수는 역할 합계에 한 번씩 넣고(기존 합계 유지) `helpers`에 내역으로 남긴다. 요청 수·생성시간·
+ * 소요시간 미기록·첫 응답 대기·모델·오류 수는 대화 요청만 센다 — 보조 호출은 `duration`·`ttft`를
+ * 남기지 않으므로 섞으면 생성시간이 거짓으로 "하한"이 되고 대표 모델이 바뀐다.
+ */
 function buildRoleSegment(
   id: string,
   kind: RunRoleKind,
   purpose: RunRolePurpose | null,
   rows: MessageRow[],
+  helperEntries: TranscriptScan["helperEntries"],
   toolCallCount: number,
   efforts: string[],
 ): RunRoleSegment {
   const models: string[] = [];
   const seenModels = new Set<string>();
+  const helpers = new Map<string, RunHelperUsage>();
+  let requestCount = 0;
   let busyMs = 0;
   let startedAt = Number.POSITIVE_INFINITY;
   let endedAt = Number.NEGATIVE_INFINITY;
@@ -544,17 +574,12 @@ function buildRoleSegment(
   let estimatedCostUsd = 0;
   let unpricedRequests = 0;
   let untimedRequests = 0;
+  let ttftMs = 0;
+  let ttftRequests = 0;
   let errorCount = 0;
   let abortedCount = 0;
   for (const row of rows) {
     const label = `${row.provider}/${row.model}`;
-    if (!seenModels.has(label)) {
-      seenModels.add(label);
-      models.push(label);
-    }
-    // `duration`이 없는 요청은 0ms로 더해지므로 busyMs가 하한이 된다. 숨기지 않고 센다.
-    if (row.duration === null) untimedRequests += 1;
-    busyMs += row.duration ?? 0;
     const requestStart = row.timestamp;
     const requestEnd = requestStart + (row.duration ?? 0);
     if (requestStart < startedAt) startedAt = requestStart;
@@ -567,12 +592,54 @@ function buildRoleSegment(
     // 상류 `omp-stats`의 `unpricedRequestSql`과 같은 조건이다.
     const unpriced = row.total_tokens > 0 && row.cost_total === 0
       && (row.provider === "xai-oauth" || row.cost_unpriced === 1);
-    if (unpriced) {
-      unpricedRequests += 1;
-    } else {
-      estimatedCostUsd += row.cost_total;
+    const cost = unpriced ? 0 : row.cost_total;
+    if (unpriced) unpricedRequests += 1;
+    estimatedCostUsd += cost;
+    const failed = row.stop_reason === "error" || row.stop_reason === "length";
+
+    const helperEntry = helperEntries.get(row.entry_id);
+    if (helperEntry) {
+      const key = JSON.stringify([helperEntry.purpose, helperEntry.role, label]);
+      const helper = helpers.get(key) ?? {
+        purpose: helperEntry.purpose,
+        role: helperEntry.role,
+        model: label,
+        requestCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0,
+        unpricedRequests: 0,
+        errorCount: 0,
+      };
+      helper.requestCount += 1;
+      helper.inputTokens += row.input_tokens;
+      helper.outputTokens += row.output_tokens;
+      helper.cacheReadTokens += row.cache_read_tokens;
+      helper.cacheWriteTokens += row.cache_write_tokens;
+      helper.totalTokens += row.total_tokens;
+      helper.estimatedCostUsd += cost;
+      if (unpriced) helper.unpricedRequests += 1;
+      if (failed) helper.errorCount += 1;
+      helpers.set(key, helper);
+      continue;
     }
-    if (row.stop_reason === "error" || row.stop_reason === "length") {
+
+    requestCount += 1;
+    if (!seenModels.has(label)) {
+      seenModels.add(label);
+      models.push(label);
+    }
+    // `duration`이 없는 요청은 0ms로 더해지므로 busyMs가 하한이 된다. 숨기지 않고 센다.
+    if (row.duration === null) untimedRequests += 1;
+    busyMs += row.duration ?? 0;
+    if (row.ttft !== null) {
+      ttftMs += row.ttft;
+      ttftRequests += 1;
+    }
+    if (failed) {
       errorCount += 1;
     } else if (row.stop_reason === "aborted") {
       abortedCount += 1;
@@ -584,7 +651,7 @@ function buildRoleSegment(
     purpose,
     models,
     efforts,
-    requestCount: rows.length,
+    requestCount,
     busyMs,
     spanMs: endedAt - startedAt,
     startedAt,
@@ -597,6 +664,12 @@ function buildRoleSegment(
     estimatedCostUsd,
     unpricedRequests,
     untimedRequests,
+    ttftMs: ttftRequests > 0 ? ttftMs : null,
+    ttftRequests,
+    helpers: [...helpers.values()].sort(
+      (a, b) => b.estimatedCostUsd - a.estimatedCostUsd || b.totalTokens - a.totalTokens
+        || (a.purpose < b.purpose ? -1 : a.purpose > b.purpose ? 1 : a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+    ),
     errorCount,
     abortedCount,
     toolCalls: toolCallCount,
@@ -671,11 +744,12 @@ function buildSessionRuns(data: SessionData): RunDetail[] {
 
     // 다음 사용자 요청이 존재하면 이 창은 이미 닫혔다. 최종 답변 전에 닫혔다면
     // "진행 중"이 아니라 "사용자 개입으로 중단"이다.
+    // 결과는 부모의 마지막 **대화** 응답으로 정한다. 보조 호출(`model_usage`)은 답변 도중이나
+    // 뒤에 `stop`으로 남으므로, 섞으면 최종 답변 없이 끝난 run이 "완료"로 둔갑한다.
     const parentRows = byFile.get(data.parentFile) ?? [];
+    const lastParentReply = parentRows.findLast((row) => !data.parentScan.helperEntries.has(row.entry_id));
     const hasFollowingRequest = index + 1 < data.users.length;
-    const settled = parentRows.length > 0
-      ? outcomeFromStopReason(parentRows[parentRows.length - 1].stop_reason)
-      : "running";
+    const settled = lastParentReply ? outcomeFromStopReason(lastParentReply.stop_reason) : "running";
     const outcome: RunOutcome = settled === "running" && hasFollowingRequest ? "interrupted" : settled;
 
     // 창이 닫힌 run은 마지막 관측 기록(`windowEnd`)에서 끝난다. 그 뒤의 effort 변경은
@@ -691,6 +765,7 @@ function buildSessionRuns(data: SessionData): RunDetail[] {
           "main",
           null,
           parentRows,
+          data.parentScan.helperEntries,
           toolCountByFile.get(data.parentFile) ?? 0,
           windowEfforts(data.parentScan, data.users, index, effortCap),
         ),
@@ -708,6 +783,7 @@ function buildSessionRuns(data: SessionData): RunDetail[] {
           resolved.kind,
           resolved.purpose,
           rows,
+          scan.helperEntries,
           toolCountByFile.get(childFile) ?? 0,
           windowEfforts(scan, data.users, index, effortCap),
         ),

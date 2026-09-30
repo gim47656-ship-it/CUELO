@@ -1,6 +1,6 @@
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 // Gemini의 큰 context를 무조건 채우지 않는다. 48 KiB/파일, 192 KiB/요청은 대량 문서 조사의
@@ -156,7 +156,7 @@ async function collect(input: SkimInput, cwd: string, signal: AbortSignal): Prom
   return { prompt, notes, count: chunks.length };
 }
 
-async function callModel(prompt: string, ctx: ExtensionContext, signal: AbortSignal, requested: typeof GEMINI | typeof DEEPSEEK): Promise<string> {
+export async function callModel(prompt: string, ctx: ExtensionContext, signal: AbortSignal, requested: typeof GEMINI | typeof DEEPSEEK): Promise<string> {
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
@@ -174,6 +174,13 @@ async function callModel(prompt: string, ctx: ExtensionContext, signal: AbortSig
     messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
   }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: requested === DEEPSEEK ? 512 : 1024,
     disableReasoning: true, signal });
+  // judge·cache-warm과 같은 대화 밖 비용 장부(`model_usage`)에 응답이 돌아온 시도만 남긴다. 오류·빈 답
+  // 응답도 청구된 시도라 먼저 기록하고, 응답 없이 던진 예외는 관측한 usage가 없어 남기지 않는다.
+  // ctx 타입은 읽기 전용이지만 런타임 값은 세션의 SessionManager다(extensions/runner.ts).
+  (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
+    purpose: "skim", role: requested === GEMINI ? "skim" : undefined, api: model.api, provider: model.provider,
+    model: model.id, usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
+  }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
   if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
   const answer = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
   if (!answer) throw new Error(`${requested}가 빈 답을 반환했습니다.`);
