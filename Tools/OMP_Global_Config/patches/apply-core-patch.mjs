@@ -7900,6 +7900,21 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 			},`,
 	},
 	{
+		// r3(2026-09-30 사용자 지적 "그 문맥상 계속 따라다니잖아"): 위 알림은 세션 custom 메시지라 이후 모든 요청의
+		// LLM 문맥에 user 메시지로 실렸다. 사람에게 보이는 기록일 뿐 모델이 읽을 내용이 아니므로, 세션·화면에는 남기고
+		// LLM 변환에서만 뺀다. 이미 보낸 세션에서는 한 번 prefix가 바뀌지만 이후는 append-only로 돌아온다.
+		file: "src/session/messages.ts",
+		marker: `if (m.customType === "autolearn-saved") return [];`,
+		anchor: `		case "custom": {
+			if (!isCustomMessageContent(m.content)) return [];
+`,
+		patched: `		case "custom": {
+			if (!isCustomMessageContent(m.content)) return [];
+			// CUELO: the auto-learn notice is for the person reading the transcript, never model context.
+			if (m.customType === "autolearn-saved") return [];
+`,
+	},
+	{
 		// capture가 교훈 맨 앞에 짧은 제목 한 문장을 쓰게 한다(2026-09-30). 알림은 그 첫 문장을 보여 주므로,
 		// 긴 설명형 첫 문장이 잘려 "…"로 끝나지 않는다. 기억 검색에도 제목이 앞에 오는 편이 낫다.
 		file: "src/prompts/system/autolearn-nudge-autocontinue.md",
@@ -8056,6 +8071,34 @@ function parentSubagentServiceTiers(
 	inheritedServiceTier?: ServiceTierByFamily | null,
 ): ServiceTierByFamily {
 	if (inheritedServiceTier === undefined) {`,
+	},
+	// 2026-09-30: 공식 preserved-thinking 문서(platform.claude.com/docs/en/build-with-claude/preserved-thinking)는
+	// Opus 5.5도 Fable 5.1·Sonnet 5.5처럼 thinking 서명을 앞선 system·tools·messages에 묶는다고 한다. 18.4.x
+	// catalog는 Opus 5.5에 thinking-prefix-binding을 빠뜨려, prefix가 바뀐 요청이 drop_block 없이 나가고 신규
+	// 계정에서는 400 뒤 재시도로만 복구된다. 내장 모델은 구워진 models.json 값을 그대로 쓰고, 규칙으로 새로 만드는
+	// 모델(discovery 등)은 rules.json을 쓰므로 두 곳에 prefixBinding과 binding controls(beta, Claude API·Vertex 범위)를
+	// 같이 채운다. Sonnet 5.5 규칙과 같은 모양이다. models.yml은 thinking override의 prefixBinding을 스키마에서 조용히
+	// 버리고 공개 설치에는 없으므로 설정으로 켜지 않는다.
+	{
+		file: "../pi-catalog/src/models.json",
+		marker: '"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
+		anchor: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":false',
+		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
+	},
+	{
+		file: "../pi-catalog/src/compat/rules.json",
+		marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
+		patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+	},
+	// 위 두 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
+	// 있는 Opus 5.5(그리고 upstream의 Sonnet 5.5·Fable 5.1)에서 prefixBinding이 사라진다. override 스키마는 이 필드를
+	// 받지 않으므로, override가 정하지 않았으면 모델 계보가 정한 값을 보존한다.
+	{
+		file: "src/config/model-patch.ts",
+		marker: "// CUELO: prefix binding is model lineage, not config surface.",
+		anchor: "\tif (patch.thinking !== undefined && built.thinking !== undefined) {\n\t\t// Config-authored capability metadata owns the explicit surface; build\n\t\t// first so non-reasoning and wire-disabled models still suppress it.\n\t\tbuilt.thinking = patch.thinking;\n\t}\n",
+		patched: "\tif (patch.thinking !== undefined && built.thinking !== undefined) {\n\t\t// Config-authored capability metadata owns the explicit surface; build\n\t\t// first so non-reasoning and wire-disabled models still suppress it.\n\t\t// CUELO: prefix binding is model lineage, not config surface.\n\t\tbuilt.thinking =\n\t\t\tpatch.thinking.prefixBinding === undefined && built.thinking.prefixBinding === true\n\t\t\t\t? { ...patch.thinking, prefixBinding: true }\n\t\t\t\t: patch.thinking;\n\t}\n",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
