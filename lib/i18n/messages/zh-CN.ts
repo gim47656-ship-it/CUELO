@@ -255,6 +255,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.queued": "已排队 · {count}",
     "chat.recall": "移回输入框",
     "chat.recallTitle": "移除所有排队消息并将其放回输入框编辑",
+    "chat.queueRemove": "仅取消这条排队消息",
     "chat.retrying": "正在重试（{attempt}/{max}）…",
     "chat.loadingCommands": "正在加载命令...",
     "chat.slashCommands": "斜杠命令 · {label}",

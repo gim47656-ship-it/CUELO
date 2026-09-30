@@ -183,6 +183,8 @@ interface Props {
   queuedMessages?: QueuedMessages | null;
   inputHistory?: string[];
   onRecallQueue?: () => void;
+  /** Cancels one queued message; the rest of the queue and the running turn stay as they are. */
+  onRemoveQueuedMessage?: (queue: "steering" | "followUp", text: string) => void;
   slashCommands?: SlashCommandInfo[];
   slashCommandsLoading?: boolean;
   onLoadSlashCommands?: () => Promise<SlashCommandInfo[]> | SlashCommandInfo[];
@@ -439,7 +441,12 @@ function revokeImagePreview(image: AttachedImage): void {
   }
 }
 
-function QueuedMessageRow({ kind, text }: { kind: "steer" | "follow-up"; text: string }) {
+function QueuedMessageRow({ kind, text, onRemove, removeLabel }: {
+  kind: "steer" | "follow-up";
+  text: string;
+  onRemove?: () => void;
+  removeLabel: string;
+}) {
   const parsed = parseDocumentPrompt(text);
   const displayText = parsed
     ? [parsed.message, parsed.documents.map((document) => document.name).join(", ")].filter(Boolean).join(" · ")
@@ -470,7 +477,35 @@ function QueuedMessageRow({ kind, text }: { kind: "steer" | "follow-up"; text: s
       >
         {kind}
       </span>
-      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayText}</span>
+      <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayText}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title={removeLabel}
+          aria-label={removeLabel}
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 20,
+            height: 20,
+            padding: 0,
+            color: "var(--text-dim)",
+            background: "transparent",
+            border: "none",
+            borderRadius: "var(--radius-control)",
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-dim)"; }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -544,7 +579,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   modelRoles, onRoleModelChange, modelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   thinkingLevel, effectiveThinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
-  retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
+  retryInfo, queuedMessages, inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
   soundEnabled, onSoundToggle, onAudioUnlock,
@@ -1903,10 +1938,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               )}
             </div>
             {queuedMessages?.steering.map((text, i) => (
-              <QueuedMessageRow key={`steer-${i}`} kind="steer" text={text} />
+              <QueuedMessageRow
+                key={`steer-${i}`} kind="steer" text={text} removeLabel={t("chat.queueRemove")}
+                onRemove={onRemoveQueuedMessage ? () => onRemoveQueuedMessage("steering", text) : undefined}
+              />
             ))}
             {queuedMessages?.followUp.map((text, i) => (
-              <QueuedMessageRow key={`followup-${i}`} kind="follow-up" text={text} />
+              <QueuedMessageRow
+                key={`followup-${i}`} kind="follow-up" text={text} removeLabel={t("chat.queueRemove")}
+                onRemove={onRemoveQueuedMessage ? () => onRemoveQueuedMessage("followUp", text) : undefined}
+              />
             ))}
           </div>
         )}

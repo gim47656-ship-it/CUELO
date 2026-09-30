@@ -1665,9 +1665,14 @@ export class AgentSessionWrapper {
       }
 
       case "clear_queue": {
-        // Full clear only: omp has no single-item dequeue, and clear+requeue
-        // races against the agent loop pulling messages mid-flight.
         return this.inner.clearQueue();
+      }
+
+      case "remove_queued_message": {
+        const queue = command.queue;
+        if (typeof command.message !== "string") throw new Error("message must be a string");
+        if (queue !== "steering" && queue !== "followUp") throw new Error('queue must be "steering" or "followUp"');
+        return { removed: this.inner.removeQueuedMessage(command.message, queue) };
       }
 
       case "steer": {

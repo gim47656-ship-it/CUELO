@@ -20,6 +20,9 @@ export const AUTO_TALK_INTERVAL_MS: Record<LoungePace, number> = {
   active: 90_000,
 };
 
+/** 자동 발언 한 번에 멤버끼리 주고받는 최대 발언 수. */
+export const AUTO_TALK_TURNS: Record<LoungePace, number> = { slow: 2, normal: 4, active: 6 };
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -123,14 +126,23 @@ export function planReply(input: {
   return { memberIds, everyone: false, allowFollowUp: true, perTurnLimit: PER_TURN_LIMIT };
 }
 
-/** 방금 답한 멤버가 본문에서 부른, 이번 차례에 아직 말하지 않은 첫 멤버. */
-export function pickFollowUp(
-  replyText: string,
-  speakerId: string,
-  candidates: readonly LoungeMemberSpec[],
-  spokenIds: ReadonlySet<string>,
-): string | undefined {
-  return detectMentions(replyText, candidates).find((id) => id !== speakerId && !spokenIds.has(id));
+/**
+ * 방금 말한 멤버 다음에 이어 말할 멤버. 본문에서 부른 다른 멤버가 먼저다(이번 차례에 이미 말했어도
+ * 되받아 말할 수 있다). 부른 멤버가 없고 대기열도 비었으면 말한 멤버를 뺀 참여자 중 가장 오래
+ * 말하지 않은 멤버가 잇는다. `candidates`는 지금 부를 수 있고 아직 대기열에 없는 멤버다.
+ */
+export function pickNextSpeaker(input: {
+  replyText: string;
+  speakerId: string;
+  candidates: readonly LoungeMemberSpec[];
+  messages: readonly LoungeMessage[];
+  queueEmpty: boolean;
+}): string | undefined {
+  const others = input.candidates.filter((member) => member.id !== input.speakerId);
+  const mentioned = detectMentions(input.replyText, others)[0];
+  if (mentioned) return mentioned;
+  if (!input.queueEmpty) return undefined;
+  return byLeastRecent(others, lastSpokeAtByMember(input.messages))[0]?.id;
 }
 
 const TRANSCRIPT_LIMIT = 30;
@@ -158,6 +170,7 @@ export function buildLoungePrompt(input: {
     `너는 단톡방 참여자 ${member.alias}다.`,
     `이 방에는 사용자${others.length > 0 ? `와 ${others.join(", ")}` : ""}가 있다.`,
     "화자 표시나 이름 접두 없이 네가 할 말만 쓴다. 짧게 1~3문장.",
+    "사용자 말만 기다리지 않는다. 바로 앞 발언이 다른 참여자면 그 말에 맞장구·반박·되묻기로 이어 가고, 다른 참여자에게 말을 걸어도 된다.",
     "기본은 한국어다. 분위기에 맞는 짧은 감탄·한마디만 가끔 일본어로 표현해도 되지만, 문장마다 섞거나 긴 답변 전체를 일본어로 쓰지 않는다. 사용자가 일본어로 말하거나 대화 자체가 일본어로 이어질 때만 그 흐름을 따른다. 억지로 일본어를 넣을 필요는 없다.",
     "앞 발언에 아직 뜻이 풀리지 않은 일본어가 있으면 네 말 속에서 한국어 뜻을 짧게 풀어 준다.",
     lastSpeaker

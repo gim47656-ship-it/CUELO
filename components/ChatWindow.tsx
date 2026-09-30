@@ -552,7 +552,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     handleMainPresetChange,
     newSessionAccount,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
-    handleRecallQueue,
+    handleRecallQueue, handleRemoveQueuedMessage,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, ensureNewSession, refreshLiveTranscript,
   } = useAgentSession({
@@ -941,6 +941,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         queuedMessages={queuedMessages}
         inputHistory={inputHistory}
         onRecallQueue={handleRecallQueue}
+        onRemoveQueuedMessage={handleRemoveQueuedMessage}
         slashCommands={slashCommands}
         slashCommandsLoading={slashCommandsLoading}
         onLoadSlashCommands={loadSlashCommands}

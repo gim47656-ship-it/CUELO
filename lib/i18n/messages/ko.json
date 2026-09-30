@@ -244,6 +244,7 @@
  "chat.queued": "대기 중 · {count}",
  "chat.recall": "입력창으로 되돌리기",
  "chat.recallTitle": "대기 중인 메시지를 모두 제거하고 편집할 수 있도록 입력창에 다시 넣습니다",
+ "chat.queueRemove": "이 대기 메시지만 취소",
  "chat.retrying": "재시도 중 ({attempt}/{max})…",
  "chat.loadingCommands": "명령 불러오는 중...",
  "chat.slashCommands": "슬래시 명령 · {label}",

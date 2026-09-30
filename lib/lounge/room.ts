@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { LOUNGE_MEMBERS, type LoungeMemberSpec } from "./roster";
 import {
   AUTO_TALK_INTERVAL_MS,
+  AUTO_TALK_TURNS,
   buildLoungePrompt,
   byLeastRecent,
   lastSpokeAtByMember,
   PER_TURN_LIMIT,
-  pickFollowUp,
+  pickNextSpeaker,
   planReply,
 } from "./scheduler";
 import { isFiniteNumber, isRecord, LOUNGE_PACES, LoungeLoadError, type LoungeRecord, type LoungeStore } from "./store";
@@ -92,11 +93,10 @@ interface ActiveRun {
   controller: AbortController;
   kind: "reply" | "auto";
   queue: string[];
-  spoken: Set<string>;
   calls: number;
   perTurnLimit: number;
+  /** 대기열이 비어도 멤버끼리 perTurnLimit까지 이어 말한다. '전원' 요청만 false. */
   allowFollowUp: boolean;
-  followUpUsed: boolean;
   startedAt: number;
   currentMemberId: string | null;
 }
@@ -492,11 +492,9 @@ export class LoungeRoomEngine {
       // single flight: 말하던 멤버는 끝까지 말하고, 남은 대기열만 새 차례로 바꾼다.
       existing.kind = kind;
       existing.queue = memberIds.slice();
-      existing.spoken = new Set();
       existing.calls = 0;
       existing.perTurnLimit = perTurnLimit;
       existing.allowFollowUp = allowFollowUp;
-      existing.followUpUsed = false;
       this.#emitState();
       return;
     }
@@ -505,11 +503,9 @@ export class LoungeRoomEngine {
       controller: new AbortController(),
       kind,
       queue: memberIds.slice(),
-      spoken: new Set(),
       calls: 0,
       perTurnLimit,
       allowFollowUp,
-      followUpUsed: false,
       startedAt: this.#deps.now(),
       currentMemberId: null,
     };
@@ -529,9 +525,13 @@ export class LoungeRoomEngine {
         const memberId = run.queue.shift()!;
         const record = this.#record!;
         const member = LOUNGE_MEMBERS.find((entry) => entry.id === memberId);
-        if (!member || !record.settings.enabled || !record.settings.participants.includes(memberId)) continue;
-        if (!this.#availability(member).ok) continue;
-        if (run.kind === "auto" && this.#deps.workingMemberIds(record.accountBindings).has(memberId)) continue;
+        // 말하지 못하는 멤버는 건너뛰되 차례는 끊지 않고 다음 사람에게 넘긴다.
+        if (!member || !record.settings.enabled || !record.settings.participants.includes(memberId)
+          || !this.#availability(member).ok
+          || (run.kind === "auto" && this.#deps.workingMemberIds(record.accountBindings).has(memberId))) {
+          this.#queueNext(run, memberId, "");
+          continue;
+        }
         if (this.#callsRemaining() <= 0) break;
 
         // 호출 시각을 먼저 기록한다. 저장하지 못하면 상한을 셀 수 없으므로 호출하지 않는다.
@@ -546,7 +546,6 @@ export class LoungeRoomEngine {
         this.#record = { ...record, callTimestamps: calls };
 
         run.calls += 1;
-        run.spoken.add(memberId);
         run.currentMemberId = memberId;
         const messageId = this.#deps.newId();
         this.#streaming = { generation: run.generation, messageId, memberId, text: "" };
@@ -554,8 +553,10 @@ export class LoungeRoomEngine {
 
         const participants = LOUNGE_MEMBERS.filter((entry) => record.settings.participants.includes(entry.id));
         const prompt = buildLoungePrompt({
-          member, participants, messages: this.#record.messages, mode: run.kind,
-          lastSpeaker: run.queue.length === 0,
+          member, participants, messages: this.#record.messages,
+          // 자동 대화도 첫 발언만 "조용하다"로 연다. 뒤 멤버는 앞 말에 잇는다.
+          mode: run.kind === "auto" && run.calls === 1 ? "auto" : "reply",
+          lastSpeaker: run.queue.length === 0 && (!run.allowFollowUp || run.calls >= run.perTurnLimit),
         });
         let text: string;
         try {
@@ -584,6 +585,7 @@ export class LoungeRoomEngine {
           this.#streaming = null;
           run.currentMemberId = null;
           this.#emitState();
+          this.#queueNext(run, memberId, "");
           continue;
         }
         // stop·OFF 뒤에 도착한 결과는 버린다.
@@ -594,6 +596,7 @@ export class LoungeRoomEngine {
         const finalText = text.trim().slice(0, LOUNGE_TEXT_MAX);
         if (finalText === "") {
           this.#emitState();
+          this.#queueNext(run, memberId, "");
           continue;
         }
         const latest = this.#record!;
@@ -608,14 +611,7 @@ export class LoungeRoomEngine {
         this.#record = next;
         this.#emit({ event: "message", data: { revision: this.#bump(), message } });
 
-        if (run.allowFollowUp && !run.followUpUsed && run.calls < run.perTurnLimit) {
-          const candidates = this.#callableParticipants({ excludeWorking: false }).filter((entry) => !run.queue.includes(entry.id));
-          const followUp = pickFollowUp(finalText, memberId, candidates, run.spoken);
-          if (followUp) {
-            run.followUpUsed = true;
-            run.queue.push(followUp);
-          }
-        }
+        this.#queueNext(run, memberId, finalText);
       }
     } finally {
       if (this.#run === run) {
@@ -625,6 +621,20 @@ export class LoungeRoomEngine {
         this.#scheduleAuto();
       }
     }
+  }
+
+  /**
+   * 방금 차례를 쓴 멤버(말했든 실패했든 건너뛰었든) 다음 화자를 대기열에 넣는다. 부를 수 없는 멤버는
+   * `#callableParticipants`가 빼므로 실패한 멤버가 곧바로 다시 뽑히지 않는다.
+   */
+  #queueNext(run: ActiveRun, speakerId: string, replyText: string): void {
+    if (!run.allowFollowUp || run.calls >= run.perTurnLimit) return;
+    const candidates = this.#callableParticipants({ excludeWorking: run.kind === "auto" })
+      .filter((entry) => !run.queue.includes(entry.id));
+    const nextSpeaker = pickNextSpeaker({
+      replyText, speakerId, candidates, messages: this.#record?.messages ?? [], queueEmpty: run.queue.length === 0,
+    });
+    if (nextSpeaker) run.queue.push(nextSpeaker);
   }
 
   // ── 자동 발언 ────────────────────────────────────────────────────────────
@@ -690,7 +700,7 @@ export class LoungeRoomEngine {
       this.#scheduleAuto();
       return;
     }
-    this.#startTurn("auto", [speaker.id], 1, false);
+    this.#startTurn("auto", [speaker.id], AUTO_TALK_TURNS[record.settings.pace], true);
   }
 
   // ── 조회 ────────────────────────────────────────────────────────────────

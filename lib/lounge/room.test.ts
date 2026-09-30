@@ -5,14 +5,14 @@ import { randomUUID } from "node:crypto";
 import { LoungeRoomEngine, HOURLY_CALL_LIMIT, parseLoungeAction, type LoungeInvokeRequest } from "./room";
 import { createFileLoungeStore, emptyLoungeRecord, type LoungeRecord } from "./store";
 import { LOUNGE_MEMBERS } from "./roster";
-import { detectMentions, planReply, AUTO_TALK_INTERVAL_MS } from "./scheduler";
+import { detectMentions, planReply, AUTO_TALK_INTERVAL_MS, AUTO_TALK_TURNS, PER_TURN_LIMIT } from "./scheduler";
 
 function fixture(initial = emptyLoungeRecord()) {
   let record = structuredClone(initial);
   let now = 1_790_000_000_000;
   let saveError = false;
   let busy = false;
-  const calls: Array<{ request: LoungeInvokeRequest; resolve: (text: string) => void }> = [];
+  const calls: Array<{ request: LoungeInvokeRequest; resolve: (text: string) => void; reject: (error: Error) => void }> = [];
   const timers = new Map<number, { callback: () => void; at: number }>();
   let timerId = 0;
   const deps = {
@@ -21,7 +21,7 @@ function fixture(initial = emptyLoungeRecord()) {
       record = structuredClone(next);
     } },
     invoker: { availability: () => ({ ok: true as const }), invoke(request: LoungeInvokeRequest) {
-      return new Promise<string>((resolve) => calls.push({ request, resolve }));
+      return new Promise<string>((resolve, reject) => calls.push({ request, resolve, reject }));
     } },
     workingMemberIds: () => new Set<string>(),
     autoTalkBlockReason: () => busy ? "작업중" : undefined,
@@ -52,8 +52,20 @@ function fixture(initial = emptyLoungeRecord()) {
 
 async function flush() { await Promise.resolve(); await Promise.resolve(); }
 
+interface DrainTarget {
+  calls: Array<{ resolve: (text: string) => void }>;
+  advance(ms: number): void;
+}
+
+/** `from`부터 새로 생기는 호출을 1초 간격으로 차례로 답해, 더 이어지지 않을 때 전체 호출 수를 돌려준다. */
+async function drain(f: DrainTarget, from: number, reply: (index: number) => string = (index) => `말 ${index}`) {
+  let index = from;
+  while (index < f.calls.length) { f.advance(1000); f.calls[index].resolve(reply(index)); index += 1; await flush(); }
+  return index;
+}
+
 test("중복 요청은 동시·재시작 뒤에도 메시지와 호출을 다시 만들지 않는다", async () => {
-  const f = fixture(); f.enable();
+  const f = fixture(); f.enable({ participants: ["rin"] });
   const send = { action: "send", text: "@린 안녕", requestId: "same" };
   f.dispatch(send); f.dispatch(send);
   expect(f.calls).toHaveLength(1);
@@ -151,21 +163,47 @@ test("자동 발언은 명시 opt-in·사용자 재개 후만, 작업중/잠든 
   const f = fixture(); f.enable({ autoTalk: true });
   f.advance(AUTO_TALK_INTERVAL_MS.normal);
   expect(f.calls).toHaveLength(0);
-  f.dispatch({ action: "send", text: "안녕" }); f.calls[0].resolve("반가워"); await flush();
-  f.calls[1].resolve("나도 반가워"); await flush();
-  const afterReply = f.calls.length;
-  expect(afterReply).toBe(2);
+  f.dispatch({ action: "send", text: "안녕" });
+  const afterReply = await drain(f, 0);
+  // 사용자 한마디 뒤에도 멤버끼리 한 차례 상한까지 번갈아 이어 말한다.
+  expect(afterReply).toBe(PER_TURN_LIMIT);
+  const speakers = f.calls.map((call) => call.request.member.id);
+  expect(speakers.every((id, index) => index === 0 || id !== speakers[index - 1])).toBe(true);
   f.setBusy(true); f.advance(AUTO_TALK_INTERVAL_MS.normal);
   expect(f.calls).toHaveLength(afterReply);
   expect(f.room.snapshot().room.autoTalkPausedReason).toBe("작업중");
   f.setBusy(false); f.advance(AUTO_TALK_INTERVAL_MS.normal);
   expect(f.calls).toHaveLength(afterReply + 1);
-  f.calls[afterReply].resolve("이어서"); await flush();
+  expect(f.calls[afterReply].request.userText).toContain("대화가 잠시 조용하다");
+  const afterAuto = await drain(f, afterReply);
+  expect(afterAuto - afterReply).toBe(AUTO_TALK_TURNS.normal);
+  expect(f.calls[afterReply + 1].request.userText).not.toContain("대화가 잠시 조용하다");
   f.advance(20 * 60_000);
-  expect(f.calls).toHaveLength(afterReply + 1); expect(f.room.snapshot().room.asleep).toBe(true);
+  expect(f.calls).toHaveLength(afterAuto); expect(f.room.snapshot().room.asleep).toBe(true);
   const restarted = new LoungeRoomEngine(f.deps);
   expect(restarted.snapshot().room.asleep).toBe(true);
   restarted.dispose(); f.room.dispose();
+});
+
+test("이어 말하기는 답에서 부른 멤버가 먼저, 없으면 가장 오래 말하지 않은 다른 멤버가 잇는다", async () => {
+  const f = fixture(); f.enable({ participants: ["rin", "mio", "yuki"] });
+  f.dispatch({ action: "send", text: "@린 안녕" });
+  const replies = ["@유키 넌 어때?", "그치", "나도", "@미오 맞지?", "응", "끝"];
+  const total = await drain(f, 0, (index) => replies[index]);
+  expect(total).toBe(PER_TURN_LIMIT);
+  expect(f.calls.map((call) => call.request.member.id)).toEqual(["rin", "yuki", "mio", "rin", "mio", "yuki"]);
+  f.room.dispose();
+});
+
+test("말하지 못한 멤버가 있어도 차례를 끊지 않고 다음 멤버가 잇는다", async () => {
+  const f = fixture(); f.enable({ participants: ["rin", "mio", "yuki"] });
+  f.dispatch({ action: "send", text: "@린 안녕" });
+  f.calls[0].reject(new Error("provider 끊김")); await flush();
+  expect(f.calls.map((call) => call.request.member.id)).toEqual(["rin", "mio"]);
+  // 빈 답도 차례를 넘기고, 방금 실패한 멤버는 다시 뽑히지 않는다.
+  f.calls[1].resolve(""); await flush();
+  expect(f.calls.map((call) => call.request.member.id)).toEqual(["rin", "mio", "yuki"]);
+  f.room.dispose();
 });
 
 test("멘션·답장·전원 순서와 web6 제외", () => {

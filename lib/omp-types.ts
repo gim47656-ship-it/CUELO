@@ -276,6 +276,8 @@ export interface AgentSessionLike {
   readonly queuedMessageCount: number;
   getQueuedMessages(): { steering: readonly string[]; followUp: readonly string[] };
   clearQueue(): { steering: RestoredQueuedMessage[]; followUp: RestoredQueuedMessage[] };
+  /** Removes one pending message (and its hidden attachment context); false once it was already delivered. */
+  removeQueuedMessage(text: string, queue: "steering" | "followUp"): boolean;
   getAllToolNames(): string[];
   getToolByName(name: string): { name: string; description?: string } | undefined;
   getActiveToolNames(): string[];

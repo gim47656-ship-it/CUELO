@@ -2738,6 +2738,25 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [opts.chatInputRef, addNotice]);
 
+  const handleRemoveQueuedMessage = useCallback(async (queue: keyof QueuedMessages, text: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    try {
+      const result = await sendAgentCommand<{ removed?: boolean }>(sid, { type: "remove_queued_message", message: text, queue });
+      // Not removed means omp already delivered it; its queue_update settles the list.
+      if (!result?.removed) return;
+      // Same as recall: queue_update only reaches us while SSE is connected.
+      setQueuedMessages((current) => {
+        const index = current[queue].indexOf(text);
+        if (index < 0) return current;
+        return { ...current, [queue]: current[queue].filter((_, i) => i !== index) };
+      });
+    } catch (e) {
+      console.error("Failed to remove queued message:", e);
+      addNotice({ type: "error", message: "Failed to remove queued message" });
+    }
+  }, [addNotice]);
+
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {
     setThinkingLevel(level);
     if (isNew && !sessionIdRef.current) {
@@ -2998,7 +3017,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     handleMainPresetChange,
     newSessionAccount,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
-    handleRecallQueue,
+    handleRecallQueue, handleRemoveQueuedMessage,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, ensureNewSession, refreshLiveTranscript, setActiveLeafId, setData, setMessages,
     dispatch, setAgentRunning, setForkingEntryId,
