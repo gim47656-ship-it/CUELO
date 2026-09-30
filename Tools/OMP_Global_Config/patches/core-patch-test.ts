@@ -2583,7 +2583,7 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 	} finally { memory.close(); }
 }
 
-console.log("\n[25a-1] autolearn capture — 성공한 저장만 onCaptured 로 알리고, 도중 실패해도 알린다");
+console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문장으로 onCaptured 에 알리고, 도중 실패해도 알린다");
 {
 	const { createAutoLearnCaptureRunner } = await import(`${CORE}/sdk.ts`);
 	const call = (id: string, name: string, args: Record<string, unknown>) => ({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] });
@@ -2607,7 +2607,7 @@ console.log("\n[25a-1] autolearn capture — 성공한 저장만 onCaptured 로 
 					abort: () => {},
 					prompt: async (nudge: unknown) => {
 						messages.push(nudge);
-						messages.push(call("c1", "learn", { memory: "배포 뒤   CUELO 재시작이\n필요하다" }));
+						messages.push(call("c1", "learn", { memory: "배포 뒤   CUELO 재시작이\n필요하다. 재시작 로그의 RESUME_SENT 도 확인한다." }));
 						messages.push(result("c1", "learn", false));
 						messages.push(call("c2", "learn", { memory: "거절된 교훈" }));
 						messages.push(result("c2", "learn", true));
@@ -2623,14 +2623,14 @@ console.log("\n[25a-1] autolearn capture — 성공한 저장만 onCaptured 로 
 	};
 	const ok = await runCapture(false);
 	check(
-		"성공한 learn·manage_skill만 한 번 알리고 실패한 learn은 뺀다",
-		JSON.stringify(ok.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다", "스킬 create: deploy-check"]]) && ok.error === undefined,
+		"성공한 learn·manage_skill만 한 번 알리고 교훈은 첫 문장만, 실패한 learn은 뺀다",
+		JSON.stringify(ok.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다.", "스킬 create: deploy-check"]]) && ok.error === undefined,
 		`reports=${JSON.stringify(ok.reports)} error=${ok.error}`,
 	);
 	const failed = await runCapture(true);
 	check(
 		"capture 가 도중에 실패해도 이미 저장된 교훈은 알리고 오류는 그대로 던진다",
-		JSON.stringify(failed.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다"]]) && failed.error === "provider 끊김",
+		JSON.stringify(failed.reports) === JSON.stringify([["교훈: 배포 뒤 CUELO 재시작이 필요하다."]]) && failed.error === "provider 끊김",
 		`reports=${JSON.stringify(failed.reports)} error=${failed.error}`,
 	);
 }

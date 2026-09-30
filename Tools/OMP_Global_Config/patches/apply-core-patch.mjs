@@ -7575,13 +7575,62 @@ export interface McpSelectEventResult {
 	{
 		// 교훈 자동 저장 표시(2026-09-29 사용자 지적 "교훈 저장이 안 뜬다"): autolearn capture Agent는 본 대화와
 		// 분리돼 저장해도 화면·다음 턴 문맥에 아무것도 남지 않았다. 성공한 learn·manage_skill만 요약해 돌려준다.
+		// r2(2026-09-30 사용자 지적 "... 로 잘리는 것보다 간단 요약이 낫다"): 160자 절단 대신 교훈의 첫 문장을
+		// 온전히 보여 준다. legacyPatched는 r1 적용본.
 		file: "src/sdk.ts",
-		marker: `export function summarizeAutoLearnSaved(`,
+		marker: `function autoLearnHeadline(memory: string): string {`,
 		anchor: `	createSessionId?: () => string;
 }
 
 /** Build a private capture runner over a detached message snapshot and provider session. */`,
 		patched: `	createSessionId?: () => string;
+	/** Receives the capture run's successful \`learn\`/\`manage_skill\` saves so the session can show them. */
+	onCaptured?: (saved: string[]) => void;
+}
+
+/**
+ * Summarize a capture run's successful \`learn\`/\`manage_skill\` calls. Each call is paired with its
+ * result, so a rejected or failed save is never reported as stored.
+ */
+export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from: number): string[] {
+	const text = (value: unknown): string => (typeof value === "string" ? value.replace(/\\s+/g, " ").trim() : "");
+	const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
+	const saved: string[] = [];
+	for (const message of messages.slice(from)) {
+		if (message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") {
+					calls.set(block.id, { name: block.name, args: (block.arguments ?? {}) as Record<string, unknown> });
+				}
+			}
+			continue;
+		}
+		if (message.role !== "toolResult" || message.isError) continue;
+		const call = calls.get(message.toolCallId);
+		if (!call) continue;
+		if (call.name === "learn") {
+			const memory = text(call.args.memory);
+			const skill = call.args.skill as { action?: unknown; name?: unknown } | undefined;
+			const skillNote = skill ? " (스킬 " + text(skill.action) + " " + text(skill.name) + ")" : "";
+			saved.push("교훈: " + autoLearnHeadline(memory) + skillNote);
+		} else if (call.name === "manage_skill") {
+			saved.push("스킬 " + text(call.args.action) + ": " + text(call.args.name));
+		}
+	}
+	return saved;
+}
+
+/** The lesson's first sentence, whole; only a first sentence over 200 chars is cut, at a word boundary. */
+function autoLearnHeadline(memory: string): string {
+	const first = /^.+?[.!?](?=\\s|$)/.exec(memory)?.[0] ?? memory;
+	if (first.length <= 200) return first;
+	const cut = first.slice(0, 200);
+	const space = cut.lastIndexOf(" ");
+	return (space > 100 ? cut.slice(0, space) : cut) + "…";
+}
+
+/** Build a private capture runner over a detached message snapshot and provider session. */`,
+		legacyPatched: `	createSessionId?: () => string;
 	/** Receives the capture run's successful \`learn\`/\`manage_skill\` saves so the session can show them. */
 	onCaptured?: (saved: string[]) => void;
 }
