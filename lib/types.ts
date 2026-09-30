@@ -431,5 +431,7 @@ export interface SessionContext {
   entryIds: string[]; // parallel to messages — the session entry id for each message
   thinkingLevel: string;
   configuredThinkingLevel: string;
+  /** 「Auto, 최대 X」 상한. 현재 가지의 마지막 CUELO 상한 기록이며 없거나 해제면 `null`. */
+  thinkingCeiling: string | null;
   model: { provider: string; modelId: string } | null;
 }

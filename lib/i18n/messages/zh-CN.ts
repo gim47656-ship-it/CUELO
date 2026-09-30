@@ -354,6 +354,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.disableSound": "关闭完成提示音",
     "chat.enableSound": "开启完成提示音",
     "chat.thinkingAuto": "自动选择推理强度",
+    "chat.thinkingAutoCapped": "自动选择，最高 {level}",
     "chat.thinkingOff": "关闭推理",
     "chat.thinkingMinimal": "最低限度推理",
     "chat.thinkingLow": "低强度推理",

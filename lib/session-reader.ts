@@ -18,6 +18,7 @@ import { resolveProject, type ProjectInfo } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent } from "./live-types";
 import { GPT6_REPLY_CUSTOM_TYPE, GPT6_REPLY_SOURCE } from "./gpt6-bridge";
+import { latestThinkingCeiling } from "./thinking-ceiling";
 
 export { getAgentDir };
 
@@ -502,6 +503,7 @@ export function buildSessionContext(
     entryIds,
     thinkingLevel: ompCtx.thinkingLevel ?? "off",
     configuredThinkingLevel: ompCtx.configuredThinkingLevel ?? ompCtx.thinkingLevel ?? "off",
+    thinkingCeiling: latestThinkingCeiling(collectBranchPath(entries, byId, leafId)),
     model: parseDefaultModel(ompCtx.models),
   };
 }

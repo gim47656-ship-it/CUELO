@@ -597,7 +597,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, toolPreset, thinkingLevel,
-    effectiveThinkingLevel,
+    effectiveThinkingLevel, thinkingCeiling,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     runStalled, runStateKnown,
@@ -620,9 +620,10 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     session, newSessionCwd, initialData: initialSessionData, transitioning, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   });
-  // 지금 대화가 어느 Main 프리셋 자리인지. 세션에서는 모델 + 런타임이 답한 실제 계정 자리 +
-  // Auto 설정을 함께 보고, 새 대화에서는 이 대화에 대기 중인 선택만 본다 — 브라우저 전역
-  // 기억이나 「유일한 활성 계정」 추측으로 계정 자리를 메우지 않는다.
+  // 지금 대화가 어느 Main 프리셋 자리인지. provider와 계정 자리가 프리셋과 같으면 그 자리다 —
+  // 모델 칩으로 같은 provider의 다른 모델을 고르거나 추론 강도를 바꿔도 프리셋은 그대로 보인다.
+  // 세션에서는 런타임이 답한 실제 계정 자리를, 새 대화에서는 이 대화에 대기 중인 선택만 본다 —
+  // 브라우저 전역 기억이나 「유일한 활성 계정」 추측으로 계정 자리를 메우지 않는다.
   const sessionAccountFace = useAccountFace(session?.id, displayModelValue?.provider, undefined);
   // 세션 캐릭터가 정해지면 그 캐릭터의 스티커·음성을 미리 받아 둔다. 턴이 끝난 뒤 받으면 늦다.
   const sessionCueAlias = sessionAccountFace?.alias;
@@ -630,17 +631,16 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     if (sessionCueAlias) void preloadCueSoundRef.current?.(sessionCueAlias);
   }, [sessionCueAlias]);
   const mainPresetActiveAlias = useMemo(() => {
-    if (thinkingLevel !== "auto" || !displayModelValue) return null;
+    if (!displayModelValue) return null;
     const accountPosition = isNew
       ? newSessionAccount
       : MAIN_PRESETS.find((entry) => entry.alias === sessionAccountFace?.alias)?.oauthPosition;
     return MAIN_PRESETS.find(
       (entry) =>
         entry.provider === displayModelValue.provider
-        && entry.model === displayModelValue.modelId
         && (entry.oauthPosition === undefined || entry.oauthPosition === accountPosition),
     )?.alias ?? null;
-  }, [displayModelValue, isNew, newSessionAccount, sessionAccountFace, thinkingLevel]);
+  }, [displayModelValue, isNew, newSessionAccount, sessionAccountFace]);
 
   const sessionBusy = agentRunning || bashRunning;
   const cueSessionId = session?.id;
@@ -1169,6 +1169,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
         thinkingLevel={thinkingLevel}
         effectiveThinkingLevel={effectiveThinkingLevel}
+        thinkingCeiling={thinkingCeiling}
         onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
         availableThinkingLevels={availableThinkingLevels}
         thinkingLevelMap={currentThinkingLevelMap}

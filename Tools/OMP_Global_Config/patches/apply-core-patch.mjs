@@ -8100,6 +8100,132 @@ function parentSubagentServiceTiers(
 		anchor: "\tif (patch.thinking !== undefined && built.thinking !== undefined) {\n\t\t// Config-authored capability metadata owns the explicit surface; build\n\t\t// first so non-reasoning and wire-disabled models still suppress it.\n\t\tbuilt.thinking = patch.thinking;\n\t}\n",
 		patched: "\tif (patch.thinking !== undefined && built.thinking !== undefined) {\n\t\t// Config-authored capability metadata owns the explicit surface; build\n\t\t// first so non-reasoning and wire-disabled models still suppress it.\n\t\t// CUELO: prefix binding is model lineage, not config surface.\n\t\tbuilt.thinking =\n\t\t\tpatch.thinking.prefixBinding === undefined && built.thinking.prefixBinding === true\n\t\t\t\t? { ...patch.thinking, prefixBinding: true }\n\t\t\t\t: patch.thinking;\n\t}\n",
 	},
+	// 「Auto, 최대 X」(CUELO 0.6.8): ModelControls의 session 상한은 생성 때 한 번만 정해지고 setter가 없다.
+	// 상한을 바꿀 수 있게 하되, 생성 때 받은 상한(task.maxEffort spawn 상한)은 넓힐 수 없는 하한으로 남긴다 —
+	// 유효 상한은 둘 중 낮은 쪽이다. auto는 상한 전 결과를 기억해 두어 상한을 올리면 그 결과로 돌아간다.
+	// 검증: patches/core-thinking-ceiling-test.ts(미패치 FAIL → 패치 PASS).
+	{
+		file: "src/session/model-controls.ts",
+		marker: "readonly #spawnThinkingLevelCeiling: Effort | undefined;",
+		anchor: `	/** Hard per-session effort ceiling (e.g. a task spawn's \`task.maxEffort\` cap); recovery paths re-clamp to it. */
+	readonly #thinkingLevelCeiling: Effort | undefined;`,
+		patched: `	/** Hard per-session effort ceiling (e.g. a task spawn's \`task.maxEffort\` cap); recovery paths re-clamp to it. */
+	#thinkingLevelCeiling: Effort | undefined;
+	/** CUELO: construction-time (task spawn) ceiling; setThinkingLevelCeiling never widens past it. */
+	readonly #spawnThinkingLevelCeiling: Effort | undefined;
+	/** CUELO: auto's last resolution before the ceiling, so a raised ceiling can restore it. */
+	#autoUncappedLevel: Effort | undefined;`,
+	},
+	{
+		file: "src/session/model-controls.ts",
+		marker: "this.#spawnThinkingLevelCeiling = options.thinkingLevelCeiling;",
+		anchor: "\t\tthis.#thinkingLevelCeiling = options.thinkingLevelCeiling;\n",
+		patched: "\t\tthis.#thinkingLevelCeiling = options.thinkingLevelCeiling;\n\t\tthis.#spawnThinkingLevelCeiling = options.thinkingLevelCeiling;\n",
+	},
+	{
+		file: "src/session/model-controls.ts",
+		marker: "setThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {",
+		anchor: `	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
+	get thinkingLevelCeiling(): Effort | undefined {
+		return this.#thinkingLevelCeiling;
+	}
+`,
+		patched: `	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
+	get thinkingLevelCeiling(): Effort | undefined {
+		return this.#thinkingLevelCeiling;
+	}
+
+	/**
+	 * CUELO: replace the user effort ceiling ("auto, but at most X"); \`undefined\` clears it.
+	 * The construction-time (task spawn) ceiling stays a hard bound: the effective ceiling is the
+	 * lower of the two, so this path never widens a spawn cap. The current level is re-clamped;
+	 * while \`auto\` is configured the resolved level is re-clamped from its pre-ceiling
+	 * resolution and \`auto\` stays configured. \`record: false\` (startup restore) applies the
+	 * ceiling without appending a transcript entry.
+	 */
+	setThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {
+		const spawn = this.#spawnThinkingLevelCeiling;
+		this.#thinkingLevelCeiling =
+			ceiling !== undefined &&
+			(spawn === undefined || THINKING_EFFORTS.indexOf(ceiling) < THINKING_EFFORTS.indexOf(spawn))
+				? ceiling
+				: spawn;
+		const model = this.#model;
+		const previous = this.#thinkingLevel;
+		let next: ThinkingLevel | undefined;
+		if (this.#autoThinking) {
+			const base =
+				this.#autoResolvedLevel === undefined
+					? resolveProvisionalAutoLevel(model)
+					: (this.#autoUncappedLevel ?? this.#autoResolvedLevel);
+			const capped = clampThinkingLevelToCeiling(model, base, this.#thinkingLevelCeiling);
+			if (capped === undefined) return;
+			if (this.#autoResolvedLevel !== undefined) this.#autoResolvedLevel = capped;
+			next = capped;
+		} else {
+			next = resolveThinkingLevelForModel(
+				model,
+				clampThinkingLevelToCeiling(model, previous, this.#thinkingLevelCeiling),
+			);
+		}
+		if (next === previous) return;
+		this.#thinkingLevel = next;
+		this.#applyThinkingLevelToAgent(next);
+		if (record) {
+			this.#host.clearInheritedProviderPromptCacheKey();
+			this.#host.sessionManager.appendThinkingLevelChange(next, this.configuredThinkingLevel());
+		}
+		this.#host.emit(
+			this.#autoThinking
+				? { type: "thinking_level_changed", thinkingLevel: next, configured: AUTO_THINKING }
+				: { type: "thinking_level_changed", thinkingLevel: next },
+		);
+	}
+`,
+	},
+	{
+		// floor 패치가 바꾼 clamp 블록 바로 뒤의 원본 줄에 붙인다(그 항목의 marker·앵커와 겹치지 않는다).
+		file: "src/session/model-controls.ts",
+		marker: "// CUELO: remember the pre-ceiling resolution so raising the ceiling can restore it.",
+		anchor: `		if (effort === undefined) return;
+		const shouldPersistResolution = this.#thinkingLevel !== effort;
+		this.#autoResolvedLevel = effort;`,
+		patched: `		if (effort === undefined) return;
+		// CUELO: remember the pre-ceiling resolution so raising the ceiling can restore it.
+		this.#autoUncappedLevel = raiseToAutoThinkingFloor(
+			model,
+			resolved ??
+				(this.#autoResolvedLevel === undefined ? undefined : (this.#autoUncappedLevel ?? this.#autoResolvedLevel)) ??
+				resolveProvisionalAutoLevel(model),
+			this.#host.settings,
+		);
+		const shouldPersistResolution = this.#thinkingLevel !== effort;
+		this.#autoResolvedLevel = effort;`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\tsetThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {\n\t\tthis.#models.setThinkingLevelCeiling(ceiling, record);",
+		anchor: `	/** Selects the session thinking level and optionally persists it as the default. */
+	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+		this.#models.setThinkingLevel(level, persist);
+	}
+`,
+		patched: `	/** Selects the session thinking level and optionally persists it as the default. */
+	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+		this.#models.setThinkingLevel(level, persist);
+	}
+
+	/** CUELO: replaces the user effort ceiling ("auto, but at most X"); a spawn ceiling still bounds it. */
+	setThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {
+		this.#models.setThinkingLevelCeiling(ceiling, record);
+	}
+
+	/** CUELO: effective effort ceiling, the lower of the spawn ceiling and the user ceiling. */
+	get thinkingLevelCeiling(): Effort | undefined {
+		return this.#models.thinkingLevelCeiling;
+	}
+`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

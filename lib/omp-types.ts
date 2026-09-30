@@ -258,6 +258,13 @@ export interface AgentSessionLike {
   handoff(customInstructions?: string): Promise<{ document: string; savedPath?: string } | undefined>;
   setThinkingLevel(level: string | undefined, persist?: boolean): void;
   configuredThinkingLevel(): string | undefined;
+  /**
+   * 「Auto, 최대 X」 사용자 상한(CUELO core patch). spawn 상한은 넓히지 않고, `record: false`는
+   * 기동 복원처럼 세션 기록에 thinking entry를 남기지 않는다.
+   */
+  setThinkingLevelCeiling(ceiling: string | undefined, record?: boolean): void;
+  /** 유효 상한 — spawn 상한과 사용자 상한 중 낮은 쪽. */
+  readonly thinkingLevelCeiling?: string;
   compact(customInstructions?: string): Promise<unknown>;
   getSessionStats(): Omit<SessionStatsInfo, "sessionName">;
   getLastAssistantText(): string | undefined;

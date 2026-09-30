@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/hero.png" alt="CUELO — AI coding agent workspace and harness for omp" width="100%">
+  <img src="./docs/hero.webp" alt="CUELO — AI coding agent workspace and harness for omp" width="100%">
 </p>
 
 <p align="center">
@@ -46,6 +46,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 - Ctrl+K 팔레트로 모든 대화 내용을 검색해 해당 메시지로 이동하고, 긴 대화 안에서는 Ctrl+F로 가장 오래된 메시지까지 찾습니다. 오른쪽 질문 레일로 내가 한 질문 사이를 오갑니다.
 - 실행이 3분 넘게 조용하면 멈춤 경고를, 서버나 PC가 꺼져 실행이 끊긴 대화를 열면 중단 알림을 보여 줍니다. 컨텍스트 압축 중에는 경과 시간을 표시합니다.
 - 모델 선택기 맨 위에 자주 고른 모델이 나오고, 팔레트에서 넓은 대화 폭을 켤 수 있습니다.
+- 입력창 아래 줄은 Main 프리셋 → 그 제공자의 모델 → 추론 강도 순서이고, 추론 강도는 "자동, 최대 high"처럼 상한을 둔 자동으로도 고를 수 있습니다.
 
 **계정과 자원**
 
@@ -194,6 +195,6 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
-캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.png`는 CUELO 고유 자산입니다.
+캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
 
 코드: [MIT License](./LICENSE)

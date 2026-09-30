@@ -343,6 +343,7 @@
  "chat.disableSound": "완료 알림음 끄기",
  "chat.enableSound": "완료 알림음 켜기",
  "chat.thinkingAuto": "추론 강도 자동 선택",
+ "chat.thinkingAutoCapped": "자동 선택, 최대 {level}",
  "chat.thinkingOff": "추론 끔",
  "chat.thinkingMinimal": "최소 추론",
  "chat.thinkingLow": "낮은 추론",

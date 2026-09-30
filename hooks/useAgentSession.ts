@@ -28,6 +28,7 @@ import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
 import { isRunStalled, RUN_STALL_CHECK_MS } from "@/lib/run-stall";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
+import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
 import {
   COMMAND_OUTPUT_CUSTOM_TYPE,
   isLocalCommandEntryId,
@@ -48,6 +49,7 @@ export interface SessionData {
     entryIds: string[];
     thinkingLevel: string;
     configuredThinkingLevel?: string;
+    thinkingCeiling?: string | null;
     model: { provider: string; modelId: string } | null;
   };
 }
@@ -96,6 +98,7 @@ type AgentStateResponse = {
   systemPrompt?: string;
   thinkingLevel?: string;
   configuredThinkingLevel?: string;
+  thinkingCeiling?: string | null;
   isStreaming?: boolean;
   isPromptRunning?: boolean;
   isBashRunning?: boolean;
@@ -575,6 +578,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return seededLevel && seededLevel !== "off" ? seededLevel as ThinkingLevelOption : "auto";
   });
   const [effectiveThinkingLevel, setEffectiveThinkingLevel] = useState<string | undefined>();
+  /** 「Auto, 최대 X」 상한. `null`이면 상한 없음. */
+  const [thinkingCeiling, setThinkingCeiling] = useState<ThinkingCeiling | null>(null);
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(seededData?.contextUsage ?? null);
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -665,6 +670,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const newSessionAccountRef = useRef<number | null>(null);
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
+  // 세션이 아직 없는 새 대화에서 고른 상한. 세션을 만든 직후 서버에 건다.
+  const thinkingCeilingOverrideRef = useRef<ThinkingCeiling | null>(null);
   // Freeze programmatic scrolling while an outgoing session-switch is pending
   // so the still-live transcript stops moving under the transition overlay.
   const transitioningRef = useRef(false);
@@ -806,6 +813,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setError(null);
       setThinkingLevel((d.context.configuredThinkingLevel ?? d.context.thinkingLevel ?? "off") as ThinkingLevelOption);
       setEffectiveThinkingLevel(d.context.thinkingLevel);
+      setThinkingCeiling((d.context.thinkingCeiling ?? null) as ThinkingCeiling | null);
 
       messagesLoaded = true;
       if (showLoading) setLoading(false);
@@ -826,6 +834,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             setThinkingLevel((liveState.configuredThinkingLevel ?? liveState.thinkingLevel) as ThinkingLevelOption);
             setEffectiveThinkingLevel(liveState.thinkingLevel);
           }
+          if (liveState.thinkingCeiling !== undefined) setThinkingCeiling((liveState.thinkingCeiling ?? null) as ThinkingCeiling | null);
           if (liveState.extensionStatuses !== undefined) setExtensionStatuses(liveState.extensionStatuses ?? []);
           if (liveState.extensionWidgets !== undefined) setExtensionWidgets(liveState.extensionWidgets ?? []);
           if (liveState.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(liveState.queuedMessages));
@@ -951,6 +960,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       };
       const realId = result.sessionId;
       sessionIdRef.current = realId;
+      // 상한은 생성 본문이 아니라 세션 명령으로 건다. 첫 전송보다 먼저 끝나야 첫 턴부터 적용된다.
+      const selectedCeiling = thinkingCeilingOverrideRef.current;
+      if (selectedCeiling !== null) {
+        await sendAgentCommand(realId, { type: "set_thinking_ceiling", ceiling: selectedCeiling });
+      }
       if (result.model && newSessionModelOverrideRef.current === selectedModel) {
         setPendingModel(result.model);
         if (!selectedModel) setNewSessionDefaultModel(result.model);
@@ -2258,10 +2272,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleModelChange = useCallback(async (provider: string, modelId: string) => {
     if (isNew) {
       const selectedModel = { provider, modelId };
+      // 계정 자리는 프리셋이 정한 값이다. 같은 provider 안에서 모델만 바꾸면(프리셋 모델 칩) 그
+      // 계정을 그대로 쓰고, 다른 provider로 가면 그 자리는 더 이상 뜻이 없어 지운다.
+      const keepAccount = newSessionModelOverrideRef.current?.provider === provider;
       newSessionModelOverrideRef.current = selectedModel;
-      // 계정 자리는 프리셋이 정한 값이다. 모델을 직접 고르면 그 선택은 더 이상 유효하지 않다.
-      newSessionAccountRef.current = null;
-      setNewSessionAccount(null);
+      if (!keepAccount) {
+        newSessionAccountRef.current = null;
+        setNewSessionAccount(null);
+      }
       setNewSessionModel(selectedModel);
       setPendingModel(selectedModel);
       const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
@@ -2814,15 +2832,25 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice]);
 
-  const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {
+  /**
+   * thinking 선택. `ceiling`은 「Auto, 최대 X」의 X이고 `auto`와만 짝을 이룬다. 그냥 `auto`나
+   * 구체 level을 고르면 상한을 푼다. 상한을 먼저 바꾼 뒤 level을 건다 — 반대로 하면 구체 level이
+   * 풀리기 전의 상한에 잘린다.
+   */
+  const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption, ceiling: ThinkingCeiling | null = null) => {
+    const nextCeiling = level === "auto" ? ceiling : null;
+    const ceilingChanged = nextCeiling !== thinkingCeiling;
     setThinkingLevel(level);
+    setThinkingCeiling(nextCeiling);
     if (isNew && !sessionIdRef.current) {
       thinkingLevelOverrideRef.current = level;
+      thinkingCeilingOverrideRef.current = nextCeiling;
     }
     setEffectiveThinkingLevel(undefined);
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {
+      if (ceilingChanged) await sendAgentCommand(sid, { type: "set_thinking_ceiling", ceiling: nextCeiling });
       await sendAgentCommand(sid, { type: "set_thinking_level", level });
       await loadSession(sid);
     } catch (e) {
@@ -2830,7 +2858,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       addNotice({ type: "error", message: "Failed to set thinking level" });
       await loadSession(sid);
     }
-  }, [isNew, loadSession, addNotice]);
+  }, [isNew, loadSession, addNotice, thinkingCeiling]);
 
   const handleToolPresetChange = useCallback(async (preset: "none" | "default" | "full") => {
     const toolNames = getToolNamesForPreset(preset);
@@ -2945,6 +2973,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             setThinkingLevel((state.configuredThinkingLevel ?? state.thinkingLevel) as ThinkingLevelOption);
             setEffectiveThinkingLevel(state.thinkingLevel);
           }
+          if (state.thinkingCeiling !== undefined) setThinkingCeiling((state.thinkingCeiling ?? null) as ThinkingCeiling | null);
           if (state.extensionStatuses !== undefined) setExtensionStatuses(state.extensionStatuses ?? []);
           if (state.extensionWidgets !== undefined) setExtensionWidgets(state.extensionWidgets ?? []);
           if (state.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(state.queuedMessages));
@@ -3061,7 +3090,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, newSessionModel, toolPreset, thinkingLevel,
-    effectiveThinkingLevel,
+    effectiveThinkingLevel, thinkingCeiling,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     runStalled, runStateKnown,

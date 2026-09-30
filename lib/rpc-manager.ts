@@ -47,6 +47,7 @@ import type { SlashCommandInfo } from "./omp-types";
 import { recordRuntimeActivity } from "./update-maintenance";
 import { GoalModeController } from "./goal-mode";
 import { registerRootReviver } from "./subagent-revive";
+import { isThinkingCeiling, latestThinkingCeiling, THINKING_CEILING_ENTRY_TYPE } from "./thinking-ceiling";
 import type {
   AgentSessionLike,
   ExtensionInputResultLike,
@@ -270,13 +271,14 @@ const CLOSING_REJECTED_COMMAND_TYPES: Record<string, true> = {
   steer: true,
 };
 
-// 모델·thinking 상태를 바꾸는 명령. Main 프리셋 transaction은 이 셋을 한 동작으로 수행하므로,
+// 모델·thinking 상태를 바꾸는 명령. Main 프리셋 transaction은 모델·계정·thinking을 한 동작으로 수행하므로,
 // 그 사이에 끼어든 다른 mutation은 복원이 그 성공을 덮지 않도록 이 세션 안에서만 거절한다.
 // 조회·중단·steer·follow_up·확장 응답은 그대로 통과한다.
 const MODEL_MUTATION_COMMAND_TYPES: Record<string, true> = {
   set_model: true,
   set_role_model: true,
   set_thinking_level: true,
+  set_thinking_ceiling: true,
 };
 
 type ForkBranchEntry = {
@@ -1441,6 +1443,7 @@ export class AgentSessionWrapper {
           systemPrompt: [this.inner.agent.state?.systemPrompt ?? ""].flat().join("\n"),
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           configuredThinkingLevel: this.inner.configuredThinkingLevel() ?? "off",
+          thinkingCeiling: this.inner.thinkingLevelCeiling ?? null,
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
           subagents: this.getSubagentSnapshots(),
@@ -1650,6 +1653,27 @@ export class AgentSessionWrapper {
           // force the state back so the compat layer can use it correctly.
           if (level === "xhigh" && (this.inner.model as { compat?: { thinkingFormat?: string } } | null)?.compat?.thinkingFormat === "deepseek" && this.inner.agent?.state) {
             this.inner.agent.state.thinkingLevel = "xhigh";
+          }
+          invalidateSessionListCache();
+          return null;
+        } finally {
+          this.modelMutations -= 1;
+        }
+      }
+
+      case "set_thinking_ceiling": {
+        // 「Auto, 최대 X」. 상한을 세션에 적용하고 CUELO custom entry로 남긴다 — custom entry는
+        // 모델 문맥에 들어가지 않고, 다음 기동 때 `restoreThinkingCeiling`이 읽는다.
+        const ceiling = command.ceiling ?? null;
+        if (ceiling !== null && !isThinkingCeiling(ceiling)) {
+          throw new Error(`Invalid thinking ceiling: ${String(ceiling)}`);
+        }
+        this.modelMutations += 1;
+        try {
+          this.inner.setThinkingLevelCeiling(ceiling ?? undefined);
+          const sessionManager = this.inner.sessionManager;
+          if (latestThinkingCeiling(sessionManager.getBranch()) !== ceiling) {
+            sessionManager.appendCustomEntry(THINKING_CEILING_ENTRY_TYPE, { ceiling });
           }
           invalidateSessionListCache();
           return null;
@@ -2444,6 +2468,17 @@ export function notifyRunningChange(): void {
 }
 
 /**
+ * 세션 기록의 마지막 「Auto, 최대 X」 상한을 방금 만든 세션에 다시 건다. 생성 옵션
+ * `thinkingLevelCeiling`은 넓힐 수 없는 spawn 상한이라 쓰지 않는다 — 그러면 다시 연 세션에서
+ * 상한을 올릴 수 없다. 복원은 기록을 새로 남기지 않아(`record: false`) 세션을 열기만 해서는
+ * 파일이 바뀌지 않는다.
+ */
+export function restoreThinkingCeiling(session: Pick<AgentSessionLike, "sessionManager" | "setThinkingLevelCeiling">): void {
+  const ceiling = latestThinkingCeiling(session.sessionManager.getBranch());
+  if (ceiling !== null) session.setThinkingLevelCeiling(ceiling, false);
+}
+
+/**
  * Get or create an AgentSession for the given session.
  * For new sessions (sessionFile === ""), omp generates its own id.
  * New sessions resolve enabledModels before construction so the initial model,
@@ -2561,6 +2596,7 @@ export async function startRpcSession(
       const { session: inner, eventBus, subagentEventBus, setToolUIContext } = await createAgentSession(sessionOptions);
 
       const session = inner as unknown as AgentSessionLike;
+      restoreThinkingCeiling(session);
 
       // If specific tool names were requested (non-empty), set the active tools to the
       // requested builtin coding tools PLUS all extension/package tools, so installed

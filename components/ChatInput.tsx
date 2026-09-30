@@ -59,6 +59,7 @@ import { usePopupPlacement } from "@/hooks/usePopupPlacement";
 import { computePopupPlacement, preferredPopupHeight, POPUP_GAP_PX, type PopupSide } from "@/lib/popup-placement";
 import { useI18n } from "@/hooks/useI18n";
 import { PRESET_DEFAULT, PRESET_FULL } from "@/lib/tool-presets";
+import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
 import {
   MAIN_PRESETS,
   avatarSrcForSeed,
@@ -177,7 +178,13 @@ interface Props {
   onToolPresetChange?: (preset: "none" | "default" | "full") => void;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   effectiveThinkingLevel?: string;
-  onThinkingLevelChange?: (level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
+  /** 「Auto, 최대 X」의 X. `auto`와만 짝을 이루며 `null`이면 상한 없음. */
+  thinkingCeiling?: ThinkingCeiling | null;
+  /** `ceiling`은 `auto`와 함께만 온다. 그냥 `auto`나 구체 level은 상한을 푼다. */
+  onThinkingLevelChange?: (
+    level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+    ceiling?: ThinkingCeiling | null,
+  ) => void;
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -259,6 +266,8 @@ export function filterModelOptions(options: ModelOption[], query: string): Model
 }
 
 const THINKING_LEVELS = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/** 「Auto, 최대 X」로 내놓는 상한. 모델이 지원하는 것만 보인다. */
+const THINKING_CEILING_CHOICES = ["low", "medium", "high", "xhigh"] as const satisfies readonly ThinkingCeiling[];
 const THINKING_LEVEL_DESC_KEYS: Record<typeof THINKING_LEVELS[number], string> = {
   auto: "chat.thinkingAuto", off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
   medium: "chat.thinkingMedium", high: "chat.thinkingHigh", xhigh: "chat.thinkingXhigh", max: "chat.thinkingMax",
@@ -579,7 +588,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   mainPresetActiveAlias,
   modelRoles, onRoleModelChange, modelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
-  thinkingLevel, effectiveThinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
+  thinkingLevel, effectiveThinkingLevel, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
@@ -606,6 +615,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [presetDropdownRect, setPresetDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
+  const [thinkingDropdownRect, setThinkingDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
   const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
@@ -1777,8 +1787,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       name,
     })).sort(compareModelOptions);
   })();
-  const filteredModelOptions = filterModelOptions(modelOptions, modelFilter);
-  const showModelFilter = modelOptions.length > MODEL_FILTER_THRESHOLD;
+  // 지금 자리 표시는 세션·새 대화가 실제로 고른 값에서만 나온다. 브라우저 전역 기억으로
+  // 계정 자리를 메우지 않는다 — 같은 모델의 다른 계정(RIN·MIO)을 다른 세션에 잘못 표시한다.
+  const activePresetAlias = mainPresetActiveAlias ?? null;
+  // 프리셋이 걸려 있으면 모델 칩은 그 provider의 모델만 내놓는다. 계정 자리는 프리셋이 정한 그대로다.
+  const presetProvider = MAIN_PRESETS.find((entry) => entry.alias === activePresetAlias)?.provider ?? null;
+  const pickerOptions = presetProvider ? modelOptions.filter((opt) => opt.provider === presetProvider) : modelOptions;
+  const filteredModelOptions = filterModelOptions(pickerOptions, modelFilter);
+  const showModelFilter = pickerOptions.length > MODEL_FILTER_THRESHOLD;
 
   // Group options by provider, preserving insertion order
   const modelsByProvider: { provider: string; options: ModelOption[] }[] = [];
@@ -1789,13 +1805,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }
 
   // omp's roles, in omp's own order, minus the ones it hides from its selector
-  // and the ones with nothing configured to switch to.
-  const roleRows = (modelRoles ?? []).filter((role) => !role.hidden && role.resolved);
+  // and the ones with nothing configured to switch to. A preset scopes the chip to
+  // one provider, so the roles (which may point anywhere) are left out then.
+  const roleRows = presetProvider ? [] : (modelRoles ?? []).filter((role) => !role.hidden && role.resolved);
   const activeRole = model
     ? roleRows.find((role) => role.resolved?.provider === model.provider && role.resolved?.modelId === model.modelId)
     : undefined;
   // Most-picked models first; the search keeps its plain filtered list.
-  const frequentModels = modelFilter.trim() ? [] : rankFrequentModels(modelPicks, modelOptions);
+  const frequentModels = modelFilter.trim() ? [] : rankFrequentModels(modelPicks, pickerOptions);
   const renderModelOption = (opt: ModelOption, section: string, count?: number) => {
     const isActive = opt.modelId === model?.modelId && opt.provider === model?.provider;
     return (
@@ -1848,20 +1865,28 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
+  const mappedThinkingLevel = (lvl: string) => {
+    const mapped = thinkingLevelMap?.[lvl];
+    return mapped != null && mapped !== lvl ? mapped : null;
+  };
   const thinkingDisplayLabel = (() => {
     const lvl = thinkingLevel ?? "auto";
     if (lvl === "auto") {
+      const base = thinkingCeiling ? `auto ≤ ${mappedThinkingLevel(thinkingCeiling) ?? thinkingCeiling}` : "auto";
       const effective = effectiveThinkingLevel && (thinkingLevelMap?.[effectiveThinkingLevel] ?? effectiveThinkingLevel);
-      return effective ? `auto (${effective})` : "auto";
+      return effective ? `${base} (${effective})` : base;
     }
     if (!thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
   })();
+  // 추론 칩 목록: auto, 「auto ≤ X」, off, 그 모델이 지원하는 구체 level 순서.
+  const supportsThinkingLevel = (lvl: string) => !availableThinkingLevels || availableThinkingLevels.includes(lvl);
+  const thinkingChoices = [
+    { level: "auto" as const, ceiling: null },
+    ...THINKING_CEILING_CHOICES.filter(supportsThinkingLevel).map((ceiling) => ({ level: "auto" as const, ceiling })),
+    ...THINKING_LEVELS.filter((lvl) => lvl !== "auto" && supportsThinkingLevel(lvl)).map((level) => ({ level, ceiling: null })),
+  ];
   const toolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
-
-  // 지금 자리 표시는 세션·새 대화가 실제로 고른 값에서만 나온다. 브라우저 전역 기억으로
-  // 계정 자리를 메우지 않는다 — 같은 모델의 다른 계정(RIN·MIO)을 다른 세션에 잘못 표시한다.
-  const activePresetAlias = mainPresetActiveAlias ?? null;
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -2743,6 +2768,151 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <polyline points="21 15 16 10 5 21" />
               </svg>
             </button>
+            {/* Main 프리셋 — [프리셋][모델][추론] 묶음의 첫 칩. roster의 Main 후보를 한 번에 적용한다.
+                라벨을 접은 모바일에서는 첨부·음성과 같은 정사각 아이콘 버튼이 된다. */}
+            {onMainPresetChange && MAIN_PRESETS.length > 0 && (
+              <div ref={presetDropdownRef} style={{ position: "relative", flexShrink: isMobile ? 1 : 0, minWidth: 0 }}>
+                <button
+                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${presetDropdownOpen ? " is-active" : ""}`}
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setPresetDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
+                    setModelDropdownOpen(false);
+                    setModelFilter("");
+                    setPresetDropdownOpen((open) => !open);
+                  }}
+                  disabled={isStreaming || modelSwitching}
+                  aria-haspopup="menu"
+                  aria-expanded={presetDropdownOpen}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape" || !presetDropdownOpen) return;
+                    e.stopPropagation();
+                    setPresetDropdownOpen(false);
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    maxWidth: "100%",
+                    padding: "4px 8px",
+                    background: presetDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none",
+                    borderRadius: "var(--radius-control)",
+                    color: "var(--text-muted)",
+                    cursor: isStreaming || modelSwitching ? "not-allowed" : "pointer",
+                    fontSize: 12,
+                    opacity: isStreaming ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isStreaming || modelSwitching) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = presetDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                  title={t("chat.mainPreset")}
+                  aria-label={t("chat.mainPreset")}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                    <path d="M12 3l2.2 5.1 5.6.5-4.2 3.7 1.2 5.5L12 15l-4.8 2.8 1.2-5.5L4.2 8.6l5.6-.5z" />
+                  </svg>
+                  {/* 좁은 폭에서는 라벨을 접는다. 한 줄에 다 넣으면 "M…"까지 줄어 뜻이
+                      없어지고, 그 폭은 지금 쓰는 모델 이름이 가져가는 편이 낫다.
+                      이름은 title/aria-label에 그대로 남는다. */}
+                  {isMobile ? null : (
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                      {t("chat.mainPreset")}
+                    </span>
+                  )}
+                </button>
+                {presetDropdownOpen && presetDropdownRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const { side, maxHeight: maxH } = computePopupPlacement(
+                    presetDropdownRect.top,
+                    presetDropdownRect.bottom,
+                    viewportHeight,
+                    preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
+                    { gap: 6, prefer: "above" },
+                  );
+                  const sidePos: React.CSSProperties = side === "above"
+                    ? { bottom: viewportHeight - presetDropdownRect.top + 6 }
+                    : { top: presetDropdownRect.bottom + 6 };
+                  const panelPos: React.CSSProperties = isMobile
+                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
+                    : { left: presetDropdownRect.left, width: "max-content", minWidth: presetDropdownRect.width };
+                  return (
+                    <div
+                      ref={presetDropdownPanelRef}
+                      role="menu"
+                      aria-label={t("chat.mainPreset")}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Escape") return;
+                        setPresetDropdownOpen(false);
+                        presetDropdownRef.current?.querySelector("button")?.focus();
+                      }}
+                      style={{
+                        position: "fixed",
+                        ...sidePos,
+                        ...panelPos,
+                        zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
+                        borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
+                        overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
+                      }}
+                    >
+                      <div style={{ minHeight: 0, overflowY: "auto" }}>
+                        {MAIN_PRESETS.map((entry) => {
+                          const isActive = entry.alias === activePresetAlias;
+                          return (
+                            <button
+                              key={entry.alias}
+                              role="menuitemradio"
+                              aria-checked={isActive}
+                              onClick={() => {
+                                setPresetDropdownOpen(false);
+                                // 적용이 성공했는지는 훅이 정한다 — 여기서 미리 기억하거나
+                                // 체크하지 않는다.
+                                void onMainPresetChange(mainPresetSelection(entry));
+                              }}
+                              title={`${entry.provider}/${entry.model}`}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8,
+                                width: "100%", padding: "7px 12px",
+                                background: isActive ? "var(--bg-selected)" : "none",
+                                border: "none",
+                                color: isActive ? "var(--text)" : "var(--text-muted)",
+                                cursor: "pointer", fontSize: 12, textAlign: "left",
+                                fontWeight: isActive ? 600 : 400,
+                                whiteSpace: "nowrap",
+                              }}
+                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                            >
+                              {isActive
+                                ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                                : <span style={{ width: 10, flexShrink: 0 }} />}
+                              <img className="account-avatar" src={avatarSrcForSeed(entry.seed)} width={20} height={20} alt="" aria-hidden="true" draggable={false} />
+                              <span>{entry.alias}</span>
+                              <span style={{
+                                marginLeft: "auto",
+                                paddingLeft: 12,
+                                color: "var(--text-dim)",
+                                fontSize: 11,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}>
+                                {entry.provider}/{entry.model}
+                                {entry.oauthPosition !== undefined ? ` · OAuth ${entry.oauthPosition}` : ""}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {/* Model selector — visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (
                 <div ref={dropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 0%" : undefined, minWidth: 0 }}>
@@ -2984,32 +3154,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   })()}
                 </div>
             )}
-            {/* Main 프리셋 — 모델 chip 바로 오른쪽에서 roster의 Main 후보를 한 번에 적용한다.
-                라벨을 접은 모바일에서는 첨부·음성과 같은 정사각 아이콘 버튼이 된다. */}
-            {onMainPresetChange && MAIN_PRESETS.length > 0 && (
-              <div ref={presetDropdownRef} style={{ position: "relative", flexShrink: isMobile ? 1 : 0, minWidth: 0 }}>
+            {/* 추론 강도 — 모델 chip 오른쪽의 제 칩. 「auto ≤ X」도 여기서 고른다. 모바일에서는 프리셋
+                칩처럼 라벨을 접은 정사각 아이콘 버튼이 되고, 지금 값은 title/aria-label에 남는다. */}
+            {onThinkingLevelChange && (
+              <div ref={thinkingDropdownRef} style={{ position: "relative", flexShrink: 0, minWidth: 0 }}>
                 <button
-                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${presetDropdownOpen ? " is-active" : ""}`}
+                  type="button"
+                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${thinkingDropdownOpen ? " is-active" : ""}`}
                   onClick={(e) => {
                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setPresetDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
+                    setThinkingDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
                     setModelDropdownOpen(false);
                     setModelFilter("");
-                    setPresetDropdownOpen((open) => !open);
+                    setPresetDropdownOpen(false);
+                    setThinkingDropdownOpen((open) => !open);
                   }}
                   disabled={isStreaming || modelSwitching}
                   aria-haspopup="menu"
-                  aria-expanded={presetDropdownOpen}
+                  aria-expanded={thinkingDropdownOpen}
                   onKeyDown={(e) => {
-                    if (e.key !== "Escape" || !presetDropdownOpen) return;
+                    if (e.key !== "Escape" || !thinkingDropdownOpen) return;
                     e.stopPropagation();
-                    setPresetDropdownOpen(false);
+                    setThinkingDropdownOpen(false);
                   }}
+                  title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
+                  aria-label={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
                   style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    maxWidth: "100%",
-                    padding: "4px 8px",
-                    background: presetDropdownOpen ? "var(--bg-hover)" : "none",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                    padding: isMobile ? 0 : "8px 12px",
+                    height: 32,
+                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
                     border: "none",
                     borderRadius: "var(--radius-control)",
                     color: "var(--text-muted)",
@@ -3024,48 +3198,40 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     e.currentTarget.style.color = "var(--text)";
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.background = presetDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
                     e.currentTarget.style.color = "var(--text-muted)";
                   }}
-                  title={t("chat.mainPreset")}
-                  aria-label={t("chat.mainPreset")}
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
-                    <path d="M12 3l2.2 5.1 5.6.5-4.2 3.7 1.2 5.5L12 15l-4.8 2.8 1.2-5.5L4.2 8.6l5.6-.5z" />
+                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
+                    <line x1="7" y1="18" x2="12" y2="18" />
+                    <line x1="8" y1="21" x2="11" y2="21" />
                   </svg>
-                  {/* 좁은 폭에서는 라벨을 접는다. 한 줄에 다 넣으면 "M…"까지 줄어 뜻이
-                      없어지고, 그 폭은 지금 쓰는 모델 이름이 가져가는 편이 낫다.
-                      이름은 title/aria-label에 그대로 남는다. */}
-                  {isMobile ? null : (
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                      {t("chat.mainPreset")}
-                    </span>
-                  )}
+                  {isMobile ? null : <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
                 </button>
-                {presetDropdownOpen && presetDropdownRect && (() => {
+                {thinkingDropdownOpen && thinkingDropdownRect && (() => {
                   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
                   const { side, maxHeight: maxH } = computePopupPlacement(
-                    presetDropdownRect.top,
-                    presetDropdownRect.bottom,
+                    thinkingDropdownRect.top,
+                    thinkingDropdownRect.bottom,
                     viewportHeight,
                     preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
                     { gap: 6, prefer: "above" },
                   );
                   const sidePos: React.CSSProperties = side === "above"
-                    ? { bottom: viewportHeight - presetDropdownRect.top + 6 }
-                    : { top: presetDropdownRect.bottom + 6 };
+                    ? { bottom: viewportHeight - thinkingDropdownRect.top + 6 }
+                    : { top: thinkingDropdownRect.bottom + 6 };
                   const panelPos: React.CSSProperties = isMobile
                     ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
-                    : { left: presetDropdownRect.left, width: "max-content", minWidth: presetDropdownRect.width };
+                    : { left: thinkingDropdownRect.left, width: "max-content", minWidth: Math.max(180, thinkingDropdownRect.width) };
                   return (
                     <div
-                      ref={presetDropdownPanelRef}
                       role="menu"
-                      aria-label={t("chat.mainPreset")}
+                      aria-label={t("chat.changeReasoningLabel")}
                       onKeyDown={(e) => {
                         if (e.key !== "Escape") return;
-                        setPresetDropdownOpen(false);
-                        presetDropdownRef.current?.querySelector("button")?.focus();
+                        setThinkingDropdownOpen(false);
+                        thinkingDropdownRef.current?.querySelector("button")?.focus();
                       }}
                       style={{
                         position: "fixed",
@@ -3073,57 +3239,48 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         ...panelPos,
                         zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
                         borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
-                        overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
+                        overflowY: "auto", maxHeight: maxH,
                       }}
                     >
-                      <div style={{ minHeight: 0, overflowY: "auto" }}>
-                        {MAIN_PRESETS.map((entry) => {
-                          const isActive = entry.alias === activePresetAlias;
-                          return (
-                            <button
-                              key={entry.alias}
-                              role="menuitemradio"
-                              aria-checked={isActive}
-                              onClick={() => {
-                                setPresetDropdownOpen(false);
-                                // 적용이 성공했는지는 훅이 정한다 — 여기서 미리 기억하거나
-                                // 체크하지 않는다.
-                                void onMainPresetChange(mainPresetSelection(entry));
-                              }}
-                              title={`${entry.provider}/${entry.model}`}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "7px 12px",
-                                background: isActive ? "var(--bg-selected)" : "none",
-                                border: "none",
-                                color: isActive ? "var(--text)" : "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                fontWeight: isActive ? 600 : 400,
-                                whiteSpace: "nowrap",
-                              }}
-                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                            >
-                              {isActive
-                                ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                                : <span style={{ width: 10, flexShrink: 0 }} />}
-                              <img className="account-avatar" src={avatarSrcForSeed(entry.seed)} width={20} height={20} alt="" aria-hidden="true" draggable={false} />
-                              <span>{entry.alias}</span>
-                              <span style={{
-                                marginLeft: "auto",
-                                paddingLeft: 12,
-                                color: "var(--text-dim)",
-                                fontSize: 11,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}>
-                                {entry.provider}/{entry.model}
-                                {entry.oauthPosition !== undefined ? ` · OAuth ${entry.oauthPosition}` : ""}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {thinkingChoices.map(({ level: lvl, ceiling }) => {
+                        const isActive = (thinkingLevel ?? "auto") === lvl && (lvl !== "auto" || (thinkingCeiling ?? null) === ceiling);
+                        const shownLevel = ceiling ?? lvl;
+                        const mapped = lvl === "auto" && ceiling === null ? null : mappedThinkingLevel(shownLevel);
+                        const displayLabel = ceiling ? `auto ≤ ${mapped ?? ceiling}` : (mapped ?? lvl);
+                        const desc = ceiling
+                          ? t("chat.thinkingAutoCapped", { level: mapped ?? ceiling })
+                          : t(THINKING_LEVEL_DESC_KEYS[lvl]);
+                        return (
+                          <button
+                            key={ceiling ? `auto-${ceiling}` : lvl}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={isActive}
+                            onClick={() => { setThinkingDropdownOpen(false); onThinkingLevelChange(lvl, ceiling); }}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 8,
+                              width: "100%", padding: "7px 12px",
+                              background: isActive ? "var(--bg-selected)" : "none",
+                              border: "none",
+                              color: isActive ? "var(--text)" : "var(--text-muted)",
+                              cursor: "pointer", fontSize: 12, textAlign: "left",
+                              fontWeight: isActive ? 600 : 400,
+                              whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                            onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                          >
+                            {isActive
+                              ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                              : <span style={{ width: 10, flexShrink: 0 }} />}
+                            <span style={{ flex: 1 }}>
+                              {displayLabel}
+                              {mapped !== null && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({shownLevel})</span>}
+                            </span>
+                            <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   );
                 })()}
@@ -3206,93 +3363,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 boxShadow: "var(--seed-shadow-s2)",
               }}
             >
-            {!isStreaming && onThinkingLevelChange && (
-              <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
-                <button
-                  className={`composer-chip${thinkingDropdownOpen ? " is-active" : ""}`}
-                  onClick={() => !isStreaming && setThinkingDropdownOpen((v) => !v)}
-                  disabled={isStreaming}
-                   title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
-                   aria-label={t("chat.changeReasoningLabel")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: "8px 12px",
-                    height: 32,
-                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: "var(--radius-control)",
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
-                    <line x1="7" y1="18" x2="12" y2="18" />
-                    <line x1="8" y1="21" x2="11" y2="21" />
-                  </svg>
-                  <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>
-                </button>
-                {thinkingDropdownOpen && (
-                  <div style={{
-                    position: "absolute", bottom: "calc(100% + 6px)", right: 0,
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
-                    overflow: "hidden", minWidth: 180,
-                  }}>
-                    {THINKING_LEVELS.filter((lvl) => {
-                      if (!availableThinkingLevels) return true;
-                      if (lvl === "auto") return true;
-                      return availableThinkingLevels.includes(lvl);
-                    }).map((lvl) => {
-                      const isActive = (thinkingLevel ?? "auto") === lvl;
-                       const desc = t(THINKING_LEVEL_DESC_KEYS[lvl]);
-                      const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                      const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
-                      const showOriginal = mappedVal != null && mappedVal !== lvl;
-                      return (
-                        <button
-                          key={lvl}
-                          onClick={() => { setThinkingDropdownOpen(false); onThinkingLevelChange(lvl); }}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
-                            border: "none",
-                            color: isActive ? "var(--text)" : "var(--text-muted)",
-                            cursor: "pointer", fontSize: 12, textAlign: "left",
-                            fontWeight: isActive ? 600 : 400,
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                        >
-                          {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
-                          <span style={{ flex: 1 }}>
-                            {displayLabel}
-                            {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({lvl})</span>}
-                          </span>
-                          <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
             {!isStreaming && onToolPresetChange && (
               <div ref={toolDropdownRef} style={{ position: "relative" }}>
                 <button

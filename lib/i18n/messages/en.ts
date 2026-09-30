@@ -354,6 +354,7 @@ export const enLocale = {
     "chat.disableSound": "Disable completion sound",
     "chat.enableSound": "Enable completion sound",
     "chat.thinkingAuto": "Automatically select reasoning effort",
+    "chat.thinkingAutoCapped": "Automatic, at most {level}",
     "chat.thinkingOff": "Reasoning off",
     "chat.thinkingMinimal": "Minimal reasoning",
     "chat.thinkingLow": "Low reasoning",
