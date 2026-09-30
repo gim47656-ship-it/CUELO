@@ -7575,10 +7575,10 @@ export interface McpSelectEventResult {
 	{
 		// 교훈 자동 저장 표시(2026-09-29 사용자 지적 "교훈 저장이 안 뜬다"): autolearn capture Agent는 본 대화와
 		// 분리돼 저장해도 화면·다음 턴 문맥에 아무것도 남지 않았다. 성공한 learn·manage_skill만 요약해 돌려준다.
-		// r2(2026-09-30 사용자 지적 "... 로 잘리는 것보다 간단 요약이 낫다"): 160자 절단 대신 교훈의 첫 문장을
-		// 온전히 보여 준다. legacyPatched는 r1 적용본.
+		// r3(2026-09-30 사용자 지적 "... 로 잘리는 것보다 몇 줄 요약이 낫다"): 160자 절단 대신 교훈의 첫 문장(=capture가
+		// 맨 앞에 쓰는 제목, 아래 nudge 항목)만 보여 주고, 그마저 120자를 넘으면 단어 경계에서 줄인다. legacyPatched는 r1 적용본.
 		file: "src/sdk.ts",
-		marker: `function autoLearnHeadline(memory: string): string {`,
+		marker: `	if (first.length <= 120) return first;`,
 		anchor: `	createSessionId?: () => string;
 }
 
@@ -7620,13 +7620,13 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 	return saved;
 }
 
-/** The lesson's first sentence, whole; only a first sentence over 200 chars is cut, at a word boundary. */
+/** The notice headline: the lesson's first sentence, shortened at a word boundary past 120 chars. */
 function autoLearnHeadline(memory: string): string {
 	const first = /^.+?[.!?](?=\\s|$)/.exec(memory)?.[0] ?? memory;
-	if (first.length <= 200) return first;
-	const cut = first.slice(0, 200);
+	if (first.length <= 120) return first;
+	const cut = first.slice(0, 120);
 	const space = cut.lastIndexOf(" ");
-	return (space > 100 ? cut.slice(0, space) : cut) + "…";
+	return (space > 60 ? cut.slice(0, space) : cut).replace(/[\\s,;:(]+$/, "") + "…";
 }
 
 /** Build a private capture runner over a detached message snapshot and provider session. */`,
@@ -7682,11 +7682,25 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 	},
 	{
 		// 저장 결과를 보이는 custom 메시지로 남긴다. idle이면 턴을 시작하지 않고 붙이고, 진행 중이면 aside로 끼운다.
+		// r2: 머리글을 "[교훈 자동 저장] N건"으로 줄이고 3건까지만 보인다. legacyPatched는 r1 적용본.
 		file: "src/sdk.ts",
-		marker: `						{ customType: "autolearn-saved", content, display: true, attribution: "agent" },`,
+		marker: `				const content = ["[교훈 자동 저장] " + saved.length + "건", ...shown].join("\\n");`,
 		anchor: `		const runAutoLearnCapture = createAutoLearnCaptureRunner({
 			sourceAgent: agent,`,
 		patched: `		const runAutoLearnCapture = createAutoLearnCaptureRunner({
+			sourceAgent: agent,
+			onCaptured: saved => {
+				const shown = saved.slice(0, 3).map(line => "- " + line);
+				if (saved.length > 3) shown.push("- 외 " + (saved.length - 3) + "건");
+				const content = ["[교훈 자동 저장] " + saved.length + "건", ...shown].join("\\n");
+				void session
+					.sendCustomMessage(
+						{ customType: "autolearn-saved", content, display: true, attribution: "agent" },
+						session.isStreaming ? { deliverAs: "aside" } : undefined,
+					)
+					.catch(error => logger.warn("Failed to show auto-learn capture result", { error: String(error) }));
+			},`,
+		legacyPatched: `		const runAutoLearnCapture = createAutoLearnCaptureRunner({
 			sourceAgent: agent,
 			onCaptured: saved => {
 				const content = ["[교훈 자동 저장] 이번 턴이 끝난 뒤 별도 capture가 저장했다.", ...saved.map(line => "- " + line)].join("\\n");
@@ -7697,6 +7711,14 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 					)
 					.catch(error => logger.warn("Failed to show auto-learn capture result", { error: String(error) }));
 			},`,
+	},
+	{
+		// capture가 교훈 맨 앞에 짧은 제목 한 문장을 쓰게 한다(2026-09-30). 알림은 그 첫 문장을 보여 주므로,
+		// 긴 설명형 첫 문장이 잘려 "…"로 끝나지 않는다. 기억 검색에도 제목이 앞에 오는 편이 낫다.
+		file: "src/prompts/system/autolearn-nudge-autocontinue.md",
+		marker: "Begin each `learn` memory with one short headline sentence",
+		anchor: "remember with `learn` when memory enabled. If nothing worth keeping, do nothing.",
+		patched: "remember with `learn` when memory enabled. Begin each `learn` memory with one short headline sentence (under 80 characters) that states the lesson, then give the details. If nothing worth keeping, do nothing.",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
