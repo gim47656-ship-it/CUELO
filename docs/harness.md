@@ -33,6 +33,7 @@ Main이 실제 재작업을 지시할 때는 [검수와 수용](../Tools/OMP_Glo
 `REWORK task_id=... role=maker previous_revision=... next_revision=...`와
 `finding_id=... source=...`를 후속 메시지에 넣어야 합니다. 평문 지시만으로 새 attempt가 기록되지는 않습니다.
 REWORK 전송 뒤 시작된 재개 실행은 코어가 같은 job id를 다시 써도 그 실행 하나만 다음 attempt(`#a2` 등)로 기록됩니다.
+CUELO가 재시작된 뒤에도 같은 Main 세션에서 이전 Maker에게 `write agent://<id>`를 보내면, 코어가 그 Maker의 저장된 대화와 도구·프롬프트 계약으로 되살려 메시지를 받게 합니다. 재시작 순간 실행 중이던 도구 호출과 백그라운드 작업은 이어지지 않으며, `isolated` 작업 공간으로 띄운 Maker는 되살리지 않습니다.
 `maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
 모델·강도 자동 조정 근거가 아닙니다.
 

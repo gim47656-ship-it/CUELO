@@ -20,6 +20,8 @@ import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
+import { cfgTaskAgentIdleTtlMs } from "@oh-my-pi/pi-coding-agent/task/settings";
 import {
   readRpcSubagentTranscript,
   RpcSubagentRegistry,
@@ -43,6 +45,7 @@ import { PRESET_FULL } from "./tool-presets";
 import type { SlashCommandInfo } from "./omp-types";
 import { recordRuntimeActivity } from "./update-maintenance";
 import { GoalModeController } from "./goal-mode";
+import { registerRootReviver } from "./subagent-revive";
 import type {
   AgentSessionLike,
   ExtensionInputResultLike,
@@ -2490,7 +2493,7 @@ export async function startRpcSession(
       // omp's own applier, so a prompt file goes through the same templates the
       // CLI renders it with instead of overwriting the whole system prompt.
       applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, systemPrompts.appendPrompt);
-      const { session: inner, eventBus, setToolUIContext } = await createAgentSession(sessionOptions);
+      const { session: inner, eventBus, subagentEventBus, setToolUIContext } = await createAgentSession(sessionOptions);
 
       const session = inner as unknown as AgentSessionLike;
 
@@ -2549,7 +2552,27 @@ export async function startRpcSession(
       const realSessionFile = inner.sessionFile as string | undefined;
       if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);
 
-      wrapper.onDestroy(() => registry.delete(realSessionId));
+      // 재시작 뒤 Main이 `write agent://<child>`를 보내면 그 child를 이 세션의 문맥으로 되살린다
+      // (lib/subagent-revive.ts). 설정은 CLI와 같은 `task.agentIdleTtlMs`를 따른다.
+      const unregisterReviver = realSessionFile
+        ? registerRootReviver(
+          realSessionFile,
+          createPersistedSubagentReviverFactory({
+            session: inner,
+            authStorage: runtime.authStorage,
+            modelRegistry,
+            settings,
+            enableLsp: toolsOption === undefined,
+            eventBus,
+            subagentEventBus,
+          }),
+          () => Math.trunc(Number(cfgTaskAgentIdleTtlMs.get(runtime.settings)) || 0),
+        )
+        : undefined;
+      wrapper.onDestroy(() => {
+        unregisterReviver?.();
+        registry.delete(realSessionId);
+      });
       registry.set(realSessionId, wrapper);
       wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
 
