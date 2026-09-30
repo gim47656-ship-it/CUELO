@@ -13,6 +13,7 @@ import {
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 
 import { matchBlockedCommand } from "./matcher";
+import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
   createOwnershipState,
@@ -816,6 +817,9 @@ export default function commandGuard(pi: ExtensionAPI): void {
     }
 
     if (!isToolCallEventType("bash", event)) return;
+
+    const powerShellReason = matchPowerShellSyntax(event.input.command);
+    if (powerShellReason) return { block: true, reason: powerShellReason };
 
     const sessionCwd = eventSessionCwd(ctx);
     const cwd =

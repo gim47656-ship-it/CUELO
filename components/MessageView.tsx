@@ -9,6 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
+import { formatTokenCount } from "@/lib/format-tokens";
 import {
   getAssistantErrorMessage,
   isHiddenAssistantBlock,
@@ -231,6 +232,12 @@ interface Props {
   writtenFiles?: WrittenFile[];
 }
 
+// One formatter per shape: `toLocale*String` with options builds a new
+// Intl.DateTimeFormat on every call, and every message renders a time.
+let timeFormat: Intl.DateTimeFormat | null = null;
+let dateFormat: Intl.DateTimeFormat | null = null;
+let dateWithYearFormat: Intl.DateTimeFormat | null = null;
+
 function formatTime(ts?: number): string | null {
   if (!ts) return null;
   const d = new Date(ts);
@@ -238,9 +245,12 @@ function formatTime(ts?: number): string | null {
   const isToday = d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  timeFormat ??= new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+  const time = timeFormat.format(d);
   if (isToday) return time;
-  const date = d.toLocaleDateString([], { month: "short", day: "numeric", year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined });
+  const date = d.getFullYear() !== now.getFullYear()
+    ? (dateWithYearFormat ??= new Intl.DateTimeFormat([], { month: "short", day: "numeric", year: "numeric" })).format(d)
+    : (dateFormat ??= new Intl.DateTimeFormat([], { month: "short", day: "numeric" })).format(d);
   return `${date} ${time}`;
 }
 
@@ -1793,6 +1803,10 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
   const summary = getMessageText(message.content);
   const parsedSummary = useMemo(() => parseCompactionSummary(summary), [summary]);
   const time = formatTime(message.timestamp);
+  const tokensBefore = message.details && typeof message.details === "object" && "tokensBefore" in message.details
+    && typeof message.details.tokensBefore === "number" && message.details.tokensBefore > 0
+    ? message.details.tokensBefore
+    : null;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -1818,6 +1832,9 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 650 }}>
             compaction
           </span>
+          {tokensBefore !== null && (
+            <span style={{ fontSize: 11 }}>{t("chat.compactedFrom", { tokens: formatTokenCount(tokensBefore) })}</span>
+          )}
           {time && <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}>{time}</span>}
         </div>
 

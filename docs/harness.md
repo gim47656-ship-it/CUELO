@@ -75,6 +75,8 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
+`bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`로 실행하라고 안내합니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.
+
 ## Typed judgment routing (Jev)
 
 정식 신규 발주나 의미 있는 과제 변경 때 `maker_route`는 작업 분류·등급의 중심 난제·기존 owner 중복 등을 한 번에 판단하도록 사용됩니다. 첫 예상 밖 실패나 보고 검수처럼 다른 경계에서는 [`jev-runtime.ts`](../Tools/OMP_Global_Config/agent/extensions/jev-runtime.ts)가 런타임 advisory로 관측 가능한 사실을 제공하고, Main/owner가 그 사실에 담기지 않은 의미와 승인을 판단합니다. 같은 질문을 반복하거나 Jev 결과를 결정론적 권한·검수로 취급하지 않습니다. 정본은 [subagent 규칙](../Tools/OMP_Global_Config/agent/rules/subagent.md)의 “Typed judgment routing”과 policy `routing.typedJudgmentRouting`입니다.

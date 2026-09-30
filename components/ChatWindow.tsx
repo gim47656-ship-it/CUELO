@@ -1,6 +1,7 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import type {
   AgentMessage,
   AssistantContentBlock,
@@ -18,11 +19,16 @@ import type {
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
-import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan } from "@/lib/transcript-plan";
-import { collectTurnSavedLessons } from "@/lib/turn-saved-lessons";
+import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
+import { collectSavedLessonPlacements } from "@/lib/turn-saved-lessons";
+import { buildChatSearchIndex } from "@/lib/chat-search";
+import { isRunInterrupted } from "@/lib/run-interruption";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
+import { ChatSearchBar } from "./ChatSearchBar";
+import { QuestionRail, type RailQuestion } from "./QuestionRail";
+import { CompactionBanner, InterruptedRunNotice, StallBanner } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
 import { resolveAccountFace, useAccountFace } from "@/hooks/useAccountFaces";
@@ -55,10 +61,13 @@ import { useDragDrop } from "@/hooks/useDragDrop";
 import type { GoalStatusInfo, SessionStatsInfo } from "@/lib/omp-types";
 import {
   captureScrollDistance,
-  getNextVisibleCount,
   getVisibleRenderWindow,
+  loadEarlier,
+  loadLater,
   restoreScrollTop,
-  VISIBLE_PAGE_SIZE,
+  TAIL_WINDOW,
+  windowAround,
+  type RenderWindow,
 } from "@/lib/chat-lazy-load";
 import { parseDocumentPrompt } from "@/lib/document-attachments";
 import {
@@ -113,6 +122,15 @@ interface Props {
   /** 이 캐릭터의 스티커·음성을 미리 받는다. 턴이 끝난 뒤 받으면 폰에서 늦게 뜬다. */
   preloadCueSound?: (alias: string | null | undefined) => Promise<void>;
   unlockAudio?: () => void;
+  /** Open this session at a message found by the palette's transcript search. */
+  jumpRequest?: ChatJumpRequest | null;
+  onJumpHandled?: (id: number) => void;
+}
+
+export interface ChatJumpRequest {
+  id: number;
+  sessionId: string;
+  entryId: string;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -160,15 +178,21 @@ interface HistoricalTranscriptProps {
   sessionBusy: boolean;
   isNew: boolean;
   isStreaming: boolean;
-  /** omp's render-affecting settings, so grouping matches what MessageView draws. */
-  displayOptions: DisplayOptions;
   handleFork: (entryId: string) => void;
   forkingEntryId: string | null;
   handleNavigate: (entryId: string) => void;
   handleEditContent: (message: UserMessage) => void;
   sessionId?: string;
-  visibleCount: number;
+  /** The conversation (user turns and answer runs) and the work log behind it. */
+  main: ConversationRenderItem[];
+  process: ProcessTurnGroup[];
+  /** Rendered conversation items: [startIndex, endIndex). */
+  startIndex: number;
+  endIndex: number;
   sentinelRef: React.RefObject<HTMLDivElement | null>;
+  laterSentinelRef: React.RefObject<HTMLDivElement | null>;
+  /** The item a jump just landed on; it flashes once. */
+  flashItem: number | null;
   t: (key: string, params?: Record<string, string | number>) => string;
   /** Hands the settled work log behind this conversation to the process view. */
   onProcessLogChange: (data: ProcessLogData) => void;
@@ -233,24 +257,35 @@ function writeStoredCues(sessionId: string, cues: readonly LiveCue[]): void {
   }
 }
 
+const EMPTY_SEARCH_INDEX: readonly string[] = [];
+
+// The interrupted-run notice, once dismissed, stays away for that stopping point.
+function interruptionDismissKey(sessionId: string): string {
+  return `omp-web:interrupted-dismissed:${sessionId}`;
+}
+function readDismissedInterruption(sessionId: string): string | null {
+  try {
+    return window.localStorage.getItem(interruptionDismissKey(sessionId));
+  } catch {
+    return null;
+  }
+}
+function writeDismissedInterruption(sessionId: string, entryId: string): void {
+  try {
+    window.localStorage.setItem(interruptionDismissKey(sessionId), entryId);
+  } catch {
+    // Without storage the notice returns on the next visit.
+  }
+}
+
 // Keep cumulative streaming snapshots outside this boundary so React can skip
 // historical projection and JSX construction while only the live bubble changes.
 const HistoricalTranscript = memo(function HistoricalTranscript({
   messages, entryIds, toolResultsMap, modelNames, messageCwd, onOpenFile,
-  sessionBusy, isNew, isStreaming, displayOptions, handleFork, forkingEntryId, handleNavigate,
-  handleEditContent, sessionId, visibleCount, sentinelRef, t,
+  sessionBusy, isNew, isStreaming, handleFork, forkingEntryId, handleNavigate,
+  handleEditContent, sessionId, main, process, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
   onProcessLogChange, cues, cueFollowRef,
 }: HistoricalTranscriptProps) {
-  // The transcript carries the conversation; thinking, tool calls and process
-  // notices are handed to the process view instead of folding inline.
-  const { main, process } = useMemo(
-    () => partitionTranscriptPlan(
-      messages,
-      buildTranscriptRenderPlan(messages, { sessionBusy, isStreaming, hideThinking: displayOptions.hideThinking }),
-      displayOptions,
-    ),
-    [messages, sessionBusy, isStreaming, displayOptions],
-  );
   useEffect(() => {
     onProcessLogChange({
       groups: process,
@@ -264,16 +299,17 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   }, [onProcessLogChange, process, messages, entryIds, toolResultsMap, modelNames, messageCwd, sessionId]);
 
   // A save the agent made itself folds with its tool call into the work log;
-  // it surfaces at the turn's end as the card the auto-learn capture posts.
+  // it surfaces as the card the auto-learn capture posts, right after the answer
+  // or the folded work that holds it - not at the turn's end, which moves.
   const savedLessonNotices = useMemo(() => {
     const notices = new Map<number, CustomMessage>();
-    for (const [anchorIdx, lessons] of collectTurnSavedLessons(process, messages, toolResultsMap)) {
+    for (const [position, lessons] of collectSavedLessonPlacements(main, process, messages, toolResultsMap)) {
       const lines = lessons.map((lesson) => {
         if (lesson.kind === "skill") return t("chat.savedSkill", { action: lesson.action, name: lesson.name });
         const line = t("chat.savedLesson", { memory: lesson.memory });
         return lesson.skill ? `${line} (${t("chat.savedSkill", lesson.skill)})` : line;
       });
-      notices.set(anchorIdx, {
+      notices.set(position, {
         role: "custom",
         customType: AUTOLEARN_SAVED_CUSTOM_TYPE,
         content: [t("chat.lessonsSaved"), ...lines.map((line) => `- ${line}`)].join("\n"),
@@ -281,10 +317,11 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
       });
     }
     return notices;
-  }, [process, messages, toolResultsMap, t]);
+  }, [main, process, messages, toolResultsMap, t]);
 
   // Window the lightweight ordered items, not an already-built JSX transcript.
-  const { startIndex, hasMore } = getVisibleRenderWindow(main.length, visibleCount);
+  const hasMore = startIndex > 0;
+  const hasLater = endIndex < main.length;
   const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
     // A tab-local command result between the answer and the next prompt does
@@ -332,6 +369,23 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     );
   };
 
+  // Each conversation item sits in a box-less holder that names its index, so
+  // search, the question rail and palette jumps can find it in the DOM. Only the
+  // item itself is inside; cards, threads and stickers after it are not its text.
+  const holder = (position: number, node: ReactNode) => {
+    const item = main[position];
+    const question = item.kind === "message" && messages[item.idx]?.role === "user";
+    return (
+      <div
+        data-chat-item={position}
+        data-chat-question={question ? "" : undefined}
+        className={flashItem === position ? "chat-item chat-jump-flash" : "chat-item"}
+      >
+        {node}
+      </div>
+    );
+  };
+
   return (
     <>
       {hasMore && (
@@ -339,11 +393,12 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
           {t("chat.loadEarlier", { count: startIndex })}
         </div>
       )}
-      {main.slice(startIndex).map((item, offset) => {
+      {main.slice(startIndex, endIndex).map((item, offset) => {
+        const position = startIndex + offset;
         // 이 턴의 발화는 그 턴의 마지막 항목 뒤에 붙는다. 어느 항목이 턴의 끝인지는
         // 작업 로그가 턴을 묶는 자리(anchorIdx)와 같은 규칙이라 두 화면이 어긋나지 않는다.
         const turnIndex = item.kind === "message" ? item.anchorIdx ?? item.idx : item.anchorIdx;
-        const next = main[startIndex + offset + 1];
+        const next = main[position + 1];
         const nextTurn = next ? (next.kind === "message" ? next.anchorIdx ?? next.idx : next.anchorIdx) : null;
         // 이 항목부터 다음 항목 직전까지의 메시지에 묶인 스티커를 이 항목 뒤에 붙인다.
         const upper = next ? next.idx : Number.POSITIVE_INFINITY;
@@ -358,9 +413,9 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
           <CueBubble key={`cue-${cue.id}`} sticker={cue.sticker} text={cue.text} tag={cue.tag} followRef={cueFollowRef} />
         ));
         const turnEnds = nextTurn !== turnIndex;
-        const savedNotice = turnEnds ? savedLessonNotices.get(turnIndex) : undefined;
+        const savedNotice = savedLessonNotices.get(position);
         const savedLessons = savedNotice ? (
-          <MessageView key={`saved-lessons-${turnIndex}`} message={savedNotice} cwd={messageCwd} onOpenFile={onOpenFile} />
+          <MessageView key={`saved-lessons-${position}`} message={savedNotice} cwd={messageCwd} onOpenFile={onOpenFile} />
         ) : null;
         const thread = !turnEnds ? null : (
           <InlineTurnThreads
@@ -374,7 +429,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         if (item.kind === "message") {
           return (
             <Fragment key={`message-${item.idx}`}>
-              {renderMessage(item.idx)}
+              {holder(position, renderMessage(item.idx))}
               {savedLessons}
               {thread}
               {cueNodes}
@@ -386,22 +441,27 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         const writtenFiles = extractTurnWrittenFiles(item.precedingBlocks, toolResultsMap, messageCwd);
         return (
           <Fragment key={`answer-${item.idx}-${item.runIndex}`}>
-            {renderMessage(item.idx, {
+            {holder(position, renderMessage(item.idx, {
               keyPrefix: `answer-${item.runIndex}`,
               messageOverride: withAssistantBlocks(messages[item.idx] as AssistantMessage, item.blocks),
               writtenFiles,
-            })}
+            }))}
             {savedLessons}
             {thread}
             {cueNodes}
           </Fragment>
         );
       })}
+      {hasLater && (
+        <div ref={laterSentinelRef} className="py-3 text-center text-xs text-text-muted">
+          {t("chat.loadLater", { count: main.length - endIndex })}
+        </div>
+      )}
     </>
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio }: Props) {
+export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
@@ -539,13 +599,14 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, toolPreset, thinkingLevel,
     effectiveThinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
-    isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
+    isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
+    runStalled, runStateKnown,
     slashCommands, slashCommandsLoading, queuedMessages, subagents, todoPhases: reportedTodoPhases,
     notices, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection,
     agentPhase,
     isNew,
-    autoFollowPaused, resumeAutoFollow,
+    autoFollowPaused, resumeAutoFollow, pauseAutoFollow,
     goalStatus,
     sessionIdRef, messagesEndRef, scrollContainerRef,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange, handleRoleModelChange,
@@ -693,12 +754,34 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }, [onAttentionChange, extensionDialog]);
   useEffect(() => () => onAttentionChange?.(false), [onAttentionChange]);
 
-  // --- Lazy-load historical messages ---
-  // Only render the last N messages initially. When the user scrolls to the
-  // top, load another page while keeping the scroll position stable.
-  const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  // --- The conversation and its render window ---
+  // The transcript carries the conversation; thinking, tool calls and process
+  // notices are handed to the process view instead of folding inline.
+  const { main, process: processGroups } = useMemo(
+    () => partitionTranscriptPlan(
+      messages,
+      buildTranscriptRenderPlan(messages, { sessionBusy, isStreaming: streamState.isStreaming, hideThinking: displayOptions.hideThinking }),
+      displayOptions,
+    ),
+    [messages, sessionBusy, streamState.isStreaming, displayOptions],
+  );
+  // Only a window of the conversation is in the DOM: the last page, growing
+  // upward as the reader scrolls to the top. A jump detaches it around an older
+  // item; new messages then wait below until the reader returns to the latest.
+  const [renderWindow, setRenderWindow] = useState<RenderWindow>(TAIL_WINDOW);
+  const { startIndex, endIndex, hasLater } = getVisibleRenderWindow(main.length, renderWindow);
+  const detached = renderWindow.end !== null && hasLater;
+  const mainLengthRef = useRef(main.length);
+  mainLengthRef.current = main.length;
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const laterSentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
+
+  // A detached window whose end the conversation no longer reaches (branch
+  // switch, compaction) follows the tail again.
+  useEffect(() => {
+    if (renderWindow.end !== null && renderWindow.end >= main.length) setRenderWindow((current) => ({ count: current.count, end: null }));
+  }, [renderWindow.end, main.length]);
 
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
@@ -711,24 +794,172 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         if (entries[0]?.isIntersecting) {
           // Save distance from top before prepending to restore scroll later
           prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
-          setVisibleCount((prev) => getNextVisibleCount(prev));
+          setRenderWindow((current) => loadEarlier(current));
         }
       },
       { root: container, threshold: 0 }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, messages.length, scrollContainerRef]);
+  }, [renderWindow, main.length, scrollContainerRef]);
 
-  // After visibleCount increases (more messages prepended), restore the
-  // scroll position so the viewport doesn't jump.
+  // After more messages are prepended, restore the scroll position so the
+  // viewport doesn't jump.
   useEffect(() => {
     if (prevScrollDistanceRef.current == null) return;
     const container = scrollContainerRef.current;
     if (!container) return;
     container.scrollTop = restoreScrollTop(container.scrollHeight, prevScrollDistanceRef.current);
     prevScrollDistanceRef.current = null;
-  }, [visibleCount, scrollContainerRef]);
+  }, [renderWindow.count, scrollContainerRef]);
+
+  // A detached window grows downward as the reader scrolls to its bottom.
+  useEffect(() => {
+    const sentinel = laterSentinelRef.current;
+    const container = scrollContainerRef.current;
+    if (!sentinel || !container) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) setRenderWindow((current) => loadLater(mainLengthRef.current, current));
+      },
+      { root: container, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [renderWindow, main.length, scrollContainerRef]);
+
+  // --- Jumps: search hits, question rail, palette results ---
+  const [flashItem, setFlashItem] = useState<number | null>(null);
+  const [jumpTick, setJumpTick] = useState(0);
+  const pendingJumpRef = useRef<number | null>(null);
+  const jumpToItem = useCallback((item: number) => {
+    pauseAutoFollow();
+    pendingJumpRef.current = item;
+    setFlashItem(null);
+    setRenderWindow((current) => windowAround(mainLengthRef.current, item, current));
+    setJumpTick((tick) => tick + 1);
+  }, [pauseAutoFollow]);
+  useLayoutEffect(() => {
+    const item = pendingJumpRef.current;
+    const container = scrollContainerRef.current;
+    if (item === null || !container) return;
+    const holder = container.querySelector<HTMLElement>(`[data-chat-item="${item}"]`);
+    if (!holder) return;
+    pendingJumpRef.current = null;
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    container.scrollTop += range.getBoundingClientRect().top - container.getBoundingClientRect().top - 24;
+    setFlashItem(item);
+  }, [jumpTick, renderWindow, main, scrollContainerRef]);
+  useEffect(() => {
+    if (flashItem === null) return;
+    const timer = setTimeout(() => setFlashItem(null), 1800);
+    return () => clearTimeout(timer);
+  }, [flashItem]);
+  // Back from a detached window: swap in the tail and land on its bottom at
+  // once, so the new window's top sentinel never sees the viewport and
+  // prepends mid-scroll. An attached window keeps its loaded range.
+  const snapToTail = useCallback(() => {
+    flushSync(() => setRenderWindow(TAIL_WINDOW));
+    const container = scrollContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [scrollContainerRef]);
+  const returnToLatest = useCallback(() => {
+    if (detached) snapToTail();
+    resumeAutoFollow();
+  }, [detached, snapToTail, resumeAutoFollow]);
+
+  // A palette hit opens this session at one message. The entry may be gone from
+  // the active branch (another branch, compacted away); then say so instead.
+  const handledJumpRef = useRef<number | null>(null);
+  const [jumpMissing, setJumpMissing] = useState(false);
+  useEffect(() => {
+    if (!jumpRequest || handledJumpRef.current === jumpRequest.id) return;
+    if (jumpRequest.sessionId !== session?.id || loading || messages.length === 0) return;
+    handledJumpRef.current = jumpRequest.id;
+    onJumpHandled?.(jumpRequest.id);
+    const messageIdx = entryIds.indexOf(jumpRequest.entryId);
+    if (messageIdx < 0) {
+      setJumpMissing(true);
+      return;
+    }
+    let target = 0;
+    for (let position = 0; position < main.length; position++) {
+      const idx = main[position].idx;
+      if (idx > messageIdx) break;
+      target = position;
+      if (idx === messageIdx) break;
+    }
+    jumpToItem(target);
+  }, [jumpRequest, session?.id, loading, messages.length, entryIds, main, jumpToItem, onJumpHandled]);
+  useEffect(() => {
+    if (!jumpMissing) return;
+    const timer = setTimeout(() => setJumpMissing(false), 6000);
+    return () => clearTimeout(timer);
+  }, [jumpMissing]);
+
+  // --- In-chat find (Ctrl/Cmd+F) over the whole conversation ---
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
+  const searchIndex = useMemo(
+    () => (searchOpen ? buildChatSearchIndex(main, messages) : EMPTY_SEARCH_INDEX),
+    [searchOpen, main, messages],
+  );
+  const revealSearchItem = useCallback((item: number) => {
+    pauseAutoFollow();
+    setRenderWindow((current) => windowAround(mainLengthRef.current, item, current));
+  }, [pauseAutoFollow]);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return;
+      const container = scrollContainerRef.current;
+      // Only the chat the reader is looking at: not a replaced transcript or a covered one.
+      if (!container || !container.checkVisibility({ visibilityProperty: true })) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-capture-keys], [role='dialog']")) return;
+      const editable = target?.closest("input, textarea, select, [contenteditable='true']");
+      if (editable && !editable.closest("[data-chat-composer], .chat-find-bar")) return;
+      event.preventDefault();
+      setSearchOpen(true);
+      setSearchFocusRequest((request) => request + 1);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [scrollContainerRef]);
+
+  // --- Question rail ---
+  const railQuestions = useMemo<RailQuestion[]>(() => {
+    const questions: RailQuestion[] = [];
+    main.forEach((item, position) => {
+      if (item.kind !== "message") return;
+      const text = getUserInputText(messages[item.idx]);
+      if (text !== null) questions.push({ item: position, text });
+    });
+    return questions;
+  }, [main, messages]);
+  const railLayoutKey = `${startIndex}:${endIndex}`;
+
+  // --- A transcript that stops mid-run (server or PC went down) ---
+  // Judged once, on the transcript the session opened with and only once the
+  // server said it is not running; the notice leaves as soon as anything new
+  // arrives. It re-sends nothing.
+  const lastEntryId = entryIds.length > 0 ? entryIds[entryIds.length - 1] : null;
+  const [interruptedAt, setInterruptedAt] = useState<string | null>(null);
+  const interruptionCheckedRef = useRef(false);
+  useEffect(() => {
+    if (interruptionCheckedRef.current || !runStateKnown || loading || !session?.id) return;
+    interruptionCheckedRef.current = true;
+    if (sessionBusy || !lastEntryId || !isRunInterrupted(messages)) return;
+    if (readDismissedInterruption(session.id) === lastEntryId) return;
+    setInterruptedAt(lastEntryId);
+  }, [runStateKnown, loading, session?.id, sessionBusy, lastEntryId, messages]);
+  const dismissInterrupted = useCallback(() => {
+    if (session?.id && interruptedAt) writeDismissedInterruption(session.id, interruptedAt);
+    setInterruptedAt(null);
+  }, [session?.id, interruptedAt]);
+  const showInterrupted = interruptedAt !== null && interruptedAt === lastEntryId && !sessionBusy && !detached;
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = sessionStats
@@ -898,7 +1129,11 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     return () => observer.disconnect();
   }, [loading, scrollContainerRef]);
 
-
+  // Sending from a detached window brings the reader back to the latest, where the new turn appears.
+  const sendFromComposer = useCallback((...args: Parameters<typeof handleSend>) => {
+    if (renderWindow.end !== null) snapToTail();
+    return handleSend(...args);
+  }, [handleSend, renderWindow.end, snapToTail]);
 
   const chatInputElement = (
     <div ref={composerRootRef} data-chat-composer="" style={{ display: "contents" }}>
@@ -907,7 +1142,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         sessionId={session?.id ?? sessionIdRef.current ?? undefined}
         onEnsureSession={isNew && newSessionCwd ? ensureNewSession : undefined}
         onLiveTranscriptPersisted={refreshLiveTranscript}
-        onSend={handleSend}
+        onSend={sendFromComposer}
         onAbort={handleAbort}
         onSteer={agentRunning ? handleSteer : undefined}
         onFollowUp={agentRunning ? handleFollowUp : undefined}
@@ -1180,13 +1415,29 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             pointerEvents: "none",
           }}
         >
-          <div style={{ maxWidth: 820, margin: "0 auto" }}>
+          <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+            <ChatSearchBar
+              open={searchOpen}
+              onClose={closeSearch}
+              containerRef={scrollContainerRef}
+              index={searchIndex}
+              renderedStart={startIndex}
+              renderedEnd={endIndex}
+              contentKey={messages}
+              onReveal={revealSearchItem}
+              onProgrammaticScroll={pauseAutoFollow}
+              focusRequest={searchFocusRequest}
+              t={t}
+            />
+            {jumpMissing && (
+              <div className="chat-jump-missing" role="status">{t("chat.jumpMissing")}</div>
+            )}
             <NoticeShelf notices={notices} floating align="right" />
           </div>
         </div>
         <div ref={scrollContainerRef} className="chat-session-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             <InlineUtterancesProvider utterances={inlineUtterances}>
@@ -1200,21 +1451,26 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 sessionBusy={sessionBusy}
                 isNew={isNew}
                 isStreaming={streamState.isStreaming}
-                displayOptions={displayOptions}
                 handleFork={handleFork}
                 forkingEntryId={forkingEntryId}
                 handleNavigate={handleNavigate}
                 handleEditContent={handleEditContent}
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
-                visibleCount={visibleCount}
+                main={main}
+                process={processGroups}
+                startIndex={startIndex}
+                endIndex={endIndex}
                 sentinelRef={sentinelRef}
+                laterSentinelRef={laterSentinelRef}
+                flashItem={flashItem}
                 t={t}
                 cues={cues}
                 cueFollowRef={cueFollowRef}
                 onProcessLogChange={publishProcessLog}
               />
             </InlineUtterancesProvider>
-            {streamState.isStreaming && streamState.streamingMessage && liveAnswerBlocks.length > 0 && (
+            {/* A detached window ends above the live tail; the run keeps streaming and shows on return. */}
+            {!detached && streamState.isStreaming && streamState.streamingMessage && liveAnswerBlocks.length > 0 && (
               <MessageView
                 message={withAssistantBlocks(streamState.streamingMessage as AssistantMessage, liveAnswerBlocks)}
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
@@ -1224,15 +1480,17 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 onOpenFile={onOpenFile}
               />
             )}
+            {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}
 
             <div ref={messagesEndRef} />
             </div>
           </div>
         </div>
-        {sessionBusy && autoFollowPaused && (
+        <QuestionRail questions={railQuestions} containerRef={scrollContainerRef} layoutKey={railLayoutKey} onJump={jumpToItem} label={t("chat.questionRail")} />
+        {((sessionBusy && autoFollowPaused) || detached) && (
           <button
             type="button"
-            onClick={resumeAutoFollow}
+            onClick={returnToLatest}
             aria-label={t("chat.jumpToBottom")}
             title={t("chat.jumpToBottom")}
             style={{
@@ -1269,7 +1527,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
       <div ref={composerDockRef} className="relative chat-composer-dock">
         {extensionDialog && (
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div style={{ maxWidth: 820, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
               <ExtensionDialog
                 request={extensionDialog}
                 onRespond={respondToExtensionUi}
@@ -1284,7 +1542,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
           }}
         >
-          <div style={{ maxWidth: 820, margin: "0 auto" }}>
+          <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
+            <StallBanner stalled={runStalled && agentRunning} t={t} />
+            <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
             <ExtensionWidgets widgets={belowEditorWidgets} />
             {todoPhases && <TodoStrip phases={todoPhases} />}

@@ -5,6 +5,8 @@ export interface ProcessEntry {
   idx: number;
   /** Set when only part of a message folds, so the renderer overrides its content. */
   blocks?: AssistantContentBlock[];
+  /** Index in `main` of the conversation item this work follows; -1 before any. Set by `partitionTranscriptPlan`. */
+  afterMainIndex?: number;
 }
 
 export type TranscriptRenderItem =
@@ -314,7 +316,8 @@ export function partitionTranscriptPlan(
   const addEntries = (turnIdx: number, entries: ProcessEntry[], toolCalls: number): void => {
     if (entries.length === 0) return;
     const target = groupFor(turnIdx);
-    for (const entry of entries) target.entries.push(entry);
+    const afterMainIndex = main.length - 1;
+    for (const entry of entries) target.entries.push({ ...entry, afterMainIndex });
     target.messageCount += entries.length;
     target.toolCallCount += toolCalls;
   };

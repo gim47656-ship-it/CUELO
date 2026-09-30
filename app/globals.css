@@ -1877,6 +1877,371 @@ span.linenumber {
   white-space: nowrap;
 }
 
+/* --- palette: transcript search ------------------------------------------- */
+.palette-search > input {
+  display: block;
+  inline-size: 100%;
+  block-size: 44px;
+  padding-inline: 14px;
+  border: 0;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.palette-search-results {
+  max-block-size: min(46vh, 420px);
+  overflow-y: auto;
+  border-block-end: 1px solid var(--border);
+}
+
+.palette-search-status {
+  margin: 0;
+  padding: 6px 14px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.palette-search-list {
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+}
+
+.palette-search-list button {
+  display: grid;
+  gap: 3px;
+  min-block-size: 44px;
+  padding: 8px 14px;
+  border: 0;
+  background: var(--bg);
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.palette-search-list button:hover {
+  background: var(--bg-hover);
+}
+
+.palette-search-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-inline-size: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.palette-search-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-search-title small {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.palette-search-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.palette-search-snippet mark {
+  border-radius: 2px;
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+/* --- chat: in-conversation find ------------------------------------------- */
+.chat-find-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  inline-size: min(380px, 100%);
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-float);
+  pointer-events: auto;
+}
+
+.chat-find-bar input {
+  flex: 1;
+  min-inline-size: 0;
+  block-size: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.chat-find-bar input:focus-visible {
+  outline: none;
+}
+
+.chat-find-bar:focus-within {
+  border-color: var(--accent-line);
+}
+
+.chat-find-count {
+  flex-shrink: 0;
+  padding-inline: 6px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chat-find-bar button {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  inline-size: 32px;
+  block-size: 32px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.chat-find-bar button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.chat-find-bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+::highlight(cuelo-chat-search) {
+  background-color: var(--warning-soft);
+}
+
+::highlight(cuelo-chat-search-active) {
+  background-color: var(--warning);
+  color: var(--bg);
+}
+
+.chat-jump-missing {
+  max-inline-size: min(100%, 420px);
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Box-less holder around each conversation item (search, rail, jumps). */
+.chat-item {
+  display: contents;
+}
+
+.chat-jump-flash > * {
+  animation: chat-jump-flash 1.6s ease-out;
+}
+
+@keyframes chat-jump-flash {
+  from {
+    border-radius: var(--radius-surface);
+    background-color: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-line);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-jump-flash > * {
+    border-radius: var(--radius-surface);
+    animation: none;
+    outline: 2px solid var(--accent-line);
+    outline-offset: 4px;
+  }
+}
+
+/* --- chat: question rail ---------------------------------------------------
+   Sits in the transcript's right edge: outside the column on wide screens and
+   inside the 16px column padding on phones, clear of messages and composer. */
+.question-rail {
+  position: absolute;
+  inset-block: 48px 56px;
+  inset-inline-end: 2px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  inline-size: 12px;
+}
+
+.question-rail-list {
+  display: flex;
+  flex-direction: column;
+  max-block-size: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.question-rail-list::-webkit-scrollbar {
+  display: none;
+}
+
+.question-rail-tick {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center end;
+  inline-size: 12px;
+  block-size: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.question-rail-tick > span {
+  inline-size: 7px;
+  block-size: 2px;
+  border-radius: 1px;
+  background: var(--border-strong);
+  transition: inline-size 0.12s ease, background-color 0.12s ease;
+}
+
+.question-rail-tick:hover > span {
+  inline-size: 12px;
+  background: var(--text-muted);
+}
+
+.question-rail-tick[aria-current="true"] > span {
+  inline-size: 12px;
+  block-size: 3px;
+  background: var(--accent);
+}
+
+.question-rail-tick:focus-visible {
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .question-rail-tick > span {
+    transition: none;
+  }
+}
+
+/* --- chat: run status in the composer dock --------------------------------- */
+.run-status-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-block-end: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.run-status-label {
+  flex-shrink: 0;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.run-status-line[data-tone="warning"] {
+  border-color: var(--warning-line);
+}
+
+.run-status-line[data-tone="warning"] .run-status-label {
+  color: var(--warning);
+}
+
+.run-status-line[data-tone="accent"] .run-status-label {
+  color: var(--accent);
+}
+
+.run-status-text {
+  min-inline-size: 0;
+  flex: 1;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.interrupted-run-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block: 4px 16px;
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--warning-line);
+  border-radius: var(--radius-surface);
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+.interrupted-run-mark {
+  flex-shrink: 0;
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.interrupted-run-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-inline-size: 0;
+  font-size: 14px;
+}
+
+.interrupted-run-text > span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.interrupted-run-notice button {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  inline-size: 32px;
+  block-size: 32px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.interrupted-run-notice button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* --- chat: wide column toggle (desktop only; phones never hit the cap) ---- */
+.workspace-shell[data-chat-wide="true"] .chat-column-cap,
+.workspace-shell[data-chat-wide="true"] .chat-session-column .chat-session-scroll > div,
+.workspace-shell[data-chat-wide="true"] .chat-session-column .chat-session-scroll > div > div {
+  max-inline-size: none !important;
+  max-width: none !important;
+}
+
 .sidebar-overlay-backdrop {
   position: fixed;
   z-index: 199;

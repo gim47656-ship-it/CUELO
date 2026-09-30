@@ -5,7 +5,8 @@ import { useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/n
 import { ActionButton, Icon, Menu, ToggleButton } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
-import { ChatWindow } from "./ChatWindow";
+import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
+import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { SettingsConfig } from "./SettingsConfig";
@@ -99,6 +100,7 @@ type AutoNameStatus =
 // the palette traps Tab inside, the drawer's background is inert instead.
 const TRANSIENT_LAYER_FOCUSABLE_SELECTOR =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+const WIDE_CHAT_STORAGE_KEY = "omp-web:wide-chat";
 function createAppSideChatStore() {
   try {
     return createSideChatHistoryStore(typeof window === "undefined" ? null : window.localStorage);
@@ -150,6 +152,32 @@ export function AppShell({
   const [preloadedSessionData, setPreloadedSessionData] = useState<SessionData | null>(null);
   const sessionPreloadRequestRef = useRef(0);
   const sessionPreloadAbortRef = useRef<AbortController | null>(null);
+  // A palette search hit waiting for its session's chat to open at that message.
+  const [chatJump, setChatJump] = useState<ChatJumpRequest | null>(null);
+  const chatJumpIdRef = useRef(0);
+  const handleChatJumpHandled = useCallback((id: number) => {
+    setChatJump((current) => (current?.id === id ? null : current));
+  }, []);
+  // Wide chat drops the transcript's column cap on wide screens; per browser.
+  const [wideChat, setWideChat] = useState(false);
+  useEffect(() => {
+    try {
+      setWideChat(window.localStorage.getItem(WIDE_CHAT_STORAGE_KEY) === "1");
+    } catch {
+      // Without storage the standard width stays.
+    }
+  }, []);
+  const toggleWideChat = useCallback(() => {
+    setWideChat((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(WIDE_CHAT_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // The choice lasts for this tab only.
+      }
+      return next;
+    });
+  }, []);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
@@ -1734,6 +1762,7 @@ export function AppShell({
       data-active-view={workspaceLayout.activeView}
       data-deck-mode={pinDecision.deck}
       data-deck-visible={showAuxiliaryDeck}
+      data-chat-wide={wideChat ? "true" : undefined}
     >
       {/* Navigator drawer backdrop */}
       <div
@@ -2274,6 +2303,8 @@ export function AppShell({
               playCueSound={playCueSound}
               preloadCueSound={preloadCueSound}
               unlockAudio={unlockAudio}
+              jumpRequest={chatJump}
+              onJumpHandled={handleChatJumpHandled}
             />
           ) : showAuxiliaryDeck && pinDecision.deck === "view-stack" ? (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
@@ -2354,6 +2385,16 @@ export function AppShell({
               <strong>{locale === "ko" ? "명령 팔레트" : "Command palette"}</strong>
               <kbd>Ctrl K</kbd>
             </header>
+            <PaletteTranscriptSearch
+              t={translate}
+              onPick={(session, hit) => {
+                dispatchWorkspaceLayout({ type: "close-layer" });
+                selectWorkspaceView("chat", false);
+                chatJumpIdRef.current += 1;
+                setChatJump({ id: chatJumpIdRef.current, sessionId: session.id, entryId: hit.entryId });
+                handleSelectSession(session);
+              }}
+            />
             <div className="workspace-command-list">
               {WORKSPACE_VIEW_IDS.map((view) => (
                 <button key={view} type="button" onClick={() => selectWorkspaceView(view, true)}>
@@ -2377,6 +2418,9 @@ export function AppShell({
               <button type="button" onClick={handleSidebarToggle}>
                 <span>{navigatorPresentation.presented ? translate("sidebar.hide") : translate("sidebar.show")}</span>
                 <small>Ctrl B</small>
+              </button>
+              <button type="button" onClick={toggleWideChat}>
+                <span>{translate(wideChat ? "palette.wideChatOff" : "palette.wideChatOn")}</span>
               </button>
               <button
                 type="button"

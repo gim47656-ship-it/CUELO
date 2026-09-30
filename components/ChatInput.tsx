@@ -53,6 +53,7 @@ import {
 } from "@/lib/file-fuzzy";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { formatTokenCount } from "@/lib/format-tokens";
+import { FREQUENT_MODEL_MIN_PICKS, modelPickKey, rankFrequentModels, readModelPicks, recordModelPick, writeModelPicks, type ModelPickCounts } from "@/lib/model-picks";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePopupPlacement } from "@/hooks/usePopupPlacement";
 import { computePopupPlacement, preferredPopupHeight, POPUP_GAP_PX, type PopupSide } from "@/lib/popup-placement";
@@ -596,6 +597,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [modelDropdownRect, setModelDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
   const [modelFilter, setModelFilter] = useState("");
+  // How often this browser picked each model; read when the picker opens.
+  const [modelPicks, setModelPicks] = useState<ModelPickCounts>({});
+  useEffect(() => {
+    if (modelDropdownOpen) setModelPicks(readModelPicks());
+  }, [modelDropdownOpen]);
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
   const [presetDropdownRect, setPresetDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
@@ -1788,6 +1794,48 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const activeRole = model
     ? roleRows.find((role) => role.resolved?.provider === model.provider && role.resolved?.modelId === model.modelId)
     : undefined;
+  // Most-picked models first; the search keeps its plain filtered list.
+  const frequentModels = modelFilter.trim() ? [] : rankFrequentModels(modelPicks, modelOptions);
+  const renderModelOption = (opt: ModelOption, section: string, count?: number) => {
+    const isActive = opt.modelId === model?.modelId && opt.provider === model?.provider;
+    return (
+      <button
+        key={`${section}:${opt.provider}:${opt.modelId}`}
+        onClick={() => {
+          setModelDropdownOpen(false);
+          setModelFilter("");
+          if (!isActive || isAutoModelSelection) {
+            const next = recordModelPick(readModelPicks(), modelPickKey(opt.provider, opt.modelId));
+            writeModelPicks(next);
+            setModelPicks(next);
+            onModelChange?.(opt.provider, opt.modelId);
+          }
+        }}
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          width: "100%", padding: "7px 12px",
+          background: isActive ? "var(--bg-selected)" : "none",
+          border: "none",
+          color: isActive ? "var(--text)" : "var(--text-muted)",
+          cursor: "pointer", fontSize: 12, textAlign: "left",
+          fontWeight: isActive ? 600 : 400,
+          whiteSpace: "nowrap",
+        }}
+        onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+      >
+        {isActive
+          ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+          : <span style={{ width: 10, flexShrink: 0 }} />}
+        {opt.name}
+        {count !== undefined && count >= FREQUENT_MODEL_MIN_PICKS && (
+          <span style={{ marginLeft: "auto", paddingLeft: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+            {t("chat.modelPickCount", { count })}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   const displayModelName = model
     ? (modelOptions.find((o) => o.modelId === model.modelId && o.provider === model.provider)?.name ?? model.modelId)
@@ -1874,7 +1922,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           e.target.value = "";
         }}
       />
-      <div style={{ maxWidth: 820, margin: "0 auto" }}>
+      <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
         {/* Queued steering / follow-up messages (delivered by omp on upcoming turns) */}
@@ -2818,11 +2866,24 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         </div>
                       )}
                       <div style={{ minHeight: 0, overflowY: "auto" }}>
+                        {/* The models this browser picks most, first, with how often. */}
+                        {frequentModels.length > 0 && (
+                          <div>
+                            <div style={{
+                              padding: "6px 12px 4px",
+                              fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
+                              textTransform: "uppercase", letterSpacing: "0.07em",
+                            }}>
+                              {t("chat.frequentModels")}
+                            </div>
+                            {frequentModels.map(({ option, count }) => renderModelOption(option, "frequent", count))}
+                          </div>
+                        )}
                         {/* omp assigns a model per scope of work; offer those first
                             so picking "Fast" or "Architect" stays one click, and
                             record the role so the transcript matches `/model`. */}
                         {roleRows.length > 0 && !modelFilter.trim() && onRoleModelChange && (
-                          <div>
+                          <div style={{ borderTop: frequentModels.length > 0 ? "1px solid var(--border)" : "none" }}>
                             <div style={{
                               padding: "6px 12px 4px",
                               fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
@@ -2914,36 +2975,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 {group.provider}
                               </div>
                             )}
-                            {group.options.map((opt) => {
-                              const isActive = opt.modelId === model?.modelId && opt.provider === model?.provider;
-                              return (
-                                <button
-                                  key={`${opt.provider}:${opt.modelId}`}
-                                  onClick={() => {
-                                    setModelDropdownOpen(false);
-                                    setModelFilter("");
-                                    if (!isActive || isAutoModelSelection) onModelChange(opt.provider, opt.modelId);
-                                  }}
-                                  style={{
-                                    display: "flex", alignItems: "center", gap: 8,
-                                    width: "100%", padding: "7px 12px",
-                                    background: isActive ? "var(--bg-selected)" : "none",
-                                    border: "none",
-                                    color: isActive ? "var(--text)" : "var(--text-muted)",
-                                    cursor: "pointer", fontSize: 12, textAlign: "left",
-                                    fontWeight: isActive ? 600 : 400,
-                                    whiteSpace: "nowrap",
-                                  }}
-                                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                                >
-                                  {isActive
-                                    ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                                    : <span style={{ width: 10, flexShrink: 0 }} />}
-                                  {opt.name}
-                                </button>
-                              );
-                            })}
+                            {group.options.map((opt) => renderModelOption(opt, "all"))}
                           </div>
                         ))}
                       </div>

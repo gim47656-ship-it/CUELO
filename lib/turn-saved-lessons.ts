@@ -1,4 +1,4 @@
-import type { ProcessTurnGroup } from "./transcript-plan";
+import type { ConversationRenderItem, ProcessTurnGroup } from "./transcript-plan";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultMessage } from "./types";
 
 export type SavedLesson =
@@ -14,26 +14,16 @@ function text(value: unknown): string {
 }
 
 /**
- * The lessons and skills a turn stored through its own `learn`/`manage_skill`
- * calls. The separate auto-learn capture announces what it saves with an
- * `autolearn-saved` message; a save the agent makes inside the turn has no such
- * notice and would stay folded in the work log. Only a call whose result arrived
- * without an error counts, the same rule the capture notice uses. The same save
- * repeated in one turn is listed once.
+ * Visits each save the blocks made through `learn`/`manage_skill`, keyed by
+ * what was stored (not by the truncated preview, so two lessons sharing their
+ * first characters stay apart). Only a call whose result arrived without an
+ * error counts, the same rule the auto-learn capture notice uses.
  */
-export function extractTurnSavedLessons(
+function visitSaves(
   blocks: readonly AssistantContentBlock[],
   toolResults: Map<string, ToolResultMessage> | undefined,
-): SavedLesson[] {
-  const saved: SavedLesson[] = [];
-  const seen = new Set<string>();
-  // Keyed by what was stored, not by the truncated preview, so two lessons
-  // sharing their first characters both stay.
-  const add = (key: string, lesson: SavedLesson): void => {
-    if (seen.has(key)) return;
-    seen.add(key);
-    saved.push(lesson);
-  };
+  visit: (key: string, lesson: SavedLesson) => void,
+): void {
   for (const block of blocks) {
     if (block.type !== "toolCall") continue;
     if (block.toolName !== "learn" && block.toolName !== "manage_skill") continue;
@@ -44,49 +34,83 @@ export function extractTurnSavedLessons(
       const action = text(input.action);
       if (SKILL_SAVE_ACTIONS[action] === true) {
         const lesson: SavedLesson = { kind: "skill", action, name: text(input.name) };
-        add(JSON.stringify(lesson), lesson);
+        visit(JSON.stringify(lesson), lesson);
       }
       continue;
     }
     const memory = text(input.memory);
     const rawSkill = input.skill as { action?: unknown; name?: unknown } | undefined;
     const skill = rawSkill ? { action: text(rawSkill.action), name: text(rawSkill.name) } : undefined;
-    add(JSON.stringify({ kind: "lesson", memory, skill }), {
+    visit(JSON.stringify({ kind: "lesson", memory, skill }), {
       kind: "lesson",
       memory: memory.length > MEMORY_PREVIEW_LIMIT ? `${memory.slice(0, MEMORY_PREVIEW_LIMIT)}…` : memory,
       ...(skill ? { skill } : {}),
     });
   }
+}
+
+/**
+ * The lessons and skills a turn stored through its own `learn`/`manage_skill`
+ * calls. The separate auto-learn capture announces what it saves with an
+ * `autolearn-saved` message; a save the agent makes inside the turn has no such
+ * notice and would stay folded in the work log. The same save repeated is
+ * listed once.
+ */
+export function extractTurnSavedLessons(
+  blocks: readonly AssistantContentBlock[],
+  toolResults: Map<string, ToolResultMessage> | undefined,
+): SavedLesson[] {
+  const saved: SavedLesson[] = [];
+  const seen = new Set<string>();
+  visitSaves(blocks, toolResults, (key, lesson) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    saved.push(lesson);
+  });
   return saved;
 }
 
 /**
- * Direct saves per turn, keyed by the turn's anchor index. The whole process
- * group is read, not an answer's preceding blocks, so a save made after the
- * turn's last answer still counts.
+ * Direct saves keyed by the conversation item (index in `main`) the card
+ * follows. A save inside a message that also answers shows after that answer;
+ * a save in folded work shows where that work sits, after the conversation
+ * item before it. The card therefore stays put while later answers of the same
+ * turn arrive, and a save made after the turn's last answer still shows. A save
+ * repeated within one turn is listed once, at its first place.
  */
-export function collectTurnSavedLessons(
+export function collectSavedLessonPlacements(
+  main: readonly ConversationRenderItem[],
   groups: readonly ProcessTurnGroup[],
   messages: readonly AgentMessage[],
   toolResults: Map<string, ToolResultMessage> | undefined,
 ): Map<number, SavedLesson[]> {
-  const blocksByTurn = new Map<number, AssistantContentBlock[]>();
+  const lastAnswerByMessage = new Map<number, number>();
+  main.forEach((item, position) => {
+    if (item.kind === "answer") lastAnswerByMessage.set(item.idx, position);
+  });
+  const placements = new Map<number, SavedLesson[]>();
+  const seenByTurn = new Map<number, Set<string>>();
   for (const group of groups) {
-    let blocks = blocksByTurn.get(group.anchorIdx);
-    if (!blocks) {
-      blocks = [];
-      blocksByTurn.set(group.anchorIdx, blocks);
+    let seen = seenByTurn.get(group.anchorIdx);
+    if (!seen) {
+      seen = new Set();
+      seenByTurn.set(group.anchorIdx, seen);
     }
     for (const entry of group.entries) {
       const message = messages[entry.idx];
       if (message?.role !== "assistant") continue;
-      for (const block of entry.blocks ?? (message as AssistantMessage).content ?? []) blocks.push(block);
+      // Only a partly folded message has an answer of its own to follow.
+      const answer = entry.blocks ? lastAnswerByMessage.get(entry.idx) : undefined;
+      const position = Math.max(0, answer ?? entry.afterMainIndex ?? -1);
+      const turnSeen = seen;
+      visitSaves(entry.blocks ?? (message as AssistantMessage).content ?? [], toolResults, (key, lesson) => {
+        if (turnSeen.has(key)) return;
+        turnSeen.add(key);
+        const list = placements.get(position);
+        if (list) list.push(lesson);
+        else placements.set(position, [lesson]);
+      });
     }
   }
-  const saved = new Map<number, SavedLesson[]>();
-  for (const [anchorIdx, blocks] of blocksByTurn) {
-    const lessons = extractTurnSavedLessons(blocks, toolResults);
-    if (lessons.length > 0) saved.set(anchorIdx, lessons);
-  }
-  return saved;
+  return placements;
 }

@@ -26,6 +26,7 @@ import {
 import { mergeRestoredQueuedMessages } from "@/lib/draft-store";
 import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
+import { isRunStalled, RUN_STALL_CHECK_MS } from "@/lib/run-stall";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
 import {
   COMMAND_OUTPUT_CUSTOM_TYPE,
@@ -584,6 +585,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
   const [compactResult, setCompactResult] = useState<CompactResultInfo | null>(null);
+  /** When the compaction in flight was first seen and what triggered it, if the event said. */
+  const [compaction, setCompaction] = useState<{ startedAt: number; reason: string | null } | null>(null);
+  const compactionReasonRef = useRef<string | null>(null);
+  /** No agent event has arrived for a while during a run. Informational only. */
+  const [runStalled, setRunStalled] = useState(false);
+  const runStalledRef = useRef(false);
+  const lastAgentEventAtRef = useRef(0);
+  /** The opened session's run state has been read from the server at least once. */
+  const [runStateKnown, setRunStateKnown] = useState(false);
   const [agentPhase, setAgentPhase] = useState<AgentPhase>(null);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsLoading, setSlashCommandsLoading] = useState(false);
@@ -1005,6 +1015,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     sessionSnapshotSourceRef.current = null;
   }, []);
 
+  // Any agent data on either stream ends a stall; the SSE heartbeat is a comment
+  // the page never sees, and update-maintenance frames say nothing about the run.
+  const markAgentActivity = useCallback((event: AgentEvent) => {
+    if (event.type === "update_maintenance") return;
+    lastAgentEventAtRef.current = Date.now();
+    if (!runStalledRef.current) return;
+    runStalledRef.current = false;
+    setRunStalled(false);
+  }, []);
+
   const connectSessionSnapshots = useCallback((sid: string) => {
     closeSessionSnapshots();
     const source = new EventSource(`/api/agent/${encodeURIComponent(sid)}/events?entries=1`);
@@ -1012,13 +1032,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     source.onmessage = (message) => {
       try {
         const event = JSON.parse(message.data) as AgentEvent;
+        markAgentActivity(event);
         if (event.type === "session_snapshot") handleAgentEventRef.current?.(event);
         else if (event.type === "agent_start") serverRunStartRef.current?.(sid);
       } catch {
         // EventSource reconnect와 다음 persisted snapshot이 복구를 맡는다.
       }
     };
-  }, [closeSessionSnapshots]);
+  }, [closeSessionSnapshots, markAgentActivity]);
 
   const connectEvents = useCallback((sid: string): Promise<EventStreamConnectionResult> => {
     closeEvents();
@@ -1042,6 +1063,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       es.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data) as AgentEvent;
+          markAgentActivity(event);
           if (event.type === "update_maintenance") {
             window.dispatchEvent(new CustomEvent("ompweb:update-maintenance", { detail: event }));
           }
@@ -1080,7 +1102,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     });
     eventConnectionAttemptRef.current = { source: es, promise, pending: true };
     return promise;
-  }, [closeEvents]);
+  }, [closeEvents, markAgentActivity]);
 
   const ensureEventsConnected = useCallback(async (sid: string) => {
     const current = eventSourceRef.current;
@@ -1560,6 +1582,33 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, []);
 
+  // The banner's clock starts when compaction is first seen here - an event, the
+  // user's own /compact, or the state read on reload - and stops with it.
+  useEffect(() => {
+    if (!isCompacting) {
+      compactionReasonRef.current = null;
+      setCompaction(null);
+      return;
+    }
+    setCompaction((current) => current ?? { startedAt: Date.now(), reason: compactionReasonRef.current });
+  }, [isCompacting]);
+
+  // A run's silence is measured from its start or its last event. Nothing is aborted.
+  useEffect(() => {
+    if (!agentRunning) {
+      runStalledRef.current = false;
+      setRunStalled(false);
+      return;
+    }
+    lastAgentEventAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      if (runStalledRef.current || !isRunStalled(agentRunningRef.current, lastAgentEventAtRef.current, Date.now())) return;
+      runStalledRef.current = true;
+      setRunStalled(true);
+    }, RUN_STALL_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [agentRunning]);
+
   // Context usage changes after each model/tool turn, not only when the prompt
   // settles. Poll the lightweight state endpoint while the session is active
   // so the meter follows those changes even if an SSE event is missed.
@@ -1950,6 +1999,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       case "auto_compaction_start":
       case "compaction_start":
+        // `auto_compaction_start` names its trigger; a bare `compaction_start` may not.
+        if (typeof event.reason === "string") {
+          compactionReasonRef.current = event.reason;
+          const reason = event.reason;
+          setCompaction((current) => (current ? { ...current, reason } : current));
+        }
         setIsCompacting(true);
         setCompactError(null);
         setCompactResult(null);
@@ -2387,6 +2442,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleCompact = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid || isCompacting) return;
+    compactionReasonRef.current = "manual";
     setIsCompacting(true);
     setCompactError(null);
     setCompactResult(null);
@@ -2453,6 +2509,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       switch (commandName) {
         case "compact": {
           if (!sid || isCompacting) return complete({ handled: true, error: "No active session to compact" });
+          compactionReasonRef.current = "manual";
           setIsCompacting(true);
           setCompactError(null);
           setCompactResult(null);
@@ -2808,6 +2865,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     scrollToBottom("smooth");
   }, [scrollToBottom, setAutoFollow]);
 
+  /** A jump (search, question rail, palette hit) leaves the bottom on purpose; stop following. */
+  const pauseAutoFollow = useCallback(() => {
+    userScrollIntentUntilRef.current = 0;
+    setAutoFollow(false);
+  }, [setAutoFollow]);
+
   const markUserScrollIntent = useCallback((event: Event) => {
     if (event instanceof KeyboardEvent) {
       if (!SCROLL_KEYS.has(event.key)) return;
@@ -2888,6 +2951,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (state.subagents !== undefined) setSubagents((current) => mergeSubagentSnapshots(current, state.subagents ?? []));
           if (state.goal !== undefined) setGoalStatus(state.goal ?? null);
         }
+        // Running or not is now known; a failed state read leaves it unknown.
+        if (agentState) setRunStateKnown(true);
       });
     }
     return () => {
@@ -2998,7 +3063,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, newSessionModel, toolPreset, thinkingLevel,
     effectiveThinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
-    isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
+    isCompacting, compaction, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
+    runStalled, runStateKnown,
     slashCommands, slashCommandsLoading, queuedMessages, subagents,
     // The tracker's own list for the open session, when a state refresh has reported one. It can
     // carry changes no tool record does; the transcript remains the fallback and the newer answer
@@ -3008,7 +3074,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,
     isNew,
-    autoFollowPaused, resumeAutoFollow,
+    autoFollowPaused, resumeAutoFollow, pauseAutoFollow,
     goalStatus,
     // Refs
     sessionIdRef, eventSourceRef, messagesEndRef, scrollContainerRef,
