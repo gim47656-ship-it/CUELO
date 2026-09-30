@@ -42,7 +42,8 @@ const CHILD_SETTLE_MS = 5000;
 export const INTERRUPT_RESUME_MESSAGE =
   "[자동 재개] CUELO 업데이트·재시작 때문에 이 세션의 진행 중 작업이 중단(abort)됐다. 서버가 새 버전으로 다시 떴다. "
   + "중단 직전에 돌던 명령·도구 결과는 사라졌을 수 있으니 파일·프로세스 상태를 먼저 확인하고, 하던 작업을 이어서 진행한다. "
-  + "그때 돌던 SubAgent(task child)도 함께 끊겨 agent:// 로 찾을 수 없다. 결과를 받지 못한 child 작업은 남은 파일 상태를 확인한 뒤 새로 맡긴다.";
+  + "그때 돌던 SubAgent(task child)도 멈췄지만 기록은 남아 있다. 결과를 받지 못한 child에는 먼저 `write agent://<id>`로 이어서 하라고 보내 되살리고, "
+  + "되살아나지 않으면(isolated 작업 공간 등) 남은 파일 상태를 확인한 뒤 새로 맡긴다.";
 
 interface PendingFailure {
   sessionId: string;

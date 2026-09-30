@@ -26,6 +26,7 @@ import {
   readRpcSubagentTranscript,
   RpcSubagentRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
 import { randomUUID } from "crypto";
 import { appendFileSync, existsSync, writeFileSync } from "fs";
@@ -597,7 +598,7 @@ export async function getAvailableSlashCommands(session: AgentSessionLike): Prom
  * (native-runtime-patch `resolveSessionAsyncJobManager`), manager 전체가 곧 이 세션 트리다.
  */
 interface DrainableJobManager {
-  cancelAll(): void;
+  cancelAll(filter?: undefined, reason?: unknown): void;
   waitForAll(): Promise<void>;
 }
 
@@ -1858,7 +1859,10 @@ export class AgentSessionWrapper {
   async stopBackgroundWorkForDrain(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     const manager = drainJobManagerOf(this.inner);
-    manager?.cancelAll();
+    // 재시작 drain은 kill이 아니다. 코어는 이 이유로 끊긴 task child를 tombstone 없이 park하므로
+    // 새 서버에서 `write agent://<id>`로 되살릴 수 있다(lib/subagent-revive.ts). 이유 없이 취소하면
+    // "signal"로 분류돼 영구 종료 표시가 남는다.
+    manager?.cancelAll(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
     for (const child of this.subagents.getSubagents()) {
       void AgentRegistry.global().get(child.id)?.session?.abort().catch(() => {});
     }
