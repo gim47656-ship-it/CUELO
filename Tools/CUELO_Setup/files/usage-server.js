@@ -25,6 +25,11 @@ const OMP = (() => {
 })();
 const ORIGIN = 'http://127.0.0.1:' + (Number(process.env.PORT) || 30141);
 const CACHE_MS = 60_000;
+// 만료 뒤 이 나이까지는 직전 스냅샷을 바로 내고 뒤에서 새로 조회한다. 콜드 조회(0.25s~수 초)가
+// maker_route의 2초 잔량 예산을 넘겨 발주 준비가 잔량 없이 끝나던 것을 막는다. 계정 차단 상태는
+// enrich가 매 응답마다 새로 붙이므로 여기 걸리는 것은 provider 한도 수치뿐이고, 각 report의
+// fetchedAt이 나이를 그대로 보여 준다. 무효화(at=0)된 캐시는 이 창과 무관하게 새 조회를 기다린다.
+const STALE_MS = 10 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
 
 let cache = null; // { at, body }. 무효화는 at=0 으로 한다(오류 시 stale 응답을 살려 두려고).
@@ -76,6 +81,17 @@ let usageEpoch = 0;
 function invalidateUsage() {
     usageEpoch += 1;
     if (cache) cache.at = 0;
+}
+
+/** 신선하면 그대로, STALE_MS 안의 만료분이면 즉시 돌려주고 뒤에서 갱신, 그보다 오래됐거나 무효화됐으면 새 조회를 기다린다. */
+function usageEntry(entry, refresh, now = Date.now()) {
+    const age = entry ? now - entry.at : Infinity;
+    if (age <= CACHE_MS) return entry;
+    if (age <= STALE_MS) {
+        refresh().catch(() => { /* 다음 요청이 다시 시도한다. 직전 스냅샷은 그대로 둔다. */ });
+        return entry;
+    }
+    return refresh();
 }
 
 const MANUAL_UNTIL_MS = 4102444800000;
@@ -603,7 +619,7 @@ async function buildUsageBody(controls = facade, readUsage) {
     if (readUsage) return JSON.stringify(await controls.enrich(await readUsage()));
     let entry = cache;
     try {
-        if (!entry || Date.now() - entry.at > CACHE_MS) entry = await fetchUsage();
+        entry = await usageEntry(cache, fetchUsage);
     } catch {
         if (!entry) {
             if (!localControl) throw controlError(502, 'usage_unavailable');
@@ -893,4 +909,5 @@ module.exports = {
     MANUAL_UNTIL_MS,
     createSampleStore,
     applyDaySlots,
+    usageEntry,
 };

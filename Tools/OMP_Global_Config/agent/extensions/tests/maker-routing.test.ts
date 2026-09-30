@@ -354,7 +354,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         const found = candidates.find((candidate) => candidate.model === model);
         return found ? { thinking: { efforts: found.efforts } } : undefined;
       },
-      refreshProvider: async () => {},
+      refreshDiscoverableProviders: async () => {},
     };
     const sessionId = "sample";
     const ctx = { sessionManager: { getSessionId: () => sessionId }, modelRegistry: registry } as never;
@@ -1021,7 +1021,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     let maxInFlight = 0;
     const registry = {
       find: (provider: string) => (ready.has(provider) ? { thinking: { efforts: strengths } } : undefined),
-      refreshProvider: async (provider: string) => {
+      refreshDiscoverableProviders: async ([provider]: string[]) => {
         refreshCalls.push(provider);
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1044,7 +1044,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     const refreshCalls: string[] = [];
     const registry = {
       find: (provider: string) => provider === "anthropic" ? undefined : { thinking: { efforts: strengths } },
-      refreshProvider: async (provider: string) => { refreshCalls.push(provider); throw new Error("offline"); },
+      refreshDiscoverableProviders: async ([provider]: string[]) => { refreshCalls.push(provider); throw new Error("offline"); },
     };
     const h = registryHarness({ registry });
     const tasks = ["FixA", "FixB", "FixC"].map((name) => ({ name, task: brief, assessment: facts }));
@@ -1070,7 +1070,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     let drifted = false;
     const registry = {
       find: () => ({ thinking: { efforts: drifted ? ["low", "high", "max"] : strengths } }),
-      refreshProvider: async () => {},
+      refreshDiscoverableProviders: async () => {},
     };
     const h = registryHarness({ registry });
     await h.route.prepareBatch("계약", [h.task], h.ctx);
@@ -1085,7 +1085,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
         if (provider !== "anthropic") return { thinking: { efforts: strengths } };
         return refreshed.has(provider) ? { thinking: { efforts: ["unsupported"] } } : undefined;
       },
-      refreshProvider: async (provider: string) => { refreshed.add(provider); },
+      refreshDiscoverableProviders: async ([provider]: string[]) => { refreshed.add(provider); },
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
@@ -1104,7 +1104,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       find: (provider: string, id: string) => ({
         thinking: { efforts: `${provider}/${id}` === "openai-codex/gpt-6-sol" ? supportedSol : strengths },
       }),
-      refreshProvider: async () => {},
+      refreshDiscoverableProviders: async () => {},
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);

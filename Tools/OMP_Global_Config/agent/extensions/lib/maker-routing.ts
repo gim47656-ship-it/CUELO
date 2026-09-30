@@ -562,12 +562,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     if (retryable.length > 0) {
       // 같은 준비→발주 계약에서 같은 provider의 online 갱신은 한 번만 시작하고,
       // 서로 다른 provider는 함께 시작한다. 새 prepare/reset은 새 map으로 다시 시도한다.
+      // refreshProvider는 그 provider의 rate-limit 쿨다운(suppressed selector)을 지우고 정적 모델을
+      // 다시 읽으므로, 발견만 다시 하는 refreshDiscoverableProviders를 쓴다(character-voice와 같은 경로).
       const attempt = (provider: string): Promise<string | null> => {
         const shared = attempts?.get(provider);
         if (shared) return shared;
         const started = (async () => {
           try {
-            await ctx.modelRegistry.refreshProvider(provider, "online");
+            await ctx.modelRegistry.refreshDiscoverableProviders([provider], "online");
             return null;
           } catch (error) {
             return `provider 갱신 실패: ${error instanceof Error ? error.message : String(error)}`;
@@ -640,7 +642,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. NORMAL UI/UX 경계는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지합니다. HARD는 UI_UX→HARD_UI_OPUS, CODE_SYSTEM→HARD_CODE_OPUS이며 HARD_CODE_SONNET는 명시적 대안입니다. 후보별 허용·registry 지원 강도만 쓰고 max나 coarse effort는 쓰지 않습니다. 작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인하고, 비-Opus의 미완 변경·증거를 freeze해 소유권을 넘깁니다. active writer와 겹치거나 실행 중 모델·effort를 바꾸지 않습니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. Opus unavailable을 다른 후보로 숨기지 않습니다. 계정 warm/exact pin·전환·쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. history는 같은 등급 최근 attempt의 중립 건수이며 후보·규칙을 자동 변경하지 않습니다. routing_verdict에는 실제 spawn identity를 씁니다. context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용하며 같은 브리프에 judge를 중복 호출하지 않습니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort(model selector suffix, 그 후보의 efforts 안)를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용합니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1032,7 +1034,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.
         const request = params as { context: string; tasks: RouteTask[] };
         const batch = await prepareBatch(request.context, request.tasks, ctx, signal, String(callId ?? ""));
-        return { content: [{ type: "text", text: JSON.stringify(batch) }], details: batch };
+        // 준비 handle(plan)은 발주 identity가 아니므로(routing_verdict는 spawn identity) 모델 문맥에는 싣지 않고 details에만 둔다.
+        const view = { ...batch, routes: batch.routes.map(({ plan: _plan, ...route }) => route) };
+        return { content: [{ type: "text", text: JSON.stringify(view) }], details: batch };
       },
     });
   }

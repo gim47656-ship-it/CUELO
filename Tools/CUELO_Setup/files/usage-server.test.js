@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { once } = require('node:events');
-const { createControlFacade, matchCredential, startServer, MANUAL_UNTIL_MS } = require('./usage-server');
+const { createControlFacade, matchCredential, startServer, usageEntry, MANUAL_UNTIL_MS } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -136,6 +136,25 @@ test('OFF then ON preserves default and scoped quota blocks across a sidecar res
     const readback = (await restarted.enrich({ reports: [report()] })).reports[0];
     assert.equal(readback.disabled, false);
     assert.equal(readback.autoBlockedUntilMs, expectedAutoUntil);
+});
+
+test('expired usage is served at once inside the stale window while one refresh runs; older or invalidated waits', async () => {
+    const now = 1_000_000_000;
+    const fresh = { at: now, body: 'next' };
+    const calls = [];
+    const refresh = () => { calls.push(1); return Promise.resolve(fresh); };
+    const recent = { at: now - 30_000, body: 'recent' };
+    assert.equal(await usageEntry(recent, refresh, now), recent);
+    assert.equal(calls.length, 0);
+    const expired = { at: now - 5 * 60_000, body: 'expired' };
+    assert.equal(await usageEntry(expired, refresh, now), expired);
+    assert.equal(calls.length, 1);
+    assert.equal(await usageEntry({ at: now - 11 * 60_000, body: 'old' }, refresh, now), fresh);
+    assert.equal(await usageEntry({ at: 0, body: 'invalidated' }, refresh, now), fresh);
+    assert.equal(await usageEntry(null, refresh, now), fresh);
+    assert.equal(calls.length, 4);
+    // 뒤에서 도는 갱신의 실패는 직전 스냅샷 응답을 깨지 않는다.
+    assert.equal(await usageEntry(expired, () => Promise.reject(new Error('offline')), now), expired);
 });
 
 test('quota and reset failures retain account rows without leaking raw credentials or errors', async t => {

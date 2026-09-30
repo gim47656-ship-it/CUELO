@@ -36,11 +36,9 @@
   must stay up. Give that service a name unique to your session - core 18.3.0 stops and replaces a
   live service of the same name regardless of who started it - read it with `read proc://<name>`
   and stop it with `write proc://<name>/kill`. Reuse
-  a suitable same-revision build, server, or result first and redo only what a rework invalidated;
-  an isolated server and a full production build are never the default. Build no separate
-  environment for these checks: `implementationOwnership.writerValidation` puts the common isolation
-  environment and any needed full build, integration, or acceptance check with Main, so request or
-  reuse that artifact instead of producing your own, and never close a change with no check at all.
+  a suitable same-revision build, server, or result first; an isolated server and a full
+  production build are never the default, and when a check needs the common environment or a full
+  build, request or reuse Main's artifact instead of producing your own.
   Never hand this validation
   to someone else and never invent a validator handoff. A later failure must be classifiable as
   pre-existing or newly introduced.
@@ -62,17 +60,13 @@
   that now covers it, keeping the same finding id — no separate messenger or new reporting stage.
   Never weaken an expectation, relax a fixture, or hide a failure to make validation pass.
 - 관련 Skill을 먼저 읽고 이번 조치에 적용되는 주의사항만 이름·절/locator·위험 요약으로 추린다.
-  첫 예상 밖 실패 뒤 재시도 경계에서 런타임이 실패 도구·오류 분류·입력 변경·사이 도구 호출이라는
-  관측 사실만으로 이미 advisory를 낸다. 그것을 읽고 런타임이 관측하지 못하는 것 — Skill 충돌·적용
-  불가, 승인 필요, 관측 불가 판단 — 만 보충한다. 같은 관측 질문을 다시 batched `judge()`로
-  호출하지 않는다.
-  Skill 원문·소스·로그·비밀은 보내지 않는다. 단순 보충·새 근거 없는 동일 질문은 반복하지 않는다.
-  검증 약화나 Skill 충돌·적용 불가가 나오면 문제 된 조치만 보류하고 기존 blocker/조향 DM으로
-  원문 오류 locator·Skill locator·제안 조치·보존할 수용 조건을 Main에 보낸다. 독립 작업은 계속한다.
+  pre-retry advisory를 보충하다가(Common Rules) 검증 약화나 Skill 충돌·적용 불가가 나오면 문제 된
+  조치만 보류하고 기존 blocker/조향 DM으로 원문 오류 locator·Skill locator·제안 조치·보존할 수용
+  조건을 Main에 보낸다. 독립 작업은 계속한다.
   Jev는 통지할 위험을 찾는 보조 수단이며 검사 생략 승인자가 아니다. 필수 검사 비활성화·기대치
   완화는 Jev가 안전하다고 하거나 응답하지 못해도 Main의 사전 판단 없이 실행하지 않는다.
   환경 오류는 생성물 위치의 모듈 해석·경로·런타임 같은 가벼운 확인으로 먼저 좁힌 뒤 무거운 검사를
-  다시 실행한다. `routing.typedJudgmentRouting`의 기존 placement와 통신 경계를 유지한다.
+  다시 실행한다.
 - Capture original source, contracts, impact-bearing caller locators, and before/after evidence
   during implementation for the review packet. Hand the confirmed delta and that evidence to Main,
   who owns the mid-flight and final review and assembles it with your command evidence without
@@ -150,9 +144,9 @@
   build error. Never put a broken intermediate state on the user's screen. Use the user's browser
   only when their live session is genuinely required, or when Main tells you to hand a FINISHED
   surface over for judgement — do not open it on your own initiative.
-- Run surface checks in the environment Main provides. Creating a new common isolation environment
-  or running a full build is Main's by default; do it yourself only when Main explicitly delegated
-  that run to you in the brief. When you do launch a server (delegated, or no environment exists
+- Run surface checks in the environment Main provides; create a common isolation environment or
+  run a full build yourself only when the brief explicitly delegates that run. When you do launch a
+  server (delegated, or no environment exists
   and your slice needs one), start it from the project's own `package.json` script, changing only
   the port. Hand-reassembling the command drops bundler or runtime flags and breaks the whole
   dependency graph. When an existing environment already reflects your revision, confirm its
@@ -238,5 +232,3 @@
 - If a git command fails on `index.lock` or a worktree lock, never delete the lock file —
   another agent may be working in the same repository. Re-analyze, wait briefly, and retry at
   most once; if the identical lock failure appears a second time, stop and report it to Main.
-- You have **no verdict authority**. Never report `PASS`/`FAIL` on someone else's work; report
-  facts and let the caller judge.
