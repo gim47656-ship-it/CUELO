@@ -265,6 +265,12 @@ export interface AgentSessionLike {
   setThinkingLevelCeiling(ceiling: string | undefined, record?: boolean): void;
   /** 유효 상한 — spawn 상한과 사용자 상한 중 낮은 쪽. */
   readonly thinkingLevelCeiling?: string;
+  /** `/fast` 요청 상태: 지금 모델 family에 priority(또는 ultrafast) tier가 걸려 있다. */
+  isFastModeEnabled(): boolean;
+  /** 그 tier가 지금 모델·계정에서 실제로 요청에 실린다. */
+  isFastModeActive(): boolean;
+  /** 켜기에서 `false`는 이 모델에 Fast가 없다는 뜻이다. 끄기는 family가 없을 때만 `false`. */
+  setFastMode(enabled: boolean): boolean;
   compact(customInstructions?: string): Promise<unknown>;
   getSessionStats(): Omit<SessionStatsInfo, "sessionName">;
   getLastAssistantText(): string | undefined;

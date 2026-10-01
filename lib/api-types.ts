@@ -129,6 +129,8 @@ export interface PluginsResponse {
   totals: PluginResourceCounts;
   diagnostics: PluginDiagnostic[];
   projectResourcesLoaded: boolean;
+  /** Global plugin install directory reported by the SDK (`getPluginsDir()`). */
+  installDir?: string;
 }
 
 /** How a model role's value is scoped when written back to config. */

@@ -279,6 +279,7 @@ const MODEL_MUTATION_COMMAND_TYPES: Record<string, true> = {
   set_role_model: true,
   set_thinking_level: true,
   set_thinking_ceiling: true,
+  set_fast_mode: true,
 };
 
 type ForkBranchEntry = {
@@ -1446,6 +1447,9 @@ export class AgentSessionWrapper {
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           configuredThinkingLevel: this.inner.configuredThinkingLevel() ?? "off",
           thinkingCeiling: this.inner.thinkingLevelCeiling ?? null,
+          // SDK rpc-mode `get_state`와 같은 이름: 요청(enabled)과 실제 적용(active)을 따로 준다.
+          fastModeEnabled: this.inner.isFastModeEnabled(),
+          fastModeActive: this.inner.isFastModeActive(),
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
           subagents: this.getSubagentSnapshots(),
@@ -1679,6 +1683,21 @@ export class AgentSessionWrapper {
           }
           invalidateSessionListCache();
           return null;
+        } finally {
+          this.modelMutations -= 1;
+        }
+      }
+
+      case "set_fast_mode": {
+        // SDK rpc-mode의 `set_fast_mode`와 같은 의미. 켜기가 거절되면 이 모델에 Fast가 없다는 뜻이고,
+        // 끄기는 실패로 보지 않는다. 응답은 언제나 세션이 실제로 가진 상태다.
+        if (typeof command.enabled !== "boolean") throw new Error("set_fast_mode requires a boolean enabled");
+        this.modelMutations += 1;
+        try {
+          const supported = this.inner.setFastMode(command.enabled);
+          if (command.enabled && !supported) throw new Error("Fast mode is unavailable for the current model.");
+          invalidateSessionListCache();
+          return { enabled: this.inner.isFastModeEnabled(), active: this.inner.isFastModeActive() };
         } finally {
           this.modelMutations -= 1;
         }

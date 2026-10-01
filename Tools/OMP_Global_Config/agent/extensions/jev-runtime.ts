@@ -335,8 +335,8 @@ interface SettledJobMeta {
   agentId?: string;
   label?: string;
   durationMs?: number;
-  /** async job 상태(completed|failed|cancelled). */
-  status?: string;
+  /** 실제 async job terminal 상태. 관측한 값이 completed|failed|cancelled일 때만 있고, 없으면 미상이다(성공으로 추정하지 않는다). */
+  status?: OutcomeRecord["status"];
   schemaStatus?: string;
   hasData: boolean;
   /** data.validation 맵에서 state가 unverified/pending 계열인 항목 수. */
@@ -463,7 +463,7 @@ function readSettledTaskJobs(details: unknown, content?: unknown): SettledJobMet
       ...(typeof record.agentId === "string" && record.agentId ? { agentId: record.agentId } : {}),
       ...(typeof record.label === "string" ? { label: record.label } : {}),
       ...(typeof record.durationMs === "number" ? { durationMs: record.durationMs } : {}),
-      ...(typeof record.status === "string" ? { status: record.status } : {}),
+      ...(record.status === "completed" || record.status === "failed" || record.status === "cancelled" ? { status: record.status } : {}),
       ...(typeof schema?.status === "string" ? { schemaStatus: schema.status } : {}),
       hasData: data !== undefined,
       hasError: typeof schema?.error === "string" || record.status === "failed",
@@ -767,7 +767,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const liveMakers = new Map<string, SpawnedTaskMeta[]>();
     /** jobId → {callId, taskIndex}. settle 시 해당 child만 liveMakers에서 닫는다. */
     const jobIndex = new Map<string, { callId: string; taskIndex: number }>();
-    /** 완료/parked 뒤에도 같은 session에서 `write agent://` 대상으로 식별할 수 있었던 maker. */
+    /**
+     * 완료/parked 뒤에도 같은 session에서 `write agent://` 대상으로 식별할 수 있었던 maker. 표시 이름은 별도 task 호출에서 재사용되고
+     * core가 실제 child를 Fix·Fix-2처럼 구분하므로, 키는 이름이 아니라 그 spawn(assignment)이다. 각 child의 소유 경로·identity를 따로 보존한다.
+     */
     const knownMakers = new Map<string, SpawnedTaskMeta>();
     /** 이미 판정한 경계. */
     // 발주 판정은 maker_route 한 곳에서만 수행한다.
@@ -781,11 +784,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     /** 미회신 advisory를 이미 낸 체크포인트 id. */
     const advisedCheckpoints = new Set<string>();
 
+    /** canonical agentId가 정확히 같은 child가 우선이다. 일치하는 agentId가 없을 때만 표시 이름으로 가장 최근 child를 찾는다. */
     function knownMakerForTarget(target: string): SpawnedTaskMeta | undefined {
+      let byName: SpawnedTaskMeta | undefined;
       for (const owner of knownMakers.values()) {
         if (owner.agentId === target) return owner;
+        if (owner.name === target) byName = owner;
       }
-      return knownMakers.get(target);
+      return byName;
     }
 
     function noteCheckpoint(record: unknown): void {
@@ -875,6 +881,22 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const settledAttempts = new Set<string>();
     /** settle로 이미 소비한 async jobId. 채널(via)과 무관하게 중복 소비하지 않는다. */
     const consumedJobs = new Set<string>();
+    /**
+     * terminal status를 싣지 못한 관측으로 정산을 보류한 job: jobId → 그 attempt와 그 실행의 시작 시각. 첫 관측의 dedupe가 뒤이은
+     * wait·`read proc://`의 권위 status 관측을 막지 않게 한다. 같은 실행 근거(snapshot row 시작 시각 일치)가 있을 때만 그 attempt에
+     * outcome을 한 번 남긴다. core는 evict 뒤 같은 jobId를 재사용하므로 jobId만으로 옛 attempt에 status를 붙이지 않는다.
+     */
+    const statusPending = new Map<string, { attemptId: string; runStart?: number; terminalRevision?: string; durationMs?: number }>();
+    /** attempt 실행의 시작 시각: spawn·재개 binding 때 core snapshot의 exact jobId row에서 본 값. 같은 실행 판정의 근거다. */
+    const runStarts = new Map<string, number>();
+    /** 끝났지만 terminal status를 관측하지 못한 attempt. 실행 중이 아니므로 REWORK 재개를 연다. outcome은 미상으로 남는다. */
+    const unobservedEnds = new Set<string>();
+    /**
+     * 성공한 `write proc://<jobId>/kill` receipt가 가리킨 실행 중 attempt: jobId → attempt와 그 실행의 시작 시각.
+     * core cancel은 abort 요청 직후 반환하고 cancelled job은 async-result를 보내지 않는다. receipt는 종료가 아니므로, 같은 실행의
+     * snapshot row가 cancelled이고 endTime이 생긴 뒤에만 owner 경계에서 cancelled로 정산한다. 그 전에는 owner 보호를 유지한다.
+     */
+    const pendingCancels = new Map<string, { attemptId: string; runStart: number }>();
     /** 명시 REWORK 전송이 성공해 열린 재개 attempt. agentId → 그 전송 직후 관측한 정확한 새 jobId와 전송 시각. */
     const resumeByAgent = new Map<string, { attemptId: string; jobId: string; sentAt: number }>();
     /** 전송별 snapshot을 보존해 같은 actor로 겹친 DM도 서로의 기준선을 덮지 않는다. */
@@ -968,10 +990,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const routing = registerMakerRouting(pi, {
       ledger: baseLedger,
       owners: (ctx) => {
+        // 취소 요청 뒤 실제로 끝난 실행은 추가 조회 없이 여기서 cancelled로 정산해 그 child만 owner에서 해제한다.
+        reconcileEndedCancels(ctx);
+        // active는 그 child 자체로 판정한다. 같은 표시 이름의 다른 child가 실행 중이라는 이유로 끝난 child를 잠그지 않는다.
         const activeTasks = [...liveMakers.values()].flat();
-        const activeNames = new Set(
-          activeTasks.flatMap((task) => task.name ? [task.name] : []),
-        );
+        const liveTasks = new Set(activeTasks);
         // 원장 running은 프로세스 재시작으로 끝나지 못한 row일 수 있다. core async snapshot에 지금 실행 중인
         // job이 있을 때만 active로 보아, 끝난·죽은 attempt가 영구 잠금이 되지 않게 한다.
         const running = ctx.getAsyncJobSnapshot?.()?.running ?? [];
@@ -982,11 +1005,17 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         for (const entry of observedAttempts.values()) {
           if (entry.agentId && entry.jobId !== "" && runningJobs.has(entry.jobId)) runningAgents.add(entry.agentId);
         }
+        // core는 cancel 즉시 그 job을 running에서 뺀다. 취소 요청 뒤 아직 끝나지 않은 실행(재개·REWORK 포함)은 계속 writer다.
+        for (const [jobId, pending] of pendingCancels) {
+          runningJobs.add(jobId);
+          const agentId = observedAttempts.get(pending.attemptId)?.agentId;
+          if (agentId) runningAgents.add(agentId);
+        }
         const owners: Owner[] = [...knownMakers.values()].map((task) => ({
           name: task.name ?? null,
           primaryDeliverable: task.guard.primaryDeliverable ?? null,
           ownedPaths: task.guard.ownedPaths,
-          active: Boolean(task.name && activeNames.has(task.name)) || Boolean(task.agentId && runningAgents.has(task.agentId)),
+          active: liveTasks.has(task) || Boolean(task.agentId && runningAgents.has(task.agentId)),
           workspace: task.workspace,
         }));
         for (const task of activeTasks) {
@@ -999,12 +1028,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             workspace: task.workspace,
           });
         }
-        // reload 전 spawn은 원장 복원 attempt로만 남는다. 이 runtime이 다시 관측한 이름은 위 목록이 우선한다.
-        // 이름별(이름 없으면 assignment별) 최신 attempt 하나만 owner로 두어 재작업이 소유를 중복 주장하지 않게 한다.
+        // reload 전 spawn은 원장 복원 attempt로만 남는다. 복원 attempt는 이 runtime이 spawn한 child와 같은 child가 아니다.
+        // assignment별 최신 attempt 하나만 owner로 두어 재작업이 소유를 중복 주장하지 않게 한다.
         const restored = new Map<string, ObservedAttempt>();
         for (const entry of observedAttempts.values()) {
-          if (!entry.restored || (entry.name && knownMakers.has(entry.name))) continue;
-          restored.set(entry.name || entry.assignmentId, entry);
+          if (entry.restored) restored.set(entry.assignmentId, entry);
         }
         for (const entry of restored.values()) {
           // 원장 status가 아니라 실제 snapshot이 권위다. 완료로 복원된 owner도 REWORK·후속 지시로 그 canonical agent의 job이
@@ -1024,7 +1052,15 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             owners.push({ name: entry.name || null, primaryDeliverable: null, ownedPaths: [], active, ownershipUnknown: true });
           }
         }
-        return owners;
+        // placement 표시용 목록만 접는다: 실행 중 owner는 실제 child마다 모두 남기고, 실행 중인 것이 없는 이름은 가장 최근
+        // child 하나만 후보로 보인다(복원 owner보다 이 runtime의 spawn이 최근이다). knownMakers의 child별 정보는 그대로다.
+        const activeNames = new Set(owners.flatMap((owner) => owner.active && owner.name ? [owner.name] : []));
+        const latestInactive = new Map<string, Owner>();
+        for (const owner of [...owners.slice(knownMakers.size), ...owners.slice(0, knownMakers.size)]) {
+          if (!owner.active && owner.name) latestInactive.set(owner.name, owner);
+        }
+        return owners.filter((owner) => owner.active || !owner.name
+          || (!activeNames.has(owner.name) && latestInactive.get(owner.name) === owner));
       },
       // legacy-pi loader가 host SDK specifier를 재작성하므로 미러의 static runtime import는 불가하다.
       settings: async (ctx) => deps.findScopedSettings?.(ctx.cwd) ??
@@ -1089,6 +1125,83 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }
     }
     /**
+     * attempt 하나의 실행 상태를 원장에 한 번 남기고 관측 상태를 맞춘다. 정산 jobId를 durable outcome에 남겨 reload 뒤에도 중복 소비를 막는다.
+     * 실행 상태일 뿐 품질 판정이 아니다. sourceRevision은 Maker terminal report가 낸 원 revision을 관측한 경우에만 남긴다.
+     */
+    function appendOutcome(identity: AttemptIdentity, jobId: string, status: OutcomeRecord["status"], durationMs: number | undefined, terminalRevision: string | undefined): ObservedAttempt | undefined {
+      statusPending.delete(jobId);
+      pendingCancels.delete(jobId);
+      unobservedEnds.delete(identity.attemptId);
+      consumedJobs.add(jobId);
+      settledAttempts.add(identity.attemptId);
+      baseLedger.append({
+        type: "outcome",
+        ts: new Date().toISOString(),
+        sessionId: identity.sessionId,
+        assignmentId: identity.assignmentId,
+        attempt: identity.attempt,
+        attemptId: identity.attemptId,
+        agentId: identity.agentId,
+        jobId,
+        status,
+        durationSec: durationMs === undefined ? null : Math.round(durationMs / 1000),
+        ...(terminalRevision ? { sourceRevision: terminalRevision } : {}),
+      });
+      const observed = observedAttempts.get(identity.attemptId);
+      if (observed) {
+        observed.status = status;
+        observed.sourceRevision = terminalRevision ?? null;
+      }
+      return observed;
+    }
+    /**
+     * 취소 요청한 실행의 실제 종료 여부. 같은 jobId·같은 실행(startTime 일치)의 core snapshot row가 cancelled이고 endTime이 있을 때만
+     * 끝난 것이다. row가 없거나 다른 실행이면 판단하지 않는다(종료로 추정하지 않고 보호를 유지한다).
+     */
+    function cancelEndedRow(jobId: string, ctx: ExtensionContext): { startTime: number; endTime: number } | undefined {
+      const pending = pendingCancels.get(jobId);
+      if (!pending) return undefined;
+      const snapshot = ctx.getAsyncJobSnapshot?.();
+      const row = [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])].find((entry) => entry.id === jobId);
+      if (!row || row.startTime !== pending.runStart || row.status !== "cancelled" || typeof row.endTime !== "number") return undefined;
+      return { startTime: row.startTime, endTime: row.endTime };
+    }
+    /** owner·admission 경계: 취소 요청 뒤 실제로 끝난 실행만 cancelled로 한 번 정산하고 그 child만 live owner에서 닫는다. */
+    function reconcileEndedCancels(ctx: ExtensionContext): void {
+      for (const [jobId, pending] of [...pendingCancels]) {
+        const ended = cancelEndedRow(jobId, ctx);
+        if (!ended) continue;
+        const observed = observedAttempts.get(pending.attemptId);
+        if (!observed || settledAttempts.has(pending.attemptId)) {
+          pendingCancels.delete(jobId);
+          continue;
+        }
+        appendOutcome(observed, jobId, "cancelled", ended.endTime - ended.startTime, undefined);
+        // 같은 실행의 뒤 wait·read proc:// 관측은 이미 정산한 결과다.
+        judgedReviews.add(jobId);
+        if (resumeByAgent.get(observed.agentId)?.attemptId === pending.attemptId) resumeByAgent.delete(observed.agentId);
+        closeSettledMakers([jobId]);
+      }
+    }
+    /**
+     * 성공한 proc kill receipt가 가리킨 실행 중 Maker attempt를 종료 대기로 둔다. attempt는 그 jobId의 live spawn, 재개 binding,
+     * 실행 중 관측 attempt 순으로 찾는다. 실행 시작 시각은 spawn·재개 때 기록한 값이 정본이고, 없으면 지금 exact row의 값을 쓴다.
+     * 기록한 시작 시각과 지금 row가 다르면 다른 실행이므로 두지 않는다. 시작 시각을 모르면 같은 실행을 확인할 수 없어 두지 않는다.
+     */
+    function noteCancelRequested(jobId: string, ctx: ExtensionContext): void {
+      const ref = jobIndex.get(jobId);
+      const spawned = ref ? liveMakers.get(ref.callId)?.find((task) => task.index === ref.taskIndex) : undefined;
+      const attemptId = spawned?.identity?.attemptId
+        ?? [...resumeByAgent.values()].find((binding) => binding.jobId === jobId)?.attemptId
+        ?? [...observedAttempts.values()].filter((entry) => entry.status === "running" && entry.jobId === jobId).at(-1)?.attemptId;
+      if (!attemptId || settledAttempts.has(attemptId) || observedAttempts.get(attemptId)?.status !== "running") return;
+      const rowStart = snapshotRunStart(jobId, ctx);
+      const recorded = runStarts.get(attemptId);
+      const runStart = recorded ?? rowStart;
+      if (runStart === undefined || (rowStart !== undefined && rowStart !== runStart)) return;
+      pendingCancels.set(jobId, { attemptId, runStart });
+    }
+    /**
      * core는 task job을 `id: agentId`로 등록하고 소비된 row를 곧 evict하므로 재개(IRC wake) 실행이 같은 jobId를 다시 받는다.
      * async-result에는 agentId도 없다. 그래서 agentId는 현재 snapshot row(id 정확 일치)에서만 읽고, 열린 REWORK receipt의
      * 전송 시각 이후 시작된 row만 재개 실행(resumeKey)으로 본다. row가 없거나(evict) 전송 전 row면 재개가 아니다.
@@ -1103,9 +1216,35 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         ? { agentId, resumeKey: `${job.jobId}@${row.startTime}` }
         : { agentId };
     }
-    /** 처음 보는 jobId이거나, 재사용 jobId라도 아직 검수하지 않은 재개 실행이면 검수 대상이다. */
+    /** 이 jobId의 현재 core snapshot row 시작 시각. core가 같은 jobId를 재사용해도 실행마다 다르다. */
+    function snapshotRunStart(jobId: string, ctx: ExtensionContext): number | undefined {
+      const snapshot = ctx.getAsyncJobSnapshot?.();
+      const row = [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])].find((entry) => entry.id === jobId);
+      return typeof row?.startTime === "number" ? row.startTime : undefined;
+    }
+    /**
+     * 그 실행의 실제 terminal 상태. 관측 결과의 status가 정본이다. 없으면 core snapshot의 exact jobId settled row를 쓰되,
+     * 그 attempt 실행의 시작 시각(runStart)과 row 시작 시각이 같을 때만 같은 실행으로 본다. 아니면 undefined이며 완료로 추정하지 않는다.
+     */
+    function settledStatus(job: SettledJobMeta, ctx: ExtensionContext, runStart: number | undefined): OutcomeRecord["status"] | undefined {
+      if (job.status) return job.status;
+      const row = ctx.getAsyncJobSnapshot?.()?.recent?.find((entry) => entry.id === job.jobId);
+      if (!row || runStart === undefined || row.startTime !== runStart || (row.type !== undefined && row.type !== "task")) return undefined;
+      return row.status === "completed" || row.status === "failed" || row.status === "cancelled" ? row.status : undefined;
+    }
+    /**
+     * 처음 보는 jobId이거나, 재사용 jobId라도 아직 검수하지 않은 재개 실행이면 검수 대상이다.
+     * status 미상으로 정산을 보류한 job은 권위 status 관측이 오면 한 번 더 통과시킨다. 어느 실행의 관측인지는 runPreReview가 가린다.
+     */
     function takeUnjudged(jobs: SettledJobMeta[], ctx: ExtensionContext): SettledJobMeta[] {
       return jobs.filter((job) => {
+        // 취소 요청한 실행은 실제로 끝나기 전 wait·read proc://가 cancelled를 보여 줘도 정산하지 않는다(owner 보호 유지).
+        // 끝난 뒤의 관측은 아직 owner 경계에서 정산되지 않았으면 통과시켜 같은 실행을 한 번 정산한다.
+        if (pendingCancels.has(job.jobId)) {
+          if (!cancelEndedRow(job.jobId, ctx)) return false;
+          judgedReviews.add(job.jobId);
+          return true;
+        }
         if (!judgedReviews.has(job.jobId)) {
           judgedReviews.add(job.jobId);
           const { resumeKey } = settledRun(job, ctx);
@@ -1113,9 +1252,12 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           return true;
         }
         const { resumeKey } = settledRun(job, ctx);
-        if (!resumeKey || judgedResumeRuns.has(resumeKey)) return false;
-        judgedResumeRuns.add(resumeKey);
-        return true;
+        if (resumeKey && !judgedResumeRuns.has(resumeKey)) {
+          judgedResumeRuns.add(resumeKey);
+          return true;
+        }
+        const pending = statusPending.get(job.jobId);
+        return pending !== undefined && settledStatus(job, ctx, pending.runStart) !== undefined;
       });
     }
     async function runPreReview(
@@ -1139,8 +1281,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const newRun = !consumedJobs.has(job.jobId) || run.resumeKey !== undefined;
         const binding = agentId ? resumeByAgent.get(agentId) : undefined;
         let resumeAttemptId = binding && binding.jobId === job.jobId && newRun ? binding.attemptId : undefined;
+        // status 미상으로 보류한 attempt는 같은 실행 근거가 있을 때만 이 관측으로 정산한다: 보류 때 기록한 그 attempt 실행의
+        // 시작 시각과 지금 이 jobId snapshot row의 시작 시각이 같아야 한다. core는 evict 뒤 같은 jobId를 새 실행에 다시 쓴다.
+        const pendingEntry = statusPending.get(job.jobId);
+        const rowStart = snapshotRunStart(job.jobId, ctx);
+        const deferred = !resumeAttemptId && pendingEntry?.runStart !== undefined && rowStart === pendingEntry.runStart
+          ? pendingEntry : undefined;
         // 늦은 이벤트 자체를 새 실행으로 간주하지 않는다. 현재 snapshot에서 확인한 유일한 새 job만 잇는다.
-        if (!resumeAttemptId && agentId && !spawned?.identity && newRun) {
+        if (!resumeAttemptId && agentId && !spawned?.identity && newRun && !deferred) {
           const pending = pendingResume.get(agentId);
           const source = pending ? observedAttempts.get(pending.sourceAttemptId) : undefined;
           const snapshot = pending ? ctx.getAsyncJobSnapshot?.() : undefined;
@@ -1180,42 +1328,40 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               ...(source.ownership ? { ownership: source.ownership } : {}),
             });
             observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running", ownership: source.ownership, restored: source.restored, sourceRevision: null });
+            if (rowStart !== undefined) runStarts.set(identity.attemptId, rowStart);
             pendingResume.delete(agentId);
             resumeAttemptId = identity.attemptId;
           }
         }
-        // session_start에서 복원한 in-flight dispatch도 실제 jobId·agentId로 정산한다.
+        // session_start에서 복원한 in-flight dispatch도 실제 jobId·agentId로 정산한다. 재개 binding이 자기 실행에 우선하고,
+        // 같은 실행으로 확인된 보류 attempt가 그다음이다. 같은 실행 근거가 없는 보류 attempt에는 이 관측의 status를 붙이지 않는다.
         const identity = resumeAttemptId ? observedAttempts.get(resumeAttemptId)
+          : deferred ? observedAttempts.get(deferred.attemptId)
           : spawned?.identity ?? [...observedAttempts.values()].find((entry) =>
-            entry.status === "running" && entry.jobId === job.jobId && entry.agentId === agentId);
+            entry.status === "running" && entry.jobId === job.jobId && entry.agentId === agentId
+            && entry.attemptId !== pendingEntry?.attemptId);
+        // 이 jobId의 다른 실행 row가 보이면 옛 보류는 더는 정산할 수 없다. 그 attempt의 outcome은 미상으로 남는다.
+        if (pendingEntry && !deferred && rowStart !== undefined && rowStart !== pendingEntry.runStart) statusPending.delete(job.jobId);
         // 채널과 무관하게 이미 소비한 jobId는 다시 처리하지 않고, 같은 attempt도 한 번만 소비한다.
-        if (identity && (!consumedJobs.has(job.jobId) || resumeAttemptId !== undefined) && !settledAttempts.has(identity.attemptId)
+        if (identity && (deferred !== undefined || !consumedJobs.has(job.jobId) || resumeAttemptId !== undefined) && !settledAttempts.has(identity.attemptId)
           && (spawned?.agent === undefined || spawned.agent === "maker")) {
-          consumedJobs.add(job.jobId);
-          settledAttempts.add(identity.attemptId);
           if (resumeAttemptId && agentId) resumeByAgent.delete(agentId);
-          const status: OutcomeRecord["status"] = job.status === "cancelled" ? "cancelled" : job.hasError ? "failed" : "completed";
-          baseLedger.append({
-            type: "outcome",
-            ts: new Date().toISOString(),
-            sessionId: identity.sessionId,
-            assignmentId: identity.assignmentId,
-            attempt: identity.attempt,
-            attemptId: identity.attemptId,
-            agentId: identity.agentId,
-            // durable outcome에 실제 정산 jobId를 남겨 reload 뒤에도 중복 소비를 막는다.
-            jobId: job.jobId,
-            status,
-            durationSec: job.durationMs === undefined ? null : Math.round(job.durationMs / 1000),
-            // Maker가 terminal report로 낸 원 revision. 관측한 경우에만 남기며 없으면 미상이다.
-            ...(job.terminalRevision ? { sourceRevision: job.terminalRevision } : {}),
-          });
-          const observed = observedAttempts.get(identity.attemptId);
-          if (observed) {
-            observed.status = status;
-            observed.sourceRevision = job.terminalRevision ?? null;
+          const runStart = runStarts.get(identity.attemptId);
+          const terminal = settledStatus(job, ctx, runStart);
+          // schema.error는 status가 없어도 실패다. 그 밖에는 관측한 terminal 상태만 쓰고 status 부재를 완료로 읽지 않는다.
+          const status: OutcomeRecord["status"] | undefined = terminal === "cancelled" ? "cancelled"
+            : job.hasError || terminal === "failed" ? "failed"
+              : terminal === "completed" ? "completed" : undefined;
+          const terminalRevision = job.terminalRevision ?? deferred?.terminalRevision;
+          const durationMs = job.durationMs ?? deferred?.durationMs;
+          if (!status) {
+            statusPending.set(job.jobId, { attemptId: identity.attemptId, ...(runStart !== undefined ? { runStart } : {}), terminalRevision, durationMs });
+            unobservedEnds.add(identity.attemptId);
+            identityNotes.push(`${spawned?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId} terminal status 미관측: outcome 보류(완료로 추정하지 않음), 같은 실행으로 확인된 wait·read proc:// 관측으로만 정산`);
+          } else {
+            const observed = appendOutcome(identity, job.jobId, status, durationMs, terminalRevision);
+            identityNotes.push(`${spawned?.name ?? observed?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
           }
-          identityNotes.push(`${spawned?.name ?? observed?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
         }
         const todoRevisionKey = spawned && job.terminalRevision
           ? `${spawned.name ?? job.jobId}:${job.terminalRevision}`
@@ -1322,6 +1468,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       observedAttempts.clear();
       settledAttempts.clear();
       consumedJobs.clear();
+      pendingCancels.clear();
+      statusPending.clear();
+      runStarts.clear();
+      unobservedEnds.clear();
       resumeByAgent.clear();
       preWriteJobs.clear();
       pendingResume.clear();
@@ -1617,10 +1767,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             }
           }
           const cancelled = fieldOf(proc, "cancelled");
+          const killedJobId = event.toolName === "write" ? PROC_KILL_URL.exec(path.trim())?.[1] : undefined;
           if (Array.isArray(cancelled)) {
             for (const item of cancelled) {
               const id = fieldOf(item, "id");
               if (typeof id === "string") bashJobs.delete(id);
+              // 이 호출이 직접 취소한 실행 중 Maker attempt만 종료 대기로 둔다. 거부(already_completed 등)·다른 job·read 관측은 대상이 아니다.
+              if (id === killedJobId && fieldOf(item, "status") === "cancelled") noteCancelRequested(id, ctx);
             }
           }
         }
@@ -1636,8 +1789,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const previous = targetAgentId
           ? [...observedAttempts.values()].filter((entry) => entry.agentId === targetAgentId).at(-1)
           : undefined;
+        // status를 관측하지 못하고 끝난 attempt도 실행 중이 아니다. 재개는 그 attempt의 outcome을 추정하지 않고 새 attempt로 연다.
         if (targetAgentId && previous && /(?:^|\n)\s*REWORK\s+task_id=\S+/i.test(message)
-          && previous.status !== "running" && !resumeByAgent.has(targetAgentId) && !pendingResume.has(targetAgentId) && beforeWrite) {
+          && (previous.status !== "running" || unobservedEnds.has(previous.attemptId))
+          && !resumeByAgent.has(targetAgentId) && !pendingResume.has(targetAgentId) && beforeWrite) {
           // 성공 receipt와 전송 전 snapshot이 있는 경우에만 실제 새 job을 바인딩한다.
           const { known: prior, sentAt } = beforeWrite;
           const snapshot = ctx.getAsyncJobSnapshot?.();
@@ -1682,6 +1837,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ...(previous.ownership ? { ownership: previous.ownership } : {}),
           });
           observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running", ownership: previous.ownership, restored: previous.restored, sourceRevision: null });
+          const freshStart = snapshotRunStart(fresh[0]!, ctx);
+          if (freshStart !== undefined) runStarts.set(identity.attemptId, freshStart);
           // 바인딩에 전송 직후 관측한 정확한 새 jobId를 둔다. 다른 job이 먼저 정산돼도 이 attempt를 소비하지 않는다.
           resumeByAgent.set(targetAgentId, { attemptId: identity.attemptId, jobId: fresh[0]!, sentAt });
           sendAdvisory(
@@ -1755,6 +1912,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           if (identity.agentId) task.agentId = identity.agentId;
           if (identity.jobId) task.jobId = identity.jobId;
           observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running", ownership, restored: false, sourceRevision: null });
+          const spawnStart = identity.jobId ? snapshotRunStart(identity.jobId, ctx) : undefined;
+          if (spawnStart !== undefined) runStarts.set(identity.attemptId, spawnStart);
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
         }
         if (identities.length > 0) {
@@ -1776,7 +1935,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const started = noneStarted ? [] : spawned.filter((task) => !(failedRows.has(task.index) && !ids.get(task.index)?.jobId));
         liveMakers.set(event.toolCallId, started);
         for (const task of started) {
-          if (task.name && (task.agent === undefined || task.agent === "maker")) knownMakers.set(task.name, task);
+          // 별도 호출이 같은 이름을 다시 써도 앞 child를 덮지 않는다. 키는 그 spawn identity다.
+          if (task.name && (task.agent === undefined || task.agent === "maker")) {
+            knownMakers.set(task.identity?.assignmentId ?? `${event.toolCallId}#${task.index}`, task);
+          }
         }
         return;
       }

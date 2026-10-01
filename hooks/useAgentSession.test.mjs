@@ -1286,3 +1286,158 @@ test("상한 적용이 남은 세션에서는 내장 슬래시 명령도 상한�
   await f.hook.handleBuiltinSlashCommand("/session").catch(() => {});
   assert.deepEqual(f.kinds().slice(0, 3), ["ensure_session", "ceiling:high", "ceiling:high"], "내장 명령이 미완 상한을 우회하지 못한다");
 });
+
+// Fast 번개: 값은 그 세션·모델의 것으로만 보이고, 읽는 사이 대상이 바뀌면 옛 값을 뒤집어 쓰지 않는다.
+test("Fast 상태는 세션·모델에 묶이고, 상태를 읽는 사이 모델·세션이 바뀌면 바꾸지 않는다", { timeout: 30_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-fast-"));
+  const rendererKey = "__ompUseAgentSessionEffectRenderer";
+  const fakeReactPath = join(directory, "react.mjs");
+  await writeFile(fakeReactPath, [
+    `const react = () => globalThis.${rendererKey}.react;`,
+    ...["useState", "useReducer", "useRef", "useCallback", "useMemo", "useEffect"]
+      .map((name) => `export const ${name} = (...args) => react().${name}(...args);`),
+    "export const useLayoutEffect = (...args) => react().useEffect(...args);",
+  ].join("\n"));
+  const sourceRoot = new URL("../", import.meta.url);
+  const subjectPath = join(directory, "useAgentSession.ts");
+  await writeFile(subjectPath, source
+    .replace('from "react";', `from ${JSON.stringify(pathToFileURL(fakeReactPath).href)};`)
+    .replace(/from "@\/([^"]+)";/g, (_match, path) => `from ${JSON.stringify(new URL(path, sourceRoot).href)};`));
+  const harnessJiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, moduleCache: false, tsconfigPaths: true });
+  const { useAgentSession: useHarnessedAgentSession } = await harnessJiti.import(subjectPath);
+
+  const globalKeys = ["window", "document", "sessionStorage", "EventSource", "fetch", rendererKey];
+  const originals = Object.fromEntries(globalKeys.map((key) => [key, globalThis[key]]));
+  t.after(async () => {
+    for (const key of globalKeys) {
+      if (originals[key] === undefined) delete globalThis[key];
+      else globalThis[key] = originals[key];
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  globalThis.EventSource = class { constructor() { this.readyState = 0; } close() { this.readyState = 2; } };
+  globalThis.window = Object.assign(new EventTarget(), { location: { pathname: "/", search: "", hash: "" } });
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: "visible", title: "" });
+  globalThis.sessionStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+
+  const MODEL_A = { provider: "anthropic", modelId: "claude-a" };
+  const MODEL_B = { provider: "openai-codex", modelId: "gpt-b" };
+  // 서버 대역: 세션별 모델과 모델별 Fast 값. `gates`가 그 명령 응답을 붙잡는다.
+  const server = { models: new Map(), fast: new Map(), running: new Map(), gates: {}, commands: [] };
+  const fastOf = (id) => server.fast.get(`${id}|${server.models.get(id).provider}`) ?? { enabled: false, active: false };
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  const sessionData = (id) => ({
+    sessionId: id, filePath: `/tmp/${id}.jsonl`, totalActiveMs: 0, tree: [], leafId: null,
+    context: { messages: [], entryIds: [], thinkingLevel: "off", model: server.models.get(id) ?? null },
+  });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const transcript = url.match(/^\/api\/sessions\/([^/?]+)\?/);
+    if (transcript) return json(sessionData(decodeURIComponent(transcript[1])));
+    const live = url.match(/^\/api\/(?:sessions\/([^/?]+)\/state|agent\/([^/?]+))$/);
+    if (!live) return json({ error: "not found" }, 404);
+    const id = decodeURIComponent(live[1] ?? live[2]);
+    const state = () => ({ fastModeEnabled: fastOf(id).enabled, fastModeActive: fastOf(id).active });
+    if (init.method !== "POST") {
+      await server.gates.get;
+      return json(server.running.get(id) ? { running: true, state: state() } : { running: false });
+    }
+    const command = JSON.parse(init.body);
+    server.commands.push(`${id}:${command.type}${command.type === "set_fast_mode" ? `:${command.enabled}` : ""}`);
+    if (command.type === "get_state") {
+      await server.gates.get_state;
+      return json({ success: true, data: state() });
+    }
+    if (command.type === "set_model") {
+      server.models.set(id, { provider: command.provider, modelId: command.modelId });
+      return json({ success: true, data: null });
+    }
+    if (command.type === "set_fast_mode") {
+      if (server.unsupported) return json({ error: "Fast mode is unavailable for the current model." }, 500);
+      server.fast.set(`${id}|${server.models.get(id).provider}`, { enabled: command.enabled, active: command.enabled });
+      return json({ success: true, data: fastOf(id) });
+    }
+    return json({ success: true, data: null });
+  };
+
+  const renderer = createEffectRenderer();
+  globalThis[rendererKey] = renderer;
+  let props;
+  let hook;
+  const show = (id) => {
+    props = { session: { id, name: "Test", cwd: "/tmp" }, newSessionCwd: null, initialData: sessionData(id) };
+    renderer.rerender();
+  };
+  const settle = async () => {
+    for (let round = 0; round < 30; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const fastCommands = () => server.commands.filter((command) => command.includes("set_fast_mode"));
+
+  // 1) 실행 중인 세션은 모델 A의 실제 값을 보인다. 모델을 B로 바꾸면 B 값을 읽기 전까지 A 값을 보이지 않는다.
+  server.models.set("s1", MODEL_A);
+  server.running.set("s1", true);
+  server.fast.set("s1|anthropic", { enabled: true, active: true });
+  props = { session: { id: "s1", name: "Test", cwd: "/tmp" }, newSessionCwd: null, initialData: sessionData("s1") };
+  renderer.mount(() => { hook = useHarnessedAgentSession(props); });
+  await settle();
+  assert.deepEqual(hook.fastMode, { enabled: true, active: true });
+  const heldRead = deferred();
+  server.gates.get = heldRead.promise;
+  const switching = hook.handleModelChange(MODEL_B.provider, MODEL_B.modelId);
+  await settle();
+  assert.equal(hook.fastMode, null, "모델이 바뀐 뒤에는 옛 모델의 켜짐을 보이지 않는다");
+  heldRead.resolve();
+  await switching;
+  await settle();
+  assert.deepEqual(hook.fastMode, { enabled: false, active: false }, "새 모델의 실제 값을 읽어 보인다");
+  server.gates.get = undefined;
+
+  // 2) 실행 중이 아닌 세션은 모름이다. 누르면 실제 값을 읽는데, 그사이 모델이 바뀌면 아무것도 바꾸지 않는다.
+  server.models.set("s2", MODEL_A);
+  server.fast.set("s2|anthropic", { enabled: true, active: true });
+  show("s2");
+  await settle();
+  assert.equal(hook.fastMode, null, "실행 중이 아닌 세션은 꺼짐으로 단정하지 않는다");
+  const heldState = deferred();
+  server.gates.get_state = heldState.promise;
+  const toggling = hook.handleFastModeToggle();
+  await settle();
+  await hook.handleModelChange(MODEL_B.provider, MODEL_B.modelId);
+  await settle();
+  heldState.resolve();
+  await toggling;
+  await settle();
+  assert.deepEqual(fastCommands(), [], "읽는 사이 모델이 바뀌면 옛 모델 값으로 뒤집지 않는다");
+  assert.deepEqual(server.fast.get("s2|anthropic"), { enabled: true, active: true });
+
+  // 3) 같은 지연 중 세션이 바뀌어도 바꾸지 않는다.
+  server.models.set("s3", MODEL_A);
+  show("s3");
+  await settle();
+  const heldAgain = deferred();
+  server.gates.get_state = heldAgain.promise;
+  const toggleOld = hook.handleFastModeToggle();
+  await settle();
+  server.models.set("s4", MODEL_A);
+  show("s4");
+  await settle();
+  heldAgain.resolve();
+  await toggleOld;
+  await settle();
+  assert.deepEqual(fastCommands(), [], "다른 세션으로 옮긴 뒤에는 옛 세션을 바꾸지 않는다");
+  assert.equal(hook.fastMode, null);
+  server.gates.get_state = undefined;
+
+  // 4) 모름에서 누르면 저장돼 있던 켜짐을 읽고 끈다. 미지원 모델 켜기는 안내하고 켜지 않는다.
+  server.fast.set("s4|anthropic", { enabled: true, active: true });
+  await hook.handleFastModeToggle();
+  await settle();
+  assert.deepEqual(fastCommands(), ["s4:set_fast_mode:false"]);
+  assert.deepEqual(hook.fastMode, { enabled: false, active: false });
+  server.unsupported = true;
+  await hook.handleFastModeToggle();
+  await settle();
+  assert.deepEqual(hook.fastMode, { enabled: false, active: false }, "거절된 켜기는 켜짐으로 보이지 않는다");
+  assert.ok(hook.notices.some((notice) => notice.type === "error" && /unavailable/.test(notice.message)), "미지원 안내를 남긴다");
+  renderer.unmount();
+});

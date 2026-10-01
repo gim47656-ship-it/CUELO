@@ -8,6 +8,8 @@ import { useI18n } from "@/hooks/useI18n";
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
+// The pinned omp SDK installs plugins only into its shared global tree.
+const INSTALL_SCOPE: PluginScope = "global";
 
 function shortenPath(path: string): string {
   return path.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -38,12 +40,6 @@ function versionSummary(pkg: PluginPackageInfo, t: ReturnType<typeof useI18n>["t
   if (pkg.version) parts.push(t("i18n.installedVersion", { version: pkg.version }));
   if (pkg.configuredVersion) parts.push(t("i18n.configuredVersion", { version: pkg.configuredVersion }));
   return parts.length ? parts.join(" · ") : t("i18n.unknown");
-}
-
-function installLocation(scope: PluginScope, cwd: string): string {
-  return scope === "project"
-    ? `${shortenPath(cwd)}/.omp/plugins`
-    : "~/.omp/plugins";
 }
 
 function findInstalledPackage(
@@ -235,75 +231,19 @@ function Toggle({
   );
 }
 
-function SegmentedScope({
-  value,
-  projectResourcesLoaded,
-  onChange,
-}: {
-  value: PluginScope;
-  projectResourcesLoaded: boolean;
-  onChange: (scope: PluginScope) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <div
-      style={{
-        display: "inline-flex",
-        border: "1px solid var(--border)",
-        borderRadius: 7,
-        overflow: "hidden",
-        height: 30,
-      }}
-    >
-      {(["global", "project"] as PluginScope[]).map((scope) => {
-        const active = value === scope;
-        const disabled = scope === "project" && !projectResourcesLoaded;
-        return (
-          <button
-            key={scope}
-            onClick={() => {
-              if (!disabled) onChange(scope);
-            }}
-            disabled={disabled}
-            title={disabled ? t("trust.projectScopeUnavailable") : undefined}
-            style={{
-              width: 76,
-              border: "none",
-              borderRight: scope === "global" ? "1px solid var(--border)" : "none",
-              background: active ? "var(--bg-selected)" : "none",
-              color: active ? "var(--text)" : "var(--text-muted)",
-              cursor: disabled ? "not-allowed" : "pointer",
-              opacity: disabled ? 0.45 : 1,
-              fontSize: 12,
-            }}
-          >
-            {scope}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function AddPluginPanel({
-  cwd,
+  installDir,
   source,
-  scope,
-  projectResourcesLoaded,
   busy,
   actionError,
   onSourceChange,
-  onScopeChange,
   onInstall,
 }: {
-  cwd: string;
+  installDir?: string;
   source: string;
-  scope: PluginScope;
-  projectResourcesLoaded: boolean;
   busy: boolean;
   actionError: string | null;
   onSourceChange: (value: string) => void;
-  onScopeChange: (scope: PluginScope) => void;
   onInstall: () => void;
 }) {
   const { t } = useI18n();
@@ -346,9 +286,11 @@ function AddPluginPanel({
             oh-my-pi plugins
           </a>
         </div>
-        <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-          {installLocation(scope, cwd)}
-        </div>
+        {installDir && (
+          <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
+            {shortenPath(installDir)}
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -388,11 +330,6 @@ function AddPluginPanel({
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <SegmentedScope
-          value={scope}
-          projectResourcesLoaded={projectResourcesLoaded}
-          onChange={onScopeChange}
-        />
         <button
           type="button"
           onClick={onInstall}
@@ -633,7 +570,6 @@ export function PluginsConfig({
   const [selected, setSelected] = useState<string | null>(null);
   const [addMode, setAddMode] = useState(false);
   const [installSource, setInstallSource] = useState("");
-  const [installScope, setInstallScope] = useState<PluginScope>("global");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -711,7 +647,7 @@ export function PluginsConfig({
     const source = normalizePluginSourceInput(installSource).trim();
     if (!source) return;
     setInstallSource(source);
-    const key = `${installScope}\0${source}`;
+    const key = `${INSTALL_SCOPE}\0${source}`;
     setBusyKey(`install:${key}`);
     setActionError(null);
     setActionMessage(null);
@@ -719,12 +655,12 @@ export function PluginsConfig({
       const res = await fetch("/api/plugins", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "install", source, scope: installScope, cwd }),
+        body: JSON.stringify({ action: "install", source, scope: INSTALL_SCOPE, cwd }),
       });
       const next = (await res.json()) as PluginsResponse & { error?: string };
       if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
       setData(next);
-      const installed = findInstalledPackage(next.packages, source, installScope);
+      const installed = findInstalledPackage(next.packages, source, INSTALL_SCOPE);
       setSelected(installed ? packageKey(installed) : key);
       setAddMode(false);
       setInstallSource("");
@@ -734,7 +670,7 @@ export function PluginsConfig({
     } finally {
       setBusyKey(null);
     }
-  }, [cwd, installScope, installSource, t]);
+  }, [cwd, installSource, t]);
 
   const reloadSession = useCallback(async () => {
     if (!sessionId) return;
@@ -1019,14 +955,11 @@ export function PluginsConfig({
           <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
             {addMode ? (
               <AddPluginPanel
-                cwd={cwd}
+                installDir={data?.installDir}
                 source={installSource}
-                scope={installScope}
-                projectResourcesLoaded={projectResourcesLoaded}
                 busy={addBusy}
                 actionError={actionError}
                 onSourceChange={setInstallSource}
-                onScopeChange={setInstallScope}
                 onInstall={installPlugin}
               />
             ) : loading ? null : selectedPackage ? (

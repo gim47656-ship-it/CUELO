@@ -32,6 +32,12 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "HIKARI(히카리)": "hikari",
 };
 
+/** 캐릭터 별칭의 자산 id. 모르는 별칭은 `null`. 통화 음성 매니페스트도 같은 id를 쓴다. */
+export function characterIdForAlias(alias: string | null | undefined): string | null {
+  if (!alias || !Object.hasOwn(CHARACTER_ID_BY_ALIAS, alias)) return null;
+  return CHARACTER_ID_BY_ALIAS[alias as CompletionAudioAlias];
+}
+
 /**
  * 태그. **「이걸 본 사용자가 무엇을 해야 하는가」**로 나눈다 — 턴이 어떻게 끝났는지가 아니다.
  * 이벤트가 이 중 하나를 고르고, 매니페스트가 태그마다 세트를 갖는다.
@@ -224,8 +230,8 @@ export function cueSetFor(
   alias: string | null | undefined,
   tag: CueTag,
 ): CueSet | null {
-  if (!alias || !Object.hasOwn(CHARACTER_ID_BY_ALIAS, alias)) return null;
-  const characterId = CHARACTER_ID_BY_ALIAS[alias as CompletionAudioAlias];
+  const characterId = characterIdForAlias(alias);
+  if (!characterId) return null;
   return manifest.get(characterId)?.get(tag) ?? null;
 }
 

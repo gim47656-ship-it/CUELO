@@ -8676,6 +8676,27 @@ class HarmonyLeakInterruption extends Error {`,
 		anchor: "			const assistantPartial = partial?.role === \"assistant\" ? partial : undefined;",
 		patched: "			// CUELO P55: a partial discarded for a steering restart is not this error's content.\n			const assistantPartial =\n				partial?.role === \"assistant\" && Reflect.get(partial, STEER_DISCARDED_PARTIAL) !== true ? partial : undefined;",
 	},
+	// 이슈 #5: async-result 자동 전달의 details.jobs[]에 그 실행의 실제 terminal status를 싣는다. wait·`read proc://`의
+	// snapshotJobs는 이미 status를 싣지만 자동 결과만 빠져, schema 없는 실패(예: 격리 준비 실패의 TaskJobError)를
+	// consumer가 completed로 읽었다. entry.job은 정산된 그 실행 객체이므로 enqueue 시점의 status가 정본이다.
+	{
+		file: "src/session/async-job-delivery.ts",
+		marker: "\t/** Actual terminal status of this run (completed|failed|cancelled); absent when the job row is gone. */",
+		anchor: "\tdurationMs?: number;\n\t/** Source capture metadata belongs to this job, not to the enclosing delivery report. */",
+		patched: "\tdurationMs?: number;\n\t/** Actual terminal status of this run (completed|failed|cancelled); absent when the job row is gone. */\n\tstatus?: AsyncJob[\"status\"];\n\t/** Source capture metadata belongs to this job, not to the enclosing delivery report. */",
+	},
+	{
+		file: "src/session/async-job-delivery.ts",
+		marker: "\t\t\tstatus: entry.job?.status,\n",
+		anchor: "\t\t\tlabel: entry.job?.label,\n",
+		patched: "\t\t\tlabel: entry.job?.label,\n\t\t\tstatus: entry.job?.status,\n",
+	},
+	{
+		file: "src/session/async-job-delivery.ts",
+		marker: "\t\t\t...(job.status ? { status: job.status } : {}),\n",
+		anchor: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
+		patched: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.status ? { status: job.status } : {}),\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

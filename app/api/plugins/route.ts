@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
+import { getPluginsDir } from "@oh-my-pi/pi-utils";
 import type { InstalledPlugin } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -130,7 +131,7 @@ async function readPlugins(cwd: string): Promise<PluginsResponse> {
     // Health checks are advisory; a doctor failure must not empty the list.
   }
 
-  return { packages, totals, diagnostics, projectResourcesLoaded: true };
+  return { packages, totals, diagnostics, projectResourcesLoaded: true, installDir: getPluginsDir() };
 }
 
 export async function GET(req: Request) {
@@ -149,7 +150,7 @@ export async function GET(req: Request) {
   }
 }
 
-// POST /api/plugins body: { action, source?, cwd }
+// POST /api/plugins body: { action, source?, scope?, cwd }
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -162,10 +163,19 @@ export async function POST(req: Request) {
     const body = await req.json() as {
       action?: PluginAction;
       source?: string;
+      scope?: unknown;
       cwd?: string;
     };
     if (!body.cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
     if (!body.action) return NextResponse.json({ error: "action required" }, { status: 400 });
+    // The pinned omp PluginManager.install() always writes the shared global
+    // plugin tree and takes no scope option. Refuse any other requested scope
+    // before touching the manager; an omitted scope keeps meaning global.
+    if (body.action === "install" && body.scope !== undefined && body.scope !== "global") {
+      return NextResponse.json({
+        error: `Unsupported plugin install scope: ${String(body.scope)}. Plugins install only globally into ${getPluginsDir()}`,
+      }, { status: 400 });
+    }
     const allowedRoots = await getAllowedFileRoots();
     if (!isExistingFilePathAllowed(body.cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });

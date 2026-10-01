@@ -597,7 +597,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, toolPreset, thinkingLevel,
-    effectiveThinkingLevel, thinkingCeiling,
+    effectiveThinkingLevel, thinkingCeiling, fastMode, fastModeBusy, handleFastModeToggle,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     runStalled, runStateKnown,
@@ -1171,6 +1171,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         effectiveThinkingLevel={effectiveThinkingLevel}
         thinkingCeiling={thinkingCeiling}
         onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
+        fastMode={fastMode}
+        fastModeBusy={fastModeBusy}
+        onFastModeToggle={session || isNew ? handleFastModeToggle : undefined}
         availableThinkingLevels={availableThinkingLevels}
         thinkingLevelMap={currentThinkingLevelMap}
         retryInfo={retryInfo}

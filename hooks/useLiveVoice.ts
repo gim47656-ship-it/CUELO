@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { isLiveHangupRequest, type LiveState } from "@/lib/live-types";
+import { isLiveHangupRequest, type LiveState, type LiveVoiceMode } from "@/lib/live-types";
+import { LiveSpeechPlayer } from "@/lib/live-speech-player";
 
 /**
  * Browser half of the live voice surface.
@@ -20,6 +21,8 @@ export type LiveFailure =
   | "mic-unavailable"
   | "auth"
   | "upstream"
+  /** The character voice could not be produced, so the call ended instead of going silent. */
+  | "voice"
   | "failed";
 
 export interface LiveTranscriptLine {
@@ -33,9 +36,25 @@ export interface LiveVoiceController {
   /** Upstream detail for the failure, when the server supplied one. */
   detail: string | null;
   transcript: LiveTranscriptLine | null;
+  /** Who is speaking the current call, once the server has answered. */
+  voice: LiveVoiceMode | null;
   /** `null` while the browser check has not run yet, on the server and first paint. */
   supported: boolean | null;
   toggle: () => void;
+}
+
+function readVoiceMode(value: unknown): LiveVoiceMode | null {
+  if (!value || typeof value !== "object" || !("mode" in value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.mode === "character" && typeof record.alias === "string"
+    && (record.tuning === "accepted" || record.tuning === "provisional")) {
+    return { mode: "character", alias: record.alias, tuning: record.tuning };
+  }
+  if (record.mode === "native"
+    && (record.reason === "no-key" || record.reason === "character-unknown" || record.reason === "voice-not-ready")) {
+    return { mode: "native", alias: typeof record.alias === "string" ? record.alias : null, reason: record.reason };
+  }
+  return null;
 }
 
 /** Codex signals over HTTP once, so the offer must carry every ICE candidate. */
@@ -88,6 +107,7 @@ export function useLiveVoice(
   const [failure, setFailure] = useState<LiveFailure | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<LiveTranscriptLine | null>(null);
+  const [voice, setVoice] = useState<LiveVoiceMode | null>(null);
   // `null` until the effect below runs: the server render cannot know whether
   // this browser has WebRTC, and starting at `false` made every first paint
   // flash "this browser cannot make live calls" before the real answer.
@@ -99,6 +119,10 @@ export function useLiveVoice(
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const eventsRef = useRef<EventSource | null>(null);
   const callIdRef = useRef<string | null>(null);
+  /** Plays character speech; absent outside a call. */
+  const playerRef = useRef<LiveSpeechPlayer | null>(null);
+  /** Read by `ontrack`: in character mode the native Codex track is never attached. */
+  const voiceModeRef = useRef<LiveVoiceMode | null>(null);
   /** Bumped by every teardown so a connect in flight knows it was cancelled. */
   const genRef = useRef(0);
 
@@ -135,6 +159,10 @@ export function useLiveVoice(
       audio.remove();
     }
 
+    playerRef.current?.close();
+    playerRef.current = null;
+    voiceModeRef.current = null;
+
     if (callId) {
       void fetch(`/api/live/call/${encodeURIComponent(callId)}`, { method: "DELETE" }).catch(() => {
         // The call also expires server-side once no reader remains.
@@ -142,6 +170,7 @@ export function useLiveVoice(
     }
     setState(next);
     setTranscript(null);
+    setVoice(null);
     // Every cancel path bumps the generation and returns from `start` wherever it
     // was waiting, so the connect in flight never reaches its own `finally`.
     // Clearing the flag here is what keeps `toggle` from being wedged shut after
@@ -162,6 +191,12 @@ export function useLiveVoice(
     setDetail(null);
     setBusy(true);
     setState("connecting");
+    // Still inside the click: create and unlock the speech output now, before
+    // any await, so autoplay policy cannot hold the character voice back.
+    playerRef.current?.close();
+    const player = new LiveSpeechPlayer();
+    player.unlock();
+    playerRef.current = player;
 
     // Cancelling bumps the generation, and a connect that was already in flight
     // keeps running until its awaits return. Reporting its failure then would
@@ -215,7 +250,9 @@ export function useLiveVoice(
       audioRef.current = audio;
       pc.ontrack = (event) => {
         const [remote] = event.streams;
-        if (remote) audio.srcObject = remote;
+        // The answer is applied only after the server said who speaks, so this
+        // never races: a character call keeps the Codex voice off entirely.
+        if (remote && voiceModeRef.current?.mode !== "character") audio.srcObject = remote;
       };
 
       await pc.setLocalDescription(await pc.createOffer());
@@ -239,6 +276,7 @@ export function useLiveVoice(
         if ("message" in body && typeof body.message === "string") message = body.message;
         if ("callId" in body && typeof body.callId === "string") callId = body.callId;
         if ("sdp" in body && typeof body.sdp === "string") answer = body.sdp;
+        if ("voice" in body && genRef.current === gen) voiceModeRef.current = readVoiceMode(body.voice);
       }
       if (!response.ok || !callId || !answer) {
         if (genRef.current === gen) {
@@ -262,6 +300,7 @@ export function useLiveVoice(
         return;
       }
       callIdRef.current = callId;
+      setVoice(voiceModeRef.current);
 
       const events = new EventSource(`/api/live/events?callId=${encodeURIComponent(callId)}`);
       eventsRef.current = events;
@@ -299,6 +338,27 @@ export function useLiveVoice(
           }
           return;
         }
+        if (parsed.type === "voice" && "voice" in parsed) {
+          const next = readVoiceMode(parsed.voice);
+          // Only the speaker changes mid-call; the native track stays as it was.
+          if (next && next.mode === voiceModeRef.current?.mode) {
+            voiceModeRef.current = next;
+            setVoice(next);
+          }
+          return;
+        }
+        if (parsed.type === "speech" && "epoch" in parsed && "audio" in parsed) {
+          if (typeof parsed.epoch === "number" && typeof parsed.audio === "string") playerRef.current?.push(parsed.epoch, parsed.audio);
+          return;
+        }
+        if (parsed.type === "speech-reset" && "epoch" in parsed) {
+          if (typeof parsed.epoch === "number") playerRef.current?.reset(parsed.epoch);
+          return;
+        }
+        if (parsed.type === "speech-error" && "message" in parsed && typeof parsed.message === "string") {
+          fail("voice", parsed.message);
+          return;
+        }
         if (parsed.type === "error" && "message" in parsed && typeof parsed.message === "string") {
           fail("upstream", parsed.message);
         }
@@ -326,5 +386,5 @@ export function useLiveVoice(
 
   useEffect(() => () => teardown("closed"), [teardown]);
 
-  return { state, failure, detail, transcript, supported, toggle };
+  return { state, failure, detail, transcript, voice, supported, toggle };
 }

@@ -185,6 +185,13 @@ interface Props {
     level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     ceiling?: ThinkingCeiling | null,
   ) => void;
+  /**
+   * 이 세션 모델 family의 Fast(priority tier). `null`은 아직 모름 — 실행 중이 아닌 세션이다.
+   * `enabled`는 요청, `active`는 지금 모델·계정에서 실제로 실리는지.
+   */
+  fastMode?: { enabled: boolean; active: boolean } | null;
+  fastModeBusy?: boolean;
+  onFastModeToggle?: () => void;
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -589,6 +596,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   modelRoles, onRoleModelChange, modelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   thinkingLevel, effectiveThinkingLevel, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
+  fastMode = null, fastModeBusy = false, onFastModeToggle,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
@@ -3294,6 +3302,50 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 })()}
               </div>
             )}
+            {onFastModeToggle && (() => {
+              // 번개 하나로 네 상태를 구분한다: 적용 중(채움), 요청됐지만 이 모델·계정엔 안 실림(테두리만·흐림),
+              // 꺼짐, 모름(실행 중이 아닌 세션 — 꺼짐으로 단정하지 않는다). 상태는 서버 응답으로만 바뀐다.
+              const fastLabel = fastModeBusy
+                ? t("chat.fastModeBusy")
+                : fastMode === null
+                  ? t("chat.fastModeUnknown")
+                  : fastMode.active
+                    ? t("chat.fastModeActive")
+                    : fastMode.enabled
+                      ? t("chat.fastModeInactive")
+                      : t("chat.fastModeOff");
+              const fastDisabled = fastModeBusy || isStreaming || modelSwitching;
+              const lit = fastMode?.enabled === true;
+              return (
+                <button
+                  type="button"
+                  className={`composer-icon-button${fastMode?.active ? " is-active" : ""}`}
+                  onClick={onFastModeToggle}
+                  disabled={fastDisabled}
+                  aria-pressed={fastMode === null ? undefined : fastMode.enabled}
+                  aria-busy={fastModeBusy || undefined}
+                  title={fastLabel}
+                  aria-label={fastLabel}
+                  style={{ flexShrink: 0, opacity: isStreaming ? 0.5 : 1 }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill={fastMode?.active ? "var(--accent)" : "none"}
+                    stroke={lit ? "var(--accent)" : "currentColor"}
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={fastMode === null ? "3 2" : undefined}
+                    style={{ opacity: lit && !fastMode?.active ? 0.6 : 1 }}
+                    aria-hidden="true"
+                  >
+                    <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+                  </svg>
+                </button>
+              );
+            })()}
             {!isMobile && currentReasoningText && (
               <span style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                 {currentReasoningText}

@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "provider": "cartesia",
+  "model": "sonic-3.6",
+  "notice": "Unofficial synthetic character references derived from the bundled AivisSpeech completion clips. Not an endorsement or representation of the original voice creators. Provider voice IDs and API credentials are private per installation.",
+  "characters": [
+    {
+      "id": "yuki",
+      "alias": "YUKI(유키)",
+      "reference": "yuki-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "excited",
+        "speed": 1.2,
+        "volume": 1
+      },
+      "tuning": "accepted",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "まお",
+        "style": "からかい",
+        "modelId": "a59cb814-0083-4369-8542-f51a29e72af7",
+        "modelVersion": "1.2.0",
+        "source": "https://hub.aivis-project.com/aivm-models/a59cb814-0083-4369-8542-f51a29e72af7",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [
+          "オズチャット -Oz Chat- <cs@tr1ppy.com> (https://0z.chat)",
+          "Trippy <cs@tr1ppy.com> (https://tr1ppy.com)",
+          "ねゆたろ (https://x.com/___neyu_zzz)"
+        ],
+        "sourceClips": [
+          "/audio/completion/yuki/01.wav",
+          "/audio/completion/yuki/02.wav",
+          "/audio/completion/yuki/03.wav",
+          "/audio/completion/yuki/04.wav",
+          "/audio/completion/yuki/05.wav",
+          "/audio/completion/yuki/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "isana",
+      "alias": "ISANA(이사나)",
+      "reference": "isana-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "excited",
+        "speed": 1.1,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "凛音エル",
+        "style": "Happy",
+        "modelId": "f5017410-fbb5-49e1-97cb-e785f42e15f5",
+        "modelVersion": "1.0.0",
+        "source": "https://hub.aivis-project.com/aivm-models/f5017410-fbb5-49e1-97cb-e785f42e15f5",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [
+          "kokuren",
+          "電脳天使工業"
+        ],
+        "sourceClips": [
+          "/audio/completion/isana/01.wav",
+          "/audio/completion/isana/02.wav",
+          "/audio/completion/isana/03.wav",
+          "/audio/completion/isana/04.wav",
+          "/audio/completion/isana/05.wav",
+          "/audio/completion/isana/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "mio",
+      "alias": "MIO(미오)",
+      "reference": "mio-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "calm",
+        "speed": 0.95,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "コハク",
+        "style": "ノーマル",
+        "modelId": "22e8ed77-94fe-4ef2-871f-a86f94e9a579",
+        "modelVersion": "1.1.0",
+        "source": "https://hub.aivis-project.com/aivm-models/22e8ed77-94fe-4ef2-871f-a86f94e9a579",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [
+          "オズチャット -Oz Chat- <cs@tr1ppy.com> (https://0z.chat)",
+          "Trippy <cs@tr1ppy.com> (https://tr1ppy.com) ",
+          "ねゆたろ (https://x.com/___neyu_zzz)"
+        ],
+        "sourceClips": [
+          "/audio/completion/mio/01.wav",
+          "/audio/completion/mio/02.wav",
+          "/audio/completion/mio/03.wav",
+          "/audio/completion/mio/04.wav",
+          "/audio/completion/mio/05.wav",
+          "/audio/completion/mio/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "rin",
+      "alias": "RIN(린)",
+      "reference": "rin-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "neutral",
+        "speed": 1,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "るな",
+        "style": "ノーマル",
+        "modelId": "4f281e78-eba6-495a-8e50-5c322d02b5b1",
+        "modelVersion": "1.0.0",
+        "source": "https://hub.aivis-project.com/aivm-models/4f281e78-eba6-495a-8e50-5c322d02b5b1",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [],
+        "sourceClips": [
+          "/audio/completion/rin/01.wav",
+          "/audio/completion/rin/02.wav",
+          "/audio/completion/rin/03.wav",
+          "/audio/completion/rin/04.wav",
+          "/audio/completion/rin/05.wav",
+          "/audio/completion/rin/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "nova",
+      "alias": "NOVA(노바)",
+      "reference": "nova-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "excited",
+        "speed": 1.15,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "わかな(現実20代女子AIボイチェン@リアボVC公式モデル)",
+        "style": "嬉しい",
+        "modelId": "f83c385c-829b-40c4-8c11-639027e61636",
+        "modelVersion": "1.0.0",
+        "source": "https://hub.aivis-project.com/aivm-models/f83c385c-829b-40c4-8c11-639027e61636",
+        "license": "# Aivis Common Model License (ACML) 1.0; AivisHub credit request: 声は(x.com/dopoiro)のAI音声",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [
+          "ぽいロード（リアボVC公式） (https://x.com/dopoiro)"
+        ],
+        "sourceClips": [
+          "/audio/completion/nova/01.wav",
+          "/audio/completion/nova/02.wav",
+          "/audio/completion/nova/03.wav",
+          "/audio/completion/nova/04.wav",
+          "/audio/completion/nova/05.wav",
+          "/audio/completion/nova/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "shion",
+      "alias": "SHION(시온)",
+      "reference": "shion-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "calm",
+        "speed": 0.95,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "まい",
+        "style": "ノーマル",
+        "modelId": "e9339137-2ae3-4d41-9394-fb757a7e61e6",
+        "modelVersion": "1.0.0",
+        "source": "https://hub.aivis-project.com/aivm-models/e9339137-2ae3-4d41-9394-fb757a7e61e6",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [],
+        "sourceClips": [
+          "/audio/completion/shion/01.wav",
+          "/audio/completion/shion/02.wav",
+          "/audio/completion/shion/03.wav",
+          "/audio/completion/shion/04.wav",
+          "/audio/completion/shion/05.wav",
+          "/audio/completion/shion/06.wav"
+        ]
+      }
+    },
+    {
+      "id": "hikari",
+      "alias": "HIKARI(히카리)",
+      "reference": "hikari-reference.wav",
+      "referenceLanguage": "ja",
+      "referenceAccent": "standard-japanese",
+      "addAccents": [
+        "korean"
+      ],
+      "generation": {
+        "emotion": "content",
+        "speed": 1.1,
+        "volume": 1
+      },
+      "tuning": "provisional",
+      "attribution": {
+        "engine": "AivisSpeech",
+        "engineVersion": "1.1.0-dev",
+        "speaker": "花音",
+        "style": "ノーマル",
+        "modelId": "a670e6b8-0852-45b2-8704-1bc9862f2fe6",
+        "modelVersion": "1.0.0",
+        "source": "https://hub.aivis-project.com/aivm-models/a670e6b8-0852-45b2-8704-1bc9862f2fe6",
+        "license": "# Aivis Common Model License (ACML) 1.0",
+        "licenseUrl": "https://github.com/Aivis-Project/ACML/blob/master/ACML-1.0.md",
+        "creators": [
+          "魔法プログラム (https://hub.aivis-project.com/@MAHOPROGRAM)"
+        ],
+        "sourceClips": [
+          "/audio/completion/hikari/01.wav",
+          "/audio/completion/hikari/02.wav",
+          "/audio/completion/hikari/03.wav",
+          "/audio/completion/hikari/04.wav",
+          "/audio/completion/hikari/05.wav",
+          "/audio/completion/hikari/06.wav"
+        ]
+      }
+    }
+  ]
+}

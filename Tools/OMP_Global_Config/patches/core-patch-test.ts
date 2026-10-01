@@ -3053,5 +3053,34 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	check("readback 실패는 전달된 행동을 오류로 바꾸지 않고 unverified/reobserve 로 남긴다", unread.ok && unreadOut.status === "unverified" && unreadOut.suggestedNext === "reobserve", JSON.stringify(unread));
 }
 
+console.log("\n[31] async-result 자동 전달 — schema 없는 실패도 그 실행의 실제 terminal status 를 싣는다");
+// 이슈 #5: wait·read proc:// 는 snapshotJobs 로 status 를 싣지만 자동 결과 details.jobs[] 에는 없어서, structured output 없이
+// 실패한 Maker(격리 준비 실패의 TaskJobError 등)를 consumer 가 completed 로 읽었다. 실제 manager 가 정산·전달한 entry 로 본다.
+{
+	const { AsyncJobError } = await import(`${CORE}/async/job-manager.ts`);
+	const { buildAsyncResultBatchMessage } = await import(`${CORE}/session/async-job-delivery.ts`);
+	const manager = new AsyncJobManager({});
+	const delivered: Array<{ jobId: string; text: string; job: unknown }> = [];
+	manager.registerDeliverySink("M31", (jobId: string, text: string, job: unknown) => {
+		delivered.push({ jobId, text, job });
+	});
+	manager.register("task", "Failed", async () => {
+		throw new AsyncJobError("Isolated task execution requires a git repository");
+	}, { id: "job-failed", ownerId: "M31", agentId: "agent-failed" });
+	manager.register("task", "Schema", async () => {
+		throw new AsyncJobError("subagent failed after yield", { source: "yield", mode: "strict", status: "valid", data: { revision: "r1" } });
+	}, { id: "job-schema", ownerId: "M31", agentId: "agent-schema" });
+	manager.register("task", "Done", async () => "done", { id: "job-done", ownerId: "M31", agentId: "agent-done" });
+	await Promise.all(manager.getAllJobs().map((job: { promise: Promise<unknown> }) => job.promise));
+	await manager.drainDeliveries({ timeoutMs: 2_000 });
+	const message = buildAsyncResultBatchMessage(delivered.map(entry => ({ jobId: entry.jobId, result: entry.text, job: entry.job, durationMs: 1, epoch: 0 })));
+	const jobs = new Map((message?.details.jobs ?? []).map((job: { jobId: string }) => [job.jobId, job as { status?: string; schema?: unknown }]));
+	check("structured 없는 실패 task 는 status=failed 로 전달된다", jobs.get("job-failed")?.status === "failed" && jobs.get("job-failed")?.schema === undefined, JSON.stringify(message?.details));
+	check("schema-valid payload 뒤의 운영 실패도 status=failed 다", jobs.get("job-schema")?.status === "failed" && jobs.get("job-schema")?.schema !== undefined, JSON.stringify(jobs.get("job-schema")));
+	check("정상 완료는 status=completed 다", jobs.get("job-done")?.status === "completed", JSON.stringify(jobs.get("job-done")));
+	check("job row 없는 entry 는 status 를 지어내지 않는다", buildAsyncResultBatchMessage([{ jobId: "gone", result: "x", job: undefined, durationMs: 1, epoch: 0 }])?.details.jobs[0]?.status === undefined);
+	manager.cancelAll();
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -99,6 +99,8 @@ type AgentStateResponse = {
   thinkingLevel?: string;
   configuredThinkingLevel?: string;
   thinkingCeiling?: string | null;
+  fastModeEnabled?: boolean;
+  fastModeActive?: boolean;
   isStreaming?: boolean;
   isPromptRunning?: boolean;
   isBashRunning?: boolean;
@@ -127,6 +129,18 @@ export interface QueuedMessages {
 
 function normalizeQueuedMessages(q?: { steering?: string[]; followUp?: string[] } | null): QueuedMessages {
   return { steering: q?.steering ?? [], followUp: q?.followUp ?? [] };
+}
+
+/**
+ * Fast(priority tier) 상태. `enabled`는 이 세션 모델 family에 요청돼 있는지, `active`는 그 요청이
+ * 지금 모델·계정에서 실제로 실리는지다. `null`은 아직 모른다 — 실행 중이 아닌 세션은 서버가 답하지
+ * 않으므로, 꺼짐으로 단정하지 않는다.
+ */
+export type FastModeState = { enabled: boolean; active: boolean } | null;
+
+function readFastModeState(state: AgentStateResponse | undefined): FastModeState | undefined {
+  if (!state || typeof state.fastModeEnabled !== "boolean") return undefined;
+  return { enabled: state.fastModeEnabled, active: state.fastModeActive === true };
 }
 
 /**
@@ -580,6 +594,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [effectiveThinkingLevel, setEffectiveThinkingLevel] = useState<string | undefined>();
   /** 「Auto, 최대 X」 상한. `null`이면 상한 없음. */
   const [thinkingCeiling, setThinkingCeiling] = useState<ThinkingCeiling | null>(null);
+  /** Fast 값과 그 값이 속한 `세션|모델`. 지금 세션·모델과 키가 다르면 화면에는 모름으로 보인다. */
+  const [fastEntry, setFastEntry] = useState<{ key: string; value: FastModeState } | null>(null);
+  const [fastModeBusy, setFastModeBusy] = useState(false);
+  /** Fast 상태 요청의 세대. 세션·모델이 바뀌거나 새 요청이 나가면 늦게 온 옛 응답을 버린다. */
+  const fastGenRef = useRef(0);
+  /** 지금 화면의 모델 키. 비동기 경로가 await 뒤에 대상이 그대로인지 확인한다. */
+  const fastModelKeyRef = useRef("");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(seededData?.contextUsage ?? null);
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -2879,6 +2900,76 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [isNew, loadSession, addNotice, thinkingCeiling, ensureNewSession]);
 
+  /**
+   * 지금 세션의 Fast 상태를 서버에서 다시 읽는다. 세션을 열 때, 모델·프리셋이 바뀐 뒤, 턴이 끝난 뒤
+   * (Anthropic이 Fast를 거절하면 SDK가 그 턴에서 끈다) 다시 읽는다. 실행 중이 아닌 세션은 답이 없어
+   * 모름(`null`)으로 둔다 — 저장된 Fast가 이미 켜져 있을 수 있으므로 꺼짐으로 단정하지 않는다.
+   */
+  const fastModelKey = displayModel ? `${displayModel.provider}/${displayModel.modelId}` : "";
+  fastModelKeyRef.current = fastModelKey;
+  // 렌더에서는 prop의 세션을 쓴다 — `sessionIdRef`는 아래 세션 effect가 이 effect보다 늦게 맞춘다.
+  // 비동기 경로는 await 뒤라 `sessionIdRef`가 이미 맞춰져 있다.
+  const fastKeyFor = (sid: string | null) => (sid ? `${sid}|${fastModelKeyRef.current}` : null);
+  const fastTarget = () => fastKeyFor(sessionIdRef.current);
+  const fastSessionId = session?.id ?? sessionIdRef.current;
+  const currentFastKey = fastKeyFor(fastSessionId);
+  const fastMode: FastModeState = fastEntry && fastEntry.key === currentFastKey ? fastEntry.value : null;
+  useEffect(() => {
+    const gen = ++fastGenRef.current;
+    const key = currentFastKey;
+    const sid = fastSessionId;
+    if (!key || !sid || agentRunning || modelSwitching) return;
+    void fetch(`/api/agent/${encodeURIComponent(sid)}`)
+      .then((res) => res.json() as Promise<{ running?: boolean; state?: AgentStateResponse }>)
+      .then((body) => {
+        if (fastGenRef.current !== gen || fastTarget() !== key) return;
+        setFastEntry({ key, value: (body.running ? readFastModeState(body.state) : undefined) ?? null });
+      })
+      .catch(() => {
+        // 다음 모델 변경·턴 종료가 다시 읽는다. 모르는 상태는 그대로 모름이다.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFastKey, agentRunning, modelSwitching]);
+
+  /**
+   * 번개 토글. 세션이 실제로 가진 상태를 뒤집는다 — 모르면 먼저 그 세션을 띄워 읽는다. 표시는
+   * 서버 응답으로만 바꾼다(낙관적으로 켜지 않는다). 새 대화는 세션을 만든 뒤 실제 모델에 건다.
+   * 읽는 사이 세션·모델이 바뀌었으면 바꾸지 않는다 — 옛 대상의 값을 새 대상에 뒤집어 쓰지 않는다.
+   */
+  const handleFastModeToggle = useCallback(async () => {
+    const sid = sessionIdRef.current ?? await ensureNewSession();
+    const key = fastTarget();
+    if (!sid || !key) return;
+    const gen = ++fastGenRef.current;
+    const stillCurrent = () => fastGenRef.current === gen && fastTarget() === key;
+    const settled = (value: FastModeState) => {
+      if (stillCurrent()) setFastEntry({ key, value });
+    };
+    setFastModeBusy(true);
+    try {
+      let enabled = fastEntry?.key === key ? fastEntry.value?.enabled : undefined;
+      if (enabled === undefined) {
+        const known = readFastModeState(await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }));
+        if (!known) throw new Error("Could not read the session's Fast state");
+        enabled = known.enabled;
+      }
+      if (!stillCurrent()) return;
+      const next = await sendAgentCommand<{ enabled?: boolean; active?: boolean }>(sid, { type: "set_fast_mode", enabled: !enabled });
+      settled({ enabled: next?.enabled === true, active: next?.active === true });
+    } catch (e) {
+      if (!stillCurrent()) return;
+      addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
+      try {
+        settled(readFastModeState(await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" })) ?? null);
+      } catch {
+        settled(null);
+      }
+    } finally {
+      setFastModeBusy(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ensureNewSession, fastEntry, addNotice]);
+
   const handleToolPresetChange = useCallback(async (preset: "none" | "default" | "full") => {
     const toolNames = getToolNamesForPreset(preset);
     setToolPresetState(preset);
@@ -3133,7 +3224,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleRecallQueue, handleRemoveQueuedMessage,
     handleBuiltinSlashCommand,
-    handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, ensureNewSession, refreshLiveTranscript, setActiveLeafId, setData, setMessages,
+    handleToolPresetChange, handleThinkingLevelChange, fastMode, fastModeBusy, handleFastModeToggle, loadTools, loadSlashCommands, ensureNewSession, refreshLiveTranscript, setActiveLeafId, setData, setMessages,
     dispatch, setAgentRunning, setForkingEntryId,
     bashRunning, pendingBash,
     // Subscriptions
