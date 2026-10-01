@@ -418,6 +418,27 @@ export function workspaceOf(input: Record<string, unknown>, item: Record<string,
 const sharesCheckout = (left: Workspace | undefined, right: Workspace | undefined) =>
   left !== "isolated" && right !== "isolated";
 
+/**
+ * 같은 checkout의 active owner 중 소유 경로가 겹치는 owner. 소유 경로 미상 active owner는 빈 소유로 보지 않고
+ * 공유 발주 전체와 충돌로 둔다.
+ */
+function activeConflicts(ownedPaths: readonly string[], workspace: Workspace, owners: readonly Owner[]): Owner[] {
+  return owners.filter((owner) => owner.active === true && sharesCheckout(owner.workspace, workspace) && (
+    owner.ownershipUnknown === true
+    || owner.ownedPaths.some((owned) => ownedPaths.some((requested) => ownedPathsOverlap(owned, requested)))));
+}
+
+function activeConflictReason(conflicts: readonly Owner[]): string {
+  const unknown = conflicts.some((owner) => owner.ownershipUnknown === true);
+  return `현재 active owner의 소유 경로와 충돌합니다: ${conflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 오래된 owner index나 다른 경로 owner로 자동 배정하지 말고 현재 owner에게 지시하거나 maker_route로 placement를 다시 판단하세요.${unknown ? " 소유 경로가 기록되지 않은 과거 발주가 아직 실행 중이라 공유 작업공간의 어느 경로와도 겹칠 수 있다고 봅니다. 그 owner가 끝난 뒤 발주하거나 isolated로 발주하세요." : ""}`;
+}
+
+/** 두 소유 계약이 같은 checkout에서 겹치는 경로. 격리 worktree가 끼면 겹침이 없다. */
+function sharedOwnedPaths(left: DispatchOwnership, right: DispatchOwnership): string[] {
+  if (!sharesCheckout(left.workspace, right.workspace)) return [];
+  return left.ownedPaths.filter((path) => right.ownedPaths.some((other) => ownedPathsOverlap(path, other)));
+}
+
 function ownerRevision(owners: Owner[]): string {
   return JSON.stringify(owners.map((owner) => [
     owner.name,
@@ -520,6 +541,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   // 새 초안은 항상 소유 계약을 싣는다. 원장의 과거 row만 ownership이 없을 수 있다.
   type DispatchDraft = Omit<DispatchRecord, "ts" | "ownership" | keyof AttemptIdentity> & { ownership: DispatchOwnership };
   const pendingDispatches = new Map<string, DispatchDraft>();
+  // 검사를 통과했지만 spawn 결과를 아직 받지 못한 task 호출의 소유 예약(toolCallId → 초안). 별도 task 호출의 admission이
+  // 이 예약과 충돌을 검사한다. spawn 관측(noteSpawned)은 실제 owner 목록으로 넘기며 지우고, spawn 없이 끝난 호출은 releaseCall이 지운다.
+  const reservations = new Map<string, { key: string; draft: DispatchDraft }[]>();
   // 거절 진단 전용 색인. 준비된 계약을 이름별로 시간순으로 모아 어긋난 필드를 지목하며,
   // 통과·차단 판정에는 관여하지 않는다.
   const preparedContracts = new Map<string, DispatchContract[]>();
@@ -532,6 +556,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     generation++;
     bindings.clear();
     pendingDispatches.clear();
+    reservations.clear();
     preparedContracts.clear();
     decisionCache.clear();
     placementCache.clear();
@@ -875,7 +900,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   const prepare = async (context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal) =>
     (await prepareBatch(context, tasks, ctx, signal)).routes;
 
-  async function beforeTask(input: Record<string, unknown>, ctx: ExtensionContext) {
+  async function beforeTask(input: Record<string, unknown>, ctx: ExtensionContext, callId = "") {
     let canonicalInput: Record<string, unknown>;
     try {
       const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -960,18 +985,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const recommendedEffort = selected.efforts.length === 1 ? selected.efforts[0] : answers?.[`effort${index}`]?.choice;
       const placement = placementOf(prepared, owners);
       const workspace = workspaceOf(canonicalInput, item);
-      // 같은 checkout을 쓰는 active owner만 충돌이다. 소유 경로 미상 active owner는 빈 소유로 보지 않고 공유 발주 전체와 충돌로 둔다.
-      const activeConflicts = [
-        ...owners.filter((owner) => owner.active === true && sharesCheckout(owner.workspace, workspace)),
-        ...allOwners.filter((owner) => owner.active === true && owner.ownershipUnknown === true && sharesCheckout(owner.workspace, workspace)),
-      ];
-      if (activeConflicts.length > 0) {
-        const unknown = activeConflicts.some((owner) => owner.ownershipUnknown === true);
-        return {
-          block: true,
-          reason: `현재 active owner의 소유 경로와 충돌합니다: ${activeConflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 오래된 owner index나 다른 경로 owner로 자동 배정하지 말고 현재 owner에게 지시하거나 maker_route로 placement를 다시 판단하세요.${unknown ? " 소유 경로가 기록되지 않은 과거 발주가 아직 실행 중이라 공유 작업공간의 어느 경로와도 겹칠 수 있다고 봅니다. 그 owner가 끝난 뒤 발주하거나 isolated로 발주하세요." : ""}`,
-        };
-      }
+      const conflicts = activeConflicts(contract.ownedPaths, workspace, allOwners);
+      if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
       const changed = prepared.status !== "judged" || profile !== selected.profile || recommendedEffort !== effort || existingOwner;
       const routingReason = /^\s*ROUTING_REASON:\s*\S.+$/m.test(task);
@@ -999,9 +1014,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const overlaps: string[] = [];
     for (const [leftIndex, [, left]] of drafts.entries()) {
       for (const [, right] of drafts.slice(leftIndex + 1)) {
-        if (!sharesCheckout(left.ownership.workspace, right.ownership.workspace)) continue;
-        const shared = left.ownership.ownedPaths.filter((path) =>
-          right.ownership.ownedPaths.some((other) => ownedPathsOverlap(path, other)));
+        const shared = sharedOwnedPaths(left.ownership, right.ownership);
         if (shared.length > 0) overlaps.push(`'${clipped(left.name, 40)}' ↔ '${clipped(right.name, 40)}'(${clippedList(shared)})`);
       }
     }
@@ -1011,8 +1024,44 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         reason: `같은 task 배치에서 공유 작업공간 Maker의 OWNED_PATHS가 겹칩니다: ${overlaps.slice(0, DIAGNOSTIC_LIST_LIMIT).join("; ")}. 배치 전체를 발주하지 않았습니다. 경로를 나누거나 한 owner에게 맡기거나, 겹치는 쪽을 순서대로 내거나 isolated로 발주하세요.`,
       };
     }
+    // 여기부터 게시까지는 await가 없는 한 구간이다. 항목별 검사 뒤 다른 호출이 owner나 예약을 바꿨을 수 있으므로
+    // 지금의 active owner와, 다른 task 호출이 승인받아 아직 spawn 결과를 기다리는 예약을 함께 다시 보고 통과한 호출만 예약한다.
+    // core는 한 assistant 메시지의 task 호출을 차례로 준비하므로 앞 호출의 예약이 뒤 호출의 준비에 보인다.
+    const currentOwners = drafts.length > 0 ? deps.owners(ctx) : [];
+    for (const [, draft] of drafts) {
+      const conflicts = activeConflicts(draft.ownership.ownedPaths, draft.ownership.workspace, currentOwners);
+      if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
+    }
+    const reserved: string[] = [];
+    for (const [, draft] of drafts) {
+      for (const [heldCall, held] of reservations) {
+        if (heldCall === callId) continue;
+        for (const { draft: other } of held) {
+          const shared = sharedOwnedPaths(draft.ownership, other.ownership);
+          if (shared.length > 0) reserved.push(`'${clipped(draft.name, 40)}' ↔ 승인 중 '${clipped(other.name, 40)}'(${clippedList(shared)})`);
+        }
+      }
+    }
+    if (reserved.length > 0) {
+      return {
+        block: true,
+        reason: `다른 task 호출이 발주 승인을 받아 spawn 결과를 기다리는 공유 작업공간 OWNED_PATHS와 겹칩니다: ${reserved.slice(0, DIAGNOSTIC_LIST_LIMIT).join("; ")}. 이 호출은 발주하지 않았습니다. 그 호출의 결과가 돌아온 뒤 현재 owner를 확인해 다시 내거나, 경로를 나누거나 isolated로 발주하세요.`,
+      };
+    }
     for (const [key, draft] of drafts) pendingDispatches.set(key, draft);
+    if (callId && drafts.length > 0) reservations.set(callId, drafts.map(([key, draft]) => ({ key, draft })));
     return canonicalInput === input ? undefined : { input: canonicalInput };
+  }
+
+  /**
+   * spawn 없이 끝난 task 호출의 예약과 초안만 푼다. 하류 guard 거절·승인 거부·실행 전 abort·skip은 core가 tool_result 없이
+   * tool_execution_end만 내고, task 실행 오류는 isError tool_result를 낸다. 다른 호출의 예약과 이미 이관된 owner는 건드리지 않는다.
+   */
+  function releaseCall(callId: string): void {
+    for (const { key, draft } of reservations.get(callId) ?? []) {
+      if (pendingDispatches.get(key) === draft) pendingDispatches.delete(key);
+    }
+    reservations.delete(callId);
   }
 
   /**
@@ -1061,6 +1110,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       known.set(name, { assignmentId, lastAttempt: attempt });
     }
     contractLock ??= candidateLock;
+    // 시작한 child는 이제 호출부의 live owner 목록이 소유한다. 이 호출의 예약은 여기서 넘긴다.
+    reservations.delete(callId);
     return dispatched;
   }
 
@@ -1085,5 +1136,5 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       },
     });
   }
-  return { prepare, prepareBatch, beforeTask, noteSpawned, reset, releaseContractLock };
+  return { prepare, prepareBatch, beforeTask, releaseCall, noteSpawned, reset, releaseContractLock };
 }

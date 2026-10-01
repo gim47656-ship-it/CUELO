@@ -27,6 +27,12 @@ Main은 작업을 발주할 때 목표·사용자 수용 조건·보존 동작·
 Main이 완료된 Maker에게 `write agent://<id>`로 후속 지시를 보내면 런타임 advisory는 같은 session의
 실제 attempt에 `routing_verdict`가 아직 기록되지 않았는지 알려줍니다. Main은 증거를 보고
 `accepted`·`rework`·`held`를 직접 기록합니다. 증거 보충 요청은 자동 재작업 판정이 아닙니다.
+`routing_verdict`의 `revision`은 Main이 실제로 검수한 revision입니다. 원장은 Maker 완료 보고에서 관측한
+`sourceRevision`을 함께 보존합니다. 원본과 같으면 `same`, 다르지만 Main이 `integratedFrom`에 원본을
+명시하면 `integrated`, 연결이 없거나 틀리면 `mismatch`, 원본을 관측하지 못했으면 `unknown`으로 기록합니다.
+검수 revision을 생략한 `held`도 `unknown`입니다. `integratedFrom`은 연결 주장이며 실제 검수 근거는
+기존 `reason`·`evidenceLocators`에 남깁니다. 불일치나 미관측 때문에 수용을 자동 거절하지 않고,
+검수 revision이 있으면 진단을 돌려줍니다. 과거 기록의 원본을 추정하거나 품질 집계를 다시 쓰지 않습니다.
 사용자 요구로 목적·범위·수용 조건이 바뀌면 변경된 사실로 `maker_route`를 다시 판단합니다.
 UI/UX 전문성 경계가 새로 확인되면 비-Opus owner의 미완 변경·증거를 보존해 명시적으로 이관하며, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다.
 Main이 실제 재작업을 지시할 때는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md#검수와-수용)의
@@ -81,7 +87,9 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
-같은 `task` 배치에서 공유 작업공간 Maker들의 `OWNED_PATHS`가 겹치면 어떤 작업도 예약하지 않고 배치 전체를 거절합니다. 별도 worktree로 실행하는 `isolated` 작업은 공유 작업공간 충돌에서 제외합니다. 실제로 시작된 작업의 소유 경로와 격리 여부는 원장에 저장해 세션을 다시 열어도 복원합니다. 복원된 작업은 현재 실행 중인 job과 일치할 때만 경로를 점유하며, 끝났거나 사라진 작업이 계속 잠그지 않습니다. 옛 기록에 소유 경로가 없으면 실행 중인 동안만 공유 작업공간의 새 발주를 막습니다.
+같은 `task` 배치에서 공유 작업공간 Maker들의 `OWNED_PATHS`가 겹치면 어떤 작업도 예약하지 않고 배치 전체를 거절합니다. 별도 호출도 앞선 호출의 승인 중 예약과 충돌하면 막습니다. 시작한 작업은 실제 owner로 넘기고, 거절·실패·미실행으로 끝난 호출은 자기 예약만 해제합니다. 하류 guard가 거절한 호출도 같은 메시지의 준비 단계에서는 예약을 유지하므로 뒤 호출이 보수적으로 막힐 수 있으며, 호출 종료 뒤 다음 발주에서 풀립니다.
+
+별도 worktree로 실행하는 `isolated` 작업은 공유 작업공간 충돌에서 제외합니다. 실제로 시작된 작업의 소유 경로와 격리 여부는 원장에 저장해 세션을 다시 열어도 복원합니다. 완료된 Maker도 REWORK나 일반 후속 지시로 실제 job이 실행 중이면 같은 경로를 보호합니다. 과거 원장의 running 상태만으로 잠그지 않으며, 끝났거나 사라진 실행은 경로를 계속 점유하지 않습니다. 옛 기록에 소유 경로가 없으면 실행 중인 동안만 공유 작업공간의 새 발주를 막습니다.
 
 `bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`로 실행하라고 안내합니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.
 

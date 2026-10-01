@@ -2,7 +2,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { registerMakerRouting, workspaceOf, type Owner } from "./lib/maker-routing";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
-import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type VerdictRecord } from "./lib/routing-ledger";
+import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
   assessTodoProgress,
@@ -862,11 +862,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     // spawn으로 실제 관측된 attempt. routing_verdict는 여기 있는 identity만 받는다.
     // 상태를 함께 두어 실행 중 attempt를 완료로 오인하지 않게 하고, session_start에서 원장 scoped 기록으로 복원한다.
     // ownership은 그 attempt dispatch의 소유 계약(과거 row는 null=미상), restored는 session_start 원장 복원 계열이다.
+    // sourceRevision은 그 attempt의 terminal report가 실제로 낸 revision이며, 관측하지 못했으면 null(미상)이다. 추정으로 채우지 않는다.
     type ObservedAttempt = AttemptIdentity & {
       name: string;
       status: "running" | OutcomeRecord["status"];
       ownership: DispatchOwnership | null;
       restored: boolean;
+      sourceRevision: string | null;
     };
     const observedAttempts = new Map<string, ObservedAttempt>();
     /** outcome을 이미 기록한 attempt. 같은 attempt를 두 번 소비하지 않는다. */
@@ -884,7 +886,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const VERDICTS = ["accepted", "rework", "held"] as const;
     type VerdictInput = {
       sessionId: string; assignmentId: string; attemptId: string; verdict: string;
-      reason: string; revision?: string; evidenceLocators?: string[]; appliedLessons?: string[];
+      reason: string; revision?: string; integratedFrom?: string; evidenceLocators?: string[]; appliedLessons?: string[];
     };
     /**
      * Main 명시 수용 판정 기록. advisory 원장에 한 줄 append할 뿐 gate도 LLM 호출도 아니다.
@@ -900,6 +902,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const revision = (request.revision ?? "").trim();
       const evidenceLocators = (request.evidenceLocators ?? []).map((value) => value.trim()).filter(Boolean);
       const appliedLessons = [...new Set((request.appliedLessons ?? []).map((value) => value.trim()).filter(Boolean))];
+      const integratedFrom = (request.integratedFrom ?? "").trim();
       if (!sessionId || !assignmentId || !attemptId) {
         return { ok: false, error: "sessionId·assignmentId·attemptId가 모두 필요합니다. maker_route 결과가 아니라 spawn advisory의 실제 triple을 쓰세요.", knownAttemptIds: [] };
       }
@@ -926,6 +929,19 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (request.verdict === "accepted" && observed.status !== "completed") {
         return { ok: false, error: `accepted는 완료가 관측된 attempt에만 쓸 수 있습니다. 현재 실행 상태: ${observed.status}`, knownAttemptIds: [] };
       }
+      // 원 revision과 검수 revision의 관계는 advisory 기록이다. 다르거나 미상이어도 막지 않고, 조용히 같은 결과로 취급하지 않도록
+      // 관계와 진단을 남긴다. integratedFrom은 Main의 명시 연결 주장일 뿐이며 실제 검수 근거는 reason·evidenceLocators가 담당한다.
+      const sourceRevision = observed.sourceRevision;
+      const revisionRelation: RevisionRelation = !sourceRevision || !revision ? "unknown"
+        : revision === sourceRevision ? "same"
+          : integratedFrom === sourceRevision ? "integrated" : "mismatch";
+      const diagnostic = revisionRelation === "mismatch"
+        ? integratedFrom
+          ? `integratedFrom '${integratedFrom}'이 이 attempt에서 관측한 Maker 원 revision '${sourceRevision}'과 다릅니다. 검수 revision '${revision}'은 mismatch로 기록했습니다. 이 attempt의 원 revision을 통합한 검수라면 integratedFrom='${sourceRevision}'로 다시 기록하고, 다른 attempt의 결과라면 그 attempt identity로 기록하세요.`
+          : `Maker 원 revision '${sourceRevision}'과 검수 revision '${revision}'이 다르고 연결 주장이 없어 mismatch로 기록했습니다. 통합 뒤 새 revision을 직접 검수했다면 integratedFrom='${sourceRevision}'로 연결을 명시하고 그 검수 근거를 reason·evidenceLocators에 남기세요.`
+        : revisionRelation === "unknown" && revision
+          ? `이 attempt의 terminal report revision이 미관측이라 검수 revision '${revision}'과의 관계를 unknown으로 기록했습니다. 원 revision을 추정해 채우지 않습니다.`
+          : undefined;
       const record: VerdictRecord = {
         type: "verdict",
         ts: new Date().toISOString(),
@@ -937,6 +953,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         jobId: observed.jobId,
         verdict: request.verdict as VerdictRecord["verdict"],
         revision: revision || null,
+        sourceRevision,
+        revisionRelation,
+        ...(integratedFrom ? { integratedFrom } : {}),
         evidenceLocators,
         reason,
         ...(appliedLessons.length > 0 ? { appliedLessons } : {}),
@@ -944,7 +963,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (!baseLedger.append(record)) {
         return { ok: false, error: "원장 기록에 실패했습니다(저장 오류). 판정은 남지 않았습니다.", knownAttemptIds: [] };
       }
-      return { ok: true, record };
+      return { ok: true, record, ...(diagnostic ? { diagnostic } : {}) };
     }
     const routing = registerMakerRouting(pi, {
       ledger: baseLedger,
@@ -953,11 +972,21 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const activeNames = new Set(
           activeTasks.flatMap((task) => task.name ? [task.name] : []),
         );
+        // 원장 running은 프로세스 재시작으로 끝나지 못한 row일 수 있다. core async snapshot에 지금 실행 중인
+        // job이 있을 때만 active로 보아, 끝난·죽은 attempt가 영구 잠금이 되지 않게 한다.
+        const running = ctx.getAsyncJobSnapshot?.()?.running ?? [];
+        // 완료로 live 목록에서 닫힌 known maker도 REWORK·후속 지시로 다시 실행 중이면 같은 소유 경로의 writer다.
+        // 그 canonical agentId(또는 이 runtime이 관측한 그 agent attempt의 jobId)가 지금 실행 중일 때만 active다.
+        const runningJobs = new Set(running.map((job) => job.id));
+        const runningAgents = new Set(running.flatMap((job) => typeof job.agentId === "string" && job.agentId ? [job.agentId] : []));
+        for (const entry of observedAttempts.values()) {
+          if (entry.agentId && entry.jobId !== "" && runningJobs.has(entry.jobId)) runningAgents.add(entry.agentId);
+        }
         const owners: Owner[] = [...knownMakers.values()].map((task) => ({
           name: task.name ?? null,
           primaryDeliverable: task.guard.primaryDeliverable ?? null,
           ownedPaths: task.guard.ownedPaths,
-          active: Boolean(task.name && activeNames.has(task.name)),
+          active: Boolean(task.name && activeNames.has(task.name)) || Boolean(task.agentId && runningAgents.has(task.agentId)),
           workspace: task.workspace,
         }));
         for (const task of activeTasks) {
@@ -977,12 +1006,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           if (!entry.restored || (entry.name && knownMakers.has(entry.name))) continue;
           restored.set(entry.name || entry.assignmentId, entry);
         }
-        // 원장 running은 프로세스 재시작으로 끝나지 못한 row일 수 있다. core async snapshot에 지금 실행 중인
-        // job이 있을 때만 active로 보아, 끝난·죽은 attempt가 영구 잠금이 되지 않게 한다.
-        const running = ctx.getAsyncJobSnapshot?.()?.running ?? [];
         for (const entry of restored.values()) {
-          const active = entry.status === "running" && running.some((job) =>
-            job.agentId === entry.agentId || (entry.jobId !== "" && job.id === entry.jobId));
+          // 원장 status가 아니라 실제 snapshot이 권위다. 완료로 복원된 owner도 REWORK·후속 지시로 그 canonical agent의 job이
+          // 지금 실행 중이면 active이고, running row라도 snapshot에 없으면 inactive다.
+          const active = Boolean(entry.agentId && runningAgents.has(entry.agentId)) || (entry.jobId !== "" && runningJobs.has(entry.jobId));
           if (entry.ownership) {
             if (!entry.name && !active) continue;
             owners.push({
@@ -1015,7 +1042,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const z = pi.zod;
       pi.registerTool({
         name: "routing_verdict", label: "Routing Verdict", loadMode: "essential", approval: "read",
-        description: "Main 전용 발주 수용 판정 기록(advisory). 실행 상태와 분리해 accepted·rework·held만 남기며 gate도 LLM 호출도 아니다. identity는 spawn/pre-review advisory와 maker_route 결과의 plan이 아니라 실제 spawn triple(sessionId·assignmentId·attemptId)을 쓴다. accepted·rework는 비어 있지 않은 revision과 evidenceLocators 최소 1개, reason이 필요하고 held는 revision·evidence를 생략할 수 있다. accepted는 완료가 관측된 attempt에만 쓸 수 있다. 선택 appliedLessons에는 그 attempt가 실제로 적용한 교훈의 기억 id(`<memories>`·recall·learn 결과의 `id:`)를 넣으며, 적용 근거는 evidenceLocators로 남긴다. spawn으로 관측되지 않은 attempt, stale identity, 현재 session이 아닌 identity는 기록하지 않고 오류와 알려진 attemptId 목록으로 알린다.",
+        description: "Main 전용 발주 수용 판정 기록(advisory). 실행 상태와 분리해 accepted·rework·held만 남기며 gate도 LLM 호출도 아니다. identity는 spawn/pre-review advisory와 maker_route 결과의 plan이 아니라 실제 spawn triple(sessionId·assignmentId·attemptId)을 쓴다. accepted·rework는 비어 있지 않은 revision과 evidenceLocators 최소 1개, reason이 필요하고 held는 revision·evidence를 생략할 수 있다. accepted는 완료가 관측된 attempt에만 쓸 수 있다. revision은 Main이 실제로 검수한 revision이다. 원장은 그 attempt의 terminal report revision(sourceRevision, 미관측이면 null)과의 관계를 same·integrated·mismatch·unknown으로 함께 남기고, mismatch·unknown이면 기록한 뒤 diagnostic으로 알린다. 통합 뒤 새 revision을 검수했다면 선택 integratedFrom에 이 attempt의 원 revision을 적어 연결을 명시한다. integratedFrom은 연결 주장일 뿐이며 검수 근거는 reason·evidenceLocators가 담당한다. 선택 appliedLessons에는 그 attempt가 실제로 적용한 교훈의 기억 id(`<memories>`·recall·learn 결과의 `id:`)를 넣으며, 적용 근거는 evidenceLocators로 남긴다. spawn으로 관측되지 않은 attempt, stale identity, 현재 session이 아닌 identity는 기록하지 않고 오류와 알려진 attemptId 목록으로 알린다.",
         parameters: z.object({
           sessionId: z.string(),
           assignmentId: z.string(),
@@ -1023,6 +1050,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           verdict: z.string(),
           reason: z.string(),
           revision: z.string().optional(),
+          integratedFrom: z.string().optional(),
           evidenceLocators: z.array(z.string()).optional(),
           appliedLessons: z.array(z.string()).optional(),
         }) as never,
@@ -1151,7 +1179,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               // 재개 attempt는 원 attempt의 소유 계약을 그대로 잇는다. 미상이면 필드를 만들지 않는다.
               ...(source.ownership ? { ownership: source.ownership } : {}),
             });
-            observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running", ownership: source.ownership, restored: source.restored });
+            observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running", ownership: source.ownership, restored: source.restored, sourceRevision: null });
             pendingResume.delete(agentId);
             resumeAttemptId = identity.attemptId;
           }
@@ -1179,9 +1207,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             jobId: job.jobId,
             status,
             durationSec: job.durationMs === undefined ? null : Math.round(job.durationMs / 1000),
+            // Maker가 terminal report로 낸 원 revision. 관측한 경우에만 남기며 없으면 미상이다.
+            ...(job.terminalRevision ? { sourceRevision: job.terminalRevision } : {}),
           });
           const observed = observedAttempts.get(identity.attemptId);
-          if (observed) observed.status = status;
+          if (observed) {
+            observed.status = status;
+            observed.sourceRevision = job.terminalRevision ?? null;
+          }
           identityNotes.push(`${spawned?.name ?? observed?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
         }
         const todoRevisionKey = spawned && job.terminalRevision
@@ -1293,7 +1326,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       preWriteJobs.clear();
       pendingResume.clear();
       for (const entry of scopedAttempts(baseLedger.read(), typeof sessionId === "string" ? sessionId : "")) {
-        observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status, ownership: entry.ownership, restored: true });
+        observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status, ownership: entry.ownership, restored: true, sourceRevision: entry.sourceRevision });
         if (entry.status !== "running") settledAttempts.add(entry.identity.attemptId);
       }
       // durable outcome이 남긴 jobId는 reload 뒤에도 중복 소비를 막는다.
@@ -1371,7 +1404,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     });
 
     pi.on("tool_call", async (event, ctx) => {
-      if (event.toolName === "task") return routing.beforeTask(event.input, ctx);
+      if (event.toolName === "task") return routing.beforeTask(event.input, ctx, event.toolCallId);
 
       if (event.toolName === "wait") {
         const unadvised = [...pendingCheckpoints].filter(([, id]) => !advisedCheckpoints.has(id));
@@ -1531,6 +1564,12 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       );
     });
 
+    // core는 실행한 호출·block·승인 거부·abort·skip 모두에 tool_execution_end를 낸다. 하류 guard 거절처럼 tool_result가 없는
+    // task 호출의 예약은 여기서 그 호출 것만 푼다. spawn 성공은 tool_result(wrapper 안)가 먼저 끝나 이미 owner로 넘어갔다.
+    pi.on("tool_execution_end", (event) => {
+      if (event.toolName === "task") routing.releaseCall(event.toolCallId);
+    });
+
 
     pi.on("tool_result", async (event, ctx) => {
       if (event.toolName === "bash") {
@@ -1642,7 +1681,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             purpose: source?.purpose ?? null,
             ...(previous.ownership ? { ownership: previous.ownership } : {}),
           });
-          observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running", ownership: previous.ownership, restored: previous.restored });
+          observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running", ownership: previous.ownership, restored: previous.restored, sourceRevision: null });
           // 바인딩에 전송 직후 관측한 정확한 새 jobId를 둔다. 다른 job이 먼저 정산돼도 이 attempt를 소비하지 않는다.
           resumeByAgent.set(targetAgentId, { attemptId: identity.attemptId, jobId: fresh[0]!, sentAt });
           sendAdvisory(
@@ -1663,20 +1702,27 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
 
       // task 호출은 pre-dispatch 경계가 따로 있으므로 재시도 문맥을 세우지 않는다.
       if (event.toolName === "task") {
-        if (event.isError) return;
+        if (event.isError) {
+          // spawn하지 못한 task 실행 오류. 이 호출의 예약만 푼다.
+          routing.releaseCall(event.toolCallId);
+          return;
+        }
         // task spawn 성공: 여기서 live maker로 등록한다. tool_call 시점에 등록하면
         // 다른 guard의 block으로 spawn이 없는데도 phantom maker가 남는다.
         // 실제 attempt identity는 이 spawn의 task 호출 id·index·session으로, canonical child id는 progress row에서 캡처한다.
         const sessionId = (ctx.sessionManager?.getSessionId?.() ?? "").trim();
-        const details = event.details as { progress?: unknown; async?: { jobId?: unknown } } | undefined;
+        const details = event.details as { progress?: unknown; async?: { jobId?: unknown }; results?: unknown } | undefined;
         // progress row의 index가 tasks[] 위치와 대응한다(AgentProgress.index). row.id가 canonical child id(= agent:// target)다.
         const progressAgentIds = new Map<number, string>();
+        const failedRows = new Set<number>();
         if (Array.isArray(details?.progress)) {
           for (const [position, row] of details.progress.entries()) {
             if (!row || typeof row !== "object") continue;
-            const record = row as { id?: unknown; index?: unknown };
+            const record = row as { id?: unknown; index?: unknown; status?: unknown };
             if (typeof record.id !== "string" || !record.id) continue;
-            progressAgentIds.set(typeof record.index === "number" ? record.index : position, record.id);
+            const index = typeof record.index === "number" ? record.index : position;
+            progressAgentIds.set(index, record.id);
+            if (record.status === "failed") failedRows.add(index);
           }
         }
         const spawned = extractSpawnedTasks(event.input, todoProgressState.currentTodos);
@@ -1708,7 +1754,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           task.identity = identity;
           if (identity.agentId) task.agentId = identity.agentId;
           if (identity.jobId) task.jobId = identity.jobId;
-          observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running", ownership, restored: false });
+          observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running", ownership, restored: false, sourceRevision: null });
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
         }
         if (identities.length > 0) {
@@ -1722,8 +1768,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ),
           );
         }
-        liveMakers.set(event.toolCallId, spawned);
-        for (const task of spawned) {
+        // core는 child job을 등록한 뒤 반환하므로 시작한 child의 job은 snapshot에 있다. schedule에 실패한 child는 progress가
+        // failed이고 job이 없다. 둘 다일 때만 시작하지 않은 child로 보고 owner에서 뺀다. snapshot 부재만으로는 빼지 않는다.
+        // 하나도 시작하지 못하면 core는 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다(task/index.ts).
+        const noneStarted = !Array.isArray(details?.progress) && details?.async === undefined
+          && Array.isArray(details?.results) && details.results.length === 0;
+        const started = noneStarted ? [] : spawned.filter((task) => !(failedRows.has(task.index) && !ids.get(task.index)?.jobId));
+        liveMakers.set(event.toolCallId, started);
+        for (const task of started) {
           if (task.name && (task.agent === undefined || task.agent === "maker")) knownMakers.set(task.name, task);
         }
         return;

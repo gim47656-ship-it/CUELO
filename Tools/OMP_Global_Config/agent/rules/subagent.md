@@ -87,7 +87,12 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   준비를 재사용하며 무관한 owner 변화·단순 진행 질문으로 난이도를 다시 묻지 않고, policy·후보가
   바뀌면 다시 준비하고 owner 조건만 바뀌면 placement만 다시 판단한다. active owner가 그 경로를
   소유하면 dispatch-new가 막히고 오래된 owner index로 자동 배정하지 않는다
-  (`routing.modelSelection.preparedReference`·`judgmentReuse`).
+  (`routing.modelSelection.preparedReference`·`judgmentReuse`). 공유 작업공간 경로는 검사를 통과해
+  spawn 결과를 기다리는 **다른 task 호출의 예약**과도 겹치면 막힌다. 예약은 spawn 결과가 실제 owner로
+  넘기고, 하류 guard 거절·승인 거부·실행 오류·미실행으로 끝난 호출은 그 호출 것만 푼다. 같은 메시지에서
+  앞 호출이 하류 guard에 막혀도 그 메시지 동안은 뒤 호출이 보수적으로 막히며 다음 발주에서 풀린다.
+  완료된 Maker도 REWORK·후속 지시로 그 canonical agentId의 job이 실제 실행 중이면 active owner다.
+  원장 running row만으로는 잠그지 않는다.
   이 session에서 성공한 spawn의 canonical child id(`agent://<id>`)로 Maker(완료·parked 포함)에게
   자연어 지시를 보내는 경계에 런타임은 `pre-dispatch-existing-owner-message` advisory를 낸다.
   전송을 기다리게 하거나 차단하지 않고, 구조 신호만 owner·지시별로 중복 제거해 다음 continuation에
@@ -442,6 +447,12 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
 수용 조건을 확인한 뒤, `rework`는 근거 있는 재작업 판정에 사용하며 두 판정 모두 검수한 revision·
 evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이유를 남기고 후속 입력 뒤에도
 명시적으로 다시 판정할 수 있다. 저장 실패는 미기록으로 보고하며 발주 자체를 차단하지 않는다.
+`revision`은 Main이 실제로 검수한 revision이다. 원장은 그 attempt의 terminal report revision
+(`sourceRevision`, 미관측이면 `null`)과의 관계를 `same`·`integrated`·`mismatch`·`unknown`으로 함께
+남긴다. 통합 뒤 새 revision을 직접 검수했으면 `integratedFrom`에 그 attempt의 원 revision을 적어 연결을
+명시한다. `integratedFrom`은 연결 주장일 뿐이고 그 검수의 증명은 `reason`·`evidenceLocators`가 맡는다.
+`mismatch`·`unknown`도 기록되며 거절하지 않고 `diagnostic`으로 알린다. 원 revision을 추정해 채우거나
+과거 판정·품질 집계를 다시 쓰지 않는다.
 준비 참조 재사용과 실행 attempt 재사용은 다르다. 재작업 후 수용은 새 attempt에 붙여 원래
 재작업 판정을 보존한다. 옛 name-only 기록은 보존하되 품질 집계에서 제외한다.
 `maker_route`의 history는 **Jev가 분류를 끝낸 뒤** Main에게 붙는 관측 건수 advisory다

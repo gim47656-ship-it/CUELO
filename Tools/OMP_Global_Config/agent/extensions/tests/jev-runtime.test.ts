@@ -863,6 +863,264 @@ describe("jev-runtime pre-dispatch", () => {
         sessionId: fixtureSession, assignmentId: "session-1#call-alpha#0", attemptId: "session-1#call-alpha#0#a2", verdict: "held", reason: "검수 대기",
       })).details).toMatchObject({ ok: true });
     });
+
+    describe("reload 없는 생명주기", () => {
+      const DELTA = GUARDED_TASK.replace("a.ts,b.ts", "d.ts");
+      const EPSILON = GUARDED_TASK.replace("a.ts,b.ts", "e.ts");
+      const executionEnd = (harness: EventHarness, toolCallId: string) =>
+        harness.emit("tool_execution_end", { type: "tool_execution_end", toolCallId, toolName: "task", result: { content: [] }, isError: true });
+
+      test("별도 task 호출의 예약은 하류 거절·실패에서 자기 것만 풀리고 spawn 결과는 실제 시작한 child로만 넘어간다", async () => {
+        const running: Array<Record<string, unknown>> = [];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        for (const [task, name] of [[GUARDED_TASK, "Alpha"], [BETA, "Beta"], [GAMMA, "Gamma"]] as const) await harness.prepare(task, name);
+        expect(await dispatch(harness, "call-alpha", "Alpha", GUARDED_TASK)).toBeUndefined();
+        // 첫 호출의 spawn 결과가 오기 전 같은 공유 경로(b.ts)를 쥐려는 별도 호출은 막힌다. disjoint 호출은 통과한다.
+        expect(await dispatch(harness, "call-beta-1", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+        expect(await dispatch(harness, "call-gamma", "Gamma", GAMMA)).toBeUndefined();
+        // 뒤 guard가 Alpha를 막으면 core는 tool_result 없이 tool_execution_end만 낸다. Alpha 예약만 풀리고 Gamma 예약은 남는다.
+        await executionEnd(harness, "call-alpha");
+        expect(await dispatch(harness, "call-beta-2", "Beta", BETA)).toBeUndefined();
+        expect(await harness.emit("tool_call", taskCall("call-gamma-dup", GAMMA, { name: "Gamma", model: "test/local:high" })))
+          .toMatchObject({ block: true, reason: expect.stringContaining("Gamma") });
+        // task 실행 실패(isError tool_result)도 그 호출 예약만 푼다.
+        await harness.emit("tool_result", { ...taskCall("call-beta-2", BETA, { name: "Beta", model: "test/local:high" }), type: "tool_result", content: [{ type: "text", text: "isolation unavailable" }], isError: true });
+        const betaInput = taskCall("call-beta-3", BETA, { name: "Beta", model: "test/local:high" });
+        expect(await harness.emit("tool_call", betaInput)).toBeUndefined();
+        // spawn 성공은 예약을 실제 owner로 넘긴다. 뒤이은 tool_execution_end가 owner를 풀지 않는다.
+        running.push({ id: "job-beta", agentId: "agent-beta" });
+        await harness.emit("tool_result", { ...betaInput, type: "tool_result", content: [{ type: "text", text: "spawned" }], isError: false, details: { async: { jobId: "job-beta" }, progress: [{ index: 0, id: "agent-beta", status: "running" }] } });
+        await executionEnd(harness, "call-beta-3");
+        // owner 조건이 바뀌었으므로 Main은 maker_route를 다시 판단한다. 그래도 실제 owner Beta가 막는다.
+        await harness.prepare(GUARDED_TASK, "Alpha");
+        expect(await dispatch(harness, "call-alpha-2", "Alpha", GUARDED_TASK)).toMatchObject({ block: true, reason: expect.stringContaining("Beta") });
+      });
+
+      test("부분 성공 batch는 시작한 child만 owner로 남기고 schedule에 실패한 child는 잠그지 않는다", async () => {
+        const running: Array<Record<string, unknown>> = [{ id: "job-delta", agentId: "agent-delta" }];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        await harness.prepare(DELTA, "Delta");
+        await harness.prepare(EPSILON, "Epsilon");
+        const call = {
+          type: "tool_call", toolName: "task", toolCallId: "call-partial",
+          input: { context: "", tasks: [
+            { name: "Delta", agent: "maker", task: DELTA, model: "test/local:high" },
+            { name: "Epsilon", agent: "maker", task: EPSILON, model: "test/local:high" },
+          ] },
+        };
+        expect(await harness.emit("tool_call", call)).toBeUndefined();
+        await harness.emit("tool_result", { ...call, type: "tool_result", isError: false, details: { async: { jobId: "job-delta" }, progress: [
+          { index: 0, id: "agent-delta", status: "running" },
+          { index: 1, id: "agent-epsilon", status: "failed" },
+        ] } });
+        await executionEnd(harness, "call-partial");
+        await harness.prepare(DELTA, "DeltaNext");
+        await harness.prepare(EPSILON, "EpsilonNext");
+        expect(await dispatch(harness, "call-delta-next", "DeltaNext", DELTA)).toMatchObject({ block: true, reason: expect.stringContaining("Delta") });
+        expect(await dispatch(harness, "call-epsilon-next", "EpsilonNext", EPSILON)).toBeUndefined();
+      });
+
+      test("모든 child schedule이 실패한 결과는 owner를 남기지 않는다", async () => {
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await harness.prepare(DELTA, "Delta");
+        const input = taskCall("call-none", DELTA, { name: "Delta", model: "test/local:high" });
+        expect(await harness.emit("tool_call", input)).toBeUndefined();
+        // core 실제형태: 시작한 job이 하나도 없으면 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다.
+        await harness.emit("tool_result", { ...input, type: "tool_result", isError: false,
+          content: [{ type: "text", text: "Failed to start background task job: agent-delta: Background job limit reached (8)." }],
+          details: { projectAgentsDir: null, results: [], totalDurationMs: 0 } });
+        await executionEnd(harness, "call-none");
+        await harness.prepare(DELTA, "DeltaNext");
+        expect(await dispatch(harness, "call-delta-after", "DeltaNext", DELTA)).toBeUndefined();
+      });
+
+      for (const variant of ["새 jobId", "재사용 jobId"] as const) {
+        test(`reload 없이 완료 Maker를 REWORK로 재개하면 실제 실행 동안만 겹치는 발주를 막는다(${variant})`, async () => {
+          const running: Array<Record<string, unknown>> = [{ id: "job-alpha", agentId: "agent-alpha" }];
+          const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+          await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+          running.length = 0;
+          await settle(harness, "job-alpha", "agent-alpha");
+          await harness.prepare(BETA, "Beta");
+          expect(await dispatch(harness, "call-beta-idle", "Beta", BETA)).toBeUndefined();
+          await executionEnd(harness, "call-beta-idle");
+
+          // 실패한 REWORK 전송은 재개가 아니다.
+          const failed = { type: "tool_call", toolCallId: "call-rework-failed", toolName: "write", input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2\n범위 유지." } };
+          await harness.emit("tool_call", failed);
+          await harness.emit("tool_result", { ...failed, type: "tool_result", content: [{ type: "text", text: "agent not found" }], isError: true });
+          expect(await dispatch(harness, "call-beta-after-failed", "Beta", BETA)).toBeUndefined();
+          await executionEnd(harness, "call-beta-after-failed");
+
+          const rework = { ...failed, toolCallId: "call-rework" };
+          await harness.emit("tool_call", rework);
+          const resumedJob = variant === "새 jobId" ? "job-alpha-2" : "job-alpha";
+          running.push({ id: resumedJob, agentId: "agent-alpha", startTime: Date.now() + 1 });
+          await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+          expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "dispatch").at(-1)).toMatchObject({ attemptId: "session-1#call-alpha#0#a2", jobId: resumedJob });
+          expect((await harness.prepare(BETA, "Beta")).details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", active: true }] });
+          expect(await dispatch(harness, "call-beta-busy", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+
+          // 재개 실행이 끝나면(terminal) 같은 경로는 다시 발주할 수 있다. 원장 running row만으로 잠그지 않는다.
+          running.length = 0;
+          await settle(harness, resumedJob, "agent-alpha");
+          await harness.prepare(BETA, "Beta");
+          expect(await dispatch(harness, "call-beta-done", "Beta", BETA)).toBeUndefined();
+        });
+      }
+
+      test("REWORK 전송 뒤 늦게 나타난 실행과 일반 후속 실행도 실제 running job 동안만 owner를 active로 둔다", async () => {
+        const running: Array<Record<string, unknown>> = [{ id: "job-alpha", agentId: "agent-alpha" }];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        running.length = 0;
+        await settle(harness, "job-alpha", "agent-alpha");
+        // 전송 직후 snapshot에 새 job이 없으면 pending receipt만 남는다. 실행이 없는 동안은 막지 않는다.
+        const rework = { type: "tool_call", toolCallId: "call-rework", toolName: "write", input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2" } };
+        await harness.emit("tool_call", rework);
+        await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-pending", "Beta", BETA)).toBeUndefined();
+        await executionEnd(harness, "call-beta-pending");
+        running.push({ id: "job-alpha-late", agentId: "agent-alpha", startTime: Date.now() + 1 });
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-late", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+        running.length = 0;
+        await settle(harness, "job-alpha-late", "agent-alpha");
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-free", "Beta", BETA)).toBeUndefined();
+        await executionEnd(harness, "call-beta-free");
+        // REWORK가 아닌 후속 지시로 깨어난 실행도 같은 checkout에 쓸 수 있는 실제 writer다.
+        running.push({ id: "job-alpha-follow", agentId: "agent-alpha" });
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-follow", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+      });
+
+      const cancel = (harness: EventHarness, jobId: string, agentId: string) => harness.emit("message_start", {
+        type: "message_start",
+        message: { role: "custom", customType: "async-result", attribution: "agent", details: { jobs: [{ jobId, agentId, type: "task", status: "cancelled", durationMs: 500 }] } },
+      });
+
+      test("REWORK 재개 실행이 취소되면 그 owner는 다시 발주를 막지 않는다", async () => {
+        const running: Array<Record<string, unknown>> = [{ id: "job-alpha", agentId: "agent-alpha" }];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        running.length = 0;
+        await settle(harness, "job-alpha", "agent-alpha");
+        const rework = { type: "tool_call", toolCallId: "call-rework", toolName: "write", input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2" } };
+        await harness.emit("tool_call", rework);
+        running.push({ id: "job-alpha-2", agentId: "agent-alpha", startTime: Date.now() + 1 });
+        await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-busy", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+        running.length = 0;
+        await cancel(harness, "job-alpha-2", "agent-alpha");
+        expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "outcome").at(-1)).toMatchObject({ attemptId: "session-1#call-alpha#0#a2", status: "cancelled" });
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-after-cancel", "Beta", BETA)).toBeUndefined();
+      });
+
+      test("reload로 복원한 완료 owner도 일반 후속 지시로 실제 실행 중이면 막고 취소되면 푼다", async () => {
+        const running: Array<Record<string, unknown>> = [{ id: "job-alpha", agentId: "agent-alpha" }];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        running.length = 0;
+        await settle(harness, "job-alpha", "agent-alpha");
+        await harness.emit("session_start", { type: "session_start" });
+        // 원장 completed attempt는 그 자체로 잠그지 않는다.
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-idle", "Beta", BETA)).toBeUndefined();
+        await executionEnd(harness, "call-beta-idle");
+        // REWORK가 아닌 후속 지시로 같은 canonical agent의 실행이 다시 돌면 같은 소유 경로의 writer다.
+        await harness.emit("tool_call", { type: "tool_call", toolCallId: "dm-follow", toolName: "write", input: { path: "agent://agent-alpha", content: "로그도 확인해줘." } });
+        running.push({ id: "job-alpha", agentId: "agent-alpha", startTime: Date.now() + 1 });
+        expect((await harness.prepare(BETA, "Beta")).details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", active: true }] });
+        expect(await dispatch(harness, "call-beta-follow", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+        running.length = 0;
+        await cancel(harness, "job-alpha", "agent-alpha");
+        await harness.prepare(BETA, "Beta");
+        expect(await dispatch(harness, "call-beta-after-cancel", "Beta", BETA)).toBeUndefined();
+      });
+    });
+
+    describe("Maker 원 revision과 Main 검수 revision", () => {
+      const settleWith = (harness: EventHarness, jobId: string, agentId: string, revision?: string) => harness.emit("message_start", {
+        type: "message_start",
+        message: { role: "custom", customType: "async-result", attribution: "agent", details: { jobs: [{
+          jobId, agentId, type: "task", status: "completed", durationMs: 1_000,
+          ...(revision ? { schema: { status: "valid", data: { revision, validation: {} } } } : {}),
+        }] } },
+      });
+      const alpha = { sessionId: fixtureSession, assignmentId: "session-1#call-alpha#0", attemptId: "session-1#call-alpha#0#a1" };
+
+      test("terminal revision을 outcome에 남기고 수용 관계를 same·integrated·mismatch로 구분하며 reload 뒤에도 같다", async () => {
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        await settleWith(harness, "job-alpha", "agent-alpha", "r1");
+        expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome")).toMatchObject({ ...alpha, sourceRevision: "r1" });
+        const accept = async (extra: Record<string, unknown>) => (await harness.verdict({
+          ...alpha, verdict: "accepted", reason: "검수", evidenceLocators: ["artifact://review"], ...extra,
+        })).details as { ok: boolean; record?: Record<string, unknown>; diagnostic?: string };
+
+        expect(await accept({ revision: "r1" })).toMatchObject({ ok: true, record: { revision: "r1", sourceRevision: "r1", revisionRelation: "same" } });
+        expect((await accept({ revision: "r1" })).diagnostic).toBeUndefined();
+        // Main 통합 수용은 원 revision을 명시해 잇는다. 정상 경로이므로 진단이 없다.
+        const integrated = await accept({ revision: "r2", integratedFrom: "r1" });
+        expect(integrated).toMatchObject({ ok: true, record: { revision: "r2", sourceRevision: "r1", integratedFrom: "r1", revisionRelation: "integrated" } });
+        expect(integrated.diagnostic).toBeUndefined();
+        // 연결 없는 다른 revision과 틀린 연결은 기록하되 조용히 같은 결과로 취급하지 않고 구체 진단을 돌려준다.
+        for (const extra of [{ revision: "r2" }, { revision: "r2", integratedFrom: "r0" }]) {
+          const mismatch = await accept(extra);
+          expect(mismatch).toMatchObject({ ok: true, record: { revision: "r2", sourceRevision: "r1", revisionRelation: "mismatch" } });
+          expect(mismatch.diagnostic).toEqual(expect.stringContaining("r1"));
+          expect(mismatch.diagnostic).toEqual(expect.stringContaining("integratedFrom"));
+        }
+
+        await harness.emit("session_start", { type: "session_start" });
+        expect(await accept({ revision: "r2", integratedFrom: "r1" })).toMatchObject({ ok: true, record: { sourceRevision: "r1", revisionRelation: "integrated" } });
+        // held는 검수 revision이 없을 수 있다. 관계를 지어내지 않는다.
+        expect((await harness.verdict({ ...alpha, verdict: "held", reason: "대기" })).details)
+          .toMatchObject({ ok: true, record: { revision: null, sourceRevision: "r1", revisionRelation: "unknown" } });
+        // 기록 관계가 달라도 품질 집계 분류는 바꾸지 않는다(수용 ok는 completed+accepted).
+        expect((await harness.prepare(BETA, "Beta")).details.routes[0]!.history).toMatchObject({ attempts: 1, followed: { ok: 0, held: 1 } });
+      });
+
+      test("원 revision 미관측과 과거 outcome은 unknown으로 두고 재작업 attempt의 revision은 섞지 않는다", async () => {
+        const running: Array<Record<string, unknown>> = [];
+        const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        await settleWith(harness, "job-alpha", "agent-alpha");
+        const unknown = (await harness.verdict({ ...alpha, verdict: "accepted", revision: "r1", reason: "검수", evidenceLocators: ["artifact://review"] })).details as { ok: boolean; record: Record<string, unknown>; diagnostic?: string };
+        expect(unknown).toMatchObject({ ok: true, record: { revision: "r1", sourceRevision: null, revisionRelation: "unknown" } });
+        expect(unknown.diagnostic).toEqual(expect.stringContaining("미관측"));
+        expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome")).not.toHaveProperty("sourceRevision");
+
+        // REWORK attempt a2는 자기 terminal revision만 갖는다.
+        const rework = { type: "tool_call", toolCallId: "call-rework", toolName: "write", input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2" } };
+        await harness.emit("tool_call", rework);
+        running.push({ id: "job-alpha-2", agentId: "agent-alpha", startTime: Date.now() + 1 });
+        await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+        running.length = 0;
+        await settleWith(harness, "job-alpha-2", "agent-alpha", "r2");
+        const second = { ...alpha, attemptId: "session-1#call-alpha#0#a2" };
+        expect((await harness.verdict({ ...second, verdict: "accepted", revision: "r2", reason: "재검수", evidenceLocators: ["artifact://r2"] })).details)
+          .toMatchObject({ ok: true, record: { sourceRevision: "r2", revisionRelation: "same" } });
+        expect((await harness.verdict({ ...alpha, verdict: "rework", revision: "r1", reason: "원 attempt", evidenceLocators: ["artifact://r1"] })).details)
+          .toMatchObject({ ok: true, record: { sourceRevision: null, revisionRelation: "unknown" } });
+
+        // sourceRevision 필드가 없는 과거 outcome row는 reload 뒤에도 미상이다. 현재 revision으로 채우지 않는다.
+        const legacy = createHarness({ judgeAnswers: NORMAL });
+        const identity = { ...alpha, attempt: 1, agentId: "agent-legacy", jobId: "job-legacy" };
+        mkdirSync(join(legacy.ledgerPath, ".."), { recursive: true });
+        appendFileSync(legacy.ledgerPath, [
+          { type: "dispatch", ts: "2026-09-30T00:00:00.000Z", name: "Legacy", workClass: "NORMAL", focus: null, recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "high", chosenModel: "test/local", chosenEffort: "high", routingReason: false, purpose: "primary", ...identity },
+          { type: "outcome", ts: "2026-09-30T00:10:00.000Z", status: "completed", durationSec: 600, ...identity },
+        ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+        await legacy.emit("session_start", { type: "session_start" });
+        expect((await legacy.verdict({ ...alpha, verdict: "accepted", revision: "r9", reason: "과거", evidenceLocators: ["artifact://old"] })).details)
+          .toMatchObject({ ok: true, record: { revision: "r9", sourceRevision: null, revisionRelation: "unknown" } });
+      });
+    });
   });
   test("명시 판정 저장 실패는 성공으로 넘기지 않고 기록되지 않았음을 알린다", async () => {
     const dir = fixtureDir("jev-verdict-fail-");

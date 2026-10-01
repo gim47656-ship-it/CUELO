@@ -130,8 +130,8 @@ function harness(options: {
       route.prepare(context, tasks, routingCtx, signal),
     prepareBatch: (context: string, tasks: typeof task[], _ctx: unknown, signal?: AbortSignal) =>
       route.prepareBatch(context, tasks, routingCtx, signal, "route"),
-    beforeTask: (value: Record<string, unknown>, _ctx: unknown) =>
-      route.beforeTask(value, routingCtx),
+    beforeTask: (value: Record<string, unknown>, _ctx: unknown, callId?: string) =>
+      route.beforeTask(value, routingCtx, callId),
     noteSpawned: (value: Record<string, unknown>, callId = "task-call",
       ids = new Map<number, { agentId: string; jobId: string }>([[0, { agentId: "agent-viewfix", jobId: "job-viewfix" }]])) =>
       route.noteSpawned(value, sessionId, callId, ids),
@@ -655,6 +655,79 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       expect(ledger.records).toMatchObject([{ name: "Left", assignmentId: `${h.sessionId}#single#0` }]);
       expect(ledger.records).toHaveLength(1);
     }
+  });
+  describe("별도 task 호출 사이의 공유 작업공간 예약", () => {
+    interface PreparedTask { name: string; task: string; assessment: RoutingFacts }
+    const make = (name: string, paths: string): PreparedTask => ({
+      name,
+      task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
+      assessment: { ...facts, paths: paths.split(",") },
+    });
+    const single = (task: PreparedTask, extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}) =>
+      ({ context: "호출 간", ...top, tasks: [{ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:high", ...extra }] });
+    async function prepared(left: string, right: string) {
+      const ledger = memoryLedger();
+      const h = harness({ ledger });
+      const tasks = [make("Left", left), make("Right", right)];
+      await h.prepare("호출 간", tasks, {} as never);
+      return { h, ledger, left: tasks[0]!, right: tasks[1]! };
+    }
+    test("겹치는 exact·상하위 경로는 순차·동시 어느 쪽이든 한 호출만 예약하고 disjoint는 모두 통과한다", async () => {
+      for (const [left, right, overlaps] of [
+        ["src/a.ts", "src/a.ts", true],
+        ["src/", "src/a.ts", true],
+        ["src/a.ts", "src/", true],
+        ["src/a.ts", "src/b.ts", false],
+      ] as const) {
+        const sequential = await prepared(left, right);
+        expect(await sequential.h.beforeTask(single(sequential.left), {} as never, "call-a")).toBeUndefined();
+        const second = await sequential.h.beforeTask(single(sequential.right), {} as never, "call-b");
+        if (overlaps) expect(second).toMatchObject({ block: true, reason: expect.stringContaining("'Left'") });
+        else expect(second).toBeUndefined();
+
+        const concurrent = await prepared(left, right);
+        const results = await Promise.all([
+          concurrent.h.beforeTask(single(concurrent.left), {} as never, "call-a"),
+          concurrent.h.beforeTask(single(concurrent.right), {} as never, "call-b"),
+        ]);
+        expect(results.filter((result) => result === undefined)).toHaveLength(overlaps ? 1 : 2);
+      }
+    });
+    test("isolated 항목과 항목별 isolated override는 예약 scope를 따른다", async () => {
+      const cases: [Record<string, unknown>, Record<string, unknown>, boolean][] = [
+        [{ isolated: true }, {}, false],
+        [{}, {}, true],
+        // 상위 isolated보다 항목 값이 우선한다: 항목이 false면 공유 작업공간 예약과 충돌한다.
+        [{ isolated: false }, { isolated: true }, true],
+      ];
+      for (const [extra, top, blocked] of cases) {
+        const { h, left, right } = await prepared("src/a.ts", "src/a.ts");
+        expect(await h.beforeTask(single(left), {} as never, "call-a")).toBeUndefined();
+        const result = await h.beforeTask(single(right, extra, top), {} as never, "call-b");
+        if (blocked) expect(result).toMatchObject({ block: true });
+        else expect(result).toBeUndefined();
+      }
+    });
+    test("뒤 guard 거절·실패·미실행으로 풀린 호출만 예약을 내놓고 spawn 관측은 예약을 실제 owner로 넘긴다", async () => {
+      const { h, ledger, left, right } = await prepared("src/a.ts", "src/b.ts");
+      const leftAgain = make("LeftAgain", "src/a.ts");
+      const rightAgain = make("RightAgain", "src/b.ts");
+      await h.prepare("호출 간", [leftAgain, rightAgain], {} as never);
+      expect(await h.beforeTask(single(left), {} as never, "call-a")).toBeUndefined();
+      expect(await h.beforeTask(single(right), {} as never, "call-b")).toBeUndefined();
+      expect(await h.beforeTask(single(leftAgain), {} as never, "call-c")).toMatchObject({ block: true });
+      // call-a가 spawn 전에 풀리면 그 예약만 사라진다. call-b 예약은 그대로다.
+      h.releaseCall("call-a");
+      expect(await h.beforeTask(single(rightAgain), {} as never, "call-d")).toMatchObject({ block: true, reason: expect.stringContaining("'Right'") });
+      expect(await h.beforeTask(single(leftAgain), {} as never, "call-c")).toBeUndefined();
+      // 풀린 호출의 초안은 남지 않아 같은 입력의 늦은 spawn 관측이 와도 원장에 쓰지 않는다.
+      h.noteSpawned(single(left), "call-a");
+      expect(ledger.records).toHaveLength(0);
+      // spawn 관측은 자기 호출 예약을 실제 owner 목록으로 넘긴다. 이후 충돌은 deps.owners의 active owner가 맡는다.
+      h.noteSpawned(single(right), "call-b");
+      expect(ledger.records).toMatchObject([{ name: "Right" }]);
+      expect(await h.beforeTask(single(rightAgain), {} as never, "call-e")).toBeUndefined();
+    });
   });
   test("isolated로 요청한 항목은 별도 worktree scope라 같은 배치 중복으로 막지 않고 workspace를 기록한다", async () => {
     const tasks = [

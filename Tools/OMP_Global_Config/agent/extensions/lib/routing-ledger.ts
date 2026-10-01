@@ -60,7 +60,18 @@ export interface OutcomeRecord extends AttemptIdentity {
   /** 실행 상태일 뿐 품질 판정이 아니다. */
   status: "completed" | "failed" | "cancelled";
   durationSec: number | null;
+  /** Maker terminal report가 낸 원 revision. 관측한 경우에만 있다. 이 필드가 생기기 전 기록과 미관측은 미상이다. */
+  sourceRevision?: string;
 }
+
+/**
+ * Main 검수 revision과 그 attempt의 Maker 원 revision의 관계. advisory 기록이며 수용 게이트가 아니다.
+ * - same: 검수 revision이 원 revision과 같다.
+ * - integrated: 다르지만 Main이 integratedFrom으로 이 attempt의 원 revision을 명시해 통합 검수로 연결했다.
+ * - mismatch: 다르고 연결 주장이 없거나 그 주장이 원 revision과 다르다.
+ * - unknown: 원 revision이 미관측이거나 검수 revision이 없다(held 등).
+ */
+export type RevisionRelation = "same" | "integrated" | "mismatch" | "unknown";
 
 /**
  * Main의 명시 수용 판정. 실행 상태(outcome)와 따로 남기며 자동 추정으로 만들지 않는다.
@@ -72,11 +83,18 @@ export interface VerdictRecord extends AttemptIdentity {
   type: "verdict";
   ts: string;
   verdict: "accepted" | "rework" | "held";
+  /** Main이 실제로 검수한 revision. */
   revision: string | null;
   evidenceLocators: string[];
   reason: string;
   /** 그 attempt가 실제로 적용한 교훈의 Mnemopi 기억 id. Main이 적용 근거(evidenceLocators)와 함께 남긴다. */
   appliedLessons?: string[];
+  /** 판정 시점에 그 attempt에서 관측한 Maker 원 revision(미관측 null). 이 필드가 생기기 전 판정에는 없다. */
+  sourceRevision?: string | null;
+  /** revision과 sourceRevision의 관계. 이 필드가 생기기 전 판정에는 없으며 그 판정은 재작성하지 않는다. */
+  revisionRelation?: RevisionRelation;
+  /** Main이 통합 검수라고 명시한 원 revision. 연결 주장일 뿐이며 검수 근거는 reason·evidenceLocators다. */
+  integratedFrom?: string;
 }
 
 export type LedgerRecord = DispatchRecord | OutcomeRecord | VerdictRecord;
@@ -209,6 +227,8 @@ export interface ScopedAttempt {
   status: OutcomeRecord["status"] | "running";
   /** 그 attempt dispatch의 소유 계약. dispatch가 없거나 과거 형식이면 null(미상). */
   ownership: DispatchOwnership | null;
+  /** 최신 outcome이 남긴 Maker 원 revision. 없거나 과거 형식이면 null(미상)이며 추정으로 채우지 않는다. */
+  sourceRevision: string | null;
 }
 
 /** 같은 session에서 identity가 있는 attempt를 원장에서 복원한다. dispatch·outcome·verdict 어느 것으로도 등록된다. */
@@ -231,11 +251,15 @@ export function scopedAttempts(records: readonly LedgerRecord[], sessionId: stri
       name: "",
       status: "running",
       ownership: null,
+      sourceRevision: null,
     };
     if (record.type === "dispatch") {
       entry.name = record.name;
       entry.ownership = ownershipOf(record);
-    } else if (record.type === "outcome") entry.status = record.status;
+    } else if (record.type === "outcome") {
+      entry.status = record.status;
+      entry.sourceRevision = typeof record.sourceRevision === "string" && record.sourceRevision.trim() ? record.sourceRevision.trim() : null;
+    }
     if (!byAttempt.has(key)) order.push(key);
     byAttempt.set(key, entry);
   }
