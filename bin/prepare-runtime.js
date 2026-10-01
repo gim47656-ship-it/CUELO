@@ -10,14 +10,16 @@ const { spawnSync } = require("node:child_process");
 
 const pkgDir = path.resolve(__dirname, "..");
 const isCheck = process.argv.length === 3 && process.argv[2] === "--check";
-if (process.argv.length > (isCheck ? 3 : 2)) {
-  console.error("Usage: node bin/prepare-runtime.js [--check]");
+// --source: a source checkout's own node_modules, prepared before typecheck/test/build.
+const isSource = process.argv.length === 3 && process.argv[2] === "--source";
+if (process.argv.length > (isCheck || isSource ? 3 : 2)) {
+  console.error("Usage: node bin/prepare-runtime.js [--check|--source]");
   process.exit(1);
 }
 
 // 소스 체크아웃의 npm postinstall은 작업 중인 node_modules를 수정하지 않는다.
 // 서버 준비 검사는 bun.lock을 추가해도 이 소스 분기를 사용하지 않는다.
-if (!isCheck &&
+if (!isCheck && !isSource &&
     fs.existsSync(path.join(pkgDir, "bun.lock")) &&
     fs.existsSync(path.join(pkgDir, "app", "layout.tsx"))) {
   console.log("CUELO source install: runtime patch preparation is handled by the source release path.");
@@ -25,7 +27,7 @@ if (!isCheck &&
 }
 
 const buildId = path.join(pkgDir, ".next", "BUILD_ID");
-if (!fs.existsSync(buildId)) {
+if (!isSource && !fs.existsSync(buildId)) {
   console.error("CUELO npm package has no production build (.next/BUILD_ID). Install a prepared tarball.");
   process.exit(1);
 }
@@ -51,13 +53,40 @@ for (const name of corePackages) {
   }
 }
 
+// Bun's default install links package files to its shared cache (nlink > 1), and the patches
+// rewrite files in place, which would change the cached copy for every project. Give the
+// package-owned @oh-my-pi files their own bytes first. Symlinks are never followed.
+function detachLinkedFiles(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      detachLinkedFiles(file);
+    } else if (entry.isFile() && fs.lstatSync(file).nlink > 1) {
+      const copy = `${file}.detach-${process.pid}`;
+      try {
+        fs.copyFileSync(file, copy);
+        fs.renameSync(copy, file);
+      } catch (error) {
+        fs.rmSync(copy, { force: true });
+        throw error;
+      }
+    }
+  }
+}
+if (isSource) {
+  for (const entry of fs.readdirSync(coreRoot, { withFileTypes: true })) {
+    if (entry.isDirectory()) detachLinkedFiles(path.join(coreRoot, entry.name));
+  }
+}
+
 const sdk = path.join(coreRoot, "pi-coding-agent");
 const home = path.join(pkgDir, ".runtime-patch-home");
 if (!isCheck) fs.mkdirSync(home, { recursive: true });
 const env = { ...process.env, OMP_CORE_PATCH_TARGET: sdk, HOME: home, USERPROFILE: home };
 const mode = isCheck ? ["--check"] : [];
 const commands = [
-  [path.join(pkgDir, "Tools", "CUELO_Setup", "files", "native-runtime-patch.js"), ["--target", pkgDir, ...mode]],
+  // The native patch edits the production build, which a source preparation does not have yet.
+  ...(isSource ? [] : [[path.join(pkgDir, "Tools", "CUELO_Setup", "files", "native-runtime-patch.js"), ["--target", pkgDir, ...mode]]]),
   [path.join(pkgDir, "Tools", "OMP_Global_Config", "patches", "apply-core-patch.mjs"), mode],
   [path.join(pkgDir, "Tools", "OMP_Global_Config", "patches", "apply-notices.mjs"), mode],
 ];
@@ -78,4 +107,6 @@ for (const [script, args] of commands) {
     process.exit(1);
   }
 }
-if (!isCheck) console.log("CUELO npm runtime patches applied and verified inside this package.");
+if (!isCheck) console.log(isSource
+  ? "CUELO source SDK core patches applied inside this checkout."
+  : "CUELO npm runtime patches applied and verified inside this package.");

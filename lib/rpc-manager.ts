@@ -916,7 +916,9 @@ export class AgentSessionWrapper {
         error instanceof Error ? error.message : error,
       );
     });
-    this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
+    this.unsubscribe = this.inner.subscribe((sdkEvent) => {
+      // SDK interfaces need no index signature; web consumers retain every event field unchanged.
+      const event = sdkEvent as AgentEvent;
       if (event.type === "agent_end") {
         invalidateSessionListCache();
       }

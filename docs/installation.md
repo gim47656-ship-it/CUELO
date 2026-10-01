@@ -73,11 +73,12 @@ node install.mjs setup
 
 소스 checkout에서는 다음 순서로 실행되며, 어느 단계든 실패하면 그 자리에서 멈추고 exit code 1을 돌려줍니다.
 
-1. `bun install --frozen-lockfile`
-2. `bun run build`
-3. SDK 런타임 패치 적용 뒤 `--check` 확인(`native-runtime-patch.js`, `apply-core-patch.mjs`, `apply-notices.mjs`)
-4. 공개 하네스(`Tools/OMP_Global_Config/agent/`)를 `~/.omp/agent`에 복사. 없는 파일만 추가하고, 이미 있는 파일은 바꾸거나 지우지 않습니다.
-5. `~/.omp/agent/config.yml`이 없으면 새로 만듭니다. 기본 운영 설정을 넣고, 넘긴 모델 역할이 있으면 함께 적습니다(아래 참고). 파일이 이미 있으면 바꾸지 않습니다.
+1. `bun install --frozen-lockfile --backend=copyfile`
+2. `node bin/prepare-runtime.js --source`로 이 작업 사본의 SDK를 빌드 전에 준비합니다. 공유 패키지 캐시와 연결된 파일은 분리한 뒤 패치하므로 캐시 원본은 바뀌지 않습니다.
+3. `bun run build`
+4. SDK 런타임 패치 적용 뒤 `--check` 확인(`native-runtime-patch.js`, `apply-core-patch.mjs`, `apply-notices.mjs`)
+5. 공개 하네스(`Tools/OMP_Global_Config/agent/`)를 `~/.omp/agent`에 복사. 없는 파일만 추가하고, 이미 있는 파일은 바꾸거나 지우지 않습니다.
+6. `~/.omp/agent/config.yml`이 없으면 새로 만듭니다. 기본 운영 설정을 넣고, 넘긴 모델 역할이 있으면 함께 적습니다(아래 참고). 파일이 이미 있으면 바꾸지 않습니다.
 
 새 `config.yml`에 들어가는 기본값은 다음과 같습니다. 하네스의 Maker 역할이 번들 에이전트(`scout`, `sonic`, `task`, `reviewer`, `security-reviewer`)를 대신하고, task 실행은 격리 환경에서 돌도록 설정합니다. 60초를 넘긴 `eval` 셀은 사용자 말이 도착하면 background로 넘어가 대화가 막히지 않습니다(`eval.autoBackground`, omp 기본값은 꺼짐). 제공자 요청을 스스로 쓰는 자동 기능(`autolearn.autoContinue`, `mnemopi.autoRetain`)은 꺼 둡니다. omp 기본값과 같은 설정은 적지 않습니다.
 

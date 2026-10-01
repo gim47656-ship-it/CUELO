@@ -672,6 +672,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
   // 세션이 아직 없는 새 대화에서 고른 상한. 세션을 만든 직후 서버에 건다.
   const thinkingCeilingOverrideRef = useRef<ThinkingCeiling | null>(null);
+  // 세션은 만들어졌지만 위 상한이 아직 서버에 걸리지 않은 세션 ID. 이 값이 있는 동안에는 전송 전에 상한을 다시 건다.
+  const pendingCeilingSessionRef = useRef<string | null>(null);
   // Freeze programmatic scrolling while an outgoing session-switch is pending
   // so the still-live transcript stops moving under the transition overlay.
   const transitioningRef = useRef(false);
@@ -925,56 +927,67 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [isNew, newSessionCwd, onSessionCreated]);
 
   const ensureNewSession = useCallback(async () => {
-    if (sessionIdRef.current) return sessionIdRef.current;
-    if (!isNew || !newSessionCwd) return sessionIdRef.current;
+    // 진행 중인 초기화(생성·상한 적용)는 이미 만들어진 ID가 있어도 끝까지 기다린다.
     if (ensuringNewSessionRef.current) return ensuringNewSessionRef.current;
+    const existingId = sessionIdRef.current;
+    if (existingId && pendingCeilingSessionRef.current !== existingId) return existingId;
+    if (!existingId && (!isNew || !newSessionCwd)) return existingId;
 
     const promise = (async () => {
-      // Only send explicit user overrides. The server resolves the current
-      // enabledModels scope atomically with AgentSession construction.
-      const selectedModel = newSessionModelOverrideRef.current;
-      const selectedThinkingLevel = thinkingLevelOverrideRef.current;
-      const selectedAccount = newSessionAccountRef.current;
-      if (selectedModel) setPendingModel(selectedModel);
-      const toolNames = getToolNamesForPreset(toolPreset);
-      const res = await fetch("/api/agent/new", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cwd: newSessionCwd,
-          type: "ensure_session",
-          toolNames,
-          ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
-          ...(selectedThinkingLevel
-            ? { thinkingLevel: selectedThinkingLevel }
-            : {}),
-          ...(selectedModel && selectedAccount !== null ? { oauthPosition: selectedAccount } : {}),
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = await res.json() as {
-        sessionId: string;
-        model?: SelectedModel | null;
-        thinkingLevel?: ThinkingLevelOption;
-        configuredThinkingLevel?: ThinkingLevelOption;
-      };
-      const realId = result.sessionId;
-      sessionIdRef.current = realId;
+      let realId = existingId;
+      if (!realId) {
+        // Only send explicit user overrides. The server resolves the current
+        // enabledModels scope atomically with AgentSession construction.
+        const selectedModel = newSessionModelOverrideRef.current;
+        const selectedThinkingLevel = thinkingLevelOverrideRef.current;
+        const selectedAccount = newSessionAccountRef.current;
+        if (selectedModel) setPendingModel(selectedModel);
+        const toolNames = getToolNamesForPreset(toolPreset);
+        const res = await fetch("/api/agent/new", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cwd: newSessionCwd,
+            type: "ensure_session",
+            toolNames,
+            ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
+            ...(selectedThinkingLevel
+              ? { thinkingLevel: selectedThinkingLevel }
+              : {}),
+            ...(selectedModel && selectedAccount !== null ? { oauthPosition: selectedAccount } : {}),
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const result = await res.json() as {
+          sessionId: string;
+          model?: SelectedModel | null;
+          thinkingLevel?: ThinkingLevelOption;
+          configuredThinkingLevel?: ThinkingLevelOption;
+        };
+        realId = result.sessionId;
+        sessionIdRef.current = realId;
+        // 상한이 서버에 걸릴 때까지 이 세션은 미완성이다. 실패하면 다음 호출이 같은 세션에서 다시 건다.
+        if (thinkingCeilingOverrideRef.current !== null) pendingCeilingSessionRef.current = realId;
+        if (result.model && newSessionModelOverrideRef.current === selectedModel) {
+          setPendingModel(result.model);
+          if (!selectedModel) setNewSessionDefaultModel(result.model);
+        }
+        if (
+          result.thinkingLevel
+          && thinkingLevelOverrideRef.current === selectedThinkingLevel
+        ) {
+          setThinkingLevel(result.configuredThinkingLevel ?? result.thinkingLevel);
+          setEffectiveThinkingLevel(result.thinkingLevel);
+        }
+      }
       // 상한은 생성 본문이 아니라 세션 명령으로 건다. 첫 전송보다 먼저 끝나야 첫 턴부터 적용된다.
-      const selectedCeiling = thinkingCeilingOverrideRef.current;
-      if (selectedCeiling !== null) {
-        await sendAgentCommand(realId, { type: "set_thinking_ceiling", ceiling: selectedCeiling });
-      }
-      if (result.model && newSessionModelOverrideRef.current === selectedModel) {
-        setPendingModel(result.model);
-        if (!selectedModel) setNewSessionDefaultModel(result.model);
-      }
-      if (
-        result.thinkingLevel
-        && thinkingLevelOverrideRef.current === selectedThinkingLevel
-      ) {
-        setThinkingLevel(result.configuredThinkingLevel ?? result.thinkingLevel);
-        setEffectiveThinkingLevel(result.thinkingLevel);
+      // 요청이 나가는 사이 사용자가 선택을 바꿀 수 있으므로, 적용한 값이 최신 선택과 같아질 때까지 같은 세션에 다시 건다.
+      while (pendingCeilingSessionRef.current === realId) {
+        const target = thinkingCeilingOverrideRef.current;
+        await sendAgentCommand(realId, { type: "set_thinking_ceiling", ceiling: target });
+        if (thinkingCeilingOverrideRef.current === target && pendingCeilingSessionRef.current === realId) {
+          pendingCeilingSessionRef.current = null;
+        }
       }
       return realId;
     })();
@@ -2097,7 +2110,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (isNew && newSessionCwd) {
         const selectedModel = newSessionModel;
         const existingSid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
-        const sid = existingSid ?? await ensureNewSession();
+        // 상한 적용이 남은 세션이면 여기서 다시 건다. 실패하면 prompt는 나가지 않는다.
+        const sid = await ensureNewSession();
 
         if (sid) {
           sentSessionId = sid;
@@ -2512,7 +2526,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     const [, commandName, rawArgs = ""] = match;
     const args = rawArgs.trim();
-    const sid = sessionIdRef.current ?? await ensureNewSession();
+    const sid = await ensureNewSession();
     const complete = (result: BuiltinSlashCommandResult): BuiltinSlashCommandResult => {
       if (!result.handled) return result;
       if (result.error) {
@@ -2842,7 +2856,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const ceilingChanged = nextCeiling !== thinkingCeiling;
     setThinkingLevel(level);
     setThinkingCeiling(nextCeiling);
-    if (isNew && !sessionIdRef.current) {
+    if (isNew && (!sessionIdRef.current || pendingCeilingSessionRef.current === sessionIdRef.current)) {
       thinkingLevelOverrideRef.current = level;
       thinkingCeilingOverrideRef.current = nextCeiling;
     }
@@ -2850,7 +2864,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {
-      if (ceilingChanged) await sendAgentCommand(sid, { type: "set_thinking_ceiling", ceiling: nextCeiling });
+      if (pendingCeilingSessionRef.current === sid) {
+        // 미완 상한이 남은 세션은 직접 보내지 않고 초기화 경로에 맡긴다. 진행 중인 요청과 순서가 엇갈려도 최신 선택이 마지막에 적용된다.
+        await ensureNewSession();
+      } else if (ceilingChanged) {
+        await sendAgentCommand(sid, { type: "set_thinking_ceiling", ceiling: nextCeiling });
+      }
       await sendAgentCommand(sid, { type: "set_thinking_level", level });
       await loadSession(sid);
     } catch (e) {
@@ -2858,7 +2877,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       addNotice({ type: "error", message: "Failed to set thinking level" });
       await loadSession(sid);
     }
-  }, [isNew, loadSession, addNotice, thinkingCeiling]);
+  }, [isNew, loadSession, addNotice, thinkingCeiling, ensureNewSession]);
 
   const handleToolPresetChange = useCallback(async (preset: "none" | "default" | "full") => {
     const toolNames = getToolNamesForPreset(preset);

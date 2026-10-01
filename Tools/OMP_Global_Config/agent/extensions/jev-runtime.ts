@@ -1,8 +1,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { registerMakerRouting } from "./lib/maker-routing";
+import { registerMakerRouting, workspaceOf, type Owner } from "./lib/maker-routing";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
-import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type OutcomeRecord, type VerdictRecord } from "./lib/routing-ledger";
+import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
   assessTodoProgress,
@@ -162,6 +162,8 @@ interface SpawnedTaskMeta {
   agentId?: string;
   /** 그 spawn이 등록된 async jobId. details가 단일 spawn의 jobId를 줄 때만 채운다. */
   jobId?: string;
+  /** core spawn의 격리 요청(항목 값 우선, 없으면 상위 값). */
+  workspace: DispatchOwnership["workspace"];
 }
 
 function extractSpawnedTasks(
@@ -188,6 +190,7 @@ function extractSpawnedTasks(
       // 현재/이전 effort는 블라인드 판정을 깨므로 state에 싣지 않는다.
       guard,
       todoBindings: captureTodoBindings(guard.progress, currentTodos),
+      workspace: workspaceOf(input, item),
     });
   }
   return tasks;
@@ -858,7 +861,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     });
     // spawn으로 실제 관측된 attempt. routing_verdict는 여기 있는 identity만 받는다.
     // 상태를 함께 두어 실행 중 attempt를 완료로 오인하지 않게 하고, session_start에서 원장 scoped 기록으로 복원한다.
-    type ObservedAttempt = AttemptIdentity & { name: string; status: "running" | OutcomeRecord["status"] };
+    // ownership은 그 attempt dispatch의 소유 계약(과거 row는 null=미상), restored는 session_start 원장 복원 계열이다.
+    type ObservedAttempt = AttemptIdentity & {
+      name: string;
+      status: "running" | OutcomeRecord["status"];
+      ownership: DispatchOwnership | null;
+      restored: boolean;
+    };
     const observedAttempts = new Map<string, ObservedAttempt>();
     /** outcome을 이미 기록한 attempt. 같은 attempt를 두 번 소비하지 않는다. */
     const settledAttempts = new Set<string>();
@@ -939,16 +948,17 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     }
     const routing = registerMakerRouting(pi, {
       ledger: baseLedger,
-      owners: () => {
+      owners: (ctx) => {
         const activeTasks = [...liveMakers.values()].flat();
         const activeNames = new Set(
           activeTasks.flatMap((task) => task.name ? [task.name] : []),
         );
-        const owners = [...knownMakers.values()].map((task) => ({
+        const owners: Owner[] = [...knownMakers.values()].map((task) => ({
           name: task.name ?? null,
           primaryDeliverable: task.guard.primaryDeliverable ?? null,
           ownedPaths: task.guard.ownedPaths,
           active: Boolean(task.name && activeNames.has(task.name)),
+          workspace: task.workspace,
         }));
         for (const task of activeTasks) {
           if (task.name) continue;
@@ -957,7 +967,35 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             primaryDeliverable: task.guard.primaryDeliverable ?? null,
             ownedPaths: task.guard.ownedPaths,
             active: true,
+            workspace: task.workspace,
           });
+        }
+        // reload 전 spawn은 원장 복원 attempt로만 남는다. 이 runtime이 다시 관측한 이름은 위 목록이 우선한다.
+        // 이름별(이름 없으면 assignment별) 최신 attempt 하나만 owner로 두어 재작업이 소유를 중복 주장하지 않게 한다.
+        const restored = new Map<string, ObservedAttempt>();
+        for (const entry of observedAttempts.values()) {
+          if (!entry.restored || (entry.name && knownMakers.has(entry.name))) continue;
+          restored.set(entry.name || entry.assignmentId, entry);
+        }
+        // 원장 running은 프로세스 재시작으로 끝나지 못한 row일 수 있다. core async snapshot에 지금 실행 중인
+        // job이 있을 때만 active로 보아, 끝난·죽은 attempt가 영구 잠금이 되지 않게 한다.
+        const running = ctx.getAsyncJobSnapshot?.()?.running ?? [];
+        for (const entry of restored.values()) {
+          const active = entry.status === "running" && running.some((job) =>
+            job.agentId === entry.agentId || (entry.jobId !== "" && job.id === entry.jobId));
+          if (entry.ownership) {
+            if (!entry.name && !active) continue;
+            owners.push({
+              name: entry.name || null,
+              primaryDeliverable: entry.ownership.primaryDeliverable,
+              ownedPaths: entry.ownership.ownedPaths,
+              active,
+              workspace: entry.ownership.workspace,
+            });
+          } else if (active) {
+            // 소유 경로를 기록하지 않은 과거 row는 빈 소유로 위장하지 않는다. 실행 중일 때만 미상 owner로 둔다.
+            owners.push({ name: entry.name || null, primaryDeliverable: null, ownedPaths: [], active, ownershipUnknown: true });
+          }
         }
         return owners;
       },
@@ -1094,7 +1132,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               jobId: job.jobId,
             };
             const sourceDispatch = baseLedger.read()
-              .filter((record) => record.type === "dispatch" && record.attemptId === source.attemptId)
+              .filter((record): record is DispatchRecord => record.type === "dispatch" && record.attemptId === source.attemptId)
               .at(-1);
             baseLedger.append({
               type: "dispatch",
@@ -1110,8 +1148,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               chosenEffort: sourceDispatch?.chosenEffort ?? "",
               routingReason: sourceDispatch?.routingReason ?? false,
               purpose: sourceDispatch?.purpose ?? null,
+              // 재개 attempt는 원 attempt의 소유 계약을 그대로 잇는다. 미상이면 필드를 만들지 않는다.
+              ...(source.ownership ? { ownership: source.ownership } : {}),
             });
-            observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running" });
+            observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running", ownership: source.ownership, restored: source.restored });
             pendingResume.delete(agentId);
             resumeAttemptId = identity.attemptId;
           }
@@ -1253,7 +1293,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       preWriteJobs.clear();
       pendingResume.clear();
       for (const entry of scopedAttempts(baseLedger.read(), typeof sessionId === "string" ? sessionId : "")) {
-        observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status });
+        observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status, ownership: entry.ownership, restored: true });
         if (entry.status !== "running") settledAttempts.add(entry.identity.attemptId);
       }
       // durable outcome이 남긴 jobId는 reload 뒤에도 중복 소비를 막는다.
@@ -1584,7 +1624,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             };
           // 원 attempt의 dispatch metadata를 정확한 identity로 복사해 재작업 attempt가 같은 모델·effort 관측을 유지한다.
           const source = baseLedger.read()
-            .filter((record) => record.type === "dispatch" && record.attemptId === previous.attemptId)
+            .filter((record): record is DispatchRecord => record.type === "dispatch" && record.attemptId === previous.attemptId)
             .at(-1);
           baseLedger.append({
             type: "dispatch",
@@ -1600,8 +1640,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             chosenEffort: source?.chosenEffort ?? "",
             routingReason: source?.routingReason ?? false,
             purpose: source?.purpose ?? null,
+            ...(previous.ownership ? { ownership: previous.ownership } : {}),
           });
-          observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running" });
+          observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running", ownership: previous.ownership, restored: previous.restored });
           // 바인딩에 전송 직후 관측한 정확한 새 jobId를 둔다. 다른 job이 먼저 정산돼도 이 attempt를 소비하지 않는다.
           resumeByAgent.set(targetAgentId, { attemptId: identity.attemptId, jobId: fresh[0]!, sentAt });
           sendAdvisory(
@@ -1661,12 +1702,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const dispatched = routing.noteSpawned(event.input, sessionId, event.toolCallId, ids);
         const identities: string[] = [];
         for (const task of spawned) {
-          const identity = dispatched.get(task.index);
-          if (!identity || !identity.sessionId) continue;
+          const entry = dispatched.get(task.index);
+          if (!entry || !entry.identity.sessionId) continue;
+          const { identity, ownership } = entry;
           task.identity = identity;
           if (identity.agentId) task.agentId = identity.agentId;
           if (identity.jobId) task.jobId = identity.jobId;
-          observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running" });
+          observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running", ownership, restored: false });
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
         }
         if (identities.length > 0) {

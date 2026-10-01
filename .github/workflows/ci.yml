@@ -47,7 +47,12 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --backend=copyfile
+
+      # The pristine SDK cannot be imported by typecheck, tests or the build; apply
+      # its core patches to this checkout's own node_modules first.
+      - name: Prepare source SDK
+        run: bun run prepare:source
 
       - name: Typecheck
         run: bun run typecheck

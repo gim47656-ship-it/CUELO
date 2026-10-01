@@ -16,6 +16,7 @@ import {
   isToolImageBlock,
   knownToolImageCount,
   loadToolImageCount,
+  toolCallDurations as measureToolCallDurations,
   toolImageUrl,
 } from "@/lib/message-display";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
@@ -624,20 +625,11 @@ function AssistantMessageView({
     return secs > 0 ? secs : undefined;
   }, [message.timestamp, prevTimestamp]);
 
-  // Tool call durations derived from session file timestamps (accurate for completed messages)
-  // assistant message timestamp = when generation ended = when tools started running
-  // toolResult timestamp = when tool execution finished
-  const toolCallDurations = useMemo<Map<string, number>>(() => {
-    const map = new Map<string, number>();
-    if (!toolResults || !message.timestamp) return map;
-    for (const [callId, result] of toolResults) {
-      if (result.timestamp && message.timestamp) {
-        const secs = Math.round((result.timestamp - message.timestamp) / 1000);
-        if (secs > 0) map.set(callId, secs);
-      }
-    }
-    return map;
-  }, [toolResults, message.timestamp]);
+  // 모델 생성 종료→결과 도착 경과(모델 추론 제외). 근거가 없으면 비운다 — lib/message-display.ts.
+  const toolCallDurations = useMemo(
+    () => measureToolCallDurations(message, toolResults),
+    [message, toolResults],
+  );
 
   const textContent = blocks
     .filter((b): b is TextContent => b.type === "text")

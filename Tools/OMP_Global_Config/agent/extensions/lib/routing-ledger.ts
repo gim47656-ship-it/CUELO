@@ -24,6 +24,16 @@ export interface AttemptIdentity {
   jobId: string;
 }
 
+/**
+ * 실제 spawn으로 관측된 발주의 소유 계약. restart 뒤 owner 충돌 판정을 복원하는 근거다.
+ * workspace는 core spawn의 격리 요청이다: isolated 요청은 격리 준비에 실패하면 공유 cwd로 fallback하지 않고 실패한다.
+ */
+export interface DispatchOwnership {
+  primaryDeliverable: string;
+  ownedPaths: string[];
+  workspace: "shared" | "isolated";
+}
+
 export interface DispatchRecord extends AttemptIdentity {
   type: "dispatch";
   ts: string;
@@ -40,6 +50,8 @@ export interface DispatchRecord extends AttemptIdentity {
   chosenEffort: string;
   routingReason: boolean;
   purpose: string | null;
+  /** 이 필드가 생기기 전 기록에는 없다. 없으면 소유 미상이며 빈 소유가 아니다. */
+  ownership?: DispatchOwnership;
 }
 
 export interface OutcomeRecord extends AttemptIdentity {
@@ -182,13 +194,27 @@ export function assignmentsByName(
   return known;
 }
 
+/** 기록된 ownership이 기대 형태일 때만 쓴다. 과거·손상 row는 null(미상)이며 빈 소유로 바꾸지 않는다. */
+function ownershipOf(record: DispatchRecord): DispatchOwnership | null {
+  const value = record.ownership;
+  if (!value || typeof value.primaryDeliverable !== "string" || !Array.isArray(value.ownedPaths)
+    || !value.ownedPaths.every((path) => typeof path === "string")
+    || (value.workspace !== "shared" && value.workspace !== "isolated")) return null;
+  return { primaryDeliverable: value.primaryDeliverable, ownedPaths: [...value.ownedPaths], workspace: value.workspace };
+}
+
+export interface ScopedAttempt {
+  identity: AttemptIdentity;
+  name: string;
+  status: OutcomeRecord["status"] | "running";
+  /** 그 attempt dispatch의 소유 계약. dispatch가 없거나 과거 형식이면 null(미상). */
+  ownership: DispatchOwnership | null;
+}
+
 /** 같은 session에서 identity가 있는 attempt를 원장에서 복원한다. dispatch·outcome·verdict 어느 것으로도 등록된다. */
-export function scopedAttempts(
-  records: readonly LedgerRecord[],
-  sessionId: string,
-): { identity: AttemptIdentity; name: string; status: OutcomeRecord["status"] | "running" }[] {
+export function scopedAttempts(records: readonly LedgerRecord[], sessionId: string): ScopedAttempt[] {
   if (!sessionId) return [];
-  const byAttempt = new Map<string, { identity: AttemptIdentity; name: string; status: OutcomeRecord["status"] | "running" }>();
+  const byAttempt = new Map<string, ScopedAttempt>();
   const order: string[] = [];
   for (const record of records) {
     if (!hasIdentity(record) || record.sessionId !== sessionId) continue;
@@ -204,9 +230,12 @@ export function scopedAttempts(
       },
       name: "",
       status: "running",
+      ownership: null,
     };
-    if (record.type === "dispatch") entry.name = record.name;
-    else if (record.type === "outcome") entry.status = record.status;
+    if (record.type === "dispatch") {
+      entry.name = record.name;
+      entry.ownership = ownershipOf(record);
+    } else if (record.type === "outcome") entry.status = record.status;
     if (!byAttempt.has(key)) order.push(key);
     byAttempt.set(key, entry);
   }

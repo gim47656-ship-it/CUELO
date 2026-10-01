@@ -612,6 +612,101 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }
     expect(h.requests).toHaveLength(2);
   });
+  test("같은 배치의 공유 작업공간 OWNED_PATHS 중복은 게시 전에 배치 전체를 막고 형제 경로는 통과한다", async () => {
+    const make = (name: string, paths: string) => ({
+      name,
+      task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
+      assessment: { ...facts, paths: paths.split(",") },
+    });
+    const spawnIds = new Map([[0, { agentId: "agent-left", jobId: "job-left" }], [1, { agentId: "agent-right", jobId: "job-right" }]]);
+    for (const [left, right, overlaps] of [
+      ["src/view.ts", "src/view.ts", true],
+      ["src/", "src/view.ts", true],
+      ["src/view.ts", "SRC\\VIEW.TS", true],
+      [".", "doc/note.md", true],
+      ["src/view.ts,src/a.ts", "src/b.ts,src/a.ts", true],
+      ["src/view.ts", "src/view.tsx", false],
+      ["evals/", "evals2/case.ts", false],
+    ] as const) {
+      const ledger = memoryLedger();
+      const h = harness({ ledger });
+      const tasks = [make("Left", left), make("Right", right)];
+      await h.prepare("같은 batch", tasks, {} as never);
+      const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:high" });
+      const batch = { context: "같은 batch", tasks: tasks.map(item) };
+      const result = await h.beforeTask(batch, {} as never);
+      if (!overlaps) {
+        expect(result).toBeUndefined();
+        h.noteSpawned(batch, "batch", spawnIds);
+        expect(ledger.records).toMatchObject([
+          { name: "Left", ownership: { primaryDeliverable: "표시 오류 수정", ownedPaths: left.split(","), workspace: "shared" } },
+          { name: "Right", ownership: { primaryDeliverable: "표시 오류 수정", ownedPaths: right.split(","), workspace: "shared" } },
+        ]);
+        continue;
+      }
+      expect(result).toMatchObject({ block: true, reason: expect.stringContaining("'Left' ↔ 'Right'") });
+      // 차단된 배치는 어떤 초안도 게시하지 않는다. 같은 입력의 spawn 관측이 와도 원장에 남지 않는다.
+      h.noteSpawned(batch, "batch", spawnIds);
+      expect(ledger.records).toHaveLength(0);
+      // 막힌 배치가 예약을 남기지 않아 한쪽만 다시 내면 그대로 통과하고 그 한 건만 기록된다.
+      const single = { context: "같은 batch", tasks: [item(tasks[0]!)] };
+      expect(await h.beforeTask(single, {} as never)).toBeUndefined();
+      h.noteSpawned(single, "single", spawnIds);
+      expect(ledger.records).toMatchObject([{ name: "Left", assignmentId: `${h.sessionId}#single#0` }]);
+      expect(ledger.records).toHaveLength(1);
+    }
+  });
+  test("isolated로 요청한 항목은 별도 worktree scope라 같은 배치 중복으로 막지 않고 workspace를 기록한다", async () => {
+    const tasks = [
+      { name: "Left", task: brief, assessment: facts },
+      { name: "Right", task: brief, assessment: facts },
+    ];
+    const item = (name: string, extra: Record<string, unknown> = {}) => ({ name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high", ...extra });
+    const spawnIds = new Map([[0, { agentId: "agent-left", jobId: "job-left" }], [1, { agentId: "agent-right", jobId: "job-right" }]]);
+    const cases: [Record<string, unknown>, string[] | null][] = [
+      [{ context: "c", tasks: [item("Left", { isolated: true }), item("Right")] }, ["isolated", "shared"]],
+      [{ context: "c", tasks: [item("Left", { isolated: true }), item("Right", { isolated: true })] }, ["isolated", "isolated"]],
+      // core spawnParamsFor처럼 항목 값이 우선이고, 없으면 상위 isolated를 따른다.
+      [{ context: "c", isolated: true, tasks: [item("Left", { isolated: false }), item("Right")] }, ["shared", "isolated"]],
+      [{ context: "c", isolated: true, tasks: [item("Left", { isolated: false }), item("Right", { isolated: false })] }, null],
+      [{ context: "c", isolated: false, tasks: [item("Left"), item("Right")] }, null],
+    ];
+    for (const [batch, workspaces] of cases) {
+      const ledger = memoryLedger();
+      const h = harness({ ledger });
+      await h.prepare("c", tasks, {} as never);
+      const result = await h.beforeTask(batch, {} as never);
+      h.noteSpawned(batch, "batch", spawnIds);
+      if (workspaces === null) {
+        expect(result).toMatchObject({ block: true });
+        expect(ledger.records).toHaveLength(0);
+      } else {
+        expect(result).toBeUndefined();
+        expect(ledger.records.map((record) => record.type === "dispatch" ? record.ownership?.workspace : undefined)).toEqual(workspaces);
+      }
+    }
+  });
+  test("active owner 충돌은 양쪽이 공유 작업공간일 때만이고 소유 경로 미상 active owner는 공유 발주 전체를 막는다", async () => {
+    const shared = { name: "SharedOwner", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/"], active: true };
+    const isolatedInput = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high", isolated: true }] };
+    const legacy: Owner = { name: "Legacy", primaryDeliverable: null, ownedPaths: [], ownershipUnknown: true, active: true };
+    const cases: [Owner, "shared" | "isolated", boolean][] = [
+      [shared, "shared", true],
+      [shared, "isolated", false],
+      [{ ...shared, workspace: "isolated" }, "shared", false],
+      [legacy, "shared", true],
+      [legacy, "isolated", false],
+      [{ ...legacy, active: false }, "shared", false],
+    ];
+    for (const [owner, input, blocked] of cases) {
+      const h = harness();
+      h.setOwners([owner]);
+      await h.prepare("같은 계약", [h.task], {} as never);
+      const result = await h.beforeTask(input === "shared" ? h.input : isolatedInput, {} as never);
+      if (blocked) expect(result).toMatchObject({ block: true, reason: expect.stringContaining(owner.name ?? "") });
+      else expect(result).toBeUndefined();
+    }
+  });
   test("늦은 이전 facts 준비는 최신 binding을 덮지 않고 동일 입력 판단 병합을 보존한다", async () => {
     let release!: () => void;
     let entered!: () => void;
@@ -1047,7 +1142,8 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       refreshDiscoverableProviders: async ([provider]: string[]) => { refreshCalls.push(provider); throw new Error("offline"); },
     };
     const h = registryHarness({ registry });
-    const tasks = ["FixA", "FixB", "FixC"].map((name) => ({ name, task: brief, assessment: facts }));
+    // 같은 배치의 공유 작업공간 Maker는 소유 경로가 겹치면 막히므로 task마다 다른 파일을 소유한다.
+    const tasks = ["FixA", "FixB", "FixC"].map((name) => ({ name, task: brief.replace("src/view.ts", `src/${name}.ts`), assessment: facts }));
     const batch = await h.route.prepareBatch("계약", tasks, h.ctx);
     expect(batch.unavailableCandidates.map((entry) => entry.profile)).toEqual(["NORMAL_OPUS", "HARD_UI_OPUS", "HARD_CODE_OPUS"]);
     expect(refreshCalls.filter((provider) => provider === "anthropic")).toHaveLength(1);

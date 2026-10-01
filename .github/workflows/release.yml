@@ -182,7 +182,11 @@ jobs:
 
       - name: Install dependencies
         if: steps.registry.outputs.exists != 'true'
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --backend=copyfile
+
+      - name: Prepare source SDK
+        if: steps.registry.outputs.exists != 'true'
+        run: bun run prepare:source
 
       - name: Build package
         if: steps.registry.outputs.exists != 'true'

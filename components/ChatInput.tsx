@@ -1869,16 +1869,23 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const mapped = thinkingLevelMap?.[lvl];
     return mapped != null && mapped !== lvl ? mapped : null;
   };
+  // 칩에는 고른 값(auto, auto ≤ X, 구체 level)만 쓴다. Auto가 실제로 정한 강도는 옆의
+  // 읽기 전용 표기(currentReasoningText)가 따로 보여 준다.
   const thinkingDisplayLabel = (() => {
     const lvl = thinkingLevel ?? "auto";
     if (lvl === "auto") {
-      const base = thinkingCeiling ? `auto ≤ ${mappedThinkingLevel(thinkingCeiling) ?? thinkingCeiling}` : "auto";
-      const effective = effectiveThinkingLevel && (thinkingLevelMap?.[effectiveThinkingLevel] ?? effectiveThinkingLevel);
-      return effective ? `${base} (${effective})` : base;
+      return thinkingCeiling ? `auto ≤ ${mappedThinkingLevel(thinkingCeiling) ?? thinkingCeiling}` : "auto";
     }
     if (!thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
   })();
+  // 아직 값이 오지 않았거나 "auto"(미결정)로만 왔으면 추정하지 않고 표기를 숨긴다. 수동 level은 칩이 이미 그 값이다.
+  const effectiveThinkingDisplay = (thinkingLevel ?? "auto") === "auto" && effectiveThinkingLevel && effectiveThinkingLevel !== "auto"
+    ? (thinkingLevelMap?.[effectiveThinkingLevel] ?? effectiveThinkingLevel)
+    : null;
+  const currentReasoningText = onThinkingLevelChange && effectiveThinkingDisplay
+    ? t("chat.currentReasoning", { level: effectiveThinkingDisplay })
+    : null;
   // 추론 칩 목록: auto, 「auto ≤ X」, off, 그 모델이 지원하는 구체 level 순서.
   const supportsThinkingLevel = (lvl: string) => !availableThinkingLevels || availableThinkingLevels.includes(lvl);
   const thinkingChoices = [
@@ -3155,7 +3162,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </div>
             )}
             {/* 추론 강도 — 모델 chip 오른쪽의 제 칩. 「auto ≤ X」도 여기서 고른다. 모바일에서는 프리셋
-                칩처럼 라벨을 접은 정사각 아이콘 버튼이 되고, 지금 값은 title/aria-label에 남는다. */}
+                칩처럼 라벨을 접은 정사각 아이콘 버튼이 되고, 지금 값은 title/aria-label에 남는다.
+                Auto가 정한 현재 강도는 칩 밖의 읽기 전용 표기로 따로 보인다(모바일은 액션 줄 아래). */}
             {onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} style={{ position: "relative", flexShrink: 0, minWidth: 0 }}>
                 <button
@@ -3285,6 +3293,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   );
                 })()}
               </div>
+            )}
+            {!isMobile && currentReasoningText && (
+              <span style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                {currentReasoningText}
+              </span>
             )}
             {/* 이 세션이 6 Pro 연결번호에 묶였을 때만 보이는 표시(모델 칩과 같은 줄). */}
             <Gpt6HandleBadge sessionId={sessionId} />
@@ -3570,6 +3583,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
 
         </div>
+
+        {/* 좁은 폭에서는 액션 줄에 자리가 없어 모델 이름이 먼저 사라진다. 현재 추론 강도는 줄 아래로 내린다. */}
+        {isMobile && currentReasoningText && (
+          <div style={{ marginTop: 4, padding: "0 4px", fontSize: 12, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+            {currentReasoningText}
+          </div>
+        )}
       </div>
     </div>
   );

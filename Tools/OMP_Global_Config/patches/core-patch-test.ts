@@ -1019,6 +1019,23 @@ check(
 		mrUnauth.parentSubstituted === "anthropic/claude-opus-4-6:xhigh",
 	`got ${JSON.stringify({ reason: mrUnauth.reason, approved: mrUnauth.approved })}`,
 );
+// 18.4.5(#13789): role 키는 배정 모델이 effort만 다를 때도 그 role의 chain을 가진다(가장 약한 tier). 승인 후보는
+// upstream과 같은 resolveRetryFallbackChainKey로 찾으므로, role 힌트 없이 배정과 다른 effort로 요청해도 그 role의 승인
+// 후보를 쓰고 부모 모델로 새지 않는다. 18.4.4 이하 core에는 이 tier가 없다(getRetryFallbackRole 도입 판에서만 본다).
+const { getRetryFallbackRole: mrGetRetryFallbackRole } = await import(`${CORE}/session/retry-fallback-chains.ts`);
+if (typeof mrGetRetryFallbackRole !== "function") {
+	console.log("  SKIP  이 core 에는 role chain effort tier(#13789)가 없다(18.4.5 이전)");
+} else {
+	const mrEffort = selectSubagentApprovedModel({
+		...mrSelectionArgs({ chains: { impl: [MUSE_SELECTOR] }, authed: MR_AUTHED, requestedModel: mrBai, patterns: ["b-ai/deepseek-v4.1-flash:high"] }),
+		role: undefined,
+	});
+	check(
+		"#13789 공존: 배정(:max)과 다른 effort(:high) 요청도 그 role의 승인 후보로 가고 부모로 새지 않는다",
+		mrEffort.reason === "approved-candidate" && mrEffort.model?.id === "muse-spark-1.3-contributor" && mrEffort.parentSubstituted === undefined,
+		`got ${JSON.stringify({ reason: mrEffort.reason, id: mrEffort.model?.id, approved: mrEffort.approved })}`,
+	);
+}
 const { mkdtempSync: mrMkdtemp, readdirSync: mrReaddir, readFileSync: mrReadFile, rmSync: rmTemp } = await import("node:fs");
 const { join: joinPath } = await import("node:path");
 const { tmpdir: mrTmpdir } = await import("node:os");
@@ -1940,6 +1957,8 @@ async function runGenerationSteer(
 	const finishSpeculation = Promise.withResolvers<void>();
 	const captureStarted = Promise.withResolvers<void>();
 	const finishCapture = Promise.withResolvers<void>();
+	// P55: 시나리오는 "toolCall 이 listener 에 보인 뒤 steer" 다. 보이기 전 steer 는 P55 가 요청을 다시 보낸다.
+	const toolCallsVisible = Promise.withResolvers<void>();
 	const executed: string[] = [];
 	const speculativeCalls: string[] = [];
 	const seenContexts: string[] = [];
@@ -2018,9 +2037,17 @@ async function runGenerationSteer(
 		if (event.type === "message_end" && event.message.role === "assistant" && providerCalls === 1) {
 			finishSpeculation.resolve();
 		}
+		if (
+			event.type === "message_update" &&
+			event.assistantMessageEvent.type === "toolcall_end" &&
+			event.assistantMessageEvent.toolCall.id === "steering-2"
+		) {
+			toolCallsVisible.resolve();
+		}
 	});
 	const run = agent.prompt("먼저 할 일");
 	await generationReady.promise;
+	await toolCallsVisible.promise;
 	if (speculative) await (capturePending ? captureStarted.promise : speculativeStarted.promise);
 	const steer = (attribution: "agent" | "user", text: string) => agent.steer({
 		role: "user", content: text, steering: true, attribution, timestamp: Date.now(),

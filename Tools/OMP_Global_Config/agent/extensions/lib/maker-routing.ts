@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { isPathOwned, parseOwnedPaths } from "../command-guard/task-guard";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
-import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
+import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 
 export interface RoutingFacts {
   goal: string;
@@ -25,6 +25,10 @@ export interface Owner {
   primaryDeliverable: string | null;
   ownedPaths: string[];
   active?: boolean;
+  /** 관측된 spawn의 작업공간. 없으면 공유로 본다. */
+  workspace?: DispatchOwnership["workspace"];
+  /** 과거 원장 row처럼 소유 경로를 알 수 없는 owner. ownedPaths가 비어도 빈 소유가 아니다. */
+  ownershipUnknown?: boolean;
 }
 interface Candidate { profile: string; model: string; efforts: string[] }
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
@@ -75,7 +79,8 @@ export type QuotaSnapshot =
 export interface RoutingDeps {
   judge: (ctx: ExtensionContext, request: { state: unknown; questions: Record<string, RoutingQuestion> }, signal?: AbortSignal) => Promise<{ answers: Record<string, RoutingAnswer> }>;
   settings: (ctx: ExtensionContext) => Promise<{ getModelRoles(): Readonly<Record<string, string>> } | undefined>;
-  owners: () => Owner[];
+  /** 현재 owner 목록. ctx는 실행 중 여부를 core async snapshot으로 확인할 때 쓴다. */
+  owners: (ctx: ExtensionContext) => Owner[];
   policy?: () => RoutingPolicy;
   candidates?: (ctx: ExtensionContext, policy: RoutingPolicy) => Promise<Candidate[]>;
   /** 후보 provider별 계정 잔량. 생략하면 CUELO usage 사이드카(`OMP_USAGE_PORT`, 기본 30142)를 읽는다. */
@@ -399,6 +404,20 @@ function relevantOwners(contract: DispatchContract, owners: Owner[]): Owner[] {
   );
 }
 
+type Workspace = DispatchOwnership["workspace"];
+
+/**
+ * core spawnParamsFor와 같은 우선순위로 task 항목의 격리 요청을 읽는다. 항목 값이 있으면 그것, 없으면 상위 값이다.
+ * isolated 요청은 격리 준비 실패 시 공유 cwd로 fallback하지 않고 실패하므로(structured-subagent) 별도 worktree scope다.
+ */
+export function workspaceOf(input: Record<string, unknown>, item: Record<string, unknown>): Workspace {
+  return (item.isolated !== undefined ? item.isolated : input.isolated) === true ? "isolated" : "shared";
+}
+
+/** 같은 checkout을 동시에 쓰는 경우만 충돌이다. 격리 worktree는 서로·공유 작업공간과 별도 scope다. */
+const sharesCheckout = (left: Workspace | undefined, right: Workspace | undefined) =>
+  left !== "isolated" && right !== "isolated";
+
 function ownerRevision(owners: Owner[]): string {
   return JSON.stringify(owners.map((owner) => [
     owner.name,
@@ -498,7 +517,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   };
   const bindings = new Map<string, Promise<Prepared>>();
   // 검사를 통과한 발주의 이력 초안. spawn 성공(noteSpawned) 때만 identity와 함께 ledger에 남긴다.
-  const pendingDispatches = new Map<string, Omit<DispatchRecord, "ts" | keyof AttemptIdentity>>();
+  // 새 초안은 항상 소유 계약을 싣는다. 원장의 과거 row만 ownership이 없을 수 있다.
+  type DispatchDraft = Omit<DispatchRecord, "ts" | "ownership" | keyof AttemptIdentity> & { ownership: DispatchOwnership };
+  const pendingDispatches = new Map<string, DispatchDraft>();
   // 거절 진단 전용 색인. 준비된 계약을 이름별로 시간순으로 모아 어긋난 필드를 지목하며,
   // 통과·차단 판정에는 관여하지 않는다.
   const preparedContracts = new Map<string, DispatchContract[]>();
@@ -646,7 +667,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
-    const allOwners = deps.owners();
+    const allOwners = deps.owners(ctx);
     const atGeneration = generation;
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
@@ -877,7 +898,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
-    const drafts: [string, Omit<DispatchRecord, "ts" | keyof AttemptIdentity>][] = [];
+    const drafts: [string, DispatchDraft][] = [];
     for (const [itemIndex, item] of tasks.entries()) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
@@ -911,7 +932,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         return { block: true, reason: "candidate 확인 중 같은 task 계약에 더 최신 maker_route 준비가 생겼습니다. 최신 판단으로 발주하세요." };
       }
       if (prepared.revision !== revisionOf(current, candidates)) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
-      const owners = relevantOwners(contract, deps.owners());
+      const allOwners = deps.owners(ctx);
+      const owners = relevantOwners(contract, allOwners);
       if (ownerRevision(prepared.owners) !== ownerRevision(owners)) return { block: true, reason: "현재 소유권 충돌 조건이 바뀌었습니다. maker_route로 owner placement만 다시 판단하세요." };
       // 같은 모델이 여러 profile에 있을 수 있다(HARD_*). 추천 profile, 이어서 추천 등급의
       // profile 구간으로 검사해 등급의 강도 구간을 모델 이름으로 우회하지 못하게 한다. 추천 등급에 그 모델이
@@ -937,11 +959,17 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const index = candidates.findIndex((candidate) => candidate.profile === selected.profile);
       const recommendedEffort = selected.efforts.length === 1 ? selected.efforts[0] : answers?.[`effort${index}`]?.choice;
       const placement = placementOf(prepared, owners);
-      const activeConflicts = owners.filter((owner) => owner.active === true);
+      const workspace = workspaceOf(canonicalInput, item);
+      // 같은 checkout을 쓰는 active owner만 충돌이다. 소유 경로 미상 active owner는 빈 소유로 보지 않고 공유 발주 전체와 충돌로 둔다.
+      const activeConflicts = [
+        ...owners.filter((owner) => owner.active === true && sharesCheckout(owner.workspace, workspace)),
+        ...allOwners.filter((owner) => owner.active === true && owner.ownershipUnknown === true && sharesCheckout(owner.workspace, workspace)),
+      ];
       if (activeConflicts.length > 0) {
+        const unknown = activeConflicts.some((owner) => owner.ownershipUnknown === true);
         return {
           block: true,
-          reason: `현재 active owner의 소유 경로와 충돌합니다: ${activeConflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 오래된 owner index나 다른 경로 owner로 자동 배정하지 말고 현재 owner에게 지시하거나 maker_route로 placement를 다시 판단하세요.`,
+          reason: `현재 active owner의 소유 경로와 충돌합니다: ${activeConflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 오래된 owner index나 다른 경로 owner로 자동 배정하지 말고 현재 owner에게 지시하거나 maker_route로 placement를 다시 판단하세요.${unknown ? " 소유 경로가 기록되지 않은 과거 발주가 아직 실행 중이라 공유 작업공간의 어느 경로와도 겹칠 수 있다고 봅니다. 그 owner가 끝난 뒤 발주하거나 isolated로 발주하세요." : ""}`,
         };
       }
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
@@ -964,7 +992,24 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         chosenEffort: effort,
         routingReason,
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
+        ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
       }]);
+    }
+    // 같은 배치의 공유 작업공간 항목끼리는 게시 전에 한꺼번에 비교한다. 하나라도 겹치면 어떤 초안도 게시하지 않는다.
+    const overlaps: string[] = [];
+    for (const [leftIndex, [, left]] of drafts.entries()) {
+      for (const [, right] of drafts.slice(leftIndex + 1)) {
+        if (!sharesCheckout(left.ownership.workspace, right.ownership.workspace)) continue;
+        const shared = left.ownership.ownedPaths.filter((path) =>
+          right.ownership.ownedPaths.some((other) => ownedPathsOverlap(path, other)));
+        if (shared.length > 0) overlaps.push(`'${clipped(left.name, 40)}' ↔ '${clipped(right.name, 40)}'(${clippedList(shared)})`);
+      }
+    }
+    if (overlaps.length > 0) {
+      return {
+        block: true,
+        reason: `같은 task 배치에서 공유 작업공간 Maker의 OWNED_PATHS가 겹칩니다: ${overlaps.slice(0, DIAGNOSTIC_LIST_LIMIT).join("; ")}. 배치 전체를 발주하지 않았습니다. 경로를 나누거나 한 owner에게 맡기거나, 겹치는 쪽을 순서대로 내거나 isolated로 발주하세요.`,
+      };
     }
     for (const [key, draft] of drafts) pendingDispatches.set(key, draft);
     return canonicalInput === input ? undefined : { input: canonicalInput };
@@ -973,16 +1018,16 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   /**
    * task spawn 성공 경계. TaskGuard lock을 확립하고, 검사를 통과해 실제로 spawn된 발주만 이력에 남긴다.
    * 실제 attempt identity는 이 spawn의 task 호출 id·index·session으로만 캡처한다(준비 handle과 섞지 않는다).
-   * 돌려주는 map은 task index → 관측된 identity이며, settle 시 같은 identity로 outcome을 잇는다.
+   * 돌려주는 map은 task index → 관측된 identity와 원장에 남긴 소유 계약이며, settle 시 같은 identity로 outcome을 잇는다.
    */
   function noteSpawned(
     input: Record<string, unknown>,
     sessionId: string,
     callId: string,
     ids: ReadonlyMap<number, { agentId: string; jobId: string }>,
-  ): Map<number, AttemptIdentity> {
+  ): Map<number, { identity: AttemptIdentity; ownership: DispatchOwnership }> {
     const tasks = (Array.isArray(input.tasks) ? input.tasks : [input]) as Record<string, unknown>[];
-    const dispatched = new Map<number, AttemptIdentity>();
+    const dispatched = new Map<number, { identity: AttemptIdentity; ownership: DispatchOwnership }>();
     // 같은 session 원장에서 이름별 assignment·최대 attempt를 읽어 FINDING_ID 재작업만 같은 assignment로 잇는다.
     // 원장에서 읽으므로 reload 뒤에도 연결이 유지되고, 관측되지 않은 준비만으로는 연결하지 않는다.
     const known = assignmentsByName(deps.ledger?.read() ?? [], sessionId);
@@ -1012,7 +1057,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         jobId: ids.get(index)?.jobId ?? "",
       };
       deps.ledger?.append({ ...draft, ...identity, ts: new Date().toISOString() });
-      dispatched.set(index, identity);
+      dispatched.set(index, { identity, ownership: draft.ownership });
       known.set(name, { assignmentId, lastAttempt: attempt });
     }
     contractLock ??= candidateLock;

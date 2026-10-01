@@ -247,7 +247,12 @@ try {
 	check("첫 response.create 에는 입력이 없다", occurrences(creates[0] ?? "") === 0);
 	check("두 번째 일반 response.create 에 정확히 한 번 실린다", occurrences(creates[1] ?? "") === 1, String(occurrences(creates[1] ?? "")));
 	check("대화 기록에도 한 번만 남는다", agent.state.messages.filter(m => m.role === "user" && JSON.stringify(m).includes(STEER_TEXT)).length === 1);
-	check("모든 assistant 응답이 error 없이 끝난다", assistants.length === 2 && assistants.every(m => m.stopReason !== "error"), JSON.stringify(assistants.map(m => m.stopReason)));
+	// P55: 첫 응답은 보이는 출력 없이 거절 steer 를 받았으므로 버려지고 같은 run 에서 다시 요청한다.
+	check(
+		"버린 첫 응답은 기록되지 않고 다시 요청한 응답 하나가 error 없이 끝난다",
+		assistants.length === 1 && assistants[0]?.stopReason === "stop",
+		JSON.stringify(assistants.map(m => m.stopReason)),
+	);
 } finally {
 	server.stop(true);
 }

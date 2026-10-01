@@ -66,7 +66,10 @@ export interface AssistantMessage {
   credentialId?: number;
   stopReason?: string;
   errorMessage?: string;
+  /** provider가 찍는 요청 시작 시각(ms). 생성이 끝난 시각이 아니다. */
   timestamp?: number;
+  /** 코어가 message_end에 찍는 로컬 생성 종료 시각(ms). 이 필드가 생기기 전 기록에는 없다. */
+  completedAt?: number;
   usage?: {
     input: number;
     output: number;

@@ -7,6 +7,7 @@ import {
   assignmentsByName,
   createRoutingLedger,
   HISTORY_WINDOW,
+  scopedAttempts,
   summarizeHistory,
   type DispatchRecord,
   type LedgerRecord,
@@ -152,5 +153,28 @@ describe("history 요약", () => {
 
     // 기록이 없으면 안내도 없다.
     expect(summarizeHistory([], "HARD", "CODE_SYSTEM").observation).toBeNull();
+  });
+});
+
+describe("소유권 복원", () => {
+  test("관측 spawn dispatch의 소유 계약만 attempt별로 복원하고 과거·손상 row는 미상(null)으로 둔다", () => {
+    const ownership = { primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"], workspace: "shared" as const };
+    const records: LedgerRecord[] = [
+      dispatch("New", { ownership }),
+      // FINDING_ID 재작업은 같은 assignment의 다음 attempt이며 원 계약을 그대로 잇는다.
+      dispatch("New", { ...ids("New", 2), ownership }),
+      outcome("New", "completed", ids("New", 2)),
+      // 이 변경 전 기록은 ownership 필드가 없다. 빈 소유로 바꾸지 않는다.
+      dispatch("Legacy"),
+      dispatch("Broken", { ownership: { primaryDeliverable: "x", ownedPaths: "src/", workspace: "shared" } as never }),
+      dispatch("Other", { ...ids("Other"), sessionId: "s2", ownership }),
+    ];
+    const restored = scopedAttempts(records, SESSION);
+    expect(restored.map((entry) => [entry.identity.attemptId, entry.status, entry.ownership])).toEqual([
+      ["s1#New#a1", "running", ownership],
+      ["s1#New#a2", "completed", ownership],
+      ["s1#Legacy#a1", "running", null],
+      ["s1#Broken#a1", "running", null],
+    ]);
   });
 });

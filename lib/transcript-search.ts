@@ -91,9 +91,44 @@ interface FileScan {
   stoppedBy: "time" | "bytes" | null;
   /** Line of the entry the latest compaction kept first; earlier hits are hidden history. */
   keptFromLine: number | null;
+  /** Matches the final latest compaction replaced that this scan had already collected. */
+  prunedHits: number;
 }
 
 const ID_PATTERN = /"id":"([^"]+)"/;
+type Entry = { type?: string; id?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
+
+/** The searchable hit on one raw JSONL line, or null when the line is not a matching user/assistant message. */
+function parseHit(
+  raw: string,
+  lineNo: number,
+  sessionId: string,
+  needle: string,
+  pattern: RegExp,
+): (TranscriptSearchHit & { line: number }) | null {
+  if (!raw.includes('"type":"message"')) return null;
+  if (!raw.includes('"role":"user"') && !raw.includes('"role":"assistant"')) return null;
+  if (!pattern.test(raw)) return null;
+  let entry: Entry;
+  try {
+    entry = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const role = entry.message?.role;
+  if (entry.type !== "message" || typeof entry.id !== "string" || (role !== "user" && role !== "assistant")) return null;
+  const excerpt = buildSnippet(textOf(entry.message?.content, role), needle);
+  if (!excerpt) return null;
+  return {
+    sessionId,
+    entryId: entry.id,
+    role,
+    snippet: excerpt.snippet,
+    matchStart: excerpt.matchStart,
+    ...(typeof entry.timestamp === "string" ? { timestamp: entry.timestamp } : {}),
+    line: lineNo,
+  };
+}
 
 async function scanFile(
   session: TranscriptSearchSession,
@@ -104,18 +139,29 @@ async function scanFile(
   bytesLeft: number,
   now: () => number,
 ): Promise<FileScan> {
-  const scan: FileScan = { hits: [], bytes: 0, stoppedBy: null, keptFromLine: null };
+  const scan: FileScan = { hits: [], bytes: 0, stoppedBy: null, keptFromLine: null, prunedHits: 0 };
   const handle = await open(session.path, "r");
   try {
     const buffer = Buffer.alloc(READ_CHUNK_BYTES);
     const decoder = new TextDecoder();
-    const lineById = new Map<string, number>();
+    const entryById = new Map<string, { line: number; offset: number }>();
     let latestFirstKept: string | null = null;
     let pending = "";
     let line = 0;
+    let lineOffset = 0;
     let position = 0;
+    // Quota is spent on visible hits only: a compaction marker frees what the
+    // history it replaced had taken. A match skipped while the quota was full,
+    // or pruned by an earlier marker that the final one does not cover, may sit
+    // in the retained range: that range is read once more at the end.
+    let firstSkippedLine = -1;
+    let lastSkippedLine = -1;
+    let maxPrunedLine = -1;
+    const prunedLines: number[] = [];
     const handleLine = (raw: string): void => {
       const lineNo = line++;
+      const offset = lineOffset;
+      lineOffset += Buffer.byteLength(raw) + 1;
       if (raw.startsWith('{"type":"compaction"') || (raw.includes('"type":"compaction"') && !raw.includes('"type":"message"'))) {
         try {
           const entry = JSON.parse(raw) as { type?: string; firstKeptEntryId?: unknown };
@@ -123,33 +169,26 @@ async function scanFile(
         } catch {
           // A torn line is skipped like the session reader skips it.
         }
+        const keptLine = latestFirstKept === null ? undefined : entryById.get(latestFirstKept)?.line;
+        if (keptLine !== undefined) {
+          const visible = scan.hits.filter((hit) => hit.line >= keptLine);
+          for (const hit of scan.hits) if (hit.line < keptLine) prunedLines.push(hit.line);
+          if (visible.length !== scan.hits.length) maxPrunedLine = Math.max(maxPrunedLine, keptLine);
+          scan.hits = visible;
+        }
         return;
       }
       if (!raw.includes('"type":"message"')) return;
       const id = ID_PATTERN.exec(raw.slice(0, 200))?.[1];
-      if (id) lineById.set(id, lineNo);
-      if (scan.hits.length >= limits.maxHitsPerSession) return;
-      if (!raw.includes('"role":"user"') && !raw.includes('"role":"assistant"')) return;
-      if (!pattern.test(raw)) return;
-      let entry: { type?: string; id?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
-      try {
-        entry = JSON.parse(raw);
-      } catch {
+      if (id) entryById.set(id, { line: lineNo, offset });
+      const hit = parseHit(raw, lineNo, session.id, needle, pattern);
+      if (!hit) return;
+      if (scan.hits.length >= limits.maxHitsPerSession) {
+        if (firstSkippedLine < 0) firstSkippedLine = lineNo;
+        lastSkippedLine = lineNo;
         return;
       }
-      const role = entry.message?.role;
-      if (entry.type !== "message" || typeof entry.id !== "string" || (role !== "user" && role !== "assistant")) return;
-      const excerpt = buildSnippet(textOf(entry.message?.content, role), needle);
-      if (!excerpt) return;
-      scan.hits.push({
-        sessionId: session.id,
-        entryId: entry.id,
-        role,
-        snippet: excerpt.snippet,
-        matchStart: excerpt.matchStart,
-        ...(typeof entry.timestamp === "string" ? { timestamp: entry.timestamp } : {}),
-        line: lineNo,
-      });
+      scan.hits.push(hit);
     };
     for (;;) {
       if (now() >= deadline) {
@@ -170,7 +209,54 @@ async function scanFile(
       for (const raw of lines) handleLine(raw);
     }
     if (scan.stoppedBy === null && pending) handleLine(pending);
-    if (latestFirstKept !== null) scan.keptFromLine = lineById.get(latestFirstKept) ?? null;
+    const kept = latestFirstKept === null ? undefined : entryById.get(latestFirstKept);
+    if (kept) scan.keptFromLine = kept.line;
+    const finalKeptLine = scan.keptFromLine ?? 0;
+    scan.prunedHits = prunedLines.filter((prunedLine) => prunedLine < finalKeptLine).length;
+    // Without a marker the first hits are the visible ones. After one, a hit
+    // skipped earlier in the retained range can rank before hits stored later.
+    const cap = limits.maxHitsPerSession;
+    const lastStored = scan.hits.length > 0 ? scan.hits[scan.hits.length - 1].line : -1;
+    const skippedRetained =
+      maxPrunedLine >= 0 && lastSkippedLine >= finalKeptLine && (scan.hits.length < cap || lastStored > firstSkippedLine);
+    const needsReread = scan.stoppedBy === null && (skippedRetained || maxPrunedLine > finalKeptLine);
+    if (needsReread) {
+      const from = kept ?? { line: 0, offset: 0 };
+      const hits: FileScan["hits"] = [];
+      const rereadDecoder = new TextDecoder();
+      let tail = "";
+      let rereadLine = from.line;
+      let at = from.offset;
+      reread: for (;;) {
+        if (now() >= deadline) {
+          scan.stoppedBy = "time";
+          break;
+        }
+        if (scan.bytes >= bytesLeft) {
+          scan.stoppedBy = "bytes";
+          break;
+        }
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, at);
+        if (bytesRead <= 0) break;
+        at += bytesRead;
+        scan.bytes += bytesRead;
+        tail += rereadDecoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+        const lines = tail.split("\n");
+        tail = lines.pop() ?? "";
+        for (const raw of lines) {
+          const hit = parseHit(raw, rereadLine++, session.id, needle, pattern);
+          if (hit && hits.push(hit) >= limits.maxHitsPerSession) break reread;
+        }
+      }
+      if (scan.stoppedBy === null && hits.length < cap && tail) {
+        const hit = parseHit(tail, rereadLine, session.id, needle, pattern);
+        if (hit) hits.push(hit);
+      }
+      // An interrupted re-read keeps what it recovered next to the first pass.
+      const merged = new Map<number, FileScan["hits"][number]>();
+      for (const hit of [...scan.hits, ...hits]) if (hit.line >= finalKeptLine) merged.set(hit.line, hit);
+      scan.hits = [...merged.values()].sort((a, b) => a.line - b.line).slice(0, cap);
+    }
   } finally {
     await handle.close();
   }
@@ -223,6 +309,7 @@ export async function searchTranscripts(
     }
     result.scannedBytes += scan.bytes;
     result.scannedSessions += 1;
+    result.compactedHits += scan.prunedHits;
     for (const { line, ...hit } of scan.hits) {
       if (scan.keptFromLine !== null && line < scan.keptFromLine) {
         result.compactedHits += 1;

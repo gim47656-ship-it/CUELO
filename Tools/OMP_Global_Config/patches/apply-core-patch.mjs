@@ -1792,31 +1792,13 @@ function resolveSubagentRetryFallbackCandidates(
 	},
 	{
 		// BAI root: executor 가 요청 패턴의 provider 를 파싱하려면 parseModelString 이
-		// 필요하다. 18.2.4 이하에서는 model-resolver 가 export 하므로 그 import 에 얹고,
-		// 18.2.5는 그 함수가 pi-tui/overlays/model-selector 로 옮겨졌으므로 그쪽 import 에
-		// 얹는다(alternate). 두 앵커는 서로 배타적이라 성립 후보가 항상 정확히 하나다.
+		// 필요하다. 18.2.5부터 그 함수는 pi-tui/overlays/model-selector 에 있으므로 그 import 한 줄에 얹는다.
+		// 18.4.5는 이 줄과 model-resolver import 사이에 render-utils·edit import 를 끼워 넣었다. 그래서 앵커를
+		// 이 한 줄로 좁힌다(18.4.4·18.4.5 모두 파일 안에 정확히 한 번, 18.4.4 적용본의 patched 도 그대로 성립).
 		file: "src/task/executor.ts",
 		marker: `import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";`,
-		anchor: `import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
-import {
-	formatModelStringWithRouting,
-	resolveAgentAdvisorSelection,
-	resolveAgentPrewalkPattern,
-	resolveConfiguredModelPatterns,
-	resolveExplicitModelRole,
-	resolveModelOverride,
-	resolveModelOverrideWithAuthFallback,
-} from "../config/model-resolver";`,
-		patched: `import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
-import {
-	formatModelStringWithRouting,
-	resolveAgentAdvisorSelection,
-	resolveAgentPrewalkPattern,
-	resolveConfiguredModelPatterns,
-	resolveExplicitModelRole,
-	resolveModelOverride,
-	resolveModelOverrideWithAuthFallback,
-} from "../config/model-resolver";`,
+		anchor: `import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";`,
+		patched: `import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";`,
 	},
 	{
 		// 미해결 subagent 모델 요청의 scoped discovery 복구 헬퍼. sdk.ts
@@ -3157,12 +3139,14 @@ import { resolveUsedFraction } from "../usage";`,
 		// ranking 을 계산하기 전에 끊어 sibling usage 조회조차 하지 않는다. 알려진 block 은
 		// provider 요청 전에 실패하고(allowBlocked:false), definitive 실패도 다른 행으로 다시
 		// 고르지 않는다(allowFallback:false). auth retry step (b)의 forceRefresh 는 같은 행만 다시 민다.
+		// 18.4.5(#13889)는 shouldRank 앞에 spent-allowance 판정(rankDespitePin·sessionPreferredUsage)을 넣어
+		// 옛 앵커 `...sessionPinIsExplicit));` 가 사라졌다. exact pin 은 늘 explicit(pin())이라 그 판정은
+		// usage 를 조회하지 않고, 자동 pin 의 spent 계정 전환은 upstream 그대로 둔다. 앵커는 두 버전 모두
+		// shouldRank 바로 뒤에 있는 "When ranking" 주석 한 줄이다(18.4.4 적용본의 patched 도 그대로 성립).
 		file: "../pi-ai/src/auth/select.ts",
 		marker: "// Exact character summons never enter the ranked sibling candidate pool.",
-		anchor: `				(policyReserveEnabled && !sessionPinIsExplicit));
-		// When ranking, seed the pinned credential first in the evaluation order so it wins genuine`,
-		patched: `				(policyReserveEnabled && !sessionPinIsExplicit));
-		// Exact character summons never enter the ranked sibling candidate pool.
+		anchor: `		// When ranking, seed the pinned credential first in the evaluation order so it wins genuine`,
+		patched: `		// Exact character summons never enter the ranked sibling candidate pool.
 		// Known blocks fail before a provider request; a request-time usage error
 		// is handled by TurnRecovery without credential or model fallback.
 		if (sessionCredential?.type === "oauth" && sessionCredential.exactLabel) {
@@ -3220,11 +3204,13 @@ import { resolveUsedFraction } from "../usage";`,
 		// 대체한다(legacyPatched). 사용량 그림이 완전하고 건강한 후보만, upstream ranking 에서 이미 차지한
 		// 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·plan 부적격·5h hot 후보는 upstream 자리
 		// 그대로다. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin 재승격은 이 뒤에 온다.
+		// 18.4.5(#13889)는 비ranking 후보 목록 끝을 `}));` 에서 삼항 map 으로 바꾸고 ranking 비교기에 spent
+		// allowance 를 reserve 보다 앞에 넣었다. 재배열 대상은 한도 미도달·측정 완료(used<1) 후보뿐이라 spent
+		// 후보는 upstream 자리 그대로다. 앵커는 두 버전 모두 한 번 있는 preflightFailures 선언 한 줄이다.
 		file: "../pi-ai/src/auth/select.ts",
 		marker: "// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.",
-		anchor: "\t\t\t\t\t}));\n\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-		legacyPatched: `					}));
-		// Prefer the healthy Anthropic account whose weekly window resets first.
+		anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
+		legacyPatched: `		// Prefer the healthy Anthropic account whose weekly window resets first.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
 		// 5h-hot candidates keep their place. Ties: larger remaining weekly quota, then upstream order.
@@ -3277,8 +3263,7 @@ import { resolveUsedFraction } from "../usage";`,
 			});
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`,
-		patched: `					}));
-		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
+		patched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
 		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
@@ -3339,19 +3324,22 @@ import { resolveUsedFraction } from "../usage";`,
 		const preflightFailures = new Set<OAuthCandidate>();`,
 	},
 	{
-		// exact OAuth 가 해석되지 않으면 login API 키·env 키로 조용히 넘어가지 않는다.
+		// exact OAuth 가 해석되지 않으면 login API 키·18.4.5 config fallback 키(#13815)·env 키로 조용히 넘어가지 않는다.
+		// 18.4.5는 resolveOAuth 성공 분기에 oauthIdentity 전달을 넣어 옛 한 덩어리 앵커가 사라졌다. 라벨은
+		// resolveOAuth 전에 읽고(이 항목), 거절은 성공 분기 바로 뒤·login/fallback/env 조회 앞에 둔다(다음 항목).
+		// 두 앵커 모두 18.4.4·18.4.5에 정확히 한 번 있고 18.4.4 적용본의 patched 도 그대로 성립한다.
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);",
+		anchor: `		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);`,
+		patched: `		const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);
+		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);`,
+	},
+	{
 		file: "../pi-ai/src/auth/cascade.ts",
 		marker: "의 지정 OAuth 계정이 현재 사용할 수 없습니다.`);",
-		anchor: `		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);
-		if (oauthResolved) {
-			if (oauthResolved.credentialId !== undefined) onCredentialId?.(oauthResolved.credentialId);
-			return oauthResolved.apiKey;
+		anchor: `			return oauthResolved.apiKey;
 		}`,
-		patched: `		const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);
-		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);
-		if (oauthResolved) {
-			if (oauthResolved.credentialId !== undefined) onCredentialId?.(oauthResolved.credentialId);
-			return oauthResolved.apiKey;
+		patched: `			return oauthResolved.apiKey;
 		}
 		if (exactOAuthLabel) {
 			throw new Error(\`[CharacterSummonRuntime] \${exactOAuthLabel}의 지정 OAuth 계정이 현재 사용할 수 없습니다.\`);
@@ -4003,19 +3991,21 @@ export const cfgJudgmentProvider = register({
 	// 사용량 패널이 두 계정을 섞어 보인다(2026-09-28 실장애). 요청을 처리한 행 id 는 resolver 경로가
 	// 이미 알고 있으므로(stream.ts runAttempt) 응답 메타데이터로 실어 그 행에 귀속한다. 행을 모르는
 	// 호출자(정적 키 등)는 기존 세션 fallback 을 그대로 쓴다. 회귀: patches/core-usage-header-attribution-test.ts
+	// 18.4.5는 attemptOptions 에 oauthIdentity 를 더해 그 줄이 버전마다 다르다. 그래서 바로 다음 줄(두 버전 공통,
+	// 정확히 한 번) 앞에 끼운다. upstream 의 oauthIdentity 전달은 그대로 둔다.
 	{
 		file: "../pi-ai/src/stream.ts",
 		marker: "// Response headers carry this attempt's account quota.",
-		anchor: `				const attemptOptions = { ...requestOptions, apiKey, credentialId };`,
-		patched: `				const attemptOptions = { ...requestOptions, apiKey, credentialId };
-				// Response headers carry this attempt's account quota. Name the row that
+		anchor: `				const inner = streamSimpleRequest(model, context, attemptOptions);`,
+		patched: `				// Response headers carry this attempt's account quota. Name the row that
 				// actually sent it so usage ingest never re-resolves the session's current
 				// account, which a mid-request pin switch may already have moved.
 				const onResponse = requestOptions?.onResponse;
 				if (credentialId !== undefined && onResponse) {
 					attemptOptions.onResponse = (response, responseModel, responseSignal) =>
 						onResponse({ ...response, metadata: { ...response.metadata, credentialId } }, responseModel, responseSignal);
-				}`,
+				}
+				const inner = streamSimpleRequest(model, context, attemptOptions);`,
 	},
 	{
 		file: "src/session/session-stats.ts",
@@ -4505,8 +4495,11 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 	// TodoTracker.`,
 	},
 	{
+		// 18.4.5(#3821 subagent live preview)는 #cancelObserverUiSyncTimer 끝에 #cancelSubagentPreviewTick() 을 더했다.
+		// lifecycle 이 TodoTracker 를 바꾸지 않게 reconcile 경로만 걷어내고, upstream 의 preview tick 취소는 그대로 둔다
+		// (alternate). 두 후보의 marker 는 각자의 cancel 함수 전체라 서로의 결과·순정본에 들어 있지 않다.
 		file: "src/modes/interactive-mode.ts",
-		marker: "Lifecycle changes only refresh observer and TODO presentation",
+		marker: "\t#cancelObserverUiSyncTimer(): void {\n\t\tif (this.#observerUiSyncTimer) {\n\t\t\tclearTimeout(this.#observerUiSyncTimer);\n\t\t\tthis.#observerUiSyncTimer = undefined;\n\t\t}\n\t}",
 		anchor: `	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
 		if (kind !== "progress") {
 			this.#observerUiSyncNeedsTodoReconcile = true;
@@ -4563,6 +4556,68 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 			this.#observerUiSyncTimer = undefined;
 		}
 	}`,
+		alternates: [{
+			file: "src/modes/interactive-mode.ts",
+			marker: "\t#cancelObserverUiSyncTimer(): void {\n\t\tif (this.#observerUiSyncTimer) {\n\t\t\tclearTimeout(this.#observerUiSyncTimer);\n\t\t\tthis.#observerUiSyncTimer = undefined;\n\t\t}\n\t\tthis.#cancelSubagentPreviewTick();\n\t}",
+			anchor: `	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
+		if (kind !== "progress") {
+			this.#observerUiSyncNeedsTodoReconcile = true;
+		}
+		if (this.#observerUiSyncTimer) return;
+		this.#observerUiSyncTimer = setTimeout(() => {
+			this.#observerUiSyncTimer = undefined;
+			this.#flushObserverUiSync();
+		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
+		this.#observerUiSyncTimer.unref?.();
+	}
+
+	#flushObserverUiSync(): void {
+		this.syncRunningSubagentBadge({ requestRender: false });
+		if (this.#observerUiSyncNeedsTodoReconcile) {
+			this.#observerUiSyncNeedsTodoReconcile = false;
+			this.#reconcileTodosWithSubagents();
+		}
+		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
+		this.#renderTodoList();
+		this.#renderSubagentList();
+		this.ui.requestRender();
+	}
+
+	#cancelObserverUiSyncTimer(): void {
+		if (this.#observerUiSyncTimer) {
+			clearTimeout(this.#observerUiSyncTimer);
+			this.#observerUiSyncTimer = undefined;
+		}
+		this.#observerUiSyncNeedsTodoReconcile = false;
+		this.#cancelSubagentPreviewTick();
+	}`,
+			patched: `	#scheduleObserverUiSync(_kind: SessionObserverChangeKind): void {
+		// Lifecycle changes only refresh observer and TODO presentation. They do
+		// not constitute Main acceptance and therefore never change TodoTracker.
+		if (this.#observerUiSyncTimer) return;
+		this.#observerUiSyncTimer = setTimeout(() => {
+			this.#observerUiSyncTimer = undefined;
+			this.#flushObserverUiSync();
+		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
+		this.#observerUiSyncTimer.unref?.();
+	}
+
+	#flushObserverUiSync(): void {
+		this.syncRunningSubagentBadge({ requestRender: false });
+		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
+		this.#renderTodoList();
+		this.#renderSubagentList();
+		this.ui.requestRender();
+	}
+
+	#cancelObserverUiSyncTimer(): void {
+		if (this.#observerUiSyncTimer) {
+			clearTimeout(this.#observerUiSyncTimer);
+			this.#observerUiSyncTimer = undefined;
+		}
+		this.#cancelSubagentPreviewTick();
+	}`,
+		}],
 	},
 	{
 		// 2026-09-21 실사용: 사용자는 `mnemopi.autoRetain: false` 로 자동 턴 저장을 껐는데도
@@ -8076,9 +8131,12 @@ function parentSubagentServiceTiers(
 	// Opus 5.5도 Fable 5.1·Sonnet 5.5처럼 thinking 서명을 앞선 system·tools·messages에 묶는다고 한다. 18.4.x
 	// catalog는 Opus 5.5에 thinking-prefix-binding을 빠뜨려, prefix가 바뀐 요청이 drop_block 없이 나가고 신규
 	// 계정에서는 400 뒤 재시도로만 복구된다. 내장 모델은 구워진 models.json 값을 그대로 쓰고, 규칙으로 새로 만드는
-	// 모델(discovery 등)은 rules.json을 쓰므로 두 곳에 prefixBinding과 binding controls(beta, Claude API·Vertex 범위)를
-	// 같이 채운다. Sonnet 5.5 규칙과 같은 모양이다. models.yml은 thinking override의 prefixBinding을 스키마에서 조용히
-	// 버리고 공개 설치에는 없으므로 설정으로 켜지 않는다.
+	// 모델(discovery 등)은 rules.json을 쓰므로 두 곳에 prefixBinding과 binding controls(beta)를 같이 채운다.
+	// binding controls의 provider 범위는 그 버전 upstream Sonnet 5.5 규칙과 같게 둔다: 18.4.4는 Claude API·
+	// Cloudflare·Vertex, 18.4.5는 Vertex가 `thinking.adaptive.block_binding: Extra inputs are not permitted`(400)로
+	// 거절해 Claude API·Cloudflare만(classes/anthropic.kdl:128). wire의 block_binding은 prefixBinding과 binding
+	// controls가 둘 다 참일 때만 나간다(anthropic.ts prefixMismatchBehavior). models.yml은 thinking override의
+	// prefixBinding을 스키마에서 조용히 버리고 공개 설치에는 없으므로 설정으로 켜지 않는다.
 	{
 		file: "../pi-catalog/src/models.json",
 		marker: '"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
@@ -8086,12 +8144,30 @@ function parentSubagentServiceTiers(
 		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
 	},
 	{
+		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 kdl:69와 같은 모양). 18.4.4·18.4.5 공통 앵커.
+		// 18.4.4 적용본은 이 patched 바로 뒤에 binding controls 규칙이 붙어 있어 marker가 그대로 성립한다.
 		file: "../pi-catalog/src/compat/rules.json",
-		marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
-		patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 	},
-	// 위 두 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
+	{
+		// binding controls 규칙은 그 버전의 upstream Sonnet 5.5 binding 규칙 바로 뒤에 같은 provider 범위로 둔다.
+		// 18.4.5: kdl:128(anthropic·cloudflare). alternate 18.4.4: kdl:106(anthropic·cloudflare·vertex).
+		// 18.4.4 라이브 적용본은 옛 위치(kdl:60 뒤)에 같은 규칙이 있어 alternate marker로 applied이다. 그 적용본의
+		// --revert는 patched가 연속으로 없으므로 엔진의 백업 경로(~/.omp/core-patch-backup)를 쓴다.
+		file: "../pi-catalog/src/compat/rules.json",
+		marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		anchor: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		patched: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		alternates: [{
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}],
+	},
+	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
 	// 있는 Opus 5.5(그리고 upstream의 Sonnet 5.5·Fable 5.1)에서 prefixBinding이 사라진다. override 스키마는 이 필드를
 	// 받지 않으므로, override가 정하지 않았으면 모델 계보가 정한 값을 보존한다.
 	{
@@ -8225,6 +8301,322 @@ function parentSubagentServiceTiers(
 		return this.#models.thinkingLevelCeiling;
 	}
 `,
+	},
+	// HTML export(세션 안 `/export`, CLI `--export`, CUELO 웹 `app/api/sessions/[id]/export`)는 세션 폴더의 `*.jsonl`을
+	// 전부 subagent 기록으로 싣는다. advisor는 같은 폴더에 `__advisor.jsonl`·`__advisor.<slug>.jsonl`(subagent advisor는
+	// `<SubId>/__advisor.jsonl`)로 자기 프롬프트·검토를 남기므로, 내보낸 HTML에 advisor 내부 기록이 그대로 들어갔다
+	// (18.4.5; upstream #13908은 같은 경계에서 isAdvisorTranscriptName으로 거르지만 미머지). 수집 경계에서 advisor
+	// 파일만 건너뛴다. 진짜 subagent·중첩 subagent·부모 대화(부모에게 전달된 advisor 메시지 포함)는 그대로이고,
+	// 파일은 읽기만 한다. 웹 route는 번들 `dist/cli.js --export`를 먼저 실행하므로 번들의 같은 함수에도 같은 조건을
+	// 넣는다(min 식별자까지 정확히 일치하는 18.4.5 앵커, 버전이 바뀌면 조용히 어긋나지 않고 anchor-lost).
+	// 회귀: patches/core-export-advisor-test.ts(실제 SDK exportFromFile과 bun dist/cli.js --export의 HTML).
+	{
+		file: "src/export/html/index.ts",
+		marker: 'import { isAdvisorTranscriptName } from "../../advisor/transcript-recorder";',
+		anchor: 'import type { SessionEntry, SessionHeader } from "../../session/session-entries";',
+		patched: 'import { isAdvisorTranscriptName } from "../../advisor/transcript-recorder";\nimport type { SessionEntry, SessionHeader } from "../../session/session-entries";',
+	},
+	{
+		file: "src/export/html/index.ts",
+		marker: '		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n',
+		anchor: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n',
+		patched: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n		if (isAdvisorTranscriptName(name)) continue;\n',
+	},
+	{
+		file: "dist/cli.js",
+		marker: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
+		anchor: 'if(!o.endsWith(".jsonl")||o.includes(".bak"))continue;let r=o.slice(0,-6),',
+		patched: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
+	},
+	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
+	// 두고 sdk.ts 가 `./ratchet/prelude` 로 import 한다. Bun 1.4.2 는 node_modules 안의 확장자 없는 import 를 .js 부터
+	// 해석하므로, npm 으로 설치해 src 를 import 하는 소비자(CUELO 웹의 SDK)에서는 sdk.ts 로드가
+	// `Export named 'createRatchetPrelude' not found in module ...ratchet\prelude.js` 로 실패한다(저장소 경로·번들은 정상).
+	// 이 import 만 .ts 로 명시한다. 동작은 upstream 이 의도한 그대로다. 18.4.5 전용이다: 18.4.4 에는 ratchet 이 없으므로
+	// 18.4.4 설치본에서는 이 항목이 anchor-lost 로 적용 전에 실패한다(다른 판을 조용히 건너뛰는 no-op 후보를 두지 않는다).
+	{
+		file: "src/sdk.ts",
+		marker: 'import { createRatchetPrelude } from "./ratchet/prelude.ts";',
+		anchor: 'import { createRatchetPrelude } from "./ratchet/prelude";',
+		patched: 'import { createRatchetPrelude } from "./ratchet/prelude.ts";',
+	},
+	// P55. genuine 사용자 steer 가 아직 보이는 출력(text·toolCall)이 없는 진행 중 모델 요청을 끝까지 기다리지 않게 한다.
+	// 2026-10-01 사용자 관측: Astra(xhigh) 4분짜리 추론 요청 중 넣은 steer 가 그 요청이 끝날 때까지(98.8s·169.6s)
+	// 큐에 머물렀고, Opus 는 바로 개입되는 것처럼 보였다. Agent.steer 는 큐에만 넣고 모델 스트림은 끊지 않으며
+	// (도구 실행만 interrupt), Codex native turn lane 은 `response.steer` 를 거절(P48 sticky)하고 SSE·Anthropic 은
+	// live 주입이 없다. 그래서 "보이는 출력이 아직 없음 + live 채널 미부착이거나 claim reject·defer" 일 때만
+	// 요청 전용 AbortSignal(promptToolAbortController 와 같이 provider signal 에만 병합)로 그 provider 호출을 끊고,
+	// partial 은 message_end 없이 버린다(context·persist·replay 에 남지 않음, 웹은 다음 message_start 가 live
+	// bubble 을 교체). 같은 run·같은 turn 안에서 steering 을 경계 주입해 새 요청을 보낸다. session/agent/loop abort·
+	// goal pause 는 건드리지 않는다. 이미 text·toolCall 이 보였으면 기존대로 boundary 처리(2026-09-20 "보이던 답 끊김"
+	// 계약, core-steer-stream-test.ts). native accept·내부 IRC/advisory/custom/agent steer·follow-up 은 대상이 아니다.
+	// 회귀: patches/core-steer-stream-test.ts(실제 Agent 루프 + Codex/SSE wire fixture).
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "class SteeringRestartInterruption extends Error {",
+		anchor: "class HarmonyLeakInterruption extends Error {",
+		patched: `/** CUELO P55: race token for a request-only restart requested by genuine user steering. */
+const STEER_RESTART = Symbol("steer-restart");
+
+/**
+ * CUELO P55: marks the last listener snapshot of a partial discarded for a steering restart.
+ * Agent#runLoop treats a marked partial as absent, so an exception before the next message
+ * start never commits it. Symbol keys stay out of JSON, structured clones and provider payloads.
+ */
+export const STEER_DISCARDED_PARTIAL = Symbol("pi-agent-core.steer-discarded-partial");
+
+/**
+ * CUELO P55: genuine user steering ended the in-flight request before it produced visible
+ * output. The partial was discarded (never committed, persisted or replayed); the loop delivers
+ * the steering at this boundary and re-requests in the same run.
+ */
+class SteeringRestartInterruption extends Error {
+	constructor() {
+		super("User steering restarted the in-flight model request");
+		this.name = "SteeringRestartInterruption";
+	}
+}
+
+/** CUELO P55: same predicate as \`hasNewUserSteering\`: user-typed, not agent-attributed, not synthetic. */
+function isGenuineUserSteer(message: AgentMessage): boolean {
+	return (
+		message.role === "user" &&
+		("attribution" in message ? message.attribution !== "agent" : true) &&
+		!("synthetic" in message && message.synthetic === true)
+	);
+}
+
+/** CUELO P55: text or a tool call already reached listeners; such a partial is never discarded for steering. */
+function hasVisibleAssistantOutput(message: AssistantMessage | null): boolean {
+	return (
+		message?.content.some(
+			block => block.type === "toolCall" || (block.type === "text" && block.text.trim().length > 0),
+		) === true
+	);
+}
+
+class HarmonyLeakInterruption extends Error {`,
+	},
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "if (steerRestartController) providerAbortSignals.push(steerRestartController.signal);",
+		anchor: `	const providerAbortSignals: AbortSignal[] = [];
+	if (requestSignal) providerAbortSignals.push(requestSignal);
+	if (promptToolAbortController) providerAbortSignals.push(promptToolAbortController.signal);`,
+		patched: `	// CUELO P55: request-only cancel for genuine user steering. Provider signal ONLY (like
+	// promptToolAbortController), so it never trips the loop's external-abort handling.
+	const steerRestartController = config.onUserSteeringQueued ? new AbortController() : undefined;
+	const providerAbortSignals: AbortSignal[] = [];
+	if (requestSignal) providerAbortSignals.push(requestSignal);
+	if (promptToolAbortController) providerAbortSignals.push(promptToolAbortController.signal);
+	if (steerRestartController) providerAbortSignals.push(steerRestartController.signal);`,
+	},
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "const discardForSteerRestart = async (): Promise<never> => {",
+		anchor: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
+			}
+
+			try {
+				while (true) {
+					let next: IteratorResult<AssistantMessageEvent>;
+					if (abortRacePromise) {
+						const result = await Promise.race([responseIterator.next(), abortRacePromise]);
+						if (result === ABORTED) {
+							return await finishAbortedStream();
+						}
+						next = result;
+					} else {
+						next = await responseIterator.next();
+					}
+					if (next.done) {
+						providerStreamSettled = true;
+						break;
+					}
+
+					const event = next.value;
+					if (event.type === "done" || event.type === "error") {`,
+		patched: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
+			}
+
+			// CUELO P55: genuine user steering ends this request only while nothing visible streamed
+			// (no text, no tool call) and the provider cannot take it live: no pump attached to the
+			// channel (SSE, non-steering providers, before response.created) or the pump's claim was
+			// rejected/deferred (Codex native lane, P48). An accepted live steer keeps the request.
+			const steerChannel = providerCall.liveSteering;
+			let steerRestartClosed = false;
+			const requestSteerRestart = (): void => {
+				if (!steerRestartController || steerRestartClosed || steerRestartController.signal.aborted) return;
+				if (hasVisibleAssistantOutput(partialMessage)) return;
+				if (steerChannel?.attached && steerChannel.deferred.length === 0) return;
+				steerRestartController.abort();
+			};
+			const detachUserSteeringRestart = steerRestartController
+				? config.onUserSteeringQueued?.(requestSteerRestart)
+				: undefined;
+			if (steerRestartController && steerChannel) {
+				steerChannel.onDeferred = () => {
+					if (steerChannel.deferred.some(isGenuineUserSteer) || hasNewUserSteering?.() === true) {
+						requestSteerRestart();
+					}
+				};
+			}
+			const detachSteerRestart = (): void => {
+				detachUserSteeringRestart?.();
+				if (steerChannel) steerChannel.onDeferred = undefined;
+			};
+			let steerRestartRace: Promise<typeof STEER_RESTART> | undefined;
+			if (steerRestartController) {
+				const { promise, resolve } = Promise.withResolvers<typeof STEER_RESTART>();
+				steerRestartController.signal.addEventListener("abort", () => resolve(STEER_RESTART), { once: true });
+				steerRestartRace = promise;
+			}
+			// Drop the partial without message_end: listeners never receive it as a message, so it is
+			// not committed, persisted or replayed (the next message_start replaces the live bubble).
+			const discardForSteerRestart = async (): Promise<never> => {
+				steerRestartClosed = true;
+				try {
+					const cleanup = responseIterator.return?.();
+					if (cleanup) void cleanup.catch(() => {});
+				} catch {
+					// Provider cancellation failures cannot resurrect the discarded partial.
+				}
+				await speculationCoordinator?.discardAll("user steering restarted the request", "discarded");
+				speculationSettled = true;
+				if (addedPartial) {
+					context.messages.pop();
+					addedPartial = false;
+				}
+				// Listeners last saw \`turnSnapshot\`; mark it so Agent#runLoop never resurrects it.
+				if (turnSnapshot) Reflect.set(turnSnapshot, STEER_DISCARDED_PARTIAL, true);
+				throw new SteeringRestartInterruption();
+			};
+			if (hasNewUserSteering?.() === true) requestSteerRestart();
+
+			try {
+				while (true) {
+					let next: IteratorResult<AssistantMessageEvent>;
+					if (abortRacePromise || steerRestartRace) {
+						const pendingNext = responseIterator.next();
+						const result = await (steerRestartRace
+							? abortRacePromise
+								? Promise.race([pendingNext, abortRacePromise, steerRestartRace])
+								: Promise.race([pendingNext, steerRestartRace])
+							: Promise.race([pendingNext, abortRacePromise as Promise<typeof ABORTED>]));
+						if (result === ABORTED) {
+							return await finishAbortedStream();
+						}
+						// A chunk that raced the restart is dropped unseen: nothing visible had streamed.
+						if (result === STEER_RESTART || steerRestartController?.signal.aborted) {
+							if (requestSignal?.aborted) return await finishAbortedStream();
+							return await discardForSteerRestart();
+						}
+						next = result;
+					} else {
+						next = await responseIterator.next();
+					}
+					if (next.done) {
+						providerStreamSettled = true;
+						break;
+					}
+
+					const event = next.value;
+					if (event.type === "done" || event.type === "error") {
+						// The request finished on its own; steering now waits for the normal boundary.
+						steerRestartClosed = true;`,
+	},
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "				detachSteerRestart();\n",
+		anchor: `				cancelArgStreams();
+				if (!providerStreamSettled) {`,
+		patched: `				cancelArgStreams();
+				detachSteerRestart();
+				if (!providerStreamSettled) {`,
+	},
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await discardForSteerRestart();",
+		anchor: `			try {
+				let trailing = await response.result();`,
+		patched: `			// CUELO P55: the iterator ended after a restart was requested; discard instead of finalizing.
+			if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await discardForSteerRestart();
+			steerRestartClosed = true;
+			try {
+				let trailing = await response.result();`,
+	},
+	{
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "if (err instanceof SteeringRestartInterruption) {",
+		anchor: "					if (!(err instanceof HarmonyLeakInterruption)) throw err;",
+		patched: `					if (err instanceof SteeringRestartInterruption) {
+						// CUELO P55: the discarded partial never reached context or listeners. Deliver the
+						// steering (plus anything the live channel took for the aborted response) at this
+						// boundary and re-request inside the same turn and run; run/goal state is untouched.
+						const channel = preparedProviderCall.liveSteering;
+						const taken = channel ? [...channel.accepted.splice(0), ...channel.deferred.splice(0)] : [];
+						const steering = [...taken, ...((await config.getSteeringMessages?.(signal)) || [])];
+						for (const queued of steering) {
+							currentContext.messages.push(queued);
+							newMessages.push(queued);
+							(queued as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
+						}
+						emitInputMessages(stream, steering);
+						hasMoreToolCalls = true;
+						continue;
+					}
+					if (!(err instanceof HarmonyLeakInterruption)) throw err;`,
+	},
+	{
+		file: "../pi-agent-core/src/live-steering.ts",
+		marker: "	attached = false;\n",
+		anchor: "	readonly #queue: LiveSteeringQueue;\n",
+		patched: `	/** CUELO P55: a provider pump pulls from this channel (set on its first wait). */
+	attached = false;
+	/** CUELO P55: notified after input is deferred to the boundary (claim rejected or not convertible). */
+	onDeferred: (() => void) | undefined;
+	readonly #queue: LiveSteeringQueue;
+`,
+	},
+	{
+		file: "../pi-agent-core/src/live-steering.ts",
+		marker: "		this.attached = true;\n",
+		anchor: "	wait(signal: AbortSignal): Promise<void> {\n",
+		patched: "	wait(signal: AbortSignal): Promise<void> {\n		this.attached = true;\n",
+	},
+	{
+		file: "../pi-agent-core/src/live-steering.ts",
+		marker: "			this.deferred.push(...messages);\n			this.onDeferred?.();\n			return undefined;",
+		anchor: "			this.deferred.push(...messages);\n			return undefined;",
+		patched: "			this.deferred.push(...messages);\n			this.onDeferred?.();\n			return undefined;",
+	},
+	{
+		file: "../pi-agent-core/src/live-steering.ts",
+		marker: "				this.deferred.push(...messages);\n				this.onDeferred?.();\n			},",
+		anchor: "				this.deferred.push(...messages);\n			},",
+		patched: "				this.deferred.push(...messages);\n				this.onDeferred?.();\n			},",
+	},
+	// P55 r2: 버린 partial 은 Agent#runLoop 의 지역 `partial` 에 마지막 snapshot 으로 남는다(message_end 만 비운다).
+	// 경계의 steering dequeue 가 던지거나(예: AgentSession usage preflight 의 "Usage preflight cancelled") 비어 있고
+	// 다음 요청이 start 전에 실패하면, 아래 두 소비 경계가 그것을 error 메시지로 commit 해 signature 째 persist 됐다.
+	// 표시된 snapshot 을 없는 것으로 취급한다. 원래 오류 문구와 stopReason 은 그대로 남는다.
+	{
+		file: "../pi-agent-core/src/agent.ts",
+		marker: "	STEER_DISCARDED_PARTIAL,\n",
+		anchor: "	steeringQueueState,\n	unpairedToolCallTail,\n} from \"./agent-loop\";",
+		patched: "	STEER_DISCARDED_PARTIAL,\n	steeringQueueState,\n	unpairedToolCallTail,\n} from \"./agent-loop\";",
+	},
+	{
+		file: "../pi-agent-core/src/agent.ts",
+		marker: "			if (partial && Reflect.get(partial, STEER_DISCARDED_PARTIAL) === true) partial = null;\n",
+		anchor: "			// Handle any remaining partial message\n",
+		patched: "			// Handle any remaining partial message\n			// CUELO P55: a partial discarded for a steering restart never becomes a message.\n			if (partial && Reflect.get(partial, STEER_DISCARDED_PARTIAL) === true) partial = null;\n",
+	},
+	{
+		file: "../pi-agent-core/src/agent.ts",
+		marker: "Reflect.get(partial, STEER_DISCARDED_PARTIAL) !== true ? partial : undefined;",
+		anchor: "			const assistantPartial = partial?.role === \"assistant\" ? partial : undefined;",
+		patched: "			// CUELO P55: a partial discarded for a steering restart is not this error's content.\n			const assistantPartial =\n				partial?.role === \"assistant\" && Reflect.get(partial, STEER_DISCARDED_PARTIAL) !== true ? partial : undefined;",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

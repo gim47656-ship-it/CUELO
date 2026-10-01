@@ -961,7 +961,7 @@ test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번�
     if (init.method === "POST" && url === `/api/agent/${SESSION}`) {
       const command = JSON.parse(String(init.body));
       if (command.type === "execute_slash_command") return json({ success: true, data: { handled: true, output: server.slashOutput } });
-      return json({ success: true, data: {} });
+      return json({ success: true, data: command.type === "get_tools" ? [] : {} });
     }
     if (/^\/api\/(?:sessions\/[^/?]+\/state|agent\/[^/?]+)$/.test(url)) return json(server.state);
     return json({ success: true, data: {} });
@@ -1102,4 +1102,187 @@ test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번�
   await settle();
   assert.deepEqual(completions, [{ outcome: "unknown", sessionId: SESSION }], "세션 전환");
   renderer.unmount();
+});
+
+// 새 세션(session=null)에서 실제 훅을 렌더하고 fetch/EventSource만 대역으로 쓴다. provider·서버 호출 없음.
+// `ceilingHook`으로 set_thinking_ceiling 응답을 지연/실패시키고, console.error는 모아 두었다가 단언한다.
+function createNewSessionFixture(t) {
+  const originalEventSource = globalThis.EventSource;
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  t.after(() => {
+    if (originalEventSource === undefined) delete globalThis.EventSource;
+    else globalThis.EventSource = originalEventSource;
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
+  });
+  const errors = [];
+  console.error = (message) => { errors.push(String(message)); };
+  globalThis.EventSource = class {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    constructor() {
+      this.readyState = 1;
+      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ type: "connected" }) }));
+    }
+    close() {}
+  };
+  const json = (body) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+  const fixture = {
+    calls: [],
+    errors,
+    created: 0,
+    restores: 0,
+    // 기본은 즉시 성공. 지연은 promise를 돌려주고 실패는 throw한다.
+    ceilingHook: async () => {},
+    hook: null,
+    kinds: () => fixture.calls.map((call) => call.type === "prompt"
+      ? `prompt:${call.message}`
+      : call.type === "set_thinking_ceiling" ? `ceiling:${call.ceiling}` : call.type),
+  };
+  globalThis.fetch = async (input, init = {}) => {
+    if (init.method !== "POST") return json({ context: { messages: [], entryIds: [] }, tree: [], leafId: null });
+    const body = JSON.parse(init.body);
+    fixture.calls.push({ url: String(input), ...body });
+    if (String(input) === "/api/agent/new") {
+      fixture.created += 1;
+      return json({ sessionId: "made" });
+    }
+    if (body.type === "set_thinking_ceiling") await fixture.ceilingHook(body.ceiling);
+    return json({ success: true, data: body.type === "get_tools" ? [] : null });
+  };
+  function Harness() {
+    fixture.hook = useAgentSession({
+      session: null,
+      newSessionCwd: "/tmp/new-project",
+      chatInputRef: { current: { restoreSubmission: () => { fixture.restores += 1; } } },
+    });
+    return null;
+  }
+  renderToStaticMarkup(React.createElement(Harness));
+  return fixture;
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+async function until(predicate) {
+  for (let attempt = 0; attempt < 100 && !predicate(); attempt += 1) await settle();
+  assert.ok(predicate(), "기다리던 조건이 만족되지 않았다");
+}
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+const connectionFailure = () => { throw new TypeError("connection failed before reaching server"); };
+
+test("새 세션의 첫 추론 상한 적용이 실패하면 prompt 없이 멈추고 다음 전송이 같은 세션에 상한을 다시 건다", async (t) => {
+  const f = createNewSessionFixture(t);
+  let failures = 1;
+  f.ceilingHook = async () => { if (failures-- > 0) connectionFailure(); };
+
+  await f.hook.handleThinkingLevelChange("auto", "high");
+  await f.hook.handleSend("first");
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:high"], "상한 실패 뒤 prompt는 나가지 않는다");
+  assert.equal(f.restores, 1);
+  assert.deepEqual(f.errors, ["Failed to send message:"]);
+
+  await f.hook.handleSend("second");
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:high", "ceiling:high", "prompt:second"]);
+  assert.equal(f.created, 1, "세션은 한 번만 만든다");
+  assert.ok(f.calls.filter((call) => call.url !== "/api/agent/new").every((call) => call.url === "/api/agent/made"));
+
+  const before = f.calls.length;
+  assert.equal(await f.hook.ensureNewSession(), "made");
+  assert.equal(f.calls.length, before, "적용이 끝난 세션에는 상한을 다시 걸지 않는다");
+});
+
+test("진행 중인 상한 적용을 동시 호출이 앞질러 세션 ID를 받지 못한다", async (t) => {
+  const f = createNewSessionFixture(t);
+  const gate = deferred();
+  f.ceilingHook = () => gate.promise;
+  await f.hook.handleThinkingLevelChange("auto", "low");
+  const first = f.hook.ensureNewSession();
+  await until(() => f.kinds().includes("ceiling:low"));
+  let secondDone = false;
+  const second = f.hook.ensureNewSession().then((id) => { secondDone = true; return id; });
+  await settle();
+  assert.equal(secondDone, false, "상한 적용이 끝나기 전에는 돌려주지 않는다");
+  gate.resolve();
+  assert.deepEqual(await Promise.all([first, second]), ["made", "made"]);
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:low"], "상한은 한 번만 건다");
+});
+
+test("상한을 고르지 않은 새 세션은 상한 명령 없이 prompt를 보낸다", async (t) => {
+  const f = createNewSessionFixture(t);
+  await f.hook.handleSend("hello");
+  assert.deepEqual(f.kinds(), ["ensure_session", "prompt:hello"]);
+  assert.deepEqual(f.errors, []);
+});
+
+test("상한 적용이 실패한 세션에서 사용자가 상한을 바꾸면 최신 선택이 적용되고 그 뒤 전송은 다시 걸지 않는다", async (t) => {
+  const f = createNewSessionFixture(t);
+  let failures = 1;
+  f.ceilingHook = async () => { if (failures-- > 0) connectionFailure(); };
+  await f.hook.handleThinkingLevelChange("auto", "high");
+  await f.hook.handleSend("first");
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:high"]);
+
+  await f.hook.handleThinkingLevelChange("auto", "low");
+  assert.deepEqual(f.kinds().slice(2), ["ceiling:low", "set_thinking_level"]);
+  await f.hook.handleSend("second");
+  assert.deepEqual(f.kinds().slice(4), ["prompt:second"], "이미 적용된 상한은 다시 걸지 않는다");
+});
+
+test("첫 상한 요청이 나가는 사이 사용자가 상한을 해제하면 해제가 마지막에 적용되고 실패하면 다음 전송이 다시 시도한다", async (t) => {
+  const f = createNewSessionFixture(t);
+  const gate = deferred();
+  let nullFailures = 1;
+  f.ceilingHook = async (ceiling) => {
+    if (ceiling === "high") await gate.promise;
+    else if (ceiling === null && nullFailures-- > 0) connectionFailure();
+  };
+  await f.hook.handleThinkingLevelChange("auto", "high");
+  const creating = f.hook.ensureNewSession();
+  await until(() => f.kinds().includes("ceiling:high"));
+  const clearing = f.hook.handleThinkingLevelChange("auto", null);
+  await settle();
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:high"], "해제는 진행 중인 요청 뒤로 직렬화된다");
+  gate.resolve();
+  await creating.catch(() => {});
+  await clearing;
+  assert.deepEqual(f.kinds().slice(0, 3), ["ensure_session", "ceiling:high", "ceiling:null"]);
+  assert.deepEqual(f.errors, ["Failed to set thinking level:"], "최신 선택(해제)의 실패가 성공으로 가려지지 않는다");
+
+  await f.hook.handleSend("after");
+  assert.deepEqual(f.kinds().filter((kind) => kind !== "set_thinking_level").slice(3), ["ceiling:null", "prompt:after"]);
+  assert.equal(f.created, 1);
+});
+
+test("첫 상한 요청이 나가는 사이 해제가 성공하면 prompt 전에 상한을 더 걸지 않는다", async (t) => {
+  const f = createNewSessionFixture(t);
+  const gate = deferred();
+  f.ceilingHook = async (ceiling) => { if (ceiling === "high") await gate.promise; };
+  await f.hook.handleThinkingLevelChange("auto", "high");
+  const creating = f.hook.ensureNewSession();
+  await until(() => f.kinds().includes("ceiling:high"));
+  const clearing = f.hook.handleThinkingLevelChange("auto", null);
+  gate.resolve();
+  await Promise.all([creating, clearing]);
+  assert.deepEqual(f.kinds().filter((kind) => kind !== "set_thinking_level"), ["ensure_session", "ceiling:high", "ceiling:null"]);
+  await f.hook.handleSend("go");
+  assert.deepEqual(f.kinds().slice(-1), ["prompt:go"]);
+  assert.equal(f.kinds().filter((kind) => kind.startsWith("ceiling:")).length, 2);
+  assert.deepEqual(f.errors, []);
+});
+
+test("상한 적용이 남은 세션에서는 내장 슬래시 명령도 상한을 다시 건 뒤 진행한다", async (t) => {
+  const f = createNewSessionFixture(t);
+  let failures = 1;
+  f.ceilingHook = async () => { if (failures-- > 0) connectionFailure(); };
+  await f.hook.handleThinkingLevelChange("auto", "high");
+  await f.hook.handleSend("first");
+  assert.deepEqual(f.kinds(), ["ensure_session", "ceiling:high"]);
+  await f.hook.handleBuiltinSlashCommand("/session").catch(() => {});
+  assert.deepEqual(f.kinds().slice(0, 3), ["ensure_session", "ceiling:high", "ceiling:high"], "내장 명령이 미완 상한을 우회하지 못한다");
 });

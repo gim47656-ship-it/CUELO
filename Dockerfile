@@ -12,10 +12,11 @@ WORKDIR /app
 
 # Manifests first, so the dependency layer is reused until they actually change.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# The source preparation runs after its files are copied below.
+RUN bun install --frozen-lockfile --ignore-scripts --backend=copyfile
 
 COPY . .
-RUN bun run build
+RUN bun bin/prepare-runtime.js --source && bun run build
 
 # ---------------------------------------------------------------------------
 # Runtime: the built app, its dependencies, and the CLI that launches them.

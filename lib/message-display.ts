@@ -82,6 +82,27 @@ export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
   return blocks.filter((block): block is ToolCallContent => block.type === "toolCall").length;
 }
 
+/**
+ * 도구 호출별로 모델 생성 종료(`completedAt`)부터 결과 도착까지 걸린 초. 모델 추론 시간은 빠지지만
+ * 도구가 실제로 시작한 시각은 기록되지 않으므로 순수 실행 시간과 같지는 않다.
+ * 생성 종료 시각이 없거나 실행 전에 건너뛴 호출(`details.executed === false`)은 비운다.
+ */
+export function toolCallDurations(
+  message: AssistantMessage,
+  toolResults: ReadonlyMap<string, ToolResultMessage> | undefined,
+): Map<string, number> {
+  const map = new Map<string, number>();
+  const generationEnd = message.completedAt;
+  if (!toolResults || !generationEnd) return map;
+  for (const [callId, result] of toolResults) {
+    if (!result.timestamp) continue;
+    if ((result.details as { executed?: unknown } | undefined)?.executed === false) continue;
+    const secs = Math.round((result.timestamp - generationEnd) / 1000);
+    if (secs > 0) map.set(callId, secs);
+  }
+  return map;
+}
+
 /** 도구 결과 이미지를 개수·바이트로 내주는 라우트(`app/api/tool-image/route.ts`). */
 export const TOOL_IMAGE_ROUTE = "/api/tool-image";
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -759,6 +759,110 @@ describe("jev-runtime pre-dispatch", () => {
       .toEqual([["session-1#batch#1", "job-right"], ["session-1#batch#0", "job-left"]]);
     expect((await harness.prepare(GUARDED_TASK, "AfterBatch")).details.routes[0]!.history)
       .toMatchObject({ attempts: 2, followed: { ok: 1, pending: 1 } });
+  });
+  describe("restart 뒤 소유권 복원", () => {
+    const NORMAL = { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } };
+    const BETA = GUARDED_TASK.replace("a.ts,b.ts", "b.ts");
+    const GAMMA = GUARDED_TASK.replace("a.ts,b.ts", "c.ts");
+    const alphaOwnership = { primaryDeliverable: "x", ownedPaths: ["a.ts", "b.ts"], workspace: "shared" };
+    const ledgerRows = (path: string) => readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    async function spawn(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task: string, callId: string, agentId: string, jobId: string) {
+      await harness.prepare(task, name);
+      const input = taskCall(callId, task, { name, model: "test/local:high" });
+      expect(await harness.emit("tool_call", input)).toBeUndefined();
+      await harness.emit("tool_result", {
+        ...input, type: "tool_result", content: [{ type: "text", text: "spawned" }], isError: false,
+        details: { async: { jobId }, progress: [{ index: 0, id: agentId, status: "running" }] },
+      });
+    }
+    const dispatch = (harness: EventHarness, callId: string, name: string, task: string) =>
+      harness.emit("tool_call", taskCall(callId, task, { name, model: "test/local:high" }));
+    const settle = (harness: EventHarness, jobId: string, agentId: string) => harness.emit("message_start", {
+      type: "message_start",
+      message: { role: "custom", customType: "async-result", attribution: "agent", details: { jobs: [{ jobId, agentId, type: "task", status: "completed", durationMs: 1_000 }] } },
+    });
+
+    test("실행 중 owner는 reload 뒤에도 겹치는 발주를 막고, 겹치지 않는 발주와 settle 뒤 발주는 통과한다", async () => {
+      const running: Array<Record<string, unknown>> = [];
+      const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+      running.push({ id: "job-alpha", agentId: "agent-alpha" });
+      await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+      expect(ledgerRows(harness.ledgerPath)).toMatchObject([{ type: "dispatch", name: "Alpha", ownership: alphaOwnership }]);
+
+      await harness.emit("session_start", { type: "session_start" });
+      const beta = await harness.prepare(BETA, "Beta");
+      expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", ownedPaths: ["a.ts", "b.ts"], active: true, workspace: "shared" }] });
+      expect(await dispatch(harness, "call-beta-1", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+      await harness.prepare(GAMMA, "Gamma");
+      expect(await dispatch(harness, "call-gamma", "Gamma", GAMMA)).toBeUndefined();
+
+      running.length = 0;
+      await settle(harness, "job-alpha", "agent-alpha");
+      expect(await dispatch(harness, "call-beta-2", "Beta", BETA)).toBeUndefined();
+    });
+
+    test("프로세스 재시작으로 끝나지 못한 running row는 영구 잠금이 아니고 terminal owner는 active가 아니다", async () => {
+      const first = createHarness({ asyncJobs: [{ id: "job-dead", agentId: "agent-dead" }], judgeAnswers: NORMAL });
+      await spawn(first, "Dead", GUARDED_TASK, "call-dead", "agent-dead", "job-dead");
+      // 새 runtime 인스턴스가 같은 원장을 읽는다. core snapshot에는 그 job이 없다.
+      const restarted = createHarness({ ledgerPath: first.ledgerPath, judgeAnswers: NORMAL });
+      await restarted.emit("session_start", { type: "session_start" });
+      const beta = await restarted.prepare(BETA, "Beta");
+      expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Dead", ownedPaths: ["a.ts", "b.ts"], active: false }] });
+      expect(await dispatch(restarted, "call-beta", "Beta", BETA)).toBeUndefined();
+    });
+
+    test("소유 경로 없는 과거 row는 실행 중일 때만 미상 owner로 공유 발주를 막고 끝나면 풀린다", async () => {
+      const running: Array<Record<string, unknown>> = [{ id: "job-legacy", agentId: "agent-legacy" }];
+      const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+      const identity = { sessionId: fixtureSession, assignmentId: "session-1#call-legacy#0", attempt: 1, attemptId: "session-1#call-legacy#0#a1", agentId: "agent-legacy", jobId: "job-legacy" };
+      mkdirSync(join(harness.ledgerPath, ".."), { recursive: true });
+      appendFileSync(harness.ledgerPath, `${JSON.stringify({
+        type: "dispatch", ts: "2026-09-30T00:00:00.000Z", name: "Legacy", workClass: "NORMAL", focus: null,
+        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "high",
+        chosenModel: "test/local", chosenEffort: "high", routingReason: false, purpose: "primary", ...identity,
+      })}\n`);
+      await harness.emit("session_start", { type: "session_start" });
+      const gamma = await harness.prepare(GAMMA, "Gamma");
+      // 경로를 모르는 owner는 placement 후보로 지어내지 않는다.
+      expect(gamma.details.routes[0]).toMatchObject({ existingOwners: [] });
+      expect(await dispatch(harness, "call-gamma-1", "Gamma", GAMMA))
+        .toMatchObject({ block: true, reason: expect.stringContaining("소유 경로가 기록되지 않은") });
+      expect(await harness.emit("tool_call", taskCall("call-gamma-iso", GAMMA, { name: "Gamma", model: "test/local:high", isolated: true }))).toBeUndefined();
+      running.length = 0;
+      expect(await dispatch(harness, "call-gamma-2", "Gamma", GAMMA)).toBeUndefined();
+    });
+
+    test("restore된 owner의 REWORK attempt는 소유 계약을 잇고 재시작 뒤에도 owner 하나로 남는다", async () => {
+      const running: Array<Record<string, unknown>> = [{ id: "job-alpha", agentId: "agent-alpha" }];
+      const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
+      await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+      await harness.emit("session_start", { type: "session_start" });
+      running.length = 0;
+      await settle(harness, "job-alpha", "agent-alpha");
+
+      const rework = {
+        type: "tool_call", toolCallId: "call-rework", toolName: "write",
+        input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2\n범위 유지." },
+      };
+      await harness.emit("tool_call", rework);
+      running.push({ id: "job-alpha-2", agentId: "agent-alpha", startTime: Date.now() + 1 });
+      await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
+      expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "dispatch")).toMatchObject([
+        { attemptId: "session-1#call-alpha#0#a1", ownership: alphaOwnership },
+        { attemptId: "session-1#call-alpha#0#a2", jobId: "job-alpha-2", ownership: alphaOwnership },
+      ]);
+      for (const round of ["before-restart", "after-restart"]) {
+        if (round === "after-restart") await harness.emit("session_start", { type: "session_start" });
+        const beta = await harness.prepare(BETA, "Beta");
+        expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", ownedPaths: ["a.ts", "b.ts"], active: true }] });
+        expect(await dispatch(harness, `call-beta-${round}`, "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+      }
+      // 재시작 뒤에도 같은 assignment의 재개 attempt identity로 판정이 이어진다.
+      expect((await harness.verdict({
+        sessionId: fixtureSession, assignmentId: "session-1#call-alpha#0", attemptId: "session-1#call-alpha#0#a2", verdict: "held", reason: "검수 대기",
+      })).details).toMatchObject({ ok: true });
+    });
   });
   test("명시 판정 저장 실패는 성공으로 넘기지 않고 기록되지 않았음을 알린다", async () => {
     const dir = fixtureDir("jev-verdict-fail-");

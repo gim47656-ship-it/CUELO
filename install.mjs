@@ -246,7 +246,9 @@ function prepareRuntime() {
     NEXT_TELEMETRY_DISABLED: "1",
   };
   const bun = bunPath();
-  run(bun, ["install", "--frozen-lockfile"], { cwd: ROOT, env: buildEnv });
+  run(bun, ["install", "--frozen-lockfile", "--backend=copyfile"], { cwd: ROOT, env: buildEnv });
+  // The unpatched SDK cannot be imported by the build; apply its core patches first.
+  run(node, [path.join(ROOT, "bin", "prepare-runtime.js"), "--source"], { cwd: ROOT, env: buildEnv });
   // The native runtime patch edits the production server chunks, so it runs after the build.
   run(bun, ["run", "build"], { cwd: ROOT, env: buildEnv });
   const env = {

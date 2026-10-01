@@ -43,6 +43,10 @@ CUELO가 재시작된 뒤에도 같은 Main 세션에서 이전 Maker에게 `wri
 
 CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중인 요청·Steer·도구 후속 실행·수동 선택의 강도는 이 설정으로 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 하한이 적용되지는 않습니다.
 
+웹 입력창의 Auto 선택·상한과 「현재 추론 강도」는 서로 다른 값입니다. 선택기는 자동 선택에 허용한 상한을 보여 주고, 별도 표시는 코어가 보고한 실효값을 보여 줍니다. 새 대화에서는 상한 적용을 마치기 전까지 첫 메시지와 내장 명령 실행을 기다리며, 연결 실패 뒤 다시 보내면 같은 세션에서 미완 적용을 재시도합니다.
+
+사용자가 직접 보낸 Steer를 진행 중인 요청에 실시간 주입할 수 없고, 답변 본문이나 도구 호출이 아직 나오지 않았다면 패치된 내장 코어는 해당 모델 요청만 취소하고 같은 실행 안에서 새 지시로 다시 요청합니다. 버린 추론은 세션 기록과 다음 요청에 싣지 않습니다. 이미 보인 답변·도구 호출, 성공한 실시간 주입, 내부 메시지와 Follow-up은 이 전환 대상이 아닙니다. 세션 중단·목표 일시정지·추론 상한 변경도 하지 않습니다. 기존 요청에서 쓴 추론은 재사용하지 않으므로 재요청에 따른 사용량이 발생할 수 있습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 패치가 포함되지 않습니다.
+
 패치된 내장 코어의 Anthropic 계정 재선택은 첫 번째 계정(RIN)을 먼저 씁니다. RIN이 주간 한도의 하루 구간을 넘으면 다음 계정(MIO)으로 넘어갑니다. 하루 구간은 사용량 패널과 같은 기준으로, 주간 창에서 지난 날 수에 오늘 하루를 더한 몫입니다. 예를 들어 사흘째라면 3/7까지 씁니다. 날이 바뀌어 허용치가 늘면 다시 RIN을 쓰고, 두 계정이 모두 구간을 넘었으면 덜 넘은 쪽을 씁니다. 사용량·주간 리셋 정보가 완전한 건강한 후보만 재배열하며, 조회 실패·부분 정보는 추정하지 않고 기존 한도·예비량·5시간 보호를 유지합니다. 사용 중인 warm pin과 명시적으로 지정한 캐릭터 계정은 이 선호로 전환하지 않습니다. 캐릭터 `교체`와 summon은 모두 그 계정을 세션 exact pin으로 고정하므로, 그 계정이 막히거나 한도에 닿으면 다른 계정으로 조용히 넘어가지 않고 실패로 알립니다.
 
 패치된 내장 코어는 thinking 요약을 생략하는 설정(`omitThinking`)에서도 Claude Opus 5.5 같은 최신 모델이 도구 호출 사이에 쓴 사용자용 진행 문장(progress update)을 본문으로 보여 줍니다. Anthropic은 이 문장을 별도 thinking 블록으로 보내므로, 생략 설정(`display: "omitted"`)을 그대로 쓰면 화면과 세션 기록에서 사라집니다. 코어는 공식 Anthropic API로 가는 이 요청을 `display: "updates"`(beta 헤더 `thinking-display-updates-2026-08-18`)로 보냅니다. 그러면 reasoning은 비어서 오고, 텍스트가 온 진행 문장만 본문 text로 내보냅니다. thinking 서명은 공식 문서대로 불투명 값으로 다루고 해석하지 않으며, 다음 요청에는 서명된 원래 thinking 블록을 그대로 돌려보냅니다. 공식 API가 아닌 주소는 upstream 동작을 따릅니다. 이 동작도 standalone `omp` 실행 파일에는 포함되지 않습니다.
@@ -74,6 +78,8 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
+
+같은 `task` 배치에서 공유 작업공간 Maker들의 `OWNED_PATHS`가 겹치면 어떤 작업도 예약하지 않고 배치 전체를 거절합니다. 별도 worktree로 실행하는 `isolated` 작업은 공유 작업공간 충돌에서 제외합니다. 실제로 시작된 작업의 소유 경로와 격리 여부는 원장에 저장해 세션을 다시 열어도 복원합니다. 복원된 작업은 현재 실행 중인 job과 일치할 때만 경로를 점유하며, 끝났거나 사라진 작업이 계속 잠그지 않습니다. 옛 기록에 소유 경로가 없으면 실행 중인 동안만 공유 작업공간의 새 발주를 막습니다.
 
 `bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`로 실행하라고 안내합니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.
 
