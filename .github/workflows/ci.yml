@@ -122,11 +122,17 @@ jobs:
 
       - name: Install dependencies
         working-directory: .
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --backend=copyfile
+
+      # Extension tests import the repository SDK as well as the patched copy below,
+      # and the pristine SDK cannot be imported (ratchet/prelude.js), so patch it first.
+      - name: Prepare source SDK
+        working-directory: .
+        run: bun run prepare:source
 
       # A fresh copy of the core version the app pins, patched in RUNNER_TEMP so
-      # the repository's node_modules stay unpatched. Core and extension tests
-      # read it through OMP_CORE_PATCH_TARGET.
+      # the core regression tests target a separate, freshly installed copy. Core and
+      # extension tests read it through OMP_CORE_PATCH_TARGET.
       - name: Prepare patched core
         run: |
           $version = (Get-Content ../../package.json -Raw | ConvertFrom-Json).dependencies.'@oh-my-pi/pi-coding-agent'
