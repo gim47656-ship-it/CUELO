@@ -156,6 +156,26 @@ export function extractLiveWireId(record: LiveWireRecord): string | undefined {
   return typeof id === "string" && id ? id : undefined;
 }
 
+/**
+ * A finalized user turn that is, in its entirety, a request to end the call
+ * ("끊어", "아, 끊어", "통화 종료해 줘"). Matching is deliberately whole-utterance
+ * only: negations ("끊지 마"), quotations ("끊어라고 하면") and commands about
+ * something else must never hang up a call.
+ */
+const HANGUP_UTTERANCE = new RegExp(
+  "^(?:아|어|음|응|네|자|그럼|이제|그만|좀)*"
+  + "(?:(?:통화|전화)(?:를|좀|그만)*)?"
+  + "(?:좀|그만)*"
+  + "(?:끊어|끊을게|끊자|끊겠습니다)(?:줘|주세요|요)?$"
+  + "|^(?:아|어|음|응|네|자|그럼|이제|그만|좀)*(?:통화|전화)(?:를|좀|그만)*(?:종료|종료해|종료할게|종료하자)(?:줘|주세요|요)?$",
+  "u",
+);
+
+export function isLiveHangupRequest(text: string): boolean {
+  const compact = text.normalize("NFC").replace(/[^\p{L}\p{N}]+/gu, "");
+  return compact.length > 0 && HANGUP_UTTERANCE.test(compact);
+}
+
 export type LiveState =
   | "idle"
   | "connecting"

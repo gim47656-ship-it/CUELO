@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import type { LiveState } from "@/lib/live-types";
+import { isLiveHangupRequest, type LiveState } from "@/lib/live-types";
 
 /**
  * Browser half of the live voice surface.
@@ -275,7 +275,11 @@ export function useLiveVoice(
         }
         if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
         if (parsed.type === "state" && "state" in parsed) {
-          if (typeof parsed.state === "string" && isLiveState(parsed.state)) setState(parsed.state);
+          if (typeof parsed.state !== "string" || !isLiveState(parsed.state)) return;
+          // The server ended the call (spoken hangup or remote close). The
+          // browser still owns the microphone and peer, so release them here.
+          if (parsed.state === "closed") teardown("closed");
+          else setState(parsed.state);
           return;
         }
         if (parsed.type === "transcript" && "role" in parsed && "text" in parsed) {
@@ -285,6 +289,12 @@ export function useLiveVoice(
               void Promise.resolve().then(() => onTranscriptPersisted(sid)).catch(() => {
                 // The next session load or page reload still reads the durable entry.
               });
+            }
+            // The server only emits a final transcript after it is durable, so
+            // ending the call now cannot lose it. Only a finished, standalone
+            // end-call request from the user counts, never a partial or the model.
+            if ("final" in parsed && parsed.final === true && parsed.role === "user" && isLiveHangupRequest(parsed.text)) {
+              teardown("idle");
             }
           }
           return;
@@ -304,7 +314,7 @@ export function useLiveVoice(
     } finally {
       if (genRef.current === gen) setBusy(false);
     }
-  }, [sessionId, ensureSession, onTranscriptPersisted, locale, fail]);
+  }, [sessionId, ensureSession, onTranscriptPersisted, locale, fail, teardown]);
 
   const toggle = useCallback(() => {
     if (state === "idle" || state === "closed" || state === "error") {
