@@ -3356,9 +3356,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
 
           {/* RIGHT: one collapsed run-options group, then the always-reachable
-              stop and voice controls. */}
+              stop and voice controls. 둘째 줄로 내려가도 화면보다 넓으면 줄어든다 —
+              줄어드는 것은 라이브 묶음의 상태 글자뿐이고 버튼은 그대로라 종료 버튼이 밖으로 밀리지 않는다. */}
           <div ref={controlsMenuRef} style={{
-            flex: "0 0 auto",
+            flex: "0 1 auto",
+            minWidth: 0,
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",

@@ -8697,6 +8697,82 @@ class HarmonyLeakInterruption extends Error {`,
 		anchor: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
 		patched: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.status ? { status: job.status } : {}),\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
 	},
+	// 이슈 #10: extension 의 getAsyncJobSnapshot 은 인자를 받지 않고(ExtensionContext 타입·runner·sdk adapter) 기본 recent 5개만
+	// 돌려줘, 같은 owner 의 더 최근 job 5개에 밀린 취소 실행의 종료 근거(같은 실행의 cancelled·endTime)를 볼 수 없었다. options 를
+	// 끝까지 전달하고, `jobIds` 를 준 호출에만 그 id 들의 exact row 를 `jobs` 로 더한다. 기존 owner filter·foreground 제외를 그대로
+	// 쓰고 getJob O(k) 조회라 정렬·전체 복사가 없다. jobIds 가 없으면 반환 형태와 기본 recent 5 는 그대로다.
+	{
+		file: "src/session/agent-session-types.ts",
+		marker: "export interface AsyncJobSnapshotOptions {",
+		anchor: "/** Snapshot of running, recent, and pending-delivery asynchronous jobs. */\nexport interface AsyncJobSnapshot {\n\trunning: AsyncJobSnapshotItem[];\n\trecent: AsyncJobSnapshotItem[];\n\tdelivery: AsyncJobDeliveryState;\n}",
+		patched: "/** Options for an {@link AsyncJobSnapshot} read. */\nexport interface AsyncJobSnapshotOptions {\n\t/** Settled rows listed in `recent`, newest first (default 5). */\n\trecentLimit?: number;\n\t/**\n\t * Exact job ids to look up regardless of the `recent` window. Rows this session owns and lists (same owner\n\t * filter; foreground-backed jobs stay hidden) are returned in `jobs`; unknown, evicted or foreign ids are omitted.\n\t */\n\tjobIds?: readonly string[];\n}\n\n/** Snapshot of running, recent, and pending-delivery asynchronous jobs. */\nexport interface AsyncJobSnapshot {\n\trunning: AsyncJobSnapshotItem[];\n\trecent: AsyncJobSnapshotItem[];\n\tdelivery: AsyncJobDeliveryState;\n\t/** Present only when `jobIds` was requested: the exact rows found for those ids, in request order. */\n\tjobs?: AsyncJobSnapshotItem[];\n}",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
+		anchor: "\tAsyncJobSnapshot,\n\tCommandMetadataChangedListener,",
+		patched: "\tAsyncJobSnapshot,\n\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\tgetAsyncJobSnapshot(options?: AsyncJobSnapshotOptions): AsyncJobSnapshot | null {",
+		anchor: "\tgetAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {",
+		patched: "\tgetAsyncJobSnapshot(options?: AsyncJobSnapshotOptions): AsyncJobSnapshot | null {",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t\treturn { running, recent, delivery, jobs };",
+		anchor: "\t\tconst delivery = manager.getDeliveryState(ownerFilter);\n\t\treturn { running, recent, delivery };",
+		patched: "\t\tconst delivery = manager.getDeliveryState(ownerFilter);\n\t\tif (!options?.jobIds) return { running, recent, delivery };\n\t\t// CUELO #10: exact lookup independent of the display-sized recent window, with the same owner and foreground rules.\n\t\tconst jobs = options.jobIds.flatMap(id => {\n\t\t\tconst job = manager.getJob(id);\n\t\t\tif (!job || job.foreground || (ownerFilter && job.ownerId !== ownerFilter.ownerId)) return [];\n\t\t\treturn [\n\t\t\t\t{\n\t\t\t\t\tid: job.id,\n\t\t\t\t\ttype: job.type,\n\t\t\t\t\tstatus: job.status,\n\t\t\t\t\tlabel: job.label,\n\t\t\t\t\tstartTime: job.startTime,\n\t\t\t\t\tendTime: job.endTime,\n\t\t\t\t\tagentId: job.agentId,\n\t\t\t\t},\n\t\t\t];\n\t\t});\n\t\treturn { running, recent, delivery, jobs };",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t\t\tgetAsyncJobSnapshot: options => this.getAsyncJobSnapshot(options),",
+		anchor: "\t\t\tgetAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),",
+		patched: "\t\t\tgetAsyncJobSnapshot: options => this.getAsyncJobSnapshot(options),",
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions, SendUserMessageOptions } from \"../../session/agent-session\";",
+		anchor: "import type { AsyncJobSnapshot, SendUserMessageOptions } from \"../../session/agent-session\";",
+		patched: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions, SendUserMessageOptions } from \"../../session/agent-session\";",
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: "\tgetAsyncJobSnapshot(options?: AsyncJobSnapshotOptions): AsyncJobSnapshot | null;",
+		anchor: "\t/** Get a read-only snapshot of async jobs owned by this session. */\n\tgetAsyncJobSnapshot(): AsyncJobSnapshot | null;",
+		patched: "\t/** Get a read-only snapshot of async jobs owned by this session; `options.jobIds` adds exact rows for those ids. */\n\tgetAsyncJobSnapshot(options?: AsyncJobSnapshotOptions): AsyncJobSnapshot | null;",
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions } from \"../../session/agent-session\";",
+		anchor: "import type { AsyncJobSnapshot } from \"../../session/agent-session\";",
+		patched: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions } from \"../../session/agent-session\";",
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "\t#getAsyncJobSnapshotFn: (options?: AsyncJobSnapshotOptions) => AsyncJobSnapshot | null = () => null;",
+		anchor: "\t#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;",
+		patched: "\t#getAsyncJobSnapshotFn: (options?: AsyncJobSnapshotOptions) => AsyncJobSnapshot | null = () => null;",
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "\t\tgetAsyncJobSnapshot?: (options?: AsyncJobSnapshotOptions) => AsyncJobSnapshot | null,",
+		anchor: "\t\tgetAsyncJobSnapshot?: () => AsyncJobSnapshot | null,",
+		patched: "\t\tgetAsyncJobSnapshot?: (options?: AsyncJobSnapshotOptions) => AsyncJobSnapshot | null,",
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "\t\t\tgetAsyncJobSnapshot: options => this.#getAsyncJobSnapshotFn(options),",
+		anchor: "\t\t\tgetAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),",
+		patched: "\t\t\tgetAsyncJobSnapshot: options => this.#getAsyncJobSnapshotFn(options),",
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "\t\t\toptions => (hasSession ? session.getAsyncJobSnapshot(options) : null),",
+		anchor: "\t\t\t() => (hasSession ? session.getAsyncJobSnapshot() : null),",
+		patched: "\t\t\toptions => (hasSession ? session.getAsyncJobSnapshot(options) : null),",
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

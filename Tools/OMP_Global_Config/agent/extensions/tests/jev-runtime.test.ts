@@ -47,6 +47,11 @@ interface HarnessOptions {
   asyncJobs?: Array<Record<string, unknown>>;
   /** getAsyncJobSnapshot().recent 행. core 실제형태처럼 settled row의 startTime·endTime을 싣는다. */
   recentJobs?: Array<Record<string, unknown>>;
+  /**
+   * core가 아직 보관 중인 이 session 소유 job row(표시용 recent 창과 무관). 주면 패치된 host처럼 `jobIds` 요청에만 그 id들의
+   * exact row를 `jobs`로 돌려준다. 주지 않으면 미패치 host처럼 `jobs`가 없다.
+   */
+  retainedJobs?: Array<Record<string, unknown>>;
   sessionEntries?: unknown[];
   judgeGate?: Promise<void>;
   ledgerPath?: string;
@@ -143,7 +148,11 @@ function createHarness(options: HarnessOptions = {}) {
       getSessionId: () => "session-1",
       getBranch: () => options.sessionEntries ?? [],
     },
-    getAsyncJobSnapshot: () => ({ running: asyncJobs, recent: options.recentJobs ?? [] }),
+    getAsyncJobSnapshot: (request?: { jobIds?: readonly string[] }) => {
+      const jobIds = request?.jobIds;
+      const base = { running: asyncJobs, recent: options.recentJobs ?? [] };
+      return jobIds && options.retainedJobs ? { ...base, jobs: options.retainedJobs.filter((job) => jobIds.includes(String(job.id))) } : base;
+    },
   };
 
   const pi = {
@@ -1110,6 +1119,36 @@ describe("jev-runtime pre-dispatch", () => {
             await harness.prepare(BETA, "Beta");
             expect([label, await dispatch(harness, `call-beta-${label}`, "Beta", BETA)]).toEqual([label, expect.objectContaining({ block: true })]);
             expect([label, outcomes(harness.ledgerPath)]).toEqual([label, []]);
+          }
+        });
+
+        test("표시용 recent 창 밖으로 밀린 같은 owner의 취소 실행도 exact row로만 실제 종료를 확인해 한 번 정산한다", async () => {
+          // 같은 owner의 더 최근 settled job 5개가 recent(기본 5개)를 차지한다. Alpha row는 core에 보관돼 있지만 recent에는 없다.
+          const newer = Array.from({ length: 5 }, (_, index) => row(`newer-${index}`, "agent-bash", "completed", 2_000 + index, 2_100 + index));
+          for (const [label, retained, readFirst, released] of [
+            ["cleanup 중(endTime 없음)", [row("job-alpha", "agent-alpha", "cancelled", 1_000)], false, false],
+            ["다른 실행의 같은 jobId", [row("job-alpha", "agent-alpha", "cancelled", 9_000, 9_400)], false, false],
+            ["보관 row 없음(evict·다른 owner)", [], false, false],
+            ["exact row 미제공 host", undefined, false, false],
+            ["실제 종료: owner 경계", [row("job-alpha", "agent-alpha", "cancelled", 1_000, 1_400)], false, true],
+            ["실제 종료: 명시 read", [row("job-alpha", "agent-alpha", "cancelled", 1_000, 1_400)], true, true],
+          ] as const) {
+            const running: Array<Record<string, unknown>> = [row("job-alpha", "agent-alpha", "running", 1_000)];
+            const recent: Array<Record<string, unknown>> = [];
+            const harness = createHarness({ asyncJobs: running, recentJobs: recent, judgeAnswers: NORMAL, ...(retained ? { retainedJobs: retained } : {}) });
+            await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+            await kill(harness, "job-alpha", "cancelled");
+            running.length = 0;
+            recent.push(...newer);
+            if (readFirst) await read(harness, "job-alpha", "cancelled");
+            await harness.prepare(BETA, "Beta");
+            const result = await dispatch(harness, `call-beta-${label}`, "Beta", BETA);
+            expect([label, result]).toEqual([label, released ? undefined : expect.objectContaining({ block: true, reason: expect.stringContaining("Alpha") })]);
+            expect([label, outcomes(harness.ledgerPath)]).toEqual([label, released ? ["agent-alpha:cancelled"] : []]);
+            if (!released) continue;
+            await executionEnd(harness, `call-beta-${label}`);
+            await read(harness, "job-alpha", "cancelled");
+            expect([label, outcomes(harness.ledgerPath)]).toEqual([label, ["agent-alpha:cancelled"]]);
           }
         });
       });

@@ -135,10 +135,11 @@ function harness(options: {
     noteSpawned: (value: Record<string, unknown>, callId = "task-call",
       ids = new Map<number, { agentId: string; jobId: string }>([[0, { agentId: "agent-viewfix", jobId: "job-viewfix" }]])) =>
       route.noteSpawned(value, sessionId, callId, ids),
+    // core는 같은 task 호출의 admission과 spawn 결과에 같은 toolCallId를 준다. noteSpawned 기본값과 같은 호출로 낸다.
     dispatch: (model: string, task: string = brief) => route.beforeTask({
       context: input.context,
       tasks: [{ name: input.tasks[0]!.name, task, agent: "maker", model }],
-    }, routingCtx),
+    }, routingCtx, "task-call"),
     setOwners(value: typeof owners) { owners = value; },
     setMain(value: typeof CODEX_MAIN | null) { mainModel = value ?? undefined; },
   };
@@ -634,7 +635,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       await h.prepare("같은 batch", tasks, {} as never);
       const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:high" });
       const batch = { context: "같은 batch", tasks: tasks.map(item) };
-      const result = await h.beforeTask(batch, {} as never);
+      const result = await h.beforeTask(batch, {} as never, "batch");
       if (!overlaps) {
         expect(result).toBeUndefined();
         h.noteSpawned(batch, "batch", spawnIds);
@@ -650,7 +651,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       expect(ledger.records).toHaveLength(0);
       // 막힌 배치가 예약을 남기지 않아 한쪽만 다시 내면 그대로 통과하고 그 한 건만 기록된다.
       const single = { context: "같은 batch", tasks: [item(tasks[0]!)] };
-      expect(await h.beforeTask(single, {} as never)).toBeUndefined();
+      expect(await h.beforeTask(single, {} as never, "single")).toBeUndefined();
       h.noteSpawned(single, "single", spawnIds);
       expect(ledger.records).toMatchObject([{ name: "Left", assignmentId: `${h.sessionId}#single#0` }]);
       expect(ledger.records).toHaveLength(1);
@@ -728,6 +729,33 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       expect(ledger.records).toMatchObject([{ name: "Right" }]);
       expect(await h.beforeTask(single(rightAgain), {} as never, "call-e")).toBeUndefined();
     });
+    test("같은 이름·같은 계약의 isolated 별도 호출은 각자 자기 초안으로 spawn identity를 남기고 다른 호출의 정리에 지워지지 않는다", async () => {
+      const ledger = memoryLedger();
+      const h = harness({ ledger });
+      const fix = make("Fix", "src/a.ts");
+      // 준비 판단은 한 번이고 두 호출이 재사용한다.
+      await h.prepare("호출 간", [fix], {} as never);
+      const isolatedCall = single(fix, { isolated: true });
+      const ids = (agentId: string) => new Map([[0, { agentId, jobId: agentId }]]);
+      // core는 한 assistant 메시지의 호출을 모두 admission한 뒤 실행·결과를 돌려준다.
+      expect(await h.beforeTask(isolatedCall, {} as never, "call-a")).toBeUndefined();
+      expect(await h.beforeTask(isolatedCall, {} as never, "call-b")).toBeUndefined();
+      expect(await h.beforeTask(isolatedCall, {} as never, "call-c")).toBeUndefined();
+      // 다른 호출의 spawn 없는 종료·selector가 어긋난 spawn은 자기 예약만 정리한다.
+      h.releaseCall("call-c");
+      h.noteSpawned(isolatedCall, "call-c", ids("Fix-3"));
+      expect(ledger.records).toHaveLength(0);
+      h.noteSpawned(single(fix, { isolated: true, model: "openai-codex/gpt-6-sol:xhigh" }), "call-x", ids("Fix-x"));
+      expect(ledger.records).toHaveLength(0);
+      expect([...h.noteSpawned(isolatedCall, "call-a", ids("Fix")).values()].map((entry) => entry.identity.attemptId)).toEqual([`${h.sessionId}#call-a#0#a1`]);
+      expect([...h.noteSpawned(isolatedCall, "call-b", ids("Fix-2")).values()].map((entry) => entry.identity.attemptId)).toEqual([`${h.sessionId}#call-b#0#a1`]);
+      // 소비한 초안은 같은 호출의 늦은 중복 관측에 다시 쓰이지 않는다.
+      h.noteSpawned(isolatedCall, "call-b", ids("Fix-2"));
+      expect(ledger.records.map((record) => record.type === "dispatch" ? [record.name, record.attemptId, record.agentId, record.ownership?.workspace] : null)).toEqual([
+        ["Fix", `${h.sessionId}#call-a#0#a1`, "Fix", "isolated"],
+        ["Fix", `${h.sessionId}#call-b#0#a1`, "Fix-2", "isolated"],
+      ]);
+    });
   });
   test("isolated로 요청한 항목은 별도 worktree scope라 같은 배치 중복으로 막지 않고 workspace를 기록한다", async () => {
     const tasks = [
@@ -748,7 +776,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const ledger = memoryLedger();
       const h = harness({ ledger });
       await h.prepare("c", tasks, {} as never);
-      const result = await h.beforeTask(batch, {} as never);
+      const result = await h.beforeTask(batch, {} as never, "batch");
       h.noteSpawned(batch, "batch", spawnIds);
       if (workspaces === null) {
         expect(result).toMatchObject({ block: true });

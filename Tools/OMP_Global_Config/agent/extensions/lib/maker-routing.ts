@@ -540,10 +540,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   // 검사를 통과한 발주의 이력 초안. spawn 성공(noteSpawned) 때만 identity와 함께 ledger에 남긴다.
   // 새 초안은 항상 소유 계약을 싣는다. 원장의 과거 row만 ownership이 없을 수 있다.
   type DispatchDraft = Omit<DispatchRecord, "ts" | "ownership" | keyof AttemptIdentity> & { ownership: DispatchOwnership };
-  const pendingDispatches = new Map<string, DispatchDraft>();
-  // 검사를 통과했지만 spawn 결과를 아직 받지 못한 task 호출의 소유 예약(toolCallId → 초안). 별도 task 호출의 admission이
-  // 이 예약과 충돌을 검사한다. spawn 관측(noteSpawned)은 실제 owner 목록으로 넘기며 지우고, spawn 없이 끝난 호출은 releaseCall이 지운다.
-  const reservations = new Map<string, { key: string; draft: DispatchDraft }[]>();
+  // 검사를 통과했지만 spawn 결과를 아직 받지 못한 task 호출의 실행 초안(toolCallId → 그 호출 tasks[]의 itemIndex별 초안).
+  // 초안은 이 호출 실행에만 속한다. 같은 이름·같은 계약의 다른 호출도 자기 초안을 갖고, 준비 판단(bindings)은 그대로 재사용한다.
+  // 별도 task 호출의 admission이 이 예약과 충돌을 검사한다. spawn 관측(noteSpawned)은 자기 초안만 소비해 실제 owner 목록으로
+  // 넘기며 지우고, spawn 없이 끝난 호출은 releaseCall이 자기 예약만 지운다.
+  const reservations = new Map<string, { itemIndex: number; key: string; draft: DispatchDraft }[]>();
   // 거절 진단 전용 색인. 준비된 계약을 이름별로 시간순으로 모아 어긋난 필드를 지목하며,
   // 통과·차단 판정에는 관여하지 않는다.
   const preparedContracts = new Map<string, DispatchContract[]>();
@@ -555,7 +556,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   const reset = () => {
     generation++;
     bindings.clear();
-    pendingDispatches.clear();
     reservations.clear();
     preparedContracts.clear();
     decisionCache.clear();
@@ -923,7 +923,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
-    const drafts: [string, DispatchDraft][] = [];
+    const drafts: [number, DispatchDraft][] = [];
     for (const [itemIndex, item] of tasks.entries()) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
@@ -994,7 +994,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
       const recommendedCandidate = candidates[recommended];
       const workClass = answers?.workClass?.choice ?? null;
-      drafts.push([key, {
+      drafts.push([itemIndex, {
         type: "dispatch",
         name,
         workClass,
@@ -1048,8 +1048,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         reason: `다른 task 호출이 발주 승인을 받아 spawn 결과를 기다리는 공유 작업공간 OWNED_PATHS와 겹칩니다: ${reserved.slice(0, DIAGNOSTIC_LIST_LIMIT).join("; ")}. 이 호출은 발주하지 않았습니다. 그 호출의 결과가 돌아온 뒤 현재 owner를 확인해 다시 내거나, 경로를 나누거나 isolated로 발주하세요.`,
       };
     }
-    for (const [key, draft] of drafts) pendingDispatches.set(key, draft);
-    if (callId && drafts.length > 0) reservations.set(callId, drafts.map(([key, draft]) => ({ key, draft })));
+    if (callId && drafts.length > 0) reservations.set(callId, drafts.map(([itemIndex, draft]) => ({ itemIndex, key: briefKey(draft.name, contracts[itemIndex]!), draft })));
     return canonicalInput === input ? undefined : { input: canonicalInput };
   }
 
@@ -1058,9 +1057,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
    * tool_execution_end만 내고, task 실행 오류는 isError tool_result를 낸다. 다른 호출의 예약과 이미 이관된 owner는 건드리지 않는다.
    */
   function releaseCall(callId: string): void {
-    for (const { key, draft } of reservations.get(callId) ?? []) {
-      if (pendingDispatches.get(key) === draft) pendingDispatches.delete(key);
-    }
     reservations.delete(callId);
   }
 
@@ -1081,16 +1077,16 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // 원장에서 읽으므로 reload 뒤에도 연결이 유지되고, 관측되지 않은 준비만으로는 연결하지 않는다.
     const known = assignmentsByName(deps.ledger?.read() ?? [], sessionId);
     let candidateLock = contractLock;
+    const reserved = reservations.get(callId) ?? [];
     for (const [index, item] of tasks.entries()) {
       const task = typeof item.task === "string" ? item.task : "";
       const contract = dispatchContract(task, candidateLock);
       if (!contract) continue;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       const name = String(item.name ?? "").trim();
-      const key = briefKey(name, contract);
-      const draft = pendingDispatches.get(key);
+      // 이 호출이 admission에서 받은 그 항목의 초안만 소비한다. 같은 이름·같은 계약의 다른 호출 초안은 그 호출의 것이다.
+      const draft = reserved.find((entry) => entry.itemIndex === index && entry.key === briefKey(name, contract))?.draft;
       if (!draft) continue;
-      pendingDispatches.delete(key);
       // 다른 guard가 막은 뒤 다른 selector로 다시 낸 발주는 그 호출의 beforeTask 초안만 맞는다.
       if (item.model !== `${draft.chosenModel}:${draft.chosenEffort}`) continue;
       const linked = sessionId && contract.findingId !== null ? known.get(name) : undefined;

@@ -3082,5 +3082,52 @@ console.log("\n[31] async-result 자동 전달 — schema 없는 실패도 그 �
 	manager.cancelAll();
 }
 
+console.log("\n[32] extension async job snapshot — options 를 끝까지 전달하고 jobIds 는 recent 창과 무관한 exact row 를 준다");
+// 이슈 #10: ExtensionContext·runner·sdk adapter 가 인자를 버려 extension 은 기본 recent 5개만 봤고, 같은 owner 의 더 최근 job 5개에
+// 밀린 취소 실행의 종료(cancelled·endTime)를 확인할 수 없었다. 실제 createAgentSession 의 extension context 로 본다.
+{
+	const { session } = await csCreateAgentSession({ ...csSessionOptions("anthropic"), agentId: "M32" });
+	const manager = session.asyncJobManager;
+	check("session 은 자기 async job manager 를 가진다", manager !== undefined);
+	if (manager) {
+		const settle = (id: string, ownerId: string) =>
+			manager.register("task", id, async ({ signal }: { signal: AbortSignal }) => {
+				if (id === "alpha") await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+				return "done";
+			}, { id, ownerId, agentId: `agent-${id}` });
+		settle("alpha", "M32");
+		await Bun.sleep(5);
+		manager.cancel("alpha");
+		await manager.getJob("alpha")?.promise;
+		for (const index of [0, 1, 2, 3, 4]) {
+			await Bun.sleep(2);
+			settle(`newer-${index}`, "M32");
+		}
+		settle("foreign", "Other");
+		await Promise.all(manager.getAllJobs().map((job: { promise: Promise<unknown> }) => job.promise));
+		const ctx = session.extensionRunner?.createContext();
+		const plain = ctx?.getAsyncJobSnapshot();
+		check(
+			"옵션 없는 snapshot 은 기본 recent 5개·jobs 없음 그대로이고 취소 실행은 창 밖이다",
+			plain?.recent.length === 5 && plain.jobs === undefined && !plain.recent.some((job: { id: string }) => job.id === "alpha"),
+			JSON.stringify(plain?.recent.map((job: { id: string }) => job.id)),
+		);
+		check("extension context 의 recentLimit 이 session 까지 전달된다", ctx?.getAsyncJobSnapshot({ recentLimit: 6 })?.recent.length === 6);
+		const exact = ctx?.getAsyncJobSnapshot({ jobIds: ["alpha", "foreign", "missing"] });
+		const alpha = manager.getJob("alpha");
+		check(
+			"jobIds 는 이 owner 의 exact row 만 준다(다른 owner·없는 id 는 빠진다)",
+			exact?.jobs?.length === 1 && exact.jobs[0]?.id === "alpha" && exact.recent.length === 5,
+			JSON.stringify(exact?.jobs),
+		);
+		check(
+			"exact row 는 그 실행의 cancelled·startTime·endTime 을 싣는다",
+			exact?.jobs?.[0]?.status === "cancelled" && exact.jobs[0]?.startTime === alpha?.startTime && typeof exact.jobs[0]?.endTime === "number" && exact.jobs[0]?.endTime === alpha?.endTime,
+			JSON.stringify(exact?.jobs?.[0]),
+		);
+	}
+	await session.dispose();
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

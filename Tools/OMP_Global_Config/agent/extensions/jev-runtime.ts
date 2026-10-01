@@ -1,5 +1,5 @@
 
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { AsyncJobSnapshot, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { registerMakerRouting, workspaceOf, type Owner } from "./lib/maker-routing";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
@@ -991,13 +991,15 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       ledger: baseLedger,
       owners: (ctx) => {
         // 취소 요청 뒤 실제로 끝난 실행은 추가 조회 없이 여기서 cancelled로 정산해 그 child만 owner에서 해제한다.
-        reconcileEndedCancels(ctx);
+        // 같은 경계의 running 판정도 이 snapshot을 그대로 쓴다.
+        const snapshot = snapshotWithPendingCancels(ctx);
+        reconcileEndedCancels(snapshot);
         // active는 그 child 자체로 판정한다. 같은 표시 이름의 다른 child가 실행 중이라는 이유로 끝난 child를 잠그지 않는다.
         const activeTasks = [...liveMakers.values()].flat();
         const liveTasks = new Set(activeTasks);
         // 원장 running은 프로세스 재시작으로 끝나지 못한 row일 수 있다. core async snapshot에 지금 실행 중인
         // job이 있을 때만 active로 보아, 끝난·죽은 attempt가 영구 잠금이 되지 않게 한다.
-        const running = ctx.getAsyncJobSnapshot?.()?.running ?? [];
+        const running = snapshot?.running ?? [];
         // 완료로 live 목록에서 닫힌 known maker도 REWORK·후속 지시로 다시 실행 중이면 같은 소유 경로의 writer다.
         // 그 canonical agentId(또는 이 runtime이 관측한 그 agent attempt의 jobId)가 지금 실행 중일 때만 active다.
         const runningJobs = new Set(running.map((job) => job.id));
@@ -1155,21 +1157,29 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       return observed;
     }
     /**
-     * 취소 요청한 실행의 실제 종료 여부. 같은 jobId·같은 실행(startTime 일치)의 core snapshot row가 cancelled이고 endTime이 있을 때만
-     * 끝난 것이다. row가 없거나 다른 실행이면 판단하지 않는다(종료로 추정하지 않고 보호를 유지한다).
+     * 취소 대기 job이 있을 때만 그 jobId들의 exact row를 함께 청한다. 표시용 recent(기본 5개) 창 밖으로 밀린 같은 owner의 실행도
+     * 종료 근거를 볼 수 있게 한다. 대기가 없으면 기본 snapshot 그대로다.
      */
-    function cancelEndedRow(jobId: string, ctx: ExtensionContext): { startTime: number; endTime: number } | undefined {
+    function snapshotWithPendingCancels(ctx: ExtensionContext, jobIds: readonly string[] = [...pendingCancels.keys()]): AsyncJobSnapshot | null | undefined {
+      return jobIds.length > 0 ? ctx.getAsyncJobSnapshot?.({ jobIds }) : ctx.getAsyncJobSnapshot?.();
+    }
+    /**
+     * 취소 요청한 실행의 실제 종료 여부. 같은 jobId·같은 실행(startTime 일치)의 core row가 cancelled이고 endTime이 있을 때만
+     * 끝난 것이다. exact row(`jobs`)를 주는 host는 그것만 근거로 쓰고, 주지 않는 host는 running·recent에서만 찾는다.
+     * row가 없거나(evict·다른 owner) 다른 실행이면 판단하지 않는다(종료로 추정하지 않고 보호를 유지한다).
+     */
+    function cancelEndedRow(jobId: string, snapshot: AsyncJobSnapshot | null | undefined): { startTime: number; endTime: number } | undefined {
       const pending = pendingCancels.get(jobId);
       if (!pending) return undefined;
-      const snapshot = ctx.getAsyncJobSnapshot?.();
-      const row = [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])].find((entry) => entry.id === jobId);
+      const rows = snapshot?.jobs ?? [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])];
+      const row = rows.find((entry) => entry.id === jobId);
       if (!row || row.startTime !== pending.runStart || row.status !== "cancelled" || typeof row.endTime !== "number") return undefined;
       return { startTime: row.startTime, endTime: row.endTime };
     }
     /** owner·admission 경계: 취소 요청 뒤 실제로 끝난 실행만 cancelled로 한 번 정산하고 그 child만 live owner에서 닫는다. */
-    function reconcileEndedCancels(ctx: ExtensionContext): void {
+    function reconcileEndedCancels(snapshot: AsyncJobSnapshot | null | undefined): void {
       for (const [jobId, pending] of [...pendingCancels]) {
-        const ended = cancelEndedRow(jobId, ctx);
+        const ended = cancelEndedRow(jobId, snapshot);
         if (!ended) continue;
         const observed = observedAttempts.get(pending.attemptId);
         if (!observed || settledAttempts.has(pending.attemptId)) {
@@ -1241,7 +1251,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         // 취소 요청한 실행은 실제로 끝나기 전 wait·read proc://가 cancelled를 보여 줘도 정산하지 않는다(owner 보호 유지).
         // 끝난 뒤의 관측은 아직 owner 경계에서 정산되지 않았으면 통과시켜 같은 실행을 한 번 정산한다.
         if (pendingCancels.has(job.jobId)) {
-          if (!cancelEndedRow(job.jobId, ctx)) return false;
+          // admission과 같은 exact 근거로만 판정한다. 명시 read가 recent 창 밖 실행을 볼 때도 마찬가지다.
+          if (!cancelEndedRow(job.jobId, snapshotWithPendingCancels(ctx, [job.jobId]))) return false;
           judgedReviews.add(job.jobId);
           return true;
         }

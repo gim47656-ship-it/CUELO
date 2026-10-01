@@ -3055,6 +3055,12 @@ section[aria-label="Subagent 기록"] > header,
   padding: 0;
 }
 
+/* 액션 줄이 한 줄에 다 들어가지 않으면 오른쪽 묶음을 둘째 줄로 내린다. 폭과 관계없이 적용한다.
+   통화가 시작돼 화자 라벨이 붙으면 가로 폰(데스크톱 배치)에서도 넘쳐, 종료 버튼이 화면 밖으로 밀렸다. */
+.composer-action-bar {
+  flex-wrap: wrap;
+}
+
 .composer-chip:hover:not(:disabled),
 .composer-icon-button:hover:not(:disabled),
 .composer-stream-action:hover:not(:disabled) {
@@ -4647,11 +4653,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .workspace-header-seam button,
   .workspace-update-banner-dismiss {
     min-inline-size: 44px;
-  }
-
-  /* 최소 크기로도 한 줄에 못 담을 만큼 좁으면 겹치는 대신 둘째 줄로 내린다. */
-  .composer-action-bar {
-    flex-wrap: wrap;
   }
 
   /* 업데이트 줄이 두세 줄로 흐를 때 헤더 아래 대화가 받는 압박을 줄인다. */
