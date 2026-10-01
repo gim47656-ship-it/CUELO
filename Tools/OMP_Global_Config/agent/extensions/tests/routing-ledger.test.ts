@@ -18,6 +18,7 @@ import {
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
 const SESSION = "s1";
+const OTHER_SESSION = "s2";
 
 /** 결정적 identity. 재작업은 같은 assignmentId를 유지하고 attempt만 올린다. */
 const ids = (assignment: string, attempt = 1) => {
@@ -167,7 +168,7 @@ describe("소유권 복원", () => {
       // 이 변경 전 기록은 ownership 필드가 없다. 빈 소유로 바꾸지 않는다.
       dispatch("Legacy"),
       dispatch("Broken", { ownership: { primaryDeliverable: "x", ownedPaths: "src/", workspace: "shared" } as never }),
-      dispatch("Other", { ...ids("Other"), sessionId: "s2", ownership }),
+      dispatch("Other", { ...ids("Other"), sessionId: OTHER_SESSION, ownership }),
     ];
     const restored = scopedAttempts(records, SESSION);
     expect(restored.map((entry) => [entry.identity.attemptId, entry.status, entry.ownership])).toEqual([
