@@ -11,8 +11,9 @@
 // 이후 복구 경로가 내보내는 재시도 표시(auto_retry_start)는 이 스모크의 검사가 아니다:
 // 모델 없는 하네스라 turn 이 주입 훅 예외로 끝나 그 경로에 도달하지 않는다.
 // abort 항목이 있는 core 에서는 RED, 원복된 core 에서는 GREEN 이다.
-// [3]–[11]은 P55(2026-10-01): 보이는 출력이 아직 없는 요청에 genuine steer 가 오면 그 요청만 끊고 같은 run 에서
-// 다시 요청한다(run abort 아님). 실제 Agent 루프와 Codex provider 를 로컬 가짜 서버에 붙여 wire 까지 본다.
+// [3]–[11]은 P55(2026-10-01): 진행 중 요청에 genuine steer 가 오면 tool call 이 아직 없는 한 그 요청만 끊고 같은 run 에서
+// 다시 요청한다(run abort 아님). r3: native accept 도 서버의 정지를 기다리지 않고, 이미 보인 text 와 완료된 서명
+// reasoning 은 기록에 남긴다. 실제 Agent 루프와 Codex provider 를 로컬 가짜 서버에 붙여 wire 까지 본다.
 // 모델 호출은 하지 않는다: before-model-call 훅이 provider 요청 직전에 예외로 turn 을 끊는다.
 // 세션 상태·모델·인증 설정은 임시 cwd·agentDir 하나로만 들어가므로 운영자의 실제 `~/.omp` 는
 // 읽지도 쓰지도 않는다.
@@ -204,16 +205,18 @@ check(
 // ── P55: 보이는 출력이 아직 없는 요청에 들어온 genuine steer ─────────────────────────────
 // 실제 Agent 루프 + 실제 Codex provider(WebSocket·SSE)를 로컬 가짜 서버에 붙인다. 첫 응답은 reasoning
 // 항목 하나를 보낸 뒤 끝나지 않는다(정지한 provider). steer 가 그 요청을 끝까지 기다리지 않고 새 요청에서
-// 소비되는지, 버린 partial 이 listener·context·wire 에 남지 않는지, 보존해야 할 경우(native accept, 이미 보인
-// text, 내부 agent steer, follow-up)는 그대로인지 본다. 패치 전 core 에서는 정지 응답 경우가 시간 초과로 RED 다.
+// 소비되는지, 버린 partial 이 listener·context·wire 에 남지 않는지, 이미 보인 text·완료된 서명 reasoning 은
+// 한 번 기록되는지, 보존해야 할 경우(내부 agent steer, follow-up)는 그대로인지 본다. native accept 뒤 서버가
+// 멈추지 않는 경우([8])는 r3 이전 core 에서 시간 초과로 RED 다.
 const { streamOpenAICodexResponses } = await import(`${CORE}/../../pi-ai/src/providers/openai-codex-responses.ts`);
 const { getBundledModel } = await import(`${CORE}/../../pi-catalog/src/models.ts`);
 const { Agent } = await import(`${CORE}/../../pi-agent-core/src/index.ts`);
 const { convertToLlm, wrapSteeringForModel } = await import(`${CORE}/session/messages.ts`);
 
-type WireMode = "hang" | "visible-text" | "late-created" | "accept";
+type WireMode = "hang" | "visible-text" | "late-created" | "accept" | "accept-text";
 let wireMode: WireMode = "hang";
 let wireCreates: string[] = [];
+let wireCreatedAt: number[] = [];
 let wireSteerFrames = 0;
 const wireCompleted = (id: string, output: unknown[] = []) => ({
 	type: "response.completed",
@@ -235,18 +238,25 @@ function wireFrames(id: string, first: boolean): Array<[number, WireFrame]> {
 	}
 	const created = wireMode === "late-created" ? 150 : 0;
 	const frames: Array<[number, WireFrame]> = [[created, { type: "response.created", response: { id } }]];
-	if (wireMode === "accept") return [...frames, [700, wireCompleted(id)]];
-	const reasoning = { type: "reasoning", id: `rs_${id}`, summary: [], encrypted_content: `DISCARDED_SIG_${id}` };
+	// accept: 서버가 steer 를 받고도 incomplete(steered)·completed 를 보내지 않는다(2026-10-01 관측).
+	if (wireMode === "accept") return frames;
+	const kept = wireMode === "visible-text" || wireMode === "accept-text";
+	const reasoning = { type: "reasoning", id: `rs_${id}`, summary: [], encrypted_content: `${kept ? "KEPT_SIG" : "DISCARDED_SIG"}_${id}` };
 	frames.push([created + 20, { type: "response.output_item.added", output_index: 0, item: { ...reasoning, encrypted_content: undefined } }]);
 	frames.push([created + 40, { type: "response.output_item.done", output_index: 0, item: reasoning }]);
-	if (wireMode === "visible-text") {
+	if (kept) {
 		const msg = { type: "message", id: `msg_${id}`, role: "assistant", content: [] };
 		frames.push([60, { type: "response.output_item.added", output_index: 1, item: msg }]);
 		frames.push([61, { type: "response.content_part.added", output_index: 1, item_id: msg.id, content_index: 0, part: { type: "output_text", text: "" } }]);
 		frames.push([70, { type: "response.output_text.delta", output_index: 1, item_id: msg.id, content_index: 0, delta: "VISIBLE_ANSWER" }]);
+		if (wireMode === "accept-text") {
+			// 아직 끝나지 않은 두 번째 reasoning: 열린 tail 이라 기록·replay 에 남으면 안 된다.
+			frames.push([120, { type: "response.output_item.added", output_index: 2, item: { type: "reasoning", id: `rs2_${id}`, summary: [] } }]);
+			return frames;
+		}
 		frames.push([900, wireCompleted(id, [reasoning, { ...msg, content: [{ type: "output_text", text: "VISIBLE_ANSWER" }] }])]);
 	}
-	return frames; // hang·late-created: 끝나지 않는다
+	return frames; // hang·late-created·accept-text: 끝나지 않는다
 }
 const wireServer = Bun.serve({
 	port: 0,
@@ -254,6 +264,7 @@ const wireServer = Bun.serve({
 		if (srv.upgrade(req)) return undefined;
 		const body = await req.text();
 		wireCreates.push(body);
+		wireCreatedAt.push(Date.now());
 		const frames = wireFrames(`resp_${wireCreates.length}`, wireCreates.length === 1);
 		const encoder = new TextEncoder();
 		const stream = new ReadableStream({
@@ -278,6 +289,7 @@ const wireServer = Bun.serve({
 			const frame = JSON.parse(String(raw)) as { type: string; previous_response_id?: string };
 			if (frame.type === "response.create") {
 				wireCreates.push(String(raw));
+				wireCreatedAt.push(Date.now());
 				for (const [delay, out] of wireFrames(`resp_${wireCreates.length}`, wireCreates.length === 1)) {
 					setTimeout(() => ws.readyState === 1 && ws.send(JSON.stringify(out)), delay);
 				}
@@ -286,7 +298,7 @@ const wireServer = Bun.serve({
 				const steer = { id: `steer_${wireSteerFrames}`, previous_response_id: frame.previous_response_id };
 				ws.send(
 					JSON.stringify(
-						wireMode === "accept"
+						wireMode === "accept" || wireMode === "accept-text"
 							? { type: "response.steer.accepted", steer }
 							: {
 									type: "error",
@@ -312,7 +324,7 @@ const genuineSteer = (text: string, extra: Record<string, unknown> = {}) => ({
 	...extra,
 });
 
-type WireResult = { outcome: "idle" | "timeout"; events: string[]; agent: InstanceType<typeof Agent>; creates: string[] };
+type WireResult = { outcome: "idle" | "timeout"; events: string[]; agent: InstanceType<typeof Agent>; creates: string[]; createdAt: number[] };
 async function wireRun(
 	mode: WireMode,
 	opts: { websocket: boolean; supportsSteering?: boolean; at?: number; deadlineMs?: number },
@@ -320,7 +332,9 @@ async function wireRun(
 ): Promise<WireResult> {
 	wireMode = mode;
 	wireCreates = [];
+	wireCreatedAt = [];
 	wireSteerFrames = 0;
+	const startedAt = Date.now();
 	const base = getBundledModel("openai-codex", "gpt-5.5");
 	const model = {
 		...base,
@@ -357,10 +371,13 @@ async function wireRun(
 		agent.abort();
 		await agent.waitForIdle();
 	}
-	return { outcome, events, agent, creates: [...wireCreates] };
+	return { outcome, events, agent, creates: [...wireCreates], createdAt: wireCreatedAt.map(at => at - startedAt) };
 }
 const assistantsOf = (r: WireResult) => r.agent.state.messages.filter((m: { role: string }) => m.role === "assistant") as Array<{ stopReason?: string; content: Array<{ type: string }> }>;
 const occurrences = (body: string | undefined, text: string) => (body ?? "").split(text).length - 1;
+/** content 의 thinking 블록 중 서명에 `sig` 가 든 것의 수. providerPayload 사본은 세지 않는다. */
+const signedThinking = (message: { content?: Array<{ type: string; thinkingSignature?: string }> } | undefined, sig: string) =>
+	(message?.content ?? []).filter(b => b.type === "thinking" && b.thinkingSignature?.includes(sig) === true).length;
 const inputItems = (body: string | undefined): Array<{ type?: string; role?: string }> => {
 	const parsed = JSON.parse(body ?? "{}");
 	return parsed.input ?? parsed.response?.input ?? [];
@@ -419,16 +436,51 @@ try {
 		["STEER_ONE", "STEER_TWO"].every(t => two.agent.state.messages.filter((m: { role: string }) => m.role === "user" && JSON.stringify(m).includes(t)).length === 1),
 	);
 
-	console.log("\n[8] native accept 는 진행 중 요청을 살린다");
+	console.log("\n[8] native accept 뒤 서버가 멈추지 않아도 steer 가 바로 반영된다");
+	// r3 계약 변경(사용자 승인 2026-10-01): accept 는 서버가 다음 output boundary 에서 멈춰야 진행되는데 그 시점을
+	// 알 신호가 없다. 사용자는 즉시 반영을 골랐다(재추론 사용량 감수).
 	const accepted = await wireRun("accept", { websocket: true }, a => a.steer(genuineSteer("STEER_ACCEPT")));
 	check("[8] response.steer 가 수락됐다", wireSteerFrames === 1, String(wireSteerFrames));
-	check("[8] 첫 응답이 끝까지 진행해 기록된다", assistantsOf(accepted).length === 2 && assistantsOf(accepted).every(a => a.stopReason === "stop"), JSON.stringify(assistantsOf(accepted).map(a => a.stopReason)));
+	checkRestarted("[8]", accepted, "STEER_ACCEPT");
+	check("[8] 새 요청은 steer 직후에 나간다(서버 정지를 기다리지 않는다)", (accepted.createdAt[1] ?? Infinity) < 700, JSON.stringify(accepted.createdAt));
 
-	console.log("\n[9] 이미 text 가 보인 요청은 끊지 않는다");
+	console.log("\n[8b] native accept + 이미 보인 text: 보인 것은 남기고 열린 tail 만 버린다");
+	const acceptText = await wireRun("accept-text", { websocket: true }, a => a.steer(genuineSteer("STEER_ACCEPT_TEXT")));
+	const acceptTextAssistants = assistantsOf(acceptText);
+	check("[8b] response.steer 가 수락됐다", wireSteerFrames === 1, String(wireSteerFrames));
+	check("[8b] 첫 응답이 끝나지 않아도 run 이 완료된다", acceptText.outcome === "idle", acceptText.outcome);
+	check(
+		"[8b] 첫 응답은 완료된 서명 reasoning 과 보인 text 로 stop 기록된다",
+		acceptTextAssistants.length === 2 &&
+			acceptTextAssistants[0]?.stopReason === "stop" &&
+			JSON.stringify(acceptTextAssistants[0]?.content.map(b => b.type)) === JSON.stringify(["thinking", "text"]) &&
+			signedThinking(acceptTextAssistants[0], "KEPT_SIG_resp_1") === 1,
+		JSON.stringify(acceptTextAssistants.map(a => [a.stopReason, a.content.map(b => b.type)])),
+	);
+	// 서명을 replay 에 넣을지는 provider 정책이다(완료 응답 경로는 넣지 않을 수 있다). 여기서는 중복만 막는다.
+	check(
+		"[8b] 두 번째 create: steer·보인 text 각 한 번, 서명 중복·열린 reasoning 없음, full replay",
+		acceptText.creates.length === 2 &&
+			occurrences(acceptText.creates[1], "STEER_ACCEPT_TEXT") === 1 &&
+			occurrences(acceptText.creates[1], "VISIBLE_ANSWER") === 1 &&
+			occurrences(acceptText.creates[1], "KEPT_SIG_resp_1") <= 1 &&
+			occurrences(acceptText.creates[1], "rs2_") === 0 &&
+			JSON.parse(acceptText.creates[1] ?? "{}").previous_response_id === undefined,
+		`creates=${acceptText.creates.length}`,
+	);
+	check("[8b] steer 는 대화 기록에 한 번 남는다", acceptText.agent.state.messages.filter((m: { role: string }) => m.role === "user" && JSON.stringify(m).includes("STEER_ACCEPT_TEXT")).length === 1);
+	check("[8b] assistant message_end 는 응답마다 한 번이다", acceptText.events.filter(e => e === "message_end:assistant").length === 2, acceptText.events.join(" "));
+
+	console.log("\n[9] 이미 text 가 보인 요청: 보인 답은 보존하고 낡은 생성만 끊는다");
 	const visible = await wireRun("visible-text", { websocket: false }, a => a.steer(genuineSteer("STEER_AFTER_TEXT")));
 	const visibleAssistants = assistantsOf(visible);
 	check("[9] 보인 답이 그대로 기록된다", visibleAssistants[0]?.stopReason === "stop" && visibleAssistants[0]?.content.some(b => b.type === "text") === true, JSON.stringify(visibleAssistants.map(a => a.content.map(b => b.type))));
 	check("[9] steer 는 그 답 뒤 다음 create 에 실린다", visible.creates.length === 2 && occurrences(visible.creates[1], "VISIBLE_ANSWER") === 1 && occurrences(visible.creates[1], "STEER_AFTER_TEXT") === 1);
+	check("[9] 다음 create 는 첫 응답 완료(900ms)를 기다리지 않는다", (visible.createdAt[1] ?? Infinity) < 700, JSON.stringify(visible.createdAt));
+	check(
+		"[9] 완료된 reasoning 서명은 기록에 한 번 남고 다음 create 에 중복되지 않는다",
+		signedThinking(visibleAssistants[0], "KEPT_SIG_resp_1") === 1 && occurrences(visible.creates[1], "KEPT_SIG_resp_1") <= 1,
+	);
 
 	console.log("\n[10] text chunk 와 steer 가 같은 순간에 온다");
 	const race = await wireRun("visible-text", { websocket: true, at: 70 }, a => a.steer(genuineSteer("STEER_RACE")));
@@ -557,6 +609,66 @@ try {
 			};
 		},
 		"pre-start failure",
+	);
+
+	console.log("\n[14] 실제 AgentSession + native accept: 서버가 멈추지 않아도 보인 답을 남기고 steer 를 바로 반영한다");
+	// 2026-10-01 사건 형태: Codex WebSocket 이 steer 를 accept 했지만 steered/completed 를 보내지 않았다.
+	wireMode = "accept-text";
+	wireCreates = [];
+	wireCreatedAt = [];
+	wireSteerFrames = 0;
+	const sessionCodexWs = { ...sessionCodex, preferWebsockets: true, compat: { ...sessionCodex.compat, supportsSteering: true } };
+	agent.streamFn = (_m: unknown, context: unknown, options: Record<string, unknown>) =>
+		streamOpenAICodexResponses(sessionCodexWs, context, { ...options, apiKey: wireJwt(), providerSessionState: new Map() });
+	phase = "wire";
+	const acceptEntriesBefore = session.sessionManager.getEntries().length;
+	const acceptStartedAt = Date.now();
+	const acceptDone = session.prompt("accept 세션 시작").then(() => agent.waitForIdle()).then(() => "idle" as const);
+	setTimeout(() => void session.steer("STEER_SESSION_ACCEPT"), 200);
+	const { promise: acceptDeadline, resolve: acceptTimeout } = Promise.withResolvers<"timeout">();
+	const acceptTimer = setTimeout(() => acceptTimeout("timeout"), 5_000);
+	const acceptOutcome = await Promise.race([acceptDone, acceptDeadline]);
+	clearTimeout(acceptTimer);
+	if (acceptOutcome === "timeout") {
+		agent.abort();
+		await agent.waitForIdle();
+	}
+	phase = "quiet";
+	agent.streamFn = realStreamFn;
+	const acceptEntries = session.sessionManager.getEntries().slice(acceptEntriesBefore) as Array<{
+		type: string;
+		message?: { role: string; stopReason?: string; content?: Array<{ type: string }> };
+	}>;
+	const acceptMessages = acceptEntries.filter(e => e.type === "message" && e.message !== undefined);
+	const acceptAssistantAt = acceptMessages.flatMap((e, i) => (e.message?.role === "assistant" ? [i] : []));
+	const acceptSteerAt = acceptMessages.findIndex(e => e.message?.role === "user" && JSON.stringify(e).includes("STEER_SESSION_ACCEPT"));
+	check("[14] response.steer 가 수락됐다", wireSteerFrames === 1, String(wireSteerFrames));
+	check("[14] 첫 응답이 끝나지 않아도 세션 run 이 완료된다", acceptOutcome === "idle", acceptOutcome);
+	check("[14] 새 요청은 steer 직후에 나간다", wireCreatedAt.length === 2 && wireCreatedAt[1]! - acceptStartedAt < 700, JSON.stringify(wireCreatedAt.map(at => at - acceptStartedAt)));
+	check(
+		"[14] 세션 기록: 보인 답(stop, thinking+text) → steer → 새 답 순서",
+		acceptAssistantAt.length === 2 &&
+			acceptAssistantAt[0]! < acceptSteerAt &&
+			acceptSteerAt < acceptAssistantAt[1]! &&
+			acceptMessages[acceptAssistantAt[0]!]?.message?.stopReason === "stop" &&
+			JSON.stringify(acceptMessages[acceptAssistantAt[0]!]?.message?.content?.map(b => b.type)) === JSON.stringify(["thinking", "text"]),
+		JSON.stringify(acceptMessages.map(e => [e.message?.role, e.message?.stopReason, e.message?.content?.map(b => b.type)])),
+	);
+	check(
+		"[14] 세션 기록: steer·보인 text·서명 각 한 번, 열린 reasoning 없음",
+		acceptMessages.filter(e => e.message?.role === "user" && JSON.stringify(e).includes("STEER_SESSION_ACCEPT")).length === 1 &&
+			occurrences(JSON.stringify(acceptEntries), "VISIBLE_ANSWER") === 1 &&
+			acceptMessages.reduce((sum, e) => sum + signedThinking(e.message, "KEPT_SIG_resp_1"), 0) === 1 &&
+			occurrences(JSON.stringify(acceptEntries), "rs2_") === 0,
+	);
+	check(
+		"[14] wire: 두 번째 create 에 steer·보인 text 한 번씩, 서명 중복 없음, full replay",
+		occurrences(wireCreates[1], "STEER_SESSION_ACCEPT") === 1 &&
+			occurrences(wireCreates[1], "VISIBLE_ANSWER") === 1 &&
+			occurrences(wireCreates[1], "KEPT_SIG_resp_1") <= 1 &&
+			occurrences(wireCreates[1], "rs2_") === 0 &&
+			JSON.parse(wireCreates[1] ?? "{}").previous_response_id === undefined,
+		`creates=${wireCreates.length}`,
 	);
 } finally {
 	wireServer.stop(true);

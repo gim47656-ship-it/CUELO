@@ -156,6 +156,13 @@ export class GoalModeController {
   #continuationInFlight = false;
   #turnHadToolCalls = false;
   #suppressNextContinuation = false;
+  /**
+   * Set by an operator abort. The SDK pauses the goal only after the turn ends,
+   * so `agent_end` can arrive while the goal still reads active; this holds the
+   * loop until the operator re-arms it (a real prompt, or goal start/set/resume).
+   * Internal events (tool activity, goal_updated, budget) never clear it.
+   */
+  #abortStop = false;
   #disposed = false;
   #restorePromise: Promise<void> | undefined;
 
@@ -262,10 +269,12 @@ export class GoalModeController {
   /** A real prompt from the operator means the next continuation is wanted. */
   onUserPrompt(): void {
     this.#suppressNextContinuation = false;
+    this.#abortStop = false;
     this.#cancelContinuation();
   }
 
   onAbort(): void {
+    this.#abortStop = true;
     this.#cancelContinuation();
   }
 
@@ -336,6 +345,7 @@ export class GoalModeController {
     const state = await this.#session.goalRuntime.replaceGoal({ objective: rest });
     this.#session.setGoalModeState?.(state);
     this.#suppressNextContinuation = false;
+    this.#abortStop = false;
     if (this.#session.isStreaming) {
       await this.#session.sendGoalModeContext({ deliverAs: "steer" });
     }
@@ -349,6 +359,7 @@ export class GoalModeController {
     await this.#session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
     this.#session.setGoalModeState?.(state);
     this.#suppressNextContinuation = false;
+    this.#abortStop = false;
     if (this.#session.isStreaming) {
       await this.#session.sendGoalModeContext({ deliverAs: "steer" });
     }
@@ -371,6 +382,7 @@ export class GoalModeController {
     await this.#session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
     this.#session.setGoalModeState?.(state);
     this.#suppressNextContinuation = false;
+    this.#abortStop = false;
     this.#notifyStatus();
     this.#scheduleContinuation();
     return { message: "Goal mode resumed.", status: this.getStatus() };
@@ -439,7 +451,7 @@ export class GoalModeController {
 
   #scheduleContinuation(): void {
     this.#cancelContinuation();
-    if (this.#disposed) return;
+    if (this.#disposed || this.#abortStop) return;
     if (!isGoalContinuationEnabled(cfgGoalContinuationModes.get(this.#session.settings))) return;
     if (this.#session.getPlanModeState?.()?.enabled) return;
     if (this.#suppressNextContinuation) return;
@@ -454,7 +466,7 @@ export class GoalModeController {
   }
 
   async #runContinuation(): Promise<void> {
-    if (this.#disposed || this.#suppressNextContinuation) return;
+    if (this.#disposed || this.#abortStop || this.#suppressNextContinuation) return;
     // The timer can outlive the idle window that scheduled it: an operator
     // prompt (or an extension) may have started a turn while it waited.
     if (this.#options.isBusy()) return;

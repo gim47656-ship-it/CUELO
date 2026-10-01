@@ -8133,8 +8133,8 @@ function parentSubagentServiceTiers(
 	// 계정에서는 400 뒤 재시도로만 복구된다. 내장 모델은 구워진 models.json 값을 그대로 쓰고, 규칙으로 새로 만드는
 	// 모델(discovery 등)은 rules.json을 쓰므로 두 곳에 prefixBinding과 binding controls(beta)를 같이 채운다.
 	// binding controls의 provider 범위는 그 버전 upstream Sonnet 5.5 규칙과 같게 둔다: 18.4.4는 Claude API·
-	// Cloudflare·Vertex, 18.4.5는 Vertex가 `thinking.adaptive.block_binding: Extra inputs are not permitted`(400)로
-	// 거절해 Claude API·Cloudflare만(classes/anthropic.kdl:128). wire의 block_binding은 prefixBinding과 binding
+	// Cloudflare·Vertex, 18.4.5·18.4.6은 Vertex가 `thinking.adaptive.block_binding: Extra inputs are not permitted`(400)로
+	// 거절해 Claude API·Cloudflare만(classes/anthropic.kdl:128, 18.4.6은 kdl:129). wire의 block_binding은 prefixBinding과 binding
 	// controls가 둘 다 참일 때만 나간다(anthropic.ts prefixMismatchBehavior). models.yml은 thinking override의
 	// prefixBinding을 스키마에서 조용히 버리고 공개 설치에는 없으므로 설정으로 켜지 않는다.
 	{
@@ -8144,23 +8144,38 @@ function parentSubagentServiceTiers(
 		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
 	},
 	{
-		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 kdl:69와 같은 모양). 18.4.4·18.4.5 공통 앵커.
-		// 18.4.4 적용본은 이 patched 바로 뒤에 binding controls 규칙이 붙어 있어 marker가 그대로 성립한다.
+		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.6은 kdl 한 줄 이동으로
+		// source가 kdl:61이고 규칙 본문은 같다. alternate는 18.4.4·18.4.5 공통 kdl:60 앵커다. 두 후보의 marker는 source가
+		// 달라 서로의 결과·순정본에 들어 있지 않다. 18.4.4 적용본은 kdl:60 patched 바로 뒤에 binding controls 규칙이 붙어
+		// 있어 alternate marker가 그대로 성립한다.
 		file: "../pi-catalog/src/compat/rules.json",
-		marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
-		patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
+		patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		alternates: [{
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
+			patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}],
 	},
 	{
 		// binding controls 규칙은 그 버전의 upstream Sonnet 5.5 binding 규칙 바로 뒤에 같은 provider 범위로 둔다.
-		// 18.4.5: kdl:128(anthropic·cloudflare). alternate 18.4.4: kdl:106(anthropic·cloudflare·vertex).
-		// 18.4.4 라이브 적용본은 옛 위치(kdl:60 뒤)에 같은 규칙이 있어 alternate marker로 applied이다. 그 적용본의
-		// --revert는 patched가 연속으로 없으므로 엔진의 백업 경로(~/.omp/core-patch-backup)를 쓴다.
+		// 18.4.6: kdl:129, alternate 18.4.5: kdl:128(둘 다 anthropic·cloudflare, 규칙 본문 동일). alternate 18.4.4:
+		// kdl:106(anthropic·cloudflare·vertex). 18.4.6·18.4.5 후보는 추가 규칙이 같아 marker를 앞 Sonnet 규칙까지 포함한
+		// patched 전체로 둔다(같은 marker면 둘 다 applied라 ambiguous가 된다). 18.4.4 라이브 적용본은 옛 위치(kdl:60 뒤)에
+		// 같은 규칙이 있어 그 alternate marker로 applied이다. 그 적용본의 --revert는 patched가 연속으로 없으므로 엔진의
+		// 백업 경로(~/.omp/core-patch-backup)를 쓴다.
 		file: "../pi-catalog/src/compat/rules.json",
-		marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		anchor: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		patched: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		marker: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		anchor: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		patched: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		alternates: [{
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
 			file: "../pi-catalog/src/compat/rules.json",
 			marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}}',
@@ -8340,20 +8355,24 @@ function parentSubagentServiceTiers(
 		anchor: 'import { createRatchetPrelude } from "./ratchet/prelude";',
 		patched: 'import { createRatchetPrelude } from "./ratchet/prelude.ts";',
 	},
-	// P55. genuine 사용자 steer 가 아직 보이는 출력(text·toolCall)이 없는 진행 중 모델 요청을 끝까지 기다리지 않게 한다.
+	// P55. genuine 사용자 steer 가 진행 중 모델 요청을 끝까지 기다리지 않게 한다(사용자 결정: 즉시 반영, 재추론 사용량 감수).
 	// 2026-10-01 사용자 관측: Astra(xhigh) 4분짜리 추론 요청 중 넣은 steer 가 그 요청이 끝날 때까지(98.8s·169.6s)
 	// 큐에 머물렀고, Opus 는 바로 개입되는 것처럼 보였다. Agent.steer 는 큐에만 넣고 모델 스트림은 끊지 않으며
 	// (도구 실행만 interrupt), Codex native turn lane 은 `response.steer` 를 거절(P48 sticky)하고 SSE·Anthropic 은
-	// live 주입이 없다. 그래서 "보이는 출력이 아직 없음 + live 채널 미부착이거나 claim reject·defer" 일 때만
-	// 요청 전용 AbortSignal(promptToolAbortController 와 같이 provider signal 에만 병합)로 그 provider 호출을 끊고,
-	// partial 은 message_end 없이 버린다(context·persist·replay 에 남지 않음, 웹은 다음 message_start 가 live
-	// bubble 을 교체). 같은 run·같은 turn 안에서 steering 을 경계 주입해 새 요청을 보낸다. session/agent/loop abort·
-	// goal pause 는 건드리지 않는다. 이미 text·toolCall 이 보였으면 기존대로 boundary 처리(2026-09-20 "보이던 답 끊김"
-	// 계약, core-steer-stream-test.ts). native accept·내부 IRC/advisory/custom/agent steer·follow-up 은 대상이 아니다.
-	// 회귀: patches/core-steer-stream-test.ts(실제 Agent 루프 + Codex/SSE wire fixture).
+	// live 주입이 없다. r3(같은 날 두 번째 관측): native 가 steer 를 accept 해도 서버가 다음 output boundary 에서
+	// incomplete(steered)로 멈춰야 진행되는데, 멈추지 않으면 사용자가 직접 취소할 때까지 기다렸다(accept 뒤 9.4s 무응답).
+	// 그래서 tool call 이 아직 없는 요청이면 live 채널 미부착·claim reject·defer·accept 어느 쪽이든 요청 전용
+	// AbortSignal(promptToolAbortController 와 같이 provider signal 에만 병합)로 그 provider 호출을 끊는다. 이미 보인
+	// text 와 완료(_end)된 서명 reasoning 은 stop 으로 commit 하고 아직 스트리밍 중인 tail 만 버린다. 보인 것이 없으면
+	// partial 은 message_end 없이 버린다(context·persist·replay 에 남지 않음, 웹은 다음 message_start 가 live bubble 을
+	// 교체). 같은 run·같은 turn 안에서 steering(채널이 accept 한 것 포함, 정확히 한 번)을 경계 주입해 새 요청을 보낸다.
+	// session/agent/loop abort·goal pause·실행 중 도구는 건드리지 않는다. tool call 이 이미 보였으면 기존대로 boundary
+	// 처리. 내부 IRC/advisory/custom/agent steer·follow-up 은 대상이 아니다.
+	// 회귀: patches/core-steer-stream-test.ts(실제 Agent 루프 + Codex/SSE wire fixture + 실제 AgentSession).
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "class SteeringRestartInterruption extends Error {",
+		// r3 marker: r2 적용본(같은 class, 인자 없는 생성자)을 applied 로 보지 않는다.
+		marker: "	constructor(readonly committed?: AssistantMessage) {\n		super(\"User steering restarted the in-flight model request\");",
 		anchor: "class HarmonyLeakInterruption extends Error {",
 		patched: `/** CUELO P55: race token for a request-only restart requested by genuine user steering. */
 const STEER_RESTART = Symbol("steer-restart");
@@ -8366,12 +8385,13 @@ const STEER_RESTART = Symbol("steer-restart");
 export const STEER_DISCARDED_PARTIAL = Symbol("pi-agent-core.steer-discarded-partial");
 
 /**
- * CUELO P55: genuine user steering ended the in-flight request before it produced visible
- * output. The partial was discarded (never committed, persisted or replayed); the loop delivers
- * the steering at this boundary and re-requests in the same run.
+ * CUELO P55: genuine user steering ended the in-flight request. Visible output that already
+ * reached listeners is \`committed\` (stop); otherwise the partial was discarded (never committed,
+ * persisted or replayed). The loop delivers the steering at this boundary and re-requests in the
+ * same run.
  */
 class SteeringRestartInterruption extends Error {
-	constructor() {
+	constructor(readonly committed?: AssistantMessage) {
 		super("User steering restarted the in-flight model request");
 		this.name = "SteeringRestartInterruption";
 	}
@@ -8386,7 +8406,7 @@ function isGenuineUserSteer(message: AgentMessage): boolean {
 	);
 }
 
-/** CUELO P55: text or a tool call already reached listeners; such a partial is never discarded for steering. */
+/** CUELO P55: text or a tool call already reached listeners; such a partial is committed, never discarded. */
 function hasVisibleAssistantOutput(message: AssistantMessage | null): boolean {
 	return (
 		message?.content.some(
@@ -8413,7 +8433,7 @@ class HarmonyLeakInterruption extends Error {`,
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "const discardForSteerRestart = async (): Promise<never> => {",
+		marker: "const restartForSteering = async (): Promise<never> => {",
 		anchor: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
 			}
 
@@ -8439,31 +8459,42 @@ class HarmonyLeakInterruption extends Error {`,
 		patched: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
 			}
 
-			// CUELO P55: genuine user steering ends this request only while nothing visible streamed
-			// (no text, no tool call) and the provider cannot take it live: no pump attached to the
-			// channel (SSE, non-steering providers, before response.created) or the pump's claim was
-			// rejected/deferred (Codex native lane, P48). An accepted live steer keeps the request.
+			// CUELO P55: genuine user steering ends this request unless a tool call already streamed
+			// (that turn ends at its normal boundary, tool results first). A pump attached to the channel
+			// may still take the steer live, so the request waits for its claim to settle; once the claim
+			// is accepted, rejected or deferred, the request is replaced: an accepted steer only stops the
+			// response at a server-chosen boundary that may never come.
 			const steerChannel = providerCall.liveSteering;
 			let steerRestartClosed = false;
 			const requestSteerRestart = (): void => {
 				if (!steerRestartController || steerRestartClosed || steerRestartController.signal.aborted) return;
-				if (hasVisibleAssistantOutput(partialMessage)) return;
-				if (steerChannel?.attached && steerChannel.deferred.length === 0) return;
+				if (partialMessage?.content.some(block => block.type === "toolCall")) return;
+				if (
+					steerChannel?.attached &&
+					steerChannel.deferred.length === 0 &&
+					!steerChannel.accepted.some(isGenuineUserSteer)
+				) {
+					return;
+				}
 				steerRestartController.abort();
 			};
 			const detachUserSteeringRestart = steerRestartController
 				? config.onUserSteeringQueued?.(requestSteerRestart)
 				: undefined;
 			if (steerRestartController && steerChannel) {
-				steerChannel.onDeferred = () => {
-					if (steerChannel.deferred.some(isGenuineUserSteer) || hasNewUserSteering?.() === true) {
+				steerChannel.onClaimSettled = () => {
+					if (
+						steerChannel.accepted.some(isGenuineUserSteer) ||
+						steerChannel.deferred.some(isGenuineUserSteer) ||
+						hasNewUserSteering?.() === true
+					) {
 						requestSteerRestart();
 					}
 				};
 			}
 			const detachSteerRestart = (): void => {
 				detachUserSteeringRestart?.();
-				if (steerChannel) steerChannel.onDeferred = undefined;
+				if (steerChannel) steerChannel.onClaimSettled = undefined;
 			};
 			let steerRestartRace: Promise<typeof STEER_RESTART> | undefined;
 			if (steerRestartController) {
@@ -8471,18 +8502,36 @@ class HarmonyLeakInterruption extends Error {`,
 				steerRestartController.signal.addEventListener("abort", () => resolve(STEER_RESTART), { once: true });
 				steerRestartRace = promise;
 			}
-			// Drop the partial without message_end: listeners never receive it as a message, so it is
-			// not committed, persisted or replayed (the next message_start replaces the live bubble).
-			const discardForSteerRestart = async (): Promise<never> => {
+			// Visible text stays: commit it with the reasoning that completed before it (closed, signed
+			// blocks) and drop only the still-streaming tail. Nothing visible: drop the partial without
+			// message_end, so listeners never receive it as a message and it is not committed, persisted
+			// or replayed (the next message_start replaces the live bubble).
+			const restartForSteering = async (): Promise<never> => {
 				steerRestartClosed = true;
 				try {
 					const cleanup = responseIterator.return?.();
 					if (cleanup) void cleanup.catch(() => {});
 				} catch {
-					// Provider cancellation failures cannot resurrect the discarded partial.
+					// Provider cancellation failures cannot resurrect the discarded tail.
 				}
 				await speculationCoordinator?.discardAll("user steering restarted the request", "discarded");
 				speculationSettled = true;
+				if (addedPartial && partialMessage && hasVisibleAssistantOutput(partialMessage)) {
+					const committed = snapshotAssistantMessage({
+						...partialMessage,
+						content: partialMessage.content.filter((block, index) => {
+							if (block.type === "text") return block.text.trim().length > 0;
+							if (block.type === "thinking") return !openBlocks.has(index) && Boolean(block.thinkingSignature);
+							if (block.type === "redactedThinking") return !openBlocks.has(index);
+							return false;
+						}),
+						stopReason: "stop",
+					});
+					context.messages[context.messages.length - 1] = committed;
+					addedPartial = false;
+					stream.push({ type: "message_end", message: snapshotAssistantMessage(committed) });
+					throw new SteeringRestartInterruption(committed);
+				}
 				if (addedPartial) {
 					context.messages.pop();
 					addedPartial = false;
@@ -8506,10 +8555,10 @@ class HarmonyLeakInterruption extends Error {`,
 						if (result === ABORTED) {
 							return await finishAbortedStream();
 						}
-						// A chunk that raced the restart is dropped unseen: nothing visible had streamed.
+						// A chunk that raced the restart is dropped: it never reached listeners.
 						if (result === STEER_RESTART || steerRestartController?.signal.aborted) {
 							if (requestSignal?.aborted) return await finishAbortedStream();
-							return await discardForSteerRestart();
+							return await restartForSteering();
 						}
 						next = result;
 					} else {
@@ -8536,23 +8585,25 @@ class HarmonyLeakInterruption extends Error {`,
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await discardForSteerRestart();",
+		marker: "if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await restartForSteering();",
 		anchor: `			try {
 				let trailing = await response.result();`,
-		patched: `			// CUELO P55: the iterator ended after a restart was requested; discard instead of finalizing.
-			if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await discardForSteerRestart();
+		patched: `			// CUELO P55: the iterator ended after a restart was requested; restart instead of finalizing.
+			if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await restartForSteering();
 			steerRestartClosed = true;
 			try {
 				let trailing = await response.result();`,
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "if (err instanceof SteeringRestartInterruption) {",
+		marker: "if (err.committed) newMessages.push(err.committed);",
 		anchor: "					if (!(err instanceof HarmonyLeakInterruption)) throw err;",
 		patched: `					if (err instanceof SteeringRestartInterruption) {
-						// CUELO P55: the discarded partial never reached context or listeners. Deliver the
+						// CUELO P55: the committed visible output (if any) is already in context and was
+						// delivered with message_end; a discarded partial never reached either. Deliver the
 						// steering (plus anything the live channel took for the aborted response) at this
 						// boundary and re-request inside the same turn and run; run/goal state is untouched.
+						if (err.committed) newMessages.push(err.committed);
 						const channel = preparedProviderCall.liveSteering;
 						const taken = channel ? [...channel.accepted.splice(0), ...channel.deferred.splice(0)] : [];
 						const steering = [...taken, ...((await config.getSteeringMessages?.(signal)) || [])];
@@ -8569,12 +8620,12 @@ class HarmonyLeakInterruption extends Error {`,
 	},
 	{
 		file: "../pi-agent-core/src/live-steering.ts",
-		marker: "	attached = false;\n",
+		marker: "	onClaimSettled: (() => void) | undefined;\n",
 		anchor: "	readonly #queue: LiveSteeringQueue;\n",
 		patched: `	/** CUELO P55: a provider pump pulls from this channel (set on its first wait). */
 	attached = false;
-	/** CUELO P55: notified after input is deferred to the boundary (claim rejected or not convertible). */
-	onDeferred: (() => void) | undefined;
+	/** CUELO P55: notified after a claim settles: input accepted live, rejected, or deferred to the boundary. */
+	onClaimSettled: (() => void) | undefined;
 	readonly #queue: LiveSteeringQueue;
 `,
 	},
@@ -8586,15 +8637,22 @@ class HarmonyLeakInterruption extends Error {`,
 	},
 	{
 		file: "../pi-agent-core/src/live-steering.ts",
-		marker: "			this.deferred.push(...messages);\n			this.onDeferred?.();\n			return undefined;",
+		marker: "			this.deferred.push(...messages);\n			this.onClaimSettled?.();\n			return undefined;",
 		anchor: "			this.deferred.push(...messages);\n			return undefined;",
-		patched: "			this.deferred.push(...messages);\n			this.onDeferred?.();\n			return undefined;",
+		patched: "			this.deferred.push(...messages);\n			this.onClaimSettled?.();\n			return undefined;",
 	},
 	{
 		file: "../pi-agent-core/src/live-steering.ts",
-		marker: "				this.deferred.push(...messages);\n				this.onDeferred?.();\n			},",
+		marker: "				this.deferred.push(...messages);\n				this.onClaimSettled?.();\n			},",
 		anchor: "				this.deferred.push(...messages);\n			},",
-		patched: "				this.deferred.push(...messages);\n				this.onDeferred?.();\n			},",
+		patched: "				this.deferred.push(...messages);\n				this.onClaimSettled?.();\n			},",
+	},
+	{
+		// r3: accept 도 claim 정산이다. 채널이 받은 genuine steer 로 진행 중 요청을 교체한다(위 requestSteerRestart).
+		file: "../pi-agent-core/src/live-steering.ts",
+		marker: "				this.accepted.push(...messages);\n				this.onClaimSettled?.();\n",
+		anchor: "				this.accepted.push(...messages);\n",
+		patched: "				this.accepted.push(...messages);\n				this.onClaimSettled?.();\n",
 	},
 	// P55 r2: 버린 partial 은 Agent#runLoop 의 지역 `partial` 에 마지막 snapshot 으로 남는다(message_end 만 비운다).
 	// 경계의 steering dequeue 가 던지거나(예: AgentSession usage preflight 의 "Usage preflight cancelled") 비어 있고
