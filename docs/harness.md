@@ -8,7 +8,7 @@ OMP 하네스는 코딩 에이전트가 요구를 작업으로 나누고, 변경
 
 공개 저장소에는 역할·검수 절차와 런타임 확장, 정책 규칙, core 패치가 포함됩니다. 반면 계정이나 모델 선택 정보를 담는 `config.yml`·`models.yml`, 개인 skills, 작업 기록은 공개하지 않습니다. npm 패키지도 해당 개인 파일과 제공자 API 키, 독립 `omp` CLI를 동봉하지 않습니다. 설치에 필요한 Node/Bun/Git과 기능별 CLI·메모리 모델의 경계는 [설치 안내](installation.md#새-windows-pc에서-먼저-준비할-것)를 따릅니다.
 
-내장 코어는 OMP **18.4.10**을 사용합니다. upstream의 큐·창 선택 개선을 반영하면서 세션 격리와 하네스의 도구 계약을 유지합니다. 공식 standalone CLI와 패치된 내장 코어의 동작 범위는 구분합니다.
+내장 코어는 OMP **18.4.12**를 사용합니다. upstream의 큐·창 선택 개선을 반영하면서 세션 격리와 하네스의 도구 계약을 유지합니다. 공식 standalone CLI와 패치된 내장 코어의 동작 범위는 구분합니다.
 
 캐릭터 확장(`character-voice.ts`)의 RIN·MIO는 Anthropic OAuth 저장 목록의 0번·1번 자리를 기본으로 씁니다. 이 번호는 저장 순서일 뿐 계정 ID·이메일 같은 개인 정보가 아니며, 공개본에서도 코드 그대로 동작합니다. 해당 자리에 쓸 자기 계정은 `omp`로 직접 로그인해 준비합니다. 계정이 하나뿐인 상태에서 MIO로 전환하면 1번 자리 계정을 찾지 못했다고 알리고 현재 세션 모델을 유지합니다.
 
@@ -73,6 +73,8 @@ upstream 18.3.3부터 코어는 `task`·`bash`를 가진 SubAgent에 `wait`를 �
 SubAgent의 service tier는 `tier.subagent: inherit`으로 Main을 따르되, 패치된 내장 코어는 Main의 OpenAI Fast(`priority`)만 새 SubAgent에 넘깁니다. Main의 Anthropic·Google Fast와 Ultrafast·flex는 SubAgent로 자동 상속하지 않습니다. `tier.subagent`에 값을 직접 적거나 agent별 override를 두면 그 값이 그대로 적용됩니다. Fast를 지원하지 않는 모델에는 요청에 싣지 않습니다.
 
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
+
+upstream 18.4.12는 SubAgent가 빌드·테스트·스모크를 아예 돌리지 않고 검증을 Main에 넘기도록 바꿨습니다. 패치된 내장 코어는 이 계약을 위 분담으로 되돌립니다. Maker는 자기 변경의 집중 검사(테스트 파일 하나·타깃 재현·스모크)를 실행해 명령과 종료 코드를 보고하고, 실행할 수 없거나 무거운 통합 검사는 Main이 돌릴 정확한 명령으로 넘깁니다. 같은 작업 공간을 쓰는 Maker는 배정에 명시되지 않은 프로젝트 전체 빌드·포매터·린터·전체 테스트를 돌리지 않습니다. 형제 Maker의 미완 편집과 CPU 경합 때문입니다. 별도 worktree로 띄운 `isolated` Maker에는 이 금지가 없습니다. Main 세션의 프롬프트는 upstream 그대로입니다. upstream 18.4.11부터 실행 중인 SubAgent에 주기적으로 완료율을 묻는 기능(`task.completionProbeMs`, 기본 2분)은 묻는 횟수만큼 모델 요청이 늘어납니다. 공개 설치는 이 기본값을 바꾸지 않으므로, 끄려면 자기 `config.yml`의 `task.completionProbeMs`를 `0`으로 둡니다.
 
 교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다. Main이 혼자 끝낸 작업은 원장에 attempt가 없으므로, 패치된 코어가 Main·Maker 모든 세션에서 첫 턴에 실제로 전달한 기억 id를 LLM 문맥에 들어가지 않는 세션 기록(`mnemopi-recall`)으로 남깁니다. 이 기록과 세션 중 `recall` 결과의 id로 교훈이 전달된 세션과 그 뒤 같은 실패가 다시 났는지를 셀 수 있습니다.
 저장 범위도 Main이 판단합니다. 여러 프로젝트에 적용되는 사용자 선호와 작업 운영 원칙은 전역 기억(`global`)으로, 특정 저장소의 구현·경로·환경에 종속된 사실은 프로젝트 기억(`project`)으로 남깁니다. 기존 교훈이 있으면 중복 저장보다 연결·수정을 우선합니다.

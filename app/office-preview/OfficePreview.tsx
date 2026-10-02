@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { OfficeRail } from "@/components/office/OfficeFloor";
 import { OfficeStage } from "@/components/office/OfficeStage";
 import officeStyles from "@/components/office/office.module.css";
+import { useIsCompactWorkspace } from "@/hooks/useIsMobile";
 import { ACCOUNT_FACES } from "@/lib/hanse-resource-client";
 import {
   OFFICE_MAIN_KEY,
@@ -72,7 +73,8 @@ const SCENARIOS: Record<string, Scenario> = {
 };
 
 const MAIN_STATES: readonly OfficeMainState[] = ["idle", "working", "waiting", "attention"];
-const WIDTHS = [0, 375, 390, 768, 1365] as const;
+/** 1105 는 1365px 창에서 기본 사이드바(260px)를 뺀 대화 줄 폭이다. */
+const WIDTHS = [0, 375, 390, 768, 1105, 1365] as const;
 
 /** 미리보기의 얼굴 배정: provider 예약 얼굴, Anthropic 은 credential 1 → RIN, 2 → MIO. */
 const resolveFace: OfficeFaceResolver = (provider, credentialId) => {
@@ -122,6 +124,9 @@ export function OfficePreview() {
   const [pane, setPane] = useState<"floor" | "target">("floor");
   const [selectCount, setSelectCount] = useState(0);
   const [width, setWidth] = useState<(typeof WIDTHS)[number]>(0);
+  // 오피스 닫기: AppShell 처럼 무대를 내려 Canvas·렌더 루프를 반납한다.
+  const [stageOpen, setStageOpen] = useState(true);
+  const compact = useIsCompactWorkspace();
   // 장면은 브라우저 전용이다. 서버 렌더와 첫 하이드레이션에는 그리지 않는다.
   useEffect(() => setMounted(true), []);
 
@@ -195,6 +200,9 @@ export function OfficePreview() {
         >
           고른 Maker 제거
         </button>
+        <button type="button" data-control="toggle-stage" aria-pressed={stageOpen} onClick={() => setStageOpen((open) => !open)}>
+          {stageOpen ? "오피스 닫기" : "오피스 열기"}
+        </button>
         <span data-control="selection">selected={effective} pane={pane} clicks={selectCount}</span>
       </div>
       <div
@@ -202,7 +210,8 @@ export function OfficePreview() {
         data-office-pane={pane}
         style={{ display: "flex", flex: "1 1 auto", minHeight: 0, width: width === 0 ? "100%" : width, maxWidth: "100%", border: "1px solid var(--seed-color-stroke-neutral-muted)" }}
       >
-        {mounted && (
+        {/* AppShell 과 같다: 좁은 화면에서 대화 칸을 보는 동안에는 무대를 그리지 않는다. */}
+        {mounted && stageOpen && (!compact || pane === "floor") && (
           <OfficeStage
             roster={roster}
             selected={effective}
@@ -212,7 +221,8 @@ export function OfficePreview() {
           />
         )}
         {pane === "target" && (
-          <aside data-preview-target={effective} style={{ flex: "0 0 clamp(200px, 36%, 480px)", padding: 12, borderInlineStart: "1px solid var(--seed-color-stroke-neutral-muted)", overflow: "auto" }}>
+          // 실제 대화 칸과 같은 클래스라 office.module.css 의 열린 폭 규칙이 그대로 걸린다.
+          <aside className="chat-session-column" data-preview-target={effective} style={{ padding: 12, overflow: "auto" }}>
             <p style={{ margin: 0 }}>대화 칸 자리(미리보기에는 실제 대화가 없다)</p>
             <p style={{ margin: "4px 0 0", fontFamily: "var(--font-mono)" }}>{effective}</p>
           </aside>

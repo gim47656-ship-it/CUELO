@@ -64,6 +64,20 @@ const OPUS55_ROW_1846 = {
 		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
 };
 
+/**
+ * #310의 18.4.10 후보. binding controls만 켜고 18.4.6 결과와 `": true"` 공백으로 구분한다(EDITS 항목 주석). marker는
+ * patched 전체다: 18.4.12 후보와는 행 앞쪽 측정값 tps로만 갈리므로 tps 뒤 조각을 marker로 쓰면 둘 다 applied가 된다.
+ */
+const OPUS55_TPS_18410 = '"tps":95.2,';
+const OPUS55_TPS_18412 = '"tps":92.9,';
+const OPUS55_ROW_18410_PATCHED = OPUS55_ROW_1846.patched.replace('"supportsThinkingBindingControls":true', '"supportsThinkingBindingControls": true');
+const OPUS55_ROW_18410 = {
+	file: "../pi-catalog/src/models.json",
+	marker: OPUS55_ROW_18410_PATCHED,
+	anchor: OPUS55_ROW_1846.anchor.replace('"supportsDisplay":true}', '"supportsDisplay":true,"prefixBinding":true}'),
+	patched: OPUS55_ROW_18410_PATCHED,
+};
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -453,6 +467,136 @@ const EDITS = [
 		marker: "Validation ownership:",
 		anchor: " Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.",
 		patched: " Validation ownership: each task owner MUST run the smallest meaningful validation for its settled changes; do not blanket-ban independent checks. Defer only checks that depend on another writer's unfinished changes or concurrently mutate the same build output, cache, database, or profile; name one owner and run each shared check once after convergence, reusing valid results instead of repeating them in Main.",
+	},
+	{
+		// 18.4.12(upstream "subagents skip their own builds, tests, and smoke runs")는 subagent 렌더에서 # 5. Verify 전체를
+		// "NEVER verify your changes … unless your assignment explicitly instructs it" Hand-off 로 바꿨다. CUELO 계약은
+		// Maker 가 자기 변경을 집중 검사로 증명·보고하고 무거운 통합 검사는 Main 에 exact command 로 넘기는 것이다
+		// (agent/sop/_writer.md, rule://subagent 「검증 소유권」). 그래서 subagent 에도 Verify 본문(UI·버그·테스트 규칙)을
+		// 그대로 두고 subagent 줄만 앞에 붙인다. 프로젝트 전체 검사 금지는 이 템플릿에 worktree 정보가 없어 여기 두지 않고
+		// subagent-system-prompt.md 의 `{{#unless worktree}}` # Validation 이 맡는다(18.4.10 의미). 18.4.10 에는 subagent
+		// 분기가 없어 할 일이 없다: alternate 는 그 판 Verify 머리의 no-op 이고, 18.4.12 결과와 순정 어디에도 없는 문맥이다.
+		file: "src/prompts/system/system-prompt.md",
+		marker: "Scoped proof of your own change is yours:",
+		anchor: `{{#if subagent}}
+# 5. Hand-off
+Main agent verifies once after all subagents land; parallel runs storm the CPU and trip on siblings' half-finished edits.
+- NEVER verify your changes (builds, tests, linters, formatters, smoke runs) unless your assignment explicitly instructs it.
+- Changes complete → yield; name the checks main agent should run.
+{{else}}
+# 5. Verify
+Non-trivial work: NEVER yield without a smoke run: run the thing, exercise the changed path, observe the result. Tests alone are not proof.
+- Investigation: run it; output proves it; no tests.
+- UI: verify actual surface.
+{{#if browserEnabled}}
+  - Web: \`browser.open\` tab, direct helpers for actions, \`tab.run\` for custom JS; visual proof; \`tab.close\`. No tests unless existing suite breaks.
+{{/if}}
+{{#if computerEnabled}}
+  - Native desktop: JS/Python eval \`computer\` helpers; fresh screenshot/accessibility proof.
+{{/if}}
+  - TUI/CLI: launch actual program; observe interaction/output/state.
+{{#ifAny (not browserEnabled) (not computerEnabled)}}
+  - No runtime for changed surface: throwaway script/smoke test; report visual limit.
+{{/ifAny}}
+- Bug: reproduce before; confirm after. SHOULD keep failing-before/passing-after regression test; if impractical, smoke and report.
+- Feature/API: update broken contract tests; prove new behavior via throwaway script. New test ONLY for uncertain edge or user request.
+- Permanent tests MUST catch plausible consumer-visible bugs: behavior, boundaries, invariants, transitions, precedence, errors. Follow conventions; deterministic, isolated, full-suite-safe.
+- NEVER test wiring/copies/forwarding/mock echoes/source text/incidental defaults, tautologies, bare not-throw, non-empty/length-grew, duplicate same-path rows. Use throwaway scripts.
+- Existing wording/implementation/incidental-behavior tests: MUST delete, NEVER re-pin regardless of author.
+{{/if}}
+
+# 6. Cleanup
+{{#if subagent}}Permanent{{else}}After smoke proof: permanent{{/if}} fix/feature`,
+		patched: `# 5. Verify
+{{#if subagent}}
+Scoped proof of your own change is yours: run the single test file, targeted repro, or smoke run below that exercises the changed path, and report each command, exit status, and observed result. A check you cannot run here, or a heavy integration check main agent owns → yield its exact command for main agent to run.
+{{/if}}
+Non-trivial work: NEVER yield without a smoke run: run the thing, exercise the changed path, observe the result. Tests alone are not proof.
+- Investigation: run it; output proves it; no tests.
+- UI: verify actual surface.
+{{#if browserEnabled}}
+  - Web: \`browser.open\` tab, direct helpers for actions, \`tab.run\` for custom JS; visual proof; \`tab.close\`. No tests unless existing suite breaks.
+{{/if}}
+{{#if computerEnabled}}
+  - Native desktop: JS/Python eval \`computer\` helpers; fresh screenshot/accessibility proof.
+{{/if}}
+  - TUI/CLI: launch actual program; observe interaction/output/state.
+{{#ifAny (not browserEnabled) (not computerEnabled)}}
+  - No runtime for changed surface: throwaway script/smoke test; report visual limit.
+{{/ifAny}}
+- Bug: reproduce before; confirm after. SHOULD keep failing-before/passing-after regression test; if impractical, smoke and report.
+- Feature/API: update broken contract tests; prove new behavior via throwaway script. New test ONLY for uncertain edge or user request.
+- Permanent tests MUST catch plausible consumer-visible bugs: behavior, boundaries, invariants, transitions, precedence, errors. Follow conventions; deterministic, isolated, full-suite-safe.
+- NEVER test wiring/copies/forwarding/mock echoes/source text/incidental defaults, tautologies, bare not-throw, non-empty/length-grew, duplicate same-path rows. Use throwaway scripts.
+- Existing wording/implementation/incidental-behavior tests: MUST delete, NEVER re-pin regardless of author.
+
+# 6. Cleanup
+After smoke proof: permanent fix/feature`,
+		alternates: [{
+			file: "src/prompts/system/system-prompt.md",
+			marker: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
+			anchor: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
+			patched: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
+		}],
+	},
+	{
+		// 같은 18.4.12 변경이 project-prompt.md <critical> 의 검증 의무 줄을 subagent 에서 "verification is main agent's job.
+		// NEVER run it yourself …"로 바꿨다. 의무 줄을 모두에게 되돌리고 subagent 범위(집중 증명·exit status 보고·못 돌린
+		// 검사의 exact command)만 덧붙인다. 18.4.10 alternate 는 그 판 의무 줄(바로 뒤 </critical>)의 no-op 이다.
+		file: "src/prompts/system/project-prompt.md",
+		marker: "- As a subagent, that proof is a scoped check of your own change;",
+		anchor: `{{#if subagent}}
+- Changes complete → yield; verification is main agent's job. NEVER run it yourself unless your assignment explicitly instructs it.
+{{else}}
+- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.
+{{/if}}`,
+		patched: `- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.
+{{#if subagent}}
+- As a subagent, that proof is a scoped check of your own change; report its command and exit status, and yield the exact command for any check you cannot run so main agent runs it.
+{{/if}}`,
+		alternates: [{
+			file: "src/prompts/system/project-prompt.md",
+			marker: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
+			anchor: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
+			patched: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
+		}],
+	},
+	{
+		// 18.4.11 은 subagent-system-prompt.md 의 # Validation 절을 지웠다. 18.4.10 과 같은 자리·같은 `{{#unless worktree}}`
+		// 조건으로 되돌린다: 작업 트리를 형제와 공유할 때만 프로젝트 전체 빌드·포매터·린터·전체 스위트를 금지한다(형제의 미완
+		// 편집·CPU 경합). 집중 증명은 "fine"(허용)이 아니라 요구로 적는다 — 18.4.12 의 다른 두 템플릿과 같은 계약이고,
+		// 18.4.10 순정 문장과 구분돼 그 판에서 applied 로 보이지 않는다. 18.4.10 alternate 는 그 판 절 끝의 no-op 이다.
+		file: "src/prompts/system/subagent-system-prompt.md",
+		marker: "Scoped proof of your own change (single test file, targeted repro, smoke run) is still required: run it and report the result.",
+		anchor: "You are operating on a piece of work assigned to you by the main agent.\n\n{{#if worktree}}",
+		patched: `You are operating on a piece of work assigned to you by the main agent.
+
+{{#unless worktree}}
+# Validation
+Project-wide validation is the main agent's job, run once after all subagents land. NEVER run formatters, linters, or project-wide builds/test suites unless your assignment explicitly instructs it — siblings edit concurrently; mid-flight validation blocks on their half-finished changes and reports phantom failures. Scoped proof of your own change (single test file, targeted repro, smoke run) is still required: run it and report the result.
+{{/unless}}
+
+{{#if worktree}}`,
+		alternates: [{
+			file: "src/prompts/system/subagent-system-prompt.md",
+			marker: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
+			anchor: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
+			patched: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
+		}],
+	},
+	{
+		// 18.4.11 은 같은 파일 Completion 의 "investigate, edit, run, verify." 에서 run·verify 를 뺐다. 실행·검증을 되살리되
+		// 범위를 집중 검사로 적는다(18.4.10 문장과도 구분된다). 18.4.10 alternate 는 그 판 문장의 no-op 이다.
+		file: "src/prompts/system/subagent-system-prompt.md",
+		marker: "you MUST continue with another tool call — investigate, edit, run scoped checks, verify.",
+		anchor: "you MUST continue with another tool call — investigate, edit. Save narrative",
+		patched: "you MUST continue with another tool call — investigate, edit, run scoped checks, verify. Save narrative",
+		alternates: [{
+			file: "src/prompts/system/subagent-system-prompt.md",
+			marker: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
+			anchor: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
+			patched: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
+		}],
 	},
 	{
 		// 2026-09-15 실환경: 사용자가 보낸 steer 가 ask 시작 12.7초 전에 큐에
@@ -8314,11 +8458,14 @@ function parentSubagentServiceTiers(
 		// 18.4.10(#14019)은 이 행에 prefixBinding을 넣었지만 binding controls는 false로 남긴다. 18.4.10 후보는 binding controls만 켠다.
 		// 그 결과가 18.4.6 적용본과 바이트까지 같으면 두 후보가 함께 applied(ambiguous)이고, 문맥으로도 가를 수 없다(가장 가까운
 		// 18.4.6↔18.4.10 차이가 앵커 앞 53K자·뒤 249K자). 그래서 18.4.10 결과만 `": true"` 공백으로 구분한다. JSON.parse는 이 공백을 무시한다.
+		// 18.4.12: 같은 행의 측정값 tps가 95.2→92.9로 바뀌어 18.4.10 앵커가 사라졌다. thinking(prefixBinding true)·compat(binding
+		// controls false)는 18.4.10과 같으므로 본 후보는 18.4.10 후보에서 tps만 바꾼다. 두 판 결과는 tps 뒤가 같아 예전 marker(tps
+		// 뒤 조각)로는 둘 다 applied(ambiguous)가 되므로, 18.4.12·18.4.10 후보 모두 tps를 포함한 patched 전체를 marker로 쓴다.
 		file: "../pi-catalog/src/models.json",
-		marker: OPUS55_ROW_1846.marker.replace('"supportsThinkingBindingControls":true', '"supportsThinkingBindingControls": true'),
-		anchor: OPUS55_ROW_1846.anchor.replace('"supportsDisplay":true}', '"supportsDisplay":true,"prefixBinding":true}'),
-		patched: OPUS55_ROW_1846.patched.replace('"supportsThinkingBindingControls":true', '"supportsThinkingBindingControls": true'),
-		alternates: [OPUS55_ROW_1846],
+		marker: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
+		anchor: OPUS55_ROW_18410.anchor.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
+		patched: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
+		alternates: [OPUS55_ROW_18410, OPUS55_ROW_1846],
 	},
 	{
 		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.10은 upstream #14019가 kdl:61에

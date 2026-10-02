@@ -81,6 +81,8 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
   const [motions, setMotions] = useState<ReadonlyMap<string, OfficeMotion>>(() => new Map());
   const [hovered, setHovered] = useState<string | null>(null);
   const bubbles = useRef<OfficeBubbleRegistry>(new Map());
+  // 말풍선이 밑으로 들어가 가려지면 안 되는 머리글·닫기 버튼.
+  const reserved = useRef<OfficeBubbleRegistry>(new Map());
 
   // 배치는 누가 어느 캐릭터 자리로 참여했는지가 바뀔 때만 다시 짠다(상태만 바뀌면 그대로).
   const placementKey = roster.participants.map((participant) => `${participant.key}=${participant.seat ?? "?"}`).join("|");
@@ -111,9 +113,13 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
     if (element) bubbles.current.set(key, element);
     else bubbles.current.delete(key);
   }, []);
+  const reservedRef = useCallback((key: string) => (element: HTMLElement | null) => {
+    if (element) reserved.current.set(key, element);
+    else reserved.current.delete(key);
+  }, []);
 
   const closeButton = chatOpen ? (
-    <button type="button" className={styles.stageClose} onClick={onCloseChat} title={ot("office.closeChatTitle")}>
+    <button type="button" ref={reservedRef("close")} className={styles.stageClose} onClick={onCloseChat} title={ot("office.closeChatTitle")}>
       {ot("office.closeChat")}
       <span aria-hidden="true">✕</span>
     </button>
@@ -154,6 +160,7 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
               layout={layout}
               participants={sceneParticipants}
               bubbles={bubbles.current}
+              reserved={reserved.current}
               onSelect={onSelect}
               onHover={setHovered}
               onReady={markReady}
@@ -163,7 +170,7 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
           </Suspense>
         </SceneBoundary>
       </div>
-      <header className={styles.stageHeader}>
+      <header ref={reservedRef("header")} className={styles.stageHeader}>
         <h2 className={styles.floorTitle}>{ot("office.stage")}</h2>
         <p className={styles.floorSummary}>{ot("office.floorSummary", { count: roster.participants.length, running })}</p>
         <p className={styles.stageHint}>{ot("office.stageHint")}</p>

@@ -178,6 +178,8 @@
   display: none;
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t1-static);
+  /* 긴 안내는 말풍선 폭(22ch) 안에서 줄을 바꾼다. 넘친 글자가 테두리 밖으로 새지 않게. */
+  white-space: normal;
 }
 
 .bubble[aria-pressed="true"] .bubbleMotion,
@@ -187,11 +189,21 @@
   display: block;
 }
 
-/* 참여하지 않은 캐릭터의 이름표. 버튼이 아니고 상태 점도 없다 — 실행 중처럼 보이지 않게 흐리게 둔다. */
+/* 참여하지 않은 캐릭터의 이름표. 버튼이 아니고 상태 점도 없다 — 실행 중처럼 보이지 않게 흐리게 둔다.
+   휴게 구역에 일곱 명이 몰려도 덜 쌓이게 이름과 「쉬는 중」을 한 줄에 둔다. 안내는 가리킬 때만 아래 줄이다. */
 .restTag {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--seed-dimension-x1);
+  padding: 1px var(--seed-dimension-x1_5, 6px) 2px;
   border: 1px dashed var(--seed-color-stroke-neutral-muted);
   background: color-mix(in srgb, var(--seed-color-bg-neutral-weak) 85%, transparent);
   color: var(--seed-color-fg-neutral-muted);
+}
+
+.restTag .bubbleMotion {
+  flex-basis: 100%;
 }
 
 .restTag .bubbleName {

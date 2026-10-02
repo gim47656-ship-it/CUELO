@@ -2000,6 +2000,9 @@ export function AppShell({
               open={moreMenuOpen}
               onOpenChange={(open) => setMoreMenuOpen(open)}
               placement="bottom-end"
+              // 닫힌 positioner도 portal에 남고 트리거 추적을 멈춘다. absolute면 넓은 창에서 잰
+              // 마지막 좌표가 남아 창을 줄인 뒤 문서 폭을 늘리므로, fixed로 스크롤 영역에서 뺀다.
+              strategy="fixed"
             >
               <Menu.Trigger asChild>
                 <ActionButton

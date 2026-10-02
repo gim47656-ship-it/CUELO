@@ -23,6 +23,7 @@ import {
   UNKNOWN_APPEARANCE,
   buildCharacter,
   createCharacterKit,
+  disposeCharacter,
   poseCharacter,
   type CharacterKit,
   type CharacterPose,
@@ -54,9 +55,21 @@ const DESK_HEIGHT = 0.42;
 const DESK_DEPTH = 0.5;
 /** 옆자리와 말풍선을 엇갈릴 때 한 칸 높이(m). */
 const BUBBLE_LIFT = 0.42;
+/** 말풍선·이름표가 무대 가장자리와 서로에게서 띄우는 간격(px). */
+const BUBBLE_MARGIN = 4;
+/** 참여자 말풍선 꼬리(`.bubble::after`)가 아래로 내려오는 길이(px). */
+const BUBBLE_TAIL = 6;
 
 const CAMERA_TARGET = new THREE.Vector3(-0.15, 0.35, 0.2);
 const CAMERA_OFFSET = new THREE.Vector3(1.2, 4.9, 8.2);
+/**
+ * 화면에 늘 들어와야 하는 상자의 꼭짓점: 휴게 구역 왼쪽 끝부터 오른쪽 책상까지, 뒷줄 의자부터 앞쪽
+ * 러그까지, 바닥부터 머리 높이까지. 대화 칸을 열어 무대가 좁아져도 휴게 구역이 잘리지 않는다.
+ */
+const CAMERA_FRAME: readonly THREE.Vector3[] = [-3.95, 3.4].flatMap((x) => [0, 1.15].flatMap((y) => [-2, 3].map((z) => new THREE.Vector3(x, y, z))));
+/** 꼭짓점이 화면 끝에서 띄울 몫(NDC). */
+const CAMERA_FRAME_EDGE = 0.94;
+const CAMERA_DISTANCE_MAX = 2.6;
 
 function angleDelta(from: number, to: number): number {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
@@ -75,55 +88,192 @@ function motionOf(phase: Phase, plan: OfficeStagePlan): OfficeMotion {
 /** 장면 하나가 함께 쓰는 것: 도형·재질, 머리 위치(말풍선용), 퇴장한 캐릭터의 마지막 자리. */
 interface SceneShared {
   kit: CharacterKit;
-  /** 말풍선을 붙일 머리와, 옆자리와 엇갈리게 더 올릴 칸 수. */
-  heads: Map<string, { head: THREE.Object3D; lift: number }>;
+  /** 말풍선을 붙일 머리, 옆자리와 엇갈리게 더 올릴 칸 수, 휴게 구역 이름표인지. */
+  heads: Map<string, { head: THREE.Object3D; lift: number; rest: boolean }>;
   /** 같은 캐릭터가 참여자↔휴게 구역으로 바뀔 때 그 자리에서 이어 걷게 한다. */
   departed: Map<number, { point: FloorPoint; heading: number }>;
   reducedMotion: { current: boolean };
 }
 
-/** 창 비율이 좁아지면(대화 칸이 열리거나 작은 화면) 방 전체가 들어오도록 카메라를 뒤로 뺀다. */
+/**
+ * 무대 비율이 바뀌면(대화 칸이 열리거나 작은 화면) `CAMERA_FRAME` 이 다 들어오는 가장 가까운 거리로
+ * 카메라를 옮긴다. 넓은 화면의 기본 거리(1)보다 가까이 가지는 않는다.
+ */
 function CameraRig() {
   const camera = useThree((state) => state.camera);
   const aspect = useThree((state) => state.size.width / Math.max(state.size.height, 1));
   const invalidate = useThree((state) => state.invalidate);
   useEffect(() => {
-    const distance = aspect < 0.75 ? 1.75 : aspect < 1 ? 1.45 : aspect < 1.35 ? 1.18 : 1;
-    camera.position.copy(CAMERA_OFFSET).multiplyScalar(distance).add(CAMERA_TARGET);
-    camera.lookAt(CAMERA_TARGET);
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+    }
+    const point = new THREE.Vector3();
+    const place = (distance: number) => {
+      camera.position.copy(CAMERA_OFFSET).multiplyScalar(distance).add(CAMERA_TARGET);
+      camera.lookAt(CAMERA_TARGET);
+      camera.updateMatrixWorld();
+      return CAMERA_FRAME.every((corner) => {
+        point.copy(corner).project(camera);
+        return Math.abs(point.x) <= CAMERA_FRAME_EDGE && Math.abs(point.y) <= CAMERA_FRAME_EDGE;
+      });
+    };
+    let near = 1;
+    let far = CAMERA_DISTANCE_MAX;
+    if (!place(near)) {
+      for (let step = 0; step < 14; step += 1) {
+        const middle = (near + far) / 2;
+        if (place(middle)) far = middle;
+        else near = middle;
+      }
+      place(far);
+    }
     invalidate();
   }, [aspect, camera, invalidate]);
   return null;
 }
 
-/** 머리 위 말풍선 자리를 매 프레임 화면 좌표로 옮긴다. 첫 프레임을 그린 뒤 준비됐다고 알린다. */
-function BubbleProjector({ shared, bubbles, onReady }: { shared: SceneShared; bubbles: OfficeBubbleRegistry; onReady: () => void }) {
+/** 가운데로 당기되, 칸이 말풍선보다 좁으면 가운데에 둔다. */
+function clamp(value: number, min: number, max: number): number {
+  return max < min ? (min + max) / 2 : Math.min(max, Math.max(min, value));
+}
+
+interface PlacedRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * 이름표 바닥을 `start` 에서 시작해 겹치는 칸을 하나씩 넘어 위(`up`) 또는 아래로 옮긴다. 겹치지 않는
+ * 바닥 높이를, 무대 위·아래 끝을 넘으면 null 을 돌려준다. `rect` 는 그 자리로 고쳐 둔다.
+ */
+function settleTag(rect: PlacedRect, placed: readonly PlacedRect[], start: number, up: boolean, height: number, highest: number, lowest: number): number | null {
+  let at = start;
+  for (let guard = 0; guard <= placed.length; guard += 1) {
+    rect.top = at - height;
+    rect.bottom = at;
+    const hit = placed.find((other) => rect.left < other.right && other.left < rect.right && rect.top < other.bottom && other.top < rect.bottom);
+    if (!hit) return at;
+    at = up ? hit.top - BUBBLE_MARGIN : hit.bottom + BUBBLE_MARGIN + height;
+    if (at < highest || at > lowest) return null;
+  }
+  return null;
+}
+
+/**
+ * 머리 위 말풍선 자리를 매 프레임 화면 좌표로 옮긴다. 첫 프레임을 그린 뒤 준비됐다고 알린다.
+ * 말풍선은 무대 안으로 당겨 가장자리에서 잘리거나 아래 참여자 줄에 걸치지 않고, 머리글·닫기 버튼
+ * (`reserved`) 밑으로 들어가 가려지지 않는다. 휴게 구역 이름표는 서로·참여자 말풍선과 겹치면
+ * 겹치지 않는 높이까지 위로(막히면 아래로) 비켜 선다.
+ */
+function BubbleProjector({ shared, bubbles, reserved, onReady }: {
+  shared: SceneShared;
+  bubbles: OfficeBubbleRegistry;
+  reserved: OfficeBubbleRegistry;
+  onReady: () => void;
+}) {
   const camera = useThree((state) => state.camera);
   const size = useThree((state) => state.size);
-  const scratch = useMemo(() => ({ point: new THREE.Vector3(), written: new Map<string, string>(), ready: false }), []);
+  const invalidate = useThree((state) => state.invalidate);
+  const scratch = useMemo(() => ({
+    point: new THREE.Vector3(),
+    written: new Map<string, string>(),
+    /** 말풍선 크기. 매 프레임 레이아웃을 읽지 않게 ResizeObserver 가 바뀔 때만 채운다. */
+    sizes: new Map<Element, { width: number; height: number }>(),
+    observer: null as ResizeObserver | null,
+    items: [] as { key: string; element: HTMLElement; x: number; y: number; depth: number; width: number; height: number; rest: boolean }[],
+    placed: [] as PlacedRect[],
+    blocked: [] as PlacedRect[],
+    ready: false,
+  }), []);
+  useEffect(() => {
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const box = entry.borderBoxSize?.[0];
+        const element = entry.target as HTMLElement;
+        scratch.sizes.set(element, box ? { width: box.inlineSize, height: box.blockSize } : { width: element.offsetWidth, height: element.offsetHeight });
+      }
+      invalidate();
+    });
+    scratch.observer = observer;
+    return () => {
+      observer?.disconnect();
+      scratch.observer = null;
+      scratch.sizes.clear();
+      scratch.written.clear();
+    };
+  }, [invalidate, scratch]);
   useFrame(() => {
+    // 머리글·닫기 버튼 자리. 이 프레임의 말풍선 쓰기 전에 읽어 강제 레이아웃이 생기지 않는다.
+    const blocked = scratch.blocked;
+    blocked.length = 0;
+    for (const element of reserved.values()) {
+      const left = element.offsetLeft;
+      const top = element.offsetTop;
+      blocked.push({ left, top, right: left + element.offsetWidth, bottom: top + element.offsetHeight });
+    }
+    const items = scratch.items;
+    items.length = 0;
     for (const [key, anchor] of shared.heads) {
       const element = bubbles.get(key);
       if (!element) continue;
+      let box = scratch.sizes.get(element);
+      if (!box) {
+        box = { width: element.offsetWidth, height: element.offsetHeight };
+        scratch.sizes.set(element, box);
+        scratch.observer?.observe(element);
+      }
       anchor.head.getWorldPosition(scratch.point);
       scratch.point.y += CHARACTER_BUBBLE_Y - CHARACTER_HEIGHT + 0.22 + anchor.lift * BUBBLE_LIFT;
       scratch.point.project(camera);
-      const x = Math.round(((scratch.point.x + 1) / 2) * size.width);
-      const y = Math.round(((1 - scratch.point.y) / 2) * size.height);
-      const transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
-      if (scratch.written.get(key) === transform) continue;
-      scratch.written.set(key, transform);
-      element.style.transform = transform;
+      items.push({
+        key,
+        element,
+        x: ((scratch.point.x + 1) / 2) * size.width,
+        y: ((1 - scratch.point.y) / 2) * size.height,
+        depth: scratch.point.z,
+        width: box.width,
+        height: box.height,
+        rest: anchor.rest,
+      });
+    }
+    // 참여자 말풍선을 먼저 두고, 이름표는 앞(화면 아래)에 선 캐릭터부터 비켜 세운다.
+    items.sort((a, b) => (a.rest === b.rest ? (a.rest ? b.y - a.y : 0) : a.rest ? 1 : -1));
+    const placed = scratch.placed;
+    placed.length = 0;
+    for (const item of items) {
+      const tail = item.rest ? 0 : BUBBLE_TAIL;
+      const half = item.width / 2;
+      const x = clamp(item.x, half + BUBBLE_MARGIN, size.width - half - BUBBLE_MARGIN);
+      // 같은 세로줄에 머리글·닫기 버튼이 있으면 그 아래까지만 올라간다.
+      let highest = item.height + BUBBLE_MARGIN;
+      for (const area of blocked) {
+        if (x - half < area.right && area.left < x + half) highest = Math.max(highest, area.bottom + BUBBLE_MARGIN + item.height);
+      }
+      const lowest = size.height - BUBBLE_MARGIN - tail;
+      let y = clamp(item.y, highest, lowest);
+      const rect: PlacedRect = { left: x - half, right: x + half, top: y - item.height, bottom: y + tail };
+      if (item.rest) {
+        y = settleTag(rect, placed, y, true, item.height, highest, lowest) ?? settleTag(rect, placed, y, false, item.height, highest, lowest) ?? y;
+        rect.top = y - item.height;
+        rect.bottom = y;
+      }
+      placed.push(rect);
+      const transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
+      if (scratch.written.get(item.key) === transform) continue;
+      scratch.written.set(item.key, transform);
+      item.element.style.transform = transform;
       // 카메라에 가까운 캐릭터의 말풍선이 위로 온다.
-      element.style.zIndex = String(Math.round((1 - scratch.point.z) * 10000));
-      element.dataset.placed = "true";
+      item.element.style.zIndex = String(Math.round((1 - item.depth) * 10000));
+      item.element.dataset.placed = "true";
     }
     if (!scratch.ready) {
       scratch.ready = true;
       onReady();
     }
   });
-  useEffect(() => () => scratch.written.clear(), [scratch]);
   return null;
 }
 
@@ -327,6 +477,7 @@ function Actor({ actorKey, seat, shared, target, selected, onSelect, onHover, on
   }, [target, invalidate]);
 
   const bubbleLift = target.kind === "participant" ? target.station.bubbleLift : 0;
+  const rest = target.kind === "rest";
   // 같은 캐릭터가 방금 다른 역할로 이 방을 떠났으면 그 자리에서 이어 걷는다. 지울 때는 반대로
   // 마지막 자리를 남긴다. 레이아웃 효과라 같은 커밋의 퇴장 정리가 먼저 돈다.
   useLayoutEffect(() => {
@@ -340,13 +491,15 @@ function Actor({ actorKey, seat, shared, target, selected, onSelect, onHover, on
         state.phase = "walk";
       }
     }
-    shared.heads.set(actorKey, { head: rig.head, lift: bubbleLift });
+    shared.heads.set(actorKey, { head: rig.head, lift: bubbleLift, rest });
     return () => {
       shared.heads.delete(actorKey);
       if (seat !== null) shared.departed.set(seat, { point: { ...state.point }, heading: state.heading });
     };
-  }, [actorKey, bubbleLift, rig, seat, shared]);
+  }, [actorKey, bubbleLift, rest, rig, seat, shared]);
 
+  // 이 캐릭터만 쓰는 합친 도형은 캐릭터가 바뀌거나 내려갈 때 반납한다.
+  useEffect(() => () => disposeCharacter(rig), [rig]);
   useEffect(() => () => { gl.domElement.style.cursor = ""; }, [gl]);
 
   useFrame((frame, rawDelta) => {
@@ -489,6 +642,8 @@ export interface OfficeScene3DProps {
   layout: OfficeLayout;
   participants: readonly OfficeSceneParticipant[];
   bubbles: OfficeBubbleRegistry;
+  /** 말풍선이 밑으로 들어가면 안 되는 무대 위 DOM(머리글·닫기 버튼). 같은 무대 기준 좌표다. */
+  reserved: OfficeBubbleRegistry;
   onSelect: (key: string) => void;
   onHover: (key: string | null) => void;
   onReady: () => void;
@@ -510,7 +665,7 @@ function ContextLossWatch({ onContextLost }: { onContextLost: () => void }) {
   return null;
 }
 
-function SceneContents({ layout, participants, bubbles, onSelect, onHover, onReady, onMotionChange }: Omit<OfficeScene3DProps, "onContextLost">) {
+function SceneContents({ layout, participants, bubbles, reserved, onSelect, onHover, onReady, onMotionChange }: Omit<OfficeScene3DProps, "onContextLost">) {
   const shared = useMemo<SceneShared>(() => ({
     kit: createCharacterKit(),
     heads: new Map(),
@@ -575,7 +730,7 @@ function SceneContents({ layout, participants, bubbles, onSelect, onHover, onRea
       {layout.rest.map((place) => (
         <RestActor key={officeRestKey(place.seat)} place={place} shared={shared} onHover={onHover} />
       ))}
-      <BubbleProjector shared={shared} bubbles={bubbles} onReady={onReady} />
+      <BubbleProjector shared={shared} bubbles={bubbles} reserved={reserved} onReady={onReady} />
     </>
   );
 }
