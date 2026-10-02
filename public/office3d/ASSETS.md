@@ -1,13 +1,8 @@
 # Office 3D assets
 
-오피스 보기의 3D 사무실(`components/office/OfficeScene3D.tsx`)이 쓰는 자산이다. 방(바닥·벽·책상·의자·모니터)은
-코드의 three.js 기본 도형이라 파일이 없고, 아래 캐릭터 하나만 내려받아 둔다. 유료 자산은 쓰지 않는다.
+오피스 보기의 3D 사무실(`components/office/OfficeScene3D.tsx`)은 내려받은 모델·텍스처·애니메이션 파일을 쓰지 않는다.
+방(바닥·벽·책상·의자·노트북·소파)과 일곱 캐릭터는 모두 코드에서 three.js 기본 도형으로 만든다. 유료 자산은 쓰지 않는다.
 
-| 파일 | 크기 | 내용 | 원 출처 | 라이선스 |
-|---|---|---|---|---|
-| `RobotExpressive.glb` | 463,988 bytes | 전신 리깅 캐릭터 1개, 애니메이션 14개(Idle·Walking·Running·Sitting·Standing·Wave·Yes·No 등), 텍스처 없음 | three.js 저장소 `examples/models/gltf/RobotExpressive/RobotExpressive.glb`, 마지막 변경 커밋 [`b924f0c`](https://github.com/mrdoob/three.js/blob/b924f0cad4058dc4dde71445c796980c3cd5b5ed/examples/models/gltf/RobotExpressive/RobotExpressive.glb) | CC0 1.0 |
-
-- 원작자: Tomás Laulhé([Quaternius](https://quaternius.com/)). 표정 morph target 추가와 FBX2GLTF 변환은 Don McCurdy.
-- 라이선스 원문 위치: 같은 폴더의 three.js [`README.md`](https://github.com/mrdoob/three.js/blob/dev/examples/models/gltf/RobotExpressive/README.md)가 "CC0 1.0"이라고 밝히며,
-  CC0 1.0 원문은 <https://creativecommons.org/publicdomain/zero/1.0/legalcode> 이다. 사본은 `LICENSE-RobotExpressive.txt`.
-- 내려받은 그대로이며 바꾸지 않았다.
+- 캐릭터 겉모습과 동작(대기 숨쉬기·걷기·앉아 일하기·손짓·쉬기)은 `components/office/OfficeCharacter.ts` 한 곳에 있다.
+  각 캐릭터의 머리색·머리 모양·옷 색은 같은 저장소의 계정 아바타(`public/avatars/`)를 보고 정했다.
+- 이전에 쓰던 three.js 예제 로봇(`RobotExpressive.glb`, CC0 1.0)은 더 쓰지 않아 지웠다.

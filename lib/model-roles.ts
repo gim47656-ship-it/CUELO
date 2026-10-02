@@ -13,6 +13,7 @@ import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-re
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRoleAssignment, ModelRoleModelRef, ModelRoleScope } from "./api-types";
+import { HARNESS_ROLES } from "./harness-roles";
 
 export type { ModelRoleAssignment, ModelRoleModelRef, ModelRoleScope };
 
@@ -116,6 +117,10 @@ export function readConfiguredModelRoleRefs(settings: Settings): { provider: str
  * dictation, web, judge) resolve against the core's own per-role candidate pool — the pool the
  * image tool and friends actually draw from — because an image model is never in the chat list,
  * so a working `image` assignment used to be reported as matching no model.
+ *
+ * The core only knows a custom role once a profile assigns, tags, or cycles it, so the CUELO
+ * harness slots the profile has not touched are appended as unset rows after omp's own order.
+ * Listing them writes nothing; only an explicit `writeModelRole` does.
  */
 export function listModelRoles(
   settings: Settings,
@@ -123,7 +128,10 @@ export function listModelRoles(
   registry: Parameters<typeof roleCandidatePool>[2],
 ): ModelRoleAssignment[] {
   const builtinIds = new Set<string>(MODEL_ROLE_IDS);
-  return getKnownRoleIds(settings).map((role) => {
+  const known = getKnownRoleIds(settings);
+  const listed = new Set(known);
+  const roleIds = [...known, ...HARNESS_ROLES.filter((role) => !listed.has(role))];
+  return roleIds.map((role) => {
     const info = getRoleInfo(role, settings);
     const selector = settings.getModelRole(role);
     const candidates = isKindRole(role) ? roleCandidatePool(role, settings, registry) : availableModels;

@@ -47,7 +47,7 @@ const ko = {
   "office.currentStep": "현재 단계",
   "office.makerRecord": "{name} 작업 기록",
   "office.stage": "3D 사무실",
-  "office.stageHint": "캐릭터를 누르면 오른쪽에 대화 칸이 열립니다.",
+  "office.stageHint": "참여자 캐릭터나 말풍선을 누르면 오른쪽에 그 대상의 대화 칸이 열립니다.",
   "office.stageLoading": "사무실 불러오는 중…",
   "office.stageNoWebgl": "이 브라우저에서 WebGL을 쓸 수 없어 3D 사무실 대신 자리 카드로 보여 줍니다.",
   "office.stageAssetFailed": "3D 사무실 자산을 불러오지 못해 자리 카드로 보여 줍니다.",
@@ -60,6 +60,12 @@ const ko = {
   "office.motion.atDesk": "책상 곁에서 기다리는 중",
   "office.motion.idle": "쉬는 자리에서 대기",
   "office.motion.wave": "입력을 기다리며 부르는 중",
+  "office.motion.slump": "실패 뒤 책상 곁에 멈춤",
+  "office.retry": "다시 시도",
+  "office.absent": "참여 안 함",
+  "office.absentHint": "이 세션에 참여하지 않아 열 기록이 없습니다.",
+  "office.viewOnly": "기록 조회 전용",
+  "office.selectionGone": "고른 Maker가 이 세션 목록에서 사라져 Main 대화를 보여 줍니다.",
 } as const;
 
 type OfficeMessageKey = keyof typeof ko;
@@ -102,7 +108,7 @@ const en: Record<OfficeMessageKey, string> = {
   "office.currentStep": "Current step",
   "office.makerRecord": "{name} work record",
   "office.stage": "3D office",
-  "office.stageHint": "Click the character to open its chat on the right.",
+  "office.stageHint": "Click a participant or its bubble to open that chat on the right.",
   "office.stageLoading": "Loading the office…",
   "office.stageNoWebgl": "WebGL is unavailable in this browser, so the office is shown as seat cards.",
   "office.stageAssetFailed": "The 3D office assets failed to load, so the office is shown as seat cards.",
@@ -115,6 +121,12 @@ const en: Record<OfficeMessageKey, string> = {
   "office.motion.atDesk": "Waiting by the desk",
   "office.motion.idle": "Idle in the lounge",
   "office.motion.wave": "Calling for your input",
+  "office.motion.slump": "Stopped by the desk after failing",
+  "office.retry": "Try again",
+  "office.absent": "Not in session",
+  "office.absentHint": "Not part of this session, so there is no record to open.",
+  "office.viewOnly": "View only",
+  "office.selectionGone": "The selected Maker left this session's list, so Main's chat is shown.",
 };
 
 const zhCN: Record<OfficeMessageKey, string> = {
@@ -155,7 +167,7 @@ const zhCN: Record<OfficeMessageKey, string> = {
   "office.currentStep": "当前步骤",
   "office.makerRecord": "{name} 工作记录",
   "office.stage": "3D 办公室",
-  "office.stageHint": "点击角色即可在右侧打开对话。",
+  "office.stageHint": "点击参与者角色或其气泡，即可在右侧打开该对象的对话。",
   "office.stageLoading": "正在加载办公室…",
   "office.stageNoWebgl": "此浏览器无法使用 WebGL，改用座位卡片显示办公室。",
   "office.stageAssetFailed": "3D 办公室资源加载失败，改用座位卡片显示办公室。",
@@ -168,6 +180,12 @@ const zhCN: Record<OfficeMessageKey, string> = {
   "office.motion.atDesk": "在办公桌旁等待",
   "office.motion.idle": "在休息区空闲",
   "office.motion.wave": "正在等待你的输入",
+  "office.motion.slump": "失败后停在桌旁",
+  "office.retry": "重试",
+  "office.absent": "未参与",
+  "office.absentHint": "未参与本会话，没有可打开的记录。",
+  "office.viewOnly": "仅查看记录",
+  "office.selectionGone": "所选 Maker 已从本会话列表中消失，改为显示 Main 对话。",
 };
 
 const OFFICE_MESSAGES: Record<string, Record<string, string>> = { ko, en, "zh-CN": zhCN };

@@ -126,6 +126,7 @@ export function OfficeMakerPanel({
         <div className={styles.makerIdentity}>
           <h2 className={styles.makerName}>{participant.name}</h2>
           <p className={styles.makerMeta}>
+            <span className={styles.viewOnly}>{ot("office.viewOnly")}</span>
             <span>{roleLabel}</span>
             <span className={styles.mono}>{participant.model ?? ot("office.modelUnknown")}</span>
           </p>

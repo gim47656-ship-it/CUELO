@@ -85,6 +85,8 @@ export interface RoutingDeps {
   candidates?: (ctx: ExtensionContext, policy: RoutingPolicy) => Promise<Candidate[]>;
   /** 후보 provider별 계정 잔량. 생략하면 CUELO usage 사이드카(`OMP_USAGE_PORT`, 기본 30142)를 읽는다. */
   quota?: (providers: string[], signal?: AbortSignal) => Promise<QuotaSnapshot>;
+  /** 준비 단계 진단용 단조 시계(ms). 생략하면 performance.now. */
+  clock?: () => number;
   /** 발주 이력. 생략하면 기록·history 요약을 하지 않는다. 실패는 발주를 막지 않는다. */
   ledger?: RoutingLedger;
 }
@@ -730,11 +732,19 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         throw new Error("같은 task 계약에 더 최신 facts 준비가 있어 이전 라우팅 판단은 폐기되었습니다.");
       }
     };
+    const clock = deps.clock ?? (() => performance.now());
+    const startedAt = clock();
+    const elapsed = (from: number, to: number) => Math.max(0, Math.round(to - from));
+    // 고정 필드 진단. 숫자만 담으며 task 수와 무관하다. jevStarted는 이 호출이 실제로 시작한 judge 요청 수이고,
+    // 분류별 건수와 합산해 해석하지 않는다(한 요청이 decision·placement를 함께 판단할 수 있다).
+    const counts = { jevStarted: 0, decisionNew: 0, decisionReused: 0, placementNew: 0, placementReused: 0 };
     let quotaAbort: AbortController | undefined;
     try {
       const ownersByTask = contracts.map((contract) => relevantOwners(contract, allOwners));
       const refreshAttempts: RefreshAttempts = new Map();
+      const candidatesStartedAt = clock();
       const { available: candidates, unavailable: unavailableCandidates } = await candidateSet(ctx, current, refreshAttempts);
+      const candidatesDoneAt = clock();
       requireLatest();
       // 잔량은 시각마다 바뀌므로 revision·identity·Jev state 밖의 참고 정보로만 붙인다.
       // Jev 판단과 함께 시작하고, 이번 계정 잔량 조회가 끝난 뒤 배정 결과를 반환한다.
@@ -760,6 +770,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           reason: error instanceof Error ? error.message : String(error),
         });
       }
+      const judgeStartedAt = clock();
       const publications = await Promise.all(tasks.map(async (task, index) => {
         const contract = contracts[index]!;
         const owners = ownersByTask[index]!;
@@ -773,8 +784,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         let decisionPending = decisionCache.get(decisionKey);
         let placementPending = placementCache.get(placementKey);
 
+        // 소유자가 없으면 placement 판단 자체가 없으므로 어느 쪽으로도 세지 않는다. 새 decision 판단은 placement를 함께 덮어쓴다.
+        if (decisionPending) counts.decisionReused += 1;
+        if (decisionPending && placementPending && owners.length > 0) counts.placementReused += 1;
         if (!decisionPending) {
           const fullQuestions = { ...baseQuestions, ...ownerQuestions };
+          counts.jevStarted += 1;
+          counts.decisionNew += 1;
+          if (owners.length > 0) counts.placementNew += 1;
           const fullPending = judge(ctx, routingState(task.assessment, owners), fullQuestions, signal);
           decisionPending = cacheJudgment(
             decisionCache,
@@ -795,6 +812,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
             );
           }
         } else if (!placementPending && owners.length > 0) {
+          counts.jevStarted += 1;
+          counts.placementNew += 1;
           placementPending = cacheJudgment(
             placementCache,
             placementKey,
@@ -841,7 +860,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           },
         };
       }));
+      const quotaWaitStartedAt = clock();
       const quota = await quotaPending;
+      const quotaDoneAt = clock();
       requireLatest();
       const allocation = normalAllocation(current, candidates, quota);
       // 이력은 advisory다. revision·identity·Jev state 밖에 두며 읽기 실패는 빈 이력이다.
@@ -870,7 +891,15 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const name = tasks[index]!.name.trim();
         preparedContracts.set(name, [...(preparedContracts.get(name) ?? []), contracts[index]!]);
       });
+      const diagnostics = {
+        totalMs: elapsed(startedAt, quotaDoneAt),
+        candidatesMs: elapsed(candidatesStartedAt, candidatesDoneAt),
+        judgeWaitMs: elapsed(judgeStartedAt, quotaWaitStartedAt),
+        quotaExtraWaitMs: elapsed(quotaWaitStartedAt, quotaDoneAt),
+        ...counts,
+      };
       return {
+        diagnostics,
         candidates,
         unavailableCandidates,
         quota,
@@ -1127,7 +1156,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const request = params as { context: string; tasks: RouteTask[] };
         const batch = await prepareBatch(request.context, request.tasks, ctx, signal, String(callId ?? ""));
         // 준비 handle(plan)은 발주 identity가 아니므로(routing_verdict는 spawn identity) 모델 문맥에는 싣지 않고 details에만 둔다.
-        const view = { ...batch, routes: batch.routes.map(({ plan: _plan, ...route }) => route) };
+        // 준비 진단(diagnostics)도 details 전용이다. 모델 문맥에는 싣지 않는다.
+        const { diagnostics: _diagnostics, ...shared } = batch;
+        const view = { ...shared, routes: batch.routes.map(({ plan: _plan, ...route }) => route) };
         return { content: [{ type: "text", text: JSON.stringify(view) }], details: batch };
       },
     });

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { ModelRoleAssignment, ModelRoleScope } from "@/lib/api-types";
+import { HARNESS_ROLES } from "@/lib/harness-roles";
 import {
   formatModelRoleSelector,
   getModelRoleThinkingLevel,
@@ -30,6 +31,7 @@ interface Props {
 }
 
 const SCOPES: ModelRoleScope[] = ["global", "project"];
+const HARNESS_ROLE_IDS: readonly string[] = HARNESS_ROLES;
 
 function selectorFor(model: ModelEntry): string {
   return `${model.provider}/${model.id}`;
@@ -114,6 +116,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
   }, [cwd, scope, onRolesChanged]);
 
   const visibleRoles = useMemo(() => roles.filter((role) => !role.hidden), [roles]);
+  const harnessUnset = visibleRoles.some((role) => HARNESS_ROLE_IDS.includes(role.role) && !role.selector);
 
   if (!cwd) {
     return <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("roles.needsProject")}</div>;
@@ -128,11 +131,16 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
         <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
           {t("roles.description")}
         </div>
+        {!loading && harnessUnset && (
+          <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5, marginTop: 4 }}>
+            {t("roles.harnessNote")}
+          </div>
+        )}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t("roles.scope")}</span>
-        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ display: "flex", flexShrink: 0, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
           {SCOPES.map((option) => (
             <button
               key={option}
@@ -175,6 +183,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
             const currentThinkingLevel = getModelRoleThinkingLevel(role.selector);
             const thinkingKey = role.resolved ? `${role.resolved.provider}:${role.resolved.modelId}` : "";
             const thinkingOptions = getModelRoleThinkingOptions(thinkingLevels[thinkingKey]);
+            const harness = HARNESS_ROLE_IDS.includes(role.role);
             return (
               <div
                 key={role.role}
@@ -188,7 +197,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                   background: "var(--bg-panel)",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, rowGap: 6 }}>
                   <span style={{
                     flexShrink: 0,
                     minWidth: 62,
@@ -208,8 +217,13 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
 
                   <div style={{ minWidth: 0, flex: "0 0 auto", width: 128 }}>
                     <div style={{ fontSize: 12, color: "var(--text)", fontWeight: 600 }}>{role.name}</div>
+                    {harness && (
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.35 }}>
+                        {t(`roles.harness.${role.role}`)}
+                      </div>
+                    )}
                     <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
-                      {t(`roles.source.${role.source}`)}
+                      {harness && !role.selector ? t("roles.harnessUnset") : t(`roles.source.${role.source}`)}
                     </div>
                   </div>
 
@@ -217,7 +231,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                     value={current}
                     disabled={pendingRole === role.role}
                     ariaLabel={role.name}
-                    style={{ flex: 1, minWidth: 160 }}
+                    style={{ flex: "1 1 160px", minWidth: 0 }}
                     onChange={(value) => {
                       if (!value) {
                         void assign(role.role, null);

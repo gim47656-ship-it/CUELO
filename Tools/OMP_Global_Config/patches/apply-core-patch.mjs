@@ -3296,72 +3296,20 @@ import { resolveUsedFraction } from "../usage";`,
 		patched: "import {\n\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n\tplanPriority,\n",
 	},
 	{
-		// 2026-09-29 사용자 정책: Anthropic 새/cold 재선택은 RIN(저장 순서 0)을 먼저 쓰고, RIN 이 주간 한도의
-		// 하루 구간(사용량 패널 paceOf 와 같은 기준: 지난 날 수 + 1 일치)을 넘으면 MIO 로 넘긴다. 날이 바뀌어
-		// 허용치가 늘면 다시 RIN 이다. 둘 다 넘었으면 덜 넘은 쪽. 옛 "주간 reset 이 빠른 계정 우선"(2026-09-26)을
-		// 대체한다(legacyPatched). 사용량 그림이 완전하고 건강한 후보만, upstream ranking 에서 이미 차지한
-		// 자리들 안에서만 재배열한다. unknown·partial·blocked·reserve·plan 부적격·5h hot 후보는 upstream 자리
-		// 그대로다. exact summon 은 이 앞에서 return 하고 warm/explicit pin·plan pin 재승격은 이 뒤에 온다.
-		// 18.4.5(#13889)는 비ranking 후보 목록 끝을 `}));` 에서 삼항 map 으로 바꾸고 ranking 비교기에 spent
-		// allowance 를 reserve 보다 앞에 넣었다. 재배열 대상은 한도 미도달·측정 완료(used<1) 후보뿐이라 spent
-		// 후보는 upstream 자리 그대로다. 앵커는 두 버전 모두 한 번 있는 preflightFailures 선언 한 줄이다.
+		// 2026-10-02 사용자 정책: "리셋이 얼마 안 남았는데 한도가 많이 남은 계정을 적극 쓴다". Anthropic 새/cold
+		// 선택에서 오늘 몫(사용량 패널 paceOf 와 같은 기준: (지난 날 수 + 1) / 창 일수) 안쪽 계정끼리는 저장
+		// 순서 대신 7d required drain(남은 비율 ÷ 리셋까지 남은 시간, upstream windowRequiredDrain 그대로)이 큰
+		// 계정을 먼저 쓴다. 몫을 넘은 계정은 몫 안쪽 계정 뒤(페이스 보호), 둘 다 넘었으면 덜 넘은 쪽, 동률은 저장
+		// 순서(위치 0 먼저). 2026-09-29 "몫 안쪽은 RIN(저장 순서 0) 먼저" 적용본을 대체한다(legacyPatched).
+		// 사용량 그림이 완전하고 건강한 후보만, upstream ranking 에서 이미 차지한 자리들 안에서만 재배열한다.
+		// unknown·partial·blocked·reserve·plan 부적격·5h hot 후보는 upstream 자리 그대로다. exact summon 은 이
+		// 앞에서 return 하고 warm/explicit pin·plan pin 재승격은 이 뒤에 온다(warm pin 은 shouldRank=false).
+		// 재배열 대상은 한도 미도달·측정 완료(used<1) 후보뿐이라 18.4.5 spent allowance 후보는 upstream 자리 그대로다.
+		// 앵커는 18.4.4~18.4.6 모두 한 번 있는 preflightFailures 선언 한 줄이다. 검증: core-account-order-test.ts.
 		file: "../pi-ai/src/auth/select.ts",
-		marker: "// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.",
+		marker: "// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.",
 		anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-		legacyPatched: `		// Prefer the healthy Anthropic account whose weekly window resets first.
-		// Only candidates with a complete, healthy usage picture move, and only among the slots they
-		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
-		// 5h-hot candidates keep their place. Ties: larger remaining weekly quota, then upstream order.
-		if (provider === "anthropic" && shouldRank && strategy) {
-			const nowMs = Date.now();
-			const weekly = candidates.map(candidate => {
-				const usage = candidate.usage;
-				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
-				const credential = candidate.selection.credential;
-				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
-					return undefined;
-				}
-				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
-					return undefined;
-				}
-				if (planGate && planGate(usage) !== true) return undefined;
-				const limits = reserveUsageLimits(strategy, usage, rankingContext);
-				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
-				const measured = limits.every(limit => {
-					const fraction = resolveUsedFraction(limit);
-					return (
-						limit.status !== "unknown" &&
-						typeof fraction === "number" &&
-						Number.isFinite(fraction) &&
-						fraction >= 0 &&
-						fraction < 1
-					);
-				});
-				if (!measured) return undefined;
-				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
-				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
-					return undefined;
-				}
-				const resetAt = secondary.window?.resetsAt;
-				const used = resolveUsedFraction(secondary);
-				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
-				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
-				return { resetAt, remaining: 1 - used };
-			});
-			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
-			const preferred = [...slots]
-				.sort((left, right) => {
-					const leftWeekly = weekly[left]!;
-					const rightWeekly = weekly[right]!;
-					return leftWeekly.resetAt - rightWeekly.resetAt || rightWeekly.remaining - leftWeekly.remaining || left - right;
-				})
-				.map(pos => candidates[pos]!);
-			slots.forEach((pos, order) => {
-				candidates[pos] = preferred[order]!;
-			});
-		}
-		const preflightFailures = new Set<OAuthCandidate>();`,
-		patched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
+		legacyPatched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
 		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
@@ -3420,6 +3368,133 @@ import { resolveUsedFraction } from "../usage";`,
 			});
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`,
+		patched: `		// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.
+		// Only candidates with a complete, healthy usage picture move, and only among the slots they
+		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
+		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
+		// Inside the slice: larger weekly required drain (upstream windowRequiredDrain) first.
+		// Over it: after every in-slice account, smaller overshoot first. Ties: storage order.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const dayMs = 86_400_000;
+			const weekly = candidates.map(candidate => {
+				const usage = candidate.usage;
+				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
+				const credential = candidate.selection.credential;
+				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
+					return undefined;
+				}
+				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
+					return undefined;
+				}
+				if (planGate && planGate(usage) !== true) return undefined;
+				const limits = reserveUsageLimits(strategy, usage, rankingContext);
+				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
+				const measured = limits.every(limit => {
+					const fraction = resolveUsedFraction(limit);
+					return (
+						limit.status !== "unknown" &&
+						typeof fraction === "number" &&
+						Number.isFinite(fraction) &&
+						fraction >= 0 &&
+						fraction < 1
+					);
+				});
+				if (!measured) return undefined;
+				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
+				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
+					return undefined;
+				}
+				const resetAt = secondary.window?.resetsAt;
+				const durationMs = secondary.window?.durationMs;
+				const used = resolveUsedFraction(secondary);
+				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
+				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
+				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
+				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
+				return {
+					overshoot: Math.max(0, used - allowance),
+					drain: windowRequiredDrain(secondary, nowMs, strategy.windowDefaults.secondaryMs),
+					index: candidate.selection.index,
+				};
+			});
+			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
+			const preferred = [...slots]
+				.sort((left, right) => {
+					const a = weekly[left]!;
+					const b = weekly[right]!;
+					return (
+						Number(a.overshoot > 0) - Number(b.overshoot > 0) ||
+						a.overshoot - b.overshoot ||
+						(a.overshoot > 0 ? 0 : b.drain - a.drain) ||
+						a.index - b.index
+					);
+				})
+				.map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => {
+				candidates[pos] = preferred[order]!;
+			});
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`,
+	},
+	// 2026-10-02 사용자 정책: summon marker 없이 띄운 일반 maker child 는 부모 세션의 Anthropic 계정 고정(warm 자동
+	// pin·교체 exact pin 모두)을 물려받지 않고 위 순서 규칙으로 새로 고른다. 실제 경로: task 도구(task/index.ts) →
+	// runStructuredSubagent(structured-subagent.ts: credentialSourceSessionId = 부모 agent.sessionId) → runSubprocess
+	// → createAgentSession(sdk.ts) → authStorage.sessions.inherit. ‘린/미오 호출’ summon child 는 상속 뒤 character-voice
+	// before_agent_start 가 지정 위치 exact pin 을 다시 걸므로 그대로 둔다. 다른 provider·maker 아닌 child 상속은 그대로.
+	// 아래 네 파일 다섯 항목: inherit 의 provider 제외 인자, 그 타입, sdk 옵션·전달, executor 의 maker 판정.
+	// 검증: core-account-order-test.ts [상속].
+	{
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "\tinherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {",
+		anchor: `	inherit(sourceSessionId: string, targetSessionId: string): number {
+		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
+		let inherited = 0;
+		for (const provider of this.#pool.providers()) {
+			const credential = this.get(provider, sourceSessionId);
+			if (!credential) continue;`,
+		patched: `	inherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {
+		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
+		let inherited = 0;
+		for (const provider of this.#pool.providers()) {
+			if (skipProviders?.includes(provider)) continue;
+			const credential = this.get(provider, sourceSessionId);
+			if (!credential) continue;`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "\tinherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number;",
+		anchor: "\tinherit(sourceSessionId: string, targetSessionId: string): number;",
+		patched: `	/** \`skipProviders\`: providers whose affinity the target must choose fresh instead of copying. */
+	inherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number;`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "\tcredentialInheritSkipProviders?: readonly string[];",
+		anchor: "\tcredentialSourceSessionId?: string;\n\n\t/** Model to use. Default: from settings, else first available */",
+		patched: `	credentialSourceSessionId?: string;
+	/** Providers whose {@link credentialSourceSessionId} affinity is not copied; the child selects them fresh. */
+	credentialInheritSkipProviders?: readonly string[];
+
+	/** Model to use. Default: from settings, else first available */`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "options.credentialSourceSessionId, providerSessionId, options.credentialInheritSkipProviders);",
+		anchor: "\t\tmodelRegistry.authStorage.sessions.inherit(options.credentialSourceSessionId, providerSessionId);",
+		patched: `		modelRegistry.authStorage.sessions.inherit(
+			options.credentialSourceSessionId, providerSessionId, options.credentialInheritSkipProviders);`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\tcredentialInheritSkipProviders:",
+		anchor: "\t\t\t\tcredentialSourceSessionId: options.credentialSourceSessionId,\n",
+		patched: `				credentialSourceSessionId: options.credentialSourceSessionId,
+				// A plain maker picks its own Anthropic account; a character summon re-pins its exact one.
+				credentialInheritSkipProviders:
+					agent.name === "maker" && !/\\[character-summon\\s/u.test(task) ? ["anthropic"] : undefined,
+`,
 	},
 	{
 		// exact OAuth 가 해석되지 않으면 login API 키·18.4.5 config fallback 키(#13815)·env 키로 조용히 넘어가지 않는다.

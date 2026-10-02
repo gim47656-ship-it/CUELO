@@ -314,8 +314,8 @@ async function switchCharacterForSession(
   try {
     const switched = await pi.setModel(model);
     if (!switched) throw new Error(`${target.model} 인증을 사용할 수 없습니다.`);
-    // 교체와 summon 모두 exact pin이다. 일반 explicit pin은 다음 요청의 계정 랭킹(RIN 우선·하루
-    // 구간 초과 시 MIO)이 다른 계정으로 되돌릴 수 있어 교체 완료 보고와 실제 계정이 어긋났다.
+    // 교체와 summon 모두 exact pin이다. 일반 explicit pin은 다음 요청의 계정 랭킹(오늘 몫 안에서 리셋 임박·
+    // 잔량 많은 계정 우선)이 다른 계정으로 되돌릴 수 있어 교체 완료 보고와 실제 계정이 어긋났다.
     // exact pin은 sessions.release로 풀 수 없으므로 뒤에 실패할 단계가 없도록 마지막에 건다.
     if (
       targetCredentialId !== undefined &&

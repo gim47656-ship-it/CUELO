@@ -16,6 +16,7 @@ import {
   parseArgs,
   resolveProfile,
 } from "./install.mjs";
+import { HARNESS_ROLES as PANEL_HARNESS_ROLES } from "./lib/harness-roles.ts";
 
 function tempDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cuelo-install-${name}-`));
@@ -25,6 +26,11 @@ function write(root, relative, text) {
   fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
   fs.writeFileSync(path.join(root, relative), text);
 }
+
+test("the installer and the Model roles panel name the same harness slots", () => {
+  // install.mjs runs before dependencies exist and cannot import the app's TypeScript list.
+  assert.deepEqual(HARNESS_ROLES, [...PANEL_HARNESS_ROLES]);
+});
 
 test("harness copy adds only the listed public files and keeps every existing profile file", () => {
   const source = tempDir("source");

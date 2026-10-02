@@ -2459,6 +2459,7 @@ export function AppShell({
             onSelect={office.select}
             pane={office.pane}
             onShowFloor={() => office.setPane("floor")}
+            selectionGone={office.selected !== officeSelected}
           />
         ) : null}
       </div>

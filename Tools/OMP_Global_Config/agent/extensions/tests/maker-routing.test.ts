@@ -54,6 +54,7 @@ function harness(options: {
   judgeGateOnCall?: number;
   onJudge?: () => void;
   quota?: (providers: string[], signal?: AbortSignal) => Promise<QuotaSnapshot>;
+  clock?: () => number;
   ledger?: RoutingLedger;
   delegation?: string;
 } = {}) {
@@ -95,6 +96,7 @@ function harness(options: {
     },
     owners: () => owners,
     quota: options.quota ?? (async () => ({ state: "unavailable", observedAt: 0, reason: "test harness" })),
+    ...(options.clock ? { clock: options.clock } : {}),
     ...(options.ledger ? { ledger: options.ledger } : {}),
     judge: async (_ctx, request) => {
       requests.push(request);
@@ -1545,5 +1547,132 @@ describe("NORMAL UI/UX 전문성 경계", () => {
     h.setOwners([{ ...owner, active: false }]);
     await h.prepareBatch("UI 경계 발견", [h.task], {} as never);
     expect(await h.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toBeUndefined();
+  });
+});
+
+describe("maker_route 준비 단계 진단", () => {
+  const setImmediateTick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const diagnosticKeys = ["candidatesMs", "decisionNew", "decisionReused", "jevStarted", "judgeWaitMs", "placementNew", "placementReused", "quotaExtraWaitMs", "totalMs"];
+  const owner = (name: string) => ({ name, primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"] });
+
+  test("최초 준비는 실제 요청 수만큼 시작하고 같은 준비의 재사용은 신규 0이다", async () => {
+    const h = harness();
+    const first = await h.prepareBatch("같은 계약", [h.task], {} as never);
+    expect(first.diagnostics).toMatchObject({ jevStarted: 1, decisionNew: 1, decisionReused: 0, placementNew: 0, placementReused: 0 });
+    expect(first.diagnostics.jevStarted).toBe(h.requests.length);
+    const second = await h.prepareBatch("같은 계약", [h.task], {} as never);
+    expect(second.diagnostics).toMatchObject({ jevStarted: 0, decisionNew: 0, decisionReused: 1 });
+    expect(h.requests).toHaveLength(1);
+  });
+
+  test("진행 중 판단을 기다리는 동시 호출은 시작 호출에만 1을 귀속한다", async () => {
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const h = harness({ judgeGate: gate.promise, onJudge: () => reached.resolve() });
+    const a = h.prepareBatch("같은 계약", [h.task], {} as never);
+    await reached.promise;
+    const b = h.prepareBatch("같은 계약", [h.task], {} as never);
+    await setImmediateTick();
+    gate.resolve();
+    const [first, second] = await Promise.all([a, b]);
+    expect(first.diagnostics.jevStarted).toBe(1);
+    expect(second.diagnostics).toMatchObject({ jevStarted: 0, decisionNew: 0, decisionReused: 1 });
+    expect(first.diagnostics.jevStarted + second.diagnostics.jevStarted).toBe(h.requests.length);
+  });
+
+  test("decision과 placement를 함께 판단해도 요청은 1이고 owner만 바뀌면 placement만 신규다", async () => {
+    const h = harness();
+    h.setOwners([owner("FirstOwner")]);
+    const full = await h.prepareBatch("같은 계약", [h.task], {} as never);
+    expect(full.diagnostics).toMatchObject({ jevStarted: 1, decisionNew: 1, placementNew: 1, decisionReused: 0, placementReused: 0 });
+    expect(h.requests).toHaveLength(1);
+    h.setOwners([owner("SecondOwner")]);
+    const placementOnly = await h.prepareBatch("같은 계약", [h.task], {} as never);
+    expect(placementOnly.diagnostics).toMatchObject({ jevStarted: 1, decisionNew: 0, decisionReused: 1, placementNew: 1, placementReused: 0 });
+    expect(h.requests).toHaveLength(2);
+    const again = await h.prepareBatch("같은 계약", [h.task], {} as never);
+    expect(again.diagnostics).toMatchObject({ jevStarted: 0, decisionReused: 1, placementReused: 1, placementNew: 0 });
+    expect(h.requests).toHaveLength(2);
+  });
+
+  test("unavailable 뒤 재준비는 신규 요청이고 이후 성공 결과는 재사용으로 센다", async () => {
+    const h = harness({ failCalls: [1] });
+    const failed = await h.prepareBatch("실패", [h.task], {} as never);
+    expect(failed.routes[0]!.status).toBe("unavailable");
+    expect(failed.diagnostics).toMatchObject({ jevStarted: 1, decisionNew: 1 });
+    const recovered = await h.prepareBatch("재준비", [h.task], {} as never);
+    expect(recovered.diagnostics).toMatchObject({ jevStarted: 1, decisionNew: 1, decisionReused: 0 });
+    const reused = await h.prepareBatch("재사용", [h.task], {} as never);
+    expect(reused.diagnostics).toMatchObject({ jevStarted: 0, decisionReused: 1 });
+    expect(h.requests).toHaveLength(2);
+  });
+
+  test("quota가 판단보다 늦으면 판단 후 추가 대기로, 먼저 끝나면 0으로 잡고 시간은 음수가 아니다", async () => {
+    let now = 0;
+    const late = Promise.withResolvers<void>();
+    const lateQuota = harness({
+      clock: () => now,
+      quota: async () => { await late.promise; return { state: "unavailable", observedAt: 0, reason: "late" }; },
+    });
+    const pending = lateQuota.prepareBatch("같은 계약", [lateQuota.task], {} as never);
+    await setImmediateTick();
+    now = 20;
+    late.resolve();
+    const slow = (await pending).diagnostics;
+    expect(slow).toMatchObject({ totalMs: 20, candidatesMs: 0, judgeWaitMs: 0, quotaExtraWaitMs: 20 });
+
+    const gate = Promise.withResolvers<void>();
+    const candidateGate = Promise.withResolvers<void>();
+    now = 0;
+    const early = harness({ clock: () => now, judgeGate: gate.promise, candidateGate: candidateGate.promise });
+    const earlyPending = early.prepareBatch("같은 계약", [early.task], {} as never);
+    await setImmediateTick();
+    now = 7;
+    candidateGate.resolve();
+    await setImmediateTick();
+    now = 30;
+    gate.resolve();
+    const fast = (await earlyPending).diagnostics;
+    expect(fast).toMatchObject({ totalMs: 30, candidatesMs: 7, judgeWaitMs: 23, quotaExtraWaitMs: 0 });
+
+    now = 100;
+    const backward = harness({ clock: () => (now -= 5) });
+    const clamped = (await backward.prepareBatch("같은 계약", [backward.task], {} as never)).diagnostics;
+    for (const key of ["totalMs", "candidatesMs", "judgeWaitMs", "quotaExtraWaitMs"] as const) expect(clamped[key]).toBeGreaterThanOrEqual(0);
+  });
+
+  test("task 수와 무관하게 진단 필드가 고정이고 추천·후보·요청 수는 task 수만 따른다", async () => {
+    const names = ["FixA", "FixB", "FixC", "FixD", "FixE"];
+    const tasks = names.map((name) => ({ name, task: brief, assessment: { ...facts, goal: `${facts.goal} ${name}` } }));
+    const one = harness();
+    const many = harness();
+    const single = await one.prepareBatch("계약", [tasks[0]!], {} as never);
+    const batch = await many.prepareBatch("계약", tasks, {} as never);
+    expect(Object.keys(single.diagnostics).sort()).toEqual(diagnosticKeys);
+    expect(Object.keys(batch.diagnostics).sort()).toEqual(diagnosticKeys);
+    expect(batch.diagnostics.jevStarted).toBe(many.requests.length);
+    expect(batch.diagnostics.jevStarted).toBe(tasks.length);
+    expect(batch.candidates).toEqual(single.candidates);
+    expect(batch.routes[0]!.recommendations).toEqual(single.routes[0]!.recommendations);
+    expect(batch.routes[0]!.profile).toBe(single.routes[0]!.profile);
+  });
+
+  test("진단은 details에만 있고 모델용 text와 진단 값에는 브리프·경로·이름이 없다", async () => {
+    const h = harness();
+    h.setOwners([owner("SecretOwner")]);
+    const result = await h.tool.execute("call-1", {
+      context: "SECRET_MARKER 문맥", tasks: [{ name: h.task.name, task: `${brief}\nSECRET_MARKER`, assessment: facts }],
+    }, undefined, undefined, h.ctx);
+    const details = result.details as { diagnostics: Record<string, unknown> } & Record<string, unknown>;
+    expect(Object.keys(details.diagnostics).sort()).toEqual(diagnosticKeys);
+    const text = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+    expect(text).not.toHaveProperty("diagnostics");
+    expect(result.content[0]!.text).not.toContain("jevStarted");
+    const serialized = JSON.stringify(details.diagnostics);
+    for (const marker of ["SECRET_MARKER", "src/view.ts", "ViewFix", "SecretOwner", "구현 원문"]) expect(serialized).not.toContain(marker);
+    for (const value of Object.values(details.diagnostics)) expect(typeof value).toBe("number");
+    // 진단을 뺀 details 공통 필드는 text view와 같은 키를 가진다.
+    const { diagnostics: _diagnostics, ...rest } = details;
+    expect(Object.keys(text).sort()).toEqual(Object.keys(rest).sort());
   });
 });

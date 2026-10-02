@@ -200,13 +200,15 @@ export interface OfficeRailProps {
   pane: OfficePane;
   /** 대화 칸을 접고 공간으로 돌아간다. */
   onShowFloor: () => void;
+  /** 고른 Maker 가 목록에서 사라져 Main 으로 돌아왔는지. 조용히 다른 대상을 보여 주지 않게 알린다. */
+  selectionGone?: boolean;
 }
 
 /**
  * 하단 참여자 줄. 자리판의 선택과 같은 상태를 가리키고, 맨 앞에는 입력이 실제로 가는 곳을 늘
  * 적는다. 여기서 누구를 골라도 받는 사람은 바뀌지 않는다 — 보는 대상만 바뀐다.
  */
-export function OfficeRail({ roster, selected, onSelect, pane, onShowFloor }: OfficeRailProps) {
+export function OfficeRail({ roster, selected, onSelect, pane, onShowFloor, selectionGone = false }: OfficeRailProps) {
   const { ot } = useOfficeText();
   const present = useParticipantPresentation();
   const main = roster.participants[0];
@@ -217,6 +219,9 @@ export function OfficeRail({ roster, selected, onSelect, pane, onShowFloor }: Of
         <OfficeFace seat={main.seat} size={22} />
         <strong className={styles.recipientName}>{present(main).name}</strong>
       </div>
+      {selectionGone && pane === "target" && (
+        <p className={styles.railNote} role="status">{ot("office.selectionGone")}</p>
+      )}
       <div className={styles.chips} role="group" aria-label={ot("office.participants")}>
         <button type="button" className={styles.chip} aria-pressed={pane === "floor"} onClick={onShowFloor}>
           <span className={styles.chipName}>{ot("office.showFloor")}</span>
