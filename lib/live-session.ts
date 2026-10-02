@@ -16,9 +16,11 @@ import {
   buildDelegationContextAppend,
   buildLiveSessionPayload,
   buildSessionClose,
+  buildSessionContextAppend,
   chunkLiveContext,
   parseLiveServerEvent,
   type LiveClientMessage,
+  type LiveContextChannel,
   type LiveServerEvent,
 } from "@oh-my-pi/pi-coding-agent/live/protocol";
 import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS } from "@oh-my-pi/pi-coding-agent/live/voices";
@@ -38,6 +40,7 @@ import {
   extractLiveWireId,
   formatLiveTranscriptContent,
   LIVE_TRANSCRIPT_MESSAGE_TYPE,
+  parseLiveTranscriptContent,
   parseLiveWirePayload,
   updateLiveTranscript,
   type LiveEvent,
@@ -77,6 +80,9 @@ const SIDEBAND_CONNECT_TIMEOUT_MS = 15_000;
  * hold a live upstream socket open forever.
  */
 const ORPHAN_GRACE_MS = 60_000;
+/** Session history handed to the live model at call start; each entry is clipped first. */
+const HISTORY_DIGEST_CHARS = 2_400;
+const HISTORY_ENTRY_CHARS = 400;
 
 export class LiveError extends Error {
   constructor(
@@ -347,6 +353,71 @@ function appendDelegationContext(call: LiveCall, text: string, commentary: boole
   }
 }
 
+function appendSessionContext(call: LiveCall, text: string, channel?: LiveContextChannel): void {
+  for (const chunk of chunkLiveContext(text)) queueSend(call, buildSessionContextAppend(chunk, channel));
+}
+
+/** One history line for the live model: typed turns, Main answers and earlier voice turns. */
+function historyLine(message: unknown): string | undefined {
+  if (!message || typeof message !== "object" || !("role" in message)) return undefined;
+  const record = message as { role: unknown; content?: unknown; customType?: unknown; details?: unknown };
+  let speaker: string;
+  let text: string;
+  if (record.role === "user" || record.role === "assistant") {
+    speaker = record.role === "user" ? "User" : "Assistant";
+    text = assistantText(record.content).trim();
+  } else if (record.role === "custom" && record.customType === LIVE_TRANSCRIPT_MESSAGE_TYPE) {
+    const turn = parseLiveTranscriptContent(record.content, record.details);
+    if (!turn) return undefined;
+    speaker = turn.role === "user" ? "User (voice)" : "Assistant (voice)";
+    text = turn.text;
+  } else {
+    return undefined;
+  }
+  if (!text) return undefined;
+  return `${speaker}: ${text.length <= HISTORY_ENTRY_CHARS ? text : `${text.slice(0, HISTORY_ENTRY_CHARS).trimEnd()}…`}`;
+}
+
+/**
+ * The live model starts with only its system prompt, so "아까 그거" means nothing
+ * to it. Hand it the recent session as silent commentary when the call opens.
+ */
+function sendSessionHistory(call: LiveCall, wrapper: AgentSessionWrapper): void {
+  const lines: string[] = [];
+  let size = 0;
+  const messages = wrapper.inner.messages;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const line = historyLine(messages[index]);
+    if (!line) continue;
+    if (size + line.length > HISTORY_DIGEST_CHARS && lines.length > 0) break;
+    lines.push(line);
+    size += line.length;
+  }
+  if (lines.length === 0) return;
+  lines.reverse();
+  appendSessionContext(
+    call,
+    `Conversation in this session before the call, oldest first. Background for continuity only; do not read it aloud.\n${lines.join("\n")}`,
+    "commentary",
+  );
+}
+
+/**
+ * A Main turn the call did not delegate (typed in chat during the call) still
+ * answers the same user, so its result is read out like a delegated one.
+ */
+function relayMainAnswer(call: LiveCall, messages: readonly unknown[]): void {
+  let answer = "";
+  for (let index = messages.length - 1; index >= 0 && !answer; index -= 1) {
+    const message = messages[index] as { role?: unknown; content?: unknown } | undefined;
+    if (message?.role === "assistant") answer = assistantText(message.content).trim();
+  }
+  if (!answer) return;
+  const request = historyLine(messages.find((message) => (message as { role?: unknown } | undefined)?.role === "user"));
+  if (request) appendSessionContext(call, `Typed in chat during the call. ${request}`, "commentary");
+  appendSessionContext(call, finalMessageContext(answer));
+}
+
 /**
  * A delegation is a normal agent turn. It is injected as a custom message with
  * `triggerTurn`, which is the same path the TUI uses, so the work lands in the
@@ -373,8 +444,12 @@ function startDelegation(call: LiveCall, wrapper: AgentSessionWrapper, itemId: s
     });
 }
 
-function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void {
-  if (!call.activeDelegationId) return;
+/** Main session events during a call. Exported so the relay to the live model can be tested without a socket. */
+export function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void {
+  if (!call.activeDelegationId) {
+    if (event.type === "agent_end" && event.isTerminal !== false) relayMainAnswer(call, event.messages);
+    return;
+  }
   if (event.type === "message_end") {
     // Tool-use turns are progress, not an answer: send them on the commentary
     // channel so the model can stay conversational without reciting them.
@@ -474,6 +549,7 @@ export function handleServerEvent(call: LiveCall, wrapper: AgentSessionWrapper, 
   switch (event.type) {
     case "session.started":
       setState(call, "live");
+      sendSessionHistory(call, wrapper);
       return;
     case "input_transcript.added": {
       const previous = call.transcripts.user;

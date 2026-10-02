@@ -211,6 +211,8 @@ export interface AgentSessionLike {
     authStorage?: Pick<AuthStorage, "health" | "reload" | "oauth" | "sessions">;
   };
   readonly sessionManager: SessionManager;
+  /** All messages including custom types (the live call reads its history from here). */
+  readonly messages: AgentMessage[];
   readonly settings: Settings;
   readonly agent: {
     state?: { systemPrompt?: string | string[]; thinkingLevel?: string };
