@@ -32,7 +32,8 @@ import { SidebarUsage } from "./SidebarUsage";
 import { useLounge } from "@/hooks/useLounge";
 import { LoungeMemberPanel } from "./lounge/LoungeMemberPanel";
 import { LoungeView } from "./lounge/LoungeView";
-import { OfficeFloor, OfficeRail } from "./office/OfficeFloor";
+import { OfficeRail } from "./office/OfficeFloor";
+import { OfficeStage } from "./office/OfficeStage";
 import { OfficeMakerPanel } from "./office/OfficeMakerPanel";
 import { useOfficeText } from "./office/i18n";
 import officeStyles from "./office/office.module.css";
@@ -1555,7 +1556,8 @@ export function AppShell({
   const officeMaker = officeRoster?.participants.find(
     (participant): participant is OfficeMakerParticipant => participant.kind === "maker" && participant.key === officeSelected,
   );
-  const officeFloorPane = office.open && isCompactWorkspace && office.pane === "floor";
+  // 오피스에서 공간만 보는 동안 대화 칸은 마운트된 채 가려지고 탭 순서·보조 기술에서도 빠진다.
+  const officeChatHidden = office.open && office.pane === "floor";
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -2320,14 +2322,26 @@ export function AppShell({
         {/* Chat content */}
         <div
           className={`chat-content-layout${office.open ? ` ${officeStyles.layout}` : ""}`}
-          data-office-pane={officeFloorPane ? "floor" : undefined}
+          data-office-pane={office.open ? office.pane : undefined}
         >
-          {/* 오피스 자리판은 대화 칸 옆(좁은 화면은 위)에 놓인다. 대화 칸과 ChatWindow는 같은 자리에
-              그대로 있어 보기를 바꿔도 다시 마운트되지 않는다. */}
+          {/* 오피스의 3D 공간은 대화 칸 앞(넓은 화면은 왼쪽 중심)에 놓인다. 대화 칸과 ChatWindow는 같은
+              자리에 그대로 있어 보기를 바꾸거나 캐릭터를 눌러도 다시 마운트되지 않는다. 좁은 화면에서
+              대화 칸을 보는 동안에는 공간을 그리지 않아 렌더 루프도 멈춘다. */}
           {officeRoster && (!isCompactWorkspace || office.pane === "floor") ? (
-            <OfficeFloor roster={officeRoster} selected={officeSelected} onSelect={office.select} />
+            <OfficeStage
+              roster={officeRoster}
+              selected={officeSelected}
+              chatOpen={office.pane === "target"}
+              onSelect={office.select}
+              onCloseChat={() => office.setPane("floor")}
+            />
           ) : null}
-          <div id="workspace-transcript" className="chat-session-column" data-lounge-open={loungeOpen ? "true" : undefined}>
+          <div
+            id="workspace-transcript"
+            className="chat-session-column"
+            data-lounge-open={loungeOpen ? "true" : undefined}
+            inert={officeChatHidden || undefined}
+          >
           {showChat ? (
             <ChatWindow
               key={sessionKey}
@@ -2443,7 +2457,6 @@ export function AppShell({
             roster={officeRoster}
             selected={officeSelected}
             onSelect={office.select}
-            compact={isCompactWorkspace}
             pane={office.pane}
             onShowFloor={() => office.setPane("floor")}
           />

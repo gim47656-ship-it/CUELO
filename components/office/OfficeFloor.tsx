@@ -126,8 +126,9 @@ export interface OfficeFloorProps {
 }
 
 /**
- * 오피스 왼쪽 자리판. 일곱 자리는 늘 같은 순서로 놓이고, 이 세션에 실제로 참여한 사람이 있는
- * 자리만 채워진다. 빈 자리는 비어 보이게 둔다 — 참여 수를 꾸며 내지 않는다.
+ * 오피스 자리판. 3D 공간(`OfficeStage`)을 그릴 수 없을 때 그 자리에 펼친다. 일곱 자리는 늘 같은
+ * 순서로 놓이고, 이 세션에 실제로 참여한 사람이 있는 자리만 채워진다. 빈 자리는 비어 보이게
+ * 둔다 — 참여 수를 꾸며 내지 않는다.
  */
 export function OfficeFloor({ roster, selected, onSelect }: OfficeFloorProps) {
   const { ot, locale } = useOfficeText();
@@ -195,9 +196,9 @@ export interface OfficeRailProps {
   roster: OfficeRoster;
   selected: string;
   onSelect: (key: string) => void;
-  /** 좁은 화면에서만 자리판 칸을 여는 버튼을 앞에 둔다. */
-  compact: boolean;
+  /** `floor` 면 공간만, `target` 이면 고른 대상의 대화 칸이 열려 있다. */
   pane: OfficePane;
+  /** 대화 칸을 접고 공간으로 돌아간다. */
   onShowFloor: () => void;
 }
 
@@ -205,7 +206,7 @@ export interface OfficeRailProps {
  * 하단 참여자 줄. 자리판의 선택과 같은 상태를 가리키고, 맨 앞에는 입력이 실제로 가는 곳을 늘
  * 적는다. 여기서 누구를 골라도 받는 사람은 바뀌지 않는다 — 보는 대상만 바뀐다.
  */
-export function OfficeRail({ roster, selected, onSelect, compact, pane, onShowFloor }: OfficeRailProps) {
+export function OfficeRail({ roster, selected, onSelect, pane, onShowFloor }: OfficeRailProps) {
   const { ot } = useOfficeText();
   const present = useParticipantPresentation();
   const main = roster.participants[0];
@@ -217,11 +218,9 @@ export function OfficeRail({ roster, selected, onSelect, compact, pane, onShowFl
         <strong className={styles.recipientName}>{present(main).name}</strong>
       </div>
       <div className={styles.chips} role="group" aria-label={ot("office.participants")}>
-        {compact && (
-          <button type="button" className={styles.chip} aria-pressed={pane === "floor"} onClick={onShowFloor}>
-            <span className={styles.chipName}>{ot("office.showFloor")}</span>
-          </button>
-        )}
+        <button type="button" className={styles.chip} aria-pressed={pane === "floor"} onClick={onShowFloor}>
+          <span className={styles.chipName}>{ot("office.showFloor")}</span>
+        </button>
         {roster.participants.map((participant) => {
           const presentation = present(participant);
           return (
@@ -229,7 +228,7 @@ export function OfficeRail({ roster, selected, onSelect, compact, pane, onShowFl
               key={participant.key}
               type="button"
               className={styles.chip}
-              aria-pressed={participant.key === selected && (!compact || pane === "target")}
+              aria-pressed={participant.key === selected && pane === "target"}
               onClick={() => onSelect(participant.key)}
             >
               <OfficeFace seat={participant.seat} size={22} />

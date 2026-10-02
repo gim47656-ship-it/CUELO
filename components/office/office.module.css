@@ -3,15 +3,175 @@
  * signature: the floor is a faint floor-plan grid; an empty desk looks empty (dashed, dimmed face) instead of a fake occupant
  */
 
-/* AppShell이 오피스를 열면 대화 칸을 감싼 줄(.chat-content-layout)에 붙는다. 좁은 화면의 자리판이
-   이 줄 위를 덮을 기준이다. */
+/* AppShell이 오피스를 열면 대화 칸을 감싼 줄(.chat-content-layout)에 붙고, 지금 칸(`pane`)을
+   data-office-pane 으로 단다. 3D 공간이 이 줄의 중심이다. */
 .layout {
   position: relative;
 }
 
-/* 좁은 화면에서 자리판을 보는 동안 대화 칸은 마운트된 채 가려진다(초안·스크롤 유지). */
+/* 공간만 보는 동안 대화 칸은 마운트된 채 흐름에서 빠져 가려진다(초안·스크롤 유지). AppShell이
+   같은 칸에 inert 도 걸어 탭 순서와 보조 기술에서도 빠진다. */
 .layout[data-office-pane="floor"] > :global(.chat-session-column) {
+  position: absolute;
+  inset: 0;
   visibility: hidden;
+}
+
+/* 넓은 화면에서 대화 칸을 열면 공간 오른쪽에 붙는다. 좁은 화면은 공간을 내리고 대화만 보인다. */
+.layout[data-office-pane="target"] > .stage ~ :global(.chat-session-column) {
+  flex: 0 0 clamp(360px, 42%, 720px);
+  border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
+}
+
+/* ---------- 3D 공간 ---------- */
+.stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 80% 70% at 50% 40%, var(--seed-color-bg-layer-default), var(--seed-color-bg-neutral-weak));
+}
+
+.stageCanvas {
+  position: absolute;
+  inset: 0;
+}
+
+.stageHeader {
+  position: absolute;
+  inset-block-start: var(--seed-dimension-x3);
+  inset-inline-start: var(--seed-dimension-x3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-inline-size: calc(100% - 180px);
+  pointer-events: none;
+}
+
+.stageClose {
+  position: absolute;
+  inset-block-start: var(--seed-dimension-x3);
+  inset-inline-end: var(--seed-dimension-x3);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5);
+  min-block-size: 36px;
+  padding: 0 var(--seed-dimension-x3);
+  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  border-radius: var(--seed-radius-full);
+  background: var(--seed-color-bg-layer-default);
+  color: var(--seed-color-fg-neutral);
+  font: inherit;
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: var(--seed-font-weight-bold);
+  cursor: pointer;
+}
+
+.stageClose:hover {
+  background: var(--bg-hover);
+}
+
+.stageLoading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  pointer-events: none;
+}
+
+.stageFooter {
+  position: absolute;
+  inset-block-end: var(--seed-dimension-x3);
+  inset-inline-start: var(--seed-dimension-x3);
+  max-inline-size: calc(100% - 2 * var(--seed-dimension-x3));
+}
+
+.stageMain {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x3) var(--seed-dimension-x1_5) var(--seed-dimension-x1_5);
+  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  border-radius: var(--seed-radius-r3);
+  background: color-mix(in srgb, var(--seed-color-bg-layer-default) 92%, transparent);
+  color: var(--seed-color-fg-neutral);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.stageMain:hover {
+  background: var(--bg-hover);
+}
+
+.stageMain[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.stageMainText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+}
+
+.stageMainName {
+  overflow: hidden;
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: var(--seed-font-weight-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stageMotion {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+/* WebGL 이 없거나 자산을 못 받으면 같은 자리에 기존 자리 카드를 편다. */
+.stageFallback {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+}
+
+.stageFallbackBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  min-block-size: 52px;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+}
+
+.stageFallbackBar > .stageClose {
+  position: static;
+  flex: none;
+  margin-inline-start: auto;
+}
+
+.stageNotice {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  line-height: 1.4;
+}
+
+.stageFallback > .floor {
+  flex: 1 1 auto;
+  border-inline-end: 0;
 }
 
 /* ---------- 자리판 ---------- */
@@ -33,11 +193,9 @@
   background-position: -1px -1px;
 }
 
-.layout[data-office-pane="floor"] > .floor {
-  position: absolute;
-  inset: 0;
-  z-index: 31;
-  border-inline-end: 0;
+/* 3D 공간 대신 펼친 자리판의 칸. 카드는 두 열 그대로다. */
+.stageFallback > .floor .desks {
+  max-inline-size: 720px;
 }
 
 .floorHeader {

@@ -109,6 +109,7 @@
   },
   "devDependencies": {
     "@lobehub/icons": "^5.16.0",
+    "@react-three/fiber": "^9.8.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/bun": "^1.4.0",
     "@types/js-yaml": "^4.0.9",
@@ -116,6 +117,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/three": "^0.186.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.2.12",
     "jiti": "^2.7.0",
@@ -131,6 +133,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwindcss": "^4.3.3",
+    "three": "^0.186.1",
     "typescript": "^5.9.3"
   }
 }

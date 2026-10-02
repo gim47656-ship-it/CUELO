@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { OFFICE_MAIN_KEY, type OfficeMakerAccount } from "@/lib/office/office-roster";
 
-/** 좁은 화면에서 오피스가 보여 주는 칸. 넓은 화면에서는 두 칸이 나란히 있어 쓰지 않는다. */
+/** 오피스가 보여 주는 칸. `floor` 는 3D 공간만, `target` 은 고른 대상의 대화 칸이 열린 상태다(넓은 화면은 공간 옆, 좁은 화면은 공간 대신). */
 export type OfficePane = "floor" | "target";
 
 const NO_ACCOUNTS: ReadonlyMap<string, OfficeMakerAccount> = new Map();
@@ -40,7 +40,7 @@ export function useOfficeView(sessionId: string | null) {
   }, []);
 
   const toggle = useCallback(() => {
-    // 오피스를 열 때 좁은 화면은 자리부터 보여 준다. 넓은 화면에서는 이 값을 쓰지 않는다.
+    // 오피스를 열 때는 늘 공간부터 보여 준다. 대화 칸은 캐릭터나 참여자를 골라야 열린다.
     if (!open) setPane("floor");
     setOpen(!open);
   }, [open]);
