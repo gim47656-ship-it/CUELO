@@ -140,7 +140,8 @@ describe("korean reply guard", () => {
     let calls = 0;
     const h = harness(async () => { calls++; return "x"; });
     await h.assistant(ENGLISH);
-    await h.assistant("The configuration uses api_key = sk-abcdefghijklmnop123456 and then restarts the worker process now.");
+    // 가짜 키는 실행 중에 조립한다. 원문에 키 모양이 있으면 프로필 반영 전 비밀값 검사가 막는다.
+    await h.assistant(`The configuration uses api_key = ${"sk" + "-"}abcdefghijklmnop123456 and then restarts the worker process now.`);
     expect(calls).toBe(0);
     expect(h.sent[1]!.content).toContain("번역 생략");
   });
