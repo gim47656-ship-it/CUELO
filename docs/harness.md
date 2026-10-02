@@ -76,6 +76,17 @@ Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증
 
 upstream 18.4.12는 SubAgent가 빌드·테스트·스모크를 아예 돌리지 않고 검증을 Main에 넘기도록 바꿨습니다. 패치된 내장 코어는 이 계약을 위 분담으로 되돌립니다. Maker는 자기 변경의 집중 검사(테스트 파일 하나·타깃 재현·스모크)를 실행해 명령과 종료 코드를 보고하고, 실행할 수 없거나 무거운 통합 검사는 Main이 돌릴 정확한 명령으로 넘깁니다. 같은 작업 공간을 쓰는 Maker는 배정에 명시되지 않은 프로젝트 전체 빌드·포매터·린터·전체 테스트를 돌리지 않습니다. 형제 Maker의 미완 편집과 CPU 경합 때문입니다. 별도 worktree로 띄운 `isolated` Maker에는 이 금지가 없습니다. Main 세션의 프롬프트는 upstream 그대로입니다. upstream 18.4.11부터 실행 중인 SubAgent에 주기적으로 완료율을 묻는 기능(`task.completionProbeMs`, 기본 2분)은 묻는 횟수만큼 모델 요청이 늘어납니다. 공개 설치는 이 기본값을 바꾸지 않으므로, 끄려면 자기 `config.yml`의 `task.completionProbeMs`를 `0`으로 둡니다.
 
+### Claude Code 실행 엔진(실험, 기본 꺼짐)
+
+Maker 한 명을 OMP 대신 Claude Code CLI로 실행할 수 있습니다. 서버 프로세스에 `CUELO_MAKER_ENGINES=claude`와 소스 checkout의 `lib/runtime` 절대 경로인 `CUELO_RUNTIME_DIR`가 모두 있을 때만 켜지고, 그때도 브리프에 `ENGINE: claude-code` 줄이 있는 일반 Maker 발주만 이 엔진을 씁니다. 줄이 없는 발주와 캐릭터 summon은 늘 OMP Maker로 실행합니다. npm 설치본에는 `lib/runtime`이 들어 있지 않습니다.
+
+- **모델:** Claude Code는 도구 실행과 루프만 맡습니다. 모델 요청은 실행마다 띄우는 loopback 전용 OMP auth-gateway(`/v1/messages`)로 가므로, 발주에 적은 모델(Anthropic이 아닌 모델 포함)과 omp에 저장된 자격 증명을 그대로 씁니다. Claude Code 자체 로그인은 쓰지 않습니다. 계정은 omp의 기본 선택 순서를 따르며, 부모 세션의 계정 고정은 이어받지 않습니다.
+- **권한:** 모든 도구를 승인 없이 여는 모드는 쓰지 않습니다. PreToolUse hook이 `OWNED_PATHS` 밖 파일 쓰기, raw git 커밋·푸시·이력 변경, 파괴 명령을 거절합니다. `OWNED_PATHS`가 없는 브리프는 쓰기를 모두 거절합니다. 셸 명령 속 쓰기는 근사 판정이라 `python -c`·`node -e` 같은 인터프리터 안의 파일 쓰기는 잡지 못합니다.
+- **규칙:** Maker SOP, 전역 규칙, 상위 `AGENTS.md`, 규칙·스킬 경로를 시스템 프롬프트로 넣고, Claude Code에 없는 OMP 도구(`write agent://Main`, `git_finalize` 등)를 알려 줍니다. 편집 전 확인은 결과 보고의 blocker 절로 대신합니다. 사용자 `~/.claude` 설정과 MCP는 쓰지 않습니다.
+- **결과와 이어받기:** 결과 끝에 Claude 세션 id, transcript 경로, `claude --resume <id>` 명령이 붙습니다. Main이 transcript를 읽고 이어 가거나 같은 세션을 재개할 수 있습니다. gateway 환경 없이 재개하면 사용자 본인의 Claude 로그인과 기본 모델로 이어집니다.
+- **취소:** Windows에서는 kill-on-close Job Object로 Claude Code와 그 자식 프로세스를 묶고, 모두 사라진 것을 확인한 뒤에 작업을 끝냅니다. job을 만들 수 없으면 실행하지 않습니다.
+- **빠지는 것:** 캐릭터 말투, 오피스·SubAgent 아카이브의 기록 표시, 비용 집계(토큰 사용량만 기록), 재시작 뒤 자동 재개(revive)는 지원하지 않습니다. 결과 형식 검증(`outputSchema`)도 하지 않습니다.
+
 교훈은 Mnemopi 기억으로 남습니다. `learn`은 Main 세션에만 있으며 저장한 기억 id를 결과에 돌려줍니다. Maker는 교훈을 직접 저장하지 않고 종료 보고에 교훈 후보(적용 조건·원인·바뀐 행동·성공 근거)를 싣습니다. 저장·기존 교훈 연결·기각은 Main이 정합니다. 패치된 내장 코어에서 Maker 세션은 첫 턴에 자기 작업 brief로 기억을 한 번 회상하고, 주입되는 `<memories>` 줄마다 `(id: …)`가 붙습니다. 이전에는 부모 Main의 첫 턴 회상만 물려받았습니다. Main은 위임 attempt가 실제로 적용한 교훈을 `routing_verdict`의 선택 필드 `appliedLessons`에 기억 id로 남기고, 적용 근거는 `evidenceLocators`로 남깁니다. 이 필드는 기록일 뿐 수용 조건을 바꾸지 않으며, 교훈의 효과를 자동으로 판정하지도 않습니다. Main이 혼자 끝낸 작업은 원장에 attempt가 없으므로, 패치된 코어가 Main·Maker 모든 세션에서 첫 턴에 실제로 전달한 기억 id를 LLM 문맥에 들어가지 않는 세션 기록(`mnemopi-recall`)으로 남깁니다. 이 기록과 세션 중 `recall` 결과의 id로 교훈이 전달된 세션과 그 뒤 같은 실패가 다시 났는지를 셀 수 있습니다.
 저장 범위도 Main이 판단합니다. 여러 프로젝트에 적용되는 사용자 선호와 작업 운영 원칙은 전역 기억(`global`)으로, 특정 저장소의 구현·경로·환경에 종속된 사실은 프로젝트 기억(`project`)으로 남깁니다. 기존 교훈이 있으면 중복 저장보다 연결·수정을 우선합니다.
 

@@ -2207,9 +2207,15 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 				return result;
 			});`,
 	},
-	// ---- task maker external runtime bridge (Codex app-server / Claude Code CLI) ----
-	// 분기는 코어가 provider/model/auth fallback 을 최종 승인한 뒤에만 일어난다.
-	// 두 env 중 하나라도 없거나 maker 이외 agent 면 기존 createAgentSession 경로를 그대로 탄다.
+	// ---- task maker external runtime bridge (Claude Code CLI, 발주별 opt-in) ----
+	// 분기는 코어가 provider/model/auth fallback 을 최종 승인한 뒤에만 일어난다. 기능 스위치
+	// (`CUELO_MAKER_ENGINES`에 `claude`, 절대 `CUELO_RUNTIME_DIR`)가 켜져 있고 브리프에 `ENGINE: claude-code`
+	// 줄이 있는 일반 maker 발주만 Claude Code로 간다. 표시 없는 발주·캐릭터 소환·기능 off는 기존
+	// createAgentSession 경로를 그대로 탄다. 모델은 이 프로세스의 AuthStorage로 만든 auth-gateway router가
+	// 해석된 발주 모델로 고정해 처리한다(Claude Code 자체 로그인 미사용).
+	// 판 사이 업그레이드: e04b463 판이 적용된 설치는 아래 두 항목의 `legacyPatched`(옛 적용본)를 새 본문으로 바꾼다.
+	// pathToFileURL import 항목은 e04b463 판과 같아 그대로 applied 로 읽힌다. 새 import 는 이웃 줄에 따로 단다:
+	// 옛 적용본이 새 patched 안에 그대로 들어 있으면 legacy 판정이 재적용 때마다 다시 맞기 때문이다.
 	{
 		file: "src/task/executor.ts",
 		marker: 'import { pathToFileURL } from "node:url";',
@@ -2219,7 +2225,15 @@ import { pathToFileURL } from "node:url";`,
 	},
 	{
 		file: "src/task/executor.ts",
-		marker: `type ExternalMakerEngine = "codex" | "claude";`,
+		marker: 'import { createAuthGatewayRouter } from "@oh-my-pi/pi-ai/auth-gateway";',
+		anchor: `import { ModelRegistry } from "../config/model-registry";`,
+		patched: `import { ModelRegistry } from "../config/model-registry";
+import { createAuthGatewayRouter } from "@oh-my-pi/pi-ai/auth-gateway";
+import { filterChildShellEnv, getAgentDir } from "@oh-my-pi/pi-utils";`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "const EXTERNAL_MAKER_OPT_IN = /^[ \\t]*ENGINE:[ \\t]*claude-code[ \\t]*$/mu;",
 		anchor: `function normalizeModelPatterns(value: string | string[] | undefined): string[] {
 	if (!value) return [];
 	if (Array.isArray(value)) {
@@ -2230,7 +2244,8 @@ import { pathToFileURL } from "node:url";`,
 		.map(entry => entry.trim())
 		.filter(Boolean);
 }`,
-		patched: `function normalizeModelPatterns(value: string | string[] | undefined): string[] {
+		// e04b463 판 적용본(provider 매핑·codex). 업그레이드 때 새 patched 로 바꾼다.
+		legacyPatched: `function normalizeModelPatterns(value: string | string[] | undefined): string[] {
 	if (!value) return [];
 	if (Array.isArray(value)) {
 		return value.map(entry => entry.trim()).filter(Boolean);
@@ -2296,6 +2311,96 @@ async function loadExternalMakerRuntime(
 	engine: ExternalMakerEngine,
 	runtimeDir: string,
 ): Promise<ExternalMakerRuntime> {
+	const moduleUrl = pathToFileURL(path.join(runtimeDir, "index.ts")).href;
+	const runtimeModule = (await import(moduleUrl)) as {
+		getRuntime?: (selected: ExternalMakerEngine) => Promise<ExternalMakerRuntime>;
+	};
+	if (typeof runtimeModule.getRuntime !== "function") {
+		throw new Error(\`CUELO runtime module does not export getRuntime(): \${moduleUrl}\`);
+	}
+	return runtimeModule.getRuntime(engine);
+}`,
+		patched: `function normalizeModelPatterns(value: string | string[] | undefined): string[] {
+	if (!value) return [];
+	if (Array.isArray(value)) {
+		return value.map(entry => entry.trim()).filter(Boolean);
+	}
+	return value
+		.split(",")
+		.map(entry => entry.trim())
+		.filter(Boolean);
+}
+
+type ExternalMakerEngine = "claude";
+type ExternalMakerEvent =
+	| { type: "session_started"; sessionId: string; engine: ExternalMakerEngine }
+	| { type: "text_delta"; text: string }
+	| { type: "reasoning_delta"; text: string }
+	| { type: "tool_started"; id: string; name: string; input: unknown }
+	| { type: "tool_completed"; id: string; output: string; isError: boolean }
+	| { type: "file_changed"; path: string }
+	| { type: "usage"; input: number; cachedInput: number; cacheWrite: number; output: number }
+	| { type: "turn_completed"; stopReason: "stop" | "aborted" | "error"; text: string }
+	| { type: "error"; message: string };
+
+interface ExternalMakerSession {
+	readonly id: string;
+	readonly engine: ExternalMakerEngine;
+	prompt(message: string): Promise<void>;
+	abort(): Promise<void>;
+	onEvent(handler: (event: ExternalMakerEvent) => void): () => void;
+	/** Resolves only after the external process tree is observed to have exited. */
+	dispose(): Promise<void>;
+}
+
+/** Shape of CUELO \`lib/runtime/types.ts\` \`ExternalMakerRuntime\`; keep the two in step. */
+interface ExternalMakerRuntime {
+	createSession(options: {
+		cwd: string;
+		model: string;
+		thinking?: string;
+		systemPrompt: string;
+		assignment: string;
+		agentDir: string;
+		env: Record<string, string>;
+		createGatewayRouter(): { route(req: Request, peer: string): Promise<Response>; close(): void };
+	}): Promise<ExternalMakerSession>;
+}
+
+const EXTERNAL_MAKER_OPT_IN = /^[ \\t]*ENGINE:[ \\t]*claude-code[ \\t]*$/mu;
+
+function resolveExternalMakerEngine(
+	agentName: string,
+	task: string,
+): { engine: ExternalMakerEngine; runtimeDir: string } | undefined {
+	if (agentName !== "maker" || !EXTERNAL_MAKER_OPT_IN.test(task)) return undefined;
+	// Character summons keep their exact account pin and voice, which only the OMP path carries.
+	if (/\\[character-summon\\s/u.test(task)) return undefined;
+	const engines = new Set(
+		(process.env.CUELO_MAKER_ENGINES ?? "")
+			.split(",")
+			.map(value => value.trim())
+			.filter(Boolean),
+	);
+	const runtimeDir = process.env.CUELO_RUNTIME_DIR?.trim();
+	if (!engines.has("claude") || !runtimeDir) {
+		logger.warn("ENGINE: claude-code requested but the Claude maker engine is disabled; using the OMP path", {
+			engines: [...engines],
+			runtimeDir: runtimeDir ?? null,
+		});
+		return undefined;
+	}
+	if (!path.isAbsolute(runtimeDir)) {
+		throw new Error("CUELO_RUNTIME_DIR must be an absolute path when the Claude maker engine is selected");
+	}
+	return { engine: "claude", runtimeDir };
+}
+
+async function loadExternalMakerRuntime(
+	engine: ExternalMakerEngine,
+	runtimeDir: string,
+): Promise<ExternalMakerRuntime> {
+	// The runtime lives in the CUELO app tree chosen at run time, outside this package.
 	const moduleUrl = pathToFileURL(path.join(runtimeDir, "index.ts")).href;
 	const runtimeModule = (await import(moduleUrl)) as {
 		getRuntime?: (selected: ExternalMakerEngine) => Promise<ExternalMakerRuntime>;
@@ -2440,7 +2545,7 @@ async function loadExternalMakerRuntime(
 	},
 	{
 		file: "src/task/executor.ts",
-		marker: "Running maker with external engine",
+		marker: "Running maker with Claude Code engine",
 		anchor: `			const sessionManagerPromise = sessionFile
 				? SessionManager.open(sessionFile, undefined, undefined, {
 						initialCwd: effectiveCwd,
@@ -2448,7 +2553,8 @@ async function loadExternalMakerRuntime(
 						suppressBreadcrumb: true,
 					})
 				: Promise.resolve(SessionManager.inMemory(effectiveCwd));`,
-		patched: `			const externalSelection = resolveExternalMakerEngine(agent.name, model);
+		// e04b463 판 적용본(env만으로 anthropic maker 전부 분기). 업그레이드 때 새 patched 로 바꾼다.
+		legacyPatched: `			const externalSelection = resolveExternalMakerEngine(agent.name, model);
 			if (externalSelection) {
 				const { engine, runtimeDir } = externalSelection;
 				progress.resolvedModelRoute = \`external-engine: \${engine}\`;
@@ -2521,6 +2627,116 @@ async function loadExternalMakerRuntime(
 						\`§ Assignment\\n\${task}\`;
 					readyAt = performance.now();
 					await awaitAbortable(externalSession.prompt(externalPrompt));
+					if (abortSignal.aborted || stopReason === "aborted") {
+						return {
+							exitCode: 1,
+							aborted: true,
+							abortReason: monitor.resolveAbortReasonText(),
+							durationMs: Date.now() - startTime,
+						};
+					}
+					if (stopReason !== "stop") {
+						throw new Error(externalError ?? \`External maker engine \${engine} ended without a successful turn\`);
+					}
+					return { exitCode: 0, durationMs: Date.now() - startTime };
+				} finally {
+					abortSignal.removeEventListener("abort", onExternalAbort);
+					unsubscribeExternal();
+					await externalSession.dispose();
+				}
+			}
+
+			const sessionManagerPromise = sessionFile
+				? SessionManager.open(sessionFile, undefined, undefined, {
+						initialCwd: effectiveCwd,
+						parentSession: options.sessionFile ?? undefined,
+						suppressBreadcrumb: true,
+					})
+				: Promise.resolve(SessionManager.inMemory(effectiveCwd));`,
+		patched: `			const externalSelection = resolveExternalMakerEngine(agent.name, task);
+			if (externalSelection) {
+				const { engine, runtimeDir } = externalSelection;
+				const externalModel = model;
+				if (!externalModel) {
+					throw new Error("ENGINE: claude-code needs a resolved model for the auth gateway; none was resolved");
+				}
+				progress.resolvedModelRoute = \`external-engine: \${engine}\`;
+				logger.info("Running maker with Claude Code engine", {
+					id,
+					engine,
+					provider: externalModel.provider,
+					model: externalModel.id,
+				});
+				emitSubagentFrame(options.eventBus, options.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+					id,
+					agent: agent.name,
+					parentToolCallId: options.parentToolCallId,
+					detached: options.detached,
+					agentSource: agent.source,
+					description: options.description,
+					status: "started" as const,
+					sessionFile: subtaskSessionFile,
+					index,
+				});
+				const externalSystemPrompt = prompt.render(subagentSystemPromptTemplate, {
+					agent: agent.systemPrompt,
+					context: options.context?.trim() ?? "",
+					planReference: options.planReference?.content ?? "",
+					planReferencePath: options.planReference?.path ?? "",
+					worktree: worktree ?? "",
+					outputSchema: undefined,
+					outputSchemaOverridesAgent: false,
+					workPoolYieldItems: [],
+					ircPeers: [],
+					ircParkedCount: 0,
+					ircOmittedCount: 0,
+					ircSelfId: "",
+				});
+				const runtime = await awaitAbortable(loadExternalMakerRuntime(engine, runtimeDir));
+				const sessionPromise = runtime.createSession({
+					cwd: effectiveCwd,
+					model: externalModel.id,
+					thinking: effectiveThinkingLevel,
+					systemPrompt: externalSystemPrompt,
+					assignment: task,
+					agentDir: getAgentDir(),
+					env: filterChildShellEnv(process.env, effectiveCwd),
+					// Every request from this run goes to the model the core already approved, with this
+					// process's credentials; the requested wire model name is not consulted.
+					createGatewayRouter: () =>
+						createAuthGatewayRouter({
+							storage: authStorage,
+							resolveModel: () => externalModel,
+							listModels: () => [externalModel],
+						}),
+				});
+				let externalSession: ExternalMakerSession;
+				try {
+					externalSession = await awaitAbortable(sessionPromise);
+				} catch (err) {
+					if (abortSignal.aborted) void sessionPromise.then(session => session.dispose()).catch(() => {});
+					throw err;
+				}
+				let stopReason: "stop" | "aborted" | "error" | undefined;
+				let externalError: string | undefined;
+				const unsubscribeExternal = externalSession.onEvent(event => {
+					if (event.type === "turn_completed") stopReason = event.stopReason;
+					if (event.type === "error") externalError = event.message;
+					monitor.acceptExternalEvent(event, engine);
+				});
+				const onExternalAbort = () => {
+					void externalSession.abort().catch(err => {
+						logger.debug("External maker abort failed", {
+							id,
+							engine,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
+				};
+				abortSignal.addEventListener("abort", onExternalAbort, { once: true });
+				try {
+					readyAt = performance.now();
+					await awaitAbortable(externalSession.prompt(task));
 					if (abortSignal.aborted || stopReason === "aborted") {
 						return {
 							exitCode: 1,
@@ -9129,7 +9345,8 @@ for (const entry of EDITS) {
 		}
 	}
 }
-
+// 테스트가 판 사이 업그레이드(legacyPatched)를 옛 본문 사본 없이 재현할 수 있게 내보낸다. import 는 여전히 아무것도 쓰지 않는다.
+export { EDITS };
 
 
 /**

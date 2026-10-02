@@ -160,6 +160,38 @@ const upgraded = run([]);
 check("옛 learn-id 패치를 최신으로 바꾼다", upgraded.code === 0 && readFileSync(learnPath, "utf8") === latestLearn,
 	`code=${upgraded.code} out=${upgraded.out.slice(-400)}`);
 
+// e04b463 판(외부 Maker env-only 분기)이 적용된 설치를 새 판으로 올려도 분기가 두 번 들어가지 않아야 한다.
+// 2026-10-03 실장애: 옛 적용본 위에 새 스크립트를 돌리자 `externalSelection` 이 두 번 선언됐다.
+// 옛 상태는 새 적용본에서 legacyPatched 를 되돌리고 e04b463 에 없던 import 항목을 빼서 만든다.
+const { EDITS } = (await import(pathToFileURL(SCRIPT).href)) as {
+	EDITS: Array<{ file: string; marker: string; anchor: string; patched: string; legacyPatched?: string }>;
+};
+const executorPath = join(fixture, "src/task/executor.ts");
+const latestExecutor = readFileSync(executorPath, "utf8");
+const bridgeLegacy = EDITS.filter(entry => entry.file === "src/task/executor.ts" && entry.legacyPatched !== undefined);
+const gatewayImport = EDITS.find(entry => entry.marker === 'import { createAuthGatewayRouter } from "@oh-my-pi/pi-ai/auth-gateway";');
+check("외부 Maker 분기의 e04b463 적용본 두 조각을 legacyPatched 로 안다", bridgeLegacy.length === 2 && gatewayImport !== undefined, `legacy=${bridgeLegacy.length}`);
+check(
+	"legacyPatched 는 새 patched 안에 들어 있지 않다(들어 있으면 재적용마다 다시 legacy 로 읽힌다)",
+	bridgeLegacy.every(entry => !entry.patched.includes(entry.legacyPatched!)),
+);
+let oldExecutor = latestExecutor;
+for (const entry of bridgeLegacy) oldExecutor = oldExecutor.replace(entry.patched, entry.legacyPatched!);
+if (gatewayImport) oldExecutor = oldExecutor.replace(gatewayImport.patched, gatewayImport.anchor);
+check(
+	"e04b463 실행기 본문을 재현한다",
+	oldExecutor.includes("resolveExternalMakerEngine(agent.name, model)") && !oldExecutor.includes("EXTERNAL_MAKER_OPT_IN") && !oldExecutor.includes("createAuthGatewayRouter"),
+);
+writeFileSync(executorPath, oldExecutor);
+const bridgeOldCheck = run(["--check"]);
+check("e04b463 분기는 MISSING(legacy)으로 판정한다", bridgeOldCheck.code === 1 && bridgeOldCheck.out.includes("legacy"), bridgeOldCheck.out.slice(-400));
+const bridgeUpgraded = run([]);
+const upgradedExecutor = readFileSync(executorPath, "utf8");
+check("e04b463 분기를 새 판으로 바꾸고 결과가 새 적용본과 같다", bridgeUpgraded.code === 0 && upgradedExecutor === latestExecutor, `code=${bridgeUpgraded.code} out=${bridgeUpgraded.out.slice(-400)}`);
+check("업그레이드 뒤 분기 선언은 하나다", upgradedExecutor.split("const externalSelection = resolveExternalMakerEngine(").length - 1 === 1);
+const bridgeAgain = run([]);
+check("업그레이드 뒤 재적용은 SKIP 이고 바꾸지 않는다", bridgeAgain.code === 0 && bridgeAgain.out.includes("SKIP") && readFileSync(executorPath, "utf8") === latestExecutor, bridgeAgain.out.slice(-200));
+
 const reverted = run(["--revert"]);
 check("--revert 는 복원 완료와 0 으로 끝난다", reverted.code === 0 && reverted.out.includes("복원 완료"), `code=${reverted.code} out=${reverted.out.slice(-2_000)}`);
 check("--revert 는 원본 바이트로 되돌린다", fixtureUnchanged());
