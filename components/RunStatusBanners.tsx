@@ -5,19 +5,13 @@ import { useEffect, useState, type ReactNode } from "react";
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 /** One line in the composer dock, shaped like the goal bar: a label and a sentence. */
-function DockLine({ label, tone, children }: { label: string; tone: "warning" | "accent"; children: ReactNode }) {
+function DockLine({ label, tone, children }: { label: string; tone: "accent"; children: ReactNode }) {
   return (
     <div className="run-status-line" data-tone={tone} role="status" aria-live="polite">
       <span className="run-status-label">{label}</span>
       <span className="run-status-text">{children}</span>
     </div>
   );
-}
-
-/** A running turn that has sent nothing for a while. It only informs; the run is left alone. */
-export function StallBanner({ stalled, t }: { stalled: boolean; t: Translate }) {
-  if (!stalled) return null;
-  return <DockLine label={t("chat.stallLabel")} tone="warning">{t("chat.stallMessage")}</DockLine>;
 }
 
 /** Triggers the SDK names on `auto_compaction_start`, plus the user's own `/compact`. */

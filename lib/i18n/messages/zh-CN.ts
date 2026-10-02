@@ -421,8 +421,6 @@ export const zhCNLocale: LocalePlugin = {
     "chat.searchPrevious": "上一个结果",
     "chat.searchNext": "下一个结果",
     "chat.searchClose": "关闭查找",
-    "chat.stallLabel": "静默",
-    "chat.stallMessage": "超过 3 分钟没有新事件。任务可能较慢或连接卡住；运行不会被中止。",
     "chat.compactionLabel": "压缩",
     "chat.compactionProgress": "正在压缩上下文 · {seconds} 秒",
     "chat.compactionReason.manual": "手动",

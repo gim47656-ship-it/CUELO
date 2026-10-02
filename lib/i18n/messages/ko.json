@@ -410,8 +410,6 @@
  "chat.searchPrevious": "이전 결과",
  "chat.searchNext": "다음 결과",
  "chat.searchClose": "찾기 닫기",
- "chat.stallLabel": "조용함",
- "chat.stallMessage": "3분 넘게 새 이벤트가 없어요. 작업이 오래 걸리거나 연결이 멈췄을 수 있어요. 실행은 그대로 둡니다.",
  "chat.compactionLabel": "압축",
  "chat.compactionProgress": "컨텍스트 압축 중 · {seconds}초",
  "chat.compactionReason.manual": "수동",

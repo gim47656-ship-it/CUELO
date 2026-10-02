@@ -2164,14 +2164,6 @@ span.linenumber {
   text-transform: uppercase;
 }
 
-.run-status-line[data-tone="warning"] {
-  border-color: var(--warning-line);
-}
-
-.run-status-line[data-tone="warning"] .run-status-label {
-  color: var(--warning);
-}
-
 .run-status-line[data-tone="accent"] .run-status-label {
   color: var(--accent);
 }

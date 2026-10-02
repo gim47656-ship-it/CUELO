@@ -32,7 +32,7 @@ import { buildDispatchLedger, placeDispatchCards, type DispatchSlot } from "@/li
 import { collectTurnBlocks, placeTurnSummaries, summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
-import { CompactionBanner, InterruptedRunNotice, StallBanner } from "./RunStatusBanners";
+import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
 import { resolveAccountFace, useAccountFace, type AccountFace } from "@/hooks/useAccountFaces";
@@ -635,7 +635,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     effectiveThinkingLevel, thinkingCeiling, fastMode, fastModeBusy, handleFastModeToggle,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
-    runStalled, runStateKnown,
+    runStateKnown,
     slashCommands, slashCommandsLoading, deliveryRows, subagents, todoPhases: reportedTodoPhases,
     notices, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection,
@@ -1611,7 +1611,6 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
           }}
         >
           <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
-            <StallBanner stalled={runStalled && agentRunning} t={t} />
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
             <ExtensionWidgets widgets={belowEditorWidgets} />

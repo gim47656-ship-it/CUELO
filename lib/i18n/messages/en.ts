@@ -421,8 +421,6 @@ export const enLocale = {
     "chat.searchPrevious": "Previous match",
     "chat.searchNext": "Next match",
     "chat.searchClose": "Close find",
-    "chat.stallLabel": "Quiet",
-    "chat.stallMessage": "No new events for over 3 minutes. The work may be slow or the connection stuck; the run keeps going.",
     "chat.compactionLabel": "Compacting",
     "chat.compactionProgress": "Compacting context · {seconds}s",
     "chat.compactionReason.manual": "manual",
