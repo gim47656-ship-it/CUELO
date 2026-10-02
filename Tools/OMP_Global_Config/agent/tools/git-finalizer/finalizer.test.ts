@@ -196,6 +196,38 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
   }, TEST_TIMEOUT_MS);
 
+  test("exports memories before the commit and carries the changed transport in it", async () => {
+    const { work, remote } = await createRepository();
+    const syncDir = join(work, "Tools", "OMP_Global_Config", "memory-sync");
+    await mkdir(syncDir, { recursive: true });
+    await writeFile(join(syncDir, "sync.ts"),
+      "const [mode, root] = process.argv.slice(2);\n"
+      + "if (mode !== 'export') process.exit(2);\n"
+      + "await Bun.write(root + '/Tools/OMP_Global_Config/memory-sync/memories.jsonl', 'lesson-from-this-pc\\n');\n");
+    await writeFile(join(work, "a.txt"), "changed-with-memory\n");
+
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(error).toBeUndefined();
+    const sha = git(work, ["rev-parse", "HEAD"]);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(sha);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).split(/\r?\n/).sort())
+      .toEqual(["Tools/OMP_Global_Config/memory-sync/memories.jsonl", "a.txt"]);
+    expect(JSON.stringify(output)).toContain("memories.jsonl");
+  }, TEST_TIMEOUT_MS);
+
+  test("still commits the requested files when the memory export fails", async () => {
+    const { work } = await createRepository();
+    const syncDir = join(work, "Tools", "OMP_Global_Config", "memory-sync");
+    await mkdir(syncDir, { recursive: true });
+    await writeFile(join(syncDir, "sync.ts"), "console.error('bank locked'); process.exit(1);\n");
+    await writeFile(join(work, "a.txt"), "changed-memory-fails\n");
+
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(error).toBeUndefined();
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])).toBe("a.txt");
+    expect(JSON.stringify(output)).toContain("bank locked");
+  }, TEST_TIMEOUT_MS);
+
   test("rejects a changed source without the manifest before invoking finalizer", async () => {
     const { work, remote } = await createManifestRepository();
     const before = git(work, ["rev-parse", "HEAD"]);

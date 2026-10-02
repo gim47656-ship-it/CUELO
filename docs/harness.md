@@ -164,6 +164,8 @@ mcp:
 
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
+저장소에 기억 동기화 스크립트(`Tools/OMP_Global_Config/memory-sync/sync.ts`)가 있으면 `git_finalize`는 커밋 전에 이 PC의 프로젝트 기억을 `memories.jsonl`로 내보내고, 바뀐 경우 그 파일을 같은 커밋에 넣습니다. 다른 PC는 `setup`에서 이 파일을 가져옵니다. 내보내기가 실패해도 요청한 파일의 커밋은 진행하고 결과 문구에 실패 이유를 남깁니다. 기억 파일은 공개 미러에 올라가지 않습니다.
+
 ## 스킬 비용 리포트
 
 omp는 세션마다 스킬의 이름과 짧은 설명만 system prompt에 넣고, `SKILL.md` 본문은 `skill://<name>`을 읽을 때마다 컨텍스트에 들어갑니다. [`skill-cost.mjs`](../Tools/OMP_Global_Config/skill-cost/skill-cost.mjs)는 설치된 스킬(`skills`, `managed-skills`)마다 설명·본문·참조 파일의 추정 토큰과, 최근 세션 기록에서 실제로 읽은 횟수·세션 수를 세어 **본문 토큰 × 읽은 횟수** 순으로 보여 줍니다. 한 번도 읽지 않은 스킬은 `[never read]`로 표시하고, 이 PC에 없는 스킬을 읽은 기록도 따로 남깁니다. 읽기 전용이며 네트워크나 모델을 호출하지 않습니다.

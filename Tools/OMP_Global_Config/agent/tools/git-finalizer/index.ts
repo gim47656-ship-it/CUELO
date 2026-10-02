@@ -1,6 +1,6 @@
 import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,41 @@ const manifestInstructions = `From cwd Tools/CUELO_Setup, run:
 node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json
 node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json
 Then include Tools/CUELO_Setup/files/source-integrity.json in the same commit.`;
+const memorySyncScript = "Tools/OMP_Global_Config/memory-sync/sync.ts";
+const memoryTransport = "Tools/OMP_Global_Config/memory-sync/memories.jsonl";
+
+type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string; stderr?: string }>;
+
+/**
+ * 기억 PC 간 동기화의 export를 커밋 경로에 붙인다. 원래 hook은 손으로 돌리는 export.ps1 끝뿐이라
+ * 평소 커밋·배포로는 한 번도 내보내지지 않았다(2026-10-02). 같은 저장소 커밋이면 먼저 export하고,
+ * 바뀐 transport 파일을 커밋 목록에 더한다. 실패는 커밋을 막지 않고 결과 문구로 알린다.
+ */
+async function exportMemories(cwd: string, files: string[], exec: Exec): Promise<{ file?: string; note?: string }> {
+  const top = await exec("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { cwd });
+  if (top.code !== 0) return {};
+  const root = resolve(top.stdout.trim());
+  try {
+    await access(join(root, ...memorySyncScript.split("/")));
+  } catch {
+    return {};
+  }
+  const inRoot = (path: string) => {
+    const rel = relative(root, resolve(cwd, path));
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  };
+  if (!files.every(inRoot)) return {};
+  const transport = relative(cwd, join(root, ...memoryTransport.split("/"))).split(sep).join("/");
+  if (transport.startsWith("../")) return { note: "기억 export 생략: 현재 cwd 밖의 파일이라 이 커밋에 넣을 수 없다." };
+  if (files.some((file) => file.replace(/\\/g, "/").toLowerCase() === transport.toLowerCase())) return {};
+  const exported = await exec("bun", [join(root, ...memorySyncScript.split("/")), "export", root], { cwd: root });
+  if (exported.code !== 0) {
+    const reason = (exported.stderr || exported.stdout).trim().split(/\r?\n/).at(-1) || `exit ${exported.code}`;
+    return { note: `기억 export 실패(커밋은 진행): ${reason}` };
+  }
+  const status = await exec("git", ["-C", root, "status", "--porcelain", "--", memoryTransport], { cwd: root });
+  return status.code === 0 && status.stdout.trim() ? { file: transport } : {};
+}
 
 function isSourcePath(path: string, packagedTools: string[]): boolean {
   if (path.split("/").some((segment) => generatedSourceSegments[segment] || segment.endsWith(".tsbuildinfo"))) return false;
@@ -137,13 +172,16 @@ const factory: CustomToolFactory = (pi) => ({
   }),
 
   async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-    const files = params.files.map((value) => value.trim()).filter(Boolean);
+    const requested = params.files.map((value) => value.trim()).filter(Boolean);
     const message = params.message.trim();
-    if (files.length === 0) throw new Error("git_finalize requires at least one exact file path.");
+    if (requested.length === 0) throw new Error("git_finalize requires at least one exact file path.");
     if (!message) throw new Error("git_finalize requires a non-empty commit message.");
     if (process.platform !== "win32") throw new Error("git_finalize currently requires Windows PowerShell.");
 
-    await checkSourceManifest(pi.cwd, files, (command, args, options) => pi.exec(command, args, { ...options, signal }));
+    const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
+    await checkSourceManifest(pi.cwd, requested, exec);
+    const memory = await exportMemories(pi.cwd, requested, exec);
+    const files = memory.file ? [...requested, memory.file] : requested;
 
     onUpdate?.({
       content: [{ type: "text", text: "Repository finalizer lock을 획득하고 변경 경계를 확인하는 중입니다." }],
@@ -168,7 +206,9 @@ const factory: CustomToolFactory = (pi) => ({
         content: [
           {
             type: "text",
-            text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`,
+            text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
+              + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
+              + (memory.note ? ` ${memory.note}` : ""),
           },
         ],
         details: parsed,
