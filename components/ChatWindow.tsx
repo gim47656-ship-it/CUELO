@@ -1367,8 +1367,10 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
       )}
 
       {isEmptyNew && !transcriptReplacement ? (
-        <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8">
-          <div className="w-full max-w-[820px]">
+        // 바깥 칸은 0까지 줄 수 있어야 한다: 세로 여백을 여기 두면 그만큼은 줄지 않아, 높이가 낮은 가로 폰에서
+        // 입력란과 도구 줄을 밀어냈다. 여백은 안쪽에 두고 my-auto로 가운데 맞춘다(넘치면 이 칸 안에서 스크롤된다).
+        <div className="flex flex-1 flex-col items-center overflow-y-auto px-4">
+          <div className="my-auto w-full max-w-[820px] py-8">
             <div
               className="mb-3"
               style={{
@@ -1528,7 +1530,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
 
       </>
       )}
-      <div ref={composerDockRef} className="relative chat-composer-dock">
+      {/* 높이가 모자라면 배너·할 일 칸이 먼저 줄고 그 안에서 스크롤된다. 입력란과 도구 줄(통화 종료 포함)은 줄지 않는다. */}
+      <div ref={composerDockRef} className="relative chat-composer-dock flex min-h-0 flex-col">
         {extensionDialog && (
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
@@ -1542,6 +1545,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
           </div>
         )}
         <div
+          className="min-h-0 overflow-y-auto"
           style={{
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
           }}

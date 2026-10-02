@@ -2739,8 +2739,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
         {/* Bottom bar: attachment + model | run options + stop + voice.
             The context usage indicator lives once in the workspace header.
-            좁은 폭에서는 왼쪽 묶음이 줄어들어 한 줄에 들어간다. 더 좁아 최소 표적
-            크기로도 못 담을 때만 오른쪽 묶음이 둘째 줄로 내려간다(globals.css). */}
+            좁은 폭에서는 왼쪽 묶음이 줄어들어 한 줄에 들어간다. 왼쪽이 최소 내용 폭(44px 표적들과
+            모델 칩 최소 44px)보다 좁아져야 할 때는 오른쪽 묶음이 둘째 줄로 내려간다. */}
         <div className="composer-action-bar" style={{
           marginTop: 8,
           display: "flex",
@@ -2750,8 +2750,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
           {/* 모바일에서는 basis 0으로 둔다. basis가 auto면 flex-wrap이 줄어들기 전의
-              최대 폭으로 줄바꿈을 결정해 버려, 들어갈 수 있는데도 두 줄이 된다. */}
-          <div style={{ flex: isMobile ? "1 1 0%" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+              최대 폭으로 줄바꿈을 결정해 버려, 들어갈 수 있는데도 두 줄이 된다. 대신 최소 폭을
+              min-content로 둬 줄바꿈 판정이 실제 최소 내용 폭을 본다. 0이면 오른쪽 묶음이 같은
+              줄에 남고 왼쪽 버튼들이 서로 겹쳐 그려졌다(통화 중 라벨이 붙으면 거의 0까지 눌렸다). */}
+          <div style={{ flex: isMobile ? "1 1 0%" : "0 0 auto", minWidth: isMobile ? "min-content" : 0, display: "flex", alignItems: "center", gap: 2 }}>
             <button
               type="button"
               className={`composer-icon-button${attachedImages.length || attachedDocuments.length ? " is-active" : ""}`}
@@ -2928,9 +2930,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 })()}
               </div>
             )}
-            {/* Model selector — visible always, disabled while the session or switch is busy */}
+            {/* Model selector — visible always, disabled while the session or switch is busy.
+                모바일에서는 남는 공간을 채운다. width 0은 최소 내용 기여에서 모델 이름 폭을 빼고
+                (실제 폭은 flex 1 1 0%가 정한다), minWidth 44는 다른 버튼과 같은 손가락 표적을 남긴다. */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (
-                <div ref={dropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 0%" : undefined, minWidth: 0 }}>
+                <div ref={dropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 0%" : undefined, width: isMobile ? 0 : undefined, minWidth: isMobile ? 44 : 0 }}>
                   <button
                     className={`composer-chip${modelDropdownOpen ? " is-active" : ""}`}
                     onClick={(e) => {

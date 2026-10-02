@@ -1,6 +1,6 @@
 # 라이브 통화와 캐릭터 음성
 
-입력창의 마이크 버튼은 이 대화의 에이전트와 음성으로 통화합니다. 통화 모델은 Codex live이고, 혼자 답할 수 없는 일은 지금 세션에 위임한 뒤 그 답을 읽어 줍니다. 통화 전사는 세션 기록에 남습니다. 통화 중에는 같은 버튼이 종료 버튼이 되며, 세로 폰처럼 좁은 화면에서도 화면 안에 남습니다. 확정된 사용자 발화 전체가 끝내는 말(「통화 끊어」, 「아… 일단 끊어」, 「통화 종료해 줘」 등)이어도 통화가 끝납니다. 「끊지 마」, 「끊어도 돼?」, 「끊어라고 했어」처럼 부정·질문·인용은 끝내지 않습니다.
+입력창의 마이크 버튼은 이 대화의 에이전트와 음성으로 통화합니다. 통화 모델은 Codex live이고, 혼자 답할 수 없는 일은 지금 세션에 위임한 뒤 그 답을 읽어 줍니다. 통화 전사는 세션 기록에 남습니다. 통화 중에는 같은 버튼이 종료 버튼이 됩니다. 좁은 화면에서는 모델 선택 등 다른 조작부와 함께 줄을 나누고, 화면 높이가 부족하면 할 일·배너 영역을 스크롤하면서 입력창과 종료 버튼을 사용할 수 있습니다. 확정된 사용자 발화 전체가 끝내는 말(「통화 끊어」, 「아… 일단 끊어」, 「통화 종료해 줘」 등)이어도 통화가 끝납니다. 「끊지 마」, 「끊어도 돼?」, 「끊어라고 했어」처럼 부정·질문·인용은 끝내지 않습니다.
 
 Cartesia API 키를 넣고 캐릭터 음성을 준비하면, 통화는 **지금 이 대화의 Main 캐릭터** 목소리로 말합니다. 키가 없으면 지금까지처럼 Codex 기본 음성으로 통화합니다.
 
@@ -85,4 +85,4 @@ Cartesia API 키를 넣고 캐릭터 음성을 준비하면, 통화는 **지금 
 - 끼어들기 신호는 사용자 발화 전사가 처음 들어온 때입니다. 실제 말 시작보다 늦을 수 있습니다.
 - 무자격 플랜의 복제 오류 status(402/403으로 처리), 크레딧 소진 때 WebSocket 오류 형식, WebSocket 유휴 종료 시간은 문서로만 확인했습니다.
 
-관련 구현: `lib/live-session.ts`, `lib/live-character.ts`, `lib/live-character-voice.ts`, `lib/live-character-voice-runtime.ts`, `lib/live-speech.ts`, `lib/live-speech-player.ts`, `lib/live-voice-manifest.ts`, `lib/cartesia.ts`, `hooks/useLiveVoice.ts`, `components/LiveVoiceButton.tsx`, `app/api/live/character-voice/route.ts`.
+관련 구현: `lib/live-session.ts`, `lib/live-character.ts`, `lib/live-character-voice.ts`, `lib/live-character-voice-runtime.ts`, `lib/live-speech.ts`, `lib/live-speech-player.ts`, `lib/live-voice-manifest.ts`, `lib/cartesia.ts`, `hooks/useLiveVoice.ts`, `components/LiveVoiceButton.tsx`, `components/LiveVoiceConfig.tsx`, `components/SettingsConfig.tsx`, `components/ChatInput.tsx`, `components/ChatWindow.tsx`, `app/api/live/character-voice/route.ts`.

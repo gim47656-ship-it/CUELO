@@ -4710,15 +4710,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   }
 }
 
-/* 340px 아래에서는 최소 표적 크기의 합이 한 줄을 넘는다. 왼쪽 묶음의 basis를 내용 폭으로
-   되돌려 위의 줄바꿈이 실제로 일어나게 한다 — 그보다 좁으면 두 줄이 정답이다.
-   basis는 인라인 style이 들고 있어 !important로만 덮인다. */
-@media (max-width: 340px) {
-  .composer-action-bar > :first-child {
-    flex-basis: auto !important;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
