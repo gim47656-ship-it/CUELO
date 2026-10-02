@@ -15,6 +15,11 @@ const LIST_PAGE_LIMIT = 100;
 const MAX_LIST_PAGES = 50;
 const REQUEST_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 120_000;
+/**
+ * 억양 추가는 provider가 voice를 다시 처리하는 요청이라 목록·조회보다 훨씬 오래 걸린다. 갓 복제한 voice에서
+ * 30초를 넘겨 준비가 `ambiguous`로 멈춘 것을 관측했다(같은 요청을 다시 보냈을 때는 11초).
+ */
+const ACCENT_TIMEOUT_MS = 120_000;
 
 /**
  * - `auth`: 키가 틀렸거나 폐기됨
@@ -197,7 +202,7 @@ export function createCartesiaClient(
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accents }),
-      });
+      }, ACCENT_TIMEOUT_MS);
     },
   };
 }

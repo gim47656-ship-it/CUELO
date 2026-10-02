@@ -70,6 +70,12 @@ export interface AssistantMessage {
   timestamp?: number;
   /** 코어가 message_end에 찍는 로컬 생성 종료 시각(ms). 이 필드가 생기기 전 기록에는 없다. */
   completedAt?: number;
+  /**
+   * 음성 통화 답변에서 실제로 말한 캐릭터. 답을 만든 모델은 `provider`·`model`(Codex Live)
+   * 그대로이고, 말풍선의 얼굴·이름만 이 화자를 따른다. `mode: "native"`는 캐릭터 음성 대신
+   * Codex 기본 음성으로 말한 경우다. 이 필드가 생기기 전 통화 기록에는 없다.
+   */
+  liveSpeaker?: { alias: string; mode: "character" | "native" };
   usage?: {
     input: number;
     output: number;

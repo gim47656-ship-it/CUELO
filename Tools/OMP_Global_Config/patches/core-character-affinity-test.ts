@@ -392,6 +392,45 @@ try {
 		check("정상 RIN summon 결과는 position 0 credentialId 를 싣는다", rin === accounts[0]!.credentialId, `got=${rin}`);
 		check("정상 MIO summon 결과는 position 1 credentialId 를 싣는다", mio === accounts[1]!.credentialId, `got=${mio}`);
 	}
+
+	console.log("\n[7] 같은 계정에서 summon label만 바뀐 pin도 persisted 행에 남는다 — 같은 DB를 새로 연 AuthStorage(다른 프로세스·재시작)가 같은 정체성으로 복원한다");
+	// 18.4.9+ 는 같은 계정 재기록의 행 쓰기를 60초 dedupe 한다(#14001, auth/affinity.ts #persistedSticky). 그 비교에 exactLabel이
+	// 없으면 아래 세 경우가 옛 행으로 복원된다(RED). 18.4.6 은 매번 다시 써서 그대로 GREEN이다.
+	{
+		const auth = await makeAuth("persist-label");
+		opened.push(auth);
+		const target = auth.oauth.accounts("anthropic")[0]!;
+		const reopen = async () => {
+			const other = await AuthStorage.create(join(workdir, "persist-label.db"));
+			// 새 프로세스의 시작과 같다: create는 자격증명을 읽지 않으므로 reload가 pool을 채운다.
+			await other.reload();
+			opened.push(other);
+			return other;
+		};
+		const toExact = "session-persist-to-exact";
+		auth.sessions.pin("anthropic", toExact, target.credentialId);
+		auth.sessions.pin("anthropic", toExact, target.credentialId, { exactLabel: "RIN(린)" });
+		const afterExact = (await reopen()).sessions.exactLabel("anthropic", toExact);
+		check("일반 pin 뒤 같은 계정 exact summon: 새로 연 저장소도 RIN exact로 복원한다", afterExact === "RIN(린)", `got=${afterExact}`);
+
+		const toPlain = "session-persist-to-plain";
+		auth.sessions.pin("anthropic", toPlain, target.credentialId, { exactLabel: "RIN(린)" });
+		auth.sessions.pin("anthropic", toPlain, target.credentialId);
+		const afterPlain = (await reopen()).sessions.exactLabel("anthropic", toPlain);
+		check("exact summon 뒤 같은 계정 일반 pin: 새로 연 저장소도 exact가 풀린 상태다", afterPlain === undefined, `got=${afterPlain}`);
+
+		const restored = "session-persist-restored";
+		auth.sessions.pin("anthropic", restored, target.credentialId, { exactLabel: "RIN(린)" });
+		const reader = await reopen();
+		const readBack = reader.sessions.exactLabel("anthropic", restored);
+		reader.sessions.pin("anthropic", restored, target.credentialId);
+		const afterRestoredPlain = (await reopen()).sessions.exactLabel("anthropic", restored);
+		check(
+			"행에서 복원한 프로세스가 같은 계정 일반 pin으로 바꾸면 그 변경도 행에 남는다",
+			readBack === "RIN(린)" && afterRestoredPlain === undefined,
+			`readBack=${readBack} after=${afterRestoredPlain}`,
+		);
+	}
 } finally {
 	for (const auth of opened) auth.close?.();
 	try {

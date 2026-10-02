@@ -29,6 +29,7 @@ import { type TodoPhase } from "@/lib/todo-state";
 import { isRunStalled, RUN_STALL_CHECK_MS } from "@/lib/run-stall";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
 import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
+import { buildDeliveryRows, deliveryReducer, userMessageText } from "@/lib/answer-status/delivery";
 import {
   COMMAND_OUTPUT_CUSTOM_TYPE,
   isLocalCommandEntryId,
@@ -634,6 +635,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
   const [subagents, setSubagents] = useState<SubagentSnapshot[]>([]);
+  // 실행 중에 보낸 입력이 관측상 어디까지 갔는지(lib/answer-status/delivery.ts). 서버 큐 자체는 queuedMessages가 정본이다.
+  const [deliveryEntries, dispatchDelivery] = useReducer(deliveryReducer, []);
+  const nextDeliveryIdRef = useRef(0);
+  useEffect(() => {
+    dispatchDelivery({ type: "queue", steering: queuedMessages.steering, followUp: queuedMessages.followUp });
+  }, [queuedMessages]);
+  useEffect(() => {
+    if (!agentRunning) dispatchDelivery({ type: "idle" });
+  }, [agentRunning]);
+  useEffect(() => {
+    dispatchDelivery({ type: "reset" });
+  }, [session?.id]);
+  const deliveryRows = useMemo(() => buildDeliveryRows(deliveryEntries, queuedMessages), [deliveryEntries, queuedMessages]);
   const [todoSnapshot, setTodoSnapshot] = useState<{ sid: string; phases: TodoPhase[] } | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -1914,6 +1928,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             }
             return [...prev, delivered];
           });
+          // 큐로 보낸 글이 대화 기록에 들어간 관측. 이번 실행의 첫 프롬프트(optimistic)는 큐 입력이 아니다.
+          if (optimisticKey !== deliveredKey) dispatchDelivery({ type: "user-message", text: userMessageText(delivered) });
         } else if (completed) {
           updateMessages((prev) => [...prev, normalizeToolCalls(completed)]);
         }
@@ -2721,13 +2737,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+    const deliveryId = ++nextDeliveryIdRef.current;
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: "steer", text: promptMessage });
     try {
       await sendAgentCommand(sid, {
         type: "steer",
         message: promptMessage,
         ...(piImages?.length ? { images: piImages } : {}),
       });
+      dispatchDelivery({ type: "ack", id: deliveryId });
     } catch (e) {
+      dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to steer:", e);
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       opts.chatInputRef?.current?.restoreSubmission?.(
@@ -2757,6 +2777,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+    const deliveryId = ++nextDeliveryIdRef.current;
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: behavior, text: promptMessage });
     try {
       await sendAgentCommand(sid, {
         type: "prompt",
@@ -2764,7 +2786,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         streamingBehavior: behavior,
         ...(piImages?.length ? { images: piImages } : {}),
       });
+      dispatchDelivery({ type: "ack", id: deliveryId });
     } catch (e) {
+      dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to queue prompt:", e);
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       opts.chatInputRef?.current?.restoreSubmission?.(
@@ -2793,13 +2817,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+    const deliveryId = ++nextDeliveryIdRef.current;
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: "followUp", text: promptMessage });
     try {
       await sendAgentCommand(sid, {
         type: "follow_up",
         message: promptMessage,
         ...(piImages?.length ? { images: piImages } : {}),
       });
+      dispatchDelivery({ type: "ack", id: deliveryId });
     } catch (e) {
+      dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to follow up:", e);
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       opts.chatInputRef?.current?.restoreSubmission?.(
@@ -2831,6 +2859,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }>(sid, { type: "clear_queue" });
       // clearQueue also emits an empty queue_update, but that only reaches us
       // while SSE is connected — clear locally so idle recalls update the UI.
+      dispatchDelivery({ type: "withdraw" });
       setQueuedMessages({ steering: [], followUp: [] });
       const recalled = mergeRestoredQueuedMessages([
         ...(result?.steering ?? []),
@@ -2855,6 +2884,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ removed?: boolean }>(sid, { type: "remove_queued_message", message: text, queue });
       // Not removed means omp already delivered it; its queue_update settles the list.
       if (!result?.removed) return;
+      dispatchDelivery({ type: "withdraw", kind: queue === "steering" ? "steer" : "followUp", text });
       // Same as recall: queue_update only reaches us while SSE is connected.
       setQueuedMessages((current) => {
         const index = current[queue].indexOf(text);
@@ -3204,7 +3234,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     runStalled, runStateKnown,
-    slashCommands, slashCommandsLoading, queuedMessages, subagents,
+    slashCommands, slashCommandsLoading, queuedMessages, deliveryRows, subagents,
     // The tracker's own list for the open session, when a state refresh has reported one. It can
     // carry changes no tool record does; the transcript remains the fallback and the newer answer
     // whenever a todo record is what changed last.

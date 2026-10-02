@@ -14,6 +14,19 @@ export const LIVE_TRANSCRIPT_MESSAGE_TYPE = "live-transcript";
 
 export interface LiveTranscriptDetails {
   role: LiveTranscriptRole;
+  /** assistant 턴을 실제로 말한 캐릭터와 음성 모드. 판별하지 못했으면 없다. */
+  speaker?: { alias: string; mode: "character" | "native" };
+}
+
+/** 저장된 details에서 화자를 읽는다. 형식이 어긋나면 화자를 지어내지 않고 없음으로 둔다. */
+export function parseLiveTranscriptSpeaker(details: unknown): LiveTranscriptDetails["speaker"] {
+  if (!details || typeof details !== "object" || !("speaker" in details)) return undefined;
+  const speaker = details.speaker;
+  if (!speaker || typeof speaker !== "object") return undefined;
+  const { alias, mode } = speaker as { alias?: unknown; mode?: unknown };
+  if (typeof alias !== "string" || alias.trim() === "") return undefined;
+  if (mode !== "character" && mode !== "native") return undefined;
+  return { alias, mode };
 }
 
 const LIVE_TRANSCRIPT_PREFIXES: Record<LiveTranscriptRole, string> = {

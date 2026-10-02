@@ -292,7 +292,10 @@ function queueFinalTranscript(
   text: string,
 ): void {
   call.persistTail = call.persistTail.then(async () => {
-    const details: LiveTranscriptDetails = { role };
+    // 화자는 이 턴이 끝난 시점의 통화 음성이다(Main 교체로 바뀌었으면 바뀐 쪽). 모르면 남기지 않는다.
+    const details: LiveTranscriptDetails = role === "assistant" && call.voice.alias
+      ? { role, speaker: { alias: call.voice.alias, mode: call.voice.mode } }
+      : { role };
     const manager = wrapper.inner.sessionManager;
     const content = formatLiveTranscriptContent(role, text);
     const attribution = role === "user" ? "user" : "agent";

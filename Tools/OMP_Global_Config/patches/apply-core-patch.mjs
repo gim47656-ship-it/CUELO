@@ -53,6 +53,17 @@ function resolveTarget() {
 	return found ?? seen[seen.length - 1];
 }
 
+/**
+ * #310(Opus 5.5 Claude API 구운 models.json 행)의 18.4.6 후보. 18.4.10 후보는 이 문자열에서 만든다(EDITS 의
+ * pi-catalog models.json 항목 주석). 18.4.6 라이브 적용본이 그대로 applied 여야 하므로 바꾸지 않는다.
+ */
+const OPUS55_ROW_1846 = {
+		file: "../pi-catalog/src/models.json",
+		marker: '"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
+		anchor: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":false',
+		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
+};
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -1587,15 +1598,29 @@ function resolveSubagentRetryFallbackCandidates(
 	{
 		// 승인 후보로 돌았어도 세션의 첫 model_change 는 요청 selector 를 함께 남겨야
 		// 한다(코어가 대체한 셀렉터만 남기면 요청과 실제가 구분되지 않는다).
+		// 18.4.10(#14040)은 옵션 빌더 함수를 `sessionSpec: SubagentSessionSpec = { options: { … } }`로 바꿔 한 단계 더
+		// 들여쓴다. 같은 options 객체가 spawn·revive 모두에 쓰이는 점은 그대로다. alternate는 18.4.6 형태다. 두 후보의
+		// marker는 줄 앞 개행과 들여쓰기까지 넣어 서로의 결과에 들어 있지 않게 했다.
 		file: "src/task/executor.ts",
-		marker: "modelPatternRequested: modelPatterns.length > 0",
-		anchor: `				modelPatternAuthFallback:
+		marker: "\n\t\t\t\t\tmodelPatternRequested: modelPatterns.length > 0",
+		anchor: `					modelPatternAuthFallback:
+						model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,`,
+		patched: `					modelPatternAuthFallback:
+						model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
+					modelPatternAuthFallbackUsed:
+						authFallbackUsed || approvedModelSelection?.substituted === true || undefined,
+					modelPatternRequested: modelPatterns.length > 0 ? modelPatterns.join(", ") : undefined,`,
+		alternates: [{
+			file: "src/task/executor.ts",
+			marker: "\n\t\t\t\tmodelPatternRequested: modelPatterns.length > 0",
+			anchor: `				modelPatternAuthFallback:
 					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,`,
-		patched: `				modelPatternAuthFallback:
+			patched: `				modelPatternAuthFallback:
 					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
 				modelPatternAuthFallbackUsed:
 					authFallbackUsed || approvedModelSelection?.substituted === true || undefined,
 				modelPatternRequested: modelPatterns.length > 0 ? modelPatterns.join(", ") : undefined,`,
+		}],
 	},
 	{
 		// 대체된 모델로 시작한 세션을 transcript 에서 구분할 수 있게 남긴다. 요청 selector
@@ -2995,6 +3020,79 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 						? { exactLabel: val.exactLabel.trim() }
 						: {}),
 				};`,
+	},
+	// 18.4.9(#14001)는 같은 계정 재기록의 persisted row 쓰기를 건너뛴다(#persistedSticky: type·credentialId·explicit·60초).
+	// 이 비교에 exactLabel이 없으면 같은 계정에서 summon label만 바뀐 pin(일반 명시 pin → exact summon, 또는 그 반대)이
+	// DB 행에 반영되지 않아, 다른 프로세스·재시작이 옛 정체성으로 복원한다(RIN exact pin이 사라져 sibling 회전 가능).
+	// 아래 세 항목이 그 비교·기록·복원에 exactLabel을 넣는다. 검증: core-character-affinity-test.ts [7].
+	// 18.4.6 은 record 마다 행을 다시 쓰므로(dedupe 없음) 할 일이 없다: alternate는 그 판의 매번-쓰기 줄 no-op이다.
+	{
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "a label-only change must rewrite the row",
+		anchor: "\texplicit: boolean;\n\tlastUsedAtMs: number;\n};\n",
+		patched: "\texplicit: boolean;\n\tlastUsedAtMs: number;\n\t/** CUELO: exact summon label stored in the row; a label-only change must rewrite the row. */\n\texactLabel: string | undefined;\n};\n",
+		alternates: [{
+			file: "../pi-ai/src/auth/affinity.ts",
+			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+		}],
+	},
+	{
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "\t\t\tpersisted.exactLabel === keptExactLabel &&\n",
+		anchor: `			persisted.explicit === isExplicit &&
+			Math.abs(nowMs - persisted.lastUsedAtMs) < SESSION_STICKY_PERSIST_INTERVAL_MS
+		) {
+			return;
+		}
+		try {
+			this.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);
+			this.#persistedSticky.set(cacheKey, {
+				type,
+				credentialId,
+				explicit: isExplicit,
+				lastUsedAtMs: nowMs,
+			});`,
+		patched: `			persisted.explicit === isExplicit &&
+			persisted.exactLabel === keptExactLabel &&
+			Math.abs(nowMs - persisted.lastUsedAtMs) < SESSION_STICKY_PERSIST_INTERVAL_MS
+		) {
+			return;
+		}
+		try {
+			this.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);
+			this.#persistedSticky.set(cacheKey, {
+				type,
+				credentialId,
+				explicit: isExplicit,
+				lastUsedAtMs: nowMs,
+				exactLabel: keptExactLabel,
+			});`,
+		alternates: [{
+			file: "../pi-ai/src/auth/affinity.ts",
+			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+		}],
+	},
+	{
+		// 복원한 행을 dedupe 기준으로 삼을 때도 그 행의 label을 같이 기억한다(바로 위 sessionVal은 위 항목이 trim한 값).
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "\t\t\t\t\t\texactLabel: sessionVal.exactLabel,\n",
+		anchor: `						explicit: val.explicit === true,
+						lastUsedAtMs: val.lastUsedAtMs,
+					});`,
+		patched: `						explicit: val.explicit === true,
+						lastUsedAtMs: val.lastUsedAtMs,
+						exactLabel: sessionVal.exactLabel,
+					});`,
+		alternates: [{
+			file: "../pi-ai/src/auth/affinity.ts",
+			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+		}],
 	},
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
@@ -8138,21 +8236,32 @@ function parentSubagentServiceTiers(
 	// controls가 둘 다 참일 때만 나간다(anthropic.ts prefixMismatchBehavior). models.yml은 thinking override의
 	// prefixBinding을 스키마에서 조용히 버리고 공개 설치에는 없으므로 설정으로 켜지 않는다.
 	{
+		// 18.4.10(#14019)은 이 행에 prefixBinding을 넣었지만 binding controls는 false로 남긴다. 18.4.10 후보는 binding controls만 켠다.
+		// 그 결과가 18.4.6 적용본과 바이트까지 같으면 두 후보가 함께 applied(ambiguous)이고, 문맥으로도 가를 수 없다(가장 가까운
+		// 18.4.6↔18.4.10 차이가 앵커 앞 53K자·뒤 249K자). 그래서 18.4.10 결과만 `": true"` 공백으로 구분한다. JSON.parse는 이 공백을 무시한다.
 		file: "../pi-catalog/src/models.json",
-		marker: '"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
-		anchor: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":false',
-		patched: '"claude-opus-5-5":{"id":"claude-opus-5-5","name":"Claude Opus 5.5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","reasoning":true,"input":["text","image"],"cost":{"input":4,"output":20,"cacheRead":0.2,"cacheWrite":5},"contextWindow":1000000,"maxTokens":128000,"int":57.6,"tps":95.2,"thinking":{"mode":"anthropic-adaptive","efforts":["low","medium","high","xhigh","max"],"supportsDisplay":true,"prefixBinding":true},"identity":{"class":"anthropic","family":"opus","revision":"5.5.0"},"requiresGlyphTokenization":true,"tokenizer":"claude-v5","supportsComputerUse":false,"compat":{"officialEndpoint":true,"signingEndpoint":true,"supportsContextManagement":true,"supportsServerCompaction":true,"firstPartyProvider":true,"supportsOutputEffort":true,"disableStrictTools":false,"disableAdaptiveThinking":false,"allowAnthropicHeaderOverrides":false,"supportsEagerToolInputStreaming":true,"supportsLongCacheRetention":true,"supportsMidConversationSystem":true,"supportsTurnScopedSystem":true,"supportsMidConversationToolChanges":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true',
+		marker: OPUS55_ROW_1846.marker.replace('"supportsThinkingBindingControls":true', '"supportsThinkingBindingControls": true'),
+		anchor: OPUS55_ROW_1846.anchor.replace('"supportsDisplay":true}', '"supportsDisplay":true,"prefixBinding":true}'),
+		patched: OPUS55_ROW_1846.patched.replace('"supportsThinkingBindingControls":true', '"supportsThinkingBindingControls": true'),
+		alternates: [OPUS55_ROW_1846],
 	},
 	{
-		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.6은 kdl 한 줄 이동으로
-		// source가 kdl:61이고 규칙 본문은 같다. alternate는 18.4.4·18.4.5 공통 kdl:60 앵커다. 두 후보의 marker는 source가
-		// 달라 서로의 결과·순정본에 들어 있지 않다. 18.4.4 적용본은 kdl:60 patched 바로 뒤에 binding controls 규칙이 붙어
-		// 있어 alternate marker가 그대로 성립한다.
+		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.10은 upstream #14019가 kdl:61에
+		// 같은 thinking.prefixBinding을 넣었으므로 할 일이 없다(본 후보: 그 upstream 줄의 no-op). 18.4.6 적용 결과와 18.4.10
+		// 순정의 kdl:61 규칙은 바이트까지 같아서, 두 후보 모두 바로 뒤 Sonnet 5.5 규칙의 source(18.4.6 kdl:70, 18.4.10 kdl:77)까지
+		// 앵커에 넣어 가른다. 그러지 않으면 18.4.10 순정이 18.4.6 후보로 applied가 되고 --revert가 upstream prefixBinding을 지운다.
+		// alternate는 18.4.6(kdl:61)과 18.4.4·18.4.5 공통 kdl:60 앵커다. 18.4.4 적용본은 kdl:60 patched 바로 뒤에 binding
+		// controls 규칙이 붙어 있어 kdl:60 marker가 그대로 성립한다.
 		file: "../pi-catalog/src/compat/rules.json",
-		marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
-		patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
+		anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
+		patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
 		alternates: [{
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:70",',
+			anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}},{"source":"classes/anthropic.kdl:70",',
+			patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:70",',
+		}, {
 			file: "../pi-catalog/src/compat/rules.json",
 			marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
@@ -8161,16 +8270,23 @@ function parentSubagentServiceTiers(
 	},
 	{
 		// binding controls 규칙은 그 버전의 upstream Sonnet 5.5 binding 규칙 바로 뒤에 같은 provider 범위로 둔다.
-		// 18.4.6: kdl:129, alternate 18.4.5: kdl:128(둘 다 anthropic·cloudflare, 규칙 본문 동일). alternate 18.4.4:
-		// kdl:106(anthropic·cloudflare·vertex). 18.4.6·18.4.5 후보는 추가 규칙이 같아 marker를 앞 Sonnet 규칙까지 포함한
+		// 18.4.10: kdl:139(#13996이 Vertex를 뺀 supportsPerMessageEffort가 같은 Sonnet 규칙에 붙었다. provider 범위는 그대로
+		// anthropic·cloudflare이고 추가하는 Opus 규칙 본문도 같다). alternate 18.4.6: kdl:129, 18.4.5: kdl:128(둘 다 anthropic·cloudflare,
+		// 규칙 본문 동일). alternate 18.4.4:
+		// kdl:106(anthropic·cloudflare·vertex). 18.4.10·18.4.6·18.4.5 후보는 추가 규칙이 같아 marker를 앞 Sonnet 규칙까지 포함한
 		// patched 전체로 둔다(같은 marker면 둘 다 applied라 ambiguous가 된다). 18.4.4 라이브 적용본은 옛 위치(kdl:60 뒤)에
 		// 같은 규칙이 있어 그 alternate marker로 applied이다. 그 적용본의 --revert는 patched가 연속으로 없으므로 엔진의
 		// 백업 경로(~/.omp/core-patch-backup)를 쓴다.
 		file: "../pi-catalog/src/compat/rules.json",
-		marker: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		anchor: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		patched: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		marker: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		anchor: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}}',
+		patched: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		alternates: [{
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
 			file: "../pi-catalog/src/compat/rules.json",
 			marker: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
@@ -8354,6 +8470,14 @@ function parentSubagentServiceTiers(
 		marker: 'import { createRatchetPrelude } from "./ratchet/prelude.ts";',
 		anchor: 'import { createRatchetPrelude } from "./ratchet/prelude";',
 		patched: 'import { createRatchetPrelude } from "./ratchet/prelude.ts";',
+		// 18.4.10: upstream #14027/#14029가 모듈을 `ratchet/prelude-definition.ts`로 개명해 같은 stem 충돌이 없어졌다(RETIRE).
+		// 그 upstream import 줄 자체의 no-op이다. 18.4.6(KYS·라이브)은 위 본 후보가 계속 필요하다.
+		alternates: [{
+			file: "src/sdk.ts",
+			marker: 'import { createRatchetPrelude } from "./ratchet/prelude-definition";',
+			anchor: 'import { createRatchetPrelude } from "./ratchet/prelude-definition";',
+			patched: 'import { createRatchetPrelude } from "./ratchet/prelude-definition";',
+		}],
 	},
 	// P55. genuine 사용자 steer 가 진행 중 모델 요청을 끝까지 기다리지 않게 한다(사용자 결정: 즉시 반영, 재추론 사용량 감수).
 	// 2026-10-01 사용자 관측: Astra(xhigh) 4분짜리 추론 요청 중 넣은 steer 가 그 요청이 끝날 때까지(98.8s·169.6s)

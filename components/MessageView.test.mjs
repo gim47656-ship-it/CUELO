@@ -266,3 +266,35 @@ test("shows the images a tool produced as thumbnails in the answer", async () =>
   assert.equal(html.match(/class="tool-image-thumb"/g)?.length, 2);
   assert.ok(html.indexOf("tool-image-strip") < html.indexOf("Here it is."), "그림이 답 글 앞에 온다");
 });
+
+const liveAnswer = (extra = {}) => ({
+  role: "assistant",
+  provider: "openai-codex",
+  model: "Codex Live",
+  content: [{ type: "text", text: "통화 답변" }],
+  stopReason: "stop",
+  ...extra,
+});
+
+test("a live call answer shows the character who spoke, keeping the Codex footer", () => {
+  const html = renderMessage(liveAnswer({ liveSpeaker: { alias: "RIN(린)", mode: "character" } }));
+  assert.match(html, /rin\.webp/);
+  assert.match(html, />RIN\(린\)</);
+  assert.doesNotMatch(html, /YUKI\(유키\)|yuki\.webp/);
+  assert.match(html, /OpenAI Codex · Codex Live/);
+  assert.doesNotMatch(html, /default voice/);
+});
+
+test("a native-voice live answer marks the default voice next to the speaker", () => {
+  const html = renderMessage(liveAnswer({ liveSpeaker: { alias: "MIO(미오)", mode: "native" } }));
+  assert.match(html, />MIO\(미오\)</);
+  assert.match(html, />default voice</);
+});
+
+test("a live answer without a recorded speaker, or with an unknown one, renders as before", () => {
+  // 화자가 없으면 계정 얼굴 경로(useAccountFace) 그대로다. 정적 렌더에서 그 값은 비어 provider · 모델만 남는다.
+  const before = renderMessage(liveAnswer());
+  assert.doesNotMatch(before, /account-avatar|rin\.webp|default voice/);
+  assert.match(before, /<span>OpenAI Codex · Codex Live<\/span>/);
+  assert.equal(renderMessage(liveAnswer({ liveSpeaker: { alias: "GHOST", mode: "native" } })), before);
+});

@@ -8,7 +8,7 @@ OMP 하네스는 코딩 에이전트가 요구를 작업으로 나누고, 변경
 
 공개 저장소에는 역할·검수 절차와 런타임 확장, 정책 규칙, core 패치가 포함됩니다. 반면 계정이나 모델 선택 정보를 담는 `config.yml`·`models.yml`, 개인 skills, 작업 기록은 공개하지 않습니다. npm 패키지도 해당 개인 파일과 제공자 API 키, 독립 `omp` CLI를 동봉하지 않습니다. 설치에 필요한 Node/Bun/Git과 기능별 CLI·메모리 모델의 경계는 [설치 안내](installation.md#새-windows-pc에서-먼저-준비할-것)를 따릅니다.
 
-내장 코어는 OMP **18.4.4**를 사용합니다. upstream의 큐·창 선택 개선을 반영하면서 세션 격리와 하네스의 도구 계약을 유지합니다. 공식 standalone CLI와 패치된 내장 코어의 동작 범위는 구분합니다.
+내장 코어는 OMP **18.4.10**을 사용합니다. upstream의 큐·창 선택 개선을 반영하면서 세션 격리와 하네스의 도구 계약을 유지합니다. 공식 standalone CLI와 패치된 내장 코어의 동작 범위는 구분합니다.
 
 캐릭터 확장(`character-voice.ts`)의 RIN·MIO는 Anthropic OAuth 저장 목록의 0번·1번 자리를 기본으로 씁니다. 이 번호는 저장 순서일 뿐 계정 ID·이메일 같은 개인 정보가 아니며, 공개본에서도 코드 그대로 동작합니다. 해당 자리에 쓸 자기 계정은 `omp`로 직접 로그인해 준비합니다. 계정이 하나뿐인 상태에서 MIO로 전환하면 1번 자리 계정을 찾지 못했다고 알리고 현재 세션 모델을 유지합니다.
 
@@ -126,6 +126,8 @@ predicate는 여전히 샌드박스가 아닌 Bun/Node 코드입니다. 위 거�
 ## 캐릭터 음성과 확장
 
 [`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
+
+[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 처음 한 번은 숨김 안내로 다음 답부터 한국어로 쓰게 하고, 그래도 이어지면 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
 
 캐릭터 교체는 인용 밖의 명확한 명령형으로 요청하세요. 부정문, 방법·설명 요청, 과거에 일어난 전환을 말하는 문장, 따옴표·코드·인용문 속 예시는 자동 전환하지 않습니다. 가능 여부를 묻는 모호한 질문도 교체 명령으로 처리하지 않습니다.
 

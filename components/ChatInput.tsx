@@ -2,7 +2,10 @@
 
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, forwardRef, KeyboardEvent } from "react";
 import { ActionButton } from "@seed-design/react";
-import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages } from "@/hooks/useAgentSession";
+import type { BuiltinSlashCommandResult, CompactResultInfo } from "@/hooks/useAgentSession";
+import type { DeliveryRow } from "@/lib/answer-status/delivery";
+import { DeliveryRows } from "./answer-status/DeliveryRows";
+import { useAnswerStatusText } from "./answer-status/i18n";
 import { SoundToggle } from "./SoundToggle";
 import { LiveVoiceButton } from "./LiveVoiceButton";
 import { Gpt6HandleBadge } from "./Gpt6HandleBadge";
@@ -195,7 +198,8 @@ interface Props {
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
-  queuedMessages?: QueuedMessages | null;
+  /** Inputs sent while the run is busy, with their observed delivery stage (lib/answer-status/delivery.ts). */
+  deliveryRows?: readonly DeliveryRow[];
   inputHistory?: string[];
   onRecallQueue?: () => void;
   /** Cancels one queued message; the rest of the queue and the running turn stay as they are. */
@@ -458,74 +462,6 @@ function revokeImagePreview(image: AttachedImage): void {
   }
 }
 
-function QueuedMessageRow({ kind, text, onRemove, removeLabel }: {
-  kind: "steer" | "follow-up";
-  text: string;
-  onRemove?: () => void;
-  removeLabel: string;
-}) {
-  const parsed = parseDocumentPrompt(text);
-  const displayText = parsed
-    ? [parsed.message, parsed.documents.map((document) => document.name).join(", ")].filter(Boolean).join(" · ")
-    : text;
-  return (
-    <div
-      title={displayText}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "3px 10px",
-        fontSize: 12,
-        color: "var(--text-muted)",
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          flexShrink: 0,
-          fontSize: 10,
-          fontFamily: "var(--font-mono)",
-          padding: "1px 7px",
-          borderRadius: "var(--seed-radius-full)",
-          border: `1px solid ${kind === "steer" ? "color-mix(in srgb, var(--accent) 45%, transparent)" : "var(--border)"}`,
-          color: kind === "steer" ? "var(--accent)" : "var(--text-dim)",
-        }}
-      >
-        {kind}
-      </span>
-      <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayText}</span>
-      {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          title={removeLabel}
-          aria-label={removeLabel}
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 20,
-            height: 20,
-            padding: 0,
-            color: "var(--text-dim)",
-            background: "transparent",
-            border: "none",
-            borderRadius: "var(--radius-control)",
-            cursor: "pointer",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-dim)"; }}
-        >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      )}
-    </div>
-  );
-}
 
 function ModelNoticeBanner({ tone, title, body }: { tone: "error" | "warning"; title: string; body: string }) {
   const role = tone === "error" ? "danger" : "warning";
@@ -597,7 +533,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   thinkingLevel, effectiveThinkingLevel, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   fastMode = null, fastModeBusy = false, onFastModeToggle,
-  retryInfo, queuedMessages, inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
+  retryInfo, deliveryRows = [], inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
   soundEnabled, onSoundToggle, onAudioUnlock,
@@ -609,6 +545,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onLiveTranscriptPersisted,
 }: Props, ref) {
   const { t } = useI18n();
+  const { st } = useAnswerStatusText();
+  const hasQueuedDelivery = deliveryRows.some((row) => row.removable);
   const isMobile = useIsMobile();
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -1965,8 +1903,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
-        {/* Queued steering / follow-up messages (delivered by omp on upcoming turns) */}
-        {((queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0)) > 0 && (
+        {/* Inputs sent while busy: queued (server queue) and their observed delivery stage */}
+        {deliveryRows.length > 0 && (
           <div style={{
             marginBottom: 8,
             border: "1px solid var(--border)",
@@ -1988,9 +1926,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 textTransform: "uppercase",
                 letterSpacing: 0.4,
               }}>
-                {t("chat.queued", { count: (queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0) })}
+                {st("delivery.title", { count: deliveryRows.length })}
               </span>
-              {onRecallQueue && (
+              {onRecallQueue && hasQueuedDelivery && (
                 <button
                   onClick={onRecallQueue}
                    title={t("chat.recallTitle")}
@@ -2025,18 +1963,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </button>
               )}
             </div>
-            {queuedMessages?.steering.map((text, i) => (
-              <QueuedMessageRow
-                key={`steer-${i}`} kind="steer" text={text} removeLabel={t("chat.queueRemove")}
-                onRemove={onRemoveQueuedMessage ? () => onRemoveQueuedMessage("steering", text) : undefined}
-              />
-            ))}
-            {queuedMessages?.followUp.map((text, i) => (
-              <QueuedMessageRow
-                key={`followup-${i}`} kind="follow-up" text={text} removeLabel={t("chat.queueRemove")}
-                onRemove={onRemoveQueuedMessage ? () => onRemoveQueuedMessage("followUp", text) : undefined}
-              />
-            ))}
+            <DeliveryRows
+              rows={deliveryRows}
+              removeLabel={t("chat.queueRemove")}
+              onRemove={onRemoveQueuedMessage ? (kind, text) => onRemoveQueuedMessage(kind === "steer" ? "steering" : "followUp", text) : undefined}
+            />
           </div>
         )}
         {/* Retry banner */}

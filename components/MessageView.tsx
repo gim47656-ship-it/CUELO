@@ -21,7 +21,8 @@ import {
 } from "@/lib/message-display";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
-import { providerDisplayName } from "@/lib/hanse-resource-client";
+import { CHARACTER_ROSTER, providerDisplayName } from "@/lib/hanse-resource-client";
+import { useAnswerStatusText } from "./answer-status/i18n";
 import { AccountAvatar } from "./workspace/AccountAvatar";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { getTodoPhases, type TodoPhase } from "@/lib/todo-state";
@@ -29,6 +30,10 @@ import { TodoChecklistRow } from "./TodoChecklistRow";
 import { normalizeCustomPanelLines, parseAnsiLine, stripAnsi } from "@/lib/ansi";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
+import type { DispatchSlot } from "@/lib/answer-status/dispatch";
+import type { TurnSummary } from "@/lib/answer-status/turn-summary";
+import { DispatchCard } from "./answer-status/DispatchCard";
+import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
 import {
   attachedDocumentKind,
   formatAttachmentSize,
@@ -231,6 +236,10 @@ interface Props {
    * final answer text-only.
    */
   writtenFiles?: WrittenFile[];
+  /** `task` calls whose in-answer card sits in this answer, and on which side of the text. */
+  dispatchSlot?: DispatchSlot;
+  /** Observed summary of the finished turn this answer closes; replaces the segment file chips. */
+  turnSummary?: TurnSummary;
 }
 
 // One formatter per shape: `toLocale*String` with options builds a new
@@ -269,12 +278,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} dispatchSlot={dispatchSlot} turnSummary={turnSummary} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -305,7 +314,9 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.onEditContent === next.onEditContent
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
-    && prev.sessionId === next.sessionId;
+    && prev.sessionId === next.sessionId
+    && prev.dispatchSlot === next.dispatchSlot
+    && prev.turnSummary === next.turnSummary;
 });
 
 function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent }: {
@@ -560,6 +571,8 @@ function AssistantMessageView({
   sessionId,
   entryId,
   writtenFiles,
+  dispatchSlot,
+  turnSummary,
 }: {
   message: AssistantMessage;
   isStreaming?: boolean;
@@ -572,13 +585,23 @@ function AssistantMessageView({
   sessionId?: string;
   entryId?: string;
   writtenFiles?: WrittenFile[];
+  dispatchSlot?: DispatchSlot;
+  turnSummary?: TurnSummary;
 }) {
   const { t } = useI18n();
   const { hideThinkingBlock } = useDisplaySettings();
   const time = showTimestamp ? formatTime(message.timestamp) : null;
   // 이 답을 만든 계정. 기록에 `credentialId` 가 있으면 그것이, 없으면 실행 중 세션의 pin 이
   // 답하고, 둘 다 없으면 `null` 이다(그때는 얼굴도 별칭도 그리지 않는다).
-  const accountFace = useAccountFace(sessionId, message.provider, message.credentialId);
+  const recordedFace = useAccountFace(sessionId, message.provider, message.credentialId);
+  // 음성 통화 답은 Codex가 만들지만(푸터 그대로) 얼굴·이름은 실제로 말한 캐릭터다. 기록에 화자가
+  // 없거나 목록에 없는 별칭이면 계정 얼굴을 그대로 쓴다.
+  const liveSpeakerEntry = message.liveSpeaker
+    ? CHARACTER_ROSTER.find((entry) => entry.alias === message.liveSpeaker?.alias)
+    : undefined;
+  const accountFace = liveSpeakerEntry ? { seed: liveSpeakerEntry.seed, alias: liveSpeakerEntry.alias } : recordedFace;
+  const nativeVoice = Boolean(liveSpeakerEntry) && message.liveSpeaker?.mode === "native";
+  const { st } = useAnswerStatusText();
   const modelLabel = modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model;
   const blockItems = useMemo(() => (message.content ?? [])
     .map((block, originalIndex) => ({ block, originalIndex }))
@@ -726,6 +749,7 @@ function AssistantMessageView({
             {accountFace && (
               <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)" }}>{accountFace.alias}</span>
             )}
+            {nativeVoice && <span>{st("live.nativeVoice")}</span>}
             {/* 모델 이름은 계속 보이되 별칭 옆의 보조 정보로 남는다. */}
             <span>{`${providerDisplayName(message.provider)} · ${modelLabel}`}</span>
           </>
@@ -734,11 +758,15 @@ function AssistantMessageView({
             folds into the same usage disclosure as the settled numbers. */}
       </div>
 
+      {dispatchSlot?.placement === "before" && <DispatchCard calls={dispatchSlot.calls} />}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blockItems.map(({ block, originalIndex }) => (
           <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
         ))}
       </div>
+
+      {dispatchSlot?.placement === "after" && <DispatchCard calls={dispatchSlot.calls} />}
 
       {providerError && (
         <div
@@ -761,7 +789,9 @@ function AssistantMessageView({
         </div>
       )}
 
-      {writtenFiles && writtenFiles.length > 0 && (
+      {turnSummary ? (
+        <TurnSummaryLine summary={turnSummary} onOpenFile={onOpenFile} />
+      ) : writtenFiles && writtenFiles.length > 0 && (
         <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
       )}
 

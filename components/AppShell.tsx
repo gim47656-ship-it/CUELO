@@ -5,7 +5,7 @@ import { useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/n
 import { ActionButton, Icon, Menu, ToggleButton } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
-import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
+import { ChatWindow, type ChatJumpRequest, type MainIdentity } from "./ChatWindow";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
@@ -27,11 +27,23 @@ import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
-import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
+import { resolveAccountFace, useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage } from "./SidebarUsage";
 import { useLounge } from "@/hooks/useLounge";
 import { LoungeMemberPanel } from "./lounge/LoungeMemberPanel";
 import { LoungeView } from "./lounge/LoungeView";
+import { OfficeFloor, OfficeRail } from "./office/OfficeFloor";
+import { OfficeMakerPanel } from "./office/OfficeMakerPanel";
+import { useOfficeText } from "./office/i18n";
+import officeStyles from "./office/office.module.css";
+import { useOfficeView } from "@/hooks/useOfficeView";
+import {
+  buildOfficeRoster,
+  OFFICE_MAIN_KEY,
+  resolveOfficeSelection,
+  type OfficeMainParticipant,
+  type OfficeMakerParticipant,
+} from "@/lib/office/office-roster";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
@@ -663,6 +675,11 @@ export function AppShell({
   // Session stats (tokens + cost) — populated by ChatWindow, shown in the session panel
   const [sessionStats, setSessionStats] = useState<SessionStatsInfo | null>(null);
   const [subagents, setSubagents] = useState<SubagentSnapshot[]>([]);
+  // 오피스 자리판용: 대화창이 관측한 Main 모델·얼굴. 읽기 전용이며 여기서 바꾸지 않는다.
+  const [mainIdentity, setMainIdentity] = useState<MainIdentity | null>(null);
+  // 오피스 보기. 열림은 기억하지 않아 늘 대화 보기에서 시작하고, 선택은 보는 대상만 바꾼다.
+  const office = useOfficeView(selectedSession?.id ?? null);
+  const { ot } = useOfficeText();
   // 상단 상태줄용 SubAgent 동시 실행 상한. 설정 화면에서만 바뀌므로 마운트 시 1회만 읽는다.
   const [subagentCap, setSubagentCap] = useState<number | null>(null);
   // ChatWindow가 들고 있는 blocking extension 다이얼로그의 열림 여부. 열려 있는 동안만 "입력필요".
@@ -1517,6 +1534,28 @@ export function AppShell({
   // 상한을 모르거나 0(Unlimited)이면 분모 없이 실행 수만 적는다.
   const mainStatusSummary =
     `${mainStatusGlyph} Main ${mainStatusLabel} · Sub ${liveSubagentCount}${subagentCap ? `/${subagentCap}` : ""}`;
+  const openWorkspaceView = useCallback((view: "subagents" | "process") => selectWorkspaceView(view, true), [selectWorkspaceView]);
+  // 자리 배정은 대화 기록과 같은 얼굴 규칙(기록된 credential → provider 예약 얼굴)만 거친다.
+  // 사용량 보고서가 바뀌면 이 컴포넌트가 다시 그려지므로 얼굴 저장소의 새 배정도 함께 반영된다.
+  const officeRoster = office.open
+    ? buildOfficeRoster({
+      main: {
+        provider: mainIdentity?.provider ?? null,
+        modelId: mainIdentity?.modelId ?? null,
+        face: mainIdentity?.face ?? null,
+        state: mainNeedsInput ? "attention" : mainWaiting ? "waiting" : sessionBusy ? "working" : "idle",
+      },
+      subagents,
+      accounts: office.accounts,
+      resolveFace: (provider, credentialId) => resolveAccountFace(undefined, provider, credentialId),
+    })
+    : null;
+  const officeSelected = officeRoster ? resolveOfficeSelection(officeRoster, office.selected) : office.selected;
+  const officeMain = officeRoster?.participants.find((participant): participant is OfficeMainParticipant => participant.kind === "main");
+  const officeMaker = officeRoster?.participants.find(
+    (participant): participant is OfficeMakerParticipant => participant.kind === "maker" && participant.key === officeSelected,
+  );
+  const officeFloorPane = office.open && isCompactWorkspace && office.pane === "floor";
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -1927,6 +1966,21 @@ export function AppShell({
                 <span className="workspace-context-readout" data-level={contextIndicator.level}>{contextReadout}</span>
               </ActionButton>
             )}
+            <ActionButton
+              className="workspace-header-action"
+              variant="ghost"
+              size="small"
+              type="button"
+              data-office-toggle={office.open ? "chat" : "office"}
+              onClick={() => {
+                // 대화 크게 보기로 돌아가면 같은 입력창으로 초점을 돌려준다(대화창은 내려가지 않았다).
+                if (office.open) requestComposerFocus();
+                office.toggle();
+              }}
+              title={ot(office.open ? "office.toChatTitle" : "office.toOfficeTitle")}
+            >
+              {ot(office.open ? "office.toChat" : "office.toOffice")}
+            </ActionButton>
             {showChat && (
               <ToggleButton
                 className="workspace-panel-toggle"
@@ -2264,7 +2318,15 @@ export function AppShell({
         </div>
 
         {/* Chat content */}
-        <div className="chat-content-layout">
+        <div
+          className={`chat-content-layout${office.open ? ` ${officeStyles.layout}` : ""}`}
+          data-office-pane={officeFloorPane ? "floor" : undefined}
+        >
+          {/* 오피스 자리판은 대화 칸 옆(좁은 화면은 위)에 놓인다. 대화 칸과 ChatWindow는 같은 자리에
+              그대로 있어 보기를 바꿔도 다시 마운트되지 않는다. */}
+          {officeRoster && (!isCompactWorkspace || office.pane === "floor") ? (
+            <OfficeFloor roster={officeRoster} selected={officeSelected} onSelect={office.select} />
+          ) : null}
           <div id="workspace-transcript" className="chat-session-column" data-lounge-open={loungeOpen ? "true" : undefined}>
           {showChat ? (
             <ChatWindow
@@ -2285,6 +2347,8 @@ export function AppShell({
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onSubagentsChange={setSubagents}
+              onMainIdentityChange={setMainIdentity}
+              onOpenWorkspaceView={openWorkspaceView}
               onProcessLogChange={setProcessLog}
               onOpenFile={handleOpenLinkedFile}
               transcriptReplacement={
@@ -2292,6 +2356,17 @@ export function AppShell({
                   <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
                     {auxiliaryDeckContent}
                   </aside>
+                ) : officeMaker && officeMain ? (
+                  <OfficeMakerPanel
+                    key={officeMaker.key}
+                    participant={officeMaker}
+                    recipient={officeMain}
+                    sessionId={selectedSession?.id ?? null}
+                    cwd={selectedSession?.cwd ?? effectiveNewSessionCwd ?? undefined}
+                    onBackToMain={() => office.select(OFFICE_MAIN_KEY)}
+                    onOpenFile={handleOpenLinkedFile}
+                    onAccountObserved={office.recordAccount}
+                  />
                 ) : null
               }
               onComposerFocusChange={registerComposerFocus}
@@ -2363,6 +2438,16 @@ export function AppShell({
             </aside>
           )}
         </div>
+        {officeRoster ? (
+          <OfficeRail
+            roster={officeRoster}
+            selected={officeSelected}
+            onSelect={office.select}
+            compact={isCompactWorkspace}
+            pane={office.pane}
+            onShowFloor={() => office.setPane("floor")}
+          />
+        ) : null}
       </div>
       {workspaceLayout.transientLayer === "command-palette" && (
         <div

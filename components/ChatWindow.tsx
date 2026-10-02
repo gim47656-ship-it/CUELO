@@ -26,12 +26,16 @@ import { isRunInterrupted } from "@/lib/run-interruption";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
+import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
+import "./answer-status/answer-status.css";
+import { buildDispatchLedger, placeDispatchCards, type DispatchSlot } from "@/lib/answer-status/dispatch";
+import { collectTurnBlocks, placeTurnSummaries, summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
 import { CompactionBanner, InterruptedRunNotice, StallBanner } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
-import { resolveAccountFace, useAccountFace } from "@/hooks/useAccountFaces";
+import { resolveAccountFace, useAccountFace, type AccountFace } from "@/hooks/useAccountFaces";
 import { MAIN_PRESETS, loadSessionAccount } from "@/lib/hanse-resource-client";
 import {
   buildInlineTurns,
@@ -101,6 +105,10 @@ interface Props {
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
   onSubagentsChange?: (subagents: SubagentSnapshot[]) => void;
+  /** Publishes the observed Main identity (model, character face, preset seat). Read-only; null on unmount. */
+  onMainIdentityChange?: (identity: MainIdentity | null) => void;
+  /** Opens an existing detail panel (subagents, work log) from an in-answer status card. */
+  onOpenWorkspaceView?: (view: "subagents" | "process") => void;
   /** Publishes the work log behind the transcript, including the run in flight. */
   onProcessLogChange?: (data: ProcessLogData | null) => void;
   /** Replaces only the scrollable transcript; the composer remains mounted and visible. */
@@ -125,6 +133,14 @@ interface Props {
   /** Open this session at a message found by the palette's transcript search. */
   jumpRequest?: ChatJumpRequest | null;
   onJumpHandled?: (id: number) => void;
+}
+
+export interface MainIdentity {
+  provider: string;
+  modelId: string;
+  face: AccountFace | null;
+  presetAlias: string | null;
+  isNew: boolean;
 }
 
 export interface ChatJumpRequest {
@@ -319,10 +335,25 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     return notices;
   }, [main, process, messages, toolResultsMap, t]);
 
+  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에, 요약은 끝난 턴의 마지막 답변에 붙는다.
+  // 실행 중인 마지막 턴은 아직 끝난 답변이 아니므로 요약하지 않는다.
+  const dispatchSlots = useMemo(() => placeDispatchCards(main, messages), [main, messages]);
+  const turnSummaries = useMemo(() => {
+    let liveTurnAnchor: number | null = null;
+    if (sessionBusy) {
+      for (const item of main) if (item.kind === "message" && messages[item.idx]?.role === "user") liveTurnAnchor = item.idx;
+    }
+    const summaries = new Map<number, TurnSummary>();
+    for (const [position, range] of placeTurnSummaries(main, messages, liveTurnAnchor)) {
+      summaries.set(position, summarizeTurn(collectTurnBlocks(messages, range.from, range.to), toolResultsMap, messageCwd));
+    }
+    return summaries;
+  }, [main, messages, toolResultsMap, messageCwd, sessionBusy]);
+
   // Window the lightweight ordered items, not an already-built JSX transcript.
   const hasMore = startIndex > 0;
   const hasLater = endIndex < main.length;
-  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
+  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; dispatchSlot?: DispatchSlot; turnSummary?: TurnSummary } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
     // A tab-local command result between the answer and the next prompt does
     // not take away the prompt's "edit from here" target.
@@ -365,6 +396,8 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
         sessionId={sessionId}
         writtenFiles={options.writtenFiles}
+        dispatchSlot={options.dispatchSlot}
+        turnSummary={options.turnSummary}
       />
     );
   };
@@ -445,6 +478,8 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
               keyPrefix: `answer-${item.runIndex}`,
               messageOverride: withAssistantBlocks(messages[item.idx] as AssistantMessage, item.blocks),
               writtenFiles,
+              dispatchSlot: dispatchSlots.get(position),
+              turnSummary: turnSummaries.get(position),
             }))}
             {savedLessons}
             {thread}
@@ -461,7 +496,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
+export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onMainIdentityChange, onOpenWorkspaceView, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
@@ -601,7 +636,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     runStalled, runStateKnown,
-    slashCommands, slashCommandsLoading, queuedMessages, subagents, todoPhases: reportedTodoPhases,
+    slashCommands, slashCommandsLoading, deliveryRows, subagents, todoPhases: reportedTodoPhases,
     notices, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection,
     agentPhase,
@@ -641,6 +676,21 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         && (entry.oauthPosition === undefined || entry.oauthPosition === accountPosition),
     )?.alias ?? null;
   }, [displayModelValue, isNew, newSessionAccount, sessionAccountFace]);
+
+  // 오피스 보기 등 바깥 화면이 관측된 Main 정체성만 읽어 가도록 원시값이 바뀔 때만 발행한다.
+  const identityProvider = displayModelValue?.provider;
+  const identityModelId = displayModelValue?.modelId;
+  const identityFaceAlias = sessionAccountFace?.alias;
+  const identityFaceSeed = sessionAccountFace?.seed;
+  const sessionAccountFaceRef = useRef(sessionAccountFace);
+  sessionAccountFaceRef.current = sessionAccountFace;
+  useEffect(() => {
+    if (!onMainIdentityChange) return;
+    onMainIdentityChange(identityProvider && identityModelId
+      ? { provider: identityProvider, modelId: identityModelId, face: sessionAccountFaceRef.current, presetAlias: mainPresetActiveAlias, isNew }
+      : null);
+  }, [onMainIdentityChange, identityProvider, identityModelId, identityFaceAlias, identityFaceSeed, mainPresetActiveAlias, isNew]);
+  useEffect(() => () => { onMainIdentityChange?.(null); }, [onMainIdentityChange]);
 
   const sessionBusy = agentRunning || bashRunning;
   const cueSessionId = session?.id;
@@ -1024,6 +1074,14 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     }
     return map;
   }, [messages]);
+  // 답변 안 발주 카드·턴 요약이 읽는 세션 단위 관측(판정·완료 기록). 실시간 스냅샷과 함께 context로 흘린다.
+  const dispatchLedger = useMemo(() => buildDispatchLedger(messages, toolResultsMap), [messages, toolResultsMap]);
+  const answerStatus = useMemo<AnswerStatusContextValue>(() => ({
+    ledger: dispatchLedger,
+    subagents,
+    toolResults: toolResultsMap,
+    onOpenPanel: onOpenWorkspaceView,
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView]);
   const inputHistory = useMemo(() => {
     const seen = new Set<string>();
     const history: string[] = [];
@@ -1177,7 +1235,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         availableThinkingLevels={availableThinkingLevels}
         thinkingLevelMap={currentThinkingLevelMap}
         retryInfo={retryInfo}
-        queuedMessages={queuedMessages}
+        deliveryRows={deliveryRows}
         inputHistory={inputHistory}
         onRecallQueue={handleRecallQueue}
         onRemoveQueuedMessage={handleRemoveQueuedMessage}
@@ -1446,6 +1504,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
+            <AnswerStatusContext.Provider value={answerStatus}>
             <InlineUtterancesProvider utterances={inlineUtterances}>
               <HistoricalTranscript
                 messages={messages}
@@ -1475,6 +1534,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 onProcessLogChange={publishProcessLog}
               />
             </InlineUtterancesProvider>
+            </AnswerStatusContext.Provider>
             {/* A detached window ends above the live tail; the run keeps streaming and shows on return. */}
             {!detached && streamState.isStreaming && streamState.streamingMessage && liveAnswerBlocks.length > 0 && (
               <MessageView

@@ -16,7 +16,7 @@ import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
-import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent } from "./live-types";
+import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent, parseLiveTranscriptSpeaker } from "./live-types";
 import { GPT6_REPLY_CUSTOM_TYPE, GPT6_REPLY_SOURCE } from "./gpt6-bridge";
 import { latestThinkingCeiling } from "./thinking-ceiling";
 
@@ -727,11 +727,13 @@ function entryToUiMessage(
           };
         }
         if (transcript?.role === "assistant") {
+          const liveSpeaker = parseLiveTranscriptSpeaker(entry.details);
           return {
             role: "assistant",
             content: [{ type: "text", text: transcript.text }],
             model: "Codex Live",
             provider: "openai-codex",
+            ...(liveSpeaker ? { liveSpeaker } : {}),
             stopReason: "stop",
             timestamp: parseEntryTimestamp(entry.timestamp),
           };

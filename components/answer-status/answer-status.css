@@ -1,0 +1,388 @@
+/* 답변 안 진행·검수 카드, 끝난 턴 요약, 입력 전달 상태.
+ * 색·반경·글꼴은 앱 토큰(--bg-panel, --border, --accent, --success, --warning, --danger,
+ * --radius-control, --font-mono)만 읽는다. 상태는 색만으로 나누지 않고 글과 테두리 모양을 함께 쓴다:
+ * 판정이 기록되지 않은 자리는 점선 테두리다. */
+
+.answer-dispatch {
+  margin: 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.answer-dispatch-toggle,
+.answer-summary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-control);
+  touch-action: manipulation;
+}
+
+.answer-dispatch-toggle:hover,
+.answer-summary-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.answer-dispatch-toggle:focus-visible,
+.answer-summary-toggle:focus-visible,
+.answer-link:focus-visible,
+.answer-delivery-remove:focus-visible {
+  outline: 2px solid var(--accent-ring, var(--accent));
+  outline-offset: 2px;
+}
+
+.answer-dispatch-heading {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.answer-dispatch-tally {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.answer-chevron {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+[aria-expanded="true"] > .answer-chevron {
+  transform: rotate(180deg);
+}
+
+.answer-dispatch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.answer-dispatch-row {
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.answer-dispatch-line,
+.answer-summary-maker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-width: 0;
+}
+
+.answer-dispatch-name {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.answer-status-pair {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.answer-status-arrow {
+  color: var(--text-dim);
+}
+
+.answer-status-run,
+.answer-status-verdict {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.answer-status-run[data-state="running"],
+.answer-status-run[data-state="dispatching"],
+.answer-status-run[data-state="pending"] {
+  color: var(--accent);
+  border-color: var(--accent-line, var(--border));
+}
+
+.answer-status-run[data-state="failed"],
+.answer-status-run[data-state="aborted"] {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.answer-status-run[data-state="unobserved"],
+.answer-status-verdict[data-verdict="none"] {
+  border-style: dashed;
+  color: var(--text-dim);
+}
+
+.answer-status-verdict[data-verdict="accepted"] {
+  color: var(--success);
+  border-color: var(--success-line);
+}
+
+.answer-status-verdict[data-verdict="rework"],
+.answer-status-verdict[data-verdict="held"] {
+  color: var(--warning);
+  border-color: var(--warning-line);
+}
+
+.answer-dispatch-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  margin: 6px 0 2px;
+  font-size: 12px;
+}
+
+.answer-dispatch-detail > div {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.answer-dispatch-detail dt {
+  flex: 0 0 6.5rem;
+  color: var(--text-dim);
+}
+
+.answer-dispatch-detail dd {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.answer-mono,
+.answer-check-command {
+  font-family: var(--font-mono);
+}
+
+.answer-dispatch-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 8px;
+}
+
+.answer-link {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.answer-link:hover {
+  background: var(--bg-hover);
+}
+
+/* 끝난 턴 요약: 카드보다 한 단계 조용하게, 테두리 없이 답변 아래 한 줄. */
+.answer-summary {
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.answer-summary-toggle {
+  width: auto;
+  max-width: 100%;
+  padding: 6px 8px;
+  margin-left: -8px;
+}
+
+.answer-summary-text {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.answer-summary-text[data-unverified] {
+  color: var(--warning);
+}
+
+.answer-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0 4px;
+  min-width: 0;
+}
+
+.answer-summary-heading {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.answer-summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.answer-summary-list > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.answer-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+}
+
+.answer-check-command {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.answer-check-result {
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.answer-check[data-state="passed"] .answer-check-result {
+  color: var(--success);
+}
+
+.answer-check[data-state="failed"] .answer-check-result {
+  color: var(--danger);
+}
+
+/* 입력창 위 큐 패널의 행. */
+.answer-delivery-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.answer-delivery-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-height: 32px;
+  padding: 3px 4px 3px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.answer-delivery-kind {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.answer-delivery-row[data-kind="steer"] .answer-delivery-kind {
+  color: var(--accent);
+  border-color: var(--accent-line, var(--border));
+}
+
+.answer-delivery-text {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-delivery-stage {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.answer-delivery-row[data-stage="delivered"] .answer-delivery-stage {
+  color: var(--success);
+}
+
+.answer-delivery-row[data-stage="failed"] .answer-delivery-stage {
+  color: var(--danger);
+}
+
+.answer-delivery-row[data-stage="unconfirmed"] .answer-delivery-stage {
+  color: var(--warning);
+}
+
+.answer-delivery-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.answer-delivery-remove:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+  .answer-delivery-remove {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answer-chevron {
+    transition: none;
+  }
+}
