@@ -720,7 +720,12 @@ async function planLiveVoice(wrapper: AgentSessionWrapper): Promise<{
   voice: LiveVoiceMode;
   ready?: { apiKey: string; model: string; voiceId: string; generation: LiveVoiceGeneration };
 }> {
-  const alias = await resolveLiveCharacter(wrapper.inner);
+  const session = wrapper.inner;
+  const alias = await resolveLiveCharacter(session, {
+    pinCredential: async () => {
+      if (session.model) await session.modelRegistry.getApiKey?.(session.model, session.sessionId);
+    },
+  });
   const plan = await getLiveVoiceService().planFor(alias);
   if (plan.kind === "no-key") return { voice: { mode: "native", alias, reason: "no-key" } };
   if (plan.kind === "not-ready") {

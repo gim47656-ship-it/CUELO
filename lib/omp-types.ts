@@ -203,6 +203,8 @@ export interface AgentSessionLike {
     hasProvider: (providerId: string) => boolean;
     refreshProvider: (providerId: string, strategy?: string) => Promise<void>;
     getProviderBaseUrl?: (provider: string) => string | undefined;
+    /** The key `prompt()` resolves before sending; resolving it pins this session's account. */
+    getApiKey?(model: ModelLike, sessionId?: string): Promise<string | undefined>;
     /**
      * 계정 선호(pin)와 목록만 쓴다. 코어의 CLI 계정 selector와 프로필 character-voice가 쓰는
      * 것과 같은 AuthStorage 네임스페이스이며, 실행 계정 선택 정책(재시도·한도 폴백)은 코어가
