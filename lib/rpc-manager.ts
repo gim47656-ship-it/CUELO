@@ -703,6 +703,9 @@ export class AgentSessionWrapper {
   // Set while the handoff RPC is in flight so state polls and the running-set
   // stay honest during the long oneshot generation + session transition.
   private handoffRunning = false;
+  // When the compaction in flight began here and what triggered it, so a reopened tab's
+  // banner keeps counting from the real start instead of from zero.
+  private compactionStarted: { at: number; reason: string | null } | null = null;
   private extensionsBound = false;
   private extensionBindingPromise: Promise<void> | null = null;
   private extensionBindingError: unknown = null;
@@ -924,6 +927,15 @@ export class AgentSessionWrapper {
         invalidateSessionListCache();
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
+      if (event.type === "auto_compaction_start" || event.type === "compaction_start") {
+        const reason = typeof event.reason === "string" ? event.reason : null;
+        this.compactionStarted = {
+          at: this.compactionStarted?.at ?? Date.now(),
+          reason: reason ?? this.compactionStarted?.reason ?? null,
+        };
+      } else if (event.type === "auto_compaction_end" || event.type === "compaction_end") {
+        this.compactionStarted = null;
+      }
       this.emit(event);
       if (RUNNING_STATE_EVENT_TYPES.has(event.type)) notifyRunningChange();
       void this.goalMode.handleSessionEvent(event).catch((error) => {
@@ -1430,6 +1442,10 @@ export class AgentSessionWrapper {
           isPromptRunning: this.promptRunning,
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
+          // Elapsed rather than a timestamp: the browser may run on a device whose clock differs.
+          compaction: this.inner.isCompacting && this.compactionStarted
+            ? { elapsedMs: Math.max(0, Date.now() - this.compactionStarted.at), reason: this.compactionStarted.reason }
+            : null,
           isHandoffRunning: this.handoffRunning,
           autoCompactionEnabled: this.inner.autoCompactionEnabled,
           autoRetryEnabled: this.inner.autoRetryEnabled,

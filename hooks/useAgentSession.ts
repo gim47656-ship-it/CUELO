@@ -105,6 +105,8 @@ type AgentStateResponse = {
   isPromptRunning?: boolean;
   isBashRunning?: boolean;
   isCompacting?: boolean;
+  /** Elapsed time of the compaction in flight, as the server saw it start. */
+  compaction?: { elapsedMs: number; reason: string | null } | null;
   isHandoffRunning?: boolean;
   extensionStatuses?: ExtensionStatusItem[];
   extensionWidgets?: ExtensionWidgetItem[];
@@ -141,6 +143,25 @@ export type FastModeState = { enabled: boolean; active: boolean } | null;
 function readFastModeState(state: AgentStateResponse | undefined): FastModeState | undefined {
   if (!state || typeof state.fastModeEnabled !== "boolean") return undefined;
   return { enabled: state.fastModeEnabled, active: state.fastModeActive === true };
+}
+
+type CompactionClock = { startedAt: number; reason: string | null };
+
+/**
+ * Re-anchors the compaction banner to the server's start so a reopened or reconciled tab
+ * keeps counting instead of restarting at zero. The earlier start wins; without a server
+ * clock the current one is kept and the isCompacting effect owns clearing it.
+ */
+function adoptServerCompaction(state: AgentStateResponse | undefined) {
+  return (current: CompactionClock | null): CompactionClock | null => {
+    const server = state?.isCompacting ? state.compaction : null;
+    if (!server) return current;
+    const startedAt = Date.now() - server.elapsedMs;
+    return {
+      startedAt: current ? Math.min(current.startedAt, startedAt) : startedAt,
+      reason: current?.reason ?? server.reason,
+    };
+  };
 }
 
 /**
@@ -1442,6 +1463,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         if (data.running && state?.isCompacting) {
           setIsCompacting(true);
+          setCompaction(adoptServerCompaction(state));
           eventStreamGraceTimerRef.current = setTimeout(() => void checkServerIdle(), PROMPT_SETTLE_POLL_MS);
           return;
         }
@@ -1567,6 +1589,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // would otherwise leave the "Stop compaction" UI stuck. No state
       // (wrapper destroyed) means nothing is compacting.
       setIsCompacting(state?.isCompacting ?? false);
+      setCompaction(adoptServerCompaction(state));
       setQueuedMessages(normalizeQueuedMessages(state?.queuedMessages));
       if (state?.contextUsage !== undefined) setContextUsage(state.contextUsage ?? null);
       setSubagents((current) => mergeSubagentSnapshots(current, state?.subagents ?? []));
@@ -3074,6 +3097,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const state = agentState?.state;
         if (state) {
           if (state.isCompacting !== undefined) setIsCompacting(state.isCompacting);
+          setCompaction(adoptServerCompaction(state));
           if (state.contextUsage !== undefined) setContextUsage(state.contextUsage ?? null);
           if (state.systemPrompt !== undefined) setSystemPrompt(state.systemPrompt ?? null);
           if (state.thinkingLevel !== undefined) {
