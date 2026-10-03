@@ -55,7 +55,7 @@
   문서 조회는 익명으로 가능하며 인증은 rate limit 상향이 필요할 때만 선택한다. `ctx7 setup`이나
   MCP·Skill을 추가하지 않는다.
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
-  내용은 Google(Gemini), 그 호출이 실패해 한 번 대체되면 OpenCode Go(DeepSeek)로도 전송된다.
+  내용은 Google(Gemini), 그 호출이 실패해 한 번 대체되면 B.AI(DeepSeek)로도 전송된다.
   비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
 - **브라우저는 relay가 기본값이다.** `browser.open`에 `app: { relay: false }`를 빼면 관리형 headless가
   아니라 **사용자의 실제 브라우저**에 탭이 열린다. 닫을 때는 `browser.close({ name })`로 자기 탭만

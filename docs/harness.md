@@ -87,7 +87,7 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 ## 다중 파일 조사 `skim`
 
-Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `opencode-go/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 OpenCode Go로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
+Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 B.AI로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
 
 `modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `anthropic/claude-sonnet-5-5`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sonnet을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
 

@@ -89,10 +89,10 @@ describe("skim", () => {
         if (model === "google-antigravity/gemini-3.8-flash") throw new Error("Gemini original 429");
         return "Public fact (guide.md:L1)";
       });
-    expect(calls.map(({ model }) => model)).toEqual(["google-antigravity/gemini-3.8-flash", "opencode-go/deepseek-v4.1-flash"]);
+    expect(calls.map(({ model }) => model)).toEqual(["google-antigravity/gemini-3.8-flash", "b-ai/deepseek-v4.1-flash"]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
-    expect(result.startsWith("model: opencode-go/deepseek-v4.1-flash")).toBe(true);
+    expect(result.startsWith("model: b-ai/deepseek-v4.1-flash")).toBe(true);
     expect(result).toContain("Gemini 실패: Gemini original 429");
     expect(result).toContain("Public fact (guide.md:L1)");
     expect(result).toContain(".env.local: 비밀 경로 제외");
@@ -107,7 +107,7 @@ describe("skim", () => {
         called.push(model);
         throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "DeepSeek original 403");
       });
-    expect(called).toEqual(["google-antigravity/gemini-3.8-flash", "opencode-go/deepseek-v4.1-flash"]);
+    expect(called).toEqual(["google-antigravity/gemini-3.8-flash", "b-ai/deepseek-v4.1-flash"]);
     expect(result).toContain("model: none");
     expect(result).toContain("Gemini 실패: Gemini original timeout");
     expect(result).toContain("DeepSeek 실패: DeepSeek original 403");
@@ -144,7 +144,7 @@ describe("skim", () => {
         { headers: { "content-type": "text/event-stream" } });
     } });
     try {
-      const model = { id: "deepseek-v4.1-flash", name: "local", api: "openai-completions", provider: "opencode-go",
+      const model = { id: "deepseek-v4.1-flash", name: "local", api: "openai-completions", provider: "b-ai",
         baseUrl: `http://127.0.0.1:${server.port}/v1`, reasoning: false, input: ["text"],
         cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 };
       const sessionManager = SessionManager.inMemory(cwd);
@@ -156,12 +156,12 @@ describe("skim", () => {
         requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
       const ok = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
       const empty = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
-      expect(ok).toContain("model: opencode-go/deepseek-v4.1-flash");
-      expect(empty).toContain("DeepSeek 실패: opencode-go/deepseek-v4.1-flash가 빈 답을 반환했습니다.");
+      expect(ok).toContain("model: b-ai/deepseek-v4.1-flash");
+      expect(empty).toContain("DeepSeek 실패: b-ai/deepseek-v4.1-flash가 빈 답을 반환했습니다.");
       const usage = sessionManager.getEntries().filter((entry) => entry.type === "model_usage");
       expect(usage.map((entry) => [entry.purpose, entry.role, entry.provider, entry.model, entry.stopReason])).toEqual([
-        ["skim", undefined, "opencode-go", "deepseek-v4.1-flash", "stop"],
-        ["skim", undefined, "opencode-go", "deepseek-v4.1-flash", "stop"],
+        ["skim", undefined, "b-ai", "deepseek-v4.1-flash", "stop"],
+        ["skim", undefined, "b-ai", "deepseek-v4.1-flash", "stop"],
       ]);
       expect(usage.map((entry) => [entry.usage.input, entry.usage.output, entry.usage.cacheRead])).toEqual([[1000, 80, 200], [1000, 80, 200]]);
       expect(usage[0].usage.cost.total).toBeGreaterThan(0);
