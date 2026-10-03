@@ -147,7 +147,10 @@ await test("bare wait with only a failed job recovers the error and then stops r
  try {
   const first = await waitTool.execute("failure", {});
   assert.ok(JSON.stringify(first).includes("STALL-FAILURE"));
-  const second = await waitTool.execute("consumed", {});
+  // 18.5.1 은 기다릴 자기 job 이 없으면 빈 결과 대신 "Nothing to wait for" ToolError 를 던진다. 어느 쪽이든 재생하지 않아야 한다.
+  const second = await waitTool.execute("consumed", {}).catch((error: unknown) => ({
+   thrown: error instanceof Error ? error.message : String(error),
+  }));
   assert.ok(!JSON.stringify(second).includes("STALL-FAILURE"));
  } finally { await manager.dispose({ timeoutMs: 0 }); }
 });

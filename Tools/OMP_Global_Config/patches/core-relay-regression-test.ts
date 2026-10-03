@@ -176,17 +176,24 @@ type Bracket = {
 	adopted?: number;
 };
 const brackets: Bracket[] = [];
+/** 동시에 열려 있던 bracket 의 최댓값. 관찰자 시작은 공유 yield 상태를 지우므로(executor resetYieldTurnState)
+ *  한 turn 에 둘이 겹치면 먼저 연 monitor 의 yield 판정이 깨진다. 어느 구간에서도 1을 넘으면 안 된다. */
+let maxOpenBrackets = 0;
 const installObserver = session.setIrcWakeTurnObserver.bind(session);
 session.setIrcWakeTurnObserver = (observer: never): void => {
 	if (observer === undefined) return installObserver(undefined);
 	installObserver(((records: never) => {
 		const entry: Bracket = { streamingAtOpen: session.isStreaming, hookAtOpen: hookHits, closed: false };
 		brackets.push(entry);
+		maxOpenBrackets = Math.max(maxOpenBrackets, brackets.filter(b => !b.closed).length);
 		if (trace) console.log(`    [bracket open] streaming=${entry.streamingAtOpen} hook=${entry.hookAtOpen}`);
 		const finish = (observer as unknown as (r: never) => unknown)(records) as
 			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: unknown[]) => void | Promise<void>)
 			| undefined;
-		if (finish === undefined) return undefined;
+		if (finish === undefined) {
+			entry.closed = true;
+			return undefined;
+		}
 		return async (error?: unknown, suppressRelay?: boolean, adoptedRecords?: unknown[]) => {
 			entry.suppress = suppressRelay === true;
 			entry.adopted = adoptedRecords?.length ?? 0;
@@ -360,6 +367,50 @@ check(
 	relays().length === beforeSib2Parent + 1,
 	`n=${relays().length - beforeSib2Parent}`,
 );
+
+console.log("\n[5] wake 정산(settle)이 바로 끝나는 세션에서도, 이어받은 continuation 이 소비한 부모 steer 답을 놓치지 않는다");
+// 18.5.1(#13703)부터 wake turn 은 endInFlight() 뒤 settleAsyncWork() 를 기다린 다음 관찰자를 닫고, 그 구간의 turn 은
+// 같은 관찰자가 본다. stranded 부모 steer 를 이어받는 continuation 은 endInFlight() 안의 drain 에서 동기적으로
+// #beginInFlight 까지 들어가므로 언제나 열린 wake bracket 아래에서 시작한다(자기 bracket 을 열지 않는다).
+// AsyncJobManager 나 agentId 가 없는 세션은 settleAsyncWork 가 즉시 끝나, 그 continuation 이 agent.continue 전
+// await(maybeRestoreRetryFallbackPrimary 등)에 있는 동안 관찰자가 닫힐 수 있다. settle 을 그 조기 반환으로 바꾸고
+// agent.continue 를 늦춰 continuation 을 그 창 안에 붙든다. 18.5.0 은 settle 없이 wake 를 drain 전에 닫으므로
+// 같은 입력에서 continuation 이 자기 bracket 으로 답한다(두 판 모두 부모 1건).
+phase = "strand";
+const beforeRaceParent = relays().length;
+const beforeRaceNova = novaRelays().length;
+const raceAgent = session.agent as unknown as { continue: (...args: unknown[]) => Promise<unknown> };
+const raceHost = session as unknown as { settleAsyncWork?: () => Promise<void> };
+const originalContinue = raceAgent.continue;
+const originalSettle = raceHost.settleAsyncWork;
+raceAgent.continue = async function (this: unknown, ...args: unknown[]) {
+	await settle(1200);
+	return await originalContinue.apply(this, args);
+};
+if (originalSettle) {
+	// `if (!manager || !this.#agentId) return;` 와 같은 조기 반환.
+	raceHost.settleAsyncWork = async () => {};
+}
+await bus.send({ from: "Nova", to: "Sol", body: "형제 wake 3" });
+const raceDeadline = Date.now() + 20_000;
+while (Date.now() < raceDeadline && (relays().length < beforeRaceParent + 1 || novaRelays().length < beforeRaceNova + 1)) {
+	await settle(200);
+}
+// 늦게 오는 중복까지 본다.
+await settle(2500);
+Reflect.deleteProperty(raceAgent, "continue");
+if (originalSettle) Reflect.deleteProperty(raceHost, "settleAsyncWork");
+check(
+	"형제는 이번 turn 에서 정확히 1건 받는다",
+	novaRelays().length === beforeRaceNova + 1,
+	`n=${novaRelays().length - beforeRaceNova}`,
+);
+check(
+	"창 안에서 이어받은 turn 이 소비한 부모 steer 도 정확히 1건 답을 받는다",
+	relays().length === beforeRaceParent + 1,
+	`n=${relays().length - beforeRaceParent}`,
+);
+check("어느 구간에서도 bracket 은 동시에 하나만 열린다", maxOpenBrackets === 1, `max=${maxOpenBrackets}`);
 
 /** 정리 단계가 어디서 멈추는지 남긴다. 실 세션은 워커·파일 핸들을 들고 있어
  *  dispose 나 임시 폴더 삭제가 Windows 에서 오래 걸릴 수 있다. */

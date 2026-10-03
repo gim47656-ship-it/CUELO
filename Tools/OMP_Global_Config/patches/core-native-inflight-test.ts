@@ -2,7 +2,9 @@
 // (code=unsupported_native_inflight_message)으로 거절해도 턴이 죽지 않고 입력이 유실되지 않는지
 // 로컬 WebSocket 서버 fixture 와 실제 provider 로 관찰한다. 유료 호출은 없다.
 //   bun run patches/core-native-inflight-test.ts (OMP_CORE_PATCH_TARGET 지정 시 그 사본)
-// 패치 전 core 에서는 [1] 이 RED(스트림 error), 패치 후 전부 GREEN 이다.
+// 18.5.0: 패치 전 core 에서는 [1] 이 RED(스트림 error), 패치 후 전부 GREEN 이다.
+// 18.5.1: upstream #13705 가 같은 거절을 재시도 가능 오류로 복구하고 세션 단위로 steer 를 끈다(P48 RETIRE).
+// 이 시험은 그 upstream 보장(턴이 죽지 않음, 입력 유실 없음)을 같은 fixture 로 계속 지킨다.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -107,7 +109,7 @@ const server = Bun.serve({
 	},
 });
 
-const claims = { rejected: 0, accepted: 0 };
+const claims = { rejected: 0, accepted: 0, claimed: 0 };
 function liveSteering(active: boolean) {
 	if (!active) return undefined;
 	let delivered = false;
@@ -121,6 +123,7 @@ function liveSteering(active: boolean) {
 		async claim() {
 			if (delivered) return undefined;
 			delivered = true;
+			claims.claimed++;
 			return {
 				messages: [{ role: "user", content: "중간에 끼어든 메시지", timestamp: Date.now() }],
 				accept: () => void claims.accepted++,
@@ -169,6 +172,7 @@ function reset(next: Mode): void {
 	creates = [];
 	claims.rejected = 0;
 	claims.accepted = 0;
+	claims.claimed = 0;
 }
 const failed = (r: { result?: { stopReason?: string } }) => r.result?.stopReason === "error";
 const why = (r: { result?: { stopReason?: string; errorMessage?: string } }) =>
@@ -188,7 +192,13 @@ try {
 	const second = await runTurn(pool, "native-inflight-1", true);
 	check("다음 턴도 error 없이 완료된다", !failed(second), why(second));
 	check("response.steer 는 더 전송되지 않았다", steerFrames() === 1, JSON.stringify(received));
-	check("두 번째 입력도 claim.reject 로 정확히 한 번 되돌아온다", claims.rejected === 2 && claims.accepted === 0, JSON.stringify(claims));
+	// 18.5.0(P48)은 같은 소켓에서 claim 한 뒤 바로 reject 하고, 18.5.1 은 세션 단위로 steer pump 를 띄우지 않아
+	// claim 자체가 없다. 어느 쪽이든 claim 된 입력은 전부 reject 로 되돌아와 다음 경계의 일반 경로에 남아야 한다.
+	check(
+		"두 번째 입력도 수락·유실 없이 일반 경로로 남는다",
+		claims.accepted === 0 && claims.rejected === claims.claimed && claims.claimed >= 1,
+		JSON.stringify(claims),
+	);
 
 	console.log("[3] 표준 steer.accepted 는 그대로 수락된다");
 	reset("steer-accepted");

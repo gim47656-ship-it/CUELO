@@ -78,6 +78,13 @@ const OPUS55_ROW_18410 = {
 	patched: OPUS55_ROW_18410_PATCHED,
 };
 
+/**
+ * #310의 18.5.1 no-op 후보(RETIRE). upstream #14168이 이 행에 prefixBinding과 binding controls를 둘 다 넣어 18.4.6 적용본과
+ * tps(93)만 다르다. 18.4.6 후보의 marker는 tps 뒤 조각이라 이 순정에서도 applied로 읽히고, 그러면 --revert가 없는 patched를
+ * 찾다 실패하므로 18.4.6 후보는 이 행이 있는 파일에서 빠진다(EDITS 항목의 excludes).
+ */
+const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93,');
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -786,6 +793,8 @@ Project-wide validation is the main agent's job, run once after all subagents la
 		// 페이지를 닫지 않으므로, 만들어진 작업 탭도 사용자가 직접 닫는다.
 		file: "src/tools/browser/tab-supervisor.ts",
 		marker: "createRelayTab",
+		// 18.5.1(#13375)은 pickElectronTarget 에 relayJson·signal 을 더했다. 사용자 탭 채택은 그대로라 새 탭 의미는 유지한다(ADAPT).
+		excludes: 'relayJson: browser.kind.kind === "relay"',
 		anchor: `	// Connected and relay browsers are user-driven. When no target is requested,
 	// adopt the visible tab and avoid raising it before screenshots. An explicit
 	// target may be backgrounded, so retain activation for target-correct pixels.
@@ -811,6 +820,40 @@ Project-wide validation is the main agent's job, run once after all subagents la
 				matcher: opts.target,
 				preferVisible: !activateForScreenshot,
 			});`,
+		alternates: [{
+			file: "src/tools/browser/tab-supervisor.ts",
+			requires: 'relayJson: browser.kind.kind === "relay"',
+			marker: "createRelayTab",
+			anchor: `	// Connected and relay browsers are user-driven. When no target is requested,
+	// adopt the visible tab and avoid raising it before screenshots. An explicit
+	// target may be backgrounded, so retain activation for target-correct pixels.
+	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
+	const activateForScreenshot = !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
+	const page = await pickElectronTarget(browser.browser, {
+		matcher: opts.target,
+		preferVisible: !activateForScreenshot,
+		relayJson: browser.kind.kind === "relay" ? browser.kind.cdpUrl : undefined,
+		signal: opts.signal,
+	});`,
+			patched: `	// Connected and relay browsers are user-driven. An explicit target may be
+	// backgrounded, so retain activation for target-correct pixels.
+	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
+	// Relay with no target used to adopt the user's visible tab and navigate it.
+	// Open our own tab instead (\`newPage\` = \`Target.createTarget\`, which the
+	// relay bridge implements with \`chrome.tabs.create\`). An explicit target
+	// still selects an existing tab, and reopening the same name still reuses
+	// this tab. Still attach mode: release keeps the page, it is never closed.
+	const createRelayTab = browser.kind.kind === "relay" && shouldPreserveConnectedBrowserFocus(opts.target);
+	const activateForScreenshot = createRelayTab || !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
+	const page = createRelayTab
+		? await browser.browser.newPage()
+		: await pickElectronTarget(browser.browser, {
+				matcher: opts.target,
+				preferVisible: !activateForScreenshot,
+				relayJson: browser.kind.kind === "relay" ? browser.kind.cdpUrl : undefined,
+				signal: opts.signal,
+			});`,
+		}],
 	},
 	{
 		// 도구 프롬프트가 "target 없으면 visible 탭을 채택한다"고 명시한다.
@@ -919,6 +962,9 @@ export interface IrcBridgeHost {
 		// 위 항목의 기록 지점. 같은 파일의 두 번째 편집이므로 marker 를 분리한다.
 		file: "src/session/irc-bridge.ts",
 		marker: "this.queueParentSteerRelay({ steered, record })",
+		// 18.5.1(#13914)은 fromParent 를 앞에서 계산하고 본문을 escapeHarnessTags 로 감싼다. streaming steer 분기는 여전히
+		// 관찰자를 설치하지 않으므로 빚 기록은 그대로 필요하다(ADAPT).
+		excludes: "const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;",
 		anchor: `		if (streaming) {
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
@@ -962,6 +1008,52 @@ export interface IrcBridgeHost {
 					this.#host.adoptParentSteerForRunningTurn();
 				}
 			} else {`,
+		alternates: [{
+			file: "src/session/irc-bridge.ts",
+			requires: "const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;",
+			marker: "this.queueParentSteerRelay({ steered, record })",
+			anchor: `		if (streaming) {
+			if (fromParent) {
+				this.#host.agent.steer({
+					role: "user",
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
+					attribution: "agent",
+					timestamp: msg.ts,
+					steering: true,
+				});
+			} else {`,
+			patched: `		if (streaming) {
+			if (fromParent) {
+				const steered: AgentMessage = {
+					role: "user",
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
+					attribution: "agent",
+					timestamp: msg.ts,
+					steering: true,
+				};
+				this.#host.agent.steer(steered);
+				// The turn that consumes this steer - the running one, or the
+				// continuation that resumes it when it strands past the loop's
+				// final queue poll - owes the parent a \`<task-result>\` if it ends
+				// in a \`yield\`. The wake branch below gets that from its observer;
+				// this branch installs none, and a kept-alive subagent's spawn job
+				// settled long ago, so its later yields reached nobody. Park the
+				// obligation against \`steered\` itself: agent-core holds that exact
+				// object until a turn consumes it, so the settle-time reconciliation
+				// can tell "this steer was answered" from "some other queue item is
+				// pending". A relay itself is an answer, never a new obligation (it
+				// would ping-pong two idle peers).
+				if (msg.wakeRelay !== true) {
+					this.queueParentSteerRelay({ steered, record });
+					// The running turn may be the one that consumes it, and nothing
+					// else would then answer: the spawn job settled long ago and the
+					// continuation bracket only covers turns that START owing a
+					// steer. Let the session bracket the turn now; it decides at
+					// settle, from the queue, whether this turn owned the answer.
+					this.#host.adoptParentSteerForRunningTurn();
+				}
+			} else {`,
+		}],
 	},
 	{
 		// 세션 경계. 전환이 큐를 비우면 그 transcript 에 속한 relay 빚도 함께 물러나고,
@@ -1173,6 +1265,9 @@ export interface IrcBridgeHost {
 		// turn 시작에서 observer 를 열고, #endInFlight 의 settle 콜백에서 닫는다.
 		file: "src/session/agent-session.ts",
 		marker: "const steerObservation = this.#beginIrcSteerContinuationObservation()",
+		// 18.5.1(#14143)은 agent_end 가 낸 continue 를 기다렸다 새로 시작하고 attempt 에 turnEnded 를 단다. bracket 은
+		// 실제로 새 turn 을 시작하는 #beginInFlight 자리에만 걸므로 그 의미는 같다(ADAPT).
+		excludes: "turnEnded: boolean;",
 		anchor: `				this.#beginInFlight();
 				const coalescedSources = new Set([options.source]);
 				const promise = this.#runAgentContinue(signal, request, coalescedSources);
@@ -1218,6 +1313,58 @@ export interface IrcBridgeHost {
 					}
 					this.#handleAgentContinueOutcome(outcome, request);
 				} finally {`,
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			requires: "turnEnded: boolean;",
+			marker: "const steerObservation = this.#beginIrcSteerContinuationObservation()",
+			anchor: `				this.#beginInFlight();
+				const coalescedSources = new Set([options.source]);
+				const promise = this.#runAgentContinue(signal, request, coalescedSources);
+				const attempt: ActiveAgentContinue = {
+					schedulerToken: request.schedulerToken,
+					turnEnded: false,
+					source: options.source,
+					coalescedSources,
+					promise,
+				};
+				this.#activeAgentContinue = attempt;
+				try {
+					this.#handleAgentContinueOutcome(await promise, request);
+				} finally {`,
+			patched: `				this.#beginInFlight();
+				// A parent IRC steer that missed the running turn's final queue poll
+				// strands in the agent-core queue, and this drain is what resumes it.
+				// For a kept-alive subagent that continuation is a full autonomous
+				// turn whose \`yield\` republishes agent://<id>, yet it was the one
+				// turn with no monitor bracket — the wake observer is installed only
+				// by #wakeForIrc and the spawn job settled long ago — so its terminal
+				// result notified nobody. Bracket it with the same observer: the
+				// steering parent gets exactly one <task-result>, and
+				// relayWakeTurnOutput still suppresses it when the agent already
+				// answered them itself.
+				const steerObservation = this.#beginIrcSteerContinuationObservation();
+				const coalescedSources = new Set([options.source]);
+				const promise = this.#runAgentContinue(signal, request, coalescedSources);
+				const attempt: ActiveAgentContinue = {
+					schedulerToken: request.schedulerToken,
+					turnEnded: false,
+					source: options.source,
+					coalescedSources,
+					promise,
+				};
+				this.#activeAgentContinue = attempt;
+				let steerObservationError: unknown;
+				try {
+					const outcome = await promise;
+					if (steerObservation) {
+						// The turn never ran: re-arm the obligation so the next
+						// continuation still owes the parent its answer.
+						if (outcome.status === "skipped") this.#irc.queueParentSteerRelay(...steerObservation.entries);
+						else if (outcome.status === "failed") steerObservationError = outcome.error;
+					}
+					this.#handleAgentContinueOutcome(outcome, request);
+				} finally {`,
+		}],
 	},
 	{
 		// 위 bracket 의 닫는 쪽. wake 경로(#wakeForIrc)와 같이 settle 콜백에서 닫아야
@@ -1374,6 +1521,47 @@ export interface IrcBridgeHost {
 					this.#ircTurnBracketOpen = false;
 					try {
 						await finishObservation?.(turnError, undefined, this.#takeAdoptedParentSteerRecords());`,
+		// 18.5.1(#13703)은 endInFlight() 뒤 settleAsyncWork() 를 기다린 다음 관찰자를 닫아, async 후속 turn 의 yield 까지
+		// 같은 monitor 가 본다. bracket 도 그 구간 끝까지 열어 둔다: 먼저 닫으면 그 사이 continuation 이 관찰자를 하나 더 열고
+		// 관찰자 시작이 공유 yield 상태(resetYieldTurnState)를 지운다. settle 은 agent streaming 만 기다리므로, 그 뒤에도
+		// turn 이 진행 중이면(continuation 이 #beginInFlight 와 agent.continue 사이의 await 에 있음) 그 turn 의 settle
+		// 콜백에서 닫아 그 turn 이 소비한 adopted steer 까지 한 번에 답한다(ADAPT).
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			marker: "const finishWakeObservation = async (): Promise<void> => {",
+			anchor: `				try {
+					await this.settleAsyncWork();
+				} catch (error) {
+					logger.warn("IRC wake async-work settle failed", { error: String(error) });
+				}
+				try {
+					await finishObservation?.(turnError);
+				} catch (error) {
+					logger.warn("IRC wake turn observer failed to finish", { error: String(error) });
+				}`,
+			patched: `				try {
+					await this.settleAsyncWork();
+				} catch (error) {
+					logger.warn("IRC wake async-work settle failed", { error: String(error) });
+				}
+				// The bracket stays open across the settle pause above: this one
+				// monitor owns every turn in it, so a continuation that resumes a
+				// stranded parent steer opens no second observer (starting one resets
+				// the shared yield state). The settle waits for agent streaming only;
+				// a turn still in flight past it (a continuation between
+				// #beginInFlight and agent.continue) is closed at its own settle, so
+				// the adopted steers it consumes ride this one finalization.
+				const finishWakeObservation = async (): Promise<void> => {
+					this.#ircTurnBracketOpen = false;
+					try {
+						await finishObservation?.(turnError, undefined, this.#takeAdoptedParentSteerRecords());
+					} catch (error) {
+						logger.warn("IRC wake turn observer failed to finish", { error: String(error) });
+					}
+				};
+				if (this.#promptInFlightCount > 0) this.#inFlightSettledCallbacks.push(finishWakeObservation);
+				else await finishWakeObservation();`,
+		}],
 	},
 	{
 		// 18.2.1은 relay 호출을 `finally`로 옮기고 실패·취소·빈 turn·finalize 오류까지
@@ -1452,6 +1640,9 @@ export interface IrcBridgeHost {
 		// `tools/wait.ts` 로 옮겼다(buildJobResult 의 6번째 인자가 agents, async/job-control.ts:226-233).
 		file: "src/tools/wait.ts",
 		marker: "runningAgentsOutsideJobs,",
+		// 18.5.1 은 wait 가 자기 job·service 만 기다리게 하고 빈 결과(nothingToWaitForResult)를 오류로 바꿨다. buildJobResult 의
+		// 6번째 인자 agents 는 그대로라 job 결과에 job row 없는 SubAgent 를 싣는 의미는 유지한다(ADAPT).
+		requires: "nothingToWaitForResult",
 		anchor: `import { buildJobResult, nothingToWaitForResult, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
 		patched: `import {
 	buildJobResult,
@@ -1460,11 +1651,18 @@ export interface IrcBridgeHost {
 	snapshotJobs,
 	undeliveredJobs,
 } from "../async/job-control";`,
+		alternates: [{
+			file: "src/tools/wait.ts",
+			marker: `import { buildJobResult, runningAgentsOutsideJobs, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
+			anchor: `import { buildJobResult, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
+			patched: `import { buildJobResult, runningAgentsOutsideJobs, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
+		}],
 	},
 	{
 		// 이미 정산됐으나 아직 전달되지 않은 결과를 즉시 돌려주는 자리.
 		file: "src/tools/wait.ts",
 		marker: "Same roster source as the empty result and `read proc://`",
+		requires: "nothingToWaitForResult",
 		anchor: `				return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);`,
 		patched: `				// Same roster source as the empty result and \`read proc://\`: the 6th
 				// argument (\`agents\`); the 5th stays the empty cancel-outcome list.
@@ -1476,6 +1674,23 @@ export interface IrcBridgeHost {
 					[],
 					runningAgentsOutsideJobs(this.session),
 				);`,
+		// 18.5.1: 같은 줄이 루프 밖으로 나와 들여쓰기가 한 단계 얕다. 그 줄은 18.5.0 줄의 부분 문자열이라 excludes 로 가른다.
+		alternates: [{
+			file: "src/tools/wait.ts",
+			excludes: "nothingToWaitForResult",
+			marker: "Same roster source as `read proc://`",
+			anchor: `			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);`,
+			patched: `			// Same roster source as \`read proc://\`: the 6th argument (\`agents\`);
+			// the 5th stays the empty cancel-outcome list.
+			return buildJobResult(
+				this.session,
+				manager,
+				"wait",
+				[...undelivered, ...jobs],
+				[],
+				runningAgentsOutsideJobs(this.session),
+			);`,
+		}],
 	},
 	{
 		// 사건(job 종료)·30분 상한 뒤의 반환. 여기가 Main 이 "## Still Running" 만 받고
@@ -8140,8 +8355,15 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 	// 있을 때만 이 정확한 코드를 거절 ack 로 돌려 기존 claim.reject() → 다음 경계 일반 전달 경로를
 	// 타게 하고, 같은 소켓은 이후 steer 를 전송하지 않는다(새 소켓은 다시 한 번 시도한다).
 	// 대기자가 없거나 다른 코드인 error 프레임은 그대로 스트림에 push 한다.
+	// 18.5.1 RETIRE(#13705): upstream 이 같은 프레임을 처리한다(openai-codex-responses.ts). onmessage 가 steer 대기자를
+	// 거절(#refuseSteerWaiters, :4084-4088)한 뒤 프레임을 스트림에 그대로 push 하고, 이 코드는 재시도 가능 오류
+	// (CODEX_RETRYABLE_EVENT_CODES, :276-288)라 #recoverStreamError(:2762)가 #stopSteeringOnNativeLaneRejection(:2747)으로
+	// 세션 단위 steeringUnsupported 를 세우고 죽은 소켓을 버린 뒤 #tryRetryProviderError 로 새 소켓에서 재생한다.
+	// 이후 #startSteering(:2477)은 steer 를 다시 보내지 않는다. 우리 swallow(return)가 남으면 그 복구 경로를 가로채므로
+	// 세 항목 모두 18.5.1 에서는 upstream 줄의 no-op 후보만 성립한다(본 후보 excludes).
 	{
 		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		excludes: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
 		marker: "#steerUnsupported = false;",
 		anchor: `	/** Steering whose automatic successor the active attach request is reading. */
 	#attachSteerIds?: ReadonlySet<string>;`,
@@ -8149,9 +8371,17 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 	#attachSteerIds?: ReadonlySet<string>;
 	/** The server answered a steer with unsupported_native_inflight_message; this socket no longer submits steers. */
 	#steerUnsupported = false;`,
+		alternates: [{
+			file: "../pi-ai/src/providers/openai-codex-responses.ts",
+			requires: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
+			marker: "\t/** The server refused steering for this session (native turn lane); later responses are not steered. */\n\tsteeringUnsupported?: boolean;",
+			anchor: "\t/** The server refused steering for this session (native turn lane); later responses are not steered. */\n\tsteeringUnsupported?: boolean;",
+			patched: "\t/** The server refused steering for this session (native turn lane); later responses are not steered. */\n\tsteeringUnsupported?: boolean;",
+		}],
 	},
 	{
 		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		excludes: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
 		marker: "this.#steerWaiters.shift()?.resolve({",
 		anchor: `				// Steering acknowledgements belong to the submitter, not to the
 				// response stream they interleave with.
@@ -8174,9 +8404,17 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 				// Steering acknowledgements belong to the submitter, not to the
 				// response stream they interleave with.
 				if (typeof parsed.type === "string" && parsed.type.startsWith("response.steer.")) {`,
+		alternates: [{
+			file: "../pi-ai/src/providers/openai-codex-responses.ts",
+			requires: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
+			marker: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+			anchor: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+			patched: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+		}],
 	},
 	{
 		file: "../pi-ai/src/providers/openai-codex-responses.ts",
+		excludes: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
 		marker: "code: \"unsupported_native_inflight_message\", message: undefined",
 		anchor: `			return Promise.reject(new CodexWebSocketTransportError(\`websocket connection is unavailable\`));
 		}
@@ -8187,6 +8425,13 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 			return Promise.resolve({ accepted: false, code: "unsupported_native_inflight_message", message: undefined });
 		}
 		const event = { type: "response.steer", previous_response_id: previousResponseId, input };`,
+		alternates: [{
+			file: "../pi-ai/src/providers/openai-codex-responses.ts",
+			requires: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
+			marker: "\t\t\tstate?.steeringUnsupported ||\n",
+			anchor: "\t\t\tstate?.steeringUnsupported ||\n",
+			patched: "\t\t\tstate?.steeringUnsupported ||\n",
+		}],
 	},
 	// 2026-09-30 사용자 요청(0.6.6): 일반 구현 선택 질문만 `ask.timeout` 무응답 시 추천안으로 진행한다.
 	// 자동선택은 긍정 opt-in(`autoSelectRecommended: true`)이고 유효한 `recommended`가 필수다. 한 호출의
@@ -8305,7 +8550,12 @@ function parentSubagentServiceTiers(
 		marker: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		anchor: OPUS55_ROW_18410.anchor.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		patched: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
-		alternates: [OPUS55_ROW_18410, OPUS55_ROW_1846],
+		// 18.5.1: 위 OPUS55_ROW_1851 no-op(RETIRE). 18.4.6 후보는 그 행이 있으면 성립하지 않는다.
+		alternates: [
+			OPUS55_ROW_18410,
+			{ ...OPUS55_ROW_1846, excludes: OPUS55_ROW_1851 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1851, anchor: OPUS55_ROW_1851, patched: OPUS55_ROW_1851 },
+		],
 	},
 	{
 		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.10은 upstream #14019가 kdl:61에
@@ -8328,6 +8578,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
 			patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 18.5.1: 같은 upstream 규칙이 kdl:85(뒤 Sonnet 규칙 kdl:101)로 옮겨졌다. 그 줄의 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
+			anchor: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
+			patched: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
 		}],
 	},
 	{
@@ -8358,6 +8614,13 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 18.5.1 RETIRE(#14168): upstream 이 같은 provider 범위(anthropic·cloudflare)의 Opus 5.5 binding controls 규칙을
+			// kdl:175 로 넣었다. 그 upstream 규칙의 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -8541,6 +8804,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.5.1 번들의 같은 upstream 조건(ERe = isAdvisorTranscriptName) no-op.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -8794,6 +9063,9 @@ class HarmonyLeakInterruption extends Error {`,
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
 		marker: "if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await restartForSteering();",
+		// 18.5.1(#13847)은 이 결과를 retainCompletedToolCalls·recoverTransientErrorToolTurn 로 감싼다. 재시작 판정은 그 정산 전
+		// 같은 자리에 둔다(ADAPT). 두 판 적용본이 같은 marker 를 가지므로 그 upstream 호출로 가른다.
+		excludes: "let trailing = recoverTransientErrorToolTurn(",
 		anchor: `			try {
 				let trailing = await response.result();`,
 		patched: `			// CUELO P55: the iterator ended after a restart was requested; restart instead of finalizing.
@@ -8801,6 +9073,18 @@ class HarmonyLeakInterruption extends Error {`,
 			steerRestartClosed = true;
 			try {
 				let trailing = await response.result();`,
+		alternates: [{
+			file: "../pi-agent-core/src/agent-loop.ts",
+			requires: "let trailing = recoverTransientErrorToolTurn(",
+			marker: "if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await restartForSteering();",
+			anchor: `			try {
+				let trailing = recoverTransientErrorToolTurn(`,
+			patched: `			// CUELO P55: the iterator ended after a restart was requested; restart instead of finalizing.
+			if (steerRestartController?.signal.aborted && !requestSignal?.aborted) await restartForSteering();
+			steerRestartClosed = true;
+			try {
+				let trailing = recoverTransientErrorToolTurn(`,
+		}],
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",

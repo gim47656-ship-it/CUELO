@@ -95,7 +95,12 @@ Bun.plugin({
 			const [pkg, ...rest] = toUrl(args.path).split("/@oh-my-pi/").at(-1)!.split("/");
 			const patched = pkg === corePackage ? join(fixture, ...rest) : join(fixture, "..", pkg!, ...rest);
 			const useOriginal = baseline || !existsSync(patched);
-			return { contents: readFileSync(useOriginal ? args.path : patched, "utf8"), loader: "ts" };
+			const contents = readFileSync(useOriginal ? args.path : patched, "utf8");
+			// Runtime `.d.ts` imports are only ever `with { type: "text" }` (18.5.1 archive/browser/computer preludes);
+			// a "ts" loader would turn the declaration source into an empty module with no default export. onLoad has
+			// no "text" loader, so hand back the same shape: the source string as the default export.
+			if (args.path.endsWith(".d.ts")) return { exports: { default: contents }, loader: "object" };
+			return { contents, loader: "ts" };
 		});
 	},
 });
