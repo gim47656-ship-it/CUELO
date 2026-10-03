@@ -194,4 +194,25 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	rmSync(root, { recursive: true, force: true });
 	console.log("  PASS  실제 Settings 로딩이 providers.autoThinkingMinEffort를 읽고 기본값은 low다");
 }
-console.log("결과 9 pass");
+
+// [raise-only] 실행 중 사용자 steering·follow-up 재판정(2026-10-04 사용자 결정): 같은 턴 안에서는 현재보다 높을 때만
+// 반영하고, 낮은 판정·분류 실패는 상태·기록을 그대로 둔다. 다음 새 사용자 턴은 평소처럼 내려갈 수 있다.
+{
+	setFloor("medium");
+	const { control, turn, persisted } = controls(full);
+	assert.equal(await turn("medium"), "medium");
+	assert.equal(await turn("high"), "high");
+	const raise = async (answer: Reply) => {
+		reply = answer;
+		await control.applyAutoThinkingLevel("fixture turn\n\n추가 목표", 1, undefined, { raiseOnly: true });
+		return control.thinkingLevel;
+	};
+	assert.equal(await raise("medium"), "high", "낮은 재판정은 내리지 않는다");
+	assert.equal(await raise("fail"), "high", "분류 실패 fallback도 내리지 않는다");
+	assert.deepEqual(persisted, ["medium", "high"], "올리지 않은 재판정은 기록을 남기지 않는다");
+	assert.equal(await raise("xhigh"), "xhigh");
+	assert.deepEqual(persisted, ["medium", "high", "xhigh"]);
+	assert.equal(await turn("low"), "medium", "다음 새 사용자 턴은 raise-only 가 아니라 하한까지 내려간다");
+	console.log("  PASS  raise-only 재판정은 올리기만 하고, 다음 새 사용자 턴은 다시 내려갈 수 있다");
+}
+console.log("결과 10 pass");

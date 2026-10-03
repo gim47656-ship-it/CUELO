@@ -8981,6 +8981,82 @@ class HarmonyLeakInterruption extends Error {`,
 		anchor: "\t\t\t() => (hasSession ? session.getAsyncJobSnapshot() : null),",
 		patched: "\t\t\toptions => (hasSession ? session.getAsyncJobSnapshot(options) : null),",
 	},
+	{
+		// 2026-10-04 사용자 결정: 실행 중 사용자 steering·follow-up 으로 목표가 늘어나면 Main auto 강도를 다시
+		// 판정한다. 같은 턴 안에서는 올리기만 하고(raiseOnly), 다음 새 사용자 턴은 평소처럼 양방향으로 다시 고른다.
+		// 근거: 같은 계정의 effort 변경은 캐시를 대체로 유지했다(Astra medium→high→medium, Opus 자동 변경 4건 중 3건).
+		// 아래 여섯 항목: 분류 옵션·raise 판정(model-controls), 턴 입력 보관·갱신과 큐 입력 연결(agent-session).
+		// 검증: core-agent-thinking-test.ts [raise-only], core-steer-auto-thinking-test.ts.
+		file: "src/session/model-controls.ts",
+		marker: "options?: { raiseOnly?: boolean },",
+		anchor: "\tasync applyAutoThinkingLevel(promptText: string, generation: number, solutionSpace?: string): Promise<void> {",
+		patched: `\tasync applyAutoThinkingLevel(
+		promptText: string,
+		generation: number,
+		solutionSpace?: string,
+		// CUELO: 실행 중 사용자 steering·follow-up 재판정은 같은 턴 안에서 강도를 올리기만 한다.
+		options?: { raiseOnly?: boolean },
+	): Promise<void> {`,
+	},
+	{
+		file: "src/session/model-controls.ts",
+		marker: "// CUELO: raise-only",
+		anchor: "\t\tif (effort === undefined) return;\n",
+		patched: `\t\tif (effort === undefined) return;
+		// CUELO: raise-only — 같은 턴의 재판정은 현재보다 높을 때만 반영한다(상태·기록·이벤트 모두 그대로).
+		if (
+			options?.raiseOnly &&
+			this.#thinkingLevel !== undefined &&
+			THINKING_EFFORTS.indexOf(effort) <= THINKING_EFFORTS.indexOf(this.#thinkingLevel as Effort)
+		) {
+			return;
+		}
+`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t#autoThinkingTurnText: string | undefined;",
+		anchor: "\t#promptGeneration = 0;\n",
+		patched: `\t#promptGeneration = 0;
+	// CUELO: 이번 사용자 턴의 auto 분류 입력. 실행 중 사용자 steering·follow-up 이 이어 붙어 재판정 입력이 된다.
+	#autoThinkingTurnText: string | undefined;
+`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t\t\tif (isUserTurn) this.#autoThinkingTurnText = expandedText;",
+		anchor: "\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
+		// 턴 중에 auto 로 바꿔도 이전 턴 문장이 섞이지 않도록 모든 사용자 턴에서 보관한다.
+		patched: "\t\t\tif (isUserTurn) this.#autoThinkingTurnText = expandedText;\n\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
+	},
+	{
+		// CUELO 화면의 실행 중 입력은 steer()가 아니라 prompt(..., { streamingBehavior })로 들어와 이 함수에서
+		// 바로 큐에 들어간다. 그래서 연결은 steer()·followUp()이 아니라 모든 사용자 큐 입력이 지나는 여기 한 곳이다.
+		file: "src/session/agent-session.ts",
+		marker: "#raiseAutoThinkingForQueuedInput(text: string",
+		anchor: "\tasync #queueUserMessage(\n",
+		patched: `\t/**
+	 * CUELO: 실행 중 사용자 steering·follow-up 으로 목표가 늘어나면 auto 강도를 다시 판정한다.
+	 * 이번 턴 요청에 지금까지의 입력을 이어 붙여 분류하고, 같은 턴 안에서는 올리기만 한다.
+	 * 분류(최대 4초)를 기다리지 않으므로 메시지 전달은 늦어지지 않고, 결과는 다음 모델 요청부터 쓴다.
+	 * agent 가 넣은 메시지, aside, auto 가 아닌 세션(고정 effort 인 Maker 포함)은 건드리지 않는다.
+	 */
+	#raiseAutoThinkingForQueuedInput(text: string, attribution: MessageAttribution): void {
+		if (!this.isAutoThinking || attribution === "agent" || !text.trim()) return;
+		const request = this.#autoThinkingTurnText ? \`\${this.#autoThinkingTurnText}\\n\\n\${text}\` : text;
+		this.#autoThinkingTurnText = request;
+		void this.#models.applyAutoThinkingLevel(request, this.#promptGeneration, undefined, { raiseOnly: true });
+	}
+
+	async #queueUserMessage(
+`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);",
+		anchor: "\t\tconst attribution = options?.attribution ?? \"user\";\n",
+		patched: "\t\tconst attribution = options?.attribution ?? \"user\";\n\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);\n",
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

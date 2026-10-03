@@ -50,7 +50,7 @@ CUELO가 재시작된 뒤에도 같은 Main 세션에서 이전 Maker에게 `wri
 
 후보별 추론 강도는 정책의 `allowedEfforts`와 실제 모델 지원 단계의 교집합입니다. `NORMAL_SONNET`·`HARD_CODE_SONNET`·`NORMAL_SOL`은 `medium`~`xhigh`, `HARD_CODE_ASTRA`는 `high`~`xhigh`, Opus 후보 셋은 `high`~`max`(기본 `high`, `max`는 기본값이 아님), DeepSeek는 `high`만 사용합니다. `max`는 Opus 후보에서만 허용되므로 child 추론 상한 `task.maxEffort`는 `max`입니다. 이 정책은 Main의 Auto나 실행 중인 세션의 모델·강도를 소급 변경하지 않습니다.
 
-CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중인 요청·Steer·도구 후속 실행·수동 선택의 강도는 이 설정으로 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 하한이 적용되지는 않습니다.
+CUELO의 패치된 내장 코어에서 Main은 Auto를 유지하며 새 사용자 턴의 자동 선택에 `providers.autoThinkingMinEffort: medium`과 `providers.autoThinkingMaxEffort: xhigh`를 적용합니다. 분류 실패 시 이전 값으로 대체하는 경우에도 같은 하한을 사용합니다. 모델이 지원하는 단계와 명시된 세션 상한 안에서만 고르며, 추론 조절이 없는 모델에 값을 만들어 넣지는 않습니다. 실행 중에 사용자가 직접 보낸 Steer·Follow-up은 이번 턴 요청에 이어 붙여 다시 판정하고, 결과가 현재 강도보다 높을 때만 다음 모델 요청부터 올립니다. 같은 턴 안에서는 내리지 않으며, 다음 새 사용자 턴은 평소처럼 처음부터 다시 고릅니다. 판정을 기다리지 않으므로 메시지 전달은 늦어지지 않고, 입력마다 판정 요청이 한 번 늘어납니다. 강도가 바뀌면 일부 제공자에서 프롬프트 캐시가 한 번 다시 쓰일 수 있습니다. 에이전트가 넣은 메시지·숨김 메시지·도구 후속 실행·수동 선택과 고정 강도 세션(Maker 포함)의 강도는 바꾸지 않습니다. 공식 standalone `omp` 실행 파일에는 이 로컬 코어 패치가 포함되지 않으므로 CLI 업데이트만으로 해당 동작이 적용되지는 않습니다.
 
 웹 입력창의 Auto 선택·상한과 「현재 추론 강도」는 서로 다른 값입니다. 선택기는 자동 선택에 허용한 상한을 보여 주고, 별도 표시는 코어가 보고한 실효값을 보여 줍니다. 새 대화에서는 상한 적용을 마치기 전까지 첫 메시지와 내장 명령 실행을 기다리며, 연결 실패 뒤 다시 보내면 같은 세션에서 미완 적용을 재시도합니다.
 
