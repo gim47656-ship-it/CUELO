@@ -299,6 +299,147 @@ export const useLayoutEffect = () => {};
   await response;
 });
 
+// 이미지 입력의 전달 상태를 실제 훅으로 렌더한다. fetch·EventSource만 대역이고 provider·서버 호출은 없다.
+// effect는 돌리지 않으므로 큐 관측(queue effect)은 entries에 반영되지 않고, 화면 행은 큐와 entries를 합친 결과다.
+async function createImageDeliveryHarness(t, name) {
+  const directory = await mkdtemp(join(tmpdir(), `cuelo-hook-${name}-`));
+  const fakeReactPath = join(directory, "react.mjs");
+  const harnessSubjectPath = join(directory, "useAgentSession.ts");
+  const harnessKey = `__ompUseAgentSessionImageHarness_${name}`;
+  await writeFile(fakeReactPath, `
+const harness = globalThis[${JSON.stringify(harnessKey)}];
+export const useState = (...args) => harness.useState(...args);
+export const useReducer = (...args) => harness.useReducer(...args);
+export const useRef = (...args) => harness.useRef(...args);
+export const useCallback = (callback) => callback;
+export const useMemo = (factory) => factory();
+export const useEffect = () => {};
+export const useLayoutEffect = () => {};
+`);
+  const sourceRoot = new URL("../", import.meta.url);
+  await writeFile(harnessSubjectPath, source
+    .replace('from "react";', `from ${JSON.stringify(pathToFileURL(fakeReactPath).href)};`)
+    .replace(/from "@\/([^"]+)";/g, (_match, path) => `from ${JSON.stringify(new URL(path, sourceRoot).href)};`));
+  const originalFetch = globalThis.fetch;
+  const originalEventSource = globalThis.EventSource;
+  t.after(async () => {
+    delete globalThis[harnessKey];
+    globalThis.fetch = originalFetch;
+    if (originalEventSource === undefined) delete globalThis.EventSource;
+    else globalThis.EventSource = originalEventSource;
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const cells = { state: [], reducers: [], refs: [] };
+  const cursor = { state: 0, reducers: 0, refs: 0 };
+  globalThis[harnessKey] = {
+    useState(initial) {
+      const index = cursor.state++;
+      if (!(index in cells.state)) cells.state[index] = typeof initial === "function" ? initial() : initial;
+      return [cells.state[index], (value) => {
+        cells.state[index] = typeof value === "function" ? value(cells.state[index]) : value;
+      }];
+    },
+    useReducer(reducer, initial) {
+      const index = cursor.reducers++;
+      if (!(index in cells.reducers)) cells.reducers[index] = initial;
+      return [cells.reducers[index], (action) => { cells.reducers[index] = reducer(cells.reducers[index], action); }];
+    },
+    useRef(initial) {
+      const index = cursor.refs++;
+      if (!(index in cells.refs)) cells.refs[index] = { current: initial };
+      return cells.refs[index];
+    },
+  };
+  const commands = [];
+  globalThis.fetch = async (_input, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : {};
+    commands.push(body);
+    return new Response(JSON.stringify({ success: true, data: body.type === "remove_queued_message" ? { removed: true } : null }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  globalThis.EventSource = class {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    constructor() {
+      this.readyState = 1;
+      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ type: "connected" }) }));
+    }
+    close() {}
+  };
+  const { useAgentSession: useHarnessedAgentSession } = await createJiti(import.meta.url, {
+    jsx: { runtime: "automatic" },
+    moduleCache: false,
+    tsconfigPaths: true,
+  }).import(harnessSubjectPath);
+  const useRenderedImageSession = () => {
+    cursor.state = 0;
+    cursor.reducers = 0;
+    cursor.refs = 0;
+    return useHarnessedAgentSession({
+      session: { id: "session-id", name: "Test", cwd: "/tmp" },
+      newSessionCwd: null,
+      initialData: {
+        sessionId: "session-id",
+        filePath: "/tmp/session.jsonl",
+        totalActiveMs: 0,
+        tree: [],
+        leafId: null,
+        context: { messages: [], entryIds: [], thinkingLevel: "off", model: null },
+      },
+    });
+  };
+  return { commands, render: useRenderedImageSession };
+}
+
+const screenshot = { data: "AQID", mimeType: "image/png", previewUrl: "blob:test" };
+
+// omp는 글 없이 이미지만 보낸 입력을 큐에 "[Image]"로 보고하고, 거둠은 보낸 원문("")으로 맞춘다.
+// 거둠이 성공하면 queue_update가 오기 전에도(SSE 미수신) 입력창 위에 유령 "[Image]" 행이 남지 않아야 한다.
+test("withdrawing a screenshot-only steer clears its [Image] queue row before any queue_update", async (t) => {
+  const { commands, render } = await createImageDeliveryHarness(t, "remove-image");
+  let hook = render();
+  await hook.handleSteer("", [screenshot]);
+  hook = render();
+  hook.handleAgentEventRef.current({ type: "queue_update", steering: ["[Image]"], followUp: [] });
+  hook = render();
+  assert.deepEqual(hook.queuedMessages.steering, ["[Image]"]);
+
+  await hook.handleRemoveQueuedMessage("steering", "");
+  hook = render();
+  assert.deepEqual(commands.find((command) => command.type === "remove_queued_message"), {
+    type: "remove_queued_message",
+    message: "",
+    queue: "steering",
+  });
+  assert.deepEqual(hook.queuedMessages.steering, []);
+  assert.deepEqual(hook.deliveryRows.map((row) => row.text), []);
+});
+
+// 이번 실행을 시작한 prompt의 user 이벤트는 omp가 이미지를 다시 인코딩해 낙관적 메시지와 키가 달라져도 큐 입력의
+// 전달 근거가 아니다. 같은 글·이미지 수로 대기 중인 follow-up을 대신 끝내면 관측 없는 delivered가 된다.
+test("the prompt that starts a run never settles a waiting screenshot follow-up", async (t) => {
+  const { commands, render } = await createImageDeliveryHarness(t, "optimistic-prompt");
+  let hook = render();
+  await hook.handleFollowUp("", [screenshot]);
+  hook = render();
+  await hook.handleSend("", [screenshot]);
+  hook = render();
+  assert.deepEqual(commands.filter((command) => command.type === "follow_up" || command.type === "prompt").map((command) => command.type), [
+    "follow_up",
+    "prompt",
+  ]);
+
+  hook.handleAgentEventRef.current({
+    type: "message_end",
+    message: { role: "user", content: [{ type: "text", text: "" }, { type: "image", data: "UkVTSVpFRA==", mimeType: "image/png" }], timestamp: 2 },
+  });
+  hook = render();
+  assert.deepEqual(hook.deliveryRows.map((row) => [row.kind, row.images, row.stage]), [["followUp", 1, "accepted"]]);
+});
+
 test("distinguishes an ambiguous transport failure from an explicit maintenance rejection", async (t) => {
   const originalEventSource = globalThis.EventSource;
   const originalFetch = globalThis.fetch;

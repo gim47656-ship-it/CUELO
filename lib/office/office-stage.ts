@@ -86,7 +86,7 @@ export interface OfficePlace {
   facing: number;
 }
 
-/** 책상 하나. 같은 캐릭터로 여러 실행이 참여하면 그 수만큼 옆으로 길어진다. */
+/** 책상 하나. 미확인 몸 여럿이 앉는 공용 책상은 그 수만큼 옆으로 길어진다. */
 export interface OfficeDesk {
   /** 캐릭터 자리 번호. 계정을 특정하지 못한 참여자의 공용 책상은 null. */
   seat: number | null;
@@ -196,9 +196,9 @@ function slotOffset(index: number, count: number): { x: number; row: number } {
 }
 
 /**
- * 참여자와 캐릭터의 배치. 같은 캐릭터로 여러 실행(Main 과 같은 계정의 Maker, 같은 계정의 Maker
- * 여럿)이 참여하면 각각 제 좌석을 받는다. 캐릭터를 특정하지 못한 참여자는 어느 캐릭터 책상에도
- * 끼우지 않고 공용 책상에 앉힌다. 참여자가 하나도 없는 캐릭터만 휴게 구역에 자리를 받는다.
+ * 몸(`officeBodies`)의 배치. 한 캐릭터는 작업이 몇 개든 몸 하나로 들어오므로 캐릭터 책상에는 한 명이
+ * 앉는다. 캐릭터를 특정하지 못한 몸은 어느 캐릭터 책상에도 끼우지 않고 공용 책상에 나란히 앉힌다.
+ * 몸이 없는 캐릭터만 휴게 구역에 자리를 받는다.
  */
 export function officeLayout(
   participants: readonly { key: string; seat: number | null }[],

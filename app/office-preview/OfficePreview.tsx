@@ -65,6 +65,14 @@ const SCENARIOS: Record<string, Scenario> = {
       { id: "AnthropicNoCredential", status: "running", model: "anthropic/claude-opus-5-5" },
     ],
   },
+  mio: {
+    label: "Main MIO + MIO Maker 2 (한 몸·작업 셋)",
+    main: { seat: 1, state: "idle" },
+    makers: [
+      { id: "MioBuild", status: "running", model: "anthropic/claude-opus-5-5", credentialId: 2, intent: "Wiring the loader" },
+      { id: "MioReview", status: "failed", model: "anthropic/claude-opus-5-5", credentialId: 2 },
+    ],
+  },
   unknown: {
     label: "Main 캐릭터 미확인 + 기록 없는 Maker",
     main: { seat: null, state: "idle" },

@@ -65,6 +65,9 @@ const ko = {
   "delivery.stage.delivered": "전달됨 · 대화에 들어감",
   "delivery.stage.failed": "보내지 못함 · 입력창에 되돌림",
   "delivery.stage.unconfirmed": "전달 확인 못 함 · 큐에서 빠짐",
+  "delivery.images": "이미지 {count}개",
+  "delivery.showOlder": "이전 {count}개 더 보기",
+  "delivery.showRecent": "최근 {count}개만 보기",
   "live.nativeVoice": "기본 음성",
 } as const;
 
@@ -125,6 +128,9 @@ const en: Record<AnswerStatusMessageKey, string> = {
   "delivery.stage.delivered": "Delivered · in the conversation",
   "delivery.stage.failed": "Not sent · back in the composer",
   "delivery.stage.unconfirmed": "Delivery not confirmed · left the queue",
+  "delivery.images": "{count} image(s)",
+  "delivery.showOlder": "Show {count} earlier",
+  "delivery.showRecent": "Show only the latest {count}",
   "live.nativeVoice": "default voice",
 };
 
@@ -183,6 +189,9 @@ const zhCN: Record<AnswerStatusMessageKey, string> = {
   "delivery.stage.delivered": "已送达 · 已进入对话",
   "delivery.stage.failed": "未发送 · 已退回输入框",
   "delivery.stage.unconfirmed": "未能确认送达 · 已离开队列",
+  "delivery.images": "图片 {count} 张",
+  "delivery.showOlder": "显示更早的 {count} 条",
+  "delivery.showRecent": "仅显示最近 {count} 条",
   "live.nativeVoice": "默认语音",
 };
 

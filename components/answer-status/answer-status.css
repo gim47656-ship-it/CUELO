@@ -38,7 +38,8 @@
 .answer-dispatch-toggle:focus-visible,
 .answer-summary-toggle:focus-visible,
 .answer-link:focus-visible,
-.answer-delivery-remove:focus-visible {
+.answer-delivery-remove:focus-visible,
+.answer-delivery-toggle:focus-visible {
   outline: 2px solid var(--accent-ring, var(--accent));
   outline-offset: 2px;
 }
@@ -448,10 +449,34 @@
   color: var(--text);
 }
 
+/* 기본으로 감춘 이전 행을 펼치는 줄. 행과 같은 들여쓰기, 누를 수 있는 글자 버튼. */
+.answer-delivery-toggle {
+  display: block;
+  min-height: 32px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.answer-delivery-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 @media (pointer: coarse), (max-width: 640px) {
   .answer-delivery-remove {
     width: 44px;
     height: 44px;
+  }
+
+  .answer-delivery-toggle {
+    min-height: 44px;
   }
 
   .run-status-line.answer-dock-line {

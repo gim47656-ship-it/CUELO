@@ -28,7 +28,7 @@ import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
 import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
-import { buildDeliveryRows, deliveryReducer, userMessageText } from "@/lib/answer-status/delivery";
+import { buildDeliveryRows, deliveryReducer, userMessageDeliveryKind, userMessageImageCount, userMessageText } from "@/lib/answer-status/delivery";
 import {
   COMMAND_OUTPUT_CUSTOM_TYPE,
   isLocalCommandEntryId,
@@ -1918,8 +1918,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             }
             return [...prev, delivered];
           });
-          // 큐로 보낸 글이 대화 기록에 들어간 관측. 이번 실행의 첫 프롬프트(optimistic)는 큐 입력이 아니다.
-          if (optimisticKey !== deliveredKey) dispatchDelivery({ type: "user-message", text: userMessageText(delivered) });
+          // 큐로 보낸 글이 대화 기록에 들어간 관측. optimisticKey가 남아 있는 동안 오는 첫 user 이벤트는 이번 실행을
+          // 시작한 prompt다(omp가 initialMessages를 먼저 기록). omp가 이미지를 다시 인코딩하면 키가 달라질 수 있으므로,
+          // 키를 비교하지 않고 이 이벤트를 아예 큐 전달 근거에서 뺀다.
+          if (!optimisticKey) {
+            dispatchDelivery({
+              type: "user-message",
+              kind: userMessageDeliveryKind(delivered),
+              text: userMessageText(delivered),
+              images: userMessageImageCount(delivered),
+            });
+          }
         } else if (completed) {
           updateMessages((prev) => [...prev, normalizeToolCalls(completed)]);
         }
@@ -2728,7 +2737,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     const deliveryId = ++nextDeliveryIdRef.current;
-    dispatchDelivery({ type: "submit", id: deliveryId, kind: "steer", text: promptMessage });
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: "steer", text: promptMessage, images: piImages?.length ?? 0 });
     try {
       await sendAgentCommand(sid, {
         type: "steer",
@@ -2768,7 +2777,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     const deliveryId = ++nextDeliveryIdRef.current;
-    dispatchDelivery({ type: "submit", id: deliveryId, kind: behavior, text: promptMessage });
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: behavior, text: promptMessage, images: piImages?.length ?? 0 });
     try {
       await sendAgentCommand(sid, {
         type: "prompt",
@@ -2808,7 +2817,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     const deliveryId = ++nextDeliveryIdRef.current;
-    dispatchDelivery({ type: "submit", id: deliveryId, kind: "followUp", text: promptMessage });
+    dispatchDelivery({ type: "submit", id: deliveryId, kind: "followUp", text: promptMessage, images: piImages?.length ?? 0 });
     try {
       await sendAgentCommand(sid, {
         type: "follow_up",
@@ -2877,7 +2886,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       dispatchDelivery({ type: "withdraw", kind: queue === "steering" ? "steer" : "followUp", text });
       // Same as recall: queue_update only reaches us while SSE is connected.
       setQueuedMessages((current) => {
-        const index = current[queue].indexOf(text);
+        // omp는 이미지만 보낸 입력을 큐에 "[Image]"로 보여 주고, 거둠은 보낸 원문("")으로 맞춘다.
+        let index = current[queue].indexOf(text);
+        if (index < 0 && text.trim() === "") index = current[queue].indexOf("[Image]");
         if (index < 0) return current;
         return { ...current, [queue]: current[queue].filter((_, i) => i !== index) };
       });

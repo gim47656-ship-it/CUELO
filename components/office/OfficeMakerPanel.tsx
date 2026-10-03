@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 import { MessageView } from "@/components/MessageView";
 import { archiveTranscriptEntries, isActiveSubagentStatus, useSubagentTranscripts, type LiveTranscriptView, type SubagentTranscriptState } from "@/hooks/useSubagentTranscripts";
 import { createHanseSubagentClient, type HanseSubagentClient } from "@/lib/hanse-subagent-client";
-import { observeMakerAccount, type OfficeMainParticipant, type OfficeMakerAccount, type OfficeMakerParticipant } from "@/lib/office/office-roster";
+import type { OfficeMainParticipant, OfficeMakerParticipant } from "@/lib/office/office-roster";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import type { AgentMessage, ToolResultMessage } from "@/lib/types";
 import { getFileName } from "@/lib/file-paths";
@@ -25,8 +25,6 @@ export interface OfficeMakerPanelProps {
   recipient: OfficeMainParticipant;
   onBackToMain: () => void;
   onOpenFile: (filePath: string) => void;
-  /** 이 기록에서 본 계정 근거를 자리 배정에 돌려준다. 대응을 위해 따로 읽지 않는다. */
-  onAccountObserved: (makerId: string, account: OfficeMakerAccount) => void;
   client?: HanseSubagentClient;
 }
 
@@ -42,7 +40,6 @@ export function OfficeMakerPanel({
   recipient,
   onBackToMain,
   onOpenFile,
-  onAccountObserved,
   client,
 }: OfficeMakerPanelProps) {
   const { ot } = useOfficeText();
@@ -89,11 +86,6 @@ export function OfficeMakerPanel({
     }
     return files;
   }, [cwd, messages, toolResults]);
-
-  const hasAssistant = messages.some((message) => message.role === "assistant");
-  useEffect(() => {
-    if (hasAssistant) onAccountObserved(snapshot.id, observeMakerAccount(snapshot, messages));
-  }, [hasAssistant, messages, onAccountObserved, snapshot]);
 
   const [tab, setTab] = useState<OfficeTab>("transcript");
   const tabsId = useId();

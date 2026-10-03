@@ -17,8 +17,10 @@ import {
   type OfficeStation,
 } from "@/lib/office/office-stage";
 import { OFFICE_CAMERA_BOUNDS, type OfficeCameraView } from "@/lib/office/office-camera";
+import { officeAvatarForSeat } from "@/lib/office/office-avatars";
 import {
   CHARACTER_BUBBLE_Y,
+  CHARACTER_HEAD_Y,
   CHARACTER_HEIGHT,
   OFFICE_APPEARANCES,
   SEATED_HIP,
@@ -31,6 +33,13 @@ import {
   type CharacterPose,
   type CharacterRig,
 } from "./OfficeCharacter";
+import {
+  loadOfficeAvatarLibrary,
+  poseOfficeAvatar,
+  updateOfficeAvatar,
+  type OfficeAvatarLibrary,
+  type OfficeAvatarRig,
+} from "./OfficeAvatar";
 import { OFFICE_KIT_URL, buildAssetRoom } from "./OfficeRoomAssets";
 
 /** 참여자 캐릭터의 지금 움직임. 말풍선 문구와 보조 기술 안내가 이 값을 그대로 읽는다. */
@@ -638,6 +647,8 @@ interface ActorProps {
   actorKey: string;
   seat: number | null;
   shared: SceneShared;
+  /** 이 설치의 개인 모델 모음. 목록을 받는 동안은 null 이다. */
+  avatars: OfficeAvatarLibrary | null;
   /** 참여자는 배치 자리와 계획, 휴게 구역 캐릭터는 휴게 자리. */
   target: { kind: "participant"; station: OfficeStation; plan: OfficeStagePlan } | { kind: "rest"; place: OfficeRestPlace };
   onSelect?: () => void;
@@ -647,15 +658,32 @@ interface ActorProps {
 
 /**
  * 캐릭터 한 명. 걷기·돌기·앉기·서기를 코드로 섞는다. 참여자만 누를 수 있고, 휴게 구역 캐릭터를
- * 눌러도 아무것도 열리지 않는다.
+ * 눌러도 아무것도 열리지 않는다. 그 캐릭터의 개인 VRM 모델이 설치돼 있으면 모델로, 아니면(모델 없는
+ * 설치·캐릭터 미확인) 기본 도형으로 그린다. 모델 목록이나 모델을 받는 동안에는 몸을 그리지 않는다 —
+ * 도형으로 그렸다가 모델로 바꾸면 다른 캐릭터처럼 보였다가 바뀐다. 모델이 있는데 받거나 읽지 못하면
+ * 장면 오류로 올려 무대가 카드 화면과 「다시 시도」로 넘어간다.
  */
-function Actor({ actorKey, seat, shared, target, onSelect, onHover, onMotionChange }: ActorProps) {
+function Actor({ actorKey, seat, shared, avatars, target, onSelect, onHover, onMotionChange }: ActorProps) {
   const gl = useThree((state) => state.gl);
   const invalidate = useThree((state) => state.invalidate);
-  const rig = useMemo<CharacterRig>(() => {
+  const avatarId = officeAvatarForSeat(seat);
+  const modelInstalled = avatarId !== null && avatars !== null && avatars.available.has(avatarId);
+  const drawShape = avatarId === null || (avatars !== null && !modelInstalled);
+  const shape = useMemo<CharacterRig | null>(() => {
+    if (!drawShape) return null;
     const look = seat === null ? UNKNOWN_APPEARANCE : OFFICE_APPEARANCES[seat % OFFICE_APPEARANCES.length];
     return buildCharacter(shared.kit, look, seat === null);
-  }, [seat, shared.kit]);
+  }, [drawShape, seat, shared.kit]);
+  const [model, setModel] = useState<OfficeAvatarRig | null>(null);
+  const [modelError, setModelError] = useState<unknown>(null);
+  if (modelError) throw modelError;
+  // 몸을 아직 그리지 않는 동안 말풍선이 붙을 머리 자리(서 있는 머리 관절 높이).
+  const waitingHead = useMemo(() => {
+    const anchor = new THREE.Object3D();
+    anchor.position.y = CHARACTER_HEAD_Y;
+    return anchor;
+  }, []);
+  const head = model?.head ?? shape?.head ?? waitingHead;
   const body = useRef<THREE.Group>(null);
   const targetRef = useRef(target);
   const start = target.kind === "rest" ? target.place.point : OFFICE_ENTRANCE;
@@ -692,15 +720,49 @@ function Actor({ actorKey, seat, shared, target, onSelect, onHover, onMotionChan
         state.phase = "walk";
       }
     }
-    shared.heads.set(actorKey, { head: rig.head, lift: bubbleLift, rest });
     return () => {
-      shared.heads.delete(actorKey);
       if (seat !== null) shared.departed.set(seat, { point: { ...state.point }, heading: state.heading });
     };
-  }, [actorKey, bubbleLift, rest, rig, seat, shared]);
+  }, [seat, shared]);
+  // 말풍선 머리. 모델이 도착해 머리가 바뀌어도 걷던 자리는 그대로다.
+  useLayoutEffect(() => {
+    shared.heads.set(actorKey, { head, lift: bubbleLift, rest });
+    return () => {
+      shared.heads.delete(actorKey);
+    };
+  }, [actorKey, bubbleLift, head, rest, shared]);
 
   // 이 캐릭터만 쓰는 합친 도형은 캐릭터가 바뀌거나 내려갈 때 반납한다.
-  useEffect(() => () => disposeCharacter(rig), [rig]);
+  useEffect(() => () => {
+    if (shape) disposeCharacter(shape);
+  }, [shape]);
+  // 모델 인스턴스는 이 캐릭터가 갖고 있는 동안만 쓰고, 바뀌거나 내려가면 모음에 돌려준다.
+  useEffect(() => {
+    if (!avatars || !avatarId || !modelInstalled) return;
+    let alive = true;
+    let owned: OfficeAvatarRig | null = null;
+    avatars.acquire(avatarId).then(
+      (rig) => {
+        if (!alive) {
+          avatars.release(rig);
+          return;
+        }
+        owned = rig;
+        setModel(rig);
+        invalidate();
+      },
+      (error: unknown) => {
+        if (!alive) return;
+        console.error(`[office] avatar ${avatarId} failed`, error);
+        setModelError(error);
+      },
+    );
+    return () => {
+      alive = false;
+      setModel(null);
+      if (owned) avatars.release(owned);
+    };
+  }, [avatarId, avatars, invalidate, modelInstalled]);
   useEffect(() => () => { gl.domElement.style.cursor = ""; }, [gl]);
 
   useFrame((frame, rawDelta) => {
@@ -785,11 +847,14 @@ function Actor({ actorKey, seat, shared, target, onSelect, onHover, onMotionChan
       slump: blend.slump,
       breathe: reduced ? 0 : 1,
     };
-    poseCharacter(rig, characterPose, state.time);
+    if (model) poseOfficeAvatar(model, characterPose, state.time);
+    else if (shape) poseCharacter(shape, characterPose, state.time);
     if (body.current) {
       body.current.position.set(state.point.x, 0, state.point.z);
       body.current.rotation.y = state.heading;
     }
+    // 모델은 몸을 제자리에 둔 뒤 뼈·표정·흔들림을 진행한다.
+    if (model) updateOfficeAvatar(model, delta, reduced);
     if (current.kind === "participant" && onMotionChange) {
       const motion = motionOf(state.phase, current.plan);
       if (motion !== state.motion) {
@@ -803,7 +868,7 @@ function Actor({ actorKey, seat, shared, target, onSelect, onHover, onMotionChan
 
   return (
     <group ref={body}>
-      <primitive object={rig.root} />
+      {model ? <primitive key="model" object={model.root} /> : shape ? <primitive key="shape" object={shape.root} /> : <primitive key="waiting" object={waitingHead} />}
       {/* 발밑 그림자. 실제 그림자 대신 가벼운 원판 하나다. */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.01, 0]}>
         <circleGeometry args={[0.26, 28]} />
@@ -882,6 +947,32 @@ function SceneContents({ layout, participants, bubbles, reserved, view, onPan, o
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, [invalidate, shared]);
+  // 개인 모델 목록. 장면이 내려가면 받던 것을 멈추고 돌려받은 모델을 버린다. 목록을 못 받으면 장면
+  // 오류로 올린다 — 모델이 없는 설치도 빈 목록은 받으므로, 실패는 숨길 일이 아니다.
+  const [avatars, setAvatars] = useState<OfficeAvatarLibrary | null>(null);
+  const [avatarError, setAvatarError] = useState<unknown>(null);
+  if (avatarError) throw avatarError;
+  useEffect(() => {
+    const controller = new AbortController();
+    let library: OfficeAvatarLibrary | null = null;
+    loadOfficeAvatarLibrary(controller.signal).then(
+      (loaded) => {
+        if (controller.signal.aborted) return;
+        library = loaded;
+        setAvatars(loaded);
+        invalidate();
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        console.error("[office] avatar list failed", error);
+        setAvatarError(error);
+      },
+    );
+    return () => {
+      controller.abort();
+      library?.dispose();
+    };
+  }, [invalidate]);
 
   const stations = useMemo(() => new Map(layout.stations.map((station) => [station.key, station])), [layout]);
   const lit = useMemo(
@@ -921,6 +1012,7 @@ function SceneContents({ layout, participants, bubbles, reserved, view, onPan, o
             participant={participant}
             station={station}
             shared={shared}
+            avatars={avatars}
             onSelect={entry.select}
             onHover={onHover}
             onMotionChange={entry.motion}
@@ -928,17 +1020,18 @@ function SceneContents({ layout, participants, bubbles, reserved, view, onPan, o
         );
       })}
       {layout.rest.map((place) => (
-        <RestActor key={officeRestKey(place.seat)} place={place} shared={shared} onHover={onHover} />
+        <RestActor key={officeRestKey(place.seat)} place={place} shared={shared} avatars={avatars} onHover={onHover} />
       ))}
       <BubbleProjector shared={shared} bubbles={bubbles} reserved={reserved} onReady={onReady} />
     </>
   );
 }
 
-function ParticipantActor({ participant, station, shared, onSelect, onHover, onMotionChange }: {
+function ParticipantActor({ participant, station, shared, avatars, onSelect, onHover, onMotionChange }: {
   participant: OfficeSceneParticipant;
   station: OfficeStation;
   shared: SceneShared;
+  avatars: OfficeAvatarLibrary | null;
   onSelect: () => void;
   onHover: (key: string | null) => void;
   onMotionChange: (motion: OfficeMotion) => void;
@@ -955,6 +1048,7 @@ function ParticipantActor({ participant, station, shared, onSelect, onHover, onM
       actorKey={participant.key}
       seat={participant.seat}
       shared={shared}
+      avatars={avatars}
       target={target}
       onSelect={onSelect}
       onHover={onHover}
@@ -963,9 +1057,14 @@ function ParticipantActor({ participant, station, shared, onSelect, onHover, onM
   );
 }
 
-function RestActor({ place, shared, onHover }: { place: OfficeRestPlace; shared: SceneShared; onHover: (key: string | null) => void }) {
+function RestActor({ place, shared, avatars, onHover }: {
+  place: OfficeRestPlace;
+  shared: SceneShared;
+  avatars: OfficeAvatarLibrary | null;
+  onHover: (key: string | null) => void;
+}) {
   const target = useMemo(() => ({ kind: "rest" as const, place }), [place]);
-  return <Actor actorKey={officeRestKey(place.seat)} seat={place.seat} shared={shared} target={target} onHover={onHover} />;
+  return <Actor actorKey={officeRestKey(place.seat)} seat={place.seat} shared={shared} avatars={avatars} target={target} onHover={onHover} />;
 }
 
 /**

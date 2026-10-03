@@ -171,3 +171,50 @@ export function buildOfficeRoster({
 export function resolveOfficeSelection(roster: OfficeRoster, selected: string): string {
   return roster.participants.some((participant) => participant.key === selected) ? selected : OFFICE_MAIN_KEY;
 }
+
+/**
+ * 오피스 장면의 몸 하나. 한 캐릭터(자리)는 작업이 몇 개든 몸이 하나다 — Main 과 같은 캐릭터의 Maker,
+ * 같은 계정의 Maker 여럿이 한 몸에 모인다. 캐릭터를 특정하지 못한 참여자는 어느 몸에도 합치지 않고
+ * 저마다 몸 하나다. 작업(참여자) 하나하나의 키·선택·기록은 그대로 `members` 에 남는다.
+ */
+export interface OfficeBody {
+  /** 장면 키. 자리 몸은 `body:<자리>` 라 대표 작업이 바뀌어도 같은 몸이 이어 움직인다. */
+  key: string;
+  seat: number | null;
+  /** 몸의 자리와 동작을 정하는 대표 작업. */
+  lead: OfficeParticipant;
+  /** 이 몸이 맡은 작업 전부. 참여자 줄 순서다. */
+  members: OfficeParticipant[];
+}
+
+const MAIN_ACTIVITY: Record<OfficeMainState, number> = { working: 0, waiting: 1, attention: 2, idle: 3 };
+
+/**
+ * 대표를 고르는 순서(작을수록 앞): 실제로 일하는 중(Main working, Maker running·재시도 아님) →
+ * 기다리는 중(waiting, pending, 재시도 대기) → 사람을 부르거나 실패(attention, failed) → 쉬거나
+ * 끝남(idle, 완료·중단). 같은 순위면 참여자 줄 순서가 앞선 쪽이다.
+ */
+function activityRank(participant: OfficeParticipant): number {
+  if (participant.kind === "main") return MAIN_ACTIVITY[participant.state];
+  if (participant.status === "running") return participant.retrying ? 1 : 0;
+  if (participant.status === "pending") return 1;
+  return participant.status === "failed" ? 2 : 3;
+}
+
+export function officeBodies(roster: OfficeRoster): OfficeBody[] {
+  const bodies: OfficeBody[] = [];
+  const bySeat = new Map<number, OfficeBody>();
+  for (const participant of roster.participants) {
+    const { seat } = participant;
+    const body = seat === null ? undefined : bySeat.get(seat);
+    if (body) {
+      body.members.push(participant);
+      if (activityRank(participant) < activityRank(body.lead)) body.lead = participant;
+      continue;
+    }
+    const created: OfficeBody = { key: seat === null ? participant.key : `body:${seat}`, seat, lead: participant, members: [participant] };
+    if (seat !== null) bySeat.set(seat, created);
+    bodies.push(created);
+  }
+  return bodies;
+}

@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 /**
- * 오피스 캐릭터의 겉모습과 코드 애니메이션. 겉모습은 이 파일 한 곳에서만 만든다 — 나중에
- * 모델을 바꿀 때는 `buildCharacter`·`poseCharacter` 와 아래 표만 바꾸면 장면·배치·상태 연결은
- * 그대로다.
+ * 오피스 캐릭터의 기본 겉모습과 코드 애니메이션. 개인 VRM 모델이 설치된 캐릭터는
+ * `OfficeAvatar` 가 같은 자세 값(`CharacterPose`)으로 그리고, 모델이 없는 캐릭터와 캐릭터를 특정하지
+ * 못한 참여자는 여기서 그린다 — 장면·배치·상태 연결은 어느 쪽이든 그대로다.
  *
  * 일곱 캐릭터는 같은 2~3등신 몸에 계정 아바타(`public/avatars/`)의 머리색·머리 모양·눈·옷을
  * 입힌 three.js 기본 도형이다. 외부 모델·텍스처 파일이 없다. 캐릭터는 +z(카메라 쪽)를 본다.
@@ -149,6 +149,8 @@ export const SEATED_HIP = 0.25;
 export const CHARACTER_HEIGHT = HIP + NECK_Y + HEAD_CENTER + HEAD_RADIUS + 0.02;
 /** 상태 말풍선을 붙일 머리 위 높이. */
 export const CHARACTER_BUBBLE_Y = CHARACTER_HEIGHT + 0.12;
+/** 서 있을 때 머리 관절(`CharacterRig.head`)의 높이. 말풍선은 이 관절에서 위로 띄운다. */
+export const CHARACTER_HEAD_Y = HIP + NECK_Y + 0.02;
 
 /** 한 장면의 캐릭터가 함께 쓰는 도형·재질. 장면이 내려갈 때 `dispose` 로 한 번에 반납한다. */
 export interface CharacterKit {
@@ -550,7 +552,7 @@ export interface CharacterPose {
   breathe: number;
 }
 
-function mix(a: number, b: number, t: number): number {
+export function mix(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 

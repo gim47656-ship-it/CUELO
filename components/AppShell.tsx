@@ -689,7 +689,7 @@ export function AppShell({
   // 오피스 자리판용: 대화창이 관측한 Main 모델·얼굴. 읽기 전용이며 여기서 바꾸지 않는다.
   const [mainIdentity, setMainIdentity] = useState<MainIdentity | null>(null);
   // 오피스 화면(/office)의 보기. 늘 공간부터 보여 주고, 선택은 보는 대상만 바꾼다.
-  const office = useOfficeView(selectedSession?.id ?? null);
+  const office = useOfficeView(selectedSession?.id ?? null, { subagents, enabled: officePage });
   const { ot } = useOfficeText();
   // 상단 상태줄용 SubAgent 동시 실행 상한. 설정 화면에서만 바뀌므로 마운트 시 1회만 읽는다.
   const [subagentCap, setSubagentCap] = useState<number | null>(null);
@@ -2414,7 +2414,6 @@ export function AppShell({
                     cwd={selectedSession?.cwd ?? effectiveNewSessionCwd ?? undefined}
                     onBackToMain={() => office.select(OFFICE_MAIN_KEY)}
                     onOpenFile={handleOpenLinkedFile}
-                    onAccountObserved={office.recordAccount}
                   />
                 ) : null
               }

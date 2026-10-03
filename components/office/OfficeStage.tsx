@@ -2,7 +2,7 @@
 
 import { Component, Suspense, lazy, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { isActiveSubagentStatus } from "@/hooks/useSubagentTranscripts";
-import { OFFICE_MAIN_KEY, type OfficeParticipant, type OfficeRoster } from "@/lib/office/office-roster";
+import { officeBodies, type OfficeParticipant, type OfficeRoster } from "@/lib/office/office-roster";
 import { officeLayout, officeMainPlan, officeMakerPlan, officeRestKey } from "@/lib/office/office-stage";
 import {
   OFFICE_CAMERA_FIT,
@@ -112,18 +112,21 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
   // 말풍선이 밑으로 들어가 가려지면 안 되는 머리글·닫기 버튼.
   const reserved = useRef<OfficeBubbleRegistry>(new Map());
 
-  // 배치는 누가 어느 캐릭터 자리로 참여했는지가 바뀔 때만 다시 짠다(상태만 바뀌면 그대로).
-  const placementKey = roster.participants.map((participant) => `${participant.key}=${participant.seat ?? "?"}`).join("|");
+  // 한 캐릭터는 작업이 몇 개든 몸 하나다. 장면·말풍선은 몸 단위이고, 작업 하나하나는 몸의 줄·참여자
+  // 줄·자리 카드에서 따로 고른다.
+  const bodies = useMemo(() => officeBodies(roster), [roster]);
+  // 배치는 어느 몸이 방에 있는지가 바뀔 때만 다시 짠다(상태나 대표 작업만 바뀌면 그대로).
+  const placementKey = bodies.map((body) => body.key).join("|");
   const layout = useMemo(
-    () => officeLayout(roster.participants.map((participant) => ({ key: participant.key, seat: participant.seat }))),
+    () => officeLayout(bodies.map((body) => ({ key: body.key, seat: body.seat }))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [placementKey],
   );
-  const sceneParticipants = useMemo<OfficeSceneParticipant[]>(() => roster.participants.map((participant) => ({
-    key: participant.key,
-    seat: participant.seat,
-    plan: participant.kind === "main" ? officeMainPlan(participant.state) : officeMakerPlan(participant.status, participant.retrying),
-  })), [roster.participants]);
+  const sceneParticipants = useMemo<OfficeSceneParticipant[]>(() => bodies.map(({ key, seat, lead }) => ({
+    key,
+    seat,
+    plan: lead.kind === "main" ? officeMainPlan(lead.state) : officeMakerPlan(lead.status, lead.retrying),
+  })), [bodies]);
 
   const markReady = useCallback(() => setReady(true), []);
   const markFailed = useCallback(() => setSupport("assetFailed"), []);
@@ -147,6 +150,14 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
   const pan = useCallback((dx: number, dz: number) => {
     onViewChange((current) => panOfficeView(current, dx, dz));
   }, [onViewChange]);
+  // 몸을 누르면: 작업이 하나면 그 작업을 열고, 여럿이면 말풍선의 첫 작업 줄에 초점을 둔다 — 어느 작업을
+  // 볼지는 사용자가 줄에서 고른다(대표 작업을 대신 열지 않는다).
+  const selectBody = useCallback((key: string) => {
+    const body = bodies.find((candidate) => candidate.key === key);
+    if (!body) return;
+    if (body.members.length === 1) onSelect(body.members[0].key);
+    else bubbles.current.get(key)?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [bodies, onSelect]);
 
   if (support !== "ok") {
     return (
@@ -167,7 +178,7 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
   }
 
   const running = roster.participants.filter(isRunning).length;
-  const mainMotion = motions.get(OFFICE_MAIN_KEY);
+  const mainMotion = motions.get(bodies.find((body) => body.members.some((member) => member.kind === "main"))?.key ?? "");
   const zoomed = view.zoom > 1;
   return (
     <section
@@ -186,7 +197,7 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
               reserved={reserved.current}
               view={view}
               onPan={pan}
-              onSelect={onSelect}
+              onSelect={selectBody}
               onHover={setHovered}
               onReady={markReady}
               onMotionChange={recordMotion}
@@ -255,34 +266,75 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
         )}
       </div>
       {!ready && <p className={styles.stageLoading} role="status">{ot("office.stageLoading")}</p>}
-      {/* 캐릭터 머리 위 말풍선. 참여자 것은 버튼이라 키보드·터치로도 같은 대상을 연다. 자리는
-          장면이 매 프레임 옮기고, 처음 자리를 잡기 전에는 보이지 않는다. 확대해서 화면 밖으로 나간
-          캐릭터의 말풍선은 무대 가장자리에 붙어 남는다. */}
+      {/* 캐릭터 머리 위 말풍선. 몸마다 하나이고, 작업이 하나면 말풍선이 버튼, 여럿이면 작업마다 버튼 한
+          줄이라 키보드·터치로도 같은 작업을 연다. 자리는 장면이 매 프레임 옮기고, 처음 자리를 잡기 전에는
+          보이지 않는다. 확대해서 화면 밖으로 나간 캐릭터의 말풍선은 무대 가장자리에 붙어 남는다. */}
       <div className={styles.bubbles} data-ready={ready ? "true" : undefined}>
-        {roster.participants.map((participant) => {
-          const presentation = present(participant);
-          const motion = motions.get(participant.key);
+        {bodies.map((body) => {
+          const motion = motions.get(body.key);
+          const motionText = motion && <span className={styles.bubbleMotion}>{ot(`office.motion.${motion}` as const)}</span>;
+          if (body.members.length === 1) {
+            const [participant] = body.members;
+            const presentation = present(participant);
+            return (
+              <button
+                key={body.key}
+                ref={bubbleRef(body.key)}
+                type="button"
+                className={styles.bubble}
+                data-key={body.key}
+                data-participant={participant.key}
+                data-kind={participant.kind}
+                data-tone={presentation.tone}
+                data-motion={motion}
+                data-hover={hovered === body.key ? "true" : undefined}
+                title={ot("office.openChat", { name: presentation.name })}
+                onClick={() => onSelect(participant.key)}
+              >
+                <span className={styles.bubbleName}>{presentation.name}</span>
+                <span className={styles.status} data-tone={presentation.tone}>
+                  <span className={styles.dot} aria-hidden="true" />
+                  {presentation.status}
+                </span>
+                {motionText}
+              </button>
+            );
+          }
+          const name = loungeMemberName(roster.seats[body.seat ?? -1]?.alias ?? "", locale);
           return (
-            <button
-              key={participant.key}
-              ref={bubbleRef(participant.key)}
-              type="button"
+            <div
+              key={body.key}
+              ref={bubbleRef(body.key)}
+              role="group"
+              aria-label={name}
               className={styles.bubble}
-              data-key={participant.key}
-              data-kind={participant.kind}
-              data-tone={presentation.tone}
+              data-key={body.key}
+              data-group="true"
               data-motion={motion}
-              data-hover={hovered === participant.key ? "true" : undefined}
-              title={ot("office.openChat", { name: presentation.name })}
-              onClick={() => onSelect(participant.key)}
+              data-hover={hovered === body.key ? "true" : undefined}
             >
-              <span className={styles.bubbleName}>{presentation.name}</span>
-              <span className={styles.status} data-tone={presentation.tone}>
-                <span className={styles.dot} aria-hidden="true" />
-                {presentation.status}
-              </span>
-              {motion && <span className={styles.bubbleMotion}>{ot(`office.motion.${motion}` as const)}</span>}
-            </button>
+              <span className={styles.bubbleName}>{name}</span>
+              {body.members.map((participant) => {
+                const presentation = present(participant);
+                return (
+                  <button
+                    key={participant.key}
+                    type="button"
+                    className={styles.bubbleTask}
+                    data-participant={participant.key}
+                    title={ot("office.openChat", { name: presentation.name })}
+                    onClick={() => onSelect(participant.key)}
+                  >
+                    <span className={styles.bubbleTaskName}>{presentation.name}</span>
+                    <span className={styles.status} data-tone={presentation.tone}>
+                      <span className={styles.dot} aria-hidden="true" />
+                      {presentation.status}
+                    </span>
+                  </button>
+                );
+              })}
+              {motionText}
+            </div>
           );
         })}
         {layout.rest.map((place) => {
