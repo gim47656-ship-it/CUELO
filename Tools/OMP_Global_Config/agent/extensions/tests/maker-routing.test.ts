@@ -18,6 +18,8 @@ const candidates = [
   { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
   { profile: "NORMAL_DEEPSEEK", model: "opencode-go/deepseek-v4.1-flash", efforts: allStrengths },
+  { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
+  { profile: "HARD_CODE_ASTRA", model: "openai-codex/gpt-6-astra", efforts: allStrengths },
 ];
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
 const families: Record<string, string> = {
@@ -108,9 +110,9 @@ function harness(options: {
         workClass: { choice: options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL" },
         hardFocus: { choice: options.hardFocuses?.[call - 1] ?? "CODE_SYSTEM" },
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
-        // 후보 순서: NORMAL_SONNET·NORMAL_OPUS·HARD_UI_OPUS·HARD_CODE_OPUS·HARD_CODE_SONNET·NORMAL_DEEPSEEK.
+        // 후보 순서: NORMAL_SONNET·NORMAL_OPUS·HARD_UI_OPUS·HARD_CODE_OPUS·HARD_CODE_SONNET·NORMAL_DEEPSEEK·NORMAL_SOL·HARD_CODE_ASTRA.
         effort0: { choice: "high" }, effort1: { choice: "high" }, effort2: { choice: "high" },
-        effort3: { choice: "xhigh" }, effort4: { choice: "high" },
+        effort3: { choice: "high" }, effort4: { choice: "high" }, effort6: { choice: "high" }, effort7: { choice: "high" },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
         delegation: { choice: options.delegation ?? "MAKER" },
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
@@ -1154,12 +1156,13 @@ describe("블라인드 입력과 독립 질문", () => {
     expect(questions).not.toHaveProperty("easyFocus");
     expect(Object.keys(policy.modelSelection.criteria)).toEqual(["NORMAL", "HARD"]);
     expect(Object.keys(questions.effort0!.criteria!)).toEqual(banded[0]!.efforts);
-    // 강도 질문은 그 후보의 좁혀진 허용 구간만 묻는다. 구간이 하나뿐인 Opus 후보(1~3)는 묻지 않는다.
+    // 강도 질문은 그 후보의 좁혀진 허용 구간만 묻는다. Opus 후보(1~3)는 max까지, 그 밖의 후보는 max를 묻지 않는다.
     for (const index of [1, 2, 3]) {
-      expect(banded[index]!.efforts).toHaveLength(1);
-      expect(questions).not.toHaveProperty(`effort${index}`);
+      expect(banded[index]!.efforts).toEqual(["high", "xhigh", "max"]);
+      expect(Object.keys(questions[`effort${index}`]!.criteria!)).toEqual(banded[index]!.efforts);
     }
-    expect(questions.effort4!.criteria).not.toHaveProperty("max");
+    for (const index of [0, 4, 6, 7]) expect(questions[`effort${index}`]!.criteria).not.toHaveProperty("max");
+    expect(questions).not.toHaveProperty("effort5");
     const ownerQuestions = routingQuestions(policy, banded, [{ name: "Existing", primaryDeliverable: "x", ownedPaths: ["x.ts"] }]);
     expect(ownerQuestions.duplicate!.type).toBe("noul");
     expect(ownerQuestions.ownerTarget!.criteria).toHaveProperty("owner0");
@@ -1176,6 +1179,8 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_CODE_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_SONNET: "openai-codex/gpt-6-sol",
     NORMAL_DEEPSEEK: "opencode-go/deepseek-v4.1-flash",
+    NORMAL_SOL: "openai-codex/gpt-6.1-sol",
+    HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
   const normalAnswers = {
@@ -1288,7 +1293,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1316,12 +1321,15 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       expect(candidate.efforts).toEqual(supported.filter((level) => allowed.includes(level)));
     }
     const asked = h.questions[0] as Record<string, { criteria: Record<string, string> }>;
-    // 허용 강도가 하나뿐인 후보는 묻지 않고, 둘 이상인 후보만 그 구간을 묻는다.
-    for (const [index, profile] of [[0, "NORMAL_SONNET"], [4, "HARD_CODE_SONNET"]] as const) {
-      expect(Object.keys(asked[`effort${index}`]!.criteria)).toEqual(batch.candidates.find((c) => c.profile === profile)!.efforts);
+    // 허용 강도가 하나뿐인 후보(DeepSeek)는 묻지 않고, 둘 이상인 후보는 그 구간만 묻는다. max는 Opus 후보만 묻는다.
+    const askedProfiles = ["NORMAL_SONNET", "NORMAL_OPUS", "HARD_UI_OPUS", "HARD_CODE_OPUS", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA"];
+    for (const [index, profile] of askedProfiles.entries()) {
+      const candidate = batch.candidates.find((c) => c.profile === profile)!;
+      if (profile === "NORMAL_DEEPSEEK") { expect(asked).not.toHaveProperty(`effort${index}`); continue; }
+      expect(Object.keys(asked[`effort${index}`]!.criteria)).toEqual(candidate.efforts);
+      expect(profile.includes("OPUS")).toBe(candidate.efforts.includes("max"));
     }
     expect(asked.effort0!.criteria).not.toHaveProperty("low");
-    for (const index of [1, 2, 3, 5]) expect(asked).not.toHaveProperty(`effort${index}`);
   });
 
 });
@@ -1345,10 +1353,10 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         ...opusOutside.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, false]),
         ["opencode-go/deepseek-v4.1-flash:high", true],
       ],
-      // HARD 조각: Opus는 HARD 구간(high)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
+      // HARD 조각: Opus는 HARD 구간(high~max)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
       HARD: [
         ["anthropic/claude-opus-5-5:medium", false], ["anthropic/claude-opus-5-5:high", true],
-        ["anthropic/claude-opus-5-5:xhigh", false], ["anthropic/claude-opus-5-5:max", false],
+        ["anthropic/claude-opus-5-5:xhigh", true], ["anthropic/claude-opus-5-5:max", true],
         ["opencode-go/deepseek-v4.1-flash:xhigh", false],
         ...solSelections,
       ],
@@ -1359,6 +1367,58 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       for (const [model, allowed] of selections) {
         const result = await h.dispatch(model, reasoned);
         if (allowed) expect(result).toBeUndefined();
+        else expect(result).toMatchObject({ block: true });
+      }
+    }
+  });
+  test("NORMAL_SOL·HARD_CODE_ASTRA는 자동 추천되지 않고 ROUTING_REASON과 자기 구간 안에서만 발주된다", async () => {
+    const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 비용·계열 근거로 명시 대안을 선택함\nOWNED_PATHS:");
+    const policy = loadRoutingPolicy();
+    const bands = {
+      NORMAL_SOL: policy.modelSelection.profiles.NORMAL_SOL!.allowedEfforts,
+      HARD_CODE_ASTRA: policy.modelSelection.profiles.HARD_CODE_ASTRA!.allowedEfforts,
+    };
+    const models = { NORMAL_SOL: "openai-codex/gpt-6.1-sol", HARD_CODE_ASTRA: "openai-codex/gpt-6-astra" };
+    // 기본 추천은 그대로: NORMAL은 Sonnet(소진 대체에도 NORMAL_SOL은 후보가 아니다), HARD 코드는 Opus.
+    const normal = harness({ workClass: "NORMAL" });
+    const [normalRoute] = await normal.prepare("명시 대안", [normal.task], {} as never);
+    expect(normalRoute!.profile).toBe("NORMAL_SONNET");
+    const spent = harness({
+      workClass: "NORMAL",
+      quota: async () => ({
+        state: "observed", observedAt: 1,
+        providers: { "openai-codex": [{ disabled: false, limitReached: true }] },
+      }) as never,
+    });
+    const [spentRoute] = await spent.prepare("소진", [spent.task], {} as never);
+    expect(spentRoute!.profile).toBe("NORMAL_DEEPSEEK");
+    // DeepSeek가 없고 primary 계정만 소진돼도 사용 가능한 NORMAL_SOL을 자동 대체로 추천하지 않는다.
+    const noDeepSeek = candidates
+      .filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK")
+      .map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
+    const solSpare = harness({
+      workClass: "NORMAL",
+      candidates: noDeepSeek,
+      quota: async () => ({
+        state: "observed", observedAt: 1,
+        providers: { anthropic: [{ disabled: false, limitReached: true }] },
+      }) as never,
+    });
+    const [solSpareRoute] = await solSpare.prepare("Sol 비추천", [solSpare.task], {} as never);
+    expect(solSpareRoute!.normalAllocation).toMatchObject({ state: "unavailable" });
+    expect(solSpareRoute!.profile).not.toBe("NORMAL_SOL");
+    for (const [profile, base] of Object.entries(models)) {
+      const work = profile === "NORMAL_SOL" ? "NORMAL" : "HARD";
+      const h = harness({ workClass: work, hardFocuses: ["CODE_SYSTEM"] });
+      const [route] = await h.prepare("명시 대안", [h.task], {} as never);
+      expect(route!.profile).toBe(work === "NORMAL" ? "NORMAL_SONNET" : "HARD_CODE_OPUS");
+      for (const level of allStrengths) {
+        const model = `${base}:${level}`;
+        // 추천과 다른 후보는 구간 안이어도 근거 없이는 막힌다.
+        const inBand = (bands[profile as keyof typeof bands] as string[]).includes(level);
+        if (inBand) expect(await h.dispatch(model)).toMatchObject({ block: true });
+        const result = await h.dispatch(model, reasoned);
+        if (inBand) expect(result).toBeUndefined();
         else expect(result).toMatchObject({ block: true });
       }
     }
@@ -1378,8 +1438,9 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high")).toMatchObject({ block: true });
     expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toBeUndefined();
     for (const model of ["anthropic/claude-opus-5-5:xhigh", "anthropic/claude-opus-5-5:max"]) {
-      expect(await unavailable.dispatch(model, reasoned)).toMatchObject({ block: true });
+      expect(await unavailable.dispatch(model, reasoned)).toBeUndefined();
     }
+    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:medium", reasoned)).toMatchObject({ block: true });
   });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [

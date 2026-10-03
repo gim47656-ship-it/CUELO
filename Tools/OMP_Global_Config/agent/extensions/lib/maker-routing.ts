@@ -479,13 +479,16 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
   CODE_SYSTEM: "HARD_CODE_OPUS",
 };
 
+/** NORMAL이지만 자동 추천·소진 대체 대상이 아니라 Main이 ROUTING_REASON으로만 고르는 후보. */
+const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_SOL: true };
+
 /**
  * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
  * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. 계정 사용 가능성은 core 신호
  * (disabled·limitReached·autoBlockedUntil)로만 보고, 미관측은 소진으로 간주하지 않는다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
-  const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && candidate.profile !== "NORMAL_OPUS");
+  const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]);
   const primary = normal.find((candidate) => candidate.profile === "NORMAL_SONNET");
   const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
   if (quota.state !== "observed") return unavailable(quota.reason);
@@ -1149,7 +1152,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_SONNET는 명시적 대안이다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이며 자동 추천하지 않는다. Opus 세 후보만 max까지 허용한다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

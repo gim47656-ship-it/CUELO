@@ -16,6 +16,7 @@ import {
   type OfficeStagePlan,
   type OfficeStation,
 } from "@/lib/office/office-stage";
+import { OFFICE_CAMERA_BOUNDS, type OfficeCameraView } from "@/lib/office/office-camera";
 import {
   CHARACTER_BUBBLE_Y,
   CHARACTER_HEIGHT,
@@ -40,8 +41,6 @@ export interface OfficeSceneParticipant {
   key: string;
   seat: number | null;
   plan: OfficeStagePlan;
-  /** 대화 칸이 이 참여자를 보여 주는 중인지. 발밑 고리로 강조한다. */
-  selected: boolean;
 }
 
 /** 말풍선 DOM. 장면이 매 프레임 그 캐릭터 머리 위 화면 좌표로 옮긴다(React 렌더 없이). */
@@ -66,12 +65,14 @@ const CAMERA_TARGET = new THREE.Vector3(-0.15, 0.35, 0.2);
 const CAMERA_OFFSET = new THREE.Vector3(1.2, 4.9, 8.2);
 /**
  * 화면에 늘 들어와야 하는 상자의 꼭짓점: 휴게 구역 왼쪽 끝부터 오른쪽 책상까지, 뒷줄 의자부터 앞쪽
- * 러그까지, 바닥부터 머리 높이까지. 대화 칸을 열어 무대가 좁아져도 휴게 구역이 잘리지 않는다.
+ * 러그까지, 바닥부터 머리 높이까지. 무대가 좁거나 세로로 길어도 휴게 구역이 잘리지 않는다.
  */
-const CAMERA_FRAME: readonly THREE.Vector3[] = [-3.95, 3.4].flatMap((x) => [0, 1.15].flatMap((y) => [-2, 3].map((z) => new THREE.Vector3(x, y, z))));
+const CAMERA_FRAME: readonly THREE.Vector3[] = [OFFICE_CAMERA_BOUNDS.minX, OFFICE_CAMERA_BOUNDS.maxX].flatMap((x) => [0, OFFICE_CAMERA_BOUNDS.height].flatMap((y) => [OFFICE_CAMERA_BOUNDS.minZ, OFFICE_CAMERA_BOUNDS.maxZ].map((z) => new THREE.Vector3(x, y, z))));
 /** 꼭짓점이 화면 끝에서 띄울 몫(NDC). */
 const CAMERA_FRAME_EDGE = 0.94;
 const CAMERA_DISTANCE_MAX = 2.6;
+/** 이만큼(px) 넘게 끌면 누르기가 아니라 옮기기다. */
+const DRAG_THRESHOLD = 5;
 
 function angleDelta(from: number, to: number): number {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
@@ -98,10 +99,11 @@ interface SceneShared {
 }
 
 /**
- * 무대 비율이 바뀌면(대화 칸이 열리거나 작은 화면) `CAMERA_FRAME` 이 다 들어오는 가장 가까운 거리로
- * 카메라를 옮긴다. 넓은 화면의 기본 거리(1)보다 가까이 가지는 않는다.
+ * 무대 비율이 바뀌면(작은 화면·세로 창) `CAMERA_FRAME` 이 다 들어오는 가장 가까운 거리(맞춤)를 찾는다.
+ * 넓은 화면의 기본 거리(1)보다 가까이 가지는 않는다. 사용자가 확대하면 맞춤 거리에서 배율만큼 다가가고,
+ * 옮기면 바라보는 점을 바닥 위로 옮긴다.
  */
-function CameraRig() {
+function CameraRig({ view }: { view: OfficeCameraView }) {
   const camera = useThree((state) => state.camera);
   const aspect = useThree((state) => state.size.width / Math.max(state.size.height, 1));
   const invalidate = useThree((state) => state.invalidate);
@@ -111,27 +113,114 @@ function CameraRig() {
       camera.updateProjectionMatrix();
     }
     const point = new THREE.Vector3();
+    const target = new THREE.Vector3();
     const place = (distance: number) => {
-      camera.position.copy(CAMERA_OFFSET).multiplyScalar(distance).add(CAMERA_TARGET);
-      camera.lookAt(CAMERA_TARGET);
+      camera.position.copy(CAMERA_OFFSET).multiplyScalar(distance).add(target);
+      camera.lookAt(target);
       camera.updateMatrixWorld();
+    };
+    const fits = (distance: number) => {
+      place(distance);
       return CAMERA_FRAME.every((corner) => {
         point.copy(corner).project(camera);
         return Math.abs(point.x) <= CAMERA_FRAME_EDGE && Math.abs(point.y) <= CAMERA_FRAME_EDGE;
       });
     };
+    target.copy(CAMERA_TARGET);
     let near = 1;
     let far = CAMERA_DISTANCE_MAX;
-    if (!place(near)) {
+    if (fits(near)) far = near;
+    else {
       for (let step = 0; step < 14; step += 1) {
         const middle = (near + far) / 2;
-        if (place(middle)) far = middle;
+        if (fits(middle)) far = middle;
         else near = middle;
       }
-      place(far);
     }
+    target.set(CAMERA_TARGET.x + view.x, CAMERA_TARGET.y, CAMERA_TARGET.z + view.z);
+    place(far / view.zoom);
     invalidate();
-  }, [aspect, camera, invalidate]);
+  }, [aspect, camera, invalidate, view.x, view.z, view.zoom]);
+  return null;
+}
+
+/**
+ * 확대한 장면을 끌어 둘러본다. 누른 바닥 점이 손가락·마우스를 따라오게, 앞뒤 포인터가 바닥(y=0)에
+ * 닿는 점의 차이만큼 바라보는 점을 옮긴다. 확대하지 않았으면 옮길 곳이 없어 터치 스크롤을 막지 않는다.
+ * 끌기는 선택이 아니다 — 문턱을 넘은 끌기를 마친 손 떼기가 만드는 click 한 번은, 시작점으로 돌아와
+ * 놓았더라도 장면(R3F 이벤트 원천인 감싼 div)에 닿기 전에 캔버스에서 멈춘다.
+ */
+function PanDrag({ zoomed, onPan }: { zoomed: boolean; onPan: (dx: number, dz: number) => void }) {
+  const canvas = useThree((state) => state.gl.domElement);
+  const camera = useThree((state) => state.camera);
+  const latest = useRef(onPan);
+  latest.current = onPan;
+  useEffect(() => {
+    canvas.style.touchAction = zoomed ? "none" : "";
+    if (!zoomed) return;
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const before = new THREE.Vector3();
+    const after = new THREE.Vector3();
+    let drag: { id: number; startX: number; startY: number; lastX: number; lastY: number; moving: boolean } | null = null;
+    // 끌기 직후의 click 을 삼킬지. 다음 pointerdown 이 늘 풀어, 뒤따르는 정상 클릭은 막지 않는다.
+    let swallowClick = false;
+    const hit = (clientX: number, clientY: number, out: THREE.Vector3) => {
+      const rect = canvas.getBoundingClientRect();
+      ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      return raycaster.ray.intersectPlane(ground, out) !== null;
+    };
+    const down = (event: PointerEvent) => {
+      swallowClick = false;
+      if (!event.isPrimary || event.button !== 0) return;
+      drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY, moving: false };
+    };
+    const move = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      if (!drag.moving) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <= DRAG_THRESHOLD) return;
+        drag.moving = true;
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = "grabbing";
+      }
+      if (hit(drag.lastX, drag.lastY, before) && hit(event.clientX, event.clientY, after)) {
+        latest.current(before.x - after.x, before.z - after.z);
+      }
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+    };
+    const end = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      if (drag.moving) {
+        canvas.style.cursor = "";
+        // 취소·포인터 놓침 뒤에는 click 이 오지 않는다. 손을 뗀 끌기만 그 click 을 삼킨다.
+        if (event.type === "pointerup") swallowClick = true;
+      }
+      drag = null;
+    };
+    const click = (event: MouseEvent) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      event.stopPropagation();
+    };
+    canvas.addEventListener("pointerdown", down);
+    canvas.addEventListener("pointermove", move);
+    canvas.addEventListener("pointerup", end);
+    canvas.addEventListener("pointercancel", end);
+    canvas.addEventListener("lostpointercapture", end);
+    canvas.addEventListener("click", click, true);
+    return () => {
+      canvas.removeEventListener("pointerdown", down);
+      canvas.removeEventListener("pointermove", move);
+      canvas.removeEventListener("pointerup", end);
+      canvas.removeEventListener("pointercancel", end);
+      canvas.removeEventListener("lostpointercapture", end);
+      canvas.removeEventListener("click", click, true);
+      canvas.style.touchAction = "";
+    };
+  }, [camera, canvas, zoomed]);
   return null;
 }
 
@@ -551,7 +640,6 @@ interface ActorProps {
   shared: SceneShared;
   /** 참여자는 배치 자리와 계획, 휴게 구역 캐릭터는 휴게 자리. */
   target: { kind: "participant"; station: OfficeStation; plan: OfficeStagePlan } | { kind: "rest"; place: OfficeRestPlace };
-  selected: boolean;
   onSelect?: () => void;
   onHover: (key: string | null) => void;
   onMotionChange?: (motion: OfficeMotion) => void;
@@ -561,7 +649,7 @@ interface ActorProps {
  * 캐릭터 한 명. 걷기·돌기·앉기·서기를 코드로 섞는다. 참여자만 누를 수 있고, 휴게 구역 캐릭터를
  * 눌러도 아무것도 열리지 않는다.
  */
-function Actor({ actorKey, seat, shared, target, selected, onSelect, onHover, onMotionChange }: ActorProps) {
+function Actor({ actorKey, seat, shared, target, onSelect, onHover, onMotionChange }: ActorProps) {
   const gl = useThree((state) => state.gl);
   const invalidate = useThree((state) => state.invalidate);
   const rig = useMemo<CharacterRig>(() => {
@@ -716,17 +804,11 @@ function Actor({ actorKey, seat, shared, target, selected, onSelect, onHover, on
   return (
     <group ref={body}>
       <primitive object={rig.root} />
-      {/* 발밑 그림자와 선택 고리. 실제 그림자 대신 가벼운 원판 하나다. */}
+      {/* 발밑 그림자. 실제 그림자 대신 가벼운 원판 하나다. */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.01, 0]}>
         <circleGeometry args={[0.26, 28]} />
         <meshBasicMaterial color="#000000" transparent opacity={target.kind === "rest" ? 0.1 : 0.16} depthWrite={false} />
       </mesh>
-      {selected && (
-        <mesh rotation-x={-Math.PI / 2} position={[0, 0.015, 0]}>
-          <ringGeometry args={[0.3, 0.37, 48]} />
-          <meshBasicMaterial color="#ff6f0f" depthWrite={false} />
-        </mesh>
-      )}
       {/* 클릭 판정 상자. 움직이는 팔다리보다 안정적으로 맞고, 보이지 않는다. */}
       <mesh
         position={[0, CHARACTER_HEIGHT / 2, 0]}
@@ -755,8 +837,12 @@ export interface OfficeScene3DProps {
   layout: OfficeLayout;
   participants: readonly OfficeSceneParticipant[];
   bubbles: OfficeBubbleRegistry;
-  /** 말풍선이 밑으로 들어가면 안 되는 무대 위 DOM(머리글·닫기 버튼). 같은 무대 기준 좌표다. */
+  /** 말풍선이 밑으로 들어가면 안 되는 무대 위 DOM(머리글·보기 조작). 같은 무대 기준 좌표다. */
   reserved: OfficeBubbleRegistry;
+  /** 맞춤 대비 확대 배율과 바라보는 점 이동. */
+  view: OfficeCameraView;
+  /** 끌어서 옮긴 바닥 거리(m). 범위는 받는 쪽이 묶는다. */
+  onPan: (dx: number, dz: number) => void;
   onSelect: (key: string) => void;
   onHover: (key: string | null) => void;
   onReady: () => void;
@@ -778,7 +864,7 @@ function ContextLossWatch({ onContextLost }: { onContextLost: () => void }) {
   return null;
 }
 
-function SceneContents({ layout, participants, bubbles, reserved, onSelect, onHover, onReady, onMotionChange }: Omit<OfficeScene3DProps, "onContextLost">) {
+function SceneContents({ layout, participants, bubbles, reserved, view, onPan, onSelect, onHover, onReady, onMotionChange }: Omit<OfficeScene3DProps, "onContextLost">) {
   const shared = useMemo<SceneShared>(() => ({
     kit: createCharacterKit(),
     heads: new Map(),
@@ -820,7 +906,8 @@ function SceneContents({ layout, participants, bubbles, reserved, onSelect, onHo
 
   return (
     <>
-      <CameraRig />
+      <CameraRig view={view} />
+      <PanDrag zoomed={view.zoom > 1} onPan={onPan} />
       <hemisphereLight args={["#ffffff", "#b5a993", 1.7]} />
       <directionalLight position={[3, 6, 5]} intensity={1.5} />
       <OfficeRoom layout={layout} lit={lit} />
@@ -869,7 +956,6 @@ function ParticipantActor({ participant, station, shared, onSelect, onHover, onM
       seat={participant.seat}
       shared={shared}
       target={target}
-      selected={participant.selected}
       onSelect={onSelect}
       onHover={onHover}
       onMotionChange={onMotionChange}
@@ -879,12 +965,12 @@ function ParticipantActor({ participant, station, shared, onSelect, onHover, onM
 
 function RestActor({ place, shared, onHover }: { place: OfficeRestPlace; shared: SceneShared; onHover: (key: string | null) => void }) {
   const target = useMemo(() => ({ kind: "rest" as const, place }), [place]);
-  return <Actor actorKey={officeRestKey(place.seat)} seat={place.seat} shared={shared} target={target} selected={false} onHover={onHover} />;
+  return <Actor actorKey={officeRestKey(place.seat)} seat={place.seat} shared={shared} target={target} onHover={onHover} />;
 }
 
 /**
  * 오피스 보기의 3D 사무실. 이 컴포넌트가 내려가면 Canvas 와 렌더 루프, 캐릭터 도형·재질도 함께
- * 반납한다 — 오피스를 닫거나 좁은 화면에서 대화 칸으로 넘어가면 AppShell 이 이 장면을 그리지 않는다.
+ * 반납한다 — 오피스 화면에서 대화 보기로 넘어가면 AppShell 이 이 장면을 그리지 않는다.
  */
 export default function OfficeScene3D({ onContextLost, ...contents }: OfficeScene3DProps) {
   const reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;

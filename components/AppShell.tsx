@@ -37,7 +37,7 @@ import { OfficeStage } from "./office/OfficeStage";
 import { OfficeMakerPanel } from "./office/OfficeMakerPanel";
 import { useOfficeText } from "./office/i18n";
 import officeStyles from "./office/office.module.css";
-import { useOfficeView } from "@/hooks/useOfficeView";
+import { useOfficeView, type OfficePane } from "@/hooks/useOfficeView";
 import {
   buildOfficeRoster,
   OFFICE_MAIN_KEY,
@@ -100,6 +100,11 @@ export interface AppShellProps {
   auxiliaryDeck?: ReactNode;
   /** Optional usage/models override; it renders inside the auxiliary panel. */
   resourcePanel?: ReactNode;
+  /**
+   * `office` 는 `/office` 전용 화면이다. 같은 세션 URL 규칙·세션 목록·대화 스트림을 그대로 쓰고,
+   * 3D 사무실이 주 화면이며 대화는 참여자를 고르면 같은 칸을 다 쓰는 보기로 연다.
+   */
+  variant?: "chat" | "office";
 }
 
 type SessionCopyField = "file" | "id";
@@ -125,7 +130,11 @@ function createAppSideChatStore() {
 export function AppShell({
   auxiliaryDeck,
   resourcePanel,
+  variant = "chat",
 }: AppShellProps = {}) {
+  const officePage = variant === "office";
+  // 이 화면의 기본 주소. 세션을 닫거나 못 찾으면 같은 화면의 빈 주소로 돌아간다.
+  const homePath = officePage ? "/office" : "/";
   const router = useRouter();
   // Next widens `useSearchParams()` to `| null` for the whole app once a `pages/` route exists,
   // because there the router can render before the query is known. This component only ever runs
@@ -426,7 +435,8 @@ export function AppShell({
     (event.shiftKey ? focusable[focusable.length - 1] : focusable[0]).focus();
   }, []);
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 오피스 화면은 사무실이 주 공간이라 이 탭에서만 목록을 닫은 채 시작한다(토글로 연다).
+  const [sidebarOpen, setSidebarOpen] = useState(!officePage);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   // Crossing the pin boundary is not a drawer gesture. Without this flag the
   // breakpoint swap between pinned and drawer geometry starts the transform /
@@ -435,7 +445,7 @@ export function AppShell({
   const [sidebarModeShift, setSidebarModeShift] = useState(false);
   const sidebarOpenRef = useRef(sidebarOpen);
   const compactSidebarOpenRef = useRef(false);
-  const pinnedSidebarOpenRef = useRef(true);
+  const pinnedSidebarOpenRef = useRef(!officePage);
   const previousCompactWorkspaceRef = useRef<boolean | null>(null);
   sidebarOpenRef.current = sidebarOpen;
   // One decision for every navigator consumer. The open state alone is not the
@@ -678,7 +688,7 @@ export function AppShell({
   const [subagents, setSubagents] = useState<SubagentSnapshot[]>([]);
   // 오피스 자리판용: 대화창이 관측한 Main 모델·얼굴. 읽기 전용이며 여기서 바꾸지 않는다.
   const [mainIdentity, setMainIdentity] = useState<MainIdentity | null>(null);
-  // 오피스 보기. 열림은 기억하지 않아 늘 대화 보기에서 시작하고, 선택은 보는 대상만 바꾼다.
+  // 오피스 화면(/office)의 보기. 늘 공간부터 보여 주고, 선택은 보는 대상만 바꾼다.
   const office = useOfficeView(selectedSession?.id ?? null);
   const { ot } = useOfficeText();
   // 상단 상태줄용 SubAgent 동시 실행 상한. 설정 화면에서만 바뀌므로 마운트 시 1회만 읽는다.
@@ -873,12 +883,12 @@ export function AppShell({
   // Same @mention format as the chat input's @ autocomplete, so the agent's
   // read tool resolves it the same way (it strips the @ prefix).
   const returnToComposer = useCallback(() => {
-    if (pinDecision.deck === "view-stack") {
+    if (pinDecision.deck === "view-stack" || officePage) {
       dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
     }
     if (isCompactWorkspace) setCompactDrawerOpen(false);
     requestComposerFocus();
-  }, [isCompactWorkspace, pinDecision.deck, requestComposerFocus, setCompactDrawerOpen]);
+  }, [isCompactWorkspace, officePage, pinDecision.deck, requestComposerFocus, setCompactDrawerOpen]);
 
   const handleAtMention = useCallback((relativePath: string, isDir: boolean) => {
     chatInputRef.current?.insertText(buildAtMentionText(relativePath, isDir));
@@ -1047,8 +1057,8 @@ export function AppShell({
     // Restore the workspace we switched to: its last open session, or keep
     // the default welcome page when none is remembered.
     restoreWorkspaceContext(newProject);
-    router.replace("/", { scroll: false });
-  }, [router, selectedSession, invalidateWorkspaceRestore, restoreWorkspaceContext]);
+    router.replace(homePath, { scroll: false });
+  }, [homePath, router, selectedSession, invalidateWorkspaceRestore, restoreWorkspaceContext]);
 
   const commitSessionSelection = useCallback((session: SessionInfo, isRestore: boolean, initialData: SessionData | null) => {
     setNewSessionCwd(null);
@@ -1155,8 +1165,8 @@ export function AppShell({
     setActiveTopPanel(null);
     dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
     if (isCompactWorkspace) setCompactDrawerOpen(false);
-    router.replace("/", { scroll: false });
-  }, [invalidateWorkspaceRestore, isCompactWorkspace, router, setCompactDrawerOpen]);
+    router.replace(homePath, { scroll: false });
+  }, [homePath, invalidateWorkspaceRestore, isCompactWorkspace, router, setCompactDrawerOpen]);
 
   const navigateProjectSession = useCallback((direction: -1 | 1) => {
     const projectRoot = selectedSession?.projectRoot
@@ -1354,9 +1364,9 @@ export function AppShell({
       setActiveTopPanel(null);
       dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
       requestComposerFocus();
-      router.replace("/", { scroll: false });
+      router.replace(homePath, { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, requestComposerFocus, selectedSession, router]);
+  }, [homePath, invalidateWorkspaceRestore, requestComposerFocus, selectedSession, router]);
 
   const handleOpenFile = useCallback((
     filePath: string,
@@ -1509,9 +1519,11 @@ export function AppShell({
   const boundedSessionTitle = normalizedSessionTitle.length > 96
     ? `${normalizedSessionTitle.slice(0, 93)}…`
     : normalizedSessionTitle;
-  const windowTitle = activeCwdName
+  const windowTitleBase = activeCwdName
     ? `${boundedSessionTitle} — ${activeCwdName} — CUELO`
     : `${boundedSessionTitle} — CUELO`;
+  // 같은 세션을 연 대화 탭과 오피스 탭을 탭 줄에서 가린다.
+  const windowTitle = officePage ? `${ot("office.toOffice")} · ${windowTitleBase}` : windowTitleBase;
   // Only document.title carries the 96-char cap; the tooltip must stay readable in full.
   // 상태줄이 상태 요약만 표시하게 되어, 세션 부가정보(경로/메모리 전용 여부)는 여기로 모은다.
   const sessionIdentityBase = activeCwdName
@@ -1538,7 +1550,7 @@ export function AppShell({
   const openWorkspaceView = useCallback((view: "subagents" | "process") => selectWorkspaceView(view, true), [selectWorkspaceView]);
   // 자리 배정은 대화 기록과 같은 얼굴 규칙(기록된 credential → provider 예약 얼굴)만 거친다.
   // 사용량 보고서가 바뀌면 이 컴포넌트가 다시 그려지므로 얼굴 저장소의 새 배정도 함께 반영된다.
-  const officeRoster = office.open
+  const officeRoster = officePage
     ? buildOfficeRoster({
       main: {
         provider: mainIdentity?.provider ?? null,
@@ -1556,8 +1568,16 @@ export function AppShell({
   const officeMaker = officeRoster?.participants.find(
     (participant): participant is OfficeMakerParticipant => participant.kind === "maker" && participant.key === officeSelected,
   );
+  // 오피스 화면의 지금 보기. 단톡방을 열면 대화 칸에 덮이므로 그동안은 대화 보기다.
+  const officePane: OfficePane | null = officePage ? (loungeOpen ? "target" : office.pane) : null;
   // 오피스에서 공간만 보는 동안 대화 칸은 마운트된 채 가려지고 탭 순서·보조 기술에서도 빠진다.
-  const officeChatHidden = office.open && office.pane === "floor";
+  const officeChatHidden = officePane === "floor";
+  // 오피스 화면은 공간·대화가 한 칸을 번갈아 쓰므로 보조 패널도 옆에 고정하지 않고 대화 자리를 대신한다.
+  const deckReplacesTranscript = showAuxiliaryDeck && (officePage || pinDecision.deck === "view-stack");
+  // 대화 화면과 오피스 화면은 같은 세션 URL 규칙(?session= / ?cwd=)으로 서로를 연다.
+  const sessionQuery = selectedSession
+    ? `?session=${encodeURIComponent(selectedSession.id)}`
+    : effectiveNewSessionCwd ? `?cwd=${encodeURIComponent(effectiveNewSessionCwd)}` : "";
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -1968,22 +1988,34 @@ export function AppShell({
                 <span className="workspace-context-readout" data-level={contextIndicator.level}>{contextReadout}</span>
               </ActionButton>
             )}
-            <ActionButton
-              className="workspace-header-action"
-              variant="ghost"
-              size="small"
-              type="button"
-              data-office-toggle={office.open ? "chat" : "office"}
-              onClick={() => {
-                // 대화 크게 보기로 돌아가면 같은 입력창으로 초점을 돌려준다(대화창은 내려가지 않았다).
-                if (office.open) requestComposerFocus();
-                office.toggle();
-              }}
-              title={ot(office.open ? "office.toChatTitle" : "office.toOfficeTitle")}
-            >
-              {ot(office.open ? "office.toChat" : "office.toOffice")}
-            </ActionButton>
-            {showChat && (
+            {officePage ? (
+              // 오피스 탭에서 같은 세션의 대화 화면으로. 이 탭에서 바로 옮겨 간다.
+              <ActionButton asChild className="workspace-header-action" variant="ghost" size="small">
+                <a href={`/${sessionQuery}`} data-office-link="chat" title={ot("office.toChatTitle")}>
+                  {ot("office.toChat")}
+                </a>
+              </ActionButton>
+            ) : (
+              // 오피스는 새 탭의 전용 화면이다. 이 탭의 URL·선택 세션·입력 초안·스트림은 그대로 남는다.
+              <ActionButton asChild className="workspace-header-action" variant="ghost" size="small">
+                <a
+                  href={`/office${sessionQuery}`}
+                  target="_blank"
+                  rel="noopener"
+                  data-office-link="office"
+                  title={ot("office.toOfficeTitle")}
+                  aria-label={`${ot("office.toOffice")} (${ot("office.newTab")})`}
+                >
+                  {ot("office.toOffice")}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M14 4h6v6" />
+                    <path d="M20 4 11 13" />
+                    <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+                  </svg>
+                </a>
+              </ActionButton>
+            )}
+            {showChat && !officePage && (
               <ToggleButton
                 className="workspace-panel-toggle"
                 variant="neutralWeak"
@@ -2324,19 +2356,19 @@ export function AppShell({
 
         {/* Chat content */}
         <div
-          className={`chat-content-layout${office.open ? ` ${officeStyles.layout}` : ""}`}
-          data-office-pane={office.open ? office.pane : undefined}
+          className={`chat-content-layout${officePage ? ` ${officeStyles.page}` : ""}`}
+          data-office-pane={officePage ? officePane : undefined}
         >
-          {/* 오피스의 3D 공간은 대화 칸 앞(넓은 화면은 왼쪽 중심)에 놓인다. 대화 칸과 ChatWindow는 같은
-              자리에 그대로 있어 보기를 바꾸거나 캐릭터를 눌러도 다시 마운트되지 않는다. 좁은 화면에서
-              대화 칸을 보는 동안에는 공간을 그리지 않아 렌더 루프도 멈춘다. */}
-          {officeRoster && (!isCompactWorkspace || office.pane === "floor") ? (
+          {/* 오피스 화면에서는 3D 공간과 대화가 같은 칸을 번갈아 다 쓴다. 대화 칸과 ChatWindow는 같은
+              자리에 그대로 있어 보기를 바꾸거나 캐릭터를 눌러도 다시 마운트되지 않고, 대화를 보는
+              동안에는 공간을 그리지 않아 렌더 루프도 멈춘다. */}
+          {officeRoster && officePane === "floor" ? (
             <OfficeStage
               roster={officeRoster}
               selected={officeSelected}
-              chatOpen={office.pane === "target"}
               onSelect={office.select}
-              onCloseChat={() => office.setPane("floor")}
+              view={office.view}
+              onViewChange={office.setView}
             />
           ) : null}
           <div
@@ -2369,7 +2401,7 @@ export function AppShell({
               onProcessLogChange={setProcessLog}
               onOpenFile={handleOpenLinkedFile}
               transcriptReplacement={
-                pinDecision.deck === "view-stack" && showAuxiliaryDeck ? (
+                deckReplacesTranscript ? (
                   <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
                     {auxiliaryDeckContent}
                   </aside>
@@ -2398,7 +2430,7 @@ export function AppShell({
               jumpRequest={chatJump}
               onJumpHandled={handleChatJumpHandled}
             />
-          ) : showAuxiliaryDeck && pinDecision.deck === "view-stack" ? (
+          ) : deckReplacesTranscript ? (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
               {auxiliaryDeckContent}
             </aside>
@@ -2449,19 +2481,26 @@ export function AppShell({
             <LoungeView lounge={lounge} visible={loungeOpen} onBack={() => setLoungeActive(false)} />
           ) : null}
           </div>
-          {pinDecision.deck === "pinned" && showAuxiliaryDeck && (
+          {pinDecision.deck === "pinned" && showAuxiliaryDeck && !officePage && (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
               {auxiliaryDeckContent}
             </aside>
           )}
         </div>
-        {officeRoster ? (
+        {officeRoster && officePane ? (
           <OfficeRail
             roster={officeRoster}
             selected={officeSelected}
-            onSelect={office.select}
-            pane={office.pane}
-            onShowFloor={() => office.setPane("floor")}
+            onSelect={(key) => {
+              // 단톡방이 대화 칸을 덮고 있으면 걷고 고른 대상을 보여 준다.
+              if (loungeOpen) setLoungeActive(false);
+              office.select(key);
+            }}
+            pane={officePane}
+            onShowFloor={() => {
+              if (loungeOpen) setLoungeActive(false);
+              office.setPane("floor");
+            }}
             selectionGone={office.selected !== officeSelected}
           />
         ) : null}

@@ -91,4 +91,4 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/", "/recover", "/api/:path*"] };
+export const config = { matcher: ["/", "/office", "/recover", "/api/:path*"] };

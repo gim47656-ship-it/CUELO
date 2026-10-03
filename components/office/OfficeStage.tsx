@@ -4,6 +4,15 @@ import { Component, Suspense, lazy, useCallback, useMemo, useRef, useState, type
 import { isActiveSubagentStatus } from "@/hooks/useSubagentTranscripts";
 import { OFFICE_MAIN_KEY, type OfficeParticipant, type OfficeRoster } from "@/lib/office/office-roster";
 import { officeLayout, officeMainPlan, officeMakerPlan, officeRestKey } from "@/lib/office/office-stage";
+import {
+  OFFICE_CAMERA_FIT,
+  OFFICE_ZOOM_MAX,
+  canPanOfficeView,
+  panOfficeView,
+  stepOfficeView,
+  zoomOfficeView,
+  type OfficeCameraView,
+} from "@/lib/office/office-camera";
 import { loungeMemberName } from "../lounge/i18n";
 import { OfficeFloor, useParticipantPresentation } from "./OfficeFloor";
 import type { OfficeBubbleRegistry, OfficeMotion, OfficeSceneParticipant } from "./OfficeScene3D";
@@ -58,20 +67,39 @@ function isRunning(participant: OfficeParticipant): boolean {
 
 export interface OfficeStageProps {
   roster: OfficeRoster;
+  /** 자리 카드(WebGL 대체)에 표시할 고른 대상. */
   selected: string;
-  /** 대화 칸이 공간 옆에 열려 있는지(`pane === "target"`). */
-  chatOpen: boolean;
   onSelect: (key: string) => void;
-  onCloseChat: () => void;
+  /** 맞춤 대비 확대 배율과 바라보는 점. 대화 보기에 다녀와도 그대로 남게 부모가 든다. */
+  view: OfficeCameraView;
+  onViewChange: (update: (view: OfficeCameraView) => OfficeCameraView) => void;
+}
+
+/** 옮기기 버튼: 방향(바닥 x·z)과 문구 키, 위쪽 화살표를 돌릴 각도. */
+const PAN_BUTTONS = [
+  { dx: 0, dz: -1, label: "office.panUp", turn: 0 },
+  { dx: -1, dz: 0, label: "office.panLeft", turn: -90 },
+  { dx: 1, dz: 0, label: "office.panRight", turn: 90 },
+  { dx: 0, dz: 1, label: "office.panDown", turn: 180 },
+] as const;
+
+/** 보기 조작 버튼의 선 아이콘. 헤더 아이콘과 같은 24 격자·2px 선이며 이름은 버튼 쪽이 단다. */
+function ToolIcon({ path, turn = 0 }: { path: string; turn?: number }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={turn ? { transform: `rotate(${turn}deg)` } : undefined}>
+      <path d={path} />
+    </svg>
+  );
 }
 
 /**
- * 오피스 보기의 중심 공간. 이 세션의 참여자(Main·Maker·캐릭터 미확인)가 실제 상태대로 책상과
+ * 오피스 화면의 중심 공간. 이 세션의 참여자(Main·Maker·캐릭터 미확인)가 실제 상태대로 책상과
  * 러그를 오가고, 참여하지 않은 캐릭터는 휴게 구역에서 쉰다. 참여자 캐릭터나 그 말풍선을 누르면
- * 그 대상의 대화 칸이 오른쪽에 열린다 — 보는 대상만 바뀌고 아무것도 실행하지 않는다. WebGL 이
- * 없거나 장면을 못 받으면 기존 자리 카드로 그대로 떨어진다.
+ * 그 대상의 대화 보기로 넘어간다 — 보는 대상만 바뀌고 아무것도 실행하지 않는다. 확대·옮기기는
+ * 버튼으로도, 확대한 장면을 끌어서도 한다. WebGL 이 없거나 장면을 못 받으면 기존 자리 카드로
+ * 그대로 떨어진다.
  */
-export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat }: OfficeStageProps) {
+export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: OfficeStageProps) {
   const { ot, locale } = useOfficeText();
   const present = useParticipantPresentation();
   const [support, setSupport] = useState<StageSupport>(() => (detectWebgl() ? "ok" : "noWebgl"));
@@ -95,8 +123,7 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
     key: participant.key,
     seat: participant.seat,
     plan: participant.kind === "main" ? officeMainPlan(participant.state) : officeMakerPlan(participant.status, participant.retrying),
-    selected: chatOpen && participant.key === selected,
-  })), [chatOpen, roster.participants, selected]);
+  })), [roster.participants]);
 
   const markReady = useCallback(() => setReady(true), []);
   const markFailed = useCallback(() => setSupport("assetFailed"), []);
@@ -117,13 +144,9 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
     if (element) reserved.current.set(key, element);
     else reserved.current.delete(key);
   }, []);
-
-  const closeButton = chatOpen ? (
-    <button type="button" ref={reservedRef("close")} className={styles.stageClose} onClick={onCloseChat} title={ot("office.closeChatTitle")}>
-      {ot("office.closeChat")}
-      <span aria-hidden="true">✕</span>
-    </button>
-  ) : null;
+  const pan = useCallback((dx: number, dz: number) => {
+    onViewChange((current) => panOfficeView(current, dx, dz));
+  }, [onViewChange]);
 
   if (support !== "ok") {
     return (
@@ -136,7 +159,6 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
             {support === "assetFailed" && (
               <button type="button" className={styles.stageRetry} onClick={retry}>{ot("office.retry")}</button>
             )}
-            {closeButton}
           </div>
           <OfficeFloor roster={roster} selected={selected} onSelect={onSelect} />
         </div>
@@ -146,6 +168,7 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
 
   const running = roster.participants.filter(isRunning).length;
   const mainMotion = motions.get(OFFICE_MAIN_KEY);
+  const zoomed = view.zoom > 1;
   return (
     <section
       className={styles.stage}
@@ -161,6 +184,8 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
               participants={sceneParticipants}
               bubbles={bubbles.current}
               reserved={reserved.current}
+              view={view}
+              onPan={pan}
               onSelect={onSelect}
               onHover={setHovered}
               onReady={markReady}
@@ -173,17 +198,70 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
       <header ref={reservedRef("header")} className={styles.stageHeader}>
         <h2 className={styles.floorTitle}>{ot("office.stage")}</h2>
         <p className={styles.floorSummary}>{ot("office.floorSummary", { count: roster.participants.length, running })}</p>
-        <p className={styles.stageHint}>{ot("office.stageHint")}</p>
+        <p className={styles.stageHint}>{ot(zoomed ? "office.stageHintZoomed" : "office.stageHint")}</p>
       </header>
-      {closeButton}
+      {/* 보기 조작. 끌기만으로 둘러보지 않아도 되게 확대·축소·전체 보기와 옮기기를 버튼으로 둔다. */}
+      <div ref={reservedRef("tools")} className={styles.stageTools} role="group" aria-label={ot("office.viewControls")}>
+        <div className={styles.toolRow}>
+          <button
+            type="button"
+            className={styles.toolButton}
+            onClick={() => onViewChange((current) => zoomOfficeView(current, -1))}
+            disabled={!zoomed}
+            aria-label={ot("office.zoomOut")}
+            title={ot("office.zoomOut")}
+          >
+            <ToolIcon path="M5 12h14" />
+          </button>
+          <button
+            type="button"
+            className={styles.toolButton}
+            data-control="zoom-fit"
+            onClick={() => onViewChange(() => OFFICE_CAMERA_FIT)}
+            disabled={!zoomed}
+            title={ot("office.zoomFitTitle")}
+            aria-label={`${ot("office.zoomFit")} (${ot("office.zoomLevel", { percent: Math.round(view.zoom * 100) })})`}
+          >
+            {ot("office.zoomLevel", { percent: Math.round(view.zoom * 100) })}
+          </button>
+          <button
+            type="button"
+            className={styles.toolButton}
+            onClick={() => onViewChange((current) => zoomOfficeView(current, 1))}
+            disabled={view.zoom >= OFFICE_ZOOM_MAX}
+            aria-label={ot("office.zoomIn")}
+            title={ot("office.zoomIn")}
+          >
+            <ToolIcon path="M12 5v14M5 12h14" />
+          </button>
+        </div>
+        {zoomed && (
+          <div className={styles.toolPad}>
+            {PAN_BUTTONS.map((button) => (
+              <button
+                key={button.label}
+                type="button"
+                className={styles.toolButton}
+                data-pan={`${button.dx},${button.dz}`}
+                onClick={() => onViewChange((current) => stepOfficeView(current, button.dx, button.dz))}
+                disabled={!canPanOfficeView(view, button.dx, button.dz)}
+                aria-label={ot(button.label)}
+                title={ot(button.label)}
+              >
+                <ToolIcon path="M12 19V5M5 12l7-7 7 7" turn={button.turn} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {!ready && <p className={styles.stageLoading} role="status">{ot("office.stageLoading")}</p>}
       {/* 캐릭터 머리 위 말풍선. 참여자 것은 버튼이라 키보드·터치로도 같은 대상을 연다. 자리는
-          장면이 매 프레임 옮기고, 처음 자리를 잡기 전에는 보이지 않는다. */}
+          장면이 매 프레임 옮기고, 처음 자리를 잡기 전에는 보이지 않는다. 확대해서 화면 밖으로 나간
+          캐릭터의 말풍선은 무대 가장자리에 붙어 남는다. */}
       <div className={styles.bubbles} data-ready={ready ? "true" : undefined}>
         {roster.participants.map((participant) => {
           const presentation = present(participant);
           const motion = motions.get(participant.key);
-          const pressed = chatOpen && participant.key === selected;
           return (
             <button
               key={participant.key}
@@ -195,7 +273,6 @@ export function OfficeStage({ roster, selected, chatOpen, onSelect, onCloseChat 
               data-tone={presentation.tone}
               data-motion={motion}
               data-hover={hovered === participant.key ? "true" : undefined}
-              aria-pressed={pressed}
               title={ot("office.openChat", { name: presentation.name })}
               onClick={() => onSelect(participant.key)}
             >

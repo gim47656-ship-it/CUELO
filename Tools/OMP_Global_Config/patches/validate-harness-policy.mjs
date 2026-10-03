@@ -577,6 +577,7 @@ const requiredPolicyShapes = [
   ["routing.effortSelection.criteria.medium", "string"],
   ["routing.effortSelection.criteria.high", "string"],
   ["routing.effortSelection.criteria.xhigh", "string"],
+  ["routing.effortSelection.criteria.max", "string"],
   ["routing.effortSelection.failure", "string"],
   ["routing.effortSelection.retry", "string"],
   ["routing.effortSelection.parallelism", "string"],
@@ -1601,7 +1602,7 @@ if (policy !== null) {
     );
   }
   // Maker 후보 표. 후보마다 등급과 허용 강도 구간이 있어야 task hook이 구간 밖 강도를 막는다.
-  // 강도 이름은 effortSelection.criteria의 단계로만 쓴다. 그 밖(max 포함)은 Jev 질문과 hook이 이해하지 못한다.
+  // 강도 이름은 effortSelection.criteria의 단계로만 쓴다. 그 밖은 Jev 질문과 hook이 이해하지 못한다. max도 criteria 단계라 Opus 세 profile만 허용 구간에 넣는다.
   {
     const profiles = valueAt(policy, "routing.modelSelection.profiles");
     const grades = Object.keys(valueAt(policy, "routing.modelSelection.criteria") ?? {});

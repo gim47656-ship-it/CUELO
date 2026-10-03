@@ -35,7 +35,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 - 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 실제 모델 계열을 담는다.
-  `NORMAL_SONNET`(`implSonnet`)·`HARD_CODE_SONNET`(`makerHardCodeSonnet`)은 medium~xhigh, Opus 세 후보(`implOpus`·`makerHardUiOpus`·`makerHardCodeOpus`)와 `NORMAL_DEEPSEEK`(`implDeepSeek`)는 high다.
+  `NORMAL_SONNET`(`implSonnet`)·`HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`NORMAL_SOL`(`implSol`)은 medium~xhigh, `HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 high~xhigh, Opus 세 후보(`implOpus`·`makerHardUiOpus`·`makerHardCodeOpus`)는 high~max(기본 high, max는 기본값이 아님), `NORMAL_DEEPSEEK`(`implDeepSeek`)는 high다.
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
@@ -44,8 +44,10 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.
   HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
-  `HARD_CODE_SONNET`(`makerHardCodeSonnet`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
-  후보별 허용 강도·registry 지원 구간을 지키며 max나 별도 접근 모드를 쓰지 않는다. Main 계열만으로
+  `HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
+  `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때, `NORMAL_SOL`은 명세가 분명한 비-UI 코드에서 지연보다 비용이 중요할 때 Main이 고른다.
+  기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
+  후보별 허용 강도·registry 지원 구간을 지키며 max는 Opus 세 후보에서만 허용한다(`task.maxEffort: max`). 별도 접근 모드는 쓰지 않는다. Main 계열만으로
   배정을 뒤집지 않고, 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
   작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인한다. 비-Opus owner의 미완 변경·증거를
   freeze하고 소유권을 명시적으로 넘긴 뒤 Opus가 이어간다. active owner와 새 writer를 겹치거나 실행 중

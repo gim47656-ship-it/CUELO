@@ -3,24 +3,29 @@
  * signature: the floor is a faint floor-plan grid; an empty desk looks empty (dashed, dimmed face) instead of a fake occupant
  */
 
-/* AppShell이 오피스를 열면 대화 칸을 감싼 줄(.chat-content-layout)에 붙고, 지금 칸(`pane`)을
-   data-office-pane 으로 단다. 3D 공간이 이 줄의 중심이다. */
-.layout {
+/* /office 전용 화면에서 AppShell이 대화 줄(.chat-content-layout)에 붙이고, 지금 보기(`pane`)를
+   data-office-pane 으로 단다. `floor` 는 3D 공간이, `target` 은 고른 대상의 대화가 이 칸을 다 쓴다 —
+   대화 때문에 공간을 좁히지 않는다. 칸이 낮으면 줄여 맞추지 않고 세로로 스크롤한다. */
+.page[data-office-pane] {
   position: relative;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* 칸 높이에 맞춰 줄고 안쪽(대화 기록·Maker 기록)이 스크롤한다. 칸이 420px보다 낮을 때만 이 줄이 스크롤한다. */
+.page[data-office-pane] > .stage,
+.page[data-office-pane] > :global(.chat-session-column) {
+  flex: 1 1 0%;
+  min-block-size: 420px;
 }
 
 /* 공간만 보는 동안 대화 칸은 마운트된 채 흐름에서 빠져 가려진다(초안·스크롤 유지). AppShell이
    같은 칸에 inert 도 걸어 탭 순서와 보조 기술에서도 빠진다. */
-.layout[data-office-pane="floor"] > :global(.chat-session-column) {
+.page[data-office-pane="floor"] > :global(.chat-session-column) {
   position: absolute;
   inset: 0;
+  min-block-size: 0;
   visibility: hidden;
-}
-
-/* 넓은 화면에서 대화 칸을 열면 공간 오른쪽에 붙는다. 좁은 화면은 공간을 내리고 대화만 보인다. */
-.layout[data-office-pane="target"] > .stage ~ :global(.chat-session-column) {
-  flex: 0 0 clamp(360px, 42%, 720px);
-  border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
 }
 
 /* ---------- 3D 공간 ---------- */
@@ -53,28 +58,85 @@
   pointer-events: none;
 }
 
-.stageClose {
+/* 보기 조작: 확대·축소·전체 보기 한 줄, 확대한 동안 그 아래 옮기기 십자. */
+.stageTools {
   position: absolute;
   inset-block-start: var(--seed-dimension-x3);
   inset-inline-end: var(--seed-dimension-x3);
   z-index: 1;
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   gap: var(--seed-dimension-x1_5);
-  min-block-size: 36px;
-  padding: 0 var(--seed-dimension-x3);
-  border: 1px solid var(--seed-color-stroke-neutral-muted);
-  border-radius: var(--seed-radius-full);
-  background: var(--seed-color-bg-layer-default);
-  color: var(--seed-color-fg-neutral);
-  font: inherit;
-  font-size: var(--seed-font-size-t3-static);
-  font-weight: var(--seed-font-weight-bold);
-  cursor: pointer;
 }
 
-.stageClose:hover {
+.toolRow,
+.toolPad {
+  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  background: var(--seed-color-bg-layer-default);
+}
+
+.toolRow {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--seed-radius-full);
+}
+
+.toolPad {
+  display: grid;
+  grid-template-areas:
+    ". up ."
+    "left . right"
+    ". down .";
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--seed-radius-r3);
+}
+
+.toolPad > :nth-child(1) { grid-area: up; }
+.toolPad > :nth-child(2) { grid-area: left; }
+.toolPad > :nth-child(3) { grid-area: right; }
+.toolPad > :nth-child(4) { grid-area: down; }
+
+.toolButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 40px;
+  min-block-size: 40px;
+  padding: 0 var(--seed-dimension-x2);
+  border: 0;
+  border-radius: var(--seed-radius-full);
+  background: transparent;
+  color: var(--seed-color-fg-neutral);
+  font: inherit;
+  font-size: var(--seed-font-size-t4-static);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--seed-font-weight-bold);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.toolButton[data-control="zoom-fit"] {
+  min-inline-size: 56px;
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.toolButton:hover:not(:disabled) {
   background: var(--bg-hover);
+}
+
+.toolButton:disabled {
+  color: var(--seed-color-fg-disabled);
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  .toolButton {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+  }
 }
 
 .stageLoading {
@@ -265,12 +327,6 @@
   min-block-size: 52px;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
   border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
-}
-
-.stageFallbackBar > .stageClose {
-  position: static;
-  flex: none;
-  margin-inline-start: auto;
 }
 
 .stageNotice {
