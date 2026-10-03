@@ -4,7 +4,8 @@
 // 자기 프롬프트·검토를 기록한다. upstream exporter의 subagent 수집은 이 디렉터리의 `*.jsonl`을 전부 subSession으로 넣어,
 // 내보낸 HTML에 advisor 검토가 그대로 들어간다(18.4.5, upstream #13908 미머지). 웹 route(`app/api/sessions/[id]/export`)는
 // 번들 `dist/cli.js --export`를 먼저 실행하고, 세션 안 `/export`는 src exporter를 쓰므로 두 경로를 모두 실제로 돌린다.
-// 미패치 core에서는 [0]·[1]·[2]의 advisor 검사가 FAIL(RED), 패치 core에서는 전부 PASS다. 세션 JSONL은 읽기만 한다(삭제·수정 없음).
+// 18.4.x 미패치 core에서는 [0]·[1]·[2]의 advisor 검사가 FAIL(RED), 패치 core에서는 전부 PASS다. 18.5.0은 upstream이 같은 경계를
+// 넣어(session/sub-sessions.ts) 순정에서도 PASS이고 패치는 no-op이다. 세션 JSONL은 읽기만 한다(삭제·수정 없음).
 // 모델 호출·네트워크 없음. HOME/USERPROFILE은 임시 폴더로 격리한다.
 // 동적 import 예외: core-bai-retry-test.ts와 같은 이유(지정한 사본만 검증).
 import { spawnSync } from "node:child_process";
@@ -26,7 +27,11 @@ function resolvePackage(): string {
 
 const PKG = resolvePackage();
 console.log(`대상 ${PKG}`);
-const { collectSubSessions, exportFromFile } = await import(`${PKG}/src/export/html/index.ts`);
+const exporter = await import(`${PKG}/src/export/html/index.ts`);
+const { exportFromFile } = exporter;
+// 18.5.0은 수집 함수를 `session/sub-sessions.ts`로 옮겼다(export/html은 내부 래퍼만 둔다). 두 판 모두 같은 수집 경계를 본다.
+const collectSubSessions = exporter.collectSubSessions
+	?? (await import(`${PKG}/src/session/sub-sessions.ts`)).collectSubSessions;
 
 let pass = 0;
 let fail = 0;

@@ -344,3 +344,81 @@ export function placeDispatchCards(
   });
   return slots;
 }
+
+export type DockPhase = "running" | "awaiting";
+
+export interface DockMaker {
+  maker: MakerPresentation;
+  phase: DockPhase;
+  /** 이 발주 카드가 붙은 대화 항목 위치(`placeDispatchCards`의 키). 붙을 답변이 아직 없으면 null. */
+  position: number | null;
+}
+
+export interface DockSummary {
+  running: number;
+  awaiting: number;
+  /** 눌렀을 때 갈 Maker: 카드 자리가 있는 가장 최근 발주, 없으면 가장 최근 발주. */
+  target: DockMaker;
+}
+
+/** 실행 상태가 dock에서 어느 쪽 후보인가. 미관측은 실행 중인지 끝났는지 모르므로 올리지 않는다. */
+const DOCK_CANDIDATE: Record<MakerRunState, DockPhase | null> = {
+  dispatching: "running",
+  pending: "running",
+  running: "running",
+  completed: "awaiting",
+  failed: "awaiting",
+  aborted: "awaiting",
+  unobserved: null,
+};
+
+/**
+ * 입력창 위 dock 한 줄에 올릴 Maker. 위로 밀려 안 보이는 발주 카드 대신 지금 볼 것만 센다.
+ *
+ * - 실행 중: 실시간 스냅샷이 실행 중이면 어느 턴이든. 기록·발주 중 상태는 Main이 아직 도는
+ *   마지막 턴만 — 중단된 세션의 기록은 영영 바뀌지 않으므로 고정해 두지 않는다.
+ * - 판정 대기: 마지막 턴에서 실행이 끝났는데 Main 판정(`routing_verdict`)이 아직 없는 것.
+ *   다음 사용자 입력부터는 그 턴의 카드에만 남는다.
+ */
+export function collectDockMakers(
+  messages: readonly AgentMessage[],
+  toolResults: ReadonlyMap<string, ToolResultMessage>,
+  slots: ReadonlyMap<number, DispatchSlot>,
+  subagents: readonly SubagentSnapshot[],
+  ledger: DispatchLedger,
+  sessionBusy: boolean,
+): DockSummary | null {
+  let lastUser = -1;
+  messages.forEach((message, idx) => {
+    if (message.role === "user") lastUser = idx;
+  });
+  const positionByCall = new Map<string, number>();
+  for (const [position, slot] of slots) for (const call of slot.calls) positionByCall.set(call.toolCallId, position);
+
+  const dock: DockMaker[] = [];
+  messages.forEach((message, idx) => {
+    if (message.role !== "assistant") return;
+    const latestTurn = idx > lastUser;
+    for (const block of (message as AssistantMessage).content ?? []) {
+      if (block.type !== "toolCall" || block.toolName !== "task") continue;
+      for (const member of readDispatchMembers(block, toolResults.get(block.toolCallId)) ?? []) {
+        const maker = presentMaker(member, subagents, ledger);
+        const candidate = DOCK_CANDIDATE[maker.run];
+        let phase: DockPhase | null = null;
+        if (candidate === "running" && (maker.runSource === "live" || (latestTurn && sessionBusy))) phase = "running";
+        else if (candidate === "awaiting" && latestTurn && !maker.verdict) phase = "awaiting";
+        if (phase) dock.push({ maker, phase, position: positionByCall.get(block.toolCallId) ?? null });
+      }
+    }
+  });
+  if (dock.length === 0) return null;
+
+  let running = 0;
+  for (const entry of dock) if (entry.phase === "running") running += 1;
+  const placed = dock.filter((entry) => entry.position !== null);
+  return {
+    running,
+    awaiting: dock.length - running,
+    target: placed.length > 0 ? placed[placed.length - 1] : dock[dock.length - 1],
+  };
+}

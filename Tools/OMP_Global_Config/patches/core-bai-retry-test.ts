@@ -279,6 +279,7 @@ try {
 	console.log("\n[2] b-ai + socket close, 재시도 예산 소진 → 기존 fallback 유지");
 	{
 		const h = makeHarness({ maxRetries: 2, currentModel: baiModel });
+		let switchedAt = 0;
 		for (let attempt = 1; attempt <= 3 && h.switches.length === 0; attempt++) {
 			const current = h.activeModel();
 			const turn = seedFailedTurn(h.agent, {
@@ -288,12 +289,15 @@ try {
 				errorMessage: SOCKET_TEXT,
 			});
 			await h.recovery.handleRetryableError(turn as never, { allowModelFallback: true });
+			if (h.switches.length > 0) switchedAt = attempt;
 		}
 		check(
 			"예산 소진 뒤 체인 후보로 전환된다",
 			h.switches[0] === "opencode-go/muse-spark-1.3-contributor",
 			`switches=${h.switches.join(",")}`,
 		);
+		// 18.5.0 upstream 의 같은 모델 재시도는 1회차뿐이다. b-ai 는 2회차도 같은 모델이고 예산(2회)을 다 쓴 3회차에 전환한다.
+		check("전환은 예산을 다 쓴 3회차에서만 일어난다", switchedAt === 3, `switchedAt=${switchedAt}`);
 		check("전환이 retry_fallback_applied 로 보고된다", h.events.some(e => e.type === "retry_fallback_applied"), h.eventTypes());
 	}
 
@@ -315,7 +319,10 @@ try {
 		);
 	}
 
-	console.log("\n[4] 다른 provider + socket close → 기존 즉시 fallback");
+	console.log("\n[4] 다른 provider + 스트리밍 진행 없는 socket close → 기존 즉시 fallback");
+	// 18.5.0 upstream 은 모든 provider 의 1회차 socket drop 중 thinking·toolCall·text 가 이미 스트리밍된 것만 같은 모델로
+	// 1회 재시도한다(turn-recovery `#isFirstAttemptMidStreamSocketDrop`). 이 케이스는 b-ai 규칙이 다른 provider 로
+	// 번지지 않는지를 보므로 그 upstream 조건이 걸리지 않는 진행 없는 끊김으로 둔다(18.4.12·18.5.0 모두 fallback).
 	{
 		const h = makeHarness({ maxRetries: 2, currentModel: museModel });
 		const turn = seedFailedTurn(h.agent, {
@@ -323,6 +330,8 @@ try {
 			model: "muse-spark-1.3-contributor",
 			api: museModel.api,
 			errorMessage: SOCKET_TEXT,
+			content: [{ type: "thinking", thinking: "" }],
+			syntheticResult: false,
 		});
 		await h.recovery.handleRetryableError(turn as never, { allowModelFallback: true });
 		check(
@@ -370,6 +379,23 @@ try {
 			retried === true && h.agent.state.messages.length === 0 && h.continues.length === 1,
 			`retried=${retried} len=${h.agent.state.messages.length} continues=${h.continues.length}`,
 		);
+	}
+
+	console.log("\n[7] b-ai + 스트리밍 진행 없는 socket close → 같은 모델 재시도(upstream 첫 시도 규칙 밖)");
+	// 18.5.0 upstream 만으로는 진행 없는 끊김이 즉시 fallback 이다. b-ai 규칙은 내용 유무와 무관하게 같은 모델을 먼저 쓴다.
+	{
+		const h = makeHarness({ maxRetries: 2, currentModel: baiModel });
+		const turn = seedFailedTurn(h.agent, {
+			provider: "b-ai",
+			model: "deepseek-v4.1-flash",
+			api: baiModel.api,
+			errorMessage: SOCKET_TEXT,
+			content: [{ type: "thinking", thinking: "" }],
+			syntheticResult: false,
+		});
+		const retried = await h.recovery.handleRetryableError(turn as never, { allowModelFallback: true });
+		check("진행 없는 끊김도 모델이 바뀌지 않는다", h.switches.length === 0, `switches=${h.switches.join(",")}`);
+		check("재시도가 예약된다", retried === true && h.continues.length === 1, `retried=${retried} continues=${h.continues.length}`);
 	}
 
 	console.log(`\n결과 ${pass} pass / ${fail} fail`);

@@ -73,8 +73,8 @@ const SCENARIOS: Record<string, Scenario> = {
 };
 
 const MAIN_STATES: readonly OfficeMainState[] = ["idle", "working", "waiting", "attention"];
-/** 1105 는 1365px 창에서 기본 사이드바(260px)를 뺀 대화 줄 폭이다. */
-const WIDTHS = [0, 375, 390, 768, 1105, 1365] as const;
+/** 1105 는 1365px 창에서 기본 사이드바(260px)를 뺀 대화 줄 폭이다. 852 는 같은 셈으로 1112px 창이다. */
+const WIDTHS = [0, 375, 390, 768, 852, 1105, 1365] as const;
 
 /** 미리보기의 얼굴 배정: provider 예약 얼굴, Anthropic 은 credential 1 → RIN, 2 → MIO. */
 const resolveFace: OfficeFaceResolver = (provider, credentialId) => {

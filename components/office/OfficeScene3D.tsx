@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   OFFICE_ENTRANCE,
-  OFFICE_SOFA,
+  OFFICE_LOUNGE,
   officeRestKey,
   stepToward,
   type FloorPoint,
@@ -29,6 +30,7 @@ import {
   type CharacterPose,
   type CharacterRig,
 } from "./OfficeCharacter";
+import { OFFICE_KIT_URL, buildAssetRoom } from "./OfficeRoomAssets";
 
 /** 참여자 캐릭터의 지금 움직임. 말풍선 문구와 보조 기술 안내가 이 값을 그대로 읽는다. */
 export type OfficeMotion = "toDesk" | "toLounge" | "work" | "atDesk" | "slump" | "idle" | "wave";
@@ -162,6 +164,49 @@ function settleTag(rect: PlacedRect, placed: readonly PlacedRect[], start: numbe
   return null;
 }
 
+/** 휴게 이름표가 머리 위 세로줄 말고 좌우로 이름표 폭만큼씩 비켜 볼 칸 수(한쪽). */
+const TAG_SIDE_STEPS = 3;
+
+/**
+ * 휴게 구역 이름표 자리. 머리 위 세로줄과 좌우 줄마다 위로(막히면 아래로) 비켜 선 빈자리를 찾고,
+ * 그중 머리에서 가장 가까운 자리의 중심 x·바닥 y 를 돌려준다. 같은 거리면 머리 위 줄이 이긴다 —
+ * 넓은 참여자 말풍선이 머리 위를 막으면 말풍선 꼭대기로 멀리 밀려나기보다 머리 높이 옆 칸에 선다.
+ * 무대 어디에도 자리가 없을 때만 머리 위(겹침)로 돌아간다.
+ */
+function placeTag(
+  placed: readonly PlacedRect[],
+  blocked: readonly PlacedRect[],
+  anchor: { x: number; y: number },
+  box: { width: number; height: number },
+  stage: { width: number; height: number },
+): { x: number; y: number } {
+  const half = box.width / 2;
+  const lowest = stage.height - BUBBLE_MARGIN;
+  const rect: PlacedRect = { left: 0, right: 0, top: 0, bottom: 0 };
+  let best: { x: number; y: number; cost: number } | null = null;
+  const home = clamp(anchor.x, half + BUBBLE_MARGIN, stage.width - half - BUBBLE_MARGIN);
+  for (let step = 0; step <= TAG_SIDE_STEPS * 2; step += 1) {
+    // 0, -1, +1, -2, +2 … 순서로 옆 줄을 본다.
+    const offset = step === 0 ? 0 : (step % 2 === 1 ? -1 : 1) * Math.ceil(step / 2) * (box.width + BUBBLE_MARGIN);
+    const x = clamp(home + offset, half + BUBBLE_MARGIN, stage.width - half - BUBBLE_MARGIN);
+    if (step > 0 && Math.abs(x - home) < 1) continue;
+    let highest = box.height + BUBBLE_MARGIN;
+    for (const area of blocked) {
+      if (x - half < area.right && area.left < x + half) highest = Math.max(highest, area.bottom + BUBBLE_MARGIN + box.height);
+    }
+    const start = clamp(anchor.y, highest, lowest);
+    rect.left = x - half;
+    rect.right = x + half;
+    // 같은 줄에서는 위(머리 위)를 먼저 쓰고, 위가 막힌 때만 아래로 간다.
+    const y = settleTag(rect, placed, start, true, box.height, highest, lowest) ?? settleTag(rect, placed, start, false, box.height, highest, lowest);
+    if (y !== null) {
+      const cost = Math.abs(x - anchor.x) + Math.abs(y - anchor.y);
+      if (!best || cost < best.cost) best = { x, y, cost };
+    }
+  }
+  return best ?? { x: home, y: clamp(anchor.y, box.height + BUBBLE_MARGIN, lowest) };
+}
+
 /**
  * 머리 위 말풍선 자리를 매 프레임 화면 좌표로 옮긴다. 첫 프레임을 그린 뒤 준비됐다고 알린다.
  * 말풍선은 무대 안으로 당겨 가장자리에서 잘리거나 아래 참여자 줄에 걸치지 않고, 머리글·닫기 버튼
@@ -246,21 +291,19 @@ function BubbleProjector({ shared, bubbles, reserved, onReady }: {
     for (const item of items) {
       const tail = item.rest ? 0 : BUBBLE_TAIL;
       const half = item.width / 2;
-      const x = clamp(item.x, half + BUBBLE_MARGIN, size.width - half - BUBBLE_MARGIN);
-      // 같은 세로줄에 머리글·닫기 버튼이 있으면 그 아래까지만 올라간다.
-      let highest = item.height + BUBBLE_MARGIN;
-      for (const area of blocked) {
-        if (x - half < area.right && area.left < x + half) highest = Math.max(highest, area.bottom + BUBBLE_MARGIN + item.height);
-      }
-      const lowest = size.height - BUBBLE_MARGIN - tail;
-      let y = clamp(item.y, highest, lowest);
-      const rect: PlacedRect = { left: x - half, right: x + half, top: y - item.height, bottom: y + tail };
+      let x = clamp(item.x, half + BUBBLE_MARGIN, size.width - half - BUBBLE_MARGIN);
+      let y: number;
       if (item.rest) {
-        y = settleTag(rect, placed, y, true, item.height, highest, lowest) ?? settleTag(rect, placed, y, false, item.height, highest, lowest) ?? y;
-        rect.top = y - item.height;
-        rect.bottom = y;
+        ({ x, y } = placeTag(placed, blocked, item, item, size));
+      } else {
+        // 같은 세로줄에 머리글·닫기 버튼이 있으면 그 아래까지만 올라간다.
+        let highest = item.height + BUBBLE_MARGIN;
+        for (const area of blocked) {
+          if (x - half < area.right && area.left < x + half) highest = Math.max(highest, area.bottom + BUBBLE_MARGIN + item.height);
+        }
+        y = clamp(item.y, highest, size.height - BUBBLE_MARGIN - tail);
       }
-      placed.push(rect);
+      placed.push({ left: x - half, right: x + half, top: y - item.height, bottom: y + tail });
       const transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
       if (scratch.written.get(item.key) === transform) continue;
       scratch.written.set(item.key, transform);
@@ -356,7 +399,10 @@ function Desk({ x, z, width, cushion, chairs, lit }: {
   );
 }
 
-/** 바닥·벽·문·러그·책상·휴게 구역. 책상 수와 길이는 배치(`OfficeLayout`)를 그대로 따른다. */
+/**
+ * 코드 도형으로 그린 바닥·벽·문·러그·책상·휴게 구역. 에셋 키트 방(`OfficeRoom`)이 키트를 받기 전이나 받지
+ * 못했을 때 그 자리에 그린다. 책상 수와 길이는 배치(`OfficeLayout`)를 그대로 따른다.
+ */
 function Room({ layout, lit }: { layout: OfficeLayout; lit: ReadonlyMap<string, boolean> }) {
   // 책상마다 앉는 자리들.
   const stationsByDesk = useMemo(() => layout.desks.map((_, index) => layout.stations
@@ -386,37 +432,52 @@ function Room({ layout, lit }: { layout: OfficeLayout; lit: ReadonlyMap<string, 
         <circleGeometry args={[1.25, 48]} />
         <meshStandardMaterial color="#c3ccbd" roughness={1} />
       </mesh>
-      {/* 휴게 구역: 바닥 깔개·소파·화분. 참여하지 않은 캐릭터가 여기서 쉰다. */}
-      <mesh rotation-x={-Math.PI / 2} position={[-2.95, 0.004, 2]}>
-        <planeGeometry args={[2.3, 2.1]} />
+      {/* 휴게 구역: 바닥 깔개·소파·암체어·탕비 탁자와 스툴·카운터. 참여하지 않은 캐릭터가 여기서 쉰다. */}
+      <mesh rotation-x={-Math.PI / 2} position={[-2.95, 0.004, 1.9]}>
+        <planeGeometry args={[2.4, 2.3]} />
         <meshStandardMaterial color="#e8d9c2" roughness={1} />
       </mesh>
-      <group position={[OFFICE_SOFA.center.x, 0, OFFICE_SOFA.center.z]}>
-        <mesh position={[0, SEATED_HIP - 0.07, 0.12]}>
-          <boxGeometry args={[OFFICE_SOFA.width, 0.14, 0.42]} />
-          <meshStandardMaterial color="#8c9a8a" roughness={0.9} />
+      {[
+        { x: OFFICE_LOUNGE.couch.x, z: OFFICE_LOUNGE.couch.z, width: OFFICE_LOUNGE.couchWidth },
+        { x: OFFICE_LOUNGE.armchair.x, z: OFFICE_LOUNGE.armchair.z, width: 0.75 },
+      ].map((seat) => (
+        <group key={seat.x} position={[seat.x, 0, seat.z]}>
+          <mesh position={[0, SEATED_HIP - 0.07, 0.12]}>
+            <boxGeometry args={[seat.width - 0.2, 0.14, 0.42]} />
+            <meshStandardMaterial color="#8c9a8a" roughness={0.9} />
+          </mesh>
+          <mesh position={[0, SEATED_HIP + 0.12, -0.12]}>
+            <boxGeometry args={[seat.width - 0.2, 0.42, 0.12]} />
+            <meshStandardMaterial color="#7d8b7b" roughness={0.9} />
+          </mesh>
+          {[-1, 1].map((side) => (
+            <mesh key={side} position={[side * (seat.width / 2 - 0.05), SEATED_HIP, 0.06]}>
+              <boxGeometry args={[0.1, 0.3, 0.5]} />
+              <meshStandardMaterial color="#7d8b7b" roughness={0.9} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+      <group position={[OFFICE_LOUNGE.table.x, 0, OFFICE_LOUNGE.table.z]}>
+        <mesh position={[0, 0.36, 0]}>
+          <cylinderGeometry args={[0.28, 0.28, 0.04, 20]} />
+          <meshStandardMaterial color="#b48a62" roughness={0.7} />
         </mesh>
-        <mesh position={[0, SEATED_HIP + 0.12, -0.12]}>
-          <boxGeometry args={[OFFICE_SOFA.width, 0.42, 0.12]} />
-          <meshStandardMaterial color="#7d8b7b" roughness={0.9} />
+        <mesh position={[0, 0.17, 0]}>
+          <cylinderGeometry args={[0.04, 0.06, 0.34, 10]} />
+          <meshStandardMaterial color="#5b4a3b" />
         </mesh>
         {[-1, 1].map((side) => (
-          <mesh key={side} position={[side * (OFFICE_SOFA.width / 2 + 0.05), SEATED_HIP, 0.06]}>
-            <boxGeometry args={[0.1, 0.3, 0.5]} />
-            <meshStandardMaterial color="#7d8b7b" roughness={0.9} />
+          <mesh key={side} position={[side * OFFICE_LOUNGE.stool, (SEATED_HIP - 0.05) / 2, 0]}>
+            <cylinderGeometry args={[0.13, 0.11, SEATED_HIP - 0.05, 14]} />
+            <meshStandardMaterial color="#8c9a8a" roughness={0.9} />
           </mesh>
         ))}
       </group>
-      <group position={[-1.95, 0, 1.15]}>
-        <mesh position={[0, 0.15, 0]}>
-          <cylinderGeometry args={[0.13, 0.1, 0.3, 14]} />
-          <meshStandardMaterial color="#b0704a" />
-        </mesh>
-        <mesh position={[0, 0.48, 0]}>
-          <sphereGeometry args={[0.24, 14, 10]} />
-          <meshStandardMaterial color="#6f9a62" roughness={0.9} />
-        </mesh>
-      </group>
+      <mesh position={[-3.86, 0.23, OFFICE_LOUNGE.counter.z]}>
+        <boxGeometry args={[0.7, 0.46, 1.5]} />
+        <meshStandardMaterial color="#d9cfc0" roughness={0.8} />
+      </mesh>
       {layout.desks.map((desk, index) => (
         <Desk
           key={`${desk.seat ?? "guest"}:${index}`}
@@ -430,6 +491,58 @@ function Room({ layout, lit }: { layout: OfficeLayout; lit: ReadonlyMap<string, 
       ))}
     </group>
   );
+}
+
+/** 받은 키트(GLB 장면)의 도형·재질·텍스처를 반납한다. 키트에서 복제한 방은 이것들을 함께 쓴다. */
+function disposeKit(kit: THREE.Object3D): void {
+  kit.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+      if (material instanceof THREE.MeshStandardMaterial) material.map?.dispose();
+      material.dispose();
+    }
+  });
+}
+
+/**
+ * 사무실 방. 장면이 뜰 때 에셋 키트(`public/office3d/office-kit.glb`)를 받아 그 모델로 방을 짓는다.
+ * 받는 동안과 받지 못했을 때는 코드 도형 방을 그린다 — 키트 실패는 장면 실패가 아니다. 키트는 이
+ * 장면이 내려갈 때 함께 반납하고, 오피스를 열기 전에는 받지 않는다.
+ */
+function OfficeRoom({ layout, lit }: { layout: OfficeLayout; lit: ReadonlyMap<string, boolean> }) {
+  const invalidate = useThree((state) => state.invalidate);
+  const [kit, setKit] = useState<THREE.Object3D | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let loaded: THREE.Object3D | null = null;
+    new GLTFLoader().loadAsync(OFFICE_KIT_URL).then(
+      (gltf) => {
+        loaded = gltf.scene;
+        if (!alive) {
+          disposeKit(gltf.scene);
+          return;
+        }
+        setKit(gltf.scene);
+        invalidate();
+      },
+      (error: unknown) => console.warn("[office] office kit failed; keeping the drawn room", error),
+    );
+    return () => {
+      alive = false;
+      if (loaded) disposeKit(loaded);
+    };
+  }, [invalidate]);
+  const room = useMemo(
+    () => (kit ? buildAssetRoom(kit, layout, (seat) => OFFICE_APPEARANCES[seat % OFFICE_APPEARANCES.length].hair) : null),
+    [kit, layout],
+  );
+  useEffect(() => () => room?.dispose(), [room]);
+  useEffect(() => {
+    room?.setLit(lit);
+    invalidate();
+  }, [invalidate, lit, room]);
+  return room ? <primitive object={room.group} /> : <Room layout={layout} lit={lit} />;
 }
 
 interface ActorProps {
@@ -710,7 +823,7 @@ function SceneContents({ layout, participants, bubbles, reserved, onSelect, onHo
       <CameraRig />
       <hemisphereLight args={["#ffffff", "#b5a993", 1.7]} />
       <directionalLight position={[3, 6, 5]} intensity={1.5} />
-      <Room layout={layout} lit={lit} />
+      <OfficeRoom layout={layout} lit={lit} />
       {participants.map((participant) => {
         const station = stations.get(participant.key);
         if (!station) return null;

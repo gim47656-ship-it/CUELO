@@ -28,7 +28,8 @@ import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
-import { buildDispatchLedger, placeDispatchCards, type DispatchSlot } from "@/lib/answer-status/dispatch";
+import { DispatchDockLine } from "./answer-status/DispatchDockLine";
+import { buildDispatchLedger, collectDockMakers, placeDispatchCards, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { collectTurnBlocks, placeTurnSummaries, summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
@@ -202,6 +203,8 @@ interface HistoricalTranscriptProps {
   /** The conversation (user turns and answer runs) and the work log behind it. */
   main: ConversationRenderItem[];
   process: ProcessTurnGroup[];
+  /** 발주 카드 자리(`placeDispatchCards`). dock 줄도 같은 값으로 카드를 찾아간다. */
+  dispatchSlots: ReadonlyMap<number, DispatchSlot>;
   /** Rendered conversation items: [startIndex, endIndex). */
   startIndex: number;
   endIndex: number;
@@ -299,7 +302,7 @@ function writeDismissedInterruption(sessionId: string, entryId: string): void {
 const HistoricalTranscript = memo(function HistoricalTranscript({
   messages, entryIds, toolResultsMap, modelNames, messageCwd, onOpenFile,
   sessionBusy, isNew, isStreaming, handleFork, forkingEntryId, handleNavigate,
-  handleEditContent, sessionId, main, process, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
+  handleEditContent, sessionId, main, process, dispatchSlots, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
   onProcessLogChange, cues, cueFollowRef,
 }: HistoricalTranscriptProps) {
   useEffect(() => {
@@ -335,9 +338,8 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     return notices;
   }, [main, process, messages, toolResultsMap, t]);
 
-  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에, 요약은 끝난 턴의 마지막 답변에 붙는다.
+  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에(dispatchSlots), 요약은 끝난 턴의 마지막 답변에 붙는다.
   // 실행 중인 마지막 턴은 아직 끝난 답변이 아니므로 요약하지 않는다.
-  const dispatchSlots = useMemo(() => placeDispatchCards(main, messages), [main, messages]);
   const turnSummaries = useMemo(() => {
     let liveTurnAnchor: number | null = null;
     if (sessionBusy) {
@@ -815,6 +817,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     ),
     [messages, sessionBusy, streamState.isStreaming, displayOptions],
   );
+  // 발주 카드 자리는 대화와 입력창 위 dock 줄이 함께 쓴다.
+  const dispatchSlots = useMemo(() => placeDispatchCards(main, messages), [main, messages]);
   // Only a window of the conversation is in the DOM: the last page, growing
   // upward as the reader scrolls to the top. A jump detaches it around an older
   // item; new messages then wait below until the reader returns to the latest.
@@ -880,32 +884,49 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
 
   // --- Jumps: search hits, question rail, palette results ---
   const [flashItem, setFlashItem] = useState<number | null>(null);
+  // dock 줄에서 건너온 발주: 항목 전체 대신 그 발주 카드가 강조된다.
+  const [flashDispatch, setFlashDispatch] = useState<string | null>(null);
   const [jumpTick, setJumpTick] = useState(0);
-  const pendingJumpRef = useRef<number | null>(null);
-  const jumpToItem = useCallback((item: number) => {
+  const pendingJumpRef = useRef<{ item: number; dispatchKey: string | null } | null>(null);
+  const jumpToItem = useCallback((item: number, dispatchKey: string | null = null) => {
     pauseAutoFollow();
-    pendingJumpRef.current = item;
+    pendingJumpRef.current = { item, dispatchKey };
     setFlashItem(null);
+    setFlashDispatch(null);
     setRenderWindow((current) => windowAround(mainLengthRef.current, item, current));
     setJumpTick((tick) => tick + 1);
   }, [pauseAutoFollow]);
   useLayoutEffect(() => {
-    const item = pendingJumpRef.current;
+    const jump = pendingJumpRef.current;
     const container = scrollContainerRef.current;
-    if (item === null || !container) return;
-    const holder = container.querySelector<HTMLElement>(`[data-chat-item="${item}"]`);
+    if (jump === null || !container) return;
+    const holder = container.querySelector<HTMLElement>(`[data-chat-item="${jump.item}"]`);
     if (!holder) return;
     pendingJumpRef.current = null;
-    const range = document.createRange();
-    range.selectNodeContents(holder);
-    container.scrollTop += range.getBoundingClientRect().top - container.getBoundingClientRect().top - 24;
-    setFlashItem(item);
+    // 한 답변에는 발주 카드가 하나다. 카드가 그려져 있으면 답변 맨 위 대신 카드로 간다.
+    const card = jump.dispatchKey ? holder.querySelector<HTMLElement>(".answer-dispatch") : null;
+    let top: number;
+    if (card) {
+      top = card.getBoundingClientRect().top;
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(holder);
+      top = range.getBoundingClientRect().top;
+    }
+    container.scrollTop += top - container.getBoundingClientRect().top - 24;
+    if (card && jump.dispatchKey) setFlashDispatch(jump.dispatchKey);
+    else setFlashItem(jump.item);
   }, [jumpTick, renderWindow, main, scrollContainerRef]);
   useEffect(() => {
     if (flashItem === null) return;
     const timer = setTimeout(() => setFlashItem(null), 1800);
     return () => clearTimeout(timer);
   }, [flashItem]);
+  useEffect(() => {
+    if (flashDispatch === null) return;
+    const timer = setTimeout(() => setFlashDispatch(null), 1800);
+    return () => clearTimeout(timer);
+  }, [flashDispatch]);
   // Back from a detached window: swap in the tail and land on its bottom at
   // once, so the new window's top sentinel never sees the viewport and
   // prepends mid-scroll. An attached window keeps its loaded range.
@@ -1081,7 +1102,17 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     subagents,
     toolResults: toolResultsMap,
     onOpenPanel: onOpenWorkspaceView,
-  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView]);
+    focusedDispatch: flashDispatch,
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch]);
+  // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
+  const dispatchDock = useMemo(
+    () => collectDockMakers(messages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy),
+    [messages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy],
+  );
+  const openSubagentsPanel = useMemo(
+    () => (onOpenWorkspaceView ? () => onOpenWorkspaceView("subagents") : undefined),
+    [onOpenWorkspaceView],
+  );
   const inputHistory = useMemo(() => {
     const seen = new Set<string>();
     const history: string[] = [];
@@ -1522,6 +1553,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 handleEditContent={handleEditContent}
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                 main={main}
+                dispatchSlots={dispatchSlots}
                 process={processGroups}
                 startIndex={startIndex}
                 endIndex={endIndex}
@@ -1613,6 +1645,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
           <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
+            <DispatchDockLine summary={dispatchDock} onJump={jumpToItem} onOpenPanel={openSubagentsPanel} />
             <ExtensionWidgets widgets={belowEditorWidgets} />
             {todoPhases && <TodoStrip phases={todoPhases} />}
           </div>

@@ -157,16 +157,34 @@ const LOUNGE_COLUMNS = 4;
 const LOUNGE_SPACING = 0.55;
 const LOUNGE_FACING = 0.35;
 
-/** 휴게 구역. 소파 셋과 서성이는 길 넷. 자리 번호마다 하나씩 정해 둔다. */
-export const OFFICE_SOFA: { center: FloorPoint; width: number } = { center: { x: -3, z: 1.05 }, width: 1.65 };
+/**
+ * 휴게 구역 가구 자리. 방 그림(에셋·도형 대체 모두)과 아래 휴게 자리가 이 값 하나를 함께 쓴다.
+ * 소파(둘이 앉음)·암체어는 뒤쪽, 탕비 탁자와 스툴 둘은 앞쪽, 카운터는 왼벽에 붙는다.
+ */
+export const OFFICE_LOUNGE = {
+  couch: { x: -3.2, z: 0.92 },
+  couchWidth: 1.42,
+  armchair: { x: -2.05, z: 0.92 },
+  table: { x: -2.2, z: 2.55 },
+  /** 탁자 중심에서 스툴까지(x). */
+  stool: 0.5,
+  /** 왼벽 카운터의 앞뒤 가운데(z). */
+  counter: { z: 2.45 },
+} as const;
+
+/**
+ * 휴게 구역. 소파 둘·암체어·스툴 둘에 앉고, 둘은 카운터 앞과 화분 옆을 짧게 오간다. 자리끼리
+ * 앞뒤·좌우로 0.6m 넘게 떨어져 있고 서성이는 길이 서로 가로지르지 않는다 — 촘촘히 모이면 머리 위
+ * 이름표가 화면에서 겹친다(이전 배치는 서성이는 넷이 0.3m 간격 줄에서 같은 구간을 오갔다).
+ */
 const REST_PLACES: readonly Omit<OfficeRestPlace, "seat">[] = [
-  { pose: "sofa", point: { x: -3.55, z: 1.2 }, facing: 0, to: null },
-  { pose: "sofa", point: { x: -3, z: 1.2 }, facing: 0, to: null },
-  { pose: "pace", point: { x: -3.7, z: 1.85 }, facing: 0, to: { x: -2.35, z: 1.85 } },
-  { pose: "pace", point: { x: -2.15, z: 2.2 }, facing: 0, to: { x: -3.45, z: 2.2 } },
-  { pose: "sofa", point: { x: -2.45, z: 1.2 }, facing: 0, to: null },
-  { pose: "pace", point: { x: -3.7, z: 2.55 }, facing: 0, to: { x: -2.6, z: 2.55 } },
-  { pose: "pace", point: { x: -1.95, z: 2.85 }, facing: 0, to: { x: -3.2, z: 2.85 } },
+  { pose: "sofa", point: { x: OFFICE_LOUNGE.couch.x - 0.33, z: OFFICE_LOUNGE.couch.z + 0.16 }, facing: 0, to: null },
+  { pose: "sofa", point: { x: OFFICE_LOUNGE.couch.x + 0.33, z: OFFICE_LOUNGE.couch.z + 0.16 }, facing: 0, to: null },
+  { pose: "sofa", point: { x: OFFICE_LOUNGE.armchair.x, z: OFFICE_LOUNGE.armchair.z + 0.16 }, facing: -0.3, to: null },
+  { pose: "sofa", point: { x: OFFICE_LOUNGE.table.x - OFFICE_LOUNGE.stool, z: OFFICE_LOUNGE.table.z }, facing: Math.PI / 2, to: null },
+  { pose: "sofa", point: { x: OFFICE_LOUNGE.table.x + OFFICE_LOUNGE.stool, z: OFFICE_LOUNGE.table.z }, facing: -Math.PI / 2, to: null },
+  { pose: "pace", point: { x: -3.15, z: 2.05 }, facing: -Math.PI / 2, to: { x: -3.15, z: 2.95 } },
+  { pose: "pace", point: { x: -1.2, z: 1.7 }, facing: 0.4, to: { x: -1.2, z: 2.4 } },
 ];
 
 /** 한 책상에 k 번째로 앉는 실행의 자리. 가운데부터 좌우로 번갈아 붙는다. */

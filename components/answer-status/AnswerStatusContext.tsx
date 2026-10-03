@@ -16,6 +16,8 @@ export interface AnswerStatusContextValue {
   toolResults: Map<string, ToolResultMessage>;
   /** 기존 상세 패널(서브에이전트·작업 기록)을 연다. 없으면 링크를 숨긴다. */
   onOpenPanel?: (view: AnswerStatusPanelView) => void;
+  /** dock 줄에서 막 건너온 발주(`DispatchMember.key`). 그 카드와 행이 한 번 강조된다. */
+  focusedDispatch?: string | null;
 }
 
 export const AnswerStatusContext = createContext<AnswerStatusContextValue>({

@@ -2215,19 +2215,37 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 	// 인증/approved-fallback/재시도 체인·task-guard 상한은 건드리지 않는다.
 	// 잘못된 값은 기존 fall-through(다음 소스로 전이)를 따르므로, 엄격한 거부는
 	// 호출자(Arena 런타임의 사전 해석)가 맡는다.
+	// 18.5.0 RETIRE: upstream 이 같은 per-call model selector 를 넣었다(string | string[], batch 최상위는 never,
+	// 해석 실패 시 대체 금지; pi-tui task.ts:2156·2185, types.ts 각 schema, index.ts:306·330·820·1631). 아래 11항목은
+	// 18.4.12 본 후보를 유지하고, 18.5.0 에는 upstream 줄 자체의 no-op 후보를 둔다. 본 후보 앵커는 18.5.0 이 바로 뒤에
+	// 넣은 upstream 줄과 겹치지 않는 범위까지 넓혀 새 판 순정에서 성립하지 않게 한다. index.ts 의 preflight·launch 두
+	// 줄은 18.5.0 순정과 18.4.12 적용본이 국소 문맥까지 같아 같은 파일의 18.5.0 전용 import(invalidModelSelectorReason)
+	// 유무로 가른다. Maker 단일 모델은 maker-routing guard(`typeof item.model === "string"`)가 계속 막는다.
 	{
 		// 18.2.5: upstream 이 TaskItem 을 @oh-my-pi/pi-tui 로 옮기고 effort 타입을 인라인했다.
 		file: "../pi-tui/src/tools/task.ts",
 		marker: "Standard model selector for this spawn (item)",
-		anchor: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";",
-		patched: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (item), e.g. \"provider/model-id:max\".\n\t * Forwards to the existing subagent model resolution (`requestModel` first,\n\t * then `task.agentModelOverrides`, then the agent definition); omitted\n\t * preserves existing behavior. Unresolvable values fall through to the next\n\t * source per existing precedence, so callers needing strictness must\n\t * pre-resolve. A `:level` suffix pins exact thinking effort unless\n\t * per-spawn `effort` overrides it.\n\t */\n\tmodel?: string;",
+		anchor: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Caller-provided output schema;",
+		patched: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (item), e.g. \"provider/model-id:max\".\n\t * Forwards to the existing subagent model resolution (`requestModel` first,\n\t * then `task.agentModelOverrides`, then the agent definition); omitted\n\t * preserves existing behavior. Unresolvable values fall through to the next\n\t * source per existing precedence, so callers needing strictness must\n\t * pre-resolve. A `:level` suffix pins exact thinking effort unless\n\t * per-spawn `effort` overrides it.\n\t */\n\tmodel?: string;\n\t/** Caller-provided output schema;",
+		alternates: [{
+			file: "../pi-tui/src/tools/task.ts",
+			marker: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+			anchor: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+			patched: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+		}],
 	},
 	{
 		// 18.2.5: upstream 이 TaskParams 를 @oh-my-pi/pi-tui 로 옮기고 effort 타입을 인라인했다.
 		file: "../pi-tui/src/tools/task.ts",
 		marker: "Standard model selector for this spawn (flat form)",
-		anchor: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";",
-		patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (flat form), e.g. \"provider/model-id:max\".\n\t * Same forwarding and fall-through semantics as the batch item field.\n\t */\n\tmodel?: string;",
+		anchor: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Caller-provided output schema;",
+		patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (flat form), e.g. \"provider/model-id:max\".\n\t * Same forwarding and fall-through semantics as the batch item field.\n\t */\n\tmodel?: string;\n\t/** Caller-provided output schema;",
+		alternates: [{
+			file: "../pi-tui/src/tools/task.ts",
+			marker: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+			anchor: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+			patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
+		}],
 	},
 	{
 		// 18.3.4는 모든 task schema에 필수 `solutionSpace: "string"` 을 `task` 바로 뒤에 넣었다
@@ -2280,6 +2298,27 @@ const taskItemSchemaIsolated = type({
 	"isolated?": "boolean",
 	"+": "delete",
 });`,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: `export const taskItemSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			anchor: `export const taskItemSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			patched: `export const taskItemSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+		}],
 	},
 	{
 		file: "src/task/types.ts",
@@ -2302,6 +2341,27 @@ const taskItemSchemaIsolated = type({
 	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,`,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: `export const taskSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			anchor: `export const taskSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			patched: `export const taskSchema = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+		}],
 	},
 	{
 		file: "src/task/types.ts",
@@ -2324,6 +2384,27 @@ const taskItemSchemaIsolated = type({
 	solutionSpace: "string",
 	"model?": "string",
 	"outputSchema?": outputSchemaInputSchema,`,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: `const taskSchemaNoIsolation = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			anchor: `const taskSchemaNoIsolation = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+			patched: `const taskSchemaNoIsolation = type({
+	"name?": "string",
+	agent: "string = 'task'",
+	task: "string",
+	solutionSpace: "string",
+	"model?": "string | string[]",`,
+		}],
 	},
 	{
 		file: "src/task/types.ts",
@@ -2362,6 +2443,18 @@ const taskItemSchemaIsolated = type({
 				"isolated?": "boolean",
 				"+": "delete",
 			});`,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: `				solutionSpace: "string",
+				...effortField,
+				"model?": "string | string[]",`,
+			anchor: `				solutionSpace: "string",
+				...effortField,
+				"model?": "string | string[]",`,
+			patched: `				solutionSpace: "string",
+				...effortField,
+				"model?": "string | string[]",`,
+		}],
 	},
 	{
 		file: "src/task/types.ts",
@@ -2395,23 +2488,92 @@ const taskItemSchemaIsolated = type({
 			...toolsField,
 			"+": "delete",
 		});`,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: `			solutionSpace: "string",
+			...effortField,
+			"model?": "string | string[]",`,
+			anchor: `			solutionSpace: "string",
+			...effortField,
+			"model?": "string | string[]",`,
+			patched: `			solutionSpace: "string",
+			...effortField,
+			"model?": "string | string[]",`,
+		}],
 	},
 	{
 		file: "src/task/index.ts",
-		marker: "item.model = params.model;",
-		anchor: `	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };`,
-		patched: `	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
+		marker: `	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("model" in params) item.model = params.model;`,
+		anchor: `	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
+	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
+	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
+	if ("tools" in params) item.tools = params.tools;
+	if ("effort" in params) item.effort = params.effort;
+	if ("isolated" in params) item.isolated = params.isolated;`,
+		patched: `	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
+	if ("model" in params) item.model = params.model;
+	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
+	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
+	if ("tools" in params) item.tools = params.tools;
+	if ("effort" in params) item.effort = params.effort;
+	if ("isolated" in params) item.isolated = params.isolated;`,
+		alternates: [{
+			file: "src/task/index.ts",
+			marker: `	if ("effort" in params) item.effort = params.effort;
+	if ("model" in params) item.model = params.model;
+	if ("isolated" in params) item.isolated = params.isolated;`,
+			anchor: `	if ("effort" in params) item.effort = params.effort;
+	if ("model" in params) item.model = params.model;
+	if ("isolated" in params) item.isolated = params.isolated;`,
+			patched: `	if ("effort" in params) item.effort = params.effort;
+	if ("model" in params) item.model = params.model;
+	if ("isolated" in params) item.isolated = params.isolated;`,
+		}],
 	},
 	{
 		file: "src/task/index.ts",
-		marker: "spawn.model = item.model;",
-		anchor: `	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };`,
-		patched: `	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
+		marker: `	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
 	if ("model" in item) spawn.model = item.model;`,
+		anchor: `	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
+	if (item.name !== undefined) spawn.name = item.name;
+	if (item.task !== undefined) spawn.task = item.task;
+	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (params.context !== undefined) spawn.context = params.context;
+	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
+	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
+	if ("tools" in item) spawn.tools = item.tools;
+	if ("effort" in item) spawn.effort = item.effort;
+	if (item.isolated !== undefined) {`,
+		patched: `	const spawn: TaskParams = { agent: item.agent?.trim() || defaultAgent };
+	if ("model" in item) spawn.model = item.model;
+	if (item.name !== undefined) spawn.name = item.name;
+	if (item.task !== undefined) spawn.task = item.task;
+	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (params.context !== undefined) spawn.context = params.context;
+	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
+	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
+	if ("tools" in item) spawn.tools = item.tools;
+	if ("effort" in item) spawn.effort = item.effort;
+	if (item.isolated !== undefined) {`,
+		alternates: [{
+			file: "src/task/index.ts",
+			marker: `	if ("effort" in item) spawn.effort = item.effort;
+	if ("model" in item) spawn.model = item.model;
+	if (item.isolated !== undefined) {`,
+			anchor: `	if ("effort" in item) spawn.effort = item.effort;
+	if ("model" in item) spawn.model = item.model;
+	if (item.isolated !== undefined) {`,
+			patched: `	if ("effort" in item) spawn.effort = item.effort;
+	if ("model" in item) spawn.model = item.model;
+	if (item.isolated !== undefined) {`,
+		}],
 	},
 	{
 		file: "src/task/index.ts",
+		excludes: "invalidModelSelectorReason",
 		marker: `...(params.model !== undefined ? { model: params.model } : {}),
 			...("isolated" in params`,
 		anchor: `			...(params.effort !== undefined ? { effort: params.effort } : {}),
@@ -2419,9 +2581,23 @@ const taskItemSchemaIsolated = type({
 		patched: `			...(params.effort !== undefined ? { effort: params.effort } : {}),
 			...(params.model !== undefined ? { model: params.model } : {}),
 			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),`,
+		alternates: [{
+			file: "src/task/index.ts",
+			requires: "invalidModelSelectorReason",
+			marker: `			...(params.effort !== undefined ? { effort: params.effort } : {}),
+			...(params.model !== undefined ? { model: params.model } : {}),
+			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),`,
+			anchor: `			...(params.effort !== undefined ? { effort: params.effort } : {}),
+			...(params.model !== undefined ? { model: params.model } : {}),
+			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),`,
+			patched: `			...(params.effort !== undefined ? { effort: params.effort } : {}),
+			...(params.model !== undefined ? { model: params.model } : {}),
+			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),`,
+		}],
 	},
 	{
 		file: "src/task/index.ts",
+		excludes: "invalidModelSelectorReason",
 		marker: `...(params.model !== undefined ? { model: params.model } : {}),
 				...(params.tools?.length`,
 		// 18.3.4는 effort 다음 줄에 `solutionSpace: params.solutionSpace,` 를 넣었다(index.ts:1506).
@@ -2432,6 +2608,19 @@ const taskItemSchemaIsolated = type({
 				solutionSpace: params.solutionSpace,
 				...(params.model !== undefined ? { model: params.model } : {}),
 				...(params.tools?.length`,
+		alternates: [{
+			file: "src/task/index.ts",
+			requires: "invalidModelSelectorReason",
+			marker: `				solutionSpace: params.solutionSpace,
+				...(params.model !== undefined ? { model: params.model } : {}),
+				...(params.tools?.length`,
+			anchor: `				solutionSpace: params.solutionSpace,
+				...(params.model !== undefined ? { model: params.model } : {}),
+				...(params.tools?.length`,
+			patched: `				solutionSpace: params.solutionSpace,
+				...(params.model !== undefined ? { model: params.model } : {}),
+				...(params.tools?.length`,
+		}],
 	},
 	{
 		// 18.3.3 BLOCK: upstream 은 `task`·`bash` 를 가진 SubAgent 정의에 `wait` 를 자동으로 더한다
@@ -2507,7 +2696,8 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	},
 	{
 		file: "src/session/turn-recovery.ts",
-		marker: `!baiTransportSameModelRetry`,
+		marker: `!(retryBudgetExhausted && classifierRefusal) &&
+				!baiTransportSameModelRetry`,
 		anchor: `			if (
 				allowModelFallback &&
 				retrySettings.modelFallback &&
@@ -2525,6 +2715,23 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 				!baiTransportSameModelRetry
 			) {
 `,
+		// 18.5.0: upstream 이 같은 조건 끝에 첫 시도·스트리밍 진행이 있는 socket drop 의 같은 모델 1회 재시도를 넣었다
+		// (turn-recovery.ts:1623-1636·2630). 합집합으로 둔다: upstream 조건은 그대로 두고 b-ai 전송 장애(2회차 이후,
+		// 내용 없는 끊김, stream read 오류)만 뒤에 덧붙인다.
+		alternates: [{
+			file: "src/session/turn-recovery.ts",
+			marker: `!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
+				!baiTransportSameModelRetry`,
+			anchor: `				!(retryBudgetExhausted && classifierRefusal) &&
+				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
+			) {
+`,
+			patched: `				!(retryBudgetExhausted && classifierRefusal) &&
+				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
+				!baiTransportSameModelRetry
+			) {
+`,
+		}],
 	},
 	{
 		file: "src/registry/agent-lifecycle.ts",
@@ -7395,10 +7602,10 @@ export interface MCPDeferredServer {
 		// MCP 선택 연결: 매 사용자 요청의 system prompt 전에 mcp_select를 보내 고른 deferred 서버만 연결하고 노출 subset을 적용한다. 실패는 새 연결 0.
 		file: "src/session/agent-session.ts",
 		marker: `import type { MCPManager } from "../mcp/manager";`,
-		anchor: `} from "@oh-my-pi/pi-utils";
-import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
-		patched: `} from "@oh-my-pi/pi-utils";
-import type { MCPManager } from "../mcp/manager";
+		// 18.5.0: upstream 이 pi-utils import 블록 바로 뒤에 `@oh-my-pi/pi-utils/ar` import 를 넣어 두 줄 앵커가 끊겼다.
+		// AdvisorConfig import 한 줄(두 판 모두 파일 안 1회)만 잡는다. 적용 결과 바이트는 18.4.12 와 같다.
+		anchor: `import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
+		patched: `import type { MCPManager } from "../mcp/manager";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
 	},
 	{
@@ -8296,23 +8503,45 @@ function parentSubagentServiceTiers(
 	// 파일은 읽기만 한다. 웹 route는 번들 `dist/cli.js --export`를 먼저 실행하므로 번들의 같은 함수에도 같은 조건을
 	// 넣는다(min 식별자까지 정확히 일치하는 18.4.5 앵커, 버전이 바뀌면 조용히 어긋나지 않고 anchor-lost).
 	// 회귀: patches/core-export-advisor-test.ts(실제 SDK exportFromFile과 bun dist/cli.js --export의 HTML).
+	// 18.5.0: upstream 이 같은 수집을 `session/sub-sessions.ts` 로 옮기고 그 루프에서 isAdvisorTranscriptName 으로
+	// 거른다(sub-sessions.ts:11·61, 번들도 같은 조건). 세 항목 모두 그 upstream 줄의 no-op 후보를 둔다(RETIRE).
+	// 본 후보 앵커는 18.5.0 에서 지워진 loadEntriesFromFile import 를 함께 잡아 새 판 순정에서 성립하지 않게 한다.
 	{
 		file: "src/export/html/index.ts",
 		marker: 'import { isAdvisorTranscriptName } from "../../advisor/transcript-recorder";',
-		anchor: 'import type { SessionEntry, SessionHeader } from "../../session/session-entries";',
-		patched: 'import { isAdvisorTranscriptName } from "../../advisor/transcript-recorder";\nimport type { SessionEntry, SessionHeader } from "../../session/session-entries";',
+		anchor: 'import type { SessionEntry, SessionHeader } from "../../session/session-entries";\nimport { loadEntriesFromFile } from "../../session/session-loader";',
+		patched: 'import { isAdvisorTranscriptName } from "../../advisor/transcript-recorder";\nimport type { SessionEntry, SessionHeader } from "../../session/session-entries";\nimport { loadEntriesFromFile } from "../../session/session-loader";',
+		alternates: [{
+			file: "src/session/sub-sessions.ts",
+			marker: 'import { isAdvisorTranscriptName } from "../advisor/transcript-recorder";',
+			anchor: 'import { isAdvisorTranscriptName } from "../advisor/transcript-recorder";',
+			patched: 'import { isAdvisorTranscriptName } from "../advisor/transcript-recorder";',
+		}],
 	},
 	{
 		file: "src/export/html/index.ts",
 		marker: '		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n',
 		anchor: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n',
 		patched: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n		if (isAdvisorTranscriptName(name)) continue;\n',
+		alternates: [{
+			file: "src/session/sub-sessions.ts",
+			marker: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
+			anchor: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
+			patched: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
+		}],
 	},
 	{
 		file: "dist/cli.js",
 		marker: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
 		anchor: 'if(!o.endsWith(".jsonl")||o.includes(".bak"))continue;let r=o.slice(0,-6),',
 		patched: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
+		// 18.5.0 번들의 upstream 조건(XTe = isAdvisorTranscriptName) 자체의 no-op.
+		alternates: [{
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
+		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
 	// 두고 sdk.ts 가 `./ratchet/prelude` 로 import 한다. Bun 1.4.2 는 node_modules 안의 확장자 없는 import 를 .js 부터
@@ -8757,7 +8986,7 @@ class HarmonyLeakInterruption extends Error {`,
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
 for (const entry of EDITS) {
 	for (const candidate of [entry, ...(entry.alternates ?? [])]) {
-		for (const key of ["anchor", "marker", "patched", "legacyPatched"]) {
+		for (const key of ["anchor", "marker", "patched", "legacyPatched", "requires", "excludes"]) {
 			if (typeof candidate[key] === "string") candidate[key] = candidate[key].replaceAll("\r\n", "\n");
 		}
 	}
@@ -8770,6 +8999,10 @@ for (const entry of EDITS) {
  * 옛 설치와 새 설치에서 앵커의 파일과 문구가 갈라지므로, 같은 목적을 양쪽 설치에 그대로 적용하려면
  * 후보가 필요하다(18.2.5의 pi-coding-agent → pi-tui 이동). 성립하는 후보는 정확히 하나여야 한다.
  * 둘 이상이면 어느 쪽이 정본인지 알 수 없으므로 한쪽을 조용히 고르지 않고 실패한다.
+ * 선택 키 `requires`·`excludes` 는 같은 파일 안에 그 문자열이 있어야/없어야 후보로 본다. 옛 판의 적용본과
+ * 새 판의 순정이 국소 문맥까지 바이트가 같을 때만 쓴다(18.5.0 task/index.ts 의 model 전달: upstream 이 우리
+ * 패치와 같은 줄을 넣어 marker 만으로는 "옛 판 적용본"과 "새 판 순정"을 가를 수 없고, 잘못 가르면 --revert 가
+ * upstream 줄을 지운다). 조건은 marker·anchor 판별 전에 적용하고, 남은 후보 수 규칙은 그대로다.
  */
 function resolveEdit(entry, target) {
 	const candidates = [entry, ...(entry.alternates ?? [])];
@@ -8778,6 +9011,8 @@ function resolveEdit(entry, target) {
 	const live = present
 		.map(candidate => {
 			const text = readFileSync(join(target, candidate.file), "utf8");
+			if (candidate.requires !== undefined && !text.includes(candidate.requires)) return undefined;
+			if (candidate.excludes !== undefined && text.includes(candidate.excludes)) return undefined;
 			if (candidate.legacyPatched && text.includes(candidate.legacyPatched)) return { ...candidate, path: join(target, candidate.file), text, status: "legacy" };
 			if (text.includes(candidate.marker)) return { ...candidate, path: join(target, candidate.file), text, status: "applied" };
 			if (text.includes(candidate.anchor)) return { ...candidate, path: join(target, candidate.file), text, status: "appliable" };

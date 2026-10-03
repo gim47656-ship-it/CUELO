@@ -209,6 +209,80 @@
   background: var(--bg-hover);
 }
 
+/* dock 줄에서 건너온 발주 카드: 잠깐 강조를 유지했다가 옅어지고, 그 Maker 행 제목은 남아 있는 동안 굵게. */
+.answer-dispatch-flash {
+  animation: answer-dispatch-flash 1.8s ease-out;
+}
+
+@keyframes answer-dispatch-flash {
+  0%,
+  35% {
+    background-color: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-line);
+  }
+}
+
+.answer-dispatch-row[data-focused] .answer-dispatch-name {
+  font-weight: 600;
+}
+
+/* 입력창 위 dock 한 줄. 모양은 같은 칸의 상태 줄(.run-status-line)을 따르고, 누를 수 있는 버튼이다. */
+.run-status-line.answer-dock-line {
+  align-items: center;
+  inline-size: 100%;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.run-status-line.answer-dock-line:hover {
+  background: var(--bg-hover);
+}
+
+.run-status-line.answer-dock-line:focus-visible {
+  outline: 2px solid var(--accent-ring, var(--accent));
+  outline-offset: 2px;
+}
+
+.answer-dock-counts {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.answer-dock-count {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  white-space: nowrap;
+}
+
+.answer-dock-count[data-phase="running"] {
+  color: var(--accent);
+  border-color: var(--accent-line, var(--border));
+}
+
+.answer-dock-count[data-phase="awaiting"] {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.answer-dock-title {
+  flex: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-dock-go {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
 /* 끝난 턴 요약: 카드보다 한 단계 조용하게, 테두리 없이 답변 아래 한 줄. */
 .answer-summary {
   margin-top: 6px;
@@ -379,10 +453,20 @@
     width: 44px;
     height: 44px;
   }
+
+  .run-status-line.answer-dock-line {
+    min-block-size: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .answer-chevron {
     transition: none;
+  }
+
+  .answer-dispatch-flash {
+    animation: none;
+    outline: 2px solid var(--accent-line);
+    outline-offset: 2px;
   }
 }

@@ -11,7 +11,7 @@ const EXPECTED = {
     name: 'cuelo',
     version: '0.8.1',
     distribution: 'cuelo',
-    coreVersion: '18.4.12',
+    coreVersion: '18.5.0',
 };
 
 // OMP core 18.4.12 `src/sdk.ts`: session-scoped AsyncJobManager for a process
@@ -177,7 +177,7 @@ function readNativePackage(target) {
         throw new Error(`unexpected native package ${packageJson.name}@${packageJson.version}`);
     }
     if (!build || build.distribution !== EXPECTED.distribution || build.coreVersion !== EXPECTED.coreVersion) {
-        throw new Error('native cueloBuild metadata does not match cuelo / core 18.4.12');
+        throw new Error('native cueloBuild metadata does not match cuelo / core 18.5.0');
     }
     return packageJson;
 }

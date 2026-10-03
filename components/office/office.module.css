@@ -189,14 +189,15 @@
   display: block;
 }
 
-/* 참여하지 않은 캐릭터의 이름표. 버튼이 아니고 상태 점도 없다 — 실행 중처럼 보이지 않게 흐리게 둔다.
-   휴게 구역에 일곱 명이 몰려도 덜 쌓이게 이름과 「쉬는 중」을 한 줄에 둔다. 안내는 가리킬 때만 아래 줄이다. */
+/* 참여하지 않은 캐릭터의 이름표. 버튼이 아니고 상태 점도 없다 — 실행 중처럼 보이지 않게 점선·흐린 글자로 둔다.
+   휴게 구역에 일곱 명이 모여도 덜 쌓이게 평소에는 이름만 보이고, 「참여 안 함」은 보조 기술에 읽히되 화면에는
+   가리킬 때만 이름 옆에 나온다. 안내는 그 아래 줄이다. */
 .restTag {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: var(--seed-dimension-x1);
-  padding: 1px var(--seed-dimension-x1_5, 6px) 2px;
+  padding: 0 var(--seed-dimension-x1_5, 6px) 1px;
   border: 1px dashed var(--seed-color-stroke-neutral-muted);
   background: color-mix(in srgb, var(--seed-color-bg-neutral-weak) 85%, transparent);
   color: var(--seed-color-fg-neutral-muted);
@@ -207,11 +208,21 @@
 }
 
 .restTag .bubbleName {
+  font-size: var(--seed-font-size-t1-static);
   font-weight: 400;
 }
 
 .restStatus {
   font-size: var(--seed-font-size-t1-static);
+}
+
+.restTag:not([data-hover="true"]) .restStatus {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .stageHint {

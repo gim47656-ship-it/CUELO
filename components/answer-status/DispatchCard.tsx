@@ -44,7 +44,7 @@ export function MakerStatusPair({ maker, st }: { maker: MakerPresentation; st: A
  * 「실행 상태 → Main 판정」 한 줄이 보이고, 펼치면 현재 단계·모델·판정 사유와 상세 패널 링크가 나온다.
  */
 export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
-  const { ledger, subagents, toolResults, onOpenPanel } = useContext(AnswerStatusContext);
+  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch } = useContext(AnswerStatusContext);
   const { st } = useAnswerStatusText();
   const [open, setOpen] = useState(false);
   const bodyId = useId();
@@ -66,7 +66,10 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
   }
 
   return (
-    <section className="answer-dispatch" aria-label={st("dispatch.title", { count: makers.length })}>
+    <section
+      className={focusedDispatch && makers.some((maker) => maker.member.key === focusedDispatch) ? "answer-dispatch answer-dispatch-flash" : "answer-dispatch"}
+      aria-label={st("dispatch.title", { count: makers.length })}
+    >
       <button
         type="button"
         className="answer-dispatch-toggle"
@@ -83,7 +86,7 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
       </button>
       <ul className="answer-dispatch-list" id={bodyId}>
         {makers.map((maker) => (
-          <li key={maker.member.key} className="answer-dispatch-row">
+          <li key={maker.member.key} className="answer-dispatch-row" data-focused={maker.member.key === focusedDispatch ? "" : undefined}>
             <div className="answer-dispatch-line">
               <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
               <MakerStatusPair maker={maker} st={st} />

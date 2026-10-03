@@ -201,6 +201,47 @@ for (const [label, args, code] of [
 	check(`${label}: 백업 생성 없음`, !existsSync(join(queryHome, ".omp/core-patch-backup")));
 }
 
+console.log("\n[5] 옛 판 적용본과 새 판 순정이 국소 문맥까지 같은 항목 — 같은 파일 조건(requires/excludes)");
+// 18.5.0 upstream 은 task/index.ts 의 preflight·launch 에 우리 18.4.12 패치와 바이트까지 같은 model 전달 줄을 넣었다.
+// 18.4.12 적용본을 순정 no-op 으로 오인하면 --revert 가 우리 줄을 못 지우고, 18.5.0 순정을 우리 적용본으로 오인하면
+// --revert 가 upstream 줄을 지운다. 두 판을 가르는 것은 같은 파일의 18.5.0 전용 import 다.
+const crossBody = (newImport: boolean) =>
+	`import {\n${newImport ? "\tinvalidModelSelectorReason,\n" : ""}\tresolveEffectiveSubagentPolicy,\n} from "./structured-subagent";\n` +
+	"\t\treturn resolveEffectiveSubagentPolicy({\n" +
+	"\t\t\t...(params.effort !== undefined ? { effort: params.effort } : {}),\n" +
+	"\t\t\t...(params.model !== undefined ? { model: params.model } : {}),\n" +
+	'\t\t\t...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),\n' +
+	"\t\t});\n" +
+	"\t\t\t\t...(params.effort !== undefined ? { effort: params.effort } : {}),\n" +
+	"\t\t\t\tsolutionSpace: params.solutionSpace,\n" +
+	"\t\t\t\t...(params.model !== undefined ? { model: params.model } : {}),\n" +
+	"\t\t\t\t...(params.tools?.length\n";
+for (const [label, newImport] of [["18.4.12 적용본", false], ["18.5.0 순정", true]] as const) {
+	const crossTarget = join(tmpRoot, `cross-${newImport ? "new" : "old"}`, "target");
+	const crossHome = join(tmpRoot, `cross-${newImport ? "new" : "old"}`, "home");
+	mkdirSync(join(crossTarget, "src/registry"), { recursive: true });
+	mkdirSync(join(crossTarget, "src/task"), { recursive: true });
+	mkdirSync(crossHome, { recursive: true });
+	writeFileSync(join(crossTarget, "src/registry/agent-registry.ts"), "");
+	const indexPath = join(crossTarget, "src/task/index.ts");
+	const before = crossBody(newImport);
+	writeFileSync(indexPath, before);
+	const env = { ...baseEnv, USERPROFILE: crossHome, HOME: crossHome, OMP_CORE_PATCH_TARGET: crossTarget };
+	const checked = run(["--check"], { env });
+	check(`${label}: task/index.ts 항목이 ambiguous 로 막히지 않는다`, !/ambiguous\s+src\/task\/index\.ts/.test(checked.out), checked.out.slice(-600));
+	const r = run(["--revert"], { env });
+	const after = readFileSync(indexPath, "utf8");
+	if (newImport) {
+		check(`${label}: --revert 는 upstream model 전달 줄을 지우지 않는다`, r.code === 0 && after === before, `code=${r.code} out=${r.out.slice(-600)}`);
+	} else {
+		check(
+			`${label}: --revert 는 우리 model 전달 줄 둘을 되돌린다(순정 no-op 으로 오인하지 않음)`,
+			r.code === 0 && !after.includes("{ model: params.model }") && after.includes("solutionSpace: params.solutionSpace,\n"),
+			`code=${r.code} out=${r.out.slice(-600)}`,
+		);
+	}
+}
+
 rmSync(tmpRoot, { recursive: true, force: true });
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
