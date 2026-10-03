@@ -17,7 +17,7 @@ const candidates = [
   { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
-  { profile: "NORMAL_DEEPSEEK", model: "opencode-go/deepseek-v4.1-flash", efforts: allStrengths },
+  { profile: "NORMAL_DEEPSEEK", model: "b-ai/deepseek-v4.1-flash", efforts: allStrengths },
   { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   { profile: "HARD_CODE_ASTRA", model: "openai-codex/gpt-6-astra", efforts: allStrengths },
 ];
@@ -1178,7 +1178,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_UI_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_SONNET: "openai-codex/gpt-6-sol",
-    NORMAL_DEEPSEEK: "opencode-go/deepseek-v4.1-flash",
+    NORMAL_DEEPSEEK: "b-ai/deepseek-v4.1-flash",
     NORMAL_SOL: "openai-codex/gpt-6.1-sol",
     HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
   };
@@ -1351,13 +1351,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         ...solSelections,
         ...opusBand.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, true]),
         ...opusOutside.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, false]),
-        ["opencode-go/deepseek-v4.1-flash:high", true],
+        ["b-ai/deepseek-v4.1-flash:high", true],
       ],
       // HARD 조각: Opus는 HARD 구간(high~max)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
       HARD: [
         ["anthropic/claude-opus-5-5:medium", false], ["anthropic/claude-opus-5-5:high", true],
         ["anthropic/claude-opus-5-5:xhigh", true], ["anthropic/claude-opus-5-5:max", true],
-        ["opencode-go/deepseek-v4.1-flash:xhigh", false],
+        ["b-ai/deepseek-v4.1-flash:xhigh", false],
         ...solSelections,
       ],
     };
@@ -1465,12 +1465,12 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const deepseek = candidates;
     const build = (providers: Record<string, unknown[]>) => harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "opencode-go/deepseek-v4.1-flash": "deepseek" },
+      families: { ...families, "b-ai/deepseek-v4.1-flash": "deepseek" },
       quota: async () => ({ state: "observed", observedAt: 1, providers }),
     });
 
     // 1) Luna가 사용 가능하면 대안 여유가 더 커도(0.8 대 0.2) primary NORMAL을 유지한다.
-    const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], "opencode-go": [account(0.2)] });
+    const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], "b-ai": [account(0.2)] });
     const first = await usable.prepareBatch("한도 배분", [usable.task], {} as never);
     expect(first.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "observed", profile: "NORMAL_SONNET" } });
     expect(await usable.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
@@ -1479,7 +1479,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
 
     // 2) Luna provider 계정이 실제로 소진(limitReached)되면 사용 가능한 NORMAL 대안을 추천한다.
     const spent = build({
-      "openai-codex": [account(1, { limitReached: true })], anthropic: [account(0.2)], "opencode-go": [account(0.2)],
+      "openai-codex": [account(1, { limitReached: true })], anthropic: [account(0.2)], "b-ai": [account(0.2)],
     });
     const second = await spent.prepareBatch("한도 배분", [spent.task], {} as never);
     expect(second.routes[0]).toMatchObject({ profile: "NORMAL_DEEPSEEK", normalAllocation: { state: "observed", profile: "NORMAL_DEEPSEEK" } });
@@ -1487,7 +1487,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 3) 미관측은 소진으로 간주하지 않는다. primary를 유지한다.
     const blind = harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "opencode-go/deepseek-v4.1-flash": "deepseek" },
+      families: { ...families, "b-ai/deepseek-v4.1-flash": "deepseek" },
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "관측 실패" }),
     });
     const third = await blind.prepareBatch("한도 배분", [blind.task], {} as never);
