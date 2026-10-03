@@ -764,6 +764,7 @@
       "riskIsOrthogonal": "main-intervention-follows-code-nature-integration-risk-and-evidence-never-model-grade-or-effort",
       "failure": "judge-unavailable-main-uses-the-same-criteria-without-another-model-call",
       "retry": "failure-alone-never-triggers-respawn-or-higher-effort-new-evidence-and-a-changed-plan-are-required",
+      "reworkEscalation": "user-decision-2026-10-04-when-rework-is-dispatched-as-a-new-attempt-and-an-observed-signal-exists-same-check-fails-again-for-the-same-cause-after-a-fix-or-main-review-confirms-a-missed-cause-or-acceptance-criterion-or-main-added-scope-to-that-maker-while-it-ran-or-the-maker-itself-reported-being-stuck-or-unsure-main-raises-the-same-candidate-one-level-within-its-allowedEfforts-never-for-rework-count-elapsed-time-or-failure-count-alone-never-mid-run-at-the-ceiling-revisit-model-split-or-brief-instead-and-record-the-signal-in-the-rework-verdict-reason-and-routing-reason",
       "parallelism": "slice-count-follows-genuine-independence-never-split-to-fill-slots",
       "validationExecution": "the-change-owner-runs-checks-main-for-routine-maker-for-delegated-work"
     },

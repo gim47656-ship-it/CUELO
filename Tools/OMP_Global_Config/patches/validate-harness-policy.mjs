@@ -580,6 +580,7 @@ const requiredPolicyShapes = [
   ["routing.effortSelection.criteria.max", "string"],
   ["routing.effortSelection.failure", "string"],
   ["routing.effortSelection.retry", "string"],
+  ["routing.effortSelection.reworkEscalation", "string"],
   ["routing.effortSelection.parallelism", "string"],
   ["routing.effortSelection.validationExecution", "string"],
   ["mainLane.workerReview.steeringCheckpoint.when", "string"],
@@ -659,7 +660,7 @@ const preEditContractKeys = [
 const highRiskFinalReviewKeys = ["added", "unapproved"];
 const effortSelectionKeys = [
   "owner", "mechanism", "decidedAt", "gradingInput", "criteriaUse", "criteria", "riskIsOrthogonal",
-  "failure", "retry", "parallelism", "validationExecution",
+  "failure", "retry", "reworkEscalation", "parallelism", "validationExecution",
 ];
 const steeringCheckpointKeys = [
   "when",
