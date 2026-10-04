@@ -3041,6 +3041,25 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	}`,
 	},
 	{
+		// 2026-10-04 실측: Maker 가 측정 job(bash async)을 띄우고 턴을 끝낸 지 task.agentIdleTtlMs(기본 420000ms)
+		// 뒤 park() 가 세션을 dispose 했다. park 는 대기 중인 async 작업을 보지 않아 job 완료 알림이 전달되지 않고
+		// 남은 작업도 끊겼다(upstream 18.6.0 도 같다). 커밋 직전 재확인에서 작업이 남아 있으면 dispose 하지 않고
+		// idle 타이머를 다시 건다. job 은 실행 한도, 남은 전달·yield 큐는 idle flush 로 끝나므로 영구 잔류는 없다.
+		file: "src/registry/agent-lifecycle.ts",
+		marker: "// HANSE: keep sessions with pending async work",
+		anchor: `				if (this.#adopted.get(id)?.ref !== ref) return;
+
+				// Commit: detach + parked *before* dispose`,
+		patched: `				if (this.#adopted.get(id)?.ref !== ref) return;
+				// HANSE: keep sessions with pending async work
+				if (session.hasPendingAsyncWork()) {
+					this.#armTimer(id, adopted);
+					return;
+				}
+
+				// Commit: detach + parked *before* dispose`,
+	},
+	{
 		file: "src/sdk.ts",
 		marker: "lifecycle.dispose(undefined, registeredAgentRef)",
 		anchor: `						await AgentLifecycleManager.global().dispose();`,
@@ -6047,6 +6066,86 @@ function koreanStem(token: string): string {
 		marker: "// HANSE: deliberate learn/retain weight",
 		anchor: "\ttool: 0.5,\n\tfalse: 0,\n",
 		patched: "\t// HANSE: deliberate learn/retain weight\n\ttool: 1.0,\n\tfalse: 0,\n",
+	},
+	{
+		// (4) 2026-10-04 2차 측정(재임베딩 복사본, 190문항): queryTime 이 없는 일반 회상에서 72시간 반감 recency 배율
+		// (0.7~1.0)이 기본 점수 차이보다 커서, 1위를 놓친 정답 101건 중 89건이 더 최근의 덜 관련된 교훈에 밀렸다(질문
+		// hit@1 21.1%). 일반 질의는 배율을 쓰지 않는다(53.3%, 영어 fixture MRR 0.878). 시간 질의(queryTime 이 있는
+		// temporalBoost 경로)와 recency_score 필드 값은 그대로다. 교훈 갱신은 learn topic 이 같은 행을 고쳐 쓰고,
+		// invalidate·superseded 행은 buildWhere 가 이미 빼므로 옛 판이 새 판을 앞서지 않는다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: no recency multiplier for plain recall",
+		anchor: "\tlet score = baseScore * (0.7 + 0.3 * decay);\n",
+		patched: "\t// HANSE: no recency multiplier for plain recall\n\tlet score = options.queryTime == null ? baseScore : baseScore * (0.7 + 0.3 * decay);\n",
+	},
+	{
+		// (5) working 기억의 dense 가중이 0.2 로 고정돼(MNEMOPI_VEC_WEIGHT 는 episodic 분기만 쓴다) 어휘 점수가 순위를
+		// 거의 정했다. 재임베딩 복사본 190문항에서 0.8 이 질문 MRR 0.565→0.644, 작업 hit@8 61.1→67.8(접두 포함)로
+		// 가장 고르게 올랐다(1.0 은 질문만 오르고 작업 hit@8 이 58.9 로 떨어졌다).
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: working dense weight 0.8",
+		anchor: "\t\tif (candidate.signals.dense > 0) baseScore = baseScore * 0.8 + candidate.signals.dense * 0.2;\n",
+		patched: "\t\t// HANSE: working dense weight 0.8\n\t\tif (candidate.signals.dense > 0) baseScore = baseScore * 0.2 + candidate.signals.dense * 0.8;\n",
+	},
+	{
+		// (6) 2026-10-04 실측: fastembed 3.0.0 업그레이드(18.5.1) 뒤 같은 이름의 multilingual-e5-large 가 다른 벡터를
+		// 냈다(옛 저장 벡터와 새 벡터 코사인 0.85~0.90, 저장 벡터 순위 hit@1 5.6%). stamp 가 모델 이름뿐이라
+		// reconcileEmbeddingModel 이 재구축하지 않았다. 로컬 fastembed 모델의 stamp 에 runtime versionKey 와 e5 접두
+		// 방식을 붙여, 둘 중 하나가 바뀌면 기존 wipe→재구축 경로가 돈다. 주입 provider·API 모델 stamp 는 그대로다.
+		// e5 는 query:/passage: 접두를 전제로 학습됐다(접두+dense 0.8: 질문 58.9/77.8, 작업 hit@8 67.8).
+		file: "../pi-mnemopi/src/core/embeddings.ts",
+		marker: "// HANSE: local embedding fingerprint and e5 prefixes",
+		anchor: "export function currentEmbeddingModel(): string {\n\treturn defaultModel();\n}\n",
+		patched: `// HANSE: local embedding fingerprint and e5 prefixes
+const E5_PREFIX_STAMP = "e5-prefix-v1";
+
+/** The local fastembed model in use (no injected provider, not an API model), or null. */
+function localEmbeddingModel(): string | null {
+	if (resolveEmbeddingProvider(activeEmbeddingOptions()?.provider) !== undefined || providerOverride !== null) return null;
+	const model = defaultModel();
+	return isApiModel(model) ? null : model;
+}
+
+function usesE5Prefix(): boolean {
+	const model = localEmbeddingModel();
+	return model !== null && /(^|[/_-])e5([-_]|$)/i.test(model);
+}
+
+/** Adds the e5 retrieval prefix for local e5 models; other models embed the text as-is. */
+export function e5Prefixed(kind: "query" | "passage", texts: readonly string[]): readonly string[] {
+	return usesE5Prefix() ? texts.map(text => \`\${kind}: \${text}\`) : texts;
+}
+
+export function currentEmbeddingModel(): string {
+	const model = localEmbeddingModel();
+	if (model === null) return defaultModel();
+	return \`\${model}#\${fastembedRuntimeInstallPlan().versionKey}\${usesE5Prefix() ? \`#\${E5_PREFIX_STAMP}\` : ""}\`;
+}
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/embeddings.ts",
+		marker: "import { fastembedRuntimeInstallPlan, loadFastembed } from",
+		anchor: 'import { loadFastembed } from "./fastembed-runtime";\n',
+		patched: 'import { fastembedRuntimeInstallPlan, loadFastembed } from "./fastembed-runtime";\n',
+	},
+	{
+		file: "../pi-mnemopi/src/core/embeddings.ts",
+		marker: 'await embed(e5Prefixed("query", [text]))',
+		anchor: "\tconst vectors = await embed([text]);\n",
+		patched: '\tconst vectors = await embed(e5Prefixed("query", [text]));\n',
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/helpers.ts",
+		marker: 'await embed(e5Prefixed("passage",',
+		anchor: "\t\tconst matrix = await embed(items.map(item => item.content));\n",
+		patched: '\t\tconst matrix = await embed(e5Prefixed("passage", items.map(item => item.content)));\n',
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/helpers.ts",
+		marker: "import { currentEmbeddingModel, e5Prefixed, embed } from",
+		anchor: 'import { currentEmbeddingModel, embed } from "../embeddings";\n',
+		patched: 'import { currentEmbeddingModel, e5Prefixed, embed } from "../embeddings";\n',
 	},
 	{
 		// 2026-09-29 실측: 기억 임베딩 재구축(모델 변경·중단 뒤 재개)이 128건 묶음을 한꺼번에 worker 에

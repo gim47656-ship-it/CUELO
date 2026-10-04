@@ -30,6 +30,7 @@ import { type TodoPhase } from "@/lib/todo-state";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
 import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
 import { buildDeliveryRows, deliveryReducer, userMessageDeliveryKind, userMessageImageCount, userMessageText } from "@/lib/answer-status/delivery";
+import { mergeSubagentSnapshots } from "@/lib/subagent-snapshots";
 import {
   COMMAND_OUTPUT_CUSTOM_TYPE,
   isLocalCommandEntryId,
@@ -186,21 +187,6 @@ function sameTodoPhases(left: TodoPhase[], right: TodoPhase[]): boolean {
     }
   }
   return true;
-}
-// State refreshes contain only live SDK entries; merge terminal frames into a bounded history.
-const MAX_SUBAGENT_HISTORY = 128;
-
-function mergeSubagentSnapshots(current: SubagentSnapshot[], incoming: SubagentSnapshot[]): SubagentSnapshot[] {
-  const byId = new Map(current.map((subagent) => [subagent.id, subagent]));
-  for (const subagent of incoming) byId.set(subagent.id, subagent);
-  const snapshots = [...byId.values()];
-  const active = snapshots
-    .filter((subagent) => subagent.status === "pending" || subagent.status === "running")
-    .sort((left, right) => left.index - right.index || left.id.localeCompare(right.id));
-  const finished = snapshots
-    .filter((subagent) => subagent.status !== "pending" && subagent.status !== "running")
-    .sort((left, right) => right.lastUpdate - left.lastUpdate || left.id.localeCompare(right.id));
-  return [...active, ...finished].slice(0, MAX_SUBAGENT_HISTORY);
 }
 
 type ExtensionUiDialogRequest = Extract<

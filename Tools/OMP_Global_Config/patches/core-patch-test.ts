@@ -2556,6 +2556,105 @@ console.log("\n[23b] Mnemopi 한국어 회수 — 조사 어간, 원본 살아 �
 	}
 }
 
+// 2026-10-04 2차 측정: queryTime 없는 일반 회상에서 72시간 반감 recency 배율(0.7~1.0)이 기본 점수 차이보다 커서
+// 관련도가 더 높은 옛 교훈이 최근 교훈 아래로 밀렸다(질문 hit@1 21.1%, 배율 제거 시 53.3%). 두 교훈은 질의 어휘가
+// 5개 중 5개·4개로 가까워, 배율이 있으면 최근 쪽이 이기고 없으면 관련도 높은 쪽이 이긴다.
+console.log("\n[23c] Mnemopi 회수 — 관련도 높은 옛 교훈이 최근 교훈보다 앞서고, 시간 질의는 최근을 끌어올린다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/index.ts`);
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-recency-"));
+	const bank = "recency";
+	const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, embeddings: false, llm: false, reconcile: false });
+	const recallIds = async (query: string, options: Record<string, unknown> = {}) =>
+		((await memory.recallEnhanced(query, 8, { includeFacts: false, channelId: bank, ...options })) as Array<{ id: string }>).map(result => result.id);
+	try {
+		const old = memory.remember("시리얼 포트 재연결은 핸들을 닫은 뒤 다시 연다. 먼저 열면 접근 거부가 난다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		const recent = memory.remember("시리얼 포트 재연결 접근 로그는 매일 보관한다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		memory.beam.db.run("UPDATE working_memory SET timestamp = ? WHERE id = ?", [new Date(Date.now() - 30 * 86_400_000).toISOString(), old]);
+		const ranked = await recallIds("시리얼 포트 재연결 접근 거부");
+		check("관련도 높은 30일 전 교훈이 최근 교훈보다 앞선다", ranked[0] === old, `ids=${ranked.join(",")} recent=${recent}`);
+		const timed = await recallIds("시리얼", { queryTime: new Date().toISOString(), temporalWeight: 0.5 });
+		check("시간 질의(queryTime)는 여전히 최근 교훈을 끌어올린다", timed.indexOf(recent) >= 0 && (timed.indexOf(old) < 0 || timed.indexOf(recent) < timed.indexOf(old)), `ids=${timed.join(",")}`);
+	} finally {
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
+// 2026-10-04 2차 측정: working 기억의 dense 가중이 0.2 로 고정돼 어휘가 더 겹치는 기억이 의미가 같은 기억을
+// 눌렀다. 질의와 같은 벡터를 가진 semantic(어휘 일부만 겹침)이 어휘만 다 겹치는 lexicalOnly 를 앞서야 한다.
+console.log("\n[23d] Mnemopi 회수 — working 기억은 dense 유사도를 0.8 가중으로 반영한다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { setEmbeddingProviderForTests, resetEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+	const query = "포트 재연결 순서";
+	const lexicalOnly = "포트 재연결 순서 표는 위키에 둔다.";
+	const semantic = "연결을 다시 열기 전에 포트를 먼저 닫는다.";
+	setEmbeddingProviderForTests({
+		embed: (texts: readonly string[]) => (async function* () {
+			yield texts.map(text => (text === lexicalOnly ? [0.1, 1, 0] : [1, 0, 0]));
+		})(),
+	});
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-dense-"));
+	const bank = "dense";
+	const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, llm: false, reconcile: false });
+	try {
+		const lexicalId = memory.remember(lexicalOnly, { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		const semanticId = memory.remember(semantic, { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		await memory.beam.flushExtractions();
+		const ranked = ((await memory.recallEnhanced(query, 8, { includeFacts: false, channelId: bank })) as Array<{ id: string }>).map(result => result.id);
+		check("질의와 같은 벡터의 기억이 어휘만 겹치는 기억보다 앞선다", ranked[0] === semanticId && ranked.includes(lexicalId), `ids=${ranked.join(",")} semantic=${semanticId}`);
+	} finally {
+		resetEmbeddingProviderForTests();
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
+// 2026-10-04 실측: 같은 이름의 multilingual-e5-large 가 fastembed 3.0.0 뒤 다른 벡터를 냈는데 stamp 가 모델
+// 이름뿐이라 재구축되지 않았다. e5 는 query:/passage: 접두를 전제로 한다. 실제 로컬 모델 경로(초기화 함수만 fixture)를 태운다.
+console.log("\n[23e] Mnemopi 임베딩 — 로컬 e5 는 접두를 붙이고, stamp 에 fastembed 버전·접두 방식이 들어가며, 바뀌면 재구축한다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { setLocalModelInitializerForTests, resetEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+	const { fastembedRuntimeInstallPlan } = await import(`${CORE}/../../pi-mnemopi/src/core/fastembed-runtime.ts`);
+	const model = "intfloat/multilingual-e5-large";
+	const seen: string[] = [];
+	setLocalModelInitializerForTests(async () => ({
+		embed: (texts: string[]) => (async function* () {
+			seen.push(...texts);
+			yield texts.map(() => [1, 0, 0]);
+		})(),
+	}));
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-e5-"));
+	const bank = "e5";
+	const open = (reconcile: boolean) => new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, llm: false, reconcile, embeddings: { model } });
+	const stamps = (memory: { conn: { query(sql: string): { all(): unknown[] } } }) =>
+		(memory.conn.query("SELECT model FROM memory_embeddings ORDER BY memory_id").all() as Array<{ model: string }>).map(row => row.model);
+	const expected = `${model}#${fastembedRuntimeInstallPlan().versionKey}#e5-prefix-v1`;
+	let memory = open(false);
+	try {
+		memory.remember("포트를 닫은 뒤 다시 연다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		memory.remember("재연결 로그는 매일 보관한다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		await memory.beam.flushExtractions();
+		await memory.recallEnhanced("포트 재연결", 8, { includeFacts: false, channelId: bank });
+		check("문서는 passage:, 질의는 query: 로 임베딩한다", seen.includes("passage: 포트를 닫은 뒤 다시 연다.") && seen.includes("query: 포트 재연결"), JSON.stringify(seen));
+		check("stamp 에 fastembed versionKey 와 접두 방식이 들어간다", JSON.stringify(stamps(memory)) === JSON.stringify([expected, expected]), JSON.stringify(stamps(memory)));
+		for (const stale of [model, `${model}#${fastembedRuntimeInstallPlan().versionKey}`]) {
+			memory.conn.run("UPDATE memory_embeddings SET model = ?", [stale]);
+			memory.close();
+			seen.length = 0;
+			memory = open(true);
+			await memory.beam.flushExtractions();
+			check(`옛 stamp(${stale.includes("#") ? "접두 표식 없음" : "모델 이름만"}) 은 열 때 전부 다시 임베딩한다`, seen.filter(text => text.startsWith("passage: ")).length === 2 && JSON.stringify(stamps(memory)) === JSON.stringify([expected, expected]), `seen=${JSON.stringify(seen)} stamps=${JSON.stringify(stamps(memory))}`);
+		}
+	} finally {
+		resetEmbeddingProviderForTests();
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
 // 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 자기 작업 brief 로 회상하지 않고 부모의 첫 턴
 // 회상만 물려받았다. 실제 backend.start(taskDepth 1) → beforeAgentStartPrompt → buildDeveloperInstructions
 // 경로를 태운다. 부모 state 는 구조만 맞춘 fixture 이며 회상 저장소(scoped)는 child 가 그대로 공유한다.
@@ -3172,6 +3271,28 @@ console.log("\n[32] extension async job snapshot — options 를 끝까지 전�
 		);
 	}
 	await session.dispose();
+}
+
+// 2026-10-04 실측: Maker 가 async job 을 띄우고 턴을 끝낸 뒤 idle TTL 이 지나자 park() 가 세션을 dispose 해
+// job 완료 알림과 남은 작업이 사라졌다. 진짜 AgentRegistry·AgentLifecycleManager 의 타이머 → park 경로를 태우고,
+// 세션은 park 가 읽는 hasPendingAsyncWork·dispose 만 있는 fixture 다.
+console.log("\n[33] 서브에이전트 idle TTL — 대기 중인 async 작업이 있으면 park(dispose)하지 않는다");
+{
+	const { AgentLifecycleManager } = await import(`${CORE}/registry/agent-lifecycle.ts`);
+	const lifeReg = new AgentRegistry();
+	const life = new AgentLifecycleManager(lifeReg);
+	let pendingWork = true;
+	let disposed = 0;
+	const session = { hasPendingAsyncWork: () => pendingWork, dispose: async () => { disposed += 1; } };
+	const ref = lifeReg.register({ id: "Worker", displayName: "Worker", kind: "sub", parentId: MAIN_AGENT_ID, status: "idle", session });
+	const ttl = 30;
+	life.adopt("Worker", { idleTtlMs: ttl }, ref);
+	await Bun.sleep(ttl * 4);
+	check("async 작업이 남은 세션은 TTL 뒤에도 idle 이고 dispose 되지 않는다", ref.status === "idle" && ref.session === session && disposed === 0, `status=${ref.status} disposed=${disposed}`);
+	pendingWork = false;
+	await Bun.sleep(ttl * 4);
+	check("작업이 끝나면 다음 TTL 에 parked 가 되고 dispose 된다", ref.status === "parked" && !ref.session && disposed === 1, `status=${ref.status} disposed=${disposed}`);
+	await life.dispose();
 }
 
 console.log(`\n결과: ${pass} pass, ${fail} fail`);

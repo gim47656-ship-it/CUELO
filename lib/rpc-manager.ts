@@ -47,6 +47,7 @@ import type { SlashCommandInfo } from "./omp-types";
 import { recordRuntimeActivity } from "./update-maintenance";
 import { GoalModeController } from "./goal-mode";
 import { registerRootReviver } from "./subagent-revive";
+import { mergeSubagentSnapshot } from "./subagent-snapshots";
 import { isThinkingCeiling, latestThinkingCeiling, THINKING_CEILING_ENTRY_TYPE } from "./thinking-ceiling";
 import type {
   AgentSessionLike,
@@ -745,7 +746,7 @@ export class AgentSessionWrapper {
   }
 
   private rememberSubagentSnapshot(snapshot: SubagentSnapshot): void {
-    this.subagentHistory.set(snapshot.id, snapshot);
+    this.subagentHistory.set(snapshot.id, mergeSubagentSnapshot(this.subagentHistory.get(snapshot.id), snapshot));
     if (this.subagentHistory.size <= MAX_SUBAGENT_HISTORY) return;
     const removable = [...this.subagentHistory.values()]
       .filter((entry) => entry.status !== "pending" && entry.status !== "running")
@@ -812,9 +813,9 @@ export class AgentSessionWrapper {
       this.rememberSubagentSnapshot(snapshot);
     }
     const snapshots = new Map(this.subagentHistory);
+    // A live entry the bounded history had to evict is still listed.
     for (const live of this.subagents.getSubagents()) {
-      const snapshot = live as unknown as SubagentSnapshot;
-      snapshots.set(snapshot.id, snapshot);
+      if (!snapshots.has(live.id)) snapshots.set(live.id, live as unknown as SubagentSnapshot);
     }
     return [...snapshots.values()].sort((left, right) => {
       const leftActive = left.status === "pending" || left.status === "running";
