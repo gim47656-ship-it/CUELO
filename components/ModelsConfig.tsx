@@ -8,6 +8,7 @@ import { useI18n } from "@/hooks/useI18n";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import { openExternal } from "@/lib/open-external";
+import { AccountAvatar } from "./workspace/AccountAvatar";
 import {
   serializeHeaderRows,
   setCompatBool,
@@ -1179,12 +1180,51 @@ function ModelDetail({
 
 // ── OAuth detail ──────────────────────────────────────────────────────────────
 
-function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefresh: () => void }) {
+/**
+ * 사이드바 사용량에서 「재로그인」을 눌러 열었을 때의 대상 계정. 얼굴·별칭·가린 식별자로 어느
+ * 계정으로 로그인해야 하는지 보여 주며, 원문 식별자나 토큰은 담지 않는다.
+ */
+export interface OAuthReloginTarget {
+  provider: string;
+  alias: string;
+  seed: number;
+  masked: string;
+  /** provider 안의 안정 identity. 로그인 뒤 같은 계정이 돌아왔는지 이 값으로만 확인한다. */
+  accountKey?: string;
+  /** 사용량 보고서가 준 사용자용 사유. */
+  reason: string;
+}
+
+/** 로그인 뒤 사용량을 다시 읽어 확인한 대상 계정의 상태. */
+export type OAuthReloginOutcome = "checking" | "recovered" | "still-failing" | "unknown";
+
+const RELOGIN_OUTCOME_KEYS = {
+  checking: "relogin.checking",
+  recovered: "relogin.recovered",
+  "still-failing": "relogin.stillFailing",
+  unknown: "relogin.unknown",
+} as const satisfies Record<OAuthReloginOutcome, string>;
+
+interface OAuthReloginContext {
+  target: OAuthReloginTarget;
+  outcome: OAuthReloginOutcome | null;
+  onLoginSucceeded: () => void;
+}
+
+function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider; onRefresh: () => void; relogin?: OAuthReloginContext }) {
+  const onLoginSucceeded = relogin?.onLoginSucceeded;
   const [loginState, setLoginState] = useState<OAuthLoginState>({ phase: "idle" });
   const { t } = useI18n();
   const [inputValue, setInputValue] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const loginButtonRef = useRef<HTMLButtonElement>(null);
+
+  // 재로그인 대상으로 열렸으면 포커스를 그 계정의 로그인 버튼에 둔다. 로그인은 사용자가 누를 때만 시작한다.
+  const reloginOpened = relogin !== undefined;
+  useEffect(() => {
+    if (reloginOpened) loginButtonRef.current?.focus();
+  }, [reloginOpened]);
 
   useEffect(() => {
     if (loginState.phase === "auth" || loginState.phase === "prompt") {
@@ -1241,6 +1281,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         es.close();
         setLoginState({ phase: "success" });
         onRefresh();
+        onLoginSucceeded?.();
       } else if (data.type === "error") {
         es.close();
         setLoginState({ phase: "error", message: data.message! });
@@ -1253,7 +1294,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
       es.close();
       setLoginState((prev) => prev.phase === "success" ? prev : { phase: "error", message: "Connection lost" });
     };
-  }, [provider.id, onRefresh]);
+  }, [provider.id, onRefresh, onLoginSucceeded]);
 
   const handleLogout = useCallback(async () => {
     await fetch(`/api/auth/logout/${encodeURIComponent(provider.id)}`, { method: "POST" });
@@ -1315,11 +1356,39 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         </div>
       </div>
 
+      {/* 재로그인 대상. 오류는 해결될 때까지 이 자리에 남고, 어느 계정으로 로그인해야 하는지를
+          얼굴·별칭·가린 식별자로 보여 준다. */}
+      {relogin && (
+        <div
+          role="note"
+          aria-label={t("relogin.title")}
+          style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-panel)" }}
+        >
+          <AccountAvatar seed={relogin.target.seed} size={32} provider={relogin.target.provider} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("relogin.title")}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", overflowWrap: "anywhere" }}>
+              {relogin.target.alias}
+              {relogin.target.masked && (
+                <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                  {relogin.target.masked}
+                </span>
+              )}
+            </span>
+            {relogin.target.reason && (
+              <span style={{ fontSize: 12, color: "var(--seed-color-fg-critical-contrast)", lineHeight: 1.5, overflowWrap: "anywhere" }}>{relogin.target.reason}</span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Status */}
       <div style={{ minHeight: 48 }}>
         {loginState.phase === "idle" && (
           <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-             {provider.loggedIn ? "Already connected. You can re-login or disconnect." : `Connect your ${provider.name} account.`}
+             {relogin
+               ? t("relogin.guide", { action: provider.loggedIn ? t("i18n.relogin") : t("i18n.login") })
+               : provider.loggedIn ? "Already connected. You can re-login or disconnect." : `Connect your ${provider.name} account.`}
           </p>
         )}
         {loginState.phase === "connecting" && (
@@ -1397,9 +1466,20 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         {loginState.phase === "progress" && (
           <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{loginState.message}</p>
         )}
-        {loginState.phase === "success" && (
+        {loginState.phase === "success" && (relogin ? (
+          // 로그인 성공은 대상 계정의 복구가 아니다. 다른 계정으로 로그인했을 수 있으므로 사용량을
+          // 다시 읽어 같은 계정이 돌아왔을 때만 복구라고 말한다.
+          <div role="status" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{t("relogin.done")}</p>
+            {relogin.outcome && (
+              <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: relogin.outcome === "recovered" ? "var(--seed-color-fg-positive-contrast)" : relogin.outcome === "still-failing" ? "var(--seed-color-fg-critical-contrast)" : "var(--text-muted)" }}>
+                {t(RELOGIN_OUTCOME_KEYS[relogin.outcome], { account: relogin.target.alias })}
+              </p>
+            )}
+          </div>
+        ) : (
              <p style={{ margin: 0, fontSize: 12, color: "#4ade80" }}>{t("i18n.connectedSuccessfully")}</p>
-        )}
+        ))}
         {loginState.phase === "error" && (
           <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{loginState.message}</p>
         )}
@@ -1417,12 +1497,13 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         ) : (
           <>
             <button
+              ref={loginButtonRef}
               onClick={handleLogin}
               style={{ padding: "5px 14px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: 5, color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
             >
                {provider.loggedIn ? t("i18n.relogin") : t("i18n.login")}
             </button>
-            {provider.loggedIn && (
+            {provider.loggedIn && !relogin && (
               <button
                 onClick={handleLogout}
                 style={{ padding: "5px 12px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", cursor: "pointer", fontSize: 12 }}
@@ -1747,7 +1828,14 @@ function AddProviderPicker({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged }: { cwd?: string | null; onClose: () => void; embedded?: boolean; onModelsChanged?: () => void }) {
+export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, relogin }: {
+  cwd?: string | null;
+  onClose: () => void;
+  embedded?: boolean;
+  onModelsChanged?: () => void;
+  /** 사이드바 사용량의 재로그인으로 열렸을 때: 그 provider의 OAuth 상세를 대상 계정 안내와 함께 연다. */
+  relogin?: OAuthReloginContext;
+}) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
@@ -1755,7 +1843,9 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged }
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
-  const [selection, setSelection] = useState<Selection | null>({ type: "roles" });
+  const [selection, setSelection] = useState<Selection | null>(
+    relogin ? { type: "oauth", providerId: relogin.target.provider } : { type: "roles" },
+  );
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [apiKeyProviders, setApiKeyProviders] = useState<ApiKeyProvider[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1918,7 +2008,14 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged }
     if (selection.type === "oauth") {
       const p = oauthProviders.find((p) => p.id === selection.providerId);
       if (!p) return null;
-      return <OAuthDetail key={p.id} provider={p} onRefresh={refreshAuthProviders} />;
+      return (
+        <OAuthDetail
+          key={p.id}
+          provider={p}
+          onRefresh={refreshAuthProviders}
+          relogin={relogin?.target.provider === p.id ? relogin : undefined}
+        />
+      );
     }
     if (selection.type === "apikey") {
       const p = apiKeyProviders.find((p) => p.id === selection.providerId);
@@ -1958,7 +2055,14 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged }
   return (
     <>
     <div style={{ position: embedded ? "relative" : "fixed", inset: embedded ? undefined : 0, width: "100%", height: "100%", zIndex: embedded ? undefined : 1000, background: embedded ? "transparent" : "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={(e) => { if (!embedded && e.target === e.currentTarget) onClose(); }}>
+      onClick={(e) => { if (!embedded && e.target === e.currentTarget) onClose(); }}
+      {...(embedded ? {} : {
+        role: "dialog",
+        "aria-modal": true,
+        "aria-label": t("common.models"),
+        // 앱의 전역 단축키는 이 대화상자가 열린 동안 꺼진다. 닫기는 여기서 직접 받는다.
+        onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } },
+      })}>
       <div style={{ width: embedded ? "100%" : isMobile ? "calc(100vw - 16px)" : 860, maxWidth: embedded ? "none" : "calc(100vw - 16px)", height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "78vh", maxHeight: embedded ? "none" : "calc(100dvh - 16px)", background: "var(--bg)", border: embedded ? "none" : "1px solid var(--border)", borderRadius: embedded ? 0 : 10, display: "flex", flexDirection: "column", boxShadow: embedded ? "none" : "0 8px 32px rgba(0,0,0,0.18)", overflow: "hidden" }}>
 
         {/* Header */}
@@ -1967,7 +2071,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged }
              <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("common.models")}</span>
             <code style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>~/.omp/agent/models.yml</code>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
+          <button onClick={onClose} aria-label={t("i18n.close")} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
         </div>
 
         {/* Body */}

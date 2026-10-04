@@ -176,6 +176,34 @@ test('quota and reset failures retain account rows without leaking raw credentia
     assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
 
+test('an auth-failed account keeps its seat as a re-login row; the other account keeps its seat and manual OFF', async () => {
+    const { controls, storage, entries } = fixture('anthropic');
+    // 자격 1(자리 0)이 refresh 만료로 비활성화됐다. core의 활성 snapshot에는 자격 2만 남는다.
+    entries.splice(0, 1);
+    storage.credentials.oauthSeatIds = provider => (provider === 'anthropic' ? [1, 2] : []);
+    storage.credentials.listDisabled = async () => [
+        { id: 1, provider: 'anthropic', type: 'oauth', email: 'same@example.test', accountId: 'workspace-1',
+            cause: 'oauth refresh failed: Error: 400 {"error":"invalid_grant","error_description":"Refresh token expired REFRESH_SECRET"}' },
+        // 교체·로그아웃 tombstone은 자리가 없어 화면에 나오지 않는다.
+        { id: 7, provider: 'anthropic', type: 'oauth', accountId: 'replaced', cause: 'replaced by newer credential' },
+    ];
+    storage.blocks.upsert({ credentialId: 2, providerKey: 'anthropic:oauth', blockScope: '', blockedUntilMs: MANUAL_UNTIL_MS });
+    const result = await controls.enrich({ reports: [report(2, 'anthropic')] });
+    const rows = result.reports.map(row => pick(row));
+    assert.deepEqual(rows, [
+        { credentialId: 2, accountRole: undefined, oauthPosition: 1, disabled: true, authError: undefined, accountKey: 'anthropic:2' },
+        { credentialId: 1, accountRole: 'auth-error', oauthPosition: 0, disabled: undefined, accountKey: 'anthropic:1',
+            authError: { code: 'refresh_expired', message: '로그인이 만료되었습니다. 다시 로그인하세요.', reloginRequired: true } },
+    ]);
+    assert.deepEqual(result.reports[1].limits, []);
+    assert.equal(JSON.stringify(result).includes('SECRET'), false);
+    assert.equal(JSON.stringify(result).includes('invalid_grant'), false);
+    function pick(row) {
+        return { credentialId: row.credentialId, accountRole: row.accountRole, oauthPosition: row.oauthPosition,
+            disabled: row.disabled, authError: row.authError, accountKey: row.accountKey };
+    }
+});
+
 test('foreign and missing Origin are rejected before any credential operation', async t => {
     const { controls, calls } = fixture();
     const server = startServer(0, controls);

@@ -2659,7 +2659,7 @@ section[aria-label="Subagent 기록"] > header,
   text-align: start;
 }
 
-.navigator-usage:hover {
+.navigator-usage:not([data-editing]):hover {
   background: var(--bg-hover);
 }
 
@@ -2706,11 +2706,18 @@ section[aria-label="Subagent 기록"] > header,
   font-variant-numeric: tabular-nums;
 }
 
-/* 쓸 수 없는 계정의 한도 행에만 붙는 상태. 쓸 수 있는 행에는 아무 표시도 없다. */
+/* 쓸 수 없는 계정의 한도 행에만 붙는 상태. 쓸 수 있는 행에는 아무 표시도 없다. 인증 오류는
+   해결할 때까지 남는 경고라 위험 색을 쓴다. */
 .navigator-usage-state {
   flex: 0 0 auto;
   color: var(--text-dim);
   font-size: var(--readout-size);
+}
+
+/* 작은 글자의 오류 표시는 막대·수치용 --danger(밝은 테마 3.4:1)가 아니라 본문 대비를 넘는
+   critical-contrast 토큰을 쓴다. */
+.navigator-usage-state[data-tone="danger"] {
+  color: var(--seed-color-fg-critical-contrast);
 }
 
 .navigator-usage-empty {
@@ -2790,6 +2797,164 @@ section[aria-label="Subagent 기록"] > header,
 .navigator-usage-toggle svg {
   margin-inline-start: auto;
   transition: transform 0.12s;
+}
+
+/* 스트립 머리줄: 「사용량」은 자세히 보기를 여는 실제 버튼이고, 오른쪽은 표시 순서 편집이다.
+   외곽은 버튼이 아니어서 안쪽 버튼들이 중첩되지 않는다. */
+.navigator-usage-header {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+}
+
+.navigator-usage-open,
+.navigator-usage-edit {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--readout-size);
+}
+
+.navigator-usage-open {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navigator-usage-edit {
+  flex: 0 0 auto;
+}
+
+.navigator-usage-open:hover,
+.navigator-usage-edit:hover {
+  color: var(--text);
+}
+
+.navigator-usage-edit[data-active] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.navigator-usage-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x2);
+}
+
+/* 한 계정의 한도들은 한 묶음으로 움직인다. 계정 줄이 맨 위, 그 아래 그 계정의 한도 행. */
+.navigator-usage-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.navigator-usage-group .navigator-usage-account {
+  margin-block-end: 0;
+}
+
+.navigator-usage-alias {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 순서 편집 중의 위·아래 버튼. 계정 줄 끝에 붙고, 좁은 화면에서는 아래 공통 규칙이 44px로
+   키운다. 터치 표적끼리는 8px 띄운다. */
+.navigator-usage-moves {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--seed-dimension-x2);
+  margin-inline-start: auto;
+}
+
+.navigator-usage-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 24px;
+  block-size: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.navigator-usage-move:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.navigator-usage-move:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* 인증 오류 계정: 사유와 재로그인 버튼. 0% 막대를 그리지 않는다. 오류는 해결할 때까지 남는
+   안내라 사유를 줄이지 않고 줄바꿈으로 다 보인다. */
+.navigator-usage-auth {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x2);
+}
+
+.navigator-usage-reason {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: var(--readout-size);
+  overflow-wrap: anywhere;
+}
+
+.navigator-usage-relogin {
+  flex: 0 0 auto;
+  padding: 2px var(--seed-dimension-x2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--readout-size);
+  white-space: nowrap;
+}
+
+.navigator-usage-relogin:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-dim);
+}
+
+/* 접혀 있어도 오류 계정이 있다는 사실은 남긴다. */
+.navigator-usage-alert {
+  flex: 0 0 auto;
+  color: var(--seed-color-fg-critical-contrast);
+  font-size: var(--readout-size);
+  white-space: nowrap;
+}
+
+.navigator-usage-open:focus-visible,
+.navigator-usage-edit:focus-visible,
+.navigator-usage-move:focus-visible,
+.navigator-usage-relogin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 순서 이동 안내를 화면 낭독기에만 전한다. */
+.navigator-usage-live {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* --- workspace header + instrument seam ------------------------------------ */
@@ -4662,6 +4827,10 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .navigator-search-input,
   .navigator-usage-more,
   .navigator-usage-toggle,
+  .navigator-usage-open,
+  .navigator-usage-edit,
+  .navigator-usage-move,
+  .navigator-usage-relogin,
   .navigator-mode-bar button,
   .navigator-project-row,
   .navigator-project-row button,

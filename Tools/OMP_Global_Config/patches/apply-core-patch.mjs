@@ -8810,6 +8810,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.6.0 번들의 같은 upstream 조건(_Re = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -9340,6 +9346,215 @@ class HarmonyLeakInterruption extends Error {`,
 		marker: "\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);",
 		anchor: "\t\tconst attribution = options?.attribution ?? \"user\";\n",
 		patched: "\t\tconst attribution = options?.attribution ?? \"user\";\n\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);\n",
+	},
+	// CUELO 계정 자리(2026-10-04). upstream oauth.accounts()의 position은 활성 credential 배열 index라서,
+	// 한 계정이 인증 실패로 비활성화되면 뒤 계정이 앞 자리로 당겨진다(RIN 자리 0이 비면 MIO 계정이 RIN이 된다).
+	// 재로그인도 새 행을 만들고 tombstone을 지우므로 [11, 12]처럼 순서가 뒤집힌다. 자리 = (활성 OAuth id ∪
+	// 인증 실패로 자리를 지키는 tombstone id) 오름차순 index로 바꾸고, 같은 identity의 재로그인은 그
+	// tombstone 행을 같은 id로 되살린다. 로그아웃(deleted by user)·교체(replaced by)는 자리를 반납한다.
+	// accounts()는 계속 활성 계정만 돌려주므로 position과 배열 index가 다를 수 있다.
+	{
+		file: "../pi-ai/src/auth/sqlite-credential-store.ts",
+		marker: "function holdsOAuthSeat(row: AuthRow): boolean {",
+		anchor: "\nfunction matchesReplacementCredential(\n",
+		patched: `
+/**
+ * CUELO: a tombstone that keeps its account seat (\`oauth.accounts\` position) — an OAuth row
+ * disabled by an auth failure. Replacement and logout tombstones give their seat up.
+ */
+function holdsOAuthSeat(row: AuthRow): boolean {
+	return (
+		row.credential_type !== "api_key" &&
+		row.disabled_cause !== null &&
+		!/^(replaced by|deleted by user)/i.test(row.disabled_cause)
+	);
+}
+
+function matchesReplacementCredential(
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/sqlite-credential-store.ts",
+		marker: "\t\t\t// CUELO: an auth-failed account that logs in again revives its own tombstone in place",
+		anchor: "\t\t\t\tthis.#deleteStmt.run(\"replaced by newer credential\", row.id);\n\t\t\t}\n\n\t\t\tif (targetId === null) {\n\t\t\t\tconst row = this.#insertStmt.get(\n",
+		patched: `\t\t\t\tthis.#deleteStmt.run("replaced by newer credential", row.id);
+\t\t\t}
+
+\t\t\t// CUELO: an auth-failed account that logs in again revives its own tombstone in place
+\t\t\t// instead of getting a new row, so its credential id, account seat and the session pins
+\t\t\t// that name it survive re-authentication. Upstream's replacement matcher decides identity:
+\t\t\t// another member of the same org never claims the row. Blocks on the id stay as they were.
+\t\t\tif (targetId === null && item.type === "oauth") {
+\t\t\t\tfor (const row of this.#listDisabledByProviderStmt.all(providerName) as AuthRow[]) {
+\t\t\t\t\tif (!holdsOAuthSeat(row)) continue;
+\t\t\t\t\tconst identityKey = resolveRowCredentialIdentityKey(providerName, row);
+\t\t\t\t\tif (!matchesReplacementCredential(providerName, deserializeCredential(row), identityKey, item)) continue;
+\t\t\t\t\tconst revived = this.#db
+\t\t\t\t\t\t.query(
+\t\t\t\t\t\t\t\`UPDATE auth_credentials SET credential_type = ?, data = ?, identity_key = ?, disabled_cause = NULL, updated_at = \${SQLITE_NOW_EPOCH} WHERE id = ? AND disabled_cause IS NOT NULL\`,
+\t\t\t\t\t\t)
+\t\t\t\t\t\t.run(serialized.credentialType, serialized.data, serialized.identityKey, row.id) as { changes: number };
+\t\t\t\t\tif (revived.changes > 0) {
+\t\t\t\t\t\ttargetId = row.id;
+\t\t\t\t\t\tbreak;
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+
+\t\t\tif (targetId === null) {
+\t\t\t\tconst row = this.#insertStmt.get(
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/sqlite-credential-store.ts",
+		marker: "\tlistOAuthSeatHolderIds(provider: string): number[] {",
+		anchor: "\tasync listDisabledCredentials(provider?: string): Promise<DisabledCredentialSummary[]> {\n",
+		patched: `\t/**
+\t * CUELO: ids of \`provider\` tombstones that keep their account seat — auth failures whose
+\t * identity no active row has taken over (the superseded-tombstone purge's own rule).
+\t */
+\tlistOAuthSeatHolderIds(provider: string): number[] {
+\t\tconst active: AuthCredential[] = [];
+\t\tfor (const row of this.#listActiveByProviderStmt.all(provider) as AuthRow[]) {
+\t\t\tconst credential = deserializeCredential(row);
+\t\t\tif (credential?.type === "oauth") active.push(credential);
+\t\t}
+\t\tconst ids: number[] = [];
+\t\tfor (const row of this.#listDisabledByProviderStmt.all(provider) as AuthRow[]) {
+\t\t\tif (!holdsOAuthSeat(row)) continue;
+\t\t\tconst credential = deserializeCredential(row);
+\t\t\tif (credential === null) continue;
+\t\t\tconst identityKey = resolveRowCredentialIdentityKey(provider, row);
+\t\t\tif (active.some(current => matchesReplacementCredential(provider, credential, identityKey, current))) continue;
+\t\t\tids.push(row.id);
+\t\t}
+\t\treturn ids;
+\t}
+
+\tasync listDisabledCredentials(provider?: string): Promise<DisabledCredentialSummary[]> {
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/store.ts",
+		marker: "\tlistOAuthSeatHolderIds?(provider: string): number[];",
+		anchor: "\tlistDisabledCredentials?(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]>;\n",
+		patched: "\tlistDisabledCredentials?(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]>;\n\t/** CUELO: ids of tombstones that keep their account seat. Local stores only; others keep upstream's compacted order. */\n\tlistOAuthSeatHolderIds?(provider: string): number[];\n",
+	},
+	{
+		file: "../pi-ai/src/auth/pool.ts",
+		marker: "\toauthSeatIds(provider: string): number[] {",
+		anchor: "\t/**\n\t * Disabled credential tombstones for display surfaces (`omp usage`,\n\t * broker `GET /v1/credentials/disabled`). Empty when the backing store\n\t * keeps no tombstones or the remote broker predates the endpoint.\n\t */\n\tasync listDisabled(",
+		patched: `\t/**
+\t * CUELO: the account seats of \`provider\` — active OAuth rows plus tombstones that keep their
+\t * seat, by id. \`oauth.accounts\` reports an account's index here as its \`position\`, so an
+\t * auth-failed account leaves its seat empty instead of shifting every later account.
+\t */
+\toauthSeatIds(provider: string): number[] {
+\t\tconst ids = new Set<number>();
+\t\tfor (const entry of this.entries(provider)) if (entry.credential.type === "oauth") ids.add(entry.id);
+\t\tfor (const id of this.#store.listOAuthSeatHolderIds?.(provider) ?? []) ids.add(id);
+\t\treturn [...ids].sort((a, b) => a - b);
+\t}
+
+\t/**
+\t * Disabled credential tombstones for display surfaces (\`omp usage\`,
+\t * broker \`GET /v1/credentials/disabled\`). Empty when the backing store
+\t * keeps no tombstones or the remote broker predates the endpoint.
+\t */
+\tasync listDisabled(`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "\toauthSeatIds(provider: string): number[];",
+		anchor: "\tlistDisabled(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]>;\n",
+		patched: "\tlistDisabled(provider?: string, signal?: AbortSignal): Promise<DisabledCredentialSummary[]>;\n\t/** CUELO: account seats by id — active OAuth rows plus auth-failed tombstones awaiting re-login. A seat's index is `OAuthAccountSummary.position`. */\n\toauthSeatIds(provider: string): number[];\n",
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: " * Returned by {@link AuthStorage.oauth.accounts}; `position` (0-based) is the\n * account seat.",
+		anchor: " * Returned by {@link AuthStorage.oauth.accounts}; `position` (0-based) is the\n * selector accepted by {@link AuthStorage.oauth.accessById}.\n",
+		patched: " * Returned by {@link AuthStorage.oauth.accounts}; `position` (0-based) is the\n * account seat. CUELO: an auth-failed account keeps its seat until it logs in again, so\n * positions can have gaps — select by `position` or `credentialId`, never by array index.\n",
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "\t * order, WITHOUT refreshing any token. Each account's `position` (0-based) is its\n\t * account seat",
+		anchor: "\t * order, WITHOUT refreshing any token. The array position (0-based) is the\n\t * selector accepted by {@link AuthStorage.oauth.accessById}; a \"pick the Nth\n\t * account\" UI should render `position + 1`.\n",
+		patched: "\t * order, WITHOUT refreshing any token. Each account's `position` (0-based) is its\n\t * account seat; a \"pick the Nth account\" UI should render `position + 1`. CUELO: an\n\t * auth-failed account keeps its seat empty, so positions can have gaps.\n",
+	},
+	{
+		file: "../pi-ai/src/auth/oauth.ts",
+		marker: "\t * order, WITHOUT refreshing any token. Each account's `position` (0-based) is its\n\t * account seat",
+		anchor: "\t * order, WITHOUT refreshing any token. The array position (0-based) is the\n\t * selector displayed by a \"pick the Nth account\" UI as `position + 1`.\n",
+		patched: "\t * order, WITHOUT refreshing any token. Each account's `position` (0-based) is its\n\t * account seat, displayed by a \"pick the Nth account\" UI as `position + 1`. CUELO: an\n\t * auth-failed account keeps its seat empty, so positions can have gaps.\n",
+	},
+	{
+		file: "../pi-ai/src/auth/oauth.ts",
+		marker: "\t\tconst seats = this.#deps.pool.oauthSeatIds(provider);",
+		anchor: "\t\treturn this.#getStoredOAuthSelections(provider).map((selection, position) => {\n\t\t\tconst active = selection.credentialId === activeCredentialId;\n\t\t\treturn {\n\t\t\t\tposition,\n",
+		patched: `\t\t// CUELO: \`position\` is the account seat (CredentialPool.oauthSeatIds), not the index in this
+\t\t// active-only list, so a later account is never renumbered into an auth-failed account's seat.
+\t\tconst seats = this.#deps.pool.oauthSeatIds(provider);
+\t\treturn this.#getStoredOAuthSelections(provider).map(selection => {
+\t\t\tconst active = selection.credentialId === activeCredentialId;
+\t\t\treturn {
+\t\t\t\tposition: seats.indexOf(selection.credentialId),
+`,
+	},
+	{
+		// 같은 org의 다른 사람 tombstone을 활성 계정이 숨기던 판정. upstream 주석("neither email nor
+		// accountId contradicts")대로 email·accountId가 다르면 org가 같아도 다른 identity다.
+		file: "src/cli/usage-cli.ts",
+		marker: "\t\tif (summaryEmail && accountEmail) return summaryEmail === accountEmail;",
+		anchor: "\t\tif (summaryEmail && accountEmail && summaryEmail === accountEmail) return true;\n\t\tif (summaryAccountId && accountAccountId && summaryAccountId === accountAccountId) return true;\n",
+		patched: "\t\t// CUELO: a differing email or accountId is another person even inside one org (or a shared\n\t\t// Codex workspace id), so that member's auth failure stays visible.\n\t\tif (summaryEmail && accountEmail) return summaryEmail === accountEmail;\n\t\tif (summaryAccountId && accountAccountId) return summaryAccountId === accountAccountId;\n",
+	},
+	{
+		// --list 가 position + 1 로 번호를 보여 주므로 --account 도 같은 번호(자리)로 고른다.
+		file: "src/commands/token.ts",
+		marker: "\t\t\t\tconst selected = n === undefined ? undefined : accounts.find(acct => acct.position === n - 1);",
+		anchor: `\t\t\t\tconst n = flags.account;
+\t\t\t\tif (n === undefined || n < 1 || n > accounts.length) {
+\t\t\t\t\tprocess.stderr.write(
+\t\t\t\t\t\t\`\${chalk.red(\`Invalid --account \${n ?? "(missing)"}.\`)} Provider "\${providerName}" has \${accounts.length} OAuth account(s) (1-\${accounts.length}).\\n\`,
+\t\t\t\t\t);
+\t\t\t\t\tprocess.exitCode = 1;
+\t\t\t\t\treturn;
+\t\t\t\t}
+\t\t\t\tconst resolution = managedMcpOAuth
+\t\t\t\t\t? await resolveManagedMcpOAuthToken(authStorage, provider, {
+\t\t\t\t\t\t\tcredentialId: accounts[n - 1]?.credentialId,
+\t\t\t\t\t\t\tforceRefresh: flags["force-refresh"],
+\t\t\t\t\t\t})
+\t\t\t\t\t: await authStorage.oauth.accessById(provider, accounts[n - 1]!.credentialId, {
+`,
+		patched: `\t\t\t\tconst n = flags.account;
+\t\t\t\t// CUELO: account numbers are seats (\`position + 1\`, as --list prints them); an auth-failed
+\t\t\t\t// account leaves its number empty instead of shifting the others.
+\t\t\t\tconst selected = n === undefined ? undefined : accounts.find(acct => acct.position === n - 1);
+\t\t\t\tif (n === undefined || selected === undefined) {
+\t\t\t\t\tprocess.stderr.write(
+\t\t\t\t\t\t\`\${chalk.red(\`Invalid --account \${n ?? "(missing)"}.\`)} Provider "\${providerName}" has OAuth account(s) \${accounts.map(acct => acct.position + 1).join(", ")}.\\n\`,
+\t\t\t\t\t);
+\t\t\t\t\tprocess.exitCode = 1;
+\t\t\t\t\treturn;
+\t\t\t\t}
+\t\t\t\tconst resolution = managedMcpOAuth
+\t\t\t\t\t? await resolveManagedMcpOAuthToken(authStorage, provider, {
+\t\t\t\t\t\t\tcredentialId: selected.credentialId,
+\t\t\t\t\t\t\tforceRefresh: flags["force-refresh"],
+\t\t\t\t\t\t})
+\t\t\t\t\t: await authStorage.oauth.accessById(provider, selected.credentialId, {
+`,
+	},
+	{
+		// 첫 줄이 read 예산보다 크면 hashline 모드는 그 줄을 한 바이트도 내지 않고 거부 문구만 낸다. 그런데
+		// upstream은 preview 크기를 전달량으로 보고해 "[Showing line 1 (partial, 150.0KB of 195.3KB)]"처럼
+		// 모델이 받은 적 없는 150KB를 받았다고 말한다(2026-10-04 실측). 전달량은 본문에 실제로 실린 것만 센다.
+		// :raw·hashline을 끈 모드의 preview, 재개 offset 미제공, 수집 예산은 그대로다.
+		file: "src/tools/read.ts",
+		marker: "\t\t\t\t\t// CUELO: hashline mode refuses the oversized line outright",
+		anchor: "\t\t\t\t\tconst previewBytes = firstLineExceedsLimit ? (firstLinePreview?.bytes ?? 0) : 0;\n",
+		patched: "\t\t\t\t\t// CUELO: hashline mode refuses the oversized line outright and delivers none of it, so its\n\t\t\t\t\t// notice must report 0 bytes shown, not the preview it never rendered.\n\t\t\t\t\tconst previewBytes =\n\t\t\t\t\t\tfirstLineExceedsLimit && (rawSelector || !displayMode.hashLines) ? (firstLinePreview?.bytes ?? 0) : 0;\n",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

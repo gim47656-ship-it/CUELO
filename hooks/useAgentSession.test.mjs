@@ -1582,3 +1582,128 @@ test("Fast 상태는 세션·모델에 묶이고, 상태를 읽는 사이 모델
   assert.ok(hook.notices.some((notice) => notice.type === "error" && /unavailable/.test(notice.message)), "미지원 안내를 남긴다");
   renderer.unmount();
 });
+
+// 실제 사고: 세션 파일에는 Auto가 처음 해석되기 전까지 thinking_level_change가 없어 context가 기본 "off"를 준다.
+// 실행 중 live state가 high/xhigh + Auto였는데 transcript 재읽기가 그 "off"로 입력창을 덮었고, 코어의
+// thinking_level_changed 이벤트는 처리되지 않아 Auto 해석 변화도 따라오지 않았다.
+test("실행 중 세션의 실제 추론 강도는 transcript 재읽기나 기본 off에 덮이지 않고 SSE 변화를 따른다", { timeout: 30_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-thinking-live-"));
+  const rendererKey = "__ompUseAgentSessionEffectRenderer";
+  const fakeReactPath = join(directory, "react.mjs");
+  await writeFile(fakeReactPath, [
+    `const react = () => globalThis.${rendererKey}.react;`,
+    ...["useState", "useReducer", "useRef", "useCallback", "useMemo", "useEffect"]
+      .map((name) => `export const ${name} = (...args) => react().${name}(...args);`),
+    "export const useLayoutEffect = (...args) => react().useEffect(...args);",
+  ].join("\n"));
+  const sourceRoot = new URL("../", import.meta.url);
+  const subjectPath = join(directory, "useAgentSession.ts");
+  await writeFile(subjectPath, source
+    .replace('from "react";', `from ${JSON.stringify(pathToFileURL(fakeReactPath).href)};`)
+    .replace(/from "@\/([^"]+)";/g, (_match, path) => `from ${JSON.stringify(new URL(path, sourceRoot).href)};`));
+  const harnessJiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, moduleCache: false, tsconfigPaths: true });
+  const { useAgentSession: useHarnessedAgentSession } = await harnessJiti.import(subjectPath);
+
+  const globalKeys = ["window", "document", "sessionStorage", "EventSource", "fetch", rendererKey];
+  const originals = Object.fromEntries(globalKeys.map((key) => [key, globalThis[key]]));
+  t.after(async () => {
+    for (const key of globalKeys) {
+      if (originals[key] === undefined) delete globalThis[key];
+      else globalThis[key] = originals[key];
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sources = [];
+  globalThis.EventSource = class {
+    constructor(url) { this.url = url; this.readyState = 0; sources.push(this); }
+    close() { this.readyState = 2; }
+  };
+  globalThis.window = Object.assign(new EventTarget(), { location: { pathname: "/", search: "", hash: "" } });
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: "visible", title: "" });
+  globalThis.sessionStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  // 파일 context는 기본 off. live state만 실제 값을 안다.
+  const server = { live: { thinkingLevel: "high", configuredThinkingLevel: "auto" }, running: true };
+  const sessionData = (id) => ({
+    sessionId: id, filePath: `/tmp/${id}.jsonl`, totalActiveMs: 0, tree: [], leafId: null,
+    context: { messages: [], entryIds: [], thinkingLevel: "off", model: null },
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    const transcript = url.match(/^\/api\/sessions\/([^/?]+)\?/);
+    if (transcript) return json(sessionData(decodeURIComponent(transcript[1])));
+    if (/^\/api\/(?:sessions\/[^/?]+\/state|agent\/[^/?]+)$/.test(url)) {
+      // 요청 시점의 스냅샷을 잡고, gate가 있으면 응답만 늦춘다.
+      const body = server.running
+        ? { running: true, state: { isStreaming: true, isPromptRunning: true, isBashRunning: false, isCompacting: false, isHandoffRunning: false, ...server.live } }
+        : { running: false };
+      await server.gate;
+      return json(body);
+    }
+    return json({ error: "not found" }, 404);
+  };
+
+  const renderer = createEffectRenderer();
+  globalThis[rendererKey] = renderer;
+  let hook;
+  const props = { session: { id: "think-1", name: "Test", cwd: "/tmp" }, newSessionCwd: null, initialData: sessionData("think-1") };
+  renderer.mount(() => { hook = useHarnessedAgentSession(props); });
+  await settle();
+  assert.equal(hook.thinkingLevel, "auto", "선택은 Auto");
+  assert.equal(hook.effectiveThinkingLevel, "high", "실제 강도는 high");
+
+  // 1) 실행 중 transcript 재읽기(message_end/agent_end/재연결)가 기본 off로 덮지 않는다.
+  await hook.refreshLiveTranscript("think-1");
+  await settle();
+  assert.equal(hook.thinkingLevel, "auto");
+  assert.equal(hook.effectiveThinkingLevel, "high", "파일에 기록이 없다는 이유로 off가 되지 않는다");
+
+  // 2) 코어 thinking_level_changed: Auto 해석 변화는 새로고침 없이 실제 강도를 갱신하고 선택(Auto)은 유지한다.
+  const events = sources.findLast((source) => !source.url.includes("entries=1"));
+  assert.ok(events?.onmessage, "실행 중 세션은 이벤트 스트림에 연결된다");
+  server.live = { thinkingLevel: "xhigh", configuredThinkingLevel: "auto" };
+  events.onmessage({ data: JSON.stringify({ type: "thinking_level_changed", thinkingLevel: "xhigh", configured: "auto", resolved: "xhigh" }) });
+  await settle();
+  assert.equal(hook.thinkingLevel, "auto");
+  assert.equal(hook.effectiveThinkingLevel, "xhigh");
+
+  // 이벤트를 놓쳤어도(재연결 틈) 재읽기는 live의 최신 실제 강도를 따른다.
+  server.live = { thinkingLevel: "medium", configuredThinkingLevel: "auto" };
+  await hook.refreshLiveTranscript("think-1");
+  await settle();
+  assert.equal(hook.thinkingLevel, "auto");
+  assert.equal(hook.effectiveThinkingLevel, "medium");
+  server.live = { thinkingLevel: "xhigh", configuredThinkingLevel: "auto" };
+
+  // 읽기를 시작한 뒤(high 스냅샷) 더 새로운 이벤트(xhigh)가 먼저 오고 옛 응답이 늦게 도착해도 되돌리지 않는다.
+  server.live = { thinkingLevel: "high", configuredThinkingLevel: "auto" };
+  const gate = deferred();
+  server.gate = gate.promise;
+  const lateRead = hook.refreshLiveTranscript("think-1");
+  await settle();
+  events.onmessage({ data: JSON.stringify({ type: "thinking_level_changed", thinkingLevel: "xhigh", configured: "auto", resolved: "xhigh" }) });
+  await settle();
+  server.gate = undefined;
+  gate.resolve();
+  await lateRead;
+  await settle();
+  assert.equal(hook.effectiveThinkingLevel, "xhigh", "늦게 도착한 옛 high 응답이 최신 이벤트를 되돌리지 않는다");
+
+  // 3) 사용자가 구체 값을 고르면 그 값이 선택이자 실제 값이다 (configured 없는 이벤트).
+  server.live = { thinkingLevel: "low", configuredThinkingLevel: "low" };
+  events.onmessage({ data: JSON.stringify({ type: "thinking_level_changed", thinkingLevel: "low" }) });
+  await settle();
+  assert.equal(hook.thinkingLevel, "low");
+  assert.equal(hook.effectiveThinkingLevel, "low");
+  await hook.refreshLiveTranscript("think-1");
+  await settle();
+  assert.equal(hook.thinkingLevel, "low", "수동 선택도 재읽기에 덮이지 않는다");
+
+  // 4) 실행이 끝난 세션(live 없음)은 기존대로 파일 context가 정본이다.
+  server.running = false;
+  await hook.refreshLiveTranscript("think-1");
+  await settle();
+  assert.equal(hook.thinkingLevel, "off");
+  renderer.unmount();
+});

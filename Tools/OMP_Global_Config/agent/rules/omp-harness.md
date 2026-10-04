@@ -53,6 +53,11 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 목표는 최신판 추종이 아니라 upstream 개선을 가져오면서 기존 해결책과 고유 작업 계약을 보존하고,
 upstream이 해결한 workaround를 제거해 patch debt를 줄이는 것이다.
 
+사용자가 “최신으로 올려줘”라고만 해도 내장 코어의 새 API·상태·데이터 흐름에 맞춘 호출부 이관,
+기존 패치의 KEEP/ADAPT/RETIRE/BLOCK 판정, 회귀·실행 검증을 요청에 포함한다. 충돌 조정은 별도
+재지시를 기다리지 않는다. CLI 실행 파일 교체와 CUELO 내장 코어 이식의 완료 증거는 구분한다.
+이 기본 범위가 배포·삭제·비용·인증 변경의 별도 승인 경계를 낮추지는 않는다.
+
 ### 판단 정본과 upstream 조사
 
 현재 설치 버전만으로 판단하지 않는다. 다음 미러와 실제 Known-Good runtime을 먼저 대조한다.

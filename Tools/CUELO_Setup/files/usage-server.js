@@ -171,6 +171,19 @@ function controlError(status, code, outcomeUnknown = false) {
     return Object.assign(new Error(code), { status, code, outcomeUnknown });
 }
 
+// 인증 실패 tombstone의 사유를 화면용 코드로 줄인다. core의 원문 사유(provider 응답 조각)는 내보내지 않는다.
+// 자리를 지키는 tombstone은 모두 인증 실패이므로 다시 로그인해야 쓸 수 있다.
+function authError(cause) {
+    const text = String(cause ?? '');
+    if (/invalid_grant|refresh token (?:expired|not found|invalid)/i.test(text)) {
+        return { code: 'refresh_expired', message: '로그인이 만료되었습니다. 다시 로그인하세요.', reloginRequired: true };
+    }
+    if (/invalidated|revoked|unauthorized|\b401\b/i.test(text)) {
+        return { code: 'token_revoked', message: '인증이 취소되었습니다. 다시 로그인하세요.', reloginRequired: true };
+    }
+    return { code: 'auth_failed', message: '인증에 실패해 이 계정을 쓸 수 없습니다. 다시 로그인하세요.', reloginRequired: true };
+}
+
 // 동일 storage의 reload/cache도 함께 직렬화한다. 외부 CLI의 mutation까지 잠그지는 않는다.
 function createControlFacade(getControl, invalidate = invalidateUsage) {
     let tail = Promise.resolve();
@@ -204,6 +217,17 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
         await storage.reload();
         const entries = storage.credentials.snapshot().credentials;
         const blocks = storage.blocks.list(entries.map(entry => entry.id));
+        // 계정 자리(oauthPosition)는 core가 정한다. 인증 실패로 비활성화된 계정도 재로그인 전까지 자기 자리를
+        // 지키므로, 그 tombstone을 오류 행으로 함께 낸다. 자리 API가 없는 core에서는 자리·오류 행을 내지 않는다.
+        const hasSeats = typeof storage.credentials.oauthSeatIds === 'function';
+        const tombstones = hasSeats && typeof storage.credentials.listDisabled === 'function'
+            ? await storage.credentials.listDisabled() : [];
+        const seats = new Map();
+        const seatOf = (provider, id) => {
+            if (!seats.has(provider)) seats.set(provider, storage.credentials.oauthSeatIds(provider));
+            const position = seats.get(provider).indexOf(id);
+            return position >= 0 ? { oauthPosition: position } : {};
+        };
         const result = entries.map(entry => {
             const providerKey = `${entry.provider}:${entry.credential.type}`;
             const own = blocks.filter(block => block.credentialId === entry.id);
@@ -216,8 +240,19 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
                 ...pick(entry.credential, IDENTITY_KEYS),
                 disabled: !!manual,
                 autoBlockedUntilMs: auto.length ? Math.max(...auto.map(block => block.blockedUntilMs)) : null,
+                ...(hasSeats && entry.credential.type === 'oauth' ? seatOf(entry.provider, entry.id) : {}),
             };
         });
+        for (const tombstone of tombstones) {
+            if (tombstone.type !== 'oauth') continue;
+            const seat = seatOf(tombstone.provider, tombstone.id);
+            // 자리가 없는 tombstone은 교체·로그아웃으로 자리를 반납한 행이다. 사용자에게 할 일이 없다.
+            if (seat.oauthPosition === undefined) continue;
+            result.push({
+                credentialId: tombstone.id, provider: tombstone.provider, credentialType: 'oauth',
+                ...pick(tombstone, IDENTITY_KEYS), ...seat, authError: authError(tombstone.cause),
+            });
+        }
         if (currentEpoch !== epoch) return credentials(true);
         snapshot = { at: Date.now(), credentials: result };
         return result;
@@ -283,14 +318,16 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
             }
             if (startEpoch !== epoch) return enrich(raw);
             const joined = new Set();
+            // 인증 실패 행은 사용량 보고서와 결합하지 않는다. 같은 identity의 활성 계정 보고서를 가져가면 안 된다.
+            const usable = all.filter(credential => !credential.authError);
             for (const report of usage.reports) {
-                const credential = matchCredential(report, all);
+                const credential = matchCredential(report, usable);
                 if (!credential) {
                     report.accountRole = 'usage-only';
                     if (RESET_PROVIDERS.includes(report.provider)) report.savedReset = savedReset(undefined, Date.now(), report.provider);
                     continue;
                 }
-                Object.assign(report, pick(credential, ['credentialId', 'disabled', 'autoBlockedUntilMs']));
+                Object.assign(report, pick(credential, ['credentialId', 'disabled', 'autoBlockedUntilMs', 'oauthPosition']));
                 joined.add(credential.credentialId);
                 if (RESET_PROVIDERS.includes(report.provider)) {
                     const credits = creditsByProvider.get(report.provider);
@@ -301,11 +338,21 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
             }
             for (const credential of all) {
                 if (joined.has(credential.credentialId) || !control().storage.usage.providerFor(credential.provider)) continue;
+                if (credential.authError) {
+                    // 수동 OFF·쿨다운 상태와 섞지 않는다. 그 id의 block은 재로그인 뒤 다시 보인다.
+                    usage.reports.push({
+                        provider: credential.provider, fetchedAt: 0, limits: [],
+                        accountRole: 'auth-error',
+                        metadata: pick(credential, IDENTITY_KEYS),
+                        ...pick(credential, ['credentialId', 'oauthPosition', 'authError']),
+                    });
+                    continue;
+                }
                 usage.reports.push({
                     provider: credential.provider, fetchedAt: 0, limits: [],
                     accountRole: 'control-only',
                     metadata: pick(credential, IDENTITY_KEYS),
-                    ...pick(credential, ['credentialId', 'disabled', 'autoBlockedUntilMs']),
+                    ...pick(credential, ['credentialId', 'disabled', 'autoBlockedUntilMs', 'oauthPosition']),
                     ...(RESET_PROVIDERS.includes(credential.provider) ? { savedReset: savedReset(
                         creditsByProvider.get(credential.provider)?.statuses.find(status => status.credentialId === credential.credentialId),
                         creditsByProvider.get(credential.provider)?.at, credential.provider) } : {}),
@@ -318,8 +365,14 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
                 delete report.credentialId;
                 delete report.disabled;
                 delete report.autoBlockedUntilMs;
+                delete report.oauthPosition;
                 if (RESET_PROVIDERS.includes(report.provider)) report.savedReset = savedReset(undefined, Date.now(), report.provider);
             }
+        }
+        // 화면이 순서를 기억할 안정 키. credential id(없으면 provider 계정 id)로 만들고 email은 쓰지 않는다.
+        for (const report of usage.reports) {
+            if (Number.isSafeInteger(report.credentialId) && report.credentialId > 0) report.accountKey = `${report.provider}:${report.credentialId}`;
+            else if (report.metadata?.accountId) report.accountKey = `${report.provider}:acct:${report.metadata.accountId}`;
         }
         return usage;
     }

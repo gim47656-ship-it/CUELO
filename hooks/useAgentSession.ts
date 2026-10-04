@@ -721,6 +721,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const newSessionAccountRef = useRef<number | null>(null);
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
+  // live(실행 중) 서버 상태나 코어 이벤트로 추론 강도를 관측한 세션 ID. 세션 파일에는 Auto가 처음 해석되기
+  // 전까지 thinking 기록이 없어 context가 기본 "off"를 주므로, 이 세션의 transcript 재읽기는 그 값을 쓰지 않는다.
+  const liveThinkingSessionRef = useRef<string | null>(null);
+  // thinking_level_changed 이벤트가 온 횟수. 늦게 도착한 /state 응답이 더 새로운 이벤트를 되돌리지 않게 비교한다.
+  const thinkingEventSeqRef = useRef(0);
   // 세션이 아직 없는 새 대화에서 고른 상한. 세션을 만든 직후 서버에 건다.
   const thinkingCeilingOverrideRef = useRef<ThinkingCeiling | null>(null);
   // 세션은 만들어졌지만 위 상한이 아직 서버에 걸리지 않은 세션 ID. 이 값이 있는 동안에는 전송 전에 상한을 다시 건다.
@@ -864,13 +869,43 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setContextUsage(d.contextUsage ?? null);
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
-      setThinkingLevel((d.context.configuredThinkingLevel ?? d.context.thinkingLevel ?? "off") as ThinkingLevelOption);
-      setEffectiveThinkingLevel(d.context.thinkingLevel);
+      // includeState는 아래에서 live 상태를 직접 읽으므로 이전 관측값에 기대지 않는다.
+      const liveThinking = !includeState && liveThinkingSessionRef.current === sid;
+      if (!liveThinking) {
+        setThinkingLevel((d.context.configuredThinkingLevel ?? d.context.thinkingLevel ?? "off") as ThinkingLevelOption);
+        setEffectiveThinkingLevel(d.context.thinkingLevel);
+      }
       setThinkingCeiling((d.context.thinkingCeiling ?? null) as ThinkingCeiling | null);
 
       messagesLoaded = true;
       if (showLoading) setLoading(false);
-      if (!includeState) return null;
+      if (!includeState) {
+        if (liveThinking) {
+          // 실행 중이던 세션은 파일 대신 live 상태로 강도를 다시 읽는다. 읽기 실패는 마지막 관측값을 유지한다.
+          try {
+            const eventSeq = thinkingEventSeqRef.current;
+            const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
+            if (res.ok && sessionIdRef.current === sid) {
+              const live = await res.json() as { running: boolean; state?: AgentStateResponse };
+              // 읽는 사이 더 새로운 thinking_level_changed가 왔다면 이 응답은 옛 스냅샷이다.
+              if (sessionIdRef.current === sid && thinkingEventSeqRef.current === eventSeq) {
+                if (live.state?.thinkingLevel !== undefined) {
+                  setThinkingLevel((live.state.configuredThinkingLevel ?? live.state.thinkingLevel) as ThinkingLevelOption);
+                  setEffectiveThinkingLevel(live.state.thinkingLevel);
+                } else if (!live.running) {
+                  // 더는 live가 아니면 기존대로 파일이 정본이다.
+                  liveThinkingSessionRef.current = null;
+                  setThinkingLevel((d.context.configuredThinkingLevel ?? d.context.thinkingLevel ?? "off") as ThinkingLevelOption);
+                  setEffectiveThinkingLevel(d.context.thinkingLevel);
+                }
+              }
+            }
+          } catch (e) {
+            console.error("Failed to refresh live thinking level:", e);
+          }
+        }
+        return null;
+      }
 
       try {
         const stateToken = todoSeqRef.current;
@@ -884,6 +919,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
           if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
           if (liveState.thinkingLevel !== undefined) {
+            liveThinkingSessionRef.current = sid;
             setThinkingLevel((liveState.configuredThinkingLevel ?? liveState.thinkingLevel) as ThinkingLevelOption);
             setEffectiveThinkingLevel(liveState.thinkingLevel);
           }
@@ -1936,6 +1972,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (sid) void refreshContextUsage(sid);
         dispatch({ type: "reset" });
         setAgentPhase({ kind: "waiting_model" });
+        break;
+      }
+      case "thinking_level_changed": {
+        // 코어가 실제 강도(Auto 해석 포함)를 바꿀 때마다 온다. `configured`는 Auto일 때만 실리고, 없으면 수동 선택이 곧 실제 값이다.
+        const sid = sessionIdRef.current;
+        const level = event.thinkingLevel as string | undefined;
+        if (sid && level !== undefined) {
+          liveThinkingSessionRef.current = sid;
+          thinkingEventSeqRef.current += 1;
+          setThinkingLevel(((event.configured as string | undefined) ?? level) as ThinkingLevelOption);
+          setEffectiveThinkingLevel(level);
+        }
         break;
       }
       case "todo_changed": {
@@ -3112,6 +3160,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (state.contextUsage !== undefined) setContextUsage(state.contextUsage ?? null);
           if (state.systemPrompt !== undefined) setSystemPrompt(state.systemPrompt ?? null);
           if (state.thinkingLevel !== undefined) {
+            liveThinkingSessionRef.current = session.id;
             setThinkingLevel((state.configuredThinkingLevel ?? state.thinkingLevel) as ThinkingLevelOption);
             setEffectiveThinkingLevel(state.thinkingLevel);
           }

@@ -123,3 +123,22 @@ test("a pin past the retry window is re-asked, so an account switch inside one p
     route.restore();
   }
 });
+
+test("a message by the seat-1 account keeps MIO when the seat-0 account turns into an auth-error row", () => {
+  // 같은 두 계정, 같은 credential id. 자리 0이 인증 실패로 빠지면 활성 목록에는 credential 11만 남는다.
+  // 같은 행 집합에서 자리만 새로 알게 돼도(sidecar 갱신) 얼굴 저장소는 다시 배정해야 한다.
+  syncAccountFaces([
+    { provider: "anthropic", credentialId: 11, metadata: { email: "second@example.com" } },
+  ]);
+  assert.equal(resolveAccountFace(undefined, "anthropic", 11)?.alias, "RIN(린)", "자리를 모르는 옛 sidecar 응답은 목록 순서");
+  syncAccountFaces([
+    { provider: "anthropic", credentialId: 11, oauthPosition: 1, metadata: { email: "second@example.com" } },
+  ]);
+  assert.equal(resolveAccountFace(undefined, "anthropic", 11)?.alias, "MIO(미오)");
+  syncAccountFaces([
+    { provider: "anthropic", credentialId: 11, oauthPosition: 1, metadata: { email: "second@example.com" } },
+    { provider: "anthropic", credentialId: 9, oauthPosition: 0, accountRole: "auth-error", limits: [] },
+  ]);
+  assert.equal(resolveAccountFace(undefined, "anthropic", 11)?.alias, "MIO(미오)");
+  assert.equal(resolveAccountFace(undefined, "anthropic", 9)?.alias, "RIN(린)");
+});

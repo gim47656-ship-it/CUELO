@@ -91,6 +91,7 @@ export function syncAccountFaces(reports: readonly UsageReport[] | undefined): v
     .map((report) => [
       report.provider,
       report.credentialId ?? "",
+      report.oauthPosition ?? "",
       report.metadata?.accountId ?? "",
       report.metadata?.email ?? "",
     ].join("\u0000"))

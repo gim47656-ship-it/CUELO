@@ -6,7 +6,7 @@ thinking-level: medium
 tools: [read, bash, edit, write, grep, glob, skim, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=4e5719c2a636
+<!-- omp-global-config:generated source-hash=816f54313240
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -76,6 +76,8 @@ is yours end to end.
 - Answer every finding that names your change with the fix you made and the raw output of the check
   that now covers it, keeping the same finding id — no separate messenger or new reporting stage.
   Never weaken an expectation, relax a fixture, or hide a failure to make validation pass.
+- Follow `rule://subagent` 「Skill 인계」 for relevant skills handed over in the brief:
+  required direct reading before implementation, reuse of known locators, and reconsultation when unclear.
 - 관련 Skill을 먼저 읽고 이번 조치에 적용되는 주의사항만 이름·절/locator·위험 요약으로 추린다.
   pre-retry advisory를 보충하다가(Common Rules) 검증 약화나 Skill 충돌·적용 불가가 나오면 문제 된
   조치만 보류하고 기존 blocker/조향 DM으로 원문 오류 locator·Skill locator·제안 조치·보존할 수용

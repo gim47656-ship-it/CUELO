@@ -71,6 +71,8 @@ Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수�
 
 Main은 사용자 요구·수용 조건·보존 동작·승인·관측 경로를 먼저 확정한다. 위임 브리프와 첫 조사에서 요구를 대조하는 절차는 `rule://verdict`·`rule://subagent` 및 `harness-policy.json` `briefContextRelay`·`routing.dispatchAssumptionCheck`를 따른다. `task` 발주 시 `TASK_GUARD` 뒤의 공유 메타 `TASK_TITLE`·`TODO_TASKS`도 `rule://task-guard`에 따라 전달한다. Skill은 설치만으로 열지 않고 이번 작업에 필요하거나 사용자가 요청했을 때만 연다. UI 작업은 `rule://frontend`를 따른다. 사용자가 명시 요청하지 않으면 `goal` 도구에 `token_budget`을 임의 설정하지 않는다.
 
+Main이 활용한 관련 Skill을 Maker에게 넘기고 적용 여부를 확인하는 절차는 `rule://subagent` 「Skill 인계」를 따른다. 사용자가 다시 요청해야 발동하는 절차가 아니다.
+
 `systematic-debugging`·`verification-before-completion`처럼 절차만 담은 Skill은 원인을 모르는 버그, 두 번째 실패, 완료 판정이 모호할 때만 연다. 위치와 수정 방향이 과제에 이미 나온 수정은 기본 검증 절차로 충분하므로 선독하지 않는다.
 
 요청 한 번마다 전체 컨텍스트를 다시 싣는다. 서로 의존하지 않는 읽기·검색은 한 턴에 묶고, 수정 전에는 고칠 구간과 그 호출부·테스트를 함께 읽어 한 번에 맞게 고친다. edit이 "본 적 없는 줄"로 거절되면 안내대로 같은 edit을 그대로 다시 보내고 재읽기를 하지 않는다.

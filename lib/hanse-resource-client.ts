@@ -123,11 +123,24 @@ export interface UsageReport {
     [key: string]: unknown;
   };
   limits?: UsageLimit[];
-  accountRole?: "usage-only" | "control-only";
+  /**
+   * `auth-error`: 인증이 실패해 다시 로그인해야 쓸 수 있는 계정이다. 수동 OFF(`disabled`)나
+   * 한도 대기(`autoBlockedUntilMs`)와 다른 상태이며, 사용량 수치는 없다(`limits: []`).
+   */
+  accountRole?: "usage-only" | "control-only" | "auth-error";
   credentialId?: number;
   disabled?: boolean;
   autoBlockedUntilMs?: number;
   savedReset?: SavedReset;
+  /**
+   * 계정 자리(0부터). core가 정하며 인증 실패로 비활성화돼도 재로그인 전까지 그대로이고, 다시
+   * 로그인하면 같은 자리로 돌아온다. 얼굴·캐릭터는 이 자리로 정한다.
+   */
+  oauthPosition?: number;
+  /** 화면 순서를 기억할 안정 키(`provider:credentialId` 또는 `provider:acct:<accountId>`). email은 쓰지 않는다. */
+  accountKey?: string;
+  /** 인증 실패 사유. 원문 오류 대신 화면용 코드와 문장만 온다. */
+  authError?: { code: string; message: string; reloginRequired: boolean };
   [key: string]: unknown;
 }
 
@@ -190,8 +203,8 @@ export interface AccountIdentity extends AccountFace {
  * 하나가 붙고, 순서도 자산 순서 그대로다. `public/avatars/` 아래 정적 자산이라 외부
  * 아바타 서비스로 계정 식별자가 나가는 일이 없고 새 의존성도 없다.
  *
- * `provider` 없는 RIN·MIO는 계정이 여럿인 provider가 **계정 순서**대로 나눠 쓰는 자리다 —
- * 목록에서 그 provider의 몇 번째 계정인지가 곧 자리이고, 그 순서는 OAuth 계정 순서다.
+ * `provider` 없는 RIN·MIO는 계정이 여럿인 provider가 **계정 자리**로 나눠 쓰는 자리다 —
+ * 보고서의 `oauthPosition`(core의 OAuth 계정 자리)이 곧 자리다.
  * `provider` 가 붙은 항목은 그 provider 전용 얼굴이라 순서 배정에서 빠진다. 예약 얼굴은
  * 반드시 목록 뒤에 모아 둔다 — 자리를 앞에서부터 세기 때문이고, 그래야 얼굴을 더 늘려도
  * 이미 배정된 계정의 얼굴이 밀리지 않는다.
@@ -420,8 +433,10 @@ export function providerDisplayName(provider: string): string {
  * 보고서 목록 전체에 별칭과 얼굴을 배정한다. 목록 단위로 계산하므로 한 화면에서 두 계정이
  * 같은 이름이나 같은 얼굴을 갖지 않는다.
  *
- * 계정이 여럿인 provider 는 **계정 순서**로 앞쪽 풀을 나눠 쓴다 — 목록에서 그 provider 의 몇
- * 번째인지가 곧 자리다. 로컬 credential id 를 섞지 않는 이유는 그 값이 PC 마다 달라서, 같은
+ * 계정이 여럿인 provider 는 **계정 자리**(`oauthPosition`)로 앞쪽 풀을 나눠 쓴다. 자리는 core가
+ * 정하므로 다른 계정이 인증 실패로 빠지거나 화면 표시 순서를 바꿔도 얼굴이 옮겨 가지 않는다.
+ * 자리를 모르는 보고서(사용량만 있는 계정 등)는 그 provider 에서 아직 비어 있는 다음 자리를
+ * 목록 순서대로 받는다. 로컬 credential id 를 섞지 않는 이유는 그 값이 PC 마다 달라서, 같은
  * 두 계정이 PC 마다 다른 얼굴로 보이기 때문이다. 사이드바와 패널이 같은(필터 이전) 목록을
  * 넘겨야 두 곳의 표시가 같다.
  *
@@ -430,7 +445,13 @@ export function providerDisplayName(provider: string): string {
  * 않는다.
  */
 export function accountIdentities(reports: readonly UsageReport[]): AccountIdentity[] {
-  const seenByProvider = new Map<string, number>();
+  const seated = new Map<string, Set<number>>();
+  for (const report of reports) {
+    if (!Number.isSafeInteger(report.oauthPosition) || report.oauthPosition! < 0) continue;
+    const taken = seated.get(report.provider) ?? new Set<number>();
+    taken.add(report.oauthPosition!);
+    seated.set(report.provider, taken);
+  }
   return reports.map((report) => {
     const email = report.metadata?.email;
     const accountId = report.metadata?.accountId;
@@ -442,8 +463,14 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
     const reserved = reservedSlot(report.provider);
     if (reserved >= 0) return { seed: reserved, alias: ACCOUNT_FACES[reserved].alias, masked, raw };
 
-    const position = seenByProvider.get(report.provider) ?? 0;
-    seenByProvider.set(report.provider, position + 1);
+    let position = report.oauthPosition!;
+    if (!Number.isSafeInteger(position) || position < 0) {
+      const taken = seated.get(report.provider) ?? new Set<number>();
+      position = 0;
+      while (taken.has(position)) position++;
+      taken.add(position);
+      seated.set(report.provider, taken);
+    }
     const slot = position % POOL_SIZE;
     // 계정이 자산보다 많으면 자리가 돌아 같은 얼굴을 다시 쓴다. 그때만 뒤에 번호를 붙여
     // 이름만은 갈라 둔다.

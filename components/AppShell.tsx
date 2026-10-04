@@ -28,7 +28,8 @@ import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
 import { resolveAccountFace, useSyncedAccountFaces } from "@/hooks/useAccountFaces";
-import { SidebarUsage } from "./SidebarUsage";
+import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
+import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
 import { useLounge } from "@/hooks/useLounge";
 import { LoungeMemberPanel } from "./lounge/LoungeMemberPanel";
 import { LoungeView } from "./lounge/LoungeView";
@@ -211,6 +212,11 @@ export function AppShell({
   const [gitRefreshKey, setGitRefreshKey] = useState(0);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [settingsConfigOpen, setSettingsConfigOpen] = useState(false);
+  // 사이드바 사용량의 「재로그인」이 연 대상 계정과, 로그인 뒤 다시 읽은 사용량으로 확인한 그 계정의 상태.
+  const [reloginTarget, setReloginTarget] = useState<OAuthReloginTarget | null>(null);
+  const [reloginStatus, setReloginStatus] = useState<OAuthReloginOutcome | null>(null);
+  // 재로그인 확인 결과의 소유권. 늦게 끝난 이전 대상의 확인이 지금 열린 다른 대상에 찍히지 않는다.
+  const [reloginCheck] = useState(() => createReloginCheck(setReloginStatus));
   const [projectTrust, setProjectTrust] = useState<ProjectTrustState | null>(null);
   // 보류된 신뢰 변경을 다시 읽을 때(턴 종료·설정 닫힘)만 올린다. 주기적 조회는 하지 않는다.
   const [projectTrustRefreshKey, setProjectTrustRefreshKey] = useState(0);
@@ -789,12 +795,39 @@ export function AppShell({
     selectWorkspaceView(lastPanelView, true);
   }, [lastPanelView, selectWorkspaceView, workspaceLayout.activeView]);
 
+  // 재로그인은 설정 진입과 같은 자리를 비우고, 기존 Models 화면의 OAuth 상세를 그 계정 안내와 함께
+  // 연다. 로그인은 사용자가 그 화면에서 직접 시작한다.
+  const openRelogin = useCallback((target: OAuthReloginTarget) => {
+    setActiveTopPanel(null);
+    dispatchWorkspaceLayout({ type: "close-layer" });
+    if (isCompactWorkspace) setCompactDrawerOpen(false);
+    reloginCheck.reset();
+    setReloginTarget(target);
+  }, [isCompactWorkspace, reloginCheck, setCompactDrawerOpen]);
+
+  const closeRelogin = useCallback(() => {
+    reloginCheck.reset();
+    setReloginTarget(null);
+    requestComposerFocus();
+  }, [reloginCheck, requestComposerFocus]);
+
+  // 로그인 성공은 대상 계정의 복구가 아니다. 기존 사용량 갱신으로 다시 읽어, 같은 안정 identity의
+  // 계정이 실제로 켜져 있고 오류가 없을 때만 복구로 본다. 갱신이 실패해 옛 값만 있으면 확인 불가다.
+  const refreshUsage = usage.refresh;
+  const handleReloginSucceeded = useCallback(() => {
+    if (reloginTarget !== null) reloginCheck.check(refreshUsage, reloginTarget);
+  }, [refreshUsage, reloginCheck, reloginTarget]);
+
   const closeTopWorkspaceLayer = useCallback((): boolean => {
     if (projectTrustDialogOpen) {
       if (!projectTrustBusy) {
         setProjectTrustDialogOpen(false);
         requestComposerFocus();
       }
+      return true;
+    }
+    if (reloginTarget !== null) {
+      closeRelogin();
       return true;
     }
     if (settingsConfigOpen) {
@@ -825,7 +858,9 @@ export function AppShell({
     }
     return false;
   }, [
+    closeRelogin,
     moreMenuOpen,
+    reloginTarget,
     activeTopPanel,
     projectTrustBusy,
     projectTrustDialogOpen,
@@ -1205,7 +1240,7 @@ export function AppShell({
     onCycleView: cycleWorkspaceView,
     onNavigateSession: navigateProjectSession,
     onEscape: closeTopWorkspaceLayer,
-    enabled: !settingsConfigOpen && !projectTrustDialogOpen,
+    enabled: !settingsConfigOpen && !projectTrustDialogOpen && reloginTarget === null,
     activeCwd,
   });
 
@@ -1763,6 +1798,7 @@ export function AppShell({
               setResourceTab("usage");
               selectWorkspaceView("resource", false);
             }}
+            onRelogin={openRelogin}
           />
         )}
         <OmpUpdateIndicator />
@@ -2588,6 +2624,14 @@ export function AppShell({
         }}
         onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
         onReloaded={() => setSessionKey((key) => key + 1)}
+      />
+    )}
+    {reloginTarget !== null && (
+      <ModelsConfig
+        cwd={projectTrustCwd}
+        onClose={closeRelogin}
+        onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
+        relogin={{ target: reloginTarget, outcome: reloginStatus, onLoginSucceeded: handleReloginSucceeded }}
       />
     )}
     {projectTrustDialogOpen && projectTrustCwd && (

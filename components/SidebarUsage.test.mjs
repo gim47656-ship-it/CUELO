@@ -5,13 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
-const { SidebarUsage } = await jiti.import("./SidebarUsage.tsx");
+const { SidebarUsage, createReloginCheck, mergeStripOrder, orderStripAccounts, reloginOutcome } = await jiti.import("./SidebarUsage.tsx");
 const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
 const { accountIdentities } = await jiti.import("../lib/hanse-resource-client.ts");
 
 const HOUR_MS = 3_600_000;
 
-function renderStrip(reports) {
+function renderStrip(reports, onRelogin = () => {}) {
   const state = { status: "fresh", data: { reports }, error: null };
   return renderToStaticMarkup(createElement(I18nProvider, null, createElement(SidebarUsage, {
     usage: {
@@ -24,19 +24,28 @@ function renderStrip(reports) {
       setPaused() {},
     },
     onOpen() {},
+    onRelogin,
   })));
+}
+
+/** The account groups the strip drew, in DOM order: the alias and that account's chunk of markup. */
+function drawnGroups(html) {
+  return html.split('class="navigator-usage-group"').slice(1).map((chunk) => ({
+    account: chunk.match(/navigator-usage-alias">([^<]*)</)?.[1],
+    html: chunk,
+  }));
 }
 
 /** The limit rows the strip drew, in DOM order, with the account each one belongs to. */
 function drawnRows(html) {
-  return [...html.matchAll(
-    /navigator-usage-label">([^<]*)<\/span><span class="navigator-usage-value"[^>]*>([^<]*)<\/span>[\s\S]*?<\/button>([^<]*)/g,
-  )].map((match) => ({ label: match[1], percent: match[2], account: match[3] }));
+  return drawnGroups(html).flatMap((group) => [...group.html.matchAll(
+    /navigator-usage-label">([^<]*)<\/span>(?:<span class="navigator-usage-state">[^<]*<\/span>)?<span class="navigator-usage-value"[^>]*>([^<]*)<\/span>/g,
+  )].filter((match) => match[1] !== "B.AI tokens").map((match) => ({ label: match[1], percent: match[2], account: group.account })));
 }
 
 /** The 상태 labels the strip drew, in DOM order. */
 function drawnStates(html) {
-  return [...html.matchAll(/class="navigator-usage-state">([^<]*)<\/span>/g)].map((match) => match[1]);
+  return [...html.matchAll(/class="navigator-usage-state"(?: data-tone="danger")?>([^<]*)<\/span>/g)].map((match) => match[1]);
 }
 
 function anthropicAccount(email, limits, extra = {}) {
@@ -198,8 +207,9 @@ test("남은 한도는 스트립 안에서 펼칠 수 있는 버튼으로 남는
   assert.ok(toggle, "펼침 버튼이 있어야 한다");
   assert.match(toggle[0], /aria-expanded="false"/);
   assert.equal(toggle[1], "Show 1 more");
-  // 스트립 자체는 여전히 「사용량 자세히 보기」를 여는 role="button" 이다.
-  assert.match(html, /role="button"/);
+  // 스트립을 여는 것은 이름 있는 실제 버튼이다. 외곽이 버튼이면 안쪽 버튼들이 중첩된다.
+  assert.match(html, /<button type="button" class="navigator-usage-open" aria-label="Open usage details: [^"]+">Usage<\/button>/);
+  assert.doesNotMatch(html, /role="button"/);
 });
 
 test("꺼둔 계정은 그리지도, 남은 개수에 세지도 않는다", () => {
@@ -218,4 +228,95 @@ test("꺼둔 계정은 그리지도, 남은 개수에 세지도 않는다", () =
   assert.equal(rows.length, 1);
   assert.equal(rows[0].label, "Claude 5 Hour");
   assert.doesNotMatch(html, /Show \d+ more/);
+});
+
+test("인증이 만료된 계정은 숨기지 않고 사유와 재로그인을 보이며, 막대를 그리지 않는다", () => {
+  const reports = [
+    anthropicAccount("expired@example.test", [], {
+      credentialId: 9,
+      accountKey: "acct-expired",
+      disabled: true,
+      authError: { code: "oauth_refresh_expired", message: "Sign-in expired. Sign in again.", reloginRequired: true },
+    }),
+    anthropicAccount("live@example.test", [
+      { id: "anthropic:7d", label: "Claude 7 Day", amount: { usedFraction: 0.3 } },
+    ], { credentialId: 11, accountKey: "acct-live" }),
+  ];
+  const aliases = accountIdentities(reports).map((identity) => identity.alias);
+  const targets = [];
+
+  const html = renderStrip(reports, (target) => targets.push(target));
+  const groups = drawnGroups(html);
+
+  // 쓸 수 있는 계정이 먼저, 만료된 계정은 뒤지만 같은 접힌 화면 안에 남는다. 얼굴은 정렬 전 목록 그대로다.
+  assert.deepEqual(groups.map((group) => group.account), [aliases[1], aliases[0]]);
+  const expired = groups[1].html;
+  assert.match(expired, /navigator-usage-reason">Sign-in expired\. Sign in again\.</);
+  assert.match(expired, new RegExp(`class="navigator-usage-relogin" aria-label="Sign in again as ${aliases[0].replace(/[()]/g, "\\$&")}"`));
+  assert.doesNotMatch(expired, /navigator-usage-track/);
+  assert.deepEqual(drawnStates(html), ["sign-in expired"]);
+  // 접힌 요약에도 오류 계정 수가 남는다.
+  assert.match(html, /navigator-usage-alert">Account issues: 1</);
+});
+
+test("재로그인으로 풀리지 않는 오류에는 재로그인 버튼을 두지 않는다", () => {
+  const html = renderStrip([
+    anthropicAccount("broken@example.test", [], {
+      credentialId: 9,
+      accountKey: "acct-broken",
+      authError: { code: "usage_unavailable", message: "Usage could not be read.", reloginRequired: false },
+    }),
+  ]);
+
+  assert.match(html, /navigator-usage-reason">Usage could not be read\.</);
+  assert.deepEqual(drawnStates(html), ["unavailable"]);
+  assert.doesNotMatch(html, /navigator-usage-relogin/);
+});
+
+test("저장된 순서는 처음 보는 계정을 뒤에 붙이고, 잠시 빠진 계정의 자리를 지킨다", () => {
+  const accounts = ["a:2", "a:3", "a:new"].map((orderKey) => ({ orderKey }));
+  // a:1 은 지금 보고서에 없다.
+  const saved = ["a:3", "a:1", "a:2"];
+
+  assert.deepEqual(orderStripAccounts(accounts, saved).map((account) => account.orderKey), ["a:3", "a:2", "a:new"]);
+  // 화면에서 a:new 를 맨 위로 올렸다. a:1 은 두 번째 칸에 그대로 남는다.
+  assert.deepEqual(mergeStripOrder(saved, ["a:new", "a:3", "a:2"]), ["a:new", "a:1", "a:3", "a:2"]);
+});
+
+test("재로그인 뒤 대상 계정이 사라진 것은 복구가 아니다", () => {
+  const target = { provider: "anthropic", accountKey: "acct-expired" };
+  const expired = { provider: "anthropic", accountKey: "acct-expired", disabled: true,
+    authError: { code: "x", message: "m", reloginRequired: true } };
+  const other = { provider: "anthropic", accountKey: "acct-other" };
+
+  assert.equal(reloginOutcome([other], target), "unknown");
+  // 다른 계정으로 로그인해 새 계정만 늘고 대상은 여전히 깨져 있다.
+  assert.equal(reloginOutcome([expired, other], target), "still-failing");
+  assert.equal(reloginOutcome([expired, { provider: "anthropic", accountKey: "acct-expired" }], target), "recovered");
+  assert.equal(reloginOutcome([{ provider: "anthropic" }], { provider: "anthropic" }), "unknown");
+});
+
+test("늦게 끝난 이전 대상의 확인은 지금 연 다른 대상에 결과를 찍지 않는다", async () => {
+  const statuses = [];
+  const check = createReloginCheck((status) => statuses.push(status));
+  let finishA;
+  const refreshA = () => new Promise((resolve) => { finishA = resolve; });
+  const a = { provider: "anthropic", accountKey: "acct-a" };
+  const b = { provider: "anthropic", accountKey: "acct-b" };
+
+  check.reset();
+  check.check(refreshA, a);
+  // A 확인이 끝나기 전에 대화상자를 닫고 B를 연다.
+  check.reset();
+  check.reset();
+  finishA({ status: "fresh", data: { reports: [{ provider: "anthropic", accountKey: "acct-a" }] }, error: null });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(statuses, [null, "checking", null, null]);
+
+  // B 자신의 확인은 그대로 반영된다.
+  check.check(async () => ({ status: "fresh", data: { reports: [{ provider: "anthropic", accountKey: "acct-b" }] }, error: null }), b);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(statuses.slice(-2), ["checking", "recovered"]);
 });

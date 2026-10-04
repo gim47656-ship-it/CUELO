@@ -59,6 +59,8 @@
 - Answer every finding that names your change with the fix you made and the raw output of the check
   that now covers it, keeping the same finding id — no separate messenger or new reporting stage.
   Never weaken an expectation, relax a fixture, or hide a failure to make validation pass.
+- Follow `rule://subagent` 「Skill 인계」 for relevant skills handed over in the brief:
+  required direct reading before implementation, reuse of known locators, and reconsultation when unclear.
 - 관련 Skill을 먼저 읽고 이번 조치에 적용되는 주의사항만 이름·절/locator·위험 요약으로 추린다.
   pre-retry advisory를 보충하다가(Common Rules) 검증 약화나 Skill 충돌·적용 불가가 나오면 문제 된
   조치만 보류하고 기존 blocker/조향 DM으로 원문 오류 locator·Skill locator·제안 조치·보존할 수용
