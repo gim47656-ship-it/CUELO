@@ -2515,6 +2515,47 @@ console.log("\n[23] Mnemopi 회수 — 원문이 실린 기억의 파생 fact �
 	}
 }
 
+// 2026-10-04 한국어 회상 측정(190문항 hit@8 19.4%): 조사 붙은 어절이 서로 맞지 않고, 원본이 살아 있는 sleep 병합
+// 에피소드와 veracity "tool"(learn/retain) 감점이 원문 교훈을 밀어냈다. 임베딩 없이 어휘·FTS 경로만으로 확인한다.
+console.log("\n[23b] Mnemopi 한국어 회수 — 조사 어간, 원본 살아 있는 sleep 에피소드 제외, learn/retain 가중");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/index.ts`);
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-ko-"));
+	const bank = "korean";
+	const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, embeddings: false, llm: false, reconcile: false });
+	const recallIds = async (query: string) =>
+		((await memory.recallEnhanced(query, 8, { includeFacts: false, channelId: bank })) as Array<{ id: string }>).map(result => result.id);
+	try {
+		const deploy = memory.remember("배포는 반드시 마이그레이션이 끝난 뒤에 서버를 재시작한다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		const english = memory.remember("Run the database migration before restarting the API server.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		check("조사가 다른 어절(배포를/배포는)로도 원문을 찾는다", (await recallIds("배포를 언제 해야 하나요")).includes(deploy));
+		check("영어 질의는 그대로 원문을 찾는다", (await recallIds("when to run the migration before restarting")).includes(english));
+		// 원본마다 질의 세 단어 중 하나만 들어 있어 각 원본은 최소 관련도(3단어 0.34)에 못 미치고, 셋을 이은 병합
+		// 에피소드만 질의 전체와 맞는다. 원본이 살아 있는 동안 그 에피소드는 사본이므로 실리면 안 된다.
+		const alpha = memory.remember("알파서버 설정은 손으로 바꾼다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		memory.remember("베타큐 길이는 매일 확인한다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		memory.remember("감마로그 보관은 일주일이다.", { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" });
+		const old = new Date(Date.now() - 48 * 3_600_000).toISOString();
+		memory.beam.db.run("UPDATE working_memory SET timestamp = ?", [old]);
+		memory.sleep(false);
+		const episode = memory.beam.db.query("SELECT id FROM episodic_memory WHERE source = 'sleep_consolidation'").get() as { id: string } | null;
+		check("sleep 이 병합 에피소드를 만든다(fixture 전제)", episode !== null);
+		const withLive = await recallIds("알파서버 베타큐 감마로그");
+		check("원본이 모두 살아 있으면 병합 에피소드는 실리지 않는다", !withLive.includes(episode?.id ?? ""), `ids=${withLive.join(",")}`);
+		memory.forget(alpha);
+		const orphaned = await recallIds("알파서버 베타큐 감마로그");
+		check("원본이 하나라도 지워지면 에피소드가 유일한 사본으로 남는다", orphaned.includes(episode?.id ?? ""), `ids=${orphaned.join(",")}`);
+
+		const lesson = memory.remember("라운지 대화가 끊기면 세션 재연결 로그부터 확인한다.", { source: "coding-agent-learn", importance: 0.7, scope: "bank", veracity: "tool", memoryType: "fact" });
+		const transcript = memory.remember("[role: user] 라운지 대화가 끊기면 세션 재연결 로그부터 확인해 볼까", { source: "coding-agent-transcript", importance: 0.7, scope: "bank", veracity: "unknown", memoryType: "episode" });
+		const ranked = await recallIds("라운지 대화 끊김 재연결 로그");
+		check("의도적 learn 기록이 같은 내용의 자동 transcript 보다 앞선다", ranked.indexOf(lesson) >= 0 && (ranked.indexOf(transcript) < 0 || ranked.indexOf(lesson) < ranked.indexOf(transcript)), `ids=${ranked.join(",")}`);
+	} finally {
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
 // 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 자기 작업 brief 로 회상하지 않고 부모의 첫 턴
 // 회상만 물려받았다. 실제 backend.start(taskDepth 1) → beforeAgentStartPrompt → buildDeveloperInstructions
 // 경로를 태운다. 부모 state 는 구조만 맞춘 fixture 이며 회상 저장소(scoped)는 child 가 그대로 공유한다.

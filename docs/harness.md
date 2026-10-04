@@ -187,6 +187,10 @@ bun Tools/OMP_Global_Config/skill-cost/skill-cost.mjs [--days 30] [--json] [--ag
 
 `learn`에 선택 인자 `topic`을 주면 같은 프로젝트 bank에서 그 주제의 기억 한 행을 새로 쌓지 않고 갱신하며, 결과에 기억 id와 revision을 보여 줍니다. 동시 실행 한도처럼 값이 바뀌는 사실이 여러 버전으로 쌓여 회상 자리(기본 8건)를 서로 차지하지 않게 하려는 것입니다. `topic` 없는 `learn`은 이전과 같습니다.
 
+## 한국어 기억 회상
+
+패치된 내장 코어는 기억을 회상할 때 세 가지를 바로잡습니다. 한글 어절은 조사·어미를 뗀 어간으로도 키워드 검색을 해서 `배포를`로 물어도 `배포는`이 적힌 교훈을 찾습니다. 수면 통합이 원본 교훈 여러 개를 이어 붙여 줄인 에피소드는, 그 원본이 모두 남아 있으면 회상 후보에서 빠지고 원본이 대신 실립니다. 원본 중 하나라도 지워졌거나 새 교훈으로 대체되면 에피소드가 유일한 사본이므로 그대로 후보에 남습니다. `learn`·`retain`으로 남긴 교훈은 회상 점수에서 자동 저장 기록보다 낮게 평가되지 않습니다. 저장된 데이터와 통합 방식은 바뀌지 않습니다. 관련 기억이 없는 질문에도 상위 기억을 채워 싣는 동작은 그대로입니다.
+
 ## omp core 패치
 
 [`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 이 공개 저장소의 CI는 앱 빌드·테스트와 함께 `Verify harness`에서 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌립니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 가볍게 실행합니다.

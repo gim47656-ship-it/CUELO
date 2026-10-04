@@ -5968,6 +5968,87 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 `,
 	},
 	{
+		// 2026-10-04 한국어 회상 측정(.omp/memory-eval, 190문항, multilingual-e5-large): baseline hit@8 19.4%.
+		// 정답 원문 learn/retain 은 상위 8칸 1,520칸 중 79칸뿐이었고, 세 원인이 겹쳐 있었다. 하나만 고치면 다른
+		// 원인이 빈자리를 채워 효과가 없었고(13.9~26.7%), 셋을 함께 고치면 57.8%다(영어 fixture MRR 0.695→0.872).
+		// (1) FTS5 unicode61 은 어절을 통째로 토큰으로 삼아 `배포를`·`배포는` 이 서로 맞지 않는다(질의 어절 2,879개
+		// 중 정답 원문에 그대로 있는 것 521, 조사를 떼면 761). 한글로만 된 어절은 조사·어미를 뗀 어간을 어휘 그룹에
+		// 더하고 FTS 는 그 어간의 접두 질의로 찾는다. 사전 없이 끝 음절만 자르므로 어간은 늘 원 어절의 접두다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: korean particle stem",
+		anchor: "const FLAT_FACT_SEARCH_NOISE: Record<string, true> = { entity: true, fact: true };\n",
+		patched: `const FLAT_FACT_SEARCH_NOISE: Record<string, true> = { entity: true, fact: true };
+
+// HANSE: korean particle stem
+const HANGUL_WORD = /^[\\uac00-\\ud7af]+$/;
+/** 긴 것부터 맞춘다. 떼고 남는 어간이 두 음절보다 짧으면 떼지 않는다. */
+const KOREAN_SUFFIXES = [
+	"에서는", "에서도", "으로는", "으로도", "에게서", "이라는", "이라고", "했는데", "됐는데", "하나요", "되나요", "인가요", "하려면", "입니다", "합니다",
+	"에서", "으로", "에게", "한테", "까지", "부터", "처럼", "보다", "마다", "라는", "라고", "에는", "로는", "이나", "이며", "이고", "하고", "해줘",
+	"해야", "하는", "했다", "하면", "해서", "하게", "하지", "되는", "된다", "인데", "이다", "인지",
+	"와", "과", "을", "를", "이", "가", "은", "는", "에", "의", "도", "만", "로", "나", "랑", "한", "할", "해", "된",
+];
+function koreanStem(token: string): string {
+	if (!HANGUL_WORD.test(token)) return token;
+	for (const suffix of KOREAN_SUFFIXES) {
+		if (token.endsWith(suffix) && token.length - suffix.length >= 2) return token.slice(0, -suffix.length);
+	}
+	return token;
+}
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "if (stem !== token) seen.add(stem);",
+		anchor: "\t\tfor (const variant of recallSynonyms(token, useSynonyms)) {\n\t\t\tfor (const part of tokenize(variant)) seen.add(part);\n\t\t}\n\t\tif (seen.size > 0) groups.push([...seen]);\n",
+		patched: "\t\tfor (const variant of recallSynonyms(token, useSynonyms)) {\n\t\t\tfor (const part of tokenize(variant)) seen.add(part);\n\t\t}\n\t\tconst stem = koreanStem(token);\n\t\tif (stem !== token) seen.add(stem);\n\t\tif (seen.size > 0) groups.push([...seen]);\n",
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "ftsPhrase(koreanStem(token))}*",
+		anchor: '\treturn tokens.map(ftsPhrase).join(" OR ");\n',
+		patched: '\treturn tokens.map(token => (koreanStem(token) === token ? ftsPhrase(token) : `${ftsPhrase(koreanStem(token))}*`)).join(" OR ");\n',
+	},
+	{
+		// (2) sleep 은 같은 출처의 working 행을 ` | ` 로 이어 aaak 로 줄인 에피소드를 만든다(CUELO 평균 11,180자, 최대
+		// 99,932자). 원본 행은 consolidated_at 만 찍히고 남아 그 자체로 후보다. 그래서 에피소드는 사본인데, 병합 문서의
+		// 임베딩이 여러 질의에 두루 가깝고 episodic 점수가 dense 를 working(0.2)보다 크게(0.5) 쳐서 상위 8칸 중
+		// 718칸을 차지했다. 원본이 모두 살아 있는(지워지거나 superseded 되지 않은) 에피소드만 후보에서 뺀다.
+		// 원본이 하나라도 없으면 그 에피소드가 유일한 사본이므로 지금처럼 남긴다. 30일·180일 열화로 에피소드
+		// 뒤쪽 교훈이 잘리는 손실(226개 중 127·155개)도 원본이 남은 에피소드에는 회상 손실이 되지 않는다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: skip sleep episodes whose sources are live",
+		anchor: "\tif (candidates.length === 0) return candidates;\n\tvoid useSynonyms;\n\treturn candidates;\n",
+		patched: `	if (candidates.length === 0) return candidates;
+	void useSynonyms;
+	// HANSE: skip sleep episodes whose sources are live
+	return candidates.filter(candidate => {
+		if (candidate.tierLabel !== "episodic" || asString(candidate.row.source) !== "sleep_consolidation") return true;
+		const ids = asString(candidate.row.summary_of)
+			.split(",")
+			.map(id => id.trim())
+			.filter(id => id.length > 0);
+		if (ids.length === 0) return true;
+		const live = queryGet(
+			beam,
+			\`SELECT COUNT(*) AS n FROM working_memory WHERE id IN (\${placeholders(ids.length)}) AND superseded_by IS NULL\`,
+			ids,
+		);
+		return asNumber(live?.n) !== ids.length;
+	});
+`,
+	},
+	{
+		// (3) learn/retain 은 의도적 기록인데 veracity "tool" 로 저장되고(learn.ts·memory-retain.ts) 회상 가중이 0.5 라,
+		// "unknown"(0.8)인 자동 transcript 아래로 밀렸다(정답 원문 fts=1 이어도 순위 25위). omp 에서 "tool" 을 쓰는
+		// 곳은 이 둘뿐이다. 회상 점수의 가중만 1.0 으로 올린다. 저장 데이터와 veracity-consolidation 가중은 그대로다.
+		// config.ts 의 MNEMOPI_TOOL_WEIGHT(toolWeight)는 어디서도 읽지 않아 이 경로를 바꾸지 못한다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: deliberate learn/retain weight",
+		anchor: "\ttool: 0.5,\n\tfalse: 0,\n",
+		patched: "\t// HANSE: deliberate learn/retain weight\n\ttool: 1.0,\n\tfalse: 0,\n",
+	},
+	{
 		// 2026-09-29 실측: 기억 임베딩 재구축(모델 변경·중단 뒤 재개)이 128건 묶음을 한꺼번에 worker 에
 		// 올렸다. worker 는 요청을 하나씩 처리하는데 요청마다 120초 타이머가 보낸 순간부터 흘러,
 		// CPU multilingual-e5-large 로 긴 기억 102건이 한 묶음이 되자 매 세션 2분 뒤 시간 초과로 worker 가
