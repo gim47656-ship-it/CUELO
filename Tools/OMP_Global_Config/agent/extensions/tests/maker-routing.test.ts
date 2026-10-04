@@ -82,7 +82,7 @@ function harness(options: {
   let candidateCalls = 0;
   // 등록 도구 경로를 그대로 지난다. 코어가 주는 zod는 schema 등록에만 쓰이므로 사슬 stub이면 충분하다.
   const toolDefinitions: { execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => Promise<{ content: { text: string }[]; details: unknown }> }[] = [];
-  const zodChain = (): { nullable(): unknown } => ({ nullable: () => zodChain() });
+  const zodChain = (): { nullable(): unknown; describe(): unknown } => ({ nullable: () => zodChain(), describe: () => zodChain() });
   const route = registerMakerRouting({
     zod: { string: zodChain, array: zodChain, object: zodChain },
     registerTool: (definition: never) => { toolDefinitions.push(definition); },

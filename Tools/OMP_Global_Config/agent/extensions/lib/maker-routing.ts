@@ -1147,7 +1147,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const z = pi.zod;
     const strings = () => z.array(z.string());
     const nullable = () => strings().nullable();
-    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string(), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
+    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe("실제로 발주할 브리프 전문(요약·제목 아님). 첫 줄 `TASK_GUARD:` 다음 줄부터 빈 줄 없이 WORK_CLASS·PRIMARY_DELIVERABLE(요청의 첫 child)·OWNED_PATHS, 그 뒤 TASK_TITLE·TODO_TASKS, 이어서 # Target·# Change·# Acceptance. 양식 정본 rule://task-guard."), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
     // SDK 18.2.6 TSchema의 unknown generic 불변성만 연결한다. 실제 Zod schema 검증은 그대로다.
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({

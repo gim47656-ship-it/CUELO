@@ -91,7 +91,7 @@ function createHarness(options: HarnessOptions = {}) {
   const warnings: string[] = [];
   const tools: Record<string, RegisteredRouteTool> = {};
   const asyncJobs: Array<{ id: string; agentId: string }> = (options.asyncJobs ?? []) as Array<{ id: string; agentId: string }>;
-  const zodChain = (): { nullable(): unknown; optional(): unknown } => ({ nullable: zodChain, optional: zodChain });
+  const zodChain = (): { nullable(): unknown; optional(): unknown; describe(): unknown } => ({ nullable: zodChain, optional: zodChain, describe: zodChain });
 
   const settings = options.noSettings
     ? undefined

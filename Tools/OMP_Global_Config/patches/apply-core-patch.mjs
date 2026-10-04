@@ -85,6 +85,37 @@ const OPUS55_ROW_18410 = {
  */
 const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93,');
 
+/**
+ * 기억 임베딩 (6) 항목의 본문. 0.9.3 은 recall 이 e5 여부로 dense 하한을 고르게 `usesE5Prefix` 를 export 한다.
+ * 0.9.2 적용본(export 없음)은 legacyPatched 로 남겨 같은 항목이 새 판으로 바꾼다.
+ */
+const e5EmbeddingBlock = (exportUsesE5Prefix) => `// HANSE: local embedding fingerprint and e5 prefixes
+const E5_PREFIX_STAMP = "e5-prefix-v1";
+
+/** The local fastembed model in use (no injected provider, not an API model), or null. */
+function localEmbeddingModel(): string | null {
+	if (resolveEmbeddingProvider(activeEmbeddingOptions()?.provider) !== undefined || providerOverride !== null) return null;
+	const model = defaultModel();
+	return isApiModel(model) ? null : model;
+}
+
+${exportUsesE5Prefix ? "export " : ""}function usesE5Prefix(): boolean {
+	const model = localEmbeddingModel();
+	return model !== null && /(^|[/_-])e5([-_]|$)/i.test(model);
+}
+
+/** Adds the e5 retrieval prefix for local e5 models; other models embed the text as-is. */
+export function e5Prefixed(kind: "query" | "passage", texts: readonly string[]): readonly string[] {
+	return usesE5Prefix() ? texts.map(text => \`\${kind}: \${text}\`) : texts;
+}
+
+export function currentEmbeddingModel(): string {
+	const model = localEmbeddingModel();
+	if (model === null) return defaultModel();
+	return \`\${model}#\${fastembedRuntimeInstallPlan().versionKey}\${usesE5Prefix() ? \`#\${E5_PREFIX_STAMP}\` : ""}\`;
+}
+`;
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -5888,6 +5919,15 @@ export class LearnTool implements AgentTool<LearnSchema> {`,
 		}],
 	},
 	{
+		// 2026-10-04 집계: bash 안의 `powershell -Command "...$x..."` 가 command-guard 에 막힌 일이 14일 14건(10-02 이후 12)이다.
+		// 규칙은 RULES·skill 에 있지만 실수는 bash 호출 자리에서 나므로, Windows 에서만 도구 설명에 우회 경로를 적는다.
+		// patched 에 달러 기호를 넣지 않는다: 문자열 replace 가 달러+백틱을 '일치 앞 전체' 로 해석해 파일을 망가뜨렸다.
+		file: "src/prompts/tools/bash.md",
+		marker: "{{#if isWindows}}PowerShell logic:",
+		anchor: "Internal URIs work as paths for builtins/coreutils, redirects, globs.\n",
+		patched: "Internal URIs work as paths for builtins/coreutils, redirects, globs.\n{{#if isWindows}}PowerShell logic: `write` a `.ps1`, then `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/abs/path.ps1`; never `-Command` with PowerShell variables (this shell rewrites them). Windows paths: forward slashes.{{/if}}\n",
+	},
+	{
 		// 같은 집계: `todo` append 에 phase 를 빠뜨리면 거절됐다(사흘간 9건). phase 가 없으면 아직 안 끝난
 		// 일이 있는 첫 phase, 없으면 마지막 phase, phase 가 없으면 init 기본 이름에 붙인다.
 		file: "src/tools/todo.ts",
@@ -6096,32 +6136,8 @@ function koreanStem(token: string): string {
 		file: "../pi-mnemopi/src/core/embeddings.ts",
 		marker: "// HANSE: local embedding fingerprint and e5 prefixes",
 		anchor: "export function currentEmbeddingModel(): string {\n\treturn defaultModel();\n}\n",
-		patched: `// HANSE: local embedding fingerprint and e5 prefixes
-const E5_PREFIX_STAMP = "e5-prefix-v1";
-
-/** The local fastembed model in use (no injected provider, not an API model), or null. */
-function localEmbeddingModel(): string | null {
-	if (resolveEmbeddingProvider(activeEmbeddingOptions()?.provider) !== undefined || providerOverride !== null) return null;
-	const model = defaultModel();
-	return isApiModel(model) ? null : model;
-}
-
-function usesE5Prefix(): boolean {
-	const model = localEmbeddingModel();
-	return model !== null && /(^|[/_-])e5([-_]|$)/i.test(model);
-}
-
-/** Adds the e5 retrieval prefix for local e5 models; other models embed the text as-is. */
-export function e5Prefixed(kind: "query" | "passage", texts: readonly string[]): readonly string[] {
-	return usesE5Prefix() ? texts.map(text => \`\${kind}: \${text}\`) : texts;
-}
-
-export function currentEmbeddingModel(): string {
-	const model = localEmbeddingModel();
-	if (model === null) return defaultModel();
-	return \`\${model}#\${fastembedRuntimeInstallPlan().versionKey}\${usesE5Prefix() ? \`#\${E5_PREFIX_STAMP}\` : ""}\`;
-}
-`,
+		patched: e5EmbeddingBlock(true),
+		legacyPatched: e5EmbeddingBlock(false),
 	},
 	{
 		file: "../pi-mnemopi/src/core/embeddings.ts",
@@ -6146,6 +6162,95 @@ export function currentEmbeddingModel(): string {
 		marker: "import { currentEmbeddingModel, e5Prefixed, embed } from",
 		anchor: 'import { currentEmbeddingModel, embed } from "../embeddings";\n',
 		patched: 'import { currentEmbeddingModel, e5Prefixed, embed } from "../embeddings";\n',
+	},
+	{
+		// (7) SHMR(core/shmr.ts)도 같은 e5 공간을 쓴다. harmonize 는 memory_embeddings 의 저장 벡터(passage: 접두)와
+		// embedBatch 가 새로 만든 벡터를 한 코사인 군집에서 섞는데, embedBatch 만 접두 없이 임베딩해 두 공간이 갈렸다.
+		// 기억·belief 텍스트는 passage: 로, recallBeliefs 의 질의만 query: 로 임베딩한다. 한 호출 안에서 접두를 정해
+		// 실패 시 hash fallback 이 묶음 전체에 걸리는 기존 계약은 그대로다. 이 벡터는 저장하지 않아 stamp 는 그대로다.
+		file: "../pi-mnemopi/src/core/shmr.ts",
+		marker: "// HANSE: shmr e5 prefixes",
+		anchor: "export async function embedBatch(texts: readonly string[]): Promise<Vector[]> {\n\tif (texts.length === 0) return [];\n\tlet matrix: embeddings.EmbeddingMatrix | null = null;\n\ttry {\n\t\tmatrix = await embeddings.embed(texts);\n",
+		patched: `// HANSE: shmr e5 prefixes
+export async function embedBatch(
+	texts: readonly string[],
+	providerTexts: readonly string[] = embeddings.e5Prefixed("passage", texts),
+): Promise<Vector[]> {
+	if (texts.length === 0) return [];
+	let matrix: embeddings.EmbeddingMatrix | null = null;
+	try {
+		matrix = await embeddings.embed(providerTexts);
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/shmr.ts",
+		marker: 'embeddings.e5Prefixed("query", [query])',
+		anchor: "\tconst vectors = await embedBatch([query, ...rows.map(row => row.object)]);\n",
+		patched: `	const objects = rows.map(row => row.object);
+	const vectors = await embedBatch(
+		[query, ...objects],
+		[...embeddings.e5Prefixed("query", [query]), ...embeddings.e5Prefixed("passage", objects)],
+	);
+`,
+	},
+	{
+		// (8) 2026-10-05 후속 측정(재임베딩 복사본, 190문항 + 교차 44 + 대조 70): 한국어 질의에 영어로 저장한 교훈은
+		// dense 점수가 1위와 거의 같은데 어휘 점수가 0.034 대 0.277 로 밀려 hit@8 14.3% 였다. 질의와 기억의 주 문자
+		// (한글/라틴)가 다르면 어휘 겹침이 구조적으로 0 에 가까우므로 working 기억의 어휘 점수에 하한 0.3 을 둔다.
+		// e5 코사인은 0.6~0.9 에 몰려 기존 dense 하한 0.65 가 거의 거르지 못해 e5 일 때만 0.82 로 올린다.
+		// 둘을 함께 쓰면 질문 h1/h8/MRR 58.9/77.8/0.644→64.4/83.3/0.722, 작업 h8 67.8→73.3, 한→영 질문 h8 14.3→47.6.
+		// 무관 질의에도 상위 기억을 채우는 동작은 남는다: 점수 컷은 대조 주입률 1.4% 에서 정답 hit@8 이 77→65 로 떨어져 넣지 않았다.
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "import { embedQuery, usesE5Prefix } from",
+		anchor: 'import { embedQuery } from "../embeddings";\n',
+		patched: 'import { embedQuery, usesE5Prefix } from "../embeddings";\n',
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "\t__queryHangulMajority?: boolean;\n",
+		anchor: "\tupdateRecallCounts?: boolean;\n};\n",
+		patched: "\tupdateRecallCounts?: boolean;\n\t// HANSE: cross-script recall (recall() 이 정해 scoreCandidate 에 넘긴다)\n\t__queryHangulMajority?: boolean;\n\t__denseFloor?: number;\n};\n",
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "const CROSS_SCRIPT_LEXICAL_FLOOR = 0.3;",
+		anchor: "function scoreCandidate(\n\tcandidate: MemoryCandidate,\n",
+		patched: `// HANSE: cross-script recall
+const CROSS_SCRIPT_LEXICAL_FLOOR = 0.3;
+const E5_DENSE_FLOOR = 0.82;
+
+/** 한글과 라틴 글자 중 한글이 절반 이상이면 true. 둘 다 없으면 false. */
+function hangulMajority(text: string): boolean {
+	const hangul = text.match(/[\\uac00-\\ud7af]/g)?.length ?? 0;
+	const latin = text.match(/[A-Za-z]/g)?.length ?? 0;
+	return hangul + latin > 0 && hangul / (hangul + latin) >= 0.5;
+}
+
+function scoreCandidate(
+	candidate: MemoryCandidate,
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "// HANSE: cross-script lexical floor and e5 dense floor",
+		anchor: "\tconst lexical = lexicalGroupRelevance(queryGroups, searchableContent);\n\tconst minRel = minimumRelevance(queryTokens);\n\tif (lexical < minRel && candidate.signals.dense < 0.65) return null;\n",
+		patched: `	// HANSE: cross-script lexical floor and e5 dense floor
+	let lexical = lexicalGroupRelevance(queryGroups, searchableContent);
+	if (
+		candidate.tierLabel === "working" &&
+		options.__queryHangulMajority !== undefined &&
+		options.__queryHangulMajority !== hangulMajority(searchableContent)
+	)
+		lexical = Math.max(lexical, CROSS_SCRIPT_LEXICAL_FLOOR);
+	const minRel = minimumRelevance(queryTokens);
+	if (lexical < minRel && candidate.signals.dense < (options.__denseFloor ?? 0.65)) return null;
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		marker: "temporalOptions.__denseFloor = usesE5Prefix()",
+		anchor: "\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
+		patched: "\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\ttemporalOptions.__queryHangulMajority = hangulMajority(query);\n\ttemporalOptions.__denseFloor = usesE5Prefix() ? E5_DENSE_FLOOR : 0.65;\n\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
 	},
 	{
 		// 2026-09-29 실측: 기억 임베딩 재구축(모델 변경·중단 뒤 재개)이 128건 묶음을 한꺼번에 worker 에

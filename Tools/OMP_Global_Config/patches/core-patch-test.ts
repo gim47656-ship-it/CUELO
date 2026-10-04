@@ -2655,6 +2655,89 @@ console.log("\n[23e] Mnemopi 임베딩 — 로컬 e5 는 접두를 붙이고, st
 	}
 }
 
+// SHMR 군집은 저장 벡터(passage: 접두)와 embedBatch 가 새로 만든 벡터를 한 코사인 공간에서 섞는다. 접두가 갈리면
+// 같은 문장끼리도 공간이 달라진다. 실제 로컬 모델 경로(초기화 함수만 fixture)로 provider 가 받은 텍스트를 본다.
+console.log("\n[23f] Mnemopi SHMR — 기억·belief 는 passage:, belief 회수 질의는 query: 로 임베딩한다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { setLocalModelInitializerForTests, resetEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+	const shmr = await import(`${CORE}/../../pi-mnemopi/src/core/shmr.ts`);
+	const { withMnemopiRuntimeOptions } = await import(`${CORE}/../../pi-mnemopi/src/core/runtime-options.ts`);
+	const seen: string[] = [];
+	setLocalModelInitializerForTests(async () => ({
+		embed: (texts: string[]) => (async function* () {
+			seen.push(...texts);
+			yield texts.map(() => [1, 0, 0]);
+		})(),
+	}));
+	const memDir = mkdtempSync(join(tmpdir(), "hanse-mnemopi-shmr-"));
+	const bank = "shmr";
+	const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, llm: false, reconcile: false, embeddings: { model: "intfloat/multilingual-e5-large" } });
+	try {
+		shmr.applyBeliefs(memory.conn, [{ subject: "port", predicate: "order", object: "포트를 닫은 뒤 다시 연다", confidence: 0.9, action: "create" }], [], "c1");
+		// 실제 호출자처럼 은행의 runtime 범위(임베딩 모델 설정) 안에서 부른다.
+		const inScope = <T>(fn: () => T): T => withMnemopiRuntimeOptions(memory.runtimeOptions, fn);
+		const beliefs = await inScope(() => shmr.recallBeliefs({ conn: memory.conn }, "포트 재연결"));
+		check("belief 회수는 질의를 query:, belief 를 passage: 로 임베딩한다", beliefs.length === 1 && seen.includes("query: 포트 재연결") && seen.includes("passage: 포트를 닫은 뒤 다시 연다"), JSON.stringify(seen));
+		seen.length = 0;
+		await inScope(() => shmr.clusterBySimilarity([{ content: "재연결 로그는 매일 보관한다" }, { content: "포트는 닫고 연다" }], 0.5));
+		check("군집용 기억 텍스트는 저장 벡터와 같은 passage: 로 임베딩한다", JSON.stringify(seen) === JSON.stringify(["passage: 재연결 로그는 매일 보관한다", "passage: 포트는 닫고 연다"]), JSON.stringify(seen));
+	} finally {
+		resetEmbeddingProviderForTests();
+		memory.close();
+		rmSync(memDir, { recursive: true, force: true });
+	}
+}
+
+// 2026-10-05 후속 측정: 한국어 질의에 영어로 저장한 교훈은 어휘 겹침이 없어 밀렸고, e5 코사인은 0.6~0.9 에 몰려
+// dense 하한 0.65 가 무관 기억을 거르지 못했다. 어휘 겹침 없는 한국어 기억(dense 0.75)과 영어 기억(dense 0.6)으로 걸러내기를 본다.
+console.log("\n[23g] Mnemopi 회수 — 문자권이 다른 기억은 어휘 하한을 받고, 로컬 e5 는 dense 하한 0.82 를 쓴다");
+{
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { setLocalModelInitializerForTests, setEmbeddingProviderForTests, resetEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+	const query = "포트 재연결 순서 확인 방법";
+	const korean = "배포 일정은 금요일에 정한다.";
+	const english = "Close the port before reopening the connection.";
+	const cosine = (text: string) => (text.endsWith(query) ? 1 : text.endsWith(english) ? 0.6 : 0.75);
+	const vector = (text: string) => [cosine(text), Math.sqrt(1 - cosine(text) ** 2), 0];
+	const recallIds = async (bank: string, model?: string) => {
+		const memDir = mkdtempSync(join(tmpdir(), `hanse-mnemopi-${bank}-`));
+		const memory = new Mnemopi({ dbPath: join(memDir, "m.db"), bank, sessionId: bank, channelId: bank, llm: false, reconcile: false, ...(model ? { embeddings: { model } } : {}) });
+		try {
+			const ids = {
+				korean: memory.remember(korean, { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" }),
+				english: memory.remember(english, { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" }),
+			};
+			await memory.beam.flushExtractions();
+			const ranked = ((await memory.recallEnhanced(query, 8, { includeFacts: false, channelId: bank })) as Array<{ id: string }>).map(result => result.id);
+			return { ids, ranked };
+		} finally {
+			memory.close();
+			rmSync(memDir, { recursive: true, force: true });
+		}
+	};
+	try {
+		setLocalModelInitializerForTests(async () => ({
+			embed: (texts: string[]) => (async function* () {
+				yield texts.map(vector);
+			})(),
+		}));
+		const e5 = await recallIds("xscript-e5", "intfloat/multilingual-e5-large");
+		check("로컬 e5: 어휘 겹침 없는 dense 0.75 한국어 기억은 빠진다", !e5.ranked.includes(e5.ids.korean), `ranked=${e5.ranked.join(",")} korean=${e5.ids.korean}`);
+		check("로컬 e5: 기존 하한 0.65 아래(dense 0.6)인 영어 기억도 문자권 하한으로 남는다", e5.ranked.includes(e5.ids.english), `ranked=${e5.ranked.join(",")} english=${e5.ids.english}`);
+		resetEmbeddingProviderForTests();
+		setEmbeddingProviderForTests({
+			embed: (texts: readonly string[]) => (async function* () {
+				yield texts.map(vector);
+			})(),
+		});
+		const injected = await recallIds("xscript-provider");
+		check("e5 가 아닌 임베딩은 dense 하한 0.65 를 지켜 dense 0.75 한국어 기억이 남는다", injected.ranked.includes(injected.ids.korean), `ranked=${injected.ranked.join(",")} korean=${injected.ids.korean}`);
+	} finally {
+		resetEmbeddingProviderForTests();
+	}
+}
+
 // 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 자기 작업 brief 로 회상하지 않고 부모의 첫 턴
 // 회상만 물려받았다. 실제 backend.start(taskDepth 1) → beforeAgentStartPrompt → buildDeveloperInstructions
 // 경로를 태운다. 부모 state 는 구조만 맞춘 fixture 이며 회상 저장소(scoped)는 child 가 그대로 공유한다.

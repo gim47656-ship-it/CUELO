@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import imageQuestionRouter, { imageReadTarget } from "../image-question-router";
+import imageQuestionRouter, { imageRead } from "../image-question-router";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 
@@ -17,12 +17,14 @@ function harness(modelInput: string[] = ["text", "image"]) {
 }
 
 describe("image question router", () => {
-  test("첫 이미지 read는 용도와 무관하게 막고 ?q= 재요청을 안내하며, 같은 경로 두 번째 read는 통과시킨다", () => {
+  test("질문 없는 이미지 read는 다시 시도해도 막고, 같은 경로로 ?q= 질문을 한 뒤에만 직접 read를 통과시킨다", () => {
     const h = harness();
     const first = h.read("shots\\layout.png");
     expect(first?.block).toBe(true);
     expect(first?.reason).toContain("shots/layout.png?q=");
-    expect(h.read("shots/layout.png")).toBeUndefined();
+    expect(h.read("shots/layout.png")?.block).toBe(true);
+    expect(h.read("shots/layout.png?q=버튼이 잘렸나")).toBeUndefined();
+    expect(h.read("shots\\layout.png")).toBeUndefined();
     expect(h.read("shots/other.png")?.block).toBe(true);
   });
 
@@ -30,18 +32,18 @@ describe("image question router", () => {
     expect(harness(["text"]).read("a.png")).toBeUndefined();
   });
 
-  test("대상은 ?·URL 없는 이미지 경로뿐이다", () => {
-    expect(imageReadTarget("a.PNG")).toBe("a.PNG");
-    expect(imageReadTarget("local://image-1.webp")).toBe("local://image-1.webp");
-    expect(imageReadTarget("a.png?q=what")).toBeUndefined();
-    expect(imageReadTarget("https://x/a.png")).toBeUndefined();
-    expect(imageReadTarget("a.pdf")).toBeUndefined();
-    expect(imageReadTarget("a.svg")).toBeUndefined();
+  test("대상은 URL이 아닌 이미지 경로이고, ?q= 여부를 함께 읽는다", () => {
+    expect(imageRead("a.PNG")).toEqual({ target: "a.PNG", asked: false });
+    expect(imageRead("local://image-1.webp")).toEqual({ target: "local://image-1.webp", asked: false });
+    expect(imageRead("a.png?q=what")).toEqual({ target: "a.png", asked: true });
+    expect(imageRead("https://x/a.png")).toBeUndefined();
+    expect(imageRead("a.pdf")).toBeUndefined();
+    expect(imageRead("a.svg")).toBeUndefined();
   });
 
-  test("새 세션은 재요청 기록을 지운다", () => {
+  test("새 세션은 질문 기록을 지운다", () => {
     const h = harness();
-    h.read("a.png");
+    h.read("a.png?q=무엇이 보이나");
     h.emit("session_start", {});
     expect(h.read("a.png")?.block).toBe(true);
   });
