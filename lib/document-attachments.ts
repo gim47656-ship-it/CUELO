@@ -5,8 +5,18 @@ export const MAX_TOTAL_ATTACHED_DOCUMENT_BYTES = 16 * 1024 * 1024;
 export const MAX_ATTACHED_DOCUMENT_TEXT_CHARS = 120_000;
 export const MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS = 240_000;
 export const MAX_ATTACHED_PDF_PAGES = 250;
-/** Same per-file cap as the file browser upload (`app/api/files` MAX_UPLOAD_FILE_BYTES). */
-export const MAX_STORED_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+/** `att_` plus 32 lowercase hex digits: the id of an upload whose lifetime the server manages. */
+const MANAGED_ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/;
+const ATTACHMENT_DRAFT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isManagedAttachmentId(value: unknown): value is string {
+  return typeof value === "string" && MANAGED_ATTACHMENT_ID_RE.test(value);
+}
+
+/** A composer draft's attachment-protection id: any UUID, such as `crypto.randomUUID()`. */
+export function isAttachmentDraftId(value: unknown): value is string {
+  return typeof value === "string" && ATTACHMENT_DRAFT_ID_RE.test(value);
+}
 
 export type SupportedDocumentKind = "markdown" | "text" | "pdf";
 
@@ -15,6 +25,8 @@ export interface AttachedDocument {
   mimeType: "text/markdown" | "text/plain" | "application/pdf";
   size: number;
   text: string;
+  /** The managed upload this document refers to; drafts report it so the server keeps the file. */
+  attachmentId?: string;
 }
 
 type FileIdentity = Pick<File, "name" | "type" | "size"> & Partial<Pick<File, "lastModified">>;
@@ -208,6 +220,7 @@ export function normalizeAttachedDocuments(value: unknown): AttachedDocument[] {
       mimeType: candidate.mimeType,
       size: candidate.size,
       text: candidate.text,
+      ...(isManagedAttachmentId(candidate.attachmentId) ? { attachmentId: candidate.attachmentId } : {}),
     });
     totalBytes += candidate.size;
     totalTextChars += candidate.text.length;
@@ -335,14 +348,24 @@ export function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** `POST /api/attachments` result: where the server saved the file, plus the audio transcript. */
+/**
+ * A file saved in the agent's attachment folder: where it is, plus the audio transcript once the
+ * transcription endpoint produced one. References in older messages carry only the path.
+ */
 export interface StoredAttachment {
   path: string;
   size: number;
   mimeType: string;
+  /** Managed upload id; the server keeps the file while a conversation or draft refers to it. */
+  id?: string;
+  /** The composer draft whose reference protects the file until it is sent. */
+  draftId?: string;
   transcript?: string;
   transcriptError?: string;
 }
+
+/** `POST /api/attachments` result. Uploads store the file only; audio is transcribed separately. */
+export type UploadedAttachment = StoredAttachment & { id: string; draftId: string };
 
 const TRANSCRIPT_TRUNCATED_NOTE = "\n[transcript truncated to fit the attachment limit]";
 const STORED_REFERENCE_PREFIX = "File saved at: ";
@@ -377,23 +400,54 @@ export function describeStoredAttachment(
     : reference;
 }
 
-/** Saves one file in this session's attachment folder; audio also comes back transcribed. */
-export async function uploadChatAttachment(file: File, sessionId: string | undefined): Promise<StoredAttachment> {
+/**
+ * Streams one file to this session's attachment folder. `draftId` registers the upload with that
+ * composer draft; without one the server issues a new id and returns it.
+ */
+export async function uploadChatAttachment(
+  file: File,
+  { sessionId, draftId, signal }: { sessionId?: string; draftId?: string; signal?: AbortSignal } = {},
+): Promise<UploadedAttachment> {
   const body = new FormData();
-  body.append("file", file, file.name);
   if (sessionId) body.append("sessionId", sessionId);
-  const response = await fetch("/api/attachments", { method: "POST", body });
-  const payload = await response.json().catch(() => null) as (Partial<StoredAttachment> & { error?: unknown }) | null;
-  if (!response.ok || typeof payload?.path !== "string" || typeof payload.size !== "number" || typeof payload.mimeType !== "string") {
+  if (draftId) body.append("draftId", draftId);
+  body.append("file", file, file.name);
+  const response = await fetch("/api/attachments", { method: "POST", body, signal });
+  const payload = await response.json().catch(() => null) as (Partial<UploadedAttachment> & { error?: unknown }) | null;
+  if (
+    !response.ok
+    || typeof payload?.path !== "string"
+    || typeof payload.size !== "number"
+    || typeof payload.mimeType !== "string"
+    || !isManagedAttachmentId(payload.id)
+    || !isAttachmentDraftId(payload.draftId)
+  ) {
     throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`);
   }
-  return {
-    path: payload.path,
-    size: payload.size,
-    mimeType: payload.mimeType,
-    ...(typeof payload.transcript === "string" ? { transcript: payload.transcript } : {}),
-    ...(typeof payload.transcriptError === "string" ? { transcriptError: payload.transcriptError } : {}),
-  };
+  return { path: payload.path, size: payload.size, mimeType: payload.mimeType, id: payload.id, draftId: payload.draftId };
+}
+
+/**
+ * Replaces the set of managed attachments `draftId` refers to; an empty list releases the draft.
+ * `sentAttachmentIds` marks ids that leave the set because a message carried them: the server keeps
+ * those until it finds the conversation's reference. On failure the server keeps the previous set.
+ */
+export async function updateAttachmentDraft(
+  draftId: string,
+  attachmentIds: readonly string[],
+  { sentAttachmentIds, signal }: { sentAttachmentIds?: readonly string[]; signal?: AbortSignal } = {},
+): Promise<{ draftId: string; attachmentIds: string[] }> {
+  const response = await fetch("/api/attachments/draft", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ draftId, attachmentIds, ...(sentAttachmentIds?.length ? { sentAttachmentIds } : {}) }),
+    signal,
+  });
+  const payload = await response.json().catch(() => null) as { draftId?: unknown; attachmentIds?: unknown; error?: unknown } | null;
+  if (!response.ok || !isAttachmentDraftId(payload?.draftId) || !Array.isArray(payload.attachmentIds) || !payload.attachmentIds.every(isManagedAttachmentId)) {
+    throw new Error(typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`);
+  }
+  return { draftId: payload.draftId, attachmentIds: payload.attachmentIds };
 }
 
 async function extractPdfText(file: File): Promise<string> {

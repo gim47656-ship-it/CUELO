@@ -29,7 +29,8 @@ import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
 import { DispatchDockLine } from "./answer-status/DispatchDockLine";
-import { buildDispatchLedger, collectDockMakers, placeDispatchCards, type DispatchSlot } from "@/lib/answer-status/dispatch";
+import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
+import { DispatchCard } from "./answer-status/DispatchCard";
 import { collectTurnBlocks, placeTurnSummaries, summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
@@ -205,6 +206,8 @@ interface HistoricalTranscriptProps {
   process: ProcessTurnGroup[];
   /** 발주 카드 자리(`placeDispatchCards`). dock 줄도 같은 값으로 카드를 찾아간다. */
   dispatchSlots: ReadonlyMap<number, DispatchSlot>;
+  /** Dispatches the latest compaction hid that no shown answer carries, drawn at the compaction point. */
+  compactedDispatch: CompactedDispatchPlacement | null;
   /** Rendered conversation items: [startIndex, endIndex). */
   startIndex: number;
   endIndex: number;
@@ -302,7 +305,7 @@ function writeDismissedInterruption(sessionId: string, entryId: string): void {
 const HistoricalTranscript = memo(function HistoricalTranscript({
   messages, entryIds, toolResultsMap, modelNames, messageCwd, onOpenFile,
   sessionBusy, isNew, isStreaming, handleFork, forkingEntryId, handleNavigate,
-  handleEditContent, sessionId, main, process, dispatchSlots, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
+  handleEditContent, sessionId, main, process, dispatchSlots, compactedDispatch, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
   onProcessLogChange, cues, cueFollowRef,
 }: HistoricalTranscriptProps) {
   useEffect(() => {
@@ -430,6 +433,10 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
       )}
       {main.slice(startIndex, endIndex).map((item, offset) => {
         const position = startIndex + offset;
+        // Only the window holding the card's own position draws it, so an earlier page never repeats it.
+        const compactedCard = compactedDispatch?.position === position
+          ? <DispatchCard calls={compactedDispatch.calls} />
+          : null;
         // 이 턴의 발화는 그 턴의 마지막 항목 뒤에 붙는다. 어느 항목이 턴의 끝인지는
         // 작업 로그가 턴을 묶는 자리(anchorIdx)와 같은 규칙이라 두 화면이 어긋나지 않는다.
         const turnIndex = item.kind === "message" ? item.anchorIdx ?? item.idx : item.anchorIdx;
@@ -464,6 +471,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         if (item.kind === "message") {
           return (
             <Fragment key={`message-${item.idx}`}>
+              {compactedCard}
               {holder(position, renderMessage(item.idx))}
               {savedLessons}
               {thread}
@@ -476,6 +484,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         const writtenFiles = extractTurnWrittenFiles(item.precedingBlocks, toolResultsMap, messageCwd);
         return (
           <Fragment key={`answer-${item.idx}-${item.runIndex}`}>
+            {compactedCard}
             {holder(position, renderMessage(item.idx, {
               keyPrefix: `answer-${item.runIndex}`,
               messageOverride: withAssistantBlocks(messages[item.idx] as AssistantMessage, item.blocks),
@@ -489,6 +498,9 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
           </Fragment>
         );
       })}
+      {compactedDispatch?.position === main.length && endIndex === main.length && (
+        <DispatchCard calls={compactedDispatch.calls} />
+      )}
       {hasLater && (
         <div ref={laterSentinelRef} className="py-3 text-center text-xs text-text-muted">
           {t("chat.loadLater", { count: main.length - endIndex })}
@@ -635,7 +647,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     effectiveThinkingLevel, thinkingCeiling, fastMode, fastModeBusy, handleFastModeToggle,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compaction, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
-    runStateKnown,
+    runStateKnown, compactedWork,
     slashCommands, slashCommandsLoading, deliveryRows, subagents, todoPhases: reportedTodoPhases,
     notices, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection,
@@ -816,7 +828,14 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     [messages, sessionBusy, streamState.isStreaming, displayOptions],
   );
   // 발주 카드 자리는 대화와 입력창 위 dock 줄이 함께 쓴다.
-  const dispatchSlots = useMemo(() => placeDispatchCards(main, messages), [main, messages]);
+  const dispatchSlots = useMemo(
+    () => placeDispatchCards(main, messages, compactedWork?.messages),
+    [main, messages, compactedWork],
+  );
+  const compactedDispatch = useMemo(
+    () => placeCompactedDispatch(main, messages, compactedWork?.messages),
+    [main, messages, compactedWork],
+  );
   // Only a window of the conversation is in the DOM: the last page, growing
   // upward as the reader scrolls to the top. A jump detaches it around an older
   // item; new messages then wait below until the reader returns to the latest.
@@ -1084,17 +1103,20 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // (the streaming message lives in streamState), so memoized MessageViews
   // skip re-rendering on every message_update event. An inline `new Map()`
   // here used to defeat MessageView's memo() on each streamed chunk.
+  // Dispatch, verdict and wait records the latest compaction hid come first; only the ledger, dock
+  // and tool results read them. The transcript, input history and search keep `messages`.
+  const workMessages = useMemo(() => withCompactedWork(compactedWork?.messages, messages), [compactedWork, messages]);
   const toolResultsMap = useMemo(() => {
     const map = new Map<string, ToolResultMessage>();
-    for (const msg of messages) {
+    for (const msg of workMessages) {
       if (msg.role === "toolResult") {
         map.set((msg as ToolResultMessage).toolCallId, msg as ToolResultMessage);
       }
     }
     return map;
-  }, [messages]);
+  }, [workMessages]);
   // 답변 안 발주 카드·턴 요약이 읽는 세션 단위 관측(판정·완료 기록). 실시간 스냅샷과 함께 context로 흘린다.
-  const dispatchLedger = useMemo(() => buildDispatchLedger(messages, toolResultsMap), [messages, toolResultsMap]);
+  const dispatchLedger = useMemo(() => buildDispatchLedger(workMessages, toolResultsMap), [workMessages, toolResultsMap]);
   const answerStatus = useMemo<AnswerStatusContextValue>(() => ({
     ledger: dispatchLedger,
     subagents,
@@ -1104,8 +1126,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch]);
   // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
   const dispatchDock = useMemo(
-    () => collectDockMakers(messages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy),
-    [messages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy],
+    () => collectDockMakers(workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch),
+    [workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch],
   );
   const openSubagentsPanel = useMemo(
     () => (onOpenWorkspaceView ? () => onOpenWorkspaceView("subagents") : undefined),
@@ -1127,8 +1149,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // own list and a session without one shows nothing. The tracker's list, when a state refresh has
   // reported one, covers the changes no tool record carries - see selectCurrentTodo.
   const todoPhases = useMemo(
-    () => selectCurrentTodo(messages, toolResultsMap, reportedTodoPhases),
-    [messages, toolResultsMap, reportedTodoPhases],
+    () => selectCurrentTodo(messages, toolResultsMap, reportedTodoPhases, compactedWork?.todoPhases ?? null),
+    [messages, toolResultsMap, reportedTodoPhases, compactedWork],
   );
 
   // --- 대화창에 끼어드는 다른 화자 ---
@@ -1548,6 +1570,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                 main={main}
                 dispatchSlots={dispatchSlots}
+                compactedDispatch={compactedDispatch}
                 process={processGroups}
                 startIndex={startIndex}
                 endIndex={endIndex}

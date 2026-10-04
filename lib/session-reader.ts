@@ -7,10 +7,13 @@ import { Tokenizer, type AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-ag
 import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "fs";
 import { normalize as normalizePath } from "path";
-import type { AgentMessage, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
+import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
+import type { TodoPhase } from "./todo-state";
+import { reduceDispatchRecord } from "./answer-status/dispatch";
 import type { ContextUsage } from "./omp-types";
 import type { SessionEntry as OmpSessionEntry, SessionInfo as OmpSessionInfo } from "@oh-my-pi/pi-coding-agent";
 import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
+import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
@@ -422,7 +425,8 @@ function collectBranchPath(
 }
 
 /**
- * Displayable entries for the chat window, in render order.
+ * Displayable entries for the chat window, in render order, plus the branch
+ * entries the latest compaction hid from it.
  *
  * omp's `buildSessionContext` returns rendered messages but not the entry ids
  * behind them, and the browser needs those ids to fork and to navigate between
@@ -433,12 +437,8 @@ function collectBranchPath(
  * newer follows.
  */
 function collectDisplayEntries(
-  entries: SessionEntry[],
-  byId: Map<string, SessionEntry>,
-  leafId?: string | null,
-): SessionEntry[] {
-  const path = collectBranchPath(entries, byId, leafId);
-
+  path: SessionEntry[],
+): { displayed: SessionEntry[]; hidden: SessionEntry[] } {
   // Only the latest compaction on the path is active; earlier ones were
   // themselves superseded.
   let compactionIdx = -1;
@@ -448,17 +448,44 @@ function collectDisplayEntries(
       break;
     }
   }
-  if (compactionIdx === -1) return path;
+  if (compactionIdx === -1) return { displayed: path, hidden: [] };
 
   const compaction = path[compactionIdx] as Extract<SessionEntry, { type: "compaction" }>;
   const kept: SessionEntry[] = [];
+  const hidden: SessionEntry[] = [];
   let foundFirstKept = false;
   for (let i = 0; i < compactionIdx; i++) {
     if (path[i].id === compaction.firstKeptEntryId) foundFirstKept = true;
-    if (foundFirstKept) kept.push(path[i]);
+    (foundFirstKept ? kept : hidden).push(path[i]);
   }
 
-  return [...kept, compaction, ...path.slice(compactionIdx + 1)];
+  return { displayed: [...kept, compaction, ...path.slice(compactionIdx + 1)], hidden };
+}
+
+/**
+ * The work the hidden history still owes the screen: dispatches, their run and
+ * verdict records, and the last durable todo. Only this branch's hidden
+ * entries are read, so nothing shown and nothing from another branch repeats.
+ */
+function collectCompactedWork(hidden: SessionEntry[]): CompactedWork | null {
+  const messages: AgentMessage[] = [];
+  let hasWork = false;
+  for (const entry of hidden) {
+    const message = entryToUiMessage(entry, {});
+    const record = message ? reduceDispatchRecord(message) : null;
+    if (!record) continue;
+    // Consecutive turn boundaries say no more than one does.
+    if (record.role === "user" && messages.at(-1)?.role === "user") continue;
+    if (record.role !== "user") hasWork = true;
+    messages.push(record);
+  }
+  const ompHidden = hidden as unknown as OmpSessionEntry[];
+  // omp's tracker rehydrates the todo from these same durable records.
+  const todoPhases = getLatestTodoSnapshotIdentity(ompHidden)
+    ? getLatestTodoPhasesFromEntries(ompHidden) as TodoPhase[]
+    : null;
+  if (!hasWork && !todoPhases) return null;
+  return { messages: hasWork ? messages : [], todoPhases };
 }
 
 /** `models.default` as the UI's `{ provider, modelId }` pair. */
@@ -488,9 +515,11 @@ export function buildSessionContext(
 
   // Convert the branch entries and their IDs together so fork/navigation
   // targets stay aligned with what the transcript renders.
+  const path = collectBranchPath(entries, byId, leafId);
+  const { displayed, hidden } = collectDisplayEntries(path);
   const messages: AgentMessage[] = [];
   const entryIds: string[] = [];
-  for (const entry of collectDisplayEntries(entries, byId, leafId)) {
+  for (const entry of displayed) {
     const m = entryToUiMessage(entry, options);
     if (m) {
       messages.push(m);
@@ -503,8 +532,9 @@ export function buildSessionContext(
     entryIds,
     thinkingLevel: ompCtx.thinkingLevel ?? "off",
     configuredThinkingLevel: ompCtx.configuredThinkingLevel ?? ompCtx.thinkingLevel ?? "off",
-    thinkingCeiling: latestThinkingCeiling(collectBranchPath(entries, byId, leafId)),
+    thinkingCeiling: latestThinkingCeiling(path),
     model: parseDefaultModel(ompCtx.models),
+    compactedWork: collectCompactedWork(hidden),
   };
 }
 

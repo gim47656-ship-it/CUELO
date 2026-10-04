@@ -13,15 +13,21 @@ import type { ModelRoleAssignment, SkillsResponse } from "@/lib/api-types";
 import type { SlashCommandInfo } from "@/lib/omp-types";
 import type { TextContent, UserMessage } from "@/lib/types";
 import {
+  beginDraftUpload,
   clearDraft,
   getDraft,
+  holdSubmittedAttachments,
   mergeRestoredSubmissionDraft,
   mergeRestoredSubmissionText,
   rekeyDraft as rekeyStoredDraft,
+  releaseUploadedAttachment,
   setDraft,
   type ChatDraftDocument,
   type ChatDraftImage,
+  type SubmissionOutcome,
 } from "@/lib/draft-store";
+import { DEFAULT_ATTACHMENT_SETTINGS, attachmentUploadLimitBytes, fetchAttachmentSettings } from "@/lib/attachment-settings";
+import type { AudioTranscriptionPlan } from "@/lib/attachment-audio-types";
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
@@ -34,7 +40,6 @@ import {
   MAX_ATTACHED_DOCUMENT_TEXT_CHARS,
   MAX_ATTACHED_DOCUMENTS,
   MAX_ATTACHED_PDF_PAGES,
-  MAX_STORED_ATTACHMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_BYTES,
   MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS,
   attachedDocumentKind,
@@ -126,14 +131,30 @@ export async function dispatchSlashSubmission(
   }
 }
 
+/** Audio transcription runs beside a ready chip: the saved-file reference is attached meanwhile. */
+type TranscriptionState =
+  | { state: "planning" }
+  | { state: "confirm"; plan: AudioTranscriptionPlan }
+  | { state: "running"; plan: AudioTranscriptionPlan | null }
+  | { state: "failed"; error: string }
+  | { state: "skipped" };
+
 interface ComposerDocument extends AttachedDocument {
   id: number;
-  status: "extracting" | "uploading" | "transcribing" | "ready";
+  status: "extracting" | "uploading" | "ready";
   /** Saved on the server and attached by path; audio also carries its transcript. */
   stored?: "audio" | "file";
   /** Bytes of the pasted file; `size` is the attached text once a stored file becomes a path note. */
   sourceSize?: number;
-  transcriptFailed?: boolean;
+  /** What `describeStoredAttachment` needs to add a transcript to the saved-file reference. */
+  storedInfo?: { path: string; size: number; mimeType: string };
+  transcription?: TranscriptionState;
+}
+
+/** Transcription is still deciding or running; the message waits for it. */
+function isTranscriptionBusy(document: ComposerDocument): boolean {
+  const state = document.transcription?.state;
+  return state === "planning" || state === "confirm" || state === "running";
 }
 
 interface ModelOption {
@@ -143,11 +164,12 @@ interface ModelOption {
 }
 
 interface Props {
-  onSend: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void;
+  /** The outcome (when known) decides when attachments handed over stop needing draft protection. */
+  onSend: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void | Promise<SubmissionOutcome | void>;
   onAbort: () => void;
-  onSteer?: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void;
-  onFollowUp?: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void;
-  onPromptWithStreamingBehavior?: (message: string, behavior: "steer" | "followUp", images?: AttachedImage[], documents?: AttachedDocument[]) => void;
+  onSteer?: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void | Promise<SubmissionOutcome | void>;
+  onFollowUp?: (message: string, images?: AttachedImage[], documents?: AttachedDocument[]) => void | Promise<SubmissionOutcome | void>;
+  onPromptWithStreamingBehavior?: (message: string, behavior: "steer" | "followUp", images?: AttachedImage[], documents?: AttachedDocument[]) => void | Promise<SubmissionOutcome | void>;
   isStreaming: boolean;
   model?: { provider: string; modelId: string } | null;
   isAutoModelSelection?: boolean;
@@ -394,17 +416,110 @@ function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined): Atta
     .slice(0, MAX_ATTACHED_IMAGES)
     .map(draftImageToAttachedImage);
 }
-/** Drafts keep only the attached text, so the saved-file/audio chip kind is read back from it. */
+const STORED_REFERENCE_PATTERN = /^File saved at: (.+)\n\(([^,\n]+), (\d+) bytes\)/;
+const TRANSCRIPT_SECTION = "\n\nTranscript of the audio ";
+
+/**
+ * Drafts keep only the attached text, so the saved-file/audio chip kind is read back from it. An
+ * untranscribed saved audio keeps what a later transcription needs to rebuild its reference.
+ */
 function draftDocumentsToComposerDocuments(documents: ChatDraftDocument[] | undefined): ComposerDocument[] {
   return normalizeAttachedDocuments(documents).map((document) => {
     const kind = attachedDocumentKind(document);
+    const reference = kind === "audio" && document.attachmentId && !document.text.includes(TRANSCRIPT_SECTION)
+      ? STORED_REFERENCE_PATTERN.exec(document.text)
+      : null;
     return {
       ...document,
       id: ++nextDocumentAttachmentId,
       status: "ready",
       ...(kind === "audio" || kind === "file" ? { stored: kind } : {}),
+      ...(reference ? { storedInfo: { path: reference[1], mimeType: reference[2], size: Number(reference[3]) } } : {}),
     };
   });
+}
+
+/** The part of a ready chip a draft or a submission carries. */
+function toDraftDocument({ name, mimeType, size, text, attachmentId }: ComposerDocument): ChatDraftDocument {
+  return attachmentId ? { name, mimeType, size, text, attachmentId } : { name, mimeType, size, text };
+}
+
+/**
+ * Rebuilding chips from a draft would drop what only the live composer knows: uploads still in
+ * flight and a transcription's plan or progress. Keep both for the attachments that survive.
+ */
+function carryComposerState(rebuilt: ComposerDocument[], current: readonly ComposerDocument[]): ComposerDocument[] {
+  const live = new Map(current.flatMap((document) => (
+    document.attachmentId ? [[document.attachmentId, document] as const] : []
+  )));
+  return [
+    ...rebuilt.map((document) => {
+      const previous = document.attachmentId ? live.get(document.attachmentId) : undefined;
+      if (!previous) return document;
+      live.delete(document.attachmentId!);
+      return {
+        ...document,
+        id: previous.id,
+        sourceSize: previous.sourceSize,
+        storedInfo: previous.storedInfo ?? document.storedInfo,
+        transcription: previous.transcription,
+      };
+    }),
+    ...current.filter((document) => document.status !== "ready"),
+  ];
+}
+
+function formatAudioDuration(seconds: number): string {
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
+class TranscriptionRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly completedParts: number | null,
+    readonly parts: number | null,
+  ) {
+    super(message);
+  }
+}
+
+const UNKEYED_DRAFT_KEY = "composer:unkeyed";
+
+/** The JSON object of a transcription response; a non-2xx answer throws its `{code, error}`. */
+async function readTranscriptionBody(response: Response): Promise<Record<string, unknown>> {
+  const parsed: unknown = await response.json().catch(() => null);
+  const body: Record<string, unknown> = parsed && typeof parsed === "object" ? { ...parsed } : {};
+  if (response.ok) return body;
+  throw new TranscriptionRequestError(
+    typeof body.error === "string" ? body.error : `HTTP ${response.status}`,
+    typeof body.code === "string" ? body.code : null,
+    typeof body.completedParts === "number" ? body.completedParts : null,
+    typeof body.parts === "number" ? body.parts : null,
+  );
+}
+
+function toTranscriptionPlan(body: Record<string, unknown>): AudioTranscriptionPlan {
+  if (
+    typeof body.requiresConfirmation !== "boolean"
+    || typeof body.estimatedCalls !== "number"
+    || typeof body.notice !== "string"
+    || (body.durationSeconds !== null && typeof body.durationSeconds !== "number")
+    || (body.processing !== "direct" && body.processing !== "compress-and-split")
+  ) {
+    throw new TranscriptionRequestError("Invalid transcription plan", null, null, null);
+  }
+  return {
+    durationSeconds: body.durationSeconds,
+    estimatedCalls: body.estimatedCalls,
+    requiresConfirmation: body.requiresConfirmation,
+    processing: body.processing,
+    notice: body.notice,
+  };
 }
 
 
@@ -574,7 +689,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     () => attachedDocuments.filter((document) => document.status === "ready"),
     [attachedDocuments],
   );
-  const isExtractingDocument = attachedDocuments.some((document) => document.status !== "ready");
+  // A transcription still deciding or running holds the message like an extraction does.
+  const isExtractingDocument = attachedDocuments.some((document) => document.status !== "ready" || isTranscriptionBusy(document));
+  // Saved audio that still has no transcript gets a row under the chips: its plan, progress or choice.
+  const transcriptionDocuments = attachedDocuments.filter((document) => (
+    document.stored === "audio"
+    && document.attachmentId
+    && document.storedInfo
+    && (document.transcription !== undefined || !document.text.includes(TRANSCRIPT_SECTION))
+  ));
   const commandValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && attachedDocuments.length === 0 && commandValue.startsWith("!");
   const bashExcluded = bashMode && commandValue.startsWith("!!");
@@ -684,7 +807,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         images: attachedImagesRef.current.map(imageToDraftImage),
         documents: attachedDocumentsRef.current
           .filter((document) => document.status === "ready")
-          .map(({ name, mimeType, size, text }) => ({ name, mimeType, size, text })),
+          .map(toDraftDocument),
       };
       const moved = rekeyStoredDraft(previousKey, nextKey, currentDraft)
         ?? { value: "", images: [], documents: [] };
@@ -700,11 +823,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           && document.mimeType === currentDraft.documents[index]?.mimeType
           && document.size === currentDraft.documents[index]?.size
           && document.text === currentDraft.documents[index]?.text
+          && document.attachmentId === currentDraft.documents[index]?.attachmentId
         ));
       draftKeyRef.current = nextKey;
       if (unchanged) return;
       const movedImages = draftImagesToAttachedImages(moved.images);
-      const movedDocuments = draftDocumentsToComposerDocuments(moved.documents);
+      const movedDocuments = carryComposerState(
+        draftDocumentsToComposerDocuments(moved.documents),
+        attachedDocumentsRef.current,
+      );
 
       const movedValue = moved.value;
       valueRef.current = movedValue;
@@ -748,7 +875,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         targetsCurrentComposer
           ? attachedDocumentsRef.current
               .filter((document) => document.status === "ready")
-              .map(({ name, mimeType, size, text }) => ({ name, mimeType, size, text }))
+              .map(toDraftDocument)
           : (storedDraft?.documents ?? []),
       );
       const restoredDraft = mergedDraft;
@@ -766,7 +893,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             ...attachedImagesRef.current,
           ].slice(0, MAX_ATTACHED_IMAGES)
         : attachedImagesRef.current;
-      const restoredDocuments = draftDocumentsToComposerDocuments(restoredDraft.documents);
+      const restoredDocuments = carryComposerState(
+        draftDocumentsToComposerDocuments(restoredDraft.documents),
+        attachedDocumentsRef.current,
+      );
       // Session promotion can rekey this composer before React flushes the
       // functional updates below, so update the imperative snapshot first.
       valueRef.current = restoredDraft.value;
@@ -967,30 +1097,164 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return true;
   }, []);
 
+  /** Stored-attachment chips are found by server id: a rebuilt chip gets a new composer id. */
+  const updateByAttachment = useCallback((attachmentId: string, update: (document: ComposerDocument) => ComposerDocument): boolean => {
+    if (!attachedDocumentsRef.current.some((document) => document.attachmentId === attachmentId)) return false;
+    const documents = attachedDocumentsRef.current.map((document) => (
+      document.attachmentId === attachmentId ? update(document) : document
+    ));
+    attachedDocumentsRef.current = documents;
+    setAttachedDocuments(documents);
+    return true;
+  }, []);
+
+  /**
+   * A result for a chip this composer no longer shows (the user switched conversations) still
+   * belongs to the draft it started in; a chip the user removed from this draft stays removed.
+   */
+  const updateStoredDraftAttachment = useCallback((key: string | undefined, attachmentId: string, update: (document: ComposerDocument) => ComposerDocument) => {
+    if (!key || key === draftKeyRef.current) return;
+    const draft = getDraft(key);
+    if (!draft?.documents.some((document) => document.attachmentId === attachmentId)) return;
+    setDraft(key, {
+      ...draft,
+      documents: draftDocumentsToComposerDocuments(draft.documents)
+        .map((document) => (document.attachmentId === attachmentId ? update(document) : document))
+        .map(toDraftDocument),
+    });
+  }, []);
+
+  const uploadControllersRef = useRef(new Map<number, AbortController>());
+  const transcriptionControllersRef = useRef(new Map<string, AbortController>());
+  const removedDocumentIdsRef = useRef(new Set<number>());
+
+  /** The saved-file reference with the transcript added, or null when it would not fit the text limits. */
+  const withTranscript = useCallback((document: ComposerDocument, transcript: string, others: readonly ComposerDocument[]): ComposerDocument | null => {
+    if (!document.storedInfo) return null;
+    const othersText = others.reduce((total, other) => total + (other.attachmentId === document.attachmentId ? 0 : other.text.length), 0);
+    const allowance = Math.min(MAX_ATTACHED_DOCUMENT_TEXT_CHARS, MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS - othersText);
+    const text = describeStoredAttachment({ ...document.storedInfo, transcript }, allowance);
+    if (text.length > allowance) return null;
+    return { ...document, text, size: new TextEncoder().encode(text).byteLength, transcription: undefined };
+  }, []);
+
+  const transcriptionErrorText = useCallback((error: unknown): string => {
+    if (error instanceof TranscriptionRequestError && error.code === "media_tool_unavailable") return t("chat.transcribeToolMissing");
+    if (error instanceof TranscriptionRequestError && error.code === "transcription_failed" && error.completedParts !== null && error.parts !== null) {
+      return t("chat.transcribePartialFailed", { done: error.completedParts, total: error.parts });
+    }
+    return error instanceof Error ? error.message : String(error);
+  }, [t]);
+
+  const runTranscription = useCallback(async (attachmentId: string, confirmed: boolean) => {
+    const key = draftKeyRef.current;
+    const target = attachedDocumentsRef.current.find((document) => document.attachmentId === attachmentId);
+    if (!target?.storedInfo) return;
+    const plan = target.transcription?.state === "confirm" ? target.transcription.plan : null;
+    transcriptionControllersRef.current.get(attachmentId)?.abort();
+    const controller = new AbortController();
+    transcriptionControllersRef.current.set(attachmentId, controller);
+    updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "running", plan } }));
+    try {
+      const body = await readTranscriptionBody(await fetch(
+        `/api/attachments/${encodeURIComponent(attachmentId)}/transcription`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(confirmed ? { confirmed: true } : {}),
+          signal: controller.signal,
+        },
+      ));
+      if (typeof body.transcript !== "string") throw new TranscriptionRequestError("Invalid transcription result", null, null, null);
+      const transcript = body.transcript;
+      // A transcript that does not fit is reported on the chip's own row, like any other failure.
+      const apply = (document: ComposerDocument) => withTranscript(document, transcript, attachedDocumentsRef.current)
+        ?? { ...document, transcription: { state: "failed" as const, error: t("chat.transcribeTooLong") } };
+      if (!updateByAttachment(attachmentId, apply)) {
+        updateStoredDraftAttachment(key, attachmentId, (document) => (
+          withTranscript(document, transcript, []) ?? document
+        ));
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "skipped" } }));
+        return;
+      }
+      if (error instanceof TranscriptionRequestError && error.code === "confirmation_required") {
+        // The server measured more than this composer assumed; ask before any call.
+        void requestTranscriptionPlanRef.current?.(attachmentId);
+        return;
+      }
+      const message = transcriptionErrorText(error);
+      updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "failed", error: message } }));
+    } finally {
+      if (transcriptionControllersRef.current.get(attachmentId) === controller) {
+        transcriptionControllersRef.current.delete(attachmentId);
+      }
+    }
+  }, [t, transcriptionErrorText, updateByAttachment, updateStoredDraftAttachment, withTranscript]);
+
+  const requestTranscriptionPlanRef = useRef<((attachmentId: string) => Promise<void>) | null>(null);
+  /** Reads the plan first; only a plan that needs no confirmation starts transcribing on its own. */
+  const requestTranscriptionPlan = useCallback(async (attachmentId: string) => {
+    transcriptionControllersRef.current.get(attachmentId)?.abort();
+    const controller = new AbortController();
+    transcriptionControllersRef.current.set(attachmentId, controller);
+    updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "planning" } }));
+    let plan: AudioTranscriptionPlan;
+    try {
+      plan = toTranscriptionPlan(await readTranscriptionBody(await fetch(
+        `/api/attachments/${encodeURIComponent(attachmentId)}/transcription`,
+        { cache: "no-store", signal: controller.signal },
+      )));
+    } catch (error) {
+      if (controller.signal.aborted) {
+        updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "skipped" } }));
+      } else {
+        const message = transcriptionErrorText(error);
+        updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "failed", error: message } }));
+      }
+      return;
+    } finally {
+      if (transcriptionControllersRef.current.get(attachmentId) === controller) {
+        transcriptionControllersRef.current.delete(attachmentId);
+      }
+    }
+    if (!plan.requiresConfirmation) {
+      await runTranscription(attachmentId, false);
+      return;
+    }
+    updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "confirm", plan } }));
+  }, [runTranscription, transcriptionErrorText, updateByAttachment]);
+  requestTranscriptionPlanRef.current = requestTranscriptionPlan;
+
+  const cancelTranscription = useCallback((attachmentId: string) => {
+    const controller = transcriptionControllersRef.current.get(attachmentId);
+    if (controller) controller.abort();
+    else updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "skipped" } }));
+  }, [updateByAttachment]);
+
   /**
    * Audio and every other file: text that decodes and fits is inlined like a document; the rest is
-   * saved in the session attachment folder and attached as its path (audio with its transcript).
+   * saved on the server (never read whole into the page) and attached as its path. Audio then gets
+   * its transcription plan.
    */
   const processFileAttachments = useCallback(async (files: File[], kind: "audio" | "file") => {
+    let uploadLimitBytes: number | null = null;
     for (const file of files) {
       if (attachedDocumentsRef.current.length >= MAX_ATTACHED_DOCUMENTS) {
         setAttachmentError(t("chat.attachLimit", { count: MAX_ATTACHED_DOCUMENTS }));
         continue;
       }
-      if (file.size > MAX_STORED_ATTACHMENT_BYTES) {
-        setAttachmentError(t("chat.attachStoredTooLarge", {
-          name: file.name,
-          limit: formatAttachmentSize(MAX_STORED_ATTACHMENT_BYTES),
-        }));
-        continue;
-      }
+      const inlineCandidate = kind === "file" && file.size <= MAX_ATTACHED_DOCUMENT_BYTES;
       const pending: ComposerDocument = {
         id: ++nextDocumentAttachmentId,
         name: file.name,
         mimeType: "text/plain",
-        size: file.size,
+        // A file headed for storage counts by its reference text, not by its bytes.
+        size: inlineCandidate ? file.size : 0,
         text: "",
-        status: kind === "audio" ? "transcribing" : "extracting",
+        status: inlineCandidate ? "extracting" : "uploading",
         sourceSize: file.size,
       };
       const withPending = [...attachedDocumentsRef.current, pending];
@@ -1003,22 +1267,37 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           && others.reduce((total, document) => total + document.size, 0) + bytes <= MAX_TOTAL_ATTACHED_DOCUMENT_BYTES;
       };
 
-      if (kind === "file" && file.size <= MAX_ATTACHED_DOCUMENT_BYTES) {
+      if (inlineCandidate) {
         const text = await file.arrayBuffer().then((buffer) => decodeTextAttachment(new Uint8Array(buffer)), () => null);
         if (text !== null && fitsBesideOthers(text.length, file.size)) {
           replaceComposerDocument(pending.id, { ...pending, text, status: "ready" });
           continue;
         }
       }
-      const storing: ComposerDocument = { ...pending, stored: kind, status: kind === "audio" ? "transcribing" : "uploading" };
+      if (uploadLimitBytes === null) {
+        uploadLimitBytes = attachmentUploadLimitBytes(await fetchAttachmentSettings().catch(() => DEFAULT_ATTACHMENT_SETTINGS));
+      }
+      if (file.size > uploadLimitBytes) {
+        if (replaceComposerDocument(pending.id, null)) {
+          setAttachmentError(t("chat.attachStoredTooLarge", { name: file.name, limit: formatAttachmentSize(uploadLimitBytes) }));
+        }
+        continue;
+      }
+      const storing: ComposerDocument = { ...pending, stored: kind, status: "uploading", size: 0 };
       if (!replaceComposerDocument(pending.id, storing)) continue;
+      const key = draftKeyRef.current ?? UNKEYED_DRAFT_KEY;
+      const upload = await beginDraftUpload(key);
+      let adoptedId: string | null = null;
+      const controller = new AbortController();
+      uploadControllersRef.current.set(pending.id, controller);
       try {
-        const stored = await uploadChatAttachment(file, sessionId);
+        if (removedDocumentIdsRef.current.has(pending.id)) continue;
+        const stored = await uploadChatAttachment(file, { sessionId, draftId: upload.draftId, signal: controller.signal });
         const othersText = attachedDocumentsRef.current
           .filter((document) => document.id !== pending.id)
           .reduce((total, document) => total + document.text.length, 0);
         const text = describeStoredAttachment(
-          stored,
+          { path: stored.path, size: stored.size, mimeType: stored.mimeType },
           Math.min(MAX_ATTACHED_DOCUMENT_TEXT_CHARS, MAX_TOTAL_ATTACHED_DOCUMENT_TEXT_CHARS - othersText),
         );
         const size = new TextEncoder().encode(text).byteLength;
@@ -1030,30 +1309,51 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           }
           continue;
         }
-        const transcriptFailed = kind === "audio" && stored.transcript === undefined;
-        const settled = replaceComposerDocument(pending.id, { ...storing, text, size, status: "ready", transcriptFailed });
-        if (settled && transcriptFailed) {
-          setAttachmentError(t("chat.attachTranscribeFailedNotice", { name: file.name, error: stored.transcriptError ?? "" }));
+        const ready: ComposerDocument = {
+          ...storing,
+          attachmentId: stored.id,
+          text,
+          size,
+          status: "ready",
+          storedInfo: { path: stored.path, size: stored.size, mimeType: stored.mimeType },
+          ...(kind === "audio" ? { transcription: { state: "planning" as const } } : {}),
+        };
+        if (replaceComposerDocument(pending.id, ready)) {
+          adoptedId = stored.id;
+        } else if (!removedDocumentIdsRef.current.has(pending.id) && key !== draftKeyRef.current) {
+          // The conversation changed while saving; the chip belongs to the draft it was added to.
+          const draft = getDraft(key) ?? { value: "", images: [], documents: [] };
+          setDraft(key, { ...draft, documents: [...draft.documents, toDraftDocument(ready)] });
+          adoptedId = stored.id;
         }
       } catch (error) {
+        if (controller.signal.aborted) continue;
         if (replaceComposerDocument(pending.id, null)) {
           setAttachmentError(t("chat.attachUploadFailed", {
             name: file.name,
             error: error instanceof Error ? error.message : String(error),
           }));
         }
+      } finally {
+        uploadControllersRef.current.delete(pending.id);
+        upload.end(adoptedId);
+      }
+      if (adoptedId && kind === "audio" && attachedDocumentsRef.current.some((document) => document.attachmentId === adoptedId)) {
+        void requestTranscriptionPlan(adoptedId);
       }
     }
-  }, [replaceComposerDocument, sessionId, t]);
+  }, [replaceComposerDocument, requestTranscriptionPlan, sessionId, t]);
 
   const processAttachmentFiles = useCallback(async (files: File[]) => {
     setAttachmentError(null);
     const { images, documents, audio, files: others } = classifyAttachmentFiles(files);
+    // A document past the extraction limit is still attachable: it is saved and sent by path.
+    const oversizedDocuments = documents.filter((file) => file.size > MAX_ATTACHED_DOCUMENT_BYTES);
     await Promise.all([
       processImageFiles(images),
-      processDocumentFiles(documents),
+      processDocumentFiles(documents.filter((file) => file.size <= MAX_ATTACHED_DOCUMENT_BYTES)),
       processFileAttachments(audio, "audio"),
-      processFileAttachments(others, "file"),
+      processFileAttachments([...others, ...oversizedDocuments], "file"),
     ]);
   }, [processDocumentFiles, processFileAttachments, processImageFiles]);
 
@@ -1067,7 +1367,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, []);
 
+  /** Removing a chip stops its upload or transcription and drops it from the draft's references. */
   const removeDocument = useCallback((id: number) => {
+    const removed = attachedDocumentsRef.current.find((document) => document.id === id);
+    removedDocumentIdsRef.current.add(id);
+    uploadControllersRef.current.get(id)?.abort();
+    if (removed?.attachmentId) {
+      transcriptionControllersRef.current.get(removed.attachmentId)?.abort();
+      releaseUploadedAttachment(removed.attachmentId);
+    }
     const next = attachedDocumentsRef.current.filter((document) => document.id !== id);
     attachedDocumentsRef.current = next;
     setAttachedDocuments(next);
@@ -1106,7 +1414,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft(draftKey, {
       value,
       images: attachedImages.map(imageToDraftImage),
-      documents: readyDocuments.map(({ name, mimeType, size, text }) => ({ name, mimeType, size, text })),
+      documents: readyDocuments.map(toDraftDocument),
     });
   }, [attachedImages, draftKey, readyDocuments, value]);
 
@@ -1120,7 +1428,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         images: attachedImagesRef.current.map(imageToDraftImage),
         documents: attachedDocumentsRef.current
           .filter((document) => document.status === "ready")
-          .map(({ name, mimeType, size, text }) => ({ name, mimeType, size, text })),
+          .map(toDraftDocument),
       });
     }
 
@@ -1155,6 +1463,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     };
   }, []);
 
+  /**
+   * Hands attachments to a send callback while their draft keeps listing them, until the callback
+   * reports them accepted by the server or put back into a draft. An unclear outcome keeps them.
+   */
+  const sendHoldingAttachments = useCallback((documents: readonly AttachedDocument[] | undefined, send: () => unknown): void => {
+    const release = holdSubmittedAttachments(draftKeyRef.current ?? UNKEYED_DRAFT_KEY, documents);
+    const result = send();
+    void Promise.resolve(result).then(
+      (outcome) => release(outcome === "accepted" || outcome === "returned" ? outcome : undefined),
+      () => undefined,
+    );
+  }, []);
+
   const handleSend = useCallback(async () => {
     const rawMessage = value.trim();
     const commandMessage = commandValue.trim();
@@ -1164,25 +1485,23 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!msg && !attachedImages.length && !readyDocuments.length) return;
     if (isStreaming || isExtractingDocument) return;
     onAudioUnlock?.();
+    const images = attachedImages.length ? attachedImages : undefined;
+    const documents = readyDocuments.length ? readyDocuments : undefined;
     if (msg.startsWith("/")) {
       const handled = await dispatchSlashSubmission(
         msg,
         slashCommands,
         onBuiltinCommand,
-        (prompt) => onSend(prompt, attachedImages.length ? attachedImages : undefined, readyDocuments.length ? readyDocuments : undefined),
+        (prompt) => sendHoldingAttachments(documents, () => onSend(prompt, images, documents)),
         setAttachmentError,
-        Boolean(attachedImages.length || readyDocuments.length),
+        Boolean(images || documents),
         onLoadSlashCommands,
       );
       if (handled) clearInput();
       return;
     }
     clearInput();
-    onSend(
-      msg,
-      attachedImages.length ? attachedImages : undefined,
-      readyDocuments.length ? readyDocuments : undefined,
-    );
+    sendHoldingAttachments(documents, () => onSend(msg, images, documents));
   }, [
     value,
     commandValue,
@@ -1196,6 +1515,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     onSend,
     clearInput,
     onAudioUnlock,
+    sendHoldingAttachments,
   ]);
 
   const slashQuery = commandValue.startsWith("/") && !/\s/.test(commandValue.slice(1))
@@ -1448,7 +1768,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         onBuiltinCommand,
         (prompt) => {
           if (!onPromptWithStreamingBehavior) throw new Error("Cannot queue this command while the session is busy.");
-          onPromptWithStreamingBehavior(prompt, streamingBehavior, submission.images, submission.documents);
+          sendHoldingAttachments(submission.documents, () => onPromptWithStreamingBehavior(prompt, streamingBehavior, submission.images, submission.documents));
         },
         setAttachmentError,
         Boolean(submission.images?.length || submission.documents?.length),
@@ -1459,9 +1779,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
     clearInput();
     if (mode === "steer" && onSteer) {
-      onSteer(submission.message, submission.images, submission.documents);
+      sendHoldingAttachments(submission.documents, () => onSteer(submission.message, submission.images, submission.documents));
     } else if (mode === "followup" && onFollowUp) {
-      onFollowUp(submission.message, submission.images, submission.documents);
+      sendHoldingAttachments(submission.documents, () => onFollowUp(submission.message, submission.images, submission.documents));
     }
   }, [
     value,
@@ -1477,6 +1797,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     onFollowUp,
     clearInput,
     onAudioUnlock,
+    sendHoldingAttachments,
   ]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
@@ -2098,7 +2419,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <div
                 className="composer-chip"
                 role="listitem"
-                aria-busy={document.status !== "ready" || undefined}
+                aria-busy={document.status !== "ready" || isTranscriptionBusy(document) || undefined}
                 key={document.id}
                 style={{
                   display: "flex",
@@ -2110,7 +2431,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   padding: "0 7px 0 9px",
                 }}
               >
-                {document.status !== "ready" ? (
+                {document.status !== "ready" || document.transcription?.state === "planning" || document.transcription?.state === "running" ? (
                   <span
                     aria-hidden="true"
                     style={{
@@ -2137,8 +2458,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     {" · "}{formatAttachmentSize(document.sourceSize ?? document.size)}
                     {document.status === "extracting" ? ` · ${t("chat.attachExtracting")}` : ""}
                     {document.status === "uploading" ? ` · ${t("chat.attachUploading")}` : ""}
-                    {document.status === "transcribing" ? ` · ${t("chat.attachTranscribing")}` : ""}
-                    {document.transcriptFailed && (
+                    {document.transcription?.state === "planning" ? ` · ${t("chat.transcribeChecking")}` : ""}
+                    {document.transcription?.state === "confirm" ? ` · ${t("chat.attachTranscribePending")}` : ""}
+                    {document.transcription?.state === "running" ? ` · ${t("chat.attachTranscribing")}` : ""}
+                    {document.transcription?.state === "failed" && (
                       <span style={{ color: "var(--danger)" }}>{` · ${t("chat.attachTranscribeFailed")}`}</span>
                     )}
                   </span>
@@ -2169,6 +2492,88 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {transcriptionDocuments.length > 0 && (
+          <div
+            role="group"
+            aria-label={t("chat.transcribeGroup")}
+            aria-live="polite"
+            style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 6 }}
+          >
+            {transcriptionDocuments.map((document) => {
+              const attachmentId = document.attachmentId!;
+              const transcription = document.transcription;
+              const plan = transcription?.state === "confirm" || transcription?.state === "running" ? transcription.plan : null;
+              const summary = plan
+                ? t("chat.transcribePlanSummary", {
+                    duration: plan.durationSeconds === null ? t("chat.transcribeDurationUnknown") : formatAudioDuration(plan.durationSeconds),
+                    calls: plan.estimatedCalls,
+                  })
+                : null;
+              const title = transcription?.state === "confirm"
+                ? t("chat.transcribeConfirmTitle", { name: document.name })
+                : transcription?.state === "running"
+                  ? t("chat.transcribeRunning", { name: document.name })
+                  : transcription?.state === "planning"
+                    ? `${document.name} · ${t("chat.transcribeChecking")}`
+                    : transcription?.state === "failed"
+                      ? t("chat.transcribeFailedRow", { name: document.name, error: transcription.error })
+                      : t("chat.transcribeSkipped", { name: document.name });
+              return (
+                <div
+                  key={document.id}
+                  data-transcription-state={transcription?.state ?? "idle"}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "7px 10px",
+                    border: `1px solid ${transcription?.state === "failed" ? "var(--danger-line)" : "var(--border)"}`,
+                    borderRadius: "var(--radius-control)",
+                    background: transcription?.state === "failed" ? "var(--danger-soft)" : "var(--bg-panel)",
+                    fontSize: 12,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                    <div style={{ color: transcription?.state === "failed" ? "var(--danger)" : "var(--text)", overflowWrap: "anywhere" }}>{title}</div>
+                    {summary && <div style={{ color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>{summary}</div>}
+                    {transcription?.state === "confirm" && (
+                      <>
+                        {transcription.plan.notice && (
+                          <div style={{ color: "var(--text-dim)", overflowWrap: "anywhere" }}>{transcription.plan.notice}</div>
+                        )}
+                        <div style={{ color: "var(--text-dim)" }}>{t("chat.transcribeUsageNotice")}</div>
+                      </>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {transcription?.state === "confirm" && (
+                      <>
+                        <ActionButton type="button" variant="neutralSolid" size="small" onClick={() => void runTranscription(attachmentId, true)}>
+                          {t("chat.transcribeStart")}
+                        </ActionButton>
+                        <ActionButton type="button" variant="neutralWeak" size="small" onClick={() => cancelTranscription(attachmentId)}>
+                          {t("chat.transcribeSkip")}
+                        </ActionButton>
+                      </>
+                    )}
+                    {(transcription?.state === "planning" || transcription?.state === "running") && (
+                      <ActionButton type="button" variant="neutralWeak" size="small" onClick={() => cancelTranscription(attachmentId)}>
+                        {t("chat.transcribeCancel")}
+                      </ActionButton>
+                    )}
+                    {(transcription === undefined || transcription.state === "skipped" || transcription.state === "failed") && (
+                      <ActionButton type="button" variant="neutralWeak" size="small" onClick={() => void requestTranscriptionPlan(attachmentId)}>
+                        {t(transcription?.state === "failed" ? "chat.transcribeRetry" : "chat.transcribeAction")}
+                      </ActionButton>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 

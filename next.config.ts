@@ -38,6 +38,7 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: __dirname,
   serverExternalPackages: [
     "unpdf",
+    "ffmpeg-static",
     "@oh-my-pi/pi-coding-agent",
     "@oh-my-pi/pi-agent-core",
     "@oh-my-pi/pi-ai",

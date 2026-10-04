@@ -53,7 +53,20 @@ test("applies a session snapshot once, preserves optimistic input, and isolates 
     entryId: "reply-1",
     messages: [persistedUser, reply, optimistic],
     entryIds: ["user-1", "reply-1"],
+    compactedWork: null,
   });
+  const hidden = { messages: [{ role: "user", content: "", timestamp: 0 }], todoPhases: null };
+  assert.equal(
+    mergeSessionSnapshotEvent(
+      { ...event, entryId: "reply-1b", context: { ...event.context, compactedWork: hidden } },
+      "session-a",
+      "user-1",
+      [persistedUser],
+      ["user-1"],
+    ).compactedWork,
+    hidden,
+    "snapshot의 압축 이전 작업 기록은 같은 frame의 messages와 함께 채택한다",
+  );
   assert.equal(
     mergeSessionSnapshotEvent(event, "session-a", "reply-1", merged.messages, merged.entryIds),
     null,
@@ -560,7 +573,8 @@ test("distinguishes an ambiguous transport failure from an explicit maintenance 
   );
   assert.equal(eventSources.length, 1);
   eventSources[0].emit({ type: "connected" });
-  await firstSend;
+  // An ambiguous transport failure must keep the composer's attachments protected.
+  assert.equal(await firstSend, "unknown");
 
   assert.equal(promptBodies.length, 1);
   assert.deepEqual(promptBodies[0].images, [
@@ -568,11 +582,11 @@ test("distinguishes an ambiguous transport failure from an explicit maintenance 
   ]);
   assert.equal(restores, 0);
 
-  await hook.handleSend("must not dispatch while unsettled");
+  assert.equal(await hook.handleSend("must not dispatch while unsettled"), "unknown");
   assert.equal(promptBodies.length, 1);
 
   hook.handleAgentEventRef.current({ type: "prompt_done" });
-  await hook.handleSend("send this next");
+  assert.equal(await hook.handleSend("send this next"), "accepted");
 
   assert.deepEqual(promptBodies.map(({ message }) => message), [
     "inspect this",
@@ -583,13 +597,13 @@ test("distinguishes an ambiguous transport failure from an explicit maintenance 
   hook.handleAgentEventRef.current({ type: "prompt_done" });
   assert.deepEqual(completions[1], { outcome: "failed", sessionId: "session-id" });
 
-  await hook.handleSend("blocked by maintenance");
+  assert.equal(await hook.handleSend("blocked by maintenance"), "returned");
   assert.equal(restores, 1);
 
   const retry = hook.handleSend("blocked by maintenance");
   assert.equal(eventSources.length, 2);
   eventSources[1].emit({ type: "connected" });
-  await retry;
+  assert.equal(await retry, "accepted");
   assert.deepEqual(promptBodies.map(({ message }) => message), [
     "inspect this",
     "send this next",
@@ -1580,6 +1594,84 @@ test("Fast 상태는 세션·모델에 묶이고, 상태를 읽는 사이 모델
   await settle();
   assert.deepEqual(hook.fastMode, { enabled: false, active: false }, "거절된 켜기는 켜짐으로 보이지 않는다");
   assert.ok(hook.notices.some((notice) => notice.type === "error" && /unavailable/.test(notice.message)), "미지원 안내를 남긴다");
+  renderer.unmount();
+});
+
+// 같은 세션에서 분기를 A→B로 빠르게 바꾸면 늦게 온 A 응답이 B 화면(본문·압축 이전 작업)을 덮지 않는다.
+test("분기 전환 중 늦게 도착한 이전 분기 context는 현재 분기 화면을 덮지 않는다", { timeout: 30_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cuelo-hook-branch-"));
+  const rendererKey = "__ompUseAgentSessionEffectRenderer";
+  const fakeReactPath = join(directory, "react.mjs");
+  await writeFile(fakeReactPath, [
+    `const react = () => globalThis.${rendererKey}.react;`,
+    ...["useState", "useReducer", "useRef", "useCallback", "useMemo", "useEffect"]
+      .map((name) => `export const ${name} = (...args) => react().${name}(...args);`),
+    "export const useLayoutEffect = (...args) => react().useEffect(...args);",
+  ].join("\n"));
+  const sourceRoot = new URL("../", import.meta.url);
+  const subjectPath = join(directory, "useAgentSession.ts");
+  await writeFile(subjectPath, source
+    .replace('from "react";', `from ${JSON.stringify(pathToFileURL(fakeReactPath).href)};`)
+    .replace(/from "@\/([^"]+)";/g, (_match, path) => `from ${JSON.stringify(new URL(path, sourceRoot).href)};`));
+  const harnessJiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, moduleCache: false, tsconfigPaths: true });
+  const { useAgentSession: useHarnessedAgentSession } = await harnessJiti.import(subjectPath);
+
+  const globalKeys = ["window", "document", "sessionStorage", "EventSource", "fetch", rendererKey];
+  const originals = Object.fromEntries(globalKeys.map((key) => [key, globalThis[key]]));
+  t.after(async () => {
+    for (const key of globalKeys) {
+      if (originals[key] === undefined) delete globalThis[key];
+      else globalThis[key] = originals[key];
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  globalThis.EventSource = class { constructor() { this.readyState = 0; } close() { this.readyState = 2; } };
+  globalThis.window = Object.assign(new EventTarget(), { location: { pathname: "/", search: "", hash: "" } });
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: "visible", title: "" });
+  globalThis.sessionStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+
+  const branch = (leaf) => ({
+    messages: [{ role: "user", content: `branch ${leaf}`, timestamp: 1 }],
+    entryIds: [`${leaf}-1`],
+    compactedWork: { messages: [{ role: "user", content: "", timestamp: 0 }], todoPhases: [{ name: leaf, tasks: [] }] },
+  });
+  const gates = new Map();
+  const json = (value) => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    const context = url.match(/\/context\?.*leafId=([^&]+)/);
+    if (context) {
+      const leaf = decodeURIComponent(context[1]);
+      await gates.get(leaf);
+      return json({ context: branch(leaf) });
+    }
+    if (/^\/api\/(?:sessions\/[^/?]+\/state|agent\/[^/?]+)$/.test(url)) return json({ running: false });
+    return json({ success: true, data: null });
+  };
+
+  const renderer = createEffectRenderer();
+  globalThis[rendererKey] = renderer;
+  const initialData = { sessionId: "s1", filePath: "/tmp/s1.jsonl", totalActiveMs: 0, tree: [], leafId: null, context: { messages: [], entryIds: [], thinkingLevel: "off", model: null } };
+  let changeLeaf;
+  const props = { session: { id: "s1", name: "Test", cwd: "/tmp" }, newSessionCwd: null, initialData, onBranchDataChange: (_tree, _leaf, change) => { changeLeaf = change; } };
+  let hook;
+  renderer.mount(() => { hook = useHarnessedAgentSession(props); });
+  const settle = async () => {
+    for (let round = 0; round < 30; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  await settle();
+
+  const lateA = deferred();
+  gates.set("A", lateA.promise);
+  const toA = changeLeaf("A");
+  await settle();
+  await changeLeaf("B");
+  await settle();
+  lateA.resolve();
+  await toA;
+  await settle();
+  assert.deepEqual(hook.messages, branch("B").messages, "본문은 마지막으로 고른 분기 것이다");
+  assert.deepEqual(hook.compactedWork, branch("B").compactedWork, "압축 이전 작업도 같은 분기 것이다");
   renderer.unmount();
 });
 

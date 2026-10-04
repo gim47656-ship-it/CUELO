@@ -1,10 +1,12 @@
+// 런타임 import는 상대 경로다 — 서버의 session-reader도 이 모듈로 가려진 기록을 줄인다.
 import {
+  readExplicitTaskTitle,
   resolveSubagentModelMeta,
   resolveSubagentTaskPresentation,
   type MergedSubagentRecord,
   type SubagentModelMeta,
-} from "@/lib/hanse-subagent-client";
-import type { ConversationRenderItem } from "@/lib/transcript-plan";
+} from "../hanse-subagent-client";
+import { isGroupAnchor, type ConversationRenderItem } from "../transcript-plan";
 import type {
   AgentMessage,
   AssistantMessage,
@@ -138,7 +140,8 @@ export function readDispatchMembers(call: ToolCallContent, result: ToolResultMes
   return members;
 }
 
-function readVerdict(result: ToolResultMessage): { key: string; record: Omit<VerdictRecord, "order"> } | null {
+/** 성공한 `routing_verdict` 결과의 판정 레코드. details에 없으면 결과 본문 JSON(`ok: true`)에서 읽는다. */
+function readVerdictShape(result: ToolResultMessage): VerdictRecordShape | null {
   if (result.isError) return null;
   let record = (result.details as { record?: VerdictRecordShape } | undefined)?.record;
   if (typeof record !== "object" || record === null) {
@@ -149,7 +152,12 @@ function readVerdict(result: ToolResultMessage): { key: string; record: Omit<Ver
       return null;
     }
   }
-  if (typeof record !== "object" || record === null) return null;
+  return typeof record === "object" && record !== null ? record : null;
+}
+
+function readVerdict(result: ToolResultMessage): { key: string; record: Omit<VerdictRecord, "order"> } | null {
+  const record = readVerdictShape(result);
+  if (!record) return null;
   const verdict = record.verdict;
   if (verdict !== "accepted" && verdict !== "rework" && verdict !== "held") return null;
   const assignmentId = readString(record.assignmentId);
@@ -171,6 +179,81 @@ function readVerdict(result: ToolResultMessage): { key: string; record: Omit<Ver
 
 const TASK_RESULT_TAG = /<task-result\b([^>]*)>/g;
 const TAG_ATTRIBUTE = /(\w+)="([^"]*)"/g;
+
+/** 발주 원문 대신 남길 제목 한 줄. 카드 제목은 `readExplicitTaskTitle`만 읽으므로 같은 제목이 나온다. */
+function titleLine(task: unknown): string {
+  const title = typeof task === "string" ? readExplicitTaskTitle(task) : null;
+  return title ? `TASK_TITLE: ${title}` : "";
+}
+
+/**
+ * 압축이 가린 기록 한 건을 원장·dock·발주 카드가 읽는 최소 모양으로 줄인다(`CompactedWork.messages`).
+ * user는 본문 없는 턴 경계 마커, assistant는 `task` 호출만(원문은 TASK_TITLE 한 줄), 결과는 원장이
+ * 읽는 필드만 남긴다. 이 원장이 읽지 않는 기록이면 null.
+ */
+export function reduceDispatchRecord(message: AgentMessage): AgentMessage | null {
+  switch (message.role) {
+    case "user":
+      return { role: "user", content: "", timestamp: message.timestamp };
+    case "assistant": {
+      const calls = (message.content ?? [])
+        .filter((block): block is ToolCallContent => block.type === "toolCall" && block.toolName === "task")
+        .map((call): ToolCallContent => ({
+          type: "toolCall",
+          toolCallId: call.toolCallId,
+          toolName: "task",
+          input: {
+            tasks: objectEntries<TaskEntryShape>(call.input?.tasks).map((task) => ({
+              name: task.name,
+              agent: task.agent,
+              task: titleLine(task.task),
+            })),
+          },
+        }));
+      if (calls.length === 0) return null;
+      return { role: "assistant", content: calls, model: message.model, provider: message.provider, timestamp: message.timestamp };
+    }
+    case "toolResult": {
+      const base = { role: "toolResult" as const, toolCallId: message.toolCallId, toolName: message.toolName, content: [], timestamp: message.timestamp };
+      if (message.toolName === "task") {
+        // 거절된 발주는 오류 결과 그대로 남아 띄운 Maker가 없다는 사실을 지킨다.
+        if (message.isError) return { ...base, isError: true };
+        const progress = objectEntries<TaskEntryShape>((message.details as { progress?: unknown } | undefined)?.progress)
+          .map((entry) => ({ index: entry.index, id: entry.id, agent: entry.agent, task: titleLine(entry.task) }));
+        return { ...base, details: { progress } };
+      }
+      if (message.toolName === "routing_verdict") {
+        if (!readVerdict(message)) return null;
+        const record = readVerdictShape(message)!;
+        return { ...base, details: { record: { verdict: record.verdict, assignmentId: record.assignmentId, attempt: record.attempt, reason: record.reason } } };
+      }
+      if (message.toolName === "wait") {
+        const jobs = objectEntries<WaitJobShape>((message.details as { jobs?: unknown } | undefined)?.jobs)
+          .filter((job) => job.type === "task")
+          .map((job) => ({ type: job.type, id: job.id, status: job.status }));
+        return jobs.length > 0 ? { ...base, details: { jobs } } : null;
+      }
+      return null;
+    }
+    case "custom": {
+      if (message.customType !== "async-result") return null;
+      const tags = [...contentText(message.content).matchAll(TASK_RESULT_TAG)].map((match) => match[0]);
+      return tags.length > 0
+        ? { role: "custom", customType: "async-result", display: false, content: tags.join("\n"), timestamp: message.timestamp }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** 가려진 기록을 화면 기록 앞에 잇는다 — 원장·dock은 이 순서로 읽는다. 가려진 기록이 없으면 화면 기록 그대로. */
+export function withCompactedWork(
+  compacted: readonly AgentMessage[] | null | undefined,
+  messages: readonly AgentMessage[],
+): readonly AgentMessage[] {
+  return compacted && compacted.length > 0 ? [...compacted, ...messages] : messages;
+}
 
 export function buildDispatchLedger(
   messages: readonly AgentMessage[],
@@ -307,42 +390,116 @@ export interface DispatchSlot {
   placement: "before" | "after";
 }
 
+type AnswerEntry = { item: Extract<ConversationRenderItem, { kind: "answer" }>; position: number };
+
+function taskCalls(message: AgentMessage): ToolCallContent[] {
+  if (message.role !== "assistant") return [];
+  return (message as AssistantMessage).content?.filter(
+    (block): block is ToolCallContent => block.type === "toolCall" && block.toolName === "task",
+  ) ?? [];
+}
+
+/**
+ * 가려진 발주의 자리. 가려진 마지막 턴(마지막 user 경계 뒤)이 압축을 넘어 이어지면 — 화면 첫 user보다
+ * 앞에 답변이 있으면 — 그 첫 답변에 붙는다. 나머지(통째로 가려진 턴, 이어지는 답변이 아직 없는 턴)는
+ * 화면의 compaction 메시지 지점에 모인다. 한 호출은 둘 중 한 곳에만 간다.
+ */
+function splitCompactedCalls(
+  main: readonly ConversationRenderItem[],
+  messages: readonly AgentMessage[],
+  compacted: readonly AgentMessage[],
+): { continuing: { position: number; calls: ToolCallContent[] } | null; atCompaction: ToolCallContent[] } {
+  let lastBoundary = -1;
+  compacted.forEach((message, idx) => {
+    if (message.role === "user") lastBoundary = idx;
+  });
+  const older = compacted.slice(0, lastBoundary + 1).flatMap(taskCalls);
+  const lastTurn = compacted.slice(lastBoundary + 1).flatMap(taskCalls);
+  const firstUser = messages.findIndex((message) => message.role === "user");
+  const continuingAt = lastTurn.length === 0
+    ? -1
+    : main.findIndex((item) => item.kind === "answer" && (firstUser === -1 || item.idx < firstUser));
+  if (continuingAt === -1) return { continuing: null, atCompaction: [...older, ...lastTurn] };
+  return { continuing: { position: continuingAt, calls: lastTurn }, atCompaction: older };
+}
+
 /**
  * 각 `task` 호출을 같은 턴의 답변 하나에 붙인다. 작업 로그로 접힌 호출 자리에 가장 가까운 답변 —
  * 그 호출 앞(같은 메시지 포함)의 마지막 답변 뒤, 없으면 그 뒤 첫 답변 앞이다. 그 턴에 답변이
  * 없으면 붙일 자리가 없다(작업 로그와 상세 패널에는 그대로 남는다).
+ *
+ * 턴은 user 메시지가 열고, 턴 중간의 압축은 compaction 요약이 이어 연다. 끝난 턴의 답변은 그 요약을,
+ * 아직 도는 꼬리는 마지막 user를 anchor로 들고 있으므로 둘 다 같은 턴으로 본다.
+ * `compacted`(`CompactedWork.messages`)의 가려진 마지막 턴 발주는 이어지는 첫 답변 앞에 붙는다.
  */
 export function placeDispatchCards(
   main: readonly ConversationRenderItem[],
   messages: readonly AgentMessage[],
+  compacted: readonly AgentMessage[] = [],
 ): Map<number, DispatchSlot> {
   const slots = new Map<number, DispatchSlot>();
   const answers = main
     .map((item, position) => ({ item, position }))
-    .filter((entry): entry is { item: Extract<ConversationRenderItem, { kind: "answer" }>; position: number } => entry.item.kind === "answer");
+    .filter((entry): entry is AnswerEntry => entry.item.kind === "answer");
   if (answers.length === 0) return slots;
-  const userIndexes = main
-    .filter((item) => item.kind === "message" && messages[item.idx]?.role === "user")
-    .map((item) => item.idx);
 
+  let lastUser = -1;
+  let lastAnchor = -1;
   messages.forEach((message, idx) => {
-    if (message.role !== "assistant") return;
-    const calls = (message as AssistantMessage).content?.filter(
-      (block): block is ToolCallContent => block.type === "toolCall" && block.toolName === "task",
-    ) ?? [];
-    if (calls.length === 0) return;
-    let anchor = -1;
-    for (const userIdx of userIndexes) if (userIdx < idx) anchor = userIdx;
-    const turnAnswers = answers.filter((entry) => entry.item.anchorIdx === anchor);
-    const before = turnAnswers.filter((entry) => entry.item.idx <= idx).pop();
-    const target = before ?? turnAnswers.find((entry) => entry.item.idx > idx);
-    if (!target) return;
-    const placement = before ? "after" : "before";
-    const slot = slots.get(target.position);
-    if (slot) slot.calls.push(...calls);
-    else slots.set(target.position, { calls: [...calls], placement });
+    const calls = taskCalls(message);
+    if (calls.length > 0) {
+      const turnAnswers = answers.filter((entry) => entry.item.anchorIdx === lastUser || entry.item.anchorIdx === lastAnchor);
+      const before = turnAnswers.filter((entry) => entry.item.idx <= idx).pop();
+      const target = before ?? turnAnswers.find((entry) => entry.item.idx > idx);
+      if (target) {
+        const slot = slots.get(target.position);
+        if (slot) slot.calls.push(...calls);
+        else slots.set(target.position, { calls: [...calls], placement: before ? "after" : "before" });
+      }
+    }
+    if (message.role === "user") lastUser = idx;
+    if (isGroupAnchor(message)) lastAnchor = idx;
   });
+
+  const { continuing } = splitCompactedCalls(main, messages, compacted);
+  if (continuing) {
+    const slot = slots.get(continuing.position);
+    if (slot) slot.calls.unshift(...continuing.calls);
+    else slots.set(continuing.position, { calls: continuing.calls, placement: "before" });
+  }
   return slots;
+}
+
+export interface CompactedDispatchPlacement {
+  /** 기존 발주 카드를 이 대화 항목(`main` 위치) 바로 앞에 그린다. `main.length`면 마지막 항목 뒤다. */
+  position: number;
+  /** dock 줄이 눌렸을 때 갈 대화 항목. 대화가 비었으면 null. */
+  jumpTo: number | null;
+  calls: ToolCallContent[];
+}
+
+/**
+ * 붙을 답변이 없는 가려진 발주(`placeDispatchCards`가 받지 않은 것)를 화면의 compaction 메시지
+ * 지점에 모은다 — 그 메시지 뒤 첫 대화 항목 앞, 없으면 대화 끝. 가짜 메시지를 만들지 않는다.
+ */
+export function placeCompactedDispatch(
+  main: readonly ConversationRenderItem[],
+  messages: readonly AgentMessage[],
+  compacted: readonly AgentMessage[] = [],
+): CompactedDispatchPlacement | null {
+  const { atCompaction } = splitCompactedCalls(main, messages, compacted);
+  if (atCompaction.length === 0) return null;
+  let compactionIdx = -1;
+  messages.forEach((message, idx) => {
+    if (message.role === "custom" && message.customType === "compaction") compactionIdx = idx;
+  });
+  const after = main.findIndex((item) => item.idx > compactionIdx);
+  const position = after === -1 ? main.length : after;
+  return {
+    position,
+    jumpTo: position < main.length ? position : main.length > 0 ? main.length - 1 : null,
+    calls: atCompaction,
+  };
 }
 
 export type DockPhase = "running" | "awaiting";
@@ -379,6 +536,9 @@ const DOCK_CANDIDATE: Record<MakerRunState, DockPhase | null> = {
  *   마지막 턴만 — 중단된 세션의 기록은 영영 바뀌지 않으므로 고정해 두지 않는다.
  * - 판정 대기: 마지막 턴에서 실행이 끝났는데 Main 판정(`routing_verdict`)이 아직 없는 것.
  *   다음 사용자 입력부터는 그 턴의 카드에만 남는다.
+ *
+ * 압축이 가린 발주까지 세려면 `withCompactedWork`로 이은 기록을 넘기고, compaction 지점에 모인
+ * 카드(`placeCompactedDispatch`)도 넘겨 dock이 그 카드로 갈 수 있게 한다.
  */
 export function collectDockMakers(
   messages: readonly AgentMessage[],
@@ -387,6 +547,7 @@ export function collectDockMakers(
   subagents: readonly SubagentSnapshot[],
   ledger: DispatchLedger,
   sessionBusy: boolean,
+  compacted: CompactedDispatchPlacement | null = null,
 ): DockSummary | null {
   let lastUser = -1;
   messages.forEach((message, idx) => {
@@ -394,6 +555,7 @@ export function collectDockMakers(
   });
   const positionByCall = new Map<string, number>();
   for (const [position, slot] of slots) for (const call of slot.calls) positionByCall.set(call.toolCallId, position);
+  if (compacted?.jumpTo != null) for (const call of compacted.calls) positionByCall.set(call.toolCallId, compacted.jumpTo);
 
   const dock: DockMaker[] = [];
   messages.forEach((message, idx) => {

@@ -118,14 +118,19 @@ function isTodoToolName(name: string | undefined): boolean {
  * call, the completion a finished subagent triggers - so any reported list is the answer and the
  * transcript is only what is left when nothing has reported one. That includes an empty list: the
  * tracker saying there is no todo must not be undone by replaying an older record.
+ *
+ * `compactedPhases` is the last durable list in the history the latest compaction hid from the
+ * transcript (`SessionContext.compactedWork.todoPhases`). Everything the transcript shows is newer,
+ * so it answers only when neither the tracker nor a shown record does.
  */
 export function selectCurrentTodo(
   messages: AgentMessage[],
   toolResults: Map<string, ToolResultMessage>,
   reportedPhases: TodoPhase[] | null = null,
+  compactedPhases: TodoPhase[] | null = null,
 ): TodoPhase[] | null {
   if (reportedPhases) return reportedPhases;
-  return selectTodoFromTranscript(messages, toolResults);
+  return selectTodoFromTranscript(messages, toolResults) ?? compactedPhases;
 }
 
 /** The todo this session's own transcript reports, or nothing when it reports none. */

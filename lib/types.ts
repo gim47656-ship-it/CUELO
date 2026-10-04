@@ -1,3 +1,5 @@
+import type { TodoPhase } from "./todo-state";
+
 // Types mirrored from pi-mono coding-agent session-manager
 
 export interface SessionHeader {
@@ -435,6 +437,20 @@ export interface SessionInfo {
   transient?: boolean;
 }
 
+/**
+ * 최신 compaction이 화면 transcript에서 가린 구간(선택한 leaf의 가지만)에 남은 작업 기록.
+ * 렌더하지 않는다 — 발주 원장·dock·발주 카드·todo 계산에만 화면 messages 앞에 이어 붙인다.
+ */
+export interface CompactedWork {
+  /**
+   * 가려진 구간의 축약 기록, root부터. user 경계 마커(본문 없음), `task` 호출(TASK_TITLE 한 줄로 축약),
+   * 그 spawn 결과, 성공한 `routing_verdict`·`wait` 결과, `async-result`의 `<task-result>` 태그뿐이다.
+   */
+  messages: AgentMessage[];
+  /** 가려진 구간의 마지막 durable todo(omp tracker가 가지에서 되살리는 규칙). 없으면 null. */
+  todoPhases: TodoPhase[] | null;
+}
+
 export interface SessionContext {
   messages: AgentMessage[];
   entryIds: string[]; // parallel to messages — the session entry id for each message
@@ -443,4 +459,6 @@ export interface SessionContext {
   /** 「Auto, 최대 X」 상한. 현재 가지의 마지막 CUELO 상한 기록이며 없거나 해제면 `null`. */
   thinkingCeiling: string | null;
   model: { provider: string; modelId: string } | null;
+  /** 최신 compaction이 아무것도 가리지 않았으면 null. */
+  compactedWork: CompactedWork | null;
 }

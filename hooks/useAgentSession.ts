@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, use
 import type {
   AgentMessage,
   BlockingExtensionUiRequest,
+  CompactedWork,
   CustomMessage,
   ExtensionStatusItem,
   ExtensionUiRequest,
@@ -23,7 +24,7 @@ import {
   composeDocumentPrompt,
   type AttachedDocument,
 } from "@/lib/document-attachments";
-import { mergeRestoredQueuedMessages } from "@/lib/draft-store";
+import { mergeRestoredQueuedMessages, type SubmissionOutcome } from "@/lib/draft-store";
 import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
@@ -50,6 +51,8 @@ export interface SessionData {
     thinkingLevel: string;
     configuredThinkingLevel?: string;
     thinkingCeiling?: string | null;
+    /** History the latest compaction hid, kept only for dispatch, verdict and todo state. */
+    compactedWork?: CompactedWork | null;
     model: { provider: string; modelId: string } | null;
   };
 }
@@ -446,6 +449,7 @@ interface SessionSnapshotPayload {
   context: {
     messages: AgentMessage[];
     entryIds: string[];
+    compactedWork?: CompactedWork | null;
   };
 }
 
@@ -487,7 +491,7 @@ export function mergeSessionSnapshotEvent(
   knownEntryId: string | null,
   currentMessages: readonly AgentMessage[],
   currentEntryIds: readonly string[],
-): { entryId: string; messages: AgentMessage[]; entryIds: string[] } | null {
+): { entryId: string; messages: AgentMessage[]; entryIds: string[]; compactedWork: CompactedWork | null } | null {
   if (event.type !== "session_snapshot") return null;
   const payload = event as AgentEvent & Partial<SessionSnapshotPayload>;
   if (
@@ -525,6 +529,7 @@ export function mergeSessionSnapshotEvent(
     entryId: payload.entryId,
     messages: [...canonicalMessages, ...optimisticTail],
     entryIds: [...payload.context.entryIds],
+    compactedWork: payload.context.compactedWork ?? null,
   };
 }
 
@@ -592,6 +597,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [activeLeafId, setActiveLeafId] = useState<string | null>(seededData?.leafId ?? null);
   const [messages, setMessages] = useState<AgentMessage[]>(seededData?.context.messages ?? []);
   const [entryIds, setEntryIds] = useState<string[]>(seededData?.context.entryIds ?? []);
+  // Always replaced together with messages: a view never mixes another branch's hidden history.
+  const [compactedWork, setCompactedWork] = useState<CompactedWork | null>(seededData?.context.compactedWork ?? null);
   const [streamState, dispatch] = useReducer(streamReducer, { isStreaming: false, streamingMessage: null });
   const [agentRunning, setAgentRunning] = useState(false);
   const [bashRunning, setBashRunning] = useState(false);
@@ -620,6 +627,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [fastModeBusy, setFastModeBusy] = useState(false);
   /** Fast 상태 요청의 세대. 세션·모델이 바뀌거나 새 요청이 나가면 늦게 온 옛 응답을 버린다. */
   const fastGenRef = useRef(0);
+  /** 분기 context 요청의 세대. 빠르게 분기를 바꾸면 늦게 온 이전 분기 응답을 버린다. */
+  const contextGenRef = useRef(0);
   /** 지금 화면의 모델 키. 비동기 경로가 await 뒤에 대상이 그대로인지 확인한다. */
   const fastModelKeyRef = useRef("");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
@@ -848,6 +857,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             setData(null);
             setActiveLeafId(null);
             updateMessages([]);
+            setCompactedWork(null);
             setError(null);
           }
           return null;
@@ -866,6 +876,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       );
       updateMessages(transcript.messages);
       updateEntryIds(transcript.entryIds);
+      setCompactedWork(d.context.compactedWork ?? null);
       setContextUsage(d.contextUsage ?? null);
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
@@ -960,6 +971,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [loadSession]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
+    // Branch switches can overlap; only the last requested view may land.
+    const gen = ++contextGenRef.current;
     try {
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (leafId) params.set("leafId", leafId);
@@ -967,9 +980,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as {
-        context: { messages: AgentMessage[]; entryIds: string[] };
+        context: { messages: AgentMessage[]; entryIds: string[]; compactedWork?: CompactedWork | null };
         contextUsage?: ContextUsage;
       };
+      if (contextGenRef.current !== gen || sessionIdRef.current !== sid) return;
       sessionSnapshotEntryIdRef.current = leafId;
       const transcript = withLocalCommandOutputs(
         d.context.messages,
@@ -978,6 +992,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       );
       updateMessages(transcript.messages);
       updateEntryIds(transcript.entryIds);
+      // The other branch's hidden history must not survive the switch.
+      setCompactedWork(d.context.compactedWork ?? null);
       setContextUsage(d.contextUsage ?? null);
     } catch (e) {
       console.error("Failed to load context:", e);
@@ -1815,6 +1831,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         );
         updateMessages(transcript.messages);
         updateEntryIds(transcript.entryIds);
+        setCompactedWork(merged.compactedWork);
         break;
       }
       case "agent_start": {
@@ -2146,12 +2163,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     message: string,
     images?: AttachedImage[],
     documents?: AttachedDocument[],
-  ) => {
+  ): Promise<SubmissionOutcome> => {
     const trimmedMessage = message.trim();
-    if (!trimmedMessage && !images?.length && !documents?.length) return;
+    // Outcomes tell the composer when the attachments it handed over stop needing its
+    // protection: only a confirmed acceptance or a restore into a draft releases them.
+    if (!trimmedMessage && !images?.length && !documents?.length) return "returned";
     // 프리셋/모델 전환이 진행 중이면 전송하지 않는다 — 새 대화의 생성 body가 바뀌는 중간
     // 선택을 실어 보내지 않게 한다(진행 중인 전환은 끝나면 다시 누를 수 있다).
-    if (agentRunningRef.current || bashRunningRef.current || modelSwitchPendingRef.current) return;
+    if (agentRunningRef.current || bashRunningRef.current || modelSwitchPendingRef.current) return "unknown";
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const isSlashCommandPrompt = !images?.length && !documents?.length && trimmedMessage.startsWith("/");
 
@@ -2159,9 +2178,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (isBashCommand) {
       const isExcluded = trimmedMessage.startsWith("!!");
       const bashCmd = (isExcluded ? trimmedMessage.slice(2) : trimmedMessage.slice(1)).trim();
-      if (!bashCmd) return;
+      if (!bashCmd) return "unknown";
       await executeBashRef.current?.(bashCmd, isExcluded);
-      return;
+      return "accepted";
     }
 
     resetCompletion();
@@ -2189,7 +2208,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     let sentSessionId: string | null = null;
     let promptRequestStarted = false;
-
+    let outcome: SubmissionOutcome = "unknown";
     try {
       if (isNew && newSessionCwd) {
         const selectedModel = newSessionModel;
@@ -2213,6 +2232,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             ...(piImages?.length ? { images: piImages } : {}),
           });
           promoteNewSession(1, message);
+          outcome = "accepted";
         }
       } else if (session) {
         sentSessionId = session.id;
@@ -2223,10 +2243,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           message: promptMessage,
           ...(piImages?.length ? { images: piImages } : {}),
         });
+        outcome = "accepted";
       }
       if (isSlashCommandPrompt && sentSessionId) {
         void waitForPromptSettlement(sentSessionId, promptRunId);
       }
+      return outcome;
     } catch (e) {
       console.error("Failed to send message:", e);
       const maintenanceRejected = e instanceof AgentCommandError
@@ -2238,7 +2260,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // until server state confirms the run is idle.
       if (!definitivelyRejected && sentSessionId) {
         void waitForPromptSettlement(sentSessionId, promptRunId);
-        return;
+        return "unknown";
       }
       rpcPromptPendingRef.current = false;
       agentRunningRef.current = false;
@@ -2266,6 +2288,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentRunning(false);
       setAgentPhase(null);
       dispatch({ type: "end" });
+      return "returned";
     }
   }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, opts.chatInputRef, resetCompletion, updateMessages]);
 
@@ -2771,7 +2794,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     message: string,
     images?: AttachedImage[],
     documents?: AttachedDocument[],
-  ) => {
+  ): Promise<SubmissionOutcome> => {
     const sid = sessionIdRef.current;
     if (!sid) {
       addNotice({ type: "error", message: "The session is not ready yet, so the message was returned to the composer." });
@@ -2780,7 +2803,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         toDraftImages(images),
         documents,
       );
-      return;
+      return "returned";
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
@@ -2793,6 +2816,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ...(piImages?.length ? { images: piImages } : {}),
       });
       dispatchDelivery({ type: "ack", id: deliveryId });
+      return "accepted";
     } catch (e) {
       dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to steer:", e);
@@ -2803,6 +2827,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         documents,
         sid,
       );
+      return "returned";
     }
   }, [addNotice, opts.chatInputRef]);
 
@@ -2811,7 +2836,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     behavior: "steer" | "followUp",
     images?: AttachedImage[],
     documents?: AttachedDocument[],
-  ) => {
+  ): Promise<SubmissionOutcome> => {
     const sid = sessionIdRef.current;
     if (!sid) {
       addNotice({ type: "error", message: "The session is not ready yet, so the message was returned to the composer." });
@@ -2820,7 +2845,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         toDraftImages(images),
         documents,
       );
-      return;
+      return "returned";
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
@@ -2834,6 +2859,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ...(piImages?.length ? { images: piImages } : {}),
       });
       dispatchDelivery({ type: "ack", id: deliveryId });
+      return "accepted";
     } catch (e) {
       dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to queue prompt:", e);
@@ -2844,6 +2870,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         documents,
         sid,
       );
+      return "returned";
     }
   }, [addNotice, opts.chatInputRef]);
 
@@ -2851,7 +2878,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     message: string,
     images?: AttachedImage[],
     documents?: AttachedDocument[],
-  ) => {
+  ): Promise<SubmissionOutcome> => {
     const sid = sessionIdRef.current;
     if (!sid) {
       addNotice({ type: "error", message: "The session is not ready yet, so the message was returned to the composer." });
@@ -2860,7 +2887,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         toDraftImages(images),
         documents,
       );
-      return;
+      return "returned";
     }
     const promptMessage = composeDocumentPrompt(message, documents ?? []);
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
@@ -2873,6 +2900,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ...(piImages?.length ? { images: piImages } : {}),
       });
       dispatchDelivery({ type: "ack", id: deliveryId });
+      return "accepted";
     } catch (e) {
       dispatchDelivery({ type: "fail", id: deliveryId });
       console.error("Failed to follow up:", e);
@@ -2883,6 +2911,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         documents,
         sid,
       );
+      return "returned";
     }
   }, [addNotice, opts.chatInputRef]);
 
@@ -3290,6 +3319,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // carry changes no tool record does; the transcript remains the fallback and the newer answer
     // whenever a todo record is what changed last.
     todoPhases: todoSnapshot && todoSnapshot.sid === sessionIdRef.current ? todoSnapshot.phases : null,
+    compactedWork,
     notices: noticeState.visible, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,

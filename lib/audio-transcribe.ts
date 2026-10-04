@@ -8,14 +8,12 @@
  * an `ImageContent` block on the wire as `inlineData { mimeType, data }` verbatim, which is exactly
  * Gemini's inline audio part, so the audio travels as that block with its real `audio/*` MIME type.
  */
+import { MAX_TRANSCRIBE_AUDIO_BYTES } from "./attachment-audio-types";
+
 export const TRANSCRIBE_PROVIDER = "google-antigravity";
 export const TRANSCRIBE_MODEL = "gemini-3.8-flash";
-/**
- * Gemini caps a request carrying inline data at 20 MB. Base64 grows the audio by 4/3, so 14 MB of
- * audio (~18.7 MB encoded) leaves room for the prompt. Larger audio is saved but not transcribed.
- */
-export const MAX_TRANSCRIBE_AUDIO_BYTES = 14 * 1024 * 1024;
-const TRANSCRIBE_TIMEOUT_MS = 180_000;
+/** One request's deadline; a split recording makes one request per part. */
+export const TRANSCRIBE_TIMEOUT_MS = 180_000;
 const TRANSCRIBE_MAX_TOKENS = 32_768;
 
 export const TRANSCRIBE_PROMPT = [
