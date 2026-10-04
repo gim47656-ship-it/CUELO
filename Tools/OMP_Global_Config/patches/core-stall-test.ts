@@ -46,7 +46,7 @@ await test("closing one root preserves another root and its revival", async () =
  const registry = new AgentRegistry();
  const lifecycle = new AgentLifecycleManager(registry);
  const disposed: string[] = [];
- const session = (id: string) => ({ dispose: async () => { disposed.push(id); }, isStreaming: false });
+ const session = (id: string) => ({ dispose: async () => { disposed.push(id); }, isStreaming: false, hasPendingAsyncWork: () => false });
  const a = registry.register({ id: "Main", kind: "main", session: session("Main") });
  registry.register({ id: "Main#2", kind: "main", session: session("Main#2") });
  registry.register({ id: "A", kind: "sub", parentId: "Main", session: session("A"), status: "idle" });
