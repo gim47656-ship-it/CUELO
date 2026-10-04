@@ -125,7 +125,7 @@ describe("gitnexus autosync 판정", () => {
   test("살아 있는 최근 잠금은 존중하고, 죽은 pid나 오래된 잠금은 회수한다", async () => {
     const r = repo();
     const now = Date.now();
-    fs.writeFileSync(r.lockPath, JSON.stringify({ pid: 777, token: "live", startedAt: now }));
+    fs.writeFileSync(r.lockPath, JSON.stringify({ pid: 777, token: "<live>", startedAt: now }));
     expect(await syncGitNexusIndex(r.root, deps(r).value)).toBe("locked");
 
     const dead = deps(r, { isAlive: (pid) => pid !== 777 });
@@ -133,7 +133,7 @@ describe("gitnexus autosync 판정", () => {
     expect(dead.jobs).toHaveLength(1);
     expect(readLog(r)).toContain("reclaim stale lock (pid 777)");
 
-    fs.writeFileSync(r.lockPath, JSON.stringify({ pid: 778, token: "old", startedAt: now - 7 * 60 * 60 * 1000 }));
+    fs.writeFileSync(r.lockPath, JSON.stringify({ pid: 778, token: "<old>", startedAt: now - 7 * 60 * 60 * 1000 }));
     const old = deps(r);
     expect(await syncGitNexusIndex(r.root, old.value)).toBe("started");
     expect(readLog(r)).toContain("reclaim stale lock (pid 778)");
