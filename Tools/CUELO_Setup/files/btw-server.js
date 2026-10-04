@@ -310,6 +310,9 @@ async function handleAsk(req) {
                     session,
                     {
                         promptText,
+                        // 웹 사이드챗은 긴 답을 읽는 자리다. 기본 4 KiB 제한은 이미 스트리밍한 답을
+                        // done에서 잘라 바꿔 버리므로 푼다. 반복 줄 정리는 TUI /btw와 같이 둔다(이슈 #16).
+                        replyMaxBytes: Infinity,
                         onTextDelta: d => send({ t: 'd', v: d }),
                         signal: req.signal,
                     },

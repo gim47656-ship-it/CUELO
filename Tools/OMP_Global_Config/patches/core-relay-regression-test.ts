@@ -103,7 +103,7 @@ writeFileSync(join(agentDir, "config.yml"), `modelRoles:\n  default: ${FIXTURE_P
  *  건수만 세면 "소비한 turn 이 답했다"와 "그 다음 turn 이 대신 답했다"가 구분되지
  *  않으므로 함께 기록한다. provider 재시도(auto_retry)는 같은 turn 안의 사건이라
  *  훅 호출 횟수로는 turn 을 셀 수 없다. */
-const parentInbox: Array<{ from: string; body: string; wakeRelay?: boolean; turnSeq: number }> = [];
+const parentInbox: Array<{ from: string; body: string; wakeRelay?: boolean; channel?: "job"; turnSeq: number }> = [];
 let turnCount = 0;
 const parentSession = {
 	isStreaming: () => false,
@@ -182,12 +182,13 @@ let maxOpenBrackets = 0;
 const installObserver = session.setIrcWakeTurnObserver.bind(session);
 session.setIrcWakeTurnObserver = (observer: never): void => {
 	if (observer === undefined) return installObserver(undefined);
-	installObserver(((records: never) => {
+	installObserver(((records: never, bracket?: never) => {
 		const entry: Bracket = { streamingAtOpen: session.isStreaming, hookAtOpen: hookHits, closed: false };
 		brackets.push(entry);
 		maxOpenBrackets = Math.max(maxOpenBrackets, brackets.filter(b => !b.closed).length);
 		if (trace) console.log(`    [bracket open] streaming=${entry.streamingAtOpen} hook=${entry.hookAtOpen}`);
-		const finish = (observer as unknown as (r: never) => unknown)(records) as
+		// 세션이 넘긴 bracket 표시(이미 돌던 turn 의 입양 등)도 그대로 전달한다. 빼면 executor 가 다른 판정을 한다.
+		const finish = (observer as unknown as (r: never, b?: never) => unknown)(records, bracket) as
 			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: unknown[]) => void | Promise<void>)
 			| undefined;
 		if (finish === undefined) {
@@ -211,6 +212,15 @@ attachIrcWakeTurnMonitor(session, {
 	index: 0,
 	agent: { name: "maker", source: "smoke", prompt: "", description: "smoke" } as never,
 	artifactsDir,
+});
+
+// 부모 Main 앞으로 등록된 owner job 의 전달을 받는 자리. 실제 Main 세션이 같은 manager 에 거는 sink 와 같은 역할이며,
+// 없으면 그 전달은 dead-letter 로 버려져 "부모가 받은 답"에서 빠진다(job-manager registerDeliverySink).
+const jobManager = session.asyncJobManager;
+check("세션에 owner job 전달을 받을 async job manager 가 있다", jobManager !== undefined);
+jobManager?.registerDeliverySink(MAIN_AGENT_ID, (_jobId: string, text: string) => {
+	parentInbox.push({ from: "Sol", body: text, channel: "job", turnSeq: turnCount });
+	if (trace) console.log(`    [parent<-job] turn=${turnCount} ${text.slice(0, 90).replace(/\n/g, " ")}`);
 });
 
 // turn 경계는 세션 이벤트가 정본이다. provider 오류로 인한 auto_retry 는 같은 turn
@@ -263,7 +273,10 @@ const watchdog = setTimeout(() => {
 // 실패·취소 turn 은 실패 원인 + `history://<id>` 포인터를 담은 통지다(executor
 // `buildWakeRelayBody`). 이 스모크의 turn 은 provider 가 없어 전부 실패하므로, "부모가 정확히
 // 1건 답을 받았는가"는 봉투가 아니라 relay 자체로 세고 본문은 아래에서 따로 본다.
-const relays = () => parentInbox.filter(m => m.wakeRelay === true);
+// 18.6.1 부터 부모 레코드로 연 wake·continuation bracket 은 부모에게 IRC relay 대신 owner job(부모 `wait`·async 결과
+// 전달)으로 답하고, relay 는 그 부모를 건너뛴다(executor attachIrcWakeTurnMonitor). 그래서 "부모가 받은 답"은 두 경로를
+// 합쳐 센다: 어느 쪽이든 부모 steer 하나당 정확히 1건이어야 하고, 0건(누락)·2건(중복) 모두 실패다.
+const relays = () => parentInbox.filter(m => m.wakeRelay === true || m.channel === "job");
 const novaRelays = () => novaInbox.filter(m => m.wakeRelay === true);
 
 async function settle(ms = 900): Promise<void> {

@@ -1161,11 +1161,16 @@ export interface IrcBridgeHost {
 	 *  \`suppressRelay\` lets the session finalize a bracketed turn without
 	 *  claiming it answered the parent (see #adoptParentSteerForRunningTurn).
 	 *  \`adoptedRecords\` carries steers that landed after the bracket opened and
-	 *  that this same turn consumed: one finalization answers every source. */
+	 *  that this same turn consumed: one finalization answers every source.
+	 *  \`bracket.runningTurn\` marks a bracket opened over a turn that was ALREADY
+	 *  running (the parent's steer did not wake it), so the monitor must not
+	 *  treat it as parent-woken work: whether it owns the answer is only known
+	 *  at settle. */
 	setIrcWakeTurnObserver(
 		observer:
 			| ((
 					records: AgentMessage[],
+					bracket?: { runningTurn?: boolean },
 			  ) =>
 					| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
 					| undefined)
@@ -1230,7 +1235,9 @@ export interface IrcBridgeHost {
 			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
 			| undefined;
 		try {
-			finish = observer(entries.map(entry => entry.record));
+			// The parent's steer did not wake this turn, and it may still strand:
+			// the monitor must not claim the parent's answer up front.
+			finish = observer(entries.map(entry => entry.record), { runningTurn: true });
 		} catch (error) {
 			logger.warn("IRC steer continuation observer failed to start", { error: String(error) });
 			return;
@@ -1508,6 +1515,7 @@ export interface IrcBridgeHost {
 		patched: `	#ircWakeTurnObserver:
 		| ((
 				records: AgentMessage[],
+				bracket?: { runningTurn?: boolean },
 		  ) =>
 				| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
 				| undefined)
@@ -1656,6 +1664,40 @@ export interface IrcBridgeHost {
 			unsubscribeTurn();`,
 		patched: `		return async (turnError: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => {
 			unsubscribeTurn();`,
+	},
+	{
+		// 18.6.1 의 executor.ts attachIrcWakeTurnMonitor 는 부모 레코드가 있는 bracket 이면 job 을 turn 시작에
+		// 미리 등록하고, yield 없이 끝난 turn 도 그 job 을 relay 본문으로 정산한다(부모 wait 가 그 turn 을 기다리게).
+		// 우리 #adoptParentSteerForRunningTurn 은 이미 돌던 turn 에 부모 steer 레코드로 bracket 을 열고, steer 가
+		// 큐에 남으면(stranded) 침묵한다. 선등록이 그 bracket 에도 걸리면 stranded turn 이 job 으로 부모에게 답하고
+		// 이어받은 continuation 이 또 답해 부모가 2건을 받는다. 그래서 관찰자에 입양 표시를 넘기고(아래 두 항목)
+		// 입양 bracket 만 선등록을 건너뛴다: yield 시점 등록과 relay 는 18.6.0 과 같다. 부모가 깨운 wake·continuation
+		// bracket 의 job 전달은 upstream 그대로다(ADAPT). 회귀: core-relay-regression-test.ts [1]·[2].
+		// 이 헤더는 18.6.0 에서도 같은 줄이라 두 판 모두 적용된다(18.6.0 에서 bracket 은 쓰이지 않는다).
+		file: "src/task/executor.ts",
+		marker: "session.setIrcWakeTurnObserver((records, bracket) => {",
+		anchor: "\tsession.setIrcWakeTurnObserver(records => {",
+		patched: "\tsession.setIrcWakeTurnObserver((records, bracket) => {",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "if (bracket?.runningTurn !== true && wakeSources(records, id).some(source => source.from === ownerId)) {",
+		anchor: "\t\tif (wakeSources(records, id).some(source => source.from === ownerId)) registerWakeJob();",
+		patched: `		// A bracket opened over a turn that was already running (a parent steer
+		// adopted mid-turn) is not parent-woken work: that turn may leave the steer
+		// queued, and the continuation that consumes it owns the answer. Keep the
+		// yield-time registration for it so a stranded turn stays silent.
+		if (bracket?.runningTurn !== true && wakeSources(records, id).some(source => source.from === ownerId)) {
+			registerWakeJob();
+		}`,
+		// 18.6.0 에는 선등록이 없다(job 은 yield 시점에만). 그 판의 no-op.
+		alternates: [{
+			file: "src/task/executor.ts",
+			excludes: "wakeSources(records, id).some(source => source.from === ownerId)",
+			marker: "\t\t\tonYieldAccepted: registerWakeJob,",
+			anchor: "\t\t\tonYieldAccepted: registerWakeJob,",
+			patched: "\t\t\tonYieldAccepted: registerWakeJob,",
+		}],
 	},
 	// relay 본문의 실패/취소 분기는 18.2.1에서 upstream이 가져갔다. `relayWakeTurnOutput`이
 	// `error/aborted/abortReason/finalizeError`를 받고 `buildWakeRelayBody`가 성공·실패·취소를
@@ -3074,7 +3116,7 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	{
 		// 2026-10-04 실측: Maker 가 측정 job(bash async)을 띄우고 턴을 끝낸 지 task.agentIdleTtlMs(기본 420000ms)
 		// 뒤 park() 가 세션을 dispose 했다. park 는 대기 중인 async 작업을 보지 않아 job 완료 알림이 전달되지 않고
-		// 남은 작업도 끊겼다(upstream 18.6.0 도 같다). 커밋 직전 재확인에서 작업이 남아 있으면 dispose 하지 않고
+		// 남은 작업도 끊겼다(upstream 18.6.0·18.6.1 도 같다). 커밋 직전 재확인에서 작업이 남아 있으면 dispose 하지 않고
 		// idle 타이머를 다시 건다. job 은 실행 한도, 남은 전달·yield 큐는 idle flush 로 끝나므로 영구 잔류는 없다.
 		file: "src/registry/agent-lifecycle.ts",
 		marker: "// HANSE: keep sessions with pending async work",
@@ -9101,6 +9143,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.6.1 번들의 같은 upstream 조건(NRe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
