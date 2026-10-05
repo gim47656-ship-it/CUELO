@@ -63,6 +63,10 @@ jobs:
       - name: Test
         run: bun run test
 
+      # Side-chat sidecar against the real SDK: long answers survive stream, done and history.
+      - name: Side chat sidecar test
+        run: bun test ./Tools/CUELO_Setup/files/btw-server.test.mjs
+
       # Same as Tools/CUELO_Setup's build: an isolated home, because the build
       # otherwise walks the real profile and fails on protected folders (EPERM).
       - name: Build package
