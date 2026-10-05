@@ -2330,6 +2330,8 @@ declare global {
   // 삭제가 진행 중인 세션 id. 프로세스 메모리에만 존재하고 삭제가 끝나거나
   // 실패하면 즉시 비워진다(영속 tombstone이 아니다).
   var __ompClosingSessionIds: Set<string> | undefined;
+  // 새 세션 생성 요청의 멱등 키(createRequestId) → 그 요청이 시작한 세션.
+  var __ompNewSessionRequests: Map<string, NewSessionRequestEntry> | undefined;
 }
 
 function getRegistry(): Map<string, AgentSessionWrapper> {
@@ -2725,4 +2727,59 @@ export async function startRpcSession(
 
   locks.set(sessionId, starting);
   return starting;
+}
+
+type NewSessionRequestEntry = {
+  starting: Promise<{ session: AgentSessionWrapper; realSessionId: string }>;
+  expiresAt: number;
+};
+
+// 래퍼의 idle 종료(10분)와 같은 길이. 그 뒤에는 키가 가리킬 살아 있는 세션이 없다.
+const NEW_SESSION_REQUEST_TTL_MS = 10 * 60 * 1000;
+
+function getNewSessionRequests(): Map<string, NewSessionRequestEntry> {
+  if (!globalThis.__ompNewSessionRequests) globalThis.__ompNewSessionRequests = new Map();
+  return globalThis.__ompNewSessionRequests;
+}
+
+/**
+ * 새 세션을 시작한다. 서버가 세션을 만든 뒤 응답이 유실되면 클라이언트는 같은
+ * `createRequestId`로 다시 보낸다. 그때 세션을 하나 더 만들면 앞의 세션은 확장에
+ * session_start까지 보낸 채 idle 종료까지 고아로 남으므로, 같은 키에는 그 요청이 시작한
+ * 살아 있는 세션을 돌려준다. 시작이 실패했거나 세션이 이미 닫혔으면 새로 만든다.
+ * 키가 없으면 매번 새 세션이다.
+ */
+export async function startNewRpcSession(
+  createRequestId: string | undefined,
+  cwd: string,
+  options: RpcSessionStartOptions = {},
+): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
+  // startRpcSession은 키를 공유하는 동시 호출을 한 세션으로 합치므로 시작 키는 요청마다 새로 만든다.
+  const start = () => startRpcSession(`__new__${randomUUID()}`, "", cwd, options);
+  if (!createRequestId) return start();
+
+  const requests = getNewSessionRequests();
+  const now = Date.now();
+  for (const [key, entry] of requests) {
+    if (entry.expiresAt <= now) requests.delete(key);
+  }
+
+  for (;;) {
+    const prior = requests.get(createRequestId);
+    if (!prior) break;
+    const reused = await prior.starting.catch(() => null);
+    if (reused?.session.isAlive()) return reused;
+    // 기다리는 사이 다른 재전송이 이미 새로 시작했으면 그쪽을 따른다.
+    if (requests.get(createRequestId) === prior) {
+      requests.delete(createRequestId);
+      break;
+    }
+  }
+
+  const entry: NewSessionRequestEntry = { starting: start(), expiresAt: now + NEW_SESSION_REQUEST_TTL_MS };
+  requests.set(createRequestId, entry);
+  entry.starting.catch(() => {
+    if (requests.get(createRequestId) === entry) requests.delete(createRequestId);
+  });
+  return entry.starting;
 }

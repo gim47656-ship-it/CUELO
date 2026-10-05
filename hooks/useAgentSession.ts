@@ -327,7 +327,7 @@ class EventStreamConnectionError extends Error {
   }
 }
 
-function createNoticeId(): string {
+function createClientId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
@@ -712,6 +712,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const ensuringNewSessionRef = useRef<Promise<string | null> | null>(null);
+  // 응답을 못 받은 생성 요청의 본문과 멱등 키. 같은 본문을 다시 보낼 때만 키를 재사용해
+  // 서버가 이미 만든 세션을 돌려받는다(본문이 바뀌면 다른 요청이다).
+  const pendingNewSessionRequestRef = useRef<{ body: string; createRequestId: string } | null>(null);
   const newSessionPromotedRef = useRef(false);
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const newSessionAccountRef = useRef<number | null>(null);
@@ -1032,19 +1035,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const selectedAccount = newSessionAccountRef.current;
         if (selectedModel) setPendingModel(selectedModel);
         const toolNames = getToolNamesForPreset(toolPreset);
+        const request = {
+          cwd: newSessionCwd,
+          type: "ensure_session",
+          toolNames,
+          ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
+          ...(selectedThinkingLevel
+            ? { thinkingLevel: selectedThinkingLevel }
+            : {}),
+          ...(selectedModel && selectedAccount !== null ? { oauthPosition: selectedAccount } : {}),
+        };
+        const body = JSON.stringify(request);
+        const pending = pendingNewSessionRequestRef.current;
+        const createRequestId = pending?.body === body ? pending.createRequestId : createClientId();
+        pendingNewSessionRequestRef.current = { body, createRequestId };
         const res = await fetch("/api/agent/new", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            cwd: newSessionCwd,
-            type: "ensure_session",
-            toolNames,
-            ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
-            ...(selectedThinkingLevel
-              ? { thinkingLevel: selectedThinkingLevel }
-              : {}),
-            ...(selectedModel && selectedAccount !== null ? { oauthPosition: selectedAccount } : {}),
-          }),
+          body: JSON.stringify({ ...request, createRequestId }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const result = await res.json() as {
@@ -1053,6 +1061,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           thinkingLevel?: ThinkingLevelOption;
           configuredThinkingLevel?: ThinkingLevelOption;
         };
+        pendingNewSessionRequestRef.current = null;
         realId = result.sessionId;
         sessionIdRef.current = realId;
         // 상한이 서버에 걸릴 때까지 이 세션은 미완성이다. 실패하면 다음 호출이 같은 세션에서 다시 건다.
@@ -1281,7 +1290,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     dispatchNotice({
       type: "add",
       notice: {
-        id: notice.id ?? createNoticeId(),
+        id: notice.id ?? createClientId(),
         message,
         type: notice.type ?? "info",
       },

@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { parseConfiguredThinkingLevel as parseOmpThinkingLevel, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { existsSync } from "fs";
-import { randomUUID } from "crypto";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
-import { startRpcSession } from "@/lib/rpc-manager";
+import { startNewRpcSession } from "@/lib/rpc-manager";
 import { describeMissingModel } from "@/lib/model-discovery-recovery";
 import { findModelWithRecovery, getOmpRuntime } from "@/lib/omp-runtime";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -23,6 +22,14 @@ function parseOauthPosition(value: unknown): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(`Invalid oauthPosition: ${String(value)}`);
+  }
+  return value;
+}
+// 응답을 못 받은 클라이언트가 같은 생성 요청을 다시 보낼 때 쓰는 멱등 키.
+function parseCreateRequestId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) {
+    throw new Error("Invalid createRequestId");
   }
   return value;
 }
@@ -77,8 +84,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    // Use a one-time key so startRpcSession's lock doesn't conflict with real session ids
-    const { provider, modelId, toolNames, thinkingLevel, oauthPosition, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: unknown; oauthPosition?: unknown; [key: string]: unknown };
+    const { provider, modelId, toolNames, thinkingLevel, oauthPosition, createRequestId, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: unknown; oauthPosition?: unknown; createRequestId?: unknown; [key: string]: unknown };
     if ((provider && !modelId) || (!provider && modelId)) {
       throw new Error("provider and modelId must be provided together");
     }
@@ -87,11 +93,8 @@ export async function POST(req: Request) {
     if (explicitOauthPosition !== undefined && !(provider && modelId)) {
       throw new Error("provider and modelId are required to select an account");
     }
+    const explicitCreateRequestId = parseCreateRequestId(createRequestId);
 
-    // Must be unique per request: startRpcSession coalesces concurrent callers
-    // that share a key onto one session. Date.now() (ms resolution) collides for
-    // requests in the same millisecond, merging two new sessions into one.
-    const tempKey = `__new__${randomUUID()}`;
     // `initialModel` came directly from this request, unlike configured role
     // references recovered during session startup. Give only this explicit
     // selection one forced discovery pass before the normal role-ref flow.
@@ -100,7 +103,7 @@ export async function POST(req: Request) {
       const lookup = await findModelWithRecovery(modelRegistry, provider, modelId, { forceDiscovery: true });
       if (lookup.miss) throw new Error(describeMissingModel(lookup.miss));
     }
-    const { session, realSessionId } = await startRpcSession(tempKey, "", cwd, {
+    const { session, realSessionId } = await startNewRpcSession(explicitCreateRequestId, cwd, {
       ...(toolNames ? { toolNames } : {}),
       ...(provider && modelId ? { initialModel: { provider, modelId } } : {}),
       ...(explicitThinkingLevel ? { thinkingLevel: explicitThinkingLevel } : {}),
