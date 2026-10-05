@@ -22,7 +22,8 @@ export function isRunInterrupted(messages: readonly AgentMessage[]): boolean {
     if (message.role !== "assistant") continue;
     const assistant = message as AssistantMessage;
     if (!assistant.stopReason) return true;
-    if (assistant.stopReason === "aborted") return false;
+    // 사용자 취소(aborted)와 실패한 턴(error·length)은 끝난 턴이다. 도구 호출이 남아 있어도 이어 갈 중단이 아니다.
+    if (assistant.stopReason === "aborted" || assistant.stopReason === "error" || assistant.stopReason === "length") return false;
     return assistant.content.some((block) => block.type === "toolCall");
   }
   return false;

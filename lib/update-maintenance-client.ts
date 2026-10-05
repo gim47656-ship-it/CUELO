@@ -6,6 +6,11 @@ const CLIENT_ID_KEY = "ompweb-update-client-id";
 const RESUME_INTENT_KEY = "ompweb-update-resume-intent-v2";
 const RETURN_KEY = "ompweb-update-return-v1";
 const RESTART_RETURN_KEY = "cuelo-restart-return-v1";
+/**
+ * 업데이트 대기 화면(`lib/update-wait-page.ts`)이 실패를 보고 남기는 기록. 대기 화면은 이 모듈을
+ * import할 수 없는 독립 HTML이므로 같은 키를 그 스크립트에도 적는다.
+ */
+const FAILURE_RETURN_KEY = "ompweb-update-failure-return-v1";
 /** 이보다 오래된 재시작 복귀 기록은 이번 화면의 복귀가 아니다. */
 const RESTART_RETURN_MAX_AGE_MS = 60_000;
 
@@ -378,4 +383,55 @@ export async function confirmUpdateResume(intent: UpdateResumeIntent): Promise<v
   ) {
     window.dispatchEvent(new CustomEvent(UPDATE_WAKE_EVENT, { detail: { sessionId: intent.sessionId } }));
   }
+}
+
+/**
+ * 대기 화면이 남긴 실패 기록을 이 복귀의 것일 때만 한 번 가져간다. 같은 request·stage·탭이
+ * 아니면 이 복귀에 쓸 수 없으므로 버리고 `null`을 돌려준다.
+ */
+function takeUpdateFailureReturn(intent: UpdateResumeIntent): { wake: boolean } | null {
+  const raw = sessionStorage.getItem(FAILURE_RETURN_KEY);
+  if (!raw) return null;
+  sessionStorage.removeItem(FAILURE_RETURN_KEY);
+  try {
+    const value = JSON.parse(raw) as Partial<{
+      schemaVersion: number;
+      requestId: string;
+      stageHash: string;
+      clientId: string;
+      wake: boolean;
+    }>;
+    if (
+      value.schemaVersion !== 1
+      || value.requestId !== intent.requestId
+      || value.stageHash !== intent.stageHash
+      || value.clientId !== intent.clientId
+    ) return null;
+    return { wake: value.wake === true };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 업데이트 대기 화면에서 돌아온 탭의 복귀를 마무리한다.
+ *
+ * 실패한 업데이트에서 돌아왔으면 성공 복귀 확인(`resume-confirm`)을 다시 보내지 않는다. 대기
+ * 화면이 이미 실패 통지를 한 번 보냈고, 서버는 그 통지로 원래 세션에 run을 세운 뒤에 답했다.
+ * 이 탭은 끝난 request의 resume 의도만 지우고, 서버가 run을 세우지 않았다고 확정한 경우가
+ * 아니면 성공 복귀와 같은 Wake 신호를 현재 탭 세션으로 보낸다. Wake는 채팅 훅이 그 세션을
+ * GET·SSE로 다시 읽어 실행 중인 run에 붙는 것뿐이고, 새 prompt나 명령은 보내지 않는다.
+ * 원래 세션이 다른 탭에 열려 있어도 그 탭을 바꾸지 않는다.
+ */
+export async function settleUpdateReturn(intent: UpdateResumeIntent): Promise<"resumed" | "failed"> {
+  const failure = takeUpdateFailureReturn(intent);
+  if (failure) {
+    clearUpdateResumeIntent();
+    if (failure.wake && intent.sessionId) {
+      window.dispatchEvent(new CustomEvent(UPDATE_WAKE_EVENT, { detail: { sessionId: intent.sessionId } }));
+    }
+    return "failed";
+  }
+  await confirmUpdateResume(intent);
+  return "resumed";
 }

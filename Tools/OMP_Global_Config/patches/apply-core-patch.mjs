@@ -3152,6 +3152,45 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 						// Other roots retain their timers and revivers. Release while shared
 						// resources are still live; subagent disposal does not tear down roots.`,
 	},
+	{
+		// 2026-10-05: 재시작 뒤 복원된 child 의 부모는 top-level 별칭(`Main#3` 등)일 수 있다. 부활 factory 는 parentId 가 literal
+		// `Main` 에 닿을 때까지의 단계 수로 taskDepth 를 정해 `Main#3` 직속 child 의 depth 가 하나 늘었다. top-level(kind main)
+		// 에서도 멈추게 해 registry 의 실제 parent 를 그대로 쓴다. literal `Main`·없는 ref·깊은 child 의 기존 동작은 같다.
+		file: "src/task/persisted-revive.ts",
+		marker: "export function revivedTaskDepth(",
+		anchor: `/**
+ * Build the factory the {@link AgentLifecycleManager} uses to cold-revive a`,
+		patched: `/** HANSE: depth of a cold-revived subagent from its persisted parent chain; a top-level (\`main\`) parent ends the climb. */
+export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegistry): number {
+	let taskDepth = 1;
+	let parentId = ref.parentId;
+	const seen = new Set<string>();
+	while (parentId && parentId !== MAIN_AGENT_ID && registry.get(parentId)?.kind !== "main" && !seen.has(parentId)) {
+		seen.add(parentId);
+		taskDepth++;
+		parentId = registry.get(parentId)?.parentId;
+	}
+	return taskDepth;
+}
+
+/**
+ * Build the factory the {@link AgentLifecycleManager} uses to cold-revive a`,
+	},
+	{
+		file: "src/task/persisted-revive.ts",
+		marker: "const taskDepth = revivedTaskDepth(ref, registry);",
+		anchor: `		let taskDepth = 1;
+		let parentId = ref.parentId;
+		const seen = new Set<string>();
+		while (parentId && parentId !== MAIN_AGENT_ID && !seen.has(parentId)) {
+			seen.add(parentId);
+			taskDepth++;
+			parentId = registry.get(parentId)?.parentId;
+		}
+`,
+		patched: `		const taskDepth = revivedTaskDepth(ref, registry);
+`,
+	},
 	// 18.3.0 RETIRE: `hub wait` 의 생략 ids 미소비 결과 포함·정산 결과 우선(옛 #115·#116).
 	// upstream `wait` 가 `undeliveredJobs` 로 같은 일을 실행 중 job 유무와 무관하게 먼저 한다
 	// (tools/wait.ts:78-81, async/job-control.ts:44-58). 차이는 isDeliverySuppressed 인

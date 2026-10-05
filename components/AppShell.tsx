@@ -81,7 +81,6 @@ import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/omp-types";
 import type { AgentCompletionResult, SessionData } from "@/hooks/useAgentSession";
 import {
-  confirmUpdateResume,
   describeUpdateCleanup,
   dismissUpdateReturn,
   enterUpdateMaintenance,
@@ -90,6 +89,7 @@ import {
   readUpdateReturn,
   recordServerRestartReturn,
   SETTLED_CLEANUP_AUTO_HIDE_MS,
+  settleUpdateReturn,
   takeServerRestartReturn,
   updateCleanupAutoHideMs,
   type UpdateReturnRecord,
@@ -410,9 +410,11 @@ export function AppShell({
     const intent = readUpdateResumeIntent();
     if (!intent || (intent.sessionId && selectedSession?.id !== intent.sessionId)) return;
     let disposed = false;
-    void confirmUpdateResume(intent)
-      .then(() => {
-        if (disposed) return;
+    void settleUpdateReturn(intent)
+      .then((outcome) => {
+        // 실패 복귀는 성공 기록·새로고침을 만들지 않는다. 이미 시작된 실패 통지 run에 붙는 것은
+        // settleUpdateReturn이 보낸 Wake 신호를 채팅 훅이 처리한다.
+        if (disposed || outcome !== "resumed") return;
         // confirmUpdateResume이 이번 request를 복귀 기록으로 남긴다. 그 기록을 읽어
         // 상단 상태 줄이 같은 request의 정리 상태를 이어서 표시한다.
         updateSettledRef.current = false;

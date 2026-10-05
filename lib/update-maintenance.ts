@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -740,15 +741,146 @@ export function getUpdateMutationBlock(): {
   } : null;
 }
 
-export function recordRuntimeActivity(runningSessionIds: string[]): void {
-  const uniqueIds = [...new Set(runningSessionIds.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))].sort();
+declare global {
+  // Next 번들이 모듈을 나눠 읽어도 한 서버 프로세스는 하나의 식별만 갖는다.
+  var __cueloRuntimeServer: { origin: string; startedAtMs: number } | undefined;
+}
+
+/**
+ * 실제 Next 서버 프로세스만 호출한다(instrumentation). 이 뒤에 쓰는 영수증에만 `recovery` 표식이 붙어
+ * 자동 복구 대상이 된다. 표식 없는 옛 영수증·일회성 node 검사 영수증은 수동 복구 경계로 남는다.
+ * 시작 시각은 한 번만 고정한다(`processStartedAtUtc`는 호출마다 흔들려 세대 식별에 못 쓴다).
+ */
+export function markRuntimeActivityServer(origin: string): { origin: string; startedAtMs: number } {
+  globalThis.__cueloRuntimeServer ??= { origin, startedAtMs: Math.round(Date.now() - process.uptime() * 1000) };
+  return globalThis.__cueloRuntimeServer;
+}
+
+function normalizeSessionIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))].sort();
+}
+
+/**
+ * `waitingSessionIds`는 실행 중이지만 사용자 답(ask·승인)을 기다리는 세션 id다. 답·승인값·대화 원문은 쓰지 않는다.
+ */
+export function recordRuntimeActivity(runningSessionIds: string[], waitingSessionIds: string[] = []): void {
+  const uniqueIds = normalizeSessionIds(runningSessionIds);
+  const server = globalThis.__cueloRuntimeServer;
   writeJsonAtomic(join(externalUpdateRoot(), "runtime-activity", `${process.pid}.json`), {
     schemaVersion: 2,
     processId: process.pid,
     processStartedAtUtc: new Date(Date.now() - process.uptime() * 1000).toISOString(),
     updatedAtUtc: new Date().toISOString(),
     runningSessionIds: uniqueIds,
+    ...(server ? {
+      recovery: {
+        eligible: true,
+        origin: server.origin,
+        startedAtMs: server.startedAtMs,
+        waitingSessionIds: normalizeSessionIds(waitingSessionIds).filter((id) => uniqueIds.includes(id)),
+      },
+    } : {}),
   });
+}
+
+export interface PriorGenerationActivity {
+  processId: number;
+  startedAtMs: number;
+  runningSessionIds: string[];
+  waitingSessionIds: string[];
+}
+
+/** 프로세스 한 개의 생존·시작 identity. `unknown`은 확인하지 못한 경우이며 호출자는 수동 경계로 둔다(fail-closed). */
+export type ProcessIdentity = { state: "dead" } | { state: "alive"; startedAtMs: number } | { state: "unknown" };
+
+/** `startedAtMs`는 `Date.now() - uptime`으로 잡은 값이라 OS가 기록한 시작 시각과 조금 어긋난다. worker(`external-update-worker.ps1`)와 같은 허용치다. */
+const PROCESS_START_TOLERANCE_MS = 2000;
+
+/**
+ * pid의 생존과 시작 시각을 OS에서 읽는다. 기존 방식 재사용: `attachment-store.ts`의 `kill(pid, 0)` 생존 판정
+ * (ESRCH만 확정된 종료)과 `external-update-worker.ps1`의 CIM `Win32_Process.CreationDate` 시작 시각 비교.
+ * 살아 있는 pid의 시작 시각을 읽을 수 없으면(win32 아님·PowerShell 실패·시간 초과·해석 실패) `unknown`이다.
+ */
+export function probeProcessIdentity(pid: number): ProcessIdentity {
+  if (!Number.isInteger(pid) || pid <= 0) return { state: "unknown" };
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return { state: "dead" };
+    // EPERM 등: 프로세스는 있으나 신호 권한이 없다. 시작 시각은 아래 조회로 이어서 본다.
+  }
+  if (process.platform !== "win32") return { state: "unknown" };
+  const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) return { state: "unknown" };
+  const text = String(result.stdout ?? "").trim();
+  // 조회가 성공했는데 결과가 없으면 그 사이 프로세스가 사라진 것이다.
+  if (text === "") return { state: "dead" };
+  const startedAtMs = Date.parse(text);
+  return Number.isFinite(startedAtMs) ? { state: "alive", startedAtMs } : { state: "unknown" };
+}
+
+/**
+ * 같은 origin의 가장 최근 *이전* 서버 세대의 영수증을 읽는다. 세대는 영수증에 고정해 둔 시작 시각으로 가른다.
+ * 가장 최근 세대가 비었거나 이미 소비됐으면 더 오래된 세대로 올라가지 않고 null이다.
+ * 대상이 되려면 그 세대의 프로세스가 끝났다는 것이 확인돼야 한다: pid가 없으면 종료, pid가 살아 있어도 시작 시각이
+ * 영수증의 세대와 다르면(PID 재사용) 그 세대는 끝난 것이다. 같은 세대가 아직 살아 있거나 확인하지 못하면 null이다.
+ * PID가 재사용돼 같은 파일 이름이어도, 이 서버가 자기 영수증을 쓰기 전에 읽어 메모리에 잡는다.
+ */
+export function readPriorGenerationActivity(
+  origin: string,
+  ownStartedAtMs: number,
+  probe: (pid: number) => ProcessIdentity = probeProcessIdentity,
+): PriorGenerationActivity | null {
+  const directory = join(externalUpdateRoot(), "runtime-activity");
+  if (!existsSync(directory)) return null;
+  let latest: (PriorGenerationActivity & { consumed: boolean }) | null = null;
+  for (const name of readdirSync(directory)) {
+    if (!name.endsWith(".json")) continue;
+    const receipt = readJson(join(directory, name));
+    const recovery = receipt && typeof receipt.recovery === "object" && receipt.recovery ? receipt.recovery as JsonRecord : null;
+    if (!receipt || !recovery || recovery.eligible !== true || recovery.origin !== origin) continue;
+    const startedAtMs = Number(recovery.startedAtMs);
+    if (!Number.isFinite(startedAtMs) || startedAtMs >= ownStartedAtMs) continue;
+    if (latest && startedAtMs <= latest.startedAtMs) continue;
+    const ids = (value: unknown) => Array.isArray(value) ? normalizeSessionIds(value.filter((id): id is string => typeof id === "string")) : [];
+    latest = {
+      processId: Number(receipt.processId),
+      startedAtMs,
+      runningSessionIds: ids(receipt.runningSessionIds),
+      waitingSessionIds: ids(recovery.waitingSessionIds),
+      consumed: typeof recovery.consumedAtUtc === "string",
+    };
+  }
+  if (!latest) return null;
+  const { consumed, ...prior } = latest;
+  if (consumed) return null;
+  // 복구할 세션이 없으면 프로세스를 조회할 이유가 없다(빈 세대는 그대로 돌려줘 호출자가 올라가지 않게 한다).
+  if (prior.runningSessionIds.length === 0) return prior;
+  const identity = probe(prior.processId);
+  if (identity.state === "dead") return prior;
+  if (identity.state === "alive" && Math.abs(identity.startedAtMs - prior.startedAtMs) > PROCESS_START_TOLERANCE_MS) return prior;
+  return null;
+}
+
+/**
+ * 복구 대기열(pending-resume.json) 쓰기가 성공한 뒤에만 부른다. 그 사이 같은 파일 이름을 다른 세대가 덮었으면
+ * (PID 재사용) 그 현재 세대의 영수증은 건드리지 않는다. 반환값은 실제로 표시했는지다.
+ */
+export function markPriorGenerationConsumed(prior: PriorGenerationActivity, consumerStartedAtMs: number): boolean {
+  const path = join(externalUpdateRoot(), "runtime-activity", `${prior.processId}.json`);
+  const receipt = readJson(path);
+  const recovery = receipt && typeof receipt.recovery === "object" && receipt.recovery ? receipt.recovery as JsonRecord : null;
+  if (!receipt || !recovery || Number(recovery.startedAtMs) !== prior.startedAtMs) return false;
+  writeJsonAtomic(path, {
+    ...receipt,
+    recovery: { ...recovery, consumedAtUtc: new Date().toISOString(), consumedByStartedAtMs: consumerStartedAtMs },
+  });
+  return true;
 }
 
 export function listUpdateClients(now = Date.now()): { active: ClientReceipt[]; recent: ClientReceipt[] } {

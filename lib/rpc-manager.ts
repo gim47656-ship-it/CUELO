@@ -19,7 +19,7 @@ import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/mes
 import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { cfgTaskAgentIdleTtlMs } from "@oh-my-pi/pi-coding-agent/task/settings";
 import {
@@ -840,6 +840,11 @@ export class AgentSessionWrapper {
 
   isAlive(): boolean {
     return this._alive;
+  }
+
+  /** 사용자 답(ask·승인 등 확장 UI)을 기다리는 중인지. 재시작 뒤 자동 재개 대상에서 빼는 근거다. */
+  isWaitingForUser(): boolean {
+    return this.pendingUiResponses.size > 0;
   }
 
   isRunning(): boolean {
@@ -2148,6 +2153,7 @@ export class AgentSessionWrapper {
       signal?.removeEventListener("abort", onAbort);
       this.pendingUiRequests.delete(id);
       this.pendingUiResponses.delete(id);
+      notifyRunningChange();
     };
     // Submit, cancel, abort and timeout can race; only the first one settles.
     const settle = (value: T, notifyClosed = false) => {
@@ -2183,6 +2189,7 @@ export class AgentSessionWrapper {
         }
         : {}),
     });
+    notifyRunningChange();
     this.emit(fullRequest as AgentEvent);
     return promise;
   }
@@ -2502,7 +2509,11 @@ export function getRunningRpcSessionIds(): string[] {
 /** 실행 중인 세션 목록을 업데이트·롤백 복구용 영수증에 기록한다. */
 export function notifyRunningChange(): void {
   const ids = getRunningRpcSessionIds();
-  recordRuntimeActivity(ids);
+  const waiting: string[] = [];
+  for (const [sessionId, session] of getRegistry()) {
+    if (session.isWaitingForUser()) waiting.push(session.sessionId || sessionId);
+  }
+  recordRuntimeActivity(ids, waiting);
   // 보류된 신뢰 변경이 없으면 map 크기만 보고 돌아온다.
   reconcileProjectTrust(projectTrustHost);
 }
@@ -2698,6 +2709,7 @@ export async function startRpcSession(
       const unregisterReviver = realSessionFile
         ? registerRootReviver(
           realSessionFile,
+          inner.getAgentId() ?? MAIN_AGENT_ID,
           createPersistedSubagentReviverFactory({
             session: inner,
             authStorage: runtime.authStorage,

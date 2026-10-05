@@ -465,7 +465,7 @@ export const enLocale = {
     "chat.compactionReason.incomplete": "incomplete",
     "chat.compactedFrom": "Compacted from {tokens} tokens",
     "chat.interruptedTitle": "The last run was interrupted",
-    "chat.interruptedDetail": "It stopped mid-run, for example when the server or PC went down. Nothing was re-sent.",
+    "chat.interruptedDetail": "The run stopped before it finished, for example when the server or PC went down. If it does not resume automatically, send a message to continue.",
     "chat.interruptedDismiss": "Dismiss",
     "chat.frequentModels": "Frequently used",
     "chat.modelPickCount": "{count}×",

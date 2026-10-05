@@ -24,6 +24,7 @@ type FakeSession = {
   isRunning: () => boolean;
   send: (message: unknown) => Promise<void>;
   sendInternalPrompt: (message: string) => Promise<void>;
+  inner: { messages: unknown[] };
   stopBackgroundWorkForDrain: (timeoutMs: number) => Promise<boolean>;
 };
 
@@ -38,6 +39,10 @@ const control = {
   /** 세션별 drain 호출 순서(`abort:<id>`·`stop:<id>`). */
   drainCalls: [] as string[],
   prompts: [] as string[],
+  /** 전송된 prompt 원문. 문구 변형(정상 중단·갑작스러운 종료)을 가른다. */
+  fullPrompts: [] as string[],
+  /** 세션 id별 저장 기록(없으면 빈 기록). 중단 판정과 재개 직전 재확인이 읽는다. */
+  transcripts: new Map<string, unknown[]>(),
   startCalls: [] as string[],
   gate: null as Promise<void> | null,
   releaseGate: null as (() => void) | null,
@@ -55,7 +60,9 @@ function sessionFor(sessionId: string): FakeSession {
     },
     sendInternalPrompt: async (message: string) => {
       control.prompts.push(`${sessionId}:${message.slice(0, 4)}`);
+      control.fullPrompts.push(message);
     },
+    inner: { messages: control.transcripts.get(sessionId) ?? [] },
     stopBackgroundWorkForDrain: async () => {
       control.drainCalls.push(`stop:${sessionId}`);
       return !control.unsettledChildren.has(sessionId);
@@ -116,6 +123,32 @@ function gateThis(): { release: () => void } {
   control.gate = gate.promise;
   control.releaseGate = gate.resolve;
   return { release: gate.resolve };
+}
+
+/** 직전 세대 프로세스가 끝난 것으로 확인된 상황의 probe. */
+const dead = () => ({ state: "dead" as const });
+
+/** 서버로 표시된 이전 세대 영수증(runtime-activity/<pid>.json)을 만든다. */
+function writeActivity(
+  pid: number,
+  options: { origin: string; startedAtMs: number; running: string[]; waiting?: string[]; marked?: boolean },
+): void {
+  mkdirSync(join(root, "runtime-activity"), { recursive: true });
+  writeFileSync(join(root, "runtime-activity", `${pid}.json`), JSON.stringify({
+    schemaVersion: 2,
+    processId: pid,
+    processStartedAtUtc: new Date(options.startedAtMs).toISOString(),
+    updatedAtUtc: new Date().toISOString(),
+    runningSessionIds: options.running,
+    ...(options.marked === false ? {} : {
+      recovery: { eligible: true, origin: options.origin, startedAtMs: options.startedAtMs, waitingSessionIds: options.waiting ?? [] },
+    }),
+  }), "utf8");
+}
+
+function activityConsumed(pid: number): boolean {
+  const receipt = JSON.parse(readFileSync(join(root, "runtime-activity", `${pid}.json`), "utf8")) as { recovery?: { consumedAtUtc?: string } };
+  return typeof receipt.recovery?.consumedAtUtc === "string";
 }
 
 /** 케이스 표. 자식 프로세스에서 하나만 실행한다. 각 케이스는 자기 root를 새로 받는다. */
@@ -364,6 +397,121 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     expect(ack.aborted).toEqual([SID(18), SID(19)]);
     expect(ack.unsettled).toEqual([SID(19)]);
   },
+
+  "직전 서버 세대 영수증의 running 중 기록이 끊긴 세션만 복구 대기열에 올리고 영수증을 소비한다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    const [cut, finished, userStopped, failed, waiting] = [SID(31), SID(32), SID(33), SID(34), SID(35)];
+    const user = { role: "user", content: "q" };
+    const assistant = (stopReason: string) => ({ role: "assistant", content: [{ type: "text", text: "x" }], stopReason });
+    control.transcripts.set(cut, [user]);
+    control.transcripts.set(finished, [user, assistant("stop")]);
+    control.transcripts.set(userStopped, [user, assistant("aborted")]);
+    control.transcripts.set(failed, [user, assistant("error")]);
+    control.transcripts.set(waiting, [user]);
+    writeActivity(4242, { origin, startedAtMs: 1_000, running: [cut, finished, userStopped, failed, waiting], waiting: [waiting] });
+
+    const result = await mod.recoverAbruptStop({ origin, probe: dead });
+    expect(result.queued).toEqual([cut]);
+    expect(result.skipped.sort()).toEqual([finished, userStopped, failed, waiting].sort());
+    const pending = readPendingFile();
+    expect(pending?.sessionIds).toEqual([cut]);
+    expect(pending?.abruptSessionIds).toEqual([cut]);
+    expect(pending?.writerPid).toBe(4242);
+    expect(String(pending?.requestId).startsWith("abrupt-")).toBe(true);
+    expect(activityConsumed(4242)).toBe(true);
+
+    // 같은 세대는 두 번 올리지 않는다.
+    expect(await mod.recoverAbruptStop({ origin, probe: dead })).toEqual({ queued: [], skipped: [] });
+    expect(readPendingFile()?.sessionIds).toEqual([cut]);
+
+    // 기존 재개 경로가 상태 확인 prompt 한 번으로 이어 가고 대기열을 비운다.
+    expect(await mod.resumeInterruptedSessions()).toEqual([cut]);
+    expect(control.fullPrompts.length).toBe(1);
+    expect(control.fullPrompts[0]).toContain("예기치 않게 종료");
+    expect(control.fullPrompts[0]).toContain("그대로 다시 실행하지 말고");
+    expect(readPendingFile()).toBeNull();
+    expect(await mod.resumeInterruptedSessions()).toEqual([]);
+    expect(control.fullPrompts.length).toBe(1);
+  },
+
+  "정상 배포가 남긴 대기열·실패 원인·세대를 보존하고 겹치는 세션은 한 번만 올린다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    const [shared, onlyDeploy, abruptOnly] = [SID(41), SID(42), SID(43)];
+    seedPending([shared, onlyDeploy], { requestId: "probe-deploy", writerPid: 777, failures: [{ sessionId: onlyDeploy, error: "boom" }] });
+    control.transcripts.set(shared, [{ role: "user", content: "q" }]);
+    control.transcripts.set(abruptOnly, [{ role: "user", content: "q" }]);
+    writeActivity(4243, { origin, startedAtMs: 1_000, running: [shared, abruptOnly] });
+
+    expect((await mod.recoverAbruptStop({ origin, probe: dead })).queued.sort()).toEqual([shared, abruptOnly].sort());
+    const pending = readPendingFile();
+    expect(pending?.sessionIds).toEqual([shared, onlyDeploy, abruptOnly].sort());
+    expect(pending?.requestId).toBe("probe-deploy");
+    expect(pending?.writerPid).toBe(777);
+    expect(failureIds()).toEqual([onlyDeploy]);
+    // 배포 대기열에 이미 있던 세션은 배포 문구 그대로, 새로 든 세션만 갑작스러운 종료 문구다.
+    expect(pending?.abruptSessionIds).toEqual([abruptOnly]);
+  },
+
+  "표시 없는 옛 영수증·다른 origin·비어 있거나 이미 소비된 최근 세대는 자동 복구하지 않는다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    control.transcripts.set(SID(51), [{ role: "user", content: "q" }]);
+    writeActivity(4300, { origin, startedAtMs: 100, running: [SID(51)], marked: false });
+    writeActivity(4301, { origin: "http://127.0.0.1:9999", startedAtMs: 200, running: [SID(51)] });
+    expect(await mod.recoverAbruptStop({ origin, probe: dead })).toEqual({ queued: [], skipped: [] });
+    expect(readPendingFile()).toBeNull();
+
+    // 더 최근 세대가 비었으면 그보다 오래된 running 세대로 올라가지 않는다.
+    writeActivity(4302, { origin, startedAtMs: 300, running: [SID(51)] });
+    writeActivity(4303, { origin, startedAtMs: 400, running: [] });
+    expect(await mod.recoverAbruptStop({ origin, probe: dead })).toEqual({ queued: [], skipped: [] });
+    expect(readPendingFile()).toBeNull();
+    expect(activityConsumed(4302)).toBe(false);
+  },
+
+  "대기열 쓰기가 실패하면 영수증을 소비 표시하지 않는다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    control.transcripts.set(SID(61), [{ role: "user", content: "q" }]);
+    writeActivity(4400, { origin, startedAtMs: 1_000, running: [SID(61)] });
+    mkdirSync(pendingPath(), { recursive: true });
+    let failed = false;
+    try {
+      await mod.recoverAbruptStop({ origin, probe: dead });
+    } catch {
+      failed = true;
+    }
+    expect(failed).toBe(true);
+    expect(activityConsumed(4400)).toBe(false);
+  },
+
+  "살아 있는 같은 세대·확인 불가인 직전 세대는 올리지 않고, PID가 재사용됐으면 올린다": async (mod) => {
+    const origin = "port:30141";
+    control.transcripts.set(SID(81), [{ role: "user", content: "q" }]);
+    writeActivity(4500, { origin, startedAtMs: 1_000_000, running: [SID(81)] });
+
+    const alive = await mod.recoverAbruptStop({ origin, probe: () => ({ state: "alive", startedAtMs: 1_000_500 }) });
+    expect(alive).toEqual({ queued: [], skipped: [] });
+    const unknown = await mod.recoverAbruptStop({ origin, probe: () => ({ state: "unknown" }) });
+    expect(unknown).toEqual({ queued: [], skipped: [] });
+    expect(readPendingFile()).toBeNull();
+    expect(activityConsumed(4500)).toBe(false);
+
+    // 같은 PID가 다른 프로세스로 재사용됐다(시작 시각이 영수증 세대와 다르다).
+    const reused = await mod.recoverAbruptStop({ origin, probe: () => ({ state: "alive", startedAtMs: 9_000_000 }) });
+    expect(reused.queued).toEqual([SID(81)]);
+    expect(activityConsumed(4500)).toBe(true);
+  },
+
+  "재개 직전에 기록이 이미 끝나 있으면 갑작스러운 종료 세션에 prompt를 넣지 않는다": async (mod) => {
+    const sid = SID(71);
+    control.transcripts.set(sid, [{ role: "user", content: "q" }, { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }]);
+    seedPending([sid], { requestId: "probe-abrupt-done", writerPid: 999999 });
+    const pending = readPendingFile() as Record<string, unknown>;
+    writeFileSync(pendingPath(), JSON.stringify({ ...pending, abruptSessionIds: [sid] }), "utf8");
+
+    expect(await mod.resumeInterruptedSessions()).toEqual([]);
+    expect(control.prompts).toEqual([]);
+    expect(readPendingFile()).toBeNull();
+  },
 };
 
 const CASE_NAMES = Object.keys(CASES);
@@ -383,7 +531,11 @@ if (process.env.UPDATE_INTERRUPT_CASE) {
       return { session: sessionFor(sessionId) };
     },
   }));
-  mock.module("./session-reader", () => ({ resolveSessionPath: async (sessionId: string) => `/fake/sessions/${sessionId}` }));
+  mock.module("./session-reader", () => ({
+    resolveSessionPath: async (sessionId: string) => `/fake/sessions/${sessionId}`,
+    getSessionEntries: async (filePath: string) => [filePath],
+    buildSessionContext: (entries: string[]) => ({ messages: control.transcripts.get(entries[0].split("/").pop() ?? "") ?? [] }),
+  }));
 
   const caseName = process.env.UPDATE_INTERRUPT_CASE;
   const savedRoot = process.env.CUELO_EXTERNAL_UPDATE_ROOT;

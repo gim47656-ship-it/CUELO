@@ -465,7 +465,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.compactionReason.incomplete": "未完成",
     "chat.compactedFrom": "从 {tokens} 个 token 压缩",
     "chat.interruptedTitle": "上次运行已中断",
-    "chat.interruptedDetail": "运行在中途停止，例如服务器或电脑关机。没有重新发送任何内容。",
+    "chat.interruptedDetail": "运行在完成前停止，例如服务器或电脑关机。如果没有自动恢复，可以发送消息继续。",
     "chat.interruptedDismiss": "关闭",
     "chat.frequentModels": "常用模型",
     "chat.modelPickCount": "{count} 次",

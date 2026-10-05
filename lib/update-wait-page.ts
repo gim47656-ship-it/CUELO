@@ -25,13 +25,17 @@ export type UpdateWaitPageInput = {
  * - 확인 요청에는 상한을 둔다. 한 번의 늦은 응답이나 무응답이 확인 루프를 끝내면 화면이
  *   마지막 단계에 얼어붙어, worker가 이미 기록한 종료 상태를 사용자가 영영 못 본다.
  * - 종료 상태가 실패면 worker가 남긴 `terminalError`를 그대로 보여 준다. 쓰기 차단
- *   (`mutationBlocked`)이 풀린 것을 관측한 뒤에만 작업 화면 복귀 버튼을 띄우고, 자동으로
- *   이동하지는 않는다 — 실패를 사용자가 읽고 직접 가야 한다. 차단이 아직 안 풀렸으면 실패
- *   표시를 유지한 채 확인을 이어간다. 그 순간 루프를 끊으면 버튼이 영영 안 뜨는 또 하나의
- *   무한대기가 된다.
+ *   (`mutationBlocked:false`)이 풀린 것을 관측하면 작업 화면 복귀 버튼을 띄우고, 다음 확인에서도
+ *   서버가 응답하며 실패·차단 해제가 그대로이고 원래 세션이 그 서버에 있으면 클릭 없이 원래
+ *   작업 화면으로 돌아간다. 실패 통지가 원래 세션에 이미 run을 세웠으므로 사용자가 이어서 볼
+ *   곳은 그 세션이다. 차단이 안 풀렸거나 값이 없거나, 서버가 무응답이거나, 세션을 확인하지
+ *   못하면 넘어가지 않고 실패 표시·버튼을 유지한 채 확인을 이어간다. 실패는 `resume-confirm`으로
+ *   성공처럼 확정하지 않는다.
  * - 실패를 처음 관측한 순간 서버에 실패 통지(`failure-notify`)를 한 번 보낸다. 사용자가
  *   버튼을 누르지 않고 탭을 닫아도 배포를 시작한 세션이 실패를 알게 하려는 것이다.
- *   통지가 실패해도 화면 표시는 그대로 둔다(통지는 부가 기능).
+ *   통지가 실패해도 화면 표시는 그대로 둔다(통지는 부가 기능). 통지 결과는 같은 탭의
+ *   sessionStorage에 남겨, 돌아간 앱이 resume 명령을 다시 보내지 않고 그 run에만 붙게 한다
+ *   (`settleUpdateReturn`, `lib/update-maintenance-client.ts`).
  */
 export function renderUpdateWaitPage(input: UpdateWaitPageInput): string {
   const data = JSON.stringify(input).replaceAll("<", "\\u003c");
@@ -291,6 +295,7 @@ const CLEANUP_LABELS={running:"정리 중",succeeded:"정리 완료",failed:"정
 let stopped=false;
 let failed=false;
 let failureNotified=false;
+let failureReleaseSeen=false;
 let resumeConfirmed=false;
 let confirmingResume=false;
 let failedPolls=0;
@@ -374,13 +379,15 @@ function renderFailureWaitingForRelease(){
   failureHintEl.hidden=false;
   failureHintEl.textContent="업데이트 쓰기가 아직 잠겨 있습니다. 잠금이 풀리면 작업 화면으로 돌아가기 버튼이 나타납니다.";
 }
-/* 쓰기 차단이 풀린 것을 관측한 뒤에만 돌아갈 길을 준다. 자동 이동은 하지 않는다 —
-   실패를 사용자가 읽고 직접 가야 한다. */
-function renderFailureReturnReady(){
+/* 쓰기 차단이 풀린 것을 관측한 뒤에만 돌아갈 길을 준다. 버튼으로 바로 갈 수 있고, 다음
+   확인에서 같은 상태와 원래 세션을 확인하면 자동으로 간다. */
+function renderFailureReturnReady(sessionPending){
   failureActionsEl.hidden=false;
   returnButtonEl.hidden=false;
-  failureHintEl.hidden=true;
-  failureHintEl.textContent="";
+  failureHintEl.hidden=false;
+  failureHintEl.textContent=sessionPending
+    ?"원래 세션을 아직 확인하지 못했습니다. 확인되면 자동으로 돌아갑니다. 바로 가려면 버튼을 누르세요."
+    :"잠시 뒤 원래 작업 화면으로 자동으로 돌아갑니다.";
 }
 returnButtonEl.addEventListener("click",function(){location.replace(state.resumeUrl);});
 
@@ -434,17 +441,24 @@ function showCleanup(cleanup){
   return null;
 }
 
+/* 이 탭의 원래 세션이 지금 응답하는 서버에 같은 id로 있는지. 세션 없는 화면은 확인할 것이 없다. */
+async function sessionMatches(){
+  if(!state.sessionId)return true;
+  try{
+    const detail=await fetch("/api/sessions/"+encodeURIComponent(state.sessionId)+"?deferThinking=1&deferMedia=1",{cache:"no-store",headers:{"Cache-Control":"no-cache"}});
+    if(!detail.ok)return false;
+    const session=await detail.json();
+    return session.sessionId===state.sessionId;
+  }catch{
+    return false;
+  }
+}
 async function confirmResume(){
   if(resumeConfirmed)return true;
   if(confirmingResume)return false;
   confirmingResume=true;
   try{
-    if(state.sessionId){
-      const detail=await fetch("/api/sessions/"+encodeURIComponent(state.sessionId)+"?deferThinking=1&deferMedia=1",{cache:"no-store",headers:{"Cache-Control":"no-cache"}});
-      if(!detail.ok)return false;
-      const session=await detail.json();
-      if(session.sessionId!==state.sessionId)return false;
-    }
+    if(!(await sessionMatches()))return false;
     const response=await fetch("/api/update-maintenance",{
       method:"POST",
       cache:"no-store",
@@ -491,15 +505,19 @@ async function pollStatus(){
 }
 /* 실패를 처음 본 순간 한 번만 알린다. 버튼을 누르지 않고 탭을 닫아도 배포를 시작한 세션이
    실패를 알게 하는 것이 목적이므로, 화면 표시와 독립적으로 보낸다. 통지가 실패해도 화면은
-   그대로 실패를 보여 준다 — 통지는 부가 기능이다. */
+   그대로 실패를 보여 준다 — 통지는 부가 기능이다. 서버는 원래 세션에 run을 세운 뒤에 답한다.
+   돌아간 앱의 Wake는 GET·SSE로 그 세션을 다시 읽기만 하고 명령을 보내지 않으므로, 서버가
+   run을 세우지 않았다고 확정해 답한 경우만 빼고(응답 유실·오류 포함) 깨우라고 복귀 기록에
+   남긴다. 키는 lib/update-maintenance-client.ts의 FAILURE_RETURN_KEY와 같다. */
 async function notifyFailureOnce(){
   if(failureNotified)return;
   failureNotified=true;
   if(!state.requestId||!state.clientId)return;
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),POLL_TIMEOUT_MS);
+  let wake=true;
   try{
-    await fetch("/api/update-maintenance",{
+    const response=await fetch("/api/update-maintenance",{
       method:"POST",
       cache:"no-store",
       headers:{"Content-Type":"application/json","Cache-Control":"no-cache"},
@@ -512,26 +530,48 @@ async function notifyFailureOnce(){
         sessionId:state.sessionId
       })
     });
+    const result=response.ok?await response.json():null;
+    const notice=result&&result.notice;
+    if(notice&&notice.notice===false&&(notice.reason==="no-terminal-result"||notice.reason==="deployment-succeeded"||notice.reason==="no-initiator"))wake=false;
   }catch{
     /* 통지 실패는 실패 표시를 막지 않는다. */
   }finally{
     clearTimeout(timer);
   }
+  try{
+    sessionStorage.setItem("ompweb-update-failure-return-v1",JSON.stringify({
+      schemaVersion:1,
+      requestId:state.requestId,
+      stageHash:state.stageHash,
+      clientId:state.clientId,
+      sessionId:state.sessionId,
+      wake:wake
+    }));
+  }catch{
+    /* 저장이 막히면 돌아간 앱은 기존 복귀 확인으로 떨어진다. 실패 표시는 그대로다. */
+  }
 }
-/* 종료 상태가 실패일 때의 화면과 다음 확인 간격을 정한다. 쓰기 차단이 풀린 것을 관측한
-   뒤에만 돌아가기 버튼을 띄우고 확인을 끝낸다. 아직 잠겨 있으면 실패 표시를 유지한 채
-   확인을 이어간다 — 그 순간 루프를 끊으면 버튼이 영영 안 뜨는 또 하나의 무한대기가 된다. */
+/* 종료 상태가 실패일 때의 화면과 다음 확인 간격을 정한다. 쓰기 차단이 풀린 것을 처음 본
+   응답에서는 버튼과 안내만 띄우고, 다음 신선한 응답도 실패·차단 해제이며 원래 세션이
+   확인되면 그 세션 화면으로 돌아간다. 잠겨 있거나 값이 없으면 실패 표시를 유지한 채 확인을
+   이어간다 — 그 순간 루프를 끊으면 버튼이 영영 안 뜨는 또 하나의 무한대기가 된다. */
 async function applyFailure(body){
   failed=true;
   await notifyFailureOnce();
   renderFailed(body);
   renderLink();
-  if(body.mutationBlocked===false){
+  if(body.mutationBlocked!==false){
+    failureReleaseSeen=false;
+    renderFailureWaitingForRelease();
+    return POLL_RETRY_MS;
+  }
+  if(failureReleaseSeen&&await sessionMatches()){
     stopped=true;
-    renderFailureReturnReady();
+    location.replace(state.resumeUrl);
     return null;
   }
-  renderFailureWaitingForRelease();
+  renderFailureReturnReady(failureReleaseSeen);
+  failureReleaseSeen=true;
   return POLL_RETRY_MS;
 }
 /* 관측한 응답 하나를 화면에 반영하고 다음 확인까지의 간격을 돌려준다.
@@ -575,6 +615,8 @@ async function check(){
   let delay=POLL_RETRY_MS;
   if(!body){
     failedPolls+=1;
+    /* 무응답 사이에 서버 상태가 바뀌었을 수 있으므로 자동 복귀는 다시 두 번의 응답을 본다. */
+    failureReleaseSeen=false;
     /* 실패를 이미 본 뒤의 무응답은 실패 표시를 지우지 않는다. */
     if(!failed)renderUnknown();
     renderLink();
