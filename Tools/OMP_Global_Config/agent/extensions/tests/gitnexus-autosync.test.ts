@@ -14,8 +14,16 @@ import {
 const HEAD = "b".repeat(40);
 const OLD = "a".repeat(40);
 const roots: string[] = [];
+const workerPids: number[] = [];
 
-afterEach(() => {
+async function waitForExit(pid: number) {
+  for (let i = 0; i < 200 && defaultDeps.isAlive(pid); i++) await Bun.sleep(50);
+  expect(defaultDeps.isAlive(pid)).toBe(false);
+}
+
+afterEach(async () => {
+  // lock 제거는 워커의 finally 안에서 일어난다. cwd 잠금이 풀리는 실제 종료까지 기다린다.
+  for (const pid of workerPids.splice(0)) await waitForExit(pid);
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -259,7 +267,15 @@ describe.skipIf(!nodePath)("gitnexus autosync 워커", () => {
       { mode: 0o755 },
     );
     const which = (c: string) => ({ node: nodePath ?? undefined, gitnexus: wrapper } as Record<string, string | undefined>)[c];
-    return deps(r, { platform: process.platform, which, spawnWorker: defaultDeps.spawnWorker }).value;
+    return deps(r, {
+      platform: process.platform,
+      which,
+      spawnWorker: (job, node) => {
+        const pid = defaultDeps.spawnWorker(job, node);
+        workerPids.push(pid);
+        return pid;
+      },
+    }).value;
   }
 
   const readCalls = (r: Repo) => fs.readFileSync(path.join(r.storage, "calls.txt"), "utf8").trim().split("\n");
@@ -357,7 +373,11 @@ describe.skipIf(!nodePath)("gitnexus autosync 워커", () => {
       expect(readCalls(r).every((c) => c.startsWith("cypher "))).toBe(true);
       expect(fs.existsSync(path.join(r.storage, "autosync-health.json"))).toBe(false);
     } finally {
-      if (fs.existsSync(pidFile)) process.kill(Number(fs.readFileSync(pidFile, "utf8")));
+      if (fs.existsSync(pidFile)) {
+        const pid = Number(fs.readFileSync(pidFile, "utf8"));
+        process.kill(pid);
+        await waitForExit(pid);
+      }
       fs.unlinkSync(trigger);
     }
     expect(await syncGitNexusIndex(r.root, d)).toBe("started");
