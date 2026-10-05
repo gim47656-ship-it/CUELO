@@ -20,6 +20,8 @@ Use the same `~/.omp/agent` sessions, credentials and model configuration from t
 
 CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다. 원인을 확인하고 필요한 부분만 바꾸며, 다음 작업에서 적용과 효과를 확인하는 것까지를 지향합니다. 기록을 저장했다는 이유만으로 자동 개선이 끝났다고 보지는 않습니다.
 
+주제별로 저장한 교훈을 정정하면 최초 기록과 최신 정정의 출처를 구분해 조회할 수 있습니다. 이전 교훈 본문을 별도 이력으로 쌓지는 않습니다. 자세한 보존 범위는 [하네스 안내](./docs/harness.md)를 참고하세요.
+
 **Keywords:** AI coding agent · agent harness · multi-agent orchestration · omp · oh-my-pi · model routing · developer tools
 
 ## 이 저장소로 되는 것과 따로 필요한 것

@@ -2837,6 +2837,87 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 	} finally { memory.close(); }
 }
 
+console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/시점)와 최신 정정 출처를 함께 남긴다");
+{
+	const { LearnTool } = await import(`${CORE}/tools/learn.ts`);
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const memory = new Mnemopi({ dbPath: csJoin(fixtureRoot, "learn-provenance.db"), bank: "prov-bank", sessionId: "prov-bank", reconcile: false });
+	const target = { bank: "prov-bank", memory };
+	const toolFor = (sessionId: string, cwd: string) => new LearnTool({
+		settings: settingsLike({ get: (key: string) => (key === "memory.backend" ? "mnemopi" : key === "autolearn.enabled" ? true : undefined) }),
+		getMnemopiSessionState: () => ({
+			sessionId,
+			session: { sessionManager: { getCwd: () => cwd } },
+			getScopedRetainTarget: () => target,
+			rememberScoped: (content: string, options: Parameters<typeof memory.remember>[1]) => memory.remember(content, options),
+		}),
+	} as never);
+	type Row = { id: string; content: string; timestamp: string; session_id: string; scope: string; source: string; metadata_json: string };
+	const rowOf = (id: string) => memory.conn.query("SELECT id, content, timestamp, session_id, scope, source, metadata_json FROM working_memory WHERE id = ?").get(id) as Row;
+	const metaOf = (id: string) => JSON.parse(rowOf(id).metadata_json) as Record<string, unknown>;
+	const idOf = (result: { content: Array<{ text?: string }> }) => /id: ([^,)]+)/.exec(String(result.content[0]?.text))![1]!;
+	try {
+		const first = await toolFor("sess-A", "F:/A").execute("p-1", { memory: "first body", topic: "prov", context: "reason-A" });
+		const id = idOf(first);
+		memory.conn.query("UPDATE working_memory SET metadata_json = json_set(metadata_json, '$.custom', 'keep') WHERE id = ?").run(id);
+		const before = rowOf(id);
+		await Bun.sleep(5);
+		await toolFor("sess-B", "F:/B").execute("p-2", { memory: "corrected body", topic: "prov", context: "reason-B" });
+		const afterB = rowOf(id);
+		const metaB = metaOf(id);
+		check("정정 뒤에도 최초 session/cwd/context/시점이 남고 최신 정정 출처가 따로 붙는다",
+			metaB.session_id === "sess-A" && metaB.cwd === "F:/A" && metaB.first_context === "reason-A" && metaB.first_timestamp === before.timestamp &&
+			metaB.updated_session_id === "sess-B" && metaB.updated_cwd === "F:/B" && metaB.context === "reason-B" &&
+			metaB.updated_at === afterB.timestamp && afterB.timestamp > before.timestamp && metaB.revision === 2,
+			JSON.stringify(metaB));
+		check("행 id/scope/source/session_id 열과 기타 metadata 는 그대로이고 이전 본문은 어디에도 저장하지 않는다",
+			afterB.id === id && afterB.scope === before.scope && afterB.source === before.source && afterB.session_id === before.session_id &&
+			metaB.custom === "keep" && metaB.tool === "learn" && metaB.topic_key === "prov" && !afterB.metadata_json.includes("first body") &&
+			(memory.conn.query("SELECT COUNT(*) n FROM working_memory WHERE content LIKE '%first body%'").get() as { n: number }).n === 0);
+		await Bun.sleep(5);
+		await toolFor("sess-C", "F:/C").execute("p-3", { memory: "third body", topic: "prov" });
+		const metaC = metaOf(id);
+		check("반복 정정은 최초 출처를 유지하고 최신 정정자만 갱신하며 context 없음은 null 이다",
+			metaC.session_id === "sess-A" && metaC.first_context === "reason-A" && metaC.first_timestamp === before.timestamp &&
+			metaC.updated_session_id === "sess-C" && metaC.updated_cwd === "F:/C" && metaC.context === null && metaC.revision === 3,
+			JSON.stringify(metaC));
+
+		const legacyMeta = (extra: Record<string, unknown>) => ({ session_id: "sess-old", cwd: "F:/old", context: "reason-old", tool: "learn", topic_key: "legacy", ...extra });
+		const seed = async (content: string, timestamp: string, metadata: Record<string, unknown>) => {
+			const seeded = await memory.remember(content, { source: "coding-agent-learn", metadata, scope: "bank" });
+			memory.conn.query("UPDATE working_memory SET timestamp = ?, metadata_json = ? WHERE id = ?").run(timestamp, JSON.stringify(metadata), seeded);
+			return seeded;
+		};
+		// working memory TTL(24h)이 오래된 임시 행을 다음 remember 때 지우므로 구형 행도 최근 시각으로 심는다.
+		const legacyAt = new Date(Date.now() - 3_600_000).toISOString();
+		const legacyV1 = await seed("legacy one", legacyAt, legacyMeta({ revision: 1 }));
+		await toolFor("sess-B", "F:/B").execute("p-4", { memory: "legacy corrected", topic: "legacy", context: "reason-new" });
+		const metaL1 = metaOf(legacyV1);
+		check("구형 revision 1 행은 갱신 직전 timestamp·context 를 최초 값으로 보존한다",
+			metaL1.first_timestamp === legacyAt && metaL1.first_context === "reason-old" &&
+			metaL1.session_id === "sess-old" && metaL1.cwd === "F:/old" && metaL1.updated_session_id === "sess-B", JSON.stringify(metaL1));
+		const legacyV2 = await seed("legacy two", legacyAt, legacyMeta({ topic_key: "legacy2", revision: 2, context: "reason-already-overwritten" }));
+		const legacyNoRev = await seed("legacy three", legacyAt, legacyMeta({ topic_key: "legacy3" }));
+		await toolFor("sess-C", "F:/C").execute("p-5b", { memory: "legacy three corrected", topic: "legacy3" });
+		const metaL3 = metaOf(legacyNoRev);
+		check("revision 없는 구형 행도 최초 시점·이유를 지어내지 않는다",
+			!("first_timestamp" in metaL3) && !("first_context" in metaL3) && metaL3.session_id === "sess-old" && metaL3.updated_session_id === "sess-C" && metaL3.revision === 2,
+			JSON.stringify(metaL3));
+		await toolFor("sess-C", "F:/C").execute("p-5", { memory: "legacy two corrected", topic: "legacy2" });
+		const metaL2 = metaOf(legacyV2);
+		check("이미 갱신된 구형 행의 모르는 최초 시점·이유는 지어내지 않는다",
+			!("first_timestamp" in metaL2) && !("first_context" in metaL2) && metaL2.session_id === "sess-old" &&
+			metaL2.updated_session_id === "sess-C" && metaL2.revision === 3, JSON.stringify(metaL2));
+
+		// 같은 bank/session 의 정확히 같은 본문은 기존 findDuplicate 가 합치므로 다른 본문의 관찰로 확인한다.
+		const observation = await toolFor("sess-D", "F:/D").execute("p-6", { memory: "단순 관찰: 같은 주제어 prov 가 언급됐다" });
+		const observedId = idOf(observation);
+		check("topic 없는 단순 관찰은 기존 topic 행을 덮어쓰지 않고 별도 행으로 남는다",
+			observedId !== id && rowOf(id).content === "third body" && metaOf(id).revision === 3 && metaOf(id).updated_session_id === "sess-C" &&
+			!("topic_key" in metaOf(observedId)) && metaOf(observedId).session_id === "sess-D");
+	} finally { memory.close(); }
+}
+
 console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문장으로 onCaptured 에 알리고, 도중 실패해도 알린다");
 {
 	const { createAutoLearnCaptureRunner } = await import(`${CORE}/sdk.ts`);

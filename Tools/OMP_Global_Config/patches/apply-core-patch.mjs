@@ -86,6 +86,86 @@ const OPUS55_ROW_18410 = {
 const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93,');
 
 /**
+ * learn topic upsert 적용본. 갱신 때 metadata 의 session_id/cwd 는 최초 저장자로 남고,
+ * updated_session_id/updated_cwd/updated_at 이 최신 정정자·시점이며 context 는 최신 이유다.
+ * first_context/first_timestamp 는 기존 revision 이 명시적으로 1 일 때만 갱신 직전 값으로 보존한다
+ * (revision 없음/2+ 는 최초 이유·시점을 알 수 없으므로 지어내지 않는다). `$` 중괄호와 백틱은 쓰지 않는다.
+ */
+const learnTopicUpsertBlock = `// HANSE: topic-key learn upsert
+function upsertLearnTopic(
+	state: MnemopiSessionState,
+	params: LearnParams,
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
+): { id: string; revision: number } {
+	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
+	if (!topic) throw new Error("Learn topic must not be blank.");
+	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
+	const db = target.memory.conn;
+	const existing = db.query(
+		"SELECT id, timestamp, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+	).get(topic) as { id: string; timestamp: string; metadata_json: string } | null;
+	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
+	if (existing) return db.transaction(() => {
+		const content = redactMemorySecrets(params.memory);
+		const stored = JSON.parse(existing.metadata_json);
+		const now = new Date().toISOString();
+		// HANSE: learn topic provenance keeps first and latest source
+		const firstSeen = stored.revision === 1 ? { first_context: stored.context ?? null, first_timestamp: existing.timestamp } : {};
+		const latest = { updated_session_id: state.sessionId, updated_cwd: state.session.sessionManager.getCwd(), updated_at: now };
+		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
+			content, now,
+			JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest }),
+			existing.id,
+		);
+		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		return { id: existing.id, revision };
+	})();
+	const id = state.rememberScoped(params.memory, {
+		source: "coding-agent-learn", importance: 0.8,
+		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
+		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
+	}, target);
+	return { id, revision };
+}
+
+export class LearnTool implements AgentTool<LearnSchema> {`;
+
+/** 출처 구분 이전 learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
+const learnTopicUpsertLegacyBlock = `// HANSE: topic-key learn upsert
+function upsertLearnTopic(
+	state: MnemopiSessionState,
+	params: LearnParams,
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
+): { id: string; revision: number } {
+	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
+	if (!topic) throw new Error("Learn topic must not be blank.");
+	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
+	const db = target.memory.conn;
+	const existing = db.query(
+		"SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+	).get(topic) as { id: string; metadata_json: string } | null;
+	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
+	if (existing) return db.transaction(() => {
+		const content = redactMemorySecrets(params.memory);
+		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
+			content, new Date().toISOString(),
+			JSON.stringify({ ...JSON.parse(existing.metadata_json), context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision }),
+			existing.id,
+		);
+		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		return { id: existing.id, revision };
+	})();
+	const id = state.rememberScoped(params.memory, {
+		source: "coding-agent-learn", importance: 0.8,
+		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
+		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
+	}, target);
+	return { id, revision };
+}
+
+export class LearnTool implements AgentTool<LearnSchema> {`;
+
+/**
  * 기억 임베딩 (6) 항목의 본문. 0.9.3 은 recall 이 e5 여부로 dense 하한을 고르게 `usesE5Prefix` 를 export 한다.
  * 0.9.2 적용본(export 없음)은 legacyPatched 로 남겨 같은 항목이 새 판으로 바꾼다.
  */
@@ -5744,42 +5824,12 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: '\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),\n\t"scope?": type("\'project\' | \'global\'").describe(',
 	},
 	{
+		// 출처 구분: 갱신해도 최초 session/cwd 는 남고 updated_* 가 최신 정정자다. legacyPatched 는 출처 구분 이전 적용본이다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: topic-key learn upsert",
+		marker: "// HANSE: learn topic provenance keeps first and latest source",
 		anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
-		patched: `// HANSE: topic-key learn upsert
-function upsertLearnTopic(
-	state: MnemopiSessionState,
-	params: LearnParams,
-	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
-): { id: string; revision: number } {
-	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
-	if (!topic) throw new Error("Learn topic must not be blank.");
-	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
-	const db = target.memory.conn;
-	const existing = db.query(
-		"SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
-	).get(topic) as { id: string; metadata_json: string } | null;
-	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
-	if (existing) return db.transaction(() => {
-		const content = redactMemorySecrets(params.memory);
-		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
-			content, new Date().toISOString(),
-			JSON.stringify({ ...JSON.parse(existing.metadata_json), context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision }),
-			existing.id,
-		);
-		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
-		return { id: existing.id, revision };
-	})();
-	const id = state.rememberScoped(params.memory, {
-		source: "coding-agent-learn", importance: 0.8,
-		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
-		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
-	}, target);
-	return { id, revision };
-}
-
-export class LearnTool implements AgentTool<LearnSchema> {`,
+		legacyPatched: learnTopicUpsertLegacyBlock,
+		patched: learnTopicUpsertBlock,
 	},
 	{
 		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
