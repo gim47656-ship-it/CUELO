@@ -216,7 +216,7 @@
           "self-doubt - 틀릴 것 같은 지점: or SELF-DOUBT: - one line naming the choice most likely to be wrong"
         ],
         "prohibited": ["diff-body", "raw-output", "file-contents", "second-dm-per-edit-step"],
-        "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-arrives-as-an-injected-message-non-trigger-work-in-the-same-slice-and-read-only-investigation-continue-subagents-have-no-wait-so-when-independent-work-runs-out-the-owner-states-in-prose-that-it-is-holding-for-the-checkpoint-reply-and-ends-the-turn-and-main-s-message-wakes-it",
+        "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-non-trigger-work-and-read-only-investigation-continue-when-independent-work-runs-out-yield-the-pending-checkpoint-completed-evidence-and-unstarted-work-as-blocked-or-partial-never-success-prose-only-invites-yield-reminders-the-first-main-reply-resumes-a-shared-workspace-maker-without-duplicate-resume-dms-isolated-terminal-work-needs-a-preserved-handoff-and-main-owned-reassignment",
         "silentApproval": "never-no-reply-is-never-approval-and-there-is-no-time-based-or-implicit-approval-trigger-edits-proceed-only-on-main-s-explicit-reply",
         "unansweredAdvisory": "jev-runtime-pre-wait-unanswered-checkpoint-flags-a-received-maker-checkpoint-that-main-has-not-answered-with-a-first-write-agent-message-to-that-same-maker-after-receipt-before-main-waits-again-an-agent-all-broadcast-never-counts-as-the-answer",
         "exemption": "a-location-pinned-small-change-with-clear-contract-and-no-trigger-or-integration-risk-needs-no-checkpoint-documentation-only-changes-also-need-none",
@@ -706,6 +706,21 @@
             "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
             "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction"
           ]
+        },
+        "pre-turn-memory-application": {
+          "owner": "the-session-receiving-the-recall",
+          "when": "before_agent_start-after-core-staged-the-recalled-memories-block-and-before-the-first-model-call-of-that-prompt-only-when-memory-rows-with-ids-are-present-at-most-once-per-identical-judged-input-never-on-tool-calls",
+          "questions": [
+            "each-recalled-memory-applies-is-excepted-conflicts-with-the-current-request-is-unrelated-or-unknown-from-bounded-excerpts"
+          ],
+          "decisionMapping": [
+            "input-is-at-most-eight-recalled-rows-of-500-characters-with-id-scope-and-revision-and-a-1200-character-request-excerpt-with-code-literals-urls-and-paths-removed-secret-pattern-rows-are-withheld-and-a-secret-pattern-request-or-no-sendable-row-makes-no-call",
+            "a-truncated-or-redacted-memory-or-request-excerpt-never-asserts-applies-excepted-or-conflicts-and-is-lowered-to-unconfirmed-with-the-memory-id-detail-lookup",
+            "conflicts-means-only-between-the-current-request-and-the-memory-excerpt-the-judge-never-claims-a-conflict-with-unseen-repository-canon-and-the-agent-checks-canon-and-approval-itself",
+            "applies-excepted-conflicts-or-unconfirmed-adds-one-same-turn-message-before-the-first-model-call-current-user-instructions-canon-and-approval-take-precedence-and-it-never-approves-blocks-or-edits-memory",
+            "all-unrelated-or-unknown-judge-failure-missing-credentials-or-the-eight-second-bounded-advisory-latency-timeout-sends-nothing-and-the-prompt-proceeds",
+            "a-genuine-interactive-or-rpc-input-session-change-or-shutdown-aborts-the-pending-judgment-and-discards-late-results-only-completed-judgments-are-deduped-by-the-full-judged-input-so-an-aborted-or-timed-out-identical-input-is-retried"
+          ]
         }
       },
       "observation": {
@@ -753,13 +768,13 @@
       "mechanism": "tasks-item-model-with-concrete-effort-suffix-task-enableEffort-false-prevents-coarse-effort-overriding-the-selected-level",
       "decidedAt": "at-dispatch-and-on-material-task-purpose-or-scope-change-never-every-turn-clarification-or-status-message-retarget-preserves-owner-and-work-record-effective-effort-separately-from-recommendation",
       "gradingInput": "slice-goal-acceptance-observed-paths-call-boundaries-settled-implementation-reused-pattern-locators-concrete-remaining-judgments-preserved-contracts-and-checks-only-unknown-values-stay-null-no-current-or-previous-model-grade-effort-or-unsupported-difficulty-labels-anywhere-in-the-shared-state",
-      "criteriaUse": "use-the-criteria-verbatim-filtered-to-each-candidates-registry-supported-levels-intersected-with-its-profile-allowedEfforts-ask-candidate-efforts-independently-in-one-batch-and-skip-the-question-when-one-level-remains-model-class-and-effort-are-independent-main-selects-the-final-model-and-concrete-level",
+      "criteriaUse": "use-the-criteria-verbatim-filtered-to-each-candidates-registry-supported-levels-intersected-with-its-profile-allowedEfforts-ask-candidate-efforts-independently-in-one-batch-and-skip-the-question-when-one-level-remains-choose-the-level-whose-judgment-characteristics-best-match-the-observed-remaining-work-for-an-accurate-result-under-and-over-estimation-are-both-misclassification-never-the-cheapest-sufficient-level-never-unconditionally-the-highest-never-lowered-for-subscription-or-converted-api-cost-and-never-shaped-to-a-target-distribution-model-class-and-effort-are-independent-main-selects-the-final-model-and-concrete-level",
       "criteria": {
-        "low": "implementation-is-settled-local-reasoning-suffices-and-few-alternatives-remain",
-        "medium": "bounded-implementation-or-diagnosis-needs-several-related-decisions",
-        "high": "remaining-alternatives-or-cross-boundary-invariants-need-sustained-reasoning",
-        "xhigh": "competing-explanations-or-interacting-constraints-need-deep-comparison-beyond-high",
-        "max": "the-slice-needs-exhaustive-comparison-of-interacting-constraints-and-alternatives-beyond-xhigh-and-the-evidence-shows-lower-levels-would-miss-a-required-contract-never-chosen-by-default-or-for-risk-file-count-or-retry-count-alone"
+        "low": "the-method-and-every-acceptance-condition-are-fixed-by-an-existing-pattern-or-specification-no-open-alternative-remains-and-the-named-checks-exercise-the-changed-behavior",
+        "medium": "a-bounded-local-implementation-or-diagnosis-inside-one-module-or-contract-where-the-facts-already-locate-the-cause-or-reusable-pattern-and-a-few-dependent-choices-remain",
+        "high": "open-alternatives-named-in-the-facts-must-be-weighed-against-preserved-invariants-or-a-change-crosses-a-call-or-module-boundary-whose-invariant-the-named-checks-do-not-fully-exercise-an-unconfirmed-cause-alone-without-such-alternatives-or-invariants-is-not-enough",
+        "xhigh": "several-invariants-or-contracts-across-boundaries-must-hold-together-or-competing-causal-explanations-must-be-ruled-out-with-counterexamples-and-a-missed-interaction-could-still-pass-the-named-checks",
+        "max": "a-deep-design-judgment-remains-over-many-coupled-contracts-states-or-orderings-where-alternatives-and-counterexamples-must-be-enumerated-and-compared-systematically-and-the-specification-and-current-checks-alone-cannot-settle-the-choice-never-the-default-and-never-for-missing-tests-risk-file-count-retry-count-or-cost-alone"
       },
       "riskIsOrthogonal": "main-intervention-follows-code-nature-integration-risk-and-evidence-never-model-grade-or-effort",
       "failure": "judge-unavailable-main-uses-the-same-criteria-without-another-model-call",
@@ -1065,7 +1080,7 @@
             "self-doubt - 틀릴 것 같은 지점: or SELF-DOUBT: - one line naming the choice most likely to be wrong"
           ],
           "prohibited": ["diff-body", "raw-output", "file-contents", "second-dm-per-edit-step"],
-          "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-arrives-as-an-injected-message-non-trigger-work-in-the-same-slice-and-read-only-investigation-continue-when-independent-work-runs-out-the-owner-states-that-it-is-holding-and-ends-the-turn",
+          "blocking": "trigger-code-only-is-held-until-main-s-explicit-reply-non-trigger-work-and-read-only-investigation-continue-when-independent-work-runs-out-yield-blocked-or-partial-with-evidence-and-unstarted-work-never-success-shared-workspace-resumes-on-the-first-reply-isolated-work-preserves-a-handoff",
           "mainReply": "one-line-decision-approved-retarget-or-scope",
           "record": "the-approved-location-and-invariants-are-retained-for-the-final-drift-check"
         },

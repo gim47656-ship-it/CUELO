@@ -20,10 +20,17 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
  *   쓰기 도중 충돌할 수 있으므로, 워커가 DB 파일을 공유 없이 열어 보고 다른 프로세스가 쥐고 있으면
  *   이번에는 건너뛴다(다음 세션이 다시 시도한다).
  * - 실패는 세션으로 올리지 않고 gitignore된 `.gitnexus/autosync.log`에만 남긴다.
+ * - analyze가 끝나면(그리고 색인이 HEAD와 같아도 이 커밋의 검사 기록이 없으면 analyze 없이도) 색인 무결성을 읽는다.
+ *   GitNexus 1.6.12 색인에서 Function 행의 id(심하면 이름까지)가 비는 손상을 실제로 봤다. 그러면 `impact`가 알려진
+ *   심볼을 못 찾거나 부풀리고 `detect-changes`가 모든 프로세스를 영향으로 보고한다(증거: doc/history/2026/10/05-five-improvements/
+ *   maker-gitnexus.md). 손상이 있으면 `analyze --index-only --force`로 한 번 다시 만들고, 결과를
+ *   `.gitnexus/autosync-health.json`에 남겨 같은 커밋을 다시 검사하지 않는다. 손상의 유발 조건은 최소 재현하지 못했다.
  */
 
 const LOCK_NAME = "autosync.lock";
 const LOG_NAME = "autosync.log";
+const ANALYZE_ARGS = ["analyze", "--index-only"];
+const HEALTH_NAME = "autosync-health.json";
 /** 살아 있는 pid라도 이보다 오래된 잠금은 pid 재사용·고착으로 보고 회수한다. */
 const LOCK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const GIT_TIMEOUT_MS = 10_000;
@@ -43,8 +50,12 @@ export interface WorkerJob {
   head: string;
   lockPath: string;
   logPath: string;
+  /** 색인 무결성 검사 결과를 남기는 파일. */
+  healthPath: string;
+  /** 색인이 이미 HEAD와 같아 analyze 없이 무결성 검사만 한다. */
+  verifyOnly: boolean;
   token: string;
-  /** analyze를 실행할 프로그램과 인자. */
+  /** analyze를 실행할 프로그램과 인자. 마지막 두 항목 앞이 실행기 접두이며 cypher 검사에도 쓴다. */
   command: string[];
   /** Windows `.cmd` 실행기처럼 셸이 필요한 경우. */
   shell: boolean;
@@ -121,7 +132,38 @@ const dbInUse = () => {
 const readLastCommit = () => {
   try { return JSON.parse(fs.readFileSync(job.root + "/.gitnexus/meta.json", "utf8")).lastCommit; } catch { return undefined; }
 };
+// 실행기 접두(analyze 앞부분)에 인자를 붙여 실행한다. capture면 stdout을 모아 돌려주고, 아니면 로그 fd로 보낸다.
+const base = job.command.slice(0, job.command.indexOf("analyze"));
+const quote = (text) => (job.shell ? '"' + text + '"' : text);
+const execute = (env, args, out) => {
+  const { promise, resolve } = Promise.withResolvers();
+  let stdout = "";
+  const child = spawn(base[0], base.slice(1).concat(args), {
+    cwd: job.root, env, stdio: ["ignore", out === undefined ? "pipe" : out, out === undefined ? "ignore" : out], windowsHide: true, shell: job.shell,
+  });
+  if (out === undefined) child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.on("error", (error) => { log("spawn error: " + error.message); resolve({ code: -1, stdout }); });
+  child.on("close", (exitCode, signal) => resolve({ code: exitCode === null ? "signal " + signal : exitCode, stdout }));
+  return promise;
+};
+const readCount = async (env, query) => {
+  const { code, stdout } = await execute(env, ["cypher", quote(query)]);
+  if (code !== 0) return undefined;
+  try {
+    const json = JSON.parse(stdout.slice(stdout.indexOf("{"), stdout.lastIndexOf("}") + 1));
+    const cell = String(json.markdown).split("\n").pop().split("|").map((s) => s.trim()).filter(Boolean)[0];
+    const count = Number(cell);
+    return Number.isInteger(count) ? count : undefined;
+  } catch { return undefined; }
+};
+// Function 행 수와 id가 온전한(Function: 접두) 행 수. id가 빈 행이 있으면 impact와 detect-changes가 틀린다.
+const functionRows = async (env) => {
+  const total = await readCount(env, "MATCH (n:Function) RETURN count(n) AS c");
+  const intact = await readCount(env, "MATCH (n:Function) WHERE n.id STARTS WITH 'Function:' RETURN count(n) AS c");
+  return total === undefined || intact === undefined ? undefined : { total, intact };
+};
 (async () => {
+  let out;
   try {
     if (dbInUse()) {
       log("skip: index DB is open by another process (e.g. a GitNexus MCP reader); next session retries");
@@ -132,23 +174,42 @@ const readLastCommit = () => {
       const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") || "PATH";
       env[key] = job.pathPrefix + (process.platform === "win32" ? ";" : ":") + (env[key] || "");
     }
-    const out = fs.openSync(job.logPath, "a");
-    const started = Date.now();
-    log("start: " + job.command.join(" ") + " (head " + job.head.slice(0, 12) + ")");
-    const code = await new Promise((resolve) => {
-      const child = spawn(job.command[0], job.command.slice(1), {
-        cwd: job.root, env, stdio: ["ignore", out, out], windowsHide: true, shell: job.shell,
-      });
-      child.on("error", (error) => { log("spawn error: " + error.message); resolve(-1); });
-      child.on("exit", (exitCode, signal) => resolve(exitCode === null ? "signal " + signal : exitCode));
-    });
-    fs.closeSync(out);
-    const indexed = readLastCommit();
-    log("end: exit=" + code + " seconds=" + ((Date.now() - started) / 1000).toFixed(1) +
-      " lastCommit=" + String(indexed).slice(0, 12) + (indexed === job.head ? " (matches head)" : " (differs from head)"));
+    out = fs.openSync(job.logPath, "a");
+    const analyzeArgs = job.command.slice(base.length);
+    if (!job.verifyOnly) {
+      const started = Date.now();
+      log("start: " + job.command.join(" ") + " (head " + job.head.slice(0, 12) + ")");
+      const { code } = await execute(env, analyzeArgs, out);
+      const indexed = readLastCommit();
+      log("end: exit=" + code + " seconds=" + ((Date.now() - started) / 1000).toFixed(1) +
+        " lastCommit=" + String(indexed).slice(0, 12) + (indexed === job.head ? " (matches head)" : " (differs from head)"));
+      if (code !== 0) return;
+    } else {
+      log("verify: index is at head " + job.head.slice(0, 12) + "; checking index integrity only");
+    }
+    let rows = await functionRows(env);
+    // 손상이 보이면 증분 갱신 뒤든 검사만 하는 경우든 --force 전체 재빌드를 한 번 한다.
+    if (rows && rows.intact < rows.total) {
+      log("integrity: " + (rows.total - rows.intact) + " of " + rows.total + " Function rows lost their id; rebuilding with --force");
+      if (dbInUse()) {
+        log("skip: index DB is open by another process; rebuild deferred");
+        return;
+      } else {
+        const started = Date.now();
+        const { code } = await execute(env, analyzeArgs.concat("--force"), out);
+        log("forced rebuild end: exit=" + code + " seconds=" + ((Date.now() - started) / 1000).toFixed(1));
+        rows = await functionRows(env);
+      }
+    }
+    log("integrity: " + (rows ? rows.intact + "/" + rows.total + " Function rows have their id" : "unreadable"));
+    // 같은 커밋을 세션마다 다시 검사하지 않도록 결과를 남긴다.
+    try {
+      fs.writeFileSync(job.healthPath, JSON.stringify({ lastCommit: readLastCommit(), checkedAt: Date.now(), rows: rows ?? null }));
+    } catch {}
   } catch (error) {
     log("worker error: " + (error && error.message ? error.message : String(error)));
   } finally {
+    if (out !== undefined) try { fs.closeSync(out); } catch {}
     release();
   }
 })();
@@ -248,11 +309,11 @@ function resolveRunner(deps: AutoSyncDeps): { command: string[]; shell: boolean;
   const installed = deps.which("gitnexus");
   if (installed) {
     const shell = deps.platform === "win32" && /\.(cmd|bat)$/i.test(installed);
-    return { command: [shell ? `"${installed}"` : installed, "analyze", "--index-only"], shell, nodePath };
+    return { command: [shell ? `"${installed}"` : installed, ...ANALYZE_ARGS], shell, nodePath };
   }
   // --no-install: 캐시에 없으면 내려받지 않고 바로 실패한다.
   const bun = deps.which("bun");
-  if (bun) return { command: [bun, "x", "--no-install", "gitnexus", "analyze", "--index-only"], shell: false, nodePath };
+  if (bun) return { command: [bun, "x", "--no-install", "gitnexus", ...ANALYZE_ARGS], shell: false, nodePath };
   return undefined;
 }
 
@@ -282,7 +343,10 @@ export async function syncGitNexusIndex(cwd: string, deps: AutoSyncDeps = defaul
   try {
     const lastCommit = readJsonObject(metaPath)?.lastCommit;
     const head = await deps.git(["rev-parse", "HEAD"], root);
-    if (lastCommit === head) return "fresh";
+    // 색인이 HEAD와 같아도 무결성을 한 번도 확인하지 않은 커밋이면 analyze 없이 검사만 하는 워커를 띄운다.
+    const healthPath = path.join(storage, HEALTH_NAME);
+    const verifyOnly = lastCommit === head;
+    if (verifyOnly && readJsonObject(healthPath)?.lastCommit === head) return "fresh";
     const runner = resolveRunner(deps);
     if (!runner) {
       appendLog(logPath, deps.now(), "skip: no node or GitNexus runner available");
@@ -296,6 +360,8 @@ export async function syncGitNexusIndex(cwd: string, deps: AutoSyncDeps = defaul
       head,
       lockPath,
       logPath,
+      healthPath,
+      verifyOnly,
       token,
       command: runner.command,
       shell: runner.shell,
@@ -312,7 +378,11 @@ export async function syncGitNexusIndex(cwd: string, deps: AutoSyncDeps = defaul
     // 잠금 소유자를 실제 워커로 넘겨 이 세션이 끝나도 워커가 사는 동안 잠금이 유지되게 한다.
     // 워커가 이미 끝나 잠금을 지웠다면 되살리지 않는다.
     if (readLock(lockPath)?.token === token) writeLockAtomically(lockPath, { pid, token, startedAt: deps.now() });
-    appendLog(logPath, deps.now(), `spawned worker pid ${pid} (index ${String(lastCommit).slice(0, 12)} -> head ${head.slice(0, 12)})`);
+    appendLog(
+      logPath,
+      deps.now(),
+      `spawned ${verifyOnly ? "verify-only " : ""}worker pid ${pid} (index ${String(lastCommit).slice(0, 12)} -> head ${head.slice(0, 12)})`,
+    );
     return "started";
   } catch (error) {
     appendLog(logPath, deps.now(), `error: ${error instanceof Error ? error.message : String(error)}`);

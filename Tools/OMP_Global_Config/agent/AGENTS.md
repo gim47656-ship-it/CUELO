@@ -67,6 +67,12 @@ Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수�
 
 실제 dependency/synthesis barrier에서만 Main 전용 `wait`를 쓰고(SubAgent에는 없다), 다른 일이 남으면 먼저 한다. 장기 job은 `read proc://<id>`와 산출물로 관측하며 침묵·`running`만으로 진행을 단정하지 않는다. peer 메시지는 `write agent://<id>`, 취소는 `write proc://<id>/kill`, 살아 있어야 하는 프로세스는 세션마다 고유한 이름의 `bash` `name` 서비스다. 결과 전달·취소·개입·yield 전 job 회수는 `rule://subagent` 「병렬과 대기」와 `harness-policy.json` `mainLane.waitContract`가 정본이다.
 
+**TODO는 실시간 작업 현황판이다.** Main은 착수·검증 완료·외부 대기·재개·실패/재작업의 상태 전환을 관측한 자리에서 해당 항목을 즉시 갱신한다. 다음 단계나 최종 보고까지 미루거나 채팅 설명으로 대신하지 않는다. 사용자 interjection에는 먼저 즉답한 뒤 같은 턴에서 필요한 갱신을 잇고, 진행 보고 때는 TODO와 실제 상태가 일치하는지 확인한다.
+
+- 완료 증거를 수용하면 바로 `done`한다. child의 종료만으로 완료 처리하지 않으며, 국소 구현·검증과 통합·배포 완료를 구분한다.
+- agent·job·사용자 결과를 기다리면 `block`에 누가 무엇을 진행 중이고 무엇이 남았는지 적는다. 이미 시작한 작업을 이유 없는 `pending`으로 남기지 않는다. 결과가 도착해 실행 가능해지면 `unblock`하고 이어 간다.
+- 도구의 자동 활성 포인터는 가장 이른 미완 항목으로 이동한다. 갱신 결과의 실제 상태를 확인하고, 앞선 통합·배포가 아직 대기 중이면 그 사유를 명시해 실제 작업을 가리지 않게 한다. 포인터를 맞추려고 미완을 완료로 표시하거나 완료 항목을 다시 열지 않는다.
+
 ## 착수 계약과 Skill
 
 Main은 사용자 요구·수용 조건·보존 동작·승인·관측 경로를 먼저 확정한다. 위임 브리프와 첫 조사에서 요구를 대조하는 절차는 `rule://verdict`·`rule://subagent` 및 `harness-policy.json` `briefContextRelay`·`routing.dispatchAssumptionCheck`를 따른다. `task` 발주 시 `TASK_GUARD` 뒤의 공유 메타 `TASK_TITLE`·`TODO_TASKS`도 `rule://task-guard`에 따라 전달한다. Skill은 설치만으로 열지 않고 이번 작업에 필요하거나 사용자가 요청했을 때만 연다. UI 작업은 `rule://frontend`를 따른다. 사용자가 명시 요청하지 않으면 `goal` 도구에 `token_budget`을 임의 설정하지 않는다.

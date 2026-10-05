@@ -159,7 +159,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
             </button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
           {scope === "global" ? "~/.omp/agent/config.yml" : ".omp/config.yml"}
         </span>
       </div>

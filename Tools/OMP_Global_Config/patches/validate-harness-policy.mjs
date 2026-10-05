@@ -413,6 +413,17 @@ const requiredPolicyMembers = [
     "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
     "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction",
   ]],
+  ["routing.typedJudgmentRouting.placements.pre-turn-memory-application.questions", [
+    "each-recalled-memory-applies-is-excepted-conflicts-with-the-current-request-is-unrelated-or-unknown-from-bounded-excerpts",
+  ]],
+  ["routing.typedJudgmentRouting.placements.pre-turn-memory-application.decisionMapping", [
+    "input-is-at-most-eight-recalled-rows-of-500-characters-with-id-scope-and-revision-and-a-1200-character-request-excerpt-with-code-literals-urls-and-paths-removed-secret-pattern-rows-are-withheld-and-a-secret-pattern-request-or-no-sendable-row-makes-no-call",
+    "a-truncated-or-redacted-memory-or-request-excerpt-never-asserts-applies-excepted-or-conflicts-and-is-lowered-to-unconfirmed-with-the-memory-id-detail-lookup",
+    "conflicts-means-only-between-the-current-request-and-the-memory-excerpt-the-judge-never-claims-a-conflict-with-unseen-repository-canon-and-the-agent-checks-canon-and-approval-itself",
+    "applies-excepted-conflicts-or-unconfirmed-adds-one-same-turn-message-before-the-first-model-call-current-user-instructions-canon-and-approval-take-precedence-and-it-never-approves-blocks-or-edits-memory",
+    "all-unrelated-or-unknown-judge-failure-missing-credentials-or-the-eight-second-bounded-advisory-latency-timeout-sends-nothing-and-the-prompt-proceeds",
+    "a-genuine-interactive-or-rpc-input-session-change-or-shutdown-aborts-the-pending-judgment-and-discards-late-results-only-completed-judgments-are-deduped-by-the-full-judged-input-so-an-aborted-or-timed-out-identical-input-is-retried",
+  ]],
   // 실장비 인계 한 통에 들어가야 하는 것. 이 항목이 줄면 "무엇을 켜고 무엇이 정상이며 언제 멈추는가"가
   // 빠진 인계가 되어, 사용자가 장비 앞에서 판단할 근거를 잃는다.
   ["implementationOwnership.writerValidation.deviceVerificationHandoff.packet", [
@@ -718,7 +729,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims", "pre-turn-memory-application"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1279,7 +1290,8 @@ if (policy !== null) {
       typedJudgmentPlacements["turn-end-solo-stop"]?.owner === "main" &&
       typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
       typedJudgmentPlacements["todo-nudge-multistep"]?.owner === "main" &&
-      typedJudgmentPlacements["external-advice-claims"]?.owner === "main",
+      typedJudgmentPlacements["external-advice-claims"]?.owner === "main" &&
+      typedJudgmentPlacements["pre-turn-memory-application"]?.owner === "the-session-receiving-the-recall",
     "typed judgment placement의 실행 주체가 다르다.",
   );
   check(

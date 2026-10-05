@@ -207,7 +207,7 @@ function decisionQuestions(policy: RoutingPolicy, candidates: Candidate[]) {
     questions[`effort${index}`] = {
       type: "choice",
       criteria: Object.fromEntries(candidate.efforts.filter((level) => level in policy.effortSelection.criteria).map((level) => [level, policy.effortSelection.criteria[level]!])),
-      instructions: "이 후보가 지원하는 구간에서 관측된 남은 판단과 수용 조건에 충분한 가장 낮은 추론 강도를 독립적으로 고른다. 작업 등급이나 다른 질문의 답을 가정하지 않는다. 위험·파일 수·경과 시간·이전 실패 횟수만으로 강도를 올리지 않는다.",
+      instructions: "이 후보가 지원하는 구간에서 결과의 정확도에 맞는 추론 강도를 독립적으로 고른다. 가장 낮은 충분 단계를 찾는 비용 최적화가 아니며 무조건 높은 단계도 아니다. 과소·과잉 모두 오분류다. facts·remainingJudgments·callBoundaries·invariants·checks에서 열린 대안의 수, 경계를 넘어 함께 지켜야 하는 불변식·계약, 경쟁 원인, 지정 검사가 놓친 조건을 드러내는지를 criteria의 판단 특성과 대조해 가장 잘 맞는 단계를 고른다. 원인 미확정 표시만으로, 또는 테스트 없음·위험·파일 수·경과 시간·이전 실패 횟수·비용만으로 단계를 정하지 않는다. 작업 등급이나 다른 질문의 답을 가정하지 않는다.",
     };
   });
   return questions;

@@ -53,7 +53,7 @@
   display: block;
   margin-top: 6px;
   overflow: hidden;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font: 10px/1.35 var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -86,6 +86,8 @@
   font: 12px var(--font-mono);
 }
 
+.search::placeholder { color: var(--text-muted); }
+
 .search:focus { border-color: var(--accent); }
 
 .nav {
@@ -96,7 +98,7 @@
 
 .navLabel {
   padding: 13px 10px 5px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font: 700 9px/1 var(--font-mono);
   letter-spacing: .12em;
   text-transform: uppercase;

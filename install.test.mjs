@@ -6,7 +6,6 @@ import test from "node:test";
 import YAML from "yaml";
 import {
   createProfileConfig,
-  PROFILE_DEFAULTS,
   checkHealth,
   portEnv,
   servicePorts,
@@ -86,14 +85,18 @@ test("a new profile gets the safe defaults and exactly the named model roles; an
     // Nothing that spends provider requests on its own is switched on.
     assert.equal(config.autolearn.autoContinue, false);
     assert.equal(config.mnemopi.autoRetain, false);
-    assert.deepEqual({ ...config, modelRoles: undefined }, { ...PROFILE_DEFAULTS, modelRoles: undefined });
+    assert.equal(config.task.enableLsp, true, "new Maker profiles must allow their declared LSP tool");
 
     // Without models the profile still gets the defaults, and no guessed modelRoles.
     const plain = createProfileConfig(bare, {});
     assert.equal(plain.written, true);
-    assert.deepEqual(YAML.parse(fs.readFileSync(plain.configPath, "utf8")), PROFILE_DEFAULTS);
+    const plainConfig = YAML.parse(fs.readFileSync(plain.configPath, "utf8"));
+    assert.equal(plainConfig.task.enableLsp, true);
+    assert.equal("modelRoles" in plainConfig, false);
     assert.deepEqual(plain.missing, ["default", ...HARNESS_ROLES]);
 
+    config.task.enableLsp = false;
+    fs.writeFileSync(result.configPath, YAML.stringify(config));
     const before = fs.readFileSync(result.configPath);
     const again = createProfileConfig(agentDir, { implSonnet: "openai-codex/gpt-6-sol:high" });
     assert.equal(again.written, false);

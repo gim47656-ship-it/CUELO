@@ -381,6 +381,46 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:medium` }] };
     expect(await route.beforeTask(blocked, ctx)).toMatchObject({ block: true });
   });
+  test("judge가 고른 높은 강도는 낮아지지 않고 추천·발주 확인에 그대로 쓰인다", async () => {
+    const policy = loadRoutingPolicy();
+    const modelRoles: Record<string, string> = {};
+    for (const profile of Object.keys(policy.modelSelection.profiles)) {
+      const slot = policy.modelSelection.profiles[profile]!.modelConfigPath.slice("modelRoles.".length);
+      modelRoles[slot] = candidates.find((candidate) => candidate.profile === profile)!.model;
+    }
+    const registry = {
+      find: (provider: string, id: string) => {
+        const found = candidates.find((candidate) => candidate.model === `${provider}/${id}`);
+        return found ? { thinking: { efforts: found.efforts } } : undefined;
+      },
+      refreshDiscoverableProviders: async () => {},
+    };
+    const ctx = { sessionManager: { getSessionId: () => "high-effort" }, modelRegistry: registry } as never;
+    const prepare = async (answers: Record<string, unknown>) => {
+      const route = registerMakerRouting({} as never, {
+        policy: () => policy,
+        settings: async () => ({ getModelRoles: () => modelRoles }),
+        owners: () => [],
+        quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test" }),
+        judge: async () => ({ answers }),
+      });
+      const batch = await route.prepareBatch("계약", [{ name: "Deep", task: brief, assessment: facts }], ctx);
+      return { route, batch };
+    };
+    const dispatch = (model: string) => ({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
+    // 후보 순서: NORMAL_SONNET(0)·NORMAL_OPUS(1)·HARD_UI_OPUS(2)·HARD_CODE_OPUS(3). 허용 구간 상단을 답한다.
+    const top = { effort0: { choice: "xhigh" }, effort1: { choice: "max" }, effort2: { choice: "max" }, effort3: { choice: "max" } };
+    const normal = await prepare({ workClass: { choice: "NORMAL" }, uiUxBoundary: { noul: 0 }, ...top });
+    expect(normal.batch.routes[0]!.recommendations).toMatchObject(top);
+    expect(await normal.route.beforeTask(dispatch("openai-codex/gpt-6-sol:xhigh"), ctx)).toBeUndefined();
+    // 추천보다 낮춘 발주는 Main 근거 없이 지나가지 않는다.
+    expect(await normal.route.beforeTask(dispatch("openai-codex/gpt-6-sol:medium"), ctx)).toMatchObject({ block: true });
+    const hard = await prepare({ workClass: { choice: "HARD" }, hardFocus: { choice: "CODE_SYSTEM" }, uiUxBoundary: { noul: 0 }, ...top });
+    expect(hard.batch.routes[0]!.recommendations).toMatchObject({ effort3: { choice: "max" } });
+    expect(await hard.route.beforeTask(dispatch("anthropic/claude-opus-5-5:max"), ctx)).toBeUndefined();
+    // 구간 밖 강도는 judge 답과 무관하게 막는다.
+    expect(await hard.route.beforeTask(dispatch("openai-codex/gpt-6-sol:max"), ctx)).toMatchObject({ block: true });
+  });
   test("reset은 candidate·judge·beforeTask await의 stale 결과 게시와 dispatch를 막는다", async () => {
     {
       let release!: () => void;

@@ -1354,7 +1354,7 @@ pre, code {
 /* syntax highlighter line numbers */
 .markdown-body span.linenumber,
 span.linenumber {
-  color: var(--text-dim) !important;
+  color: var(--text-muted) !important;
   font-style: normal !important;
 }
 
@@ -1642,7 +1642,7 @@ span.linenumber {
 
 .workspace-session-identity span {
   margin-block-start: 2px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -2549,7 +2549,7 @@ section[aria-label="Subagent 기록"] > header,
 }
 
 .navigator-search-input::placeholder {
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 .navigator-search-input:focus {
@@ -3002,7 +3002,7 @@ section[aria-label="Subagent 기록"] > header,
 }
 
 .message-assistant-role {
-  color: var(--text-dim) !important;
+  color: var(--text-muted) !important;
   font-size: var(--readout-size) !important;
 }
 
@@ -3166,7 +3166,7 @@ section[aria-label="Subagent 기록"] > header,
 }
 
 .chat-composer-textarea::placeholder {
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 /* one solid control per surface: SEED neutralSolid pair, never a tint fill */

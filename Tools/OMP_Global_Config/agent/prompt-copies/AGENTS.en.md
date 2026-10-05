@@ -1,4 +1,4 @@
-<!-- source-fingerprint: a3671e216eec0e9 -->
+<!-- source-fingerprint: bf386c940cdedd3 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -69,6 +69,12 @@ The change owner runs verification; Main judges the evidence. A Maker runs the m
 ## Progress and waiting
 
 Use Main-only `wait` (subagents have none) only at real dependency/synthesis barriers; do other remaining work first. Observe long jobs through `read proc://<id>` and artifacts; never conclude progress from silence or `running` alone. Peer messages are `write agent://<id>`, cancellation is `write proc://<id>/kill`, and processes that must stay up are `bash` `name` services with a session-unique name. Delivery, cancellation, intervention, collecting jobs before yield: `rule://subagent` 「병렬과 대기」 and `harness-policy.json` `mainLane.waitContract`.
+
+**TODO is a live work board.** Main updates the relevant item as soon as it observes a transition: starting, verified completion, external waiting, resuming, or failure/rework. Do not postpone updates until the next phase or final report, or substitute chat narration for them. On a user interjection, reply first and then make the needed update in the same turn. During progress reports, check that TODO matches the actual state.
+
+- Mark `done` immediately after accepting completion evidence. A child's termination alone is not acceptance; distinguish local implementation/verification from integrated release/deployment completion.
+- When waiting for an agent, job, or user result, use `block` to say who is doing what and what remains. Do not leave already-started work as unexplained `pending`. When the result makes work actionable, `unblock` and continue.
+- The tool's automatic active pointer moves to the earliest unfinished item. Check the returned state; if an earlier integration/deployment item is still waiting, state why so it does not hide the actual work. Never mark unfinished work done or reopen completed items merely to move the pointer.
 
 ## Kickoff contract and Skills
 

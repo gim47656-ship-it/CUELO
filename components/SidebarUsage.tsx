@@ -536,7 +536,7 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
           <span className="navigator-usage-label">{t("usage.bai")}</span>
           <span
             className="navigator-usage-value"
-            style={bai.status === "measured" ? undefined : { color: "var(--text-dim)" }}
+            style={bai.status === "measured" ? undefined : { color: "var(--text-muted)" }}
           >
             {baiValue}
           </span>

@@ -68,6 +68,10 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   아니라 남은 판단으로 고른다. 프론트 상태 경쟁은 코드·시스템이고 확정 시안 CSS는 자동 HARD가 아니다.
   작은 routine은 계속 Main이 직접 끝낸다. 이미 위임할 가치가 있는 조각에서 적합한 가장 낮은 등급을
   고른다. 검증·소유권·승인 경계는 낮추지 않는다.
+- 관련 실측·실패 기록을 알고 있으면 과제 조건·하네스 revision·수용 품질·표본 한계를 함께
+  `assessment.facts`에 반영한다. 경로를 나눌 수 있다는 사실만으로 병렬 이득을 가정하지 않고,
+  공유 계약·발주 준비·재작업·통합 검수 비용과 실제 동시에 끝낼 수 있는 구간을 대조한다.
+  관측되지 않은 절감 시간은 만들지 않으며 한 사례를 줄 수·인원수 임계값이나 항상 단독 규칙으로 바꾸지 않는다.
 - 발주 전 `maker_route`에 `context`·각 `name/task`와 최소 사실 `assessment`를 전달한다.
   이 도구가 정본 criteria의 작업 분류·중심 난제·후보별 지원 effort·중복 여부·`ownerTarget`과
   **위임 판단**(`routing.modelSelection.delegationCriteria`)을 한 번에 묻는다. 위임 판단은
@@ -113,6 +117,10 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   실제 core 우선순위는 coarse effort > selector suffix > agent 기본 > pattern-derived다.
   생성 기본 medium은 유지하되 발주 suffix가 덮는다. Auto를 suffix의 `auto`나 기본값 적용으로
   대체하지 않는다. 발주 뒤 매 턴 재분류하지 않는다.
+- 후보별 강도는 비용을 줄이는 가장 낮은 충분 단계가 아니라 결과 정확도에 맞는 단계로 판정한다.
+  열린 대안·경계를 넘는 불변식 결합·경쟁 원인·검사가 놓칠 수 있는 조건을 정본 criteria의 판단
+  특성과 대조하며 과소·과잉 모두 오분류다. 무조건 최고 단계, 구독 비용 환산, 선택 분포 맞추기를
+  하지 않고, 원인 미확정 표시·테스트 없음·위험·파일 수·재시도만으로 올리지 않는다.
 - 입력은 목표·수용 조건·확인 범위/호출 관계·확정 방향/패턴 locator·남은 판단·보존 계약·검사다.
   사실·가설·미확인을 구별하고 unknown은 null로 둔다. 현재/이전/희망 모델·등급·강도와 근거 없는
   쉬움/복잡함을 공유 state 전체에서 제외한다. 원문·소스·diff·로그·비밀은 보내지 않는다.
@@ -143,8 +151,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 - 체크포인트 라벨과 본문 규격은 `agent/sop/_writer.md`, 판단 정본은
   `mainLane.workerReview.steeringCheckpoint`다. 체크포인트는 `write agent://Main` 한 통이고 비차단이다.
   SubAgent에는 `wait`가 없으므로 Maker는 트리거 편집만 보류하고 read-only 조사와 비트리거 작업을
-  계속하며, 승인은 주입된 Main 메시지로 받는다. 독립 작업이 소진되면 체크포인트 회신 대기 중임을
-  산문으로 밝히고 턴을 끝내고, Main의 메시지가 wake 턴으로 깨운다. 회신 없음은 승인이 아니며 시간
+  계속하며, 승인은 주입된 Main 메시지로 받는다. 독립 작업이 소진되면 `yield`로 승인 대기·완료한
+  증거·착수하지 않은 작업을 blocked/partial로 보고한다. 산문만으로 턴을 끝내면 실행기는
+  `yield`를 요구하는 안내를 반복한다. 공유 작업공간 Maker는 Main의 첫 회신으로 재개하므로 같은
+  승인을 재개·상태 DM으로 중복 전송하지 않는다. 격리 작업공간은 terminal 뒤 재개되지 않으므로
+  인계 증거를 보존하고 Main이 후속 소유권을 정한다. 회신 없음은 승인이나 성공이 아니며 시간
   기반 암묵 승인도 없다. Main은 받은 체크포인트마다 그 Maker에게 가는 첫 `write agent://<id>`로
   한 줄(approved·retarget·scope)을 답한다.
   Main 승인 때문에 owner가 막힌 경우, 다음 도구 행동은 승인에 필요한 좁은 확인과 회신이다.
@@ -351,6 +362,9 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
 - `yield` 직전 자신이 만든 background job을 전부 회수하거나 `write proc://<id>/kill`로 취소한다(한 호출에 id 하나). 미회수 `[async-result]`가 종료 세션을 되살려 텍스트 전용 루프에 빠뜨릴 수 있고, 보고가 끝났는데 job은 `running`으로 남을 수 있다. 확인 결과가 필요 없는 명령은 처음부터 background로 띄우지 않는다.
 - 살아 있어야 하는 서버·watcher·REPL은 `bash`에 `name`(필요하면 `ready`·`env`)을 준 서비스로 띄운다. **이름은 세션마다 고유하게 짓는다** — core 18.3.0은 살아 있는 같은 이름의 서비스를 owner와 무관하게 멈추고 교체하므로 흔한 이름은 다른 세션의 서버를 죽일 수 있다. 상태·최근 로그는 `read proc://<name>`, stdin은 `write proc://<name>`, 중지는 `write proc://<name>/kill`이다.
 - 검증용으로 system Chrome을 `app.path`로 띄우지 않는다. 단일 인스턴스가 사용자의 기존 프로세스를 재사용할 수 있어, `browser.close({all:true, kill:true})`가 성공처럼 보여도 닫히지 않을 수 있다. 정리 실패는 재시도하거나 탭을 다시 열지 말고 남은 PID를 보고한다. managed Chromium 또는 relay를 사용한다.
+  검증 중 bash·eval에서 Chrome/Edge 실행 파일을 직접 띄우지 않는다(`Bun.spawn` 포함).
+  브라우저 helper나 프로젝트의 지원 검증 명령을 사용한다. 지원 명령의 프로필은 절대경로의
+  격리 위치를 써야 한다. headless라도 프로필 경로 오류는 초기화 중 사용자 데스크톱에 네이티브 창을 띄울 수 있다.
 - Main은 위임한 조각의 구현·검증을 대신 실행하지 않고, 이미 받은 보고나 Maker가 한 조사를
   다시 읽지 않는다. 대기 시간을 채우려고 검수·검증을 생략하지도 않는다.
 

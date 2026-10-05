@@ -170,6 +170,7 @@ export const PROFILE_DEFAULTS = {
   memory: { backend: "mnemopi" },
   mnemopi: { scoping: "per-project-tagged", embeddingVariant: "multilingual", autoRetain: false },
   task: {
+    enableLsp: true,
     softRequestBudget: 400,
     maxConcurrency: 8,
     eager: "preferred",

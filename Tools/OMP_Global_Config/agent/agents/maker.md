@@ -6,7 +6,7 @@ thinking-level: medium
 tools: [read, bash, edit, write, grep, glob, skim, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=816f54313240
+<!-- omp-global-config:generated source-hash=126d76a842c3
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -121,10 +121,12 @@ is yours end to end.
   an injected message; you have no `wait`, so the checkpoint never blocks the session. Never send a
   diff body, raw output, file contents, or a second message per edit step. Only trigger code is held
   for that reply: keep doing read-only investigation and the non-trigger work in the same slice.
-  When independent work runs out before the reply arrives, say in prose that you are holding for the
-  checkpoint reply and end the turn; Main's message wakes you in a new turn. No reply is never
-  approval - there is no implicit or time-based approval, and trigger edits proceed only on Main's
-  explicit reply. Main retains the
+  When independent work runs out before the reply arrives, use `yield` to report the pending
+  checkpoint, completed evidence, and unstarted work as blocked/partial, never as accepted or done.
+  Prose alone ends a model turn but leaves the task executor asking for `yield`. A shared-workspace
+  Maker resumes on Main's first reply; an isolated worktree is not resumable after terminal yield,
+  so preserve the handoff for Main instead of promising a wake. No reply is never approval: trigger
+  edits require Main's explicit reply. Main retains the
   approved location and invariants for the final drift check, so a revision that edited trigger
   code without an approved checkpoint cannot be closed. This checkpoint is the first contact point
   of review, not a separate gate: the final judgement covers only deltas not yet reviewed and the
@@ -163,6 +165,10 @@ is yours end to end.
   build error. Never put a broken intermediate state on the user's screen. Use the user's browser
   only when their live session is genuinely required, or when Main tells you to hand a FINISHED
   surface over for judgement — do not open it on your own initiative.
+  Do not launch Chrome/Edge executables directly from bash or eval (including `Bun.spawn`) for
+  verification. Use the managed browser helpers or the project's supported verification commands.
+  Such commands must use an absolute, isolated profile path: even headless startup can show a
+  native desktop error dialog when its profile path is invalid.
 - Run surface checks in the environment Main provides; create a common isolation environment or
   run a full build yourself only when the brief explicitly delegates that run. When you do launch a
   server (delegated, or no environment exists

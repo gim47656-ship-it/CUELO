@@ -18,6 +18,19 @@ const ZOOM_STEP = 0.25;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 
+// Prism `vs`의 청록(#36acaa: number·boolean·variable 등)은 밝은 코드 바탕에서 2.75:1이라
+// 본문 크기 코드 글자 기준 4.5:1에 못 미친다. 같은 색조의 SEED 팔레트 단계(라이트 #00745f,
+// 약 5.4:1)로만 바꾸고 나머지 토큰 색은 테마 그대로 둔다.
+const LIGHT_CODE_STYLE = {
+  ...vs,
+  ...Object.fromEntries(
+    ["url", "symbol", "number", "boolean", "variable", "constant", "inserted"].map((token) => [
+      token,
+      { ...vs[token], color: "var(--seed-color-palette-green-800)" },
+    ]),
+  ),
+};
+
 type RenderState =
   | { key: string; status: "loading" }
   | { key: string; status: "error" }
@@ -279,9 +292,9 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
       ) : (
         <SyntaxHighlighter
           language={lang || "text"}
-          style={isDark ? vscDarkPlus : vs}
+          style={isDark ? vscDarkPlus : LIGHT_CODE_STYLE}
           showLineNumbers
-          lineNumberStyle={{ color: "var(--text-dim)", fontStyle: "normal" }}
+          lineNumberStyle={{ color: "var(--text-muted)", fontStyle: "normal" }}
           customStyle={{
             margin: 0,
             padding: "11px 13px",
