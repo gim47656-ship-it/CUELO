@@ -457,6 +457,31 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
 
+  test("한 발주 배치는 후보를 한 번 해석하고 다음 발주에서는 변경된 후보를 확인한다", async () => {
+    let candidateCalls = 0;
+    const available = structuredClone(candidates);
+    const ledger = memoryLedger();
+    const h = harness({ candidates: available, ledger, onCandidate: (call) => { candidateCalls = call; } });
+    const tasks = Array.from({ length: 5 }, (_, index) => ({
+      ...h.task,
+      name: `Slice${index}`,
+      task: brief.replace("src/view.ts", `src/slice${index}.ts`),
+    }));
+    await h.prepare("독립 경로 다섯 개", tasks, {} as never);
+    candidateCalls = 0;
+    const batch = { tasks: tasks.map(({ name, task }) => ({ name, task, model: "openai-codex/gpt-6-sol:high" })) };
+    expect(await h.beforeTask(batch, {} as never, "five")).toBeUndefined();
+    // 준비의 한 번을 제외하면 admission은 task 수와 무관하게 한 번이다.
+    expect(candidateCalls).toBe(2);
+    h.noteSpawned(batch, "five", new Map(tasks.map((task, index) =>
+      [index, { agentId: `agent-${task.name}`, jobId: `job-${task.name}` }])));
+    expect(ledger.records.map((record) => "name" in record ? record.name : null)).toEqual(tasks.map((task) => task.name));
+    available[0]!.efforts = ["medium"];
+    expect(await h.beforeTask(batch, {} as never, "changed")).toMatchObject({
+      block: true, reason: expect.stringContaining("후보 또는 판단 기준"),
+    });
+  });
+
   test("Task Guard 계약이 같으면 본문·context 문구는 달라도 연결하고 이름·계약 변경은 재준비한다", async () => {
     const h = harness();
     await h.prepare("준비할 때 쓴 설명", [h.task], {} as never);

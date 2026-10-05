@@ -949,8 +949,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
     const tasks = (Array.isArray(canonicalInput.tasks) ? canonicalInput.tasks : [canonicalInput]) as Record<string, unknown>[];
     const atGeneration = generation;
-    // 후보 해석은 작업마다 현재 local registry로 다시 한다. 같은 prepared 계약에서 이미 시작한
-    // online provider 시도만 재사용하고, 이 task 호출에서 새로 필요한 provider도 함께 공유한다.
+    // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.
+    // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
     const refreshAttempts: RefreshAttempts = new Map();
     let candidateLock = contractLock;
     const locksBefore: (DispatchContractLock | undefined)[] = [];
@@ -963,6 +963,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       return contract;
     });
     const drafts: [number, DispatchDraft][] = [];
+    const ready: { itemIndex: number; item: Record<string, unknown>; contract: DispatchContract; key: string; prepared: Prepared }[] = [];
     for (const [itemIndex, item] of tasks.entries()) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
@@ -987,16 +988,25 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (latestPublications.get(key)?.token !== prepared.publicationToken) {
         return { block: true, reason: "같은 task 계약에 더 최신 maker_route 준비가 있습니다. 최신 판단이 끝난 뒤 그 결과로 발주하세요." };
       }
-      const current = policy();
-      const candidates = await candidateList(ctx, current, refreshAttempts);
-      if (atGeneration !== generation) {
-        return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
-      }
+      ready.push({ itemIndex, item, contract, key, prepared });
+    }
+    const current = policy();
+    const candidates = ready.length > 0 ? await candidateList(ctx, current, refreshAttempts) : [];
+    if (atGeneration !== generation) {
+      return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
+    }
+    const revision = revisionOf(current, candidates);
+    const allOwners = ready.length > 0 ? deps.owners(ctx) : [];
+    // 마지막 await 이후 모든 항목을 같은 snapshot으로 검사하고 예약한다.
+    // 앞 항목을 검사한 뒤 뒤 항목의 후보 조회를 기다리는 stale publication 틈도 없앤다.
+    for (const { itemIndex, item, contract, key, prepared } of ready) {
+      const name = String(item.name ?? "").trim();
+      const task = typeof item.task === "string" ? item.task : "";
+      const requested = typeof item.model === "string" ? item.model : "";
       if (latestPublications.get(key)?.token !== prepared.publicationToken) {
         return { block: true, reason: "candidate 확인 중 같은 task 계약에 더 최신 maker_route 준비가 생겼습니다. 최신 판단으로 발주하세요." };
       }
-      if (prepared.revision !== revisionOf(current, candidates)) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
-      const allOwners = deps.owners(ctx);
+      if (prepared.revision !== revision) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
       const owners = relevantOwners(contract, allOwners);
       if (ownerRevision(prepared.owners) !== ownerRevision(owners)) return { block: true, reason: "현재 소유권 충돌 조건이 바뀌었습니다. maker_route로 owner placement만 다시 판단하세요." };
       // 같은 모델이 여러 profile에 있을 수 있다(HARD_*). 추천 profile, 이어서 추천 등급의
