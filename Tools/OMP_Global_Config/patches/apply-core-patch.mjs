@@ -116,6 +116,109 @@ export function currentEmbeddingModel(): string {
 }
 `;
 
+/**
+ * task schema 정적 네 곳(item·isolated item·단일 flat·단일 no-isolation)의 per-spawn `model?` 전달과 optional `agent`.
+ * 18.3.4는 모든 schema에 필수 `solutionSpace: "string"` 을 `task` 바로 뒤에 넣었고 `model?` 은 그 뒤에 둔다.
+ *
+ * `agent: "string = 'task'"` 기본값은 pi-ai validateToolArguments가 extension tool_call 앞에서 채워, hook에는 생략한 호출과
+ * 명시한 `task`가 구별되지 않았다. 생략을 undefined로 두면 CUELO guard가 생략만 maker로 해석하고 명시 `task`·scout 등은 계속
+ * 거절할 수 있다. core executor는 생략을 이미 처리한다(task/index.ts spawnParamsFor `item.agent?.trim() || defaultAgent`,
+ * `spawn.agent ?? defaultAgent`)이므로 다른 프로필의 기본 agent 의미는 그대로다.
+ *
+ * 두 변경은 같은 줄 묶음에 있으므로 한 항목이 함께 만든다. 각 항목의 marker는 자기 schema header를 포함해 다른 schema의 줄이
+ * 이 항목을 이미 적용한 것으로 보이게 하지 않고, 빠진 model 줄은 그 schema에서만 복구된다. 후보는
+ *  - 기본 후보: model이 없는 순정(18.4 이하)에서 model과 optional agent를 함께 넣는다. 옛 패치가 이미 model을 넣은
+ *    기본-agent 상태는 `legacyPatched` 로 optional agent만 얹는다.
+ *  - alternates: model을 가진 18.5+ upstream(`string | string[]`)에 optional agent만 얹는다.
+ * 한 항목이 변환 전체를 가지므로 `--revert` 는 patched를 anchor로 되돌려 순정을 그대로 복원한다.
+ */
+const TASK_SCHEMA_MODEL_EDITS = [
+	"export const taskItemSchema = type({",
+	"const taskItemSchemaIsolated = type({",
+	"export const taskSchema = type({",
+	"const taskSchemaNoIsolation = type({",
+].map(header => {
+	const body = (agent, model) =>
+		[header, '\t"name?": "string",', `\t${agent}`, '\ttask: "string",', '\tsolutionSpace: "string",', ...(model ? [`\t${model}`] : [])].join("\n");
+	const DEFAULT_AGENT = "agent: \"string = 'task'\",";
+	const OPTIONAL_AGENT = '"agent?": "string",';
+	const SINGLE = '"model?": "string",';
+	const SINGLE_OR_ARRAY = '"model?": "string | string[]",';
+	const output = '\n\t"outputSchema?": outputSchemaInputSchema,';
+	return {
+		file: "src/task/types.ts",
+		marker: body(OPTIONAL_AGENT, SINGLE),
+		anchor: body(DEFAULT_AGENT) + output,
+		patched: body(OPTIONAL_AGENT, SINGLE) + output,
+		legacyPatched: body(DEFAULT_AGENT, SINGLE) + output,
+		alternates: [{
+			file: "src/task/types.ts",
+			marker: body(OPTIONAL_AGENT, SINGLE_OR_ARRAY),
+			anchor: body(DEFAULT_AGENT, SINGLE_OR_ARRAY),
+			patched: body(OPTIONAL_AGENT, SINGLE_OR_ARRAY),
+		}],
+	};
+});
+
+/**
+ * 위 정적 schema와 같은 이유로 defaultAgent 동적 schema(createTaskSchema)의 agent도 optional로 둔다.
+ * 동적 model 항목의 앵커가 `agent,` 를 포함하므로 반드시 그 뒤에 적용한다.
+ */
+const TASK_AGENT_OPTIONAL_EDITS = [
+	...[
+		["\t\t\tconst item = type.raw({", "\t\t\t\t"],
+		["\t\tconst item = type.raw({", "\t\t\t"],
+		["\t\treturn type.raw({", "\t\t\t"],
+		["\treturn type.raw({", "\t\t"],
+	].map(([header, indent]) => ({
+		file: "src/task/types.ts",
+		marker: `${header}\n${indent}"name?": "string",\n${indent}"agent?": "string",`,
+		anchor: `${header}\n${indent}"name?": "string",\n${indent}agent,`,
+		patched: `${header}\n${indent}"name?": "string",\n${indent}"agent?": "string",`,
+	})),
+	{
+		// 위 여덟 곳이 더는 쓰지 않는 기본 agent 규칙 helper와 그 정규식·지역 변수를 함께 지운다.
+		file: "src/task/types.ts",
+		marker: "// CUELO: task schema agent is optional on the wire.",
+		anchor: [
+			"const TASK_AGENT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;",
+			"const taskSchemaCache = new Map<string, BaseType>();",
+			"",
+			"function taskAgentSchemaRule(defaultAgent: string): string {",
+			"\tconst trimmed = defaultAgent.trim();",
+			"\tif (TASK_AGENT_NAME_PATTERN.test(trimmed)) {",
+			"\t\treturn `string = '${trimmed}'`;",
+			"\t}",
+			"\treturn \"string\";",
+			"}",
+			"",
+			"function createTaskSchema(options: {",
+			"\tisolationEnabled: boolean;",
+			"\tbatchEnabled: boolean;",
+			"\tdefaultAgent: string;",
+			"\teffortEnabled: boolean;",
+			"\tevalToolsEnabled: boolean;",
+			"}): BaseType {",
+			"\tconst agent = taskAgentSchemaRule(options.defaultAgent);",
+			"",
+		].join("\n"),
+		patched: [
+			"// CUELO: task schema agent is optional on the wire. An omitted agent reaches extension hooks as undefined and",
+			"// the executor resolves it to the spawn policy's defaultAgent.",
+			"const taskSchemaCache = new Map<string, BaseType>();",
+			"",
+			"function createTaskSchema(options: {",
+			"\tisolationEnabled: boolean;",
+			"\tbatchEnabled: boolean;",
+			"\tdefaultAgent: string;",
+			"\teffortEnabled: boolean;",
+			"\tevalToolsEnabled: boolean;",
+			"}): BaseType {",
+			"",
+		].join("\n"),
+	},
+];
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -2535,165 +2638,7 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 			patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
 		}],
 	},
-	{
-		// 18.3.4는 모든 task schema에 필수 `solutionSpace: "string"` 을 `task` 바로 뒤에 넣었다
-		// (types.ts:52-185). per-spawn `model?` 은 그 필수 필드 뒤에 둔다. 의미는 18.3.2와 같다.
-		file: "src/task/types.ts",
-		marker: `task: "string",
-	solutionSpace: "string",
-	"model?": "string",`,
-		anchor: `export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"+": "delete",
-});
-const taskItemSchemaIsolated = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"isolated?": "boolean",
-	"+": "delete",
-});`,
-		patched: `export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"+": "delete",
-});
-const taskItemSchemaIsolated = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"isolated?": "boolean",
-	"+": "delete",
-});`,
-		alternates: [{
-			file: "src/task/types.ts",
-			marker: `export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			anchor: `export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			patched: `export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-		}],
-	},
-	{
-		file: "src/task/types.ts",
-		marker: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",`,
-		anchor: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"outputSchema?": outputSchemaInputSchema,`,
-		patched: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,`,
-		alternates: [{
-			file: "src/task/types.ts",
-			marker: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			anchor: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			patched: `export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-		}],
-	},
-	{
-		file: "src/task/types.ts",
-		marker: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",`,
-		anchor: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"outputSchema?": outputSchemaInputSchema,`,
-		patched: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string",
-	"outputSchema?": outputSchemaInputSchema,`,
-		alternates: [{
-			file: "src/task/types.ts",
-			marker: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			anchor: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-			patched: `const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	solutionSpace: "string",
-	"model?": "string | string[]",`,
-		}],
-	},
+	...TASK_SCHEMA_MODEL_EDITS,
 	{
 		file: "src/task/types.ts",
 		marker: `"model?": "string",
@@ -9928,6 +9873,8 @@ function matchesReplacementCredential(
 		anchor: "\t\t\t\t\tconst previewBytes = firstLineExceedsLimit ? (firstLinePreview?.bytes ?? 0) : 0;\n",
 		patched: "\t\t\t\t\t// CUELO: hashline mode refuses the oversized line outright and delivers none of it, so its\n\t\t\t\t\t// notice must report 0 bytes shown, not the preview it never rendered.\n\t\t\t\t\tconst previewBytes =\n\t\t\t\t\t\tfirstLineExceedsLimit && (rawSelector || !displayMode.hashLines) ? (firstLinePreview?.bytes ?? 0) : 0;\n",
 	},
+	// agent 생략 보존: 위 per-item model 항목의 앵커가 `agent: "string = 'task'"`를 포함하므로 반드시 그 뒤에 적용한다.
+	...TASK_AGENT_OPTIONAL_EDITS,
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

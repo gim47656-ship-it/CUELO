@@ -84,6 +84,8 @@ type SpawnItem = {
   agent: string;
   task: string;
   name?: string;
+  /** 호출이 agent를 생략했다. 위임 정의가 maker 하나뿐이라 maker로 해석하고 반환 input에도 기록한다. */
+  agentOmitted?: true;
 };
 
 export type TaskCallInput = Record<string, unknown>;
@@ -155,7 +157,7 @@ function readField(block: string, name: string): string | undefined {
   return value || undefined;
 }
 
-const WORK_CLASSES = ["feature", "maintenance", "diagnostic"] as const;
+export const WORK_CLASSES = ["feature", "maintenance", "diagnostic"] as const;
 const PURPOSES = ["primary", "rework"] as const;
 
 /**
@@ -280,12 +282,13 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
         return "[SpawnGuard] tasks[] 항목 형식이 올바르지 않습니다.";
       }
       const item = rawItem as Record<string, unknown>;
-      if (typeof item.agent !== "string" || typeof item.task !== "string") {
-        return "[SpawnGuard] 모든 task 항목은 agent와 task를 명시해야 합니다.";
+      if (typeof item.task !== "string" || (item.agent !== undefined && typeof item.agent !== "string")) {
+        return "[SpawnGuard] 모든 task 항목은 task 문자열을 가져야 하고 agent는 생략하거나 문자열이어야 합니다.";
       }
       items.push({
-        agent: item.agent.trim().toLowerCase(),
+        agent: item.agent === undefined ? "maker" : item.agent.trim().toLowerCase(),
         task: item.task,
+        ...(item.agent === undefined ? { agentOmitted: true as const } : {}),
         ...(typeof item.name === "string" && item.name.trim()
           ? { name: item.name.trim() }
           : {}),
@@ -294,13 +297,14 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
     return items;
   }
 
-  if (typeof input.agent !== "string" || typeof input.task !== "string") {
-    return "[SpawnGuard] task 호출은 agent와 task를 명시해야 합니다.";
+  if (typeof input.task !== "string" || (input.agent !== undefined && typeof input.agent !== "string")) {
+    return "[SpawnGuard] task 호출은 task 문자열을 가져야 하고 agent는 생략하거나 문자열이어야 합니다.";
   }
   return [
     {
-      agent: input.agent.trim().toLowerCase(),
+      agent: input.agent === undefined ? "maker" : input.agent.trim().toLowerCase(),
       task: input.task,
+      ...(input.agent === undefined ? { agentOmitted: true as const } : {}),
       ...(typeof input.name === "string" && input.name.trim()
         ? { name: input.name.trim() }
         : {}),
@@ -412,6 +416,7 @@ export function reserveTaskCall(
   const makers: MakerSpawn[] = [];
   // 파생이 일어난 항목만 정규 블록으로 교체한다. 나머지 항목은 원본 문자열을 그대로 쓴다.
   const rewritten = new Map<number, string>();
+  const agentFilled = new Set<number>();
 
   for (const [index, item] of normalized.entries()) {
     const raw = parseGuardMetadata(item.task);
@@ -446,6 +451,7 @@ export function reserveTaskCall(
       raw.blocksPrimary === undefined ||
       raw.primaryDeliverable === undefined;
     if (derived) rewritten.set(index, canonicalizeTask(item.task, raw, metadata, item.agent));
+    if (item.agentOmitted) agentFilled.add(index);
   }
 
   const overBudget = budgetReason(state.usage, delta);
@@ -459,21 +465,36 @@ export function reserveTaskCall(
     makers,
   });
   for (const entry of refundable) state.refundable.set(entry.name, entry.delta);
-  if (rewritten.size === 0) return { ok: true };
-  return { ok: true, input: replaceTaskBodies(input, rewritten) };
+  if (rewritten.size === 0 && agentFilled.size === 0) return { ok: true };
+  return { ok: true, input: replaceTaskBodies(input, rewritten, agentFilled) };
 }
 
 /**
- * 원본 입력을 제자리에서 바꾸지 않고 교체 본문만 담은 얕은 복사본을 만든다. tasks[]의 다른 항목과
- * context·model·isolated 같은 나머지 키는 그대로 보존한다.
+ * 원본 입력을 제자리에서 바꾸지 않고 교체 본문과 생략된 agent의 maker 기록만 담은 얕은 복사본을 만든다.
+ * tasks[]의 다른 항목과 context·model·isolated 같은 나머지 키는 그대로 보존한다.
  */
-function replaceTaskBodies(input: TaskCallInput, rewritten: Map<number, string>): TaskCallInput {
-  if (!Array.isArray(input.tasks)) return { ...input, task: rewritten.get(0) };
+function replaceTaskBodies(
+  input: TaskCallInput,
+  rewritten: Map<number, string>,
+  agentFilled: Set<number>,
+): TaskCallInput {
+  if (!Array.isArray(input.tasks)) {
+    return {
+      ...input,
+      ...(rewritten.has(0) ? { task: rewritten.get(0) } : {}),
+      ...(agentFilled.has(0) ? { agent: "maker" } : {}),
+    };
+  }
   return {
     ...input,
     tasks: input.tasks.map((item, index) => {
       const task = rewritten.get(index);
-      return task === undefined ? item : { ...(item as Record<string, unknown>), task };
+      if (task === undefined && !agentFilled.has(index)) return item;
+      return {
+        ...(item as Record<string, unknown>),
+        ...(task === undefined ? {} : { task }),
+        ...(agentFilled.has(index) ? { agent: "maker" } : {}),
+      };
     }),
   };
 }

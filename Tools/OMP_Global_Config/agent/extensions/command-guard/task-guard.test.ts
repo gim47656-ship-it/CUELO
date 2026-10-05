@@ -744,6 +744,34 @@ describe("TASK_GUARD 파생", () => {
     expect(replaced.task).toContain("WORK_CLASS: feature");
   });
 
+  test("agent를 생략한 항목은 maker로 예약하고 반환 input에 maker를 기록한다", () => {
+    const state = createTaskGuardState();
+    const input = { context: "shared", tasks: [{ name: "Omitted", task: brief() }, { name: "Explicit", agent: "maker", task: brief() }] };
+    const decision = reserveTaskCall(state, "omitted", input);
+    expect(decision.ok).toBe(true);
+    if (!decision.ok || !decision.input) throw new Error("agent 기록 입력이 없다");
+    const [omitted, explicit] = decision.input.tasks as Array<Record<string, unknown>>;
+    expect(omitted!.agent).toBe("maker");
+    expect(omitted!.task).toBe(brief());
+    expect(explicit).toBe(input.tasks[1]);
+    expect(reservedMakers(state, "omitted")?.map((maker) => maker.name)).toEqual(["Omitted", "Explicit"]);
+    expect("agent" in input.tasks[0]!).toBe(false);
+
+    const single = reserveTaskCall(createTaskGuardState(), "single", { name: "One", task: brief() });
+    expect(single.ok && single.input?.agent).toBe("maker");
+  });
+
+  test("명시한 task·scout 같은 다른 agent와 문자열이 아닌 agent는 계속 거절하고 예약하지 않는다", () => {
+    const state = createTaskGuardState();
+    for (const agent of ["task", "scout", "reviewer", "", 7]) {
+      const decision = reserveTaskCall(state, `bad-${String(agent)}`, { tasks: [{ agent, task: brief() }] });
+      expect(decision.ok).toBe(false);
+    }
+    const task = reserveTaskCall(state, "task", { tasks: [{ agent: "task", task: brief() }] });
+    if (!task.ok) expect(task.reason).toContain("허용 child는 maker뿐입니다: task");
+    expect(getTaskGuardUsage(state).total).toBe(0);
+  });
+
   test("블록만 치환하고 앞뒤 본문은 그대로 둔다", () => {
     const state = lockedState();
     const task =

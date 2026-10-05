@@ -242,6 +242,43 @@ for (const [label, newImport] of [["18.4.12 적용본", false], ["18.5.0 순정"
 	}
 }
 
+console.log("\n[N] 일부 task schema만 model이 없을 때 다른 schema가 marker를 대신 채우지 않고 빠진 곳만 복구한다");
+// 18.6.1 순정 기준선(agent default 표현)에서 한 schema의 model 줄만 빠진 상태를 만든다. 각 schema의 marker가 자기 header를
+// 포함하지 않으면 다른 schema의 model 줄이 이 항목을 이미 적용한 것으로 보이게 하고(false APPLIED/SKIP) 복구도 건너뛴다.
+const typesRel = "src/task/types.ts";
+const baselineTypes = snapshot.get(typesRel)?.toString("utf8");
+if (baselineTypes === undefined) throw new Error("기준선에 src/task/types.ts 가 없다");
+const modelLine = /^\t"model\?": [^\n]*\n/m;
+const modelLineCount = (text: string) => text.split("\n").filter(line => /^\t"model\?": /.test(line)).length;
+for (const header of ["export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
+	const partialRoot = join(tmpRoot, `partial-${header.includes("NoIsolation") ? "noiso" : "plain"}`);
+	const partialTarget = join(partialRoot, "target");
+	const partialHome = join(partialRoot, "home");
+	mkdirSync(partialHome, { recursive: true });
+	for (const [rel, bytes] of snapshot) {
+		mkdirSync(dirname(join(partialTarget, rel)), { recursive: true });
+		writeFileSync(join(partialTarget, rel), bytes);
+	}
+	const start = baselineTypes.indexOf(header);
+	const end = baselineTypes.indexOf("\n});", start);
+	const block = baselineTypes.slice(start, end);
+	const stripped = block.replace(modelLine, "");
+	check(`${header}: 준비 상태는 이 schema의 model 줄만 뺀다`, start >= 0 && stripped !== block && modelLineCount(baselineTypes.slice(0, start) + stripped + baselineTypes.slice(end)) === modelLineCount(baselineTypes) - 1);
+	const partialPath = join(partialTarget, typesRel);
+	writeFileSync(partialPath, baselineTypes.slice(0, start) + stripped + baselineTypes.slice(end), "utf8");
+	const partialEnv = { ...baseEnv, USERPROFILE: partialHome, HOME: partialHome, OMP_CORE_PATCH_TARGET: partialTarget };
+	const partialCheck = run(["--check"], { env: partialEnv });
+	check(`${header}: model이 빠진 schema가 있으면 --check 는 APPLIED 로 보고하지 않는다`, partialCheck.code === 1 && !partialCheck.out.includes("APPLIED"), `code=${partialCheck.code}`);
+	const partialApply = run([], { env: partialEnv });
+	const recovered = readFileSync(partialPath, "utf8");
+	const recoveredStart = recovered.indexOf(header);
+	const recoveredBlock = recovered.slice(recoveredStart, recovered.indexOf("\n});", recoveredStart));
+	check(`${header}: 적용이 빠진 model 줄을 그 schema에 복구한다`, partialApply.code === 0 && /^\t"model\?": /m.test(recoveredBlock), `code=${partialApply.code} out=${partialApply.out.slice(-300)}`);
+	check(`${header}: 복구 뒤 model 줄 수는 기준선과 같다(다른 schema에 중복 추가 없음)`, modelLineCount(recovered) === modelLineCount(baselineTypes));
+	const again = run(["--check"], { env: partialEnv });
+	check(`${header}: 복구 뒤 --check 는 APPLIED 이고 재적용은 SKIP 이다`, again.code === 0 && run([], { env: partialEnv }).out.includes("SKIP"), again.out.slice(-200));
+}
+
 rmSync(tmpRoot, { recursive: true, force: true });
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { isPathOwned, parseOwnedPaths } from "../command-guard/task-guard";
+import { isPathOwned, parseOwnedPaths, WORK_CLASSES } from "../command-guard/task-guard";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 
@@ -257,7 +257,10 @@ function guardFields(task: string): ((name: string) => string) | null {
 function dispatchContract(task: string, lock: DispatchContractLock | undefined): DispatchContract | null {
   const field = guardFields(task);
   if (!field) return null;
-  const workClass = field("WORK_CLASS").toLowerCase() || lock?.workClass;
+  const explicitWorkClass = field("WORK_CLASS").toLowerCase();
+  // 준비 경계도 task hook과 같은 enum 정본을 쓴다. 명시된 값이 enum 밖이면 계약을 만들지 않는다.
+  if (explicitWorkClass && !(WORK_CLASSES as readonly string[]).includes(explicitWorkClass)) return null;
+  const workClass = explicitWorkClass || lock?.workClass;
   const primaryDeliverable = field("PRIMARY_DELIVERABLE") || lock?.primaryDeliverable;
   const ownedPaths = parseOwnedPaths(field("OWNED_PATHS"));
   if (!workClass || !primaryDeliverable || ownedPaths.length === 0) return null;
@@ -270,7 +273,7 @@ function dispatchContract(task: string, lock: DispatchContractLock | undefined):
 }
 
 const GUARD_TEMPLATE =
-  "양식: 브리프 첫머리에 `TASK_GUARD:` 줄, 그 다음 줄부터 빈 줄 없이 `WORK_CLASS: feature|maintenance|diagnostic`(요청의 첫 child만 필수)·`PRIMARY_DELIVERABLE: <완료물 한 줄>`(첫 child만 필수)·`OWNED_PATHS: <cwd 상대경로, 콤마 구분>`, 그 뒤 `TASK_TITLE`·`TODO_TASKS`. 정본 rule://task-guard.";
+  `양식: 브리프 첫머리에 \`TASK_GUARD:\` 줄, 그 다음 줄부터 빈 줄 없이 \`WORK_CLASS: ${WORK_CLASSES.join("|")}\`(요청의 첫 child만 필수)·\`PRIMARY_DELIVERABLE: <완료물 한 줄>\`(첫 child만 필수)·\`OWNED_PATHS: <cwd 상대경로, 콤마 구분>\`, 그 뒤 \`TASK_TITLE\`·\`TODO_TASKS\`. 정본 rule://task-guard.`;
 
 /** 계약을 완성하지 못한 이유를 필드 단위로 짚는다. 브리프 본문은 싣지 않는다. */
 export function contractGapReason(task: string, lock: DispatchContractLock | undefined, name: string): string {
@@ -278,6 +281,10 @@ export function contractGapReason(task: string, lock: DispatchContractLock | und
   const field = guardFields(task);
   if (!field) return `task ${label}: \`TASK_GUARD:\` 블록이 없습니다. ${GUARD_TEMPLATE}`;
   const missing: string[] = [];
+  const explicitWorkClass = field("WORK_CLASS").toLowerCase();
+  if (explicitWorkClass && !(WORK_CLASSES as readonly string[]).includes(explicitWorkClass)) {
+    return `task ${label}: WORK_CLASS는 ${WORK_CLASSES.join("|")} 중 하나여야 합니다(받은 값 '${explicitWorkClass.slice(0, 40)}'). ${GUARD_TEMPLATE}`;
+  }
   if (!field("WORK_CLASS") && !lock?.workClass) missing.push("WORK_CLASS(아직 lock이 없어 이 child에 필요)");
   if (!field("PRIMARY_DELIVERABLE") && !lock?.primaryDeliverable) missing.push("PRIMARY_DELIVERABLE(아직 lock이 없어 이 child에 필요)");
   if (parseOwnedPaths(field("OWNED_PATHS")).length === 0) missing.push("OWNED_PATHS(모든 child 필수)");
@@ -693,7 +700,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort(model selector suffix, 그 후보의 efforts 안)를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 context='PREPARED_CONTEXT', task='PREPARED_TASK: <preparedId>'로 원문을 재사용합니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort(model selector suffix, 그 후보의 efforts 안)를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:<concrete effort>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보와 그 efforts 안의 concrete effort로 반드시 명시합니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1147,7 +1154,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const z = pi.zod;
     const strings = () => z.array(z.string());
     const nullable = () => strings().nullable();
-    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe("실제로 발주할 브리프 전문(요약·제목 아님). 첫 줄 `TASK_GUARD:` 다음 줄부터 빈 줄 없이 WORK_CLASS·PRIMARY_DELIVERABLE(요청의 첫 child)·OWNED_PATHS, 그 뒤 TASK_TITLE·TODO_TASKS, 이어서 # Target·# Change·# Acceptance. 양식 정본 rule://task-guard."), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
+    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe(`실제로 발주할 브리프 전문(요약·제목 아님). 첫 줄 \`TASK_GUARD:\` 다음 줄부터 빈 줄 없이 WORK_CLASS: ${WORK_CLASSES.join("|")}(이 셋만 허용, 요청의 첫 child 필수)·PRIMARY_DELIVERABLE(요청의 첫 child)·OWNED_PATHS, 그 뒤 TASK_TITLE·TODO_TASKS, 이어서 # Target·# Change·# Acceptance. 실제 task 호출은 agent를 생략하면 maker이고 다른 agent는 거절된다. 양식 정본 rule://task-guard.`), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
     // SDK 18.2.6 TSchema의 unknown generic 불변성만 연결한다. 실제 Zod schema 검증은 그대로다.
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({

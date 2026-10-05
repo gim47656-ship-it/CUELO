@@ -811,7 +811,7 @@
       "decidedAt": "spawn-time-per-task-item",
       "preparedReference": {
         "produce": "maker_route-receives-the-context-and-every-full-task-with-its-assessment-once-and-returns-one-session-local-preparedId-per-task",
-        "consume": "the-real-task-call-may-send-context-PREPARED_CONTEXT-and-each-task-string-PREPARED_TASK-space-preparedId-with-explicit-name-agent-and-model-with-concrete-effort",
+        "consume": "the-real-task-call-may-send-context-PREPARED_CONTEXT-and-each-task-string-PREPARED_TASK-space-preparedId-with-model-with-concrete-effort-chosen-by-Main-and-name-and-agent-omitted-where-an-omitted-name-is-restored-from-the-prepared-record-and-an-omitted-agent-is-read-as-maker-while-an-explicit-mismatched-name-or-other-agent-is-rejected",
         "restore": "the-task-hook-restores-the-original-context-guard-task-title-and-TODO-text-before-the-existing-checks-run",
         "linkage": "the-binding-stays-the-session-local-task-name-and-the-task-guard-semantic-fields-the-preparedId-only-carries-the-original-text",
         "errors": [

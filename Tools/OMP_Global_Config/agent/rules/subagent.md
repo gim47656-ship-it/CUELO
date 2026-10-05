@@ -81,8 +81,8 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   `OWNED_PATHS`·`FINDING_ID`)로 연결하고 정본 기준·후보·owner revision을 확인한다 — 산문·`context`
   표현 차이는 허용되고 이름이나 의미 필드가 바뀌면 다시 준비한다. 다시 판정하거나 자율 선택하지 않는다.
   실제 발주는 `maker_route`가 돌려준 session-local `preparedId`로 원문을 재사용할 수 있다 —
-  `context='PREPARED_CONTEXT'`와 각 task 문자열 `'PREPARED_TASK: <preparedId>'`에 명시적
-  `name`·`agent`·`model:<concrete-effort>`를 함께 보내면 hook이 원문 context·guard·task·title·TODO를
+  `context='PREPARED_CONTEXT'`와 각 task 문자열 `'PREPARED_TASK: <preparedId>'`에 `model:<concrete-effort>`는 Main이 반드시 명시하고
+  `name`·`agent`는 생략할 수 있다(생략한 name은 준비한 이름으로 복원되고 명시하면 일치해야 하며, 생략한 agent는 maker이고 명시한 다른 agent는 거절) — hook이 원문 context·guard·task·title·TODO를
   기존 guard 앞에서 복원한다. full/ref 혼합, 문법 변형, 다른 session·batch·name, 해제된 참조는
   오류이고 full brief 경로는 그대로 쓸 수 있다. 연결 키는 여전히 session-local task 이름과
   `TASK_GUARD` 의미 필드이고 `preparedId`는 원문 운반일 뿐이다. 사실·계약·policy·후보가 그대로면

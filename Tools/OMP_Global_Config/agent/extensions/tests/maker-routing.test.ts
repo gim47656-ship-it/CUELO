@@ -992,6 +992,14 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await expect(h.prepare("", [noPaths], {} as never)).rejects.toThrow("빠진 필드: OWNED_PATHS(모든 child 필수)");
     expect(h.requests).toHaveLength(0);
   });
+  test("준비 경계도 WORK_CLASS enum을 거절하고 허용값을 알리며 판정을 호출하지 않는다", async () => {
+    const h = harness();
+    const invalid = { ...h.task, task: brief.replace("WORK_CLASS: maintenance", "WORK_CLASS: implementation") };
+    const error = await h.prepare("", [invalid], {} as never).then(() => undefined, (e: Error) => e.message);
+    expect(error).toContain("WORK_CLASS는 feature|maintenance|diagnostic 중 하나여야 합니다");
+    expect(error).toContain("implementation");
+    expect(h.requests).toHaveLength(0);
+  });
   test("prepared 참조는 실제 beforeTask에서 canonical context와 brief로 복원한다", async () => {
     const h = harness();
     const routes = await h.prepare("원래 batch context", [h.task], {} as never);
@@ -1055,6 +1063,30 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       tasks: [{ name: "OtherFix", task: `PREPARED_TASK: ${preparedId}` }],
     }, {} as never) as { block: boolean; reason: string };
     expect(missingName.reason).toContain("prepared task name이 일치하지 않습니다: prepared='ViewFix' 발주='OtherFix'");
+    for (const name of ["", "  ", 7]) {
+      const bad = await h.beforeTask({
+        context: "PREPARED_CONTEXT",
+        tasks: [{ name, task: `PREPARED_TASK: ${preparedId}` }],
+      }, {} as never) as { block: boolean; reason: string };
+      expect(bad.reason).toContain("prepared task name이 일치하지 않습니다: prepared='ViewFix'");
+    }
+
+    // 이름을 생략한 참조는 준비한 name으로 복원돼 같은 계약으로 발주된다. 후속 hook은 복원된 name을 본다.
+    const restored = resolvePreparedTaskInput({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:high" }],
+    }, h.sessionId) as { tasks: Array<Record<string, unknown>> };
+    expect(restored.tasks[0]).toMatchObject({ name: "ViewFix", task: brief, model: "openai-codex/gpt-6-sol:high" });
+    const omitted = await h.beforeTask({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:high" }],
+    }, {} as never) as { block?: boolean; input?: { tasks: Array<Record<string, unknown>> } };
+    expect(omitted.block).toBeUndefined();
+    expect(omitted.input?.tasks[0]).toMatchObject({ name: "ViewFix", task: brief });
+    expect(() => resolvePreparedTaskInput({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}` }],
+    }, "다른-session")).toThrow();
   });
   test("서로 다른 module instance도 같은 prepared store와 증가 ID를 공유한다", async () => {
     // legacy loader의 entry별 module 평가 경계를 재현하므로 static import 하나로는 이 계약을 검사할 수 없다.

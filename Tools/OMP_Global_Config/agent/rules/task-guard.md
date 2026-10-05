@@ -27,6 +27,7 @@ TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
 - `TODO_TASKS`는 **현재 Main TODO 항목의 exact 문자열** JSON 배열이다. 비어 있지 않은 고유 문자열이어야 하고 trim·유사도 정규화 없이 그대로 비교되므로 Main이 실제로 가진 문자열을 그대로 쓴다. 두 메타 중 하나라도 있으면 런타임이 TODO 진행 관측을 시작한다.
 - `TASK_GUARD` **안에서** Main이 직접 판단해야 하는 값만 적는다. **무엇을 만드는가**(`WORK_CLASS`·`PRIMARY_DELIVERABLE`)와 **어디까지 고치는가**(`OWNED_PATHS`)가 그것이고, 나머지는 런타임이 승인된 값에서 조립한다. 한 요청의 첫 child가 앞의 둘로 lock을 세우면 그 다음 child부터는 `OWNED_PATHS`(와 rework면 `FINDING_ID`)만 적어도 된다. 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock 값으로 채워지고, `PURPOSE`는 `FINDING_ID` 유무에서(`FINDING_ID` 있으면 `rework`, 그 밖엔 `primary`) 파생되며, `BLOCKS_PRIMARY`는 `yes`로 채워진다. 조립이 일어난 항목은 런타임이 그 브리프의 `TASK_GUARD` 블록을 실제 적용된 값으로 다시 써서 실행하므로 child와 기록이 같은 계약을 본다.
 - 비어 있는 것과 잘못 적은 것은 다르다. 생략은 조립되지만 enum 밖의 값(`WORK_CLASS: feat` 같은)은 거부된다. 허용 child는 `maker`뿐이다. lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`, `BLOCKS_PRIMARY:no`, `OWNED_PATHS` 누락, `FINDING_ID` 없는 rework도 거부된다.
+- `agent`는 생략하면 `maker`로 읽히고 반환 input에도 `maker`로 기록된다. 명시한 다른 값(`task`·`scout` 등)은 거부된다. `maker_route` 준비도 같은 `WORK_CLASS` enum으로 명시 오값을 거절해 준비 성공처럼 보이지 않는다.
 - `feature`의 `PRIMARY_DELIVERABLE`은 테스트 개수나 내부 정리가 아니라 사용자가 실제로 쓸 수 있게 되는 동작·화면으로 적는다.
 - child는 현재 `PRIMARY_DELIVERABLE`을 직접 진전시키거나 완료를 막는 일에만 쓴다. 아니면 `BLOCKS_PRIMARY:no`로 기록하고 backlog로 넘기며 spawn하지 않는다.
 - 첫 child의 `WORK_CLASS`와 `PRIMARY_DELIVERABLE`은 그 사용자 요청 동안 고정한다. 관측·오탐·증거 복구를 이유로 다른 완료물로 바꾸지 않는다. 사용자가 실행 중인 턴에 방향을 바꾸면 runtime이 그 redirect를 보고 lock만 해제하므로 새 완료물로 다시 고정해 발주한다. 누적 budget은 그대로 유지된다.

@@ -189,13 +189,14 @@ export function resolvePreparedTaskInput(
   const restoredItems = items.map((item, index) => {
     const source = item as Record<string, unknown>;
     const record = resolved[index]!;
-    if (source.name !== record.name) {
+    // 참조에 이미 session·batch·ref로 묶인 name이 있으므로 생략만 그 name으로 복원한다. 명시한 값은 일치해야 한다.
+    if (source.name !== undefined && source.name !== record.name) {
       throw new Error(
         `prepared task name이 일치하지 않습니다: prepared='${clipped(record.name, 40)}' 발주='${clipped(typeof source.name === "string" ? source.name : String(source.name), 40)}'. ` +
-        "참조 발주는 준비한 이름을 그대로 써야 합니다.",
+        "참조 발주는 name을 생략하거나 준비한 이름을 그대로 써야 합니다.",
       );
     }
-    return { ...source, task: record.task };
+    return { ...source, name: record.name, task: record.task };
   });
   if (Array.isArray(input.tasks)) {
     return { ...input, context, tasks: restoredItems };

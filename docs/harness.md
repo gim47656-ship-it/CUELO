@@ -26,6 +26,8 @@ OMP 하네스는 코딩 에이전트가 요구를 작업으로 나누고, 변경
 ## 발주와 검수 계약
 
 Main은 작업을 발주할 때 목표·사용자 수용 조건·보존 동작·허용 경로·검증 범위를 정합니다. [`maker_route`](../Tools/OMP_Global_Config/agent/rules/subagent.md)는 작업 분류와 남은 판단, 후보 적합성·노력 수준, 기존 owner와 중복되는지를 돕는 발주 전 판단입니다. 결과는 Main의 조언이지 자동 승인이나 자동 배정이 아닙니다.
+`WORK_CLASS`를 명시하면 준비 단계에서도 `feature`·`maintenance`·`diagnostic` 중 하나인지 확인합니다. 잘못된 값은 모델 판정이나 준비 참조 발급 전에 오류로 알리고, 다른 값으로 추정해 바꾸지 않습니다. 후속 발주의 생략·상속 규칙은 그대로 유지합니다.
+준비 참조로 발주할 때 `name`을 생략하면 그 참조에 저장된 이름을 복원합니다. 이름을 명시했다면 준비한 이름과 정확히 같아야 합니다. `model`은 추천에서 자동으로 채우지 않으며, Main이 선택한 후보와 구체적인 추론 강도를 반드시 전달합니다. 준비 참조의 세션·배치·유효성 검사도 유지합니다.
 Main은 자신이 읽고 활용한 Skill 가운데 맡길 조각과 관련된 것만 브리프에 넘깁니다. Skill 이름과 필요한 절, Main이 적용한 판단, 아직 불명확한 점을 짧게 적고 원문 전체는 복사하지 않습니다. 필수 Skill은 Maker가 착수 전에 직접 읽으며, Main의 요약이 그 직접 확인을 대신하지 않습니다. 적용이 헷갈리거나 요약과 현재 코드가 어긋나면 Maker가 해당 절을 다시 확인하고, 실제로 적용한 판단과 근거를 완료 보고에 연결합니다. 이 인계는 자동 차단 검사가 아닙니다.
 Main이 완료된 Maker에게 `write agent://<id>`로 후속 지시를 보내면 런타임 advisory는 같은 session의
 실제 attempt에 `routing_verdict`가 아직 기록되지 않았는지 알려줍니다. Main은 증거를 보고
@@ -102,6 +104,8 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
+
+이 하네스에서 `agent`를 생략하면 `maker`로 채워 실제 실행에 전달합니다. 명시적으로 `task`나 다른 역할을 적으면 허용하지 않습니다. 내장 코어는 도구 입력 검사에서 생략을 임의의 역할 이름으로 바꾸지 않으며, 이 하네스가 없는 환경에서는 기존 실행기의 기본 역할 선택을 유지합니다. 준비 참조 복원 뒤에도 같은 구분을 적용하고, 모델·추론 강도·소유권·승인·예산 검사는 생략하지 않습니다.
 
 같은 `task` 배치에서 공유 작업공간 Maker들의 `OWNED_PATHS`가 겹치면 어떤 작업도 예약하지 않고 배치 전체를 거절합니다. 별도 호출도 앞선 호출의 승인 중 예약과 충돌하면 막습니다. 시작한 작업은 실제 owner로 넘기고, 거절·실패·미실행으로 끝난 호출은 자기 예약만 해제합니다. 하류 guard가 거절한 호출도 같은 메시지의 준비 단계에서는 예약을 유지하므로 뒤 호출이 보수적으로 막힐 수 있으며, 호출 종료 뒤 다음 발주에서 풀립니다.
 

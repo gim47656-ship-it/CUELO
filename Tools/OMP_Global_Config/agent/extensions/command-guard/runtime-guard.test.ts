@@ -679,6 +679,52 @@ describe("prepared task guard glue", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  test("agent를 생략한 prepared 참조는 maker로 복원·기록하고 명시한 task·scout는 예약 없이 거절한다", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "omp-prepared-omitted-"));
+    const sessionId = "omitted-agent";
+    const canonicalEvent = makerTaskEvent("prepared-omitted-source", "OmittedAgent");
+    const [preparedId] = storePreparedTaskBatch(
+      "canonical omitted context",
+      [{ name: "OmittedAgent", task: canonicalEvent.input.task }],
+      sessionId,
+    );
+    try {
+      const harness = createGuardHarness({ cwd: directory, sessionId });
+      const reference = { name: "OmittedAgent", task: `PREPARED_TASK: ${preparedId}` };
+      const bad = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "task",
+        toolCallId: "explicit-task",
+        input: { context: "PREPARED_CONTEXT", tasks: [{ ...reference, agent: "task" }] },
+      }) as { block?: boolean; reason?: string };
+      expect(bad.block).toBe(true);
+      expect(bad.reason).toContain("허용 child는 maker뿐입니다: task");
+      const scout = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "task",
+        toolCallId: "explicit-scout",
+        input: { context: "PREPARED_CONTEXT", tasks: [{ ...reference, agent: "scout" }] },
+      }) as { block?: boolean; reason?: string };
+      expect(scout.reason).toContain("허용 child는 maker뿐입니다: scout");
+
+      const result = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "task",
+        toolCallId: "omitted-agent",
+        input: { context: "PREPARED_CONTEXT", tasks: [{ task: reference.task }] },
+      });
+      expect(result).toMatchObject({
+        input: {
+          context: "canonical omitted context",
+          tasks: [{ name: "OmittedAgent", agent: "maker", task: canonicalEvent.input.task }],
+        },
+      });
+    } finally {
+      clearPreparedTaskSession(sessionId);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("async ownership snapshots", () => {
