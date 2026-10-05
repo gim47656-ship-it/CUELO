@@ -471,6 +471,11 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
 수용 조건을 확인한 뒤, `rework`는 근거 있는 재작업 판정에 사용하며 두 판정 모두 검수한 revision·
 evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이유를 남기고 후속 입력 뒤에도
 명시적으로 다시 판정할 수 있다. 저장 실패는 미기록으로 보고하며 발주 자체를 차단하지 않는다.
+최종 판정을 내린 Main은 **같은 단계에서 `routing_verdict`를 호출하고 저장 성공을 확인한다.**
+산출물 사용·다음 실험 실행·배포·TODO 완료는 판정 기록을 대신하지 않는다. 최종 답변 전에는
+이번 요청의 실제 spawn triple별 완료 attempt와 판정 기록을 대조해 누락을 정산한다.
+이미 검수한 근거는 재사용하고, 판정할 근거가 부족하면 구체적인 이유로 `held`를 남긴다.
+표시를 채우려고 자동 `accepted` 처리하거나 과거 원 revision을 만들어 넣지 않는다.
 `revision`은 Main이 실제로 검수한 revision이다. 원장은 그 attempt의 terminal report revision
 (`sourceRevision`, 미관측이면 `null`)과의 관계를 `same`·`integrated`·`mismatch`·`unknown`으로 함께
 남긴다. 통합 뒤 새 revision을 직접 검수했으면 `integratedFrom`에 그 attempt의 원 revision을 적어 연결을

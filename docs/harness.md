@@ -32,6 +32,7 @@ Main은 자신이 읽고 활용한 Skill 가운데 맡길 조각과 관련된 �
 Main이 완료된 Maker에게 `write agent://<id>`로 후속 지시를 보내면 런타임 advisory는 같은 session의
 실제 attempt에 `routing_verdict`가 아직 기록되지 않았는지 알려줍니다. Main은 증거를 보고
 `accepted`·`rework`·`held`를 직접 기록합니다. 증거 보충 요청은 자동 재작업 판정이 아닙니다.
+Main은 최종 판정과 `routing_verdict` 저장 성공 확인을 같은 단계에서 끝냅니다. 산출물을 사용하거나 다음 실험·배포로 넘어간 것으로 기록을 대신하지 않습니다. 최종 답변 전에는 이번 요청의 실제 실행 식별자별 완료 attempt와 판정 기록을 대조합니다. 이미 확인한 증거는 재사용하며, 근거가 부족하면 이유를 붙인 `held`로 남깁니다. 누락 표시를 없애기 위해 자동으로 수용하지 않습니다. 이는 Main의 마감 절차이며 별도 자동 합격이나 발주 차단 장치가 아닙니다.
 `routing_verdict`의 `revision`은 Main이 실제로 검수한 revision입니다. 원장은 Maker 완료 보고에서 관측한
 `sourceRevision`을 함께 보존합니다. 원본과 같으면 `same`, 다르지만 Main이 `integratedFrom`에 원본을
 명시하면 `integrated`, 연결이 없거나 틀리면 `mismatch`, 원본을 관측하지 못했으면 `unknown`으로 기록합니다.
