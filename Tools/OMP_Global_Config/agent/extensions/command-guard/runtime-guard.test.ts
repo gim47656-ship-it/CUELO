@@ -682,7 +682,7 @@ describe("prepared task guard glue", () => {
 
   test("agent를 생략한 prepared 참조는 maker로 복원·기록하고 명시한 task·scout는 예약 없이 거절한다", async () => {
     const directory = await mkdtemp(join(tmpdir(), "omp-prepared-omitted-"));
-    const sessionId = "omitted-agent";
+    const sessionId = "placeholder";
     const canonicalEvent = makerTaskEvent("prepared-omitted-source", "OmittedAgent");
     const [preparedId] = storePreparedTaskBatch(
       "canonical omitted context",
