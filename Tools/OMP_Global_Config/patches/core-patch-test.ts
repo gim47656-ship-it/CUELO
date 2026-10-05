@@ -2918,6 +2918,76 @@ console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/
 	} finally { memory.close(); }
 }
 
+console.log("\n[25a-q] 회상 소비 출력 — 범위(global/project)와 정정(revision>1)의 최초·정정 시점이 자동 주입·recall·handler 에서 구분된다");
+{
+	const stateMod = await import(`${CORE}/mnemopi/state.ts`);
+	await stateMod.loadMnemopi();
+	await stateMod.loadMnemopiCore();
+	const { LearnTool } = await import(`${CORE}/tools/learn.ts`);
+	const { MemoryProtocolHandler } = await import(`${CORE}/internal-urls/memory-protocol.ts`);
+	const { parseInternalUrl } = await import(`${CORE}/internal-urls/parse.ts`);
+	const dir = csJoin(fixtureRoot, "recall-consumer");
+	const mkCfg = (bank: string) => ({
+		dbPath: csJoin(dir, "m.db"), baseBank: "shared", bank, globalBank: "shared", retainBank: bank, recallBanks: [bank, "shared"],
+		scoping: "per-project-tagged", autoRecall: true, autoRetain: false, polyphonicRecall: false, enhancedRecall: true,
+		proactiveLinking: false, retainEveryNTurns: 1, recallLimit: 8, recallContextTurns: 1, recallMaxQueryChars: 800,
+		injectionTokenLimit: 2000, debug: false, providerOptions: { noEmbeddings: true, debug: false }, llmMode: "none",
+	});
+	const mkState = (sid: string, cwd: string, bank: string) => {
+		const session: Record<string, unknown> = {
+			sessionId: sid, sessionFile: undefined, sessionManager: { getCwd: () => cwd, getSessionId: () => sid },
+			settings: settingsLike({ get: (k: string) => (k === "memory.backend" ? "mnemopi" : k === "autolearn.enabled" ? true : undefined) }),
+		};
+		const st = new stateMod.MnemopiSessionState({ sessionId: sid, config: mkCfg(bank), session: session as never });
+		session.getMnemopiSessionState = () => st;
+		stateMod.setMnemopiSessionState(session as never, st);
+		return { st, session };
+	};
+	const A = mkState("sess-A", "F:/projA", "projA");
+	const A2 = mkState("sess-B", "F:/projA2", "projA");
+	const B = mkState("sess-C", "F:/projB", "projB");
+	const learn = (s: { session: unknown }, args: Record<string, unknown>) => new LearnTool(s.session as never).execute("q", args as never);
+	const idOf = (r: { content: Array<{ text?: string }> }) => /id: ([^,)]+)/.exec(String(r.content[0]?.text))![1]!;
+	try {
+		const projId = idOf(await learn(A, { memory: "배포 승인 standing approval alpha 최초 본문", topic: "approval", context: "PRIVATE-REASON" }));
+		const globalId = idOf(await learn(A, { memory: "전역 교훈 beta 승인 결정은 정본과 대조한다", scope: "global" }));
+		await Bun.sleep(5);
+		await learn(A2, { memory: "배포 승인 standing approval alpha 정정 본문", topic: "approval" });
+		// 구형 행: revision 2 이지만 최초 시점이 없는 정정 행, metadata 가 전혀 없는 행.
+		const projMem = A.st.memory;
+		const legacyRev = projMem.remember("구형 gamma 정정 행 standing approval", { source: "coding-agent-learn", metadata: { topic_key: "old", revision: 2, session_id: "x" } });
+		const legacyPlain = projMem.remember("구형 delta 평문 행 standing approval", { source: "coding-agent-learn" });
+		const query = "standing approval alpha beta gamma delta 승인";
+		const noteOf = (text: string, id: string) => new RegExp(`^- .*?(\\{[^}]*\\})? \\(id: ${id}\\)$`, "m").exec(text)?.[1];
+		const injected = String(await A2.st.recallForContext(query));
+		const projNote = noteOf(injected, projId) ?? "";
+		check("자동 주입: 정정된 project 행은 범위·정정 revision·확인된 최초/정정 날짜를 보인다",
+			/^\{project; corrected r2; first \d{4}-\d\d-\d\d; corrected \d{4}-\d\d-\d\d\}$/.test(projNote), injected);
+		check("자동 주입: global 행은 정정 표시 없이 global 만, 구형 정정 행은 최초 시점 미상, 평문 행은 범위만",
+			noteOf(injected, globalId) === "{global}" && noteOf(injected, legacyRev) === "{project; corrected r2; first unknown}" && noteOf(injected, legacyPlain) === "{project}", injected);
+		check("정정 이유 context 와 전체 metadata 는 주입 줄에 실리지 않고 정정 행이 있을 때만 memory://<id> 안내가 한 번 붙는다",
+			!injected.includes("PRIVATE-REASON") && !injected.includes("topic_key") && injected.split("Corrected rows:").length === 2, injected);
+		check("모든 줄의 (id: X) 형식이 유지돼 전달 기록 regex 가 id 를 그대로 뽑는다",
+			[...injected.matchAll(/\(id: ([^)\s]+)\)/g)].map(m => m[1]).sort().join() === [projId, globalId, legacyRev, legacyPlain].sort().join(), injected);
+		const injectedB = String(await B.st.recallForContext(query));
+		check("다른 project 는 global 만 받고 project 행·정정 안내를 받지 않는다",
+			injectedB.includes(`(id: ${globalId})`) && !injectedB.includes(projId) && !injectedB.includes("Corrected rows:") && injectedB.includes("{global}"), injectedB);
+		const toolText = A2.st.formatScopedRecallWithIds(await A2.st.recallResultsScoped(query));
+		check("recall 도구 출력도 같은 범위·정정 표시와 id 를 쓴다",
+			toolText.includes(`{project; corrected r2; first `) && toolText.includes("{global}") && toolText.includes(`(id: ${projId})`), toolText);
+		const stored = A.st.memory.conn.query("SELECT count(*) AS n FROM working_memory WHERE metadata_json LIKE '%recallScope%'").get() as { n: number };
+		const storedG = B.st.globalMemory.conn.query("SELECT count(*) AS n FROM working_memory WHERE metadata_json LIKE '%recallScope%'").get() as { n: number };
+		check("일시 범위 표시는 DB metadata 로 저장되지 않는다", stored.n === 0 && storedG.n === 0);
+		const registry = { list: () => [A2, B].map(s => ({ session: s.session })) };
+		const resource = await new MemoryProtocolHandler().resolve(parseInternalUrl(`memory://${projId}`), { sessionId: "sess-B", agentRegistry: registry } as never);
+		check("memory://<id> handler 는 전체 metadata(최초 시점·정정 이유)를 그대로 읽게 한다",
+			resource.content.includes("first_timestamp") && resource.content.includes("PRIVATE-REASON") && resource.content.includes("정정 본문"), resource.content);
+	} finally {
+		for (const s of [A, A2, B]) s.st.unsubscribe?.();
+		for (const m of new Set([A.st.memory, A.st.globalMemory, B.st.memory])) (m as { close(): void } | undefined)?.close();
+	}
+}
+
 console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문장으로 onCaptured 에 알리고, 도중 실패해도 알린다");
 {
 	const { createAutoLearnCaptureRunner } = await import(`${CORE}/sdk.ts`);

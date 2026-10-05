@@ -130,6 +130,51 @@ function upsertLearnTopic(
 
 export class LearnTool implements AgentTool<LearnSchema> {`;
 
+/**
+ * 회상 줄의 범위(global/project)·정정 표시 보조. 순수 표시이며 DB 와 RecallResult 원본은 바꾸지 않는다.
+ * 범위는 collectScopedRecallResults 가 고른 결과의 실제 bank 로 붙인 일시 필드(recallScope)에서만 읽는다.
+ * 정정 표시는 revision>1 일 때만, 최초 시점은 first_timestamp 가 있을 때만, 정정 시점은 updated_at 이 있을 때만 쓴다.
+ */
+const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string };
+function recallProvenance(result: RecallResult): RecallProvenance {
+	const scope = (result as { recallScope?: string }).recallScope;
+	let meta: Record<string, unknown> | null = null;
+	try {
+		const raw: unknown = result.metadata ?? (result.metadata_json ? JSON.parse(result.metadata_json) : null);
+		if (raw && typeof raw === "object") meta = raw as Record<string, unknown>;
+	} catch {
+		meta = null;
+	}
+	const day = (value: unknown): string | undefined =>
+		typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : undefined;
+	const revision = Number(meta?.revision);
+	return {
+		scope,
+		revision: Number.isInteger(revision) ? revision : 0,
+		first: day(meta?.first_timestamp),
+		corrected: day(meta?.updated_at),
+	};
+}
+function recallProvenanceNote(result: RecallResult): string {
+	const info = recallProvenance(result);
+	const parts: string[] = [];
+	if (info.scope) parts.push(info.scope);
+	if (info.revision > 1) {
+		parts.push("corrected r" + info.revision);
+		parts.push("first " + (info.first ?? "unknown"));
+		if (info.corrected) parts.push("corrected " + info.corrected);
+	}
+	return parts.length > 0 ? " {" + parts.join("; ") + "}" : "";
+}
+function recallRevisionFooter(results: readonly RecallResult[]): string {
+	return results.some(result => recallProvenance(result).revision > 1)
+		? "\n\nCorrected rows: read memory://<id> for the full metadata and correction reason."
+		: "";
+}
+
+`;
+
 /** 출처 구분 이전 learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
 const learnTopicUpsertLegacyBlock = `// HANSE: topic-key learn upsert
 function upsertLearnTopic(
@@ -5803,7 +5848,35 @@ function operationFromNative(op: string): Operation | undefined {
 		file: "src/mnemopi/state.ts",
 		marker: "// HANSE: recall line carries memory id",
 		anchor: "\t\treturn `- ${content}${source}${date}`;\n",
-		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
+		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${recallProvenanceNote(result)}${memoryId}`;\n",
+		legacyPatched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
+	},
+	{
+		// 위 항목의 짝. 범위·정정 표시 보조 함수와 정정 행이 있을 때만 붙는 한 줄 안내(상세는 memory://<id>).
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: recall provenance note",
+		anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
+		patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+	},
+	{
+		file: "src/mnemopi/state.ts",
+		marker: "${lines.join(\"\\n\\n\")}${recallRevisionFooter(results)}\\n</memories>",
+		anchor: "${lines.join(\"\\n\\n\")}\\n</memories>`;\n",
+		patched: "${lines.join(\"\\n\\n\")}${recallRevisionFooter(results)}\\n</memories>`;\n",
+	},
+	{
+		// recall 도구 출력도 같은 표시를 쓴다.
+		file: "src/mnemopi/state.ts",
+		marker: "${source}${date}${recallProvenanceNote(result)}${confidence}",
+		anchor: "\t\t\treturn `- ${result.content}${id}${source}${date}${confidence}`;\n\t\t});\n\t\treturn lines.join(\"\\n\\n\");\n",
+		patched: "\t\t\treturn `- ${result.content}${id}${source}${date}${recallProvenanceNote(result)}${confidence}`;\n\t\t});\n\t\treturn lines.join(\"\\n\\n\") + recallRevisionFooter(results);\n",
+	},
+	{
+		// 결과가 실제로 나온 bank 로 범위를 일시 표시한다(DB 저장 없음). 전역 bank 가 없는 구성은 추정하지 않는다.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: recall result carries its bank scope",
+		anchor: "\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, result);\n",
+		patched: "\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\t// HANSE: recall result carries its bank scope\n\t\t\t\t\t\tconst recallScope = this.scoped.global ? (target.bank === this.scoped.global.bank ? \"global\" : \"project\") : undefined;\n\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, { ...result, recallScope } as RecallResult);\n",
 	},
 	{
 		file: "src/tools/learn.ts",
