@@ -344,6 +344,131 @@ const TASK_AGENT_OPTIONAL_EDITS = [
 	},
 ];
 
+/**
+ * 부모 steer bracket 장부(#ircTurnBracketOpen·adopted steer)와 입양·continuation 관찰 메서드. setIrcWakeTurnObserver
+ * 항목의 18.6.1 후보와 18.6.3 후보가 같은 본문을 붙이므로 한 곳에 둔다(값은 18.6.1 후보 patched 의 해당 구간 그대로).
+ */
+const IRC_STEER_BRACKET_MEMBERS = `
+
+	/** True while some bracket already owes the steering parent this turn's
+	 *  result: the wake monitor, a continuation that started owing a steer, or an
+	 *  adoption below. One owner per turn - never two relays for one turn. */
+	#ircTurnBracketOpen = false;
+
+	/** Parent steers that landed after this turn's bracket was already open - a
+	 *  sibling peer's wake turn, or an earlier adoption. The open bracket owns
+	 *  them: a turn finalizes exactly once, so they ride that finalization
+	 *  instead of opening a second monitor for the same turn. */
+	#adoptedParentSteerEntries: ParentSteerRelay[] = [];
+
+	/** Hands the open bracket the adopted steers this turn actually consumed, so
+	 *  its single finalization answers their sender too. Stranded ones stay parked
+	 *  for the continuation that consumes them. */
+	#takeAdoptedParentSteerRecords(): AgentMessage[] {
+		const entries = this.#adoptedParentSteerEntries;
+		if (entries.length === 0) return [];
+		this.#adoptedParentSteerEntries = [];
+		const queued = this.agent.peekSteeringQueue();
+		return entries.filter(entry => !queued.some(message => message === entry.steered)).map(entry => entry.record);
+	}
+
+	/**
+	 * A parent steer landed inside a turn that is ALREADY running, so no bracket
+	 * could have been opened for it at turn start. Ownership follows consumption:
+	 * if this running turn polls the steer out of the agent-core queue, this
+	 * turn's result is the answer, and nothing else will ever send one - the
+	 * spawn job settled long ago and #scheduleAgentContinue only brackets turns
+	 * that START owing a steer. So bracket the running turn now, while the
+	 * monitor can still watch it, and decide at settle from the queue itself:
+	 *   - steer gone   -> this turn consumed it -> relay its result, exactly once;
+	 *   - steer queued -> genuinely stranded    -> stay silent and leave the
+	 *     parked record to the continuation that will consume it.
+	 * No-ops while the spawn job still owns the run (no observer installed).
+	 */
+	#adoptParentSteerForRunningTurn(): void {
+		if (this.#promptInFlightCount === 0 || !this.isStreaming) return;
+		const observer = this.#ircWakeTurnObserver;
+		if (observer === undefined) return;
+		const entries = this.#irc.peekParentSteerRelays();
+		if (entries.length === 0) return;
+		if (this.#ircTurnBracketOpen) {
+			// Another bracket already owes this turn's one finalization (a sibling's
+			// wake turn, or an earlier adoption). Opening a second monitor would
+			// finalize the same turn twice - two lifecycle frames, two artifacts -
+			// while dropping the steer would leave the parent unanswered whenever
+			// this turn consumes it. Ride the open bracket instead.
+			for (const entry of entries) {
+				if (!this.#adoptedParentSteerEntries.includes(entry)) this.#adoptedParentSteerEntries.push(entry);
+			}
+			return;
+		}
+		let finish:
+			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
+			| undefined;
+		try {
+			// The parent's steer did not wake this turn, and it may still strand:
+			// the monitor must not claim the parent's answer up front.
+			finish = observer(entries.map(entry => entry.record), { runningTurn: true });
+		} catch (error) {
+			logger.warn("IRC steer continuation observer failed to start", { error: String(error) });
+			return;
+		}
+		if (finish === undefined) return;
+		this.#ircTurnBracketOpen = true;
+		// Same settle hook every other bracket uses; it runs before the queue
+		// reconciliation in #drainStrandedQueuedMessages, so the entries this turn
+		// consumed are still parked here and retire immediately afterwards.
+		this.#inFlightSettledCallbacks.push(async () => {
+			this.#ircTurnBracketOpen = false;
+			const queued = this.agent.peekSteeringQueue();
+			const stranded = entries.some(entry => queued.some(message => message === entry.steered));
+			try {
+				await finish?.(undefined, stranded, this.#takeAdoptedParentSteerRecords());
+			} catch (error) {
+				logger.warn("IRC steer continuation observer failed to finish", { error: String(error) });
+			}
+		});
+	}
+
+	/**
+	 * Brackets an autonomous continuation with the wake-turn monitor when a parent
+	 * IRC steer is what it resumes. \`#ircWakeTurnObserver\` exists only after the
+	 * kept-alive subagent's spawn run settled (task executor
+	 * \`installIrcWakeTurnMonitor\`), so its presence is exactly the condition "this
+	 * agent's job can no longer deliver its results". That flag is handed to the
+	 * bridge rather than short-circuiting here: while the job still owns the run
+	 * the record must stay parked, and the queue-backed reconciliation in
+	 * #drainStrandedQueuedMessages - not this call - decides when it retires.
+	 * Returns the consumed entries so a continuation that never ran can re-arm.
+	 */
+	#beginIrcSteerContinuationObservation():
+		| {
+				entries: ParentSteerRelay[];
+				finish:
+					| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
+					| undefined;
+		  }
+		| undefined {
+		const observer = this.#ircWakeTurnObserver;
+		// A bracket is already open for this turn: #adoptParentSteerForRunningTurn
+		// took the running turn and settles the same obligation from the queue.
+		// Taking the entries here would open a second monitor for one obligation -
+		// two "started" lifecycle frames, two finalized run artifacts, and a parent
+		// notice that stays single only because the bus drops the duplicate send.
+		if (this.#ircTurnBracketOpen) return undefined;
+		const entries = this.#irc.takeParentSteerRelays(observer !== undefined);
+		if (observer === undefined || entries.length === 0) return undefined;
+		const records = entries.map(entry => entry.record);
+		try {
+			const finish = observer(records);
+			if (finish !== undefined) this.#ircTurnBracketOpen = true;
+			return { entries, finish };
+		} catch (error) {
+			logger.warn("IRC steer continuation observer failed to start", { error: String(error) });
+			return { entries, finish: undefined };
+		}
+	}`;
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -1379,6 +1504,9 @@ export interface IrcBridgeHost {
 		// 더 이상 결과를 전달할 수 없다"는 조건이다.
 		file: "src/session/agent-session.ts",
 		marker: "#beginIrcSteerContinuationObservation",
+		// 18.6.3(#14428)은 이 setter 의 주석을 바꾸고 관찰 수명을 #openTurnObservation 으로 관리한다. 두 판의 결과가 같은
+		// marker 를 가지므로 그 필드 유무로 후보를 가른다. 붙이는 장부·메서드 본문은 같다(IRC_STEER_BRACKET_MEMBERS).
+		excludes: "#openTurnObservation",
 		anchor: `	/** Installs task-executor monitoring around autonomous IRC wake turns. */
 	setIrcWakeTurnObserver(
 		observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
@@ -1405,126 +1533,45 @@ export interface IrcBridgeHost {
 			| undefined,
 	): void {
 		this.#ircWakeTurnObserver = observer;
-	}
-
-	/** True while some bracket already owes the steering parent this turn's
-	 *  result: the wake monitor, a continuation that started owing a steer, or an
-	 *  adoption below. One owner per turn - never two relays for one turn. */
-	#ircTurnBracketOpen = false;
-
-	/** Parent steers that landed after this turn's bracket was already open - a
-	 *  sibling peer's wake turn, or an earlier adoption. The open bracket owns
-	 *  them: a turn finalizes exactly once, so they ride that finalization
-	 *  instead of opening a second monitor for the same turn. */
-	#adoptedParentSteerEntries: ParentSteerRelay[] = [];
-
-	/** Hands the open bracket the adopted steers this turn actually consumed, so
-	 *  its single finalization answers their sender too. Stranded ones stay parked
-	 *  for the continuation that consumes them. */
-	#takeAdoptedParentSteerRecords(): AgentMessage[] {
-		const entries = this.#adoptedParentSteerEntries;
-		if (entries.length === 0) return [];
-		this.#adoptedParentSteerEntries = [];
-		const queued = this.agent.peekSteeringQueue();
-		return entries.filter(entry => !queued.some(message => message === entry.steered)).map(entry => entry.record);
-	}
-
-	/**
-	 * A parent steer landed inside a turn that is ALREADY running, so no bracket
-	 * could have been opened for it at turn start. Ownership follows consumption:
-	 * if this running turn polls the steer out of the agent-core queue, this
-	 * turn's result is the answer, and nothing else will ever send one - the
-	 * spawn job settled long ago and #scheduleAgentContinue only brackets turns
-	 * that START owing a steer. So bracket the running turn now, while the
-	 * monitor can still watch it, and decide at settle from the queue itself:
-	 *   - steer gone   -> this turn consumed it -> relay its result, exactly once;
-	 *   - steer queued -> genuinely stranded    -> stay silent and leave the
-	 *     parked record to the continuation that will consume it.
-	 * No-ops while the spawn job still owns the run (no observer installed).
+	}` + IRC_STEER_BRACKET_MEMBERS,
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			requires: "#openTurnObservation",
+			marker: "#beginIrcSteerContinuationObservation",
+			anchor: `	/**
+	 * Installs task-executor monitoring around turns no executor drives: autonomous IRC
+	 * wake turns and user prompts (focused-session steering of a kept-alive subagent).
 	 */
-	#adoptParentSteerForRunningTurn(): void {
-		if (this.#promptInFlightCount === 0 || !this.isStreaming) return;
-		const observer = this.#ircWakeTurnObserver;
-		if (observer === undefined) return;
-		const entries = this.#irc.peekParentSteerRelays();
-		if (entries.length === 0) return;
-		if (this.#ircTurnBracketOpen) {
-			// Another bracket already owes this turn's one finalization (a sibling's
-			// wake turn, or an earlier adoption). Opening a second monitor would
-			// finalize the same turn twice - two lifecycle frames, two artifacts -
-			// while dropping the steer would leave the parent unanswered whenever
-			// this turn consumes it. Ride the open bracket instead.
-			for (const entry of entries) {
-				if (!this.#adoptedParentSteerEntries.includes(entry)) this.#adoptedParentSteerEntries.push(entry);
-			}
-			return;
-		}
-		let finish:
-			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
-			| undefined;
-		try {
-			// The parent's steer did not wake this turn, and it may still strand:
-			// the monitor must not claim the parent's answer up front.
-			finish = observer(entries.map(entry => entry.record), { runningTurn: true });
-		} catch (error) {
-			logger.warn("IRC steer continuation observer failed to start", { error: String(error) });
-			return;
-		}
-		if (finish === undefined) return;
-		this.#ircTurnBracketOpen = true;
-		// Same settle hook every other bracket uses; it runs before the queue
-		// reconciliation in #drainStrandedQueuedMessages, so the entries this turn
-		// consumed are still parked here and retire immediately afterwards.
-		this.#inFlightSettledCallbacks.push(async () => {
-			this.#ircTurnBracketOpen = false;
-			const queued = this.agent.peekSteeringQueue();
-			const stranded = entries.some(entry => queued.some(message => message === entry.steered));
-			try {
-				await finish?.(undefined, stranded, this.#takeAdoptedParentSteerRecords());
-			} catch (error) {
-				logger.warn("IRC steer continuation observer failed to finish", { error: String(error) });
-			}
-		});
-	}
-
-	/**
-	 * Brackets an autonomous continuation with the wake-turn monitor when a parent
-	 * IRC steer is what it resumes. \`#ircWakeTurnObserver\` exists only after the
-	 * kept-alive subagent's spawn run settled (task executor
-	 * \`installIrcWakeTurnMonitor\`), so its presence is exactly the condition "this
-	 * agent's job can no longer deliver its results". That flag is handed to the
-	 * bridge rather than short-circuiting here: while the job still owns the run
-	 * the record must stay parked, and the queue-backed reconciliation in
-	 * #drainStrandedQueuedMessages - not this call - decides when it retires.
-	 * Returns the consumed entries so a continuation that never ran can re-arm.
-	 */
-	#beginIrcSteerContinuationObservation():
-		| {
-				entries: ParentSteerRelay[];
-				finish:
-					| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
-					| undefined;
-		  }
-		| undefined {
-		const observer = this.#ircWakeTurnObserver;
-		// A bracket is already open for this turn: #adoptParentSteerForRunningTurn
-		// took the running turn and settles the same obligation from the queue.
-		// Taking the entries here would open a second monitor for one obligation -
-		// two "started" lifecycle frames, two finalized run artifacts, and a parent
-		// notice that stays single only because the bus drops the duplicate send.
-		if (this.#ircTurnBracketOpen) return undefined;
-		const entries = this.#irc.takeParentSteerRelays(observer !== undefined);
-		if (observer === undefined || entries.length === 0) return undefined;
-		const records = entries.map(entry => entry.record);
-		try {
-			const finish = observer(records);
-			if (finish !== undefined) this.#ircTurnBracketOpen = true;
-			return { entries, finish };
-		} catch (error) {
-			logger.warn("IRC steer continuation observer failed to start", { error: String(error) });
-			return { entries, finish: undefined };
-		}
+	setIrcWakeTurnObserver(
+		observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
+	): void {
+		this.#ircWakeTurnObserver = observer;
 	}`,
+			patched: `	/**
+	 * Installs task-executor monitoring around turns no executor drives: autonomous IRC
+	 * wake turns and user prompts (focused-session steering of a kept-alive subagent).
+	 * \`suppressRelay\` lets the session finalize a bracketed turn without
+	 * claiming it answered the parent (see #adoptParentSteerForRunningTurn).
+	 * \`adoptedRecords\` carries steers that landed after the bracket opened and
+	 * that this same turn consumed: one finalization answers every source.
+	 * \`bracket.runningTurn\` marks a bracket opened over a turn that was ALREADY
+	 * running (the parent's steer did not wake it), so the monitor must not
+	 * treat it as parent-woken work: whether it owns the answer is only known
+	 * at settle.
+	 */
+	setIrcWakeTurnObserver(
+		observer:
+			| ((
+					records: AgentMessage[],
+					bracket?: { runningTurn?: boolean },
+			  ) =>
+					| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
+					| undefined)
+			| undefined,
+	): void {
+		this.#ircWakeTurnObserver = observer;
+	}` + IRC_STEER_BRACKET_MEMBERS,
+		}],
 	},
 	{
 		// 실제 bracket. #wakeForIrc 가 wake turn 을 감싸는 방식과 같은 계약이다:
@@ -1765,6 +1812,50 @@ export interface IrcBridgeHost {
 				} catch (error) {
 					logger.warn("IRC wake turn observer failed to start", { error: String(error) });
 				}`,
+		// 18.6.3(#14428)은 wake 와 사용자 prompt 의 관찰을 #startTurnObservation 으로 모으고 "세션당 열린 관찰 하나"를
+		// #openTurnObservation 으로 지킨다. 우리 장부도 그 관찰을 이 turn 의 bracket 으로 본다. 반대로 우리 bracket(입양·
+		// stranded steer continuation)이 돌고 있는 turn 을 잡고 있으면, 상류가 자기 관찰의 turn 이 아직 돌 때 하듯 시작하지
+		// 않는다. 두 장부가 서로를 모르면 같은 turn 을 두 monitor 가 정산한다(ADAPT).
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			marker: "this.#openTurnObservation = observation;\n\t\t// The observation is this turn's bracket",
+			anchor: `		const open = this.#openTurnObservation;
+		if (open) {
+			if (!open.turnEnded) return undefined;
+			void this.#closeTurnObservation(open);
+		}
+		let finish: TurnObservation["finish"] | undefined;
+		try {
+			finish = this.#ircWakeTurnObserver?.(records);
+		} catch (error) {
+			logger.warn("Turn observer failed to start", { error: String(error) });
+		}
+		if (!finish) return undefined;
+		const observation: TurnObservation = { finish, turnEnded: false, closed: false, turnError: undefined };
+		this.#openTurnObservation = observation;`,
+			patched: `		const open = this.#openTurnObservation;
+		if (open) {
+			if (!open.turnEnded) return undefined;
+			void this.#closeTurnObservation(open);
+		} else if (this.#ircTurnBracketOpen) {
+			// A parent-steer bracket (#adoptParentSteerForRunningTurn, or the
+			// continuation that resumes a stranded steer) already owns the running
+			// turn. One monitor per turn, as for an open observation whose turn runs.
+			return undefined;
+		}
+		let finish: TurnObservation["finish"] | undefined;
+		try {
+			finish = this.#ircWakeTurnObserver?.(records);
+		} catch (error) {
+			logger.warn("Turn observer failed to start", { error: String(error) });
+		}
+		if (!finish) return undefined;
+		const observation: TurnObservation = { finish, turnEnded: false, closed: false, turnError: undefined };
+		this.#openTurnObservation = observation;
+		// The observation is this turn's bracket: a parent steer landing in it rides
+		// its single finalization instead of opening a second monitor.
+		this.#ircTurnBracketOpen = true;`,
+		}],
 	},
 	{
 		// wake turn 의 지역 선언도 같은 계약을 실어야 한다. 이 turn 도중에 도착해
@@ -1775,6 +1866,15 @@ export interface IrcBridgeHost {
 		patched: `		let finishObservation:
 			| ((error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>)
 			| undefined;`,
+		// 18.6.3: wake 지역 변수 대신 TurnObservation.finish 가 같은 계약을 싣는다(ADAPT).
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			marker: "type TurnObservation = {\n\tfinish: (error?: unknown, suppressRelay?: boolean",
+			anchor: `type TurnObservation = {
+	finish: (error?: unknown) => void | Promise<void>;`,
+			patched: `type TurnObservation = {
+	finish: (error?: unknown, suppressRelay?: boolean, adoptedRecords?: AgentMessage[]) => void | Promise<void>;`,
+		}],
 	},
 	{
 		// wake bracket 의 닫는 쪽. 같은 장부를 되돌린다.
@@ -1828,6 +1928,54 @@ export interface IrcBridgeHost {
 				};
 				if (this.#promptInFlightCount > 0) this.#inFlightSettledCallbacks.push(finishWakeObservation);
 				else await finishWakeObservation();`,
+		}, {
+			// 18.6.3: 같은 정산이 #finishTurnObservation(settle 대기)과 #closeTurnObservation(한 번만 finish)으로 옮겨졌다.
+			// settle 뒤에도 turn 이 in-flight 면 그 settle 콜백에서 닫고, 닫을 때 장부를 내리고 adopted steer 를 넘긴다(ADAPT).
+			// 새 wake·사용자 prompt 가 먼저 닫으면(상류 supersede) 미뤄 둔 닫기는 closed 로 끝난다.
+			file: "src/session/agent-session.ts",
+			marker: "await observation.finish(observation.turnError, undefined, adoptedRecords);",
+			anchor: `		try {
+			await this.settleAsyncWork();
+		} catch (error) {
+			logger.warn("Turn observation async-work settle failed", { error: String(error) });
+		}
+		await this.#closeTurnObservation(observation);
+	}
+
+	/** Runs an observation's finish exactly once; the observer detaches synchronously before the first await. */
+	async #closeTurnObservation(observation: TurnObservation): Promise<void> {
+		if (observation.closed) return;
+		observation.closed = true;
+		if (this.#openTurnObservation === observation) this.#openTurnObservation = undefined;
+		try {
+			await observation.finish(observation.turnError);`,
+			patched: `		try {
+			await this.settleAsyncWork();
+		} catch (error) {
+			logger.warn("Turn observation async-work settle failed", { error: String(error) });
+		}
+		// The settle waits for agent streaming only. A turn still in flight past it
+		// (a continuation between #beginInFlight and agent.continue that resumes a
+		// stranded parent steer) runs inside this bracket, so close at its own
+		// settle: the adopted steers it consumes then ride this one finalization.
+		if (this.#promptInFlightCount > 0) {
+			this.#inFlightSettledCallbacks.push(() => this.#closeTurnObservation(observation));
+			return;
+		}
+		await this.#closeTurnObservation(observation);
+	}
+
+	/** Runs an observation's finish exactly once; the observer detaches synchronously before the first await. */
+	async #closeTurnObservation(observation: TurnObservation): Promise<void> {
+		if (observation.closed) return;
+		observation.closed = true;
+		if (this.#openTurnObservation === observation) this.#openTurnObservation = undefined;
+		// The bracket ledger closes with the observation; parent steers that landed
+		// after it opened and that its turn consumed ride this finalization.
+		this.#ircTurnBracketOpen = false;
+		const adoptedRecords = this.#takeAdoptedParentSteerRecords();
+		try {
+			await observation.finish(observation.turnError, undefined, adoptedRecords);`,
 		}],
 	},
 	{
@@ -5679,6 +5827,39 @@ export function hostNextServerEnvUnsets(
 `,
 	},
 	{
+		// 2026-10-07 Linux: 위 항목이 건너뛰는 PTY 경로(zsh/fish 사용자 셸의 `!` 핫키)는 map 에서 지운 서버 변수가 되살아났다.
+		// native PTY 가 넘긴 env map 을 OS environ 위에 덧씌우기 때문이다(실측: zsh 이름 셸 + usePty 에서 NODE_ENV=production).
+		// 셸과 무관하게 argv 앞에 `env -u NAME…` 를 붙여 뺀다. 이름 목록은 위 `unset -v` 와 같은 규칙이고, 비면 argv 는 그대로다.
+		// Windows 는 사용자 셸 PTY 를 쓰지 않는다(resolveUserShellConfig 가 기본 셸로 돌아간다).
+		file: "src/exec/bash-executor.ts",
+		marker: "\tenvUnsets: string[]; // HANSE: CUELO next server env",
+		anchor: "\tcwd: string | undefined;\n\tenv: Record<string, string>;\n\tpty: BashPtyOptions;\n",
+		patched: "\tcwd: string | undefined;\n\tenv: Record<string, string>;\n\tenvUnsets: string[]; // HANSE: CUELO next server env\n\tpty: BashPtyOptions;\n",
+	},
+	{
+		file: "src/exec/bash-executor.ts",
+		marker: '...(run.envUnsets.length > 0 ? [...run.envUnsets.flatMap(name => ["-u", name]), run.shell] : []),',
+		anchor: "\t\t\tapplication: run.shell,\n\t\t\targs: [...ensureInteractiveShellArgs(run.shell, run.args), run.command],\n",
+		patched: `			// HANSE: CUELO next server env stays out of the user-shell PTY. The native PTY layers the env map
+			// over the OS environ, so names dropped from the map come back unless env -u removes them at exec.
+			application: run.envUnsets.length > 0 ? "env" : run.shell,
+			args: [
+				...(run.envUnsets.length > 0 ? [...run.envUnsets.flatMap(name => ["-u", name]), run.shell] : []),
+				...ensureInteractiveShellArgs(run.shell, run.args),
+				run.command,
+			],
+`,
+	},
+	{
+		file: "src/exec/bash-executor.ts",
+		marker: "envUnsets: hostNextServerEnvUnsets(process.env, shellEnv).filter(",
+		anchor: "\t\t\t\tenv: buildUserShellPtyEnv(shellEnv, commandEnv),\n\t\t\t\tpty: ptyRequest,\n",
+		patched: `				env: buildUserShellPtyEnv(shellEnv, commandEnv),
+				envUnsets: hostNextServerEnvUnsets(process.env, shellEnv).filter(name => !(options?.env && name in options.env)),
+				pty: ptyRequest,
+`,
+	},
+	{
 		// 2026-09-29: 이름 있는 bash service 는 bash-executor 를 거치지 않는다. daemon broker 가
 		// `workerEnvFromParent(spec.env)` 로 띄우는데, 이 함수는 broker 자신의 env 위에 overlay 를 덧씌우기만
 		// 한다. CUELO 가 띄운 broker 는 Next 서버 env 를 물려받으므로, shell.env 에서 지운 서버 변수가 그대로
@@ -5694,13 +5875,52 @@ export function hostNextServerEnvUnsets(
 		patched: 'import { workerEnvFromParent } from "../subprocess/worker-client";\nimport { hostNextServerEnvUnsets } from "@oh-my-pi/pi-utils/env";\n',
 	},
 	{
+		// 2026-10-07 Linux: 아래 startup 의 `delete process.env` 는 Windows 에서는 OS env 에도 반영되지만, Linux Bun 에서는 OS
+		// environ 까지 내려가지 않는다. pi-natives PtySession 은 OS environ 위에 넘긴 env map 을 덧씌우므로 pty service 에
+		// 서버 변수가 되살아났다(실측: map·pipe 는 unset, pty 는 OS 값). 지운 이름을 기억해 POSIX PTY 실행에서 뺀다(아래 항목).
 		file: "src/launch/broker.ts",
-		marker: "// HANSE: broker env drops inherited CUELO next server env",
+		marker: "const brokerDroppedHostEnv = new Set<string>();",
+		anchor: 'const LOG_FILE = "output.log";\n',
+		patched: `/** HANSE: CUELO Next server env names this broker dropped from its own env at startup. */
+const brokerDroppedHostEnv = new Set<string>();
+const LOG_FILE = "output.log";
+`,
+	},
+	{
+		file: "src/launch/broker.ts",
+		marker: "brokerDroppedHostEnv.add(name);",
 		anchor: "\tdelete process.env[DAEMON_IDLE_GRACE_ENV];\n",
 		patched: `	delete process.env[DAEMON_IDLE_GRACE_ENV];
 	// HANSE: broker env drops inherited CUELO next server env
+	for (const name of hostNextServerEnvUnsets(process.env, {})) {
+		delete process.env[name];
+		brokerDroppedHostEnv.add(name);
+	}
+`,
+		// 2026-10-07 이전 적용본(이름을 기억하지 않는다). 그 위에 다시 적용하면 이 본문으로 바뀐다.
+		legacyPatched: `	delete process.env[DAEMON_IDLE_GRACE_ENV];
+	// HANSE: broker env drops inherited CUELO next server env
 	for (const name of hostNextServerEnvUnsets(process.env, {})) delete process.env[name];
 `,
+	},
+	{
+		// POSIX PTY service 는 사용자 셸(bash·zsh·fish)로 `exec <argv>` 를 띄운다. 셸과 무관하게 argv 앞에 `env -u NAME…` 를
+		// 붙여 OS environ 에서 온 서버 변수를 뺀다(`exec env` 가 같은 pid 로 app 을 exec 한다). 호출자가 준 이름은 map 에 있으니
+		// 남긴다. Windows(startArgv)·pipe 경로와 서버 변수가 없던 broker 는 그대로다.
+		file: "src/launch/broker.ts",
+		marker: "const dropped = [...brokerDroppedHostEnv]",
+		anchor: `			const argv = [record.spec.application, ...record.spec.args];
+			const command = \`exec \${argv.map(quoteShellArg).join(" ")}\`;`,
+		patched: `			// HANSE: CUELO next server env stays out of POSIX PTY services. The native PTY layers its env
+			// map over the OS environ, and the startup delete of process.env does not reach the OS environ
+			// on Linux, so drop those names at exec. Names the caller set are in the map and stay.
+			const dropped = [...brokerDroppedHostEnv].filter(name => !(name in options.env));
+			const argv = [
+				...(dropped.length > 0 ? ["env", ...dropped.flatMap(name => ["-u", name])] : []),
+				record.spec.application,
+				...record.spec.args,
+			];
+			const command = \`exec \${argv.map(quoteShellArg).join(" ")}\`;`,
 	},
 	{
 		// 2026-09-29 jevgrep 비교(.omp/jevgrep-comparison/SUMMARY.md §4): jfind 의 비밀 파일 제외는 이름을
@@ -7363,6 +7583,10 @@ class El {
 		// 모든 ref에 지문을 남기고, find()/ref()는 발급하는 요소에 지문을 남긴다.
 		file: "src/tools/computer/worker.ts",
 		marker: "return windowInputResult(action, this.id, options);",
+		// 18.6.3 은 같은 클래스에 holdKeys·holdMouse·observe·menu·bringToCurrentSpace 를 넣고 move 에 pointerOptions() 를
+		// 넘긴다. 결과가 같은 marker 를 가지므로 holdKeys 유무로 후보를 가른다. 새 메서드는 상류 그대로 두고, observe 만
+		// ax() 와 같은 규칙(텍스트의 모든 ref 에 지문, goal probe 안에서는 출력 없음)을 따른다(ADAPT).
+		excludes: "async holdKeys(",
 		anchor: `	async click(x: number, y: number, options?: ClickOptions): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "click");
@@ -7510,6 +7734,282 @@ class El {
 	ref(ref: string): Promise<El> {
 		return resolveElement(this.#session, this.#getContext, ref, this.id);
 	}`,
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			requires: "async holdKeys(",
+			marker: "return windowInputResult(action, this.id, options);",
+			anchor: `	async click(x: number, y: number, options?: ClickOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "click");
+		await nativeCall(context.signal, () => this.#session.click(this.id, x, y, pointerOptions(options)));
+	}
+
+	async doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "doubleClick");
+		await nativeCall(context.signal, () =>
+			this.#session.click(this.id, x, y, pointerOptions({ ...options, count: 2 })),
+		);
+	}
+
+	async move(x: number, y: number): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "move");
+		await nativeCall(context.signal, () => this.#session.moveMouse(this.id, x, y, pointerOptions()));
+	}
+
+	async drag(points: Array<[number, number]>, options?: DragOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "drag");
+		await nativeCall(context.signal, () =>
+			this.#session.drag(
+				this.id,
+				points.map(([x, y]) => ({ x, y })),
+				pointerOptions(options),
+			),
+		);
+	}
+
+	async scroll(x: number, y: number, options: ScrollOptions = {}): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "scroll");
+		await nativeCall(context.signal, () =>
+			this.#session.scroll(this.id, x, y, options.dx ?? 0, options.dy ?? 0, pointerOptions(options)),
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "type");
+		await nativeCall(context.signal, () => this.#session.typeText(this.id, text, pointerOptions(options)));
+	}
+
+	async press(chord: string | string[], options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "press");
+		await nativeCall(context.signal, () =>
+			this.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),
+		);
+	}
+
+	async holdKeys(keys: string[], options: HoldOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "holdKeys");
+		validateHold(options);
+		validateKeys(keys, "keys");
+		await nativeCall(context.signal, () => this.#session.holdKeys(this.id, keys, options));
+	}
+
+	async holdMouse(x: number, y: number, options: HoldMouseOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "holdMouse");
+		validateHold(options);
+		if (options.keys !== undefined) validateKeys(options.keys, "keys");
+		await nativeCall(context.signal, () => this.#session.holdMouse(this.id, x, y, options));
+	}
+
+	async observe(options?: ScreenshotOptions & AxOptions): Promise<ObservationResult> {
+		const context = this.#getContext();
+		const result = await nativeCall(context.signal, () =>
+			this.#session.observe(
+				this.id,
+				{
+					maxWidth: context.snapshot.captureMaxWidth,
+					maxHeight: context.snapshot.captureMaxHeight,
+				},
+				options && { all: options.all, maxDepth: options.maxDepth },
+			),
+		);
+		const screenshot = await emitScreenshot(context, result.capture, options);
+		if (!options?.silent) context.output.push({ type: "text", text: result.accessibility.text });
+		return {
+			...screenshot,
+			ax: result.accessibility.text,
+			nodeCount: result.accessibility.nodeCount,
+			truncated: result.accessibility.truncated,
+		};
+	}
+
+	get menu() {
+		return {
+			items: async (path?: string | string[]): Promise<MenuItem[]> => {
+				const context = this.#getContext();
+				const segments = path === undefined ? undefined : typeof path === "string" ? [path] : path;
+				if (segments !== undefined) validateKeys(segments, "menu path", { allowEmpty: true });
+				return await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));
+			},
+			select: async (path: string[]): Promise<void> => {
+				const context = this.#getContext();
+				guardRun(context, "menu.select");
+				validateKeys(path, "menu path");
+				await nativeCall(context.signal, () => this.#session.menuSelect(this.id, path));
+			},
+		};
+	}
+
+	async bringToCurrentSpace(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "bringToCurrentSpace");
+		await nativeCall(context.signal, () => this.#session.bringToCurrentSpace(this.id));
+	}
+
+	async raise(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "raise");
+		await nativeCall(context.signal, () => this.#session.raiseWindow(this.id));
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(
+			node => new El(this.#session, this.#getContext, node),
+		);
+	}
+
+	async ref(ref: string): Promise<El> {
+		const { signal } = this.#getContext();
+		return new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));
+	}`,
+			patched: `	async #input(action: string, options: InputOptions | undefined, call: () => Promise<void>): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, action);
+		try {
+			await nativeCall(context.signal, call);
+		} catch (error) {
+			throw refuseAction(error, action, undefined, options?.takeover);
+		}
+		return windowInputResult(action, this.id, options);
+	}
+
+	click(x: number, y: number, options?: ClickOptions): Promise<ComputerActionResult> {
+		return this.#input("click", options, () => this.#session.click(this.id, x, y, pointerOptions(options)));
+	}
+
+	doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {
+		return this.#input("doubleClick", options, () =>
+			this.#session.click(this.id, x, y, pointerOptions({ ...options, count: 2 })),
+		);
+	}
+
+	move(x: number, y: number): Promise<ComputerActionResult> {
+		return this.#input("move", undefined, () => this.#session.moveMouse(this.id, x, y, pointerOptions()));
+	}
+
+	drag(points: Array<[number, number]>, options?: DragOptions): Promise<ComputerActionResult> {
+		return this.#input("drag", options, () =>
+			this.#session.drag(
+				this.id,
+				points.map(([x, y]) => ({ x, y })),
+				pointerOptions(options),
+			),
+		);
+	}
+
+	scroll(x: number, y: number, options: ScrollOptions = {}): Promise<ComputerActionResult> {
+		return this.#input("scroll", options, () =>
+			this.#session.scroll(this.id, x, y, options.dx ?? 0, options.dy ?? 0, pointerOptions(options)),
+		);
+	}
+
+	type(text: string, options?: InputOptions): Promise<ComputerActionResult> {
+		return this.#input("type", options, () => this.#session.typeText(this.id, text, pointerOptions(options)));
+	}
+
+	press(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {
+		return this.#input("press", options, () =>
+			this.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),
+		);
+	}
+
+	async holdKeys(keys: string[], options: HoldOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "holdKeys");
+		validateHold(options);
+		validateKeys(keys, "keys");
+		await nativeCall(context.signal, () => this.#session.holdKeys(this.id, keys, options));
+	}
+
+	async holdMouse(x: number, y: number, options: HoldMouseOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "holdMouse");
+		validateHold(options);
+		if (options.keys !== undefined) validateKeys(options.keys, "keys");
+		await nativeCall(context.signal, () => this.#session.holdMouse(this.id, x, y, options));
+	}
+
+	async observe(options?: ScreenshotOptions & AxOptions): Promise<ObservationResult> {
+		const context = this.#getContext();
+		const result = await nativeCall(context.signal, () =>
+			this.#session.observe(
+				this.id,
+				{
+					maxWidth: context.snapshot.captureMaxWidth,
+					maxHeight: context.snapshot.captureMaxHeight,
+				},
+				options && { all: options.all, maxDepth: options.maxDepth },
+			),
+		);
+		const screenshot = await emitScreenshot(context, result.capture, options);
+		// Same tree text as ax(): every ref it shows gets a fingerprint, and a goal probe stays silent.
+		refBook(this.#session).noteSnapshot(this.id, result.accessibility.text);
+		if (!options?.silent && !context.goalProbe) context.output.push({ type: "text", text: result.accessibility.text });
+		return {
+			...screenshot,
+			ax: result.accessibility.text,
+			nodeCount: result.accessibility.nodeCount,
+			truncated: result.accessibility.truncated,
+		};
+	}
+
+	get menu() {
+		return {
+			items: async (path?: string | string[]): Promise<MenuItem[]> => {
+				const context = this.#getContext();
+				const segments = path === undefined ? undefined : typeof path === "string" ? [path] : path;
+				if (segments !== undefined) validateKeys(segments, "menu path", { allowEmpty: true });
+				return await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));
+			},
+			select: async (path: string[]): Promise<void> => {
+				const context = this.#getContext();
+				guardRun(context, "menu.select");
+				validateKeys(path, "menu path");
+				await nativeCall(context.signal, () => this.#session.menuSelect(this.id, path));
+			},
+		};
+	}
+
+	async bringToCurrentSpace(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "bringToCurrentSpace");
+		await nativeCall(context.signal, () => this.#session.bringToCurrentSpace(this.id));
+	}
+
+	raise(): Promise<ComputerActionResult> {
+		return this.#input("raise", undefined, () => this.#session.raiseWindow(this.id));
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		const text = (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+		refBook(this.#session).noteSnapshot(this.id, text);
+		return text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		const nodes = await nativeCall(signal, () => this.#session.axQuery(this.id, query));
+		return issueElements(this.#session, this.#getContext, nodes, this.id);
+	}
+
+	ref(ref: string): Promise<El> {
+		return resolveElement(this.#session, this.#getContext, ref, this.id);
+	}`,
+		}],
 	},
 	{
 		// Python·JS 직접 헬퍼는 win.ref(ref)도 매번 desktop.ref(ref)로 푼다. 재획득은 이 경로에서도 일어나야 한다.
@@ -7525,6 +8025,9 @@ class El {
 		// 모델이 보는 타입: 행동 결과·거절 필드와 재획득 규칙을 적는다.
 		file: "src/tools/computer/declarations.d.ts",
 		marker: "interface ComputerActionResult {",
+		// 18.6.3 은 ComputerInputTarget 에 zoom·holdKeys·holdMouse 를 넣고 좌표 설명을 "full screenshot" 기준으로 바꿨다.
+		// 새 멤버와 설명은 상류 그대로 두고, 우리 결과 타입이 걸린 멤버만 바꾼다. holdKeys 유무로 후보를 가른다(ADAPT).
+		excludes: "holdKeys(keys: string[]",
 		anchor: `/** Live accessibility element resolved from a snapshot ref; expired refs throw \`StaleRef\`. */
 interface ComputerElement {
 	/** Snapshot ref tag, e.g. \`e5\`. */
@@ -7634,6 +8137,122 @@ interface ComputerInputTarget {
 	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
 	press(chord: string | string[], options?: ComputerInputOptions): Promise<ComputerActionResult>;
 }`,
+		alternates: [{
+			file: "src/tools/computer/declarations.d.ts",
+			requires: "holdKeys(keys: string[]",
+			marker: "interface ComputerActionResult {",
+			anchor: `/** Live accessibility element resolved from a snapshot ref; expired refs throw \`StaleRef\`. */
+interface ComputerElement {
+	/** Snapshot ref tag, e.g. \`e5\`. */
+	readonly ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	value(): Promise<string | undefined>;
+	setValue(value: string): Promise<void>;
+	/** Bounds in global desktop coordinates, or null when the element has none. */
+	bounds(): Promise<ComputerBounds | null>;
+	attributes(): Promise<Record<string, string>>;
+	actions(): Promise<string[]>;
+	perform(action: string): Promise<void>;
+	/** Perform the element's native press action; needs no screenshot. */
+	press(): Promise<void>;
+	/** Click the element's center with native input. */
+	click(options?: ComputerInputOptions): Promise<void>;
+	focus(): Promise<void>;
+	parent(): Promise<ComputerElement | null>;
+	children(): Promise<ComputerElement[]>;
+}
+
+/** Native input helpers shared by the desktop root and window handles; \`x\`/\`y\` are pixels in the most recent full screenshot of the same target, never zoom pixels. */
+interface ComputerInputTarget {
+	screenshot(options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	/** Display a detailed region without replacing the input frame. Use base full screenshot coordinates for subsequent input, not zoom pixels. */
+	zoom(region: CaptureRegion, options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	click(x: number, y: number, options?: ComputerClickOptions): Promise<void>;
+	doubleClick(x: number, y: number, options?: Omit<ComputerClickOptions, "count">): Promise<void>;
+	move(x: number, y: number): Promise<void>;
+	drag(points: Array<[number, number]>, options?: ComputerDragOptions): Promise<void>;
+	scroll(x: number, y: number, options?: ComputerScrollOptions): Promise<void>;
+	type(text: string, options?: ComputerInputOptions): Promise<void>;
+	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
+	press(chord: string | string[], options?: ComputerInputOptions): Promise<void>;`,
+			patched: `/** Result of an input or element action. Delivery is not proof of effect. */
+interface ComputerActionResult {
+	action: string;
+	/** \`verified\`: an AX readback shows the change. \`unverified\`: delivered, effect not observed. \`suspected_noop\`: the readback contradicts the intended change. */
+	status: "verified" | "unverified" | "suspected_noop";
+	/** \`reobserve\`: screenshot or AX before relying on the effect. \`escalate\`: follow \`escalation\`. */
+	suggestedNext: "continue" | "reobserve" | "escalate";
+	escalation?: { target: "pixel" | "takeover"; reason: string };
+	/** Readback the status rests on. */
+	evidence?: string;
+	ref?: string;
+	/** Present when the action ran on an element reacquired from a stale ref. */
+	reacquired?: { from: string; to: string; matchedBy: string };
+}
+
+/** Attached to a failed action's error as \`error.computerAction\` (visible inside \`computer.run\`); the error message is unchanged. */
+interface ComputerActionRefusal {
+	action: string;
+	status: "refused";
+	suggestedNext: "reobserve" | "escalate";
+	escalation?: { target: "takeover"; reason: string };
+	ref?: string;
+	/** Why a stale ref was not reacquired, with up to five candidates. */
+	reacquire?: {
+		outcome: "no-fingerprint" | "no-window" | "no-candidate" | "parent-mismatch" | "ambiguous";
+		candidates: Array<{ ref: string; role: string; title?: string; bounds?: ComputerBounds }>;
+	};
+}
+
+/** Live accessibility element resolved from a snapshot ref. A stale ref is reacquired only when its fingerprint matches exactly one element; otherwise it throws \`StaleRef\`. */
+interface ComputerElement {
+	/** Snapshot ref tag, e.g. \`e5\`; the new ref after a reacquisition. */
+	readonly ref: string;
+	/** Stale ref this element was reacquired from. */
+	readonly reacquiredFrom?: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	value(): Promise<string | undefined>;
+	setValue(value: string): Promise<ComputerActionResult>;
+	/** Bounds in global desktop coordinates, or null when the element has none. */
+	bounds(): Promise<ComputerBounds | null>;
+	attributes(): Promise<Record<string, string>>;
+	actions(): Promise<string[]>;
+	perform(action: string): Promise<ComputerActionResult>;
+	/** Perform the element's native press action; needs no screenshot. */
+	press(): Promise<ComputerActionResult>;
+	/** Click the element's center with native input. */
+	click(options?: ComputerInputOptions): Promise<ComputerActionResult>;
+	focus(): Promise<ComputerActionResult>;
+	parent(): Promise<ComputerElement | null>;
+	children(): Promise<ComputerElement[]>;
+}
+
+/** Native input helpers shared by the desktop root and window handles; \`x\`/\`y\` are pixels in the most recent full screenshot of the same target, never zoom pixels. Pointer and keyboard action results are always \`unverified\`. */
+interface ComputerInputTarget {
+	screenshot(options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	/** Display a detailed region without replacing the input frame. Use base full screenshot coordinates for subsequent input, not zoom pixels. */
+	zoom(region: CaptureRegion, options?: ComputerScreenshotOptions): Promise<ComputerScreenshotResult>;
+	click(x: number, y: number, options?: ComputerClickOptions): Promise<ComputerActionResult>;
+	doubleClick(x: number, y: number, options?: Omit<ComputerClickOptions, "count">): Promise<ComputerActionResult>;
+	move(x: number, y: number): Promise<ComputerActionResult>;
+	drag(points: Array<[number, number]>, options?: ComputerDragOptions): Promise<ComputerActionResult>;
+	scroll(x: number, y: number, options?: ComputerScrollOptions): Promise<ComputerActionResult>;
+	type(text: string, options?: ComputerInputOptions): Promise<ComputerActionResult>;
+	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
+	press(chord: string | string[], options?: ComputerInputOptions): Promise<ComputerActionResult>;`,
+		}],
 	},
 	{
 		file: "src/tools/computer/declarations.d.ts",
@@ -7647,6 +8266,15 @@ interface ComputerInputTarget {
 		marker: "Actions return `{ action, status, suggestedNext",
 		anchor: "- Each window `.ax()` starts a ref generation. Current/previous snapshot refs remain valid; older refs throw `StaleRef`. Re-snapshot; NEVER guess.\n",
 		patched: "- Each window `.ax()` starts a ref generation. Current/previous snapshot refs remain valid. An older ref is reacquired only when its saved fingerprint (role, name, AutomationId, named parents, position) matches exactly one element; the element's `ref` changes and the action result carries `reacquired`. Otherwise it throws `StaleRef` naming why and the candidates: re-snapshot; NEVER guess.\n- Actions return `{ action, status, suggestedNext, evidence?, escalation?, reacquired? }`. `verified` rests on an AX readback; `unverified` (all pointer/keyboard input) means delivered but unobserved: `reobserve` before relying on it; `suspected_noop` → follow `escalation`. Inside `computer.run`, a thrown action error carries `error.computerAction`.\n",
+		// 18.6.3(#14485)은 ref 가 role·label 이 바뀔 때까지 유지되고 마지막 두 `.ax()` 에 없는 요소의 ref 만 StaleRef 라고
+		// 고쳐 적었다. 그 규칙은 상류 그대로 두고, StaleRef 가 날 때의 지문 재획득과 결과 필드 읽는 법을 잇는다. 결과를
+		// 돌려주는 helper 는 상류가 새로 넣은 hold·menu 와 구별해 이름으로 적는다(ADAPT).
+		alternates: [{
+			file: "src/prompts/tools/computer.md",
+			marker: "snapshots is reacquired only when its saved fingerprint",
+			anchor: "- An element keeps its `[ref=eN]` across `.ax()`/`find()` reads until its role or label changes; a ref whose element is missing from the window's last two `.ax()` snapshots throws `StaleRef`. Re-snapshot; NEVER guess.\n",
+			patched: "- An element keeps its `[ref=eN]` across `.ax()`/`find()` reads until its role or label changes. A ref whose element is missing from the window's last two `.ax()` snapshots is reacquired only when its saved fingerprint (role, name, AutomationId, named parents, position) matches exactly one element; the element's `ref` changes and the action result carries `reacquired`. Otherwise it throws `StaleRef` naming why and the candidates: re-snapshot; NEVER guess.\n- Element actions and window/display `click`, `doubleClick`, `move`, `drag`, `scroll`, `type`, `press`, `raise` return `{ action, status, suggestedNext, evidence?, escalation?, reacquired? }`. `verified` rests on an AX readback; `unverified` (all pointer/keyboard input) means delivered but unobserved: `reobserve` before relying on it; `suspected_noop` → follow `escalation`. Inside `computer.run`, a thrown action error carries `error.computerAction`.\n",
+		}],
 	},
 	{
 		// 2026-09-30 computer 목표 대기(사용자 요청 0.6.6): 행동은 사용자 코드에서 한 번, 목표는 wait(predicate)가 로컬 읽기로만 확인한다.
@@ -7661,6 +8289,9 @@ import * as postmortem from "@oh-my-pi/pi-utils/postmortem";`,
 	{
 		file: "src/tools/computer/worker.ts",
 		marker: "	goalProbe?: boolean;",
+		// 18.6.3 은 run context 에 confirmControl(전경 제어 승인 요청)을 넣었다. probe 는 context 를 펼쳐 복제하므로 그 필드도
+		// 따라가고, control.acquire 는 guardRun 에서 probe 거절된다. 두 판 결과가 같은 marker 를 가지므로 그 필드로 가른다(ADAPT).
+		excludes: "confirmControl(reason: string): Promise<boolean>;",
 		anchor: `interface ComputerRunContext {
 	signal: AbortSignal;
 	readOnly: boolean;
@@ -7687,6 +8318,39 @@ function goalProbeRefusal(method: string): ToolError {
 		\`wait(predicate) probe cannot run '\${method}': probes only read desktop state (windows, ax, find, value); act once before wait()\`,
 	);
 }`,
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			requires: "confirmControl(reason: string): Promise<boolean>;",
+			marker: "	goalProbe?: boolean;",
+			anchor: `interface ComputerRunContext {
+	signal: AbortSignal;
+	readOnly: boolean;
+	snapshot: ComputerSessionSnapshot;
+	output: RunOutput;
+	confirmControl(reason: string): Promise<boolean>;
+	screenshots: ComputerScreenshot[];
+}`,
+			patched: `interface ComputerRunContext {
+	signal: AbortSignal;
+	readOnly: boolean;
+	/** Set while a \`wait(predicate)\` probe runs; \`signal\` then also ends at the wait's deadline and when it settles. */
+	goalProbe?: boolean;
+	snapshot: ComputerSessionSnapshot;
+	output: RunOutput;
+	confirmControl(reason: string): Promise<boolean>;
+	screenshots: ComputerScreenshot[];
+}
+
+/** Pauses between goal probes when \`interval\` is not given: Playwright's \`pollAgainstDeadline\` default; the last one repeats. */
+const GOAL_POLL_INTERVALS = [100, 250, 500, 1000] as const;
+
+/** A goal probe only reads: desktop input, clipboard writes, and tool-bridge calls would repeat on every probe. */
+function goalProbeRefusal(method: string): ToolError {
+	return new ToolError(
+		\`wait(predicate) probe cannot run '\${method}': probes only read desktop state (windows, ax, find, value); act once before wait()\`,
+	);
+}`,
+		}],
 	},
 	{
 		file: "src/tools/computer/worker.ts",
@@ -7826,8 +8490,18 @@ function goalProbeRefusal(method: string): ToolError {
 		// 모델 지시: 행동은 한 번, 목표는 wait(predicate)로 읽고, 미달이면 다시 누르지 않는다.
 		file: "src/prompts/tools/computer.md",
 		marker: "- Goal after an action: act ONCE",
+		// 18.6.3 은 같은 줄 끝에 "Group predictable actions …" 문장을 붙였다. 그 문장 뒤에 같은 지시를 잇는다. 두 판 결과가
+		// 같은 marker 를 가지므로 그 문장 유무로 후보를 가른다(ADAPT).
+		excludes: "Group predictable actions and their verification in one run",
 		anchor: "Plain data, functions, and `RegExp` values are supported in `args`.\n",
 		patched: "Plain data, functions, and `RegExp` values are supported in `args`.\n- Goal after an action: act ONCE, then `await wait(async () => …read…, { timeout })` for the row, text, or value the user asked for; it resolves with that value. Inside the predicate, desktop input, `clipboard.write`, and tool calls throw and screenshots stay silent; probes back off 100→1000 ms, and a late read cannot continue past the deadline. The predicate is still unsandboxed Bun/Node code. On `wait(predicate) timed out` NEVER re-click, take over, or switch windows: reobserve and report. A button state change alone does not prove a save.\n",
+		alternates: [{
+			file: "src/prompts/tools/computer.md",
+			requires: "Group predictable actions and their verification in one run",
+			marker: "- Goal after an action: act ONCE",
+			anchor: "Plain data, functions, and `RegExp` values are supported in `args`. Group predictable actions and their verification in one run; stop and inspect when the outcome is uncertain.\n",
+			patched: "Plain data, functions, and `RegExp` values are supported in `args`. Group predictable actions and their verification in one run; stop and inspect when the outcome is uncertain.\n- Goal after an action: act ONCE, then `await wait(async () => …read…, { timeout })` for the row, text, or value the user asked for; it resolves with that value. Inside the predicate, desktop input, `clipboard.write`, and tool calls throw and screenshots stay silent; probes back off 100→1000 ms, and a late read cannot continue past the deadline. The predicate is still unsandboxed Bun/Node code. On `wait(predicate) timed out` NEVER re-click, take over, or switch windows: reobserve and report. A button state change alone does not prove a save.\n",
+		}],
 	},
 	{
 		file: "src/prompts/tools/computer.md",
@@ -7841,11 +8515,24 @@ function goalProbeRefusal(method: string): ToolError {
 		// interop 자식으로 띄우고 stdin/stdout으로 아래 frame을 주고받는다. 포트·리스너 없음.
 		file: "src/tools/computer/protocol.ts",
 		marker: `import { deserialize, serialize } from "bun:jsc";`,
+		excludes: "CaptureRegion, DesktopCapabilities",
 		anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
 		patched: `import { deserialize, serialize } from "bun:jsc";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+		// 18.6.3 은 같은 import 에 CaptureRegion 을 더했다(zoom). 프레임 직렬화 import 는 그대로 앞에 둔다. 두 판 결과가 같은
+		// marker 를 가지므로 그 import 이름으로 후보를 가른다(ADAPT).
+		alternates: [{
+			file: "src/tools/computer/protocol.ts",
+			requires: "CaptureRegion, DesktopCapabilities",
+			marker: `import { deserialize, serialize } from "bun:jsc";`,
+			anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+			patched: `import { deserialize, serialize } from "bun:jsc";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+		}],
 	},
 	{
 		// frame: "CMP1" magic + big-endian u32 길이 + Bun structured clone 본문. Worker postMessage와 같은 값 의미.
@@ -9112,6 +9799,13 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 			marker: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
 			anchor: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
 			patched: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+		}, {
+			// 18.6.3: upstream 이 상수를 AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE 로 옮겼다(#14242). 같은 upstream 줄의 no-op.
+			file: "../pi-ai/src/providers/openai-codex-responses.ts",
+			requires: "AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
+			marker: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+			anchor: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
+			patched: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
 		}],
 	},
 	{
@@ -9165,9 +9859,19 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 	},
 	{
 		file: "src/tools/ask.ts",
+		// 18.6.3(#14369)은 formatQuestionResult 를 다시 짜 timeout 접미사를 `timeoutSuffix` 한 줄로 옮겼다. 그 줄에 같은 문구를 넣는다(ADAPT).
+		// 두 판 결과가 같은 marker 를 가지므로 `timeoutSuffix` 유무로 후보를 가른다.
+		excludes: "const timeoutSuffix = ",
 		marker: "no user response, not user approval",
 		anchor: `		const suffix = \`\${result.timedOut ? " (auto-selected after timeout)" : ""}\${noteSuffix}\`;`,
 		patched: `		const suffix = \`\${result.timedOut ? " (auto-selected recommended option after timeout; no user response, not user approval)" : ""}\${noteSuffix}\`;`,
+		alternates: [{
+			file: "src/tools/ask.ts",
+			requires: "const timeoutSuffix = ",
+			marker: "no user response, not user approval",
+			anchor: `	const timeoutSuffix = result.timedOut ? " (auto-selected after timeout)" : "";`,
+			patched: `	const timeoutSuffix = result.timedOut ? " (auto-selected recommended option after timeout; no user response, not user approval)" : "";`,
+		}],
 	},
 	{
 		file: "src/tools/ask.ts",
@@ -9286,6 +9990,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
 			anchor: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
 			patched: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
+		}, {
+			// 18.6.3: 같은 upstream 규칙이 kdl:150(뒤 Sonnet 규칙 kdl:166)로 옮겨졌다. 본문은 그대로다. 그 줄의 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
+			anchor: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
+			patched: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
 		}],
 	},
 	{
@@ -9323,6 +10033,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 18.6.3: 같은 upstream 규칙이 kdl:240 으로 옮겨졌다. 본문·provider 범위는 그대로다. 그 줄의 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -9524,6 +10240,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.6.3 번들의 같은 upstream 조건(ZRe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

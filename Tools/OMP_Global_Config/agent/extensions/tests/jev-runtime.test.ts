@@ -39,6 +39,7 @@ interface EventHarness {
 }
 
 interface HarnessOptions {
+  platform?: NodeJS.Platform;
   judgeError?: string;
   judgeAnswers?: Record<string, unknown>;
   settings?: Record<string, unknown>;
@@ -112,6 +113,7 @@ function createHarness(options: HarnessOptions = {}) {
   const deps: JevRuntimeDeps = {
     ledgerPath,
     memoryApplicationTimeoutMs: options.memoryApplicationTimeoutMs,
+    platform: options.platform,
     findScopedSettings: () => settings,
     resolveJudge: () => {
       if (options.resolveError) throw new Error(options.resolveError);
@@ -1775,7 +1777,7 @@ describe("jev-runtime pre-retry", () => {
       "command not found: findstr",
       "line 14: syntax error near unexpected token `$'{\\r''",
     ]) {
-      const harness = createHarness();
+      const harness = createHarness({ platform: "win32" });
       await harness.emit("tool_result", bashError("c1", "probe", error));
       await harness.emit("tool_call", bashCall("c2", "probe"));
       const advisory = String(harness.sent[0]!.message.content);
@@ -1791,16 +1793,33 @@ describe("jev-runtime pre-retry", () => {
 
   test("Windows curl 의 -o /dev/null exit 23 은 windows-shell 로 분류하고 -o NUL 을 안내한다", async () => {
     const command = 'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:30141/';
-    const harness = createHarness();
+    const harness = createHarness({ platform: "win32" });
     await harness.emit("tool_result", bashError("c1", command, "200\n\nWall time: 0.1 seconds\n\nCommand exited with code 23"));
     await harness.emit("tool_call", bashCall("c2", command));
     const advisory = String(harness.sent[0]!.message.content);
     expect(advisory).toContain("errorCategory=windows-shell");
     expect(advisory).toContain("-o NUL");
-    const other = createHarness();
+    const other = createHarness({ platform: "win32" });
     await other.emit("tool_result", bashError("c1", "curl -s -o out.bin http://x/", "Command exited with code 23"));
     await other.emit("tool_call", bashCall("c2", "curl -s -o out.bin http://x/"));
     expect(String(other.sent[0]!.message.content)).not.toContain("errorCategory=windows-shell");
+  });
+
+  test("Linux 셸 오류는 Linux 교정을 안내하고 Git Bash·curl.exe 진단을 내지 않는다", async () => {
+    const harness = createHarness({ platform: "linux" });
+    await harness.emit("tool_result", bashError("c1", "probe", "line 14: syntax error near unexpected token `$'{\\r''"));
+    await harness.emit("tool_call", bashCall("c2", "probe"));
+    const advisory = String(harness.sent[0]!.message.content);
+    expect(advisory).toContain("errorCategory=windows-shell");
+    expect(advisory).toContain("wslpath -w");
+    expect(advisory).toContain("tr -d");
+    expect(advisory).not.toContain("C:/Program Files/Git/bin/bash.exe");
+    // Linux curl은 /dev/null에 쓸 수 있으므로 exit 23은 다른 원인이다.
+    const command = 'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:30141/';
+    const curl = createHarness({ platform: "linux" });
+    await curl.emit("tool_result", bashError("c1", command, "200\n\nCommand exited with code 23"));
+    await curl.emit("tool_call", bashCall("c2", command));
+    expect(String(curl.sent[0]!.message.content)).not.toContain("errorCategory=windows-shell");
   });
 
   test("테스트·CI 실패는 로컬 분류와 원인별 다음 행동만 안내한다", async () => {

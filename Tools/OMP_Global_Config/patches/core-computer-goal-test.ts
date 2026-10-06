@@ -100,6 +100,9 @@ const session = {
 	axPerform: async () => press(),
 	axClick: async () => press(),
 	close: async () => {},
+	// 18.6.3 worker 는 run 이 끝날 때 native session 의 retire()(성공)·cancel()(실패·취소)을 부른다.
+	cancel: () => {},
+	retire: () => {},
 };
 
 type RunError = { message: string; isAbort?: boolean; isToolError?: boolean };

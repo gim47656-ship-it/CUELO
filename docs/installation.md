@@ -6,7 +6,7 @@
 
 - **소스 설치**: checkout 후 `node install.mjs setup`을 실행합니다(아래 절차).
 - **npm 설치**: 패키지명은 [`cuelo`](https://www.npmjs.com/package/cuelo)입니다. production 빌드가 포함되며 설치 때 패키지 자체 SDK를 준비합니다. `cuelo setup`은 빌드를 건너뛰고 준비된 런타임을 검사한 뒤 공개 하네스의 없는 파일만 추가합니다.
-- **개발·검증 환경**: Windows입니다. macOS·Linux는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다.
+- **개발·검증 환경**: Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Windows에서 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. 아래 단계별 안내는 Windows 기준이며, Linux에서는 Node.js·Bun·Git을 배포판의 공식 방법으로 설치한 뒤 같은 `setup`·`start` 명령을 씁니다.
 
 ## 대표 경로: `omp`만 있는 Windows PC (`omp-web` 없음)
 
@@ -49,7 +49,7 @@ Codex live 통화는 버튼으로 끝내거나, “끊어”, “알았어, 끊�
 
 선택 기능인 [캐릭터 통화 음성](./live-voice.md)은 Cartesia의 음성 복제 지원 플랜과 API 키가 필요합니다. CUELO에 키 하나를 입력한 뒤 참조 음성 전송·크레딧 사용에 동의하면 캐릭터별 비공개 음성과 한국어 지원을 준비합니다. 개인 키와 생성된 음성 ID는 공개 저장소나 브라우저에 배포하지 않습니다. 키를 설정하지 않으면 기존 Codex live 통화를 그대로 사용합니다. Cartesia는 답변의 음성 합성을 담당하므로 기존 통화 제공자의 자격 요건과 사용량을 대체하지 않습니다.
 
-현재 PC의 Node 24/Bun 1.4.2를 가진 빈 프로필·격리 npm prefix에서 설치와 네 서비스 경로를 시험했습니다. **운영체제 자체가 비어 있는 Windows VM/새 PC의 전체 설치, 외부 로그인, 유료 Jev 호출, 최초 임베딩 다운로드는 검증하지 않았습니다.** macOS·Linux 지원도 보장하지 않습니다.
+현재 PC의 Node 24/Bun 1.4.2를 가진 빈 프로필·격리 npm prefix에서 설치와 네 서비스 경로를 시험했습니다. **운영체제 자체가 비어 있는 Windows VM/새 PC의 전체 설치, 외부 로그인, 유료 Jev 호출, 최초 임베딩 다운로드는 검증하지 않았습니다.** macOS 지원은 보장하지 않습니다.
 
 ## npm으로 설치하기
 

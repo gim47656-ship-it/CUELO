@@ -179,6 +179,8 @@ const brackets: Bracket[] = [];
 /** 동시에 열려 있던 bracket 의 최댓값. 관찰자 시작은 공유 yield 상태를 지우므로(executor resetYieldTurnState)
  *  한 turn 에 둘이 겹치면 먼저 연 monitor 의 yield 판정이 깨진다. 어느 구간에서도 1을 넘으면 안 된다. */
 let maxOpenBrackets = 0;
+/** 경합 창 구간([6]~[8])마다 따로 잰 최댓값. 누적값만 보면 앞 구간의 겹침이 뒤 구간 실패로 보인다. */
+let sectionMaxOpenBrackets = 0;
 const installObserver = session.setIrcWakeTurnObserver.bind(session);
 session.setIrcWakeTurnObserver = (observer: never): void => {
 	if (observer === undefined) return installObserver(undefined);
@@ -186,6 +188,7 @@ session.setIrcWakeTurnObserver = (observer: never): void => {
 		const entry: Bracket = { streamingAtOpen: session.isStreaming, hookAtOpen: hookHits, closed: false };
 		brackets.push(entry);
 		maxOpenBrackets = Math.max(maxOpenBrackets, brackets.filter(b => !b.closed).length);
+		sectionMaxOpenBrackets = Math.max(sectionMaxOpenBrackets, brackets.filter(b => !b.closed).length);
 		if (trace) console.log(`    [bracket open] streaming=${entry.streamingAtOpen} hook=${entry.hookAtOpen}`);
 		// 세션이 넘긴 bracket 표시(이미 돌던 turn 의 입양 등)도 그대로 전달한다. 빼면 executor 가 다른 판정을 한다.
 		const finish = (observer as unknown as (r: never, b?: never) => unknown)(records, bracket) as
@@ -235,6 +238,8 @@ session.subscribe((event: { type: string }) => {
 type Phase = "idle" | "consume" | "strand" | "quiet";
 let phase: Phase = "idle";
 let hookHits = 0;
+/** 훅이 부모 steer 를 꽂은 turn. 답이 "그 steer 를 남긴 turn"이 아니라 "이어받은 turn"에서 나왔는지 가른다. */
+let injectedAtTurn = 0;
 /** provider 요청 직전(스트리밍 중) 훅. 여기서 부모 steer 를 꽂고 예외로 turn 을 끝낸다.
  *  모델 호출은 이 지점 다음이므로 네트워크로는 아무것도 나가지 않는다. */
 session.agent.addBeforeModelCallHook(async () => {
@@ -243,6 +248,7 @@ session.agent.addBeforeModelCallHook(async () => {
 	if (phase === "consume" || phase === "strand") {
 		const current = phase;
 		phase = "quiet";
+		injectedAtTurn = turnCount;
 		await bus.send({ from: MAIN_AGENT_ID, to: "Sol", body: `${current} 지시` });
 		if (current === "consume") {
 			// 실행 중 turn 이 steering 큐를 실제로 읽어 간 것과 같은 상태를 만든다:
@@ -320,6 +326,7 @@ console.log("\n[2] 소비하지 않고 남긴 steer 는 이 turn 이 답하지 �
 phase = "strand";
 const beforeStrand = relays().length;
 const bracketsBeforeStrand = brackets.length;
+const hookBeforeStrand = hookHits;
 await session.prompt("두 번째 turn 시작").catch(() => {});
 await settle(1500);
 check(
@@ -327,17 +334,36 @@ check(
 	relays().length === beforeStrand + 1,
 	`relays=${relays().length - beforeStrand}`,
 );
-// 남긴 steer 는 그 turn 의 몫이 아니다: 실행 중 turn 의 bracket 은 "억제"로 닫히고,
-// 그것을 실제로 이어받은 다음 bracket 하나가 답한다. 빚 하나당 정산도 하나여야 하므로
-// 이 구간의 bracket 은 정확히 둘 - 억제로 닫힌 것 하나, 답한 것 하나 - 이다.
+// 남긴 steer 는 그 turn 의 몫이 아니다. 빚 하나당 정산도 하나여야 하는데, 그 하나가 어디서 나오는지는 실행 중 turn 에
+// 처음부터 관찰이 있었느냐로 갈린다.
+//  - 관찰 없음(18.6.1까지: 사용자 prompt 는 관찰되지 않는다): 실행 중 turn 을 입양한 bracket 은 "억제"로 닫히고,
+//    그것을 실제로 이어받은 다음 bracket 하나가 답한다. 이 구간의 bracket 은 정확히 둘이다.
+//  - 관찰 있음(18.6.3 #14428: 사용자 prompt 도 관찰된다. 스트리밍 전에 열린다): 그 관찰은 settle 까지 열린 채
+//    이어받은 turn 을 보므로 두 번째 monitor 를 열지 않고, 이어받은 turn 이 소비한 steer 를 adopted 로 함께 정산한다.
+//    이 구간의 bracket 은 정확히 하나이고 억제 없이 adopted 1건으로 닫힌다.
+// 어느 쪽이든 답은 steer 를 남긴 turn 이 아니라 그것을 이어받은 turn 의 것이어야 한다.
 const strandBrackets = brackets.slice(bracketsBeforeStrand);
+const strandTurn = injectedAtTurn;
+const promptObserved = strandBrackets[0]?.streamingAtOpen === false && strandBrackets[0]?.hookAtOpen === hookBeforeStrand;
 check(
-	"남긴 steer 는 그 turn 이 억제로 닫고 이어받은 turn 하나가 답한다",
-	strandBrackets.length === 2 &&
-		strandBrackets.every(b => b.closed) &&
-		strandBrackets[0]?.suppress === true &&
-		strandBrackets[1]?.suppress === false,
+	promptObserved
+		? "남긴 steer 는 관찰된 prompt 의 정산 하나가 이어받은 turn 뒤 adopted 로 답한다"
+		: "남긴 steer 는 그 turn 이 억제로 닫고 이어받은 turn 하나가 답한다",
+	promptObserved
+		? strandBrackets.length === 1 &&
+				strandBrackets[0]?.closed === true &&
+				strandBrackets[0]?.suppress === false &&
+				strandBrackets[0]?.adopted === 1
+		: strandBrackets.length === 2 &&
+				strandBrackets.every(b => b.closed) &&
+				strandBrackets[0]?.suppress === true &&
+				strandBrackets[1]?.suppress === false,
 	`brackets=${JSON.stringify(strandBrackets)}`,
+);
+check(
+	"그 답은 steer 를 남긴 turn 이 아니라 이어받은 turn 에서 나온다",
+	(relays().at(-1)?.turnSeq ?? 0) > strandTurn,
+	`answerTurn=${relays().at(-1)?.turnSeq} strandTurn=${strandTurn}`,
 );
 
 console.log("\n[3] 형제 wake turn 도중 부모 steer 가 도착해 그 turn 이 소비하면, 한 번의 정산이 형제와 부모 모두에게 1건씩 답한다");
@@ -424,6 +450,76 @@ check(
 	`n=${relays().length - beforeRaceParent}`,
 );
 check("어느 구간에서도 bracket 은 동시에 하나만 열린다", maxOpenBrackets === 1, `max=${maxOpenBrackets}`);
+
+/**
+ * 경합 창: 남긴 부모 steer 를 이어받는 continuation 은 #beginInFlight 와 agent.continue 사이의 await
+ * (maybeRestoreRetryFallbackPrimary·사전 compaction 검사)에서 bracket 을 연 채 아직 스트리밍하지 않는다. 그 창에 끼어드는
+ * 입력을 agent.continue 를 붙들어 재현한다. 형제 wake 는 agent.state.isStreaming 만 보므로 그 창에서 turn 을 시작하려 들고,
+ * 사용자 prompt 는 in-flight 를 포함한 세션 isStreaming 에 걸려 큐로 간다. 붙드는 것은 steering 큐에 남긴 steer 가 있을
+ * 때의 첫 continue 하나뿐이다(그 steer 를 이어받는 continuation).
+ */
+async function gapScenario(start: () => Promise<unknown>, intrude: () => Promise<void>, novaExpected: number) {
+	phase = "strand";
+	const before = { parent: relays().length, nova: novaRelays().length, brackets: brackets.length };
+	sectionMaxOpenBrackets = 0;
+	let intruded = false;
+	raceAgent.continue = async function (this: unknown, ...args: unknown[]) {
+		if (!intruded && session.agent.peekSteeringQueue().length > 0) {
+			intruded = true;
+			await intrude();
+			await settle(400);
+		}
+		return await originalContinue.apply(this, args);
+	};
+	await start().catch(() => {});
+	const deadline = Date.now() + 20_000;
+	while (Date.now() < deadline && (relays().length < before.parent + 1 || novaRelays().length < before.nova + novaExpected)) {
+		await settle(200);
+	}
+	// 늦게 오는 중복까지 본다.
+	await settle(3000);
+	Reflect.deleteProperty(raceAgent, "continue");
+	return {
+		intruded,
+		parent: relays().length - before.parent,
+		nova: novaRelays().length - before.nova,
+		brackets: brackets.slice(before.brackets),
+		maxOpen: sectionMaxOpenBrackets,
+	};
+}
+const novaWake = (body: string) => async () => {
+	await bus.send({ from: "Nova", to: "Sol", body });
+};
+
+console.log("\n[6] 관찰된 사용자 prompt 가 남긴 부모 steer 를 이어받는 continuation 창에 형제 wake 가 들어와도, 부모·형제 모두 정확히 1건 받는다");
+// 18.6.3 은 사용자 prompt 를 관찰하고, 그 관찰은 settle 까지 열려 있다. 부모 steer 는 그 관찰에 adopted 로 실려 있다.
+const userGap = await gapScenario(() => session.prompt("사용자 turn (창)"), novaWake("형제 wake (사용자 창)"), 1);
+check("창 안에 끼어들었다(남긴 steer 를 이어받는 continue 를 붙들었다)", userGap.intruded);
+check("부모는 남긴 steer 에 정확히 1건 받는다(adopted 답이 빠지지 않는다)", userGap.parent === 1, `n=${userGap.parent} brackets=${JSON.stringify(userGap.brackets)}`);
+check("창 안에 들어온 형제 wake 도 정확히 1건 받는다", userGap.nova === 1, `n=${userGap.nova}`);
+check("이 구간에서도 bracket 은 동시에 하나만 열린다", userGap.maxOpen === 1, `max=${userGap.maxOpen}`);
+
+console.log("\n[7] 관찰 없는 turn 이 남긴 부모 steer 를 이어받는 continuation 이 자기 bracket 을 연 창에 형제 wake 가 들어와도, 부모·형제 모두 정확히 1건 받는다");
+// 에이전트 귀속 prompt 는 관찰되지 않는다. 실행 중 turn 은 입양 bracket 이 억제로 닫고, 이어받는 continuation 이 자기
+// bracket(#beginIrcSteerContinuationObservation)을 연 채 창에 머문다.
+const agentGap = await gapScenario(() => session.prompt("에이전트 turn (창)", { attribution: "agent" }), novaWake("형제 wake (에이전트 창)"), 1);
+check("창 안에 끼어들었다(남긴 steer 를 이어받는 continue 를 붙들었다)", agentGap.intruded);
+check("부모는 남긴 steer 에 정확히 1건 받는다", agentGap.parent === 1, `n=${agentGap.parent} brackets=${JSON.stringify(agentGap.brackets)}`);
+check("창 안에 들어온 형제 wake 도 정확히 1건 받는다", agentGap.nova === 1, `n=${agentGap.nova}`);
+check("이 구간에서도 bracket 은 동시에 하나만 열린다", agentGap.maxOpen === 1, `max=${agentGap.maxOpen}`);
+
+console.log("\n[8] 같은 continuation 창에 사용자 prompt 가 들어오면 큐로 가고, 부모는 정확히 1건 받으며 bracket 은 겹치지 않는다");
+const promptGap = await gapScenario(
+	() => session.prompt("에이전트 turn (사용자 창)", { attribution: "agent" }),
+	async () => {
+		void session.prompt("사용자 끼어듦", { streamingBehavior: "followUp" }).catch(() => {});
+	},
+	0,
+);
+check("창 안에 끼어들었다(남긴 steer 를 이어받는 continue 를 붙들었다)", promptGap.intruded);
+check("부모는 남긴 steer 에 정확히 1건 받는다", promptGap.parent === 1, `n=${promptGap.parent} brackets=${JSON.stringify(promptGap.brackets)}`);
+check("형제에게는 아무것도 가지 않는다", promptGap.nova === 0, `n=${promptGap.nova}`);
+check("이 구간에서도 bracket 은 동시에 하나만 열린다", promptGap.maxOpen === 1, `max=${promptGap.maxOpen}`);
 
 /** 정리 단계가 어디서 멈추는지 남긴다. 실 세션은 워커·파일 핸들을 들고 있어
  *  dispose 나 임시 폴더 삭제가 Windows 에서 오래 걸릴 수 있다. */

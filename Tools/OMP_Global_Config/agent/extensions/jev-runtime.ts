@@ -81,6 +81,8 @@ export interface JevRuntimeDeps {
   ledgerPath?: string;
   /** 회상 기억 적용 점검의 bounded advisory latency. 테스트만 짧게 준다. 기본은 MEMORY_APPLICATION_TIMEOUT_MS다. */
   memoryApplicationTimeoutMs?: number;
+  /** 셸 오류 분류·안내를 고를 실행 플랫폼. 테스트만 주입한다. 기본은 process.platform이다. */
+  platform?: NodeJS.Platform;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +249,14 @@ function textContent(content: unknown): string {
 // Windows 기본 curl.exe 는 `-o /dev/null` 을 파일 경로로 받아 쓰지 못하고 응답을 받은 뒤 exit 23 으로 끝난다.
 const WINDOWS_CURL_DEVNULL = /\bcurl(?:\.exe)?\b[^\n;|&]*\s-o\s*\/dev\/null\b/u;
 
-function classifyError(content: unknown, input?: unknown): string {
+const WINDOWS_SHELL_NEXT_ACTION = "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다. `curl -o /dev/null`의 exit 23은 Windows curl.exe가 /dev/null에 쓰지 못한 것이라 응답은 이미 받았다. `-o NUL`이나 셸 리디렉션 `>/dev/null`로 바꾼다.";
+// Linux(WSL 포함) 셸: Windows 명령·CRLF 스크립트·interop PowerShell 호출이 원인이다.
+const POSIX_SHELL_NEXT_ACTION = "같은 명령을 그대로 재시도하지 않는다. 이 셸은 Linux다. del·copy·findstr·cmd /c 대신 rm·cp·grep을 쓴다. Windows 전용 작업만 interop으로 부르고, PowerShell 로직은 write로 .ps1 파일을 만들어 powershell.exe -File \"$(wslpath -w <스크립트>)\"로 실행하며 넘기는 경로도 wslpath -w로 바꾼다. `$'\\r'` 구문 오류는 CRLF .sh를 읽은 것이니 bash <(tr -d '\\r' < <스크립트>)로 실행하거나 스크립트를 LF로 저장한다.";
+
+function classifyError(content: unknown, input: unknown, platform: NodeJS.Platform): string {
   const text = textContent(content);
   const command = input && typeof input === "object" && "command" in input ? input.command : undefined;
-  if (/exited with code 23\b/u.test(text) && typeof command === "string" && WINDOWS_CURL_DEVNULL.test(command)) {
+  if (platform === "win32" && /exited with code 23\b/u.test(text) && typeof command === "string" && WINDOWS_CURL_DEVNULL.test(command)) {
     return "windows-shell";
   }
   for (const [pattern, category] of ERROR_CATEGORY_PATTERNS) {
@@ -889,6 +895,7 @@ function renderMemoryApplication(
 
 export function createJevRuntime(deps: JevRuntimeDeps = {}) {
   return function jevRuntime(pi: ExtensionAPI): void {
+    const platform = deps.platform ?? process.platform;
     /** toolCallId → spawn된 task 메타. pre-dispatch 중복 판정의 기존 maker 목록. */
     const liveMakers = new Map<string, SpawnedTaskMeta[]>();
     /** jobId → {callId, taskIndex}. settle 시 해당 child만 liveMakers에서 닫는다. */
@@ -1903,7 +1910,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const inputChanged = serializeInput(event.input) !== failure.inputSerialized;
       const observation = failure.observation;
       const nextAction = failure.category === "windows-shell"
-        ? "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다. `curl -o /dev/null`의 exit 23은 Windows curl.exe가 /dev/null에 쓰지 못한 것이라 응답은 이미 받았다. `-o NUL`이나 셸 리디렉션 `>/dev/null`로 바꾼다."
+        ? (platform === "win32" ? WINDOWS_SHELL_NEXT_ACTION : POSIX_SHELL_NEXT_ACTION)
         : observation.cancelled && !observation.deterministicExitObserved
           ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
           : RETRY_CATEGORY_NEXT_ACTION[failure.category]
@@ -2166,7 +2173,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         if (!EXPLORATION_TOOLS[event.toolName]) {
           pendingFailures.set(event.toolName, {
             inputSerialized: serializeInput(event.input),
-            category: classifyError(event.content, event.input),
+            category: classifyError(event.content, event.input, platform),
             interveningTools: [],
             observation: readFailureObservation(event.details, event.content),
           });

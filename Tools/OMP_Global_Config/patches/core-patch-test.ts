@@ -3,7 +3,7 @@
 // 동적 import 예외: 정적 import는 `@oh-my-pi/pi-coding-agent`를 bun 전역 캐시의
 // 미패치 사본으로 해석한다. 이 테스트는 omp-web이 실제로 적재하는 사본만 검증해야
 // 하므로 디스크 경로를 고정한다(모듈 로딩 경계 테스트).
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
@@ -2240,6 +2240,35 @@ process.exit(0);`;
 		shellLine === "NODE_ENV=unset PORT=unset NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1",
 		`shell=${shellLine} stderr=${child.stderr.toString().trim().slice(0, 300)}`,
 	);
+	// 2026-10-07 Linux: zsh/fish 사용자 셸의 `!` 핫키는 bash 도구가 PTY 로 띄우고, native PTY 는 넘긴 env map 을 OS environ
+	// 위에 덧씌운다. map 에서 지운 서버 변수가 되살아났다. 이 PTY 분기는 bash 가 아닌 사용자 셸에서만 타므로, `zsh` 라는 이름의
+	// bash 를 SHELL 로 준다. `[ -t 1 ]` 로 PTY 경로를 실제로 탔는지 함께 본다. 명시 env(PORT·EXPLICIT)는 남아야 한다.
+	// Windows 는 사용자 셸 PTY 를 쓰지 않는다(resolveUserShellConfig 가 기본 셸로 돌아간다).
+	const realBash = Bun.which("bash");
+	if (process.platform === "win32" || !realBash) console.log("  (이 환경에서는 사용자 셸 PTY 경로가 없다: PTY 셸 검사는 세지 않는다)");
+	else {
+		const fakeShellDir = mkdtempSync(join(tmpdir(), "hanse-user-shell-"));
+		symlinkSync(realBash, join(fakeShellDir, "zsh"));
+		const ptyHome = mkdtempSync(join(tmpdir(), "hanse-shell-home-"));
+		const ptyProbe = `const { executeBash } = await import(${JSON.stringify(`${CORE}/exec/bash-executor.ts`)});
+const result = await executeBash('tty=no; [ -t 1 ] && tty=yes; echo "PTY=$tty NODE_ENV=\${NODE_ENV-unset} PORT=\${PORT-unset} NEXT_RUNTIME=\${NEXT_RUNTIME-unset} ORIGIN=\${__NEXT_PRIVATE_ORIGIN-unset} KEEP_ME=\${KEEP_ME-unset} EXPLICIT=\${EXPLICIT-unset}"', { cwd: ${JSON.stringify(envCwd)}, useUserShell: true, env: { EXPLICIT: "1", PORT: "5555" }, pty: { cols: 120, rows: 24, onChunk: () => {} }, timeout: 20_000 });
+console.log(result.output.split(/\\r?\\n/).find(line => line.startsWith("PTY=")) ?? "<none> " + result.output.slice(0, 200));
+process.exit(0);`;
+		const { PI_NO_PTY: _noPty, ...inherited } = process.env;
+		const ptyChild = Bun.spawnSync([process.execPath, "-e", ptyProbe], {
+			cwd: envCwd,
+			env: { ...inherited, ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}", HOME: ptyHome, USERPROFILE: ptyHome, SHELL: join(fakeShellDir, "zsh") },
+			timeout: 60_000,
+		});
+		const ptyLine = ptyChild.stdout.toString().trim().split(/\r?\n/).pop()?.trim() ?? "";
+		check(
+			"사용자 셸 PTY(`!` 핫키) 에도 서버 변수가 새지 않고 명시 env 는 남는다",
+			ptyLine === "PTY=yes NODE_ENV=unset PORT=5555 NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1",
+			`pty=${ptyLine} stderr=${ptyChild.stderr.toString().trim().slice(0, 300)}`,
+		);
+		rmSync(ptyHome, { recursive: true, force: true });
+		rmSync(fakeShellDir, { recursive: true, force: true });
+	}
 	rmSync(probeHome, { recursive: true, force: true });
 	rmSync(envCwd, { recursive: true, force: true });
 }
@@ -3180,7 +3209,8 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 		{ id: "131644", app: "Whale", title: "CUELO - Whale", x: 0, y: 0, width: 1, height: 1, focused: true },
 		{ id: "329350", app: "STAR PLUTO", title: "STAR PLUTO", x: 0, y: 0, width: 1, height: 1, focused: false },
 	];
-	const session = { capabilities: {}, listDisplays: async () => [], listWindows: async () => windows, close: async () => {} };
+	// 18.6.3 worker 는 run 이 끝날 때 native session 의 retire()(성공)·cancel()(실패·취소)을 부른다.
+	const session = { capabilities: {}, listDisplays: async () => [], listWindows: async () => windows, close: async () => {}, cancel: () => {}, retire: () => {} };
 	type RunResult = { ok: boolean; payload?: { returnValue: unknown }; error?: { message: string } };
 	const waiters = new Map<string, (result: RunResult) => void>();
 	let deliver: (message: unknown) => void = () => {};
@@ -3272,6 +3302,13 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		listDisplays: async () => [],
 		listWindows: async () => [{ id: "w1", app: "Fixture", title: "Fixture", x: 0, y: 0, width: 400, height: 300, focused: false }],
 		close: async () => {},
+		cancel: () => {},
+		retire: () => {},
+		// 18.6.3 observe(): 스크린샷과 AX 트리를 한 번에 돌려준다. AX 쪽은 axSnapshot 과 같은 세대 규칙을 따른다.
+		observe: async (target: string) => ({
+			capture: { data: new Uint8Array(4), width: 1, height: 1, sourceWidth: 1, sourceHeight: 1, coordinateWidth: 1, coordinateHeight: 1, target },
+			accessibility: { text: (await session.axSnapshot()).text, nodeCount: items.size, truncated: false },
+		}),
 		axSnapshot: async () => {
 			snapshots++;
 			generation++;
@@ -3383,6 +3420,18 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	const direct = await run(`const el = await desktop.ref(${JSON.stringify(textRef)}); return { ref: el.ref, from: el.reacquiredFrom, result: await el.press() };`);
 	const d = (direct.payload?.returnValue ?? {}) as Reacquired;
 	const directActed = acted.slice(actedBeforeDirect);
+	// 18.6.3 의 observe() 도 ax() 와 같은 AX 텍스트를 돌려준다. 그 텍스트에서 고른 ref 도 지문이 남아 stale 뒤 재획득돼야 한다.
+	const observed = await run(`const win = await desktop.window("w1"); if (typeof win.observe !== "function") return { absent: true }; return { ax: (await win.observe({ silent: true })).ax };`);
+	const observedOut = (observed.payload?.returnValue ?? {}) as { absent?: boolean; ax?: string };
+	const observeRef = /- button "Alpha" \[ref=(e\d+)\]/.exec(String(observedOut.ax))?.[1];
+	let viaObserve: RunResult | undefined;
+	let observeActed: string[] = [];
+	if (!observedOut.absent) {
+		await run(`const win = await desktop.window("w1"); await win.ax(); await win.ax(); return 0;`);
+		const actedBeforeObserve = acted.length;
+		viaObserve = await run(`const el = await desktop.ref(${JSON.stringify(observeRef)}); return { ref: el.ref, from: el.reacquiredFrom, result: await el.press() };`);
+		observeActed = acted.slice(actedBeforeObserve);
+	}
 
 	const refusal = async (title: string, change: () => void) => {
 		onSnapshot.push(change);
@@ -3423,6 +3472,11 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	check("재획득(유일 후보): stale 된 요소 핸들의 press 가 같은 요소에 한 번만 닿는다", elementPath.ok && JSON.stringify(elementActed) === '["alpha"]' && e.result?.reacquired?.from === e.old && e.result?.reacquired?.to === e.now && e.from === e.old && e.now !== e.old, JSON.stringify({ elementPath, elementActed }));
 	check("재획득은 axSnapshot 을 부르지 않아 다른 ref 세대를 밀어내지 않는다", elementSnapshots === 2, `snapshots=${elementSnapshots}`);
 	check("재획득(직접 헬퍼 경로): ax() 텍스트에서 고른 stale ref 도 desktop.ref 에서 같은 요소로 풀린다", direct.ok && textRef !== undefined && d.from === textRef && d.result?.reacquired?.matchedBy?.includes("parent") && JSON.stringify(directActed) === '["alpha"]', JSON.stringify({ textRef, direct, directActed }));
+	if (observedOut.absent) console.log("  (이 판에는 observe() 가 없다: observe 경로 재획득 검사는 세지 않는다)");
+	else {
+		const o = (viaObserve?.payload?.returnValue ?? {}) as Reacquired;
+		check("재획득(observe 경로): observe() 의 AX 텍스트에서 고른 stale ref 도 desktop.ref 에서 같은 요소로 풀린다", viaObserve?.ok === true && observeRef !== undefined && o.from === observeRef && o.result?.reacquired?.from === observeRef && JSON.stringify(observeActed) === '["alpha"]', JSON.stringify({ observed, viaObserve, observeActed }));
+	}
 	check("후보 0개: 이름이 바뀐 요소는 누르지 않고 원래 StaleRef 로 실패하며 사유를 남긴다", none.value.ok === false && none.value.message.startsWith("StaleRef: ") && none.value.name === "ToolError" && none.value.info?.reacquire?.outcome === "no-candidate" && none.value.info?.action === "press" && none.acted.length === 0, JSON.stringify(none));
 	check("모호 후보: 같은 이름·같은 부모 둘이 모두 자리를 옮기면 어느 쪽도 누르지 않는다", tie.value.ok === false && tie.value.message.startsWith("StaleRef: ") && tie.value.info?.reacquire?.outcome === "ambiguous" && tie.value.info?.reacquire?.candidates?.length === 2 && tie.acted.length === 0, JSON.stringify(tie));
 	check("부모 경로 불일치: 이름이 같아도 다른 부모 아래로 옮겨 간 요소는 누르지 않는다", moved.value.ok === false && moved.value.info?.reacquire?.outcome === "parent-mismatch" && moved.acted.length === 0, JSON.stringify(moved));

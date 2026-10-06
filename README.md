@@ -16,7 +16,7 @@ Use the same `~/.omp/agent` sessions, credentials and model configuration from t
 
 **한국어:** CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 웹 앱은 omp SDK를 서버 안에서 실행하고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정을 공유합니다.
 
-내장 OMP 코어는 **18.6.1**입니다. 추론 강도를 바꾸거나 서브에이전트를 다시 이어도 예비 모델 설정을 유지하며, 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적입니다.
+내장 OMP 코어는 **18.6.3**입니다. 추론 강도를 바꾸거나 서브에이전트를 다시 이어도 예비 모델 설정을 유지하며, 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적입니다.
 
 CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다. 원인을 확인하고 필요한 부분만 바꾸며, 다음 작업에서 적용과 효과를 확인하는 것까지를 지향합니다. 기록을 저장했다는 이유만으로 자동 개선이 끝났다고 보지는 않습니다.
 
@@ -31,7 +31,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 | 구분 | 내용 |
 | --- | --- |
 | 앱·런타임 설치 뒤 동작 | 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, 비밀번호 잠금, 캐릭터 알림 등. 대화에는 별도 제공자 인증이 필요합니다 |
-| 사용자가 준비할 것 | Node.js·Bun과 자신의 모델 제공자 계정·모델 선택. 소스 checkout/전체 Git 기능에는 Git for Windows도 필요합니다. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
+| 사용자가 준비할 것 | Node.js·Bun과 자신의 모델 제공자 계정·모델 선택. 소스 checkout/전체 Git 기능에는 Git(Windows는 Git for Windows)도 필요합니다. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
 | 로컬 사이드카 (공개) | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브의 실행 소스도 포함합니다. `start`가 앱과 함께 실행합니다. usage의 CLI fallback·`stats`에는 별도 `omp` CLI가 필요합니다 |
 | OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 음성, 명령 가드의 규칙·SOP·확장과 앱 SDK core 패치입니다. `setup`으로 설치합니다. [하네스 안내](./docs/harness.md)에 Jev의 외부 자격 경계가 있습니다 |
 | 포함하지 않는 것 | 개발자의 로그인 정보·API 키·개인 계정 및 모델 설정·개인 skill·대화와 작업 기록·PC별 운영 자료. 공개 설치는 필요한 비개인 운영 기본값만 제공하고 모델은 사용자가 고릅니다 |
@@ -118,7 +118,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 CUELO는 GitHub 소스와 npm 패키지 [`cuelo`](https://www.npmjs.com/package/cuelo)로 설치합니다. npm의 `omp-web`은 upstream 프로젝트이며 CUELO와 별개입니다. **기존 `omp` CLI만 설치한 PC에도 `omp-web` 없이 CUELO를 추가할 수 있습니다.** 기존 `config.yml`·계정·세션을 보존하는 순서는 [대표 설치 경로](./docs/installation.md#대표-경로-omp만-있는-windows-pc-omp-web-없음)에 있습니다.
 
-> **개발·검증 환경은 Windows입니다.** macOS·Linux는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다.
+> **개발·검증 환경은 Windows와 Linux(WSL2 Ubuntu 24.04)입니다.** 공개 CI는 Windows에서 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다.
 
 서버는 **Bun 1.4.2 이상**에서만 실행됩니다(omp SDK가 TypeScript 소스와 `bun:` 내장 모듈을 사용). Node.js 22.19.0 이상도 `install.mjs`와 npm에 필요합니다. Git은 소스 checkout과 Git 작업(worktree·commit 등)에 필요하지만 npm 설치와 기본 대화에는 필요하지 않습니다.
 메모리 패키지가 선언한 선택적 ONNX peer는 `onnxruntime-node:1.21.0`으로 제공합니다. Transformers가 요구하는 별도 버전은 자체 의존성으로 유지하며, 설치 오류를 피하려고 peer 검증을 끄지 않습니다. Mnemopi의 로컬 임베딩은 별도 `fastembed`와 모델을 첫 사용 때 내려받을 수 있습니다.
@@ -126,6 +126,7 @@ CUELO는 GitHub 소스와 npm 패키지 [`cuelo`](https://www.npmjs.com/package/
 ```bash
 # Bun 설치
 powershell -c "irm bun.sh/install.ps1 | iex"    # Windows
+curl -fsSL https://bun.sh/install | bash        # Linux
 
 # CUELO 받기와 실행
 git clone https://github.com/gim47656-ship-it/CUELO.git

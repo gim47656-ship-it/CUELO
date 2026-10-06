@@ -86,8 +86,10 @@ describe("정책상 금지된 git 명령", () => {
 });
 
 describe("finalizer 전용 git 명령의 저장소 경계", () => {
-  const sessionDirectory = resolve("V:/Projects");
-  const externalDirectory = resolve("V:/kasset-core-work");
+  // 드라이브 경로는 Windows에서만 절대경로다. Linux에서는 같은 모양의 POSIX 절대경로로 같은 경계를 검사한다.
+  const ROOT = process.platform === "win32" ? "V:" : "/v";
+  const sessionDirectory = resolve(`${ROOT}/Projects`);
+  const externalDirectory = resolve(`${ROOT}/kasset-core-work`);
   const isSessionRepository = (directory: string): boolean =>
     normalizePath(directory) === normalizePath(sessionDirectory);
   const contextFor = (cwd: string): GuardContext => ({
@@ -110,7 +112,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
 
   test("세션 저장소 callback은 -C push를 차단한다", () => {
     expect(
-      matchBlockedCommand("git -C V:/Projects push", {
+      matchBlockedCommand(`git -C ${ROOT}/Projects push`, {
         cwd: sessionDirectory,
         isSessionRepository: () => true,
       }),
@@ -129,7 +131,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
   test("다른 저장소의 push를 허용한다", () => {
     expect(
       matchBlockedCommand(
-        "git -C V:/kasset-core-work push -u origin br",
+        `git -C ${ROOT}/kasset-core-work push -u origin br`,
         contextFor(sessionDirectory),
       ),
     ).toBeUndefined();
@@ -138,7 +140,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
   test("다른 저장소의 commit을 허용한다", () => {
     expect(
       matchBlockedCommand(
-        "git -C V:/kasset-core-work commit -m x",
+        `git -C ${ROOT}/kasset-core-work commit -m x`,
         contextFor(sessionDirectory),
       ),
     ).toBeUndefined();
@@ -146,14 +148,14 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
 
   test("같은 저장소를 가리키는 -C push는 차단한다", () => {
     expect(
-      matchBlockedCommand("git -C V:/Projects push", contextFor(externalDirectory)),
+      matchBlockedCommand(`git -C ${ROOT}/Projects push`, contextFor(externalDirectory)),
     ).toBeDefined();
   });
 
   test("-C를 앞에서 뒤로 누적 적용한다", () => {
     const targets: string[] = [];
     const reason = matchBlockedCommand(
-      "git -C V:/kasset-core-work -C sub push",
+      `git -C ${ROOT}/kasset-core-work -C sub push`,
       {
         cwd: sessionDirectory,
         isSessionRepository: (directory) => {
@@ -169,7 +171,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
 
   test("붙여 쓴 -C 값을 대상 디렉터리로 적용한다", () => {
     const targets: string[] = [];
-    const reason = matchBlockedCommand("git -CV:/kasset-core-work push", {
+    const reason = matchBlockedCommand(`git -C${ROOT}/kasset-core-work push`, {
       cwd: sessionDirectory,
       isSessionRepository: (directory) => {
         targets.push(normalizePath(directory));
@@ -184,7 +186,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
   test("--git-dir 값을 대상 디렉터리로 적용한다", () => {
     const targets: string[] = [];
     const reason = matchBlockedCommand(
-      "git --git-dir=V:/kasset-core-work/.git push",
+      `git --git-dir=${ROOT}/kasset-core-work/.git push`,
       {
         cwd: sessionDirectory,
         isSessionRepository: (directory) => {
@@ -201,7 +203,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
   test("상대 --git-dir 값은 모든 -C 적용 후 해석한다", () => {
     const targets: string[] = [];
     const reason = matchBlockedCommand(
-      "git --git-dir=.git -C V:/kasset-core-work push",
+      `git --git-dir=.git -C ${ROOT}/kasset-core-work push`,
       {
         cwd: sessionDirectory,
         isSessionRepository: (directory) => {
@@ -253,7 +255,7 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
     });
   }
 
-  const shortNamePath = "C:/Users/RUNNER~1/AppData/Local/Temp/ext";
+  const shortNamePath = process.platform === "win32" ? "C:/Users/RUNNER~1/AppData/Local/Temp/ext" : "/home/RUNNER~1/tmp/ext";
   const shortNameCases = [
     ["-C 값", `git -C ${shortNamePath} push origin main`, shortNamePath],
     ["따옴표 -C 값", `git -C '${shortNamePath}' commit -m x`, shortNamePath],
