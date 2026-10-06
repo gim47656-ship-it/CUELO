@@ -115,6 +115,31 @@ test("setup refuses role names and selectors the harness does not route to", () 
   assert.throws(() => parseArgs(["deploy"]), /unknown command/);
 });
 
+test("only start accepts an explicit listener address", () => {
+  assert.equal(parseArgs(["start", "--hostname", "0.0.0.0"]).hostname, "0.0.0.0");
+  assert.throws(() => parseArgs(["setup", "--hostname", "0.0.0.0"]), /unknown option for setup/);
+  assert.throws(() => parseArgs(["health", "--hostname", "0.0.0.0"]), /unknown option for health/);
+  assert.throws(() => parseArgs(["start", "--hostname"]), /needs a value/);
+});
+
+test("health authenticates only the web service and never leaks the password to sidecars", async () => {
+  const previous = process.env.CUELO_PASSWORD;
+  process.env.CUELO_PASSWORD = "health-test-password";
+  const expected = `Basic ${Buffer.from("omp:health-test-password").toString("base64")}`;
+  const web = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => new Response(null, { status: req.headers.get("authorization") === expected ? 200 : 401 }) });
+  const sidecar = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => new Response(null, { status: req.headers.has("authorization") ? 400 : 204 }) });
+  try {
+    const result = await checkHealth([
+      { name: "web", port: web.port, method: "GET", path: "/", expect: 200 },
+      { name: "usage", port: sidecar.port, method: "OPTIONS", path: "/", expect: 204 },
+    ]);
+    assert.deepEqual(result.map(({ ok, status }) => ({ ok, status })), [{ ok: true, status: 200 }, { ok: true, status: 204 }]);
+  } finally {
+    if (previous === undefined) delete process.env.CUELO_PASSWORD; else process.env.CUELO_PASSWORD = previous;
+    web.stop(true); sidecar.stop(true);
+  }
+});
+
 test("--home moves every profile variable the SDK and sidecars read", () => {
   const home = path.resolve("fixture-home");
   const profile = resolveProfile(home, { PATH: "p", PI_CODING_AGENT_DIR: "elsewhere" });

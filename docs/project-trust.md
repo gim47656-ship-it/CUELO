@@ -13,7 +13,7 @@ CUELO는 브라우저 세션에서 omp를 실행합니다. 프로젝트를 열 �
 | Custom tools | 위 설정 루트들의 `tools/` 디렉터리 |
 | MCP 설정 | `.mcp.json`, `.omp/.mcp.json`, `.omp/mcp.json`, `.claude/.mcp.json`, `.claude/mcp.json`, `.cursor/mcp.json` |
 
-Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`는 이 신뢰 확인으로 실행을 차단하는 대상이 아닙니다. 일부는 prompt 입력으로 처리되므로, 이 문서는 prompt injection을 막는다고 보장하지 않습니다. 신뢰할 수 없는 프로젝트의 지시문도 검토 없이 따라서는 안 됩니다.
+Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYSTEM.md`는 이 신뢰 확인으로 실행을 차단하는 대상이 아닙니다. 일부는 prompt 입력으로 처리되므로, 이 문서는 prompt injection을 막는다고 보장하지 않습니다. 신뢰할 수 없는 프로젝트의 지시문도 검토 없이 따라서는 안 됩니다.
 
 해당 실행 자원이 없는 프로젝트는 별도 신뢰 단계가 필요하지 않습니다.
 

@@ -1,13 +1,13 @@
 import { findConfigFile } from "@oh-my-pi/pi-coding-agent/config";
-import { resolvePromptInput } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { discoverTitleSystemPromptFile, resolvePromptInput } from "@oh-my-pi/pi-coding-agent/system-prompt";
 
 /**
- * `SYSTEM.md` / `APPEND_SYSTEM.md` resolution for CUELO sessions.
+ * `SYSTEM.md` / `APPEND_SYSTEM.md` / `TITLE_SYSTEM.md` resolution for CUELO sessions.
  *
- * The `omp` CLI resolves both files before it creates a session — project-local
+ * The `omp` CLI resolves these files before it creates a session — project-local
  * first (`.omp/`, `.claude/`, `.codex/`, `.gemini/`), then user-level
  * (`~/.omp/agent/`, …) — and hands the text to `createAgentSession` as
- * `customSystemPrompt` / `appendSystemPrompt`. CUELO builds its own session
+ * `customSystemPrompt` / `appendSystemPrompt` / `titleSystemPrompt`. CUELO builds its own session
  * options in `lib/rpc-manager.ts`, so a browser session used to silently drop
  * every prompt file the same user gets in the terminal (issue #28).
  *
@@ -19,7 +19,7 @@ import { resolvePromptInput } from "@oh-my-pi/pi-coding-agent/system-prompt";
  *   started in. Here every lookup is bound to the session's own cwd.
  * - Project-local prompt files come from whatever repository the browser
  *   opened, so `lib/project-trust.ts` is in scope. They load for untrusted
- *   projects too, deliberately: they are data folded into the system prompt —
+ *   projects too, deliberately: they are data folded into the model's prompts —
  *   the same category as skills, rules and `AGENTS.md`, which the trust gate
  *   leaves alone — and the gate exists for code omp *imports and executes*.
  *   They are a prompt-injection surface exactly as they are in the CLI; see
@@ -31,6 +31,8 @@ export interface ResolvedSessionSystemPrompts {
   systemPrompt: string | undefined;
   /** `APPEND_SYSTEM.md` text, appended to the rendered system prompt. */
   appendPrompt: string | undefined;
+  /** `TITLE_SYSTEM.md` text, replacing omp's bundled session-title prompt. */
+  titlePrompt: string | undefined;
 }
 
 /**
@@ -46,13 +48,14 @@ function discoverPromptFile(fileName: string, cwd: string): string | undefined {
 /**
  * Resolve the prompt files a session started in `cwd` should carry.
  *
- * Both fields are `undefined` when no file exists, which keeps the session on
- * omp's default prompt.
+ * Every field is `undefined` when its file does not exist, which keeps the
+ * session on omp's default prompt.
  */
 export async function resolveSessionSystemPrompts(cwd: string): Promise<ResolvedSessionSystemPrompts> {
-  const [systemPrompt, appendPrompt] = await Promise.all([
+  const [systemPrompt, appendPrompt, titlePrompt] = await Promise.all([
     resolvePromptInput(discoverPromptFile("SYSTEM.md", cwd), "system prompt"),
     resolvePromptInput(discoverPromptFile("APPEND_SYSTEM.md", cwd), "append system prompt"),
+    resolvePromptInput(discoverTitleSystemPromptFile(cwd), "title system prompt"),
   ]);
-  return { systemPrompt, appendPrompt };
+  return { systemPrompt, appendPrompt, titlePrompt };
 }

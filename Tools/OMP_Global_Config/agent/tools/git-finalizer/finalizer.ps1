@@ -10,6 +10,10 @@ try {
     $OutputEncoding = [Console]::OutputEncoding
 } catch {}
 $env:GIT_TERMINAL_PROMPT = '0'
+# PowerShell 5.1 on Windows and PowerShell 7 on Linux share this transaction.
+$isWindowsPlatform = [IO.Path]::DirectorySeparatorChar -eq '\'
+$pathComparison = if ($isWindowsPlatform) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$pathComparer = if ($isWindowsPlatform) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
 
 $stage = 'request'
 $createdCommit = $null
@@ -58,12 +62,12 @@ function Get-Sha256Hex([string]$Text) {
 function Normalize-FullPath([string]$Path) {
     $fullPath = [IO.Path]::GetFullPath($Path)
     $pathRoot = [IO.Path]::GetPathRoot($fullPath)
-    if ($fullPath.Equals($pathRoot, [StringComparison]::OrdinalIgnoreCase)) { return $pathRoot }
+    if ($fullPath.Equals($pathRoot, $pathComparison)) { return $pathRoot }
     return $fullPath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 }
 
 function Test-PathWithin([string]$Path, [string]$Root) {
-    if ($Path.Equals($Root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($Path.Equals($Root, $pathComparison)) { return $true }
     $prefix = $Root
     if (
         -not $prefix.EndsWith([IO.Path]::DirectorySeparatorChar) -and
@@ -71,7 +75,7 @@ function Test-PathWithin([string]$Path, [string]$Root) {
     ) {
         $prefix += [IO.Path]::DirectorySeparatorChar
     }
-    return $Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    return $Path.StartsWith($prefix, $pathComparison)
 }
 
 function Get-NearestExistingDirectory([string]$Path) {
@@ -97,7 +101,7 @@ function Get-RepositoryRootInPathNamespace([string]$WorkingDirectory) {
 }
 
 function Convert-ToRepoPath([string]$FullPath, [string]$Root) {
-    if ($FullPath.Equals($Root, [StringComparison]::OrdinalIgnoreCase)) { return '' }
+    if ($FullPath.Equals($Root, $pathComparison)) { return '' }
     return $FullPath.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
 }
 
@@ -108,8 +112,8 @@ function Get-GitPaths([string]$WorkingDirectory, [string[]]$GitArgs) {
 }
 
 function Assert-ExactPathSet([string[]]$Actual, [string[]]$Expected, [string]$Label) {
-    $actualSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $expectedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $actualSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
+    $expectedSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
     foreach ($path in $Actual) { [void]$actualSet.Add($path) }
     foreach ($path in $Expected) { [void]$expectedSet.Add($path) }
     if (-not $actualSet.SetEquals($expectedSet)) {
@@ -129,7 +133,7 @@ try {
 
     $stage = 'repository'
     $resolvedFiles = @()
-    $seenFullPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seenFullPaths = [Collections.Generic.HashSet[string]]::new($pathComparer)
     foreach ($inputFile in $inputFiles) {
         if ($inputFile.IndexOfAny(@([char]0, [char]10, [char]13)) -ge 0) { throw 'File paths cannot contain NUL or newlines.' }
         if ([IO.Path]::IsPathRooted($inputFile)) { throw "Absolute file path is not allowed: $inputFile" }
@@ -164,8 +168,8 @@ try {
             $selectedRepoRoot = $targetRepoRoot
             $selectedCommonDir = $targetCommonDir
         } elseif (
-            -not $selectedRepoRoot.Equals($targetRepoRoot, [StringComparison]::OrdinalIgnoreCase) -or
-            -not $selectedCommonDir.Equals($targetCommonDir, [StringComparison]::OrdinalIgnoreCase)
+            -not $selectedRepoRoot.Equals($targetRepoRoot, $pathComparison) -or
+            -not $selectedCommonDir.Equals($targetCommonDir, $pathComparison)
         ) {
             throw "Files belong to different repositories: $($file.Input)"
         }
@@ -174,11 +178,11 @@ try {
     $repoRoot = $selectedRepoRoot
     $commonDir = $selectedCommonDir
     if ($cwdRepoRoot) {
-        $targetsBelongToCwdRepository = $commonDir.Equals($cwdCommonDir, [StringComparison]::OrdinalIgnoreCase)
+        $targetsBelongToCwdRepository = $commonDir.Equals($cwdCommonDir, $pathComparison)
         if ($targetsBelongToCwdRepository) {
             foreach ($file in $resolvedFiles) {
                 $parentPath = [IO.Path]::GetDirectoryName($file.FullPath)
-                $isDirectRepoRootChild = $parentPath -and $parentPath.Equals($cwdRepoRoot, [StringComparison]::OrdinalIgnoreCase)
+                $isDirectRepoRootChild = $parentPath -and $parentPath.Equals($cwdRepoRoot, $pathComparison)
                 if (-not (Test-PathWithin -Path $file.FullPath -Root $cwd) -and -not $isDirectRepoRootChild) {
                     throw "File path escapes the session cwd: $($file.Input)"
                 }
@@ -195,10 +199,10 @@ try {
         }
     }
 
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seen = [Collections.Generic.HashSet[string]]::new($pathComparer)
     foreach ($file in $resolvedFiles) {
         $repoPath = Convert-ToRepoPath -FullPath $file.FullPath -Root $repoRoot
-        if (-not $repoPath -or $repoPath -eq '.git' -or $repoPath.StartsWith('.git/', [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not $repoPath -or $repoPath -eq '.git' -or $repoPath.StartsWith('.git/', $pathComparison)) {
             throw "Repository metadata or broad paths are not allowed: $($file.Input)"
         }
         if (-not $seen.Add($repoPath)) { throw "Duplicate file path: $($file.Input)" }
@@ -235,8 +239,9 @@ try {
     $trackingConfigured = [bool]$configuredRemote -and [bool]$configuredUpstreamRef
 
     $stage = 'lock'
-    $lockKey = Get-Sha256Hex ($commonDir.ToLowerInvariant() + [char]0 + $remote + [char]0 + $upstreamRef)
-    $mutexName = "Global\OMP-GitFinalize-$lockKey"
+    $lockDirectory = if ($isWindowsPlatform) { $commonDir.ToLowerInvariant() } else { $commonDir }
+    $lockKey = Get-Sha256Hex ($lockDirectory + [char]0 + $remote + [char]0 + $upstreamRef)
+    $mutexName = if ($isWindowsPlatform) { "Global\OMP-GitFinalize-$lockKey" } else { "OMP-GitFinalize-$lockKey" }
     $mutex = [Threading.Mutex]::new($false, $mutexName)
     try {
         $ownsMutex = $mutex.WaitOne([TimeSpan]::FromSeconds(120))
@@ -248,7 +253,7 @@ try {
     $stage = 'locked-preflight'
     $lockedCommonDir = Normalize-FullPath (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir')).Output
     $lockedBranch = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')).Output
-    if (-not $lockedCommonDir.Equals($commonDir, [StringComparison]::OrdinalIgnoreCase) -or $lockedBranch -ne $branch) {
+    if (-not $lockedCommonDir.Equals($commonDir, $pathComparison) -or $lockedBranch -cne $branch) {
         throw 'Repository or branch changed while acquiring the finalizer lock.'
     }
 
@@ -276,22 +281,47 @@ try {
     $stagedByFinalizer = $true
     [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'add', '-A', '--') + $repoPaths))
     $cachedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--cached', '--no-renames', '--name-only')
-    Assert-ExactPathSet -Actual $cachedPaths -Expected $repoPaths -Label 'Staged path set'
-
-    $stage = 'commit'
-    $messageFile = [IO.Path]::GetTempFileName()
-    [IO.File]::WriteAllText($messageFile, $message + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-    [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('commit', '--file', $messageFile))
-    $createdCommit = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', 'HEAD')).Output
-    $stagedByFinalizer = $false
-
-    $stage = 'commit-verify'
-    $parentSha = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', "$createdCommit^" )).Output
-    if ($parentSha -ne $headSha) {
-        throw "Created commit parent does not match the captured HEAD. parent=$parentSha head=$headSha"
+    # 이전 실행이 커밋은 만들고 push에서 실패했으면 요청 파일이 이미 깨끗하다. 그 파일이 아직
+    # 원격에 없는 upstream..HEAD 커밋에 들어 있을 때만 그 커밋을 인정하고, 새 커밋 없이 다시 보낸다.
+    $cachedPaths = @($cachedPaths)
+    $cachedSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
+    foreach ($path in $cachedPaths) { [void]$cachedSet.Add($path) }
+    $alreadyCommitted = @($repoPaths | Where-Object { -not $cachedSet.Contains($_) })
+    $resumedPush = $false
+    if ($alreadyCommitted.Count -gt 0) {
+        if (-not $upstreamSha -or $upstreamSha -eq $headSha) {
+            Assert-ExactPathSet -Actual $cachedPaths -Expected $repoPaths -Label 'Staged path set'
+        }
+        $pendingPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only', $upstreamSha, $headSha)
+        $pendingSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
+        foreach ($path in $pendingPaths) { [void]$pendingSet.Add($path) }
+        $unpending = @($alreadyCommitted | Where-Object { -not $pendingSet.Contains($_) })
+        if ($unpending.Count -gt 0) {
+            throw "Staged path set mismatch. Unchanged paths are not in unpushed commits ${upstreamSha}..${headSha}: $($unpending -join ', ')"
+        }
+        $resumedPush = $true
     }
-    $committedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', $createdCommit)
-    Assert-ExactPathSet -Actual $committedPaths -Expected $repoPaths -Label 'Committed path set'
+
+    if ($cachedPaths.Count -gt 0) {
+        Assert-ExactPathSet -Actual $cachedPaths -Expected @($repoPaths | Where-Object { $cachedSet.Contains($_) }) -Label 'Staged path set'
+        $stage = 'commit'
+        $messageFile = [IO.Path]::GetTempFileName()
+        [IO.File]::WriteAllText($messageFile, $message + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+        [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('commit', '--file', $messageFile))
+        $createdCommit = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', 'HEAD')).Output
+        $stagedByFinalizer = $false
+
+        $stage = 'commit-verify'
+        $parentSha = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', "$createdCommit^" )).Output
+        if ($parentSha -ne $headSha) {
+            throw "Created commit parent does not match the captured HEAD. parent=$parentSha head=$headSha"
+        }
+        $committedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', $createdCommit)
+        Assert-ExactPathSet -Actual $committedPaths -Expected $cachedPaths -Label 'Committed path set'
+    } else {
+        $stagedByFinalizer = $false
+        $createdCommit = $headSha
+    }
 
     $stage = 'push'
     [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('push', $remote, "${createdCommit}:${upstreamRef}"))
@@ -316,6 +346,7 @@ try {
         commitSha = $createdCommit
         remote = $remote
         upstreamRef = $upstreamRef
+        resumedPush = $resumedPush
     }
 } catch {
     $exitCode = 1

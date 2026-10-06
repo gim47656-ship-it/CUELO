@@ -21,6 +21,7 @@ import { skillExpansionToCommand } from "@/lib/slash-display";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { DirectoryPicker } from "./DirectoryPicker";
+import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
 import { useLoungeText } from "./lounge/i18n";
 
@@ -387,6 +388,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [homeDir, setHomeDir] = useState<string>("");
+  const [cloudProjects, setCloudProjects] = useState(false);
   const [projectFilter, setProjectFilter] = useState("");
   const [navigatorMode, setNavigatorMode] = useState<NavigatorMode>("projects");
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
@@ -800,8 +802,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   }, [selectedSessionId]);
 
   useEffect(() => {
-    fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
+    fetch("/api/home").then((r) => r.json()).then((d: { home?: string; cloudProjects?: boolean }) => {
       if (d.home) setHomeDir(d.home);
+      setCloudProjects(d.cloudProjects === true);
     }).catch(() => {});
   }, []);
 
@@ -1333,13 +1336,14 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   // 단톡방 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
   // 단톡방에서 돌아오면 떠나기 전 보기로 돌아간다.
   const loungeOn = loungePanel !== undefined && loungeActive;
+  const ProjectPicker = cloudProjects ? CloudProjectPicker : DirectoryPicker;
 
   return (
     // tabIndex -1: 탭 순서에 끼지 않되, 모달을 띄운 트리거가 메뉴와 함께
     // 사라졌을 때 초점을 돌려줄 수 있는 대상은 남겨 둔다.
     <div className="session-navigator" tabIndex={-1} style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", outline: "none" }}>
       {customPathOpen && (
-        <DirectoryPicker
+        <ProjectPicker
           busy={customPathValidating}
           error={customPathError}
           onCancel={() => {
@@ -1454,6 +1458,12 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </div>
 
       </div>
+      {cloudProjects && !loungeOn && (
+        <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
+          style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          {t("cloudProjects.launch")}
+        </button>
+      )}
 
 
       <div

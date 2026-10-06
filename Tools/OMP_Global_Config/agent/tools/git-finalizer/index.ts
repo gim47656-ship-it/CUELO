@@ -12,6 +12,7 @@ interface FinalizerResult {
   commitSha?: string;
   remote?: string;
   upstreamRef?: string;
+  resumedPush?: boolean;
 }
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
@@ -30,6 +31,7 @@ node files/source-build-helper.js verify-source ../.. files/source-integrity.jso
 Then include Tools/CUELO_Setup/files/source-integrity.json in the same commit.`;
 const memorySyncScript = "Tools/OMP_Global_Config/memory-sync/sync.ts";
 const memoryTransport = "Tools/OMP_Global_Config/memory-sync/memories.jsonl";
+const pathKey = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
 
 type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
@@ -54,7 +56,7 @@ async function exportMemories(cwd: string, files: string[], exec: Exec): Promise
   if (!files.every(inRoot)) return {};
   const transport = relative(cwd, join(root, ...memoryTransport.split("/"))).split(sep).join("/");
   if (transport.startsWith("../")) return { note: "기억 export 생략: 현재 cwd 밖의 파일이라 이 커밋에 넣을 수 없다." };
-  if (files.some((file) => file.replace(/\\/g, "/").toLowerCase() === transport.toLowerCase())) return {};
+  if (files.some((file) => pathKey(file.replace(/\\/g, "/")) === pathKey(transport))) return {};
   const exported = await exec("bun", [join(root, ...memorySyncScript.split("/")), "export", root], { cwd: root });
   if (exported.code !== 0) {
     const reason = (exported.stderr || exported.stdout).trim().split(/\r?\n/).at(-1) || `exit ${exported.code}`;
@@ -99,7 +101,7 @@ async function checkSourceManifest(
     if (!path || path === ".." || path.startsWith("../")) return;
     targets.push({ root, path });
   }
-  if (!targets.length || targets.some(({ root }) => root.toLowerCase() !== targets[0].root.toLowerCase())) return;
+  if (!targets.length || targets.some(({ root }) => pathKey(root) !== pathKey(targets[0].root))) return;
 
   const root = targets[0].root;
   try {
@@ -108,7 +110,7 @@ async function checkSourceManifest(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  if (targets.some(({ path }) => path.toLowerCase() === manifestPath.toLowerCase())) return;
+  if (targets.some(({ path }) => pathKey(path) === pathKey(manifestPath))) return;
 
   let packagedTools: string[] = [];
   try {
@@ -165,7 +167,7 @@ const factory: CustomToolFactory = (pi) => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. Main only.",
+    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Main only.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
@@ -176,7 +178,6 @@ const factory: CustomToolFactory = (pi) => ({
     const message = params.message.trim();
     if (requested.length === 0) throw new Error("git_finalize requires at least one exact file path.");
     if (!message) throw new Error("git_finalize requires a non-empty commit message.");
-    if (process.platform !== "win32") throw new Error("git_finalize currently requires Windows PowerShell.");
 
     const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
     await checkSourceManifest(pi.cwd, requested, exec);
@@ -193,7 +194,7 @@ const factory: CustomToolFactory = (pi) => ({
     try {
       await writeFile(requestPath, JSON.stringify({ cwd: pi.cwd, files, message }), "utf8");
       const result = await pi.exec(
-        "powershell.exe",
+        process.platform === "win32" ? "powershell.exe" : "pwsh",
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", requestPath],
         { cwd: pi.cwd, signal, timeout: 180_000 },
       );
@@ -207,6 +208,7 @@ const factory: CustomToolFactory = (pi) => ({
           {
             type: "text",
             text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
+              + (parsed.resumedPush ? " 이미 커밋돼 있던 미전송 커밋을 함께 다시 보냈다." : "")
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : ""),
           },

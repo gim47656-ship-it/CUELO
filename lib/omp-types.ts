@@ -216,6 +216,8 @@ export interface AgentSessionLike {
   /** All messages including custom types (the live call reads its history from here). */
   readonly messages: AgentMessage[];
   readonly settings: Settings;
+  /** The session's `TITLE_SYSTEM.md` override; `undefined` keeps omp's bundled title prompt. */
+  readonly titleSystemPrompt?: string;
   readonly agent: {
     state?: { systemPrompt?: string | string[]; thinkingLevel?: string };
     appendMessage(message: AgentMessage): void;

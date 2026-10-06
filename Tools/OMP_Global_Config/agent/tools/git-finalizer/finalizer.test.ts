@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import factory from "./index";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
+const powerShell = process.platform === "win32" ? "powershell.exe" : "pwsh";
 
 const tempRoots: string[] = [];
 // 각 테스트는 PowerShell 5.1 기동과 bare remote push를 실제로 한다. GitHub Windows 러너에서 평소 2~7초지만
@@ -24,6 +25,7 @@ interface FinalizerOutput {
   stage: string;
   error?: string;
   commitSha?: string;
+  resumedPush?: boolean;
 }
 
 function run(command: string, args: string[], cwd?: string): CommandResult {
@@ -150,7 +152,7 @@ async function startFinalizer(
   const request = join(root, `${name}.json`);
   await writeFile(request, JSON.stringify({ cwd: work, files, message }), "utf8");
   const process = Bun.spawn({
-    cmd: ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", request],
+    cmd: [powerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", request],
     cwd: work,
     stdout: "pipe",
     stderr: "pipe",
@@ -170,7 +172,7 @@ afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-describe.skipIf(process.platform !== "win32")("git finalizer", () => {
+describe("git finalizer", () => {
   test("commits only declared files and preserves unrelated dirty files", async () => {
     const { root, remote, work } = await createRepository();
     await writeFile(join(work, "a.txt"), "changed-a\n");
@@ -184,6 +186,15 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(output.commitSha!);
     expect(git(work, ["status", "--short"])).toBe("?? unrelated.txt");
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test.skipIf(process.platform === "win32")("preserves distinct case-sensitive file names", async () => {
+    const { root, work } = await createRepository();
+    await writeFile(join(work, "a.txt"), "lowercase\n");
+    await writeFile(join(work, "A.txt"), "uppercase\n");
+    const { result, output } = await startFinalizer(root, work, "case-sensitive", ["a.txt", "A.txt"], "two different files");
+    expect(result.code, result.stderr || result.stdout).toBe(0);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", output.commitSha!]).split("\n").sort()).toEqual(["A.txt", "a.txt"]);
   }, TEST_TIMEOUT_MS);
 
   test("keeps ordinary repositories without a source helper unchanged", async () => {
@@ -313,7 +324,7 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
   }, TEST_TIMEOUT_MS);
 
-  test("accepts a direct file when the repository root is a mapped drive root", async () => {
+  test.skipIf(process.platform !== "win32")("accepts a direct file when the repository root is a mapped drive root", async () => {
     const { root, remote, work } = await createRepository();
     const drive = await getUnusedDriveLetter();
     const mappedRoot = `${drive}\\`;
@@ -816,6 +827,46 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
   }, TEST_TIMEOUT_MS);
 
+  test("pushes the existing commit when a retry follows a commit whose push failed", async () => {
+    const { root, remote, work } = await createRepository();
+    const hook = join(remote, "hooks", "pre-receive");
+    const commitButFailPush = async (file: string, name: string) => {
+      await writeFile(hook, "#!/bin/sh\necho 'Internal Server Error' >&2\nexit 1\n");
+      await chmod(hook, 0o755);
+      const before = git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"]);
+      await writeFile(join(work, file), `changed-${file}\n`);
+      const failed = await startFinalizer(root, work, name, [file], `change ${file}`);
+      expect(failed.result.code).toBe(1);
+      expect(failed.output.stage).toBe("push");
+      expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+      await rm(hook);
+      return failed.output.commitSha!;
+    };
+
+    // 같은 파일로 다시 부르면 새 커밋 없이 남은 커밋을 보낸다.
+    const first = await commitButFailPush("a.txt", "push-fails");
+    const resumed = await startFinalizer(root, work, "push-retry", ["a.txt"], "change a.txt");
+    expect(resumed.result.code, resumed.result.stderr || resumed.result.stdout).toBe(0);
+    expect(resumed.output.resumedPush).toBe(true);
+    expect(resumed.output.commitSha).toBe(first);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(first);
+
+    // 재시도에 새 변경(예: 기억 transport)이 붙으면 그것만 새로 커밋해 함께 보낸다.
+    const second = await commitButFailPush("b.txt", "push-fails-again");
+    await writeFile(join(work, "c.txt"), "new-c\n");
+    const mixed = await startFinalizer(root, work, "mixed-retry", ["b.txt", "c.txt"], "add c");
+    expect(mixed.result.code, mixed.result.stderr || mixed.result.stdout).toBe(0);
+    expect(mixed.output.resumedPush).toBe(true);
+    expect(git(work, ["rev-parse", `${mixed.output.commitSha}^`])).toBe(second);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", mixed.output.commitSha!])).toBe("c.txt");
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(mixed.output.commitSha!);
+
+    // 이미 원격에 올라간 깨끗한 파일은 여전히 거절한다.
+    const pushed = await startFinalizer(root, work, "nothing-pending", ["a.txt"], "must fail");
+    expect(pushed.result.code).toBe(1);
+    expect(pushed.output.stage).toBe("stage");
+  }, TEST_TIMEOUT_MS);
+
   test("serializes two finalizers for one repository and upstream", async () => {
     const { root, remote, work } = await createRepository();
     await writeFile(join(work, "a.txt"), "parallel-a\n");
@@ -823,7 +874,7 @@ describe.skipIf(process.platform !== "win32")("git finalizer", () => {
 
     const results = await Promise.all([
       startFinalizer(root, work, "parallel-a", ["a.txt"], "change a"),
-      startFinalizer(root, work.toUpperCase(), "parallel-b", ["b.txt"], "change b"),
+      startFinalizer(root, process.platform === "win32" ? work.toUpperCase() : work, "parallel-b", ["b.txt"], "change b"),
     ]);
     for (const item of results) {
       expect(item.result.code, item.result.stderr || item.result.stdout).toBe(0);

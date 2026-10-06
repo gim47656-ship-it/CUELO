@@ -8,6 +8,12 @@
 
 node_modules
 .next
+.next-*
+.omp
+.gitnexus
+.runtime-patch-home
+doc
+.tmp*
 out
 build
 coverage
@@ -16,6 +22,18 @@ next-env.d.ts
 
 docs
 *.md
+!Tools/OMP_Global_Config/agent/**/*.md
+!Tools/OMP_Global_Config/notices/*.md
+Tools/**/doc
+Tools/**/evals
+Tools/OMP_Global_Config/agent/config.yml
+Tools/OMP_Global_Config/agent/models.yml
+Tools/OMP_Global_Config/agent/skills
+Tools/OMP_Global_Config/memory-sync
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/.env*
 
 .env*
 *.pem

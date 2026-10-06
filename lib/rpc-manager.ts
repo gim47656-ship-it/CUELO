@@ -2598,7 +2598,7 @@ export async function startRpcSession(
       ]);
       const untrusted = untrustedProjectSessionOptions(sessionCwd, agentDir, { extensionPaths, customToolPaths });
 
-      // `SYSTEM.md` / `APPEND_SYSTEM.md`, resolved against this session's cwd the
+      // `SYSTEM.md` / `APPEND_SYSTEM.md` / `TITLE_SYSTEM.md`, resolved against this session's cwd the
       // way the CLI resolves them against its own (lib/session-system-prompt.ts).
       const systemPrompts = await resolveSessionSystemPrompts(sessionCwd);
 
@@ -2640,6 +2640,9 @@ export async function startRpcSession(
         ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),
         ...(toolsOption !== undefined ? { toolNames: toolsOption, restrictToolNames: true } : {}),
         ...(untrusted ?? {}),
+        // The CLI hands `TITLE_SYSTEM.md` to the session the same way; without it the
+        // core's automatic title uses its bundled prompt without language guidance.
+        ...(systemPrompts.titlePrompt ? { titleSystemPrompt: systemPrompts.titlePrompt } : {}),
       };
       // omp's own applier, so a prompt file goes through the same templates the
       // CLI renders it with instead of overwriting the whole system prompt.

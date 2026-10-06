@@ -123,6 +123,8 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 `modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `anthropic/claude-sonnet-5-5`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sonnet을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
 
+세션 제목 프롬프트는 `agent/TITLE_SYSTEM.md`가 정본입니다. [`TITLE_SYSTEM.md`](../Tools/OMP_Global_Config/agent/TITLE_SYSTEM.md)는 요청이 쓰인 언어로 제목을 쓰고(한국어 요청은 한국어, 영어 요청은 영어) 식별자는 원문으로 두며, 인사처럼 이름 붙일 수 없는 입력은 거절하도록 지시합니다. 코어 기본 제목 프롬프트에는 이 언어 지시가 없고, CUELO는 세션을 만들 때 `TITLE_SYSTEM.md`를 코어에 전달하지 않아 CLI와 달리 사용자 파일이 적용되지 않았습니다. 그 둘이 겹쳐 한국어 요청에도 영어 제목이 나올 수 있었고, 그래서 기본 프롬프트가 항상 영어를 강제한다고 단정할 수는 없습니다. 이제 `lib/session-system-prompt.ts`가 세션 cwd 기준으로 코어의 `discoverTitleSystemPromptFile`·`resolvePromptInput`을 호출하고, 결과를 `createAgentSession`의 `titleSystemPrompt`로 넘깁니다. 자동 제목과 수동 이름 짓기(`lib/session-title.ts`)가 그 세션의 같은 값을 씁니다. 탐색 순서는 `SYSTEM.md`와 같습니다: 프로젝트(`.omp/`, `.claude/` 등)가 사용자 수준(`~/.omp/agent/`)보다 먼저이고, 파일이 없으면 코어 기본 동작을 유지합니다. `setup.ps1`/`export.ps1`/`verify.ps1`은 이 파일을 다른 필수 프로필 파일과 같게 설치·내보내기·검사하고, 공개 설치(`install.mjs`)는 `package.json`의 `files`에 있는 이 파일을 `~/.omp/agent`에 없을 때만 추가합니다. 기존 세션의 제목은 일괄 변경하지 않습니다.
+
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
@@ -209,6 +211,8 @@ mcp:
 ## Git 마감 도구
 
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
+
+커밋은 됐는데 push가 실패했다면(원격 오류·네트워크 끊김) 같은 파일 목록으로 다시 호출합니다. 요청한 파일이 이미 깨끗하고 아직 원격에 없는 커밋(upstream..HEAD)에 들어 있으면, 새 커밋을 만들지 않고 그 커밋을 그대로 다시 보냅니다. 재시도 사이에 새로 바뀐 파일만 있으면 그것만 새 커밋으로 만들어 함께 보냅니다. 이미 원격에 있는 파일이나 바뀌지 않은 파일만 넘기면 기존처럼 거절합니다.
 
 저장소에 기억 동기화 스크립트(`Tools/OMP_Global_Config/memory-sync/sync.ts`)가 있으면 `git_finalize`는 커밋 전에 이 PC의 프로젝트 기억을 `memories.jsonl`로 내보내고, 바뀐 경우 그 파일을 같은 커밋에 넣습니다. 다른 PC는 `setup`에서 이 파일을 가져옵니다. 내보내기가 실패해도 요청한 파일의 커밋은 진행하고 결과 문구에 실패 이유를 남깁니다. 기억 파일은 공개 미러에 올라가지 않습니다.
 

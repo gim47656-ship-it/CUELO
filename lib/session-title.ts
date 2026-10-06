@@ -71,12 +71,16 @@ export async function generateSessionTitle(
     throw new Error("The session has no user messages to name");
   }
 
+  // `titleSystemPrompt` is the session's `TITLE_SYSTEM.md` override, so the
+  // manual "name this session" button and the automatic title share one prompt.
   const title = await generateOmpSessionTitle(
     firstMessage,
     session.modelRegistry as never,
     session.settings,
     session.sessionId,
     session.model as never,
+    undefined,
+    session.titleSystemPrompt,
   );
   if (!title) return null;
 

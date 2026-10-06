@@ -82,13 +82,15 @@ export function parseArgs(argv) {
   const args = [...argv];
   const command = args[0] && !args[0].startsWith("--") ? args.shift() : "setup";
   if (!["setup", "start", "health"].includes(command)) throw new UsageError(`unknown command: ${command}`);
-  const options = { command, home: null, roles: {}, portBase: null };
+  const options = { command, home: null, roles: {}, portBase: null, hostname: "127.0.0.1" };
   while (args.length > 0) {
     const flag = args.shift();
     const value = args.shift();
     if (value === undefined || value.startsWith("--")) throw new UsageError(`${flag} needs a value`);
     if (flag === "--home" && command !== "health") {
       options.home = path.resolve(value);
+    } else if (flag === "--hostname" && command === "start") {
+      options.hostname = value;
     } else if (flag === "--port-base" && command !== "setup") {
       options.portBase = parsePort(value, MAX_PORT_BASE);
       if (options.portBase === null) throw new UsageError(`--port-base takes a number from 1 to ${MAX_PORT_BASE}`);
@@ -306,9 +308,8 @@ async function start(options) {
   const files = path.join(ROOT, "Tools", "CUELO_Setup", "files");
   const childEnv = { ...env, ...portEnv(services), CUELO_DIR: ROOT };
   const commands = [
-    // The app-only launcher; `--no-open` leaves the browser to the user, and the explicit loopback
-    // host wins over an inherited CUELO_HOSTNAME so this never listens beyond the machine.
-    ["web", bun, [path.join(ROOT, "bin", "cuelo.js"), "--no-open", "--hostname", "127.0.0.1"]],
+    // Only an explicit start flag widens the listener; inherited host settings do not.
+    ["web", bun, [path.join(ROOT, "bin", "cuelo.js"), "--no-open", "--hostname", options.hostname]],
     ["usage", bun, [path.join(files, "usage-server.js")]],
     ["btw", bun, [path.join(files, "btw-server.js")]],
     ["subagent", node, [path.join(files, "subagent-server.js")]],
@@ -327,7 +328,7 @@ async function start(options) {
     return { name, child };
   });
   const web = services.find((service) => service.name === "web");
-  console.log(`CUELO is starting at http://127.0.0.1:${web.port} . Press Ctrl+C to stop all four services.`);
+  console.log(`CUELO is starting at http://${options.hostname}:${web.port} . Press Ctrl+C to stop all four services.`);
 
   let stopping = false;
   const stopAll = () => {
@@ -355,13 +356,16 @@ async function start(options) {
   return exits.some((code) => code !== 0) ? 1 : 0;
 }
 
-/** One request per service; nothing here authenticates or reaches a model provider. */
+/** One request per local service; never reaches a model provider. */
 export async function checkHealth(services = servicePorts(), timeoutMs = 3000) {
   return Promise.all(services.map(async (service) => {
     try {
       const response = await fetch(`http://127.0.0.1:${service.port}${service.path}`, {
         method: service.method,
         signal: AbortSignal.timeout(timeoutMs),
+        headers: service.name === "web" && process.env.CUELO_PASSWORD
+          ? { Authorization: `Basic ${Buffer.from(`omp:${process.env.CUELO_PASSWORD}`).toString("base64")}` }
+          : undefined,
       });
       return { ...service, ok: response.status === service.expect, status: response.status };
     } catch (error) {
@@ -377,7 +381,7 @@ async function main(argv) {
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     console.error(error.message);
-    console.error("Usage: node install.mjs [setup|start|health] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>]");
+    console.error("Usage: node install.mjs [setup|start|health] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>] [--hostname <address>]");
     return 2;
   }
   try {

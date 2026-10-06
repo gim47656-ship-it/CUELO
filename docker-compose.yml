@@ -7,6 +7,7 @@
 # cannot be set inline.
 services:
   cuelo:
+    init: true
     build:
       context: .
       args:
@@ -22,6 +23,9 @@ services:
     environment:
       CUELO_AUTHENTICATED: "1"
       CUELO_PASSWORD: ${CUELO_PASSWORD:?set CUELO_PASSWORD to the password the browser should ask for}
+      CUELO_ALLOWED_HOSTS: ${CUELO_ALLOWED_HOSTS:-}
+      CUELO_INSTANCE_LABEL: ${CUELO_INSTANCE_LABEL:-}
+      CUELO_GITHUB_WORKSPACE: ${CUELO_GITHUB_WORKSPACE:-}
     volumes:
       # The same directory the omp CLI writes: sessions, config and model roles
       # are shared with the terminal.
@@ -29,4 +33,12 @@ services:
       # The projects CUELO may open. Narrow this to the tree you want the
       # agent to reach.
       - ${CUELO_WORKSPACE:-.}:/workspace
+      - ${CUELO_GH_CONFIG:-./.omp/cloud-gh}:/home/omp/.config/gh
+    cpus: ${CUELO_CPU_LIMIT:-1.0}
+    mem_limit: ${CUELO_MEMORY_LIMIT:-4g}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped

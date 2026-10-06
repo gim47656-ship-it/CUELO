@@ -60,6 +60,7 @@
     "Tools/OMP_Global_Config/agent/AGENTS.md",
     "Tools/OMP_Global_Config/agent/RULES.md",
     "Tools/OMP_Global_Config/agent/WATCHDOG.md",
+    "Tools/OMP_Global_Config/agent/TITLE_SYSTEM.md",
     "Tools/OMP_Global_Config/agent/agents",
     "Tools/OMP_Global_Config/agent/extensions",
     "Tools/OMP_Global_Config/agent/prompt-copies",
