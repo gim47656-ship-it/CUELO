@@ -16,8 +16,10 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --ignore-scripts --backend=copyfile
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# .next/cache holds only the build-time webpack cache (~750MB); the server does not read it.
 RUN bun bin/prepare-runtime.js --source && bun run build \
- && node Tools/CUELO_Setup/files/native-runtime-patch.js --target /app
+ && node Tools/CUELO_Setup/files/native-runtime-patch.js --target /app \
+ && rm -rf .next/cache
 
 FROM base AS runtime
 ARG UID=1000
