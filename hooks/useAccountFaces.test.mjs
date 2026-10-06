@@ -6,6 +6,7 @@ const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
 const {
   requestSessionPin,
   resolveAccountFace,
+  resolveLiveAccountFace,
   syncAccountFaces,
 } = await jiti.import("./useAccountFaces.ts");
 
@@ -120,6 +121,36 @@ test("a pin past the retry window is re-asked, so an account switch inside one p
     assert.equal(resolveAccountFace("account-switch", "anthropic", undefined)?.alias, "MIO(미오)");
   } finally {
     Date.now = realNow;
+    route.restore();
+  }
+});
+
+test("a turn that rotated accounts gets the runtime account, not the previous turn's pin", async () => {
+  // core 는 credential 을 끝난 메시지에만 찍는다. 착수 큐는 스트리밍 중에 떠서 계정을 모르고,
+  // 사용량 한도로 계정이 회전한 턴이면 저장소 pin 은 직전 턴의 계정이다(2026-10-06 RIN→MIO 회전 턴의
+  // 「시작한다.」 스티커가 RIN 으로 떴다). 런타임 pin 은 요청 직전에 갱신되므로 그것을 먼저 묻는다.
+  const route = stubSessionAccount();
+  try {
+    syncAccountFaces(REPORTS);
+    route.answer({ state: "resolved", provider: "anthropic", credentialId: 9 });
+    requestSessionPin("rotated", "anthropic");
+    await settle();
+    assert.equal(resolveAccountFace("rotated", "anthropic", undefined)?.alias, "RIN(린)");
+
+    route.answer({ state: "resolved", provider: "anthropic", credentialId: 11 });
+    assert.equal((await resolveLiveAccountFace("rotated", "anthropic", undefined))?.alias, "MIO(미오)");
+    // 같은 답으로 저장소 pin 도 고쳐, 오피스처럼 pin 을 읽는 화면이 직전 계정에 머물지 않는다.
+    assert.equal(resolveAccountFace("rotated", "anthropic", undefined)?.alias, "MIO(미오)");
+
+    // 메시지가 기록한 credential 이 있으면 그 계정이 답을 만든 것이라 묻지 않는다.
+    const before = route.calls.length;
+    assert.equal((await resolveLiveAccountFace("rotated", "anthropic", 9))?.alias, "RIN(린)");
+    assert.equal(route.calls.length, before);
+
+    // 런타임이 계정을 특정하지 못하면 저장소가 아는 것으로 답한다.
+    route.answer({ state: "not-running" });
+    assert.equal((await resolveLiveAccountFace("rotated", "anthropic", undefined))?.alias, "MIO(미오)");
+  } finally {
     route.restore();
   }
 });

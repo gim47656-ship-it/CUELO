@@ -699,6 +699,35 @@ describe("git finalizer", () => {
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
   }, TEST_TIMEOUT_MS);
 
+  test("retries the first publication of a new branch whose push failed after the commit", async () => {
+    const { root, remote, work } = await createRepository();
+    const mainHead = git(work, ["rev-parse", "HEAD"]);
+    git(work, ["checkout", "-b", "feature"]);
+    const hook = join(remote, "hooks", "pre-receive");
+    await writeFile(hook, "#!/bin/sh\necho 'Internal Server Error' >&2\nexit 1\n");
+    await chmod(hook, 0o755);
+    await writeFile(join(work, "a.txt"), "feature-a\n");
+    const failed = await startFinalizer(root, work, "first-publish-fails", ["a.txt"], "publish feature");
+    expect(failed.result.code).toBe(1);
+    expect(failed.output.stage).toBe("push");
+    expect(run("git", ["--git-dir", remote, "rev-parse", "--verify", "refs/heads/feature"], work).code).not.toBe(0);
+    await rm(hook);
+
+    const { result, output } = await startFinalizer(root, work, "first-publish-retry", ["a.txt"], "publish feature");
+    expect(result.code, result.stderr || result.stdout).toBe(0);
+    expect(output.resumedPush).toBe(true);
+    expect(output.commitSha).toBe(failed.output.commitSha!);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/feature"])).toBe(failed.output.commitSha!);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(mainHead);
+    expect(git(work, ["config", "--get", "branch.feature.merge"])).toBe("refs/heads/feature");
+
+    // 원격 main에 이미 있는 파일만 넘기는 새 브랜치는 보낼 커밋이 없으므로 거절한다.
+    git(work, ["checkout", "-b", "empty", "main"]);
+    const empty = await startFinalizer(root, work, "nothing-to-publish", ["b.txt"], "must fail");
+    expect(empty.result.code).toBe(1);
+    expect(empty.output.stage).toBe("stage");
+  }, TEST_TIMEOUT_MS);
+
   test("publishes a configured upstream ref that does not exist on the remote yet", async () => {
     const { root, remote, work } = await createRepository();
     const mainHead = git(work, ["rev-parse", "HEAD"]);

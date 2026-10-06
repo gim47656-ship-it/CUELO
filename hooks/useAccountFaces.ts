@@ -175,6 +175,30 @@ export function resolveAccountFace(
 }
 
 /**
+ * 지금 막 시작된 응답의 얼굴. core 는 credential 을 끝난(done) 메시지에만 찍으므로 스트리밍 중에는
+ * 계정을 모른다. 사용량 한도로 계정이 회전한 턴이면 저장소 pin 은 직전 턴의 계정이라, 요청 직전에
+ * 갱신되는 런타임 pin 을 하한선 없이 먼저 묻고 그 답으로 저장소 pin 도 고친다. 묻지 못하면 저장소로 답한다.
+ */
+export async function resolveLiveAccountFace(
+  sessionId: string,
+  provider: string | undefined,
+  credentialId: number | undefined,
+): Promise<AccountFace | null> {
+  if (!provider || isCredentialId(credentialId) || providerAccountFace(provider)) return resolveAccountFace(sessionId, provider, credentialId);
+  try {
+    const { data } = await loadSessionAccount(sessionId);
+    if (data?.state === "resolved" && data.provider === provider && isCredentialId(data.credentialId)) {
+      const pins = new Map(state.pins);
+      pins.set(sessionId, { provider, credentialId: data.credentialId, observedAt: Date.now() });
+      publish({ faces: state.faces, pins });
+    }
+  } catch {
+    // 얼굴은 장식이다. 실패하면 저장소가 아는 것으로 답한다.
+  }
+  return resolveAccountFace(sessionId, provider, undefined);
+}
+
+/**
  * 사용량 스냅샷을 저장소에 흘려 넣는 자리. 앱의 단일 사용량 구독을 가진 곳에서 한 번만 부른다.
  */
 export function useSyncedAccountFaces(reports: readonly UsageReport[] | undefined): void {

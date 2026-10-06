@@ -281,23 +281,29 @@ try {
     $stagedByFinalizer = $true
     [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'add', '-A', '--') + $repoPaths))
     $cachedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--cached', '--no-renames', '--name-only')
-    # 이전 실행이 커밋은 만들고 push에서 실패했으면 요청 파일이 이미 깨끗하다. 그 파일이 아직
-    # 원격에 없는 upstream..HEAD 커밋에 들어 있을 때만 그 커밋을 인정하고, 새 커밋 없이 다시 보낸다.
+    # 이전 실행이 커밋은 만들고 push에서 실패했으면 요청 파일이 이미 깨끗하다. 그 파일이 아직 원격에 없는
+    # 커밋(upstream..HEAD, 원격 브랜치가 없으면 원격 추적 ref 어디에도 없는 HEAD 커밋)에 들어 있을 때만
+    # 그 커밋을 인정하고 새 커밋 없이 다시 보낸다.
     $cachedPaths = @($cachedPaths)
     $cachedSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
     foreach ($path in $cachedPaths) { [void]$cachedSet.Add($path) }
     $alreadyCommitted = @($repoPaths | Where-Object { -not $cachedSet.Contains($_) })
     $resumedPush = $false
     if ($alreadyCommitted.Count -gt 0) {
-        if (-not $upstreamSha -or $upstreamSha -eq $headSha) {
+        if ($upstreamSha -eq $headSha) {
             Assert-ExactPathSet -Actual $cachedPaths -Expected $repoPaths -Label 'Staged path set'
         }
-        $pendingPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only', $upstreamSha, $headSha)
+        $pendingRange = if ($upstreamSha) { "${upstreamSha}..${headSha}" } else { "${headSha} not in refs/remotes/$remote" }
+        $pendingPaths = if ($upstreamSha) {
+            Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only', $upstreamSha, $headSha)
+        } else {
+            Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'log', '--no-renames', '--format=', '--name-only', $headSha, '--not', "--remotes=$remote")
+        }
         $pendingSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
         foreach ($path in $pendingPaths) { [void]$pendingSet.Add($path) }
         $unpending = @($alreadyCommitted | Where-Object { -not $pendingSet.Contains($_) })
         if ($unpending.Count -gt 0) {
-            throw "Staged path set mismatch. Unchanged paths are not in unpushed commits ${upstreamSha}..${headSha}: $($unpending -join ', ')"
+            throw "Staged path set mismatch. Unchanged paths are not in unpushed commits ${pendingRange}: $($unpending -join ', ')"
         }
         $resumedPush = $true
     }

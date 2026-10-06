@@ -37,8 +37,8 @@ import { QuestionRail, type RailQuestion } from "./QuestionRail";
 import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
-import { resolveAccountFace, useAccountFace, type AccountFace } from "@/hooks/useAccountFaces";
-import { MAIN_PRESETS, loadSessionAccount } from "@/lib/hanse-resource-client";
+import { resolveAccountFace, resolveLiveAccountFace, useAccountFace, type AccountFace } from "@/hooks/useAccountFaces";
+import { MAIN_PRESETS } from "@/lib/hanse-resource-client";
 import {
   buildInlineTurns,
   collectCharacterSummons,
@@ -522,8 +522,6 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   const soundedExtensionDialogIdRef = useRef<string | null>(null);
   const preloadCueSoundRef = useRef(preloadCueSound);
   preloadCueSoundRef.current = preloadCueSound;
-  // 턴 종료 때 서버에 다시 물어 알아낸 캐릭터. 같은 세션의 다음 턴은 다시 묻지 않는다.
-  const resolvedAliasRef = useRef<{ sessionId: string; provider: string; alias: string } | null>(null);
 
   // 캐릭터 큐가 화면에 내는 것 — 스티커와 그 대사. 메신저 이모티콘처럼 그 턴의 메시지 뒤에
   // 박혀 남는다. 지우지 않고 쌓으며, 자리가 확정된 큐는 새로고침해도 세션별로 다시 붙는다.
@@ -582,26 +580,13 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }, [isCueTriggerCurrent, showCue]);
 
   /**
-   * 큐를 낼 캐릭터. 메시지의 계정·세션 pin·예약 provider로 바로 모르면 세션이 살아 있는 지금
-   * 서버에 한 번 더 묻는다 — 이전부터 있던 세션은 화면을 열 때 idle이라 pin을 못 받은 채로 남는다.
+   * 큐를 낼 캐릭터. 메시지가 기록한 계정이 없으면(스트리밍 중 착수·대화상자) 런타임에 지금 계정을
+   * 묻는다 — 계정이 회전한 턴에서 직전 턴의 pin 으로 얼굴을 고르지 않게.
    */
   const resolveCueAlias = useCallback(async (sessionId: string, provider: string | undefined, credentialId: number | undefined): Promise<string | null> => {
-    const face = resolveAccountFace(sessionId, provider, credentialId);
-    if (face || !provider) return face?.alias ?? null;
-    const known = resolvedAliasRef.current;
-    if (known && known.sessionId === sessionId && known.provider === provider) return known.alias;
-    try {
-      const { data } = await loadSessionAccount(sessionId);
-      const resolvedCredentialId = data?.state === "resolved" && data.provider === provider ? data.credentialId : undefined;
-      const alias = resolveAccountFace(sessionId, provider, resolvedCredentialId)?.alias ?? null;
-      if (alias) {
-        resolvedAliasRef.current = { sessionId, provider, alias };
-        void preloadCueSoundRef.current?.(alias);
-      }
-      return alias;
-    } catch {
-      return null;
-    }
+    const alias = (await resolveLiveAccountFace(sessionId, provider, credentialId))?.alias ?? null;
+    if (alias) void preloadCueSoundRef.current?.(alias);
+    return alias;
   }, []);
 
   /** 지금 화면의 마지막 메시지 뒤를 자리로 잡고, 캐릭터를 정한 뒤 큐를 낸다. */
