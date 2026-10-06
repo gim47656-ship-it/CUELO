@@ -5,15 +5,33 @@ import { resolveOAuthLoginId } from "@/lib/provider-listing-runtime";
 
 export const dynamic = "force-dynamic";
 
-// In-memory registry: loginToken -> resolve/reject for the manualCodeInput promise
+/** 로그인의 다음 상태. 붙여 넣은 값 뒤에 이어진 결과를 POST 가 그대로 돌려준다. */
+type LoginStep = { state: "success" } | { state: "error"; message: string } | { state: "input" } | { state: "pending" };
+
+interface PendingInput {
+  resolve: (v: string) => void;
+  reject: (e: Error) => void;
+  /** 이 입력 다음에 일어날 일(성공·실패·다음 입력 요청)을 기다린다. */
+  nextStep: () => Promise<LoginStep>;
+}
+
+// In-memory registry: loginToken -> pending browser input of a running login
 declare global {
-  var __ompLoginCallbacks: Map<string, { resolve: (v: string) => void; reject: (e: Error) => void }> | undefined;
+  var __ompLoginCallbacks: Map<string, PendingInput> | undefined;
 }
 
 function getCallbackRegistry() {
   if (!globalThis.__ompLoginCallbacks) globalThis.__ompLoginCallbacks = new Map();
   return globalThis.__ompLoginCallbacks;
 }
+
+/**
+ * 휴대폰은 로그인하러 브라우저로 넘어가면 이 화면을 백그라운드로 보내 SSE 가 끊긴다. 끊겼다고 바로
+ * 취소하면 돌아와 붙여 넣은 주소가 갈 곳이 없으므로, 입력을 이만큼 더 기다린 뒤에 취소한다.
+ */
+const DETACHED_LOGIN_TTL_MS = 10 * 60_000;
+/** 붙여 넣은 값으로 토큰 교환이 끝나기를 POST 가 기다리는 상한. */
+const STEP_WAIT_MS = 90_000;
 
 // POST /api/auth/login/[provider] — frontend sends redirect URL or auth code
 export async function POST(
@@ -37,9 +55,16 @@ export async function POST(
     return Response.json({ error: "Token does not match provider" }, { status: 400 });
   }
 
+  const next = callbacks.nextStep();
   callbacks.resolve(code);
   registry.delete(token);
-  return Response.json({ ok: true, provider });
+  // SSE 가 끊긴 화면도 결과를 알 수 있게, 이 입력 다음의 결과를 응답으로 돌려준다.
+  const step = await Promise.race([
+    next,
+    new Promise<LoginStep>((resolve) => setTimeout(() => resolve({ state: "pending" }), STEP_WAIT_MS)),
+  ]);
+  if (step.state === "error") return Response.json({ error: step.message, state: step.state }, { status: 400 });
+  return Response.json({ ok: true, provider, state: step.state });
 }
 
 // GET /api/auth/login/[provider] — SSE stream for OAuth flow
@@ -51,12 +76,19 @@ export async function GET(
 
   const encoder = new TextEncoder();
   const send = (controller: ReadableStreamDefaultController, data: unknown) => {
-    controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+    // 화면이 떠난 뒤에도 로그인은 이어지므로, 닫힌 스트림에 쓰는 실패는 무시한다.
+    try {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+    } catch {}
   };
 
-  // AbortController propagates client disconnect into AuthStorage.oauth.login().
+  // 화면 연결이 끊기면 바로 취소하지 않고, 입력을 기다릴 시간을 둔 뒤 AuthStorage.oauth.login() 을 멈춘다.
   const abort = new AbortController();
-  req.signal.addEventListener("abort", () => abort.abort());
+  let detachTimer: ReturnType<typeof setTimeout> | undefined;
+  const detach = () => {
+    if (detachTimer === undefined && !abort.signal.aborted) detachTimer = setTimeout(() => abort.abort(), DETACHED_LOGIN_TTL_MS);
+  };
+  req.signal.addEventListener("abort", detach);
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -71,8 +103,17 @@ export async function GET(
       const registry = getCallbackRegistry();
       const activeTokens = new Set<string>();
       let pendingManualRequest: { token: string; promise: Promise<string> } | undefined;
+      let stepWaiters: ((step: LoginStep) => void)[] = [];
+      const announce = (step: LoginStep) => {
+        const waiters = stepWaiters;
+        stepWaiters = [];
+        for (const waiter of waiters) waiter(step);
+      };
+      const nextStep = () => new Promise<LoginStep>((resolve) => stepWaiters.push(resolve));
 
       const createClientInputRequest = () => {
+        // 앞서 붙여 넣은 값이 이 새 입력 요청으로 이어졌다.
+        announce({ state: "input" });
         const token = `${provider}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         activeTokens.add(token);
 
@@ -88,6 +129,7 @@ export async function GET(
               registry.delete(token);
               reject(error);
             },
+            nextStep,
           });
         });
 
@@ -115,7 +157,7 @@ export async function GET(
         activeTokens.clear();
       };
 
-      // Also cancel on client disconnect
+      // 입력 대기 시간이 지나면 남은 입력을 취소한다.
       abort.signal.addEventListener("abort", cleanup);
 
       try {
@@ -139,10 +181,9 @@ export async function GET(
             const request = getManualInputRequest();
             send(controller, {
               type: "auth",
-              // `launchUrl` is the truncation-safe loopback redirect when the
-              // flow hosts one; fall back to the full authorization URL.
-              url: info.launchUrl ?? info.url,
-              fullUrl: info.url,
+              // 실제 인증 주소를 준다. core 의 `launchUrl` 은 서버 자신의 localhost 라서
+              // 휴대폰·원격 브라우저에서는 열리지 않는다.
+              url: info.url,
               instructions: info.instructions ?? null,
               token: request.token,
             });
@@ -155,21 +196,26 @@ export async function GET(
 
         invalidateModelsCache();
         invalidateOmpRuntime();
+        announce({ state: "success" });
         send(controller, { type: "success" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        announce({ state: "error", message: msg });
         if (msg !== "Login cancelled") {
           send(controller, { type: "error", message: msg });
         } else {
           send(controller, { type: "cancelled" });
         }
       } finally {
+        if (detachTimer !== undefined) clearTimeout(detachTimer);
         cleanup();
-        controller.close();
+        try {
+          controller.close();
+        } catch {}
       }
     },
     cancel() {
-      abort.abort();
+      detach();
     },
   });
 

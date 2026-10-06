@@ -1217,6 +1217,8 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
   const { t } = useI18n();
   const [inputValue, setInputValue] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
+  // 같은 로그인의 성공을 SSE 와 붙여넣기 응답이 둘 다 알릴 수 있다. 한 번만 마무리한다.
+  const loginSettledRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const loginButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -1244,8 +1246,19 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
     return () => { eventSourceRef.current?.close(); };
   }, []);
 
+  const finishLoginSuccess = useCallback(() => {
+    eventSourceRef.current?.close();
+    if (loginSettledRef.current) return;
+    loginSettledRef.current = true;
+    setInputValue("");
+    setLoginState({ phase: "success" });
+    onRefresh();
+    onLoginSucceeded?.();
+  }, [onRefresh, onLoginSucceeded]);
+
   const handleLogin = useCallback(() => {
     eventSourceRef.current?.close();
+    loginSettledRef.current = false;
     setLoginState({ phase: "connecting" });
     setInputValue("");
 
@@ -1278,10 +1291,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
       } else if (data.type === "progress") {
         setLoginState({ phase: "progress", message: data.message! });
       } else if (data.type === "success") {
-        es.close();
-        setLoginState({ phase: "success" });
-        onRefresh();
-        onLoginSucceeded?.();
+        finishLoginSuccess();
       } else if (data.type === "error") {
         es.close();
         setLoginState({ phase: "error", message: data.message! });
@@ -1292,9 +1302,14 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
     };
     es.onerror = () => {
       es.close();
-      setLoginState((prev) => prev.phase === "success" ? prev : { phase: "error", message: "Connection lost" });
+      // 휴대폰은 로그인하러 브라우저로 넘어가면 이 화면이 백그라운드로 가며 연결이 끊긴다. 서버는 입력을
+      // 계속 기다리므로, 입력을 받는 중이면 붙여 넣을 칸을 그대로 둔다.
+      setLoginState((prev) =>
+        prev.phase === "success" || prev.phase === "auth" || prev.phase === "prompt" || prev.phase === "select"
+          ? prev
+          : { phase: "error", message: "Connection lost" });
     };
-  }, [provider.id, onRefresh, onLoginSucceeded]);
+  }, [provider.id, finishLoginSuccess]);
 
   const handleLogout = useCallback(async () => {
     await fetch(`/api/auth/logout/${encodeURIComponent(provider.id)}`, { method: "POST" });
@@ -1302,43 +1317,42 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
     onRefresh();
   }, [provider.id, onRefresh]);
 
-  const submitCode = useCallback(async (token: string, code: string) => {
-    if (!code.trim()) return;
-    setLoginState({ phase: "progress", message: "Verifying…" });
-    try {
-      const res = await fetch(`/api/auth/login/${encodeURIComponent(provider.id)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, code: code.trim() }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string };
-        setLoginState({ phase: "error", message: d.error ?? `Server error ${res.status}` });
-        return;
-      }
-      setInputValue("");
-      // Success path: SSE stream will emit "success" and update state
-    } catch (e) {
-      setLoginState({ phase: "error", message: e instanceof Error ? e.message : "Network error" });
-    }
-  }, [provider.id]);
-
-  const submitSelection = useCallback(async (token: string, value: string) => {
-    setLoginState({ phase: "progress", message: "Continuing…" });
+  /** 붙여 넣은 값·선택을 보내고, 서버가 돌려준 그다음 결과로 화면을 정한다. */
+  const submitLoginInput = useCallback(async (token: string, value: string, progressMessage: string) => {
+    setLoginState({ phase: "progress", message: progressMessage });
     try {
       const res = await fetch(`/api/auth/login/${encodeURIComponent(provider.id)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, code: value }),
       });
+      const d = await res.json().catch(() => ({})) as { error?: string; state?: string };
       if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string };
         setLoginState({ phase: "error", message: d.error ?? `Server error ${res.status}` });
+        return;
+      }
+      setInputValue("");
+      if (d.state === "success") {
+        finishLoginSuccess();
+        return;
+      }
+      // 다음 입력 요청·진행 상태는 SSE 로 온다. 연결이 끊긴 화면은 그것을 받을 수 없다.
+      if (eventSourceRef.current?.readyState === EventSource.CLOSED) {
+        setLoginState({ phase: "error", message: "Connection lost. Start the login again." });
       }
     } catch (e) {
       setLoginState({ phase: "error", message: e instanceof Error ? e.message : "Network error" });
     }
-  }, [provider.id]);
+  }, [provider.id, finishLoginSuccess]);
+
+  const submitCode = useCallback(async (token: string, code: string) => {
+    if (!code.trim()) return;
+    await submitLoginInput(token, code.trim(), "Verifying…");
+  }, [submitLoginInput]);
+
+  const submitSelection = useCallback(async (token: string, value: string) => {
+    await submitLoginInput(token, value, "Continuing…");
+  }, [submitLoginInput]);
 
   const isWorking = loginState.phase === "connecting" || loginState.phase === "progress" ||
     loginState.phase === "auth" || loginState.phase === "device_code" ||
@@ -1416,7 +1430,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
               {loginState.phase === "auth"
-                ? "Complete sign-in in the browser, then copy the redirect URL from the address bar and paste it below."
+                ? "Complete sign-in in the browser. If the last page does not load (for example on a phone), copy its address from the address bar and paste it below."
                 : loginState.message}
             </p>
             {loginState.phase === "auth" && (
@@ -1434,7 +1448,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") submitCode(loginState.token, inputValue); }}
-                placeholder={loginState.phase === "auth" ? "http://localhost:1455/auth/callback?code=…" : (loginState.placeholder ?? "Enter value…")}
+                placeholder={loginState.phase === "auth" ? "Paste the redirect URL or code" : (loginState.placeholder ?? "Enter value…")}
                 style={{ flex: 1, padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 12, outline: "none", fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
               />
               <button
