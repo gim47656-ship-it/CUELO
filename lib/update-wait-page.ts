@@ -617,8 +617,12 @@ async function check(){
     failedPolls+=1;
     /* 무응답 사이에 서버 상태가 바뀌었을 수 있으므로 자동 복귀는 다시 두 번의 응답을 본다. */
     failureReleaseSeen=false;
-    /* 실패를 이미 본 뒤의 무응답은 실패 표시를 지우지 않는다. */
-    if(!failed)renderUnknown();
+    /* 실패를 이미 본 뒤의 무응답은 실패 표시를 지우지 않는다. 교체(CUTOVER)까지 본 뒤의 무응답은 그 단계가
+       예고한 서비스 재시작이므로 단계 표시를 유지한다(WSL 갱신은 이 구간에 빌드까지 해 몇 분 걸린다). */
+    if(!failed){
+      if(rank===PHASE_INDEX.CUTOVER)renderPhase(rank,null,rank);
+      else renderUnknown();
+    }
     renderLink();
   }else{
     failedPolls=0;

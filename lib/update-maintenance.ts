@@ -18,6 +18,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const REQUEST_ID_PATTERN = /^[0-9a-f]{32}$/;
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const GIT_REVISION_PATTERN = /^[0-9a-f]{40}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ACTIVE_CLIENT_MS = 10_000;
 const RECENT_CLIENT_MS = 5 * 60_000;
@@ -287,9 +288,7 @@ function normalizeDeploymentCompletion(
     || service.exact !== true
     || service.requestId !== request.requestId
     || service.stageHash !== command.stageHash
-    || rollback?.packagePresent !== true
-    || rollback.transactionRecorded !== true
-    || cleanupOwner?.owner !== "runtime-transaction"
+    || rollback?.transactionRecorded !== true
   ) return null;
   const resumeStatus = String(resume?.status ?? "");
   const targetCount = Number(resume?.targetCount);
@@ -299,6 +298,20 @@ function normalizeDeploymentCompletion(
     || !Number.isInteger(targetCount) || targetCount < 0
     || !Number.isInteger(confirmedCount) || confirmedCount < 0 || confirmedCount > targetCount
   ) return null;
+  const completion: DeploymentCompletion = {
+    completionContractVersion: 1,
+    completed: true,
+    writeSafe: true,
+    completedAtUtc: String(deployment.completedAtUtc),
+    requestId: request.requestId,
+    stageHash: command.stageHash,
+  };
+  // WSL CUELO(Tools/CUELO_Setup/wsl/update.sh)는 npm 전역 package가 아니라 git checkout을 갱신한다. 되돌릴 근거는
+  // 이전 commit이고 산출물 정리 단계가 없으므로 package·shim·cleanup owner 대신 그 revision을 확인한다.
+  if (rollback.kind === "git-revision") {
+    return GIT_REVISION_PATTERN.test(String(rollback.revision ?? "")) ? completion : null;
+  }
+  if (rollback.packagePresent !== true || cleanupOwner?.owner !== "runtime-transaction") return null;
   const rollbackTransactionPath = resolve(String(rollback.transactionPath ?? ""));
   const rollbackRoot = dirname(rollbackTransactionPath);
   const rollbackPackagePath = resolve(String(rollback.packagePath ?? ""));
@@ -325,14 +338,7 @@ function normalizeDeploymentCompletion(
   ) return null;
   // cleanup progress는 배포 완료 뒤 계속 바뀌는 비필수 receipt다. 여기 의존하면 파일 교체
   // 순간이나 정리 실패가 이미 열린 메시지 쓰기 경로를 다시 잠그므로 owner 포인터만 고정한다.
-  return {
-    completionContractVersion: 1,
-    completed: true,
-    writeSafe: true,
-    completedAtUtc: String(deployment.completedAtUtc),
-    requestId: request.requestId,
-    stageHash: command.stageHash,
-  };
+  return completion;
 }
 function getActiveDeployment(): ActiveDeployment | null {
   const active = readJson(join(externalUpdateRoot(), "active.json"));
