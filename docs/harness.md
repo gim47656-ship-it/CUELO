@@ -240,7 +240,7 @@ bun Tools/OMP_Global_Config/skill-cost/skill-cost.mjs [--days 30] [--json] [--ag
 
 ## omp core 패치
 
-[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 이 공개 저장소의 CI는 앱 빌드·테스트와 함께 `Verify harness`에서 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌립니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 가볍게 실행합니다.
+[`Tools/OMP_Global_Config/patches/`](../Tools/OMP_Global_Config/patches/)에는 이 하네스의 동작을 omp core에 맞춰 적용하는 패치와 적용·검증 도구가 있습니다. 소스 `setup`은 빌드 뒤 앱 자체 SDK에 패치를 적용·검사하고, npm의 `postinstall`은 설치된 `cuelo` 패키지 SDK를 준비합니다. **사용자가 별도 설치한 standalone `omp.exe`는 이 패치의 대상이 아닙니다.** `apply-core-patch.mjs`, `validate-harness-policy.mjs`, `core-*-test.ts`가 관련 도구·회귀 검사를 담습니다. 이 공개 저장소의 CI는 앱 빌드·테스트와 함께 `Verify harness`(Windows)와 `Verify harness (Linux)`(Ubuntu)에서 앱이 고정한 core 버전을 새로 설치·패치해 확장·가드·finalizer 테스트와 core 회귀 검사를 돌립니다. Linux job은 Windows가 쓰지 않는 사용자 셸 PTY 경로 검사가 실제로 돌아 통과해야 성공합니다. 정책·생성 에이전트 일치, source manifest, 내용 검사 증거, eval 분석 테스트는 공개 미러에 없는 설정·증거 파일을 읽으므로 원본 저장소에서만 가볍게 실행합니다.
 
 Codex WebSocket에서 실행 중 끼어든 메시지(live steering)를 서버가 `unsupported_native_inflight_message`로 거절하면, 코어 18.5.1부터는 CUELO의 별도 패치 대신 upstream 복구를 따릅니다. 그 세션에서는 이후 끼어들기를 보내지 않고, 거절된 연결을 닫은 뒤 새 연결에서 현재 요청을 다시 시도합니다. 거절된 끼어들기 입력은 유실되지 않고 되돌려집니다. 실제 서비스에서의 거절 순서는 확인하지 않았습니다(`core-native-inflight-test.ts`는 로컬 WebSocket fixture).
 

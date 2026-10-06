@@ -1,8 +1,10 @@
 name: CI
 
 # Actions minutes are free only for the public mirror, so the heavy checks run
-# there: `verify` (install, typecheck, lint, app tests, production build) and
-# `harness` (extension, guard, finalizer and core patch tests). CUELO-private
+# there: `verify` (install, typecheck, lint, app tests, production build),
+# `harness` (extension, guard, finalizer and core patch tests) and
+# `harness-linux` (the same harness tests on Linux, where the user-shell PTY
+# path runs). CUELO-private
 # is billed per minute (Windows at twice the Linux rate), so its `private` job
 # (the checks that read files the mirror does not carry) runs only when started
 # by hand (`workflow_dispatch`). The same checks run locally before a commit,
@@ -175,6 +177,76 @@ jobs:
             if ($code -ne 0) { $failed += "$($test.Name) (exit $code)" }
           }
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }
+
+  # Linux CUELO (WSL) takes paths Windows never does: the user-shell PTY used by
+  # the `!` hotkey (core-patch-test.ts counts it only where it exists) and the
+  # finalizer under pwsh. Same SDK preparation and tests as `harness`.
+  harness-linux:
+    name: Verify harness (Linux)
+    if: github.repository == 'gim47656-ship-it/CUELO'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: Tools/OMP_Global_Config
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      - name: Prepare source SDK
+        working-directory: .
+        run: bun run prepare:source
+
+      - name: Prepare patched core
+        run: |
+          version=$(node -p "require('../../package.json').dependencies['@oh-my-pi/pi-coding-agent']")
+          core="$RUNNER_TEMP/core"
+          mkdir -p "$core"
+          echo '{"name":"ci-core","private":true}' > "$core/package.json"
+          (cd "$core" && bun add "@oh-my-pi/pi-coding-agent@$version")
+          export OMP_CORE_PATCH_TARGET="$core/node_modules/@oh-my-pi/pi-coding-agent"
+          node patches/apply-core-patch.mjs
+          echo "OMP_CORE_PATCH_TARGET=$OMP_CORE_PATCH_TARGET" >> "$GITHUB_ENV"
+
+      # Without bash the PTY check skips itself; the PTY itself comes from the
+      # platform native package, and the finalizer tests run pwsh.
+      - name: Check PTY and finalizer prerequisites
+        run: |
+          command -v bash
+          command -v pwsh
+          test -d "$RUNNER_TEMP/core/node_modules/@oh-my-pi/pi-natives-linux-x64" || { echo "pi-natives-linux-x64 is missing"; exit 1; }
+
+      - name: Extension, guard, finalizer and skill-cost tests
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./skill-cost
+
+      - name: Core patch regression tests
+        run: |
+          failed=()
+          for test in patches/core-*-test.ts patches/apply-core-patch-cli-test.ts; do
+            name=$(basename "$test")
+            echo "::group::$name"
+            bun run "$test" 2>&1 | tee "$RUNNER_TEMP/$name.log"
+            code=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            [ "$code" -eq 0 ] || failed+=("$name (exit $code)")
+          done
+          # The user-shell PTY check must have run and passed here, not been skipped.
+          grep -q "PASS  사용자 셸 PTY" "$RUNNER_TEMP/core-patch-test.ts.log" || failed+=("user-shell PTY check did not run")
+          [ ${#failed[@]} -eq 0 ] || { echo "Failed: ${failed[*]}"; exit 1; }
 
   # The mirror has no agent/config.yml, models.yml, evals/, setup source manifest
   # or frozen review evidence. These checks use only Node/Bun built-ins, so there
