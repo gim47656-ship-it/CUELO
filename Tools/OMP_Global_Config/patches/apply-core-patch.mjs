@@ -7836,6 +7836,274 @@ function goalProbeRefusal(method: string): ToolError {
 		patched: "\treturn await target.ax();\n}, { timeout: 30 });\nawait computer.run(async ({ desktop, wait }) => {\n\tconst orders = await desktop.window({ title: \"Orders\" });\n\tconst [save] = await orders.find({ role: \"button\", title: \"Save\" });\n\tawait save.press();\n\treturn await wait(async () => (await orders.find({ title: \"Saved row 1\" }))[0]?.title, { timeout: 5000 });\n}, { timeout: 30 });\n",
 	},
 	{
+		// 2026-10-06 WSL 단일 CUELO의 Windows 화면 조작. upstream computer worker는 같은 프로세스의 Bun Worker라
+		// Linux CUELO는 linux-x64 addon(WSLg)만 본다. Windows helper exe(Tools/CUELO_Setup/wsl/windows-computer)를
+		// interop 자식으로 띄우고 stdin/stdout으로 아래 frame을 주고받는다. 포트·리스너 없음.
+		file: "src/tools/computer/protocol.ts",
+		marker: `import { deserialize, serialize } from "bun:jsc";`,
+		anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+		patched: `import { deserialize, serialize } from "bun:jsc";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+	},
+	{
+		// frame: "CMP1" magic + big-endian u32 길이 + Bun structured clone 본문. Worker postMessage와 같은 값 의미.
+		// 잘못된 magic·읽을 수 없는 본문은 throw해 읽는 쪽이 fail closed 한다. 조각난 frame은 완성될 때 한 번만 복사한다.
+		file: "src/tools/computer/protocol.ts",
+		marker: "export class ComputerFrameReader {",
+		anchor: `/** Transport used by the worker core in Bun workers and tests. */
+export interface ComputerWorkerTransport {
+	send(message: ComputerWorkerOutbound, transfer?: Bun.Transferable[]): void;
+	onMessage(handler: (message: ComputerWorkerInbound) => void): () => void;
+	close(): void;
+}`,
+		patched: `/** Transport used by the worker core in Bun workers and tests. */
+export interface ComputerWorkerTransport {
+	send(message: ComputerWorkerOutbound, transfer?: Bun.Transferable[]): void;
+	onMessage(handler: (message: ComputerWorkerInbound) => void): () => void;
+	close(): void;
+}
+
+/**
+ * CUELO: stdio framing for a computer worker hosted in another process (a WSL CUELO driving the
+ * Windows host executable through interop). Each frame is the "CMP1" magic, a big-endian u32 body
+ * length, and a Bun structured-clone body, so values cross exactly as through Worker postMessage.
+ * A wrong magic or an unreadable body throws: the stream is corrupt and the reader fails closed
+ * instead of guessing where the next frame starts.
+ */
+const COMPUTER_FRAME_MAGIC = 0x434d5031;
+const COMPUTER_FRAME_HEADER_BYTES = 8;
+
+/** Encodes one worker message as a stdio frame; a non-cloneable message throws like postMessage. */
+export function encodeComputerFrame(message: ComputerWorkerInbound | ComputerWorkerOutbound): Uint8Array {
+	const body = new Uint8Array(serialize(message));
+	const frame = new Uint8Array(COMPUTER_FRAME_HEADER_BYTES + body.byteLength);
+	const view = new DataView(frame.buffer);
+	view.setUint32(0, COMPUTER_FRAME_MAGIC);
+	view.setUint32(4, body.byteLength);
+	frame.set(body, COMPUTER_FRAME_HEADER_BYTES);
+	return frame;
+}
+
+/** Reassembles frames from stdio chunks. After a throw the stream is corrupt; drop the reader. */
+export class ComputerFrameReader {
+	#chunks: Uint8Array[] = [];
+	#buffered = 0;
+
+	/** Adds one chunk and returns every message it completes, in order. */
+	push(chunk: Uint8Array): unknown[] {
+		this.#chunks.push(chunk);
+		this.#buffered += chunk.byteLength;
+		const messages: unknown[] = [];
+		while (this.#buffered >= COMPUTER_FRAME_HEADER_BYTES) {
+			const header = this.#read(COMPUTER_FRAME_HEADER_BYTES);
+			const view = new DataView(header.buffer, header.byteOffset, COMPUTER_FRAME_HEADER_BYTES);
+			if (view.getUint32(0) !== COMPUTER_FRAME_MAGIC) throw new Error("computer frame stream is corrupt: bad magic");
+			const length = view.getUint32(4);
+			if (this.#buffered < COMPUTER_FRAME_HEADER_BYTES + length) break;
+			const frame = this.#read(COMPUTER_FRAME_HEADER_BYTES + length);
+			this.#drop(COMPUTER_FRAME_HEADER_BYTES + length);
+			messages.push(deserialize(frame.subarray(COMPUTER_FRAME_HEADER_BYTES)));
+		}
+		return messages;
+	}
+
+	/** The first \`size\` buffered bytes: a view when one chunk holds them, else one copy. */
+	#read(size: number): Uint8Array {
+		const first = this.#chunks[0]!;
+		if (first.byteLength >= size) return first.subarray(0, size);
+		const bytes = new Uint8Array(size);
+		let filled = 0;
+		for (const chunk of this.#chunks) {
+			const take = Math.min(chunk.byteLength, size - filled);
+			bytes.set(chunk.subarray(0, take), filled);
+			filled += take;
+			if (filled === size) break;
+		}
+		return bytes;
+	}
+
+	#drop(size: number): void {
+		this.#buffered -= size;
+		let left = size;
+		while (left > 0) {
+			const chunk = this.#chunks[0]!;
+			if (chunk.byteLength <= left) {
+				this.#chunks.shift();
+				left -= chunk.byteLength;
+			} else {
+				this.#chunks[0] = chunk.subarray(left);
+				left = 0;
+			}
+		}
+	}
+}`,
+	},
+	{
+		file: "src/tools/computer/supervisor.ts",
+		marker: "\tComputerFrameReader,\n\ttype ComputerRunOk,",
+		anchor: `import {
+	COMPUTER_WORKER_ARG,
+	type ComputerRunOk,
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerOutbound,
+	type RunErrorPayload,
+} from "./protocol";`,
+		patched: `import {
+	COMPUTER_WORKER_ARG,
+	ComputerFrameReader,
+	type ComputerRunOk,
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerOutbound,
+	encodeComputerFrame,
+	type RunErrorPayload,
+} from "./protocol";`,
+	},
+	{
+		// linux + CUELO_WINDOWS_COMPUTER_HOST 일 때만 helper를 쓴다. 다른 OS·변수 없음은 upstream Worker 경로 그대로이고,
+		// helper 실패는 오류로 보고할 뿐 WSLg desktop으로 바꾸지 않는다. spawn 실패·host 종료·끊긴 pipe·손상 frame은
+		// onError로 한 번 알려 supervisor가 대기 중인 호출을 바로 실패시킨다. terminate는 stdin EOF → 2초 → kill.
+		file: "src/tools/computer/supervisor.ts",
+		marker: "export function spawnInteropComputerWorker(command: string[]): ComputerWorkerHandle {",
+		anchor: `/** Spawns the computer worker through the active CLI host when available. */
+export function spawnComputerWorker(): ComputerWorkerHandle {
+	const hostEntry = workerHostEntry();`,
+		patched: `/** CUELO: names the Windows computer host executable a WSL CUELO runs through interop. */
+const WINDOWS_COMPUTER_HOST_ENV = "CUELO_WINDOWS_COMPUTER_HOST";
+/** Wait after closing the host's stdin before killing it; the host exits on EOF. */
+const INTEROP_TERMINATE_MS = 2_000;
+/** Wait for the exit status after the host closes its output, so the error names it. */
+const INTEROP_EXIT_AFTER_EOF_MS = 1_000;
+const INTEROP_STDERR_TAIL_CHARS = 2_000;
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * CUELO: runs the computer worker in a separate process speaking {@link encodeComputerFrame} frames on
+ * stdin/stdout. A WSL CUELO starts the Windows host executable this way through interop: only the
+ * parent's pipes connect the two (no port, no listener), and the host exits when its stdin closes. A
+ * spawn failure, an exited host, a closed pipe, or a corrupt frame surfaces once through \`onError\`, so
+ * the supervisor fails pending calls instead of waiting for them.
+ */
+export function spawnInteropComputerWorker(command: string[]): ComputerWorkerHandle {
+	let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
+	try {
+		child = Bun.spawn(command, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+	} catch (error) {
+		throw new ToolError(\`Cannot start the computer host \${command[0]}: \${errorText(error)}\`);
+	}
+	const messageHandlers = new Set<(message: ComputerWorkerOutbound) => void>();
+	const errorHandlers = new Set<(error: Error) => void>();
+	let failure: Error | undefined;
+	let stderrTail = "";
+	const describe = (text: string): Error => {
+		const tail = stderrTail.trim();
+		return new Error(tail ? \`\${text}: \${tail}\` : text);
+	};
+	const fail = (error: Error): void => {
+		if (failure) return;
+		failure = error;
+		for (const handler of [...errorHandlers]) handler(error);
+	};
+
+	void (async () => {
+		const decoder = new TextDecoder();
+		try {
+			for await (const chunk of child.stderr) {
+				const text = decoder.decode(chunk, { stream: true });
+				stderrTail = (stderrTail + text).slice(-INTEROP_STDERR_TAIL_CHARS);
+				logger.debug("Computer host stderr", { text });
+			}
+		} catch {
+			// stderr only feeds diagnostics; the exit and stdout paths report the failure.
+		}
+	})();
+	void (async () => {
+		const reader = new ComputerFrameReader();
+		try {
+			for await (const chunk of child.stdout) {
+				let messages: unknown[];
+				try {
+					messages = reader.push(chunk);
+				} catch (error) {
+					child.kill(9);
+					fail(describe(\`Computer host sent an unreadable frame (\${errorText(error)}); rebuild the host for this CUELO build\`));
+					return;
+				}
+				for (const message of messages) {
+					// The host is built from this core's protocol, exactly like a Worker entry.
+					const outbound = message as ComputerWorkerOutbound;
+					for (const handler of [...messageHandlers]) handler(outbound);
+				}
+			}
+		} catch (error) {
+			fail(describe(\`Computer host output failed: \${errorText(error)}\`));
+			return;
+		}
+		const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(INTEROP_EXIT_AFTER_EOF_MS).then(() => false)]);
+		if (!exited) fail(describe("Computer host closed its output"));
+	})();
+	void child.exited.then(code => fail(describe(\`Computer host exited (\${code ?? child.signalCode})\`)));
+
+	return {
+		send(message) {
+			if (failure) throw failure;
+			// A non-cloneable message throws here, before any byte is written, exactly like postMessage.
+			const frame = encodeComputerFrame(message);
+			try {
+				child.stdin.write(frame);
+				const flushed = child.stdin.flush();
+				if (flushed instanceof Promise) flushed.catch(error => fail(describe(\`Computer host input closed: \${errorText(error)}\`)));
+			} catch (error) {
+				const closed = describe(\`Computer host input closed: \${errorText(error)}\`);
+				fail(closed);
+				throw closed;
+			}
+		},
+		onMessage(handler) {
+			messageHandlers.add(handler);
+			return () => {
+				messageHandlers.delete(handler);
+			};
+		},
+		onError(handler) {
+			errorHandlers.add(handler);
+			const early = failure;
+			if (early) queueMicrotask(() => handler(early));
+			return () => {
+				errorHandlers.delete(handler);
+			};
+		},
+		async terminate() {
+			try {
+				await child.stdin.end();
+			} catch {
+				// Already closed: the host has its EOF.
+			}
+			const deadline = Promise.withResolvers<boolean>();
+			const timer = setTimeout(() => deadline.resolve(false), INTEROP_TERMINATE_MS);
+			const exited = await Promise.race([child.exited.then(() => true), deadline.promise]);
+			clearTimeout(timer);
+			if (!exited) child.kill(9);
+		},
+	};
+}
+
+/** Spawns the computer worker through the active CLI host when available. */
+export function spawnComputerWorker(): ComputerWorkerHandle {
+	// CUELO: a WSL CUELO drives the Windows desktop through the host executable named by
+	// CUELO_WINDOWS_COMPUTER_HOST. Linux only; without the variable nothing changes, and a host
+	// failure is reported, never replaced by the Linux (WSLg) desktop.
+	const windowsHost = process.platform === "linux" ? process.env[WINDOWS_COMPUTER_HOST_ENV]?.trim() : undefined;
+	if (windowsHost) return spawnInteropComputerWorker([windowsHost]);
+	const hostEntry = workerHostEntry();`,
+	},
+	{
 		// MCP 선택 연결: 요청별 MCP 선택(opt-in). all이 기본이며 per-request면 시작 시 연결하지 않고 요청마다 확장이 고른다.
 		file: "src/mcp/settings.ts",
 		marker: `			"all: connect every enabled server at startup. per-request: connect nothing at startup; before each request an extension selects which enabled servers to connect (new sessions)",`,

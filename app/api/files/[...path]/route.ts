@@ -6,7 +6,9 @@ import {
   isExistingFilePathAllowed,
   isFilePathAllowed,
   isWindowsAbsolutePath,
+  mapLegacyWindowsPath,
   normalizeSlashes,
+  readLegacyPathMap,
 } from "@/lib/file-access";
 import {
   DOCX_PREVIEW_MAX_BYTES,
@@ -83,7 +85,7 @@ function parseFileRequestType(value: string): FileRequestType | null {
 async function getUploadDirectory(segments: string[]): Promise<
   { directory: string } | { response: NextResponse }
 > {
-  const directory = filePathFromSegments(segments);
+  const directory = mapLegacyWindowsPath(filePathFromSegments(segments), readLegacyPathMap());
   const allowedRoots = await getAllowedFileRoots();
   if (!isFilePathAllowed(directory, allowedRoots)) {
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
@@ -417,7 +419,11 @@ export async function GET(
 ) {
   try {
     const { path: segments } = await params;
-    const filePath = filePathFromSegments(segments);
+    const requestedPath = filePathFromSegments(segments);
+    // Transcripts from before the profile moved hosts keep their Windows paths. The explicit local map
+    // (absent on an unmoved host) rewrites them; root, realpath and file checks run on the local path,
+    // while the session-reference check matches the path as the transcript wrote it.
+    const filePath = mapLegacyWindowsPath(requestedPath, readLegacyPathMap());
     const rawType = request.nextUrl.searchParams.get("type") ?? "list";
     const type = parseFileRequestType(rawType);
     if (!type) {
@@ -430,7 +436,7 @@ export async function GET(
     const allowedBySessionReference =
       !allowedByRoot &&
       type !== "list" &&
-      await isFilePathReferencedBySession(filePath, sessionId);
+      await isFilePathReferencedBySession(requestedPath, sessionId);
     if (!allowedByRoot && !allowedBySessionReference) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
