@@ -41,11 +41,12 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
   비-UI NORMAL은 사용 가능한 `NORMAL_SONNET`을 우선하고, 실제 사용 불가·한도 소진이 관측됐을 때만
   대안을 추천한다. 한도 여유 크기나 미관측을 이유로 primary를 밀지 않는다.
-  **관측된 Anthropic 계정 전부를 쓸 수 없고 그중 하나 이상이 1주 공유 한도(`anthropic:7d` usedFraction≥1, 리셋 전)를
-  넘었으면** NORMAL·UI/UX·HARD의 Sonnet·Opus 추천 대신 `NORMAL_SOL`(`implSol`)을 먼저 추천하고, Sol도 쓸 수 없으면
+  **관측된 Anthropic 계정이 모두 1주 공유 한도(`anthropic:7d`)의 오늘 몫에 도달했거나 쓸 수 없으면** — 오늘 몫은 리셋 시각에서
+  24시간씩 거꾸로 센 오늘 구간의 사용량(`daySlot.usedPct`)이 하루 몫(`daySlot.quotaPct`, 1주의 1/7) 이상인 것 —
+  계정이 아직 쓸 수 있어도 NORMAL·UI/UX·HARD의 Sonnet·Opus 추천 대신 `NORMAL_SOL`(`implSol`)을 먼저 추천하고, Sol도 쓸 수 없으면
   사용 가능한 비-Anthropic NORMAL 대안(`NORMAL_DEEPSEEK`)을 추천한다. route의 `anthropicWeeklyLimit`에 원래 후보·대체 후보·근거가
   남으며 추천대로 발주하면 `ROUTING_REASON`이 필요 없다(2026-10-08 사용자 결정, `routing.modelSelection.anthropicWeeklyLimit`).
-  계정 하나만 넘었으면 core가 다른 계정으로 돌므로 바꾸지 않고, 관측되지 않은 한도는 소진으로 보지 않는다.
+  계정 하나만 도달했으면 바꾸지 않고, 오늘 구간 사용량을 모르거나 관측되지 않은 한도는 도달로 보지 않는다.
   그 밖의 primary 소진에서는 `NORMAL_DEEPSEEK`를 추천한다.
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다. 1주 한도 대체는 route에 근거가 남는 명시적 대체다.

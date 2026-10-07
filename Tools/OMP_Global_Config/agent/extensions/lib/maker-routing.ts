@@ -63,7 +63,8 @@ export interface QuotaLimit {
   id: string | null;
   usedFraction: number | null;
   resetsAt: number | null;
-  daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null } | null;
+  /** 사이드카가 리셋 시각에서 24시간씩 거꾸로 센 오늘 구간. `usedPct`는 그 구간에서 쓴 양, `quotaPct`는 하루 몫(7d면 100/7%), `slotEnd`는 구간 끝 시각이다. */
+  daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null; slotEnd?: number | null } | null;
   /** 사이드카 `scope.windowId`(없으면 `window.id`). 예: `5h`, `7d`. */
   windowId: string | null;
   /** 계정의 모든 모델이 함께 쓰는 공유 구간(`scope.shared`). 계열 전용 tier 구간은 false다. */
@@ -143,6 +144,7 @@ export async function readSidecarQuota(providers: string[], signal?: AbortSignal
                 quotaPct: finiteOrNull(daySlot.quotaPct),
                 slotsLeft: finiteOrNull(daySlot.slotsLeft),
                 quality: typeof daySlot.quality === "string" ? daySlot.quality : null,
+                slotEnd: finiteOrNull(daySlot.slotEnd),
               }
               : null,
             windowId: typeof scope.windowId === "string" ? scope.windowId : typeof window.id === "string" ? window.id : null,
@@ -489,11 +491,25 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. NORMAL_SOL은 Anthropic 1주 한도 대체에서만 먼저 추천된다. */
 const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_SOL: true };
 
-/** 계정의 1주 공유 구간(`7d`, shared)이 관측상 찼다. 관측 시각에 리셋 시각이 이미 지났으면 찬 것으로 보지 않는다. */
-function weeklySharedExhausted(account: QuotaAccount, observedAt: number) {
-  return account.limits.some((limit) => limit.windowId === "7d" && limit.shared
-    && limit.usedFraction !== null && limit.usedFraction >= 1
+/** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
+function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
+  return account.limits.filter((limit) => limit.windowId === "7d" && limit.shared
     && !(limit.resetsAt !== null && limit.resetsAt <= observedAt));
+}
+
+/** 계정의 1주 공유 구간이 관측상 찼다. */
+function weeklySharedExhausted(account: QuotaAccount, observedAt: number) {
+  return liveWeeklyShared(account, observedAt).some((limit) => limit.usedFraction !== null && limit.usedFraction >= 1);
+}
+
+/**
+ * 1주 공유 구간의 오늘 몫을 다 썼다: 리셋 시각에서 24시간씩 거꾸로 센 오늘 구간의 사용량(`daySlot.usedPct`)이
+ * 하루 몫(`daySlot.quotaPct`) 이상이다. 구간 시작값을 몰라 사용량이 없거나(quality unknown), 관측 시각에 이미 끝난 구간 값이면 도달이 아니다.
+ */
+function dailyShareReached(account: QuotaAccount, observedAt: number) {
+  return liveWeeklyShared(account, observedAt).some(({ daySlot }) => daySlot !== null
+    && daySlot.usedPct !== null && daySlot.quotaPct !== null && daySlot.usedPct >= daySlot.quotaPct
+    && !(daySlot.slotEnd != null && daySlot.slotEnd <= observedAt));
 }
 
 /** 계정 사용 가능성은 core 신호(disabled·limitReached·autoBlockedUntil)와 관측된 1주 공유 구간 소진으로만 본다. */
@@ -511,33 +527,36 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
 }
 
 /**
- * 2026-10-08 사용자 결정: 관측된 Anthropic 계정이 모두 쓸 수 없고 그중 하나 이상이 1주 공유 한도를 넘었으면
- * Sonnet·Opus 후보(NORMAL·UI/UX·HARD) 대신 Sol 6.1(NORMAL_SOL)을 먼저 추천하고, Sol도 쓸 수 없으면 사용 가능한 NORMAL 대안을 추천한다.
- * 계정 하나만 넘었으면 core가 다른 계정으로 돌므로 바꾸지 않는다. 한도 미관측은 소진이 아니다. 해당하지 않으면 null이다.
+ * 2026-10-08 사용자 결정: 관측된 Anthropic 계정이 모두 리셋 시각 기준 오늘 몫(1주 공유 한도의 하루치)을 다 썼거나 쓸 수 없고,
+ * 그중 하나 이상이 오늘 몫 도달이나 1주 공유 한도 소진으로 관측되면 Sonnet·Opus 후보(NORMAL·UI/UX·HARD) 대신
+ * Sol 6.1(NORMAL_SOL)을 먼저 추천하고, Sol도 쓸 수 없으면 사용 가능한 NORMAL 대안을 추천한다.
+ * 한 계정만 도달했으면 바꾸지 않는다. 오늘 구간 사용량을 모르면 도달이 아니다. 해당하지 않으면 null이다.
  */
 function anthropicWeeklySubstitute(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
   if (quota.state !== "observed") return null;
   const anthropic = quota.providers.anthropic ?? [];
-  if (!anthropic.length || !anthropic.every((account) => accountUnusable(account, quota.observedAt))
-    || !anthropic.some((account) => weeklySharedExhausted(account, quota.observedAt))) return null;
+  const at = quota.observedAt;
+  if (!anthropic.length
+    || !anthropic.every((account) => accountUnusable(account, at) || dailyShareReached(account, at))
+    || !anthropic.some((account) => dailyShareReached(account, at) || weeklySharedExhausted(account, at))) return null;
   const sol = candidates.find((candidate) => candidate.profile === "NORMAL_SOL"
     && !candidate.model.startsWith("anthropic/") && !modelQuotaExhausted(quota, candidate.model));
   if (sol) {
-    return { profile: sol.profile, reason: "관측된 Anthropic 계정이 모두 쓸 수 없고 1주 공유 한도 소진이 관측되어 Sonnet·Opus 대신 Sol 6.1을 먼저 추천합니다." };
+    return { profile: sol.profile, reason: "관측된 Anthropic 계정이 모두 리셋 시각 기준 오늘 몫(1주 공유 한도의 하루치)을 다 썼거나 쓸 수 없어 Sonnet·Opus 대신 Sol 6.1을 먼저 추천합니다." };
   }
   const fallback = candidates.find((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL"
     && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]
     && !candidate.model.startsWith("anthropic/") && !modelQuotaExhausted(quota, candidate.model));
   if (fallback) {
-    return { profile: fallback.profile, reason: "Anthropic 1주 공유 한도 소진이 관측되었고 Sol 6.1도 쓸 수 없어 사용 가능한 NORMAL 대안을 추천합니다." };
+    return { profile: fallback.profile, reason: "관측된 Anthropic 계정이 모두 오늘 몫을 다 썼거나 쓸 수 없고 Sol 6.1도 쓸 수 없어 사용 가능한 NORMAL 대안을 추천합니다." };
   }
-  return { profile: null, reason: "Anthropic 1주 공유 한도 소진이 관측되었고 Sol 6.1·NORMAL 대안도 쓸 수 없습니다." };
+  return { profile: null, reason: "관측된 Anthropic 계정이 모두 오늘 몫을 다 썼거나 쓸 수 없고 Sol 6.1·NORMAL 대안도 쓸 수 없습니다." };
 }
 
 /**
  * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
- * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. primary가 Anthropic 1주 한도로 막히면
- * anthropicWeeklySubstitute(Sol 6.1 먼저)를, 그 밖의 소진이면 사용 가능한 NORMAL 대안을 추천한다.
+ * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. primary가 Anthropic이고 그 계정들이 오늘 몫에 도달했으면
+ * primary가 아직 쓸 수 있어도 anthropicWeeklySubstitute(Sol 6.1 먼저)를, 그 밖의 소진이면 사용 가능한 NORMAL 대안을 추천한다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
   const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]);
@@ -553,11 +572,11 @@ function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[
     }
     return unavailable("사용 가능한 NORMAL 후보가 없습니다.");
   }
+  const weekly = primary.model.startsWith("anthropic/") ? anthropicWeeklySubstitute(policy, candidates, quota) : null;
+  if (weekly) return weekly.profile ? { state: "observed" as const, profile: weekly.profile, reason: weekly.reason } : unavailable(weekly.reason);
   if (!exhausted(primary)) {
     return { state: "observed" as const, profile: primary.profile, reason: "primary NORMAL이 사용 가능해 한도 여유 크기 비교 없이 이를 추천합니다." };
   }
-  const weekly = primary.model.startsWith("anthropic/") ? anthropicWeeklySubstitute(policy, candidates, quota) : null;
-  if (weekly) return weekly.profile ? { state: "observed" as const, profile: weekly.profile, reason: weekly.reason } : unavailable(weekly.reason);
   const fallback = normal.find((candidate) => candidate.profile !== primary.profile && !exhausted(candidate));
   if (fallback) {
     return { state: "observed" as const, profile: fallback.profile, reason: "primary NORMAL 계정 한도가 소진되어 사용 가능한 NORMAL 대안을 추천합니다." };
@@ -734,7 +753,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation·anthropicWeeklyLimit를 보고 후보를 지정합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace(남은 판단이 얼마나 열려 있는지)와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 관측된 Anthropic 계정이 모두 1주 공유 한도 등으로 막히면 Sonnet·Opus 추천 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천합니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation·anthropicWeeklyLimit를 보고 후보를 지정합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace(남은 판단이 얼마나 열려 있는지)와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 관측된 Anthropic 계정이 모두 1주 공유 한도의 오늘 몫(리셋 시각 기준 하루치)에 도달했거나 막히면 Sonnet·Opus 추천 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천합니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -916,7 +935,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
-      // 관측된 Anthropic 1주 한도 소진은 NORMAL·UI/UX·HARD의 Anthropic 추천을 같은 대체 결과로 옮기고 route에 근거를 남긴다.
+      // 관측된 Anthropic 계정 전부의 오늘 몫 도달(또는 사용 불가)은 NORMAL·UI/UX·HARD의 Anthropic 추천을 같은 대체 결과로 옮기고 route에 근거를 남긴다.
       // 비-UI NORMAL은 normalAllocation도 같은 대체를 반영하므로 두 값은 일치한다.
       const weeklyMoves: ({ from: string; to: string | null; reason: string } | null)[] = [];
       for (const publication of publications) {
@@ -1207,7 +1226,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. 관측된 Anthropic 계정이 모두 1주 공유 한도로 막히면 Sonnet·Opus 추천(NORMAL·UI/UX·HARD) 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천하고 그 근거를 anthropicWeeklyLimit에 남긴다. 그 밖에 HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. 관측된 Anthropic 계정이 모두 1주 공유 한도의 오늘 몫(리셋 시각 기준 하루치)에 도달했거나 막히면 Sonnet·Opus 추천(NORMAL·UI/UX·HARD) 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천하고 그 근거를 anthropicWeeklyLimit에 남긴다. 그 밖에 HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

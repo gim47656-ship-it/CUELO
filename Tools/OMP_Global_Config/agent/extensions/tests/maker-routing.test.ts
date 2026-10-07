@@ -1465,15 +1465,17 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const hard = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
     expect((await hard.prepareBatch("HARD 유지", [hard.task], {} as never)).routes[0]!.profile).toBe("HARD_CODE_OPUS");
   });
-  describe("Anthropic 1주 공유 한도 소진 때 Sol 6.1 우선", () => {
+  describe("Anthropic 계정이 모두 1주 한도의 오늘 몫에 도달하면 Sol 6.1 우선", () => {
     // 운영 설정처럼 Sonnet·Opus 후보가 모두 Anthropic인 후보 표.
     const live = candidates.map((candidate) => candidate.model === "openai-codex/gpt-6-sol"
       ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
-    const anthropicAccount = (weeklyUsed: number, extra: Record<string, unknown> = {}) => ({
+    // 오늘 구간(리셋 시각에서 24시간씩 거꾸로 센 구간)의 사용량. 7d의 하루 몫은 100/7%다.
+    const slot = (usedPct: number | null, slotEnd = 500) => ({ usedPct, quotaPct: 100 / 7, slotsLeft: 1, quality: usedPct === null ? "unknown" : "exact", slotEnd });
+    const anthropicAccount = (weeklyUsed: number, extra: Record<string, unknown> = {}, daySlot: unknown = null) => ({
       credentialId: 1, disabled: false, autoBlockedUntilMs: null, limitReached: null, fetchedAt: 1,
       limits: [
         { id: "anthropic:5h", usedFraction: 0.1, resetsAt: 50, daySlot: null, windowId: "5h", shared: true },
-        { id: "anthropic:7d", usedFraction: weeklyUsed, resetsAt: 500, daySlot: null, windowId: "7d", shared: true },
+        { id: "anthropic:7d", usedFraction: weeklyUsed, resetsAt: 500, daySlot, windowId: "7d", shared: true },
       ],
       ...extra,
     });
@@ -1484,20 +1486,28 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ...options,
     });
 
-    test("관측된 Anthropic 계정이 모두 1주 공유 한도를 넘으면 NORMAL·UI/UX·HARD 추천을 NORMAL_SOL로 옮기고 근거 없이 auto로 발주된다", async () => {
+    test("두 계정이 모두 오늘 몫을 다 쓰면(아직 쓸 수 있어도) NORMAL·UI/UX·HARD 추천을 NORMAL_SOL로 옮기고 근거 없이 auto로 발주된다", async () => {
       const cases: [NonNullable<Parameters<typeof harness>[0]>, string][] = [
         [{ workClass: "NORMAL" }, "NORMAL_SONNET"],
         [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS"],
         [{ workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS"],
         [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS"],
       ];
-      for (const [options, from] of cases) {
-        const h = build([anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], [open], options);
-        const batch = await h.prepareBatch("주간 소진", [h.task], {} as never);
-        expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SOL", anthropicWeeklyLimit: { from, to: "NORMAL_SOL" } });
-        // 원래 Anthropic 후보로 되돌리는 선택은 추천 변경이라 Main 근거가 필요하다.
-        expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toMatchObject({ block: true });
-        expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+      const accountSets = [
+        // 오늘 몫 도달: 1주 사용률은 절반이지만 오늘 구간에서 하루치(약 14.3%) 이상을 썼다.
+        [anthropicAccount(0.5, {}, slot(15)), anthropicAccount(0.6, { credentialId: 3 }, slot(100 / 7))],
+        // 한 계정은 오늘 몫 도달, 다른 계정은 1주 한도 소진.
+        [anthropicAccount(0.5, {}, slot(20)), anthropicAccount(1.02, { credentialId: 3 })],
+      ];
+      for (const anthropic of accountSets) {
+        for (const [options, from] of cases) {
+          const h = build(anthropic, [open], options);
+          const batch = await h.prepareBatch("오늘 몫 도달", [h.task], {} as never);
+          expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SOL", anthropicWeeklyLimit: { from, to: "NORMAL_SOL" } });
+          // 원래 Anthropic 후보로 되돌리는 선택은 추천 변경이라 Main 근거가 필요하다.
+          expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toMatchObject({ block: true });
+          expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+        }
       }
     });
 
@@ -1516,25 +1526,32 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       });
     });
 
-    test("한 계정만 넘었거나 1주 공유 구간 소진이 관측되지 않으면 Sonnet·Opus 추천을 Sol로 옮기지 않는다", async () => {
+    test("한 계정만 도달했거나 오늘 구간 사용량을 모르거나 지난 구간 값이면 Sonnet·Opus 추천을 Sol로 옮기지 않는다", async () => {
       const route = async (anthropic: unknown[], options: NonNullable<Parameters<typeof harness>[0]>) => {
         const h = build(anthropic, [open], options);
-        return (await h.prepareBatch("주간 미소진", [h.task], {} as never)).routes[0]!;
+        return (await h.prepareBatch("오늘 몫 미도달", [h.task], {} as never)).routes[0]!;
       };
-      // 다른 계정이 남아 있으면 core가 그 계정으로 돈다.
-      expect(await route([anthropicAccount(1), anthropicAccount(0.4, { credentialId: 3 })], { workClass: "NORMAL" }))
-        .toMatchObject({ profile: "NORMAL_SONNET", anthropicWeeklyLimit: null });
-      // 1주 구간이 차지 않은 limitReached(예: 5시간 한도)는 기존 소진 대체(DeepSeek)를 따른다.
+      // 다른 계정이 오늘 몫 아래면 바꾸지 않는다(1주 소진 계정이어도 core가 다른 계정으로 돈다).
+      for (const reached of [anthropicAccount(1), anthropicAccount(0.5, {}, slot(30))]) {
+        expect(await route([reached, anthropicAccount(0.4, { credentialId: 3 }, slot(5))], { workClass: "NORMAL" }))
+          .toMatchObject({ profile: "NORMAL_SONNET", anthropicWeeklyLimit: null });
+      }
+      // 오늘 구간 시작값을 몰라 사용량이 없거나, 관측 시각에 이미 끝난 구간 값은 도달이 아니다.
+      for (const daySlot of [slot(null), slot(30, 5)]) {
+        expect(await route([anthropicAccount(0.5, {}, daySlot), anthropicAccount(0.5, { credentialId: 3 }, slot(30))], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }))
+          .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
+      }
+      // 1주 구간 신호가 없는 limitReached(예: 5시간 한도)는 기존 소진 대체(DeepSeek)를 따른다.
       expect(await route([anthropicAccount(0.5, { limitReached: true })], { workClass: "NORMAL" }))
         .toMatchObject({ profile: "NORMAL_DEEPSEEK", anthropicWeeklyLimit: null });
-      // 관측 시각에 이미 리셋된 1주 구간과 계열 전용(비공유) 1주 구간은 공유 한도 소진이 아니다.
-      const stale = { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, daySlot: null, windowId: "7d", shared: true }] };
-      const tier = { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, daySlot: null, windowId: "7d", shared: false }] };
+      // 관측 시각에 이미 리셋된 1주 구간과 계열 전용(비공유) 1주 구간은 공유 한도 신호가 아니다.
+      const stale = { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, daySlot: slot(30), windowId: "7d", shared: true }] };
+      const tier = { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, daySlot: slot(30), windowId: "7d", shared: false }] };
       for (const extra of [stale, tier]) {
         expect(await route([anthropicAccount(0, extra)], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }))
           .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
       }
-      // 잔량을 관측하지 못하면 소진이 아니다.
+      // 잔량을 관측하지 못하면 도달이 아니다.
       const blind = harness({ candidates: live, workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
       expect((await blind.prepareBatch("미관측", [blind.task], {} as never)).routes[0])
         .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
