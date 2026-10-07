@@ -25,12 +25,14 @@ function harness(options: {
   loadCore?: () => Promise<CoreJudgmentModules>;
   userMcp?: unknown;
   projectFiles?: Record<string, string>;
+  /** 다른 세션의 기록을 이어 쓰는 경우. 없으면 새로 만든다. */
+  agentDir?: string;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mcp-selection-"));
   roots.push(root);
-  const agentDir = join(root, "agent");
+  const agentDir = options.agentDir ?? join(root, "agent");
   const cwd = join(root, "project");
-  mkdirSync(agentDir);
+  if (!options.agentDir) mkdirSync(agentDir);
   mkdirSync(join(cwd, ".omp"), { recursive: true });
   if (options.userMcp) writeFileSync(join(agentDir, "mcp.json"), JSON.stringify(options.userMcp));
   for (const [file, content] of Object.entries(options.projectFiles ?? {})) {
@@ -67,7 +69,7 @@ function harness(options: {
     ((await handlers.before_agent_start![0]!({ type: "before_agent_start", prompt: "", systemPrompt: [] }, ctx)) as
       | { message: { customType: string; content: string; display: boolean } }
       | undefined)?.message;
-  return { select, notice, requests };
+  return { select, notice, requests, agentDir };
 }
 
 const server = (name: string, tools: Server["tools"] = [], selected?: boolean): Server => ({ name, level: "project", provider: "native", transport: "stdio", tools, selected });
@@ -148,6 +150,21 @@ describe("mcp-selection", () => {
     expect(content).toContain(entry.source);
     await h.select("WinForms 문서 다시 확인", [figma]);
     expect(h.requests.at(-1)!.state.servers.map((item) => item.name)).not.toContain("microsoft-learn");
+  });
+
+  test("한 번 보여 준 설치 제안은 다음 세션에서 반복하지 않고, 요청에 이름이 있으면 다시 판단한다", async () => {
+    const decide = (name: string): McpNeed => (name === "microsoft-learn" ? "needed" : "not-needed");
+    const first = harness({ decide });
+    await first.select("WinForms 공식 문서 확인해줘", []);
+    expect((await first.notice())!.content).toContain("설치 제안(아직 실행 안 함): `microsoft-learn`");
+
+    const next = harness({ decide, agentDir: first.agentDir });
+    await next.select("WinForms 공식 문서 확인해줘", []);
+    expect(next.requests.at(-1)?.state.servers.map((item) => item.name) ?? []).not.toContain("microsoft-learn");
+    expect((await next.notice())?.content ?? "").not.toContain("microsoft-learn");
+
+    await next.select("microsoft-learn 으로 WinForms 문서 찾아줘", []);
+    expect((await next.notice())!.content).toContain("설치 제안(아직 실행 안 함): `microsoft-learn`");
   });
 
   test("선택이 연결한 서버만 not-needed에 숨기고, 사용자가 수동 재연결하면 이후 not-needed에서도 유지한다", async () => {

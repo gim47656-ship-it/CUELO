@@ -57,22 +57,33 @@ function textPrefix(bytes: Uint8Array, max: number): string {
   throw new Error("UTF-8이 아닙니다.");
 }
 
+/** cwd 위쪽 저장소의 gitignore 규칙에 걸리는 경로만 돌려준다. 판정하지 못하면 전송하지 않도록 실패한다. */
+async function gitIgnored(cwd: string, paths: readonly string[], signal: AbortSignal): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  // --no-index: native glob처럼 추적 여부와 무관하게 규칙만 본다.
+  const child = Bun.spawn(["git", "check-ignore", "--no-index", "--stdin", "-z"], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe", signal });
+  child.stdin.write(`${paths.join("\0")}\0`);
+  await child.stdin.end();
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  // 0: 하나 이상 제외, 1: 제외 없음.
+  if (code !== 0 && code !== 1) throw new Error(`git check-ignore 실패(exit ${code}): ${err.trim()}`);
+  return new Set(out.split("\0").filter(Boolean).map(slash));
+}
+
 async function collect(input: SkimInput, cwd: string, signal: AbortSignal): Promise<{ prompt: string; notes: string[]; count: number }> {
   // legacy-pi 확장 loader는 이 host SDK 경로를 설치된 runtime으로 치환한다.
   const { glob, FileType } = await import("@oh-my-pi/pi-natives");
   const root = await realpath(resolve(cwd));
   if (slash(root).toLowerCase().includes("/.omp/agent")) throw new Error("인증 저장소 ~/.omp/agent 아래에서는 skim을 사용할 수 없습니다.");
-  // cwd가 저장소 안쪽이면 저장소 루트부터 탐색해 상위 .gitignore도 적용한다.
-  let searchRoot = root;
-  while (true) {
-    try { await lstat(resolve(searchRoot, ".git")); break; }
+  // 탐색은 cwd에서만 한다. 저장소 루트부터 걸으면 명시 파일 하나에도 저장소 전체를 훑어, 원격
+  // 드라이브의 큰 저장소에서 native glob 10초 제한을 넘긴다. native glob은 cwd 위쪽 .gitignore를
+  // 보지 못하므로 cwd가 저장소 안쪽이면 찾은 경로만 git check-ignore로 다시 거른다.
+  let parentRepo = false;
+  for (let dir = dirname(root); ; dir = dirname(dir)) {
+    try { await lstat(resolve(dir, ".git")); parentRepo = true; break; }
     catch { /* 상위 저장소 경계를 계속 탐색 */ }
-    const parent = dirname(searchRoot);
-    if (parent === searchRoot) { searchRoot = root; break; }
-    searchRoot = parent;
+    if (dirname(dir) === dir) break;
   }
-  const prefix = slash(relative(searchRoot, root));
-  const fromSearchRoot = (pattern: string) => prefix ? `${prefix}/${pattern}` : pattern;
   const notes: string[] = [];
   const found = new Set<string>();
   let capped = false;
@@ -95,23 +106,33 @@ async function collect(input: SkimInput, cwd: string, signal: AbortSignal): Prom
         notes.push(`${target.pattern}: 심볼릭 링크 제외`); continue;
       }
     }
-    // 명시 경로도 저장소 루트 상대 pattern으로 확인한다. 부모 디렉터리를 검색 루트로
-    // 바꾸면 .gitignore가 적용되지 않는 native glob 계약이 있다.
-    const result = await glob({ pattern: fromSearchRoot(pattern), path: searchRoot, fileType: FileType.File, hidden: true,
-      recursive: false, gitignore: true, maxResults: MAX_MATCHES + 1, signal, timeoutMs: 10_000 });
-    if (result.matches.length > MAX_MATCHES) capped = true;
-    if (target.explicit && result.matches.length === 0) {
+    let matches: string[];
+    try {
+      const result = await glob({ pattern, path: root, fileType: FileType.File, hidden: true,
+        recursive: false, gitignore: true, maxResults: MAX_MATCHES + 1, signal, timeoutMs: 10_000 });
+      if (result.matches.length > MAX_MATCHES) capped = true;
+      matches = result.matches.slice(0, MAX_MATCHES).map((item) => slash(relative(root, resolve(root, item.path))));
+    } catch (error) {
+      // 이 경로만 건너뛰고 나머지 경로는 계속 조사한다.
+      if (signal.aborted || !(error instanceof Error && error.message.includes("Aborted: Timeout"))) throw error;
+      notes.push(`${target.pattern}: 파일 탐색이 10초를 넘어 건너뜀`);
+      continue;
+    }
+    if (parentRepo && matches.length > 0) {
+      const ignored = await gitIgnored(root, matches, signal);
+      matches = matches.filter((rel) => !ignored.has(rel));
+    }
+    if (target.explicit && matches.length === 0) {
       if (pattern === target.pattern) notes.push(`${target.pattern}: gitignore로 건너뜀`);
       else {
-        const directory = await glob({ pattern: fromSearchRoot(target.pattern), path: searchRoot, fileType: FileType.Dir,
+        const directory = await glob({ pattern: target.pattern, path: root, fileType: FileType.Dir,
           hidden: true, recursive: false, gitignore: true, maxResults: 1, signal, timeoutMs: 10_000 });
-        if (directory.matches.length === 0) notes.push(`${target.pattern}: gitignore로 건너뜀`);
+        if (directory.matches.length === 0 || (parentRepo && (await gitIgnored(root, [target.pattern], signal)).size > 0)) {
+          notes.push(`${target.pattern}: gitignore로 건너뜀`);
+        }
       }
     }
-    for (const item of result.matches.slice(0, MAX_MATCHES)) {
-      const rel = relative(root, resolve(searchRoot, item.path));
-      if (inside(rel)) found.add(slash(rel));
-    }
+    for (const rel of matches) if (inside(rel)) found.add(rel);
   }
   if (capped) notes.push(`발견 파일이 입력당 ${MAX_MATCHES}개를 초과해 나머지는 탐색하지 않음`);
   const chunks: string[] = [];

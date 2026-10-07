@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
@@ -21,7 +21,8 @@ import {
  * 요청별 MCP 선택(`mcp.selection: per-request`). 패치된 core가 매 사용자 요청의 system prompt를 만들기
  * 전에 `mcp_select`를 보내면, 이미 허용된 서버 중 native JEV가 needed로 본 것만 연결하게 이름을 돌려준다.
  * 꺼진 서버·미설치 추천은 안내만 하고 이 선택기는 켜거나 설치하지 않는다. 설치·인증·권한은 먼저 사용자 승인을 요청하고
- * 승인 후 Main 에이전트가 실행하며, 사용자 본인 로그인·제공자 안전 동의만 사용자가 한다. 설정 파일은 읽기만 한다.
+ * 승인 후 Main 에이전트가 실행하며, 사용자 본인 로그인·제공자 안전 동의만 사용자가 한다. 설정 파일은 읽기만 하고,
+ * 한 번 보여 준 설치 제안 이름만 `mcp-suggested.json`에 남겨 다음 세션부터는 요청에 그 이름이 있을 때만 다시 판단한다.
  * `mcp_select`를 모르는 core(standalone omp 등)에서는 핸들러가 호출되지 않아 아무 일도 하지 않는다.
  */
 
@@ -80,6 +81,7 @@ interface McpSelectEventLike {
 }
 
 const CUSTOM_TYPE = "mcp-selection";
+const SUGGESTED_FILE = "mcp-suggested.json";
 const STACK_SKIP_DIRS: ReadonlySet<string> = new Set(["node_modules", "bin", "obj", "dist", "build", "out", "target", "vendor"]);
 const STACK_DIR_LIMIT = 40;
 
@@ -92,6 +94,20 @@ async function readJson(path: string): Promise<Record<string, unknown> | undefin
   } catch {
     return undefined;
   }
+}
+
+async function readSuggested(agentDir: string): Promise<Set<string>> {
+  const names = (await readJson(join(agentDir, SUGGESTED_FILE)))?.names;
+  return new Set(Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : []);
+}
+
+/** 다른 세션이 남긴 이름과 합쳐 원자적으로 바꾼다. */
+async function writeSuggested(agentDir: string, names: ReadonlySet<string>): Promise<void> {
+  const merged = new Set([...(await readSuggested(agentDir)), ...names]);
+  const path = join(agentDir, SUGGESTED_FILE);
+  const temp = `${path}.${process.pid}.tmp`;
+  await writeFile(temp, `${JSON.stringify({ names: [...merged].sort() }, null, 2)}\n`);
+  await rename(temp, path);
 }
 
 /** 사용자가 끈 서버 이름만 읽는다(command·url·env·headers는 읽지 않는다). */
@@ -186,8 +202,8 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
   const resolveJudge = deps.resolveJudge ?? ((ctx: ExtensionContext) => resolveNativeJudge(ctx, loadCore));
 
   return function mcpSelection(pi: ExtensionAPI): void {
-    /** 이미 보여 준 설치 제안. 같은 세션에서 반복하지 않는다. */
-    const suggested = new Set<string>();
+    /** 이미 보여 준 설치 제안. 세션을 넘어 반복하지 않도록 agentDir 파일과 함께 유지한다. */
+    let suggestedPromise: Promise<Set<string>> | undefined;
     let judgePromise: Promise<NativeJudge | undefined> | undefined;
     let stackPromise: Promise<string> | undefined;
     /** 진행 중 선택. before_agent_start가 닫으면 늦게 끝난 판정은 상태를 바꾸지 못한다. */
@@ -228,8 +244,13 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       }
       const known = new Set([...event.deferred, ...event.connected].map((server) => server.name));
       const disabled = (await readDisabledServers(agentDir, ctx.cwd)).filter((server) => !known.has(server.name));
+      const suggested = await (suggestedPromise ??= readSuggested(agentDir));
+      const namedCatalog = mentionedServers(event.prompt, catalog.map((entry) => entry.name));
       const pendingCatalog = catalog.filter(
-        (entry) => !known.has(entry.name) && !disabled.some((server) => server.name === entry.name) && !suggested.has(entry.name),
+        (entry) =>
+          !known.has(entry.name) &&
+          !disabled.some((server) => server.name === entry.name) &&
+          (!suggested.has(entry.name) || namedCatalog.has(entry.name)),
       );
       const candidates = buildCandidates({ deferred: event.deferred, connected: event.connected, disabled, catalog: pendingCatalog });
       if (candidates.length === 0) {
@@ -257,8 +278,12 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
 
       const plan = planSelection({ candidates, answers, mentioned, catalog: pendingCatalog });
       if (!finish({ lines: plan.lines, requested: plan.connect.length > 0, outcome: event.outcome })) return undefined;
-      for (const entry of pendingCatalog) {
-        if (plan.lines.some((line) => line.includes(`\`${entry.name}\``))) suggested.add(entry.name);
+      const shown = pendingCatalog.filter((entry) => !suggested.has(entry.name) && plan.lines.some((line) => line.includes(`\`${entry.name}\``)));
+      if (shown.length > 0) {
+        for (const entry of shown) suggested.add(entry.name);
+        await writeSuggested(agentDir, suggested).catch((error) =>
+          pi.logger.warn("mcp-selection: 설치 제안 기록 실패", { error: error instanceof Error ? error.message : String(error) }),
+        );
       }
       return { connect: plan.connect, expose: plan.expose };
     };
@@ -293,7 +318,6 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       current?.controller.abort();
       current = undefined;
       pending = undefined;
-      suggested.clear();
       stackPromise = undefined;
     });
   };

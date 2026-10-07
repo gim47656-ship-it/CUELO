@@ -46,7 +46,7 @@ describe("skim", () => {
 
   test("하위 cwd에서도 상위 저장소의 gitignore를 명시 파일에 적용한다", async () => {
     const repo = fixture();
-    mkdirSync(join(repo, ".git"));
+    expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
     mkdirSync(join(repo, "nested"));
     writeFileSync(join(repo, ".gitignore"), "nested/ignored.md\n");
     writeFileSync(join(repo, "nested", "ignored.md"), "PARENT_IGNORE_MARKER");

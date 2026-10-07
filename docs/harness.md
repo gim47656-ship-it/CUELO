@@ -121,7 +121,7 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 ## 다중 파일 조사 `skim`
 
-Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 B.AI로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
+Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 B.AI로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 파일 탐색은 cwd 안에서만 하고, cwd가 더 큰 저장소의 하위 폴더이면 찾은 경로를 `git check-ignore`로 다시 걸러 상위 `.gitignore`도 적용합니다. 그래서 원격 드라이브의 큰 저장소 안에서도 저장소 전체를 훑지 않으며, 한 경로의 탐색이 10초를 넘으면 그 경로만 건너뛰었다고 표시합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
 
 `modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `anthropic/claude-sonnet-5-5`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sonnet을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
 
@@ -207,6 +207,7 @@ mcp:
 - 필요하지 않은 자동 연결 서버는 다시 실행하지 않고 도구 노출만 줄입니다. 사용자가 직접 연결한 서버는 수동 선택을 존중합니다.
 - JEV를 사용할 수 없으면 새 연결을 만들지 않고 실패 상태를 알립니다. 개별 서버의 필요성을 판단하지 못한 경우도 연결하지 않으며, 요청에서 이름을 부른 서버에만 보류 안내를 표시합니다. 이름을 부르지 않은 보류 후보는 나열하지 않습니다. 전체 서버 연결이나 다른 채팅 모델로 조용히 대체하지 않습니다.
 - 전역·프로젝트 설치 추천은 공식 출처와 필요한 작업·권한을 함께 안내하고 사용자 승인을 요청합니다. 승인 뒤에는 에이전트가 설치·등록·설정·연결·검증을 수행합니다. 사용자 본인 로그인·인증정보 입력·제공자 안전 확인·동의가 필요한 단계만 사용자에게 넘깁니다. 선택 확장은 스스로 설치를 실행하거나 승인을 대신하지 않습니다. `/mcp` 설치·인증 명령이 필요한 경우 터미널의 대화형 `omp`를 사용합니다.
+- 같은 서버의 설치 추천은 한 번만 보여 줍니다. 보여 준 서버 이름은 agent 데이터 디렉터리의 `mcp-suggested.json`에 남고, 이후 세션에서는 요청에 그 서버 이름을 직접 적었을 때만 다시 판단합니다. 다시 처음부터 추천받으려면 그 파일에서 이름을 지웁니다.
 
 `tools.xdevDocs: catalog`는 도구 상세 설명을 필요할 때 읽도록 하는 별도 설정입니다. 서버 연결을 고르는 `mcp.selection`과 같은 기능이 아닙니다. 요청별 판정은 JEV 사용량을 추가하며, 전체 작업 비용 절감률은 별도 측정 없이 보장하지 않습니다.
 
