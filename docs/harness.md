@@ -214,6 +214,8 @@ mcp:
 
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
+WSL에서 Windows 드라이브(`/mnt/c`·`/mnt/v` 등) 위의 저장소를 마감할 때는 같은 finalizer를 Linux `pwsh` 대신 Windows `powershell.exe`로 돌리고, 경로는 `wslpath -w`로 바꿔 넘깁니다. 그래서 commit·push는 Windows Git과 그 자격 증명으로 실행됩니다. Linux Git은 Windows 드라이브의 파일을 하나씩 확인하느라 파일이 많은 저장소에서 수 분이 걸리고, 마감 제한 시간(3분)에 걸려 중단될 수 있기 때문입니다. WSL 디스크 안의 저장소는 이전처럼 Linux에서 실행합니다.
+
 커밋은 됐는데 push가 실패했다면(원격 오류·네트워크 끊김) 같은 파일 목록으로 다시 호출합니다. 요청한 파일이 이미 깨끗하고 아직 원격에 없는 커밋에 들어 있으면, 새 커밋을 만들지 않고 그 커밋을 그대로 다시 보냅니다. 원격 브랜치가 있으면 upstream..HEAD를, 원격에 처음 올리는 브랜치면 원격 추적 ref(`refs/remotes/<remote>/*`) 어디에도 없는 HEAD 커밋을 원격에 없는 커밋으로 봅니다. 재시도 사이에 새로 바뀐 파일이 있으면 그것만 새 커밋으로 만들어 함께 보냅니다. 이미 원격에 있는 파일이나 바뀌지 않은 파일만 넘기면 기존처럼 거절합니다.
 
 저장소에 기억 동기화 스크립트(`Tools/OMP_Global_Config/memory-sync/sync.ts`)가 있으면 `git_finalize`는 커밋 전에 이 PC의 프로젝트 기억을 `memories.jsonl`로 내보내고, 바뀐 경우 그 파일을 같은 커밋에 넣습니다. 다른 PC는 `setup`에서 이 파일을 가져옵니다. 내보내기가 실패해도 요청한 파일의 커밋은 진행하고 결과 문구에 실패 이유를 남깁니다. 기억 파일은 공개 미러에 올라가지 않습니다.

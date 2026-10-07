@@ -162,6 +162,23 @@ function parseResult(stdout: string): FinalizerResult | undefined {
   return undefined;
 }
 
+/**
+ * WSL에서 Windows 드라이브(`/mnt/<드라이브>/`) 위 저장소는 Linux git이 9p로 파일마다 stat해 매우 느리다.
+ * 2026-10-08 V: 아카이브(추적 파일 21만여 개)에서 Linux `git status`는 300초를 넘겼고 finalizer 제한 시간(180초)에
+ * 걸려 `exit -1`로 끊겼다. 같은 저장소의 Windows `git.exe status`는 2.5초다. 그런 저장소는 Windows PowerShell과
+ * Windows git으로 같은 finalizer를 돌리고, 넘기는 경로는 `wslpath -w`로 바꾼다. 해당하지 않으면 undefined다.
+ */
+async function windowsDrivePaths(cwd: string, paths: string[], exec: Exec): Promise<string[] | undefined> {
+  if (process.platform !== "linux" || !process.env.WSL_DISTRO_NAME || !/^\/mnt\/[a-z]\//i.test(cwd)) return undefined;
+  const converted: string[] = [];
+  for (const path of paths) {
+    const result = await exec("wslpath", ["-w", path], { cwd });
+    if (result.code !== 0 || !result.stdout.trim()) throw new Error(`git_finalize: wslpath -w ${path} 변환 실패: ${(result.stderr || result.stdout).trim()}`);
+    converted.push(result.stdout.trim());
+  }
+  return converted;
+}
+
 const factory: CustomToolFactory = (pi) => ({
   name: "git_finalize",
   label: "Git Finalize",
@@ -192,10 +209,11 @@ const factory: CustomToolFactory = (pi) => ({
     const tempDir = await mkdtemp(join(tmpdir(), "omp-git-finalize-"));
     const requestPath = join(tempDir, "request.json");
     try {
-      await writeFile(requestPath, JSON.stringify({ cwd: pi.cwd, files, message }), "utf8");
+      const windows = await windowsDrivePaths(pi.cwd, [pi.cwd, scriptPath, requestPath], exec);
+      await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message }), "utf8");
       const result = await pi.exec(
-        process.platform === "win32" ? "powershell.exe" : "pwsh",
-        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", requestPath],
+        process.platform === "win32" || windows ? "powershell.exe" : "pwsh",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windows?.[1] ?? scriptPath, "-Request", windows?.[2] ?? requestPath],
         { cwd: pi.cwd, signal, timeout: 180_000 },
       );
       const parsed = parseResult(result.stdout);
