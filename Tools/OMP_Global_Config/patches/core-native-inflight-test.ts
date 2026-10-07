@@ -157,7 +157,8 @@ async function runTurn(providerSessionState: Map<string, unknown>, sessionId: st
 }
 
 function fixtureModel() {
-	const base = getBundledModel("openai-codex", "gpt-5.5");
+	// 18.7.0 번들에서 openai-codex/gpt-5.5 가 빠졌다. 두 판에 모두 있고 compat 이 가장 가까운 Codex 모델을 쓴다.
+	const base = getBundledModel("openai-codex", "gpt-5.6-sol");
 	return {
 		...base,
 		baseUrl: `http://127.0.0.1:${server.port}/codex`,

@@ -20,6 +20,9 @@ export type UpdateWaitPageInput = {
  *   전체 완료 퍼센트나 예상 시간은 데이터에 없으므로 만들지 않는다. 진행선은 관측한
  *   단계(`DRAINING`→`QUIESCENT`→`CUTOVER`→`SERVICE_READY`)까지만 채운다.
  * - 단계를 아직 받지 못했거나 모르는 값이면 성공·실패 어느 쪽으로도 단정하지 않는다.
+ * - 서버가 응답하지 않는 동안에는 이미 관측한 단계를 지우지 않고 마지막으로 확인한 단계를 그대로 보인다.
+ *   읽지 못한 단계로 올리지는 않는다. 서비스는 단계 사이에서도 내려가고 WSL 갱신은 교체 단계를 쓰자마자
+ *   서비스를 멈추므로, 탭이 교체 단계를 읽기 전에 서버가 사라지는 것이 보통이다.
  * - 복귀 판정(정확한 request/stage 일치, `deploymentCompleted`·`writeSafe`·`mutationBlocked`)과
  *   확인 주기는 서버 계약 그대로이며 이 화면은 그 조건을 바꾸지 않는다.
  * - 확인 요청에는 상한을 둔다. 한 번의 늦은 응답이나 무응답이 확인 루프를 끝내면 화면이
@@ -291,6 +294,8 @@ const STAGES=[
 ];
 const PHASE_INDEX={DRAINING:0,QUIESCENT:1,CUTOVER:2,SERVICE_READY:3};
 const CLEANUP_LABELS={running:"정리 중",succeeded:"정리 완료",failed:"정리 실패 · 증거 보존",skipped:"정리 건너뜀","pending-approval":"정리 승인 대기"};
+/* 단계를 본 뒤 서버가 응답하지 않을 때, 예고된 재시작(CUTOVER)이 아닌 단계에 붙이는 문구. */
+const HELD_STATUS="서버 응답을 기다리는 중입니다. 마지막으로 확인한 단계를 표시하고 있으며, 업데이트가 끝났는지 실패했는지는 아직 확인되지 않았습니다.";
 
 let stopped=false;
 let failed=false;
@@ -617,11 +622,14 @@ async function check(){
     failedPolls+=1;
     /* 무응답 사이에 서버 상태가 바뀌었을 수 있으므로 자동 복귀는 다시 두 번의 응답을 본다. */
     failureReleaseSeen=false;
-    /* 실패를 이미 본 뒤의 무응답은 실패 표시를 지우지 않는다. 교체(CUTOVER)까지 본 뒤의 무응답은 그 단계가
-       예고한 서비스 재시작이므로 단계 표시를 유지한다(WSL 갱신은 이 구간에 빌드까지 해 몇 분 걸린다). */
+    /* 실패를 이미 본 뒤의 무응답은 실패 표시를 지우지 않는다. 단계를 하나라도 본 뒤의 무응답은 마지막으로 관측한
+       단계를 그대로 둔다. WSL 갱신은 QUIESCENT 직후 CUTOVER를 쓰자마자 서비스를 멈추고 그 뒤 빌드까지 몇 분 걸리므로
+       탭이 CUTOVER를 읽기 전에 서버가 사라지는 것이 보통이다. 이때 단계를 지우지도, 읽지 못한 단계로 올리지도
+       않는다. CUTOVER는 예고된 재시작이라 그 단계 문구를 쓰고, 그 앞 단계에는 결과를 아직 모른다는 문구를 붙인다.
+       아무 단계도 못 봤으면 단정하지 않는다. */
     if(!failed){
-      if(rank===PHASE_INDEX.CUTOVER)renderPhase(rank,null,rank);
-      else renderUnknown();
+      if(rank<0)renderUnknown();
+      else renderPhase(rank,rank===PHASE_INDEX.CUTOVER?null:HELD_STATUS,rank);
     }
     renderLink();
   }else{

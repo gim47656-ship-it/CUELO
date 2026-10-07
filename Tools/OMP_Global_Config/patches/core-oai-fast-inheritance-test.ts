@@ -181,7 +181,8 @@ console.log("[7] priority 를 광고하지 않는 Codex 모델은 상속돼도 w
 {
 	const child = createSubagentSettings(Settings.isolated({ "tier.subagent": "inherit" }), undefined, { openai: "priority" });
 	const tiers = buildServiceTierByFamily(cfgTierOpenai.get(child), cfgTierAnthropic.get(child), cfgTierGoogle.get(child));
-	const base = getBundledModel("openai-codex", "gpt-5.5");
+	// 18.7.0 번들에서 openai-codex/gpt-5.5 가 빠졌다. 두 판에 모두 있는 같은 계열 Codex 모델을 쓴다.
+	const base = getBundledModel("openai-codex", "gpt-5.6-sol");
 	const context = { messages: [{ role: "user", content: "probe", timestamp: Date.now() }] };
 	const unsupported = { ...base, serviceTiers: ["flex"] };
 	const supported = { ...base, serviceTiers: ["priority", "flex"] };

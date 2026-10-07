@@ -86,6 +86,18 @@ const OPUS55_ROW_18410 = {
 const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93,');
 
 /**
+ * #310의 18.7.0 no-op 후보(RETIRE 유지). upstream이 같은 행의 tps만 93→97로 바꿨고 prefixBinding·binding controls는 그대로다.
+ */
+const OPUS55_ROW_1870 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":97,');
+
+/**
+ * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
+ * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
+ * 18.4.6 적용본으로 잘못 읽어 --revert가 없는 patched를 찾다 실패하는 일을 막는다. tps가 다시 바뀌어도 같다.
+ */
+const OPUS55_HEAD_1846 = OPUS55_ROW_1846.anchor.slice(0, OPUS55_ROW_1846.anchor.indexOf('"tps":95.2,') + '"tps":95.2,'.length);
+
+/**
  * learn topic upsert 적용본. 갱신 때 metadata 의 session_id/cwd 는 최초 저장자로 남고,
  * updated_session_id/updated_cwd/updated_at 이 최신 정정자·시점이며 context 는 최신 이유다.
  * first_context/first_timestamp 는 기존 revision 이 명시적으로 1 일 때만 갱신 직전 값으로 보존한다
@@ -4145,6 +4157,10 @@ import { resolveUsedFraction } from "../usage";`,
 		}],
 	},
 	{
+		// 18.7.0: upstream 이 `if (!currentModel) return false;` 바로 뒤에 reserve 승인 범위용 `sessionId` 줄을 넣어
+		// (#usageReserveApproval) 원 앵커가 깨졌다. 두 판 적용본의 marker 가 같으므로 그 두 줄 묶음으로 후보를 가른다.
+		// 18.7.0 후보는 CUELO 블록을 sessionId 줄 뒤에 둬서 가르는 문자열이 적용 뒤에도 남는다(upstream 줄은 그대로).
+		excludes: "\t\tif (!currentModel) return false;\n\t\tconst sessionId = this.#host.sessionManager.getSessionId();\n",
 		file: "src/session/turn-recovery.ts",
 		marker: `// Usage preflight for an exact summon evaluates only its selected identity.`,
 		anchor: `		const currentModel = this.#host.model();
@@ -4160,6 +4176,26 @@ import { resolveUsedFraction } from "../usage";`,
 		);
 		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
 		let health: ModelUsageHealth;`,
+		alternates: [{
+			file: "src/session/turn-recovery.ts",
+			requires: "\t\tif (!currentModel) return false;\n\t\tconst sessionId = this.#host.sessionManager.getSessionId();\n",
+			marker: `// Usage preflight for an exact summon evaluates only its selected identity.`,
+			anchor: `		const currentModel = this.#host.model();
+		if (!currentModel) return false;
+		const sessionId = this.#host.sessionManager.getSessionId();
+		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
+		let health: ModelUsageHealth;`,
+			patched: `		const currentModel = this.#host.model();
+		if (!currentModel) return false;
+		const sessionId = this.#host.sessionManager.getSessionId();
+		// Usage preflight for an exact summon evaluates only its selected identity.
+		const exactAccountLabel = this.#host.modelRegistry.authStorage.sessions.exactLabel(
+			currentModel.provider,
+			this.#host.sessionId(),
+		);
+		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
+		let health: ModelUsageHealth;`,
+		}],
 	},
 	{
 		file: "src/session/turn-recovery.ts",
@@ -9957,10 +9993,12 @@ function parentSubagentServiceTiers(
 		anchor: OPUS55_ROW_18410.anchor.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		patched: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		// 18.5.1: 위 OPUS55_ROW_1851 no-op(RETIRE). 18.4.6 후보는 그 행이 있으면 성립하지 않는다.
+		// 18.7.0: OPUS55_ROW_1870 no-op(RETIRE 유지). 18.4.6 후보는 자기 행 머리(OPUS55_HEAD_1846)가 있을 때만 성립한다.
 		alternates: [
 			OPUS55_ROW_18410,
-			{ ...OPUS55_ROW_1846, excludes: OPUS55_ROW_1851 },
+			{ ...OPUS55_ROW_1846, excludes: OPUS55_ROW_1851, requires: OPUS55_HEAD_1846 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1851, anchor: OPUS55_ROW_1851, patched: OPUS55_ROW_1851 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1870, anchor: OPUS55_ROW_1870, patched: OPUS55_ROW_1870 },
 		],
 	},
 	{
@@ -10153,7 +10191,12 @@ function parentSubagentServiceTiers(
 		this.#autoResolvedLevel = effort;`,
 	},
 	{
+		// 18.7.0: upstream 이 setThinkingLevel·cycleThinkingLevel 앞에 `this.#prewalk.releaseHandoff();` 를 넣어(명시 선택이
+		// prewalk handoff 를 소유한다) 원 앵커가 깨졌다. upstream 본문은 그대로 두고 같은 자리에 상한 setter/getter 를 붙인다.
+		// 상한은 선택이 아니라 경계이고 재기동 복원(record:false)도 이 setter 를 타므로 여기에는 releaseHandoff 를 넣지 않는다.
+		// 두 판 적용본의 marker 가 같으므로 upstream 의 두 줄 묶음으로 후보를 가른다.
 		file: "src/session/agent-session.ts",
+		excludes: "\t\tthis.#prewalk.releaseHandoff();\n\t\tthis.#models.setThinkingLevel(level, persist);",
 		marker: "\tsetThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {\n\t\tthis.#models.setThinkingLevelCeiling(ceiling, record);",
 		anchor: `	/** Selects the session thinking level and optionally persists it as the default. */
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
@@ -10175,6 +10218,33 @@ function parentSubagentServiceTiers(
 		return this.#models.thinkingLevelCeiling;
 	}
 `,
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			requires: "\t\tthis.#prewalk.releaseHandoff();\n\t\tthis.#models.setThinkingLevel(level, persist);",
+			marker: "\tsetThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {\n\t\tthis.#models.setThinkingLevelCeiling(ceiling, record);",
+			anchor: `	/** Selects the session thinking level and optionally persists it as the default. */
+	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+		this.#prewalk.releaseHandoff();
+		this.#models.setThinkingLevel(level, persist);
+	}
+`,
+			patched: `	/** Selects the session thinking level and optionally persists it as the default. */
+	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+		this.#prewalk.releaseHandoff();
+		this.#models.setThinkingLevel(level, persist);
+	}
+
+	/** CUELO: replaces the user effort ceiling ("auto, but at most X"); a spawn ceiling still bounds it. */
+	setThinkingLevelCeiling(ceiling: Effort | undefined, record: boolean = true): void {
+		this.#models.setThinkingLevelCeiling(ceiling, record);
+	}
+
+	/** CUELO: effective effort ceiling, the lower of the spawn ceiling and the user ceiling. */
+	get thinkingLevelCeiling(): Effort | undefined {
+		return this.#models.thinkingLevelCeiling;
+	}
+`,
+		}],
 	},
 	// HTML export(세션 안 `/export`, CLI `--export`, CUELO 웹 `app/api/sessions/[id]/export`)는 세션 폴더의 `*.jsonl`을
 	// 전부 subagent 기록으로 싣는다. advisor는 같은 폴더에 `__advisor.jsonl`·`__advisor.<slug>.jsonl`(subagent advisor는
@@ -10246,6 +10316,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.7.0 번들의 같은 upstream 조건(MCe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

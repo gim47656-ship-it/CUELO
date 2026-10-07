@@ -335,7 +335,8 @@ async function wireRun(
 	wireCreatedAt = [];
 	wireSteerFrames = 0;
 	const startedAt = Date.now();
-	const base = getBundledModel("openai-codex", "gpt-5.5");
+	// 18.7.0 번들에서 openai-codex/gpt-5.5 가 빠졌다. 두 판에 모두 있고 compat 이 가장 가까운 Codex 모델을 쓴다.
+	const base = getBundledModel("openai-codex", "gpt-5.6-sol");
 	const model = {
 		...base,
 		baseUrl: `http://127.0.0.1:${wireServer.port}/codex`,
@@ -501,7 +502,7 @@ try {
 	// 위 실제 세션의 provider 호출만 같은 가짜 Codex(SSE)로 돌린다. persist 는 AgentSession 의 message_end 경로다.
 	wireMode = "hang";
 	wireCreates = [];
-	const sessionBase = getBundledModel("openai-codex", "gpt-5.5");
+	const sessionBase = getBundledModel("openai-codex", "gpt-5.6-sol");
 	const sessionCodex = { ...sessionBase, baseUrl: `http://127.0.0.1:${wireServer.port}/codex`, preferWebsockets: false };
 	const realStreamFn = agent.streamFn;
 	agent.streamFn = (_m: unknown, context: unknown, options: Record<string, unknown>) =>

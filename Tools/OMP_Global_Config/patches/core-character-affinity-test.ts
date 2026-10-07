@@ -75,14 +75,14 @@ async function keyError(run: () => Promise<unknown>): Promise<string> {
 }
 
 const fallbackSelector = "b-ai/deepseek-v4.1-flash:max";
-function makeSettings() {
+function makeSettings(usageAware = false) {
 	const chains = {
 		"anthropic/claude-opus-5": [fallbackSelector],
 		"anthropic/claude-opus-5:high": [fallbackSelector],
 	};
 	return Object.assign(
 		createSettingsTestScope(key =>
-			key === "retry.fallbackChains" ? chains : key === "retry.usageAwareFallback" ? false : undefined,
+			key === "retry.fallbackChains" ? chains : key === "retry.usageAwareFallback" ? usageAware : undefined,
 		),
 		{
 			getGroup: (name: string) =>
@@ -136,7 +136,7 @@ interface RecoveryHarness {
 	model: { provider: string; id: string; api: string };
 }
 
-function makeRecoveryHarness(registry: InstanceType<typeof ModelRegistry>, sessionId: string): RecoveryHarness {
+function makeRecoveryHarness(registry: InstanceType<typeof ModelRegistry>, sessionId: string, usageAware = false): RecoveryHarness {
 	const anthropic = registry.find("anthropic", "claude-opus-5");
 	if (!anthropic) throw new Error("fixture registry에서 anthropic/claude-opus-5를 찾지 못했다");
 	let current = anthropic;
@@ -158,7 +158,7 @@ function makeRecoveryHarness(registry: InstanceType<typeof ModelRegistry>, sessi
 			getLastModelChangeRole: () => undefined,
 			getSessionId: () => sessionId,
 		},
-		settings: makeSettings(),
+		settings: makeSettings(usageAware),
 		modelRegistry: registry,
 		configWarnings: [] as string[],
 		model: () => current,
@@ -430,6 +430,42 @@ try {
 			readBack === "RIN(린)" && afterRestoredPlain === undefined,
 			`readBack=${readBack} after=${afterRestoredPlain}`,
 		);
+	}
+
+	console.log("\n[8] usage-aware preflight — exact 계정이 고갈이면 다른 모델로 대체하지 않는다(일반 pin 은 fallback)");
+	// turn-recovery `#maybeApplyUsageAwareFallback` 의 exact summon 분기(core patch). health 는 네트워크 usage 조회 대신
+	// 이 registry 가 쓰는 AuthStorage 인스턴스에서만 고정값을 돌려준다: anthropic 은 지정 계정 depleted, fallback 은 unknown.
+	// 18.7.0 은 이 함수 머리에 sessionId 줄을 더해 앵커가 옮겨졌다(ADAPT). 그 블록이 빠지면 exactAccountLabel 이 정의되지 않는다.
+	for (const exact of [true, false]) {
+		const tag = exact ? "preflight-exact" : "preflight-ordinary";
+		const { auth, target, sessionId } = await pinned(tag, exact);
+		Reflect.set(auth.health, "model", async (provider: string) =>
+			provider === "anthropic"
+				? {
+						state: "depleted",
+						accounts: [{ credentialId: target.credentialId, credentialType: "oauth", state: "depleted", selected: true }],
+					}
+				: { state: "unknown", accounts: [] },
+		);
+		const harness = makeRecoveryHarness(makeRegistry(auth, tag), sessionId, true);
+		let switched: unknown;
+		const error = await keyError(async () => {
+			switched = await harness.recovery.maybeApplyUsageAwareFallback(new AbortController().signal);
+		});
+		if (exact) {
+			check(
+				"exact: preflight 가 지정 계정 한도 오류로 끝난다",
+				error.includes("RIN(린)의 지정 OAuth 계정이 계정 한도 또는 차단 상태"),
+				error || `switched=${switched}`,
+			);
+			check("exact: 다른 모델로 바뀌지 않는다", harness.switches.length === 0, `switches=${harness.switches.join(",")}`);
+		} else {
+			check(
+				"비교(upstream 그대로): 일반 pin 은 같은 고갈에서 fallback model 로 전환한다",
+				error === "" && switched === true && harness.switches[0] === "b-ai/deepseek-v4.1-flash",
+				`error=${error} switched=${switched} switches=${harness.switches.join(",")}`,
+			);
+		}
 	}
 } finally {
 	for (const auth of opened) auth.close?.();
