@@ -84,3 +84,53 @@ test("notification click opens a window and rejects cross-origin targets", async
 
   assert.deepEqual(opened, ["https://pi.test/"]);
 });
+
+function dispatchNavigation(url = "https://pi.test/?session=session-1") {
+  let pending;
+  listeners.get("fetch")({
+    request: { method: "GET", mode: "navigate", url },
+    respondWith: (promise) => { pending = promise; },
+  });
+  return pending;
+}
+
+async function navigateWith(fetchImpl, { cached = true } = {}) {
+  const cacheLookups = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  globalThis.caches = {
+    match: async (url) => {
+      cacheLookups.push(url);
+      return cached ? new Response("OFFLINE_RECOVERY", { status: 200 }) : undefined;
+    },
+  };
+  try {
+    const response = await dispatchNavigation();
+    return { status: response.status, body: await response.text(), cacheLookups };
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.caches;
+  }
+}
+
+test("navigation shows the recovery page when the server cannot be reached", async () => {
+  const result = await navigateWith(async () => { throw new TypeError("network down"); });
+  assert.deepEqual(result, { status: 200, body: "OFFLINE_RECOVERY", cacheLookups: ["/offline.html"] });
+});
+
+test("navigation shows the recovery page for gateway errors from a proxy in front of CUELO", async () => {
+  for (const status of [502, 504]) {
+    const result = await navigateWith(async () => new Response(`GATEWAY_${status}`, { status }));
+    assert.deepEqual(result, { status: 200, body: "OFFLINE_RECOVERY", cacheLookups: ["/offline.html"] }, `HTTP ${status}`);
+  }
+});
+
+test("navigation keeps the server's own 503 so its message stays visible", async () => {
+  const result = await navigateWith(async () => new Response("credential file could not be read", { status: 503 }));
+  assert.deepEqual(result, { status: 503, body: "credential file could not be read", cacheLookups: [] });
+});
+
+test("navigation keeps the gateway error when the recovery page is not cached", async () => {
+  const result = await navigateWith(async () => new Response("GATEWAY_502", { status: 502 }), { cached: false });
+  assert.deepEqual(result, { status: 502, body: "GATEWAY_502", cacheLookups: ["/offline.html"] });
+});

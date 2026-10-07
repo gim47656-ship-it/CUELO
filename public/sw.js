@@ -16,6 +16,10 @@ const PRECACHE_URLS = [
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
 ];
+// A proxy in front of CUELO (Tailscale serve) answers a navigation with 502 or 504 while the
+// server is restarting, e.g. during an update. CUELO itself never sends these, so they get the
+// recovery page. Its own 503 carries an actionable message and passes through.
+const GATEWAY_ERROR_STATUSES = new Set([502, 504]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -52,12 +56,7 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/") || url.pathname === "/sw.js") return;
 
   if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request).catch(async () => {
-        const fallback = await caches.match(OFFLINE_URL);
-        return fallback ?? Response.error();
-      }),
-    );
+    event.respondWith(navigateWithRecovery(request));
     return;
   }
 
@@ -110,6 +109,17 @@ async function focusOrOpenWindow(targetUrl) {
   }
 
   await self.clients.openWindow(targetUrl);
+}
+
+async function navigateWithRecovery(request) {
+  let response;
+  try {
+    response = await fetch(request);
+  } catch {
+    return (await caches.match(OFFLINE_URL)) ?? Response.error();
+  }
+  if (!GATEWAY_ERROR_STATUSES.has(response.status)) return response;
+  return (await caches.match(OFFLINE_URL)) ?? response;
 }
 
 async function cacheFirst(request) {
