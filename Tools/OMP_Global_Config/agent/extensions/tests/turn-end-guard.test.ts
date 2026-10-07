@@ -424,13 +424,39 @@ describe("turn-end guard", () => {
       if (current === choices.length) throw new Error("judge unavailable");
       return { answered: [], solo: choices[current]! };
     });
-    for (const text of ["사용자 판단을 받겠습니다.", "작업을 완료했습니다.", "다음 조치는 불명확합니다.", "검사는 다음에 하겠습니다."]) {
+    for (const text of ["사용자 판단을 받겠습니다.", "작업을 완료했습니다. 요약을 드리겠습니다.", "다음 조치는 불명확하지만 확인해 보겠습니다.", "검사는 다음에 하겠습니다."]) {
       await h.emit("input", { source: "interactive", text: "작업 진행" });
       await h.end(text);
       await h.end("다음에 하겠습니다.");
     }
     expect(calls).toBe(4);
     expect(h.sent).toHaveLength(0);
+  });
+
+  test("미루기·이어 하기 약속 표현이 없으면 solo 판정을 부르지 않고 질문 미답 판정만 한다", async () => {
+    const soloTexts: string[] = [];
+    let questionCalls = 0;
+    const h = harness([], undefined, async () => { questionCalls++; return [true]; }, async (_summary, excerpt) => {
+      soloTexts.push(excerpt);
+      return { answered: [true], solo: "continue-now" };
+    });
+    for (const text of ["작업을 완료했습니다. 검사는 모두 통과했습니다.", "All checks passed."]) {
+      await h.emit("input", { source: "rpc", text: "작업 진행" });
+      await h.end(text);
+    }
+    expect(soloTexts).toHaveLength(0);
+    await h.emit("input", { source: "rpc", text: "lint는 뭐?" });
+    const messages = [
+      { role: "user", content: "lint는 뭐?" },
+      { role: "assistant", content: [{ type: "text", text: "lint는 정적 검사입니다." }] },
+    ];
+    await h.end("lint는 정적 검사입니다.", { messages });
+    expect(questionCalls).toBe(1);
+    expect(soloTexts).toHaveLength(0);
+    await h.emit("input", { source: "rpc", text: "작업 진행" });
+    await h.end("I'll finish the remaining checks next.");
+    expect(soloTexts).toEqual(["I'll finish the remaining checks next."]);
+    expect(h.sent).toHaveLength(1);
   });
 
   test.each([

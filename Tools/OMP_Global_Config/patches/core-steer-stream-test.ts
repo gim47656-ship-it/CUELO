@@ -213,7 +213,9 @@ const { getBundledModel } = await import(`${CORE}/../../pi-catalog/src/models.ts
 const { Agent } = await import(`${CORE}/../../pi-agent-core/src/index.ts`);
 const { convertToLlm, wrapSteeringForModel } = await import(`${CORE}/session/messages.ts`);
 
-type WireMode = "hang" | "visible-text" | "late-created" | "accept" | "accept-text";
+// reject-tool: 보인 text 뒤 tool call 인자가 스트리밍되는 중 steer 를 native lane 이 거절하고 그 응답을 버린다
+// (2026-10-07 WSL gpt-6-astra 관측). reject-tool-done: 같은 거절이 완성된 tool call 뒤에 온다.
+type WireMode = "hang" | "visible-text" | "late-created" | "accept" | "accept-text" | "reject-tool" | "reject-tool-done";
 let wireMode: WireMode = "hang";
 let wireCreates: string[] = [];
 let wireCreatedAt: number[] = [];
@@ -240,7 +242,7 @@ function wireFrames(id: string, first: boolean): Array<[number, WireFrame]> {
 	const frames: Array<[number, WireFrame]> = [[created, { type: "response.created", response: { id } }]];
 	// accept: 서버가 steer 를 받고도 incomplete(steered)·completed 를 보내지 않는다(2026-10-01 관측).
 	if (wireMode === "accept") return frames;
-	const kept = wireMode === "visible-text" || wireMode === "accept-text";
+	const kept = wireMode === "visible-text" || wireMode === "accept-text" || wireMode === "reject-tool" || wireMode === "reject-tool-done";
 	const reasoning = { type: "reasoning", id: `rs_${id}`, summary: [], encrypted_content: `${kept ? "KEPT_SIG" : "DISCARDED_SIG"}_${id}` };
 	frames.push([created + 20, { type: "response.output_item.added", output_index: 0, item: { ...reasoning, encrypted_content: undefined } }]);
 	frames.push([created + 40, { type: "response.output_item.done", output_index: 0, item: reasoning }]);
@@ -254,9 +256,20 @@ function wireFrames(id: string, first: boolean): Array<[number, WireFrame]> {
 			frames.push([120, { type: "response.output_item.added", output_index: 2, item: { type: "reasoning", id: `rs2_${id}`, summary: [] } }]);
 			return frames;
 		}
+		if (wireMode === "reject-tool" || wireMode === "reject-tool-done") {
+			const call = { type: "function_call", id: `fc_${id}`, call_id: `call_${id}`, name: "steering_probe", arguments: "" };
+			frames.push([100, { type: "response.output_item.done", output_index: 1, item: { ...msg, content: [{ type: "output_text", text: "VISIBLE_ANSWER" }] } }]);
+			frames.push([120, { type: "response.output_item.added", output_index: 2, item: call }]);
+			frames.push([130, { type: "response.function_call_arguments.delta", output_index: 2, item_id: call.id, delta: "{" }]);
+			if (wireMode === "reject-tool-done") {
+				frames.push([140, { type: "response.function_call_arguments.delta", output_index: 2, item_id: call.id, delta: "}" }]);
+				frames.push([150, { type: "response.output_item.done", output_index: 2, item: { ...call, arguments: "{}" } }]);
+			}
+			return frames;
+		}
 		frames.push([900, wireCompleted(id, [reasoning, { ...msg, content: [{ type: "output_text", text: "VISIBLE_ANSWER" }] }])]);
 	}
-	return frames; // hang·late-created·accept-text: 끝나지 않는다
+	return frames; // hang·late-created·accept-text·reject-tool*: 끝나지 않는다
 }
 const wireServer = Bun.serve({
 	port: 0,
@@ -327,7 +340,7 @@ const genuineSteer = (text: string, extra: Record<string, unknown> = {}) => ({
 type WireResult = { outcome: "idle" | "timeout"; events: string[]; agent: InstanceType<typeof Agent>; creates: string[]; createdAt: number[] };
 async function wireRun(
 	mode: WireMode,
-	opts: { websocket: boolean; supportsSteering?: boolean; at?: number; deadlineMs?: number },
+	opts: { websocket: boolean; supportsSteering?: boolean; at?: number; deadlineMs?: number; tools?: unknown[] },
 	inject: (agent: InstanceType<typeof Agent>) => void,
 ): Promise<WireResult> {
 	wireMode = mode;
@@ -345,7 +358,7 @@ async function wireRun(
 	};
 	const pool = new Map<string, unknown>();
 	const agent = new Agent({
-		initialState: { model, systemPrompt: "", tools: [], messages: [] },
+		initialState: { model, systemPrompt: "", tools: opts.tools ?? [], messages: [] },
 		sessionId: `p55-${mode}-${opts.websocket ? "ws" : "sse"}-${Date.now()}`,
 		convertToLlm,
 		transformContext: async (messages: unknown[]) => wrapSteeringForModel(messages),
@@ -670,6 +683,117 @@ try {
 			occurrences(wireCreates[1], "rs2_") === 0 &&
 			JSON.parse(wireCreates[1] ?? "{}").previous_response_id === undefined,
 		`creates=${wireCreates.length}`,
+	);
+
+	console.log("\n[15] 실제 AgentSession + native 거절: 보인 text 뒤 tool call 인자 스트리밍 중 거절돼도 오류로 끝나지 않고 steer 를 같은 run 에 싣는다");
+	// 2026-10-07 WSL 사건 형태(gpt-6-astra): text 가 보인 뒤 tool call 이 스트리밍되던 응답에 넣은 steer 를 native lane 이
+	// error 프레임으로 거절하고 그 응답을 버렸다. P55 는 tool call 이 보인 요청을 재시작하지 않고, 미완성 tool call 이 빠진
+	// text 만의 error 는 provider·세션 재생이 모두 거부해 `Codex error event: ...(code=unsupported_native_inflight_message)`
+	// 가 사용자 오류로 남았고 steer 는 다음 run(queued-message-drain)으로 밀렸다.
+	wireMode = "reject-tool";
+	wireCreates = [];
+	wireCreatedAt = [];
+	wireSteerFrames = 0;
+	agent.streamFn = (_m: unknown, context: unknown, options: Record<string, unknown>) =>
+		streamOpenAICodexResponses(sessionCodexWs, context, { ...options, apiKey: wireJwt(), providerSessionState: new Map() });
+	const rejectEnds: Array<{ stopReason?: string; errorMessage?: string }> = [];
+	const unsubscribeReject = session.subscribe((event: { type: string; message?: { role: string; stopReason?: string; errorMessage?: string } }) => {
+		if (event.type === "message_end" && event.message?.role === "assistant") {
+			rejectEnds.push({ stopReason: event.message.stopReason, errorMessage: event.message.errorMessage });
+		}
+	});
+	phase = "wire";
+	const rejectEntriesBefore = session.sessionManager.getEntries().length;
+	const rejectDone = session.prompt("reject 세션 시작").then(() => agent.waitForIdle()).then(() => "idle" as const);
+	setTimeout(() => void session.steer("STEER_SESSION_REJECT"), 200);
+	const { promise: rejectDeadline, resolve: rejectTimeout } = Promise.withResolvers<"timeout">();
+	const rejectTimer = setTimeout(() => rejectTimeout("timeout"), 5_000);
+	const rejectOutcome = await Promise.race([rejectDone, rejectDeadline]);
+	clearTimeout(rejectTimer);
+	if (rejectOutcome === "timeout") {
+		agent.abort();
+		await agent.waitForIdle();
+	}
+	phase = "quiet";
+	agent.streamFn = realStreamFn;
+	unsubscribeReject();
+	const rejectEntries = session.sessionManager.getEntries().slice(rejectEntriesBefore) as Array<{
+		type: string;
+		message?: { role: string; stopReason?: string; content?: Array<{ type: string }> };
+	}>;
+	const rejectMessages = rejectEntries.filter(e => e.type === "message" && e.message !== undefined);
+	const rejectAssistantAt = rejectMessages.flatMap((e, i) => (e.message?.role === "assistant" ? [i] : []));
+	const rejectSteerAt = rejectMessages.findIndex(e => e.message?.role === "user" && JSON.stringify(e).includes("STEER_SESSION_REJECT"));
+	check("[15] response.steer 를 한 번 시도했다", wireSteerFrames === 1, String(wireSteerFrames));
+	check("[15] 세션 run 이 완료된다", rejectOutcome === "idle", rejectOutcome);
+	check(
+		"[15] 어떤 assistant message_end 도 error 가 아니다(사용자 오류 노출 없음)",
+		rejectEnds.length > 0 && rejectEnds.every(end => end.stopReason !== "error"),
+		JSON.stringify(rejectEnds),
+	);
+	check(
+		"[15] 세션 기록: 보인 답(stop, 미완성 tool call 없음) → steer → 새 답(stop) 순서",
+		rejectAssistantAt.length === 2 &&
+			rejectAssistantAt[0]! < rejectSteerAt &&
+			rejectSteerAt < rejectAssistantAt[1]! &&
+			rejectMessages[rejectAssistantAt[0]!]?.message?.stopReason === "stop" &&
+			rejectMessages[rejectAssistantAt[0]!]?.message?.content?.some(b => b.type === "text") === true &&
+			rejectMessages[rejectAssistantAt[0]!]?.message?.content?.some(b => b.type === "toolCall") === false &&
+			rejectMessages[rejectAssistantAt[1]!]?.message?.stopReason === "stop",
+		JSON.stringify(rejectMessages.map(e => [e.message?.role, e.message?.stopReason, e.message?.content?.map(b => b.type)])),
+	);
+	// 같은 세션의 앞 시나리오 기록([14] 의 보인 답)도 다시 실리므로 이번 run 의 첫 create 대비 증가분을 센다.
+	const visibleAdded = occurrences(wireCreates[1], "VISIBLE_ANSWER") - occurrences(wireCreates[0], "VISIBLE_ANSWER");
+	check(
+		"[15] 보인 text·steer 는 세션 기록에 한 번씩, 두 번째 create 에도 한 번씩 실리고 미완성 tool call 은 어디에도 없다",
+		occurrences(JSON.stringify(rejectEntries), "VISIBLE_ANSWER") === 1 &&
+			rejectMessages.filter(e => e.message?.role === "user" && JSON.stringify(e).includes("STEER_SESSION_REJECT")).length === 1 &&
+			occurrences(JSON.stringify(rejectEntries), "call_resp_1") === 0 &&
+			wireCreates.length === 2 &&
+			occurrences(wireCreates[1], "STEER_SESSION_REJECT") === 1 &&
+			visibleAdded === 1 &&
+			occurrences(wireCreates[1], "call_resp_1") === 0,
+		`entries=${occurrences(JSON.stringify(rejectEntries), "VISIBLE_ANSWER")} creates=${wireCreates.length} added=${visibleAdded}`,
+	);
+
+	console.log("\n[16] 완성된 tool call 뒤 native 거절: 선제 재시작 없이 tool 이 먼저 실행되고 steer 는 그 결과 뒤에 실린다");
+	// P55 가드(tool call 이 보인 요청은 끊지 않고 tool 결과가 먼저)는 그대로다. 서버가 응답을 버려 정상 경계가 오지 않으므로
+	// 완성된 tool call 만 남긴 tool turn 으로 되살린다. 수정 전에는 완성된 tool call 을 든 error 로 끝나 tool 도 실행되지 않았다.
+	const probeRuns: string[] = [];
+	const probe = {
+		name: "steering_probe",
+		label: "steering_probe",
+		description: "Fixture probe",
+		parameters: { type: "object", properties: {} },
+		async execute(id: string) {
+			probeRuns.push(id);
+			return { content: [{ type: "text", text: "PROBE_RESULT" }], details: {} };
+		},
+	};
+	const doneTool = await wireRun("reject-tool-done", { websocket: true, tools: [probe] }, a => a.steer(genuineSteer("STEER_AFTER_TOOL")));
+	const doneAssistants = assistantsOf(doneTool);
+	const doneSecond = doneTool.creates[1] ?? "";
+	check("[16] response.steer 를 한 번 시도했다", wireSteerFrames === 1, String(wireSteerFrames));
+	check(
+		"[16] run 이 완료되고 어떤 assistant 도 error 가 아니다",
+		doneTool.outcome === "idle" && doneAssistants.length === 2 && doneAssistants.every(a => a.stopReason !== "error"),
+		JSON.stringify(doneAssistants.map(a => [a.stopReason, a.content.map(b => b.type)])),
+	);
+	check(
+		"[16] 완성된 tool call 은 끊기지 않고 보인 text 와 함께 남아 한 번 실행된다",
+		probeRuns.length === 1 &&
+			doneAssistants[0]?.stopReason === "toolUse" &&
+			JSON.stringify(doneAssistants[0]?.content.map(b => b.type)) === JSON.stringify(["thinking", "text", "toolCall"]),
+		`runs=${probeRuns.length}`,
+	);
+	check(
+		"[16] 두 번째 create: tool 결과 뒤에 steer 가 한 번 실린다",
+		doneTool.creates.length === 2 &&
+			occurrences(doneSecond, "VISIBLE_ANSWER") === 1 &&
+			occurrences(doneSecond, "PROBE_RESULT") === 1 &&
+			occurrences(doneSecond, "STEER_AFTER_TOOL") === 1 &&
+			doneSecond.indexOf("PROBE_RESULT") < doneSecond.indexOf("STEER_AFTER_TOOL"),
+		`creates=${doneTool.creates.length}`,
 	);
 } finally {
 	wireServer.stop(true);

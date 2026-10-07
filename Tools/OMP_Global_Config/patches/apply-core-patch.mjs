@@ -3600,6 +3600,8 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 	},
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
+		// 18.8.0 적용본도 같은 marker 를 가지므로 그 판의 provider 별 LRU 기록 줄로 가른다(아래 alternate).
+		excludes: "persistedSessions.set(sessionId, {",
 		marker: "\t\t\tpersisted.exactLabel === keptExactLabel &&\n",
 		anchor: `			persisted.explicit === isExplicit &&
 			Math.abs(nowMs - persisted.lastUsedAtMs) < SESSION_STICKY_PERSIST_INTERVAL_MS
@@ -3634,6 +3636,40 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
 			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
 			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
+		}, {
+			// 18.8.0 은 persisted row 를 provider 별 LRU(sessionId 키, SESSION_AFFINITY_MAX_SESSIONS_PER_PROVIDER)로 옮겼다.
+			// 같은 비교·기록에 exactLabel 을 넣는 의미는 그대로다.
+			file: "../pi-ai/src/auth/affinity.ts",
+			requires: "persistedSessions.set(sessionId, {",
+			marker: "\t\t\tpersisted.exactLabel === keptExactLabel &&\n",
+			anchor: `			persisted.explicit === isExplicit &&
+			Math.abs(nowMs - persisted.lastUsedAtMs) < SESSION_STICKY_PERSIST_INTERVAL_MS
+		) {
+			return;
+		}
+		try {
+			this.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);
+			persistedSessions.set(sessionId, {
+				type,
+				credentialId,
+				explicit: isExplicit,
+				lastUsedAtMs: nowMs,
+			});`,
+			patched: `			persisted.explicit === isExplicit &&
+			persisted.exactLabel === keptExactLabel &&
+			Math.abs(nowMs - persisted.lastUsedAtMs) < SESSION_STICKY_PERSIST_INTERVAL_MS
+		) {
+			return;
+		}
+		try {
+			this.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);
+			persistedSessions.set(sessionId, {
+				type,
+				credentialId,
+				explicit: isExplicit,
+				lastUsedAtMs: nowMs,
+				exactLabel: keptExactLabel,
+			});`,
 		}],
 	},
 	{
@@ -5178,9 +5214,19 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 		// completed pending/blocked todos, bypassing terminal validation and the
 		// canonical todo tool receipt.
 		file: "src/modes/interactive-mode.ts",
+		// 18.8.0 은 이 flag 를 lifecycle(전체 HUD 동기화)·progress(subagent key 가 바뀔 때만 다시 그림) 구분에 쓴다.
+		// 그 판에서는 필드를 남기고(아래 no-op alternate) reconcile 호출만 #185 의 18.8.0 후보가 걷어낸다.
+		excludes: "#todoHudSubagentKey",
 		marker: "Subagent lifecycle is review evidence only; it never accepts TODO completion.",
 		anchor: `	#observerUiSyncNeedsTodoReconcile = false;`,
 		patched: `	// Subagent lifecycle is review evidence only; it never accepts TODO completion.`,
+		alternates: [{
+			file: "src/modes/interactive-mode.ts",
+			requires: "#todoHudSubagentKey",
+			marker: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
+			anchor: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
+			patched: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
+		}],
 	},
 	{
 		// 18.2.10 은 이 메서드의 `appendCustomEntry` 호출만 여러 줄로 재정렬했다(의미 변화 없음).
@@ -5374,6 +5420,24 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 		}
 		this.#cancelSubagentPreviewTick();
 	}`,
+		}, {
+			// 18.8.0 은 flush 를 lifecycle 변화(reconcile·HUD 동기화·다시 그림)와 progress tick(subagent key 가 바뀔 때만
+			// 다시 그림)으로 갈랐다(upstream auto-clear 수정). 그 구분은 그대로 두고 lifecycle 분기의 reconcile 호출만 뺀다.
+			file: "src/modes/interactive-mode.ts",
+			marker: "\t\t\t// Lifecycle changes only refresh observer and TODO presentation. They do\n",
+			anchor: `	#flushObserverUiSync(): void {
+		this.syncRunningSubagentBadge({ requestRender: false });
+		if (this.#observerUiSyncNeedsTodoReconcile) {
+			this.#observerUiSyncNeedsTodoReconcile = false;
+			this.#reconcileTodosWithSubagents();
+			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);`,
+			patched: `	#flushObserverUiSync(): void {
+		this.syncRunningSubagentBadge({ requestRender: false });
+		if (this.#observerUiSyncNeedsTodoReconcile) {
+			// Lifecycle changes only refresh observer and TODO presentation. They do
+			// not constitute Main acceptance and therefore never change TodoTracker.
+			this.#observerUiSyncNeedsTodoReconcile = false;
+			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);`,
 		}],
 	},
 	{
@@ -6808,6 +6872,23 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 			),
 			this.#thinkingLevelCeiling,
 		);`,
+	},
+	{
+		// Maker auto 범위(2026-10-08 사용자 결정): child 의 auto 는 정책 하한·상한 없이 그 모델 최대(Opus max)까지 고른다.
+		// Main 의 medium~xhigh 는 그대로 둔다. 모델이 없는 단계는 분류기 ceiling(지원 effort 확인)과 clamp 가 떨어뜨리고,
+		// concrete effort 로 띄운 child 는 auto 가 아니라 영향이 없다. per-spawn overrides 가 뒤에 펼쳐지므로 여전히 이긴다.
+		// 검증: core-agent-thinking-test.ts [child-range].
+		file: "src/task/executor.ts",
+		marker: "\t\t\"providers.autoThinkingMaxEffort\": \"max\",\n",
+		anchor: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+`,
+		patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+		// CUELO: a child's \`auto\` has no policy floor or cap - from the lowest auto level up to the
+		// model's maximum. The classifier ceiling and clamp still drop levels the model lacks; the
+		// parent keeps its own configured range.
+		"providers.autoThinkingMinEffort": "low",
+		"providers.autoThinkingMaxEffort": "max",
+`,
 	},
 	{
 		// 2026-09-28 도구 오류 집계: `computer.window(65822)`처럼 숫자 id를 넘기면 필터 객체로 해석돼
@@ -10322,6 +10403,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.8.0 번들의 같은 upstream 조건(oCe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -10562,6 +10649,62 @@ class HarmonyLeakInterruption extends Error {`,
 					if (event.type === "done" || event.type === "error") {
 						// The request finished on its own; steering now waits for the normal boundary.
 						steerRestartClosed = true;`,
+	},
+	{
+		// CUELO P55 r4(2026-10-08, Codex 스티어링 오류 노출): native lane 은 실행 중 응답에 보낸 response.steer 를
+		// unsupported_native_inflight_message 로 거절하면서 그 응답을 버린다. P55 는 tool call 이 보인 요청을 선제 취소하지
+		// 않고 정상 경계를 기다리는데 그 경계가 오지 않는다: 인자 스트리밍 중이던 tool call 은 미완성으로 버려지고 text 만
+		// 남은 error 가 provider 재생(text 스트리밍됨)·세션 재시도(커밋된 text) 양쪽에서 거부돼 사용자 오류로 끝났다.
+		// 거절된 claim 이 있고 완성된 tool call 이 없을 때만 이 끝을 steering 재시작으로 처리한다. P55 항목의 restart
+		// helper·steerChannel 을 쓰므로 그 뒤에 둔다(anchor 는 순정본에도 그대로 있어 preflight 가 성립한다).
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "AIError.isCodexSteerRejection(event.error)",
+		anchor: `					const event = next.value;
+					if (event.type === "done" || event.type === "error") {
+`,
+		patched: `					const event = next.value;
+					// CUELO P55: Codex native lane rejected our live steer and dropped this response, so
+					// the boundary the tool-call guard waits for never comes. Restart for the steering as a
+					// requested restart would: visible text is committed, a tool call still streaming its
+					// arguments never completed or ran and is dropped, and the rejected steering is
+					// delivered once in this run. A completed tool call keeps the normal boundary.
+					if (
+						event.type === "error" &&
+						steerRestartController &&
+						!steerRestartClosed &&
+						!requestSignal?.aborted &&
+						completedToolCallIds.size === 0 &&
+						(steerChannel?.deferred.length ?? 0) > 0 &&
+						AIError.isCodexSteerRejection(event.error)
+					) {
+						// Without visible text only the dropped tool call reached listeners: discard the partial.
+						if (!partialMessage?.content.some(block => block.type === "text" && block.text.trim().length > 0)) {
+							partialMessage = null;
+						}
+						return await restartForSteering();
+					}
+					if (event.type === "done" || event.type === "error") {
+`,
+	},
+	{
+		// CUELO P55 r4: 같은 거절이 완성된 tool call 뒤에 오면 재시작하지 않는다(P55 가드: tool 결과가 먼저). 응답은 서버가
+		// 버렸으므로 upstream 의 transient stream 오류(#13847)와 같이 완성된 tool call 만 남긴 tool turn 으로 되살린다. 그러면
+		// tool 이 실행되고 거절된 steer 는 그 결과 뒤 정상 경계에서 실린다. 이 처리가 없으면 완성된 tool call 을 든 error 로 끝났다.
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "!AIError.isCodexSteerRejection(message)",
+		anchor: `		!AIError.isTransientStreamParseError(message.stopDetails?.explanation)
+	)
+		return message;
+	return {
+		...message,
+		stopReason: "toolUse",`,
+		patched: `		!AIError.isTransientStreamParseError(message.stopDetails?.explanation) &&
+		!AIError.isCodexSteerRejection(message)
+	)
+		return message;
+	return {
+		...message,
+		stopReason: "toolUse",`,
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
@@ -10852,6 +10995,56 @@ class HarmonyLeakInterruption extends Error {`,
 		marker: "\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);",
 		anchor: "\t\tconst attribution = options?.attribution ?? \"user\";\n",
 		patched: "\t\tconst attribution = options?.attribution ?? \"user\";\n\t\tif (mode !== \"aside\") this.#raiseAutoThinkingForQueuedInput(text, attribution);\n",
+	},
+	// child auto 재분류(2026-10-08 사용자 결정): Main 이 사용자 턴마다 다시 분류되듯, SubAgent 는 부모(Main)의 IRC 메시지를
+	// 받을 때마다 auto 강도를 다시 분류한다. 입력은 최초 과제(#autoThinkingTurnText)에 그 메시지를 이어 붙인 것이고(짧은
+	// "승인" 답이 강도를 무너뜨리지 않게), 결과는 그 child 의 auto 범위 안에서 오르내린다(raise-only 아님). peer 메시지·
+	// wake relay·job 결과·시스템 알림은 이 경로를 타지 않는다. 검증: core-steer-auto-thinking-test.ts [4].
+	{
+		file: "src/session/irc-bridge.ts",
+		marker: "\treclassifyAutoThinkingForParent(message: string): void;\n",
+		anchor: "\twakeForIrc(records: AgentMessage[]): void;\n",
+		patched: `	/** CUELO: a parent message re-classifies this subagent's \`auto\` effort (assignment + parent messages). */
+	reclassifyAutoThinkingForParent(message: string): void;
+	wakeForIrc(records: AgentMessage[]): void;
+`,
+	},
+	{
+		file: "src/session/irc-bridge.ts",
+		marker: "if (fromParent && msg.wakeRelay !== true) this.#host.reclassifyAutoThinkingForParent(msg.body);",
+		anchor: `		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		if (streaming) {
+`,
+		patched: `		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		// CUELO: only the parent's own instructions re-classify; peers and wake relays never do.
+		if (fromParent && msg.wakeRelay !== true) this.#host.reclassifyAutoThinkingForParent(msg.body);
+		if (streaming) {
+`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "reclassifyAutoThinkingForParent: message => this.#reclassifyAutoThinkingForParent(message),",
+		anchor: "\t\t\twakeForIrc: records => this.#wakeForIrc(records),\n",
+		patched: "\t\t\treclassifyAutoThinkingForParent: message => this.#reclassifyAutoThinkingForParent(message),\n\t\t\twakeForIrc: records => this.#wakeForIrc(records),\n",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t#reclassifyAutoThinkingForParent(text: string): void {\n",
+		anchor: "\tasync #queueUserMessage(\n",
+		patched: `\t/**
+	 * CUELO: SubAgent 가 부모 메시지를 받을 때마다 auto 강도를 다시 분류한다(Main 의 사용자 턴마다 분류와 같은 자리).
+	 * 최초 과제에 지금까지의 부모 메시지를 이어 붙여 분류하므로 짧은 답이 강도를 무너뜨리지 않고, 결과는 오르내린다.
+	 * 분류를 기다리지 않아 메시지 전달은 늦어지지 않고, 결과는 다음 모델 요청부터 쓴다. 분류 실패는 현재 강도를 둔다.
+	 */
+	#reclassifyAutoThinkingForParent(text: string): void {
+		if (!this.isAutoThinking || !text.trim()) return;
+		const request = this.#autoThinkingTurnText ? \`\${this.#autoThinkingTurnText}\\n\\n\${text}\` : text;
+		this.#autoThinkingTurnText = request;
+		void this.#models.applyAutoThinkingLevel(request, this.#promptGeneration);
+	}
+
+\tasync #queueUserMessage(
+`,
 	},
 	// CUELO 계정 자리(2026-10-04). upstream oauth.accounts()의 position은 활성 credential 배열 index라서,
 	// 한 계정이 인증 실패로 비활성화되면 뒤 계정이 앞 자리로 당겨진다(RIN 자리 0이 비면 MIO 계정이 RIN이 된다).

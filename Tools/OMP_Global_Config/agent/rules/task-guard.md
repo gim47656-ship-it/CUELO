@@ -40,12 +40,13 @@ TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
   표현 차이는 허용되고, 이름이나 의미 필드가 바뀌면 다시 준비한다. `duplicate`·
   `additionalInstruction`이 true이고 **`ownerTarget`이 실재 owner를 가리킬 때만** 그 owner에게
   추가 지시·retarget하고 새 spawn을 금지한다 — 확률만으로 owner를 고르지 않는다. 어느 쪽도
-  아니면 단일 `maker`에 Main이 결정한 `model:"provider/model:concrete-effort"`를 넘기며 coarse `effort`는 생략한다. 판정이 가리키는 owner가 실제로
+  아니면 단일 `maker`에 `model:"provider/model:auto"`를 넘기며 concrete 강도 suffix와 coarse `effort`는 쓰지 않는다. 강도는 child auto가 `solutionSpace`와 이후 Main 지시로 고른다. 판정이 가리키는 owner가 실제로
   없거나 결정론 증거와 모순되면 그 placement 결과를 적용하지 않고 기존 절차로 간다. 실패·timeout·
   credential 없음도 판단 불가로 두고 일반 모델 fallback 없이 기존 절차를 실행한다.
   이 session에서 성공한 spawn으로 식별된 Maker(완료·parked 포함)에게 `write agent://<id>`로 자연어 지시를
-  보내는 경계는 `pre-dispatch-existing-owner-message`로 런타임이 advisory를 낸다(그 전송을 차단하지
-  않는다). 실질 변경·정보 부족이면 정식 `maker_route`를 다시 부른다. Task Guard의
+  보내면 `pre-dispatch-existing-owner-message`가 그 전송을 차단하지 않고 뒤에서 JEV로 원 계약(PRIMARY_DELIVERABLE·
+  OWNED_PATHS·Acceptance) 대비 동일 범위·범위 변경·수용 조건 변경·불명 중 하나로 분류해 advisory로 알린다.
+  JEV 실패·timeout·자격 없음·secret 후보는 불명이다. 범위 변경이면 바뀐 사실로 `maker_route`를 다시 부른다. Task Guard의
   lock·budget·소유 경로·`FINDING_ID`와 사용자 요구 대조는 언제나 결정론 정본이며 judgment가
   대신하지 않는다.
 - budget은 성공 수가 아니라 발주 수로 센다. 잘못 발주해 `write proc://<id>/kill`로 되돌린 child는 runtime이 취소를 확인한 만큼 요청당 `8` 슬롯까지만 환불해 full cancelled wave 한 번을 복구하되 반복 spawn→cancel 우회는 막는다. 환불받으려면 spawn 때 `tasks[].name`을 명시해야 하고, 이름 없는 spawn과 이미 끝난 child는 환불 대상이 아니다. 브리프 방향이 정해지기 전에는 발주하지 않는다.

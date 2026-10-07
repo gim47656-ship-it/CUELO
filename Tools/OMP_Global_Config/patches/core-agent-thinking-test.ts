@@ -70,20 +70,23 @@ const { ModelControls } = await import(`${packages}/pi-coding-agent/src/session/
 const { Settings } = await import(`${packages}/pi-coding-agent/src/config/settings.ts`);
 const { cfgProvidersAutoThinkingMinEffort } = await import(`${packages}/pi-coding-agent/src/session/settings.ts`);
 
-type Reply = "fail" | "low" | "medium" | "high" | "xhigh";
+type Reply = "fail" | "low" | "medium" | "high" | "xhigh" | "max";
 let reply: Reply = "low";
 let judgeCalls = 0;
-globalThis.fetch = (async () => {
+let askedLevels: string[] = [];
+globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
 	judgeCalls += 1;
-	if (reply === "fail") return new Response("{}", { status: 500 });
-	const levels = ["low", "medium", "high", "xhigh"];
-	const probabilities = Object.fromEntries(levels.map(level => [level, level === reply ? 0.7 : 0.1]));
+	// 질문이 허용하는 단계(criteria 키)로만 답한다: auto ceiling 이 xhigh 면 max 는 질문에 없어 고를 수 없다.
+	askedLevels = Object.keys(JSON.parse(String(init?.body ?? "{}")).questions?.level?.criteria ?? {});
+	if (reply === "fail" || !askedLevels.includes(reply)) return new Response("{}", { status: 500 });
+	const other = (1 - 0.6) / (askedLevels.length - 1);
+	const probabilities = Object.fromEntries(askedLevels.map(level => [level, level === reply ? 0.6 : other]));
 	return new Response(
 		JSON.stringify({
 			answers: { level: { type: "choice", choice: reply, probabilities } },
 			usage: { inputTokens: 1, outputTokens: 1 },
 			rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
-			providerMetadata: { typesafe: { confidence: { level: 0.7 } } },
+			providerMetadata: { typesafe: { confidence: { level: 0.6 } } },
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
@@ -104,12 +107,15 @@ const ladderModel = (efforts: string[], defaultLevel = "high") => ({
 	provider: "fixture", id: `floor-${efforts.join("-")}`, reasoning: true,
 	thinking: { mode: "effort", efforts, defaultLevel },
 });
-const controls = (model: object, options: { thinkingLevel?: string; thinkingLevelCeiling?: string } = {}) => {
+const controls = (
+	model: object,
+	options: { thinkingLevel?: string; thinkingLevelCeiling?: string; settings?: unknown } = {},
+) => {
 	const persisted: string[] = [];
 	const control = new ModelControls(
 		{
 			agent: { setThinkingLevel() {}, setDisableReasoning() {}, metadataForProvider: () => undefined },
-			settings: autoSettings,
+			settings: options.settings ?? autoSettings,
 			modelRegistry: registry,
 			sessionManager: {
 				getSessionId: () => "your-floor-session",
@@ -215,4 +221,39 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	assert.equal(await turn("low"), "medium", "다음 새 사용자 턴은 raise-only 가 아니라 하한까지 내려간다");
 	console.log("  PASS  raise-only 재판정은 올리기만 하고, 다음 새 사용자 턴은 다시 내려갈 수 있다");
 }
-console.log("결과 10 pass");
+
+// [child-range] Maker auto 범위(2026-10-08 사용자 결정): child(createSubagentSettings overlay)의 auto 는 정책 하한·상한 없이
+// 그 모델 최대까지 오르내리고, Main 은 설정한 medium~xhigh 그대로다. concrete effort 로 띄운 child 는 auto 가 아니다.
+{
+	const { createSubagentSettings } = await import(`${packages}/pi-coding-agent/src/task/executor.ts`);
+	const root = mkdtempSync(join(tmpdir(), "omp-child-range-"));
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "work");
+	mkdirSync(agentDir, { recursive: true });
+	mkdirSync(cwd, { recursive: true });
+	const file = join(root, "config.yml");
+	writeFileSync(
+		file,
+		"providers:\n  judgmentProvider: vercel\n  autoThinkingMinEffort: medium\n  autoThinkingMaxEffort: xhigh\n",
+		"utf8",
+	);
+	const main = await Settings.loadIsolated({ inMemory: true, cwd, agentDir, configFiles: [file] });
+	const child = createSubagentSettings(main);
+	const opus = ladderModel(["low", "medium", "high", "xhigh", "max"]);
+	const childTurn = controls(opus, { settings: child }).turn;
+	assert.equal(await childTurn("max"), "max", "child Opus auto 는 max 를 고를 수 있다");
+	assert.ok(askedLevels.includes("max"), "child 분류 질문에 max 가 있다");
+	assert.equal(await childTurn("low"), "low", "child low 를 Main 하한 medium 으로 올리지 않는다");
+	assert.equal(await controls(full, { settings: child }).turn("xhigh"), "xhigh", "max 가 없는 모델은 그 모델 최대(xhigh)까지다");
+	assert.ok(!askedLevels.includes("max"), "max 가 없는 모델에는 max 를 묻지 않는다");
+	const mainTurn = controls(opus, { settings: main }).turn;
+	assert.equal(await mainTurn("low"), "medium", "Main 하한 medium 은 그대로다");
+	assert.equal(await mainTurn("xhigh"), "xhigh");
+	assert.ok(!askedLevels.includes("max"), "Main 분류 질문은 xhigh 상한 그대로 max 가 없다");
+	const concrete = controls(opus, { settings: child, thinkingLevel: "high" });
+	assert.equal(await concrete.turn("max"), "high", "concrete effort child 는 분류 결과를 쓰지 않는다");
+	assert.equal(concrete.control.isAutoThinking, false);
+	rmSync(root, { recursive: true, force: true });
+	console.log("  PASS  child auto 는 low~모델 최대(Opus max)이고 Main medium~xhigh·concrete child 는 그대로다");
+}
+console.log("결과 11 pass");

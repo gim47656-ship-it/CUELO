@@ -365,6 +365,8 @@ const host = {
 	adoptParentSteerForRunningTurn: () => {
 		adoptRequests++;
 	},
+	// 부모 메시지 auto 재분류의 실제 판정은 core-steer-auto-thinking-test.ts [4] 가 실제 AgentSession 으로 본다.
+	reclassifyAutoThinkingForParent: () => {},
 	runEphemeralTurn: async () => ({ replyText: "" }),
 } as never;
 const bridge = new IrcBridge(host);

@@ -2,8 +2,8 @@
 //
 // 손으로 관리하던 역할 파일에는 같은 문장이 반복돼 있었다. 한 곳만 고치고 나머지를
 // 잊는 사고가 실제로 났으므로, 공통 문장은 `agent/sop/_common.md` 같은 조각에 한 번만
-// 쓰고 여기서 합친다. 단일 Maker의 모델은 @implSonnet, 기본 추론은 medium이다.
-// 발주 전 Main이 고른 tasks[].model의 concrete effort suffix가 생성 기본값보다 우선한다.
+// 쓰고 여기서 합친다. 단일 Maker의 모델은 @implSonnet, 기본 추론은 auto다.
+// 발주 selector의 `:auto`가 child auto 분류기를 켜고, 실제 단계는 그 모델이 지원하는 범위 안에서 child가 고른다.
 //
 //   node patches/build-agents.mjs           조각에서 다시 만들어 덮어쓴다
 //   node patches/build-agents.mjs --check   현재 파일이 재생성 결과와 같은지만 확인한다
@@ -27,8 +27,8 @@ const ROLES = {
 // 모든 역할이 마지막에 붙이는 조각.
 const CommonFragment = "_common";
 
-// verify.ps1 의 effort 접미사 정규식과 같은 목록이어야 한다.
-const Efforts = ["minimal", "low", "medium", "high", "xhigh", "max"];
+// verify.ps1 의 $ThinkingLevels 안의 값만 쓴다. Maker slot은 `:auto`다.
+const Efforts = ["minimal", "low", "medium", "high", "xhigh", "max", "auto"];
 const EffortPattern = new RegExp(`:(${Efforts.join("|")})$`);
 
 // 모든 역할의 모델은 조각의 `model: "@<별칭>"` 과 config.yml 의 `modelRoles` 가 정한다.
@@ -137,7 +137,7 @@ function splitFragment(role, text) {
 	return { front: lines.slice(1, end), body: lines.slice(end + 1).join("\n").trim() };
 }
 
-/** 머리말을 검증하고 native task effort가 없을 때의 기본 medium을 넣는다. */
+/** 머리말을 검증하고 Maker 기본 추론 auto를 넣는다. */
 function resolveFrontmatter(role, front, modelRoles) {
 	const name = front.find((line) => /^name\s*:/.test(line));
 	if (!name) {
@@ -162,11 +162,11 @@ function resolveFrontmatter(role, front, modelRoles) {
 		return null;
 	}
 	if (!EffortPattern.test(value)) {
-		fail(`역할 ${role}: ${source} = ${value} 에 effort 접미사가 없다.`);
+		fail(`역할 ${role}: ${source} = ${value} 에 추론 접미사가 없다.`);
 		return null;
 	}
 	const resolved = front.slice();
-	resolved.splice(modelIndex + 1, 0, "thinking-level: medium");
+	resolved.splice(modelIndex + 1, 0, "thinking-level: auto");
 	return resolved;
 }
 

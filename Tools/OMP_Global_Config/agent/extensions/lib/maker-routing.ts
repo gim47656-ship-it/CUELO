@@ -30,7 +30,8 @@ export interface Owner {
   /** 과거 원장 row처럼 소유 경로를 알 수 없는 owner. ownedPaths가 비어도 빈 소유가 아니다. */
   ownershipUnknown?: boolean;
 }
-interface Candidate { profile: string; model: string; efforts: string[] }
+/** `efforts`는 그 모델이 registry에 선언한 단계다. Maker는 `:auto`로 이 단계 전체를 오가며, 단계가 없으면 auto가 고를 것이 없다. */
+interface Candidate { profile: string; model: string; efforts: readonly string[] }
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
@@ -38,14 +39,13 @@ interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandida
 type RefreshAttempts = Map<string, Promise<string | null>>;
 interface RoutingPolicy {
   modelSelection: {
-    profiles: Record<string, { modelConfigPath: string; workClass: string; allowedEfforts: string[] }>;
+    profiles: Record<string, { modelConfigPath: string; workClass: string }>;
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
     uiUxBoundaryCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
   };
-  effortSelection: { criteria: Record<string, string> };
 }
 export interface RoutingQuestion {
   type: "choice" | "noul";
@@ -64,6 +64,10 @@ export interface QuotaLimit {
   usedFraction: number | null;
   resetsAt: number | null;
   daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null } | null;
+  /** 사이드카 `scope.windowId`(없으면 `window.id`). 예: `5h`, `7d`. */
+  windowId: string | null;
+  /** 계정의 모든 모델이 함께 쓰는 공유 구간(`scope.shared`). 계열 전용 tier 구간은 false다. */
+  shared: boolean;
 }
 export interface QuotaAccount {
   credentialId: number | null;
@@ -127,6 +131,7 @@ export async function readSidecarQuota(providers: string[], signal?: AbortSignal
         limits: limits.map((limit) => {
           const amount = (limit.amount ?? {}) as Record<string, unknown>;
           const window = (limit.window ?? {}) as Record<string, unknown>;
+          const scope = (limit.scope ?? {}) as Record<string, unknown>;
           const daySlot = limit.daySlot as Record<string, unknown> | undefined;
           return {
             id: typeof limit.id === "string" ? limit.id : null,
@@ -140,6 +145,8 @@ export async function readSidecarQuota(providers: string[], signal?: AbortSignal
                 quality: typeof daySlot.quality === "string" ? daySlot.quality : null,
               }
               : null,
+            windowId: typeof scope.windowId === "string" ? scope.windowId : typeof window.id === "string" ? window.id : null,
+            shared: scope.shared === true,
           };
         }),
       });
@@ -181,7 +188,8 @@ export function routingState(input: RoutingFacts, owners: Owner[]) {
   };
 }
 
-function decisionQuestions(policy: RoutingPolicy, candidates: Candidate[]) {
+// 2026-10-08 사용자 결정: Maker 강도는 child auto 분류기가 고른다. 후보별 강도 질문은 두지 않는다.
+function decisionQuestions(policy: RoutingPolicy) {
   const questions: Record<string, RoutingQuestion> = {
     workClass: {
       type: "choice", criteria: policy.modelSelection.criteria,
@@ -202,14 +210,6 @@ function decisionQuestions(policy: RoutingPolicy, candidates: Candidate[]) {
     criteria: policy.modelSelection.delegationCriteria,
     instructions: "위 criteria를 정본으로 이 조각의 수행 주체를 독립적으로 판단한다. facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 있는 독립 완결성, Main 보유 문맥, 실제 병렬·전문성 이득, 설명·검수 부담을 대조한다. 난이도나 병렬 실행 가능성만으로 위임 이득을 단정하지 않는다. 결과는 Main의 조언이며 자동 발주·owner 변경이 아니다.",
   };
-  candidates.forEach((candidate, index) => {
-    if (candidate.efforts.filter((level) => level in policy.effortSelection.criteria).length <= 1) return;
-    questions[`effort${index}`] = {
-      type: "choice",
-      criteria: Object.fromEntries(candidate.efforts.filter((level) => level in policy.effortSelection.criteria).map((level) => [level, policy.effortSelection.criteria[level]!])),
-      instructions: "이 후보가 지원하는 구간에서 결과의 정확도에 맞는 추론 강도를 독립적으로 고른다. 가장 낮은 충분 단계를 찾는 비용 최적화가 아니며 무조건 높은 단계도 아니다. 과소·과잉 모두 오분류다. facts·remainingJudgments·callBoundaries·invariants·checks에서 열린 대안의 수, 경계를 넘어 함께 지켜야 하는 불변식·계약, 경쟁 원인, 지정 검사가 놓친 조건을 드러내는지를 criteria의 판단 특성과 대조해 가장 잘 맞는 단계를 고른다. 원인 미확정 표시만으로, 또는 테스트 없음·위험·파일 수·경과 시간·이전 실패 횟수·비용만으로 단계를 정하지 않는다. 작업 등급이나 다른 질문의 답을 가정하지 않는다.",
-    };
-  });
   return questions;
 }
 function placementQuestions(owners: Owner[]) {
@@ -229,8 +229,8 @@ function placementQuestions(owners: Owner[]) {
   } satisfies Record<string, RoutingQuestion>;
 }
 
-export function routingQuestions(policy: RoutingPolicy, candidates: Candidate[], owners: Owner[]) {
-  return { ...decisionQuestions(policy, candidates), ...placementQuestions(owners) };
+export function routingQuestions(policy: RoutingPolicy, owners: Owner[]) {
+  return { ...decisionQuestions(policy), ...placementQuestions(owners) };
 }
 
 export interface DispatchContract {
@@ -486,27 +486,65 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
   CODE_SYSTEM: "HARD_CODE_OPUS",
 };
 
-/** NORMAL이지만 자동 추천·소진 대체 대상이 아니라 Main이 ROUTING_REASON으로만 고르는 후보. */
+/** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. NORMAL_SOL은 Anthropic 1주 한도 대체에서만 먼저 추천된다. */
 const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_SOL: true };
+
+/** 계정의 1주 공유 구간(`7d`, shared)이 관측상 찼다. 관측 시각에 리셋 시각이 이미 지났으면 찬 것으로 보지 않는다. */
+function weeklySharedExhausted(account: QuotaAccount, observedAt: number) {
+  return account.limits.some((limit) => limit.windowId === "7d" && limit.shared
+    && limit.usedFraction !== null && limit.usedFraction >= 1
+    && !(limit.resetsAt !== null && limit.resetsAt <= observedAt));
+}
+
+/** 계정 사용 가능성은 core 신호(disabled·limitReached·autoBlockedUntil)와 관측된 1주 공유 구간 소진으로만 본다. */
+function accountUnusable(account: QuotaAccount, observedAt: number) {
+  return account.disabled || account.limitReached === true
+    || (account.autoBlockedUntilMs != null && account.autoBlockedUntilMs > observedAt)
+    || weeklySharedExhausted(account, observedAt);
+}
+
+/** 그 모델 provider의 관측된 계정이 모두 쓸 수 없을 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
+function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
+  if (quota.state !== "observed") return false;
+  const accounts = quota.providers[model.slice(0, model.indexOf("/"))] ?? [];
+  return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
+}
+
+/**
+ * 2026-10-08 사용자 결정: 관측된 Anthropic 계정이 모두 쓸 수 없고 그중 하나 이상이 1주 공유 한도를 넘었으면
+ * Sonnet·Opus 후보(NORMAL·UI/UX·HARD) 대신 Sol 6.1(NORMAL_SOL)을 먼저 추천하고, Sol도 쓸 수 없으면 사용 가능한 NORMAL 대안을 추천한다.
+ * 계정 하나만 넘었으면 core가 다른 계정으로 돌므로 바꾸지 않는다. 한도 미관측은 소진이 아니다. 해당하지 않으면 null이다.
+ */
+function anthropicWeeklySubstitute(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
+  if (quota.state !== "observed") return null;
+  const anthropic = quota.providers.anthropic ?? [];
+  if (!anthropic.length || !anthropic.every((account) => accountUnusable(account, quota.observedAt))
+    || !anthropic.some((account) => weeklySharedExhausted(account, quota.observedAt))) return null;
+  const sol = candidates.find((candidate) => candidate.profile === "NORMAL_SOL"
+    && !candidate.model.startsWith("anthropic/") && !modelQuotaExhausted(quota, candidate.model));
+  if (sol) {
+    return { profile: sol.profile, reason: "관측된 Anthropic 계정이 모두 쓸 수 없고 1주 공유 한도 소진이 관측되어 Sonnet·Opus 대신 Sol 6.1을 먼저 추천합니다." };
+  }
+  const fallback = candidates.find((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL"
+    && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]
+    && !candidate.model.startsWith("anthropic/") && !modelQuotaExhausted(quota, candidate.model));
+  if (fallback) {
+    return { profile: fallback.profile, reason: "Anthropic 1주 공유 한도 소진이 관측되었고 Sol 6.1도 쓸 수 없어 사용 가능한 NORMAL 대안을 추천합니다." };
+  }
+  return { profile: null, reason: "Anthropic 1주 공유 한도 소진이 관측되었고 Sol 6.1·NORMAL 대안도 쓸 수 없습니다." };
+}
 
 /**
  * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
- * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. 계정 사용 가능성은 core 신호
- * (disabled·limitReached·autoBlockedUntil)로만 보고, 미관측은 소진으로 간주하지 않는다.
+ * 대안이 한도 여유가 더 크다는 이유로 primary를 밀지 않는다. primary가 Anthropic 1주 한도로 막히면
+ * anthropicWeeklySubstitute(Sol 6.1 먼저)를, 그 밖의 소진이면 사용 가능한 NORMAL 대안을 추천한다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
   const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]);
   const primary = normal.find((candidate) => candidate.profile === "NORMAL_SONNET");
   const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
   if (quota.state !== "observed") return unavailable(quota.reason);
-  /** 그 후보 provider의 관측된 계정이 모두 사용 불가할 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
-  const exhausted = (candidate: Candidate) => {
-    const provider = candidate.model.slice(0, candidate.model.indexOf("/"));
-    const accounts = quota.providers[provider] ?? [];
-    if (!accounts.length) return false;
-    return !accounts.some((account) => !account.disabled && !account.limitReached
-      && !(account.autoBlockedUntilMs != null && account.autoBlockedUntilMs > quota.observedAt));
-  };
+  const exhausted = (candidate: Candidate) => modelQuotaExhausted(quota, candidate.model);
   if (!primary) {
     // primary NORMAL 후보 자체가 없으면(사용 불가·후보 제외) 사용 가능한 NORMAL 대안을 쓴다.
     const alternative = normal.find((candidate) => !exhausted(candidate));
@@ -518,6 +556,8 @@ function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[
   if (!exhausted(primary)) {
     return { state: "observed" as const, profile: primary.profile, reason: "primary NORMAL이 사용 가능해 한도 여유 크기 비교 없이 이를 추천합니다." };
   }
+  const weekly = primary.model.startsWith("anthropic/") ? anthropicWeeklySubstitute(policy, candidates, quota) : null;
+  if (weekly) return weekly.profile ? { state: "observed" as const, profile: weekly.profile, reason: weekly.reason } : unavailable(weekly.reason);
   const fallback = normal.find((candidate) => candidate.profile !== primary.profile && !exhausted(candidate));
   if (fallback) {
     return { state: "observed" as const, profile: fallback.profile, reason: "primary NORMAL 계정 한도가 소진되어 사용 가능한 NORMAL 대안을 추천합니다." };
@@ -580,15 +620,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   };
   const policy = deps.policy ?? loadRoutingPolicy;
   async function candidateSet(ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts): Promise<CandidateSet> {
-    // registry 지원 강도 중 profile 허용 구간 안의 것만 후보 강도다. 구간 밖(max 포함)은 질문도 발주도 하지 않는다.
-    const allowedEfforts = (profile: string, efforts: readonly string[]) => {
-      const allowed = current.modelSelection.profiles[profile]?.allowedEfforts ?? [];
-      return efforts.filter((level) => allowed.includes(level));
-    };
+    // 후보 강도는 registry가 그 모델에 선언한 단계 전체다. Maker는 :auto로 이 안을 오가므로 정책 구간으로 좁히지 않는다.
     if (deps.candidates) return {
-      available: (await deps.candidates(ctx, current)).map((candidate) => ({
-        ...candidate, efforts: allowedEfforts(candidate.profile, candidate.efforts),
-      })).filter((candidate) => candidate.efforts.length > 0),
+      available: (await deps.candidates(ctx, current)).filter((candidate) => candidate.efforts.length > 0),
       unavailable: [],
     };
     const settings = await deps.settings(ctx);
@@ -602,16 +636,16 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const retryable: { index: number; profile: string; base: string; provider: string; id: string }[] = [];
     profiles.forEach(([profile, entry], index) => {
       const selector = modelRoles[entry.modelConfigPath.slice("modelRoles.".length)] ?? "";
-      const base = selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, "");
+      const base = selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max|auto)$/, "");
       if (isRetired(base)) { slots[index] = { profile, model: base, reason: "SWE-2는 새 작업 후보에서 제외되어 있습니다." }; return; }
       const slash = base.indexOf("/");
       const provider = base.slice(0, slash), id = base.slice(slash + 1);
       const model = ctx.modelRegistry.find(provider, id);
       if (model) {
-        const efforts = allowedEfforts(profile, model.thinking?.efforts ?? []);
+        const efforts = model.thinking?.efforts ?? [];
         slots[index] = efforts.length > 0
           ? { profile, model: base, efforts }
-          : { profile, model: base, reason: "지원 추론 강도를 확인할 수 없는 후보" };
+          : { profile, model: base, reason: "auto로 고를 추론 강도를 확인할 수 없는 후보" };
         return;
       }
       if (slash > 0) { retryable.push({ index, profile, base, provider, id }); return; }
@@ -643,13 +677,13 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       for (const item of retryable) {
         const failure = failures.get(item.provider);
         const model = failure ? undefined : ctx.modelRegistry.find(item.provider, item.id);
-        const efforts = allowedEfforts(item.profile, model?.thinking?.efforts ?? []);
+        const efforts = model?.thinking?.efforts ?? [];
         slots[item.index] = efforts.length > 0
           ? { profile: item.profile, model: item.base, efforts }
           : {
             profile: item.profile,
             model: item.base,
-            reason: model ? "지원 추론 강도를 확인할 수 없는 후보" : failure ?? "registry에 없는 Maker 후보",
+            reason: model ? "auto로 고를 추론 강도를 확인할 수 없는 후보" : failure ?? "registry에 없는 Maker 후보",
           };
       }
     }
@@ -663,7 +697,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   const candidateList = async (ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts) =>
     (await candidateSet(ctx, current, attempts)).available;
   const revisionOf = (current: RoutingPolicy, candidates: Candidate[]) =>
-    JSON.stringify([current.modelSelection, current.effortSelection, candidates]);
+    JSON.stringify([current.modelSelection, candidates]);
 
   const answersFor = (
     answers: Record<string, RoutingAnswer>,
@@ -700,7 +734,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history를 보고 후보와 concrete effort(model selector suffix, 그 후보의 efforts 안)를 지정합니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:<concrete effort>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보와 그 efforts 안의 concrete effort로 반드시 명시합니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation·anthropicWeeklyLimit를 보고 후보를 지정합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace(남은 판단이 얼마나 열려 있는지)와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. 관측된 Anthropic 계정이 모두 1주 공유 한도 등으로 막히면 Sonnet·Opus 추천 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천합니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -725,7 +759,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const identity = JSON.stringify([
         routingFactsState(task.assessment),
         current.modelSelection,
-        current.effortSelection,
       ]);
       const latest = latestPublications.get(key);
       if (latest?.identity === identity && latest.pending > 0) {
@@ -789,7 +822,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const decisionState = routingFactsState(task.assessment);
         const decisionKey = JSON.stringify([key, decisionState, revision]);
         const placementKey = JSON.stringify([decisionKey, ownerRevision(owners)]);
-        const baseQuestions = decisionQuestions(current, candidates);
+        const baseQuestions = decisionQuestions(current);
         const ownerQuestions = placementQuestions(owners);
         let decisionPending = decisionCache.get(decisionKey);
         let placementPending = placementCache.get(placementKey);
@@ -875,6 +908,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const quotaDoneAt = clock();
       requireLatest();
       const allocation = normalAllocation(current, candidates, quota);
+      const weekly = anthropicWeeklySubstitute(current, candidates, quota);
       // 이력은 advisory다. revision·identity·Jev state 밖에 두며 읽기 실패는 빈 이력이다.
       const ledgerRecords = deps.ledger?.read();
       const historyOf = (answers: Record<string, RoutingAnswer> | null): RoutingHistory | null => {
@@ -882,14 +916,22 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
+      // 관측된 Anthropic 1주 한도 소진은 NORMAL·UI/UX·HARD의 Anthropic 추천을 같은 대체 결과로 옮기고 route에 근거를 남긴다.
+      // 비-UI NORMAL은 normalAllocation도 같은 대체를 반영하므로 두 값은 일치한다.
+      const weeklyMoves: ({ from: string; to: string | null; reason: string } | null)[] = [];
       for (const publication of publications) {
         const answers = publication.prepared.answers;
+        const normal = answers?.workClass?.choice === "NORMAL";
         const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
-        publication.prepared.profile = answers?.workClass?.choice === "NORMAL"
-          ? uiUxBoundary
-            ? candidates.find((candidate) => candidate.profile === "NORMAL_OPUS")?.profile ?? null
-            : allocation.profile
+        const preferred = normal
+          ? candidates.find((candidate) => candidate.profile === (uiUxBoundary ? "NORMAL_OPUS" : "NORMAL_SONNET"))?.profile ?? null
           : recommendedProfile(answers, candidates);
+        const moved = weekly && preferred
+          && candidates.find((candidate) => candidate.profile === preferred)?.model.startsWith("anthropic/")
+          ? { from: preferred, to: weekly.profile, reason: weekly.reason }
+          : null;
+        weeklyMoves.push(moved);
+        publication.prepared.profile = moved ? moved.to : normal && !uiUxBoundary ? allocation.profile : preferred;
       }
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (typeof sessionId !== "string" || !sessionId.trim()) {
@@ -919,6 +961,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           profile: publication.prepared.profile,
           normalAllocation: publication.prepared.answers?.workClass?.choice === "NORMAL"
             && (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) < 0.5 ? allocation : null,
+          anthropicWeeklyLimit: weeklyMoves[index] ?? null,
           uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
             ? "기존 owner가 Opus인지 확인하세요. 비-Opus면 미완 변경·증거를 freeze하고 소유권을 넘깁니다. active owner를 동시에 새 발주하거나 실행 중 모델을 바꾸지 않습니다."
             : null,
@@ -1009,35 +1052,31 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (prepared.revision !== revision) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
       const owners = relevantOwners(contract, allOwners);
       if (ownerRevision(prepared.owners) !== ownerRevision(owners)) return { block: true, reason: "현재 소유권 충돌 조건이 바뀌었습니다. maker_route로 owner placement만 다시 판단하세요." };
-      // 같은 모델이 여러 profile에 있을 수 있다(HARD_*). 추천 profile, 이어서 추천 등급의
-      // profile 구간으로 검사해 등급의 강도 구간을 모델 이름으로 우회하지 못하게 한다. 추천 등급에 그 모델이
-      // 없거나 등급을 모르면(Jev 불가) 그 강도를 허용하는 profile로 본다. 추천과 다른 profile은 아래에서 ROUTING_REASON을 요구한다.
+      // 같은 모델이 여러 profile에 있을 수 있다(HARD_*). 추천 profile, 이어서 추천 등급의 profile로 본다.
+      // 추천 등급에 그 모델이 없거나 등급을 모르면(Jev 불가) 그 모델의 첫 profile로 본다. 추천과 다른 profile은 아래에서 ROUTING_REASON을 요구한다.
+      // 2026-10-08 사용자 결정: Maker는 auto로만 발주한다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시로 고른다.
       const cut = requested.lastIndexOf(":");
-      const effort = cut > 0 ? requested.slice(cut + 1) : "";
       const sameModel = candidates.filter((candidate) => candidate.model === (cut > 0 ? requested.slice(0, cut) : requested));
       const grade = (prepared.profile ? current.modelSelection.profiles[prepared.profile]?.workClass : undefined)
         ?? prepared.answers?.workClass?.choice;
       const sameGrade = sameModel.filter((candidate) => current.modelSelection.profiles[candidate.profile]?.workClass === grade);
-      const pool = sameGrade.length > 0 ? sameGrade : sameModel;
       const selected = sameModel.find((candidate) => candidate.profile === prepared.profile)
-        ?? pool.find((candidate) => candidate.efforts.includes(effort))
-        ?? pool[0];
-      if (!selected || item.effort !== undefined) return { block: true, reason: "maker_route가 확인한 후보와 concrete effort를 model selector에 지정하세요. coarse effort는 전달하지 않습니다." };
-      if (!selected.efforts.includes(effort)) return { block: true, reason: `${selected.profile}(${selected.model})의 허용 강도는 ${selected.efforts.join("·")}입니다. 구간 밖 강도('${effort || "<없음>"}')로는 발주하지 않습니다.` };
+        ?? sameGrade[0]
+        ?? sameModel[0];
+      if (!selected || item.effort !== undefined) return { block: true, reason: "maker_route가 확인한 후보를 '<후보 selector>:auto'로 지정하세요. coarse effort는 전달하지 않습니다." };
+      if (requested.slice(cut + 1) !== "auto") return { block: true, reason: `Maker는 auto로만 발주합니다: model:'${selected.model}:auto'. concrete 강도('${cut > 0 ? requested.slice(cut + 1) : "<없음>"}')는 쓰지 않으며 강도는 solutionSpace와 이후 Main 지시로 child auto가 고릅니다.` };
       const answers = prepared.answers;
       if (answers?.workClass?.choice === "NORMAL" && (answers.uiUxBoundary?.noul ?? 0) >= 0.5
-        && selected.profile !== "NORMAL_OPUS") {
-        return { block: true, reason: "NORMAL UI/UX 경계는 NORMAL_OPUS로 배정합니다. Opus가 없으면 unavailable로 보고하며 다른 후보로 조용히 대체하지 않습니다." };
+        && selected.profile !== "NORMAL_OPUS" && selected.profile !== prepared.profile) {
+        return { block: true, reason: "NORMAL UI/UX 경계는 NORMAL_OPUS로 배정합니다(관측된 Anthropic 1주 한도 대체 추천은 예외). Opus가 없으면 unavailable로 보고하며 다른 후보로 조용히 대체하지 않습니다." };
       }
       const profile = prepared.profile;
-      const index = candidates.findIndex((candidate) => candidate.profile === selected.profile);
-      const recommendedEffort = selected.efforts.length === 1 ? selected.efforts[0] : answers?.[`effort${index}`]?.choice;
       const placement = placementOf(prepared, owners);
       const workspace = workspaceOf(canonicalInput, item);
       const conflicts = activeConflicts(contract.ownedPaths, workspace, allOwners);
       if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
-      const changed = prepared.status !== "judged" || profile !== selected.profile || recommendedEffort !== effort || existingOwner;
+      const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
       const routingReason = /^\s*ROUTING_REASON:\s*\S.+$/m.test(task);
       if (changed && !routingReason) return { block: true, reason: existingOwner ? `기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ROUTING_REASON에 근거를 적습니다.` : "Jev 불가·불명확한 지배 판단·추천 변경은 Main이 같은 기준으로 결정하고 ROUTING_REASON 한 줄에 근거를 남깁니다." };
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
@@ -1050,10 +1089,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         focus: workClass === "HARD" ? answers?.hardFocus?.choice ?? null : null,
         recommendedProfile: profile,
         recommendedModel: recommendedCandidate?.model ?? null,
-        recommendedEffort: !recommendedCandidate ? null
-          : recommendedCandidate.efforts.length === 1 ? recommendedCandidate.efforts[0]! : answers?.[`effort${recommended}`]?.choice ?? null,
+        recommendedEffort: recommendedCandidate ? "auto" : null,
         chosenModel: selected.model,
-        chosenEffort: effort,
+        chosenEffort: "auto",
         routingReason,
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
         ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
@@ -1169,7 +1207,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·후보별 effort·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따르고 HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이며 자동 추천하지 않는다. Opus 세 후보만 max까지 허용한다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 후보별 강도·소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. 관측된 Anthropic 계정이 모두 1주 공유 한도로 막히면 Sonnet·Opus 추천(NORMAL·UI/UX·HARD) 대신 NORMAL_SOL을, Sol도 막히면 사용 가능한 NORMAL 대안을 추천하고 그 근거를 anthropicWeeklyLimit에 남긴다. 그 밖에 HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

@@ -1,6 +1,7 @@
 /**
- * OMP `bash` 도구의 내장 셸은 PowerShell도 Git Bash도 아니다. PowerShell 전용 문법을 실행 위치에 쓰면
- * 실행 뒤에 `pi-natives:command: syntax error`로만 드러나므로, 실행 전에 같은 기준으로 거절한다.
+ * OMP `bash` 도구의 셸은 PowerShell이 아니다(Windows는 내장 셸, WSL·Linux는 진짜 `/bin/bash`). PowerShell 전용
+ * 문법을 실행 위치에 쓰면 실행 뒤에 `pi-natives:command: syntax error`나 bash 오류로만 드러나므로, 실행 전에
+ * 같은 기준으로 거절한다.
  * 따옴표 안의 값(grep 패턴, echo 인자 등)과 heredoc 본문은 다른 프로그램의 데이터라 검사하지 않는다.
  */
 
@@ -16,11 +17,19 @@ const CMDLETS = new Set(
   ].map((name) => name.toLowerCase()),
 );
 
-const GUIDANCE =
+const GUIDANCE_WINDOWS =
   "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/절대/슬래시/경로.ps1`로 실행하세요.";
 
-function reason(subject: string): string {
-  return `bash 도구의 내장 셸은 PowerShell이 아니라서 ${subject}는 실행 전에 차단됩니다. ${GUIDANCE}`;
+// WSL의 bash는 진짜 bash라 따옴표·`\$`가 정상 처리되고, Windows 프로그램에는 Windows 경로를 넘겨야 한다.
+// 한글은 BOM 없는 .ps1을 PowerShell 5.1이 CP949로 읽고 stdout도 CP949로 내보내 깨진다(2026-10-07 관측).
+const GUIDANCE_LINUX =
+  "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w /절대/경로.ps1)\"`로 실행하세요. " +
+  "한글이 있으면 .ps1을 UTF-8 BOM으로 저장하고 첫 줄에 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`를 두세요. " +
+  "짧은 `-Command` 본문은 작은따옴표로 감싸거나 `\\$`로 이스케이프하면 통과합니다.";
+
+function reason(subject: string, platform: NodeJS.Platform): string {
+  const windows = platform === "win32";
+  return `bash 도구의 ${windows ? "내장 " : ""}셸은 PowerShell이 아니라서 ${subject}는 실행 전에 차단됩니다. ${windows ? GUIDANCE_WINDOWS : GUIDANCE_LINUX}`;
 }
 
 /** `<<[-]'WORD'` 형태의 heredoc 본문을 지워 스크립트 파일 내용이 명령으로 검사되지 않게 한다. */
@@ -67,21 +76,29 @@ function maskQuoted(command: string): string {
 interface Token {
   value: string;
   quoted: boolean;
+  /** posix 모드에서 bash가 `$`를 확장할 자리(따옴표 밖이나 큰따옴표 안의 이스케이프 안 된 `$name`·`${`·`$(` 등)가 있었는가. */
+  expands: boolean;
 }
 
-/** 따옴표를 존중해 명령 구분자(; | & 줄바꿈 괄호)로 나눈 세그먼트별 토큰. */
-function segmentTokens(command: string): Token[][] {
+/**
+ * 따옴표를 존중해 명령 구분자(; | & 줄바꿈 괄호)로 나눈 세그먼트별 토큰.
+ * `posix`는 진짜 bash(WSL·Linux)의 따옴표·백슬래시 이스케이프 규칙을 따른다. Windows 내장 셸 기준(`posix` false)은
+ * 백슬래시를 이스케이프로 읽지 않는 기존 동작을 그대로 유지한다.
+ */
+function segmentTokens(command: string, posix: boolean): Token[][] {
   const segments: Token[][] = [];
   let tokens: Token[] = [];
   let value = "";
   let started = false;
   let quoted = false;
+  let expands = false;
   let quote: "'" | '"' | undefined;
   const endToken = (): void => {
-    if (started) tokens.push({ value, quoted });
+    if (started) tokens.push({ value, quoted, expands });
     value = "";
     started = false;
     quoted = false;
+    expands = false;
   };
   const endSegment = (): void => {
     endToken();
@@ -90,12 +107,25 @@ function segmentTokens(command: string): Token[][] {
   };
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index];
+    // bash가 확장하는 `$` 꼴(`$name`, `$1`, `$_`, `${`, `$(`, `$?` 등). 뒤가 공백·따옴표·끝이면 글자 그대로 남는다.
+    const dollar = character === "$" && /[A-Za-z0-9_{(?!@*#$]/.test(command[index + 1] ?? "");
     if (quote) {
-      if (character === quote) quote = undefined;
-      else value += character;
+      if (character === quote) {
+        quote = undefined;
+      } else if (posix && quote === '"' && character === "\\" && index + 1 < command.length) {
+        value += character + command[index + 1];
+        index += 1;
+      } else {
+        if (posix && quote === '"' && dollar) expands = true;
+        value += character;
+      }
       continue;
     }
-    if (character === "'" || character === '"') {
+    if (posix && character === "\\" && index + 1 < command.length && command[index + 1] !== "\n") {
+      value += character + command[index + 1];
+      started = true;
+      index += 1;
+    } else if (character === "'" || character === '"') {
       quote = character;
       started = true;
       quoted = true;
@@ -106,6 +136,7 @@ function segmentTokens(command: string): Token[][] {
     } else if (/[;|&\n(){}]/.test(character)) {
       endSegment();
     } else {
+      if (posix && dollar) expands = true;
       value += character;
       started = true;
     }
@@ -120,7 +151,7 @@ function commandBasename(value: string): string {
 }
 
 /** powershell/pwsh 호출의 판정: undefined면 허용, 문자열이면 차단 사유. */
-function matchPowerShellHost(args: Token[]): string | undefined {
+function matchPowerShellHost(args: Token[], platform: NodeJS.Platform): string | undefined {
   for (const arg of args) {
     const option = arg.value.toLowerCase();
     if (!arg.quoted && /^-f(?:i(?:le?)?)?$/.test(option)) return undefined;
@@ -132,37 +163,47 @@ function matchPowerShellHost(args: Token[]): string | undefined {
     (arg) => !arg.quoted && ["-c", "-command", "-commandwithargs"].includes(arg.value.toLowerCase()),
   );
   if (commandIndex < 0) return undefined;
-  if (args.slice(commandIndex + 1).some((arg) => arg.value.includes("$"))) {
-    return reason("`-Command` 인자의 `$`(bash 층이 변형해 PowerShell이 다른 코드를 받습니다)");
+  // Windows 내장 셸은 따옴표 안의 `$`도 바꿔 넘기므로 모든 `$`를 막고, 진짜 bash는 확장되는 `$`만 막는다.
+  const dollar = platform === "win32"
+    ? (arg: Token) => arg.value.includes("$")
+    : (arg: Token) => arg.expands;
+  if (args.slice(commandIndex + 1).some(dollar)) {
+    return reason("`-Command` 인자의 `$`(bash 층이 변형해 PowerShell이 다른 코드를 받습니다)", platform);
   }
   return undefined;
 }
 
-/** bash 명령에 PowerShell 전용 문법이 실행 위치로 쓰였으면 차단 사유를, 아니면 undefined를 돌려준다. */
-export function matchPowerShellSyntax(command: string): string | undefined {
+/**
+ * bash 명령에 PowerShell 전용 문법이 실행 위치로 쓰였으면 차단 사유를, 아니면 undefined를 돌려준다.
+ * `platform`은 bash 도구가 실제로 도는 OS(기본 `process.platform`)이며 안내문과 `-Command`의 `$` 판정을 가른다.
+ */
+export function matchPowerShellSyntax(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
   const body = stripHeredocBodies(command);
 
-  for (const tokens of segmentTokens(body)) {
+  for (const tokens of segmentTokens(body, platform !== "win32")) {
     const head = tokens[0];
     if (head.quoted) continue;
     const name = commandBasename(head.value);
     if (name === "powershell" || name === "pwsh") {
-      const hostReason = matchPowerShellHost(tokens.slice(1));
+      const hostReason = matchPowerShellHost(tokens.slice(1), platform);
       if (hostReason) return hostReason;
       continue;
     }
-    if (CMDLETS.has(name)) return reason(`cmdlet \`${head.value}\``);
+    if (CMDLETS.has(name)) return reason(`cmdlet \`${head.value}\``, platform);
   }
 
   const masked = maskQuoted(body);
   const envVariable = /\$env:[A-Za-z_]\w*/i.exec(masked);
-  if (envVariable) return reason(`\`${envVariable[0]}\``);
+  if (envVariable) return reason(`\`${envVariable[0]}\``, platform);
 
   const assignment = /(?:^|[;&|{\n])[ \t]*(\$[A-Za-z_]\w*)[ \t]*(?:[-+*/]|\?\?)?=(?!=)/.exec(masked);
-  if (assignment) return reason(`\`${assignment[1]} = ...\` 대입`);
+  if (assignment) return reason(`\`${assignment[1]} = ...\` 대입`, platform);
 
   const block = /(?:^|[;&|{\n])[ \t]*(if|elseif|foreach|while)[ \t]*\([^\n]*\)[ \t]*\{/i.exec(masked);
-  if (block) return reason(`\`${block[1]} (...) { }\` 블록`);
+  if (block) return reason(`\`${block[1]} (...) { }\` 블록`, platform);
 
   return undefined;
 }

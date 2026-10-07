@@ -27,7 +27,7 @@
 
 ## 역할
 
-역할은 **Main·`maker`** 둘이며 위임 child도 `maker` 하나다. Main은 요구·계약·승인·라우팅·중간 검수·최종 수용을 소유하고 위임하지 않은 일은 직접 끝낸다. Maker는 맡은 조각을 조사부터 구현·재작업·검증·실제 표면 확인까지 end-to-end로 맡는다. 현재 model role은 `config.yml` `modelRoles`가 정본이고, 발주 분류·후보·추론 강도·재사용 규칙은 `rule://subagent` 및 `routing.modelSelection`·`routing.effortSelection`을 따른다. 폐지된 별도 검수·디자인·검증·정찰 역할을 되살리지 않는다.
+역할은 **Main·`maker`** 둘이며 위임 child도 `maker` 하나다. Main은 요구·계약·승인·라우팅·중간 검수·최종 수용을 소유하고 위임하지 않은 일은 직접 끝낸다. Maker는 맡은 조각을 조사부터 구현·재작업·검증·실제 표면 확인까지 end-to-end로 맡는다. 현재 model role은 `config.yml` `modelRoles`가 정본이고, 발주 분류·후보·재사용 규칙은 `rule://subagent` 및 `routing.modelSelection`·`routing.effortSelection`을 따른다. Maker는 `:auto`로 발주하며 추론 강도는 child가 `solutionSpace`와 이후 Main 지시마다 그 모델의 전체 단계 안에서 고른다. 폐지된 별도 검수·디자인·검증·정찰 역할을 되살리지 않는다.
 
 ## 작업 모드
 

@@ -9,6 +9,8 @@
 // 실제로 반영되는지로 "이 입력이 재판정을 일으켰는가"를 본다. 매 단계는 고정 low 로 턴을 시작해 턴 시작 분류도
 // 건너뛰고, 스트리밍 중(before-model-call 훅)에 auto 로 바꾼 뒤 입력을 넣는다. 내림이 없다는 raise-only 계약은
 // core-agent-thinking-test.ts [raise-only] 가 분류기 경로로 본다.
+// [4] 2026-10-08 사용자 결정: SubAgent 는 부모(Main) IRC 메시지마다 최초 과제+메시지로 auto 를 다시 분류해 오르내린다.
+// 이 단계만 실제 분류기 경로(providers.judgmentProvider: vercel)를 타고, fetch 는 그 endpoint 만 메모리에서 답한다.
 // 모델 호출은 하지 않는다: 훅이 provider 요청 직전에 예외로 turn 을 끊는다. 세션·모델 설정은 임시 cwd·agentDir 에만
 // 쓰므로 운영자의 실제 `~/.omp` 는 읽지도 쓰지도 않는다.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -69,7 +71,39 @@ writeFileSync(
 	].join("\n"),
 	"utf8",
 );
-writeFileSync(join(agentDir, "config.yml"), `modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\n`, "utf8");
+writeFileSync(
+	join(agentDir, "config.yml"),
+	`modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\nproviders:\n  judgmentProvider: vercel\n`,
+	"utf8",
+);
+
+// [4] 의 분류기: Vercel evaluation endpoint 만 가로채 질문이 허용하는 단계(criteria 키)로 답하고, 분류 입력을 남긴다.
+// 다른 요청은 원래 fetch 로 넘긴다. 키는 더미다(비밀 아님).
+process.env.AI_GATEWAY_API_KEY = "example";
+const realFetch = globalThis.fetch;
+let judgeReply = "xhigh";
+const levelRequests: string[] = [];
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+	const url = input instanceof Request ? input.url : String(input);
+	if (!url.startsWith("https://ai-gateway.vercel.sh/")) return realFetch(input, init);
+	const body = JSON.parse(String(init?.body ?? "{}"));
+	const criteria = body.questions?.level?.criteria;
+	if (!criteria) return new Response("{}", { status: 500 });
+	levelRequests.push(String(body.state?.request ?? ""));
+	const levels = Object.keys(criteria);
+	const other = (1 - 0.6) / (levels.length - 1);
+	return new Response(
+		JSON.stringify({
+			answers: {
+				level: { type: "choice", choice: judgeReply, probabilities: Object.fromEntries(levels.map(l => [l, l === judgeReply ? 0.6 : other])) },
+			},
+			usage: { inputTokens: 1, outputTokens: 1 },
+			rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
+			providerMetadata: { typesafe: { confidence: { level: 0.6 } } },
+		}),
+		{ status: 200, headers: { "content-type": "application/json" } },
+	);
+}) as typeof fetch;
 
 const created = await sdk.createAgentSession({ cwd: workdir, agentDir, disableExtensionDiscovery: true });
 const session = created.session;
@@ -93,7 +127,7 @@ session.subscribe((event: { type: string; thinkingLevel?: string }) => {
 // 판정은 분류를 기다리지 않고 뒤에서 돈다. ultrathink 경로는 즉시 끝나지만 이벤트 루프를 한 번 넘긴다.
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 20));
 
-type Phase = "steer" | "followUp" | "fixed" | "quiet";
+type Phase = "steer" | "followUp" | "fixed" | "parent" | "quiet";
 let phase: Phase = "quiet";
 const seen: Record<string, unknown> = {};
 
@@ -131,6 +165,26 @@ agent.addBeforeModelCallHook(async () => {
 		await flush();
 		seen.fixedAuto = session.isAutoThinking;
 		seen.afterFixedSteer = session.thinkingLevel;
+	} else if (current === "parent") {
+		session.setThinkingLevel("auto");
+		seen.parentProvisional = session.thinkingLevel;
+		const judgedBefore = levelRequests.length;
+		// 부모가 아닌 입력: peer IRC, 부모에게서 온 wake relay, 자기 job 결과, 시스템 알림. ultrathink 가 있어도 그대로여야 한다.
+		await deliverToChild(PEER_ID, "ultrathink 피어가 보낸 보고");
+		await deliverToChild(PARENT_ID, "ultrathink 부모에게 돌아온 relay", true);
+		await session.steer("ultrathink job 결과", undefined, { attribution: "agent" });
+		await session.sendCustomMessage({ customType: "async-result", content: "ultrathink 비동기 job 결과", display: true }, { deliverAs: "steer" });
+		await session.sendCustomMessage({ customType: "system-notice", content: "ultrathink 시스템 알림", display: true }, { deliverAs: "steer" });
+		await flush();
+		seen.afterOthers = session.thinkingLevel;
+		seen.othersJudged = levelRequests.length - judgedBefore;
+		judgeReply = "xhigh";
+		await deliverToChild(PARENT_ID, "스키마 검증과 마이그레이션까지 맡아 줘");
+		seen.afterParentUp = await levelSettles("xhigh");
+		judgeReply = "low";
+		await deliverToChild(PARENT_ID, "승인합니다");
+		seen.afterParentDown = await levelSettles("low");
+		seen.parentRequests = levelRequests.slice(judgedBefore);
 	}
 	throw new Error("smoke: no provider call");
 });
@@ -139,6 +193,23 @@ const watchdog = setTimeout(() => {
 	console.log(`\nWATCHDOG: phase=${phase} seen=${JSON.stringify(seen)}`);
 	process.exit(2);
 }, Number(process.env.SMOKE_TIMEOUT_MS ?? 60_000));
+
+// [4] 이 세션을 부모가 있는 SubAgent 로 등록한다. bridge 는 registry 의 parentId 로 부모 메시지를 가린다.
+const { AgentRegistry } = await import(`${CORE}/registry/agent-registry.ts`); // 대상 core 경로가 실행 시점에 정해진다.
+const CHILD_ID = "ReclassChild";
+const PARENT_ID = "ReclassParent";
+const PEER_ID = "ReclassPeer";
+AgentRegistry.global().register({ id: CHILD_ID, displayName: "child", kind: "sub", parentId: PARENT_ID, session });
+let ircSeq = 0;
+async function deliverToChild(from: string, body: string, wakeRelay = false): Promise<void> {
+	ircSeq += 1;
+	await session.deliverIrcMessage({ id: `irc-${ircSeq}`, from, to: CHILD_ID, body, ts: Date.now(), ...(wakeRelay ? { wakeRelay: true } : {}) });
+}
+/** 재분류는 메시지 전달을 기다리지 않고 뒤에서 돈다. 목표 강도가 되거나 2초가 지나면 그때 강도를 돌려준다. */
+async function levelSettles(target: string): Promise<unknown> {
+	for (let waited = 0; waited < 2_000 && session.thinkingLevel !== target; waited += 20) await flush();
+	return session.thinkingLevel;
+}
 
 async function runPhase(next: Phase, start: "low" | "high", prompt: string): Promise<void> {
 	session.setThinkingLevel(start);
@@ -181,6 +252,32 @@ await runPhase("fixed", "high", "문서를 정리해");
 check("[3] 입력 시점에 턴이 스트리밍 중이었다", seen["fixed:streaming"] === true);
 check("[3] 고정 강도 세션은 auto 가 아니다", seen.fixedAuto === false);
 check("[3] 고정 강도는 사용자 steer 뒤에도 high 다", seen.afterFixedSteer === "high", `after=${seen.afterFixedSteer}`);
+
+console.log("\n[4] SubAgent 는 부모 메시지마다 auto 를 다시 분류해 오르내리고, 다른 입력으로는 분류하지 않는다");
+await runPhase("parent", "low", "로그 파서를 고쳐 (child 과제)");
+check("[4] 입력 시점에 턴이 스트리밍 중이었다", seen["parent:streaming"] === true);
+check(
+	"[4] 전제: auto 전환 직후 강도는 xhigh·low 가 아니다(오르내림이 구분된다)",
+	seen.parentProvisional !== undefined && seen.parentProvisional !== "xhigh" && seen.parentProvisional !== "low",
+	`provisional=${seen.parentProvisional}`,
+);
+check(
+	"[4] peer·wake relay·job 결과·시스템 알림은 분류기를 부르지 않고 강도도 그대로다",
+	seen.othersJudged === 0 && seen.afterOthers === seen.parentProvisional,
+	`judged=${seen.othersJudged} after=${seen.afterOthers}`,
+);
+check("[4] 부모 메시지는 다시 분류해 강도를 올린다", seen.afterParentUp === "xhigh", `after=${seen.afterParentUp}`);
+check("[4] 짧은 부모 답도 다시 분류하고, 낮게 나오면 내려간다", seen.afterParentDown === "low", `after=${seen.afterParentDown}`);
+const parentRequests = Array.isArray(seen.parentRequests) ? (seen.parentRequests as string[]) : [];
+check(
+	"[4] 분류 입력은 최초 과제에 지금까지의 부모 메시지를 이어 붙인 것이고 다른 입력은 섞이지 않는다",
+	parentRequests.length === 2 &&
+		parentRequests[1]!.includes("로그 파서를 고쳐 (child 과제)") &&
+		parentRequests[1]!.includes("스키마 검증과 마이그레이션까지 맡아 줘") &&
+		parentRequests[1]!.includes("승인합니다") &&
+		!parentRequests.some(request => request.includes("ultrathink")),
+	JSON.stringify(parentRequests),
+);
 
 await session.dispose?.();
 // Windows 는 dispose 직후에도 agent.db 를 잠깐 잡고 있다. 정리 실패는 검사 결과가 아니므로 남기고 넘어간다.

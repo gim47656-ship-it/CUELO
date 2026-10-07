@@ -306,26 +306,25 @@ const requiredPolicyMembers = [
     "identifiable-existing-owner-for-this-slice",
     "maker-class-choice-NORMAL-HARD",
     "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
-    "independent-concrete-effort-choice-for-each-candidate-profile",
     "proposed-scope-conflicts-with-applicable-skill-or-user-contract",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-dispatch.decisionMapping", [
     "instruct-or-retarget-an-existing-owner-only-when-duplicate-or-additional-instruction-is-true-and-an-identifiable-existing-owner-resolves-otherwise-dispatch-new",
     "duplicate-or-additional-instruction-true-without-an-identifiable-existing-owner-never-selects-an-owner",
-    "otherwise-main-selects-one-maker-model-and-its-supported-concrete-effort-from-the-batch-and-passes-an-explicit-model-selector",
+    "otherwise-main-selects-one-maker-candidate-from-the-batch-and-passes-its-explicit-model-selector-with-the-auto-suffix-never-a-concrete-effort",
     "applicable-skill-or-user-contract-conflict-true-main-resolves-the-specific-conflict-before-the-affected-dispatch-never-let-judge-relax-the-contract",
   ]],
-  // 기존 owner 지시는 구조 사실만 로컬 관측한다. 의미와 정식 assessment 필요성은
-  // Main이 실제 지시를 보고 결정하며, 관측 불가만으로 judge 호출을 의무화하지 않는다.
+  // 2026-10-08 사용자 결정: 기존 owner 지시는 전송을 붙잡지 않고 뒤에서 JEV가 원 계약 대비 넷으로 분류한다.
+  // 분류는 Main 판단의 참고이며 승인·차단·owner 선택이 아니다.
   ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.questions", [
-    "observable-action-scope-and-acceptance-signals-with-owned-path-overlap",
-    "requested-meaning-and-material-scope-change-remain-unknown-without-semantic-facts",
-    "formal-assessment-need-is-a-main-decision-not-inferred-from-structural-counts",
+    "the-instruction-against-the-original-contract-primary-deliverable-owned-paths-and-acceptance-is-same-scope-scope-change-acceptance-change-or-unknown",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.decisionMapping", [
-    "main-reads-the-actual-instruction-and-uses-existing-maker_route-only-when-new-semantic-facts-or-a-material-task-change-need-it-unknown-alone-does-not-require-a-call",
-    "preserve-the-existing-owner-and-completed-owner-identity-unless-main-determines-a-real-ownership-change",
-    "the-advisory-only-informs-main-s-next-action-it-never-approves-blocks-switches-a-model-or-selects-an-owner",
+    "input-is-the-original-primary-deliverable-and-owned-paths-and-bounded-acceptance-and-instruction-excerpts-with-code-urls-and-literals-masked-and-each-path-replaced-by-a-local-inside-or-outside-owned-paths-marker-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "same-scope-keeps-the-original-acceptance-scope-change-means-main-rejudges-with-maker_route-from-the-changed-facts-and-uses-the-existing-rework-contract-for-real-rework-acceptance-change-means-main-states-the-changed-condition-to-the-owner-and-reviews-against-it",
+    "judge-failure-timeout-missing-credentials-or-a-secret-candidate-is-unknown-and-never-falls-back-to-another-model",
+    "the-advisory-is-an-aside-while-main-runs-and-next-turn-context-while-idle-a-session-change-aborts-pending-classifications-and-discards-late-results",
+    "the-advisory-only-informs-main-s-next-action-it-never-approves-blocks-switches-a-model-or-selects-an-owner-and-preserves-the-existing-and-completed-owner-identity-unless-main-determines-a-real-ownership-change",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-retry.questions", [
     "authentication-or-provider-problem-versus-code-problem",
@@ -379,6 +378,7 @@ const requiredPolicyMembers = [
     "the-final-assistant-body-left-work-it-could-do-now-with-tools-without-approval-continue-now-needs-user-done-or-unknown",
   ]],
   ["routing.typedJudgmentRouting.placements.turn-end-solo-stop.decisionMapping", [
+    "the-solo-judgment-runs-only-when-the-last-500-characters-of-the-final-assistant-body-match-the-local-defer-or-continuation-promise-pattern-otherwise-only-a-pending-unanswered-question-judgment-may-run",
     "input-is-a-bounded-final-assistant-excerpt-with-paths-urls-and-code-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
     "when-an-unanswered-question-is-also-pending-both-are-judged-in-one-call-and-only-the-unanswered-question-aside-is-sent",
     "continue-now-with-no-unanswered-question-sends-the-existing-continuation-aside-once-never-an-approval",
@@ -394,24 +394,6 @@ const requiredPolicyMembers = [
     "the-tool-call-handler-returns-immediately-and-the-judgment-runs-in-the-background-so-the-tool-is-never-held",
     "no-body-text-keeps-the-existing-deterministic-reply-reminder-a-progress-update-counts-as-a-reply-only-through-its-body-text-copy-never-by-signature",
     "answered-unknown-judge-failure-or-a-new-input-produces-no-notice-and-discards-late-results",
-  ]],
-  ["routing.typedJudgmentRouting.placements.todo-nudge-multistep.questions", [
-    "the-user-request-asks-for-several-items-or-three-or-more-steps",
-  ]],
-  ["routing.typedJudgmentRouting.placements.todo-nudge-multistep.decisionMapping", [
-    "input-is-a-bounded-request-excerpt-with-paths-urls-and-code-removed",
-    "at-or-above-0.5-sends-the-existing-todo-aside-once-per-request-below-0.5-sends-none",
-    "not-yet-arrived-failure-timeout-or-no-credential-falls-back-to-the-existing-three-tool-call-rule",
-    "a-result-from-an-older-input-generation-or-after-the-third-call-decision-is-discarded-and-never-applied-retroactively",
-    "child-sessions-an-existing-todo-use-or-an-active-todo-list-are-never-nudged",
-  ]],
-  ["routing.typedJudgmentRouting.placements.external-advice-claims.questions", [
-    "each-bounded-claim-candidate-is-a-file-test-ci-version-behavior-opinion-or-unverifiable-claim",
-  ]],
-  ["routing.typedJudgmentRouting.placements.external-advice-claims.decisionMapping", [
-    "input-is-at-most-twelve-claim-candidates-of-160-characters-with-paths-urls-literals-code-and-secrets-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
-    "main-verifies-each-claim-with-tools-and-answers-confirmed-refuted-or-unverified-keeping-opinion-apart-from-fact-the-aside-never-approves-or-blocks",
-    "judge-failure-or-timeout-sends-only-the-generic-claim-by-claim-verification-instruction",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-turn-memory-application.questions", [
     "each-recalled-memory-applies-is-excepted-conflicts-with-the-current-request-is-unrelated-or-unknown-from-bounded-excerpts",
@@ -581,17 +563,12 @@ const requiredPolicyShapes = [
   ["routing.high-risk.mainIntervention.finalReview.unapproved", "string"],
   ["routing.effortSelection.owner", "string"],
   ["routing.effortSelection.mechanism", "string"],
+  ["routing.effortSelection.range", "string"],
   ["routing.effortSelection.decidedAt", "string"],
   ["routing.effortSelection.gradingInput", "string"],
-  ["routing.effortSelection.criteriaUse", "string"],
-  ["routing.effortSelection.criteria.low", "string"],
-  ["routing.effortSelection.criteria.medium", "string"],
-  ["routing.effortSelection.criteria.high", "string"],
-  ["routing.effortSelection.criteria.xhigh", "string"],
-  ["routing.effortSelection.criteria.max", "string"],
   ["routing.effortSelection.failure", "string"],
   ["routing.effortSelection.retry", "string"],
-  ["routing.effortSelection.reworkEscalation", "string"],
+  ["routing.effortSelection.rework", "string"],
   ["routing.effortSelection.parallelism", "string"],
   ["routing.effortSelection.validationExecution", "string"],
   ["mainLane.workerReview.steeringCheckpoint.when", "string"],
@@ -670,8 +647,8 @@ const preEditContractKeys = [
 ];
 const highRiskFinalReviewKeys = ["added", "unapproved"];
 const effortSelectionKeys = [
-  "owner", "mechanism", "decidedAt", "gradingInput", "criteriaUse", "criteria", "riskIsOrthogonal",
-  "failure", "retry", "reworkEscalation", "parallelism", "validationExecution",
+  "owner", "mechanism", "range", "decidedAt", "gradingInput", "riskIsOrthogonal",
+  "failure", "retry", "rework", "parallelism", "validationExecution",
 ];
 const steeringCheckpointKeys = [
   "when",
@@ -729,7 +706,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "todo-nudge-multistep", "external-advice-claims", "pre-turn-memory-application"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1226,18 +1203,16 @@ if (policy !== null) {
   );
   check(valueAt(policy, "roles.main.thinkingMode") === "auto", 'roles.main.thinkingMode는 "auto"여야 한다.');
   check(valueAt(policy, "roles.main.autoThinkingFloor") === "medium", "roles.main.autoThinkingFloor는 medium이어야 한다.");
+  // 2026-10-08 사용자 결정: Maker는 발주 selector의 `:auto`로 그 모델의 전체 단계를 오간다.
+  check(valueAt(policy, "roles.maker.thinkingMode") === "auto", 'roles.maker.thinkingMode는 "auto"여야 한다.');
   check(
-    valueAt(policy, "roles.maker.thinkingMode") === "dispatch-selected-concrete-effort",
-    'roles.maker.thinkingMode는 "dispatch-selected-concrete-effort"여야 한다.',
+    valueAt(policy, "roles.maker.defaultThinkingLevel") === "auto" &&
+      readAgentThinkingLevel("maker") === "auto",
+    "Maker의 기본 추론은 auto여야 한다.",
   );
   check(
-    valueAt(policy, "roles.maker.defaultThinkingLevel") === "medium" &&
-      readAgentThinkingLevel("maker") === "medium",
-    "Maker의 기본 추론은 medium이어야 한다.",
-  );
-  check(
-    valueAt(policy, "roles.maker.effortLevels") === "resolved-model-supported-concrete-levels-not-a-fixed-coarse-mapping",
-    "Maker 추론은 선택 모델의 지원 concrete level을 사용해야 한다.",
+    valueAt(policy, "roles.maker.effortLevels") === "child-auto-over-the-full-range-the-selected-model-supports-opus-up-to-max-with-no-policy-floor-or-ceiling",
+    "Maker 추론은 선택 모델이 지원하는 전체 단계의 child auto여야 한다.",
   );
 
   const routing = isPlainObject(policy.routing) ? policy.routing : {};
@@ -1289,8 +1264,6 @@ if (policy !== null) {
       typedJudgmentPlacements["turn-end-unanswered-question"]?.owner === "main" &&
       typedJudgmentPlacements["turn-end-solo-stop"]?.owner === "main" &&
       typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
-      typedJudgmentPlacements["todo-nudge-multistep"]?.owner === "main" &&
-      typedJudgmentPlacements["external-advice-claims"]?.owner === "main" &&
       typedJudgmentPlacements["pre-turn-memory-application"]?.owner === "the-session-receiving-the-recall",
     "typed judgment placement의 실행 주체가 다르다.",
   );
@@ -1614,25 +1587,18 @@ if (policy !== null) {
       `${path}에 prepared 참조 소비 식별자가 없다: ${missing.join(", ")}(정본이 가리키는 소비 경로가 사라졌다).`,
     );
   }
-  // Maker 후보 표. 후보마다 등급과 허용 강도 구간이 있어야 task hook이 구간 밖 강도를 막는다.
-  // 강도 이름은 effortSelection.criteria의 단계로만 쓴다. 그 밖은 Jev 질문과 hook이 이해하지 못한다. max도 criteria 단계라 Opus 세 profile만 허용 구간에 넣는다.
+  // Maker 후보 표. 후보마다 등급만 정한다. 강도는 child auto가 그 모델의 단계 안에서 고르므로 profile에 강도 구간을 두지 않는다.
   {
     const profiles = valueAt(policy, "routing.modelSelection.profiles");
     const grades = Object.keys(valueAt(policy, "routing.modelSelection.criteria") ?? {});
-    const levels = Object.keys(valueAt(policy, "routing.effortSelection.criteria") ?? {});
     check(isPlainObject(profiles) && Object.keys(profiles).length > 0, "routing.modelSelection.profiles가 비어 있다.");
     for (const [profile, entry] of Object.entries(isPlainObject(profiles) ? profiles : {})) {
       const where = `routing.modelSelection.profiles.${profile}`;
       check(
-        isPlainObject(entry) && Object.keys(entry).sort().join(",") === "allowedEfforts,modelConfigPath,workClass",
-        `${where}는 modelConfigPath·workClass·allowedEfforts만 가져야 한다(옛 minimumEffort 등은 hook이 읽지 않는다).`,
+        isPlainObject(entry) && Object.keys(entry).sort().join(",") === "modelConfigPath,workClass",
+        `${where}는 modelConfigPath·workClass만 가져야 한다(옛 allowedEfforts·minimumEffort는 hook이 읽지 않는다).`,
       );
       check(grades.includes(entry?.workClass), `${where}.workClass는 modelSelection.criteria의 등급(${grades.join(", ")}) 중 하나여야 한다.`);
-      const allowed = entry?.allowedEfforts;
-      check(
-        isStringList(allowed) && allowed.length > 0 && new Set(allowed).size === allowed.length && allowed.every((level) => levels.includes(level)),
-        `${where}.allowedEfforts는 effortSelection.criteria 단계(${levels.join(", ")}) 안의 중복 없는 비지 않은 목록이어야 한다.`,
-      );
     }
   }
 

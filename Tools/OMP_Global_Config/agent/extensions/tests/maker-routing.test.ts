@@ -110,9 +110,6 @@ function harness(options: {
         workClass: { choice: options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL" },
         hardFocus: { choice: options.hardFocuses?.[call - 1] ?? "CODE_SYSTEM" },
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
-        // 후보 순서: NORMAL_SONNET·NORMAL_OPUS·HARD_UI_OPUS·HARD_CODE_OPUS·HARD_CODE_SONNET·NORMAL_DEEPSEEK·NORMAL_SOL·HARD_CODE_ASTRA.
-        effort0: { choice: "high" }, effort1: { choice: "high" }, effort2: { choice: "high" },
-        effort3: { choice: "high" }, effort4: { choice: "high" }, effort6: { choice: "high" }, effort7: { choice: "high" },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
         delegation: { choice: options.delegation ?? "MAKER" },
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
@@ -120,7 +117,7 @@ function harness(options: {
     },
   });
   const task = { name: "ViewFix", task: brief, assessment: facts };
-  const input = { context: "같은 계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high" }] };
+  const input = { context: "같은 계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }] };
   return {
     ...route,
     policy,
@@ -164,7 +161,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await h.prepare("같은 계약", [h.task], {} as never);
     const dispatch = async (task: string) => (await h.beforeTask({
       context: "같은 계약",
-      tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6-sol:medium" }],
+      tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }],
     }, {} as never)) as { block: boolean; reason: string };
 
     const added = await dispatch(brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts, src/extra.ts"));
@@ -206,7 +203,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: h.task.name,
         task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
         agent: "maker",
-        model: "openai-codex/gpt-6-sol:high",
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     }, {} as never);
 
@@ -268,7 +265,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: longName,
         task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: src/view.ts, ${longPath}`),
         agent: "maker",
-        model: "openai-codex/gpt-6-sol:medium",
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     }, {} as never) as { block: boolean; reason: string };
     expect(reason.block).toBe(true);
@@ -313,12 +310,8 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(returned).toBe(false);
     quotaRelease.resolve();
     const first = await pending;
-    const allowed = (profile: string) => h.policy.modelSelection.profiles[profile]!.allowedEfforts;
     expect(first).toMatchObject({
-      candidates: candidates.map((candidate) => ({
-        ...candidate,
-        efforts: candidate.efforts.filter((level) => allowed(candidate.profile).includes(level)),
-      })),
+      candidates,
       unavailableCandidates: [],
       quota: {
         state: "observed",
@@ -368,58 +361,60 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       settings: async () => ({ getModelRoles: () => modelRoles }),
       owners: () => [],
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test" }),
-      judge: async () => ({ answers: { workClass: { choice: "NORMAL" }, effort0: { choice: "high" }, effort1: { choice: "medium" }, effort2: { choice: "high" }, effort3: { choice: "high" }, effort4: { choice: "max" } } }),
+      judge: async () => ({ answers: { workClass: { choice: "NORMAL" } } }),
     });
     const task = { name: "ViewFix", task: brief, assessment: facts };
     const batch = await route.prepareBatch("계약", [task], ctx);
     expect(batch.candidates.map((candidate) => candidate.model)).not.toContain(missing.model);
     expect(batch.unavailableCandidates).toEqual([{ profile: "NORMAL_DEEPSEEK", model: missing.model, reason: "registry에 없는 Maker 후보" }]);
     expect(batch.routes[0]!.status).toBe("judged");
-    const input = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high" }] };
+    const input = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }] };
     expect(await route.beforeTask(input, ctx)).toBeUndefined();
     // 불가한 후보를 지정하면 다른 모델로 대체하지 않고 막는다.
-    const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:medium` }] };
+    const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:auto` }] };
     expect(await route.beforeTask(blocked, ctx)).toMatchObject({ block: true });
   });
-  test("judge가 고른 높은 강도는 낮아지지 않고 추천·발주 확인에 그대로 쓰인다", async () => {
+  test("후보 강도는 registry 단계 전체이고 Jev에 강도를 묻지 않으며 발주는 '<후보 selector>:auto'만 통과한다", async () => {
     const policy = loadRoutingPolicy();
     const modelRoles: Record<string, string> = {};
     for (const profile of Object.keys(policy.modelSelection.profiles)) {
       const slot = policy.modelSelection.profiles[profile]!.modelConfigPath.slice("modelRoles.".length);
-      modelRoles[slot] = candidates.find((candidate) => candidate.profile === profile)!.model;
+      // 설정 slot은 운영처럼 :auto suffix다. 후보 해석은 suffix를 떼고 registry를 찾는다.
+      modelRoles[slot] = `${candidates.find((candidate) => candidate.profile === profile)!.model}:auto`;
     }
+    // DeepSeek는 운영 models.yml처럼 low·high만 선언한다. 후보 강도는 그 선언 그대로다.
+    const ladders: Record<string, string[]> = { "b-ai/deepseek-v4.1-flash": ["low", "high"] };
     const registry = {
       find: (provider: string, id: string) => {
         const found = candidates.find((candidate) => candidate.model === `${provider}/${id}`);
-        return found ? { thinking: { efforts: found.efforts } } : undefined;
+        return found ? { thinking: { efforts: ladders[found.model] ?? found.efforts } } : undefined;
       },
       refreshDiscoverableProviders: async () => {},
     };
-    const ctx = { sessionManager: { getSessionId: () => "high-effort" }, modelRegistry: registry } as never;
-    const prepare = async (answers: Record<string, unknown>) => {
-      const route = registerMakerRouting({} as never, {
-        policy: () => policy,
-        settings: async () => ({ getModelRoles: () => modelRoles }),
-        owners: () => [],
-        quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test" }),
-        judge: async () => ({ answers }),
-      });
-      const batch = await route.prepareBatch("계약", [{ name: "Deep", task: brief, assessment: facts }], ctx);
-      return { route, batch };
-    };
+    const ctx = { sessionManager: { getSessionId: () => "auto-only" }, modelRegistry: registry } as never;
+    const asked: Record<string, unknown>[] = [];
+    const route = registerMakerRouting({} as never, {
+      policy: () => policy,
+      settings: async () => ({ getModelRoles: () => modelRoles }),
+      owners: () => [],
+      quota: async () => ({ state: "unavailable", observedAt: 0, reason: "test" }),
+      judge: async (_ctx, request) => {
+        asked.push(request.questions);
+        return { answers: { workClass: { choice: "HARD" }, hardFocus: { choice: "CODE_SYSTEM" }, uiUxBoundary: { noul: 0 } } };
+      },
+    });
+    const batch = await route.prepareBatch("계약", [{ name: "Deep", task: brief, assessment: facts }], ctx);
+    // 정책 구간으로 좁히지 않는다. Opus·Sonnet·Sol·DeepSeek 모두 registry가 선언한 단계 그대로다.
+    expect(batch.candidates).toEqual(candidates.map((candidate) => ({ ...candidate, efforts: ladders[candidate.model] ?? candidate.efforts })));
+    expect(Object.keys(asked[0]!).filter((key) => /effort/i.test(key))).toEqual([]);
+    expect(batch.routes[0]!.profile).toBe("HARD_CODE_OPUS");
     const dispatch = (model: string) => ({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
-    // 후보 순서: NORMAL_SONNET(0)·NORMAL_OPUS(1)·HARD_UI_OPUS(2)·HARD_CODE_OPUS(3). 허용 구간 상단을 답한다.
-    const top = { effort0: { choice: "xhigh" }, effort1: { choice: "max" }, effort2: { choice: "max" }, effort3: { choice: "max" } };
-    const normal = await prepare({ workClass: { choice: "NORMAL" }, uiUxBoundary: { noul: 0 }, ...top });
-    expect(normal.batch.routes[0]!.recommendations).toMatchObject(top);
-    expect(await normal.route.beforeTask(dispatch("openai-codex/gpt-6-sol:xhigh"), ctx)).toBeUndefined();
-    // 추천보다 낮춘 발주는 Main 근거 없이 지나가지 않는다.
-    expect(await normal.route.beforeTask(dispatch("openai-codex/gpt-6-sol:medium"), ctx)).toMatchObject({ block: true });
-    const hard = await prepare({ workClass: { choice: "HARD" }, hardFocus: { choice: "CODE_SYSTEM" }, uiUxBoundary: { noul: 0 }, ...top });
-    expect(hard.batch.routes[0]!.recommendations).toMatchObject({ effort3: { choice: "max" } });
-    expect(await hard.route.beforeTask(dispatch("anthropic/claude-opus-5-5:max"), ctx)).toBeUndefined();
-    // 구간 밖 강도는 judge 답과 무관하게 막는다.
-    expect(await hard.route.beforeTask(dispatch("openai-codex/gpt-6-sol:max"), ctx)).toMatchObject({ block: true });
+    for (const concrete of ["anthropic/claude-opus-5-5:low", "anthropic/claude-opus-5-5:max", "anthropic/claude-opus-5-5"]) {
+      expect(await route.beforeTask(dispatch(concrete), ctx)).toMatchObject({
+        block: true, reason: expect.stringContaining("model:'anthropic/claude-opus-5-5:auto'"),
+      });
+    }
+    expect(await route.beforeTask(dispatch("anthropic/claude-opus-5-5:auto"), ctx)).toBeUndefined();
   });
   test("reset은 candidate·judge·beforeTask await의 stale 결과 게시와 dispatch를 막는다", async () => {
     {
@@ -509,7 +504,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }));
     await h.prepare("독립 경로 다섯 개", tasks, {} as never);
     candidateCalls = 0;
-    const batch = { tasks: tasks.map(({ name, task }) => ({ name, task, model: "openai-codex/gpt-6-sol:high" })) };
+    const batch = { tasks: tasks.map(({ name, task }) => ({ name, task, model: "openai-codex/gpt-6-sol:auto" })) };
     expect(await h.beforeTask(batch, {} as never, "five")).toBeUndefined();
     // 준비의 한 번을 제외하면 admission은 task 수와 무관하게 한 번이다.
     expect(candidateCalls).toBe(2);
@@ -569,7 +564,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: "ViewFix",
         task: reasonTask,
         agent: "maker",
-        model: `openai-codex/gpt-6-sol:${loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts[0]}`,
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     };
     const owner = {
@@ -613,7 +608,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }], {} as never);
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
-  test("관련 owner만 바뀌면 placement 질문만 다시 묻고 최초 등급·effort를 보존한다", async () => {
+  test("관련 owner만 바뀌면 placement 질문만 다시 묻고 최초 등급·UI/UX 판단을 보존한다", async () => {
     const h = harness();
     h.setOwners([{ name: "FirstOwner", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"] }]);
     const first = await h.prepare("같은 계약", [h.task], {} as never);
@@ -627,7 +622,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       "additionalInstruction", "duplicate", "ownerTarget",
     ]);
     expect(second[0]!.recommendations.workClass).toEqual(first[0]!.recommendations.workClass);
-    expect(second[0]!.recommendations.effort2).toEqual(first[0]!.recommendations.effort2);
+    expect(second[0]!.recommendations.uiUxBoundary).toEqual(first[0]!.recommendations.uiUxBoundary);
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
   test("소유 경로 overlap은 정본의 case·directory·exact·dot 경계를 따른다", async () => {
@@ -668,7 +663,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: second.name,
         task: second.task,
         agent: "maker",
-        model: "openai-codex/gpt-6-sol:high",
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     };
     for (const active of [true, false]) {
@@ -702,7 +697,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ ledger });
       const tasks = [make("Left", left), make("Right", right)];
       await h.prepare("같은 batch", tasks, {} as never);
-      const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:high" });
+      const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" });
       const batch = { context: "같은 batch", tasks: tasks.map(item) };
       const result = await h.beforeTask(batch, {} as never, "batch");
       if (!overlaps) {
@@ -734,7 +729,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       assessment: { ...facts, paths: paths.split(",") },
     });
     const single = (task: PreparedTask, extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}) =>
-      ({ context: "호출 간", ...top, tasks: [{ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:high", ...extra }] });
+      ({ context: "호출 간", ...top, tasks: [{ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto", ...extra }] });
     async function prepared(left: string, right: string) {
       const ledger = memoryLedger();
       const h = harness({ ledger });
@@ -814,7 +809,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       h.releaseCall("call-c");
       h.noteSpawned(isolatedCall, "call-c", ids("Fix-3"));
       expect(ledger.records).toHaveLength(0);
-      h.noteSpawned(single(fix, { isolated: true, model: "openai-codex/gpt-6-sol:xhigh" }), "call-x", ids("Fix-x"));
+      h.noteSpawned(single(fix, { isolated: true, model: "openai-codex/gpt-6-sol:auto" }), "call-x", ids("Fix-x"));
       expect(ledger.records).toHaveLength(0);
       expect([...h.noteSpawned(isolatedCall, "call-a", ids("Fix")).values()].map((entry) => entry.identity.attemptId)).toEqual([`${h.sessionId}#call-a#0#a1`]);
       expect([...h.noteSpawned(isolatedCall, "call-b", ids("Fix-2")).values()].map((entry) => entry.identity.attemptId)).toEqual([`${h.sessionId}#call-b#0#a1`]);
@@ -831,7 +826,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       { name: "Left", task: brief, assessment: facts },
       { name: "Right", task: brief, assessment: facts },
     ];
-    const item = (name: string, extra: Record<string, unknown> = {}) => ({ name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high", ...extra });
+    const item = (name: string, extra: Record<string, unknown> = {}) => ({ name, task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:auto", ...extra });
     const spawnIds = new Map([[0, { agentId: "agent-left", jobId: "job-left" }], [1, { agentId: "agent-right", jobId: "job-right" }]]);
     const cases: [Record<string, unknown>, string[] | null][] = [
       [{ context: "c", tasks: [item("Left", { isolated: true }), item("Right")] }, ["isolated", "shared"]],
@@ -858,7 +853,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
   });
   test("active owner 충돌은 양쪽이 공유 작업공간일 때만이고 소유 경로 미상 active owner는 공유 발주 전체를 막는다", async () => {
     const shared = { name: "SharedOwner", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/"], active: true };
-    const isolatedInput = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:high", isolated: true }] };
+    const isolatedInput = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:auto", isolated: true }] };
     const legacy: Owner = { name: "Legacy", primaryDeliverable: null, ownedPaths: [], ownershipUnknown: true, active: true };
     const cases: [Owner, "shared" | "isolated", boolean][] = [
       [shared, "shared", true],
@@ -900,20 +895,19 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await expect(stale).rejects.toThrow("더 최신");
     expect(await h.beforeTask({
       ...h.input,
-      tasks: [{ ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:high" }],
+      tasks: [{ ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto" }],
     }, {} as never)).toBeUndefined();
     expect(h.requests).toHaveLength(2);
   });
-  test("assessment 변경은 등급·effort를 포함한 새 판단으로 교체한다", async () => {
+  test("assessment 변경은 등급을 포함한 새 판단으로 교체한다", async () => {
     const h = harness();
     await h.prepare("처음 설명", [h.task], {} as never);
     await h.prepare("다른 설명", [{ ...h.task, assessment: { ...facts, unknowns: ["추가로 확인한 미확인 값"] } }], {} as never);
     expect(h.requests.length).toBe(2);
     expect(h.requests[1]!.questions).toHaveProperty("workClass");
-    expect(h.requests[1]!.questions).toHaveProperty("effort0");
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
-  test("루브릭 변경은 등급·effort를 다시 묻고 full session reset 뒤에는 재준비가 필요하다", async () => {
+  test("루브릭 변경은 등급을 다시 묻고 full session reset 뒤에는 재준비가 필요하다", async () => {
     const h = harness();
     await h.prepare("같은 계약", [h.task], {} as never);
     h.policy.modelSelection.criteria.NORMAL += " revised";
@@ -921,7 +915,6 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await h.prepare("같은 계약", [h.task], {} as never);
     expect(h.requests.length).toBe(2);
     expect(h.requests[1]!.questions).toHaveProperty("workClass");
-    expect(h.requests[1]!.questions).toHaveProperty("effort0");
     h.reset();
     expect(await h.beforeTask(h.input, {} as never)).toMatchObject({ block: true });
   });
@@ -930,8 +923,8 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ fail });
       const prepared = await h.prepare("같은 계약", [h.task], {} as never);
       expect(prepared[0]!.status).toBe(fail ? "unavailable" : "judged");
-      // 추천 등급의 다른 후보(같은 모델의 HARD_CODE_SONNET)는 그 후보 구간으로 보고 추천 변경이라 근거를 요구한다.
-      const item = { ...h.input.tasks[0], model: "openai-codex/gpt-6-sol:xhigh" };
+      // 추천(NORMAL_SONNET)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
+      const item = { ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto" };
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
       item.task = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 두 경합 불변식이 새로 확인되어 Main이 결정함\nOWNED_PATHS:");
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toBeUndefined();
@@ -949,13 +942,13 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(h.requests).toHaveLength(2);
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
-  test("native selector 밖 강도와 coarse override 및 SWE 발주는 거절한다", async () => {
+  test("concrete 강도와 coarse override 및 SWE 발주는 거절한다", async () => {
     const h = harness();
     await h.prepare("같은 계약", [h.task], {} as never);
     for (const item of [
       { ...h.input.tasks[0], model: "openai-codex/gpt-6-sol:medium" },
       { ...h.input.tasks[0], effort: "hi" },
-      { ...h.input.tasks[0], model: "devin/swe-2:high" },
+      { ...h.input.tasks[0], model: "devin/swe-2:auto" },
       { ...h.input.tasks[0], model: "", task: '[character-summon alias="NOVA" model="devin/swe-2"]' },
     ]) expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
   });
@@ -987,23 +980,11 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived }] }, {} as never)).toBeUndefined();
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived.replace("src/view.ts", "src/other.ts") }] }, {} as never)).toMatchObject({ block: true });
   });
-  test("NORMAL 기본 Sonnet은 허용 구간 밖 강도의 발주를 차단한다", async () => {
-    const ordinary = harness({ workClass: "NORMAL" });
-    await ordinary.prepare("일반 발주", [ordinary.task], {} as never);
-    expect(await ordinary.beforeTask({
-      ...ordinary.input,
-      tasks: [{ ...ordinary.input.tasks[0], model: "openai-codex/gpt-6-sol:high" }],
-    }, {} as never)).toBeUndefined();
-    expect(await ordinary.beforeTask({
-      ...ordinary.input,
-      tasks: [{ ...ordinary.input.tasks[0], model: "openai-codex/gpt-6-sol:low" }],
-    }, {} as never)).toMatchObject({ block: true });
-  });
   test("NORMAL 한도를 모르면 기본 Sonnet 후보와 unavailable 사유를 유지한다", async () => {
     const h = harness({ workClass: "NORMAL" });
     const batch = await h.prepareBatch("확정 문장 작업", [h.task], {} as never);
     expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
-    expect(await h.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
+    expect(await h.dispatch("openai-codex/gpt-6-sol:auto")).toBeUndefined();
   });
   test("TaskGuard lock이 확립된 뒤 WORK_CLASS와 PRIMARY_DELIVERABLE을 생략한 child도 연결한다", async () => {
     const h = harness();
@@ -1023,7 +1004,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: inheritedTask.name,
         task: inheritedBrief,
         agent: "maker",
-        model: "openai-codex/gpt-6-sol:high",
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     }, {} as never)).toBeUndefined();
   });
@@ -1075,7 +1056,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: h.task.name,
         task: `PREPARED_TASK: ${preparedId}`,
         agent: "maker",
-        model: "openai-codex/gpt-6-sol:high",
+        model: "openai-codex/gpt-6-sol:auto",
       }],
     };
     const decision = await h.beforeTask(referenced, {} as never) as {
@@ -1101,7 +1082,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const preparedId = routes[0]!.preparedId;
     const dispatch = async (task: string, context = "PREPARED_CONTEXT") => (await h.beforeTask({
       context,
-      tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6-sol:medium" }],
+      tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }],
     }, {} as never)) as { block: boolean; reason: string };
 
     const appended = await dispatch(`PREPARED_TASK: ${preparedId}\n\n덧붙인 본문`);
@@ -1139,12 +1120,12 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     // 이름을 생략한 참조는 준비한 name으로 복원돼 같은 계약으로 발주된다. 후속 hook은 복원된 name을 본다.
     const restored = resolvePreparedTaskInput({
       context: "PREPARED_CONTEXT",
-      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:high" }],
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:auto" }],
     }, h.sessionId) as { tasks: Array<Record<string, unknown>> };
-    expect(restored.tasks[0]).toMatchObject({ name: "ViewFix", task: brief, model: "openai-codex/gpt-6-sol:high" });
+    expect(restored.tasks[0]).toMatchObject({ name: "ViewFix", task: brief, model: "openai-codex/gpt-6-sol:auto" });
     const omitted = await h.beforeTask({
       context: "PREPARED_CONTEXT",
-      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:high" }],
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: "openai-codex/gpt-6-sol:auto" }],
     }, {} as never) as { block?: boolean; input?: { tasks: Array<Record<string, unknown>> } };
     expect(omitted.block).toBeUndefined();
     expect(omitted.input?.tasks[0]).toMatchObject({ name: "ViewFix", task: brief });
@@ -1243,24 +1224,11 @@ describe("블라인드 입력과 독립 질문", () => {
     expect(JSON.stringify(state)).not.toContain("desiredGrade");
     expect(state.facts).toEqual(["일반 단어와 gpt-5.6-terra 설정명을 문서에서 확인했다"]);
     const policy = loadRoutingPolicy();
-    // registry 지원 강도를 profile 허용 구간으로 거른다.
-    const banded = candidates.map((candidate) => ({
-      ...candidate,
-      efforts: candidate.efforts.filter((level) => policy.modelSelection.profiles[candidate.profile]!.allowedEfforts.includes(level)),
-    }));
-    const questions = routingQuestions(policy, banded, []);
+    const questions = routingQuestions(policy, []);
     expect(questions.workClass!.criteria).toEqual(policy.modelSelection.criteria);
     expect(questions).not.toHaveProperty("easyFocus");
     expect(Object.keys(policy.modelSelection.criteria)).toEqual(["NORMAL", "HARD"]);
-    expect(Object.keys(questions.effort0!.criteria!)).toEqual(banded[0]!.efforts);
-    // 강도 질문은 그 후보의 좁혀진 허용 구간만 묻는다. Opus 후보(1~3)는 max까지, 그 밖의 후보는 max를 묻지 않는다.
-    for (const index of [1, 2, 3]) {
-      expect(banded[index]!.efforts).toEqual(["high", "xhigh", "max"]);
-      expect(Object.keys(questions[`effort${index}`]!.criteria!)).toEqual(banded[index]!.efforts);
-    }
-    for (const index of [0, 4, 6, 7]) expect(questions[`effort${index}`]!.criteria).not.toHaveProperty("max");
-    expect(questions).not.toHaveProperty("effort5");
-    const ownerQuestions = routingQuestions(policy, banded, [{ name: "Existing", primaryDeliverable: "x", ownedPaths: ["x.ts"] }]);
+    const ownerQuestions = routingQuestions(policy, [{ name: "Existing", primaryDeliverable: "x", ownedPaths: ["x.ts"] }]);
     expect(ownerQuestions.duplicate!.type).toBe("noul");
     expect(ownerQuestions.ownerTarget!.criteria).toHaveProperty("owner0");
     expect(state.unknowns).toEqual(facts.unknowns);
@@ -1283,8 +1251,6 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
   const normalAnswers = {
     workClass: { choice: "NORMAL" }, hardFocus: { choice: "CODE_SYSTEM" },
     uiUxBoundary: { noul: 0 },
-    effort0: { choice: "high" }, effort1: { choice: "high" }, effort2: { choice: "high" },
-    effort3: { choice: "high" }, effort4: { choice: "high" },
   };
   function registryHarness(options: { registry: unknown; useSidecar?: boolean; sessionId?: string }) {
     const routingPolicy = loadRoutingPolicy();
@@ -1310,7 +1276,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     });
     return { route, ctx, questions, policy: routingPolicy, task: { name: "ViewFix", task: brief, assessment: facts } };
   }
-  const dispatchInput = (task: { name: string }, model = "openai-codex/gpt-6-sol:high") => ({
+  const dispatchInput = (task: { name: string }, model = "openai-codex/gpt-6-sol:auto") => ({
     context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model }],
   });
 
@@ -1355,7 +1321,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     refreshCalls.length = 0;
     const input = {
       context: "계약",
-      tasks: tasks.map((entry) => ({ name: entry.name, task: entry.task, agent: "maker", model: "openai-codex/gpt-6-sol:high" })),
+      tasks: tasks.map((entry) => ({ name: entry.name, task: entry.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" })),
     };
     expect(await h.route.beforeTask(input, h.ctx)).toBeUndefined();
     expect(refreshCalls).toEqual([]);
@@ -1379,12 +1345,12 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     expect(await h.route.beforeTask(dispatchInput(h.task), h.ctx)).toMatchObject({ block: true });
   });
 
-  test("갱신 뒤 찾은 후보도 지원 강도를 확인할 수 없으면 발주 후보에서 제외된다", async () => {
+  test("갱신 뒤 찾은 후보도 추론 단계를 선언하지 않으면 auto로 고를 수 없어 발주 후보에서 제외된다", async () => {
     const refreshed = new Set<string>();
     const registry = {
       find: (provider: string) => {
         if (provider !== "anthropic") return { thinking: { efforts: strengths } };
-        return refreshed.has(provider) ? { thinking: { efforts: ["unsupported"] } } : undefined;
+        return refreshed.has(provider) ? {} : undefined;
       },
       refreshDiscoverableProviders: async ([provider]: string[]) => { refreshed.add(provider); },
     };
@@ -1396,87 +1362,16 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5" },
     ]);
-  });
-
-  test("후보 강도는 registry 지원과 profile 허용 구간의 교집합이고 Jev는 그 안에서만, 하나뿐이면 묻지 않는다", async () => {
-    // Sonnet은 registry가 허용 구간 밖 강도(low)도 지원한다고 답한다. 교집합에서 빠져야 한다.
-    const supportedSol = ["low", ...loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts];
-    const registry = {
-      find: (provider: string, id: string) => ({
-        thinking: { efforts: `${provider}/${id}` === "openai-codex/gpt-6-sol" ? supportedSol : strengths },
-      }),
-      refreshDiscoverableProviders: async () => {},
-    };
-    const h = registryHarness({ registry });
-    const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    // 후보 모델은 fixture가 정하고, 강도는 registry 지원 ∩ profile 허용 구간이어야 한다. 정책 리터럴을 복사하지 않는다.
-    expect(batch.candidates.map(({ profile, model }) => ({ profile, model })))
-      .toEqual(Object.entries(profileModels).map(([profile, model]) => ({ profile, model })));
-    for (const candidate of batch.candidates) {
-      const allowed = h.policy.modelSelection.profiles[candidate.profile]!.allowedEfforts;
-      const supported = candidate.model === "openai-codex/gpt-6-sol" ? supportedSol : strengths;
-      expect(candidate.efforts).toEqual(supported.filter((level) => allowed.includes(level)));
-    }
-    const asked = h.questions[0] as Record<string, { criteria: Record<string, string> }>;
-    // 허용 강도가 하나뿐인 후보(DeepSeek)는 묻지 않고, 둘 이상인 후보는 그 구간만 묻는다. max는 Opus 후보만 묻는다.
-    const askedProfiles = ["NORMAL_SONNET", "NORMAL_OPUS", "HARD_UI_OPUS", "HARD_CODE_OPUS", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA"];
-    for (const [index, profile] of askedProfiles.entries()) {
-      const candidate = batch.candidates.find((c) => c.profile === profile)!;
-      if (profile === "NORMAL_DEEPSEEK") { expect(asked).not.toHaveProperty(`effort${index}`); continue; }
-      expect(Object.keys(asked[`effort${index}`]!.criteria)).toEqual(candidate.efforts);
-      expect(profile.includes("OPUS")).toBe(candidate.efforts.includes("max"));
-    }
-    expect(asked.effort0!.criteria).not.toHaveProperty("low");
+    expect(batch.unavailableCandidates[0]!.reason).toBe("auto로 고를 추론 강도를 확인할 수 없는 후보");
   });
 
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
-  test("후보별 허용 강도 구간 밖 선택은 같은 모델 이름으로 우회하지 못한다", async () => {
-    const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 후보 구간 안에서 선택함\nOWNED_PATHS:");
-    // NORMAL_OPUS 구간 안/밖을 실제 발주 경계에서 검사한다.
-    const opusBand = loadRoutingPolicy().modelSelection.profiles.NORMAL_OPUS!.allowedEfforts;
-    const solBand = loadRoutingPolicy().modelSelection.profiles.NORMAL_SONNET!.allowedEfforts;
-    const solSelections = allStrengths.map((level): [string, boolean] => [
-      `openai-codex/gpt-6-sol:${level}`, solBand.includes(level),
-    ]);
-    const opusOutside = allStrengths.filter((level) => !opusBand.includes(level));
-    const cases: Record<string, [string, boolean][]> = {
-      // NORMAL 조각: 각 후보의 정책 구간 안/밖을 실제 발주 경계에서 검사한다.
-      // 등급에 없는 Astra는 그 후보 구간을 따른다.
-      NORMAL: [
-        ...solSelections,
-        ...opusBand.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, true]),
-        ...opusOutside.map((level): [string, boolean] => [`anthropic/claude-opus-5-5:${level}`, false]),
-        ["b-ai/deepseek-v4.1-flash:high", true],
-      ],
-      // HARD 조각: Opus는 HARD 구간(high~max)으로 검사한다. NORMAL 후보로 낮추는 선택은 그 후보 구간을 따른다.
-      HARD: [
-        ["anthropic/claude-opus-5-5:medium", false], ["anthropic/claude-opus-5-5:high", true],
-        ["anthropic/claude-opus-5-5:xhigh", true], ["anthropic/claude-opus-5-5:max", true],
-        ["b-ai/deepseek-v4.1-flash:xhigh", false],
-        ...solSelections,
-      ],
-    };
-    for (const [workClass, selections] of Object.entries(cases)) {
-      const h = harness({ workClass, hardFocuses: ["CODE_SYSTEM"] });
-      await h.prepare("후보별 강도 구간", [h.task], {} as never);
-      for (const [model, allowed] of selections) {
-        const result = await h.dispatch(model, reasoned);
-        if (allowed) expect(result).toBeUndefined();
-        else expect(result).toMatchObject({ block: true });
-      }
-    }
-  });
-  test("NORMAL_SOL·HARD_CODE_ASTRA는 자동 추천되지 않고 ROUTING_REASON과 자기 구간 안에서만 발주된다", async () => {
+  test("NORMAL_SOL·HARD_CODE_ASTRA는 Anthropic 1주 한도 대체 밖에서는 자동 추천되지 않고 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 비용·계열 근거로 명시 대안을 선택함\nOWNED_PATHS:");
-    const policy = loadRoutingPolicy();
-    const bands = {
-      NORMAL_SOL: policy.modelSelection.profiles.NORMAL_SOL!.allowedEfforts,
-      HARD_CODE_ASTRA: policy.modelSelection.profiles.HARD_CODE_ASTRA!.allowedEfforts,
-    };
     const models = { NORMAL_SOL: "openai-codex/gpt-6.1-sol", HARD_CODE_ASTRA: "openai-codex/gpt-6-astra" };
-    // 기본 추천은 그대로: NORMAL은 Sonnet(소진 대체에도 NORMAL_SOL은 후보가 아니다), HARD 코드는 Opus.
+    // 기본 추천은 그대로: NORMAL은 Sonnet(일반 소진 대체에도 NORMAL_SOL은 후보가 아니다), HARD 코드는 Opus.
     const normal = harness({ workClass: "NORMAL" });
     const [normalRoute] = await normal.prepare("명시 대안", [normal.task], {} as never);
     expect(normalRoute!.profile).toBe("NORMAL_SONNET");
@@ -1484,12 +1379,12 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       workClass: "NORMAL",
       quota: async () => ({
         state: "observed", observedAt: 1,
-        providers: { "openai-codex": [{ disabled: false, limitReached: true }] },
+        providers: { "openai-codex": [{ disabled: false, limitReached: true, limits: [] }] },
       }) as never,
     });
     const [spentRoute] = await spent.prepare("소진", [spent.task], {} as never);
     expect(spentRoute!.profile).toBe("NORMAL_DEEPSEEK");
-    // DeepSeek가 없고 primary 계정만 소진돼도 사용 가능한 NORMAL_SOL을 자동 대체로 추천하지 않는다.
+    // DeepSeek가 없고 primary 계정이 1주 구간 관측 없이 limitReached만이면 NORMAL_SOL을 자동 대체로 추천하지 않는다.
     const noDeepSeek = candidates
       .filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK")
       .map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
@@ -1498,7 +1393,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       candidates: noDeepSeek,
       quota: async () => ({
         state: "observed", observedAt: 1,
-        providers: { anthropic: [{ disabled: false, limitReached: true }] },
+        providers: { anthropic: [{ disabled: false, limitReached: true, limits: [] }] },
       }) as never,
     });
     const [solSpareRoute] = await solSpare.prepare("Sol 비추천", [solSpare.task], {} as never);
@@ -1509,40 +1404,16 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       const h = harness({ workClass: work, hardFocuses: ["CODE_SYSTEM"] });
       const [route] = await h.prepare("명시 대안", [h.task], {} as never);
       expect(route!.profile).toBe(work === "NORMAL" ? "NORMAL_SONNET" : "HARD_CODE_OPUS");
-      for (const level of allStrengths) {
-        const model = `${base}:${level}`;
-        // 추천과 다른 후보는 구간 안이어도 근거 없이는 막힌다.
-        const inBand = (bands[profile as keyof typeof bands] as string[]).includes(level);
-        if (inBand) expect(await h.dispatch(model)).toMatchObject({ block: true });
-        const result = await h.dispatch(model, reasoned);
-        if (inBand) expect(result).toBeUndefined();
-        else expect(result).toMatchObject({ block: true });
-      }
+      // 추천과 다른 후보는 근거 없이는 막히고, 근거가 있어도 concrete 강도는 막힌다.
+      expect(await h.dispatch(`${base}:auto`)).toMatchObject({ block: true });
+      expect(await h.dispatch(`${base}:auto`, reasoned)).toBeUndefined();
+      expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ block: true });
     }
-  });
-  test("추천과 다른 후보는 구간 안이어도 ROUTING_REASON이 있어야 하고 Jev 불가 때는 강도를 허용하는 후보로 본다", async () => {
-    const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 대체 후보를 선택함\nOWNED_PATHS:");
-    const hard = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
-    await hard.prepare("HARD 대체", [hard.task], {} as never);
-    expect(await hard.dispatch("anthropic/claude-opus-5-5:high")).toBeUndefined();
-    expect(await hard.dispatch("openai-codex/gpt-6-sol:xhigh")).toMatchObject({ block: true });
-    expect(await hard.dispatch("openai-codex/gpt-6-sol:xhigh", reasoned)).toBeUndefined();
-    const normal = harness({ workClass: "NORMAL" });
-    await normal.prepare("NORMAL 대체", [normal.task], {} as never);
-    expect(await normal.dispatch("anthropic/claude-opus-5-5:medium")).toMatchObject({ block: true });
-    const unavailable = harness({ fail: true });
-    await unavailable.prepare("Jev 불가", [unavailable.task], {} as never);
-    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high")).toMatchObject({ block: true });
-    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toBeUndefined();
-    for (const model of ["anthropic/claude-opus-5-5:xhigh", "anthropic/claude-opus-5-5:max"]) {
-      expect(await unavailable.dispatch(model, reasoned)).toBeUndefined();
-    }
-    expect(await unavailable.dispatch("anthropic/claude-opus-5-5:medium", reasoned)).toMatchObject({ block: true });
   });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [
-      ["UI_UX", "HARD_UI_OPUS", "anthropic/claude-opus-5-5:high"],
-      ["CODE_SYSTEM", "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:high"],
+      ["UI_UX", "HARD_UI_OPUS", "anthropic/claude-opus-5-5:auto"],
+      ["CODE_SYSTEM", "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:auto"],
     ]) {
       const h = harness({ workClass: "HARD", hardFocuses: [focus!], main: CODEX_MAIN });
       const routes = await h.prepare("분야별 선택", [h.task], {} as never);
@@ -1570,8 +1441,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], "b-ai": [account(0.2)] });
     const first = await usable.prepareBatch("한도 배분", [usable.task], {} as never);
     expect(first.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "observed", profile: "NORMAL_SONNET" } });
-    expect(await usable.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
-    expect(await usable.dispatch("openai-codex/gpt-6-sol:low")).toMatchObject({ block: true });
+    expect(await usable.dispatch("openai-codex/gpt-6-sol:auto")).toBeUndefined();
     expect(usable.requests).toHaveLength(1);
 
     // 2) Luna provider 계정이 실제로 소진(limitReached)되면 사용 가능한 NORMAL 대안을 추천한다.
@@ -1589,11 +1459,86 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     });
     const third = await blind.prepareBatch("한도 배분", [blind.task], {} as never);
     expect(third.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
-    expect(await blind.dispatch("openai-codex/gpt-6-sol:high")).toBeUndefined();
+    expect(await blind.dispatch("openai-codex/gpt-6-sol:auto")).toBeUndefined();
 
-    // 4) HARD 배정은 계정 상태와 무관하게 분야를 따른다.
+    // 4) HARD 배정은 Anthropic 1주 한도 소진이 관측되지 않으면 계정 상태와 무관하게 분야를 따른다.
     const hard = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
     expect((await hard.prepareBatch("HARD 유지", [hard.task], {} as never)).routes[0]!.profile).toBe("HARD_CODE_OPUS");
+  });
+  describe("Anthropic 1주 공유 한도 소진 때 Sol 6.1 우선", () => {
+    // 운영 설정처럼 Sonnet·Opus 후보가 모두 Anthropic인 후보 표.
+    const live = candidates.map((candidate) => candidate.model === "openai-codex/gpt-6-sol"
+      ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
+    const anthropicAccount = (weeklyUsed: number, extra: Record<string, unknown> = {}) => ({
+      credentialId: 1, disabled: false, autoBlockedUntilMs: null, limitReached: null, fetchedAt: 1,
+      limits: [
+        { id: "anthropic:5h", usedFraction: 0.1, resetsAt: 50, daySlot: null, windowId: "5h", shared: true },
+        { id: "anthropic:7d", usedFraction: weeklyUsed, resetsAt: 500, daySlot: null, windowId: "7d", shared: true },
+      ],
+      ...extra,
+    });
+    const open = { credentialId: 2, disabled: false, autoBlockedUntilMs: null, limitReached: null, fetchedAt: 1, limits: [] };
+    const build = (anthropic: unknown[], codex: unknown[], options: NonNullable<Parameters<typeof harness>[0]>) => harness({
+      candidates: live,
+      quota: async () => ({ state: "observed", observedAt: 10, providers: { anthropic, "openai-codex": codex, "b-ai": [open] } }) as never,
+      ...options,
+    });
+
+    test("관측된 Anthropic 계정이 모두 1주 공유 한도를 넘으면 NORMAL·UI/UX·HARD 추천을 NORMAL_SOL로 옮기고 근거 없이 auto로 발주된다", async () => {
+      const cases: [NonNullable<Parameters<typeof harness>[0]>, string][] = [
+        [{ workClass: "NORMAL" }, "NORMAL_SONNET"],
+        [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS"],
+        [{ workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS"],
+        [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS"],
+      ];
+      for (const [options, from] of cases) {
+        const h = build([anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], [open], options);
+        const batch = await h.prepareBatch("주간 소진", [h.task], {} as never);
+        expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SOL", anthropicWeeklyLimit: { from, to: "NORMAL_SOL" } });
+        // 원래 Anthropic 후보로 되돌리는 선택은 추천 변경이라 Main 근거가 필요하다.
+        expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toMatchObject({ block: true });
+        expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+      }
+    });
+
+    test("Sol 6.1도 쓸 수 없으면 사용 가능한 NORMAL 대안을, 그마저 없으면 추천 없이 Main 결정으로 둔다", async () => {
+      const solSpent = build([anthropicAccount(1)], [{ ...open, limitReached: true }], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
+      const fallback = await solSpent.prepareBatch("Sol 소진", [solSpent.task], {} as never);
+      expect(fallback.routes[0]).toMatchObject({ profile: "NORMAL_DEEPSEEK", anthropicWeeklyLimit: { from: "HARD_CODE_OPUS", to: "NORMAL_DEEPSEEK" } });
+      expect(await solSpent.dispatch("b-ai/deepseek-v4.1-flash:auto")).toBeUndefined();
+
+      const nothing = build([anthropicAccount(1)], [{ ...open, limitReached: true }], {
+        workClass: "NORMAL", candidates: live.filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK"),
+      });
+      const none = await nothing.prepareBatch("대안 없음", [nothing.task], {} as never);
+      expect(none.routes[0]).toMatchObject({
+        profile: null, normalAllocation: { state: "unavailable" }, anthropicWeeklyLimit: { from: "NORMAL_SONNET", to: null },
+      });
+    });
+
+    test("한 계정만 넘었거나 1주 공유 구간 소진이 관측되지 않으면 Sonnet·Opus 추천을 Sol로 옮기지 않는다", async () => {
+      const route = async (anthropic: unknown[], options: NonNullable<Parameters<typeof harness>[0]>) => {
+        const h = build(anthropic, [open], options);
+        return (await h.prepareBatch("주간 미소진", [h.task], {} as never)).routes[0]!;
+      };
+      // 다른 계정이 남아 있으면 core가 그 계정으로 돈다.
+      expect(await route([anthropicAccount(1), anthropicAccount(0.4, { credentialId: 3 })], { workClass: "NORMAL" }))
+        .toMatchObject({ profile: "NORMAL_SONNET", anthropicWeeklyLimit: null });
+      // 1주 구간이 차지 않은 limitReached(예: 5시간 한도)는 기존 소진 대체(DeepSeek)를 따른다.
+      expect(await route([anthropicAccount(0.5, { limitReached: true })], { workClass: "NORMAL" }))
+        .toMatchObject({ profile: "NORMAL_DEEPSEEK", anthropicWeeklyLimit: null });
+      // 관측 시각에 이미 리셋된 1주 구간과 계열 전용(비공유) 1주 구간은 공유 한도 소진이 아니다.
+      const stale = { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, daySlot: null, windowId: "7d", shared: true }] };
+      const tier = { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, daySlot: null, windowId: "7d", shared: false }] };
+      for (const extra of [stale, tier]) {
+        expect(await route([anthropicAccount(0, extra)], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }))
+          .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
+      }
+      // 잔량을 관측하지 못하면 소진이 아니다.
+      const blind = harness({ candidates: live, workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
+      expect((await blind.prepareBatch("미관측", [blind.task], {} as never)).routes[0])
+        .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
+    });
   });
   test("위임 판단은 같은 배치에서 recommendations로만 돌아오고 등급·profile·placement를 바꾸지 않는다", async () => {
     const criteria = { MAIN: "Main 문맥이 유리한 단일 밀접 수정", MAKER: "독립·병렬 수행이 가능", UNKNOWN: "근거 부족" };
@@ -1649,7 +1594,7 @@ describe("발주 이력 기록과 history advisory", () => {
     // 준비 handle만 route에 싣는다. 실제 발주 identity는 spawn에서 task 호출 id로 캡처한다.
     expect(batch.routes[0]!.plan).toEqual({ sessionId: h.sessionId, planId: `${h.sessionId}#route#0` });
     const before = ledger.records.length;
-    const alternate = "openai-codex/gpt-6-sol:xhigh";
+    const alternate = "openai-codex/gpt-6-sol:auto";
     expect(await h.dispatch(alternate)).toMatchObject({ block: true });
     h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], model: alternate }] });
     expect(ledger.records).toHaveLength(before);
@@ -1657,15 +1602,15 @@ describe("발주 이력 기록과 history advisory", () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 독립 판단이 필요해 대안을 선택함\nOWNED_PATHS:");
     expect(await h.dispatch(alternate, reasoned)).toBeUndefined();
     // 통과한 초안과 다른 selector로 spawn된 결과는 기록하지 않는다.
-    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: reasoned, model: "anthropic/claude-opus-5-5:xhigh" }] });
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: reasoned, model: "anthropic/claude-opus-5-5:auto" }] });
     expect(ledger.records).toHaveLength(before);
     expect(await h.dispatch(alternate, reasoned)).toBeUndefined();
     h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: reasoned, model: alternate }] });
     expect(ledger.records).toHaveLength(before + 1);
     expect(ledger.records.at(-1)).toMatchObject({
       type: "dispatch", name: "ViewFix", workClass: "HARD", focus: "CODE_SYSTEM",
-      recommendedProfile: "HARD_CODE_OPUS", recommendedModel: "anthropic/claude-opus-5-5", recommendedEffort: "high",
-      chosenModel: "openai-codex/gpt-6-sol", chosenEffort: "xhigh", routingReason: true, purpose: null,
+      recommendedProfile: "HARD_CODE_OPUS", recommendedModel: "anthropic/claude-opus-5-5", recommendedEffort: "auto",
+      chosenModel: "openai-codex/gpt-6-sol", chosenEffort: "auto", routingReason: true, purpose: null,
       sessionId: h.sessionId, assignmentId: `${h.sessionId}#task-call#0`, attempt: 1, attemptId: `${h.sessionId}#task-call#0#a1`,
       agentId: "agent-viewfix", jobId: "job-viewfix",
     });
@@ -1682,9 +1627,9 @@ describe("NORMAL UI/UX 전문성 경계", () => {
     const h = harness({ uiUxBoundary: 1, hardFocuses: ["CODE_SYSTEM"] });
     const batch = await h.prepareBatch("혼합 UI 판단", [h.task], {} as never);
     expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_OPUS", normalAllocation: null, recommendations: { workClass: { choice: "NORMAL" } } });
-    expect(await h.dispatch("anthropic/claude-opus-5-5:high")).toBeUndefined();
+    expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toBeUndefined();
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 다른 후보 선택\nOWNED_PATHS:");
-    expect(await h.dispatch("openai-codex/gpt-6-sol:high", reasoned)).toMatchObject({ block: true });
+    expect(await h.dispatch("openai-codex/gpt-6-sol:auto", reasoned)).toMatchObject({ block: true });
   });
 
   test("Opus unavailable이면 일반 후보로 조용히 대체하지 않는다", async () => {
@@ -1692,7 +1637,7 @@ describe("NORMAL UI/UX 전문성 경계", () => {
     const batch = await h.prepareBatch("UI 후보 없음", [h.task], {} as never);
     expect(batch.routes[0]!.profile).toBeNull();
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 후보 없음\nOWNED_PATHS:");
-    expect(await h.dispatch("openai-codex/gpt-6-sol:high", reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("NORMAL_OPUS") });
+    expect(await h.dispatch("openai-codex/gpt-6-sol:auto", reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("NORMAL_OPUS") });
   });
 
   test("UI 이관도 active writer를 보존하고 freeze 뒤 명시적 새 발주만 허용한다", async () => {
@@ -1701,10 +1646,10 @@ describe("NORMAL UI/UX 전문성 경계", () => {
     h.setOwners([owner]);
     await h.prepareBatch("UI 경계 발견", [h.task], {} as never);
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: 변경·증거 인계 후 Opus 이관\nOWNED_PATHS:");
-    expect(await h.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("active owner") });
+    expect(await h.dispatch("anthropic/claude-opus-5-5:auto", reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("active owner") });
     h.setOwners([{ ...owner, active: false }]);
     await h.prepareBatch("UI 경계 발견", [h.task], {} as never);
-    expect(await h.dispatch("anthropic/claude-opus-5-5:high", reasoned)).toBeUndefined();
+    expect(await h.dispatch("anthropic/claude-opus-5-5:auto", reasoned)).toBeUndefined();
   });
 });
 

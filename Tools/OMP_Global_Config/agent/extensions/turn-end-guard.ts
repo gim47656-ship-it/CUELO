@@ -14,6 +14,10 @@ const CONFIRMATION_PATTERN =
   /(승인|허락|확인.{0,12}(필요|부탁|주세)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|알려 주세요|말씀해 주세요|정해 주세요|골라 주세요|선택해 주세요|어느 쪽|어떤 .{0,10}(말씀|원하)|approval|permission|confirm|shall I|may I|would you like)/i;
 const SOLO_BOUNDARY_PATTERN =
   /(승인|허락|계정|기다리|대기|선택.{0,12}(필요|해|하|기다)|(?:정해|결정해|골라).{0,12}(주세|줘)|제품 의미|방향을 정|외부|external wait|waiting for|account change|approval|confirm)/i;
+// 2026-10-08 사용자 결정: TODO 없는 혼자 종료 판정(JEV)은 마지막 본문 끝에 미루기·이어 하기 약속 표현이 있을 때만
+// 부른다. 완료 보고처럼 이 표현이 없으면 판정하지 않으며, 작업 중 질문의 미답 판정은 그대로 돈다.
+const CONTINUATION_PROMISE_PATTERN =
+  /(겠|[가-힣](?:게요|께요)|다음에|다음 (?:턴|단계|작업|차례)|이어서|이어 ?(?:가|갑|하|할|진행)|계속 ?(?:하|할|진행)|나중에|추후|후속|남은 (?:작업|일|항목|부분|단계|검사)|아직 (?:안 |못 |하지 |남)|\b(?:next|later|follow[- ]?up|remaining|not yet|will|I'll|let me|going to)\b)/i;
 
 type StopKind = "routine_confirmation" | "user_approval" | "user_choice" | "external_wait" | "finished" | "unknown";
 type ClassifyConfirmation = (summary: string, ctx: ExtensionContext, signal: AbortSignal) => Promise<StopKind>;
@@ -37,8 +41,9 @@ function safeExcerpt(text: string): string {
 
 function soloExcerpt(text: string): string | undefined {
   if (!text.trim() || SECRET_PATTERN.test(text) || CONSEQUENCE_PATTERN.test(text) || SOLO_BOUNDARY_PATTERN.test(text)) return undefined;
-  const excerpt = safeExcerpt(text).replace(/\s+/g, " ");
-  return excerpt ? excerpt.slice(-500) : undefined;
+  // 판정이 보는 끝 500자에 약속 표현이 있어야 부른다. 앞부분에만 있으면 발췌로도 판정할 수 없다.
+  const excerpt = safeExcerpt(text).replace(/\s+/g, " ").slice(-500);
+  return CONTINUATION_PROMISE_PATTERN.test(excerpt) ? excerpt : undefined;
 }
 
 function questionParts(text: string): string[] {

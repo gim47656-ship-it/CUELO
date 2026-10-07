@@ -17,14 +17,58 @@ describe("bash PowerShell 문법 사전 차단", () => {
     ["powershell -Command $", 'powershell.exe -NoProfile -Command "$x = 1; $x"', "-Command"],
     ["pwsh -c $", "pwsh -c 'Write-Host $env:PATH'", "-Command"],
   ] as const;
+  // 진짜 bash(Linux·WSL)에서는 작은따옴표 안의 `$`가 그대로 넘어가므로 이 항목만 Windows에서만 막는다.
 
-  for (const [label, command, token] of rejected) {
-    test(`차단: ${label}`, () => {
-      const reason = matchPowerShellSyntax(command);
-      expect(reason).toBeDefined();
-      expect(reason).toContain(token);
-      expect(reason).toContain("-NoProfile -ExecutionPolicy Bypass -File");
-      expect(reason).toContain("write");
+  for (const platform of ["win32", "linux"] as const) {
+    for (const [label, command, token] of rejected) {
+      if (platform === "linux" && label === "pwsh -c $") continue;
+      test(`차단(${platform}): ${label}`, () => {
+        const reason = matchPowerShellSyntax(command, platform);
+        expect(reason).toBeDefined();
+        expect(reason).toContain(token);
+        expect(reason).toContain("-NoProfile -ExecutionPolicy Bypass -File");
+        expect(reason).toContain("write");
+      });
+    }
+  }
+
+  test("안내문은 실행 OS의 경로 규칙을 따른다", () => {
+    const windows = matchPowerShellSyntax("Set-Content a.txt x", "win32");
+    expect(windows).toContain("C:/절대/슬래시/경로.ps1");
+    expect(windows).not.toContain("wslpath");
+    const linux = matchPowerShellSyntax("Set-Content a.txt x", "linux");
+    expect(linux).toContain("wslpath -w");
+    expect(linux).toContain("UTF-8 BOM");
+    expect(linux).toContain("[Console]::OutputEncoding");
+    expect(linux).not.toContain("C:/절대/슬래시/경로.ps1");
+  });
+
+  const bashKeepsDollar = [
+    ["작은따옴표 본문", "powershell.exe -NoProfile -Command 'Get-Date | ForEach-Object { $_.Year }'"],
+    ["큰따옴표 안 \\$ 이스케이프", 'powershell.exe -NoProfile -Command "Get-Process | Where-Object { \\$_.Id -gt 1 }"'],
+    ["이스케이프된 따옴표와 \\$", 'powershell.exe -NoProfile -Command "Get-CimInstance Win32_Service -Filter \\"Name=\'x\'\\" | ForEach-Object { \\$_.Name }"'],
+    ["따옴표 밖 \\$ 이스케이프", "pwsh -c \\$PSVersionTable.PSVersion"],
+    ["뒤에 이름이 없는 $", 'pwsh -Command "echo cost: 5$ total"'],
+  ] as const;
+
+  for (const [label, command] of bashKeepsDollar) {
+    test(`허용(linux)·차단(win32): ${label}`, () => {
+      expect(matchPowerShellSyntax(command, "linux")).toBeUndefined();
+      expect(matchPowerShellSyntax(command, "win32")).toContain("-Command");
+    });
+  }
+
+  const bashExpandsDollar = [
+    ["큰따옴표 안 $_", 'powershell.exe -Command "Get-Process | Where-Object { $_.Id -gt 1 }"'],
+    ["큰따옴표 안 ${}", 'pwsh -Command "echo ${x}"'],
+    ["큰따옴표 안 $()", 'pwsh -Command "echo $(Get-Date)"'],
+    ["따옴표 밖 $name", "powershell.exe -Command echo $PSVersionTable"],
+    ["이스케이프 뒤 확장 $", 'pwsh -Command "\\$a = $b"'],
+  ] as const;
+
+  for (const [label, command] of bashExpandsDollar) {
+    test(`차단(linux): ${label}`, () => {
+      expect(matchPowerShellSyntax(command, "linux")).toContain("-Command");
     });
   }
 
@@ -47,9 +91,11 @@ describe("bash PowerShell 문법 사전 차단", () => {
     ["python", "python -c 'print(1)'"],
   ] as const;
 
-  for (const [label, command] of allowed) {
-    test(`허용: ${label}`, () => {
-      expect(matchPowerShellSyntax(command)).toBeUndefined();
-    });
+  for (const platform of ["win32", "linux"] as const) {
+    for (const [label, command] of allowed) {
+      test(`허용(${platform}): ${label}`, () => {
+        expect(matchPowerShellSyntax(command, platform)).toBeUndefined();
+      });
+    }
   }
 });

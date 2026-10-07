@@ -154,6 +154,8 @@ function makeRecoveryHarness(registry: InstanceType<typeof ModelRegistry>, sessi
 		agent,
 		sessionManager: {
 			getBranch: () => [],
+			// 18.8.0 turn-recovery 는 복사 없는 getBranchView 로 읽는다(같은 빈 branch).
+			getBranchView: () => [],
 			appendModelChange: () => {},
 			getLastModelChangeRole: () => undefined,
 			getSessionId: () => sessionId,
