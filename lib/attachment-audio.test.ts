@@ -3,7 +3,7 @@
  * recorder: nothing here sends audio anywhere, so passing these tests says nothing about a real
  * transcription. Without the `ffmpeg-static` binary the media cases are skipped, not faked.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
@@ -26,6 +26,10 @@ const ffmpeg = await resolveFfmpegPath().catch(() => null);
 const work = mkdtempSync(join(tmpdir(), "cuelo-audio-test-"));
 const tmpRoot = join(work, "tmp");
 const LARGE_SECONDS = 1300;
+// Each conversion case runs the real FFmpeg on ~20 MB of audio and took 3.4-3.9 s on the Windows CI
+// runner, close to Bun's 5 s default. One case crossed it (run 37627691455); the timed-out case kept
+// its in-progress claim on the shared fixture and every later case failed with `in_progress`.
+setDefaultTimeout(60_000);
 
 function makeAudio(name: string, args: string[]): string {
   const target = join(work, name);
