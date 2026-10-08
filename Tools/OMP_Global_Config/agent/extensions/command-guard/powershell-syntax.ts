@@ -18,13 +18,14 @@ const CMDLETS = new Set(
 );
 
 const GUIDANCE_WINDOWS =
-  "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/절대/슬래시/경로.ps1`로 실행하세요.";
+  "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 PowerShell 7 `pwsh -NoProfile -ExecutionPolicy Bypass -File C:/절대/슬래시/경로.ps1`로 실행하세요(7이 없을 때만 `powershell.exe`).";
 
 // WSL의 bash는 진짜 bash라 따옴표·`\$`가 정상 처리되고, Windows 프로그램에는 Windows 경로를 넘겨야 한다.
-// 한글은 BOM 없는 .ps1을 PowerShell 5.1이 CP949로 읽고 stdout도 CP949로 내보내 깨진다(2026-10-07 관측).
+// Linux `pwsh`가 아니라 Windows PowerShell 7(`pwsh.exe`)을 부른다. 5.1은 BOM 없는 .ps1을 CP949로 읽는다.
+// 7도 WSL로 넘기는 stdout은 시스템 코드페이지(CP949)라 한글이 깨진다(2026-10-09 7.6.6에서 관측).
 const GUIDANCE_LINUX =
-  "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w /절대/경로.ps1)\"`로 실행하세요. " +
-  "한글이 있으면 .ps1을 UTF-8 BOM으로 저장하고 첫 줄에 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`를 두세요. " +
+  "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 Windows PowerShell 7 `pwsh.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w /절대/경로.ps1)\"`로 실행하세요(7이 없을 때만 `powershell.exe`). " +
+  "한글을 출력하면 첫 줄에 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`를 두세요. `powershell.exe`(5.1)로 실행하면 .ps1도 UTF-8 BOM으로 저장해야 합니다. " +
   "짧은 `-Command` 본문은 작은따옴표로 감싸거나 `\\$`로 이스케이프하면 통과합니다.";
 
 function reason(subject: string, platform: NodeJS.Platform): string {

@@ -485,7 +485,7 @@
     "newContractEvidence": "before-writing-a-contract-as-settled-fact-confirm-the-path-that-consumes-it-tool-schema-config-key-or-code-otherwise-mark-it-unverified",
     "preDispatchCrossCheck": ["requirement-omission", "unverified-assertion-as-settled-fact", "arbitrary-scope-or-acceptance-change"],
     "acceptanceChangeOwner": "only-the-user-changes-an-acceptance-condition-never-lower-it-to-make-a-slice-easier",
-    "taskBriefLanguage": "korean-prose-from-initial-dispatch-through-every-follow-up-never-english-prose",
+    "taskBriefLanguage": "english-prose-for-the-initial-dispatch-and-every-follow-up-instruction-to-a-child",
     "childVisibleLanguage": "korean-progress-and-final-prose",
     "languageVerbatimCarveOut": "structural-keys-and-headings-model-ids-code-commands-paths-filenames-api-names-and-original-errors-stay-verbatim",
     "conversationalStyle": "selected-character-voice-for-ordinary-dialogue-progress-and-inline-speech-without-default-report-headings-nominal-lists-or-fixed-status-structure",

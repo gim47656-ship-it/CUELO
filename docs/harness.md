@@ -139,7 +139,7 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 별도 worktree로 실행하는 `isolated` 작업은 공유 작업공간 충돌에서 제외합니다. 실제로 시작된 작업의 소유 경로와 격리 여부는 원장에 저장해 세션을 다시 열어도 복원합니다. 완료된 Maker도 REWORK나 일반 후속 지시로 실제 job이 실행 중이면 같은 경로를 보호합니다. 과거 원장의 running 상태만으로 잠그지 않으며, 끝났거나 사라진 실행은 경로를 계속 점유하지 않습니다. 옛 기록에 소유 경로가 없으면 실행 중인 동안만 공유 작업공간의 새 발주를 막습니다.
 
-`bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`로 실행하라고 안내합니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.
+`bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 PowerShell 7(`pwsh -NoProfile -ExecutionPolicy Bypass -File`, WSL에서는 Windows `pwsh.exe`)로 실행하라고 안내합니다. 7이 없을 때만 `powershell.exe`(5.1)를 씁니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.
 
 ## Typed judgment routing (Jev)
 

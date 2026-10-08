@@ -425,7 +425,7 @@ export function renderCharacterSummonRouting(aliases: CharacterAlias | readonly 
     `[CharacterSummon] 사용자가 ${alias}을(를) 인라인으로 호출했다.`,
     `먼저 사용자에게 자연스러운 한국어와 ${alias}의 성격·표현으로 ${target.model}을(를) 호출한다고 짧고 자연스럽게 답한다.`,
     "그 다음 첫 관련 행동은 반드시 task child 호출이어야 한다. Main이 대신 답하거나 다른 도구로 우회하지 않는다.",
-    "task brief의 산문과 child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. 선택된 character voice를 그대로 따르며, `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
+    "task brief와 후속 지시의 산문은 영어로 쓰고, child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. 선택된 character voice를 그대로 따르며, `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
     "command guard가 task brief에 선택된 모델과 아래 voice 계약을 넣는다. child는 첫 provider request 전에 그 모델로 세션 한정 전환하고, 이전 voice block을 제거한 뒤 이 block을 effective system prompt에 정확히 한 번 설치한다.",
     renderCharacterVoice(alias),
     "호출된 캐릭터 child의 terminal 발화는 이미 사용자 화면에 표시되는 정본이다. Main은 그 본문을 다시 인용·요약·재집계하지 않고, child가 실패하거나 미완료일 때만 자기 말로 그 상태를 알린다.",
@@ -455,7 +455,7 @@ function renderMultiCharacterSummonRouting(aliases: readonly CharacterAlias[]): 
         : "그 다음 첫 관련 행동은 반드시 task child 호출이어야 한다. Main이 대신 답하거나 다른 도구로 우회하지 않는다.",
       "한 번의 task 호출의 tasks[]에 tool-capable 캐릭터마다 task 하나씩을 언급 순서대로 넣는다. 각 task 본문에는 아래 exact marker를 그대로 쓴다. marker가 없거나 pending과 다른 alias이면 command guard가 차단한다. 일반 task를 같은 호출에 섞지 않는다.",
       ...capable.map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``),
-      "task brief의 산문과 child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
+      "task brief와 후속 지시의 산문은 영어로 쓰고, child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
     );
   }
   for (const alias of webOnly) {
@@ -565,7 +565,7 @@ export function buildCharacterSummonBrief(brief: string, alias: CharacterAlias):
         ? ""
         : ` Anthropic OAuth 계정은 stable storage position ${target.oauthPosition}을 먼저 pin한다.`
     }`,
-    "- 이 task brief의 산문과 사용자 화면에 표시하는 모든 진행·최종 산문은 한국어다. 선택된 character voice를 그대로 따르며, `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
+    "- 이 task brief의 산문은 영어지만, 사용자 화면에 표시하는 모든 진행·최종 산문은 한국어다. 선택된 character voice를 그대로 따르며, `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
     "- 아래 character voice block을 effective system prompt와 최종 provider payload에 정확히 한 번 설치하고, 이전 character voice block은 제거한다. 고정 catchphrase는 만들지 않는다.",
     renderCharacterVoice(alias),
     "- 이 child의 terminal 발화 자체가 사용자 화면에 표시되는 정본이다. Main에게 다시 전달할 요약을 쓰거나 본문 재인용을 요청하지 말고, 원래 과제에 대한 완전한 응답을 직접 끝낸다.",

@@ -358,7 +358,7 @@ describe("character voice identity", () => {
     expect(harness.ctx.model.provider).toBe("openai-codex");
   });
 
-  test("tool-capable summon rewrites one task with exact model, Korean, and selected voice", () => {
+  test("tool-capable summon rewrites one task with exact model and selected voice", () => {
     const oldVoice = renderCharacterVoice("MIO(미오)");
     const rewritten = rewriteTaskInputForCharacterSummon(
       {
@@ -372,7 +372,6 @@ describe("character voice identity", () => {
     const task = rewritten.input.task;
     expect(typeof task).toBe("string");
     expect(task).toContain('alias="RIN(린)" model="anthropic/claude-opus-5-5" oauth-position="0"');
-    expect(task).toContain("task brief의 산문과 사용자 화면에 표시하는 모든 진행·최종 산문은 한국어");
     expect(task).toContain('alias="RIN(린)"');
     expect(task).not.toContain('alias="MIO(미오)"');
     expect(task.match(/<character-voice\b/gu)).toHaveLength(1);

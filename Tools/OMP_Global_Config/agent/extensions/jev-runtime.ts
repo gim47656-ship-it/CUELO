@@ -266,7 +266,7 @@ const WINDOWS_CURL_DEVNULL = /\bcurl(?:\.exe)?\b[^\n;|&]*\s-o\s*\/dev\/null\b/u;
 
 const WINDOWS_SHELL_NEXT_ACTION = "같은 명령을 그대로 재시도하지 않는다. PowerShell 로직은 write로 .ps1 파일을 만들고 -File <슬래시 절대경로>로 실행한다. .\\x·역슬래시 경로 대신 슬래시 절대경로를 쓴다. cmd /c rd·del 대신 rm 또는 .ps1의 Remove-Item -LiteralPath를 쓴다. `$'\\r'` 구문 오류는 PATH 첫 bash(WSL)가 CRLF .sh를 읽은 것이니 Git Bash(\"C:/Program Files/Git/bin/bash.exe\" <스크립트>)로 실행한다. `curl -o /dev/null`의 exit 23은 Windows curl.exe가 /dev/null에 쓰지 못한 것이라 응답은 이미 받았다. `-o NUL`이나 셸 리디렉션 `>/dev/null`로 바꾼다.";
 // Linux(WSL 포함) 셸: Windows 명령·CRLF 스크립트·interop PowerShell 호출이 원인이다.
-const POSIX_SHELL_NEXT_ACTION = "같은 명령을 그대로 재시도하지 않는다. 이 셸은 Linux다. del·copy·findstr·cmd /c 대신 rm·cp·grep을 쓴다. Windows 전용 작업만 interop으로 부르고, PowerShell 로직은 write로 .ps1 파일을 만들어 powershell.exe -File \"$(wslpath -w <스크립트>)\"로 실행하며 넘기는 경로도 wslpath -w로 바꾼다. `$'\\r'` 구문 오류는 CRLF .sh를 읽은 것이니 bash <(tr -d '\\r' < <스크립트>)로 실행하거나 스크립트를 LF로 저장한다.";
+const POSIX_SHELL_NEXT_ACTION = "같은 명령을 그대로 재시도하지 않는다. 이 셸은 Linux다. del·copy·findstr·cmd /c 대신 rm·cp·grep을 쓴다. Windows 전용 작업만 interop으로 부르고, PowerShell 로직은 write로 .ps1 파일을 만들어 Windows PowerShell 7 pwsh.exe -File \"$(wslpath -w <스크립트>)\"로 실행하며(7이 없을 때만 powershell.exe) 넘기는 경로도 wslpath -w로 바꾼다. `$'\\r'` 구문 오류는 CRLF .sh를 읽은 것이니 bash <(tr -d '\\r' < <스크립트>)로 실행하거나 스크립트를 LF로 저장한다.";
 
 function classifyError(content: unknown, input: unknown, platform: NodeJS.Platform): string {
   const text = textContent(content);

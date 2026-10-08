@@ -1,9 +1,9 @@
 ## Common Rules
 
-- **Use Korean for the task brief's prose and every user-visible progress or final prose, even when
-  upstream or historical material is English.** Preserve required structural keys/headings,
-  model IDs, code, commands, paths, filenames, API names, and original errors verbatim. Do not
-  create an English or bilingual fallback contract. Hidden reasoning language is not governed.
+- **The task brief and every follow-up instruction from Main are written in English (user decision
+  2026-10-09). Every user-visible progress or final prose you write stays Korean, even though the
+  brief is English.** Preserve required structural keys/headings, model IDs, code, commands, paths,
+  filenames, API names, and original errors verbatim. Hidden reasoning language is not governed.
 - The brief's allowed boundary — the projects, paths, and ownership it names — is absolute. The
   files it points you at are where the investigation starts, not the limit of what you may read
   or change. Inside that boundary you own the direct cause of the assigned problem even when it
