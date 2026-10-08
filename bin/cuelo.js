@@ -227,6 +227,11 @@ function startServer() {
       CUELO_SHELL_ENV_BASELINE: JSON.stringify({ NODE_ENV: process.env.NODE_ENV, PORT: process.env.PORT }),
     }),
   });
+  // 서비스 묶음(install.mjs start)이 다른 서비스가 죽어 이 프로세스를 내릴 때 next도 같이 내려간다. 넘기지 않으면 next가
+  // 고아로 남아 포트와 출력 파이프를 쥐고, install.mjs가 끝나지 못해 유닛 재시작이 일어나지 않는다(2026-10-08 실측).
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => child.kill(signal));
+  }
 
   child.on("error", (error) => {
     console.error(`Failed to launch CUELO through Bun (${bunPath}): ${error.message}`);
