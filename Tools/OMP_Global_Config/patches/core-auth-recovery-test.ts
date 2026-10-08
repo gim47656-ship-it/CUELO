@@ -23,6 +23,7 @@ if (!process.env.OMP_AUTH_RECOVERY_ROOT) {
 			env: {
 				...process.env,
 				HOME: home,
+				CUELO_REAL_HOME: homedir(),
 				USERPROFILE: home,
 				PI_CODING_AGENT_DIR: join(home, ".omp", "agent"),
 				OMP_PROFILE: "",
@@ -40,7 +41,7 @@ if (!process.env.OMP_AUTH_RECOVERY_ROOT) {
 }
 
 const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
-const core = process.env.OMP_CORE_PATCH_TARGET ?? [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent")].find(dir => existsSync(dir)) ?? join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent");
+const core = process.env.OMP_CORE_PATCH_TARGET ?? [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(process.env.CUELO_REAL_HOME ?? homedir(), "cuelo-run/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent")].find(dir => existsSync(dir)) ?? join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent");
 const script = resolve(import.meta.dirname, "apply-core-patch.mjs");
 const temp = process.env.OMP_AUTH_RECOVERY_ROOT;
 const fixture = join(temp, "target");

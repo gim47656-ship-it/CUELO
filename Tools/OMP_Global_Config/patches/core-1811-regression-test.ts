@@ -75,6 +75,7 @@ function resolveCorePackage(): string | undefined {
 		? [override]
 		: [
 				join(NPM_MODULES, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(NPM_MODULES, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
+				join(homedir(), "cuelo-run/node_modules/@oh-my-pi/pi-coding-agent"),
 				join(NPM_MODULES, "@oh-my-pi/pi-coding-agent"),
 			];
 	return candidates.find(directory => existsSync(join(directory, "src/registry/agent-registry.ts")));

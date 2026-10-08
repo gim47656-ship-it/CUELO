@@ -609,7 +609,9 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   같은 방식이며 모든 target은 같은 repoRoot와 `git common-dir`에 속해야 한다.
 - cwd가 저장소 안이고 target 저장소의 `git common-dir`가 같으면 같은 저장소로 보며, canonical
   target은 session cwd 안 또는 cwd repoRoot의 direct file child만 허용한다. 같은 저장소의 sibling
-  project와 linked worktree는 차단한다. 별도 저장소면 상대경로로 도달할 수 있을 때 cwd 밖도 허용한다.
+  project와 cwd 밖 linked worktree(다른 세션의 작업 공간일 수 있다)는 차단한다. cwd 안에 만든 linked
+  worktree(`.worktrees/<이름>` 등)의 파일은 그 worktree의 branch로 마감한다. 별도 저장소면 상대경로로
+  도달할 수 있을 때 cwd 밖도 허용한다.
 - cwd가 저장소 밖 상위 폴더인 탐색 모드에서는 target과 repoRoot가 cwd 아래여야 하고 `../` escape를
   허용하지 않는다. repository root directory·`.git` metadata·저장소 내부 cwd의 sibling project·
   repo 밖·absolute·duplicate·directory·current/external 혼합·둘 이상의 external repo target은 거부한다.

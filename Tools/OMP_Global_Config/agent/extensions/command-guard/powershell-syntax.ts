@@ -25,7 +25,7 @@ const GUIDANCE_WINDOWS =
 // 7도 WSL로 넘기는 stdout은 시스템 코드페이지(CP949)라 한글이 깨진다(2026-10-09 7.6.6에서 관측).
 const GUIDANCE_LINUX =
   "PowerShell 로직은 `write`로 .ps1 파일을 만든 뒤 Windows PowerShell 7 `pwsh.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w /절대/경로.ps1)\"`로 실행하세요(7이 없을 때만 `powershell.exe`). " +
-  "한글을 출력하면 첫 줄에 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`를 두세요. `powershell.exe`(5.1)로 실행하면 .ps1도 UTF-8 BOM으로 저장해야 합니다. " +
+  "한글을 출력하면 .ps1 첫 줄(짧은 `-Command`면 본문 맨 앞)에 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`를 두세요. `powershell.exe`(5.1)로 실행하면 .ps1도 UTF-8 BOM으로 저장해야 합니다. " +
   "짧은 `-Command` 본문은 작은따옴표로 감싸거나 `\\$`로 이스케이프하면 통과합니다.";
 
 function reason(subject: string, platform: NodeJS.Platform): string {

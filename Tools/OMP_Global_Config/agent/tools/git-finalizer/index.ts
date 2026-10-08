@@ -179,6 +179,29 @@ async function windowsDrivePaths(cwd: string, paths: string[], exec: Exec): Prom
   return converted;
 }
 
+/**
+ * WSL Linux git이 `/mnt/...` 저장소에 만든 linked worktree는 `.git` 파일에 `gitdir: /mnt/e/...` 같은 Linux 경로를 적는다.
+ * Windows git은 이 경로를 따라가지 못해 `fatal: not a git repository`로 끝난다(2026-10-09 `.worktrees/dart-cron-order`).
+ * 대상 파일에서 위로 올라가 처음 만나는 `.git`이 그런 파일이면 true다. 그때는 느려도 Linux git으로 마감한다.
+ */
+export async function hasPosixGitdirWorktree(cwd: string, files: string[]): Promise<boolean> {
+  for (const file of files) {
+    let dir = dirname(resolve(cwd, file));
+    for (;;) {
+      const dotGit = join(dir, ".git");
+      const info = await stat(dotGit).catch(() => undefined);
+      if (info) {
+        if (info.isFile() && /^gitdir:\s*\//m.test(await readFile(dotGit, "utf8"))) return true;
+        break;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return false;
+}
+
 const factory: CustomToolFactory = (pi) => ({
   name: "git_finalize",
   label: "Git Finalize",
@@ -209,7 +232,9 @@ const factory: CustomToolFactory = (pi) => ({
     const tempDir = await mkdtemp(join(tmpdir(), "omp-git-finalize-"));
     const requestPath = join(tempDir, "request.json");
     try {
-      const windows = await windowsDrivePaths(pi.cwd, [pi.cwd, scriptPath, requestPath], exec);
+      const windows = await hasPosixGitdirWorktree(pi.cwd, files)
+        ? undefined
+        : await windowsDrivePaths(pi.cwd, [pi.cwd, scriptPath, requestPath], exec);
       await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message }), "utf8");
       const result = await pi.exec(
         process.platform === "win32" || windows ? "powershell.exe" : "pwsh",

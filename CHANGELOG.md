@@ -7,6 +7,10 @@
 - PowerShell 스크립트를 실행하라고 안내할 때 PowerShell 7(`pwsh`)을 먼저 씁니다. 7이 없을 때만 Windows PowerShell 5.1을 씁니다.
 - 서브에이전트에게 맡기는 작업 지시는 영어로 쓰고, 서브에이전트가 화면에 보여 주는 진행·완료 보고는 한국어로 유지합니다.
 
+### 수정
+
+- WSL에서 Windows 드라이브 위 저장소의 Linux Git으로 만든 작업 트리(worktree)를 커밋·푸시할 때 `not a git repository`로 실패하던 문제를 고쳤습니다.
+
 ## [0.10.1] - 2026-10-08
 
 ### 변경

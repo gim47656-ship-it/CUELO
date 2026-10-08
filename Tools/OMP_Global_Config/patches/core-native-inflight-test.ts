@@ -15,6 +15,7 @@ function resolveCoreRoot(): string {
 	const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 	const candidates = [
 		join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"),
+		join(homedir(), "cuelo-run/node_modules/@oh-my-pi/pi-coding-agent"),
 		join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent"),
 		join(root, "@oh-my-pi/pi-coding-agent"),
 	];

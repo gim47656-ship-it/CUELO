@@ -4,7 +4,7 @@ import { access, chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import factory from "./index";
+import factory, { hasPosixGitdirWorktree } from "./index";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
 const powerShell = process.platform === "win32" ? "powershell.exe" : "pwsh";
@@ -463,6 +463,29 @@ describe("git finalizer", () => {
     expect(git(linked, ["diff", "--cached", "--name-only"])).toBe("");
     expect(git(work, ["status", "--short"])).toBe(currentStatus);
     expect(git(linked, ["status", "--short"])).toBe(linkedStatus);
+  }, TEST_TIMEOUT_MS);
+
+  test("finalizes a linked worktree inside the session cwd on its own branch", async () => {
+    const { root, remote, work } = await createRepository();
+    const linked = join(work, ".worktrees", "inner");
+    git(work, ["worktree", "add", "-b", "inner-branch", linked]);
+    await writeFile(join(linked, "a.txt"), "changed-inner-a\n");
+    const mainHead = git(work, ["rev-parse", "HEAD"]);
+
+    const { result, output } = await startFinalizer(root, work, "inner-worktree", [".worktrees/inner/a.txt"], "inner change");
+    expect(result.code, result.stderr || result.stdout).toBe(0);
+    expect(output.ok).toBe(true);
+    expect(git(linked, ["rev-parse", "HEAD"])).toBe(output.commitSha!);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/inner-branch"])).toBe(output.commitSha!);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(mainHead);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(mainHead);
+  }, TEST_TIMEOUT_MS);
+
+  test.skipIf(process.platform === "win32")("detects a worktree whose .git file points at a Linux path", async () => {
+    const { work } = await createRepository();
+    git(work, ["worktree", "add", "-b", "posix-branch", join(work, ".worktrees", "posix")]);
+    expect(await hasPosixGitdirWorktree(work, [".worktrees/posix/a.txt", ".worktrees/posix/new/dir/file.txt"])).toBe(true);
+    expect(await hasPosixGitdirWorktree(work, ["a.txt", "missing/dir/file.txt"])).toBe(false);
   }, TEST_TIMEOUT_MS);
 
   test("discovers one nested repository from a deleted target and preserves unrelated dirty state", async () => {
