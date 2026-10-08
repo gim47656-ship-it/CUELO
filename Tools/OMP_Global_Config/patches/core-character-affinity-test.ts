@@ -6,7 +6,7 @@
 // (auth/affinity.ts:216-227), usage-limit·인증 실패·transport 실패의 sibling 회전과 model fallback 은
 // 막지 않는다. 미패치 core 에서는 exactLabel 옵션이 무시되어 exact 절이 RED, 일반 비교 절은 GREEN 이다.
 // 네트워크·유료 호출·실제 자격증명 변경 없음(scratch SQLite + local model registry + mock provider).
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSettingsTestScope } from "./core-test-settings";
@@ -468,6 +468,55 @@ try {
 				`error=${error} switched=${switched} switches=${harness.switches.join(",")}`,
 			);
 		}
+	}
+	// 18.8.4부터 공개된 OAuth pool 경계와 exact summon의 교집합을 실제 AuthStorage로 검증한다.
+	// 이전 버전은 pool API 자체가 없으므로 기존 exact/warm pin 회귀만 그대로 실행한다.
+	if (typeof opened[0]?.sessions.restrict === "function") {
+		console.log("\n[9] OAuth pool 제한은 exact pin·상속·fallback에서도 유지된다");
+		const { resolveCredentialIdentityKey } = await import(`${AI_ROOT}/auth/sqlite-credential-store.ts`);
+		const auth = await makeAuth("pool-exact");
+		opened.push(auth);
+		// 자격증명 갱신은 affinity를 초기화하므로 테스트 준비를 pin보다 먼저 끝낸다.
+		await auth.credentials.upsert("anthropic", { type: "api_key", key: "fixture-pool-static", source: "login" });
+		const accounts = auth.oauth.accounts("anthropic");
+		const target = accounts[0]!;
+		const sibling = accounts[1]!;
+		const targetIdentity = resolveCredentialIdentityKey("anthropic", fixtureCredential("pool-exact-0"))!;
+		const siblingIdentity = resolveCredentialIdentityKey("anthropic", fixtureCredential("pool-exact-1"))!;
+		const sessionId = "session-pool-exact";
+		const lease = auth.sessions.restrict("anthropic", sessionId, [targetIdentity]);
+		check("pool 밖 exact pin은 거절된다", !auth.sessions.pin("anthropic", sessionId, sibling.credentialId, { exactLabel: "MIO(미오)" }));
+		check("pool 안 exact pin은 지정 정체성을 유지한다", auth.sessions.pin("anthropic", sessionId, target.credentialId, { exactLabel: "RIN(린)" }) && auth.sessions.exactLabel("anthropic", sessionId) === "RIN(린)");
+		const deniedChild = "session-pool-denied-child";
+		auth.sessions.restrict("anthropic", deniedChild, [siblingIdentity]);
+		check("상속도 대상 pool 밖 정체성을 복사하지 않는다", auth.sessions.inherit(sessionId, deniedChild) === 0 && auth.sessions.get("anthropic", deniedChild) === undefined);
+		const allowedChild = "session-pool-allowed-child";
+		auth.sessions.restrict("anthropic", allowedChild, [targetIdentity]);
+		check("pool 안 상속은 exactLabel까지 복사한다", auth.sessions.inherit(sessionId, allowedChild) === 1 && auth.sessions.exactLabel("anthropic", allowedChild) === "RIN(린)");
+		const skippedChild = "session-pool-skipped-child";
+		auth.sessions.restrict("anthropic", skippedChild, [targetIdentity]);
+		const { version } = JSON.parse(readFileSync(join(AI_ROOT, "../package.json"), "utf8"));
+		const [major, minor, patch] = version.split(".").map(Number);
+		const includesFilter = major > 18 || (major === 18 && (minor > 8 || (minor === 8 && patch >= 5)));
+		const excludeAnthropic = includesFilter ? (provider: string) => provider !== "anthropic" : ["anthropic"];
+		check("Maker provider 제외는 허용 pool 안에서도 부모 pin을 복사하지 않는다", auth.sessions.inherit(sessionId, skippedChild, excludeAnthropic) === 0 && auth.sessions.get("anthropic", skippedChild) === undefined);
+		if (includesFilter) {
+			const filteredChild = "session-pool-explicit-filter";
+			auth.sessions.restrict("anthropic", filteredChild, [targetIdentity]);
+			const seen: Array<[string, boolean]> = [];
+			check("upstream include는 부모 explicit pin 여부를 전달하고 exactLabel을 보존한다", auth.sessions.inherit(sessionId, filteredChild, (provider: string, explicit: boolean) => { seen.push([provider, explicit]); return explicit; }) === 1 && seen.some(([provider, explicit]) => provider === "anthropic" && explicit) && auth.sessions.exactLabel("anthropic", filteredChild) === "RIN(린)");
+		}
+		await auth.limits.markReached("anthropic", sessionId, { credentialId: target.credentialId, retryAfterMs: 60 * 60 * 1000 });
+		const previousEnv = process.env.ANTHROPIC_API_KEY;
+		process.env.ANTHROPIC_API_KEY = "fixture-pool-env";
+		try {
+			const error = await keyError(() => auth.keys.get("anthropic", sessionId, { modelId: "claude-opus-5" }));
+			check("차단된 pool exact pin은 sibling·API·env 키로 fallback하지 않는다", error.includes("RIN(린)") && error.includes("지정 OAuth 계정"), error || "key resolved");
+		} finally {
+			if (previousEnv === undefined) delete process.env.ANTHROPIC_API_KEY;
+			else process.env.ANTHROPIC_API_KEY = previousEnv;
+		}
+		auth.sessions.unrestrict("anthropic", sessionId, lease);
 	}
 } finally {
 	for (const auth of opened) auth.close?.();

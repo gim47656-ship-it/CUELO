@@ -243,11 +243,20 @@ for (const [label, newImport] of [["18.4.12 적용본", false], ["18.5.0 순정"
 }
 
 console.log("\n[N] 일부 task schema만 model이 없을 때 다른 schema가 marker를 대신 채우지 않고 빠진 곳만 복구한다");
-// 18.6.1 순정 기준선(agent default 표현)에서 한 schema의 model 줄만 빠진 상태를 만든다. 각 schema의 marker가 자기 header를
-// 포함하지 않으면 다른 schema의 model 줄이 이 항목을 이미 적용한 것으로 보이게 하고(false APPLIED/SKIP) 복구도 건너뛴다.
+// 순정 schema에 모델 선택 계약만 복원한 호환 기준선에서 한 schema의 model을 뺀다.
+// 18.8.4부터 upstream 순정에는 model 자체가 없지만, 보호할 계약은 여전히 한 schema만 복구하는 것이다.
 const typesRel = "src/task/types.ts";
-const baselineTypes = snapshot.get(typesRel)?.toString("utf8");
+let baselineTypes = snapshot.get(typesRel)?.toString("utf8");
 if (baselineTypes === undefined) throw new Error("기준선에 src/task/types.ts 가 없다");
+for (const header of ["export const taskItemSchema = type({", "const taskItemSchemaIsolated = type({", "export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
+	const start = baselineTypes.indexOf(header);
+	const end = baselineTypes.indexOf("\n});", start);
+	const block = baselineTypes.slice(start, end);
+	if (!/^\t"model\?": /m.test(block)) {
+		const withModel = block.replace('\tsolutionSpace: "string",\n', '\tsolutionSpace: "string",\n\t"model?": "string | string[]",\n');
+		baselineTypes = baselineTypes.slice(0, start) + withModel + baselineTypes.slice(end);
+	}
+}
 const modelLine = /^\t"model\?": [^\n]*\n/m;
 const modelLineCount = (text: string) => text.split("\n").filter(line => /^\t"model\?": /.test(line)).length;
 for (const header of ["export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {

@@ -9,9 +9,9 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.10.0',
+    version: '0.10.1',
     distribution: 'cuelo',
-    coreVersion: '18.8.0',
+    coreVersion: '18.8.5',
 };
 
 // OMP core 18.4.12 `src/sdk.ts`: session-scoped AsyncJobManager for a process
@@ -177,7 +177,7 @@ function readNativePackage(target) {
         throw new Error(`unexpected native package ${packageJson.name}@${packageJson.version}`);
     }
     if (!build || build.distribution !== EXPECTED.distribution || build.coreVersion !== EXPECTED.coreVersion) {
-        throw new Error('native cueloBuild metadata does not match cuelo / core 18.8.0');
+        throw new Error('native cueloBuild metadata does not match cuelo / core 18.8.5');
     }
     return packageJson;
 }

@@ -750,6 +750,7 @@ export function getUpdateMutationBlock(): {
 declare global {
   // Next 번들이 모듈을 나눠 읽어도 한 서버 프로세스는 하나의 식별만 갖는다.
   var __cueloRuntimeServer: { origin: string; startedAtMs: number } | undefined;
+  var __cueloRuntimeLinuxIdentity: { bootId: string; startTicks: number } | null | undefined;
 }
 
 /**
@@ -766,16 +767,35 @@ function normalizeSessionIds(ids: readonly string[]): string[] {
   return [...new Set(ids.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))].sort();
 }
 
+function getRuntimeLinuxIdentity(): { bootId: string; startTicks: number } | null {
+  if (globalThis.__cueloRuntimeLinuxIdentity !== undefined) return globalThis.__cueloRuntimeLinuxIdentity;
+  globalThis.__cueloRuntimeLinuxIdentity = null;
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+      globalThis.__cueloRuntimeLinuxIdentity = {
+        bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+        startTicks: Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]),
+      };
+    } catch {
+      // /proc를 읽지 못하는 환경은 기존 시작 시각 비교 경계로 남긴다.
+    }
+  }
+  return globalThis.__cueloRuntimeLinuxIdentity;
+}
+
 /**
  * `waitingSessionIds`는 실행 중이지만 사용자 답(ask·승인)을 기다리는 세션 id다. 답·승인값·대화 원문은 쓰지 않는다.
  */
 export function recordRuntimeActivity(runningSessionIds: string[], waitingSessionIds: string[] = []): void {
   const uniqueIds = normalizeSessionIds(runningSessionIds);
   const server = globalThis.__cueloRuntimeServer;
+  const linuxIdentity = getRuntimeLinuxIdentity();
   writeJsonAtomic(join(externalUpdateRoot(), "runtime-activity", `${process.pid}.json`), {
     schemaVersion: 2,
     processId: process.pid,
     processStartedAtUtc: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    ...(linuxIdentity ? { linuxProcessIdentity: linuxIdentity } : {}),
     updatedAtUtc: new Date().toISOString(),
     runningSessionIds: uniqueIds,
     ...(server ? {

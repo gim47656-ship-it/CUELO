@@ -90,6 +90,9 @@ const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93
  */
 const OPUS55_ROW_1870 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":97,');
 
+// 18.8.4: 측정값만 97→96.2. upstream prefixBinding·binding controls는 그대로라 RETIRE를 유지한다.
+const OPUS55_ROW_1884 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":96.2,');
+
 /**
  * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
  * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
@@ -3693,6 +3696,7 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
 		marker: "exactLabel(provider: string, sessionId: string | undefined): string | undefined {",
+		excludes: "this.#overrides.suppressesOAuth(provider, this.isRestricted(provider, sessionId))",
 		anchor: `	pin(provider: string, sessionId: string, credentialId: number, options?: { restoredAtMs?: number }): boolean {
 		if (!sessionId || this.#overrides.has(provider)) {
 			return false;
@@ -3740,6 +3744,56 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 		const credential = this.get(provider, sessionId);
 		return credential?.type === "oauth" ? credential.exactLabel : undefined;
 	}`,
+		// 18.8.4의 OAuth pool 제한은 유지하고 exactLabel만 결합한다.
+		alternates: [{
+			file: "../pi-ai/src/auth/affinity.ts",
+			requires: "this.#overrides.suppressesOAuth(provider, this.isRestricted(provider, sessionId))",
+			marker: "exactLabel(provider: string, sessionId: string | undefined): string | undefined {",
+			anchor: `	pin(provider: string, sessionId: string, credentialId: number, options?: { restoredAtMs?: number }): boolean {
+		if (!sessionId || this.#overrides.suppressesOAuth(provider, this.isRestricted(provider, sessionId))) {
+			return false;
+		}
+		const stored = this.#pool.entries(provider);
+		const index = stored.findIndex(entry => entry.id === credentialId);
+		const target = stored[index];
+		if (target?.credential.type !== "oauth" || !this.allows(provider, sessionId, target.credential)) return false;
+		const restoredAtMs = options?.restoredAtMs;
+		this.record(provider, sessionId, "oauth", index, restoredAtMs, restoredAtMs === undefined);
+		return true;
+	}`,
+			patched: `	pin(
+		provider: string,
+		sessionId: string,
+		credentialId: number,
+		options?: { restoredAtMs?: number; exactLabel?: string },
+	): boolean {
+		if (!sessionId || this.#overrides.suppressesOAuth(provider, this.isRestricted(provider, sessionId))) {
+			return false;
+		}
+		const stored = this.#pool.entries(provider);
+		const index = stored.findIndex(entry => entry.id === credentialId);
+		const target = stored[index];
+		if (target?.credential.type !== "oauth" || !this.allows(provider, sessionId, target.credential)) return false;
+		const restoredAtMs = options?.restoredAtMs;
+		const exactLabel = options?.exactLabel?.trim() || undefined;
+		this.record(
+			provider,
+			sessionId,
+			"oauth",
+			index,
+			restoredAtMs,
+			restoredAtMs === undefined || exactLabel !== undefined,
+			exactLabel,
+		);
+		return true;
+	}
+
+	/** 검증된 exact summon 라벨이며 일반 warm/explicit pin에는 없다. */
+	exactLabel(provider: string, sessionId: string | undefined): string | undefined {
+		const credential = this.get(provider, sessionId);
+		return credential?.type === "oauth" ? credential.exactLabel : undefined;
+	}`,
+		}],
 	},
 	{
 		// 다른 세션으로 affinity 를 복사할 때(subagent 상속 등) summon 정체성도 같이 넘긴다.
@@ -4044,6 +4098,7 @@ import { resolveUsedFraction } from "../usage";`,
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
 		marker: "\tinherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {",
+		excludes: "!this.#permits(provider, targetSessionId, credential.index)",
 		anchor: `	inherit(sourceSessionId: string, targetSessionId: string): number {
 		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
 		let inherited = 0;
@@ -4057,6 +4112,30 @@ import { resolveUsedFraction } from "../usage";`,
 			if (skipProviders?.includes(provider)) continue;
 			const credential = this.get(provider, sourceSessionId);
 			if (!credential) continue;`,
+		alternates: [{
+			file: "../pi-ai/src/auth/affinity.ts",
+			requires: "!this.#permits(provider, targetSessionId, credential.index)",
+			marker: "\tinherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {",
+			anchor: `	inherit(sourceSessionId: string, targetSessionId: string): number {
+		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
+		let inherited = 0;
+		for (const provider of this.#pool.providers()) {
+			const credential = this.get(provider, sourceSessionId);
+			if (!credential || !this.#permits(provider, targetSessionId, credential.index)) continue;`,
+			patched: `	inherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {
+		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
+		let inherited = 0;
+		for (const provider of this.#pool.providers()) {
+			if (skipProviders?.includes(provider)) continue;
+			const credential = this.get(provider, sourceSessionId);
+			if (!credential || !this.#permits(provider, targetSessionId, credential.index)) continue;`,
+		}, {
+			// 18.8.5: provider 제외는 SDK에서 upstream include 필터와 결합한다. 구현은 그대로 둔다.
+			file: "../pi-ai/src/auth/affinity.ts",
+			marker: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number {",
+			anchor: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number {",
+			patched: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number {",
+		}],
 	},
 	{
 		file: "../pi-ai/src/auth/types.ts",
@@ -4064,16 +4143,33 @@ import { resolveUsedFraction } from "../usage";`,
 		anchor: "\tinherit(sourceSessionId: string, targetSessionId: string): number;",
 		patched: `	/** \`skipProviders\`: providers whose affinity the target must choose fresh instead of copying. */
 	inherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number;`,
+		alternates: [{
+			file: "../pi-ai/src/auth/types.ts",
+			marker: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number;",
+			anchor: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number;",
+			patched: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number;",
+		}],
 	},
 	{
 		file: "src/sdk.ts",
 		marker: "\tcredentialInheritSkipProviders?: readonly string[];",
+		excludes: "oauthAccountPools?: OAuthAccountPools;",
 		anchor: "\tcredentialSourceSessionId?: string;\n\n\t/** Model to use. Default: from settings, else first available */",
 		patched: `	credentialSourceSessionId?: string;
 	/** Providers whose {@link credentialSourceSessionId} affinity is not copied; the child selects them fresh. */
 	credentialInheritSkipProviders?: readonly string[];
 
 	/** Model to use. Default: from settings, else first available */`,
+		alternates: [{
+			file: "src/sdk.ts",
+			requires: "oauthAccountPools?: OAuthAccountPools;",
+			marker: "\tcredentialInheritSkipProviders?: readonly string[];",
+			anchor: "\tcredentialSourceSessionId?: string;\n",
+			patched: `	credentialSourceSessionId?: string;
+	/** 부모 affinity 중 새로 선택할 provider만 제외하며 OAuth pool 제한은 유지한다. */
+	credentialInheritSkipProviders?: readonly string[];
+`,
+		}],
 	},
 	{
 		file: "src/sdk.ts",
@@ -4081,6 +4177,12 @@ import { resolveUsedFraction } from "../usage";`,
 		anchor: "\t\tmodelRegistry.authStorage.sessions.inherit(options.credentialSourceSessionId, providerSessionId);",
 		patched: `		modelRegistry.authStorage.sessions.inherit(
 			options.credentialSourceSessionId, providerSessionId, options.credentialInheritSkipProviders);`,
+		alternates: [{
+			file: "src/sdk.ts",
+			marker: "!options.credentialInheritSkipProviders?.includes(provider) && (explicit || !ownPins.has(provider))",
+			anchor: "\t\t\t(provider, explicit) => explicit || !ownPins.has(provider),",
+			patched: "\t\t\t(provider, explicit) => !options.credentialInheritSkipProviders?.includes(provider) && (explicit || !ownPins.has(provider)),",
+		}],
 	},
 	{
 		file: "src/task/executor.ts",
@@ -4099,9 +4201,18 @@ import { resolveUsedFraction } from "../usage";`,
 		// 두 앵커 모두 18.4.4·18.4.5에 정확히 한 번 있고 18.4.4 적용본의 patched 도 그대로 성립한다.
 		file: "../pi-ai/src/auth/cascade.ts",
 		marker: "const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);",
+		excludes: "let oauthResolved: OAuthResolutionResult | undefined;",
 		anchor: `		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);`,
 		patched: `		const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);
 		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);`,
+		alternates: [{
+			file: "../pi-ai/src/auth/cascade.ts",
+			requires: "let oauthResolved: OAuthResolutionResult | undefined;",
+			marker: "const exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);",
+			anchor: "\t\tlet oauthResolved: OAuthResolutionResult | undefined;",
+			// 라벨은 refresh 전에 캡처한다. upstream의 transient catch와 restricted 검사·후속 fallback은 그대로다.
+			patched: "\t\tconst exactOAuthLabel = this.#deps.affinity.exactLabel(provider, sessionId);\n\t\tlet oauthResolved: OAuthResolutionResult | undefined;",
+		}],
 	},
 	{
 		file: "../pi-ai/src/auth/cascade.ts",
@@ -6009,6 +6120,7 @@ const LOG_FILE = "output.log";
 		// 남긴다. Windows(startArgv)·pipe 경로와 서버 변수가 없던 broker 는 그대로다.
 		file: "src/launch/broker.ts",
 		marker: "const dropped = [...brokerDroppedHostEnv]",
+		excludes: "quotePosixArgv",
 		anchor: `			const argv = [record.spec.application, ...record.spec.args];
 			const command = \`exec \${argv.map(quoteShellArg).join(" ")}\`;`,
 		patched: `			// HANSE: CUELO next server env stays out of POSIX PTY services. The native PTY layers its env
@@ -6021,6 +6133,21 @@ const LOG_FILE = "output.log";
 				...record.spec.args,
 			];
 			const command = \`exec \${argv.map(quoteShellArg).join(" ")}\`;`,
+		alternates: [{
+			file: "src/launch/broker.ts",
+			requires: "quotePosixArgv",
+			marker: "const dropped = [...brokerDroppedHostEnv]",
+			anchor: `			const argv = [record.spec.application, ...record.spec.args];
+			const command = \`exec \${quotePosixArgv(argv)}\`;`,
+			patched: `			// PTY가 OS 환경을 다시 상속하므로 서버 변수는 exec 직전에 제거한다. 호출자 override는 남긴다.
+			const dropped = [...brokerDroppedHostEnv].filter(name => !(name in options.env));
+			const argv = [
+				...(dropped.length > 0 ? ["env", ...dropped.flatMap(name => ["-u", name])] : []),
+				record.spec.application,
+				...record.spec.args,
+			];
+			const command = \`exec \${quotePosixArgv(argv)}\`;`,
+		}],
 	},
 	{
 		// 2026-09-29 jevgrep 비교(.omp/jevgrep-comparison/SUMMARY.md §4): jfind 의 비밀 파일 제외는 이름을
@@ -10080,6 +10207,7 @@ function parentSubagentServiceTiers(
 			{ ...OPUS55_ROW_1846, excludes: OPUS55_ROW_1851, requires: OPUS55_HEAD_1846 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1851, anchor: OPUS55_ROW_1851, patched: OPUS55_ROW_1851 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1870, anchor: OPUS55_ROW_1870, patched: OPUS55_ROW_1870 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1884, anchor: OPUS55_ROW_1884, patched: OPUS55_ROW_1884 },
 		],
 	},
 	{
@@ -10115,6 +10243,18 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
 			anchor: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
 			patched: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
+		}, {
+			// 18.8.4: upstream Opus prefixBinding 규칙이 kdl:170으로 이동했다. 동일 의미의 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 18.8.5: 출처 줄만 이동했으며 prefixBinding 의미는 동일하다.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		}],
 	},
 	{
@@ -10158,6 +10298,18 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 18.8.4: upstream binding controls 규칙이 kdl:283으로 이동했다. provider 범위도 동일한 no-op.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 18.8.5: 출처 줄만 이동했으며 provider·revision 경계도 동일하다.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -10409,6 +10561,18 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.8.4 번들의 같은 upstream 조건(cCe = isAdvisorTranscriptName) no-op.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.8.5: RCe는 같은 isAdvisorTranscriptName 함수다. 새 번들도 upstream 제외를 유지한다.
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

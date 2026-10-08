@@ -1368,7 +1368,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
-  test("NORMAL_SOL·HARD_CODE_ASTRA는 Anthropic 1주 한도 대체 밖에서는 자동 추천되지 않고 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
+  test("NORMAL_SOL·HARD_CODE_ASTRA는 자동 추천되지 않고 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 비용·계열 근거로 명시 대안을 선택함\nOWNED_PATHS:");
     const models = { NORMAL_SOL: "openai-codex/gpt-6.1-sol", HARD_CODE_ASTRA: "openai-codex/gpt-6-astra" };
     // 기본 추천은 그대로: NORMAL은 Sonnet(일반 소진 대체에도 NORMAL_SOL은 후보가 아니다), HARD 코드는 Opus.
@@ -1384,7 +1384,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     });
     const [spentRoute] = await spent.prepare("소진", [spent.task], {} as never);
     expect(spentRoute!.profile).toBe("NORMAL_DEEPSEEK");
-    // DeepSeek가 없고 primary 계정이 1주 구간 관측 없이 limitReached만이면 NORMAL_SOL을 자동 대체로 추천하지 않는다.
+    // DeepSeek가 없고 primary 계정이 소진돼도 NORMAL_SOL을 자동 대체로 추천하지 않는다.
     const noDeepSeek = candidates
       .filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK")
       .map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
@@ -1461,11 +1461,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(third.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
     expect(await blind.dispatch("openai-codex/gpt-6-sol:auto")).toBeUndefined();
 
-    // 4) HARD 배정은 Anthropic 1주 한도 소진이 관측되지 않으면 계정 상태와 무관하게 분야를 따른다.
+    // 4) HARD 배정은 계정 상태와 무관하게 분야를 따른다.
     const hard = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
     expect((await hard.prepareBatch("HARD 유지", [hard.task], {} as never)).routes[0]!.profile).toBe("HARD_CODE_OPUS");
   });
-  describe("Anthropic 계정이 모두 1주 한도의 오늘 몫에 도달하면 Sol 6.1 우선", () => {
+  describe("Anthropic 사용량과 명시적 모델 선택", () => {
     // 운영 설정처럼 Sonnet·Opus 후보가 모두 Anthropic인 후보 표.
     const live = candidates.map((candidate) => candidate.model === "openai-codex/gpt-6-sol"
       ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
@@ -1486,75 +1486,42 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ...options,
     });
 
-    test("두 계정이 모두 오늘 몫을 다 쓰면(아직 쓸 수 있어도) NORMAL·UI/UX·HARD 추천을 NORMAL_SOL로 옮기고 근거 없이 auto로 발주된다", async () => {
-      const cases: [NonNullable<Parameters<typeof harness>[0]>, string][] = [
-        [{ workClass: "NORMAL" }, "NORMAL_SONNET"],
+    test("모든 계정이 오늘 몫에 도달해도 사용 가능한 Sonnet·Opus를 유지한다", async () => {
+      const cases: [NonNullable<Parameters<typeof harness>[0]>, string, string][] = [
+        [{ workClass: "NORMAL" }, "NORMAL_SONNET", "anthropic/claude-sonnet-5-5:auto"],
+        [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS", "anthropic/claude-opus-5-5:auto"],
+        [{ workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS", "anthropic/claude-opus-5-5:auto"],
+        [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:auto"],
+      ];
+      for (const [options, profile, model] of cases) {
+        const h = build([
+          anthropicAccount(0.5, {}, slot(20)),
+          anthropicAccount(0.6, { credentialId: 3 }, slot(30)),
+        ], [open], options);
+        const batch = await h.prepareBatch("사용 가능한 모델 유지", [h.task], {} as never);
+        expect(batch.routes[0]!.profile).toBe(profile);
+        expect(await h.dispatch(model)).toBeUndefined();
+      }
+    });
+
+    test("실제 공유 한도 소진만 NORMAL 대안을 고르고 HARD·UI 전문성은 자동 전환하지 않는다", async () => {
+      const cases: [unknown[], string][] = [
+        [[anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], "NORMAL_DEEPSEEK"],
+        [[anthropicAccount(1), anthropicAccount(0.4, { credentialId: 3 }, slot(30))], "NORMAL_SONNET"],
+        [[anthropicAccount(0, { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, windowId: "7d", shared: true }] })], "NORMAL_SONNET"],
+        [[anthropicAccount(0, { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, windowId: "7d", shared: false }] })], "NORMAL_SONNET"],
+      ];
+      for (const [accounts, profile] of cases) {
+        const h = build(accounts, [open], { workClass: "NORMAL" });
+        expect((await h.prepareBatch("실제 소진", [h.task], {} as never)).routes[0]!.profile).toBe(profile);
+      }
+      for (const [options, profile] of [
         [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS"],
-        [{ workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS"],
         [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS"],
-      ];
-      const accountSets = [
-        // 오늘 몫 도달: 1주 사용률은 절반이지만 오늘 구간에서 하루치(약 14.3%) 이상을 썼다.
-        [anthropicAccount(0.5, {}, slot(15)), anthropicAccount(0.6, { credentialId: 3 }, slot(100 / 7))],
-        // 한 계정은 오늘 몫 도달, 다른 계정은 1주 한도 소진.
-        [anthropicAccount(0.5, {}, slot(20)), anthropicAccount(1.02, { credentialId: 3 })],
-      ];
-      for (const anthropic of accountSets) {
-        for (const [options, from] of cases) {
-          const h = build(anthropic, [open], options);
-          const batch = await h.prepareBatch("오늘 몫 도달", [h.task], {} as never);
-          expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SOL", anthropicWeeklyLimit: { from, to: "NORMAL_SOL" } });
-          // 원래 Anthropic 후보로 되돌리는 선택은 추천 변경이라 Main 근거가 필요하다.
-          expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toMatchObject({ block: true });
-          expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
-        }
+      ] as [NonNullable<Parameters<typeof harness>[0]>, string][]) {
+        const h = build([anthropicAccount(1)], [open], options);
+        expect((await h.prepareBatch("전문성 유지", [h.task], {} as never)).routes[0]!.profile).toBe(profile);
       }
-    });
-
-    test("Sol 6.1도 쓸 수 없으면 사용 가능한 NORMAL 대안을, 그마저 없으면 추천 없이 Main 결정으로 둔다", async () => {
-      const solSpent = build([anthropicAccount(1)], [{ ...open, limitReached: true }], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
-      const fallback = await solSpent.prepareBatch("Sol 소진", [solSpent.task], {} as never);
-      expect(fallback.routes[0]).toMatchObject({ profile: "NORMAL_DEEPSEEK", anthropicWeeklyLimit: { from: "HARD_CODE_OPUS", to: "NORMAL_DEEPSEEK" } });
-      expect(await solSpent.dispatch("b-ai/deepseek-v4.1-flash:auto")).toBeUndefined();
-
-      const nothing = build([anthropicAccount(1)], [{ ...open, limitReached: true }], {
-        workClass: "NORMAL", candidates: live.filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK"),
-      });
-      const none = await nothing.prepareBatch("대안 없음", [nothing.task], {} as never);
-      expect(none.routes[0]).toMatchObject({
-        profile: null, normalAllocation: { state: "unavailable" }, anthropicWeeklyLimit: { from: "NORMAL_SONNET", to: null },
-      });
-    });
-
-    test("한 계정만 도달했거나 오늘 구간 사용량을 모르거나 지난 구간 값이면 Sonnet·Opus 추천을 Sol로 옮기지 않는다", async () => {
-      const route = async (anthropic: unknown[], options: NonNullable<Parameters<typeof harness>[0]>) => {
-        const h = build(anthropic, [open], options);
-        return (await h.prepareBatch("오늘 몫 미도달", [h.task], {} as never)).routes[0]!;
-      };
-      // 다른 계정이 오늘 몫 아래면 바꾸지 않는다(1주 소진 계정이어도 core가 다른 계정으로 돈다).
-      for (const reached of [anthropicAccount(1), anthropicAccount(0.5, {}, slot(30))]) {
-        expect(await route([reached, anthropicAccount(0.4, { credentialId: 3 }, slot(5))], { workClass: "NORMAL" }))
-          .toMatchObject({ profile: "NORMAL_SONNET", anthropicWeeklyLimit: null });
-      }
-      // 오늘 구간 시작값을 몰라 사용량이 없거나, 관측 시각에 이미 끝난 구간 값은 도달이 아니다.
-      for (const daySlot of [slot(null), slot(30, 5)]) {
-        expect(await route([anthropicAccount(0.5, {}, daySlot), anthropicAccount(0.5, { credentialId: 3 }, slot(30))], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }))
-          .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
-      }
-      // 1주 구간 신호가 없는 limitReached(예: 5시간 한도)는 기존 소진 대체(DeepSeek)를 따른다.
-      expect(await route([anthropicAccount(0.5, { limitReached: true })], { workClass: "NORMAL" }))
-        .toMatchObject({ profile: "NORMAL_DEEPSEEK", anthropicWeeklyLimit: null });
-      // 관측 시각에 이미 리셋된 1주 구간과 계열 전용(비공유) 1주 구간은 공유 한도 신호가 아니다.
-      const stale = { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, daySlot: slot(30), windowId: "7d", shared: true }] };
-      const tier = { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, daySlot: slot(30), windowId: "7d", shared: false }] };
-      for (const extra of [stale, tier]) {
-        expect(await route([anthropicAccount(0, extra)], { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }))
-          .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
-      }
-      // 잔량을 관측하지 못하면 도달이 아니다.
-      const blind = harness({ candidates: live, workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] });
-      expect((await blind.prepareBatch("미관측", [blind.task], {} as never)).routes[0])
-        .toMatchObject({ profile: "HARD_CODE_OPUS", anthropicWeeklyLimit: null });
     });
   });
   test("위임 판단은 같은 배치에서 recommendations로만 돌아오고 등급·profile·placement를 바꾸지 않는다", async () => {
