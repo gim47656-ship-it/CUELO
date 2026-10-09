@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-09
+
 ### 수정
 
 - 0.10.3에서 `windows_build` 도구 정의 때문에 Anthropic·OpenAI 모델이 모든 요청을 거절하던 문제를 고쳤습니다. 빌드 속성 인자 이름은 `msbuildProperties`입니다.
