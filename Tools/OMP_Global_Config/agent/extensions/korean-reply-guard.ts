@@ -5,7 +5,8 @@ import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/p
  * 응답 언어 가드. Main이 영어 브리프를 쓰다 사용자에게 보이는 진행 문장까지 영어로 새는 일(2026-10-02)을 막는다.
  * 1) 감지: 사용자에게 보이는 산문에서 원문 보존 대상(코드·URL·경로·식별자)을 뺀 글자 중 한글 비율이 낮으면 드리프트.
  * 2) 교정: 첫 드리프트 뒤 다음 요청에 한국어 복귀 알림을 한 번 넣는다(모델 호출 없음).
- * 3) 번역: 알림 뒤에도 또 드리프트면 그 메시지만 @tiny(HIKARI)로 번역해 원문 아래에 표시한다(모델 문맥 제외).
+ * 3) 번역: 드리프트한 메시지는 첫 번째부터 @tiny(HIKARI)로 번역해 원문 아래에 표시한다(모델 문맥 제외).
+ *    이미 나간 영어 문장을 그대로 두지 않는다(2026-10-09 사용자 요청: 다음 답만 한국어로 돌아오는 것으로는 부족하다).
  */
 
 export type TranslateReply = (text: string, ctx: ExtensionContext, signal: AbortSignal) => Promise<string>;
@@ -142,7 +143,6 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
           { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
           { deliverAs: hasToolCall ? "aside" : "nextTurn" },
         );
-        return;
       }
       const key = hash(text);
       if (translated.has(key)) return;

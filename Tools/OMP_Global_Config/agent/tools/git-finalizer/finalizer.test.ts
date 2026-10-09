@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import factory, { hasPosixGitdirWorktree } from "./index";
+import { selectGitExecutor, windowsPathToPosix } from "./wsl-git";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
 const powerShell = process.platform === "win32" ? "powershell.exe" : "pwsh";
@@ -940,4 +941,57 @@ describe("git finalizer", () => {
     const changed = commits.map((sha) => git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha])).sort();
     expect(changed).toEqual(["a.txt", "b.txt"]);
   }, TEST_TIMEOUT_MS);
+});
+
+describe("WSL drive git executor selection", () => {
+  test("windowsPathToPosix converts only drive-letter paths", () => {
+    expect(windowsPathToPosix("D:/repo/.git")).toBe("/mnt/d/repo/.git");
+    expect(windowsPathToPosix("E:\\a\\b\\")).toBe("/mnt/e/a/b");
+    expect(windowsPathToPosix("C:/")).toBe("/mnt/c");
+    expect(windowsPathToPosix("D:/한글/파일.txt")).toBe("/mnt/d/한글/파일.txt");
+    expect(windowsPathToPosix("/mnt/d/repo/.git")).toBe("/mnt/d/repo/.git");
+    expect(windowsPathToPosix("relative/path")).toBe("relative/path");
+  });
+
+  describe.skipIf(process.platform !== "linux")("on Linux", () => {
+    const saved = { wsl: process.env.WSL_DISTRO_NAME, path: process.env.PATH };
+    afterEach(() => {
+      if (saved.wsl === undefined) delete process.env.WSL_DISTRO_NAME;
+      else process.env.WSL_DISTRO_NAME = saved.wsl;
+      process.env.PATH = saved.path;
+    });
+
+    async function pathWithGitExe(): Promise<string> {
+      const directory = await mkdtemp(join(tmpdir(), "omp-fake-gitexe-"));
+      tempRoots.push(directory);
+      await writeFile(join(directory, "git.exe"), "");
+      return `${directory}:${saved.path}`;
+    }
+
+    test("uses Windows git only for WSL drive paths and maps its output back to POSIX", async () => {
+      process.env.WSL_DISTRO_NAME = "Ubuntu-Test";
+      process.env.PATH = await pathWithGitExe();
+
+      const drive = await selectGitExecutor("/mnt/d/none/repo");
+      expect(drive.command).toBe("git.exe");
+      expect(drive.toPosix("D:/none/repo/.git")).toBe("/mnt/d/none/repo/.git");
+      expect((await selectGitExecutor("/mnt/d")).command).toBe("git.exe");
+
+      for (const directory of ["/mnt/dd/repo", "/mnt/wsl/repo", "/tmp/repo", "/home/user/repo"]) {
+        const executor = await selectGitExecutor(directory);
+        expect(executor.command, directory).toBe("git");
+        expect(executor.toPosix("D:/none/repo/.git")).toBe("D:/none/repo/.git");
+      }
+    });
+
+    test("keeps Linux git outside WSL and when git.exe is not on PATH", async () => {
+      process.env.PATH = await pathWithGitExe();
+      delete process.env.WSL_DISTRO_NAME;
+      expect((await selectGitExecutor("/mnt/d/none/repo")).command).toBe("git");
+
+      process.env.WSL_DISTRO_NAME = "Ubuntu-Test";
+      process.env.PATH = "/usr/bin:/bin";
+      expect((await selectGitExecutor("/mnt/d/none/repo")).command).toBe("git");
+    });
+  });
 });

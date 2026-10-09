@@ -486,7 +486,7 @@
     "preDispatchCrossCheck": ["requirement-omission", "unverified-assertion-as-settled-fact", "arbitrary-scope-or-acceptance-change"],
     "acceptanceChangeOwner": "only-the-user-changes-an-acceptance-condition-never-lower-it-to-make-a-slice-easier",
     "taskBriefLanguage": "english-prose-for-the-initial-dispatch-and-every-follow-up-instruction-to-a-child",
-    "childVisibleLanguage": "korean-progress-and-final-prose",
+    "childVisibleLanguage": "english-progress-narration-final-reports-checkpoints-and-agent-to-agent-messages-read-by-main-main-relays-them-to-the-user-in-korean-only-character-summon-children-answering-the-user-directly-stay-korean",
     "languageVerbatimCarveOut": "structural-keys-and-headings-model-ids-code-commands-paths-filenames-api-names-and-original-errors-stay-verbatim",
     "conversationalStyle": "selected-character-voice-for-ordinary-dialogue-progress-and-inline-speech-without-default-report-headings-nominal-lists-or-fixed-status-structure",
     "bilingualFallback": "never"
@@ -769,7 +769,7 @@
       "codeAndPolicyReviewOwner": "main",
       "designJudgment": "main-or-the-owning-maker-reads-the-design-rules-and-skills-there-is-no-separate-design-role",
       "repositoryAccess": "owner-writable-inside-its-brief-boundary-only",
-      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "checkpoint"],
+      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "checkpoint"],
       "runtimeAutoPair": "checkpoint-in-frontmatter-causes-core-createTools-to-add-rewind-to-the-restricted-session-tool-surface-rewind-is-intentionally-absent-from-frontmatter",
       "execution": "async",
       "broadValidation": "the-owner-runs-the-ordinary-project-checks-its-slice-needs-and-skips-unrelated-project-wide-suites",

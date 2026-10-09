@@ -50,15 +50,16 @@ describe("classify", () => {
 });
 
 describe("korean reply guard", () => {
-  test("첫 드리프트는 알림 1회, 번역 없음", async () => {
-    let calls = 0;
-    const h = harness(async () => { calls++; return "x"; });
+  test("첫 드리프트도 알림 1회와 함께 그 메시지를 번역해 표시한다", async () => {
+    const seen: string[] = [];
+    const h = harness(async (text) => { seen.push(text); return "번역문"; });
     await h.assistant(ENGLISH);
-    expect(calls).toBe(0);
-    expect(h.sent).toHaveLength(1);
+    expect(seen).toEqual([ENGLISH]);
+    expect(h.sent).toHaveLength(2);
     expect(h.sent[0]).toMatchObject({ customType: REMINDER_TYPE, display: false });
     expect(h.sent[0]!.content).toContain("한국어");
     expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn" });
+    expect(h.sent[1]).toMatchObject({ customType: TRANSLATION_TYPE, display: true, content: "[한국어 번역]\n번역문" });
   });
 
   test("도구 호출이 이어지는 드리프트 알림은 aside로 끼운다", async () => {
@@ -67,26 +68,23 @@ describe("korean reply guard", () => {
     expect(h.deliveries[0]).toEqual({ deliverAs: "aside" });
   });
 
-  test("알림 뒤 연속 드리프트는 그 메시지만 번역해 표시하고 같은 메시지는 두 번 번역하지 않는다", async () => {
+  test("연속 드리프트는 알림 없이 메시지마다 번역하고 같은 메시지는 두 번 번역하지 않는다", async () => {
     const seen: string[] = [];
     const h = harness(async (text) => { seen.push(text); return "한국어 번역"; });
     await h.assistant(ENGLISH);
     await h.assistant(ENGLISH + " Second part.");
-    expect(seen).toEqual([ENGLISH + " Second part."]);
-    expect(h.sent).toHaveLength(2);
-    expect(h.sent[1]).toMatchObject({ customType: TRANSLATION_TYPE, display: true });
-    expect(h.sent[1]!.content).toContain("한국어 번역");
+    expect(seen).toEqual([ENGLISH, ENGLISH + " Second part."]);
+    expect(h.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE, TRANSLATION_TYPE]);
     h.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: ENGLISH + " Second part." }] } });
     for (let i = 0; i < 10; i++) await Promise.resolve();
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(2);
   });
 
-  test("빠르게 이어진 드리프트 둘은 각각 번역되어 둘 다 표시된다", async () => {
+  test("빠르게 이어진 드리프트들은 각각 번역되어 모두 표시된다", async () => {
     const resolvers: ((value: string) => void)[] = [];
     const h = harness(() => new Promise<string>((resolve) => { resolvers.push(resolve); }));
     await h.assistant(ENGLISH);
     await h.assistant(ENGLISH + " First.");
-    await h.assistant(ENGLISH + " Second.");
     expect(resolvers).toHaveLength(2);
     resolvers[1]!("둘째");
     resolvers[0]!("첫째");
@@ -106,14 +104,13 @@ describe("korean reply guard", () => {
     expect(h.emit("context", { messages: [messages[0]] })[0]).toBeUndefined();
   });
 
-  test("한국어로 돌아오면 리셋되어 다음 드리프트는 다시 알림만 보낸다", async () => {
-    let calls = 0;
-    const h = harness(async () => { calls++; return "x"; });
+  test("한국어로 돌아오면 리셋되어 다음 드리프트는 다시 알림을 보낸다", async () => {
+    const h = harness(ok);
     await h.assistant(ENGLISH);
     await h.assistant(KOREAN);
     await h.assistant("Now I will inspect another module and then summarize the remaining open risks.");
-    expect(calls).toBe(0);
-    expect(h.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, REMINDER_TYPE]);
+    expect(h.sent.filter((m) => m.customType === REMINDER_TYPE)).toHaveLength(2);
+    expect(h.sent.filter((m) => m.customType === TRANSLATION_TYPE)).toHaveLength(2);
   });
 
   test("서브에이전트 세션은 건너뛴다", async () => {
@@ -133,13 +130,12 @@ describe("korean reply guard", () => {
     expect(b.sent).toHaveLength(0);
     b.user("이제 한국어로 계속해");
     await b.assistant(ENGLISH);
-    expect(b.sent).toHaveLength(1);
+    expect(b.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE]);
   });
 
   test("비밀처럼 보이면 번역을 보내지 않고 생략 한 줄만 남긴다", async () => {
     let calls = 0;
     const h = harness(async () => { calls++; return "x"; });
-    await h.assistant(ENGLISH);
     // 가짜 키는 실행 중에 조립한다. 원문에 키 모양이 있으면 프로필 반영 전 비밀값 검사가 막는다.
     await h.assistant(`The configuration uses api_key = ${"sk" + "-"}abcdefghijklmnop123456 and then restarts the worker process now.`);
     expect(calls).toBe(0);
@@ -149,7 +145,6 @@ describe("korean reply guard", () => {
   test("번역 실패는 실패 한 줄만 표시한다", async () => {
     const h = harness(async () => { throw new Error("no credentials"); });
     await h.assistant(ENGLISH);
-    await h.assistant(ENGLISH + " Again.");
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1]).toMatchObject({ customType: TRANSLATION_TYPE, display: true });
     expect(h.sent[1]!.content).toContain("번역 실패");

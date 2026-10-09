@@ -139,6 +139,10 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 모델은 `modelRoles.draft`(기본 `google-antigravity/gemini-3.8-flash`)이고, Gemini가 실패하거나 응답이 형식 검사(CSV·JSON 파싱)를 통과하지 못하면 같은 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체합니다. 결과 첫 줄은 실제 응답 모델이며 저장 경로·크기·개요를 함께 돌려주고, 둘 다 실패하면 `model: none`과 각 실패 원문을 표시하고 파일을 만들지 않습니다. 출력 상한에 걸려 잘린 응답도 저장하지 않습니다. Gemini 할당량은 같은 Antigravity 계정의 `vision`·`skim`·`tiny`와 공유합니다.
 
+## Windows 빌드 `windows_build`
+
+[`windows_build`](../Tools/OMP_Global_Config/agent/tools/windows-build/)는 WSL에서 `/mnt/<드라이브>/` 또는 `X:\` 위의 `.sln`·`.slnx`·`*proj`를 Windows MSBuild로 빌드합니다. `vswhere.exe`(`-latest -products * -requires Microsoft.Component.MSBuild`)로 MSBuild를 찾고, `wslpath`로 경로를 바꾼 뒤 `-nologo -m -nodeReuse:false -noconlog -flp`(UTF-8 로그)로 실행합니다. 결과는 종료 코드, MSBuild 경로·버전, 오류·경고 수, 앞쪽 오류 줄, 로그 경로(`%TEMP%\omp-windows-build\`)입니다. 빌드 실패는 `ok:false` 결과로 돌려주고, 입력·환경 문제만 오류로 끝냅니다. 빌드만 합니다: 산출물을 실행·복사·배포하지 않으며, `Run`·`Deploy`·`Publish`·`Install` target과 `PreBuildEvent`·`PostBuildEvent`·`StartProgram` 같은 속성은 거부합니다. 프로젝트 파일에 이미 들어 있는 빌드 이벤트는 막지 않으므로, 빌드는 곧 그 프로젝트 코드의 실행이라는 전제는 그대로입니다. MSBuild가 없으면 Visual Studio 또는 Build Tools 설치를 안내하는 오류로 끝납니다. Main과 Maker가 함께 씁니다.
+
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
@@ -189,7 +193,9 @@ Windows에서는 FTS 확장이 Git의 `mingw64/bin`에 있는 OpenSSL DLL을 필
 
 Main은 TODO를 최초 계획에만 쓰지 않고 실시간 현황으로 유지합니다. 착수·검증 완료·외부 대기·재개·재작업을 확인한 자리에서 갱신하고, agent나 검사 결과를 기다리는 항목에는 담당과 남은 조건을 적습니다. 도구의 자동 활성 포인터가 앞선 통합 항목으로 돌아갈 수 있으므로 갱신 결과도 확인합니다. 사용자에게 먼저 답해야 할 때는 즉답 후 같은 턴에서 동기화하며, 채팅 설명만으로 TODO 갱신을 대신하거나 포인터를 맞추려고 미완을 완료 처리하지 않습니다.
 
-[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 처음 한 번은 숨김 안내로 다음 답부터 한국어로 쓰게 하고, 그래도 이어지면 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
+[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 영어로 나간 메시지는 처음부터 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시해, 이미 나간 내용도 한국어로 읽을 수 있게 합니다. 처음 한 번은 숨김 안내도 넣어 다음 답부터 한국어로 쓰게 합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
+
+Main과 서브에이전트(Maker)가 서로 주고받는 글은 양방향 모두 영어입니다. 발주·후속 지시뿐 아니라 Maker의 진행 발화·완료 보고·체크포인트·Maker끼리 보내는 메시지도 영어로 쓰고, 사용자에게는 Main이 필요한 내용을 한국어로 옮겨 전합니다. 사용자가 캐릭터를 불러 직접 답하게 한 경우는 사용자에게 하는 말이므로 한국어입니다.
 
 캐릭터 교체는 인용 밖의 명확한 명령형으로 요청하세요. 부정문, 방법·설명 요청, 과거에 일어난 전환을 말하는 문장, 따옴표·코드·인용문 속 예시는 자동 전환하지 않습니다. 가능 여부를 묻는 모호한 질문도 교체 명령으로 처리하지 않습니다.
 
@@ -228,6 +234,8 @@ mcp:
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
 WSL에서 Windows 드라이브(`/mnt/c`·`/mnt/v` 등) 위의 저장소를 마감할 때는 같은 finalizer를 Linux `pwsh` 대신 Windows `powershell.exe`로 돌리고, 경로는 `wslpath -w`로 바꿔 넘깁니다. 그래서 commit·push는 Windows Git과 그 자격 증명으로 실행됩니다. Linux Git은 Windows 드라이브의 파일을 하나씩 확인하느라 파일이 많은 저장소에서 수 분이 걸리고, 마감 제한 시간(3분)에 걸려 중단될 수 있기 때문입니다. 다만 Linux Git으로 만든 linked worktree는 `.git` 파일이 Linux 경로(`gitdir: /mnt/...`)를 가리켜 Windows Git이 열지 못하므로, 대상이 그런 worktree 안에 있으면 Linux `pwsh`와 Linux Git으로 마감합니다. WSL 디스크 안의 저장소는 이전처럼 Linux에서 실행합니다.
+
+같은 판정을 command guard의 저장소 확인, 앱의 Git 변경 보기(`/api/git/status`·`/api/git/diff`), worktree 조회도 씁니다. WSL에서 `/mnt/<드라이브>` 위 저장소이고, Linux 경로를 가리키는 linked worktree가 아니며, `git.exe`를 찾을 수 있으면 Windows Git으로 실행하고 출력 경로(`D:/repo`)는 `/mnt/d/repo`로 되돌립니다. 그 밖의 경우(ext4 저장소, Windows, 일반 Linux)는 이전과 같습니다. 판정 규칙은 하네스(`agent/tools/git-finalizer/wsl-git.ts`)와 앱(`lib/wsl-git.ts`)이 번들이 달라 두 벌이며, 바꿀 때는 둘을 함께 바꿉니다. worktree 만들기·지우기는 Linux Git으로 남깁니다(Windows Git이 만든 `gitdir: D:/...`를 Linux Git이 읽지 못합니다). Git 변경 보기는 세션 작업 폴더가 저장소의 하위 폴더이면 그 폴더 아래만 봅니다.
 
 세션 저장소의 raw `git add`·`commit`·`push`는 `git_finalize`로만 하도록 막고, 다른 저장소를 향한 명령은 허용합니다. 대상 저장소는 bash 도구가 실제로 명령을 실행하는 폴더로 판정합니다. 그래서 WSL에서 `cwd`를 `E:/repo`처럼 Windows 드라이브 경로로 주면 bash와 같은 규칙으로 `/mnt/e/repo`에서 확인하고, 없는 경로로 오인해 다른 저장소의 Git까지 막지 않습니다.
 

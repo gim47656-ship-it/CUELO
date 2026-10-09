@@ -13,8 +13,8 @@ globs: ["Tools/OMP_Global_Config/**"]
 - `thinking-level`은 SOP에 쓰지 않는다. 생성 기본값은 `auto`이고 모델은 `model:"@implSonnet"`이다.
   발주 때 Main이 고른 `tasks[].model`의 `:auto` selector가 child auto를 켜고, 실제 단계는 그 모델의 전체 범위에서 child가 고른다.
   모델·fallback은 `modelRoles`, 모델 분류·추론은 `routing.modelSelection`·`routing.effortSelection`이 정한다.
-- frontmatter 도구는 `read, bash, edit, write, grep, glob, lsp, eval,
-  generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint`다. core 18.3.0에는 `hub`가
+- frontmatter 도구는 `read, bash, edit, write, grep, glob, skim, draft, lsp, eval,
+  generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, checkpoint`다. core 18.3.0에는 `hub`가
   없고(목록에 남겨도 조용히 버려진다) `wait`는 top-level 전용이라 Maker(depth 1)에 넣어도 생기지 않으므로 둘 다 적지 않는다.
   restricted session에서 `checkpoint`를 명시하면 core `createTools`가 `rewind`를 안전 쌍으로
   자동 추가하므로 frontmatter에는 `rewind`를 중복하지 않지만 실제 runtime에는 둘 다 노출된다.

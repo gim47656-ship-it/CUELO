@@ -838,7 +838,7 @@ const taskBudgetRuntimeLimitKeys = ["primaryMaker", "reworkMaker", "total"];
 
 // 역할이 실제로 가질 수 있는 도구. 금지 목록만 두면 새 도구(git_finalize 등)가 조용히 통과한다.
 const roleToolAllowlists = {
-  maker: ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "checkpoint"],
+  maker: ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "checkpoint"],
 };
 
 const modelOrProviderIdPattern = /(?:\b(?:anthropic|openai(?:-codex)?|opencode(?:-[a-z]+)?|cursor)\/|\b(?:gpt|claude|gemini|grok|deepseek|qwen|kimi|glm|llama|mistral)-[a-z0-9._-]+)/i;

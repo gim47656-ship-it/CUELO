@@ -12,6 +12,7 @@ import {
   type CharacterAlias,
 } from "../character-voice";
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
+import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 
 import { matchBlockedCommand } from "./matcher";
 import { matchPowerShellSyntax } from "./powershell-syntax";
@@ -123,12 +124,15 @@ function sameMakerReservation(
 
 async function gitCommonDirectory(directory: string): Promise<string | undefined> {
   try {
+    const git = await selectGitExecutor(directory);
     const output = await runGit(
+      git,
       directory,
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     );
     const commonDirectory = output?.trim();
-    return commonDirectory ? normalizeRepositoryPath(commonDirectory) : undefined;
+    // Windows git은 `D:/repo/.git`을 돌려준다. Linux git 쪽 `/mnt/d/repo/.git`과 같은 키가 되게 되돌린다.
+    return commonDirectory ? normalizeRepositoryPath(git.toPosix(commonDirectory)) : undefined;
   } catch {
     return undefined;
   }
@@ -194,10 +198,11 @@ async function repositoryMatcher(
 const GIT_SPAWN_TIMEOUT_MS = 5000;
 const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-function runGit(directory: string, args: string[], input?: string): Promise<string | undefined> {
+function runGit(git: GitExecutor, directory: string, args: string[], input?: string): Promise<string | undefined> {
   const { promise, resolve: resolveOutput } = Promise.withResolvers<string | undefined>();
   const child = execFile(
-    "git",
+    // /mnt/<드라이브> 저장소는 Windows git이 훨씬 빠르다(9p stat). 판정은 git_finalize·앱과 같다.
+    git.command,
     args,
     {
       cwd: directory,
@@ -232,11 +237,13 @@ function runGit(directory: string, args: string[], input?: string): Promise<stri
  */
 async function takeTreeSnapshot(directory: string): Promise<TreeSnapshot | undefined> {
   try {
-    const prefixOutput = await runGit(directory, ["rev-parse", "--show-prefix"]);
+    const git = await selectGitExecutor(directory);
+    const prefixOutput = await runGit(git, directory, ["rev-parse", "--show-prefix"]);
     if (prefixOutput === undefined) return undefined;
     const scope = prefixOutput.trim().replace(/\\/g, "/");
 
     const statusOutput = await runGit(
+      git,
       directory,
       ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
     );
@@ -265,6 +272,7 @@ async function takeTreeSnapshot(directory: string): Promise<TreeSnapshot | undef
     const hashedPaths = entries.filter((entry) => !entry.deleted).map((entry) => entry.path);
     if (hashedPaths.length > 0) {
       const hashOutput = await runGit(
+        git,
         directory,
         ["hash-object", "--stdin-paths", "--no-filters"],
         hashedPaths.join("\n") + "\n",

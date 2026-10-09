@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, realpathSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { promisify } from "util";
 import { allowFileRoot } from "./allowed-roots";
+import { selectGitExecutor, type GitExecutor } from "./wsl-git";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,8 +49,14 @@ export function invalidateProjectCache(): void {
   globalThis.__ompProjectCache?.clear();
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+/**
+ * executor를 주면 그 git으로, 안 주면 Linux git으로 실행한다. 읽기(project·worktree 조회)만 executor를 고른다.
+ * worktree add/remove는 항상 Linux git이다. Windows git이 만든 `.git` 파일(`gitdir: D:/...`)은 Linux git이 못 따라가고,
+ * Linux git이 만든 `gitdir: /mnt/...` worktree는 Windows git이 못 따라간다. 이 앱이 만드는 worktree는 Linux 형식이다.
+ */
+async function git(cwd: string, args: string[], executor?: GitExecutor): Promise<string> {
+  const { stdout } = await execFileAsync(executor?.command ?? "git", args, {
+    cwd,
     timeout: 10_000,
     maxBuffer: 1024 * 1024,
     // Pin the message locale so error-text matching (e.g. the dirty-worktree
@@ -85,13 +92,17 @@ export async function resolveProject(cwd: string): Promise<ProjectInfo> {
       cache.set(cwd, { info, expiresAt: Date.now() + PROJECT_CACHE_TTL_MS });
       return info;
     }
+    const executor = await selectGitExecutor(cwd);
     const out = await git(cwd, [
       "rev-parse", "--path-format=absolute",
       "--git-common-dir", "--git-dir", "--show-toplevel",
       "--abbrev-ref", "HEAD",
-    ]);
-    const [commonDir, gitDir, toplevel, ref] = out.split("\n").map((l) => l.trim());
-    // git prints resolved (symlink-free) paths; normalize cwd the same way
+    ], executor);
+    const [commonDirRaw, gitDirRaw, toplevelRaw, ref] = out.split("\n").map((l) => l.trim());
+    // Windows git prints `D:/repo/.git`; callers compare POSIX paths.
+    const commonDir = executor.toPosix(commonDirRaw);
+    const gitDir = executor.toPosix(gitDirRaw);
+    const toplevel = executor.toPosix(toplevelRaw);
     let realCwd = cwd;
     try { realCwd = realpathSync(cwd); } catch { /* keep as-is */ }
     // For a linked worktree, --git-dir differs from --git-common-dir.
@@ -125,14 +136,16 @@ export async function resolveProject(cwd: string): Promise<ProjectInfo> {
 
 /** Main repo root (parent of the shared .git dir), or throws for non-git dirs */
 async function getRepoRoot(cwd: string): Promise<string> {
-  const commonDir = await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const executor = await selectGitExecutor(cwd);
+  const commonDir = executor.toPosix(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], executor));
   return dirname(commonDir);
 }
 
 export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
-  const out = await git(cwd, ["worktree", "list", "--porcelain"]);
+  const executor = await selectGitExecutor(cwd);
+  const out = await git(cwd, ["worktree", "list", "--porcelain"], executor);
   const worktrees: WorktreeInfo[] = [];
-  let current: (Partial<WorktreeInfo> & { prunable?: boolean }) | null = null;
+  let current: (Partial<WorktreeInfo> & { prunable?: boolean; linuxRegistered?: boolean }) | null = null;
 
   const flush = () => {
     if (current?.path) {
@@ -153,11 +166,14 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
   for (const line of out.split("\n")) {
     if (line.startsWith("worktree ")) {
       flush();
-      current = { path: line.slice("worktree ".length).trim() };
+      const raw = line.slice("worktree ".length).trim();
+      // Windows git cannot follow a worktree that Linux git registered (`/mnt/...`) and flags it prunable.
+      // Only the existsSync check below applies to those.
+      current = { path: executor.toPosix(raw), linuxRegistered: executor.windows && raw.startsWith("/") };
     } else if (line.startsWith("branch ") && current) {
       current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
     } else if (line.startsWith("prunable") && current) {
-      current.prunable = true;
+      if (!current.linuxRegistered) current.prunable = true;
     } else if (line.trim() === "") {
       flush();
     }

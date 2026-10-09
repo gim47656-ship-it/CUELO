@@ -13,13 +13,20 @@ import {
   parseGitPorcelainV1,
   type GitPorcelainEntry,
 } from "./git-status";
+import { selectGitExecutor, type GitExecutor } from "./wsl-git";
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_STATUS_MAX_BUFFER = 8 * 1024 * 1024;
 
-async function git(cwd: string, args: string[], maxBuffer = GIT_STATUS_MAX_BUFFER): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+async function git(
+  executor: GitExecutor,
+  cwd: string,
+  args: string[],
+  maxBuffer = GIT_STATUS_MAX_BUFFER,
+): Promise<string> {
+  const { stdout } = await execFileAsync(executor.command, args, {
+    cwd,
     timeout: GIT_TIMEOUT_MS,
     maxBuffer,
     env: { ...process.env, LC_ALL: "C" },
@@ -27,9 +34,11 @@ async function git(cwd: string, args: string[], maxBuffer = GIT_STATUS_MAX_BUFFE
   return stdout;
 }
 
-async function findRepositoryRoot(cwd: string): Promise<string | null> {
+async function findRepositoryRoot(executor: GitExecutor, cwd: string): Promise<string | null> {
   try {
-    return (await git(cwd, ["rev-parse", "--show-toplevel"])).trim() || null;
+    // Windows git은 `D:/repo`를 돌려준다. 호출자가 비교하는 POSIX 경로로 되돌린다.
+    const root = executor.toPosix((await git(executor, cwd, ["rev-parse", "--show-toplevel"])).trim());
+    return root || null;
   } catch {
     return null;
   }
@@ -44,24 +53,41 @@ function toGitPath(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }
 
-async function readStatusEntries(repositoryRoot: string): Promise<GitPorcelainEntry[]> {
-  const output = await git(repositoryRoot, [
+/**
+ * 세션 cwd로 좁히는 pathspec. cwd가 저장소 root이면 ".", 하위 디렉터리이면 literal 상대경로다.
+ * cwd가 root 밖으로 풀리면(symlink·대소문자 차이) undefined다. 하위 디렉터리 세션이 저장소 전체를
+ * 훑지 않게 하려는 것이다. 9p 위 큰 저장소에서는 이 차이가 곧 응답 시간이다.
+ */
+function cwdPathspec(repositoryRoot: string, cwd: string): string | undefined {
+  const relative = toGitPath(path.relative(repositoryRoot, cwd));
+  if (relative === "") return ".";
+  if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) return undefined;
+  return `:(literal)${relative}`;
+}
+
+async function readStatusEntries(
+  executor: GitExecutor,
+  repositoryRoot: string,
+  pathspec?: string,
+): Promise<GitPorcelainEntry[]> {
+  const output = await git(executor, repositoryRoot, [
     "status",
     "--porcelain=v1",
     "-z",
     "--untracked-files=all",
+    ...(pathspec && pathspec !== "." ? ["--", pathspec] : []),
   ]);
   return parseGitPorcelainV1(output);
 }
 
 async function readTrackedLineStats(
+  executor: GitExecutor,
   repositoryRoot: string,
-  cwd: string,
+  pathspec: string | undefined,
 ): Promise<{ additions: number; deletions: number }> {
-  const relativeCwd = toGitPath(path.relative(repositoryRoot, cwd));
-  const pathspec = relativeCwd || ".";
+  if (!pathspec) return { additions: 0, deletions: 0 };
   try {
-    const output = await git(repositoryRoot, [
+    const output = await git(executor, repositoryRoot, [
       "diff",
       "--no-color",
       "--no-ext-diff",
@@ -100,7 +126,8 @@ function countUntrackedTextLines(filePath: string): number {
 }
 
 export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
-  const repositoryRoot = await findRepositoryRoot(cwd);
+  const executor = await selectGitExecutor(cwd);
+  const repositoryRoot = await findRepositoryRoot(executor, cwd);
   if (!repositoryRoot) {
     return {
       isGitRepository: false,
@@ -111,9 +138,10 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
     };
   }
 
+  const pathspec = cwdPathspec(repositoryRoot, cwd);
   const [entries, trackedLineStats] = await Promise.all([
-    readStatusEntries(repositoryRoot),
-    readTrackedLineStats(repositoryRoot, cwd),
+    readStatusEntries(executor, repositoryRoot, pathspec),
+    readTrackedLineStats(executor, repositoryRoot, pathspec),
   ]);
   const files = entries.flatMap((entry): GitFileStatus[] => {
     const filePath = path.resolve(repositoryRoot, entry.path);
@@ -163,6 +191,7 @@ function createAddedFilePatch(gitPath: string, content: string): string {
 }
 
 async function createTrackedFilePatch(
+  executor: GitExecutor,
   repositoryRoot: string,
   relativePath: string,
   originalPath?: string,
@@ -171,7 +200,7 @@ async function createTrackedFilePatch(
     ? [originalPath, relativePath]
     : [relativePath];
   try {
-    return await git(repositoryRoot, [
+    return await git(executor, repositoryRoot, [
       "diff",
       "--no-color",
       "--no-ext-diff",
@@ -186,18 +215,21 @@ async function createTrackedFilePatch(
 }
 
 export async function getGitFileDiff(cwd: string, filePath: string): Promise<GitFileDiffResponse> {
-  const repositoryRoot = await findRepositoryRoot(cwd);
+  const executor = await selectGitExecutor(cwd);
+  const repositoryRoot = await findRepositoryRoot(executor, cwd);
   if (!repositoryRoot || !isWithinPath(repositoryRoot, filePath)) return { supported: false };
 
   const resolvedFilePath = path.resolve(filePath);
   const relativePath = toGitPath(path.relative(repositoryRoot, resolvedFilePath));
-  const entries = await readStatusEntries(repositoryRoot);
+  // cwd 밖 파일은 cwd pathspec에 걸리지 않으므로 그때만 저장소 전체를 본다.
+  const pathspec = isWithinPath(cwd, resolvedFilePath) ? cwdPathspec(repositoryRoot, cwd) : undefined;
+  const entries = await readStatusEntries(executor, repositoryRoot, pathspec);
   const entry = entries.find((candidate) => candidate.path === relativePath);
   if (!entry) return { supported: false };
 
   const { status } = classifyGitStatus(entry);
   if (status === "deleted") {
-    const patch = await createTrackedFilePatch(repositoryRoot, relativePath, entry.originalPath);
+    const patch = await createTrackedFilePatch(executor, repositoryRoot, relativePath, entry.originalPath);
     if (!patch?.includes("\n@@ ")) return { supported: false };
     return { supported: true, status, patch };
   }
@@ -218,7 +250,7 @@ export async function getGitFileDiff(cwd: string, filePath: string): Promise<Git
   if (status === "untracked") {
     patch = createAddedFilePatch(relativePath, newContent);
   } else {
-    const trackedPatch = await createTrackedFilePatch(repositoryRoot, relativePath, entry.originalPath);
+    const trackedPatch = await createTrackedFilePatch(executor, repositoryRoot, relativePath, entry.originalPath);
     if (trackedPatch === null) {
       if (status !== "added") return { supported: false };
       patch = createAddedFilePatch(relativePath, newContent);

@@ -304,9 +304,11 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
 - 넘을 수 없는 허용 경계와 조사를 시작할 파일·심볼은 구분해 적는다. 경계 안이고 다른 Writer와
   겹치지 않으면 직접 원인이 있는 인접 파일까지 담당자가 맡는다. 사용자가 파일을 지정했으면 그
   목록이 곧 경계다. 새 프로젝트, 다른 소유자의 파일, 계약 변경, 새 위험은 Main이 먼저 조정한다.
-- **child에게 가는 발주 산문은 영어다(2026-10-09 사용자 결정).** 과제·배치 `context`의 첫 발주와 그 뒤
-  `write agent://` 메시지의 조향·체크포인트 회신·재작업 인계·상태 질의를 모두 영어로 쓴다. child가 사용자
-  화면에 쓰는 진행·최종 응답은 브리프가 영어여도 한국어이며 선택된 character voice를 따른다.
+- **Main과 child 사이의 산문은 양방향 모두 영어다(2026-10-09 사용자 결정).** 과제·배치 `context`의 첫 발주와 그 뒤
+  `write agent://` 메시지의 조향·체크포인트 회신·재작업 인계·상태 질의를 영어로 쓴다. child의 진행 발화·완료 보고·
+  편집 전 체크포인트·peer 메시지도 Main만 읽으므로 영어다. 사용자는 child 보고를 직접 읽을 필요가 없고, Main이 필요한
+  내용을 한국어로 옮겨 전한다. 예외는 캐릭터 호출(summon)로 만든 child가 사용자에게 직접 하는 답으로, 사용자에게 하는
+  말이라 한국어이며 선택된 character voice를 따른다.
   `TASK_GUARD` field와 `# Target`·`# Change`·`# Acceptance` 같은 구조 heading, 모델 ID, 코드·명령·경로·
   파일명·API명·원본 오류 메시지는 원문을 유지하고, 같은 브리프를 두 언어로 병기하는 bilingual fallback은 두지 않는다.
   정본은 `harness-policy.json` `briefContextRelay.taskBriefLanguage`·`childVisibleLanguage`·

@@ -1030,3 +1030,134 @@ describe("async repository matching", () => {
     }
   });
 });
+
+/** WSL에서 쓸 수 있는 drive mount 아래 디렉터리. interop git.exe가 없거나 쓸 수 있는 drive가 없으면 undefined다. */
+async function findWritableDriveBase(): Promise<string | undefined> {
+  if (process.platform !== "linux" || !process.env.WSL_DISTRO_NAME || !Bun.which("git.exe")) return undefined;
+  for (const base of ["/mnt/c/Users/Public", "/mnt/d", "/mnt/e", "/mnt/f"]) {
+    try {
+      await rm(await mkdtemp(join(base, "omp-probe-")), { recursive: true });
+      return base;
+    } catch {
+      // 다음 drive를 본다.
+    }
+  }
+  return undefined;
+}
+
+const driveBase = await findWritableDriveBase();
+
+/** 진짜 git.exe 앞에 호출 cwd와 인자를 남기는 shim을 PATH 앞에 둔다. 어느 git으로 실행됐는지 이 로그로 본다. */
+async function installGitExeShim(root: string) {
+  const real = Bun.which("git.exe")!;
+  const log = join(root, "git-exe.log");
+  const directory = join(root, "shim");
+  await mkdir(directory);
+  await writeFile(
+    join(directory, "git.exe"),
+    `#!/bin/sh\nprintf '%s\\t%s\\n' "$PWD" "$*" >> '${log}'\nexec '${real}' "$@"\n`,
+  );
+  await chmod(join(directory, "git.exe"), 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${directory}:${previousPath}`;
+  return {
+    readLog: async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean),
+    restore: () => {
+      process.env.PATH = previousPath;
+    },
+  };
+}
+
+async function initDriveRepository(repository: string, files: Record<string, string>): Promise<void> {
+  await mkdir(repository, { recursive: true });
+  for (const [relative, content] of Object.entries(files)) {
+    await mkdir(dirname(join(repository, relative)), { recursive: true });
+    await writeFile(join(repository, relative), content);
+  }
+  await runFixtureGit(repository, ["init", "--quiet"]);
+  await runFixtureGit(repository, ["config", "user.name", "OMP Test"]);
+  await runFixtureGit(repository, ["config", "user.email", "omp-test@example.invalid"]);
+  await runFixtureGit(repository, ["config", "commit.gpgsign", "false"]);
+  await runFixtureGit(repository, ["config", "core.autocrlf", "false"]);
+  await runFixtureGit(repository, ["add", "--", "."]);
+  await runFixtureGit(repository, ["commit", "--quiet", "-m", "fixture"]);
+}
+
+// 같은 drive 저장소를 Windows git(main)과 Linux git(POSIX gitdir worktree)이 각각 열어도 같은 저장소로 비교돼야 한다.
+describe("WSL drive repository git executor", () => {
+  test.skipIf(!driveBase)("Windows git이 본 common-dir과 POSIX gitdir worktree의 Linux git 결과를 같은 저장소로 비교한다", async () => {
+    const root = await mkdtemp(join(driveBase!, "omp-wslgit-"));
+    const shim = await installGitExeShim(root);
+    try {
+      const main = join(root, "main");
+      const other = join(root, "other");
+      const linked = join(root, "linked");
+      await initDriveRepository(main, { "tracked.txt": "a\n" });
+      await initDriveRepository(other, { "tracked.txt": "b\n" });
+      // Linux git이 만든 worktree의 .git 파일은 `gitdir: /mnt/...`다. Windows git은 열지 못하므로 Linux git이어야 한다.
+      await runFixtureGit(main, ["worktree", "add", "--quiet", "-b", "linked", linked]);
+
+      const harness = createGuardHarness({ cwd: linked });
+      const sameRepository = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "drive-same-repository",
+        input: { command: "git add tracked.txt", cwd: main },
+      });
+      expect(sameRepository).toMatchObject({ block: true });
+      // session(linked)은 Linux git, target(main)만 git.exe다.
+      let calls = await shim.readLog();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain(`${main}\t`);
+      expect(calls[0]).toContain("--git-common-dir");
+
+      const otherRepository = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "drive-other-repository",
+        input: { command: "git add tracked.txt", cwd: other },
+      });
+      expect(otherRepository).toBeUndefined();
+      calls = await shim.readLog();
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toContain(`${other}\t`);
+    } finally {
+      shim.restore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!driveBase)("drive 저장소의 ownership 스냅샷을 git.exe로 읽고 한글 경로를 cwd 기준 POSIX 상대경로로 보존한다", async () => {
+    const root = await mkdtemp(join(driveBase!, "omp-wslgit-"));
+    const shim = await installGitExeShim(root);
+    try {
+      const repository = join(root, "repository");
+      const workspace = join(repository, "workspace");
+      await initDriveRepository(repository, {
+        "workspace/owned/kept.txt": "owned-baseline\n",
+        "workspace/outside/한글.txt": "before\n",
+        "workspace/outside/unchanged.txt": "same\n",
+      });
+      const harness = createGuardHarness({ cwd: workspace });
+      await harness.emit("tool_call", makerTaskEvent("drive-snapshot", "DriveSnapshot"));
+      await Promise.all([
+        writeFile(join(workspace, "owned", "kept.txt"), "owned-after\n"),
+        writeFile(join(workspace, "outside", "한글.txt"), "after\n"),
+        writeFile(join(workspace, "outside", "new.txt"), "untracked\n"),
+      ]);
+      const result = await harness.emit("tool_result", settledTaskResult("drive-snapshot", "DriveSnapshot"));
+      const report = renderedText(result)
+        .split("\n")
+        .find((text) => text.includes("[OwnershipGuard]"));
+      const outside = /\soutside=([^ ]+)/.exec(report ?? "")?.[1]?.split(",") ?? [];
+      expect(outside).toEqual(expect.arrayContaining(["outside/한글.txt", "outside/new.txt"]));
+      expect(outside).not.toContain("outside/unchanged.txt");
+      expect(outside).not.toContain("owned/kept.txt");
+      const subcommands = (await shim.readLog()).map((line) => line.split("\t")[1]?.split(" ")[0]);
+      expect(subcommands).toEqual(expect.arrayContaining(["rev-parse", "status", "hash-object"]));
+    } finally {
+      shim.restore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
