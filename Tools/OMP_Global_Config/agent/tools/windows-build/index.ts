@@ -14,7 +14,7 @@ export interface WindowsBuildParams {
   configuration?: string;
   platform?: string;
   target?: string;
-  properties?: Record<string, string>;
+  msbuildProperties?: Record<string, string>;
   restore?: boolean;
   maxErrors?: number;
   timeoutSeconds?: number;
@@ -116,7 +116,7 @@ export function buildMsbuildArgs(params: Omit<WindowsBuildParams, "project">, pr
   const properties: Array<[string, string]> = [];
   if (params.configuration !== undefined) properties.push(["Configuration", validateToken("configuration", params.configuration, /^[\w .+-]+$/)]);
   if (params.platform !== undefined) properties.push(["Platform", validateToken("platform", params.platform, /^[\w .+-]+$/)]);
-  for (const [name, value] of Object.entries(params.properties ?? {})) {
+  for (const [name, value] of Object.entries(params.msbuildProperties ?? {})) {
     if (!/^[A-Za-z_][\w.]*$/.test(name)) throw new Error(`windows_build: 속성 이름이 올바르지 않다: ${JSON.stringify(name)}`);
     if (DENIED_PROPERTIES[name.toLowerCase()]) throw new Error(`windows_build: 빌드만 허용하므로 속성 ${name}은 쓸 수 없다.`);
     if (/[\r\n\0]/.test(value)) throw new Error(`windows_build: 속성 ${name} 값에 줄바꿈이 있다.`);
@@ -305,7 +305,9 @@ const factory: CustomToolFactory = (pi) => ({
     configuration: pi.zod.string().optional().describe("Configuration property, e.g. Debug or Release"),
     platform: pi.zod.string().optional().describe("Platform property, e.g. x86, x64, Any CPU"),
     target: pi.zod.string().optional().describe("MSBuild target(s), e.g. Rebuild or Clean;Build. Run/Deploy/Publish/Install are rejected"),
-    properties: pi.zod.record(pi.zod.string()).optional().describe("Extra -p:Name=Value properties"),
+    // Not named `properties`: the core wire-schema pass turns the empty `properties` map of a
+    // parameter with that name into `true`, and Anthropic/OpenAI then reject the whole request.
+    msbuildProperties: pi.zod.record(pi.zod.string()).optional().describe("Extra -p:Name=Value properties"),
     restore: pi.zod.boolean().optional().describe("Add -restore before building (default false)"),
     maxErrors: pi.zod.number().optional().describe("Number of error lines to return (default 20, max 200)"),
     timeoutSeconds: pi.zod.number().optional().describe("Build time limit in seconds (default 600, max 3600)"),

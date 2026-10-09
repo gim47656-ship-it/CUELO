@@ -46,7 +46,7 @@ describe("buildMsbuildArgs", () => {
 
   test("adds configuration, platform with a space, properties, targets and restore", () => {
     const args = buildMsbuildArgs(
-      { configuration: "Release", platform: "Any CPU", target: "Clean, Build", properties: { OutputPath: "bin\\x\\" }, restore: true },
+      { configuration: "Release", platform: "Any CPU", target: "Clean, Build", msbuildProperties: { OutputPath: "bin\\x\\" }, restore: true },
       "C:\\p\\App.vbproj", log,
     );
     expect(args.slice(4)).toEqual([
@@ -58,8 +58,8 @@ describe("buildMsbuildArgs", () => {
   test("rejects run/deploy targets, build-event properties and injection-shaped values", () => {
     expect(() => buildMsbuildArgs({ target: "Build;Publish" }, "p.sln", log)).toThrow("Publish");
     expect(() => buildMsbuildArgs({ target: "Run" }, "p.sln", log)).toThrow("Run");
-    expect(() => buildMsbuildArgs({ properties: { PostBuildEvent: "copy a b" } }, "p.sln", log)).toThrow("PostBuildEvent");
-    expect(() => buildMsbuildArgs({ properties: { "A=B": "x" } }, "p.sln", log)).toThrow("속성 이름");
+    expect(() => buildMsbuildArgs({ msbuildProperties: { PostBuildEvent: "copy a b" } }, "p.sln", log)).toThrow("PostBuildEvent");
+    expect(() => buildMsbuildArgs({ msbuildProperties: { "A=B": "x" } }, "p.sln", log)).toThrow("속성 이름");
     expect(() => buildMsbuildArgs({ configuration: "Debug;Evil" }, "p.sln", log)).toThrow("configuration");
     expect(() => buildMsbuildArgs({}, "p.sln", "C:\\a;b\\x.log")).toThrow("';'");
   });
