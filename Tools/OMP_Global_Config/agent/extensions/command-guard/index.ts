@@ -24,7 +24,7 @@ import {
   hasUnreportedChildren,
   matchBlockedEvalModelBridge,
   noteUserRedirect,
-  readCancelledJobIds,
+  readCancelledChildIds,
   readSettledTaskIds,
   readSpawnProgress,
   registerSpawnedMakers,
@@ -34,12 +34,14 @@ import {
   reservedMakers,
   resetOwnershipState,
   resetTaskGuardState,
-  rollbackTaskCall,
+  settleTaskCall,
   stripScopePrefix,
   type EvalCallInput,
   type MakerSpawn,
   type OwnershipState,
   type TaskCallInput,
+  type TaskCallOutcome,
+  type TaskJobRow,
   type TreeSnapshot,
 } from "./task-guard";
 
@@ -55,6 +57,35 @@ function normalizeRelativePath(value: string): string {
 /** 이벤트 컨텍스트의 세션 cwd. CUELO처럼 process.cwd()가 세션 cwd가 아닐 수 있어 우선한다. */
 function eventSessionCwd(ctx: { cwd?: string } | undefined): string {
   return typeof ctx?.cwd === "string" && ctx.cwd ? resolve(ctx.cwd) : process.cwd();
+}
+
+/**
+ * 세션이 소유한 task job(running+recent)을 읽는다. 조회 API가 없거나 실패하면 undefined로 두어 등록 여부를
+ * 모르는 것으로 다룬다. 빈 registry로 간주하면 실제로 등록된 child의 예약을 해제할 수 있다.
+ */
+function readTaskJobRegistry(ctx: unknown): TaskJobRow[] | undefined {
+  if (!ctx || typeof ctx !== "object" || !("getAsyncJobSnapshot" in ctx)) return undefined;
+  const read = ctx.getAsyncJobSnapshot;
+  if (typeof read !== "function") return undefined;
+  let snapshot: unknown;
+  try {
+    snapshot = read.call(ctx, { recentLimit: Number.MAX_SAFE_INTEGER });
+  } catch {
+    return undefined;
+  }
+  if (!snapshot || typeof snapshot !== "object" || !("running" in snapshot) || !("recent" in snapshot)) {
+    return undefined;
+  }
+  if (!Array.isArray(snapshot.running) || !Array.isArray(snapshot.recent)) return undefined;
+  const rows: TaskJobRow[] = [];
+  for (const job of [...snapshot.running, ...snapshot.recent]) {
+    if (!job || typeof job !== "object" || !("type" in job) || job.type !== "task") continue;
+    if (!("id" in job) || typeof job.id !== "string") continue;
+    if (!("startTime" in job) || typeof job.startTime !== "number") continue;
+    const agentId = "agentId" in job && typeof job.agentId === "string" ? job.agentId : undefined;
+    rows.push({ id: job.id, startTime: job.startTime, ...(agentId ? { agentId } : {}) });
+  }
+  return rows;
 }
 
 /**
@@ -637,6 +668,40 @@ export default function commandGuard(pi: ExtensionAPI): void {
     return reportOwnedChildren(ownership, stillPendingKeys, tree);
   };
 
+  // tool-capable child가 실제로 뜨지 못했으면 첫 행동 계약을 다시 요구한다.
+  // 반면 SHION은 검증된 exact WEB6 eval을 실제 호출한 것으로 상담 시도가 끝난다.
+  // provider/model 오류까지 pending으로 되돌리면 read/todo/진단을 전부 막아 원인 확인도
+  // 사용자의 원래 작업 재개도 불가능해진다.
+  const restoreRetryableSummons = (claimedAliases: readonly CharacterAlias[]): void => {
+    const retryableAliases = claimedAliases.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
+    pendingSummons = [
+      ...retryableAliases,
+      ...pendingSummons.filter((alias) => !retryableAliases.includes(alias)),
+    ];
+  };
+
+  /**
+   * task 호출 결과를 TaskBudget과 OwnershipGuard에 함께 반영한다. 해제된 항목은 뜨지 않은 child의 임시
+   * ownership을 버리고, 뒤늦은 시작 증거로 다시 과금한 항목은 baseline 없이(unobserved) 추적을 되살린다.
+   */
+  const settleTaskOutcome = (
+    toolCallId: string,
+    outcome: TaskCallOutcome,
+    progress: readonly { index: number; id: string }[],
+  ): void => {
+    const before = reservedMakers(taskGuard, toolCallId) ?? [];
+    const settlement = settleTaskCall(taskGuard, toolCallId, outcome);
+    if (!settlement) return;
+    const released = before.filter((maker) => settlement.released.includes(maker.index));
+    if (released.length > 0) dropOwnedChildren(ownership, toolCallId, released);
+    const after = reservedMakers(taskGuard, toolCallId);
+    if (!after) return;
+    const recharged = after.filter((maker) => settlement.recharged.includes(maker.index));
+    if (recharged.length > 0) registerSpawnedMakers(ownership, toolCallId, recharged, undefined);
+    // 이름 없는 spawn은 결과의 progress id를 별칭으로 연결해야 나중에 완료를 되찾을 수 있다.
+    bindSpawnAliases(ownership, toolCallId, after, progress);
+  };
+
   pi.on("session_start", () => {
     ownershipGeneration += 1;
     resetTaskGuardState(taskGuard);
@@ -868,36 +933,26 @@ export default function commandGuard(pi: ExtensionAPI): void {
     if (reason) return { block: true, reason };
   });
 
-  // preflight를 통과했지만 실제 task tool 자체가 실패한 경우에는 예약한 spawn budget을 되돌리고
-  // 뜨지도 않은 child의 ownership 추적도 버린다. `write proc://<id>/kill`로 발주를 되돌린 경우에도 런타임이
-  // 취소를 확인한 child만 상한 안에서 환불하며, 취소된 child도 트리가 바뀌었으면 보고한다.
+  // 실행된 task 호출(tool_result)과 실행 전에 끝난 호출(tool_execution_end)은 같은 항목 단위 정산을 탄다.
+  // 뜨지 않은 child의 예약·임시 ownership은 그 호출 것만 되돌리고, 시작 증거가 있는 child는 오류로 끝나도
+  // 유지한다. `write proc://<id>/kill`로 발주를 되돌린 경우에도 런타임이 취소를 확인한 child만 canonical
+  // agent id로 찾아 상한 안에서 환불하며, 취소된 child도 트리가 바뀌었으면 보고한다.
   pi.on("tool_result", async (event, ctx) => {
     const claimedAliases = summonCalls.get(event.toolCallId);
     if (claimedAliases) {
       summonCalls.delete(event.toolCallId);
-      if (event.isError) {
-        // tool-capable child가 실제로 뜨지 못했으면 첫 행동 계약을 다시 요구한다.
-        // 반면 SHION은 검증된 exact WEB6 eval을 실제 호출한 것으로 상담 시도가 끝난다.
-        // provider/model 오류까지 pending으로 되돌리면 read/todo/진단을 전부 막아 원인 확인도
-        // 사용자의 원래 작업 재개도 불가능해진다.
-        const retryableAliases = claimedAliases.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
-        pendingSummons = [
-          ...retryableAliases,
-          ...pendingSummons.filter((alias) => !retryableAliases.includes(alias)),
-        ];
-      }
+      if (event.isError) restoreRetryableSummons(claimedAliases);
     }
     if (event.toolName === "task") {
-      const makers = reservedMakers(taskGuard, event.toolCallId);
-      if (event.isError) {
-        rollbackTaskCall(taskGuard, event.toolCallId);
-        if (makers) dropOwnedChildren(ownership, event.toolCallId, makers);
-        return;
-      }
-      if (!makers || makers.length === 0) return;
       const progress = readSpawnProgress(event.details);
-      // 이름 없는 spawn은 이 결과의 progress id를 별칭으로 연결해야 나중에 완료를 되찾을 수 있다.
-      bindSpawnAliases(ownership, event.toolCallId, makers, progress);
+      settleTaskOutcome(
+        event.toolCallId,
+        { executed: true, isError: event.isError, details: event.details, registry: readTaskJobRegistry(ctx) },
+        progress,
+      );
+      if (event.isError) return;
+      const makers = reservedMakers(taskGuard, event.toolCallId);
+      if (!makers || makers.length === 0) return;
       const settled = progress
         .filter((row) => row.status && row.status !== "running" && row.status !== "pending")
         .map((row) => row.id);
@@ -915,7 +970,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
     let cancelled: string[] = [];
     let jobDetails: unknown;
     if (event.toolName === "write" && /^proc:\/\/[^/?#]+\/kill$/.test(path)) {
-      cancelled = readCancelledJobIds(details);
+      cancelled = readCancelledChildIds(details);
       if (cancelled.length > 0) releaseCancelledSpawns(taskGuard, cancelled);
       jobDetails = proc;
     } else if (event.toolName === "wait") {
@@ -932,5 +987,24 @@ export default function commandGuard(pi: ExtensionAPI): void {
     const lines = await reportPendingOwnedChildren(ids, ctx);
     if (lines.length === 0) return;
     return { content: [...event.content, { type: "text", text: lines.join("\n") }] };
+  });
+
+  // core는 tool_result 없이 끝난 호출(하류 guard 거절·승인 거부·승인 예외·실행 전 abort·skip)에도
+  // tool_execution_end를 낸다. 이때 claim한 summon도 실행되지 않았다. tool_result를 이미 본 호출은
+  // summon 기록이 지워졌고 settleTaskCall도 결과를 바꾸지 않는다.
+  pi.on("tool_execution_end", (event, ctx) => {
+    const claimedAliases = summonCalls.get(event.toolCallId);
+    if (claimedAliases) {
+      summonCalls.delete(event.toolCallId);
+      if (event.isError) restoreRetryableSummons(claimedAliases);
+    }
+    if (event.toolName !== "task") return;
+    const result: unknown = event.result;
+    const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
+    settleTaskOutcome(
+      event.toolCallId,
+      { executed: false, isError: event.isError, details, registry: readTaskJobRegistry(ctx) },
+      readSpawnProgress(details),
+    );
   });
 }

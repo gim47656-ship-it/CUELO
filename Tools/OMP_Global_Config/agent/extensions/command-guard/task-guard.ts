@@ -31,11 +31,31 @@ type Lock = {
 
 type Delta = Usage;
 
-type Reservation = {
+/**
+ * 예약한 tasks[] 항목 하나의 상태. 결과를 관측하면 reserved는 started 또는 released로 갈린다.
+ * 시작 증거는 단조라 released 항목도 뒤늦은 증거가 오면 다시 과금하고, 취소 환불한 refunded는 종착이다.
+ */
+type ChildState = "reserved" | "released" | "started" | "refunded";
+
+type ReservedChild = {
+  /** 원본 tasks[] 위치. progress[].index가 같은 기준을 쓴다. */
+  index: number;
   delta: Delta;
-  names: string[];
+  /** 이름 있는 항목만 취소 환불 대상이다. */
+  refundable: boolean;
+  /** 결과 progress가 이 index에 준 canonical agent id. 표시 이름과 다를 수 있다(`Fix-2`). */
+  agentId?: string;
+  state: ChildState;
+};
+
+type Reservation = {
+  children: ReservedChild[];
   /** 이 호출이 띄운 maker 계열 항목들(순서 = tasks[] 순서). 이름 없는 항목은 name이 없다. */
   makers: MakerSpawn[];
+  /** 예약 시각. receipt 없이 실패한 호출 뒤에 등록된 job을 가리는 기준이다. */
+  reservedAt: number;
+  /** tool_result를 관측했다. core는 tool.execute를 부른 호출에만 tool_result를 낸다. */
+  executed: boolean;
 };
 
 /** maker 계열 spawn 하나가 소유한다고 선언한 경로. */
@@ -49,9 +69,8 @@ export type MakerSpawn = {
 export type TaskGuardState = {
   usage: Usage;
   lock?: Lock;
+  /** toolCallId → 예약. 취소 환불과 뒤늦은 결과 판정에 쓰므로 요청이 끝날 때까지 남긴다. */
   reservations: Map<string, Reservation>;
-  /** child 이름 → 취소 확인 시 되돌릴 delta. 이름 없는 spawn은 식별할 수 없어 환불 대상이 아니다. */
-  refundable: Map<string, Delta>;
   /** 이번 요청에서 이미 되돌린 child 슬롯 수. */
   refunded: number;
 };
@@ -108,7 +127,6 @@ export function createTaskGuardState(): TaskGuardState {
   return {
     usage: zeroUsage(),
     reservations: new Map(),
-    refundable: new Map(),
     refunded: 0,
   };
 }
@@ -117,7 +135,6 @@ export function resetTaskGuardState(state: TaskGuardState): void {
   state.usage = zeroUsage();
   state.lock = undefined;
   state.reservations.clear();
-  state.refundable.clear();
   state.refunded = 0;
 }
 
@@ -405,14 +422,16 @@ export function reserveTaskCall(
   toolCallId: string,
   input: TaskCallInput,
 ): TaskGuardDecision {
-  if (state.reservations.has(toolCallId)) return { ok: true };
+  // 같은 호출의 중복 tool_call은 다시 세지 않는다. 전부 해제된 예약만 새 호출처럼 다시 예약한다.
+  const existing = state.reservations.get(toolCallId);
+  if (existing?.children.some((child) => child.state !== "released")) return { ok: true };
 
   const normalized = normalizeSpawnItems(input);
   if (typeof normalized === "string") return { ok: false, reason: normalized };
 
   let candidateLock = state.lock;
   const delta = zeroUsage();
-  const refundable: Array<{ name: string; delta: Delta }> = [];
+  const children: ReservedChild[] = [];
   const makers: MakerSpawn[] = [];
   // 파생이 일어난 항목만 정규 블록으로 교체한다. 나머지 항목은 원본 문자열을 그대로 쓴다.
   const rewritten = new Map<number, string>();
@@ -435,7 +454,7 @@ export function reserveTaskCall(
     const itemDelta = validateItem(item, metadata, candidateLock);
     if (typeof itemDelta === "string") return { ok: false, reason: itemDelta };
     addDelta(delta, itemDelta);
-    if (item.name) refundable.push({ name: item.name, delta: itemDelta });
+    children.push({ index, delta: itemDelta, refundable: Boolean(item.name), state: "reserved" });
     if (isMakerAgent(item.agent)) {
       makers.push({
         ...(item.name ? { name: item.name } : {}),
@@ -459,12 +478,7 @@ export function reserveTaskCall(
 
   if (!state.lock) state.lock = candidateLock;
   addDelta(state.usage, delta);
-  state.reservations.set(toolCallId, {
-    delta,
-    names: refundable.map((entry) => entry.name),
-    makers,
-  });
-  for (const entry of refundable) state.refundable.set(entry.name, entry.delta);
+  state.reservations.set(toolCallId, { children, makers, reservedAt: Date.now(), executed: false });
   if (rewritten.size === 0 && agentFilled.size === 0) return { ok: true };
   return { ok: true, input: replaceTaskBodies(input, rewritten, agentFilled) };
 }
@@ -499,20 +513,134 @@ function replaceTaskBodies(
   };
 }
 
-export function rollbackTaskCall(state: TaskGuardState, toolCallId: string): void {
-  const reservation = state.reservations.get(toolCallId);
-  if (!reservation) return;
-  subtractDelta(state.usage, reservation.delta);
-  state.reservations.delete(toolCallId);
-  for (const name of reservation.names) state.refundable.delete(name);
-  if (state.usage.total === 0) state.lock = undefined;
+/** handler ctx의 async job registry(running+recent)에서 읽은 task job 하나. */
+export type TaskJobRow = {
+  id: string;
+  agentId?: string;
+  startTime: number;
+};
+
+export type TaskCallOutcome = {
+  /** tool_result로 관측했다. false는 tool_result 없이 끝난 tool_execution_end다. */
+  executed: boolean;
+  isError: boolean;
+  details: unknown;
+  /** 세션 task job registry. 조회 API가 없거나 실패하면 undefined이며, 빈 registry와 달리 등록 여부를 모른다는 뜻이다. */
+  registry?: readonly TaskJobRow[];
+};
+
+export type TaskCallSettlement = {
+  /** 이번에 해제한 tasks[] index. 뜨지 않은 child의 임시 ownership을 버릴 대상이다. */
+  released: number[];
+  /** 해제했다가 뒤늦은 시작 증거로 다시 과금한 tasks[] index. */
+  recharged: number[];
+};
+
+/** sync spawn 결과 details.results[]의 child id. 결과가 있다는 것은 그 child가 실제로 실행됐다는 뜻이다. */
+function readSpawnResultIds(details: unknown): string[] {
+  if (!details || typeof details !== "object" || !("results" in details) || !Array.isArray(details.results)) {
+    return [];
+  }
+  return details.results.flatMap((row: unknown) =>
+    row && typeof row === "object" && "id" in row && typeof row.id === "string" ? [row.id] : [],
+  );
 }
 
-/** 이 호출이 띄운 maker 계열 항목들(순서 = tasks[] 순서). 예약이 없으면 undefined. */
+function hasAsyncJob(details: unknown): boolean {
+  if (!details || typeof details !== "object" || !("async" in details)) return false;
+  const async: unknown = details.async;
+  return Boolean(async && typeof async === "object" && "jobId" in async && typeof async.jobId === "string");
+}
+
+/** 예약 시각 이후 등록됐는데 어느 예약 항목에도 묶이지 않은 task job이 있는지 본다. */
+function hasUnattributedJob(
+  state: TaskGuardState,
+  reservation: Reservation,
+  registry: readonly TaskJobRow[],
+): boolean {
+  const bound = new Set<string>();
+  for (const other of state.reservations.values()) {
+    for (const child of other.children) if (child.agentId) bound.add(child.agentId);
+  }
+  return registry.some((job) => job.startTime >= reservation.reservedAt && !bound.has(job.agentId ?? job.id));
+}
+
+/**
+ * task 호출의 결과를 항목 단위로 반영한다. 시작 증거는 실행 흔적(`running`·`completed` 행, results[] id)이나
+ * registry에 그 agent id로 등록된 task job이다. 증거가 있으면 started로 묶고, 해제했던 항목이면 다시 과금한다.
+ * 해제는 reserved 항목에서만 일어난다.
+ * - tool_result 없는 end: core가 tool.execute를 부르지 않았으므로(하류 guard·승인 거부·실행 전 abort·skip) 해제한다.
+ * - 행은 있는데 증거가 없는 항목: registry를 읽었으면 등록 실패로 해제하고, 못 읽었으면 유지한다.
+ * - 행·results·async job이 모두 없는 결과(모드 오류·전부 등록 실패): child가 없으므로 해제한다.
+ * - details 없는 isError(실행 중 예외로 receipt 소실): 예약 이후 묶이지 않은 task job이 없다고 registry가 확인할 때만 해제한다.
+ * started 항목은 이후 오류 결과나 end로 해제하지 않고, refunded 항목은 다시 과금하지 않는다.
+ * 예약이 없으면 undefined, tool_result를 이미 본 호출의 end는 아무것도 바꾸지 않는다.
+ */
+export function settleTaskCall(
+  state: TaskGuardState,
+  toolCallId: string,
+  outcome: TaskCallOutcome,
+): TaskCallSettlement | undefined {
+  const reservation = state.reservations.get(toolCallId);
+  if (!reservation) return undefined;
+  const settlement: TaskCallSettlement = { released: [], recharged: [] };
+  if (!outcome.executed && reservation.executed) return settlement;
+  if (outcome.executed) reservation.executed = true;
+
+  const rows = readSpawnProgress(outcome.details);
+  const resultIds = readSpawnResultIds(outcome.details);
+  const registered = outcome.registry
+    ? new Set(outcome.registry.flatMap((job) => (job.agentId ? [job.agentId] : [])))
+    : undefined;
+  const detailsMissing = !outcome.details || typeof outcome.details !== "object";
+  const noChildRecord = rows.length === 0 && resultIds.length === 0 && !hasAsyncJob(outcome.details);
+  const receiptLostWithoutJob =
+    outcome.executed &&
+    outcome.isError &&
+    detailsMissing &&
+    outcome.registry !== undefined &&
+    !hasUnattributedJob(state, reservation, outcome.registry);
+
+  for (const child of reservation.children) {
+    const row = rows.find((candidate) => candidate.index === child.index);
+    if (row) {
+      child.agentId ??= row.id;
+      const ran = row.status === "running" || row.status === "completed" || resultIds.includes(row.id);
+      if (ran || registered?.has(row.id)) {
+        if (child.state === "released") {
+          addDelta(state.usage, child.delta);
+          settlement.recharged.push(child.index);
+        }
+        if (child.state === "reserved" || child.state === "released") child.state = "started";
+        continue;
+      }
+      if (registered) releaseChild(state, child, settlement);
+      continue;
+    }
+    if (!outcome.executed || receiptLostWithoutJob || (!detailsMissing && noChildRecord)) {
+      releaseChild(state, child, settlement);
+    }
+  }
+  if (state.usage.total === 0) state.lock = undefined;
+  return settlement;
+}
+
+function releaseChild(state: TaskGuardState, child: ReservedChild, settlement: TaskCallSettlement): void {
+  if (child.state !== "reserved") return;
+  subtractDelta(state.usage, child.delta);
+  child.state = "released";
+  settlement.released.push(child.index);
+}
+
+/** 이 호출에서 아직 해제되지 않은 maker 계열 항목들(순서 = tasks[] 순서). 남은 항목이 없으면 undefined. */
 export function reservedMakers(state: TaskGuardState, toolCallId: string): MakerSpawn[] | undefined {
   const reservation = state.reservations.get(toolCallId);
   if (!reservation) return undefined;
-  return reservation.makers.map((maker) => ({ ...maker, ownedPaths: [...maker.ownedPaths] }));
+  const live = reservation.makers.filter((maker) =>
+    reservation.children.some((child) => child.index === maker.index && child.state !== "released"),
+  );
+  if (live.length === 0) return undefined;
+  return live.map((maker) => ({ ...maker, ownedPaths: [...maker.ownedPaths] }));
 }
 
 /**
@@ -526,45 +654,66 @@ export function noteUserRedirect(state: TaskGuardState): boolean {
 }
 
 /**
- * `write proc://<id>/kill` 결과 details.proc.cancelled[]에서 런타임이 실제로 취소했다고 확인한
- * id만 뽑는다. already_completed·not_found 결과는 환불 근거가 아니다.
+ * `write proc://<id>/kill` 결과에서 런타임이 실제로 취소한 task child의 canonical agent id를 읽는다.
+ * `cancelled[].id`는 요청한 id다. 실행 중 job을 manager가 취소했으면 같은 결과 `jobs[]` 행이 cancelled이고
+ * `agentUrlId`가 그 job의 agent id다. job id는 충돌 시 `-N`이 붙어 agent id와 다를 수 있다. job 행이 없거나
+ * 끝난 행이면 agent registry를 직접 끊은 것이라 요청 id가 곧 agent id다.
+ * task가 아닌 job과 already_completed·not_found는 환불 근거가 아니다.
  */
-export function readCancelledJobIds(details: unknown): string[] {
+export function readCancelledChildIds(details: unknown): string[] {
   const proc = details && typeof details === "object" && "proc" in details ? details.proc : undefined;
   const cancelled = proc && typeof proc === "object" && "cancelled" in proc ? proc.cancelled : undefined;
   if (!Array.isArray(cancelled)) return [];
+  const jobs = proc && typeof proc === "object" && "jobs" in proc && Array.isArray(proc.jobs) ? proc.jobs : [];
   const ids: string[] = [];
   for (const outcome of cancelled) {
     if (!outcome || typeof outcome !== "object") continue;
     const record = outcome as Record<string, unknown>;
-    if (record.status === "cancelled" && typeof record.id === "string" && record.id) ids.push(record.id);
+    if (record.status !== "cancelled" || typeof record.id !== "string" || !record.id) continue;
+    const job: unknown = jobs.find(
+      (candidate: unknown) =>
+        candidate !== null && typeof candidate === "object" && "id" in candidate && candidate.id === record.id,
+    );
+    const row = job && typeof job === "object" ? job : undefined;
+    if (row && "type" in row && row.type !== undefined && row.type !== "task") continue;
+    const agentId =
+      row && "status" in row && row.status === "cancelled" && "agentUrlId" in row && typeof row.agentUrlId === "string"
+        ? row.agentUrlId
+        : "";
+    ids.push(agentId || record.id);
   }
   return ids;
 }
 
 /**
- * 취소가 확인된 child의 슬롯을 되돌린다. 요청당 CANCEL_REFUND_LIMIT 슬롯까지만 환불하므로
- * full 8-slot 취소 wave 한 번은 복구하지만 반복 spawn→cancel로는 누적 cap을 넘을 수 없다.
+ * 취소가 확인된 child의 슬롯을 되돌린다. canonical agent id로 정확히 그 항목 하나만 한 번 환불하며,
+ * 요청당 CANCEL_REFUND_LIMIT 슬롯까지만 환불하므로 full 8-slot 취소 wave 한 번은 복구하지만 반복
+ * spawn→cancel로는 누적 cap을 넘을 수 없다. 이름 없는 항목과 이미 해제·환불된 항목은 건너뛴다.
  */
-export function releaseCancelledSpawns(state: TaskGuardState, names: string[]): number {
+export function releaseCancelledSpawns(state: TaskGuardState, ids: readonly string[]): number {
   let released = 0;
-  for (const name of names) {
-    const delta = state.refundable.get(name);
-    if (!delta) continue;
-    if (state.refunded + delta.total > CANCEL_REFUND_LIMIT) continue;
-    state.refundable.delete(name);
-    subtractDelta(state.usage, delta);
-    state.refunded += delta.total;
-    released += delta.total;
-    for (const [id, reservation] of state.reservations) {
-      if (!reservation.names.includes(name)) continue;
-      reservation.names = reservation.names.filter((entry) => entry !== name);
-      subtractDelta(reservation.delta, delta);
-      if (reservation.delta.total === 0) state.reservations.delete(id);
-    }
+  for (const id of ids) {
+    const child = findCancellableChild(state, id);
+    if (!child) continue;
+    if (state.refunded + child.delta.total > CANCEL_REFUND_LIMIT) continue;
+    subtractDelta(state.usage, child.delta);
+    child.state = "refunded";
+    state.refunded += child.delta.total;
+    released += child.delta.total;
   }
   if (state.usage.total === 0) state.lock = undefined;
   return released;
+}
+
+/** 취소 receipt가 가리키는 과금 중인 named 항목. receipt 자체가 그 child가 존재했다는 런타임 확인이다. */
+function findCancellableChild(state: TaskGuardState, id: string): ReservedChild | undefined {
+  for (const reservation of state.reservations.values()) {
+    for (const child of reservation.children) {
+      if (child.agentId !== id || !child.refundable) continue;
+      if (child.state === "started" || child.state === "reserved") return child;
+    }
+  }
+  return undefined;
 }
 
 export function getTaskGuardUsage(state: TaskGuardState): Readonly<Usage> {

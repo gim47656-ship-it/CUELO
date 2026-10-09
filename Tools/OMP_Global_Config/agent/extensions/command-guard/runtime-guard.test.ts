@@ -800,7 +800,7 @@ describe("async ownership snapshots", () => {
     }
   });
 
-  test("pending baseline의 reset·task 실패는 stale dispatch를 차단하고 steering은 예약을 보존한다", async () => {
+  test("pending baseline의 reset·실행 전 종료는 stale dispatch를 차단하고 steering은 예약을 보존한다", async () => {
     const fixture = await createDelayedGitFixture();
     try {
       const resetHarness = createGuardHarness({ cwd: fixture.workspace });
@@ -854,12 +854,12 @@ describe("async ownership snapshots", () => {
         makerTaskEvent("snapshot-failed", "SnapshotFailed"),
       );
       await failureDelay.started;
-      await failedHarness.emit("tool_result", {
-        type: "tool_result",
+      // baseline 대기 중 runner가 tool_call을 끊으면 core는 tool_result 없이 tool_execution_end만 낸다.
+      await failedHarness.emit("tool_execution_end", {
+        type: "tool_execution_end",
         toolName: "task",
         toolCallId: "snapshot-failed",
-        input: {},
-        content: [{ type: "text", text: "spawn failed" }],
+        result: { content: [{ type: "text", text: "Extension timed out" }], details: {} },
         isError: true,
       });
       await failureDelay.release();

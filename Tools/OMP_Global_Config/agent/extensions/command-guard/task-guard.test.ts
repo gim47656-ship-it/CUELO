@@ -13,7 +13,7 @@ import {
   matchBlockedEvalModelBridge,
   noteUserRedirect,
   parseOwnedPaths,
-  readCancelledJobIds,
+  readCancelledChildIds,
   readSettledTaskIds,
   readSpawnProgress,
   registerSpawnedMakers,
@@ -21,7 +21,7 @@ import {
   reportOwnedChildren,
   reserveTaskCall,
   reservedMakers,
-  rollbackTaskCall,
+  settleTaskCall,
   stripScopePrefix,
   TASK_BUDGET_LIMITS,
   type TaskGuardDecision,
@@ -53,13 +53,25 @@ function snap(entries: Array<[string, string | undefined]>): TreeSnapshot {
   return new Map(entries);
 }
 
-/** primary Maker 한도를 named child로 정확히 채우고 그 이름을 순서대로 돌려준다. */
+/** 실제 async spawn 결과처럼 progress 행과 registry의 task job으로 tasks[] index에 canonical id를 묶는다. */
+function settleSpawned(state: TaskGuardState, toolCallId: string, ids: readonly string[]): void {
+  const startTime = Date.now();
+  settleTaskCall(state, toolCallId, {
+    executed: true,
+    isError: false,
+    details: { progress: ids.map((id, index) => ({ index, id, status: "pending" })), async: { jobId: ids[0] } },
+    registry: ids.map((id) => ({ id, agentId: id, startTime })),
+  });
+}
+
+/** primary Maker 한도를 spawn된 named child로 정확히 채우고 그 이름을 순서대로 돌려준다. */
 function fillPrimaryMakers(state: TaskGuardState): string[] {
   const names: string[] = [];
   for (let index = 0; index < TASK_BUDGET_LIMITS.primaryMaker; index += 1) {
     const name = `Filler${index}`;
     const spawn = { tasks: [{ agent: "maker", name, task: brief() }] };
     expect(reserveTaskCall(state, `fill-${index}`, spawn).ok).toBe(true);
+    settleSpawned(state, `fill-${index}`, [name]);
     names.push(name);
   }
   return names;
@@ -237,10 +249,10 @@ describe("SideQuestGuard", () => {
     });
   });
 
-  test("실제 task tool 오류가 나면 선점한 budget을 되돌린다", () => {
+  test("tool_result 없이 끝난 호출은 선점한 budget을 되돌린다", () => {
     const state = createTaskGuardState();
     expect(reserveTaskCall(state, "1", flat("maker", brief())).ok).toBe(true);
-    rollbackTaskCall(state, "1");
+    settleTaskCall(state, "1", { executed: false, isError: true, details: {} });
     expect(getTaskGuardUsage(state).total).toBe(0);
     expect(reserveTaskCall(state, "2", flat("maker", brief())).ok).toBe(true);
   });
@@ -282,10 +294,10 @@ describe("취소 환불", () => {
 
   test("proc kill 결과에서 런타임이 cancelled로 확인한 id만 읽는다", () => {
     expect(
-      readCancelledJobIds(killDetails(["LiveServer", "cancelled"], ["Done", "already_completed"], ["Foreign", "not_found"])),
+      readCancelledChildIds(killDetails(["LiveServer", "cancelled"], ["Done", "already_completed"], ["Foreign", "not_found"])),
     ).toEqual(["LiveServer"]);
-    expect(readCancelledJobIds({ proc: { action: "stop", daemon: {} } })).toEqual([]);
-    expect(readCancelledJobIds(undefined)).toEqual([]);
+    expect(readCancelledChildIds({ proc: { action: "stop", daemon: {} } })).toEqual([]);
+    expect(readCancelledChildIds(undefined)).toEqual([]);
   });
 
   test("취소가 확인된 named child의 슬롯은 다시 쓸 수 있다", () => {
@@ -297,7 +309,7 @@ describe("취소 환불", () => {
     expect(
       releaseCancelledSpawns(
         state,
-        readCancelledJobIds(killDetails(...cancelled.map((name): [string, string] => [name, "cancelled"]))),
+        readCancelledChildIds(killDetails(...cancelled.map((name): [string, string] => [name, "cancelled"]))),
       ),
     ).toBe(CANCEL_REFUND_LIMIT);
     const remaining = TASK_BUDGET_LIMITS.primaryMaker - CANCEL_REFUND_LIMIT;
@@ -312,7 +324,8 @@ describe("취소 환불", () => {
   test("이름 없는 spawn과 취소되지 않은 job은 환불하지 않는다", () => {
     const state = createTaskGuardState();
     expect(reserveTaskCall(state, "1", flat("maker", brief())).ok).toBe(true);
-    expect(releaseCancelledSpawns(state, ["Unknown"])).toBe(0);
+    settleSpawned(state, "1", ["QuietOtter"]);
+    expect(releaseCancelledSpawns(state, ["QuietOtter", "Unknown"])).toBe(0);
     expect(getTaskGuardUsage(state).primaryMaker).toBe(1);
   });
 
@@ -326,6 +339,7 @@ describe("취소 환불", () => {
     const refilled = cancelled.map((name) => `${name}-again`);
     refilled.forEach((name, index) => {
       expect(reserveTaskCall(state, `refill-${index}`, named(name)).ok).toBe(true);
+      settleSpawned(state, `refill-${index}`, [name]);
     });
     expect(getTaskGuardUsage(state)).toEqual({
       primaryMaker: 16,
@@ -335,6 +349,133 @@ describe("취소 환불", () => {
     expect(releaseCancelledSpawns(state, [refilled[0]!])).toBe(0);
     expect(getTaskGuardUsage(state).primaryMaker).toBe(16);
     expect(reserveTaskCall(state, "over", named("Extra")).ok).toBe(false);
+  });
+});
+
+describe("호출·child 단위 정산", () => {
+  const named = (name: string, task = brief()) => ({ tasks: [{ agent: "maker", name, task }] });
+  const pair = () => ({
+    tasks: [
+      { agent: "maker", name: "Fix", task: brief({ OWNED_PATHS: "src/a.ts" }) },
+      { agent: "maker", name: "Fix", task: brief({ OWNED_PATHS: "src/b.ts" }) },
+    ],
+  });
+  const noResultEnd = { executed: false, isError: true, details: {} } as const;
+
+  test("실행 전에 끝난 호출은 그 호출 예약만 풀어 16번 거절 뒤에도 primary를 발주하고 다른 호출은 남긴다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "bravo", named("Bravo")).ok).toBe(true);
+    for (let index = 0; index < 16; index += 1) {
+      expect(reserveTaskCall(state, `denied-${index}`, named("Fix")).ok).toBe(true);
+      expect(settleTaskCall(state, `denied-${index}`, noResultEnd)?.released).toEqual([0]);
+      expect(settleTaskCall(state, `denied-${index}`, noResultEnd)?.released).toEqual([]);
+    }
+    expect(getTaskGuardUsage(state).total).toBe(1);
+    expect(reservedMakers(state, "bravo")?.map((maker) => maker.name)).toEqual(["Bravo"]);
+    for (let index = 0; index < 15; index += 1) {
+      expect(reserveTaskCall(state, `after-${index}`, named(`After${index}`)).ok).toBe(true);
+    }
+    expect(reserveTaskCall(state, "over", named("Over")).ok).toBe(false);
+  });
+
+  test("부분 spawn은 registry에 등록된 child만 남기고, registry를 못 읽으면 둘 다 유지한다", () => {
+    const partial = {
+      executed: true,
+      isError: false,
+      details: { progress: [{ index: 0, id: "Fix", status: "pending" }, { index: 1, id: "Fix-2", status: "failed" }] },
+    } as const;
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "call", pair()).ok).toBe(true);
+    expect(
+      settleTaskCall(state, "call", { ...partial, registry: [{ id: "Fix", agentId: "Fix", startTime: Date.now() }] })
+        ?.released,
+    ).toEqual([1]);
+    expect(getTaskGuardUsage(state).total).toBe(1);
+    // 시작한 child는 뒤따르는 오류 end나 중복 결과로 해제하지 않는다.
+    settleTaskCall(state, "call", noResultEnd);
+    settleTaskCall(state, "call", { executed: true, isError: true, details: undefined, registry: [] });
+    expect(getTaskGuardUsage(state).total).toBe(1);
+
+    const unknown = createTaskGuardState();
+    expect(reserveTaskCall(unknown, "call", pair()).ok).toBe(true);
+    expect(settleTaskCall(unknown, "call", partial)?.released).toEqual([]);
+    expect(getTaskGuardUsage(unknown).total).toBe(2);
+  });
+
+  test("결과가 child 없음을 보이면 해제하고, receipt를 잃은 실행 오류는 묶이지 않은 새 job이 없을 때만 해제한다", () => {
+    const settleOne = (outcome: Parameters<typeof settleTaskCall>[2]) => {
+      const state = createTaskGuardState();
+      expect(reserveTaskCall(state, "call", named("Fix")).ok).toBe(true);
+      settleTaskCall(state, "call", outcome);
+      return getTaskGuardUsage(state).total;
+    };
+    // 모드 오류·전부 등록 실패는 isError 없이 child 기록이 빈 details를 돌려준다.
+    expect(settleOne({ executed: true, isError: false, details: { results: [] }, registry: [] })).toBe(0);
+    expect(settleOne({ executed: true, isError: true, details: undefined, registry: [] })).toBe(0);
+    const lateJob = [{ id: "Fix", agentId: "Fix", startTime: Date.now() + 1 }];
+    expect(settleOne({ executed: true, isError: true, details: undefined, registry: lateJob })).toBe(1);
+    expect(settleOne({ executed: true, isError: true, details: undefined })).toBe(1);
+  });
+
+  test("결과 없는 end 뒤 늦은 spawn 증거는 다시 과금하고, 환불된 child는 다시 과금하지 않는다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "late", named("Fix")).ok).toBe(true);
+    settleTaskCall(state, "late", noResultEnd);
+    expect(getTaskGuardUsage(state).total).toBe(0);
+    const running = { executed: true, isError: false, details: { progress: [{ index: 0, id: "Fix", status: "running" }] } };
+    expect(settleTaskCall(state, "late", running)?.recharged).toEqual([0]);
+    expect(getTaskGuardUsage(state).total).toBe(1);
+    expect(releaseCancelledSpawns(state, ["Fix"])).toBe(1);
+    expect(settleTaskCall(state, "late", running)?.recharged).toEqual([]);
+    expect(releaseCancelledSpawns(state, ["Fix"])).toBe(0);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+    expect(state.refunded).toBe(1);
+  });
+
+  test("같은 이름 child는 canonical id로 정확한 종류만 한 번씩 환불한다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "primary", named("Fix")).ok).toBe(true);
+    settleSpawned(state, "primary", ["Fix"]);
+    const rework = brief({ PURPOSE: "rework", FINDING_ID: "F-19" });
+    expect(reserveTaskCall(state, "rework", named("Fix", rework)).ok).toBe(true);
+    settleSpawned(state, "rework", ["Fix-2"]);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 1, reworkMaker: 1, total: 2 });
+
+    expect(releaseCancelledSpawns(state, ["Fix-2"])).toBe(1);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 1, reworkMaker: 0, total: 1 });
+    expect(releaseCancelledSpawns(state, ["Fix-2"])).toBe(0);
+    expect(releaseCancelledSpawns(state, ["Fix"])).toBe(1);
+    expect(getTaskGuardUsage(state).total).toBe(0);
+
+    // 새 요청의 첫 child가 Fix-3이면 표시 이름 Fix로는 환불하지 않는다.
+    const next = createTaskGuardState();
+    expect(reserveTaskCall(next, "call", named("Fix")).ok).toBe(true);
+    settleSpawned(next, "call", ["Fix-3"]);
+    expect(releaseCancelledSpawns(next, ["Fix"])).toBe(0);
+    expect(releaseCancelledSpawns(next, ["Fix-3"])).toBe(1);
+  });
+
+  test("job id가 충돌해 agent id와 다르면 receipt의 agentUrlId로 실제 child를 찾는다", () => {
+    const receipt = {
+      proc: {
+        op: "cancel",
+        jobs: [
+          { id: "Fix-2", type: "task", status: "cancelled", agentUrlId: "Fix" },
+          { id: "Server", type: "bash", status: "cancelled" },
+        ],
+        cancelled: [
+          { id: "Fix-2", status: "cancelled" },
+          { id: "Server", status: "cancelled" },
+        ],
+      },
+    };
+    expect(readCancelledChildIds(receipt)).toEqual(["Fix"]);
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "call", pair()).ok).toBe(true);
+    settleSpawned(state, "call", ["Fix", "Fix-2"]);
+    expect(releaseCancelledSpawns(state, readCancelledChildIds(receipt))).toBe(1);
+    expect(releaseCancelledSpawns(state, ["Fix-2"])).toBe(1);
+    expect(releaseCancelledSpawns(state, ["Fix"])).toBe(0);
   });
 });
 

@@ -147,6 +147,8 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
+요청별 budget(primary 16, rework 8, 합계 24)은 실제로 시작한 Maker만 셉니다. 승인 거부, 승인 창 오류, 하류 guard 거절, 실행 전 중단·건너뛰기로 task가 실행되지 않은 호출과 작업 등록에 실패한 항목은 그 호출의 예약과 임시 소유 추적만 돌려놓습니다. 이미 시작한 Maker는 호출이 오류로 끝나도 계속 셉니다. 실행 도중 예외로 결과가 사라진 호출은 그 뒤 등록된 작업이 없다고 확인될 때만 돌려놓고, 확인할 수 없으면 그대로 남깁니다. `proc://<id>/kill`로 취소가 확인된 Maker는 이름이 같아도 런타임이 붙인 실제 id로 찾아 그 Maker의 primary·rework 몫만 한 번 돌려받습니다. 취소로 돌려받는 몫은 요청당 8개까지입니다.
+
 이 하네스에서 `agent`를 생략하면 `maker`로 채워 실제 실행에 전달합니다. 명시적으로 `task`나 다른 역할을 적으면 허용하지 않습니다. 내장 코어는 도구 입력 검사에서 생략을 임의의 역할 이름으로 바꾸지 않으며, 이 하네스가 없는 환경에서는 기존 실행기의 기본 역할 선택을 유지합니다. 준비 참조 복원 뒤에도 같은 구분을 적용하고, 모델·추론 강도·소유권·승인·예산 검사는 생략하지 않습니다.
 
 같은 `task` 배치에서 공유 작업공간 Maker들의 `OWNED_PATHS`가 겹치면 어떤 작업도 예약하지 않고 배치 전체를 거절합니다. 별도 호출도 앞선 호출의 승인 중 예약과 충돌하면 막습니다. 시작한 작업은 실제 owner로 넘기고, 거절·실패·미실행으로 끝난 호출은 자기 예약만 해제합니다. 하류 guard가 거절한 호출도 같은 메시지의 준비 단계에서는 예약을 유지하므로 뒤 호출이 보수적으로 막힐 수 있으며, 호출 종료 뒤 다음 발주에서 풀립니다.
