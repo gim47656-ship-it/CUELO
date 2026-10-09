@@ -220,7 +220,7 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 
 3D 오피스 장면만 고칠 때는 `bun run dev:verify`로 띄운 뒤 `http://127.0.0.1:30163/office-preview`를 여세요. 실제 장면 코드에 고정된 상태(대기·작업·주의·여러 참여자 등)와 화면 폭을 골라 넣는 개발 전용 화면이며, 세션이나 계정을 만들지 않습니다. production 빌드에서는 이 경로가 열리지 않습니다. 실제 상태 연결과 대화 화면·오피스 탭 사이의 세션·초안 보존은 전체 앱(`/`와 `/office`)에서 확인하세요.
 
-참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md)
+참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md)
 
 ## 계보와 라이선스
 
