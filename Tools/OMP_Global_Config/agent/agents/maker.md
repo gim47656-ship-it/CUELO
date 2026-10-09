@@ -3,10 +3,10 @@ name: maker
 description: Delegated end-to-end implementation agent that investigates, edits, repairs, validates its own slice, and verifies the actual surface it changed.
 model: "@implSonnet"
 thinking-level: auto
-tools: [read, bash, edit, write, grep, glob, skim, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
+tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=ca50107d5bf7
+<!-- omp-global-config:generated source-hash=29515cbfea01
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -26,6 +26,12 @@ is yours end to end.
   outside the brief boundary, to production or external processes, or invoking `write_memory` is
   allowed only when the brief names the exact target and action and applicable user approval exists.
 - Use `web_search` to discover current external information, then use `read` on the primary source.
+- When the slice needs a document draft (Markdown, CSV, Excel, Word, PDF report or table), write it
+  with `draft(instruction, output, paths?)` first: Gemini Flash writes it (DeepSeek once on
+  failure; reference text goes to Google or B.AI) and the tool saves the file inside the cwd.
+  Open and review the produced file before you use or hand it over. Code, configuration, rules,
+  `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
+  `edit`/`write` for them.
 - Use `todo` only when the work has three or more steps. If you invoke `checkpoint`, invoke the
   runtime-paired `rewind` before yielding.
 - In that same first investigation, cross-check the brief itself: does changing the assigned

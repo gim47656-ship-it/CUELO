@@ -129,6 +129,16 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 세션 제목 프롬프트는 `agent/TITLE_SYSTEM.md`가 정본입니다. [`TITLE_SYSTEM.md`](../Tools/OMP_Global_Config/agent/TITLE_SYSTEM.md)는 요청이 쓰인 언어로 제목을 쓰고(한국어 요청은 한국어, 영어 요청은 영어) 식별자는 원문으로 두며, 인사처럼 이름 붙일 수 없는 입력은 거절하도록 지시합니다. 코어 기본 제목 프롬프트에는 이 언어 지시가 없고, CUELO는 세션을 만들 때 `TITLE_SYSTEM.md`를 코어에 전달하지 않아 CLI와 달리 사용자 파일이 적용되지 않았습니다. 그 둘이 겹쳐 한국어 요청에도 영어 제목이 나올 수 있었고, 그래서 기본 프롬프트가 항상 영어를 강제한다고 단정할 수는 없습니다. 이제 `lib/session-system-prompt.ts`가 세션 cwd 기준으로 코어의 `discoverTitleSystemPromptFile`·`resolvePromptInput`을 호출하고, 결과를 `createAgentSession`의 `titleSystemPrompt`로 넘깁니다. 자동 제목과 수동 이름 짓기(`lib/session-title.ts`)가 그 세션의 같은 값을 씁니다. 탐색 순서는 `SYSTEM.md`와 같습니다: 프로젝트(`.omp/`, `.claude/` 등)가 사용자 수준(`~/.omp/agent/`)보다 먼저이고, 파일이 없으면 코어 기본 동작을 유지합니다. `setup.ps1`/`export.ps1`/`verify.ps1`은 이 파일을 다른 필수 프로필 파일과 같게 설치·내보내기·검사하고, 공개 설치(`install.mjs`)는 `package.json`의 `files`에 있는 이 파일을 `~/.omp/agent`에 없을 때만 추가합니다. 기존 세션의 제목은 일괄 변경하지 않습니다.
 
+## 문서 초안 작성 `draft`
+
+Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)이 필요하면 먼저 [`draft.ts`](../Tools/OMP_Global_Config/agent/extensions/draft.ts)의 `draft(instruction, output, paths?, overwrite?)`로 Gemini Flash에 쓰게 하고, 만들어진 파일을 직접 열어 검토한 뒤 씁니다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이 아니어서 계속 `edit`/`write`를 씁니다.
+
+형식은 `output` 확장자로 정합니다. `.md`·`.txt`는 받은 글을 그대로, `.csv`는 RFC 4180으로 파싱되는지 확인한 뒤 Excel이 한글을 깨뜨리지 않도록 UTF-8 BOM을 붙여 저장합니다. `.xlsx`는 모델에게 시트·행 JSON을 받아, `.docx`는 Markdown 부분집합(제목, 굵게·기울임·코드, 글머리·번호 목록, 표, 코드 블록, 인용)을 받아 도구가 직접 OOXML 파일을 만듭니다. 새 패키지는 쓰지 않으며 글꼴은 맑은 고딕입니다. `.pdf`는 같은 Markdown을 HTML로 바꿔 WSL에서 Windows Edge headless 인쇄(`--print-to-pdf`)로 A4 PDF를 만듭니다. WSL이 아니거나 Edge가 없으면 모델을 부르기 전에 오류로 끝나며 다른 형식으로 몰래 바꾸지 않습니다.
+
+저장 경로는 cwd 기준 상대 경로만 받습니다. `..`, cwd 밖으로 해석되는 경로, 심볼릭 링크, `.git`·`node_modules`·비밀처럼 보이는 이름은 거부하고, 기존 파일은 `overwrite: true`일 때만 바꿉니다. 경로 확인은 모델 호출 전에 하므로 거부된 요청은 할당량을 쓰지 않습니다. `paths`의 참고 자료는 `skim`과 같은 안전 필터(비밀·gitignore·바이너리·크기 제한)를 거쳐 Google 또는 대체 시 B.AI로 전송됩니다.
+
+모델은 `modelRoles.draft`(기본 `google-antigravity/gemini-3.8-flash`)이고, Gemini가 실패하거나 응답이 형식 검사(CSV·JSON 파싱)를 통과하지 못하면 같은 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체합니다. 결과 첫 줄은 실제 응답 모델이며 저장 경로·크기·개요를 함께 돌려주고, 둘 다 실패하면 `model: none`과 각 실패 원문을 표시하고 파일을 만들지 않습니다. 출력 상한에 걸려 잘린 응답도 저장하지 않습니다. Gemini 할당량은 같은 Antigravity 계정의 `vision`·`skim`·`tiny`와 공유합니다.
+
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.

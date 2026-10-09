@@ -769,7 +769,7 @@
       "codeAndPolicyReviewOwner": "main",
       "designJudgment": "main-or-the-owning-maker-reads-the-design-rules-and-skills-there-is-no-separate-design-role",
       "repositoryAccess": "owner-writable-inside-its-brief-boundary-only",
-      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "checkpoint"],
+      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "checkpoint"],
       "runtimeAutoPair": "checkpoint-in-frontmatter-causes-core-createTools-to-add-rewind-to-the-restricted-session-tool-surface-rewind-is-intentionally-absent-from-frontmatter",
       "execution": "async",
       "broadValidation": "the-owner-runs-the-ordinary-project-checks-its-slice-needs-and-skips-unrelated-project-wide-suites",

@@ -59,6 +59,10 @@
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
   내용은 Google(Gemini), 그 호출이 실패해 한 번 대체되면 B.AI(DeepSeek)로도 전송된다.
   비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
+- 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft`로 쓴다. Gemini가
+  작성해 cwd 안에 저장하고, 실패하면 DeepSeek로 한 번 대체한다(참고 텍스트는 Google 또는 B.AI로 전송).
+  만들어진 파일은 직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이
+  아니므로 `edit`/`write`를 쓴다. Gemini 할당량은 같은 Antigravity 계정의 vision·skim과 공유한다.
 - **브라우저는 relay가 기본값이다.** `browser.open`에 `app: { relay: false }`를 빼면 관리형 headless가
   아니라 **사용자의 실제 브라우저**에 탭이 열린다. 닫을 때는 `browser.close({ name })`로 자기 탭만
   닫고 `all`·`kill`·`app.path`는 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.

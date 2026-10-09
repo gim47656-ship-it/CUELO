@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 추가
+
+- 하네스에 문서 초안 작성 도구 `draft`를 추가했습니다. 보조 모델이 쓴 Markdown·텍스트·CSV·Excel·Word·PDF 문서를 작업 폴더 안에 바로 저장합니다. 내용은 Google Antigravity로, 그 호출이 실패하면 B.AI로 한 번 더 전송됩니다. Excel·Word 파일은 별도 설치 없이 만들고, PDF는 WSL에서 Windows Edge로 인쇄합니다. 기존 파일은 명시적으로 허락할 때만 덮어쓰고, 참고 자료는 조사 도구 `skim`과 같은 기준으로 비밀 파일과 gitignore 대상을 빼고 보냅니다. 문서 초안이 필요하면 이 도구를 먼저 쓰고, 만들어진 파일은 에이전트가 직접 검토합니다.
+
 ### 변경
 
 - PowerShell 스크립트를 실행하라고 안내할 때 PowerShell 7(`pwsh`)을 먼저 씁니다. 7이 없을 때만 Windows PowerShell 5.1을 씁니다.
