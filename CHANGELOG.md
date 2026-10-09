@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-09
+
 ### 추가
 
 - WSL에서 Windows 드라이브 위의 Visual Studio 솔루션·프로젝트를 Windows MSBuild로 빌드하는 하네스 도구 `windows_build`를 추가했습니다. MSBuild를 자동으로 찾고, 종료 코드·MSBuild 버전·오류와 경고 수·앞쪽 오류·UTF-8 로그 경로를 같은 형식으로 돌려줍니다. 빌드만 하며 산출물을 실행하거나 배포하지 않습니다.
