@@ -11,7 +11,7 @@ OpenCode Go), dependency versions and character names stay allowed.
 A hit means: rewrite the sentence. There is no allow list to get past it.
 Reads the tree root from argv[1]. Reports file:line and the kind only, never the value.
 
-Local check: python .github/scripts/public-notes-scan.py .
+Local check: python3 .github/scripts/public-notes-scan.py .
 """
 import re
 import sys

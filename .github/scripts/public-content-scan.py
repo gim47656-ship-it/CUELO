@@ -5,7 +5,7 @@ advance: e-mail addresses outside reserved example domains, real user folders in
 paths, and Windows machine names. Reads NUL-separated relative paths from stdin and
 the tree root from argv[1]. Reports file:line and the kind only, never the value.
 
-Local check: git ls-files -z | python .github/scripts/public-content-scan.py .
+Local check: git ls-files -z | python3 .github/scripts/public-content-scan.py .
 """
 import re
 import sys
