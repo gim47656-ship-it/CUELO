@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -30,7 +30,7 @@
   "license": "MIT",
   "cueloBuild": {
     "distribution": "cuelo",
-    "coreVersion": "18.8.5"
+    "coreVersion": "18.8.6"
   },
   "engines": {
     "node": ">=22.19.0",
@@ -89,11 +89,11 @@
     "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs"
   },
   "dependencies": {
-    "@oh-my-pi/pi-agent-core": "18.8.5",
-    "@oh-my-pi/pi-ai": "18.8.5",
-    "@oh-my-pi/pi-coding-agent": "18.8.5",
-    "@oh-my-pi/pi-tui": "18.8.5",
-    "@oh-my-pi/pi-utils": "18.8.5",
+    "@oh-my-pi/pi-agent-core": "18.8.6",
+    "@oh-my-pi/pi-ai": "18.8.6",
+    "@oh-my-pi/pi-coding-agent": "18.8.6",
+    "@oh-my-pi/pi-tui": "18.8.6",
+    "@oh-my-pi/pi-utils": "18.8.6",
     "@seed-design/css": "2.8.0",
     "@seed-design/react": "2.4.1",
     "@seed-design/tailwind4-theme": "2.4.0",

@@ -10255,6 +10255,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			patched: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 18.8.6: 출처 줄만 kdl:177로 이동했으며 prefixBinding 의미는 동일하다.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		}],
 	},
 	{
@@ -10310,6 +10316,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 18.8.6: 출처 줄만 kdl:290으로 이동했으며 provider·revision 경계도 동일하다.
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -10573,6 +10585,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
 			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
 			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
+		}, {
+			// 18.8.6: LCe는 같은 isAdvisorTranscriptName 함수다(`e===NCe||e.startsWith(\`${DCe}.\`)&&e.endsWith(...)`).
+			file: "dist/cli.js",
+			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
+			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
+			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
