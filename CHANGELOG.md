@@ -14,6 +14,7 @@
 ### 수정
 
 - WSL에서 Windows 드라이브 위 저장소의 Linux Git으로 만든 작업 트리(worktree)를 커밋·푸시할 때 `not a git repository`로 실패하던 문제를 고쳤습니다.
+- WSL에서 bash 작업 폴더를 `E:/repo`처럼 Windows 드라이브 경로로 주면, 다른 저장소의 Git 명령까지 세션 저장소 보호에 막히던 문제를 고쳤습니다.
 
 ## [0.10.1] - 2026-10-08
 

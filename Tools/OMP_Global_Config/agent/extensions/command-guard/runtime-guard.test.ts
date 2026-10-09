@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -992,6 +992,41 @@ describe("async repository matching", () => {
       if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
       else process.env.GIT_TRACE2_EVENT = previousTrace;
       await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  // 실제 drive mount가 있는 WSL에서만 의미가 있다. CI(windows·일반 ubuntu)에서는 건너뛴다.
+  const wslDriveRoot = "/mnt/c/Users/Public";
+  const onWslWithDrive =
+    process.platform === "linux" &&
+    Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) &&
+    existsSync(wslDriveRoot);
+  test.skipIf(!onWslWithDrive)("WSL에서 bash cwd의 drive 경로는 코어처럼 /mnt로 풀어 다른 저장소 git을 막지 않는다", async () => {
+    const sessionRoot = await mkdtemp(join(tmpdir(), "omp-session-repo-"));
+    const otherRoot = await mkdtemp(join(wslDriveRoot, "omp-drive-repo-"));
+    try {
+      await runFixtureGit(sessionRoot, ["init", "--quiet"]);
+      await runFixtureGit(otherRoot, ["init", "--quiet"]);
+      const harness = createGuardHarness({ cwd: sessionRoot });
+      const driveCwd = `C:${otherRoot.slice("/mnt/c".length)}`;
+      const otherRepository = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "drive-cwd-other-repository",
+        input: { command: "git add tracked.txt", cwd: driveCwd },
+      });
+      expect(otherRepository).toBeUndefined();
+
+      const sessionRepository = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "drive-cwd-session-repository",
+        input: { command: "git add tracked.txt", cwd: sessionRoot },
+      });
+      expect(sessionRepository).toMatchObject({ block: true });
+    } finally {
+      await rm(sessionRoot, { recursive: true, force: true });
+      await rm(otherRoot, { recursive: true, force: true });
     }
   });
 });

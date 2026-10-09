@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import {
   CHARACTER_TARGETS,
   malformedSummonMarkerReason,
@@ -53,6 +54,20 @@ function normalizeRelativePath(value: string): string {
 /** 이벤트 컨텍스트의 세션 cwd. CUELO처럼 process.cwd()가 세션 cwd가 아닐 수 있어 우선한다. */
 function eventSessionCwd(ctx: { cwd?: string } | undefined): string {
   return typeof ctx?.cwd === "string" && ctx.cwd ? resolve(ctx.cwd) : process.cwd();
+}
+
+/**
+ * bash 도구의 `cwd` 인자를 코어 bash와 같은 규칙으로 푼다. WSL에서 `E:/x`·`E:\x`는 코어가
+ * `/mnt/e/x`에서 실행하므로, `path.resolve`로 `<세션 cwd>/E:/x`를 만들면 없는 경로의 저장소를
+ * 증명하지 못해 다른 저장소의 git까지 막는다. 첫 판정 전에 명령을 동기적으로 읽어야 하므로 sync다.
+ */
+function bashToolCwd(sessionCwd: string, inputCwd: string): string {
+  try {
+    return resolve(resolveToCwd(inputCwd, sessionCwd));
+  } catch {
+    // 내부 URL 등 코어가 거절한 cwd는 기존 판정으로 넘긴다.
+    return resolve(sessionCwd, inputCwd);
+  }
 }
 
 /**
@@ -823,7 +838,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
 
     const sessionCwd = eventSessionCwd(ctx);
     const cwd =
-      typeof event.input.cwd === "string" ? resolve(sessionCwd, event.input.cwd) : sessionCwd;
+      typeof event.input.cwd === "string" ? bashToolCwd(sessionCwd, event.input.cwd) : sessionCwd;
     const targetDirectories: string[] = [];
     const collectTarget = (directory: string): boolean => {
       targetDirectories.push(directory);
