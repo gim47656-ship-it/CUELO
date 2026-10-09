@@ -171,6 +171,8 @@ Jev 런타임은 `findScopedSettings(ctx.cwd)`로 실제 실행 프로필/프로
 
 패치된 내장 코어의 `computer` 행동(`press`·`click`·`setValue`·`focus`·창 좌표 입력 등)은 `{ action, status, suggestedNext, evidence?, reacquired? }`를 돌려줍니다. `status`는 `verified`·`unverified`·`suspected_noop`이고, `verified`는 행동 전후 접근성 readback에서 값·포커스·상태 변화를 읽었을 때만 붙습니다. 좌표·키 입력은 읽을 대상이 없어 늘 `unverified`와 `reobserve`입니다. `ax()`·`observe()`·`find()`가 준 ref가 화면 갱신으로 만료되면 발급 때 저장한 지문(role·이름·RuntimeId·AutomationId·이름 있는 부모 경로·위치)으로 후보를 좁혀, 하나로 특정될 때만 그 요소를 다시 잡습니다. 후보가 없거나 여럿이면 다른 요소를 조작하지 않고 기존 `StaleRef`로 실패하며, 오류의 `computerAction` 필드에 거절 이유와 후보를 싣습니다. 설계는 [Cua의 행동 결과 계약](https://github.com/trycua/cua/blob/main/libs/cua-driver/docs/action-result-contract.md)과 [browser-use의 요소 재식별](https://github.com/browser-use/browser-use/blob/main/browser_use/agent/service.py)을 참고했습니다.
 
+background 입력을 받지 않는 창(Chromium 계열·XAML 메모장 등)은 `BackgroundUnavailable`로 거절합니다. 이때 패치된 코어 안내는 그 동작 하나만 `{ takeover: true }`로 다시 보내게 합니다. 이 경로는 확인 창 없이 실행됩니다. 작업 전체의 포그라운드 장악(`computer.control.acquire`)은 확인 창이 그대로 있고, 사용자가 지속적인 포그라운드 조작을 요청할 때만 씁니다.
+
 행동 뒤 목표 상태는 `computer.run` 안에서 행동을 한 번 부른 다음 `wait(predicate, { timeout })`으로 확인합니다. 예: `await save.press(); const row = await wait(async () => (await win.find({ title: "Saved row 1" }))[0], { timeout: 5000 });`. `wait(predicate)`는 upstream에 이미 있던 기능이고, 새 API나 도구는 추가하지 않았습니다. 기존에는 predicate를 100ms 고정 간격으로 다시 불렀고, 그 안의 클릭·도구 호출도 매번 그대로 실행했습니다. 늦게 끝난 읽기의 나머지 코드도 deadline 뒤에 계속 돌았습니다. 패치된 코어는 다음처럼 바꿉니다.
 
 - predicate를 바로 한 번 읽고, 이후 100·250·500·1000ms 간격으로 다시 읽습니다(마지막 간격 반복). `interval`을 주면 그 고정 간격(최소 10ms)을 씁니다. 대기는 남은 시간을 넘지 않고, deadline이나 취소 뒤에는 새 읽기를 시작하지 않습니다. 참이 되면 그 값만 돌려줍니다.

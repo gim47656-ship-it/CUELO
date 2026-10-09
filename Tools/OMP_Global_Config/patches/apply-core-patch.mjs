@@ -1263,6 +1263,21 @@ Project-wide validation is the main agent's job, run once after all subagents la
 		patched: `- \`app.relay: true\`: drive the user's Chrome through the omp relay. \`app.target\` selects a tab by URL/title substring; without it, the relay opens a new tab for this \`name\` and leaves the user's tabs alone. Reopening the same \`name\` reuses that tab; closing it releases the tab without closing the page.`,
 	},
 	{
+		// 2026-10-09 사용자 결정: computer 승인 창은 control.acquire에서만 뜬다. 모델이
+		// BackgroundUnavailable을 우회하려고 acquire를 불러 매번 승인을 묻게 됐다(Windows 시절
+		// 세션은 동작별 takeover만 썼다). 승인 게이트는 그대로 두고, 동작별 takeover를 먼저 쓰게 안내한다.
+		file: "src/prompts/tools/computer.md",
+		marker: "NEVER acquire control to work around",
+		anchor: "- `computer.control.acquire({reason})` requires live human confirmation for task-scoped foreground control;",
+		patched: "- NEVER acquire control to work around `BackgroundUnavailable` or a background no-op: retry that one call with `{ takeover: true }`, which needs no confirmation. Acquire only when the user asks for sustained foreground control.\n- `computer.control.acquire({reason})` requires live human confirmation for task-scoped foreground control;",
+	},
+	{
+		file: "src/prompts/system/computer-use.md",
+		marker: "Per-call `takeover: true`",
+		anchor: "- Task-scoped control requires live human confirmation; release it when finished.",
+		patched: "- Per-call `takeover: true` after `BackgroundUnavailable` needs no confirmation; use it instead of `computer.control.acquire`. Acquired control requires live human confirmation; acquire only on user request and release it when finished.",
+	},
+	{
 		// 빚의 정체(어느 steer 메시지인가)를 표현하는 최소 타입.
 		file: "src/session/irc-bridge.ts",
 		marker: "export interface ParentSteerRelay",
