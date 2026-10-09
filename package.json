@@ -139,6 +139,7 @@
     "remark-math": "^6.0.0",
     "tailwindcss": "^4.3.3",
     "three": "^0.186.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-language-server": "^6.0.1"
   }
 }

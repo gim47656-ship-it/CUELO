@@ -4753,6 +4753,95 @@ class LocalTextBackend implements TextBackend {`,
 import { cfgJudgmentProvider } from "../config/model-settings";`,
 	},
 	{
+		// 2026-10-09 WSL 회귀 감사 3.5: JEV `find` 판정이 typesafe 경로에서 23.8% 400("Invalid decision request.
+		// Send only model, state, and bounded typed questions; ...")으로 실패하고 openrouter 로 넘어갔다. typesafe
+		// provider 는 Experiential Labs gateway(models.yml)로 가고, 그 decoder 는 요청당 질문을 32개까지만 받는다
+		// (experientiallabs/experiential exp/runtime/gateway/decisions_contracts.py MAX_DECISION_QUESTIONS = 32).
+		// find 는 한 요청에 최대 64(NAME_BATCH·DIR_BATCH)·48(SKETCH_CARDS_MAX)개를 보낸다. 세션 기록에서 400 62건은
+		// 전부 35문항 이상, 성공 184건은 전부 30문항 이하였다. 질문은 같은 state 에 대해 서로 독립으로 판정되므로
+		// 32개씩 나눠 같은 state 로 병렬 전송하고 응답을 합친다. jfind 배치 상수와 벤치마크한 state 배치는 그대로다.
+		// 32개 이하 요청은 본문 바이트가 그대로이고, openrouter-decisions 경로(61문항도 받았다)는 나누지 않는다.
+		// 검증: core-typesafe-split-test.ts.
+		file: "../pi-ai/src/judgment/typesafe.ts",
+		marker: "const TYPESAFE_MAX_QUESTIONS = 32;",
+		anchor: "\treturn Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);\n}\n\nexport class TypeSafeJudge implements Judge {\n",
+		patched: [
+			"\treturn Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);",
+			"}",
+			"",
+			"/**",
+			" * CUELO: questions per request on the `typesafe` route. CUELO points that route at the Experiential Labs",
+			" * gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a larger set",
+			" * with 400 \"Invalid decision request\". Questions are judged independently against the shared state, so a",
+			" * larger set goes out as parts that each repeat the state.",
+			" */",
+			"const TYPESAFE_MAX_QUESTIONS = 32;",
+			"",
+			"/** `questions` itself when it has at most `max` entries, else parts of at most `max` in insertion order. */",
+			"function questionParts(questions: Questions, max: number): Questions[] {",
+			"\tconst ids = Object.keys(questions);",
+			"\tif (ids.length <= max) return [questions];",
+			"\tconst parts: Questions[] = [];",
+			"\tfor (let start = 0; start < ids.length; start += max) {",
+			"\t\tconst part: Questions = {};",
+			"\t\tfor (const id of ids.slice(start, start + max)) part[id] = questions[id]!;",
+			"\t\tparts.push(part);",
+			"\t}",
+			"\treturn parts;",
+			"}",
+			"",
+			"/** The parts' responses as one: answers merged, token counts and billed cost summed where reported. */",
+			"function mergeResponses(responses: SystemOneResponse[]): SystemOneResponse {",
+			"\tif (responses.length === 1) return responses[0]!;",
+			"\tconst total = (pick: (usage: SystemOneResponse[\"usage\"]) => number | undefined): number | undefined => {",
+			"\t\tlet sum: number | undefined;",
+			"\t\tfor (const response of responses) {",
+			"\t\t\tconst value = pick(response.usage);",
+			"\t\t\tif (value !== undefined) sum = (sum ?? 0) + value;",
+			"\t\t}",
+			"\t\treturn sum;",
+			"\t};",
+			"\treturn {",
+			"\t\tmodel: responses[0]!.model,",
+			"\t\tanswers: Object.assign({}, ...responses.map(response => response.answers)),",
+			"\t\tusage: {",
+			"\t\t\tinput_tokens: total(usage => usage.input_tokens),",
+			"\t\t\toutput_tokens: total(usage => usage.output_tokens),",
+			"\t\t\tcost: total(usage => usage.cost),",
+			"\t\t},",
+			"\t};",
+			"}",
+			"",
+			"export class TypeSafeJudge implements Judge {",
+			"",
+		].join("\n"),
+	},
+	{
+		// 위 항목과 짝: judge 가 질문 묶음을 나눠 보내고 응답을 합친다. 나누지 않으면 parts 는 request.questions
+		// 그 객체 하나라 본문이 원래 식 `{ state, model, questions }` 과 바이트까지 같다.
+		file: "../pi-ai/src/judgment/typesafe.ts",
+		marker: "// CUELO: past the typesafe question bound",
+		anchor: "\t\tconst body = JSON.stringify({ state: request.state, model: this.model, questions: request.questions });\n\t\tconst signal = options?.signal;\n\t\tconst response = await withAuth(\n\t\t\tthis.#apiKey,\n\t\t\tkey => this.#attempt<SystemOneResponse>(JUDGMENT_ROUTES[this.api], body, key, signal),\n\t\t\t{ signal },\n\t\t);\n",
+		patched: [
+			"\t\tconst signal = options?.signal;",
+			"\t\t// CUELO: past the typesafe question bound the parts run in parallel and merge into one response.",
+			"\t\tconst parts = questionParts(request.questions, this.api === TYPESAFE_PROVIDER ? TYPESAFE_MAX_QUESTIONS : Infinity);",
+			"\t\tconst response = mergeResponses(",
+			"\t\t\tawait Promise.all(",
+			"\t\t\t\tparts.map(questions => {",
+			"\t\t\t\t\tconst body = JSON.stringify({ state: request.state, model: this.model, questions });",
+			"\t\t\t\t\treturn withAuth(",
+			"\t\t\t\t\t\tthis.#apiKey,",
+			"\t\t\t\t\t\tkey => this.#attempt<SystemOneResponse>(JUDGMENT_ROUTES[this.api], body, key, signal),",
+			"\t\t\t\t\t\t{ signal },",
+			"\t\t\t\t\t);",
+			"\t\t\t\t}),",
+			"\t\t\t),",
+			"\t\t);",
+			"",
+		].join("\n"),
+	},
+	{
 		// 18.2.7 에는 `providers.judgmentProvider` schema 항목 자체가 없다(legacy key 목록에만
 		// 남아 migration 이 소비한다). 이 빌드의 로컬 선택 설정으로 최소 enum 만 되살린다:
 		// auto=upstream judge role chain, vercel=one-shot no fallback. upstream 에서 제거된
@@ -6084,6 +6173,35 @@ export function hostNextServerEnvUnsets(
 				envUnsets: hostNextServerEnvUnsets(process.env, shellEnv).filter(name => !(options?.env && name in options.env)),
 				pty: ptyRequest,
 `,
+	},
+	{
+		// 2026-10-09 WSL 회귀 감사 3.3: WSL bash 도구에서 wsl.exe 자체 메시지가 UTF-16LE 로 나와 NUL·U+FFFD 로 깨졌다.
+		// bash 출력은 pi-natives(Rust)가 손실 UTF-8 로 풀어 문자열로 넘기므로 JS 에서는 원래 바이트를 되살릴 수 없다.
+		// wsl.exe 는 WSL_UTF8=1 이면 UTF-8 로 쓰지만, Linux 변수는 WSLENV 에 이름이 있어야 Windows 프로세스에 닿는다
+		// (실측: `WSL_UTF8=1 wsl.exe --version` 은 그대로 UTF-16LE, `WSLENV=WSL_UTF8` 을 더하면 UTF-8, `WSL_UTF8/u` 는 UTF-16LE).
+		// linux 이고 WSL_DISTRO_NAME 이 있으면 기존 WSLENV 항목은 남긴 채 WSL_UTF8 을 한 번 덧붙인다. 서버 env 나 호출자가
+		// 정한 WSL_UTF8 은 그 값을 그대로 넘기고, 없을 때만 1 로 둔다(서비스 env 가 WSL_UTF8=1 만 정해도 이 경로로 닿는다).
+		// 호출자가 넘긴 WSLENV 는 그대로 이긴다. 비WSL·win32 경로는 그대로다.
+		// PowerShell 등의 CP949 콘솔 출력은 범위 밖이다(Main 결정: iconv 안내 유지). 검증: core-wsl-utf8-env-test.ts.
+		file: "src/exec/non-interactive-env.ts",
+		marker: "// CUELO: on WSL, wsl.exe writes its own messages as UTF-16LE",
+		anchor: "\tif (platform !== \"win32\") {\n\t\treturn overrides ? { ...base, ...overrides } : base;\n\t}\n",
+		patched: [
+			"\tif (platform !== \"win32\") {",
+			"\t\t// CUELO: on WSL, wsl.exe writes its own messages as UTF-16LE, which the bash tool shows as NUL/U+FFFD",
+			"\t\t// mojibake, unless WSL_UTF8=1 reaches it. Windows processes see only the Linux variables WSLENV names, so",
+			"\t\t// WSL_UTF8 is listed there; a value the server env or the caller already set is forwarded as is.",
+			"\t\t// A caller WSLENV still wins.",
+			"\t\tif (platform === \"linux\" && baseEnv.WSL_DISTRO_NAME) {",
+			"\t\t\tconst shared = (baseEnv.WSLENV ?? \"\").split(\":\").filter(name => name.length > 0);",
+			"\t\t\tif (!shared.some(name => name.split(\"/\")[0] === \"WSL_UTF8\")) shared.push(\"WSL_UTF8\");",
+			"\t\t\tconst utf8 = hasEnvValue(baseEnv, \"WSL_UTF8\", platform) ? {} : { WSL_UTF8: \"1\" };",
+			"\t\t\treturn { ...base, ...utf8, WSLENV: shared.join(\":\"), ...overrides };",
+			"\t\t}",
+			"\t\treturn overrides ? { ...base, ...overrides } : base;",
+			"\t}",
+			"",
+		].join("\n"),
 	},
 	{
 		// 2026-09-29: 이름 있는 bash service 는 bash-executor 를 거치지 않는다. daemon broker 가
