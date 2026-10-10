@@ -1368,10 +1368,10 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
-  test("NORMAL_SOL·HARD_CODE_ASTRA는 자동 추천되지 않고 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
+  test("NORMAL_SOL·HARD_CODE_ASTRA는 기본 추천이 아니고, 소진 대체 밖에서는 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 비용·계열 근거로 명시 대안을 선택함\nOWNED_PATHS:");
     const models = { NORMAL_SOL: "openai-codex/gpt-6.1-sol", HARD_CODE_ASTRA: "openai-codex/gpt-6-astra" };
-    // 기본 추천은 그대로: NORMAL은 Sonnet(일반 소진 대체에도 NORMAL_SOL은 후보가 아니다), HARD 코드는 Opus.
+    // 기본 추천은 그대로: NORMAL은 Sonnet, HARD 코드는 Opus.
     const normal = harness({ workClass: "NORMAL" });
     const [normalRoute] = await normal.prepare("명시 대안", [normal.task], {} as never);
     expect(normalRoute!.profile).toBe("NORMAL_SONNET");
@@ -1383,22 +1383,23 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       }) as never,
     });
     const [spentRoute] = await spent.prepare("소진", [spent.task], {} as never);
+    // 이 fixture의 Sonnet·Sol은 둘 다 Codex라 함께 소진됐다. 다음 대체인 DeepSeek를 추천한다.
     expect(spentRoute!.profile).toBe("NORMAL_DEEPSEEK");
-    // DeepSeek가 없고 primary 계정이 소진돼도 NORMAL_SOL을 자동 대체로 추천하지 않는다.
-    const noDeepSeek = candidates
-      .filter((candidate) => candidate.profile !== "NORMAL_DEEPSEEK")
+    // Anthropic primary만 소진되고 Codex가 살아 있으면 DeepSeek보다 Sol을 먼저 추천한다.
+    const anthropicSonnet = candidates
       .map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
-    const solSpare = harness({
+    const solFirst = harness({
       workClass: "NORMAL",
-      candidates: noDeepSeek,
+      candidates: anthropicSonnet,
       quota: async () => ({
         state: "observed", observedAt: 1,
         providers: { anthropic: [{ disabled: false, limitReached: true, limits: [] }] },
       }) as never,
     });
-    const [solSpareRoute] = await solSpare.prepare("Sol 비추천", [solSpare.task], {} as never);
-    expect(solSpareRoute!.normalAllocation).toMatchObject({ state: "unavailable" });
-    expect(solSpareRoute!.profile).not.toBe("NORMAL_SOL");
+    const [solFirstRoute] = await solFirst.prepare("Sol 먼저", [solFirst.task], {} as never);
+    expect(solFirstRoute!.normalAllocation).toMatchObject({ state: "observed", profile: "NORMAL_SOL" });
+    expect(solFirstRoute!.profile).toBe("NORMAL_SOL");
+    expect(await solFirst.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
     for (const [profile, base] of Object.entries(models)) {
       const work = profile === "NORMAL_SOL" ? "NORMAL" : "HARD";
       const h = harness({ workClass: work, hardFocuses: ["CODE_SYSTEM"] });
@@ -1506,7 +1507,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
 
     test("실제 공유 한도 소진만 NORMAL 대안을 고르고 HARD·UI 전문성은 자동 전환하지 않는다", async () => {
       const cases: [unknown[], string][] = [
-        [[anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], "NORMAL_DEEPSEEK"],
+        [[anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], "NORMAL_SOL"],
         [[anthropicAccount(1), anthropicAccount(0.4, { credentialId: 3 }, slot(30))], "NORMAL_SONNET"],
         [[anthropicAccount(0, { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, windowId: "7d", shared: true }] })], "NORMAL_SONNET"],
         [[anthropicAccount(0, { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, windowId: "7d", shared: false }] })], "NORMAL_SONNET"],
@@ -1515,6 +1516,9 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         const h = build(accounts, [open], { workClass: "NORMAL" });
         expect((await h.prepareBatch("실제 소진", [h.task], {} as never)).routes[0]!.profile).toBe(profile);
       }
+      // Codex(Sol)까지 소진되면 다음 대체인 DeepSeek로 넘어간다.
+      const bothSpent = build([anthropicAccount(1)], [{ ...open, limitReached: true }], { workClass: "NORMAL" });
+      expect((await bothSpent.prepareBatch("둘 다 소진", [bothSpent.task], {} as never)).routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
       for (const [options, profile] of [
         [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS"],
         [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS"],

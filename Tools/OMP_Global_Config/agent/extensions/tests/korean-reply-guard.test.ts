@@ -44,8 +44,11 @@ describe("classify", () => {
     expect(classify("검증 결과를 정리해서 아래에 그대로 붙입니다.\n```\nThis is a long English log line that should be preserved verbatim here\n```")).toBe("korean");
     expect(classify("TypeError: Cannot read properties of undefined while parsing the configuration object value")).toBe("neutral");
   });
-  test("짧은 영어는 판정하지 않는다", () => {
+  test("한 줄 영어 진행 문장은 드리프트이고 더 짧은 영어는 판정하지 않는다", () => {
+    expect(classify("Looking at the refill logs now.")).toBe("drift");
+    expect(classify("Docs updated. Committing and pushing docs branch.")).toBe("drift");
     expect(classify("Done. Checking now.")).toBe("neutral");
+    expect(classify("파일을 읽는 중이고 Looking now 같은 표기는 그대로 둔다.")).toBe("korean");
   });
 });
 

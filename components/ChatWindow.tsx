@@ -64,6 +64,8 @@ import {
 import { useSyncedDisplaySettings } from "@/hooks/useDisplaySettings";
 import { formatTokenCount } from "@/lib/format-tokens";
 import { useDragDrop } from "@/hooks/useDragDrop";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { useSoftKeyboardOpen } from "@/hooks/useViewportHeight";
 import type { GoalStatusInfo, SessionStatsInfo } from "@/lib/omp-types";
 import {
   captureScrollDistance,
@@ -512,6 +514,10 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
 
 export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onMainIdentityChange, onOpenWorkspaceView, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
+  // 휴대폰 키보드가 올라와 있으면 dock의 서브에이전트 줄과 할 일 줄을 잠시 접어 대화가 보이게 한다.
+  const softKeyboardOpen = useSoftKeyboardOpen();
+  const isMobile = useIsMobile();
+  const keyboardCompact = softKeyboardOpen && isMobile;
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -1603,6 +1609,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
               alignItems: "center",
               gap: 6,
               padding: "6px 12px",
+              // 휴대폰에서는 손가락 표적 44px(데스크톱은 그대로).
+              minHeight: isMobile ? 44 : undefined,
               borderRadius: 999,
               border: "1px solid var(--border)",
               background: "var(--bg-panel)",
@@ -1647,9 +1655,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
           <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
-            <DispatchDockLine summary={dispatchDock} onJump={jumpToItem} onOpenPanel={openSubagentsPanel} />
+            {!keyboardCompact && <DispatchDockLine summary={dispatchDock} onJump={jumpToItem} onOpenPanel={openSubagentsPanel} />}
             <ExtensionWidgets widgets={belowEditorWidgets} />
-            {todoPhases && <TodoStrip phases={todoPhases} />}
+            {todoPhases && !keyboardCompact && <TodoStrip phases={todoPhases} />}
           </div>
         </div>
         {chatInputElement}

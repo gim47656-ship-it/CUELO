@@ -65,6 +65,12 @@ export default function RootLayout({
       <head>
         <meta name="google" content="notranslate" />
         <meta name="color-scheme" content="light dark" />
+        {/* Self-hosted faces (public/fonts/). One small same-origin stylesheet of
+            @font-face rules kept next to the font files, outside the CSS bundle so
+            its root-relative URLs stay as written; the browser then fetches only
+            the subsets on screen. */}
+        {/* eslint-disable-next-line @next/next/no-css-tags -- deliberate public/ stylesheet, see above */}
+        <link rel="stylesheet" href="/fonts/fonts.css" />
         {/* Paints the resolved color mode before hydration. `data-seed-color-mode`
             is what @seed-design/css switches its token scheme on; `.dark` and
             `data-omp-theme-mode` remain for this app's own selectors. This is the

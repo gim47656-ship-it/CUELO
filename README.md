@@ -221,7 +221,7 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 
 3D 오피스 장면만 고칠 때는 `bun run dev:verify`로 띄운 뒤 `http://127.0.0.1:30163/office-preview`를 여세요. 실제 장면 코드에 고정된 상태(대기·작업·주의·여러 참여자 등)와 화면 폭을 골라 넣는 개발 전용 화면이며, 세션이나 계정을 만들지 않습니다. production 빌드에서는 이 경로가 열리지 않습니다. 실제 상태 연결과 대화 화면·오피스 탭 사이의 세션·초안 보존은 전체 앱(`/`와 `/office`)에서 확인하세요.
 
-참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md)
+참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md) · [Maker 코드 품질 평가](./docs/maker-quality.md)
 
 ## 계보와 라이선스
 
@@ -230,5 +230,7 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
 캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
+
+함께 싣는 글꼴은 모두 SIL Open Font License 1.1입니다. 본문은 [Wanted Sans](https://github.com/wanteddev/wanted-sans), 코드는 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)이고, 제목은 [G마켓 산스](https://corp.gmarket.com/fonts/)를 웹용으로 나누고 변환한 것입니다. 원래 이름은 수정본에 쓸 수 없어서 "CUELO Display"라는 이름으로 싣습니다. 라이선스 전문은 [`public/fonts/`](./public/fonts/) 아래 각 글꼴 폴더에 있습니다.
 
 코드: [MIT License](./LICENSE)

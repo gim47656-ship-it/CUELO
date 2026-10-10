@@ -191,9 +191,36 @@ function normalizeCommand(request: ExternalUpdateRequest): MaintenanceCommand | 
   };
 }
 
+/** 정리 실행이 결과 없이 끝났을 때 상단 줄과 대기 화면이 보이는 사유. */
+const CLEANUP_OWNER_EXITED_REASON = "정리 실행이 결과를 남기지 않고 끝났습니다.";
+
+/**
+ * `running`으로 남은 정리 receipt를 쓴 실행이 이미 끝났는지 본다. 끝난 실행은 receipt를 더 바꾸지 못해 상단 줄이
+ * "정리 중"에 영영 남는다(갱신 유닛이 정리 도중 강제로 끝난 경우 등). 종료는 `kill(pid, 0)`의 ESRCH로만 판정하고
+ * (EPERM은 살아 있음), WSL 정리 실행이 적은 Linux 부팅·시작 tick(`ownerIdentity`)이 있으면 update-state.mjs의
+ * ownerAlive와 같은 규칙으로 재부팅·PID 재사용도 끝난 실행으로 본다.
+ */
+function cleanupOwnerExited(raw: JsonRecord, ownerPid: number): boolean {
+  try {
+    process.kill(ownerPid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+  }
+  const identity = asRecord(raw.ownerIdentity);
+  if (!identity || process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${ownerPid}/stat`, "utf8");
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== identity.bootId
+      || Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]) !== identity.startTicks;
+  } catch {
+    return true;
+  }
+}
+
 function normalizeCleanupProgress(
   request: ExternalUpdateRequest,
   command: MaintenanceCommand,
+  checkOwner = true,
 ): CleanupProgress | null {
   const raw = readJson(join(request.maintenanceDirectory, "cleanup.json"));
   if (
@@ -234,6 +261,18 @@ function normalizeCleanupProgress(
     || !Number.isFinite(Date.parse(updatedAtUtc))
     || (finishedAtUtc !== null && !Number.isFinite(Date.parse(finishedAtUtc)))
   ) return null;
+  if (status === "running" && checkOwner && cleanupOwnerExited(raw, ownerPid)) {
+    // 실행은 마지막 receipt를 쓴 뒤에 끝나므로, 끝난 것을 본 뒤 다시 읽어도 running이면 결과 없이 끝난 것이다.
+    const latest = normalizeCleanupProgress(request, command, false);
+    if (latest?.status !== "running") return latest;
+    return {
+      ...latest,
+      status: "failed",
+      reason: CLEANUP_OWNER_EXITED_REASON,
+      currentTarget: null,
+      failureCount: latest.failureCount + 1,
+    };
+  }
   return {
     schemaVersion: 1,
     owner: "runtime-transaction",
@@ -307,7 +346,8 @@ function normalizeDeploymentCompletion(
     stageHash: command.stageHash,
   };
   // WSL CUELO(Tools/CUELO_Setup/wsl/update.sh)는 npm 전역 package가 아니라 git checkout을 갱신한다. 되돌릴 근거는
-  // 이전 commit이고 산출물 정리 단계가 없으므로 package·shim·cleanup owner 대신 그 revision을 확인한다.
+  // 이전 commit이므로 package·shim 대신 그 revision을 확인한다. 산출물 정리는 이 receipt를 쓴 뒤에 시작해 같은
+  // maintenance 폴더의 cleanup.json으로만 알리므로(update-state.mjs cleanupArtifacts) cleanup owner 포인터도 요구하지 않는다.
   if (rollback.kind === "git-revision") {
     return GIT_REVISION_PATTERN.test(String(rollback.revision ?? "")) ? completion : null;
   }

@@ -66,6 +66,12 @@ export interface UpdateReturnStatus {
 export const SETTLED_CLEANUP_AUTO_HIDE_MS = 8_000;
 /** 정리 실패는 읽을 시간이 더 필요하므로 오래 두되 영구 잔류시키지는 않는다. */
 export const FAILED_CLEANUP_AUTO_HIDE_MS = 30_000;
+/**
+ * 배포는 끝났는데 정리 receipt가 없는 완료 줄이 남아 있는 상한. 정리는 배포 완료 직후 receipt부터 쓰므로
+ * 그 안에 receipt가 오면 그 상태로 바뀌고, 끝내 오지 않으면(정리 단계가 없는 옛 갱신 스크립트·receipt 기록
+ * 실패) 줄이 스스로 닫힌다.
+ */
+export const MISSING_CLEANUP_AUTO_HIDE_MS = 20_000;
 
 /** 상단 업데이트 상태 줄의 표시 내용과 사라지는 조건. */
 export interface UpdateCleanupBanner {
@@ -79,11 +85,12 @@ export interface UpdateCleanupBanner {
 }
 
 /**
- * 정리 상태별로 상태 줄이 스스로 사라지기까지의 시간. 진행 중이거나 아직 receipt를
- * 못 읽은 동안에는 사라지지 않는다.
+ * 정리 상태별로 상태 줄이 스스로 사라지기까지의 시간. 진행 중일 때만 사라지지 않고, receipt를 아직 못 읽은
+ * 완료 줄도 정해진 시간 뒤에는 사라진다.
  */
 export function updateCleanupAutoHideMs(status: UpdateCleanupSnapshot["status"] | null): number | null {
-  if (status === null || status === "running") return null;
+  if (status === null) return MISSING_CLEANUP_AUTO_HIDE_MS;
+  if (status === "running") return null;
   return status === "failed" ? FAILED_CLEANUP_AUTO_HIDE_MS : SETTLED_CLEANUP_AUTO_HIDE_MS;
 }
 
@@ -176,8 +183,8 @@ export function recordUpdateReturn(input: { requestId: string; stageHash: string
 /**
  * 복귀 화면의 업데이트 상태 한 줄. 배포 성공과 임시 산출물 정리를 분리해 읽고,
  * cleanup receipt에 실제로 적힌 값(완료수/전체·경과·현재 대상·보존 건수)만 쓴다.
- * 정리 실패는 업데이트 실패가 아니므로 tone을 critical로 올리지 않는다. 정리가 끝난
- * 상태는 실패를 포함해 사용자가 닫을 수 있고 `autoHideMs` 뒤 스스로 사라진다.
+ * 정리 실패는 업데이트 실패가 아니므로 tone을 critical로 올리지 않는다. 진행 중이 아닌
+ * 줄은 실패와 receipt 없음을 포함해 사용자가 닫을 수 있고 `autoHideMs` 뒤 스스로 사라진다.
  * 실패 증거 자체는 배포 receipt에 남으므로 줄이 사라져도 유실되지 않는다.
  */
 export function describeUpdateCleanup(cleanup: UpdateCleanupSnapshot | null): UpdateCleanupBanner {
@@ -187,7 +194,7 @@ export function describeUpdateCleanup(cleanup: UpdateCleanupSnapshot | null): Up
       title: "업데이트 완료",
       detail: "임시 산출물 정리 상태를 확인하고 있습니다.",
       dismissible: true,
-      autoHideMs: null,
+      autoHideMs: updateCleanupAutoHideMs(null),
     };
   }
   const counts = `${cleanup.completedCount}/${cleanup.totalCount} 완료`;

@@ -195,9 +195,10 @@ html, body {
   overflow: clip;
   background: var(--bg);
   color: var(--text);
-  /* `--seed-font-family` only names faces — SEED downloads nothing, so the
-     no-font-CDN rule still holds. Korean prose reads at t5 (16px); chrome and
-     controls step down to t4/t3 locally. */
+  /* Body, controls and headings use the bundled Wanted Sans Variable
+     (public/fonts/fonts.css, linked from app/layout.tsx); SEED's own system
+     stack stays behind it as the fallback. No font comes from a CDN. Korean
+     prose reads at t5 (16px); chrome and controls step down to t4/t3 locally. */
   font-family: var(--seed-font-family);
   font-size: var(--seed-font-size-t5-static);
   overscroll-behavior: none;
@@ -245,14 +246,30 @@ body {
 }
 
 :root {
-  /* System monospace stack. CUELO is a local tool: it must not depend on a
-     font CDN at build or at runtime, and the terminal-native faces below are
-     already what omp users read code in. CJK fallbacks stay last. */
-  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Noto Sans Mono', 'DejaVu Sans Mono', Consolas, 'Liberation Mono', 'PingFang SC', 'Microsoft YaHei', monospace;
+  /* Three roles, all served from public/fonts/. The SEED stack after each
+     bundled face is the fallback while a subset loads or if a file is missing. */
+  --seed-font-family: "Wanted Sans Variable", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard Variable", Pretendard, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  /* Code, paths, IDs and readouts use the bundled JetBrains Mono. It has no
+     Hangul, so Korean inside code falls through to Wanted Sans before the
+     system monospace faces. */
+  --font-mono: "JetBrains Mono", "Wanted Sans Variable", ui-monospace, 'SF Mono', 'Fira Code', 'Cascadia Code', 'Noto Sans Mono', 'DejaVu Sans Mono', Consolas, 'Liberation Mono', 'PingFang SC', 'Microsoft YaHei', monospace;
+  /* Titles only: CUELO Display (Gmarket Sans, renamed for its OFL reserved
+     name). Medium 500 and Bold 700 exist; body text never uses it. */
+  --font-heading: "CUELO Display", var(--seed-font-family);
+}
+
+/* Semantic page, panel and modal titles take the heading face. Zero
+   specificity, so any component rule that names a font still wins (the mono
+   uppercase settings group labels, for one). Tiny uppercase eyebrow headings
+   are labels rather than titles and keep the body face. */
+:where(h1, h2, h3):where(:not(.uppercase)) {
+  font-family: var(--font-heading);
 }
 
 pre, code {
   font-family: var(--font-mono);
+  /* Agent output must show the characters as typed: no `=>`/`!=` ligatures. */
+  font-variant-ligatures: none;
 }
 
 /* react-markdown output styles */
@@ -283,15 +300,16 @@ pre, code {
 .update-changelog .markdown-body li { margin: 2px 0; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3,
 .markdown-body h4, .markdown-body h5, .markdown-body h6 {
-  font-weight: 600;
+  font-weight: 650;
   margin: 10px 0 5px;
   color: var(--text);
   line-height: 1.35;
   letter-spacing: 0;
 }
-.markdown-body h1 { font-size: 1.16em; }
-.markdown-body h2 { font-size: 1.08em; }
-.markdown-body h3 { font-size: 0.98em; color: color-mix(in srgb, var(--text) 88%, var(--text-muted)); }
+/* Headings sit on SEED's t7/t6/t5 steps, so a long reply keeps its outline. */
+.markdown-body h1 { font-size: 1.25em; font-weight: 700; letter-spacing: -0.01em; }
+.markdown-body h2 { font-size: 1.125em; font-weight: 700; letter-spacing: -0.005em; }
+.markdown-body h3 { font-size: 1em; font-weight: 500; color: color-mix(in srgb, var(--text) 88%, var(--text-muted)); }
 .markdown-body ul, .markdown-body ol {
   padding-left: 22px;
   margin: 5px 0 8px;
@@ -4800,6 +4818,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .chat-composer-send,
   .composer-action-bar button,
   .workspace-header-seam button,
+  .workspace-header-seam a,
   .workspace-update-banner-dismiss {
     min-block-size: 44px;
   }
@@ -4808,6 +4827,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
      좁은 폭에서 더 줄어들지 못해 옆 묶음을 밀고 실제로 겹친다 — 칩의 가로는 내용에 맡긴다. */
   .composer-icon-button,
   .workspace-header-seam button,
+  .workspace-header-seam a,
   .workspace-update-banner-dismiss {
     min-inline-size: 44px;
   }
@@ -4862,6 +4882,65 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   /* 드로어를 조금 넓혀 뒤 레이어가 남기는 띠를 줄인다. 닫기용 여백은 남긴다. */
   .sidebar-container {
     inline-size: min(320px, calc(100vw - 44px));
+  }
+
+  /* 드로어는 화면 높이를 다 쓴다. 열린 동안 대화 칸은 inert라 입력란을 아래에 남겨 둘 이유가 없고,
+     남겨 두면 프로젝트 목록이 입력란 높이만큼 줄었다. */
+  .sidebar-container,
+  .sidebar-overlay-backdrop {
+    inset-block-end: 0;
+  }
+
+  /* 질문 레일은 12px 눈금이라 손가락으로 누를 수 없고, 낮은 화면에서는 헤더·입력란과 겹친다. */
+  .question-rail {
+    display: none;
+  }
+
+  /* 머리줄이 폭을 넘으면 overflow:hidden에 ⋮ 버튼이 잘린다. 오피스 링크는 아이콘만 남기고
+     (이름은 aria-label), 보조 패널 토글은 글자를 말줄임으로 줄인다. 좌우 여백은 안전 영역을 따른다. */
+  .workspace-header-seam {
+    padding-inline: max(var(--seed-dimension-x2), env(safe-area-inset-left)) max(var(--seed-dimension-x2), env(safe-area-inset-right));
+  }
+
+  .workspace-header-action-label {
+    display: none;
+  }
+
+  .workspace-panel-toggle {
+    flex: 0 1 auto;
+    min-inline-size: 44px;
+  }
+
+  .workspace-panel-toggle-label {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 키보드가 열린 동안 헤더 위 알림·업데이트 줄은 접는다. 닫히면 그대로 돌아온다. */
+  .workspace-header-stack[data-soft-keyboard="open"] > :not(.workspace-header-seam) {
+    display: none;
+  }
+
+  /* 입력란은 보이는 화면의 일부까지만 자라고 나머지는 대화에 남긴다(인라인 200px 상한보다 우선).
+     한 줄일 때도 옆 보내기 버튼과 같은 44px 표적으로 둔다 — 26px이면 입력란 위아래 여백을 눌러도
+     포커스가 가지 않았다. 패딩은 scrollHeight에 들어가므로 자동 높이 계산은 그대로 맞는다.
+     세로 여백은 입력란 안으로 옮겨, 테두리 상자는 44px 표적 + 테두리 높이(48px)로 그대로 둔다. */
+  .chat-composer-field {
+    padding-block: 1px !important;
+  }
+
+  .chat-composer-textarea {
+    min-block-size: 44px !important;
+    padding-block: 9px !important;
+    max-height: calc(var(--app-viewport-height, 100dvh) * 0.28) !important;
+  }
+
+  /* Seed 메뉴는 480px에서 잘려 안에서 스크롤된다. 휴대폰에서는 ⋮ 메뉴 끝의 설정이 접힌 스크롤
+     아래 숨어 입력란 뒤에 있는 것처럼 보였다 — 화면 높이까지 펼친다(남는 높이는 Seed가 다시 줄인다). */
+  .seed-menu__positioner {
+    --seed-menu-max-height: calc(var(--app-viewport-height, 100dvh) - 16px);
   }
 
   textarea,

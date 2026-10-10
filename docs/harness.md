@@ -62,9 +62,9 @@ WSL 갱신은 진행 기록의 서버 세대를 Linux 부팅 ID와 프로세스 
 
 이전 측정은 과제·하네스·모델 조건과 수용 품질, 표본 한계를 함께 봅니다. 합성 과제와 실제 제품 작업을 구분하고, 기존 계약·문맥 재사용 및 발주 준비·재작업·통합 검수 비용을 실제 독립 병렬 구간과 대조합니다. 모델 응답 생성과 도구 실행 시간을 섞지 않으며, 단독 대조군 없는 기록으로 속도 우열을 단정하거나 한 사례를 줄 수·인원수 임계값으로 만들지 않습니다.
 
-등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_SOL`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `HARD_CODE_ASTRA`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sonnet을 우선하고 실제 사용 불가·소진 시에만 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다. HARD 코드의 기본은 Opus이고, `HARD_CODE_SONNET`·`HARD_CODE_ASTRA`는 `ROUTING_REASON`을 남길 때만 고르는 대안입니다. `NORMAL_SOL`도 자동 추천 대상이 아니라 명세가 분명한 비-UI 코드에서 지연보다 비용이 중요할 때 `ROUTING_REASON`으로 고르는 대안이며 Sonnet 기본을 대체하지 않습니다. 기존 평가는 표본이 작아 이 대안들의 우월성을 증명하지 않습니다.
+등급(`NORMAL`·`HARD`)과 후보 이름은 구분합니다. 후보는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_SOL`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `HARD_CODE_ASTRA`처럼 실제 모델 계열을 표시합니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 Sonnet을 우선하고, 실제 사용 불가·소진 시에는 Sol을 먼저, Sol도 쓸 수 없으면 DeepSeek를 추천합니다. 기존 NORMAL의 명시적 Opus 선택도 유지합니다. UI/UX의 Opus unavailable은 다른 모델로 숨겨 대체하지 않습니다. HARD 코드의 기본은 Opus이고, `HARD_CODE_SONNET`·`HARD_CODE_ASTRA`는 `ROUTING_REASON`을 남길 때만 고르는 대안입니다. 소진 대체가 아닐 때 `NORMAL_SOL`을 고르는 것도 `ROUTING_REASON`이 필요하며 Sonnet 기본을 대체하지 않습니다.
 
-사용량 패널의 오늘 몫이나 Anthropic 주간 한도 때문에 Sonnet·Opus 추천을 Sol로 자동 전환하지 않습니다. 계정의 실제 차단·소진 여부와 쿨다운·리셋은 계속 관측하지만, 사용 가능한 기본 후보를 하루 사용량만으로 밀어내지 않습니다. Sol은 Main이 근거를 남겨 명시적으로 선택할 수 있습니다.
+사용량 패널의 오늘 몫이나 Anthropic 주간 한도만으로 Sonnet·Opus 추천을 Sol로 미리 바꾸지 않습니다. 계정의 실제 차단·소진 여부와 쿨다운·리셋은 계속 관측하고, 실제로 소진됐을 때만 위 순서로 대체합니다. 소진 대체에서 Sol을 DeepSeek보다 먼저 두는 근거는 [Maker 코드 품질 평가](./maker-quality.md)입니다. 두 모델의 코드 품질은 같은 수준이었고 Sol이 더 빨리 끝났습니다.
 
 Maker의 추론 강도는 Main이 정하지 않습니다. 모든 Maker 후보는 `:auto`로 발주되고, child의 auto 분류기가 발주 항목의 `solutionSpace`를 입력으로 그 모델이 지원하는 가장 낮은 단계부터 가장 높은 단계(Opus는 `max`)까지에서 고릅니다. 정책에 강도 하한·상한을 두지 않습니다. child는 첫 턴을 `solutionSpace`로 분류하고 이후 Main이 보낸 지시마다 다시 분류하며, 분류가 실패하면 직전 단계(첫 분류 전에는 잠정 단계)를 유지합니다. task hook은 `:high` 같은 구체 강도 suffix나 coarse `effort`를 넣은 발주를 막습니다. Main의 Auto 범위(`medium`~`xhigh`)는 바뀌지 않고, 실행 중인 세션의 모델도 소급 변경하지 않습니다. 재작업도 auto입니다. 수정 뒤 같은 검사가 같은 원인으로 다시 실패했거나, 검수에서 원인 오진·수용 조건 누락이 확인됐거나, 실행 중 범위가 늘었거나, Maker가 막혔다고 보고한 신호는 새 발주의 `solutionSpace`와 재작업 판정 사유에 적습니다. 예전의 후보별 강도 구간과 재작업 강도 한 단계 상향은 2026-10-08에 폐지했습니다.
 
@@ -193,11 +193,11 @@ Windows에서는 FTS 확장이 Git의 `mingw64/bin`에 있는 OpenSSL DLL을 필
 
 ## 캐릭터 음성과 확장
 
-[`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
+[`character-voice.ts`](../Tools/OMP_Global_Config/agent/extensions/character-voice.ts)는 사용자 대면 말투 block을 현재 세션에 주입하고, 캐릭터 호출 의도를 지정된 경로로 전달합니다. 사용자 지정 말투와 기술적 사실은 보존하고, 반복되는 고정 대사를 피하는 규칙은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md)에 있습니다. [`todo-nudge.ts`](../Tools/OMP_Global_Config/agent/extensions/todo-nudge.ts)는 사용자 요청 하나에서 Main이 TODO 목록 없이 도구를 세 번 부르면 요청당 한 번 목록을 만들라고 안내합니다. 목록이 진행 중일 때 작업 종료·Maker 보고·DM 알림이 도착하면 해당 항목의 상태를 바로 갱신하라는 안내도 한 번 넣고, TODO를 다시 갱신하면 다음 알림에서 또 안내합니다. 사용자가 화면의 TODO로 진행 상황을 볼 수 있게 하려는 것이며, 도구를 막지 않고 child 세션에는 개입하지 않습니다. 다른 공개 확장과 `command-guard`는 `agent/extensions/`에 있습니다.
 
 Main은 TODO를 최초 계획에만 쓰지 않고 실시간 현황으로 유지합니다. 착수·검증 완료·외부 대기·재개·재작업을 확인한 자리에서 갱신하고, agent나 검사 결과를 기다리는 항목에는 담당과 남은 조건을 적습니다. 도구의 자동 활성 포인터가 앞선 통합 항목으로 돌아갈 수 있으므로 갱신 결과도 확인합니다. 사용자에게 먼저 답해야 할 때는 즉답 후 같은 턴에서 동기화하며, 채팅 설명만으로 TODO 갱신을 대신하거나 포인터를 맞추려고 미완을 완료 처리하지 않습니다.
 
-[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 영어로 나간 메시지는 처음부터 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시해, 이미 나간 내용도 한국어로 읽을 수 있게 합니다. 긴 답도 앞부분만 자르지 않고 전체를 번역하며(출력은 모델 최대치, 2분 제한), 모델 한도에서 끊기면 끊긴 번역과 그 사실을 함께 보여 줍니다. 처음 한 번은 숨김 안내도 넣어 다음 답부터 한국어로 쓰게 합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
+[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 20자 이상이고 한글 비율이 15% 미만이면(한 줄짜리 영어 진행 문장 포함) 영어로 봅니다. 영어로 나간 메시지는 처음부터 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시해, 이미 나간 내용도 한국어로 읽을 수 있게 합니다. 긴 답도 앞부분만 자르지 않고 전체를 번역하며(출력은 모델 최대치, 2분 제한), 모델 한도에서 끊기면 끊긴 번역과 그 사실을 함께 보여 줍니다. 처음 한 번은 숨김 안내도 넣어 다음 답부터 한국어로 쓰게 합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
 
 Main과 서브에이전트(Maker)가 서로 주고받는 글은 양방향 모두 영어입니다. 발주·후속 지시뿐 아니라 Maker의 진행 발화·완료 보고·체크포인트·Maker끼리 보내는 메시지도 영어로 쓰고, 사용자에게는 Main이 필요한 내용을 한국어로 옮겨 전합니다. 사용자가 캐릭터를 불러 직접 답하게 한 경우는 사용자에게 하는 말이므로 한국어입니다.
 
@@ -234,6 +234,30 @@ mcp:
 - 같은 서버의 설치 추천은 한 번만 보여 줍니다. 보여 준 서버 이름은 agent 데이터 디렉터리의 `mcp-suggested.json`에 남고, 이후 세션에서는 요청에 그 서버 이름을 직접 적었을 때만 다시 판단합니다. 다시 처음부터 추천받으려면 그 파일에서 이름을 지웁니다.
 
 `tools.xdevDocs: catalog`는 도구 상세 설명을 필요할 때 읽도록 하는 별도 설정입니다. 서버 연결을 고르는 `mcp.selection`과 같은 기능이 아닙니다. 요청별 판정은 JEV 사용량을 추가하며, 전체 작업 비용 절감률은 별도 측정 없이 보장하지 않습니다.
+
+### 바이너리 분석용 REA 연결(선택)
+
+소스가 없는 실행 파일·.NET 어셈블리·JavaScript/Electron 배포물의 구조를 볼 때는 [REA](https://github.com/morluto/rea)를 기존 MCP 경로로 붙일 수 있습니다. 전용 코어나 중계 서버는 필요 없습니다. 사용할 프로젝트의 `.omp/mcp.json`에 아래 항목을 기존 서버와 **병합**합니다(파일을 통째로 덮어쓰지 않습니다). 설치·등록은 사용자 승인 뒤에만 합니다.
+
+```json
+{
+  "mcpServers": {
+    "rea": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "rea-agents@6.1.0", "mcp"],
+      "timeout": 120000
+    }
+  }
+}
+```
+
+- REA는 Node `22.x >=22.19`, `24.x >=24.11` 또는 `26+`에서 돕니다. CUELO 서버가 도는 OS(WSL이면 Linux)의 Node가 기준이며, 서비스 환경에서 `npx`를 못 찾으면 실제 경로를 `command`에 적습니다. 경로 인자도 그 프로세스가 읽는 경로(`/mnt/c/...`)로 줍니다.
+- `rea setup --all-detected`는 다른 에이전트 설정까지 바꾸므로 쓰지 않습니다. 새 세션이나 `/mcp reconnect rea`로 연결한 뒤 실제 도구 목록과 호출 결과를 확인합니다. 처음 등록한 서버는 도구 캐시가 없어 `per-request` 자동 선택이 보장되지 않으므로 첫 확인은 명시 재연결로 합니다.
+- 큰 분석 결과는 MCP 전달 한도(약 10MiB)를 넘어 `resource_constraint`로 돌아올 수 있습니다. 같은 연결에서 범위를 좁힌 trace나 `export_evidence_bundle`로 받고, 전체 분석을 반복하거나 잘린 결과를 성공으로 보지 않습니다. `complete`·미지원 signature·본문 없음·unknown은 구분해서 보고합니다.
+- 여러 Maker가 REA의 열린 대상(`open_binary`·`close_binary`)을 동시에 바꾸지 않게 하고, managed 검사에는 매번 명시 경로를 줍니다. 네이티브 심층 분석(Ghidra·IDA 등)과 LabVIEW 실행 파일은 별도 환경 확인이 필요한 범위입니다.
+- 소스가 있는 프로젝트는 기존 `read`·`grep`·LSP·테스트가 기준입니다. 추천 카탈로그는 HTTP 서버만 다루므로 REA는 자동 추천 목록에 없습니다.
 
 ## Git 마감 도구
 

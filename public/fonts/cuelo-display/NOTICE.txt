@@ -1,0 +1,15 @@
+CUELO Display is a Modified Version of Gmarket Sans 1.000
+(Copyright (c) 2019, eBay Korea Co., Ltd., now Gmarket; https://corp.gmarket.com/fonts/),
+distributed under the SIL Open Font License 1.1 (OFL.txt in this folder).
+
+The original license reserves the font name "Gmarket Sans Font". Because these files
+are modified, they are published under a different name, as OFL section 3 requires.
+
+Changes from the official GmarketSansTTF download (GmarketSansTTFMedium.ttf, GmarketSansTTFBold.ttf):
+- name table: family renamed to "CUELO Display"; only Windows English records kept.
+- split into unicode-range subsets (the same ranges as Wanted Sans' web split) and
+  compressed to WOFF2 so a page downloads only the characters it shows.
+- no glyph outlines were changed.
+
+OFL.txt is the license text embedded in the official font files; the official
+download ships no separate license file.

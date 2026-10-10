@@ -53,11 +53,19 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
 
     const render = async () => {
       const { default: mermaid } = await import("mermaid");
+      // Mermaid sizes node boxes from text measured at render time, so the
+      // diagram uses the app's body face and waits until the subsets covering
+      // its characters have loaded instead of measuring a fallback face.
+      const fontFamily = getComputedStyle(document.body).fontFamily;
+      await document.fonts.load(`16px ${fontFamily}`, code);
+      await document.fonts.ready;
+      if (cancelled) return;
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: "strict",
         suppressErrorRendering: true,
         theme: isDark ? "dark" : "default",
+        fontFamily,
       });
 
       const parsed = await mermaid.parse(code, { suppressErrors: true });

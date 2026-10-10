@@ -48,7 +48,7 @@ export function OmpWordmark({
           minWidth: 0,
           overflow: "hidden",
           color: "inherit",
-          fontFamily: '"Plus Jakarta Sans", Geist, ui-sans-serif, system-ui, sans-serif',
+          fontFamily: "var(--font-heading)",
           fontSize: 15,
           fontWeight: 700,
           letterSpacing: "-0.025em",

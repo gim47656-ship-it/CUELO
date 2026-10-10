@@ -489,7 +489,13 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 };
 
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
-const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_SOL: true };
+const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true };
+
+/**
+ * primary 소진 때 대체 순서. Sol과 DeepSeek는 코드 품질이 같은 수준이고 Sol이 더 빨라 먼저 쓴다
+ * (2026-10-10 Maker 품질 평가, 사용자 결정). 목록에 없는 NORMAL 대안은 그 뒤에 정책 순서대로 온다.
+ */
+const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SOL", "NORMAL_DEEPSEEK"];
 
 /** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
 function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
@@ -518,10 +524,17 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
 
 /**
  * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
- * 대안의 한도 여유나 하루 사용 몫 때문에 primary를 밀지 않는다. 실제 소진일 때만 사용 가능한 NORMAL 대안을 추천한다.
+ * 대안의 한도 여유나 하루 사용 몫 때문에 primary를 밀지 않는다. 실제 소진일 때만 사용 가능한 NORMAL 대안을
+ * NORMAL_FALLBACK_ORDER 순서로 추천한다.
  */
 function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
-  const normal = candidates.filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile]);
+  const rank = (candidate: Candidate) => {
+    const index = NORMAL_FALLBACK_ORDER.indexOf(candidate.profile);
+    return index < 0 ? NORMAL_FALLBACK_ORDER.length : index;
+  };
+  const normal = candidates
+    .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
+    .sort((a, b) => rank(a) - rank(b));
   const primary = normal.find((candidate) => candidate.profile === "NORMAL_SONNET");
   const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
   if (quota.state !== "observed") return unavailable(quota.reason);
@@ -1176,7 +1189,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. Anthropic 한도 때문에 NORMAL_SOL을 자동 추천하지 않는다. HARD_CODE_SONNET·HARD_CODE_ASTRA·NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안이다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_SOL, 그것도 쓸 수 없으면 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. Anthropic 오늘 몫·주간 한도만으로 Sonnet·Opus를 Sol로 미리 바꾸지 않는다. HARD_CODE_SONNET·HARD_CODE_ASTRA는 ROUTING_REASON이 필요한 명시적 대안이고, 소진이 아닐 때 NORMAL_SOL을 고르는 것도 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

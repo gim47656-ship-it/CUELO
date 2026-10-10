@@ -22,8 +22,8 @@ import { getContextIndicator } from "@/lib/context-usage";
 import { autoNameBlockReason } from "@/lib/auto-name";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
-import { useIsCompactWorkspace } from "@/hooks/useIsMobile";
-import { useViewportHeight } from "@/hooks/useViewportHeight";
+import { useIsCompactWorkspace, useIsMobile } from "@/hooks/useIsMobile";
+import { useSoftKeyboardOpen, useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
@@ -149,6 +149,9 @@ export function AppShell({
   const notificationPermission = useNotificationPermission();
   const isCompactWorkspace = useIsCompactWorkspace();
   useViewportHeight();
+  // 휴대폰 키보드가 열린 동안 헤더 위 알림 줄을 접어 대화가 보일 자리를 남긴다(globals.css).
+  const softKeyboardOpen = useSoftKeyboardOpen();
+  const isMobile = useIsMobile();
   // Audio ownership lives here (not in ChatWindow) so a neutral attention tone can
   // also fire for tasks settling in a non-active workspace whose outcome and Main
   // identity are not available. ChatWindow receives the audio callbacks as props.
@@ -383,7 +386,8 @@ export function AppShell({
   }, [restartReturned]);
 
   // 정리가 끝난 상태 줄은 스스로 사라진다. 실패 줄도 예외가 아니며, 실패 증거는 배포
-  // receipt에 남으므로 화면에서 사라져도 유실되지 않는다. 진행 중에는 타이머를 걸지 않는다.
+  // receipt에 남으므로 화면에서 사라져도 유실되지 않는다. 정리 receipt가 끝내 오지 않는 완료 줄도
+  // 정해진 시간 뒤 사라진다(updateCleanupAutoHideMs). 진행 중에만 타이머를 걸지 않는다.
   const updateReturnRequestId = updateReturn?.requestId ?? null;
   const updateReturnDismissed = updateReturn?.dismissed ?? true;
   const updateStatusRequestId = updateStatus?.requestId ?? null;
@@ -1905,7 +1909,7 @@ export function AppShell({
         aria-hidden={navigatorPresentation.drawer}
         inert={navigatorPresentation.drawer}
       >
-        <div ref={topBarRef} className="workspace-header-stack">
+        <div ref={topBarRef} className="workspace-header-stack" data-soft-keyboard={softKeyboardOpen && isMobile ? "open" : undefined}>
           {updateBanner && updateReturn && (
             <div className="workspace-update-banner" data-tone={updateBanner.tone} role="status" aria-live="polite">
               <span className="workspace-update-banner-title">{updateBanner.title}</span>
@@ -2044,7 +2048,7 @@ export function AppShell({
                   title={ot("office.toOfficeTitle")}
                   aria-label={`${ot("office.toOffice")} (${ot("office.newTab")})`}
                 >
-                  {ot("office.toOffice")}
+                  <span className="workspace-header-action-label">{ot("office.toOffice")}</span>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M14 4h6v6" />
                     <path d="M20 4 11 13" />
@@ -2063,7 +2067,7 @@ export function AppShell({
                 aria-controls="workspace-auxiliary-panel"
                 title={locale === "ko" ? "보조 패널" : "Auxiliary panel"}
               >
-                {activePanelLabel}
+                <span className="workspace-panel-toggle-label">{activePanelLabel}</span>
               </ToggleButton>
             )}
             <Menu.Root

@@ -45,13 +45,14 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
   비-UI NORMAL은 사용 가능한 `NORMAL_SONNET`을 우선하고, 실제 사용 불가·한도 소진이 관측됐을 때만
   대안을 추천한다. 한도 여유 크기나 미관측을 이유로 primary를 밀지 않는다.
-  Anthropic의 오늘 몫이나 주간 한도 때문에 `NORMAL_SOL`을 자동 추천하지 않는다(2026-10-08 사용자 결정으로 해당 예외 폐기).
-  실제 primary 소진에서는 `NORMAL_DEEPSEEK`를 추천한다.
+  Anthropic의 오늘 몫이나 주간 한도만으로 Sonnet·Opus를 `NORMAL_SOL`로 미리 바꾸지 않는다(2026-10-08 사용자 결정).
+  실제 primary 소진에서는 사용 가능한 `NORMAL_SOL`을 먼저, 그것도 소진이면 `NORMAL_DEEPSEEK`를 추천한다
+  (2026-10-10 사용자 결정: Maker 품질 평가에서 코드 품질은 같은 수준이고 Sol이 더 빨랐다).
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.
   HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
   `HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
-  `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때, `NORMAL_SOL`은 명세가 분명한 비-UI 코드에서 지연보다 비용이 중요할 때 Main이 명시적으로 고른다.
+  `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때, 소진 대체가 아닌 `NORMAL_SOL`은 명세가 분명한 비-UI 코드에서 Main이 명시적으로 고른다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. Main 계열만으로
   배정을 뒤집지 않고, 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.

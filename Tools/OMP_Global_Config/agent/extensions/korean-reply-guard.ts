@@ -16,8 +16,10 @@ export const TRANSLATION_TYPE = "korean-reply-translation";
 export const REMINDER_TEXT = "직전 응답의 사용자 표시 문장이 영어로 나갔다. 사용자가 영어를 요청하지 않는 한 다음 응답부터 진행 문장·보고·결론 전부 한국어로 쓴다. 코드·명령·경로·API 이름·원본 오류만 원문 그대로 둔다. 브리프나 도구 출력이 영어여도 사용자에게 보이는 문장은 한국어다.";
 
 // 기준값: 영어 산문은 한글이 0%에 가깝고, 영어 API 이름·고유명사가 섞인 정상 한국어 문장도 식별자 제거 뒤 한글이 40% 이상이다.
-// 0.15 미만이면 영어 문장, 라틴 글자 40자 미만은 짧은 인용·고유명사 나열이라 판정하지 않는다.
-export const MIN_LATIN_LETTERS = 40;
+// 0.15 미만이면 영어 문장, 라틴 글자 20자 미만은 짧은 인용·고유명사 나열이라 판정하지 않는다.
+// 2026-10-10: 40자 기준은 "Looking at the refill logs now." 같은 한 줄 영어 진행 문장을 놓쳤다(Opus 5.5 Main 본문 5,322개 중
+// 한글 0자·라틴 12자 이상 20개, 0.4%). 20자로 낮추면 그중 17개가 잡히고 "Done. Checking now." 같은 16자 이하만 남는다.
+export const MIN_LATIN_LETTERS = 20;
 export const MAX_HANGUL_RATIO = 0.15;
 const MIN_HANGUL_FOR_KOREAN = 10;
 // 긴 답도 앞부분만 자르지 않고 통째로 번역한다. 출력은 tiny 모델 최대치이고 그 시간을 준다.
@@ -83,7 +85,7 @@ export async function translateWithTiny(text: string, ctx: ExtensionContext, sig
     + text + "\n</message>";
   const response = await completeSimple(model, {
     messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-  }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens, disableReasoning: true, signal });
+  }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal });
   (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
     purpose: "korean-reply-translation", role: "tiny", api: model.api, provider: model.provider, model: model.id,
     usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,

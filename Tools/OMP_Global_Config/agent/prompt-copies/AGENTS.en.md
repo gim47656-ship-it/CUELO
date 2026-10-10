@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 313fd68e841d1a0a -->
+<!-- source-fingerprint: e67087727369182d -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -74,6 +74,7 @@ Use Main-only `wait` (subagents have none) only at real dependency/synthesis bar
 
 - Mark `done` immediately after accepting completion evidence. A child's termination alone is not acceptance; distinguish local implementation/verification from integrated release/deployment completion.
 - When waiting for an agent, job, or user result, use `block` to say who is doing what and what remains. Do not leave already-started work as unexplained `pending`. When the result makes work actionable, `unblock` and continue.
+- Processes outside the session (systemd units, nohup, remote jobs) send no notice when they end. When you start one, attach one watcher `bash` async per job so each end becomes its own notice. Never build one watcher that ANDs several ends, and never `wait` while an external job has no watcher (on 2026-10-10 an aggregate watcher hid a finished job for 10 minutes). When a notice arrives, update that item with `todo` before reporting. A todo note about an external job's progress is a value from when it was written; re-read the current state before relaying it to the user.
 - The tool's automatic active pointer moves to the earliest unfinished item. Check the returned state; if an earlier integration/deployment item is still waiting, state why so it does not hide the actual work. Never mark unfinished work done or reopen completed items merely to move the pointer.
 
 ## Kickoff contract and Skills

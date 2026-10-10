@@ -939,7 +939,15 @@ describe("jev-runtime pre-dispatch", () => {
           { index: 1, id: "agent-epsilon", status: "failed" },
         ] } });
         await executionEnd(harness, "call-partial");
-        await harness.prepare(DELTA, "DeltaNext");
+        // 시작하지 못한 Epsilon은 미관측 감사 행으로만 남는다. 실행 attempt·pending에 들지 않고, 그 triple로는 판정을 쓸 수 없다(#22).
+        const epsilon = { sessionId: fixtureSession, assignmentId: "session-1#call-partial#1", attemptId: "session-1#call-partial#1#a1" };
+        expect((await harness.verdict({ ...epsilon, verdict: "rework", revision: "r1", reason: "재작업", evidenceLocators: ["artifact://x"] })).details)
+          .toMatchObject({ ok: false });
+        for (const round of ["before-reload", "after-reload"]) {
+          if (round === "after-reload") await harness.emit("session_start", { type: "session_start" });
+          expect([round, (await harness.prepare(DELTA, "DeltaNext")).details.routes[0]!.history])
+            .toMatchObject([round, { attempts: 1, followed: { pending: 1, rework: 0 } }]);
+        }
         await harness.prepare(EPSILON, "EpsilonNext");
         expect(await dispatch(harness, "call-delta-next", "DeltaNext", DELTA)).toMatchObject({ block: true, reason: expect.stringContaining("Delta") });
         expect(await dispatch(harness, "call-epsilon-next", "EpsilonNext", EPSILON)).toBeUndefined();
@@ -2597,6 +2605,32 @@ describe("jev-runtime pre-review", () => {
     });
     expect(harness.judgments).toHaveLength(0);
     expect(harness.sent).toHaveLength(0);
+  });
+
+  test("본문 JSON으로 온 보고의 unresolved도 TODO 수용 후보를 막는다(#21)", async () => {
+    const harness = createHarness();
+    const names = ["stable title 구현", "focused 검증"];
+    await harness.emit("tool_result", todoResult(
+      { op: "init" },
+      names.map((content) => ({ content, status: "in_progress" })),
+    ));
+    await registerLiveMaker(harness, "ProgressVisibility", PROGRESS_TASK);
+    const report = {
+      revision: "fixture-rev-1",
+      validation: Object.fromEntries(names.map((name) => [name, { state: "met", evidence: `fixture://logs/${name}` }])),
+      unresolved: ["fixture: regression still open"],
+    };
+    await harness.emit("message_start", {
+      type: "message_start",
+      message: {
+        role: "custom", customType: "async-result", attribution: "agent",
+        details: { jobs: [{ jobId: "job-ProgressVisibility", type: "task", status: "completed" }] },
+        content: `<task-result id="agent-ProgressVisibility"><output>${JSON.stringify(report)}</output></task-result>`,
+      },
+    });
+    const advisory = String(harness.sent.at(-1)?.message.content);
+    expect(advisory).toContain("Main 수용 후보=0");
+    expect(advisory).toContain("unresolved=1");
   });
 });
 

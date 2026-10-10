@@ -371,4 +371,14 @@
   .themeGrid { grid-template-columns: 1fr; }
   .mcpLayout { grid-template-columns: 1fr; }
   .mcpList { min-height: 180px; border-right: 0; border-bottom: 1px solid var(--border); }
+  /* Finger-sized targets. The embedded panels (models, roles, skills, plugins) set their button
+     sizes inline with paddings only, so a minimum height here lifts them without restyling them. */
+  .closeButton,
+  .content button:not(.switch),
+  .content select,
+  .content input:not([type="checkbox"]):not([type="radio"]) { min-height: 44px; }
+  .closeButton, .content button:not(.switch), .reorder button, .serverToggle { min-width: 44px; }
+  .choice { padding-block: 0; }
+  /* The switch keeps its drawn size; an invisible ring around it takes the touch. */
+  .switch::before { content: ""; position: absolute; inset: -11px -3px; }
 }

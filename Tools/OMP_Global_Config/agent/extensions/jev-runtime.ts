@@ -351,7 +351,10 @@ interface SettledJobMeta {
 interface TerminalReportMeta {
   revision?: string;
   validation: Record<string, TerminalValidationItem>;
+  /** 보고의 unresolved 배열 길이. schema.data든 완결된 본문 JSON이든 같은 규칙으로 읽는다. */
+  unresolvedCount?: number;
 }
+
 interface ReviewStructuralReport {
   jobId: string;
   evidenceLocators: string[];
@@ -387,33 +390,32 @@ interface StructuralCountObservation {
 
 
 function readTerminalReport(data: unknown, resultText: string): TerminalReportMeta {
+  let record: Record<string, unknown> | undefined;
+  let trimmed = "";
   if (data && typeof data === "object" && !Array.isArray(data)) {
-    const record = data as Record<string, unknown>;
+    record = data as Record<string, unknown>;
+  } else {
+    const envelope =
+      /<output>\s*([\s\S]*?)\s*<\/output>/i.exec(resultText)?.[1] ??
+      /<preview\b[^>]*>\s*([\s\S]*?)\s*<\/preview>/i.exec(resultText)?.[1] ??
+      resultText;
+    trimmed = envelope.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) record = parsed as Record<string, unknown>;
+    } catch {
+      // 5KB 초과 task preview는 JSON 뒷부분이 잘릴 수 있다. 완결된 revision만 복구한다.
+    }
+  }
+  // schema.data든 완결된 본문 JSON이든 같은 규칙으로 읽는다(#21).
+  if (record) {
     return {
       ...(typeof record.revision === "string" && record.revision.trim()
         ? { revision: record.revision.trim() }
         : {}),
       validation: readTerminalValidation(record),
+      ...(Array.isArray(record.unresolved) ? { unresolvedCount: record.unresolved.length } : {}),
     };
-  }
-  const envelope =
-    /<output>\s*([\s\S]*?)\s*<\/output>/i.exec(resultText)?.[1] ??
-    /<preview\b[^>]*>\s*([\s\S]*?)\s*<\/preview>/i.exec(resultText)?.[1] ??
-    resultText;
-  const trimmed = envelope.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const record = parsed as Record<string, unknown>;
-      return {
-        ...(typeof record.revision === "string" && record.revision.trim()
-          ? { revision: record.revision.trim() }
-          : {}),
-        validation: readTerminalValidation(record),
-      };
-    }
-  } catch {
-    // 5KB 초과 task preview는 JSON 뒷부분이 잘릴 수 있다. 완결된 revision만 복구한다.
   }
   const revisionMatch = /"revision"\s*:\s*("(?:\\.|[^"\\])*")/.exec(trimmed);
   let revision: string | undefined;
@@ -476,10 +478,7 @@ function readSettledTaskJobs(details: unknown, content?: unknown): SettledJobMet
         (entry) => entry.state !== "met" || !entry.evidencePresent,
       ).length;
     }
-    if (data && typeof data === "object" && !Array.isArray(data)) {
-      const unresolved = (data as Record<string, unknown>).unresolved;
-      if (Array.isArray(unresolved)) meta.unresolvedCount = unresolved.length;
-    }
+    if (terminal.unresolvedCount !== undefined) meta.unresolvedCount = terminal.unresolvedCount;
     settled.push(meta);
   }
   return settled;
@@ -2233,9 +2232,19 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           // 관측된 모든 spawn jobId를 settle 연결 대상으로 등록한다(첫 child만 등록하지 않는다).
           if (jobId) jobIndex.set(jobId, { callId: event.toolCallId, taskIndex: task.index });
         }
+        // core는 child job을 등록한 뒤 반환하므로 시작한 child의 job은 snapshot에 있다. schedule에 실패한 child는 progress가
+        // failed이고 job이 없다. 둘 다일 때만 시작하지 않은 child로 보고 owner에서 뺀다. snapshot 부재만으로는 빼지 않는다.
+        // 하나도 시작하지 못하면 core는 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다(task/index.ts).
+        const noneStarted = !Array.isArray(details?.progress) && details?.async === undefined
+          && Array.isArray(details?.results) && details.results.length === 0;
+        const started = noneStarted ? [] : spawned.filter((task) => !(failedRows.has(task.index) && !ids.get(task.index)?.jobId));
+        // 원장·관측 attempt는 이 판정을 먼저 따른다. 시작하지 못한 child는 미리 할당된 output id가 있어도 child id를 비워
+        // 미관측 감사 행으로만 남긴다(원장은 child id가 있어야 실행 attempt로 센다). tasks[] index는 그대로 둔다(#22).
+        const startedIndexes = new Set(started.map((task) => task.index));
+        for (const task of spawned) if (!startedIndexes.has(task.index)) ids.set(task.index, { agentId: "", jobId: "" });
         const dispatched = routing.noteSpawned(event.input, sessionId, event.toolCallId, ids);
         const identities: string[] = [];
-        for (const task of spawned) {
+        for (const task of started) {
           const entry = dispatched.get(task.index);
           if (!entry || !entry.identity.sessionId) continue;
           const { identity, ownership } = entry;
@@ -2258,12 +2267,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ),
           );
         }
-        // core는 child job을 등록한 뒤 반환하므로 시작한 child의 job은 snapshot에 있다. schedule에 실패한 child는 progress가
-        // failed이고 job이 없다. 둘 다일 때만 시작하지 않은 child로 보고 owner에서 뺀다. snapshot 부재만으로는 빼지 않는다.
-        // 하나도 시작하지 못하면 core는 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다(task/index.ts).
-        const noneStarted = !Array.isArray(details?.progress) && details?.async === undefined
-          && Array.isArray(details?.results) && details.results.length === 0;
-        const started = noneStarted ? [] : spawned.filter((task) => !(failedRows.has(task.index) && !ids.get(task.index)?.jobId));
         liveMakers.set(event.toolCallId, started);
         for (const task of started) {
           // 별도 호출이 같은 이름을 다시 써도 앞 child를 덮지 않는다. 키는 그 spawn identity다.

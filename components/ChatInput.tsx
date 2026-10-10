@@ -2200,6 +2200,419 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
 
 
+  // 휴대폰에서는 액션 줄을 한 줄로 둔다. 아래 컨트롤은 그때 실행 옵션 안으로 옮겨 가고,
+  // 실행 중에는 지시·후속 메시지가 비활성 모델 칩 자리로 내려가 입력란이 한 줄을 다 쓴다.
+  const attachButton = (
+            <button
+              type="button"
+              className={`composer-icon-button${attachedImages.length || attachedDocuments.length ? " is-active" : ""}`}
+              onClick={() => fileInputRef.current?.click()}
+              title={t("chat.attachFile")}
+              aria-label={t("chat.attachFile")}
+              style={{
+                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                width: 32, height: 32, padding: 0,
+                background: "none", border: "none",
+                borderRadius: "var(--radius-control)",
+                color: attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text-muted)",
+                cursor: "pointer",
+                opacity: 1,
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--bg-hover)";
+                e.currentTarget.style.color = attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "none";
+                e.currentTarget.style.color = attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text-muted)";
+              }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <polyline points="21 15 16 10 5 21" />
+              </svg>
+            </button>
+  );
+  const presetControl = onMainPresetChange && MAIN_PRESETS.length > 0 ? (
+              <div ref={presetDropdownRef} style={{ position: "relative", flexShrink: isMobile ? 1 : 0, minWidth: 0 }}>
+                <button
+                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${presetDropdownOpen ? " is-active" : ""}`}
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setPresetDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
+                    setModelDropdownOpen(false);
+                    setModelFilter("");
+                    setPresetDropdownOpen((open) => !open);
+                  }}
+                  disabled={isStreaming || modelSwitching}
+                  aria-haspopup="menu"
+                  aria-expanded={presetDropdownOpen}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape" || !presetDropdownOpen) return;
+                    e.stopPropagation();
+                    setPresetDropdownOpen(false);
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    maxWidth: "100%",
+                    padding: "4px 8px",
+                    background: presetDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none",
+                    borderRadius: "var(--radius-control)",
+                    color: "var(--text-muted)",
+                    cursor: isStreaming || modelSwitching ? "not-allowed" : "pointer",
+                    fontSize: 12,
+                    opacity: isStreaming ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isStreaming || modelSwitching) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = presetDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                  title={t("chat.mainPreset")}
+                  aria-label={t("chat.mainPreset")}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                    <path d="M12 3l2.2 5.1 5.6.5-4.2 3.7 1.2 5.5L12 15l-4.8 2.8 1.2-5.5L4.2 8.6l5.6-.5z" />
+                  </svg>
+                  {/* 좁은 폭에서는 라벨을 접는다. 한 줄에 다 넣으면 "M…"까지 줄어 뜻이
+                      없어지고, 그 폭은 지금 쓰는 모델 이름이 가져가는 편이 낫다.
+                      이름은 title/aria-label에 그대로 남는다. */}
+                  {isMobile ? null : (
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                      {t("chat.mainPreset")}
+                    </span>
+                  )}
+                </button>
+                {presetDropdownOpen && presetDropdownRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const { side, maxHeight: maxH } = computePopupPlacement(
+                    presetDropdownRect.top,
+                    presetDropdownRect.bottom,
+                    viewportHeight,
+                    preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
+                    { gap: 6, prefer: "above" },
+                  );
+                  const sidePos: React.CSSProperties = side === "above"
+                    ? { bottom: viewportHeight - presetDropdownRect.top + 6 }
+                    : { top: presetDropdownRect.bottom + 6 };
+                  const panelPos: React.CSSProperties = isMobile
+                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
+                    : { left: presetDropdownRect.left, width: "max-content", minWidth: presetDropdownRect.width };
+                  return (
+                    <div
+                      ref={presetDropdownPanelRef}
+                      role="menu"
+                      aria-label={t("chat.mainPreset")}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Escape") return;
+                        setPresetDropdownOpen(false);
+                        presetDropdownRef.current?.querySelector("button")?.focus();
+                      }}
+                      style={{
+                        position: "fixed",
+                        ...sidePos,
+                        ...panelPos,
+                        zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
+                        borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
+                        overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
+                      }}
+                    >
+                      <div style={{ minHeight: 0, overflowY: "auto" }}>
+                        {MAIN_PRESETS.map((entry) => {
+                          const isActive = entry.alias === activePresetAlias;
+                          return (
+                            <button
+                              key={entry.alias}
+                              role="menuitemradio"
+                              aria-checked={isActive}
+                              onClick={() => {
+                                setPresetDropdownOpen(false);
+                                // 적용이 성공했는지는 훅이 정한다 — 여기서 미리 기억하거나
+                                // 체크하지 않는다.
+                                void onMainPresetChange(mainPresetSelection(entry));
+                              }}
+                              title={`${entry.provider}/${entry.model}`}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8,
+                                width: "100%", padding: "7px 12px",
+                                background: isActive ? "var(--bg-selected)" : "none",
+                                border: "none",
+                                color: isActive ? "var(--text)" : "var(--text-muted)",
+                                cursor: "pointer", fontSize: 12, textAlign: "left",
+                                fontWeight: isActive ? 600 : 400,
+                                whiteSpace: "nowrap",
+                              }}
+                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                            >
+                              {isActive
+                                ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                                : <span style={{ width: 10, flexShrink: 0 }} />}
+                              <img className="account-avatar" src={avatarSrcForSeed(entry.seed)} width={20} height={20} alt="" aria-hidden="true" draggable={false} />
+                              <span>{entry.alias}</span>
+                              <span style={{
+                                marginLeft: "auto",
+                                paddingLeft: 12,
+                                color: "var(--text-dim)",
+                                fontSize: 11,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}>
+                                {entry.provider}/{entry.model}
+                                {entry.oauthPosition !== undefined ? ` · OAuth ${entry.oauthPosition}` : ""}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+  ) : null;
+  const thinkingControl = onThinkingLevelChange ? (
+              <div ref={thinkingDropdownRef} style={{ position: "relative", flexShrink: 0, minWidth: 0 }}>
+                <button
+                  type="button"
+                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${thinkingDropdownOpen ? " is-active" : ""}`}
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setThinkingDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
+                    setModelDropdownOpen(false);
+                    setModelFilter("");
+                    setPresetDropdownOpen(false);
+                    setThinkingDropdownOpen((open) => !open);
+                  }}
+                  disabled={isStreaming || modelSwitching}
+                  aria-haspopup="menu"
+                  aria-expanded={thinkingDropdownOpen}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape" || !thinkingDropdownOpen) return;
+                    e.stopPropagation();
+                    setThinkingDropdownOpen(false);
+                  }}
+                  title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
+                  aria-label={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                    padding: isMobile ? 0 : "8px 12px",
+                    height: 32,
+                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none",
+                    borderRadius: "var(--radius-control)",
+                    color: "var(--text-muted)",
+                    cursor: isStreaming || modelSwitching ? "not-allowed" : "pointer",
+                    fontSize: 12,
+                    opacity: isStreaming ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isStreaming || modelSwitching) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
+                    <line x1="7" y1="18" x2="12" y2="18" />
+                    <line x1="8" y1="21" x2="11" y2="21" />
+                  </svg>
+                  {isMobile ? null : <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
+                </button>
+                {thinkingDropdownOpen && thinkingDropdownRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const { side, maxHeight: maxH } = computePopupPlacement(
+                    thinkingDropdownRect.top,
+                    thinkingDropdownRect.bottom,
+                    viewportHeight,
+                    preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
+                    { gap: 6, prefer: "above" },
+                  );
+                  const sidePos: React.CSSProperties = side === "above"
+                    ? { bottom: viewportHeight - thinkingDropdownRect.top + 6 }
+                    : { top: thinkingDropdownRect.bottom + 6 };
+                  const panelPos: React.CSSProperties = isMobile
+                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
+                    : { left: thinkingDropdownRect.left, width: "max-content", minWidth: Math.max(180, thinkingDropdownRect.width) };
+                  return (
+                    <div
+                      role="menu"
+                      aria-label={t("chat.changeReasoningLabel")}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Escape") return;
+                        setThinkingDropdownOpen(false);
+                        thinkingDropdownRef.current?.querySelector("button")?.focus();
+                      }}
+                      style={{
+                        position: "fixed",
+                        ...sidePos,
+                        ...panelPos,
+                        zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
+                        borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
+                        overflowY: "auto", maxHeight: maxH,
+                      }}
+                    >
+                      {thinkingChoices.map(({ level: lvl, ceiling }) => {
+                        const isActive = (thinkingLevel ?? "auto") === lvl && (lvl !== "auto" || (thinkingCeiling ?? null) === ceiling);
+                        const shownLevel = ceiling ?? lvl;
+                        const mapped = lvl === "auto" && ceiling === null ? null : mappedThinkingLevel(shownLevel);
+                        const displayLabel = ceiling ? `auto ≤ ${mapped ?? ceiling}` : (mapped ?? lvl);
+                        const desc = ceiling
+                          ? t("chat.thinkingAutoCapped", { level: mapped ?? ceiling })
+                          : t(THINKING_LEVEL_DESC_KEYS[lvl]);
+                        return (
+                          <button
+                            key={ceiling ? `auto-${ceiling}` : lvl}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={isActive}
+                            onClick={() => { setThinkingDropdownOpen(false); onThinkingLevelChange(lvl, ceiling); }}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 8,
+                              width: "100%", padding: "7px 12px",
+                              background: isActive ? "var(--bg-selected)" : "none",
+                              border: "none",
+                              color: isActive ? "var(--text)" : "var(--text-muted)",
+                              cursor: "pointer", fontSize: 12, textAlign: "left",
+                              fontWeight: isActive ? 600 : 400,
+                              whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                            onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                          >
+                            {isActive
+                              ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                              : <span style={{ width: 10, flexShrink: 0 }} />}
+                            <span style={{ flex: 1 }}>
+                              {displayLabel}
+                              {mapped !== null && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({shownLevel})</span>}
+                            </span>
+                            <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+  ) : null;
+  const fastControl = onFastModeToggle ? (() => {
+              // 번개 하나로 네 상태를 구분한다: 적용 중(채움), 요청됐지만 이 모델·계정엔 안 실림(테두리만·흐림),
+              // 꺼짐, 모름(실행 중이 아닌 세션 — 꺼짐으로 단정하지 않는다). 상태는 서버 응답으로만 바뀐다.
+              const fastLabel = fastModeBusy
+                ? t("chat.fastModeBusy")
+                : fastMode === null
+                  ? t("chat.fastModeUnknown")
+                  : fastMode.active
+                    ? t("chat.fastModeActive")
+                    : fastMode.enabled
+                      ? t("chat.fastModeInactive")
+                      : t("chat.fastModeOff");
+              const fastDisabled = fastModeBusy || isStreaming || modelSwitching;
+              const lit = fastMode?.enabled === true;
+              return (
+                <button
+                  type="button"
+                  className={`composer-icon-button${fastMode?.active ? " is-active" : ""}`}
+                  onClick={onFastModeToggle}
+                  disabled={fastDisabled}
+                  aria-pressed={fastMode === null ? undefined : fastMode.enabled}
+                  aria-busy={fastModeBusy || undefined}
+                  title={fastLabel}
+                  aria-label={fastLabel}
+                  style={{ flexShrink: 0, opacity: isStreaming ? 0.5 : 1 }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill={fastMode?.active ? "var(--accent)" : "none"}
+                    stroke={lit ? "var(--accent)" : "currentColor"}
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={fastMode === null ? "3 2" : undefined}
+                    style={{ opacity: lit && !fastMode?.active ? 0.6 : 1 }}
+                    aria-hidden="true"
+                  >
+                    <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+                  </svg>
+                </button>
+              );
+  })() : null;
+  const streamActions = (
+    <>
+              {onSteer && (
+                <button
+                  className="composer-stream-action is-warning"
+                  onClick={() => sendQueued("steer")}
+                  disabled={!canQueueStreamingMessage}
+                  title={isExtractingDocument
+                    ? t("chat.attachExtractingWait")
+                    : t("chat.steerTitle")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "7px 12px",
+                    background: canQueueStreamingMessage ? "var(--warning-soft)" : "none",
+                    border: "1px solid var(--warning-line)",
+                    borderRadius: "var(--radius-control)",
+                    color: canQueueStreamingMessage ? "var(--warning)" : "var(--text-dim)",
+                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
+                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
+                    transition: "background 0.12s",
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 1 L9 5 L5 9" /><line x1="1" y1="5" x2="9" y2="5" />
+                  </svg>
+                  {t("chat.steer")}
+                </button>
+              )}
+              {onFollowUp && (
+                <button
+                  className="composer-stream-action is-followup"
+                  onClick={() => sendQueued("followup")}
+                  disabled={!canQueueStreamingMessage}
+                  title={isExtractingDocument
+                    ? t("chat.attachExtractingWait")
+                    : t("chat.followUpTitle")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "7px 12px",
+                    background: canQueueStreamingMessage ? "var(--accent-soft)" : "none",
+                    border: "1px solid var(--accent-line)",
+                    borderRadius: "var(--radius-control)",
+                    color: canQueueStreamingMessage ? "var(--accent-hover)" : "var(--text-dim)",
+                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
+                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
+                    transition: "background 0.12s",
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="1" x2="5" y2="6" /><polyline points="2.5 3.5 5 1 7.5 3.5" />
+                    <line x1="2" y1="9" x2="8" y2="9" />
+                  </svg>
+                  {t("chat.followUp")}
+                </button>
+              )}
+    </>
+  );
+  const soundControl = onSoundToggle !== undefined
+    ? <SoundToggle soundEnabled={soundEnabled ?? true} onToggle={onSoundToggle} />
+    : null;
+
   return (
     <div
       className="chat-composer"
@@ -2975,74 +3388,24 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           />
 
-          {isStreaming ? (
+          {isStreaming ? (isMobile ? null : (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, alignSelf: "flex-end" }}>
-              {onSteer && (
-                <button
-                  className="composer-stream-action is-warning"
-                  onClick={() => sendQueued("steer")}
-                  disabled={!canQueueStreamingMessage}
-                  title={isExtractingDocument
-                    ? t("chat.attachExtractingWait")
-                    : t("chat.steerTitle")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "var(--warning-soft)" : "none",
-                    border: "1px solid var(--warning-line)",
-                    borderRadius: "var(--radius-control)",
-                    color: canQueueStreamingMessage ? "var(--warning)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 1 L9 5 L5 9" /><line x1="1" y1="5" x2="9" y2="5" />
-                  </svg>
-                  {t("chat.steer")}
-                </button>
-              )}
-              {onFollowUp && (
-                <button
-                  className="composer-stream-action is-followup"
-                  onClick={() => sendQueued("followup")}
-                  disabled={!canQueueStreamingMessage}
-                  title={isExtractingDocument
-                    ? t("chat.attachExtractingWait")
-                    : t("chat.followUpTitle")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "var(--accent-soft)" : "none",
-                    border: "1px solid var(--accent-line)",
-                    borderRadius: "var(--radius-control)",
-                    color: canQueueStreamingMessage ? "var(--accent-hover)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="1" x2="5" y2="6" /><polyline points="2.5 3.5 5 1 7.5 3.5" />
-                    <line x1="2" y1="9" x2="8" y2="9" />
-                  </svg>
-                  {t("chat.followUp")}
-                </button>
-              )}
+              {streamActions}
             </div>
-          ) : (
+          )) : (
             <button
               className="chat-composer-send"
               onClick={handleSend}
               disabled={!canSend}
               aria-busy={isExtractingDocument || undefined}
+              aria-label={isMobile ? t("chat.send") : undefined}
               title={isExtractingDocument ? t("chat.attachExtractingWait") : undefined}
               style={{
                 flexShrink: 0,
                 alignSelf: "flex-end",
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "7px 14px",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                minWidth: isMobile ? 44 : undefined,
+                padding: isMobile ? 0 : "7px 14px",
                 background: canSend ? "var(--accent-soft)" : "var(--bg-raised)",
                 border: "none",
                 borderRadius: "var(--radius-control)",
@@ -3058,7 +3421,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <line x1="2" y1="7" x2="11" y2="7" />
                 <polyline points="7.5 3 12 7 7.5 11" />
               </svg>
-              {t("chat.send")}
+              {isMobile ? null : t("chat.send")}
             </button>
           )}
           </div>
@@ -3090,186 +3453,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               min-content로 둬 줄바꿈 판정이 실제 최소 내용 폭을 본다. 0이면 오른쪽 묶음이 같은
               줄에 남고 왼쪽 버튼들이 서로 겹쳐 그려졌다(통화 중 라벨이 붙으면 거의 0까지 눌렸다). */}
           <div style={{ flex: isMobile ? "1 1 0%" : "0 0 auto", minWidth: isMobile ? "min-content" : 0, display: "flex", alignItems: "center", gap: 2 }}>
-            <button
-              type="button"
-              className={`composer-icon-button${attachedImages.length || attachedDocuments.length ? " is-active" : ""}`}
-              onClick={() => fileInputRef.current?.click()}
-              title={t("chat.attachFile")}
-              aria-label={t("chat.attachFile")}
-              style={{
-                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                width: 32, height: 32, padding: 0,
-                background: "none", border: "none",
-                borderRadius: "var(--radius-control)",
-                color: attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text-muted)",
-                cursor: "pointer",
-                opacity: 1,
-                transition: "background 0.12s, color 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = attachedImages.length || attachedDocuments.length ? "var(--accent)" : "var(--text-muted)";
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <polyline points="21 15 16 10 5 21" />
-              </svg>
-            </button>
+            {(!isMobile || !isStreaming) && attachButton}
             {/* Main 프리셋 — [프리셋][모델][추론] 묶음의 첫 칩. roster의 Main 후보를 한 번에 적용한다.
                 라벨을 접은 모바일에서는 첨부·음성과 같은 정사각 아이콘 버튼이 된다. */}
-            {onMainPresetChange && MAIN_PRESETS.length > 0 && (
-              <div ref={presetDropdownRef} style={{ position: "relative", flexShrink: isMobile ? 1 : 0, minWidth: 0 }}>
-                <button
-                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${presetDropdownOpen ? " is-active" : ""}`}
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setPresetDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
-                    setModelDropdownOpen(false);
-                    setModelFilter("");
-                    setPresetDropdownOpen((open) => !open);
-                  }}
-                  disabled={isStreaming || modelSwitching}
-                  aria-haspopup="menu"
-                  aria-expanded={presetDropdownOpen}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Escape" || !presetDropdownOpen) return;
-                    e.stopPropagation();
-                    setPresetDropdownOpen(false);
-                  }}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    maxWidth: "100%",
-                    padding: "4px 8px",
-                    background: presetDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: "var(--radius-control)",
-                    color: "var(--text-muted)",
-                    cursor: isStreaming || modelSwitching ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming || modelSwitching) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = presetDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                  title={t("chat.mainPreset")}
-                  aria-label={t("chat.mainPreset")}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
-                    <path d="M12 3l2.2 5.1 5.6.5-4.2 3.7 1.2 5.5L12 15l-4.8 2.8 1.2-5.5L4.2 8.6l5.6-.5z" />
-                  </svg>
-                  {/* 좁은 폭에서는 라벨을 접는다. 한 줄에 다 넣으면 "M…"까지 줄어 뜻이
-                      없어지고, 그 폭은 지금 쓰는 모델 이름이 가져가는 편이 낫다.
-                      이름은 title/aria-label에 그대로 남는다. */}
-                  {isMobile ? null : (
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                      {t("chat.mainPreset")}
-                    </span>
-                  )}
-                </button>
-                {presetDropdownOpen && presetDropdownRect && (() => {
-                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-                  const { side, maxHeight: maxH } = computePopupPlacement(
-                    presetDropdownRect.top,
-                    presetDropdownRect.bottom,
-                    viewportHeight,
-                    preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
-                    { gap: 6, prefer: "above" },
-                  );
-                  const sidePos: React.CSSProperties = side === "above"
-                    ? { bottom: viewportHeight - presetDropdownRect.top + 6 }
-                    : { top: presetDropdownRect.bottom + 6 };
-                  const panelPos: React.CSSProperties = isMobile
-                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
-                    : { left: presetDropdownRect.left, width: "max-content", minWidth: presetDropdownRect.width };
-                  return (
-                    <div
-                      ref={presetDropdownPanelRef}
-                      role="menu"
-                      aria-label={t("chat.mainPreset")}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Escape") return;
-                        setPresetDropdownOpen(false);
-                        presetDropdownRef.current?.querySelector("button")?.focus();
-                      }}
-                      style={{
-                        position: "fixed",
-                        ...sidePos,
-                        ...panelPos,
-                        zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
-                        overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
-                      }}
-                    >
-                      <div style={{ minHeight: 0, overflowY: "auto" }}>
-                        {MAIN_PRESETS.map((entry) => {
-                          const isActive = entry.alias === activePresetAlias;
-                          return (
-                            <button
-                              key={entry.alias}
-                              role="menuitemradio"
-                              aria-checked={isActive}
-                              onClick={() => {
-                                setPresetDropdownOpen(false);
-                                // 적용이 성공했는지는 훅이 정한다 — 여기서 미리 기억하거나
-                                // 체크하지 않는다.
-                                void onMainPresetChange(mainPresetSelection(entry));
-                              }}
-                              title={`${entry.provider}/${entry.model}`}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "7px 12px",
-                                background: isActive ? "var(--bg-selected)" : "none",
-                                border: "none",
-                                color: isActive ? "var(--text)" : "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                fontWeight: isActive ? 600 : 400,
-                                whiteSpace: "nowrap",
-                              }}
-                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                            >
-                              {isActive
-                                ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                                : <span style={{ width: 10, flexShrink: 0 }} />}
-                              <img className="account-avatar" src={avatarSrcForSeed(entry.seed)} width={20} height={20} alt="" aria-hidden="true" draggable={false} />
-                              <span>{entry.alias}</span>
-                              <span style={{
-                                marginLeft: "auto",
-                                paddingLeft: 12,
-                                color: "var(--text-dim)",
-                                fontSize: 11,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}>
-                                {entry.provider}/{entry.model}
-                                {entry.oauthPosition !== undefined ? ` · OAuth ${entry.oauthPosition}` : ""}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
+            {!isMobile && presetControl}
             {/* Model selector — visible always, disabled while the session or switch is busy.
                 모바일에서는 남는 공간을 채운다. width 0은 최소 내용 기여에서 모델 이름 폭을 빼고
                 (실제 폭은 flex 1 1 0%가 정한다), minWidth 44는 다른 버튼과 같은 손가락 표적을 남긴다. */}
-            {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (
+            {!(isMobile && isStreaming) && (modelOptions.length > 0 || currentName || modelError) && onModelChange && (
                 <div ref={dropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 0%" : undefined, width: isMobile ? 0 : undefined, minWidth: isMobile ? 44 : 0 }}>
                   <button
                     className={`composer-chip${modelDropdownOpen ? " is-active" : ""}`}
@@ -3509,183 +3700,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   })()}
                 </div>
             )}
-            {/* 추론 강도 — 모델 chip 오른쪽의 제 칩. 「auto ≤ X」도 여기서 고른다. 모바일에서는 프리셋
-                칩처럼 라벨을 접은 정사각 아이콘 버튼이 되고, 지금 값은 title/aria-label에 남는다.
-                Auto가 정한 현재 강도는 칩 밖의 읽기 전용 표기로 따로 보인다(모바일은 액션 줄 아래). */}
-            {onThinkingLevelChange && (
-              <div ref={thinkingDropdownRef} style={{ position: "relative", flexShrink: 0, minWidth: 0 }}>
-                <button
-                  type="button"
-                  className={`${isMobile ? "composer-icon-button" : "composer-chip"}${thinkingDropdownOpen ? " is-active" : ""}`}
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setThinkingDropdownRect({ top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width });
-                    setModelDropdownOpen(false);
-                    setModelFilter("");
-                    setPresetDropdownOpen(false);
-                    setThinkingDropdownOpen((open) => !open);
-                  }}
-                  disabled={isStreaming || modelSwitching}
-                  aria-haspopup="menu"
-                  aria-expanded={thinkingDropdownOpen}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Escape" || !thinkingDropdownOpen) return;
-                    e.stopPropagation();
-                    setThinkingDropdownOpen(false);
-                  }}
-                  title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
-                  aria-label={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? 0 : "8px 12px",
-                    height: 32,
-                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: "var(--radius-control)",
-                    color: "var(--text-muted)",
-                    cursor: isStreaming || modelSwitching ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming || modelSwitching) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
-                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
-                    <line x1="7" y1="18" x2="12" y2="18" />
-                    <line x1="8" y1="21" x2="11" y2="21" />
-                  </svg>
-                  {isMobile ? null : <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
-                </button>
-                {thinkingDropdownOpen && thinkingDropdownRect && (() => {
-                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-                  const { side, maxHeight: maxH } = computePopupPlacement(
-                    thinkingDropdownRect.top,
-                    thinkingDropdownRect.bottom,
-                    viewportHeight,
-                    preferredPopupHeight(viewportHeight, 0.6, MODEL_DROPDOWN_MAX_HEIGHT_PX),
-                    { gap: 6, prefer: "above" },
-                  );
-                  const sidePos: React.CSSProperties = side === "above"
-                    ? { bottom: viewportHeight - thinkingDropdownRect.top + 6 }
-                    : { top: thinkingDropdownRect.bottom + 6 };
-                  const panelPos: React.CSSProperties = isMobile
-                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
-                    : { left: thinkingDropdownRect.left, width: "max-content", minWidth: Math.max(180, thinkingDropdownRect.width) };
-                  return (
-                    <div
-                      role="menu"
-                      aria-label={t("chat.changeReasoningLabel")}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Escape") return;
-                        setThinkingDropdownOpen(false);
-                        thinkingDropdownRef.current?.querySelector("button")?.focus();
-                      }}
-                      style={{
-                        position: "fixed",
-                        ...sidePos,
-                        ...panelPos,
-                        zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s2)",
-                        overflowY: "auto", maxHeight: maxH,
-                      }}
-                    >
-                      {thinkingChoices.map(({ level: lvl, ceiling }) => {
-                        const isActive = (thinkingLevel ?? "auto") === lvl && (lvl !== "auto" || (thinkingCeiling ?? null) === ceiling);
-                        const shownLevel = ceiling ?? lvl;
-                        const mapped = lvl === "auto" && ceiling === null ? null : mappedThinkingLevel(shownLevel);
-                        const displayLabel = ceiling ? `auto ≤ ${mapped ?? ceiling}` : (mapped ?? lvl);
-                        const desc = ceiling
-                          ? t("chat.thinkingAutoCapped", { level: mapped ?? ceiling })
-                          : t(THINKING_LEVEL_DESC_KEYS[lvl]);
-                        return (
-                          <button
-                            key={ceiling ? `auto-${ceiling}` : lvl}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={isActive}
-                            onClick={() => { setThinkingDropdownOpen(false); onThinkingLevelChange(lvl, ceiling); }}
-                            style={{
-                              display: "flex", alignItems: "center", gap: 8,
-                              width: "100%", padding: "7px 12px",
-                              background: isActive ? "var(--bg-selected)" : "none",
-                              border: "none",
-                              color: isActive ? "var(--text)" : "var(--text-muted)",
-                              cursor: "pointer", fontSize: 12, textAlign: "left",
-                              fontWeight: isActive ? 600 : 400,
-                              whiteSpace: "nowrap",
-                            }}
-                            onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                            onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                          >
-                            {isActive
-                              ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                              : <span style={{ width: 10, flexShrink: 0 }} />}
-                            <span style={{ flex: 1 }}>
-                              {displayLabel}
-                              {mapped !== null && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({shownLevel})</span>}
-                            </span>
-                            <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
+            {isMobile && isStreaming && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                {streamActions}
               </div>
             )}
-            {onFastModeToggle && (() => {
-              // 번개 하나로 네 상태를 구분한다: 적용 중(채움), 요청됐지만 이 모델·계정엔 안 실림(테두리만·흐림),
-              // 꺼짐, 모름(실행 중이 아닌 세션 — 꺼짐으로 단정하지 않는다). 상태는 서버 응답으로만 바뀐다.
-              const fastLabel = fastModeBusy
-                ? t("chat.fastModeBusy")
-                : fastMode === null
-                  ? t("chat.fastModeUnknown")
-                  : fastMode.active
-                    ? t("chat.fastModeActive")
-                    : fastMode.enabled
-                      ? t("chat.fastModeInactive")
-                      : t("chat.fastModeOff");
-              const fastDisabled = fastModeBusy || isStreaming || modelSwitching;
-              const lit = fastMode?.enabled === true;
-              return (
-                <button
-                  type="button"
-                  className={`composer-icon-button${fastMode?.active ? " is-active" : ""}`}
-                  onClick={onFastModeToggle}
-                  disabled={fastDisabled}
-                  aria-pressed={fastMode === null ? undefined : fastMode.enabled}
-                  aria-busy={fastModeBusy || undefined}
-                  title={fastLabel}
-                  aria-label={fastLabel}
-                  style={{ flexShrink: 0, opacity: isStreaming ? 0.5 : 1 }}
-                >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill={fastMode?.active ? "var(--accent)" : "none"}
-                    stroke={lit ? "var(--accent)" : "currentColor"}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeDasharray={fastMode === null ? "3 2" : undefined}
-                    style={{ opacity: lit && !fastMode?.active ? 0.6 : 1 }}
-                    aria-hidden="true"
-                  >
-                    <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
-                  </svg>
-                </button>
-              );
-            })()}
+            {/* 추론 강도 — 모델 chip 오른쪽의 제 칩. 「auto ≤ X」도 여기서 고른다. 휴대폰에서는 프리셋·빠른
+                모드와 함께 실행 옵션 안으로 들어가고, 지금 값은 title/aria-label에 남는다. */}
+            {!isMobile && thinkingControl}
+            {!isMobile && fastControl}
             {!isMobile && currentReasoningText && (
               <span style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                 {currentReasoningText}
@@ -3770,6 +3793,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 boxShadow: "var(--seed-shadow-s2)",
               }}
             >
+            {/* 휴대폰: 액션 줄을 한 줄로 두려고 프리셋·추론·빠른 모드(실행 중이면 첨부까지)가 여기로 온다. */}
+            {isMobile && (
+              <>
+                {isStreaming && attachButton}
+                {presetControl}
+                {thinkingControl}
+                {fastControl}
+              </>
+            )}
             {!isStreaming && onToolPresetChange && (
               <div ref={toolDropdownRef} style={{ position: "relative" }}>
                 <button
@@ -3894,6 +3926,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </button>
               </div>
             )}
+            {isMobile && soundControl}
             {controlsMenuOpen && (
               <button
                 className="composer-icon-button is-active"
@@ -3941,10 +3974,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <button
                 className="composer-chip is-danger is-active"
                 onClick={onAbort}
-                 title={t("chat.stopAgent")}
+                title={t("chat.stopAgent")}
+                aria-label={isMobile ? t("chat.stopAgent") : undefined}
                 style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "8px 14px",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  minWidth: isMobile ? 44 : undefined,
+                  padding: isMobile ? 0 : "8px 14px",
                   height: 32,
                   background: "var(--danger-soft)",
                   border: "1px solid var(--danger-line)",
@@ -3961,7 +3996,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                   <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
                 </svg>
-                 {t("chat.stop")}
+                {isMobile ? null : t("chat.stop")}
               </button>
             )}
 
@@ -3971,19 +4006,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onTranscriptPersisted={onLiveTranscriptPersisted}
             />
 
-            {onSoundToggle !== undefined && (
-              <SoundToggle soundEnabled={soundEnabled ?? true} onToggle={onSoundToggle} />
-            )}
+            {!isMobile && soundControl}
           </div>
 
         </div>
 
-        {/* 좁은 폭에서는 액션 줄에 자리가 없어 모델 이름이 먼저 사라진다. 현재 추론 강도는 줄 아래로 내린다. */}
-        {isMobile && currentReasoningText && (
-          <div style={{ marginTop: 4, padding: "0 4px", fontSize: 12, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
-            {currentReasoningText}
-          </div>
-        )}
       </div>
     </div>
   );
