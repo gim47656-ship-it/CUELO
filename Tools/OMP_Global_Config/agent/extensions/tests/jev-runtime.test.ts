@@ -1807,46 +1807,42 @@ describe("jev-runtime pre-retry", () => {
     ...(details ? { details } : {}),
   });
 
-  test("실패 뒤 같은 도구 재호출에서 구조 관측만 한 번 알리고 JEV를 호출하지 않는다", async () => {
+  test("범주별 조치가 있는 실패만 재호출 때 한 번 알리고 JEV를 호출하지 않는다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1", { exitCode: 1 }));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)", { exitCode: 1 }));
     const result = await harness.emit("tool_call", bashCall("c2", "bun test"));
     expect(result).toBeUndefined();
     expect(harness.judgments).toHaveLength(0);
     expect(harness.sent).toHaveLength(1);
     const advisory = String(harness.sent[0]!.message.content);
-    expect(advisory).toContain("tool=bash");
-    expect(advisory).toContain("errorCategory=exit-status");
-    expect(advisory).toContain("inputChanged=false");
-    expect(advisory).toContain("deterministicExitObserved=true");
-    expect(advisory).toContain("sameCause, newEvidence");
     expect(advisory).toContain("[JevRuntime:pre-retry]");
+    expect(advisory).toContain("tool=bash, errorCategory=assertion");
+    expect(advisory).not.toContain("관측 불가");
   });
 
-  test("toolResult 원문은 advisory에 보내지 않고 카테고리만 보낸다", async () => {
-    const harness = createHarness();
-    await harness.emit(
-      "tool_result",
-      bashError("c1", "bun test", "secret-token-xyz exit code 1"),
-    );
-    await harness.emit("tool_call", bashCall("c2", "bun test"));
-    expect(String(harness.sent[0]!.message.content)).not.toContain("secret-token-xyz");
-    expect(String(harness.sent[0]!.message.content)).toContain("errorCategory=exit-status");
-  });
-  test("숫자 부분문자열은 auth가 아니고 HTTP 상태만 auth다", async () => {
-    for (const [error, category] of [
-      ["ENOENT: C:/missing (wall time 1401ms, pid=4039)", "missing-path"],
-      ["HTTP 403 Forbidden", "auth"],
-      ["exit code 1401", "exit-status"],
-      ["path /tmp/4010-not-found", "other"],
-      ["HTTP 403 response not found", "auth"],
-      ["pid=403", "other"],
+  test("조치가 없는 범주는 알리지 않고, 앞선 범주가 뒤 범주의 조치를 가린다", async () => {
+    for (const error of [
+      "exit code 1",
+      "exit code 1401",
+      "path /tmp/4010-not-found",
+      "ENOENT: no such file (exit code 1)",
+      "permission denied (exit code 1)",
+      "fetch failed (exit code 1)",
+      // network가 test-timeout보다, auth가 module-environment보다, exit-status가 assertion보다 먼저다.
+      "fetch failed: timed out after 5000ms",
+      "HTTP 403: Cannot find module 'x'",
+      "0 fail (exit code 1)",
     ]) {
       const harness = createHarness();
       await harness.emit("tool_result", bashError("c1", "probe", error));
       await harness.emit("tool_call", bashCall("c2", "probe"));
-      expect(String(harness.sent[0]!.message.content)).toContain(`errorCategory=${category}`);
+      expect(harness.sent).toHaveLength(0);
+      expect(harness.judgments).toHaveLength(0);
     }
+    const shell = createHarness();
+    await shell.emit("tool_result", bashError("c1", "probe", "ParserError: Cannot find module 'x' (exit code 1)"));
+    await shell.emit("tool_call", bashCall("c2", "probe"));
+    expect(String(shell.sent[0]!.message.content)).toContain("errorCategory=windows-shell");
   });
 
   test("Windows 셸 오류는 일반 경로·exit 오류보다 먼저 분류하고 로컬 교정을 안내한다", async () => {
@@ -1887,7 +1883,7 @@ describe("jev-runtime pre-retry", () => {
     const other = createHarness({ platform: "win32" });
     await other.emit("tool_result", bashError("c1", "curl -s -o out.bin http://x/", "Command exited with code 23"));
     await other.emit("tool_call", bashCall("c2", "curl -s -o out.bin http://x/"));
-    expect(String(other.sent[0]!.message.content)).not.toContain("errorCategory=windows-shell");
+    expect(other.sent).toHaveLength(0);
   });
 
   test("Linux 셸 오류는 Linux 교정을 안내하고 Git Bash·curl.exe 진단을 내지 않는다", async () => {
@@ -1904,7 +1900,7 @@ describe("jev-runtime pre-retry", () => {
     const curl = createHarness({ platform: "linux" });
     await curl.emit("tool_result", bashError("c1", command, "200\n\nCommand exited with code 23"));
     await curl.emit("tool_call", bashCall("c2", command));
-    expect(String(curl.sent[0]!.message.content)).not.toContain("errorCategory=windows-shell");
+    expect(curl.sent).toHaveLength(0);
   });
 
   test("테스트·CI 실패는 로컬 분류와 원인별 다음 행동만 안내한다", async () => {
@@ -1937,24 +1933,11 @@ describe("jev-runtime pre-retry", () => {
     }
   });
 
-  test("기존 오류 우선순위와 일반 실패의 기본 안내를 보존한다", async () => {
-    for (const [error, category] of [
-      ["ParserError: Cannot find module 'x' (exit code 1)", "windows-shell"],
-      ["HTTP 403: Cannot find module 'x'", "auth"],
-      ["ENOENT: no such file (exit code 1)", "missing-path"],
-      ["permission denied (exit code 1)", "permission"],
-      ["fetch failed (exit code 1)", "network"],
-      ["fetch failed: timed out after 5000ms", "network"],
-      ["0 fail (exit code 1)", "exit-status"],
-    ]) {
-      const harness = createHarness();
-      await harness.emit("tool_result", bashError("c1", "probe", error));
-      await harness.emit("tool_call", bashCall("c2", "probe"));
-      const advisory = String(harness.sent[0]!.message.content);
-      expect(advisory).toContain(`errorCategory=${category}`);
-      if (category === "exit-status") expect(advisory).toContain("다음 한 변수를 확인");
-      expect(harness.judgments).toHaveLength(0);
-    }
+  test("pre-retry 알림은 실패 원문을 싣지 않는다", async () => {
+    const harness = createHarness();
+    await harness.emit("tool_result", bashError("c1", "bun test", "secret-token-xyz 1 fail (exit code 1)"));
+    await harness.emit("tool_call", bashCall("c2", "bun test"));
+    expect(String(harness.sent[0]!.message.content)).not.toContain("secret-token-xyz");
   });
 
   test("자기 async job이 삭제 leaf 또는 glob prefix를 쥐고 있을 때만 차단한다", async () => {
@@ -2064,28 +2047,27 @@ describe("jev-runtime pre-retry", () => {
     await harness.emit("tool_result", bashError("c1", "bun test", "Command aborted"));
     await harness.emit("tool_call", bashCall("c2", "bun test"));
     const advisory = String(harness.sent[0]!.message.content);
-    expect(advisory).toContain("cancelled=true");
-    expect(advisory).toContain("deterministicExitObserved=false");
+    expect(advisory).toContain("tool=bash");
     expect(String(harness.sent[0]!.message.content)).toContain("취소 근거 없음");
     expect(String(harness.sent[0]!.message.content)).toContain("실행 결과 회수 또는 다음 한 변수 확인");
   });
 
   test("같은 실패→재시도 경계는 한 번만 판정하고, 새 실패는 새 경계다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     await harness.emit("tool_call", bashCall("c2", "bun test"));
     await harness.emit("tool_call", bashCall("c3", "bun test"));
     // 경계는 c2에서 소비됐으므로 c3은 판정하지 않는다.
     expect(harness.sent).toHaveLength(1);
     // c3의 실패는 새 경계를 만든다.
-    await harness.emit("tool_result", bashError("c3", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c3", "bun test", "1 fail (exit code 1)"));
     await harness.emit("tool_call", bashCall("c4", "bun test"));
     expect(harness.sent).toHaveLength(2);
   });
 
-  test("실패 뒤 다른 도구 호출은 경계를 소비하지 않고 interveningTools로 남는다", async () => {
+  test("실패 뒤 다른 도구 호출은 경계를 소비하지 않는다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     // read로 조사한 뒤 같은 도구를 재시도하는 경계가 유지돼야 한다.
     await harness.emit("tool_call", {
       type: "tool_call",
@@ -2103,12 +2085,11 @@ describe("jev-runtime pre-retry", () => {
     });
     await harness.emit("tool_call", bashCall("c3", "bun test"));
     expect(harness.sent).toHaveLength(1);
-    expect(String(harness.sent[0]!.message.content)).toContain("interveningTools=read");
   });
 
   test("같은 도구의 성공은 실패 문맥을 닫는다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     await harness.emit("tool_call", bashCall("c2", "bun test --fix"));
     await harness.emit("tool_result", {
       type: "tool_result",
@@ -2125,7 +2106,7 @@ describe("jev-runtime pre-retry", () => {
 
   test("agent 귀속 user 메시지는 재시도 문맥을 끊지 않는다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     await harness.emit("message_start", {
       type: "message_start",
       message: { role: "user", attribution: "agent", content: "auto" },
@@ -2136,20 +2117,19 @@ describe("jev-runtime pre-retry", () => {
 
   test("독립 실패 둘은 도구별로 보존되어 각각 재시도 경계를 만든다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     // edit 실패가 bash 실패를 지우지 않는다.
     await harness.emit("tool_result", {
       type: "tool_result",
       toolCallId: "c2",
       toolName: "edit",
       input: { input: "x" },
-      content: [{ type: "text", text: "permission denied" }],
+      content: [{ type: "text", text: "AssertionError: expected 1 to equal 2" }],
       isError: true,
     });
     await harness.emit("tool_call", bashCall("c3", "bun test"));
     expect(harness.sent).toHaveLength(1);
     expect(String(harness.sent[0]!.message.content)).toContain("tool=bash");
-    expect(String(harness.sent[0]!.message.content)).toContain("interveningTools=edit");
     // edit 재시도도 독립 경계로 판정한다.
     await harness.emit("tool_call", {
       type: "tool_call",
@@ -2163,7 +2143,7 @@ describe("jev-runtime pre-retry", () => {
 
   test("실패 뒤 다른 도구 호출은 재시도 경계가 아니다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     await harness.emit("tool_call", {
       type: "tool_call",
       toolCallId: "c2",
@@ -2213,13 +2193,14 @@ describe("jev-runtime pre-retry", () => {
 
   test("사람의 새 입력은 재시도 문맥을 끊는다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "exit code 1"));
+    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
     await harness.emit("message_start", {
       type: "message_start",
       message: { role: "user", steering: true, content: "다른 걸 해" },
     });
     await harness.emit("tool_call", bashCall("c2", "bun test"));
     expect(harness.judgments).toHaveLength(0);
+    expect(harness.sent).toHaveLength(0);
   });
 });
 
@@ -2700,7 +2681,7 @@ describe("jev-runtime fail-open과 세션 격리", () => {
       toolCallId: "c1",
       toolName: "bash",
       input: { command: "bun test" },
-      content: [{ type: "text", text: "exit code 1" }],
+      content: [{ type: "text", text: "1 fail (exit code 1)" }],
       isError: true,
     });
     await child.emit("tool_call", {

@@ -331,7 +331,7 @@ const requiredPolicyMembers = [
     "validation-environment-problem-rather-than-source-defect",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-retry.decisionMapping", [
-    "the-owner-never-infers-same-underlying-cause-or-new-evidence-from-inputChanged-or-interveningTools-and-stops-the-identical-retry-when-the-cause-is-actually-the-same-and-no-new-evidence-or-condition-exists",
+    "the-owner-never-infers-same-underlying-cause-or-new-evidence-from-a-changed-input-or-intervening-tool-calls-and-stops-the-identical-retry-when-the-cause-is-actually-the-same-and-no-new-evidence-or-condition-exists",
     "otherwise-change-the-next-action-from-the-new-evidence-and-use-authentication-or-provider-true-for-that-diagnostic-path-or-false-for-the-code-diagnostic-path",
     "deterministic-exit-status-and-the-actual-error-override-the-authentication-provider-versus-code-result",
     "validation-environment-true-first-repair-or-probe-the-identified-path-dependency-or-runtime-boundary-with-a-focused-command-before-repeating-the-heavy-check-never-edit-product-code-without-causal-evidence",

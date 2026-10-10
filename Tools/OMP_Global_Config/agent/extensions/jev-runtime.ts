@@ -216,18 +216,6 @@ function extractSpawnedTasks(
 }
 
 // ---------------------------------------------------------------------------
-// 재시도 입력 비교 — 내용은 judge에 보내지 않고 로컬 직렬화 동일성만 본다.
-// ---------------------------------------------------------------------------
-
-function serializeInput(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 오류 카테고리 — toolResult 원문은 보내지 않고 분류 라벨만 만든다.
 // ---------------------------------------------------------------------------
 
@@ -327,24 +315,13 @@ function jobMentionsTarget(command: string, target: string): boolean {
   return false;
 }
 
-interface FailureObservation {
-  deterministicExitObserved: boolean;
-  executionObservationPresent: boolean;
-  cancelled: boolean;
-  timedOut: boolean;
-}
-
-function readFailureObservation(details: unknown, content: unknown): FailureObservation {
-  const record = details && typeof details === "object" && !Array.isArray(details)
-    ? details as Record<string, unknown>
-    : {};
-  const text = textContent(content);
-  return {
-    deterministicExitObserved: typeof record.exitCode === "number",
-    executionObservationPresent: typeof record.executionObservation === "string",
-    cancelled: /command (?:aborted|cancelled)|작업 취소|명령 취소/iu.test(text),
-    timedOut: record.timedOut === true,
-  };
+/** 종료 코드 없이 취소 문구만 남은 실패. 이때는 결과 회수나 한 변수 확인을 먼저 권한다. */
+function cancelledWithoutExit(details: unknown, content: unknown): boolean {
+  const exitCode = details && typeof details === "object" && !Array.isArray(details)
+    ? (details as Record<string, unknown>).exitCode
+    : undefined;
+  return typeof exitCode !== "number"
+    && /command (?:aborted|cancelled)|작업 취소|명령 취소/iu.test(textContent(content));
 }
 
 // ---------------------------------------------------------------------------
@@ -993,12 +970,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     }
     /**
      * 도구별 직전 실패. 같은 도구의 다음 호출이 재시도 경계다.
-     * genuine 새 입력·해당 도구 성공·경계 소비만 해당 항목을 지운다.
+     * 해당 도구 성공·경계 소비·사람의 새 입력만 해당 항목을 지운다.
      */
-    const pendingFailures = new Map<
-      string,
-      { inputSerialized: string; category: string; interveningTools: string[]; observation: FailureObservation }
-    >();
+    const pendingFailures = new Map<string, { category: string; cancelledWithoutExit: boolean }>();
     /** TASK_TITLE/TODO_TASKS consumer state: TodoTracker incarnation과 explicit Main `done` receipt. */
     let todoProgressState: TodoProgressState = createTodoProgressState();
     /** 같은 owner+frozen revision의 TODO coverage는 한 번만 판정한다. */
@@ -2049,25 +2023,24 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }
 
       // pre-retry: 직전 실패 뒤 같은 도구의 다음 호출이 재시도 경계다.
-      // 다른 도구 호출은 문맥을 소비하지 않는다.
+      // 다른 도구 호출은 문맥을 소비하지 않는다. 범주별 조치가 없는 실패는 알리지 않는다:
+      // 2026-10-10 실측에서 일반 범주 알림 2,004건은 모두 판정 없는 구조 나열(누적 약 123만 자)이었다.
       const failure = pendingFailures.get(event.toolName);
       if (!failure) return;
       pendingFailures.delete(event.toolName);
-      const inputChanged = serializeInput(event.input) !== failure.inputSerialized;
-      const observation = failure.observation;
       const nextAction = failure.category === "windows-shell"
         ? (platform === "win32" ? WINDOWS_SHELL_NEXT_ACTION : POSIX_SHELL_NEXT_ACTION)
-        : observation.cancelled && !observation.deterministicExitObserved
+        : failure.cancelledWithoutExit
           ? "취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다."
-          : RETRY_CATEGORY_NEXT_ACTION[failure.category]
-            ?? "sameCause/newEvidence를 inputChanged·interveningTools로 추정하지 않는다. 실제 오류·exit를 근거로 다음 한 변수를 확인한 뒤 조치를 바꾼다.";
+          : RETRY_CATEGORY_NEXT_ACTION[failure.category];
+      if (!nextAction) return;
       sendAdvisory(
         "pre-retry",
         renderAdvisory(
           "pre-retry",
           undefined,
-          ["sameCause", "newEvidence", "authOrProviderCause", "environmentOrSourceCause", "weakensValidation", "skillConflict", "skillBlocked"],
-          `첫 실패 뒤 재시도 경계의 구조 관측은 로컬에서 확정했다: tool=${event.toolName}, errorCategory=${failure.category}, inputChanged=${inputChanged}, interveningTools=${failure.interveningTools.join(",") || "none"}, deterministicExitObserved=${observation.deterministicExitObserved}, executionObservationPresent=${observation.executionObservationPresent}, cancelled=${observation.cancelled}, timedOut=${observation.timedOut}. ${nextAction} errorCategory만으로 원인 의미를 재판단하지 않아 judge 호출을 생략한다.`,
+          [],
+          `첫 실패 뒤 같은 도구 재호출(tool=${event.toolName}, errorCategory=${failure.category}): ${nextAction}`,
         ),
       );
     });
@@ -2314,26 +2287,16 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }
 
       // 실패 기록 — 탐색 도구의 실패는 일상 probing이라 재시도 판정을 세우지 않는다.
-      // 다른 도구의 완료는 각 pending 실패의 interveningTools에만 남는다.
       if (event.isError) {
         if (!EXPLORATION_TOOLS[event.toolName]) {
           pendingFailures.set(event.toolName, {
-            inputSerialized: serializeInput(event.input),
             category: classifyError(event.content, event.input, platform),
-            interveningTools: [],
-            observation: readFailureObservation(event.details, event.content),
+            cancelledWithoutExit: cancelledWithoutExit(event.details, event.content),
           });
         }
       } else if (pendingFailures.has(event.toolName)) {
         // 같은 도구의 성공은 그 도구의 실패 문맥만 닫는다.
         pendingFailures.delete(event.toolName);
-      }
-      // 이 호출 자체를 제외한 다른 도구의 pending 실패에 intervening으로 기록한다.
-      for (const [toolName, failure] of pendingFailures) {
-        if (toolName === event.toolName) continue;
-        if (failure.interveningTools.length < 8 && !failure.interveningTools.includes(event.toolName)) {
-          failure.interveningTools.push(event.toolName);
-        }
       }
 
       // pre-review: `wait`·`read proc://`가 auto-delivery보다 먼저 settled 결과를 보여 준 경계.
