@@ -46,6 +46,7 @@ function harness(options: {
 
   hardFocuses?: string[];
   uiUxBoundary?: number;
+  normalFits?: string[];
   candidates?: typeof candidates;
   main?: { provider: string; id: string } | null;
   families?: Record<string, string>;
@@ -112,6 +113,7 @@ function harness(options: {
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
         delegation: { choice: options.delegation ?? "MAKER" },
+        ...(options.normalFits?.[call - 1] ? { normalFit: { choice: options.normalFits[call - 1] } } : {}),
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
       } };
     },
@@ -1368,7 +1370,95 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
-  test("NORMAL_SOL·HARD_CODE_ASTRA는 기본 추천이 아니고, 소진 대체 밖에서는 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
+  test("같은 가용 한도에서 과제별 Sonnet·Sol을 추천하고 prepared 발주에 추가 판단·예외 근거를 요구하지 않는다", async () => {
+    const live = candidates.map((candidate) => candidate.profile === "NORMAL_SONNET"
+      ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
+    const h = harness({
+      candidates: live, normalFits: ["SONNET", "SOL"],
+      quota: async () => ({ state: "observed", observedAt: 1, providers: {} }),
+    });
+    const tasks = ["MeaningComparison", "SettledCode"].map((name) => ({
+      ...h.task, name, task: brief.replace("src/view.ts", `src/${name}.ts`),
+      assessment: {
+        ...facts,
+        settledImplementation: name === "SettledCode" ? ["기존 타입 매퍼 계약과 입출력·실행 검사 확정"] : null,
+        remainingJudgments: name === "SettledCode" ? ["명세에 따른 국소 구현"] : ["문서·정책 간 의미 비교와 요구 해석"],
+      },
+    }));
+    const batch = await h.prepareBatch("과제별 선택", tasks, {} as never);
+    expect(batch.routes.map((route) => route.profile)).toEqual(["NORMAL_SONNET", "NORMAL_SOL"]);
+    expect(batch.routes.map((route) => route.normalAllocation?.fit)).toEqual(["SONNET", "SOL"]);
+    const beforeDispatch = h.requests.length;
+    const dispatch = await h.beforeTask({
+      context: "PREPARED_CONTEXT",
+      tasks: batch.routes.map((route) => ({
+        task: `PREPARED_TASK: ${route.preparedId}`,
+        model: `${live.find((candidate) => candidate.profile === route.profile)!.model}:auto`,
+        solutionSpace: "기존 계약 안에서 구현",
+      })),
+    }, {} as never);
+    expect(dispatch).toMatchObject({ input: { context: "과제별 선택", tasks: [
+      { name: "MeaningComparison", model: "anthropic/claude-sonnet-5-5:auto", task: tasks[0]!.task },
+      { name: "SettledCode", model: "openai-codex/gpt-6.1-sol:auto", task: tasks[1]!.task },
+    ] } });
+    expect(dispatch).not.toHaveProperty("block");
+    expect(beforeDispatch).toBe(2);
+    expect(h.requests.length).toBe(beforeDispatch);
+    expect(batch.diagnostics.jevStarted).toBe(2);
+    expect(JSON.stringify(h.requests)).not.toContain("구현 원문");
+  });
+  test("불명·누락·잘못된 적합성 답은 Sonnet 기본이고 한도 미관측도 소진이 아니며 Sol 근거를 보존한다", async () => {
+    for (const fit of ["UNKNOWN", "OTHER", undefined, "SOL"]) {
+      const h = harness({ normalFits: fit ? [fit] : undefined });
+      const [route] = await h.prepare("한도 미관측", [h.task], {} as never);
+      expect(route!.profile).toBe(fit === "SOL" ? "NORMAL_SOL" : "NORMAL_SONNET");
+      expect(route!.normalAllocation).toMatchObject({
+        state: "unavailable", fit: fit === "SOL" ? "SOL" : "UNKNOWN",
+        basis: h.policy.modelSelection.normalFitCriteria[fit === "SOL" ? "SOL" : "UNKNOWN"],
+      });
+    }
+  });
+  test("적합성 우선 후보가 없거나 소진되면 다른 일반 후보를 먼저 확인하고 모두 불가하면 최종 대안 또는 null이다", async () => {
+    const live = candidates.map((candidate) => candidate.profile === "NORMAL_SONNET"
+      ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
+    const cases: [string, string[], Record<string, unknown[]>, string | null][] = [
+      ["SOL", ["NORMAL_SOL"], {}, "NORMAL_SONNET"],
+      ["SOL", [], { "openai-codex": [{ limitReached: true, limits: [] }] }, "NORMAL_SONNET"],
+      ["SONNET", ["NORMAL_SONNET"], {}, "NORMAL_SOL"],
+      ["SONNET", [], { anthropic: [{ limitReached: true, limits: [] }] }, "NORMAL_SOL"],
+      ["SOL", [], { "openai-codex": [{ limitReached: true, limits: [] }], anthropic: [{ limitReached: true, limits: [] }] }, "NORMAL_DEEPSEEK"],
+      ["SOL", [], { "openai-codex": [{ limitReached: true, limits: [] }], anthropic: [{ limitReached: true, limits: [] }], "b-ai": [{ limitReached: true, limits: [] }] }, null],
+      ["SOL", ["NORMAL_SONNET", "NORMAL_SOL", "NORMAL_DEEPSEEK"], {}, null],
+    ];
+    for (const [fit, missing, providers, expected] of cases) {
+      const h = harness({
+        normalFits: [fit], candidates: live.filter((candidate) => !missing.includes(candidate.profile)),
+        quota: async () => ({ state: "observed", observedAt: 1, providers }) as never,
+      });
+      const [route] = await h.prepare("가용 후보 선택", [h.task], {} as never);
+      expect(route!.profile).toBe(expected);
+      if (expected === null) expect(route!.normalAllocation).toMatchObject({ state: "unavailable", profile: null });
+    }
+    // quota unavailable still respects missing registry candidates, not a nonexistent preferred profile.
+    const blind = harness({ normalFits: ["SOL"], candidates: live.filter((candidate) => candidate.profile !== "NORMAL_SOL") });
+    expect((await blind.prepare("미관측·후보 없음", [blind.task], {} as never))[0]!.profile).toBe("NORMAL_SONNET");
+  });
+  test("Sol 적합성도 UI·HARD의 Opus와 active owner 충돌을 바꾸지 않는다", async () => {
+    for (const [options, expected] of [
+      [{ uiUxBoundary: 0.9 }, "NORMAL_OPUS"],
+      [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS"],
+    ] as [NonNullable<Parameters<typeof harness>[0]>, string][]) {
+      const h = harness({ ...options, normalFits: ["SOL"] });
+      const [route] = await h.prepare("경계 보존", [h.task], {} as never);
+      expect(route!.profile).toBe(expected);
+      expect(route!.normalAllocation).toBeNull();
+    }
+    const h = harness({ normalFits: ["SOL"] });
+    h.setOwners([{ name: "Existing", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"], active: true }]);
+    await h.prepare("owner 보존", [h.task], {} as never);
+    expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toMatchObject({ block: true });
+  });
+  test("적합성 근거가 없을 때 Sol·HARD Astra로 추천을 바꾸려면 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS:", "ROUTING_REASON: Main이 비용·계열 근거로 명시 대안을 선택함\nOWNED_PATHS:");
     const models = { NORMAL_SOL: "openai-codex/gpt-6.1-sol", HARD_CODE_ASTRA: "openai-codex/gpt-6-astra" };
     // 기본 추천은 그대로: NORMAL은 Sonnet, HARD 코드는 Opus.
@@ -1490,14 +1580,15 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     test("모든 계정이 오늘 몫에 도달해도 사용 가능한 Sonnet·Opus를 유지한다", async () => {
       const cases: [NonNullable<Parameters<typeof harness>[0]>, string, string][] = [
         [{ workClass: "NORMAL" }, "NORMAL_SONNET", "anthropic/claude-sonnet-5-5:auto"],
+        [{ workClass: "NORMAL", normalFits: ["SOL"] }, "NORMAL_SOL", "openai-codex/gpt-6.1-sol:auto"],
         [{ workClass: "NORMAL", uiUxBoundary: 0.9 }, "NORMAL_OPUS", "anthropic/claude-opus-5-5:auto"],
         [{ workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS", "anthropic/claude-opus-5-5:auto"],
         [{ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:auto"],
       ];
       for (const [options, profile, model] of cases) {
         const h = build([
-          anthropicAccount(0.5, {}, slot(20)),
-          anthropicAccount(0.6, { credentialId: 3 }, slot(30)),
+          anthropicAccount(0.5, {}, { ...slot(20), quotaPct: 0.001 }),
+          anthropicAccount(0.6, { credentialId: 3 }, { ...slot(30), quotaPct: 0.001 }),
         ], [open], options);
         const batch = await h.prepareBatch("사용 가능한 모델 유지", [h.task], {} as never);
         expect(batch.routes[0]!.profile).toBe(profile);

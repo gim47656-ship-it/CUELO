@@ -10061,6 +10061,122 @@ export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from:
 			if (saved.length > 0) options.onCaptured?.(saved);`,
 	},
 	{
+		// capture 한 번의 실제 비용을 잰다(2026-10-10 Hermes 비교 M1, 방법 A). 지금까지 capture 응답의 usage는 저장 요약에서만
+		// 읽고 버려져 "얼마나 드는가"를 답할 수 없었다. 이 capture 가 새로 만든 assistant 응답(원본 스냅샷 제외)만 합산한다.
+		// 한 요청이라도 필드를 보고하지 않으면 그 합계는 null(미상)이지 0이 아니다. 본문·도구 인자·저장한 교훈 내용은 남기지 않는다.
+		file: "src/sdk.ts",
+		marker: `function summarizeAutoLearnUsage(`,
+		anchor: `/** Build a private capture runner over a detached message snapshot and provider session. */`,
+		patched: `/**
+ * What a capture run's own assistant responses reported. A total is null (unknown, never 0) unless
+ * every response reported that field, so a partial sum is never presented as complete.
+ */
+interface AutoLearnCaptureUsage {
+	/** Assistant responses the capture agent produced; each one is one provider request. */
+	requests: number;
+	/** Responses that ended aborted or error, whose usage is partial. */
+	incompleteRequests: number;
+	lastStopReason: string | null;
+	input: number | null;
+	output: number | null;
+	cacheRead: number | null;
+	cacheWrite: number | null;
+	costUsd: number | null;
+}
+
+/** Aggregate usage over the messages a capture run added after its source snapshot (\`from\`). */
+function summarizeAutoLearnUsage(messages: readonly AgentMessage[], from: number): AutoLearnCaptureUsage {
+	const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+	const unknown = new Set<keyof typeof totals>();
+	const add = (key: keyof typeof totals, value: unknown): void => {
+		if (typeof value === "number" && Number.isFinite(value)) totals[key] += value;
+		else unknown.add(key);
+	};
+	let requests = 0;
+	let incompleteRequests = 0;
+	let lastStopReason: string | null = null;
+	for (let index = from; index < messages.length; index++) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		requests++;
+		lastStopReason = message.stopReason ?? null;
+		if (message.stopReason === "aborted" || message.stopReason === "error") incompleteRequests++;
+		const usage = message.usage as
+			| { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; cost?: { total?: unknown } }
+			| undefined;
+		add("input", usage?.input);
+		add("output", usage?.output);
+		add("cacheRead", usage?.cacheRead);
+		add("cacheWrite", usage?.cacheWrite);
+		add("costUsd", usage?.cost?.total);
+	}
+	const total = (key: keyof typeof totals): number | null => (requests > 0 && !unknown.has(key) ? totals[key] : null);
+	return {
+		requests,
+		incompleteRequests,
+		lastStopReason,
+		input: total("input"),
+		output: total("output"),
+		cacheRead: total("cacheRead"),
+		cacheWrite: total("cacheWrite"),
+		costUsd: total("costUsd"),
+	};
+}
+
+/** Build a private capture runner over a detached message snapshot and provider session. */`,
+	},
+	{
+		// 위 합계를 capture 한 번에 한 줄로 남긴다. finally 맨 앞(abort 리스너 해제 직후)에 두어 저장 알림·provider 상태 정리와
+		// 독립이고, 관찰 실패가 원래 오류를 대체하지 못하도록 감싼다. 던져진 오류는 그대로 던진다.
+		file: "src/sdk.ts",
+		marker: `logger.info("Auto-learn capture usage", {`,
+		anchor: `		signal?.addEventListener("abort", abortCapture, { once: true });
+		try {
+			if (signal?.aborted) {
+				abortCapture();
+				return;
+			}
+			await captureAgent.prompt(captureMessage);
+		} catch (error) {
+			if (!signal?.aborted) throw error;
+		} finally {
+			signal?.removeEventListener("abort", abortCapture);`,
+		patched: `		signal?.addEventListener("abort", abortCapture, { once: true });
+		const startedAt = performance.now();
+		let thrown = false;
+		try {
+			if (signal?.aborted) {
+				abortCapture();
+				return;
+			}
+			await captureAgent.prompt(captureMessage);
+		} catch (error) {
+			if (!signal?.aborted) {
+				thrown = true;
+				throw error;
+			}
+		} finally {
+			signal?.removeEventListener("abort", abortCapture);
+			try {
+				const { lastStopReason, ...usage } = summarizeAutoLearnUsage(captureAgent.state.messages, captureMessages.length);
+				logger.info("Auto-learn capture usage", {
+					provider: captureModel.provider,
+					model: captureModel.id,
+					outcome:
+						thrown || lastStopReason === "error"
+							? "failed"
+							: signal?.aborted || lastStopReason === "aborted"
+								? "aborted"
+								: "completed",
+					elapsedMs: Math.round(performance.now() - startedAt),
+					...usage,
+				});
+			} catch {
+				// Static text only: the failure may carry the very content this row must not contain.
+				logger.warn("Failed to record auto-learn capture usage");
+			}`,
+	},
+	{
 		// 저장 결과를 보이는 custom 메시지로 남긴다. idle이면 턴을 시작하지 않고 붙이고, 진행 중이면 aside로 끼운다.
 		// r2: 머리글을 "[교훈 자동 저장] N건"으로 줄이고 3건까지만 보인다. legacyPatched는 r1 적용본.
 		file: "src/sdk.ts",

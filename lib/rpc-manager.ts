@@ -36,6 +36,7 @@ import { getDocumentPromptUserMessage } from "./document-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
+import { createSessionRecallTool } from "./session-recall";
 import { canonicalProjectKey, untrustedProjectSessionOptions } from "./project-trust";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
@@ -2639,6 +2640,10 @@ export async function startRpcSession(
         ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
         ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),
         ...(toolsOption !== undefined ? { toolNames: toolsOption, restrictToolNames: true } : {}),
+        // Read-only recall of earlier transcripts for this top-level session. The SDK
+        // drops explicit custom tools when the tool list is restricted (tools off), and
+        // subagents and revived children never inherit them.
+        customTools: [createSessionRecallTool()],
         ...(untrusted ?? {}),
         // The CLI hands `TITLE_SYSTEM.md` to the session the same way; without it the
         // core's automatic title uses its bundled prompt without language guidance.

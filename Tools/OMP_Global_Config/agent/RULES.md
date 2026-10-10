@@ -22,6 +22,8 @@
 - 실행 코드를 바꿨으면 그 범위의 최소 빌드나 테스트를 돌린다. 문서와 문구만 바꿨으면 diff 확인으로 끝낸다.
   사용자나 브리프가 검증 명령을 지정했으면 다른 점검으로 대체하지 않고 그 명령을 그대로 실행해
   결과와 종료 코드를 보고한다.
+  - 검증은 가능하면 원 명령을 직접 실행하고 긴 출력은 도구의 artifact로 읽는다. `| tail`·`| grep`·후행 출력 명령의 성공을 검사 성공으로 보고하지 않는다. 출력 수집이 필요하면 실제 검사 프로세스의 종료 코드를 보존한다. 검색 0건의 exit 1이나 의도한 실패 재현은 제품 실패와 구분한다.
+  - 임시 검증 스크립트는 실제 파일 위치에서 프로젝트의 설치된 런타임·의존성이 해석되는지 먼저 확인하고 기존 fixture·mock 설정을 재사용한다. 다른 폴더의 bare import가 다른 버전을 자동 설치해 검증 대상을 바꾸도록 두지 않는다. 환경 문제 뒤에는 이 가벼운 확인을 먼저 하고 무거운 검사를 재실행한다.
 - 같은 조건에서 같은 조치를 반복하지 않는다. 관측으로 원인을 좁히고 그 근거에 맞춰 다음 조치를
   바꾼 진단은 맹목적 재시도와 다르며, 같은 오류 문자열이 나왔다는 이유만으로 동일 시도로 보지
   않는다. 첫 실패에서 바꿀 조치도 안전한 진전 경로도 없으면 같은 실패를 두 번째로 확인하지 말고
@@ -32,6 +34,7 @@
   - 배포 확인(사용자, 2026-09-26·2026-09-29·2026-09-30): 집 PC(hostname `KYS`)와 사무실 PC(hostname은 비공개 배포 표에 있다)는 같은 확인 절차를 따른다. 그 PC의 CUELO 세션이 소스 변경을 검증하고 커밋·push했으면, 그 커밋의 GitHub CI가 끝날 때까지 지켜본 뒤 결과를 보고하고 배포 여부를 묻는다. 사용자가 승인하면 같은 revision으로 아래 「WSL 배포」를 실행한다. 라이브 서버는 Settings를 시작 때 한 번만 읽어 파일 변경·touch로는 반영되지 않으므로, 배포 없이 프로필만 바꿨으면 지원되는 프로필 갱신 뒤 서버를 재시작하고 `/api/models` 역할을 확인한다. 실행 전 `hostname`으로 PC를 확인한다. 예약 작업 같은 자동 배포는 두지 않는다. stage·rollback 삭제, 이 두 PC 밖의 배포, CLI 업데이트, 비용이 드는 작업은 따로 승인받는다.
   - WSL 배포(사용자, 2026-10-07): 두 PC 모두 WSL의 CUELO 하나로 돈다(집 배포판 `Ubuntu-24.04`, 사무실 `Ubuntu`). 재시작을 알리고 WSL에서 `systemd-run --user --unit=cuelo-update-$(date +%s) --collect --setenv=WSL_DISTRO_NAME="$WSL_DISTRO_NAME" bash ~/cuelo-run/Tools/CUELO_Setup/wsl/update.sh <revision>`을 실행한다(Windows 세션이면 `wsl.exe -d <배포판> --exec bash -lc '…'`로 배포판 이름을 적어서). 세션 정지·빌드·WSL 프로필 반영·재시작·대기 화면 복귀까지 이 스크립트가 맡는다. `Tools/CUELO_Setup/deploy-live.ps1`과 앱 전체 `setup.ps1`은 지운 Windows 앱을 다시 설치하므로 두 PC에서 실행하지 않는다. `verify.ps1 -StrictRuntime`·`setup.ps1 -ProfileOnly`는 Windows 쪽 프로필·런타임을 보므로 WSL 배포의 증거가 아니다. 완료는 최신 `~/.omp/wsl-update/*.log`의 `READY <revision>`, `wsl\launch.ps1 -Status`의 `matched: true`(배포판이 기본값이 아니면 `-Distribution <배포판>`), `node install.mjs health` 4/4, `/api/models?cwd=<세션 cwd>` 역할 selector와 WSL `~/.omp/agent/config.yml` `modelRoles`의 일치로 본다(`cwd`가 없으면 403). exit 2(되돌림)·3(되돌리기 실패)은 배포 실패로 보고한다. 세부 절차와 함정은 `Tools/CUELO_Setup/WSL-SETUP.md` 「운영」에 있다.
   - CI 감시(사용자, 2026-09-28·2026-10-03): 커밋의 CI를 지켜볼 때는 기다릴 워크플로를 이름으로 지정하고(`gh run list --workflow <이름>` 등), 그 run이 끝나는 즉시 결과를 보고한다. 같은 SHA에 걸린 run 전체의 완료를 조건으로 삼지 않는다. CI 성공이 트리거하는 릴리스·배포 run(`workflow_run`)이 몇 초 뒤 같은 SHA로 생겨 CI 완료 보고를 붙잡기 때문이다. 이어 붙는 run은 보고한 뒤 따로 지켜본다. 감시는 `bash`의 `gh run watch <id> --exit-status`나 `gh run list` 직접 조회로 하고, `eval` 커널 안에서 `gh`를 subprocess로 부르는 폴링 루프로 짜지 않는다. 2026-10-03 그런 루프가 빈 출력을 "run 없음"으로 읽어, CI가 끝난 뒤에도 20분 넘게 보고하지 못했다. 직접 짠 폴링은 빈 출력·0이 아닌 exit를 즉시 오류로 끝낸다. 공개 미러 CI는 headSha가 원본 커밋과 다르므로 run 제목으로 찾는다.
+  - WSL 작업 결과의 Windows 반영(사용자, 2026-10-11, 모든 세션): 대응하는 기존 Windows 프로젝트 사본이 확인된 WSL 작업은 완료할 때 검증·커밋·게시한 소스와 문서를 Windows 사본에도 같은 커밋으로 자동 반영한다. UNC로 같은 WSL 폴더를 여는 것은 이 반영을 대신하지 않는다. 대상은 프로젝트 운영 문서의 명시 대응 경로와 실제 Git origin·branch로 확인하며, 경로를 추정해 다른 프로젝트를 갱신하거나 새 사본을 만들지 않는다. Main이 `git_finalize`로 게시를 마친 뒤 `bun ~/.omp/agent/tools/git-finalizer/sync-checkout.ts --source <WSL 저장소 루트> --target <대응 Windows 사본의 /mnt 경로> --revision <게시한 전체 SHA>`를 호출한다. 명령은 수정 없는 동일 origin·branch의 사본만 정확한 커밋으로 fast-forward하고 결과를 확인한다. 미커밋 수정·미추적 파일·분기 이력·락·인증 실패는 보존하고 막힌 이유를 알린다. reset·stash·강제 덮어쓰기·자동 rebase로 우회하지 않는다. 원본 작업 완료와 Windows 반영 완료는 구분해 보고하며 실패를 성공으로 감추지 않는다. 실시간·양방향 동기화나 감시 작업은 만들지 않고, 실행 산출물·설치된 프로필·인증 DB·세션·기억·독립 CLI를 복사하지 않는다. WSL 단일 CUELO의 실행본·활성 하네스 프로필 갱신은 기존 WSL 배포 절차를 따르며 Windows 앱을 다시 설치하지 않는다. Windows 전용 MSBuild·VB6·COM·장비 프로젝트의 기존 위치와 도구를 임의로 바꾸지 않는다.
 - 구현 방법의 불확실성은 명시 요구·승인된 계약, 실제 호출부와 데이터 흐름, 테스트·재현 결과,
   현재 동작과 문서로 좁힌다. 증거로 방향이 정해지면 근거를 남기고 진행하며 사소한 구현 선택마다
   확인을 요청하지 않는다. 테스트·문서·현재 동작 중 어느 하나도 자동으로 정답이 아니므로 요구와
@@ -50,6 +53,8 @@
   설명을 반복하지 않는다.
 - 조사할 때는 영향받는 symbol·필요한 파일 구간·기존 artifact와 실제 유효 runtime context 증거를
   먼저 사용한다. 그 증거 없이 context 압축 proxy, 영구 gate 또는 설정 임계값을 추가하거나 바꾸지 않는다.
+  - 컨텍스트 창과 압축 시작점은 별개다. 먼저 실제 모델 ID에 적용된 창과 core의 `compaction.thresholdPercent`·`modelThresholds` 해석을 확인한다. 지원되는 core 설정으로 해결할 수 있으면 새 hook·JEV 호출을 붙이지 않는다. 임계값 조정은 같은 기준의 실제 요청·압축 후 재탐색·보고 비용과 품질 근거로 판단하며, cache read/write·압축 뒤 재작성 비용을 구분하고 없는 값은 unknown으로 남긴다. API 가격 환산을 구독 사용 한도로, 외부 개인 사례의 절감률을 이 하네스의 보장으로 바꾸지 않는다.
+  - 압축·재개 뒤에는 기존 결정·보존 계약·미결 작업·검증 명령과 종료 코드·artifact locator를 먼저 이어받고 이미 검증된 범위를 다시 훑지 않는다. 결론에 영향을 주는 과거 지시가 불명확하면 사용 가능한 세션 원문 회수로 좁게 확인한다. 토큰 수만을 이유로 진행 중 작업을 끊거나 재시작 직전 강제 압축을 새 관행으로 만들지 않는다.
 - 알려진 공식 문서 URL은 직접 읽는다. 라이브러리·버전·API·migration 문서를 찾아야 하면 사용자에게
   묻지 않고 기존 Context7 CLI를 선택해도 되지만 모든 작업에 호출하지 않는다. `CTX7_TELEMETRY_DISABLED=1`을
   명령마다 적용하고, 비밀·자격증명·내부 소스가 없는 최소 질문으로 `ctx7 library <name> "<질문>"`을

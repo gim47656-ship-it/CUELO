@@ -35,6 +35,14 @@ interface Candidate { profile: string; model: string; efforts: readonly string[]
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
+export interface NormalAllocation {
+  state: "observed" | "unavailable";
+  profile: string | null;
+  fit: "SONNET" | "SOL" | "UNKNOWN";
+  preferredProfile: string;
+  basis: string;
+  reason: string;
+}
 /** 같은 준비→발주 계약에서 공유하는 provider online 갱신 시도. 값은 실패 사유이고 null이면 성공이다. */
 type RefreshAttempts = Map<string, Promise<string | null>>;
 interface RoutingPolicy {
@@ -42,6 +50,7 @@ interface RoutingPolicy {
     profiles: Record<string, { modelConfigPath: string; workClass: string }>;
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
+    normalFitCriteria: Record<"SONNET" | "SOL" | "UNKNOWN", string>;
     uiUxBoundaryCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
@@ -204,6 +213,10 @@ function decisionQuestions(policy: RoutingPolicy) {
     uiUxBoundary: {
       type: "noul",
       instructions: `${policy.modelSelection.uiUxBoundaryCriteria}. 남은 UI/UX 판단의 존재를 난이도·지배 분야와 독립적으로 판단한다. 혼합 작업의 UI/UX 경계도 포함하고 파일 확장자만으로 추정하지 않는다.`,
+    },
+    normalFit: {
+      type: "choice", criteria: policy.modelSelection.normalFitCriteria,
+      instructions: "facts·settledImplementation·reusedPatterns·remainingJudgments·checks에 있는 과제 적합성 근거만 대조한다. NORMAL/HARD·UI/UX·위임·owner 판단과 독립적으로 답한다. 근거가 부족하거나 두 후보를 구분할 수 없으면 UNKNOWN이다. 사용량·한도 비율·현재 모델·과거 성공률로 선택하거나 어느 모델의 일반적 우월성을 추정하지 않는다. 이 답은 NORMAL 비-UI에만 적용된다.",
     },
   };
   // 위임 판정은 정책 정본(delegationCriteria = MAIN·MAKER·UNKNOWN)을 그대로 choice 선택지로 쓴다.
@@ -491,11 +504,8 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
 const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true };
 
-/**
- * primary 소진 때 대체 순서. Sol과 DeepSeek는 코드 품질이 같은 수준이고 Sol이 더 빨라 먼저 쓴다
- * (2026-10-10 Maker 품질 평가, 사용자 결정). 목록에 없는 NORMAL 대안은 그 뒤에 정책 순서대로 온다.
- */
-const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SOL", "NORMAL_DEEPSEEK"];
+/** 두 과제 적합성 후보를 먼저 확인한 뒤 기존 최종 대안을 쓴다. */
+const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SONNET", "NORMAL_SOL", "NORMAL_DEEPSEEK"];
 
 /** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
 function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
@@ -522,39 +532,33 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
 }
 
-/**
- * 비-UI NORMAL은 primary(NORMAL_SONNET = modelRoles.implSonnet)를 우선한다.
- * 대안의 한도 여유나 하루 사용 몫 때문에 primary를 밀지 않는다. 실제 소진일 때만 사용 가능한 NORMAL 대안을
- * NORMAL_FALLBACK_ORDER 순서로 추천한다.
- */
-function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot) {
+/** 과제 적합성은 task별로 고르고, 한도는 관측된 사용 불가 후보만 제외한다. */
+function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, answers: Record<string, RoutingAnswer> | null): NormalAllocation {
+  const choice = answers?.normalFit?.choice;
+  const fit = choice === "SONNET" || choice === "SOL" ? choice : "UNKNOWN";
+  const preferredProfile = fit === "SOL" ? "NORMAL_SOL" : "NORMAL_SONNET";
+  const basis = policy.modelSelection.normalFitCriteria[fit];
+  const order = [preferredProfile, ...NORMAL_FALLBACK_ORDER.filter((profile) => profile !== preferredProfile)];
   const rank = (candidate: Candidate) => {
-    const index = NORMAL_FALLBACK_ORDER.indexOf(candidate.profile);
-    return index < 0 ? NORMAL_FALLBACK_ORDER.length : index;
+    const index = order.indexOf(candidate.profile);
+    return index < 0 ? order.length : index;
   };
   const normal = candidates
     .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
     .sort((a, b) => rank(a) - rank(b));
-  const primary = normal.find((candidate) => candidate.profile === "NORMAL_SONNET");
-  const unavailable = (reason: string) => ({ state: "unavailable" as const, profile: (primary ?? normal[0])?.profile ?? null, reason });
-  if (quota.state !== "observed") return unavailable(quota.reason);
-  const exhausted = (candidate: Candidate) => modelQuotaExhausted(quota, candidate.model);
-  if (!primary) {
-    // primary NORMAL 후보 자체가 없으면(사용 불가·후보 제외) 사용 가능한 NORMAL 대안을 쓴다.
-    const alternative = normal.find((candidate) => !exhausted(candidate));
-    if (alternative) {
-      return { state: "observed" as const, profile: alternative.profile, reason: "primary NORMAL 후보가 없어 사용 가능한 NORMAL 대안을 추천합니다." };
-    }
-    return unavailable("사용 가능한 NORMAL 후보가 없습니다.");
-  }
-  if (!exhausted(primary)) {
-    return { state: "observed" as const, profile: primary.profile, reason: "primary NORMAL이 사용 가능해 한도 여유 크기 비교 없이 이를 추천합니다." };
-  }
-  const fallback = normal.find((candidate) => candidate.profile !== primary.profile && !exhausted(candidate));
-  if (fallback) {
-    return { state: "observed" as const, profile: fallback.profile, reason: "primary NORMAL 계정 한도가 소진되어 사용 가능한 NORMAL 대안을 추천합니다." };
-  }
-  return unavailable("primary NORMAL 계정 한도가 소진되었고 사용 가능한 NORMAL 대안이 없습니다.");
+  const selected = normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
+  const state = quota.state === "observed" && selected ? "observed" as const : "unavailable" as const;
+  const reason = !selected
+    ? "사용 가능한 NORMAL 후보가 없습니다."
+    : selected.profile !== preferredProfile
+      ? "과제 적합성 우선 후보가 사용 불가·관측 소진되어 다른 사용 가능한 NORMAL 후보를 추천합니다."
+      : fit === "UNKNOWN"
+        ? "과제 적합성 근거가 불충분하여 보수적 기본 Sonnet을 추천합니다."
+        : "구조화된 과제 적합성 판단에 따라 사용 가능한 NORMAL 후보를 추천합니다.";
+  return {
+    state, profile: selected?.profile ?? null, fit, preferredProfile, basis,
+    reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
+  };
 }
 
 function recommendedProfile(answers: Record<string, RoutingAnswer> | null, candidates: readonly Candidate[]) {
@@ -726,7 +730,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace(남은 판단이 얼마나 열려 있는지)와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아닙니다. Anthropic의 하루 사용 몫이나 주간 한도로 NORMAL_SOL을 자동 추천하지 않습니다. NORMAL_SOL은 ROUTING_REASON이 필요한 명시적 대안입니다. 기존 NORMAL의 명시적 Opus 선택은 ROUTING_REASON으로 유지하고, 같은 Opus owner와 완료된 비-UI 작업은 재사용합니다. 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI는 같은 Jev 배치의 normalFit(SONNET/SOL/UNKNOWN)과 basis로 Sonnet·Sol을 과제별 추천합니다. 근거가 부족하면 Sonnet이 보수적 기본이며, 우선 후보가 사용 불가·관측 소진이면 다른 일반 후보를 먼저 확인하고 그 뒤 DeepSeek를 추천합니다. 과제 적합성에 따른 Sol 추천은 소진 예외가 아니므로 ROUTING_REASON이 필요하지 않습니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 과제 적합성을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫·한도 여유만으로 후보를 바꾸지 않습니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -892,6 +896,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
             recommendations: prepared.answers,
             placement: placementOf(prepared, owners),
             existingOwners: owners,
+            normalAllocation: null as NormalAllocation | null,
           },
         };
       }));
@@ -899,7 +904,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const quota = await quotaPending;
       const quotaDoneAt = clock();
       requireLatest();
-      const allocation = normalAllocation(current, candidates, quota);
       // 이력은 advisory다. revision·identity·Jev state 밖에 두며 읽기 실패는 빈 이력이다.
       const ledgerRecords = deps.ledger?.read();
       const historyOf = (answers: Record<string, RoutingAnswer> | null): RoutingHistory | null => {
@@ -911,10 +915,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const answers = publication.prepared.answers;
         const normal = answers?.workClass?.choice === "NORMAL";
         const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
+        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota, answers) : null;
         const preferred = normal
           ? candidates.find((candidate) => candidate.profile === (uiUxBoundary ? "NORMAL_OPUS" : "NORMAL_SONNET"))?.profile ?? null
           : recommendedProfile(answers, candidates);
-        publication.prepared.profile = normal && !uiUxBoundary ? allocation.profile : preferred;
+        publication.prepared.profile = allocation ? allocation.profile : preferred;
+        publication.route.normalAllocation = allocation;
       }
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (typeof sessionId !== "string" || !sessionId.trim()) {
@@ -942,8 +948,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         routes: publications.map((publication, index) => ({
           ...publication.route,
           profile: publication.prepared.profile,
-          normalAllocation: publication.prepared.answers?.workClass?.choice === "NORMAL"
-            && (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) < 0.5 ? allocation : null,
+          normalAllocation: publication.route.normalAllocation,
           uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
             ? "기존 owner가 Opus인지 확인하세요. 비-Opus면 미완 변경·증거를 freeze하고 소유권을 넘깁니다. active owner를 동시에 새 발주하거나 실행 중 모델을 바꾸지 않습니다."
             : null,
@@ -1189,7 +1194,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 NORMAL_SONNET 우선이며 실제 소진·사용 불가 때만 NORMAL_SOL, 그것도 쓸 수 없으면 NORMAL_DEEPSEEK를 추천한다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. Anthropic 오늘 몫·주간 한도만으로 Sonnet·Opus를 Sol로 미리 바꾸지 않는다. HARD_CODE_SONNET·HARD_CODE_ASTRA는 ROUTING_REASON이 필요한 명시적 대안이고, 소진이 아닐 때 NORMAL_SOL을 고르는 것도 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·NORMAL 과제 적합성(SONNET/SOL/UNKNOWN)·owner 중복을 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI는 구조화된 사실·확정 구현·남은 판단·검사를 근거로 Sonnet·Sol을 과제별 추천하며 basis를 돌려준다. 불충분한 근거는 Sonnet 기본, 사용 불가·관측 소진이면 다른 일반 후보를 먼저 확인하고 그 뒤 NORMAL_DEEPSEEK다. 과제 적합성 Sol 추천은 소진이나 ROUTING_REASON이 필요하지 않다. 오늘 몫·한도 여유·과거 성공률로 후보를 바꾸거나 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

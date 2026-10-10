@@ -62,7 +62,8 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function textOf(content: unknown, role: "user" | "assistant"): string {
+/** The searchable text of a user or assistant message: user strings and `text` blocks only. */
+export function textOf(content: unknown, role: "user" | "assistant"): string {
   if (typeof content === "string") return role === "user" ? content : "";
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];

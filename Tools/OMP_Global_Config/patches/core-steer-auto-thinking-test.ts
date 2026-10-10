@@ -187,6 +187,12 @@ agent.addBeforeModelCallHook(async () => {
 		seen.afterParentDown = await levelSettles("low");
 		seen.parentRequests = levelRequests.slice(judgedBefore);
 	}
+	// 훅이 모델 호출을 끊으면 이 단계가 큐에 넣은 steer·follow-up(IRC 부모 steer 포함)은 소비되지 않고 남는다. 큐가
+	// 비어 있지 않으면 세션이 agent_end 뒤 같은 대기열을 이어받는 continuation 을 예약하고, 그 continuation 은 매번 이
+	// 훅에서 끊겨 다시 남은 큐를 예약한다. 그 run 이 다음 단계의 session.prompt 와 경쟁해(부하가 걸린 CI 에서 이긴다)
+	// prompt 는 "Agent is already processing" 으로 삼켜지고, 다음 단계가 옛 턴 문맥(#autoThinkingTurnText)에 얹혀 돈다.
+	// 단계가 끝날 때 남은 입력을 비워 continuation 자체를 만들지 않는다. 관측값은 위에서 이미 기록했다.
+	agent.clearAllQueues();
 	throw new Error("smoke: no provider call");
 });
 

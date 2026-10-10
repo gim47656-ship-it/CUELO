@@ -397,31 +397,43 @@ export async function getSessionEntries(filePath: string): Promise<SessionEntry[
   return manager.getEntries() as unknown as SessionEntry[];
 }
 
+/** What the branch walk reads: full entries and a streamed skinny index both carry it. */
+export interface BranchLink {
+  id: string;
+  parentId?: string | null;
+}
+
 /**
  * Entries on the branch that ends at `leafId`, root-first.
  *
  * Corrupt or pre-fix files can contain parent cycles; stop at the first repeat
  * so loading a session is bounded.
  */
-function collectBranchPath(
-  entries: SessionEntry[],
-  byId: Map<string, SessionEntry>,
+export function collectBranchPath<T extends BranchLink>(
+  entries: readonly T[],
+  byId: ReadonlyMap<string, T>,
   leafId?: string | null,
-): SessionEntry[] {
+): T[] {
   if (leafId === null) return [];
 
   const leaf = (leafId ? byId.get(leafId) : undefined) ?? entries[entries.length - 1];
   if (!leaf) return [];
 
-  const path: SessionEntry[] = [];
+  const path: T[] = [];
   const seen = new Set<string>();
-  let current: SessionEntry | undefined = leaf;
+  let current: T | undefined = leaf;
   while (current && !seen.has(current.id)) {
     seen.add(current.id);
     path.push(current);
     current = current.parentId ? byId.get(current.parentId) : undefined;
   }
   return path.reverse();
+}
+
+/** What the compaction split reads; compaction entries carry `firstKeptEntryId`. */
+export interface DisplayLink extends BranchLink {
+  type: string;
+  firstKeptEntryId?: string;
 }
 
 /**
@@ -436,9 +448,9 @@ function collectBranchPath(
  * elided, the summary renders at the compaction point, and everything kept or
  * newer follows.
  */
-function collectDisplayEntries(
-  path: SessionEntry[],
-): { displayed: SessionEntry[]; hidden: SessionEntry[] } {
+export function collectDisplayEntries<T extends DisplayLink>(
+  path: T[],
+): { displayed: T[]; hidden: T[] } {
   // Only the latest compaction on the path is active; earlier ones were
   // themselves superseded.
   let compactionIdx = -1;
@@ -450,9 +462,9 @@ function collectDisplayEntries(
   }
   if (compactionIdx === -1) return { displayed: path, hidden: [] };
 
-  const compaction = path[compactionIdx] as Extract<SessionEntry, { type: "compaction" }>;
-  const kept: SessionEntry[] = [];
-  const hidden: SessionEntry[] = [];
+  const compaction = path[compactionIdx];
+  const kept: T[] = [];
+  const hidden: T[] = [];
   let foundFirstKept = false;
   for (let i = 0; i < compactionIdx; i++) {
     if (path[i].id === compaction.firstKeptEntryId) foundFirstKept = true;

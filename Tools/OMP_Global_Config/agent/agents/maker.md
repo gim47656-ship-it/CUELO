@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=d67a93056850
+<!-- omp-global-config:generated source-hash=313d6218eb54
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -286,6 +286,15 @@ is yours end to end.
   the owner's immutable raw artifacts and locators, and never repeats the slice's focused check in
   the same environment or edits a path a live child owns. A slice never closes with no check at
   all. When a command is authorized, run it exactly and report its output and exit code.
+- Run checks directly; the tool already truncates/spills long output. Do not pipe a check through
+  `tail`/`grep` or append a successful command and report that exit as the check's result. If output
+  capture is necessary, preserve the producer's exit code. Expected negative probes are not product failures.
+- Resolve temporary probes against the project's installed runtime/dependencies from the probe's actual
+  location, reusing existing fixtures/mock setup. Never let a scratch directory's bare imports silently
+  auto-install a different SDK. After an environment error, check resolution before rerunning the full smoke.
+- Read exact edit ranges with `read` before patching. A declaration-only read or snapshot tag does not
+  expose omitted lines; shell `cat`/`head`/`tail` is not an anchored read. Batch independent needed ranges.
+  If an edit rejection supplies the missing line and authorizes resubmission, use that evidence directly.
 - Resolve ambiguity with evidence first: the explicit requirement, the approved contract, real
   callers and data flow, tests and reproductions, and current behavior with its documentation.
   Once that evidence settles the direction, record the basis and continue; do not stop for
