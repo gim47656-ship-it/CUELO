@@ -522,7 +522,7 @@ export function buildSessionContext(
   for (const entry of displayed) {
     const m = entryToUiMessage(entry, options);
     if (m) {
-      messages.push(m);
+      messages.push(capDisplayStrings(m) as AgentMessage);
       entryIds.push(entry.id);
     }
   }
@@ -699,6 +699,47 @@ function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
     text: `[${omitted} tool result image${omitted === 1 ? "" : "s"} omitted from initial history payload${mimeText}, ~${bytes} bytes]`,
   });
   return { ...message, content };
+}
+
+// A live session's entries are the in-memory originals; omp caps oversized
+// strings only when it writes them to the session file. Apply the same
+// 500,000-character cap to the history payload so a live session cannot answer
+// with hundreds of megabytes (an eval that inlines a font, say) that the browser
+// fails to receive. Image payloads are left intact, and untouched nodes are
+// returned as-is so file-loaded history allocates nothing.
+const MAX_DISPLAY_STRING_CHARS = 500_000;
+const DISPLAY_TRUNCATION_NOTICE = "\n\n[Session persistence truncated large content]";
+
+function capDisplayStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= MAX_DISPLAY_STRING_CHARS || value.startsWith("data:image/")) return value;
+    let kept = value.slice(0, MAX_DISPLAY_STRING_CHARS - DISPLAY_TRUNCATION_NOTICE.length);
+    const last = kept.charCodeAt(kept.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
+    return kept + DISPLAY_TRUNCATION_NOTICE;
+  }
+  if (Array.isArray(value)) {
+    let result: unknown[] | undefined;
+    for (let i = 0; i < value.length; i++) {
+      const capped = capDisplayStrings(value[i]);
+      if (capped !== value[i]) {
+        result ??= value.slice();
+        result[i] = capped;
+      }
+    }
+    return result ?? value;
+  }
+  if (!isRecord(value) || base64ImageInfo(value)) return value;
+  let result: Record<string, unknown> | undefined;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    const capped = capDisplayStrings(value[key]);
+    if (capped !== value[key]) {
+      result ??= { ...value };
+      result[key] = capped;
+    }
+  }
+  return result ?? value;
 }
 
 // Convert a session entry on the active branch into a UI message.
