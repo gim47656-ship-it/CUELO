@@ -2,8 +2,8 @@
 //   bun test patches/content-scan.test.ts
 //
 // 지키는 계약은 셋이다.
-//  (1) 커밋된 증거(.jsonl·.diff)와 스캐너 소스 자신은 통과한다. 정상 증거 때문에 게이트가 멈추지
-//      않는다.
+//  (1) 스캐너 소스 자신(content-scan.ps1·setup.ps1·verify.ps1)은 통과한다. 정상 .jsonl·.diff는 아래
+//      합성 픽스처로 확인한다.
 //  (2) 실제 비밀은 포맷과 무관하게 차단한다. .jsonl 의 JSON 문자열 값과 .diff 의 추가(+)·삭제(-)
 //      줄을 빼지 않는다.
 //  (3) 형식/파싱 실패와 미지원 확장자는 '비밀 탐지'와 다른 사유로 실패한다(검사를 생략하지 않는다).
@@ -42,12 +42,6 @@ const bearerSecretCode = writeFixture("bearer-secret.mjs", `const headers = { ${
 const parenthesizedReference = writeFixture("parenthesized-reference.ts", `const ${sessionKey} = (ctx.sessionManager?.getSessionId?.() ?? "").trim();`);
 const parenthesizedLiteral = writeFixture("parenthesized-literal.ts", `const ${sessionKey} = (${JSON.stringify(sessionValue)});`);
 
-const committedEvidence = [
-  ".core-validation-raw.jsonl",
-  ".frozen-review.diff",
-  ".frozen-three-role.diff",
-  ".frozen-three-role-r2.diff",
-].map((name) => join(repoRoot, name));
 const scannerSources = [helperPath, join(repoRoot, "setup.ps1"), join(repoRoot, "verify.ps1")];
 
 const cleanJsonl = writeFixture(
@@ -167,7 +161,6 @@ function scanAll(paths: string[]): Record<string, string | null> {
 }
 
 const reasons = scanAll([
-  ...committedEvidence,
   ...scannerSources,
   cleanJsonl,
   bomJsonl,
@@ -190,9 +183,9 @@ const reasons = scanAll([
   parenthesizedLiteral,
 ]);
 
-describe("커밋된 증거", () => {
-  test("정상 .jsonl·.diff 증거와 스캐너 소스는 통과한다", () => {
-    const failed = [...committedEvidence, ...scannerSources].filter((path) => reasons[path] !== null);
+describe("스캐너 소스", () => {
+  test("스캐너 자신과 setup.ps1·verify.ps1은 통과한다", () => {
+    const failed = scannerSources.filter((path) => reasons[path] !== null);
     expect(failed.map((path) => `${path} :: ${reasons[path]}`)).toEqual([]);
   });
 });

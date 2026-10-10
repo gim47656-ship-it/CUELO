@@ -1,8 +1,9 @@
 name: CI
 
 # Actions minutes are free only for the public mirror, so the heavy checks run
-# there: `verify` (install, typecheck, lint, app tests, production build),
-# `harness` (extension, guard, finalizer and core patch tests) and
+# there: `verify` and `verify-linux` (install, typecheck, lint, app tests,
+# production build on Windows and on Linux, where both live PCs run CUELO under
+# WSL), `harness` (extension, guard, finalizer and core patch tests) and
 # `harness-linux` (the same harness tests on Linux, where the user-shell PTY
 # path runs). CUELO-private
 # is billed per minute (Windows at twice the Linux rate), so its `private` job
@@ -28,8 +29,8 @@ concurrency:
 jobs:
   verify:
     name: Verify build
-    # CUELO runs on Windows PCs, and several tests (run X-Ray session paths)
-    # assume Windows paths.
+    # Windows installs (PC-SETUP) still build here; `verify-linux` covers the
+    # WSL runtime both live PCs use.
     if: github.repository == 'gim47656-ship-it/CUELO'
     runs-on: windows-latest
     steps:
@@ -95,6 +96,55 @@ jobs:
           $env:OMP_CORE_PATCH_TARGET = Join-Path $PWD 'node_modules/@oh-my-pi/pi-coding-agent'
           bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  verify-linux:
+    name: Verify build (Linux)
+    # Both live PCs run CUELO under WSL; install.mjs builds and patches there
+    # with the same steps as below.
+    if: github.repository == 'gim47656-ship-it/CUELO'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare source SDK
+        run: bun run prepare:source
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Test
+        run: bun run test
+
+      - name: Side chat sidecar test
+        run: bun test ./Tools/CUELO_Setup/files/btw-server.test.mjs
+
+      - name: Build package
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: bun run build
+
+      - name: Apply and verify web runtime compatibility
+        run: |
+          node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
+          node Tools/CUELO_Setup/files/native-runtime-patch.js --target . --check
+          OMP_CORE_PATCH_TARGET="$PWD/node_modules/@oh-my-pi/pi-coding-agent" bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
 
   harness:
     name: Verify harness
@@ -288,7 +338,7 @@ jobs:
           node patches/build-agents.mjs --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # content-scan.test.ts replays the committed review evidence and setup.ps1/verify.ps1.
+      # content-scan.test.ts replays setup.ps1/verify.ps1 and synthetic .jsonl/.diff fixtures.
       - name: Content scan tests
         run: |
           bun test ./patches/content-scan.test.ts

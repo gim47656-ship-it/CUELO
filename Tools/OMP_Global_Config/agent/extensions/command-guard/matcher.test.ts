@@ -300,6 +300,39 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
       ),
     ).toBeUndefined();
   });
+
+  const sessionOnly: GuardContext = { cwd: sessionDirectory, isSessionRepository: () => true };
+  const dryRunCases = [
+    ["add --dry-run", "git add --dry-run README.md", false],
+    ["add -n", "git add -n .", false],
+    ["push --dry-run", "git push --dry-run origin main", false],
+    ["push -n", "git push -n origin main", false],
+    ["commit --dry-run", "git commit --dry-run", false],
+    ["commit -n은 --no-verify", "git commit -n -m x", true],
+    ["미리보기 뒤 실제 push", "git push --dry-run origin main && git push origin main", true],
+  ] as const;
+  for (const [name, command, blocked] of dryRunCases) {
+    test(`세션 저장소의 미리보기만 허용한다: ${name}`, () => {
+      expect(matchBlockedCommand(command, sessionOnly) !== undefined).toBe(blocked);
+    });
+  }
+
+  const other = `${ROOT}/kasset-core-work`;
+  const cdCases = [
+    ["&&로 이어진 cd 뒤 다른 저장소 commit", `cd ${other} && git add -A && git commit -m x`, sessionDirectory, false],
+    ["cd 실패에도 도는 ; 뒤 commit", `cd ${other}; git commit -m x`, sessionDirectory, true],
+    ["|| 뒤 commit", `cd ${other} || true && git commit -m x`, sessionDirectory, true],
+    ["변수 경로 cd", 'cd "$T" && git commit -m x', externalDirectory, true],
+    ["subshell이 닫힌 뒤 commit", `(cd ${other} && git add -A) && git commit -m x`, sessionDirectory, true],
+    ["cd 뒤 subshell 안 commit", `cd ${other} && (git add -A && git commit -m x)`, sessionDirectory, false],
+    ["세션 저장소로 다시 cd", `cd ${other} && cd ${ROOT}/Projects && git push`, sessionDirectory, true],
+    ["GIT_DIR를 쓰는 명령", `export GIT_DIR=${ROOT}/Projects/.git; cd ${other} && git commit -m x`, sessionDirectory, true],
+  ] as const;
+  for (const [name, command, cwd, blocked] of cdCases) {
+    test(`명령 안의 cd를 따라 저장소를 판정한다: ${name}`, () => {
+      expect(matchBlockedCommand(command, contextFor(cwd)) !== undefined).toBe(blocked);
+    });
+  }
 });
 
 describe("광범위한 파일 삭제", () => {

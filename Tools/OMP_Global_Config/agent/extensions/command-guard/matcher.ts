@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 export interface GuardContext {
   /** bash tool_call이 지정한 cwd. 없으면 세션 cwd. */
@@ -17,6 +17,8 @@ interface ShellToken {
 interface ShellSegment {
   tokens: ShellToken[];
   separatorBefore?: Separator;
+  /** 괄호 subshell 깊이. `cd`의 효과는 같은 깊이 이하로만 이어진다. */
+  depth: number;
 }
 
 interface Invocation {
@@ -275,6 +277,7 @@ function tokenizeShell(command: string): ShellSegment[] {
   let tokenQuoted = false;
   let quote: "'" | '"' | undefined;
   let separatorBefore: Separator | undefined;
+  let depth = 0;
 
   const endToken = (): void => {
     if (!tokenStarted) return;
@@ -290,7 +293,7 @@ function tokenizeShell(command: string): ShellSegment[] {
     if (tokens.length > 0) {
       const executableTokens = stripRedirections(tokens);
       if (executableTokens.length > 0) {
-        segments.push({ tokens: executableTokens, separatorBefore });
+        segments.push({ tokens: executableTokens, separatorBefore, depth });
         pushed = true;
       }
     }
@@ -409,6 +412,7 @@ function tokenizeShell(command: string): ShellSegment[] {
 
     if (character === "(" || character === ")") {
       endSegment(";");
+      depth = character === "(" ? depth + 1 : Math.max(0, depth - 1);
       continue;
     }
 
@@ -450,7 +454,7 @@ function tokenizeShell(command: string): ShellSegment[] {
   endToken();
   const executableTokens = stripRedirections(tokens);
   if (executableTokens.length > 0) {
-    segments.push({ tokens: executableTokens, separatorBefore });
+    segments.push({ tokens: executableTokens, separatorBefore, depth });
   }
   return segments;
 }
@@ -761,6 +765,12 @@ function matchGit(
   if (!git) return undefined;
 
   if (FINALIZER_OWNED_GIT_COMMANDS[git.subcommand]) {
+    // 미리보기는 index·ref·원격을 바꾸지 않는다. commit의 `-n`은 `--no-verify`라 commit은 long option만 본다.
+    const dryRun =
+      (git.subcommand === "add" || git.subcommand === "commit" || git.subcommand === "push") &&
+      (hasLongOption(git.args, ["--dry-run"]) ||
+        (git.subcommand !== "commit" && shortFlags(git.args).has("n")));
+    if (dryRun) return undefined;
     if (!context?.isSessionRepository) return REASONS.gitFinalize;
     const targetDirectory = finalizerTargetDirectory(git, context);
     if (!targetDirectory) return REASONS.gitFinalize;
@@ -1166,13 +1176,46 @@ function matchBlockedCommandInternal(
   context?: GuardContext,
 ): string | undefined {
   const segments = tokenizeShell(command);
+  // `cd <리터럴 경로>` 뒤 `&&`로만 이어진 호출은 그 경로에서 돈다. `;`·`||`·`|`·`&`·줄바꿈으로 이어지면 cd가 실패해도
+  // 다음 호출이 돌 수 있어 위치를 모르는 것(null)으로 보고 finalizer 소유 git을 막는다. 괄호 subshell의 cd는 닫히면
+  // 사라진다. GIT_DIR·GIT_WORK_TREE를 쓰는 명령은 위치가 저장소를 정하지 않으므로 cd를 따라가지 않는다.
+  const followCd = !/\bGIT_(?:DIR|WORK_TREE)\b/.test(command);
+  const cwds: (string | null | undefined)[] = [context?.cwd];
+  const moved: boolean[] = [false];
 
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
+    for (let level = cwds.length; level <= segment.depth; level += 1) {
+      cwds[level] = cwds[level - 1];
+      moved[level] = moved[level - 1];
+    }
+    cwds.length = moved.length = segment.depth + 1;
+    if (index > 0 && segment.separatorBefore !== "&&" && moved[segment.depth]) cwds[segment.depth] = null;
+
     const invocation = resolveInvocation(segment.tokens);
     if (!invocation) continue;
 
-    const gitReason = matchGit(segment.tokens, invocation, context);
+    if (invocation.name === "cd" || invocation.name === "pushd" || invocation.name === "popd") {
+      const targets = segment.tokens
+        .slice(invocation.index + 1)
+        .map((token) => token.value)
+        .filter((value) => value !== "-L" && value !== "-P" && value !== "--");
+      const from = cwds[segment.depth];
+      const target = targets[0];
+      const literal =
+        followCd && invocation.name === "cd" && targets.length === 1 && target !== "-" && !hasShellExpansion(target);
+      cwds[segment.depth] = !literal
+        ? null
+        : from === null
+          ? isAbsolute(target) ? resolve(target) : null
+          : resolve(from ?? ".", target);
+      moved[segment.depth] = true;
+      continue;
+    }
+
+    const segmentCwd = cwds[segment.depth];
+    const gitContext = segmentCwd === null ? undefined : context && { ...context, cwd: segmentCwd };
+    const gitReason = matchGit(segment.tokens, invocation, gitContext);
     if (gitReason) return gitReason;
 
     const args = segment.tokens.slice(invocation.index + 1).map((token) => token.value);
@@ -1207,7 +1250,7 @@ function matchBlockedCommandInternal(
     if (depth < 3) {
       const nested = nestedCommand(segment.tokens, invocation);
       if (nested) {
-        const nestedReason = matchBlockedCommandInternal(nested, depth + 1, context);
+        const nestedReason = matchBlockedCommandInternal(nested, depth + 1, gitContext);
         if (nestedReason) return nestedReason;
       }
     }
