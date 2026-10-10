@@ -80,6 +80,15 @@ describe("korean reply guard", () => {
     expect(seen).toHaveLength(2);
   });
 
+  test("긴 드리프트도 앞부분만 자르지 않고 전체를 번역기에 넘긴다", async () => {
+    const seen: string[] = [];
+    const h = harness(async (text) => { seen.push(text); return "번역문"; });
+    const long = Array.from({ length: 120 }, (_, i) => `${ENGLISH} Paragraph ${i}.`).join("\n");
+    expect(long.length).toBeGreaterThan(4000);
+    await h.assistant(long);
+    expect(seen).toEqual([long.trim()]);
+  });
+
   test("빠르게 이어진 드리프트들은 각각 번역되어 모두 표시된다", async () => {
     const resolvers: ((value: string) => void)[] = [];
     const h = harness(() => new Promise<string>((resolve) => { resolvers.push(resolve); }));

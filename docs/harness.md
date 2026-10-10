@@ -123,7 +123,7 @@ Main 승인이 작업을 막고 있다면 관계없는 문서 정리나 새 발�
 
 ## 다중 파일 조사 `skim`
 
-Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 B.AI로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 파일 탐색은 cwd 안에서만 하고, cwd가 더 큰 저장소의 하위 폴더이면 찾은 경로를 `git check-ignore`로 다시 걸러 상위 `.gitignore`도 적용합니다. 그래서 원격 드라이브의 큰 저장소 안에서도 저장소 전체를 훑지 않으며, 한 경로의 탐색이 10초를 넘으면 그 경로만 건너뛰었다고 표시합니다. 전송량은 파일당 48 KiB, 요청당 192 KiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
+Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts)의 `skim(paths, question)`으로 cwd 안 파일·디렉터리·glob의 텍스트를 Gemini Flash에 묻고 근거 경로가 붙은 답을 받습니다. Gemini 실패 시 같은 안전 필터를 거친 동일 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체하며, 첫 줄에 실제 응답 모델, 그 다음 줄에 Gemini 실패 원문을 표시합니다. DeepSeek는 별도 역할 slot을 만들지 않고 이 도구에서만 지정합니다. 허용 파일 내용은 Google 또는 대체 시 B.AI로 전송됩니다. 자기 프로필에 `modelRoles.skim: google-antigravity/gemini-3.8-flash`와 각 제공자 인증이 필요합니다. `.env*`와 인증·비밀 경로, **명시 경로도 포함한** gitignore 대상, 바이너리와 1 MiB 초과 파일은 제외합니다. 이름 검사에서 `auth`·`token`은 단어로 떨어질 때만 비밀 경로로 보므로(`auth.json`, `oauth-token.txt`) `authentic-…`·`tokenizer…` 같은 일반 파일은 보내고, 파일 내용의 키·토큰 형식은 따로 검사해 제외합니다. 파일 탐색은 cwd 안에서만 하고, cwd가 더 큰 저장소의 하위 폴더이면 찾은 경로를 `git check-ignore`로 다시 걸러 상위 `.gitignore`도 적용합니다. 그래서 원격 드라이브의 큰 저장소 안에서도 저장소 전체를 훑지 않으며, 한 경로의 탐색이 10초를 넘으면 그 경로만 건너뛰었다고 표시합니다. 전송량은 파일당 256 KiB, 요청당 1 MiB로 제한하며 빠지거나 잘린 파일을 결과에 표시합니다. 답은 최대 8,192토큰이고 3분 안에 받습니다. 답이 그 상한에 닿으면 버리지 않고 받은 데까지 돌려주며 끊겼다고 표시합니다. 정확한 편집 줄은 `read`로 확인합니다. 이미지 `vision`과 Jev 기반 `find`는 바꾸지 않습니다.
 
 `modelRoles.tiny`는 Gemini Flash입니다. 세션 제목 생성은 코어의 `tiny → commit → smol` 순서를 써서 Gemini 실패 시 `commit`의 `anthropic/claude-sonnet-5-5`로 넘어가고, Mnemopi의 `memory` 역할은 전용 후보 체인에서 Sonnet을 시도합니다. `tts/speech-enhancer`는 단일 `@tiny` 호출에 실패하면 모델을 바꾸지 않고 기존의 기계적 음성 텍스트 정규화로 돌아갑니다. Gemini의 모델 키 전체에 retry 체인을 걸지 않아 `vision`은 바뀌지 않습니다.
 
@@ -137,7 +137,7 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 저장 경로는 cwd 기준 상대 경로만 받습니다. `..`, cwd 밖으로 해석되는 경로, 심볼릭 링크, `.git`·`node_modules`·비밀처럼 보이는 이름은 거부하고, 기존 파일은 `overwrite: true`일 때만 바꿉니다. 경로 확인은 모델 호출 전에 하므로 거부된 요청은 할당량을 쓰지 않습니다. `paths`의 참고 자료는 `skim`과 같은 안전 필터(비밀·gitignore·바이너리·크기 제한)를 거쳐 Google 또는 대체 시 B.AI로 전송됩니다.
 
-모델은 `modelRoles.draft`(기본 `google-antigravity/gemini-3.8-flash`)이고, Gemini가 실패하거나 응답이 형식 검사(CSV·JSON 파싱)를 통과하지 못하면 같은 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체합니다. 결과 첫 줄은 실제 응답 모델이며 저장 경로·크기·개요를 함께 돌려주고, 둘 다 실패하면 `model: none`과 각 실패 원문을 표시하고 파일을 만들지 않습니다. 출력 상한에 걸려 잘린 응답도 저장하지 않습니다. Gemini 할당량은 같은 Antigravity 계정의 `vision`·`skim`·`tiny`와 공유합니다.
+모델은 `modelRoles.draft`(기본 `google-antigravity/gemini-3.8-flash`)이고, Gemini가 실패하거나 응답이 형식 검사(CSV·JSON 파싱)를 통과하지 못하면 같은 입력으로 `b-ai/deepseek-v4.1-flash`에 한 번 대체합니다. 결과 첫 줄은 실제 응답 모델이며 저장 경로·크기·개요를 함께 돌려주고, 둘 다 실패하면 `model: none`과 각 실패 원문을 표시하고 파일을 만들지 않습니다. 출력 상한은 따로 두지 않고 모델 최대치(Gemini 3.8 Flash 65,536토큰)를 쓰며 10분 안에 받습니다. 그 최대치에서도 잘린 응답은 반쪽 문서라 저장하지 않습니다. Gemini 할당량은 같은 Antigravity 계정의 `vision`·`skim`·`tiny`와 공유합니다.
 
 ## Windows 빌드 `windows_build`
 
@@ -197,7 +197,7 @@ Windows에서는 FTS 확장이 Git의 `mingw64/bin`에 있는 OpenSSL DLL을 필
 
 Main은 TODO를 최초 계획에만 쓰지 않고 실시간 현황으로 유지합니다. 착수·검증 완료·외부 대기·재개·재작업을 확인한 자리에서 갱신하고, agent나 검사 결과를 기다리는 항목에는 담당과 남은 조건을 적습니다. 도구의 자동 활성 포인터가 앞선 통합 항목으로 돌아갈 수 있으므로 갱신 결과도 확인합니다. 사용자에게 먼저 답해야 할 때는 즉답 후 같은 턴에서 동기화하며, 채팅 설명만으로 TODO 갱신을 대신하거나 포인터를 맞추려고 미완을 완료 처리하지 않습니다.
 
-[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 영어로 나간 메시지는 처음부터 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시해, 이미 나간 내용도 한국어로 읽을 수 있게 합니다. 처음 한 번은 숨김 안내도 넣어 다음 답부터 한국어로 쓰게 합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
+[`korean-reply-guard.ts`](../Tools/OMP_Global_Config/agent/extensions/korean-reply-guard.ts)는 Main의 사용자 표시 답변이 영어로 새는 일을 막습니다. 코드·인라인 코드·URL·경로·식별자·원본 오류 줄을 뺀 산문에서 라틴 글자가 40자 이상이고 한글 비율이 15% 미만이면 영어로 봅니다. 영어로 나간 메시지는 처음부터 `modelRoles.tiny` 모델로 번역한 한국어를 원문 아래에 표시해, 이미 나간 내용도 한국어로 읽을 수 있게 합니다. 긴 답도 앞부분만 자르지 않고 전체를 번역하며(출력은 모델 최대치, 2분 제한), 모델 한도에서 끊기면 끊긴 번역과 그 사실을 함께 보여 줍니다. 처음 한 번은 숨김 안내도 넣어 다음 답부터 한국어로 쓰게 합니다. 번역은 모델 문맥에서 빠지고, 민감 정보처럼 보이는 글은 외부로 보내지 않습니다. 사용자가 영어로 쓰거나 영어 답을 요청한 턴과 서브에이전트에는 개입하지 않으며, 번역에는 tiny 모델 요청 비용이 듭니다.
 
 Main과 서브에이전트(Maker)가 서로 주고받는 글은 양방향 모두 영어입니다. 발주·후속 지시뿐 아니라 Maker의 진행 발화·완료 보고·체크포인트·Maker끼리 보내는 메시지도 영어로 쓰고, 사용자에게는 Main이 필요한 내용을 한국어로 옮겨 전합니다. 사용자가 캐릭터를 불러 직접 답하게 한 경우는 사용자에게 하는 말이므로 한국어입니다.
 

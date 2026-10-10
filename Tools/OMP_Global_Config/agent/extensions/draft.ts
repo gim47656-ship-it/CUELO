@@ -7,10 +7,10 @@ import { findEdge, renderPdf } from "./draft/pdf";
 import { collect, completeRole, DEEPSEEK, GEMINI, SECRET_EXTENSION, SECRET_NAME, type HelperModel } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
-// 문서 한 편을 통째로 받는다. skim(1024토큰·45초)과 달리 긴 보고서·표가 잘리지 않을 만큼 잡고,
-// 상한에 걸려 잘린 응답(stopReason length)은 저장하지 않고 실패로 돌린다.
-const MAX_TOKENS = 32_768;
-const TIMEOUT_MS = 240_000;
+// 문서 한 편을 통째로 받는다. 출력 상한은 모델 최대치(Gemini 3.8 Flash 65,536토큰)라 우리 상한 때문에 잘리지
+// 않는다. 그래도 모델 최대치에서 잘린 응답(stopReason length)은 반쪽 문서라 저장하지 않고 실패로 돌린다.
+// 최대 출력을 다 쓰는 초안도 끝날 시간을 준다.
+const TIMEOUT_MS = 600_000;
 
 export type Format = "md" | "txt" | "csv" | "xlsx" | "docx" | "pdf";
 const FORMATS: Record<string, Format> = {
@@ -124,7 +124,7 @@ function prepare(format: Format, text: string, title: string): Prepared {
 }
 
 export async function draftDocument(input: DraftInput, ctx: ExtensionContext, signal: AbortSignal,
-  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft", maxTokens: MAX_TOKENS })): Promise<string> {
+  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<string> {
   if (!input.instruction?.trim() || !input.output?.trim()) return "model: none\ninstruction과 output을 지정해 주세요.";
   const overwrite = input.overwrite === true;
   let notes: string[] = [];

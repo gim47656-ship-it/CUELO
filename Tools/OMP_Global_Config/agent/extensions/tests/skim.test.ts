@@ -44,6 +44,18 @@ describe("skim", () => {
     expect(answer).toContain("docs/note.md: 비밀 내용 제외");
   });
 
+  test("auth·token은 단어로 떨어진 이름만 비밀로 보고, 그 글자를 품은 일반 이름은 보낸다", async () => {
+    const cwd = fixture();
+    mkdirSync(join(cwd, "docs"));
+    for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) writeFileSync(join(cwd, "docs", name), `PUBLIC ${name}`);
+    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) writeFileSync(join(cwd, "docs", name), "SECRET_NAME_MARKER");
+    let prompt = "";
+    const answer = await skimQuestion({ paths: ["docs"], question: "?" }, context(cwd), signal, async (input) => { prompt = input; return "ok"; });
+    for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) expect(prompt).toContain(`<file path="docs/${name}">`);
+    expect(prompt).not.toContain("SECRET_NAME_MARKER");
+    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) expect(answer).toContain(`docs/${name}: 비밀 경로 제외`);
+  });
+
   test("하위 cwd에서도 상위 저장소의 gitignore를 명시 파일에 적용한다", async () => {
     const repo = fixture();
     expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
@@ -165,6 +177,40 @@ describe("skim", () => {
       ]);
       expect(usage.map((entry) => [entry.usage.input, entry.usage.output, entry.usage.cacheRead])).toEqual([[1000, 80, 200], [1000, 80, 200]]);
       expect(usage[0].usage.cost.total).toBeGreaterThan(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("출력 상한(8192토큰)에 닿은 답은 버리지 않고 끊김 안내와 함께 돌려준다", async () => {
+    const cwd = fixture();
+    writeFileSync(join(cwd, "guide.md"), "fact");
+    const bodies: Record<string, unknown>[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      bodies.push(await request.json() as Record<string, unknown>);
+      const base = { id: "local-length", object: "chat.completion.chunk", created: 0, model: "deepseek-v4.1-flash" };
+      const chunks = [
+        { ...base, choices: [{ index: 0, delta: { role: "assistant", content: "긴 답의 앞부분 (guide.md:L1)" }, finish_reason: null }] },
+        { ...base, choices: [{ index: 0, delta: {}, finish_reason: "length" }] },
+        { ...base, choices: [], usage: { prompt_tokens: 100, completion_tokens: 8192, total_tokens: 8292 } },
+      ];
+      return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+    } });
+    try {
+      const model = { id: "deepseek-v4.1-flash", name: "local", api: "openai-completions", provider: "b-ai",
+        baseUrl: `http://127.0.0.1:${server.port}/v1`, reasoning: false, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 150000 };
+      const ctx = { cwd, sessionManager: SessionManager.inMemory(cwd), models: { resolve: () => model },
+        modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
+      const viaDeepSeek: SkimCompletion = (prompt, ctx, attempt, requested) =>
+        requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
+      const result = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
+      expect(result).toContain("model: b-ai/deepseek-v4.1-flash");
+      expect(result).toContain("긴 답의 앞부분 (guide.md:L1)");
+      expect(result).toContain("[출력 상한 8192토큰에서 답이 끊겼습니다.");
+      expect(result).not.toContain("DeepSeek 실패");
+      expect(JSON.stringify(bodies[0])).toMatch(/"max_(?:completion_)?tokens":8192/);
     } finally {
       server.stop(true);
     }

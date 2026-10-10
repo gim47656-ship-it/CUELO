@@ -20,8 +20,8 @@ export const REMINDER_TEXT = "직전 응답의 사용자 표시 문장이 영어
 export const MIN_LATIN_LETTERS = 40;
 export const MAX_HANGUL_RATIO = 0.15;
 const MIN_HANGUL_FOR_KOREAN = 10;
-const MAX_TRANSLATE_CHARS = 4000;
-const TRANSLATE_TIMEOUT_MS = 30_000;
+// 긴 답도 앞부분만 자르지 않고 통째로 번역한다. 출력은 tiny 모델 최대치이고 그 시간을 준다.
+const TRANSLATE_TIMEOUT_MS = 120_000;
 const SEEN_LIMIT = 50;
 const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bearer|secret|token|credential|client[_ -]?secret)\b|(?:비밀번호|자격증명|인증키|토큰)|(?:sk-[A-Za-z0-9_-]{12,})|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[opusr]_|github_pat_)[A-Za-z0-9_-]{12,}/i;
 const ENGLISH_REQUEST = /(?:in\s+english|answer\s+in\s+english|reply\s+in\s+english|영어로|영문으로|영어\s*(?:답|응답|번역))/i;
@@ -83,15 +83,16 @@ export async function translateWithTiny(text: string, ctx: ExtensionContext, sig
     + text + "\n</message>";
   const response = await completeSimple(model, {
     messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-  }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: 2048, disableReasoning: true, signal });
+  }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens, disableReasoning: true, signal });
   (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
     purpose: "korean-reply-translation", role: "tiny", api: model.api, provider: model.provider, model: model.id,
     usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
   }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
-  if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
+  const truncated = response.stopReason === "length";
+  if (response.stopReason !== "stop" && !truncated) throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
   const answer = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
   if (!answer) throw new Error("tiny 모델이 빈 답을 반환했습니다.");
-  return answer;
+  return truncated ? `${answer}\n\n[번역이 모델 출력 한도에서 끊겼다. 나머지는 원문을 본다.]` : answer;
 }
 
 export function createKoreanReplyGuard(translate: TranslateReply = translateWithTiny) {
@@ -158,7 +159,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       // reset(세션 시작·종료)만 pending을 비운다. 타임아웃 abort는 pending에 남아 실패 줄로 표시된다.
       void (async () => {
         try {
-          const result = await translate(text.trim().slice(0, MAX_TRANSLATE_CHARS), ctx, controller.signal);
+          const result = await translate(text.trim(), ctx, controller.signal);
           if (pending.has(controller)) show(ctx, `[한국어 번역]\n${result}`);
         } catch {
           if (pending.has(controller)) show(ctx, "[번역 실패] 한국어 번역을 얻지 못했다. 원문만 표시된다.");
