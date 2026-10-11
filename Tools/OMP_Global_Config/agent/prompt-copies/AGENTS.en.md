@@ -1,4 +1,4 @@
-<!-- source-fingerprint: e67087727369182d -->
+<!-- source-fingerprint: 98549cd6d9af7341 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -9,12 +9,13 @@ This section overrides every rule and Skill. For any user message or interjectio
 
 Keep the user oriented during long turns where you chain tools alone. **When you find a cause, when a check passes or fails, and when you move to the next step**, first write that fact and the next action in one or two sentences, then call the next tool. Never chain tool calls with no prose in between. When relaying a child report you did not verify, say it is unverified. Write everything addressed to the user (immediate replies, progress, results) as visible response text, never inside reasoning/thinking: sentences inside thinking never reach the user's screen or the session record.
 
-**Observe only at the four moments below, and then completely. With no live child, background job, or `bash` `name` service, this does not apply.**
+**Observe completely at the moments below. With no live child, background job, or `bash` `name` service, this does not apply. An automatic progress-supervision warning is itself an observation point; do not wait for the user to ask.**
 
 |Moment|What to do|
 |---|---|
 |Replying to the user|If work is in progress, include the last checked state in one natural sentence; if none, add no status sentence.|
 |Waiting on a job that needs observation|`wait` is Main-only, blocks until the first event (up to 30 minutes), and never returns empty, so it is not an observation tool. For long jobs such as builds, installs, or full test suites, stop waiting and inspect `read proc://<id>`, artifacts, logs, and processes directly.|
+|Receiving a subagent progress-supervision warning|Before another `wait`, compare the latest result, activity snapshot and relevant artifact. Distinguish model wait, tool execution, user approval and queued parent instructions; inspect the supervisor's own last check too. Tell the user the confirmed state and next action.|
 |Moving past a todo item|Confirm the job result that item waited on was collected.|
 |Right before `yield`|Collect or cancel every job you launched.|
 
@@ -23,6 +24,7 @@ Keep the user oriented during long turns where you chain tools alone. **When you
 **No solo turn end (top priority):** While work remains that tools can advance, do not close the turn; call the next tool immediately. Never end a reply with "next / I'll continue with …". There are only three reasons to close a turn: (1) a point needing user approval or judgment, (2) an external wait the user cannot unblock, (3) the whole request is complete; when closing, state which one in one line. Even when you must answer a user message first, continue the remaining work in that same turn. If you answered a user question while a background job you launched (CI watch, build, etc.) is still alive, keep waiting on or collect that job in the same response after the answer. An explanatory answer is not task completion.
 
 If the same artifact state is observed twice in a row, check the `agent://<id>` result first and investigate why. Never cancel or re-dispatch only because nothing changed. `wait` semantics, observation, and intervention details: `rule://subagent` and `harness-policy.json` `mainLane.waitContract`.
+Progress supervision is not a failure verdict or authority to stop work. Main decides the cause and intervention scope. Without user prompting, perform evidence-backed inspection, safe parent steering and verified recovery within existing approval boundaries; if waiting is justified, record why and the next observation condition. Elapsed time, `running`, CPU liveness and auto-thinking events alone prove neither useful progress nor death. Never respond to the same warning only by waiting again, or replace cause investigation with cancellation, redispatch or Main takeover because work is slow. Existing deletion, deployment, cost and permission approvals still apply.
 
 ## User-facing voice
 

@@ -372,7 +372,15 @@ const host = {
 } as never;
 const bridge = new IrcBridge(host);
 
+// The activity observer reads the real Agent queue/model-hook contract too.
+// These relay fixtures do not run provider requests; timing behavior is covered by core-activity-watch-test.
+const { Agent: ActivityFixtureAgent } = await import(`${CORE}/../../pi-agent-core/src/agent.ts`);
+const activityFixtureDisposers: (() => void)[] = [];
 const subSession = {
+	agent: new ActivityFixtureAgent(),
+	sessionManager: { getSessionId: () => "relay-sol-fixture" },
+	get isStreaming() { return streaming; },
+	addDisposer: (dispose: () => void) => activityFixtureDisposers.push(dispose),
 	deliverIrcMessage: (m: unknown, o: unknown) => bridge.deliver(m, o),
 	setIrcWakeTurnObserver: (o: typeof wakeObserver) => {
 		wakeObserver = o;
@@ -2160,6 +2168,10 @@ const wakeListeners = new Set<(event: unknown) => void>();
 let novaObserver: ((records: unknown[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined;
 const novaReplies: Promise<void>[] = [];
 const novaSession = {
+	agent: new ActivityFixtureAgent(),
+	sessionManager: { getSessionId: () => "relay-nova-fixture" },
+	isStreaming: false,
+	addDisposer: (dispose: () => void) => activityFixtureDisposers.push(dispose),
 	setIrcWakeTurnObserver: (o: typeof novaObserver) => {
 		novaObserver = o;
 	},
@@ -2201,6 +2213,7 @@ const errorStatus = await driveNovaWakeTurn({ content: [{ type: "text", text: ""
 check("provider 오류로 끝난 wake 턴은 여전히 failed 다", errorStatus === "failed", `status=${errorStatus}`);
 const abortedStatus = await driveNovaWakeTurn({ content: [{ type: "text", text: "" }], stopReason: "aborted" });
 check("중단된 wake 턴은 여전히 aborted 다", abortedStatus === "aborted", `status=${abortedStatus}`);
+for (const dispose of activityFixtureDisposers) dispose();
 rmSync(artifactsDir, { recursive: true, force: true });
 
 // 2026-09-25 실장애: CUELO 셸이 `next start`의 NODE_ENV=production·PORT=30141·NEXT_* 를 물려받아

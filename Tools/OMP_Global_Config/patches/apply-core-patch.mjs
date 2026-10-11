@@ -487,6 +487,76 @@ const IRC_STEER_BRACKET_MEMBERS = `
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
+		// 2026-10-09 windows_build: a record argument named `properties` made
+		// its empty properties map become true. Map containers and instance data
+		// are not schemas; normalize only actual subschema positions.
+		file: "../pi-ai/src/utils/schema/wire.ts",
+		marker: "// CUELO: recurse only into schema positions, never map containers or instance data.",
+		anchor: `export function normalizeEmptySchemas(node: unknown): void {
+	if (Array.isArray(node)) {
+		for (const child of node) normalizeEmptySchemas(child);
+		return;
+	}
+	if (!node || typeof node !== "object") return;
+	const obj = node as Record<string, unknown>;
+
+	for (const key of SCHEMA_VALUE_KEYS) {
+		if (Object.hasOwn(obj, key) && isEmptyObject(obj[key])) obj[key] = true;
+	}
+	for (const mapKey of SCHEMA_MAP_KEYS) {
+		const map = obj[mapKey];
+		if (map !== null && typeof map === "object" && !Array.isArray(map)) {
+			for (const k in map as Record<string, unknown>) {
+				if (isEmptyObject((map as Record<string, unknown>)[k])) (map as Record<string, unknown>)[k] = true;
+			}
+		}
+	}
+	for (const arrKey of SCHEMA_ARRAY_KEYS) {
+		const arr = obj[arrKey];
+		if (Array.isArray(arr)) {
+			for (let i = 0; i < arr.length; i++) {
+				if (isEmptyObject(arr[i])) arr[i] = true;
+			}
+		}
+	}
+
+	for (const k in obj) normalizeEmptySchemas(obj[k]);
+}`,
+		patched: `export function normalizeEmptySchemas(node: unknown): void {
+	if (Array.isArray(node)) {
+		for (const child of node) normalizeEmptySchemas(child);
+		return;
+	}
+	if (!node || typeof node !== "object") return;
+	const obj = node as Record<string, unknown>;
+
+	// CUELO: recurse only into schema positions, never map containers or instance data.
+	for (const key of SCHEMA_VALUE_KEYS) {
+		if (!Object.hasOwn(obj, key)) continue;
+		if (isEmptyObject(obj[key])) obj[key] = true;
+		else normalizeEmptySchemas(obj[key]);
+	}
+	for (const mapKey of SCHEMA_MAP_KEYS) {
+		const map = obj[mapKey];
+		if (map !== null && typeof map === "object" && !Array.isArray(map)) {
+			for (const k in map as Record<string, unknown>) {
+				if (isEmptyObject((map as Record<string, unknown>)[k])) (map as Record<string, unknown>)[k] = true;
+				else normalizeEmptySchemas((map as Record<string, unknown>)[k]);
+			}
+		}
+	}
+	for (const arrKey of SCHEMA_ARRAY_KEYS) {
+		const arr = obj[arrKey];
+		if (Array.isArray(arr)) {
+			for (let i = 0; i < arr.length; i++) {
+				if (isEmptyObject(arr[i])) arr[i] = true;
+				else normalizeEmptySchemas(arr[i]);
+			}
+		}
+	}
+}`,
+	},
+	{
 		// A full-queue peek sees user steering behind an agent steer in
 		// one-at-a-time mode without consuming either message.
 		file: "../pi-agent-core/src/types.ts",
@@ -772,36 +842,49 @@ const EDITS = [
 	},
 	{
 		file: "../pi-agent-core/src/agent.ts",
-		marker: "for (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t}",
+		marker: "if (isRequestRestartSteer(m)) {\n\t\t\tfor (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t}",
 		anchor: `	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}`,
-		patched: `	steer(m: AgentMessage) {
+		...((legacyPatched) => ({
+			legacyPatched,
+			patched: legacyPatched.replace(
+				'm.role === "user" && ("attribution" in m ? m.attribution !== "agent" : true) && !("synthetic" in m && m.synthetic === true)',
+				"isRequestRestartSteer(m)",
+			),
+		}))(`	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
 		if (m.role === "user" && ("attribution" in m ? m.attribution !== "agent" : true) && !("synthetic" in m && m.synthetic === true)) {
 			for (const listener of this.#userSteeringListeners) listener();
 		}
 		this.#notifySteeringWaiters();
 	}`,
+		),
 		// 18.4.4(#11872): steer() 가 큐 mutator 마다 `#emitQueueChanged()` 를 정확히 한 번 부른다. 사용자 steer 리스너는
 		// 큐 push 직후·notifyWaiters 이전이라는 위치만 그대로 두고 upstream 의 emit 은 건드리지 않는다.
 		alternates: [{
 			file: "../pi-agent-core/src/agent.ts",
-			marker: "for (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t\tthis.#emitQueueChanged();",
+			marker: "if (isRequestRestartSteer(m)) {\n\t\t\tfor (const listener of this.#userSteeringListeners) listener();\n\t\t}\n\t\tthis.#notifySteeringWaiters();\n\t\tthis.#emitQueueChanged();",
 			anchor: `	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 		this.#emitQueueChanged();
 	}`,
-			patched: `	steer(m: AgentMessage) {
+			...((legacyPatched) => ({
+				legacyPatched,
+				patched: legacyPatched.replace(
+					'm.role === "user" && ("attribution" in m ? m.attribution !== "agent" : true) && !("synthetic" in m && m.synthetic === true)',
+					"isRequestRestartSteer(m)",
+				),
+			}))(`	steer(m: AgentMessage) {
 		this.#steeringQueue.push(m);
 		if (m.role === "user" && ("attribution" in m ? m.attribution !== "agent" : true) && !("synthetic" in m && m.synthetic === true)) {
 			for (const listener of this.#userSteeringListeners) listener();
 		}
 		this.#notifySteeringWaiters();
 		this.#emitQueueChanged();
-	}`,
+	}`),
 		}],
 	},
 	{
@@ -1375,7 +1458,7 @@ export interface IrcBridgeHost {
 	{
 		// 위 항목의 기록 지점. 같은 파일의 두 번째 편집이므로 marker 를 분리한다.
 		file: "src/session/irc-bridge.ts",
-		marker: "this.queueParentSteerRelay({ steered, record })",
+		marker: "Reflect.set(steered, PARENT_REQUEST_STEER, true)",
 		// 18.5.1(#13914)은 fromParent 를 앞에서 계산하고 본문을 escapeHarnessTags 로 감싼다. streaming steer 분기는 여전히
 		// 관찰자를 설치하지 않으므로 빚 기록은 그대로 필요하다(ADAPT).
 		excludes: "const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;",
@@ -1390,7 +1473,13 @@ export interface IrcBridgeHost {
 					steering: true,
 				});
 			} else {`,
-		patched: `		if (streaming) {
+		...((legacyPatched) => ({
+			legacyPatched,
+			patched: legacyPatched.replace(
+				"\t\t\t\tthis.#host.agent.steer(steered);",
+				"\t\t\t\tif (msg.wakeRelay !== true) Reflect.set(steered, PARENT_REQUEST_STEER, true);\n\t\t\t\tthis.#host.agent.steer(steered);",
+			),
+		}))(`		if (streaming) {
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
 				const steered: AgentMessage = {
@@ -1421,11 +1510,11 @@ export interface IrcBridgeHost {
 					// settle, from the queue, whether this turn owned the answer.
 					this.#host.adoptParentSteerForRunningTurn();
 				}
-			} else {`,
+			} else {`),
 		alternates: [{
 			file: "src/session/irc-bridge.ts",
 			requires: "const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;",
-			marker: "this.queueParentSteerRelay({ steered, record })",
+			marker: "Reflect.set(steered, PARENT_REQUEST_STEER, true)",
 			anchor: `		if (streaming) {
 			if (fromParent) {
 				this.#host.agent.steer({
@@ -1436,7 +1525,13 @@ export interface IrcBridgeHost {
 					steering: true,
 				});
 			} else {`,
-			patched: `		if (streaming) {
+			...((legacyPatched) => ({
+				legacyPatched,
+				patched: legacyPatched.replace(
+					"\t\t\t\tthis.#host.agent.steer(steered);",
+					"\t\t\t\tif (msg.wakeRelay !== true) Reflect.set(steered, PARENT_REQUEST_STEER, true);\n\t\t\t\tthis.#host.agent.steer(steered);",
+				),
+			}))(`		if (streaming) {
 			if (fromParent) {
 				const steered: AgentMessage = {
 					role: "user",
@@ -1466,7 +1561,7 @@ export interface IrcBridgeHost {
 					// settle, from the queue, whether this turn owned the answer.
 					this.#host.adoptParentSteerForRunningTurn();
 				}
-			} else {`,
+			} else {`),
 		}],
 	},
 	{
@@ -10874,14 +10969,35 @@ function parentSubagentServiceTiers(
 	// partial 은 message_end 없이 버린다(context·persist·replay 에 남지 않음, 웹은 다음 message_start 가 live bubble 을
 	// 교체). 같은 run·같은 turn 안에서 steering(채널이 accept 한 것 포함, 정확히 한 번)을 경계 주입해 새 요청을 보낸다.
 	// session/agent/loop abort·goal pause·실행 중 도구는 건드리지 않는다. tool call 이 이미 보였으면 기존대로 boundary
-	// 처리. 내부 IRC/advisory/custom/agent steer·follow-up 은 대상이 아니다.
-	// 회귀: patches/core-steer-stream-test.ts(실제 Agent 루프 + Codex/SSE wire fixture + 실제 AgentSession).
+	// 처리. 2026-10-11: registry가 확인한 실제 부모의 non-wake IRC 지시만 같은 request-only 경로에 포함한다.
+	// peer·wake relay·advisory·custom·일반 agent steer·follow-up은 여전히 제외한다.
+	// 회귀: core-steer-stream-test.ts + core-parent-steer-stream-test.ts(실제 AgentSession + Anthropic HTTP/SSE).
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		// r3 marker: r2 적용본(같은 class, 인자 없는 생성자)을 applied 로 보지 않는다.
-		marker: "	constructor(readonly committed?: AssistantMessage) {\n		super(\"User steering restarted the in-flight model request\");",
+		// The process-local parent marker distinguishes this upgrade from the installed r3/r4 body.
+		marker: 'export const PARENT_REQUEST_STEER = Symbol("pi-agent-core.parent-request-steer");',
 		anchor: "class HarmonyLeakInterruption extends Error {",
-		patched: `/** CUELO P55: race token for a request-only restart requested by genuine user steering. */
+		...((legacyPatched) => ({
+			legacyPatched,
+			patched: legacyPatched.replace(
+				"/** CUELO P55: text or a tool call",
+				`/** CUELO: only the registry-verified parent bridge stamps this process-local marker.
+ * Symbol identity cannot be supplied by an IRC body, JSON payload or persisted message. */
+export const PARENT_REQUEST_STEER = Symbol("pi-agent-core.parent-request-steer");
+
+/** Shared request-preemption eligibility; tool-dispatch user classification stays unchanged. */
+export function isRequestRestartSteer(message: AgentMessage): boolean {
+	return isGenuineUserSteer(message) || (
+		message.role === "user" &&
+		("attribution" in message && message.attribution === "agent") &&
+		!("synthetic" in message && message.synthetic === true) &&
+		Reflect.get(message, PARENT_REQUEST_STEER) === true
+	);
+}
+
+/** CUELO P55: text or a tool call`,
+			),
+		}))(`/** CUELO P55: race token for a request-only restart requested by genuine user steering. */
 const STEER_RESTART = Symbol("steer-restart");
 
 /**
@@ -10922,7 +11038,7 @@ function hasVisibleAssistantOutput(message: AssistantMessage | null): boolean {
 	);
 }
 
-class HarmonyLeakInterruption extends Error {`,
+class HarmonyLeakInterruption extends Error {`),
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
@@ -10940,7 +11056,7 @@ class HarmonyLeakInterruption extends Error {`,
 	},
 	{
 		file: "../pi-agent-core/src/agent-loop.ts",
-		marker: "const restartForSteering = async (): Promise<never> => {",
+		marker: "const hasRequestRestartSteering = (): boolean =>",
 		anchor: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
 			}
 
@@ -10961,9 +11077,17 @@ class HarmonyLeakInterruption extends Error {`,
 						break;
 					}
 
-					const event = next.value;
-					if (event.type === "done" || event.type === "error") {`,
-		patched: `				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
+					const event = next.value;`,
+		...((legacyPatched) => ({
+			legacyPatched,
+			patched: legacyPatched
+				.replaceAll("isGenuineUserSteer", "isRequestRestartSteer")
+				.replaceAll("hasNewUserSteering?.() === true", "hasRequestRestartSteering()")
+				.replace(
+					"const steerChannel = providerCall.liveSteering;",
+					"const hasRequestRestartSteering = (): boolean =>\n\t\t\t\thasNewUserSteering?.() === true || config.peekSteeringMessages?.().some(isRequestRestartSteer) === true;\n\t\t\tconst steerChannel = providerCall.liveSteering;",
+				),
+		}))(`				detachAbortListener = () => requestSignal.removeEventListener("abort", onAbort);
 			}
 
 			// CUELO P55: genuine user steering ends this request unless a tool call already streamed
@@ -11076,10 +11200,15 @@ class HarmonyLeakInterruption extends Error {`,
 						break;
 					}
 
-					const event = next.value;
-					if (event.type === "done" || event.type === "error") {
-						// The request finished on its own; steering now waits for the normal boundary.
-						steerRestartClosed = true;`,
+					const event = next.value;`),
+	},
+	{
+		// Keep this suffix separate: the Codex r4 patch nests between `event` and this branch.
+		// A narrow prefix above upgrades an already-installed r4 without consuming its code.
+		file: "../pi-agent-core/src/agent-loop.ts",
+		marker: "// The request finished on its own; steering now waits for the normal boundary.",
+		anchor: '\t\t\t\t\tif (event.type === "done" || event.type === "error") {\n',
+		patched: '\t\t\t\t\tif (event.type === "done" || event.type === "error") {\n\t\t\t\t\t\t// The request finished on its own; steering now waits for the normal boundary.\n\t\t\t\t\t\tsteerRestartClosed = true;\n',
 	},
 	{
 		// CUELO P55 r4(2026-10-08, Codex 스티어링 오류 노출): native lane 은 실행 중 응답에 보낸 response.steer 를
@@ -11238,9 +11367,10 @@ class HarmonyLeakInterruption extends Error {`,
 	// 표시된 snapshot 을 없는 것으로 취급한다. 원래 오류 문구와 stopReason 은 그대로 남는다.
 	{
 		file: "../pi-agent-core/src/agent.ts",
-		marker: "	STEER_DISCARDED_PARTIAL,\n",
-		anchor: "	steeringQueueState,\n	unpairedToolCallTail,\n} from \"./agent-loop\";",
-		patched: "	STEER_DISCARDED_PARTIAL,\n	steeringQueueState,\n	unpairedToolCallTail,\n} from \"./agent-loop\";",
+		marker: "\tisRequestRestartSteer,\n\tSTEER_DISCARDED_PARTIAL,\n",
+		anchor: "\tresolveOwnedDialectFromEnv,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
+		legacyPatched: "\tresolveOwnedDialectFromEnv,\n\tSTEER_DISCARDED_PARTIAL,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
+		patched: "\tresolveOwnedDialectFromEnv,\n\tisRequestRestartSteer,\n\tSTEER_DISCARDED_PARTIAL,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
 	},
 	{
 		file: "../pi-agent-core/src/agent.ts",
@@ -11688,6 +11818,587 @@ function matchesReplacementCredential(
 	},
 	// agent 생략 보존: 위 per-item model 항목의 앵커가 `agent: "string = 'task'"`를 포함하므로 반드시 그 뒤에 적용한다.
 	...TASK_AGENT_OPTIONAL_EDITS,
+	// Parent request preemption shares P55's request-only settlement, not the run abort.
+	{
+		file: "src/session/irc-bridge.ts",
+		marker: 'import { PARENT_REQUEST_STEER } from "@oh-my-pi/pi-agent-core";',
+		anchor: 'import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";',
+		patched: 'import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";\nimport { PARENT_REQUEST_STEER } from "@oh-my-pi/pi-agent-core";',
+	},
+	{
+		// The public barrel's types resolve to dist/types, not the source implementation.
+		// Keep the new cross-package marker and predicate visible to typed consumers too.
+		file: "../pi-agent-core/dist/types/agent-loop.d.ts",
+		marker: "export declare const PARENT_REQUEST_STEER: unique symbol;",
+		anchor: 'export declare const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";',
+		patched: 'export declare const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";\nexport declare const PARENT_REQUEST_STEER: unique symbol;\nexport declare function isRequestRestartSteer(message: AgentMessage): boolean;',
+	},
+	// Child activity supervision is advisory and event-driven; completion-probe stays untouched.
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "// CUELO: factual child activity, not a provider-health or failure verdict.",
+		anchor: "export interface AgentRef {",
+		patched: String.raw`// CUELO: factual child activity, not a provider-health or failure verdict.
+export interface AgentActivityWatchSnapshot {
+	id: string;
+	sessionId: string;
+	identityLimitations: "dispatch_assignment_unavailable";
+	phase: "idle" | "model_waiting" | "model_streaming" | "tool_execution" | "user_waiting";
+	activeTools: string[];
+	quietSince: number;
+	lastModelProgressAt: number | null;
+	lastToolProgressAt: number | null;
+	pendingParentSince: number | null;
+	watcher: "inactive" | "scheduled" | "disposed";
+	observedAt: number;
+	lastCheckAt: number | null;
+	nextCheckAt: number | null;
+	episode: number;
+	lastAdvisoryAt: number | null;
+	delivery: "not_sent" | "pending" | "cancel_requested" | "injected" | "woken" | "revived" | "failed";
+	transportProgress: "unknown";
+}
+
+export function formatAgentActivityWatch(snapshot: AgentActivityWatchSnapshot | undefined, now = Date.now()): string {
+	if (!snapshot) return "";
+	return "\n[Child activity; advisory only]\n" + JSON.stringify({
+		...snapshot,
+		quietAgeMs: snapshot.phase === "idle" ? null : Math.max(0, now - snapshot.quietSince),
+		pendingParentAgeMs: snapshot.pendingParentSince === null ? null : Math.max(0, now - snapshot.pendingParentSince),
+		observedAgeMs: Math.max(0, now - snapshot.observedAt),
+		scheduler: snapshot.watcher === "scheduled" && snapshot.nextCheckAt !== null && now > snapshot.nextCheckAt
+			? "overdue" : snapshot.watcher,
+		nextRead: "read agent://" + snapshot.id + " or proc://" + snapshot.id,
+	});
+}
+
+export interface AgentRef {
+	activityWatch?: AgentActivityWatchSnapshot;`,
+	},
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "\tsetActivityWatch(ref: AgentRef, session: AgentSession, snapshot: AgentActivityWatchSnapshot): boolean {",
+		anchor: "\tsetStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {",
+		patched: String.raw`	setActivityWatch(ref: AgentRef, session: AgentSession, snapshot: AgentActivityWatchSnapshot): boolean {
+		if (this.#refs.get(ref.id) !== ref || ref.session !== session) return false;
+		ref.activityWatch = snapshot;
+		// Monitoring itself is not agent activity: never refresh lastActivity here.
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
+	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: 'import { PARENT_REQUEST_STEER, AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry }',
+		anchor: 'import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry }',
+		patched: 'import { PARENT_REQUEST_STEER, AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry }',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: 'import { type AgentActivityWatchSnapshot, type AgentRef, AgentRegistry, MAIN_AGENT_ID }',
+		anchor: 'import { AgentRegistry, MAIN_AGENT_ID }',
+		patched: 'import { type AgentActivityWatchSnapshot, type AgentRef, AgentRegistry, MAIN_AGENT_ID }',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "// CUELO: event-driven child activity supervision; thresholds are attention, never failure.",
+		anchor: "function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {",
+		patched: String.raw`// CUELO: event-driven child activity supervision; thresholds are attention, never failure.
+export interface ActivityWatchClock {
+	now(): number;
+	schedule(callback: () => void, delayMs: number): () => void;
+}
+const activityWatchClock: ActivityWatchClock = {
+	now: () => Date.now(),
+	schedule(callback, delayMs) {
+		const timer = setTimeout(callback, delayMs);
+		timer.unref?.();
+		return () => clearTimeout(timer);
+	},
+};
+const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>();
+
+export class SubagentActivityWatch {
+	readonly snapshot: AgentActivityWatchSnapshot;
+	readonly #publishers = new Set<(snapshot: AgentActivityWatchSnapshot) => void>();
+	readonly #tools = new Map<string, { name: string; waitingForUser: boolean }>();
+	readonly #session: AgentSession;
+	readonly #registry: AgentRegistry;
+	readonly #bus: IrcBus;
+	readonly #clock: ActivityWatchClock;
+	readonly #ref: AgentRef;
+	readonly #unsubscribe: () => void;
+	readonly #detachModelHook: () => void;
+	readonly #unsubscribeRegistry: () => void;
+	#cancelTimer: (() => void) | undefined;
+	#delivery: AbortController | undefined;
+	#episodeReason: string | undefined;
+	#nextAdvisoryAt: number | undefined;
+	#running = false;
+	#disposed = false;
+
+	constructor(session: AgentSession, ref: AgentRef, registry = AgentRegistry.global(), bus = IrcBus.global(), clock = activityWatchClock) {
+		this.#session = session;
+		this.#ref = ref;
+		this.#registry = registry;
+		this.#bus = bus;
+		this.#clock = clock;
+		const now = clock.now();
+		this.snapshot = {
+			id: ref.id, sessionId: session.sessionManager.getSessionId(), phase: "idle", activeTools: [], quietSince: now,
+			identityLimitations: "dispatch_assignment_unavailable",
+			lastModelProgressAt: null, lastToolProgressAt: null, pendingParentSince: null,
+			watcher: "inactive", observedAt: now, lastCheckAt: null, nextCheckAt: null,
+			episode: 0, lastAdvisoryAt: null, delivery: "not_sent", transportProgress: "unknown",
+		};
+		this.#unsubscribe = session.subscribe(event => this.#observe(event));
+		this.#detachModelHook = session.agent.addBeforeModelCallHook(async () => {
+			if (!this.#current()) return;
+			if (!this.#running) this.#start();
+			if (this.#tools.size === 0) this.snapshot.phase = "model_waiting";
+			this.#schedule();
+			this.#publish();
+		});
+		this.#unsubscribeRegistry = registry.onChange(event => {
+			if (event.ref.id !== ref.id) return;
+			if (!this.#current() || event.type === "removed" || event.ref.status === "parked" || event.ref.status === "aborted") {
+				this.dispose();
+			} else if (event.type === "status_changed" && event.ref.status !== "running" && !session.isStreaming) {
+				this.#stop();
+			}
+		});
+		sessionActivityWatches.set(session, this);
+		session.addDisposer(() => this.dispose());
+		if (session.isStreaming) this.#start();
+		else this.#publish();
+	}
+
+	addPublisher(publish: (snapshot: AgentActivityWatchSnapshot) => void): () => void {
+		this.#publishers.add(publish);
+		publish(this.snapshot);
+		return () => this.#publishers.delete(publish);
+	}
+
+	owns(ref: AgentRef): boolean {
+		return this.#ref === ref && this.#current();
+	}
+
+	#current(): boolean {
+		const current = this.#registry.get(this.#ref.id);
+		return !this.#disposed && current === this.#ref && current.session === this.#session;
+	}
+
+	#publish(): void {
+		this.snapshot.observedAt = this.#clock.now();
+		if (!this.#registry.setActivityWatch(this.#ref, this.#session, this.snapshot)) return;
+		for (const publish of this.#publishers) publish(this.snapshot);
+	}
+
+	#cancelDelivery(): void {
+		if (!this.#delivery) return;
+		if (this.snapshot.delivery === "pending") this.snapshot.delivery = "cancel_requested";
+		this.#delivery.abort();
+		this.#delivery = undefined;
+	}
+
+	#progress(model: boolean): void {
+		const now = this.#clock.now();
+		this.snapshot.observedAt = now;
+		this.snapshot.quietSince = now;
+		if (model) this.snapshot.lastModelProgressAt = now;
+		else this.snapshot.lastToolProgressAt = now;
+		if (this.#episodeReason !== "parent_directive_pending") this.#recover();
+	}
+
+	#recover(): void {
+		this.#episodeReason = undefined;
+		this.#nextAdvisoryAt = undefined;
+		this.#cancelDelivery();
+	}
+
+	#start(): void {
+		if (!this.#current()) return;
+		if (this.#running) {
+			// Retry/compaction continuations are still the same quiet episode, not new progress.
+			if (this.#tools.size === 0) this.snapshot.phase = "model_waiting";
+			this.#refreshParentQueue();
+			this.#schedule();
+			this.#publish();
+			return;
+		}
+		this.#running = true;
+		this.#tools.clear();
+		this.snapshot.activeTools = [];
+		this.snapshot.phase = "model_waiting";
+		this.snapshot.quietSince = this.#clock.now();
+		this.snapshot.lastModelProgressAt = null;
+		this.snapshot.lastToolProgressAt = null;
+		this.snapshot.lastCheckAt = this.#clock.now();
+		this.#episodeReason = undefined;
+		this.#nextAdvisoryAt = undefined;
+		this.#cancelDelivery();
+		this.#refreshParentQueue();
+		this.#schedule();
+		this.#publish();
+	}
+
+	#stop(): void {
+		this.#running = false;
+		this.#cancelTimer?.();
+		this.#cancelTimer = undefined;
+		this.#cancelDelivery();
+		this.#tools.clear();
+		this.snapshot.activeTools = [];
+		this.snapshot.phase = "idle";
+		this.snapshot.watcher = "inactive";
+		this.snapshot.nextCheckAt = null;
+		this.snapshot.pendingParentSince = null;
+		this.#publish();
+	}
+
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#stop();
+		this.snapshot.watcher = "disposed";
+		this.#publish();
+		this.#unsubscribe();
+		this.#detachModelHook();
+		this.#unsubscribeRegistry();
+		this.#publishers.clear();
+		if (sessionActivityWatches.get(this.#session) === this) sessionActivityWatches.delete(this.#session);
+	}
+
+	#refreshParentQueue(): void {
+		let oldest: number | null = null;
+		for (const message of this.#session.agent.peekSteeringQueue()) {
+			if (Reflect.get(message, PARENT_REQUEST_STEER) !== true || typeof message.timestamp !== "number") continue;
+			if (oldest === null || message.timestamp < oldest) oldest = message.timestamp;
+		}
+		if (oldest !== this.snapshot.pendingParentSince && this.#episodeReason === "parent_directive_pending") {
+			this.snapshot.quietSince = this.#clock.now();
+			this.#recover();
+		}
+		this.snapshot.pendingParentSince = oldest;
+	}
+
+	#toolPhase(): void {
+		this.snapshot.activeTools = [...new Set([...this.#tools.values()].map(tool => tool.name))];
+		this.snapshot.phase = [...this.#tools.values()].some(tool => tool.waitingForUser)
+			? "user_waiting" : this.#tools.size > 0 ? "tool_execution" : "model_waiting";
+		if (this.snapshot.phase === "user_waiting") this.#recover();
+	}
+
+	#observe(event: AgentSessionEvent): void {
+		if (!this.#current()) { this.dispose(); return; }
+		if (event.type === "agent_start") { this.#start(); return; }
+		if (event.type === "agent_end") {
+			if (event.isTerminal === false && event.yielded !== true) {
+				this.snapshot.phase = "model_waiting";
+				this.#schedule();
+				this.#publish();
+			} else this.#stop();
+			return;
+		}
+		if (!this.#running) return;
+		let changed = false;
+		if (event.type === "tool_execution_start") {
+			this.#tools.set(event.toolCallId, { name: event.toolName, waitingForUser: false });
+			this.#progress(false);
+			this.#toolPhase();
+			changed = true;
+		} else if (event.type === "tool_execution_end") {
+			this.#tools.delete(event.toolCallId);
+			this.#progress(false);
+			this.#toolPhase();
+			changed = true;
+		} else if (event.type === "tool_execution_update") {
+			const details = event.partialResult?.details;
+			const tool = this.#tools.get(event.toolCallId);
+			if (tool && isRecord(details) && typeof details.waitingForUser === "boolean") {
+				tool.waitingForUser = details.waitingForUser;
+				this.#progress(false);
+				this.#toolPhase();
+				changed = true;
+			} else if (event.partialResult?.content.some((block: { type: string; text?: string }) => block.type === "text" && block.text)) {
+				this.#progress(false);
+			}
+		} else if (event.type === "message_update") {
+			const delta = event.assistantMessageEvent;
+			if ((delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") && delta.delta.length > 0) {
+				this.#progress(true);
+				if (this.#tools.size === 0) this.snapshot.phase = "model_streaming";
+			}
+		}
+		// Title, usage and auto-thinking events deliberately do not update progress timestamps.
+		const oldPending = this.snapshot.pendingParentSince;
+		this.#refreshParentQueue();
+		this.#schedule();
+		if (changed || oldPending !== this.snapshot.pendingParentSince) this.#publish();
+	}
+
+	#reason(now: number): string | undefined {
+		if (this.snapshot.phase === "user_waiting") return undefined;
+		if (this.snapshot.pendingParentSince !== null && now - this.snapshot.pendingParentSince >= 60_000) return "parent_directive_pending";
+		const threshold = this.snapshot.phase === "tool_execution" ? 300_000 : 120_000;
+		if (now - this.snapshot.quietSince < threshold) return undefined;
+		return this.snapshot.phase === "tool_execution" ? "quiet_tool" : "quiet_model";
+	}
+
+	#schedule(): void {
+		if (!this.#running || !this.#current()) return;
+		const now = this.#clock.now();
+		let at = this.snapshot.phase === "user_waiting" ? (this.snapshot.lastCheckAt ?? now) + 300_000
+			: this.#nextAdvisoryAt ?? this.snapshot.quietSince + (this.snapshot.phase === "tool_execution" ? 300_000 : 120_000);
+		if (this.snapshot.phase !== "user_waiting" && this.snapshot.pendingParentSince !== null && !this.#episodeReason) {
+			at = Math.min(at, this.snapshot.pendingParentSince + 60_000);
+		}
+		this.snapshot.watcher = "scheduled";
+		const nextCheckAt = Math.max(now + 1, at);
+		// Keep an earlier scheduled check: deltas need not allocate a timer/controller per token.
+		if (this.#cancelTimer && this.snapshot.nextCheckAt !== null && this.snapshot.nextCheckAt <= nextCheckAt) return;
+		this.#cancelTimer?.();
+		this.snapshot.nextCheckAt = nextCheckAt;
+		this.#cancelTimer = this.#clock.schedule(() => this.#check(), this.snapshot.nextCheckAt - now);
+	}
+
+	#check(): void {
+		this.#cancelTimer = undefined;
+		if (!this.#running || !this.#current()) { this.dispose(); return; }
+		const now = this.#clock.now();
+		this.snapshot.lastCheckAt = now;
+		this.#refreshParentQueue();
+		const reason = this.#reason(now);
+		if (reason && (this.#nextAdvisoryAt === undefined || now >= this.#nextAdvisoryAt)) {
+			if (!this.#episodeReason) this.snapshot.episode++;
+			this.#episodeReason = reason;
+			this.#nextAdvisoryAt = now + 300_000;
+			this.snapshot.lastAdvisoryAt = now;
+			this.#cancelDelivery();
+			this.snapshot.delivery = "pending";
+			const delivery = new AbortController();
+			this.#delivery = delivery;
+			const parent = this.#ref.parentId;
+			if (parent) {
+				const body = "[Child activity advisory; not a failure verdict]\n" + JSON.stringify({
+					id: this.#ref.id, sessionId: this.snapshot.sessionId, reason,
+					identityLimitations: this.snapshot.identityLimitations,
+					phase: this.snapshot.phase, quietAgeMs: Math.max(0, now - this.snapshot.quietSince),
+					pendingParentAgeMs: this.snapshot.pendingParentSince === null ? null : Math.max(0, now - this.snapshot.pendingParentSince),
+					activeTools: this.snapshot.activeTools, transportProgress: "unknown",
+					lastCheckAt: now, nextRead: "read agent://" + this.#ref.id + " or proc://" + this.#ref.id,
+					intervention: "Inspect the current activity before another wait; no automatic kill, retry or reassignment.",
+				});
+				void this.#bus.send({ from: this.#ref.id, to: parent, body, wakeRelay: true }, { signal: delivery.signal, countsAsReply: false })
+					.then(receipt => {
+						if (this.#current() && !delivery.signal.aborted && delivery === this.#delivery) {
+							this.snapshot.delivery = receipt.outcome;
+							this.#delivery = undefined;
+							this.#publish();
+						}
+					}, () => {
+						if (this.#current() && !delivery.signal.aborted && delivery === this.#delivery) {
+							this.snapshot.delivery = "failed";
+							this.#delivery = undefined;
+							this.#publish();
+						}
+					});
+			} else this.snapshot.delivery = "failed";
+		}
+		this.#schedule();
+		this.#publish();
+	}
+}
+
+export function attachSubagentActivityWatch(session: AgentSession, id: string,
+	publish: (snapshot: AgentActivityWatchSnapshot) => void, clock?: ActivityWatchClock): () => void {
+	const registry = AgentRegistry.global();
+	const ref = registry.get(id);
+	if (!ref || ref.kind !== "sub" || ref.session !== session) return () => {};
+	let watch = sessionActivityWatches.get(session);
+	if (watch && !watch.owns(ref)) {
+		watch.dispose();
+		watch = undefined;
+	}
+	if (!watch) {
+		watch = new SubagentActivityWatch(session, ref, registry, IrcBus.global(), clock);
+		sessionActivityWatches.set(session, watch);
+	}
+	return watch.addPublisher(publish);
+}
+
+function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\tconst progress: AgentProgress & { activityWatch?: AgentActivityWatchSnapshot } = {",
+		anchor: "\tconst progress: AgentProgress = {",
+		patched: "\tconst progress: AgentProgress & { activityWatch?: AgentActivityWatchSnapshot } = {",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tconst detachActivityWatch = attachSubagentActivityWatch(session, id, snapshot => {",
+		anchor: "\tconst attach = (session: AgentSession): (() => void) => {",
+		patched: String.raw`	const attach = (session: AgentSession): (() => void) => {
+		const detachActivityWatch = attachSubagentActivityWatch(session, id, snapshot => {
+			progress.activityWatch = snapshot;
+			scheduleProgress(true);
+		});`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tconst unsubscribe = session.subscribe(event => {\n\t\t\temitSubagentEvent(event);",
+		anchor: "\t\treturn session.subscribe(event => {\n\t\t\temitSubagentEvent(event);",
+		patched: "\t\tconst unsubscribe = session.subscribe(event => {\n\t\t\temitSubagentEvent(event);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tunsubscribe();\n\t\t\tdetachActivityWatch();",
+		anchor: "\t\t});\n\t};\n\n\tconst captureSalvage",
+		patched: "\t\t});\n\t\treturn () => {\n\t\t\tunsubscribe();\n\t\t\tdetachActivityWatch();\n\t\t};\n\t};\n\n\tconst captureSalvage",
+	},
+	{
+		file: "../pi-tui/src/tools/ask.ts",
+		marker: "\twaitingForUser?: boolean;",
+		anchor: "export interface AskToolDetails {",
+		patched: "export interface AskToolDetails {\n\t/** Observable interactive-wait lifecycle; never contains the question or answer. */\n\twaitingForUser?: boolean;",
+	},
+	{
+		file: "../pi-tui/dist/types/tools/ask.d.ts",
+		marker: "    waitingForUser?: boolean;",
+		anchor: "export interface AskToolDetails {",
+		patched: "export interface AskToolDetails {\n    /** Observable interactive-wait lifecycle; never contains the question or answer. */\n    waitingForUser?: boolean;",
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "\t\tconst waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {",
+		anchor: String.raw`		const extensionUi = context.ui;
+		const ui: UIContext = {
+			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,
+			select: (prompt, options, dialogOptions) => extensionUi.select(prompt, options, dialogOptions),
+			editor: (title, prefill, dialogOptions, editorOptions) =>
+				extensionUi.editor(title, prefill, dialogOptions, editorOptions),
+		};`,
+		patched: String.raw`		const extensionUi = context.ui;
+		const waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {
+			_onUpdate?.({ content: [], details: { waitingForUser: true } });
+			try {
+				return signal ? await untilAborted(signal, action) : await action();
+			} finally {
+				_onUpdate?.({ content: [], details: { waitingForUser: false } });
+			}
+		};
+		const ui: UIContext = {
+			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,
+			select: (prompt, options, dialogOptions) => waitForUser(() => extensionUi.select(prompt, options, dialogOptions)),
+			editor: (title, prefill, dialogOptions, editorOptions) =>
+				waitForUser(() => extensionUi.editor(title, prefill, dialogOptions, editorOptions)),
+		};`,
+	},
+	{
+		file: "src/tools/ask.ts",
+		marker: "\t\t\t\tconst richResult = await waitForUser(showRichDialog);",
+		anchor: "\t\t\t\tconst richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();",
+		patched: "\t\t\t\tconst richResult = await waitForUser(showRichDialog);",
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: 'import { type AgentRef, AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";',
+		anchor: 'import { type AgentRef, AgentRegistry } from "../registry/agent-registry";',
+		patched: 'import { type AgentRef, AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";',
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "\t\tif (isSuperseded(registry, outputId) || registry.get(outputId)?.activityWatch) return null;",
+		anchor: "\t\tif (isSuperseded(context?.agentRegistry ?? AgentRegistry.global(), outputId)) return null;",
+		patched: "\t\tconst registry = context?.agentRegistry ?? AgentRegistry.global();\n\t\tif (isSuperseded(registry, outputId) || registry.get(outputId)?.activityWatch) return null;",
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "\t\tif (!extraction) content += formatAgentActivityWatch(registry.get(outputId)?.activityWatch);",
+		anchor: "\n\t\treturn {\n\t\t\turl: url.href,\n\t\t\tcontent,\n\t\t\tcontentType,\n",
+		patched: "\n\t\tif (!extraction) content += formatAgentActivityWatch(registry.get(outputId)?.activityWatch);\n\t\treturn {\n\t\t\turl: url.href,\n\t\t\tcontent,\n\t\t\tcontentType,\n",
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "${formatAgentActivityWatch(ref.activityWatch)}",
+		anchor: "\t\t\tempty: sections.length === 0 && !lastText,\n\t\t})}\\n`;",
+		patched: "\t\t\tempty: sections.length === 0 && !lastText,\n\t\t})}\\n${formatAgentActivityWatch(ref.activityWatch)}`;",
+	},
+	{
+		file: "src/internal-urls/proc-protocol.ts",
+		marker: 'import { AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";',
+		anchor: 'import type { AsyncJob } from "../async";',
+		patched: 'import type { AsyncJob } from "../async";\nimport { AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";',
+	},
+	{
+		file: "src/internal-urls/proc-protocol.ts",
+		marker: "\t\t\tconst activity = formatAgentActivityWatch(registry.get(job.agentId ?? job.id)?.activityWatch);",
+		anchor: '\t\t\treturn textResource(url, lines.join("\\n"), undefined, false, {',
+		patched: '\t\t\tconst registry = context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global();\n\t\t\tconst activity = formatAgentActivityWatch(registry.get(job.agentId ?? job.id)?.activityWatch);\n\t\t\tif (activity) lines.push(activity);\n\t\t\treturn textResource(url, lines.join("\\n"), undefined, false, {',
+	},
+	{
+		file: "src/internal-urls/proc-protocol.ts",
+		marker: "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(agent.id)?.activityWatch)}",
+		anchor: "\t\t\t\t`${agent.id} [task] — running — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}\\nhistory://${agent.id}`,",
+		patched: "\t\t\t\t`${agent.id} [task] — running — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}\\nhistory://${agent.id}${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(agent.id)?.activityWatch)}`,",
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: 'opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }',
+		anchor: '\tasync send(msg: Omit<IrcMessage, "id" | "ts">, opts?: { suppressRelay?: boolean }): Promise<IrcDeliveryReceipt> {',
+		patched: '\tasync send(msg: Omit<IrcMessage, "id" | "ts">, opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }): Promise<IrcDeliveryReceipt> {',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\t\tif (receipt.outcome !== "failed" && opts?.countsAsReply !== false) {',
+		anchor: '\t\tif (receipt.outcome !== "failed") {',
+		patched: '\t\t// Supervisor advisories must not suppress the child\'s later final-answer relay.\n\t\tif (receipt.outcome !== "failed" && opts?.countsAsReply !== false) {',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }): Promise<IrcDeliveryReceipt> {',
+		anchor: '\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean }): Promise<IrcDeliveryReceipt> {',
+		patched: '\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }): Promise<IrcDeliveryReceipt> {\n\t\tif (opts?.signal?.aborted) return { to: message.to, outcome: "failed", error: "IRC delivery cancelled." };',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\t\t// CUELO: a completed/disposed child may cancel while its parent is being revived.',
+		anchor: '\t\tconst waiter = this.#takeMatchingWaiter(message.to, message.from);',
+		patched: '\t\t// CUELO: a completed/disposed child may cancel while its parent is being revived.\n\t\tif (opts?.signal?.aborted) return { to: message.to, outcome: "failed", error: "IRC delivery cancelled." };\n\t\tconst waiter = this.#takeMatchingWaiter(message.to, message.from);',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted)',
+		anchor: '\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.suppressRelay) this.#relayToMainUi(message);',
+		patched: '\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted) this.#relayToMainUi(message);',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted)',
+		anchor: '\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.suppressRelay) this.#relayToMainUi(message);',
+		patched: '\t\t\tif (opts?.signal?.aborted) return { to: message.to, outcome: "failed", error: "IRC delivery cancelled." };\n\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted) this.#relayToMainUi(message);',
+	},
+	{
+		file: "src/irc/bus.ts",
+		marker: '\t\t\tif (!opts?.signal?.aborted && opts?.countsAsReply !== false) this.#enqueue(message);',
+		anchor: '\t\t\tthis.#enqueue(message);\n\t\t\treturn {\n\t\t\t\tto: message.to,\n\t\t\t\toutcome: "failed",',
+		patched: '\t\t\t// Time-sensitive supervisor notices retry from current state, never from a stale inbox.\n\t\t\tif (!opts?.signal?.aborted && opts?.countsAsReply !== false) this.#enqueue(message);\n\t\t\treturn {\n\t\t\t\tto: message.to,\n\t\t\t\toutcome: "failed",',
+	},
+	{
+		file: "src/internal-urls/proc-protocol.ts",
+		marker: "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}",
+		anchor: "\t\t\t\t\treturn `${job.id} [${job.type}] ${job.status} ${duration} — ${job.label.replace(/\\s+/g, \" \")}`;",
+		patched: "\t\t\t\t\treturn `${job.id} [${job.type}] ${job.status} ${duration} — ${job.label.replace(/\\s+/g, \" \")}${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}`;",
+	},
+	{
+		file: "src/internal-urls/proc-protocol.ts",
+		marker: "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(agent.id)?.activityWatch, now)}",
+		anchor: "\t\t\t\t\t\t`${agent.id} [task] running up ${formatDuration(agent.ageMs)} — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}`,",
+		patched: "\t\t\t\t\t\t`${agent.id} [task] running up ${formatDuration(agent.ageMs)} — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(agent.id)?.activityWatch, now)}`,",
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

@@ -98,6 +98,83 @@ for (const file of entryFiles()) {
 }
 
 describe("custom tool wire schemas", () => {
+  test("keyword-named record parameters retain object property maps", () => {
+    const fields = Object.fromEntries(
+      ["properties", "items", "required", "type", "enum", "additionalProperties"].map(name => [
+        name, zod.record(zod.string(), zod.string()).optional(),
+      ]),
+    );
+    const wire = toolWireSchema({ name: "original_record_arguments", description: "", parameters: zod.object(fields) });
+    expect(keywordProblems(wire, "original_record_arguments", [])).toEqual([]);
+    for (const name of Object.keys(fields)) {
+      expect((wire.properties as SchemaNode)[name]).toMatchObject({
+        type: "object", properties: {}, additionalProperties: { type: "string" },
+      });
+    }
+  });
+
+  test("nested keyword-named schema map entries retain their empty property maps", () => {
+    const record = { type: "object", properties: {}, additionalProperties: { type: "string" } };
+    const parameters = {
+      type: "object",
+      properties: {
+        properties: { type: "object", properties: { properties: record } },
+        items: { type: "array", items: { type: "object", properties: { properties: record } } },
+      },
+      patternProperties: { properties: record },
+      $defs: { properties: record },
+      definitions: { properties: record },
+    };
+    const wire = toolWireSchema({ name: "nested_keyword_maps", description: "", parameters });
+    expect(keywordProblems(wire, "nested_keyword_maps", [])).toEqual([]);
+    expect(wire.properties).toEqual(parameters.properties);
+    expect(wire.patternProperties).toEqual(parameters.patternProperties);
+    // The draft upgrader moves legacy definitions into $defs.
+    expect(wire.$defs).toEqual(parameters.$defs);
+  });
+
+  test("instance data containing schema keywords is not normalized as schemas", () => {
+    const data = { properties: { properties: {} }, items: {}, additionalProperties: {} };
+    const parameters = {
+      type: "object",
+      properties: {
+        payload: { default: data, const: data, enum: [data], examples: [data] },
+      },
+    };
+    const wire = toolWireSchema({ name: "keyword_instance_data", description: "", parameters });
+    expect(wire.properties).toEqual(parameters.properties);
+    expect(parameters.properties.payload.default).toEqual(data);
+  });
+
+  test("empty schemas and existing boolean schemas keep their supported semantics", () => {
+    const parameters = {
+      type: "object",
+      properties: {
+        open: {}, allowed: true, denied: false,
+        array: { type: "array", items: {}, prefixItems: [{}, true, false] },
+        union: { anyOf: [{}, true, false] },
+        condition: { if: {}, then: {}, else: false, not: {} },
+      },
+      patternProperties: { open: {}, denied: false },
+      $defs: { open: {}, denied: false },
+      additionalProperties: {},
+    };
+    const wire = toolWireSchema({ name: "boolean_subschemas", description: "", parameters });
+    expect(wire).toEqual({
+      type: "object",
+      properties: {
+        open: true, allowed: true, denied: false,
+        array: { type: "array", items: true, prefixItems: [true, true, false] },
+        union: { anyOf: [true, true, false] },
+        condition: { if: true, then: true, else: false, not: true },
+      },
+      patternProperties: { open: true, denied: false },
+      $defs: { open: true, denied: false },
+      additionalProperties: true,
+    });
+    expect(parameters.additionalProperties).toEqual({});
+  });
+
   test("discovers the registered tools", () => {
     const names = registered.map(({ tool }) => tool.name);
     expect(names).toEqual(expect.arrayContaining(["git_finalize", "windows_build", "skim", "draft", "maker_route", "routing_verdict"]));

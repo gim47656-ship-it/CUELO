@@ -174,10 +174,20 @@
       "observationCadence": "pick-an-interval-from-the-expected-duration-first-default-one-check-near-half-the-expected-runtime-then-widen-5min-10min-15min-never-second-level-probing-of-a-multi-minute-job",
       "blockingWaitIsNotObservation": "a-long-job-is-observed-through-read-proc-id-and-its-artifacts-never-by-waiting-longer-because-wait-shows-no-progress-and-holds-until-an-event-or-the-30-minute-cap",
       "observationOutput": "emit-only-on-state-change-never-repeat-an-identical-status-line-because-repetition-carries-no-information-and-buries-the-real-change",
-      "shortJobNoObservation": "a-background-job-expected-to-finish-in-a-few-minutes-is-never-observed-or-waited-on-at-all-its-result-auto-delivers-so-the-only-correct-action-is-to-move-on",
-      "pendingWorkBeatsWaiting": "never-wait-or-observe-while-any-independent-work-remains-such-as-handoff-edits-or-unrelated-reads-waiting-is-only-for-being-genuinely-blocked-with-nothing-else-to-do",
+      "shortJobNoObservation": "short-jobs-auto-deliver-no-routine-polling-but-a-progress-supervision-advisory-is-an-explicit-decision-point-requiring-inspection",
+      "pendingWorkBeatsWaiting": "do-independent-work-before-routine-wait-or-status-observation-but-handle-a-progress-supervision-warning-as-an-immediate-decision-point-before-resuming-other-work",
       "silenceIsNotProgress": "a-quiet-child-or-an-unchanged-running-row-is-never-evidence-that-work-is-advancing-or-that-no-rework-happened",
       "observedAnomalyReport": "restarts-discarded-artifacts-repeated-failures-and-stalls-are-reported-to-the-user-as-soon-as-observed-never-only-after-the-user-asks",
+      "progressSupervision": {
+        "purpose": "local-event-based-attention-advisory-not-failure-verdict-or-provider-timeout",
+        "owner": "Main-decides-cause-and-safe-intervention-without-user-prompting",
+        "onAdvisory": "before-waiting-again-check-latest-result-activity-snapshot-and-relevant-artifact-report-confirmed-state-and-next-action",
+        "distinguish": ["model-wait-or-stream", "tool-execution", "explicit-user-wait", "observed-parent-directive-queue", "unknown-transport-activity"],
+        "supervisorHealth": "inspect-last-check-and-next-check-or-equivalent-never-assume-a-missing-or-stale-monitor-is-healthy",
+        "progressEvidence": "meaningful-model-delta-tool-progress-or-observed-artifact-not-title-usage-auto-thinking-or-running-alone",
+        "intervention": "preserve-owner-use-safe-parent-steer-or-evidence-backed-approved-recovery-record-next-observation-condition-if-waiting",
+        "forbidden": ["automatic-kill", "unbounded-retry", "automatic-redispatch", "takeover-instead-of-cause-investigation", "approval-boundary-bypass"]
+      },
       "userSteering": "may-interrupt-the-call-handle-steering-then-resume-still-required-barrier-once",
       "elapsedTimeIsFailureEvidence": false,
       "scopeReductionOrSkippingValidationFromElapsedTime": "never"

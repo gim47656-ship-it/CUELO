@@ -24,7 +24,10 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
  *   GitNexus 1.6.12 색인에서 Function 행의 id(심하면 이름까지)가 비는 손상을 실제로 봤다. 그러면 `impact`가 알려진
  *   심볼을 못 찾거나 부풀리고 `detect-changes`가 모든 프로세스를 영향으로 보고한다(증거: doc/history/2026/10/05-five-improvements/
  *   maker-gitnexus.md). 손상이 있으면 `analyze --index-only --force`로 한 번 다시 만들고, 결과를
- *   `.gitnexus/autosync-health.json`에 남겨 같은 커밋을 다시 검사하지 않는다. 손상의 유발 조건은 최소 재현하지 못했다.
+ *   `.gitnexus/autosync-health.json` records the checked commit, avoiding repeated checks.
+ * Native0.18.3 delete+COPY+CHECKPOINT now reproduces ID loss; force rebuild restores operation, not the defect.
+ * The verified native0.21.2/format47 migration and historical-crash limits are recorded in
+ * doc/history/2026/10/11-tool-repairs/gitnexus/native47-migration.md. Keep the recovery/lock behavior unchanged.
  */
 
 const LOCK_NAME = "autosync.lock";
