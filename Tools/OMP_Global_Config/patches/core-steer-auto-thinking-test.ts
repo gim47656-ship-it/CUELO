@@ -84,6 +84,8 @@ process.env.AI_GATEWAY_API_KEY = "example";
 const realFetch = globalThis.fetch;
 let judgeReply = "xhigh";
 const levelRequests: string[] = [];
+// [5] 는 분류 입력 종류(request·solution_space)를 함께 본다.
+const levelInputs: Array<{ request?: string; solutionSpace?: string }> = [];
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 	const url = input instanceof Request ? input.url : String(input);
 	if (!url.startsWith("https://ai-gateway.vercel.sh/")) return realFetch(input, init);
@@ -91,6 +93,10 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
 	const criteria = body.questions?.level?.criteria;
 	if (!criteria) return new Response("{}", { status: 500 });
 	levelRequests.push(String(body.state?.request ?? ""));
+	levelInputs.push({
+		...(body.state?.request !== undefined ? { request: String(body.state.request) } : {}),
+		...(body.state?.solution_space !== undefined ? { solutionSpace: String(body.state.solution_space) } : {}),
+	});
 	const levels = Object.keys(criteria);
 	const other = (1 - 0.6) / (levels.length - 1);
 	return new Response(
@@ -128,7 +134,7 @@ session.subscribe((event: { type: string; thinkingLevel?: string }) => {
 // 판정은 분류를 기다리지 않고 뒤에서 돈다. ultrathink 경로는 즉시 끝나지만 이벤트 루프를 한 번 넘긴다.
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 20));
 
-type Phase = "steer" | "followUp" | "fixed" | "parent" | "quiet";
+type Phase = "steer" | "followUp" | "fixed" | "parent" | "solution" | "quiet";
 let phase: Phase = "quiet";
 const seen: Record<string, unknown> = {};
 
@@ -186,6 +192,16 @@ agent.addBeforeModelCallHook(async () => {
 		await deliverToChild(PARENT_ID, "승인합니다");
 		seen.afterParentDown = await levelSettles("low");
 		seen.parentRequests = levelRequests.slice(judgedBefore);
+	} else if (current === "solution") {
+		session.setThinkingLevel("auto");
+		const judgedBefore = levelInputs.length;
+		judgeReply = "high";
+		await deliverToChild(PARENT_ID, "마이그레이션 롤백도 확인해");
+		await inputsSettle(judgedBefore + 1);
+		judgeReply = "low";
+		await deliverToChild(PARENT_ID, "승인");
+		await inputsSettle(judgedBefore + 2);
+		seen.solutionInputs = levelInputs.slice(judgedBefore);
 	}
 	// 훅이 모델 호출을 끊으면 이 단계가 큐에 넣은 steer·follow-up(IRC 부모 steer 포함)은 소비되지 않고 남는다. 큐가
 	// 비어 있지 않으면 세션이 agent_end 뒤 같은 대기열을 이어받는 continuation 을 예약하고, 그 continuation 은 매번 이
@@ -217,12 +233,16 @@ async function levelSettles(target: string): Promise<unknown> {
 	for (let waited = 0; waited < 2_000 && session.thinkingLevel !== target; waited += 20) await flush();
 	return session.thinkingLevel;
 }
+/** 분류 요청이 count 개가 될 때까지(최대 2초) 기다린다. */
+async function inputsSettle(count: number): Promise<void> {
+	for (let waited = 0; waited < 2_000 && levelInputs.length < count; waited += 20) await flush();
+}
 
-async function runPhase(next: Phase, start: "low" | "high", prompt: string): Promise<void> {
+async function runPhase(next: Phase, start: "low" | "high", prompt: string, solutionSpace?: string): Promise<void> {
 	session.setThinkingLevel(start);
 	phase = next;
 	try {
-		await session.prompt(prompt);
+		await session.prompt(prompt, solutionSpace ? { solutionSpace } : undefined);
 	} catch {
 		// 모델 없는 turn 은 실패로 끝난다. 관측값은 훅 안에서 이미 기록했다.
 	}
@@ -286,6 +306,24 @@ check(
 	JSON.stringify(parentRequests),
 );
 
+console.log("\n[5] solutionSpace 로 시작한 SubAgent 는 부모 메시지 재분류도 그 solutionSpace 와 부모 메시지로 한다");
+// task 는 child 첫 턴을 위임자의 solutionSpace 로 분류한다. 긴 brief 의 앞부분이 잡음이면 brief+메시지 request 로는 부모
+// 지시가 분류 입력에서 밀린다. 재분류도 같은 기준이어야 한다.
+const SOLUTION_SPACE = "열린 설계: 스키마 이전 방식을 정하고 호환을 지킨다";
+const NOISY_BRIEF = `${"참고 로그 줄 ".repeat(400)}\n실제 과제: 스키마 이전`;
+await runPhase("solution", "low", NOISY_BRIEF, SOLUTION_SPACE);
+check("[5] 입력 시점에 턴이 스트리밍 중이었다", seen["solution:streaming"] === true);
+const solutionInputs = Array.isArray(seen.solutionInputs) ? (seen.solutionInputs as Array<{ request?: string; solutionSpace?: string }>) : [];
+check(
+	"[5] 부모 메시지 재분류는 request 가 아니라 solution_space 입력이고, solutionSpace 와 지금까지의 부모 메시지를 담는다",
+	solutionInputs.length === 2 &&
+		solutionInputs.every(input => input.request === undefined && input.solutionSpace?.includes(SOLUTION_SPACE) === true) &&
+		solutionInputs[0]!.solutionSpace!.includes("마이그레이션 롤백도 확인해") &&
+		solutionInputs[1]!.solutionSpace!.includes("마이그레이션 롤백도 확인해") &&
+		solutionInputs[1]!.solutionSpace!.includes("승인") &&
+		!solutionInputs.some(input => input.solutionSpace?.includes("참고 로그 줄")),
+	JSON.stringify(solutionInputs).slice(0, 600),
+);
 await session.dispose?.();
 // Windows 는 dispose 직후에도 agent.db 를 잠깐 잡고 있다. 정리 실패는 검사 결과가 아니므로 남기고 넘어간다.
 for (const dir of [workdir, agentDir]) {

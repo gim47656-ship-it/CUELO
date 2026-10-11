@@ -1,8 +1,10 @@
 import type {
   ExperimentConfig,
   ExperimentConfigRole,
+  ExperimentHarnessCount,
   ExperimentResponse,
   ExperimentScope,
+  ExperimentView,
   RunBottleneck,
   RunDetail,
   RunListResponse,
@@ -11,6 +13,7 @@ import type {
   RunToolTotal,
 } from "./run-xray-types";
 import {
+  EXPERIMENT_GROUP_BYS,
   EXPERIMENT_SCOPES,
   RUN_OUTCOMES,
   RUN_ROLE_KINDS,
@@ -45,6 +48,7 @@ export interface HanseEfficiencyClient {
     sessions: number,
     scope: ExperimentScope,
     signal?: AbortSignal,
+    view?: ExperimentView,
   ) => Promise<ExperimentResponse>;
 }
 
@@ -53,6 +57,7 @@ const RUN_ROLE_KIND_VALUES: readonly string[] = RUN_ROLE_KINDS;
 const RUN_ROLE_PURPOSE_VALUES: readonly string[] = RUN_ROLE_PURPOSES;
 const RUN_UNMEASURED_VALUES: readonly string[] = RUN_UNMEASURED_REASONS;
 const EXPERIMENT_SCOPE_VALUES: readonly string[] = EXPERIMENT_SCOPES;
+const EXPERIMENT_GROUP_BY_VALUES: readonly string[] = EXPERIMENT_GROUP_BYS;
 
 // `object`로 좁힌다. `Record<string, unknown>`으로 좁히면 구체 타입으로의
 // 단언이 "겹치지 않는 변환"으로 거부되므로, 이 좁히기를 쓴다.
@@ -81,7 +86,8 @@ function validRunSummary(raw: unknown): raw is RunSummary {
     && typeof summary.totalTokens === "number" && Number.isFinite(summary.totalTokens)
     && typeof summary.estimatedCostUsd === "number" && Number.isFinite(summary.estimatedCostUsd)
     && typeof summary.unpricedRequests === "number" && Number.isFinite(summary.unpricedRequests)
-    && typeof summary.configSignature === "string";
+    && typeof summary.configSignature === "string"
+    && (summary.harnessRevision === null || typeof summary.harnessRevision === "string");
 }
 
 function validRoleSegment(raw: unknown): raw is RunRoleSegment {
@@ -137,6 +143,13 @@ function validExperimentConfigRole(raw: unknown): raw is ExperimentConfigRole {
     && typeof role.count === "number" && Number.isFinite(role.count);
 }
 
+function validHarnessCount(raw: unknown): raw is ExperimentHarnessCount {
+  if (!isObject(raw)) return false;
+  const count = raw as ExperimentHarnessCount;
+  return (count.revision === null || typeof count.revision === "string")
+    && typeof count.runCount === "number" && Number.isFinite(count.runCount);
+}
+
 function validExperimentConfig(raw: unknown): raw is ExperimentConfig {
   if (!isObject(raw)) return false;
   const config = raw as ExperimentConfig;
@@ -154,7 +167,8 @@ function validExperimentConfig(raw: unknown): raw is ExperimentConfig {
     && typeof config.errorRuns === "number" && Number.isFinite(config.errorRuns)
     && typeof config.childRunsAvg === "number" && Number.isFinite(config.childRunsAvg)
     && typeof config.firstSeenAt === "number" && Number.isFinite(config.firstSeenAt)
-    && typeof config.lastSeenAt === "number" && Number.isFinite(config.lastSeenAt);
+    && typeof config.lastSeenAt === "number" && Number.isFinite(config.lastSeenAt)
+    && Array.isArray(config.harnesses) && config.harnesses.every(validHarnessCount);
 }
 
 function validUnmeasuredList(raw: unknown): boolean {
@@ -214,6 +228,9 @@ export function parseExperimentResponse(raw: unknown): ExperimentResponse {
     && typeof response.runCount === "number" && Number.isFinite(response.runCount)
     && typeof response.sessionCount === "number" && Number.isFinite(response.sessionCount)
     && typeof response.excludedRunCount === "number" && Number.isFinite(response.excludedRunCount)
+    && typeof response.groupBy === "string" && EXPERIMENT_GROUP_BY_VALUES.includes(response.groupBy)
+    && (response.harness === null || typeof response.harness === "string")
+    && Array.isArray(response.harnesses) && response.harnesses.every(validHarnessCount)
     && validUnmeasuredList(response.unmeasured);
   if (!valid) {
     throw new EfficiencyClientError("invalid-response", "구성 비교 응답이 올바르지 않습니다.");
@@ -299,11 +316,14 @@ export function createHanseEfficiencyClient(
       return decodeRunDetail(body, "실행 상세 응답이 올바르지 않습니다.", response.status);
     },
 
-    async listExperiments(folder, sessions, scope, signal) {
+    async listExperiments(folder, sessions, scope, signal, view) {
       const params = new URLSearchParams();
       if (folder !== null && folder !== "") params.set("folder", folder);
       params.set("sessions", String(sessions));
       params.set("scope", scope);
+      // 기본 보기는 매개변수를 싣지 않는다. 서버 기본값과 같은 요청을 만든다.
+      if (view?.groupBy === "harness") params.set("groupBy", "harness");
+      if (view?.harness) params.set("harness", view.harness);
       const { response, body } = await request(
         `${EFFICIENCY_EXPERIMENTS_BASE}?${params.toString()}`,
         { method: "GET", signal },

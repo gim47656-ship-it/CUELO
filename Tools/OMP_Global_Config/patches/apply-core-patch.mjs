@@ -93,6 +93,9 @@ const OPUS55_ROW_1870 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":97
 // 18.8.4: 측정값만 97→96.2. upstream prefixBinding·binding controls는 그대로라 RETIRE를 유지한다.
 const OPUS55_ROW_1884 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":96.2,');
 
+// 18.9.1: 측정값만 96.2→98.8. 행의 나머지는 18.4.6 적용본과 바이트가 같아 RETIRE를 유지한다.
+const OPUS55_ROW_1891 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":98.8,');
+
 /**
  * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
  * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
@@ -2921,9 +2924,19 @@ export async function refreshSubagentUnresolvedDiscovery(args: {
 		// 관측 불가로 남긴다. statusEvents 바로 옆에 두어 이 필드가 무엇을 한정하는지 드러낸다.
 		// 18.2.5: upstream 이 EvalToolDetails 를 @oh-my-pi/pi-tui 로 옮겼다.
 		file: "../pi-tui/src/tools/eval.ts",
+		// 18.9.1 은 statusEvents 와 isError 사이에 statusEventsElided 를 넣었다. 필드는 그 뒤에 두고, 버린 이벤트가 있으면
+		// 관측이 불완전하다는 문장을 더한다(아래 src/tools/eval.ts 18.9.1 후보가 그 조건을 지킨다; ADAPT).
+		excludes: "statusEventsElided",
 		marker: "executionObservation?: \"observed\" | \"rejected\";",
 		anchor: "\tstatusEvents?: EvalStatusEvent[];\n\tisError?: boolean;",
 		patched: "\tstatusEvents?: EvalStatusEvent[];\n\t/**\n\t * How far this result observed the call's own execution.\n\t * `\"observed\"`: every cell reached a terminal `complete` status, so\n\t * `statusEvents` above is the complete record of the runs this call\n\t * started — absent or empty means it started none, not that they went\n\t * unrecorded.\n\t * `\"rejected\"`: the backend refused the call before any cell started, so no\n\t * code ran and no child could have started.\n\t * Absent when the observation is incomplete (a cell errored or was\n\t * cancelled, the execution ended without a result, or it was backgrounded as\n\t * a job) or when the trace predates this field. Readers must treat absence as\n\t * unknown, never as zero.\n\t */\n\texecutionObservation?: \"observed\" | \"rejected\";\n\tisError?: boolean;",
+		alternates: [{
+			file: "../pi-tui/src/tools/eval.ts",
+			requires: "statusEventsElided",
+			marker: "executionObservation?: \"observed\" | \"rejected\";",
+			anchor: "\tstatusEventsElided?: number;\n\tisError?: boolean;",
+			patched: "\tstatusEventsElided?: number;\n\t/**\n\t * How far this result observed the call's own execution.\n\t * `\"observed\"`: every cell reached a terminal `complete` status and no\n\t * status event was dropped, so `statusEvents` above is the complete record of\n\t * the runs this call started — absent or empty means it started none, not\n\t * that they went unrecorded.\n\t * `\"rejected\"`: the backend refused the call before any cell started, so no\n\t * code ran and no child could have started.\n\t * Absent when the observation is incomplete (a cell errored or was\n\t * cancelled, the execution ended without a result, it was backgrounded as a\n\t * job, or `statusEventsElided` counts dropped events) or when the trace\n\t * predates this field. Readers must treat absence as unknown, never as zero.\n\t */\n\texecutionObservation?: \"observed\" | \"rejected\";\n\tisError?: boolean;",
+		}],
 	},
 	{
 		// backend 해석은 cell 실행 전이다. 여기서 거부되면 아무 code도 돌지 않은 확정인데, 던지면
@@ -2980,6 +2993,10 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		// 모든 cell이 complete로 끝났다는 뜻이다. 던진 실행과 cell error·cancel 반환은 표시를 받지
 		// 않아 미관측으로 남는다(중단된 실행은 시작한 child의 status가 다 실렸다고 볼 수 없다).
 		file: "src/tools/eval.ts",
+		// 18.9.1 은 status 로그를 discrete 200건으로 묶고 앞에서 버린 수를 statusEventsElided 로 센다(agent·judge_batch
+		// snapshot 은 남는다). 버린 것이 있으면 statusEvents 는 이 호출이 시작한 일의 완전한 기록이 아니므로 "observed"
+		// 를 붙이지 않는다. 필드 계약(위 #79 주석)을 그대로 지키는 조정이다(ADAPT).
+		excludes: "statusEventsElided",
 		marker: 'details.executionObservation = "observed";',
 		anchor: `			return session.trackEvalExecution?.(execution, sessionAbortController) ?? execution;`,
 		patched: `			const tracked = session.trackEvalExecution?.(execution, sessionAbortController) ?? execution;
@@ -2995,6 +3012,26 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 				}
 				return result;
 			});`,
+		alternates: [{
+			file: "src/tools/eval.ts",
+			requires: "statusEventsElided",
+			marker: "details.executionObservation === undefined && !details.statusEventsElided",
+			anchor: `			return session.trackEvalExecution?.(execution, sessionAbortController) ?? execution;`,
+			patched: `			const tracked = session.trackEvalExecution?.(execution, sessionAbortController) ?? execution;
+			// Returning a result here is the observation, but only for a run that reached
+			// its own end: \`#runCells\` resolves with \`isError\` set when a cell errored or
+			// was cancelled, and an interrupted run may have started work whose status
+			// never reached the ledger. Those stay unset for readers, exactly like an
+			// execution that ends by throwing. A log that dropped events
+			// (\`statusEventsElided\`) is no longer the complete record either.
+			return tracked.then(result => {
+				const details = result.details;
+				if (details && details.isError !== true && details.executionObservation === undefined && !details.statusEventsElided) {
+					details.executionObservation = "observed";
+				}
+				return result;
+			});`,
+		}],
 	},
 	// ---- task per-item model selector (Arena hypothesis makers) ----
 	// 네이티브 task wire 계약에는 per-spawn 모델 선택기가 없고 모델은 agent 정의에서만
@@ -3304,6 +3341,9 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 	},
 	{
 		file: "src/session/turn-recovery.ts",
+		// 18.9.1 은 바로 아래 refusal 주석을 refusal walk(한 턴에 모델당 한 번) 설명으로 바꿨다. 같은 블록을 같은 자리
+		// (fallback 판단 직전)에 넣는다(ADAPT). 두 판 적용본의 marker 가 같으므로 새 주석 첫 줄로 가른다.
+		excludes: "// The retry budget bounds same-model retries against a failing provider.",
 		marker: `const baiTransportSameModelRetry =`,
 		anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			// A refusal chain stops at the retry budget: the exhausted-attempt
@@ -3324,6 +3364,30 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			// A refusal chain stops at the retry budget: the exhausted-attempt
 `,
+		alternates: [{
+			file: "src/session/turn-recovery.ts",
+			requires: "// The retry budget bounds same-model retries against a failing provider.",
+			marker: `const baiTransportSameModelRetry =`,
+			anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
+			// The retry budget bounds same-model retries against a failing provider. A
+`,
+			patched: `		// b-ai drops turns on transient socket/stream transport faults that say nothing
+		// about model health and replay safely on the same model, so the configured
+		// same-model retry budget is spent before the chain is consulted
+		// (BAI_TRANSPORT_SAME_MODEL_RETRY). A usage-limit error, an exhausted budget,
+		// an abort or fault the classifier does not call retriable, and every other
+		// provider keep the existing immediate-fallback behaviour.
+		const baiTransportSameModelRetry =
+			!retryBudgetExhausted &&
+			AIError.retriable(id) &&
+			!AIError.is(id, AIError.Flag.UsageLimit) &&
+			message.provider === "b-ai" &&
+			currentModel?.provider === "b-ai" &&
+			(isUnexpectedSocketCloseMessage(errorMessage) || AIError.isStreamReadErrorText(errorMessage));
+		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
+			// The retry budget bounds same-model retries against a failing provider. A
+`,
+		}],
 	},
 	{
 		file: "src/session/turn-recovery.ts",
@@ -3351,6 +3415,7 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		// 내용 없는 끊김, stream read 오류)만 뒤에 덧붙인다.
 		alternates: [{
 			file: "src/session/turn-recovery.ts",
+			excludes: "!refusalWalkRepeats &&",
 			marker: `!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
 				!baiTransportSameModelRetry`,
 			anchor: `				!(retryBudgetExhausted && classifierRefusal) &&
@@ -3358,6 +3423,22 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 			) {
 `,
 			patched: `				!(retryBudgetExhausted && classifierRefusal) &&
+				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
+				!baiTransportSameModelRetry
+			) {
+`,
+		}, {
+			// 18.9.1: classifier refusal 은 retry budget 이 아니라 refusal walk(모델당 한 번)로 끊는다(!refusalWalkRepeats).
+			// b-ai 전송 장애 조건은 refusal 과 무관하므로 같은 조건 끝에 그대로 덧붙인다(ADAPT).
+			file: "src/session/turn-recovery.ts",
+			requires: "!refusalWalkRepeats &&",
+			marker: `!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
+				!baiTransportSameModelRetry`,
+			anchor: `				!refusalWalkRepeats &&
+				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
+			) {
+`,
+			patched: `				!refusalWalkRepeats &&
 				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
 				!baiTransportSameModelRetry
 			) {
@@ -3462,6 +3543,9 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		// 남은 작업도 끊겼다(upstream 18.6.0·18.6.1 도 같다). 커밋 직전 재확인에서 작업이 남아 있으면 dispose 하지 않고
 		// idle 타이머를 다시 건다. job 은 실행 한도, 남은 전달·yield 큐는 idle flush 로 끝나므로 영구 잔류는 없다.
 		file: "src/registry/agent-lifecycle.ts",
+		// 18.9.1 은 같은 자리(ref 재확인 직후, detach 전)에 park 직전 비용 스냅샷(setHistory directCost)을 넣었다. 남은 작업이
+		// 있으면 park 하지 않으므로 검사는 스냅샷 앞에 둔다(ADAPT). 두 판 적용본의 marker 가 같으므로 그 주석으로 가른다.
+		excludes: "// Preserve cost before detaching the only live source.",
 		marker: "// HANSE: keep sessions with pending async work",
 		anchor: `				if (this.#adopted.get(id)?.ref !== ref) return;
 
@@ -3474,6 +3558,22 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 				}
 
 				// Commit: detach + parked *before* dispose`,
+		alternates: [{
+			file: "src/registry/agent-lifecycle.ts",
+			requires: "// Preserve cost before detaching the only live source.",
+			marker: "// HANSE: keep sessions with pending async work",
+			anchor: `				if (this.#adopted.get(id)?.ref !== ref) return;
+
+				// Preserve cost before detaching the only live source.`,
+			patched: `				if (this.#adopted.get(id)?.ref !== ref) return;
+				// HANSE: keep sessions with pending async work
+				if (session.hasPendingAsyncWork()) {
+					this.#armTimer(id, adopted);
+					return;
+				}
+
+				// Preserve cost before detaching the only live source.`,
+		}],
 	},
 	{
 		file: "src/sdk.ts",
@@ -5804,6 +5904,9 @@ function staticInstructions(autoRetain: boolean): string {
 		patched: `		const parts = [staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))];`,
 		alternates: [{
 			file: "src/mnemopi/backend.ts",
+			// 18.9.1 은 본문을 withLoopPhase("mnemopi.recall") 로 감싸 배열을 여러 줄로 폈다. 두 판 적용본의 marker 가
+			// 같으므로 그 호출 유무로 가른다(ADAPT).
+			excludes: 'withLoopPhase("mnemopi.recall"',
 			marker: "autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings)",
 			anchor: `		const parts = [prompt.render(mnemopiInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];`,
 			patched: `		const parts = [
@@ -5812,6 +5915,19 @@ function staticInstructions(autoRetain: boolean): string {
 				autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings),
 			}),
 		];`,
+		}, {
+			file: "src/mnemopi/backend.ts",
+			requires: 'withLoopPhase("mnemopi.recall"',
+			marker: "autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings)",
+			anchor: `			const parts = [
+				prompt.render(mnemopiInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) }),
+			];`,
+			patched: `			const parts = [
+				prompt.render(mnemopiInstructions, {
+					toolRefs: memoryToolRefs(session?.getXdevToolEntries()),
+					autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings),
+				}),
+			];`,
 		}],
 	},
 	{
@@ -5842,6 +5958,19 @@ function staticInstructions(autoRetain: boolean): string {
 				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
 				autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? cfgMnemopiAutoRetain.get(session.settings),
 			});`,
+		}, {
+			// 18.9.1 은 첫 턴 회상 예산 계산을 backend 에서 state.budgetRecallBlock 으로 옮겼다(회상 블록을 transcript 에
+			// 남기면서 전달본을 그 자리에서 자른다). 같은 안내 블록 길이로 잘라야 한다는 목적은 그대로라 그 자리의 렌더에
+			// 같은 autoRetain 값을 넘긴다(ADAPT). state 에는 config 가 늘 있으므로 settings fallback 은 필요 없다.
+			file: "src/mnemopi/state.ts",
+			marker: "autoRetain: (this.aliasOf ?? this).config.autoRetain,",
+			anchor: `		const instructions = prompt.render(mnemopiInstructions, {
+			toolRefs: memoryToolRefs(this.session.getXdevToolEntries()),
+		});`,
+			patched: `		const instructions = prompt.render(mnemopiInstructions, {
+			toolRefs: memoryToolRefs(this.session.getXdevToolEntries()),
+			autoRetain: (this.aliasOf ?? this).config.autoRetain,
+		});`,
 		}],
 	},
 	{
@@ -5910,6 +6039,22 @@ function staticInstructions(autoRetain: boolean): string {
 			? \`\\n\${skillName} is a rule, not a skill: read rule://\${skillName}\`
 			: "";
 		throw new Error(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
+		}, {
+			// 18.9.1 은 이 throw 를 UnknownSkillError 로 바꿔, 아무 skill 도 갖지 않은 이름이면 resolve 가 MCP 서버가 광고한
+			// 같은 skill:// 자원을 찾게 했다. 그 오류 종류를 지켜야 MCP fallback 과 locate 의 null 반환이 그대로다(ADAPT).
+			// skillTargetPath 에는 ResolveContext 가 없다: 18.3.1 후보의 `context?.rules` 는 이 함수 안에서
+			// `ReferenceError: context is not defined` 로 던진다(18.8.9 라이브에서 재현). 그래서 18.3.0 처럼 프로세스의
+			// 활성 rule snapshot 을 본다.
+			file: "src/internal-urls/skill-protocol.ts",
+			marker: "// 18.9.1 rule lookup keeps UnknownSkillError and reads the active-rule snapshot.",
+			anchor: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
+		throw new UnknownSkillError(\`Unknown skill: \${skillName}\\nAvailable: \${availableStr}\`);`,
+			patched: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
+		// 18.9.1 rule lookup keeps UnknownSkillError and reads the active-rule snapshot.
+		const ruleHint = getActiveRules().some(r => r.name === skillName)
+			? \`\\n\${skillName} is a rule, not a skill: read rule://\${skillName}\`
+			: "";
+		throw new UnknownSkillError(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
 		}],
 	},
 	{
@@ -6521,37 +6666,82 @@ function operationFromNative(op: string): Operation | undefined {
 		// 주입되는 <memories> 줄에 기억 id 를 싣는다. recall 도구 결과에는 id 가 있지만 자동 주입 블록에는
 		// 없어서, 작업에 전달된 교훈을 routing_verdict appliedLessons 로 가리킬 수 없었다.
 		file: "src/mnemopi/state.ts",
+		// 18.9.1 은 첫 턴 회상을 transcript 에 남기며(recall-entry.ts persistRecall) formatRecallBlock 이 기억별 offset 을
+		// 함께 돌려준다. 줄 본문 뒤에 id·출처 표시를 붙이는 의미는 같고 offset(본문 시작)도 그대로다(ADAPT).
+		// 두 판 적용본이 같은 marker 를 가지므로 18.9.1 전용 import(findPersistedRecall) 유무로 가른다.
+		excludes: "findPersistedRecall",
 		marker: "// HANSE: recall line carries memory id",
 		anchor: "\t\treturn `- ${content}${source}${date}`;\n",
 		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${recallProvenanceNote(result)}${memoryId}`;\n",
 		legacyPatched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			requires: "findPersistedRecall",
+			marker: "// HANSE: recall line carries memory id",
+			anchor: "\t\ttext += `${recalledText(result.content)}${source}${date}`;\n",
+			patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\ttext += `${recalledText(result.content)}${source}${date}${recallProvenanceNote(result)}${memoryId}`;\n",
+		}],
 	},
 	{
 		// 위 항목의 짝. 범위·정정 표시 보조 함수와 정정 행이 있을 때만 붙는 한 줄 안내(상세는 memory://<id>).
 		file: "src/mnemopi/state.ts",
+		// 18.9.1: 반환형이 { text, offsets } 로 바뀌고 JSDoc 이 붙었다. 보조 함수는 JSDoc 앞에 둔다(ADAPT).
+		excludes: "findPersistedRecall",
 		marker: "// HANSE: recall provenance note",
 		anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
 		patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			requires: "findPersistedRecall",
+			marker: "// HANSE: recall provenance note",
+			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+		}],
 	},
 	{
 		file: "src/mnemopi/state.ts",
 		marker: "${lines.join(\"\\n\\n\")}${recallRevisionFooter(results)}\\n</memories>",
 		anchor: "${lines.join(\"\\n\\n\")}\\n</memories>`;\n",
 		patched: "${lines.join(\"\\n\\n\")}${recallRevisionFooter(results)}\\n</memories>`;\n",
+		// 18.9.1: 블록을 text 에 이어 붙여 { text, offsets } 로 돌려준다. 안내 줄은 같은 자리(</memories> 앞)다(ADAPT).
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			marker: "${text}${recallRevisionFooter(results)}\\n</memories>",
+			anchor: "\treturn { text: `${text}\\n</memories>`, offsets };\n",
+			patched: "\treturn { text: `${text}${recallRevisionFooter(results)}\\n</memories>`, offsets };\n",
+		}],
 	},
 	{
 		// recall 도구 출력도 같은 표시를 쓴다.
 		file: "src/mnemopi/state.ts",
+		// 18.9.1: 본문을 withLoopPhase("mnemopi.recall") 안으로 옮겨 한 단계 들여썼다(ADAPT).
+		excludes: "findPersistedRecall",
 		marker: "${source}${date}${recallProvenanceNote(result)}${confidence}",
 		anchor: "\t\t\treturn `- ${result.content}${id}${source}${date}${confidence}`;\n\t\t});\n\t\treturn lines.join(\"\\n\\n\");\n",
 		patched: "\t\t\treturn `- ${result.content}${id}${source}${date}${recallProvenanceNote(result)}${confidence}`;\n\t\t});\n\t\treturn lines.join(\"\\n\\n\") + recallRevisionFooter(results);\n",
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			requires: "findPersistedRecall",
+			marker: "${source}${date}${recallProvenanceNote(result)}${confidence}",
+			anchor: "\t\t\t\treturn `- ${result.content}${id}${source}${date}${confidence}`;\n\t\t\t});\n\t\t\treturn lines.join(\"\\n\\n\");\n",
+			patched: "\t\t\t\treturn `- ${result.content}${id}${source}${date}${recallProvenanceNote(result)}${confidence}`;\n\t\t\t});\n\t\t\treturn lines.join(\"\\n\\n\") + recallRevisionFooter(results);\n",
+		}],
 	},
 	{
 		// 결과가 실제로 나온 bank 로 범위를 일시 표시한다(DB 저장 없음). 전역 bank 가 없는 구성은 추정하지 않는다.
 		file: "src/mnemopi/state.ts",
+		// 18.9.1: 병합 루프를 withLoopPhase("mnemopi.recall") 안으로 옮겨 한 단계 들여썼다. target 은 같은 바깥 루프 변수다(ADAPT).
+		excludes: "findPersistedRecall",
 		marker: "// HANSE: recall result carries its bank scope",
 		anchor: "\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, result);\n",
 		patched: "\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\t// HANSE: recall result carries its bank scope\n\t\t\t\t\t\tconst recallScope = this.scoped.global ? (target.bank === this.scoped.global.bank ? \"global\" : \"project\") : undefined;\n\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, { ...result, recallScope } as RecallResult);\n",
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			requires: "findPersistedRecall",
+			marker: "// HANSE: recall result carries its bank scope",
+			anchor: "\t\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, result);\n",
+			patched: "\t\t\t\t\t\tfor (const result of results) {\n\t\t\t\t\t\t\t// HANSE: recall result carries its bank scope\n\t\t\t\t\t\t\tconst recallScope = this.scoped.global ? (target.bank === this.scoped.global.bank ? \"global\" : \"project\") : undefined;\n\t\t\t\t\t\t\tmergeRecallResult(merged, byId, byContent, { ...result, recallScope } as RecallResult);\n",
+		}],
 	},
 	{
 		file: "src/tools/learn.ts",
@@ -6602,9 +6792,20 @@ function operationFromNative(op: string): Operation | undefined {
 		// 셀 수 없었다(위임 attempt 만 routing_verdict appliedLessons 로 연결됨). 첫 턴 회상이 확정될 때 전달한
 		// 기억 id 를 LLM context 에 들어가지 않는 custom entry 로 남긴다. 소비자는 evals/analyze-lesson-recurrence.mjs.
 		file: "src/mnemopi/state.ts",
+		// 18.9.1: 첫 턴 회상(beforeAgentStartPrompt)과 백그라운드 회상(maybeRecallOnAgentStart)의 확정이 #commitRecall 하나로
+		// 모였다. text 는 lastRecallSnippet 이 되는 전체 블록(재사용이면 transcript 의 블록)이라 18.8.9 의 context 와 같은 값이다.
+		// 그 자리에 기록하면 두 경로가 모두 남는다(ADAPT; 아래 항목은 18.9.1 에서 no-op).
+		excludes: "#commitRecall(",
 		marker: "// HANSE: first-turn recall delivery is recorded",
 		anchor: "\t\t\t\tthis.hasRecalledForFirstTurn = true;\n\t\t\t\tif (context) this.lastRecallSnippet = context;\n",
 		patched: "\t\t\t\tthis.hasRecalledForFirstTurn = true;\n\t\t\t\tif (context) this.lastRecallSnippet = context;\n\t\t\t\t// HANSE: first-turn recall delivery is recorded\n\t\t\t\tconst deliveredIds = [...(context ?? \"\").matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\t\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			requires: "#commitRecall(",
+			marker: "// HANSE: first-turn recall delivery is recorded",
+			anchor: "\t\tthis.hasRecalledForFirstTurn = true;\n\t\tif (text) this.lastRecallSnippet = text;\n",
+			patched: "\t\tthis.hasRecalledForFirstTurn = true;\n\t\tif (text) this.lastRecallSnippet = text;\n\t\t// HANSE: first-turn recall delivery is recorded\n\t\tconst deliveredIds = [...text.matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
+		}],
 	},
 	{
 		// 위 항목의 짝. 백그라운드 첫 턴 회상(maybeRecallOnAgentStart)도 같은 기록을 남긴다.
@@ -6612,6 +6813,13 @@ function operationFromNative(op: string): Operation | undefined {
 		marker: "// HANSE: background recall delivery is recorded",
 		anchor: "\t\tif (!context) return;\n\t\tthis.lastRecallSnippet = context;\n",
 		patched: "\t\tif (!context) return;\n\t\tthis.lastRecallSnippet = context;\n\t\t// HANSE: background recall delivery is recorded\n\t\tconst deliveredIds = [...context.matchAll(/\\(id: ([^)\\s]+)\\)/g)].map(match => match[1]);\n\t\tif (deliveredIds.length > 0) this.session.sessionManager.appendCustomEntry(\"mnemopi-recall\", { ids: deliveredIds });\n",
+		// 18.9.1 no-op: 백그라운드 경로도 #commitRecall 로 확정하므로 위 항목의 18.9.1 후보가 이 기록을 맡는다.
+		alternates: [{
+			file: "src/mnemopi/state.ts",
+			marker: "\t\tif (!this.#commitRecall(generation, context ?? \"\", record)) return;\n",
+			anchor: "\t\tif (!this.#commitRecall(generation, context ?? \"\", record)) return;\n",
+			patched: "\t\tif (!this.#commitRecall(generation, context ?? \"\", record)) return;\n",
+		}],
 	},
 	{
 		// 2026-09-27 도구 오류 집계(최근 7일 2,372건): `bash` 에 service 이름 없이 `env` 를 주면 거절돼
@@ -7072,9 +7280,19 @@ function scoreCandidate(
 	},
 	{
 		file: "../pi-mnemopi/src/core/beam/recall.ts",
+		// 18.9.1 은 점수 계산 본문을 withLoopPhase("mnemopi.recall") 안으로 옮겨 한 단계 들여썼다. 같은 두 줄을 같은
+		// 자리(후보 수집 직전)에 넣는다(ADAPT). 두 판 적용본의 marker 가 같으므로 그 import 유무로 가른다.
+		excludes: 'import { popLoopPhase, pushLoopPhase, withLoopPhase } from "@oh-my-pi/pi-utils";',
 		marker: "temporalOptions.__denseFloor = usesE5Prefix()",
 		anchor: "\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
 		patched: "\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\ttemporalOptions.__queryHangulMajority = hangulMajority(query);\n\ttemporalOptions.__denseFloor = usesE5Prefix() ? E5_DENSE_FLOOR : 0.65;\n\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
+		alternates: [{
+			file: "../pi-mnemopi/src/core/beam/recall.ts",
+			requires: 'import { popLoopPhase, pushLoopPhase, withLoopPhase } from "@oh-my-pi/pi-utils";',
+			marker: "temporalOptions.__denseFloor = usesE5Prefix()",
+			anchor: "\t\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\t\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
+			patched: "\t\tconst tokenGroups = expandedTokenGroups(query, useSynonyms);\n\t\ttemporalOptions.__queryHangulMajority = hangulMajority(query);\n\t\ttemporalOptions.__denseFloor = usesE5Prefix() ? E5_DENSE_FLOOR : 0.65;\n\t\tconst candidates = collectMemoryCandidates(beam, query, topK, temporalOptions);\n",
+		}],
 	},
 	{
 		// 2026-09-29 실측: 기억 임베딩 재구축(모델 변경·중단 뒤 재개)이 128건 묶음을 한꺼번에 worker 에
@@ -7370,6 +7588,8 @@ function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 		// 요소를 건드리지 않고 원래 StaleRef로 실패하며 사유를 error.computerAction에 남긴다.
 		// readback은 행동 전·후 1회씩이고, readback 실패는 행동 실패가 아니라 unverified다.
 		file: "src/tools/computer/worker.ts",
+		// 18.9.1 후보(El.click ClickOptions + ElRef)는 apply 목록 끝의 COMPUTER_ELREF_1891 파생 블록이 만든다.
+		excludes: "class ElRef",
 		marker: "class RefBook {",
 		anchor: `class El {
 	readonly ref: string;
@@ -8209,6 +8429,8 @@ class El {
 		alternates: [{
 			file: "src/tools/computer/worker.ts",
 			requires: "async holdKeys(",
+			// 18.9.1 후보(ElRef)는 apply 목록 끝의 COMPUTER_ELREF_1891 파생 블록이 이 후보에서 만든다.
+			excludes: "class ElRef",
 			marker: "return windowInputResult(action, this.id, options);",
 			anchor: `	async click(x: number, y: number, options?: ClickOptions): Promise<void> {
 		const context = this.#getContext();
@@ -8492,6 +8714,18 @@ class El {
 				return el(await nativeCall(signal, () => session.axNode(ref)));
 			},`,
 		patched: `			ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),`,
+		// 18.9.1 은 ref() 가 ElRef(await 하면 El, 요소 메서드를 바로 chain)를 돌려준다. 늦게 푸는 lookup 만 재획득 경로로
+		// 바꾼다(ADAPT; ElRef 의 결과 반환은 아래 COMPUTER_ELREF_1891 파생 후보).
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			marker: "ref: (ref: string): ElRef => new ElRef(ref, () => resolveElement(session, getContext, ref)),",
+			anchor: `			ref: (ref: string): ElRef =>
+				new ElRef(ref, async () => {
+					const { signal } = getContext();
+					return el(await nativeCall(signal, () => session.axNode(ref)));
+				}),`,
+			patched: `			ref: (ref: string): ElRef => new ElRef(ref, () => resolveElement(session, getContext, ref)),`,
+		}],
 	},
 	{
 		// 모델이 보는 타입: 행동 결과·거절 필드와 재획득 규칙을 적는다.
@@ -8612,6 +8846,8 @@ interface ComputerInputTarget {
 		alternates: [{
 			file: "src/tools/computer/declarations.d.ts",
 			requires: "holdKeys(keys: string[]",
+			// 18.9.1 후보(ComputerElementRef)는 apply 목록 끝의 COMPUTER_ELREF_1891 파생 블록이 이 후보에서 만든다.
+			excludes: "interface ComputerElementRef",
 			marker: "interface ComputerActionResult {",
 			anchor: `/** Live accessibility element resolved from a snapshot ref; expired refs throw \`StaleRef\`. */
 interface ComputerElement {
@@ -8998,12 +9234,24 @@ import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
 		alternates: [{
 			file: "src/tools/computer/protocol.ts",
 			requires: "CaptureRegion, DesktopCapabilities",
+			excludes: "DesktopScreenState",
 			marker: `import { deserialize, serialize } from "bun:jsc";`,
 			anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
 			patched: `import { deserialize, serialize } from "bun:jsc";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
+		}, {
+			// 18.9.1 은 같은 import 에 DesktopScreenState 를 더했다(잠금 화면·디스플레이 절전 안내). 직렬화 import 는 그대로
+			// 앞에 둔다(ADAPT). 18.6.3 후보와 같은 marker 이므로 그 이름으로 가른다.
+			file: "src/tools/computer/protocol.ts",
+			requires: "DesktopScreenState",
+			marker: `import { deserialize, serialize } from "bun:jsc";`,
+			anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { CaptureRegion, DesktopCapabilities, DesktopScreenState } from "@oh-my-pi/pi-natives";`,
+			patched: `import { deserialize, serialize } from "bun:jsc";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { CaptureRegion, DesktopCapabilities, DesktopScreenState } from "@oh-my-pi/pi-natives";`,
 		}],
 	},
 	{
@@ -9867,6 +10115,10 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
 	},
 	{
 		file: "src/session/agent-session.ts",
+		// 18.9.1 은 cancelled 바로 뒤에 첫 턴의 MCP discovery 대기(최대 MCP_DISCOVERY_TURN_WAIT_MS)를 넣었다. 요청별 선택은
+		// 발견된 서버 목록을 보고 고르므로 그 대기 뒤, 정책 준비 루프 앞에 둔다(ADAPT). 두 판 적용본의 marker 가 같으므로
+		// 그 상수 유무로 가른다.
+		excludes: "MCP_DISCOVERY_TURN_WAIT_MS",
 		marker: `		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {`,
 		anchor: `		const cancelled = { baseXdevCatalogDelivered: false, commit: () => undefined };
 		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
@@ -9878,6 +10130,25 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
 		});
 		if (!isCurrent()) return cancelled;
 		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			requires: "MCP_DISCOVERY_TURN_WAIT_MS",
+			marker: `		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {`,
+			anchor: `				logger.debug("Turn started before MCP discovery finished", { error: String(error) });
+			});
+		}
+		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
+			patched: `				logger.debug("Turn started before MCP discovery finished", { error: String(error) });
+			});
+		}
+		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {
+			logger.warn("MCP per-request selection failed; no new server connected", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		if (!isCurrent()) return cancelled;
+		for (let attempt = 0; attempt < AGENT_START_POLICY_MAX_ATTEMPTS; attempt++) {`,
+		}],
 	},
 	{
 		// MCP 선택 연결: mcp_select 이벤트: 공개 metadata(이름·scope·provider·transport·도구명/설명)만 싣고 결과는 이름 목록뿐이다.
@@ -10552,6 +10823,7 @@ function parentSubagentServiceTiers(
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1851, anchor: OPUS55_ROW_1851, patched: OPUS55_ROW_1851 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1870, anchor: OPUS55_ROW_1870, patched: OPUS55_ROW_1870 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1884, anchor: OPUS55_ROW_1884, patched: OPUS55_ROW_1884 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1891, anchor: OPUS55_ROW_1891, patched: OPUS55_ROW_1891 },
 		],
 	},
 	{
@@ -10942,6 +11214,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 18.9.1: oxe는 같은 isAdvisorTranscriptName 함수다(`e===sxe||e.startsWith(\`${nxe}.\`)&&e.endsWith(Iie)`,
+			// nxe="__advisor", Iie=".jsonl"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -11394,23 +11673,50 @@ class HarmonyLeakInterruption extends Error {`),
 	// 이슈 #5: async-result 자동 전달의 details.jobs[]에 그 실행의 실제 terminal status를 싣는다. wait·`read proc://`의
 	// snapshotJobs는 이미 status를 싣지만 자동 결과만 빠져, schema 없는 실패(예: 격리 준비 실패의 TaskJobError)를
 	// consumer가 completed로 읽었다. entry.job은 정산된 그 실행 객체이므로 enqueue 시점의 status가 정본이다.
+	// 18.9.0("structured async job metadata")은 같은 type 에 status·agentId 를 넣고 두 전달 경로(entry.job·job) 모두 status 를
+	// 싣는다. 그 위에 덧붙이면 type 필드가 겹치고 되돌리기가 어긋나므로 18.9.1 은 no-op 후보로 둔다(RETIRE 후보, Main 승인
+	// 대상). 같은 계약은 core-patch-test.ts [31] 이 그대로 지킨다. 세 항목 모두 그 type 두 줄 유무로 가른다.
 	{
 		file: "src/session/async-job-delivery.ts",
+		excludes: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
 		marker: "\t/** Actual terminal status of this run (completed|failed|cancelled); absent when the job row is gone. */",
 		anchor: "\tdurationMs?: number;\n\t/** Source capture metadata belongs to this job, not to the enclosing delivery report. */",
 		patched: "\tdurationMs?: number;\n\t/** Actual terminal status of this run (completed|failed|cancelled); absent when the job row is gone. */\n\tstatus?: AsyncJob[\"status\"];\n\t/** Source capture metadata belongs to this job, not to the enclosing delivery report. */",
+		alternates: [{
+			file: "src/session/async-job-delivery.ts",
+			requires: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+			marker: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+			anchor: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+			patched: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+		}],
 	},
 	{
 		file: "src/session/async-job-delivery.ts",
+		excludes: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
 		marker: "\t\t\tstatus: entry.job?.status,\n",
 		anchor: "\t\t\tlabel: entry.job?.label,\n",
 		patched: "\t\t\tlabel: entry.job?.label,\n\t\t\tstatus: entry.job?.status,\n",
+		alternates: [{
+			file: "src/session/async-job-delivery.ts",
+			requires: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+			marker: "\t\t\tstatus: entry.job?.status,\n\t\t\tagentId: entry.job?.agentId,\n",
+			anchor: "\t\t\tstatus: entry.job?.status,\n\t\t\tagentId: entry.job?.agentId,\n",
+			patched: "\t\t\tstatus: entry.job?.status,\n\t\t\tagentId: entry.job?.agentId,\n",
+		}],
 	},
 	{
 		file: "src/session/async-job-delivery.ts",
+		excludes: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
 		marker: "\t\t\t...(job.status ? { status: job.status } : {}),\n",
 		anchor: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
 		patched: "\t\t\tdurationMs: job.durationMs,\n\t\t\t...(job.status ? { status: job.status } : {}),\n\t\t\t...(job.meta ? { meta: job.meta } : {}),\n",
+		alternates: [{
+			file: "src/session/async-job-delivery.ts",
+			requires: "\tstatus?: AsyncJob[\"status\"];\n\tagentId?: string;\n",
+			marker: "\t\t\tstatus: job.status,\n\t\t\tagentId: job.agentId,\n",
+			anchor: "\t\t\tstatus: job.status,\n\t\t\tagentId: job.agentId,\n",
+			patched: "\t\t\tstatus: job.status,\n\t\t\tagentId: job.agentId,\n",
+		}],
 	},
 	// 이슈 #10: extension 의 getAsyncJobSnapshot 은 인자를 받지 않고(ExtensionContext 타입·runner·sdk adapter) 기본 recent 5개만
 	// 돌려줘, 같은 owner 의 더 최근 job 5개에 밀린 취소 실행의 종료 근거(같은 실행의 cancelled·endTime)를 볼 수 없었다. options 를
@@ -11463,6 +11769,13 @@ class HarmonyLeakInterruption extends Error {`),
 		marker: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions } from \"../../session/agent-session\";",
 		anchor: "import type { AsyncJobSnapshot } from \"../../session/agent-session\";",
 		patched: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions } from \"../../session/agent-session\";",
+		// 18.9.1 은 같은 import 에 SendUserMessageOptions 를 더했다(ctx.annotations). 이름 하나만 덧붙인다(ADAPT).
+		alternates: [{
+			file: "src/extensibility/extensions/runner.ts",
+			marker: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions, SendUserMessageOptions } from \"../../session/agent-session\";",
+			anchor: "import type { AsyncJobSnapshot, SendUserMessageOptions } from \"../../session/agent-session\";",
+			patched: "import type { AsyncJobSnapshot, AsyncJobSnapshotOptions, SendUserMessageOptions } from \"../../session/agent-session\";",
+		}],
 	},
 	{
 		file: "src/extensibility/extensions/runner.ts",
@@ -11520,21 +11833,33 @@ class HarmonyLeakInterruption extends Error {`),
 		}
 `,
 	},
+	// 2026-10-11 사용자 결정: task 로 시작한 child 는 위임자의 solutionSpace 로 분류됐는데(긴 brief 의 앞부분 잡음 대신),
+	// 부모 메시지 재분류는 solutionSpace 없이 brief+메시지를 request 로 다시 읽어 그 기준을 잃었다. 시작 solutionSpace 와
+	// 지금까지의 부모 메시지를 따로 보관해 재분류도 solution_space 입력으로 한다. legacyPatched 는 r1 적용본이다.
 	{
 		file: "src/session/agent-session.ts",
-		marker: "\t#autoThinkingTurnText: string | undefined;",
+		marker: "\t#autoThinkingSolutionSpace: string | undefined;",
 		anchor: "\t#promptGeneration = 0;\n",
-		patched: `\t#promptGeneration = 0;
+		legacyPatched: `\t#promptGeneration = 0;
 	// CUELO: 이번 사용자 턴의 auto 분류 입력. 실행 중 사용자 steering·follow-up 이 이어 붙어 재판정 입력이 된다.
 	#autoThinkingTurnText: string | undefined;
+`,
+		patched: `\t#promptGeneration = 0;
+	// CUELO: 이번 사용자 턴의 auto 분류 입력. 실행 중 사용자 steering·follow-up·부모 메시지가 이어 붙어 재판정 입력이 된다.
+	#autoThinkingTurnText: string | undefined;
+	// CUELO: task 가 넘긴 solutionSpace 와 그 뒤 부모 메시지들. 있으면 부모 메시지 재분류도 solution_space 로 한다.
+	#autoThinkingSolutionSpace: string | undefined;
+	#autoThinkingParentText: string | undefined;
 `,
 	},
 	{
 		file: "src/session/agent-session.ts",
-		marker: "\t\t\tif (isUserTurn) this.#autoThinkingTurnText = expandedText;",
+		marker: "\t\t\t\tif (options?.solutionSpace?.trim()) {\n\t\t\t\t\tthis.#autoThinkingSolutionSpace = options.solutionSpace;",
 		anchor: "\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
-		// 턴 중에 auto 로 바꿔도 이전 턴 문장이 섞이지 않도록 모든 사용자 턴에서 보관한다.
-		patched: "\t\t\tif (isUserTurn) this.#autoThinkingTurnText = expandedText;\n\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
+		legacyPatched: "\t\t\tif (isUserTurn) this.#autoThinkingTurnText = expandedText;\n\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
+		// 턴 중에 auto 로 바꿔도 이전 턴 문장이 섞이지 않도록 모든 사용자 턴에서 보관한다. solutionSpace 는 새로 받을 때만
+		// 바꾸고(그때 부모 메시지 누적도 새로 시작), 없는 턴은 그대로 둔다.
+		patched: "\t\t\tif (isUserTurn) {\n\t\t\t\tthis.#autoThinkingTurnText = expandedText;\n\t\t\t\tif (options?.solutionSpace?.trim()) {\n\t\t\t\t\tthis.#autoThinkingSolutionSpace = options.solutionSpace;\n\t\t\t\t\tthis.#autoThinkingParentText = undefined;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (this.isAutoThinking && isUserTurn) {\n\t\t\t\tawait this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);",
 	},
 	{
 		// CUELO 화면의 실행 중 입력은 steer()가 아니라 prompt(..., { streamingBehavior })로 들어와 이 함수에서
@@ -11566,8 +11891,9 @@ class HarmonyLeakInterruption extends Error {`),
 	},
 	// child auto 재분류(2026-10-08 사용자 결정): Main 이 사용자 턴마다 다시 분류되듯, SubAgent 는 부모(Main)의 IRC 메시지를
 	// 받을 때마다 auto 강도를 다시 분류한다. 입력은 최초 과제(#autoThinkingTurnText)에 그 메시지를 이어 붙인 것이고(짧은
-	// "승인" 답이 강도를 무너뜨리지 않게), 결과는 그 child 의 auto 범위 안에서 오르내린다(raise-only 아님). peer 메시지·
-	// wake relay·job 결과·시스템 알림은 이 경로를 타지 않는다. 검증: core-steer-auto-thinking-test.ts [4].
+	// "승인" 답이 강도를 무너뜨리지 않게), 결과는 그 child 의 auto 범위 안에서 오르내린다(raise-only 아님). task 가
+	// solutionSpace 를 넘긴 child 는 그 solutionSpace 에 부모 메시지들을 붙여 solution_space 입력으로 분류한다(2026-10-11).
+	// peer 메시지·wake relay·job 결과·시스템 알림은 이 경로를 타지 않는다. 검증: core-steer-auto-thinking-test.ts [4]·[5].
 	{
 		file: "src/session/irc-bridge.ts",
 		marker: "\treclassifyAutoThinkingForParent(message: string): void;\n",
@@ -11599,7 +11925,7 @@ class HarmonyLeakInterruption extends Error {`),
 		file: "src/session/agent-session.ts",
 		marker: "\t#reclassifyAutoThinkingForParent(text: string): void {\n",
 		anchor: "\tasync #queueUserMessage(\n",
-		patched: `\t/**
+		legacyPatched: `\t/**
 	 * CUELO: SubAgent 가 부모 메시지를 받을 때마다 auto 강도를 다시 분류한다(Main 의 사용자 턴마다 분류와 같은 자리).
 	 * 최초 과제에 지금까지의 부모 메시지를 이어 붙여 분류하므로 짧은 답이 강도를 무너뜨리지 않고, 결과는 오르내린다.
 	 * 분류를 기다리지 않아 메시지 전달은 늦어지지 않고, 결과는 다음 모델 요청부터 쓴다. 분류 실패는 현재 강도를 둔다.
@@ -11613,6 +11939,27 @@ class HarmonyLeakInterruption extends Error {`),
 
 \tasync #queueUserMessage(
 `,
+		patched: `\t/**
+	 * CUELO: SubAgent 가 부모 메시지를 받을 때마다 auto 강도를 다시 분류한다(Main 의 사용자 턴마다 분류와 같은 자리).
+	 * 최초 과제에 지금까지의 부모 메시지를 이어 붙여 분류하므로 짧은 답이 강도를 무너뜨리지 않고, 결과는 오르내린다.
+	 * task 가 solutionSpace 를 넘긴 child 는 시작 분류와 같은 기준(solution_space)으로, 그 solutionSpace 에 지금까지의
+	 * 부모 메시지를 붙여 분류한다. 긴 brief 의 앞부분이 분류 입력을 차지해 부모 지시가 잘리는 일이 없다.
+	 * 분류를 기다리지 않아 메시지 전달은 늦어지지 않고, 결과는 다음 모델 요청부터 쓴다. 분류 실패는 현재 강도를 둔다.
+	 */
+	#reclassifyAutoThinkingForParent(text: string): void {
+		if (!this.isAutoThinking || !text.trim()) return;
+		const request = this.#autoThinkingTurnText ? \`\${this.#autoThinkingTurnText}\\n\\n\${text}\` : text;
+		this.#autoThinkingTurnText = request;
+		const parentText = this.#autoThinkingParentText ? \`\${this.#autoThinkingParentText}\\n\\n\${text}\` : text;
+		this.#autoThinkingParentText = parentText;
+		const solutionSpace = this.#autoThinkingSolutionSpace?.trim()
+			? \`\${this.#autoThinkingSolutionSpace}\\n\\nLater parent instructions:\\n\${parentText}\`
+			: undefined;
+		void this.#models.applyAutoThinkingLevel(request, this.#promptGeneration, solutionSpace);
+	}
+
+\tasync #queueUserMessage(
+`,
 	},
 	// CUELO 계정 자리(2026-10-04). upstream oauth.accounts()의 position은 활성 credential 배열 index라서,
 	// 한 계정이 인증 실패로 비활성화되면 뒤 계정이 앞 자리로 당겨진다(RIN 자리 0이 비면 MIO 계정이 RIN이 된다).
@@ -11622,6 +11969,9 @@ class HarmonyLeakInterruption extends Error {`),
 	// accounts()는 계속 활성 계정만 돌려주므로 position과 배열 index가 다를 수 있다.
 	{
 		file: "../pi-ai/src/auth/sqlite-credential-store.ts",
+		// 18.9.1 은 matchesReplacementCredential 을 JSDoc 과 함께 export 했다(isSameOAuthAccount 추가, 의미 변화 없음).
+		// helper 는 그 JSDoc 앞에 둔다(ADAPT). 두 판 적용본의 marker 가 같으므로 export 유무로 가른다.
+		excludes: "export function matchesReplacementCredential(",
 		marker: "function holdsOAuthSeat(row: AuthRow): boolean {",
 		anchor: "\nfunction matchesReplacementCredential(\n",
 		patched: `
@@ -11639,6 +11989,28 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 
 function matchesReplacementCredential(
 `,
+		alternates: [{
+			file: "../pi-ai/src/auth/sqlite-credential-store.ts",
+			requires: "export function matchesReplacementCredential(",
+			marker: "function holdsOAuthSeat(row: AuthRow): boolean {",
+			anchor: "\n/**\n * Whether upserting `incoming` replaces the active row holding `existing` (stored\n",
+			patched: `
+/**
+ * CUELO: a tombstone that keeps its account seat (\`oauth.accounts\` position) — an OAuth row
+ * disabled by an auth failure. Replacement and logout tombstones give their seat up.
+ */
+function holdsOAuthSeat(row: AuthRow): boolean {
+	return (
+		row.credential_type !== "api_key" &&
+		row.disabled_cause !== null &&
+		!/^(replaced by|deleted by user)/i.test(row.disabled_cause)
+	);
+}
+
+/**
+ * Whether upserting \`incoming\` replaces the active row holding \`existing\` (stored
+`,
+		}],
 	},
 	{
 		file: "../pi-ai/src/auth/sqlite-credential-store.ts",
@@ -12647,6 +13019,191 @@ for (const entry of EDITS) {
 		for (const key of ["anchor", "marker", "patched", "legacyPatched", "requires", "excludes"]) {
 			if (typeof candidate[key] === "string") candidate[key] = candidate[key].replaceAll("\r\n", "\n");
 		}
+	}
+}
+// 18.9.1 computer.run: upstream 이 Win.ref·desktop.ref 를 ElRef(await 하면 El, 요소 메서드를 handle 에서 바로 chain)로
+// 바꾸고 El.click 이 ClickOptions(count: 2 = 더블클릭)를 받는다. upstream ElRef 의 행동 메서드는 El 의 반환값을 버리므로
+// (`await (await this.#resolve()).press()`), `win.ref("e5").press()` 가 CUELO 행동 결과(verified·unverified·suspected_noop)
+// 대신 undefined 를 돌려준다. 18.9.1 후보는 (1) El 본문에 같은 행동 결과·재획득 패치를 얹고 click 만 ClickOptions 로,
+// (2) ElRef 행동 메서드가 결과를 돌려주게, (3) Win.ref 의 늦은 lookup 을 재획득 경로(resolveElement)로, (4) 모델이 보는
+// 타입에 ComputerElementRef 를 두고 ComputerElement.click 만 새 문구로 바꾼다(ADAPT). 몇백 줄 본문을 복제하지 않고 18.8.9
+// 후보에서 정확한 치환으로 만들며, 치환할 조각이 없으면 조용히 어긋나지 않고 여기서 실패한다.
+const COMPUTER_ELREF_1891 = `/** \`await ref("e5")\` resolves the element; its methods chain on the handle and await the lookup first. */
+class ElRef implements PromiseLike<El> {
+	readonly ref: string;
+	readonly #lookup: () => Promise<El>;
+	#element?: Promise<El>;
+
+	constructor(ref: string, lookup: () => Promise<El>) {
+		this.ref = ref;
+		this.#lookup = lookup;
+	}
+
+	#resolve(): Promise<El> {
+		this.#element ??= this.#lookup();
+		return this.#element;
+	}
+
+	// oxlint-disable-next-line unicorn/no-thenable -- the handle is awaitable by design: \`await ref("e5")\` resolves the element.
+	then<A = El, B = never>(
+		onFulfilled?: ((element: El) => A | PromiseLike<A>) | null,
+		onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+	): Promise<A | B> {
+		return this.#resolve().then(onFulfilled, onRejected);
+	}
+
+	catch<B = never>(onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<El | B> {
+		return this.#resolve().catch(onRejected);
+	}
+
+	finally(onFinally?: (() => void) | null): Promise<El> {
+		return this.#resolve().finally(onFinally);
+	}
+
+	async value(): Promise<string | undefined> {
+		return (await this.#resolve()).value();
+	}
+
+	async setValue(value: string): Promise<void> {
+		await (await this.#resolve()).setValue(value);
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		return (await this.#resolve()).bounds();
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		return (await this.#resolve()).attributes();
+	}
+
+	async actions(): Promise<string[]> {
+		return (await this.#resolve()).actions();
+	}
+
+	async perform(action: string): Promise<void> {
+		await (await this.#resolve()).perform(action);
+	}
+
+	async press(): Promise<void> {
+		await (await this.#resolve()).press();
+	}
+
+	async click(options?: ClickOptions): Promise<void> {
+		await (await this.#resolve()).click(options);
+	}
+
+	async focus(): Promise<void> {
+		await (await this.#resolve()).focus();
+	}
+
+	async parent(): Promise<El | null> {
+		return (await this.#resolve()).parent();
+	}
+
+	async children(): Promise<El[]> {
+		return (await this.#resolve()).children();
+	}
+}`;
+const COMPUTER_ELEMENT_REF_TYPE_1891 = `/** \`ref()\` result: \`await\` it for the element, or call element methods on it directly (\`win.ref("e5").click()\`). */
+interface ComputerElementRef
+	extends
+		PromiseLike<ComputerElement>,
+		Pick<
+			ComputerElement,
+			| "value"
+			| "setValue"
+			| "bounds"
+			| "attributes"
+			| "actions"
+			| "perform"
+			| "press"
+			| "click"
+			| "focus"
+			| "parent"
+			| "children"
+		> {
+	readonly ref: string;
+	catch<T = never>(onRejected?: ((reason: unknown) => T | PromiseLike<T>) | null): Promise<ComputerElement | T>;
+	finally(onFinally?: (() => void) | null): Promise<ComputerElement>;
+}`;
+{
+	const swap = (text, from, to, count = 1) => {
+		const found = text.split(from).length - 1;
+		if (found !== count) throw new Error(`18.9.1 computer 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/${count}`);
+		return text.replaceAll(from, to);
+	};
+	const upstreamElRef = COMPUTER_ELREF_1891.replaceAll("\r\n", "\n");
+	const cueloElRef = swap(
+		swap(upstreamElRef, "): Promise<void> {\n\t\tawait (await this.#resolve())", "): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve())", 5),
+		"await the lookup first. */",
+		"await the lookup first. Action methods return the element's ComputerActionResult. */",
+	);
+	const element = EDITS.find(entry => entry.marker === "class RefBook {");
+	element.alternates = [{
+		file: element.file,
+		requires: "class ElRef",
+		marker: element.marker,
+		anchor: swap(element.anchor, "\tasync click(options?: InputOptions): Promise<void> {", "\tasync click(options?: ClickOptions): Promise<void> {") + "\n\n" + upstreamElRef,
+		patched: swap(element.patched, "\tclick(options?: InputOptions): Promise<ComputerActionResult> {", "\tclick(options?: ClickOptions): Promise<ComputerActionResult> {") + "\n\n" + cueloElRef,
+	}];
+	const win = EDITS.find(entry => entry.marker === "return windowInputResult(action, this.id, options);");
+	const win1880 = win.alternates.find(candidate => candidate.requires === "async holdKeys(");
+	win.alternates.push({
+		file: win1880.file,
+		requires: "class ElRef",
+		marker: win1880.marker,
+		anchor: swap(
+			win1880.anchor,
+			"\tasync ref(ref: string): Promise<El> {\n\t\tconst { signal } = this.#getContext();\n\t\treturn new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));\n\t}",
+			"\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, async () => {\n\t\t\tconst { signal } = this.#getContext();\n\t\t\treturn new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));\n\t\t});\n\t}",
+		),
+		patched: swap(
+			win1880.patched,
+			"\tref(ref: string): Promise<El> {\n\t\treturn resolveElement(this.#session, this.#getContext, ref, this.id);\n\t}",
+			"\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, () => resolveElement(this.#session, this.#getContext, ref, this.id));\n\t}",
+		),
+	});
+	const types = EDITS.find(entry => entry.marker === "interface ComputerActionResult {");
+	const types1880 = types.alternates.find(candidate => candidate.requires === "holdKeys(keys: string[]");
+	const typeRef = COMPUTER_ELEMENT_REF_TYPE_1891.replaceAll("\r\n", "\n");
+	const inputTarget = "\n\n/** Native input helpers shared by the desktop root and window handles;";
+	types.alternates.push({
+		file: types1880.file,
+		requires: "interface ComputerElementRef",
+		marker: types1880.marker,
+		anchor: swap(
+			swap(types1880.anchor, "\t/** Click the element's center with native input. */\n\tclick(options?: ComputerInputOptions): Promise<void>;", "\t/** Click the element's center with native input; `count: 2` double-clicks. */\n\tclick(options?: ComputerClickOptions): Promise<void>;"),
+			inputTarget,
+			"\n\n" + typeRef + inputTarget,
+		),
+		patched: swap(
+			swap(types1880.patched, "\t/** Click the element's center with native input. */\n\tclick(options?: ComputerInputOptions): Promise<ComputerActionResult>;", "\t/** Click the element's center with native input; `count: 2` double-clicks. */\n\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;"),
+			inputTarget,
+			"\n\n" + typeRef + inputTarget,
+		),
+	});
+}
+// 18.9.1 MCPManager 는 deferred 전역 로더에 `static #deferred` 를 새로 둔다. JS 는 같은 class 안에서 static 과 instance
+// private 이름을 겹쳐 둘 수 없어("#deferred" has already been declared) 모듈 적재가 실패한다. 요청별 MCP 선택이 쓰는
+// instance 표(나중에 띄울 서버)의 이름만 #deferredServers 로 바꾼 18.9.1 후보를 만든다. 의미·위치는 같다(ADAPT).
+// 18.8.9 후보는 그대로라 라이브 18.8.9 --check 와 롤백이 유지된다. upstream anchor 에는 이 이름이 없다.
+{
+	const DEFERRED_1891 = "static #deferred:";
+	const instanceDeferred = /#deferred(?![A-Za-z0-9_])/;
+	const rename = text => text.replaceAll(new RegExp(instanceDeferred.source, "g"), "#deferredServers");
+	for (const entry of EDITS) {
+		if (entry.file !== "src/mcp/manager.ts" || !instanceDeferred.test(entry.patched)) continue;
+		if (entry.excludes || entry.requires || instanceDeferred.test(entry.anchor)) {
+			throw new Error(`18.9.1 MCP #deferred 후보를 만들 수 없다: ${JSON.stringify(entry.marker.slice(0, 80))}`);
+		}
+		entry.excludes = DEFERRED_1891;
+		(entry.alternates ??= []).push({
+			file: entry.file,
+			requires: DEFERRED_1891,
+			marker: rename(entry.marker),
+			anchor: entry.anchor,
+			patched: rename(entry.patched),
+		});
 	}
 }
 // These deltas amend code introduced by the original watch patch, not upstream code.

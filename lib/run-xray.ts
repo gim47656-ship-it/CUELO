@@ -13,12 +13,13 @@
 import { Database } from "bun:sqlite";
 import { syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
 import { closeDb } from "@oh-my-pi/omp-stats/db";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   EXPERIMENT_DEFAULT_SESSIONS,
   EXPERIMENT_MAX_SESSIONS,
+  HARNESS_UNKNOWN_FILTER,
   RUN_LIST_DEFAULT_LIMIT,
   RUN_LIST_MAX_LIMIT,
   RUN_ROLE_KINDS,
@@ -26,6 +27,8 @@ import {
   RUN_UNMEASURED_REASONS,
   type ExperimentConfig,
   type ExperimentConfigRole,
+  type ExperimentGroupBy,
+  type ExperimentHarnessCount,
   type ExperimentResponse,
   type ExperimentScope,
   type RunBottleneck,
@@ -151,6 +154,99 @@ export function buildConfigSignature(
     .map((role) => `${role.kind === "main" ? "main" : `${role.kind} x${role.count}`}=${role.model}:${role.effort ?? "?"}`)
     .join("|");
   return { signature, roles: sorted };
+}
+
+/** CUELO WSL 갱신 기록에서 하네스 revision을 정하는 데 쓰는 줄 하나. */
+export interface HarnessDeployEvent {
+  at: number;
+  kind: "start" | "ready" | "rolled-back" | "rollback-failed";
+  /** `start`는 갱신 전에 돌던 revision, 나머지는 그 시각부터 도는 revision. 알 수 없으면 `null`. */
+  revision: string | null;
+}
+
+/** `from`부터 다음 구간 시작 전까지 설치돼 있던 revision. `null`은 unknown이다. */
+export interface HarnessSegment {
+  from: number;
+  revision: string | null;
+}
+
+const DEPLOY_LINE_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (START old=(\S*)|READY ([0-9a-f]{40})|ROLLED_BACK ([0-9a-f]{40})|ROLLBACK_FAILED)(?:\s|$)/;
+const REVISION_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * 갱신 스크립트(`Tools/CUELO_Setup/wsl/update.sh`)가 `say`로 남긴 줄만 읽는다. 형식은
+ * `<UTC ISO 초> <단계> ...`이며 빌드 출력처럼 다른 줄은 건너뛴다. 미리 빌드 실패(`FAIL prebuild`)는
+ * 실행 중인 버전을 바꾸지 않으므로 사건이 아니다.
+ */
+export function parseHarnessDeployLog(text: string): HarnessDeployEvent[] {
+  const events: HarnessDeployEvent[] = [];
+  for (const line of text.split("\n")) {
+    const match = DEPLOY_LINE_RE.exec(line);
+    if (!match) continue;
+    const at = Date.parse(match[1]);
+    if (!Number.isFinite(at)) continue;
+    if (match[3] !== undefined) {
+      events.push({ at, kind: "start", revision: REVISION_RE.test(match[3]) ? match[3] : null });
+    } else if (match[4] !== undefined) {
+      events.push({ at, kind: "ready", revision: match[4] });
+    } else if (match[5] !== undefined) {
+      events.push({ at, kind: "rolled-back", revision: match[5] });
+    } else {
+      events.push({ at, kind: "rollback-failed", revision: null });
+    }
+  }
+  return events;
+}
+
+/**
+ * 갱신 사건을 시간 구간으로 바꾼다.
+ * - 첫 사건 이전은 구간이 없어 unknown이다.
+ * - `READY`·`ROLLED_BACK`은 그 시각부터 해당 revision, `ROLLBACK_FAILED`는 그 시각부터 unknown이다.
+ * - `START old=X`는 그 순간 X가 돌고 있었다는 증거다. 직전 구간의 revision과 다르면 기록 밖에서
+ *   버전이 바뀐 것이므로, 바뀐 시각을 모르는 직전 구간 전체를 unknown으로 내리고 X를 START부터 잇는다.
+ */
+export function buildHarnessTimeline(events: readonly HarnessDeployEvent[]): HarnessSegment[] {
+  const ordered = [...events].sort((a, b) => a.at - b.at);
+  const segments: HarnessSegment[] = [];
+  for (const event of ordered) {
+    const last = segments.at(-1);
+    if (event.kind === "start") {
+      if (last && last.revision === event.revision) continue;
+      if (last) last.revision = null;
+      segments.push({ from: event.at, revision: event.revision });
+      continue;
+    }
+    if (last && last.revision === event.revision) continue;
+    segments.push({ from: event.at, revision: event.revision });
+  }
+  return segments;
+}
+
+/** `at`에 설치돼 있던 revision. 구간 시작 시각과 같으면 그 구간이다. */
+export function harnessRevisionAt(timeline: readonly HarnessSegment[], at: number): string | null {
+  let revision: string | null = null;
+  for (const segment of timeline) {
+    if (segment.from > at) break;
+    revision = segment.revision;
+  }
+  return revision;
+}
+
+/** run들의 revision별 수. 가장 최근에 시작된 run의 revision이 먼저 온다. */
+export function countHarnesses(
+  runs: ReadonlyArray<{ harnessRevision: string | null; startedAt: number }>,
+): ExperimentHarnessCount[] {
+  const counts = new Map<string | null, { runCount: number; lastSeenAt: number }>();
+  for (const run of runs) {
+    const entry = counts.get(run.harnessRevision) ?? { runCount: 0, lastSeenAt: run.startedAt };
+    entry.runCount += 1;
+    entry.lastSeenAt = Math.max(entry.lastSeenAt, run.startedAt);
+    counts.set(run.harnessRevision, entry);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1].lastSeenAt - a[1].lastSeenAt)
+    .map(([revision, entry]) => ({ revision, runCount: entry.runCount }));
 }
 
 /** 빈 배열이면 0, 짝수면 두 중앙값의 평균. */
@@ -380,6 +476,42 @@ function openStatsDb(): Database | null {
   const path = join(homedir(), ".omp", "stats.db");
   if (!existsSync(path)) return null;
   return new Database(path, { readonly: true });
+}
+
+/** 갱신 기록 파일별 파싱 결과. 끝난 갱신의 기록은 바뀌지 않으므로 크기·수정 시각이 같으면 다시 읽지 않는다. */
+const deployLogCache = new Map<string, { size: number; mtimeMs: number; events: HarnessDeployEvent[] }>();
+const DEPLOY_LOG_NAME_RE = /^\d{8}T\d{6}Z\.log$/;
+
+/**
+ * 이 PC의 WSL 갱신 기록(`~/.omp/wsl-update/<UTC>.log`)으로 하네스 시간선을 만든다. 폴더가 없거나
+ * 읽지 못하면 빈 시간선이며, 그러면 모든 run이 unknown이다.
+ */
+function loadHarnessTimeline(): HarnessSegment[] {
+  const dir = join(homedir(), ".omp", "wsl-update");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => DEPLOY_LOG_NAME_RE.test(name)).sort();
+  } catch {
+    return [];
+  }
+  const events: HarnessDeployEvent[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      const stat = statSync(path);
+      const cached = deployLogCache.get(path);
+      if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+        events.push(...cached.events);
+        continue;
+      }
+      const parsed = parseHarnessDeployLog(readFileSync(path, "utf8"));
+      deployLogCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, events: parsed });
+      events.push(...parsed);
+    } catch {
+      // 읽는 도중 사라진 파일은 건너뛴다. 그 구간은 다음 START의 old 대조로 unknown이 된다.
+    }
+  }
+  return buildHarnessTimeline(events);
 }
 
 let statsSync: Promise<void> | null = null;
@@ -695,7 +827,7 @@ function buildToolTotals(rows: ToolCallRow[]): RunToolTotal[] {
  * 마지막 run의 끝은 관측된 요청 종료 시각과 도구 기록 시각의 최댓값이다.
  * 다음 사용자 요청까지의 창은 사용자 유휴를 포함하며 작업 완료 시간과 다르다.
  */
-function buildSessionRuns(data: SessionData): RunDetail[] {
+function buildSessionRuns(data: SessionData, harness: readonly HarnessSegment[] = []): RunDetail[] {
   if (data.users.length === 0) return [];
   const messageBuckets: MessageRow[][] = data.users.map(() => []);
   for (const row of data.messages) {
@@ -830,6 +962,7 @@ function buildSessionRuns(data: SessionData): RunDetail[] {
       estimatedCostUsd,
       unpricedRequests,
       configSignature: built.signature,
+      harnessRevision: harnessRevisionAt(harness, windowStart),
       roles,
       bottlenecks: pickBottlenecks(
         roles.map((role) => ({ id: role.id, ms: role.busyMs })),
@@ -908,7 +1041,7 @@ export function listRuns(sessionId: string, limit: number = RUN_LIST_DEFAULT_LIM
   try {
     const parentFile = resolveParentSessionFile(db, sessionId);
     if (!parentFile) return { sessionId, runs: [], unmeasured: [] };
-    const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile));
+    const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile), loadHarnessTimeline());
     details.sort((a, b) => b.startedAt - a.startedAt || b.index - a.index);
     const picked = details.slice(0, clamped);
     return {
@@ -929,6 +1062,7 @@ export function listRuns(sessionId: string, limit: number = RUN_LIST_DEFAULT_LIM
         estimatedCostUsd: detail.estimatedCostUsd,
         unpricedRequests: detail.unpricedRequests,
         configSignature: detail.configSignature,
+        harnessRevision: detail.harnessRevision,
       })),
       unmeasured: unionUnmeasured(picked),
     };
@@ -947,7 +1081,7 @@ export function getRunDetail(sessionId: string, entryId: string): RunDetail {
   try {
     const parentFile = resolveParentSessionFile(db, sessionId);
     if (!parentFile) throw new RunXrayError("기록을 찾을 수 없습니다.", 404);
-    const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile));
+    const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile), loadHarnessTimeline());
     const found = details.find((detail) => detail.entryId === entryId);
     if (!found) throw new RunXrayError("기록을 찾을 수 없습니다.", 404);
     return found;
@@ -959,11 +1093,16 @@ export function getRunDetail(sessionId: string, entryId: string): RunDetail {
 /**
  * `GET /api/experiments` — 구성을 `configSignature`로 묶어 비교한다.
  * `scope`가 `attributed`면 역할을 하나라도 확정하지 못한 run을 그룹화 전에 뺀다.
+ * `groupBy`가 `harness`면 같은 구성을 하네스 revision별로 나눈다(기본 `config`는 기존 묶음 그대로).
+ * `harness`(40자 revision 또는 `unknown`)를 주면 그 revision의 run만 센다. 선택지(`harnesses`)는
+ * 범위 필터 뒤·하네스 필터 전 run으로 만든다.
  */
 export function listExperiments(
   folder: string | null,
   sessionLimit: number = EXPERIMENT_DEFAULT_SESSIONS,
   scope: ExperimentScope = "all",
+  groupBy: ExperimentGroupBy = "config",
+  harness: string | null = null,
 ): ExperimentResponse {
   const clamped = Math.min(Math.max(Math.floor(sessionLimit), 1), EXPERIMENT_MAX_SESSIONS);
   const db = openStatsDb();
@@ -976,6 +1115,9 @@ export function listExperiments(
       runCount: 0,
       sessionCount: 0,
       excludedRunCount: 0,
+      groupBy,
+      harness,
+      harnesses: [],
       unmeasured: [],
     };
   }
@@ -1016,7 +1158,9 @@ export function listExperiments(
       .filter((file) => PARENT_TRANSCRIPT_RE.test(file))
       .slice(0, clamped);
 
-    const grouped = new Map<string, { roles: ExperimentConfigRole[]; runs: RunDetail[] }>();
+    const grouped = new Map<string, { signature: string; roles: ExperimentConfigRole[]; runs: RunDetail[] }>();
+    const harnessTimeline = loadHarnessTimeline();
+    const scopedRuns: RunDetail[] = [];
     // `attributed`는 역할 판정이 끝난 run만 남긴다. 제외 수를 세어 두면 화면이
     // "무엇을 빼고 센 값인지"를 숫자로 말할 수 있다.
     let sessionCount = 0;
@@ -1027,7 +1171,7 @@ export function listExperiments(
       const sessionId = base.endsWith(".jsonl")
         ? base.slice(0, -".jsonl".length).split("_").slice(1).join("_")
         : "";
-      const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile));
+      const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile), harnessTimeline);
       let contributed = false;
       for (const detail of details) {
         // 역할이 없거나 확정하지 못한 run은 비교할 역할 체계가 없다. 그룹화 전에 뺀다.
@@ -1035,21 +1179,29 @@ export function listExperiments(
           excludedRunCount += 1;
           continue;
         }
+        scopedRuns.push(detail);
+        if (harness !== null
+          && (harness === HARNESS_UNKNOWN_FILTER ? detail.harnessRevision !== null : detail.harnessRevision !== harness)) {
+          continue;
+        }
         contributed = true;
-        const existing = grouped.get(detail.configSignature);
+        const key = groupBy === "harness"
+          ? JSON.stringify([detail.configSignature, detail.harnessRevision])
+          : detail.configSignature;
+        const existing = grouped.get(key);
         if (existing) {
           existing.runs.push(detail);
         } else {
           const built = buildConfigSignature(
             detail.roles.map((role) => ({ kind: role.kind, models: role.models, efforts: role.efforts })),
           );
-          grouped.set(detail.configSignature, { roles: built.roles, runs: [detail] });
+          grouped.set(key, { signature: detail.configSignature, roles: built.roles, runs: [detail] });
         }
       }
       if (contributed) sessionCount += 1;
     }
 
-    const configs: ExperimentConfig[] = [...grouped.entries()].map(([signature, group]) => {
+    const configs: ExperimentConfig[] = [...grouped.values()].map((group) => {
       const runs = group.runs;
       const wallClocks = runs.map((run) => run.wallClockMs);
       const busies = runs.map((run) => run.busyMs);
@@ -1057,7 +1209,7 @@ export function listExperiments(
       const costs = runs.map((run) => run.estimatedCostUsd);
       const starts = runs.map((run) => run.startedAt);
       return {
-        signature,
+        signature: group.signature,
         roles: group.roles,
         runCount: runs.length,
         medianWallClockMs: median(wallClocks),
@@ -1072,9 +1224,30 @@ export function listExperiments(
         childRunsAvg: runs.reduce((sum, run) => sum + run.childCount, 0) / runs.length,
         firstSeenAt: Math.min(...starts),
         lastSeenAt: Math.max(...starts),
+        harnesses: countHarnesses(runs),
       };
     });
-    configs.sort((a, b) => b.runCount - a.runCount || b.lastSeenAt - a.lastSeenAt);
+    if (groupBy === "harness") {
+      // 같은 구성의 하네스별 묶음을 나란히 둔다. 구성 순서는 기본 보기와 같은 규칙(run 수, 최근 사용)이고
+      // 그 안에서는 최근 하네스가 먼저 온다.
+      const bySignature = new Map<string, { runCount: number; lastSeenAt: number }>();
+      for (const config of configs) {
+        const total = bySignature.get(config.signature) ?? { runCount: 0, lastSeenAt: config.lastSeenAt };
+        total.runCount += config.runCount;
+        total.lastSeenAt = Math.max(total.lastSeenAt, config.lastSeenAt);
+        bySignature.set(config.signature, total);
+      }
+      configs.sort((a, b) => {
+        const left = bySignature.get(a.signature) ?? { runCount: a.runCount, lastSeenAt: a.lastSeenAt };
+        const right = bySignature.get(b.signature) ?? { runCount: b.runCount, lastSeenAt: b.lastSeenAt };
+        return right.runCount - left.runCount
+          || right.lastSeenAt - left.lastSeenAt
+          || (a.signature < b.signature ? -1 : a.signature > b.signature ? 1 : 0)
+          || b.lastSeenAt - a.lastSeenAt;
+      });
+    } else {
+      configs.sort((a, b) => b.runCount - a.runCount || b.lastSeenAt - a.lastSeenAt);
+    }
 
     const allRuns = [...grouped.values()].flatMap((group) => group.runs);
     return {
@@ -1085,6 +1258,9 @@ export function listExperiments(
       runCount: allRuns.length,
       sessionCount,
       excludedRunCount,
+      groupBy,
+      harness,
+      harnesses: countHarnesses(scopedRuns),
       unmeasured: unionUnmeasured(allRuns),
     };
   } finally {

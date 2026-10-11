@@ -211,15 +211,20 @@ export function resolveSubagentModelMeta(record: MergedSubagentRecord): Subagent
   const sameRunArchive = record.archive && (record.identity === "archive" || record.archiveMatch === "session-file")
     ? record.archive
     : undefined;
-  // Live snapshots carry no thinking level, so effort is only observed when
-  // this run's own archive file was read.
+  // The live snapshot's `resolvedThinkingLevel` is the level this run's last
+  // served turn used (before the first turn, the level currently applied); the
+  // same value is the `:<level>` suffix of `resolvedModel`. Older cores omit it,
+  // and then only this run's own archive file is evidence.
+  const liveEffort = typeof progress?.resolvedThinkingLevel === "string" ? progress.resolvedThinkingLevel.trim() : "";
   const archiveEffort = typeof sameRunArchive?.thinkingLevel === "string" ? sameRunArchive.thinkingLevel.trim() : "";
   if (liveModel) {
+    const tail = liveModel.split("/").pop() || liveModel;
     return {
       model: liveModel,
-      modelShort: liveModel.split("/").pop() || liveModel,
+      // effort shows the level on its own, so drop the selector's repeat of it.
+      modelShort: liveEffort && tail.endsWith(`:${liveEffort}`) ? tail.slice(0, -(liveEffort.length + 1)) : tail,
       modelIsFallback: progress?.resolvedModelIsFallback === true,
-      effort: archiveEffort || null,
+      effort: liveEffort || archiveEffort || null,
     };
   }
   const archiveModel = typeof sameRunArchive?.model === "string" ? sameRunArchive.model.trim() : "";

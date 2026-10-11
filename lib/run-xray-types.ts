@@ -175,8 +175,14 @@ export interface RunSummary {
   totalTokens: number;
   estimatedCostUsd: number;
   unpricedRequests: number;
-  /** 이 run의 구성 서명. Experiment Lab의 묶음 키와 같은 규칙이다. */
+  /** 이 run의 구성 서명. Experiment Lab의 묶음 키와 같은 규칙이다. 하네스는 들어가지 않는다. */
   configSignature: string;
+  /**
+   * run 시작 시각에 설치돼 있던 CUELO 하네스 revision(40자 commit). WSL 갱신 기록
+   * (`START old=`·`READY`·`ROLLED_BACK`·`ROLLBACK_FAILED`)으로만 정하며, 첫 기록 이전·기록 밖에서
+   * 바뀐 구간·기록이 없는 PC는 `null`(unknown)이다. 추정하지 않는다.
+   */
+  harnessRevision: string | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -202,6 +208,28 @@ export interface ExperimentConfigRole {
   model: string;
   effort: string | null;
   count: number;
+}
+
+/**
+ * Experiment Lab 묶음 기준. `config`(기본)는 구성 서명만으로, `harness`는 구성 서명 x
+ * 하네스 revision으로 묶는다.
+ */
+export const EXPERIMENT_GROUP_BYS = ["config", "harness"] as const;
+export type ExperimentGroupBy = (typeof EXPERIMENT_GROUP_BYS)[number];
+
+/** 하네스 필터에서 "기록으로 정하지 못한 run"을 가리키는 값. */
+export const HARNESS_UNKNOWN_FILTER = "unknown";
+
+/** 구성 비교의 보기 선택. `harness`는 40자 revision, `unknown`, 또는 전체(`null`)다. */
+export interface ExperimentView {
+  groupBy: ExperimentGroupBy;
+  harness: string | null;
+}
+
+/** 하네스 revision별 run 수. `revision`이 `null`이면 unknown이다. 최근에 쓰인 revision이 먼저 온다. */
+export interface ExperimentHarnessCount {
+  revision: string | null;
+  runCount: number;
 }
 
 /**
@@ -233,6 +261,10 @@ export interface ExperimentConfig {
   childRunsAvg: number;
   firstSeenAt: number;
   lastSeenAt: number;
+  /**
+   * 이 묶음의 run이 어떤 하네스 revision에서 돌았는지. `groupBy=harness`면 항목이 하나다.
+   */
+  harnesses: ExperimentHarnessCount[];
 }
 
 export interface ExperimentResponse {
@@ -250,6 +282,12 @@ export interface ExperimentResponse {
   sessionCount: number;
   /** `scope`가 `attributed`라서 뺀 run 수. `all`이면 0이다. */
   excludedRunCount: number;
+  /** 실제로 적용된 묶음 기준. 알 수 없는 요청 값은 `config`로 떨어진다. */
+  groupBy: ExperimentGroupBy;
+  /** 실제로 적용된 하네스 필터(40자 revision 또는 `unknown`). 전체면 `null`. */
+  harness: string | null;
+  /** 범위 필터 뒤·하네스 필터 전 run의 revision별 수. 하네스 선택지다. */
+  harnesses: ExperimentHarnessCount[];
   unmeasured: RunUnmeasuredReason[];
 }
 

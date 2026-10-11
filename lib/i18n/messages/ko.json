@@ -860,5 +860,11 @@
  "efficiency.scopeAll": "전체 기록",
  "efficiency.scopeSessions": "집계 세션",
  "efficiency.scopeRuns": "집계 run",
- "efficiency.scopeExcludedRuns": "제외된 run"
+ "efficiency.scopeExcludedRuns": "제외된 run",
+ "efficiency.harness": "하네스",
+ "efficiency.harnessValue": "하네스 {value}",
+ "efficiency.harnessUnknown": "unknown",
+ "efficiency.harnessAll": "모든 하네스",
+ "efficiency.groupByHarness": "하네스별로 나누기",
+ "efficiency.harnessNote": "하네스는 run 시작 시점에 설치돼 있던 CUELO 버전입니다. 이 PC의 업데이트 기록으로만 정하며, 기록이 없거나 기록 밖에서 바뀐 구간은 unknown입니다."
 }

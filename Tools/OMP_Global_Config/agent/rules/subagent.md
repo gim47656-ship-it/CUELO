@@ -43,15 +43,12 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
-  비-UI NORMAL은 기존 단일 Jev 배치에서 `normalFit`(SONNET·SOL·UNKNOWN)을 과제별로 독립 판단한다.
+  비-UI NORMAL은 2026-10-11 사용자 결정에 따라 과제 성격과 무관하게 `NORMAL_SONNET`(Sonnet)을 추천한다. 과제별 모델 적합성 판단은 하지 않는다.
   `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 2026-10-11 사용자 지시로 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6-astra:auto`다. Sol의 과거 평가 수치를 Astra의 성능 증거로 옮기지 않는다.
-  `normalFitCriteria`가 정본이며 구조화된 사실·확정 구현·재사용 패턴·남은 판단·검사만 근거로 삼는다.
-  요구 해석·문서/정책 일관성·증거 간 의미 비교가 중심이면 Sonnet, 명세·입출력 또는 재현과 실행 가능한
-  수용 검사가 명확한 구현·버그 수정이면 코드 후보 Astra를 지지할 수 있다. 이는 부드러운 운영 가설이지 검증된 능력 순위나
-  확장자·언어·복잡도 규칙이 아니다. 근거 부족·혼합·불명은 보수적 Sonnet 기본을 유지한다.
-  사용 가능한 코드 후보는 Sonnet 소진 없이 추천할 수 있고, 이 과제 적합성 추천에는 `ROUTING_REASON`이 필요하지 않다.
-  우선 후보가 사용 불가·관측 소진이면 다른 일반 후보를 먼저 확인하고 둘 다 쓸 수 없으면 `NORMAL_DEEPSEEK`를 추천한다.
-  오늘 몫·한도 여유·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다. `normalAllocation.basis`를 Main에게 돌려준다.
+  코드 후보 Astra(`NORMAL_SOL`)는 Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측됐을 때만 대체로 추천하고,
+  Astra도 쓸 수 없으면 `NORMAL_DEEPSEEK`, 셋 다 쓸 수 없으면 후보 없음(null)이다.
+  오늘 몫·한도 여유·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
+  Sonnet이 사용 가능한데 Main이 `NORMAL_SOL`을 고르면 추천 변경이므로 `ROUTING_REASON`이 필요하다.
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.
   HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.

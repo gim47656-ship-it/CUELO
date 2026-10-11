@@ -867,5 +867,11 @@ export const zhCNLocale: LocalePlugin = {
     "efficiency.scopeSessions": "纳入会话",
     "efficiency.scopeRuns": "纳入 run",
     "efficiency.scopeExcludedRuns": "已排除 run",
+    "efficiency.harness": "Harness",
+    "efficiency.harnessValue": "Harness {value}",
+    "efficiency.harnessUnknown": "unknown",
+    "efficiency.harnessAll": "全部 harness",
+    "efficiency.groupByHarness": "按 harness 拆分",
+    "efficiency.harnessNote": "Harness 指 run 开始时已安装的 CUELO 版本，只根据本机的更新记录确定；没有记录或在记录之外变更的区间显示为 unknown。",
   },
 };

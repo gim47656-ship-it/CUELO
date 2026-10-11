@@ -9,140 +9,46 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.10.8',
+    version: '0.10.9',
     distribution: 'cuelo',
-    coreVersion: '18.8.9',
+    coreVersion: '18.9.1',
 };
 
-// OMP core 18.4.12 `src/sdk.ts`: session-scoped AsyncJobManager for a process
-// that hosts several top-level sessions (CUELO opens one per browser session).
-// Upstream lets only the first top-level session construct a manager; every
-// later one got `asyncJobManager: undefined`, so its `task` calls logged
-// "no AsyncJobManager registered; falling back to sync execution" and blocked
-// the prompt until the subagent finished. Sharing the first manager is not a
-// fix: it is disposed with its owning session (CUELO idle-shuts sessions
-// after 10 minutes) and would cancel every other session's jobs, and a
-// disposed manager throws on the next register(). Each edit is an exact text
-// anchor of the pristine 18.4.12 source (also present after core patch) and fails closed when it drifts.
-// `insertBefore` edits keep their anchor (the helper is inserted in front of
-// it), so their anchor count stays 1 after patching.
+// OMP core `src/sdk.ts`: session-scoped AsyncJobManager for a process that hosts
+// several top-level sessions (CUELO opens one per browser session). Up to core
+// 18.8.9 this script rewrote sdk.ts so every top-level session owned a manager and
+// children inherited their parent's. Core 18.9.0 (#15229) ships that contract
+// itself: every root builds its own manager, children receive the parent's exact
+// manager through `options.asyncJobManager`, and only the first root is adopted as
+// the process singleton (its owner clears it on dispose). The script no longer
+// edits sdk.ts; it verifies that each upstream line below is present exactly once
+// and fails closed when the pinned core drifts. native-runtime-behavior-test.ts
+// covers the behaviour itself.
 const SDK_FILE = path.join('node_modules', '@oh-my-pi', 'pi-coding-agent', 'src', 'sdk.ts');
-const SDK_HELPER = [
-    '/**',
-    ' * CUELO: session-scoped async job managers for a host that keeps several',
-    ' * top-level sessions in one process (CUELO opens one per browser session).',
-    ' *',
-    ' * Upstream lets only the first top-level session construct a manager and',
-    ' * leaves every later top-level session without one, so their `task` calls fell',
-    ' * back to blocking execution ("no AsyncJobManager registered"). Sharing the',
-    ' * first manager is not an option either: it is disposed with its owning session',
-    ' * and would cancel every other session\'s jobs. Instead every top-level session',
-    ' * owns a manager that its own dispose tears down; the first one is adopted as',
-    ' * the process singleton atomically here and never re-installed by a later',
-    ' * session, so the fallback below stays stable. Subagents inherit the manager of',
-    ' * the parent that spawned them, resolved through the agent registry by',
-    ' * `parentAgentId`, so a child\'s jobs live and die with its own root session;',
-    ' * orphaned or revived children without a live parent keep the singleton',
-    ' * fallback.',
-    ' */',
-    'export function resolveSessionAsyncJobManager(',
-    '\toptions: Pick<CreateAgentSessionOptions, "parentTaskPrefix" | "parentAgentId">,',
-    '\tagentRegistry: AgentRegistry,',
-    '\tmaxRunningJobs: number | (() => number),',
-    '): { owned: AsyncJobManager | undefined; scoped: AsyncJobManager | undefined } {',
-    '\tif (options.parentTaskPrefix) {',
-    '\t\tconst parentManager = options.parentAgentId',
-    '\t\t\t? agentRegistry.get(options.parentAgentId)?.session?.asyncJobManager',
-    '\t\t\t: undefined;',
-    '\t\treturn { owned: undefined, scoped: parentManager ?? AsyncJobManager.instance() };',
-    '\t}',
-    '\tconst owned = new AsyncJobManager({ maxRunningJobs });',
-    '\tif (!AsyncJobManager.instance()) AsyncJobManager.setInstance(owned);',
-    '\treturn { owned, scoped: owned };',
-    '}',
-    '',
-].join('\n');
-const SDK_EDITS = [
+const SDK_UPSTREAM = [
     {
-        key: 'sessionAsyncHelper',
-        label: 'sdk.ts resolveSessionAsyncJobManager helper',
-        insertBefore: true,
-        anchor: '/**\n * Create an AgentSession with the specified options.\n',
-        marker: 'export function resolveSessionAsyncJobManager(',
-        patched: SDK_HELPER + '/**\n * Create an AgentSession with the specified options.\n',
+        key: 'sessionAsyncChildOption',
+        text: [
+            '\t/** Parent\'s async jobs and delivery sinks; child sessions never resolve a process-global manager. */',
+            '\tasyncJobManager?: AsyncJobManager;',
+            '',
+        ].join('\n'),
     },
     {
         key: 'sessionAsyncOwnership',
-        label: 'sdk.ts per-session AsyncJobManager ownership',
-        anchor: [
-            '\t// Only the first top-level session in a process owns an AsyncJobManager.',
-            '\t// Subagents inherit the parent\'s manager via `AsyncJobManager.instance()`',
-            '\t// (set below), and any additional top-level session spun up in-process',
-            '\t// (e.g. the agent-creation architect in `agents-hub-deps.ts`) must share',
-            '\t// the live singleton \u2014 otherwise its dispose path would clobber the',
-            '\t// owning session\'s manager and break the `task`/`bash` async paths',
-            '\t// (issue #1923). The `instance()` guard means later sessions also skip',
-            '\t// constructing an orphaned manager that nothing would ever route to.',
-            '\t// Delivery is owner-routed: every AgentSession registers its own sink',
-            '\t// (see session/async-job-delivery.ts), so the manager takes no default',
-            '\t// onJobComplete here.',
-            '\tconst asyncJobManager =',
-            '\t\t!options.parentTaskPrefix && !AsyncJobManager.instance()',
-            '\t\t\t? new AsyncJobManager({',
-            '\t\t\t\t\t// Re-read per capacity check so `async.maxJobs` resizes the cap live.',
-            '\t\t\t\t\tmaxRunningJobs: () => Math.min(100, cfgAsyncMaxJobs.get(settings)),',
-            '\t\t\t\t})',
-            '\t\t\t: undefined;',
-            '',
-            '\tconst scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);',
-            '',
-            '\tconst agentRegistry = options.agentRegistry ?? AgentRegistry.global();',
-            '',
-        ].join('\n'),
-        marker: '} = resolveSessionAsyncJobManager(',
-        patched: [
-            '\t// Delivery is owner-routed: every AgentSession registers its own sink',
-            '\t// (see session/async-job-delivery.ts), so the manager takes no default',
-            '\t// onJobComplete here. Ownership and inheritance: resolveSessionAsyncJobManager.',
-            '\tconst agentRegistry = options.agentRegistry ?? AgentRegistry.global();',
-            '\tconst { owned: asyncJobManager, scoped: scopedAsyncJobManager } = resolveSessionAsyncJobManager(',
-            '\t\toptions,',
-            '\t\tagentRegistry,',
-            '\t\t// Re-read per capacity check so `async.maxJobs` resizes the cap live.',
-            '\t\t() => Math.min(100, cfgAsyncMaxJobs.get(settings)),',
-            '\t);',
-            '',
-        ].join('\n'),
-    },
-    {
-        key: 'sessionAsyncToolSession',
-        label: 'sdk.ts ToolSession asyncJobManager comment',
-        anchor: [
-            '\t\t\t// Subagents inherit the singleton (the parent\'s manager) so their bash/task',
-            '\t\t\t// completions still flow into the spawning conversation\'s yieldQueue.',
-            '\t\t\t// Secondary in-process top-level sessions (no parentTaskPrefix, no',
-            '\t\t\t// constructed manager because the singleton was already installed) leave',
-            '\t\t\t// this undefined so tools and session job snapshots refuse async work',
-            '\t\t\t// instead of silently routing into the owning session (issue #1923).',
-            '\t\t\tasyncJobManager: scopedAsyncJobManager,',
-            '',
-        ].join('\n'),
-        marker: '// Session-scoped: a top-level session\'s own manager',
-        patched: [
-            '\t\t\t// Session-scoped: a top-level session\'s own manager, or for subagents the',
-            '\t\t\t// manager of the root session that spawned them (see',
-            '\t\t\t// resolveSessionAsyncJobManager), so bash/task completions flow into their',
-            '\t\t\t// own conversation and never into another session\'s.',
-            '\t\t\tasyncJobManager: scopedAsyncJobManager,',
+        text: [
+            '\tconst asyncJobManager = !options.parentTaskPrefix',
+            '\t\t? new AsyncJobManager({',
+            '\t\t\t\tmaxRunningJobs: () => Math.min(100, cfgAsyncMaxJobs.get(settings)),',
+            '\t\t\t})',
+            '\t\t: undefined;',
+            '\tconst scopedAsyncJobManager = asyncJobManager ?? options.asyncJobManager;',
             '',
         ].join('\n'),
     },
     {
         key: 'sessionAsyncSingleton',
-        label: 'sdk.ts first-top-level-only singleton adoption',
-        anchor: '\t\t\tif (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);\n',
-        marker: '// Process singleton adoption happened in resolveSessionAsyncJobManager',
-        patched: '\t\t\t// Process singleton adoption happened in resolveSessionAsyncJobManager (first top-level only).\n',
+        text: '\t\t\tif (asyncJobManager && !AsyncJobManager.instance()) AsyncJobManager.setInstance(asyncJobManager);\n',
     },
 ];
 
@@ -177,7 +83,7 @@ function readNativePackage(target) {
         throw new Error(`unexpected native package ${packageJson.name}@${packageJson.version}`);
     }
     if (!build || build.distribution !== EXPECTED.distribution || build.coreVersion !== EXPECTED.coreVersion) {
-        throw new Error('native cueloBuild metadata does not match cuelo / core 18.8.9');
+        throw new Error('native cueloBuild metadata does not match cuelo / core 18.9.1');
     }
     return packageJson;
 }
@@ -240,7 +146,7 @@ function inspect(target, expectPatched) {
         }
     }
 
-    const sdkChecks = inspectSdk(target, expectPatched, errors, writes);
+    const sdkChecks = inspectSdk(target, errors);
 
     return {
         errors,
@@ -257,41 +163,19 @@ function occurrences(text, needle) {
     return text.split(needle).length - 1;
 }
 
-// All sdk.ts edits are applied to one text in sequence and written once. Each edit
-// must find its anchor exactly once (pristine) or its marker exactly once
-// (patched); any other count is a drift of the pinned core and fails closed.
-function inspectSdk(target, expectPatched, errors, writes) {
+// sdk.ts is verified, never written: each upstream line must appear exactly once in
+// both apply and check mode; any other count is a drift of the pinned core.
+function inspectSdk(target, errors) {
     const sdkFile = path.join(target, SDK_FILE);
     const checks = {};
-    if (!fs.existsSync(sdkFile)) {
-        errors.push('MISSING core sdk source: ' + sdkFile);
-        for (const edit of SDK_EDITS) {
-            checks[edit.key] = { patched: 0, raw: 0, expectedPatched: 1, expectedRaw: edit.insertBefore ? 1 : 0 };
+    const text = fs.existsSync(sdkFile) ? fs.readFileSync(sdkFile, 'utf8') : undefined;
+    if (text === undefined) errors.push('MISSING core sdk source: ' + sdkFile);
+    for (const line of SDK_UPSTREAM) {
+        const present = text === undefined ? 0 : occurrences(text, line.text);
+        checks[line.key] = { present, expected: 1 };
+        if (text !== undefined && present !== 1) {
+            errors.push(`SDK ${line.key} upstream count ${present}, expected exactly 1`);
         }
-        return checks;
-    }
-    const original = fs.readFileSync(sdkFile, 'utf8');
-    let text = original;
-    for (const edit of SDK_EDITS) {
-        const patched = occurrences(text, edit.marker);
-        const raw = occurrences(text, edit.anchor);
-        const expectedRaw = edit.insertBefore ? 1 : 0;
-        checks[edit.key] = { patched, raw, expectedPatched: 1, expectedRaw };
-        if (expectPatched) {
-            if (patched !== 1 || raw !== expectedRaw) {
-                errors.push(`SDK ${edit.key} patched/raw count ${patched}/${raw}, expected 1/${expectedRaw}`);
-            }
-            continue;
-        }
-        if (patched === 1 && raw === expectedRaw) continue;
-        if (patched !== 0 || raw !== 1) {
-            errors.push(`SDK ${edit.key} anchor/marker count ${raw}/${patched}, expected exactly 1/0`);
-            continue;
-        }
-        text = text.replace(edit.anchor, () => edit.patched);
-    }
-    if (!expectPatched && text !== original) {
-        writes.push({ file: sdkFile, text, label: 'sdk.ts session-scoped AsyncJobManager' });
     }
     return checks;
 }

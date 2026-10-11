@@ -2791,11 +2791,13 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 	const recallQueries: string[] = [];
 	const lessonRow = { id: "lesson-ps-dollar", content: "PowerShell -Command 안의 $변수는 바깥 셸에 먹힌다", source: "coding-agent-learn", timestamp: "2026-09-25T00:00:00Z", score: 1 };
 	const parentState = {
-		config: { autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 2, recallMaxQueryChars: 2000 },
-		scoped: {
-			recall: [{ bank: "bank", memory: { recallEnhanced: async (query: string) => { recallQueries.push(query); return [lessonRow]; } } }],
-			retain: { bank: "bank" },
-		},
+		// 18.9.1 첫 턴 회상은 회상 범위(bank·db 경로)로 transcript 의 저장본을 먼저 찾는다. 공유 bank 하나면 core 모듈 없이 dbPath 로 정해진다.
+		config: { autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 2, recallMaxQueryChars: 2000, bank: "bank", globalBank: "bank", dbPath: csJoin(fixtureRoot, "child-recall.db") },
+		// 18.9.1 은 회상한 기억을 범위 안 저장소에서 다시 찾아(memory.get) 변경 보고 대상으로 삼는다. 그 조회는 이 검사 밖이라 null 이다.
+		scoped: (() => {
+			const target = { bank: "bank", memory: { recallEnhanced: async (query: string) => { recallQueries.push(query); return [lessonRow]; }, get: () => null } };
+			return { recall: [target], retain: target };
+		})(),
 		lastRecallSnippet: "PARENT-FIRST-TURN-SNIPPET",
 	};
 	const recorded: Array<{ customType: string; data: unknown }> = [];
@@ -2803,7 +2805,7 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 		sessionId: "child-session",
 		settings: mnemopiSettings(false),
 		getXdevToolEntries: () => [],
-		sessionManager: { getEntries: () => [], appendCustomEntry: (customType: string, data: unknown) => { recorded.push({ customType, data }); return "entry"; } },
+		sessionManager: { getEntries: () => [], getBranch: () => [], appendCustomEntry: (customType: string, data: unknown) => { recorded.push({ customType, data }); return "entry"; } },
 	} as never;
 	await mnemopiBackend.start({ session: childSession, settings: mnemopiSettings(false), agentDir: "", taskDepth: 1, parentMnemopiSessionState: parentState } as never);
 	const brief = "Tools/CUELO_Setup 에서 PowerShell 스크립트를 bash 로 실행한다";
@@ -2811,9 +2813,11 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 	check("child 첫 턴은 작업 brief 로 회상한다", recallQueries.length === 1 && recallQueries[0]!.includes(brief), `queries=${JSON.stringify(recallQueries)}`);
 	check("회상 줄에 기억 id 가 실린다", staged?.context?.includes("(id: lesson-ps-dollar)") === true, `context=${JSON.stringify(staged?.context ?? null)}`);
 	check("commit 이 적용된다", staged?.commit() === true);
+	// 18.9.1 은 같은 commit 에 upstream 회상 저장본(memory_recall)도 남긴다. CUELO 의 mnemopi-recall 기록만 정확히 본다.
+	const cueloRecorded = recorded.filter(entry => entry.customType === "mnemopi-recall");
 	check(
 		"전달한 기억 id 가 세션 파일 custom entry 로 남는다(Main 단독 세션도 같은 경로)",
-		JSON.stringify(recorded) === JSON.stringify([{ customType: "mnemopi-recall", data: { ids: ["lesson-ps-dollar"] } }]),
+		JSON.stringify(cueloRecorded) === JSON.stringify([{ customType: "mnemopi-recall", data: { ids: ["lesson-ps-dollar"] } }]),
 		`recorded=${JSON.stringify(recorded)}`,
 	);
 	const childGuidance = (await mnemopiBackend.buildDeveloperInstructions("", mnemopiSettings(false), childSession)) ?? "";
@@ -3448,6 +3452,17 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		viaObserve = await run(`const el = await desktop.ref(${JSON.stringify(observeRef)}); return { ref: el.ref, from: el.reacquiredFrom, result: await el.press() };`);
 		observeActed = acted.slice(actedBeforeObserve);
 	}
+	// 18.9.1 의 ref() 는 await 없이 요소 메서드를 바로 부르는 handle(ElRef)이다. 그 chain 행동도 El 과 같은 행동 결과를 돌려줘야
+	// 한다(upstream ElRef 는 결과를 버린다). ref() 가 Promise 인 판(18.8.9)에는 chain 이 없으므로 세지 않는다.
+	const freshTree = await run(`return await (await desktop.window("w1")).ax();`);
+	const freshRef = /- button "Alpha" \[ref=(e\d+)\]/.exec(String(freshTree.payload?.returnValue))?.[1];
+	const actedBeforeChain = acted.length;
+	const chained = await run(`
+		const win = await desktop.window("w1");
+		const viaDesktop = desktop.ref(${JSON.stringify(freshRef)});
+		if (typeof viaDesktop.press !== "function") { await Promise.resolve(viaDesktop).catch(() => {}); return { absent: true }; }
+		return { desktop: await viaDesktop.press(), win: await win.ref(${JSON.stringify(freshRef)}).press() };`);
+	const chainedActed = acted.slice(actedBeforeChain);
 
 	const refusal = async (title: string, change: () => void) => {
 		onSnapshot.push(change);
@@ -3493,6 +3508,9 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		const o = (viaObserve?.payload?.returnValue ?? {}) as Reacquired;
 		check("재획득(observe 경로): observe() 의 AX 텍스트에서 고른 stale ref 도 desktop.ref 에서 같은 요소로 풀린다", viaObserve?.ok === true && observeRef !== undefined && o.from === observeRef && o.result?.reacquired?.from === observeRef && JSON.stringify(observeActed) === '["alpha"]', JSON.stringify({ observed, viaObserve, observeActed }));
 	}
+	const ch = (chained.payload?.returnValue ?? {}) as { absent?: boolean; desktop?: ActionOut; win?: ActionOut };
+	if (ch.absent) console.log("  (이 판의 ref() 는 Promise 다: ElRef chain 행동 결과 검사는 세지 않는다)");
+	else check("ElRef chain: desktop.ref(r).press()·win.ref(r).press() 도 El 과 같은 행동 결과를 돌려주고 요소에 한 번씩 닿는다", chained.ok && freshRef !== undefined && ch.desktop?.action === "press" && typeof ch.desktop?.status === "string" && ch.win?.action === "press" && typeof ch.win?.status === "string" && JSON.stringify(chainedActed) === '["alpha","alpha"]', JSON.stringify({ freshRef, chained, chainedActed }));
 	check("후보 0개: 이름이 바뀐 요소는 누르지 않고 원래 StaleRef 로 실패하며 사유를 남긴다", none.value.ok === false && none.value.message.startsWith("StaleRef: ") && none.value.name === "ToolError" && none.value.info?.reacquire?.outcome === "no-candidate" && none.value.info?.action === "press" && none.acted.length === 0, JSON.stringify(none));
 	check("모호 후보: 같은 이름·같은 부모 둘이 모두 자리를 옮기면 어느 쪽도 누르지 않는다", tie.value.ok === false && tie.value.message.startsWith("StaleRef: ") && tie.value.info?.reacquire?.outcome === "ambiguous" && tie.value.info?.reacquire?.candidates?.length === 2 && tie.acted.length === 0, JSON.stringify(tie));
 	check("부모 경로 불일치: 이름이 같아도 다른 부모 아래로 옮겨 간 요소는 누르지 않는다", moved.value.ok === false && moved.value.info?.reacquire?.outcome === "parent-mismatch" && moved.acted.length === 0, JSON.stringify(moved));

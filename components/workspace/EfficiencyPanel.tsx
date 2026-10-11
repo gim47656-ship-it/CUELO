@@ -8,14 +8,17 @@ import type { HanseEfficiencyClient } from "@/lib/hanse-efficiency-client";
 import type {
   ExperimentConfig,
   ExperimentConfigRole,
+  ExperimentHarnessCount,
   ExperimentResponse,
   ExperimentScope,
+  ExperimentView,
   RunBottleneck,
   RunDetail,
   RunOutcome,
   RunRoleSegment,
   RunSummary,
 } from "@/lib/run-xray-types";
+import { HARNESS_UNKNOWN_FILTER } from "@/lib/run-xray-types";
 import type { WorkspaceEfficiencyTab } from "@/lib/workspace-layout";
 
 export interface EfficiencyPanelProps {
@@ -87,6 +90,24 @@ function formatDurationMs(value: number | null | undefined): string {
 function formatPercent(value: number | null | undefined, digits = 0): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return `${(value * 100).toFixed(digits)}%`;
+}
+
+/** 하네스 revision의 짧은 표기(7자). 기록으로 정하지 못한 run은 `unknown`을 그대로 보인다. */
+function harnessLabel(revision: string | null, t: (key: string) => string): string {
+  return revision === null ? t("efficiency.harnessUnknown") : revision.slice(0, 7);
+}
+
+/** 묶음이 담은 하네스를 `짧은 revision ×run 수`로 최대 4개까지 잇고 나머지는 개수만 붙인다. */
+function harnessSummary(harnesses: ExperimentHarnessCount[], t: (key: string) => string): { text: string; full: string } {
+  if (harnesses.length === 1) {
+    return { text: harnessLabel(harnesses[0].revision, t), full: harnesses[0].revision ?? t("efficiency.harnessUnknown") };
+  }
+  const parts = harnesses.map((entry) => `${harnessLabel(entry.revision, t)} ×${entry.runCount}`);
+  const shown = parts.slice(0, 4).join(" · ");
+  return {
+    text: parts.length > 4 ? `${shown} · +${parts.length - 4}` : shown,
+    full: harnesses.map((entry) => `${entry.revision ?? t("efficiency.harnessUnknown")} ×${entry.runCount}`).join("\n"),
+  };
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -175,6 +196,9 @@ function RunListItem({
         <span className="efficiency-run-meta">
           <span className="font-mono tabular-nums">{t("efficiency.elapsedValue").replace("{value}", formatDurationMs(run.wallClockMs))}</span>
           <CostLine costUsd={run.estimatedCostUsd} unpriced={run.unpricedRequests} t={t} />
+          <span className="font-mono tabular-nums" title={run.harnessRevision ?? t("efficiency.harnessUnknown")}>
+            {t("efficiency.harnessValue").replace("{value}", harnessLabel(run.harnessRevision, t))}
+          </span>
         </span>
       </button>
     </li>
@@ -296,6 +320,7 @@ export function GovernorDetail({ detail, t }: {
         <dl className="m-0 grid grid-cols-2 gap-x-4">
           <Metric label={t("efficiency.estimatedCost")} value={formatMoney(detail.estimatedCostUsd)} />
           <Metric label={t("efficiency.tokens")} value={formatTokens(detail.totalTokens)} />
+          <Metric label={t("efficiency.harness")} value={harnessLabel(detail.harnessRevision, t)} />
         </dl>
         {detail.unpricedRequests > 0 ? (
           <p className="efficiency-note">{t("efficiency.unpricedLowerBound")}</p>
@@ -386,10 +411,14 @@ function ExperimentCard({
   const share = baselineRuns > 0 ? config.runCount / baselineRuns : 0;
   const reworkRate = config.runCount > 0 ? config.reworkRuns / config.runCount : 0;
   const errorRate = config.runCount > 0 ? config.errorRuns / config.runCount : 0;
+  const harness = harnessSummary(config.harnesses, t);
   return (
     <section className="efficiency-card">
       <p className="efficiency-model-line" title={configRoleSummary(config.roles)}>
         {configRoleSummary(config.roles)}
+      </p>
+      <p className="efficiency-dim font-mono tabular-nums" title={harness.full}>
+        {t("efficiency.harnessValue").replace("{value}", harness.text)}
       </p>
       <div className="efficiency-bottleneck-top">
         <span className="efficiency-dim">
@@ -455,6 +484,12 @@ export function EfficiencyPanel({
   // 토글은 화면에 올라온 응답의 범위를 그대로 가리킨다. 눌린 상태와 실제 집계가
   // 어긋나면(예: 탭을 다시 열어 기본 범위로 돌아온 뒤) 화면이 거짓말을 하게 된다.
   const scope: ExperimentScope = xray.experiments.response?.scope ?? "all";
+  // 하네스 묶음·필터도 같은 이유로 응답에 실린 값을 그대로 가리키고, 다른 조작은 이 보기를 유지한다.
+  const view: ExperimentView = {
+    groupBy: xray.experiments.response?.groupBy ?? "config",
+    harness: xray.experiments.response?.harness ?? null,
+  };
+  const harnessOptions = xray.experiments.response?.harnesses ?? [];
 
   if (!open) return null;
 
@@ -467,7 +502,7 @@ export function EfficiencyPanel({
 
   const handleRefresh = () => {
     if (activeTab === "governor") xray.refreshRuns();
-    else xray.refreshExperiments(undefined, scope);
+    else xray.refreshExperiments(undefined, scope, view);
   };
 
   const renderGovernor = () => {
@@ -541,16 +576,25 @@ export function EfficiencyPanel({
             </div>
           ) : null}
           <p className="efficiency-note">{t("efficiency.difficultyNote")}</p>
+          <p className="efficiency-note">{t("efficiency.harnessNote")}</p>
         </>
       );
     }
     return (
       <>
         <p className="efficiency-note">{t("efficiency.difficultyNote")}</p>
+        <p className="efficiency-note">{t("efficiency.harnessNote")}</p>
         <div className="efficiency-stack">
           <ScopeSummary response={response} t={t} />
           {response.configs.map((config) => (
-            <ExperimentCard key={config.signature} config={config} baselineRuns={baselineRuns} t={t} />
+            <ExperimentCard
+              key={response.groupBy === "harness"
+                ? `${config.signature}@${config.harnesses[0]?.revision ?? HARNESS_UNKNOWN_FILTER}`
+                : config.signature}
+              config={config}
+              baselineRuns={baselineRuns}
+              t={t}
+            />
           ))}
         </div>
       </>
@@ -604,7 +648,7 @@ export function EfficiencyPanel({
             onChange={(event) => {
               const next = event.target.value === "" ? null : event.target.value;
               setManualFolder(next ?? "");
-              xray.refreshExperiments(next, scope);
+              xray.refreshExperiments(next, scope, view);
             }}
           >
             <option value="">{t("efficiency.folderAll")}</option>
@@ -624,16 +668,40 @@ export function EfficiencyPanel({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 const next = manualFolder.trim() === "" ? null : manualFolder.trim();
-                xray.refreshExperiments(next, scope);
+                xray.refreshExperiments(next, scope, view);
               }
             }}
           />
+          <label className="efficiency-folder-label" htmlFor={`${tabPanelId}-harness`}>
+            {t("efficiency.harness")}
+          </label>
+          <select
+            id={`${tabPanelId}-harness`}
+            className="efficiency-folder-select font-mono"
+            value={view.harness ?? ""}
+            onChange={(event) => {
+              const harness = event.target.value === "" ? null : event.target.value;
+              xray.refreshExperiments(undefined, scope, { groupBy: view.groupBy, harness });
+            }}
+          >
+            <option value="">{t("efficiency.harnessAll")}</option>
+            {harnessOptions.map((entry) => (
+              <option key={entry.revision ?? HARNESS_UNKNOWN_FILTER} value={entry.revision ?? HARNESS_UNKNOWN_FILTER}>
+                {`${harnessLabel(entry.revision, t)} (${entry.runCount})`}
+              </option>
+            ))}
+            {view.harness && !harnessOptions.some((entry) => (entry.revision ?? HARNESS_UNKNOWN_FILTER) === view.harness) ? (
+              <option value={view.harness}>
+                {view.harness === HARNESS_UNKNOWN_FILTER ? t("efficiency.harnessUnknown") : view.harness.slice(0, 7)}
+              </option>
+            ) : null}
+          </select>
           <div className="col-span-full flex flex-col items-start gap-2">
             <ToggleButton
               variant="neutralWeak"
               size="xsmall"
               pressed={scope === "attributed"}
-              onPressedChange={(pressed) => xray.refreshExperiments(undefined, pressed ? "attributed" : "all")}
+              onPressedChange={(pressed) => xray.refreshExperiments(undefined, pressed ? "attributed" : "all", view)}
             >
               {t("efficiency.scopeAttributed")}
             </ToggleButton>
@@ -641,6 +709,14 @@ export function EfficiencyPanel({
             <Badge tone={scope === "attributed" ? "informative" : "neutral"} variant="weak" size="medium">
               {t(scope === "attributed" ? "efficiency.scopeAttributed" : "efficiency.scopeAll")}
             </Badge>
+            <ToggleButton
+              variant="neutralWeak"
+              size="xsmall"
+              pressed={view.groupBy === "harness"}
+              onPressedChange={(pressed) => xray.refreshExperiments(undefined, scope, { groupBy: pressed ? "harness" : "config", harness: view.harness })}
+            >
+              {t("efficiency.groupByHarness")}
+            </ToggleButton>
           </div>
         </div>
       ) : null}

@@ -356,12 +356,15 @@ function PiWebTitle() {
         padding: 0,
         cursor: "default",
         color: showVersion ? "var(--accent)" : "var(--text)",
-        minWidth: "6ch",
+        // 버전 문자열이 옆 아이콘 버튼 밑으로 밀려 잘리지 않도록 남은 폭 안에서 줄어든다.
+        flex: "0 1 auto",
+        minWidth: 0,
+        overflow: "hidden",
       }}
     >
       <OmpWordmark
         label={display}
-        labelStyle={showVersion ? { fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" } : undefined}
+        labelStyle={showVersion ? { fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "-0.02em", textOverflow: "ellipsis" } : undefined}
       />
     </button>
   );
@@ -1374,7 +1377,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           flexShrink: 0,
         }}
       >
-        <div className="session-navigator-titlebar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="session-navigator-titlebar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <PiWebTitle />
           {/* 12px: 모바일에서 두 아이콘 버튼의 확장된 터치 표적이 서로 겹치지 않는 간격. */}
           <div style={{ display: "flex", gap: 12 }}>

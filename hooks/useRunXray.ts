@@ -11,6 +11,7 @@ import {
   RUN_LIST_DEFAULT_LIMIT,
   type ExperimentResponse,
   type ExperimentScope,
+  type ExperimentView,
   type RunDetail,
   type RunSummary,
 } from "@/lib/run-xray-types";
@@ -50,9 +51,12 @@ export interface UseRunXray {
   selectedRunId: string | null;
   selectRun: (runId: string | null) => void;
   refreshRuns: () => void;
-  refreshExperiments: (folder?: string | null, scope?: ExperimentScope) => void;
+  refreshExperiments: (folder?: string | null, scope?: ExperimentScope, view?: ExperimentView) => void;
   experimentFolder: string | null;
 }
+
+/** 구성 비교 기본 보기: 구성별 묶음, 하네스 필터 없음. */
+const DEFAULT_EXPERIMENT_VIEW: ExperimentView = { groupBy: "config", harness: null };
 
 function toMessage(error: unknown, fallback: string): string {
   if (error instanceof EfficiencyClientError) return error.message;
@@ -128,7 +132,11 @@ export function useRunXray({ sessionId, visible, activeTab, client: clientOverri
       });
   }, [client, visible]);
 
-  const requestExperiments = useCallback((folder: string | null, scope: ExperimentScope = "all") => {
+  const requestExperiments = useCallback((
+    folder: string | null,
+    scope: ExperimentScope = "all",
+    view: ExperimentView = DEFAULT_EXPERIMENT_VIEW,
+  ) => {
     if (!visible || activeTab !== "lab") return;
     experimentControllerRef.current?.abort();
     const controller = new AbortController();
@@ -138,7 +146,7 @@ export function useRunXray({ sessionId, visible, activeTab, client: clientOverri
       response: current.status === "ready" || current.status === "empty" ? current.response : null,
       error: null,
     }));
-    void client.listExperiments(folder, EXPERIMENT_DEFAULT_SESSIONS, scope, controller.signal)
+    void client.listExperiments(folder, EXPERIMENT_DEFAULT_SESSIONS, scope, controller.signal, view)
       .then((response) => {
         if (controller.signal.aborted || experimentControllerRef.current !== controller) return;
         if (response.configs.length === 0) {
@@ -205,14 +213,18 @@ export function useRunXray({ sessionId, visible, activeTab, client: clientOverri
     requestRuns();
   }, [requestRuns]);
 
-  const refreshExperiments = useCallback((folder?: string | null, scope: ExperimentScope = "all") => {
+  const refreshExperiments = useCallback((
+    folder?: string | null,
+    scope: ExperimentScope = "all",
+    view: ExperimentView = DEFAULT_EXPERIMENT_VIEW,
+  ) => {
     // undefined는 기존 선택 유지, null은 명시적인 전체 폴더 조회다.
     const next = folder === undefined ? experimentFolderRef.current : folder;
     if (folder !== undefined) {
       experimentFolderRef.current = folder;
       setExperimentFolder(folder);
     }
-    requestExperiments(next, scope);
+    requestExperiments(next, scope, view);
   }, [requestExperiments]);
 
   return { list, detail, experiments, selectedRunId, selectRun, refreshRuns, refreshExperiments, experimentFolder };

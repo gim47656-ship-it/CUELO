@@ -867,5 +867,11 @@ export const enLocale = {
     "efficiency.scopeSessions": "Sessions counted",
     "efficiency.scopeRuns": "Runs counted",
     "efficiency.scopeExcludedRuns": "Runs excluded",
+    "efficiency.harness": "Harness",
+    "efficiency.harnessValue": "Harness {value}",
+    "efficiency.harnessUnknown": "unknown",
+    "efficiency.harnessAll": "All harnesses",
+    "efficiency.groupByHarness": "Split by harness",
+    "efficiency.harnessNote": "Harness is the CUELO version installed when the run started. It comes only from this PC's update records; runs without a record, or in a span changed outside the records, are unknown.",
   },
 } satisfies LocalePlugin;

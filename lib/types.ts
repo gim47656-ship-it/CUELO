@@ -181,6 +181,8 @@ export interface SubagentProgress {
   durationMs: number;
   resolvedModel?: string;
   resolvedModelIsFallback?: boolean;
+  /** Thinking level the last served turn used; the `:<level>` suffix of `resolvedModel`. */
+  resolvedThinkingLevel?: string;
   retryState?: {
     attempt: number;
     maxAttempts: number;

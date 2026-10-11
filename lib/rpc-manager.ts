@@ -628,8 +628,8 @@ export async function getAvailableSlashCommands(session: AgentSessionLike): Prom
 
 /**
  * 세션이 소유한 async job manager의 drain용 좁은 모양. 코어 `AgentSession.asyncJobManager`다.
- * CUELO는 top-level 세션마다 자기 manager를 갖고 child는 그것을 상속하므로
- * (native-runtime-patch `resolveSessionAsyncJobManager`), manager 전체가 곧 이 세션 트리다.
+ * 코어(18.9.0 이후 upstream)는 top-level 세션마다 자기 manager를 만들고 child에는 부모의 manager를
+ * 그대로 넘기므로, manager 전체가 곧 이 세션 트리다.
  */
 interface DrainableJobManager {
   cancelAll(filter?: undefined, reason?: unknown): void;
