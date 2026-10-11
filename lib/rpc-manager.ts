@@ -38,6 +38,7 @@ import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { createSessionRecallTool } from "./session-recall";
 import { canonicalProjectKey, untrustedProjectSessionOptions } from "./project-trust";
+import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
 import { readConfiguredModelRoleRefs, readDefaultModelRole } from "./model-roles";
@@ -2340,6 +2341,8 @@ declare global {
   var __ompClosingSessionIds: Set<string> | undefined;
   // 새 세션 생성 요청의 멱등 키(createRequestId) → 그 요청이 시작한 세션.
   var __ompNewSessionRequests: Map<string, NewSessionRequestEntry> | undefined;
+  // 삭제 중인 worktree의 canonical 경로. 그 아래 cwd로는 새 세션을 띄우지 않는다.
+  var __ompRemovingWorktrees: Set<string> | undefined;
 }
 
 function getRegistry(): Map<string, AgentSessionWrapper> {
@@ -2415,6 +2418,43 @@ function trackStartingSession(cwd: string): () => void {
     const remaining = (startingCwds.get(key) ?? 1) - 1;
     if (remaining > 0) startingCwds.set(key, remaining);
     else startingCwds.delete(key);
+  };
+}
+
+function getRemovingWorktrees(): Set<string> {
+  if (!globalThis.__ompRemovingWorktrees) globalThis.__ompRemovingWorktrees = new Set();
+  return globalThis.__ompRemovingWorktrees;
+}
+
+/**
+ * worktree 삭제를 예약한다. 그 경로 아래에 아직 잃을 작업이 있는 세션(`isSafelyIdle()`이 아닌 세션:
+ * 턴·Maker·background job·배달 대기·active goal)이나 시작 중인 세션이 있으면 예약하지 않고 그 목록을
+ * 돌려준다. 예약이 걸린 동안 `startRpcSession()`은 그 아래 cwd로 세션을 띄우지 않는다. 확인과 예약이
+ * 같은 동기 구간이라 세션 시작과 삭제가 겹쳐도 둘 중 하나만 진행된다.
+ */
+export function reserveWorktreeRemoval(worktreePath: string): { busy: string[]; release: () => void } {
+  const key = canonicalProjectKey(worktreePath);
+  const root = new Set([key]);
+  const busy: string[] = [];
+  for (const [sessionId, session] of getRegistry()) {
+    if (session.isAlive() && !session.isSafelyIdle() && isPathWithinRoots(canonicalProjectKey(session.cwd), root)) {
+      busy.push(session.sessionId || sessionId);
+    }
+  }
+  for (const startingKey of getStartingSessionCwds().keys()) {
+    if (isPathWithinRoots(startingKey, root)) busy.push(`starting:${startingKey}`);
+  }
+  if (busy.length > 0) return { busy, release: () => {} };
+  const removing = getRemovingWorktrees();
+  removing.add(key);
+  let released = false;
+  return {
+    busy,
+    release: () => {
+      if (released) return;
+      released = true;
+      removing.delete(key);
+    },
   };
 }
 
@@ -2573,6 +2613,9 @@ export async function startRpcSession(
     const finishStartingSession = trackStartingSession(sessionCwd);
 
     try {
+      if (isPathWithinRoots(canonicalProjectKey(sessionCwd), getRemovingWorktrees())) {
+        throw new Error("Worktree is being removed");
+      }
       const runtime = await getOmpRuntime();
       const settings = await getSettingsForCwd(sessionCwd);
 

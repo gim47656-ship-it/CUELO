@@ -63,6 +63,16 @@ describe("buildMsbuildArgs", () => {
     expect(() => buildMsbuildArgs({ configuration: "Debug;Evil" }, "p.sln", log)).toThrow("configuration");
     expect(() => buildMsbuildArgs({}, "p.sln", "C:\\a;b\\x.log")).toThrow("';'");
   });
+
+  test("keeps ';' and ',' inside a property value so it cannot smuggle a denied property", () => {
+    const args = buildMsbuildArgs(
+      { msbuildProperties: { OutputPath: "bin;PostBuildEvent=calc", NoWarn: "CS0168,CS0219", DefineConstants: "DEBUG;TRACE" } },
+      "p.sln", log,
+    );
+    expect(args.filter((arg) => arg.startsWith("-p:"))).toEqual([
+      "-p:OutputPath=bin%3BPostBuildEvent=calc", "-p:NoWarn=CS0168%2CCS0219", "-p:DefineConstants=DEBUG%3BTRACE",
+    ]);
+  });
 });
 
 describe("parseBuildLog", () => {

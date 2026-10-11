@@ -120,7 +120,10 @@ export function buildMsbuildArgs(params: Omit<WindowsBuildParams, "project">, pr
     if (!/^[A-Za-z_][\w.]*$/.test(name)) throw new Error(`windows_build: 속성 이름이 올바르지 않다: ${JSON.stringify(name)}`);
     if (DENIED_PROPERTIES[name.toLowerCase()]) throw new Error(`windows_build: 빌드만 허용하므로 속성 ${name}은 쓸 수 없다.`);
     if (/[\r\n\0]/.test(value)) throw new Error(`windows_build: 속성 ${name} 값에 줄바꿈이 있다.`);
-    properties.push([name, value]);
+    // `-p:`는 값 안의 `;`·`,`를 다음 속성의 구분자로 읽는다. 그대로 두면 허용된 속성의 값으로
+    // 위 금지 속성(PostBuildEvent 등)을 끼워 넣을 수 있으므로 MSBuild 이스케이프로 바꿔 한 값으로 남긴다.
+    // `DefineConstants=DEBUG;TRACE`도 이렇게 해야 값 하나로 전달된다.
+    properties.push([name, value.replace(/;/g, "%3B").replace(/,/g, "%2C")]);
   }
   for (const [name, value] of properties) args.push(`-p:${name}=${value}`);
   if (params.target !== undefined) {

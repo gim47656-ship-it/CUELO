@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { addWorktree, listWorktrees, removeWorktree, resolveProject } from "@/lib/worktree";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { reserveWorktreeRemoval } from "@/lib/rpc-manager";
 
 /** Same gate as /api/files: only session cwds / project roots / explicitly
  *  allowed dirs may be inspected or mutated through this endpoint. */
@@ -104,7 +105,20 @@ export async function DELETE(req: Request) {
     const denied = await checkCwdAllowed(body.cwd);
     if (denied) return denied;
 
-    await removeWorktree(body.cwd, body.path, body.force === true);
+    // force는 git의 미커밋 변경만 무시한다. 그 폴더에서 아직 도는 세션·Maker·job은 force로도 지우지 않는다.
+    const reservation = reserveWorktreeRemoval(body.path);
+    if (reservation.busy.length > 0) {
+      return NextResponse.json({
+        error: `Worktree still has running sessions; not removed: ${reservation.busy.join(", ")}`,
+        dirty: false,
+        busy: reservation.busy,
+      }, { status: 409 });
+    }
+    try {
+      await removeWorktree(body.cwd, body.path, body.force === true);
+    } finally {
+      reservation.release();
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

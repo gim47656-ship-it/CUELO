@@ -180,7 +180,7 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 ## Windows 빌드 `windows_build`
 
-[`windows_build`](../Tools/OMP_Global_Config/agent/tools/windows-build/)는 WSL에서 `/mnt/<드라이브>/` 또는 `X:\` 위의 `.sln`·`.slnx`·`*proj`를 Windows MSBuild로 빌드합니다. `vswhere.exe`(`-latest -products * -requires Microsoft.Component.MSBuild`)로 MSBuild를 찾고, `wslpath`로 경로를 바꾼 뒤 `-nologo -m -nodeReuse:false -noconlog -flp`(UTF-8 로그)로 실행합니다. 결과는 종료 코드, MSBuild 경로·버전, 오류·경고 수, 앞쪽 오류 줄, 로그 경로(`%TEMP%\omp-windows-build\`)입니다. 빌드 실패는 `ok:false` 결과로 돌려주고, 입력·환경 문제만 오류로 끝냅니다. 빌드만 합니다: 산출물을 실행·복사·배포하지 않으며, `Run`·`Deploy`·`Publish`·`Install` target과 `PreBuildEvent`·`PostBuildEvent`·`StartProgram` 같은 속성은 거부합니다. 프로젝트 파일에 이미 들어 있는 빌드 이벤트는 막지 않으므로, 빌드는 곧 그 프로젝트 코드의 실행이라는 전제는 그대로입니다. MSBuild가 없으면 Visual Studio 또는 Build Tools 설치를 안내하는 오류로 끝납니다. Main과 Maker가 함께 씁니다.
+[`windows_build`](../Tools/OMP_Global_Config/agent/tools/windows-build/)는 WSL에서 `/mnt/<드라이브>/` 또는 `X:\` 위의 `.sln`·`.slnx`·`*proj`를 Windows MSBuild로 빌드합니다. `vswhere.exe`(`-latest -products * -requires Microsoft.Component.MSBuild`)로 MSBuild를 찾고, `wslpath`로 경로를 바꾼 뒤 `-nologo -m -nodeReuse:false -noconlog -flp`(UTF-8 로그)로 실행합니다. 결과는 종료 코드, MSBuild 경로·버전, 오류·경고 수, 앞쪽 오류 줄, 로그 경로(`%TEMP%\omp-windows-build\`)입니다. 빌드 실패는 `ok:false` 결과로 돌려주고, 입력·환경 문제만 오류로 끝냅니다. 빌드만 합니다: 산출물을 실행·복사·배포하지 않으며, `Run`·`Deploy`·`Publish`·`Install` target과 `PreBuildEvent`·`PostBuildEvent`·`StartProgram` 같은 속성은 거부합니다. `msbuildProperties` 값 안의 `;`·`,`는 MSBuild 이스케이프(`%3B`·`%2C`)로 넘겨 값 하나로 남기므로, 허용된 속성의 값에 금지 속성을 끼워 넣을 수 없고 `DefineConstants: "DEBUG;TRACE"`도 그대로 전달됩니다. 프로젝트 파일에 이미 들어 있는 빌드 이벤트는 막지 않으므로, 빌드는 곧 그 프로젝트 코드의 실행이라는 전제는 그대로입니다. MSBuild가 없으면 Visual Studio 또는 Build Tools 설치를 안내하는 오류로 끝납니다. Main과 Maker가 함께 씁니다.
 
 ## Task Guard와 command guard
 

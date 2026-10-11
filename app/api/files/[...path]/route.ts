@@ -298,12 +298,18 @@ function getContentDisposition(filePath: string, asDownload = false): string {
 }
 
 function streamFile(filePath: string, stat: fs.Stats, contentType: string, rangeHeader: string | null, asDownload = false): Response {
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": contentType,
     "Cache-Control": "no-cache",
     "Accept-Ranges": "bytes",
     "Content-Disposition": getContentDisposition(filePath, asDownload),
   };
+  // SVG는 새 탭에서 직접 열면 CUELO와 같은 출처의 문서로 스크립트를 실행할 수 있다. `<img>` 표시는
+  // 그대로 두고, 문서로 열릴 때 스크립트·외부 요청을 막고 고유 출처(sandbox)로 격리한다.
+  if (contentType === "image/svg+xml") {
+    headers["Content-Security-Policy"] = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
+    headers["X-Content-Type-Options"] = "nosniff";
+  }
 
   if (!rangeHeader) {
     return new Response(createFileBodyStream(filePath), {
