@@ -15,6 +15,7 @@ const core = resolve(target, "src");
 const { createAgentSession } = await import(`${core}/sdk.ts`);
 const { AgentRegistry } = await import(`${core}/registry/agent-registry.ts`);
 const { getBundledModel } = await import(`${core}/../../pi-catalog/src/models.ts`);
+const { closeModelCache } = await import(`${core}/../../pi-catalog/src/model-cache.ts`);
 const encoder = new TextEncoder();
 let failures = 0;
 async function check(name: string, run: () => Promise<void>) {
@@ -167,6 +168,9 @@ async function scenario(mode: WireCase["mode"], run: (context: ScenarioContext) 
     await done.catch(() => {});
     unsubscribe();
     await session.dispose();
+    // These stores belong to this fixture, not to a shared application runtime.
+    session.modelRegistry.authStorage.close();
+    closeModelCache();
     for (const path of [workdir, agentDir]) rmSync(path, { recursive: true, force: true });
   }
 }

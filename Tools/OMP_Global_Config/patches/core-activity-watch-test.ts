@@ -27,6 +27,7 @@ const { Agent } = await import(`${core}/../../pi-agent-core/src/agent.ts`);
 const { PARENT_REQUEST_STEER } = await import(`${core}/../../pi-agent-core/src/agent-loop.ts`);
 const { AskTool } = await import(`${core}/tools/ask.ts`);
 const { initThemeSync } = await import(`${core}/../../pi-tui/src/theme/theme.ts`);
+const { closeModelCache } = await import(`${core}/../../pi-catalog/src/model-cache.ts`);
 initThemeSync();
 let passed = 0, failed = 0;
 async function check(name: string, body: () => Promise<void> | void) {
@@ -318,8 +319,16 @@ async function realScenario(busy: boolean) {
     console.log(`SDK ${busy ? "busy injection" : "idle wake"}: actual parent request contains advisory; child completes naturally; one observer/timer; no late wake`);
   } finally {
     for (const fn of detach) fn();
-    for (const session of sessions) { session.agent.clearAllQueues(); if (session.isStreaming) await session.abort(); await session.dispose(); }
-    await Promise.allSettled(done); rmSync(root, { recursive: true, force: true });
+    for (const session of sessions) {
+      session.agent.clearAllQueues();
+      if (session.isStreaming) await session.abort();
+      await session.dispose();
+      // This fixture owns the per-profile store; AgentSession does not own shared auth.
+      session.modelRegistry.authStorage.close();
+    }
+    await Promise.allSettled(done);
+    closeModelCache(); // Process-shared models.db must close before Windows directory removal.
+    rmSync(root, { recursive: true, force: true });
   }
 }
 try {
