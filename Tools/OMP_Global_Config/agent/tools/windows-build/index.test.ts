@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildMsbuildArgs, formatBuildResult, normalizeProjectInput, parseBuildLog, parseVswhereOutput, runWindowsBuild,
-  type BuildDeps, type Exec, type ExecResult,
+  buildMsbuildArgs, formatBuildResult, normalizeProjectInput, parseBuildLog, parseVswhereOutput, readBuildSource, runWindowsBuild,
+  type BuildDeps, type BuildSource, type Exec, type ExecResult,
 } from "./index";
 
 // 실제 MSBuild 18(한국어 로캘, -flp verbosity=minimal, encoding=UTF-8)이 쓴 로그를 그대로 옮긴 것이다. 맨 앞은 BOM이다.
@@ -118,7 +118,7 @@ interface Fake {
 const toWindows = (posix: string) => posix.replace(/^\/mnt\/([a-z])\//, (_m, d: string) => `${d.toUpperCase()}:\\`).replace(/\//g, "\\");
 const toPosix = (windows: string) => windows.replace(/^([A-Za-z]):\\/, (_m, d: string) => `/mnt/${d.toLowerCase()}/`).replace(/\\/g, "/");
 
-function fake(options: { vswhere?: ExecResult; msbuild?: Partial<ExecResult>; log?: string; existing?: (path: string) => boolean } = {}): Fake {
+function fake(options: { vswhere?: ExecResult; msbuild?: Partial<ExecResult>; log?: string; existing?: (path: string) => boolean; source?: BuildSource } = {}): Fake {
   const calls: Fake["calls"] = [];
   const logs = new Map<string, string>();
   const exec: Exec = async (command, args, opts) => {
@@ -138,6 +138,10 @@ function fake(options: { vswhere?: ExecResult; msbuild?: Partial<ExecResult>; lo
     readText: async (path) => logs.get(path),
     env: () => undefined,
     now: (() => { let t = 1_760_000_000_000; return () => (t += 1500); })(),
+    readSource: async (projectDir) => {
+      calls.push({ command: "readSource", args: [], cwd: projectDir });
+      return options.source ?? { revision: SHA, repository: "/mnt/d/work", changed: [] };
+    },
   };
   return { deps, calls };
 }
@@ -165,10 +169,16 @@ describe("runWindowsBuild", () => {
     expect(result.logPath.startsWith(`${TEMP}\\omp-windows-build\\build-`)).toBe(true);
     expect(result.logPathPosix.startsWith("/mnt/c/Users/user/AppData/Local/Temp/omp-windows-build/build-")).toBe(true);
     expect(result.consoleTail).toBeUndefined();
+    // The source is read from the project directory before MSBuild runs, so build outputs cannot leak into it.
+    const readIndex = calls.findIndex((call) => call.command === "readSource");
+    expect(calls[readIndex]?.cwd).toBe("/mnt/d/work");
+    expect(readIndex).toBeLessThan(calls.length - 1);
+    expect(result.source).toEqual({ revision: SHA, repository: "/mnt/d/work", changed: [] });
     const text = formatBuildResult(result);
     expect(text).toContain("빌드 실패 — exit 1");
     expect(text).toContain("오류 2개 · 경고 1개");
     expect(text).toContain(result.logPath);
+    expect(text).toContain(`소스: /mnt/d/work @ ${SHA} · 미커밋 변경 없음`);
   });
 
   test("reports success for exit 0 and a Windows drive project path", async () => {
@@ -205,5 +215,48 @@ describe("runWindowsBuild", () => {
     const { deps, calls } = fake({ existing: () => false });
     await expect(runWindowsBuild({ project: "/mnt/c/missing.sln" }, deps)).rejects.toThrow("프로젝트 파일이 없다");
     expect(calls.some((call) => call.command === "cmd.exe")).toBe(false);
+  });
+});
+
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+describe("readBuildSource", () => {
+  // Outside /mnt so the executor choice does not depend on whether this host has Windows git.
+  const dir = "/tmp/omp-wb-source/app";
+  const gitExec = (results: { head: ExecResult; status?: ExecResult }): { exec: Exec; calls: string[][] } => {
+    const calls: string[][] = [];
+    const exec: Exec = async (command, args) => {
+      expect(command).toBe("git");
+      calls.push(args);
+      return args.includes("rev-parse") ? results.head : results.status ?? { code: 0, stdout: "" };
+    };
+    return { exec, calls };
+  };
+
+  test("returns HEAD, the repository root and porcelain lines limited to the project folder", async () => {
+    const { exec, calls } = gitExec({
+      head: { code: 0, stdout: `/tmp/omp-wb-source\n${SHA}\n` },
+      status: { code: 0, stdout: " M App/MainForm.vb\n?? App/새파일.vb\n" },
+    });
+    expect(await readBuildSource(exec, dir)).toEqual({
+      revision: SHA, repository: "/tmp/omp-wb-source", changed: [" M App/MainForm.vb", "?? App/새파일.vb"],
+    });
+    expect(calls[1]).toEqual(["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all", "--", "."]);
+  });
+
+  test("records a missing revision instead of failing the build outside a repository", async () => {
+    const { exec, calls } = gitExec({ head: { code: 128, stdout: "", stderr: "fatal: not a git repository" } });
+    expect(await readBuildSource(exec, dir)).toMatchObject({ revision: null, changed: [], note: "git 저장소가 아니거나 커밋이 없다" });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("keeps the revision but does not claim a clean tree when git status fails", async () => {
+    const { exec } = gitExec({ head: { code: 0, stdout: `/tmp/omp-wb-source\n${SHA}\n` }, status: { code: 128, stdout: "", stderr: "fatal: index locked" } });
+    const source = await readBuildSource(exec, dir);
+    expect(source).toMatchObject({ revision: SHA, changed: [] });
+    const { deps } = fake({ log: "", msbuild: { code: 0 }, source });
+    const text = formatBuildResult(await runWindowsBuild({ project: "/mnt/d/work/App.sln" }, deps));
+    expect(text).toContain("미커밋 변경 확인 실패");
+    expect(text).not.toContain("미커밋 변경 없음");
   });
 });

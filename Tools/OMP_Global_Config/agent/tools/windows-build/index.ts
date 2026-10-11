@@ -1,6 +1,7 @@
 import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { access, mkdir, readFile } from "node:fs/promises";
 import { posix, win32 } from "node:path";
+import { selectGitExecutor } from "../git-finalizer/wsl-git";
 
 /**
  * WSL(또는 Windows)에서 Windows 전용 프로젝트(VB.NET/.NET Framework WinForms, C# 솔루션)를 MSBuild로 빌드한다.
@@ -33,6 +34,19 @@ export interface BuildDeps {
   readText: (path: string) => Promise<string | undefined>;
   env: (name: string) => string | undefined;
   now: () => number;
+  /** 빌드 직전 프로젝트 폴더의 소스 상태. 결과가 어느 소스를 빌드한 것인지 남긴다. */
+  readSource: (projectDir: string) => Promise<BuildSource>;
+}
+
+/**
+ * 빌드한 소스. `revision`은 저장소 HEAD 전체 SHA이고, `changed`는 프로젝트 폴더 아래 미커밋 변경(`git status --porcelain`
+ * 줄, untracked 포함, ignored 제외)이다. 저장소가 아니거나 git을 읽지 못하면 `revision: null`과 `note`로 남긴다.
+ */
+export interface BuildSource {
+  revision: string | null;
+  repository?: string;
+  changed: string[];
+  note?: string;
 }
 
 export interface BuildDiagnostics {
@@ -54,6 +68,7 @@ export interface BuildResult extends BuildDiagnostics {
   logMissing: boolean;
   consoleTail?: string[];
   durationMs: number;
+  source: BuildSource;
 }
 
 const DEFAULT_MAX_ERRORS = 20;
@@ -173,6 +188,31 @@ function describeFailure(label: string, result: ExecResult): string {
   return `${label} (exit ${result.code}): ${(result.stderr || result.stdout || "").trim() || "출력 없음"}`;
 }
 
+const MAX_CHANGED_LINES = 5;
+
+/**
+ * 빌드 직전 프로젝트 폴더의 저장소 HEAD와 그 폴더 아래 미커밋 변경을 읽는다. `/mnt/<드라이브>` 저장소는 command guard·
+ * sync-checkout과 같은 `selectGitExecutor` 판정으로 Windows git을 쓴다. 저장소가 아니거나 git이 실패해도 빌드는 막지 않고
+ * `revision: null`·`note`로 남긴다.
+ */
+export async function readBuildSource(exec: Exec, projectDir: string): Promise<BuildSource> {
+  const git = await selectGitExecutor(projectDir);
+  let head: ExecResult;
+  try {
+    head = await exec(git.command, ["rev-parse", "--show-toplevel", "HEAD"], { cwd: projectDir });
+  } catch (error) {
+    return { revision: null, changed: [], note: `git 실행 실패: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const [top, revision] = nonEmptyLines(head.stdout);
+  if (head.code !== 0 || !top || !/^[0-9a-f]{40,64}$/.test(revision ?? "")) {
+    return { revision: null, changed: [], note: "git 저장소가 아니거나 커밋이 없다" };
+  }
+  const repository = git.toPosix(top);
+  const status = await exec(git.command, ["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all", "--", "."], { cwd: projectDir });
+  if (status.code !== 0) return { revision, repository, changed: [], note: describeFailure("git status 실패", status) };
+  return { revision, repository, changed: status.stdout.split(/\r?\n/).filter((line) => line.trim()) };
+}
+
 export async function runWindowsBuild(params: WindowsBuildParams, deps: BuildDeps): Promise<BuildResult> {
   const { exec, cwd } = deps;
   const maxErrors = Math.max(1, Math.min(200, Math.trunc(params.maxErrors ?? DEFAULT_MAX_ERRORS)));
@@ -236,6 +276,8 @@ export async function runWindowsBuild(params: WindowsBuildParams, deps: BuildDep
   const logPath = win32.join(logDirWindows, logName);
   const logPathPosix = deps.wsl ? posix.join(logDirPosix, logName) : logPath;
 
+  // 빌드가 만드는 bin/obj가 섞이기 전에, 이 결과가 어느 소스를 빌드한 것인지 읽어 둔다.
+  const source = await deps.readSource(projectDir);
   const args = buildMsbuildArgs(params, projectWindows, logPath);
   const started = deps.now();
   const run = await exec(msbuildPosix, args, { cwd: projectDir, timeout: timeoutSeconds * 1000 });
@@ -259,6 +301,7 @@ export async function runWindowsBuild(params: WindowsBuildParams, deps: BuildDep
     ...diagnostics,
     ...(failed && diagnostics.errorCount === 0 ? { consoleTail: nonEmptyLines(consoleText).slice(-15) } : {}),
     durationMs,
+    source,
   };
 }
 
@@ -268,6 +311,16 @@ export function formatBuildResult(result: BuildResult, maxErrors = DEFAULT_MAX_E
   const status = result.ok ? "빌드 성공" : result.killed ? "빌드 중단(시간 초과 또는 취소)" : "빌드 실패";
   lines.push(`${status} — exit ${result.exitCode}, ${seconds}s`);
   lines.push(`프로젝트: ${result.project}`);
+  const { source } = result;
+  if (!source.revision) {
+    lines.push(`소스: revision 없음(${source.note ?? "알 수 없음"})`);
+  } else if (source.note) {
+    lines.push(`소스: ${source.repository} @ ${source.revision} · 미커밋 변경 확인 실패(${source.note})`);
+  } else {
+    lines.push(`소스: ${source.repository} @ ${source.revision} · ${source.changed.length ? `프로젝트 폴더 미커밋 변경 ${source.changed.length}개` : "미커밋 변경 없음"}`);
+    lines.push(...source.changed.slice(0, MAX_CHANGED_LINES).map((line) => `  ${line}`));
+    if (source.changed.length > MAX_CHANGED_LINES) lines.push(`  … 외 ${source.changed.length - MAX_CHANGED_LINES}개`);
+  }
   lines.push(`MSBuild: ${result.msbuildPath} (${result.msbuildVersion})`);
   lines.push(`오류 ${result.errorCount}개 · 경고 ${result.warningCount}개`);
   if (result.errors.length > 0) {
@@ -292,6 +345,7 @@ const defaultDeps = (cwd: string, exec: Exec): BuildDeps => ({
   readText: (path) => readFile(path, "utf8").then((text) => text, () => undefined),
   env: (name) => process.env[name],
   now: () => Date.now(),
+  readSource: (projectDir) => readBuildSource(exec, projectDir),
 });
 
 const factory: CustomToolFactory = (pi) => ({
@@ -300,7 +354,7 @@ const factory: CustomToolFactory = (pi) => ({
   loadMode: "essential",
   description:
     "Build a Windows-only project (.sln/.slnx/*proj, e.g. VB.NET or C# WinForms on a /mnt/<drive> or X:\\ path) with Windows MSBuild from WSL. "
-    + "Locates MSBuild through vswhere.exe, converts paths with wslpath, runs `MSBuild -nologo -m` with a UTF-8 file logger, and returns exit code, MSBuild path/version, error/warning counts, the first error lines and the log path. "
+    + "Locates MSBuild through vswhere.exe, converts paths with wslpath, runs `MSBuild -nologo -m` with a UTF-8 file logger, and returns exit code, MSBuild path/version, error/warning counts, the first error lines, the log path and the built source (repository HEAD SHA plus uncommitted changes under the project folder, read just before the build). "
     + "Build only: never runs the built program, never touches devices, never deploys or copies outputs; Run/Deploy/Publish/Install targets and Pre/PostBuildEvent properties are rejected. "
     + "`restore: true` adds -restore (NuGet network access); default is off. Build writes bin/obj inside the project folder as a normal build does.",
   parameters: pi.zod.object({
