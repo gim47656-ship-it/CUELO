@@ -353,6 +353,10 @@ WSL에서 에이전트 셸이 Windows 실행 파일을 띄울 때 패치된 내�
 
 [문서 지도 규칙](../Tools/OMP_Global_Config/agent/rules/docs-handoff.md)은 세션이 관련 작업을 시작할 때 `HANDOFF.md`의 연관 항목을 현재 소스·기록과 대조해 끝남·실행 가능·대기·타 owner 진행 중으로 가르고, 이번 요청이 승인한 범위의 실행 가능 항목만 검증까지 수행한 뒤 현재 문서와 `HANDOFF.md`를 맞추도록 정합니다. 날짜·관측·사용자 기기·다른 PC·승인 대기 항목은 조건이 충족되기 전에는 실행하지 않으며, 적힌 TODO는 승인이 아닙니다. 미해결 실패는 기존 실패 환류 규칙대로 증거로 원인을 좁히고 다른 조치를 한 뒤 원래 실패 경로를 다시 실행하며, 같은 시도를 그대로 되풀이하거나 검증을 약화하지 않습니다. 막히면 증거·시도·차단 사유·재검증 기준을 `HANDOFF.md`에 남겨 다음 관련 세션이 이어받게 합니다. 상시 감사·백그라운드 자동 수정·새 장부나 hook은 없습니다.
 
+AI가 추가로 제안하는 개선은 착수 전에 **어떤 실제 실패를 고치는가**, **왜 가장 작은 수정인가**, **어떤 관측 결과면 완료인가**를 근거와 함께 제시합니다. 하나라도 빠지면 구현을 보류하고 읽기 전용 원인 조사는 할 수 있습니다. 사용자가 명시적으로 요청한 새 기능에는 기존 실패가 있어야 한다는 요건을 적용하지 않습니다. 별도 검사기나 자동 차단 장치를 추가하는 것이 아니라 기존 최소 변경 규칙의 착수 기준입니다.
+
+설계 선택과 최종 수용의 근거를 남기되, AI의 재평가만을 독립 검증으로 보거나 테스트 통과를 사용자 PC 실동작·제품 전체 품질의 증거로 확대하지 않습니다. 확인·미확인 범위를 구분하고, 실패는 모델 판단·구현 오류, 도구·환경 한계, 요구사항 누락·충돌을 근거로 나눠 보고합니다. 원인이 확인되지 않았으면 미상으로 남기며 사용자 책임으로 단정하지 않습니다.
+
 ## 정본 자료
 
 역할과 운용 요약은 [AGENTS.md](../Tools/OMP_Global_Config/agent/AGENTS.md), 전역 구현 원칙은 [RULES.md](../Tools/OMP_Global_Config/agent/RULES.md), 상세한 위임·검수 절차는 [rules/subagent.md](../Tools/OMP_Global_Config/agent/rules/subagent.md), task dispatch 계약은 [rules/task-guard.md](../Tools/OMP_Global_Config/agent/rules/task-guard.md), 정책 데이터는 [rules/harness-policy.json](../Tools/OMP_Global_Config/agent/rules/harness-policy.json)에서 확인할 수 있습니다.

@@ -1,9 +1,11 @@
-<!-- source-fingerprint: 3270ab027f011f17 -->
+<!-- source-fingerprint: a1acda0c482d30d2 -->
 # Global Rules
 
 (Model-facing English copy of the Korean source `RULES.md`.)
 
 - Prefer the smallest clear change that satisfies the requirements and existing repository/package conventions. Leave working features and out-of-scope areas alone; fix existing structure rather than adding new structure.
+  - Before starting an AI-initiated additional improvement, state with evidence **what observed failure it fixes**, **why this is the smallest change**, and **what observable result means done**. If any answer or evidence is missing, hold implementation; read-only investigation to establish the cause may proceed. Do not require a pre-existing failure for a new feature explicitly requested by the user.
+  - Leave the grounds for design choices and final acceptance inspectable by the user. AI re-evaluation alone is not independent verification; passing tests alone is not evidence of actual behavior on the user's PC or overall product quality. Distinguish verified and unverified scope. Attribute failures, with evidence, to model judgment or implementation errors, tool or environment limits, or missing or conflicting requirements. Leave unknown causes unknown rather than assigning blame to the user.
   - Add tests, helpers, abstractions, validators, fallbacks, compatibility shims, automation, dependencies, layers, optimizations, refactors, or permanent gates only when repository/package conventions require them, or when a concrete requirement and a realistic failure mode both exist. Do not skip a convention-mandated mechanism because no concrete failure mode is visible.
   - Do not re-verify contracts already guaranteed by the compiler, type system, framework, code generator, DB model, provider, protocol, authorization boundary, or artifact format. Do not duplicate a test when an existing test already defends the same contract, execution path, and case. But when you reproduce a real regression the existing tests miss, add a focused regression test.
   - Use hashes, checksums, or cryptography only when a security, integrity, privacy, protocol, payment, signing, or artifact boundary requires it.
