@@ -61,6 +61,8 @@
 
 Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수용 조건별 증거로 직접 판정한다. Maker의 경로를 중복 수정하거나 그 검사를 반복하지 않는다. 시점·체크포인트·revision·재작업·수용 절차는 `rule://subagent` 「검수와 수용」 및 `harness-policy.json` `mainLane.workerReview`가 정본이다.
 
+코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면(문서·주석·테스트 제외) `git_finalize` 전에 `cross_review`로 다른 계열 reviewer(Anthropic 작성분, Main 포함은 OpenAI·`modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자 작성분은 Anthropic·`modelRoles.crossReviewAnthropic`)의 검토를 받고 모든 finding을 근거와 함께 닫아야 한다. 이는 reviewer 역할이 아니라 도구이고, finding은 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 waiver를 쓰지 않는다. 절차는 `rule://subagent` 「검수와 수용」과 `mainLane.workerReview.crossFamilyReview`가 정본이다.
+
 ## 검증
 
 검증 실행은 변경 owner가 맡고 Main이 증거를 판정한다. Maker는 공통 환경을 새로 만들지 않고 자기 조각의 최소 집중 검사를, Main은 공통 격리 환경과 필요한 전체 빌드·통합·수용 검사를 frozen revision에서 실행하며 어느 슬라이스도 검사 없이 닫지 않는다. 범위는 delta가 깨뜨릴 수 있는 동작에 맞추며, 적합한 동일 revision 증거를 재사용한다. 화면·실장비·사용자 확인, pending 처리, 승인 경계는 `rule://subagent` 「검증 소유권」과 `harness-policy.json` `implementationOwnership.writerValidation`을 따른다.

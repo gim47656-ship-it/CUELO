@@ -7,6 +7,7 @@ import {
   assignmentsByName,
   createRoutingLedger,
   HISTORY_WINDOW,
+  readCrossReviewRecords,
   scopedAttempts,
   summarizeHistory,
   type DispatchRecord,
@@ -177,5 +178,23 @@ describe("소유권 복원", () => {
       ["s1#Legacy#a1", "running", null],
       ["s1#Broken#a1", "running", null],
     ]);
+  });
+});
+
+describe("교차검증 기록", () => {
+  test("같은 파일에 남아도 이력 read()에는 섞이지 않고 전용 읽기는 꼬리 밖 기록까지 찾는다", () => {
+    const dir = mkdtempSync(join(tmpdir(), "routing-ledger-xr-"));
+    try {
+      const path = join(dir, "routing-ledger.jsonl");
+      const ledger = createRoutingLedger(path);
+      const waiver = { type: "cross-review-waiver" as const, ts: "2026-10-11T00:00:00.000Z", root: "/r", reason: "user said so", files: [] };
+      expect(ledger.append(waiver)).toBe(true);
+      for (let index = 0; index < 1500; index++) ledger.append(dispatch(`pad${index}`, { name: "x".repeat(700) }));
+      expect(ledger.read().every((record) => record.type === "dispatch")).toBe(true);
+      expect(ledger.read().length).toBeLessThan(1501); // 오래된 waiver가 있던 앞부분은 꼬리 창 밖이다
+      expect(readCrossReviewRecords(path)).toEqual([waiver]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

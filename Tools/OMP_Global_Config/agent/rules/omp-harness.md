@@ -43,7 +43,8 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
   아니며 pack·운영 cutover·재시작을 포함하지 않는다.
 - 재빌드를 유발할 코드·계약 finding이 남아 있으면 먼저 수정한다. 필요한 독립 코드 검토는
   frozen diff와 caller가 준비되면 가벼운 검사와 병행할 수 있다(high-risk 직렬 경계 유지).
-  새 검수 단계나 영구 gate를 추가하지 않고, 같은 입력의 통과한 무거운 검사는 재사용한다.
+  통과한 무거운 검사는 같은 입력이면 재사용한다. 추가 검수 단계는 `git_finalize`의 계열 교차검증
+  gate(`mainLane.workerReview.crossFamilyReview`) 하나뿐이며, 그 밖의 영구 gate를 새로 두지 않는다.
 - 유료 외부 호출 대신 실제 handler·저장소·화면 callback에 일회성 입력을 주입했다면 그
   경계와 미검증 구간을 보고한다. 주입용 route·export·fixture는 정본이나 배포물에 넣지 않는다.
 

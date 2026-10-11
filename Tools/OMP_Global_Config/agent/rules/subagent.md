@@ -547,6 +547,17 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   직렬 검수이며, 후자에서 **편집 전에 승인한 위치·불변식을 최종 diff와 대조**한다(drift 검수).
   승인된 편집 전 계약 없이 트리거 코드를 고친 revision은 닫지 않는다. 정본은
   `routing.high-risk.mainIntervention`이다.
+- **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
+  뽑힌 코드 변경(문서·주석·테스트 제외)은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다.
+  Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. Main은 frozen revision에서
+  `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
+  되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
+  각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. 통과는 모든
+  finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 최대 2회이며 2회차는 1회차 이후 delta만 본다.
+  `fixed`로 닫은 finding은 owner에게 `finding_id=<review가 준 ID>`를 붙인 기존 `REWORK` 주문으로 보내고
+  새 revision에서 다시 검토한다. 사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
+  `mainLane.workerReview.crossFamilyReview`다.
 - Main은 각 finding을 `ACCEPTED`·`REJECTED_WITH_EVIDENCE`·`ESCALATED`로 판정한다. 재작업 주문에는
   사용자 관측·재현 결과 또는 실제 diff와 요구 계약의 모순 및 정확한 locator가 필요하다.
   미확인 가설은 Main이 조사하거나 증거만 묻고, 근거 없이 구현을 바꾸도록 보내지 않는다.

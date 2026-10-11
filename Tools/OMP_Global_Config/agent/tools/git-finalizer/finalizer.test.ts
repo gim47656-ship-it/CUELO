@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
+import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
 import factory, { hasPosixGitdirWorktree } from "./index";
 import { selectGitExecutor, windowsPathToPosix } from "./wsl-git";
 
@@ -114,18 +116,22 @@ async function createManifestRepository() {
   return { ...repository, manifestPath };
 }
 
+// 도구 스키마 선언이 체인(`.optional()`)을 쓰므로 어느 호출이든 자기 자신을 돌려주는 값으로 받는다.
+const schemaNode: object = new Proxy(function node() {}, { get: () => schemaNode, apply: () => schemaNode });
+
 async function startTool(
   work: string,
   files: string[],
+  extra: Record<string, unknown> = {},
 ): Promise<{ error?: Error; output?: unknown }> {
   const pi = {
     cwd: work,
-    zod: { object: () => ({}), array: () => ({}), string: () => ({}) },
+    zod: { object: () => ({}), array: () => schemaNode, string: () => schemaNode, boolean: () => schemaNode },
     exec: async (command: string, args: string[], options: { cwd: string }) => run(command, args, options.cwd),
   };
   const tool = factory(pi as never);
   try {
-    return { output: await tool.execute("fixture", { files, message: "manifest case" }, undefined, {} as never, new AbortController().signal) };
+    return { output: await tool.execute("fixture", { files, message: "manifest case", ...extra }, undefined, {} as never, new AbortController().signal) };
   } catch (error) {
     return { error: error as Error };
   }
@@ -149,9 +155,10 @@ async function startFinalizer(
   name: string,
   files: string[],
   message: string,
+  extra: Record<string, unknown> = {},
 ): Promise<{ result: CommandResult; output: FinalizerOutput }> {
   const request = join(root, `${name}.json`);
-  await writeFile(request, JSON.stringify({ cwd: work, files, message }), "utf8");
+  await writeFile(request, JSON.stringify({ cwd: work, files, message, ...extra }), "utf8");
   const process = Bun.spawn({
     cmd: [powerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", request],
     cwd: work,
@@ -187,6 +194,70 @@ describe("git finalizer", () => {
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(output.commitSha!);
     expect(git(work, ["status", "--short"])).toBe("?? unrelated.txt");
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test("refuses to commit a file whose staged blob differs from the one the cross-review gate checked", async () => {
+    const { root, remote, work } = await createRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "a.txt"), "reviewed-a\n");
+    const checked = git(work, ["hash-object", "a.txt"]);
+    await writeFile(join(work, "a.txt"), "edited-after-the-gate\n");
+
+    const stale = await startFinalizer(root, work, "gate-stale", ["a.txt"], "must fail", { gateBlobs: { "a.txt": checked } });
+    expect(stale.result.code).toBe(1);
+    expect(stale.output.stage).toBe("cross-review-verify");
+    expect(stale.output.error).toContain("a.txt changed after the review check");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(await Bun.file(join(work, "a.txt")).text()).toBe("edited-after-the-gate\n");
+
+    const current = git(work, ["hash-object", "a.txt"]);
+    const fresh = await startFinalizer(root, work, "gate-fresh", ["a.txt"], "matches", { gateBlobs: { "a.txt": current } });
+    expect(fresh.result.code, fresh.result.stderr || fresh.result.stdout).toBe(0);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(fresh.output.commitSha!);
+  }, TEST_TIMEOUT_MS);
+
+  test("refuses a path the cross-review gate never checked and a file that was clean at the gate but changed before staging", async () => {
+    const { root, remote, work } = await createRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    const cleanBlob = git(work, ["hash-object", "a.txt"]);
+    await writeFile(join(work, "a.txt"), "changed-after-clean-gate\n");
+    await writeFile(join(work, "b.txt"), "also-changed\n");
+
+    const clean = await startFinalizer(root, work, "gate-clean-then-changed", ["a.txt"], "must fail", { gateBlobs: { "a.txt": cleanBlob } });
+    expect(clean.result.code).toBe(1);
+    expect(clean.output.stage).toBe("cross-review-verify");
+    expect(clean.output.error).toContain("a.txt changed after the review check");
+
+    const unchecked = await startFinalizer(root, work, "gate-unchecked", ["a.txt", "b.txt"], "must fail", {
+      gateBlobs: { "a.txt": git(work, ["hash-object", "a.txt"]) },
+    });
+    expect(unchecked.result.code).toBe(1);
+    expect(unchecked.output.stage).toBe("cross-review-verify");
+    expect(unchecked.output.error).toContain("b.txt was not part of the change set the gate checked");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+  }, TEST_TIMEOUT_MS);
+
+  test.skipIf(process.platform === "win32")("stops before push when a commit hook rewrites a gated file, keeping the local commit", async () => {
+    const { root, remote, work } = await createRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "a.txt"), "reviewed-a\n");
+    const checked = git(work, ["hash-object", "a.txt"]);
+    const hook = join(work, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\necho rewritten-by-hook >> a.txt\ngit add a.txt\n");
+    expect(run("chmod", ["+x", hook]).code).toBe(0);
+
+    const { result, output } = await startFinalizer(root, work, "gate-hook", ["a.txt"], "hook rewrites", { gateBlobs: { "a.txt": checked } });
+    expect(result.code).toBe(1);
+    expect(output.stage).toBe("cross-review-verify");
+    expect(output.error).toContain("holds a different blob for a.txt");
+    expect(output.error).toContain("NOT pushed");
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(output.commitSha!);
+    expect(output.commitSha).not.toBe(before);
   }, TEST_TIMEOUT_MS);
 
   test.skipIf(process.platform === "win32")("preserves distinct case-sensitive file names", async () => {
@@ -994,4 +1065,83 @@ describe("WSL drive git executor selection", () => {
       expect((await selectGitExecutor("/mnt/d/none/repo")).command).toBe("git");
     });
   });
+});
+
+describe("cross-family review gate", () => {
+  const savedLedger = process.env.OMP_CROSS_REVIEW_LEDGER;
+  afterEach(() => {
+    if (savedLedger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER;
+    else process.env.OMP_CROSS_REVIEW_LEDGER = savedLedger;
+  });
+
+  const wipe = "import { rmSync } from \"node:fs\";\nexport const wipe = (path: string) => rmSync(path, { recursive: true });\n";
+
+  async function reviewAndResolve(work: string, ledger: string, files: string[]) {
+    const store = createRoutingLedger(ledger);
+    const deps = {
+      cwd: work, sessionId: "gate-test", mainModel: "anthropic/claude-opus-5-5", exec: spawnExec(),
+      readAll: () => readCrossReviewRecords(ledger), append: (record: Parameters<typeof store.append>[0]) => store.append(record),
+      snapshotRoot: join(dirname(ledger), "snapshots"),
+      complete: async () => ({ model: "openai-codex/gpt-6-astra", text: "{\"findings\":[]}" }),
+    };
+    const review = await runReview({ files, acceptance: "must not delete", authors: ["main"] }, deps, new AbortController().signal);
+    return runResolve({ reviewId: review.reviewId, resolutions: [] }, deps);
+  }
+
+  test("refuses a marker-hitting code change, passes after review+resolve, and never gates docs", async () => {
+    const { root, work, remote } = await createRepository();
+    const ledger = join(root, "ledger.jsonl");
+    process.env.OMP_CROSS_REVIEW_LEDGER = ledger;
+    const before = git(work, ["rev-parse", "HEAD"]);
+
+    await writeFile(join(work, "wipe.ts"), wipe);
+    const refused = await startTool(work, ["wipe.ts"]);
+    expect(refused.error?.message).toContain("git_finalize failed at cross-review");
+    expect(refused.error?.message).toContain("marker deletion at L2");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+
+    const resolved = await reviewAndResolve(work, ledger, ["wipe.ts"]);
+    expect(resolved.pass).toBe(true);
+    const passed = await startTool(work, ["wipe.ts"]);
+    expect(passed.error).toBeUndefined();
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
+
+    await writeFile(join(work, "a.txt"), "docs-only change with rm -rf and password\n");
+    const docs = await startTool(work, ["a.txt"]);
+    expect(docs.error).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  test("a reviewed code file and the generated memory transport are committed together under the locked blob check", async () => {
+    const { root, work, remote } = await createRepository();
+    const ledger = join(root, "ledger.jsonl");
+    process.env.OMP_CROSS_REVIEW_LEDGER = ledger;
+    const syncDir = join(work, "Tools", "OMP_Global_Config", "memory-sync");
+    await mkdir(syncDir, { recursive: true });
+    await writeFile(join(syncDir, "sync.ts"),
+      "const [mode, root] = process.argv.slice(2);\n"
+      + "if (mode !== 'export') process.exit(2);\n"
+      + "await Bun.write(root + '/Tools/OMP_Global_Config/memory-sync/memories.jsonl', 'lesson-from-this-pc\\n');\n");
+    await writeFile(join(work, "wipe.ts"), wipe);
+    expect((await reviewAndResolve(work, ledger, ["wipe.ts"])).pass).toBe(true);
+
+    const { error, output } = await startTool(work, ["wipe.ts"]);
+    expect(error).toBeUndefined();
+    const sha = git(work, ["rev-parse", "HEAD"]);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(sha);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).split(/\r?\n/).sort())
+      .toEqual(["Tools/OMP_Global_Config/memory-sync/memories.jsonl", "wipe.ts"]);
+    expect(JSON.stringify(output)).toContain("memories.jsonl");
+  }, TEST_TIMEOUT_MS);
+
+  test("a recorded waiver lets the commit through; declared high-risk gates plain code", async () => {
+    const { root, work } = await createRepository();
+    process.env.OMP_CROSS_REVIEW_LEDGER = join(root, "ledger.jsonl");
+    await writeFile(join(work, "plain.ts"), "export const one = 1;\n");
+    const declared = await startTool(work, ["plain.ts"], { crossReviewHighRisk: true });
+    expect(declared.error?.message).toContain("declared high-risk");
+    const waived = await startTool(work, ["plain.ts"], { crossReviewHighRisk: true, crossReviewWaiver: "user approved skipping review" });
+    expect(waived.error).toBeUndefined();
+    expect(readCrossReviewRecords(join(root, "ledger.jsonl"))).toMatchObject([{ type: "cross-review-waiver", reason: "user approved skipping review" }]);
+  }, TEST_TIMEOUT_MS);
 });

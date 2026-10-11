@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 98549cd6d9af7341 -->
+<!-- source-fingerprint: 184d43e1baf9b83a -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -63,6 +63,8 @@ Pre-dispatch judgment goes through `maker_route`; first failures, report review,
 ## Main's interim review
 
 Main reviews confirmed deltas and their evidence cumulatively and decides final acceptance directly from per-acceptance-criterion evidence. Never re-edit a Maker's paths or repeat its checks. Timing, checkpoints, revisions, rework, acceptance: `rule://subagent` 「검수와 수용」 and `harness-policy.json` `mainLane.workerReview`.
+
+When a code change is high-risk, or matches a trigger marker or the deterministic 10% sample (documentation, comments and tests excluded), it must pass a `cross_review` by the other family's reviewer before `git_finalize`: Anthropic-authored code (Main included) goes to OpenAI (`modelRoles.crossReviewOpenAI`), OpenAI- or other-provider-authored code goes to Anthropic (`modelRoles.crossReviewAnthropic`), and every finding is closed with evidence. This is a tool, not a reviewer role; findings are advisory evidence, not a PASS. Never use the waiver without an explicit user instruction. Procedure: `rule://subagent` 「검수와 수용」 and `mainLane.workerReview.crossFamilyReview`.
 
 ## Verification
 

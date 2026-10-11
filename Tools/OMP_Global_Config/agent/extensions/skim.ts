@@ -18,7 +18,7 @@ export const SECRET_NAME = /^(?:\.env.*|id_[^/\\]*|.*(?:credential|secret|passwo
 export const SECRET_EXTENSION = /\.(?:pem|key|p12|pfx|jks|keystore|kdbx|gpg|pgp|tfvars(?:\.json)?|tfstate(?:\.backup)?)$/i;
 const BINARY_EXTENSION = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svg|pdf|zip|gz|tgz|tar|bz2|xz|zst|7z|rar|mp[34]|mov|avi|mkv|wav|ogg|woff2?|ttf|otf|eot|wasm|dll|exe|so|db|sqlite3?|lock|map|onnx|parquet|arrow)$/i;
 const SKIP_DIR: Record<string, true> = { ".git": true, node_modules: true, ".next": true, ".cache": true, dist: true, build: true, coverage: true };
-const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
+export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-antigravity/gemini-3.8-flash";
 // 조사 도구 한정 대체. retry.fallbackChains의 Gemini 모델 키는 vision까지 바꾸므로 사용하지 않는다.

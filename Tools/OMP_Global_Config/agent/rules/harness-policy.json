@@ -236,13 +236,32 @@
       "finalVerdictConsult": {
         "when": "optional-once-per-revision-immediately-before-the-final-judgement-never-during-steering-or-delta-review",
         "useWhen": "main-s-discretion-and-worth-it-when-the-revision-edited-trigger-code-when-an-acceptance-condition-is-a-judgement-call-rather-than-a-command-exit-status-or-when-several-slices-converged-on-one-execution-path-a-docs-or-typo-revision-never-consults",
-        "neverAJustification": "having-consulted-is-never-part-of-the-pass-evidence-and-skipping-the-consult-is-never-a-finding",
+        "neverAJustification": "having-consulted-is-never-part-of-the-pass-evidence-and-skipping-the-consult-is-never-a-finding-this-optional-consult-is-not-the-mainLane.workerReview.crossFamilyReview-gate-which-is-mandatory-when-triggered-and-never-replaced-by-it",
         "channel": "eval-completion-stateless-configured-slot-slow-astra-or-smol-fable-5-1-with-explicit-main-decided-effort-no-tools-no-session-no-owned-paths",
         "notAChild": "never-counts-against-task-budget-and-spawnguard-still-blocks-agent-workpool-and-tool.task-so-child-execution-stays-on-the-task-path",
         "input": ["acceptance-conditions", "evidence-locators-with-command-and-exit-status", "delta-summary-by-path"],
         "prohibited": ["diff-body", "raw-build-or-test-output", "file-contents", "asking-the-model-to-decide-acceptance"],
         "output": "a-list-of-objections-only-main-still-issues-accepted-rejected-with-evidence-or-escalated",
         "evidence": "recorded-with-the-model-slot-used-and-the-objections-raised-never-reported-as-a-passing-signal"
+      },
+      "crossFamilyReview": {
+        "purpose": "code-written-by-one-model-family-is-reviewed-by-the-other-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled",
+        "tool": "cross_review-with-actions-review-and-resolve-a-tool-never-a-revived-reviewer-role-and-never-an-eval-completion-call",
+        "familyMapping": {
+          "anthropic-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
+          "openai-or-any-other-provider-authored": "reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
+          "mixed-authors": "reviewed-by-both-reviewers"
+        },
+        "required": "any-of-declared-high-risk-or-a-trigger-marker-in-the-changed-code-lines-or-the-deterministic-ten-percent-sample",
+        "exclusions": "documentation-comments-and-tests-are-excluded",
+        "reviewerInput": "clean-input-the-frozen-diff-and-the-acceptance-conditions-without-profile-or-persona-text",
+        "pass": "every-finding-is-closed-by-main-as-fixed-refuted-or-limit-with-evidence-through-cross_review-resolve",
+        "rounds": "at-most-two-and-round-two-reviews-only-the-delta-since-round-one",
+        "gate": "git_finalize-stage-cross-review-runs-before-the-commit-and-blocks-a-required-change-without-a-passing-record",
+        "waiver": "only-on-an-explicit-user-instruction-through-crossReviewWaiver-and-recorded-in-the-ledger-never-chosen-by-main-or-a-maker-on-its-own",
+        "ledger": "cross-review-cross-review-resolve-and-cross-review-waiver-records",
+        "advisory": "a-review-is-advisory-evidence-main-verifies-each-finding-against-the-code-and-a-clean-review-is-never-a-pass-verdict-or-a-substitute-for-the-final-judgement",
+        "rework": "a-fixed-finding-reaches-the-owner-as-a-rework-order-carrying-the-finding-id-and-the-existing-REWORK-marker"
       },
       "deliveryGuarantee": {
         "owner": "the-slice-owner-never-main-polling",
@@ -451,7 +470,7 @@
         "afterTakeover": "main-is-the-sole-writer-and-runs-only-the-checks-this-delta-invalidates-on-the-new-revision",
         "evidenceRule": "past-evidence-never-covers-the-changed-delta-and-main-never-marks-its-own-delta-as-independently-reviewed"
       },
-      "unconfirmedConcern": "main-investigates-or-asks-one-bounded-evidence-question-do-not-order-speculative-code-changes-or-add-a-new-review-stage",
+      "unconfirmedConcern": "main-investigates-or-asks-one-bounded-evidence-question-do-not-order-speculative-code-changes-or-add-a-review-stage-beyond-the-mainLane.workerReview.crossFamilyReview-gate",
       "unavailableImplementer": "hand-over-required-delta-and-evidence-never-restart-completed-work",
       "isolationLifetime": {
         "isolatedChild": "an-isolated-run-merges-or-captures-its-worktree-and-tears-it-down-so-that-session-is-never-resumable-or-messageable-after-the-run",

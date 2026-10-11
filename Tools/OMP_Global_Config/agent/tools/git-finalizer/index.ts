@@ -2,9 +2,10 @@ import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hasPosixGitdirWorktree, usesWindowsDriveRepo } from "./wsl-git";
+import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
+import { hasPosixGitdirWorktree, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
 
 export { hasPosixGitdirWorktree };
 
@@ -83,30 +84,9 @@ async function checkSourceManifest(
   files: string[],
   exec: (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string }>,
 ): Promise<void> {
-  const targets: { root: string; path: string }[] = [];
-  for (const input of files) {
-    if (isAbsolute(input) || /[\0\r\n]/.test(input)) return; // 잘못된 경로의 최종 판정은 finalizer.ps1에 둔다.
-    const absolute = resolve(cwd, input);
-    let directory = dirname(absolute);
-    while (true) {
-      try {
-        if ((await stat(directory)).isDirectory()) break;
-      } catch { /* finalizer.ps1과 같이 가장 가까운 기존 부모를 찾는다. */ }
-      const parent = dirname(directory);
-      if (parent === directory) return;
-      directory = parent;
-    }
-    const result = await exec("git", ["-C", directory, "rev-parse", "--show-prefix"], { cwd });
-    if (result.code !== 0) return; // 저장소 밖·잘못된 대상은 finalizer.ps1이 판정한다.
-    const prefix = result.stdout.trim().split("/").filter(Boolean);
-    const root = resolve(directory, ...prefix.map(() => ".."));
-    const path = relative(root, absolute).split(sep).join("/");
-    if (!path || path === ".." || path.startsWith("../")) return;
-    targets.push({ root, path });
-  }
-  if (!targets.length || targets.some(({ root }) => pathKey(root) !== pathKey(targets[0].root))) return;
-
-  const root = targets[0].root;
+  const resolved = await resolveRepoTargets(cwd, files, exec);
+  if ("failure" in resolved) return; // 잘못된 경로·저장소 밖·여러 저장소의 최종 판정은 finalizer.ps1에 둔다.
+  const { root, targets } = resolved;
   try {
     await stat(join(root, ...helperPath.split("/")));
   } catch (error) {
@@ -188,10 +168,12 @@ const factory: CustomToolFactory = (pi) => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Main only.",
+    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Cross-family review gate (stage `cross-review`): when there is something new to commit, a code file (docs, tests and generated files excluded) needs a passed cross_review resolve for its exact current content if crossReviewHighRisk is true, a high-risk marker hits its changed lines, or the deterministic 10% sample selects the commit; otherwise the call is refused with the files, the reason and the next step. crossReviewWaiver is allowed only on the user's explicit instruction and is recorded. Main only.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
+    crossReviewHighRisk: pi.zod.boolean().optional(),
+    crossReviewWaiver: pi.zod.string().optional(),
   }),
 
   async execute(_toolCallId, params, onUpdate, _ctx, signal) {
@@ -202,8 +184,28 @@ const factory: CustomToolFactory = (pi) => ({
 
     const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
     await checkSourceManifest(pi.cwd, requested, exec);
+    // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.
+    // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
+    let gateBlobs: Record<string, string> | undefined;
+    try {
+      gateBlobs = (await runGate({
+        cwd: pi.cwd, files: requested, highRisk: params.crossReviewHighRisk, waiver: params.crossReviewWaiver,
+        ledgerPath: ledgerPath(), exec: spawnExec(signal), gitFor: async (root) => (await selectGitExecutor(root)).command,
+      })).gateBlobs;
+    } catch (error) {
+      // 게이트가 판정하지 못한 오류(git 실패 등)도 열어 두지 않는다: 확인하지 못한 채 커밋하지 않는다.
+      throw new Error(`git_finalize failed at cross-review: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const memory = await exportMemories(pi.cwd, requested, exec);
     const files = memory.file ? [...requested, memory.file] : requested;
+    if (gateBlobs && memory.file) {
+      // 기억 transport는 게이트 뒤에 방금 만든 생성물(검토 대상 아님)이라 finalizer가 같은 기준으로 비교하도록 지금 blob을 넣는다.
+      const transport = await resolveRepoTargets(pi.cwd, [memory.file], exec);
+      if (!("failure" in transport)) {
+        const blobs = await currentBlobs(spawnExec(signal), (await selectGitExecutor(transport.root)).command, transport.root, transport.targets.map((target) => target.path));
+        for (const [path, blob] of blobs) gateBlobs[path] = blob;
+      }
+    }
 
     onUpdate?.({
       content: [{ type: "text", text: "Repository finalizer lock을 획득하고 변경 경계를 확인하는 중입니다." }],
@@ -214,7 +216,8 @@ const factory: CustomToolFactory = (pi) => ({
     const requestPath = join(tempDir, "request.json");
     try {
       const windows = await windowsDrivePaths(pi.cwd, files, [pi.cwd, scriptPath, requestPath], exec);
-      await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message }), "utf8");
+      // gateBlobs: 게이트가 본 코드 파일의 blob. finalizer.ps1이 잠금 안에서 stage된 내용과 대조해, 게이트 뒤에 파일이 바뀌었으면 커밋하지 않는다.
+      await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message, ...(gateBlobs && Object.keys(gateBlobs).length > 0 ? { gateBlobs } : {}) }), "utf8");
       const result = await pi.exec(
         process.platform === "win32" || windows ? "powershell.exe" : "pwsh",
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windows?.[1] ?? scriptPath, "-Request", windows?.[2] ?? requestPath],

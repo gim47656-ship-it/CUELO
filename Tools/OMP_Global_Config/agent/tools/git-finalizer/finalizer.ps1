@@ -281,6 +281,26 @@ try {
     $stagedByFinalizer = $true
     [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'add', '-A', '--') + $repoPaths))
     $cachedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--cached', '--no-renames', '--name-only')
+    # 계열 교차검증 게이트(index.ts)가 본 파일별 blob(요청한 모든 경로, 안 바뀐 것 포함)과 stage된 내용이 같아야 커밋한다.
+    # 게이트 검사와 이 잠금 사이에 파일이 바뀌었거나 게이트가 보지 못한 경로가 stage되면 검토받지 않은 내용이 커밋되므로
+    # 거절한다(요청에 gateBlobs가 없으면, 즉 코드 파일이 없는 요청이면 검사하지 않는다).
+    $gateMap = $null
+    if ($payload.gateBlobs) {
+        $gateMap = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+        foreach ($gateEntry in $payload.gateBlobs.PSObject.Properties) { $gateMap[[string]$gateEntry.Name] = [string]$gateEntry.Value }
+        $stage = 'cross-review-verify'
+        foreach ($gatePath in $repoPaths) {
+            if (-not $gateMap.ContainsKey($gatePath)) {
+                throw "Cross-review gate: $gatePath was not part of the change set the gate checked. Run git_finalize again so the gate sees it."
+            }
+            $indexEntry = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('--literal-pathspecs', 'ls-files', '--stage', '--', $gatePath)).Output
+            $stagedBlob = if ($indexEntry) { (($indexEntry -split '\s+')[1]) } else { 'deleted' }
+            if ($stagedBlob -cne $gateMap[$gatePath]) {
+                throw "Cross-review gate: $gatePath changed after the review check (checked blob $($gateMap[$gatePath]), staged blob $stagedBlob). Run git_finalize again so the gate sees the current content."
+            }
+        }
+        $stage = 'stage'
+    }
     # 이전 실행이 커밋은 만들고 push에서 실패했으면 요청 파일이 이미 깨끗하다. 그 파일이 아직 원격에 없는
     # 커밋(upstream..HEAD, 원격 브랜치가 없으면 원격 추적 ref 어디에도 없는 HEAD 커밋)에 들어 있을 때만
     # 그 커밋을 인정하고 새 커밋 없이 다시 보낸다.
@@ -324,6 +344,18 @@ try {
         }
         $committedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', $createdCommit)
         Assert-ExactPathSet -Actual $committedPaths -Expected $cachedPaths -Label 'Committed path set'
+        # 커밋 hook이 stage 뒤 파일을 다시 쓸 수 있으므로 push 전에 커밋에 들어간 blob도 게이트가 본 blob과 대조한다. 어긋나면 되돌리지
+        # 않고(사용자 작업 보존) 로컬 커밋이 남았음을 알리며 멈춘다.
+        if ($gateMap) {
+            $stage = 'cross-review-verify'
+            foreach ($gatePath in $repoPaths) {
+                $treeEntry = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('--literal-pathspecs', 'ls-tree', $createdCommit, '--', $gatePath)).Output
+                $committedBlob = if ($treeEntry) { (($treeEntry -split '\s+')[2]) } else { 'deleted' }
+                if ($committedBlob -cne $gateMap[$gatePath]) {
+                    throw "Cross-review gate: the created commit $createdCommit holds a different blob for $gatePath than the one the gate checked (checked $($gateMap[$gatePath]), committed $committedBlob), probably a commit hook rewrote it. The local commit exists and was NOT pushed; inspect it before retrying."
+                }
+            }
+        }
     } else {
         $stagedByFinalizer = $false
         $createdCommit = $headSha

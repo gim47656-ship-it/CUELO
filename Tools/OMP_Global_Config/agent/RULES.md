@@ -105,6 +105,7 @@
 - 자동 staging·commit·push는 raw `git add`·`git commit`·`git push` 대신 Main의
   `git_finalize` 도구를 사용한다. SubAgent에는 raw Git fallback을 허용하지 않는다. 검증과
   `HANDOFF.md` 갱신을 마친 뒤 현재 과제에서 바꾼 정확한 파일 목록과 commit message를 넘긴다.
+- 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면(문서·주석·테스트 제외) `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
 - `git_finalize`는 상대경로 canonical target만 받고 한 호출에서 저장소 하나만 마감한다. 경로
   해석과 거부 대상, cwd 밖 별도 Git 저장소 허용, Main의 raw Git fallback 4조건과 사전 확인,
   remote·upstream·ancestry·mutex 계약의 정본은 `rule://subagent`의 「프로젝트와 Git 경계」다.

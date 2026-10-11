@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -99,9 +99,101 @@ export interface VerdictRecord extends AttemptIdentity {
 
 export type LedgerRecord = DispatchRecord | OutcomeRecord | VerdictRecord;
 
+/**
+ * 계열 교차검증(cross_review) 기록. 발주 이력과 같은 append-only 파일에 남기지만 read()의 이력 요약에는
+ * 섞이지 않고, git_finalize 게이트가 readCrossReviewRecords로 전체 파일에서 따로 읽는다(꼬리 창 밖의 통과도 잃지 않게).
+ */
+export interface CrossReviewFinding {
+  /** 도구가 붙인 안정 id(R1-OAI-1, R2-ANT-2 ...). 모델이 준 id는 쓰지 않는다. */
+  id: string;
+  severity: "blocker" | "major" | "minor";
+  file: string;
+  line?: number;
+  claim: string;
+  why: string;
+  /** 이 지적을 낸 reviewer 모델(provider/id). */
+  reviewer: string;
+}
+
+export interface CrossReviewReviewer {
+  family: "openai" | "anthropic";
+  /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
+  model: string;
+  /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. */
+  status: "ok" | "unparsable" | "error";
+  elapsedMs: number;
+  /** 앞 20 KB 발췌. 전문은 rawFile에 있다. */
+  raw?: string;
+  /** reviewer 답 전문 파일(사본 디렉터리의 raw-<계열>.txt). */
+  rawFile?: string;
+  error?: string;
+}
+
+export interface CrossReviewFile { path: string; blob: string }
+
+export interface CrossReviewRecord {
+  type: "cross-review";
+  ts: string;
+  reviewId: string;
+  sessionId: string;
+  /** 파일 경로의 기준이 되는 저장소 루트(호출 cwd 이름공간). */
+  root: string;
+  round: 1 | 2;
+  previousReviewId?: string;
+  authors: string[];
+  highRisk: boolean;
+  /** 변경 줄이 걸린 trigger marker id 목록(정보용). */
+  triggers: string[];
+  /** 검토한 파일과 검토 시점의 git blob. */
+  files: CrossReviewFile[];
+  /** 안전 필터·변경 없음 등으로 검토에서 빠진 파일과 이유. 이 파일은 통과가 덮지 않는다. */
+  skipped: { path: string; reason: string }[];
+  /** 비밀로 보여 값을 가린 채 검토한 파일과 가린 횟수. */
+  redacted?: { path: string; matches: number }[];
+  reviewers: CrossReviewReviewer[];
+  findings: CrossReviewFinding[];
+  /** 2회차 diff의 기준이 되는 검토 시점 내용 사본 위치. */
+  snapshotDir: string;
+  /** 모든 reviewer가 ok여야 true. false면 이 체인은 통과할 수 없다. */
+  passable: boolean;
+}
+
+export interface CrossReviewResolution {
+  id: string;
+  status: "fixed" | "refuted" | "limit";
+  evidence: string;
+}
+
+export interface CrossReviewResolveRecord {
+  type: "cross-review-resolve";
+  ts: string;
+  reviewId: string;
+  /** 1회차부터 reviewId까지의 체인. */
+  chain: string[];
+  /** 이번 호출이 받아들인 판정만. 이전 호출의 판정은 같은 체인의 앞선 resolve 기록에 있다. */
+  resolutions: CrossReviewResolution[];
+  /** 체인 전체에서 아직 판정이 없는 finding id. */
+  open: string[];
+  pass: boolean;
+  /** resolve 시점의 파일 내용(git blob). pass일 때만 게이트가 덮는 내용으로 쓴다. */
+  files: CrossReviewFile[];
+}
+
+export interface CrossReviewWaiverRecord {
+  type: "cross-review-waiver";
+  ts: string;
+  root: string;
+  /** 사용자의 명시 지시를 근거로 Main이 적은 사유. */
+  reason: string;
+  files: { path: string; blob: string; reasons: string[] }[];
+}
+
+export type CrossReviewLedgerRecord = CrossReviewRecord | CrossReviewResolveRecord | CrossReviewWaiverRecord;
+export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord;
+
 export interface RoutingLedger {
   /** 실패해도 던지지 않는다. 기록 실패가 발주를 막으면 안 된다. 저장 성공 여부를 돌려준다. */
-  append(record: LedgerRecord): boolean;
+  append(record: AnyLedgerRecord): boolean;
   /** 실패하면 빈 목록. 깨진 줄은 건너뛴다. */
   read(): LedgerRecord[];
 }
@@ -153,6 +245,30 @@ export function createRoutingLedger(path: string, onError?: (error: unknown) => 
       }
     },
   };
+}
+
+/**
+ * 교차검증 기록만 파일 전체에서 읽는다. read()는 최근 1MiB 꼬리만 보므로 통과 기록이 그 밖으로 밀리면 게이트가
+ * 통과를 잃는다. 줄 문자열로 먼저 걸러 JSON.parse는 해당 줄에만 한다. 깨진 줄은 건너뛰고, 파일이 없으면 빈 목록이다.
+ */
+export function readCrossReviewRecords(path: string): CrossReviewLedgerRecord[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const records: CrossReviewLedgerRecord[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes('"type":"cross-review')) continue;
+    try {
+      const parsed = JSON.parse(line) as CrossReviewLedgerRecord;
+      if (parsed && (parsed.type === "cross-review" || parsed.type === "cross-review-resolve" || parsed.type === "cross-review-waiver")) records.push(parsed);
+    } catch {
+      // 깨진 줄은 건너뛴다.
+    }
+  }
+  return records;
 }
 
 /** identity(sessionId·assignmentId·attemptId)와 관측된 canonical agentId가 모두 있어야 귀속 대상이다. */
