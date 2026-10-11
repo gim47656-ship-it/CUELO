@@ -6,6 +6,7 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
 const { SubagentArchivePanel } = await jiti.import("./SubagentArchivePanel.tsx");
+const { I18nProvider } = await jiti.import("../../hooks/useI18n.tsx");
 
 const client = {
   async getArchive() { return { sessionId: "session", dir: "", found: true, subagents: [] }; },
@@ -24,7 +25,8 @@ function renderCard(options = {}) {
     "TODO_TASKS: [\"stable title 구현\", \"focused 검증\"]",
   ].join("\n");
   const task = options.task ?? "follow-up hub DM: 검증만 이어서 실행해줘";
-  return renderToStaticMarkup(createElement(SubagentArchivePanel, {
+  const status = options.status ?? "running";
+  return renderToStaticMarkup(createElement(I18nProvider, null, createElement(SubagentArchivePanel, {
     title: "Subagent",
     sessionId: "session",
     sessionPath: "C:/sessions/session.jsonl",
@@ -34,7 +36,7 @@ function renderCard(options = {}) {
       index: 0,
       agent: "maker",
       agentSource: "project",
-      status: "running",
+      status,
       task,
       assignment,
       lastUpdate: 100,
@@ -43,7 +45,7 @@ function renderCard(options = {}) {
         index: 0,
         agent: "maker",
         agentSource: "project",
-        status: "running",
+        status,
         task,
         lastIntent: "focused 검증 실행",
         currentTool: "bash",
@@ -56,7 +58,7 @@ function renderCard(options = {}) {
         durationMs: 5000,
       },
     }],
-  }));
+  })));
 }
 
 test("카드는 최초 TASK_TITLE과 현재 follow-up 단계를 별도 행으로 표시한다", () => {
@@ -75,4 +77,13 @@ test("stable 제목 근거가 없으면 raw guard나 후속 지시 대신 미확
   assert.match(html, /class="subagent-task-line"[^>]*>담당 업무 미확인</);
   assert.doesNotMatch(html, />후속 DM의 긴 실행 지시</);
   assert.doesNotMatch(html, />TASK_GUARD:/);
+});
+
+test("끝난 카드는 마지막 의도·도구를 현재 단계로 남기지 않는다", () => {
+  for (const status of ["completed", "failed", "aborted"]) {
+    const html = renderCard({ status });
+    assert.match(html, /class="subagent-task-line"[^>]*>서브카드 실제 담당업무 표시</, status);
+    assert.doesNotMatch(html, /subagent-stage-line/, status);
+    assert.doesNotMatch(html, /현재 단계/, status);
+  }
 });

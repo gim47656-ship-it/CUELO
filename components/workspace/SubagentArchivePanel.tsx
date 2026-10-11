@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { SubagentSnapshot, ToolResultMessage } from "@/lib/types";
 import { MessageView } from "@/components/MessageView";
 import {
@@ -20,6 +20,14 @@ import {
   useSubagentTranscripts,
   type SubagentTranscriptState,
 } from "@/hooks/useSubagentTranscripts";
+import { useAnswerStatusText } from "@/components/answer-status/i18n";
+import {
+  SubagentLiveEta,
+  SubagentPhaseSteps,
+  todoText,
+  useSubagentProgress,
+  type SubagentProgressView,
+} from "@/components/answer-status/SubagentProgress";
 
 export interface SubagentArchivePanelProps {
   /** Header label, supplied by the deck so it matches the view switcher's locale. */
@@ -225,10 +233,18 @@ function SubagentDetail({
   );
 }
 
-function SubagentRow({ record, onSelect }: { record: MergedSubagentRecord; onSelect: () => void }) {
+function SubagentRow({ record, view, onSelect }: { record: MergedSubagentRecord; view?: SubagentProgressView; onSelect: () => void }) {
+  const { st } = useAnswerStatusText();
+  const etaId = useId();
   const snapshot = record.live;
   const archived = record.archive;
   const presentation = resolveSubagentTaskPresentation(record);
+  // 끝난 실행의 스냅샷은 마지막 의도·도구를 그대로 들고 있다. 그건 지금 단계가 아니다.
+  const active = Boolean(snapshot && isActiveSubagentStatus(snapshot.status));
+  const stage = active ? presentation.stage : null;
+  const live = active && view ? view : null;
+  const phaseLabel = live?.phase ? st("phase.current", { phase: st(`phase.${live.phase}`) }) : "";
+  const todoLabel = live?.todo ? todoText(st, live.todo) : "";
   const name = snapshot?.id || archived?.name || "Subagent";
   const source = identityLabel(record);
   const role = resolveSubagentRole(record);
@@ -243,8 +259,9 @@ function SubagentRow({ record, onSelect }: { record: MergedSubagentRecord; onSel
       role="listitem"
       onClick={onSelect}
       data-identity={record.identity}
-      title={`${name}\n${meta.model ?? "모델 미확인"} · ${effortLabel}\n${presentation.title}${presentation.stage ? `\n현재 단계: ${presentation.stage}` : ""}`}
-      aria-label={`${roleLabel} ${name}, 업무 ${presentation.title}${presentation.stage ? `, 현재 단계 ${presentation.stage}` : ""}, ${snapshot ? snapshot.status : (archived?.status ?? "미확인")}, 모델 ${meta.model ?? "미확인"}, 추론 ${effortLabel}`}
+      title={`${name}\n${meta.model ?? "모델 미확인"} · ${effortLabel}\n${presentation.title}${stage ? `\n현재 단계: ${stage}` : ""}${phaseLabel ? `\n${phaseLabel}` : ""}${todoLabel ? `\n${todoLabel}` : ""}`}
+      aria-label={`${roleLabel} ${name}, 업무 ${presentation.title}${stage ? `, 현재 단계 ${stage}` : ""}${phaseLabel ? `, ${phaseLabel}` : ""}${todoLabel ? `, ${todoLabel}` : ""}, ${snapshot ? snapshot.status : (archived?.status ?? "미확인")}, 모델 ${meta.model ?? "미확인"}, 추론 ${effortLabel}`}
+      aria-describedby={live && snapshot ? etaId : undefined}
       style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "4px 8px", width: "100%", marginBottom: 8, padding: 12, border: "1px solid var(--seed-color-stroke-neutral-weak)", borderRadius: "var(--seed-radius-r2)", background: "var(--seed-color-bg-layer-default)", color: "var(--seed-color-fg-neutral)", cursor: "pointer", textAlign: "left" }}
     >
       {/* 1행: 역할 + 이 실행이 맡은 일, 그리고 상태. */}
@@ -274,15 +291,33 @@ function SubagentRow({ record, onSelect }: { record: MergedSubagentRecord; onSel
             </span>
           )
           : <span aria-hidden="true" />}
-      {presentation.stage && (
+      {stage && (
         <span
           className="subagent-stage-line"
-          title={`현재 단계: ${presentation.stage}`}
+          title={`현재 단계: ${stage}`}
           style={{ gridColumn: "1 / -1", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--seed-color-fg-neutral-subtle)", fontSize: "var(--seed-font-size-t2-static)" }}
         >
           <span style={{ fontWeight: 600 }}>현재 단계</span>
           {" · "}
-          {presentation.stage}
+          {stage}
+        </span>
+      )}
+      {/* 실행 중일 때만: 도구 흐름으로 읽은 단계(todo는 있으면 덧붙임)와, 흐르는 경과·남은 시간. */}
+      {live?.phase && (
+        <span
+          className="subagent-phase-line"
+          style={{ gridColumn: "1 / -1", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--seed-font-size-t2-static)", fontVariantNumeric: "tabular-nums" }}
+        >
+          <SubagentPhaseSteps phase={live.phase} />
+          {todoLabel && <span style={{ color: "var(--seed-color-fg-neutral-subtle)" }} title={todoLabel}>{` · ${todoLabel}`}</span>}
+        </span>
+      )}
+      {live && snapshot && (
+        <span
+          className="subagent-eta-line"
+          style={{ gridColumn: "1 / -1", minWidth: 0, color: "var(--seed-color-fg-neutral)", fontSize: "var(--seed-font-size-t2-static)", fontVariantNumeric: "tabular-nums" }}
+        >
+          <SubagentLiveEta snapshot={snapshot} view={live} id={etaId} />
         </span>
       )}
       {/* 3행: 같은 실행의 실제 모델과 유효 추론 강도. */}
@@ -396,6 +431,7 @@ export function SubagentArchivePanel({
   const archive = archiveState.kind === "ready" || archiveState.kind === "empty" ? archiveState.data : [];
   const records = useMemo(() => mergeSubagentRecords(effectiveLive, archive), [archive, effectiveLive]);
   const selected = selectedKey ? records.find((record) => record.key === selectedKey) ?? null : null;
+  const progressViews = useSubagentProgress({ sessionId, snapshots: effectiveLive, client: resolvedClient, enabled: visible && !selected });
 
   useEffect(() => {
     if (selectedKey && !selected) setSelectedKey(null);
@@ -446,7 +482,7 @@ export function SubagentArchivePanel({
           <div role="status" style={{ padding: 24, color: "var(--text-muted)", textAlign: "center", fontSize: 10.5, lineHeight: 1.6 }}>이 세션은 아직 Subagent를 실행한 적이 없습니다.</div>
         ) : (
           <div role="list" aria-label="Subagent 실시간 및 디스크 기록">
-            {records.map((record) => <SubagentRow key={record.key} record={record} onSelect={() => setSelectedKey(record.key)} />)}
+            {records.map((record) => <SubagentRow key={record.key} record={record} view={record.live ? progressViews.get(record.live.id) : undefined} onSelect={() => setSelectedKey(record.key)} />)}
           </div>
         )}
 

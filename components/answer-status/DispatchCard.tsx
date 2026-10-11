@@ -1,10 +1,12 @@
 "use client";
 
 import { useContext, useId, useMemo, useState } from "react";
-import { presentMaker, readDispatchMembers, type MakerPresentation, type MakerRunState } from "@/lib/answer-status/dispatch";
-import type { ToolCallContent } from "@/lib/types";
+import { findLiveSnapshot, presentMaker, readDispatchMembers, type MakerPresentation, type MakerRunState } from "@/lib/answer-status/dispatch";
+import { createHanseSubagentClient } from "@/lib/hanse-subagent-client";
+import type { SubagentSnapshot, ToolCallContent } from "@/lib/types";
 import { AnswerStatusContext } from "./AnswerStatusContext";
 import { useAnswerStatusText, type AnswerStatusMessageKey, type AnswerStatusTranslate } from "./i18n";
+import { SubagentLiveEta, SubagentPhaseSteps, todoText, useSubagentProgress } from "./SubagentProgress";
 
 const RUN_LABEL: Record<MakerRunState, AnswerStatusMessageKey> = {
   dispatching: "run.dispatching",
@@ -44,16 +46,27 @@ export function MakerStatusPair({ maker, st }: { maker: MakerPresentation; st: A
  * 「실행 상태 → Main 판정」 한 줄이 보이고, 펼치면 현재 단계·모델·판정 사유와 상세 패널 링크가 나온다.
  */
 export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
-  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch } = useContext(AnswerStatusContext);
+  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch, sessionId } = useContext(AnswerStatusContext);
   const { st } = useAnswerStatusText();
   const [open, setOpen] = useState(false);
   const bodyId = useId();
+  const client = useMemo(() => createHanseSubagentClient(), []);
   const makers = useMemo(
     () => calls
       .flatMap((call) => readDispatchMembers(call, toolResults.get(call.toolCallId)) ?? [])
       .map((member) => presentMaker(member, subagents, ledger)),
     [calls, toolResults, subagents, ledger],
   );
+  // 이 카드의 실행 중 Maker 스냅샷. 진행률·예상 시간은 상세를 펼쳤을 때만 읽는다.
+  const runningSnapshots = useMemo(
+    () => makers.flatMap((maker): SubagentSnapshot[] => {
+      if (maker.run !== "pending" && maker.run !== "running") return [];
+      const live = findLiveSnapshot(maker.member, subagents, ledger);
+      return live ? [live] : [];
+    }),
+    [makers, subagents, ledger],
+  );
+  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: open });
   if (makers.length === 0) return null;
 
   let running = 0;
@@ -85,7 +98,11 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
         </svg>
       </button>
       <ul className="answer-dispatch-list" id={bodyId}>
-        {makers.map((maker) => (
+        {makers.map((maker) => {
+          const active = maker.run === "pending" || maker.run === "running";
+          const snapshot = active ? runningSnapshots.find((entry) => entry.id === maker.member.agentId) : undefined;
+          const view = snapshot ? progressViews.get(snapshot.id) : undefined;
+          return (
           <li key={maker.member.key} className="answer-dispatch-row" data-focused={maker.member.key === focusedDispatch ? "" : undefined}>
             <div className="answer-dispatch-line">
               <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
@@ -93,10 +110,28 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
             </div>
             {open && (
               <dl className="answer-dispatch-detail">
-                <div>
-                  <dt>{st("detail.stage")}</dt>
-                  <dd>{maker.stage ?? st("detail.stageNone")}</dd>
-                </div>
+                {/* 끝난 Maker의 마지막 의도·도구는 지금 단계가 아니라서 실행 중일 때만 보인다. */}
+                {active && (
+                  <div>
+                    <dt>{st("detail.stage")}</dt>
+                    <dd>{maker.stage ?? st("detail.stageNone")}</dd>
+                  </div>
+                )}
+                {view?.phase && (
+                  <div>
+                    <dt>{st("progress.label")}</dt>
+                    <dd>
+                      <SubagentPhaseSteps phase={view.phase} />
+                      {view.todo ? ` · ${todoText(st, view.todo)}` : null}
+                    </dd>
+                  </div>
+                )}
+                {snapshot && view && (
+                  <div>
+                    <dt>{st("eta.label")}</dt>
+                    <dd><SubagentLiveEta snapshot={snapshot} view={view} /></dd>
+                  </div>
+                )}
                 <div>
                   <dt>{st("detail.model")}</dt>
                   <dd title={maker.model?.model ?? undefined}>
@@ -121,7 +156,8 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
               </dl>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
       {open && onOpenPanel && (
         <div className="answer-dispatch-links">

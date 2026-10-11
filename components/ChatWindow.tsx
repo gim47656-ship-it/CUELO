@@ -1114,7 +1114,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     toolResults: toolResultsMap,
     onOpenPanel: onOpenWorkspaceView,
     focusedDispatch: flashDispatch,
-  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch]);
+    sessionId: session?.id ?? null,
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id]);
   // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
   const dispatchDock = useMemo(
     () => collectDockMakers(workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch),
