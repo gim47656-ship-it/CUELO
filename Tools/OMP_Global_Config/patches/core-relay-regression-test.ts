@@ -106,8 +106,15 @@ writeFileSync(join(agentDir, "config.yml"), `modelRoles:\n  default: ${FIXTURE_P
  *  훅 호출 횟수로는 turn 을 셀 수 없다. */
 const parentInbox: Array<{ from: string; body: string; wakeRelay?: boolean; channel?: "job"; turnSeq: number }> = [];
 let turnCount = 0;
+// The real child watch subscribes to its parent's tool events. This inbox-only
+// parent emits none, but must retain/release listeners like an AgentSession.
+const parentListeners = new Set<(event: { type: string }) => void>();
 const parentSession = {
 	isStreaming: () => false,
+	subscribe(listener: (event: { type: string }) => void) {
+		parentListeners.add(listener);
+		return () => { parentListeners.delete(listener); };
+	},
 	deliverIrcMessage: async (m: { from: string; body: string; wakeRelay?: boolean }) => {
 		parentInbox.push({ from: m.from, body: m.body, wakeRelay: m.wakeRelay, turnSeq: turnCount });
 		if (process.env.SMOKE_TRACE === "1") {
