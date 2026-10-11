@@ -143,7 +143,7 @@ function rangeText(st: AnswerStatusTranslate, lowMs: number, highMs: number): st
 export function SubagentPhaseSteps({ phase }: { phase: SubagentPhase }) {
   const { st } = useAnswerStatusText();
   return (
-    <span className="subagent-phase-steps" data-phase={phase} title={st("phase.hint")}>
+    <span className="subagent-phase-steps" data-phase={phase} title={st("phase.hint")} style={{ position: "relative" }}>
       <span className="sr-only">{st("phase.current", { phase: st(`phase.${phase}`) })}</span>
       <span aria-hidden="true">
         {SUBAGENT_PHASES.map((step, index) => (

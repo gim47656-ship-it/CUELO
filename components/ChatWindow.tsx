@@ -1538,7 +1538,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             <NoticeShelf notices={notices} floating align="right" />
           </div>
         </div>
-        <div ref={scrollContainerRef} className="chat-session-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
+        {/* relative: 메시지 안의 absolute 요소(sr-only 등)가 이 스크롤 상자를 기준으로 잘리게 한다. 아니면 바깥 overflow-hidden 상자가 늘어나고 scrollIntoView가 그 상자를 밀어 대화가 화면 밖으로 사라진다. */}
+        <div ref={scrollContainerRef} className="chat-session-scroll relative min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
