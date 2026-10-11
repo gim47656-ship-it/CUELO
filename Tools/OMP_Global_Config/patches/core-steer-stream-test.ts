@@ -221,6 +221,14 @@ let wireMode: WireMode = "hang";
 let wireCreates: string[] = [];
 let wireCreatedAt: number[] = [];
 let wireSteerFrames = 0;
+// Section [9] proves ordering, not a machine-speed margin: the first completion
+// cannot be sent until the restarted request reaches this local server.
+let wireFirstCompletionGate: {
+	promise: Promise<void>;
+	resolve: () => void;
+	completed: boolean;
+	restartedBeforeCompletion: boolean;
+} | undefined;
 const wireCompleted = (id: string, output: unknown[] = []) => ({
 	type: "response.completed",
 	response: { id, status: "completed", output, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
@@ -279,7 +287,13 @@ const wireServer = Bun.serve({
 		const body = await req.text();
 		wireCreates.push(body);
 		wireCreatedAt.push(Date.now());
-		const frames = wireFrames(`resp_${wireCreates.length}`, wireCreates.length === 1);
+		const first = wireCreates.length === 1;
+		const completionGate = wireFirstCompletionGate;
+		if (wireCreates.length === 2 && completionGate) {
+			completionGate.restartedBeforeCompletion = !completionGate.completed;
+			completionGate.resolve();
+		}
+		const frames = wireFrames(`resp_${wireCreates.length}`, first);
 		const encoder = new TextEncoder();
 		const stream = new ReadableStream({
 			async start(controller) {
@@ -287,8 +301,10 @@ const wireServer = Bun.serve({
 				for (const [delay, frame] of frames) {
 					await Bun.sleep(delay - at);
 					at = delay;
+					if (first && frame.type === "response.completed") await completionGate?.promise;
 					try {
 						controller.enqueue(encoder.encode(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`));
+						if (first && frame.type === "response.completed" && completionGate) completionGate.completed = true;
 					} catch {
 						return; // 클라이언트가 요청을 끊었다
 					}
@@ -338,16 +354,20 @@ const genuineSteer = (text: string, extra: Record<string, unknown> = {}) => ({
 	...extra,
 });
 
-type WireResult = { outcome: "idle" | "timeout"; events: string[]; agent: InstanceType<typeof Agent>; creates: string[]; createdAt: number[] };
+type WireResult = { outcome: "idle" | "timeout"; events: string[]; agent: InstanceType<typeof Agent>; creates: string[]; createdAt: number[]; restartedBeforeCompletion?: boolean };
 async function wireRun(
 	mode: WireMode,
-	opts: { websocket: boolean; supportsSteering?: boolean; at?: number; deadlineMs?: number; tools?: unknown[] },
+	opts: { websocket: boolean; supportsSteering?: boolean; at?: number; deadlineMs?: number; tools?: unknown[]; afterVisibleText?: boolean },
 	inject: (agent: InstanceType<typeof Agent>) => void,
 ): Promise<WireResult> {
 	wireMode = mode;
 	wireCreates = [];
 	wireCreatedAt = [];
 	wireSteerFrames = 0;
+	const completionGate = opts.afterVisibleText
+		? { ...Promise.withResolvers<void>(), completed: false, restartedBeforeCompletion: false }
+		: undefined;
+	wireFirstCompletionGate = completionGate;
 	const startedAt = Date.now();
 	// 18.7.0 번들에서 openai-codex/gpt-5.5 가 빠졌다. 두 판에 모두 있고 compat 이 가장 가까운 Codex 모델을 쓴다.
 	const base = getBundledModel("openai-codex", "gpt-5.6-sol");
@@ -358,35 +378,45 @@ async function wireRun(
 		compat: { ...base.compat, supportsSteering: opts.supportsSteering ?? true },
 	};
 	const pool = new Map<string, unknown>();
+	const events: string[] = [];
 	const agent = new Agent({
 		initialState: { model, systemPrompt: "", tools: opts.tools ?? [], messages: [] },
 		sessionId: `p55-${mode}-${opts.websocket ? "ws" : "sse"}-${Date.now()}`,
 		convertToLlm,
 		transformContext: async (messages: unknown[]) => wrapSteeringForModel(messages),
-		streamFn: (m: unknown, context: unknown, options: Record<string, unknown>) =>
-			streamOpenAICodexResponses(m, context, { ...options, apiKey: wireJwt(), providerSessionState: pool }),
+		streamFn: (m: unknown, context: unknown, options: Record<string, unknown>) => {
+			events.push("request_start");
+			return streamOpenAICodexResponses(m, context, { ...options, apiKey: wireJwt(), providerSessionState: pool });
+		},
 	});
-	const events: string[] = [];
 	let textSeen = false;
+	let injectedAfterText = false;
 	agent.subscribe((event: { type: string; message?: { role: string; content?: Array<{ type: string; text?: string }> } }) => {
 		if (event.type === "message_start") textSeen = false;
 		if (event.type === "message_update" && !textSeen && event.message?.content?.some(b => b.type === "text" && b.text?.trim())) {
 			textSeen = true;
 			events.push("visible-text");
+			if (opts.afterVisibleText && !injectedAfterText) {
+				injectedAfterText = true;
+				inject(agent);
+			}
 		}
 		if (event.type === "message_start" || event.type === "message_end") events.push(`${event.type}:${event.message?.role}`);
 	});
 	const done = agent.prompt("시작").then(() => agent.waitForIdle()).then(() => "idle" as const);
-	setTimeout(() => inject(agent), opts.at ?? 200);
+	const injectionTimer = opts.afterVisibleText ? undefined : setTimeout(() => inject(agent), opts.at ?? 200);
 	const { promise: deadline, resolve } = Promise.withResolvers<"timeout">();
 	const timer = setTimeout(() => resolve("timeout"), opts.deadlineMs ?? 5_000);
 	const outcome = await Promise.race([done, deadline]);
 	clearTimeout(timer);
+	clearTimeout(injectionTimer);
 	if (outcome === "timeout") {
 		agent.abort();
 		await agent.waitForIdle();
 	}
-	return { outcome, events, agent, creates: [...wireCreates], createdAt: wireCreatedAt.map(at => at - startedAt) };
+	completionGate?.resolve(); // Release the fixture coroutine after abort/deadline too.
+	return { outcome, events, agent, creates: [...wireCreates], createdAt: wireCreatedAt.map(at => at - startedAt),
+		restartedBeforeCompletion: completionGate?.restartedBeforeCompletion };
 }
 const assistantsOf = (r: WireResult) => r.agent.state.messages.filter((m: { role: string }) => m.role === "assistant") as Array<{ stopReason?: string; content: Array<{ type: string }> }>;
 const occurrences = (body: string | undefined, text: string) => (body ?? "").split(text).length - 1;
@@ -397,10 +427,10 @@ const inputItems = (body: string | undefined): Array<{ type?: string; role?: str
 	const parsed = JSON.parse(body ?? "{}");
 	return parsed.input ?? parsed.response?.input ?? [];
 };
-/** 첫 assistant 응답(다음 message_start 전까지)이 listener 에 text 를 보였는가. */
+/** Did request one show text, even if it restarted before emitting message_start? */
 const firstResponseShowedText = (events: string[]): boolean => {
-	const start = events.indexOf("message_start:assistant");
-	const next = events.indexOf("message_start:assistant", start + 1);
+	const start = events.indexOf("request_start");
+	const next = events.indexOf("request_start", start + 1);
 	return events.slice(start, next === -1 ? undefined : next).includes("visible-text");
 };
 /** 정지한 첫 응답을 기다리지 않고 steer 를 소비했는가: 새 create 1개, 거기에만 steer, 버린 partial 흔적 없음. */
@@ -487,11 +517,11 @@ try {
 	check("[8b] assistant message_end 는 응답마다 한 번이다", acceptText.events.filter(e => e === "message_end:assistant").length === 2, acceptText.events.join(" "));
 
 	console.log("\n[9] 이미 text 가 보인 요청: 보인 답은 보존하고 낡은 생성만 끊는다");
-	const visible = await wireRun("visible-text", { websocket: false }, a => a.steer(genuineSteer("STEER_AFTER_TEXT")));
+	const visible = await wireRun("visible-text", { websocket: false, afterVisibleText: true }, a => a.steer(genuineSteer("STEER_AFTER_TEXT")));
 	const visibleAssistants = assistantsOf(visible);
 	check("[9] 보인 답이 그대로 기록된다", visibleAssistants[0]?.stopReason === "stop" && visibleAssistants[0]?.content.some(b => b.type === "text") === true, JSON.stringify(visibleAssistants.map(a => a.content.map(b => b.type))));
 	check("[9] steer 는 그 답 뒤 다음 create 에 실린다", visible.creates.length === 2 && occurrences(visible.creates[1], "VISIBLE_ANSWER") === 1 && occurrences(visible.creates[1], "STEER_AFTER_TEXT") === 1);
-	check("[9] 다음 create 는 첫 응답 완료(900ms)를 기다리지 않는다", (visible.createdAt[1] ?? Infinity) < 700, JSON.stringify(visible.createdAt));
+	check("[9] 다음 create 는 첫 응답 완료를 기다리지 않는다", visible.outcome === "idle" && visible.restartedBeforeCompletion === true, JSON.stringify({ outcome: visible.outcome, restartedBeforeCompletion: visible.restartedBeforeCompletion }));
 	check(
 		"[9] 완료된 reasoning 서명은 기록에 한 번 남고 다음 create 에 중복되지 않는다",
 		signedThinking(visibleAssistants[0], "KEPT_SIG_resp_1") === 1 && occurrences(visible.creates[1], "KEPT_SIG_resp_1") <= 1,
