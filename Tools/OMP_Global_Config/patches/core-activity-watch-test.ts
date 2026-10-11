@@ -19,6 +19,19 @@ import { createSettingsTestScope } from "./core-test-settings";
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required");
 const core = resolve(target, "src");
+// The SDK keeps process-global stores under the first profile. Let OS process
+// teardown release them before the parent removes its fixture tree on Windows.
+if (process.argv[2] !== "--fixture-worker") {
+  const root = mkdtempSync(join(tmpdir(), "omp-activity-watch-suite-"));
+  let exitCode = 1;
+  try {
+    exitCode = Bun.spawnSync([process.execPath, ...process.execArgv, import.meta.path, "--fixture-worker", root], {
+      env: process.env, stdout: "inherit", stderr: "inherit",
+    }).exitCode;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  process.exit(exitCode);
+}
+const fixtureRoot = process.argv[3]!;
 const { SubagentActivityWatch, attachSubagentActivityWatch } = await import(`${core}/task/executor.ts`);
 const { AgentRegistry, formatAgentActivityWatch } = await import(`${core}/registry/agent-registry.ts`);
 const { AgentLifecycleManager } = await import(`${core}/registry/agent-lifecycle.ts`);
@@ -278,7 +291,7 @@ const server = Bun.serve({ port: 0, async fetch(request) {
 } });
 async function realScenario(busy: boolean) {
   AgentRegistry.resetGlobalForTests(); IrcBus.resetGlobalForTests();
-  const root = mkdtempSync(join(tmpdir(), "omp-activity-watch-"));
+  const root = mkdtempSync(join(fixtureRoot, "scenario-"));
   const profile = join(root, "profile");
   mkdirSync(profile);
   writeFileSync(join(profile, "models.yml"), `providers:\n  activity-fixture:\n    baseUrl: http://127.0.0.1:${server.port}\n    api: anthropic-messages\n    apiKey: example\n    models:\n      - id: claude-opus-5-5\n`);
@@ -328,7 +341,6 @@ async function realScenario(busy: boolean) {
     }
     await Promise.allSettled(done);
     closeModelCache(); // Process-shared models.db must close before Windows directory removal.
-    rmSync(root, { recursive: true, force: true });
   }
 }
 try {

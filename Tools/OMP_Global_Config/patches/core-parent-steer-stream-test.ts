@@ -11,6 +11,19 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required");
 const core = resolve(target, "src");
+// SDK process-global stores outlive a session. The parent owns fixture files and
+// removes them only after the worker exits, when Windows has released every handle.
+if (process.argv[2] !== "--fixture-worker") {
+  const root = mkdtempSync(join(tmpdir(), "omp-parent-stream-suite-"));
+  let exitCode = 1;
+  try {
+    exitCode = Bun.spawnSync([process.execPath, ...process.execArgv, import.meta.path, "--fixture-worker", root], {
+      env: process.env, stdout: "inherit", stderr: "inherit",
+    }).exitCode;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  process.exit(exitCode);
+}
+const fixtureRoot = process.argv[3]!;
 // Runtime-selected SDK root is required for isolated patched/unpatched validation.
 const { createAgentSession } = await import(`${core}/sdk.ts`);
 const { AgentRegistry } = await import(`${core}/registry/agent-registry.ts`);
@@ -112,8 +125,8 @@ async function scenario(mode: WireCase["mode"], run: (context: ScenarioContext) 
   sequence++;
   const child = `ParentStreamChild${sequence}`;
   const parent = `ParentStreamParent${sequence}`;
-  const workdir = mkdtempSync(join(tmpdir(), "omp-parent-stream-cwd-"));
-  const agentDir = mkdtempSync(join(tmpdir(), "omp-parent-stream-profile-"));
+  const workdir = mkdtempSync(join(fixtureRoot, "cwd-"));
+  const agentDir = mkdtempSync(join(fixtureRoot, "profile-"));
   current = { mode, requests: [], cancelled: 0, finishFirst: () => { throw new Error("First response not ready"); } };
   const state = current;
   writeFileSync(join(agentDir, "models.yml"), `providers:\n  parent-stream-fixture:\n    baseUrl: http://127.0.0.1:${server.port}\n    api: anthropic-messages\n    apiKey: example\n    models:\n      - id: claude-opus-5-5\n        reasoning: true\n        thinking:\n          mode: adaptive\n          efforts: [low, medium, high, xhigh, max]\n          defaultLevel: low\n`);
@@ -171,7 +184,6 @@ async function scenario(mode: WireCase["mode"], run: (context: ScenarioContext) 
     // These stores belong to this fixture, not to a shared application runtime.
     session.modelRegistry.authStorage.close();
     closeModelCache();
-    for (const path of [workdir, agentDir]) rmSync(path, { recursive: true, force: true });
   }
 }
 
