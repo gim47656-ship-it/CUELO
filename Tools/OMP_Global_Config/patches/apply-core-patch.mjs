@@ -12406,6 +12406,239 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {`,
 		anchor: "\t\t\t\t\t\t`${agent.id} [task] running up ${formatDuration(agent.ageMs)} — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}`,",
 		patched: "\t\t\t\t\t\t`${agent.id} [task] running up ${formatDuration(agent.ageMs)} — ${agent.activity ?? \"agent\"}${agentStaleNote(agent)}${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(agent.id)?.activityWatch, now)}`,",
 	},
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: '\tepisodeState: "none" | "attention" | "progress" | "terminal";',
+		anchor: '\ttransportProgress: "unknown";',
+		patched: '\ttransportProgress: "unknown";\n\tepisodeState: "none" | "attention" | "progress" | "terminal";\n\tinspectedAt: number | null;\n\tactionAt: number | null;\n\taction: "parent_directive_delivered" | null;',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#parentSession: AgentSession | undefined;",
+		anchor: "\t#episodeReason: string | undefined;",
+		patched: String.raw`	#parentSession: AgentSession | undefined;
+	#detachParent: (() => void) | undefined;
+	readonly #parentCalls = new Map<string, { episode: number; kind: "read" | "write" }>();
+	#episodeReason: string | undefined;`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\t\tepisodeState: "none", inspectedAt: null, actionAt: null, action: null,',
+		anchor: '\t\t\tepisode: 0, lastAdvisoryAt: null, delivery: "not_sent", transportProgress: "unknown",',
+		patched: '\t\t\tepisode: 0, lastAdvisoryAt: null, delivery: "not_sent", transportProgress: "unknown",\n\t\t\tepisodeState: "none", inspectedAt: null, actionAt: null, action: null,',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tif (event.ref.id === ref.parentId) this.#bindParent();",
+		anchor: "\t\tthis.#unsubscribeRegistry = registry.onChange(event => {\n\t\t\tif (event.ref.id !== ref.id) return;",
+		patched: "\t\tthis.#unsubscribeRegistry = registry.onChange(event => {\n\t\t\tif (event.ref.id === ref.parentId) this.#bindParent();\n\t\t\tif (event.ref.id !== ref.id) return;",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.#bindParent();\n\t\tsessionActivityWatches.set(session, this);",
+		anchor: "\t\tsessionActivityWatches.set(session, this);",
+		patched: "\t\tthis.#bindParent();\n\t\tsessionActivityWatches.set(session, this);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#bindParent(): void {",
+		anchor: "\t#cancelDelivery(): void {",
+		patched: String.raw`	#bindParent(): void {
+		const parent = this.#ref.parentId ? this.#registry.get(this.#ref.parentId)?.session ?? undefined : undefined;
+		if (parent === this.#parentSession) return;
+		this.#detachParent?.();
+		this.#parentCalls.clear();
+		this.#parentSession = parent;
+		this.#detachParent = parent?.subscribe(event => this.#observeParent(parent, event));
+	}
+
+	#observeParent(parent: AgentSession, event: AgentSessionEvent): void {
+		if (!this.#current() || parent !== this.#parentSession ||
+			this.#registry.get(this.#ref.parentId!)?.session !== parent) return;
+		if (event.type === "tool_execution_start") {
+			if (this.snapshot.episodeState !== "attention" || !isRecord(event.args)) return;
+			if (event.toolName !== "read" && event.toolName !== "write") return;
+			const path = event.args.path;
+			if (typeof path !== "string") return;
+			// Exact targeted reads only: listings, selectors and JSON extraction do not prove inspection.
+			const target = /^(agent|proc):\/\/([^/?#:]+)\/?$/.exec(path);
+			if (!target) return;
+			const job = target[1] === "proc" ? parent.asyncJobManager?.getJob(target[2]) : undefined;
+			const id = job ? (job.ownerId === this.#ref.parentId ? job.agentId : undefined) : target[2];
+			if (id !== this.#ref.id || (event.toolName === "write" && target[1] !== "agent")) return;
+			this.#parentCalls.set(event.toolCallId, { episode: this.snapshot.episode, kind: event.toolName });
+			return;
+		}
+		if (event.type !== "tool_execution_end") return;
+		const call = this.#parentCalls.get(event.toolCallId);
+		this.#parentCalls.delete(event.toolCallId);
+		if (!call || event.isError || event.result?.isError || call.episode !== this.snapshot.episode) return;
+		if (call.kind === "read") {
+			const content = event.result?.content;
+			if (!Array.isArray(content)) return;
+			// The actual returned snapshot must be visible, not merely generated before truncation.
+			const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+			const marker = "\n[Child activity; advisory only]\n";
+			const at = text.lastIndexOf(marker);
+			if (at < 0) return;
+			try {
+				const seen = JSON.parse(text.slice(at + marker.length).split("\n")[0]);
+				if (seen.id !== this.snapshot.id || seen.sessionId !== this.snapshot.sessionId ||
+					seen.episode !== call.episode || seen.episodeState !== "attention") return;
+			} catch { return; }
+			this.snapshot.inspectedAt = this.#clock.now();
+		} else {
+			const message = event.result?.details?.message;
+			if (!message || !Array.isArray(message.receipts) ||
+				!message.receipts.some((receipt: { to: string; outcome: string }) =>
+					receipt.to === this.#ref.id && ["injected", "woken", "revived"].includes(receipt.outcome))) return;
+			this.snapshot.actionAt = this.#clock.now();
+			this.snapshot.action = "parent_directive_delivered";
+		}
+		// Observation is not resolution. Never reset quiet time or the advisory cadence.
+		this.#publish();
+	}
+
+	#cancelDelivery(): void {`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\tif (this.snapshot.episodeState === "attention") this.snapshot.episodeState = "progress";',
+		anchor: "\t#recover(): void {\n\t\tthis.#episodeReason = undefined;",
+		patched: '\t#recover(): void {\n\t\tif (this.snapshot.episodeState === "attention") this.snapshot.episodeState = "progress";\n\t\tthis.#episodeReason = undefined;',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\tif (this.snapshot.episodeState === "attention") this.snapshot.episodeState = "terminal";',
+		anchor: "\t#stop(): void {\n\t\tthis.#running = false;",
+		patched: '\t#stop(): void {\n\t\tif (this.snapshot.episodeState === "attention") this.snapshot.episodeState = "terminal";\n\t\tthis.#parentCalls.clear();\n\t\tthis.#running = false;',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.#detachParent?.();\n\t\tthis.#publishers.clear();",
+		anchor: "\t\tthis.#unsubscribeRegistry();\n\t\tthis.#publishers.clear();",
+		patched: "\t\tthis.#unsubscribeRegistry();\n\t\tthis.#detachParent?.();\n\t\tthis.#publishers.clear();",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\t\t\tthis.snapshot.episodeState = "attention";',
+		anchor: "\t\t\tif (!this.#episodeReason) this.snapshot.episode++;",
+		patched: String.raw`			if (!this.#episodeReason) {
+				this.snapshot.episode++;
+				this.snapshot.episodeState = "attention";
+				this.snapshot.inspectedAt = null;
+				this.snapshot.actionAt = null;
+				this.snapshot.action = null;
+				this.#parentCalls.clear();
+			}`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\t\tepisode: this.snapshot.episode, inspectedAt: this.snapshot.inspectedAt, actionAt: this.snapshot.actionAt,",
+		anchor: "\t\t\t\t\tidentityLimitations: this.snapshot.identityLimitations,",
+		patched: "\t\t\t\t\tidentityLimitations: this.snapshot.identityLimitations,\n\t\t\t\t\tepisode: this.snapshot.episode, inspectedAt: this.snapshot.inspectedAt, actionAt: this.snapshot.actionAt,",
+	},
+	// Full terminal evidence stays on the exact existing async run, separate from its preview.
+	{
+		file: "src/async/job-manager.ts",
+		marker: "\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;",
+		anchor: "export interface AsyncJob {\n\tid: string;",
+		patched: "export interface AsyncJob {\n\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;\n\tid: string;",
+	},
+	{
+		file: "src/task/index.ts",
+		marker: "\t\t\t\t\tconst completionJob = manager.getJob(jobId);",
+		anchor: "\t\t\t\t\tconst singleResult = result.details?.results[0];",
+		patched: String.raw`					const singleResult = result.details?.results[0];
+					const completionJob = manager.getJob(jobId);
+					if (completionJob && singleResult) {
+						completionJob.completion = Object.freeze({
+							agentId: singleResult.id, startTime: completionJob.startTime, output: singleResult.output,
+						});
+					}`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "let wakeJob: { jobId: string; ownerId: string;",
+		anchor: "let wakeJob: { ownerId: string; outcome: PromiseWithResolvers<AsyncJobRunResult> } | undefined;",
+		patched: "let wakeJob: { jobId: string; ownerId: string; outcome: PromiseWithResolvers<AsyncJobRunResult> } | undefined;",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\t\t\tconst jobId = manager.register(\n\t\t\t\t\t"task",',
+		anchor: '\t\t\t\tmanager.register(\n\t\t\t\t\t"task",',
+		patched: '\t\t\t\tconst jobId = manager.register(\n\t\t\t\t\t"task",',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\twakeJob = { jobId, ownerId, outcome };",
+		anchor: "\t\t\t\twakeJob = { ownerId, outcome };",
+		patched: "\t\t\t\twakeJob = { jobId, ownerId, outcome };",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\t\tconst completionJob = session.asyncJobManager?.getJob(wakeJob.jobId);",
+		anchor: "\t\t\t\tif (wakeJob && yielded && result) {",
+		patched: String.raw`				if (wakeJob && yielded && result) {
+					const completionJob = session.asyncJobManager?.getJob(wakeJob.jobId);
+					if (completionJob) completionJob.completion = Object.freeze({
+						agentId: result.id, startTime: completionJob.startTime, output: result.output,
+					});`,
+	},
+	{
+		file: "src/async/job-manager.ts",
+		marker: '"structured" | "agentId" | "latestDetails" | "completion"',
+		anchor: '"structured" | "agentId" | "latestDetails"\n',
+		patched: '"structured" | "agentId" | "latestDetails" | "completion"\n',
+	},
+	{
+		file: "src/async/job-manager.ts",
+		marker: "\t\t\t\t\t\tcompletion: job.completion,",
+		anchor: "\t\t\t\t\t\tstructured: job.structured,",
+		patched: "\t\t\t\t\t\tstructured: job.structured,\n\t\t\t\t\t\tcompletion: job.completion,",
+	},
+	{
+		file: "src/async/job-manager.ts",
+		marker: "\t\t\tcompletion: snapshot.completion,",
+		anchor: "\t\t\tstructured: snapshot.structured,",
+		patched: "\t\t\tstructured: snapshot.structured,\n\t\t\tcompletion: snapshot.completion,",
+	},
+	{
+		file: "src/async/job-manager.ts",
+		marker: "this.#jobs.get(delivery.jobId)?.startTime === delivery.jobSnapshot?.startTime",
+		anchor: "\t\t\t\t\tthis.#jobs.get(delivery.jobId) ?? this.#reconstructEvictedJob(delivery),",
+		patched: "\t\t\t\t\tthis.#jobs.get(delivery.jobId)?.startTime === delivery.jobSnapshot?.startTime\n\t\t\t\t\t\t? this.#jobs.get(delivery.jobId) : this.#reconstructEvictedJob(delivery),",
+	},
+	{
+		file: "src/session/async-job-delivery.ts",
+		marker: "\t\t\tcompletion: entry.job?.completion,",
+		anchor: "\t\t\tagentUrlId: entry.job?.agentId ?? entry.jobId,",
+		patched: "\t\t\tagentUrlId: entry.job?.agentId ?? entry.jobId,\n\t\t\tcompletion: entry.job?.completion,",
+	},
+	{
+		file: "src/session/async-job-delivery.ts",
+		marker: "\t\t\t...(job.completion ? { completion: job.completion } : {}),",
+		anchor: "\t\t\t...(job.structured ? { schema: job.structured } : {}),",
+		patched: "\t\t\t...(job.structured ? { schema: job.structured } : {}),\n\t\t\t...(job.completion ? { completion: job.completion } : {}),",
+	},
+	{
+		file: "src/async/job-control.ts",
+		marker: '\tcompletion?: AsyncJob["completion"];',
+		anchor: "interface TrackedJobLike {\n\tid: string;",
+		patched: 'interface TrackedJobLike {\n\tcompletion?: AsyncJob["completion"];\n\tid: string;',
+	},
+	{
+		file: "src/async/job-control.ts",
+		marker: "\t\tconst latest = current?.startTime === j.startTime ? current : j;",
+		anchor: "\t\tconst latest = current ?? j;",
+		patched: "\t\tconst latest = current?.startTime === j.startTime ? current : j;",
+	},
+	{
+		file: "src/async/job-control.ts",
+		marker: "\t\t\t...(options.includeResults !== false && j.completion ? { completion: j.completion } : {}),",
+		anchor: '\t\t\t...(latest.type === "task" ? { agentUrlId: current?.agentId ?? latest.id } : {}),',
+		patched: '\t\t\t...(latest.type === "task" ? { agentUrlId: j.completion?.agentId ?? current?.agentId ?? latest.id } : {}),\n\t\t\t...(options.includeResults !== false && j.completion ? { completion: j.completion } : {}),',
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
@@ -12415,6 +12648,17 @@ for (const entry of EDITS) {
 			if (typeof candidate[key] === "string") candidate[key] = candidate[key].replaceAll("\r\n", "\n");
 		}
 	}
+}
+// These deltas amend code introduced by the original watch patch, not upstream code.
+// Fold before preflight so clean installs see upstream anchors; retain the old whole
+// injected block for upgrades instead of requiring an intermediate patch application.
+const watchFollowupStart = EDITS.findIndex(entry => entry.marker === '\tepisodeState: "none" | "attention" | "progress" | "terminal";');
+const watchFollowupEnd = EDITS.findIndex(entry => entry.marker === "\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;");
+for (const update of EDITS.splice(watchFollowupStart, watchFollowupEnd - watchFollowupStart)) {
+	const owner = EDITS.find(entry => entry.file === update.file && entry.patched.includes(update.anchor));
+	if (!owner) throw new Error(`Missing activity-watch patch owner: ${update.marker}`);
+	owner.legacyPatched ??= owner.patched;
+	owner.patched = owner.patched.replace(update.anchor, update.patched);
 }
 
 

@@ -153,6 +153,7 @@ function createHarness(options: HarnessOptions = {}) {
     isIdle: () => options.idle ?? false,
     sessionManager: {
       getSessionId: () => "session-1",
+      getSessionFile: () => "/fixture/session-1.jsonl",
       getBranch: () => options.sessionEntries ?? [],
     },
     getAsyncJobSnapshot: (request?: { jobIds?: readonly string[] }) => {
@@ -2631,6 +2632,210 @@ describe("jev-runtime pre-review", () => {
     const advisory = String(harness.sent.at(-1)?.message.content);
     expect(advisory).toContain("Main 수용 후보=0");
     expect(advisory).toContain("unresolved=1");
+  });
+
+  function createReviewHarness(options: HarnessOptions = {}) {
+    return createHarness({
+      ...options,
+      judgeAnswers: {
+        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+        hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
+      },
+    });
+  }
+
+  async function finishReviewSpawn(harness: EventHarness, name: string, task: string) {
+    await harness.emit("tool_result", {
+      ...taskCall(`spawn-${name}`, task, { name, model: "test/local:auto" }),
+      type: "tool_result", isError: false, content: [],
+      details: { async: { jobId: `job-${name}` }, progress: [{ index: 0, id: `agent-${name}`, status: "running" }] },
+    });
+  }
+
+  for (const via of ["async-result", "wait", "read proc://"] as const) {
+    test(`full completion preserves late evidence beyond preview through ${via}`, async () => {
+      const harness = createReviewHarness({ asyncJobs: [{ id: "job-Full", agentId: "agent-Full", startTime: 100 }] });
+      const task = await beginReviewTask(harness, "Full");
+      await finishReviewSpawn(harness, "Full", task);
+      const output = JSON.stringify({
+        revision: "rev-full",
+        summary: "long report ".repeat(800),
+        validation: { requestedBehavior: { state: "met", evidence: "artifact://full-proof" } },
+        unresolved: [],
+      });
+      const job = {
+        id: "job-Full", jobId: "job-Full", type: "task", status: "completed",
+        resultText: `<preview>${output.slice(0, 5000)}</preview>`,
+        completion: { agentId: "agent-Full", startTime: 100, output },
+      };
+      if (via === "async-result") {
+        await harness.emit("message_start", { message: { role: "custom", customType: "async-result", details: { jobs: [job] } } });
+      } else {
+        await harness.emit("tool_result", {
+          toolName: via === "wait" ? "wait" : "read", toolCallId: "settle", input: { path: "proc://job-Full" },
+          isError: false, content: [],
+          details: via === "wait" ? { jobs: [job] } : { proc: { job } },
+        });
+      }
+      expect(structuralReports(harness.sent)[0]!.evidenceLocators).toEqual(["artifact://full-proof"]);
+      expect(String(harness.sent.at(-1)?.message.content)).toContain("unverified=0");
+      expect(String(harness.sent.at(-1)?.message.content)).toContain("unresolved=0");
+      expect(harness.judgments).toHaveLength(1);
+    });
+  }
+
+  test("absent full output and unbound run keep evidence unknown", async () => {
+    for (const knownStart of [100, undefined]) {
+      const harness = createReviewHarness({ asyncJobs: [{ id: "job-Missing", agentId: "agent-Missing", startTime: knownStart }] });
+      const task = await beginReviewTask(harness, "Missing");
+      await finishReviewSpawn(harness, "Missing", task);
+      await harness.emit("message_start", asyncResult("job-Missing", {
+        schema: undefined,
+        resultText: '{"revision":"rev-missing","summary":"' + "x".repeat(5000),
+        ...(knownStart === undefined ? { completion: { agentId: "agent-Missing", startTime: 100, output: '{"validation":{"x":{"state":"met","evidence":"wrong"}},"unresolved":[]}' } } : {}),
+      }));
+      const report = structuralReports(harness.sent)[0]!;
+      expect(report.unverifiedCount).toBeNull();
+      expect(report.unresolvedCount).toBeNull();
+      expect(report.evidenceLocators).toEqual([]);
+    }
+  });
+
+  test("mismatched agent and reused run cannot consume current attempt evidence or review slot", async () => {
+    const harness = createReviewHarness({ asyncJobs: [{ id: "job-Reused", agentId: "agent-Reused", startTime: 200 }] });
+    const task = await beginReviewTask(harness, "Reused");
+    await finishReviewSpawn(harness, "Reused", task);
+    const before = harness.sent.length;
+    const output = JSON.stringify({ revision: "new", validation: { behavior: { state: "met", evidence: "artifact://new" } }, unresolved: [] });
+    for (const completion of [
+      { agentId: "other-agent", startTime: 200, output },
+      { agentId: "agent-Reused", startTime: 100, output },
+    ]) await harness.emit("message_start", asyncResult("job-Reused", { schema: undefined, completion }));
+    expect(harness.sent).toHaveLength(before);
+    expect(readFileSync(harness.ledgerPath, "utf8")).not.toContain('"type":"outcome"');
+    await harness.emit("message_start", asyncResult("job-Reused", {
+      schema: undefined, completion: { agentId: "agent-Reused", startTime: 200, output },
+    }));
+    expect(structuralReports(harness.sent)[0]!.evidenceLocators).toEqual(["artifact://new"]);
+  });
+
+  test("pending rework recovers only the newly observed run and retains its original request", async () => {
+    const jobs = [{ id: "job-Resume", agentId: "agent-Resume", startTime: 100 }];
+    const harness = createReviewHarness({ asyncJobs: jobs });
+    await harness.emit("message_start", { message: { role: "user", content: "Original full scope", timestamp: 501 } });
+    const task = await beginReviewTask(harness, "Resume");
+    await finishReviewSpawn(harness, "Resume", task);
+    await harness.emit("message_start", asyncResult("job-Resume", { agentId: "agent-Resume" }));
+    jobs.splice(0);
+    await harness.emit("message_start", { message: { role: "user", content: "A different request", timestamp: 502 } });
+    const write = {
+      toolName: "write", toolCallId: "rework-write",
+      input: { path: "agent://agent-Resume", content: "REWORK task_id=Resume role=maker previous_revision=r1 next_revision=r2\nKeep original scope." },
+    };
+    await harness.emit("tool_call", write);
+    await harness.emit("tool_result", { ...write, isError: false, content: [] });
+    const startTime = Date.now() + 10;
+    jobs.push({ id: "job-Resume", agentId: "agent-Resume", startTime });
+    const output = JSON.stringify({ revision: "r2", summary: "x".repeat(6000), validation: { A: { state: "met", evidence: "artifact://resume-full" } }, unresolved: [] });
+    const before = harness.sent.length;
+    await harness.emit("message_start", asyncResult("job-Resume", { schema: undefined, completion: { agentId: "agent-Resume", startTime: 100, output } }));
+    expect(harness.sent).toHaveLength(before);
+    await harness.emit("message_start", asyncResult("job-Resume", { schema: undefined, completion: { agentId: "agent-Resume", startTime, output } }));
+    expect(structuralReports(harness.sent)[0]!.evidenceLocators).toEqual(["artifact://resume-full"]);
+    expect(reviewContexts(harness)[0]).toMatchObject({ originalRequest: { excerpt: "Original full scope" }, attemptId: "session-1#spawn-Resume#0#a2" });
+  });
+
+  function reviewContexts(harness: { sent: SentMessage[] }) {
+    const text = String(harness.sent.at(-1)?.message.content);
+    return JSON.parse(text.split("\nreviewContext=")[1]!.split("\n")[0]!) as Array<{
+      jobId: string;
+      originalRequest: { source: string; excerpt: string; complete: boolean } | null;
+      explicitSteering: Array<{ excerpt: string }>;
+      acceptance: { excerpt: string; complete: boolean } | null;
+      briefSource: string | null;
+      semanticAlignment: string;
+    }>;
+  }
+
+  async function beginReviewTask(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task = `${GUARDED_TASK}\n# Acceptance\nDeliver all three requested behaviors.`) {
+    await harness.prepare(task, name);
+    const result = await harness.emit("tool_call", taskCall(`spawn-${name}`, task, { name, model: "test/local:auto" }));
+    expect(result).toBeUndefined();
+    return task;
+  }
+
+  test("review origin survives new request during spawn and late concurrent completion", async () => {
+    const harness = createReviewHarness();
+    await harness.emit("message_start", { message: { role: "user", content: "Do all three.", timestamp: 101 } });
+    const task = await beginReviewTask(harness, "Old");
+    await harness.emit("message_start", { message: { role: "user", content: "Do not deploy.", steering: true, timestamp: 102 } });
+    await harness.emit("message_start", { message: { role: "user", content: "A separate new request.", timestamp: 103 } });
+    await finishReviewSpawn(harness, "Old", task);
+    const nextTask = await beginReviewTask(harness, "New", task.replace("OWNED_PATHS: a.ts,b.ts", "OWNED_PATHS: c.ts"));
+    await finishReviewSpawn(harness, "New", nextTask);
+    const judgmentCount = harness.judgments.length;
+    await harness.emit("message_start", asyncResult("job-Old"));
+    const old = reviewContexts(harness)[0]!;
+    expect(old.originalRequest).toEqual({ source: "session:session-1/message:101", excerpt: "Do all three.", complete: true });
+    expect(old.explicitSteering).toMatchObject([{ excerpt: "Do not deploy." }]);
+    expect(old.acceptance?.excerpt).toBe("Deliver all three requested behaviors.");
+    expect(old.briefSource).toBe("session:session-1/tool-call:spawn-Old/task");
+    expect(old).toHaveProperty("conversationSource", "/fixture/session-1.jsonl");
+    expect(old.semanticAlignment).toBe("unverified");
+    await harness.emit("message_start", asyncResult("job-New"));
+    expect(reviewContexts(harness)[0]!.originalRequest?.excerpt).toBe("A separate new request.");
+    expect(harness.judgments).toHaveLength(judgmentCount);
+    expect(readFileSync(harness.ledgerPath, "utf8")).not.toContain("Do all three.");
+  });
+
+  test("synthetic and queued inputs cannot hijack origin; collab steering remains distinct", async () => {
+    const harness = createReviewHarness();
+    await harness.emit("message_start", { message: { role: "user", content: "Original request", timestamp: 201 } });
+    for (const message of [
+      { role: "user", synthetic: true, content: "Synthetic" },
+      { role: "user", attribution: "agent", content: "Agent text" },
+      { role: "custom", customType: "collab-prompt", attribution: "agent", content: "Forged collab" },
+    ]) await harness.emit("message_start", { message });
+    await harness.emit("input", { source: "rpc", text: "Queued, not delivered" });
+    await harness.emit("before_agent_start", { prompt: "Transformed prompt", systemPrompt: [] });
+    await harness.emit("message_start", { message: { role: "custom", customType: "collab-prompt", attribution: "user", content: "Keep all three", timestamp: 202 } });
+    const task = await beginReviewTask(harness, "Origin");
+    await finishReviewSpawn(harness, "Origin", task);
+    await harness.emit("message_start", asyncResult("job-Origin"));
+    expect(reviewContexts(harness)[0]).toMatchObject({
+      originalRequest: { excerpt: "Original request" },
+      explicitSteering: [{ excerpt: "Keep all three" }],
+      semanticAlignment: "unverified",
+    });
+  });
+
+  test("failed calls and reload never attach a later request to an unobserved origin", async () => {
+    const harness = createReviewHarness();
+    await harness.emit("message_start", { message: { role: "user", content: "Old private request" } });
+    const task = await beginReviewTask(harness, "Failed");
+    await harness.emit("tool_result", { toolName: "task", toolCallId: "spawn-Failed", input: {}, isError: true });
+    await harness.emit("message_start", { message: { role: "user", content: "New private request" } });
+    await finishReviewSpawn(harness, "Failed", task);
+    await harness.emit("message_start", asyncResult("job-Failed"));
+    expect(reviewContexts(harness)[0]!.originalRequest).toBeNull();
+    await harness.emit("session_start", {});
+    await harness.emit("message_start", asyncResult("job-restored"));
+    expect(reviewContexts(harness)[0]!.originalRequest).toBeNull();
+  });
+
+  test("long request and acceptance are bounded excerpts with original conversation and brief locators", async () => {
+    const harness = createReviewHarness();
+    await harness.emit("message_start", { message: { role: "user", content: "private ".repeat(2000), timestamp: 301 } });
+    const task = await beginReviewTask(harness, "Long", `${GUARDED_TASK}\n# Acceptance\n${"criterion ".repeat(1000)}`);
+    await finishReviewSpawn(harness, "Long", task);
+    await harness.emit("message_start", asyncResult("job-Long"));
+    const context = reviewContexts(harness)[0]!;
+    expect(context.originalRequest?.complete).toBe(false);
+    expect(context.originalRequest!.excerpt.length).toBeLessThanOrEqual(2000);
+    expect(context.acceptance?.complete).toBe(false);
+    expect(context.acceptance!.excerpt.length).toBeLessThanOrEqual(4000);
+    expect(context.originalRequest?.source).toBe("session:session-1/message:301");
+    expect(context.briefSource).toBe("session:session-1/tool-call:spawn-Long/task");
   });
 });
 

@@ -167,6 +167,18 @@ function extractTaskGuardMeta(task: string): TaskGuardMeta {
   return meta;
 }
 
+interface ReviewRequest {
+  original: { source: string; excerpt: string; complete: boolean };
+  steering: Array<{ source: string; excerpt: string; complete: boolean }>;
+  omittedSteering: number;
+}
+
+interface ReviewOrigin {
+  request?: ReviewRequest;
+  conversationSource?: string;
+  briefSource: string;
+}
+
 interface SpawnedTaskMeta {
   /** tasks[] 배열 위치 — tool_result progress row의 index와 대응한다. */
   index: number;
@@ -183,6 +195,7 @@ interface SpawnedTaskMeta {
   jobId?: string;
   /** core spawn의 격리 요청(항목 값 우선, 없으면 상위 값). */
   workspace: DispatchOwnership["workspace"];
+  reviewOrigin?: ReviewOrigin;
 }
 
 function extractSpawnedTasks(
@@ -433,7 +446,11 @@ function readTerminalReport(data: unknown, resultText: string): TerminalReportMe
   };
 }
 
-function readSettledTaskJobs(details: unknown, content?: unknown): SettledJobMeta[] {
+function readSettledTaskJobs(
+  details: unknown,
+  content?: unknown,
+  completionFor?: (jobId: string, completion: unknown) => { output?: string; agentId?: string; ignore?: boolean },
+): SettledJobMeta[] {
   const jobs = (details as { jobs?: unknown } | undefined)?.jobs;
   if (!Array.isArray(jobs)) return [];
   const resultBlocks = [...textContent(content).matchAll(/<task-result\b[\s\S]*?<\/task-result>/gi)]
@@ -459,10 +476,12 @@ function readSettledTaskJobs(details: unknown, content?: unknown): SettledJobMet
         ? record.resultText
         : resultBlocks[resultBlockIndex] ?? (jobs.length === 1 ? textContent(content) : "");
     resultBlockIndex += 1;
-    const terminal = readTerminalReport(data, resultText);
+    const completion = completionFor?.(jobId, record.completion);
+    if (completion?.ignore) continue;
+    const terminal = readTerminalReport(data, completion?.output ?? resultText);
     const meta: SettledJobMeta = {
       jobId,
-      ...(typeof record.agentId === "string" && record.agentId ? { agentId: record.agentId } : {}),
+      ...(completion?.agentId ? { agentId: completion.agentId } : typeof record.agentId === "string" && record.agentId ? { agentId: record.agentId } : {}),
       ...(typeof record.label === "string" ? { label: record.label } : {}),
       ...(typeof record.durationMs === "number" ? { durationMs: record.durationMs } : {}),
       ...(record.status === "completed" || record.status === "failed" || record.status === "cancelled" ? { status: record.status } : {}),
@@ -982,6 +1001,26 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const bashServices = new Map<string, string>();
     /** running job 취소 직전의 근거 공백 advisory 중복 방지. */
     const advisedRunningCancellations = new Set<string>();
+    // Local session context only: never persist private prompts in the routing ledger.
+    let currentReviewRequest: ReviewRequest | undefined;
+    let reviewMessageSequence = 0;
+    const pendingReviewOrigins = new Map<string, ReviewOrigin>();
+
+    function captureReviewRequest(message: { content?: unknown; timestamp?: number; steering?: boolean }, ctx: ExtensionContext): void {
+      const text = textContent(message.content);
+      const excerpt = boundedExcerpt(text, 2000);
+      const source = `session:${ctx.sessionManager.getSessionId()}/message:${message.timestamp ?? `observed-${++reviewMessageSequence}`}`;
+      const item = { source, ...excerpt };
+      if (message.steering && currentReviewRequest) {
+        currentReviewRequest.steering.push(item);
+        if (currentReviewRequest.steering.length > 4) {
+          currentReviewRequest.steering.shift();
+          currentReviewRequest.omittedSteering += 1;
+        }
+      } else {
+        currentReviewRequest = { original: item, steering: [], omittedSteering: 0 };
+      }
+    }
 
     interface ResolvedJudgeEnv {
       judge: JudgeLike;
@@ -1505,6 +1544,35 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (!row || runStart === undefined || row.startTime !== runStart || (row.type !== undefined && row.type !== "task")) return undefined;
       return row.status === "completed" || row.status === "failed" || row.status === "cancelled" ? row.status : undefined;
     }
+    /** Only the producer's immutable completion for an observed exact attempt may replace its preview. */
+    function readReviewJobs(details: unknown, content: unknown, ctx: ExtensionContext): SettledJobMeta[] {
+      return readSettledTaskJobs(details, content, (jobId, value) => {
+        if (!value || typeof value !== "object") return {};
+        const completion = value as { agentId?: unknown; startTime?: unknown; output?: unknown };
+        const ref = jobIndex.get(jobId);
+        const spawned = ref ? liveMakers.get(ref.callId)?.find((task) => task.index === ref.taskIndex) : undefined;
+        const pending = typeof completion.agentId === "string" ? pendingResume.get(completion.agentId) : undefined;
+        if (!spawned && pending && observedAttempts.has(pending.sourceAttemptId)) {
+          const snapshot = ctx.getAsyncJobSnapshot?.();
+          const rows = [...(snapshot?.running ?? []), ...(snapshot?.recent ?? [])];
+          const row = rows.find((entry) => entry.id === jobId);
+          const candidates = new Set(rows
+            .filter((entry) => entry.agentId === completion.agentId &&
+              (entry.startTime >= pending.sentAt || (!pending.priorJobs.has(entry.id) && !consumedJobs.has(entry.id))))
+            .map((entry) => entry.id));
+          if (candidates.size !== 1 || !candidates.has(jobId)) return { ignore: true };
+          if (!row || row.agentId !== completion.agentId || row.startTime !== completion.startTime || row.startTime < pending.sentAt) return { ignore: true };
+          return typeof completion.output === "string" ? { output: completion.output, agentId: row.agentId } : {};
+        }
+        const attempt = spawned?.identity ?? [...observedAttempts.values()].findLast((entry) =>
+          entry.jobId === jobId && entry.status === "running");
+        const start = attempt ? runStarts.get(attempt.attemptId) : undefined;
+        if (!attempt || start === undefined) return {};
+        // A queued old result must not consume the new run's review/outcome dedupe slot.
+        if (completion.agentId !== attempt.agentId || completion.startTime !== start) return { ignore: true };
+        return typeof completion.output === "string" ? { output: completion.output, agentId: attempt.agentId } : {};
+      });
+    }
     /**
      * 처음 보는 jobId이거나, 재사용 jobId라도 아직 검수하지 않은 재개 실행이면 검수 대상이다.
      * status 미상으로 정산을 보류한 job은 권위 status 관측이 오면 한 번 더 통과시킨다. 어느 실행의 관측인지는 runPreReview가 가린다.
@@ -1542,6 +1610,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     ): Promise<void> {
       const todoAdvice: string[] = [];
       const identityNotes: string[] = [];
+      const reviewContexts: unknown[] = [];
       const reports: ReviewStructuralReport[] = settled.map((job) => {
         const ref = jobIndex.get(job.jobId);
         const spawned = ref
@@ -1614,6 +1683,20 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           : spawned?.identity ?? [...observedAttempts.values()].find((entry) =>
             entry.status === "running" && entry.jobId === job.jobId && entry.agentId === agentId
             && entry.attemptId !== pendingEntry?.attemptId);
+        const owner = spawned ?? (identity ? knownMakers.get(identity.assignmentId) : undefined);
+        const origin = owner?.reviewOrigin;
+        reviewContexts.push({
+          jobId: job.jobId,
+          attemptId: identity?.attemptId ?? null,
+          originalRequest: origin?.request?.original ?? null,
+          explicitSteering: origin?.request?.steering ?? [],
+          omittedSteering: origin?.request?.omittedSteering ?? 0,
+          briefSource: origin?.briefSource ?? null,
+          conversationSource: origin?.conversationSource ?? null,
+          acceptance: owner?.guard.acceptance ? boundedExcerpt(owner.guard.acceptance, 4000) : null,
+          primaryDeliverable: owner?.guard.primaryDeliverable ?? null,
+          semanticAlignment: "unverified",
+        });
         // 이 jobId의 다른 실행 row가 보이면 옛 보류는 더는 정산할 수 없다. 그 attempt의 outcome은 미상으로 남는다.
         if (pendingEntry && !deferred && rowStart !== undefined && rowStart !== pendingEntry.runStart) statusPending.delete(job.jobId);
         // 채널과 무관하게 이미 소비한 jobId는 다시 처리하지 않고, 같은 attempt도 한 번만 소비한다.
@@ -1728,7 +1811,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           "pre-review",
           undefined,
           ["requirementsAndEvidenceAligned", "claimsExceedEvidence", "validationWeakened"],
-          `${note} 구조 관측은 로컬에서 확정했다: via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}, structuralSummary=${JSON.stringify(structuralSummary)}. 구조 count만으로 요구 의미 충족을 판정하지 않는다.${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""} 관측 가능한 JEV 질문이 없어 호출을 생략한다.`,
+          `${note} 구조 관측은 로컬에서 확정했다: via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}, structuralSummary=${JSON.stringify(structuralSummary)}. 구조 count만으로 요구 의미 충족을 판정하지 않는다.${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""} 관측 가능한 JEV 질문이 없어 호출을 생략한다.\nreviewContext=${JSON.stringify(reviewContexts)}\n원 요청·명시 조향·발주 수용 조건을 위 terminal 근거와 Main이 대조한다. 발췌만으로 지시 대상·의미·권한을 추정하지 말고 source의 같은 세션 대화와 task call 원문을 확인한다. 미관측·잘린 문맥은 미상이며 자동 수용·TODO 완료가 아니다.`,
         ),
       );
     }
@@ -1776,6 +1859,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       reviewedTodoRevisions.clear();
       advisedRunningCancellations.clear();
       cachedEnv = undefined;
+      currentReviewRequest = undefined;
+      reviewMessageSequence = 0;
+      pendingReviewOrigins.clear();
     });
 
     // 새 genuine 입력은 실패 문맥과 routing의 TaskGuard 상속 lock만 끊는다.
@@ -1869,6 +1955,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         synthetic?: boolean;
         attribution?: string;
         steering?: boolean;
+        timestamp?: number;
       };
       if (message.synthetic === true) return;
       // 자기 advisory는 재귀하지 않는다.
@@ -1877,8 +1964,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // deliverable 상속 lock만 풀고, 성공 판단 cache와 prepared ref는 유지한다.
       if (message.role === "user") {
         if (message.attribution === "agent") return;
+        captureReviewRequest(message, ctx);
         pendingFailures.clear();
         if (message.steering === true) routing.releaseContractLock();
+        return;
+      }
+      if (message.role === "custom" && message.customType === "collab-prompt" && message.attribution === "user") {
+        captureReviewRequest({ ...message, steering: true }, ctx);
         return;
       }
       // Maker가 `write agent://Main`으로 보낸 DM은 `irc:incoming` custom 메시지로 주입된다.
@@ -1889,7 +1981,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // pre-review: async-result 자동 전달이 Main에 도착하는 가장 이른 경계.
       // async-result는 attribution:"agent"로 오므로 attribution 필터보다 먼저 본다.
       if (message.role !== "custom" || message.customType !== "async-result") return;
-      const settled = takeUnjudged(readSettledTaskJobs(message.details, message.content), ctx);
+      const settled = takeUnjudged(readReviewJobs(message.details, message.content, ctx), ctx);
       if (settled.length === 0) return;
       await runPreReview(
         ctx,
@@ -1900,7 +1992,16 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     });
 
     pi.on("tool_call", async (event, ctx) => {
-      if (event.toolName === "task") return routing.beforeTask(event.input, ctx, event.toolCallId);
+      if (event.toolName === "task") {
+        pendingReviewOrigins.set(event.toolCallId, {
+          request: currentReviewRequest,
+          conversationSource: ctx.sessionManager.getSessionFile?.(),
+          briefSource: `session:${ctx.sessionManager.getSessionId()}/tool-call:${event.toolCallId}`,
+        });
+        const result = await routing.beforeTask(event.input, ctx, event.toolCallId);
+        if (result?.block) pendingReviewOrigins.delete(event.toolCallId);
+        return result;
+      }
 
       if (event.toolName === "wait") {
         const unadvised = [...pendingCheckpoints].filter(([, id]) => !advisedCheckpoints.has(id));
@@ -2189,6 +2290,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
 
       // task 호출은 pre-dispatch 경계가 따로 있으므로 재시도 문맥을 세우지 않는다.
       if (event.toolName === "task") {
+        const reviewOrigin = pendingReviewOrigins.get(event.toolCallId);
+        pendingReviewOrigins.delete(event.toolCallId);
         if (event.isError) {
           // spawn하지 못한 task 실행 오류. 이 호출의 예약만 푼다.
           routing.releaseCall(event.toolCallId);
@@ -2213,6 +2316,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           }
         }
         const spawned = extractSpawnedTasks(event.input, todoProgressState.currentTodos);
+        for (const task of spawned) {
+          if (reviewOrigin) task.reviewOrigin = { ...reviewOrigin, briefSource: `${reviewOrigin.briefSource}/${Array.isArray(event.input.tasks) ? `tasks/${task.index}` : "task"}` };
+        }
         // 실제 wire: 각 spawn의 jobId는 ctx snapshot의 exact agentId 대응에서만 얻는다(없으면 미관측).
         const snapshot = ctx.getAsyncJobSnapshot?.();
         const jobByAgent = new Map<string, string>();
@@ -2318,7 +2424,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       } else {
         return;
       }
-      const settled = takeUnjudged(readSettledTaskJobs(jobDetails, event.content), ctx);
+      const settled = takeUnjudged(readReviewJobs(jobDetails, event.content, ctx), ctx);
       if (settled.length === 0) return;
       await runPreReview(
         ctx,
