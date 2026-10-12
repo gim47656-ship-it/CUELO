@@ -101,6 +101,14 @@
   overflow-wrap: anywhere;
 }
 
+/* 실행 중 Maker의 단계·경과·남은 시간. 접힌 카드에서도 보인다. */
+.answer-dispatch-progress {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .answer-status-pair {
   display: inline-flex;
   flex-wrap: wrap;

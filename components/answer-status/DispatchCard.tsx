@@ -43,7 +43,8 @@ export function MakerStatusPair({ maker, st }: { maker: MakerPresentation; st: A
 
 /**
  * 서브에이전트 발주가 있는 답변 안의 접힌 카드. 접힌 상태에서도 Maker마다 업무 제목과
- * 「실행 상태 → Main 판정」 한 줄이 보이고, 펼치면 현재 단계·모델·판정 사유와 상세 패널 링크가 나온다.
+ * 「실행 상태 → Main 판정」 한 줄이 보이고, 실행 중이면 그 아래 경과·남은 시간 한 줄이 붙는다.
+ * 펼치면 그 줄에 단계가 더해지고 현재 도구·모델·판정 사유와 상세 패널 링크가 나온다.
  */
 export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
   const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch, sessionId } = useContext(AnswerStatusContext);
@@ -57,7 +58,8 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
       .map((member) => presentMaker(member, subagents, ledger)),
     [calls, toolResults, subagents, ledger],
   );
-  // 이 카드의 실행 중 Maker 스냅샷. 진행률·예상 시간은 상세를 펼쳤을 때만 읽는다.
+  // 이 카드의 실행 중 Maker 스냅샷. 경과·남은 시간은 접힌 상태에서도 보이고, 자식 기록(수 MB)을
+  // 읽어야 하는 단계는 펼쳤을 때만 읽는다. 끝난 자식은 읽지 않는다.
   const runningSnapshots = useMemo(
     () => makers.flatMap((maker): SubagentSnapshot[] => {
       if (maker.run !== "pending" && maker.run !== "running") return [];
@@ -66,7 +68,7 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
     }),
     [makers, subagents, ledger],
   );
-  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: open });
+  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: true, transcripts: open });
   if (makers.length === 0) return null;
 
   let running = 0;
@@ -108,6 +110,14 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
               <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
               <MakerStatusPair maker={maker} st={st} />
             </div>
+            {snapshot && view && (
+              <div className="answer-dispatch-progress">
+                {view.phase && <SubagentPhaseSteps phase={view.phase} />}
+                {view.phase && view.todo ? ` · ${todoText(st, view.todo)}` : null}
+                {view.phase ? " · " : null}
+                <SubagentLiveEta snapshot={snapshot} view={view} />
+              </div>
+            )}
             {open && (
               <dl className="answer-dispatch-detail">
                 {/* 끝난 Maker의 마지막 의도·도구는 지금 단계가 아니라서 실행 중일 때만 보인다. */}
@@ -115,21 +125,6 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
                   <div>
                     <dt>{st("detail.stage")}</dt>
                     <dd>{maker.stage ?? st("detail.stageNone")}</dd>
-                  </div>
-                )}
-                {view?.phase && (
-                  <div>
-                    <dt>{st("progress.label")}</dt>
-                    <dd>
-                      <SubagentPhaseSteps phase={view.phase} />
-                      {view.todo ? ` · ${todoText(st, view.todo)}` : null}
-                    </dd>
-                  </div>
-                )}
-                {snapshot && view && (
-                  <div>
-                    <dt>{st("eta.label")}</dt>
-                    <dd><SubagentLiveEta snapshot={snapshot} view={view} /></dd>
                   </div>
                 )}
                 <div>

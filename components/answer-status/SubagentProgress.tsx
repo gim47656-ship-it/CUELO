@@ -34,17 +34,21 @@ export interface SubagentProgressView {
  * 실행 중인 자식마다 단계·todo(자식 자신의 기록)와 과거 소요 시간(서버가 원장에서 낸 요약)을
  * 모은다. 끝난 자식은 읽지 않는다. 기록은 다른 화면이 쓰는 같은 훅으로 읽어 기록이 바뀔 때마다
  * 다시 계산된다. 경과에 따라 바뀌는 값은 `SubagentLiveEta`가 그 자리에서 계산한다.
+ * 기록 읽기는 자식마다 처음에 전체(수 MB)를 받으므로 `transcripts: false`면 건너뛰고 단계·todo는
+ * null로 둔다 - 경과·남은 시간은 스냅샷과 작은 요약만으로 계속 나온다.
  */
 export function useSubagentProgress({
   sessionId,
   snapshots,
   client,
   enabled,
+  transcripts = true,
 }: {
   sessionId: string | null | undefined;
   snapshots: readonly SubagentSnapshot[];
   client: HanseSubagentClient;
   enabled: boolean;
+  transcripts?: boolean;
 }): ReadonlyMap<string, SubagentProgressView> {
   const active = useMemo(() => snapshots.filter((snapshot) => isActiveSubagentStatus(snapshot.status)), [snapshots]);
   const on = enabled && Boolean(sessionId) && active.length > 0;
@@ -52,7 +56,7 @@ export function useSubagentProgress({
     () => active.map((snapshot) => ({ key: snapshot.id, liveId: snapshot.id, status: snapshot.status })),
     [active],
   );
-  const reads = useSubagentTranscripts(targets, { sessionId: sessionId ?? "", client, enabled: on });
+  const reads = useSubagentTranscripts(targets, { sessionId: sessionId ?? "", client, enabled: on && transcripts });
 
   const [histories, setHistories] = useState<SubagentEtaResponse | null>(null);
   // 발주 기록 반영 지연·일시적인 실패는 짧게 재시도하고, 이후에도 1분마다 새 기록을 읽는다.
@@ -95,7 +99,9 @@ export function useSubagentProgress({
     if (!on) return views;
     const sessionHistories = histories && histories.sessionId === sessionId ? histories.histories : undefined;
     for (const snapshot of active) {
-      const messages = (reads.get(snapshot.id)?.entries ?? []).flatMap((entry) => ("message" in entry ? [entry.message] : []));
+      // 기록 읽기를 멈추면 마지막으로 읽은 단계가 갱신 없이 남으므로 쓰지 않는다.
+      const entries = transcripts ? reads.get(snapshot.id)?.entries ?? [] : [];
+      const messages = entries.flatMap((entry) => ("message" in entry ? [entry.message] : []));
       views.set(snapshot.id, {
         phase: classifySubagentPhase(messages),
         todo: readSubagentTodoProgress(messages),
@@ -103,7 +109,7 @@ export function useSubagentProgress({
       });
     }
     return views;
-  }, [active, histories, on, reads, sessionId]);
+  }, [active, histories, on, reads, sessionId, transcripts]);
 }
 
 /** 대략의 길이(분 단위). 1분 미만은 따로 말한다. */
@@ -174,6 +180,7 @@ export function todoText(st: AnswerStatusTranslate, todo: SubagentTodoProgress):
  * 경과와 남은 시간 한 줄. 5초마다, 그리고 기록이 바뀔 때마다 다시 계산한다. 과거 기록 근거
  * (경과를 조건으로 한 범위·% 추정)와 todo 근거는 섞지 않고 각자 라벨을 달아 나란히 둔다.
  * 더 오래 걸린 표본이 적으면 그 수를, 하나도 없으면 최장 기록에 도달한 사실을 경고색으로 말한다.
+ * 재작업 시도는 추정 대신 시도 차수와 첫 발주부터의 시간을 보인다.
  */
 export function SubagentLiveEta({ snapshot, view, id }: {
   snapshot: SubagentSnapshot;
@@ -187,9 +194,21 @@ export function SubagentLiveEta({ snapshot, view, id }: {
   const eta = estimateConditionalEta(view.history, elapsedMs);
   const todoMs = estimateTodoRemainingMs(view.todo, elapsedMs);
   const subtle = { color: "var(--seed-color-fg-neutral-subtle, var(--text-muted))" };
+  const history = view.history;
+  const sinceFirstMs = history?.rework && history.firstDispatchedAtMs !== null ? now - history.firstDispatchedAtMs : null;
   return (
-    <span id={id} className="subagent-live-eta" data-eta={eta?.kind ?? "none"}>
+    <span id={id} className="subagent-live-eta" data-eta={eta?.kind ?? (history?.rework ? "rework" : "none")}>
       <span data-elapsed={Math.floor(elapsedMs / 1000)}>{st("eta.elapsed", { duration: elapsedText(st, elapsedMs) })}</span>
+      {history?.rework && (
+        <>
+          {" · "}
+          <span style={subtle} title={st("eta.reworkHint")}>
+            {sinceFirstMs !== null && sinceFirstMs >= 0
+              ? st("eta.rework", { attempt: history.attempt, duration: elapsedText(st, sinceFirstMs) })
+              : st("eta.reworkAttempt", { attempt: history.attempt })}
+          </span>
+        </>
+      )}
       {eta?.kind === "remaining" && (
         <>
           {" · "}

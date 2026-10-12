@@ -12,7 +12,8 @@ import type { AgentMessage, AssistantMessage, SubagentSnapshot, ToolCallContent,
  * - 남은 시간: routing ledger의 같은 모델·같은 작업 등급(NORMAL/HARD) 첫 시도 완료 기록 가운데
  *   지금 경과보다 오래 걸린 실행만 골라 `소요 − 경과`의 분포(p25·중앙·p75)를 낸다. 이미 그만큼
  *   지난 실행 사이의 조건부 분포라 경과가 늘수록 범위가 저절로 고쳐진다. 재작업 시도는 원장 소요
- *   시간이 대부분 0초로 남아 표본에서 빼고, 재작업 중인 카드에는 이 근거를 내지 않는다.
+ *   시간이 대부분 0초로 남아 표본에서 빼고, 재작업 중인 카드에는 이 근거를 내지 않는다. 대신
+ *   시도 차수와 같은 배정의 첫 발주 시각을 내보내 화면이 「재작업 N차 · 첫 발주부터 M분」을 보인다.
  */
 
 /** 이보다 표본이 적으면 남은 시간 근거를 숨기거나(전체) 더 오래 걸린 실행 수로 바꾼다. */
@@ -30,6 +31,10 @@ export interface EtaHistory {
   workClass: EtaWorkClass | null;
   /** 이 실행이 재작업 시도(attempt ≥ 2)인가. 그러면 표본을 모으지 않는다. */
   rework: boolean;
+  /** 원장의 시도 차수(1부터). */
+  attempt: number;
+  /** 같은 배정의 가장 이른 발주 시각(epoch ms). 원장 시각이 없으면 null. */
+  firstDispatchedAtMs: number | null;
   /** 같은 모델(·등급) 첫 시도 정상 완료의 소요 시간(초), 오름차순. */
   durationsSec: number[];
 }
@@ -43,7 +48,10 @@ export interface SubagentEtaResponse {
 interface LedgerDispatch {
   sessionId: string;
   attemptId: string;
+  assignmentId: string;
   attempt: number;
+  /** 발주 시각(epoch ms). 없거나 읽을 수 없으면 null. */
+  ts: number | null;
   agentId: string;
   jobId: string;
   model: string;
@@ -87,6 +95,8 @@ export function quantile(values: readonly number[], q: number): number | null {
 export function buildEtaHistories(rows: readonly unknown[], sessionId: string): Record<string, EtaHistory> {
   const dispatches = new Map<string, LedgerDispatch>();
   const sessionLatest = new Map<string, LedgerDispatch>();
+  /** assignmentId → 가장 이른 발주 시각. 재작업 카드가 첫 발주부터의 시간을 보인다. */
+  const firstDispatchAt = new Map<string, number>();
   const samples: Array<{ attemptId: string; model: string; workClass: EtaWorkClass | null; sec: number }> = [];
 
   for (const row of rows) {
@@ -96,10 +106,13 @@ export function buildEtaHistories(rows: readonly unknown[], sessionId: string): 
       const attemptId = text(record.attemptId);
       const model = text(record.chosenModel);
       if (!attemptId || !model) continue;
+      const parsedTs = typeof record.ts === "string" ? Date.parse(record.ts) : Number.NaN;
       const dispatch: LedgerDispatch = {
         sessionId: text(record.sessionId),
         attemptId,
+        assignmentId: text(record.assignmentId),
         attempt: typeof record.attempt === "number" ? record.attempt : 1,
+        ts: Number.isFinite(parsedTs) ? parsedTs : null,
         agentId: text(record.agentId),
         jobId: text(record.jobId),
         model,
@@ -109,6 +122,10 @@ export function buildEtaHistories(rows: readonly unknown[], sessionId: string): 
       if (dispatch.sessionId === sessionId) {
         for (const id of new Set([dispatch.agentId, dispatch.jobId])) {
           if (id) sessionLatest.set(id, dispatch);
+        }
+        if (dispatch.assignmentId && dispatch.ts !== null) {
+          const known = firstDispatchAt.get(dispatch.assignmentId);
+          if (known === undefined || dispatch.ts < known) firstDispatchAt.set(dispatch.assignmentId, dispatch.ts);
         }
       }
       continue;
@@ -128,6 +145,8 @@ export function buildEtaHistories(rows: readonly unknown[], sessionId: string): 
       model: dispatch.model,
       workClass: dispatch.workClass,
       rework,
+      attempt: dispatch.attempt,
+      firstDispatchedAtMs: firstDispatchAt.get(dispatch.assignmentId) ?? null,
       durationsSec: rework
         ? []
         : samples
