@@ -38,11 +38,21 @@ export async function listWindowsDrives(): Promise<BrowsableDirectory[]> {
   return candidates.filter((drive): drive is BrowsableDirectory => drive !== null);
 }
 
-export function normalizeDirectory(directory: string): string {
+export function normalizeDirectory(
+  directory: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (directory === "~") return homedir();
   if (/^~[\\/]/.test(directory)) {
     const suffix = directory.slice(2).replace(/[\\/]+/g, path.sep);
     return path.resolve(homedir(), suffix);
+  }
+
+  // Under WSL the server is Linux, so a pasted Windows drive path lives at /mnt/<drive>.
+  const drivePath = platform === "linux" ? /^([a-zA-Z]):(?:[\\/](.*))?$/.exec(directory) : null;
+  if (drivePath) {
+    const rest = (drivePath[2] ?? "").split(/[\\/]+/).filter(Boolean);
+    return path.posix.resolve("/mnt", drivePath[1].toLowerCase(), ...rest);
   }
 
   const isWindowsPath = /^[a-zA-Z]:[\\/]/.test(directory)
