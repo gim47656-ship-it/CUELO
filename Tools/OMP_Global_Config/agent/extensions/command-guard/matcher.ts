@@ -5,6 +5,10 @@ export interface GuardContext {
   cwd?: string;
   /** 주어진 디렉터리가 세션 저장소와 같은 git 저장소인지. 미제공이면 차단. */
   isSessionRepository?: (dir: string) => boolean;
+  /**
+   * 주어진 디렉터리를 하네스가 Windows `git.exe`로 다루는지(WSL의 `/mnt/<드라이브>` 저장소). 미제공이면 판정하지 않는다.
+   */
+  usesWindowsGit?: (dir: string) => boolean;
 }
 
 type Separator = ";" | "&&" | "||" | "|" | "&" | "\n";
@@ -67,6 +71,12 @@ const FINALIZER_OWNED_GIT_COMMANDS: StringLookup = {
   "commit-tree": true,
   push: true,
   "update-ref": true,
+};
+
+/** 저장소 없이 도는 git 하위 명령. 어느 git으로 돌려도 index를 건드리지 않는다. */
+const REPOSITORY_FREE_GIT_COMMANDS: StringLookup = {
+  help: true,
+  version: true,
 };
 
 const DB_CLIENTS: StringLookup = {
@@ -249,6 +259,11 @@ const REASONS = {
     "실제 데이터베이스 클라이언트로 DROP/TRUNCATE를 실행하는 명령은 정책상 차단됩니다.",
   deploy:
     "배포·게시·릴리스 작업을 실행하는 명령은 정책상 차단됩니다.",
+  linuxGitOnWindowsDrive:
+    "이 저장소는 Windows 드라이브(/mnt/<드라이브>)에 있어 하네스·앱·git_finalize가 Windows git.exe로 다룹니다. " +
+    "Linux git을 섞어 쓰면 index의 파일 정보가 서로 맞지 않아 추적 파일 전체를 다시 확인하고 index를 다시 씁니다. " +
+    "큰 저장소에서는 수 분이 걸려 시간 제한에 끊기고 index.lock이 남습니다(--no-optional-locks로도 git diff의 갱신은 막히지 않습니다). " +
+    "같은 명령을 git.exe로 실행하세요. 예: cd <저장소 안 폴더> && git.exe status. -C에는 \"$(wslpath -w <경로>)\"로 바꾼 경로를 넘깁니다.",
 } as const;
 
 function isRedirectionToken(value: string): boolean {
@@ -669,11 +684,15 @@ function hasShellExpansion(value: string): boolean {
   return /[$%`*?]|(?:^|[=:])~/.test(value);
 }
 
-function finalizerTargetDirectory(
+/**
+ * git이 실제로 여는 위치. `cwd`가 null이면(앞선 cd를 확정할 수 없음) 절대경로 `-C`·`--git-dir`만으로 정해질 때만
+ * 값을 돌려주고, 그 밖에는 undefined다. undefined `cwd`는 현재 프로세스 위치(".")다.
+ */
+function gitTargetDirectory(
   git: GitInvocation,
-  context: GuardContext,
+  cwd: string | null | undefined,
 ): string | undefined {
-  let directory = resolve(context.cwd ?? ".");
+  let directory = cwd === null ? undefined : resolve(cwd ?? ".");
   let gitDirectoryPath: string | undefined;
 
   for (let index = 0; index < git.globalArgs.length; index += 1) {
@@ -683,8 +702,9 @@ function finalizerTargetDirectory(
     if (value === "-C" || value === "--git-dir") {
       const path = git.globalArgs[index + 1];
       if (path === undefined || hasShellExpansion(path)) return undefined;
-      if (value === "-C") directory = resolve(directory, path);
-      else gitDirectoryPath = path;
+      if (value === "-C") {
+        directory = isAbsolute(path) ? resolve(path) : directory === undefined ? undefined : resolve(directory, path);
+      } else gitDirectoryPath = path;
       index += 1;
       continue;
     }
@@ -692,7 +712,7 @@ function finalizerTargetDirectory(
     if (value.startsWith("-C") && value.length > 2) {
       const path = value.slice(2);
       if (hasShellExpansion(path)) return undefined;
-      directory = resolve(directory, path);
+      directory = isAbsolute(path) ? resolve(path) : directory === undefined ? undefined : resolve(directory, path);
       continue;
     }
 
@@ -716,9 +736,9 @@ function finalizerTargetDirectory(
     }
   }
 
-  return gitDirectoryPath === undefined
-    ? directory
-    : resolve(directory, gitDirectoryPath);
+  if (gitDirectoryPath === undefined) return directory;
+  if (isAbsolute(gitDirectoryPath)) return resolve(gitDirectoryPath);
+  return directory === undefined ? undefined : resolve(directory, gitDirectoryPath);
 }
 
 function hasLongOption(
@@ -772,7 +792,7 @@ function matchGit(
         (git.subcommand !== "commit" && shortFlags(git.args).has("n")));
     if (dryRun) return undefined;
     if (!context?.isSessionRepository) return REASONS.gitFinalize;
-    const targetDirectory = finalizerTargetDirectory(git, context);
+    const targetDirectory = gitTargetDirectory(git, context.cwd);
     if (!targetDirectory) return REASONS.gitFinalize;
     try {
       return context.isSessionRepository(targetDirectory)
@@ -816,6 +836,32 @@ function matchGit(
   }
 
   return undefined;
+}
+
+/**
+ * WSL에서 하네스가 Windows `git.exe`로 다루는 저장소(`/mnt/<드라이브>`)를 Linux git으로 여는 호출을 막는다.
+ * 두 git은 index에 적는 stat 정보가 달라, 번갈아 쓰면 바뀐 쪽이 추적 파일 전체를 다시 확인하고 index를 통째로 다시 쓴다.
+ * 2026-10-12 SJF 저장소(추적 217,935개)에서 Linux `git --no-optional-locks diff`가 그 갱신 도중 bash 30초 제한에 끊겨
+ * `index.lock`을 남겼다. `--no-optional-locks`는 diff의 index 갱신을 막지 못한다(git 2.43 재현).
+ * `windowsShell`은 Windows PowerShell(`*.exe`) 안의 호출이라 그 안의 `git`이 이미 Windows git이라는 뜻이다.
+ * 앞선 cd를 확정할 수 없어도(`cwd` null) 절대경로 `-C`·`--git-dir`이면 판정하고, 그 밖에 위치를 모르면 판정하지 않는다.
+ */
+function matchLinuxGitOnWindowsDrive(
+  tokens: ShellToken[],
+  invocation: Invocation,
+  context: GuardContext | undefined,
+  cwd: string | null | undefined,
+  windowsShell: boolean,
+): string | undefined {
+  if (windowsShell || !context?.usesWindowsGit) return undefined;
+  // commandName은 `.exe`를 떼므로 원래 토큰으로 Windows git을 구분한다.
+  if (/\.exe$/i.test(tokens[invocation.index].value)) return undefined;
+  const git = parseGitInvocation(tokens, invocation);
+  if (!git || REPOSITORY_FREE_GIT_COMMANDS[git.subcommand]) return undefined;
+  const directory = gitTargetDirectory(git, cwd);
+  return directory !== undefined && context.usesWindowsGit(directory)
+    ? REASONS.linuxGitOnWindowsDrive
+    : undefined;
 }
 
 function isBroadPath(value: string): boolean {
@@ -1173,7 +1219,8 @@ function nestedCommand(tokens: ShellToken[], invocation: Invocation): string | u
 function matchBlockedCommandInternal(
   command: string,
   depth: number,
-  context?: GuardContext,
+  context: GuardContext | undefined,
+  windowsShell: boolean,
 ): string | undefined {
   const segments = tokenizeShell(command);
   // `cd <리터럴 경로>` 뒤 `&&`로만 이어진 호출은 그 경로에서 돈다. `;`·`||`·`|`·`&`·줄바꿈으로 이어지면 cd가 실패해도
@@ -1217,6 +1264,8 @@ function matchBlockedCommandInternal(
     const gitContext = segmentCwd === null ? undefined : context && { ...context, cwd: segmentCwd };
     const gitReason = matchGit(segment.tokens, invocation, gitContext);
     if (gitReason) return gitReason;
+    const linuxGitReason = matchLinuxGitOnWindowsDrive(segment.tokens, invocation, context, segmentCwd, windowsShell);
+    if (linuxGitReason) return linuxGitReason;
 
     const args = segment.tokens.slice(invocation.index + 1).map((token) => token.value);
     if (invocation.name === "rm") {
@@ -1250,7 +1299,12 @@ function matchBlockedCommandInternal(
     if (depth < 3) {
       const nested = nestedCommand(segment.tokens, invocation);
       if (nested) {
-        const nestedReason = matchBlockedCommandInternal(nested, depth + 1, gitContext);
+        const nestedReason = matchBlockedCommandInternal(
+          nested,
+          depth + 1,
+          gitContext,
+          windowsShell || /\.exe$/i.test(segment.tokens[invocation.index].value),
+        );
         if (nestedReason) return nestedReason;
       }
     }
@@ -1263,10 +1317,10 @@ export function matchBlockedCommand(
   command: string,
   context?: GuardContext,
 ): string | undefined {
-  const directReason = matchBlockedCommandInternal(command, 0, context);
+  const directReason = matchBlockedCommandInternal(command, 0, context, false);
   if (directReason) return directReason;
 
   const posixUnescaped = command.replace(/\\([^\r\n])/g, "$1");
   if (posixUnescaped === command) return undefined;
-  return matchBlockedCommandInternal(posixUnescaped, 0, context);
+  return matchBlockedCommandInternal(posixUnescaped, 0, context, false);
 }

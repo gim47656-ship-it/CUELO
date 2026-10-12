@@ -1013,7 +1013,8 @@ describe("async repository matching", () => {
         type: "tool_call",
         toolName: "bash",
         toolCallId: "drive-cwd-other-repository",
-        input: { command: "git add tracked.txt", cwd: driveCwd },
+        // drive 저장소의 Linux git은 따로 막히므로 git.exe로 finalizer 저장소 경계만 본다.
+        input: { command: "git.exe add tracked.txt", cwd: driveCwd },
       });
       expect(otherRepository).toBeUndefined();
 
@@ -1115,7 +1116,8 @@ describe("WSL drive repository git executor", () => {
         type: "tool_call",
         toolName: "bash",
         toolCallId: "drive-other-repository",
-        input: { command: "git add tracked.txt", cwd: other },
+        // drive 저장소의 Linux git은 따로 막히므로 git.exe로 finalizer 저장소 경계만 본다.
+        input: { command: "git.exe add tracked.txt", cwd: other },
       });
       expect(otherRepository).toBeUndefined();
       calls = await shim.readLog();
@@ -1157,6 +1159,38 @@ describe("WSL drive repository git executor", () => {
       expect(subcommands).toEqual(expect.arrayContaining(["rev-parse", "status", "hash-object"]));
     } finally {
       shim.restore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!driveBase || !Bun.which("git.exe"))("drive 저장소의 Linux git은 막고 git.exe와 POSIX gitdir worktree의 Linux git은 통과시킨다", async () => {
+    const root = await mkdtemp(join(driveBase!, "omp-wslgit-"));
+    try {
+      const repository = join(root, "repository");
+      const linked = join(root, "linked");
+      const other = join(root, "other");
+      await initDriveRepository(repository, { "sub/tracked.txt": "a\n" });
+      await initDriveRepository(other, { "tracked.txt": "b\n" });
+      await runFixtureGit(repository, ["worktree", "add", "--quiet", "-b", "linked", linked]);
+      const harness = createGuardHarness({ cwd: join(repository, "sub") });
+      const bash = (id: string, command: string, cwd?: string) =>
+        harness.emit("tool_call", { type: "tool_call", toolName: "bash", toolCallId: id, input: { command, cwd } });
+
+      expect(await bash("drive-linux-status", "git --no-optional-locks status --porcelain")).toMatchObject({
+        block: true,
+        reason: expect.stringContaining("git.exe"),
+      });
+      expect(await bash("drive-linux-cd", `cd "${repository}" && git diff --name-only`, tmpdir())).toMatchObject({ block: true });
+      expect(await bash("drive-windows-status", "git.exe status --porcelain")).toBeUndefined();
+      expect(await bash("drive-linked-worktree", "git status --porcelain", linked)).toBeUndefined();
+      expect(await bash("linux-repository", "git status --porcelain", tmpdir())).toBeUndefined();
+      // 다른 저장소의 add는 finalizer 경계를 통과해도 Linux git이면 막혀야 한다(1차 수집이 판정에서 멈추지 않는다).
+      expect(await bash("drive-other-linux-add", `git -C "${other}" add tracked.txt`)).toMatchObject({
+        block: true,
+        reason: expect.stringContaining("git.exe"),
+      });
+      expect(await bash("drive-other-windows-add", `git.exe -C "${other}" add tracked.txt`)).toBeUndefined();
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

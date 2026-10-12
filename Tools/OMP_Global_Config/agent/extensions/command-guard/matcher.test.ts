@@ -450,6 +450,51 @@ describe("셸 구분자와 중첩 명령", () => {
   }
 });
 
+describe("Windows 드라이브 저장소의 Linux git", () => {
+  const DRIVE_REPOSITORY = "/mnt/v/repo";
+  const usesWindowsGit = (directory: string): boolean =>
+    directory.replace(/\\/g, "/").toLowerCase().includes("/mnt/v/repo");
+  const fromDrive: GuardContext = { cwd: `${DRIVE_REPOSITORY}/sub`, isSessionRepository: () => true, usesWindowsGit };
+  const fromHome: GuardContext = { cwd: "/home/user/src/app", isSessionRepository: () => true, usesWindowsGit };
+
+  const blocked = [
+    ["status in the drive repository", "git status", fromDrive],
+    ["diff with --no-optional-locks", "git --no-optional-locks diff --name-only -- .", fromDrive],
+    ["read-only log", "git log --oneline -5", fromDrive],
+    ["cd into the drive repository", `cd "${DRIVE_REPOSITORY}/sub" && git diff`, fromHome],
+    ["-C into the drive repository", `git -C ${DRIVE_REPOSITORY} status`, fromHome],
+    ["absolute -C after an unknown cd", `cd "$HOME" && git -C ${DRIVE_REPOSITORY} status`, fromHome],
+    ["absolute Linux git path", "/usr/bin/git status", fromDrive],
+    ["Linux PowerShell runs Linux git", "pwsh -c \"git status\"", fromDrive],
+  ] as const;
+  for (const [name, command, context] of blocked) {
+    test(`blocks ${name}`, () => {
+      expect(matchBlockedCommand(command, context)).toContain("git.exe");
+    });
+  }
+
+  const allowed = [
+    ["Windows git", "git.exe status", fromDrive],
+    ["Windows git with -C", `git.exe -C "$(wslpath -w ${DRIVE_REPOSITORY})" status`, fromHome],
+    ["git inside Windows PowerShell", "powershell.exe -NoProfile -Command \"git status\"", fromDrive],
+    ["Linux repository after cd", "cd /home/user/src/app && git status", fromDrive],
+    ["relative -C after an unknown cd", "cd \"$REPO\" && git -C sub status", fromHome],
+    ["Linux repository cwd", "git status", fromHome],
+    ["version", "git --version && git version", fromDrive],
+    ["help", "git help status", fromDrive],
+    ["unknown cd target", "cd \"$REPO\" && git status", fromHome],
+  ] as const;
+  for (const [name, command, context] of allowed) {
+    test(`allows ${name}`, () => {
+      expect(matchBlockedCommand(command, context)).toBeUndefined();
+    });
+  }
+
+  test("판정 함수가 없으면 막지 않는다", () => {
+    expect(matchBlockedCommand("git status", { cwd: DRIVE_REPOSITORY, isSessionRepository: () => true })).toBeUndefined();
+  });
+});
+
 describe("정상 개발 명령", () => {
   const commands = [
     "bun test agent/extensions/command-guard/matcher.test.ts",

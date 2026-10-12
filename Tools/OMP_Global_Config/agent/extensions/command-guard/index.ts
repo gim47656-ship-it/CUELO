@@ -223,6 +223,20 @@ async function repositoryMatcher(
 }
 
 /**
+ * Linux git 호출 대상 디렉터리마다 하네스가 Windows `git.exe`로 다룰 저장소인지 미리 판정한다. 판정은
+ * git_finalize·앱·소유권 스냅샷과 같은 `selectGitExecutor`다. 1차 수집에 없던 디렉터리는 막지 않는다.
+ */
+async function windowsGitMatcher(targetDirectories: readonly string[]): Promise<(directory: string) => boolean> {
+  const verdicts = new Map<string, boolean>();
+  await Promise.all(
+    [...new Set(targetDirectories)].map(async (directory) => {
+      verdicts.set(directory, (await selectGitExecutor(directory)).windows);
+    }),
+  );
+  return (directory) => verdicts.get(directory) === true;
+}
+
+/**
  * git 호출 하나의 상한. 각 child callback을 기다리는 extension handler의 상한은 기본 30초이므로
  * 세 순차 호출의 최악값을 그 아래로 둔다. 비동기 child를 써 대기 중 JS event loop는 계속 돈다.
  */
@@ -913,22 +927,34 @@ export default function commandGuard(pi: ExtensionAPI): void {
     const cwd =
       typeof event.input.cwd === "string" ? bashToolCwd(sessionCwd, event.input.cwd) : sessionCwd;
     const targetDirectories: string[] = [];
-    const collectTarget = (directory: string): boolean => {
-      targetDirectories.push(directory);
-      return true;
-    };
+    const windowsGitTargets: string[] = [];
+    // 1차는 대상만 모은다. 저장소 콜백이 true(차단)를 돌려주면 그 세그먼트에서 판정이 끝나 같은 git의
+    // Windows git 판정과 뒤 세그먼트의 대상을 놓친다. 그래서 둘 다 false로 끝까지 훑고 2차에서 실제 판정을 쓴다.
     const preliminaryReason = matchBlockedCommand(event.input.command, {
       cwd,
-      isSessionRepository: collectTarget,
+      isSessionRepository: (directory) => {
+        targetDirectories.push(directory);
+        return false;
+      },
+      usesWindowsGit: (directory) => {
+        windowsGitTargets.push(directory);
+        return false;
+      },
     });
-    if (targetDirectories.length === 0) {
+    if (targetDirectories.length === 0 && windowsGitTargets.length === 0) {
       if (preliminaryReason) return { block: true, reason: preliminaryReason };
       return;
     }
-    const isSessionRepository = await repositoryMatcher(sessionCwd, targetDirectories);
+    const [isSessionRepository, usesWindowsGit] = await Promise.all([
+      targetDirectories.length > 0
+        ? repositoryMatcher(sessionCwd, targetDirectories)
+        : (_directory: string) => true,
+      windowsGitMatcher(windowsGitTargets),
+    ]);
     const reason = matchBlockedCommand(event.input.command, {
       cwd,
       isSessionRepository,
+      usesWindowsGit,
     });
     if (reason) return { block: true, reason };
   });
