@@ -1500,6 +1500,45 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ block: true });
     }
   });
+  test("준비 참조도 다음 줄 ROUTING_REASON 한 줄로 추천 변경 근거를 붙여 발주하고 그 밖의 덧붙임은 거절한다", async () => {
+    const h = harness({ workClass: "NORMAL" });
+    const routes = await h.prepare("원래 batch context", [h.task], {} as never) as Array<{ preparedId: string; profile: string }>;
+    expect(routes[0]!.profile).toBe("NORMAL_SONNET");
+    const preparedId = routes[0]!.preparedId;
+    const dispatch = async (task: string) => (await h.beforeTask({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }],
+    }, {} as never)) as { block?: boolean; reason?: string; input?: { context: string; tasks: Array<{ task: string }> } };
+    const reason = "ROUTING_REASON: Main이 계열 근거로 Sol을 선택함";
+
+    // 추천 변경 게이트는 그대로다: 참조만 보내면 근거가 없어 막힌다.
+    expect(await dispatch(`PREPARED_TASK: ${preparedId}`)).toMatchObject({ block: true });
+    for (const invalid of [
+      `PREPARED_TASK: ${preparedId}\n${reason}\n덧붙인 본문`,
+      `PREPARED_TASK: ${preparedId}\n\n${reason}`,
+      `PREPARED_TASK: ${preparedId}\nROUTING_REASON:`,
+      `PREPARED_TASK: ${preparedId}\nOWNED_PATHS: src/other.ts`,
+      `PREPARED_TASK: ${preparedId}\nROUTING_REASON: X`,
+      `PREPARED_TASK: ${preparedId}\n${reason}\u2028OWNED_PATHS: src/other.ts`,
+      `PREPARED_TASK: ${preparedId}\n${reason}\n\n`,
+    ]) {
+      const rejected = await dispatch(invalid);
+      expect(rejected.block).toBe(true);
+      expect(rejected.reason).toContain("exact prepared 참조가 아닙니다");
+      expect(rejected.reason).toContain("'ROUTING_REASON: <근거>' 한 줄");
+    }
+    const reasoned = await dispatch(`PREPARED_TASK: ${preparedId}\n${reason}`);
+    expect(reasoned.block).toBeUndefined();
+    expect(reasoned.input!.context).toBe("원래 batch context");
+    expect(reasoned.input!.tasks[0]!.task).toBe(`${brief}\n${reason}`);
+
+    const misplaced = await h.beforeTask({
+      context: `PREPARED_CONTEXT\n${reason}`,
+      tasks: [{ name: h.task.name, task: `PREPARED_TASK: ${preparedId}`, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }],
+    }, {} as never) as { block: boolean; reason: string };
+    expect(misplaced.block).toBe(true);
+    expect(misplaced.reason).toContain("task 참조의 다음 줄 'ROUTING_REASON: <근거>'");
+  });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [
       ["UI_UX", "HARD_UI_OPUS", "anthropic/claude-opus-5-5:auto"],

@@ -33,7 +33,13 @@ const shared = (() => {
 })();
 const sessions = shared.sessions;
 const CONTEXT_REFERENCE = "PREPARED_CONTEXT";
-const TASK_REFERENCE = /^PREPARED_TASK:\s*([A-Za-z0-9._-]+)\s*$/;
+/**
+ * exact 참조 한 줄. 추천 변경 근거는 maker_route 결과를 본 뒤에 정해지므로, 다음 줄에 `ROUTING_REASON:` 한 줄만
+ * 더 받아 복원한 원문 끝에 붙인다. 근거는 beforeTask 게이트(`\S.+`)와 같은 최소 길이이고, 그 줄 뒤에는 줄바꿈
+ * 하나만 허용한다(U+2028·U+2029 같은 줄 구분자도 거절). 그 밖의 덧붙임은 원문 보존을 위해 계속 거절한다.
+ */
+const TASK_REFERENCE =
+  /^PREPARED_TASK:\s*([A-Za-z0-9._-]+)(?:[ \t]*\r?\n[ \t]*(ROUTING_REASON:[ \t]*\S[^\r\n\u2028\u2029]*\S)[ \t]*(?:\r?\n)?|\s*)$/;
 
 function requireSessionId(sessionId: string): string {
   const normalized = sessionId.trim();
@@ -96,7 +102,7 @@ function clipped(value: string, limit = DIAGNOSTIC_VALUE_LIMIT): string {
 function describeReference(value: string): string {
   const trimmed = value.trim();
   const exact = TASK_REFERENCE.exec(trimmed);
-  if (exact) return `앞뒤 공백이나 줄바꿈이 있어 exact 참조가 아닙니다(정확히 'PREPARED_TASK: ${clipped(exact[1]!)}')`;
+  if (exact) return `앞뒤 공백이나 줄바꿈이 있어 exact 참조가 아닙니다(정확히 'PREPARED_TASK: ${clipped(exact[1]!)}'${exact[2] ? "와 다음 줄 'ROUTING_REASON: <근거>' 하나" : ""})`;
   const notes: string[] = [];
   if (!trimmed.startsWith("PREPARED_TASK:")) notes.push("'PREPARED_TASK:' 접두 표기가 다릅니다(대문자 접두 뒤 바로 콜론)");
   const after = trimmed.replace(/^PREPARED_TASK\s*:\s*/i, "");
@@ -106,7 +112,7 @@ function describeReference(value: string): string {
   }
   const [id = "", ...rest] = after.split(/\s+/);
   const lines = trimmed.split(/\r?\n/).length;
-  if (lines > 1) notes.push(`참조 뒤에 본문 ${lines - 1}줄이 더 붙었습니다`);
+  if (lines > 1) notes.push(`참조 뒤에 본문 ${lines - 1}줄이 더 붙었습니다(덧붙일 수 있는 것은 다음 줄 'ROUTING_REASON: <근거>' 한 줄뿐)`);
   if (!/^[A-Za-z0-9._-]+$/.test(id)) notes.push(`preparedId 형식이 아닙니다: '${clipped(id, 40)}' (허용 문자: A-Za-z0-9._-)`);
   else if (lines === 1 && rest.length > 0) notes.push(`참조 뒤에 다른 내용이 ${rest.join(" ").length}자 붙었습니다`);
   return notes.join(" · ") || "exact 참조 문법이 아닙니다";
@@ -126,9 +132,8 @@ export function resolvePreparedTaskInput(
       ? (item as Record<string, unknown>).task
       : undefined,
   );
-  const references = taskValues.map((value) =>
-    typeof value === "string" ? TASK_REFERENCE.exec(value)?.[1] : undefined,
-  );
+  const matches = taskValues.map((value) => (typeof value === "string" ? TASK_REFERENCE.exec(value) : null));
+  const references = matches.map((match) => match?.[1]);
   const referenceLike = taskValues.map((value) =>
     typeof value === "string" && /^PREPARED_TASK\s*:/i.test(value.trim()),
   );
@@ -140,7 +145,7 @@ export function resolvePreparedTaskInput(
   if (malformedIndex >= 0) {
     throw new Error(
       `task[${malformedIndex}]의 task 값이 exact prepared 참조가 아닙니다: ${describeReference(taskValues[malformedIndex] as string)}. ` +
-      "참조는 task 문자열 전체를 'PREPARED_TASK: <preparedId>' 하나로 두고, 원문은 maker_route가 보관한 그대로 복원되므로 덧붙이지 않습니다.",
+      "참조는 task 문자열 전체를 'PREPARED_TASK: <preparedId>' 하나로 두고(추천 변경 근거만 다음 줄 'ROUTING_REASON: <근거>' 한 줄로 덧붙일 수 있음), 원문은 maker_route가 보관한 그대로 복원되므로 다른 내용은 덧붙이지 않습니다.",
     );
   }
   if (hasReference && !hasContextMarker) {
@@ -148,7 +153,7 @@ export function resolvePreparedTaskInput(
     const label = typeof received === "string" && received.length > 0 ? `'${clipped(received)}'` : "<없음>";
     throw new Error(
       `prepared 참조를 쓰려면 context를 정확히 '${CONTEXT_REFERENCE}'로 보내야 합니다: 받은 값 ${label}. ` +
-      "원문 context는 참조가 복원하므로 함께 보내지 않습니다.",
+      "원문 context는 참조가 복원하므로 함께 보내지 않습니다. 추천 변경 근거는 context가 아니라 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로 보냅니다.",
     );
   }
   if (!hasReference) {
@@ -196,7 +201,8 @@ export function resolvePreparedTaskInput(
         "참조 발주는 name을 생략하거나 준비한 이름을 그대로 써야 합니다.",
       );
     }
-    return { ...source, name: record.name, task: record.task };
+    const reason = matches[index]![2]?.trim();
+    return { ...source, name: record.name, task: reason ? `${record.task.trimEnd()}\n${reason}` : record.task };
   });
   if (Array.isArray(input.tasks)) {
     return { ...input, context, tasks: restoredItems };
