@@ -92,6 +92,18 @@ async function inspect(label: string, path: string): Promise<Checkout> {
   return { executor, root, branch: branchOut.stdout.trim(), origin, head };
 }
 
+/**
+ * 네트워크 원격(`file://`을 뺀 스킴 URL, `[user@]host:path` SSH 형식)은 끝의 `/`와 `.git`을 떼고 비교한다.
+ * `https://github.com/o/r`와 `https://github.com/o/r.git`은 같은 저장소다.
+ * 로컬 경로·`file://` origin은 `r`과 `r.git`이 서로 다른 디렉터리일 수 있어 그대로 비교한다.
+ * SSH 형식의 host는 두 글자 이상이어서 `C:/…` 같은 드라이브 경로는 로컬로 남는다.
+ */
+export function sameOrigin(a: string, b: string): boolean {
+  const remote = /^(?!file:)[a-z][a-z0-9+.-]*:\/\/|^(?:[^/\\@:]+@)?[^/\\@:]{2,}:(?!\/\/)/i;
+  const norm = (url: string) => (remote.test(url) ? url.replace(/\/+$/, "").replace(/\.git$/, "") : url);
+  return norm(a) === norm(b);
+}
+
 async function run({ source, target, revision }: SyncCheckoutOptions): Promise<SyncCheckoutResult> {
   if (!/^[0-9a-f]{40}$/.test(revision)) blocked("revision은 소문자 40자 전체 sha여야 한다");
   const src = await inspect("source", source);
@@ -99,7 +111,7 @@ async function run({ source, target, revision }: SyncCheckoutOptions): Promise<S
   if (src.root === dst.root || src.root.startsWith(dst.root + sep) || dst.root.startsWith(src.root + sep)) {
     blocked(`source와 target이 같거나 겹친다: ${src.root} / ${dst.root}`);
   }
-  if (src.origin !== dst.origin) blocked("source와 target의 origin이 다르다");
+  if (!sameOrigin(src.origin, dst.origin)) blocked("source와 target의 origin이 다르다");
   if (src.branch !== dst.branch) blocked(`브랜치가 다르다: source ${src.branch} / target ${dst.branch}`);
   if (src.head !== revision) blocked(`요청한 revision이 source HEAD(${src.head})와 다르다`);
 

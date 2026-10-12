@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { syncCheckout } from "./sync-checkout";
+import { sameOrigin, syncCheckout } from "./sync-checkout";
 
 const cli = fileURLToPath(new URL("./sync-checkout.ts", import.meta.url));
 const base = mkdtempSync(join(tmpdir(), "sync-checkout-"));
@@ -111,6 +111,17 @@ describe("syncCheckout", () => {
     const result = await syncCheckout({ source: f.source, target: f.target, revision: f.rev });
     expect(result).toMatchObject({ ok: false });
     expect(head(f.target)).toBe(f.old);
+  });
+
+  test("network remotes differing only by trailing .git or / match; local origins stay exact", () => {
+    expect(sameOrigin("https://github.com/o/r", "https://github.com/o/r.git")).toBe(true);
+    expect(sameOrigin("https://github.com/o/r/", "https://github.com/o/r.git")).toBe(true);
+    expect(sameOrigin("git@example.com:o/r", "git@example.com:o/r.git")).toBe(true);
+    expect(sameOrigin("github.com:o/r", "github.com:o/r.git")).toBe(true);
+    expect(sameOrigin("https://github.com/o/r", "https://github.com/o/other.git")).toBe(false);
+    expect(sameOrigin("file:///srv/repos/r", "file:///srv/repos/r.git")).toBe(false);
+    expect(sameOrigin("/srv/repos/r", "/srv/repos/r.git")).toBe(false);
+    expect(sameOrigin("C:/repos/r", "C:/repos/r.git")).toBe(false);
   });
 
   test("revision that is not source HEAD, or not published, is refused", async () => {
