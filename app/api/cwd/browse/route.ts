@@ -3,6 +3,7 @@ import { stat } from "fs/promises";
 import {
   getBrowseStartDirectory,
   getParentDirectory,
+  isWslRuntime,
   listDirectories,
   listWindowsDrives,
   resolveDirectory,
@@ -38,10 +39,13 @@ export async function GET(request: NextRequest) {
     }
 
     const directories = await listDirectories(resolved);
+    // A WSL drive mount's parent is the drive list, not /mnt.
+    const upToDrives = isWslRuntime() && /^\/mnt\/[a-z]\/?$/.test(resolved);
 
     return NextResponse.json({
       path: resolved,
-      parentPath: getParentDirectory(resolved),
+      parentPath: upToDrives ? null : getParentDirectory(resolved),
+      upToDrives,
       directories,
     });
   } catch (error) {

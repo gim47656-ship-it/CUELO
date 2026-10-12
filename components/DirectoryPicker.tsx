@@ -12,6 +12,7 @@ interface DirectoryEntry {
 interface BrowseResponse {
   path?: string;
   parentPath?: string | null;
+  upToDrives?: boolean;
   directories?: DirectoryEntry[];
   drives?: DirectoryEntry[];
   error?: string;
@@ -59,6 +60,7 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [currentPath, setCurrentPath] = useState("");
   const [parentDirectory, setParentDirectory] = useState<string | null>(null);
+  const [upToDrives, setUpToDrives] = useState(false);
   const [pathInput, setPathInput] = useState("");
   const [directories, setDirectories] = useState<DirectoryEntry[]>([]);
   const [drives, setDrives] = useState<DirectoryEntry[] | null>(null);
@@ -73,6 +75,7 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
       const nextPath = data.path ?? directory ?? "/";
       setCurrentPath(nextPath);
       setParentDirectory(data.parentPath ?? null);
+      setUpToDrives(data.upToDrives === true);
       setPathInput(nextPath);
       setDirectories(data.directories ?? []);
       setDrives(data.drives ?? null);
@@ -95,7 +98,7 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
   };
   const hasUncommittedPath = pathInput.trim() !== currentPath;
   const canSelect = Boolean(currentPath) && !hasUncommittedPath && !busy;
-  const canNavigateUp = Boolean(parentDirectory) || isWindowsDriveRoot(currentPath);
+  const canNavigateUp = Boolean(parentDirectory) || upToDrives || isWindowsDriveRoot(currentPath);
 
   if (!portalTarget) return null;
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 import { readdir, realpath, stat } from "fs/promises";
 import { homedir } from "os";
 import path from "path";
@@ -7,26 +8,42 @@ export interface BrowsableDirectory {
   path: string;
 }
 
+let wslRuntime: boolean | undefined;
+
+/** True when this Linux server runs inside WSL, where Windows drives are mounted at /mnt/<drive>. */
+export function isWslRuntime(platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "linux") return false;
+  if (wslRuntime === undefined) {
+    try {
+      wslRuntime = /microsoft/i.test(readFileSync("/proc/sys/kernel/osrelease", "utf8"));
+    } catch {
+      wslRuntime = false;
+    }
+  }
+  return wslRuntime;
+}
+
 export function shouldShowWindowsDrivePicker(
   directory?: string,
   platform: NodeJS.Platform = process.platform,
+  wsl: boolean = isWslRuntime(platform),
 ): boolean {
-  return platform === "win32" && !directory;
+  return !directory && (platform === "win32" || wsl);
 }
 
 export function getBrowseStartDirectory(directory?: string): string {
   return directory || homedir();
 }
 
-export function getWindowsDriveCandidates(): BrowsableDirectory[] {
+export function getWindowsDriveCandidates(wsl = false): BrowsableDirectory[] {
   return "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map((letter) => ({
     name: `${letter}:`,
-    path: `${letter}:\\`,
+    path: wsl ? `/mnt/${letter.toLowerCase()}` : `${letter}:\\`,
   }));
 }
 
-export async function listWindowsDrives(): Promise<BrowsableDirectory[]> {
-  const candidates = await Promise.all(getWindowsDriveCandidates().map(async (drive) => {
+export async function listWindowsDrives(wsl: boolean = isWslRuntime()): Promise<BrowsableDirectory[]> {
+  const candidates = await Promise.all(getWindowsDriveCandidates(wsl).map(async (drive) => {
     try {
       const driveStat = await stat(drive.path);
       return driveStat.isDirectory() ? drive : null;
@@ -35,7 +52,9 @@ export async function listWindowsDrives(): Promise<BrowsableDirectory[]> {
     }
   }));
 
-  return candidates.filter((drive): drive is BrowsableDirectory => drive !== null);
+  const drives = candidates.filter((drive): drive is BrowsableDirectory => drive !== null);
+  // The WSL home stays one click away so Linux-side projects remain reachable.
+  return wsl ? [...drives, { name: `~ (${homedir()})`, path: homedir() }] : drives;
 }
 
 export function normalizeDirectory(
