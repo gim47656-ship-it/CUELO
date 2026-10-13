@@ -178,6 +178,7 @@ export const PROFILE_DEFAULTS = {
     eager: "preferred",
     maxEffort: "xhigh",
     isolation: { enabled: true },
+    structured: true,
     disabledAgents: ["scout", "sonic", "task", "reviewer", "security-reviewer"],
   },
   eval: { autoBackground: { enabled: true } },

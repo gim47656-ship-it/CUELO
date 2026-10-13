@@ -85,7 +85,7 @@ node install.mjs setup
 5. 공개 하네스(`Tools/OMP_Global_Config/agent/`)를 `~/.omp/agent`에 복사. 없는 파일만 추가하고, 이미 있는 파일은 바꾸거나 지우지 않습니다.
 6. `~/.omp/agent/config.yml`이 없으면 새로 만듭니다. 기본 운영 설정을 넣고, 넘긴 모델 역할이 있으면 함께 적습니다(아래 참고). 파일이 이미 있으면 바꾸지 않습니다.
 
-새 `config.yml`에 들어가는 기본값은 다음과 같습니다. 하네스의 Maker 역할이 번들 에이전트(`scout`, `sonic`, `task`, `reviewer`, `security-reviewer`)를 대신하고, task 실행은 격리 환경에서 돌도록 설정합니다. 60초를 넘긴 `eval` 셀은 사용자 말이 도착하면 background로 넘어가 대화가 막히지 않습니다(`eval.autoBackground`, omp 기본값은 꺼짐). 제공자 요청을 스스로 쓰는 자동 기능(`autolearn.autoContinue`, `mnemopi.autoRetain`)은 꺼 둡니다. omp 기본값과 같은 설정은 적지 않습니다.
+새 `config.yml`에 들어가는 기본값은 다음과 같습니다. 하네스의 Maker 역할이 번들 에이전트(`scout`, `sonic`, `task`, `reviewer`, `security-reviewer`)를 대신하고, task 실행은 격리 환경에서 돌도록 설정합니다. Maker가 정해진 형식의 완료 보고를 돌려주도록 `task.structured`를 켭니다(omp 기본값은 꺼짐). 60초를 넘긴 `eval` 셀은 사용자 말이 도착하면 background로 넘어가 대화가 막히지 않습니다(`eval.autoBackground`, omp 기본값은 꺼짐). 제공자 요청을 스스로 쓰는 자동 기능(`autolearn.autoContinue`, `mnemopi.autoRetain`)은 꺼 둡니다. omp 기본값과 같은 설정은 적지 않습니다.
 
 ```yaml
 defaultThinkingLevel: auto
@@ -93,11 +93,13 @@ autolearn: { enabled: true, autoContinue: false }
 memory: { backend: mnemopi }
 mnemopi: { scoping: per-project-tagged, embeddingVariant: multilingual, autoRetain: false }
 task:
+  enableLsp: true
   softRequestBudget: 400
   maxConcurrency: 8
   eager: preferred
   maxEffort: xhigh
   isolation: { enabled: true }
+  structured: true
   disabledAgents: [scout, sonic, task, reviewer, security-reviewer]
 eval: { autoBackground: { enabled: true } }
 ```

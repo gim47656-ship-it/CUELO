@@ -17,6 +17,7 @@ import { ProcessLogPanel, type ProcessLogData } from "./workspace/ProcessLogPane
 import { SideChatPanel } from "./workspace/SideChatPanel";
 import { ResourcePanel, type ResourceTab } from "./workspace/ResourcePanel";
 import { EfficiencyPanel } from "./workspace/EfficiencyPanel";
+import { FileDocShortcuts } from "./workspace/FileDocShortcuts";
 import { BranchNavigator } from "./BranchNavigator";
 import { getContextIndicator } from "@/lib/context-usage";
 import { autoNameBlockReason } from "@/lib/auto-name";
@@ -1693,7 +1694,9 @@ export function AppShell({
             )}
           />
         ) : (
-          <div className="workspace-file-empty">{translate("files.noneOpen")}</div>
+          <div className="workspace-file-empty">
+            <FileDocShortcuts cwd={selectedSession?.cwd ?? activeCwd} onOpenFile={handleOpenLinkedFile} />
+          </div>
         )}
       </div>
     </div>

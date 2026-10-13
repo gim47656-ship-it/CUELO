@@ -86,6 +86,7 @@ test("a new profile gets the safe defaults and exactly the named model roles; an
     assert.equal(config.autolearn.autoContinue, false);
     assert.equal(config.mnemopi.autoRetain, false);
     assert.equal(config.task.enableLsp, true, "new Maker profiles must allow their declared LSP tool");
+    assert.equal(config.task.structured, true, "Maker yield contract needs structured task results (core default is false)");
 
     // Without models the profile still gets the defaults, and no guessed modelRoles.
     const plain = createProfileConfig(bare, {});
