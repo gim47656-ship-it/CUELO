@@ -4439,6 +4439,320 @@ import { resolveUsedFraction } from "../usage";`,
 			throw new Error(\`[CharacterSummonRuntime] \${exactOAuthLabel}의 지정 OAuth 계정이 현재 사용할 수 없습니다.\`);
 		}`,
 	},
+	// 2026-10-13 사용자 결정: Anthropic 구독 좌석이 모두 주간(7d) 한도로 막혔을 때만 API 키로 요청을 넘긴다. 키 출처는
+	// `<agentDir>/anthropic-fallback-api-key`(한 줄, trim) 파일 하나뿐이다. 주간 소진 판정이 참인 순간에만 읽고, env 에 넣거나
+	// 캐시하지 않는다. env·config fallback·login tier 는 이 판정에 쓰지 않는다(env tier 는 키가 모든 자식 셸에 상속되고
+	// affinity.ts activeOAuth 의 env 가드가 pin 없는 세션의 귀속을 끈다). 파일이 없거나 비었거나 못 읽으면 다른 키가
+	// 설정돼 있어도 upstream last-resort(막힌 좌석으로 요청해 wire 의 usage-limit 의미를 받는다) 그대로다. 5h 단독 소진·
+	// 인증·transient refresh·plan 실패도 그대로. restricted·exact summon(캐릭터 pin) 세션은 대상이 아니다. api_key affinity 를
+	// 남기지 않으므로 좌석 block 이 끝나거나(reset) heal 되면 다음 resolve 의 strict pass 가 다시 OAuth 를 고른다. 폴백 중인
+	// 세션은 affinity 표식으로 OAuth account_uuid 귀속에서 빠지고, 표식은 파일 키나 OAuth 를 실제로 돌려줄 때만 바뀐다.
+	// 항목: select 판정 메서드·passes 진입점, cascade import·helper/공개 메서드·resolveOAuth 호출·OAuth 반환·파일 키 반환·
+	// resolver() lastChance, affinity 표식·가드, 타입 두 곳, coding-agent resolver lastChance·registry 타입.
+	// 검증: core-weekly-fallback-test.ts.
+	{
+		file: "../pi-ai/src/auth/select.ts",
+		marker: "async cueloWeeklyExhausted(",
+		anchor: "\t#syncOAuthSelectionFromStore(\n",
+		patched: `	/**
+	 * CUELO: true when every OAuth seat this session may use for an Anthropic request is
+	 * blocked AND its usage report shows an exhausted weekly (7d) window, scoped to the
+	 * request model, whose reset is still ahead. 5h-only exhaustion, auth/refresh/plan
+	 * failures, or a missing report answer false so the upstream last-resort ladder runs.
+	 * The answer is re-validated after the report awaits: the same eligible seats (by durable
+	 * row id), all still blocked and all still inside their exhausted week.
+	 */
+	async cueloWeeklyExhausted(
+		provider: string,
+		sessionId: string | undefined,
+		options?: AuthApiKeyOptions,
+	): Promise<boolean> {
+		if (provider !== "anthropic") return false;
+		const strategy = this.#deps.strategies(provider);
+		if (!strategy) return false;
+		const nowMs = Date.now();
+		await this.#deps.pool.adoptExternalChanges();
+		type CueloSeat = { id: number; credential: OAuthCredential; index: number };
+		const eligibleSeats = (): CueloSeat[] =>
+			this.#deps.pool
+				.entries(provider)
+				.map((entry, index) => ({ id: entry.id, credential: entry.credential, index }))
+				.filter(
+					(seat): seat is CueloSeat =>
+						seat.credential.type === "oauth" && this.#deps.affinity.allows(provider, sessionId, seat.credential),
+				);
+		const seats = eligibleSeats();
+		if (seats.length === 0) return false;
+		const providerKey = providerTypeKey(provider, "oauth");
+		const rankingContext: CredentialRankingContext = { modelId: options?.modelId };
+		const blockScopes = credentialBlockScopesForRequest(
+			provider,
+			strategy,
+			rankingContext,
+			strategy.blockScope?.(rankingContext),
+		);
+		const allBlocked = (current: CueloSeat[]) =>
+			current.every(seat => this.#deps.blocks.isBlocked(provider, providerKey, seat.index, blockScopes));
+		if (!allBlocked(seats)) return false;
+		// Latest exhausted-week reset per seat, kept for the re-check below (no refetch).
+		const weeklyResets: number[] = [];
+		for (const seat of seats) {
+			const usage = await this.#deps.usage.report(provider, seat.credential, {
+				...options,
+				timeoutMs: this.#deps.usage.requestTimeoutMs,
+			});
+			if (!usage) return false;
+			let weeklyResetAt: number | undefined;
+			for (const limit of scopedUsageLimits(strategy, usage, rankingContext)) {
+				const resetsAt = limit.window?.resetsAt;
+				if (
+					(limit.scope.windowId === "7d" || limit.window?.id === "7d") &&
+					isUsageLimitReached([limit]) &&
+					typeof resetsAt === "number" &&
+					resetsAt > nowMs
+				) {
+					weeklyResetAt = Math.max(weeklyResetAt ?? resetsAt, resetsAt);
+				}
+			}
+			if (weeklyResetAt === undefined) return false;
+			weeklyResets.push(weeklyResetAt);
+		}
+		// The awaits may have outlived a weekly reset, a block, or a pool change (seat added,
+		// removed or replaced): any of them leaves the decision to the next resolve.
+		const recheckNowMs = Date.now();
+		if (weeklyResets.some(resetsAt => resetsAt <= recheckNowMs)) return false;
+		const current = eligibleSeats();
+		const probedIds = new Set(seats.map(seat => seat.id));
+		if (current.length !== seats.length || current.some(seat => !probedIds.has(seat.id))) return false;
+		return allBlocked(current);
+	}
+
+	#syncOAuthSelectionFromStore(
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/select.ts",
+		marker: "options?.cueloOnWeeklyExhausted !== undefined &&",
+		anchor: `		for (const pass of passes) {
+			for (const candidate of pass.allowBlocked ? lastResortCandidates : candidates) {`,
+		patched: `		for (const pass of passes) {
+			// CUELO: the strict pass found nothing. A weekly-exhausted Anthropic pool hands the
+			// request to the cascade's fallback key file, when the cascade read a key from it,
+			// instead of a last-resort blocked seat.
+			if (
+				pass === passes[1] &&
+				options?.cueloOnWeeklyExhausted !== undefined &&
+				(await this.cueloWeeklyExhausted(provider, sessionId, options)) &&
+				options.cueloOnWeeklyExhausted()
+			) {
+				return undefined;
+			}
+			for (const candidate of pass.allowBlocked ? lastResortCandidates : candidates) {`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: 'import { $env, $envExact, getAgentDir, logger } from "@oh-my-pi/pi-utils";',
+		anchor: 'import { $env, $envExact, logger } from "@oh-my-pi/pi-utils";\n',
+		patched: `import * as fs from "node:fs";
+import * as path from "node:path";
+import { $env, $envExact, getAgentDir, logger } from "@oh-my-pi/pi-utils";
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "cueloOnWeeklyExhausted: () => {",
+		anchor: "\t\ttry {\n\t\t\toauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, options);\n",
+		patched: `		// CUELO: the fallback key file is read only when the selector confirms the weekly decision.
+		let cueloFileKey: string | undefined;
+		try {
+			oauthResolved = await this.#deps.selector.resolveOAuth(
+				provider,
+				sessionId,
+				this.#cueloWeeklyFallbackAllowed(provider, sessionId)
+					? {
+							...options,
+							cueloOnWeeklyExhausted: () => {
+								cueloFileKey = this.#cueloReadFallbackKeyFile();
+								return cueloFileKey !== undefined;
+							},
+						}
+					: options,
+			);
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, false);",
+		anchor: "\t\tif (oauthResolved) {\n\t\t\tif (onCredentialId && oauthResolved.credentialId !== undefined) {\n",
+		patched: `		if (oauthResolved) {
+			// CUELO: OAuth actually serves this session again, so it is OAuth-attributed again.
+			this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, false);
+			if (onCredentialId && oauthResolved.credentialId !== undefined) {
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "if (cueloFileKey !== undefined) {",
+		anchor: "\t\tconst loginApiKeySelection = await this.#deps.selector.selectApiKey(\n",
+		patched: `		if (cueloFileKey !== undefined) {
+			// CUELO: weekly-exhausted pool served by the fallback key file. Leave OAuth without an
+			// api_key sticky and keep this session out of OAuth account attribution.
+			if (sessionId) this.#deps.affinity.forget(provider, sessionId);
+			this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, true);
+			return cueloFileKey;
+		}
+		const loginApiKeySelection = await this.#deps.selector.selectApiKey(
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "async cueloWeeklyApiKeyFallback(",
+		anchor: "\tasync #resolve(\n",
+		patched: `	/** CUELO: \`<agentDir>/anthropic-fallback-api-key\`, the weekly fallback's only key source. */
+	#cueloFallbackKeyPath(): string {
+		return path.join(getAgentDir(), "anthropic-fallback-api-key");
+	}
+
+	/**
+	 * CUELO: an Anthropic session that may leave OAuth for the fallback key file — not
+	 * restricted, no exact character pin, and the file exists (stat only; the key is read
+	 * after the weekly decision). Without the file every path stays upstream.
+	 */
+	#cueloWeeklyFallbackAllowed(provider: string, sessionId: string | undefined): boolean {
+		if (provider !== "anthropic") return false;
+		if (this.#deps.affinity.isRestricted(provider, sessionId)) return false;
+		if (this.#deps.affinity.exactLabel(provider, sessionId)) return false;
+		return fs.existsSync(this.#cueloFallbackKeyPath());
+	}
+
+	/**
+	 * CUELO: the fallback key file's one trimmed line. Undefined when missing, empty or
+	 * unreadable. Read per decision, never cached and never copied into the process environment.
+	 */
+	#cueloReadFallbackKeyFile(): string | undefined {
+		try {
+			return fs.readFileSync(this.#cueloFallbackKeyPath(), "utf8").trim() || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling. Returns the fallback
+	 * key file's key, read once after the weekly decision holds, and never an OAuth bearer;
+	 * otherwise undefined, so the caller keeps the upstream no-sibling backoff.
+	 */
+	async cueloWeeklyApiKeyFallback(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedApiKey | undefined> {
+		if (!this.#cueloWeeklyFallbackAllowed(provider, sessionId)) return undefined;
+		if (!(await this.#deps.selector.cueloWeeklyExhausted(provider, sessionId, options))) return undefined;
+		const apiKey = this.#cueloReadFallbackKeyFile();
+		if (apiKey === undefined) return undefined;
+		if (sessionId) this.#deps.affinity.forget(provider, sessionId);
+		this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, true);
+		return { apiKey };
+	}
+
+	async #resolve(
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "\tcueloMarkKeyFallback(provider: string, sessionId: string | undefined, active: boolean): void {\n",
+		anchor: "\tactiveOAuth(provider: string, sessionId?: string): OAuthCredential | undefined {\n",
+		patched: `	/** CUELO: provider → sessions whose latest bearer is the weekly-fallback key file's key. */
+	#cueloKeyFallbackSessions = new Map<string, Set<string>>();
+
+	/** CUELO: mark or clear a session as served by the weekly-exhaustion API key (no OAuth attribution). */
+	cueloMarkKeyFallback(provider: string, sessionId: string | undefined, active: boolean): void {
+		if (!sessionId) return;
+		const sessions = this.#cueloKeyFallbackSessions.get(provider);
+		if (active) {
+			if (sessions) sessions.add(sessionId);
+			else this.#cueloKeyFallbackSessions.set(provider, new Set([sessionId]));
+			return;
+		}
+		sessions?.delete(sessionId);
+		if (sessions?.size === 0) this.#cueloKeyFallbackSessions.delete(provider);
+	}
+
+	activeOAuth(provider: string, sessionId?: string): OAuthCredential | undefined {
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/affinity.ts",
+		marker: "this.#cueloKeyFallbackSessions.get(provider)?.has(sessionId ?? \"\")",
+		anchor: "\t\tif (!restricted && !sessionPref && getEnvApiKey(provider)) return undefined;\n",
+		patched: `		// CUELO: this session's latest bearer is the weekly-fallback key file's key. The mark wins over
+		// a persisted OAuth pin (which forget() does not drop) and is cleared once OAuth serves again.
+		if (this.#cueloKeyFallbackSessions.get(provider)?.has(sessionId ?? "")) return undefined;
+		if (!restricted && !sessionPref && getEnvApiKey(provider)) return undefined;
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "return this.cueloWeeklyApiKeyFallback(provider, sessionId, { baseUrl, modelId, signal });",
+		anchor: "\t\t\t\t\tif (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) return undefined;\n",
+		patched: `					if (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) {
+						// CUELO: a weekly-exhausted pool finishes on the fallback key file's key.
+						return this.cueloWeeklyApiKeyFallback(provider, sessionId, { baseUrl, modelId, signal });
+					}
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "\tcueloOnWeeklyExhausted?: () => boolean;\n",
+		anchor: "\trecordAffinity?: boolean;\n};\n",
+		patched: `	recordAffinity?: boolean;
+	/**
+	 * CUELO: set by KeyCascade. Called once the selector finds every OAuth seat weekly-exhausted;
+	 * true means the cascade read a key from its fallback key file, so the selector skips its
+	 * last-resort blocked seat.
+	 */
+	cueloOnWeeklyExhausted?: () => boolean;
+};
+`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		marker: "\tcueloWeeklyApiKeyFallback?(\n",
+		anchor: "\tresolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }): ApiKeyResolver;\n}\n",
+		patched: `	resolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }): ApiKeyResolver;
+	/**
+	 * CUELO: the fallback key file's key for a usage-limit retry when every OAuth seat this
+	 * session may use is blocked by an exhausted weekly window; undefined otherwise.
+	 */
+	cueloWeeklyApiKeyFallback?(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedApiKey | undefined>;
+}
+`,
+	},
+	{
+		file: "src/config/api-key-resolver.ts",
+		marker: "registry.authStorage.keys?.cueloWeeklyApiKeyFallback?.(",
+		anchor: "\t\t\t\tif (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) return undefined;\n",
+		patched: `				if (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) {
+					// CUELO: a weekly-exhausted Anthropic pool finishes on the fallback key file's key.
+					return registry.authStorage.keys?.cueloWeeklyApiKeyFallback?.(provider, sessionId, {
+						baseUrl,
+						modelId,
+						signal,
+					});
+				}
+`,
+	},
+	{
+		file: "src/config/api-key-resolver.ts",
+		marker: "\tauthStorage: Pick<AuthStorage, \"limits\"> & { readonly keys?: Pick<AuthStorage[\"keys\"], \"cueloWeeklyApiKeyFallback\"> };\n",
+		anchor: "\tauthStorage: Pick<AuthStorage, \"limits\">;\n",
+		patched: "\tauthStorage: Pick<AuthStorage, \"limits\"> & { readonly keys?: Pick<AuthStorage[\"keys\"], \"cueloWeeklyApiKeyFallback\"> };\n",
+	},
 	{
 		// usage-limit 표시: exact 대상은 block 을 기록하되 sibling 전환 가능으로 보고하지 않는다.
 		file: "../pi-ai/src/auth/rotation.ts",
