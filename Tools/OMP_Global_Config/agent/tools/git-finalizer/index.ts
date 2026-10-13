@@ -2,7 +2,7 @@ import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { hasPosixGitdirWorktree, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
@@ -68,6 +68,55 @@ async function exportMemories(cwd: string, files: string[], exec: Exec): Promise
   }
   const status = await exec("git", ["-C", root, "status", "--porcelain", "--", memoryTransport], { cwd: root });
   return status.code === 0 && status.stdout.trim() ? { file: transport } : {};
+}
+
+// 문서·그림은 HANDOFF 의무의 대상인 소스·설정 변경이 아니다. 목록 밖의 자산(예: 오디오)은 소스로 보고 알림이 날 수 있다(advisory).
+const nonSourceFile = /\.(md|markdown|rst|adoc|txt|rtf|pdf|docx?|xlsx?|pptx?|odt|ods|odp|hwpx?|png|jpe?g|gif|svg|webp|ico|bmp|tiff?|avif|heic)$/i;
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 프로젝트가 여럿인 저장소에서, HANDOFF가 없던 프로젝트의 첫 코드 커밋이 기록 없이 올라간 일이 두 번 있었다(2026-10-13 확인, rule://docs-handoff).
+ * 바꾼 코드 파일에서 저장소 루트(`.git`이 있는 폴더)까지 `HANDOFF.md`가 하나도 없을 때만 결과 문구로 알린다. 커밋은 막지 않는다.
+ */
+async function missingHandoffNote(cwd: string, files: string[]): Promise<string | undefined> {
+  // 폴더 → 그 폴더의 저장소 루트(`.git`이 있는 폴더)와, 그 폴더에서 루트까지 HANDOFF.md가 있는지. 저장소 밖이면 undefined.
+  const memo = new Map<string, Promise<{ root: string; handoff: boolean } | undefined>>();
+  const scan = (dir: string): Promise<{ root: string; handoff: boolean } | undefined> => {
+    let found = memo.get(dir);
+    if (!found) {
+      found = (async () => {
+        const handoff = await exists(join(dir, "HANDOFF.md"));
+        if (await exists(join(dir, ".git"))) return { root: dir, handoff };
+        const parent = dirname(dir);
+        if (parent === dir) return undefined;
+        const above = await scan(parent);
+        return above && { root: above.root, handoff: handoff || above.handoff };
+      })();
+      memo.set(dir, found);
+    }
+    return found;
+  };
+  const folders = new Set<string>();
+  for (const file of files) {
+    const path = resolve(cwd, file);
+    if (nonSourceFile.test(path)) continue;
+    const repo = await scan(dirname(path));
+    // `doc/`는 cwd나 요청 문자열이 아니라 대상 저장소 루트 기준 경로로 가린다.
+    if (!repo || repo.handoff || relative(repo.root, path).split(sep).includes("doc")) continue;
+    folders.add(relative(cwd, dirname(path)).split(sep).join("/") || ".");
+  }
+  if (folders.size === 0) return undefined;
+  const shown = [...folders].slice(0, 3).map((folder) => `\`${folder}\``).join(", ");
+  const more = folders.size > 3 ? ` 외 ${folders.size - 3}곳` : "";
+  return `HANDOFF 확인: ${shown}${more}에서 저장소 루트까지 HANDOFF.md가 없다. 소스·설정을 바꾼 첫 커밋이면 rule://docs-handoff대로 작업한 프로젝트 폴더에 HANDOFF.md·doc/README.md·doc/history 기록을 만들어 이어서 커밋한다(이번 커밋은 그대로 진행됐다).`;
 }
 
 function isSourcePath(path: string, packagedTools: string[]): boolean {
@@ -198,6 +247,7 @@ const factory: CustomToolFactory = (pi) => ({
     }
     const memory = await exportMemories(pi.cwd, requested, exec);
     const files = memory.file ? [...requested, memory.file] : requested;
+    const handoffNote = await missingHandoffNote(pi.cwd, requested);
     if (gateBlobs && memory.file) {
       // 기억 transport는 게이트 뒤에 방금 만든 생성물(검토 대상 아님)이라 finalizer가 같은 기준으로 비교하도록 지금 blob을 넣는다.
       const transport = await resolveRepoTargets(pi.cwd, [memory.file], exec);
@@ -235,7 +285,8 @@ const factory: CustomToolFactory = (pi) => ({
             text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
               + (parsed.resumedPush ? " 이미 커밋돼 있던 미전송 커밋을 함께 다시 보냈다." : "")
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
-              + (memory.note ? ` ${memory.note}` : ""),
+              + (memory.note ? ` ${memory.note}` : "")
+              + (handoffNote ? ` ${handoffNote}` : ""),
           },
         ],
         details: parsed,

@@ -311,6 +311,55 @@ describe("git finalizer", () => {
     expect(JSON.stringify(output)).toContain("bank locked");
   }, TEST_TIMEOUT_MS);
 
+  test("notes a source commit with no HANDOFF.md up to the repository root and stays quiet once one exists", async () => {
+    const { work, remote } = await createRepository();
+    await mkdir(join(work, "proj", "src"), { recursive: true });
+    await writeFile(join(work, "proj", "src", "Main.vb"), "first\n");
+
+    const first = await startTool(work, ["proj/src/Main.vb"]);
+    expect(first.error).toBeUndefined();
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
+    expect(JSON.stringify(first.output)).toContain("`proj/src`에서 저장소 루트까지 HANDOFF.md가 없다");
+
+    await writeFile(join(work, "proj", "src", "Main.vb"), "second\n");
+    await writeFile(join(work, "proj", "HANDOFF.md"), "# proj\n");
+    const withProjectHandoff = await startTool(work, ["proj/src/Main.vb", "proj/HANDOFF.md"]);
+    expect(withProjectHandoff.error).toBeUndefined();
+    expect(JSON.stringify(withProjectHandoff.output)).not.toContain("HANDOFF 확인");
+
+    await mkdir(join(work, "other"), { recursive: true });
+    await writeFile(join(work, "other", "tool.ts"), "export {};\n");
+    await writeFile(join(work, "HANDOFF.md"), "# root\n");
+    const withRootHandoff = await startTool(work, ["other/tool.ts", "HANDOFF.md"]);
+    expect(withRootHandoff.error).toBeUndefined();
+    expect(JSON.stringify(withRootHandoff.output)).not.toContain("HANDOFF 확인");
+  }, TEST_TIMEOUT_MS);
+
+  test("judges doc/ and document or image files against the target repository root, not the cwd or request text", async () => {
+    const { root, work } = await createRepository();
+    await mkdir(join(work, "assets"), { recursive: true });
+    await writeFile(join(work, "assets", "app.ico"), "icon\n");
+    await writeFile(join(work, "README.rst"), "readme\n");
+    const docsOnly = await startTool(work, ["assets/app.ico", "README.rst"]);
+    expect(docsOnly.error).toBeUndefined();
+    expect(JSON.stringify(docsOnly.output)).not.toContain("HANDOFF 확인");
+
+    await mkdir(join(work, "doc"), { recursive: true });
+    await writeFile(join(work, "doc", "example.ts"), "export const example = 1;\n");
+    const insideDoc = await startTool(join(work, "doc"), ["example.ts"]);
+    expect(insideDoc.error).toBeUndefined();
+    expect(JSON.stringify(insideDoc.output)).not.toContain("HANDOFF 확인");
+
+    await mkdir(join(root, "doc"));
+    const sibling = await createAdditionalRepository(root, "doc/core");
+    await mkdir(join(sibling.work, "src"));
+    await writeFile(join(sibling.work, "src", "main.ts"), "export const core = 1;\n");
+    const underDocAncestor = await startTool(work, ["../doc/core/src/main.ts"]);
+    expect(underDocAncestor.error).toBeUndefined();
+    expect(git(sibling.work, ["--git-dir", sibling.remote, "rev-parse", "refs/heads/main"])).toBe(git(sibling.work, ["rev-parse", "HEAD"]));
+    expect(JSON.stringify(underDocAncestor.output)).toContain("`../doc/core/src`에서 저장소 루트까지 HANDOFF.md가 없다");
+  }, TEST_TIMEOUT_MS);
+
   test("rejects a changed source without the manifest before invoking finalizer", async () => {
     const { work, remote } = await createManifestRepository();
     const before = git(work, ["rev-parse", "HEAD"]);

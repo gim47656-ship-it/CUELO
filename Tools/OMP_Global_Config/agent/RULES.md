@@ -104,7 +104,9 @@
   있을 수 있으므로 저장소 루트를 작업 범위로 착각하지 않는다.
 - 자동 staging·commit·push는 raw `git add`·`git commit`·`git push` 대신 Main의
   `git_finalize` 도구를 사용한다. SubAgent에는 raw Git fallback을 허용하지 않는다. 검증을 마치고
-  `HANDOFF.md`를 현재 상태로 맞춘 뒤 현재 과제에서 바꾼 정확한 파일 목록과 commit message를 넘긴다.
+  그 프로젝트의 `HANDOFF.md`를 현재 상태로 맞춘 뒤 현재 과제에서 바꾼 정확한 파일 목록과 commit message를 넘긴다.
+  바꾼 파일에서 저장소 루트까지 `HANDOFF.md`가 없으면 첫 소스 변경 커밋에서 작업한 프로젝트 폴더에
+  `HANDOFF.md`·`doc/README.md`·`doc/history` 기록을 만들어 같은 커밋에 넣는다.
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
 - 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면(문서·주석·테스트 제외) `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
