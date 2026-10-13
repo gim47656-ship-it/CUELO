@@ -450,6 +450,8 @@ await check("actual SDK task producer preserves long terminal evidence through a
   const root = mkdtempSync(join(fixtureRoot, "completion-")), profile = join(root, "profile");
   mkdirSync(profile);
   writeFileSync(join(profile, "models.yml"), `providers:\n  activity-fixture:\n    baseUrl: http://127.0.0.1:${local.port}\n    api: anthropic-messages\n    apiKey: example\n    models:\n      - id: claude-opus-5-5\n`);
+  // CUELO config.yml sets task.structured (default false since core 18.10.2), so the child gets `yield`; 18.9.1 ignores the key.
+  writeFileSync(join(profile, "config.yml"), "task:\n  structured: true\n");
   const { session } = await createAgentSession({
     model: { ...getBundledModel("anthropic", "claude-opus-5-5"), provider: "activity-fixture", baseUrl: `http://127.0.0.1:${local.port}` },
     getApiKey: async () => "example", cwd: root, agentDir: profile, agentId: "Main", thinkingLevel: "off",

@@ -96,6 +96,10 @@ const OPUS55_ROW_1884 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":96
 // 18.9.1: 측정값만 96.2→98.8. 행의 나머지는 18.4.6 적용본과 바이트가 같아 RETIRE를 유지한다.
 const OPUS55_ROW_1891 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":98.8,');
 
+// 2026-10-13 18.10.3: 측정값 98.8→95.6, compat 에 honorsClaudeCodeBetaKillSwitch(18.10.2 #15458)가 들어왔다. prefixBinding·binding
+// controls 는 그대로라 RETIRE 를 유지한다(no-op 후보).
+const OPUS55_ROW_18103 = OPUS55_ROW_1891.replace('"tps":98.8,', '"tps":95.6,').replace('"firstPartyProvider":true,', '"firstPartyProvider":true,"honorsClaudeCodeBetaKillSwitch":true,');
+
 /**
  * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
  * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
@@ -5010,6 +5014,23 @@ import { cfgJudgmentProvider } from "../config/model-settings";`,
 			"export class TypeSafeJudge implements Judge {",
 			"",
 		].join("\n"),
+		// 2026-10-13 18.9.2(ADAPT): upstream 이 TypeSafeJudge·typesafe.ts 를 지우고 NativeJudge 로 바꿨다. NativeJudge 는
+		// catalog `judgment-questions-max` 로 요청을 나누지만(최대 4개 병렬, 한 조각 실패 시 나머지 중단) TypeSafe jev 는
+		// 한도 없음으로 둔다. CUELO 는 typesafe 경로를 Experiential gateway(32문항)로 보내므로 judge chain 호출부
+		// (judgment/index.ts)에서만 그 경로의 상한을 32로 넘긴다. 이 항목은 그 호출부가 쓰는 import 두 줄이다.
+		alternates: [{
+			file: "src/judgment/index.ts",
+			requires: "\tcreateNativeJudge,\n",
+			marker: 'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
+			anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
+			patched: [
+				'import * as AIError from "@oh-my-pi/pi-ai/error";',
+				"// CUELO: the typesafe route's per-request question cap (see #createJudge).",
+				'import { NativeJudge as TypesafeGatewayJudge } from "@oh-my-pi/pi-ai";',
+				'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
+				"",
+			].join("\n"),
+		}],
 	},
 	{
 		// 위 항목과 짝: judge 가 질문 묶음을 나눠 보내고 응답을 합친다. 나누지 않으면 parts 는 request.questions
@@ -5035,6 +5056,32 @@ import { cfgJudgmentProvider } from "../config/model-settings";`,
 			"\t\t);",
 			"",
 		].join("\n"),
+		// 2026-10-13 18.9.2(ADAPT): 위 항목과 짝. typesafe API 후보만 catalog 상한과 32 중 작은 값으로 NativeJudge 를 직접
+		// 만들고(createNativeJudge 와 같은 wire id·baseUrl), 다른 judgment API 와 auth-gateway 는 upstream createNativeJudge 그대로다.
+		alternates: [{
+			file: "src/judgment/index.ts",
+			requires: "\tcreateNativeJudge,\n",
+			marker: "// CUELO: past the typesafe question bound",
+			anchor: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
+			patched: [
+				"\t\t\t// CUELO: past the typesafe question bound the judge splits the request. CUELO points the `typesafe` route at the",
+				"\t\t\t// Experiential Labs gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a",
+				"\t\t\t// larger set with 400 \"Invalid decision request\"; the catalog leaves TypeSafe jev uncapped.",
+				"\t\t\tconst judge =",
+				"\t\t\t\tmodel.api === TYPESAFE_PROVIDER",
+				"\t\t\t\t\t? new TypesafeGatewayJudge({",
+				"\t\t\t\t\t\t\tapiKey,",
+				"\t\t\t\t\t\t\theaders,",
+				"\t\t\t\t\t\t\tapi: model.api,",
+				"\t\t\t\t\t\t\tprovider: model.provider,",
+				"\t\t\t\t\t\t\tmodel: model.requestModelId ?? model.id,",
+				"\t\t\t\t\t\t\tbaseUrl: model.baseUrl,",
+				"\t\t\t\t\t\t\tmaxQuestions: Math.min(resolveJudgmentQuestionsMax(model) ?? 32, 32),",
+				"\t\t\t\t\t\t})",
+				"\t\t\t\t\t: createNativeJudge(model, { apiKey, headers });",
+				"",
+			].join("\n"),
+		}],
 	},
 	{
 		// 18.2.7 에는 `providers.judgmentProvider` schema 항목 자체가 없다(legacy key 목록에만
@@ -10824,6 +10871,7 @@ function parentSubagentServiceTiers(
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1870, anchor: OPUS55_ROW_1870, patched: OPUS55_ROW_1870 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1884, anchor: OPUS55_ROW_1884, patched: OPUS55_ROW_1884 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1891, anchor: OPUS55_ROW_1891, patched: OPUS55_ROW_1891 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_18103, anchor: OPUS55_ROW_18103, patched: OPUS55_ROW_18103 },
 		],
 	},
 	{
@@ -10877,6 +10925,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			patched: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 2026-10-13 18.10.3: 출처 줄만 kdl:215로 이동했으며 prefixBinding 의미는 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		}],
 	},
 	{
@@ -10938,6 +10992,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 2026-10-13 18.10.3: 출처 줄만 kdl:328로 이동했으며 provider·revision 경계도 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -11221,6 +11281,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-13 18.10.3: Gxe는 같은 isAdvisorTranscriptName 함수다(`e===Wxe||e.startsWith(\`${Hxe}.\`)&&e.endsWith(pae)`,
+			// Hxe="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -13182,6 +13249,197 @@ interface ComputerElementRef
 			"\n\n" + typeRef + inputTarget,
 		),
 	});
+}
+// 2026-10-13 18.9.2 computer.run(ADAPT): upstream 이 helper 인자 검사(validateString·press chord 검사)를 native 호출 앞에 넣고,
+// El·ElRef 에 doubleClick 을, find() 결과 배열에 foundElements(요소 필드·메서드를 읽으면 "배열이다"로 실패)를 더했으며,
+// ElRef 가 getContext 를 받아 setValue·perform 의 guardRun·인자 검사를 lookup 전에 한다. CUELO 후보는 이 검사들을 upstream
+// 순서(guardRun → 인자 검사 → 전달)로 그대로 두고, 새 El.doubleClick 도 click 과 같은 #act 행동 결과·재획득 경로로, ElRef 의
+// doubleClick·setValue·perform 은 결과를 돌려주게 한다. find 는 재획득 지문을 남기는 issueElements 결과를 foundElements 로 감싼다.
+// 18.9.1 후보는 `function foundElements(` 이 있는 파일에서 빠진다(18.10.3 순정·적용본 모두에 있다).
+{
+	const swap = (text, from, to, count = 1) => {
+		const found = text.split(from).length - 1;
+		if (found !== count) throw new Error(`18.10.3 computer 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/${count}`);
+		return text.replaceAll(from, to);
+	};
+	const swaps = (text, pairs) => pairs.reduce((acc, [from, to]) => swap(acc, from, to), text);
+	const WORKER_18103 = "function foundElements(";
+	const FOUND_ELEMENTS = [
+		'const ELEMENT_FIELDS = ["ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount"];',
+		"",
+		'/** `find()`\'s array answers element field reads and calls with how to pick one, instead of `undefined` or "is not a function". */',
+		"function foundElements(elements: El[]): El[] {",
+		"\tconst pickOne = (member: string): TypeError =>",
+		"\t\tnew TypeError(",
+		"\t\t\t`find() returns an array (length ${elements.length}), not one element, so it has no ${member}; pick one first: const [el] = await win.find(query)`,",
+		"\t\t);",
+		"\tfor (const method of Object.getOwnPropertyNames(El.prototype)) {",
+		'\t\tif (method === "constructor") continue;',
+		"\t\tObject.defineProperty(elements, method, {",
+		"\t\t\tvalue: () => {",
+		"\t\t\t\tthrow pickOne(`${method}()`);",
+		"\t\t\t},",
+		"\t\t});",
+		"\t}",
+		"\tfor (const field of ELEMENT_FIELDS) {",
+		"\t\tObject.defineProperty(elements, field, {",
+		"\t\t\tget: () => {",
+		"\t\t\t\tthrow pickOne(field);",
+		"\t\t\t},",
+		"\t\t});",
+		"\t}",
+		"\treturn elements;",
+		"}",
+		"",
+		"",
+	].join("\n");
+	const REF_GUARD = {
+		setValue: '\t\t// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.\n\t\tguardRun(this.#getContext(), "setValue");\n\t\tvalidateString(value, "setValue(value)");\n',
+		perform: '\t\tguardRun(this.#getContext(), "perform");\n\t\tvalidateString(action, "perform(action)", { nonEmpty: true });\n',
+	};
+	// ElRef 공통: getContext 필드·생성자와 foundElements 위치. anchor·patched 에 같은 upstream 변경이다.
+	const elRefShared = [
+		['}\n\n/** `await ref("e5")` resolves the element; its methods chain on the handle and await the lookup first.', '}\n\n' + FOUND_ELEMENTS + '/** `await ref("e5")` resolves the element; its methods chain on the handle and await the lookup first.'],
+		["\treadonly ref: string;\n\treadonly #lookup: () => Promise<El>;", "\treadonly ref: string;\n\treadonly #getContext: RunContextAccessor;\n\treadonly #lookup: () => Promise<El>;"],
+		["\tconstructor(ref: string, lookup: () => Promise<El>) {\n\t\tthis.ref = ref;\n", "\tconstructor(ref: string, getContext: RunContextAccessor, lookup: () => Promise<El>) {\n\t\tthis.ref = ref;\n\t\tthis.#getContext = getContext;\n"],
+	];
+	const element = EDITS.find(entry => entry.marker === "class RefBook {");
+	const element1891 = element.alternates.find(candidate => candidate.requires === "class ElRef");
+	element1891.excludes = WORKER_18103;
+	element.alternates.push({
+		file: element1891.file,
+		requires: WORKER_18103,
+		marker: element1891.marker,
+		anchor: swaps(element1891.anchor, [
+			['\t\tguardRun(context, "setValue");\n', '\t\tguardRun(context, "setValue");\n\t\tvalidateString(value, "setValue(value)");\n'],
+			['\t\tguardRun(context, "perform");\n', '\t\tguardRun(context, "perform");\n\t\tvalidateString(action, "perform(action)", { nonEmpty: true });\n'],
+			["\tasync focus(): Promise<void> {\n\t\tconst context = this.#getContext();", '\tasync doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {\n\t\tconst context = this.#getContext();\n\t\tguardRun(context, "doubleClick");\n\t\tawait nativeCall(context.signal, () => this.#session.axClick(this.ref, pointerOptions({ ...options, count: 2 })));\n\t}\n\n\tasync focus(): Promise<void> {\n\t\tconst context = this.#getContext();'],
+			...elRefShared,
+			["\tasync setValue(value: string): Promise<void> {\n\t\tawait (await this.#resolve())", "\tasync setValue(value: string): Promise<void> {\n" + REF_GUARD.setValue + "\t\tawait (await this.#resolve())"],
+			["\tasync perform(action: string): Promise<void> {\n\t\tawait (await this.#resolve())", "\tasync perform(action: string): Promise<void> {\n" + REF_GUARD.perform + "\t\tawait (await this.#resolve())"],
+			["\tasync focus(): Promise<void> {\n\t\tawait (await this.#resolve()).focus();", '\tasync doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {\n\t\tawait (await this.#resolve()).doubleClick(options);\n\t}\n\n\tasync focus(): Promise<void> {\n\t\tawait (await this.#resolve()).focus();'],
+		]),
+		patched: swaps(element1891.patched, [
+			['\tsetValue(value: string): Promise<ComputerActionResult> {\n\t\treturn this.#act(', '\tasync setValue(value: string): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "setValue");\n\t\tvalidateString(value, "setValue(value)");\n\t\treturn this.#act('],
+			['\tperform(action: string): Promise<ComputerActionResult> {\n\t\treturn this.#act(', '\tasync perform(action: string): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "perform");\n\t\tvalidateString(action, "perform(action)", { nonEmpty: true });\n\t\treturn this.#act('],
+			["\tfocus(): Promise<ComputerActionResult> {\n\t\treturn this.#act(", '\tdoubleClick(options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {\n\t\treturn this.#act(\n\t\t\t"doubleClick",\n\t\t\tref => this.#session.axClick(ref, pointerOptions({ ...options, count: 2 })),\n\t\t\tjudgeStateChange,\n\t\t\toptions?.takeover,\n\t\t);\n\t}\n\n\tfocus(): Promise<ComputerActionResult> {\n\t\treturn this.#act('],
+			...elRefShared,
+			["\tasync setValue(value: string): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve())", "\tasync setValue(value: string): Promise<ComputerActionResult> {\n" + REF_GUARD.setValue + "\t\treturn (await this.#resolve())"],
+			["\tasync perform(action: string): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve())", "\tasync perform(action: string): Promise<ComputerActionResult> {\n" + REF_GUARD.perform + "\t\treturn (await this.#resolve())"],
+			["\tasync focus(): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).focus();", '\tasync doubleClick(options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).doubleClick(options);\n\t}\n\n\tasync focus(): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).focus();'],
+		]),
+	});
+	const MENU_1891 = [
+		"\t\t\titems: async (path?: string | string[]): Promise<MenuItem[]> => {",
+		"\t\t\t\tconst context = this.#getContext();",
+		"\t\t\t\tconst segments = path === undefined ? undefined : typeof path === \"string\" ? [path] : path;",
+		"\t\t\t\tif (segments !== undefined) validateKeys(segments, \"menu path\", { allowEmpty: true });",
+		"\t\t\t\treturn await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));",
+		"\t\t\t},",
+		"\t\t\tselect: async (path: string[]): Promise<void> => {",
+		"\t\t\t\tconst context = this.#getContext();",
+		"\t\t\t\tguardRun(context, \"menu.select\");",
+		"\t\t\t\tvalidateKeys(path, \"menu path\");",
+		"\t\t\t\tawait nativeCall(context.signal, () => this.#session.menuSelect(this.id, path));",
+	].join("\n");
+	const MENU_18103 = [
+		"\t\t\titems: async (...path: string[] | [path?: string | string[]]): Promise<MenuItem[]> => {",
+		"\t\t\t\tconst context = this.#getContext();",
+		"\t\t\t\t// An omitted path, or one passed on as `undefined`, lists the top-level menus.",
+		"\t\t\t\tconst segments =",
+		"\t\t\t\t\tpath.length <= 1 && path[0] === undefined",
+		"\t\t\t\t\t\t? undefined",
+		"\t\t\t\t\t\t: menuPath(\"menu.items\", path, { allowEmpty: true });",
+		"\t\t\t\treturn await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));",
+		"\t\t\t},",
+		"\t\t\tselect: async (...path: [string, ...string[]] | [string[]]): Promise<void> => {",
+		"\t\t\t\tconst context = this.#getContext();",
+		"\t\t\t\tguardRun(context, \"menu.select\");",
+		"\t\t\t\tconst segments = menuPath(\"menu.select\", path);",
+		"\t\t\t\tawait nativeCall(context.signal, () => this.#session.menuSelect(this.id, segments));",
+	].join("\n");
+	const PRESS_CHECK =
+		"\t\tconst keys = chordKeys(chord);\n\t\tif (!isStringList(keys) || keys.length === 0) {\n\t\t\tthrow new ToolError(\n\t\t\t\t`press(chord) requires a key chord such as \"cmd+shift+p\" or [\"cmd\", \"shift\", \"p\"], got ${describeArgument(chord)}`,\n\t\t\t);\n\t\t}\n";
+	const win = EDITS.find(entry => entry.marker === "return windowInputResult(action, this.id, options);");
+	const win1891 = win.alternates.find(candidate => candidate.requires === "class ElRef");
+	win1891.excludes = WORKER_18103;
+	win.alternates.push({
+		file: win1891.file,
+		requires: WORKER_18103,
+		marker: win1891.marker,
+		anchor: swaps(win1891.anchor, [
+			['\t\tguardRun(context, "type");\n', '\t\tguardRun(context, "type");\n\t\tvalidateString(text, "type(text)");\n'],
+			["\t\tawait nativeCall(context.signal, () =>\n\t\t\tthis.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),\n\t\t);", PRESS_CHECK + "\t\tawait nativeCall(context.signal, () => this.#session.keyChord(this.id, keys, pointerOptions(options)));"],
+			[MENU_1891, MENU_18103],
+			["\t\treturn (await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(\n\t\t\tnode => new El(this.#session, this.#getContext, node),\n\t\t);", "\t\treturn foundElements(\n\t\t\t(await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(\n\t\t\t\tnode => new El(this.#session, this.#getContext, node),\n\t\t\t),\n\t\t);"],
+			["\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, async () => {", '\tref(ref: string): ElRef {\n\t\tvalidateString(ref, "ref(ref)", { nonEmpty: true });\n\t\treturn new ElRef(ref, this.#getContext, async () => {'],
+		]),
+		patched: swaps(win1891.patched, [
+			['\ttype(text: string, options?: InputOptions): Promise<ComputerActionResult> {\n\t\treturn this.#input(', '\tasync type(text: string, options?: InputOptions): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "type");\n\t\tvalidateString(text, "type(text)");\n\t\treturn this.#input('],
+			['\tpress(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {\n\t\treturn this.#input("press", options, () =>\n\t\t\tthis.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),\n\t\t);', '\tasync press(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "press");\n' + PRESS_CHECK + '\t\treturn this.#input("press", options, () => this.#session.keyChord(this.id, keys, pointerOptions(options)));'],
+			[MENU_1891, MENU_18103],
+			["\t\treturn issueElements(this.#session, this.#getContext, nodes, this.id);\n\t}\n\n\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, () =>", '\t\treturn foundElements(await issueElements(this.#session, this.#getContext, nodes, this.id));\n\t}\n\n\tref(ref: string): ElRef {\n\t\tvalidateString(ref, "ref(ref)", { nonEmpty: true });\n\t\treturn new ElRef(ref, this.#getContext, () =>'],
+		]),
+	});
+	const desktopRef = EDITS.find(entry => entry.marker === "ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),");
+	desktopRef.alternates.push({
+		file: desktopRef.file,
+		marker: "\t\t\t\treturn new ElRef(ref, getContext, () => resolveElement(session, getContext, ref));",
+		anchor: "\t\t\tref: (ref: string): ElRef => {\n\t\t\t\tvalidateString(ref, \"ref(ref)\", { nonEmpty: true });\n\t\t\t\treturn new ElRef(ref, getContext, async () => {\n\t\t\t\t\tconst { signal } = getContext();\n\t\t\t\t\treturn el(await nativeCall(signal, () => session.axNode(ref)));\n\t\t\t\t});\n\t\t\t},",
+		patched: "\t\t\tref: (ref: string): ElRef => {\n\t\t\t\tvalidateString(ref, \"ref(ref)\", { nonEmpty: true });\n\t\t\t\treturn new ElRef(ref, getContext, () => resolveElement(session, getContext, ref));\n\t\t\t},",
+	});
+	const DECLARATIONS_18103 = 'doubleClick(options?: Omit<ComputerClickOptions, "count">)';
+	const types = EDITS.find(entry => entry.marker === "interface ComputerActionResult {");
+	const types1891 = types.alternates.find(candidate => candidate.requires === "interface ComputerElementRef");
+	types1891.excludes = DECLARATIONS_18103;
+	const pick = ['\t\t\t| "click"\n', '\t\t\t| "click"\n\t\t\t| "doubleClick"\n'];
+	types.alternates.push({
+		file: types1891.file,
+		requires: DECLARATIONS_18103,
+		marker: types1891.marker,
+		anchor: swaps(types1891.anchor, [
+			["\tclick(options?: ComputerClickOptions): Promise<void>;\n", '\tclick(options?: ComputerClickOptions): Promise<void>;\n\tdoubleClick(options?: Omit<ComputerClickOptions, "count">): Promise<void>;\n'],
+			pick,
+		]),
+		patched: swaps(types1891.patched, [
+			["\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;\n\tfocus(", '\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;\n\tdoubleClick(options?: Omit<ComputerClickOptions, "count">): Promise<ComputerActionResult>;\n\tfocus('],
+			pick,
+		]),
+	});
+}
+// 2026-10-13 18.10.2 task.structured(ADAPT): 동적 task schema 가 outputSchema·schemaMode 두 줄 대신 `...schemaFields,` 를 펼치고
+// createTaskSchema 옵션에 `structured` 가 생겼다. batch 항목의 `model?` 추가와 agent optional 정리는 같은 의미로 새 모양에 둔다.
+// CUELO 는 agent/config.yml `task.structured: true` 로 schemaFields 가 그대로 outputSchema·schemaMode 를 담는다.
+{
+	const STRUCTURED_18102 = "const schemaFields = options.structured";
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.10.3 task schema 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, to);
+	};
+	for (const indent of ["\t\t\t\t", "\t\t\t"]) {
+		const fields = `${indent}"outputSchema?": outputSchemaInputSchema,\n${indent}"schemaMode?": '"permissive" | "strict"',\n`;
+		const spread = `${indent}...schemaFields,\n`;
+		const entry = EDITS.find(candidate => candidate.file === "src/task/types.ts" && candidate.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`));
+		entry.excludes = STRUCTURED_18102;
+		entry.alternates.push({
+			file: entry.file,
+			requires: STRUCTURED_18102,
+			marker: swap(entry.marker, fields, spread),
+			anchor: swap(entry.anchor, fields, spread),
+			patched: swap(entry.patched, fields, spread),
+		});
+	}
+	const agentOptional = EDITS.find(candidate => candidate.marker === "// CUELO: task schema agent is optional on the wire.");
+	const options = ["\tevalToolsEnabled: boolean;\n}): BaseType {", "\tevalToolsEnabled: boolean;\n\tstructured: boolean;\n}): BaseType {"];
+	agentOptional.excludes = STRUCTURED_18102;
+	agentOptional.alternates = [{
+		file: agentOptional.file,
+		requires: STRUCTURED_18102,
+		marker: agentOptional.marker,
+		anchor: swap(agentOptional.anchor, ...options),
+		patched: swap(agentOptional.patched, ...options),
+	}];
 }
 // 18.9.1 MCPManager 는 deferred 전역 로더에 `static #deferred` 를 새로 둔다. JS 는 같은 class 안에서 static 과 instance
 // private 이름을 겹쳐 둘 수 없어("#deferred" has already been declared) 모듈 적재가 실패한다. 요청별 MCP 선택이 쓰는

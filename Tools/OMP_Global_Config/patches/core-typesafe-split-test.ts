@@ -23,7 +23,12 @@ const CORE = resolveCore();
 const PI_AI = join(CORE, "..", "..", "pi-ai", "src").replace(/\\/g, "/");
 console.log(`대상 ${CORE}`);
 // The core copy is chosen at runtime (OMP_CORE_PATCH_TARGET or the installed core), so these imports cannot be static.
-const { TypeSafeJudge, TypeSafeApiError } = await import(`${PI_AI}/judgment/typesafe.ts`);
+// 18.9.2+ removed typesafe.ts: NativeJudge splits by `maxQuestions`, and the CUELO patch sets the typesafe cap at the judge
+// chain's call site (judgment/index.ts), so on those cores the test drives the real chain with the jev model as session model.
+const NATIVE_JUDGE = existsSync(`${PI_AI}/judgment/native.ts`);
+const legacy = NATIVE_JUDGE ? undefined : await import(`${PI_AI}/judgment/typesafe.ts`);
+const chain = NATIVE_JUDGE ? await import(`${CORE}/judgment/index.ts`) : undefined;
+const settings = NATIVE_JUDGE ? (await import(`${CORE}/config/settings.ts`)).Settings : undefined;
 const { nameBatch, dirBatch, sketchBatch, passageBatch } = await import(`${CORE}/tools/jfind/questions.ts`);
 
 let pass = 0;
@@ -123,15 +128,57 @@ function stubFetch(sent: Sent[], options: StubOptions = {}): typeof fetch {
 }
 
 type Route = "typesafe" | "openrouter-decisions";
-function judgeFor(route: Route, fetchImpl: typeof fetch) {
-	return new TypeSafeJudge({
-		apiKey: "test-key",
+interface RouteJudge {
+	judge(request: { state: unknown; questions: Record<string, unknown> }): Promise<{
+		answers: Record<string, unknown>;
+		usage: { input: number; output: number; cost: { total: number } };
+		model: string;
+		provider: string;
+	}>;
+}
+function judgeFor(route: Route, fetchImpl: typeof fetch, modelId?: string): RouteJudge {
+	const id = modelId ?? (route === "typesafe" ? "jev-latest" : "~typesafe/jev-latest");
+	const provider = route === "typesafe" ? "typesafe" : "openrouter";
+	const baseUrl = route === "typesafe" ? "https://api.experientiallabs.ai" : "https://openrouter.ai/api/alpha";
+	if (legacy) return new legacy.TypeSafeJudge({ apiKey: "test-key", api: route, provider, baseUrl, model: id, fetch: fetchImpl });
+	// The jev model is the session model and the judge role is empty, so the chain's only candidate is this native model and
+	// the judge is built by the patched #createJudge. NativeJudge reads the global fetch when it is constructed per judgment.
+	const model = {
+		id,
+		name: id,
 		api: route,
-		provider: route === "typesafe" ? "typesafe" : "openrouter",
-		baseUrl: route === "typesafe" ? "https://api.experientiallabs.ai" : "https://openrouter.ai/api/alpha",
-		model: route === "typesafe" ? "jev-latest" : "~typesafe/jev-latest",
-		fetch: fetchImpl,
+		provider,
+		baseUrl,
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 65_536,
+		maxTokens: 1024,
+	};
+	const registry = {
+		getAvailable: () => [],
+		getApiKey: async () => "test-key",
+		resolver: () => "test-key",
+		resolveModelHeaders: async () => undefined,
+	};
+	const judge = chain!.resolveJudge({
+		settings: settings!.isolated({}) as never,
+		registry: registry as never,
+		sessionModel: model as never,
+		sessionId: "typesafe-split-test",
+		purpose: "find",
 	});
+	return {
+		async judge(request) {
+			const previous = globalThis.fetch;
+			globalThis.fetch = fetchImpl;
+			try {
+				return await judge.judge(request);
+			} finally {
+				globalThis.fetch = previous;
+			}
+		},
+	};
 }
 
 function noulQuestions(count: number): Record<string, { type: "noul"; instructions: string }> {
@@ -208,12 +255,23 @@ await judged("한 부분 실패", async () => {
 	} catch (caught) {
 		error = caught;
 	}
+	// The legacy judge throws its own API error; the native chain reports the failed candidate with the provider message.
+	const providerError = legacy ? error instanceof legacy.TypeSafeApiError : error instanceof Error;
 	check(
 		"한 부분이 400 이면 부분 결과 없이 그 오류로 실패하고 다시 보내지 않는다",
-		error instanceof Error && error instanceof TypeSafeApiError && error.message.includes("(400)") && sent.length === 2,
+		error instanceof Error && providerError && error.message.includes("(400)") && sent.length === 2,
 		`error=${error instanceof Error ? error.message.slice(0, 120) : String(error)} requests=${sent.length}`,
 	);
 });
+if (!legacy) {
+	await judged("catalog 상한이 더 작은 typesafe 모델", async () => {
+		// The catalog caps unknown OpenJEV ids at 16 (judgment-questions.kdl); the gateway cap only lowers a cap, never raises it.
+		const sent: Sent[] = [];
+		await judgeFor("typesafe", stubFetch(sent), "openjev-fixture").judge({ state: STATE, questions: noulQuestions(40) });
+		const sizes = sent.map(part => part.ids.length).sort((a, b) => b - a);
+		check("catalog 16문항 상한은 32로 올라가지 않는다", isDeepStrictEqual(sizes, [16, 16, 8]), `sizes=${sizes}`);
+	});
+}
 
 console.log("openrouter-decisions 경로는 그대로다");
 await judged("openrouter 64문항", async () => {
