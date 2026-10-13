@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
-import { hasPosixGitdirWorktree, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
+import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
 
 export { hasPosixGitdirWorktree };
 
@@ -200,8 +200,11 @@ function parseResult(stdout: string): FinalizerResult | undefined {
  * 걸려 `exit -1`로 끊겼다. 같은 저장소의 Windows `git.exe status`는 2.5초다. 그런 저장소는 Windows PowerShell과
  * Windows git으로 같은 finalizer를 돌리고, 넘기는 경로는 `wslpath -w`로 바꾼다. 해당하지 않으면 undefined다.
  * 판정(`usesWindowsDriveRepo`: `/mnt/<드라이브>/` + POSIX gitdir worktree 제외)은 command-guard·앱의 git 실행기와 같다.
+ * 단 cwd만 보지 않고 대상 파일 위치도 본다. cwd가 드라이브 위여도 대상이 ext4(`~/src/...`) 같은 드라이브 밖이면 Windows git은
+ * 그 저장소를 열지 못한다. 2026-10-13 cwd `/mnt/f/CUELO`에서 `~/src/CUELO-private` 파일을 넘기자 `fatal: not a git repository`로 끝났다.
  */
-async function windowsDrivePaths(cwd: string, files: string[], paths: string[], exec: Exec): Promise<string[] | undefined> {
+export async function windowsDrivePaths(cwd: string, files: string[], paths: string[], exec: Exec): Promise<string[] | undefined> {
+  if (!files.every((file) => isWindowsDrivePath(resolve(cwd, file)))) return undefined;
   if (!(await usesWindowsDriveRepo(cwd, files))) return undefined;
   const converted: string[] = [];
   for (const path of paths) {

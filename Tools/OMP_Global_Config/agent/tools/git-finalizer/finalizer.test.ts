@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
-import factory, { hasPosixGitdirWorktree } from "./index";
+import factory, { hasPosixGitdirWorktree, windowsDrivePaths } from "./index";
 import { selectGitExecutor, windowsPathToPosix } from "./wsl-git";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
@@ -241,14 +241,14 @@ describe("git finalizer", () => {
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
-  test.skipIf(process.platform === "win32")("stops before push when a commit hook rewrites a gated file, keeping the local commit", async () => {
+  test("stops before push when a commit hook rewrites a gated file, keeping the local commit", async () => {
     const { root, remote, work } = await createRepository();
     const before = git(work, ["rev-parse", "HEAD"]);
     await writeFile(join(work, "a.txt"), "reviewed-a\n");
     const checked = git(work, ["hash-object", "a.txt"]);
     const hook = join(work, ".git", "hooks", "pre-commit");
     await writeFile(hook, "#!/bin/sh\necho rewritten-by-hook >> a.txt\ngit add a.txt\n");
-    expect(run("chmod", ["+x", hook]).code).toBe(0);
+    await chmod(hook, 0o755);
 
     const { result, output } = await startFinalizer(root, work, "gate-hook", ["a.txt"], "hook rewrites", { gateBlobs: { "a.txt": checked } });
     expect(result.code).toBe(1);
@@ -1112,6 +1112,23 @@ describe("WSL drive git executor selection", () => {
       process.env.WSL_DISTRO_NAME = "Ubuntu-Test";
       process.env.PATH = "/usr/bin:/bin";
       expect((await selectGitExecutor("/mnt/d/none/repo")).command).toBe("git");
+    });
+
+    test("runs the finalizer on the Windows side only when the target files are on a drive, not just the cwd", async () => {
+      process.env.WSL_DISTRO_NAME = "Ubuntu-Test";
+      const converted: string[] = [];
+      const exec = async (_command: string, args: string[]) => {
+        converted.push(args[1]);
+        return { code: 0, stdout: `F:\\converted\\${converted.length}`, stderr: "" };
+      };
+
+      // cwd는 Windows 사본, 대상은 WSL ext4 원본: Windows git이 열 수 없으니 Linux 쪽으로 남는다.
+      const ext4 = await windowsDrivePaths("/mnt/f/none/CUELO", ["../../../../home/user/src/repo/a.txt"], ["/mnt/f/none/CUELO"], exec);
+      expect(ext4).toBeUndefined();
+      expect(converted).toEqual([]);
+
+      const drive = await windowsDrivePaths("/mnt/f/none/CUELO", ["a.txt"], ["/mnt/f/none/CUELO"], exec);
+      expect(drive).toEqual(["F:\\converted\\1"]);
     });
   });
 });
