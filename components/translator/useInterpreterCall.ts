@@ -34,6 +34,12 @@ const hangUp = (callId: string) => {
   });
 };
 
+/** Remote voice louder than this RMS counts as the interpreter speaking. */
+const ECHO_GATE_RMS = 0.01;
+/** The mic stays muted this long after the voice falls silent (speaker and room tail). */
+const ECHO_GATE_TAIL_MS = 600;
+const ECHO_GATE_POLL_MS = 50;
+
 export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscript) => void): InterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
   const [failure, setFailure] = useState<LiveFailure | null>(null);
@@ -45,6 +51,9 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const eventsRef = useRef<EventSource | null>(null);
   const callIdRef = useRef<string | null>(null);
+  /** Watches the interpreted voice so the mic can be muted while it plays (speakerphone echo). */
+  const gateContextRef = useRef<AudioContext | null>(null);
+  const gateTimerRef = useRef<number | undefined>(undefined);
   /** Bumped by every teardown so a connect in flight knows it was cancelled. */
   const genRef = useRef(0);
   const onTranscriptRef = useRef(onTranscript);
@@ -70,6 +79,10 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
     eventsRef.current = null;
     peerRef.current?.close();
     peerRef.current = null;
+    window.clearInterval(gateTimerRef.current);
+    gateTimerRef.current = undefined;
+    void gateContextRef.current?.close().catch(() => {});
+    gateContextRef.current = null;
     for (const track of streamRef.current?.getTracks() ?? []) track.stop();
     streamRef.current = null;
     const audio = audioRef.current;
@@ -88,12 +101,57 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
     teardown("error");
   }, [teardown]);
 
+  /**
+   * Half-duplex gate. On a phone speaker the interpreted voice reaches the mic again,
+   * and echo cancellation does not always remove it, so the call heard its own
+   * translation and interpreted it back. While the remote voice is audible (and for
+   * a short tail after), the mic track is disabled; WebRTC then sends silence. If the
+   * analyser cannot run, the mic simply stays on, as before.
+   */
+  const watchInterpretedVoice = useCallback((remote: MediaStream, mic: MediaStream) => {
+    const setMic = (enabled: boolean) => {
+      for (const track of mic.getAudioTracks()) if (track.enabled !== enabled) track.enabled = enabled;
+    };
+    window.clearInterval(gateTimerRef.current);
+    gateTimerRef.current = undefined;
+    // Whatever the previous gate left, start from an open mic; every failure below keeps it open.
+    setMic(true);
+    const context = gateContextRef.current;
+    if (!context) return;
+    let analyser: AnalyserNode;
+    try {
+      analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      context.createMediaStreamSource(remote).connect(analyser);
+    } catch {
+      return;
+    }
+    const samples = new Float32Array(analyser.fftSize);
+    let lastAudible = 0;
+    gateTimerRef.current = window.setInterval(() => {
+      // A suspended context can keep returning its last samples; never trust them.
+      if (context.state !== "running") {
+        lastAudible = 0;
+        setMic(true);
+        return;
+      }
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      const now = performance.now();
+      if (Math.sqrt(sum / samples.length) > ECHO_GATE_RMS) lastAudible = now;
+      setMic(now - lastAudible > ECHO_GATE_TAIL_MS);
+    }, ECHO_GATE_POLL_MS);
+  }, []);
+
   const connect = useCallback(async (gen: number, mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
     // Every exit is gated on `genRef.current === gen`: a cancelled connect must not
     // tear down or relabel the call that replaced it.
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
     } catch (error) {
       const name = error instanceof DOMException ? error.name : "";
       if (genRef.current === gen) fail(name === "NotAllowedError" || name === "SecurityError" ? "mic-denied" : "mic-unavailable");
@@ -111,7 +169,9 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
       const audio = audioRef.current;
       pc.ontrack = (event) => {
         const [remote] = event.streams;
-        if (remote && audio) audio.srcObject = remote;
+        if (!remote || !audio) return;
+        audio.srcObject = remote;
+        watchInterpretedVoice(remote, stream);
       };
 
       await pc.setLocalDescription(await pc.createOffer());
@@ -195,7 +255,7 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
     } catch (error) {
       if (genRef.current === gen) fail("failed", error instanceof Error ? error.message : String(error));
     }
-  }, [fail, teardown]);
+  }, [fail, teardown, watchInterpretedVoice]);
 
   const start = useCallback((mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
     teardown("connecting");
@@ -206,6 +266,14 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
     const audio = document.createElement("audio");
     audio.autoplay = true;
     audioRef.current = audio;
+    // Also inside the click: iOS keeps a context created later suspended, and a
+    // suspended analyser reads silence (the gate then simply never mutes).
+    try {
+      gateContextRef.current = new AudioContext();
+      void gateContextRef.current.resume().catch(() => {});
+    } catch {
+      gateContextRef.current = null;
+    }
     void connect(gen, mine, theirs);
   }, [connect, teardown]);
 
