@@ -23,7 +23,13 @@ export interface InterpreterCallController {
   detail: string | null;
   /** `null` until the browser check ran (server render and first paint). */
   supported: boolean | null;
-  /** Start a call for this pair, ending any call already open. Call it inside the click. */
+  /**
+   * Open a call for this pair ahead of Start, without the microphone: the peer sends
+   * no audio track until `start`. Idempotent for the pair; a failure stays silent and
+   * `start` then connects from scratch. The state stays `idle`.
+   */
+  prepare: (mine: TranslatorLanguage, theirs: TranslatorLanguage) => void;
+  /** Start interpreting this pair, reusing a prepared call when it matches. Call it inside the click. */
   start: (mine: TranslatorLanguage, theirs: TranslatorLanguage) => void;
   stop: () => void;
 }
@@ -34,11 +40,14 @@ const hangUp = (callId: string) => {
   });
 };
 
-/** Remote voice louder than this RMS counts as the interpreter speaking. */
-const ECHO_GATE_RMS = 0.01;
-/** The mic stays muted this long after the voice falls silent (speaker and room tail). */
-const ECHO_GATE_TAIL_MS = 600;
-const ECHO_GATE_POLL_MS = 50;
+/**
+ * Codex ends a call that carries no speech about 30 s after it answers (measured 32 s and
+ * 34 s). A prepared call is hung up a little before that, so Start never lands on a call
+ * Codex is about to end; after it Start connects cold.
+ */
+const PREPARED_CALL_MAX_IDLE_MS = 25_000;
+
+const pairKey = (mine: TranslatorLanguage, theirs: TranslatorLanguage) => `${mine.code}>${theirs.code}`;
 
 export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscript) => void): InterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
@@ -47,13 +56,22 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
   const [supported, setSupported] = useState<boolean | null>(null);
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  /** The audio sender; it carries no track until Start attaches the microphone. */
+  const senderRef = useRef<RTCRtpSender | null>(null);
+  const remoteRef = useRef<MediaStream | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const eventsRef = useRef<EventSource | null>(null);
   const callIdRef = useRef<string | null>(null);
-  /** Watches the interpreted voice so the mic can be muted while it plays (speakerphone echo). */
-  const gateContextRef = useRef<AudioContext | null>(null);
-  const gateTimerRef = useRef<number | undefined>(undefined);
+  /** Pair of the call that is open or opening, prepared or started. */
+  const pairRef = useRef<string | null>(null);
+  /** Whether Start was pressed for the current call. Before that the call is invisible. */
+  const startedRef = useRef(false);
+  /** The server answered and the event stream is open. */
+  const callReadyRef = useRef(false);
+  /** The microphone track is on the call's sender (`replaceTrack` resolved). */
+  const micAttachedRef = useRef(false);
+  const preparedTimerRef = useRef<number | undefined>(undefined);
   /** Bumped by every teardown so a connect in flight knows it was cancelled. */
   const genRef = useRef(0);
   const onTranscriptRef = useRef(onTranscript);
@@ -71,18 +89,22 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
   }, []);
 
   /** Release the microphone, peer, audio element, event stream and server call. */
-  const teardown = useCallback((next: LiveState) => {
+  const release = useCallback(() => {
     genRef.current += 1;
     const callId = callIdRef.current;
     callIdRef.current = null;
+    pairRef.current = null;
+    startedRef.current = false;
+    callReadyRef.current = false;
+    micAttachedRef.current = false;
+    window.clearTimeout(preparedTimerRef.current);
+    preparedTimerRef.current = undefined;
     eventsRef.current?.close();
     eventsRef.current = null;
     peerRef.current?.close();
     peerRef.current = null;
-    window.clearInterval(gateTimerRef.current);
-    gateTimerRef.current = undefined;
-    void gateContextRef.current?.close().catch(() => {});
-    gateContextRef.current = null;
+    senderRef.current = null;
+    remoteRef.current = null;
     for (const track of streamRef.current?.getTracks() ?? []) track.stop();
     streamRef.current = null;
     const audio = audioRef.current;
@@ -92,86 +114,58 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
       audio.remove();
     }
     if (callId) hangUp(callId);
-    setState(next);
   }, []);
 
+  const teardown = useCallback((next: LiveState) => {
+    release();
+    setState(next);
+  }, [release]);
+
+  /** A started call shows the failure; a prepared one is dropped quietly and Start connects anew. */
   const fail = useCallback((reason: LiveFailure, message?: string) => {
+    if (!startedRef.current) {
+      release();
+      return;
+    }
     setFailure(reason);
     setDetail(message ?? null);
     teardown("error");
-  }, [teardown]);
+  }, [release, teardown]);
 
-  /**
-   * Half-duplex gate. On a phone speaker the interpreted voice reaches the mic again,
-   * and echo cancellation does not always remove it, so the call heard its own
-   * translation and interpreted it back. While the remote voice is audible (and for
-   * a short tail after), the mic track is disabled; WebRTC then sends silence. If the
-   * analyser cannot run, the mic simply stays on, as before.
-   */
-  const watchInterpretedVoice = useCallback((remote: MediaStream, mic: MediaStream) => {
-    const setMic = (enabled: boolean) => {
-      for (const track of mic.getAudioTracks()) if (track.enabled !== enabled) track.enabled = enabled;
-    };
-    window.clearInterval(gateTimerRef.current);
-    gateTimerRef.current = undefined;
-    // Whatever the previous gate left, start from an open mic; every failure below keeps it open.
-    setMic(true);
-    const context = gateContextRef.current;
-    if (!context) return;
-    let analyser: AnalyserNode;
-    try {
-      analyser = context.createAnalyser();
-      analyser.fftSize = 1024;
-      context.createMediaStreamSource(remote).connect(analyser);
-    } catch {
-      return;
-    }
-    const samples = new Float32Array(analyser.fftSize);
-    let lastAudible = 0;
-    gateTimerRef.current = window.setInterval(() => {
-      // A suspended context can keep returning its last samples; never trust them.
-      if (context.state !== "running") {
-        lastAudible = 0;
-        setMic(true);
-        return;
-      }
-      analyser.getFloatTimeDomainData(samples);
-      let sum = 0;
-      for (const sample of samples) sum += sample * sample;
-      const now = performance.now();
-      if (Math.sqrt(sum / samples.length) > ECHO_GATE_RMS) lastAudible = now;
-      setMic(now - lastAudible > ECHO_GATE_TAIL_MS);
-    }, ECHO_GATE_POLL_MS);
+  /** Started, the call answered and the microphone is on its sender: only then may the view say it listens. */
+  const isListening = useCallback(
+    () => startedRef.current && callReadyRef.current && micAttachedRef.current,
+    [],
+  );
+
+  const settleLive = useCallback((gen: number) => {
+    if (genRef.current !== gen || !isListening()) return;
+    setState("live");
+  }, [isListening]);
+
+  /** Hand the interpreted voice to the audio element once both exist. */
+  const attachRemote = useCallback(() => {
+    const remote = remoteRef.current;
+    const audio = audioRef.current;
+    if (!remote || !audio) return;
+    if (audio.srcObject !== remote) audio.srcObject = remote;
   }, []);
 
-  const connect = useCallback(async (gen: number, mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
-    // Every exit is gated on `genRef.current === gen`: a cancelled connect must not
-    // tear down or relabel the call that replaced it.
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-    } catch (error) {
-      const name = error instanceof DOMException ? error.name : "";
-      if (genRef.current === gen) fail(name === "NotAllowedError" || name === "SecurityError" ? "mic-denied" : "mic-unavailable");
-      return;
-    }
-    if (genRef.current !== gen) {
-      for (const track of stream.getTracks()) track.stop();
-      return;
-    }
-    streamRef.current = stream;
+  /**
+   * Open the Codex call with an audio sender that has no track yet: nothing is captured
+   * or sent until `attachMic`. Every exit is gated on `genRef.current === gen`, so a
+   * cancelled open never tears down or relabels the call that replaced it.
+   */
+  const openCall = useCallback(async (gen: number, mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
     try {
       const pc = new RTCPeerConnection();
       peerRef.current = pc;
-      for (const track of stream.getTracks()) pc.addTrack(track, stream);
-      const audio = audioRef.current;
+      senderRef.current = pc.addTransceiver("audio", { direction: "sendrecv" }).sender;
       pc.ontrack = (event) => {
-        const [remote] = event.streams;
-        if (!remote || !audio) return;
-        audio.srcObject = remote;
-        watchInterpretedVoice(remote, stream);
+        // A late track from a cancelled peer must not reach the call that replaced it.
+        if (genRef.current !== gen || peerRef.current !== pc) return;
+        remoteRef.current = event.streams[0] ?? new MediaStream([event.track]);
+        attachRemote();
       };
 
       await pc.setLocalDescription(await pc.createOffer());
@@ -230,14 +224,19 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
           // and peer, so release them. Only the in-call states keep them: the view
           // shows Start for every other state, and it must never do so over a live
           // mic. An error state may arrive alone as a replay when the upstream error
-          // happened before this stream subscribed.
-          if (parsed.state === "connecting" || parsed.state === "live" || parsed.state === "working") setState(parsed.state);
-          else if (parsed.state === "error") fail("upstream", parsed.state);
-          else teardown(parsed.state);
+          // happened before this stream subscribed. A prepared call stays invisible:
+          // its in-call states are not shown, and its end only drops it. A started
+          // call stays "connecting" until the microphone is attached: the server can
+          // report live while the permission prompt is still open.
+          if (parsed.state === "connecting" || parsed.state === "live" || parsed.state === "working") {
+            if (isListening()) setState(parsed.state);
+          } else if (parsed.state === "error") fail("upstream", parsed.state);
+          else if (startedRef.current) teardown(parsed.state);
+          else release();
           return;
         }
         if (parsed.type === "transcript" && "role" in parsed && "text" in parsed && "final" in parsed) {
-          if ((parsed.role === "user" || parsed.role === "assistant") && typeof parsed.text === "string") {
+          if (startedRef.current && (parsed.role === "user" || parsed.role === "assistant") && typeof parsed.text === "string") {
             onTranscriptRef.current({ role: parsed.role, text: parsed.text, final: parsed.final === true });
           }
           return;
@@ -251,35 +250,86 @@ export function useInterpreterCall(onTranscript: (transcript: InterpreterTranscr
         // The stream also ends normally when the call is closed on purpose.
         if (callIdRef.current) fail("failed");
       };
-      setState("live");
+      callReadyRef.current = true;
+      settleLive(gen);
     } catch (error) {
       if (genRef.current === gen) fail("failed", error instanceof Error ? error.message : String(error));
     }
-  }, [fail, teardown, watchInterpretedVoice]);
+  }, [attachRemote, fail, isListening, release, settleLive, teardown]);
+
+  /** Ask for the microphone (only after Start) and put it on the call's audio sender. */
+  const attachMic = useCallback(async (gen: number) => {
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (error) {
+      const name = error instanceof DOMException ? error.name : "";
+      if (genRef.current === gen) fail(name === "NotAllowedError" || name === "SecurityError" ? "mic-denied" : "mic-unavailable");
+      return;
+    }
+    const sender = senderRef.current;
+    if (genRef.current !== gen || !sender) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+    // Kept before the await so a teardown during `replaceTrack` still stops the track.
+    streamRef.current = stream;
+    try {
+      // Same transceiver the offer negotiated: no renegotiation, the call hears the mic at once.
+      await sender.replaceTrack(stream.getAudioTracks()[0] ?? null);
+    } catch (error) {
+      if (genRef.current === gen) fail("failed", error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (genRef.current !== gen) return;
+    micAttachedRef.current = true;
+    attachRemote();
+    settleLive(gen);
+  }, [attachRemote, fail, settleLive]);
+
+  const prepare = useCallback((mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
+    const key = pairKey(mine, theirs);
+    if (pairRef.current === key) return;
+    // A started call is never replaced from here; changing the pair mid-call goes through `start`.
+    if (startedRef.current) return;
+    release();
+    pairRef.current = key;
+    const gen = genRef.current;
+    preparedTimerRef.current = window.setTimeout(() => {
+      if (genRef.current === gen && !startedRef.current) release();
+    }, PREPARED_CALL_MAX_IDLE_MS);
+    void openCall(gen, mine, theirs);
+  }, [openCall, release]);
 
   const start = useCallback((mine: TranslatorLanguage, theirs: TranslatorLanguage) => {
-    teardown("connecting");
+    const key = pairKey(mine, theirs);
+    const reuse = pairRef.current === key && !startedRef.current && peerRef.current !== null;
+    if (!reuse) {
+      release();
+      pairRef.current = key;
+    }
+    window.clearTimeout(preparedTimerRef.current);
+    preparedTimerRef.current = undefined;
+    startedRef.current = true;
     const gen = genRef.current;
     setFailure(null);
     setDetail(null);
+    setState("connecting");
     // Created inside the click so autoplay policy lets the interpreted voice play.
     const audio = document.createElement("audio");
     audio.autoplay = true;
     audioRef.current = audio;
-    // Also inside the click: iOS keeps a context created later suspended, and a
-    // suspended analyser reads silence (the gate then simply never mutes).
-    try {
-      gateContextRef.current = new AudioContext();
-      void gateContextRef.current.resume().catch(() => {});
-    } catch {
-      gateContextRef.current = null;
-    }
-    void connect(gen, mine, theirs);
-  }, [connect, teardown]);
+    attachRemote();
+    // The microphone and a cold call open side by side; a prepared call only needs the mic.
+    if (!reuse) void openCall(gen, mine, theirs);
+    void attachMic(gen);
+  }, [attachMic, attachRemote, openCall, release]);
 
   const stop = useCallback(() => teardown("idle"), [teardown]);
 
-  useEffect(() => () => teardown("closed"), [teardown]);
+  useEffect(() => () => release(), [release]);
 
-  return { state, failure, detail, supported, start, stop };
+  return { state, failure, detail, supported, prepare, start, stop };
 }

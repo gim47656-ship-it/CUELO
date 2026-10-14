@@ -114,10 +114,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   };
 
   // 대화 화면으로 돌아가면 통화(마이크)를 끝낸다. 화면이 사라질 때는 훅이 정리한다.
-  const { stop } = call;
+  const { prepare, stop, supported } = call;
   useEffect(() => {
     if (!visible) stop();
   }, [stop, visible]);
+
+  // 화면이 열려 있고 통역 중이 아니면 고른 언어 짝으로 통화를 미리 열어 둔다. 마이크는 열지 않고
+  // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
+  useEffect(() => {
+    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs);
+  }, [active, mine, prepare, supported, theirs, visible]);
 
   useEffect(() => {
     const log = logRef.current;
