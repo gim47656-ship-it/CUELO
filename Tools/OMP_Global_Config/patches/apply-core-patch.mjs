@@ -9321,6 +9321,15 @@ interface ComputerInputTarget {
 	type(text: string, options?: ComputerInputOptions): Promise<ComputerActionResult>;
 	/** Key chord such as \`"cmd+shift+p"\` or \`["cmd", "shift", "p"]\`. */
 	press(chord: string | string[], options?: ComputerInputOptions): Promise<ComputerActionResult>;`,
+		}, {
+			// 2026-10-14 18.10.4 RETIRE: declarations.d.ts는 Codex Code Mode 설명(eval.ts #codeModeDescription의
+			// codeModeDeclarations)만 읽던 파일이고, 18.10.4가 Code Mode와 함께 지웠다. 모델이 보는 결과·재획득·목표 대기
+			// 규칙은 computer.md 항목이 그대로 싣는다. 이 판에는 대상이 없으므로 prelude 자산 목록(codeModeDeclarations가
+			// 빠진 판에만 있는 줄)의 no-op으로 둔다. 아래 raise()·wait 항목도 같은 후보를 쓴다.
+			file: "src/tools/computer/prelude-definition.ts",
+			marker: "\tpython: computerPython,\n} as const;",
+			anchor: "\tpython: computerPython,\n} as const;",
+			patched: "\tpython: computerPython,\n} as const;",
 		}],
 	},
 	{
@@ -9328,6 +9337,13 @@ interface ComputerInputTarget {
 		marker: "\traise(): Promise<ComputerActionResult>;",
 		anchor: "\traise(): Promise<void>;",
 		patched: "\traise(): Promise<ComputerActionResult>;",
+		// 2026-10-14 18.10.4 RETIRE: declarations.d.ts 삭제(위 ComputerActionResult 항목 참고). 같은 no-op 후보.
+		alternates: [{
+			file: "src/tools/computer/prelude-definition.ts",
+			marker: "\tpython: computerPython,\n} as const;",
+			anchor: "\tpython: computerPython,\n} as const;",
+			patched: "\tpython: computerPython,\n} as const;",
+		}],
 	},
 	{
 		// 모델 지시: 재획득 규칙과 결과 필드를 읽는 법. 기존 takeover 규칙(다음 줄)은 그대로 둔다.
@@ -9554,6 +9570,13 @@ function goalProbeRefusal(method: string): ToolError {
 			interval?: number;
 		},
 	) => Promise<unknown>;`,
+		// 2026-10-14 18.10.4 RETIRE: declarations.d.ts 삭제(ComputerActionResult 항목 참고). 같은 no-op 후보.
+		alternates: [{
+			file: "src/tools/computer/prelude-definition.ts",
+			marker: "\tpython: computerPython,\n} as const;",
+			anchor: "\tpython: computerPython,\n} as const;",
+			patched: "\tpython: computerPython,\n} as const;",
+		}],
 	},
 	{
 		// 모델 지시: 행동은 한 번, 목표는 wait(predicate)로 읽고, 미달이면 다시 누르지 않는다.
@@ -11245,6 +11268,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			patched: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 2026-10-14 18.10.4: 출처 줄만 kdl:218로 이동했으며 prefixBinding 의미는 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		}],
 	},
 	{
@@ -11312,6 +11341,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 2026-10-14 18.10.4: 출처 줄만 kdl:331로 이동했으며 provider·revision 경계도 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -11602,6 +11637,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-14 18.10.4: pve는 같은 isAdvisorTranscriptName 함수다(`e===uve||e.startsWith(\`${lve}.\`)&&e.endsWith(Cae)`,
+			// lve="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
