@@ -1,5 +1,6 @@
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { subscribeLiveCall } from "@/lib/live-session";
+import { subscribeInterpreterCall } from "@/lib/translator-live";
 import type { LiveEvent } from "@/lib/live-types";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +27,8 @@ export function GET(req: Request) {
           // The reader is gone; cleanup runs from the abort listener.
         }
       };
-      detach = subscribeLiveCall(callId, send);
+      // Session calls first; an interpreter call is looked up only when no session call has the id.
+      detach = subscribeLiveCall(callId, send) ?? subscribeInterpreterCall(callId, send);
       if (!detach) {
         send({ type: "error", message: "not-found" });
         controller.close();

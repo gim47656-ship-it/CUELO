@@ -258,7 +258,8 @@ describe("runReview", () => {
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     const long = "x".repeat(30_000);
     const result = await runReview(input(), deps(env, { openai: long }), signal);
-    expect(result.reviewers[0].raw).toHaveLength(30_000);
+    expect(result.reviewers[0].raw).toBe(long.slice(0, 2_000));
+    expect(result.reviewers[0].rawChars).toBe(30_000);
     expect(readFileSync(result.reviewers[0].rawFile!, "utf8")).toBe(long);
     const [record] = readCrossReviewRecords(env.ledger) as { reviewers: { raw: string; rawFile: string }[] }[];
     expect(record.reviewers[0].raw).toHaveLength(20_000);
@@ -640,7 +641,7 @@ describe("2회차 심사 보강", () => {
     const partial = `{"findings":[{"severity":"major","claim":"cut off ${"x".repeat(25_000)}`;
     const result = await runReview(input(), deps(env, { openai: new ReviewerCallError("Model stopped: length", ASTRA, partial) }), signal);
     expect(result.passable).toBe(false);
-    expect(result.reviewers[0]).toMatchObject({ status: "error", error: "Model stopped: length", raw: partial });
+    expect(result.reviewers[0]).toMatchObject({ status: "error", error: "Model stopped: length", raw: partial.slice(0, 2_000), rawChars: partial.length });
     expect(readFileSync(result.reviewers[0].rawFile!, "utf8")).toBe(partial);
     const [record] = readCrossReviewRecords(env.ledger) as { reviewers: { raw: string; rawFile: string }[] }[];
     expect(record.reviewers[0].raw).toBe(partial.slice(0, 20_000));

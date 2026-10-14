@@ -69,11 +69,12 @@ const LIVE_STATE_IDS: Record<string, true> = {
   closed: true,
 };
 
-function isLiveState(value: string): value is LiveState {
+export function isLiveState(value: string): value is LiveState {
   return LIVE_STATE_IDS[value] === true;
 }
 
-function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
+/** Codex signals over HTTP once, so wait until the offer carries every ICE candidate (or the timeout). */
+export function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
   if (pc.iceGatheringState === "complete") return Promise.resolve();
   const { promise, resolve } = Promise.withResolvers<void>();
   const finish = () => {
@@ -89,7 +90,7 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
   return promise;
 }
 
-function failureFromOffer(status: number, code: unknown): LiveFailure {
+export function failureFromOffer(status: number, code: unknown): LiveFailure {
   if (status === 401 || code === "live-auth") return "auth";
   if (status === 502 || code === "live-upstream") return "upstream";
   return "failed";

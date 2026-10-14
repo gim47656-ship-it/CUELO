@@ -5106,8 +5106,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 /* ---------------------------------------------------------------------------
    통역(translator). 사이드바 「통역」 보기의 안내 패널과 가운데 통역 화면.
-   색은 의미에만 쓴다: 듣는 중인 버튼만 accent로 칠하고, 내 말은 오른쪽·상대 말은
-   왼쪽 자리로 가른다. 번역문을 원문보다 크게 써서 화면을 상대에게 보여 줘도 읽힌다.
+   색은 의미에만 쓴다: 통역 중인 통화 버튼만 accent로 칠하고, 내 말은 오른쪽·상대 말은
+   왼쪽 자리로 가른다. 통역문을 원문보다 크게 써서 화면을 상대에게 보여 줘도 읽힌다.
    --------------------------------------------------------------------------- */
 .translator-panel {
   display: flex;
@@ -5191,8 +5191,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-size: var(--seed-font-size-t2-static);
 }
 
-.translator-language select,
-.translator-direction {
+.translator-language select {
   min-block-size: 32px;
   padding: 0 var(--seed-dimension-x2);
   border: 1px solid var(--border-strong);
@@ -5224,16 +5223,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   align-items: center;
   gap: var(--seed-dimension-x2);
   margin-inline-start: auto;
-}
-
-.translator-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--seed-dimension-x1);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--seed-font-size-t3-static);
-  white-space: nowrap;
 }
 
 .translator-banner {
@@ -5326,33 +5315,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-size: var(--seed-font-size-t4-static);
 }
 
-.translator-error {
-  margin: 0;
-  color: var(--danger);
-  font-size: var(--seed-font-size-t3-static);
-}
-
-.translator-entry-action {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  min-inline-size: 36px;
-  min-block-size: 36px;
-  padding: 0 var(--seed-dimension-x2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--seed-font-size-t3-static);
-}
-
-.translator-entry-action:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
 .translator-dock {
   display: flex;
   flex-direction: column;
@@ -5362,95 +5324,56 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   border-block-start: 1px solid var(--border);
 }
 
-.translator-heard {
+.translator-status {
   min-block-size: 1.45em;
   margin: 0;
   color: var(--text-muted);
   font-size: var(--seed-font-size-t4-static);
   line-height: 1.45;
-  overflow-wrap: anywhere;
+  text-align: center;
 }
 
-.translator-talk {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--seed-dimension-x2);
-}
-
-.translator-talk-button {
-  display: flex;
-  flex-direction: column;
+.translator-call-button {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: var(--seed-dimension-x2);
   min-block-size: 72px;
-  padding: var(--seed-dimension-x2);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
   background: var(--bg-panel);
   color: var(--text);
   cursor: pointer;
   font: inherit;
+  font-size: var(--seed-font-size-t5-static);
+  font-weight: 600;
 }
 
-.translator-talk-button:hover:not(:disabled) {
+.translator-call-button:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 
-.translator-talk-button[aria-pressed="true"] {
+.translator-call-button[aria-pressed="true"] {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, var(--bg));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-.translator-talk-button:disabled {
+.translator-call-button:disabled {
   color: var(--text-dim);
   cursor: not-allowed;
 }
 
-.translator-talk-who {
-  color: var(--text-dim);
-  font-size: var(--seed-font-size-t2-static);
-}
-
-.translator-talk-label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--seed-dimension-x1_5);
-  font-size: var(--seed-font-size-t5-static);
-  font-weight: 600;
-}
-
-.translator-talk-button[aria-pressed="true"] .translator-talk-label svg {
+.translator-call-button[aria-pressed="true"] svg {
   color: var(--accent);
   animation: translator-listen 1.1s ease-in-out infinite;
 }
 
 @keyframes translator-listen { 50% { opacity: 0.35; } }
 
-.translator-type {
-  display: flex;
-  align-items: center;
-  gap: var(--seed-dimension-x2);
-}
-
-.translator-input {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  min-block-size: 36px;
-  padding: 0 var(--seed-dimension-x3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  outline: none;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--seed-font-size-t4-static);
-}
-
 .translator-view button:focus-visible,
 .translator-view select:focus-visible,
-.translator-view input:focus-visible,
 .translator-panel button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -5472,10 +5395,12 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     min-inline-size: 0;
   }
 
+  /* iOS Safari는 16px보다 작은 입력칸에 초점이 가면 화면을 확대한다. */
   .translator-language select {
     flex: 1 1 auto;
     min-inline-size: 0;
     min-block-size: 44px;
+    font-size: 16px;
   }
 
   .translator-swap {
@@ -5483,28 +5408,23 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     min-block-size: 44px;
   }
 
+  /* 「대화로」·「지우기」도 폰에서 44px 높이로 누른다. */
+  .translator-header > button,
+  .translator-actions button {
+    min-block-size: 44px;
+  }
+
   .translator-entry {
     max-inline-size: 94%;
   }
 
-  .translator-talk-button {
+  .translator-call-button {
     min-block-size: 88px;
-  }
-
-  /* iOS Safari는 16px보다 작은 입력칸에 초점이 가면 화면을 확대한다. */
-  .translator-direction,
-  .translator-input {
-    min-block-size: 44px;
-    font-size: 16px;
-  }
-
-  .translator-direction {
-    max-inline-size: 36%;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .translator-talk-button[aria-pressed="true"] .translator-talk-label svg {
+  .translator-call-button[aria-pressed="true"] svg {
     animation: none;
   }
 }

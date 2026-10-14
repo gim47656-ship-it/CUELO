@@ -95,20 +95,28 @@ export class LiveError extends Error {
   }
 }
 
-interface LiveCall {
+/**
+ * The part of a live call the shared signaling, sideband and event helpers
+ * touch. Session calls extend it below; the sessionless interpreter call
+ * (`lib/translator-live.ts`) uses it as is.
+ */
+export interface LiveCallCore {
   callId: string;
-  sessionId: string;
   sideband: WebSocket;
   state: LiveState;
   listeners: Set<(event: LiveEvent) => void>;
-  detachAgent: () => void;
-  activeDelegationId: string | undefined;
   sendTail: Promise<void>;
-  persistTail: Promise<void>;
   transcripts: Record<LiveTranscriptRole, LiveTranscriptTurn>;
   lastTranscript: Extract<LiveEvent, { type: "transcript" }> | undefined;
   orphanTimer: NodeJS.Timeout | undefined;
   closed: boolean;
+}
+
+interface LiveCall extends LiveCallCore {
+  sessionId: string;
+  detachAgent: () => void;
+  activeDelegationId: string | undefined;
+  persistTail: Promise<void>;
   /** Who speaks this call; fixed at start, changed only by a resolved Main switch. */
   voice: LiveVoiceMode;
   /** Character speech in `character` mode. Native Codex audio is never played then. */
@@ -250,7 +258,7 @@ function assistantText(content: unknown): string {
   return parts.join("\n");
 }
 
-function emit(call: LiveCall, event: LiveEvent): void {
+function emit(call: LiveCallCore, event: LiveEvent): void {
   if (event.type === "transcript") call.lastTranscript = event;
   for (const listener of call.listeners) {
     try {
@@ -261,7 +269,7 @@ function emit(call: LiveCall, event: LiveEvent): void {
   }
 }
 
-function setState(call: LiveCall, state: LiveState): void {
+function setState(call: LiveCallCore, state: LiveState): void {
   if (call.state === state) return;
   call.state = state;
   emit(call, { type: "state", state });
@@ -274,7 +282,7 @@ function setState(call: LiveCall, state: LiveState): void {
  * turn are still dropped. Frames without an id keep the text heuristic.
  */
 function updateTranscript(
-  call: LiveCall,
+  call: LiveCallCore,
   role: LiveTranscriptRole,
   text: string,
   final: boolean,
@@ -336,7 +344,7 @@ function queueFinalTranscript(
 }
 
 /** Serialize sideband writes: the wire expects one complete JSON frame at a time. */
-function queueSend(call: LiveCall, message: LiveClientMessage): void {
+function queueSend(call: LiveCallCore, message: LiveClientMessage): void {
   call.sendTail = call.sendTail.then(() => {
     if (call.closed || call.sideband.readyState !== WebSocket.OPEN) return;
     call.sideband.send(JSON.stringify(message));
@@ -605,12 +613,20 @@ export function handleServerEvent(call: LiveCall, wrapper: AgentSessionWrapper, 
   }
 }
 
-function openSideband(
-  url: string,
+/**
+ * Open the sideband WebSocket of an accepted call. Every text frame is decoded
+ * once: the SDK parser drops `turn.id`/`item.id`, so they are read off the
+ * parsed frame first and handed over with the event, which lets identical
+ * sentences on distinct turns survive. The decoded frame itself goes along for
+ * wire types the SDK parser reports only as `unknown`.
+ */
+export function openLiveSideband(
+  callId: string,
   headers: Record<string, string>,
-  onMessage: (payload: string) => void,
+  onEvent: (event: LiveServerEvent, wireId: string | undefined, frame: Record<string, unknown>) => void,
   onClose: (reason: string) => void,
 ): Promise<WebSocket> {
+  const url = sidebandUrl(callId);
   // Bun's WebSocket accepts request headers through a second constructor
   // argument the DOM type does not describe; the SDK opens its sideband the
   // same way. Codex rejects the upgrade without the Authorization header.
@@ -633,7 +649,10 @@ function openSideband(
     reject(new Error("Codex live sideband connection failed"));
   };
   socket.onmessage = (event: MessageEvent) => {
-    if (typeof event.data === "string") onMessage(event.data);
+    if (typeof event.data !== "string") return;
+    const record = parseLiveWirePayload(event.data);
+    const parsed = record && parseLiveServerEvent(record);
+    if (record && parsed) onEvent(parsed, extractLiveWireId(record), record);
   };
   socket.onclose = (event: CloseEvent) => {
     clearTimeout(timeout);
@@ -656,14 +675,28 @@ async function resolveWrapper(sessionId: string): Promise<AgentSessionWrapper> {
 }
 
 /** Result of a completed Codex signaling exchange. */
-interface LiveSignalingResult {
+export interface LiveSignalingResult {
   answer: string;
   callId: string;
   /** Reused verbatim for the sideband upgrade, which Codex authenticates the same way. */
   headers: Record<string, string>;
 }
 
-async function signal(request: LiveOfferRequest, realtimeSessionId: string): Promise<LiveSignalingResult> {
+export interface LiveSignalingRequest {
+  /** Offer SDP produced by the browser peer connection. */
+  sdp: string;
+  /** The live model's whole system prompt for this call. */
+  instructions: string;
+  voice: string;
+  /** Sent as the Codex scoped session / thread id. */
+  threadId: string;
+  /** Session id for Codex credential stickiness; omitted when the call belongs to no session. */
+  credentialSessionId?: string;
+}
+
+/** Sign the browser's offer with the Codex OAuth credential and post it to Codex signaling. */
+export async function signalLiveCall(request: LiveSignalingRequest): Promise<LiveSignalingResult> {
+  const realtimeSessionId = crypto.randomUUID();
   let attestation: string | undefined;
   try {
     attestation = await generateCodexAttestation();
@@ -671,8 +704,6 @@ async function signal(request: LiveOfferRequest, realtimeSessionId: string): Pro
     // Device attestation is only available on some platforms; Codex accepts
     // the call without it, exactly as the CLI does here.
   }
-  const instructions = liveInstructions(request.locale);
-  const voice = request.voice?.trim() || DEFAULT_LIVE_VOICE;
   const fetchImpl = wrapFetchForProxy(fetch, LIVE_PROVIDER);
 
   const { authStorage } = await getOmpRuntime();
@@ -680,11 +711,11 @@ async function signal(request: LiveOfferRequest, realtimeSessionId: string): Pro
     authStorage,
     LIVE_PROVIDER,
     async (access: OAuthAccess) => {
-      const headers = liveHeaders(access, request.sessionId, realtimeSessionId, attestation);
+      const headers = liveHeaders(access, request.threadId, realtimeSessionId, attestation);
       const response = await fetchImpl(SIGNALING_URL, {
         method: "POST",
         headers: { ...headers, Accept: "*/*", "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: request.sdp, session: buildLiveSessionPayload(instructions, voice) }),
+        body: JSON.stringify({ sdp: request.sdp, session: buildLiveSessionPayload(request.instructions, request.voice) }),
       });
       const body = await response.text();
       if (!response.ok) {
@@ -701,7 +732,7 @@ async function signal(request: LiveOfferRequest, realtimeSessionId: string): Pro
       return { answer: body, callId, headers };
     },
     {
-      sessionId: request.sessionId,
+      ...(request.credentialSessionId ? { sessionId: request.credentialSessionId } : {}),
       isAuthError: isAuthRetryableError,
       missingAccessMessage: "No Codex OAuth credential is available for a live call.",
     },
@@ -741,8 +772,13 @@ async function planLiveVoice(wrapper: AgentSessionWrapper): Promise<{
 export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOfferResponse> {
   const wrapper = await resolveWrapper(request.sessionId);
   const { voice, ready } = await planLiveVoice(wrapper);
-  const realtimeSessionId = crypto.randomUUID();
-  const { answer, callId, headers } = await signal(request, realtimeSessionId);
+  const { answer, callId, headers } = await signalLiveCall({
+    sdp: request.sdp,
+    instructions: liveInstructions(request.locale),
+    voice: request.voice?.trim() || DEFAULT_LIVE_VOICE,
+    threadId: request.sessionId,
+    credentialSessionId: request.sessionId,
+  });
 
   const call: LiveCall = {
     callId,
@@ -771,16 +807,12 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
     assistantResponseOpen: false,
   };
 
-  const socket = await openSideband(
-    sidebandUrl(callId),
+  const socket = await openLiveSideband(
+    callId,
     headers,
-    (payload) => {
+    (event, wireId) => {
       if (call.closed) return;
-      // The SDK parser drops `turn.id`/`item.id`; read them off the parsed
-      // frame first so identical sentences on distinct turns survive.
-      const record = parseLiveWirePayload(payload);
-      const event = record && parseLiveServerEvent(record);
-      if (record && event) handleServerEvent(call, wrapper, event, extractLiveWireId(record));
+      handleServerEvent(call, wrapper, event, wireId);
     },
     (reason) => {
       if (call.closed) return;
@@ -818,42 +850,51 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
 
   liveCalls().set(callId, call);
   // Nothing is reading yet: the browser subscribes right after this response.
-  call.orphanTimer = setTimeout(() => void closeLiveCall(callId), ORPHAN_GRACE_MS);
+  armLiveOrphanTimer(call, () => void closeLiveCall(callId));
   return { callId, sdp: answer, voice };
 }
 
-/** Attach an SSE reader. Returns `null` when the call is already gone. */
-export function subscribeLiveCall(callId: string, listener: (event: LiveEvent) => void): (() => void) | null {
-  const call = liveCalls().get(callId);
-  if (!call || call.closed) return null;
+/** Close a call nobody reads after {@link ORPHAN_GRACE_MS}. */
+export function armLiveOrphanTimer(call: LiveCallCore, close: () => void): void {
+  call.orphanTimer = setTimeout(close, ORPHAN_GRACE_MS);
+}
+
+/**
+ * Attach one SSE reader and replay the current state to it. The returned
+ * detach re-arms the orphan timer once the last reader is gone.
+ */
+export function attachLiveListener(call: LiveCallCore, listener: (event: LiveEvent) => void, close: () => void): () => void {
   if (call.orphanTimer) {
     clearTimeout(call.orphanTimer);
     call.orphanTimer = undefined;
   }
   call.listeners.add(listener);
   listener({ type: "state", state: call.state });
+  return () => {
+    call.listeners.delete(listener);
+    if (call.listeners.size > 0 || call.closed) return;
+    armLiveOrphanTimer(call, close);
+  };
+}
+
+/** Attach an SSE reader. Returns `null` when the call is already gone. */
+export function subscribeLiveCall(callId: string, listener: (event: LiveEvent) => void): (() => void) | null {
+  const call = liveCalls().get(callId);
+  if (!call || call.closed) return null;
+  const detach = attachLiveListener(call, listener, () => void closeLiveCall(callId));
   listener({ type: "voice", voice: call.voice });
   if (call.lastTranscript) listener(call.lastTranscript);
   // Open the speech socket once someone can see a connection failure.
   call.speech?.connect();
-  return () => {
-    call.listeners.delete(listener);
-    if (call.listeners.size > 0 || call.closed) return;
-    call.orphanTimer = setTimeout(() => void closeLiveCall(callId), ORPHAN_GRACE_MS);
-  };
+  return detach;
 }
 
-export async function closeLiveCall(callId: string): Promise<boolean> {
-  const call = liveCalls().get(callId);
-  if (!call) return false;
-  liveCalls().delete(callId);
-  if (call.closed) return true;
-  call.closed = true;
-  clearTimeout(call.orphanTimer);
-  call.detachAgent();
-  call.speech?.close();
-  await call.persistTail;
-
+/**
+ * Last step of every hang-up, after the caller marked the call closed and
+ * settled its own work: ask Codex to end the session, tell the readers, and
+ * release the sideband.
+ */
+export function finishLiveCall(call: LiveCallCore): void {
   if (call.sideband.readyState === WebSocket.OPEN) {
     try {
       call.sideband.send(JSON.stringify(buildSessionClose()));
@@ -866,5 +907,24 @@ export async function closeLiveCall(callId: string): Promise<boolean> {
   if (call.sideband.readyState === WebSocket.OPEN || call.sideband.readyState === WebSocket.CONNECTING) {
     call.sideband.close(1000, "done");
   }
+}
+
+export async function closeLiveCall(callId: string): Promise<boolean> {
+  const call = liveCalls().get(callId);
+  if (!call) return false;
+  liveCalls().delete(callId);
+  if (call.closed) return true;
+  call.closed = true;
+  clearTimeout(call.orphanTimer);
+  call.detachAgent();
+  call.speech?.close();
+  await call.persistTail;
+  finishLiveCall(call);
   return true;
 }
+
+export {
+  emit as emitLiveEvent,
+  setState as setLiveState,
+  updateTranscript as updateLiveCallTranscript,
+};

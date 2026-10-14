@@ -40,6 +40,8 @@ export const SLOT: Record<Family, string> = { openai: "crossReviewOpenAI", anthr
 export const DELETED_BLOB = "deleted";
 /** 원장에 남기는 reviewer 원문 발췌 길이. 전문은 사본 디렉터리의 raw-<계열>.txt에 둔다. */
 const RAW_EXCERPT_CHARS = 20_000;
+/** 도구 결과로 Main에 돌려주는 발췌 길이. 더 필요하면 rawFile을 읽는다(긴 답을 매번 컨텍스트에 싣지 않는다). */
+const RESULT_EXCERPT_CHARS = 2_000;
 
 // ── 계열 매핑 ────────────────────────────────────────────────────────────────
 
@@ -567,7 +569,7 @@ export interface ReviewDeps {
 export interface ReviewResult {
   reviewId: string;
   round: 1 | 2;
-  reviewers: { family: Family; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawFile?: string; error?: string }[];
+  reviewers: { family: Family; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string }[];
   triggers: string[];
   highRisk: boolean;
   findings: CrossReviewFinding[];
@@ -757,12 +759,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
 
   const reviewers: CrossReviewReviewer[] = [];
   const findings: CrossReviewFinding[] = [];
-  const fullRaw: Partial<Record<Family, string>> = {};
+  const rawChars: Partial<Record<Family, number>> = {};
   const keepRaw = (item: { family: Family; text: string }): { raw: string; rawFile: string } => {
-    // 답 전문은 사본 디렉터리의 파일로 남기고(원장에는 앞 20 KB 발췌와 그 경로만), 결과로는 전부 돌려준다.
+    // 답 전문은 사본 디렉터리의 파일로 남긴다. 원장에는 앞 20 KB 발췌, 결과에는 앞 2,000자와 전체 길이·경로만 준다.
     const rawFile = join(snapshotDir, `raw-${item.family}.txt`);
     writeFileSync(rawFile, item.text, { mode: 0o600 });
-    fullRaw[item.family] = item.text;
+    rawChars[item.family] = item.text.length;
     return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
   };
   for (const item of settled) {
@@ -782,7 +784,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   };
   if (!deps.append(record)) throw new Error(`The review ran but could not be recorded in the routing ledger (${reviewId}); it cannot be resolved. Re-run it.`);
   return {
-    reviewId, round, reviewers: reviewers.map((reviewer) => ({ family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000), ...(fullRaw[reviewer.family] ? { raw: fullRaw[reviewer.family], rawFile: reviewer.rawFile } : {}), ...(reviewer.error ? { error: reviewer.error } : {}) })),
+    reviewId, round, reviewers: reviewers.map((reviewer) => ({
+      family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
+      ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
+      ...(reviewer.error ? { error: reviewer.error } : {}),
+    })),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted, passable, snapshotDir, nextStep: describeNext(round, passable, findings.length),
   };
 }
