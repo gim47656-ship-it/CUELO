@@ -39,10 +39,16 @@ export interface TranscriptLog {
    * 통역(`base`), 나머지를 쓰는 말풍선(`rest`, 아직 없으면 `null`). 전사는 누적이라 매번 다시 나눈다.
    */
   carry: { id: number; base: string; rest: number | null } | null;
+  /**
+   * 끊긴 것으로 보이는 마지막 통역. 문장 끝 없이 끝났고 그때 이미 다음 사람의 말이 들어오고 있었다
+   * (Codex가 다음 말 때문에 통역을 끊은 경우). 다음 통역 턴 하나만 이것을 이어 받는다. 다음 말이
+   * 시작되기 전에 끝난 통역(「Well」)은 끊긴 게 아니라 원래 그렇게 끝난 말이다.
+   */
+  cutOff: { id: number; base: string } | null;
 }
 
 export function emptyTranscriptLog(): TranscriptLog {
-  return { entries: [], open: { user: null, assistant: null }, nextId: 0, call: 0, carry: null };
+  return { entries: [], open: { user: null, assistant: null }, nextId: 0, call: 0, carry: null, cutOff: null };
 }
 
 /**
@@ -51,7 +57,7 @@ export function emptyTranscriptLog(): TranscriptLog {
  * 거기 붙으면 다른 언어 짝의 말과 섞인다.
  */
 export function beginTranscriptCall(log: TranscriptLog): TranscriptLog {
-  return { ...log, open: { user: null, assistant: null }, call: log.call + 1, carry: null };
+  return { ...log, open: { user: null, assistant: null }, call: log.call + 1, carry: null, cutOff: null };
 }
 
 /** 말풍선을 모두 지운다. 진행 중인 통화의 번호는 이어 쓴다. */
@@ -93,11 +99,17 @@ export function addTranscript(
 ): TranscriptLog {
   if (transcript.role !== "assistant") return placeTranscript(log, transcript, pair);
   let carry = log.carry;
-  if (carry === null && log.open.assistant === null) {
-    const previous = log.entries.findLast((entry) => entry.call === log.call && entry.translation !== "");
-    if (previous && !ENDS_SENTENCE.test(previous.translation.trimEnd())) carry = { id: previous.id, base: previous.translation, rest: null };
+  if (carry === null && log.open.assistant === null && log.cutOff) carry = { ...log.cutOff, rest: null };
+  if (carry === null) {
+    if (!transcript.final) return placeTranscript(log, transcript, pair);
+    // 통역이 끝났다. 문장 끝 없이 끝났고 그 뒤의 말이 이미 들어오고 있으면 끊긴 통역으로 남긴다.
+    const placed = placeTranscript(log, { ...transcript, final: false }, pair);
+    const id = placed.open.assistant;
+    const entry = placed.entries.find((candidate) => candidate.id === id);
+    const cut = entry !== undefined && !ENDS_SENTENCE.test(entry.translation.trimEnd())
+      && placed.entries.some((later) => later.call === log.call && later.id > entry.id && later.original !== "");
+    return { ...placed, open: { ...placed.open, assistant: null }, cutOff: cut ? { id: entry.id, base: entry.translation } : null };
   }
-  if (carry === null) return placeTranscript(log, transcript, pair);
   const { id, base } = carry;
   let { rest } = carry;
   // 누적 전사가 고쳐질 수 있어 매 갱신마다 처음부터 나눈다. 조각이 아니면 앞 말풍선은 원래대로다.
@@ -117,6 +129,7 @@ export function addTranscript(
     ...next,
     open: { ...next.open, assistant: transcript.final ? null : rest },
     carry: transcript.final ? null : { id, base, rest },
+    cutOff: null,
   };
 }
 

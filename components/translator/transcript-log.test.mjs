@@ -97,12 +97,14 @@ describe("interpreter transcript log", () => {
     expect(log.carry).toBe(null);
   });
 
-  test("keeps a whole new sentence in its own bubble after an unpunctuated translation", () => {
-    const log = replayLog([
+  test("keeps a new utterance's translation in its own bubble after an unpunctuated one", () => {
+    // 짧은 새 문장도 앞 통역이 다음 말 전에 끝났으면 끊긴 게 아니다(「Well Thanks.」로 붙던 회귀).
+    expect(bubbles(replayLog([["u", "음 그러니까", 1], ["a", "Well", 1], ["u", "고마워요", 1], ["a", "Thanks.", 1]])))
+      .toEqual([["음 그러니까", "Well"], ["고마워요", "Thanks."]]);
+    expect(bubbles(replayLog([
       ["u", "음 그러니까", 1], ["a", "Well", 1], ["u", "오늘 날씨가 정말 좋네요", 1],
       ["a", "The weather is", 0], ["a", "The weather is really nice today.", 1],
-    ]);
-    expect(bubbles(log)).toEqual([["음 그러니까", "Well"], ["오늘 날씨가 정말 좋네요", "The weather is really nice today."]]);
+    ]))).toEqual([["음 그러니까", "Well"], ["오늘 날씨가 정말 좋네요", "The weather is really nice today."]]);
   });
 
   test("spaces sentences Codex joined without a space", () => {
@@ -111,7 +113,7 @@ describe("interpreter transcript log", () => {
   });
 
   test("re-splits a cut-off translation when a later cumulative update corrects it", () => {
-    const start = [["u", "It is about five minutes away.", 1], ["a", "거기서 한 5분 정도 걸", 1], ["u", "Turn left at the second street.", 1]];
+    const start = [["u", "It is about five minutes away.", 1], ["u", "Turn left", 0], ["a", "거기서 한 5분 정도 걸", 1], ["u", "Turn left at the second street.", 1]];
     const languages = { mine: findTranslatorLanguage("ko"), theirs: findTranslatorLanguage("en") };
     // 한때 첫 문장이 조각으로 보기에 길었다가 고쳐져 짧아진다.
     const longThenShort = replayLog([
