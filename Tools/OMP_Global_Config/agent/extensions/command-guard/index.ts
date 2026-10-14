@@ -17,7 +17,7 @@ import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 
 import { matchBlockedCommand } from "./matcher";
-import { interopHint } from "./interop-hint";
+import { interopHint, windowsOutputCommand } from "./interop-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
@@ -47,6 +47,9 @@ import {
   type TaskJobRow,
   type TreeSnapshot,
 } from "./task-guard";
+
+/** WSL에서 Windows 실행 파일을 부를 수 있는지(binfmt interop 등록). Windows 출력 변환을 이때만 붙인다. */
+const WSL_INTEROP = process.platform === "linux" && existsSync("/proc/sys/fs/binfmt_misc/WSLInterop");
 
 /** eval이 자동으로 고르는 관리 Python 환경(코어 `getPythonEnvDir()` 기본값). WSL(Linux)에만 안내한다. */
 function managedPythonPath(): string | undefined {
@@ -951,22 +954,25 @@ export default function commandGuard(pi: ExtensionAPI): void {
         return false;
       },
     });
-    if (targetDirectories.length === 0 && windowsGitTargets.length === 0) {
-      if (preliminaryReason) return { block: true, reason: preliminaryReason };
-      return;
+    let reason = preliminaryReason;
+    if (targetDirectories.length > 0 || windowsGitTargets.length > 0) {
+      const [isSessionRepository, usesWindowsGit] = await Promise.all([
+        targetDirectories.length > 0
+          ? repositoryMatcher(sessionCwd, targetDirectories)
+          : (_directory: string) => true,
+        windowsGitMatcher(windowsGitTargets),
+      ]);
+      reason = matchBlockedCommand(event.input.command, {
+        cwd,
+        isSessionRepository,
+        usesWindowsGit,
+      });
     }
-    const [isSessionRepository, usesWindowsGit] = await Promise.all([
-      targetDirectories.length > 0
-        ? repositoryMatcher(sessionCwd, targetDirectories)
-        : (_directory: string) => true,
-      windowsGitMatcher(windowsGitTargets),
-    ]);
-    const reason = matchBlockedCommand(event.input.command, {
-      cwd,
-      isSessionRepository,
-      usesWindowsGit,
-    });
     if (reason) return { block: true, reason };
+    // 통과한 명령 중 Windows 실행 파일을 부르는 것은 출력이 UTF-8로 오도록 감싸 실행한다(interop-hint.ts).
+    const pty = (event.input as { pty?: unknown }).pty === true;
+    const command = windowsOutputCommand(event.input.command, { wsl: WSL_INTEROP, pty });
+    return command ? { input: { ...event.input, command } } : undefined;
   });
 
   // 실행된 task 호출(tool_result)과 실행 전에 끝난 호출(tool_execution_end)은 같은 항목 단위 정산을 탄다.
