@@ -80,4 +80,53 @@ describe("interpreter transcript log", () => {
     expect(log.call).toBe(2);
     expect(replayLog([["u", "네", 1]], log).entries[0].call).toBe(2);
   });
+
+  test("moves the cut-off start of a translation back to the bubble Codex split it from", () => {
+    // 2026-10-15 운영 화면(사용자 웨일 탭, en→ko): Codex가 「…걸려요.」를 두 통역 턴에 걸쳐 끊어
+    // 「…정도 걸」과 「려요.두 번째…」가 서로 다른 말풍선에 들어갔고 문장 사이도 붙었다.
+    const languages = { mine: findTranslatorLanguage("ko"), theirs: findTranslatorLanguage("en") };
+    const log = replayLog([
+      ["u", "It is about five minutes away.", 1], ["a", "거기서 한 5분", 0], ["u", "Turn left", 0],
+      ["a", "거기서 한 5분 정도 걸", 1], ["u", "Turn left at the second street.", 1],
+      ["a", "려", 0], ["a", "려요.두 번째", 0], ["a", "려요.두 번째 길에서 왼쪽으로 도세요.", 1],
+    ], emptyTranscriptLog(), languages);
+    expect(bubbles(log)).toEqual([
+      ["It is about five minutes away.", "거기서 한 5분 정도 걸려요."],
+      ["Turn left at the second street.", "두 번째 길에서 왼쪽으로 도세요."],
+    ]);
+    expect(log.carry).toBe(null);
+  });
+
+  test("keeps a whole new sentence in its own bubble after an unpunctuated translation", () => {
+    const log = replayLog([
+      ["u", "음 그러니까", 1], ["a", "Well", 1], ["u", "오늘 날씨가 정말 좋네요", 1],
+      ["a", "The weather is", 0], ["a", "The weather is really nice today.", 1],
+    ]);
+    expect(bubbles(log)).toEqual([["음 그러니까", "Well"], ["오늘 날씨가 정말 좋네요", "The weather is really nice today."]]);
+  });
+
+  test("spaces sentences Codex joined without a space", () => {
+    const log = replayLog([["u", "안녕하세요.근처에 있나요?", 1], ["a", "Xin chào.Có ở gần đây không?", 1]]);
+    expect(bubbles(log)).toEqual([["안녕하세요. 근처에 있나요?", "Xin chào. Có ở gần đây không?"]]);
+  });
+
+  test("re-splits a cut-off translation when a later cumulative update corrects it", () => {
+    const start = [["u", "It is about five minutes away.", 1], ["a", "거기서 한 5분 정도 걸", 1], ["u", "Turn left at the second street.", 1]];
+    const languages = { mine: findTranslatorLanguage("ko"), theirs: findTranslatorLanguage("en") };
+    // 한때 첫 문장이 조각으로 보기에 길었다가 고쳐져 짧아진다.
+    const longThenShort = replayLog([
+      ...start, ["a", "려요 그리고 아주 길게 이어지는 문장인데요", 0], ["a", "려요. 두 번째 길에서 왼쪽으로 도세요.", 1],
+    ], emptyTranscriptLog(), languages);
+    expect(bubbles(longThenShort)).toEqual([
+      ["It is about five minutes away.", "거기서 한 5분 정도 걸려요."],
+      ["Turn left at the second street.", "두 번째 길에서 왼쪽으로 도세요."],
+    ]);
+    // 나머지가 고쳐진 전사에서 사라지면 그 말풍선의 통역만 비운다.
+    const restDropped = replayLog([...start, ["a", "려요.두 번째", 0], ["a", "려요.", 1]], emptyTranscriptLog(), languages);
+    expect(bubbles(restDropped)).toEqual([
+      ["It is about five minutes away.", "거기서 한 5분 정도 걸려요."],
+      ["Turn left at the second street.", ""],
+    ]);
+    expect(restDropped.open.assistant).toBe(null);
+  });
 });

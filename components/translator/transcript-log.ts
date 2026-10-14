@@ -33,10 +33,16 @@ export interface TranscriptLog {
   nextId: number;
   /** 지금 전사를 받는 통화 번호. */
   call: number;
+  /**
+   * Codex가 통역 한 문장을 두 턴에 걸쳐 끊으면(「…정도 걸」 + 「려요. 두 번째…」) 앞 턴은 문장 끝 없이
+   * 끝난다. 그다음 통역 턴이 끝날 때까지 기억한다: 첫 문장 조각을 붙일 앞 말풍선(`id`)과 그 원래
+   * 통역(`base`), 나머지를 쓰는 말풍선(`rest`, 아직 없으면 `null`). 전사는 누적이라 매번 다시 나눈다.
+   */
+  carry: { id: number; base: string; rest: number | null } | null;
 }
 
 export function emptyTranscriptLog(): TranscriptLog {
-  return { entries: [], open: { user: null, assistant: null }, nextId: 0, call: 0 };
+  return { entries: [], open: { user: null, assistant: null }, nextId: 0, call: 0, carry: null };
 }
 
 /**
@@ -45,7 +51,7 @@ export function emptyTranscriptLog(): TranscriptLog {
  * 거기 붙으면 다른 언어 짝의 말과 섞인다.
  */
 export function beginTranscriptCall(log: TranscriptLog): TranscriptLog {
-  return { ...log, open: { user: null, assistant: null }, call: log.call + 1 };
+  return { ...log, open: { user: null, assistant: null }, call: log.call + 1, carry: null };
 }
 
 /** 말풍선을 모두 지운다. 진행 중인 통화의 번호는 이어 쓴다. */
@@ -53,7 +59,68 @@ export function clearTranscripts(log: TranscriptLog): TranscriptLog {
   return { ...emptyTranscriptLog(), call: log.call };
 }
 
+/** 문장 끝 부호와 그 뒤의 닫는 따옴표·괄호. */
+const SENTENCE_END = /[.!?。！？…]["'”’)\]」』]*/u;
+const ENDS_SENTENCE = new RegExp(`${SENTENCE_END.source}$`, "u");
+/** 새 통역 턴 첫머리에서 앞 말풍선으로 돌려 붙일 조각의 최대 길이. 더 길면 끊긴 조각이 아니라 새 문장이다. */
+const CARRY_MAX_CHARS = 24;
+
+/** 끊긴 첫 문장 조각과 나머지. 조각으로 보기에 길면 `null`이다. */
+function splitCarried(text: string): { head: string; rest: string } | null {
+  const end = SENTENCE_END.exec(text);
+  const head = end ? text.slice(0, end.index + end[0].length) : text;
+  if (head.length > CARRY_MAX_CHARS) return null;
+  return { head, rest: text.slice(head.length).trim() };
+}
+
+/** 라틴 문자끼리 맞닿으면 단어 사이로 보고 띄운다. 한글·가나·태국 문자는 낱말 가운데서 끊긴다. */
+function joinCarried(base: string, head: string): string {
+  return spaceSentences(/[\p{Script=Latin}\d]$/u.test(base) && /^[\p{Script=Latin}\d]/u.test(head) ? `${base} ${head}` : base + head);
+}
+
+/**
+ * Codex 전사는 문장 조각을 공백 없이 잇기도 한다(「걸려요.두 번째」). 마침표·물음표·느낌표 바로 뒤에
+ * 대문자나 한글·가나 같은 글자가 오면 띄운다. 소수점·약어(「5.5」, 「e.g.」)는 그대로다.
+ */
+function spaceSentences(text: string): string {
+  return text.replace(/([.!?])(?=[\p{Lu}\p{Lo}])/gu, "$1 ");
+}
+
 export function addTranscript(
+  log: TranscriptLog,
+  transcript: TranscriptUpdate,
+  pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage },
+): TranscriptLog {
+  if (transcript.role !== "assistant") return placeTranscript(log, transcript, pair);
+  let carry = log.carry;
+  if (carry === null && log.open.assistant === null) {
+    const previous = log.entries.findLast((entry) => entry.call === log.call && entry.translation !== "");
+    if (previous && !ENDS_SENTENCE.test(previous.translation.trimEnd())) carry = { id: previous.id, base: previous.translation, rest: null };
+  }
+  if (carry === null) return placeTranscript(log, transcript, pair);
+  const { id, base } = carry;
+  let { rest } = carry;
+  // 누적 전사가 고쳐질 수 있어 매 갱신마다 처음부터 나눈다. 조각이 아니면 앞 말풍선은 원래대로다.
+  const split = splitCarried(transcript.text);
+  const remainder = split ? split.rest : transcript.text;
+  const translation = split ? joinCarried(base, split.head) : base;
+  let next: TranscriptLog = { ...log, entries: log.entries.map((entry) => (entry.id === id ? { ...entry, translation } : entry)) };
+  if (remainder) {
+    // 나머지는 이 턴 동안 한 말풍선에만 쓴다. 처음이면 평소 규칙으로 고른다.
+    next = placeTranscript({ ...next, open: { ...next.open, assistant: rest } }, { ...transcript, text: remainder, final: false }, pair);
+    rest = next.open.assistant;
+  } else if (rest !== null) {
+    // 고쳐진 전사에 나머지가 없어졌다. 그 말풍선의 통역만 비운다(들은 말은 그대로).
+    next = { ...next, entries: next.entries.map((entry) => (entry.id === rest ? { ...entry, translation: "" } : entry)) };
+  }
+  return {
+    ...next,
+    open: { ...next.open, assistant: transcript.final ? null : rest },
+    carry: transcript.final ? null : { id, base, rest },
+  };
+}
+
+function placeTranscript(
   log: TranscriptLog,
   transcript: TranscriptUpdate,
   pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage },
@@ -78,11 +145,12 @@ export function addTranscript(
       entries = [...entries, { id, original: "", heard: false, translation: "", ...pair, call: log.call }];
     }
   }
+  const text = spaceSentences(transcript.text);
   const update: Partial<TranscriptEntry> = transcript.role === "user"
-    ? { original: transcript.text, heard: transcript.final }
-    : { translation: transcript.text };
+    ? { original: text, heard: transcript.final }
+    : { translation: text };
   entries = entries.map((entry) => (entry.id === id ? { ...entry, ...update } : entry));
-  return { entries, nextId, call: log.call, open: { ...log.open, [transcript.role]: transcript.final ? null : id } };
+  return { ...log, entries, nextId, open: { ...log.open, [transcript.role]: transcript.final ? null : id } };
 }
 
 /**
