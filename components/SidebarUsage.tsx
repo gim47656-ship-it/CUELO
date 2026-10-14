@@ -13,7 +13,7 @@ import {
 } from "@/lib/hanse-resource-client";
 import type { OAuthReloginOutcome, OAuthReloginTarget } from "./ModelsConfig";
 import { AccountAvatar } from "./workspace/AccountAvatar";
-import { shortWindowAlert, usageWindowKind } from "./lounge/member-usage";
+import { shortWindowAlert, usageWindowKind } from "@/lib/usage-window";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useNow } from "@/hooks/useNow";
 

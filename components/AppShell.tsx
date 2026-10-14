@@ -31,9 +31,7 @@ import { useUsageSnapshot } from "@/hooks/useUsageSnapshot";
 import { resolveAccountFace, useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
 import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
-import { useLounge } from "@/hooks/useLounge";
-import { LoungeMemberPanel } from "./lounge/LoungeMemberPanel";
-import { LoungeView } from "./lounge/LoungeView";
+import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
 import { OfficeRail } from "./office/OfficeFloor";
 import { OfficeStage } from "./office/OfficeStage";
 import { OfficeMakerPanel } from "./office/OfficeMakerPanel";
@@ -161,12 +159,10 @@ export function AppShell({
   // 대화 기록의 계정 얼굴은 사용량 탭과 같은 목록에서 배정돼야 같은 계정이 같은 얼굴로
   // 보인다. 앱의 단일 사용량 구독을 여기서 한 번 흘려 넣고, 메시지들은 읽기만 한다.
   useSyncedAccountFaces(usage.state.data?.reports);
-  // 단톡방은 작업 대화와 따로 도는 방이다. 컨트롤러는 여기서 한 번만 만들고 사이드바 멤버
-  // 패널과 가운데 대화 화면이 같이 쓴다(SSE 연결 하나). 처음 열 때 연결하고, 그 뒤로는 작업
-  // 화면으로 돌아가도 연결을 유지해 말하던 본문이 끊기지 않는다.
-  const [loungeOpen, setLoungeOpen] = useState(false);
-  const [loungeVisited, setLoungeVisited] = useState(false);
-  const lounge = useLounge(loungeVisited);
+  // 통역 모드는 작업 대화와 따로 도는 화면이다. 처음 열 때 마운트하고, 그 뒤로는 작업 화면으로
+  // 돌아가도 마운트해 둬 통역 기록이 남는다.
+  const [translatorOpen, setTranslatorOpen] = useState(false);
+  const [translatorVisited, setTranslatorVisited] = useState(false);
   const notifiedAttentionRequestIdsRef = useRef(new Set<string>());
   const handleBackgroundTaskDone = useCallback(() => {
     // 다른 workspace에서 끝난 작업은 어느 계정이 했는지 알 수 없다 — 캐릭터 없이 「결과 확인」
@@ -255,11 +251,11 @@ export function AppShell({
   const requestComposerFocus = useCallback(() => {
     setComposerFocusRequest((request) => request + 1);
   }, []);
-  // 단톡방을 열고 닫는다. 작업 ChatWindow는 그대로 마운트된 채 가려질 뿐이라 선택 세션·초안·
+  // 통역 화면을 열고 닫는다. 작업 ChatWindow는 그대로 마운트된 채 가려질 뿐이라 선택 세션·초안·
   // 실행 중인 작업이 그대로 남고, 닫으면 작업 입력창으로 초점을 돌려준다.
-  const setLoungeActive = useCallback((active: boolean) => {
-    if (active) setLoungeVisited(true);
-    setLoungeOpen(active);
+  const setTranslatorActive = useCallback((active: boolean) => {
+    if (active) setTranslatorVisited(true);
+    setTranslatorOpen(active);
     if (!active) requestComposerFocus();
   }, [requestComposerFocus]);
   const registerComposerFocus = useCallback((focus: (() => void) | null) => {
@@ -1610,8 +1606,8 @@ export function AppShell({
   const officeMaker = officeRoster?.participants.find(
     (participant): participant is OfficeMakerParticipant => participant.kind === "maker" && participant.key === officeSelected,
   );
-  // 오피스 화면의 지금 보기. 단톡방을 열면 대화 칸에 덮이므로 그동안은 대화 보기다.
-  const officePane: OfficePane | null = officePage ? (loungeOpen ? "target" : office.pane) : null;
+  // 오피스 화면의 지금 보기. 통역 화면을 열면 대화 칸에 덮이므로 그동안은 대화 보기다.
+  const officePane: OfficePane | null = officePage ? (translatorOpen ? "target" : office.pane) : null;
   // 오피스에서 공간만 보는 동안 대화 칸은 마운트된 채 가려지고 탭 순서·보조 기술에서도 빠진다.
   const officeChatHidden = officePane === "floor";
   // 오피스 화면은 공간·대화가 한 칸을 번갈아 쓰므로 보조 패널도 옆에 고정하지 않고 대화 자리를 대신한다.
@@ -1783,33 +1779,24 @@ export function AppShell({
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onBackgroundTaskDone={handleBackgroundTaskDone}
-        loungePanel={(
-          <LoungeMemberPanel
-            lounge={lounge}
-            usage={usage}
-            loungeOpen={loungeOpen}
-            // 넓은 화면에서는 보기를 고르는 순간 가운데가 이미 단톡방이다. 드로어에서만 드로어를
-            // 닫고 뒤의 대화 화면을 보여 주는 버튼이 필요하다.
-            onOpenLounge={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined}
-          />
+        translatorPanel={(
+          // 넓은 화면에서는 보기를 고르는 순간 가운데가 이미 통역 화면이다. 드로어에서만 드로어를
+          // 닫고 뒤의 통역 화면을 보여 주는 버튼이 필요하다.
+          <TranslatorPanel onOpen={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined} />
         )}
-        loungeActive={loungeOpen}
-        onLoungeActiveChange={setLoungeActive}
+        translatorActive={translatorOpen}
+        onTranslatorActiveChange={setTranslatorActive}
       />
       {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. */}
       <div className="navigator-footer" style={{ padding: "8px", flexShrink: 0 }}>
-        {/* 단톡방 보기에서는 멤버 패널이 멤버별 주간·한도 경고를 이미 보여 준다. 같은 사용량을
-            아래에 한 번 더 쌓으면 멤버 목록의 세로 공간만 줄어든다. 작업 보기에서는 그대로 둔다. */}
-        {loungeOpen ? null : (
-          <SidebarUsage
-            usage={usage}
-            onOpen={() => {
-              setResourceTab("usage");
-              selectWorkspaceView("resource", false);
-            }}
-            onRelogin={openRelogin}
-          />
-        )}
+        <SidebarUsage
+          usage={usage}
+          onOpen={() => {
+            setResourceTab("usage");
+            selectWorkspaceView("resource", false);
+          }}
+          onRelogin={openRelogin}
+        />
         <OmpUpdateIndicator />
         <button
           className="navigator-settings-action"
@@ -2419,7 +2406,7 @@ export function AppShell({
           <div
             id="workspace-transcript"
             className="chat-session-column"
-            data-lounge-open={loungeOpen ? "true" : undefined}
+            data-translator-open={translatorOpen ? "true" : undefined}
             inert={officeChatHidden || undefined}
           >
           {showChat ? (
@@ -2519,10 +2506,10 @@ export function AppShell({
               </div>
             )
           ) : null}
-          {/* 단톡방은 작업 화면 위에 덮인다. 작업 쪽은 visibility로만 가려 ChatWindow·초안·스크롤·
+          {/* 통역 화면은 작업 화면 위에 덮인다. 작업 쪽은 visibility로만 가려 ChatWindow·초안·스크롤·
               실행 상태가 그대로 살아 있고, 닫으면 떠나기 전 그대로 돌아온다. */}
-          {loungeVisited ? (
-            <LoungeView lounge={lounge} visible={loungeOpen} onBack={() => setLoungeActive(false)} />
+          {translatorVisited ? (
+            <TranslatorView visible={translatorOpen} onBack={() => setTranslatorActive(false)} />
           ) : null}
           </div>
           {pinDecision.deck === "pinned" && showAuxiliaryDeck && !officePage && (
@@ -2536,13 +2523,13 @@ export function AppShell({
             roster={officeRoster}
             selected={officeSelected}
             onSelect={(key) => {
-              // 단톡방이 대화 칸을 덮고 있으면 걷고 고른 대상을 보여 준다.
-              if (loungeOpen) setLoungeActive(false);
+              // 통역 화면이 대화 칸을 덮고 있으면 걷고 고른 대상을 보여 준다.
+              if (translatorOpen) setTranslatorActive(false);
               office.select(key);
             }}
             pane={officePane}
             onShowFloor={() => {
-              if (loungeOpen) setLoungeActive(false);
+              if (translatorOpen) setTranslatorActive(false);
               office.setPane("floor");
             }}
             selectionGone={office.selected !== officeSelected}

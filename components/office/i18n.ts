@@ -6,8 +6,8 @@ import { translateMessage } from "@/lib/i18n/format";
 import type { Locale, TranslationParams } from "@/lib/i18n/types";
 
 /**
- * 오피스 보기 전용 문구. 단톡방(`components/lounge/i18n.ts`)과 같은 이유로 앱 공용 언어 팩을
- * 건드리지 않고 여기서 따로 들며, 조회·보간·영어 대체는 공용 `translateMessage`를 그대로 쓴다.
+ * 오피스 보기 전용 문구. 앱 공용 언어 팩을 건드리지 않고 여기서 따로 들며, 조회·보간·영어 대체는
+ * 공용 `translateMessage`를 그대로 쓴다.
  */
 const ko = {
   "office.toOffice": "오피스",
@@ -230,4 +230,14 @@ export function useOfficeText(): { ot: OfficeTranslate; locale: Locale } {
     [locale],
   );
   return { ot, locale };
+}
+
+/**
+ * roster alias(`"YUKI(유키)"`)에서 화면 이름을 꺼낸다. 한국어 화면은 괄호 안 이름, 그 밖은 영문
+ * 이름이다.
+ */
+export function officeMemberName(alias: string, locale: string): string {
+  const match = /^([^(]+)\(([^)]+)\)$/.exec(alias.trim());
+  if (!match) return alias;
+  return locale === "ko" ? match[2] : match[1];
 }

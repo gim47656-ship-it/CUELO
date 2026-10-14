@@ -6,8 +6,7 @@ import { ACCOUNT_FACES, avatarSrcForSeed } from "@/lib/hanse-resource-client";
 import { isActiveSubagentStatus } from "@/hooks/useSubagentTranscripts";
 import type { OfficeParticipant, OfficeRoster } from "@/lib/office/office-roster";
 import type { OfficePane } from "@/hooks/useOfficeView";
-import { loungeMemberName } from "../lounge/i18n";
-import { useOfficeText, type OfficeTranslate } from "./i18n";
+import { officeMemberName, useOfficeText, type OfficeTranslate } from "./i18n";
 import styles from "./office.module.css";
 
 /** 상태 점과 글자의 색 역할. 색만으로 뜻을 나르지 않게 늘 글자와 함께 쓴다. */
@@ -30,7 +29,7 @@ export function useParticipantPresentation(): (participant: OfficeParticipant) =
     if (participant.kind === "main") {
       const character = participant.seat === null
         ? ot("office.faceUnknown")
-        : loungeMemberName(SEAT_ALIASES[participant.seat], locale);
+        : officeMemberName(SEAT_ALIASES[participant.seat], locale);
       const state = participant.state;
       return {
         name: ot("office.recipientMain", { name: character }),
@@ -150,7 +149,7 @@ export function OfficeFloor({ roster, selected, onSelect }: OfficeFloorProps) {
             <li key={seat.seat} className={styles.desk} data-occupied={occupied ? "true" : undefined} data-selected={selectedHere ? "true" : undefined}>
               <div className={styles.deskPlate}>
                 <OfficeFace seat={seat.seat} size={36} dim={!occupied} />
-                <span className={styles.deskName}>{loungeMemberName(seat.alias, locale)}</span>
+                <span className={styles.deskName}>{officeMemberName(seat.alias, locale)}</span>
               </div>
               {occupied
                 ? seat.participants.map((participant) => (

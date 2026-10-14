@@ -8,7 +8,7 @@ import type { Locale, TranslationParams } from "@/lib/i18n/types";
 /**
  * 답변 안 진행·검수 카드, 완료 턴 요약, 입력 전달 상태 전용 문구. 공용 언어 팩
  * (`lib/i18n/messages/*`)은 다른 작업이 함께 고치므로 여기서 따로 들고, 조회·보간·영어 대체는
- * 공용 `translateMessage`를 그대로 쓴다(`components/lounge/i18n.ts`와 같은 방식).
+ * 공용 `translateMessage`를 그대로 쓴다(`components/office/i18n.ts`와 같은 방식).
  */
 const ko = {
   "dispatch.title": "서브에이전트 {count}명",

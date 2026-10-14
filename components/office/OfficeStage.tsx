@@ -13,10 +13,9 @@ import {
   zoomOfficeView,
   type OfficeCameraView,
 } from "@/lib/office/office-camera";
-import { loungeMemberName } from "../lounge/i18n";
 import { OfficeFloor, useParticipantPresentation } from "./OfficeFloor";
 import type { OfficeBubbleRegistry, OfficeMotion, OfficeSceneParticipant } from "./OfficeScene3D";
-import { useOfficeText } from "./i18n";
+import { officeMemberName, useOfficeText } from "./i18n";
 import styles from "./office.module.css";
 
 /**
@@ -300,7 +299,7 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
               </button>
             );
           }
-          const name = loungeMemberName(roster.seats[body.seat ?? -1]?.alias ?? "", locale);
+          const name = officeMemberName(roster.seats[body.seat ?? -1]?.alias ?? "", locale);
           return (
             <div
               key={body.key}
@@ -348,7 +347,7 @@ export function OfficeStage({ roster, selected, onSelect, view, onViewChange }: 
               data-hover={hovered === key ? "true" : undefined}
               title={ot("office.absentHint")}
             >
-              <span className={styles.bubbleName}>{loungeMemberName(roster.seats[place.seat]?.alias ?? "", locale)}</span>
+              <span className={styles.bubbleName}>{officeMemberName(roster.seats[place.seat]?.alias ?? "", locale)}</span>
               <span className={styles.restStatus}>{ot("office.absent")}</span>
               <span className={styles.bubbleMotion}>{ot("office.absentHint")}</span>
             </span>

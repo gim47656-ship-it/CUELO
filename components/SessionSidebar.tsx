@@ -23,7 +23,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
-import { useLoungeText } from "./lounge/i18n";
+import { useTranslatorText } from "./translator/i18n";
 
 interface Props {
   selectedSessionId: string | null;
@@ -40,11 +40,11 @@ interface Props {
   /** Fired when a session that is not currently selected stops running.
    *  The running snapshot has no outcome or Main identity, so consumers use a neutral tone. */
   onBackgroundTaskDone?: () => void;
-  /** 「단톡방」 보기의 내용(멤버 패널). 주어질 때만 보기 전환에 단톡방이 생긴다. */
-  loungePanel?: ReactNode;
-  /** 단톡방 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모가 들고 있다. */
-  loungeActive?: boolean;
-  onLoungeActiveChange?: (active: boolean) => void;
+  /** 「통역」 보기의 내용(안내 패널). 주어질 때만 보기 전환에 통역이 생긴다. */
+  translatorPanel?: ReactNode;
+  /** 통역 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모가 들고 있다. */
+  translatorActive?: boolean;
+  onTranslatorActiveChange?: (active: boolean) => void;
 }
 
 interface WorktreeEntry {
@@ -379,8 +379,8 @@ async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): 
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, loungePanel, loungeActive = false, onLoungeActiveChange }: Props) {
-  const { lt } = useLoungeText();
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, onTranslatorActiveChange }: Props) {
+  const { tt } = useTranslatorText();
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -1336,9 +1336,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     }
     return seen.size;
   };
-  // 단톡방 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
-  // 단톡방에서 돌아오면 떠나기 전 보기로 돌아간다.
-  const loungeOn = loungePanel !== undefined && loungeActive;
+  // 통역 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
+  // 통역에서 돌아오면 떠나기 전 보기로 돌아간다.
+  const translatorOn = translatorPanel !== undefined && translatorActive;
   const ProjectPicker = cloudProjects ? CloudProjectPicker : DirectoryPicker;
 
   return (
@@ -1461,7 +1461,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </div>
 
       </div>
-      {cloudProjects && !loungeOn && (
+      {cloudProjects && !translatorOn && (
         <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
           style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           {t("cloudProjects.launch")}
@@ -1500,7 +1500,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             const label = mode === "projects"
               ? t("sidebar.projects")
               : t("navigator.priority");
-            const active = !loungeOn && navigatorMode === mode;
+            const active = !translatorOn && navigatorMode === mode;
             return (
               <button
                 key={mode}
@@ -1511,7 +1511,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 data-navigator-mode={mode}
                 onClick={() => {
                   selectNavigatorMode(mode);
-                  if (loungeOn) onLoungeActiveChange?.(false);
+                  if (translatorOn) onTranslatorActiveChange?.(false);
                 }}
                 style={{
                   minWidth: 0,
@@ -1532,14 +1532,14 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               </button>
             );
           })}
-          {loungePanel !== undefined && (
+          {translatorPanel !== undefined && (
             <button
               type="button"
-              aria-label={t("navigator.view", { label: lt("lounge.tab") })}
-              aria-pressed={loungeOn}
-              aria-controls="navigator-lounge-panel"
-              data-navigator-mode="lounge"
-              onClick={() => onLoungeActiveChange?.(!loungeOn)}
+              aria-label={t("navigator.view", { label: tt("translator.tab") })}
+              aria-pressed={translatorOn}
+              aria-controls="navigator-translator-panel"
+              data-navigator-mode="translator"
+              onClick={() => onTranslatorActiveChange?.(!translatorOn)}
               style={{
                 minWidth: 0,
                 minHeight: 26,
@@ -1547,19 +1547,19 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 padding: "3px 4px",
                 border: "none",
                 borderRadius: 4,
-                background: loungeOn ? "var(--bg-selected)" : "transparent",
-                color: loungeOn ? "var(--text)" : "var(--text-dim)",
+                background: translatorOn ? "var(--bg-selected)" : "transparent",
+                color: translatorOn ? "var(--text)" : "var(--text-dim)",
                 cursor: "pointer",
                 fontSize: 10,
-                fontWeight: loungeOn ? 600 : 500,
+                fontWeight: translatorOn ? 600 : 500,
                 whiteSpace: "nowrap",
               }}
             >
-              {lt("lounge.tab")}
+              {tt("translator.tab")}
             </button>
           )}
         </div>
-        {!loungeOn && navigatorMode === "projects" && (
+        {!translatorOn && navigatorMode === "projects" && (
           <button
             type="button"
             onClick={() => setShowHiddenProjects((show) => !show)}
@@ -1590,7 +1590,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             </svg>
           </button>
         )}
-        {!loungeOn && navigatorMode === "projects" && (
+        {!translatorOn && navigatorMode === "projects" && (
           <button
             className="navigator-add-project"
             type="button"
@@ -1627,8 +1627,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           </button>
         )}
       </div>
-      {loungeOn && loungePanel}
-      {!loungeOn && navigatorMode === "projects" && (
+      {translatorOn && translatorPanel}
+      {!translatorOn && navigatorMode === "projects" && (
         <label className="navigator-search" style={{ position: "relative", display: "block", margin: "0 8px 8px" }}>
           <svg
             width="14"
@@ -1674,7 +1674,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </label>
       )}
 
-      {!loungeOn && navigatorMode === "projects" && (
+      {!translatorOn && navigatorMode === "projects" && (
       <div
         id="navigator-projects-panel"
         className="navigator-session-list"
@@ -2525,7 +2525,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       )}
 
-      {!loungeOn && (
+      {!translatorOn && (
         <ArchivedSessionsSection
           refreshKey={archiveRefreshKey}
           selectedSessionId={selectedSessionId}
@@ -2534,7 +2534,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         />
       )}
 
-      {!loungeOn && navigatorMode === "priority" && (
+      {!translatorOn && navigatorMode === "priority" && (
         <div
           id="navigator-priority-panel"
           style={{ flex: "1 1 auto", minHeight: 80, overflowY: "auto", padding: "0 6px 10px" }}
