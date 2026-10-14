@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
@@ -15,6 +17,7 @@ import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 
 import { matchBlockedCommand } from "./matcher";
+import { interopHint } from "./interop-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
@@ -44,6 +47,13 @@ import {
   type TaskJobRow,
   type TreeSnapshot,
 } from "./task-guard";
+
+/** eval이 자동으로 고르는 관리 Python 환경(코어 `getPythonEnvDir()` 기본값). WSL(Linux)에만 안내한다. */
+function managedPythonPath(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const python = join(homedir(), ".omp", "python-env", "bin", "python");
+  return existsSync(python) ? python : undefined;
+}
 
 function normalizeRepositoryPath(value: string): string {
   return resolve(value).replace(/\\/g, "/").toLowerCase();
@@ -988,6 +998,12 @@ export default function commandGuard(pi: ExtensionAPI): void {
       return { content: [...event.content, { type: "text", text: lines.join("\n") }] };
     }
 
+    if (event.toolName === "bash") {
+      const command = typeof event.input.command === "string" ? event.input.command : "";
+      const output = event.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+      const hint = interopHint(command, output, { managedPython: managedPythonPath() });
+      return hint ? { content: [...event.content, { type: "text", text: hint }] } : undefined;
+    }
     if (event.isError) return;
     const path = typeof event.input.path === "string" ? event.input.path.trim() : "";
     // 18.3.0 write/read 결과의 proc:// details는 선언 타입에 없으므로 unknown으로 좁힌다.

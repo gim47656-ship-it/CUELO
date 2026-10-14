@@ -191,7 +191,7 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 ## Task Guard와 command guard
 
-[Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
+[Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. WSL에서는 `bash` 결과도 살펴, Windows 프로그램 출력의 한글이 깨졌거나 시스템 `python3`에 모듈이 없어 실패했으면 다시 실행할 방법(`iconv`, 관리 Python 환경 경로)을 한 줄 덧붙입니다. 명령을 바꾸거나 대신 실행하지는 않습니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
 요청별 budget(primary 16, rework 8, 합계 24)은 실제로 시작한 Maker만 셉니다. 승인 거부, 승인 창 오류, 하류 guard 거절, 실행 전 중단·건너뛰기로 task가 실행되지 않은 호출과 작업 등록에 실패한 항목은 그 호출의 예약과 임시 소유 추적만 돌려놓습니다. 이미 시작한 Maker는 호출이 오류로 끝나도 계속 셉니다. 실행 도중 예외로 결과가 사라진 호출은 그 뒤 등록된 작업이 없다고 확인될 때만 돌려놓고, 확인할 수 없으면 그대로 남깁니다. `proc://<id>/kill`로 취소가 확인된 Maker는 이름이 같아도 런타임이 붙인 실제 id로 찾아 그 Maker의 primary·rework 몫만 한 번 돌려받습니다. 취소로 돌려받는 몫은 요청당 8개까지입니다.
 
