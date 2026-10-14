@@ -10,7 +10,7 @@ function errorResponse(status: number, code: string, error: string) {
   return NextResponse.json({ code, error }, { status });
 }
 
-/** POST { text, language } -> audio/mpeg: 통역 모드 번역문 한 건을 Cartesia로 읽는다. */
+/** POST { text, language } -> 모노 `pcm_s16le`(`TRANSLATOR_SPEECH_SAMPLE_RATE`) 스트림: 통역 모드 번역문 한 건을 Cartesia로 읽는다. */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -31,7 +31,9 @@ export async function POST(req: Request) {
   }
   try {
     const audio = await synthesizeTranslation(text.trim(), speechLanguage, req.signal);
-    return new Response(audio, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" } });
+    return new Response(audio, {
+      headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" },
+    });
   } catch (error) {
     if (req.signal.aborted) return errorResponse(499, "aborted", "Request aborted");
     if (error instanceof TranslatorSpeechError) return errorResponse(error.status, "speech_failed", error.message);

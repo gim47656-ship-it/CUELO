@@ -1,13 +1,15 @@
 /**
  * 통역 모드의 읽어 주기. 통화 캐릭터 음성과 같은 Cartesia 키(AuthStorage `cartesia`)로 번역문 한 건을
- * `sonic-3.6` mp3로 합성한다. 목소리는 그 언어가 원어(native accent)인 공개 voice를 언어마다 한 번
- * 골라 프로세스에 기억하므로, 매 문장 조회하지 않는다. 키는 요청 헤더로만 나가고 오류 문구에서 지운다.
+ * `sonic-3.6`으로 합성한다. 소리는 다 만들어지기를 기다리지 않고 Cartesia가 보내는 대로 모노 `pcm_s16le`
+ * 조각으로 흘려보내, 화면이 첫 조각부터 재생하게 한다. 목소리는 그 언어가 원어(native accent)인 공개
+ * voice를 언어마다 한 번 골라 프로세스에 기억하므로, 매 문장 조회하지 않는다. 키는 요청 헤더로만 나가고
+ * 오류 문구에서 지운다.
  */
 import { wrapFetchForProxy } from "@oh-my-pi/pi-ai/utils/proxy";
 import { CARTESIA_API_ORIGIN, CARTESIA_PROXY_PROVIDER, CARTESIA_VERSION, redactSecret } from "./cartesia";
 import { LIVE_VOICE_KEY_PROVIDER } from "./live-character-voice-runtime";
 import { getOmpRuntime } from "./omp-runtime";
-import type { TranslatorLanguage } from "./translator-languages";
+import { TRANSLATOR_SPEECH_SAMPLE_RATE, type TranslatorLanguage } from "./translator-languages";
 
 export const TRANSLATOR_SPEECH_MODEL = "sonic-3.6";
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -75,8 +77,12 @@ function voiceIdFor(apiKey: string, language: TranslatorLanguage): Promise<strin
   return lookup;
 }
 
-/** 번역문 한 건의 mp3. */
-export async function synthesizeTranslation(text: string, language: TranslatorLanguage, signal?: AbortSignal): Promise<ArrayBuffer> {
+/** 번역문 한 건의 소리(모노 `pcm_s16le`, `TRANSLATOR_SPEECH_SAMPLE_RATE`). Cartesia가 받아들인 뒤에만 돌려준다. */
+export async function synthesizeTranslation(
+  text: string,
+  language: TranslatorLanguage,
+  signal?: AbortSignal,
+): Promise<ReadableStream<Uint8Array>> {
   const { authStorage } = await getOmpRuntime();
   const credential = authStorage.credentials.get(LIVE_VOICE_KEY_PROVIDER);
   const apiKey = credential?.type === "api_key" ? credential.key : undefined;
@@ -90,8 +96,9 @@ export async function synthesizeTranslation(text: string, language: TranslatorLa
       transcript: text,
       voice: { id: voice },
       language: language.code,
-      output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
+      output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TRANSLATOR_SPEECH_SAMPLE_RATE },
     }),
   }, signal);
-  return response.arrayBuffer();
+  if (!response.body) throw new TranslatorSpeechError("Cartesia returned no audio", 502);
+  return response.body;
 }

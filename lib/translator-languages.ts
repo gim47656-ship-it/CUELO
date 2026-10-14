@@ -28,3 +28,6 @@ export function findTranslatorLanguage(code: unknown): TranslatorLanguage | unde
 
 /** 한 번에 번역할 수 있는 글자 수. 말 한마디·짧은 문단을 넘는 입력은 받지 않는다. */
 export const MAX_TRANSLATE_CHARS = 2_000;
+
+/** `/api/translate/speech`가 흘려보내는 소리: 모노 `pcm_s16le`(리틀엔디언), 이 표본율. 서버와 화면이 함께 쓴다. */
+export const TRANSLATOR_SPEECH_SAMPLE_RATE = 24_000;

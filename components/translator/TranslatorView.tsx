@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import {
   MAX_TRANSLATE_CHARS,
   TRANSLATOR_LANGUAGES,
+  TRANSLATOR_SPEECH_SAMPLE_RATE,
   findTranslatorLanguage,
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
@@ -89,6 +90,32 @@ function speakWithDevice(text: string, language: TranslatorLanguage): void {
   synth.speak(utterance);
 }
 
+/** 첫 조각을 바로 붙이면 예약 지연으로 앞이 잘린다. 그만큼만 여유를 둔다. */
+const PLAYBACK_LEAD_SECONDS = 0.05;
+
+/** 서버가 흘려보내는 `pcm_s16le` 바이트를 샘플로 바꾼다. 조각 경계에서 잘린 한 바이트는 다음 조각 앞에 붙인다. */
+class PcmDecoder {
+  #carry: number | null = null;
+
+  push(chunk: Uint8Array): Float32Array<ArrayBuffer> {
+    let bytes = chunk;
+    if (this.#carry !== null) {
+      bytes = new Uint8Array(chunk.length + 1);
+      bytes[0] = this.#carry;
+      bytes.set(chunk, 1);
+      this.#carry = null;
+    }
+    if (bytes.length % 2 === 1) {
+      this.#carry = bytes[bytes.length - 1];
+      bytes = bytes.subarray(0, bytes.length - 1);
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const samples = new Float32Array(bytes.length / 2);
+    for (let index = 0; index < samples.length; index += 1) samples[index] = view.getInt16(index * 2, true) / 32768;
+    return samples;
+  }
+}
+
 function MicIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -123,9 +150,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const autoSpeakRef = useRef(autoSpeak);
   const speechUnlockedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
-  /** 말풍선별 Cartesia 음성(받는 중이면 그 요청). 다시 듣기·연타에 크레딧을 또 쓰지 않는다. */
+  /** 말풍선별 Cartesia 음성(받는 중이면 다 받았을 때의 소리). 다시 듣기·연타에 크레딧을 또 쓰지 않는다. */
   const audioCacheRef = useRef(new Map<number, Promise<AudioBuffer>>());
-  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
+  /** 예약됐거나 재생 중인 소리 조각과, 다음 조각을 이어 붙일 시각. */
+  const sourcesRef = useRef(new Set<AudioBufferSourceNode>());
+  const nextStartRef = useRef(0);
   /** 재생을 멈출 때마다 늘린다. 음성을 받는 사이 멈췄으면 받은 뒤에도 재생하지 않는다. */
   const playTokenRef = useRef(0);
   /**
@@ -154,12 +183,15 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   const stopPlayback = useCallback(() => {
     playTokenRef.current += 1;
-    try {
-      sourceRef.current?.stop();
-    } catch {
-      // 이미 끝난 소리다.
+    for (const source of sourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // 이미 끝난 소리다.
+      }
     }
-    sourceRef.current = null;
+    sourcesRef.current.clear();
+    nextStartRef.current = 0;
     window.speechSynthesis?.cancel();
   }, []);
 
@@ -168,43 +200,89 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     stopPlayback();
   }, [stopPlayback]);
 
+  /** 소리 한 덩어리를 앞 조각 바로 뒤에 이어 예약한다. */
+  const queueBuffer = useCallback((context: AudioContext, buffer: AudioBuffer) => {
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    // 앞 조각이 아직 끝나지 않았으면 그 끝에 바로 붙인다. 이미 끝났거나 처음이면 예약 여유만큼 뒤에서 시작한다.
+    const start = nextStartRef.current > context.currentTime
+      ? nextStartRef.current
+      : context.currentTime + PLAYBACK_LEAD_SECONDS;
+    source.onended = () => {
+      sourcesRef.current.delete(source);
+    };
+    sourcesRef.current.add(source);
+    source.start(start);
+    nextStartRef.current = start + buffer.duration;
+  }, []);
+
   const playTranslation = useCallback(async (id: number, text: string, language: TranslatorLanguage) => {
     stopPlayback();
     const token = playTokenRef.current;
+    const audible = () => token === playTokenRef.current;
     const context = audioContextRef.current;
+    let played = false;
     try {
       if (!context) throw new Error("audio is not unlocked");
-      let pending = audioCacheRef.current.get(id);
-      if (!pending) {
-        const request = (async () => {
-          const response = await fetch("/api/translate/speech", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text, language: language.code }),
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return context.decodeAudioData(await response.arrayBuffer());
-        })();
-        audioCacheRef.current.set(id, request);
-        request.catch(() => {
-          if (audioCacheRef.current.get(id) === request) audioCacheRef.current.delete(id);
-        });
-        pending = request;
+      const cached = audioCacheRef.current.get(id);
+      if (cached) {
+        const buffer = await cached;
+        if (audible()) queueBuffer(context, buffer);
+        return;
       }
-      const buffer = await pending;
-      if (token !== playTokenRef.current) return;
-      const source = context.createBufferSource();
-      source.buffer = buffer;
-      source.connect(context.destination);
-      source.onended = () => {
-        if (sourceRef.current === source) sourceRef.current = null;
-      };
-      sourceRef.current = source;
-      source.start();
+      // 받는 중에 다시 듣기를 누르면 이 약속을 기다려 다 받은 소리를 읽는다. 실패하면 지워 다음에 다시 받는다.
+      let settle: { resolve: (buffer: AudioBuffer) => void; reject: (error: unknown) => void } | undefined;
+      const whole = new Promise<AudioBuffer>((resolve, reject) => {
+        settle = { resolve, reject };
+      });
+      whole.catch(() => {
+        if (audioCacheRef.current.get(id) === whole) audioCacheRef.current.delete(id);
+      });
+      audioCacheRef.current.set(id, whole);
+      try {
+        const response = await fetch("/api/translate/speech", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, language: language.code }),
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body.getReader();
+        const decoder = new PcmDecoder();
+        const parts: Float32Array<ArrayBuffer>[] = [];
+        let length = 0;
+        // 멈췄어도 끝까지 받아 다시 듣기용으로 기억한다. 재생은 멈추지 않았을 때만 조각마다 이어 붙인다.
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const samples = decoder.push(value);
+          if (samples.length === 0) continue;
+          parts.push(samples);
+          length += samples.length;
+          if (audible()) {
+            const chunk = context.createBuffer(1, samples.length, TRANSLATOR_SPEECH_SAMPLE_RATE);
+            chunk.copyToChannel(samples, 0);
+            queueBuffer(context, chunk);
+            played = true;
+          }
+        }
+        if (length === 0) throw new Error("no audio");
+        const buffer = context.createBuffer(1, length, TRANSLATOR_SPEECH_SAMPLE_RATE);
+        let offset = 0;
+        for (const part of parts) {
+          buffer.copyToChannel(part, 0, offset);
+          offset += part.length;
+        }
+        settle?.resolve(buffer);
+      } catch (error) {
+        settle?.reject(error);
+        throw error;
+      }
     } catch {
-      if (token === playTokenRef.current) speakWithDevice(text, language);
+      // 소리를 한 조각도 내지 못했을 때만 폰 목소리로 대신 읽는다. 중간에 끊긴 소리 위에 겹쳐 읽지 않는다.
+      if (!played && audible()) speakWithDevice(text, language);
     }
-  }, [stopPlayback]);
+  }, [queueBuffer, stopPlayback]);
 
   const translate = useCallback(async (id: number, text: string, source: TranslatorLanguage, target: TranslatorLanguage) => {
     const silenced = silenceRef.current;
@@ -278,6 +356,17 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       }
       latest = finalText + interimText;
       setHeard(latest);
+      // 한 번에 한 마디만 듣는다(continuous=false). 확정 결과가 나오면 인식이 닫히기를 기다리지 않고 바로 보낸다.
+      const text = finalText.trim();
+      if (!text || interimText) return;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
+      setListening(null);
+      setHeard("");
+      recognition.abort();
+      addUtterance(side, text, source, target);
     };
     recognition.onerror = (event) => {
       if (event.error === "no-speech" || event.error === "aborted") return;
@@ -364,7 +453,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               value={mine.code}
               onChange={(event) => {
                 const language = findTranslatorLanguage(event.target.value);
-                if (language) setSettings((current) => ({ ...current, mine: language }));
+                if (!language) return;
+                // 이미 듣고 있는 인식은 시작할 때의 언어로 계속 듣는다. 바꾸는 순간 끊어 새 언어로 다시 누르게 한다.
+                stopListening();
+                setSettings((current) => ({ ...current, mine: language }));
               }}
             >
               {languageOptions}
@@ -375,7 +467,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             className="translator-swap"
             aria-label={tt("translator.swap")}
             title={tt("translator.swap")}
-            onClick={() => setSettings((current) => ({ ...current, mine: current.theirs, theirs: current.mine }))}
+            onClick={() => {
+              stopListening();
+              setSettings((current) => ({ ...current, mine: current.theirs, theirs: current.mine }));
+            }}
           >
             ⇄
           </button>
@@ -386,7 +481,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               value={theirs.code}
               onChange={(event) => {
                 const language = findTranslatorLanguage(event.target.value);
-                if (language) setSettings((current) => ({ ...current, theirs: language }));
+                if (!language) return;
+                stopListening();
+                setSettings((current) => ({ ...current, theirs: language }));
               }}
             >
               {languageOptions}
