@@ -829,6 +829,7 @@ export const zhCNLocale: LocalePlugin = {
     "efficiency.untimedRuns": "缺少耗时的 run",
     "efficiency.untimedMedianLowerBound": "有 {value} 个 run 含未记录耗时的请求 — 生成时间中位数为下限。",
     "efficiency.unpricedLowerBound": "包含未计价记录 — 下限",
+    "efficiency.mixedPairingNote": "混合配置：无法确认每个请求使用的模型与推理强度组合及其顺序。不能断定这些 run 处于相同条件。",
     "efficiency.unmeasuredShort": "未测量",
     "efficiency.effortLabel": "effort {value}",
     "efficiency.requestsValue": "{value} 次请求",

@@ -202,12 +202,28 @@ export interface RunListResponse {
   unmeasured: RunUnmeasuredReason[];
 }
 
-/** 구성 서명의 한 항목. 같은 역할·모델·effort는 `count`로 합친다. */
+/** `single`은 model·effort를 하나(또는 미기록)만 관측. `unknown`은 둘 이상 관측해 요청별 짝·순서를 모른다. */
+export const EXPERIMENT_ROLE_PAIRINGS = ["single", "unknown"] as const;
+export type ExperimentRolePairing = (typeof EXPERIMENT_ROLE_PAIRINGS)[number];
+
+/**
+ * 구성 서명의 한 항목. 같은 역할·모델 집합·effort 집합은 `count`로 합친다.
+ *
+ * `model`·`effort`는 화면용 라벨이다. 하나만 관측했으면 그 값이고, 둘 이상이면 정렬한 `{a,b}`다.
+ * `pairing`이 `"unknown"`이면 이 역할에서 model 또는 effort를 둘 이상 관측한 것이다. 관측 배열은
+ * 요청별 (model, effort) 짝도 순서도 담지 않으므로, 같은 집합이어도 같은 실행 조건이라고 말할 수 없다.
+ * 원인(Auto effort, 모델 전환, fallback)도 이 값으로는 알 수 없다.
+ */
 export interface ExperimentConfigRole {
   kind: RunRoleKind;
   model: string;
   effort: string | null;
   count: number;
+  /** 관측한 model 집합(정렬·중복 제거). 기록이 없으면 빈 배열. */
+  models: string[];
+  /** 관측한 effort 집합(정렬·중복 제거). 기록이 없으면 빈 배열이고 추정하지 않는다. */
+  efforts: string[];
+  pairing: ExperimentRolePairing;
 }
 
 /**

@@ -829,6 +829,7 @@ export const enLocale = {
     "efficiency.untimedRuns": "Runs missing duration",
     "efficiency.untimedMedianLowerBound": "{value} run(s) contain requests with no recorded duration — the median generation time is a lower bound.",
     "efficiency.unpricedLowerBound": "Includes unpriced records — lower bound",
+    "efficiency.mixedPairingNote": "Mixed configuration: which model and reasoning effort each request used, and in what order, could not be determined. These runs cannot be assumed to share the same conditions.",
     "efficiency.unmeasuredShort": "Unmeasured",
     "efficiency.effortLabel": "Effort {value}",
     "efficiency.requestsValue": "{value} requests",

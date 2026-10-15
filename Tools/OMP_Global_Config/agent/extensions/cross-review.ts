@@ -83,6 +83,7 @@ export interface CrossReviewParams {
   authors?: string[];
   highRisk?: boolean;
   previousReviewId?: string;
+  references?: string[];
   reviewId?: string;
   resolutions?: { id: string; status: string; evidence: string }[];
 }
@@ -93,7 +94,7 @@ export async function executeCrossReview(params: CrossReviewParams, ctx: Extensi
   if (params.action === "review") {
     const input: ReviewInput = {
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
-      highRisk: params.highRisk, previousReviewId: params.previousReviewId,
+      highRisk: params.highRisk, previousReviewId: params.previousReviewId, references: params.references,
     };
     return runReview(input, deps, signal);
   }
@@ -109,7 +110,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Main 전용 계열 교차검증. action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector 또는 \"main\"이며 두 계열이면 둘 다 돌린다. previousReviewId를 주면 2회차(1회차 이후 delta만)이고 3회차는 거절한다. 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve: reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다. git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
+    description: "Main 전용 계열 교차검증. action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector 또는 \"main\"이며 두 계열이면 둘 다 돌린다. previousReviewId를 주면 2회차(1회차 이후 delta만)이고 3회차는 거절한다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 비밀 경로·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve: reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다. git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -117,6 +118,7 @@ export default function crossReview(pi: ExtensionAPI): void {
       authors: z.array(z.string()).optional(),
       highRisk: z.boolean().optional(),
       previousReviewId: z.string().optional(),
+      references: z.array(z.string()).optional(),
       reviewId: z.string().optional(),
       resolutions: z.array(z.object({ id: z.string(), status: z.string(), evidence: z.string() })).optional(),
     }) as never,

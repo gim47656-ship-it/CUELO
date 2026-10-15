@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { callModel, skimQuestion, FILE_BYTES, TOTAL_BYTES, type SkimCompletion } from "../skim";
+import { callModel, skimQuestion, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
 
 const directories: string[] = [];
 const signal = new AbortController().signal;
@@ -15,6 +15,10 @@ function fixture() {
 }
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function context(cwd: string): ExtensionContext { return { cwd } as ExtensionContext; }
+const GEMINI = "google-antigravity/gemini-3.8-flash";
+/** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
+const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
+async function skimText(...args: Parameters<typeof skimQuestion>): Promise<string> { return (await skimQuestion(...args)).text; }
 
 describe("skim", () => {
   test("Gemini에 허용 파일만 보내고 secret·gitignore 대상은 명시해도 제외한다", async () => {
@@ -30,8 +34,8 @@ describe("skim", () => {
     // setup 비밀 검사(content-scan)가 소스의 할당 모양을 막으므로 키 이름을 이어 붙여 만든다.
     writeFileSync(join(cwd, "docs", "note.md"), ["api", "key"].join("_") + " = \"not-a-real-key\"");
     let prompt = "";
-    const answer = await skimQuestion({ paths: ["docs", "docs/ignored.md", "docs/credentials.json", ".env.local", "private"], question: "두 번째 줄은?" },
-      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe("google-antigravity/gemini-3.8-flash"); prompt = input; return "Second fact (docs/guide.md:L2)"; });
+    const answer = await skimText({ paths: ["docs", "docs/ignored.md", "docs/credentials.json", ".env.local", "private"], question: "두 번째 줄은?" },
+      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe("google-antigravity/gemini-3.8-flash"); prompt = input; return reply("Second fact (docs/guide.md:L2)"); });
     expect(prompt).toContain("<file path=\"docs/guide.md\">");
     expect(prompt).toContain("2: Second fact");
     expect(prompt).not.toMatch(/IGNORED_SECRET_MARKER|CREDENTIAL_SECRET_MARKER|ENV_SECRET_MARKER|PRIVATE_SECRET_MARKER|not-a-real-key/);
@@ -50,7 +54,7 @@ describe("skim", () => {
     for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) writeFileSync(join(cwd, "docs", name), `PUBLIC ${name}`);
     for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) writeFileSync(join(cwd, "docs", name), "SECRET_NAME_MARKER");
     let prompt = "";
-    const answer = await skimQuestion({ paths: ["docs"], question: "?" }, context(cwd), signal, async (input) => { prompt = input; return "ok"; });
+    const answer = await skimText({ paths: ["docs"], question: "?" }, context(cwd), signal, async (input) => { prompt = input; return reply("ok"); });
     for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) expect(prompt).toContain(`<file path="docs/${name}">`);
     expect(prompt).not.toContain("SECRET_NAME_MARKER");
     for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) expect(answer).toContain(`docs/${name}: 비밀 경로 제외`);
@@ -64,8 +68,8 @@ describe("skim", () => {
     writeFileSync(join(repo, "nested", "ignored.md"), "PARENT_IGNORE_MARKER");
     writeFileSync(join(repo, "nested", "allowed.md"), "Allowed fact");
     let prompt = "";
-    const output = await skimQuestion({ paths: ["ignored.md", "allowed.md"], question: "근거?" },
-      context(join(repo, "nested")), signal, async (input) => { prompt = input; return "allowed.md:L1"; });
+    const output = await skimText({ paths: ["ignored.md", "allowed.md"], question: "근거?" },
+      context(join(repo, "nested")), signal, async (input) => { prompt = input; return reply("allowed.md:L1"); });
     expect(prompt).toContain("Allowed fact");
     expect(prompt).not.toContain("PARENT_IGNORE_MARKER");
     expect(output).toContain("ignored.md: gitignore로 건너뜀");
@@ -78,8 +82,8 @@ describe("skim", () => {
     writeFileSync(join(cwd, "docs", "binary.dat"), Buffer.from([0, 1, 2]));
     writeFileSync(join(cwd, "docs", "oversize.md"), "y".repeat(1024 * 1024 + 1));
     let prompt = "";
-    const result = await skimQuestion({ paths: ["docs/*.md", "docs/binary.dat"], question: "요약" }, context(cwd), signal,
-      async (input) => { prompt = input; return "요약"; });
+    const result = await skimText({ paths: ["docs/*.md", "docs/binary.dat"], question: "요약" }, context(cwd), signal,
+      async (input) => { prompt = input; return reply("요약"); });
     expect(Buffer.byteLength(prompt)).toBeGreaterThan(TOTAL_BYTES);
     expect(prompt).toContain("<file path=\"docs/part-0.md\">");
     expect(prompt).not.toContain("<file path=\"docs/part-4.md\">");
@@ -95,11 +99,11 @@ describe("skim", () => {
     writeFileSync(join(cwd, "guide.md"), "Public fact");
     writeFileSync(join(cwd, ".env.local"), "PRIVATE_MARKER");
     const calls: Array<{ prompt: string; model: string }> = [];
-    const result = await skimQuestion({ paths: ["guide.md", ".env.local"], question: "근거?" }, context(cwd), signal,
+    const result = await skimText({ paths: ["guide.md", ".env.local"], question: "근거?" }, context(cwd), signal,
       async (prompt, _ctx, _signal, model) => {
         calls.push({ prompt, model });
         if (model === "google-antigravity/gemini-3.8-flash") throw new Error("Gemini original 429");
-        return "Public fact (guide.md:L1)";
+        return reply("Public fact (guide.md:L1)", model);
       });
     expect(calls.map(({ model }) => model)).toEqual(["google-antigravity/gemini-3.8-flash", "b-ai/deepseek-v4.1-flash"]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
@@ -114,7 +118,7 @@ describe("skim", () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "guide.md"), "fact");
     const called: string[] = [];
-    const result = await skimQuestion({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
+    const result = await skimText({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
       async (_prompt, _ctx, _signal, model) => {
         called.push(model);
         throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "DeepSeek original 403");
@@ -129,11 +133,11 @@ describe("skim", () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "guide.md"), "fact");
     let calls = 0;
-    const outside = await skimQuestion({ paths: ["../outside.md"], question: "?" }, context(cwd), signal,
-      async () => { calls++; return "unexpected"; });
+    const outside = await skimText({ paths: ["../outside.md"], question: "?" }, context(cwd), signal,
+      async () => { calls++; return reply("unexpected"); });
     expect(outside).toContain("cwd 밖");
     expect(calls).toBe(0);
-    const failed = await skimQuestion({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
+    const failed = await skimText({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
       async () => { throw new Error("provider original 429"); });
     expect(failed).toContain("provider original 429");
   });
@@ -166,8 +170,8 @@ describe("skim", () => {
       // Gemini는 응답 없이 실패한다 → 관측한 usage가 없으므로 기록하지 않는다.
       const viaDeepSeek: SkimCompletion = (prompt, ctx, attempt, requested) =>
         requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
-      const ok = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
-      const empty = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
+      const ok = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
+      const empty = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
       expect(ok).toContain("model: b-ai/deepseek-v4.1-flash");
       expect(empty).toContain("DeepSeek 실패: b-ai/deepseek-v4.1-flash가 빈 답을 반환했습니다.");
       const usage = sessionManager.getEntries().filter((entry) => entry.type === "model_usage");
@@ -205,7 +209,7 @@ describe("skim", () => {
         modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
       const viaDeepSeek: SkimCompletion = (prompt, ctx, attempt, requested) =>
         requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
-      const result = await skimQuestion({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
+      const result = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
       expect(result).toContain("model: b-ai/deepseek-v4.1-flash");
       expect(result).toContain("긴 답의 앞부분 (guide.md:L1)");
       expect(result).toContain("[출력 상한 8192토큰에서 답이 끊겼습니다.");
@@ -214,6 +218,32 @@ describe("skim", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("isError는 두 모델 실패·수집 실패에만 붙고 fallback 성공·입력 없음·보낼 텍스트 없음·사용자 취소는 오류가 아니다", async () => {
+    const cwd = fixture();
+    writeFileSync(join(cwd, "guide.md"), "fact");
+    const run = (paths: string[], question: string, complete: SkimCompletion, abort?: AbortSignal) =>
+      skimQuestion({ paths, question }, context(cwd), abort ?? signal, complete);
+    const fail: SkimCompletion = async (_p, _c, _s, model) => { throw new Error(`${model} down`); };
+    expect((await run(["guide.md"], "?", fail)).isError).toBe(true);
+    expect((await run(["guide.md"], "?", async (_p, _c, _s, model) => {
+      if (model === GEMINI) throw new Error("first down");
+      return reply("ok", model);
+    })).isError).toBe(false);
+    expect((await run(["guide.md"], " ", fail))).toEqual({ text: "model: none\n질문과 경로를 하나 이상 지정해 주세요.", isError: false });
+    expect((await run(["nothing-here.md"], "?", fail)).isError).toBe(false);
+    // 사용자 취소: 다음 모델을 부르지 않고 실패로 세지 않는다.
+    const controller = new AbortController();
+    const called: string[] = [];
+    const cancelled = await run(["guide.md"], "?", async (_p, _c, _s, model) => {
+      called.push(model);
+      controller.abort();
+      throw new Error("aborted by user");
+    }, controller.signal);
+    expect(cancelled.isError).toBe(false);
+    expect(cancelled.text).toContain("model: none");
+    expect(called).toEqual([GEMINI]);
   });
 
   test("core Settings가 별도 skim 슬롯을 그대로 해석한다", () => {

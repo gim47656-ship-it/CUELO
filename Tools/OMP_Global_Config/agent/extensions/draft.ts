@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
 import { docx, parseCsv, parseWorkbook, xlsx } from "./draft/ooxml";
 import { findEdge, renderPdf } from "./draft/pdf";
-import { collect, completeRole, DEEPSEEK, GEMINI, SECRET_EXTENSION, SECRET_NAME, type HelperModel } from "./skim";
+import { collect, completeRole, HelperCallError, SECRET_EXTENSION, SECRET_NAME, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
 // 문서 한 편을 통째로 받는다. 출력 상한은 모델 최대치(Gemini 3.8 Flash 65,536토큰)라 우리 상한 때문에 잘리지
@@ -27,7 +27,7 @@ const FORMAT_RULES: Record<Format, string> = {
 };
 
 export interface DraftInput { instruction: string; output: string; paths?: string[]; overwrite?: boolean }
-export type DraftCompletion = (prompt: string, ctx: ExtensionContext, signal: AbortSignal, model: HelperModel) => Promise<string>;
+export type DraftCompletion = (prompt: string, ctx: ExtensionContext, signal: AbortSignal, model: HelperModel) => Promise<HelperAnswer>;
 interface Target { root: string; rel: string; absolute: string; format: Format; exists: boolean }
 /** 모델 응답을 형식 규칙으로 검증한 결과. PDF는 인쇄 전 HTML만 담는다. */
 interface Prepared { bytes?: Buffer; html?: string; summary: string[] }
@@ -124,8 +124,8 @@ function prepare(format: Format, text: string, title: string): Prepared {
 }
 
 export async function draftDocument(input: DraftInput, ctx: ExtensionContext, signal: AbortSignal,
-  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<string> {
-  if (!input.instruction?.trim() || !input.output?.trim()) return "model: none\ninstruction과 output을 지정해 주세요.";
+  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<HelperResult> {
+  if (!input.instruction?.trim() || !input.output?.trim()) return { text: "model: none\ninstruction과 output을 지정해 주세요.", isError: false };
   const overwrite = input.overwrite === true;
   let notes: string[] = [];
   const skipped = () => notes.map((note) => `건너뜀/잘림: ${note}`);
@@ -138,7 +138,7 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       const gathered = await collect({ paths: input.paths }, ctx.cwd, signal, "draft");
       notes = gathered.notes;
       chunks = gathered.chunks;
-      if (!chunks.length) return ["model: none", "참고 자료로 보낼 수 있는 텍스트 파일이 없습니다. 자료 없이 쓰려면 paths를 비우세요.", ...skipped()].join("\n");
+      if (!chunks.length) return { text: ["model: none", "참고 자료로 보낼 수 있는 텍스트 파일이 없습니다. 자료 없이 쓰려면 paths를 비우세요.", ...skipped()].join("\n"), isError: false };
     }
     const title = basename(target.rel, extname(target.rel));
     const prompt = [
@@ -151,44 +151,38 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       ...chunks,
     ].join("\n\n");
     // 형식 검증(CSV·JSON 파싱)까지가 한 시도다. 깨진 응답은 저장하지 않고 다음 모델로 넘긴다.
-    const attempt = async (model: HelperModel): Promise<Prepared> => {
-      const answer = await complete(prompt, ctx, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]), model);
-      if (!answer.trim()) throw new Error(`${model}가 빈 답을 반환했습니다.`);
-      return prepare(target.format, unwrap(answer), title);
-    };
-    let used: HelperModel = GEMINI;
-    let prepared: Prepared;
-    const header: string[] = [];
-    try {
-      prepared = await attempt(GEMINI);
-    } catch (error) {
-      const geminiError = message(error).replace(/\s+/g, " ").trim();
-      if (signal.aborted) return ["model: none", `Gemini 실패: ${geminiError}`, ...skipped()].join("\n\n");
+    const outcome = await withFallback(async (requested) => {
+      const answer = await complete(prompt, ctx, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]), requested);
+      if (!answer.text.trim()) throw new HelperCallError(`${answer.model}가 빈 답을 반환했습니다.`, answer.model);
       try {
-        used = DEEPSEEK;
-        prepared = await attempt(DEEPSEEK);
-        header.push(`Gemini 실패: ${geminiError}`);
-      } catch (fallback) {
-        return ["model: none", `Gemini 실패: ${geminiError}`, `DeepSeek 실패: ${message(fallback)}`, ...skipped()].join("\n\n");
+        return { model: answer.model, value: prepare(target.format, unwrap(answer.text), title) };
+      } catch (error) {
+        throw new HelperCallError(message(error), answer.model, { cause: error });
       }
+    }, signal);
+    if (outcome.status !== "done") {
+      return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: outcome.status === "failed" };
     }
+    const { model: used, value: prepared, failures } = outcome;
     let bytes = prepared.bytes;
     if (prepared.html !== undefined) {
       try { bytes = await renderPdf(prepared.html, signal); } catch (error) {
-        return ["model: none", `${used}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: ${message(error)}`, ...skipped()].join("\n\n");
+        return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
       }
     }
-    await save(target, bytes!, overwrite);
-    return [
+    try { await save(target, bytes!, overwrite); } catch (error) {
+      return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 ${target.rel} 저장에 실패했습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: true };
+    }
+    return { text: [
       `model: ${used}`,
-      ...header,
+      ...failures,
       `저장: ${target.rel} (${bytes!.length}바이트, ${target.format}${target.exists ? ", 덮어씀" : ""})`,
       ["개요:", ...prepared.summary.map((line) => `- ${line}`)].join("\n"),
-      `검토: 초안입니다. 사용 전에 파일을 직접 열어 사실·수치·형식을 확인하세요.${chunks.length ? " 참고 자료 내용은 Google 또는 B.AI로 전송됐습니다." : ""}`,
+      `검토: 초안입니다. 사용 전에 파일을 직접 열어 사실·수치·형식을 확인하세요.${chunks.length ? ` 참고 자료 내용은 ${used}의 제공자로 전송됐습니다.` : ""}`,
       ...skipped(),
-    ].join("\n\n");
+    ].join("\n\n"), isError: false };
   } catch (error) {
-    return ["model: none", `draft 실패: ${message(error)}`, ...skipped()].join("\n\n");
+    return { text: ["model: none", `draft 실패: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
   }
 }
 
@@ -196,7 +190,7 @@ export default function draft(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "draft", label: "Draft", loadMode: "essential", approval: "write",
-    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 Gemini Flash가 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 DeepSeek로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL의 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 Google 또는 B.AI로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
+    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Gemini Flash)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 DeepSeek로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL의 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체 B.AI)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
     parameters: z.object({
       instruction: z.string().describe("무엇을 쓸지: 목적·독자·구성·분량·언어"),
       output: z.string().describe("cwd 기준 저장 경로. 확장자가 형식을 정함: .md .txt .csv .xlsx .docx .pdf"),
@@ -204,8 +198,7 @@ export default function draft(pi: ExtensionAPI): void {
       overwrite: z.boolean().optional().describe("기존 파일 덮어쓰기(기본 false)"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
-      const text = await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal);
-      return { content: [{ type: "text", text }] };
+      return toolResult(await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal));
     },
   });
 }

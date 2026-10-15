@@ -122,38 +122,65 @@ export function pickBottlenecks(
 }
 
 /**
- * 역할별 (kind, 대표 model, 대표 effort)를 만들고 같은 조합을 `count`로 합친다.
- * 대표값은 그 역할의 첫 관측값이고, effort가 없으면 `null`이며 서명 문자열에서는
- * `?`로 쓴다. `main`은 항상 하나이므로 개수 표기를 붙이지 않고, 나머지 역할은
- * 항상 ` xN`을 붙인다.
+ * 역할별 (kind, 관측 model 집합, 관측 effort 집합)을 만들고 같은 조합을 `count`로 합친다.
+ *
+ * 한 역할이 model 하나·effort 하나(또는 effort 미기록)만 관측했으면 그 값이 곧 구성이다(`pairing:
+ * "single"`). 서명 문자열은 `kind=model:effort`이고 effort가 없으면 `null`·서명에서는 `?`다.
+ * 둘 이상 관측했으면 첫 관측값을 대표로 쓰지 않는다. 대표값만 쓰면 첫 값이 같은 단일 run과 혼합 run이
+ * 같은 구성으로 합쳐진다. 대신 정렬한 집합을 `{a,b}`로 적고 `pairing: "unknown"`으로 표시한다.
+ * 관측 배열은 요청별 (model, effort) 짝도, 순서도 담지 않으므로 같은 집합의 두 혼합 run이 같은
+ * 조건에서 돌았다고 말할 수 없다. 이 값은 "같은 집합을 관측했다"는 뜻일 뿐이다.
+ * `main`은 항상 하나이므로 개수 표기를 붙이지 않고, 나머지 역할은 항상 ` xN`을 붙인다.
+ *
+ * `signature`는 화면용 라벨이고 묶음 키는 `identity`다. 라벨은 모델 ID 문자열을 이어 붙이므로
+ * 이름에 따라 겹칠 수 있지만, `identity`는 구조(JSON)라 겹치지 않는다.
  */
 export function buildConfigSignature(
   roles: ReadonlyArray<{ kind: RunRoleKind; models: string[]; efforts: string[] }>,
-): { signature: string; roles: ExperimentConfigRole[] } {
+): { signature: string; identity: string; roles: ExperimentConfigRole[] } {
   const grouped = new Map<string, ExperimentConfigRole>();
   for (const role of roles) {
-    const model = role.models[0] ?? "?";
-    const effort = role.efforts[0] ?? null;
-    const key = JSON.stringify([role.kind, model, effort]);
+    const models = [...new Set(role.models)].sort();
+    const efforts = [...new Set(role.efforts)].sort();
+    const model = setLabel(models) ?? "?";
+    const effort = setLabel(efforts);
+    const key = JSON.stringify([role.kind, models, efforts]);
     const existing = grouped.get(key);
     if (existing) {
       existing.count += 1;
     } else {
-      grouped.set(key, { kind: role.kind, model, effort, count: 1 });
+      grouped.set(key, {
+        kind: role.kind,
+        model,
+        effort,
+        count: 1,
+        models,
+        efforts,
+        pairing: models.length > 1 || efforts.length > 1 ? "unknown" : "single",
+      });
     }
   }
-  const sorted = [...grouped.values()].sort((a, b) => {
+  const sorted = [...grouped.entries()].sort(([leftKey, a], [rightKey, b]) => {
     const byKind = RUN_ROLE_KINDS.indexOf(a.kind) - RUN_ROLE_KINDS.indexOf(b.kind);
     if (byKind !== 0) return byKind;
     if (a.model !== b.model) return a.model < b.model ? -1 : 1;
     const leftEffort = a.effort ?? "?";
     const rightEffort = b.effort ?? "?";
-    return leftEffort === rightEffort ? 0 : leftEffort < rightEffort ? -1 : 1;
-  });
+    if (leftEffort !== rightEffort) return leftEffort < rightEffort ? -1 : 1;
+    // 표시 라벨이 같아도(모델 ID `{a,b}` 대 집합 {a,b}) 구조 키로 순서를 정해 입력 순서와 무관하게 한다.
+    return leftKey === rightKey ? 0 : leftKey < rightKey ? -1 : 1;
+  }).map(([, role]) => role);
   const signature = sorted
     .map((role) => `${role.kind === "main" ? "main" : `${role.kind} x${role.count}`}=${role.model}:${role.effort ?? "?"}`)
     .join("|");
-  return { signature, roles: sorted };
+  const identity = JSON.stringify(sorted.map((role) => [role.kind, role.models, role.efforts, role.count]));
+  return { signature, identity, roles: sorted };
+}
+
+/** 관측값 집합의 라벨. 없으면 `null`, 하나면 그 값, 둘 이상이면 `{a,b}`. */
+function setLabel(values: string[]): string | null {
+  if (values.length === 0) return null;
+  return values.length === 1 ? values[0] : `{${values.join(",")}}`;
 }
 
 /** CUELO WSL 갱신 기록에서 하네스 revision을 정하는 데 쓰는 줄 하나. */
@@ -1185,16 +1212,17 @@ export function listExperiments(
           continue;
         }
         contributed = true;
+        const built = buildConfigSignature(
+          detail.roles.map((role) => ({ kind: role.kind, models: role.models, efforts: role.efforts })),
+        );
+        // 묶음 키는 표시용 서명 문자열이 아니라 구조 identity다. 혼합 run은 단일 run과 합쳐지지 않는다.
         const key = groupBy === "harness"
-          ? JSON.stringify([detail.configSignature, detail.harnessRevision])
-          : detail.configSignature;
+          ? JSON.stringify([built.identity, detail.harnessRevision])
+          : built.identity;
         const existing = grouped.get(key);
         if (existing) {
           existing.runs.push(detail);
         } else {
-          const built = buildConfigSignature(
-            detail.roles.map((role) => ({ kind: role.kind, models: role.models, efforts: role.efforts })),
-          );
           grouped.set(key, { signature: detail.configSignature, roles: built.roles, runs: [detail] });
         }
       }

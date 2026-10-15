@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { draftDocument, type DraftCompletion } from "../draft";
+import type { HelperAnswer } from "../skim";
 
 const GEMINI = "google-antigravity/gemini-3.8-flash";
 const DEEPSEEK = "b-ai/deepseek-v4.1-flash";
@@ -17,6 +18,9 @@ function fixture() {
 }
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function context(cwd: string): ExtensionContext { return { cwd } as ExtensionContext; }
+/** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
+const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
+async function draftText(...args: Parameters<typeof draftDocument>): Promise<string> { return (await draftDocument(...args)).text; }
 
 /** 중앙 디렉터리를 따라 ZIP 항목을 풀고 CRC를 대조한다. */
 function unzip(file: Buffer): Map<string, string> {
@@ -81,7 +85,7 @@ describe("draft", () => {
     symlinkSync(outside, join(cwd, "linked"));
     writeFileSync(join(cwd, "report.md"), "OLD");
     let calls = 0;
-    const complete: DraftCompletion = async () => { calls++; return "# 새 보고서\n\n본문"; };
+    const complete: DraftCompletion = async () => { calls++; return reply("# 새 보고서\n\n본문"); };
     const refused: Array<[string, string]> = [
       ["../escape.md", "'..'"],
       [join(outside, "abs.md"), "상대 경로만"],
@@ -94,7 +98,7 @@ describe("draft", () => {
       ["report.md", "overwrite: true"],
     ];
     for (const [output, reason] of refused) {
-      const result = await draftDocument({ instruction: "보고서", output }, context(cwd), signal, complete);
+      const result = await draftText({ instruction: "보고서", output }, context(cwd), signal, complete);
       expect(result.startsWith("model: none")).toBe(true);
       expect(result).toContain(reason);
     }
@@ -102,11 +106,11 @@ describe("draft", () => {
     expect(existsSync(join(outside, "inner.md"))).toBe(false);
     expect(readFileSync(join(cwd, "report.md"), "utf8")).toBe("OLD");
 
-    const replaced = await draftDocument({ instruction: "보고서", output: "report.md", overwrite: true }, context(cwd), signal, complete);
+    const replaced = await draftText({ instruction: "보고서", output: "report.md", overwrite: true }, context(cwd), signal, complete);
     expect(replaced).toContain("저장: report.md");
     expect(replaced).toContain("덮어씀");
     expect(readFileSync(join(cwd, "report.md"), "utf8")).toBe("# 새 보고서\n\n본문\n");
-    const nested = await draftDocument({ instruction: "보고서", output: "docs/new/plan.md" }, context(cwd), signal, complete);
+    const nested = await draftText({ instruction: "보고서", output: "docs/new/plan.md" }, context(cwd), signal, complete);
     expect(nested).toContain("저장: docs/new/plan.md");
     expect(nested).toContain("- # 새 보고서");
   });
@@ -118,9 +122,9 @@ describe("draft", () => {
     const calls: Array<{ prompt: string; model: string }> = [];
     const brokenCsv: DraftCompletion = async (prompt, _ctx, _signal, model) => {
       calls.push({ prompt, model });
-      return model === GEMINI ? 'a,b\n"unclosed,1\n' : "```csv\n품목,수량\n장갑,12\n```";
+      return reply(model === GEMINI ? 'a,b\n"unclosed,1\n' : "```csv\n품목,수량\n장갑,12\n```", model);
     };
-    const csv = await draftDocument({ instruction: "재고표", output: "stock.csv", paths: ["facts.md", ".env.local"] }, context(cwd), signal, brokenCsv);
+    const csv = await draftText({ instruction: "재고표", output: "stock.csv", paths: ["facts.md", ".env.local"] }, context(cwd), signal, brokenCsv);
     expect(calls.map(({ model }) => model)).toEqual([GEMINI, DEEPSEEK]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).toContain("재고 12개");
@@ -131,7 +135,7 @@ describe("draft", () => {
     expect(readFileSync(join(cwd, "stock.csv"), "utf8")).toBe("\uFEFF품목,수량\n장갑,12\n");
 
     const called: string[] = [];
-    const failed = await draftDocument({ instruction: "요약", output: "summary.md" }, context(cwd), signal, async (_p, _c, _s, model) => {
+    const failed = await draftText({ instruction: "요약", output: "summary.md" }, context(cwd), signal, async (_p, _c, _s, model) => {
       called.push(model);
       throw new Error(model === GEMINI ? "Gemini original 429" : "DeepSeek original 403");
     });
@@ -148,8 +152,8 @@ describe("draft", () => {
       { name: "구매/계획", header: true, rows: [["품목", "수량", "합격"], ["장갑 <L> & \"M\"", 200, true], ["비고", null, "없음"]] },
       { name: "구매/계획", rows: [["총액", 2090000]] },
     ] };
-    const result = await draftDocument({ instruction: "구매 계획", output: "plan.xlsx" }, context(cwd), signal,
-      async () => `\`\`\`json\n${JSON.stringify(workbook)}\n\`\`\``);
+    const result = await draftText({ instruction: "구매 계획", output: "plan.xlsx" }, context(cwd), signal,
+      async () => reply(`\`\`\`json\n${JSON.stringify(workbook)}\n\`\`\``));
     expect(result).toContain(`model: ${GEMINI}`);
     expect(result).toContain('시트 "구매_계획": 3행 × 3열');
     const parts = unzip(readFileSync(join(cwd, "plan.xlsx")));
@@ -172,7 +176,7 @@ describe("draft", () => {
       "1. 보호구 착용", "2. 전원 차단", "   - 표지판 부착", "", "| 위험 | 조치 |", "| --- | --- |", "| 끼임 | 접근 금지 |", "",
       "```", "log <ok>", "```",
     ].join("\n");
-    const result = await draftDocument({ instruction: "안내문", output: "guide.docx" }, context(cwd), signal, async () => markdown);
+    const result = await draftText({ instruction: "안내문", output: "guide.docx" }, context(cwd), signal, async () => reply(markdown));
     expect(result).toContain("저장: guide.docx");
     expect(result).toContain("- # 안전 수칙");
     const parts = unzip(readFileSync(join(cwd, "guide.docx")));

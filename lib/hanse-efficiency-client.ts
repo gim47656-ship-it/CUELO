@@ -14,6 +14,7 @@ import type {
 } from "./run-xray-types";
 import {
   EXPERIMENT_GROUP_BYS,
+  EXPERIMENT_ROLE_PAIRINGS,
   EXPERIMENT_SCOPES,
   RUN_OUTCOMES,
   RUN_ROLE_KINDS,
@@ -57,6 +58,7 @@ const RUN_ROLE_KIND_VALUES: readonly string[] = RUN_ROLE_KINDS;
 const RUN_ROLE_PURPOSE_VALUES: readonly string[] = RUN_ROLE_PURPOSES;
 const RUN_UNMEASURED_VALUES: readonly string[] = RUN_UNMEASURED_REASONS;
 const EXPERIMENT_SCOPE_VALUES: readonly string[] = EXPERIMENT_SCOPES;
+const EXPERIMENT_ROLE_PAIRING_VALUES: readonly string[] = EXPERIMENT_ROLE_PAIRINGS;
 const EXPERIMENT_GROUP_BY_VALUES: readonly string[] = EXPERIMENT_GROUP_BYS;
 
 // `object`로 좁힌다. `Record<string, unknown>`으로 좁히면 구체 타입으로의
@@ -140,7 +142,9 @@ function validExperimentConfigRole(raw: unknown): raw is ExperimentConfigRole {
   return typeof role.kind === "string" && RUN_ROLE_KIND_VALUES.includes(role.kind)
     && typeof role.model === "string"
     && (role.effort === null || typeof role.effort === "string")
-    && typeof role.count === "number" && Number.isFinite(role.count);
+    && typeof role.count === "number" && Number.isFinite(role.count)
+    && isStringArray(role.models) && isStringArray(role.efforts)
+    && EXPERIMENT_ROLE_PAIRING_VALUES.includes(role.pairing);
 }
 
 function validHarnessCount(raw: unknown): raw is ExperimentHarnessCount {

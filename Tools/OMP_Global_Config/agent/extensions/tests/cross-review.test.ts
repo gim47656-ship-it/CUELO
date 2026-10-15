@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,12 +11,15 @@ import {
   detectMarkers,
   isCodeFile,
   MAX_INPUT_BYTES,
+  MAX_REFERENCE_FILE_BYTES,
   parseChangedLines,
   parseReviewerOutput,
   reviewerFamilies,
   ReviewerCallError,
   runGate,
   runResolve,
+  readReferenceFile,
+  type ReferenceRead,
   runReview,
   sampleSelected,
   spawnExec,
@@ -646,5 +649,344 @@ describe("2회차 심사 보강", () => {
     const [record] = readCrossReviewRecords(env.ledger) as { reviewers: { raw: string; rawFile: string }[] }[];
     expect(record.reviewers[0].raw).toBe(partial.slice(0, 20_000));
     expect(record.reviewers[0].rawFile).toBe(result.reviewers[0].rawFile!);
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("참고 증거(references)", () => {
+  const gateOptions = (env: RepoEnv, over: Partial<Parameters<typeof runGate>[0]> = {}) =>
+    ({ cwd: env.work, files: ["ref.ts"], ledgerPath: env.ledger, ...over });
+  const REF_BASE = "export const contract = { retries: 3 };\n";
+
+  /** ref.ts는 커밋된 기존 계약 파일, a.ts는 이번에 바뀐 파일이다. */
+  function withReference(): RepoEnv {
+    const env = repo();
+    writeFileSync(join(env.work, "ref.ts"), REF_BASE);
+    sh(env.work, "add", "ref.ts");
+    sh(env.work, "commit", "-q", "-m", "ref");
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    return env;
+  }
+
+  test("안 바뀐 참고 파일도 명시하면 reviewer 입력에 닿고, 변경 파일의 검토와 통과 대상은 그대로다", async () => {
+    const env = withReference();
+    const calls: { family: Family; prompt: string }[] = [];
+    const result = await runReview(input({ references: ["ref.ts"] }), deps(env, {}, calls), signal);
+    expect(calls[0].prompt).toContain("<reference path=\"ref.ts\">");
+    expect(calls[0].prompt).toContain("1: export const contract = { retries: 3 };");
+    expect(calls[0].prompt).toContain("<new-file path=\"a.ts\">");
+    expect(calls[0].prompt.indexOf("<new-file")).toBeLessThan(calls[0].prompt.indexOf("<reference"));
+    expect(result.references).toEqual([{ path: "ref.ts", bytes: REF_BASE.length, blob: blobOf(REF_BASE) }]);
+    expect(result.skippedReferences).toEqual([]);
+    const [record] = readCrossReviewRecords(env.ledger) as { files: { path: string }[]; skipped: unknown[] }[];
+    expect(record.files.map((file) => file.path)).toEqual(["a.ts"]);
+    expect(record.skipped).toEqual([]);
+    // 검토 시점에 reviewer가 본 참고 파일이 사본 디렉터리에 고정된다.
+    const frozen = JSON.parse(readFileSync(join(result.snapshotDir, "references.json"), "utf8")) as { path: string; blob: string; file: string }[];
+    expect(frozen).toMatchObject([{ path: "ref.ts", blob: blobOf(REF_BASE) }]);
+    expect(readFileSync(join(result.snapshotDir, frozen[0].file), "utf8")).toBe(REF_BASE);
+  });
+
+  test("references를 안 주면 안 바뀐 파일은 전과 같이 본문 없이 건너뛴다", async () => {
+    const env = withReference();
+    const calls: { family: Family; prompt: string }[] = [];
+    const result = await runReview(input({ files: ["a.ts", "ref.ts"] }), deps(env, {}, calls), signal);
+    expect(calls[0].prompt).not.toContain("retries");
+    expect(result.skipped).toEqual([{ path: "ref.ts", reason: "no changes against HEAD; nothing to review" }]);
+    expect(result.references).toEqual([]);
+  });
+
+  test("참고 파일만으로는 심사하지 않고 reviewer도 부르지 않는다", async () => {
+    const env = withReference();
+    const calls: { family: Family; prompt: string }[] = [];
+    await expect(runReview(input({ files: ["base.txt"], references: ["ref.ts"] }), deps(env, {}, calls), signal)).rejects.toThrow("Nothing to review");
+    expect(calls).toEqual([]);
+  });
+
+  test("바뀐 파일을 참고로만 넘겨도 통과 지문을 얻지 못해 게이트가 계속 거절한다", async () => {
+    const env = withReference();
+    const changed = `${REF_BASE}export const credentialsPath = "access_token cache";\n`;
+    writeFileSync(join(env.work, "ref.ts"), changed);
+    const d = deps(env, {});
+    const review = await runReview(input({ references: ["ref.ts"] }), d, signal);
+    expect(review.references).toMatchObject([{ path: "ref.ts", blob: blobOf(changed) }]);
+    const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
+    expect(resolved.pass).toBe(true);
+    await expect(runGate(gateOptions(env, { highRisk: true }))).rejects.toThrow(CrossReviewRefusal);
+    // 변경 파일 a.ts는 통과 기록이 덮는다.
+    await expect(runGate(gateOptions(env, { files: ["a.ts"], highRisk: true }))).resolves.toBeDefined();
+  });
+
+  test("files에도 있는 경로는 참고로 또 싣지 않는다", async () => {
+    const env = withReference();
+    const calls: { family: Family; prompt: string }[] = [];
+    const result = await runReview(input({ files: ["a.ts"], references: ["a.ts"] }), deps(env, {}, calls), signal);
+    expect(calls[0].prompt).not.toContain("<reference");
+    expect(result.skippedReferences).toMatchObject([{ path: "a.ts" }]);
+  });
+
+  test("비밀 경로·개인키 블록·gitignore·바이너리·심볼릭 링크·없는 경로는 싣지 않고 이유를 돌려주며, 새 안전 파일은 싣고 비밀 값은 가린다", async () => {
+    const env = withReference();
+    const passwordKey = ["pass", "word"].join("");
+    writeFileSync(join(env.work, ".gitignore"), "ignored.ts\n");
+    writeFileSync(join(env.work, ".env.local"), "X=hunter-env\n");
+    writeFileSync(join(env.work, "pem.ts"), `const pem = \`${["-----BEGIN RSA PRIV", "ATE KEY-----"].join("")}\`;\n`);
+    writeFileSync(join(env.work, "cfg.ts"), `const ${passwordKey} = "hunter2-not-real";\nexport const kept = 1;\n`);
+    writeFileSync(join(env.work, "bin.dat"), Buffer.from([1, 2, 0, 3]));
+    writeFileSync(join(env.work, "ignored.ts"), "export const ignoredBody = 1;\n");
+    writeFileSync(join(env.work, "fresh-record.md"), "# Maker record\nValidation: exit 0, evidence kept-new-record\n");
+    writeFileSync(join(env.dir, "outside-target"), "linked-secret-body\n");
+    symlinkSync(join(env.dir, "outside-target"), join(env.work, "link.ts"));
+    sh(env.work, "add", "-f", ".env.local", "pem.ts", "cfg.ts", "bin.dat", "link.ts");
+    const calls: { family: Family; prompt: string }[] = [];
+    const result = await runReview(input({ references: ["ref.ts", ".env.local", "pem.ts", "cfg.ts", "bin.dat", "ignored.ts", "fresh-record.md", "link.ts", "missing.ts"] }), deps(env, {}, calls), signal);
+    const prompt = calls[0].prompt;
+    expect(prompt).not.toMatch(/hunter-env|hunter2|BEGIN RSA|linked-secret-body|ignoredBody/);
+    expect(prompt).toContain("[REDACTED]");
+    expect(prompt).toContain("export const kept = 1;");
+    expect(prompt).toContain("<reference path=\"fresh-record.md\">");
+    expect(prompt).toContain("kept-new-record");
+    expect(result.references.map((item) => item.path).sort()).toEqual(["cfg.ts", "fresh-record.md", "ref.ts"]);
+    expect(result.references.find((item) => item.path === "cfg.ts")).toMatchObject({ redacted: expect.any(Number) });
+    expect(result.skippedReferences.map((item) => item.path).sort()).toEqual([".env.local", "bin.dat", "ignored.ts", "link.ts", "missing.ts", "pem.ts"]);
+    expect(result.skippedReferences.find((item) => item.path === "link.ts")?.reason).toContain("symlink");
+    const [record] = readCrossReviewRecords(env.ledger) as { files: { path: string }[] }[];
+    expect(record.files.map((file) => file.path)).toEqual(["a.ts"]);
+  });
+
+  test("절대 경로·저장소 밖 경로·다른 저장소의 참고는 거절하고 reviewer를 부르지 않는다", async () => {
+    const env = withReference();
+    const other = mkdtempSync(join(tmpdir(), "cross-review-other-"));
+    roots.push(other);
+    sh(other, "init", "-q", "--initial-branch=main");
+    writeFileSync(join(other, "x.ts"), "export const x = 1;\n");
+    const calls: { family: Family; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    for (const bad of [join(other, "x.ts"), "../outside.ts", "a\nb.ts"]) {
+      await expect(runReview(input({ references: [bad] }), d, signal), bad).rejects.toThrow("references");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("파일당·합계·개수 상한을 넘는 참고는 싣지 않거나 거절한다", async () => {
+    const env = withReference();
+    for (const name of ["big.ts", "m1.ts", "m2.ts", "m3.ts"]) writeFileSync(join(env.work, name), name === "big.ts" ? `${"x".repeat(70 * 1024)}\n` : `${`// ${name}\n`.repeat(4500)}`);
+    const calls: { family: Family; prompt: string }[] = [];
+    const result = await runReview(input({ references: ["big.ts", "m1.ts", "m2.ts", "m3.ts", "ref.ts"] }), deps(env, {}, calls), signal);
+    expect(result.skippedReferences.map((item) => item.path)).toEqual(["big.ts", "m3.ts"]);
+    expect(result.skippedReferences[0].reason).toContain("per-file");
+    expect(result.skippedReferences[1].reason).toContain("total");
+    expect(result.references.map((item) => item.path)).toEqual(["m1.ts", "m2.ts", "ref.ts"]);
+    expect(calls[0].prompt).not.toContain("xxxxxxxxxx");
+    const many = Array.from({ length: 11 }, (_, index) => `r${index}.ts`);
+    await expect(runReview(input({ references: many }), deps(env, {}, calls), signal)).rejects.toThrow("at most");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("2회차도 명시한 참고만 싣고, 참고 파일의 변화는 delta가 아니라 현재 내용으로만 보낸다", async () => {
+    const env = withReference();
+    const d = deps(env, { openai: finding("x") });
+    const first = await runReview(input(), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
+    writeFileSync(join(env.work, "ref.ts"), "export const contract = { retries: 4 };\n");
+    const calls: { family: Family; prompt: string }[] = [];
+    const d2 = { ...d, complete: async (family: Family, prompt: string) => { calls.push({ family, prompt }); return { model: ASTRA, text: '{"findings":[]}' }; } };
+    const second = await runReview(input({ previousReviewId: first.reviewId, references: ["ref.ts"] }), d2, signal);
+    expect(second.round).toBe(2);
+    expect(calls[0].prompt).toContain("<delta path=\"a.ts\">");
+    expect(calls[0].prompt).not.toContain("<delta path=\"ref.ts\">");
+    expect(calls[0].prompt).toContain("<reference path=\"ref.ts\">\n1: export const contract = { retries: 4 };");
+    expect(second.references).toMatchObject([{ path: "ref.ts" }]);
+    const [, record] = readCrossReviewRecords(env.ledger) as { files: { path: string }[] }[];
+    expect(record.files.map((file) => file.path)).toEqual(["a.ts"]);
+    // 참고를 주지 않은 2회차에는 참고가 없다.
+    const env2 = withReference();
+    const d3 = deps(env2, { openai: finding("x") });
+    const first2 = await runReview(input({ references: ["ref.ts"] }), d3, signal);
+    writeFileSync(join(env2.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
+    const calls2: { family: Family; prompt: string }[] = [];
+    const second2 = await runReview(input({ previousReviewId: first2.reviewId }), { ...d3, complete: async (family: Family, prompt: string) => { calls2.push({ family, prompt }); return { model: ASTRA, text: '{"findings":[]}' }; } }, signal);
+    expect(second2.references).toEqual([]);
+    expect(calls2[0].prompt).not.toContain("retries");
+  });
+
+  test("프롬프트는 참고 블록을 변경 뒤에 두고 심사 대상이 아니며 신뢰하지 않는 자료라고 알린다", () => {
+    const prompt = buildReviewPrompt({ acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff", text: "@@" }], references: [{ path: "ref.ts", text: "1: x" }] });
+    expect(prompt).toContain("<reference path=\"ref.ts\">\n1: x\n</reference>");
+    expect(prompt).toMatch(/REFERENCE[^\n]*not under review[^\n]*not covered by any pass/);
+    expect(prompt).toMatch(/<reference>[^\n]*untrusted data/);
+    expect(buildReviewPrompt({ acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff", text: "@@" }] })).not.toContain("REFERENCE");
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("참고 파일 경쟁(readReferenceFile)", () => {
+  /** 저장소 정식 루트(sub/x.ts 포함)와 그 밖의 비밀 디렉터리(OUTSIDE)를 만든다. */
+  function tree() {
+    const base = mkdtempSync(join(tmpdir(), "cross-review-race-"));
+    roots.push(base);
+    const root = realpathSync(base);
+    mkdirSync(join(root, "repo", "sub"), { recursive: true });
+    mkdirSync(join(root, "out"));
+    writeFileSync(join(root, "repo", "sub", "x.ts"), "export const inside = 1;\n");
+    writeFileSync(join(root, "out", "x.ts"), "OUTSIDE-SECRET-BODY\n");
+    return { repo: join(root, "repo"), out: join(root, "out") };
+  }
+  const text = (read: ReferenceRead) => ("content" in read ? read.content.toString("utf8") : "");
+
+  test("검사한 handle에서 읽고, 읽는 동안 변화가 없으면 바이트를 돌려준다", () => {
+    const { repo } = tree();
+    expect(text(readReferenceFile(repo, "sub/x.ts"))).toBe("export const inside = 1;\n");
+  });
+
+  test("읽은 뒤 상위 디렉터리가 저장소 밖을 가리키는 링크로 바뀌면 바이트를 버린다", () => {
+    const { repo, out } = tree();
+    const read = readReferenceFile(repo, "sub/x.ts", () => {
+      renameSync(join(repo, "sub"), join(repo, "sub-moved"));
+      symlinkSync(out, join(repo, "sub"), "junction");
+    });
+    expect(read).toMatchObject({ skip: expect.stringContaining("not at the pinned location") });
+    expect(text(read)).toBe("");
+  });
+
+  test("읽은 뒤 같은 이름에 다른 파일이 놓이거나 내용이 늘면 바이트를 버린다", () => {
+    const { repo } = tree();
+    const replaced = readReferenceFile(repo, "sub/x.ts", () => {
+      writeFileSync(join(repo, "sub", "x.new"), "REPLACEMENT\n");
+      renameSync(join(repo, "sub", "x.new"), join(repo, "sub", "x.ts"));
+    });
+    expect(replaced).toMatchObject({ skip: expect.stringContaining("not at the pinned location") });
+    const { repo: repo2 } = tree();
+    const grown = readReferenceFile(repo2, "sub/x.ts", () => appendFileSync(join(repo2, "sub", "x.ts"), "export const more = 2;\n"));
+    expect(grown).toMatchObject({ skip: expect.stringContaining("size differs") });
+  });
+
+  test("마지막 성분이 링크면 열지 않고, 디렉터리·너무 큰 파일은 바이트 없이 이유만 돌려준다", () => {
+    const { repo, out } = tree();
+    symlinkSync(join(out, "x.ts"), join(repo, "link.ts"));
+    const link = readReferenceFile(repo, "link.ts");
+    expect(link).toMatchObject({ skip: expect.stringContaining("symlink") });
+    expect(text(link)).toBe("");
+    expect(readReferenceFile(repo, "sub")).toMatchObject({ skip: expect.stringContaining("not a regular file") });
+    writeFileSync(join(repo, "big.ts"), "x".repeat(MAX_REFERENCE_FILE_BYTES + 1));
+    expect(readReferenceFile(repo, "big.ts")).toMatchObject({ skip: expect.stringContaining("per-file") });
+  });
+
+  test("FIFO는 읽기를 막지 않고 건너뛴다", () => {
+    const { repo } = tree();
+    expect(Bun.spawnSync(["mkfifo", join(repo, "pipe.ts")]).exitCode).toBe(0);
+    expect(readReferenceFile(repo, "pipe.ts")).toMatchObject({ skip: expect.stringContaining("not a regular file") });
+  });
+
+  test("ABA 대응: 링크된 상위 디렉터리로 바깥 파일을 연 뒤 이름을 되돌려 이름·inode 검사가 맞아 보여도 fd 경로가 다르면 버린다", () => {
+    const { repo, out } = tree();
+    // 열 때: repo/sub 는 바깥(out)을 가리키는 링크. 읽은 뒤: 진짜 디렉터리로 되돌리고 x.ts 는 바깥 파일의 하드 링크라
+    // realpath(이름)와 dev/ino 비교만 쓰면 모두 일치해 통과한다.
+    rmSync(join(repo, "sub"), { recursive: true });
+    symlinkSync(out, join(repo, "sub"), "junction");
+    const read = readReferenceFile(repo, "sub/x.ts", () => {
+      rmSync(join(repo, "sub"));
+      mkdirSync(join(repo, "sub"));
+      linkSync(join(out, "x.ts"), join(repo, "sub", "x.ts"));
+    });
+    expect(read).toMatchObject({ skip: expect.stringContaining("not at the pinned location") });
+    expect(text(read)).toBe("");
+  });
+
+  test("고정한 루트가 읽기 전에 링크로 바뀌면 그 아래 파일은 열려도 버린다", () => {
+    const { repo, out } = tree();
+    const moved = `${repo}-moved`;
+    renameSync(repo, moved);
+    mkdirSync(join(out, "sub"));
+    writeFileSync(join(out, "sub", "x.ts"), "OUTSIDE-SECRET-BODY\n");
+    symlinkSync(out, repo, "junction");
+    const read = readReferenceFile(repo, "sub/x.ts");
+    expect(read).toMatchObject({ skip: expect.stringContaining("not at the pinned location") });
+    expect(text(read)).toBe("");
+  });
+
+  test("runReview: 루트는 첫 비동기 수집 전에 고정되고, 이후 루트가 다른 저장소로 바뀌어도 새 루트의 내용은 가지 않는다", async () => {
+    const env = withRefTree();
+    const copy = join(env.dir, "outside-work");
+    cpSync(env.work, copy, { recursive: true });
+    writeFileSync(join(copy, "ref.ts"), "export const marker = 'OUTSIDE-COPY-MARKER';\n");
+    const calls: { family: Family; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    let swapped = false;
+    const racing: ReviewDeps = { ...d, exec: async (command, args, options) => {
+      const result = await d.exec(command, args, options);
+      // collectChanges의 git status 직후: 고정(pin)은 이미 끝났고 참고 수집은 아직이다.
+      if (!swapped && args.includes("status")) {
+        swapped = true;
+        renameSync(env.work, `${env.work}-moved`);
+        symlinkSync(copy, env.work, "junction");
+      }
+      return result;
+    } };
+    const result = await runReview(input({ references: ["ref.ts"] }), racing, signal);
+    expect(swapped).toBe(true);
+    expect(calls[0].prompt).not.toContain("OUTSIDE-COPY-MARKER");
+    expect(result.references).toEqual([]);
+    expect(result.skippedReferences).toMatchObject([{ path: "ref.ts", reason: expect.stringContaining("not at the pinned location") }]);
+  });
+
+  test("runReview: 목록을 만든 뒤 상위 디렉터리나 파일이 링크로 바뀌어도 저장소 밖 내용은 reviewer에 가지 않는다", async () => {
+    const env = withRefTree();
+    const outside = join(env.dir, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "x.ts"), "OUTSIDE-SECRET-BODY\n");
+    const calls: { family: Family; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    let swapped = false;
+    const racing: ReviewDeps = { ...d, exec: async (command, args, options) => {
+      const result = await d.exec(command, args, options);
+      if (!swapped && args.includes("ls-files")) {
+        swapped = true;
+        renameSync(join(env.work, "sub"), join(env.work, "sub-moved"));
+        symlinkSync(outside, join(env.work, "sub"), "junction");
+        rmSync(join(env.work, "swap.ts"));
+        symlinkSync(join(outside, "x.ts"), join(env.work, "swap.ts"));
+      }
+      return result;
+    } };
+    const result = await runReview(input({ references: ["sub/x.ts", "swap.ts", "ref.ts"] }), racing, signal);
+    expect(swapped).toBe(true);
+    expect(calls[0].prompt).not.toContain("OUTSIDE-SECRET-BODY");
+    expect(result.references.map((item) => item.path)).toEqual(["ref.ts"]);
+    expect(result.skippedReferences.map((item) => item.path).sort()).toEqual(["sub/x.ts", "swap.ts"]);
+    expect(result.skippedReferences.find((item) => item.path === "swap.ts")?.reason).toContain("symlink");
+  });
+
+  function withRefTree(): RepoEnv {
+    const env = repo();
+    mkdirSync(join(env.work, "sub"));
+    writeFileSync(join(env.work, "sub", "x.ts"), "export const inside = 1;\n");
+    writeFileSync(join(env.work, "swap.ts"), "export const swap = 1;\n");
+    writeFileSync(join(env.work, "ref.ts"), "export const contract = { retries: 3 };\n");
+    sh(env.work, "add", "sub/x.ts", "swap.ts", "ref.ts");
+    sh(env.work, "commit", "-q", "-m", "tree");
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    return env;
+  }
+});
+
+describe("참고 증거: Linux 밖에서는 닫힌 채 건너뛴다", () => {
+  test("native Windows/macOS는 fd 경로 API가 없어 참고를 읽지 않고, 이유를 skippedReferences에 남기며 변경 심사는 그대로다", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const env = repo();
+    writeFileSync(join(env.work, "ref.ts"), "export const contract = 1;\n");
+    sh(env.work, "add", "ref.ts");
+    sh(env.work, "commit", "-q", "-m", "ref");
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const calls: { family: Family; prompt: string }[] = [];
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      const result = await runReview(input({ references: ["ref.ts"] }), deps(env, {}, calls), signal);
+      expect(result.references).toEqual([]);
+      expect(result.skippedReferences).toMatchObject([{ path: "ref.ts", reason: expect.stringContaining("unsupported on win32") }]);
+      expect(calls[0].prompt).toContain("<new-file path=\"a.ts\">");
+      expect(calls[0].prompt).not.toContain("export const contract = 1");
+      expect(calls[0].prompt).not.toContain("<reference");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 });

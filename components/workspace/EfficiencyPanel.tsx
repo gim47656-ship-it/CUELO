@@ -420,6 +420,9 @@ function ExperimentCard({
       <p className="efficiency-dim font-mono tabular-nums" title={harness.full}>
         {t("efficiency.harnessValue").replace("{value}", harness.text)}
       </p>
+      {config.roles.some((role) => role.pairing === "unknown") ? (
+        <p className="efficiency-note">{t("efficiency.mixedPairingNote")}</p>
+      ) : null}
       <div className="efficiency-bottleneck-top">
         <span className="efficiency-dim">
           {t("efficiency.runsValue").replace("{value}", String(config.runCount))}
@@ -588,9 +591,12 @@ export function EfficiencyPanel({
           <ScopeSummary response={response} t={t} />
           {response.configs.map((config) => (
             <ExperimentCard
-              key={response.groupBy === "harness"
-                ? `${config.signature}@${config.harnesses[0]?.revision ?? HARNESS_UNKNOWN_FILTER}`
-                : config.signature}
+              // 표시 서명은 모델 ID에 따라 겹칠 수 있다(리터럴 `{a,b}` 모델 대 a·b 두 모델). 서버 묶음처럼
+              // 역할·모델 집합·effort 집합·수로 key를 만들고, 하네스 보기에서만 revision을 더한다.
+              key={JSON.stringify([
+                config.roles.map((role) => [role.kind, role.models, role.efforts, role.count]),
+                response.groupBy === "harness" ? config.harnesses[0]?.revision ?? null : null,
+              ])}
               config={config}
               baselineRuns={baselineRuns}
               t={t}
