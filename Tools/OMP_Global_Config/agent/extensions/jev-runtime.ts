@@ -2,6 +2,14 @@
 import type { AsyncJobSnapshot, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isPathOwned } from "./command-guard/task-guard";
 import { registerMakerRouting, workspaceOf, type Owner } from "./lib/maker-routing";
+import {
+  describeObservedJob,
+  JobObservationLedger,
+  OBSERVATION_CLEARING_RULE,
+  OBSERVATION_SAFETY_NOTE,
+  type JobIncarnation,
+  type JobObservationClock,
+} from "./lib/job-observation";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
@@ -85,6 +93,10 @@ export interface JevRuntimeDeps {
   memoryApplicationTimeoutMs?: number;
   /** 셸 오류 분류·안내를 고를 실행 플랫폼. 테스트만 주입한다. 기본은 process.platform이다. */
   platform?: NodeJS.Platform;
+  /** 장기 job 관측 시점의 시계. 테스트만 주입한다. 기본은 Date.now와 unref된 setTimeout이다. */
+  jobObservationClock?: JobObservationClock;
+  /** 관측 주기(ms). 테스트만 짧게 준다. 기본은 lib/job-observation의 5·10·15분이다. */
+  jobObservationIntervalsMs?: readonly number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,6 +1013,109 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const bashServices = new Map<string, string>();
     /** running job 취소 직전의 근거 공백 advisory 중복 방지. */
     const advisedRunningCancellations = new Set<string>();
+    /**
+     * 장기 background bash/eval job의 관측 요구(harness-policy mainLane.waitContract.requiredObservation). 관측 기한이 지난
+     * job이 있으면 Main의 `wait` 진입만 막고, 이 session의 wait 실행 중 기한이 오면 aside 하나로 wait를 돌려준다
+     * (upstream은 extension aside가 interruptible wait를 끝내게 한다). job·전달 경로는 건드리지 않고 judge도 부르지 않는다.
+     */
+    const jobObservations = new JobObservationLedger(deps.jobObservationIntervalsMs);
+    const observationClock: JobObservationClock = deps.jobObservationClock ?? {
+      now: () => Date.now(),
+      schedule(callback, delayMs) {
+        const timer = setTimeout(callback, delayMs);
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      },
+    };
+    /** 실행 중인 이 session의 `wait` 호출과 그 ctx. core는 block·abort에도 tool_execution_end를 내므로 거기서 닫힌다. */
+    let observedWait: { toolCallId: string; ctx: ExtensionContext } | undefined;
+    let cancelObservationTimer: (() => void) | undefined;
+    /** 사용자 답을 기다리는 `ask` 호출. 이 동안에는 관측 요구로 wait를 막거나 깨우지 않는다. */
+    const pendingAsks = new Set<string>();
+    /** session 교체·종료마다 올린다. 이전 세대에서 시작한 `read proc://` 결과는 새 세대의 관측 근거가 아니다. */
+    let observationGeneration = 0;
+    /** `read proc://<id>` toolCallId → 호출 시점의 세대와 job incarnation. 결과는 이 묶음과 같을 때만 관측 근거가 된다. */
+    const pendingInspections = new Map<string, { generation: number; job: JobIncarnation }>();
+
+    function resetJobObservation(): void {
+      cancelObservationTimer?.();
+      cancelObservationTimer = undefined;
+      observedWait = undefined;
+      pendingAsks.clear();
+      jobObservations.clear();
+      observationGeneration += 1;
+      pendingInspections.clear();
+    }
+
+    /** 정산된 결과가 대기 중이거나 전달 중이면 그 완료가 관측 안내보다 먼저다. */
+    function completionPending(snapshot: AsyncJobSnapshot): boolean {
+      return (snapshot.delivery?.queued ?? 0) > 0 || snapshot.delivery?.delivering === true;
+    }
+
+    /** wait 실행 중에만 다음 미알림 기한에 한 번 깨운다. 기한마다 알림은 한 번이고 그 뒤는 진입 차단이 맡는다. */
+    function armObservationTimer(): void {
+      cancelObservationTimer?.();
+      cancelObservationTimer = undefined;
+      const wait = observedWait;
+      if (!wait || pendingAsks.size > 0) return;
+      const next = jobObservations.nextDueAt(jobObservations.sync(wait.ctx.getAsyncJobSnapshot?.()?.running ?? []));
+      if (next === undefined) return;
+      cancelObservationTimer = observationClock.schedule(() => {
+        cancelObservationTimer = undefined;
+        if (observedWait !== wait || pendingAsks.size > 0) return;
+        const snapshot = wait.ctx.getAsyncJobSnapshot?.();
+        // 정산된 결과가 대기·전달 중이면 그 전달이 이 wait를 먼저 깨운다. 관측 안내가 완료를 앞지르지 않는다.
+        if (!snapshot || completionPending(snapshot)) return;
+        const now = observationClock.now();
+        const due = jobObservations.takeAnnouncements(jobObservations.sync(snapshot.running), now);
+        if (due.length > 0) {
+          sendAdvisory(
+            "wait-observation-due",
+            renderAdvisory(
+              "wait-observation-due",
+              undefined,
+              [],
+              `관측 시점이 된 실행 중 job: ${due.map((job) => describeObservedJob(jobObservations, job, now)).join("; ")}. 다시 wait하기 전에 ${due.map((job) => `read proc://${job.id}`).join(", ")}로 출력과 그 job의 산출물을 확인하고 확인한 상태와 다음 행동을 보고한다. ${OBSERVATION_CLEARING_RULE} ${OBSERVATION_SAFETY_NOTE}`,
+            ),
+          );
+        }
+        armObservationTimer();
+      }, Math.max(0, next - observationClock.now()));
+    }
+
+    /** Main의 wait 진입을 막을 관측 근거 공백. 사용자 대기·미전달 완료·subagent에는 막지 않는다. */
+    function observationBlockReason(ctx: ExtensionContext): string | undefined {
+      if (ctx.agent?.kind === "sub" || pendingAsks.size > 0) return undefined;
+      const snapshot = ctx.getAsyncJobSnapshot?.();
+      if (!snapshot) return undefined;
+      const tracked = jobObservations.sync(snapshot.running);
+      // 정산됐지만 아직 전달·소비되지 않았거나 전달 중인 결과가 있으면 wait가 그 결과를 먼저 돌려주게 둔다.
+      if (completionPending(snapshot)) return undefined;
+      const now = observationClock.now();
+      const overdue = jobObservations.overdue(tracked, now);
+      if (overdue.length === 0) return undefined;
+      return `[JevRuntime:pre-wait-observation] 관측 기한이 지난 실행 중 job이 있어 이번 wait는 실행하지 않았다: ${overdue.map((job) => describeObservedJob(jobObservations, job, now)).join("; ")}. 먼저 ${overdue.map((job) => `read proc://${job.id}`).join(", ")}로 출력과 그 job의 산출물을 확인하고 확인한 상태를 보고한 뒤 다시 wait한다. ${OBSERVATION_CLEARING_RULE} 다른 작업은 그대로 진행할 수 있다. ${OBSERVATION_SAFETY_NOTE}`;
+    }
+
+    /** `read proc://<id>`(표시 selector 포함) 호출 시점의 세대와 running incarnation을 묶는다. 다른 하위 경로·목록은 묶지 않는다. */
+    function bindJobInspection(toolCallId: string, input: unknown, ctx: ExtensionContext): void {
+      const jobId = /^proc:\/\/([^/?#:]+)(?::[^/?#]*)?$/u.exec(String(fieldOf(input, "path") ?? "").trim())?.[1];
+      if (!jobId) return;
+      const job = jobObservations.sync(ctx.getAsyncJobSnapshot?.()?.running ?? []).find((candidate) => candidate.id === jobId);
+      if (job) pendingInspections.set(toolCallId, { generation: observationGeneration, job: { id: job.id, type: job.type, startTime: job.startTime } });
+    }
+
+    /** 묶인 같은 세대·같은 incarnation의 성공한 job 읽기만 관측 근거로 기록한다. 결과의 job id도 묶음과 같아야 한다. */
+    function recordJobInspection(binding: { generation: number; job: JobIncarnation } | undefined, details: unknown, content: unknown, ctx: ExtensionContext): void {
+      if (!binding || binding.generation !== observationGeneration) return;
+      const proc = fieldOf(details, "proc");
+      if (fieldOf(fieldOf(proc, "job"), "id") !== binding.job.id) return;
+      const snapshot = ctx.getAsyncJobSnapshot?.();
+      if (!snapshot) return;
+      const log = fieldOf(proc, "log");
+      const inspected = jobObservations.inspect(snapshot.running, binding.job, typeof log === "string" ? log : textContent(content), observationClock.now());
+      if (inspected && observedWait) armObservationTimer();
+    }
     // Local session context only: never persist private prompts in the routing ledger.
     let currentReviewRequest: ReviewRequest | undefined;
     let reviewMessageSequence = 0;
@@ -1862,7 +1977,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       currentReviewRequest = undefined;
       reviewMessageSequence = 0;
       pendingReviewOrigins.clear();
+      resetJobObservation();
     });
+    // session 교체(newSession·switchSession)와 종료는 이전 session의 job 관측 근거·대기 타이머를 잇지 않는다.
+    pi.on("session_switch", () => resetJobObservation());
+    pi.on("session_shutdown", () => resetJobObservation());
 
     // 새 genuine 입력은 실패 문맥과 routing의 TaskGuard 상속 lock만 끊는다.
     // 성공 판단 cache·prepared ref·known owner의 local advisory dedupe는 보존한다.
@@ -2017,6 +2136,17 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ),
           );
         }
+        const blocked = observationBlockReason(ctx);
+        if (blocked) return { block: true, reason: blocked };
+      }
+
+      if (event.toolName === "read") bindJobInspection(event.toolCallId, event.input, ctx);
+
+      // ask는 tool_call 시점부터 사용자 대기로 본다. block되어도 tool_execution_end가 닫는다.
+      if (event.toolName === "ask") {
+        pendingAsks.add(event.toolCallId);
+        cancelObservationTimer?.();
+        cancelObservationTimer = undefined;
       }
 
       if (event.toolName === "bash") {
@@ -2149,6 +2279,20 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     // task 호출의 예약은 여기서 그 호출 것만 푼다. spawn 성공은 tool_result(wrapper 안)가 먼저 끝나 이미 owner로 넘어갔다.
     pi.on("tool_execution_end", (event) => {
       if (event.toolName === "task") routing.releaseCall(event.toolCallId);
+      // block·abort·실패로 결과가 없던 읽기의 묶음도 여기서 버린다.
+      if (event.toolName === "read") pendingInspections.delete(event.toolCallId);
+      if (event.toolName === "ask" && pendingAsks.delete(event.toolCallId) && pendingAsks.size === 0) armObservationTimer();
+      if (event.toolName === "wait" && observedWait?.toolCallId === event.toolCallId) {
+        observedWait = undefined;
+        cancelObservationTimer?.();
+        cancelObservationTimer = undefined;
+      }
+    });
+
+    pi.on("tool_execution_start", (event, ctx) => {
+      if (event.toolName !== "wait" || ctx.agent?.kind === "sub") return;
+      observedWait = { toolCallId: event.toolCallId, ctx };
+      armObservationTimer();
     });
 
 
@@ -2408,6 +2552,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         pendingFailures.delete(event.toolName);
       }
 
+      // 관측 묶음은 성공 여부와 무관하게 이 결과에서 소비한다. 실패한 읽기는 근거가 아니다.
+      const inspection = event.toolName === "read" ? pendingInspections.get(event.toolCallId) : undefined;
+      if (inspection) pendingInspections.delete(event.toolCallId);
+
       // pre-review: `wait`·`read proc://`가 auto-delivery보다 먼저 settled 결과를 보여 준 경계.
       if (event.isError) return;
       let via: "wait" | "read proc://";
@@ -2417,6 +2565,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         via = "wait";
         jobDetails = event.details;
       } else if (event.toolName === "read" && /^proc:\/\//.test(String(fieldOf(event.input, "path") ?? ""))) {
+        recordJobInspection(inspection, event.details, event.content, ctx);
         const proc = fieldOf(event.details, "proc");
         const job = fieldOf(proc, "job");
         via = "read proc://";

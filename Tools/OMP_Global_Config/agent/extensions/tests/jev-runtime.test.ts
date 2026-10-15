@@ -59,6 +59,12 @@ interface HarnessOptions {
   memoryApplicationTimeoutMs?: number;
   /** ctx.isIdle() 값. 기본은 실행 중(false)이다. */
   idle?: boolean;
+  /** getAsyncJobSnapshot().delivery. 테스트가 같은 객체를 바꿔 미전달 완료를 흉내 낸다. 기본은 비어 있다. */
+  delivery?: { queued: number; delivering?: boolean; pendingJobIds?: string[] };
+  /** ctx.agent.kind. 기본은 top-level host처럼 없음(main)이다. */
+  agentKind?: "main" | "sub";
+  jobObservationClock?: JevRuntimeDeps["jobObservationClock"];
+  jobObservationIntervalsMs?: readonly number[];
 }
 
 
@@ -116,6 +122,8 @@ function createHarness(options: HarnessOptions = {}) {
     ledgerPath,
     memoryApplicationTimeoutMs: options.memoryApplicationTimeoutMs,
     platform: options.platform,
+    jobObservationClock: options.jobObservationClock,
+    jobObservationIntervalsMs: options.jobObservationIntervalsMs,
     findScopedSettings: () => settings,
     resolveJudge: () => {
       if (options.resolveError) throw new Error(options.resolveError);
@@ -158,9 +166,10 @@ function createHarness(options: HarnessOptions = {}) {
     },
     getAsyncJobSnapshot: (request?: { jobIds?: readonly string[] }) => {
       const jobIds = request?.jobIds;
-      const base = { running: asyncJobs, recent: options.recentJobs ?? [] };
+      const base = { running: asyncJobs, recent: options.recentJobs ?? [], delivery: options.delivery ?? { queued: 0, delivering: false, pendingJobIds: [] } };
       return jobIds && options.retainedJobs ? { ...base, jobs: options.retainedJobs.filter((job) => jobIds.includes(String(job.id))) } : base;
     },
+    ...(options.agentKind ? { agent: { kind: options.agentKind } } : {}),
   };
 
   /** 뒤에서 도는 advisory를 실제 전송 사건으로 기다린다. */
@@ -3077,4 +3086,203 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
       expect(await harness.emit("before_agent_start", start(PROMPT, ["base", block(BRANCH)]))).toBeDefined();
     });
   }
+});
+
+describe("장기 job 관측 요구(wait 경계)", () => {
+  const MIN = 60_000;
+  function manualClock() {
+    let now = 0;
+    let sequence = 0;
+    const timers = new Map<number, { at: number; callback: () => void }>();
+    return {
+      now: () => now,
+      schedule(callback: () => void, delayMs: number) {
+        const id = ++sequence;
+        timers.set(id, { at: now + delayMs, callback });
+        return () => { timers.delete(id); };
+      },
+      advance(ms: number) {
+        now += ms;
+        for (;;) {
+          const next = [...timers].filter(([, timer]) => timer.at <= now).sort((a, b) => a[1].at - b[1].at)[0];
+          if (!next) return;
+          timers.delete(next[0]);
+          next[1].callback();
+        }
+      },
+      get pending() { return timers.size; },
+    };
+  }
+  const running = (id: string, startTime: number, extra: Record<string, unknown> = {}) =>
+    ({ id, type: "bash", status: "running", label: `gh run watch ${id}`, startTime, ...extra });
+  const call = (toolName: string, toolCallId: string, input: Record<string, unknown> = {}) => ({ type: "tool_call", toolCallId, toolName, input });
+  const started = (toolName: string, toolCallId: string) => ({ type: "tool_execution_start", toolCallId, toolName, args: {} });
+  const ended = (toolName: string, toolCallId: string) => ({ type: "tool_execution_end", toolCallId, toolName, result: {}, isError: false });
+  // core 실제 형태: ProcProtocolHandler가 job 읽기 결과의 details.proc.job과 log(출력 꼬리)를 싣는다.
+  const procResult = (toolCallId: string, path: string, id: string, log: string, isError = false) => ({
+    type: "tool_result", toolCallId, toolName: "read", input: { path }, isError,
+    content: [{ type: "text", text: `${id} [bash] — running — watch\n${log}` }],
+    details: { proc: { job: { id, type: "bash", status: "running", label: "watch", durationMs: 1 }, log } },
+  });
+  type Emitter = { emit(name: string, event: unknown): Promise<unknown> };
+  // core 순서: tool_call(호출 시점 묶음) → tool_result → tool_execution_end.
+  async function readProc(harness: Emitter, toolCallId: string, path: string, id: string, log: string, isError = false) {
+    await harness.emit("tool_call", call("read", toolCallId, { path }));
+    await harness.emit("tool_result", procResult(toolCallId, path, id, log, isError));
+    await harness.emit("tool_execution_end", ended("read", toolCallId));
+  }
+  const blockOf = async (harness: Emitter, id: string) =>
+    (await harness.emit("tool_call", call("wait", id))) as { block: true; reason: string } | undefined;
+  const asides = (sent: SentMessage[]) => sent.filter((entry) => String(entry.message.content).startsWith("[JevRuntime:wait-observation-due]"));
+  function setup(options: HarnessOptions = {}) {
+    const clock = manualClock();
+    const asyncJobs: Array<Record<string, unknown>> = [running("bg_21", 0)];
+    return { clock, asyncJobs, harness: createHarness({ asyncJobs, jobObservationClock: clock, ...options }) };
+  }
+
+  test("기한이 지나면 wait 진입만 막고 같은 job incarnation의 성공한 read proc://<id>만 푼다", async () => {
+    const { clock, harness } = setup();
+    clock.advance(5 * MIN - 1);
+    expect(await blockOf(harness, "w-early")).toBeUndefined();
+    clock.advance(1);
+    const blocked = await blockOf(harness, "w-due");
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("read proc://bg_21");
+    expect(blocked?.reason).toContain("로그 파일·gh run view 같은 다른 조회는 계속 허용되지만 요구를 풀지 않는다");
+
+    // 다른 도구·다른 조회는 막지 않고 요구도 풀지 않는다.
+    expect(await harness.emit("tool_call", call("bash", "b-log", { command: "gh run view 1 --log" }))).toBeUndefined();
+    await harness.emit("tool_result", { type: "tool_result", toolCallId: "r-log", toolName: "read", input: { path: "/tmp/ci.log" }, isError: false, content: [{ type: "text", text: "log" }], details: {} });
+    await harness.emit("tool_result", { type: "tool_result", toolCallId: "r-list", toolName: "read", input: { path: "proc://" }, isError: false, content: [{ type: "text", text: "list" }], details: { proc: { jobs: [{ id: "bg_21", type: "bash", status: "running" }] } } });
+    await readProc(harness, "r-other", "proc://bg_99", "bg_21", "step 1");
+    await readProc(harness, "r-failed", "proc://bg_21", "bg_21", "step 1", true);
+    expect((await blockOf(harness, "w-still"))?.block).toBe(true);
+
+    // 표시 selector가 붙은 같은 job 조회는 같은 근거다.
+    await readProc(harness, "r-job", "proc://bg_21:-20", "bg_21", "step 1");
+    expect(await blockOf(harness, "w-after")).toBeUndefined();
+    clock.advance(5 * MIN);
+    expect((await blockOf(harness, "w-next"))?.block).toBe(true);
+  });
+
+  test("wait 실행 중 기한이 오면 aside 하나로 돌려주고 같은 기한을 반복하지 않으며 재진입은 차단이 맡는다", async () => {
+    const { clock, harness } = setup();
+    expect(await blockOf(harness, "w1")).toBeUndefined();
+    await harness.emit("tool_execution_start", started("wait", "w1"));
+    clock.advance(5 * MIN - 1);
+    expect(asides(harness.sent)).toHaveLength(0);
+    clock.advance(1);
+    expect(asides(harness.sent)).toHaveLength(1);
+    expect(asides(harness.sent)[0]!.options).toEqual({ deliverAs: "aside" });
+    expect(String(asides(harness.sent)[0]!.message.content)).toContain("자동 취소·재시도·재발주하지 않는다");
+    clock.advance(30 * MIN);
+    expect(asides(harness.sent)).toHaveLength(1);
+    await harness.emit("tool_execution_end", ended("wait", "w1"));
+    expect(clock.pending).toBe(0);
+    expect((await blockOf(harness, "w2"))?.block).toBe(true);
+    expect(asides(harness.sent)).toHaveLength(1);
+  });
+
+  test("대기 중이거나 전달 중인 완료와 정산된 job은 기한 지난 관측보다 먼저다", async () => {
+    const delivery = { queued: 1, delivering: false, pendingJobIds: ["bg_7"] };
+    const { clock, harness } = setup({ delivery });
+    clock.advance(6 * MIN);
+    expect(await blockOf(harness, "w-pending")).toBeUndefined();
+    await harness.emit("tool_execution_start", started("wait", "w-pending"));
+    clock.advance(1);
+    expect(asides(harness.sent)).toHaveLength(0);
+    await harness.emit("tool_execution_end", ended("wait", "w-pending"));
+
+    // queued가 0이어도 전달이 진행 중이면 그 완료가 먼저다.
+    delivery.queued = 0;
+    delivery.delivering = true;
+    expect(await blockOf(harness, "w-in-flight")).toBeUndefined();
+    await harness.emit("tool_execution_start", started("wait", "w-in-flight"));
+    clock.advance(1);
+    expect(asides(harness.sent)).toHaveLength(0);
+    await harness.emit("tool_execution_end", ended("wait", "w-in-flight"));
+
+    delivery.delivering = false;
+    delivery.pendingJobIds = [];
+    expect((await blockOf(harness, "w-observed-next"))?.block).toBe(true);
+
+    const settled = setup();
+    expect(await blockOf(settled.harness, "w-run")).toBeUndefined();
+    await settled.harness.emit("tool_execution_start", started("wait", "w-run"));
+    settled.clock.advance(5 * MIN - 10);
+    settled.asyncJobs.splice(0);
+    settled.clock.advance(10);
+    expect(asides(settled.harness.sent)).toHaveLength(0);
+    expect(await blockOf(settled.harness, "w-after-complete")).toBeUndefined();
+  });
+
+  test("이전 incarnation에서 시작한 read proc:// 결과는 같은 id의 새 실행 관측 요구를 풀지 않는다", async () => {
+    // read는 incarnation A(startTime 0)에서 시작하고, 결과가 오기 전에 같은 id의 새 실행 B(startTime 4분)로 바뀐다.
+    const { clock, asyncJobs, harness } = setup();
+    clock.advance(4 * MIN);
+    await harness.emit("tool_call", call("read", "r-late", { path: "proc://bg_21" }));
+    asyncJobs.splice(0, 1, running("bg_21", 4 * MIN));
+    clock.advance(4 * MIN);
+    await harness.emit("tool_result", procResult("r-late", "proc://bg_21", "bg_21", "A output"));
+    await harness.emit("tool_execution_end", ended("read", "r-late"));
+    clock.advance(2 * MIN);
+    expect((await blockOf(harness, "w-b-due"))?.block).toBe(true);
+    await readProc(harness, "r-b", "proc://bg_21", "bg_21", "B output");
+    expect(await blockOf(harness, "w-b-ok")).toBeUndefined();
+  });
+
+  test("session 교체 전에 시작한 read proc:// 결과는 교체 뒤 와도 새 session의 관측 요구를 풀지 않는다", async () => {
+    const { clock, harness } = setup();
+    clock.advance(6 * MIN);
+    await harness.emit("tool_call", call("read", "r-old", { path: "proc://bg_21" }));
+    await harness.emit("session_switch", { type: "session_switch" });
+    await harness.emit("tool_result", procResult("r-old", "proc://bg_21", "bg_21", "before switch"));
+    await harness.emit("tool_execution_end", ended("read", "r-old"));
+    expect((await blockOf(harness, "w-new-session"))?.block).toBe(true);
+    await readProc(harness, "r-new", "proc://bg_21", "bg_21", "after switch");
+    expect(await blockOf(harness, "w-new-ok")).toBeUndefined();
+  });
+
+  test("ask가 사용자 답을 기다리는 동안은 막거나 깨우지 않고, 답 뒤 실행 중인 wait에 한 번 알린다", async () => {
+    const { clock, harness } = setup();
+    clock.advance(6 * MIN);
+    await harness.emit("tool_call", call("ask", "a1"));
+    expect(await blockOf(harness, "w1")).toBeUndefined();
+    await harness.emit("tool_execution_start", started("ask", "a1"));
+    await harness.emit("tool_execution_start", started("wait", "w1"));
+    clock.advance(MIN);
+    expect(asides(harness.sent)).toHaveLength(0);
+    await harness.emit("tool_execution_end", ended("ask", "a1"));
+    clock.advance(1);
+    expect(asides(harness.sent)).toHaveLength(1);
+  });
+
+  test("subagent·task job·재사용된 job id·교체된 session은 다른 실행의 관측 요구로 막거나 깨우지 않는다", async () => {
+    const sub = setup({ agentKind: "sub" });
+    sub.clock.advance(6 * MIN);
+    expect(await blockOf(sub.harness, "w-sub")).toBeUndefined();
+    await sub.harness.emit("tool_execution_start", started("wait", "w-sub"));
+    sub.clock.advance(MIN);
+    expect(asides(sub.harness.sent)).toHaveLength(0);
+
+    const task = setup();
+    task.asyncJobs.splice(0, 1, { id: "Maker", type: "task", status: "running", label: "Maker", startTime: 0, agentId: "Maker" });
+    task.clock.advance(60 * MIN);
+    expect(await blockOf(task.harness, "w-task")).toBeUndefined();
+
+    const reused = setup();
+    reused.clock.advance(4 * MIN);
+    expect(await blockOf(reused.harness, "w-old")).toBeUndefined();
+    reused.asyncJobs.splice(0, 1, running("bg_21", 4 * MIN));
+    reused.clock.advance(2 * MIN);
+    expect(await blockOf(reused.harness, "w-new")).toBeUndefined();
+
+    const replaced = setup();
+    expect(await blockOf(replaced.harness, "w-before")).toBeUndefined();
+    await replaced.harness.emit("tool_execution_start", started("wait", "w-before"));
+    await replaced.harness.emit("session_switch", { type: "session_switch" });
+    expect(replaced.clock.pending).toBe(0);
+    replaced.clock.advance(6 * MIN);
+    expect(asides(replaced.harness.sent)).toHaveLength(0);
+  });
 });
