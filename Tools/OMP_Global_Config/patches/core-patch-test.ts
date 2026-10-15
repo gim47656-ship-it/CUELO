@@ -1899,11 +1899,16 @@ const mnemopiSession = (options: { stateAutoRetain?: boolean; settingsAutoRetain
 	} as never);
 	return session;
 };
+// 18.11.0 은 buildDeveloperInstructions(agentDir, cwd, settings, session) 로 cwd 를 받는다(#15375). 18.10.x 는
+// (agentDir, settings, session) 이다. 두 판 모두 이 하네스가 도므로 선언된 인자 수로 호출 모양을 고른다.
+const buildMnemopiInstructions = (settings: never, session: never) =>
+	mnemopiBackend.buildDeveloperInstructions.length >= 4
+		? (mnemopiBackend.buildDeveloperInstructions as (...args: unknown[]) => Promise<string | undefined>)("", "", settings, session)
+		: (mnemopiBackend.buildDeveloperInstructions as (...args: unknown[]) => Promise<string | undefined>)("", settings, session);
 const mnemopiGuidance = async (options: { stateAutoRetain?: boolean; settingsAutoRetain: boolean }) =>
-	(await mnemopiBackend.buildDeveloperInstructions(
-		"",
+	(await buildMnemopiInstructions(
 		mnemopiSettings(options.settingsAutoRetain),
-		options.stateAutoRetain === undefined ? undefined : mnemopiSession(options),
+		(options.stateAutoRetain === undefined ? undefined : mnemopiSession(options)) as never,
 	)) ?? "";
 
 const mnemopiGuidanceOn = await mnemopiGuidance({ settingsAutoRetain: true });
@@ -2296,7 +2301,7 @@ process.exit(0);`;
 console.log("\nCUELO Next 서버 env 를 이름 있는 service 에도 넘기지 않는다");
 {
 	const serviceProbe = `const { Settings } = await import(${JSON.stringify(`${CORE}/config/settings.ts`)});
-const { startService, stopService } = await import(${JSON.stringify(`${CORE}/launch/services.ts`)});
+const { startService, stopService, serviceLogs } = await import(${JSON.stringify(`${CORE}/launch/services.ts`)});
 const { closeDaemonClients } = await import(${JSON.stringify(`${CORE}/launch/client.ts`)});
 const session = { cwd: process.cwd(), settings: Settings.isolated({ "launch.enabled": true }), getSessionId: () => "hanse-service-env" };
 const lines = [];
@@ -2310,7 +2315,9 @@ for (const pty of JSON.parse(process.env.HANSE_PROBE_PTY ?? "[false]")) {
 		// 18.4.4 는 launch 가 env 를 받지 않는다. bash 도구 패치가 하는 것과 같이 명시 env 는 명령 앞 export 로 넣는다.
 		ready: { log: "PROBE NODE_ENV", timeout: 20 },
 	});
-	lines.push((started.log.split(/\\r?\\n/).find(line => line.includes("PROBE NODE_ENV")) ?? "<none>").trim());
+	// 18.11.0 은 startService 결과에서 log 를 뺐다(#15653). 18.10.x 는 결과에 싣는다.
+	const log = started.log ?? await serviceLogs(session, name);
+	lines.push((log.split(/\\r?\\n/).find(line => line.includes("PROBE NODE_ENV")) ?? "<none>").trim());
 	await stopService(session, name).catch(() => {});
 }
 console.log(JSON.stringify(lines));
@@ -2820,7 +2827,7 @@ console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 �
 		JSON.stringify(cueloRecorded) === JSON.stringify([{ customType: "mnemopi-recall", data: { ids: ["lesson-ps-dollar"] } }]),
 		`recorded=${JSON.stringify(recorded)}`,
 	);
-	const childGuidance = (await mnemopiBackend.buildDeveloperInstructions("", mnemopiSettings(false), childSession)) ?? "";
+	const childGuidance = (await buildMnemopiInstructions(mnemopiSettings(false), childSession)) ?? "";
 	check(
 		"child 안내에는 자기 회상이 실리고 부모 첫 턴 회상은 빠진다",
 		childGuidance.includes("lesson-ps-dollar") && !childGuidance.includes("PARENT-FIRST-TURN-SNIPPET"),

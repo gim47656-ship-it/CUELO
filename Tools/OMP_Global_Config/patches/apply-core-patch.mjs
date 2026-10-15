@@ -1347,14 +1347,24 @@ Project-wide validation is the main agent's job, run once after all subagents la
 	// 2026-10-14 공개 이슈 #25: browser.run 이 끝날 때 run 동안 page.on 으로 붙은 listener 를 모두 떼면서 Puppeteer 가
 	// request 마다 자기 handler 안에서 단 완료 구독(requestfinished·requestfailed·response)까지 뗐다. 앞 run 에서 시작해
 	// 그 뒤에 끝난 요청이 in-flight 로 남아 다음 run 의 waitForNetworkIdle 이 타임아웃된다. upstream b32ac7d·05fda95·
-	// 2a7ad69(18.10.4 이후 main, 아직 정식판 없음)의 createRunPageScope 를 그대로 옮긴다. 아래 세 항목이 한 묶음이다.
-	// upstream 정식판이 같은 함수를 실으면 marker 가 순정에서 applied 로 읽히므로, 그 판으로 올릴 때 RETIRE 한다.
+	// 2a7ad69 의 createRunPageScope 를 그대로 옮긴 것이고, 아래 세 항목이 한 묶음이다. 18.11.0 정식판(#15495)이 같은
+	// 함수를 실어 세 항목 모두 그 판에서는 no-op 후보로 RETIRE 했다(18.10.3·18.10.4 는 본 후보가 계속 필요하다).
 	// 회귀 시험: core-browser-run-scope-test.ts(src·dist 양쪽, 실제 puppeteer-core Page·HTTPRequest).
 	{
 		file: "src/tools/browser/tab-worker.ts",
 		marker: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
 		anchor: "\tFrame,\n\tHTTPResponse,",
 		patched: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
+		// 2026-10-15 18.11.0 RETIRE: 정식판이 HTTPRequest import 까지 포함한 같은 createRunPageScope(upstream #15495)를 싣는다.
+		// 판은 18.11.0 에만 있는 text()/html() selector 선택 인자 주석으로 가른다. 그 판에서는 no-op 이다.
+		excludes: "Without a selector, reads the page `<body>`.",
+		alternates: [{
+			file: "src/tools/browser/tab-worker.ts",
+			requires: "Without a selector, reads the page `<body>`.",
+			marker: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
+			anchor: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
+			patched: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
+		}],
 	},
 	{
 		file: "src/tools/browser/tab-worker.ts",
@@ -1681,6 +1691,16 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		},
 	};
 }`,
+		// 2026-10-15 18.11.0 RETIRE: 정식판이 같은 createRunPageScope(upstream #15495)를 싣는다(함수 본문이 위 patched 와 바이트 동일).
+		// 판은 18.11.0 에만 있는 text()/html() selector 선택 인자 주석으로 가른다. 그 판에서는 no-op 이다.
+		excludes: "Without a selector, reads the page `<body>`.",
+		alternates: [{
+			file: "src/tools/browser/tab-worker.ts",
+			requires: "Without a selector, reads the page `<body>`.",
+			marker: '\tconst emitDescriptor = Object.getOwnPropertyDescriptor(page, "emit");',
+			anchor: '\tconst emitDescriptor = Object.getOwnPropertyDescriptor(page, "emit");',
+			patched: '\tconst emitDescriptor = Object.getOwnPropertyDescriptor(page, "emit");',
+		}],
 	},
 	{
 		// 위 함수의 CLI 번들(dist/cli.js, Linux `omp`) 판. 축약본은 18.10.4 번들 그대로이고, 적용본은 위 patched 에서
@@ -1690,6 +1710,16 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		marker: 'const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit")',
 		anchor: `function B$l(e,t){let n=new Map,{on:s,off:o,once:r,setRequestInterception:i}=e,a=Object.getOwnPropertyDescriptor(e,"on"),l=Object.getOwnPropertyDescriptor(e,"off"),u=Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"removeAllListeners"),c=Object.getOwnPropertyDescriptor(e,"setRequestInterception"),d=!1,f=(g,h)=>{let y=n.get(g);if(y)y.push(h);else n.set(g,[h])},m=(g,h)=>{let y=n.get(g);if(!y)return;if(h===void 0){for(let b of y)Reflect.apply(o,e,[g,b]);n.delete(g);return}let T=y.lastIndexOf(h);if(T<0)return;if(Reflect.apply(o,e,[g,h]),y.splice(T,1),y.length===0)n.delete(g)};return Object.defineProperties(e,{on:{configurable:!0,value:(g,h)=>(Reflect.apply(s,e,[g,h]),f(g,h),e)},once:{configurable:!0,value:(g,h)=>{if(typeof h!=="function")return Reflect.apply(r,e,[g,h]),e;let y=(T)=>{m(g,y),Reflect.apply(h,e,[T])};return f(g,y),Reflect.apply(s,e,[g,y]),e}},off:{configurable:!0,value:(g,h)=>(m(g,h),e)},removeAllListeners:{configurable:!0,value:(g)=>{if(g!==void 0)m(g);else for(let h of n.keys())m(h);return e}},setRequestInterception:{configurable:!0,value:(g)=>(d=!0,Reflect.apply(i,e,[g]))}}),{page:e,detach(){if(a)Object.defineProperty(e,"on",a);else Reflect.deleteProperty(e,"on");if(l)Object.defineProperty(e,"off",l);else Reflect.deleteProperty(e,"off");if(u)Object.defineProperty(e,"once",u);else Reflect.deleteProperty(e,"once");if(p)Object.defineProperty(e,"removeAllListeners",p);else Reflect.deleteProperty(e,"removeAllListeners");if(c)Object.defineProperty(e,"setRequestInterception",c);else Reflect.deleteProperty(e,"setRequestInterception");for(let[g,h]of n)for(let y of h)Reflect.apply(o,e,[g,y]);n.clear()},async restoreInterception(){if(!d)return;try{await ga(t(),D$l,"Timed out restoring browser request interception")}catch(g){throw new ies("Failed to restore browser request interception after browser.run",{error:g instanceof Error?g.message:String(g)})}}}}`,
 		patched: `function B$l(page,restoreInterception){const handlers=new Map;const listeners=new Map;const on=page.on;const off=page.off;const once=page.once;const emit=page.emit;const setRequestInterception=page.setRequestInterception;const onDescriptor=Object.getOwnPropertyDescriptor(page,"on");const offDescriptor=Object.getOwnPropertyDescriptor(page,"off");const onceDescriptor=Object.getOwnPropertyDescriptor(page,"once");const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit");const removeAllDescriptor=Object.getOwnPropertyDescriptor(page,"removeAllListeners");const interceptionDescriptor=Object.getOwnPropertyDescriptor(page,"setRequestInterception");let interceptionChanged=false;let delivering=false;const withDelivering=(value,fn)=>{const outer=delivering;delivering=value;try{return fn()}finally{delivering=outer}};const listenerFor=(handler)=>{let listener=listeners.get(handler);if(!listener){listener=(...args)=>withDelivering(false,()=>Reflect.apply(handler,undefined,args));listeners.set(handler,listener)}return listener};const remember=(type,handler)=>{const owned=handlers.get(type);if(owned)owned.push(handler);else handlers.set(type,[handler]);Reflect.apply(on,page,[type,listenerFor(handler)])};const forget=(type,handler)=>{const owned=handlers.get(type);if(!owned)return false;if(handler===undefined){for(const registered of owned)Reflect.apply(off,page,[type,listenerFor(registered)]);handlers.delete(type);return true}const index=owned.findLastIndex((registered)=>registered===handler);if(index<0)return false;Reflect.apply(off,page,[type,listenerFor(owned[index])]);owned.splice(index,1);if(owned.length===0)handlers.delete(type);return true};Object.defineProperties(page,{on:{configurable:true,value:(type,handler)=>{if(delivering||typeof handler!=="function")Reflect.apply(on,page,[type,handler]);else remember(type,handler);return page}},once:{configurable:true,value:(type,handler)=>{if(delivering||typeof handler!=="function"){Reflect.apply(once,page,[type,handler]);return page}const wrapper=(event)=>{forget(type,wrapper);Reflect.apply(handler,page,[event])};remember(type,wrapper);return page}},off:{configurable:true,value:(type,handler)=>{if(!forget(type,handler)&&handler!==undefined)Reflect.apply(off,page,[type,handler]);return page}},emit:{configurable:true,value:(type,event)=>{const request=type==="request"&&typeof event==="object"?event:null;const enqueue=request?.enqueueInterceptAction;if(!request||typeof enqueue!=="function"){return withDelivering(true,()=>Reflect.apply(emit,page,[type,event]))}const enqueueDescriptor=Object.getOwnPropertyDescriptor(request,"enqueueInterceptAction");Object.defineProperty(request,"enqueueInterceptAction",{configurable:true,value:(action)=>{const queued=delivering;Reflect.apply(enqueue,request,[()=>withDelivering(queued,action)])}});try{return withDelivering(true,()=>Reflect.apply(emit,page,[type,event]))}finally{if(enqueueDescriptor)Object.defineProperty(request,"enqueueInterceptAction",enqueueDescriptor);else Reflect.deleteProperty(request,"enqueueInterceptAction")}}},removeAllListeners:{configurable:true,value:(type)=>{if(type!==undefined)forget(type);else{for(const ownedType of handlers.keys())forget(ownedType)}return page}},setRequestInterception:{configurable:true,value:(value)=>{interceptionChanged=true;return Reflect.apply(setRequestInterception,page,[value])}}});return{page,detach(){if(onDescriptor)Object.defineProperty(page,"on",onDescriptor);else Reflect.deleteProperty(page,"on");if(offDescriptor)Object.defineProperty(page,"off",offDescriptor);else Reflect.deleteProperty(page,"off");if(onceDescriptor)Object.defineProperty(page,"once",onceDescriptor);else Reflect.deleteProperty(page,"once");if(emitDescriptor)Object.defineProperty(page,"emit",emitDescriptor);else Reflect.deleteProperty(page,"emit");if(removeAllDescriptor)Object.defineProperty(page,"removeAllListeners",removeAllDescriptor);else Reflect.deleteProperty(page,"removeAllListeners");if(interceptionDescriptor)Object.defineProperty(page,"setRequestInterception",interceptionDescriptor);else Reflect.deleteProperty(page,"setRequestInterception");for(const[type,owned]of handlers){for(const handler of owned)Reflect.apply(off,page,[type,listenerFor(handler)])}handlers.clear()},async restoreInterception(){if(!interceptionChanged)return;try{await ga(restoreInterception(),D$l,"Timed out restoring browser request interception")}catch(error){throw new ies("Failed to restore browser request interception after browser.run",{error:error instanceof Error?error.message:String(error)})}}}}`,
+		// 2026-10-15 18.11.0 RETIRE: 정식판 dist 가 같은 함수(upstream #15495, emit descriptor 포함)를 이미 싣는다. 판 구분은
+		// `Timed out restoring…` 앞 축약 이름(D$l=18.10.4)이다. 18.10.3 후보는 아래 파일 끝쪽 블록이 토큰 이름만 바꿔 더한다.
+		requires: ',D$l,"Timed out restoring browser request interception',
+		alternates: [{
+			file: "dist/cli.js",
+			requires: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			marker: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			anchor: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			patched: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+		}],
 	},
 	{
 		// 도구 프롬프트가 "target 없으면 visible 탭을 채택한다"고 명시한다.
@@ -11991,6 +12021,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-15 18.11.0: $Me는 같은 isAdvisorTranscriptName 함수다(`e===jMe||e.startsWith(\`${GMe}.\`)&&e.endsWith(cpe)`,
+			// GMe="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -14166,6 +14203,22 @@ interface ComputerElementRef
 			patched: rename(entry.patched),
 		});
 	}
+}
+// 2026-10-15 18.10.3: 공개 이슈 #25 dist 항목은 18.10.4 번들의 축약 이름(B$l·ga·D$l·ies)으로 쓰였다. 18.10.3 번들은 같은
+// 함수를 Wjl·ma·Njl·bZn 으로 축약했을 뿐 본문이 같아서, 식별자 토큰만 바꾼 후보를 만든다(문자열 치환이 아니라 토큰 단위이므로
+// 짧은 이름이 다른 식별자의 일부와 섞이지 않는다). 세 번들은 `Timed out restoring…` 앞 축약 이름으로 서로 배타적이다.
+{
+	const RENAMED_1810_3 = { "B$l": "Wjl", ga: "ma", "D$l": "Njl", ies: "bZn" };
+	const rename = text => text.split(/([A-Za-z0-9_$]+)/).map(token => RENAMED_1810_3[token] ?? token).join("");
+	const bundle = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker === 'const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit")');
+	if (!bundle?.requires || bundle.alternates?.length !== 1) throw new Error("18.10.3 browser.run dist 후보를 만들 수 없다");
+	bundle.alternates.push({
+		file: bundle.file,
+		requires: ',Njl,"Timed out restoring browser request interception',
+		marker: bundle.marker,
+		anchor: rename(bundle.anchor),
+		patched: rename(bundle.patched),
+	});
 }
 // These deltas amend code introduced by the original watch patch, not upstream code.
 // Fold before preflight so clean installs see upstream anchors; retain the old whole

@@ -144,7 +144,8 @@ function makeRecoveryHarness(registry: InstanceType<typeof ModelRegistry>, sessi
 	const continues: string[] = [];
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
 	const agent = {
-		state: { messages: [] as unknown[] },
+		// 18.11.0 fallback 교체는 요청 표면(systemPrompt·tools)이 그대로인지 비교한다(#15702). 실제 Agent state 는 둘 다 항상 배열이다.
+		state: { messages: [] as unknown[], systemPrompt: [] as unknown[], tools: [] as unknown[] },
 		replaceMessages(next: unknown[]) {
 			agent.state.messages = next;
 		},
