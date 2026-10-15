@@ -2,10 +2,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bu
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
-import { analyzeGuardEffects } from "../../../evals/analyze-guard-effects.mjs";
-import { analyzeLessonRecurrence } from "../../../evals/analyze-lesson-recurrence.mjs";
 import draft from "../draft";
 import * as realPdf from "../draft/pdf";
 import skim, { DEEPSEEK, GEMINI } from "../skim";
@@ -271,7 +270,18 @@ describe("helper tool result contract through the SDK", () => {
     expect(requested).toEqual(["deepseek-v4.1-flash"]);
   });
 
-  test("실제로 남은 세션 transcript를 두 분석기가 읽는다: 최종 실패는 오류로, 성공한 fallback은 오류 없이 센다", async () => {
+});
+
+// 분석기(evals/)는 .publicignore로 공개 미러에 없다. 공개 checkout에서는 이 분석기 소비 검증만 건너뛰고 위의 SDK 검증은 모두 실행한다.
+const guardPath = fileURLToPath(new URL("../../../evals/analyze-guard-effects.mjs", import.meta.url));
+const recurrencePath = fileURLToPath(new URL("../../../evals/analyze-lesson-recurrence.mjs", import.meta.url));
+const analyzersPresent = existsSync(guardPath) && existsSync(recurrencePath);
+
+describe.skipIf(!analyzersPresent)("비공개 evals 분석기가 SDK 세션 transcript를 읽는다 (공개 checkout에서는 건너뜀)", () => {
+  test("최종 실패는 오류로, 성공한 fallback은 오류 없이 센다", async () => {
+    // 경로가 런타임에 정해지고(공개 미러에는 파일이 없다) 정적 import는 공개 checkout의 모듈 로드를 깨므로 지연 import한다.
+    const { analyzeGuardEffects } = await import(pathToFileURL(guardPath).href);
+    const { analyzeLessonRecurrence } = await import(pathToFileURL(recurrencePath).href);
     behavior["glm-fake"] = "fail";
     behavior["deepseek-v4.1-flash"] = "fail";
     const failed = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
@@ -279,8 +289,8 @@ describe("helper tool result contract through the SDK", () => {
     const fallback = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
     expect([failed.isError, fallback.isError]).toEqual([true, false]);
     const lesson = { id: "helper-final-failure", since: "2000-01-01T00:00:00Z", pattern: "model: none", callPattern: "guide\\.md" };
-    const guard = (dir: string) => analyzeGuardEffects({ sessionsDir: dir, since: undefined, until: undefined }).weeks.reduce((sum: number, week: { toolErrors: number }) => sum + week.toolErrors, 0);
-    const recurrence = (dir: string) => analyzeLessonRecurrence({ lessons: [lesson], sessionsDir: dir, ledgerPath: undefined })[0]!.after;
+    const guard = (dir: string): number => analyzeGuardEffects({ sessionsDir: dir }).weeks.reduce((sum: number, week: { toolErrors: number }) => sum + week.toolErrors, 0);
+    const recurrence = (dir: string) => analyzeLessonRecurrence({ lessons: [lesson], sessionsDir: dir })[0].after;
     expect(guard(failed.sessionsDir)).toBe(1);
     expect(recurrence(failed.sessionsDir)).toMatchObject({ calls: 1, matches: 1, episodes: 1 });
     expect(guard(fallback.sessionsDir)).toBe(0);
