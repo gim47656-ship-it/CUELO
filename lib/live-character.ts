@@ -2,7 +2,7 @@ import { CHARACTER_ROSTER, providerAccountFace } from "./hanse-resource-client";
 import type { AgentSessionLike } from "./omp-types";
 
 /**
- * 통화가 지금 말해야 할 캐릭터 — 이 세션의 Main이 실제로 쓰는 계정에서 정한다.
+ * 통화 기록이 귀속할 캐릭터 — 이 세션의 Main이 실제로 쓰는 계정에서 정한다.
  *
  * 화면의 얼굴(`useAccountFace`)과 전역 `character-voice` 확장과 같은 규칙이다.
  * 계정이 하나뿐인 provider는 예약된 얼굴, 계정이 여럿인 provider(Anthropic의 RIN·MIO)는
@@ -11,8 +11,7 @@ import type { AgentSessionLike } from "./omp-types";
  * 열려 있어도 각자의 계정으로 갈린다. 둘 이상이면 추측하지 않고 `null`이다.
  *
  * 첫 요청 전의 새 세션은 아직 pin이 없다. `pinCredential`이 주어지면 그때만 한 번 불러 이 세션의
- * 계정을 정한 뒤 다시 읽는다. 통화 시작은 이것으로 계정을 먼저 정해야 한다. 정하지 못하면 통화가
- * Codex 기본 음성으로 시작하고, 기본 음성은 통화 도중 캐릭터 음성으로 바뀌지 않는다.
+ * 계정을 정한 뒤 다시 읽는다. 통화 시작은 이것으로 계정을 먼저 정해야 통화 기록에 캐릭터가 남는다.
  */
 export async function resolveLiveCharacter(
   session: Pick<AgentSessionLike, "model" | "listCurrentProviderOAuthAccounts">,

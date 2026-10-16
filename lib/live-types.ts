@@ -14,7 +14,10 @@ export const LIVE_TRANSCRIPT_MESSAGE_TYPE = "live-transcript";
 
 export interface LiveTranscriptDetails {
   role: LiveTranscriptRole;
-  /** assistant 턴을 실제로 말한 캐릭터와 음성 모드. 판별하지 못했으면 없다. */
+  /**
+   * assistant 턴이 귀속된 캐릭터. 새 통화는 항상 `native`(Codex 목소리)로 남기고, `character`는
+   * 캐릭터 통화 음성이 있던 때 저장된 기록에서만 나온다. 판별하지 못했으면 없다.
+   */
   speaker?: { alias: string; mode: "character" | "native" };
 }
 
@@ -217,12 +220,6 @@ export interface LiveOfferResponse {
   callId: string;
   /** Answer SDP returned verbatim by Codex signaling. */
   sdp: string;
-  /**
-   * Who speaks this call. The browser reads it before applying the answer, so
-   * in character mode the native Codex track is never attached and the two
-   * voices cannot overlap.
-   */
-  voice: LiveVoiceMode;
 }
 
 export interface LiveVoiceOption {
@@ -237,72 +234,13 @@ export interface LiveVoices {
   defaultVoice: string;
 }
 
-/**
- * Who the user wants to speak a call. `character` uses the character's
- * Cartesia voice when it is ready (and falls back to Codex when it is not);
- * `native` always uses the Codex voice, even with a stored key.
- */
-export type LiveSpeaker = "character" | "native";
-
-/**
- * - `character`: the server synthesizes the assistant transcript with this
- *   character's private Cartesia voice and streams PCM over the event stream.
- * - `native`: the Codex voice plays over WebRTC. `reason` says why a
- *   configured installation is not using the character voice; `no-key` is the
- *   ordinary Codex-only flow and `preferred` the user's own choice, and
- *   neither shows a notice.
- */
-export type LiveVoiceMode =
-  | { mode: "character"; alias: string; tuning: "accepted" | "provisional" }
-  | { mode: "native"; alias: string | null; reason: "no-key" | "preferred" | "character-unknown" | "voice-not-ready" };
-
-/** Character speech arrives as raw mono `pcm_s16le` at this rate, base64 per event. */
-export const LIVE_SPEECH_SAMPLE_RATE = 24_000;
-
 export type LiveEvent =
   | { type: "state"; state: LiveState }
   | { type: "transcript"; role: LiveTranscriptRole; text: string; final: boolean }
   | { type: "delegation"; status: "started" | "completed"; request?: string }
-  | { type: "voice"; voice: LiveVoiceMode }
-  /** One PCM chunk. Chunks from an `epoch` older than the latest reset are stale. */
-  | { type: "speech"; epoch: number; audio: string }
-  /** Drop every queued and playing chunk; only chunks of `epoch` or later play. */
-  | { type: "speech-reset"; epoch: number }
-  /** Character speech can no longer be produced; the call ends instead of going silent. */
-  | { type: "speech-error"; message: string }
   | { type: "error"; message: string };
 
 export interface LiveErrorBody {
   error: "bad-request" | "live-auth" | "not-found" | "live-upstream";
   message?: string;
-}
-
-export type LiveCharacterVoiceState =
-  | "ready"
-  | "not-prepared"
-  | "preparing"
-  /** A paid request may have landed; the next preparation reconciles the owned list first. */
-  | "needs-check"
-  | "failed"
-  | "missing-asset";
-
-export interface LiveCharacterVoiceStatus {
-  id: string;
-  alias: string;
-  state: LiveCharacterVoiceState;
-  tuning?: "accepted" | "provisional";
-  error?: string;
-}
-
-/** `GET /api/live/character-voice`. Local state only: reading it never calls the provider. */
-export interface LiveCharacterVoiceSettings {
-  configured: boolean;
-  /** Masked key (`sk_car_…abcd`), never the key itself. */
-  keyHint: string | null;
-  preparing: boolean;
-  acknowledgedAt: string | null;
-  characters: LiveCharacterVoiceStatus[];
-  lastError: string | null;
-  /** The user's speaker choice; `character` when never chosen. */
-  speaker: LiveSpeaker;
 }

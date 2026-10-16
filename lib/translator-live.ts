@@ -23,7 +23,7 @@ import type { TranslatorLanguage } from "./translator-languages";
  * - 지시는 고른 두 언어로 만든 통역 지시뿐이다.
  * - 위임이 와도 아무것도 실행하지 않는다. 소리 내지 않는 commentary 채널로 "여기는 백엔드가 없다"고만
  *   돌려준다.
- * - 목소리는 설정의 Codex 목소리(`live.voice`)다(캐릭터 음성 없음).
+ * - 목소리는 설정의 Codex 목소리(`live.voice`)다.
  *
  * 통화 id는 Codex가 붙인 `rtc_*`라 세션 통화와 겹치지 않는다. 이벤트 스트림과 끊기는 기존
  * `/api/live/events`·`/api/live/call/[callId]`가 세션 통화를 먼저 찾고, 없을 때 여기서 찾는다.

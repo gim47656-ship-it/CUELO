@@ -2,7 +2,6 @@
 
 import { useI18n } from "@/hooks/useI18n";
 import { useLiveVoice, type LiveFailure } from "@/hooks/useLiveVoice";
-import type { LiveVoiceMode } from "@/lib/live-types";
 
 /**
  * Composer control for a Codex live voice call.
@@ -10,12 +9,8 @@ import type { LiveVoiceMode } from "@/lib/live-types";
  * The call speaks with the same assistant the transcript belongs to: anything
  * the voice model cannot answer on its own is delegated to this session, and
  * the agent's answer is read back. Status is shown as text, not as a pulsing
- * dot, so it stays legible at a glance and to a screen reader.
- *
- * With a Cartesia key and prepared voices, the current Main character speaks in
- * its own private voice. The key, the consent, and the one explicit preparation
- * step live in Settings → Call voice (`LiveVoiceConfig`), so the composer keeps
- * only this start/end control.
+ * dot, so it stays legible at a glance and to a screen reader. The spoken
+ * voice is the Codex voice chosen in Settings → Call voice.
  */
 
 interface LiveVoiceButtonProps {
@@ -35,7 +30,6 @@ const FAILURE_KEYS: Record<LiveFailure, string> = {
   "mic-unavailable": "chat.liveMicUnavailable",
   auth: "chat.liveAuthRequired",
   upstream: "chat.liveUpstreamFailed",
-  voice: "chat.liveVoiceFailed",
   failed: "chat.liveFailed",
 };
 
@@ -52,17 +46,6 @@ const HANGUP_ICON = (
     <rect x="4" y="4" width="16" height="16" rx="3" />
   </>
 );
-
-function voiceLabel(voice: LiveVoiceMode | null, t: (key: string, values?: Record<string, string>) => string): string | null {
-  if (!voice) return null;
-  if (voice.mode === "character") {
-    const name = t("chat.liveVoiceCharacter", { name: voice.alias });
-    return voice.tuning === "provisional" ? `${name} · ${t("chat.liveVoiceProvisional")}` : name;
-  }
-  if (voice.reason === "voice-not-ready" && voice.alias) return t("chat.liveVoiceNativeNotReady", { name: voice.alias });
-  if (voice.reason === "character-unknown") return t("chat.liveVoiceNativeUnknown");
-  return null;
-}
 
 export function LiveVoiceButton({ sessionId, onEnsureSession, onTranscriptPersisted }: LiveVoiceButtonProps) {
   const { t } = useI18n();
@@ -88,10 +71,9 @@ export function LiveVoiceButton({ sessionId, onEnsureSession, onTranscriptPersis
   // says why instead of vanishing from the composer.
   const canCall = Boolean(sessionId || onEnsureSession);
   const hintKey = canCall ? null : "chat.liveNeedsSession";
-  const speaker = active ? voiceLabel(live.voice, t) : null;
 
   return (
-    // 좁은 줄에서는 상태·화자 글자만 줄어들고(말줄임, 전체는 title) 시작/종료 버튼은 줄지 않는다.
+    // 좁은 줄에서는 상태 글자만 줄어들고(말줄임) 시작/종료 버튼은 줄지 않는다.
     <div role="group" aria-label={t("chat.liveVoice")} style={{ display: "flex", alignItems: "center", gap: 6, flex: "0 1 auto", minWidth: 0 }}>
       {failureKey && (
         <span
@@ -113,14 +95,6 @@ export function LiveVoiceButton({ sessionId, onEnsureSession, onTranscriptPersis
       {statusKey && (
         <span style={{ fontSize: 11, color: "var(--text-muted)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {t(statusKey)}
-        </span>
-      )}
-      {speaker && (
-        <span
-          style={{ fontSize: 11, color: "var(--text-muted)", maxWidth: 200, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          title={speaker}
-        >
-          {speaker}
         </span>
       )}
       <button

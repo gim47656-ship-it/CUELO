@@ -34,9 +34,6 @@ import { getRpcSession, startRpcSession, type AgentSessionWrapper } from "./rpc-
 import { invalidateSessionListCache, resolveSessionPath } from "./session-reader";
 import { getOmpRuntime, getSettingsForCwd } from "./omp-runtime";
 import { resolveLiveCharacter } from "./live-character";
-import { getLiveVoiceService } from "./live-character-voice-runtime";
-import { CharacterSpeech } from "./live-speech";
-import type { LiveVoiceGeneration } from "./live-voice-manifest";
 import {
   extractLiveWireId,
   formatLiveTranscriptContent,
@@ -51,7 +48,6 @@ import {
   type LiveTranscriptDetails,
   type LiveTranscriptRole,
   type LiveTranscriptTurn,
-  type LiveVoiceMode,
   type LiveVoices,
 } from "./live-types";
 
@@ -118,23 +114,11 @@ interface LiveCall extends LiveCallCore {
   detachAgent: () => void;
   activeDelegationId: string | undefined;
   persistTail: Promise<void>;
-  /** Who speaks this call; fixed at start, changed only by a resolved Main switch. */
-  voice: LiveVoiceMode;
-  /** Character speech in `character` mode. Native Codex audio is never played then. */
-  speech: CharacterSpeech | undefined;
-  /** Key the speech socket was opened with; a switch must stay on that account. */
-  speechKey: string | undefined;
-  /** Serializes Main re-resolution and the assistant speech that must wait for it. */
-  characterCheck: Promise<void>;
   /**
-   * Pending checks plus assistant frames queued behind them. While non-zero, new
-   * assistant speech joins the queue so the next Main never speaks in the old voice.
+   * The Main character this call is attributed to, resolved when the call opens.
+   * It only labels transcript turns; the voice is always the Codex voice.
    */
-  speechHold: number;
-  /** Bumped when the user talks over the assistant; queued frames from before are dropped. */
-  speechGen: number;
-  /** An assistant response is being spoken; its first frame already started a Main check. */
-  assistantResponseOpen: boolean;
+  alias: string | null;
 }
 
 declare global {
@@ -316,9 +300,9 @@ function queueFinalTranscript(
   text: string,
 ): void {
   call.persistTail = call.persistTail.then(async () => {
-    // 화자는 이 턴이 끝난 시점의 통화 음성이다(Main 교체로 바뀌었으면 바뀐 쪽). 모르면 남기지 않는다.
-    const details: LiveTranscriptDetails = role === "assistant" && call.voice.alias
-      ? { role, speaker: { alias: call.voice.alias, mode: call.voice.mode } }
+    // 화자는 통화가 열릴 때 확인한 Main 캐릭터다. 모르면 남기지 않는다.
+    const details: LiveTranscriptDetails = role === "assistant" && call.alias
+      ? { role, speaker: { alias: call.alias, mode: "native" } }
       : { role };
     const manager = wrapper.inner.sessionManager;
     const content = formatLiveTranscriptContent(role, text);
@@ -490,79 +474,7 @@ export function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void
   setState(call, "live");
 }
 
-/**
- * Follow a Main switch made during the call (`린으로 교체해` in chat, or a
- * delegated switch). Assistant speech that arrives while this runs waits for it
- * (`speakAssistant`), so the answer after a switch is never sent in the previous
- * character's voice. A ready new character takes over after the old character's
- * queued audio is cleared. An unready character, an unresolved identity, or a
- * failed lookup ends the call explicitly instead of carrying on in the old voice.
- */
-function refreshCharacter(call: LiveCall, wrapper: AgentSessionWrapper): void {
-  if (call.voice.mode !== "character") return;
-  // 끝내기로 정한 순간부터 아무 목소리도 내지 않는다. 통화 정리는 비동기라 그 사이 오는 답도 막는다.
-  const end = (message: string) => {
-    call.speechGen += 1;
-    call.speech?.reset();
-    call.speech?.close();
-    call.speech = undefined;
-    emit(call, { type: "speech-error", message });
-    void closeLiveCall(call.callId);
-  };
-  call.speechHold += 1;
-  call.characterCheck = call.characterCheck.then(async () => {
-    if (call.closed || !call.speech || call.voice.mode !== "character") return;
-    const alias = await resolveLiveCharacter(wrapper.inner);
-    if (call.closed || !call.speech) return;
-    if (!alias) {
-      end("지금 Main 캐릭터를 확인하지 못해 다른 목소리로 말하지 않도록 통화를 끝냈습니다.");
-      return;
-    }
-    if (alias === call.voice.alias) return;
-    const plan = await getLiveVoiceService().planFor(alias);
-    if (call.closed || !call.speech) return;
-    if (plan.kind === "ready" && plan.apiKey === call.speechKey) {
-      call.speech.setVoice({ voiceId: plan.voiceId, generation: plan.profile.generation });
-      call.voice = { mode: "character", alias, tuning: plan.profile.tuning };
-      emit(call, { type: "voice", voice: call.voice });
-      return;
-    }
-    end(`Main이 ${alias}(으)로 바뀌었지만 그 캐릭터 통화 음성이 준비되지 않아 통화를 끝냈습니다.`);
-  }).catch(() => {
-    if (!call.closed) end("Main 캐릭터를 확인하지 못해 통화를 끝냈습니다.");
-  }).finally(() => {
-    call.speechHold -= 1;
-  });
-}
-
-/**
- * Assistant transcript to the character voice, in order behind any pending Main check.
- * The first frame of every assistant response — a partial or a final-only turn — first
- * re-resolves Main and waits behind that check. The native order lets assistant partials
- * start before the user's final turn, so checking at the user's `turn.done` is too late:
- * the opening frames went out in the previous character's voice.
- */
-function speakAssistant(call: LiveCall, wrapper: AgentSessionWrapper, text: string, final: boolean): void {
-  if (!call.speech) return;
-  if (!call.assistantResponseOpen) {
-    call.assistantResponseOpen = true;
-    refreshCharacter(call, wrapper);
-  }
-  if (final) call.assistantResponseOpen = false;
-  if (call.speechHold === 0) {
-    call.speech?.assistantText(text, final);
-    return;
-  }
-  const gen = call.speechGen;
-  call.speechHold += 1;
-  call.characterCheck = call.characterCheck.then(() => {
-    call.speechHold -= 1;
-    if (call.closed || gen !== call.speechGen) return;
-    call.speech?.assistantText(text, final);
-  });
-}
-
-/** One decoded sideband event. Exported so the speech/Main-switch ordering can be tested without a socket. */
+/** One decoded sideband event. Exported so the relay to the live model can be tested without a socket. */
 export function handleServerEvent(call: LiveCall, wrapper: AgentSessionWrapper, event: LiveServerEvent, wireId: string | undefined): void {
   switch (event.type) {
     case "session.started":
@@ -570,36 +482,20 @@ export function handleServerEvent(call: LiveCall, wrapper: AgentSessionWrapper, 
       sendSessionHistory(call, wrapper);
       return;
     case "input_transcript.added": {
-      const previous = call.transcripts.user;
       const text = updateTranscript(call, "user", event.item.text, false, wireId);
       if (!text) return;
       emit(call, { type: "transcript", role: "user", text, final: false });
-      // Native ASR lags the audio: partials of the very user turn this response answers
-      // keep arriving after the assistant started. They extend the unfinished turn's text
-      // (and keep its wire id when one is present), so they are not the user talking over
-      // the answer and must not restart it.
-      const sameItem = wireId === undefined || previous.itemId === undefined || wireId === previous.itemId;
-      const lateTranscript = call.assistantResponseOpen && !previous.final && previous.text !== "" && sameItem && text.startsWith(previous.text);
-      if (lateTranscript) return;
-      // The user is talking over the assistant: drop what is still queued or playing,
-      // including frames still waiting behind a Main check. The next assistant frame
-      // starts a new response and checks Main again.
-      call.speechGen += 1;
-      call.assistantResponseOpen = false;
-      call.speech?.reset();
       return;
     }
     case "output_transcript.added": {
       const text = updateTranscript(call, "assistant", event.item.text, false, wireId);
       if (!text) return;
       emit(call, { type: "transcript", role: "assistant", text, final: false });
-      speakAssistant(call, wrapper, text, false);
       return;
     }
     case "turn.done": {
       const text = updateTranscript(call, event.turn.role, event.turn.transcript, true, wireId);
       if (!text) return;
-      if (event.turn.role === "assistant") speakAssistant(call, wrapper, text, true);
       queueFinalTranscript(call, wrapper, event.turn.role, text);
       return;
     }
@@ -749,43 +645,23 @@ export async function signalLiveCall(request: LiveSignalingRequest): Promise<Liv
   );
 }
 
-/** Cartesia transcript language when the text itself does not say (no Hangul or kana). */
-const SPEECH_LANGUAGE_BY_LOCALE: Record<string, string> = { ko: "ko", en: "en", "zh-CN": "zh" };
-
 /**
- * Decide who speaks this call before the answer reaches the browser. Local
- * state only: no provider is called here. Without a stored key this is the
- * unchanged Codex flow. A user who chose the Codex voice gets it without the
- * character voice being planned; the Main character is still resolved so the
- * transcript shows who answered, exactly as in the no-key flow.
+ * The Main character this call's transcript is attributed to. Local state only:
+ * the live voice is the Codex voice either way.
  */
-async function planLiveVoice(wrapper: AgentSessionWrapper): Promise<{
-  voice: LiveVoiceMode;
-  ready?: { apiKey: string; model: string; voiceId: string; generation: LiveVoiceGeneration };
-}> {
+async function resolveCallAlias(wrapper: AgentSessionWrapper): Promise<string | null> {
   const session = wrapper.inner;
-  const alias = await resolveLiveCharacter(session, {
+  return await resolveLiveCharacter(session, {
     pinCredential: async () => {
       if (session.model) await session.modelRegistry.getApiKey?.(session.model, session.sessionId);
     },
   });
-  const service = getLiveVoiceService();
-  if (service.speaker() === "native") return { voice: { mode: "native", alias, reason: "preferred" } };
-  const plan = await service.planFor(alias);
-  if (plan.kind === "no-key") return { voice: { mode: "native", alias, reason: "no-key" } };
-  if (plan.kind === "not-ready") {
-    return { voice: { mode: "native", alias, reason: alias ? "voice-not-ready" : "character-unknown" } };
-  }
-  return {
-    voice: { mode: "character", alias: plan.profile.alias, tuning: plan.profile.tuning },
-    ready: { apiKey: plan.apiKey, model: plan.model, voiceId: plan.voiceId, generation: plan.profile.generation },
-  };
 }
 
 /** Exchange the browser's offer for a Codex answer and attach the sideband. */
 export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOfferResponse> {
   const wrapper = await resolveWrapper(request.sessionId);
-  const { voice, ready } = await planLiveVoice(wrapper);
+  const alias = await resolveCallAlias(wrapper);
   const { answer, callId, headers } = await signalLiveCall({
     sdp: request.sdp,
     instructions: liveInstructions(request.locale),
@@ -812,13 +688,7 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
     lastTranscript: undefined,
     orphanTimer: undefined,
     closed: false,
-    voice,
-    speech: undefined,
-    speechKey: ready?.apiKey,
-    characterCheck: Promise.resolve(),
-    speechHold: 0,
-    speechGen: 0,
-    assistantResponseOpen: false,
+    alias,
   };
 
   const socket = await openLiveSideband(
@@ -842,30 +712,13 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
   call.sideband = socket;
   call.detachAgent = wrapper.inner.subscribe((event: AgentSessionEvent) => {
     if (call.closed) return;
-    // A delegated turn may have switched Main; its answer is read out next.
-    if (event.type === "agent_end" && event.isTerminal !== false && call.activeDelegationId) refreshCharacter(call, wrapper);
     handleAgentEvent(call, event);
   });
-  if (ready) {
-    const locale = request.locale;
-    call.speech = new CharacterSpeech({
-      apiKey: ready.apiKey,
-      model: ready.model,
-      voice: { voiceId: ready.voiceId, generation: ready.generation },
-      defaultLanguage: locale && Object.hasOwn(SPEECH_LANGUAGE_BY_LOCALE, locale) ? SPEECH_LANGUAGE_BY_LOCALE[locale] : "en",
-      emit: (event) => emit(call, event),
-      onFatal: (message) => {
-        if (call.closed) return;
-        emit(call, { type: "speech-error", message });
-        void closeLiveCall(callId);
-      },
-    });
-  }
 
   liveCalls().set(callId, call);
   // Nothing is reading yet: the browser subscribes right after this response.
   armLiveOrphanTimer(call, () => void closeLiveCall(callId));
-  return { callId, sdp: answer, voice };
+  return { callId, sdp: answer };
 }
 
 /** Close a call nobody reads after {@link ORPHAN_GRACE_MS}. */
@@ -896,10 +749,7 @@ export function subscribeLiveCall(callId: string, listener: (event: LiveEvent) =
   const call = liveCalls().get(callId);
   if (!call || call.closed) return null;
   const detach = attachLiveListener(call, listener, () => void closeLiveCall(callId));
-  listener({ type: "voice", voice: call.voice });
   if (call.lastTranscript) listener(call.lastTranscript);
-  // Open the speech socket once someone can see a connection failure.
-  call.speech?.connect();
   return detach;
 }
 
@@ -931,7 +781,6 @@ export async function closeLiveCall(callId: string): Promise<boolean> {
   call.closed = true;
   clearTimeout(call.orphanTimer);
   call.detachAgent();
-  call.speech?.close();
   await call.persistTail;
   finishLiveCall(call);
   return true;
