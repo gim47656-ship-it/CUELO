@@ -50,8 +50,8 @@ function readVoiceMode(value: unknown): LiveVoiceMode | null {
     && (record.tuning === "accepted" || record.tuning === "provisional")) {
     return { mode: "character", alias: record.alias, tuning: record.tuning };
   }
-  if (record.mode === "native"
-    && (record.reason === "no-key" || record.reason === "character-unknown" || record.reason === "voice-not-ready")) {
+  if (record.mode === "native" && (record.reason === "no-key" || record.reason === "preferred"
+    || record.reason === "character-unknown" || record.reason === "voice-not-ready")) {
     return { mode: "native", alias: typeof record.alias === "string" ? record.alias : null, reason: record.reason };
   }
   return null;

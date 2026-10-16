@@ -2,20 +2,25 @@
 
 import { useCallback, useEffect, useId, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import type { LiveCharacterVoiceSettings, LiveCharacterVoiceState } from "@/lib/live-types";
+import type { LiveCharacterVoiceSettings, LiveCharacterVoiceState, LiveSpeaker, LiveVoices } from "@/lib/live-types";
+import { SearchableSelect } from "./SearchableSelect";
 import styles from "./SettingsConfig.module.css";
 
 /**
- * Character call voices, from the settings dialog.
+ * Call voices, from the settings dialog.
  *
- * Opening this section only reads local state: the masked key and each
- * character's readiness. Saving or removing the key and the one explicit
- * preparation step (which uploads the reference voices and uses Cartesia
- * credits) each happen only on their own button, and preparation needs the
- * consent box first. The composer keeps just the call start/end control.
+ * The first group picks who speaks a call (the character's Cartesia voice or
+ * the Codex voice) and which Codex voice that is; both save on change and
+ * apply from the next call. Opening this section only reads local state: the
+ * masked key and each character's readiness. Saving or removing the key and
+ * the one explicit preparation step (which uploads the reference voices and
+ * uses Cartesia credits) each happen only on their own button, and
+ * preparation needs the consent box first. The composer keeps just the call
+ * start/end control.
  */
 
 const SETTINGS_URL = "/api/live/character-voice";
+const VOICES_URL = "/api/live/voices";
 const LICENSE_URL = "/audio/live/ACML-1.0.txt";
 const PREPARE_POLL_MS = 2_000;
 
@@ -54,6 +59,10 @@ export function LiveVoiceConfig() {
   const [keyInput, setKeyInput] = useState("");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [voices, setVoices] = useState<LiveVoices | null>(null);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [speakerError, setSpeakerError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -66,6 +75,23 @@ export function LiveVoiceConfig() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadVoices = useCallback(async () => {
+    try {
+      const response = await fetch(VOICES_URL, { cache: "no-store" });
+      const body = await response.json().catch(() => ({})) as Partial<LiveVoices>;
+      if (!response.ok || !Array.isArray(body.voices) || typeof body.defaultVoice !== "string") {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      setVoices({ voices: body.voices, defaultVoice: body.defaultVoice });
+    } catch (loadError) {
+      setVoiceError(loadError instanceof Error ? loadError.message : String(loadError));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadVoices();
+  }, [loadVoices]);
 
   // 준비는 서버에서 계속 돈다. 진행 중일 때만 로컬 상태를 다시 읽는다(provider 호출 없음).
   const preparing = settings?.preparing === true;
@@ -103,6 +129,44 @@ export function LiveVoiceConfig() {
     body: JSON.stringify({ prepare: true, acknowledged: true }),
   });
 
+  // 화자 선택은 키·준비 버튼과 따로 저장하고 오류도 그 줄에 보인다.
+  const chooseSpeaker = async (speaker: LiveSpeaker) => {
+    setBusy(true);
+    setSpeakerError(null);
+    try {
+      setSettings(await readSettings(await fetch(SETTINGS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speaker }),
+      })));
+    } catch (saveError) {
+      setSpeakerError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // `live.voice`는 core 설정이라 다른 설정과 같은 경로(`/api/settings`)로 저장한다.
+  const chooseVoice = async (value: string) => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "live.voice", value }),
+      });
+      const result = await response.json().catch(() => ({})) as { value?: unknown; error?: string };
+      if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
+      const saved = typeof result.value === "string" ? result.value : value;
+      setVoices((current) => current ? { ...current, defaultVoice: saved } : current);
+    } catch (saveError) {
+      setVoiceError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
   if (!settings) {
     return (
       <div className={styles.empty}>
@@ -122,6 +186,49 @@ export function LiveVoiceConfig() {
       </header>
 
       <div className={styles.settingsBody}>
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>{t("chat.liveVoiceSpeakerGroup")}</h3>
+          <div className={styles.settingRow}>
+            <div style={{ minWidth: 0 }}>
+              <div className={styles.settingLabel}>{t("chat.liveVoiceSpeakerLabel")}</div>
+              <div className={styles.settingDescription}>{t("chat.liveVoiceSpeakerHelp")}</div>
+              {speakerError && <div className={styles.error} role="alert" style={{ overflowWrap: "anywhere" }}>{speakerError}</div>}
+            </div>
+            <div className={styles.settingControl}>
+              <SearchableSelect
+                value={settings.speaker}
+                disabled={busy}
+                ariaLabel={t("chat.liveVoiceSpeakerLabel")}
+                options={[
+                  { value: "character", label: t("chat.liveVoiceSpeakerCharacter") },
+                  { value: "native", label: t("chat.liveVoiceSpeakerNative") },
+                ]}
+                onChange={(value) => {
+                  if ((value === "character" || value === "native") && value !== settings.speaker) void chooseSpeaker(value);
+                }}
+              />
+            </div>
+          </div>
+          <div className={styles.settingRow}>
+            <div style={{ minWidth: 0 }}>
+              <div className={styles.settingLabel}>{t("chat.liveVoiceCodexLabel")}</div>
+              <div className={styles.settingDescription}>{t("chat.liveVoiceCodexHelp")}</div>
+              {voiceError && <div className={styles.error} role="alert" style={{ overflowWrap: "anywhere" }}>{voiceError}</div>}
+            </div>
+            <div className={styles.settingControl}>
+              <SearchableSelect
+                value={voices?.defaultVoice ?? ""}
+                disabled={!voices || voiceBusy}
+                ariaLabel={t("chat.liveVoiceCodexLabel")}
+                options={voices?.voices ?? []}
+                onChange={(value) => {
+                  if (value !== voices?.defaultVoice) void chooseVoice(value);
+                }}
+              />
+            </div>
+          </div>
+        </section>
+
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>{t("chat.liveVoiceKeyLabel")}</h3>
           <div className={styles.settingRow}>

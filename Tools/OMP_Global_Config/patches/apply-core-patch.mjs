@@ -504,6 +504,33 @@ const IRC_STEER_BRACKET_MEMBERS = `
 		}
 	}`;
 
+/**
+ * 2026-10-16 Codex realtime v3 목소리. core 18.11.1 의 `LIVE_VOICE_OPTIONS` 는 v1 아홉 개뿐이라 `live.voice` 가
+ * 새 목소리(한국어 haetsal·hanul 등)를 거절한다. CUELO 통화는 Codex CLI 와 같은 frameless-bidi/avas 경로
+ * (`gpt-live-1-codex`)이고, Codex CLI 는 그 경로를 `RealtimeVoicesList::builtin().v3`(openai/codex
+ * codex-rs/protocol/src/protocol.rs, #52363) 로 검증한다. 기존 아홉 개와 기본값 `sol` 은 그대로 두고 v3 에만 있는
+ * 열여섯 개를 같은 순서로 뒤에 붙인다. 한국어 두 목소리만 뜻을 라벨에 덧붙인다.
+ * 회귀: patches/core-patch-test.ts [34].
+ */
+const CODEX_V3_LIVE_VOICES = [
+	["aube", "Aube"],
+	["bubbie", "Bubbie"],
+	["haetsal", "Haetsal (햇살)"],
+	["hanul", "Hanul (하늘)"],
+	["himari", "Himari"],
+	["leher", "Leher"],
+	["miko", "Miko"],
+	["neer", "Neer"],
+	["porto", "Porto"],
+	["rindo", "Rindo"],
+	["rio", "Rio"],
+	["rivage", "Rivage"],
+	["selva", "Selva"],
+	["sonna", "Sonna"],
+	["tinta", "Tinta"],
+	["viola", "Viola"],
+];
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -13953,6 +13980,20 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {`,
 		marker: "\t\t\t...(options.includeResults !== false && j.completion ? { completion: j.completion } : {}),",
 		anchor: '\t\t\t...(latest.type === "task" ? { agentUrlId: current?.agentId ?? latest.id } : {}),',
 		patched: '\t\t\t...(latest.type === "task" ? { agentUrlId: j.completion?.agentId ?? current?.agentId ?? latest.id } : {}),\n\t\t\t...(options.includeResults !== false && j.completion ? { completion: j.completion } : {}),',
+	},
+	{
+		// Codex realtime v3 목소리(위 CODEX_V3_LIVE_VOICES 주석). CUELO 앱이 읽는 소스 판.
+		file: "src/live/voices.ts",
+		marker: "\t// CUELO: Codex realtime v3 voices",
+		anchor: '\t{ value: "vale", label: "Vale" },\n] as const;',
+		patched: `\t{ value: "vale", label: "Vale" },\n\t// CUELO: Codex realtime v3 voices (gpt-live-1-codex, openai/codex RealtimeVoicesList::builtin().v3).\n${CODEX_V3_LIVE_VOICES.map(([value, label]) => `\t{ value: "${value}", label: "${label}" },\n`).join("")}] as const;`,
+	},
+	{
+		// 같은 목록의 CLI 번들(dist/cli.js, Linux `omp`) 판. 같은 config.yml 을 읽으므로 CLI 도 새 값을 거절하지 않게 한다.
+		file: "dist/cli.js",
+		marker: '{value:"haetsal",label:"Haetsal (햇살)"}',
+		anchor: '{value:"spruce",label:"Spruce"},{value:"vale",label:"Vale"}]',
+		patched: `{value:"spruce",label:"Spruce"},{value:"vale",label:"Vale"}${CODEX_V3_LIVE_VOICES.map(([value, label]) => `,{value:"${value}",label:"${label}"}`).join("")}]`,
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

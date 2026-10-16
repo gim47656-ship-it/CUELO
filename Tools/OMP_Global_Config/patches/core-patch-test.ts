@@ -3694,5 +3694,33 @@ console.log("\n[33] 서브에이전트 idle TTL — 대기 중인 async 작업�
 	await life.dispose();
 }
 
+// 2026-10-16 Codex 라이브 v3 목소리: core 의 v1 목록만으로는 `live.voice: haetsal` 이 거절돼 CUELO 통화가 늘 기본 `sol` 로 돌았다.
+// 동적 import 는 파일 머리의 예외와 같다(실행 시점에 고른 대상 SDK 사본을 읽어야 한다).
+console.log("\n[34] live.voice — Codex v3 목소리(haetsal·hanul 등)를 받고, 목록 밖 값은 계속 거절한다");
+{
+	const { cfgLiveVoice } = await import(`${CORE}/live/settings.ts`);
+	const { DEFAULT_LIVE_VOICE, LIVE_VOICE_VALUES } = await import(`${CORE}/live/voices.ts`);
+	const v1 = ["arbor", "breeze", "cove", "ember", "juniper", "maple", "sol", "spruce", "vale"];
+	const v3Only = ["aube", "bubbie", "haetsal", "hanul", "himari", "leher", "miko", "neer", "porto", "rindo", "rio", "rivage", "selva", "sonna", "tinta", "viola"];
+	check(
+		"기존 아홉 목소리 순서와 기본값 sol 은 그대로이고 v3 열여섯 개가 뒤에 붙는다",
+		DEFAULT_LIVE_VOICE === "sol" && JSON.stringify(LIVE_VOICE_VALUES) === JSON.stringify([...v1, ...v3Only]),
+		JSON.stringify(LIVE_VOICE_VALUES),
+	);
+	check("live.voice 는 haetsal·hanul 을 포함한 v3 값을 모두 받는다", [...v1, ...v3Only].every(value => cfgLiveVoice.accepts(value)));
+	check("live.voice 는 haetsal 을 텍스트로도 받는다", cfgLiveVoice.parse("haetsal") === "haetsal");
+	let rejected = 0;
+	for (const bad of ["nova", "Haetsal", "marin", ""]) {
+		if (!cfgLiveVoice.accepts(bad)) rejected += 1;
+	}
+	let parseRejected = false;
+	try {
+		cfgLiveVoice.parse("nova");
+	} catch {
+		parseRejected = true;
+	}
+	check("목록 밖 값(nova·대문자 Haetsal·v2 marin·빈 값)은 계속 거절한다", rejected === 4 && parseRejected, `rejected=${rejected} parse=${parseRejected}`);
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

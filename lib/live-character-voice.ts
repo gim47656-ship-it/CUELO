@@ -12,7 +12,7 @@ import {
   type LiveVoiceProfile,
 } from "./live-voice-manifest";
 import { characterIdForAlias } from "./completion-audio";
-import type { LiveCharacterVoiceSettings, LiveCharacterVoiceStatus } from "./live-types";
+import type { LiveCharacterVoiceSettings, LiveCharacterVoiceStatus, LiveSpeaker } from "./live-types";
 
 /**
  * 캐릭터 통화 음성의 설치별 준비 상태.
@@ -38,6 +38,11 @@ export interface LiveVoiceServiceOptions {
   assetDir: string;
   /** 설치별 voice 매핑 파일. 키 원문은 여기 들어가지 않는다. */
   stateFile: string;
+  /**
+   * 통화 화자 선택 파일. voice 매핑 파일과 따로 둔다 — 그 파일이 깨져 읽히지 않아도 Codex 목소리로
+   * 바꾸는 길은 막히지 않아야 한다.
+   */
+  speakerFile: string;
   keys: LiveVoiceKeyStore;
   client?: (apiKey: string) => CartesiaClient;
 }
@@ -72,6 +77,7 @@ interface StoredState {
 }
 
 const STATE_VERSION = 1;
+const SPEAKER_VERSION = 1;
 const PROVIDER_NAME_PREFIX = "CUELO";
 
 /** 키를 두 번 저장하지 않고 키(=계정)마다 매핑을 가른다. 원문은 복원되지 않는다. */
@@ -106,6 +112,9 @@ export interface LiveVoiceService {
   /** 동의 뒤 사용자가 누른 준비를 시작한다. 끝을 기다리지 않는다. */
   prepare(): Promise<void>;
   planFor(alias: string | null): Promise<LiveSpeechPlan>;
+  /** 사용자가 고른 화자. 고른 적이 없거나 파일을 읽지 못하면 `character`(지금까지의 동작)다. */
+  speaker(): LiveSpeaker;
+  setSpeaker(speaker: LiveSpeaker): void;
   /** 진행 중인 준비가 끝날 때까지. 테스트와 스모크가 기다리는 자리. */
   idle(): Promise<void>;
 }
@@ -210,7 +219,27 @@ export function createLiveVoiceService(options: LiveVoiceServiceOptions): LiveVo
       acknowledgedAt: account?.acknowledgedAt ?? null,
       characters,
       lastError: stateError ?? lastError,
+      speaker: speaker(),
     };
+  }
+
+  /** `{ version: 1, speaker }`. 없거나 읽을 수 없는 파일은 고른 적 없음과 같다. */
+  function speaker(): LiveSpeaker {
+    try {
+      const parsed = JSON.parse(readFileSync(options.speakerFile, "utf8")) as unknown;
+      if (parsed && typeof parsed === "object" && "version" in parsed && parsed.version === SPEAKER_VERSION
+        && "speaker" in parsed && parsed.speaker === "native") {
+        return "native";
+      }
+    } catch {
+      // 없는 파일도 여기로 온다.
+    }
+    return "character";
+  }
+
+  function setSpeaker(next: LiveSpeaker): void {
+    mkdirSync(dirname(options.speakerFile), { recursive: true, mode: 0o700 });
+    writePrivateFileAtomicSync(options.speakerFile, `${JSON.stringify({ version: SPEAKER_VERSION, speaker: next }, null, 2)}\n`);
   }
 
   /** 키를 검증하고 저장한다. 크레딧을 쓰지 않는 조회 한 번으로 틀린 키는 저장하지 않는다. */
@@ -403,6 +432,8 @@ export function createLiveVoiceService(options: LiveVoiceServiceOptions): LiveVo
     removeKey,
     prepare,
     planFor,
+    speaker,
+    setSpeaker,
     /** 테스트와 수동 확인용: 진행 중인 준비가 끝날 때까지. */
     idle: () => running ?? Promise.resolve(),
   };

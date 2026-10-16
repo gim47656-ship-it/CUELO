@@ -10,10 +10,12 @@ import { createLiveVoiceService, type LiveVoiceKeyStore, type LiveVoiceService }
  * 키는 CLI와 같은 AuthStorage(`cartesia` api_key)에 둔다 — 기존 API 키 라우트와 같은 저장소·락이다.
  * Cartesia는 모델 provider가 아니라 provider 목록·사용량 화면에는 나오지 않는다.
  * voice 매핑은 `<agentDir>/cuelo-live-voices.json`(0600, 원자적 교체)에 키 지문별로 둔다.
+ * 통화 화자 선택(캐릭터/Codex)은 그와 따로 `<agentDir>/cuelo-live-call.json`에 둔다.
  */
 
 export const LIVE_VOICE_KEY_PROVIDER = "cartesia";
 export const LIVE_VOICE_STATE_FILE = "cuelo-live-voices.json";
+export const LIVE_CALL_SPEAKER_FILE = "cuelo-live-call.json";
 
 const authStorageKeys: LiveVoiceKeyStore = {
   async read() {
@@ -45,6 +47,7 @@ export function getLiveVoiceService(): LiveVoiceService {
   globalThis.__liveVoiceService ??= createLiveVoiceService({
     assetDir: join(process.cwd(), "public", "audio", "live"),
     stateFile: join(getAgentDir(), LIVE_VOICE_STATE_FILE),
+    speakerFile: join(getAgentDir(), LIVE_CALL_SPEAKER_FILE),
     keys: authStorageKeys,
   });
   return globalThis.__liveVoiceService;

@@ -23,7 +23,8 @@ import {
   type LiveContextChannel,
   type LiveServerEvent,
 } from "@oh-my-pi/pi-coding-agent/live/protocol";
-import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS } from "@oh-my-pi/pi-coding-agent/live/voices";
+import { cfgLiveVoice } from "@oh-my-pi/pi-coding-agent/live/settings";
+import { LIVE_VOICE_OPTIONS } from "@oh-my-pi/pi-coding-agent/live/voices";
 import {
   createCustomMessage,
   LIVE_DELEGATION_MESSAGE_TYPE,
@@ -31,7 +32,7 @@ import {
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { getRpcSession, startRpcSession, type AgentSessionWrapper } from "./rpc-manager";
 import { invalidateSessionListCache, resolveSessionPath } from "./session-reader";
-import { getOmpRuntime } from "./omp-runtime";
+import { getOmpRuntime, getSettingsForCwd } from "./omp-runtime";
 import { resolveLiveCharacter } from "./live-character";
 import { getLiveVoiceService } from "./live-character-voice-runtime";
 import { CharacterSpeech } from "./live-speech";
@@ -145,10 +146,19 @@ function liveCalls(): Map<string, LiveCall> {
   return globalThis.__liveCalls;
 }
 
-export function getLiveVoices(): LiveVoices {
+/**
+ * The Codex voice a call uses when the request names none: `live.voice` as the
+ * scope sees it now. Read per call rather than from the session's own settings
+ * so a change saved from Settings applies to the next call of an open session.
+ */
+export async function configuredLiveVoice(cwd: string | undefined): Promise<string> {
+  return cfgLiveVoice.get(await getSettingsForCwd(cwd));
+}
+
+export async function getLiveVoices(): Promise<LiveVoices> {
   return {
     voices: LIVE_VOICE_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-    defaultVoice: DEFAULT_LIVE_VOICE,
+    defaultVoice: await configuredLiveVoice(undefined),
   };
 }
 
@@ -745,7 +755,9 @@ const SPEECH_LANGUAGE_BY_LOCALE: Record<string, string> = { ko: "ko", en: "en", 
 /**
  * Decide who speaks this call before the answer reaches the browser. Local
  * state only: no provider is called here. Without a stored key this is the
- * unchanged Codex flow.
+ * unchanged Codex flow. A user who chose the Codex voice gets it without the
+ * character voice being planned; the Main character is still resolved so the
+ * transcript shows who answered, exactly as in the no-key flow.
  */
 async function planLiveVoice(wrapper: AgentSessionWrapper): Promise<{
   voice: LiveVoiceMode;
@@ -757,7 +769,9 @@ async function planLiveVoice(wrapper: AgentSessionWrapper): Promise<{
       if (session.model) await session.modelRegistry.getApiKey?.(session.model, session.sessionId);
     },
   });
-  const plan = await getLiveVoiceService().planFor(alias);
+  const service = getLiveVoiceService();
+  if (service.speaker() === "native") return { voice: { mode: "native", alias, reason: "preferred" } };
+  const plan = await service.planFor(alias);
   if (plan.kind === "no-key") return { voice: { mode: "native", alias, reason: "no-key" } };
   if (plan.kind === "not-ready") {
     return { voice: { mode: "native", alias, reason: alias ? "voice-not-ready" : "character-unknown" } };
@@ -775,7 +789,7 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
   const { answer, callId, headers } = await signalLiveCall({
     sdp: request.sdp,
     instructions: liveInstructions(request.locale),
-    voice: request.voice?.trim() || DEFAULT_LIVE_VOICE,
+    voice: request.voice?.trim() || await configuredLiveVoice(wrapper.cwd),
     threadId: request.sessionId,
     credentialSessionId: request.sessionId,
   });

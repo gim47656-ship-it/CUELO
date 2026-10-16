@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { CartesiaError } from "@/lib/cartesia";
 import { getLiveVoiceService } from "@/lib/live-character-voice-runtime";
+import type { LiveSpeaker } from "@/lib/live-types";
 
 export const dynamic = "force-dynamic";
 
@@ -30,11 +31,12 @@ export async function GET(req: Request) {
 }
 
 /**
- * POST `{ apiKey?: string, prepare?: true, acknowledged?: true }`.
+ * POST `{ apiKey?: string, prepare?: true, acknowledged?: true, speaker?: "character" | "native" }`.
  *
  * `apiKey` is verified with one free list request and stored server-side.
  * `prepare` starts the paid private cloning only when the same request carries
  * the user's explicit acknowledgement of upload, credit use, and rights.
+ * `speaker` stores who speaks calls; choosing `native` keeps the key and voices.
  */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
@@ -46,17 +48,24 @@ export async function POST(req: Request) {
   let apiKey: string | undefined;
   let prepare = false;
   let acknowledged = false;
+  let speaker: LiveSpeaker | undefined;
   try {
     const body: unknown = await req.json();
     if (body && typeof body === "object") {
       if ("apiKey" in body && typeof body.apiKey === "string") apiKey = body.apiKey;
       prepare = "prepare" in body && body.prepare === true;
       acknowledged = "acknowledged" in body && body.acknowledged === true;
+      if ("speaker" in body) {
+        if (body.speaker !== "character" && body.speaker !== "native") {
+          return NextResponse.json({ error: "bad-request" }, { status: 400, headers: NO_STORE });
+        }
+        speaker = body.speaker;
+      }
     }
   } catch {
     return NextResponse.json({ error: "bad-request" }, { status: 400, headers: NO_STORE });
   }
-  if (apiKey === undefined && !prepare) {
+  if (apiKey === undefined && !prepare && speaker === undefined) {
     return NextResponse.json({ error: "bad-request" }, { status: 400, headers: NO_STORE });
   }
   if (prepare && !acknowledged) {
@@ -65,6 +74,7 @@ export async function POST(req: Request) {
 
   const service = getLiveVoiceService();
   try {
+    if (speaker !== undefined) service.setSpeaker(speaker);
     if (apiKey !== undefined) await service.saveKey(apiKey);
     if (prepare) await service.prepare();
     return NextResponse.json(await service.settings(), { status: prepare ? 202 : 200, headers: NO_STORE });

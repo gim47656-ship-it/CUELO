@@ -230,21 +230,31 @@ export interface LiveVoiceOption {
   label: string;
 }
 
+/** `GET /api/live/voices`. */
 export interface LiveVoices {
   voices: LiveVoiceOption[];
+  /** The Codex voice a call uses when the request names none: the configured `live.voice`. */
   defaultVoice: string;
 }
+
+/**
+ * Who the user wants to speak a call. `character` uses the character's
+ * Cartesia voice when it is ready (and falls back to Codex when it is not);
+ * `native` always uses the Codex voice, even with a stored key.
+ */
+export type LiveSpeaker = "character" | "native";
 
 /**
  * - `character`: the server synthesizes the assistant transcript with this
  *   character's private Cartesia voice and streams PCM over the event stream.
  * - `native`: the Codex voice plays over WebRTC. `reason` says why a
  *   configured installation is not using the character voice; `no-key` is the
- *   ordinary Codex-only flow and shows nothing.
+ *   ordinary Codex-only flow and `preferred` the user's own choice, and
+ *   neither shows a notice.
  */
 export type LiveVoiceMode =
   | { mode: "character"; alias: string; tuning: "accepted" | "provisional" }
-  | { mode: "native"; alias: string | null; reason: "no-key" | "character-unknown" | "voice-not-ready" };
+  | { mode: "native"; alias: string | null; reason: "no-key" | "preferred" | "character-unknown" | "voice-not-ready" };
 
 /** Character speech arrives as raw mono `pcm_s16le` at this rate, base64 per event. */
 export const LIVE_SPEECH_SAMPLE_RATE = 24_000;
@@ -293,4 +303,6 @@ export interface LiveCharacterVoiceSettings {
   acknowledgedAt: string | null;
   characters: LiveCharacterVoiceStatus[];
   lastError: string | null;
+  /** The user's speaker choice; `character` when never chosen. */
+  speaker: LiveSpeaker;
 }
