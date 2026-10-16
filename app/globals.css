@@ -3417,15 +3417,36 @@ section[aria-label="Subagent 기록"] > header,
   min-inline-size: 0;
 }
 
+/* SEED hides the list's scrollbar, so in a narrow deck the trailing tabs
+   (side chat last) were clipped with no visible way to reach them. Wrap the
+   six destinations onto a second row instead of an invisible inner scroll.
+   SEED's sliding indicator tracks only `left`, so on wrapped rows the
+   selected trigger draws its own 2px underline, matching SEED's SSR mark. */
 .auxiliary-deck-tabbar .seed-tabs__list {
   flex: 1 1 auto;
+  flex-wrap: wrap;
   min-inline-size: 0;
+  overflow: visible;
+}
+
+.auxiliary-deck-tabbar .seed-tabs__indicator {
+  display: none;
+}
+
+.auxiliary-deck-tabbar .seed-tabs__trigger:is([aria-selected="true"], [data-selected]) {
+  box-shadow: inset 0 -2px var(--seed-color-fg-neutral);
 }
 
 .auxiliary-deck-close {
   flex: none;
-  align-self: center;
+  align-self: flex-start;
   margin-inline: var(--seed-dimension-x1);
+}
+
+/* Keep the 36px close centred on the first 40px tab row; the extra class
+   outranks SEED's box-bleed margin reset on ActionButton. */
+.auxiliary-deck-tabbar .auxiliary-deck-close {
+  margin-block-start: var(--seed-dimension-x0_5);
 }
 
 .auxiliary-deck-tabs .seed-tabs__content {

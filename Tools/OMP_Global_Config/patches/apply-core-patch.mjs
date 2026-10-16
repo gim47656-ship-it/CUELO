@@ -116,7 +116,8 @@ const OPUS55_HEAD_1846 = OPUS55_ROW_1846.anchor.slice(0, OPUS55_ROW_1846.anchor.
  * (공개 이슈 #30: 같은 본문 재저장·context 만 바뀐 갱신도 벡터를 지워 다음 store open 이 다시 예약했다).
  * 벡터의 모델 일치는 store open 의 reconcileEmbeddingModel 이 계속 책임진다. 별도 projection(embed_text ≠ 본문)은 기존처럼 지운다.
  */
-const learnTopicUpsertBlock = `// HANSE: topic-key learn upsert
+/** 이슈 #32 이전에 배포된 learn topic upsert(HEAD b8f1aad, embedding 보존판) 그대로다. */
+const learnTopicUpsertPreEvidenceBlock = `// HANSE: topic-key learn upsert
 function upsertLearnTopic(
 	state: MnemopiSessionState,
 	params: LearnParams,
@@ -153,6 +154,55 @@ function upsertLearnTopic(
 	const id = state.rememberScoped(params.memory, {
 		source: "coding-agent-learn", importance: 0.8,
 		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
+		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
+	}, target);
+	return { id, revision };
+}
+
+export class LearnTool implements AgentTool<LearnSchema> {`;
+
+const learnTopicUpsertBlock = `// HANSE: topic-key learn upsert
+function upsertLearnTopic(
+	state: MnemopiSessionState,
+	params: LearnParams,
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
+	evidence: LearnEvidence,
+): { id: string; revision: number } {
+	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
+	if (!topic) throw new Error("Learn topic must not be blank.");
+	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
+	const db = target.memory.conn;
+	const existing = db.query(
+		"SELECT id, timestamp, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+	).get(topic) as { id: string; timestamp: string; metadata_json: string } | null;
+	// HANSE: learn topic evidence is stored with the topic row
+	// 근거(kind·citations)는 본문·임베딩과 같은 쓰기 단위로 저장한다. 갱신은 아래 transaction 한 번, 새로 만들 때는 한 번의 INSERT 다.
+	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
+	if (existing) return db.transaction(() => {
+		const content = redactMemorySecrets(params.memory);
+		const stored = JSON.parse(existing.metadata_json);
+		delete stored.kind;
+		delete stored.citations;
+		const now = new Date().toISOString();
+		// HANSE: learn topic provenance keeps first and latest source
+		const firstSeen = stored.revision === 1 ? { first_context: stored.context ?? null, first_timestamp: existing.timestamp } : {};
+		const latest = { updated_session_id: state.sessionId, updated_cwd: state.session.sessionManager.getCwd(), updated_at: now };
+		const metadata = JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest, ...learnEvidenceMetadata(evidence) });
+		// HANSE: learn topic keeps embedding when its input is unchanged
+		// 비교할 본문은 쓰기 lock 을 잡은(immediate) 같은 transaction 안에서 다시 읽는다. 바깥에서 읽은 값이면
+		// 그 사이 다른 프로세스가 바꾼 본문·벡터를 이 갱신이 그대로 남길 수 있다.
+		const current = db.query("SELECT content, embed_text FROM working_memory WHERE id = ?").get(existing.id) as { content: string; embed_text: string | null } | null;
+		if (current?.content === content && (current.embed_text == null || current.embed_text === content)) {
+			db.query("UPDATE working_memory SET timestamp = ?, metadata_json = ? WHERE id = ?").run(now, metadata, existing.id);
+		} else {
+			db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(content, now, metadata, existing.id);
+			db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		}
+		return { id: existing.id, revision };
+	}).immediate();
+	const id = state.rememberScoped(params.memory, {
+		source: "coding-agent-learn", importance: 0.8,
+		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision, ...learnEvidenceMetadata(evidence) },
 		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
 	}, target);
 	return { id, revision };
@@ -287,6 +337,154 @@ function attachFactCitations(memory: { conn: { query(sql: string): { get(...para
  * 글이 교훈을 뒷받침하는지는 판정하지 않는다. 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(이 파일의 String.raw 안이다).
  */
 const learnEvidenceBlock = String.raw`// HANSE: learn evidence citations
+type LearnKind = "evidence" | "preference" | "procedure" | "hypothesis";
+type LearnCitation = { path: string; anchor?: string };
+type LearnEvidence = { kind?: LearnKind; citations: LearnCitation[] };
+const LEARN_MAX_CITATIONS = 8;
+const LEARN_MAX_ANCHOR_FILE_BYTES = 8 * 1024 * 1024;
+
+const learnKindSchema = type("'evidence' | 'preference' | 'procedure' | 'hypothesis'").describe(
+	"what the lesson is: evidence = project fact, design decision or failure cause (needs citations in project scope); preference = how the user wants work done; procedure = how to do a task; hypothesis = unverified guess",
+);
+const learnCitationsSchema = type({
+	path: type("string").describe("file path relative to the project root"),
+	"anchor?": type("string").describe("a '## ' heading text, a header field name such as RECORD or SCOPE, or a line range such as 120-140"),
+})
+	.array()
+	.describe("project files that record this lesson; required for kind evidence in project scope; checked for existence only, not for whether the file supports the lesson");
+
+function learnProjectRoot(cwd: string): string {
+	let real = cwd;
+	try {
+		real = fs.realpathSync(cwd);
+	} catch {
+		// An unreadable cwd is reported by the citation path check below.
+	}
+	try {
+		const out = Bun.spawnSync(["git", "-C", real, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
+		const top = out.exitCode === 0 ? out.stdout.toString().trim() : "";
+		if (top) return fs.realpathSync(top);
+	} catch {
+		// No git: the session cwd is the project root.
+	}
+	return real;
+}
+
+function learnPathIgnored(root: string, rel: string): boolean {
+	try {
+		return Bun.spawnSync(["git", "-C", root, "check-ignore", "-q", "--", rel], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+function learnHeadings(text: string): string[] {
+	const headings: string[] = [];
+	for (const line of text.split(/\r?\n/)) {
+		const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+		if (match) headings.push(match[1]!.replace(/\s+/g, " "));
+	}
+	return headings;
+}
+
+function learnAnchorFound(text: string, anchor: string): boolean {
+	const lines = text.split(/\r?\n/);
+	const range = /^(\d+)(?:-(\d+))?$/.exec(anchor);
+	if (range) {
+		const start = Number(range[1]);
+		const end = Number(range[2] ?? range[1]);
+		return start >= 1 && end >= start && end <= lines.length;
+	}
+	if (/^(RECORD|DATE|SCOPE|PATHS|STATUS)$/.test(anchor)) {
+		return lines.slice(0, 40).some(line => line.startsWith(anchor + ":") || line.startsWith("*" + anchor + ":"));
+	}
+	const want = anchor.replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim().toLowerCase();
+	if (!want) return false;
+	return learnHeadings(text).some(heading => {
+		const have = heading.toLowerCase();
+		return have === want || have.startsWith(want);
+	});
+}
+
+function resolveLearnEvidence(session: ToolSession, params: LearnParams): LearnEvidence {
+	const given = params.citations ?? [];
+	const projectScope = (params.scope ?? "project") === "project";
+	const kind = params.kind ?? (given.length > 0 ? "evidence" : undefined);
+	if (kind === undefined && projectScope) {
+		throw new Error(
+			"learn needs a kind. Use kind evidence for a project fact, design decision or failure cause, and add citations (a list of path plus optional anchor) naming the project file that records it. Use kind preference (how the user wants work done), procedure (how to do a task) or hypothesis (unverified) when no project file records it.",
+		);
+	}
+	if (kind === "evidence" && projectScope && given.length === 0) {
+		throw new Error(
+			"kind evidence in project scope needs at least one citation: citations = [{ path: <file relative to the project root>, anchor: <optional: a '## ' heading text, a header field such as RECORD or SCOPE, or a line range like 120-140> }]. Cite the file that records it (a doc/history record, HANDOFF.md, source). If no file records it yet, write the record first, or use kind hypothesis.",
+		);
+	}
+	if (given.length > LEARN_MAX_CITATIONS) {
+		throw new Error("learn accepts at most " + LEARN_MAX_CITATIONS + " citations; cite the one or two files that matter most.");
+	}
+	if (given.length === 0) return { kind, citations: [] };
+	const root = learnProjectRoot(session.cwd);
+	const citations: LearnCitation[] = [];
+	const seen = new Set<string>();
+	given.forEach((citation, index) => {
+		const label = "citations[" + index + "]";
+		const raw = citation.path.trim().replaceAll("\\", "/");
+		if (!raw) throw new Error(label + ".path is empty.");
+		// A credential-shaped path or anchor is rejected before any error below can echo it and before anything is stored; the value is never quoted.
+		const rawAnchor = citation.anchor?.trim();
+		if (redactMemorySecrets(raw) !== raw) throw new Error(label + ".path contains a credential and cannot be cited.");
+		if (rawAnchor && redactMemorySecrets(rawAnchor) !== rawAnchor) throw new Error(label + ".anchor contains a credential and cannot be cited.");
+		let real: string;
+		try {
+			real = fs.realpathSync(path.resolve(root, raw));
+		} catch {
+			throw new Error(label + '.path "' + raw + '" does not exist under the project root ' + root + ". Use a path relative to the project root.");
+		}
+		const rel = path.relative(root, real);
+		if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+			throw new Error(label + '.path "' + raw + '" is outside the project root ' + root + ".");
+		}
+		// The normalized path is checked before any filesystem call on it, so a native stat error cannot echo a credential-shaped real path.
+		const relPosix = rel.split(path.sep).join("/");
+		if (redactMemorySecrets(relPosix) !== relPosix) throw new Error(label + ".path contains a credential and cannot be cited.");
+		const stat = fs.statSync(real);
+		if (!stat.isFile()) throw new Error(label + '.path "' + raw + '" is not a file; cite a file.');
+		if (!eligibleFile(relPosix, stat.size, true) || learnPathIgnored(root, relPosix)) {
+			throw new Error(label + '.path "' + raw + '" is a secret, binary, empty, excluded or git-ignored file and cannot be cited.');
+		}
+		const anchor = citation.anchor?.trim();
+		if (anchor) {
+			if (stat.size > LEARN_MAX_ANCHOR_FILE_BYTES) throw new Error(label + '.path "' + raw + '" is too large to check an anchor in; cite it without an anchor or use a line range of a smaller file.');
+			const text = fs.readFileSync(real, "utf8");
+			if (!learnAnchorFound(text, anchor)) {
+				const headings = learnHeadings(text).slice(0, 8).map(heading => redactMemorySecrets(heading));
+				throw new Error(
+					label + '.anchor "' + anchor + '" was not found in ' + relPosix + ". Use the text of a '## ' heading, a header field name (RECORD, DATE, SCOPE, PATHS, STATUS) or a line range inside the file." +
+						(headings.length > 0 ? " Headings in the file: " + headings.join(" | ") : ""),
+				);
+			}
+		}
+		// Store a heading without its "## " prefix so the recall line reads path#heading.
+		const stored = anchor ? anchor.replace(/^#{1,6}\s*/, "") : undefined;
+		if (stored && redactMemorySecrets(stored) !== stored) throw new Error(label + ".anchor contains a credential and cannot be cited.");
+		const key = relPosix + "#" + (stored ?? "");
+		if (seen.has(key)) return;
+		seen.add(key);
+		citations.push(stored ? { path: relPosix, anchor: stored } : { path: relPosix });
+	});
+	return { kind, citations };
+}
+
+function learnEvidenceMetadata(evidence: LearnEvidence): Record<string, unknown> {
+	return { ...(evidence.kind ? { kind: evidence.kind } : {}), ...(evidence.citations.length > 0 ? { citations: evidence.citations } : {}) };
+}
+
+const learnSchemaBase = type({
+`;
+
+/** 이슈 #32 이전에 배포된 learn 근거 블록(HEAD b8f1aad) 그대로다. 새 판(learnEvidenceBlock)이 이 본문을 대체한다(legacyPatched). */
+const learnEvidenceLegacyBlock = String.raw`// HANSE: learn evidence citations
 type LearnKind = "evidence" | "preference" | "procedure" | "hypothesis";
 type LearnCitation = { path: string; anchor?: string };
 type LearnEvidence = { kind?: LearnKind; citations: LearnCitation[] };
@@ -7898,12 +8096,24 @@ function operationFromNative(op: string): Operation | undefined {
 	},
 	{
 		// 출처 구분: 갱신해도 최초 session/cwd 는 남고 updated_* 가 최신 정정자다. 실효 embedding 입력이 같으면 벡터를 둔다(#30).
-		// legacyPatched 는 embedding 보존 이전(출처 구분) 적용본이다.
+		// 이슈 #32: topic 근거(kind·citations)는 이 함수가 본문·임베딩과 같은 쓰기 단위로 저장한다.
+		// 본 후보의 legacyPatched 는 #32 이전에 배포된 embedding 보존판(HEAD b8f1aad)이고, alternates 는 embedding 보존 이전(출처 구분) 적용본을 옮긴다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: learn topic keeps embedding when its input is unchanged",
+		marker: "// HANSE: learn topic evidence is stored with the topic row",
 		anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
-		legacyPatched: learnTopicUpsertLegacyBlock,
+		excludes: learnTopicUpsertLegacyBlock,
+		legacyPatched: learnTopicUpsertPreEvidenceBlock,
 		patched: learnTopicUpsertBlock,
+		alternates: [
+			{
+				file: "src/tools/learn.ts",
+				marker: "// HANSE: learn topic evidence is stored with the topic row",
+				anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
+				requires: learnTopicUpsertLegacyBlock,
+				legacyPatched: learnTopicUpsertLegacyBlock,
+				patched: learnTopicUpsertBlock,
+			},
+		],
 	},
 	{
 		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
@@ -7911,10 +8121,22 @@ function operationFromNative(op: string): Operation | undefined {
 		// 18.3.3은 호출을 `rememberScoped(memory, {...}, target)` 3인자로 펼쳤다(learn.ts:110-134,
 		// global scope 지원). 반환값(기억 id)은 그대로 string 이다.
 		file: "src/tools/learn.ts",
+		// 이슈 #32: topic 호출이 근거(evidence)를 함께 넘긴다. 본 후보의 legacyPatched 는 근거를 넘기지 않던 배포본(HEAD b8f1aad)이다.
 		marker: "// HANSE: learn reports memory id",
 		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
-		legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
-		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget()) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
+		excludes: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
+		legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget()) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
+		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget(), evidence) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
+		alternates: [
+			{
+				file: "src/tools/learn.ts",
+				marker: "// HANSE: learn reports memory id",
+				anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
+				requires: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
+				legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
+				patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget(), evidence) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
+			},
+		],
 	},
 	{
 		file: "src/tools/learn.ts",
@@ -7926,8 +8148,10 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		// 2026-10-17 근거형 learn: 검증·metadata 보조 함수와 kind·citations schema 는 learnSchemaBase 앞에 한 덩어리로 둔다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: learn evidence citations",
+		// legacyPatched 는 citation 의 비밀 형태 거절 이전 적용본이다(#32).
+		marker: "// A credential-shaped path or anchor is rejected",
 		anchor: "const learnSchemaBase = type({\n",
+		legacyPatched: learnEvidenceLegacyBlock,
 		patched: learnEvidenceBlock,
 	},
 	{
@@ -7962,11 +8186,13 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: '\t\t\t\t\t\t\ttool: "learn",\n\t\t\t\t\t\t\t...learnEvidenceMetadata(evidence),\n\t\t\t\t\t\t},\n',
 	},
 	{
-		// topic 갱신은 upsertLearnTopic 이 metadata 를 직접 만든다. 저장 직후 같은 행의 kind·citations 를 이번 판으로 바꾼다.
+		// 이슈 #32: 별도 stamp 호출(저장 뒤 두 번째 쓰기)을 없앴다. 근거는 upsertLearnTopic 이 저장한다.
+		// legacyPatched 는 그 stamp 호출을 넣었던 배포본(HEAD b8f1aad)이다. 원본·#32 이후 상태에서는 앵커를 그대로 둔다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: learn evidence of a topic lesson follows its newest revision",
+		marker: "// HANSE: learn topic evidence is stored with the topic row",
 		anchor: '\t\t} else if (backend === "local") {\n',
-		patched: '\t\t\t// HANSE: learn evidence of a topic lesson follows its newest revision\n\t\t\tif (params.topic) stampLearnTopicEvidence(target ?? state.getScopedRetainTarget(), params.topic, evidence);\n\t\t} else if (backend === "local") {\n',
+		legacyPatched: '\t\t\t// HANSE: learn evidence of a topic lesson follows its newest revision\n\t\t\tif (params.topic) stampLearnTopicEvidence(target ?? state.getScopedRetainTarget(), params.topic, evidence);\n\t\t} else if (backend === "local") {\n',
+		patched: '\t\t} else if (backend === "local") {\n',
 	},
 	{
 		file: "src/prompts/tools/learn.md",

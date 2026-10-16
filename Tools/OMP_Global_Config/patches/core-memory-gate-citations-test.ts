@@ -253,6 +253,97 @@ try {
 			const many = await attempt({ memory: "여러 근거 후보 표시는 세 개까지다 긴경로", kind: "evidence", citations: [{ path: record, anchor: "1" }, { path: record, anchor: "2" }, { path: record, anchor: "3" }, { path: record, anchor: "4" }, { path: longPath }] });
 			const manyText = String(await st.recallForContext("여러 근거 후보 표시는 세 개까지다 긴경로"));
 			check("근거 후보는 세 개까지 보이고 나머지는 건수로 줄인다", many.ok && manyText.includes("외 2건") && manyText.includes("#3") && !manyText.includes("#4"), manyText);
+
+			// 비밀 형태 citation(#32): 합성 토큰은 실행 중에 조립한다. 저장 전에 거절되고 어떤 오류도 값을 되풀이하지 않는다.
+			const synthetic = "gh" + "p_" + "1".repeat(36);
+			writeFileSync(join(project, "secret-heading.md"), `# 제목\n\n## ${synthetic}\n\n본문.\n`);
+			const secretNamed = `note-${synthetic}.md`;
+			writeFileSync(join(project, secretNamed), "# 제목\n\n## 정상 절\n");
+			const dump = () => JSON.stringify([st.memory, st.globalMemory].map(m => [m.conn.query("SELECT * FROM working_memory ORDER BY id").all(), m.conn.query("SELECT * FROM memory_embeddings ORDER BY memory_id").all()]));
+			const secretCases: Array<[string, Record<string, unknown>]> = [
+				["존재하는 절 제목이 비밀 형태인 anchor", { path: "secret-heading.md", anchor: synthetic }],
+				["## 접두가 붙은 비밀 형태 anchor", { path: "secret-heading.md", anchor: `## ${synthetic}` }],
+				["존재하는 파일 이름이 비밀 형태인 path", { path: secretNamed }],
+				["존재하지 않는 비밀 형태 path", { path: `nope-${synthetic}.md` }],
+				["존재하지 않는 비밀 형태 anchor", { path: record, anchor: synthetic }],
+			];
+			const topicCreated = await attempt({ memory: "비밀 citation 시험용 topic", topic: "secret-cite-topic", kind: "evidence", citations: [{ path: record, anchor: "SCOPE" }] });
+			const topicBefore = metaOf(idOf(topicCreated.text));
+			// 유료 임베딩 호출 없이 core-patch-test.ts [25] 와 같은 방식으로 고정 벡터를 직접 넣는다.
+			const vectorOf = (id: string) => JSON.stringify(st.memory.conn.query("SELECT embedding_json, model FROM memory_embeddings WHERE memory_id = ?").get(id));
+			st.memory.conn.query("INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, '[0.25,0.5]', 'fixture-model')").run(idOf(topicCreated.text));
+			const seeded = vectorOf(idOf(topicCreated.text));
+			check("시험용 topic 행에 고정 임베딩이 들어 있다", seeded === JSON.stringify({ embedding_json: "[0.25,0.5]", model: "fixture-model" }), seeded);
+			const baseline = dump();
+			for (const [label, citation] of secretCases) {
+				for (const [mode, extra] of [["일반", {}], ["topic 갱신", { topic: "secret-cite-topic" }], ["topic 신규", { topic: "secret-cite-topic-new" }], ["global", { scope: "global" }]] as Array<[string, Record<string, unknown>]>) {
+					const r = await attempt({ memory: "비밀 citation 이 새 내용으로 저장되면 안 된다", kind: "evidence", citations: [citation], ...extra });
+					const echoed = r.text.includes(synthetic) || r.text.includes("1".repeat(36));
+					check(`${mode}: ${label} 은 거절되고 오류가 값을 되풀이하지 않는다`, !r.ok && !echoed && r.text.includes("contains a credential") && dump() === baseline, r.text);
+				}
+			}
+			check("비밀 형태 path·anchor 는 존재 확인 오류보다 먼저 거절한다(존재하지 않아도 credential 오류)",
+				(await attempt({ memory: "x", kind: "evidence", citations: [{ path: `nope-${synthetic}.md` }] })).text.includes("contains a credential") &&
+				(await attempt({ memory: "x", kind: "evidence", citations: [{ path: record, anchor: synthetic }] })).text.includes("contains a credential"));
+			// 리뷰 R1-OAI-1/2: 안전한 이름의 링크가 비밀 형태 실제 경로를 가리켜도, 없는 앵커의 제목 목록에 비밀 제목이 있어도 오류가 값을 되풀이하지 않는다.
+			const leakProbes: Array<[string, Record<string, unknown>]> = [["일반 learn, 없는 앵커 + 비밀 제목 파일", { path: "secret-heading.md", anchor: "없는 절" }]];
+			try {
+				symlinkSync(join(project, secretNamed), join(project, "safe-link.md"));
+				leakProbes.push(["일반 learn, 안전한 이름의 링크가 비밀 형태 실제 경로를 가리킴", { path: "safe-link.md" }]);
+			} catch {
+				// 심볼릭 링크를 못 만드는 환경은 그 사례만 건너뛴다.
+			}
+			for (const [label, citation] of leakProbes) {
+				const r = await attempt({ memory: "누출 시험", kind: "evidence", citations: [citation] });
+				check(`${label}: 거절되고 오류에 합성 토큰이 없으며 상태가 그대로다`, !r.ok && !r.text.includes(synthetic) && !r.text.includes("1".repeat(36)) && dump() === baseline, r.text);
+			}
+			const linkOnly = leakProbes.length > 1 ? await attempt({ memory: "누출 시험", kind: "evidence", citations: [{ path: "safe-link.md" }] }) : undefined;
+			check("링크의 실제 경로가 비밀 형태이면 credential 오류로 거절한다", linkOnly === undefined || (!linkOnly.ok && linkOnly.text.includes("contains a credential")), linkOnly?.text);
+			const headingMiss = await attempt({ memory: "누출 시험", kind: "evidence", citations: [{ path: "secret-heading.md", anchor: "없는 절" }] });
+			check("없는 앵커 오류의 제목 목록에서 비밀 제목은 [REDACTED] 로 보인다", !headingMiss.ok && headingMiss.text.includes("was not found") && headingMiss.text.includes("[REDACTED]"), headingMiss.text);
+			check("거절 뒤 기존 topic 행의 id·revision·metadata·내용이 그대로다", dump() === baseline && JSON.stringify(metaOf(idOf(`id: ${(st.memory.conn.query("SELECT id FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = 'secret-cite-topic'").get() as { id: string }).id}`))) === JSON.stringify(topicBefore));
+			check("거절 뒤에도 기존 topic 의 임베딩 행(고정 벡터·model)이 그대로다", vectorOf(idOf(topicCreated.text)) === seeded, vectorOf(idOf(topicCreated.text)));
+			const sameBody = await attempt({ memory: "비밀 citation 시험용 topic", topic: "secret-cite-topic", kind: "evidence", citations: [{ path: record, anchor: "배포 검증 절차" }] });
+			check("거절 뒤 본문이 같은 정상 정정은 같은 id 로 citations 만 바꾸고 고정 임베딩을 남긴다",
+				sameBody.ok && idOf(sameBody.text) === idOf(topicCreated.text) && vectorOf(idOf(topicCreated.text)) === seeded && JSON.stringify(metaOf(idOf(sameBody.text)).citations) === JSON.stringify([{ path: record, anchor: "배포 검증 절차" }]), sameBody.text);
+			const okAfter = await attempt({ memory: "거절 뒤에도 정상 정정은 된다", topic: "secret-cite-topic", kind: "evidence", citations: [{ path: record, anchor: "SCOPE" }] });
+			const okMeta = okAfter.ok ? metaOf(idOf(okAfter.text)) : {};
+			check("거절 뒤 정상 citation 으로 topic 을 정정하면 revision 이 오르고 citations 가 교체된다", okAfter.ok && okMeta.revision === topicBefore.revision + 2 && JSON.stringify(okMeta.citations) === JSON.stringify([{ path: record, anchor: "SCOPE" }]), JSON.stringify([okAfter, okMeta]));
+
+			// 원자성: topic 근거를 저장하는 쓰기가 DB 에서 실패하면 본문·임베딩·metadata 어느 것도 바뀌지 않고, 새로 만들다 실패하면 행이 남지 않는다.
+			// 실제 SQLite trigger 의 RAISE(ABORT) 로 실패를 만든다(project·global 대상 각각).
+			for (const [mode, target, extra] of [["project", st.memory, {}], ["global", st.globalMemory, { scope: "global" }]] as Array<[string, typeof st.memory, Record<string, unknown>]>) {
+				const conn = target.conn;
+				const topic = `atom-${mode}`;
+				const base = await attempt({ memory: `원자성 본문 ${mode}`, topic, kind: "hypothesis", ...extra });
+				const baseId = idOf(base.text);
+				conn.query("INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, '[0.75,0.125]', 'fixture-model')").run(baseId);
+				const baseline = dump();
+				const quoted = (name: string) => `'%"${name}"%'`;
+				const faults: Array<[string, string, Record<string, unknown>]> = [
+					["본문이 같은 갱신(마지막 쓰기는 metadata UPDATE)", `CREATE TRIGGER fault_atom BEFORE UPDATE ON working_memory WHEN NEW.metadata_json LIKE ${quoted(topic)} AND NEW.metadata_json LIKE '%"citations"%' BEGIN SELECT RAISE(ABORT, 'fault-injected'); END`, { memory: `원자성 본문 ${mode}`, topic }],
+					["본문이 바뀌는 갱신(본문 UPDATE 뒤 임베딩 DELETE 가 마지막 쓰기)", "CREATE TRIGGER fault_atom BEFORE DELETE ON memory_embeddings BEGIN SELECT RAISE(ABORT, 'fault-injected'); END", { memory: `원자성 새 본문 ${mode}`, topic }],
+					["새 topic 만들기(INSERT)", `CREATE TRIGGER fault_atom BEFORE INSERT ON working_memory WHEN NEW.metadata_json LIKE ${quoted(topic + "-new")} BEGIN SELECT RAISE(ABORT, 'fault-injected'); END`, { memory: `원자성 새 topic ${mode}`, topic: topic + "-new" }],
+				];
+				for (const [label, trigger, args] of faults) {
+					conn.run(trigger);
+					let r: { ok: boolean; text: string };
+					try {
+						r = await attempt({ kind: "evidence", citations: [{ path: record, anchor: "배포 검증 절차" }], ...extra, ...args });
+					} finally {
+						conn.run("DROP TRIGGER fault_atom");
+					}
+					check(`${mode} ${label}: 실패를 알리고 working_memory·memory_embeddings 전체가 그대로다(고아 행 없음)`, !r.ok && r.text.includes("fault-injected") && dump() === baseline, r.text);
+				}
+				check(`${mode}: 실패 뒤 기존 topic 의 임베딩 행이 그대로 남아 있다`, JSON.stringify(conn.query("SELECT embedding_json, model FROM memory_embeddings WHERE memory_id = ?").get(baseId)) === JSON.stringify({ embedding_json: "[0.75,0.125]", model: "fixture-model" }));
+				const created = await attempt({ memory: `원자성 새 topic ${mode}`, topic: topic + "-new", kind: "evidence", citations: [{ path: record, anchor: "배포 검증 절차" }], ...extra });
+				const createdMeta = created.ok ? metaOf(idOf(created.text)) : {};
+				check(`${mode}: 실패 뒤 같은 요청이 정상 저장되고 근거가 한 행에 함께 저장된다`, created.ok && createdMeta.kind === "evidence" && JSON.stringify(createdMeta.citations) === JSON.stringify([{ path: record, anchor: "배포 검증 절차" }]) && createdMeta.topic_key === topic + "-new" && createdMeta.revision === 1, JSON.stringify([created, createdMeta]));
+				const updated = await attempt({ memory: `원자성 새 본문 ${mode}`, topic, kind: "evidence", citations: [{ path: record, anchor: "SCOPE" }], ...extra });
+				const updatedMeta = updated.ok ? metaOf(idOf(updated.text)) : {};
+				check(`${mode}: 정상 갱신은 같은 id·다음 revision 으로 근거를 바꾸고 옛 임베딩을 지운다`,
+					updated.ok && idOf(updated.text) === baseId && updatedMeta.revision === 2 && JSON.stringify(updatedMeta.citations) === JSON.stringify([{ path: record, anchor: "SCOPE" }]) && conn.query("SELECT 1 FROM memory_embeddings WHERE memory_id = ?").get(baseId) == null, JSON.stringify([updated, updatedMeta]));
+			}
 		} finally {
 			st.unsubscribe?.();
 			for (const m of new Set([st.memory, st.globalMemory])) (m as { close(): void } | undefined)?.close();
