@@ -165,7 +165,7 @@ export class LearnTool implements AgentTool<LearnSchema> {`;
  * 범위는 collectScopedRecallResults 가 고른 결과의 실제 bank 로 붙인 일시 필드(recallScope)에서만 읽는다.
  * 정정 표시는 revision>1 일 때만, 최초 시점은 first_timestamp 가 있을 때만, 정정 시점은 updated_at 이 있을 때만 쓴다.
  */
-const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+const recallProvenanceLegacyBlock = String.raw`// HANSE: recall provenance note
 type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string };
 function recallProvenance(result: RecallResult): RecallProvenance {
 	const scope = (result as { recallScope?: string }).recallScope;
@@ -203,6 +203,247 @@ function recallRevisionFooter(results: readonly RecallResult[]): string {
 		: "";
 }
 
+`;
+
+/**
+ * 2026-10-17: 근거형 learn 의 citations 를 회상 줄에 `근거 후보:` 로 싣는다. 확인할 위치이지 근거가 아니라는 안내는 줄이 하나라도
+ * 있을 때 한 번만 붙는다. 위 legacy 본문(정정 표시만)을 쓰던 설치는 legacyPatched 로 이 본문으로 바뀐다.
+ */
+const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string; citations: string[] };
+function recallProvenance(result: RecallResult): RecallProvenance {
+	const scope = (result as { recallScope?: string }).recallScope;
+	let meta: Record<string, unknown> | null = null;
+	try {
+		const raw: unknown = result.metadata ?? (result.metadata_json ? JSON.parse(result.metadata_json) : null);
+		if (raw && typeof raw === "object") meta = raw as Record<string, unknown>;
+	} catch {
+		meta = null;
+	}
+	const day = (value: unknown): string | undefined =>
+		typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : undefined;
+	const revision = Number(meta?.revision);
+	const cited: unknown[] = Array.isArray(meta?.citations) ? (meta?.citations as unknown[]) : [];
+	const citations = cited.flatMap((entry): string[] => {
+		const item = entry as { path?: unknown; anchor?: unknown } | null;
+		if (!item || typeof item.path !== "string" || item.path === "") return [];
+		const text = item.path + (typeof item.anchor === "string" && item.anchor !== "" ? "#" + item.anchor : "");
+		return [text.length > 120 ? text.slice(0, 119) + "…" : text];
+	});
+	return {
+		scope,
+		revision: Number.isInteger(revision) ? revision : 0,
+		first: day(meta?.first_timestamp),
+		corrected: day(meta?.updated_at),
+		citations,
+	};
+}
+function recallProvenanceNote(result: RecallResult): string {
+	const info = recallProvenance(result);
+	const parts: string[] = [];
+	if (info.scope) parts.push(info.scope);
+	if (info.revision > 1) {
+		parts.push("corrected r" + info.revision);
+		parts.push("first " + (info.first ?? "unknown"));
+		if (info.corrected) parts.push("corrected " + info.corrected);
+	}
+	if (info.citations.length > 0) {
+		const more = info.citations.length > 3 ? " 외 " + (info.citations.length - 3) + "건" : "";
+		parts.push("근거 후보: " + info.citations.slice(0, 3).join(", ") + more);
+	}
+	return parts.length > 0 ? " {" + parts.join("; ") + "}" : "";
+}
+function recallRevisionFooter(results: readonly RecallResult[]): string {
+	const notes: string[] = [];
+	if (results.some(result => recallProvenance(result).revision > 1))
+		notes.push("Corrected rows: read memory://<id> for the full metadata and correction reason.");
+	if (results.some(result => recallProvenance(result).citations.length > 0))
+		notes.push("근거 후보 paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
+	return notes.length > 0 ? "\n\n" + notes.join("\n") : "";
+}
+
+/**
+ * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no 근거 후보 even when the
+ * lesson it came from cites a record. Copy just the citations of that origin row onto the fact result before it is rendered.
+ */
+function attachFactCitations(memory: { conn: { query(sql: string): { get(...params: string[]): unknown } } }, results: RecallResult[]): void {
+	for (const result of results) {
+		const origin = (result as { source_memory_id?: unknown }).source_memory_id;
+		if (result.tier !== "fact" || typeof origin !== "string" || result.metadata) continue;
+		try {
+			const row = memory.conn.query("SELECT metadata_json FROM working_memory WHERE id = ?").get(origin) as { metadata_json?: string | null } | null;
+			const cited: unknown = row?.metadata_json ? (JSON.parse(row.metadata_json) as { citations?: unknown }).citations : undefined;
+			if (Array.isArray(cited) && cited.length > 0) result.metadata = { citations: cited };
+		} catch {
+			// A fact whose origin row cannot be read simply shows no citation.
+		}
+	}
+}
+
+`;
+
+/**
+ * 2026-10-17 근거형 learn. kind 와 citations 를 받아 저장 전에 검증하고 metadata 에 남긴다. 존재(경로·앵커)만 보며
+ * 글이 교훈을 뒷받침하는지는 판정하지 않는다. 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(이 파일의 String.raw 안이다).
+ */
+const learnEvidenceBlock = String.raw`// HANSE: learn evidence citations
+type LearnKind = "evidence" | "preference" | "procedure" | "hypothesis";
+type LearnCitation = { path: string; anchor?: string };
+type LearnEvidence = { kind?: LearnKind; citations: LearnCitation[] };
+const LEARN_MAX_CITATIONS = 8;
+const LEARN_MAX_ANCHOR_FILE_BYTES = 8 * 1024 * 1024;
+
+const learnKindSchema = type("'evidence' | 'preference' | 'procedure' | 'hypothesis'").describe(
+	"what the lesson is: evidence = project fact, design decision or failure cause (needs citations in project scope); preference = how the user wants work done; procedure = how to do a task; hypothesis = unverified guess",
+);
+const learnCitationsSchema = type({
+	path: type("string").describe("file path relative to the project root"),
+	"anchor?": type("string").describe("a '## ' heading text, a header field name such as RECORD or SCOPE, or a line range such as 120-140"),
+})
+	.array()
+	.describe("project files that record this lesson; required for kind evidence in project scope; checked for existence only, not for whether the file supports the lesson");
+
+function learnProjectRoot(cwd: string): string {
+	let real = cwd;
+	try {
+		real = fs.realpathSync(cwd);
+	} catch {
+		// An unreadable cwd is reported by the citation path check below.
+	}
+	try {
+		const out = Bun.spawnSync(["git", "-C", real, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
+		const top = out.exitCode === 0 ? out.stdout.toString().trim() : "";
+		if (top) return fs.realpathSync(top);
+	} catch {
+		// No git: the session cwd is the project root.
+	}
+	return real;
+}
+
+function learnPathIgnored(root: string, rel: string): boolean {
+	try {
+		return Bun.spawnSync(["git", "-C", root, "check-ignore", "-q", "--", rel], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+function learnHeadings(text: string): string[] {
+	const headings: string[] = [];
+	for (const line of text.split(/\r?\n/)) {
+		const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+		if (match) headings.push(match[1]!.replace(/\s+/g, " "));
+	}
+	return headings;
+}
+
+function learnAnchorFound(text: string, anchor: string): boolean {
+	const lines = text.split(/\r?\n/);
+	const range = /^(\d+)(?:-(\d+))?$/.exec(anchor);
+	if (range) {
+		const start = Number(range[1]);
+		const end = Number(range[2] ?? range[1]);
+		return start >= 1 && end >= start && end <= lines.length;
+	}
+	if (/^(RECORD|DATE|SCOPE|PATHS|STATUS)$/.test(anchor)) {
+		return lines.slice(0, 40).some(line => line.startsWith(anchor + ":") || line.startsWith("*" + anchor + ":"));
+	}
+	const want = anchor.replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim().toLowerCase();
+	if (!want) return false;
+	return learnHeadings(text).some(heading => {
+		const have = heading.toLowerCase();
+		return have === want || have.startsWith(want);
+	});
+}
+
+function resolveLearnEvidence(session: ToolSession, params: LearnParams): LearnEvidence {
+	const given = params.citations ?? [];
+	const projectScope = (params.scope ?? "project") === "project";
+	const kind = params.kind ?? (given.length > 0 ? "evidence" : undefined);
+	if (kind === undefined && projectScope) {
+		throw new Error(
+			"learn needs a kind. Use kind evidence for a project fact, design decision or failure cause, and add citations (a list of path plus optional anchor) naming the project file that records it. Use kind preference (how the user wants work done), procedure (how to do a task) or hypothesis (unverified) when no project file records it.",
+		);
+	}
+	if (kind === "evidence" && projectScope && given.length === 0) {
+		throw new Error(
+			"kind evidence in project scope needs at least one citation: citations = [{ path: <file relative to the project root>, anchor: <optional: a '## ' heading text, a header field such as RECORD or SCOPE, or a line range like 120-140> }]. Cite the file that records it (a doc/history record, HANDOFF.md, source). If no file records it yet, write the record first, or use kind hypothesis.",
+		);
+	}
+	if (given.length > LEARN_MAX_CITATIONS) {
+		throw new Error("learn accepts at most " + LEARN_MAX_CITATIONS + " citations; cite the one or two files that matter most.");
+	}
+	if (given.length === 0) return { kind, citations: [] };
+	const root = learnProjectRoot(session.cwd);
+	const citations: LearnCitation[] = [];
+	const seen = new Set<string>();
+	given.forEach((citation, index) => {
+		const label = "citations[" + index + "]";
+		const raw = citation.path.trim().replaceAll("\\", "/");
+		if (!raw) throw new Error(label + ".path is empty.");
+		let real: string;
+		try {
+			real = fs.realpathSync(path.resolve(root, raw));
+		} catch {
+			throw new Error(label + '.path "' + raw + '" does not exist under the project root ' + root + ". Use a path relative to the project root.");
+		}
+		const rel = path.relative(root, real);
+		if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+			throw new Error(label + '.path "' + raw + '" is outside the project root ' + root + ".");
+		}
+		const stat = fs.statSync(real);
+		if (!stat.isFile()) throw new Error(label + '.path "' + raw + '" is not a file; cite a file.');
+		const relPosix = rel.split(path.sep).join("/");
+		if (!eligibleFile(relPosix, stat.size, true) || learnPathIgnored(root, relPosix)) {
+			throw new Error(label + '.path "' + raw + '" is a secret, binary, empty, excluded or git-ignored file and cannot be cited.');
+		}
+		const anchor = citation.anchor?.trim();
+		if (anchor) {
+			if (stat.size > LEARN_MAX_ANCHOR_FILE_BYTES) throw new Error(label + '.path "' + raw + '" is too large to check an anchor in; cite it without an anchor or use a line range of a smaller file.');
+			const text = fs.readFileSync(real, "utf8");
+			if (!learnAnchorFound(text, anchor)) {
+				const headings = learnHeadings(text).slice(0, 8);
+				throw new Error(
+					label + '.anchor "' + anchor + '" was not found in ' + relPosix + ". Use the text of a '## ' heading, a header field name (RECORD, DATE, SCOPE, PATHS, STATUS) or a line range inside the file." +
+						(headings.length > 0 ? " Headings in the file: " + headings.join(" | ") : ""),
+				);
+			}
+		}
+		// Store a heading without its "## " prefix so the recall line reads path#heading.
+		const stored = anchor ? anchor.replace(/^#{1,6}\s*/, "") : undefined;
+		const key = relPosix + "#" + (stored ?? "");
+		if (seen.has(key)) return;
+		seen.add(key);
+		citations.push(stored ? { path: relPosix, anchor: stored } : { path: relPosix });
+	});
+	return { kind, citations };
+}
+
+function learnEvidenceMetadata(evidence: LearnEvidence): Record<string, unknown> {
+	return { ...(evidence.kind ? { kind: evidence.kind } : {}), ...(evidence.citations.length > 0 ? { citations: evidence.citations } : {}) };
+}
+
+/** A topic lesson is written by upsertLearnTopic; the evidence of the newest revision replaces the previous one afterwards. */
+function stampLearnTopicEvidence(
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
+	topicInput: string,
+	evidence: LearnEvidence,
+): void {
+	const topic = topicInput.normalize("NFKC").trim().toLowerCase();
+	const db = target.memory.conn;
+	db.transaction(() => {
+		const row = db
+			.query("SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1")
+			.get(topic) as { id: string; metadata_json: string } | null;
+		if (!row) throw new Error("Lesson stored, but its topic row was not found to attach the evidence.");
+		const metadata: Record<string, unknown> = JSON.parse(row.metadata_json);
+		delete metadata.kind;
+		delete metadata.citations;
+		db.query("UPDATE working_memory SET metadata_json = ? WHERE id = ?").run(JSON.stringify({ ...metadata, ...learnEvidenceMetadata(evidence) }), row.id);
+	}).immediate();
+}
+
+const learnSchemaBase = type({
 `;
 
 /** embedding 보존 이전(출처 구분) learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
@@ -7515,12 +7756,14 @@ function operationFromNative(op: string): Operation | undefined {
 		marker: "// HANSE: recall provenance note",
 		anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
 		patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+		legacyPatched: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 		alternates: [{
 			file: "src/mnemopi/state.ts",
 			requires: "findPersistedRecall",
 			marker: "// HANSE: recall provenance note",
 			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			legacyPatched: recallProvenanceLegacyBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 		}],
 	},
 	{
@@ -7569,6 +7812,73 @@ function operationFromNative(op: string): Operation | undefined {
 		}],
 	},
 	{
+		// 2026-10-17: recall 은 facts 를 함께 싣는데 fact 줄은 metadata 가 없다. 출처 기억(source_memory_id)의 citations 만 줄에 옮겨 근거 후보가 사라지지 않게 한다.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: facts carry the citations of the memory they were taken from",
+		anchor: "targetSucceeded = true;\n",
+		patched: "targetSucceeded = true;\n\t\t\t\t\t// HANSE: facts carry the citations of the memory they were taken from\n\t\t\t\t\tattachFactCitations(target.memory, results);\n",
+	},
+	{
+		// 2026-10-17 턴 단위 주입 게이트(doc/history/2026/10/17-memory-gate-citations): 자동 첫 턴 회상에서 상위 후보의 원시 dense
+		// 코사인 최댓값이 기준 미만이면 그 턴에는 기억을 싣지 않는다. 기준은 설정이고 0 이면 끈다(기본 0.80, multilingual-e5 전용).
+		file: "src/mnemopi/settings.ts",
+		marker: "cfgMnemopiRecallDenseGate",
+		anchor: "export const cfgMnemopiRecallContextTurns = register({ id: \"mnemopi.recallContextTurns\", type: \"number\", default: 3 });\n",
+		patched: "export const cfgMnemopiRecallContextTurns = register({ id: \"mnemopi.recallContextTurns\", type: \"number\", default: 3 });\n\n// HANSE: turn-level dense gate setting (0 disables)\nexport const cfgMnemopiRecallDenseGate = register({ id: \"mnemopi.recallDenseGate\", type: \"number\", default: 0.8 });\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\tcfgMnemopiRecallDenseGate,\n",
+		anchor: "\tcfgMnemopiRecallContextTurns,\n",
+		patched: "\tcfgMnemopiRecallContextTurns,\n\tcfgMnemopiRecallDenseGate,\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\trecallDenseGate: number;\n",
+		anchor: "\trecallContextTurns: number;\n",
+		patched: "\trecallContextTurns: number;\n\t/** HANSE: turn-level dense gate; best raw dense cosine below this skips the first-turn injection. 0 disables. */\n\trecallDenseGate: number;\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\t\trecallDenseGate: Math.min(1, Math.max(0, Number(cfgMnemopiRecallDenseGate.get(settings)) || 0)),\n",
+		anchor: "\t\trecallContextTurns: Math.max(1, Math.floor(cfgMnemopiRecallContextTurns.get(settings))),\n",
+		patched: "\t\trecallContextTurns: Math.max(1, Math.floor(cfgMnemopiRecallContextTurns.get(settings))),\n\t\trecallDenseGate: Math.min(1, Math.max(0, Number(cfgMnemopiRecallDenseGate.get(settings)) || 0)),\n",
+	},
+	{
+		// recallForContext 는 압축 회상도 쓰므로 게이트는 세 번째 인자로 자동 첫 턴 주입 경로만 켠다.
+		file: "src/mnemopi/state.ts",
+		marker: "// HANSE: turn-level dense gate",
+		anchor: "\tasync recallForContext(query: string, signal?: AbortSignal): Promise<string | undefined> {\n\t\treturn (await this.#recallBlock(query, signal))?.text || undefined;\n\t}\n\n\t/** Recalls `query` into a prompt block plus the memories it holds; undefined when aborted. */\n\tasync #recallBlock(query: string, signal?: AbortSignal): Promise<RecallBlock | undefined> {\n\t\tconst results = await this.collectScopedRecallResults(query);\n\t\tif (signal?.aborted) return undefined;\n\t\tif (results.length === 0) return { text: \"\", memories: [] };\n",
+		patched: "\t/** `autoInjection` is passed only by the first-turn prompt injection; compaction recall and explicit recall never gate. */\n\tasync recallForContext(query: string, signal?: AbortSignal, autoInjection = false): Promise<string | undefined> {\n\t\treturn (await this.#recallBlock(query, signal, autoInjection))?.text || undefined;\n\t}\n\n"
+			+ "\t// HANSE: turn-level dense gate\n"
+			+ "\t/**\n\t * Whole-turn skip for the automatic first-turn recall: when even the best raw dense cosine among the recalled candidates\n\t * is below `mnemopi.recallDenseGate`, the request matches nothing stored and no memory is injected this turn.\n\t * Calibrated for multilingual-e5 (other models have another cosine range), so it is off for them. A turn with no dense\n\t * signal at all (embeddings off, rows not embedded yet) never gates.\n\t */\n"
+			+ "\t#recallGated(results: readonly RecallResult[]): boolean {\n"
+			+ "\t\tconst gate = this.config.recallDenseGate;\n"
+			+ "\t\tconst provider = this.config.providerOptions;\n"
+			+ "\t\tif (!(typeof gate === \"number\" && gate > 0)) return false;\n"
+			+ "\t\tif (!provider || provider.noEmbeddings || provider.embeddingApiUrl || !/(^|[/_-])e5([-_]|$)/i.test(provider.embeddingModel ?? \"\")) return false;\n"
+			+ "\t\tlet best = 0;\n"
+			+ "\t\tfor (const result of results) if (typeof result.dense_score === \"number\" && result.dense_score > best) best = result.dense_score;\n"
+			+ "\t\tif (best <= 0 || best >= gate) return false;\n"
+			+ "\t\tlogger.debug(\"Mnemopi: first-turn recall skipped by dense gate\", { best, gate });\n"
+			+ "\t\tthis.session.sessionManager.appendCustomEntry?.(\"mnemopi-recall-gated\", { dense: best, gate, candidates: results.length });\n"
+			+ "\t\treturn true;\n"
+			+ "\t}\n\n"
+			+ "\t/** Recalls `query` into a prompt block plus the memories it holds; undefined when aborted. */\n\tasync #recallBlock(query: string, signal?: AbortSignal, autoInjection = false): Promise<RecallBlock | undefined> {\n\t\tconst results = await this.collectScopedRecallResults(query);\n\t\tif (signal?.aborted) return undefined;\n\t\tif (results.length === 0) return { text: \"\", memories: [] };\n\t\tif (autoInjection && this.#recallGated(results)) return { text: \"\", memories: [] };\n",
+	},
+	{
+		file: "src/mnemopi/state.ts",
+		marker: "await this.#recallBlock(truncated, signal, true);",
+		anchor: "\t\tconst recall = await this.#recallBlock(truncated, signal);\n",
+		patched: "\t\tconst recall = await this.#recallBlock(truncated, signal, true);\n",
+	},
+	{
+		file: "src/mnemopi/state.ts",
+		marker: "await this.#recallBlock(truncated, undefined, true);",
+		anchor: "\t\t\t\tconst recall = await this.#recallBlock(truncated);\n",
+		patched: "\t\t\t\tconst recall = await this.#recallBlock(truncated, undefined, true);\n",
+	},
+	{
 		file: "src/tools/learn.ts",
 		marker: 'import { redactMemorySecrets } from "../memory-backend/redact";',
 		anchor: 'import { localBackend } from "../memory-backend/local-backend";',
@@ -7612,6 +7922,57 @@ function operationFromNative(op: string): Operation | undefined {
 		anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
 		legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
 		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t} catch (error) {\n",
+	},
+	{
+		// 2026-10-17 근거형 learn: 검증·metadata 보조 함수와 kind·citations schema 는 learnSchemaBase 앞에 한 덩어리로 둔다.
+		file: "src/tools/learn.ts",
+		marker: "// HANSE: learn evidence citations",
+		anchor: "const learnSchemaBase = type({\n",
+		patched: learnEvidenceBlock,
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: 'import { eligibleFile } from "./jfind/tree";',
+		anchor: 'import type { ToolSession } from ".";\n',
+		patched: 'import type { ToolSession } from ".";\nimport * as fs from "node:fs";\nimport * as path from "node:path";\nimport { eligibleFile } from "./jfind/tree";\n',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: '\t"kind?": learnKindSchema,\n\t"citations?": learnCitationsSchema,\n\t"skill?": learnSkillSchema,\n});\n\n/** Offered only',
+		anchor: '\t"skill?": learnSkillSchema,\n});\n\n/** Offered only',
+		patched: '\t"kind?": learnKindSchema,\n\t"citations?": learnCitationsSchema,\n\t"skill?": learnSkillSchema,\n});\n\n/** Offered only',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: '\t"kind?": learnKindSchema,\n\t"citations?": learnCitationsSchema,\n\t"skill?": learnSkillSchema,\n});\n\ntype LearnSchema',
+		anchor: '\t"skill?": learnSkillSchema,\n});\n\ntype LearnSchema',
+		patched: '\t"kind?": learnKindSchema,\n\t"citations?": learnCitationsSchema,\n\t"skill?": learnSkillSchema,\n});\n\ntype LearnSchema',
+	},
+	{
+		// 저장 전에 검증한다. mnemopi 만 metadata 를 남길 수 있으므로 다른 백엔드는 kind·citations 를 요구하지 않는다.
+		file: "src/tools/learn.ts",
+		marker: "// HANSE: learn evidence is validated before anything is written",
+		anchor: '\t\tconst backend = cfgMemoryBackend.get(this.session.settings);\n\t\tif (params.scope === "global" && backend !== "mnemopi") {\n',
+		patched: '\t\tconst backend = cfgMemoryBackend.get(this.session.settings);\n\t\t// HANSE: learn evidence is validated before anything is written\n\t\tconst evidence: LearnEvidence = backend === "mnemopi" ? resolveLearnEvidence(this.session, params) : { citations: [] };\n\t\tif (params.scope === "global" && backend !== "mnemopi") {\n',
+	},
+	{
+		file: "src/tools/learn.ts",
+		marker: "...learnEvidenceMetadata(evidence),",
+		anchor: '\t\t\t\t\t\t\ttool: "learn",\n\t\t\t\t\t\t},\n',
+		patched: '\t\t\t\t\t\t\ttool: "learn",\n\t\t\t\t\t\t\t...learnEvidenceMetadata(evidence),\n\t\t\t\t\t\t},\n',
+	},
+	{
+		// topic 갱신은 upsertLearnTopic 이 metadata 를 직접 만든다. 저장 직후 같은 행의 kind·citations 를 이번 판으로 바꾼다.
+		file: "src/tools/learn.ts",
+		marker: "// HANSE: learn evidence of a topic lesson follows its newest revision",
+		anchor: '\t\t} else if (backend === "local") {\n',
+		patched: '\t\t\t// HANSE: learn evidence of a topic lesson follows its newest revision\n\t\t\tif (params.topic) stampLearnTopicEvidence(target ?? state.getScopedRetainTarget(), params.topic, evidence);\n\t\t} else if (backend === "local") {\n',
+	},
+	{
+		file: "src/prompts/tools/learn.md",
+		marker: "`kind` is required in project scope",
+		anchor: "Capture sparingly, specifically: one strong reusable lesson > several vague ones.",
+		patched: "`kind` is required in project scope. `evidence` = a project fact, design decision, or failure cause: add `citations`, each a `path` relative to the project root plus an optional `anchor` (a `## ` heading text, a header field such as `RECORD`/`SCOPE`, or a line range), naming the file that records it. The save is rejected when a path or anchor does not exist; the check does not judge whether the file supports the lesson, so cite only what you read. Recall shows citations as places to verify, not as proof. `preference` (how the user wants work done), `procedure` (how to do a task) and `hypothesis` (unverified) need no citation.\n\nCapture sparingly, specifically: one strong reusable lesson > several vague ones.",
 	},
 	{
 		// 2026-09-27: 자동 주입 <memories> 는 세션 파일에 남지 않아, Main 단독 세션에서 어떤 교훈이 전달됐는지

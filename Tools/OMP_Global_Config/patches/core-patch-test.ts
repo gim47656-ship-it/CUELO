@@ -2848,7 +2848,7 @@ console.log("\n[25] learn — 저장한 기억 id 를 결과에 싣는다");
 			rememberScoped: () => "mem-42",
 		}),
 	} as never;
-	const learned = await new LearnTool(learnSession).execute("learn-1", { memory: "manifest 는 Tools 파일도 포함한다" });
+	const learned = await new LearnTool(learnSession).execute("learn-1", { kind: "procedure", memory: "manifest 는 Tools 파일도 포함한다" });
 	const learnedText = String(learned.content[0]?.text);
 	check("learn 결과가 저장된 기억 id 를 알린다", learnedText === "Lesson stored (id: mem-42).", `text=${learnedText}`);
 }
@@ -2872,9 +2872,9 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 	} as never;
 	try {
 		const tool = new LearnTool(session);
-		const first = await tool.execute("topic-1", { memory: "old topic lesson", topic: "  Deploy  " });
+		const first = await tool.execute("topic-1", { kind: "procedure", memory: "old topic lesson", topic: "  Deploy  " });
 		const fakeCredential = "gh" + "p_" + "1".repeat(36);
-		const second = await tool.execute("topic-2", { memory: "new topic lesson", topic: "deploy", context: fakeCredential });
+		const second = await tool.execute("topic-2", { kind: "procedure", memory: "new topic lesson", topic: "deploy", context: fakeCredential });
 		const rows = memory.conn.query("SELECT id, content, metadata_json FROM working_memory ORDER BY id").all() as Array<{ id: string; content: string; metadata_json: string }>;
 		check("같은 topic은 단일 행에서 내용과 revision 2로 갱신한다",
 			rows.length === 1 && rows[0]?.content === "new topic lesson" &&
@@ -2883,10 +2883,10 @@ console.log("\n[25a] learn topic — 같은 bank/topic 갱신과 revision, 일�
 			String(second.content[0]?.text).includes(`id: ${rows[0]?.id}, revision: 2`));
 		check("topic 수정의 context는 기억 비밀 제거 규칙을 지킨다",
 			JSON.parse(rows[0]!.metadata_json).context === "[REDACTED]");
-		const unsafeTopic = await tool.execute("topic-unsafe", { memory: "should not store", topic: fakeCredential })
+		const unsafeTopic = await tool.execute("topic-unsafe", { kind: "procedure", memory: "should not store", topic: fakeCredential })
 			.then(() => "stored", (error: Error) => error.message);
 		check("credential 형태 topic은 저장 전에 거절한다", unsafeTopic.includes("contains a credential"));
-		const plain = await tool.execute("plain-1", { memory: "plain lesson" });
+		const plain = await tool.execute("plain-1", { kind: "procedure", memory: "plain lesson" });
 		check("topic 없는 learn 결과/추가는 기존과 같다",
 			String(plain.content[0]?.text).startsWith("Lesson stored (id: ") &&
 			Number((memory.conn.query("SELECT COUNT(*) n FROM working_memory").get() as { n: number }).n) === 2);
@@ -2913,12 +2913,12 @@ console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/
 	const metaOf = (id: string) => JSON.parse(rowOf(id).metadata_json) as Record<string, unknown>;
 	const idOf = (result: { content: Array<{ text?: string }> }) => /id: ([^,)]+)/.exec(String(result.content[0]?.text))![1]!;
 	try {
-		const first = await toolFor("sess-A", "F:/A").execute("p-1", { memory: "first body", topic: "prov", context: "reason-A" });
+		const first = await toolFor("sess-A", "F:/A").execute("p-1", { kind: "procedure", memory: "first body", topic: "prov", context: "reason-A" });
 		const id = idOf(first);
 		memory.conn.query("UPDATE working_memory SET metadata_json = json_set(metadata_json, '$.custom', 'keep') WHERE id = ?").run(id);
 		const before = rowOf(id);
 		await Bun.sleep(5);
-		await toolFor("sess-B", "F:/B").execute("p-2", { memory: "corrected body", topic: "prov", context: "reason-B" });
+		await toolFor("sess-B", "F:/B").execute("p-2", { kind: "procedure", memory: "corrected body", topic: "prov", context: "reason-B" });
 		const afterB = rowOf(id);
 		const metaB = metaOf(id);
 		check("정정 뒤에도 최초 session/cwd/context/시점이 남고 최신 정정 출처가 따로 붙는다",
@@ -2931,7 +2931,7 @@ console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/
 			metaB.custom === "keep" && metaB.tool === "learn" && metaB.topic_key === "prov" && !afterB.metadata_json.includes("first body") &&
 			(memory.conn.query("SELECT COUNT(*) n FROM working_memory WHERE content LIKE '%first body%'").get() as { n: number }).n === 0);
 		await Bun.sleep(5);
-		await toolFor("sess-C", "F:/C").execute("p-3", { memory: "third body", topic: "prov" });
+		await toolFor("sess-C", "F:/C").execute("p-3", { kind: "procedure", memory: "third body", topic: "prov" });
 		const metaC = metaOf(id);
 		check("반복 정정은 최초 출처를 유지하고 최신 정정자만 갱신하며 context 없음은 null 이다",
 			metaC.session_id === "sess-A" && metaC.first_context === "reason-A" && metaC.first_timestamp === before.timestamp &&
@@ -2947,26 +2947,26 @@ console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/
 		// working memory TTL(24h)이 오래된 임시 행을 다음 remember 때 지우므로 구형 행도 최근 시각으로 심는다.
 		const legacyAt = new Date(Date.now() - 3_600_000).toISOString();
 		const legacyV1 = await seed("legacy one", legacyAt, legacyMeta({ revision: 1 }));
-		await toolFor("sess-B", "F:/B").execute("p-4", { memory: "legacy corrected", topic: "legacy", context: "reason-new" });
+		await toolFor("sess-B", "F:/B").execute("p-4", { kind: "procedure", memory: "legacy corrected", topic: "legacy", context: "reason-new" });
 		const metaL1 = metaOf(legacyV1);
 		check("구형 revision 1 행은 갱신 직전 timestamp·context 를 최초 값으로 보존한다",
 			metaL1.first_timestamp === legacyAt && metaL1.first_context === "reason-old" &&
 			metaL1.session_id === "sess-old" && metaL1.cwd === "F:/old" && metaL1.updated_session_id === "sess-B", JSON.stringify(metaL1));
 		const legacyV2 = await seed("legacy two", legacyAt, legacyMeta({ topic_key: "legacy2", revision: 2, context: "reason-already-overwritten" }));
 		const legacyNoRev = await seed("legacy three", legacyAt, legacyMeta({ topic_key: "legacy3" }));
-		await toolFor("sess-C", "F:/C").execute("p-5b", { memory: "legacy three corrected", topic: "legacy3" });
+		await toolFor("sess-C", "F:/C").execute("p-5b", { kind: "procedure", memory: "legacy three corrected", topic: "legacy3" });
 		const metaL3 = metaOf(legacyNoRev);
 		check("revision 없는 구형 행도 최초 시점·이유를 지어내지 않는다",
 			!("first_timestamp" in metaL3) && !("first_context" in metaL3) && metaL3.session_id === "sess-old" && metaL3.updated_session_id === "sess-C" && metaL3.revision === 2,
 			JSON.stringify(metaL3));
-		await toolFor("sess-C", "F:/C").execute("p-5", { memory: "legacy two corrected", topic: "legacy2" });
+		await toolFor("sess-C", "F:/C").execute("p-5", { kind: "procedure", memory: "legacy two corrected", topic: "legacy2" });
 		const metaL2 = metaOf(legacyV2);
 		check("이미 갱신된 구형 행의 모르는 최초 시점·이유는 지어내지 않는다",
 			!("first_timestamp" in metaL2) && !("first_context" in metaL2) && metaL2.session_id === "sess-old" &&
 			metaL2.updated_session_id === "sess-C" && metaL2.revision === 3, JSON.stringify(metaL2));
 
 		// 같은 bank/session 의 정확히 같은 본문은 기존 findDuplicate 가 합치므로 다른 본문의 관찰로 확인한다.
-		const observation = await toolFor("sess-D", "F:/D").execute("p-6", { memory: "단순 관찰: 같은 주제어 prov 가 언급됐다" });
+		const observation = await toolFor("sess-D", "F:/D").execute("p-6", { kind: "procedure", memory: "단순 관찰: 같은 주제어 prov 가 언급됐다" });
 		const observedId = idOf(observation);
 		check("topic 없는 단순 관찰은 기존 topic 행을 덮어쓰지 않고 별도 행으로 남는다",
 			observedId !== id && rowOf(id).content === "third body" && metaOf(id).revision === 3 && metaOf(id).updated_session_id === "sess-C" &&
@@ -2998,11 +2998,11 @@ console.log("\n[25a-e] learn topic 갱신 — 실효 embedding 입력이 같을 
 	const seedVector = (id: string) => memory.conn.query("INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, '[0.25,0.5]', 'fixture-model')").run(id);
 	const learnId = async (call: string, params: Record<string, unknown>) => /id: ([^,)]+)/.exec(String((await tool.execute(call, params as never)).content[0]?.text))![1]!;
 	try {
-		const id = await learnId("e-1", { memory: "same body lesson", topic: "emb", context: "reason-1" });
+		const id = await learnId("e-1", { kind: "procedure", memory: "same body lesson", topic: "emb", context: "reason-1" });
 		seedVector(id);
 		const before = rowOf(id);
 		await Bun.sleep(5);
-		await learnId("e-2", { memory: "same body lesson", topic: "emb", context: "reason-2" });
+		await learnId("e-2", { kind: "procedure", memory: "same body lesson", topic: "emb", context: "reason-2" });
 		const kept = rowOf(id);
 		const keptMeta = JSON.parse(kept.metadata_json);
 		check("본문이 같고 context 만 바뀐 갱신은 벡터·embed_text 를 남기고 revision·출처·시점은 갱신한다",
@@ -3012,22 +3012,22 @@ console.log("\n[25a-e] learn topic 갱신 — 실효 embedding 입력이 같을 
 			kept.timestamp > before.timestamp && keptMeta.updated_at === kept.timestamp,
 			JSON.stringify({ kept, vector: vectorOf(id) }));
 
-		await learnId("e-3", { memory: "changed body lesson", topic: "emb" });
+		await learnId("e-3", { kind: "procedure", memory: "changed body lesson", topic: "emb" });
 		check("본문이 바뀐 갱신은 기존처럼 벡터를 지우고 embed_text 를 비운다",
 			vectorOf(id) === null && rowOf(id).content === "changed body lesson" && rowOf(id).embed_text === null && JSON.parse(rowOf(id).metadata_json).revision === 3);
 
 		const fakeCredential = "gh" + "p_" + "2".repeat(36);
-		const secretId = await learnId("e-4", { memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret" });
+		const secretId = await learnId("e-4", { kind: "procedure", memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret" });
 		seedVector(secretId);
-		await learnId("e-5", { memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret", context: "again" });
+		await learnId("e-5", { kind: "procedure", memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret", context: "again" });
 		check("redaction 뒤 같은 본문은 같은 입력으로 보고 벡터를 남긴다",
 			vectorOf(secretId)?.model === "fixture-model" && !rowOf(secretId).content.includes(fakeCredential) &&
 			JSON.parse(rowOf(secretId).metadata_json).revision === 2);
 
-		const projectionId = await learnId("e-6", { memory: "projected body", topic: "emb-projection" });
+		const projectionId = await learnId("e-6", { kind: "procedure", memory: "projected body", topic: "emb-projection" });
 		memory.conn.query("UPDATE working_memory SET embed_text = 'separate projection' WHERE id = ?").run(projectionId);
 		seedVector(projectionId);
-		await learnId("e-7", { memory: "projected body", topic: "emb-projection" });
+		await learnId("e-7", { kind: "procedure", memory: "projected body", topic: "emb-projection" });
 		check("별도 projection(embed_text ≠ 본문)은 본문이 같아도 기존처럼 지운다",
 			vectorOf(projectionId) === null && rowOf(projectionId).embed_text === null);
 	} finally { memory.close(); }
@@ -3064,10 +3064,10 @@ console.log("\n[25a-q] 회상 소비 출력 — 범위(global/project)와 정정
 	const learn = (s: { session: unknown }, args: Record<string, unknown>) => new LearnTool(s.session as never).execute("q", args as never);
 	const idOf = (r: { content: Array<{ text?: string }> }) => /id: ([^,)]+)/.exec(String(r.content[0]?.text))![1]!;
 	try {
-		const projId = idOf(await learn(A, { memory: "배포 승인 standing approval alpha 최초 본문", topic: "approval", context: "PRIVATE-REASON" }));
+		const projId = idOf(await learn(A, { kind: "procedure", memory: "배포 승인 standing approval alpha 최초 본문", topic: "approval", context: "PRIVATE-REASON" }));
 		const globalId = idOf(await learn(A, { memory: "전역 교훈 beta 승인 결정은 정본과 대조한다", scope: "global" }));
 		await Bun.sleep(5);
-		await learn(A2, { memory: "배포 승인 standing approval alpha 정정 본문", topic: "approval" });
+		await learn(A2, { kind: "procedure", memory: "배포 승인 standing approval alpha 정정 본문", topic: "approval" });
 		// 구형 행: revision 2 이지만 최초 시점이 없는 정정 행, metadata 가 전혀 없는 행.
 		const projMem = A.st.memory;
 		const legacyRev = projMem.remember("구형 gamma 정정 행 standing approval", { source: "coding-agent-learn", metadata: { topic_key: "old", revision: 2, session_id: "x" } });
@@ -3127,9 +3127,9 @@ console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문�
 					abort: () => {},
 					prompt: async (nudge: unknown) => {
 						messages.push(nudge);
-						messages.push(call("c1", "learn", { memory: "배포 뒤   CUELO 재시작이\n필요하다. 재시작 로그의 RESUME_SENT 도 확인한다." }));
+						messages.push(call("c1", "learn", { kind: "procedure", memory: "배포 뒤   CUELO 재시작이\n필요하다. 재시작 로그의 RESUME_SENT 도 확인한다." }));
 						messages.push(result("c1", "learn", false));
-						messages.push(call("c2", "learn", { memory: "거절된 교훈" }));
+						messages.push(call("c2", "learn", { kind: "procedure", memory: "거절된 교훈" }));
 						messages.push(result("c2", "learn", true));
 						if (failAfterSave) throw new Error("provider 끊김");
 						messages.push(call("c3", "manage_skill", { action: "create", name: "deploy-check" }));
