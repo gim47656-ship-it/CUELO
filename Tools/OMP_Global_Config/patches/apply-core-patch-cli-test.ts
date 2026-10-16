@@ -145,7 +145,7 @@ const learnPath = join(fixture, "src/tools/learn.ts");
 const latestLearn = readFileSync(learnPath, "utf8");
 const oldLearn = latestLearn
 	.replace(
-		"const topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget()) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(",
+		/const topicResult = params\.topic \? upsertLearnTopic\([^\n]*\) : undefined;\n\t\t\t\tconst memoryId = topicResult\?\.id \?\? state\.rememberScoped\(/,
 		"const memoryId = state.rememberScoped(",
 	)
 	.replace(

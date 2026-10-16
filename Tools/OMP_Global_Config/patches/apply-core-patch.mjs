@@ -8189,10 +8189,10 @@ function operationFromNative(op: string): Operation | undefined {
 		// 이슈 #32: 별도 stamp 호출(저장 뒤 두 번째 쓰기)을 없앴다. 근거는 upsertLearnTopic 이 저장한다.
 		// legacyPatched 는 그 stamp 호출을 넣었던 배포본(HEAD b8f1aad)이다. 원본·#32 이후 상태에서는 앵커를 그대로 둔다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: learn topic evidence is stored with the topic row",
+		marker: "// HANSE: learn topic evidence has no separate stamp write",
 		anchor: '\t\t} else if (backend === "local") {\n',
 		legacyPatched: '\t\t\t// HANSE: learn evidence of a topic lesson follows its newest revision\n\t\t\tif (params.topic) stampLearnTopicEvidence(target ?? state.getScopedRetainTarget(), params.topic, evidence);\n\t\t} else if (backend === "local") {\n',
-		patched: '\t\t} else if (backend === "local") {\n',
+		patched: '\t\t\t// HANSE: learn topic evidence has no separate stamp write\n\t\t} else if (backend === "local") {\n',
 	},
 	{
 		file: "src/prompts/tools/learn.md",
