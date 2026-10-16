@@ -3069,6 +3069,26 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
     expect(slow.warnings.some((line) => line.includes("timed out"))).toBe(true);
   });
 
+  test("같은 run 안의 steering 재요청은 판정하지 않고, run이 끝난 뒤 새 요청은 다시 판정한다", async () => {
+    const harness = createHarness({ judgeAnswers: { memory0: choice("applies") } });
+    const memories = ["base", block(BRANCH)];
+    // core 순서: 직접 요청 before_agent_start → agent_start → (steering) before_agent_start → agent_end.
+    expect(await harness.emit("before_agent_start", start(PROMPT, memories))).toBeDefined();
+    await harness.emit("agent_start", { type: "agent_start" });
+    const startedAt = Date.now();
+    expect(await harness.emit("before_agent_start", start("방금 말한 것 대신 PR을 만들어줘.", memories))).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(harness.judgments).toHaveLength(1);
+    await harness.emit("agent_end", { type: "agent_end", messages: [], willContinue: true });
+    expect(await harness.emit("before_agent_start", start("다음 요청: PR 설명을 정리해서 올려줘.", memories))).toBeDefined();
+    expect(harness.judgments).toHaveLength(2);
+    // session 변경도 run 상태를 끊는다.
+    await harness.emit("agent_start", { type: "agent_start" });
+    await harness.emit("session_start", { type: "session_start" });
+    expect(await harness.emit("before_agent_start", start(PROMPT, memories))).toBeDefined();
+    expect(harness.judgments).toHaveLength(3);
+  });
+
   for (const [label, boundary] of [
     ["새 사용자 입력", { name: "input", event: { type: "input", source: "rpc", text: "다른 작업" } }],
     ["세션 변경", { name: "session_start", event: { type: "session_start" } }],

@@ -16,7 +16,7 @@
  * The calling session is read from its in-memory branch. Text is masked with the
  * core credential patterns before it is cut to the character limits.
  */
-import { stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import {
   visitEntriesFromFileStream,
   z,
@@ -393,9 +393,55 @@ async function indexSessionFile(
     },
   );
   budget.spend(consumed);
+  // An unterminated last record is an append still in progress (recall usually reads the live session),
+  // not corruption. Core 18.11.3 counts it as malformed at end of input, exactly once; take that one back.
+  if (!timedOut && consumed === size && index.malformed > 0 && (await coreCountedUnterminatedTail(path, identity))) index.malformed--;
   if (timedOut) index.incomplete = "time";
   else if (consumed < size || !(await unchangedSince(path, identity))) index.incomplete = "changed";
   return index;
+}
+
+/**
+ * Whether the snapshot's bytes after the last newline are a record core 18.11.3 counted as malformed when
+ * its input ended: non-whitespace payload (the core's tab/LF/CR/space test) that does not parse as one JSON
+ * value. A complete record without its newline parses, so the core counted nothing for it. The tail counts
+ * only when it was read in full and the open file still has the loader's identity (dev, inode, size, mtime)
+ * after the read, so a change before or during the read is caught (the same-size same-tick rewrite limit
+ * above still applies). Any failure keeps the core's count; the unchanged-snapshot check then reports a
+ * changed file.
+ */
+async function coreCountedUnterminatedTail(path: string, identity: FileIdentity): Promise<boolean> {
+  const handle = await open(path, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    const parts: Buffer[] = [];
+    for (let end = Number(identity.size); end > 0; ) {
+      const start = Math.max(0, end - 64 * 1024);
+      const chunk = Buffer.alloc(end - start);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, start);
+      if (bytesRead !== chunk.length) return false;
+      const newline = chunk.lastIndexOf(0x0a);
+      parts.unshift(newline === -1 ? chunk : chunk.subarray(newline + 1));
+      if (newline !== -1) break;
+      end = start;
+    }
+    const now = await handle.stat({ bigint: true });
+    if (now.dev !== identity.dev || now.ino !== identity.ino || now.size !== identity.size || now.mtimeNs !== identity.mtimeNs) {
+      return false;
+    }
+    const tail = Buffer.concat(parts).toString("utf8");
+    if (!/[^\t\n\r ]/.test(tail)) return false;
+    try {
+      JSON.parse(tail);
+      return false;
+    } catch {
+      return true;
+    }
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 interface BranchView {

@@ -65,6 +65,8 @@ export interface McpSelectionDeps {
   /** user `mcp.json`이 있는 agent 루트. 기본은 이 확장이 설치된 프로필 루트다. */
   agentDir?: string;
   catalog?: readonly CatalogEntry[];
+  /** 판정 대기 상한. 테스트만 짧게 준다. 기본은 MCP_SELECTION_TIMEOUT_MS다. */
+  judgeTimeoutMs?: number;
 }
 
 interface McpSelectOutcomeLike {
@@ -84,6 +86,11 @@ const CUSTOM_TYPE = "mcp-selection";
 const SUGGESTED_FILE = "mcp-suggested.json";
 const STACK_SKIP_DIRS: ReadonlySet<string> = new Set(["node_modules", "bin", "obj", "dist", "build", "out", "target", "vendor"]);
 const STACK_DIR_LIMIT = 40;
+/** 새 요청의 판정 대기 상한. 넘으면 판정을 취소하고 판정 실패와 같게 새 연결 없이 진행한다(runner 30초 제한에 기대지 않는다). */
+const MCP_SELECTION_TIMEOUT_MS = 3_000;
+const JUDGE_TIMEOUT_REASON = "판정이 제한 시간 안에 끝나지 않음";
+/** 취소·제한 시간이 판정보다 먼저 끝났음을 나타내는 race 표지. */
+const STOPPED: unique symbol = Symbol("mcp-selection-stopped");
 
 async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
   try {
@@ -200,6 +207,7 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
   const catalog = deps.catalog ?? VERIFIED_CATALOG;
   const loadCore = deps.loadCore ?? defaultLoadCore;
   const resolveJudge = deps.resolveJudge ?? ((ctx: ExtensionContext) => resolveNativeJudge(ctx, loadCore));
+  const judgeTimeoutMs = deps.judgeTimeoutMs ?? MCP_SELECTION_TIMEOUT_MS;
 
   return function mcpSelection(pi: ExtensionAPI): void {
     /** 이미 보여 준 설치 제안. 세션을 넘어 반복하지 않도록 agentDir 파일과 함께 유지한다. */
@@ -209,6 +217,11 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
     /** 진행 중 선택. before_agent_start가 닫으면 늦게 끝난 판정은 상태를 바꾸지 못한다. */
     let current: { controller: AbortController; done: boolean } | undefined;
     let pending: { lines: string[]; requested: boolean; outcome?: Promise<McpSelectOutcomeLike> } | undefined;
+    /**
+     * agent_start~agent_end 사이. core는 직접 요청의 mcp_select를 agent_start 전에 보내고, 실행 중 steering·queued
+     * 입력은 같은 run 안에서 다시 보낸다. run 안의 재요청은 run 시작 때 이미 판정했으므로 판정하지 않고 노출을 유지한다.
+     */
+    let inRun = false;
 
     const judgeFor = (ctx: ExtensionContext) => {
       // 해석 실패·미해석은 캐시하지 않는다. 다음 요청에서 다시 해석한다.
@@ -227,9 +240,13 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
 
     const onSelect = async (event: McpSelectEventLike, ctx: ExtensionContext) => {
       current?.controller.abort();
+      pending = undefined;
+      if (inRun) {
+        current = undefined;
+        return undefined;
+      }
       const token = { controller: new AbortController(), done: false };
       current = token;
-      pending = undefined;
       const finish = (value: typeof pending) => {
         if (current !== token) return false;
         token.done = true;
@@ -258,22 +275,37 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
         return undefined;
       }
       const mentioned = mentionedServers(event.prompt, candidates.map((candidate) => candidate.name));
-      stackPromise ??= readProjectStack(ctx.cwd);
+      const projectStack = (stackPromise ??= readProjectStack(ctx.cwd));
 
       const answers: Record<string, string | undefined> = {};
+      const signal = event.signal ? AbortSignal.any([event.signal, token.controller.signal]) : token.controller.signal;
+      // provider가 signal을 무시해도 취소·제한 시간에 바로 돌아온다.
+      const stopped = Promise.withResolvers<typeof STOPPED>();
+      if (signal.aborted) stopped.resolve(STOPPED);
+      else signal.addEventListener("abort", () => stopped.resolve(STOPPED), { once: true });
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        token.controller.abort();
+      }, judgeTimeoutMs);
       try {
-        const judge = await judgeFor(ctx);
+        const judge = await Promise.race([judgeFor(ctx), stopped.promise]);
+        if (judge === STOPPED) throw new Error("판정 취소");
         if (!judge) throw new Error("JEV 판정기를 해석하지 못함");
-        const signal = event.signal ? AbortSignal.any([event.signal, token.controller.signal]) : token.controller.signal;
-        const result = await judge.judge(buildJudgeRequest(cue, await stackPromise, candidates), { signal });
+        const stack = await Promise.race([projectStack, stopped.promise]);
+        if (stack === STOPPED) throw new Error("판정 취소");
+        const result = await Promise.race([judge.judge(buildJudgeRequest(cue, stack, candidates), { signal }), stopped.promise]);
+        if (result === STOPPED) throw new Error("판정 취소");
         for (const [key, answer] of Object.entries(result.answers)) {
           answers[key] = answer?.type === "choice" ? answer.choice : undefined;
         }
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const reason = timedOut ? JUDGE_TIMEOUT_REASON : error instanceof Error ? error.message : String(error);
         if (current === token) pi.logger.warn("mcp-selection: JEV 판정 실패, 새 MCP 연결 없음", { error: reason });
         finish({ lines: [renderJudgeFailure(reason, event.deferred.map((server) => server.name))], requested: false });
         return undefined;
+      } finally {
+        clearTimeout(timer);
       }
 
       const plan = planSelection({ candidates, answers, mentioned, catalog: pendingCatalog });
@@ -304,7 +336,7 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       if (!token.done) {
         // runner 제한 시간 안에 판정이 끝나지 않았다. 늦은 결과는 버리고 진행 중 판정을 취소한다.
         token.controller.abort();
-        content = renderJudgeFailure("판정이 제한 시간 안에 끝나지 않음", []);
+        content = renderJudgeFailure(JUDGE_TIMEOUT_REASON, []);
       } else if (result) {
         const lines = [...result.lines];
         if (result.requested && result.outcome) lines.unshift(...renderOutcomeLines(await result.outcome));
@@ -314,11 +346,20 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       return { message: { customType: CUSTOM_TYPE, content, display: true, attribution: "agent" } };
     });
 
+    pi.on("agent_start", () => {
+      inRun = true;
+    });
+    // willContinue 여부와 관계없이 끝으로 본다. 다음 loop 전에 들어온 queued 입력은 새 요청처럼 (제한 시간 안에서) 판정한다.
+    pi.on("agent_end", () => {
+      inRun = false;
+    });
+
     pi.on("session_start", () => {
       current?.controller.abort();
       current = undefined;
       pending = undefined;
       stackPromise = undefined;
+      inRun = false;
     });
   };
 }

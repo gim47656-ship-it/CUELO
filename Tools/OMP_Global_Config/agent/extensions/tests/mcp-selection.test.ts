@@ -27,6 +27,7 @@ function harness(options: {
   projectFiles?: Record<string, string>;
   /** 다른 세션의 기록을 이어 쓰는 경우. 없으면 새로 만든다. */
   agentDir?: string;
+  judgeTimeoutMs?: number;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mcp-selection-"));
   roots.push(root);
@@ -55,6 +56,7 @@ function harness(options: {
   };
   createMcpSelection({
     agentDir,
+    judgeTimeoutMs: options.judgeTimeoutMs,
     ...(options.loadCore ? { loadCore: options.loadCore } : { resolveJudge: async () => options.judge ?? deterministic }),
   })({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
@@ -69,7 +71,10 @@ function harness(options: {
     ((await handlers.before_agent_start![0]!({ type: "before_agent_start", prompt: "", systemPrompt: [] }, ctx)) as
       | { message: { customType: string; content: string; display: boolean } }
       | undefined)?.message;
-  return { select, notice, requests, agentDir };
+  const emit = async (name: string, event: Record<string, unknown> = {}) => {
+    for (const handler of handlers[name] ?? []) await handler({ type: name, ...event }, ctx);
+  };
+  return { select, notice, emit, requests, agentDir };
 }
 
 const server = (name: string, tools: Server["tools"] = [], selected?: boolean): Server => ({ name, level: "project", provider: "native", transport: "stdio", tools, selected });
@@ -205,6 +210,44 @@ describe("mcp-selection", () => {
     release.resolve();
     expect(await late).toBeUndefined();
     expect(await h.notice()).toBeUndefined();
+  });
+
+  test("같은 run 안의 steering 재요청은 판정하지 않고 노출을 유지하며, run이 끝난 뒤 새 요청은 다시 판정한다", async () => {
+    const h = harness({ decide: (name) => (name === "figma-stub" ? "needed" : "not-needed"), userMcp: noCatalog });
+    // core 순서: 직접 요청 mcp_select·before_agent_start → agent_start → (steering) mcp_select·before_agent_start → agent_end.
+    expect((await h.select("피그마 시안 읽어줘", [figma, docs]))!.connect).toEqual(["figma-stub"]);
+    await h.notice();
+    await h.emit("agent_start");
+    const startedAt = Date.now();
+    expect(await h.select("피그마 말고 docs도 같이 봐줘", [docs], [figma])).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(await h.notice()).toBeUndefined();
+    expect(h.requests).toHaveLength(1);
+    await h.emit("agent_end", { messages: [], willContinue: true });
+    expect(await h.select("docs-stub 써서 요약해줘", [docs], [figma])).toBeDefined();
+    expect(h.requests).toHaveLength(2);
+    await h.emit("agent_start");
+    await h.emit("session_start");
+    expect(await h.select("docs-stub 써서 요약해줘", [docs], [figma])).toBeDefined();
+    expect(h.requests).toHaveLength(3);
+  });
+
+  test("판정이 제한 시간을 넘으면 runner 제한을 기다리지 않고 취소한 뒤 새 연결 없이 실패 안내를 남긴다", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const h = harness({
+      userMcp: noCatalog,
+      judgeTimeoutMs: 50,
+      // signal을 무시하는 provider도 제한 시간에 끊긴다.
+      judge: { judge: (_request, options) => { seenSignal = options?.signal; return Promise.withResolvers<never>().promise; } },
+    });
+    const startedAt = Date.now();
+    expect(await h.select("피그마 시안 읽어줘", [figma])).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(seenSignal?.aborted).toBe(true);
+    const content = (await h.notice())!.content;
+    expect(content).toContain("판정이 제한 시간 안에 끝나지 않음");
+    expect(content).toContain("새 MCP 연결 없음");
+    expect(content).toContain("/mcp reconnect");
   });
 
   test("기본 판정기는 native JEV가 첫 후보일 때만, native 후보에서만, 세션 모델 fallback 없이 판정한다", async () => {

@@ -433,8 +433,9 @@ await check("actual SDK task producer preserves long terminal evidence through a
     const input = await request.json() as { tools?: { name: string }[] };
     const yieldName = input.tools?.find(tool => tool.name === "yield" || tool.name === "_yield")?.name;
     const call = yieldName ? { id: "long-yield", name: yieldName, input: { data: report } }
+      // 18.11.3 upstream (seance) rejects `model` on a non-maker agent; the child inherits the parent's fixture model.
       : parentRequests++ === 0 ? { id: "spawn-long", name: "task", input: { context: "Local completion fixture", tasks: [
-        { name: "EvidenceChild", agent: "task", task: "Return the fixture report.", solutionSpace: "Return supplied fixture only.", model: "activity-fixture/claude-opus-5-5:off", isolated: false },
+        { name: "EvidenceChild", agent: "task", task: "Return the fixture report.", solutionSpace: "Return supplied fixture only.", isolated: false },
       ] } } : undefined;
     return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       send(controller, { type: "message_start", message: { id: "completion", type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });

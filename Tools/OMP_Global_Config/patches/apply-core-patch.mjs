@@ -333,10 +333,11 @@ function attachFactCitations(memory: { conn: { query(sql: string): { get(...para
 `;
 
 /**
- * 2026-10-17 근거형 learn. kind 와 citations 를 받아 저장 전에 검증하고 metadata 에 남긴다. 존재(경로·앵커)만 보며
+ * 2026-10-17 근거형 learn(이슈 #32 배포본). kind 와 citations 를 받아 저장 전에 검증하고 metadata 에 남긴다. 존재(경로·앵커)만 보며
  * 글이 교훈을 뒷받침하는지는 판정하지 않는다. 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(이 파일의 String.raw 안이다).
+ * 이 본문은 배포된 그대로 두고(아래 learnEvidenceBlock 의 legacyPatched), 오류 문구만 바꾼 새 판을 그 아래에서 만든다.
  */
-const learnEvidenceBlock = String.raw`// HANSE: learn evidence citations
+const learnEvidenceIssue32Block = String.raw`// HANSE: learn evidence citations
 type LearnKind = "evidence" | "preference" | "procedure" | "hypothesis";
 type LearnCitation = { path: string; anchor?: string };
 type LearnEvidence = { kind?: LearnKind; citations: LearnCitation[] };
@@ -482,6 +483,62 @@ function learnEvidenceMetadata(evidence: LearnEvidence): Record<string, unknown>
 
 const learnSchemaBase = type({
 `;
+
+/**
+ * 2026-10-17 18.11.3 이식: #32 판의 경로 오류가 절대 프로젝트 루트를 그대로 보였다. 오류는 "the project root" 라고만 말하고,
+ * 사용자가 준 상대 경로만 인용한다(절대 경로 입력은 루트를 담을 수 있으므로 "(an absolute path)"). 루트 안으로 확인된 뒤의
+ * 오류는 정규화한 상대 경로를 인용한다. 이슈 #34: 안전한 이름의 링크 cwd 뒤 실제 루트가 native fs 오류(EACCES 등)에 그대로
+ * 실리므로 stat·read 실패도 상대 경로와 오류 코드만 보인다. 나머지 본문은 #32 판과 바이트가 같다.
+ */
+const learnEvidenceBlock = (() => {
+	let text = learnEvidenceIssue32Block;
+	const swap = (from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`learn 근거 블록을 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		text = text.replace(from, () => to);
+	};
+	swap("\t\tlet real: string;\n", String.raw`		// Errors never echo the absolute project root: they say "the project root" and quote only a relative input.
+		const shown = path.isAbsolute(raw) || /^[A-Za-z]:\//.test(raw) ? "(an absolute path)" : '"' + raw + '"';
+		let real: string;
+`);
+	swap(
+		String.raw`throw new Error(label + '.path "' + raw + '" does not exist under the project root ' + root + ". Use a path relative to the project root.");`,
+		String.raw`throw new Error(label + ".path " + shown + " does not exist under the project root. Use a path relative to the project root.");`,
+	);
+	swap(
+		String.raw`throw new Error(label + '.path "' + raw + '" is outside the project root ' + root + ".");`,
+		String.raw`throw new Error(label + ".path " + shown + " is outside the project root.");`,
+	);
+	swap(String.raw`'.path "' + raw + '" is not a file; cite a file.'`, String.raw`'.path "' + relPosix + '" is not a file; cite a file.'`);
+	swap(String.raw`'.path "' + raw + '" is a secret, binary,`, String.raw`'.path "' + relPosix + '" is a secret, binary,`);
+	swap(String.raw`'.path "' + raw + '" is too large`, String.raw`'.path "' + relPosix + '" is too large`);
+	swap(
+		"\t\tconst stat = fs.statSync(real);\n",
+		String.raw`		// Native fs errors quote the absolute real path; report only the relative path and the error code.
+		let stat: fs.Stats;
+		try {
+			stat = fs.statSync(real);
+		} catch (error) {
+			throw new Error(label + '.path "' + relPosix + '" could not be read (' + ((error as NodeJS.ErrnoException).code ?? "error") + ").");
+		}
+`,
+	);
+	swap(
+		'\t\t\tconst text = fs.readFileSync(real, "utf8");\n',
+		String.raw`			let text: string;
+			try {
+				text = fs.readFileSync(real, "utf8");
+			} catch (error) {
+				throw new Error(label + '.path "' + relPosix + '" could not be read (' + ((error as NodeJS.ErrnoException).code ?? "error") + ").");
+			}
+`,
+	);
+	return text;
+})();
+/** 새 판에만 있는 줄. #32 판·그 이전 판에는 없다. */
+const LEARN_EVIDENCE_MASKED_MARKER = String.raw`+ " is outside the project root.");`;
+/** #32 판과 새 판에만 있는 줄. 그 이전 판(learnEvidenceLegacyBlock)과 순정에는 없다. */
+const LEARN_EVIDENCE_SINCE_32 = "// A credential-shaped path or anchor is rejected";
 
 /** 이슈 #32 이전에 배포된 learn 근거 블록(HEAD b8f1aad) 그대로다. 새 판(learnEvidenceBlock)이 이 본문을 대체한다(legacyPatched). */
 const learnEvidenceLegacyBlock = String.raw`// HANSE: learn evidence citations
@@ -4159,6 +4216,37 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		}],
 	},
 	{
+		// 2026-10-17 18.11.3 공개 이슈 #33: upstream 은 seance 전용 task `model` 을 넣으며 validateSeanceParams 로 다른 agent 의
+		// `model` 을 거절한다. planSpawns 가 이 검사를 speculative launch 와 dispatch 양쪽에서 부르므로 CUELO Maker 의
+		// `model: '<후보 selector>:auto'` 발주가 executor 에 닿기 전에 막힌다. Maker(agent 이름 `maker`, CUELO task-guard 가
+		// 허용하는 유일한 child) 만 문자열 selector 하나를 받는다. selector 자체(후보·`:auto`)는 command-guard maker-routing 이
+		// 검사한다. seance 검사(sourceSession 필수·custom tools 금지·selector 형태)와 비-seance `sourceSession` 거절, 다른
+		// 비-seance agent 의 `model` 거절은 그대로다. seance.ts 가 없는 옛 판(18.11.1 이하)은 index.ts 의 no-op 후보로 둔다.
+		file: "src/task/seance.ts",
+		marker: "// CUELO: the Maker carries its routed candidate",
+		anchor: `	if (agent !== SEANCE_AGENT_NAME) {
+		if (item.sourceSession !== undefined)
+			return \`\\\`sourceSession\\\` is only accepted for the \\\`\${SEANCE_AGENT_NAME}\\\` agent.\`;
+		if (item.model !== undefined) return \`\\\`model\\\` is only accepted for the \\\`\${SEANCE_AGENT_NAME}\\\` agent.\`;`,
+		patched: `	if (agent !== SEANCE_AGENT_NAME) {
+		if (item.sourceSession !== undefined)
+			return \`\\\`sourceSession\\\` is only accepted for the \\\`\${SEANCE_AGENT_NAME}\\\` agent.\`;
+		// CUELO: the Maker carries its routed candidate as one \`model\` selector ('<selector>:auto'); the command-guard
+		// maker-routing hook validates that selector. Every other non-seance agent still rejects \`model\`.
+		if (agent === "maker" && item.model !== undefined) {
+			if (typeof item.model === "string" && item.model.trim().length > 0) return undefined;
+			return "\`model\` for the \`maker\` agent must be one non-empty selector string.";
+		}
+		if (item.model !== undefined) return \`\\\`model\\\` is only accepted for the \\\`\${SEANCE_AGENT_NAME}\\\` agent.\`;`,
+		alternates: [{
+			file: "src/task/index.ts",
+			excludes: "validateSeanceParams",
+			marker: 'import { formatTaskResultSummary } from "./result-summary";',
+			anchor: 'import { formatTaskResultSummary } from "./result-summary";',
+			patched: 'import { formatTaskResultSummary } from "./result-summary";',
+		}],
+	},
+	{
 		// 18.3.3 BLOCK: upstream 은 `task`·`bash` 를 가진 SubAgent 정의에 `wait` 를 자동으로 더한다
 		// (executor.ts:3505-3516). CUELO 계약은 Main 전용 wait 다(harness-policy
 		// `mainLane.waitContract.barrierCall`: subagents have no wait tool, 자기 job 결과는 자동으로
@@ -6168,137 +6256,47 @@ class LocalTextBackend implements TextBackend {`,
 		patched: `import type { Settings } from "../config/settings";
 import { cfgJudgmentProvider } from "../config/model-settings";`,
 	},
+	// 2026-10-17 RETIRE(사용자 결정: Experiential 탈퇴): typesafe 경로를 Experiential Labs gateway 로 보내던 설정을 지웠으므로
+	// 그 gateway decoder 의 32문항 한도(MAX_DECISION_QUESTIONS) 때문에 judge chain 이 typesafe 요청을 32개씩 나누던
+	// 2026-10-09 항목 두 개(18.9.1 typesafe.ts·18.9.2 이후 judgment/index.ts import·#createJudge)를 없앤다. judge 는 이제
+	// upstream createNativeJudge(catalog 상한) 그대로다. 이미 그 패치를 실은 설치(18.11.1 라이브)를 --apply·--revert 가
+	// upstream 줄로 되돌리도록 옛 적용본을 legacyPatched 로 둔 no-op 후보로 남긴다. 회귀 시험 core-typesafe-split-test.ts 도 지웠다.
 	{
-		// 2026-10-09 WSL 회귀 감사 3.5: JEV `find` 판정이 typesafe 경로에서 23.8% 400("Invalid decision request.
-		// Send only model, state, and bounded typed questions; ...")으로 실패하고 openrouter 로 넘어갔다. typesafe
-		// provider 는 Experiential Labs gateway(models.yml)로 가고, 그 decoder 는 요청당 질문을 32개까지만 받는다
-		// (experientiallabs/experiential exp/runtime/gateway/decisions_contracts.py MAX_DECISION_QUESTIONS = 32).
-		// find 는 한 요청에 최대 64(NAME_BATCH·DIR_BATCH)·48(SKETCH_CARDS_MAX)개를 보낸다. 세션 기록에서 400 62건은
-		// 전부 35문항 이상, 성공 184건은 전부 30문항 이하였다. 질문은 같은 state 에 대해 서로 독립으로 판정되므로
-		// 32개씩 나눠 같은 state 로 병렬 전송하고 응답을 합친다. jfind 배치 상수와 벤치마크한 state 배치는 그대로다.
-		// 32개 이하 요청은 본문 바이트가 그대로이고, openrouter-decisions 경로(61문항도 받았다)는 나누지 않는다.
-		// 검증: core-typesafe-split-test.ts.
-		file: "../pi-ai/src/judgment/typesafe.ts",
-		marker: "const TYPESAFE_MAX_QUESTIONS = 32;",
-		anchor: "\treturn Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);\n}\n\nexport class TypeSafeJudge implements Judge {\n",
-		patched: [
-			"\treturn Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);",
-			"}",
-			"",
-			"/**",
-			" * CUELO: questions per request on the `typesafe` route. CUELO points that route at the Experiential Labs",
-			" * gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a larger set",
-			" * with 400 \"Invalid decision request\". Questions are judged independently against the shared state, so a",
-			" * larger set goes out as parts that each repeat the state.",
-			" */",
-			"const TYPESAFE_MAX_QUESTIONS = 32;",
-			"",
-			"/** `questions` itself when it has at most `max` entries, else parts of at most `max` in insertion order. */",
-			"function questionParts(questions: Questions, max: number): Questions[] {",
-			"\tconst ids = Object.keys(questions);",
-			"\tif (ids.length <= max) return [questions];",
-			"\tconst parts: Questions[] = [];",
-			"\tfor (let start = 0; start < ids.length; start += max) {",
-			"\t\tconst part: Questions = {};",
-			"\t\tfor (const id of ids.slice(start, start + max)) part[id] = questions[id]!;",
-			"\t\tparts.push(part);",
-			"\t}",
-			"\treturn parts;",
-			"}",
-			"",
-			"/** The parts' responses as one: answers merged, token counts and billed cost summed where reported. */",
-			"function mergeResponses(responses: SystemOneResponse[]): SystemOneResponse {",
-			"\tif (responses.length === 1) return responses[0]!;",
-			"\tconst total = (pick: (usage: SystemOneResponse[\"usage\"]) => number | undefined): number | undefined => {",
-			"\t\tlet sum: number | undefined;",
-			"\t\tfor (const response of responses) {",
-			"\t\t\tconst value = pick(response.usage);",
-			"\t\t\tif (value !== undefined) sum = (sum ?? 0) + value;",
-			"\t\t}",
-			"\t\treturn sum;",
-			"\t};",
-			"\treturn {",
-			"\t\tmodel: responses[0]!.model,",
-			"\t\tanswers: Object.assign({}, ...responses.map(response => response.answers)),",
-			"\t\tusage: {",
-			"\t\t\tinput_tokens: total(usage => usage.input_tokens),",
-			"\t\t\toutput_tokens: total(usage => usage.output_tokens),",
-			"\t\t\tcost: total(usage => usage.cost),",
-			"\t\t},",
-			"\t};",
-			"}",
-			"",
-			"export class TypeSafeJudge implements Judge {",
+		file: "src/judgment/index.ts",
+		marker: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
+		anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
+		patched: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
+		legacyPatched: [
+			'import * as AIError from "@oh-my-pi/pi-ai/error";',
+			"// CUELO: the typesafe route's per-request question cap (see #createJudge).",
+			'import { NativeJudge as TypesafeGatewayJudge } from "@oh-my-pi/pi-ai";',
+			'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
 			"",
 		].join("\n"),
-		// 2026-10-13 18.9.2(ADAPT): upstream 이 TypeSafeJudge·typesafe.ts 를 지우고 NativeJudge 로 바꿨다. NativeJudge 는
-		// catalog `judgment-questions-max` 로 요청을 나누지만(최대 4개 병렬, 한 조각 실패 시 나머지 중단) TypeSafe jev 는
-		// 한도 없음으로 둔다. CUELO 는 typesafe 경로를 Experiential gateway(32문항)로 보내므로 judge chain 호출부
-		// (judgment/index.ts)에서만 그 경로의 상한을 32로 넘긴다. 이 항목은 그 호출부가 쓰는 import 두 줄이다.
-		alternates: [{
-			file: "src/judgment/index.ts",
-			requires: "\tcreateNativeJudge,\n",
-			marker: 'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
-			anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
-			patched: [
-				'import * as AIError from "@oh-my-pi/pi-ai/error";',
-				"// CUELO: the typesafe route's per-request question cap (see #createJudge).",
-				'import { NativeJudge as TypesafeGatewayJudge } from "@oh-my-pi/pi-ai";',
-				'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
-				"",
-			].join("\n"),
-		}],
 	},
 	{
-		// 위 항목과 짝: judge 가 질문 묶음을 나눠 보내고 응답을 합친다. 나누지 않으면 parts 는 request.questions
-		// 그 객체 하나라 본문이 원래 식 `{ state, model, questions }` 과 바이트까지 같다.
-		file: "../pi-ai/src/judgment/typesafe.ts",
-		marker: "// CUELO: past the typesafe question bound",
-		anchor: "\t\tconst body = JSON.stringify({ state: request.state, model: this.model, questions: request.questions });\n\t\tconst signal = options?.signal;\n\t\tconst response = await withAuth(\n\t\t\tthis.#apiKey,\n\t\t\tkey => this.#attempt<SystemOneResponse>(JUDGMENT_ROUTES[this.api], body, key, signal),\n\t\t\t{ signal },\n\t\t);\n",
-		patched: [
-			"\t\tconst signal = options?.signal;",
-			"\t\t// CUELO: past the typesafe question bound the parts run in parallel and merge into one response.",
-			"\t\tconst parts = questionParts(request.questions, this.api === TYPESAFE_PROVIDER ? TYPESAFE_MAX_QUESTIONS : Infinity);",
-			"\t\tconst response = mergeResponses(",
-			"\t\t\tawait Promise.all(",
-			"\t\t\t\tparts.map(questions => {",
-			"\t\t\t\t\tconst body = JSON.stringify({ state: request.state, model: this.model, questions });",
-			"\t\t\t\t\treturn withAuth(",
-			"\t\t\t\t\t\tthis.#apiKey,",
-			"\t\t\t\t\t\tkey => this.#attempt<SystemOneResponse>(JUDGMENT_ROUTES[this.api], body, key, signal),",
-			"\t\t\t\t\t\t{ signal },",
-			"\t\t\t\t\t);",
-			"\t\t\t\t}),",
-			"\t\t\t),",
-			"\t\t);",
+		file: "src/judgment/index.ts",
+		marker: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
+		anchor: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
+		patched: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
+		legacyPatched: [
+			"\t\t\t// CUELO: past the typesafe question bound the judge splits the request. CUELO points the `typesafe` route at the",
+			"\t\t\t// Experiential Labs gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a",
+			"\t\t\t// larger set with 400 \"Invalid decision request\"; the catalog leaves TypeSafe jev uncapped.",
+			"\t\t\tconst judge =",
+			"\t\t\t\tmodel.api === TYPESAFE_PROVIDER",
+			"\t\t\t\t\t? new TypesafeGatewayJudge({",
+			"\t\t\t\t\t\t\tapiKey,",
+			"\t\t\t\t\t\t\theaders,",
+			"\t\t\t\t\t\t\tapi: model.api,",
+			"\t\t\t\t\t\t\tprovider: model.provider,",
+			"\t\t\t\t\t\t\tmodel: model.requestModelId ?? model.id,",
+			"\t\t\t\t\t\t\tbaseUrl: model.baseUrl,",
+			"\t\t\t\t\t\t\tmaxQuestions: Math.min(resolveJudgmentQuestionsMax(model) ?? 32, 32),",
+			"\t\t\t\t\t\t})",
+			"\t\t\t\t\t: createNativeJudge(model, { apiKey, headers });",
 			"",
 		].join("\n"),
-		// 2026-10-13 18.9.2(ADAPT): 위 항목과 짝. typesafe API 후보만 catalog 상한과 32 중 작은 값으로 NativeJudge 를 직접
-		// 만들고(createNativeJudge 와 같은 wire id·baseUrl), 다른 judgment API 와 auth-gateway 는 upstream createNativeJudge 그대로다.
-		alternates: [{
-			file: "src/judgment/index.ts",
-			requires: "\tcreateNativeJudge,\n",
-			marker: "// CUELO: past the typesafe question bound",
-			anchor: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
-			patched: [
-				"\t\t\t// CUELO: past the typesafe question bound the judge splits the request. CUELO points the `typesafe` route at the",
-				"\t\t\t// Experiential Labs gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a",
-				"\t\t\t// larger set with 400 \"Invalid decision request\"; the catalog leaves TypeSafe jev uncapped.",
-				"\t\t\tconst judge =",
-				"\t\t\t\tmodel.api === TYPESAFE_PROVIDER",
-				"\t\t\t\t\t? new TypesafeGatewayJudge({",
-				"\t\t\t\t\t\t\tapiKey,",
-				"\t\t\t\t\t\t\theaders,",
-				"\t\t\t\t\t\t\tapi: model.api,",
-				"\t\t\t\t\t\t\tprovider: model.provider,",
-				"\t\t\t\t\t\t\tmodel: model.requestModelId ?? model.id,",
-				"\t\t\t\t\t\t\tbaseUrl: model.baseUrl,",
-				"\t\t\t\t\t\t\tmaxQuestions: Math.min(resolveJudgmentQuestionsMax(model) ?? 32, 32),",
-				"\t\t\t\t\t\t})",
-				"\t\t\t\t\t: createNativeJudge(model, { apiKey, headers });",
-				"",
-			].join("\n"),
-		}],
 	},
 	{
 		// 18.2.7 에는 `providers.judgmentProvider` schema 항목 자체가 없다(legacy key 목록에만
@@ -8149,10 +8147,21 @@ function operationFromNative(op: string): Operation | undefined {
 		// 2026-10-17 근거형 learn: 검증·metadata 보조 함수와 kind·citations schema 는 learnSchemaBase 앞에 한 덩어리로 둔다.
 		file: "src/tools/learn.ts",
 		// legacyPatched 는 citation 의 비밀 형태 거절 이전 적용본이다(#32).
-		marker: "// A credential-shaped path or anchor is rejected",
+		// 2026-10-17 18.11.3 이식: 경로 오류가 루트를 가린 새 판. #32 배포본(learnEvidenceIssue32Block)은 아래 alternate 의
+		// legacyPatched 로 받는다. 두 후보는 #32 이후에만 있는 비밀 거절 주석으로 서로 배타적이다(순정·옛 판 = 본 후보).
+		marker: LEARN_EVIDENCE_MASKED_MARKER,
+		excludes: LEARN_EVIDENCE_SINCE_32,
 		anchor: "const learnSchemaBase = type({\n",
 		legacyPatched: learnEvidenceLegacyBlock,
 		patched: learnEvidenceBlock,
+		alternates: [{
+			file: "src/tools/learn.ts",
+			requires: LEARN_EVIDENCE_SINCE_32,
+			marker: LEARN_EVIDENCE_MASKED_MARKER,
+			anchor: "const learnSchemaBase = type({\n",
+			legacyPatched: learnEvidenceIssue32Block,
+			patched: learnEvidenceBlock,
+		}],
 	},
 	{
 		file: "src/tools/learn.ts",
@@ -14945,6 +14954,216 @@ interface ComputerElementRef
 		patched: swap(agentOptional.patched, ...options),
 	}];
 }
+// 2026-10-17 18.11.3 이식(공개 이슈 #31·#33 포함). 18.11.1 후보는 한 바이트도 바꾸지 않고, 18.11.3 순정에서 앵커를 잃은 항목마다
+// 그 판에만 성립하는 후보를 더한다. marker 를 공유하는 후보는 18.11.3 에만 있는 문자열로 requires(새 후보)·excludes(옛 후보)를
+// 짝지어 서로 배타적으로 둔다.
+//  - ADAPT: IRC steer bracket(in-flight epoch), wake-turn 판정·완료 기록(publishMessageResult·messageResult), Vercel judge
+//    (#31: #withCandidate 의 셋째 인자가 images 배열), task schema 의 seance 필드, recall 의 tool 가중(env 로 바뀜).
+//  - RETIRE: upstream 이 seance 와 함께 넣은 task model 타입·전달 줄(같은 줄을 두 번 넣지 않는다. 특히 TaskItem·TaskParams 의
+//    `model?: string` 은 upstream 의 `string | string[]` 과 겹쳐 TS2717 이 된다), 번들의 advisor transcript filter 새 이름.
+{
+	const one = (predicate, label) => {
+		const found = EDITS.filter(predicate);
+		if (found.length !== 1) throw new Error(`18.11.3 후보를 만들 수 없다: ${label} ${found.length}/1`);
+		return found[0];
+	};
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.11.3 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, () => to);
+	};
+	const noop = (file, text, extra = {}) => ({ file, marker: text, anchor: text, patched: text, ...extra });
+
+	// IRC steer continuation bracket: #beginInFlight 가 epoch 를 돌려주고 #endInFlight(epoch, onSettled) 가 abort 뒤(#resetInFlight 가
+	// epoch 를 올린 뒤) 늦게 온 settle 콜백을 버린다. 18.11.1 에서는 그 늦은 콜백이 flush 되어 관찰자가 닫혔으므로, epoch 가
+	// 지났으면 관찰자를 직접 닫아 부모가 받을 답 하나를 그대로 지킨다.
+	const EPOCH_18113 = "#endInFlight(epoch: number";
+	const steerOpen = one(entry => entry.marker === "const steerObservation = this.#beginIrcSteerContinuationObservation()", "steer bracket open");
+	const steerOpenTurnEnded = steerOpen.alternates.find(candidate => candidate.requires === "turnEnded: boolean;");
+	steerOpenTurnEnded.excludes = EPOCH_18113;
+	const epochBegin = ["\t\t\t\tthis.#beginInFlight();\n", "\t\t\t\tconst inFlightEpoch = this.#beginInFlight();\n"];
+	steerOpen.alternates.push({
+		file: steerOpen.file,
+		requires: EPOCH_18113,
+		marker: steerOpen.marker,
+		anchor: swap(steerOpenTurnEnded.anchor, ...epochBegin),
+		patched: swap(steerOpenTurnEnded.patched, ...epochBegin),
+	});
+	const steerClose = one(entry => entry.marker === "IRC steer continuation observer failed to finish", "steer bracket close");
+	steerClose.excludes = EPOCH_18113;
+	(steerClose.alternates ??= []).push({
+		file: steerClose.file,
+		requires: EPOCH_18113,
+		marker: steerClose.marker,
+		anchor: swap(steerClose.anchor, "this.#endInFlight();", "this.#endInFlight(inFlightEpoch);"),
+		patched: `					this.#usagePreflightReadyForNextModelCall = false;
+					const finishSteerObservation = steerObservation?.finish
+						? async () => {
+								this.#ircTurnBracketOpen = false;
+								try {
+									await steerObservation.finish?.(
+										steerObservationError,
+										undefined,
+										this.#takeAdoptedParentSteerRecords(),
+									);
+								} catch (error) {
+									logger.warn("IRC steer continuation observer failed to finish", {
+										error: String(error),
+									});
+								}
+							}
+						: undefined;
+					// An abort (#resetInFlight) already released this bracket and #endInFlight drops a stale settle
+					// callback, yet the steering parent is still owed its one answer: close the observer here then.
+					if (finishSteerObservation && inFlightEpoch !== this.#inFlightEpoch) void finishSteerObservation();
+					else this.#endInFlight(inFlightEpoch, finishSteerObservation);
+				}
+			},
+			{
+				delayMs: options.delayMs,`,
+	});
+
+	// Wake turn: upstream 이 owner 판정을 ownerWoken 변수로 빼고(publishMessageResult 에도 쓴다), 완료 인자에 publishMessageResult·
+	// signal 을, 결과 분기에 messageResult 를 더했다. CUELO 의 runningTurn 예외는 wake job 선등록에만 걸고, ircWakeTurn 표시와
+	// 완료 기록은 같은 자리에 그대로 둔다.
+	const wakeRegister = one(entry => entry.marker.startsWith("if (bracket?.runningTurn !== true && wakeSources(records, id)"), "wake register");
+	const ownerWoken = "\t\tconst ownerWoken = wakeSources(records, id).some(source => source.from === ownerId);\n";
+	wakeRegister.alternates.push({
+		file: wakeRegister.file,
+		marker: "if (bracket?.runningTurn !== true && ownerWoken) {",
+		anchor: `${ownerWoken}\t\tif (ownerWoken) registerWakeJob();`,
+		patched: `${ownerWoken}\t\t// A bracket opened over a turn that was already running (a parent steer
+		// adopted mid-turn) is not parent-woken work: that turn may leave the steer
+		// queued, and the continuation that consumes it owns the answer. Keep the
+		// yield-time registration for it so a stranded turn stays silent.
+		if (bracket?.runningTurn !== true && ownerWoken) {
+			registerWakeJob();
+		}`,
+	});
+	const PUBLISH_FIELD_18113 = "publishMessageResult?: boolean;";
+	const wakeField = one(entry => entry.marker === "ircWakeTurn?: boolean;", "ircWakeTurn field");
+	const publishField = ["\tfollowUpTurn?: boolean;\n", `\tfollowUpTurn?: boolean;\n\t${PUBLISH_FIELD_18113}\n`];
+	wakeField.excludes = PUBLISH_FIELD_18113;
+	(wakeField.alternates ??= []).push({
+		file: wakeField.file,
+		requires: PUBLISH_FIELD_18113,
+		marker: wakeField.marker,
+		anchor: swap(wakeField.anchor, ...publishField),
+		patched: swap(wakeField.patched, ...publishField),
+	});
+	const PUBLISH_ARG_18113 = "\t\t\t\t\tpublishMessageResult: ownerWoken || userPrompted,";
+	const wakeArg = one(entry => entry.marker === "\t\t\t\t\tircWakeTurn: true,", "ircWakeTurn argument");
+	wakeArg.excludes = PUBLISH_ARG_18113;
+	(wakeArg.alternates ??= []).push({
+		file: wakeArg.file,
+		requires: PUBLISH_ARG_18113,
+		marker: wakeArg.marker,
+		anchor: `\t\t\t\t\tfollowUpTurn: true,\n${PUBLISH_ARG_18113}`,
+		patched: `\t\t\t\t\tfollowUpTurn: true,\n\t\t\t\t\tircWakeTurn: true,\n${PUBLISH_ARG_18113}`,
+	});
+	const MESSAGE_RESULT_18113 = "if (wakeJob && (yielded || messageResult) && result) {";
+	const completion = one(entry => entry.marker === "\t\t\t\t\tconst completionJob = session.asyncJobManager?.getJob(wakeJob.jobId);", "wake completion record");
+	const resultBranch = ["if (wakeJob && yielded && result) {", MESSAGE_RESULT_18113];
+	completion.excludes = MESSAGE_RESULT_18113;
+	(completion.alternates ??= []).push({
+		file: completion.file,
+		requires: MESSAGE_RESULT_18113,
+		marker: completion.marker,
+		anchor: swap(completion.anchor, ...resultBranch),
+		patched: swap(completion.patched, ...resultBranch),
+	});
+
+	// #31 Vercel judge: 18.11.2 부터 #withCandidate 의 셋째 인자가 images 배열이고 첫 줄에서 requiresImages 를 계산하며 후보는
+	// #resolveCandidates(images) 로 고른다. upstream 세 줄은 그대로 두고 명시 Vercel 분기를 requiresImages 계산 바로 뒤에 둔다.
+	// 고정 평가 요청은 이미지를 싣지 않으므로 이미지 요청은 명시적으로 거절하고, 텍스트 요청은 한 번만 보내 usage 를 한 번 남기며
+	// chat/local 후보로 넘어가지 않는다(18.11.1 후보와 같은 본문).
+	const IMAGES_18112 = "const requiresImages = images.length > 0;";
+	const vercel = one(entry => entry.file === "src/judgment/index.ts" && entry.marker.startsWith("VERCEL_JUDGMENT_PROVIDER) {\n\t\t\tconst vercel = new VercelJudge("), "Vercel judge");
+	const vercelPrivate = vercel.alternates.find(candidate => candidate.requires === "\tasync #withCandidate<T>(");
+	const imagesArg = ["\t\trequiresImages: boolean,\n\t): Promise<T> {\n", `\t\timages: readonly ImageContent[],\n\t): Promise<T> {\n\t\t${IMAGES_18112}\n`];
+	vercelPrivate.excludes = IMAGES_18112;
+	vercel.alternates.push({
+		file: vercel.file,
+		requires: IMAGES_18112,
+		marker: vercelPrivate.marker,
+		anchor: swap(vercelPrivate.anchor, ...imagesArg),
+		patched: swap(vercelPrivate.patched, ...imagesArg),
+	});
+
+	// recall 가중: upstream 이 상수표를 env 로 읽는 resolveTrustWeights 로 바꿨다(MNEMOPI_TOOL_WEIGHT, 기본 0.5). learn/retain 의
+	// 의도적 기록 가중 1.0 은 기본값으로만 지키고, 사용자가 env 로 정한 값은 그대로 따른다.
+	const TRUST_18113 = "function resolveTrustWeights(";
+	const recallWeight = one(entry => entry.marker === "// HANSE: deliberate learn/retain weight", "recall tool weight");
+	recallWeight.excludes = TRUST_18113;
+	(recallWeight.alternates ??= []).push({
+		file: recallWeight.file,
+		requires: TRUST_18113,
+		marker: recallWeight.marker,
+		anchor: "\t\t\ttool: Math.max(0, toolWeight()),\n",
+		patched: '\t\t\t// HANSE: deliberate learn/retain weight (default 1.0; MNEMOPI_TOOL_WEIGHT still overrides)\n\t\t\ttool: Math.max(0, toolWeight({ MNEMOPI_TOOL_WEIGHT: "1.0", ...process.env })),\n',
+	});
+
+	// task schema: 동적 schema 가 ...seanceFields 를 펼치고 createTaskSchema 앞에 SeanceTaskSchemaFields 타입이 생겼다. batch 항목의
+	// `model?` 추가와 agent optional 정리는 같은 의미로 새 모양에 둔다. seance 가 노출되면 upstream 의 seance 필드가 뒤에서
+	// `model?` 을 string | string[] 로 덮는다(Maker 는 아래 validator 와 maker-routing 이 문자열 하나만 받는다).
+	const SEANCE_FIELDS_18113 = "const seanceFields = options.seanceFields;";
+	for (const indent of ["\t\t\t\t", "\t\t\t"]) {
+		const entry = one(candidate => candidate.file === "src/task/types.ts" && candidate.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`), `task schema ${indent.length}`);
+		const structured = entry.alternates.find(candidate => candidate.requires === "const schemaFields = options.structured");
+		const spread = [`${indent}...toolsField,\n`, `${indent}...toolsField,\n${indent}...seanceFields,\n`];
+		structured.excludes = SEANCE_FIELDS_18113;
+		entry.alternates.push({
+			file: entry.file,
+			requires: SEANCE_FIELDS_18113,
+			marker: swap(structured.marker, ...spread),
+			anchor: swap(structured.anchor, ...spread),
+			patched: swap(structured.patched, ...spread),
+		});
+	}
+	const agentOptional = one(candidate => candidate.marker === "// CUELO: task schema agent is optional on the wire.", "agent optional");
+	const agentOptionalStructured = agentOptional.alternates.find(candidate => candidate.requires === "const schemaFields = options.structured");
+	const seanceType = 'type SeanceTaskSchemaFields = {\n\t"sourceSession?"?: FluentType<string>;\n\t"model?"?: FluentType<string | string[]>;\n};\n\n';
+	const seanceOption = ["\tstructured: boolean;\n}): BaseType {", "\tstructured: boolean;\n\tseanceFields: SeanceTaskSchemaFields;\n}): BaseType {"];
+	agentOptionalStructured.excludes = SEANCE_FIELDS_18113;
+	agentOptional.alternates.push({
+		file: agentOptional.file,
+		requires: SEANCE_FIELDS_18113,
+		marker: agentOptional.marker,
+		anchor: swap(swap(agentOptionalStructured.anchor, "}\n\nfunction createTaskSchema(", `}\n\n${seanceType}function createTaskSchema(`), ...seanceOption),
+		patched: swap(swap(agentOptionalStructured.patched, "BaseType>();\n\nfunction createTaskSchema(", `BaseType>();\n\n${seanceType}function createTaskSchema(`), ...seanceOption),
+	});
+
+	// RETIRE: 18.11.3 upstream 의 TaskItem·TaskParams `model?: string | string[]`, 단일 형 item 과 spawn 의 model 복사,
+	// preflight·실행 요청의 `model: params.model` 은 CUELO 가 넣던 줄과 같은 일을 한다. 그 판에서는 upstream 줄을 no-op 후보로 둔다.
+	const SEANCE_TYPES_18113 = "\t/** Historical source session selected by the bundled consult agent. */\n\tsourceSession?: string;\n\t/** Optional model selector override for the historical source session. */\n\tmodel?: string | string[];";
+	for (const [marker, agentLine] of [
+		["Standard model selector for this spawn (item)", "\t/** Agent type to run this item (e.g. \"scout\"). Defaults to the spawn policy's default agent. */\n\tagent?: string;\n"],
+		["Standard model selector for this spawn (flat form)", "\t/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */\n\tagent?: string;\n"],
+	]) {
+		const entry = one(candidate => candidate.marker === marker, marker);
+		entry.excludes = SEANCE_TYPES_18113;
+		entry.alternates.push(noop(entry.file, agentLine + SEANCE_TYPES_18113, { requires: SEANCE_TYPES_18113 }));
+	}
+	const itemSource = 'if ("sourceSession" in params) item.sourceSession = params.sourceSession;';
+	const flatItem = one(candidate => candidate.file === "src/task/index.ts" && candidate.marker.startsWith("\tconst item: TaskItem = {"), "flat item model");
+	flatItem.excludes = itemSource;
+	flatItem.alternates.push(noop(flatItem.file, `\t${itemSource}\n\tif ("model" in params) item.model = params.model;`, { requires: itemSource }));
+	const spawnSource = 'if ("sourceSession" in item) spawn.sourceSession = item.sourceSession;';
+	const spawnModel = one(candidate => candidate.file === "src/task/index.ts" && candidate.marker.startsWith("\tconst spawn: TaskParams = {"), "spawn model");
+	spawnModel.excludes = spawnSource;
+	spawnModel.alternates.push(noop(spawnModel.file, `\t${spawnSource}\n\tif ("model" in item) spawn.model = item.model;`, { requires: spawnSource }));
+	for (const [next, indent] of [['...("is', "\t\t\t"], ["...(params.tools", "\t\t\t\t"]]) {
+		const entry = one(candidate => candidate.file === "src/task/index.ts" && candidate.marker.startsWith(`...(params.model !== undefined ? { model: params.model } : {}),\n${indent}${next}`), `request model ${indent.length}`);
+		const forwarded = `\n${indent}sourceSession: params.sourceSession,\n${indent}model: params.model,\n`;
+		entry.excludes = [entry.excludes, forwarded];
+		entry.alternates.push(noop(entry.file, forwarded, { requires: forwarded }));
+	}
+
+	// RETIRE(17번째): 번들의 advisor transcript filter 이름이 b_e → X_e 로 바뀌었다(본문 같음:
+	// e===J_e||e.startsWith(`${Y_e}.`)&&e.endsWith(cue), Y_e="__advisor", cue=".jsonl").
+	const advisorFilter = one(candidate => candidate.file === "dist/cli.js" && candidate.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
+	advisorFilter.alternates.push(noop(advisorFilter.file, 'if(!a.endsWith(".jsonl")||a.includes(".bak")||X_e(a))continue;let l=a.slice(0,-6),'));
+}
 // 18.9.1 MCPManager 는 deferred 전역 로더에 `static #deferred` 를 새로 둔다. JS 는 같은 class 안에서 static 과 instance
 // private 이름을 겹쳐 둘 수 없어("#deferred" has already been declared) 모듈 적재가 실패한다. 요청별 MCP 선택이 쓰는
 // instance 표(나중에 띄울 서버)의 이름만 #deferredServers 로 바꾼 18.9.1 후보를 만든다. 의미·위치는 같다(ADAPT).
@@ -15008,6 +15227,8 @@ for (const update of EDITS.splice(watchFollowupStart, watchFollowupEnd - watchFo
  * 새 판의 순정이 국소 문맥까지 바이트가 같을 때만 쓴다(18.5.0 task/index.ts 의 model 전달: upstream 이 우리
  * 패치와 같은 줄을 넣어 marker 만으로는 "옛 판 적용본"과 "새 판 순정"을 가를 수 없고, 잘못 가르면 --revert 가
  * upstream 줄을 지운다). 조건은 marker·anchor 판별 전에 적용하고, 남은 후보 수 규칙은 그대로다.
+ * `excludes` 는 문자열 하나 또는 목록이며, 목록이면 그중 하나라도 있으면 후보가 아니다(18.11.3: 18.5.0 과 18.11.3 이
+ * 같은 model 전달 줄을 서로 다른 모양으로 upstream 에 넣었다).
  */
 function resolveEdit(entry, target) {
 	const candidates = [entry, ...(entry.alternates ?? [])];
@@ -15017,7 +15238,7 @@ function resolveEdit(entry, target) {
 		.map(candidate => {
 			const text = readFileSync(join(target, candidate.file), "utf8");
 			if (candidate.requires !== undefined && !text.includes(candidate.requires)) return undefined;
-			if (candidate.excludes !== undefined && text.includes(candidate.excludes)) return undefined;
+			if (candidate.excludes !== undefined && [candidate.excludes].flat().some(excluded => text.includes(excluded))) return undefined;
 			if (candidate.legacyPatched && text.includes(candidate.legacyPatched)) return { ...candidate, path: join(target, candidate.file), text, status: "legacy" };
 			if (text.includes(candidate.marker)) return { ...candidate, path: join(target, candidate.file), text, status: "applied" };
 			if (text.includes(candidate.anchor)) return { ...candidate, path: join(target, candidate.file), text, status: "appliable" };

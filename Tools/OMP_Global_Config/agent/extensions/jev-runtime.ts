@@ -841,7 +841,7 @@ const MEMORY_ITEM_LIMIT = 8;
 const MEMORY_EXCERPT_CHARS = 500;
 const REQUEST_EXCERPT_CHARS = 1200;
 /** 판정이 이 안에 끝나지 않으면 기억 안내 없이 그대로 진행한다. 실행 허가·차단이 아닌 bounded advisory latency다. */
-const MEMORY_APPLICATION_TIMEOUT_MS = 8_000;
+const MEMORY_APPLICATION_TIMEOUT_MS = 3_000;
 const MEMORY_APPLICATION_CHOICES = ["applies", "excepted", "conflicts", "unrelated", "unknown"] as const;
 type MemoryApplication = (typeof MEMORY_APPLICATION_CHOICES)[number];
 /** recall 행: `- 내용 [source] (날짜) {scope; corrected rN; …} (id: …)`. id 없는 옛 행은 가리킬 수 없어 제외한다. */
@@ -1999,6 +1999,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     let memoryGeneration = 0;
     let memoryController: AbortController | undefined;
     const judgedMemoryInputs = new Set<string>();
+    // core는 직접 요청의 before_agent_start를 agent_start 전에 보내고, 실행 중 steering·queued 입력은 같은 run 안에서 다시 보낸다.
+    // run 시작 때 이미 점검했으므로 run 안의 재요청은 판정 없이 바로 넘긴다(steering 지연 방지).
+    let memoryInRun = false;
     function cancelMemoryApplication(): void {
       memoryGeneration += 1;
       memoryController?.abort();
@@ -2007,6 +2010,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     pi.on("session_start", () => {
       cancelMemoryApplication();
       judgedMemoryInputs.clear();
+      memoryInRun = false;
+    });
+    pi.on("agent_start", () => {
+      memoryInRun = true;
+    });
+    pi.on("agent_end", () => {
+      memoryInRun = false;
     });
     pi.on("session_shutdown", () => {
       cancelMemoryApplication();
@@ -2016,6 +2026,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (event.source === "interactive" || event.source === "rpc") cancelMemoryApplication();
     });
     pi.on("before_agent_start", async (event, ctx) => {
+      if (memoryInRun) return undefined;
       const recalled = readRecalledMemories(event.systemPrompt ?? []);
       if (!recalled || recalled.memories.length === 0 || MEMORY_SECRET_PATTERN.test(event.prompt)) return undefined;
       const request = boundedExcerpt(event.prompt, REQUEST_EXCERPT_CHARS);

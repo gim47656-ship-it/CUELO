@@ -3,7 +3,7 @@
 // 게이트: 자동 첫 턴 회상에서 상위 후보의 원시 dense 최댓값이 기준 미만이면 그 턴은 기억을 싣지 않는다. 명시 recall·압축 회상은
 // 게이트를 받지 않는다. citations: kind evidence(project)는 존재하는 근거 파일을 요구하고, 회상 줄에 `근거 후보:` 로 나온다.
 // 동적 import 예외: core-bai-retry-test.ts 와 같다(지정한 사본만 검증). 네트워크·`~/.omp` 접근 없음(임베딩 끔·임시 폴더).
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { settingsLike } from "./core-test-settings";
@@ -193,6 +193,33 @@ try {
 			check("git 이 무시하는 파일은 인용할 수 없다", !ignored.ok && ignored.text.includes("cannot be cited"), ignored.text);
 			const directory = await attempt({ memory: "폴더를 인용한다", kind: "evidence", citations: [{ path: "doc/history" }] });
 			check("폴더는 인용할 수 없다", !directory.ok && directory.text.includes("not a file"), directory.text);
+			// 2026-10-17 18.11.3: 경로 오류는 절대 프로젝트 루트를 드러내지 않고 "the project root" 라고만 말한다.
+			const absoluteMissing = await attempt({ memory: "프로젝트 안 없는 절대 경로를 인용한다", kind: "evidence", citations: [{ path: join(project, "doc", "history", "none.md") }] });
+			check("프로젝트 안 없는 절대 경로는 거절한다", !absoluteMissing.ok && absoluteMissing.text.includes("does not exist"), absoluteMissing.text);
+			const pathErrors = [missing, outside, absolute, absoluteMissing, directory];
+			const roots = [root, realpathSync(root)];
+			check("경로 오류는 절대 루트 경로를 보이지 않는다", pathErrors.every(result => roots.every(prefix => !result.text.includes(prefix))), pathErrors.map(result => result.text).join(" | "));
+			check("경로 오류는 루트를 'the project root' 로 부른다", [missing, outside, absolute, absoluteMissing].every(result => result.text.includes("the project root")), pathErrors.map(result => result.text).join(" | "));
+			// 이슈 #34: 프로젝트 안 파일의 native 읽기 오류(EACCES)도 절대 경로 대신 상대 경로와 오류 코드만 보인다.
+			const locked = join(project, "doc", "history", "locked.md");
+			writeFileSync(locked, "# Locked\n\n## 절\n");
+			chmodSync(locked, 0o000);
+			try {
+				let lockedReadable = true;
+				try {
+					readFileSync(locked);
+				} catch {
+					lockedReadable = false;
+				}
+				// root 로 돌면 권한이 막히지 않으므로 그 사례만 건너뛴다.
+				if (!lockedReadable) {
+					const denied = await attempt({ memory: "읽을 수 없는 파일을 인용한다", kind: "evidence", citations: [{ path: "doc/history/locked.md", anchor: "1" }] });
+					check("읽기 실패는 상대 경로와 오류 코드만 보이고 절대 경로를 보이지 않는다",
+						!denied.ok && denied.text.includes('"doc/history/locked.md" could not be read (EACCES)') && roots.every(prefix => !denied.text.includes(prefix)), denied.text);
+				}
+			} finally {
+				chmodSync(locked, 0o644);
+			}
 			const badAnchor = await attempt({ memory: "없는 절을 인용한다", kind: "evidence", citations: [{ path: record, anchor: "없는 절" }] });
 			check("없는 앵커는 거절하고 파일의 절 제목을 알려 준다",
 				!badAnchor.ok && badAnchor.text.includes("was not found in doc/history/record.md") && badAnchor.text.includes("배포 검증 절차"), badAnchor.text);

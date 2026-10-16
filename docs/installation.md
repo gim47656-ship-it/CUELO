@@ -136,7 +136,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    ```yaml
    modelRoles:
-     judge: openrouter/typesafe/jev-1.13
+     judge: openrouter/typesafe/jev-1.14
    providers:
      judgmentProvider: auto
    ```

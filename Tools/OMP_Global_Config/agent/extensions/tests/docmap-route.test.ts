@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import docmapRoute from "../docmap-route";
-import { DOCMAP_MAX_CHARS, DOCMAP_MIN_SCORE, routeDocmap } from "../lib/docmap-search";
+import { buildDocmapCorpus, DOCMAP_MAX_CHARS, DOCMAP_MIN_COVERAGE, DOCMAP_MIN_SCORE, docmapQueryTerms, docmapSignals, findDocmapMaps, rankDocmap, routeDocmap } from "../lib/docmap-search";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 type Message = { content: string; customType: string; display: boolean; attribution: string };
@@ -17,8 +17,20 @@ function put(rel: string, text: string): void {
   writeFileSync(path, text);
 }
 
-function record(title: string, scope: string, status: string, body: string): string {
-  return `# ${title}\n\nRECORD:\nDATE: 2026-10-05\nSCOPE: ${scope}\nPATHS: lib/\nSTATUS: ${status}\n\n${body}\n`;
+// 실제 기록 본문은 길어서 조사·일반어(「에서」「실행」「확인」)가 거의 모든 기록에 나온다. 한 줄짜리 fixture 본문만으로는
+// 그것이 드문 낱말처럼 보이므로, 모든 본문에 그런 일상 어휘 문장을 넣는다.
+function record(title: string, scope: string, status: string, body: string, date = "2026-10-05"): string {
+  return `# ${title}\n\nRECORD:\nDATE: ${date}\nSCOPE: ${scope}\nPATHS: lib/\nSTATUS: ${status}\n\n${body}\n\n진행 기록에서 확인한 내용으로 정리했다. 실행 결과와 설명, 사용자 요청은 아래에 있다.\n`;
+}
+
+function repo(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "docmap-size-"));
+  mkdirSync(join(dir, ".git"));
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), text);
+  }
+  return dir;
 }
 
 // 서로 다른 주제의 기록이 여럿이어야 IDF가 실제 저장소처럼 갈린다.
@@ -54,6 +66,12 @@ beforeAll(() => {
   put("doc/history/2026/10/06-new-voice/main.md", record("통화 목소리 새 방식", "통화 목소리 고르기 새 방식", "accepted", "## 결정\n\n통화 음성 합성 엔진 선택 방식을 새로 정했다."));
   put("Tools/Sub/doc/history/2026/09/22-preset/main.md", record("Main 기본 설정 묶음", "Main 기본 설정 묶음, 로그인 계정 고정", "accepted", "## 판단\n\n로그인 계정은 고정한다."));
   put("Tools/Sub/doc/README.md", "# Sub 지도\n\n| [09-22 Main 기본 설정 묶음](history/2026/09/22-preset/main.md) | 로그인 계정 고정 |\n");
+  put("doc/history/2026/10/16-rag/main.md", record("RAG 재조사", "기억 회상 재측정, 문서 지도 탐색 정확도, 무관 질문 주입률", "accepted", "## 결과\n\nRAG 검색 단계별로 놓친 곳을 쟀다.", "2026-10-16"));
+  put("doc/history/2026/10/14-wsl-hint/main.md", record("WSL에서 윈도우 실행 힌트", "WSL에서 윈도우 프로그램 실행 안내", "accepted", "## 결정\n\n힌트를 붙였다.", "2026-10-14"));
+  // 같은 주제 기록 넷. 13~15는 헤더가 같아 점수가 같고, 16은 SCOPE가 길어 점수가 조금 낮다.
+  for (const [dd, extra] of [["13", ""], ["14", ""], ["15", ""], ["16", ", 재측정 후속, 표본 늘림"]] as const) {
+    put(`doc/history/2026/10/${dd}-latency/main.md`, record("음성 비서 응답 지연 측정", `음성 비서 응답 지연 측정${extra}`, "accepted", "## 측정\n\n지연을 쟀다.", `2026-10-${dd}`));
+  }
   put(
     "doc/README.md",
     [
@@ -93,6 +111,16 @@ const rpc = (): Ctx => ({ cwd: join(root, "doc"), mode: "print", hasUI: true, ag
 const cli = (): Ctx => ({ cwd: root, mode: "print", hasUI: false, agent: { kind: "main" } });
 const WAKE_Q = "자동 업데이트 뒤에 세션이 스스로 깨어나지 못한 원인이 뭐였지? 깨우기 실패 기록";
 
+function signalsFor(base: string, q: string) {
+  const corpus = buildDocmapCorpus(base, findDocmapMaps(base, base));
+  const terms = docmapQueryTerms(corpus, q);
+  return docmapSignals(corpus, rankDocmap(corpus, q, terms)[0]!, terms);
+}
+
+function picked(base: string, q: string, now?: Date): string[] {
+  return routeDocmap(base, q, now)?.candidates.map((c) => relative(base, c.unit.key).split(sep).join("/")) ?? [];
+}
+
 describe("docmap route", () => {
   test("기록이 있는 질문에는 지도 줄·SCOPE·구간이 담긴 후보를 그 prompt의 숨은 메시지 하나로 붙인다", async () => {
     const h = harness();
@@ -128,11 +156,57 @@ describe("docmap route", () => {
   test("여러 주제를 섞은 긴 지시는 1위 점수가 높아도 1위 기록이 질의를 조금만 담으면 붙이지 않는다", async () => {
     // 회귀: 점수가 질의 낱말 점수의 합이라 실제 300자 초과 prompt 120건 중 119건이 하한을 넘었다.
     const long = [WAKE_Q, ...FILLERS.map(([title, scope]) => `${title}: ${scope} 확인하고 정리해 줘.`)].join("\n");
-    // 점수 하한만으로는 걸리는 prompt임을 먼저 확인한다.
-    expect(routeDocmap(root, long, DOCMAP_MIN_SCORE, 0)?.topScore).toBeGreaterThanOrEqual(DOCMAP_MIN_SCORE);
+    // 점수 조건만으로는 걸리는 prompt임을 먼저 확인한다.
+    const signals = signalsFor(root, long);
+    expect(signals.score).toBeGreaterThanOrEqual(DOCMAP_MIN_SCORE);
+    expect(signals.coverage).toBeLessThan(DOCMAP_MIN_COVERAGE);
     const h = harness();
     h.emit({ source: "rpc", text: long }, rpc());
     expect(await h.start(long, rpc())).toHaveLength(0);
+  });
+
+  test("드문 낱말 하나에 조사만 붙은 짧은 질문도 맞는 기록에 붙고, 조사만 맞은 기록은 후보가 아니다", () => {
+    // 회귀(2026-10-17 실제 질문): 1위가 정답이었지만 절대 하한 10 미만(5.78)이라 버려졌고, 2위는 「에서」로만 걸렸다.
+    const keys = picked(root, "RAG에서 안된것좀찾아바");
+    expect(keys[0]).toBe("doc/history/2026/10/16-rag");
+    expect(keys).not.toContain("doc/history/2026/10/14-wsl-hint");
+  });
+
+  test("기록 수가 1개든 16개든 같은 질문은 같은 기록으로 붙는다", () => {
+    // 회귀: 절대 BM25 하한은 기록 1개일 때 정답 4.07로 떨어지고, 무관 기록 15개를 더하면 같은 정답이 22.39로 붙었다.
+    const gold = {
+      "doc/README.md": "# 지도\n\n- 10-05 세션 깨우기 실패: [Main 기록](history/2026/10/05-wake/main.md).\n",
+      "doc/history/2026/10/05-wake/main.md": record("자동 업데이트 뒤 Wake 실패", "자동 업데이트 뒤 세션 깨우기 실패 원인, claim 반납", "accepted", "## 원인\n\nclaim을 반납하지 않았다."),
+    };
+    const more = ["가계부 앱", "날씨 위젯", "사진 정리", "독서 기록장", "운동 일지"].map((t) => [t, `${t} 화면, 저장 방식`] as const);
+    const crowd = Object.fromEntries([...FILLERS, ...more].map(([title, scope], i) => [`doc/history/2026/09/${String(10 + i)}-other${i}/main.md`, record(title, scope, "accepted", "## 경과\n\n일반 진행.")]));
+    const alone = repo(gold);
+    const crowded = repo({ ...gold, ...crowd });
+    try {
+      expect(Object.keys(crowd)).toHaveLength(15);
+      expect(picked(alone, WAKE_Q)[0]).toBe("doc/history/2026/10/05-wake");
+      expect(picked(crowded, WAKE_Q)[0]).toBe("doc/history/2026/10/05-wake");
+    } finally {
+      rmSync(alone, { recursive: true, force: true });
+      rmSync(crowded, { recursive: true, force: true });
+    }
+  });
+
+  test("긴 배경 뒤에 놓인 질문도 검색한다", () => {
+    // 회귀: 앞 1000자만 질의로 써서 붙여 넣은 로그 뒤의 질문에는 후보가 없었다.
+    const prompt = `${"at worker.run(job.ts:42) retry=3 code=E_TIMEOUT pid=7781\n".repeat(60)}\n위 로그는 무시하고, ${WAKE_Q}`;
+    expect(prompt.length).toBeGreaterThan(2000);
+    expect(picked(root, prompt)[0]).toBe("doc/history/2026/10/05-wake");
+  });
+
+  test("같은 주제 기록이 여럿이면 최근·날짜 질문에서 그 날짜 기록을 앞에 두고, 점수가 같으면 새 기록이 먼저다", () => {
+    // 회귀: 「최근」을 물어도 같은 주제의 13·14·15일 기록이 세 자리를 채워 가장 새 16일 기록이 빠졌다.
+    const now = new Date(2026, 9, 17);
+    const q = "음성 비서 응답 지연 측정";
+    expect(picked(root, `${q} 기록`, now).slice(0, 3)).toEqual(["doc/history/2026/10/15-latency", "doc/history/2026/10/14-latency", "doc/history/2026/10/13-latency"]);
+    expect(picked(root, `최근 ${q} 기록 보여줘`, now)[0]).toBe("doc/history/2026/10/16-latency");
+    expect(picked(root, `어제 ${q}한 거`, now)[0]).toBe("doc/history/2026/10/16-latency");
+    expect(picked(root, `10-14 ${q}`, now)[0]).toBe("doc/history/2026/10/14-latency");
   });
 
   test("superseded-by 기록은 새 기록으로 바꿔 보여 주고 같은 기록을 두 번 넣지 않는다", async () => {
