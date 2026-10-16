@@ -23,16 +23,25 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
 
 ## 디자인 경로
 
-- 시각 디자인이 포함된 작업에서는 아래 세 설치 스킬의 지침을 **반드시** 읽고 그 판단을 디자인
-  계약에 반영한다. 설치된 이름과 실제 출처는 이 셋뿐이다: `skill://seed-design`(미러 vendored,
-  upstream `daangn/seed-design`), `skill://frontend-design`(설치 플러그인
+- 시각 디자인이 포함된 작업에서는 아래 세 기본 디자인 스킬의 지침을 **반드시** 읽고 그 판단을
+  디자인 계약에 반영한다. 세 스킬의 이름과 실제 출처는 다음과 같다: `skill://seed-design`(미러
+  vendored, upstream `daangn/seed-design`), `skill://frontend-design`(설치 플러그인
   `frontend-design@claude-plugins-official`), `skill://ui-ux-pro-max`(미러 vendored, upstream
-  `nextlevelbuilder/ui-ux-pro-max-skill`). 출처를 다른 벤더나 OMP 기본 제공으로 표기하지 않으며,
+  `nextlevelbuilder/ui-ux-pro-max-skill`). 그 밖의 설치 스킬과 출처는 미러
+  `agent/skills/registry.json`이 정본이다. 출처를 다른 벤더나 OMP 기본 제공으로 표기하지 않으며,
   없는 설치·업그레이드·마이그레이션 절차를 만들지 않는다.
 - 신규 화면·리디자인·기존 화면 분석은 `skill://hallmark`, 제네릭한 AI 스타일 감사와 제거는
   `skill://kill-ai-slop`을 함께 사용한다. 그 밖의 스킬은 설치된 스킬 이름과 설명을 보고 이번
   과제와 현재 프로젝트에 실제로 필요한 최소 집합만 스스로 고른다. 브리프가 스킬 목록을 미리 다
   싣거나 사용자에게 고르라고 묻지 않는다.
+- UI·문서 산출물(화면 코드, 강의·보고용 HTML·문서)을 사용자에게 넘기기 전에
+  `node <kill-ai-slop 스킬 폴더>/scripts/scan.mjs <대상>`을 실행한다(프로필 기준
+  `~/.omp/agent/skills/kill-ai-slop/scripts/scan.mjs`). 적중은 판정이 아니라 단서이므로 해당
+  코드를 읽어 확정한다. 확정한 징후는 고치거나, 의도적으로 남긴 이유를 보고에 적는다. 이 절차는
+  산출 전 점검(advisory)이며 영구 gate나 CI 검사로 만들지 않는다.
+- 스캐너는 시각·코드 징후만 보고 한국어 문구는 보지 않는다. 한국어 사용자용 문구(UI 텍스트,
+  강의·문서)는 `skill://humanizer`의 감지 전용 방식(「분석 결과」만 내고 재작성·파일 수정은 하지
+  않음)으로 점검한다. 굵은 글씨 강조는 문단당 최대 1개로 한다.
 - `skill://seed-design`은 위 셋 중 공통 설계 원칙 담당이다. 사용자가 SEED를 언급하지 않아도
   이번 화면에 해당하는 공통 Foundations(정보 위계, 색 역할, 타이포그래피, spacing, 컴포넌트
   상태, 접근성)와 영향받는 컴포넌트의 공통 가이드라인을 공식 인덱스에서 찾아 읽고, 적용 가능한
