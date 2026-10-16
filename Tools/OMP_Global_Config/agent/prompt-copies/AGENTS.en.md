@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 184d43e1baf9b83a -->
+<!-- source-fingerprint: dfd364f028b881f5 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -86,6 +86,8 @@ Use Main-only `wait` (subagents have none) only at real dependency/synthesis bar
 Main first fixes user requirements, acceptance criteria, behavior to preserve, approvals, and the observation path. Checking the requirements in the delegation brief and first investigation: `rule://verdict`·`rule://subagent` and `harness-policy.json` `briefContextRelay`·`routing.dispatchAssumptionCheck`. When dispatching `task`, also pass the shared metadata `TASK_TITLE`·`TODO_TASKS` after `TASK_GUARD` per `rule://task-guard`. Open a Skill only when this task needs it or the user asks, not because it is installed. UI work follows `rule://frontend`. Never set `token_budget` on the `goal` tool unless the user explicitly asks.
 
 Follow `rule://subagent` 「Skill 인계」 to hand the relevant Skills Main used to the Maker and verify their application. This applies without another user reminder.
+
+Once you use a Skill, produce its result by that Skill's own procedure and criteria. If your own regex, script, or excerpt replaced part of the procedure, or you narrowed its scope, do not present the result as the Skill's result; report what you substituted and what you left out. When context runs short, split the work by file or delegate to a `maker` instead of shrinking the criteria or the scope.
 
 Open procedure-only Skills such as `systematic-debugging`·`verification-before-completion` only for a bug of unknown cause, a second failure, or an ambiguous completion verdict. When the task already names the location and fix direction, the default verification procedure suffices; do not pre-read them.
 
