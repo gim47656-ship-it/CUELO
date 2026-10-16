@@ -2974,6 +2974,65 @@ console.log("\n[25a-p] learn topic 정정 — 최초 출처(session/cwd/context/
 	} finally { memory.close(); }
 }
 
+console.log("\n[25a-e] learn topic 갱신 — 실효 embedding 입력이 같을 때만 벡터를 남긴다(공개 이슈 #30)");
+{
+	const { LearnTool } = await import(`${CORE}/tools/learn.ts`);
+	const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+	const { redactRememberWrite } = await import(`${CORE}/memory-backend/redact.ts`);
+	const memory = new Mnemopi({ dbPath: csJoin(fixtureRoot, "learn-embedding.db"), bank: "emb-bank", sessionId: "emb-bank", reconcile: false });
+	const target = { bank: "emb-bank", memory };
+	const tool = new LearnTool({
+		settings: settingsLike({ get: (key: string) => (key === "memory.backend" ? "mnemopi" : key === "autolearn.enabled" ? true : undefined) }),
+		getMnemopiSessionState: () => ({
+			sessionId: "emb-session",
+			session: { sessionManager: { getCwd: () => "F:/E" } },
+			getScopedRetainTarget: () => target,
+			// 실제 state.rememberScoped 처럼 저장 전에 redactRememberWrite 를 거친다(redaction 케이스가 실제 저장 본문과 비교되게).
+			rememberScoped: (content: string, options: Parameters<typeof memory.remember>[1]) => memory.remember(...redactRememberWrite(content, options)),
+		}),
+	} as never);
+	type Row = { content: string; embed_text: string | null; timestamp: string; metadata_json: string };
+	const rowOf = (id: string) => memory.conn.query("SELECT content, embed_text, timestamp, metadata_json FROM working_memory WHERE id = ?").get(id) as Row;
+	const vectorOf = (id: string) => memory.conn.query("SELECT embedding_json, model FROM memory_embeddings WHERE memory_id = ?").get(id) as { embedding_json: string; model: string } | null;
+	// 실제 provider 없이 현재 모델이 만든 벡터가 있는 상태를 심는다. 값과 모델 stamp 가 그대로 남는지만 본다.
+	const seedVector = (id: string) => memory.conn.query("INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, '[0.25,0.5]', 'fixture-model')").run(id);
+	const learnId = async (call: string, params: Record<string, unknown>) => /id: ([^,)]+)/.exec(String((await tool.execute(call, params as never)).content[0]?.text))![1]!;
+	try {
+		const id = await learnId("e-1", { memory: "same body lesson", topic: "emb", context: "reason-1" });
+		seedVector(id);
+		const before = rowOf(id);
+		await Bun.sleep(5);
+		await learnId("e-2", { memory: "same body lesson", topic: "emb", context: "reason-2" });
+		const kept = rowOf(id);
+		const keptMeta = JSON.parse(kept.metadata_json);
+		check("본문이 같고 context 만 바뀐 갱신은 벡터·embed_text 를 남기고 revision·출처·시점은 갱신한다",
+			vectorOf(id)?.model === "fixture-model" && vectorOf(id)?.embedding_json === "[0.25,0.5]" &&
+			kept.content === before.content && kept.embed_text === before.embed_text &&
+			keptMeta.revision === 2 && keptMeta.context === "reason-2" && keptMeta.first_context === "reason-1" &&
+			kept.timestamp > before.timestamp && keptMeta.updated_at === kept.timestamp,
+			JSON.stringify({ kept, vector: vectorOf(id) }));
+
+		await learnId("e-3", { memory: "changed body lesson", topic: "emb" });
+		check("본문이 바뀐 갱신은 기존처럼 벡터를 지우고 embed_text 를 비운다",
+			vectorOf(id) === null && rowOf(id).content === "changed body lesson" && rowOf(id).embed_text === null && JSON.parse(rowOf(id).metadata_json).revision === 3);
+
+		const fakeCredential = "gh" + "p_" + "2".repeat(36);
+		const secretId = await learnId("e-4", { memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret" });
+		seedVector(secretId);
+		await learnId("e-5", { memory: `token ${fakeCredential} rotates weekly`, topic: "emb-secret", context: "again" });
+		check("redaction 뒤 같은 본문은 같은 입력으로 보고 벡터를 남긴다",
+			vectorOf(secretId)?.model === "fixture-model" && !rowOf(secretId).content.includes(fakeCredential) &&
+			JSON.parse(rowOf(secretId).metadata_json).revision === 2);
+
+		const projectionId = await learnId("e-6", { memory: "projected body", topic: "emb-projection" });
+		memory.conn.query("UPDATE working_memory SET embed_text = 'separate projection' WHERE id = ?").run(projectionId);
+		seedVector(projectionId);
+		await learnId("e-7", { memory: "projected body", topic: "emb-projection" });
+		check("별도 projection(embed_text ≠ 본문)은 본문이 같아도 기존처럼 지운다",
+			vectorOf(projectionId) === null && rowOf(projectionId).embed_text === null);
+	} finally { memory.close(); }
+}
+
 console.log("\n[25a-q] 회상 소비 출력 — 범위(global/project)와 정정(revision>1)의 최초·정정 시점이 자동 주입·recall·handler 에서 구분된다");
 {
 	const stateMod = await import(`${CORE}/mnemopi/state.ts`);

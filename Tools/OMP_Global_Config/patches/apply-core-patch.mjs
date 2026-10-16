@@ -112,6 +112,9 @@ const OPUS55_HEAD_1846 = OPUS55_ROW_1846.anchor.slice(0, OPUS55_ROW_1846.anchor.
  * updated_session_id/updated_cwd/updated_at 이 최신 정정자·시점이며 context 는 최신 이유다.
  * first_context/first_timestamp 는 기존 revision 이 명시적으로 1 일 때만 갱신 직전 값으로 보존한다
  * (revision 없음/2+ 는 최초 이유·시점을 알 수 없으므로 지어내지 않는다). `$` 중괄호와 백틱은 쓰지 않는다.
+ * 저장된 실효 embedding 입력(embed_text ?? content)이 새 redacted 본문과 같으면 embed_text·벡터를 그대로 둔다
+ * (공개 이슈 #30: 같은 본문 재저장·context 만 바뀐 갱신도 벡터를 지워 다음 store open 이 다시 예약했다).
+ * 벡터의 모델 일치는 store open 의 reconcileEmbeddingModel 이 계속 책임진다. 별도 projection(embed_text ≠ 본문)은 기존처럼 지운다.
  */
 const learnTopicUpsertBlock = `// HANSE: topic-key learn upsert
 function upsertLearnTopic(
@@ -134,14 +137,19 @@ function upsertLearnTopic(
 		// HANSE: learn topic provenance keeps first and latest source
 		const firstSeen = stored.revision === 1 ? { first_context: stored.context ?? null, first_timestamp: existing.timestamp } : {};
 		const latest = { updated_session_id: state.sessionId, updated_cwd: state.session.sessionManager.getCwd(), updated_at: now };
-		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
-			content, now,
-			JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest }),
-			existing.id,
-		);
-		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		const metadata = JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest });
+		// HANSE: learn topic keeps embedding when its input is unchanged
+		// 비교할 본문은 쓰기 lock 을 잡은(immediate) 같은 transaction 안에서 다시 읽는다. 바깥에서 읽은 값이면
+		// 그 사이 다른 프로세스가 바꾼 본문·벡터를 이 갱신이 그대로 남길 수 있다.
+		const current = db.query("SELECT content, embed_text FROM working_memory WHERE id = ?").get(existing.id) as { content: string; embed_text: string | null } | null;
+		if (current?.content === content && (current.embed_text == null || current.embed_text === content)) {
+			db.query("UPDATE working_memory SET timestamp = ?, metadata_json = ? WHERE id = ?").run(now, metadata, existing.id);
+		} else {
+			db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(content, now, metadata, existing.id);
+			db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
+		}
 		return { id: existing.id, revision };
-	})();
+	}).immediate();
 	const id = state.rememberScoped(params.memory, {
 		source: "coding-agent-learn", importance: 0.8,
 		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
@@ -197,7 +205,7 @@ function recallRevisionFooter(results: readonly RecallResult[]): string {
 
 `;
 
-/** 출처 구분 이전 learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
+/** embedding 보존 이전(출처 구분) learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
 const learnTopicUpsertLegacyBlock = `// HANSE: topic-key learn upsert
 function upsertLearnTopic(
 	state: MnemopiSessionState,
@@ -209,14 +217,19 @@ function upsertLearnTopic(
 	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
 	const db = target.memory.conn;
 	const existing = db.query(
-		"SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
-	).get(topic) as { id: string; metadata_json: string } | null;
+		"SELECT id, timestamp, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+	).get(topic) as { id: string; timestamp: string; metadata_json: string } | null;
 	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
 	if (existing) return db.transaction(() => {
 		const content = redactMemorySecrets(params.memory);
+		const stored = JSON.parse(existing.metadata_json);
+		const now = new Date().toISOString();
+		// HANSE: learn topic provenance keeps first and latest source
+		const firstSeen = stored.revision === 1 ? { first_context: stored.context ?? null, first_timestamp: existing.timestamp } : {};
+		const latest = { updated_session_id: state.sessionId, updated_cwd: state.session.sessionManager.getCwd(), updated_at: now };
 		db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(
-			content, new Date().toISOString(),
-			JSON.stringify({ ...JSON.parse(existing.metadata_json), context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision }),
+			content, now,
+			JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest }),
 			existing.id,
 		);
 		db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
@@ -7547,9 +7560,10 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: '\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),\n\t"scope?": type("\'project\' | \'global\'").describe(',
 	},
 	{
-		// 출처 구분: 갱신해도 최초 session/cwd 는 남고 updated_* 가 최신 정정자다. legacyPatched 는 출처 구분 이전 적용본이다.
+		// 출처 구분: 갱신해도 최초 session/cwd 는 남고 updated_* 가 최신 정정자다. 실효 embedding 입력이 같으면 벡터를 둔다(#30).
+		// legacyPatched 는 embedding 보존 이전(출처 구분) 적용본이다.
 		file: "src/tools/learn.ts",
-		marker: "// HANSE: learn topic provenance keeps first and latest source",
+		marker: "// HANSE: learn topic keeps embedding when its input is unchanged",
 		anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
 		legacyPatched: learnTopicUpsertLegacyBlock,
 		patched: learnTopicUpsertBlock,
