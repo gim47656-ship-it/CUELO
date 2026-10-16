@@ -1719,6 +1719,14 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 			marker: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
 			anchor: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
 			patched: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+		}, {
+			// 2026-10-16 18.11.1 RETIRE: 같은 upstream 함수(#15495)가 그대로 있고 번들 축약 이름만 `d=`→`p=` 로 바뀌었다.
+			// 18.11.0 후보와 서로 배타적이다(각 문자열은 다른 판에 없다).
+			file: "dist/cli.js",
+			requires: 'Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			marker: 'Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			anchor: 'Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
+			patched: 'Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
 		}],
 	},
 	{
@@ -5617,6 +5625,7 @@ class LocalTextBackend implements TextBackend {`,
 		// callback 에는 upstream 분류 `native` 를 넘긴다.
 		file: "src/judgment/index.ts",
 		marker: "VERCEL_JUDGMENT_PROVIDER) {\n\t\t\tconst vercel = new VercelJudge(",
+		excludes: "\tasync #withCandidate<T>(",
 		anchor: `	async withCandidate<T>(run: (judge: Judge, kind: JudgeKind) => Promise<T>, options: JudgeOptions = {}): Promise<T> {
 		const signal = options.signal;`,
 		patched: `	async withCandidate<T>(run: (judge: Judge, kind: JudgeKind) => Promise<T>, options: JudgeOptions = {}): Promise<T> {
@@ -5633,6 +5642,44 @@ class LocalTextBackend implements TextBackend {`,
 			return run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native");
 		}
 		const signal = options.signal;`,
+		// 2026-10-16 18.11.1 ADAPT: upstream 이 후보 loop 를 private `#withCandidate(run, options, requiresImages)` 로 옮기고 공개
+		// `withCandidate` 는 그 위의 얇은 wrapper 로 만들었다(이미지 판정, #15471). `judge()` 도 이제 `withCandidate` 가 아니라
+		// `#withCandidate` 를 직접 부르므로 분기는 반드시 `#withCandidate` 안에 있어야 두 진입점을 모두 덮는다(wrapper 에 두면 judge()
+		// 가 명시 vercel 을 우회해 후보 chain 으로 간다). 이미지 요청은 upstream 계약대로 명시 실패한다 — VercelJudge 는 state·questions
+		// 만 보내므로 이미지를 조용히 버리면 안 된다. run 의 세 번째 인자(model)는 `online` 이미지 정규화에만 쓰이고 native 는 읽지
+		// 않아 형만 맞춘다. 판 구분은 18.11.1 에만 있는 `#withCandidate` 선언이고, 본 후보는 `excludes`, 이 후보는 `requires` 다.
+		alternates: [{
+			file: "src/judgment/index.ts",
+			requires: "\tasync #withCandidate<T>(",
+			marker: "VERCEL_JUDGMENT_PROVIDER) {\n\t\t\t// The fixed evaluation request carries no images;",
+			anchor: `	async #withCandidate<T>(
+		run: (judge: Judge, kind: JudgeKind, model: Model) => Promise<T>,
+		options: JudgeOptions,
+		requiresImages: boolean,
+	): Promise<T> {
+		const signal = options.signal;`,
+			patched: `	async #withCandidate<T>(
+		run: (judge: Judge, kind: JudgeKind, model: Model) => Promise<T>,
+		options: JudgeOptions,
+		requiresImages: boolean,
+	): Promise<T> {
+		// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate
+		// chain so a failure, abort, or missing credential reaches the caller instead of
+		// falling back to a chat or local model. Every other value keeps the upstream chain.
+		if (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {
+			// The fixed evaluation request carries no images; fail like every image-incapable candidate rather than drop them.
+			if (requiresImages) throw new Error("judgment: no compatible judge candidate supports images");
+			const vercel = new VercelJudge({
+				apiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {
+					sessionId: this.#deps.sessionId,
+				}),
+				fetch: this.#deps.fetch,
+			});
+			// "native" never reads \`model\` (only the "online" image path does), so the session model stands in for its type.
+			return run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native", this.#deps.sessionModel as Model);
+		}
+		const signal = options.signal;`,
+		}],
 	},
 	{
 		// 18.3.1 에는 `Settings.get` 이 없다. 위 분기는 typed handle 로 읽으므로 그 import 를 넣는다.
@@ -7580,6 +7627,13 @@ function operationFromNative(op: string): Operation | undefined {
 			marker: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
 			anchor: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
 			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
+		}, {
+			// 2026-10-16 18.11.1: upstream 이 ready 알림 조건을 log/port 가 실제로 준 경우로 좁혔다(#15629). 이 분기는 여전히 env 를
+			// 거절·무시하지 않는다(env 는 아래 export 항목이 맡는다). 이미 우리가 바라는 형태라 적용할 것이 없다.
+			file: "src/tools/bash.ts",
+			marker: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
+			anchor: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
+			patched: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
 		}],
 	},
 	{
@@ -8131,6 +8185,7 @@ export const cfgProvidersAutoThinkingMinEffort = register({
 		// 생성자·restore·setter provisional 은 건드리지 않아 진행 중 active effort 는 바뀌지 않는다.
 		file: "src/session/model-controls.ts",
 		marker: "function raiseToAutoThinkingFloor(",
+		excludes: 'import { buildServiceTierByFamily } from "../config/service-tier";',
 		anchor: `import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
 `,
@@ -8165,6 +8220,57 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 	);
 }
 `,
+		// 2026-10-16 18.11.1 ADAPT: upstream 이 `./settings` import 를 여러 줄로 바꿨다(cfgTierAnthropic·cfgTierGoogle·cfgTierOpenai, 새 fast tier
+		// 준비 표시). 우리 이름 둘을 같은 알파벳 순서로 끼워 넣고 함수는 그대로다. 판 구분은 18.11.1 에만 있는 `service-tier` import 이며,
+		// 본 후보는 그 문자열을 `excludes`, 이 후보는 `requires` 로 가져 서로 배타적이다(marker 는 어느 쪽 적용본에도 `function` 이 있다).
+		alternates: [{
+			file: "src/session/model-controls.ts",
+			requires: 'import { buildServiceTierByFamily } from "../config/service-tier";',
+			marker: "\tcfgProvidersAutoThinkingMinEffort,\n\tcfgProvidersFireworksTier,\n\tcfgTierAnthropic,",
+			anchor: `import {
+	cfgDefaultThinkingLevel,
+	cfgProvidersFireworksTier,
+	cfgTierAnthropic,
+	cfgTierGoogle,
+	cfgTierOpenai,
+} from "./settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+`,
+			patched: `import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import {
+	cfgDefaultThinkingLevel,
+	cfgProvidersAutoThinkingMaxEffort,
+	cfgProvidersAutoThinkingMinEffort,
+	cfgProvidersFireworksTier,
+	cfgTierAnthropic,
+	cfgTierGoogle,
+	cfgTierOpenai,
+} from "./settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+
+/**
+ * Raise an auto-resolved effort to \`providers.autoThinkingMinEffort\`: the lowest
+ * supported effort at or above the floor that the auto ceiling
+ * (\`providers.autoThinkingMaxEffort\`) still allows. A level already at the floor,
+ * no level, or a ladder without such an effort stays unchanged, so a sparse ladder
+ * never snaps up to a tier auto may not pick. The caller's session ceiling still wins.
+ */
+function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, settings: Settings): Effort | undefined {
+	if (level === undefined) return undefined;
+	const floor = cfgProvidersAutoThinkingMinEffort.get(settings);
+	const floorIndex = THINKING_EFFORTS.findIndex(effort => effort === floor);
+	if (THINKING_EFFORTS.indexOf(level) >= floorIndex) return level;
+	const ceiling = cfgProvidersAutoThinkingMaxEffort.get(settings) === Effort.Max ? Effort.Max : Effort.XHigh;
+	const ceilingIndex = THINKING_EFFORTS.indexOf(ceiling);
+	return (
+		getSupportedEfforts(model).find(effort => {
+			const index = THINKING_EFFORTS.indexOf(effort);
+			return index >= floorIndex && index <= ceilingIndex;
+		}) ?? level
+	);
+}
+`,
+		}],
 	},
 	{
 		file: "src/session/model-controls.ts",
@@ -12028,6 +12134,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-16 18.11.1: b_e는 같은 isAdvisorTranscriptName 함수다(`e===y_e||e.startsWith(\`${g_e}.\`)&&e.endsWith(kde)`,
+			// g_e="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -12540,6 +12653,15 @@ class HarmonyLeakInterruption extends Error {`),
 		marker: "\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
 		anchor: "\tAsyncJobSnapshot,\n\tCommandMetadataChangedListener,",
 		patched: "\tAsyncJobSnapshot,\n\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
+		// 2026-10-16 18.11.1 ADAPT(공개 이슈 #29): upstream 이 job tree(#15854)를 넣으며 두 import 사이에 AsyncJobSnapshotItem·AsyncJobTree 를
+		// 끼워 연속 두 줄 앵커가 사라졌다. 새 import 는 그대로 두고 AsyncJobSnapshotOptions 만 알파벳 순서로 더한다. 두 후보의 marker 는
+		// 서로의 적용본에 없어(Options 바로 뒤가 각각 CommandMetadataChangedListener / AsyncJobTree) 정확히 하나만 성립한다.
+		alternates: [{
+			file: "src/session/agent-session.ts",
+			marker: "\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,",
+			anchor: "\tAsyncJobSnapshotItem,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
+			patched: "\tAsyncJobSnapshotItem,\n\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
+		}],
 	},
 	{
 		file: "src/session/agent-session.ts",
@@ -14211,7 +14333,8 @@ interface ComputerElementRef
 	const RENAMED_1810_3 = { "B$l": "Wjl", ga: "ma", "D$l": "Njl", ies: "bZn" };
 	const rename = text => text.split(/([A-Za-z0-9_$]+)/).map(token => RENAMED_1810_3[token] ?? token).join("");
 	const bundle = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker === 'const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit")');
-	if (!bundle?.requires || bundle.alternates?.length !== 1) throw new Error("18.10.3 browser.run dist 후보를 만들 수 없다");
+	// alternates 는 18.11.0·18.11.1 RETIRE no-op 둘이어야 한다(후보가 늘면 이 수와 아래 배타성을 다시 본다).
+	if (!bundle?.requires || bundle.alternates?.length !== 2) throw new Error("18.10.3 browser.run dist 후보를 만들 수 없다");
 	bundle.alternates.push({
 		file: bundle.file,
 		requires: ',Njl,"Timed out restoring browser request interception',

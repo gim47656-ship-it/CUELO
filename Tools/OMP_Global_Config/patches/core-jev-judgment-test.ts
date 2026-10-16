@@ -3,7 +3,7 @@
 // 실제 외부 호출은 없으며 모든 fetch·credential resolver·Settings 입력은 메모리 fixture 이거나
 // 임시 디렉터리 파일이다. 라이브 프로필·credential·HTTP 는 건드리지 않는다.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { settingsLike } from "./core-test-settings";
@@ -322,6 +322,40 @@ function vercelHarness(options: { fetch: typeof fetch; onUsage?: (usage: unknown
 	);
 	assert.equal(counters.fetch, 0);
 	ok("abort는 요청 전에 caller로 전파");
+}
+
+{
+	// 18.11.1 은 `judge()` 가 공개 `withCandidate` 가 아니라 private 후보 loop 를 직접 부른다. 분기가 wrapper 에만 있으면 judge() 가
+	// 명시 vercel 을 우회해 role chain 으로 가므로, 두 진입점을 모두 본다.
+	const { judge, counters } = vercelHarness({
+		fetch: async () => {
+			counters.fetch += 1;
+			return jsonResponse(successPayload);
+		},
+	});
+	const result = await judge.judge(request);
+	assert.equal(counters.fetch, 1);
+	assert.equal(counters.pool, 0);
+	assert.deepEqual(result.answers.retry, { type: "noul", noul: 0.75 });
+	ok("explicit vercel은 judge()에서도 한 번 실행되고 후보 pool을 보지 않는다");
+}
+
+if (readFileSync(join(CORE, "judgment/index.ts"), "utf8").includes("requiresImages")) {
+	// 18.11.1+ (#15471): 이미지 판정은 이미지를 못 받는 후보를 건너뛰고, 남은 후보가 없으면 이미지를 조용히 버리지 않고 실패한다.
+	// VercelJudge 는 state·questions 만 보내므로 명시 vercel 도 같은 계약을 따라 요청 전에 실패해야 한다.
+	const { judge, counters } = vercelHarness({
+		fetch: async () => {
+			counters.fetch += 1;
+			return jsonResponse(successPayload);
+		},
+	});
+	await assert.rejects(
+		judge.judge({ ...request, images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }),
+		/no compatible judge candidate supports images/,
+	);
+	assert.equal(counters.fetch, 0);
+	assert.equal(counters.pool, 0);
+	ok("explicit vercel은 이미지 요청을 조용히 버리지 않고 요청 전에 명시 실패한다");
 }
 
 {

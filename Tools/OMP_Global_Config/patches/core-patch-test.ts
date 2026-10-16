@@ -3598,6 +3598,17 @@ console.log("\n[32] extension async job snapshot — options 를 끝까지 전�
 			exact?.jobs?.[0]?.status === "cancelled" && exact.jobs[0]?.startTime === alpha?.startTime && typeof exact.jobs[0]?.endTime === "number" && exact.jobs[0]?.endTime === alpha?.endTime,
 			JSON.stringify(exact?.jobs?.[0]),
 		);
+		// 18.11.1(#15854)은 같은 owner scope 위에 job tree 를 더했다. exact jobIds 조회와 upstream tree 가 한 세션에서 같은 owner 경계를 보는지
+		// 본다(공개 이슈 #29 의 anchor 이동이 이 경로를 깨지 않았다는 증거). tree API 가 없는 이전 core 에서는 건너뛴다.
+		if (typeof session.getAsyncJobTree === "function") {
+			const tree = session.getAsyncJobTree();
+			const treeRows: Array<{ id: string; status: string }> = tree ? [...tree.running, ...tree.recent] : [];
+			check(
+				"upstream job tree 는 이 owner 의 job 만 싣고(foreign 제외) 취소 실행도 exact row 와 같은 상태로 보인다",
+				tree?.rootId === "M32" && treeRows.some(job => job.id === "alpha" && job.status === "cancelled") && !treeRows.some(job => job.id === "foreign"),
+				JSON.stringify({ rootId: tree?.rootId, ids: treeRows.map(job => job.id) }),
+			);
+		}
 	}
 	await session.dispose();
 }
