@@ -22,7 +22,7 @@ const SKIP_DIR: Record<string, true> = { ".git": true, node_modules: true, ".nex
 export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-antigravity/gemini-3.8-flash";
-// 조사 도구 한정 대체. retry.fallbackChains의 Gemini 모델 키는 vision까지 바꾸므로 사용하지 않는다.
+// 조사 도구 한정 대체. retry.fallbackChains의 모델 키 체인은 같은 모델을 쓰는 다른 slot까지 바꾸므로 사용하지 않는다.
 export const DEEPSEEK = "b-ai/deepseek-v4.1-flash";
 /**
  * 모델 요청 표지다. GEMINI는 "역할 slot(modelRoles.skim·draft)으로 부른다"는 뜻이고 기본 설정의 모델 이름을 겸한다.
@@ -323,7 +323,7 @@ export default function skim(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "skim", label: "Skim", loadMode: "essential", approval: "read",
-    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(기본 Gemini Flash)로 조사하고 실패 시 DeepSeek로 한 번 대체합니다. 허용 파일 내용은 그 모델 제공자(기본 Google, 대체 B.AI)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
+    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(OpenRouter DeepSeek v4.1 Flash 1017)로 조사하고 실패 시 B.AI DeepSeek로 한 번 대체합니다. 허용 파일 내용은 그 모델 제공자(OpenRouter가 고른 제공자, 대체 B.AI)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
     parameters: z.object({ paths: z.array(z.string()), question: z.string() }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await skimQuestion(params as SkimInput, ctx, signal ?? new AbortController().signal));

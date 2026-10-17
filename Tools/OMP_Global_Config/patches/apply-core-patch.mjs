@@ -13986,6 +13986,76 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 		anchor: "\t\t\t\t\tconst previewBytes = firstLineExceedsLimit ? (firstLinePreview?.bytes ?? 0) : 0;\n",
 		patched: "\t\t\t\t\t// CUELO: hashline mode refuses the oversized line outright and delivers none of it, so its\n\t\t\t\t\t// notice must report 0 bytes shown, not the preview it never rendered.\n\t\t\t\t\tconst previewBytes =\n\t\t\t\t\t\tfirstLineExceedsLimit && (rawSelector || !displayMode.hashLines) ? (firstLinePreview?.bytes ?? 0) : 0;\n",
 	},
+	// OCR 전용 이미지 질문 slot(2026-10-18). `read <image>?ocr=<질문>` 은 modelRoles.ocr 모델이, `?q=` 는 그대로 modelRoles.vision
+	// 모델이 답한다. 질문 종류는 쿼리 키로 정한다(좌표·레이아웃 질문이 OCR 모델로 새면 크게 틀리고, OCR 질문이 vision 모델로 가는 건
+	// 정확도 손해가 없다). ocr slot 이 없거나 쓸 수 없으면 ?ocr= 도 ?q= 과 같은 순서로 간다. `?ocr=` 질문은 OCR_QUESTION_MARK 를
+	// 앞에 달고 `question` 문자열 그대로 내려가므로, question 을 전달만 하는 열 군데 남짓의 호출부는 건드리지 않는다.
+	{
+		file: "src/utils/image-question.ts",
+		marker: "export const OCR_QUESTION_MARK",
+		anchor: "/** Resolve the vision model used by `read <image>?q=<question>`. */\nexport function resolveImageQuestionModel(session: ToolSession): ResolvedImageQuestionModel {\n",
+		patched: "/**\n * CUELO: `read` tags an `?ocr=` question with this prefix so the question kind travels as one string down to the image\n * call. `#loadImageContent` strips it before the question reaches the model.\n */\nexport const OCR_QUESTION_MARK = \"\\u0000ocr:\";\n\n/**\n * Resolve the vision model used by `read <image>?q=<question>`. `ocr` (an `?ocr=` question) tries `modelRoles.ocr`\n * first and falls back to the `?q=` order when that role is unset, unavailable or cannot take images.\n */\nexport function resolveImageQuestionModel(session: ToolSession, ocr = false): ResolvedImageQuestionModel {\n",
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "...(ocr ? [\"@ocr\"] : []), \"@vision\"",
+		anchor: "\tfor (const pattern of [\"@vision\", \"@default\", activeModelPattern]) {\n",
+		patched: "\t// CUELO: `?ocr=` asks the OCR role first; an unset `@ocr` resolves to nothing and falls through to the `?q=` order.\n\tfor (const pattern of [...(ocr ? [\"@ocr\"] : []), \"@vision\", \"@default\", activeModelPattern]) {\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "import { askImageQuestion, OCR_QUESTION_MARK, resolveImageQuestionModel }",
+		anchor: "import { askImageQuestion, resolveImageQuestionModel } from \"../utils/image-question\";",
+		patched: "import { askImageQuestion, OCR_QUESTION_MARK, resolveImageQuestionModel } from \"../utils/image-question\";",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "question?: string; conflict?: boolean }",
+		anchor: "export function splitImageQuestionTarget(readPath: string): { path: string; question?: string } {\n",
+		patched: "export function splitImageQuestionTarget(readPath: string): { path: string; question?: string; conflict?: boolean } {\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "\tconst plain = params.get(\"q\")?.replaceAll(",
+		anchor: "\tconst question = new URLSearchParams(readPath.slice(queryIndex + 1)).get(\"q\");\n\treturn question ? { path: readPath.slice(0, queryIndex), question } : { path: readPath };\n",
+		patched: "\t// CUELO: `?ocr=<question>` asks the OCR role. The kind rides on the question itself (OCR_QUESTION_MARK) so every caller that\n\t// forwards `question` keeps working. Both keys at once (even with an empty value) is rejected by execute() rather than guessed.\n\tconst params = new URLSearchParams(readPath.slice(queryIndex + 1));\n\t// NUL leads OCR_QUESTION_MARK: drop it from both user values so a `?q=` question can never begin with the mark.\n\tconst plain = params.get(\"q\")?.replaceAll(\"\\u0000\", \"\");\n\tconst ocr = params.get(\"ocr\")?.replaceAll(\"\\u0000\", \"\");\n\tif (params.has(\"q\") && params.has(\"ocr\")) return { path: readPath.slice(0, queryIndex), question: plain, conflict: true };\n\tconst question = ocr ? OCR_QUESTION_MARK + ocr : plain;\n\treturn question ? { path: readPath.slice(0, queryIndex), question } : { path: readPath };\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "selectors only support images",
+		anchor: "\t\"The ?q= selector only supports images (raster files, .svg:img, file-backed image URLs, PDF page screenshots).\";",
+		patched: "\t\"The ?q= and ?ocr= selectors only support images (raster files, .svg:img, file-backed image URLs, PDF page screenshots).\";",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "\t\tif (imageQuestion.conflict) throw",
+		anchor: "\t\tconst imageQuestion = splitImageQuestionTarget(readPath);\n",
+		patched: "\t\tconst imageQuestion = splitImageQuestionTarget(readPath);\n\t\tif (imageQuestion.conflict) throw new ToolError(\"Pass either ?q= or ?ocr= to an image read, not both.\");\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "\t\tconst ocr = options.question?.startsWith(OCR_QUESTION_MARK) === true;",
+		anchor: "\t\tconst { readPath, absolutePath, mimeType, imageMetadata, fileSize, imageKind, question, questionPath, signal } =\n\t\t\toptions;\n",
+		patched: "\t\tconst { readPath, absolutePath, mimeType, imageMetadata, fileSize, imageKind, questionPath, signal } = options;\n\t\t// CUELO: an `?ocr=` question carries OCR_QUESTION_MARK; strip it here, where the model is picked and asked.\n\t\tconst ocr = options.question?.startsWith(OCR_QUESTION_MARK) === true;\n\t\tconst question = ocr ? options.question?.slice(OCR_QUESTION_MARK.length) : options.question;\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "resolveImageQuestionModel(this.session, ocr)",
+		anchor: "\t\t\tconst resolved = question ? resolveImageQuestionModel(this.session) : undefined;\n",
+		patched: "\t\t\tconst resolved = question ? resolveImageQuestionModel(this.session, ocr) : undefined;\n",
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "?ocr=<question>\\` instead",
+		anchor: "\t\t\t\t`To analyze the image, read \\`${imageQuestionPath}?q=<question>\\` — the question is answered by a vision model and returned as text.`,\n",
+		patched: "\t\t\t\t`To analyze the image, read \\`${imageQuestionPath}?q=<question>\\` — the question is answered by a vision model and returned as text.`,\n\t\t\t\t`To transcribe text (OCR), read \\`${imageQuestionPath}?ocr=<question>\\` instead — that question is answered by the OCR model.`,\n",
+	},
+	{
+		file: "src/prompts/tools/read.md",
+		marker: "images: decoded inline (",
+		anchor: "images: decoded inline.",
+		patched: "images: decoded inline (`img?ocr=<question>` transcribes text with the OCR model; `img?q=<question>` asks the vision model).",
+	},
 	// agent 생략 보존: 위 per-item model 항목의 앵커가 `agent: "string = 'task'"`를 포함하므로 반드시 그 뒤에 적용한다.
 	...TASK_AGENT_OPTIONAL_EDITS,
 	// Parent request preemption shares P55's request-only settlement, not the run abort.

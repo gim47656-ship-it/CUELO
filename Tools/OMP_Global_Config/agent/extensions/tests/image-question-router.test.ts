@@ -22,9 +22,18 @@ describe("image question router", () => {
     const first = h.read("shots\\layout.png");
     expect(first?.block).toBe(true);
     expect(first?.reason).toContain("shots/layout.png?q=");
+    expect(first?.reason).toContain("shots/layout.png?ocr=");
     expect(h.read("shots/layout.png")?.block).toBe(true);
     expect(h.read("shots/layout.png?q=버튼이 잘렸나")).toBeUndefined();
     expect(h.read("shots\\layout.png")).toBeUndefined();
+    expect(h.read("shots/other.png")?.block).toBe(true);
+  });
+
+  test("?ocr= 질문도 ?q= 처럼 같은 경로의 직접 read를 연다", () => {
+    const h = harness();
+    expect(h.read("shots/table.png")?.block).toBe(true);
+    expect(h.read("shots/table.png?ocr=표의 글자를 옮겨라")).toBeUndefined();
+    expect(h.read("shots\\table.png")).toBeUndefined();
     expect(h.read("shots/other.png")?.block).toBe(true);
   });
 
@@ -36,6 +45,8 @@ describe("image question router", () => {
     expect(imageRead("a.PNG")).toEqual({ target: "a.PNG", asked: false });
     expect(imageRead("local://image-1.webp")).toEqual({ target: "local://image-1.webp", asked: false });
     expect(imageRead("a.png?q=what")).toEqual({ target: "a.png", asked: true });
+    expect(imageRead("a.png?ocr=what")).toEqual({ target: "a.png", asked: true });
+    expect(imageRead("a.png?ocrx=what")).toEqual({ target: "a.png", asked: false });
     expect(imageRead("https://x/a.png")).toBeUndefined();
     expect(imageRead("a.pdf")).toBeUndefined();
     expect(imageRead("a.svg")).toBeUndefined();
