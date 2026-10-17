@@ -79,7 +79,7 @@
   문서 조회는 익명으로 가능하며 인증은 rate limit 상향이 필요할 때만 선택한다. `ctx7 setup`이나
   MCP·Skill을 추가하지 않는다.
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
-  내용은 `skim` 역할 모델(OpenRouter DeepSeek v4.1 Flash 1017, 제공자 제한 없음)로, 그 호출이 실패해 한 번
+  내용은 `skim` 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로, 그 호출이 실패해 한 번
   대체되면 B.AI(DeepSeek)로도 전송된다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
 - 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft`로 쓴다. Gemini가
   작성해 cwd 안에 저장하고, 실패하면 DeepSeek로 한 번 대체한다(참고 텍스트는 Google 또는 B.AI로 전송).
