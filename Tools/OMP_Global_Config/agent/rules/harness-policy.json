@@ -604,14 +604,16 @@
             "additional-instruction-to-an-existing-maker-is-sufficient",
             "identifiable-existing-owner-for-this-slice",
             "maker-class-choice-NORMAL-HARD",
-            "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
+            "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN"
+          ],
+          "mainOwnedJudgments": [
             "proposed-scope-conflicts-with-applicable-skill-or-user-contract"
           ],
           "decisionMapping": [
             "instruct-or-retarget-an-existing-owner-only-when-duplicate-or-additional-instruction-is-true-and-an-identifiable-existing-owner-resolves-otherwise-dispatch-new",
             "duplicate-or-additional-instruction-true-without-an-identifiable-existing-owner-never-selects-an-owner",
             "otherwise-main-selects-one-maker-candidate-from-the-batch-and-passes-its-explicit-model-selector-with-the-auto-suffix-never-a-concrete-effort",
-            "applicable-skill-or-user-contract-conflict-true-main-resolves-the-specific-conflict-before-the-affected-dispatch-never-let-judge-relax-the-contract"
+            "applicable-skill-or-user-contract-conflict-is-a-main-owned-judgment-maker_route-never-asks-judge-it-and-main-resolves-the-specific-conflict-before-the-affected-dispatch-and-no-judge-result-relaxes-the-contract"
           ]
         },
         "pre-dispatch-existing-owner-message": {

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { onSessionLifecycle } from "./lib/session-identity";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 /**
@@ -118,7 +119,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       );
     };
 
-    pi.on("session_start", reset);
+    onSessionLifecycle(pi, { start: reset });
     pi.on("session_shutdown", reset);
     pi.on("message_start", (event) => {
       const message = event.message as Message;

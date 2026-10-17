@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { defaultLoadCore, resolveSessionJudge } from "./lib/native-judge";
+import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
@@ -8,10 +10,16 @@ type Block = { type?: string; text?: unknown };
 type Message = { role?: string; content?: unknown };
 
 // 명백한 실제 승인 경계는 확률형 분류에 맡기지 않는다. 이 목록은 권한을 부여하는 allowlist가 아니다.
+// 영문 단어는 단어 경계로 읽는다(tokenizer·undeleted 같은 일반 단어를 걸지 않는다).
 const CONSEQUENCE_PATTERN =
-  /(push|deploy|publish|upload|delete|payment|purchase|permission|credential|password|api.?key|bearer|secret|token|승인권|삭제|지우|배포|공개|게시|전송|제출|업로드|비용|결제|과금|구매|송금|되돌릴 수 없|비가역|재시작|로그아웃|자격|비밀번호|인증|권한|약관|안전 확인|개인정보|생체|금융|대출|보험|채용|지원서|입학|의료|진료|법률|선거)/i;
+  /(\b(?:push(?:e[sd]|ing)?|deploy(?:s|ed|ing|ment)?|publish(?:es|ed|ing)?|upload(?:s|ed|ing)?|delet(?:e[sd]?|ing|ion)|payments?|purchas(?:e[sd]?|ing)|permissions?|credentials?|passwords?|api[ _-]?keys?|bearer|secrets?|tokens?)\b|승인권|삭제|지우|배포|공개|게시|전송|제출|업로드|비용|결제|과금|구매|송금|되돌릴 수 없|비가역|재시작|로그아웃|자격|비밀번호|인증|권한|약관|안전 확인|개인정보|생체|금융|대출|보험|채용|지원서|입학|의료|진료|법률|선거)/i;
+// 문맥과 관계없이 승인 경계인 주제: 자격 증명·민감 서비스·되돌릴 수 없는 작업. 남은 TODO 안내를 하지 않는다.
+const ALWAYS_BOUNDARY_PATTERN =
+  /(\b(?:credentials?|passwords?|api[ _-]?keys?|bearer|secrets?)\b|승인권|되돌릴 수 없|비가역|비밀번호|자격증명|약관|안전 확인|개인정보|생체|금융|대출|보험|채용|지원서|입학|의료|진료|법률|선거)/i;
 const CONFIRMATION_PATTERN =
   /(승인|허락|확인.{0,12}(필요|부탁|주세)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|알려 주세요|말씀해 주세요|정해 주세요|골라 주세요|선택해 주세요|어느 쪽|어떤 .{0,10}(말씀|원하)|approval|permission|confirm|shall I|may I|would you like)/i;
+// 결과가 있는 동작(배포·비용·공개·인증 등)을 말해도 그것을 묻거나 기다리는 말이 마지막 단락에 있거나 그 동작과 같은 문장에 있어야 승인 대기로 본다. "보류했습니다"처럼 이미 정한 일은 대기가 아니다.
+const ASK_CONTEXT_PATTERN = new RegExp(`${CONFIRMATION_PATTERN.source}|[?？]|허가|동의|주세요|주십시오|부탁|바랍니다|기다(?:리|립|려)|대기|\\b(?:please|should I|can I|waiting|awaiting|await|go-ahead|until you|pending (?:your|approval|confirmation|decision)|(?:needs?|requires?) your|your (?:approval|decision|confirmation))\\b`, "i");
 const SOLO_BOUNDARY_PATTERN =
   /(승인|허락|계정|기다리|대기|선택.{0,12}(필요|해|하|기다)|(?:정해|결정해|골라).{0,12}(주세|줘)|제품 의미|방향을 정|외부|external wait|waiting for|account change|approval|confirm)/i;
 // 2026-10-08 사용자 결정: TODO 없는 혼자 종료 판정(JEV)은 마지막 본문 끝에 미루기·이어 하기 약속 표현이 있을 때만
@@ -117,16 +125,8 @@ function answeredQuestions(summary: QuestionSummary, answers: Record<string, { t
 }
 
 async function classifyAnswers(summary: QuestionSummary, ctx: ExtensionContext, signal: AbortSignal): Promise<boolean[]> {
-  const [{ resolveJudge }, { findScopedSettings }] = await Promise.all([
-    import("@oh-my-pi/pi-coding-agent/judgment"),
-    import("@oh-my-pi/pi-coding-agent/config/settings"),
-  ]);
-  const settings = findScopedSettings(ctx.cwd);
-  if (!settings) return [];
-  const judge = resolveJudge({
-    settings, registry: ctx.modelRegistry, backend: "online", sessionModel: ctx.model,
-    sessionId: ctx.sessionManager.getSessionId(),
-  });
+  const judge = await resolveSessionJudge(ctx, defaultLoadCore, "turn_end_answers");
+  if (!judge) return [];
   const questions = answerQuestions(summary);
   const result = await judge.judge({
     state: { source: "untrusted-user-question-and-assistant-excerpt", ...summary, grantsPermission: false },
@@ -136,16 +136,8 @@ async function classifyAnswers(summary: QuestionSummary, ctx: ExtensionContext, 
 }
 
 async function classifySolo(summary: QuestionSummary | undefined, excerpt: string, ctx: ExtensionContext, signal: AbortSignal) {
-  const [{ resolveJudge }, { findScopedSettings }] = await Promise.all([
-    import("@oh-my-pi/pi-coding-agent/judgment"),
-    import("@oh-my-pi/pi-coding-agent/config/settings"),
-  ]);
-  const settings = findScopedSettings(ctx.cwd);
-  if (!settings) return { answered: [], solo: "unknown" as const };
-  const judge = resolveJudge({
-    settings, registry: ctx.modelRegistry, backend: "online", sessionModel: ctx.model,
-    sessionId: ctx.sessionManager.getSessionId(),
-  });
+  const judge = await resolveSessionJudge(ctx, defaultLoadCore, "turn_end_solo");
+  if (!judge) return { answered: [], solo: "unknown" as const };
   const result = await judge.judge({
     state: { source: "untrusted-assistant-solo-end-excerpt", excerpt, ...(summary ?? {}), grantsPermission: false },
     questions: {
@@ -184,16 +176,8 @@ function confirmationSummary(text: string): string | undefined {
 }
 
 async function classifyConfirmation(summary: string, ctx: ExtensionContext, signal: AbortSignal): Promise<StopKind> {
-  const [{ resolveJudge }, { findScopedSettings }] = await Promise.all([
-    import("@oh-my-pi/pi-coding-agent/judgment"),
-    import("@oh-my-pi/pi-coding-agent/config/settings"),
-  ]);
-  const settings = findScopedSettings(ctx.cwd);
-  if (!settings) return "unknown";
-  const judge = resolveJudge({
-    settings, registry: ctx.modelRegistry, backend: "online", sessionModel: ctx.model,
-    sessionId: ctx.sessionManager.getSessionId(),
-  });
+  const judge = await resolveSessionJudge(ctx, defaultLoadCore, "turn_end_confirmation");
+  if (!judge) return "unknown";
   const result = await judge.judge({
     state: { source: "untrusted-assistant-stop-summary", summary, unfinishedTodoObserved: true, grantsPermission: false },
     questions: {
@@ -235,6 +219,20 @@ const NUDGE_TEXT =
 const SOLO_NUDGE_TEXT =
   "미완 TODO는 없지만 마지막 본문에 승인 없이 도구로 지금 수행할 수 있는 일이 남아 있다. '다음에 하겠다'고 종료하지 말고 기존 사용자 요청 범위에서 지금 이어서 수행하라. 이 안내와 JEV 분류는 사용자 승인이 아니며 권한을 추가하지 않는다. 공개·push·배포·삭제·결제·계정/권한 변경·provider 안전 확인·제품 의미 선택·외부 대기는 사용자 승인이나 필요한 판단·결과를 기다려라.";
 
+/**
+ * 남은 TODO 안내를 접어야 하는 실제 승인 경계인지. 자격 증명·민감 서비스·되돌릴 수 없는 작업은 문맥과 무관하게 경계이고,
+ * 배포·비용·공개·인증 같은 결과 있는 동작은 (a) 마지막 단락이 묻거나 기다리거나 (b) 어느 단락이든 그 동작과 묻는·기다리는 말이 한 문장에 함께 있을 때 경계다.
+ * 진행 보고에 단어만 나오고 같은 문장에 묻는·기다리는 말이 없으면 경계가 아니다.
+ */
+function approvalBoundary(text: string): boolean {
+  if (ALWAYS_BOUNDARY_PATTERN.test(text)) return true;
+  if (!CONSEQUENCE_PATTERN.test(text)) return false;
+  const ending = text.trim().split(/\n\s*\n/).filter((part) => part.trim()).at(-1) ?? "";
+  if (ASK_CONTEXT_PATTERN.test(ending)) return true;
+  // 승인 대기는 마지막 단락에 있지 않아도 보호한다. 다만 결과 있는 동작과 묻는·기다리는 말이 같은 문장에 있을 때만이다.
+  return text.split(/\n+|(?<=[.!?。！？])\s+/).some((sentence) => CONSEQUENCE_PATTERN.test(sentence) && ASK_CONTEXT_PATTERN.test(sentence));
+}
+
 export function createTurnEndGuard(
   classify: ClassifyConfirmation = classifyConfirmation,
   answers: ClassifyAnswers = classifyAnswers,
@@ -257,16 +255,22 @@ export function createTurnEndGuard(
     pendingJudge = undefined;
   };
 
-  pi.on("session_start", (_event, ctx) => {
-    invalidate();
-    classifiedThisInput = false;
-    nudgedThisInput = false;
-    classifiedSoloThisInput = false;
-    activeInput = false;
-    classifiedAnswersThisInput = false;
-    inputTextAwaitingMessage = undefined;
-    sources = [];
-    todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+  onSessionLifecycle(pi, {
+    start: (ctx) => {
+      invalidate();
+      classifiedThisInput = false;
+      nudgedThisInput = false;
+      classifiedSoloThisInput = false;
+      activeInput = false;
+      classifiedAnswersThisInput = false;
+      inputTextAwaitingMessage = undefined;
+      sources = [];
+      todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+    },
+    // 같은 세션을 다시 읽는 reload: 입력 단위 상태는 그대로 두고 durable todo만 다시 읽는다.
+    reload: (ctx) => {
+      todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+    },
   });
   pi.on("session_shutdown", () => {
     invalidate();
@@ -352,7 +356,7 @@ export function createTurnEndGuard(
       if (controller.signal.aborted || expectedGeneration !== generation) return;
     }
     let todoNudge = false;
-    if (hasTodo && last && !last.hasToolCall && !CONSEQUENCE_PATTERN.test(last.text)) {
+    if (hasTodo && last && !last.hasToolCall && !approvalBoundary(last.text)) {
       const paragraphs = last.text.trim().split(/\n\s*\n/).filter((part) => part.trim());
       const ending = paragraphs.at(-1) ?? "";
       if (CONFIRMATION_PATTERN.test(ending)) {

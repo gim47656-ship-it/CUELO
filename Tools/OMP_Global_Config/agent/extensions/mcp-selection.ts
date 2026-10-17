@@ -17,6 +17,7 @@ import {
   VERIFIED_CATALOG,
 } from "./lib/mcp-selection";
 import { type CoreJudgmentModules, defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, stoppedBy } from "./lib/native-judge";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 export type { CoreJudgmentModules, NativeJudge } from "./lib/native-judge";
 
@@ -287,13 +288,13 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       inRun = false;
     });
 
-    pi.on("session_start", () => {
+    onSessionLifecycle(pi, { start: () => {
       current?.controller.abort();
       current = undefined;
       pending = undefined;
       stackPromise = undefined;
       inRun = false;
-    });
+    } });
   };
 }
 

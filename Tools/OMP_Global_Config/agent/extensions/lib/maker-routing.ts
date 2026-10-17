@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { isPathOwned, parseOwnedPaths, WORK_CLASSES } from "../command-guard/task-guard";
+import { extractGuardBlock, isPathOwned, isSummonCall, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 
@@ -260,16 +261,14 @@ export interface DispatchContract {
 
 type DispatchContractLock = Pick<DispatchContract, "workClass" | "primaryDeliverable">;
 
-/** TASK_GUARD 블록의 필드 reader. 블록이 없으면 null. */
+/**
+ * TASK_GUARD 블록의 필드 reader. 블록이 없으면 null. 블록 경계는 SpawnGuard가 쓰는 `extractGuardBlock` 하나뿐이라
+ * 준비와 발주가 같은 필드를 읽는다(guard 필드 사이에 끼어든 줄 뒤의 필드는 둘 다 읽지 않는다).
+ */
 function guardFields(task: string): ((name: string) => string) | null {
-  const marker = /^\s*TASK_GUARD\s*:\s*$/im.exec(task);
-  if (!marker) return null;
-  const remainderStart = marker.index + marker[0].length;
-  const remainder = task.slice(remainderStart);
-  const separator = /\r?\n\s*\r?\n/.exec(remainder);
-  const blockEnd = separator ? remainderStart + separator.index : task.length;
-  const block = task.slice(remainderStart, blockEnd).replace(/\r\n/g, "\n");
-  return (name) => block.match(new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "im"))?.[1]?.trim() ?? "";
+  const extracted = extractGuardBlock(task);
+  if (!extracted) return null;
+  return (name) => readGuardField(extracted.block, name) ?? "";
 }
 
 function dispatchContract(task: string, lock: DispatchContractLock | undefined): DispatchContract | null {
@@ -610,6 +609,15 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   const releaseContractLock = () => {
     contractLock = undefined;
   };
+  const sessionIdOf = (ctx: ExtensionContext) => (ctx.sessionManager?.getSessionId?.() ?? "").trim();
+  /**
+   * TaskGuard가 이 session에 연결돼 있으면 그 lock이 정본이다. 취소 환불·정산으로 TaskGuard가 푼 lock을 사본이
+   * 상속하지 않고, 다른 session의 lock은 읽지 않는다. 연결이 없을 때만(TaskGuard 없는 단독 사용) 자기 사본을 쓴다.
+   */
+  const lockFor = (sessionId: string): DispatchContractLock | undefined => {
+    const bound = taskGuardLockOf(sessionId);
+    return bound === undefined ? contractLock : bound ?? undefined;
+  };
   const policy = deps.policy ?? loadRoutingPolicy;
   async function candidateSet(ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts): Promise<CandidateSet> {
     // 후보 강도는 registry가 그 모델에 선언한 단계 전체다. Maker는 :auto로 이 안을 오가므로 정책 구간으로 좁히지 않는다.
@@ -734,7 +742,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const atGeneration = generation;
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
-    let candidateLock = contractLock;
+    let candidateLock = lockFor(sessionIdOf(ctx));
     const contracts = tasks.map((task) => {
       const contract = dispatchContract(task.task, candidateLock);
       if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
@@ -979,7 +987,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.
     // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
     const refreshAttempts: RefreshAttempts = new Map();
-    let candidateLock = contractLock;
+    let candidateLock = lockFor(sessionIdOf(ctx));
     const locksBefore: (DispatchContractLock | undefined)[] = [];
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
@@ -995,8 +1003,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
       if (isRetired(requested) || /\[character-summon[^\]]*model="devin\//.test(task)) return { block: true, reason: "SWE-2 사용은 중단되었습니다. 인증·기록·캐릭터 identity를 바꾸지 않으며 다른 모델로 몰래 대체하지 않습니다." };
-      // 명시적 캐릭터 summon은 일반 구현 발주가 아니며 기존 summon guard가 검증한다.
-      if (/\[character-summon alias="[^"]+" model="[^"]+"/.test(task)) continue;
+      // character-summon child는 일반 구현 발주가 아니다. 정확한 marker가 있거나, 이 session의 사용자가 요청한 캐릭터 호출이
+      // 아직 task child로 쓰이지 않았으면(command-guard가 정본을 소유; 단일 alias는 평문 brief를 guard가 marker brief로 다시 쓴다)
+      // 면제한다. 그 task는 guard가 pendingSummons로 검증해 요청되지 않은 marker·재사용·혼합 task를 막는다.
+      // 정확하지 않은 문자열이나 summon 요청이 없는 marker는 면제하지 않는다.
+      if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
       const name = String(item.name ?? "").trim();
@@ -1147,7 +1158,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // 같은 session 원장에서 이름별 assignment·최대 attempt를 읽어 FINDING_ID 재작업만 같은 assignment로 잇는다.
     // 원장에서 읽으므로 reload 뒤에도 연결이 유지되고, 관측되지 않은 준비만으로는 연결하지 않는다.
     const known = assignmentsByName(deps.ledger?.read() ?? [], sessionId);
-    let candidateLock = contractLock;
+    let candidateLock = lockFor(sessionId.trim());
     const reserved = reservations.get(callId) ?? [];
     for (const [index, item] of tasks.entries()) {
       const task = typeof item.task === "string" ? item.task : "";

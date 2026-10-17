@@ -43,6 +43,9 @@ TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
   아니면 단일 `maker`에 `model:"provider/model:auto"`를 넘기며 concrete 강도 suffix와 coarse `effort`는 쓰지 않는다. 강도는 child auto가 `solutionSpace`와 이후 Main 지시로 고른다. 판정이 가리키는 owner가 실제로
   없거나 결정론 증거와 모순되면 그 placement 결과를 적용하지 않고 기존 절차로 간다. 실패·timeout·
   credential 없음도 판단 불가로 두고 일반 모델 fallback 없이 기존 절차를 실행한다.
+  제안 범위가 적용 Skill이나 사용자 계약과 충돌하는지는 `pre-dispatch.mainOwnedJudgments`에 둔 Main 소유 판단이다.
+  `maker_route`는 이를 JEV에 묻지 않는다. Main이 발주 전 3항목 대조로 직접 판정하고 충돌이 있으면 해당 발주 전에
+  해소하며, judge 결과가 계약을 완화하는 근거가 될 수 없다.
   이 session에서 성공한 spawn으로 식별된 Maker(완료·parked 포함)에게 `write agent://<id>`로 자연어 지시를
   보내면 `pre-dispatch-existing-owner-message`가 그 전송을 차단하지 않고 뒤에서 JEV로 원 계약(PRIMARY_DELIVERABLE·
   OWNED_PATHS·Acceptance) 대비 동일 범위·범위 변경·수용 조건 변경·불명 중 하나로 분류해 advisory로 알린다.
@@ -53,4 +56,4 @@ TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
 - `rework`는 기존 finding의 delta 수정용이며 `FINDING_ID`가 필수다. 새 조사나 새 기능을 rework로 포장하지 않는다.
 - **이 가드는 lock 일치·`WORK_CLASS` enum·소유 경로·`FINDING_ID`·budget만 검사한다. 그 과제가 사용자 요구와 맞는지는 검사하지 않는다.** 즉 Main이 요구를 잘못 해석해도 가드는 통과하고 Maker는 그 발주를 충실히 구현한다. 그 빈틈은 Main의 발주 전 3항목 대조(`harness-policy.json` `briefContextRelay.preDispatchCrossCheck`: 요구 누락·확인하지 않은 단정·임의 변경)와 Maker의 첫 조사 대조(`routing.dispatchAssumptionCheck`)가 메운다. `PRIMARY_DELIVERABLE`은 Main이 정한 완료물이고 사용자 요구의 사본이 아니므로, 그 둘이 어긋나면 lock을 지키는 것이 아니라 발주를 고친다.
 - `OWNED_PATHS`는 모든 maker(primary·rework)에 필수다. 세션 cwd 기준 상대경로를 `/`로 적고, 후행 `/`는 디렉터리 prefix, 없으면 정확한 파일, `.`은 cwd 전체다. 선행 `./`는 무시되고 절대경로·cwd 밖 `..`는 거부된다. 완료 시 runtime이 `[OwnershipGuard] child=… owned=… outside=… concurrent=…`로 소유 경로 밖 변경을 알린다. `outside=none`은 없음, `unobserved`는 git 관측 불가다. ignored 파일·저장소 밖·submodule 내부는 관측하지 못한다. advisory이므로 `outside≠none`이면 Main이 동시 writer·허용 경계와 대조해 판단한다.
-- child와 별도 모델 호출은 Main의 `task` 경로로만 보낸다. `eval`의 `agent()`·`completion()`·`workpool()`·`tool.task()`로 budget을 우회하지 않는다. runtime도 이 경로를 차단하며 일반 계산·파일 처리·browser 관측용 `eval`은 그대로 허용한다. 검수용 모델 호출은 예외로 `cross_review`만 인정하며 원장에 기록·집계된다. 검수 목적의 `completion()`은 여전히 금지다.
+- child와 별도 모델 호출은 Main의 `task` 경로로만 보낸다. `eval`의 `agent()`·`workpool()`·`tool.task()`로 budget을 우회하지 않는다. runtime(SpawnGuard)은 이 세 경로를 정적 패턴으로 차단하며, 별칭을 거친 호출까지 막는 보안 경계가 아니라 사고 방지 장치다. 일반 계산·파일 처리·browser 관측용 `eval`은 그대로 허용한다. stateless `completion(model="slow"|"smol")`은 child가 아니므로 runtime이 막지 않으며, Main의 최종 판정 직전 상담(revision당 1회, 입력은 판정 패킷뿐, 받는 것은 이견 목록이고 판정은 Main이 낸다 — `rule://subagent` 「검수와 수용」, 정본 `mainLane.workerReview.finalVerdictConsult`)에만 쓴다. `completion()`으로 diff 검수나 수용 여부를 묻는 것은 금지지만 runtime은 목적을 구분하지 못하므로 Main의 규율이다. 검수용 모델 호출은 `cross_review`만 인정하며 원장에 기록·집계된다.

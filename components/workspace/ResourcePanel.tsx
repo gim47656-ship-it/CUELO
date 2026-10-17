@@ -18,6 +18,7 @@ import {
   setCredentialEnabled,
   type AccountIdentity,
   type AgentAggregate,
+  type CacheStatus,
   type CredentialResetResult,
   type DailyModelCost,
   type ModelAggregate,
@@ -150,6 +151,20 @@ function formatMoney(value: number | null | undefined): string {
   if (value >= 1) return `$${value.toFixed(2)}`;
   if (value >= 0.01) return `$${value.toFixed(3)}`;
   return `$${value.toFixed(4)}`;
+}
+
+// 비용이 하한일 때(가격표 없는 사용량이 섞임) ≥ 를 붙인다. 하한이 0 이면 아는 값이 없으므로 미상이다.
+function formatCost(value: number | null | undefined, complete: boolean | undefined): string {
+  if (complete !== false) return formatMoney(value);
+  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) return "가격 미상";
+  return `≥${formatMoney(value)}`;
+}
+
+// 캐시를 보고하지 못하는 wire 와 메타데이터가 없어 0 인지 알 수 없는 모델은 0% 로 쓰지 않는다.
+function formatCacheRate(rate: number | undefined, status: CacheStatus | undefined): string {
+  if (status === "not-reported") return "미보고";
+  if (status === "unknown") return "알 수 없음";
+  return formatPercent(rate, 1);
 }
 
 function formatNumber(value: number | null | undefined): string {
@@ -885,22 +900,27 @@ export function UsageView({
 
 function ModelRow({ model }: { model: ModelAggregate }) {
   const width = Math.max(1, Math.min(100, model.costShare * 100));
+  // pricing 이 없는 옛 sidecar 응답은 지금처럼 완전한 비용으로 읽는다.
+  const costComplete = model.pricing !== "unpriced" && model.pricing !== "partial";
+  const costLabel = model.pricing === "unpriced"
+    ? formatCost(0, false)
+    : `${formatCost(model.cost, costComplete)} · ${formatPercent(model.costShare)}`;
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
       <div className="flex items-baseline gap-2">
         <h3 className="m-0 min-w-0 flex-1 truncate text-sm font-semibold text-text" title={model.model}>{model.model}</h3>
         <span className="text-xs text-text-muted">{model.provider}</span>
-        <span className="font-mono text-xs tabular-nums text-text">{formatMoney(model.cost)} · {formatPercent(model.costShare)}</span>
+        <span className="font-mono text-xs tabular-nums text-text">{costLabel}</span>
       </div>
       <div className="my-2 h-1 overflow-hidden border border-border-strong bg-metric-track" aria-hidden="true">
         <div className="h-full bg-metric" style={{ width: `${width}%` }} />
       </div>
       <dl className="m-0 grid grid-cols-2 gap-x-4">
         <Metric label="요청" value={formatNumber(model.requests)} />
-        <Metric label="요청당" value={formatMoney(model.costPerRequest)} />
+        <Metric label="요청당" value={formatCost(model.costPerRequest, costComplete)} />
         <Metric label="토큰/요청" value={formatTokens(model.tokensPerRequest)} />
         <Metric label="출력/요청" value={formatTokens(model.outputPerRequest)} />
-        <Metric label="캐시율" value={formatPercent(model.cacheRate, 1)} />
+        <Metric label="캐시율" value={formatCacheRate(model.cacheRate, model.cacheStatus)} />
         <Metric label="TTFT" value={formatSeconds(model.avgTtft)} />
       </dl>
     </section>
@@ -915,14 +935,14 @@ function AgentRow({ agent }: { agent: AgentAggregate }) {
     <section className="border-b border-border px-4 py-3 last:border-b-0">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="m-0 text-sm font-semibold text-text">{label}</h3>
-        <span className="font-mono text-xs tabular-nums text-text">{formatMoney(agent.cost)} · {formatPercent(agent.costShare)}</span>
+        <span className="font-mono text-xs tabular-nums text-text">{formatCost(agent.cost, agent.costComplete)} · {formatPercent(agent.costShare)}</span>
       </div>
       <div className="my-2 h-1 overflow-hidden border border-border-strong bg-metric-track" aria-hidden="true">
         <div className="h-full bg-metric" style={{ width: `${width}%` }} />
       </div>
       <dl className="m-0 grid grid-cols-2 gap-x-4">
         <Metric label="요청" value={formatNumber(agent.requests)} />
-        <Metric label="요청당" value={formatMoney(agent.costPerRequest)} />
+        <Metric label="요청당" value={formatCost(agent.costPerRequest, agent.costComplete)} />
         <Metric label="토큰/요청" value={formatTokens(agent.tokensPerRequest)} />
       </dl>
     </section>
@@ -935,12 +955,14 @@ function DailyRow({ day }: { day: DailyModelCost }) {
     <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border px-4 py-2 last:border-b-0">
       <span className="font-mono text-xs tabular-nums text-text-muted">{dayLabel(day.timestamp)}</span>
       <span className="truncate text-xs text-text-muted" title={names}>{names}</span>
-      <span className="font-mono text-xs tabular-nums text-text">{formatMoney(day.cost)}</span>
+      <span className="font-mono text-xs tabular-nums text-text">{formatCost(day.cost, day.costComplete)}</span>
     </div>
   );
 }
 export function ModelsView({ state, loading }: { state: PanelState<ModelStatsSnapshot>; loading: boolean }) {
   const data = state.data;
+  const unpricedModels = data?.overall.unpricedModels ?? 0;
+  const cacheExcludedModels = data?.overall.cacheExcludedModels ?? 0;
   return (
     <>
       <StateNotice state={state} loading={loading} subject="모델 집계" />
@@ -950,10 +972,10 @@ export function ModelsView({ state, loading }: { state: PanelState<ModelStatsSna
             <h2 id="resource-overall-heading" className="m-0 border-b border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">전체</h2>
             <dl className="m-0 grid grid-cols-2 gap-x-4 px-4 py-3">
               <Metric label="요청" value={formatNumber(data.overall.requests)} />
-              <Metric label="비용" value={formatMoney(data.overall.cost)} />
+              <Metric label="추정 비용" value={formatCost(data.overall.cost, data.overall.costComplete)} />
               <Metric label="토큰" value={formatTokens(data.overall.tokens)} />
-              <Metric label="캐시율" value={formatPercent(data.overall.cacheRate, 1)} />
-              <Metric label="캐시 절감" value={formatPercent(data.overall.cacheSavings, 1)} />
+              <Metric label={cacheExcludedModels > 0 ? "캐시율(일부)" : "캐시율"} value={formatPercent(data.overall.cacheRate, 1)} />
+              <Metric label={unpricedModels > 0 ? "캐시 절감(일부)" : "캐시 절감"} value={formatPercent(data.overall.cacheSavings, 1)} />
               <Metric label="평균 TTFT" value={formatSeconds(data.overall.avgTtft)} />
             </dl>
           </section>
@@ -971,12 +993,18 @@ export function ModelsView({ state, loading }: { state: PanelState<ModelStatsSna
           </section>
           {data.daily.length ? (
             <section aria-labelledby="resource-daily-heading">
-              <h2 id="resource-daily-heading" className="m-0 border-y border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">일별 비용</h2>
+              <h2 id="resource-daily-heading" className="m-0 border-y border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">일별 추정 비용</h2>
               {data.daily.map((day) => <DailyRow key={day.timestamp} day={day} />)}
             </section>
           ) : null}
           <p className="m-0 border-t border-border px-4 py-3 text-xs leading-5 text-text-dim">
-            `omp stats` 기준 누적값입니다. 구독 한도 %는 계정 한도 탭에서 확인하세요.
+            `omp stats` 기준 누적값입니다. 금액은 토큰 단가로 계산한 추정치이며 실제 청구액이나 구독 사용량이 아닙니다. 구독 한도 %는 계정 한도 탭에서 확인하세요.
+            {unpricedModels > 0
+              ? ` 가격을 다 매기지 못한 모델이 ${unpricedModels}개 있어 추정 비용·비중·캐시 절감은 단가를 아는 사용량만 셉니다. ≥가 붙은 금액은 추정 비용의 최솟값입니다. 에이전트 종류별 집계는 모델을 나누지 않아 모든 행에 ≥를 붙입니다.`
+              : null}
+            {cacheExcludedModels > 0
+              ? ` 캐시 사용량을 보고하지 않거나 보고 여부를 알 수 없는 모델 ${cacheExcludedModels}개는 캐시율 계산에서 뺐습니다.`
+              : null}
           </p>
         </>
       ) : null}

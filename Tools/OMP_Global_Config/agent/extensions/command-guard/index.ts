@@ -8,12 +8,14 @@ import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import {
   CHARACTER_TARGETS,
   malformedSummonMarkerReason,
+  parseCharacterSummonMarker,
   parseCharacterIntent,
   parseCharacterSummonDirectives,
   rewriteTaskInputForCharacterSummon,
   type CharacterAlias,
 } from "../character-voice";
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
+import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 
 import { matchBlockedCommand } from "./matcher";
@@ -21,6 +23,7 @@ import { interopHint, windowsOutputCommand } from "./interop-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
+  bindTaskGuardSession,
   createOwnershipState,
   createTaskGuardState,
   dropOwnedChildren,
@@ -39,6 +42,7 @@ import {
   resetTaskGuardState,
   settleTaskCall,
   stripScopePrefix,
+  unbindTaskGuardSession,
   type EvalCallInput,
   type MakerSpawn,
   type OwnershipState,
@@ -729,18 +733,43 @@ export default function commandGuard(pi: ExtensionAPI): void {
     bindSpawnAliases(ownership, toolCallId, after, progress);
   };
 
-  pi.on("session_start", () => {
-    ownershipGeneration += 1;
-    resetTaskGuardState(taskGuard);
-    resetOwnershipState(ownership);
-    summonCalls.clear();
-    pendingSummons = [];
+  // maker_route 준비가 이 session의 TaskGuard 정본 lock을 읽도록 이 인스턴스의 state를 현재 session id에 묶는다.
+  // 사본을 만들지 않으므로 취소 환불·정산이 lock을 풀면 준비 쪽도 같은 순간 푼 상태를 본다.
+  let boundSessionId = "";
+  const bindSession = (ctx: { sessionManager?: { getSessionId?: () => string } } | undefined): void => {
+    const id = (ctx?.sessionManager?.getSessionId?.() ?? "").trim();
+    if (!id || id === boundSessionId) return;
+    if (boundSessionId) unbindTaskGuardSession(boundSessionId, taskGuard);
+    bindTaskGuardSession(id, taskGuard, {
+      pending: () => pendingSummons,
+      claimed: (toolCallId) => summonCalls.has(toolCallId),
+    });
+    boundSessionId = id;
+  };
+
+  // core는 session_start를 런타임 초기화 때만 보내고 /new·resume·fork·reload는 session_switch로 알린다.
+  // 다른 session id로 옮겨 가면 이전 session의 budget·lock·소유권·대기 summon을 잇지 않는다. 같은 id의 reload는
+  // 같은 요청의 연속이므로 비우지 않는다(요청 경계는 아래 input 이벤트가 이미 소유한다).
+  onSessionLifecycle(pi, {
+    start(ctx) {
+      ownershipGeneration += 1;
+      resetTaskGuardState(taskGuard);
+      resetOwnershipState(ownership);
+      summonCalls.clear();
+      pendingSummons = [];
+      bindSession(ctx);
+    },
+  });
+  pi.on("session_shutdown", () => {
+    if (boundSessionId) unbindTaskGuardSession(boundSessionId, taskGuard);
+    boundSessionId = "";
   });
 
   // 실제 사용자 입력 하나를 budget 단위로 본다. extension 내부 주입은 같은 요청의
   // 연속이므로 reset하지 않는다. CUELO은 RPC 입력이므로 interactive와 rpc를 모두 포함한다.
-  pi.on("input", (event) => {
+  pi.on("input", (event, ctx) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
+    bindSession(ctx);
     ownershipGeneration += 1;
     resetTaskGuardState(taskGuard);
     resetOwnershipState(ownership);
@@ -831,7 +860,19 @@ export default function commandGuard(pi: ExtensionAPI): void {
       for (const text of taskTexts) {
         const malformed = malformedSummonMarkerReason(text);
         if (malformed) return { block: true, reason: malformed };
+        // 정확한 marker는 일반 발주의 maker_route 경계를 면제받는 신호다. 사용자가 이번에 요청한 캐릭터의 것이 아니면
+        // 모델이 쓴 marker로 그 경계를 건너뛸 수 있으므로 막는다. 일반 구현 발주는 marker 없이 maker_route로 낸다.
+        const marked = parseCharacterSummonMarker(text);
+        if (marked !== undefined && !pendingSummons.includes(marked)) {
+          return {
+            block: true,
+            reason:
+              `[CharacterSummonGuard] character-summon marker ${marked}은 이번 사용자 호출이 요청한 캐릭터가 아니거나 이미 사용됐습니다. ` +
+              "marker는 사용자가 캐릭터를 부른 요청에서만 쓰며, 일반 구현 발주는 marker 없이 maker_route로 준비해 내세요.",
+          };
+        }
       }
+      bindSession(ctx);
 
       let guardedInput = canonicalInput;
       const claimedAliases: CharacterAlias[] = [];

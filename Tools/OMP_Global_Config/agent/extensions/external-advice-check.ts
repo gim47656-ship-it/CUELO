@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 // 2026-10-08 사용자 결정: 주장 분류용 JEV 호출과 그 대기(최대 2.5초)를 두지 않는다.
 // 결정론 감지에서 기본 검증 지시만 그 prompt에 붙이고, 사용자 원문은 다시 싣지 않는다.
@@ -13,7 +14,7 @@ const INSTRUCTION =
  */
 export default function externalAdviceCheck(pi: ExtensionAPI): void {
   let pendingText: string | undefined;
-  pi.on("session_start", () => { pendingText = undefined; });
+  onSessionLifecycle(pi, { start: () => { pendingText = undefined; } });
   pi.on("session_shutdown", () => { pendingText = undefined; });
   pi.on("input", (event) => {
     pendingText = undefined;

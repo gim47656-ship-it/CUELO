@@ -11,7 +11,9 @@ import {
   type JobObservationClock,
 } from "./lib/job-observation";
 import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
+import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
+import { onSessionLifecycle } from "./lib/session-identity";
 import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
@@ -76,9 +78,12 @@ interface JudgeSettingsLike {
 interface JudgeDepsLike {
   settings: JudgeSettingsLike;
   registry: unknown;
-  backend: string;
   sessionModel?: unknown;
   sessionId?: string;
+  /** 원장·telemetry에 남는 호출 목적. */
+  purpose: string;
+  onUsage?: unknown;
+  cache?: unknown;
 }
 
 type ResolveJudgeFn = (deps: JudgeDepsLike) => JudgeLike;
@@ -104,9 +109,8 @@ export interface JevRuntimeDeps {
 // 정본 설정 키 — 값은 Settings에서 읽고 상수로 복제하지 않는다.
 // ---------------------------------------------------------------------------
 
-/** resolveJudge의 backend 계약값. SDK의 ONLINE_MEMORY_MODEL_KEY("online")와 동일하다. */
-const ONLINE_JUDGE_BACKEND = "online";
 const ADVISORY_CUSTOM_TYPE = "jev-runtime-advisory";
+
 
 
 
@@ -1141,33 +1145,24 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       judge: JudgeLike;
     }
 
-    let cachedEnv: Promise<ResolvedJudgeEnv | undefined> | undefined;
-    function judgeEnvFor(ctx: ExtensionContext): Promise<ResolvedJudgeEnv | undefined> {
-      if (cachedEnv) return cachedEnv;
-      const sessionId = ctx.sessionManager?.getSessionId?.();
-      cachedEnv = (async () => {
+    /** purpose마다 하나. purpose는 ChainJudge 단위로 원장에 기록되므로 호출 목적별로 따로 해석한다. */
+    const judgeEnvs = new Map<string, Promise<ResolvedJudgeEnv | undefined>>();
+    function judgeEnvFor(ctx: ExtensionContext, purpose: string): Promise<ResolvedJudgeEnv | undefined> {
+      const cached = judgeEnvs.get(purpose);
+      if (cached) return cached;
+      const env = (async () => {
         try {
           // 지연 import가 필수다: bun test는 node_modules 없는 미러에서 이 파일을
           // 직접 로드하고, 실제 런타임에서는 legacy-pi shim이 @oh-my-pi/* specifier를
           // host 번들로 재작성한다. 로드 시점이 아니라 첫 판정 시점에 해석한다.
-          const resolveJudge: ResolveJudgeFn =
-            deps.resolveJudge ??
-            ((await import("@oh-my-pi/pi-coding-agent/judgment"))
-              .resolveJudge as unknown as ResolveJudgeFn);
+          // resolveJudge를 주입한 테스트는 core 모듈 없이 돌고(사용량 기록·캐시 없음) 실제 런타임은 host 번들의 core 모듈을 쓴다.
+          const core = deps.resolveJudge ? undefined : await defaultLoadCore();
+          const resolveJudge: ResolveJudgeFn = deps.resolveJudge ?? (core!.judgment.resolveJudge as unknown as ResolveJudgeFn);
           const settings =
             deps.findScopedSettings?.(ctx.cwd) ??
-            ((
-              await import("@oh-my-pi/pi-coding-agent/config/settings")
-            ).findScopedSettings(ctx.cwd) as JudgeSettingsLike | undefined);
+            (((core ?? await defaultLoadCore()).settings.findScopedSettings(ctx.cwd)) as JudgeSettingsLike | undefined);
           if (!settings) return undefined;
-          const judge = resolveJudge({
-            settings,
-            registry: ctx.modelRegistry,
-            backend: ONLINE_JUDGE_BACKEND,
-            sessionModel: ctx.model,
-            sessionId,
-          });
-          return { judge };
+          return { judge: resolveJudge(sessionJudgeDeps(ctx, core?.judgment, settings, purpose, true)) };
         } catch (error) {
           pi.logger.warn("jev-runtime: judge resolution failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -1175,7 +1170,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           return undefined;
         }
       })();
-      return cachedEnv;
+      judgeEnvs.set(purpose, env);
+      return env;
     }
 
     const baseLedger = createRoutingLedger(deps.ledgerPath ?? DEFAULT_LEDGER_PATH, (error) => {
@@ -1215,6 +1211,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
      * snapshot row가 cancelled이고 endTime이 생긴 뒤에만 owner 경계에서 cancelled로 정산한다. 그 전에는 owner 보호를 유지한다.
      */
     const pendingCancels = new Map<string, { attemptId: string; runStart: number }>();
+    /** 취소 요청 row를 다시 보는 다음 관측 timer. pendingCancels가 비거나 세션이 바뀌면 취소한다. */
+    let cancelPoll: (() => void) | undefined;
+    /** 세션 전환·종료마다 올린다. 이전 세대의 늦은 timer callback은 새 세션의 상태를 건드리지 않는다. */
+    let cancelPollGeneration = 0;
+    const CANCEL_OBSERVATION_MS = 2_000;
     /** 명시 REWORK 전송이 성공해 열린 재개 attempt. agentId → 그 전송 직후 관측한 정확한 새 jobId와 전송 시각. */
     const resumeByAgent = new Map<string, { attemptId: string; jobId: string; sentAt: number }>();
     /** 전송별 snapshot을 보존해 같은 actor로 겹친 DM도 서로의 기준선을 덮지 않는다. */
@@ -1386,7 +1387,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       settings: async (ctx) => deps.findScopedSettings?.(ctx.cwd) ??
         (await import("@oh-my-pi/pi-coding-agent/config/settings")).findScopedSettings(ctx.cwd),
       judge: async (ctx, request, signal) => {
-        const env = await judgeEnvFor(ctx);
+        const env = await judgeEnvFor(ctx, "jev_runtime_routing");
         if (!env) throw new Error("Jev를 해석하지 못했습니다. 다른 모델로 대체하지 않습니다.");
         return env.judge.judge(request as Parameters<JudgeLike["judge"]>[0], { signal });
       },
@@ -1494,7 +1495,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }, OWNER_MESSAGE_TIMEOUT_MS);
       try {
         // provider가 signal을 무시해도 이 판정은 예산 안에 끝난다.
-        const env = await Promise.race([judgeEnvFor(ctx), aborted.promise]);
+        const env = await Promise.race([judgeEnvFor(ctx, "jev_runtime_owner_message"), aborted.promise]);
         if (controller.signal.aborted) {
           if (timedOut) deliver("unknown", undefined, "JEV timeout");
           return;
@@ -1627,6 +1628,35 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const runStart = recorded ?? rowStart;
       if (runStart === undefined || (rowStart !== undefined && rowStart !== runStart)) return;
       pendingCancels.set(jobId, { attemptId, runStart });
+      armCancelPoll(ctx);
+    }
+    function resetCancelPoll(): void {
+      cancelPoll?.();
+      cancelPoll = undefined;
+      cancelPollGeneration += 1;
+    }
+    /**
+     * 취소 요청이 남은 동안만 exact row를 local snapshot으로 다시 본다. core는 body가 끝난 row를 5분 뒤 evict하므로 그 전에 endTime을
+     * 보지 못하면 종료를 증명할 수 없고, 그 경우 보호는 세션 전환 전까지 유지된다. 종료 근거는 같은 실행 row의 cancelled+endTime뿐이며
+     * 경과 시간·row 부재는 근거가 아니다. 더 볼 row가 없는(evict·다른 실행·다른 owner) 요청은 보호를 유지한 채 관측만 멈추고,
+     * exact row(`jobs`)를 주지 않는 host는 관측하지 않는다.
+     */
+    function armCancelPoll(ctx: ExtensionContext): void {
+      if (cancelPoll || pendingCancels.size === 0) return;
+      const generation = cancelPollGeneration;
+      cancelPoll = observationClock.schedule(() => {
+        cancelPoll = undefined;
+        if (generation !== cancelPollGeneration) return;
+        const snapshot = snapshotWithPendingCancels(ctx);
+        const rows = snapshot?.jobs;
+        if (!rows) return;
+        reconcileEndedCancels(snapshot);
+        const observable = [...pendingCancels].some(([jobId, pending]) => {
+          const row = rows.find((entry) => entry.id === jobId);
+          return row !== undefined && row.startTime === pending.runStart && row.endTime === undefined;
+        });
+        if (observable) armCancelPoll(ctx);
+      }, CANCEL_OBSERVATION_MS);
     }
     /**
      * core는 task job을 `id: agentId`로 등록하고 소비된 row를 곧 evict하므로 재개(IRC wake) 실행이 같은 jobId를 다시 받는다.
@@ -1932,7 +1962,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     }
 
 
-    pi.on("session_start", (_event, ctx) => {
+    // 세션 identity가 바뀐 전환(`/new`·resume·fork)은 session_start와 같은 초기화를 한다. 같은 세션을 다시 읽는 reload는
+    // 진행 중인 취소 관측·owner 상태·이미 낸 TODO 점검 기록을 그대로 두고, job 관측을 다시 시작하며 durable TODO 정본만 다시 읽는다
+    // (branch가 바뀐 reload 뒤 이전 live 상태로 child 결과를 점검하지 않는다).
+    onSessionLifecycle(pi, { reload: (ctx) => {
+      resetJobObservation();
+      todoProgressState = readPersistedTodoProgress(ctx.sessionManager.getBranch());
+    }, start: (ctx) => {
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (typeof sessionId === "string") clearPreparedTaskSession(sessionId);
       // 이 session의 durable scoped dispatch·outcome·verdict로 관측 목록을 복원한다.
@@ -1973,15 +2009,18 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       todoProgressState = readPersistedTodoProgress(ctx.sessionManager.getBranch());
       reviewedTodoRevisions.clear();
       advisedRunningCancellations.clear();
-      cachedEnv = undefined;
+      judgeEnvs.clear();
+      resetCancelPoll();
       currentReviewRequest = undefined;
       reviewMessageSequence = 0;
       pendingReviewOrigins.clear();
       resetJobObservation();
+    } });
+    // 종료는 이전 session의 job 관측 근거·대기 타이머를 잇지 않는다.
+    pi.on("session_shutdown", () => {
+      resetJobObservation();
+      resetCancelPoll();
     });
-    // session 교체(newSession·switchSession)와 종료는 이전 session의 job 관측 근거·대기 타이머를 잇지 않는다.
-    pi.on("session_switch", () => resetJobObservation());
-    pi.on("session_shutdown", () => resetJobObservation());
 
     // 새 genuine 입력은 실패 문맥과 routing의 TaskGuard 상속 lock만 끊는다.
     // 성공 판단 cache·prepared ref·known owner의 local advisory dedupe는 보존한다.
@@ -2007,11 +2046,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       memoryController?.abort();
       memoryController = undefined;
     }
-    pi.on("session_start", () => {
+    onSessionLifecycle(pi, { start: () => {
       cancelMemoryApplication();
       judgedMemoryInputs.clear();
       memoryInRun = false;
-    });
+    } });
     pi.on("agent_start", () => {
       memoryInRun = true;
     });
@@ -2054,7 +2093,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }, deps.memoryApplicationTimeoutMs ?? MEMORY_APPLICATION_TIMEOUT_MS);
       try {
         // provider가 signal을 무시해도 handler는 예산 안에 돌아온다.
-        const env = await Promise.race([judgeEnvFor(ctx), aborted.promise]);
+        const env = await Promise.race([judgeEnvFor(ctx, "jev_runtime_memory_application"), aborted.promise]);
         if (!env || controller.signal.aborted) return undefined;
         const result = await Promise.race([
           env.judge.judge({ state, questions: memoryApplicationQuestions(recalled.memories) }, { signal: controller.signal }),

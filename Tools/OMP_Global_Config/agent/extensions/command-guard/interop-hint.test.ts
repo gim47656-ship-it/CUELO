@@ -101,3 +101,52 @@ describe("windowsOutputCommand", () => {
     });
   });
 });
+
+describe("Windows 프로그램을 부르는 호출과 언급의 구분", () => {
+  const WSL = { wsl: true };
+  const NL = "\n";
+
+  const invoked = [
+    ["exe", "tasklist.exe"],
+    ["powershell", "powershell -c x"],
+    ["pwsh.exe", "pwsh.exe -c x"],
+    ["absolute exe path", "/mnt/c/Windows/System32/cmd.exe /c dir"],
+    ["quoted exe path", '"/mnt/c/Windows/System32/cmd.exe" /c dir'],
+    ["end of a pipeline", "ls | clip.exe"],
+    ["after &&", "cd /tmp && tasklist.exe"],
+    ["environment prefix", "X=1 tasklist.exe"],
+    ["timeout wrapper", "timeout 5 tasklist.exe"],
+    ["bash -c string", "bash -c 'tasklist.exe'"],
+    ["command substitution", "x=$(tasklist.exe); echo $x"],
+    ["loop body", "for i in 1; do tasklist.exe; done"],
+    ["xargs", "echo a | xargs notepad.exe"],
+    ["find -exec", "find . -exec foo.exe {} \\;"],
+    ["substitution in an unquoted heredoc", `cat > f <<EOF${NL}$(tasklist.exe)${NL}EOF`],
+    ["second program next to git.exe", "git.exe status && tasklist.exe"],
+  ] as const;
+  for (const [name, command] of invoked) {
+    test(`wraps ${name}`, () => expect(windowsOutputCommand(command, WSL)).toBeDefined());
+  }
+
+  const mentioned = [
+    ["quoted text", 'echo "run tasklist.exe later"'],
+    ["grep pattern", "grep -r 'powershell' docs"],
+    ["quoted heredoc body", `cat > f <<'EOF'${NL}run pwsh and tasklist.exe${NL}EOF`],
+    ["python heredoc body", `python3 - <<'PY'${NL}print("pwsh")${NL}PY`],
+    ["unquoted heredoc body", `cat > f <<EOF${NL}tasklist.exe${NL}EOF`],
+    ["echoed word", "echo powershell"],
+    ["git.exe with a mention in its message", 'git.exe commit -m "fix tasklist.exe"'],
+    ["comment", "ls # tasklist.exe"],
+  ] as const;
+  for (const [name, command] of mentioned) {
+    test(`leaves ${name} alone`, () => expect(windowsOutputCommand(command, WSL)).toBeUndefined());
+  }
+
+  test("깨진 출력 안내도 실제 호출에만 붙는다", () => {
+    const broken = "\uFFFD\uFFFD\uFFFD";
+    expect(interopHint("taskkill.exe /PID 1", broken)).toBeDefined();
+    expect(interopHint("powershell.exe -c x", broken)).toBeDefined();
+    expect(interopHint('echo "taskkill.exe"', broken)).toBeUndefined();
+    expect(interopHint(`cat <<'EOF'${NL}powershell${NL}EOF`, broken)).toBeUndefined();
+  });
+});

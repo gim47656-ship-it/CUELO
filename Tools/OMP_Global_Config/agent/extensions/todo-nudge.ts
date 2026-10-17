@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 
 // 사용자 직접 입력 하나에서 todo 없이 도구를 세 번 부르면 요청당 한 번 안내한다.
@@ -22,10 +23,16 @@ export default function todoNudge(pi: ExtensionAPI): void {
   let todos: readonly TodoSnapshotItem[] = [];
   let noticeNudged = false;
 
-  pi.on("session_start", (_event, ctx) => {
-    armed = false;
-    noticeNudged = false;
-    todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+  onSessionLifecycle(pi, {
+    start: (ctx) => {
+      armed = false;
+      noticeNudged = false;
+      todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+    },
+    // 같은 세션을 다시 읽는 reload: 요청 단위 상태는 두고 durable todo만 다시 읽는다.
+    reload: (ctx) => {
+      todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
+    },
   });
   pi.on("session_shutdown", () => {
     armed = false;

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type DocmapCandidate, type DocmapRoute, routeDocmap } from "./lib/docmap-search";
 import { type CoreJudgmentModules, defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, stoppedBy } from "./lib/native-judge";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 // 2026-10-16 재조사(doc/history/2026/10/16-rag-reinvestigation): 격리 표본 12건에서 문서 지도를 연 경우가 0건이었다.
 // 도구나 규칙만 두면 같은 문제가 되풀이되므로, 사용자 요청마다 하네스가 지도·RECORD 헤더 검색을 직접 돌려
@@ -65,11 +66,11 @@ export function createDocmapRoute(deps: DocmapRouteDeps = {}) {
     let inRun = false;
     const judgeFor = (ctx: ExtensionContext) => (judgePromise ??= resolveJudge(ctx).catch(() => undefined));
 
-    pi.on("session_start", () => {
+    onSessionLifecycle(pi, { start: () => {
       pendingText = undefined;
       judgePromise = undefined;
       inRun = false;
-    });
+    } });
     pi.on("session_shutdown", () => { pendingText = undefined; });
     pi.on("agent_start", () => { inRun = true; });
     pi.on("agent_end", () => { inRun = false; });

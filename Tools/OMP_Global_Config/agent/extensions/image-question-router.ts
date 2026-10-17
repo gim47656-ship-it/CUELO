@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 /**
  * 이미지 파일을 `?q=` 없이 `read`하려는 시도를 막고 `경로?q=<질문>`으로 먼저 묻게 한다. 글자·값 확인뿐 아니라
@@ -33,9 +34,9 @@ export function blockReason(path: string): string {
 export default function imageQuestionRouter(pi: ExtensionAPI): void {
   const asked = new Set<string>();
 
-  pi.on("session_start", () => {
+  onSessionLifecycle(pi, { start: () => {
     asked.clear();
-  });
+  } });
   pi.on("tool_call", (event, ctx) => {
     if (event.toolName !== "read") return;
     const input: unknown = event.input;

@@ -563,3 +563,416 @@ describe("인용문·문서·주석의 금지 명령 언급", () => {
     test(command, () => expectAllowed(command));
   }
 });
+
+describe("중첩 셸과 실행 래퍼 안의 금지 명령", () => {
+  const blocked = [
+    ["bash -c", 'bash -c "git push origin main"'],
+    ["sh -c with commit", "sh -c 'git commit -am x'"],
+    ["zsh -c", "zsh -c 'git push'"],
+    ["dash -c", "dash -c 'git push'"],
+    ["clustered -lc", "bash -lc 'git push'"],
+    ["clustered -ec", "bash -ec 'git push'"],
+    ["-o value before -c", "bash -o pipefail -c 'git push'"],
+    ["long option before -c", "bash --norc -c 'git push'"],
+    ["absolute shell path", "/bin/bash -c 'git push'"],
+    ["sudo shell", "sudo bash -c 'git push'"],
+    ["shell inside shell", `bash -c "bash -c 'git push'"`],
+    ["second command after separator", "bash -c 'echo hi; git push'"],
+    ["nested remove", "bash -c 'rm -rf /'"],
+    ["nested deploy", "bash -c 'wrangler deploy'"],
+    ["nested SQL", `bash -c 'psql -c "DROP TABLE x"'`],
+    ["nested checkout discard", "bash -c 'git checkout .'"],
+    ["eval string", 'eval "git push"'],
+    ["eval words", "eval git push"],
+    ["su -c", "su -c 'git push' user"],
+    ["flock -c", "flock /tmp/l -c 'git push'"],
+    ["script -qc", "script -qc 'git push' /dev/null"],
+    ["watch", "watch -n 5 git push"],
+    ["if then", "if true; then git push origin main; fi"],
+    ["for do", "for i in 1; do git commit -am x; done"],
+    ["while do", "while true; do git push; done"],
+    ["else branch", "if false; then echo a; else git push; fi"],
+    ["elif branch", "if false; then echo a; elif true; then git push; fi"],
+    ["negation", "! git push"],
+    ["exec", "exec git push"],
+    ["exec -a", "exec -a name git push"],
+    ["nice", "nice git push"],
+    ["nice -n", "nice -n 10 git push"],
+    ["nice -10", "nice -10 git push"],
+    ["setsid", "setsid git push"],
+    ["setsid -f", "setsid -f git push"],
+    ["ionice", "ionice -c 3 git push"],
+    ["stdbuf attached", "stdbuf -oL git push"],
+    ["stdbuf separate", "stdbuf -o L git push"],
+    ["taskset cpu list", "taskset -c 0 git push"],
+    ["taskset mask", "taskset 0x1 git push"],
+    ["chrt", "chrt -f 10 git push"],
+    ["flock command", "flock /tmp/lock git push"],
+    ["flock -w", "flock -w 5 /tmp/lock git push"],
+    ["xargs", "echo x | xargs git push"],
+    ["xargs -n", "echo x | xargs -n 1 git push"],
+    ["xargs -I", "echo x | xargs -I {} git push {}"],
+    ["doas", "doas git push"],
+    ["echo piped into a shell", 'echo "git push" | bash'],
+    ["printf piped into a shell", "printf 'git push\\n' | sh"],
+    ["here-string into a shell", 'bash <<< "git push"'],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["benign -c", "bash -c 'echo hi'"],
+    ["quoted mention in -c", `bash -c "echo 'git push'"`],
+    ["script file", "bash ./run.sh"],
+    ["words after -c command are $0 and arguments", "bash -c 'echo $0' git push"],
+    ["eval benign", 'eval "echo hi"'],
+    ["benign if", "if true; then echo ok; fi"],
+    ["benign nice", "nice -n 10 bun test"],
+    ["benign xargs", "echo x | xargs echo"],
+    ["benign setsid", "setsid -f bun run dev"],
+    ["benign pipe into a shell", 'echo "hello" | sh'],
+    ["finalizer dry run inside -c", "bash -c 'git push --dry-run'"],
+    ["dry run inside substitution", 'echo "$(git push -n)"'],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+
+  test("중첩 호출은 세그먼트가 도는 cwd의 저장소 경계를 그대로 쓴다", () => {
+    const context = (cwd: string): GuardContext => ({
+      cwd,
+      isSessionRepository: (directory) => normalizePath(directory).includes("/repo/session"),
+    });
+    const command = "bash -c 'git push origin main'";
+    expect(matchBlockedCommand(command, context("/repo/session"))).toBeDefined();
+    expect(matchBlockedCommand(command, context("/repo/external"))).toBeUndefined();
+    expect(matchBlockedCommand("cd /repo/external && bash -c 'git push'", context("/repo/session"))).toBeUndefined();
+  });
+});
+
+describe("명령 치환 안의 금지 명령", () => {
+  const blocked = [
+    ["backtick", "echo `git push`"],
+    ["double-quoted substitution", 'echo "$(git push)"'],
+    ["double-quoted backtick", 'echo "`git push`"'],
+    ["unquoted substitution", "echo $(git push)"],
+    ["assignment substitution", "x=$(git push)"],
+    ["substitution as -C value", "git -C $(pwd) push"],
+    ["nested substitution", "echo $(echo $(git push))"],
+    ["deploy in substitution", 'echo "$(wrangler deploy)"'],
+    ["separator after backtick in a double-quoted word", 'echo "`date`"; git push'],
+    ["parenthesis inside a quoted substitution argument", `echo "$(echo ')'; git push)"`],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["single-quoted substitution", "echo '$(git push)'"],
+    ["escaped substitution", 'echo "\\$(git push)"'],
+    ["benign backtick", "echo `date`"],
+    ["benign substitution", 'echo "$(git rev-parse HEAD)"'],
+    ["arithmetic", "echo $((1 + 2))"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("heredoc 본문", () => {
+  const NL = "\n";
+  const blocked = [
+    ["unquoted body substitution", `cat > f <<EOF${NL}now $(git push)${NL}EOF`],
+    ["unquoted body backtick", `cat > f <<EOF${NL}now \`git push\`${NL}EOF`],
+    ["command after the terminator", `cat <<'EOF'${NL}hello${NL}EOF${NL}git push`],
+    ["deploy after the terminator", `cat <<'EOF'${NL}x${NL}EOF${NL}wrangler deploy`],
+    ["command owning the heredoc", `git push <<'EOF'${NL}x${NL}EOF`],
+    ["heredoc piped into a shell", `cat <<'EOF' | bash${NL}git push${NL}EOF`],
+    ["heredoc into a shell", `bash <<'EOF'${NL}git push${NL}EOF`],
+    ["heredoc into sh", `sh <<EOF${NL}git commit -am x${NL}EOF`],
+    ["SQL heredoc into psql", `psql <<'EOF'${NL}DROP TABLE x;${NL}EOF`],
+    ["SQL here-string into psql", 'psql <<< "DROP TABLE x"'],
+    ["SQL heredoc piped from cat", `cat <<'EOF' | psql${NL}TRUNCATE x;${NL}EOF`],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["quoted body with git commit", `cat > f <<'EOF'${NL}git commit -m x${NL}EOF`],
+    ["quoted body with a regex alternation", `cat > f <<'EOF'${NL}const r = /(push|deploy|publish)/;${NL}EOF`],
+    ["quoted body with the word deploy", `cat > f <<'EOF'${NL}deploy checklist${NL}EOF`],
+    ["quoted body with an apostrophe", `cat > f <<'EOF'${NL}use it's rules${NL}git commit -m x${NL}EOF`],
+    ["unquoted body without substitution", `cat > f <<EOF${NL}git commit -m x${NL}EOF`],
+    ["quoted body substitution is inert", `cat > f <<'EOF'${NL}now $(git push)${NL}EOF`],
+    ["double-quoted tag is inert", `cat > f <<"EOF"${NL}now $(git push)${NL}EOF`],
+    ["backslash tag is inert", `cat > f <<\\EOF${NL}now $(git push)${NL}EOF`],
+    ["tab-stripped body", `cat <<-EOF${NL}\tgit push${NL}\tEOF`],
+    ["two heredocs on one line", `cat <<A <<B${NL}git push${NL}A${NL}git commit${NL}B`],
+    ["shell reads a harmless body", `bash <<'EOF'${NL}echo hi${NL}EOF`],
+    ["SQL string literal in the body", `psql <<'EOF'${NL}SELECT 'DROP TABLE x';${NL}EOF`],
+    ["unterminated heredoc", `cat <<EOF${NL}git push`],
+    ["substitution that only reads a heredoc", `echo "$(cat <<'EOF'${NL}text git push${NL}EOF${NL})"`],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("wrangler 배포 하위 명령 정규화", () => {
+  const blocked = [
+    ["--env", "wrangler --env prod deploy"],
+    ["-e", "wrangler -e prod deploy"],
+    ["--env=", "wrangler --env=prod deploy"],
+    ["config then env", "wrangler -c wrangler.toml -e prod deploy"],
+    ["publish", "wrangler publish"],
+    ["pages deploy", "wrangler pages deploy dist"],
+    ["pages publish", "wrangler pages publish dist"],
+    ["versions deploy", "wrangler versions deploy"],
+    ["triggers deploy", "wrangler triggers deploy"],
+    ["npx with @latest", "npx wrangler@latest deploy"],
+    ["bunx with @major", "bunx wrangler@4 deploy"],
+    ["npx with env", "npx wrangler -e prod deploy"],
+    ["pnpm bin shorthand", "pnpm wrangler deploy"],
+    ["yarn bin shorthand", "yarn wrangler deploy"],
+    ["bun x", "bun x wrangler deploy"],
+    ["npm exec with version", "npm exec -- wrangler@4 deploy"],
+    ["pnpm exec versions deploy", "pnpm exec wrangler versions deploy"],
+    ["Windows shim", "wrangler.cmd deploy"],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["dev with env", "wrangler --env prod dev"],
+    ["env named deploy", "wrangler --env deploy dev"],
+    ["versions list", "wrangler versions list"],
+    ["pages dev", "wrangler pages dev dist"],
+    ["whoami", "wrangler whoami"],
+    ["tail through npx", "npx wrangler@latest tail"],
+    ["installing the package", "npm install wrangler"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("psql 묶음 짧은 옵션의 -c", () => {
+  const blocked = [
+    ["-Atc", 'psql -Atc "DROP TABLE x"'],
+    ["-qc", 'psql -qc "DROP TABLE x"'],
+    ["-1c", 'psql -1c "TRUNCATE x"'],
+    ["-Xc", 'psql -Xc "DROP TABLE x"'],
+    ["attached query after a cluster", 'psql -Atc"DROP TABLE x"'],
+    ["attached query after -c", 'psql -c"DROP TABLE x"'],
+    ["value option before the cluster", 'psql -d db -Atc "DROP TABLE x"'],
+    ["longer cluster", 'psql -U u -qtAc "DROP TABLE x"'],
+    ["--command", 'psql --command "DROP TABLE x"'],
+    ["--command=", 'psql --command="DROP TABLE x"'],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["clustered SELECT", 'psql -Atc "SELECT 1"'],
+    ["clustered literal", `psql -Atc "SELECT 'DROP TABLE x'"`],
+    ["-a is a flag, not the query", 'psql -ac "SELECT 1"'],
+    ["database named like a verb", 'psql -d drop_db -c "SELECT 1"'],
+    ["script file", "psql -f schema.sql"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("git clean 미리보기와 작업 폐기 명령", () => {
+  const clean = [
+    ["-n -f", "git clean -n -f"],
+    ["-nf", "git clean -nf"],
+    ["-fdn", "git clean -fdn"],
+    ["--dry-run -f", "git clean --dry-run -f"],
+    ["-f --dry-run", "git clean -f --dry-run -d"],
+    ["abbreviated dry run", "git clean --dry -fd"],
+  ] as const;
+  for (const [name, command] of clean) {
+    test(`allows the dry run ${name}`, () => expectAllowed(command));
+  }
+  test("실제로 지우는 git clean은 -e 값이 있어도 막는다", () => expectBlocked("git clean -fdx -e keep"));
+
+  const blocked = [
+    ["checkout -- .", "git checkout -- ."],
+    ["checkout .", "git checkout ."],
+    ["checkout revision -- .", "git checkout HEAD -- ."],
+    ["checkout -f", "git checkout -f main"],
+    ["checkout --force", "git checkout --force main"],
+    ["checkout wildcard", "git checkout -- '*'"],
+    ["checkout repository-root pathspec", "git checkout -- :/"],
+    ["checkout clustered -fb", "git checkout -fb x"],
+    ["checkout with -C", "git -C repo checkout ."],
+    ["restore .", "git restore ."],
+    ["restore -- .", "git restore -- ."],
+    ["restore source and worktree", "git restore --source=HEAD --worktree ."],
+    ["restore -s", "git restore -s HEAD ."],
+    ["restore clustered -SW", "git restore -SW ."],
+    ["restore staged and worktree", "git restore --staged --worktree ."],
+    ["switch -f", "git switch -f main"],
+    ["switch --force", "git switch --force main"],
+    ["switch --discard-changes", "git switch --discard-changes main"],
+    ["stash clear", "git stash clear"],
+    ["stash drop", "git stash drop"],
+    ["stash drop with a ref", "git stash drop stash@{1}"],
+    ["worktree remove -f", "git worktree remove -f ../wt"],
+    ["worktree remove --force", "git worktree remove --force ../wt"],
+    ["worktree remove -f -f", "git worktree remove -f -f ../wt"],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => {
+      expectBlocked(command);
+      expect(matchBlockedCommand(command)).toContain("되돌릴 수 없게");
+    });
+  }
+
+  const allowed = [
+    ["checkout a branch", "git checkout main"],
+    ["checkout -b", "git checkout -b feature"],
+    ["checkout a single file", "git checkout -- src/a.ts"],
+    ["checkout a file from a revision", "git checkout HEAD~1 -- src/a.ts"],
+    ["checkout -b with a dotted name", "git checkout -b fix.x"],
+    ["checkout a dotfile", "git checkout -- .gitignore"],
+    ["restore a single file", "git restore src/a.ts"],
+    ["restore --staged is index-only", "git restore --staged ."],
+    ["restore -S is index-only", "git restore -S ."],
+    ["switch a branch", "git switch main"],
+    ["switch -c", "git switch -c feature"],
+    ["stash", "git stash"],
+    ["stash push", "git stash push -m drop"],
+    ["stash list", "git stash list"],
+    ["stash pop", "git stash pop"],
+    ["stash apply", "git stash apply"],
+    ["worktree add", "git worktree add ../wt"],
+    ["worktree list", "git worktree list"],
+    ["worktree remove without force", "git worktree remove ../wt"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("deploy-live 스크립트와 mysql 묶음 옵션", () => {
+  const blocked = [
+    ["direct deploy-live script", "./Tools/CUELO_Setup/deploy-live.ps1"],
+    ["pwsh positional script", "pwsh Tools/CUELO_Setup/deploy-live.ps1"],
+    ["pwsh -File", "pwsh -NoProfile -ExecutionPolicy Bypass -File Tools/CUELO_Setup/deploy-live.ps1"],
+    ["Windows PowerShell with policy then script", "powershell.exe -ExecutionPolicy Bypass .\\Tools\\CUELO_Setup\\deploy-live.ps1"],
+    ["pwsh working-directory value before the script", "pwsh -wd C:\\x .\\deploy-live.ps1"],
+    ["bash deploy-live script", "bash Tools/CUELO_Setup/deploy-live.sh"],
+    ["mysql -Ne", 'mysql -Ne "DROP TABLE x"'],
+    ["mysql -Nse", 'mysql -Nse "DROP TABLE x"'],
+    ["mysql -Be TRUNCATE", 'mysql -Be "TRUNCATE x"'],
+    ["mysql password flag before -e", 'mysql -u root -p -e "DROP TABLE x"'],
+    ["mysql attached user and password", 'mysql -uroot -psecret -Ne "DROP TABLE x"'],
+    ["mysql database value before the cluster", 'mysql -D db -Ne "DROP TABLE x"'],
+    ["mysql attached query", 'mysql -e"DROP TABLE x"'],
+    ["mariadb repeated verbose flag", 'mariadb -vvv -e "DROP TABLE x"'],
+    ["mysql --execute with a separate value", 'mysql --execute "DROP TABLE x"'],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["verify script", "pwsh Tools/CUELO_Setup/verify.ps1"],
+    ["pwsh -File of another script", "pwsh -NoProfile -File verify.ps1"],
+    ["pwsh -Command", "pwsh -Command Get-Date"],
+    ["reading the deploy script", "cat Tools/CUELO_Setup/deploy-live.ps1"],
+    ["diffing the deploy script", "git diff -- deploy-live.ps1"],
+    ["mysql clustered SELECT", 'mysql -Ne "SELECT 1"'],
+    ["mysql clustered literal", `mysql -Nse "SELECT 'DROP TABLE x'"`],
+    ["mysql database named like a verb", 'mysql -D drop_db -Ne "SELECT 1"'],
+    ["mysql password that looks like -e", 'mysql -uroot -pe -e "SELECT 1"'],
+    ["mysql password that looks like a verb", 'mysql -pDROP -e "SELECT 1"'],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("값을 받는 짧은 옵션·ionice·printf·heredoc 구분자", () => {
+  const blocked = [
+    ["git clean -e with an attached pattern is not a dry run", "git clean -fd -enode_modules"],
+    ["git restore -s with an attached source", "git restore -sSTABLE ."],
+    ["git restore -s attached source and top pathspec", "git restore -sHEAD~1 :/"],
+    ["git push -o with an attached push option is not a dry run", "git push -onitro origin main"],
+    ["ionice -t takes no argument", "ionice -t git reset --hard"],
+    ["ionice -t after class options", "ionice -c 3 -t git reset --hard"],
+    ["printf format with an empty %s", "printf 'git reset --hard\\n%s' '' | bash"],
+    ["printf format filled by an argument", "printf 'git %s --hard\\n' reset | bash"],
+    ["printf %b argument", "printf '%b' 'git reset --hard\\n' | bash"],
+    ["printf format repeated for every argument", "printf '%s\\n' 'echo hi' 'git reset --hard' | bash"],
+    ["printf SQL with substituted table", "printf 'DROP TABLE %s;\\n' users | mysql"],
+    ["unquoted heredoc substitution stays live", "cat <<EOF\n$(git reset --hard)\nEOF"],
+    ["command after an empty-delimiter heredoc", "cat <<''\ntext\n\ngit reset --hard"],
+    ["empty-delimiter heredoc fed to a shell", "bash <<''\ngit reset --hard\n\n"],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["git clean with a dry run and a pattern", "git clean -fdn -e node_modules"],
+    ["git switch -c with an attached branch name containing f", "git switch -cfeature"],
+    ["git checkout -b with an attached branch name containing f", "git checkout -bfix main"],
+    ["git tag -m with an attached message containing d", "git tag -mdelete v1"],
+    ["git restore -s then --staged", "git restore -sSTABLE --staged ."],
+    ["ionice -t with a harmless command", "ionice -t git status"],
+    ["printf harmless script", "printf '%s\\n' 'echo hi' | bash"],
+    ["printf joins %s values without spaces", "printf '%s' git reset --hard | bash"],
+    ["printf with an empty %s and a harmless line", "printf 'git status\\n%s' '' | bash"],
+    ["empty-delimiter heredoc body is inert", "cat <<''\ngit reset --hard\n\n"],
+    ["heredoc delimiter quoted in the middle (backslash)", "cat <<E\\OF\n$(git reset --hard)\nEOF"],
+    ["heredoc delimiter quoted in the middle (single quotes)", "cat <<'E'OF\n$(git reset --hard)\nEOF"],
+    ["heredoc delimiter quoted in the middle (double quotes)", 'cat <<E"O"F\n$(git reset --hard)\nEOF'],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("옵션 값 걷어내기와 printf 너비·정밀도", () => {
+  const blocked = [
+    ["git clean --exclude with a separate value that looks like -n", "git clean -fd --exclude -n"],
+    ["git clean abbreviated --exclude value", "git clean -fd --exc -n"],
+    ["git clean --exclude=-n attached value", "git clean -fd --exclude=-n"],
+    ["git commit -m value that looks like --dry-run", "git commit -m --dry-run"],
+    ["git commit --message value that looks like --dry-run", "git commit --message --dry-run"],
+    ["git push --push-option value that looks like -n", "git push --push-option -n origin main"],
+    ["git push -o separate value that looks like -n", "git push -o -n origin main"],
+    ["git restore --source value that looks like --staged", "git restore --source --staged ."],
+    ["printf precision keeps three characters", "printf '%.3s reset --hard\\n' github | bash"],
+    ["printf precision from an argument", "printf '%.*s reset --hard\\n' 3 github | bash"],
+    ["printf width padding trailing spaces", "printf '%-20s\\n' 'git reset --hard' | bash"],
+    ["printf format repeated with a precision", "printf '%.3s reset --hard\\n' github gitlab | bash"],
+    ["printf %b with a trailing \\c", "printf '%b\\n' 'git reset --hard\\c' | bash"],
+    ["printf output before an invalid conversion", "printf 'git reset --hard\\n%z' | bash"],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expectBlocked(command));
+  }
+
+  const allowed = [
+    ["git clean dry run next to an exclude", "git clean -n --exclude -f"],
+    ["git tag --message value that looks like -d", "git tag --message -d v1"],
+    ["printf precision 0 prints nothing", "printf '%.0s' 'git reset --hard' | bash"],
+    ["printf precision cuts the command", "printf '%.3s\\n' 'git reset --hard' | bash"],
+    ["printf %b \\c ends all output", "printf '%b' 'echo hi\\cgit reset --hard' | bash"],
+    ["printf %b \\c skips the rest of the format", "printf 'x%b git reset --hard\\n' 'a\\c' | bash"],
+    ["printf stops at an invalid conversion", "printf '%z git reset --hard\\n' | bash"],
+    ["printf float conversion", "printf '%5.1f\\n' 3.14 | bash"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expectAllowed(command));
+  }
+});

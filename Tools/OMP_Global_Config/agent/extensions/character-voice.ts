@@ -601,6 +601,30 @@ export function malformedSummonMarkerReason(task: string): string | undefined {
   ].join("\n");
 }
 
+/**
+ * system/developer 역할 항목에서만 voice·report-style을 걷어낸다. 내용이 비면 항목을 버린다.
+ * user·assistant·tool 항목과 역할이 없는 항목(function_call, reasoning 등)은 그대로 둔다.
+ */
+function cleanSystemRoleItems(items: readonly unknown[]): unknown[] {
+  const cleanedItems: unknown[] = [];
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      !("role" in item) ||
+      (item.role !== "system" && item.role !== "developer") ||
+      !("content" in item)
+    ) {
+      cleanedItems.push(item);
+      continue;
+    }
+    const content = cleanPayloadTextContainer(item.content);
+    if (content === "" || (Array.isArray(content) && content.length === 0)) continue;
+    cleanedItems.push({ ...item, content });
+  }
+  return cleanedItems;
+}
+
 /** 최종 wire payload에서 이전 voice/report style을 걷어내고 선택된 voice를 정확히 한 번 설치한다. */
 export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): unknown {
   if (!payload || typeof payload !== "object") return payload;
@@ -627,25 +651,7 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
   }
   if ("instructions" in next) next.instructions = cleanPayloadTextContainer(next.instructions);
   if ("system" in next && !Array.isArray(next.system)) next.system = cleanPayloadTextContainer(next.system);
-  if (Array.isArray(next.messages)) {
-    const messages: unknown[] = [];
-    for (const message of next.messages) {
-      if (
-        !message ||
-        typeof message !== "object" ||
-        !("role" in message) ||
-        (message.role !== "system" && message.role !== "developer") ||
-        !("content" in message)
-      ) {
-        messages.push(message);
-        continue;
-      }
-      const content = cleanPayloadTextContainer(message.content);
-      if (content === "" || (Array.isArray(content) && content.length === 0)) continue;
-      messages.push({ ...message, content });
-    }
-    next.messages = messages;
-  }
+  if (Array.isArray(next.messages)) next.messages = cleanSystemRoleItems(next.messages);
 
   if (typeof next.system === "string") {
     next.system = next.system ? `${next.system}\n\n${block}` : block;
@@ -656,6 +662,9 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
     return next;
   }
   if (typeof next.instructions === "string") {
+    // Responses/Codex는 system 블록 0을 instructions로, 나머지를 input 앞 developer 항목으로 싣는다.
+    // voice의 단일 자리는 instructions이므로 developer/system 항목에 남은 옛 voice를 걷어낸다.
+    if (Array.isArray(next.input)) next.input = cleanSystemRoleItems(next.input);
     next.instructions = next.instructions ? `${next.instructions}\n\n${block}` : block;
     return next;
   }

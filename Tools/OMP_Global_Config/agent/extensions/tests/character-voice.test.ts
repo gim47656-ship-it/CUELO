@@ -31,6 +31,7 @@ import characterVoice, {
   renderCharacterVoice,
   rewriteTaskInputForCharacterSummon,
 } from "../character-voice";
+import type { CharacterAlias } from "../character-voice";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -143,6 +144,12 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     sent,
     ctx,
     accounts,
+    /** `/model` 같은 선택 밖의 model 변경을 흉내 낸다. */
+    selectModel(selector: string) {
+      const next = models.find((model) => `${model.provider}/${model.id}` === selector);
+      if (!next) throw new Error(`unknown model ${selector}`);
+      currentModel = next;
+    },
     async emit(name: string, event: unknown) {
       let result: unknown;
       for (const handler of handlers[name] ?? []) {
@@ -686,6 +693,115 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("MIO(미오)");
     expect(serialized).not.toContain("<report-style");
     expect(serialized).not.toContain("Problem / Decision / Check / Next를 항상 쓴다");
+  });
+
+  // Codex Responses 본문은 system 블록 0을 `instructions`로, 나머지를 input 앞의 developer 메시지로 싣는다.
+  // before_agent_start가 넣은 voice가 developer 메시지에 남은 채 instructions 끝에도 붙어 voice가 두 번 나갔다.
+  interface CodexPayloadFixture {
+    model: string;
+    instructions: string;
+    input: unknown[];
+    store: boolean;
+    stream: boolean;
+    prompt_cache_key: string;
+  }
+  const voiceCount = (value: unknown): number => JSON.stringify(value).split("<character-voice").length - 1;
+  const itemRole = (item: unknown): string | undefined =>
+    item && typeof item === "object" && "role" in item && typeof item.role === "string" ? item.role : undefined;
+  const developerItems = (payload: CodexPayloadFixture): unknown[] => payload.input.filter((item) => itemRole(item) === "developer");
+  const otherItems = (payload: CodexPayloadFixture): unknown[] => payload.input.filter((item) => itemRole(item) !== "developer");
+  const developerItem = (text: string) => ({ type: "message", role: "developer", content: [{ type: "input_text", text }] });
+  const codexPayload = (turns: number, alias: CharacterAlias = "YUKI(유키)"): CodexPayloadFixture => {
+    const quoted = `사용자가 붙여 넣은 예시: ${renderCharacterVoice("MIO(미오)")}`;
+    const input: unknown[] = [
+      developerItem("<project-context>\ncwd=/w\n</project-context>"),
+      developerItem(renderCharacterVoice(alias)),
+      developerItem("<memories>\nrecalled facts\n</memories>"),
+      { role: "user", content: [{ type: "input_text", text: quoted }] },
+    ];
+    for (let turn = 0; turn < turns; turn += 1) {
+      input.push({ type: "reasoning", id: `rs_${turn}`, encrypted_content: `enc${turn}`, summary: [] });
+      input.push({ type: "function_call", call_id: `call_${turn}`, name: "read", arguments: "{}" });
+      input.push({ type: "function_call_output", call_id: `call_${turn}`, output: quoted });
+    }
+    return { model: "gpt-6-astra", instructions: "base contract", input, store: false, stream: true, prompt_cache_key: "session-1" };
+  };
+  const toCodexPayload = (value: unknown): CodexPayloadFixture => {
+    if (!value || typeof value !== "object" || !("instructions" in value) || !("input" in value) || !Array.isArray(value.input)) {
+      throw new Error("Codex payload shape was lost");
+    }
+    // 위에서 두 키를 모두 확인했고 fixture가 만든 이 형태만 들어온다.
+    return value as CodexPayloadFixture;
+  };
+
+  test("Codex payload keeps exactly one current voice and leaves user/tool items untouched", async () => {
+    const harness = createRuntimeHarness();
+    const payload = codexPayload(2);
+    const before = JSON.stringify(payload);
+    const result = toCodexPayload(await harness.emit("before_provider_request", { type: "before_provider_request", payload }));
+    expect(JSON.stringify(payload)).toBe(before);
+    expect(result.instructions).toBe(`base contract\n\n${renderCharacterVoice("YUKI(유키)")}`);
+    expect(developerItems(result)).toEqual([
+      developerItem("<project-context>\ncwd=/w\n</project-context>"),
+      developerItem("<memories>\nrecalled facts\n</memories>"),
+    ]);
+    // 사용자가 인용한 voice 마커와 도구 출력은 그대로 남는다(보호 대상은 system/developer 항목뿐).
+    expect(otherItems(result)).toEqual(otherItems(payload));
+    expect(voiceCount(result.instructions)).toBe(1);
+    expect(voiceCount(developerItems(result))).toBe(0);
+    expect(result.prompt_cache_key).toBe("session-1");
+  });
+
+  test("Codex payload voice injection is idempotent and append-only across turns", async () => {
+    const harness = createRuntimeHarness();
+    const emit = async (payload: unknown) =>
+      toCodexPayload(await harness.emit("before_provider_request", { type: "before_provider_request", payload }));
+    const turnN = await emit(codexPayload(2));
+    const turnN1 = await emit(codexPayload(3));
+    expect(turnN1.instructions).toBe(turnN.instructions);
+    expect(turnN1.input.slice(0, turnN.input.length)).toEqual(turnN.input);
+    expect(await emit(turnN)).toEqual(turnN);
+  });
+
+  test("a stale voice from another character is replaced in Codex instructions and developer items", async () => {
+    const harness = createRuntimeHarness();
+    const payload = { ...codexPayload(1, "MIO(미오)"), instructions: `base contract\n\n${renderCharacterVoice("RIN(린)")}` };
+    const result = toCodexPayload(await harness.emit("before_provider_request", { type: "before_provider_request", payload }));
+    const serialized = JSON.stringify(developerItems(result)) + JSON.stringify(result.instructions);
+    expect(serialized.split('alias=\\"YUKI(유키)\\"')).toHaveLength(2);
+    expect(serialized).not.toContain("MIO(미오)");
+    expect(serialized).not.toContain("RIN(린)");
+  });
+
+  // 세션 전환 뒤에도 이전 선택이 새 컨텍스트로 새지 않는다: 선택 alias는 현재 model/계정과 맞을 때만 쓰이고,
+  // 그때 값은 provider별 기본 alias와 같다. 그래서 session_switch에서 지우지 않는다.
+  test("an earlier selection never leaks across new/resume/fork or a model/account change", async () => {
+    const harness = createRuntimeHarness();
+    const voiceOf = async (): Promise<string | undefined> => {
+      const started = await harness.emit("before_agent_start", { type: "before_agent_start", prompt: "안녕", systemPrompt: ["base"] });
+      if (!started || typeof started !== "object" || !("systemPrompt" in started) || !Array.isArray(started.systemPrompt)) return undefined;
+      const block = started.systemPrompt.find((part) => typeof part === "string" && part.startsWith("<character-voice"));
+      return typeof block === "string" ? block.match(/alias="([^"]+)"/u)?.[1] : undefined;
+    };
+    await harness.emit("input", { type: "input", text: "린으로 교체해", source: "rpc" });
+    expect(await voiceOf()).toBe("RIN(린)");
+    // 같은 세션 reload는 선택과 계정 pin을 그대로 유지한다.
+    await harness.emit("session_switch", { type: "session_switch", reason: "resume", previousSessionFile: "same.jsonl" });
+    expect(await voiceOf()).toBe("RIN(린)");
+    // 새 세션은 pin을 잃고 계정 랭킹이 다른 계정을 고를 수 있다: 보이는 voice는 그 계정의 것이다.
+    for (const reason of ["new", "fork", "resume"] as const) {
+      await harness.emit("session_switch", { type: "session_switch", reason, previousSessionFile: "old.jsonl" });
+      for (const account of harness.accounts) account.active = account.position === 1;
+      expect(await voiceOf()).toBe("MIO(미오)");
+      for (const account of harness.accounts) account.active = account.position === 0;
+      expect(await voiceOf()).toBe("RIN(린)");
+    }
+    // model이 바뀌면 이전 선택은 쓰이지 않는다.
+    await harness.emit("input", { type: "input", text: "이사나로 교체해", source: "rpc" });
+    expect(await voiceOf()).toBe("ISANA(이사나)");
+    harness.selectModel("openai-codex/gpt-6-astra");
+    await harness.emit("session_switch", { type: "session_switch", reason: "new", previousSessionFile: "old.jsonl" });
+    expect(await voiceOf()).toBe("YUKI(유키)");
   });
 
   test("summoned task child receives the same final payload enforcement", async () => {

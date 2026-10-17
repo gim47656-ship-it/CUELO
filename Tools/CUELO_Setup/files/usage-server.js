@@ -723,37 +723,101 @@ function ompStats() {
     });
 }
 
+// `omp models --json --kind all` 의 provider/id 별 메타데이터. 가격이 없다는 것과 무료라는 것,
+// 캐시를 보고하지 못하는 wire 라는 것은 비용 0·캐시 0 숫자로는 가를 수 없고 이 카드로만 가른다.
+// 쓰는 필드는 core models-cli.ts toModelJson 의 kind 와 pricingStatus 둘이다.
+function modelCatalog(text) {
+    const at = text.indexOf('{');
+    if (at < 0) throw new Error('omp models --json 에 JSON 이 없다');
+    const catalog = new Map();
+    for (const model of JSON.parse(text.slice(at)).models || []) {
+        if (!model || typeof model.provider !== 'string' || typeof model.id !== 'string') continue;
+        catalog.set(`${model.provider}/${model.id}`, { kind: model.kind, pricingStatus: model.pricingStatus });
+    }
+    return catalog;
+}
+
 // 0 나눗셈을 피하면서 비율을 낸다. 분모가 0 이면 값 자체를 만들지 않는다(null).
 function per(total, count) {
     return count > 0 ? total / count : null;
 }
 
+// 캐시율 분모는 prompt 입력 전부(input + cacheRead + cacheWrite)다. core cacheRate 는 cacheWrite 를
+// 빼서 Anthropic 처럼 새 prefix 를 cacheWrite 로 보고하는 provider 만 높게 보였다.
+// 판정 wire(kind judge)는 core judgment tokenUsage 가 cacheRead/cacheWrite 를 0 으로 고정해 캐시를
+// 보고할 수 없다(not-reported). 카탈로그에 없는 모델의 캐시 0 은 미지원인지 실제 0 인지 알 수 없다
+// (unknown). 둘 다 0% 로 내지 않는다.
+function cacheOf(m, meta) {
+    const read = m.totalCacheReadTokens || 0;
+    const write = m.totalCacheWriteTokens || 0;
+    const prompt = (m.totalInputTokens || 0) + read + write;
+    if (meta && meta.kind === 'judge') return { cacheStatus: 'not-reported', read: 0, prompt: 0 };
+    if (!meta && read + write === 0) return { cacheStatus: 'unknown', read: 0, prompt: 0 };
+    return { cacheStatus: 'reported', cacheRate: prompt > 0 ? read / prompt : undefined, read, prompt };
+}
+
+// 비용 0 은 무료일 수도, 가격표가 없을 수도 있다. 카드의 pricingStatus 로만 가른다.
+//   priced: 가격표로 매긴 비용 / free: 카드가 무료라고 밝힘 / unpriced: 매길 가격이 없음(0 은 미상) /
+//   partial: 기록된 비용은 있으나 일부 요청이 미가격이거나 지금 카드가 그 비용을 보증하지 못함(하한).
+function pricingOf(cost, unpricedRequests, meta) {
+    const status = meta && meta.pricingStatus;
+    if (cost > 0) return unpricedRequests > 0 || status !== 'fixed' ? 'partial' : 'priced';
+    if (unpricedRequests > 0) return 'unpriced';
+    if (status === 'free') return 'free';
+    if (status === 'fixed') return 'priced';
+    return 'unpriced';
+}
+
+const COMPLETE_PRICING = new Set(['priced', 'free']);
+
 // stats 원본은 크고(모델×시간 시계열 두 개) 패널이 쓰지 않는 필드가 많다. 필요한 축만
 // 남겨 보낸다. 축은 세 개다: 모델 / agent 종류 / 최근 일별 모델 비용.
-function shapeStats(raw) {
+// catalog 은 modelCatalog() 결과이고, 조회에 실패하면 null 이다. 그때는 아무 0 도 확정하지 않는다.
+function shapeStats(raw, catalog) {
     const overall = raw.overall || {};
     const totalCost = overall.totalCost || 0;
+    const metaOf = (provider, model) => (catalog ? catalog.get(`${provider}/${model}`) : undefined);
 
+    let cacheRead = 0;
+    let cachePrompt = 0;
+    let cacheExcludedModels = 0;
+    const pricingByModel = new Map();
     const models = (raw.byModel || []).map(m => {
         const tokens = (m.totalInputTokens || 0) + (m.totalOutputTokens || 0)
             + (m.totalCacheReadTokens || 0) + (m.totalCacheWriteTokens || 0);
+        const meta = metaOf(m.provider, m.model);
+        const cache = cacheOf(m, meta);
+        if (cache.cacheStatus === 'reported') {
+            cacheRead += cache.read;
+            cachePrompt += cache.prompt;
+        } else {
+            cacheExcludedModels += 1;
+        }
+        const pricing = pricingOf(m.totalCost || 0, m.unpricedRequests || 0, meta);
+        pricingByModel.set(`${m.provider}/${m.model}`, pricing);
         return {
             model: m.model,
             provider: m.provider,
             requests: m.totalRequests || 0,
             cost: m.totalCost || 0,
+            pricing,
             costShare: totalCost > 0 ? (m.totalCost || 0) / totalCost : 0,
-            costPerRequest: per(m.totalCost || 0, m.totalRequests || 0),
+            costPerRequest: pricing === 'unpriced' ? null : per(m.totalCost || 0, m.totalRequests || 0),
             tokens,
             tokensPerRequest: per(tokens, m.totalRequests || 0),
             outputPerRequest: per(m.totalOutputTokens || 0, m.totalRequests || 0),
-            cacheRate: m.cacheRate,
+            cacheRate: cache.cacheRate,
+            cacheStatus: cache.cacheStatus,
             avgTtft: m.avgTtft,
             avgTokensPerSecond: m.avgTokensPerSecond,
             errorRate: m.errorRate,
         };
     }).sort((a, b) => b.cost - a.cost);
+    const unpricedModels = models.filter(model => !COMPLETE_PRICING.has(model.pricing)).length;
+    const costComplete = unpricedModels === 0;
 
+    // byAgentType 에는 모델별 분해가 없어 미가격 요청이 어느 종류에 속했는지 모른다. 전체에 하나라도
+    // 미가격이 있으면 모든 종류의 비용을 하한으로 둔다(보수적).
     const agents = (raw.byAgentType || []).map(a => {
         const tokens = (a.totalInputTokens || 0) + (a.totalOutputTokens || 0)
             + (a.totalCacheReadTokens || 0) + (a.totalCacheWriteTokens || 0);
@@ -761,20 +825,27 @@ function shapeStats(raw) {
             agentType: a.agentType,
             requests: a.totalRequests || 0,
             cost: a.totalCost || 0,
+            costComplete,
             costShare: totalCost > 0 ? (a.totalCost || 0) / totalCost : 0,
             costPerRequest: per(a.totalCost || 0, a.totalRequests || 0),
             tokensPerRequest: per(tokens, a.totalRequests || 0),
         };
     }).sort((a, b) => b.cost - a.cost);
 
-    // costSeries 는 (일자, 모델) 단위 비용이다. 날짜로 묶어 최근 것부터 낸다.
+    // costSeries 는 (일자, 모델) 단위 비용이다. 날짜로 묶어 최근 것부터 낸다. 그날 그 모델의 비용이
+    // 완전한지는 모델 전체 판정에 그날의 core 미가격 표시와 기록 비용을 겹쳐 가른다.
     const byDay = new Map();
     for (const point of raw.costSeries || []) {
         if (!point || typeof point.timestamp !== 'number') continue;
         let day = byDay.get(point.timestamp);
         if (!day) byDay.set(point.timestamp, (day = { timestamp: point.timestamp, cost: 0, models: [] }));
-        day.cost += point.cost || 0;
-        day.models.push({ model: point.model, provider: point.provider, cost: point.cost || 0 });
+        const cost = point.cost || 0;
+        const modelPricing = pricingByModel.get(`${point.provider}/${point.model}`);
+        const pricing = COMPLETE_PRICING.has(modelPricing) && !(point.unpricedRequests > 0)
+            ? modelPricing
+            : cost > 0 ? 'partial' : 'unpriced';
+        day.cost += cost;
+        day.models.push({ model: point.model, provider: point.provider, cost, pricing });
     }
     const daily = [...byDay.values()]
         .sort((a, b) => b.timestamp - a.timestamp)
@@ -782,6 +853,7 @@ function shapeStats(raw) {
         .map(day => ({
             timestamp: day.timestamp,
             cost: day.cost,
+            costComplete: day.models.every(model => COMPLETE_PRICING.has(model.pricing)),
             models: day.models.sort((a, b) => b.cost - a.cost),
         }));
 
@@ -793,9 +865,14 @@ function shapeStats(raw) {
             failedRequests: overall.failedRequests || 0,
             errorRate: overall.errorRate,
             cost: totalCost,
+            costComplete,
+            unpricedModels,
             tokens: (overall.totalInputTokens || 0) + (overall.totalOutputTokens || 0)
                 + (overall.totalCacheReadTokens || 0) + (overall.totalCacheWriteTokens || 0),
-            cacheRate: overall.cacheRate,
+            // 보고한 모델만의 비율이다. cacheExcludedModels > 0 이면 전체 provider 비율이 아니다.
+            cacheRate: cachePrompt > 0 ? cacheRead / cachePrompt : undefined,
+            cacheExcludedModels,
+            // core 값: 가격이 있는 요청만으로 계산된다. costComplete 가 false 면 그 부분집합의 절감률이다.
             cacheSavings: overall.cacheSavings,
             avgTtft: overall.avgTtft,
             avgDuration: overall.avgDuration,
@@ -806,11 +883,23 @@ function shapeStats(raw) {
     };
 }
 
+function ompModels() {
+    return omp(['models', '--json', '--kind', 'all']).then(modelCatalog);
+}
+
 function fetchStats() {
     if (statsInflight) return statsInflight;
     statsInflight = (async () => {
         try {
-            const body = JSON.stringify(shapeStats(await ompStats()));
+            // 카드 조회가 실패해도 집계는 낸다. catalog=null 이면 모든 0 이 미상으로 표시된다.
+            const [raw, catalog] = await Promise.all([
+                ompStats(),
+                ompModels().catch((error) => {
+                    console.error(`[models catalog] ${error && error.message ? error.message : error}`);
+                    return null;
+                }),
+            ]);
+            const body = JSON.stringify(shapeStats(raw, catalog));
             statsCache = { at: Date.now(), body };
             return statsCache;
         } finally {
@@ -963,4 +1052,6 @@ module.exports = {
     createSampleStore,
     applyDaySlots,
     usageEntry,
+    shapeStats,
+    modelCatalog,
 };

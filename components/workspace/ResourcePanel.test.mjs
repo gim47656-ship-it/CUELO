@@ -118,13 +118,78 @@ test("계정 한도와 모델 통계는 별도 탭으로 열고 기존 통계는
   }));
   assert.match(stats, />요청</);
   assert.match(stats, />토큰</);
-  assert.match(stats, />비용</);
+  assert.match(stats, />추정 비용</);
+  assert.match(stats, /금액은 토큰 단가로 계산한 추정치이며 실제 청구액이나 구독 사용량이 아닙니다/, "the estimate disclaimer is visible even when every cost is priced");
+  assert.doesNotMatch(stats, /≥|최솟값|\(일부\)/, "a complete snapshot shows no lower-bound marks");
   assert.match(stats, />캐시율</);
   assert.match(stats, />평균 TTFT</);
   assert.match(stats, /claude-opus-5/);
   assert.match(stats, /\$4\.56/);
   assert.match(stats, /34\.5%/);
   assert.match(stats, /1\.2s/);
+});
+
+const incompleteStats = {
+  generatedAt: 1,
+  range: {},
+  overall: {
+    requests: 40,
+    failedRequests: 0,
+    cost: 4.56,
+    costComplete: false,
+    unpricedModels: 1,
+    tokens: 50_000,
+    cacheRate: 0.9,
+    cacheExcludedModels: 2,
+    cacheSavings: 0.5,
+  },
+  models: [
+    { model: "claude-opus-5", provider: "anthropic", requests: 10, cost: 4.56, pricing: "priced", costShare: 1, costPerRequest: 0.456,
+      tokens: 10_000, tokensPerRequest: 1_000, outputPerRequest: 100, cacheRate: 0.9, cacheStatus: "reported" },
+    { model: "deepseek-v4.1-flash", provider: "b-ai", requests: 10, cost: 0, pricing: "unpriced", costShare: 0, costPerRequest: null,
+      tokens: 10_000, tokensPerRequest: 1_000, outputPerRequest: 100, cacheRate: 0.96, cacheStatus: "reported" },
+    { model: "typesafe/jev-1.14", provider: "openrouter", requests: 10, cost: 0.01, pricing: "priced", costShare: 0, costPerRequest: 0.001,
+      tokens: 10_000, tokensPerRequest: 1_000, outputPerRequest: 0, cacheStatus: "not-reported" },
+    { model: "kimi-k3", provider: "a6api", requests: 5, cost: 0, pricing: "unpriced", costShare: 0, costPerRequest: null,
+      tokens: 5_000, tokensPerRequest: 1_000, outputPerRequest: 0, cacheStatus: "unknown" },
+    { model: "free-model", provider: "local", requests: 5, cost: 0, pricing: "free", costShare: 0, costPerRequest: 0,
+      tokens: 5_000, tokensPerRequest: 1_000, outputPerRequest: 0, cacheRate: 0, cacheStatus: "reported" },
+  ],
+  agents: [{ agentType: "main", requests: 40, cost: 4.56, costComplete: false, costShare: 1, costPerRequest: 0.114, tokensPerRequest: 1_250 }],
+  daily: [{ timestamp: Date.parse("2026-10-17T03:00:00Z"), cost: 1.5, costComplete: false,
+    models: [{ model: "deepseek-v4.1-flash", provider: "b-ai", cost: 0, pricing: "unpriced" }] }],
+};
+
+function section(html, heading) {
+  return html.match(new RegExp(`<section aria-labelledby="${heading}"[\\s\\S]*?</section>(?=<section|<p)`))?.[0] ?? "";
+}
+
+function modelRow(html, name) {
+  return html.split("<section").find((part) => part.includes(`title="${name}"`)) ?? "";
+}
+
+test("가격표가 없거나 캐시를 보고하지 못하는 값은 실제 0으로 보이지 않고 합계는 최소값으로 표시한다", () => {
+  const html = renderToStaticMarkup(createElement(ModelsView, { state: { status: "fresh", error: null, data: incompleteStats }, loading: false }));
+  const overall = section(html, "resource-overall-heading");
+  assert.match(overall, />추정 비용<\/dt><dd[^>]*>≥\$4\.56</);
+  assert.match(overall, />캐시율\(일부\)<\/dt><dd[^>]*>90\.0%</);
+  assert.match(overall, />캐시 절감\(일부\)</);
+
+  const bai = modelRow(html, "deepseek-v4.1-flash");
+  assert.match(bai, />가격 미상</);
+  assert.doesNotMatch(bai, /\$0/);
+  assert.match(bai, />96\.0%</, "unpriced usage still shows its real cache hits");
+  assert.match(modelRow(html, "typesafe/jev-1.14"), />캐시율<\/dt><dd[^>]*>미보고</);
+  assert.match(modelRow(html, "kimi-k3"), />캐시율<\/dt><dd[^>]*>알 수 없음</);
+  const free = modelRow(html, "free-model");
+  assert.match(free, />\$0 · 0%</, "an explicitly free model keeps its real $0");
+  assert.match(free, />캐시율<\/dt><dd[^>]*>0\.0%</);
+
+  assert.match(section(html, "resource-agents-heading"), />≥\$4\.56 · 100%</);
+  assert.match(section(html, "resource-daily-heading"), />일별 추정 비용<[\s\S]*>≥\$1\.50</);
+  assert.match(html, /가격을 다 매기지 못한 모델이 1개/);
+  assert.match(html, /≥가 붙은 금액은 추정 비용의 최솟값입니다/);
+  assert.match(html, /모델 2개는 캐시율 계산에서 뺐습니다/);
 });
 
 test("closed panels render no surface or local open-state control", () => {

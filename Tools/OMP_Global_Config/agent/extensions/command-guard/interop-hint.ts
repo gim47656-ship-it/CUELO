@@ -9,8 +9,8 @@
  *   관리 Python 환경(`~/.omp/python-env`, eval이 자동으로 고르는 환경)에는 설치돼 있다.
  */
 
-// 실행 파일 이름 끝의 `.exe`만 본다(`x.exe.log` 같은 인자는 아니다). `powershell`·`pwsh`도 낱말 하나일 때만(`powershell.md`는 아니다).
-const WINDOWS_EXECUTABLE = /\.exe(?=["'\s;&|)<>]|$)|(?<=^|[\s;&|(/"'=])(?:powershell|pwsh)(?=["'\s;&|)<>]|$)/im;
+import { invokedCommands } from "./matcher";
+
 const MOJIBAKE = /\uFFFD{2,}/;
 const MISSING_PYTHON_MODULE = /ModuleNotFoundError: No module named '([\w.]+)'/;
 // `python3`, `python3.12`, `/usr/bin/python3`, `"/usr/bin/python3"`처럼 경로·따옴표를 붙인 호출도 잡는다.
@@ -39,8 +39,19 @@ const DECODER = [
 const RUNNER =
   'c=$(printf %s "$1" | base64 -d) && p=$(printf %s "$2" | base64 -d) || exit 2; ' +
   'bash -c "$c" 2>&1 | python3 -u -c "$p"; exit "${PIPESTATUS[0]}"';
-// 명령에 든 Windows 프로그램 이름(경로 마지막 조각)을 모두 찾는다.
-const WINDOWS_PROGRAM = /[\w.-]*\.exe(?=["'\s;&|)<>]|$)|(?<=^|[\s;&|(/"'=])(?:powershell|pwsh)(?=["'\s;&|)<>]|$)/gim;
+/**
+ * 명령이 실제로 부르는 Windows 프로그램의 파일 이름(소문자). `*.exe`와 낱말 하나인 `powershell`·`pwsh`만 센다.
+ * 따옴표 안 언급·주석·heredoc 본문의 글자(`echo "tasklist.exe"`, `cat <<'EOF' … pwsh … EOF`)는 부르는 것이 아니므로 세지 않고,
+ * `bash -c '…'`·`$(…)`·`xargs`·`for … do` 안의 호출은 센다.
+ */
+function windowsPrograms(command: string): string[] {
+  const programs: string[] = [];
+  for (const invoked of invokedCommands(command)) {
+    const name = (invoked.replace(/\\/g, "/").split("/").pop() ?? "").toLowerCase();
+    if (name.endsWith(".exe") || name === "powershell" || name === "pwsh") programs.push(name);
+  }
+  return programs;
+}
 
 /**
  * bash 따옴표·이스케이프를 따라가며 따옴표 밖의 백그라운드 `&`가 있는지 본다(`&&`·`&>`·`>&`·`<&`·`|&` 제외).
@@ -98,7 +109,7 @@ export function windowsOutputCommand(command: string, context: WindowsOutputCont
   if (!context.wsl || context.pty) return undefined;
   if (/\biconv\b/.test(command) || hasBackgroundAmpersand(command)) return undefined;
   // `git.exe`는 UTF-8로 내고 /mnt 저장소에서 가장 자주 부르므로, Windows 프로그램이 그것뿐이면 감싸지 않는다.
-  const programs = [...command.matchAll(WINDOWS_PROGRAM)].map((match) => match[0].toLowerCase());
+  const programs = windowsPrograms(command);
   if (programs.every((program) => program === "git.exe")) return undefined;
   const encodedCommand = Buffer.from(command, "utf8").toString("base64");
   const encodedDecoder = Buffer.from(DECODER, "utf8").toString("base64");
@@ -107,7 +118,7 @@ export function windowsOutputCommand(command: string, context: WindowsOutputCont
 
 export function interopHint(command: string, output: string, context: InteropHintContext = {}): string | undefined {
   const hints: string[] = [];
-  if (WINDOWS_EXECUTABLE.test(command) && !/\biconv\b/.test(command) && MOJIBAKE.test(output)) {
+  if (windowsPrograms(command).length > 0 && !/\biconv\b/.test(command) && MOJIBAKE.test(output)) {
     hints.push(
       "[WSL interop] Windows 프로그램 출력의 한글이 CP949라 깨졌다(�). 자동 UTF-8 변환은 `&` 백그라운드·pty·`iconv`가 든 명령을 감싸지 않는다. 이 결과는 복구할 수 없으니 `| iconv -f cp949 -t utf-8`을 붙여 다시 실행한다. `wsl.exe`는 `WSL_UTF8=1 WSLENV=WSL_UTF8`을 쓴다.",
     );

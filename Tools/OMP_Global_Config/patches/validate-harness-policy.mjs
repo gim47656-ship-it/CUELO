@@ -306,13 +306,16 @@ const requiredPolicyMembers = [
     "identifiable-existing-owner-for-this-slice",
     "maker-class-choice-NORMAL-HARD",
     "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
+  ]],
+  // 적용 Skill·사용자 계약과의 충돌 판단은 maker_route가 JEV에 묻는 질문이 아니라 Main 소유 판단이다.
+  ["routing.typedJudgmentRouting.placements.pre-dispatch.mainOwnedJudgments", [
     "proposed-scope-conflicts-with-applicable-skill-or-user-contract",
   ]],
   ["routing.typedJudgmentRouting.placements.pre-dispatch.decisionMapping", [
     "instruct-or-retarget-an-existing-owner-only-when-duplicate-or-additional-instruction-is-true-and-an-identifiable-existing-owner-resolves-otherwise-dispatch-new",
     "duplicate-or-additional-instruction-true-without-an-identifiable-existing-owner-never-selects-an-owner",
     "otherwise-main-selects-one-maker-candidate-from-the-batch-and-passes-its-explicit-model-selector-with-the-auto-suffix-never-a-concrete-effort",
-    "applicable-skill-or-user-contract-conflict-true-main-resolves-the-specific-conflict-before-the-affected-dispatch-never-let-judge-relax-the-contract",
+    "applicable-skill-or-user-contract-conflict-is-a-main-owned-judgment-maker_route-never-asks-judge-it-and-main-resolves-the-specific-conflict-before-the-affected-dispatch-and-no-judge-result-relaxes-the-contract",
   ]],
   // 2026-10-08 사용자 결정: 기존 owner 지시는 전송을 붙잡지 않고 뒤에서 JEV가 원 계약 대비 넷으로 분류한다.
   // 분류는 Main 판단의 참고이며 승인·차단·owner 선택이 아니다.
@@ -524,6 +527,7 @@ const requiredPolicyShapes = [
   ["routing.typedJudgmentRouting.placements.pre-dispatch.owner", "string"],
   ["routing.typedJudgmentRouting.placements.pre-dispatch.when", "string"],
   ["routing.typedJudgmentRouting.placements.pre-dispatch.questions", "list"],
+  ["routing.typedJudgmentRouting.placements.pre-dispatch.mainOwnedJudgments", "list"],
   ["routing.typedJudgmentRouting.placements.pre-dispatch.decisionMapping", "list"],
   ["routing.typedJudgmentRouting.placements.pre-retry.owner", "string"],
   ["routing.typedJudgmentRouting.placements.pre-retry.when", "string"],
@@ -1242,12 +1246,15 @@ if (policy !== null) {
     const contract = isPlainObject(typedJudgmentPlacements[placement])
       ? typedJudgmentPlacements[placement]
       : {};
+    const expectedContractKeys = placement === "pre-dispatch"
+      ? [...typedJudgmentPlacementContractKeys, "mainOwnedJudgments"]
+      : typedJudgmentPlacementContractKeys;
     check(
       Object.keys(contract).sort().join("\u0000") ===
-        [...typedJudgmentPlacementContractKeys].sort().join("\u0000"),
+        [...expectedContractKeys].sort().join("\u0000"),
       `routing.typedJudgmentRouting.placements.${placement}의 키 집합이 다르다: ${Object.keys(contract).sort().join(", ")}`,
     );
-    for (const field of ["questions", "decisionMapping"]) {
+    for (const field of placement === "pre-dispatch" ? ["questions", "mainOwnedJudgments", "decisionMapping"] : ["questions", "decisionMapping"]) {
       const path = `routing.typedJudgmentRouting.placements.${placement}.${field}`;
       check(
         JSON.stringify(contract[field]) === JSON.stringify(requiredMemberLookup.get(path)),

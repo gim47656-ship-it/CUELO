@@ -1,6 +1,7 @@
 import { posix, win32 } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 // 2026-10-17: 저장 교훈은 첫 턴 recall(`<memories>`)과 요청별 docmap-route로만 닿는다. 파일 경로에 묶인 교훈
 // (예: `setup.ps1 -ValidateOnly`는 배포 전에 먼저 돌린다)은 그 파일을 고치는 순간에 필요한데, 그때는 어디서도 다시 오르지 않는다
@@ -86,7 +87,7 @@ export function createEditLessons(deps: EditLessonsDeps = {}) {
       lookedUp.clear();
       attached.clear();
     };
-    pi.on("session_start", reset);
+    onSessionLifecycle(pi, { start: reset });
     pi.on("session_shutdown", reset);
 
     /** 경로 하나의 후보 기억. 검색 없음·오류·제한 시간·빈 결과는 undefined. */

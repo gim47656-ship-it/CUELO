@@ -568,3 +568,62 @@ describe("turn-end guard", () => {
     expect(h.sent).toHaveLength(0);
   });
 });
+
+describe("turn-end guard 승인 경계와 일반 진행 문장", () => {
+  const nudgeCount = async (text: string) => {
+    const h = harness();
+    h.todo(["in_progress"]);
+    await h.end(text);
+    return h.sent.length;
+  };
+
+  test("도구·단어가 우연히 들어간 진행 보고는 남은 TODO 안내를 막지 않는다", async () => {
+    for (const text of [
+      "tokenizer 테스트를 이어서 돌리겠습니다.",
+      "pushed 된 커밋 확인을 마쳤고 나머지 검사를 계속하겠습니다.",
+      "공개 API 시그니처 검사는 끝났고 다음 항목을 진행합니다.",
+      "비용이 큰 테스트는 이미 돌렸고 남은 검사를 하겠습니다.",
+      "인증 모듈 테스트를 이어서 하겠습니다.",
+      "배포 파이프라인 문서를 읽었고 다음은 로컬 빌드입니다.",
+      "undeleted 항목 목록을 정리했고 다음 파일을 수정합니다.",
+    ]) expect([text, await nudgeCount(text)]).toEqual([text, 1]);
+  });
+
+  test("실제 승인·비용·권한 대기와 자격 증명·되돌릴 수 없는 작업은 계속 안내하지 않는다", async () => {
+    for (const text of [
+      "배포 승인해 주세요.",
+      "비용이 발생합니다. 진행해도 될까요?",
+      "공개 저장소로 push 해도 될까요?",
+      "외부 인증이 필요합니다. 허락해 주세요.",
+      "Shall I deploy this to production?",
+      "May I push this branch?",
+      "계정 비밀번호를 알려 주세요.",
+      "되돌릴 수 없는 삭제라서 이 작업은 직접 지시를 기다립니다.",
+      "api key 를 읽는 단계라 먼저 확인이 필요합니다.",
+      "배포는 승인을 기다립니다.",
+      "배포 전 사용자 결정을 기다리는 중입니다.",
+      "비용 발생 여부에 대한 응답을 기다립니다.",
+      "외부 전송 권한은 대기 중입니다.",
+      "Waiting for your go-ahead to deploy.",
+      "Awaiting your decision on the push.",
+    ]) expect([text, await nudgeCount(text)]).toEqual([text, 0]);
+  });
+
+  test("결과 있는 동작을 말하면서 마지막 단락에서 묻는 경우만 경계이고, 앞 단락의 설명만으로는 아니다", async () => {
+    expect(await nudgeCount("비용 때문에 배포는 보류했습니다.\n\n남은 로컬 검사를 이어서 하겠습니다.")).toBe(1);
+    expect(await nudgeCount("배포 계획은 아래와 같습니다.\n\n이대로 진행해도 될까요?")).toBe(0);
+  });
+
+  test("승인 대기는 마지막 단락이 아니어도, 현재형 대기 문구 없이도 계속 안내하지 않고, 같은 문장에 없는 단어만으로는 막지 않는다", async () => {
+    for (const text of [
+      "Deployment is on hold until you give the go-ahead.",
+      "Waiting for your approval to deploy.\n\nLocal checks passed.",
+      "배포 승인을 기다립니다.\n\n로컬 검사는 통과했습니다.",
+      "The push needs your decision.\n\nUnit tests are green.",
+    ]) expect([text, await nudgeCount(text)]).toEqual([text, 0]);
+    for (const text of [
+      "배포 계획 문서를 읽었습니다.\n\n로컬 검사는 통과했습니다.",
+      "Deployment docs reviewed.\n\nLocal checks passed, continuing with the remaining tests.",
+    ]) expect([text, await nudgeCount(text)]).toEqual([text, 1]);
+  });
+});

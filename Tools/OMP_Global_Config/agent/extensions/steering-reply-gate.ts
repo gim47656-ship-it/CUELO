@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultLoadCore, resolveSessionJudge } from "./lib/native-judge";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 type Message = {
   role?: string;
@@ -48,16 +50,8 @@ function introText(message: Message): string {
 async function classifySteeringReply(
   summary: { steering: string; assistant: string }, ctx: ExtensionContext, signal: AbortSignal,
 ): Promise<SteeringAnswer> {
-  const [{ resolveJudge }, { findScopedSettings }] = await Promise.all([
-    import("@oh-my-pi/pi-coding-agent/judgment"),
-    import("@oh-my-pi/pi-coding-agent/config/settings"),
-  ]);
-  const settings = findScopedSettings(ctx.cwd);
-  if (!settings) return "unknown";
-  const judge = resolveJudge({
-    settings, registry: ctx.modelRegistry, backend: "online", sessionModel: ctx.model,
-    sessionId: ctx.sessionManager.getSessionId(),
-  });
+  const judge = await resolveSessionJudge(ctx, defaultLoadCore, "steering_reply");
+  if (!judge) return "unknown";
   const result = await judge.judge({
     state: { source: "untrusted-steering-and-assistant-excerpts", ...summary, grantsPermission: false },
     questions: {
@@ -112,13 +106,13 @@ export function createSteeringReplyGate(classify: ClassifySteeringReply = classi
       if (assistantReplied) replyText = introText(message);
     };
 
-    pi.on("session_start", () => {
+    onSessionLifecycle(pi, { start: () => {
       invalidate();
       awaitingReply = false;
       assistantReplied = false;
       steeringText = "";
       replyText = "";
-    });
+    } });
     pi.on("session_shutdown", () => {
       invalidate();
       awaitingReply = false;

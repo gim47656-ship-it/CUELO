@@ -168,7 +168,8 @@ function isEscapingOwnedPath(value: string): boolean {
   );
 }
 
-function readField(block: string, name: string): string | undefined {
+/** guard 블록 안의 필드 한 줄을 읽는다. SpawnGuard와 maker_route 준비가 같은 reader를 쓴다. */
+export function readGuardField(block: string, name: string): string | undefined {
   const match = block.match(new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "im"));
   const value = match?.[1]?.trim();
   return value || undefined;
@@ -180,10 +181,11 @@ const PURPOSES = ["primary", "rework"] as const;
 /**
  * TASK_GUARD marker 바로 뒤에서 연속된 정본 필드만 읽는다. LLM이 빈 줄 없이
  * ROUTING_REASON·character marker·과제 본문을 이어 붙여도 그 후속 본문은 guard 블록이 아니다.
+ * 블록 경계는 SpawnGuard와 maker_route 준비가 같아야 하므로 이 함수 하나만 계산한다.
  */
-function parseGuardMetadata(task: string): RawGuardMetadata | string {
+export function extractGuardBlock(task: string): { block: string; span: { start: number; end: number } } | null {
   const marker = /^\s*TASK_GUARD\s*:\s*$/im.exec(task);
-  if (!marker) return { ownedPaths: [] };
+  if (!marker) return null;
 
   const fieldLine =
     /^[\t ]*(?:WORK_CLASS|PURPOSE|BLOCKS_PRIMARY|PRIMARY_DELIVERABLE|OWNED_PATHS|FINDING_ID)[\t ]*:[^\r\n]*$/i;
@@ -202,16 +204,21 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
     blockEnd = contentEnd;
     cursor = newline === -1 ? task.length : newline + 1;
   }
-  const block = task.slice(blockStart, blockEnd);
   // marker[0]은 `^\s*`가 앞 줄의 개행까지 먹을 수 있으므로 실제 마커 줄 시작으로 보정한다.
   const lead = marker[0].length - marker[0].trimStart().length;
-  const span = {
-    start: marker.index + lead,
-    end: blockEnd,
+  return {
+    block: task.slice(blockStart, blockEnd),
+    span: { start: marker.index + lead, end: blockEnd },
   };
-  const workClassRaw = readField(block, "WORK_CLASS")?.toLowerCase();
-  const purposeRaw = readField(block, "PURPOSE")?.toLowerCase();
-  const blocksPrimaryRaw = readField(block, "BLOCKS_PRIMARY")?.toLowerCase();
+}
+
+function parseGuardMetadata(task: string): RawGuardMetadata | string {
+  const extracted = extractGuardBlock(task);
+  if (!extracted) return { ownedPaths: [] };
+  const { block, span } = extracted;
+  const workClassRaw = readGuardField(block, "WORK_CLASS")?.toLowerCase();
+  const purposeRaw = readGuardField(block, "PURPOSE")?.toLowerCase();
+  const blocksPrimaryRaw = readGuardField(block, "BLOCKS_PRIMARY")?.toLowerCase();
 
   if (workClassRaw && !WORK_CLASSES.includes(workClassRaw as WorkClass)) {
     return "[SpawnGuard] WORK_CLASS는 feature|maintenance|diagnostic 중 하나여야 합니다.";
@@ -227,11 +234,11 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
     ...(workClassRaw ? { workClass: workClassRaw as WorkClass } : {}),
     ...(purposeRaw ? { purpose: purposeRaw as Purpose } : {}),
     ...(blocksPrimaryRaw ? { blocksPrimary: blocksPrimaryRaw === "yes" } : {}),
-    ...(readField(block, "PRIMARY_DELIVERABLE")
-      ? { primaryDeliverable: readField(block, "PRIMARY_DELIVERABLE") }
+    ...(readGuardField(block, "PRIMARY_DELIVERABLE")
+      ? { primaryDeliverable: readGuardField(block, "PRIMARY_DELIVERABLE") }
       : {}),
-    ownedPaths: parseOwnedPaths(readField(block, "OWNED_PATHS")),
-    ...(readField(block, "FINDING_ID") ? { findingId: readField(block, "FINDING_ID") } : {}),
+    ownedPaths: parseOwnedPaths(readGuardField(block, "OWNED_PATHS")),
+    ...(readGuardField(block, "FINDING_ID") ? { findingId: readGuardField(block, "FINDING_ID") } : {}),
     span,
   };
 }
@@ -718,6 +725,60 @@ function findCancellableChild(state: TaskGuardState, id: string): ReservedChild 
 
 export function getTaskGuardUsage(state: TaskGuardState): Readonly<Usage> {
   return { ...state.usage };
+}
+
+/**
+ * maker_route 준비가 읽는 session별 TaskGuard 정본 lock. command-guard가 자기 state를 session id로 묶고,
+ * 준비 쪽은 같은 session id의 lock만 읽는다. lock을 복제해 따로 들고 있으면 취소 환불·영수 정산으로 TaskGuard가
+ * lock을 풀어도 남는 stale 상속이 생기므로 사본을 만들지 않는다. 확장 module이 여러 번 평가되어도 같은 map을
+ * 보도록 prepared-task와 같이 globalThis 심볼에 둔다.
+ */
+const TASK_GUARD_SESSIONS = Symbol.for("@oh-my-pi/omp/task-guard-sessions/v2");
+/** command-guard가 소유한 캐릭터 호출 상태의 읽기 창구. */
+export interface SummonView {
+  /** 사용자가 요청했고 아직 task child로 쓰지 않은 alias. */
+  pending(): readonly string[];
+  /** 이 tool call이 이미 summon으로 claim됐는지(handler 순서와 무관하게 같은 호출을 인식하려는 용도). */
+  claimed(toolCallId: string): boolean;
+}
+const NO_SUMMONS: SummonView = { pending: () => [], claimed: () => false };
+interface BoundSession {
+  state: TaskGuardState;
+  summons: SummonView;
+}
+const boundSessions: Map<string, BoundSession> = (() => {
+  const existing = Reflect.get(globalThis, TASK_GUARD_SESSIONS) as Map<string, BoundSession> | undefined;
+  if (existing) return existing;
+  const created = new Map<string, BoundSession>();
+  Reflect.set(globalThis, TASK_GUARD_SESSIONS, created);
+  return created;
+})();
+
+export function bindTaskGuardSession(sessionId: string, state: TaskGuardState, summons: SummonView = NO_SUMMONS): void {
+  const key = sessionId.trim();
+  if (key) boundSessions.set(key, { state, summons });
+}
+
+/** 자기 state일 때만 푼다. reload로 새 state가 같은 id를 이어받은 뒤 옛 인스턴스의 늦은 정리가 새 연결을 지우지 않는다. */
+export function unbindTaskGuardSession(sessionId: string, state: TaskGuardState): void {
+  const key = sessionId.trim();
+  if (key && boundSessions.get(key)?.state === state) boundSessions.delete(key);
+}
+
+/** 연결된 session이 없으면 undefined(호출자가 자기 사본으로 대체), 연결됐지만 lock이 없으면 null. */
+export function taskGuardLockOf(sessionId: string): { workClass: string; primaryDeliverable: string } | null | undefined {
+  const state = boundSessions.get(sessionId.trim())?.state;
+  if (!state) return undefined;
+  return state.lock ? { workClass: state.lock.workClass, primaryDeliverable: state.lock.deliverable } : null;
+}
+
+/**
+ * 이 tool call이 이 session의 실제 사용자 캐릭터 호출에 속하는가: 아직 쓰지 않은 요청이 있거나 이 호출이 이미 claim했다.
+ * claim 뒤에는 pending이 비므로 guard가 먼저 도는 순서에서도 같은 호출을 summon으로 인식한다. 연결이 없으면 false.
+ */
+export function isSummonCall(sessionId: string, toolCallId: string): boolean {
+  const summons = boundSessions.get(sessionId.trim())?.summons;
+  return !!summons && (summons.pending().length > 0 || summons.claimed(toolCallId));
 }
 
 // 2026-09-18 사용자 결정: Main이 최종 판정 직전에 던지는 stateless `completion()`은 허용한다.

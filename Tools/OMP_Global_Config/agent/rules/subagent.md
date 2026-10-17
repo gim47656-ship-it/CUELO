@@ -566,7 +566,9 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. 통과는 모든
   finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 최대 2회이며 2회차는 1회차 이후 delta만 본다.
   `fixed`로 닫은 finding은 owner에게 `finding_id=<review가 준 ID>`를 붙인 기존 `REWORK` 주문으로 보내고
-  새 revision에서 다시 검토한다. 사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
+  Main이 새 revision의 delta를 검토한다(2회차 `cross_review`는 선택이며 필수가 아니다). 통과 지문은 `resolve` 시점
+  파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
+  사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
   `mainLane.workerReview.crossFamilyReview`다.
 - Main은 각 finding을 `ACCEPTED`·`REJECTED_WITH_EVIDENCE`·`ESCALATED`로 판정한다. 재작업 주문에는
   사용자 관측·재현 결과 또는 실제 diff와 요구 계약의 모순 및 정확한 locator가 필요하다.
@@ -677,4 +679,4 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   decoding을 증명하고 high-risk의 Main 검수 계약을 적용한다.
 
 제거한 모델 비용·provider 실험·과거 라우팅 기록은
-`docs/history/subagent-routing-2026-08-25-pre-lean.md`에만 보존한다.
+`Tools/OMP_Global_Config/doc/history/subagent-routing-2026-08-25-pre-lean.md`에만 보존한다.

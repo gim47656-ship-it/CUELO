@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { once } = require('node:events');
-const { createControlFacade, matchCredential, startServer, usageEntry, MANUAL_UNTIL_MS } = require('./usage-server');
+const { createControlFacade, matchCredential, startServer, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -341,4 +341,115 @@ test('missing Anthropic reset API keeps account rows and reports only that reset
     assert.equal(result.reports[0].credentialId, 1);
     assert.equal(result.reports[0].savedReset.state, 'unavailable');
     assert.equal(result.reports[0].savedReset.availableCount, null);
+});
+
+// `omp stats --json` 원본 한 줄. core 의 cacheRate 는 cacheWrite 를 분모에서 뺀 값이라 일부러 그 값을 싣는다.
+function statRow(provider, model, { input = 0, output = 0, read = 0, write = 0, cost = 0, requests = 10, unpriced = 0 } = {}) {
+    return {
+        provider, model, totalRequests: requests, totalInputTokens: input, totalOutputTokens: output,
+        totalCacheReadTokens: read, totalCacheWriteTokens: write, totalCost: cost, unpricedRequests: unpriced,
+        cacheRate: input + read > 0 ? read / (input + read) : 0,
+    };
+}
+
+function statsFixture(rows, costSeries = []) {
+    const sum = key => rows.reduce((total, row) => total + row[key], 0);
+    const overall = {
+        totalRequests: sum('totalRequests'), totalInputTokens: sum('totalInputTokens'),
+        totalOutputTokens: sum('totalOutputTokens'), totalCacheReadTokens: sum('totalCacheReadTokens'),
+        totalCacheWriteTokens: sum('totalCacheWriteTokens'), totalCost: sum('totalCost'),
+        unpricedRequests: sum('unpricedRequests'), cacheRate: 0.999, cacheSavings: 0.9,
+    };
+    return { overall, byModel: rows, byAgentType: [{ agentType: 'main', totalRequests: 1, totalCost: overall.totalCost }], costSeries };
+}
+
+// `omp models --json --kind all` 의 실제 모양. pricingStatus 는 core getModelPricingStatus 가 낸다.
+const catalog = modelCatalog(JSON.stringify({ models: [
+    { provider: 'anthropic', id: 'claude-opus-5-5', kind: 'chat', pricingStatus: 'fixed' },
+    { provider: 'openai-codex', id: 'gpt-6-astra', kind: 'chat', pricingStatus: 'fixed' },
+    { provider: 'b-ai', id: 'deepseek-v4.1-flash', kind: 'chat', pricingStatus: 'unknown' },
+    { provider: 'openrouter', id: 'typesafe/jev-1.14', kind: 'judge', pricingStatus: 'fixed' },
+    { provider: 'local', id: 'free-model', kind: 'chat', pricingStatus: 'free' },
+] }));
+
+test('cache rate counts cache writes as prompt input for every model and the overall row', () => {
+    const stats = shapeStats(statsFixture([
+        statRow('anthropic', 'claude-opus-5-5', { input: 600, read: 85_000, write: 14_400, cost: 30 }),
+        statRow('openai-codex', 'gpt-6-astra', { input: 2_800, read: 97_200, cost: 20 }),
+    ]), catalog);
+    const opus = stats.models.find(model => model.model === 'claude-opus-5-5');
+    const astra = stats.models.find(model => model.model === 'gpt-6-astra');
+    assert.equal(opus.cacheRate, 0.85);
+    assert.equal(opus.cacheStatus, 'reported');
+    assert.equal(astra.cacheRate, 0.972);
+    assert.equal(stats.overall.cacheRate, (85_000 + 97_200) / 200_000);
+    assert.equal(stats.overall.cacheExcludedModels, 0);
+});
+
+test('a judge model whose wire cannot report cache shows no cache rate and leaves the overall rate', () => {
+    const stats = shapeStats(statsFixture([
+        statRow('openai-codex', 'gpt-6-astra', { input: 10, read: 90, cost: 1 }),
+        statRow('openrouter', 'typesafe/jev-1.14', { input: 900, cost: 0.01 }),
+    ]), catalog);
+    const jev = stats.models.find(model => model.model === 'typesafe/jev-1.14');
+    assert.equal(jev.cacheStatus, 'not-reported');
+    assert.equal(jev.cacheRate, undefined);
+    assert.equal(stats.overall.cacheRate, 0.9);
+    assert.equal(stats.overall.cacheExcludedModels, 1);
+});
+
+test('a model without a rate card is unpriced, not free, and the totals say they are incomplete', () => {
+    const stats = shapeStats(statsFixture([
+        statRow('anthropic', 'claude-opus-5-5', { input: 10, read: 90, cost: 3 }),
+        statRow('b-ai', 'deepseek-v4.1-flash', { input: 100, read: 900 }),
+        statRow('local', 'free-model', { input: 50 }),
+    ], [
+        { timestamp: 2, provider: 'b-ai', model: 'deepseek-v4.1-flash', cost: 0, requests: 4, unpricedRequests: 0 },
+        { timestamp: 2, provider: 'anthropic', model: 'claude-opus-5-5', cost: 3, requests: 1, unpricedRequests: 0 },
+        { timestamp: 1, provider: 'local', model: 'free-model', cost: 0, requests: 2, unpricedRequests: 0 },
+    ]), catalog);
+    const bai = stats.models.find(model => model.provider === 'b-ai');
+    const free = stats.models.find(model => model.provider === 'local');
+    assert.equal(bai.pricing, 'unpriced');
+    assert.equal(bai.costPerRequest, null);
+    assert.equal(bai.cacheRate, 0.9, 'an unpriced model still reports its real cache hits');
+    assert.equal(free.pricing, 'free');
+    assert.equal(free.cost, 0);
+    assert.equal(free.costPerRequest, 0);
+    assert.equal(stats.overall.costComplete, false);
+    assert.equal(stats.overall.unpricedModels, 1);
+    assert.equal(stats.agents[0].costComplete, false);
+    const [recent, older] = stats.daily;
+    assert.equal(recent.costComplete, false);
+    assert.equal(recent.models.find(model => model.provider === 'b-ai').pricing, 'unpriced');
+    assert.equal(older.costComplete, true);
+});
+
+test('core-marked unpriced requests make a priced model a lower bound', () => {
+    const stats = shapeStats(statsFixture([
+        statRow('anthropic', 'claude-opus-5-5', { input: 10, read: 90, cost: 3, unpriced: 2 }),
+    ]), catalog);
+    assert.equal(stats.models[0].pricing, 'partial');
+    assert.equal(stats.overall.costComplete, false);
+    assert.equal(stats.overall.unpricedModels, 1);
+});
+
+test('rows the catalog does not know never turn into a measured zero', () => {
+    const stats = shapeStats(statsFixture([
+        statRow('a6api', 'kimi-k3', { input: 100 }),
+        statRow('devin', 'swe-2', { input: 100, read: 900, cost: 4 }),
+    ]), catalog);
+    const kimi = stats.models.find(model => model.model === 'kimi-k3');
+    const swe = stats.models.find(model => model.model === 'swe-2');
+    assert.equal(kimi.pricing, 'unpriced');
+    assert.equal(kimi.cacheStatus, 'unknown');
+    assert.equal(kimi.cacheRate, undefined);
+    assert.equal(swe.pricing, 'partial', 'a recorded cost without a current card is only a lower bound');
+    assert.equal(stats.overall.costComplete, false);
+    assert.equal(swe.cacheRate, 0.9);
+
+    const blind = shapeStats(statsFixture([statRow('local', 'free-model', { input: 50 })]), null);
+    assert.equal(blind.models[0].pricing, 'unpriced', 'without metadata a zero cost cannot be called free');
+    assert.equal(blind.models[0].cacheStatus, 'unknown');
+    assert.equal(blind.overall.costComplete, false);
 });

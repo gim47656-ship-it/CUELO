@@ -481,17 +481,30 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
   });
 }
 
+/**
+ * How complete an estimated token-price cost is (rate card × recorded tokens; never an invoice or
+ * subscription spend). "unpriced" is a zero that means "no rate card", not free; "partial" is only
+ * a lower bound of the estimate. Absent on older sidecars.
+ */
+export type CostPricing = "priced" | "free" | "unpriced" | "partial";
+
+/** "not-reported": the wire cannot report cache hits; "unknown": no metadata to tell a real 0 apart. */
+export type CacheStatus = "reported" | "not-reported" | "unknown";
+
 export interface ModelAggregate {
   model: string;
   provider: string;
   requests: number;
   cost: number;
+  pricing?: CostPricing;
   costShare: number;
   costPerRequest: number | null;
   tokens: number;
   tokensPerRequest: number | null;
   outputPerRequest: number | null;
+  /** cacheRead / (input + cacheRead + cacheWrite); omitted unless cacheStatus is "reported". */
   cacheRate?: number;
+  cacheStatus?: CacheStatus;
   avgTtft?: number;
   avgTokensPerSecond?: number;
   errorRate?: number;
@@ -501,6 +514,8 @@ export interface AgentAggregate {
   agentType: string;
   requests: number;
   cost: number;
+  /** false: some usage has no price; agent rows carry no model split, so every row is a lower bound. */
+  costComplete?: boolean;
   costShare: number;
   costPerRequest: number | null;
   tokensPerRequest: number | null;
@@ -509,7 +524,8 @@ export interface AgentAggregate {
 export interface DailyModelCost {
   timestamp: number;
   cost: number;
-  models: Array<{ model: string; provider: string; cost: number }>;
+  costComplete?: boolean;
+  models: Array<{ model: string; provider: string; cost: number; pricing?: CostPricing }>;
 }
 
 export interface ModelStatsSnapshot {
@@ -520,8 +536,12 @@ export interface ModelStatsSnapshot {
     failedRequests: number;
     errorRate?: number;
     cost: number;
+    costComplete?: boolean;
+    unpricedModels?: number;
     tokens: number;
+    /** Rate over models that report cache; a subset when cacheExcludedModels > 0. */
     cacheRate?: number;
+    cacheExcludedModels?: number;
     cacheSavings?: number;
     avgTtft?: number;
     avgDuration?: number;
