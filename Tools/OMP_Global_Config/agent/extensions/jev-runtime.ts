@@ -519,6 +519,42 @@ function readSettledTaskJobs(
   }
   return settled;
 }
+/** 이 task 호출 안에서 끝난 child 하나의 terminal 관측. core SingleResult(details.results[])에서만 읽는다. */
+interface InlineTaskResult {
+  /** SingleResult.id = canonical child id(= agent:// target). */
+  agentId: string;
+  status: OutcomeRecord["status"];
+  durationMs?: number;
+  terminalRevision?: string;
+}
+
+/**
+ * task tool_result의 results[]는 이 호출 안에서 실행을 마친 child다(async.enabled=false·blocking agent·실행 뒤 단계 실패의 salvage).
+ * async 발주 영수증의 results는 비어 있다. SingleResult.index가 tasks[] 위치이고 없으면 배열 위치를 쓴다.
+ * 상태는 core async job과 같은 규칙이다: aborted·exitCode≠0·error는 failed(core가 그 job을 failed로 끝낸다), schema error도 async
+ * 정산처럼 failed이고, 나머지만 completed다. results가 있다는 것만으로 성공으로 보지 않는다.
+ */
+function readInlineResults(results: unknown): Map<number, InlineTaskResult> {
+  const inline = new Map<number, InlineTaskResult>();
+  if (!Array.isArray(results)) return inline;
+  for (const [position, row] of results.entries()) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as { index?: unknown; id?: unknown; exitCode?: unknown; error?: unknown; aborted?: unknown; output?: unknown; durationMs?: unknown; structuredOutput?: unknown };
+    if (typeof record.id !== "string" || !record.id) continue;
+    const structured = record.structuredOutput && typeof record.structuredOutput === "object"
+      ? record.structuredOutput as { data?: unknown; error?: unknown }
+      : undefined;
+    const failed = record.aborted === true || record.exitCode !== 0 || typeof record.error === "string" || typeof structured?.error === "string";
+    const terminal = readTerminalReport(structured?.data, typeof record.output === "string" ? record.output : "");
+    inline.set(typeof record.index === "number" ? record.index : position, {
+      agentId: record.id,
+      status: failed ? "failed" : "completed",
+      ...(typeof record.durationMs === "number" ? { durationMs: record.durationMs } : {}),
+      ...(terminal.revision ? { terminalRevision: terminal.revision } : {}),
+    });
+  }
+  return inline;
+}
 function renderStructuralCount(
   label: string,
   observations: StructuralCountObservation[],
@@ -1552,7 +1588,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       statusPending.delete(jobId);
       pendingCancels.delete(jobId);
       unobservedEnds.delete(identity.attemptId);
-      consumedJobs.add(jobId);
+      // inline으로 끝난 attempt는 async jobId가 없다(빈 값). 중복 소비는 attempt 기준(settledAttempts)으로 막는다.
+      if (jobId) consumedJobs.add(jobId);
       settledAttempts.add(identity.attemptId);
       baseLedger.append({
         type: "outcome",
@@ -2486,16 +2523,18 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (event.toolName === "task") {
         const reviewOrigin = pendingReviewOrigins.get(event.toolCallId);
         pendingReviewOrigins.delete(event.toolCallId);
-        if (event.isError) {
+        const details = event.details as { progress?: unknown; async?: { jobId?: unknown }; results?: unknown } | undefined;
+        // 이 호출 안에서 실행을 마친 child(SingleResult). 실행 뒤 단계에서 실패한 child는 core가 error를 채운 결과를 isError와 함께 싣는다.
+        const inlineResults = readInlineResults(details?.results);
+        if (event.isError && inlineResults.size === 0) {
           // spawn하지 못한 task 실행 오류. 이 호출의 예약만 푼다.
           routing.releaseCall(event.toolCallId);
           return;
         }
         // task spawn 성공: 여기서 live maker로 등록한다. tool_call 시점에 등록하면
         // 다른 guard의 block으로 spawn이 없는데도 phantom maker가 남는다.
-        // 실제 attempt identity는 이 spawn의 task 호출 id·index·session으로, canonical child id는 progress row에서 캡처한다.
+        // 실제 attempt identity는 이 spawn의 task 호출 id·index·session으로, canonical child id는 progress row 또는 inline 결과에서 캡처한다.
         const sessionId = (ctx.sessionManager?.getSessionId?.() ?? "").trim();
-        const details = event.details as { progress?: unknown; async?: { jobId?: unknown }; results?: unknown } | undefined;
         // progress row의 index가 tasks[] 위치와 대응한다(AgentProgress.index). row.id가 canonical child id(= agent:// target)다.
         const progressAgentIds = new Map<number, string>();
         const failedRows = new Set<number>();
@@ -2526,25 +2565,37 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const primaryJobId = typeof details?.async?.jobId === "string" ? details.async.jobId : "";
         const ids = new Map<number, { agentId: string; jobId: string }>();
         for (const task of spawned) {
+          const inline = inlineResults.get(task.index);
+          if (inline) {
+            // inline child에는 async job이 없다. jobId를 지어내지 않는다.
+            ids.set(task.index, { agentId: inline.agentId, jobId: "" });
+            continue;
+          }
           const agentId = progressAgentIds.get(task.index) ?? "";
           const jobId = (agentId ? jobByAgent.get(agentId) : undefined) ?? (spawned.length === 1 ? primaryJobId : "");
           ids.set(task.index, { agentId, jobId });
           // 관측된 모든 spawn jobId를 settle 연결 대상으로 등록한다(첫 child만 등록하지 않는다).
           if (jobId) jobIndex.set(jobId, { callId: event.toolCallId, taskIndex: task.index });
         }
-        // core는 child job을 등록한 뒤 반환하므로 시작한 child의 job은 snapshot에 있다. schedule에 실패한 child는 progress가
-        // failed이고 job이 없다. 둘 다일 때만 시작하지 않은 child로 보고 owner에서 뺀다. snapshot 부재만으로는 빼지 않는다.
-        // 하나도 시작하지 못하면 core는 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다(task/index.ts).
-        const noneStarted = !Array.isArray(details?.progress) && details?.async === undefined
-          && Array.isArray(details?.results) && details.results.length === 0;
-        const started = noneStarted ? [] : spawned.filter((task) => !(failedRows.has(task.index) && !ids.get(task.index)?.jobId));
+        // async 발주 영수증(progress·async)에서는 core가 child job을 등록한 뒤 반환하므로 시작한 child의 job은 snapshot에 있다.
+        // schedule에 실패한 child는 progress가 failed이고 job이 없다. 둘 다일 때만 시작하지 않은 child로 보고 owner에서 뺀다.
+        // snapshot 부재만으로는 빼지 않는다. 영수증이 없는 결과는 inline 실행이다(task/index.ts): results[]에 있는 child만 시작했고,
+        // 빈 results는 하나도 시작하지 못한 것이다. results[]에 있는 child는 어느 경우든 실제로 실행을 마쳤다.
+        const asyncReceipt = Array.isArray(details?.progress) || details?.async !== undefined;
+        const inlineOnly = !asyncReceipt && Array.isArray(details?.results);
+        const started = spawned.filter((task) => inlineResults.has(task.index)
+          || (!inlineOnly && !(failedRows.has(task.index) && !ids.get(task.index)?.jobId)));
         // 원장·관측 attempt는 이 판정을 먼저 따른다. 시작하지 못한 child는 미리 할당된 output id가 있어도 child id를 비워
         // 미관측 감사 행으로만 남긴다(원장은 child id가 있어야 실행 attempt로 센다). tasks[] index는 그대로 둔다(#22).
         const startedIndexes = new Set(started.map((task) => task.index));
         for (const task of spawned) if (!startedIndexes.has(task.index)) ids.set(task.index, { agentId: "", jobId: "" });
         const dispatched = routing.noteSpawned(event.input, sessionId, event.toolCallId, ids);
         const identities: string[] = [];
+        const live: SpawnedTaskMeta[] = [];
         for (const task of started) {
+          const inline = inlineResults.get(task.index);
+          // 끝난 inline child는 live owner가 아니다. 다시 실행 중인지는 그 canonical agentId의 실제 job으로만 본다.
+          if (!inline) live.push(task);
           const entry = dispatched.get(task.index);
           if (!entry || !entry.identity.sessionId) continue;
           const { identity, ownership } = entry;
@@ -2554,7 +2605,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           observedAttempts.set(identity.attemptId, { ...identity, name: task.name ?? "", status: "running", ownership, restored: false, sourceRevision: null });
           const spawnStart = identity.jobId ? snapshotRunStart(identity.jobId, ctx) : undefined;
           if (spawnStart !== undefined) runStarts.set(identity.attemptId, spawnStart);
-          identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
+          // inline 결과는 그 attempt의 terminal 관측이다. async 정산과 같은 함수로 그 attempt 하나에만 outcome을 남긴다(수용은 Main 명시 판정).
+          if (inline && (task.agent === undefined || task.agent === "maker")) {
+            appendOutcome(identity, "", inline.status, inline.durationMs, inline.terminalRevision);
+          }
+          identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}${inline ? ` inline=${inline.status}` : ""}`);
         }
         if (identities.length > 0) {
           sendAdvisory(
@@ -2567,7 +2622,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             ),
           );
         }
-        liveMakers.set(event.toolCallId, started);
+        liveMakers.set(event.toolCallId, live);
         for (const task of started) {
           // 별도 호출이 같은 이름을 다시 써도 앞 child를 덮지 않는다. 키는 그 spawn identity다.
           if (task.name && (task.agent === undefined || task.agent === "maker")) {

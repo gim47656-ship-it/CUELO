@@ -368,17 +368,33 @@ export type ToolErrorKind = "failed" | "noMatch" | "cancelled";
 const HARNESS_SKIP_PREFIX = "실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지가 도착했다";
 const NO_MATCH_COMMAND = /^(?:grep|egrep|fgrep|rg|test|\[\[?)(?:\s|$)/;
 
+/** 끝의 공백 앞 백슬래시가 짝수(0 포함)면 단어가 끝난 것이다. `file\ #tag`의 #은 같은 단어라 주석이 아니다. */
+const UNESCAPED_TRAILING_SPACE = /(?:^|[^\\])(?:\\\\)*\s$/;
+
+/** 단순 명령 구간과, 그 구간 바로 앞에 있던 구분자. 첫 구간은 `start`다. */
+interface CommandSegment {
+  text: string;
+  joinedBy: "start" | "sequence" | "pipe" | "and" | "or";
+}
+
 /**
  * 스크립트를 단순 명령 구간으로 나눈다. 줄바꿈·`;`·`&&`·`||`·`|`에서 자르고, 따옴표('…', "…")와
  * 백슬래시로 이스케이프한 문자 안의 구분자는 무시한다. 따옴표 밖 heredoc(`<<`, `<<-`)이나 닫히지
  * 않은 따옴표가 있으면 구간을 믿을 수 없으므로 빈 배열을 돌려준다.
  */
-function splitSimpleCommands(script: string): string[] {
-  const segments: string[] = [];
+function splitSimpleCommands(script: string): CommandSegment[] {
+  const segments: CommandSegment[] = [];
   let current = "";
+  let joinedBy: CommandSegment["joinedBy"] = "start";
   let quote: "'" | '"' | null = null;
-  const flush = () => {
-    if (current.trim()) segments.push(current.trim());
+  const flush = (next: CommandSegment["joinedBy"]) => {
+    if (current.trim()) {
+      segments.push({ text: current.trim(), joinedBy });
+      joinedBy = next;
+    } else if (segments.length > 0 && !(next === "sequence" && joinedBy !== "sequence")) {
+      // 빈 구간은 건너뛴다. `a &&⏎b`처럼 &&·||·| 뒤의 줄바꿈이 그 연결을 지우지 않게 한다.
+      joinedBy = next;
+    }
     current = "";
   };
   for (let i = 0; i < script.length; i++) {
@@ -397,15 +413,19 @@ function splitSimpleCommands(script: string): string[] {
       current += ch;
     } else if (ch === "<" && script[i + 1] === "<" && script[i + 2] !== "<" && script[i - 1] !== "<") {
       return [];
+    } else if (ch === "#" && (current === "" || UNESCAPED_TRAILING_SPACE.test(current))) {
+      // 단어 첫머리의 #부터 줄 끝까지는 셸 주석이다. 구간으로 세지 않아 앞의 && 연결이 다음 줄 명령에 그대로 이어진다.
+      while (i + 1 < script.length && script[i + 1] !== "\n") i++;
     } else if (ch === "\n" || ch === ";" || ch === "|" || (ch === "&" && script[i + 1] === "&")) {
-      if (ch === "&" || (ch === "|" && script[i + 1] === "|")) i++;
-      flush();
+      const next = ch === "&" ? "and" : ch === "|" ? (script[i + 1] === "|" ? "or" : "pipe") : "sequence";
+      if (next === "and" || next === "or") i++;
+      flush(next);
     } else {
       current += ch;
     }
   }
   if (quote) return [];
-  flush();
+  flush("sequence");
   return segments;
 }
 
@@ -417,6 +437,7 @@ const SHELL_ERROR_MARKERS = [
   ": No such file or directory",
   ": command not found",
   ": Permission denied",
+  ": Not a directory",
   "syntax error",
   "Traceback (most recent call last)",
 ];
@@ -429,6 +450,24 @@ const SHELL_ERROR_MARKERS = [
 //   한 줄이다. 둘 다 뒤에 `\n\n[capture notice]`가 올 수 있다.
 const EXIT_CODE_LINE = /(?:^|\n)Command exited with code (\d+)\s*$/;
 const ABORTED_TAIL = /(?:^Command aborted|\n\n\[Command aborted\])(?:\n\n\[[^\n]*\])?\s*$/;
+
+/** `cd`는 실패하면 `No such file or directory` 같은 표지를 남기므로, 그 뒤 `&&`의 검사가 돌았는지 출력으로 가릴 수 있다. */
+const CD_COMMAND = /^cd(?:\s|$)/;
+
+/**
+ * 마지막 검사 명령이 실제로 실행됐다고 볼 수 있는가. `;`·줄바꿈·`|`·`||` 뒤라면 실행됐고 종료 코드도 그
+ * 검사의 것이다. `&&` 뒤라면 앞 명령이 실패했을 때 검사는 돌지 않고 종료 코드는 앞 명령의 것이므로,
+ * 실패가 출력에 드러나는 `cd`만 앞에 올 수 있다(#36).
+ */
+function lastCheckRan(segments: CommandSegment[]): boolean {
+  let index = segments.length - 1;
+  for (;;) {
+    while (index > 0 && segments[index].joinedBy === "pipe") index--;
+    if (segments[index].joinedBy !== "and") return true;
+    index--;
+    if (index < 0 || !CD_COMMAND.test(segments[index].text)) return false;
+  }
+}
 
 /**
  * 오류로 기록된 도구 결과를 가른다. 보수적으로, 근거가 분명한 것만 `cancelled`·`noMatch`로 두고
@@ -443,9 +482,10 @@ export function classifyToolError(toolName: string, command: string | null, text
   if (!command || exit?.[1] !== "1") return "failed";
   if (SHELL_ERROR_MARKERS.some((marker) => text.includes(marker))) return "failed";
   const segments = splitSimpleCommands(command);
-  const last = segments.pop() ?? "";
-  if (segments.some((segment) => STDERR_SUPPRESSED.test(segment))) return "failed";
-  return NO_MATCH_COMMAND.test(last) ? "noMatch" : "failed";
+  const last = segments.at(-1);
+  if (!last || !NO_MATCH_COMMAND.test(last.text)) return "failed";
+  if (segments.slice(0, -1).some((segment) => STDERR_SUPPRESSED.test(segment.text))) return "failed";
+  return lastCheckRan(segments) ? "noMatch" : "failed";
 }
 
 function emptyScan(): TranscriptScan {

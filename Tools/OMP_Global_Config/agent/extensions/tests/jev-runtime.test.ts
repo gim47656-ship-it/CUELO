@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createTaskGuardState, getTaskGuardUsage, reserveTaskCall, settleTaskCall } from "../command-guard/task-guard";
 import { createJevRuntime, type JevRuntimeDeps } from "../jev-runtime";
 
 const fixtureSession = "session-1";
@@ -1263,6 +1264,122 @@ describe("jev-runtime pre-dispatch", () => {
         await legacy.emit("session_start", { type: "session_start" });
         expect((await legacy.verdict({ ...alpha, verdict: "accepted", revision: "r9", reason: "과거", evidenceLocators: ["artifact://old"] })).details)
           .toMatchObject({ ok: true, record: { revision: "r9", sourceRevision: null, revisionRelation: "unknown" } });
+      });
+    });
+
+    describe("async.enabled=false inline 결과(#35)", () => {
+      // core 실제형태(task/index.ts #executeSyncFanout → #buildResultPayload·mergeSyncPayloads): progress·async 없이 실행을 마친
+      // child의 SingleResult만 results[]에 싣는다. index는 원 tasks[] 위치, id는 canonical child id다.
+      const singleResult = (id: string, extra: Record<string, unknown> = {}) => ({
+        index: 0, id, agent: "maker", agentSource: "bundled", task: "", exitCode: 0,
+        output: JSON.stringify({ revision: "r1", validation: {}, unresolved: [] }), stderr: "", truncated: false,
+        durationMs: 5_000, tokens: 0, requests: 1, ...extra,
+      });
+      const alpha = { sessionId: fixtureSession, assignmentId: "session-1#call-alpha#0", attemptId: "session-1#call-alpha#0#a1" };
+      type Harness = EventHarness & { verdict(params: Record<string, unknown>): Promise<{ details: Record<string, unknown> }> };
+      const accept = (harness: Harness, identity = alpha, revision = "r1") =>
+        harness.verdict({ ...identity, verdict: "accepted", revision, reason: "검수", evidenceLocators: ["artifact://review"] });
+      const outcomes = (path: string) => ledgerRows(path).filter((row) => row.type === "outcome").map((row) => row.status);
+      const executionEnd = (harness: Harness, toolCallId: string) =>
+        harness.emit("tool_execution_end", { type: "tool_execution_end", toolCallId, toolName: "task", result: { content: [] }, isError: false });
+      async function runInline(harness: Harness, call: { toolCallId: string; input: Record<string, unknown> }, results: unknown[], isError = false) {
+        expect(await harness.emit("tool_call", { type: "tool_call", toolName: "task", ...call })).toBeUndefined();
+        const receipt = {
+          type: "tool_result", toolName: "task", ...call, isError, content: [{ type: "text", text: "inline done" }],
+          details: { projectAgentsDir: null, results, totalDurationMs: 5_000 },
+        };
+        await harness.emit("tool_result", receipt);
+        await executionEnd(harness, call.toolCallId);
+        return receipt;
+      }
+
+      test("성공 child는 실제 id·원 revision으로 completed가 되고 reload 전후로 명시 수용과 같은 경로 다음 발주가 가능하다", async () => {
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await harness.prepare(GUARDED_TASK, "Alpha");
+        const receipt = await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }), [singleResult("Alpha")]);
+        // 같은 receipt 재전달은 attempt를 새로 만들거나 outcome을 다시 남기지 않는다.
+        await harness.emit("tool_result", receipt);
+        expect(ledgerRows(harness.ledgerPath).map((row) => [row.type, row.attemptId, row.agentId, row.jobId, row.status ?? null, row.sourceRevision ?? null])).toEqual([
+          ["dispatch", alpha.attemptId, "Alpha", "", null, null],
+          ["outcome", alpha.attemptId, "Alpha", "", "completed", "r1"],
+        ]);
+        for (const round of ["before-reload", "after-reload"]) {
+          if (round === "after-reload") await harness.emit("session_start", { type: "session_start" });
+          expect([round, (await accept(harness)).details])
+            .toMatchObject([round, { ok: true, record: { agentId: "Alpha", sourceRevision: "r1", revisionRelation: "same" } }]);
+          const beta = await harness.prepare(BETA, "Beta");
+          expect([round, beta.details.routes[0]])
+            .toMatchObject([round, { existingOwners: [{ name: "Alpha", active: false }], history: { attempts: 1, unobserved: 0 } }]);
+          expect([round, await dispatch(harness, `call-beta-${round}`, "Beta", BETA)]).toEqual([round, undefined]);
+          await executionEnd(harness, `call-beta-${round}`);
+        }
+      });
+
+      test("실패·중단·schema 오류·실행 뒤 단계 실패 child는 running이 아니라 failed로 끝나 owner를 풀고 accepted는 거절된다", async () => {
+        const variants: Array<[string, Record<string, unknown>, boolean]> = [
+          ["exitCode 1", { exitCode: 1, error: "provider failed" }, false],
+          ["aborted", { exitCode: 1, aborted: true, abortReason: "runtime limit" }, false],
+          ["schema error", { structuredOutput: { source: "agent", mode: "permissive", status: "invalid", data: { revision: "r1" }, error: "missing validation" } }, false],
+          ["isError salvage", { error: "isolation merge failed" }, true],
+        ];
+        for (const [label, extra, isError] of variants) {
+          const harness = createHarness({ judgeAnswers: NORMAL });
+          await harness.prepare(GUARDED_TASK, "Alpha");
+          await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }), [singleResult("Alpha", extra)], isError);
+          expect([label, outcomes(harness.ledgerPath)]).toEqual([label, ["failed"]]);
+          expect([label, (await accept(harness)).details]).toMatchObject([label, { ok: false, error: expect.stringContaining("failed") }]);
+          await harness.prepare(BETA, "Beta");
+          expect([label, await dispatch(harness, "call-beta", "Beta", BETA)]).toEqual([label, undefined]);
+        }
+      });
+
+      test("중단된 inline child는 async 실패와 같은 failed로 남고 TaskBudget 슬롯을 환불하지 않는다", async () => {
+        const call = taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" });
+        const budget = createTaskGuardState();
+        expect(reserveTaskCall(budget, call.toolCallId, call.input).ok).toBe(true);
+        const charged = getTaskGuardUsage(budget);
+        expect(charged.total).toBe(1);
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await harness.prepare(GUARDED_TASK, "Alpha");
+        const receipt = await runInline(harness, call, [singleResult("Alpha", { exitCode: 1, aborted: true, abortReason: "Cancelled before start" })]);
+        settleTaskCall(budget, call.toolCallId, { executed: true, isError: false, details: receipt.details, registry: [] });
+        expect(outcomes(harness.ledgerPath)).toEqual(["failed"]);
+        expect(getTaskGuardUsage(budget)).toEqual(charged);
+        expect(budget.refunded).toBe(0);
+      });
+
+      test("여러 inline child는 원 index·실제 id로 따로 정산되고 결과 없는 child는 미관측 감사 행으로만 남는다", async () => {
+        const DELTA = GUARDED_TASK.replace("a.ts,b.ts", "d.ts");
+        const EPSILON = GUARDED_TASK.replace("a.ts,b.ts", "e.ts");
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        for (const [task, name] of [[DELTA, "Delta"], [EPSILON, "Epsilon"], [GAMMA, "Gamma"]] as const) await harness.prepare(task, name);
+        const call = { toolCallId: "call-batch", input: { context: "", tasks: [
+          { name: "Delta", agent: "maker", task: DELTA, model: "test/local:auto" },
+          { name: "Epsilon", agent: "maker", task: EPSILON, model: "test/local:auto" },
+          { name: "Gamma", agent: "maker", task: GAMMA, model: "test/local:auto" },
+        ] } };
+        // 시작 전에 실패한 Epsilon은 결과가 없다. 결과 배열 순서가 아니라 원 index로 잇는다.
+        await runInline(harness, call, [
+          singleResult("Gamma", { index: 2, exitCode: 1, error: "boom", output: "" }),
+          // schema가 고른 structured data의 revision이 본문(output r1)보다 우선한다(async schema.data와 같은 규칙).
+          singleResult("Delta", { index: 0, structuredOutput: { source: "agent", mode: "strict", status: "valid", data: { revision: "r7", validation: {}, unresolved: [] } } }),
+        ]);
+        expect(ledgerRows(harness.ledgerPath).map((row) => [row.type, row.assignmentId, row.agentId, row.status ?? null, row.sourceRevision ?? null])).toEqual([
+          ["dispatch", "session-1#call-batch#0", "Delta", null, null],
+          ["dispatch", "session-1#call-batch#1", "", null, null],
+          ["dispatch", "session-1#call-batch#2", "Gamma", null, null],
+          ["outcome", "session-1#call-batch#0", "Delta", "completed", "r7"],
+          ["outcome", "session-1#call-batch#2", "Gamma", "failed", null],
+        ]);
+        const triple = (index: number) => ({ sessionId: fixtureSession, assignmentId: `session-1#call-batch#${index}`, attemptId: `session-1#call-batch#${index}#a1` });
+        expect((await accept(harness, triple(0), "r7")).details).toMatchObject({ ok: true, record: { agentId: "Delta", sourceRevision: "r7", revisionRelation: "same" } });
+        expect((await accept(harness, triple(1))).details).toMatchObject({ ok: false });
+        expect((await accept(harness, triple(2))).details).toMatchObject({ ok: false, error: expect.stringContaining("failed") });
+        expect((await harness.prepare(DELTA, "DeltaNext")).details.routes[0]!.history).toMatchObject({ attempts: 2, unobserved: 1 });
+        for (const [task, name] of [[DELTA, "DeltaNext"], [EPSILON, "EpsilonNext"], [GAMMA, "GammaNext"]] as const) {
+          await harness.prepare(task, name);
+          expect([name, await dispatch(harness, `call-${name}`, name, task)]).toEqual([name, undefined]);
+        }
       });
     });
 
