@@ -17,7 +17,9 @@
   - compiler, type system, framework, code generator, DB model, provider, protocol,
     authorization boundary, artifact format이 이미 보장하는 계약은 중복 검증하지 않는다. 동일
     계약·실행 경로·case를 유지 중인 기존 테스트가 이미 방어하면 중복 테스트를 만들지 않는다.
-    다만 실제 회귀를 재현하고 기존 테스트가 잡지 못하면 focused regression test를 추가한다.
+    다만 실제 회귀를 재현하고 기존 테스트가 잡지 못하면 focused regression test를 추가한다. 그 테스트는
+    수정 전에 의도한 이유(재현한 그 결함)로 실패하고 수정 후 통과했는지 확인해 보고에 적는다. 다른
+    이유(import·fixture 오류 등)로 난 실패는 수정 전 실패로 세지 않는다.
   - hash, checksum, cryptography는 보안·무결성·개인정보·protocol·payment·signing·artifact
     boundary가 요구할 때만 사용한다.
   - build, merge, release, startup, access, sync, rollout을 영구적으로 막는 gate의 추가·변경·제거는

@@ -91,7 +91,7 @@ beforeAll(() => {
 
 afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
-type JudgeFn = (request: { state: unknown; questions: Record<string, unknown> }, options?: { signal?: AbortSignal }) => Promise<{ answers: Record<string, { type: string; bool?: number } | undefined> }>;
+type JudgeFn = (request: { state: unknown; questions: Record<string, unknown> }, options?: { signal?: AbortSignal }) => Promise<{ answers: Record<string, { type: string; noul?: number } | undefined> }>;
 
 /** 기본 판정기는 모든 후보를 남긴다(낱말 후보 그대로). `judge`를 주면 그 답을 쓰고, `null`이면 판정기 없음. */
 function harness(options: { judge?: JudgeFn | null; judgeTimeoutMs?: number } = {}) {
@@ -99,7 +99,7 @@ function harness(options: { judge?: JudgeFn | null; judgeTimeoutMs?: number } = 
   const sent: unknown[] = [];
   const logs: unknown[] = [];
   let judgeCalls = 0;
-  const keepAll: JudgeFn = async (request) => ({ answers: Object.fromEntries(Object.keys(request.questions).map((k) => [k, { type: "bool", bool: 1 }])) });
+  const keepAll: JudgeFn = async (request) => ({ answers: Object.fromEntries(Object.keys(request.questions).map((k) => [k, { type: "noul", noul: 1 }])) });
   const judge = options.judge === undefined ? keepAll : options.judge;
   const route = createDocmapRoute({
     resolveJudge: async () => (judge ? { judge: (request, opts) => { judgeCalls++; return judge(request, opts); } } : undefined),
@@ -261,16 +261,19 @@ describe("docmap route", () => {
 
   describe("JEV 후보 판정", () => {
     const LAT_Q = "음성 비서 응답 지연 측정 기록";
-    const answer = (bools: number[]) => async (request: { questions: Record<string, unknown> }) => ({
-      answers: Object.fromEntries(Object.keys(request.questions).map((k, i) => [k, { type: "bool", bool: bools[i] ?? 0 }])),
+    const answer = (scores: number[]) => async (request: { questions: Record<string, unknown> }) => ({
+      answers: Object.fromEntries(Object.keys(request.questions).map((k, i) => [k, { type: "noul", noul: scores[i] ?? 0 }])),
     });
 
-    test("판정기는 후보마다 bool 질문 하나를 받고, 0.6 이상인 후보만 원래 순서로 남는다", async () => {
+    test("판정기는 후보마다 noul 질문 하나를 받고, 0.6 이상인 후보만 원래 순서로 남는다", async () => {
       let seen: { state: unknown; questions: Record<string, unknown> } | undefined;
       const h = harness({ judge: async (request) => { seen = request; return answer([0.2, 0.9, 0.6])(request); } });
       h.emit({ source: "rpc", text: LAT_Q }, cli());
       const [message] = await h.start(LAT_Q, cli());
       expect(Object.keys(seen!.questions)).toEqual(["c1", "c2", "c3"]);
+      // core 판정 API의 예/아니오 종류는 `noul`이다. `bool`은 eval 셀 별칭이라 API가 400으로 거절한다.
+      const noul = expect.objectContaining({ type: "noul" });
+      expect(Object.values(seen!.questions)).toEqual([noul, noul, noul]);
       const state = seen!.state as { prompt: string; candidates: { path: string; map?: string; scope?: string; date?: string }[] };
       expect(state.prompt).toBe(LAT_Q);
       expect(state.candidates).toHaveLength(3);

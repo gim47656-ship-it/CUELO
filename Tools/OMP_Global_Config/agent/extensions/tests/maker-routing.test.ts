@@ -335,6 +335,19 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(h.requests.length).toBe(1);
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
+  test("acceptance·checks가 비었거나 공백뿐인 발주는 briefGaps로 알리고, 발주 자체는 막지 않는다", async () => {
+    const h = harness();
+    const filled = await h.prepareBatch("같은 계약", [h.task], {});
+    expect(filled.routes[0]!.briefGaps).toBeNull();
+    const empty = { ...h.task, assessment: { ...facts, acceptance: ["  "], checks: [] } };
+    const batch = await h.prepareBatch("같은 계약", [empty], {});
+    expect(batch.routes[0]!.briefGaps).toEqual([
+      "acceptance가 비어 있음: 무엇을 만족해야 끝나는지 적으세요.",
+      "checks가 비어 있음: 어떻게 확인할지(명령·관측 대상) 적으세요.",
+    ]);
+    expect(batch.routes[0]!.status).toBe("judged");
+    expect(await h.beforeTask(h.input, {})).toBeUndefined();
+  });
   test("registry에 없는 후보는 unavailable로 분리되고 나머지 후보의 발주는 막히지 않는다", async () => {
     const policy = loadRoutingPolicy();
     const profiles = Object.keys(policy.modelSelection.profiles);

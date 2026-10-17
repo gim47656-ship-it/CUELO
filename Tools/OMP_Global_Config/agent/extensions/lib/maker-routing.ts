@@ -19,6 +19,17 @@ export interface RoutingFacts {
   checks: string[];
   failureEvidence: string[] | null;
 }
+
+/**
+ * 발주 전 빈 조건 경고. acceptance·checks가 비었거나 공백뿐이면 무엇을 만족해야 끝나는지, 어떻게 확인할지가 없는 발주다.
+ * 발주를 막지 않는 advisory다(2026-10-17 사용자 결정: 경고로 시작해 실제 누락·재작업이 줄어드는지 본다).
+ */
+export function briefGaps(assessment: Pick<RoutingFacts, "acceptance" | "checks">): string[] | null {
+  const gaps: string[] = [];
+  if (!assessment.acceptance.some((item) => item.trim())) gaps.push("acceptance가 비어 있음: 무엇을 만족해야 끝나는지 적으세요.");
+  if (!assessment.checks.some((item) => item.trim())) gaps.push("checks가 비어 있음: 어떻게 확인할지(명령·관측 대상) 적으세요.");
+  return gaps.length > 0 ? gaps : null;
+}
 interface RouteTask { name: string; task: string; assessment: RoutingFacts }
 export interface Owner {
   name: string | null;
@@ -715,7 +726,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI는 과제 성격과 무관하게 Sonnet(NORMAL_SONNET)을 추천합니다. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, Sonnet이 사용 불가·관측 소진일 때만 추천하며 그다음이 NORMAL_DEEPSEEK입니다. Sonnet이 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫·한도 여유만으로 후보를 바꾸지 않습니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다.";
+  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI는 과제 성격과 무관하게 Sonnet(NORMAL_SONNET)을 추천합니다. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, Sonnet이 사용 불가·관측 소진일 때만 추천하며 그다음이 NORMAL_DEEPSEEK입니다. Sonnet이 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫·한도 여유만으로 후보를 바꾸지 않습니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건이나 확인 방법이 비어 있으니, assessment와 브리프 # Acceptance를 채워 다시 준비합니다(경고이며 발주를 막지 않습니다).";
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -876,6 +887,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           prepared,
           route: {
             name: task.name,
+            briefGaps: briefGaps(task.assessment),
             status: prepared.status,
             error: prepared.error,
             recommendations: prepared.answers,

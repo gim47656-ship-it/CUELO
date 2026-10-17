@@ -7,7 +7,7 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
  */
 
 export interface JudgeAnswers {
-  answers: Record<string, { type: string; choice?: string; bool?: number } | undefined>;
+  answers: Record<string, { type: string; choice?: string; noul?: number } | undefined>;
 }
 
 /** 판정기 seam. 기본 구현은 native 후보에서만 판정을 실행한다. */

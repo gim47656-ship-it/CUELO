@@ -35,12 +35,12 @@ function judgePrompt(prompt: string): string {
   return prompt.length <= PROMPT_HEAD_CHARS + PROMPT_TAIL_CHARS ? prompt : `${prompt.slice(0, PROMPT_HEAD_CHARS)}\n…\n${prompt.slice(-PROMPT_TAIL_CHARS)}`;
 }
 
-/** 후보마다 bool 질문 하나. 같은 state를 보므로 한 요청에 묶는다. */
+/** 후보마다 예/아니오(core 판정 API 이름 `noul`) 질문 하나. 같은 state를 보므로 한 요청에 묶는다. */
 export function buildDocmapJudgeRequest(prompt: string, route: DocmapRoute): { state: unknown; questions: Record<string, unknown> } {
   const questions: Record<string, unknown> = {};
   route.judgeCandidates.forEach((_, i) => {
     questions[`c${i + 1}`] = {
-      type: "bool",
+      type: "noul",
       instructions: `Is candidates[${i}] a record of the earlier work the prompt refers to (the same event, decision, procedure or state), not merely sharing words with it? The prompt is one message a user sent to a coding agent mid-conversation; a new instruction, a reaction or small talk that only shares vocabulary is "no".`,
       criteria: { true: "the prompt asks about or continues the work this record covers", false: "new instruction, reaction, small talk, or only topical word overlap" },
     };
@@ -49,8 +49,8 @@ export function buildDocmapJudgeRequest(prompt: string, route: DocmapRoute): { s
 }
 
 /** 판정 답에서 남길 후보. 답이 없는 후보는 버린다. */
-export function keptByJudge(route: DocmapRoute, answers: Record<string, { bool?: number } | undefined>): DocmapCandidate[] {
-  return route.candidates.filter((_, i) => (answers[`c${i + 1}`]?.bool ?? 0) >= DOCMAP_JUDGE_KEEP);
+export function keptByJudge(route: DocmapRoute, answers: Record<string, { noul?: number } | undefined>): DocmapCandidate[] {
+  return route.candidates.filter((_, i) => (answers[`c${i + 1}`]?.noul ?? 0) >= DOCMAP_JUDGE_KEEP);
 }
 
 export function createDocmapRoute(deps: DocmapRouteDeps = {}) {

@@ -108,6 +108,8 @@ WSL 갱신은 진행 기록의 서버 세대를 Linux 부팅 ID와 프로세스 
 `maker_route`에 표시되는 history는 Jev 분류 **후** Main에게 붙는 건수 advisory이며 분류 입력이나
 모델·강도 자동 조정 근거가 아닙니다.
 
+준비 단계는 `assessment.acceptance`나 `assessment.checks`가 비었거나 공백뿐이면 그 route에 `briefGaps` 경고를 붙입니다. 무엇을 만족해야 끝나는지, 어떻게 확인할지가 빠진 발주라는 뜻이며, Main은 수용 조건과 확인 방법을 채운 뒤 다시 준비합니다. 경고일 뿐 발주를 막지 않고 모델 판정을 추가로 부르지도 않습니다.
+
 이전 측정은 과제·하네스·모델 조건과 수용 품질, 표본 한계를 함께 봅니다. 합성 과제와 실제 제품 작업을 구분하고, 기존 계약·문맥 재사용 및 발주 준비·재작업·통합 검수 비용을 실제 독립 병렬 구간과 대조합니다. 모델 응답 생성과 도구 실행 시간을 섞지 않으며, 단독 대조군 없는 기록으로 속도 우열을 단정하거나 한 사례를 줄 수·인원수 임계값으로 만들지 않습니다.
 
 등급(`NORMAL`·`HARD`)과 후보 슬롯은 구분합니다. 후보는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_SOL`, `NORMAL_DEEPSEEK`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `HARD_CODE_ASTRA`입니다. 기존 설정·라우팅 식별자 `implSol`·`NORMAL_SOL`·`SOL`은 유지하지만 해당 코드 후보의 실제 모델은 GPT-6 Astra입니다. NORMAL도 레이아웃·반응형·접근성·포커스·터치 표적 등 UI/UX 판단이 남으면 Opus를 선택하며, 이를 위해 HARD로 승격하지 않습니다. 비-UI NORMAL은 과제별 모델 적합성 판단 없이 항상 Sonnet을 추천합니다. Main이 Sonnet이 사용 가능한데 `NORMAL_SOL`을 고르면 추천을 바꾸는 것이므로 `ROUTING_REASON`을 남깁니다. 기존 NORMAL Opus 명시 선택, UI/UX Opus unavailable의 명시 보고, HARD 코드 기본 Opus 및 이유가 필요한 `HARD_CODE_SONNET`·`HARD_CODE_ASTRA` 대안은 유지합니다.

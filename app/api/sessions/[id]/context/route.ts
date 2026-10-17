@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { resolveSessionPath, buildSessionContext, getHistoricalContextUsage } from "@/lib/session-reader";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { compressedJson } from "@/lib/compressed-json";
 
 export async function GET(
   req: Request,
@@ -29,7 +30,7 @@ export async function GET(
     });
     const contextUsage = await getHistoricalContextUsage(entries, leafId);
 
-    return NextResponse.json({
+    return compressedJson(req, {
       context,
       ...(contextUsage ? { contextUsage } : {}),
     });

@@ -18,6 +18,7 @@ import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security"
 import { projectTreeForResponse } from "@/lib/project-tree";
 import { computeSessionTotalActiveMs } from "@/lib/session-timing";
 import { getDocumentPromptUserMessage } from "@/lib/document-attachments";
+import { compressedJson } from "@/lib/compressed-json";
 
 export async function GET(
   req: Request,
@@ -76,7 +77,7 @@ export async function GET(
       transient: !filePath || !existsSync(filePath),
     } : null;
 
-    return NextResponse.json({
+    return compressedJson(req, {
       sessionId: id,
       filePath,
       info,
