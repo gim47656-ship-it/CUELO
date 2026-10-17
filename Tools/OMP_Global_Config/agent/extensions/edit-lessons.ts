@@ -1,4 +1,4 @@
-import { isAbsolute, posix, relative, resolve, sep } from "node:path";
+import { posix, win32 } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 
@@ -52,12 +52,14 @@ function inputPaths(input: unknown): string[] {
  * cwd가 없으면 준 문자열을 posix로 정규화만 한다. 같은 파일을 가리키는 다른 표기가 같은 검색·중복 키가 되게 한다.
  */
 export function relativeTarget(cwd: string | undefined, path: string): string {
+  // 호스트 플랫폼이 아니라 cwd(없으면 입력)의 모양으로 경로 규칙을 고른다. Windows 러너에서 POSIX 입력에 드라이브가 붙지 않게 한다.
+  const p = /^[A-Za-z]:[\\/]/.test(cwd ?? path) ? win32 : posix;
   const slashed = path.replace(/\\/g, "/");
-  if (!cwd) return posix.normalize(slashed);
-  const abs = resolve(cwd, slashed);
-  const rel = relative(cwd, abs);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return abs.replace(/\\/g, "/");
-  return rel.split(sep).join("/");
+  if (!cwd) return p.normalize(slashed).replace(/\\/g, "/");
+  const abs = p.resolve(cwd, slashed);
+  const rel = p.relative(cwd, abs);
+  if (!rel || rel === ".." || rel.startsWith(`..${p.sep}`) || p.isAbsolute(rel)) return abs.replace(/\\/g, "/");
+  return rel.split(p.sep).join("/");
 }
 
 /** 검색 결과에서 이 경로에 묶인 교훈 후보만 남긴다(출처·basename 일치·id 필요). 같은 id는 처음 것만 둔다. */

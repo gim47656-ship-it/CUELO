@@ -268,4 +268,19 @@ describe("relativeTarget", () => {
     expect(relativeTarget(undefined, "src/../x.ts")).toBe("x.ts");
     expect(relativeTarget(undefined, "./a\\b.ts")).toBe("a/b.ts");
   });
+
+  test("Windows 모양 cwd(`C:\\repo`)는 호스트와 무관하게 win32 규칙으로 푼다", () => {
+    expect(relativeTarget("C:\\repo", "C:\\repo\\src\\..\\x.ts")).toBe("x.ts");
+    expect(relativeTarget("C:\\repo", "x.ts")).toBe("x.ts");
+    expect(relativeTarget("C:\\repo", "c:/repo/a/b.ts")).toBe("a/b.ts");
+    expect(relativeTarget("C:\\repo", "D:\\other\\x.ts")).toBe("D:/other/x.ts");
+    expect(relativeTarget("C:\\repo", "..\\other\\x.ts")).toBe("C:/other/x.ts");
+    expect(relativeTarget(undefined, "C:\\a\\..\\x.ts")).toBe("C:/x.ts");
+  });
+
+  test("POSIX 모양 cwd(`/repo`)는 호스트 플랫폼과 무관하게 드라이브 없이 푼다", () => {
+    expect(relativeTarget("/repo", "/repo/src/../x.ts")).toBe("x.ts");
+    expect(relativeTarget("/repo", "/other/x.ts")).toBe("/other/x.ts");
+    expect(relativeTarget("/repo", "../other/x.ts")).toBe("/other/x.ts");
+  });
 });
