@@ -7869,10 +7869,157 @@ function operationFromNative(op: string): Operation | undefined {
 		// 거부가 여러 파일 배치에서 났으면 같은 payload 를 쓰기 거부 writer 로 native 에 다시 돌려 남은 파일의 거부를 한 응답에
 		// 모은다. 매 실행은 모델의 그대로 재전송과 같은 기록만 남기고(native 가 보인 줄만 기록) 아무것도 쓰지 않는다. native 에
 		// 검사 전용 API 가 없고(preview 는 seen-line 검사를 하지 않는다) 줄 범위를 TS 에서 다시 풀면 block(*) 해석이 갈라진다.
+		// 0.10.27: 실행을 대상 snapshot 을 복사한 임시 store 에서 돌려 세션 store 의 no-op 횟수에 넣지 않고(0.10.26 은 STOP 이
+		// 한 번 일찍 왔다) 새로 기록된 본 줄만 세션 store 로 옮긴다. 복사를 보장할 수 없으면 0.10.26 처럼 세션 store 에서 돈다.
+		// 요약 줄은 cwd 밖 파일을 '../' 대신 절대 경로로 적는다. 0.10.26 적용본(legacyPatched)은 이 본문으로 바뀐다.
 		file: "src/edit/index.ts",
-		marker: "// HANSE: batch-wide seen-line rejection",
+		marker: "// HANSE: batch-wide seen-line rejection on a scratch store",
 		anchor: "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
-		patched: `	// HANSE: batch-wide seen-line rejection
+		patched: `	// HANSE: batch-wide seen-line rejection on a scratch store
+	/**
+	 * Native apply stops at the first file whose edit anchors undisplayed lines and records only that
+	 * file's shown lines as seen, so a multi-file payload resent verbatim was rejected once per file
+	 * (2026-10-17: five identical resends, a different file each time). Re-run the same payload through
+	 * native with a writer that refuses every write: each run records the next unseen file exactly as a
+	 * verbatim resend would, until a run reaches the writer (every file now passes), rejects a file
+	 * again (past the preview cap native records nothing) or fails otherwise. Nothing is written, and only
+	 * a run that reached the writer counts as passing. The runs use a scratch store holding copies of the
+	 * targets' snapshots (see #seenLineProbeStore), so they never count toward the session store's
+	 * byte-identical no-op guard; afterwards only the lines they newly recorded as seen move to the
+	 * session store. When the copy cannot be guaranteed the runs use the session store itself and each
+	 * counts as a no-op strike. A rejection that already reports that guard is not probed, and a
+	 * single-target payload keeps the native message.
+	 */
+	async #seenLineRejection(params: EditParams, argsJson: string, text: string, signal?: AbortSignal): Promise<string> {
+		const cwd = this.session.cwd;
+		// Native no-op guard errors begin a line with these phrases. A file name or a displayed source line
+		// cannot, because the seen-line head starts with "This edit" and preview rows with their line number.
+		const noopGuard = /^(?:STOP\\. Edits to .+ have been a byte-identical no-op \\d+ times in a row|Edits to .+ parsed and applied cleanly, but produced no change: )/m;
+		const fileOf = (message: string) => {
+			const display = [...message.matchAll(SEEN_LINE_HEAD)][0]?.[2];
+			return display === undefined ? undefined : path.resolve(cwd, display);
+		};
+		const first = fileOf(text);
+		const authored = this.#inspect(params).paths;
+		const targets = new Set(authored.map(target => path.resolve(cwd, target)));
+		if (first === undefined || targets.size < 2 || noopGuard.test(text)) return localizeSeenLineRejection(text);
+		const session = getEditStore(this.session);
+		const scratch = this.#seenLineProbeStore(params, authored, first, session);
+		const rejections = [text];
+		const rejected = new Set([first]);
+		let passed = false;
+		let failure: string | undefined;
+		for (let run = 0; run < targets.size && !signal?.aborted; run++) {
+			let reachedWriter = false;
+			let outcome: { isError: boolean; text: string } | undefined;
+			let probe: OpenEditSession | undefined;
+			try {
+				probe = this.#openSession(false, signal, undefined, scratch?.store);
+				probe.native.setArgsJson(argsJson);
+				probe.native.finish();
+				outcome = await probe.native.apply({ lspFlush: false }, async () => {
+					reachedWriter = true;
+					throw new Error("seen-line probe writes nothing");
+				});
+			} catch (error) {
+				if (!reachedWriter) failure = error instanceof Error ? error.message : String(error);
+			} finally {
+				probe?.native.close();
+			}
+			if (reachedWriter) {
+				passed = true;
+				break;
+			}
+			// A thrown probe (failure set above) or an error-free outcome that never reached the writer
+			// proves nothing about the remaining files.
+			if (outcome === undefined || !outcome.isError) break;
+			const file = fileOf(outcome.text);
+			if (file === undefined) failure = outcome.text;
+			if (file === undefined || rejected.has(file)) break;
+			rejected.add(file);
+			rejections.push(outcome.text);
+		}
+		// Hand the session store exactly the lines the runs recorded. An empty or absent seen set is
+		// unrestricted provenance, and merging lines into it would restrict it.
+		if (scratch) {
+			for (const [file, tag] of scratch.snapshots) {
+				const before = session.seenLines(file, tag);
+				if (!before || before.length === 0) continue;
+				const known = new Set(before);
+				const added = (scratch.store.seenLines(file, tag) ?? []).filter(line => !known.has(line));
+				if (added.length > 0) session.recordSeenLines(file, tag, added);
+			}
+		}
+		if (passed && rejections.length === 1) return localizeSeenLineRejection(text);
+		// Outside cwd a relative path climbs through '..' segments, so those files are named absolutely.
+		const shown = (target: string) => {
+			const relative = path.relative(cwd, target);
+			return relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? target : relative;
+		};
+		const parts = [
+			"이 배치는 아무 파일도 쓰지 않았다. 보지 않은 줄을 기준으로 한 파일 " + rejections.length + "개: " + [...rejected].map(shown).join(", ") + ".",
+			...rejections.map(message => localizeSeenLineRejection(message.replace(SEEN_LINE_TAIL, "").trimEnd())),
+		];
+		if (failure !== undefined) parts.push("같은 배치를 다시 보내면 다음 오류로도 실패한다:\\n" + localizeSeenLineRejection(failure));
+		// Past the preview cap native records nothing, and a probe that stopped early never reached the
+		// remaining files, so only a probe that reached the writer may promise the verbatim resend.
+		const unchecked = passed || failure !== undefined ? [] : [...targets].filter(target => !rejected.has(target)).map(shown);
+		parts.push(
+			passed
+				? "파일마다 건드리려던 내용과 맞는지 확인한 뒤 같은 배치를 같은 [path#tag] 헤더로 다시 보낸다. 위 줄은 모두 본 것으로 기록돼 다시 읽지 않고 그대로 재시도해도 이제 성공한다. 내용이 다르면 그 파일의 줄 번호를 고친다."
+				: "그대로 다시 보내도 성공한다는 보장은 없다." +
+						(failure !== undefined ? " 위 오류를 먼저 고친다." : "") +
+						(unchecked.length > 0 ? " 보지 않은 줄 검사를 마치지 못했을 수 있는 파일: " + unchecked.join(", ") + ". 그 파일의 대상 범위도 먼저 읽거나 배치를 파일별로 나눈다." : ""),
+		);
+		return parts.join("\\n\\n");
+	}
+
+	/**
+	 * A fresh store holding, for every target, the snapshots the payload's headers name and the session
+	 * store's head for that path, each with the session store's seen lines (null and empty stay as they
+	 * are: both mean unrestricted), so a native run on it resolves the same snapshots and provenance as
+	 * on the session store. Undefined, and the probes use the session store, when that cannot be
+	 * guaranteed: a non-text payload, an internal URL or home-relative target (native resolves those
+	 * elsewhere), a header tag the session store does not hold, a copy that mints another tag or other
+	 * seen lines, or a first rejected file that is not among the copied paths. CUT/PUT registers from
+	 * earlier calls are not copied (the store has no API for them).
+	 */
+	#seenLineProbeStore(
+		params: EditParams,
+		authored: string[],
+		first: string,
+		session: EditStore,
+	): { store: EditStore; snapshots: [string, string][] } | undefined {
+		const input = (params as { input?: unknown }).input;
+		if (typeof input !== "string" || authored.some(target => target.startsWith("~") || extractUriScheme(target) !== undefined)) return undefined;
+		const cwd = this.session.cwd;
+		const named = new Map<string, Set<string>>();
+		for (const match of input.matchAll(/^\\[([^\\]\\n#]+)#([0-9A-Fa-f]{4})\\]/gm)) {
+			const file = path.resolve(cwd, match[1].trim());
+			named.set(file, (named.get(file) ?? new Set<string>()).add(match[2].toUpperCase()));
+		}
+		const store = new EditStore();
+		const snapshots: [string, string][] = [];
+		for (const file of new Set(authored.map(target => path.resolve(cwd, target)))) {
+			const head = session.headHash(file)?.toUpperCase();
+			// The head goes last so the copy's head is the session store's head.
+			const tags = [...(named.get(file) ?? [])].filter(tag => tag !== head);
+			if (head !== undefined) tags.push(head);
+			for (const tag of tags) {
+				const text = session.byHashText(file, tag);
+				if (text === null) return undefined;
+				const seen = session.seenLines(file, tag);
+				if (store.recordSnapshot(file, text, seen).toUpperCase() !== tag) return undefined;
+				if (JSON.stringify(store.seenLines(file, tag)) !== JSON.stringify(seen)) return undefined;
+				snapshots.push([file, tag]);
+			}
+			if (store.headHash(file)?.toUpperCase() !== head) return undefined;
+		}
+		return snapshots.some(([file]) => file === first) ? { store, snapshots } : undefined;
+	}
+
+` + "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
+		legacyPatched: `	// HANSE: batch-wide seen-line rejection
 	/**
 	 * Native apply stops at the first file whose edit anchors undisplayed lines and records only that
 	 * file's shown lines as seen, so a multi-file payload resent verbatim was rejected once per file
@@ -7952,6 +8099,22 @@ function operationFromNative(op: string): Operation | undefined {
 	}
 
 ` + "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
+	},
+	{
+		// 위 #seenLineRejection 의 probe 가 세션 store 대신 임시 store 로 native 세션을 열 수 있게 한다(기본값은 그대로 세션 store).
+		file: "src/edit/index.ts",
+		marker: "\t\t// HANSE: seen-line probe store\n",
+		anchor:
+			"\t\tonPreview?: (error: Error | null, batch: EditPreviewBatch) => void,\n\t): OpenEditSession {\n\t\tconst resolveContext = sessionResolveContext(this.session, { signal });\n\t\tconst native = new EditSession(\n\t\t\tgetEditStore(this.session),\n",
+		patched:
+			"\t\tonPreview?: (error: Error | null, batch: EditPreviewBatch) => void,\n\t\t// HANSE: seen-line probe store\n\t\tstore = getEditStore(this.session),\n\t): OpenEditSession {\n\t\tconst resolveContext = sessionResolveContext(this.session, { signal });\n\t\tconst native = new EditSession(\n\t\t\tstore,\n",
+	},
+	{
+		// 위 #seenLineProbeStore 가 임시 store 를 만들고 그 타입을 적도록 native EditStore 를 가져온다.
+		file: "src/edit/index.ts",
+		marker: "\tEditStore, // HANSE: seen-line probe scratch store\n",
+		anchor: "\teditInspect,\n\ttype EditFileOutcome,\n",
+		patched: "\teditInspect,\n\tEditStore, // HANSE: seen-line probe scratch store\n\ttype EditFileOutcome,\n",
 	},
 	{
 		// 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 부모 state 의 alias 로 만들어지면서
