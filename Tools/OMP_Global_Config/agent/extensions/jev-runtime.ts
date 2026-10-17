@@ -10,6 +10,7 @@ import {
   type JobIncarnation,
   type JobObservationClock,
 } from "./lib/job-observation";
+import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
@@ -836,7 +837,6 @@ function renderTodoProgressAdvice(assessment: TodoProgressAssessment): string {
 // emitBeforeAgentStart → 같은 commit으로 메시지 전달). 원문 system prompt·대화·비밀 항목은 보내지 않는다.
 // ---------------------------------------------------------------------------
 
-const MEMORY_SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bearer|secret|token|credential|client[_ -]?secret)\b|(?:비밀번호|자격증명|인증키|토큰)|(?:sk-[A-Za-z0-9_-]{12,})/i;
 const MEMORY_ITEM_LIMIT = 8;
 const MEMORY_EXCERPT_CHARS = 500;
 const REQUEST_EXCERPT_CHARS = 1200;

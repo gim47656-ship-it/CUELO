@@ -133,7 +133,9 @@ function validToolTotal(raw: unknown): raw is RunToolTotal {
   const total = raw as RunToolTotal;
   return typeof total.toolName === "string"
     && typeof total.calls === "number" && Number.isFinite(total.calls)
-    && typeof total.errors === "number" && Number.isFinite(total.errors);
+    && typeof total.failed === "number" && Number.isFinite(total.failed)
+    && typeof total.noMatch === "number" && Number.isFinite(total.noMatch)
+    && typeof total.cancelled === "number" && Number.isFinite(total.cancelled);
 }
 
 function validExperimentConfigRole(raw: unknown): raw is ExperimentConfigRole {

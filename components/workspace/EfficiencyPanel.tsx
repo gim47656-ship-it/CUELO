@@ -361,7 +361,12 @@ export function GovernorDetail({ detail, t }: {
             {detail.toolTotals.map((tool) => (
               <Metric
                 key={tool.toolName}
-                label={`${tool.toolName} · ${t("efficiency.toolErrorsValue").replace("{value}", String(tool.errors))}`}
+                label={[
+                  tool.toolName,
+                  t("efficiency.toolFailedValue").replace("{value}", String(tool.failed)),
+                  ...(tool.noMatch > 0 ? [t("efficiency.toolNoMatchValue").replace("{value}", String(tool.noMatch))] : []),
+                  ...(tool.cancelled > 0 ? [t("efficiency.toolCancelledValue").replace("{value}", String(tool.cancelled))] : []),
+                ].join(" · ")}
                 value={formatNumber(tool.calls)}
               />
             ))}

@@ -152,7 +152,12 @@ export interface RunBottleneck {
 export interface RunToolTotal {
   toolName: string;
   calls: number;
-  errors: number;
+  /** `isError`이고 아래 두 분류에 들지 않는 결과(진짜 실패). */
+  failed: number;
+  /** `grep`·`test`류가 일치 없이 exit 1로 끝난 결과. 실패가 아니다. */
+  noMatch: number;
+  /** 사용자 메시지로 건너뛰었거나 중단·취소된 호출. */
+  cancelled: number;
 }
 
 /** 목록 한 줄. 상세를 열지 않아도 결론이 보이는 값만 담는다. */

@@ -359,10 +359,97 @@ interface TranscriptScan {
    * `messages` 표에 넣고 구분 열을 남기지 않으므로 transcript의 id로만 가려낸다.
    */
   helperEntries: Map<string, { purpose: string; role: string | null }>;
+  /** `isError` 도구 결과의 toolCallId → 분류. 오류가 아닌 결과는 담지 않는다. */
+  toolErrors: Map<string, ToolErrorKind>;
+}
+
+export type ToolErrorKind = "failed" | "noMatch" | "cancelled";
+
+const HARNESS_SKIP_PREFIX = "실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지가 도착했다";
+const NO_MATCH_COMMAND = /^(?:grep|egrep|fgrep|rg|test|\[\[?)(?:\s|$)/;
+
+/**
+ * 스크립트를 단순 명령 구간으로 나눈다. 줄바꿈·`;`·`&&`·`||`·`|`에서 자르고, 따옴표('…', "…")와
+ * 백슬래시로 이스케이프한 문자 안의 구분자는 무시한다. 따옴표 밖 heredoc(`<<`, `<<-`)이나 닫히지
+ * 않은 따옴표가 있으면 구간을 믿을 수 없으므로 빈 배열을 돌려준다.
+ */
+function splitSimpleCommands(script: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  const flush = () => {
+    if (current.trim()) segments.push(current.trim());
+    current = "";
+  };
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && quote === '"' && i + 1 < script.length) current += script[++i];
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch + (script[i + 1] ?? "");
+      i++;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+    } else if (ch === "<" && script[i + 1] === "<" && script[i + 2] !== "<" && script[i - 1] !== "<") {
+      return [];
+    } else if (ch === "\n" || ch === ";" || ch === "|" || (ch === "&" && script[i + 1] === "&")) {
+      if (ch === "&" || (ch === "|" && script[i + 1] === "|")) i++;
+      flush();
+    } else {
+      current += ch;
+    }
+  }
+  if (quote) return [];
+  flush();
+  return segments;
+}
+
+/** stderr를 버리거나 닫는 리다이렉트. 앞선 명령의 진단이 가려지므로 grep이 실제로 돌았는지 알 수 없다. */
+const STDERR_SUPPRESSED = /2>\s*\/dev\/null|2>&-|&>\s*\/dev\/null|>\s*\/dev\/null\s+2>&1/;
+
+/** `cd`가 실패하는 식으로 grep이 아예 실행되지 않았다는 신호. 출력에 이 표지가 있으면 무일치로 보지 않는다. */
+const SHELL_ERROR_MARKERS = [
+  ": No such file or directory",
+  ": command not found",
+  ": Permission denied",
+  "syntax error",
+  "Traceback (most recent call last)",
+];
+
+// bash.ts(node_modules/@oh-my-pi/pi-coding-agent/src/tools/bash.ts)가 만드는 위치에만 맞춘다. 명령 출력이
+// 같은 문구를 찍어도 흉내 내지 못하게 한다.
+// - 종료 줄: `#buildCompletedResult`(727행)가 출력 뒤 `"", "Command exited with code N"`을 마지막 줄로 붙인다.
+// - `[Command cancelled]`: 로컬 실행기가 출력 맨 앞에 붙인다(681-685행, 1600-1606행). 뒤에 capture notice가 붙을 수 있다.
+// - `[Command aborted]`: 앞 표지가 없을 때 출력 뒤 `"\n\n[Command aborted]"`로 붙이고(685행), 출력이 없으면 `Command aborted`
+//   한 줄이다. 둘 다 뒤에 `\n\n[capture notice]`가 올 수 있다.
+const EXIT_CODE_LINE = /(?:^|\n)Command exited with code (\d+)\s*$/;
+const ABORTED_TAIL = /(?:^Command aborted|\n\n\[Command aborted\])(?:\n\n\[[^\n]*\])?\s*$/;
+
+/**
+ * 오류로 기록된 도구 결과를 가른다. 보수적으로, 근거가 분명한 것만 `cancelled`·`noMatch`로 두고
+ * 나머지는 모두 `failed`다.
+ */
+export function classifyToolError(toolName: string, command: string | null, text: string): ToolErrorKind {
+  if (text.startsWith(HARNESS_SKIP_PREFIX)) return "cancelled";
+  if (toolName !== "bash") return "failed";
+  // 실제 중단·취소 결과에는 종료 줄이 없다. 종료 줄이 있으면 명령이 표지를 흉내 낸 것이다.
+  const exit = EXIT_CODE_LINE.exec(text);
+  if (!exit && (text.startsWith("[Command cancelled]") || ABORTED_TAIL.test(text))) return "cancelled";
+  if (!command || exit?.[1] !== "1") return "failed";
+  if (SHELL_ERROR_MARKERS.some((marker) => text.includes(marker))) return "failed";
+  const segments = splitSimpleCommands(command);
+  const last = segments.pop() ?? "";
+  if (segments.some((segment) => STDERR_SUPPRESSED.test(segment))) return "failed";
+  return NO_MATCH_COMMAND.test(last) ? "noMatch" : "failed";
 }
 
 function emptyScan(): TranscriptScan {
-  return { titles: new Map(), effortTimeline: [], roleMap: new Map(), helperEntries: new Map() };
+  return { titles: new Map(), effortTimeline: [], roleMap: new Map(), helperEntries: new Map(), toolErrors: new Map() };
 }
 
 /** 스캔 캐시 상한. 오래된 것부터 버린다. */
@@ -394,6 +481,53 @@ function scanTranscriptFile(file: string): TranscriptScan {
   return scan;
 }
 
+/** assistant 줄의 `bash` toolCall 블록에서 toolCallId → command를 모은다. */
+function collectBashCommands(line: string, out: Map<string, string>): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+  const record = parsed as { message?: { content?: unknown } };
+  const content = record.message?.content;
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const call = block as { type?: unknown; id?: unknown; name?: unknown; arguments?: { command?: unknown } };
+    if (call.type === "toolCall" && call.name === "bash" && typeof call.id === "string" && typeof call.arguments?.command === "string") {
+      out.set(call.id, call.arguments.command);
+    }
+  }
+}
+
+function classifyToolErrors(errorLines: string[], bashCommands: Map<string, string>): Map<string, ToolErrorKind> {
+  const result = new Map<string, ToolErrorKind>();
+  for (const line of errorLines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = parsed as { message?: { toolCallId?: unknown; toolName?: unknown; isError?: unknown; content?: unknown } };
+    const message = record.message;
+    if (!message || message.isError !== true || typeof message.toolCallId !== "string") continue;
+    const texts: string[] = [];
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (!block || typeof block !== "object") continue;
+        const textBlock = block as { type?: unknown; text?: unknown };
+        if (textBlock.type === "text" && typeof textBlock.text === "string") texts.push(textBlock.text);
+      }
+    }
+    const text = texts.join("\n");
+    const toolName = typeof message.toolName === "string" ? message.toolName : "";
+    result.set(message.toolCallId, classifyToolError(toolName, bashCommands.get(message.toolCallId) ?? null, text));
+  }
+  return result;
+}
+
 function readTranscriptFile(file: string): TranscriptScan {
   const scan = emptyScan();
   let raw: string;
@@ -403,6 +537,8 @@ function readTranscriptFile(file: string): TranscriptScan {
     return scan;
   }
   const taskLines: string[] = [];
+  const errorLines: string[] = [];
+  const bashCommands = new Map<string, string>();
   for (const line of raw.split("\n")) {
     if (line.startsWith('{"type":"thinking_level_change"')) {
       let parsed: unknown;
@@ -453,11 +589,17 @@ function readTranscriptFile(file: string): TranscriptScan {
             }
           }
         }
-      } else if (line.includes('"name":"task"')) {
-        taskLines.push(line);
+      } else {
+        if (line.includes('"name":"task"')) taskLines.push(line);
+        if (line.includes('"role":"toolResult"') && line.includes('"isError":true')) {
+          errorLines.push(line);
+        } else if (line.includes('"type":"toolCall"') && line.includes('"name":"bash"')) {
+          collectBashCommands(line, bashCommands);
+        }
       }
     }
   }
+  scan.toolErrors = classifyToolErrors(errorLines, bashCommands);
   scan.roleMap = parseTaskRoleMap(taskLines);
   return scan;
 }
@@ -492,6 +634,7 @@ interface ToolCallRow {
   tool_name: string;
   timestamp: number;
   is_error: number | null;
+  tool_call_id: string;
 }
 
 interface UserRow {
@@ -644,7 +787,7 @@ function loadSessionDataByParent(db: Database, sessionId: string, parentFile: st
     .all(...files);
   const toolCalls = db
     .query<ToolCallRow, string[]>(
-      `SELECT session_file, tool_name, timestamp, is_error
+      `SELECT session_file, tool_call_id, tool_name, timestamp, is_error
        FROM tool_calls WHERE session_file IN (${placeholders})`,
     )
     .all(...files);
@@ -835,16 +978,21 @@ function buildRoleSegment(
   };
 }
 
-function buildToolTotals(rows: ToolCallRow[]): RunToolTotal[] {
-  const grouped = new Map<string, { calls: number; errors: number }>();
+function buildToolTotals(rows: ToolCallRow[], data: SessionData): RunToolTotal[] {
+  const grouped = new Map<string, { calls: number; failed: number; noMatch: number; cancelled: number }>();
   for (const row of rows) {
-    const entry = grouped.get(row.tool_name) ?? { calls: 0, errors: 0 };
+    const entry = grouped.get(row.tool_name) ?? { calls: 0, failed: 0, noMatch: 0, cancelled: 0 };
     entry.calls += 1;
-    if ((row.is_error ?? 0) !== 0) entry.errors += 1;
+    if ((row.is_error ?? 0) !== 0) {
+      const scan = row.session_file === data.parentFile ? data.parentScan : data.childScans.get(row.session_file);
+      // transcript에서 못 찾은 오류는 조용히 빠지지 않도록 실패로 센다.
+      const kind = scan?.toolErrors.get(row.tool_call_id) ?? "failed";
+      entry[kind] += 1;
+    }
     grouped.set(row.tool_name, entry);
   }
   return [...grouped.entries()]
-    .map(([toolName, totals]) => ({ toolName, calls: totals.calls, errors: totals.errors }))
+    .map(([toolName, totals]) => ({ toolName, ...totals }))
     .sort((a, b) => b.calls - a.calls || (a.toolName < b.toolName ? -1 : a.toolName > b.toolName ? 1 : 0))
     .slice(0, 8);
 }
@@ -996,7 +1144,7 @@ function buildSessionRuns(data: SessionData, harness: readonly HarnessSegment[] 
         unmeasuredMs,
       ),
       unmeasuredMs,
-      toolTotals: buildToolTotals(bucketTools),
+      toolTotals: buildToolTotals(bucketTools, data),
       unmeasured,
     });
   }
