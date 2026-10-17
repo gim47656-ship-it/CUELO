@@ -5,8 +5,9 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { Tokenizer, type AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
-import { closeSync, existsSync, fstatSync, openSync, readSync } from "fs";
-import { normalize as normalizePath } from "path";
+import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync } from "fs";
+import { stat } from "fs/promises";
+import { dirname, join, normalize as normalizePath } from "path";
 import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
 import type { TodoPhase } from "./todo-state";
 import { reduceDispatchRecord } from "./answer-status/dispatch";
@@ -17,7 +18,7 @@ import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity } from "@
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
-import { resolveProject, type ProjectInfo } from "./worktree";
+import { peekSessionProject, rememberPlainSessionProject, resolveProject, type SessionProjectGrouping } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent, parseLiveTranscriptSpeaker } from "./live-types";
 import { GPT6_REPLY_CUSTOM_TYPE, GPT6_REPLY_SOURCE } from "./gpt6-bridge";
@@ -25,11 +26,81 @@ import { latestThinkingCeiling } from "./thinking-ceiling";
 
 export { getAgentDir };
 
+/** Git environment overrides that can change which repository, git dir or work tree `rev-parse` reports. */
+const GIT_DISCOVERY_ENV = [
+  "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_OBJECT_DIRECTORY",
+] as const;
+
+type DirVerdict = "clear" | "git";
+
+/** `true` when the path exists, `false` when it is absent, `null` for any other failure. */
+async function pathState(path: string): Promise<{ isDirectory: boolean } | false | null> {
+  try {
+    return { isDirectory: (await stat(path)).isDirectory() };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? false : null;
+  }
+}
+
+/**
+ * Whether `dir` can only ever leave `gitDir === commonDir` for any repository git might discover through it.
+ * `.git` and a bare-style `HEAD` are tested independently, because an unusable `.git` directory can sit next to
+ * the `HEAD` of a git dir git does accept. "clear" - no `HEAD`, and `.git` is absent or an ordinary directory
+ * without `commondir` (whether git accepts it does not matter, so nothing about its contents is validated);
+ * "git" - anything else (a `.git` file, `commondir`, a `HEAD`, an unreadable entry), which only git can judge.
+ */
+async function examineDir(dir: string): Promise<DirVerdict> {
+  const [dotGit, head] = await Promise.all([pathState(join(dir, ".git")), pathState(join(dir, "HEAD"))]);
+  if (head !== false || dotGit === null) return "git";
+  if (dotGit === false) return "clear";
+  return dotGit.isDirectory && await pathState(join(dir, ".git", "commondir")) === false ? "clear" : "git";
+}
+
+/**
+ * True when `resolveProject(cwd)` is known to answer `{ projectRoot: cwd, isWorktree: false }` without
+ * spawning git: no Git env override and every physical ancestor of `cwd` up to the root is "clear". Git
+ * discovery stops at some ancestor it accepts, and linked-worktree top levels need `gitDir !== commonDir`,
+ * which no "clear" ancestor can produce, whichever one git picks. Everything else (a `.git` file,
+ * `commondir`, a bare-style `HEAD`, an unreadable entry, a missing cwd) returns false.
+ */
+async function isPlainProjectDir(cwd: string, verdicts: Map<string, Promise<DirVerdict>>): Promise<boolean> {
+  if (GIT_DISCOVERY_ENV.some((name) => process.env[name] !== undefined)) return false;
+  let dir: string;
+  try {
+    if (!existsSync(cwd)) return false;
+    dir = realpathSync(cwd);
+  } catch {
+    return false;
+  }
+  for (;;) {
+    let verdict = verdicts.get(dir);
+    if (!verdict) {
+      verdict = examineDir(dir);
+      verdicts.set(dir, verdict);
+    }
+    if (await verdict === "git") return false;
+    const parent = dirname(dir);
+    if (parent === dir) return true;
+    dir = parent;
+  }
+}
+
+/** The ProjectInfo fields session grouping reads. Only a cold, provably plain directory skips `resolveProject`. */
+async function sessionProject(cwd: string, verdicts: Map<string, Promise<DirVerdict>>): Promise<SessionProjectGrouping> {
+  const cached = peekSessionProject(cwd);
+  if (cached) return cached;
+  if (await isPlainProjectDir(cwd, verdicts)) return rememberPlainSessionProject(cwd);
+  return resolveProject(cwd);
+}
+
 export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
   const uniqueCwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
-  const projectByCwd = new Map<string, ProjectInfo>();
+  const projectByCwd = new Map<string, SessionProjectGrouping>();
+  const verdicts = new Map<string, Promise<DirVerdict>>();
   await Promise.all(uniqueCwds.map(async (cwd) => {
-    projectByCwd.set(cwd, await resolveProject(cwd));
+    projectByCwd.set(cwd, await sessionProject(cwd, verdicts));
   }));
 
   return sessions.map((session) => {

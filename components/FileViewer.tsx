@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, memo, type CSSProperties, type MouseEvent } from "react";
 import {
   Prism as SyntaxHighlighter,
   createElement as renderSyntaxNode,
@@ -195,6 +195,52 @@ function SourceCodeRenderer({ rows, stylesheet, useInlineStyles, wrapLines }: So
     );
   });
 }
+
+interface SourceViewProps {
+  content: string;
+  language: string;
+  isDark: boolean;
+  wrapLines: boolean;
+}
+
+// Highlighting a whole file costs hundreds of milliseconds, so it must not re-run when only the
+// toolbar state around it changes (git diff arriving, the live-sync indicator, the line selection).
+const SourceView = memo(function SourceView({ content, language, isDark, wrapLines }: SourceViewProps) {
+  return (
+    <SyntaxHighlighter
+      className={wrapLines ? "file-source-view is-wrapped" : "file-source-view"}
+      language={language === "text" ? "plaintext" : language}
+      style={isDark ? vscDarkPlus : vs}
+      showLineNumbers
+      lineNumberStyle={{
+        ...FILE_LINE_NUMBER_STYLE,
+      }}
+      customStyle={{
+        margin: 0,
+        padding: 0,
+        border: 0,
+        background: "var(--bg)",
+        ...FILE_CODE_STYLE,
+        width: wrapLines ? "100%" : "max-content",
+        minWidth: "100%",
+        minHeight: "100%",
+        overflow: "visible",
+      }}
+      codeTagProps={{
+        style: {
+          fontFamily: "var(--font-mono)",
+          overflowWrap: wrapLines ? "anywhere" : "normal",
+        },
+      }}
+      renderer={(rendererProps) => (
+        <SourceCodeRenderer {...rendererProps} wrapLines={wrapLines} />
+      )}
+      wrapLongLines={wrapLines}
+    >
+      {content}
+    </SyntaxHighlighter>
+  );
+});
 
 function getFileApiUrl(
   filePath: string,
@@ -954,11 +1000,13 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   useEffect(() => {
     const updateSelectedLineRange = () => {
       const root = contentRef.current;
-      setSelectedLineRange(
-        onMentionLines && displayMode === "source" && root
-          ? getSelectedSourceLineRange(root, window.getSelection())
-          : null,
-      );
+      const next = onMentionLines && displayMode === "source" && root
+        ? getSelectedSourceLineRange(root, window.getSelection())
+        : null;
+      // selectionchange fires for every caret move; an unchanged range must not re-render the viewer.
+      setSelectedLineRange((current) => (
+        current?.startLine === next?.startLine && current?.endLine === next?.endLine ? current : next
+      ));
     };
 
     updateSelectedLineRange();
@@ -1234,38 +1282,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             </ReactMarkdown>
           </div>
         ) : (
-          <SyntaxHighlighter
-            className={wrapLines ? "file-source-view is-wrapped" : "file-source-view"}
-            language={language === "text" ? "plaintext" : language}
-            style={isDark ? vscDarkPlus : vs}
-            showLineNumbers
-            lineNumberStyle={{
-              ...FILE_LINE_NUMBER_STYLE,
-            }}
-            customStyle={{
-              margin: 0,
-              padding: 0,
-              border: 0,
-              background: "var(--bg)",
-              ...FILE_CODE_STYLE,
-              width: wrapLines ? "100%" : "max-content",
-              minWidth: "100%",
-              minHeight: "100%",
-              overflow: "visible",
-            }}
-            codeTagProps={{
-              style: {
-                fontFamily: "var(--font-mono)",
-                overflowWrap: wrapLines ? "anywhere" : "normal",
-              },
-            }}
-            renderer={(rendererProps) => (
-              <SourceCodeRenderer {...rendererProps} wrapLines={wrapLines} />
-            )}
-            wrapLongLines={wrapLines}
-          >
-            {content}
-          </SyntaxHighlighter>
+          <SourceView content={content} language={language} isDark={isDark} wrapLines={wrapLines} />
         )}
       </div>
     </div>

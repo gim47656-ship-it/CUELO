@@ -55,8 +55,9 @@ function errorFrame(code: string) {
 	};
 }
 
-type Mode = "native-lane" | "steer-accepted" | "steer-failed" | "stray-inflight" | "other-error-on-steer";
+type Mode = "native-lane" | "steer-accepted" | "steer-failed" | "stray-inflight" | "other-error-on-steer" | "text-then-native-lane";
 let mode: Mode = "native-lane";
+let hangRecovery = false;
 let received: string[] = [];
 let created = 0;
 let creates: string[] = [];
@@ -76,6 +77,29 @@ const server = Bun.serve({
 				const id = `resp_${created}`;
 				ws.send(JSON.stringify({ type: "response.created", response: { id } }));
 				if (mode === "stray-inflight") ws.send(JSON.stringify(errorFrame("unsupported_native_inflight_message")));
+				// text-then-native-lane: 첫 응답은 보이는 commentary 를 내보낸 뒤 끝나지 않고(steer 거절을 기다린다),
+				// 이후 응답은 짧은 답을 하고 끝난다. 거절 뒤 서버가 첫 응답을 더 보내지 않는 관측 형태다.
+				if (mode === "text-then-native-lane") {
+					const msg = { type: "message", id: `msg_${id}`, role: "assistant", content: [] };
+					const text = creates.length === 1 ? "VISIBLE_COMMENTARY" : "NEXT_ANSWER";
+					const send = (out: unknown) => ws.readyState === 1 && ws.send(JSON.stringify(out));
+					send({ type: "response.output_item.added", output_index: 0, item: msg });
+					send({ type: "response.content_part.added", output_index: 0, item_id: msg.id, content_index: 0, part: { type: "output_text", text: "" } });
+					send({ type: "response.output_text.delta", output_index: 0, item_id: msg.id, content_index: 0, delta: text });
+					if (creates.length > 1 && !hangRecovery) {
+						const done = { ...msg, content: [{ type: "output_text", text }] };
+						setTimeout(() => send({ type: "response.output_item.done", output_index: 0, item: done }), 20);
+						setTimeout(
+							() =>
+								send({
+									type: "response.completed",
+									response: { id, status: "completed", output: [done], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+								}),
+							40,
+						);
+					}
+					return;
+				}
 				// 스트리밍 중인 턴: steer 가 도착한 뒤에 끝낸다.
 				setTimeout(
 					() =>
@@ -94,7 +118,8 @@ const server = Bun.serve({
 				);
 			} else if (frame.type === "response.steer") {
 				const steer = { id: `steer_${received.length}`, previous_response_id: frame.previous_response_id };
-				if (mode === "native-lane") ws.send(JSON.stringify(errorFrame("unsupported_native_inflight_message")));
+				if (mode === "native-lane" || mode === "text-then-native-lane")
+					ws.send(JSON.stringify(errorFrame("unsupported_native_inflight_message")));
 				else if (mode === "other-error-on-steer") ws.send(JSON.stringify(errorFrame("invalid_request_error")));
 				else if (mode === "steer-accepted") ws.send(JSON.stringify({ type: "response.steer.accepted", steer }));
 				else if (mode === "steer-failed")
@@ -265,7 +290,82 @@ try {
 		assistants.length === 1 && assistants[0]?.stopReason === "stop",
 		JSON.stringify(assistants.map(m => m.stopReason)),
 	);
+
+	console.log("[10] 실제 Agent 루프: 보인 commentary 뒤 native 거절 — 입력·보인 출력이 각각 한 번씩 남고 오류로 끝나지 않는다");
+	reset("text-then-native-lane");
+	const partialPool = new Map<string, unknown>();
+	const partialAgent = new Agent({
+		initialState: { model: fixtureModel(), systemPrompt: "", tools: [], messages: [] },
+		sessionId: "native-inflight-partial",
+		streamFn: (model, context, options) =>
+			streamOpenAICodexResponses(model, context, { ...options, apiKey: fakeJwt(), providerSessionState: partialPool }),
+	});
+	let commentarySeen = false;
+	partialAgent.subscribe(event => {
+		if (event.type !== "message_update" || commentarySeen) return;
+		if (JSON.stringify(event.message).includes("VISIBLE_COMMENTARY")) {
+			commentarySeen = true;
+			partialAgent.steer({ role: "user", content: STEER_TEXT, timestamp: Date.now() });
+		}
+	});
+	const partialRun = partialAgent.prompt("시작");
+	const partialDeadline = Bun.sleep(5000).then(() => "timeout" as const);
+	const partialOutcome = await Promise.race([partialRun.then(() => partialAgent.waitForIdle()).then(() => "idle" as const), partialDeadline]);
+	if (partialOutcome === "timeout") {
+		partialAgent.abort();
+		await partialAgent.waitForIdle();
+	}
+	const partialAssistants = partialAgent.state.messages.filter(m => m.role === "assistant") as Array<{ stopReason?: string; errorMessage?: string }>;
+	const partialHistory = JSON.stringify(partialAgent.state.messages);
+	const secondCreate = creates[1] ?? "";
+	check("run 이 완료된다", partialOutcome === "idle", partialOutcome);
+	check("response.steer 는 한 번만 시도됐다", steerFrames() === 1, JSON.stringify(received));
+	check("거절 오류가 사용자 오류로 남지 않는다", partialAssistants.every(m => m.stopReason !== "error"), JSON.stringify(partialAssistants));
+	check("steer 입력이 다음 일반 response.create 에 정확히 한 번 실린다", creates.length === 2 && secondCreate.split(STEER_TEXT).length - 1 === 1, String(creates.length));
+	check(
+		"이미 보인 commentary 는 다음 요청에 한 번, 입력보다 앞에 실린다",
+		secondCreate.split("VISIBLE_COMMENTARY").length - 1 === 1 && secondCreate.indexOf("VISIBLE_COMMENTARY") < secondCreate.indexOf(STEER_TEXT),
+	);
+	check("이미 보인 commentary 는 대화 기록에 한 번만 있다", partialHistory.split("VISIBLE_COMMENTARY").length - 1 === 1);
+	check("steer 입력도 대화 기록에 한 번만 있다", partialHistory.split(STEER_TEXT).length - 1 === 1);
+	check("거절된 응답을 이어 받은 새 응답이 기록되고 둘 다 stop 이다", partialAssistants.length === 2 && partialAssistants.every(m => m.stopReason === "stop"), JSON.stringify(partialAssistants));
+
+	console.log("[11] 보인 commentary 뒤 거절이 일어나고 재요청이 나간 뒤 abort 하면 aborted 로 끝나고 오류 문구가 없다");
+	// 재요청(두 번째 response.create)은 거절을 처리한 뒤에만 나간다. 그 응답을 끝내지 않고 재요청 도착을 기다린 뒤 abort 하므로
+	// abort 는 거절보다 앞설 수 없다(타이머 경쟁 없음).
+	reset("text-then-native-lane");
+	hangRecovery = true;
+	const abortAgent = new Agent({
+		initialState: { model: fixtureModel(), systemPrompt: "", tools: [], messages: [] },
+		sessionId: "native-inflight-partial-abort",
+		streamFn: (model, context, options) =>
+			streamOpenAICodexResponses(model, context, { ...options, apiKey: fakeJwt(), providerSessionState: new Map() }),
+	});
+	let abortArmed = false;
+	abortAgent.subscribe(event => {
+		if (event.type !== "message_update" || abortArmed) return;
+		if (JSON.stringify(event.message).includes("VISIBLE_COMMENTARY")) {
+			abortArmed = true;
+			abortAgent.steer({ role: "user", content: STEER_TEXT, timestamp: Date.now() });
+			void (async () => {
+				while (creates.length < 2) await Bun.sleep(5);
+				abortAgent.abort();
+			})();
+		}
+	});
+	const abortRun = abortAgent.prompt("시작");
+	const abortOutcome = await Promise.race([abortRun.then(() => abortAgent.waitForIdle()).then(() => "idle" as const), Bun.sleep(5000).then(() => "timeout" as const)]);
+	if (abortOutcome === "timeout") {
+		abortAgent.abort();
+		await abortAgent.waitForIdle();
+	}
+	const abortAssistants = abortAgent.state.messages.filter(m => m.role === "assistant") as Array<{ stopReason?: string; errorMessage?: string }>;
+	check("run 이 abort 로 끝난다", abortOutcome === "idle" && abortAssistants.at(-1)?.stopReason === "aborted", `${abortOutcome} ${JSON.stringify(abortAssistants.map(m => m.stopReason))}`);
+	check("inflight 오류 문구가 기록에 없다", !JSON.stringify(abortAgent.state.messages).includes("unsupported_native_inflight_message"));
+	check("거절은 abort 전에 일어났다: steer 프레임 1개 뒤 재요청이 나갔다", steerFrames() === 1 && creates.length === 2, JSON.stringify(received));
+	check("steer 입력은 재요청에 정확히 한 번 실렸다", (creates[1] ?? "").split(STEER_TEXT).length - 1 === 1);
 } finally {
+	hangRecovery = false;
 	server.stop(true);
 }
 

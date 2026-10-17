@@ -187,9 +187,15 @@ export function SideChatPanel({
   useEffect(() => {
     setTurns(normalizedSessionId ? historyStore.read(normalizedSessionId) : []);
   }, [historyStore, normalizedSessionId]);
+  // 숨은 탭도 덱 안에 마운트된 채로 남는다. 답변 얼굴을 정하는 세션 전체 조회(수백 KB~수 MB)는
+  // 사이드챗이 실제로 보일 때 세션마다 한 번만 한다.
+  const identityReadForRef = useRef<string | null>(null);
   useEffect(() => {
     setAssistantIdentity(null);
-    if (!normalizedSessionId) return;
+    identityReadForRef.current = null;
+  }, [normalizedSessionId]);
+  useEffect(() => {
+    if (!visible || !normalizedSessionId || identityReadForRef.current === normalizedSessionId) return;
     let current = true;
     const sid = normalizedSessionId;
     void fetch(`/api/sessions/${encodeURIComponent(sid)}?deferThinking=1&deferMedia=1`, { cache: "no-store" })
@@ -198,15 +204,19 @@ export function SideChatPanel({
         return latestSideChatAssistantIdentity(await response.json());
       })
       .then((identity) => {
-        if (current) setAssistantIdentity(identity ? { ...identity, sessionId: sid } : null);
+        if (!current) return;
+        identityReadForRef.current = sid;
+        setAssistantIdentity(identity ? { ...identity, sessionId: sid } : null);
       })
       .catch(() => {
-        if (current) setAssistantIdentity(null);
+        if (!current) return;
+        identityReadForRef.current = sid;
+        setAssistantIdentity(null);
       });
     return () => {
       current = false;
     };
-  }, [normalizedSessionId]);
+  }, [normalizedSessionId, visible]);
   // 레지스트리의 flight에 재부착한다. 종료 결과(중단 notice·오류 entry·
   // 실패 질문 복원·완료 모델)는 시작한 인스턴스가 아니라 현재 마운트된
   // 패널이 outcome으로 받아 처리하므로, 닫힘·재부모화 뒤에도 유실되지

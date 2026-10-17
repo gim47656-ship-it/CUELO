@@ -12121,6 +12121,20 @@ function summarizeAutoLearnUsage(messages: readonly AgentMessage[], from: number
 			patched: "\t\t\tstate?.steeringUnsupported ||\n",
 		}],
 	},
+	// 2026-10-17 진단 전용: 거절 로그에도 수락 로그와 같은 prepareMs/ackMs 를 남긴다. 이미 있는 claimedAt/sentAt
+	// 시각만 쓰며 새 타이머·재시도·본문 필드·거절 처리 흐름 변경은 없다. 수락 로그는 upstream 그대로다.
+	{
+		file: "../pi-ai/src/providers/openai-codex/live-steering.ts",
+		marker: "message: ack.message,\n\t\t\t\t\t\tprepareMs: Math.round(sentAt - claimedAt),",
+		anchor: `					logger.debug("Codex steering rejected", { responseId, code: ack.code, message: ack.message });`,
+		patched: `					logger.debug("Codex steering rejected", {
+						responseId,
+						code: ack.code,
+						message: ack.message,
+						prepareMs: Math.round(sentAt - claimedAt),
+						ackMs: Math.round(performance.now() - sentAt),
+					});`,
+	},
 	// 2026-09-30 사용자 요청(0.6.6): 일반 구현 선택 질문만 `ask.timeout` 무응답 시 추천안으로 진행한다.
 	// 자동선택은 긍정 opt-in(`autoSelectRecommended: true`)이고 유효한 `recommended`가 필수다. 한 호출의
 	// 모든 질문이 조건을 채울 때만 timeout 을 넘기고, 나머지(기존 호출·승인 질문·plan mode)는 무기한 기다린다.

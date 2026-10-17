@@ -6,6 +6,7 @@ import {
 } from "@/lib/session-reader";
 import { getRpcSessionInfos, getRunningRpcSessionIds } from "@/lib/rpc-manager";
 import { readArchivedIds } from "@/lib/session-archive";
+import { compressedJson } from "@/lib/compressed-json";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,8 @@ export async function GET(req: Request) {
     const archived = readArchivedIds();
     const sessions = mergeSessionLists(persistedSessions, runtimeSessions)
       .filter((s) => (showArchived ? archived.has(s.id) : !archived.has(s.id)));
-    return NextResponse.json(
+    return compressedJson(
+      req,
       { sessions, runningSessionIds: getRunningRpcSessionIds() },
       { headers: { "Cache-Control": "no-store" } },
     );

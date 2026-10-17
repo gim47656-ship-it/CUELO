@@ -726,11 +726,25 @@ const PARENT_TRANSCRIPT_RE =
  */
 function resolveParentSessionFile(db: Database, sessionId: string): string | null {
   const pattern = `%\\_${sessionId.replace(/[\\%_]/g, (char) => `\\${char}`)}.jsonl`;
+  // 파일마다 행이 수백~수천 개라 `LIKE '%…'`는 messages 인덱스 전체(수십만 행)를 훑는다. 고유 session_file만
+  // 인덱스에서 하나씩 건너뛰며(loose index scan) 뽑아 같은 LIKE에 건다. 대상 집합은 messages와
+  // user_messages의 고유 session_file 합집합 그대로다.
   const rows = db
     .query<{ session_file: string }, [string, string]>(
-      `SELECT session_file FROM messages WHERE session_file LIKE ? ESCAPE '\\'
+      `WITH RECURSIVE
+         m(f) AS (
+           SELECT MIN(session_file) FROM messages
+           UNION ALL
+           SELECT (SELECT MIN(session_file) FROM messages WHERE session_file > m.f) FROM m WHERE m.f IS NOT NULL
+         ),
+         u(f) AS (
+           SELECT MIN(session_file) FROM user_messages
+           UNION ALL
+           SELECT (SELECT MIN(session_file) FROM user_messages WHERE session_file > u.f) FROM u WHERE u.f IS NOT NULL
+         )
+       SELECT f AS session_file FROM m WHERE f LIKE ? ESCAPE '\\'
        UNION
-       SELECT session_file FROM user_messages WHERE session_file LIKE ? ESCAPE '\\'`,
+       SELECT f AS session_file FROM u WHERE f LIKE ? ESCAPE '\\'`,
     )
     .all(pattern, pattern);
   const suffix = `_${sessionId}.jsonl`;
@@ -754,16 +768,17 @@ interface SessionData {
 
 function loadSessionDataByParent(db: Database, sessionId: string, parentFile: string): SessionData {
   const stem = parentFile.slice(0, -".jsonl".length);
-  const likeBase = stem.replace(/[\\%_]/g, (char) => `\\${char}`);
+  // 자식 transcript는 `<stem>\` 또는 `<stem>/`로 시작하는 파일이다. `session_file`은 BINARY(UTF-8) 비교라
+  // 같은 접두사 문자열은 `[접두사, 다음 문자)` 구간 하나이고(`/`→`0`, `\`→`]`는 바로 다음 바이트),
+  // 구간 조회는 `idx_messages_session`을 타서 messages 전체를 훑지 않는다. LIKE는 ASCII 대소문자를
+  // 가리지 않아 messages 전체 인덱스를 읽어야 했다. 아래 startsWith 검사는 그대로 두어 판정 계약을 지킨다.
   const childRows = db
-    .query<{ session_file: string }, [string, string]>(
+    .query<{ session_file: string }, [string, string, string, string]>(
       `SELECT DISTINCT session_file FROM messages
-       WHERE session_file LIKE ? ESCAPE '\\' OR session_file LIKE ? ESCAPE '\\'
+       WHERE (session_file >= ? AND session_file < ?) OR (session_file >= ? AND session_file < ?)
        ORDER BY session_file ASC`,
     )
-    // 구분자 `\`도 ESCAPE 문자이므로 두 번 써야 리터럴 백슬래시가 된다.
-    // `\%`로 두면 "%를 리터럴로 매칭"이 되어 자식이 하나도 잡히지 않는다.
-    .all(`${likeBase}\\\\%`, `${likeBase}/%`);
+    .all(`${stem}\\`, `${stem}]`, `${stem}/`, `${stem}0`);
   const childFiles = childRows
     .map((row) => row.session_file)
     .filter(
@@ -1311,19 +1326,23 @@ export function listExperiments(
       )
       .all()
       .map((row) => row.folder);
+    // 부모 후보는 user_messages의 고유 session_file이다. user_messages와 messages를 바로 조인하면
+    // (요청 수 × 응답 수)만큼 행이 불어나므로, 고유 파일마다 가장 늦은 응답 시각을 인덱스로 한 번씩만 읽는다.
+    // 마지막 응답 시각이 같거나 없는 세션의 순서는 이전 GROUP BY가 내던 session_file 오름차순으로 못박는다.
+    // DISTINCT의 방출 순서는 쿼리 계획에 달려 있어, 이 보조 키가 없으면 계획이 바뀔 때 동률의 순서가 달라진다.
     const parentRows = folder
       ? db
           .query<{ session_file: string }, [string]>(
             `SELECT u.session_file AS session_file
-             FROM user_messages u LEFT JOIN messages m ON m.session_file = u.session_file
-             WHERE u.folder = ? GROUP BY u.session_file ORDER BY MAX(m.timestamp) DESC`,
+             FROM (SELECT DISTINCT session_file FROM user_messages WHERE folder = ?) u
+             ORDER BY (SELECT MAX(timestamp) FROM messages WHERE session_file = u.session_file) DESC, u.session_file COLLATE BINARY ASC`,
           )
           .all(folder)
       : db
           .query<{ session_file: string }, []>(
             `SELECT u.session_file AS session_file
-             FROM user_messages u LEFT JOIN messages m ON m.session_file = u.session_file
-             GROUP BY u.session_file ORDER BY MAX(m.timestamp) DESC`,
+             FROM (SELECT DISTINCT session_file FROM user_messages) u
+             ORDER BY (SELECT MAX(timestamp) FROM messages WHERE session_file = u.session_file) DESC, u.session_file COLLATE BINARY ASC`,
           )
           .all();
     // 자식 transcript를 먼저 버리고 나서 개수를 센다. 먼저 자르면 최근 세션이

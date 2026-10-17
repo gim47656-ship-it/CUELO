@@ -34,19 +34,52 @@ export interface WorktreeInfo {
   isMain: boolean;
 }
 
+/** What session grouping reads from a project. */
+export type SessionProjectGrouping = Pick<ProjectInfo, "projectRoot" | "branch" | "isWorktree">;
+
+type ProjectCacheEntry =
+  | { info: ProjectInfo; expiresAt: number }
+  // A directory proven plain by file metadata alone: enough to group sessions, never to answer
+  // `branch` or `isTopLevel`, so `resolveProject` ignores it and replaces it with the full result.
+  | { grouping: SessionProjectGrouping; expiresAt: number };
+
 declare global {
-  var __ompProjectCache: Map<string, { info: ProjectInfo; expiresAt: number }> | undefined;
+  var __ompProjectCache: Map<string, ProjectCacheEntry> | undefined;
 }
 
 const PROJECT_CACHE_TTL_MS = 60_000;
 
-function getProjectCache(): Map<string, { info: ProjectInfo; expiresAt: number }> {
+function getProjectCache(): Map<string, ProjectCacheEntry> {
   if (!globalThis.__ompProjectCache) globalThis.__ompProjectCache = new Map();
   return globalThis.__ompProjectCache;
 }
 
+function freshEntry(cwd: string): ProjectCacheEntry | undefined {
+  const cached = getProjectCache().get(cwd);
+  return cached && cached.expiresAt > Date.now() ? cached : undefined;
+}
+
 export function invalidateProjectCache(): void {
   globalThis.__ompProjectCache?.clear();
+}
+
+/** Session grouping for `cwd` from the fresh cache entry (full or plain-proof), or undefined. Never resolves. */
+export function peekSessionProject(cwd: string): SessionProjectGrouping | undefined {
+  const entry = freshEntry(cwd);
+  if (!entry) return undefined;
+  return "info" in entry ? entry.info : entry.grouping;
+}
+
+/**
+ * Record that `cwd` was proven a plain directory by metadata: grouping `{ projectRoot: cwd, isWorktree: false }`.
+ * Same cache, key and expiry as a full result. A fresh entry that already exists wins and is returned instead.
+ */
+export function rememberPlainSessionProject(cwd: string): SessionProjectGrouping {
+  const existing = peekSessionProject(cwd);
+  if (existing) return existing;
+  const grouping: SessionProjectGrouping = { projectRoot: cwd, branch: null, isWorktree: false };
+  getProjectCache().set(cwd, { grouping, expiresAt: Date.now() + PROJECT_CACHE_TTL_MS });
+  return grouping;
 }
 
 /**
@@ -81,9 +114,9 @@ function inferRemovedWorktree(cwd: string): ProjectInfo | null {
 }
 
 export async function resolveProject(cwd: string): Promise<ProjectInfo> {
+  const cached = freshEntry(cwd);
+  if (cached && "info" in cached) return cached.info;
   const cache = getProjectCache();
-  const cached = cache.get(cwd);
-  if (cached && cached.expiresAt > Date.now()) return cached.info;
 
   let info: ProjectInfo;
   try {
