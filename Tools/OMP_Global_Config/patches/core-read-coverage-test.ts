@@ -3,6 +3,7 @@
 // [과장] hashline 모드에서 첫 줄이 read 예산보다 크면 본문은 거부 문구뿐인데 "partial, 150.0KB" 전달로 보고했다 → 0 B.
 // [보존] :raw 의 첫 줄 preview 크기 보고, 첫 줄 미전달 시 재개 offset 미제공, 전달 단계 재잘림(spill)에서 재개 offset이
 //        실제 마지막 전달 행 다음이고 중간 생략은 artifact로 회수 가능하다는 안내.
+// [안내] 2026-10-17: 'file:1484:1545' 같은 범위 문법 실수의 not-found 오류에 바른 범위 형태(:N-M, :N+K)를 덧붙인다.
 // patch는 임시 source fixture에만 적용한다. READ_COVERAGE_BASELINE=1 이면 target 설치본 원본을 읽는다(수정 전 RED 확인용).
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -146,6 +147,27 @@ check(
 	/middle lines? \([^)]*\) elided/.test(wide) && artifactId !== undefined && (artifacts.get(artifactId) ?? "").includes(row(200, 400)),
 	JSON.stringify(wide.slice(-240)),
 );
+
+// 범위 문법 실수(2026-10-17 실측 'file:1484:1545'): splitter 가 ':1545' 만 떼어 'file:1484' 를 찾다 실패했고, 안내는
+// 같은 폴더 파일명 후보뿐이었다. 그 후보는 그대로 두고, 첫 콜론 앞이 실제 파일이면 바른 범위 형태를 덧붙인다.
+writeFileSync(join(files, "range.txt"), `${Array.from({ length: 30 }, (_, i) => row(i + 1, 20)).join("\n")}\n`);
+async function readError(path: string): Promise<string> {
+	try {
+		return `delivered: ${await delivered(path)}`;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+const colonRange = await readError("range.txt:3:7");
+check(
+	":N:M 범위: 바른 형태 range.txt:3-7 을 안내하고 같은 폴더 후보도 그대로 싣는다",
+	colonRange.includes("range.txt:3-7") && colonRange.includes("same folder has: range.txt"),
+	JSON.stringify(colonRange),
+);
+const trailingColon = await readError("range.txt:3:");
+check("숫자 둘이 아닌 꼬리: 선택자 형태(:N-M, :N+K)를 안내한다", /':3:' is not a read selector \(use :N-M, :N\+K/.test(trailingColon), JSON.stringify(trailingColon));
+const missingFile = await readError("absent.txt:3-7");
+check("범위는 바르고 파일만 없으면 범위 안내를 붙이지 않는다", missingFile.includes("not found") && !missingFile.includes("' exists;"), JSON.stringify(missingFile));
 
 console.log(`\n결과: ${passes} pass, ${failures} fail`);
 process.exit(failures === 0 ? 0 : 1);

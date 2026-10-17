@@ -7176,10 +7176,37 @@ function staticInstructions(autoRetain: boolean): string {
 		// 폴더는 있는데 파일명 추측 40, 폴더째 없는 경로 18). 원래 오류는 한 줄뿐이라 다음 호출도
 		// 다시 추측했다. 같은 폴더의 비슷한 이름 후보나 "폴더도 없음"을 붙여 다음 호출을 바로 고치게 한다.
 		// 읽기 전용 목록 조회뿐이며 오류 여부·종류(ToolError)는 바꾸지 않는다.
+		// 2026-10-17: 'file:1484:1545' 는 splitter 가 ':1545' 만 떼어 'file:1484' 를 찾다 실패했고, 안내는 파일명 후보뿐이라
+		// 범위 구분자가 '-' 라는 단서가 없었다. 첫 콜론 앞이 실제 파일이면 바른 범위 형태를 한 줄 덧붙인다. 위 적용본은
+		// legacyPatched 로 이 본문으로 바뀐다.
 		file: "src/tools/read.ts",
-		marker: "same folder has: ",
+		marker: "// HANSE: read range selector hint",
 		anchor: `					throw new ToolError(\`Path '\${localReadPath}' not found\`);`,
-		patched: `					let nearby = "";
+		...((legacyPatched) => ({
+			legacyPatched,
+			patched: legacyPatched.replace(
+				`					throw new ToolError(\`Path '\${localReadPath}' not found\${nearby}\`);`,
+				`					// HANSE: read range selector hint
+					// A malformed range such as 'file:1484:1545' peels only ':1545', so the missing path is 'file:1484'.
+					// When the part before the first colon is an existing file, name the range form it needs.
+					let rangeHint = "";
+					const rangeTail = /^((?:.*[/\\\\])?[^/\\\\:]+):([^/\\\\]*\\d[^/\\\\]*)$/.exec(readPath);
+					if (rangeTail && rangeTail[1] !== localReadPath) {
+						const rangeBase = rangeTail[1]!;
+						try {
+							if ((await fs.stat(await resolveReadPathAsync(rangeBase, this.session.cwd))).isFile()) {
+								const bounds = /^L?(\\d+)\\D+L?(\\d+)$/i.exec(rangeTail[2]!);
+								rangeHint = bounds
+									? \` — '\${rangeBase}' exists; write the line range as \${rangeBase}:\${bounds[1]}-\${bounds[2]} (or :N+K for K lines from N), not :\${rangeTail[2]}\`
+									: \` — '\${rangeBase}' exists; ':\${rangeTail[2]}' is not a read selector (use :N-M, :N+K, :N, :-N or :raw)\`;
+							}
+						} catch {
+							// The part before the colon is not a readable file either: keep the plain not-found message.
+						}
+					}
+					throw new ToolError(\`Path '\${localReadPath}' not found\${nearby}\${rangeHint}\`);`,
+			),
+		}))(`					let nearby = "";
 					try {
 						const wanted = path.basename(absolutePath).toLowerCase();
 						const stem = wanted.replace(/\\.[^.]+$/, "") || wanted;
@@ -7198,7 +7225,7 @@ function staticInstructions(autoRetain: boolean): string {
 					} catch {
 						nearby = \` — folder \${path.dirname(localReadPath)} does not exist either\`;
 					}
-					throw new ToolError(\`Path '\${localReadPath}' not found\${nearby}\`);`,
+					throw new ToolError(\`Path '\${localReadPath}' not found\${nearby}\`);`),
 	},
 	// 18.3.0 RETIRE: eval 설명에 browser·computer prelude 문서 전체를 싣지 않고 짧은 안내 +
 	// `xd://eval-browser`·`xd://eval-computer` 장치로 돌리던 네 항목(옛 #181~#184). upstream이
@@ -7829,10 +7856,102 @@ function operationFromNative(op: string): Operation | undefined {
 `,
 	},
 	{
+		// 2026-10-17: native 는 배치에서 보지 않은 줄을 쓴 첫 파일 하나만 거부하고 그 파일의 보인 줄만 본 것으로 기록한다.
+		// "그대로 재시도하면 성공" 안내를 믿고 같은 배치를 5번 다시 보냈는데 매번 다른 파일이 거부됐다. 거부 문구는 아래
+		// #seenLineRejection 이 배치 전체로 모아 만든다. 위 localize 적용본(legacyPatched)은 이 줄로 바뀐다.
 		file: "src/edit/index.ts",
-		marker: "text: localizeSeenLineRejection(outcome.text) }], isError: true };",
+		marker: "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };",
 		anchor: "\t\t\treturn { content: [{ type: \"text\", text: outcome.text }], isError: true };\n",
-		patched: "\t\t\treturn { content: [{ type: \"text\", text: localizeSeenLineRejection(outcome.text) }], isError: true };\n",
+		legacyPatched: "\t\t\treturn { content: [{ type: \"text\", text: localizeSeenLineRejection(outcome.text) }], isError: true };\n",
+		patched: "\t\t\treturn { content: [{ type: \"text\", text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };\n",
+	},
+	{
+		// 거부가 여러 파일 배치에서 났으면 같은 payload 를 쓰기 거부 writer 로 native 에 다시 돌려 남은 파일의 거부를 한 응답에
+		// 모은다. 매 실행은 모델의 그대로 재전송과 같은 기록만 남기고(native 가 보인 줄만 기록) 아무것도 쓰지 않는다. native 에
+		// 검사 전용 API 가 없고(preview 는 seen-line 검사를 하지 않는다) 줄 범위를 TS 에서 다시 풀면 block(*) 해석이 갈라진다.
+		file: "src/edit/index.ts",
+		marker: "// HANSE: batch-wide seen-line rejection",
+		anchor: "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
+		patched: `	// HANSE: batch-wide seen-line rejection
+	/**
+	 * Native apply stops at the first file whose edit anchors undisplayed lines and records only that
+	 * file's shown lines as seen, so a multi-file payload resent verbatim was rejected once per file
+	 * (2026-10-17: five identical resends, a different file each time). Re-run the same payload through
+	 * native with a writer that refuses every write: each run records the next unseen file exactly as a
+	 * verbatim resend would, until a run reaches the writer (every file now passes), rejects a file
+	 * again (past the preview cap native records nothing) or fails otherwise. Nothing is written, and only
+	 * a run that reached the writer counts as passing. Each probe is a native run, so it also counts
+	 * toward the byte-identical no-op guard (a no-op file in the batch reaches STOP one resend sooner);
+	 * a rejection that already reports that guard is not probed. A single-target payload keeps the
+	 * native message.
+	 */
+	async #seenLineRejection(params: EditParams, argsJson: string, text: string, signal?: AbortSignal): Promise<string> {
+		const cwd = this.session.cwd;
+		// Native no-op guard errors begin a line with these phrases. A file name or a displayed source line
+		// cannot, because the seen-line head starts with "This edit" and preview rows with their line number.
+		const noopGuard = /^(?:STOP\\. Edits to .+ have been a byte-identical no-op \\d+ times in a row|Edits to .+ parsed and applied cleanly, but produced no change: )/m;
+		const fileOf = (message: string) => {
+			const display = [...message.matchAll(SEEN_LINE_HEAD)][0]?.[2];
+			return display === undefined ? undefined : path.resolve(cwd, display);
+		};
+		const first = fileOf(text);
+		const targets = new Set(this.#inspect(params).paths.map(target => path.resolve(cwd, target)));
+		if (first === undefined || targets.size < 2 || noopGuard.test(text)) return localizeSeenLineRejection(text);
+		const rejections = [text];
+		const rejected = new Set([first]);
+		let passed = false;
+		let failure: string | undefined;
+		for (let run = 0; run < targets.size && !signal?.aborted; run++) {
+			let reachedWriter = false;
+			let outcome: { isError: boolean; text: string } | undefined;
+			let probe: OpenEditSession | undefined;
+			try {
+				probe = this.#openSession(false, signal);
+				probe.native.setArgsJson(argsJson);
+				probe.native.finish();
+				outcome = await probe.native.apply({ lspFlush: false }, async () => {
+					reachedWriter = true;
+					throw new Error("seen-line probe writes nothing");
+				});
+			} catch (error) {
+				if (!reachedWriter) failure = error instanceof Error ? error.message : String(error);
+			} finally {
+				probe?.native.close();
+			}
+			if (reachedWriter) {
+				passed = true;
+				break;
+			}
+			// A thrown probe (failure set above) or an error-free outcome that never reached the writer
+			// proves nothing about the remaining files.
+			if (outcome === undefined || !outcome.isError) break;
+			const file = fileOf(outcome.text);
+			if (file === undefined) failure = outcome.text;
+			if (file === undefined || rejected.has(file)) break;
+			rejected.add(file);
+			rejections.push(outcome.text);
+		}
+		if (passed && rejections.length === 1) return localizeSeenLineRejection(text);
+		const shown = (target: string) => path.relative(cwd, target) || target;
+		const parts = [
+			"이 배치는 아무 파일도 쓰지 않았다. 보지 않은 줄을 기준으로 한 파일 " + rejections.length + "개: " + [...rejected].map(shown).join(", ") + ".",
+			...rejections.map(message => localizeSeenLineRejection(message.replace(SEEN_LINE_TAIL, "").trimEnd())),
+		];
+		if (failure !== undefined) parts.push("같은 배치를 다시 보내면 다음 오류로도 실패한다:\\n" + localizeSeenLineRejection(failure));
+		// Past the preview cap native records nothing, and a probe that stopped early never reached the
+		// remaining files, so only a probe that reached the writer may promise the verbatim resend.
+		const unchecked = passed || failure !== undefined ? [] : [...targets].filter(target => !rejected.has(target)).map(shown);
+		parts.push(
+			passed
+				? "파일마다 건드리려던 내용과 맞는지 확인한 뒤 같은 배치를 같은 [path#tag] 헤더로 다시 보낸다. 위 줄은 모두 본 것으로 기록돼 다시 읽지 않고 그대로 재시도해도 이제 성공한다. 내용이 다르면 그 파일의 줄 번호를 고친다."
+				: "그대로 다시 보내도 성공한다는 보장은 없다." +
+						(failure !== undefined ? " 위 오류를 먼저 고친다." : "") +
+						(unchecked.length > 0 ? " 보지 않은 줄 검사를 마치지 못했을 수 있는 파일: " + unchecked.join(", ") + ". 그 파일의 대상 범위도 먼저 읽거나 배치를 파일별로 나눈다." : ""),
+		);
+		return parts.join("\\n\\n");
+	}
+
+` + "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
 	},
 	{
 		// 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 부모 state 의 alias 로 만들어지면서
