@@ -1,12 +1,13 @@
-// Vercel Jev typed judgment core patch regression.
+// Jev typed judgment regression after the Vercel judge mode was retired (2026-10-17).
 // 실행: OMP_CORE_PATCH_TARGET=<isolated-patched-core> bun run patches/core-jev-judgment-test.ts
-// 실제 외부 호출은 없으며 모든 fetch·credential resolver·Settings 입력은 메모리 fixture 이거나
-// 임시 디렉터리 파일이다. 라이브 프로필·credential·HTTP 는 건드리지 않는다.
+// 판정은 upstream judge role chain(modelRoles.judge, 권장 openrouter/typesafe/jev-1.14) 하나뿐이다. 옛 설정 `providers.judgmentProvider: vercel`
+// 이 남은 설치도 upstream 18.11.3 의 legacy migration 이 받아 죽지 않고, Vercel endpoint 는 어떤 경로로도 호출되지 않는다.
+// 실제 외부 호출은 없으며 모든 fetch·registry·Settings 입력은 메모리 fixture 이거나 임시 디렉터리 파일이다.
+// 라이브 프로필·credential·HTTP 는 건드리지 않는다.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { settingsLike } from "./core-test-settings";
+import { homedir, tmpdir } from "node:os";
 
 function resolveCore(): string {
 	const override = process.env.OMP_CORE_PATCH_TARGET;
@@ -21,32 +22,9 @@ function resolveCore(): string {
 
 const CORE = resolveCore();
 console.log(`대상 ${CORE}`);
-const {
-	VERCEL_JUDGMENT_AUTH_PROVIDER,
-	VERCEL_JUDGMENT_ENDPOINT,
-	VERCEL_JUDGMENT_MODEL,
-	VERCEL_JUDGMENT_PROVIDER,
-	VercelJudge,
-	resolveJudge,
-} = await import(`${CORE}/judgment/index.ts`);
-// The pinned core source changed its settings registry between 18.3.0 and 18.3.1.
-// Keep the same semantic contract check while importing only the module present in the staged revision.
-let judgmentProviderValues: readonly string[] | undefined;
-let judgmentProviderDefault: unknown;
-// 18.3.0은 settings.get(path), 18.3.1은 registry handle(lookup(id).get(settings))로 값을 읽는다.
-let readSetting: (settings: { get?: (path: string) => unknown }, id: string) => any = (settings, id) =>
-	settings.get!(id);
-if (existsSync(join(CORE, "config/settings-schema.ts"))) {
-	const { SETTINGS_SCHEMA } = await import(`${CORE}/config/settings-schema.ts`);
-	judgmentProviderValues = SETTINGS_SCHEMA["providers.judgmentProvider"].values;
-	judgmentProviderDefault = SETTINGS_SCHEMA["providers.judgmentProvider"].default;
-} else {
-	const { lookup } = await import(`${CORE}/config/registry.ts`);
-	const judgmentProviderSetting = lookup("providers.judgmentProvider");
-	judgmentProviderValues = judgmentProviderSetting?.enumValues;
-	judgmentProviderDefault = judgmentProviderSetting?.default;
-	readSetting = (settings, id) => lookup(id)!.get(settings);
-}
+const judgment = await import(`${CORE}/judgment/index.ts`);
+const { resolveJudge } = judgment;
+const { lookup } = await import(`${CORE}/config/registry.ts`);
 const { Settings } = await import(`${CORE}/config/settings.ts`);
 
 let pass = 0;
@@ -55,30 +33,17 @@ function ok(name: string): void {
 	console.log(`  PASS  ${name}`);
 }
 
-assert.deepEqual(judgmentProviderValues, ["auto", "vercel"]);
-assert.equal(judgmentProviderDefault, "auto");
-ok("settings schema는 auto/vercel 두 값만 노출한다");
-
-function jsonResponse(value: unknown, status = 200): Response {
-	return new Response(JSON.stringify(value), {
-		status,
-		headers: { "content-type": "application/json" },
-	});
-}
+assert.equal(judgment.VercelJudge, undefined);
+assert.equal(
+	Object.keys(judgment).some(name => name.startsWith("VERCEL_")),
+	false,
+);
+assert.equal(lookup("providers.judgmentProvider"), undefined);
+ok("Vercel adapter export와 providers.judgmentProvider 설정 항목이 없다");
 
 const request = {
 	state: { task: "structured-summary", attempts: 1 },
 	questions: {
-		route: {
-			type: "choice" as const,
-			instructions: "Choose a route",
-			criteria: { existing: "Reuse", new: "Create" },
-		},
-		severity: {
-			type: "score" as const,
-			instructions: "Score severity",
-			criteria: ["low", "medium", "high"] as [string, string, ...string[]],
-		},
 		retry: {
 			type: "noul" as const,
 			instructions: "Should this retry?",
@@ -87,332 +52,65 @@ const request = {
 	},
 };
 
-const successPayload = {
-	answers: {
-		route: { type: "choice", choice: "new", probabilities: { existing: 0.1, new: 0.9 } },
-		severity: { type: "score", score: 1.3, probabilities: { "0": 0.2, "1": 0.3, "2": 0.5 } },
-		retry: { type: "boolean", probability: 0.75 },
-	},
-	usage: { inputTokens: 420, outputTokens: 70 },
-	rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
-	providerMetadata: { typesafe: { confidence: { route: 0.84, severity: 0.67 } } },
-};
 
 {
-	const key = "fixture-key-never-log";
-	const calls: Array<{ url: string; init: RequestInit }> = [];
-	const judge = new VercelJudge({
-		apiKey: key,
-		fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
-			calls.push({ url: String(url), init: init ?? {} });
-			return jsonResponse(successPayload);
-		},
-	});
-	const result = await judge.judge(request);
-	assert.equal(calls.length, 1);
-	assert.equal(calls[0]?.url, VERCEL_JUDGMENT_ENDPOINT);
-	assert.equal(calls[0]?.init.method, "POST");
-	const headers = new Headers(calls[0]?.init.headers);
-	assert.equal(headers.get("authorization"), `Bearer ${key}`);
-	assert.equal(headers.get("content-type"), "application/json");
-	assert.equal(headers.get("ai-gateway-protocol-version"), "0.0.1");
-	assert.equal(headers.get("ai-gateway-auth-method"), "api-key");
-	assert.equal(headers.get("ai-evaluation-model-specification-version"), "4");
-	assert.equal(headers.get("ai-model-id"), VERCEL_JUDGMENT_MODEL);
-	const body = JSON.parse(String(calls[0]?.init.body));
-	assert.deepEqual(Object.keys(body), ["state", "questions"]);
-	assert.deepEqual(body.state, request.state);
-	assert.equal(body.questions.retry.type, "boolean");
-	assert.equal(body.questions.route.type, "choice");
-	assert.equal(body.questions.severity.type, "score");
-	assert.deepEqual(result.answers.route, {
-		type: "choice",
-		choice: "new",
-		probabilities: { existing: 0.1, new: 0.9 },
-		confidence: 0.84,
-	});
-	assert.deepEqual(result.answers.severity, {
-		type: "score",
-		score: 1.3,
-		probabilities: { "0": 0.2, "1": 0.3, "2": 0.5 },
-		confidence: 0.67,
-	});
-	assert.deepEqual(result.answers.retry, { type: "noul", noul: 0.75 });
-	assert.equal(result.usage.input, 420);
-	assert.equal(result.usage.output, 70);
-	ok("exact URL/header/body와 choice·score·Noul 변환");
-}
-
-{
-	let fetchCalls = 0;
-	const judge = new VercelJudge({
-		apiKey: async () => undefined,
-		fetch: async () => {
-			fetchCalls += 1;
-			return jsonResponse(successPayload);
-		},
-	});
-	await assert.rejects(judge.judge(request), /API key is not configured/);
-	assert.equal(fetchCalls, 0);
-	ok("credential 없음은 network 전에 실패");
-}
-
-{
-	let fetchCalls = 0;
-	const judge = new VercelJudge({
-		apiKey: "your-fixture-key",
-		fetch: async () => {
-			fetchCalls += 1;
-			return jsonResponse({ echoedSecret: "your-fixture-key" }, 503);
-		},
-	});
-	await assert.rejects(
-		judge.judge(request),
-		error => error instanceof Error && error.message.includes("HTTP 503") && !error.message.includes("your-fixture-key"),
-	);
-	assert.equal(fetchCalls, 1);
-	ok("non-2xx는 body·secret 없이 한 번만 실패");
-}
-
-{
-	let fetchCalls = 0;
-	const judge = new VercelJudge({
-		apiKey: "your-fixture-key",
-		timeoutMs: 10,
-		fetch: async (_url: RequestInfo | URL, init?: RequestInit) => {
-			fetchCalls += 1;
-			return await new Promise<Response>((_resolve, reject) => {
-				const signal = init?.signal;
-				if (signal?.aborted) reject(signal.reason);
-				else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-			});
-		},
-	});
-	await assert.rejects(judge.judge(request), error => error instanceof Error && error.name === "TimeoutError");
-	assert.equal(fetchCalls, 1);
-	ok("timeout은 한 요청에서 종료");
-}
-
-{
-	const malformed = [
-		{
-			name: "answer id 불일치",
-			payload: { ...successPayload, answers: { ...successPayload.answers, extra: { type: "boolean", probability: 0.5 } } },
-		},
-		{
-			name: "choice type 불일치",
-			payload: { ...successPayload, answers: { ...successPayload.answers, route: { type: "boolean", probability: 0.5 } } },
-		},
-		{
-			name: "확률 범위 초과",
-			payload: { ...successPayload, answers: { ...successPayload.answers, retry: { type: "boolean", probability: 1.1 } } },
-		},
-		{
-			name: "distribution 합 불일치",
-			payload: { ...successPayload, answers: { ...successPayload.answers, route: { type: "choice", choice: "new", probabilities: { existing: 0.3, new: 0.3 } } } },
-		},
-		{
-			name: "score weighted mean 불일치",
-			payload: { ...successPayload, answers: { ...successPayload.answers, severity: { type: "score", score: 0.1, probabilities: { "0": 0.2, "1": 0.3, "2": 0.5 } } } },
-		},
-		{
-			name: "confidence 누락",
-			payload: { ...successPayload, providerMetadata: { typesafe: { confidence: { route: 0.8 } } } },
-		},
-		{
-			name: "usage malformed",
-			payload: { ...successPayload, usage: { inputTokens: -1, outputTokens: 2 } },
-		},
-	];
-	for (const scenario of malformed) {
-		const judge = new VercelJudge({ apiKey: "your-fixture-key", fetch: async () => jsonResponse(scenario.payload) });
-		await assert.rejects(judge.judge(request), /Vercel judgment response/);
-		ok(`malformed 거부: ${scenario.name}`);
-	}
-}
-
-/** explicit vercel 선택과 후보 pool 호출 수를 함께 세는 registry stub. */
-function vercelHarness(options: { fetch: typeof fetch; onUsage?: (usage: unknown) => void }) {
-	const counters = { fetch: 0, pool: 0 };
-	const settings = settingsLike({
-		get: (path: string) => (path === "providers.judgmentProvider" ? "vercel" : undefined),
-	});
-	const registry = {
-		authStorage: {
-			keys: {
-				resolver(provider: string) {
-					assert.equal(provider, VERCEL_JUDGMENT_AUTH_PROVIDER);
-					return "fixture-key";
-				},
-			},
-		},
-		getAvailable() {
-			counters.pool += 1;
-			return [];
-		},
-		resolver() {
-			counters.pool += 1;
-			return undefined;
-		},
-		getApiKey() {
-			counters.pool += 1;
-			return undefined;
-		},
-	};
-	const judge = resolveJudge({
-		settings: settings as never,
-		registry: registry as never,
-		sessionId: "fixture-session",
-		fetch: options.fetch,
-		onUsage: options.onUsage as never,
-	});
-	return { judge, counters };
-}
-
-{
-	const usages: Array<Record<string, unknown>> = [];
-	const { judge, counters } = vercelHarness({
-		fetch: async () => {
-			counters.fetch += 1;
-			return jsonResponse(successPayload);
-		},
-		onUsage: usage => usages.push(usage as Record<string, unknown>),
-	});
-	const kinds: string[] = [];
-	const result = await judge.withCandidate((candidate, kind) => {
-		kinds.push(kind);
-		return candidate.judge(request);
-	});
-	assert.deepEqual(kinds, ["native"]);
-	assert.equal(counters.fetch, 1);
-	assert.equal(counters.pool, 0);
-	assert.equal(usages.length, 1);
-	assert.equal(usages[0]?.role, VERCEL_JUDGMENT_PROVIDER);
-	assert.equal(usages[0]?.provider, VERCEL_JUDGMENT_AUTH_PROVIDER);
-	assert.equal(usages[0]?.stopReason, "stop");
-	assert.deepEqual(result.answers.retry, { type: "noul", noul: 0.75 });
-	ok("explicit vercel은 withCandidate에서 native 분류로 한 번 실행되고 후보 pool을 보지 않는다");
-}
-
-{
-	const { judge, counters } = vercelHarness({
-		fetch: async () => {
-			counters.fetch += 1;
-			return jsonResponse({}, 500);
-		},
-	});
-	await assert.rejects(judge.withCandidate(candidate => candidate.judge(request)), /HTTP 500/);
-	assert.equal(counters.fetch, 1);
-	assert.equal(counters.pool, 0);
-	ok("explicit vercel 실패는 tiny·smol·default·session fallback 0건으로 caller에 전파");
-}
-
-{
-	const { judge, counters } = vercelHarness({
-		fetch: async () => {
-			counters.fetch += 1;
-			return jsonResponse(successPayload);
-		},
-	});
-	const controller = new AbortController();
-	controller.abort();
-	await assert.rejects(
-		judge.withCandidate(candidate => candidate.judge(request, { signal: controller.signal })),
-		error => (error as Error | undefined)?.name === "AbortError",
-	);
-	assert.equal(counters.fetch, 0);
-	ok("abort는 요청 전에 caller로 전파");
-}
-
-{
-	// 18.11.1 은 `judge()` 가 공개 `withCandidate` 가 아니라 private 후보 loop 를 직접 부른다. 분기가 wrapper 에만 있으면 judge() 가
-	// 명시 vercel 을 우회해 role chain 으로 가므로, 두 진입점을 모두 본다.
-	const { judge, counters } = vercelHarness({
-		fetch: async () => {
-			counters.fetch += 1;
-			return jsonResponse(successPayload);
-		},
-	});
-	const result = await judge.judge(request);
-	assert.equal(counters.fetch, 1);
-	assert.equal(counters.pool, 0);
-	assert.deepEqual(result.answers.retry, { type: "noul", noul: 0.75 });
-	ok("explicit vercel은 judge()에서도 한 번 실행되고 후보 pool을 보지 않는다");
-}
-
-if (readFileSync(join(CORE, "judgment/index.ts"), "utf8").includes("requiresImages")) {
-	// 18.11.1+ (#15471): 이미지 판정은 이미지를 못 받는 후보를 건너뛰고, 남은 후보가 없으면 이미지를 조용히 버리지 않고 실패한다.
-	// VercelJudge 는 state·questions 만 보내므로 명시 vercel 도 같은 계약을 따라 요청 전에 실패해야 한다.
-	const { judge, counters } = vercelHarness({
-		fetch: async () => {
-			counters.fetch += 1;
-			return jsonResponse(successPayload);
-		},
-	});
-	await assert.rejects(
-		judge.judge({ ...request, images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }),
-		/no compatible judge candidate supports images/,
-	);
-	assert.equal(counters.fetch, 0);
-	assert.equal(counters.pool, 0);
-	ok("explicit vercel은 이미지 요청을 조용히 버리지 않고 요청 전에 명시 실패한다");
-}
-
-{
-	// `auto`(그 밖의 값)는 upstream role chain 이다. 후보가 없으면 chain 이 실패하고 Vercel
-	// adapter 는 fetch 를 한 번도 부르지 않는다.
-	let fetchCalls = 0;
-	const judge = resolveJudge({
-		settings: settingsLike({ get: (path: string) => (path === "providers.judgmentProvider" ? "auto" : undefined) }) as never,
-		registry: { getAvailable: () => [] } as never,
-		fetch: async () => {
-			fetchCalls += 1;
-			return jsonResponse(successPayload);
-		},
-	});
-	let autoError: unknown;
-	try {
-		await judge.withCandidate(candidate => candidate.judge(request));
-	} catch (error) {
-		autoError = error;
-	}
-	assert.ok(autoError !== undefined, "후보 없는 auto chain은 실패해야 한다");
-	assert.equal(fetchCalls, 0);
-	ok("auto는 upstream judge role chain으로 가고 Vercel adapter를 쓰지 않는다");
-}
-
-{
-	// 실제 Settings 로딩을 한 번 통과시킨다. mock settings.get 은 migration 결함을 못 잡는다:
-	// 18.2.7 의 legacy migration 은 `providers.judgmentProvider` 를 삭제하고 judge role chain 을
-	// 주입하므로, vercel 선택이 살아남는지와 뜻밖의 주입이 없는지를 여기서 본다.
+	// 실제 Settings 로딩을 한 번 통과시킨다. mock settings.get 은 migration 결함을 못 잡는다.
+	// `vercel` 은 이제 upstream legacy migration 이 읽는 비-auto 선택자다: judge role 이 없으면 typesafe/jev-latest chain 을 주입하고
+	// 키는 지우며 던지지 않는다. 이미 judge role 이 있는 CUELO 프로필(openrouter/typesafe/jev-1.14)은 그대로다.
 	const root = mkdtempSync(join(tmpdir(), "omp-judgment-provider-"));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "work");
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(cwd, { recursive: true });
-	const load = (value: string) => {
-		const file = join(root, `config-${value}.yml`);
-		writeFileSync(file, `providers:\n  judgmentProvider: ${value}\nmodelRoles:\n  default: openai-codex/gpt-6-astra\n`, "utf8");
+	const modelRoles = lookup("modelRoles")!;
+	const fallbackChains = lookup("retry.fallbackChains")!;
+	const load = (value: string, extraRoles = "") => {
+		const file = join(root, `config-${value}-${extraRoles ? "judge" : "plain"}.yml`);
+		writeFileSync(
+			file,
+			`providers:\n  judgmentProvider: ${value}\nmodelRoles:\n  default: openai-codex/gpt-6-astra\n${extraRoles}`,
+			"utf8",
+		);
 		return Settings.loadIsolated({ inMemory: true, cwd, agentDir, configFiles: [file] });
 	};
 
 	const vercel = await load("vercel");
-	assert.equal(readSetting(vercel, "providers.judgmentProvider"), "vercel");
-	assert.equal(readSetting(vercel, "modelRoles").judge, undefined);
-	assert.equal(readSetting(vercel, "retry.fallbackChains").judge, undefined);
-	ok("실제 Settings 로딩에서 vercel이 남고 legacy judge role이 주입되지 않는다");
+	assert.equal(modelRoles.get(vercel).judge, "typesafe/jev-latest");
+	assert.deepEqual(fallbackChains.get(vercel).judge, ["@tiny", "@smol", "@default"]);
+	ok("옛 vercel 설정은 upstream migration 이 받아 던지지 않고 typesafe judge chain 으로 옮긴다");
+
+	const pinned = await load("vercel", "  judge: openrouter/typesafe/jev-1.14\n");
+	assert.equal(modelRoles.get(pinned).judge, "openrouter/typesafe/jev-1.14");
+	ok("이미 judge role 이 있는 프로필은 vercel 값이 남아도 그 judge 를 바꾸지 않는다");
 
 	const typesafe = await load("typesafe");
-	assert.equal(readSetting(typesafe, "providers.judgmentProvider"), "auto");
-	assert.equal(readSetting(typesafe, "modelRoles").judge, "typesafe/jev-latest");
-	assert.deepEqual(readSetting(typesafe, "retry.fallbackChains").judge, ["@tiny", "@smol", "@default"]);
-	ok("upstream migration은 typesafe 입력에서 그대로 동작한다");
+	assert.equal(modelRoles.get(typesafe).judge, "typesafe/jev-latest");
+	assert.deepEqual(fallbackChains.get(typesafe).judge, ["@tiny", "@smol", "@default"]);
+	ok("upstream migration 은 typesafe 입력에서 그대로 동작한다");
 
 	const auto = await load("auto");
-	assert.equal(readSetting(auto, "providers.judgmentProvider"), "auto");
-	assert.equal(readSetting(auto, "modelRoles").judge, undefined);
-	assert.equal(readSetting(auto, "retry.fallbackChains").judge, undefined);
-	ok("auto 입력은 키 유지도 legacy judge 주입도 하지 않는다");
+	assert.equal(modelRoles.get(auto).judge, undefined);
+	assert.equal(fallbackChains.get(auto).judge, undefined);
+	ok("auto 입력은 legacy judge 주입을 하지 않는다");
+
+	// 옛 vercel 설정을 migration 으로 통과한 판정은 judge role chain 으로만 간다. 후보가 없으면 withCandidate·judge() 모두 chain 실패이고
+	// fetch 는 한 번도 나가지 않는다(Vercel endpoint 포함).
+	const realFetch = globalThis.fetch;
+	let fetchCalls = 0;
+	globalThis.fetch = (async () => {
+		fetchCalls += 1;
+		throw new Error("fixture: network must not be reached");
+	}) as unknown as typeof fetch;
+	try {
+		const judge = resolveJudge({ settings: vercel, registry: { getAvailable: () => [] } as never });
+		const run = (candidate: { judge: (input: typeof request) => Promise<unknown> }) => candidate.judge(request);
+		await assert.rejects(judge.withCandidate(run), /no judge model available/);
+		await assert.rejects(judge.judge(request), /no judge model available/);
+		assert.equal(fetchCalls, 0);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+	ok("옛 vercel 설정 프로필의 판정은 role chain 으로만 가고 withCandidate·judge() 모두 외부 호출 0건");
 
 	rmSync(root, { recursive: true, force: true });
 }

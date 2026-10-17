@@ -27,7 +27,7 @@ Windows 10 1809 이상에서 다음을 사용자가 직접 설치합니다(Bun�
 | [Bun](https://bun.sh/docs/installation) `>=1.4.2` | 외부 필수. 공식 Windows 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`·`btw`가 사용합니다. |
 | [Git for Windows](https://git-scm.com/install/windows) | 전체 코딩·Git 기능 기준 외부 필수. 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화·내장 `bash`만 시험할 때는 생략할 수 있습니다. SDK는 Windows에서 Git Bash가 없어도 `cmd.exe`로 fallback하지만, Git 명령까지 제공하지는 않습니다. |
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
-| Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 백엔드와 자격을 고릅니다. 권장은 OpenRouter API 키로 `modelRoles.judge`에 OpenRouter의 Jev를 지정하는 방법이며, Vercel 고정 모드는 별도의 Vercel AI Gateway **유료 크레딧**이 필요합니다. |
+| Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 권장은 OpenRouter API 키로 `modelRoles.judge`에 OpenRouter의 Jev를 지정하는 방법입니다. |
 | 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업·usage의 CLI fallback·`stats` 집계가 필요할 때 [공식 Windows 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE` 또는 PATH의 `omp.exe`를 실행합니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
 
 Windows에 `winget`이 있으면 Node·Git 설치에 써도 됩니다. 위 공식 링크의 설치본을 직접 받아도 됩니다. 네트워크와 설치 권한이 없는 PC에서는 먼저 설치본과 승인된 계정·접속 방법을 준비해야 합니다. 제공자 로그인, Git/CLI·OS 설치, 유료 모델 호출을 `setup`이 대신하지 않습니다.
@@ -137,13 +137,11 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
    ```yaml
    modelRoles:
      judge: openrouter/typesafe/jev-1.14
-   providers:
-     judgmentProvider: auto
    ```
 
-   `auto`는 `modelRoles.judge` 후보 체인을 읽습니다. 첫 native 판정 후보(여기서는 OpenRouter의 Jev) 뒤로는 chat/local 후보와 현재 세션 모델을 붙이지 않으므로, 판정이 실패하면 느린 채팅 모델로 조용히 넘어가지 않고 호출자에게 실패가 전달됩니다. `judge`에 native 판정 모델이 없으면 auto는 chat/local 후보와 조건에 따라 현재 세션 모델을 쓰며, 이는 Jev 판정이 아닙니다. [TypeSafe API 키](https://console.typesafe.ai/)로 `typesafe/jev-latest`를 직접 지정해도 native 판정입니다.
+   판정 백엔드는 `modelRoles.judge` 후보 체인입니다. 첫 native 판정 후보(여기서는 OpenRouter의 Jev) 뒤로는 chat/local 후보와 현재 세션 모델을 붙이지 않으므로, 판정이 실패하면 느린 채팅 모델로 조용히 넘어가지 않고 호출자에게 실패가 전달됩니다. `judge`에 native 판정 모델이 없으면 chat/local 후보와 조건에 따라 현재 세션 모델을 쓰며, 이는 Jev 판정이 아닙니다. [TypeSafe API 키](https://console.typesafe.ai/)로 `typesafe/jev-latest`를 직접 지정해도 native 판정입니다.
 
-   Vercel AI Gateway 고정 모드(`providers.judgmentProvider: vercel`)는 SDK의 `vercel-ai-gateway` 자격으로 `typesafe-ai/jev` endpoint를 호출하며 `modelRoles.judge`를 읽지 않습니다. Vercel 무료 등급 계정은 이 모델에 접근할 수 없어 HTTP 403(`RestrictedModelsError`)으로 거절되므로 유료 크레딧이 필요합니다. 어느 경로든 판정 요청은 외부 전송·과금 대상이므로 본인 승인과 요금 확인 없이 시험 호출하지 않습니다.
+   예전 설정의 `providers.judgmentProvider`(`auto`·`vercel`)는 이제 쓰지 않습니다. 값이 남은 프로필은 설정을 읽을 때 upstream의 이전 규칙이 키를 지우며, `modelRoles.judge`가 이미 있으면 그 값을 그대로 두고 없을 때만 `typesafe/jev-latest` 후보 체인을 채웁니다(이 경우 TypeSafe API 키가 필요합니다). Vercel AI Gateway 고정 모드는 제거되어 `vercel-ai-gateway` 자격은 판정에 쓰이지 않습니다. 판정 요청은 외부 전송·과금 대상이므로 본인 승인과 요금 확인 없이 시험 호출하지 않습니다.
 4. `cuelo health` 또는 하네스 파일 복사 성공은 Jev 성공 증거가 아닙니다. 실제 로그인 상태, 모델 후보 해석, 첫 판정/응답은 사용자가 준비한 자격으로 별도 확인해야 합니다. 키가 없거나 실패하면 Jev가 무언가를 조용히 대체해 설치 성공으로 만드는 계약도 없습니다.
 
 ### 0.6.1로 기존 하네스 갱신

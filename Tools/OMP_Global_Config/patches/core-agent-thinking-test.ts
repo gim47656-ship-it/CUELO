@@ -65,44 +65,52 @@ assert.equal(compacted.input.some(item => item.type === "configuration_update"),
 console.log("  PASS  짧아진 이력에서는 이전 update를 버리고 새 baseline을 잡는다");
 
 // Auto 하한(providers.autoThinkingMinEffort)은 실제 ModelControls.applyAutoThinkingLevel →
-// classifyDifficulty → Vercel judge 경로에서 본다. fetch만 메모리 stub이고 외부 호출은 없다.
+// classifyDifficulty 경로에서 본다. 분류기 전송은 judge role chain(ChainJudge.withCandidate)을 후보 하나로 대체하는 메모리 stub 이고
+// 외부 호출은 없다. 후보가 받는 질문은 classifier 가 실제로 만든 것이다.
 const { ModelControls } = await import(`${packages}/pi-coding-agent/src/session/model-controls.ts`);
 const { Settings } = await import(`${packages}/pi-coding-agent/src/config/settings.ts`);
 const { cfgProvidersAutoThinkingMinEffort } = await import(`${packages}/pi-coding-agent/src/session/settings.ts`);
+const { ChainJudge } = await import(`${packages}/pi-coding-agent/src/judgment/index.ts`);
 
 type Reply = "fail" | "low" | "medium" | "high" | "xhigh" | "max";
 let reply: Reply = "low";
 let judgeCalls = 0;
 let askedLevels: string[] = [];
-globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-	judgeCalls += 1;
-	// 질문이 허용하는 단계(criteria 키)로만 답한다: auto ceiling 이 xhigh 면 max 는 질문에 없어 고를 수 없다.
-	askedLevels = Object.keys(JSON.parse(String(init?.body ?? "{}")).questions?.level?.criteria ?? {});
-	if (reply === "fail" || !askedLevels.includes(reply)) return new Response("{}", { status: 500 });
-	const other = (1 - 0.6) / (askedLevels.length - 1);
-	const probabilities = Object.fromEntries(askedLevels.map(level => [level, level === reply ? 0.6 : other]));
-	return new Response(
-		JSON.stringify({
-			answers: { level: { type: "choice", choice: reply, probabilities } },
-			usage: { inputTokens: 1, outputTokens: 1 },
-			rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
-			providerMetadata: { typesafe: { confidence: { level: 0.6 } } },
-		}),
-		{ status: 200, headers: { "content-type": "application/json" } },
-	);
-}) as typeof fetch;
+type LevelRequest = { questions?: { level?: { criteria?: Record<string, string> } } };
+const fixtureJudge = {
+	label: "fixture",
+	async judge(request: LevelRequest) {
+		judgeCalls += 1;
+		// 질문이 허용하는 단계(criteria 키)로만 답한다: auto ceiling 이 xhigh 면 max 는 질문에 없어 고를 수 없다.
+		askedLevels = Object.keys(request.questions?.level?.criteria ?? {});
+		if (reply === "fail" || !askedLevels.includes(reply)) throw new Error("fixture classifier failure");
+		const other = (1 - 0.6) / (askedLevels.length - 1);
+		const probabilities = Object.fromEntries(askedLevels.map(level => [level, level === reply ? 0.6 : other]));
+		return {
+			api: "fixture",
+			provider: "fixture",
+			model: "fixture",
+			answers: { level: { type: "choice", choice: reply, probabilities, confidence: 0.6 } },
+			usage: { input: 1, output: 1 },
+		};
+	},
+};
+ChainJudge.prototype.withCandidate = async function withFixtureCandidate(
+	run: (judge: typeof fixtureJudge, kind: string) => Promise<unknown>,
+) {
+	return run(fixtureJudge, "native");
+};
 
 let floor: string | undefined;
 const autoSettings = settingsLike({
 	revision: 0,
-	get: (key: string) =>
-		key === "providers.judgmentProvider" ? "vercel" : key === "providers.autoThinkingMinEffort" ? floor : undefined,
+	get: (key: string) => (key === "providers.autoThinkingMinEffort" ? floor : undefined),
 });
 const setFloor = (value: string | undefined) => {
 	floor = value;
 	autoSettings.revision += 1;
 };
-const registry = { authStorage: { keys: { resolver: () => "your-floor-key" } } };
+const registry = {};
 const ladderModel = (efforts: string[], defaultLevel = "high") => ({
 	provider: "fixture", id: `floor-${efforts.join("-")}`, reasoning: true,
 	thinking: { mode: "effort", efforts, defaultLevel },
@@ -234,7 +242,7 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	const file = join(root, "config.yml");
 	writeFileSync(
 		file,
-		"providers:\n  judgmentProvider: vercel\n  autoThinkingMinEffort: medium\n  autoThinkingMaxEffort: xhigh\n",
+		"providers:\n  autoThinkingMinEffort: medium\n  autoThinkingMaxEffort: xhigh\n",
 		"utf8",
 	);
 	const main = await Settings.loadIsolated({ inMemory: true, cwd, agentDir, configFiles: [file] });

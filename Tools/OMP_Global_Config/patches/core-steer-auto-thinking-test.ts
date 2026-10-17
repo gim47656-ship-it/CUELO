@@ -10,7 +10,7 @@
 // 건너뛰고, 스트리밍 중(before-model-call 훅)에 auto 로 바꾼 뒤 입력을 넣는다. 내림이 없다는 raise-only 계약은
 // core-agent-thinking-test.ts [raise-only] 가 분류기 경로로 본다.
 // [4] 2026-10-08 사용자 결정: SubAgent 는 부모(Main) IRC 메시지마다 최초 과제+메시지로 auto 를 다시 분류해 오르내린다.
-// 이 단계만 실제 분류기 경로(providers.judgmentProvider: vercel)를 타고, fetch 는 그 endpoint 만 메모리에서 답한다.
+// 이 단계만 실제 분류기 경로(classifyDifficulty)를 타고, judge role chain 은 메모리 후보 하나로 대체한다.
 // 모델 호출은 하지 않는다: 훅이 provider 요청 직전에 예외로 turn 을 끊는다. 세션·모델 설정은 임시 cwd·agentDir 에만
 // 쓰므로 운영자의 실제 `~/.omp` 는 읽지도 쓰지도 않는다.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -74,43 +74,54 @@ writeFileSync(
 );
 writeFileSync(
 	join(agentDir, "config.yml"),
-	`modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\nproviders:\n  judgmentProvider: vercel\n`,
+	`modelRoles:\n  default: ${FIXTURE_PROVIDER}/${FIXTURE_MODEL_ID}\n`,
 	"utf8",
 );
 
-// [4] 의 분류기: Vercel evaluation endpoint 만 가로채 질문이 허용하는 단계(criteria 키)로 답하고, 분류 입력을 남긴다.
-// 다른 요청은 원래 fetch 로 넘긴다. 키는 더미다(비밀 아님).
-process.env.AI_GATEWAY_API_KEY = "example";
-const realFetch = globalThis.fetch;
+// [4] 의 분류기: judge role chain(ChainJudge.withCandidate)을 후보 하나로 대체한다. 후보는 classifier 가 실제로 만든 질문이 허용하는
+// 단계(criteria 키)로 답하고 분류 입력을 남긴다. 외부 호출은 없다.
+const { ChainJudge } = await import(`${CORE}/judgment/index.ts`);
 let judgeReply = "xhigh";
 const levelRequests: string[] = [];
 // [5] 는 분류 입력 종류(request·solution_space)를 함께 본다.
 const levelInputs: Array<{ request?: string; solutionSpace?: string }> = [];
-globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-	const url = input instanceof Request ? input.url : String(input);
-	if (!url.startsWith("https://ai-gateway.vercel.sh/")) return realFetch(input, init);
-	const body = JSON.parse(String(init?.body ?? "{}"));
-	const criteria = body.questions?.level?.criteria;
-	if (!criteria) return new Response("{}", { status: 500 });
-	levelRequests.push(String(body.state?.request ?? ""));
-	levelInputs.push({
-		...(body.state?.request !== undefined ? { request: String(body.state.request) } : {}),
-		...(body.state?.solution_space !== undefined ? { solutionSpace: String(body.state.solution_space) } : {}),
-	});
-	const levels = Object.keys(criteria);
-	const other = (1 - 0.6) / (levels.length - 1);
-	return new Response(
-		JSON.stringify({
+type LevelRequest = {
+	state?: { request?: string; solution_space?: string };
+	questions?: { level?: { criteria?: Record<string, string> } };
+};
+const fixtureJudge = {
+	label: "fixture",
+	async judge(request: LevelRequest) {
+		const criteria = request.questions?.level?.criteria;
+		if (!criteria) throw new Error("fixture classifier failure");
+		levelRequests.push(String(request.state?.request ?? ""));
+		levelInputs.push({
+			...(request.state?.request !== undefined ? { request: String(request.state.request) } : {}),
+			...(request.state?.solution_space !== undefined ? { solutionSpace: String(request.state.solution_space) } : {}),
+		});
+		const levels = Object.keys(criteria);
+		const other = (1 - 0.6) / (levels.length - 1);
+		return {
+			api: "fixture",
+			provider: "fixture",
+			model: "fixture",
 			answers: {
-				level: { type: "choice", choice: judgeReply, probabilities: Object.fromEntries(levels.map(l => [l, l === judgeReply ? 0.6 : other])) },
+				level: {
+					type: "choice",
+					choice: judgeReply,
+					probabilities: Object.fromEntries(levels.map(l => [l, l === judgeReply ? 0.6 : other])),
+					confidence: 0.6,
+				},
 			},
-			usage: { inputTokens: 1, outputTokens: 1 },
-			rounding: { probabilityDecimals: 2, scoreDecimals: 2 },
-			providerMetadata: { typesafe: { confidence: { level: 0.6 } } },
-		}),
-		{ status: 200, headers: { "content-type": "application/json" } },
-	);
-}) as typeof fetch;
+			usage: { input: 1, output: 1 },
+		};
+	},
+};
+ChainJudge.prototype.withCandidate = async function withFixtureCandidate(
+	run: (judge: typeof fixtureJudge, kind: string) => Promise<unknown>,
+) {
+	return run(fixtureJudge, "native");
+};
 
 const created = await sdk.createAgentSession({ cwd: workdir, agentDir, disableExtensionDiscovery: true });
 const session = created.session;

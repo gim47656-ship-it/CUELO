@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
-import docmapRoute from "../docmap-route";
+import { createDocmapRoute } from "../docmap-route";
 import { buildDocmapCorpus, DOCMAP_MAX_CHARS, DOCMAP_MIN_COVERAGE, DOCMAP_MIN_SCORE, docmapQueryTerms, docmapSignals, findDocmapMaps, rankDocmap, routeDocmap } from "../lib/docmap-search";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
@@ -91,19 +91,32 @@ beforeAll(() => {
 
 afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
-function harness() {
+type JudgeFn = (request: { state: unknown; questions: Record<string, unknown> }, options?: { signal?: AbortSignal }) => Promise<{ answers: Record<string, { type: string; bool?: number } | undefined> }>;
+
+/** 기본 판정기는 모든 후보를 남긴다(낱말 후보 그대로). `judge`를 주면 그 답을 쓰고, `null`이면 판정기 없음. */
+function harness(options: { judge?: JudgeFn | null; judgeTimeoutMs?: number } = {}) {
   const handlers: Record<string, Handler[]> = {};
   const sent: unknown[] = [];
-  docmapRoute({
+  const logs: unknown[] = [];
+  let judgeCalls = 0;
+  const keepAll: JudgeFn = async (request) => ({ answers: Object.fromEntries(Object.keys(request.questions).map((k) => [k, { type: "bool", bool: 1 }])) });
+  const judge = options.judge === undefined ? keepAll : options.judge;
+  const route = createDocmapRoute({
+    resolveJudge: async () => (judge ? { judge: (request, opts) => { judgeCalls++; return judge(request, opts); } } : undefined),
+    judgeTimeoutMs: options.judgeTimeoutMs,
+  });
+  route({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: unknown) => { sent.push(message); },
-  } as unknown as Parameters<typeof docmapRoute>[0]);
+    logger: { debug: (...args: unknown[]) => { logs.push(args); }, warn: () => {}, info: () => {} },
+  } as unknown as Parameters<typeof route>[0]);
   const emit = (event: Record<string, unknown>, ctx: unknown) => { for (const handler of handlers.input ?? []) handler(event, ctx); };
+  const fire = (name: string) => { for (const handler of handlers[name] ?? []) handler({ type: name }, {}); };
   const start = async (prompt: string, ctx: unknown) => {
     const results = await Promise.all((handlers.before_agent_start ?? []).map((handler) => handler({ type: "before_agent_start", prompt, systemPrompt: [] }, ctx)));
     return results.flatMap((result) => (result as { message?: Message } | undefined)?.message ?? []);
   };
-  return { emit, start, sent };
+  return { emit, fire, start, sent, logs, judgeCalls: () => judgeCalls };
 }
 
 // CUELO는 확장을 mode 없이 초기화해 ctx.mode가 "print"이고, 브라우저 UI 문맥이 있어 hasUI가 참이다.
@@ -244,5 +257,76 @@ describe("docmap route", () => {
     }
     const broken = { mode: "print", hasUI: false, agent: { kind: "main" }, get cwd(): string { throw new Error("cwd unavailable"); } };
     expect(await h.start(WAKE_Q, broken)).toHaveLength(0);
+  });
+
+  describe("JEV 후보 판정", () => {
+    const LAT_Q = "음성 비서 응답 지연 측정 기록";
+    const answer = (bools: number[]) => async (request: { questions: Record<string, unknown> }) => ({
+      answers: Object.fromEntries(Object.keys(request.questions).map((k, i) => [k, { type: "bool", bool: bools[i] ?? 0 }])),
+    });
+
+    test("판정기는 후보마다 bool 질문 하나를 받고, 0.6 이상인 후보만 원래 순서로 남는다", async () => {
+      let seen: { state: unknown; questions: Record<string, unknown> } | undefined;
+      const h = harness({ judge: async (request) => { seen = request; return answer([0.2, 0.9, 0.6])(request); } });
+      h.emit({ source: "rpc", text: LAT_Q }, cli());
+      const [message] = await h.start(LAT_Q, cli());
+      expect(Object.keys(seen!.questions)).toEqual(["c1", "c2", "c3"]);
+      const state = seen!.state as { prompt: string; candidates: { path: string; map?: string; scope?: string; date?: string }[] };
+      expect(state.prompt).toBe(LAT_Q);
+      expect(state.candidates).toHaveLength(3);
+      expect(state.candidates[0]).toMatchObject({ path: "doc/history/2026/10/15-latency/main.md", date: "2026-10-15" });
+      expect(state.candidates[0]!.scope).toContain("음성 비서 응답 지연 측정");
+      const lines = message!.content.split("\n").filter((l) => /^\d+\. /.test(l));
+      expect(lines).toEqual(["1. doc/history/2026/10/14-latency/main.md (STATUS: accepted)", "2. doc/history/2026/10/13-latency/main.md (STATUS: accepted)"]);
+      // 0.59는 하한 아래다.
+      const h2 = harness({ judge: answer([0.59, 0.6, 0]) });
+      h2.emit({ source: "rpc", text: LAT_Q }, cli());
+      const [m2] = await h2.start(LAT_Q, cli());
+      expect(m2!.content.split("\n").filter((l) => /^\d+\. /.test(l))).toEqual(["1. doc/history/2026/10/14-latency/main.md (STATUS: accepted)"]);
+      expect(h.judgeCalls()).toBe(1);
+    });
+
+    test("남는 후보가 없으면 아무것도 붙이지 않는다", async () => {
+      const h = harness({ judge: answer([0.1, 0.2, 0.3]) });
+      h.emit({ source: "rpc", text: LAT_Q }, cli());
+      expect(await h.start(LAT_Q, cli())).toHaveLength(0);
+      expect(h.judgeCalls()).toBe(1);
+    });
+
+    test("판정이 제한 시간 안에 끝나지 않으면 취소하고 낱말 후보를 그대로 붙인다", async () => {
+      let aborted = false;
+      const h = harness({
+        judgeTimeoutMs: 30,
+        judge: (_request, options) => new Promise((resolve) => { options?.signal?.addEventListener("abort", () => { aborted = true; }); setTimeout(() => resolve({ answers: {} }), 2_000); }),
+      });
+      h.emit({ source: "rpc", text: LAT_Q }, cli());
+      const t0 = performance.now();
+      const [message] = await h.start(LAT_Q, cli());
+      expect(performance.now() - t0).toBeLessThan(1_000);
+      expect(aborted).toBe(true);
+      expect(message!.content.split("\n").filter((l) => /^\d+\. /.test(l))).toHaveLength(3);
+      expect(JSON.stringify(h.logs)).toContain("제한 시간");
+    });
+
+    test("판정기 오류나 판정기 없음은 낱말 후보를 그대로 붙인다", async () => {
+      for (const judge of [async () => { throw new Error("judge down"); }, null] as const) {
+        const h = harness({ judge });
+        h.emit({ source: "rpc", text: LAT_Q }, cli());
+        const [message] = await h.start(LAT_Q, cli());
+        expect(message!.content.split("\n").filter((l) => /^\d+\. /.test(l))).toHaveLength(3);
+      }
+    });
+
+    test("실행 중(agent_start~agent_end) 재요청은 판정하지 않고 붙이며, 끝난 뒤 새 요청은 다시 판정한다", async () => {
+      const h = harness({ judge: answer([0, 0, 0]) });
+      h.fire("agent_start");
+      h.emit({ source: "rpc", text: LAT_Q }, cli());
+      expect(await h.start(LAT_Q, cli())).toHaveLength(1);
+      expect(h.judgeCalls()).toBe(0);
+      h.fire("agent_end");
+      h.emit({ source: "rpc", text: LAT_Q }, cli());
+      expect(await h.start(LAT_Q, cli())).toHaveLength(0);
+      expect(h.judgeCalls()).toBe(1);
+    });
   });
 });

@@ -100,11 +100,24 @@ export interface DocmapSection {
   readonly excerpt: string;
 }
 
+/** 후보 하나를 판정기에 보여 주는 모양. 경로·지도 줄·SCOPE·DATE·가장 맞는 절의 발췌만 싣는다. */
+export interface DocmapJudgeCandidate {
+  readonly path: string;
+  readonly map?: string;
+  readonly scope?: string;
+  readonly date?: string;
+  readonly excerpt?: string;
+}
+
 export interface DocmapRoute {
   readonly topScore: number;
   readonly signals: DocmapSignals;
   readonly candidates: readonly DocmapCandidate[];
   readonly text: string;
+  /** 판정기에 넘길 후보 요약. `candidates`와 같은 순서다. */
+  readonly judgeCandidates: readonly DocmapJudgeCandidate[];
+  /** 후보 일부만 남겼을 때의 안내문. 빈 배열이면 빈 문자열. */
+  render(kept: readonly DocmapCandidate[]): string;
 }
 
 /** 소문자 ASCII 낱말(2자 이상)과 한글 연속 구간의 2글자 조각. */
@@ -529,12 +542,17 @@ function clip(text: string, max: number): string {
   return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
+/** 지도 줄에서 링크 대상·머리 기호·표 구분을 빼고 한 줄로 줄인다. */
+function mapLineText(line: string): string {
+  return clip(line.replace(/\]\([^)]*\)/g, "]").replace(/^[-*]\s*/, "").replace(/\s*\|\s*/g, " "), 200);
+}
+
 export function renderDocmapRoute(corpus: DocmapCorpus, candidates: readonly DocmapCandidate[], sections: ReadonlyMap<string, DocmapSection>, maxChars = DOCMAP_MAX_CHARS): string {
   const blocks = candidates.map((c, i) => {
     const u = c.unit;
     const lines = [`${i + 1}. ${rel(corpus.root, u.file)}${u.fields.STATUS ? ` (STATUS: ${clip(u.fields.STATUS, 60)})` : ""}`];
     if (c.supersededFrom) lines.push(`   대체 전: ${rel(corpus.root, c.supersededFrom)}`);
-    if (u.mapLines[0]) lines.push(`   지도: ${clip(u.mapLines[0].replace(/\]\([^)]*\)/g, "]").replace(/^[-*]\s*/, "").replace(/\s*\|\s*/g, " "), 200)}`);
+    if (u.mapLines[0]) lines.push(`   지도: ${mapLineText(u.mapLines[0])}`);
     else if (u.title) lines.push(`   제목: ${clip(u.title, 160)}`);
     if (u.fields.SCOPE) lines.push(`   SCOPE: ${clip(u.fields.SCOPE, 160)}`);
     const sec = sections.get(u.file);
@@ -572,5 +590,23 @@ export function routeDocmap(cwd: string, prompt: string, now = new Date()): Docm
   if (!docmapPasses(signals)) return undefined;
   const candidates = pickDocmapCandidates(corpus, ranked, DOCMAP_MAX_CANDIDATES, DOCMAP_CANDIDATE_RATIO, docmapDateIntent(prompt, now));
   const sections = bestDocmapSections(candidates.map((c) => c.unit.file), prompt);
-  return { topScore: top.score, signals, candidates, text: renderDocmapRoute(corpus, candidates, sections) };
+  const judgeCandidates = candidates.map((c) => {
+    const u = c.unit;
+    const sec = sections.get(u.file);
+    return {
+      path: rel(corpus.root, u.file),
+      ...(u.mapLines[0] ? { map: mapLineText(u.mapLines[0]) } : u.title ? { map: clip(u.title, 160) } : {}),
+      ...(u.fields.SCOPE ? { scope: clip(u.fields.SCOPE, 160) } : {}),
+      ...(u.fields.DATE ? { date: u.fields.DATE } : {}),
+      ...(sec ? { excerpt: `${clip(sec.heading, 60)}${sec.excerpt ? ` — ${sec.excerpt}` : ""}` } : {}),
+    };
+  });
+  return {
+    topScore: top.score,
+    signals,
+    candidates,
+    text: renderDocmapRoute(corpus, candidates, sections),
+    judgeCandidates,
+    render: (kept) => (kept.length === 0 ? "" : renderDocmapRoute(corpus, kept, sections)),
+  };
 }

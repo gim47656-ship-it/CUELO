@@ -5873,56 +5873,42 @@ import { $env, $envExact, getAgentDir, logger } from "@oh-my-pi/pi-utils";
 		}
 		if (accountPolicyDenial && currentModel) {`,
 	},
+	// 2026-10-17 RETIRE(사용자 결정: Vercel 판정 모드 제거): `providers.judgmentProvider: vercel` 고정 모드를 받치던 CUELO 전용 항목 전부를
+	// no-op 후보로 둔다(이 세 항목 + 아래 judgment/index.ts·model-settings.ts·settings.ts 항목). 이미 그 패치를 실은 설치(18.11.3 라이브)를
+	// --apply·--revert 가 upstream 줄로 되돌리도록 옛 적용본을 legacyPatched 로 둔다. 후보는 라이브에 배포된 18.11.3 판 하나뿐이다
+	// (이전 판의 Vercel 후보·alternates 는 같은 판의 순정·적용본을 다루던 것이라 함께 지웠다). 회귀 시험은 core-jev-judgment-test.ts 가 맡는다.
 	{
-		// 18.4.2 재앵커: import 블록 전체를 앵커로 쓰면 버전마다 upstream 이 한두 이름을 더해(18.3.0 `tokenUsage`,
-		// 18.4.2 `Answer`) 매번 깨지고, 적용 결과가 버전 사이에 같아져 alternates 로는 ambiguous 가 된다.
-		// 두 버전에 공통인 이웃 줄에 Vercel adapter 가 쓰는 두 이름만 넣는다. `Answer` 는 adapter 본문에서
-		// `import("@oh-my-pi/pi-ai").Answer` 로 직접 참조해 import 가 필요 없다.
-		// 옛 전체 블록 patched 가 적용된 라이브(18.3.5)에서도 두 marker 가 모두 들어 있어 applied 로 읽힌다.
 		file: "src/judgment/index.ts",
-		marker: "\ttype ApiKey,\n\ttype AssistantMessage,\n",
+		marker: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
 		anchor: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
-		patched: "\ttype ApiKey,\n\ttype AssistantMessage,\n\tchatTextBackend,\n",
+		patched: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
+		legacyPatched: "\ttype ApiKey,\n\ttype AssistantMessage,\n\tchatTextBackend,\n",
 	},
 	{
 		file: "src/judgment/index.ts",
-		marker: "\ttype Questions,\n\tresolveApiKeyOnce,\n",
+		marker: "\ttype Questions,\n\ttype TextBackend,\n",
 		anchor: "\ttype Questions,\n\ttype TextBackend,\n",
-		patched: "\ttype Questions,\n\tresolveApiKeyOnce,\n\ttype TextBackend,\n",
+		patched: "\ttype Questions,\n\ttype TextBackend,\n",
+		legacyPatched: "\ttype Questions,\n\tresolveApiKeyOnce,\n\ttype TextBackend,\n",
 	},
 	{
 		file: "src/judgment/index.ts",
-		// marker 는 버전 형태별로 좁힌다. `fetch?: typeof fetch;` 만으로는 Vercel adapter 옵션(아래 항목)에도
-		// 걸리고 18.4.2 후보와도 겹쳐 ambiguous 가 된다. 18.3.5 에서는 interface 끝(`}`) 바로 앞이다.
-		marker: "backend tests. */\n\tfetch?: typeof fetch;\n}",
-		anchor: `	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
-	onUsage?: (usage: JudgmentUsage) => void;`,
-		patched: `	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
-	onUsage?: (usage: JudgmentUsage) => void;
-	/** Injectable transport for deterministic judgment backend tests. */
-	fetch?: typeof fetch;`,
-		// 18.4.2: onUsage 위에 doc 주석이 생겼고 바로 아래에 telemetry 가 온다.
-		alternates: [{
-			file: "src/judgment/index.ts",
-			marker: "backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
-			anchor: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
-			patched: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Injectable transport for deterministic judgment backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
-		}],
+		marker: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
+		anchor: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
+		patched: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
+		legacyPatched:
+			"\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Injectable transport for deterministic judgment backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
 	},
-	// RETIRE (2026-09-21, 18.2.7): `JudgeKind` 에 `"vercel"` 을 더하던 항목은 없앴다.
-	// 18.2.7 은 `export type JudgeKind = "native" | "local" | "online"` 이고 분류는 모델 API 로만
-	// 한다(`kindOf`, judgment/index.ts:105-114). Vercel adapter 는 자체 kind 를 만들지 않고
-	// `withCandidate` callback 에 upstream 분류 `native` 를 넘긴다. 옛 `ResolvedJudge.kind`
-	// 호환 shim 도 되살리지 않는다.
+	// RETIRE (2026-09-21, 18.2.7): `JudgeKind` 에 `"vercel"` 을 더하던 항목은 없앴다(그 뒤 Vercel 판정 모드 전체도 2026-10-17 에 retire).
 	{
-		// 18.2.7 재앵커: 옛 앵커는 `usesTypeSafeJudge` 의 doc 주석이었는데 그 심볼이 사라졌다.
-		// 같은 목적지(정적 Vercel adapter 블록을 다른 헬퍼 앞에 심는다)를 `LocalTextBackend`
-		// 선언 앞에 붙인다. VercelJudge 는 upstream `Judge` 를 구현하고 자체 kind 를 만들지 않는다.
+		// 2026-10-17 RETIRE(사용자 결정: Vercel 판정 모드 제거): 정적 Vercel adapter 블록(VERCEL_JUDGMENT_* 상수·VercelJudge·응답 parser·
+		// usageReportingVercelJudge)을 `LocalTextBackend` 선언 앞에 심던 항목이다. 아래 legacyPatched 는 18.11.3 라이브에 배포된 그 블록
+		// 그대로이고, --apply·--revert 가 upstream 줄(anchor)로 되돌린다. Vercel 판정 요청은 `ai-gateway.vercel.sh` 로 가던 유료 경로였다.
 		file: "src/judgment/index.ts",
-		marker: `export const VERCEL_JUDGMENT_PROVIDER = "vercel";`,
-		anchor: `/** Keyword completions through the shared on-device tiny-model worker. */
-class LocalTextBackend implements TextBackend {`,
-		patched: `export const VERCEL_JUDGMENT_PROVIDER = "vercel";
+		marker: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
+		anchor: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
+		patched: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
+		legacyPatched: `export const VERCEL_JUDGMENT_PROVIDER = "vercel";
 export const VERCEL_JUDGMENT_AUTH_PROVIDER = "vercel-ai-gateway";
 export const VERCEL_JUDGMENT_ENDPOINT = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model";
 export const VERCEL_JUDGMENT_MODEL = "typesafe-ai/jev";
@@ -6185,76 +6171,40 @@ function usageReportingVercelJudge(judge: VercelJudge, onUsage: JudgeDeps["onUsa
 class LocalTextBackend implements TextBackend {`,
 	},
 	{
-		// 18.2.7 재앵커: 옛 분기는 `resolveJudge` 안에서 `ResolvedJudge` 를 만들었지만, 이제
-		// `resolveJudge` 는 `new ChainJudge(deps)` 만 돌려주고 후보 해석은 `withCandidate` 가
-		// 소유한다. 명시 vercel 은 그 진입점에서 **후보 loop 바깥**으로 갈라져 한 요청만 하고,
-		// 실패·abort·credential 없음은 caller 로 그대로 전파된다(session/chat fallback 없음).
-		// callback 에는 upstream 분류 `native` 를 넘긴다.
+		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): `#withCandidate` 의 명시 Vercel 분기(18.11.2+ 의 images 배열 인자 판). 후보 loop 는
+		// upstream 그대로이고 `judge()`·`withCandidate()` 두 진입점 모두 role chain 으로 간다. 이미지 요청의 명시 실패는 upstream 후보 loop 가 한다.
 		file: "src/judgment/index.ts",
-		marker: "VERCEL_JUDGMENT_PROVIDER) {\n\t\t\tconst vercel = new VercelJudge(",
-		excludes: "\tasync #withCandidate<T>(",
-		anchor: `	async withCandidate<T>(run: (judge: Judge, kind: JudgeKind) => Promise<T>, options: JudgeOptions = {}): Promise<T> {
-		const signal = options.signal;`,
-		patched: `	async withCandidate<T>(run: (judge: Judge, kind: JudgeKind) => Promise<T>, options: JudgeOptions = {}): Promise<T> {
-		// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate
-		// chain so a failure, abort, or missing credential reaches the caller instead of
-		// falling back to a chat or local model. Every other value keeps the upstream chain.
-		if (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {
-			const vercel = new VercelJudge({
-				apiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {
-					sessionId: this.#deps.sessionId,
-				}),
-				fetch: this.#deps.fetch,
-			});
-			return run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native");
-		}
-		const signal = options.signal;`,
-		// 2026-10-16 18.11.1 ADAPT: upstream 이 후보 loop 를 private `#withCandidate(run, options, requiresImages)` 로 옮기고 공개
-		// `withCandidate` 는 그 위의 얇은 wrapper 로 만들었다(이미지 판정, #15471). `judge()` 도 이제 `withCandidate` 가 아니라
-		// `#withCandidate` 를 직접 부르므로 분기는 반드시 `#withCandidate` 안에 있어야 두 진입점을 모두 덮는다(wrapper 에 두면 judge()
-		// 가 명시 vercel 을 우회해 후보 chain 으로 간다). 이미지 요청은 upstream 계약대로 명시 실패한다 — VercelJudge 는 state·questions
-		// 만 보내므로 이미지를 조용히 버리면 안 된다. run 의 세 번째 인자(model)는 `online` 이미지 정규화에만 쓰이고 native 는 읽지
-		// 않아 형만 맞춘다. 판 구분은 18.11.1 에만 있는 `#withCandidate` 선언이고, 본 후보는 `excludes`, 이 후보는 `requires` 다.
-		alternates: [{
-			file: "src/judgment/index.ts",
-			requires: "\tasync #withCandidate<T>(",
-			marker: "VERCEL_JUDGMENT_PROVIDER) {\n\t\t\t// The fixed evaluation request carries no images;",
-			anchor: `	async #withCandidate<T>(
-		run: (judge: Judge, kind: JudgeKind, model: Model) => Promise<T>,
-		options: JudgeOptions,
-		requiresImages: boolean,
-	): Promise<T> {
-		const signal = options.signal;`,
-			patched: `	async #withCandidate<T>(
-		run: (judge: Judge, kind: JudgeKind, model: Model) => Promise<T>,
-		options: JudgeOptions,
-		requiresImages: boolean,
-	): Promise<T> {
-		// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate
-		// chain so a failure, abort, or missing credential reaches the caller instead of
-		// falling back to a chat or local model. Every other value keeps the upstream chain.
-		if (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {
-			// The fixed evaluation request carries no images; fail like every image-incapable candidate rather than drop them.
-			if (requiresImages) throw new Error("judgment: no compatible judge candidate supports images");
-			const vercel = new VercelJudge({
-				apiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {
-					sessionId: this.#deps.sessionId,
-				}),
-				fetch: this.#deps.fetch,
-			});
-			// "native" never reads \`model\` (only the "online" image path does), so the session model stands in for its type.
-			return run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native", this.#deps.sessionModel as Model);
-		}
-		const signal = options.signal;`,
-		}],
+		marker: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
+		anchor: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
+		patched: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
+		legacyPatched: [
+			"\t\tconst requiresImages = images.length > 0;",
+			"\t\t// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate",
+			"\t\t// chain so a failure, abort, or missing credential reaches the caller instead of",
+			"\t\t// falling back to a chat or local model. Every other value keeps the upstream chain.",
+			"\t\tif (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {",
+			"\t\t\t// The fixed evaluation request carries no images; fail like every image-incapable candidate rather than drop them.",
+			'\t\t\tif (requiresImages) throw new Error("judgment: no compatible judge candidate supports images");',
+			"\t\t\tconst vercel = new VercelJudge({",
+			"\t\t\t\tapiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {",
+			"\t\t\t\t\tsessionId: this.#deps.sessionId,",
+			"\t\t\t\t}),",
+			"\t\t\t\tfetch: this.#deps.fetch,",
+			"\t\t\t});",
+			'\t\t\t// "native" never reads `model` (only the "online" image path does), so the session model stands in for its type.',
+			'\t\t\treturn run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native", this.#deps.sessionModel as Model);',
+			"\t\t}",
+			"\t\tconst signal = options.signal;",
+			"",
+		].join("\n"),
 	},
 	{
-		// 18.3.1 에는 `Settings.get` 이 없다. 위 분기는 typed handle 로 읽으므로 그 import 를 넣는다.
+		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): 위 분기가 읽던 typed handle import.
 		file: "src/judgment/index.ts",
-		marker: 'import type { Settings } from "../config/settings";\nimport { cfgJudgmentProvider } from "../config/model-settings";',
+		marker: 'import type { Settings } from "../config/settings";',
 		anchor: 'import type { Settings } from "../config/settings";',
-		patched: `import type { Settings } from "../config/settings";
-import { cfgJudgmentProvider } from "../config/model-settings";`,
+		patched: 'import type { Settings } from "../config/settings";',
+		legacyPatched: 'import type { Settings } from "../config/settings";\nimport { cfgJudgmentProvider } from "../config/model-settings";',
 	},
 	// 2026-10-17 RETIRE(사용자 결정: Experiential 탈퇴): typesafe 경로를 Experiential Labs gateway 로 보내던 설정을 지웠으므로
 	// 그 gateway decoder 의 32문항 한도(MAX_DECISION_QUESTIONS) 때문에 judge chain 이 typesafe 요청을 32개씩 나누던
@@ -6299,92 +6249,71 @@ import { cfgJudgmentProvider } from "../config/model-settings";`,
 		].join("\n"),
 	},
 	{
-		// 18.2.7 에는 `providers.judgmentProvider` schema 항목 자체가 없다(legacy key 목록에만
-		// 남아 migration 이 소비한다). 이 빌드의 로컬 선택 설정으로 최소 enum 만 되살린다:
-		// auto=upstream judge role chain, vercel=one-shot no fallback. upstream 에서 제거된
-		// typesafe/llm selector 는 되살리지 않는다. `SETTING_PATH_SEGMENTS` 가 schema 키에서
-		// 파생되므로 이 항목이 있어야 `settings.get("providers.judgmentProvider")` 가 성립한다.
-		file: "src/config/settings-schema.ts",
-		marker: `"providers.judgmentProvider": {`,
-		anchor: `	"providers.autoThinkingMaxEffort": {`,
-		patched: `	"providers.judgmentProvider": {
-		type: "enum",
-		values: ["auto", "vercel"] as const,
-		default: "auto",
-		ui: {
-			tab: "providers",
-			group: "Judgment",
-			label: "Judgment Provider",
-			description:
-				"Backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). \`auto\` uses the judge model role chain (native judgment APIs, then chat/local candidates). \`vercel\` runs one fixed Vercel AI Gateway evaluation request and never falls back to a chat or local model.",
-			options: [
-				{ value: "auto", label: "Auto", description: "Judge model role chain (default)" },
-				{
-					value: "vercel",
-					label: "Vercel Jev",
-					description: "One fixed evaluation request; failures never fall back",
-				},
-			],
-		},
-	},
-	"providers.autoThinkingMaxEffort": {`,
-		alternates: [{
-			file: "src/config/model-settings.ts",
-			marker: 'id: "providers.judgmentProvider"',
-			anchor: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
-			patched: `export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });
-
-export const cfgJudgmentProvider = register({
-	id: "providers.judgmentProvider",
-	type: "enum",
-	values: ["auto", "vercel"] as const,
-	default: "auto",
-	ui: {
-		tab: "providers",
-		group: "Judgment",
-		label: "Judgment Provider",
-		description:
-			"Backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). \`auto\` uses the judge model role chain (native judgment APIs, then chat/local candidates). \`vercel\` runs one fixed Vercel AI Gateway evaluation request and never falls back to a chat or local model.",
-		options: [
-			{ value: "auto", label: "Auto", description: "Judge model role chain (default)" },
-			{ value: "vercel", label: "Vercel Jev", description: "One fixed evaluation request; failures never fall back" },
-		],
-	},
-});`,
-		}],
+		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): model-settings.ts 의 `providers.judgmentProvider` enum(auto·vercel) 등록. 이 값은 이제
+		// upstream 18.11.3 의 legacy 설정 키로만 남는다. `vercel` 을 남긴 사용자 설정은 upstream migration 이 받는다(core-jev-judgment-test.ts).
+		file: "src/config/model-settings.ts",
+		marker: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
+		anchor: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
+		patched: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
+		legacyPatched: [
+			'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
+			"",
+			"export const cfgJudgmentProvider = register({",
+			'\tid: "providers.judgmentProvider",',
+			'\ttype: "enum",',
+			'\tvalues: ["auto", "vercel"] as const,',
+			'\tdefault: "auto",',
+			"\tui: {",
+			'\t\ttab: "providers",',
+			'\t\tgroup: "Judgment",',
+			'\t\tlabel: "Judgment Provider",',
+			"\t\tdescription:",
+			'\t\t\t"Backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). `auto` uses the judge model role chain (native judgment APIs, then chat/local candidates). `vercel` runs one fixed Vercel AI Gateway evaluation request and never falls back to a chat or local model.",',
+			"\t\toptions: [",
+			'\t\t\t{ value: "auto", label: "Auto", description: "Judge model role chain (default)" },',
+			'\t\t\t{ value: "vercel", label: "Vercel Jev", description: "One fixed evaluation request; failures never fall back" },',
+			"\t\t],",
+			"\t},",
+			"});",
+		].join("\n"),
 	},
 	{
-		// 18.2.7 은 `providers.judgmentProvider` 를 legacy selector 로 보고 값을 읽은 뒤 키를
-		// 지운다(config/settings.ts:2847,2887-2902). 값이 `vercel` 이면 그것은 이 빌드의 로컬
-		// one-shot adapter 선택이므로 키를 남기고 legacy judge role 주입도 건너뛴다. auto/typesafe/
-		// llm/undefined 는 upstream migration 그대로다.
+		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): legacy `judgmentProvider: vercel` 을 로컬 설정으로 살리던 migration 예외 셋(아래 세 항목).
+		// 되돌리면 upstream 처럼 `vercel` 도 비-auto legacy 선택자로 읽혀 judge role chain 으로 옮겨지고 키는 지워진다.
 		file: "src/config/settings.ts",
-		marker: `const localVercelJudgment = legacyJudgmentProvider === "vercel";`,
-		anchor: `			const legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");`,
-		patched: `			const legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");
-			// \`vercel\` selects this build's local one-shot Vercel judge adapter, not a retired
-			// provider selector: keep the key and skip the legacy judge role injection for it.
-			const localVercelJudgment = legacyJudgmentProvider === "vercel";`,
+		marker: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
+		anchor: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
+		patched: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
+		legacyPatched: [
+			'\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
+			"\t\t\t// `vercel` selects this build's local one-shot Vercel judge adapter, not a retired",
+			"\t\t\t// provider selector: keep the key and skip the legacy judge role injection for it.",
+			'\t\t\tconst localVercelJudgment = legacyJudgmentProvider === "vercel";',
+		].join("\n"),
 	},
 	{
 		file: "src/config/settings.ts",
-		marker: `const nonDefaultJudge =
-				(!localVercelJudgment &&`,
-		anchor: `			const nonDefaultJudge =
-				(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||`,
-		patched: `			const nonDefaultJudge =
-				(!localVercelJudgment &&
-					typeof legacyJudgmentProvider === "string" &&
-					legacyJudgmentProvider !== "auto") ||`,
+		marker: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
+		anchor: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
+		patched: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
+		legacyPatched: [
+			"\t\t\tconst nonDefaultJudge =",
+			"\t\t\t\t(!localVercelJudgment &&",
+			'\t\t\t\t\ttypeof legacyJudgmentProvider === "string" &&',
+			'\t\t\t\t\tlegacyJudgmentProvider !== "auto") ||',
+		].join("\n"),
 	},
 	{
 		file: "src/config/settings.ts",
-		marker: `if (key === "judgmentProvider" && localVercelJudgment) continue;`,
-		anchor: `				removeLegacy(providerSettings, key, \`providers.\${key}\`);`,
-		patched: `				// The local explicit mode is a live selection setting, not a retired
-				// selector; it must survive for the judge adapter to read.
-				if (key === "judgmentProvider" && localVercelJudgment) continue;
-				removeLegacy(providerSettings, key, \`providers.\${key}\`);`,
+		marker: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
+		anchor: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
+		patched: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
+		legacyPatched: [
+			"\t\t\t\t// The local explicit mode is a live selection setting, not a retired",
+			"\t\t\t\t// selector; it must survive for the judge adapter to read.",
+			'\t\t\t\tif (key === "judgmentProvider" && localVercelJudgment) continue;',
+			"\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
+		].join("\n"),
 	},
 	// --- usage 보고의 저장 행 귀속 (localCredentialId) ---
 	// API 키 계정(opencode-go 등)의 usage 보고에는 email·accountId가 없어 localCredentialId가
@@ -14957,8 +14886,8 @@ interface ComputerElementRef
 // 2026-10-17 18.11.3 이식(공개 이슈 #31·#33 포함). 18.11.1 후보는 한 바이트도 바꾸지 않고, 18.11.3 순정에서 앵커를 잃은 항목마다
 // 그 판에만 성립하는 후보를 더한다. marker 를 공유하는 후보는 18.11.3 에만 있는 문자열로 requires(새 후보)·excludes(옛 후보)를
 // 짝지어 서로 배타적으로 둔다.
-//  - ADAPT: IRC steer bracket(in-flight epoch), wake-turn 판정·완료 기록(publishMessageResult·messageResult), Vercel judge
-//    (#31: #withCandidate 의 셋째 인자가 images 배열), task schema 의 seance 필드, recall 의 tool 가중(env 로 바뀜).
+//  - ADAPT: IRC steer bracket(in-flight epoch), wake-turn 판정·완료 기록(publishMessageResult·messageResult),
+//    task schema 의 seance 필드, recall 의 tool 가중(env 로 바뀜).
 //  - RETIRE: upstream 이 seance 와 함께 넣은 task model 타입·전달 줄(같은 줄을 두 번 넣지 않는다. 특히 TaskItem·TaskParams 의
 //    `model?: string` 은 upstream 의 `string | string[]` 과 겹쳐 TS2717 이 된다), 번들의 advisor transcript filter 새 이름.
 {
@@ -15071,23 +15000,6 @@ interface ComputerElementRef
 		marker: completion.marker,
 		anchor: swap(completion.anchor, ...resultBranch),
 		patched: swap(completion.patched, ...resultBranch),
-	});
-
-	// #31 Vercel judge: 18.11.2 부터 #withCandidate 의 셋째 인자가 images 배열이고 첫 줄에서 requiresImages 를 계산하며 후보는
-	// #resolveCandidates(images) 로 고른다. upstream 세 줄은 그대로 두고 명시 Vercel 분기를 requiresImages 계산 바로 뒤에 둔다.
-	// 고정 평가 요청은 이미지를 싣지 않으므로 이미지 요청은 명시적으로 거절하고, 텍스트 요청은 한 번만 보내 usage 를 한 번 남기며
-	// chat/local 후보로 넘어가지 않는다(18.11.1 후보와 같은 본문).
-	const IMAGES_18112 = "const requiresImages = images.length > 0;";
-	const vercel = one(entry => entry.file === "src/judgment/index.ts" && entry.marker.startsWith("VERCEL_JUDGMENT_PROVIDER) {\n\t\t\tconst vercel = new VercelJudge("), "Vercel judge");
-	const vercelPrivate = vercel.alternates.find(candidate => candidate.requires === "\tasync #withCandidate<T>(");
-	const imagesArg = ["\t\trequiresImages: boolean,\n\t): Promise<T> {\n", `\t\timages: readonly ImageContent[],\n\t): Promise<T> {\n\t\t${IMAGES_18112}\n`];
-	vercelPrivate.excludes = IMAGES_18112;
-	vercel.alternates.push({
-		file: vercel.file,
-		requires: IMAGES_18112,
-		marker: vercelPrivate.marker,
-		anchor: swap(vercelPrivate.anchor, ...imagesArg),
-		patched: swap(vercelPrivate.patched, ...imagesArg),
 	});
 
 	// recall 가중: upstream 이 상수표를 env 로 읽는 resolveTrustWeights 로 바꿨다(MNEMOPI_TOOL_WEIGHT, 기본 0.5). learn/retain 의
@@ -15306,6 +15218,13 @@ function main() {
 			// (tab-supervisor.ts) 앞 항목이 이미 디스크를 바꿔 놓았으므로, 스냅샷으로
 			// 되돌리면 그 편집이 통째로 되살아난다. 항상 현재 내용을 읽어서 치환한다.
 			const current = readFileSync(s.path, "utf8");
+			// retire 항목(patched === anchor, no-op)은 옛 적용본(legacyPatched)이 anchor 를 부분 문자열로 품어 아래 patched 검사가 항상 먼저
+			// 걸리고 아무것도 되돌리지 못한다. 옛 패치가 실린 상태면 그 본문을 먼저 anchor 로 되돌린다.
+			if (s.status === "legacy" && s.patched === s.anchor && s.legacyPatched && current.includes(s.legacyPatched)) {
+				writeFileSync(s.path, current.replace(s.legacyPatched, s.anchor), "utf8");
+				console.log(`  복원 ${s.file} (옛 패치)`);
+				continue;
+			}
 			if (current.includes(s.patched)) {
 				writeFileSync(s.path, current.replace(s.patched, s.anchor), "utf8");
 				console.log(`  복원 ${s.file}`);

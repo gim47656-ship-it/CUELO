@@ -16,6 +16,9 @@ import {
   summarizeProjectStack,
   VERIFIED_CATALOG,
 } from "./lib/mcp-selection";
+import { type CoreJudgmentModules, defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, stoppedBy } from "./lib/native-judge";
+
+export type { CoreJudgmentModules, NativeJudge } from "./lib/native-judge";
 
 /**
  * 요청별 MCP 선택(`mcp.selection: per-request`). 패치된 core가 매 사용자 요청의 system prompt를 만들기
@@ -25,37 +28,6 @@ import {
  * 한 번 보여 준 설치 제안 이름만 `mcp-suggested.json`에 남겨 다음 세션부터는 요청에 그 이름이 있을 때만 다시 판단한다.
  * `mcp_select`를 모르는 core(standalone omp 등)에서는 핸들러가 호출되지 않아 아무 일도 하지 않는다.
  */
-
-interface JudgeAnswers {
-  answers: Record<string, { type: string; choice?: string } | undefined>;
-}
-
-/** 판정기 seam. 기본 구현은 native 후보에서만 판정을 실행한다. */
-export interface NativeJudge {
-  judge(request: { state: unknown; questions: Record<string, unknown> }, options?: { signal?: AbortSignal }): Promise<JudgeAnswers>;
-}
-
-type JudgeKind = "native" | "local" | "online";
-
-interface ChainJudgeLike {
-  withCandidate<T>(run: (judge: NativeJudge, kind: JudgeKind) => Promise<T>, options?: { signal?: AbortSignal }): Promise<T>;
-}
-
-/** 기존 core 판정 모듈. 런타임 값은 host가 해석하고 타입은 여기 필요한 만큼만 둔다. */
-export interface CoreJudgmentModules {
-  judgment: {
-    resolveJudge(deps: {
-      settings: unknown;
-      registry: unknown;
-      sessionId?: string;
-      purpose: string;
-      onUsage?: unknown;
-    }): ChainJudgeLike;
-    hasNativeJudge(settings: unknown, registry: unknown): boolean;
-    journalJudgmentUsage?(manager: unknown): unknown;
-  };
-  settings: { findScopedSettings(cwd?: string): unknown };
-}
 
 export interface McpSelectionDeps {
   /** 결정적 판정기 seam(테스트). 없으면 {@link loadCore}의 native JEV를 쓴다. */
@@ -89,8 +61,6 @@ const STACK_DIR_LIMIT = 40;
 /** 새 요청의 판정 대기 상한. 넘으면 판정을 취소하고 판정 실패와 같게 새 연결 없이 진행한다(runner 30초 제한에 기대지 않는다). */
 const MCP_SELECTION_TIMEOUT_MS = 3_000;
 const JUDGE_TIMEOUT_REASON = "판정이 제한 시간 안에 끝나지 않음";
-/** 취소·제한 시간이 판정보다 먼저 끝났음을 나타내는 race 표지. */
-const STOPPED: unique symbol = Symbol("mcp-selection-stopped");
 
 async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
   try {
@@ -167,46 +137,11 @@ async function readProjectStack(cwd: string): Promise<string> {
   return summarizeProjectStack({ fileNames, dependencyNames });
 }
 
-async function defaultLoadCore(): Promise<CoreJudgmentModules> {
-  // 지연 import: 테스트 미러에는 node_modules가 없고, 런타임은 host 번들로 해석한다(jev-runtime과 같다).
-  const [judgment, settings] = await Promise.all([
-    import("@oh-my-pi/pi-coding-agent/judgment"),
-    import("@oh-my-pi/pi-coding-agent/config/settings"),
-  ]);
-  return { judgment, settings } as unknown as CoreJudgmentModules;
-}
-
-/**
- * 기존 native JEV만 쓴다. judge 역할의 첫 후보가 native가 아니면 판정하지 않고, 세션 모델 fallback을
- * 붙이지 않으며(sessionModel 미전달), 체인이 native가 아닌 후보를 내면 그 후보에서는 실행하지 않는다.
- */
-async function resolveNativeJudge(ctx: ExtensionContext, loadCore: () => Promise<CoreJudgmentModules>): Promise<NativeJudge> {
-  const { judgment, settings: settingsModule } = await loadCore();
-  const settings = settingsModule.findScopedSettings(ctx.cwd);
-  if (!settings) throw new Error("세션 설정을 찾지 못함");
-  if (!judgment.hasNativeJudge(settings, ctx.modelRegistry)) throw new Error("judge 역할 첫 후보가 native JEV가 아님");
-  const chain = judgment.resolveJudge({
-    settings,
-    registry: ctx.modelRegistry,
-    sessionId: ctx.sessionManager?.getSessionId?.(),
-    purpose: "mcp_selection",
-    onUsage: judgment.journalJudgmentUsage?.(ctx.sessionManager),
-  });
-  return {
-    judge: (request, options) =>
-      chain.withCandidate(
-        (candidate, kind) =>
-          kind === "native" ? candidate.judge(request, options) : Promise.reject(new Error(`native가 아닌 judge 후보(${kind})`)),
-        options,
-      ),
-  };
-}
-
 export function createMcpSelection(deps: McpSelectionDeps = {}) {
   const agentDir = deps.agentDir ?? join(import.meta.dir, "..");
   const catalog = deps.catalog ?? VERIFIED_CATALOG;
   const loadCore = deps.loadCore ?? defaultLoadCore;
-  const resolveJudge = deps.resolveJudge ?? ((ctx: ExtensionContext) => resolveNativeJudge(ctx, loadCore));
+  const resolveJudge = deps.resolveJudge ?? ((ctx: ExtensionContext) => resolveNativeJudge(ctx, loadCore, "mcp_selection"));
   const judgeTimeoutMs = deps.judgeTimeoutMs ?? MCP_SELECTION_TIMEOUT_MS;
 
   return function mcpSelection(pi: ExtensionAPI): void {
@@ -280,22 +215,20 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       const answers: Record<string, string | undefined> = {};
       const signal = event.signal ? AbortSignal.any([event.signal, token.controller.signal]) : token.controller.signal;
       // provider가 signal을 무시해도 취소·제한 시간에 바로 돌아온다.
-      const stopped = Promise.withResolvers<typeof STOPPED>();
-      if (signal.aborted) stopped.resolve(STOPPED);
-      else signal.addEventListener("abort", () => stopped.resolve(STOPPED), { once: true });
+      const stopped = stoppedBy(signal);
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
         token.controller.abort();
       }, judgeTimeoutMs);
       try {
-        const judge = await Promise.race([judgeFor(ctx), stopped.promise]);
-        if (judge === STOPPED) throw new Error("판정 취소");
+        const judge = await Promise.race([judgeFor(ctx), stopped]);
+        if (judge === JUDGE_STOPPED) throw new Error("판정 취소");
         if (!judge) throw new Error("JEV 판정기를 해석하지 못함");
-        const stack = await Promise.race([projectStack, stopped.promise]);
-        if (stack === STOPPED) throw new Error("판정 취소");
-        const result = await Promise.race([judge.judge(buildJudgeRequest(cue, stack, candidates), { signal }), stopped.promise]);
-        if (result === STOPPED) throw new Error("판정 취소");
+        const stack = await Promise.race([projectStack, stopped]);
+        if (stack === JUDGE_STOPPED) throw new Error("판정 취소");
+        const result = await Promise.race([judge.judge(buildJudgeRequest(cue, stack, candidates), { signal }), stopped]);
+        if (result === JUDGE_STOPPED) throw new Error("판정 취소");
         for (const [key, answer] of Object.entries(result.answers)) {
           answers[key] = answer?.type === "choice" ? answer.choice : undefined;
         }
