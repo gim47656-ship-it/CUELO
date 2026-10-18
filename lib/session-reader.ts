@@ -17,6 +17,7 @@ import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit
 import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
+import { deferredToolImageText } from "./message-display";
 import { sessionPathKey } from "./session-path";
 import { peekSessionProject, rememberPlainSessionProject, resolveProject, type SessionProjectGrouping } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
@@ -776,11 +777,7 @@ function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
   });
   if (omitted === 0) return message;
 
-  const mimeText = mimes.size > 0 ? `: ${[...mimes].join(", ")}` : "";
-  content.push({
-    type: "text",
-    text: `[${omitted} tool result image${omitted === 1 ? "" : "s"} omitted from initial history payload${mimeText}, ~${bytes} bytes]`,
-  });
+  content.push({ type: "text", text: deferredToolImageText(omitted, [...mimes], bytes) });
   return { ...message, content };
 }
 

@@ -67,8 +67,17 @@ function soloExcerpt(text: string): string | undefined {
   return CONTINUATION_PROMISE_PATTERN.test(excerpt) ? excerpt : undefined;
 }
 
+// 물음표가 든 따옴표 구절은 사용자가 에이전트에게 시킨 문구다("…진행할까요?"라고 물어). 질문 후보에서 뺀다.
+// 따옴표 밖의 질문은 그대로 둔다(2026-10-18 라이브 시험에서 시킨 문구를 미답 질문으로 잡아 같은 질문이 두 번 나갔다).
+// 따옴표는 왼쪽부터 짝을 맞춘 뒤 물음표가 든 짝만 지운다. 물음표로 먼저 고르면 앞 구절의 닫는 따옴표가 여는 따옴표로 잡힌다.
+// 시킨 문구가 여러 줄일 수 있어 짝은 줄바꿈을 넘어 끝까지 소비한다. 짝 없는 따옴표가 먼 따옴표와 이어져 긴 짝이 되면
+// 그 안의 실제 질문까지 지우지 않도록 400자를 넘는 짝은 그대로 둔다. 상한을 매칭에 두면 넘는 짝의 닫는 따옴표가 다음 짝의 여는 따옴표로 잡힌다.
+const QUOTED_SPAN = /"[^"]*"|“[^”]*”|「[^」]*」|『[^』]*』/g;
+const QUOTED_INSTRUCTION_LIMIT = 400;
+
 function questionParts(text: string): string[] {
-  return safeExcerpt(text).split(/(?<=[?？])|(?<=[.!。…])(?=\s|[가-힣])|\n+/)
+  return safeExcerpt(text).replace(QUOTED_SPAN, span => span.length <= QUOTED_INSTRUCTION_LIMIT + 2 && /[?？]/.test(span) ? " " : span)
+    .split(/(?<=[?？])|(?<=[.!。…])(?=\s|[가-힣])|\n+/)
     .map(part => part.trim())
     .filter(part => /[?？]$/.test(part)
       || /(?:뭐지|뭐야|뭐여|뭔데|왜|어떻게|인가|인지|한가|한지|냐|니|나요|까|는지|알려줘|설명해줘)$/

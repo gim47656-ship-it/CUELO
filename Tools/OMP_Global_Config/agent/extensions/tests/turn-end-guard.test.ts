@@ -203,6 +203,35 @@ describe("turn-end guard", () => {
     });
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
   });
+  test("따옴표로 시킨 질문 문구는 사용자 질문으로 보지 않고 따옴표 밖의 질문만 판정한다", async () => {
+    const seen: { questions: { question: string }[] }[] = [];
+    const h = harness([], undefined, async (summary) => {
+      seen.push(summary as (typeof seen)[number]);
+      return summary.questions.map(() => false);
+    });
+    const quotedOnly = '첫 항목만 끝내고 "첫 항목 완료.\n두 번째 항목을 진행할까요?"라고만 묻고 끝내.';
+    await h.emit("input", { source: "rpc", text: quotedOnly });
+    await h.end("두 번째 항목을 진행할까요?", {
+      messages: [{ role: "user", content: quotedOnly }, { role: "assistant", content: [{ type: "text", text: "두 번째 항목을 진행할까요?" }] }],
+    });
+    expect(seen).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+
+    const mixed = '"fork" 버튼은 뭐야? 답한 뒤 "계속할까요?"라고 물어.';
+    await h.emit("input", { source: "rpc", text: mixed });
+    await h.end("계속할까요?", {
+      messages: [{ role: "user", content: mixed }, { role: "assistant", content: [{ type: "text", text: "계속할까요?" }] }],
+    });
+    expect(seen.map((summary) => summary.questions.map((item) => item.question))).toEqual([['"fork" 버튼은 뭐야?']]);
+
+    // 긴 인용의 닫는 따옴표가 다음 인용과 짝이 되어 그 사이 실제 질문을 지우면 안 된다.
+    const long = `"${"가".repeat(401)}"\nlint는 뭐야?\n"계속할까요?"라고 물어.`;
+    await h.emit("input", { source: "rpc", text: long });
+    await h.end("계속할까요?", {
+      messages: [{ role: "user", content: long }, { role: "assistant", content: [{ type: "text", text: "계속할까요?" }] }],
+    });
+    expect(seen.at(-1)?.questions.map((item) => item.question)).toEqual(["lint는 뭐야?"]);
+  });
 
   test("여러 질문의 판정을 나눠 미답 요지만 알리고 기존 TODO 안내와 합친다", async () => {
     const h = harness([], async () => "unknown", async () => [true, false]);

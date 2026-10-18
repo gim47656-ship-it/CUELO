@@ -130,10 +130,25 @@ export function toolImageUrl(sessionId: string, toolCallId: string, index?: numb
   return `${TOOL_IMAGE_ROUTE}?${query}`;
 }
 
+/** 초기 기록이 도구 결과 이미지를 뺀 자리에 남기는 안내 문구. `session-reader` 가 만들고 아래 판정이 읽는다. */
+export function deferredToolImageText(count: number, mimes: readonly string[], bytes: number): string {
+  const mimeText = mimes.length > 0 ? `: ${mimes.join(", ")}` : "";
+  return `[${count} tool result image${count === 1 ? "" : "s"} omitted from initial history payload${mimeText}, ~${bytes} bytes]`;
+}
+
+const DEFERRED_TOOL_IMAGE_TEXT = /^\[[1-9]\d* tool result images? omitted from initial history payload(?:: [^\]\n]*)?, ~\d+ bytes\]$/;
+
+/** 안내 문구는 결과의 마지막 블록으로 붙는다. 같은 구절을 출력만 한 eval 은 대상이 아니다. */
+function endsWithDeferredToolImages(result: ToolResultMessage): boolean {
+  const last = result.content?.at(-1);
+  return last?.type === "text" && DEFERRED_TOOL_IMAGE_TEXT.test(last.text);
+}
+
 /**
  * 이 도구 호출의 결과가 이미지를 담았을 수 있는가 — 생성한 그림(`generate_image`, xd:// 장치
- * 호출 포함)이나 확인한 그림(이미지 파일 `read`)이다. 초기 기록에서는 base64 가 빠져 결과만으로
- * 알 수 없으므로 호출 구조로 고르고, 실제 개수는 라우트가 센다(0 이면 아무것도 그리지 않는다).
+ * 호출 포함), 확인한 그림(이미지 파일 `read`), eval 셀이 출력한 그림이다. 초기 기록에서는 base64 가
+ * 빠져 결과만으로 알 수 없으므로 호출 구조로 고르고(eval 은 이미지를 뺐다는 안내 문구로), 실제
+ * 개수는 라우트가 센다(0 이면 아무것도 그리지 않는다).
  */
 export function mayCarryToolImages(call: ToolCallContent, result: ToolResultMessage | undefined): boolean {
   if (!result || result.isError) return false;
@@ -141,6 +156,7 @@ export function mayCarryToolImages(call: ToolCallContent, result: ToolResultMess
   const input = call.input ?? {};
   if (call.toolName === "generate_image") return true;
   if (call.toolName === "write") return input.path === "xd://generate_image";
+  if (call.toolName === "eval") return endsWithDeferredToolImages(result);
   return call.toolName === "read" && typeof input.path === "string" && isImagePath(input.path);
 }
 
