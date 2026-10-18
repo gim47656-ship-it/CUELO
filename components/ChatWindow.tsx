@@ -1916,6 +1916,73 @@ function ResponseSurface({
   );
 }
 
+/** Picked option indexes and typed answers of an `ask` dialog, keyed by question id. */
+export interface AskAnswers {
+  selected: Record<string, number[]>;
+  custom: Record<string, string>;
+}
+
+type AskQuestion = Extract<ExtensionDialogRequest, { method: "ask" }>["questions"][number];
+
+export function initialAskAnswers(questions: AskQuestion[]): AskAnswers {
+  const selected: Record<string, number[]> = {};
+  for (const question of questions) {
+    selected[question.id] = question.recommended !== undefined
+      && question.options[question.recommended] !== undefined
+      ? [question.recommended]
+      : [];
+  }
+  return { selected, custom: {} };
+}
+
+// A single-choice question takes one answer, like omp's TUI ask: a typed answer
+// replaces the picked option (its "Other" row clears the selection), and picking
+// an option drops the typed answer. A multi-choice question keeps both.
+export function chooseAskOption(answers: AskAnswers, question: AskQuestion, optionIndex: number): AskAnswers {
+  const current = answers.selected[question.id] ?? [];
+  if (question.multi) {
+    const next = current.includes(optionIndex)
+      ? current.filter((index) => index !== optionIndex)
+      : [...current, optionIndex];
+    return { ...answers, selected: { ...answers.selected, [question.id]: next } };
+  }
+  return {
+    selected: { ...answers.selected, [question.id]: [optionIndex] },
+    custom: { ...answers.custom, [question.id]: "" },
+  };
+}
+
+export function typeAskAnswer(answers: AskAnswers, question: AskQuestion, text: string): AskAnswers {
+  const custom = { ...answers.custom, [question.id]: text };
+  if (question.multi || text.trim().length === 0) return { ...answers, custom };
+  return { selected: { ...answers.selected, [question.id]: [] }, custom };
+}
+
+export function canSubmitAskAnswers(questions: AskQuestion[], answers: AskAnswers): boolean {
+  return questions.every((question) =>
+    (answers.selected[question.id]?.length ?? 0) > 0
+    || (answers.custom[question.id]?.trim().length ?? 0) > 0);
+}
+
+export function askSubmissionValue(questions: AskQuestion[], answers: AskAnswers): string {
+  return JSON.stringify({
+    kind: "submit",
+    results: questions.map((question) => {
+      const customInput = answers.custom[question.id]?.trim();
+      return {
+        id: question.id,
+        question: question.question,
+        options: question.options.map((option) => option.label),
+        multi: question.multi ?? false,
+        selectedOptions: (answers.selected[question.id] ?? [])
+          .map((index) => question.options[index]?.label)
+          .filter((option): option is string => option !== undefined),
+        ...(customInput ? { customInput } : {}),
+      };
+    }),
+  });
+}
+
 function ExtensionDialog({
   request,
   onRespond,
@@ -1931,8 +1998,7 @@ function ExtensionDialog({
 }) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
-  const [selectedOptions, setSelectedOptions] = useState<Record<string, number[]>>({});
-  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
+  const [askAnswers, setAskAnswers] = useState<AskAnswers>({ selected: {}, custom: {} });
   const [planFeedback, setPlanFeedback] = useState("");
   const lastActivityRef = useRef(0);
   // Only a timed ask auto-selects; one report per second is enough to keep a 120s wait open.
@@ -1947,19 +2013,7 @@ function ExtensionDialog({
   useEffect(() => {
     setValue(request.method === "editor" ? request.prefill ?? "" : "");
     setPlanFeedback("");
-    setCustomAnswers({});
-    if (request.method !== "ask") {
-      setSelectedOptions({});
-      return;
-    }
-    const recommended: Record<string, number[]> = {};
-    for (const question of request.questions) {
-      recommended[question.id] = question.recommended !== undefined
-        && question.options[question.recommended] !== undefined
-        ? [question.recommended]
-        : [];
-    }
-    setSelectedOptions(recommended);
+    setAskAnswers(request.method === "ask" ? initialAskAnswers(request.questions) : { selected: {}, custom: {} });
   }, [request]);
 
   const submitValue = () => {
@@ -1970,41 +2024,10 @@ function ExtensionDialog({
     }
   };
   if (request.method === "ask") {
-    const canSubmit = request.questions.every((question) =>
-      (selectedOptions[question.id]?.length ?? 0) > 0
-      || (customAnswers[question.id]?.trim().length ?? 0) > 0);
-    const toggleOption = (questionId: string, optionIndex: number, multi: boolean) => {
-      reportActivity();
-      setSelectedOptions((current) => {
-        const selected = current[questionId] ?? [];
-        const next = multi
-          ? selected.includes(optionIndex)
-            ? selected.filter((index) => index !== optionIndex)
-            : [...selected, optionIndex]
-          : [optionIndex];
-        return { ...current, [questionId]: next };
-      });
-    };
+    const canSubmit = canSubmitAskAnswers(request.questions, askAnswers);
     const submitAnswers = () => {
       if (!canSubmit) return;
-      onRespond(request, {
-        value: JSON.stringify({
-          kind: "submit",
-          results: request.questions.map((question) => {
-            const customInput = customAnswers[question.id]?.trim();
-            return {
-              id: question.id,
-              question: question.question,
-              options: question.options.map((option) => option.label),
-              multi: question.multi ?? false,
-              selectedOptions: (selectedOptions[question.id] ?? [])
-                .map((index) => question.options[index]?.label)
-                .filter((option): option is string => option !== undefined),
-              ...(customInput ? { customInput } : {}),
-            };
-          }),
-        }),
-      });
+      onRespond(request, { value: askSubmissionValue(request.questions, askAnswers) });
     };
 
     return (
@@ -2030,7 +2053,7 @@ function ExtensionDialog({
           <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 16 }}>
             <div style={{ display: "grid", gap: 20 }}>
               {request.questions.map((question, questionIndex) => {
-                const selected = selectedOptions[question.id] ?? [];
+                const selected = askAnswers.selected[question.id] ?? [];
                 return (
                   <section
                     key={question.id}
@@ -2068,7 +2091,10 @@ function ExtensionDialog({
                             type="button"
                             role={question.multi ? "checkbox" : "radio"}
                             aria-checked={checked}
-                            onClick={() => toggleOption(question.id, optionIndex, question.multi ?? false)}
+                            onClick={() => {
+                              reportActivity();
+                              setAskAnswers((current) => chooseAskOption(current, question, optionIndex));
+                            }}
                             style={{
                               display: "grid",
                               gridTemplateColumns: "18px minmax(0, 1fr) auto",
@@ -2132,10 +2158,11 @@ function ExtensionDialog({
                       })}
                     </div>
                     <input
-                      value={customAnswers[question.id] ?? ""}
+                      value={askAnswers.custom[question.id] ?? ""}
                       onChange={(event) => {
                         reportActivity();
-                        setCustomAnswers((current) => ({ ...current, [question.id]: event.target.value }));
+                        const text = event.target.value;
+                        setAskAnswers((current) => typeAskAnswer(current, question, text));
                       }}
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submitAnswers();

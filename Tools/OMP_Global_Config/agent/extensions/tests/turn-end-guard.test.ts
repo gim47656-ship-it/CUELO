@@ -476,6 +476,41 @@ describe("turn-end guard", () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  test("끝낸 배포·재시작을 보고한 완료 보고도 지금 고칠 수 있는 남은 항목을 넘기면 solo 판정한다", async () => {
+    const soloTexts: string[] = [];
+    const h = harness([], undefined, undefined, async (_summary, excerpt) => {
+      soloTexts.push(excerpt);
+      return { answered: [], solo: "continue-now" };
+    });
+    await h.emit("input", { source: "rpc", text: "지금 작업" });
+    await h.end("배포까지 마쳤고 재시작 뒤 health 4/4입니다.\n\n남은 건 하나입니다. 거절 요약의 경로가 상대 경로로 보입니다. 동작에는 영향이 없어서 고치지 않았습니다. 거슬리시면 고칠게요.");
+    expect(soloTexts).toHaveLength(1);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("남은 항목이 승인을 기다리는 배포 문장이면 앞의 보고와 관계없이 solo 판정 전에 차단한다", async () => {
+    let calls = 0;
+    const h = harness([], undefined, undefined, async () => { calls++; return { answered: [], solo: "continue-now" }; });
+    await h.emit("input", { source: "rpc", text: "지금 작업" });
+    await h.end("로컬 검사는 모두 통과했습니다.\n\n사무실 배포는 승인을 받은 다음에 할게요.");
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("줄이 접힌 문장도 한 문장으로 보고, 공백 없이 붙은 다음 문장은 나눠 본다", async () => {
+    const soloTexts: string[] = [];
+    const h = harness([], undefined, undefined, async (_summary, excerpt) => {
+      soloTexts.push(excerpt);
+      return { answered: [], solo: "continue-now" };
+    });
+    await h.emit("input", { source: "rpc", text: "지금 작업" });
+    await h.end("로컬 검사는 통과했습니다.\n\n사무실 배포는\n다음에 하겠습니다.");
+    expect(soloTexts).toHaveLength(0);
+    await h.emit("input", { source: "rpc", text: "지금 작업" });
+    await h.end("배포까지 마쳤습니다.로컬 검사는 다음에 하겠습니다.");
+    expect(soloTexts).toHaveLength(1);
+  });
+
   test("미답 질문과 solo 종료 후보는 같은 판정 한 번·aside 한 통이며 미답을 우선한다", async () => {
     let calls = 0;
     let separateCalls = 0;

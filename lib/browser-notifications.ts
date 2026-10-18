@@ -40,6 +40,8 @@ export function isBlockingExtensionUiRequest(
     case "confirm":
     case "input":
     case "editor":
+    case "ask":
+    case "plan_review":
       return true;
     case "custom":
       return request.closed !== true;
