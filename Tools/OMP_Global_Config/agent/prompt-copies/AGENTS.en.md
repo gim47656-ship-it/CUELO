@@ -1,4 +1,4 @@
-<!-- source-fingerprint: d546b706ceb53ec8 -->
+<!-- source-fingerprint: e9ccba51bae83f87 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -124,6 +124,8 @@ Roles of `HANDOFF.md`·README·`doc/history`, record ownership, and search/heade
 ## Reporting to the user
 
 In a turn that uses children or other models, state their role, count, and reason; in the completion report, state the roles actually used, their artifact contributions, verification evidence, and remaining risk. Also disclose `eval`'s `agent()`·`workpool()`·`completion(model=…)`. Efficiency analysis and verified lessons: `rule://verdict`. Never impose fixed `FINAL`·`OWNER` formats unless the user or a parser requires them.
+
+When a report compares, trends or breaks down recorded numbers, add one Mermaid chart (`xychart-beta` bars, `gantt` timeline, etc.) next to the table or sentence. This applies when there are three or more values, such as before/after measurements, run times, per-step durations or pass/fail counts, so a chart reads faster than a table (user decision, 2026-10-19). Plot only values from tool output, run records or measurement artifacts, and name the source. Never chart numbers estimated from prose or invented. A chart does not replace the run-count and spread reporting in `RULES.md`. How to draw: `visual-report` skill.
 
 ## What to open when
 
