@@ -397,6 +397,39 @@ export function scopedAttempts(records: readonly LedgerRecord[], sessionId: stri
   return order.map((key) => byAttempt.get(key)!);
 }
 
+export interface OpenHeldVerdict {
+  identity: AttemptIdentity;
+  name: string;
+}
+
+/**
+ * 같은 session에서 마지막 판정이 held로 남은 assignment. 같은 assignment의 뒤 판정(재개 attempt의 수용 등)이 있으면 닫힌 것이다.
+ * 다른 발주가 같은 일을 대신했는지는 원장이 모른다. 닫을지와 어떤 판정으로 닫을지는 Main이 정한다.
+ */
+export function openHeldVerdicts(records: readonly LedgerRecord[], sessionId: string): OpenHeldVerdict[] {
+  if (!sessionId) return [];
+  const names = new Map<string, string>();
+  const latest = new Map<string, VerdictRecord>();
+  for (const record of records) {
+    if (!hasIdentity(record) || record.sessionId !== sessionId) continue;
+    if (record.type === "dispatch") names.set(record.assignmentId, record.name);
+    else if (record.type === "verdict") latest.set(record.assignmentId, record);
+  }
+  return [...latest.values()]
+    .filter((record) => record.verdict === "held")
+    .map((record) => ({
+      identity: {
+        sessionId: record.sessionId,
+        assignmentId: record.assignmentId,
+        attempt: record.attempt,
+        attemptId: record.attemptId,
+        agentId: record.agentId,
+        jobId: record.jobId,
+      },
+      name: names.get(record.assignmentId) ?? "",
+    }));
+}
+
 /** 정확한 triple로만 잇는다. sessionId·assignmentId·attemptId 중 하나라도 다른 기록은 붙이지 않는다. */
 const attemptKey = (record: AttemptIdentity) => `${record.sessionId}\u0000${record.assignmentId}\u0000${record.attemptId}`;
 

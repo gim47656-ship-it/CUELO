@@ -5,9 +5,14 @@ import { ActionButton, Badge, Icon, Tabs } from "@seed-design/react";
 import type { SubagentSnapshot } from "@/lib/types";
 import type { HanseSubagentClient } from "@/lib/hanse-subagent-client";
 import { WORKSPACE_PANEL_VIEW_IDS, type WorkspacePanelViewId } from "@/lib/workspace-layout";
+import type { MakerSelection } from "@/components/answer-status/AnswerStatusContext";
 import { SubagentArchivePanel } from "./SubagentArchivePanel";
+import { PanelExpandContext, PanelExpandToggle, type PanelExpandState } from "./PanelHeader";
 
 export type AuxiliaryDeckView = WorkspacePanelViewId;
+
+/** 자기 머리줄(PanelHeader)이 없는 보기. 이 보기에서만 넓게 보기 토글을 탭 줄에 둔다. */
+const HEADERLESS_VIEWS: ReadonlySet<AuxiliaryDeckView> = new Set<AuxiliaryDeckView>(["efficiency", "sidechat", "resource"]);
 
 export interface AuxiliaryDeckProps {
   activeView: AuxiliaryDeckView;
@@ -32,6 +37,15 @@ export interface AuxiliaryDeckProps {
   visible?: boolean;
   onClose?: () => void;
   onReturnFocus?: () => void;
+  /** 고정 자리에 있을 때만 준다. 없으면 넓게 보기 토글을 그리지 않는다. */
+  expand?: PanelExpandState | null;
+  /** 셸이 든 Maker 상세 선택. 발주 카드와 Subagents 목록이 같은 값을 쓴다. */
+  selectedMaker?: MakerSelection | null;
+  onSelectMaker?: (selection: MakerSelection | null) => void;
+  onReturnToDispatch?: (origin: string) => void;
+  onOpenFile?: (filePath: string) => void;
+  /** 파일 보기에 열린 파일이 있어 그 머리줄이 넓게 보기 토글을 든다. 없으면 탭 줄이 든다. */
+  fileOpen?: boolean;
 }
 
 const VIEW_ORDER: ReadonlyArray<AuxiliaryDeckView> = WORKSPACE_PANEL_VIEW_IDS;
@@ -54,6 +68,12 @@ export function AuxiliaryDeck({
   visible = true,
   onClose,
   onReturnFocus,
+  expand = null,
+  selectedMaker,
+  onSelectMaker,
+  onReturnToDispatch,
+  onOpenFile,
+  fileOpen = false,
 }: AuxiliaryDeckProps) {
   const closeDeck = () => {
     onClose?.();
@@ -61,10 +81,12 @@ export function AuxiliaryDeck({
   };
 
   return (
+    <PanelExpandContext.Provider value={expand}>
     <aside
       className="auxiliary-deck"
       aria-label="보조 패널"
       data-auxiliary-view={activeView}
+      data-expanded={expand?.expanded ? "true" : undefined}
     >
       <Tabs.Root
         className="auxiliary-deck-tabs"
@@ -98,6 +120,7 @@ export function AuxiliaryDeck({
             })}
             <Tabs.Indicator />
           </Tabs.List>
+          {(HEADERLESS_VIEWS.has(activeView) || (activeView === "files" && !fileOpen)) && <PanelExpandToggle className="auxiliary-deck-expand" />}
           {onClose && (
             <ActionButton
               className="auxiliary-deck-close"
@@ -129,6 +152,10 @@ export function AuxiliaryDeck({
             liveSubagents={liveSubagents}
             client={subagentClient}
             visible={visible && activeView === "subagents"}
+            selection={selectedMaker}
+            onSelectionChange={onSelectMaker}
+            onReturnToOrigin={onReturnToDispatch}
+            onOpenFile={onOpenFile}
           />
         </Tabs.Content>
 
@@ -144,5 +171,6 @@ export function AuxiliaryDeck({
         </Tabs.Content>
       </Tabs.Root>
     </aside>
+    </PanelExpandContext.Provider>
   );
 }

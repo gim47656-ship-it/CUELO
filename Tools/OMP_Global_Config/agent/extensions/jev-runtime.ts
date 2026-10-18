@@ -14,7 +14,7 @@ import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { onSessionLifecycle } from "./lib/session-identity";
-import { createRoutingLedger, DEFAULT_LEDGER_PATH, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
+import { createRoutingLedger, DEFAULT_LEDGER_PATH, openHeldVerdicts, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
   assessTodoProgress,
@@ -2612,13 +2612,20 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}${inline ? ` inline=${inline.status}` : ""}`);
         }
         if (identities.length > 0) {
+          // 보류(held)도 기록된 판정이라 최종 정산을 통과한다. 같은 일을 새 발주로 다시 맡기면 옛 보류가 끝난 일 위에 남는다
+          // (2026-10-18 PanelLane held → PanelView 수용). 새 발주가 잡히는 이 자리에서 열린 보류를 함께 보여 준다.
+          const openHeld = openHeldVerdicts(baseLedger.read(), sessionId)
+            .map((entry) => `${entry.name || "<unnamed>"} ${entry.identity.sessionId}|${entry.identity.assignmentId}|${entry.identity.attemptId}`);
+          const heldNote = openHeld.length > 0
+            ? ` 이 session에서 마지막 판정이 보류(held)로 남은 발주 ${openHeld.length}건: ${openHeld.join("; ")}. 이 발주가 그 일을 대신하거나 이어받으면 옛 attempt를 근거와 함께 rework 또는 accepted로 닫는다. 보류 이유가 그대로면 최종 답변에 열린 보류로 밝힌다.`
+            : "";
           sendAdvisory(
             "spawn-identity",
             renderAdvisory(
               "spawn-identity",
               undefined,
               [],
-              `실제 발주 identity를 spawn에서 캡처했다: ${identities.join("; ")}. routing_verdict는 이 triple과 이 session으로만 기록하며 준비 plan 값으로는 기록하지 않는다.`,
+              `실제 발주 identity를 spawn에서 캡처했다: ${identities.join("; ")}. routing_verdict는 이 triple과 이 session으로만 기록하며 준비 plan 값으로는 기록하지 않는다.${heldNote}`,
             ),
           );
         }

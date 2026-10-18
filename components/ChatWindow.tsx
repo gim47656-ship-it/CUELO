@@ -114,6 +114,10 @@ interface Props {
   onMainIdentityChange?: (identity: MainIdentity | null) => void;
   /** Opens an existing detail panel (subagents, work log) from an in-answer status card. */
   onOpenWorkspaceView?: (view: "subagents" | "process") => void;
+  /** Opens one Maker's detail in the deck from an in-answer dispatch card; passed through to the cards unchanged. */
+  onOpenMaker?: AnswerStatusContextValue["onOpenMaker"];
+  /** The Maker the deck shows now; the matching card row is marked. */
+  selectedMaker?: AnswerStatusContextValue["selectedMaker"];
   /** Publishes the work log behind the transcript, including the run in flight. */
   onProcessLogChange?: (data: ProcessLogData | null) => void;
   /** Replaces only the scrollable transcript; the composer remains mounted and visible. */
@@ -513,7 +517,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onMainIdentityChange, onOpenWorkspaceView, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
+export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onMainIdentityChange, onOpenWorkspaceView, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 서브에이전트 줄과 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -1119,7 +1123,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     onOpenPanel: onOpenWorkspaceView,
     focusedDispatch: flashDispatch,
     sessionId: session?.id ?? null,
-  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id]);
+    onOpenMaker,
+    selectedMaker,
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id, onOpenMaker, selectedMaker]);
   // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
   const dispatchDock = useMemo(
     () => collectDockMakers(workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch),

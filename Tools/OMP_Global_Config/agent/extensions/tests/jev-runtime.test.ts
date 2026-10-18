@@ -512,6 +512,32 @@ describe("jev-runtime pre-dispatch", () => {
     expect(records.filter((record) => "appliedLessons" in record)).toHaveLength(1);
   });
 
+  test("새 발주를 잡을 때 이 session에서 마지막 판정이 보류인 발주를 알리고, 다른 판정으로 닫힌 보류는 뺀다", async () => {
+    const harness = createHarness({
+      judgeAnswers: {
+        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+      },
+    });
+    const spawnNotes = () => harness.sent.map((entry) => String(entry.message.content))
+      .filter((text) => text.includes("실제 발주 identity를 spawn에서 캡처했다"));
+    const lane = { sessionId: fixtureSession, assignmentId: "session-1#call-lane#0", attemptId: "session-1#call-lane#0#a1" };
+    await spawnAndSettle(harness, "Lane", "call-lane", "agent-lane");
+    expect(spawnNotes().at(-1)).not.toContain("보류(held)");
+    expect((await harness.verdict({ ...lane, verdict: "held", reason: "부분 완료 뒤 재개 대기" })).details).toMatchObject({ ok: true });
+
+    // 같은 일을 새 발주로 다시 맡기는 순간 옛 보류가 보인다(2026-10-18 PanelLane 보류가 끝난 일 위에 남은 사례).
+    await spawnAndSettle(harness, "View", "call-view", "agent-view");
+    expect(spawnNotes().at(-1)).toContain("보류(held)로 남은 발주 1건: Lane session-1|session-1#call-lane#0|session-1#call-lane#0#a1");
+
+    // 옛 attempt를 다른 판정으로 닫으면 마지막 판정이 보류가 아니므로 다음 발주에는 나오지 않는다.
+    expect((await harness.verdict({
+      ...lane, verdict: "rework", revision: "r1", reason: "View 발주가 대신 끝냄", evidenceLocators: ["artifact://view"],
+    })).details).toMatchObject({ ok: true });
+    await spawnAndSettle(harness, "Next", "call-next", "agent-next");
+    expect(spawnNotes().at(-1)).toContain("실제 발주 identity를 spawn에서 캡처했다: Next");
+    expect(spawnNotes().at(-1)).not.toContain("보류(held)");
+  });
+
   test("같은 이름의 새 발주는 새 assignment이고, 성공한 REWORK write가 실제 새 jobId로만 재개 attempt를 연다", async () => {
     // 전송 전에 이미 알던 job 집합과 전송 뒤 새 job을 구분할 수 있도록 스냅샷을 흉내낸다.
     const jobs: Array<{ id: string; agentId: string }> = [];

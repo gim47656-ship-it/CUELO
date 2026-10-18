@@ -198,6 +198,7 @@
         "supervisorHealth": "inspect-last-check-and-next-check-or-equivalent-never-assume-a-missing-or-stale-monitor-is-healthy",
         "progressEvidence": "meaningful-model-delta-tool-progress-or-observed-artifact-not-title-usage-auto-thinking-or-running-alone",
         "intervention": "preserve-owner-use-safe-parent-steer-or-evidence-backed-approved-recovery-record-next-observation-condition-if-waiting",
+        "overrunRecall": "user-decision-2026-10-18-once-the-cause-is-confirmed-a-slice-past-its-expected-time-whose-same-blockage-persists-is-recalled-instead-of-reviving-the-environment-and-waiting-again-for-a-verification-environment-shared-by-several-makers-the-recall-point-is-the-same-blockage-seen-again-after-the-first-recovery-the-owner-stops-further-runs-and-reports-its-delta-valid-evidence-and-unobserved-checks-now-and-main-finishes-the-remaining-checks-and-integration-itself-preserving-running-commands-and-never-redispatching-or-repeating-passed-checks-never-recall-on-elapsed-time-alone-or-with-the-cause-unknown",
         "forbidden": ["automatic-kill", "unbounded-retry", "automatic-redispatch", "takeover-instead-of-cause-investigation", "approval-boundary-bypass"]
       },
       "userSteering": "may-interrupt-the-call-handle-steering-then-resume-still-required-barrier-once",
@@ -911,6 +912,7 @@
         "summary": "after-jev-classification-each-maker_route-route-shows-main-only-advisory-recent-attempt-history-for-the-same-work-class-and-hard-focus-split-by-recommended-versus-chosen-model-effort-with-ok-rework-held-pending-aborted-counts-history-is-outside-jev-state-and-never-changes-the-classification-execution-completion-alone-is-not-quality-acceptance",
         "observation": "report-observed-counts-and-uncertainty-only-no-success-rate-superiority-or-criteria-review-recommendation-from-small-unequal-samples-never-change-rules-candidates-or-efforts-automatically",
         "verdict": "main-explicitly-records-accepted-rework-or-held-for-the-exact-attempt-accepted-requires-completed-execution-accepted-and-rework-require-revision-evidence-locators-and-reason-held-requires-reason-finalize-and-later-user-input-never-infer-acceptance",
+        "openHeld": "held-is-a-recorded-verdict-but-not-a-closed-one-an-assignment-whose-latest-verdict-in-the-session-is-held-stays-open-the-spawn-identity-advisory-lists-open-held-assignments-of-the-session-whenever-a-new-maker-spawns-when-a-new-dispatch-or-a-resume-takes-over-that-work-main-closes-the-old-attempt-with-rework-or-accepted-and-evidence-a-hold-whose-reason-still-stands-is-named-in-the-final-answer-the-ledger-never-links-or-closes-it-automatically",
         "failure": "ledger-write-or-read-failure-never-blocks-routing-or-dispatch-an-explicit-verdict-write-failure-is-reported-as-not-recorded-never-as-success"
       },
       "failure": "judge-unavailable-main-uses-the-same-criteria-no-other-llm-no-automatic-hard-max-or-normal-auth-errors-do-not-change-difficulty",

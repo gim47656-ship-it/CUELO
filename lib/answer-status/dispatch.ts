@@ -384,6 +384,41 @@ export function presentMaker(
   };
 }
 
+/**
+ * 이 발주 항목을 정확히 띄운 실시간 스냅샷. 상세 패널로 건너갈 때만 쓴다 — 표시용 `findLiveSnapshot`과 달리
+ * parentToolCallId가 없는 스냅샷을 agent 이름으로 잇지 않는다. 없으면 이 시도의 상세는 열 수 없다.
+ */
+export function findExactLiveSnapshot(
+  member: DispatchMember,
+  subagents: readonly SubagentSnapshot[],
+): SubagentSnapshot | undefined {
+  return subagents.find((snapshot) => snapshot.parentToolCallId === member.toolCallId && snapshot.id === member.agentId);
+}
+
+export interface MakerAttempt {
+  /** 판정 기록의 시도 번호. 옛 기록처럼 번호가 없으면 null — 순서로 번호를 지어내지 않는다. */
+  attempt: number | null;
+  verdict: MainVerdict;
+  reason: string | null;
+}
+
+/**
+ * 한 assignment(원장 key)에 기록된 시도를 시도 번호 순으로. 같은 시도에 판정이 여러 번 남았으면 마지막
+ * 판정이 그 시도의 판정이다. 판정이 없으면 빈 배열 — 판정이 남지 않은 시도는 지어내지 않는다.
+ * FINDING_ID 재발주가 새 task 호출로 열렸어도 판정은 첫 발주의 assignment key에 쌓이므로 여기 모인다.
+ */
+export function listMakerAttempts(member: DispatchMember, ledger: DispatchLedger): MakerAttempt[] {
+  const records = [...(ledger.verdicts.get(member.key) ?? [])].sort((a, b) => a.order - b.order);
+  const numbered = new Map<number, MakerAttempt>();
+  const unnumbered: MakerAttempt[] = [];
+  for (const record of records) {
+    const entry: MakerAttempt = { attempt: record.attempt, verdict: record.verdict, reason: record.reason };
+    if (record.attempt === null) unnumbered.push(entry);
+    else numbered.set(record.attempt, entry);
+  }
+  return [...unnumbered, ...[...numbered.values()].sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0))];
+}
+
 export interface DispatchSlot {
   calls: ToolCallContent[];
   /** 답변 본문 기준 카드 자리: 도구 호출이 답변 뒤면 "after", 앞이면 "before". */

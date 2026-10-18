@@ -50,8 +50,8 @@ test("renders partial assistant content before the provider error", () => {
   assert.match(html, /Error: Connection closed/);
 });
 
-test("renders shell blocks as themed terminal content", () => {
-  const html = renderToStaticMarkup(
+function renderTool(toolName, input, result, message = {}) {
+  return renderToStaticMarkup(
     React.createElement(
       I18nProvider,
       null,
@@ -60,29 +60,107 @@ test("renders shell blocks as themed terminal content", () => {
           role: "assistant",
           provider: "openai",
           model: "gpt-test",
-          content: [{
-            type: "toolCall",
-            toolCallId: "shell-1",
-            toolName: "bash",
-            input: { command: "git status --short" },
-          }],
+          content: [{ type: "toolCall", toolCallId: "call-1", toolName, input }],
+          ...message,
         },
-        toolResults: new Map([
-          ["shell-1", {
-            role: "toolResult",
-            toolCallId: "shell-1",
-            content: [{ type: "text", text: "staged 0, unstaged 1\n M components/MessageView.tsx" }],
-          }],
-        ]),
+        toolResults: result ? new Map([["call-1", { role: "toolResult", toolCallId: "call-1", ...result }]]) : undefined,
       }),
     ),
   );
+}
 
-  assert.match(html, /class="shell-output-preview"/);
-  assert.match(html, /git<\/span>/);
-  assert.match(html, /--short/);
-  assert.match(html, /Output/);
-  assert.match(html, /components\/MessageView\.tsx/);
+test("a call still waiting for its result is shown as running, never as a success", () => {
+  // 생성이 끝난 지 몇 초 지난 호출: 지연이 지났으므로 상태 단어가 보인다.
+  const html = renderTool("read", { path: "lib/main.ts" }, undefined, { completedAt: Date.now() - 3_000 });
+
+  assert.doesNotMatch(html, /is-success/);
+  assert.match(html, /class="tool-call-card is-running"/);
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /Running<span class="tool-run-duration">3s<\/span>/);
+});
+
+test("a running call that just started does not flash the running word", () => {
+  const html = renderTool("read", { path: "lib/main.ts" }, undefined, { completedAt: Date.now() });
+
+  assert.match(html, /aria-busy="true"/);
+  assert.doesNotMatch(html, /Running/);
+});
+
+test("a finished call shows only its duration, with no state word", () => {
+  const html = renderTool(
+    "read",
+    { path: "lib/main.ts" },
+    { content: [{ type: "text", text: "contents" }], timestamp: 1_007_000 },
+    { completedAt: 1_000_000 },
+  );
+
+  assert.match(html, /class="tool-call-card is-done"/);
+  assert.match(html, /<span class="tool-run-duration">7s<\/span>/);
+  assert.doesNotMatch(html, /Running|Failed|aria-busy/);
+});
+
+test("collapsed bash is one row with the first command line and its state", () => {
+  const html = renderTool(
+    "bash",
+    { command: "git status --short\necho second-line" },
+    { content: [{ type: "text", text: " M components/MessageView.tsx\nCommand exited with code 0" }] },
+  );
+
+  assert.match(html, /<span class="tool-call-name">bash<\/span>/);
+  assert.match(html, /class="tool-call-target"[^>]*>git status --short<\/span>/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /shell-output-preview/);
+  // 접힌 줄은 본문을 그리지 않으므로 없는 id를 가리키지 않는다.
+  assert.doesNotMatch(html, /aria-controls=/);
+  assert.doesNotMatch(html, /components\/MessageView\.tsx/);
+  assert.doesNotMatch(html, /Failed/);
+});
+
+test("a failed bash opens expanded with the failure word, exit code and output", () => {
+  const html = renderTool(
+    "bash",
+    { command: "bun test" },
+    { content: [{ type: "text", text: "1 fail\nCommand exited with code 1" }], isError: true },
+  );
+
+  assert.match(html, /class="tool-call-card is-error is-shell"/);
+  assert.match(html, />Failed</);
+  assert.match(html, /exit 1/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /class="shell-output-preview is-error"/);
+  // 실패는 배지와 종료 코드로만 말한다. 종류 아이콘은 중립 잉크 그대로다.
+  assert.match(html, /data-tool-icon="bash" style="[^"]*color:var\(--text-muted\)/);
+  assert.doesNotMatch(html, /data-tool-icon="bash" style="[^"]*color:var\(--danger\)/);
+  assert.match(html, /1 fail/);
+  const controls = /aria-controls="([^"]+)"/.exec(html)?.[1];
+  assert.ok(controls && html.includes(`id="${controls}"`), "the row controls the expanded body");
+});
+
+test("a nonzero exit counts as failed even when the result is not flagged as an error", () => {
+  const html = renderTool("bash", { command: "false" }, { content: [{ type: "text", text: "Command exited with code 2" }] });
+
+  assert.match(html, />Failed</);
+  assert.match(html, /exit 2/);
+});
+
+test("an edit row starts collapsed and shows its line counts", () => {
+  const html = renderTool(
+    "edit",
+    { i: "Fixing the header", path: "components/MessageView.tsx" },
+    { content: [{ type: "text", text: "ok" }], details: { diff: "--- a\n+++ b\n-old line\n+new line\n+another line" } },
+  );
+
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /aria-label="2 lines added, 1 lines removed"/);
+  assert.match(html, />\+2<\/span>/);
+  assert.match(html, />−1<\/span>/);
+  assert.doesNotMatch(html, /new line/);
+});
+
+test("a path target keeps its filename by trimming from the front", () => {
+  const html = renderTool("unknown_tool", { path: "components/workspace/ProcessLogPanel.tsx" });
+
+  assert.match(html, /class="tool-call-target is-path"[^>]*><bdi dir="ltr">components\/workspace\/ProcessLogPanel\.tsx<\/bdi>/);
 });
 
 test("uses i/title in the standard header for grep, read, write, glob, and eval blocks", () => {
@@ -116,19 +194,19 @@ test("uses i/title in the standard header for grep, read, write, glob, and eval 
   }
 });
 
-test("shows an operation icon beside every standard tool label", () => {
+test("shows a neutral operation icon beside every standard tool label", () => {
   const cases = [
-    ["read", "read", "var(--accent)"],
-    ["write", "write", "var(--warning)"],
-    ["glob", "glob", "var(--accent-hover)"],
-    ["grep", "grep", "var(--accent)"],
-    ["edit", "edit", "var(--warning)"],
-    ["eval", "eval", "var(--accent-hover)"],
-    ["functions.task", "task", "var(--accent)"],
-    ["unknown_tool", "generic", "var(--text-dim)"],
+    ["read", "read"],
+    ["write", "write"],
+    ["glob", "glob"],
+    ["grep", "grep"],
+    ["edit", "edit"],
+    ["eval", "eval"],
+    ["functions.task", "task"],
+    ["unknown_tool", "generic"],
   ];
 
-  for (const [toolName, iconKind, themeColor] of cases) {
+  for (const [toolName, iconKind] of cases) {
     const html = renderMessage({
       role: "assistant",
       provider: "openai",
@@ -145,7 +223,7 @@ test("shows an operation icon beside every standard tool label", () => {
     const iconEnd = html.indexOf(">", iconPosition);
     const toolPosition = html.indexOf(`>${toolName}</span>`);
     assert.ok(iconPosition >= 0, `expected ${iconKind} icon for ${toolName}`);
-    assert.ok(html.slice(iconPosition, iconEnd).includes(`color:${themeColor}`), `expected ${toolName} icon to use ${themeColor}`);
+    assert.ok(html.slice(iconPosition, iconEnd).includes("color:var(--text-muted)"), `expected ${toolName} icon in neutral ink`);
     assert.ok(iconPosition < toolPosition, `expected ${iconKind} icon before ${toolName}`);
   }
 });

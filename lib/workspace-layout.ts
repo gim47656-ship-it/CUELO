@@ -45,18 +45,26 @@ export const WORKSPACE_PIN_THRESHOLDS = Object.freeze({
 export interface WorkspaceLayoutState {
   activeView: WorkspaceViewId;
   transientLayer: WorkspaceTransientLayer | null;
+  /**
+   * The user widened the pinned deck into the transcript's place. Only the
+   * shell decides whether it takes effect (a pinned deck); closing the deck
+   * clears it so the next open starts at the pinned size again.
+   */
+  deckExpanded: boolean;
 }
 
 export const DEFAULT_WORKSPACE_LAYOUT_STATE: Readonly<WorkspaceLayoutState> = Object.freeze({
   activeView: "chat",
   transientLayer: null,
+  deckExpanded: false,
 });
 
 export type WorkspaceLayoutAction =
   | { type: "select-view"; view: WorkspaceViewId }
   | { type: "open-layer"; layer: WorkspaceTransientLayer }
   | { type: "toggle-layer"; layer: WorkspaceTransientLayer }
-  | { type: "close-layer" };
+  | { type: "close-layer" }
+  | { type: "set-deck-expanded"; expanded: boolean };
 
 const WORKSPACE_VIEW_ID_LOOKUP: Record<string, true> = Object.fromEntries(
   WORKSPACE_VIEW_IDS.map((id) => [id, true]),
@@ -81,25 +89,57 @@ export function reduceWorkspaceLayout(
   state: Readonly<WorkspaceLayoutState>,
   action: WorkspaceLayoutAction,
 ): WorkspaceLayoutState {
+  // 넓게 보기는 덱이 열려 있을 때만 뜻이 있다. 대화 보기로 돌아가면(정규화로 돌아간 경우 포함) 지운다.
+  const keepExpanded = (activeView: WorkspaceViewId, expanded: boolean): boolean => activeView !== "chat" && expanded;
   switch (action.type) {
-    case "select-view":
+    case "select-view": {
+      const activeView = normalizeWorkspaceViewId(action.view);
+      return { activeView, transientLayer: null, deckExpanded: keepExpanded(activeView, state.deckExpanded === true) };
+    }
+    case "open-layer": {
+      const activeView = normalizeWorkspaceViewId(state.activeView);
+      return { activeView, transientLayer: action.layer, deckExpanded: keepExpanded(activeView, state.deckExpanded === true) };
+    }
+    case "toggle-layer": {
+      const activeView = normalizeWorkspaceViewId(state.activeView);
       return {
-        activeView: normalizeWorkspaceViewId(action.view),
-        transientLayer: null,
-      };
-    case "open-layer":
-      return {
-        activeView: normalizeWorkspaceViewId(state.activeView),
-        transientLayer: action.layer,
-      };
-    case "toggle-layer":
-      return {
-        activeView: normalizeWorkspaceViewId(state.activeView),
+        activeView,
         transientLayer: state.transientLayer === action.layer ? null : action.layer,
+        deckExpanded: keepExpanded(activeView, state.deckExpanded === true),
       };
-    case "close-layer":
-      return { activeView: normalizeWorkspaceViewId(state.activeView), transientLayer: null };
+    }
+    case "close-layer": {
+      const activeView = normalizeWorkspaceViewId(state.activeView);
+      return { activeView, transientLayer: null, deckExpanded: keepExpanded(activeView, state.deckExpanded === true) };
+    }
+    case "set-deck-expanded": {
+      const activeView = normalizeWorkspaceViewId(state.activeView);
+      return { activeView, transientLayer: state.transientLayer, deckExpanded: keepExpanded(activeView, action.expanded) };
+    }
   }
+}
+
+/**
+ * Whether the deck takes the transcript's place. View-stack and the office
+ * page always do; a pinned deck does only while the user has widened it.
+ * `staleExpansion` is true when a widened deck can no longer be widened (the
+ * window narrowed to view-stack, or the office page): the shell clears the
+ * flag then, so widening the window again does not silently re-expand it.
+ */
+export function getDeckPresentation(input: {
+  deckVisible: boolean;
+  pinDecision: WorkspacePinDecision;
+  officePage: boolean;
+  deckExpanded: boolean;
+}): { replacesTranscript: boolean; expandable: boolean; expanded: boolean; staleExpansion: boolean } {
+  const expandable = input.deckVisible && input.pinDecision.deck === "pinned" && !input.officePage;
+  const expanded = expandable && input.deckExpanded;
+  return {
+    replacesTranscript: input.deckVisible && (input.officePage || input.pinDecision.deck === "view-stack" || expanded),
+    expandable,
+    expanded,
+    staleExpansion: input.deckExpanded && !expandable,
+  };
 }
 
 export interface WorkspacePinDecision {

@@ -235,6 +235,67 @@
   font-weight: 600;
 }
 
+/* 펼친 카드의 Maker 줄: 제목 · 실행(단계) · 검사 → 판정 · 자세히. 좁으면 상태와 버튼이 다음 줄로 내려간다. */
+.answer-dispatch-line.is-lane {
+  align-items: center;
+}
+
+.answer-dispatch-checks {
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-dispatch-checks[data-checks="failed"] {
+  color: var(--danger);
+}
+
+.answer-dispatch-checks[data-checks="unobserved"],
+.answer-dispatch-checks[data-checks="loading"],
+.answer-dispatch-unavailable {
+  color: var(--text-dim);
+}
+
+.answer-dispatch-unavailable {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.answer-link.answer-dispatch-open {
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+@media (pointer: coarse) {
+  .answer-link.answer-dispatch-open {
+    min-height: 44px;
+  }
+}
+
+.answer-dispatch-row[data-focused] .answer-dispatch-open {
+  border-color: var(--accent-line, var(--border));
+}
+
+.answer-dispatch-attempts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.answer-dispatch-attempts > li[data-verdict="accepted"] {
+  color: var(--success);
+}
+
+.answer-dispatch-attempts > li[data-verdict="rework"],
+.answer-dispatch-attempts > li[data-verdict="held"] {
+  color: var(--warning);
+}
+
 /* 입력창 위 dock 한 줄. 모양은 같은 칸의 상태 줄(.run-status-line)을 따르고, 누를 수 있는 버튼이다. */
 .run-status-line.answer-dock-line {
   align-items: center;

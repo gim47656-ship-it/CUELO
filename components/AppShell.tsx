@@ -7,7 +7,8 @@ import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow, type ChatJumpRequest, type MainIdentity } from "./ChatWindow";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
-import { FileViewer } from "./FileViewer";
+import { FileViewer, type FileViewStateStore } from "./FileViewer";
+import type { MakerSelection } from "./answer-status/AnswerStatusContext";
 import { TabBar, type Tab } from "./TabBar";
 import { SettingsConfig } from "./SettingsConfig";
 import { NotificationPermission, useNotificationPermission } from "./NotificationPermission";
@@ -59,6 +60,7 @@ import { clearLastOpen, getLastOpenSession, setLastOpenSession } from "@/lib/wor
 import { createSideChatFlightRegistry, createSideChatHistoryStore, resolveSidePanelSessionPath, type SideChatSessionCensus } from "@/lib/hanse-sidechat-client";
 import {
   DEFAULT_WORKSPACE_LAYOUT_STATE,
+  getDeckPresentation,
   getNavigatorPresentation,
   getWorkspacePinDecision,
   reduceWorkspaceLayout,
@@ -125,6 +127,18 @@ function createAppSideChatStore() {
   } catch {
     return createSideChatHistoryStore(null);
   }
+}
+
+/**
+ * 발주 카드에서 그 Maker 행이 초점을 받을 버튼. 카드가 접혀 다시 그려졌으면 카드의 펼침 버튼이다.
+ * 대화가 가려져 행이 화면에 없으면 null이다.
+ */
+function findDispatchFocusTarget(origin: string): HTMLElement | null {
+  const row = document.querySelector<HTMLElement>(`[data-dispatch-key="${CSS.escape(origin)}"]`);
+  if (!row || row.getClientRects().length === 0) return null;
+  return row.querySelector<HTMLElement>(".answer-dispatch-open")
+    ?? row.closest(".answer-dispatch")?.querySelector<HTMLElement>(".answer-dispatch-toggle")
+    ?? null;
 }
 
 export function AppShell({
@@ -773,6 +787,56 @@ export function AppShell({
     if (restoreFocus || view === "chat") requestComposerFocus();
   }, [isCompactWorkspace, requestComposerFocus, setCompactDrawerOpen]);
 
+  // 넓게 보기/원래 크기를 바꾼 뒤 초점을 새 자리의 같은 토글에 둔다. 덱이 다른 자리로 다시 마운트된다.
+  const expandFocusPendingRef = useRef(false);
+  const toggleDeckExpanded = useCallback(() => {
+    expandFocusPendingRef.current = true;
+    dispatchWorkspaceLayout({ type: "set-deck-expanded", expanded: !workspaceLayout.deckExpanded });
+  }, [workspaceLayout.deckExpanded]);
+  useEffect(() => {
+    if (!expandFocusPendingRef.current) return;
+    expandFocusPendingRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      // 덱은 보기마다 머리줄을 마운트해 두고 지금 보기만 보인다. 보이는 토글 하나에만 초점을 준다.
+      [...document.querySelectorAll<HTMLElement>("#workspace-auxiliary-panel [data-panel-expand]")]
+        .find((toggle) => toggle.getClientRects().length > 0)
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [workspaceLayout.deckExpanded]);
+
+  // 덱의 Maker 상세에 열린 대상. 발주 카드(대화)와 Subagents 목록(덱)이 이 하나를 같이 본다.
+  const [selectedMaker, setSelectedMaker] = useState<MakerSelection | null>(null);
+  const openMaker = useCallback((selection: MakerSelection, reveal = true) => {
+    setSelectedMaker(selection);
+    if (reveal) selectWorkspaceView("subagents");
+  }, [selectWorkspaceView]);
+  const selectedSessionId = selectedSession?.id ?? null;
+  useEffect(() => {
+    setSelectedMaker(null);
+  }, [selectedSessionId]);
+  // 상세에서 뒤로 가면 연 발주 카드 행으로 초점을 돌려보낸다. 그 행이 화면에 없으면(덱이 대화를 대신하는 중)
+  // 먼저 대화를 다시 보이게 한다: 넓게 본 덱은 원래 크기로, 대화 자리를 대신한 덱은 닫는다.
+  const [dispatchFocusTarget, setDispatchFocusTarget] = useState<string | null>(null);
+  const returnToDispatch = useCallback((origin: string) => {
+    if (!findDispatchFocusTarget(origin)) {
+      if (workspaceLayout.deckExpanded && pinDecision.deck === "pinned") {
+        dispatchWorkspaceLayout({ type: "set-deck-expanded", expanded: false });
+      } else {
+        dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
+      }
+    }
+    setDispatchFocusTarget(origin);
+  }, [pinDecision.deck, workspaceLayout.deckExpanded]);
+  useEffect(() => {
+    if (!dispatchFocusTarget) return;
+    const frame = requestAnimationFrame(() => {
+      findDispatchFocusTarget(dispatchFocusTarget)?.focus();
+      setDispatchFocusTarget(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [dispatchFocusTarget]);
+
   const toggleWorkspaceLayer = useCallback((layer: "command-palette") => {
     const closing = workspaceLayout.transientLayer === layer;
     setActiveTopPanel(null);
@@ -854,6 +918,17 @@ export function AppShell({
       requestComposerFocus();
       return true;
     }
+    // 넓게 본 덱 안에서 누른 Escape는 덱을 닫기 전에 원래 크기로 되돌린다. 안쪽 메뉴·대화상자는 위에서 먼저 받는다.
+    if (
+      workspaceLayout.deckExpanded
+      && pinDecision.deck === "pinned"
+      && !officePage
+      && document.activeElement?.closest("#workspace-auxiliary-panel")
+    ) {
+      expandFocusPendingRef.current = true;
+      dispatchWorkspaceLayout({ type: "set-deck-expanded", expanded: false });
+      return true;
+    }
     if (workspaceLayout.activeView !== "chat") {
       dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
       requestComposerFocus();
@@ -872,6 +947,9 @@ export function AppShell({
     settingsConfigOpen,
     workspaceLayout.activeView,
     workspaceLayout.transientLayer,
+    workspaceLayout.deckExpanded,
+    pinDecision.deck,
+    officePage,
   ]);
 
   const toggleTopPanel = useCallback((panel: "branches" | "system" | "session") => {
@@ -917,6 +995,8 @@ export function AppShell({
   // File tabs are rendered in the AuxiliaryDeck's existing FileViewer slot.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
+  // 파일 탭마다 고른 보기(원본·미리보기·비교)와 스크롤. 넓게 보기로 덱이 다시 마운트돼도 이어진다.
+  const fileViewStatesRef = useRef<FileViewStateStore>(new Map());
 
   // Same @mention format as the chat input's @ autocomplete, so the agent's
   // read tool resolves it the same way (it strips the @ prefix).
@@ -1416,6 +1496,8 @@ export function AppShell({
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
     const tabId = `file:${filePath}`;
+    // 비교로 열어 달라는 요청은 그 탭에서 전에 고른 보기보다 앞선다.
+    if (modeHint) fileViewStatesRef.current.delete(tabId);
     setFileTabs((prev) => {
       const existing = prev.find((t) => t.id === tabId);
       if (!existing) {
@@ -1449,6 +1531,7 @@ export function AppShell({
   }, [handleOpenFile, selectedSession?.id]);
 
   const handleCloseFileTab = useCallback((tabId: string) => {
+    fileViewStatesRef.current.delete(tabId);
     const remaining = fileTabs.filter((tab) => tab.id !== tabId);
     setFileTabs(remaining);
     setActiveFileTabId((current) => {
@@ -1613,7 +1696,22 @@ export function AppShell({
   // 오피스에서 공간만 보는 동안 대화 칸은 마운트된 채 가려지고 탭 순서·보조 기술에서도 빠진다.
   const officeChatHidden = officePane === "floor";
   // 오피스 화면은 공간·대화가 한 칸을 번갈아 쓰므로 보조 패널도 옆에 고정하지 않고 대화 자리를 대신한다.
-  const deckReplacesTranscript = showAuxiliaryDeck && (officePage || pinDecision.deck === "view-stack");
+  // 넓게 보기를 누르면 고정 자리의 덱도 같은 길(대화 기록 자리 대신하기)로 간다. 입력창은 그대로 남는다.
+  const deckPresentation = getDeckPresentation({
+    deckVisible: showAuxiliaryDeck,
+    pinDecision,
+    officePage,
+    deckExpanded: workspaceLayout.deckExpanded,
+  });
+  const deckReplacesTranscript = deckPresentation.replacesTranscript;
+  const deckExpand = deckPresentation.expandable
+    ? { expanded: deckPresentation.expanded, onToggle: toggleDeckExpanded }
+    : null;
+  // 넓힌 덱이 더는 넓힐 수 없는 자리로 가면(창이 좁아짐·오피스) 넓힌 상태를 지운다. 창을 다시 넓혀도 저절로 넓어지지 않는다.
+  const staleDeckExpansion = deckPresentation.staleExpansion;
+  useEffect(() => {
+    if (staleDeckExpansion) dispatchWorkspaceLayout({ type: "set-deck-expanded", expanded: false });
+  }, [staleDeckExpansion]);
   // 대화 화면과 오피스 화면은 같은 세션 URL 규칙(?session= / ?cwd=)으로 서로를 연다.
   const sessionQuery = selectedSession
     ? `?session=${encodeURIComponent(selectedSession.id)}`
@@ -1678,11 +1776,14 @@ export function AppShell({
       <div className="workspace-file-content">
         {activeFileTab?.filePath ? (
           <FileViewer
+            key={activeFileTab.id}
             filePath={activeFileTab.filePath}
             cwd={activeCwd ?? undefined}
             sourceSessionId={activeFileTab.sourceSessionId}
             gitRefreshKey={gitRefreshKey}
             initialDisplayMode={activeFileTab.initialDisplayMode}
+            viewStateStore={fileViewStatesRef.current}
+            viewStateKey={activeFileTab.id}
             onMentionLines={handleFileLineMention}
             onAtMention={handleAtMention}
             onOpenFile={(filePath) => handleOpenFile(
@@ -1762,6 +1863,12 @@ export function AppShell({
       visible
       onClose={() => dispatchWorkspaceLayout({ type: "select-view", view: "chat" })}
       onReturnFocus={requestComposerFocus}
+      expand={deckExpand}
+      selectedMaker={selectedMaker}
+      onSelectMaker={setSelectedMaker}
+      onReturnToDispatch={returnToDispatch}
+      onOpenFile={handleOpenLinkedFile}
+      fileOpen={Boolean(activeFileTab?.filePath)}
     />
   ) : null;
   const auxiliaryDeckContent = auxiliaryDeck ?? nativeAuxiliaryDeck;
@@ -2432,6 +2539,8 @@ export function AppShell({
               onSubagentsChange={setSubagents}
               onMainIdentityChange={setMainIdentity}
               onOpenWorkspaceView={openWorkspaceView}
+              onOpenMaker={openMaker}
+              selectedMaker={selectedMaker}
               onProcessLogChange={setProcessLog}
               onOpenFile={handleOpenLinkedFile}
               transcriptReplacement={
@@ -2514,7 +2623,7 @@ export function AppShell({
             <TranslatorView visible={translatorOpen} onBack={() => setTranslatorActive(false)} />
           ) : null}
           </div>
-          {pinDecision.deck === "pinned" && showAuxiliaryDeck && !officePage && (
+          {pinDecision.deck === "pinned" && showAuxiliaryDeck && !officePage && !deckPresentation.expanded && (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
               {auxiliaryDeckContent}
             </aside>

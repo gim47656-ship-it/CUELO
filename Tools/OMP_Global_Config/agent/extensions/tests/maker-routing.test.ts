@@ -352,6 +352,38 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(batch.routes[0]!.status).toBe("judged");
     expect(await h.beforeTask(h.input, {})).toBeUndefined();
   });
+  test("같은 배치의 OWNED_PATHS 겹침은 준비 결과 ownershipOverlaps로 먼저 알리고, 같은 배치 발주는 그대로 막힌다", async () => {
+    const make = (name: string, paths: string) => ({
+      name,
+      task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
+      assessment: { ...facts, paths: paths.split(",") },
+    });
+    const h = harness();
+    const tasks = [make("Left", "src/view.ts,lib/i18n/"), make("Right", "lib/i18n/ko.ts"), make("Solo", "doc/note.md")];
+    const batch = await h.prepareBatch("같은 batch", tasks, {} as never);
+    expect(batch.routes.map((route) => route.ownershipOverlaps)).toEqual([
+      ["'Right'과 겹침: lib/i18n/"],
+      ["'Left'과 겹침: lib/i18n/ko.ts"],
+      null,
+    ]);
+    expect(batch.instruction).toContain("ownershipOverlaps");
+    // 경고는 발주 판정을 바꾸지 않는다. 같은 배치를 공유 작업공간으로 내면 기존 검사가 막고, 겹침 없는 항목만 내면 통과한다.
+    const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" });
+    expect(await h.beforeTask({ context: "같은 batch", tasks: tasks.map(item) }, {} as never, "batch"))
+      .toMatchObject({ block: true, reason: expect.stringContaining("'Left' ↔ 'Right'") });
+    expect(await h.beforeTask({ context: "같은 batch", tasks: [item(tasks[0]!), item(tasks[2]!)] }, {} as never, "pair")).toBeUndefined();
+  });
+  test("OWNED_PATHS에 설명 괄호·glob이 섞이면 briefGaps로 경로가 아니라고 알리고, Next 경로 그룹·동적 세그먼트는 그대로 둔다", async () => {
+    const h = harness();
+    const paths = "app/globals.css (panel,deck blocks only),lib/i18n/messages/*,app/(chat)/page.tsx,app/api/agent/[id]/route.ts";
+    const annotated = { ...h.task, task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`) };
+    const batch = await h.prepareBatch("같은 계약", [annotated], {} as never);
+    expect(batch.routes[0]!.briefGaps).toEqual([
+      "OWNED_PATHS에 경로가 아닌 항목: 'app/globals.css (panel', 'deck blocks only)', 'lib/i18n/messages/*'. 설명·괄호·glob 없이 파일 또는 후행 /의 디렉터리만 콤마로 적으세요. 같은 파일을 블록으로 나눠 맡기는 범위는 소유 검사가 표현하지 못하므로 # Target에 적습니다.",
+    ]);
+    const plain = { ...h.task, task: brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: app/(chat)/page.tsx,app/api/agent/[id]/route.ts,lib/i18n/") };
+    expect((await h.prepareBatch("같은 계약", [plain], {} as never)).routes[0]!.briefGaps).toBeNull();
+  });
   test("registry에 없는 후보는 unavailable로 분리되고 나머지 후보의 발주는 막히지 않는다", async () => {
     const policy = loadRoutingPolicy();
     const profiles = Object.keys(policy.modelSelection.profiles);

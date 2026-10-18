@@ -13,13 +13,14 @@
 @import "@seed-design/css/base.css";
 /* Recipe CSS is not imported by @seed-design/react itself, so the app loads
    exactly the recipes it consumes: ActionButton, ToggleButton, Menu(+item),
-   Tabs, Badge, Switch(+mark). Adding a SEED component means adding its recipe here. */
+   Tabs, Badge, SegmentedControl, Switch(+mark). Adding a SEED component means adding its recipe here. */
 @import "@seed-design/css/recipes/action-button.css";
 @import "@seed-design/css/recipes/toggle-button.css";
 @import "@seed-design/css/recipes/menu.css";
 @import "@seed-design/css/recipes/menu-item.css";
 @import "@seed-design/css/recipes/tabs.css";
 @import "@seed-design/css/recipes/badge.css";
+@import "@seed-design/css/recipes/segmented-control.css";
 @import "@seed-design/css/recipes/switch.css";
 @import "@seed-design/css/recipes/switchmark.css";
 @import "tailwindcss" source("../");
@@ -721,18 +722,6 @@ pre, code {
   padding-right: 2px;
   background: var(--tool-bg);
 }
-.shell-output-status {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 500;
-}
-.shell-output-status.is-pending {
-  color: var(--accent);
-}
-.shell-output-status.is-error {
-  color: var(--danger);
-}
 .shell-output-body {
   max-height: 420px;
   overflow: auto;
@@ -758,18 +747,6 @@ pre, code {
 .shell-output-empty {
   color: var(--text-dim);
   font-style: italic;
-}
-.shell-output-pending {
-  display: inline-block;
-  color: var(--accent);
-  animation: pulse 1.2s infinite;
-}
-.shell-output-footer {
-  padding: 0 13px 8px;
-  color: var(--text-dim);
-  font-size: 10px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 .todo-checklist-preview {
@@ -1149,139 +1126,9 @@ pre, code {
   }
 }
 
-/* File viewer toolbar */
-.file-viewer-toolbar {
-  min-width: 0;
-  min-height: 35px;
-}
-
-.file-viewer-path {
-  flex: 1 1 auto;
-  min-width: 48px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-viewer-meta {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-viewer-live-indicator {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex: 0 0 7px;
-}
-
-.file-viewer-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.file-viewer-actions {
-  display: flex;
-  align-items: center;
-  height: 24px;
-  gap: 4px;
-  flex-shrink: 0;
-  order: -1;
-}
-
-.file-viewer-mode-switch {
-  display: flex;
-  height: 24px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-}
-
-.file-viewer-mode-button {
-  height: 22px;
-  padding: 0 8px;
-  border: 0;
-  border-left: 1px solid var(--border);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.file-viewer-mode-button:first-child {
-  border-left: 0;
-}
-
-.file-viewer-mode-button:hover {
-  filter: brightness(1.08);
-}
-
-.file-viewer-icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  box-sizing: border-box;
-  flex: 0 0 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.file-viewer-icon-button:hover {
-  background: var(--bg-hover) !important;
-  color: var(--text);
-}
-
-.file-viewer-icon-button:disabled {
-  color: var(--text-dim);
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.file-viewer-icon-button:disabled:hover {
-  background: transparent !important;
-  color: var(--text-dim);
-}
-
-.file-viewer-mode-button:focus-visible,
-.file-viewer-icon-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
 .directory-picker-path:focus-visible {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-@media (max-width: 640px) {
-  .file-viewer-meta {
-    display: none;
-  }
-}
-
-@media (max-width: 380px) {
-  .file-viewer-toolbar {
-    gap: 6px !important;
-    padding-inline: 8px !important;
-  }
-
-  .file-viewer-mode-button {
-    padding-inline: 6px;
-  }
 }
 
 /* File viewer markdown preview — larger headings */
@@ -2566,9 +2413,8 @@ span.linenumber {
 .todo-checklist-header,
 .shell-command-line,
 .workspace-file-tabs,
-.file-viewer-toolbar,
+.panel-header,
 .side-chat-panel > header,
-section[aria-label="Subagent 기록"] > header,
 .resource-panel h2 {
   background: var(--channel-bg) !important;
 }
@@ -3158,12 +3004,91 @@ section[aria-label="Subagent 기록"] > header,
   border-color: var(--danger-line) !important;
 }
 
-.tool-call-name {
-  color: var(--success) !important;
+/* 도구 실행 줄: 이름은 중립 잉크이고 상태는 단어로 보인다(실행 중·실패 배지). 색은 상태에만 쓴다.
+   걸린 시간·상태·펼침 표시는 줄지 않고, 좁은 줄에서는 +a −r가 대상보다 먼저 빠진다. */
+.tool-call-card {
+  container: tool-run / inline-size;
 }
 
-.tool-call-card.is-error .tool-call-name {
-  color: var(--danger) !important;
+.tool-call-name {
+  flex-shrink: 0;
+  color: var(--text) !important;
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: 600;
+}
+
+.tool-call-target {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 경로는 앞쪽을 줄여 파일명을 남긴다. 안쪽 bdi가 글자 순서를 왼→오로 지킨다. */
+.tool-call-target.is-path {
+  direction: rtl;
+  text-align: left;
+}
+
+.tool-call-diffstats {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-run-duration {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-run-running {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tool-run-failed {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-run-exit {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-call-chevron {
+  flex-shrink: 0;
+}
+
+.tool-call-header .shell-local-label {
+  margin-top: 0;
+}
+
+@container tool-run (max-width: 359px) {
+  .tool-call-diffstats {
+    display: none;
+  }
 }
 
 .tool-call-header {
@@ -3194,6 +3119,13 @@ section[aria-label="Subagent 기록"] > header,
 
 .shell-command-line {
   color: var(--text);
+}
+
+/* 펼친 bash 줄의 명령·출력은 줄 카드 안에 붙으므로 자기 테두리를 버린다. */
+.tool-call-body > .shell-output-preview {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .todo-checklist-preview {
@@ -3469,28 +3401,192 @@ section[aria-label="Subagent 기록"] > header,
   min-inline-size: 0;
 }
 
-.process-log-header {
+/* --- panel header: the one 32px row at the top of each deck view ---------- */
+/* Title, path, state, view switch, actions, expand and close share one row and
+   never wrap. The header is its own size container: below 360px the subtitle
+   goes first, below 300px the actions fold into the overflow menu, and the
+   title only truncates once nothing else is left to give. */
+.panel-header {
+  container: panel-header / inline-size;
   display: flex;
   flex: none;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--seed-dimension-x2);
-  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+  block-size: 32px;
+  padding-inline: var(--seed-dimension-x2) var(--seed-dimension-x1);
   border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  white-space: nowrap;
 }
 
-.process-log-header h2 {
+.panel-header-heading {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5);
+  min-inline-size: 0;
+}
+
+.panel-header-title {
+  flex: 0 1 auto;
+  min-inline-size: 0;
   margin: 0;
+  overflow: hidden;
   color: var(--seed-color-fg-neutral);
   font-size: var(--seed-font-size-t4-static);
   font-weight: 600;
+  line-height: var(--seed-line-height-t4-static);
+  text-overflow: ellipsis;
 }
 
-.process-log-count {
-  color: var(--seed-color-fg-neutral-muted);
+.panel-header-title:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: 1px;
+}
+
+.panel-header-subtitle {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t2-static);
+  text-overflow: ellipsis;
+}
+
+/* Paths lose their head, not their tail: the folder next to the file stays. */
+.panel-header-subtitle.is-path {
+  direction: rtl;
   font-family: var(--font-mono);
-  font-size: var(--seed-font-size-t3-static);
+  text-align: left;
+}
+
+.panel-header-live {
+  flex: none;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--seed-color-stroke-neutral-muted);
+}
+
+.panel-header-live[data-live="true"] {
+  background: var(--seed-color-fg-positive);
+}
+
+.panel-header-state {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
   font-variant-numeric: tabular-nums;
+}
+
+.panel-header .panel-header-switch {
+  flex: none;
+  padding: 2px;
+}
+
+.panel-header .panel-header-switch .seed-segmented-control__item {
+  min-inline-size: 0;
+  min-block-size: 22px;
+  padding-inline: var(--seed-dimension-x2);
+  padding-block: 0;
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: 600;
+}
+
+.panel-header .panel-header-switch .seed-segmented-control__indicator {
+  inset-block: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--segment-count));
+}
+
+.panel-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.panel-header .panel-header-button,
+.panel-header-link-button {
+  flex: none;
+  block-size: 28px;
+  min-inline-size: 28px;
+  --seed-box-padding-left: var(--seed-dimension-x1_5);
+  --seed-box-padding-right: var(--seed-dimension-x1_5);
+  --seed-box-padding-top: var(--seed-dimension-x1_5);
+  --seed-box-padding-bottom: var(--seed-dimension-x1_5);
+}
+
+.panel-header .panel-header-button[aria-pressed="true"] {
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.panel-header-link-button {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 28px;
+  border-radius: var(--seed-radius-r2);
+  color: var(--seed-color-fg-neutral);
+}
+
+.panel-header-link-button:hover {
+  background: var(--seed-color-bg-transparent-pressed);
+}
+
+.panel-header-link-button:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: 1px;
+}
+
+.panel-header .panel-header-more {
+  display: none;
+}
+
+@container panel-header (max-width: 360px) {
+  .panel-header-subtitle {
+    display: none;
+  }
+}
+
+@container panel-header (max-width: 300px) {
+  .panel-header-actions {
+    display: none;
+  }
+
+  .panel-header .panel-header-more {
+    display: inline-flex;
+  }
+}
+
+/* Maker 상세의 결과 칸: 변경 파일·실행한 검사·판정 사유. 길면 이 칸만 스크롤되고 기록은 아래에 남는다. */
+.maker-detail-outcome {
+  display: grid;
+  gap: var(--seed-dimension-x2);
+  flex: 0 0 auto;
+  max-block-size: 40%;
+  overflow-y: auto;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  font-size: 12px;
+}
+
+.maker-detail-heading {
+  margin: 0 0 var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.maker-detail-empty,
+.maker-detail-reason {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.maker-detail-reason > span {
+  color: var(--seed-color-fg-neutral-muted);
 }
 
 .process-log-body {
@@ -3587,20 +3683,6 @@ section[aria-label="Subagent 기록"] > header,
 
 .file-tab-close {
   border-radius: var(--radius-control) !important;
-}
-
-.file-viewer-toolbar {
-  border-block-end-color: var(--border) !important;
-  color: var(--text-muted) !important;
-}
-
-.file-viewer-mode-switch {
-  border-color: var(--border-strong);
-  border-radius: var(--radius-control);
-}
-
-.file-viewer-mode-button[aria-pressed="true"] {
-  box-shadow: inset 0 -2px var(--accent);
 }
 
 .file-viewer-content,
@@ -4627,13 +4709,308 @@ ul.efficiency-stack {
   grid-column: 1 / -1;
 }
 
+/* --- Run X-Ray: what the model saw (per request, approximate) ------------- */
+/* 요청 줄은 카드가 아니라 구분선으로 나누고, 주입 항목만 옅은 바탕 한 단계를 쓴다.
+   390px에서도 가로 overflow가 없도록 긴 토큰은 접고, 인자 한 줄은 말줄임한다. */
+.run-saw {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.run-saw-approx {
+  margin: 0;
+  padding: 6px 16px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-actions,
+.run-saw-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 16px;
+  min-inline-size: 0;
+}
+
+.run-saw-role {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.run-saw-role select {
+  max-inline-size: 240px;
+}
+
+.run-saw-summary {
+  margin: 0;
+  padding: 4px 16px 2px;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-names {
+  margin: 0;
+  padding: 0 16px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-dim {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-pad {
+  padding: 4px 16px;
+}
+
+.run-saw-turns {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  border-block-start: 1px solid var(--border);
+  min-inline-size: 0;
+}
+
+.run-saw-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--border);
+  min-inline-size: 0;
+}
+
+.run-saw-turn-head,
+.run-saw-event-head,
+.run-saw-tool-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-inline-size: 0;
+}
+
+.run-saw-turn-label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.run-saw-turn-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-inline-size: 0;
+}
+
+.run-saw-group-label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.run-saw-events,
+.run-saw-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.run-saw-event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+  min-inline-size: 0;
+}
+
+.run-saw-kind {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* customType·도구 이름은 식별자라 mono, 소요시간은 본문 글꼴의 고정폭 숫자다. */
+.run-saw-source {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-num {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-saw-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.run-saw-tool-name {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.run-saw-args {
+  display: block;
+  overflow: hidden;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-saw-tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-inline-size: 0;
+}
+
+.run-saw-full-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.run-saw-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-saw-link:hover {
+  text-decoration: underline;
+}
+
+.run-saw-link:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.run-saw-full {
+  box-sizing: border-box;
+  inline-size: 100%;
+  max-block-size: 320px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.run-saw-trailing {
+  padding: 8px 16px;
+  border-block-end: 1px solid var(--border);
+}
+
+.run-saw-prelude {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-block-start: 8px;
+  padding: 8px 16px 4px;
+  border-block-start: 1px solid var(--border);
+  min-inline-size: 0;
+}
+
+.run-saw-prelude .run-saw-approx,
+.run-saw-prelude .run-saw-actions,
+.run-saw-prelude .run-saw-names {
+  padding-inline: 0;
+}
+
+.run-saw-subtitle {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.run-saw-line {
+  margin: 0;
+  color: var(--text);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
 .side-chat-panel,
 section[aria-label="Subagent 기록"] {
   background: var(--bg-panel) !important;
 }
 
-.side-chat-panel > header,
-section[aria-label="Subagent 기록"] > header {
+.side-chat-panel > header {
   border-block-end-color: var(--border) !important;
 }
 
@@ -4704,7 +5081,7 @@ section[aria-label="Subagent 기록"] > header {
 }
 
 .side-chat-panel > form button,
-section[aria-label="Subagent 기록"] button {
+section[aria-label="Subagent 기록"] [role="list"] button {
   border-color: var(--border-strong) !important;
   border-radius: var(--radius-control) !important;
   background: var(--bg) !important;
@@ -4712,18 +5089,18 @@ section[aria-label="Subagent 기록"] button {
 }
 
 .side-chat-panel > form button:hover:not(:disabled),
-section[aria-label="Subagent 기록"] button:hover:not(:disabled) {
+section[aria-label="Subagent 기록"] [role="list"] button:hover:not(:disabled) {
   background: var(--bg-hover) !important;
   color: var(--text) !important;
 }
 
-section[aria-label="Subagent 기록"] [role="listitem"] {
+section[aria-label="Subagent 기록"] [role="listitem"] > button {
   border-color: var(--border) !important;
   border-radius: var(--radius-surface) !important;
   background: var(--bg) !important;
 }
 
-section[aria-label="Subagent 기록"] [role="listitem"]:hover {
+section[aria-label="Subagent 기록"] [role="listitem"] > button:hover {
   border-color: var(--border-strong) !important;
   background: var(--bg-hover) !important;
 }

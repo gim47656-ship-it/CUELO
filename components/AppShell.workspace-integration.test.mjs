@@ -75,7 +75,7 @@ test("session views and transient layers remain mutually exclusive", () => {
     type: "select-view",
     view: "resource",
   });
-  assert.deepEqual(resource, { activeView: "resource", transientLayer: null });
+  assert.deepEqual(resource, { activeView: "resource", transientLayer: null, deckExpanded: false });
 });
 
 test("side-chat cleanup waits for a complete census", () => {

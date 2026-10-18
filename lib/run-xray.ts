@@ -1301,8 +1301,45 @@ export function listRuns(sessionId: string, limit: number = RUN_LIST_DEFAULT_LIM
   }
 }
 
+/**
+ * `runId`(URL 조각)를 `sessionId`·`entryId`로 나눈다. `${sessionId}:${entryId}` 모양이 아니면 400이다.
+ * `/api/runs/<runId>` 하위 라우트가 모두 같은 규칙을 쓴다.
+ */
+export function parseRunId(raw: string): { sessionId: string; entryId: string } {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new RunXrayError("runId 형식이 올바르지 않습니다.", 400);
+  }
+  const separator = decoded.indexOf(":");
+  if (separator < 0) throw new RunXrayError("runId 형식이 올바르지 않습니다.", 400);
+  const sessionId = decoded.slice(0, separator);
+  const entryId = decoded.slice(separator + 1);
+  if (!sessionId.trim() || !entryId.trim()) throw new RunXrayError("runId 형식이 올바르지 않습니다.", 400);
+  return { sessionId, entryId };
+}
+
+/** run 하나가 기록된 transcript 위치. "모델이 본 것" 보기가 이 파일들만 읽는다. */
+export interface RunTranscriptLocation {
+  detail: RunDetail;
+  parentFile: string;
+  /** 역할 id(`RunRoleSegment.id`) → 자식 transcript. 이 run에 요청을 남긴 자식만 담는다. */
+  childFiles: Map<string, string>;
+  /** 이 세션의 모든 run 시작 항목 id. 부모 transcript에서 run 경계를 찾는 데 쓴다. */
+  runEntryIds: Set<string>;
+  /** 이 run 창 `[windowStart, windowEnd)`. 마지막 run이면 `windowEnd`는 `null`(상한 없음). */
+  windowStart: number;
+  windowEnd: number | null;
+}
+
 /** `GET /api/runs/<runId>` — 없으면 404. */
 export function getRunDetail(sessionId: string, entryId: string): RunDetail {
+  return locateRunTranscripts(sessionId, entryId).detail;
+}
+
+/** run의 상세와 transcript 위치. 없으면 404. */
+export function locateRunTranscripts(sessionId: string, entryId: string): RunTranscriptLocation {
   if (!sessionId.trim() || !entryId.trim()) {
     throw new RunXrayError("runId 형식이 올바르지 않습니다.", 400);
   }
@@ -1311,10 +1348,25 @@ export function getRunDetail(sessionId: string, entryId: string): RunDetail {
   try {
     const parentFile = resolveParentSessionFile(db, sessionId);
     if (!parentFile) throw new RunXrayError("기록을 찾을 수 없습니다.", 404);
-    const details = buildSessionRuns(loadSessionDataByParent(db, sessionId, parentFile), loadHarnessTimeline());
-    const found = details.find((detail) => detail.entryId === entryId);
-    if (!found) throw new RunXrayError("기록을 찾을 수 없습니다.", 404);
-    return found;
+    const data = loadSessionDataByParent(db, sessionId, parentFile);
+    const details = buildSessionRuns(data, loadHarnessTimeline());
+    const index = details.findIndex((detail) => detail.entryId === entryId);
+    if (index < 0) throw new RunXrayError("기록을 찾을 수 없습니다.", 404);
+    const detail = details[index];
+    const roleIds = new Set(detail.roles.map((role) => role.id));
+    const childFiles = new Map<string, string>();
+    for (const file of data.childFiles) {
+      const roleName = roleNameOf(file);
+      if (roleIds.has(roleName)) childFiles.set(roleName, file);
+    }
+    return {
+      detail,
+      parentFile,
+      childFiles,
+      runEntryIds: new Set(data.users.map((user) => user.entry_id)),
+      windowStart: detail.startedAt,
+      windowEnd: index + 1 < details.length ? details[index + 1].startedAt : null,
+    };
   } finally {
     db.close();
   }

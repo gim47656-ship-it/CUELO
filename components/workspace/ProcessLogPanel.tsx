@@ -7,6 +7,7 @@ import { withAssistantBlocks } from "@/lib/message-display";
 import type { ProcessTurnGroup } from "@/lib/transcript-plan";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "@/lib/types";
 import { MessageView } from "../MessageView";
+import { PanelHeader } from "./PanelHeader";
 
 /**
  * Everything the work log needs to render the process items the transcript
@@ -48,12 +49,8 @@ export function ProcessLogPanel({ title, data, onOpenFile }: ProcessLogPanelProp
 
   return (
     <section className="process-log" aria-label={title}>
-      <header className="process-log-header">
-        <h2>{title}</h2>
-        <span className="process-log-count">
-          {groups.length > 0 ? `${groups.length} ${t(groups.length === 1 ? "process.turn" : "process.turns")}` : ""}
-        </span>
-      </header>
+      {/* 탭이 이미 이 보기의 이름이므로 머리줄에는 턴 수만 둔다. */}
+      <PanelHeader title={`${groups.length} ${t(groups.length === 1 ? "process.turn" : "process.turns")}`} />
       <div className="process-log-body">
         {data?.status ? (
           <p className="process-log-status" role="status">

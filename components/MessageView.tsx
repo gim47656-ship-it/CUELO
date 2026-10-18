@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useRef, useEffect, useMemo } from "react";
+import { memo, useState, useRef, useEffect, useId, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
@@ -8,6 +8,9 @@ import { MarkdownBody } from "./MarkdownBody";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
+import { useNow } from "@/hooks/useNow";
+import { Badge } from "@seed-design/react";
+import { readExitCode } from "@/lib/tool-exit-code";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { formatTokenCount } from "@/lib/format-tokens";
 import {
@@ -762,7 +765,7 @@ function AssistantMessageView({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blockItems.map(({ block, originalIndex }) => (
-          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
+          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} runStartedAt={message.completedAt} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
         ))}
       </div>
 
@@ -883,7 +886,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, runStartedAt, cwd, onOpenFile, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; runStartedAt?: number; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
   }
@@ -894,7 +897,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} runStartedAt={runStartedAt} />;
   }
   if (block.type === "image") {
     if (isToolImageBlock(block)) {
@@ -1095,15 +1098,18 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
 }
 
 
-function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number }) {
+type ToolRunState = "running" | "done" | "failed";
+
+/** 실행 중 단어를 늦게 띄우는 시간. 바로 끝나는 호출이 깜빡이지 않게 한다. */
+const RUNNING_WORD_DELAY_MS = 400;
+
+function ToolCallBlock({ block, result, duration, runStartedAt }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; runStartedAt?: number }) {
+  const { t } = useI18n();
+  const bodyId = useId();
+  // 결과가 없을 때 경과를 셀 기준. 생성 종료 시각이 없으면 이 줄이 처음 그려진 때로 대신한다.
+  const [mountedAt] = useState(() => Date.now());
+  const [toggled, setToggled] = useState<boolean | null>(null);
   const normalizedToolName = block.toolName.toLowerCase();
-  const isEditTool = normalizedToolName === "edit" ||
-    normalizedToolName.startsWith("edit_") ||
-    normalizedToolName.endsWith(".edit") ||
-    normalizedToolName.endsWith("_edit") ||
-    normalizedToolName.includes("str_replace") ||
-    normalizedToolName.includes("replace_editor");
-  const [expanded, setExpanded] = useState(isEditTool);
   const inputStr = JSON.stringify(block.input, null, 2);
   const isTodoTool = normalizedToolName === "todo" || normalizedToolName.endsWith(".todo") || normalizedToolName.endsWith("_todo");
   const isBashTool = normalizedToolName === "bash" || normalizedToolName.startsWith("bash ") || normalizedToolName.endsWith(".bash") || normalizedToolName.endsWith("_bash");
@@ -1124,45 +1130,38 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
     ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join("\n")
     : null;
   const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
-  const isError = result?.isError ?? false;
-
-  if (isBashTool) {
-    return (
-      <ConsoleOutputPreview
-        command={isRecord(block.input) && typeof block.input.command === "string" ? block.input.command : ""}
-        output={resultText ?? ""}
-        pending={!result}
-        isError={isError}
-        duration={duration}
-        local={normalizedToolName.includes("(local)")}
-      />
-    );
-  }
+  const exitCode = result ? readExitCode(result) : null;
+  const state: ToolRunState = !result
+    ? "running"
+    : result.isError || (exitCode !== null && exitCode !== 0) ? "failed" : "done";
+  const isError = state === "failed";
+  // 사용자가 한 번 누르기 전까지는 실패한 호출만 펼친다. 편집 diff도 접힌 채로 시작한다.
+  const expanded = toggled ?? isError;
 
   if (isTodoTool && todoPhases) {
     return <TodoChecklistPreview phases={todoPhases} />;
   }
 
+  const command = isBashTool && typeof block.input.command === "string" ? block.input.command : "";
   const hasStructuredPreview = Boolean(todoPhases || resultDiff);
-  const headerPreview = getStructuredToolPreview(block, todoPhases);
-
+  const target = isBashTool ? (command.split(/\r?\n/, 1)[0] ?? "") : getStructuredToolPreview(block, todoPhases);
+  // 공백 없는 경로 모양이면 앞쪽을 줄여 파일명을 남긴다. 명령과 설명 문장은 뒤쪽을 줄인다.
+  const targetIsPath = !isBashTool && /^\S+$/.test(target) && /[\\/]/.test(target);
+  const diffStatsLabel = diffStats ? t("toolRun.diffStats", { added: diffStats.added, removed: diffStats.removed }) : "";
 
   return (
     <div
-      className={`tool-call-card${isError ? " is-error" : " is-success"}`}
-      style={{
-        borderRadius: 7,
-        overflow: "hidden",
-        fontSize: 12,
-        border: isError ? "1px solid var(--danger-line)" : "1px solid var(--success-line)",
-        background: isError ? "var(--danger-soft)" : "var(--success-soft)",
-      }}
+      className={`tool-call-card ${isError ? "is-error" : state === "running" ? "is-running" : "is-done"}${isBashTool ? " is-shell" : ""}`}
+      aria-busy={state === "running" ? true : undefined}
+      style={{ overflow: "hidden", fontSize: 12 }}
     >
-
       <button
+        type="button"
         className="tool-call-header"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setToggled(!expanded)}
         aria-expanded={expanded}
+        // 접힌 줄은 본문을 그리지 않으므로(긴 기록의 비용) 펼쳤을 때만 본문을 가리킨다.
+        aria-controls={expanded ? bodyId : undefined}
         style={{
           display: "flex",
           alignItems: "center",
@@ -1171,96 +1170,112 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
           padding: "6px 10px",
           background: "none",
           border: "none",
-          color: "var(--text-muted)",
           cursor: "pointer",
           fontSize: 12,
           textAlign: "left",
           minWidth: 0,
         }}
       >
-        <ToolBlockIcon toolName={block.toolName} isError={isError} />
-
-
-        <span className="tool-call-name" style={{ color: isError ? "var(--danger)" : "var(--success)", fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
-          {block.toolName}
-        </span>
-        <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-          {headerPreview}
+        <ToolBlockIcon toolName={block.toolName} />
+        <span className="tool-call-name">{isBashTool ? "bash" : block.toolName}</span>
+        {isBashTool && normalizedToolName.includes("(local)") && <span className="shell-local-label">local</span>}
+        <span className={`tool-call-target${targetIsPath ? " is-path" : ""}`} title={isBashTool ? command : target}>
+          {targetIsPath ? <bdi dir="ltr">{target}</bdi> : target}
         </span>
         {diffStats && (
-          <span
-            title={`${diffStats.added} lines added, ${diffStats.removed} lines removed`}
-            aria-label={`${diffStats.added} lines added, ${diffStats.removed} lines removed`}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 11, fontVariantNumeric: "tabular-nums" }}
-          >
+          <span className="tool-call-diffstats" title={diffStatsLabel} aria-label={diffStatsLabel}>
             <span style={{ color: "var(--success)" }}>+{diffStats.added}</span>
             <span style={{ color: "var(--danger)" }}>−{diffStats.removed}</span>
           </span>
         )}
-        {duration !== undefined && (
-          <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
-        )}
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+        <ToolRunStateSlot state={state} duration={duration} exitCode={exitCode} startedAt={runStartedAt ?? mountedAt} />
+        <svg className="tool-call-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
       </button>
 
-      {resultDiff && (
-        <div style={{ maxHeight: expanded ? 560 : 260, overflowY: "auto", overflowX: "hidden", borderTop: "1px solid var(--success-line)" }}>
-          <PairedDiffResult diff={resultDiff} />
+      {expanded && (
+        <div id={bodyId} className="tool-call-body">
+          {isBashTool ? (
+            <ConsoleOutputPreview command={command} output={resultText ?? ""} pending={!result} isError={isError} />
+          ) : (
+            <>
+              {resultDiff && (
+                <div style={{ maxHeight: 560, overflowY: "auto", overflowX: "hidden" }}>
+                  <PairedDiffResult diff={resultDiff} />
+                </div>
+              )}
+
+              {result && isError && (
+                <PairedResult text={resultText ?? ""} isEmpty={resultIsEmpty} isError />
+              )}
+
+              {!hasStructuredPreview && (
+                <pre
+                  className="tool-call-input"
+                  style={{
+                    margin: 0,
+                    padding: "8px 10px",
+                    color: "var(--text-muted)",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    overflow: "auto",
+                    // 실패해 저절로 펼친 write는 입력에 파일 전체가 들어 있다. 결과 칸과 같은 높이에서 스크롤한다.
+                    maxHeight: 400,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {inputStr}
+                </pre>
+              )}
+
+              {result && !hasStructuredPreview && !isError && (
+                <PairedResult text={resultText ?? ""} isEmpty={resultIsEmpty} isError={false} />
+              )}
+            </>
+          )}
         </div>
-      )}
-
-      {result && isError && (
-        <PairedResult text={resultText ?? ""} isEmpty={resultIsEmpty} isError />
-      )}
-
-      {expanded && !hasStructuredPreview && (
-        <pre
-          className="tool-call-input"
-          style={{
-            margin: 0,
-            padding: "8px 10px",
-            color: "var(--text-muted)",
-            fontSize: 12,
-            lineHeight: 1.5,
-            overflow: "auto",
-            background: "var(--bg-subtle)",
-            borderTop: isError ? "1px solid var(--danger-line)" : "1px solid var(--success-line)",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-          }}
-        >
-          {inputStr}
-        </pre>
-      )}
-
-      {expanded && result && !hasStructuredPreview && !isError && (
-        <PairedResult
-          text={resultText ?? ""}
-          isEmpty={resultIsEmpty}
-          isError={false}
-        />
       )}
     </div>
   );
 }
-type ToolIconKind = "read" | "write" | "glob" | "grep" | "edit" | "bash" | "todo" | "eval" | "task" | "browser" | "image" | "generic";
 
-const TOOL_ICON_COLORS: Record<ToolIconKind, string> = {
-  read: "var(--accent)",
-  write: "var(--warning)",
-  glob: "var(--accent-hover)",
-  grep: "var(--accent)",
-  edit: "var(--warning)",
-  bash: "var(--success)",
-  todo: "var(--warning)",
-  eval: "var(--accent-hover)",
-  task: "var(--accent)",
-  browser: "var(--accent-hover)",
-  image: "var(--success)",
-  generic: "var(--text-dim)",
-};
+/**
+ * 줄 오른쪽의 걸린 시간과 상태. 끝난 호출은 시간만 남기고(조용함이 성공), 실패는 단어 배지와
+ * 종료 코드를, 실행 중은 단어와 경과 초를 보인다. 색만으로 상태를 나타내지 않는다.
+ */
+function ToolRunStateSlot({ state, duration, exitCode, startedAt }: { state: ToolRunState; duration?: number; exitCode: number | null; startedAt: number }) {
+  const { t } = useI18n();
+  if (state === "running") return <ToolRunElapsed startedAt={startedAt} />;
+  return (
+    <>
+      {duration !== undefined && <span className="tool-run-duration">{duration}s</span>}
+      {state === "failed" && (
+        <span className="tool-run-failed">
+          <Badge tone="critical" variant="weak" size="medium">{t("toolRun.failed")}</Badge>
+          {exitCode !== null && <span className="tool-run-exit">{t("toolRun.exitCode", { code: exitCode })}</span>}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** 실행 중 단어와 경과 초. 이 줄만 시계를 구독하므로 끝난 줄은 다시 그리지 않는다. */
+function ToolRunElapsed({ startedAt }: { startedAt: number }) {
+  const { t } = useI18n();
+  const now = useNow(500);
+  const elapsedMs = now - startedAt;
+  if (elapsedMs < RUNNING_WORD_DELAY_MS) return null;
+  return (
+    <span className="tool-run-running">
+      {t("toolRun.running")}
+      <span className="tool-run-duration">{Math.floor(elapsedMs / 1000)}s</span>
+    </span>
+  );
+}
+
+type ToolIconKind = "read" | "write" | "glob" | "grep" | "edit" | "bash" | "todo" | "eval" | "task" | "browser" | "image" | "generic";
 
 function toolNameHasPart(toolName: string, part: string): boolean {
   const normalized = toolName.trim().toLowerCase();
@@ -1286,9 +1301,10 @@ function getToolIconKind(toolName: string): ToolIconKind {
   return "generic";
 }
 
-function ToolBlockIcon({ toolName, isError }: { toolName: string; isError: boolean }) {
+function ToolBlockIcon({ toolName }: { toolName: string }) {
   const kind = getToolIconKind(toolName);
-  const color = isError ? "var(--danger)" : TOOL_ICON_COLORS[kind];
+  // 종류 아이콘은 언제나 중립 잉크다. 실패는 상태 칸의 배지와 종료 코드가 말한다.
+  const color = "var(--text-muted)";
 
   return (
     <span
@@ -1443,26 +1459,22 @@ function TodoChecklistPreview({ phases }: { phases: TodoPhase[] }) {
   );
 }
 
+/** 펼친 bash 줄의 본문: 전체 명령과 출력. 걸린 시간과 상태는 줄(`ToolCallBlock`)이 보인다. */
 function ConsoleOutputPreview({
   command,
   output,
   pending,
   isError,
-  duration,
-  local,
 }: {
   command: string;
   output: string;
   pending: boolean;
   isError: boolean;
-  duration?: number;
-  local?: boolean;
 }) {
   const { isDark } = useTheme();
   const { t } = useI18n();
   const normalizedLines = normalizeCustomPanelLines(output.split(/\r?\n/));
   const outputLines = normalizedLines.length === 1 && normalizedLines[0] === "" ? [] : normalizedLines;
-  const statusLabel = pending ? t("chat.runningCommand") : isError ? "failed" : "";
 
   return (
     <div className={`shell-output-preview${isError ? " is-error" : ""}`}>
@@ -1494,15 +1506,13 @@ function ConsoleOutputPreview({
         >
           {command || " "}
         </SyntaxHighlighter>
-        {local && <span className="shell-local-label">local</span>}
       </div>
 
       <div className="shell-output-panel">
         <div className="shell-output-divider">
           <span className="shell-output-label">Output</span>
-          {statusLabel && <span className={`shell-output-status${isError ? " is-error" : pending ? " is-pending" : ""}`}>{statusLabel}</span>}
         </div>
-        <div className="shell-output-body" aria-live={pending ? "polite" : undefined}>
+        <div className="shell-output-body">
           {outputLines.length === 0 && !pending && (
             <span className="shell-output-empty">{t("i18n.noOutput")}</span>
           )}
@@ -1526,15 +1536,8 @@ function ConsoleOutputPreview({
               </div>
             );
           })}
-          {pending && (
-            <span className="shell-output-pending" aria-label={t("chat.runningCommand")}>▋</span>
-          )}
         </div>
       </div>
-
-      {duration !== undefined && (
-        <div className="shell-output-footer">{duration}s</div>
-      )}
     </div>
   );
 }
@@ -2136,8 +2139,9 @@ function getToolPreview(block: ToolCallContent): string {
 
   // Common tool input patterns
   if ("command" in input) return String(input.command).slice(0, 120);
-  if ("path" in input) return String(input.path).slice(0, 120);
-  if ("file_path" in input) return String(input.file_path).slice(0, 120);
+  // 경로는 뒤쪽(파일명)을 남긴다. 줄에서도 앞쪽을 줄인다.
+  if ("path" in input) return String(input.path).slice(-120);
+  if ("file_path" in input) return String(input.file_path).slice(-120);
   if ("pattern" in input) return String(input.pattern).slice(0, 120);
   if ("query" in input) return String(input.query).slice(0, 120);
 
@@ -2229,12 +2233,13 @@ function BashExecutionView({ message, sessionId }: { message: BashExecutionMessa
         toolName,
         content: displayOutput ? [{ type: "text", text: displayOutput }] : [],
         isError,
+        details: message.exitCode !== undefined ? { exitCode: message.exitCode } : undefined,
         timestamp: message.timestamp,
       };
 
   return (
     <div style={{ margin: "6px 0" }}>
-      <ToolCallBlock block={block} result={result} />
+      <ToolCallBlock block={block} result={result} runStartedAt={message.timestamp} />
       {message.truncated && fullOutputUrl && (
         <div style={{ padding: "4px 10px", fontSize: 11, marginTop: -1 }}>
           {showFullButton && (

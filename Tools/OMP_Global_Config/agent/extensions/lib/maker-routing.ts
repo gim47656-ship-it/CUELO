@@ -24,12 +24,40 @@ export interface RoutingFacts {
 /**
  * 발주 전 빈 조건 경고. acceptance·checks가 비었거나 공백뿐이면 무엇을 만족해야 끝나는지, 어떻게 확인할지가 없는 발주다.
  * 발주를 막지 않는 advisory다(2026-10-17 사용자 결정: 경고로 시작해 실제 누락·재작업이 줄어드는지 본다).
+ * OWNED_PATHS에 경로가 아닌 항목(설명 괄호·glob)이 있으면 함께 알린다. 소유 판정은 문자열 정확 일치라
+ * `app/globals.css (panel, deck)`은 콤마로 쪼개진 뒤 실제 파일과 일치하지 않아 겹침 검사와 완료 뒤 소유 검사를 모두 빠져나간다(2026-10-18).
  */
-export function briefGaps(assessment: Pick<RoutingFacts, "acceptance" | "checks">): string[] | null {
+export function briefGaps(assessment: Pick<RoutingFacts, "acceptance" | "checks">, ownedPaths: readonly string[] = []): string[] | null {
   const gaps: string[] = [];
   if (!assessment.acceptance.some((item) => item.trim())) gaps.push("acceptance가 비어 있음: 무엇을 만족해야 끝나는지 적으세요.");
   if (!assessment.checks.some((item) => item.trim())) gaps.push("checks가 비어 있음: 어떻게 확인할지(명령·관측 대상) 적으세요.");
+  const notPaths = ownedPaths.filter(isNotOwnedPath);
+  if (notPaths.length > 0) {
+    gaps.push(`OWNED_PATHS에 경로가 아닌 항목: ${clippedList(notPaths.map((entry) => `'${entry}'`))}. 설명·괄호·glob 없이 파일 또는 후행 /의 디렉터리만 콤마로 적으세요. 같은 파일을 블록으로 나눠 맡기는 범위는 소유 검사가 표현하지 못하므로 # Target에 적습니다.`);
+  }
   return gaps.length > 0 ? gaps : null;
+}
+
+/** 공백 뒤 여는 괄호(설명 주석), 짝이 안 맞는 괄호(콤마로 잘린 주석 조각), glob `*`. Next의 `(group)`·`[id]` 세그먼트는 경로다. */
+function isNotOwnedPath(entry: string): boolean {
+  const opens = entry.split("(").length - 1;
+  const closes = entry.split(")").length - 1;
+  return /\s\(/.test(entry) || opens !== closes || entry.includes("*");
+}
+/**
+ * 같은 준비 배치를 공유 작업공간으로 냈을 때 task가 배치 전체를 거절할 OWNED_PATHS 겹침. 발주를 막지 않는 advisory다.
+ * isolated 여부는 발주 때 정해지므로 준비 단계에서는 공유 작업공간으로 본다. 2026-10-18 겹침을 발주 때에야 알고
+ * 경로를 고치자 준비 계약 불일치로 한 번 더 막혔다. 같은 판정 함수(sharedOwnedPaths)를 써서 발주 검사와 어긋나지 않는다.
+ */
+function batchOwnershipOverlaps(names: readonly string[], contracts: readonly DispatchContract[]): (string[] | null)[] {
+  const shared = (contract: DispatchContract): DispatchOwnership => ({ primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace: "shared" });
+  return contracts.map((contract, index) => {
+    const hits = contracts.flatMap((other, otherIndex) => {
+      const paths = otherIndex === index ? [] : sharedOwnedPaths(shared(contract), shared(other));
+      return paths.length > 0 ? [`'${clipped(names[otherIndex]!, 40)}'과 겹침: ${clippedList(paths)}`] : [];
+    });
+    return hits.length > 0 ? hits : null;
+  });
 }
 interface RouteTask { name: string; task: string; assessment: RoutingFacts }
 export interface Owner {
@@ -800,7 +828,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI의 기본 추천은 Sonnet(NORMAL_SONNET)이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천합니다. Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천합니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫은 위 (3)의 Anthropic 전 계정 초과일 때만 후보를 바꿉니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건이나 확인 방법이 비어 있으니, assessment와 브리프 # Acceptance를 채워 다시 준비합니다(경고이며 발주를 막지 않습니다).`;
+  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI의 기본 추천은 Sonnet(NORMAL_SONNET)이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천합니다. Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천합니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫은 위 (3)의 Anthropic 전 계정 초과일 때만 후보를 바꿉니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건·확인 방법이 비었거나 OWNED_PATHS에 경로가 아닌 항목이 있으니, 적힌 항목을 고쳐 다시 준비합니다(경고이며 발주를 막지 않습니다). routes[].ownershipOverlaps가 있으면 이 배치를 공유 작업공간으로 함께 낼 때 task가 배치 전체를 거절하니, 발주 전에 경로를 나누거나 한 owner에게 맡기거나 isolated로 낼지 정하고, OWNED_PATHS를 바꿨다면 maker_route로 다시 준비합니다(경고이며 준비 결과는 그대로 씁니다).`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -850,6 +878,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     let quotaAbort: AbortController | undefined;
     try {
       const ownersByTask = contracts.map((contract) => relevantOwners(contract, allOwners));
+      const overlapsByTask = batchOwnershipOverlaps(tasks.map((task) => task.name), contracts);
       const refreshAttempts: RefreshAttempts = new Map();
       const candidatesStartedAt = clock();
       const { available: candidates, unavailable: unavailableCandidates } = await candidateSet(ctx, current, refreshAttempts);
@@ -961,7 +990,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           prepared,
           route: {
             name: task.name,
-            briefGaps: briefGaps(task.assessment),
+            briefGaps: briefGaps(task.assessment, contracts[index]!.ownedPaths),
+            ownershipOverlaps: overlapsByTask[index]!,
             status: prepared.status,
             error: prepared.error,
             recommendations: prepared.answers,

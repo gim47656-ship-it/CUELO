@@ -1,4 +1,5 @@
 import type { ConversationRenderItem } from "@/lib/transcript-plan";
+import { readExitCode } from "@/lib/tool-exit-code";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolCallContent, ToolResultMessage } from "@/lib/types";
 
@@ -27,14 +28,6 @@ export interface TurnSummary {
   files: WrittenFile[];
   checks: CheckRun[];
   dispatchCalls: ToolCallContent[];
-}
-
-function readExitCode(result: ToolResultMessage): number | null {
-  const details = result.details as { exitCode?: unknown } | undefined;
-  if (typeof details?.exitCode === "number") return details.exitCode;
-  const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
-  const match = /Command exited with code (-?\d+)\s*$/.exec(text.trimEnd());
-  return match ? Number(match[1]) : null;
 }
 
 export function summarizeTurn(
