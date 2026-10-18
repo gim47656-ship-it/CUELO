@@ -115,4 +115,52 @@ const request = {
 	rmSync(root, { recursive: true, force: true });
 }
 
+{
+	// 계정 거절(403) 뒤 그 judge 후보는 1분만 건너뛴다(2026-10-19 사용자 결정, upstream 5분). 키 한도를 올린 뒤
+	// 판정이 몇 분씩 「rejected the account recently」로 막히지 않아야 하고, 1분 안에는 죽은 키로 다시 요청하지 않아야 한다.
+	const root = mkdtempSync(join(tmpdir(), "omp-judgment-cooldown-"));
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "work");
+	mkdirSync(agentDir, { recursive: true });
+	mkdirSync(cwd, { recursive: true });
+	const file = join(root, "config.yml");
+	writeFileSync(file, "modelRoles:\n  default: openrouter/test-judge\n  judge: openrouter/test-judge\n", "utf8");
+	const settings = await Settings.loadIsolated({ inMemory: true, cwd, agentDir, configFiles: [file] });
+	const model = {
+		provider: "openrouter", id: "test-judge", name: "test judge", api: "openai-completions",
+		baseUrl: "http://127.0.0.1:9", reasoning: false, input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024,
+	};
+	const registry = {
+		getAvailable: () => [model],
+		getApiKey: async () => "fixture-key",
+		resolver: () => "fixture-key",
+		resolveModelHeaders: async () => ({}),
+	};
+	const judge = resolveJudge({ settings, registry: registry as never });
+	let calls = 0;
+	const rejectAccount = async () => {
+		calls += 1;
+		throw Object.assign(new Error("fixture: Key limit exceeded (monthly limit)"), { status: 403 });
+	};
+	const realNow = Date.now;
+	const start = realNow();
+	let offset = 0;
+	Date.now = () => start + offset;
+	try {
+		await assert.rejects(judge.withCandidate(rejectAccount), /Key limit exceeded/);
+		assert.equal(calls, 1);
+		offset = 59_000;
+		await assert.rejects(judge.withCandidate(rejectAccount), /rejected the account recently/);
+		assert.equal(calls, 1);
+		offset = 61_000;
+		await assert.rejects(judge.withCandidate(rejectAccount), /Key limit exceeded/);
+		assert.equal(calls, 2);
+	} finally {
+		Date.now = realNow;
+		rmSync(root, { recursive: true, force: true });
+	}
+	ok("403 계정 거절 뒤 judge 후보는 59초에는 건너뛰고 61초에는 다시 요청한다");
+}
+
 console.log(`결과 ${pass} pass`);

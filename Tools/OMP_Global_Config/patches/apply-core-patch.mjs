@@ -6272,6 +6272,15 @@ class LocalTextBackend implements TextBackend {`,
 		].join("\n"),
 	},
 	{
+		// 2026-10-19 사용자 결정(「1분만해」): 계정 거절(401·402·403) 뒤 judge 후보를 건너뛰는 시간을 5분에서 1분으로 줄인다.
+		// 키 한도를 올리거나 키를 바꾼 뒤 판정이 5분 동안 「rejected the account recently」로 막혀 있던 것을 줄인다.
+		// 같은 죽은 키로 판정마다 다시 요청하지 않는 목적은 그대로다(core-jev-judgment-test.ts).
+		file: "src/judgment/index.ts",
+		marker: "const CANDIDATE_REJECTION_COOLDOWN_MS = 60 * 1000;\n",
+		anchor: "const CANDIDATE_REJECTION_COOLDOWN_MS = 5 * 60 * 1000;\n",
+		patched: "const CANDIDATE_REJECTION_COOLDOWN_MS = 60 * 1000;\n",
+	},
+	{
 		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): model-settings.ts 의 `providers.judgmentProvider` enum(auto·vercel) 등록. 이 값은 이제
 		// upstream 18.11.3 의 legacy 설정 키로만 남는다. `vercel` 을 남긴 사용자 설정은 upstream migration 이 받는다(core-jev-judgment-test.ts).
 		file: "src/config/model-settings.ts",
