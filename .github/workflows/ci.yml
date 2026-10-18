@@ -147,9 +147,16 @@ jobs:
           OMP_CORE_PATCH_TARGET="$PWD/node_modules/@oh-my-pi/pi-coding-agent" bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
 
   harness:
-    name: Verify harness
+    # Two runners in parallel: the extension suite and the serial core patch tests
+    # took about 3 and 4 minutes on one runner (10-18 runs). Separate runners keep
+    # their temp folders, ports and timing apart; each repeats the install.
+    name: ${{ matrix.suite == 'core' && 'Verify harness (core patches)' || 'Verify harness' }}
     if: github.repository == 'gim47656-ship-it/CUELO'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [extensions, core]
     defaults:
       run:
         shell: pwsh
@@ -206,16 +213,19 @@ jobs:
           "OMP_CORE_PATCH_TARGET=$env:OMP_CORE_PATCH_TARGET" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Extension duplicate declarations
+        if: matrix.suite == 'extensions'
         run: |
           node patches/check-extension-duplicates.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Extension, guard, finalizer and skill-cost tests
+        if: matrix.suite == 'extensions'
         run: |
           bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./skill-cost
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Core patch regression tests
+        if: matrix.suite == 'core'
         run: |
           $failed = @()
           $tests = @(Get-ChildItem patches -Filter 'core-*-test.ts') + @(Get-Item patches/apply-core-patch-cli-test.ts)
