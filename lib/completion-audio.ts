@@ -7,7 +7,7 @@
  * 세트가 비어 있으면(자산 미조달) 음성은 중립 tone으로, 스티커는 표시 없음으로 물러난다 —
  * 자산이 없어도 알림 자체는 동작해야 한다.
  */
-import type { AgentMessage } from "./types";
+import type { AgentMessage, AssistantMessage } from "./types";
 
 export const COMPLETION_AUDIO_ALIASES = [
   "YUKI(유키)",
@@ -370,6 +370,36 @@ export function resolveCueAnchor(
     if (seen === intent.occurrence) return { kind: "entry", entryId: entryIds[i] };
   }
   return null;
+}
+
+/** 큐를 낼 화자 — 그 순간 말하고 있는 쪽의 provider와, 알면 그 답을 만든 계정. */
+export interface CueSpeaker {
+  readonly provider: string | undefined;
+  readonly credentialId: number | undefined;
+}
+
+/**
+ * 지금 턴의 화자. 흐르는 답이 있으면 그것, 없으면 마지막 사용자 메시지 뒤의 마지막 assistant
+ * 메시지가 기록한 provider·계정이다. 이 턴에 아직 답이 없을 때만 세션 모델(`fallbackProvider`)로
+ * 물러난다. 세션 모델은 세션이 고른 모델이지 지금 말한 쪽이 아니고, 지난 재시도 폴백이 남아
+ * 낡을 수 있다 — Opus 턴의 선택지 큐에 Codex 계정 얼굴이 뜬 적이 있다(2026-10-18).
+ * 6PRO 상담 답변은 에이전트 턴의 화자가 아니므로 건너뛴다.
+ */
+export function cueSpeaker(
+  messages: readonly AgentMessage[],
+  streaming: AssistantMessage | null,
+  fallbackProvider: string | undefined,
+): CueSpeaker {
+  if (streaming && !(streaming.provider === "web6" && streaming.model === CONSULT_REPLY_MODEL)) {
+    return { provider: streaming.provider, credentialId: streaming.credentialId };
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "user") break;
+    if (message.role !== "assistant" || (message.provider === "web6" && message.model === CONSULT_REPLY_MODEL)) continue;
+    return { provider: message.provider, credentialId: message.credentialId };
+  }
+  return { provider: fallbackProvider, credentialId: undefined };
 }
 
 /**

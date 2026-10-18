@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/p
 import { extractGuardBlock, isPathOwned, isSummonCall, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
-import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
+import { assignmentsByName, lastAttemptChosenModel, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 
 export interface RoutingFacts {
   goal: string;
@@ -47,10 +47,14 @@ interface Candidate { profile: string; model: string; efforts: readonly string[]
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
+/** 비-UI NORMAL을 DeepSeek(Hive 1017)로 먼저 보내는 트리거. 하나라도 걸리면 순서가 DeepSeek → Sonnet → 코드 후보(Astra)가 된다. */
+export type DeepSeekTrigger = "sonnet-rework" | "off-critical-path" | "anthropic-over-share";
 export interface NormalAllocation {
   state: "observed" | "unavailable";
   profile: string | null;
   reason: string;
+  /** 이 추천에서 걸린 트리거. 없으면 빈 배열이다. */
+  triggers: DeepSeekTrigger[];
 }
 /** 같은 준비→발주 계약에서 공유하는 provider online 갱신 시도. 값은 실패 사유이고 null이면 성공이다. */
 type RefreshAttempts = Map<string, Promise<string | null>>;
@@ -60,6 +64,8 @@ interface RoutingPolicy {
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
     uiUxBoundaryCriteria: string;
+    /** Main이 이 조각의 결과를 기다리는지(mainWaits) 판정 기준. 확률형 bool이며 0.5 미만일 때만 기다리지 않는다고 본다. */
+    mainWaitsCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
   };
@@ -228,6 +234,11 @@ function decisionQuestions(policy: RoutingPolicy) {
     type: "choice",
     criteria: policy.modelSelection.delegationCriteria,
     instructions: "위 criteria를 정본으로 이 조각의 수행 주체를 독립적으로 판단한다. facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 있는 독립 완결성, Main 보유 문맥, 실제 병렬·전문성 이득, 설명·검수 부담을 대조한다. 난이도나 병렬 실행 가능성만으로 위임 이득을 단정하지 않는다. 결과는 Main의 조언이며 자동 발주·owner 변경이 아니다.",
+  };
+  // Main이 이 조각의 결과를 기다리는지. 낮을 때만(<0.5) NORMAL_DEEPSEEK 트리거이며, 답이 없거나 Jev가 불가하면 기다린다고 본다.
+  questions.mainWaits = {
+    type: "noul",
+    instructions: `${policy.modelSelection.mainWaitsCriteria}. facts·remainingJudgments·paths에 적힌 사실만 근거로 하고, 그런 사실이 없으면 Main이 기다린다고 본다.`,
   };
   return questions;
 }
@@ -506,8 +517,49 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
 const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true };
 
-/** 2026-10-11 사용자 결정: 과제 성격과 무관하게 Sonnet을 먼저 추천하고, DeepSeek(Hive 1017)·코드 후보(Astra)는 앞 후보를 쓸 수 없을 때만 순서대로 쓴다. 2026-10-18 사용자 결정으로 DeepSeek가 Astra보다 앞선다. */
+/**
+ * 비-UI NORMAL 후보 순서. 기본은 Sonnet → DeepSeek(Hive 1017) → 코드 후보(Astra)다(2026-10-18 사용자 결정으로 2026-10-11의
+ * "항상 Sonnet" 결정을 철회). DeepSeek 트리거가 하나라도 걸리면 DeepSeek를 맨 앞에 두고, 쓸 수 없을 때 Sonnet → Astra로 내려간다.
+ */
 const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"];
+const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SONNET", "NORMAL_SOL"];
+
+const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
+  "sonnet-rework": "Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 Sonnet을 다른 모델로 바꾼 경우는 보이지 않음)",
+  "off-critical-path": "Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 병렬·다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업)",
+  "anthropic-over-share": "관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김",
+};
+
+/** INSTRUCTION과 도구 description이 같은 트리거 설명을 쓴다. */
+const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 모델을 바꾼 경우는 보이지 않음), (2) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 병렬 조각이나 다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다), (3) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않습니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
+
+const DAY_MS = 86_400_000;
+const WEEKLY_WINDOW_MS = 7 * DAY_MS;
+
+/**
+ * core 계정 선택기(`pi-ai/src/auth/select.ts` patch, apply-core-patch.mjs의 `elapsedMs`·`allowance`)와 같은 정의의 오늘 몫:
+ * 창 시작 = resetsAt − 창 길이, 경과 = clamp(창 길이 − (resetsAt − now), 0, 창 길이), 몫 = min(1, (floor(경과/1일)+1)일 / 창 길이).
+ * 누적 몫이라 하루가 지날 때마다 1/7씩 늘고 마지막 날에는 1이다.
+ */
+function weeklyDayShare(resetsAt: number, nowMs: number): number {
+  const elapsedMs = Math.min(WEEKLY_WINDOW_MS, Math.max(0, WEEKLY_WINDOW_MS - (resetsAt - nowMs)));
+  return Math.min(1, ((Math.floor(elapsedMs / DAY_MS) + 1) * DAY_MS) / WEEKLY_WINDOW_MS);
+}
+
+/**
+ * 관측된 Anthropic 계정이 모두 아직 리셋되지 않은 7일 공유 구간에서 오늘 몫보다 많이 썼다. 계정이 없거나, 어느 계정이든
+ * 살아 있는 7일 공유 구간이 없거나 사용량·리셋 시각을 관측하지 못했으면 미관측이므로 false다(Sonnet 유지).
+ */
+function anthropicOverDayShare(quota: QuotaSnapshot): boolean {
+  if (quota.state !== "observed") return false;
+  const accounts = quota.providers.anthropic ?? [];
+  return accounts.length > 0 && accounts.every((account) => {
+    const live = liveWeeklyShared(account, quota.observedAt);
+    return live.length > 0 && live.every((limit) =>
+      limit.usedFraction !== null && limit.resetsAt !== null
+      && limit.usedFraction > weeklyDayShare(limit.resetsAt, quota.observedAt));
+  });
+}
 
 /** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
 function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
@@ -534,25 +586,39 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
 }
 
-/** 비-UI NORMAL 추천은 항상 Sonnet이다. 한도는 관측된 사용 불가 후보만 제외한다. */
-function normalAllocation(policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot): NormalAllocation {
+/**
+ * 비-UI NORMAL 추천. 기본은 Sonnet이고 한도는 관측된 사용 불가 후보만 제외한다. 트리거가 걸리면 DeepSeek를 먼저 추천하고,
+ * 쓸 수 없으면(registry 없음·관측 소진) Sonnet, 그다음 코드 후보로 내려간다.
+ */
+function normalAllocation(
+  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[],
+): NormalAllocation {
+  const order = triggers.length > 0 ? DEEPSEEK_FIRST_ORDER : NORMAL_FALLBACK_ORDER;
   const rank = (candidate: Candidate) => {
-    const index = NORMAL_FALLBACK_ORDER.indexOf(candidate.profile);
-    return index < 0 ? NORMAL_FALLBACK_ORDER.length : index;
+    const index = order.indexOf(candidate.profile);
+    return index < 0 ? order.length : index;
   };
   const normal = candidates
     .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
     .sort((a, b) => rank(a) - rank(b));
   const selected = normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
   const state = quota.state === "observed" && selected ? "observed" as const : "unavailable" as const;
+  const fired = triggers.map((trigger) => TRIGGER_REASONS[trigger]).join("; ");
   const reason = !selected
-    ? "사용 가능한 NORMAL 후보가 없습니다."
-    : selected.profile !== NORMAL_FALLBACK_ORDER[0]
-      ? "Sonnet이 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
-      : "비-UI NORMAL은 과제 성격과 무관하게 Sonnet을 추천합니다.";
+    ? triggers.length > 0
+      ? `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 사용 가능한 NORMAL 후보가 없습니다.`
+      : "사용 가능한 NORMAL 후보가 없습니다."
+    : triggers.length > 0
+      ? selected.profile === "NORMAL_DEEPSEEK"
+        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(Sonnet보다 벽시계 시간이 길다). Sonnet을 고르면 ROUTING_REASON이 필요합니다.`
+        : `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 NORMAL_DEEPSEEK를 쓸 수 없어 ${selected.profile}를 추천합니다.`
+      : selected.profile !== NORMAL_FALLBACK_ORDER[0]
+        ? "Sonnet이 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
+        : "비-UI NORMAL의 기본 추천은 Sonnet입니다(DeepSeek 트리거 없음).";
   return {
     state, profile: selected?.profile ?? null,
     reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
+    triggers: [...triggers],
   };
 }
 
@@ -734,7 +800,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = "Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI는 과제 성격과 무관하게 Sonnet(NORMAL_SONNET)을 추천합니다. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천합니다. Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천합니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫·한도 여유만으로 후보를 바꾸지 않습니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건이나 확인 방법이 비어 있으니, assessment와 브리프 # Acceptance를 채워 다시 준비합니다(경고이며 발주를 막지 않습니다).";
+  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI의 기본 추천은 Sonnet(NORMAL_SONNET)이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천합니다. Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천합니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫은 위 (3)의 Anthropic 전 계정 초과일 때만 후보를 바꿉니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건이나 확인 방법이 비어 있으니, assessment와 브리프 # Acceptance를 채워 다시 준비합니다(경고이며 발주를 막지 않습니다).`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -916,11 +982,25 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
-      for (const publication of publications) {
+      // 트리거 입력은 모두 관측된 사실이다. 재작업 연결은 noteSpawned와 같은 이름·FINDING_ID·session 원장 조회를 쓰고,
+      // 이전 attempt의 모델이나 mainWaits 답이 없으면 트리거가 아니다.
+      const planSession = plans[0]?.sessionId ?? "";
+      const knownAssignments = ledgerRecords && planSession ? assignmentsByName(ledgerRecords, planSession) : undefined;
+      const anthropicOver = anthropicOverDayShare(quota);
+      for (const [index, publication] of publications.entries()) {
         const answers = publication.prepared.answers;
         const normal = answers?.workClass?.choice === "NORMAL";
         const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
-        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota) : null;
+        const triggers: DeepSeekTrigger[] = [];
+        if (normal && !uiUxBoundary) {
+          const linked = contracts[index]!.findingId !== null ? knownAssignments?.get(tasks[index]!.name.trim()) : undefined;
+          const previousModel = linked && ledgerRecords ? lastAttemptChosenModel(ledgerRecords, planSession, linked.assignmentId) : null;
+          if (previousModel !== null && /(?:^|[/-])sonnet(?:[-.:\d]|$)/i.test(previousModel)) triggers.push("sonnet-rework");
+          const mainWaits = answers?.mainWaits?.noul;
+          if (typeof mainWaits === "number" && mainWaits < 0.5) triggers.push("off-critical-path");
+          if (anthropicOver) triggers.push("anthropic-over-share");
+        }
+        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota, triggers) : null;
         const preferred = normal
           ? candidates.find((candidate) => candidate.profile === (uiUxBoundary ? "NORMAL_OPUS" : "NORMAL_SONNET"))?.profile ?? null
           : recommendedProfile(answers, candidates);
@@ -1202,7 +1282,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복을 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL은 과제 성격과 무관하게 NORMAL_SONNET을 추천한다(2026-10-11 사용자 결정). 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 오늘 몫·한도 여유·과거 성공률로 후보를 바꾸거나 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.",
+      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)를 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

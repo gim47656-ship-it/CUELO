@@ -126,7 +126,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
    | --- | --- | --- |
    | `implSonnet` | NORMAL 비-UI 우선 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
    | `implOpus` | NORMAL UI/UX | Opus 모델 및 `high` 지원 |
-   | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sonnet이 실제 불가할 때만 사용 |
+   | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sonnet을 쓸 수 없을 때, 또는 Main이 결과를 기다리지 않는 조각(백그라운드·병렬 중 늦어도 되는 조각, Sonnet이 실패한 재작업, Anthropic 한도가 오늘 몫을 넘었을 때)에 먼저 추천 |
    | `makerHardUiOpus` | HARD UI/UX | Opus 모델 지원 |
    | `makerHardCodeOpus` | HARD 코드 | Opus 모델 지원 |
    | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |

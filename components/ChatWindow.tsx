@@ -81,6 +81,7 @@ import { parseDocumentPrompt } from "@/lib/document-attachments";
 import {
   captureCueAnchor,
   cueForOutcome,
+  cueSpeaker,
   cueTagForDialog,
   newConsultReplyEntryIds,
   resolveCueAnchor,
@@ -785,9 +786,12 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     const trigger = currentCueTrigger();
     if (!trigger) return;
     // 사용자가 지금 할 행동으로 나눈다 — 선택지를 내밀면 고르는 일, 그 밖의 확인·입력은 답하는 일.
+    // 얼굴은 이 대화상자를 낸 이번 턴의 답이 기록한 계정으로 고른다. 세션 모델은 낡을 수 있다.
     priorityCueTurnRef.current = trigger.turn;
-    requestCue(cueTagForDialog(extensionDialog.method), trigger, displayModelValue?.provider, undefined);
-  }, [extensionDialog, displayModelValue?.provider, currentCueTrigger, requestCue]);
+    const streaming = streamState.streamingMessage?.role === "assistant" ? streamState.streamingMessage as AssistantMessage : null;
+    const speaker = cueSpeaker(cueMessagesRef.current, streaming, displayModelValue?.provider);
+    requestCue(cueTagForDialog(extensionDialog.method), trigger, speaker.provider, speaker.credentialId);
+  }, [extensionDialog, streamState.streamingMessage, displayModelValue?.provider, currentCueTrigger, requestCue]);
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
@@ -1320,8 +1324,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     agentPhase?.kind === "running_tools"
     || (streamingAssistant?.content ?? []).some((block) => (block.type === "text" && /\S/.test(block.text)) || block.type === "toolCall")
   );
-  const progressProvider = streamingAssistant?.provider ?? displayModelValue?.provider;
-  const progressCredentialId = streamingAssistant?.credentialId;
+  const progressSpeaker = cueSpeaker(messages, streamingAssistant, displayModelValue?.provider);
+  const progressProvider = progressSpeaker.provider;
+  const progressCredentialId = progressSpeaker.credentialId;
   useEffect(() => {
     if (!progressStarted) return;
     const trigger = currentCueTrigger();

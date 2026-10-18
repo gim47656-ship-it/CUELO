@@ -44,11 +44,17 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
-  비-UI NORMAL은 2026-10-11 사용자 결정에 따라 과제 성격과 무관하게 `NORMAL_SONNET`(Sonnet)을 추천한다. 과제별 모델 적합성 판단은 하지 않는다.
+  비-UI NORMAL의 기본 추천은 `NORMAL_SONNET`(Sonnet)이다. 2026-10-11의 "항상 Sonnet" 결정은 2026-10-18 사용자 결정으로 철회했다. 과제별 모델 적합성 판단은 하지 않는다.
+  아래 셋 중 하나가 걸리면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017)를 먼저 추천하고, `normalAllocation.reason`이 걸린 트리거를 적는다.
+  DeepSeek는 Sonnet과 통과 품질이 같았지만 벽시계 시간이 중앙값 약 4.5배라(SJF eval, 소표본) 아무도 기다리지 않는 조각에만 쓴다.
+  (1) Sonnet이 맡았던 이전 attempt의 `FINDING_ID` 재작업: 원장 dispatch row의 `chosenModel`이 Sonnet일 때다. 원장이 기록하는 모델은 이 값뿐이라 core retry 체인이 실행 중 Sonnet을 Hive로 바꾼 경우는 보이지 않고, 이전 모델을 모르면 Sonnet을 유지한다.
+  (2) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 병렬 조각이나 다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업이면 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). Jev 불가·답 없음은 Sonnet 유지다.
+  (3) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
   `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 2026-10-11 사용자 지시로 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6-astra:auto`다. Sol의 과거 평가 수치를 Astra의 성능 증거로 옮기지 않는다.
   Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,
   그것도 쓸 수 없을 때만 코드 후보 Astra(`NORMAL_SOL`)를 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
-  오늘 몫·한도 여유·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
+  한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
+  DeepSeek를 쓸 수 없으면(registry 없음·관측 소진) 트리거가 걸려도 Sonnet, 그다음 Astra(`NORMAL_SOL`) 순이다. 트리거가 걸린 `NORMAL_DEEPSEEK` 선택에는 `ROUTING_REASON`이 필요 없고 다른 후보를 고르면 필요하다.
   Sonnet 또는 `NORMAL_DEEPSEEK`가 사용 가능한데 Main이 `NORMAL_SOL`을 고르면 추천 변경이므로 `ROUTING_REASON`이 필요하다.
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.

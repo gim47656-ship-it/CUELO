@@ -328,6 +328,21 @@ export function assignmentsByName(
   return known;
 }
 
+/**
+ * 같은 session·assignment의 가장 높은 attempt dispatch row가 기록한 `chosenModel`. 원장이 spawn된 모델로 남기는 유일한 필드다
+ * (outcome row에는 모델이 없다). 그 attempt의 row가 없거나 모델이 비어 있으면 null(미관측)이다. core retry 체인이 실행 중 다른
+ * 모델로 바꾼 경우는 이 값에 나타나지 않는다.
+ */
+export function lastAttemptChosenModel(records: readonly LedgerRecord[], sessionId: string, assignmentId: string): string | null {
+  if (!sessionId || !assignmentId) return null;
+  let last: DispatchRecord | null = null;
+  for (const record of records) {
+    if (record.type !== "dispatch" || record.sessionId !== sessionId || record.assignmentId !== assignmentId || !hasIdentity(record)) continue;
+    if (!last || record.attempt >= last.attempt) last = record;
+  }
+  return last && typeof last.chosenModel === "string" && last.chosenModel.trim() ? last.chosenModel.trim() : null;
+}
+
 /** 기록된 ownership이 기대 형태일 때만 쓴다. 과거·손상 row는 null(미상)이며 빈 소유로 바꾸지 않는다. */
 function ownershipOf(record: DispatchRecord): DispatchOwnership | null {
   const value = record.ownership;

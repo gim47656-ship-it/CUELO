@@ -60,6 +60,8 @@ function harness(options: {
   clock?: () => number;
   ledger?: RoutingLedger;
   delegation?: string;
+  /** Jev의 mainWaits 확률. 기본 1(Main이 기다린다), null이면 답에서 생략한다. */
+  mainWaits?: number | null;
 } = {}) {
   const sessionId = "example".concat(String(++nextHarnessSession));
   const modelFamilies = options.families ?? families;
@@ -113,6 +115,7 @@ function harness(options: {
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
         delegation: { choice: options.delegation ?? "MAKER" },
+        ...(options.mainWaits === null ? {} : { mainWaits: { noul: options.mainWaits ?? 1 } }),
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
       } };
     },
@@ -1382,7 +1385,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 });
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
-  test("과제 성격과 무관하게 같은 가용 한도에서 모두 Sonnet을 추천하고 prepared 발주에 추가 판단·예외 근거를 요구하지 않는다", async () => {
+  test("DeepSeek 트리거가 없으면 과제 성격과 무관하게 같은 가용 한도에서 모두 Sonnet을 추천하고 prepared 발주에 추가 판단·예외 근거를 요구하지 않는다", async () => {
     const live = candidates.map((candidate) => candidate.profile === "NORMAL_SONNET"
       ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
     const h = harness({
@@ -2058,6 +2061,214 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
       expect((await h.prepare("후속", second(), {} as never))[0]!.status).toBe("judged");
     } finally {
       unbindTaskGuardSession(h.sessionId, newState);
+    }
+  });
+});
+
+describe("비-UI NORMAL의 DeepSeek 우선 트리거(2026-10-18, 2026-10-11 항상 Sonnet 결정 철회)", () => {
+  const sonnetModel = "anthropic/claude-sonnet-5-5";
+  const hiveModel = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+  const live = candidates.map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: sonnetModel } : candidate);
+  const DAY = 86_400_000;
+  const NOW = 100 * DAY;
+  /** 7일 공유 구간. remainingMs는 관측 시각부터 리셋까지 남은 시간이다. */
+  const weekly = (used: number | null, remainingMs: number | null, extra: Record<string, unknown> = {}) => ({
+    id: "anthropic:7d", usedFraction: used, resetsAt: remainingMs === null ? null : NOW + remainingMs, daySlot: null, windowId: "7d", shared: true, ...extra,
+  });
+  const account = (limits: unknown[], extra: Record<string, unknown> = {}) => ({
+    credentialId: 1, disabled: false, autoBlockedUntilMs: null, limitReached: null, fetchedAt: 1, limits, ...extra,
+  });
+  const quotaOf = (providers: Record<string, unknown[]>) => async () => ({ state: "observed", observedAt: NOW, providers: { anthropic: [], "openai-codex": [], hive: [], ...providers } }) as never;
+  const route = async (options: NonNullable<Parameters<typeof harness>[0]>) => {
+    const h = harness({ candidates: live, ...options });
+    const [first] = await h.prepare("트리거", [h.task], {} as never);
+    return { h, route: first! };
+  };
+  const single = (task: string, model: string) => ({ context: "c", tasks: [{ name: "ViewFix", task, agent: "maker", model }] });
+  const reworkBrief = brief.replace("OWNED_PATHS:", "FINDING_ID: f-1\nOWNED_PATHS:");
+  const dispatchRow = (h: { sessionId: string }, overrides: Record<string, unknown> = {}) => ({
+    type: "dispatch", ts: "2026-10-18T00:00:00.000Z", name: "ViewFix", workClass: "NORMAL", focus: null,
+    recommendedProfile: "NORMAL_SONNET", recommendedModel: sonnetModel, recommendedEffort: "auto",
+    chosenModel: sonnetModel, chosenEffort: "auto", routingReason: false, purpose: null,
+    sessionId: h.sessionId, assignmentId: `${h.sessionId}#old#0`, attempt: 1, attemptId: `${h.sessionId}#old#0#a1`, agentId: "agent-old", jobId: "job-old",
+    ...overrides,
+  }) as unknown as LedgerRecord;
+
+  test("트리거가 없으면 Sonnet이고 UI·HARD는 트리거가 걸려도 그대로 NORMAL_OPUS·HARD Opus다", async () => {
+    const plain = await route({});
+    expect(plain.route.profile).toBe("NORMAL_SONNET");
+    expect(plain.route.normalAllocation).toMatchObject({ profile: "NORMAL_SONNET", triggers: [] });
+    // mainWaits가 0이어도 UI/UX 경계가 먼저고 allocation 자체가 없다.
+    const ui = await route({ uiUxBoundary: 0.9, mainWaits: 0 });
+    expect(ui.route.profile).toBe("NORMAL_OPUS");
+    expect(ui.route.normalAllocation).toBeNull();
+    const hard = await route({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], mainWaits: 0 });
+    expect(hard.route.profile).toBe("HARD_CODE_OPUS");
+    expect(hard.route.normalAllocation).toBeNull();
+  });
+
+  test("Sonnet이 서빙한 attempt 뒤 FINDING_ID 재작업은 DeepSeek이고 이유에 트리거와 관측 한계를 남긴다", async () => {
+    const ledger = memoryLedger();
+    const h = harness({ candidates: live, ledger });
+    await h.prepare("첫 발주", [h.task], {} as never);
+    expect(await h.beforeTask(single(brief, `${sonnetModel}:auto`), {} as never, "call-a")).toBeUndefined();
+    h.noteSpawned(single(brief, `${sonnetModel}:auto`), "call-a");
+
+    const [rework] = await h.prepare("재작업", [{ ...h.task, task: reworkBrief }], {} as never);
+    expect(rework!.profile).toBe("NORMAL_DEEPSEEK");
+    const reasonText = rework!.normalAllocation!.reason;
+    expect(reasonText).toContain("FINDING_ID");
+    expect(reasonText).toContain("chosenModel");
+    expect(rework!.normalAllocation).toMatchObject({ profile: "NORMAL_DEEPSEEK", triggers: ["sonnet-rework"] });
+    // 트리거가 걸린 DeepSeek 선택은 ROUTING_REASON 없이 통과하고, Sonnet으로 되돌리려면 근거가 필요하다.
+    expect(await h.beforeTask(single(reworkBrief, `${hiveModel}:auto`), {} as never, "call-b")).toBeUndefined();
+    expect(await h.beforeTask(single(reworkBrief, `${sonnetModel}:auto`), {} as never, "call-c")).toMatchObject({ block: true });
+    h.releaseCall("call-b");
+    const overridden = reworkBrief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 같은 모델로 이어서 수정");
+    expect(await h.beforeTask(single(overridden, `${sonnetModel}:auto`), {} as never, "call-d")).toBeUndefined();
+
+    // FINDING_ID 없는 같은 이름의 새 발주는 재작업이 아니므로 Sonnet을 유지한다.
+    const [fresh] = await h.prepare("새 발주", [h.task], {} as never);
+    expect(fresh!.profile).toBe("NORMAL_SONNET");
+  });
+
+  test("이전 attempt의 모델이 Sonnet이 아니거나 미관측이면 재작업도 Sonnet을 유지한다", async () => {
+    const cases: [string, LedgerRecord[] | ((h: { sessionId: string }) => LedgerRecord[])][] = [
+      ["원장에 이전 발주 없음", []],
+      ["이전 attempt 모델 미기록", (h) => [dispatchRow(h, { chosenModel: "" })]],
+      ["이전 attempt가 DeepSeek", (h) => [dispatchRow(h, { chosenModel: hiveModel })]],
+      ["다른 session의 Sonnet attempt", (h) => [dispatchRow(h, { sessionId: `${h.sessionId}-other`, attemptId: "x", assignmentId: "other" })]],
+      ["agentId 미관측 attempt", (h) => [dispatchRow(h, { agentId: "" })]],
+    ];
+    for (const [label, rows] of cases) {
+      const ledger = memoryLedger();
+      const h = harness({ candidates: live, ledger });
+      ledger.records.push(...(typeof rows === "function" ? rows(h) : rows));
+      const [rework] = await h.prepare(label, [{ ...h.task, task: reworkBrief }], {} as never);
+      expect(rework!.profile, label).toBe("NORMAL_SONNET");
+      expect(rework!.normalAllocation!.triggers, label).toEqual([]);
+    }
+    // 같은 assignment에서는 가장 높은 attempt의 모델을 본다: 1회차 Sonnet, 2회차 DeepSeek이면 3회차는 Sonnet 트리거가 아니다.
+    const ledger = memoryLedger();
+    const h = harness({ candidates: live, ledger });
+    ledger.records.push(
+      dispatchRow(h),
+      dispatchRow(h, { chosenModel: hiveModel, attempt: 2, attemptId: `${h.sessionId}#old#0#a2` }),
+    );
+    const [third] = await h.prepare("3회차", [{ ...h.task, task: reworkBrief }], {} as never);
+    expect(third!.profile).toBe("NORMAL_SONNET");
+    ledger.records.push(dispatchRow(h, { attempt: 3, attemptId: `${h.sessionId}#old#0#a3` }));
+    const [fourth] = await h.prepare("4회차", [{ ...h.task, task: reworkBrief }], {} as never);
+    expect(fourth!.profile).toBe("NORMAL_DEEPSEEK");
+
+    // 판별은 모델 이름의 `sonnet` 토큰으로 한다: 옛 이름 형식·effort 접미사도 Sonnet이고, 다른 낱말 속 글자는 아니다.
+    const variants: [string, string][] = [
+      ["anthropic/claude-3-7-sonnet-20250219", "NORMAL_DEEPSEEK"],
+      ["anthropic/claude-sonnet-5-5:auto", "NORMAL_DEEPSEEK"],
+      ["openrouter/acme/unsonnetlike-1", "NORMAL_SONNET"],
+    ];
+    for (const [chosenModel, expected] of variants) {
+      const variantLedger = memoryLedger();
+      const v = harness({ candidates: live, ledger: variantLedger });
+      variantLedger.records.push(dispatchRow(v, { chosenModel }));
+      const [variant] = await v.prepare(chosenModel, [{ ...v.task, task: reworkBrief }], {} as never);
+      expect(variant!.profile, chosenModel).toBe(expected);
+    }
+  });
+
+  test("Main이 결과를 기다리지 않는다는 판단(mainWaits<0.5)만 DeepSeek이고 불가·미응답·경계값은 Sonnet이다", async () => {
+    const { route: background } = await route({ mainWaits: 0.2 });
+    expect(background.profile).toBe("NORMAL_DEEPSEEK");
+    expect(background.normalAllocation).toMatchObject({ profile: "NORMAL_DEEPSEEK", triggers: ["off-critical-path"], reason: expect.stringContaining("mainWaits") });
+    for (const [label, options] of [
+      ["기다린다", { mainWaits: 1 }],
+      ["경계값 0.5는 기다린다", { mainWaits: 0.5 }],
+      ["답 없음", { mainWaits: null }],
+    ] as [string, NonNullable<Parameters<typeof harness>[0]>][]) {
+      const { route: waits } = await route(options);
+      expect(waits.profile, label).toBe("NORMAL_SONNET");
+      expect(waits.normalAllocation!.triggers, label).toEqual([]);
+    }
+    // Jev 전체 실패는 등급조차 모르므로 추천이 없고(Main이 같은 기준으로 결정), DeepSeek 트리거는 걸리지 않는다.
+    const failed = await route({ fail: true, mainWaits: 0 });
+    expect(failed.route.profile).toBeNull();
+    expect(failed.route.normalAllocation).toBeNull();
+  });
+
+  test("mainWaits 질문은 정책 정본 문구와 함께 같은 Jev 배치에 한 번만 실리고 task 원문은 싣지 않는다", async () => {
+    const h = harness({ candidates: live });
+    await h.prepare("질문", [h.task], {} as never);
+    expect(h.requests).toHaveLength(1);
+    const question = h.requests[0]!.questions.mainWaits!;
+    expect(question.type).toBe("noul");
+    expect(question.instructions).toContain(h.policy.modelSelection.mainWaitsCriteria);
+    expect(JSON.stringify(h.requests)).not.toContain("구현 원문");
+  });
+
+  describe("관측된 Anthropic 계정이 모두 오늘 몫을 넘긴 경우", () => {
+    // 남은 5.5일 = 경과 1.5일. core 선택기의 누적 몫은 (floor(1.5)+1)/7 = 2/7 ≈ 0.2857이다.
+    const REMAINING = 5.5 * DAY;
+    const over = (extra: Record<string, unknown> = {}) => account([weekly(0.3, REMAINING)], extra);
+    const under = (extra: Record<string, unknown> = {}) => account([weekly(0.25, REMAINING)], extra);
+
+    test("모든 계정이 몫을 넘기면 DeepSeek이고 이유에 트리거를 적는다", async () => {
+      const { route: spent } = await route({ quota: quotaOf({ anthropic: [over(), over({ credentialId: 2 })] }) });
+      expect(spent.profile).toBe("NORMAL_DEEPSEEK");
+      expect(spent.normalAllocation).toMatchObject({
+        state: "observed", profile: "NORMAL_DEEPSEEK", triggers: ["anthropic-over-share"], reason: expect.stringContaining("Anthropic"),
+      });
+    });
+
+    test("몫은 하루치가 아니라 core 선택기와 같은 누적 (경과 일수+1)/7이다", async () => {
+      // 0.25는 하루치 1/7(0.143)은 넘지만 누적 몫 2/7(0.286) 이내라 Sonnet이다.
+      const { route: within } = await route({ quota: quotaOf({ anthropic: [under()] }) });
+      expect(within.profile).toBe("NORMAL_SONNET");
+      // 같은 사용량이라도 경과 0.5일이면 몫 1/7이라 넘긴다.
+      const early = account([weekly(0.25, 6.5 * DAY)]);
+      expect((await route({ quota: quotaOf({ anthropic: [early] }) })).route.profile).toBe("NORMAL_DEEPSEEK");
+      // 마지막 날(남은 0.5일)은 몫이 1이라 거의 다 써도 넘기지 않는다.
+      const lastDay = account([weekly(0.99, 0.5 * DAY)]);
+      expect((await route({ quota: quotaOf({ anthropic: [lastDay] }) })).route.profile).toBe("NORMAL_SONNET");
+    });
+
+    test("한 계정이라도 몫 이내이거나 관측되지 않았으면 Sonnet을 유지한다", async () => {
+      const cases: [string, unknown[]][] = [
+        ["한 계정이 몫 이내", [over(), under({ credentialId: 2 })]],
+        ["계정 없음", []],
+        ["한 계정은 7일 구간 없음", [over(), account([], { credentialId: 2 })]],
+        ["사용량 미관측", [over(), account([weekly(null, REMAINING)], { credentialId: 2 })]],
+        ["리셋 시각 미관측", [over(), account([weekly(0.9, null)], { credentialId: 2 })]],
+        ["이미 리셋된 구간", [account([weekly(0.9, -1)])]],
+        ["계열 전용(shared 아님) 구간", [account([weekly(0.9, REMAINING, { shared: false })])]],
+        ["5h 구간만 있음", [account([weekly(0.9, REMAINING, { windowId: "5h" })])]],
+      ];
+      for (const [label, anthropic] of cases) {
+        const { route: kept } = await route({ quota: quotaOf({ anthropic }) });
+        expect(kept.profile, label).toBe("NORMAL_SONNET");
+        expect(kept.normalAllocation!.triggers, label).toEqual([]);
+      }
+      // 사용량 조회 자체가 실패하면 미관측이다.
+      const blind = await route({ quota: async () => ({ state: "unavailable", observedAt: 0, reason: "관측 실패" }) as never });
+      expect(blind.route.profile).toBe("NORMAL_SONNET");
+    });
+  });
+
+  test("DeepSeek를 쓸 수 없으면 트리거가 걸려도 Sonnet, 둘 다 쓸 수 없으면 Astra이고 이유가 그 사실을 적는다", async () => {
+    const spent = { disabled: false, limitReached: true, limits: [] };
+    const cases: [string[], Record<string, unknown[]>, string][] = [
+      [["NORMAL_DEEPSEEK"], {}, "NORMAL_SONNET"],
+      [[], { hive: [spent] }, "NORMAL_SONNET"],
+      [["NORMAL_DEEPSEEK"], { anthropic: [spent] }, "NORMAL_SOL"],
+      [[], { hive: [spent], anthropic: [spent] }, "NORMAL_SOL"],
+    ];
+    for (const [missing, providers, expected] of cases) {
+      const { route: fallback } = await route({
+        mainWaits: 0,
+        candidates: live.filter((candidate) => !missing.includes(candidate.profile)),
+        quota: quotaOf(providers),
+      });
+      expect(fallback.profile).toBe(expected);
+      expect(fallback.normalAllocation).toMatchObject({ triggers: ["off-critical-path"], reason: expect.stringContaining("쓸 수 없어") });
     }
   });
 });

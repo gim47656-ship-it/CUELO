@@ -145,7 +145,8 @@ function createHarness(options: HarnessOptions = {}) {
             answers[id] =
               options.judgeAnswers?.[id] ??
               (question.type === "noul"
-                ? { type: "noul", noul: 0.1 }
+                // mainWaits는 기다린다(1)가 기본이다. 0.1을 주면 DeepSeek 트리거가 걸려 추천이 바뀐다.
+                ? { type: "noul", noul: id === "mainWaits" ? 1 : 0.1 }
                 // 강도 질문은 픽스처가 실제로 발주하는 high로 답한다.
                 : id.startsWith("effort")
                   ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }

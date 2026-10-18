@@ -306,6 +306,7 @@ const requiredPolicyMembers = [
     "identifiable-existing-owner-for-this-slice",
     "maker-class-choice-NORMAL-HARD",
     "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
+    "main-waits-for-this-slice-result-before-it-can-continue-or-finish-the-user-request-probability",
   ]],
   // 적용 Skill·사용자 계약과의 충돌 판단은 maker_route가 JEV에 묻는 질문이 아니라 Main 소유 판단이다.
   ["routing.typedJudgmentRouting.placements.pre-dispatch.mainOwnedJudgments", [

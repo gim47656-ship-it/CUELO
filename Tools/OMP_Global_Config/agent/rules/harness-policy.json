@@ -604,7 +604,8 @@
             "additional-instruction-to-an-existing-maker-is-sufficient",
             "identifiable-existing-owner-for-this-slice",
             "maker-class-choice-NORMAL-HARD",
-            "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN"
+            "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
+            "main-waits-for-this-slice-result-before-it-can-continue-or-finish-the-user-request-probability"
           ],
           "mainOwnedJudgments": [
             "proposed-scope-conflicts-with-applicable-skill-or-user-contract"
@@ -885,8 +886,16 @@
         "UNKNOWN": "insufficient-evidence-for-dominant-judgment-main-decides-and-records-why-no-automatic-dual-dispatch"
       },
       "uiUxBoundaryCriteria": "remaining-UI-or-UX-judgment-in-layout-responsive-behavior-information-hierarchy-visual-design-accessibility-focus-touch-targets-or-user-interaction-including-mixed-code-and-design-work-even-when-code-is-dominant-not-file-extension-alone-or-copying-already-settled-wording",
+      "mainWaitsCriteria": "main-must-wait-for-this-slice-result-before-it-can-continue-or-finish-the-user-request-true-when-the-facts-say-the-next-step-or-the-final-answer-depends-on-it-false-only-when-the-facts-say-a-parallel-slice-or-other-remaining-main-work-takes-longer-than-this-slice-or-that-it-is-a-background-or-long-batch-job-such-as-eval-reruns-or-bulk-classification-no-such-fact-means-main-waits",
       "normalAllocation": {
-        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-NORMAL_SONNET-for-every-non-UI-NORMAL-task-regardless-of-task-nature-user-decision-2026-10-11-no-per-task-model-suitability-judgment-NORMAL_SOL-resolves-to-the-configured-code-candidate-and-is-only-the-last-substitute-after-NORMAL_SONNET-then-NORMAL_DEEPSEEK-user-decision-2026-10-18-when-each-is-not-an-available-candidate-or-its-provider-limit-exhaustion-is-observed-all-unavailable-means-null-profile-choosing-NORMAL_SOL-while-NORMAL_SONNET-or-NORMAL_DEEPSEEK-is-usable-is-a-recommendation-change-that-needs-ROUTING_REASON-no-quota-percentage-balancing-daily-share-headroom-or-historical-success-rate-superiority-inference-unobserved-quota-is-never-exhaustion",
+        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-NORMAL_SONNET-for-non-UI-NORMAL-by-default-and-NORMAL_DEEPSEEK-first-when-a-deepSeekTriggers-entry-fires-user-decision-2026-10-18-revoking-the-2026-10-11-always-Sonnet-rule-no-per-task-model-suitability-judgment-NORMAL_SOL-resolves-to-the-configured-code-candidate-and-is-only-the-last-substitute-after-NORMAL_SONNET-then-NORMAL_DEEPSEEK-user-decision-2026-10-18-when-each-is-not-an-available-candidate-or-its-provider-limit-exhaustion-is-observed-all-unavailable-means-null-profile-choosing-NORMAL_SOL-while-NORMAL_SONNET-or-NORMAL_DEEPSEEK-is-usable-is-a-recommendation-change-that-needs-ROUTING_REASON-no-quota-percentage-balancing-or-historical-success-rate-superiority-inference-unobserved-quota-is-never-exhaustion",
+        "deepSeekTriggers": {
+          "rework": "a-FINDING_ID-rework-linked-in-the-routing-ledger-to-an-assignment-whose-last-attempt-dispatch-row-chosenModel-is-a-Sonnet-model-chosenModel-is-the-only-model-the-ledger-records-so-a-core-retry-chain-swap-from-Sonnet-to-the-fallback-model-is-invisible-and-an-unobserved-previous-model-keeps-Sonnet",
+          "offCriticalPath": "the-pre-dispatch-mainWaits-question-answers-below-0.5-main-states-the-parallel-or-background-nature-through-assessment-facts-never-a-task-guard-field-or-a-task-argument-a-judge-failure-or-a-missing-answer-keeps-Sonnet",
+          "anthropicOverShare": "every-observed-anthropic-account-has-a-live-7d-shared-window-with-usedFraction-greater-than-the-core-selector-day-share-min-1-floor-elapsed-days-plus-1-over-7-measured-from-resetsAt-and-any-unobserved-or-under-share-account-keeps-Sonnet",
+          "precedence": "UI-UX-NORMAL_OPUS-first-HARD-unchanged-a-fired-trigger-orders-NORMAL_DEEPSEEK-then-NORMAL_SONNET-then-NORMAL_SOL-and-normalAllocation.reason-names-the-trigger",
+          "override": "choosing-NORMAL_DEEPSEEK-when-a-trigger-fired-needs-no-ROUTING_REASON-choosing-another-candidate-does"
+        },
         "missing": "UI-UX-Opus-unavailable-is-explicit-no-silent-model-substitution-missing-quota-is-unknown-not-zero-keep-NORMAL_SONNET-with-unavailable-reason-and-still-skip-candidates-missing-from-the-registry-no-eligible-normal-candidate-means-null-profile",
         "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-newly-observed-UI-UX-boundary-requires-main-to-check-existing-owner-model-freeze-unfinished-delta-and-evidence-and-transfer-non-Opus-ownership-never-change-a-running-model-in-place-or-repeat-completed-non-UI-work",
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
