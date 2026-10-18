@@ -212,13 +212,13 @@ export interface AccountIdentity extends AccountFace {
 export const ACCOUNT_FACES = [
   { alias: "RIN(린)", file: "rin.webp" },
   { alias: "MIO(미오)", file: "mio.webp" },
-  // Codex 모델은 계정·모델과 무관하게 YUKI, OpenCode Go는 NOVA로 표시한다. b-ai는 API 키
-  // 하나를 AuthStorage에 넣는 custom provider이고 web6는 `auth: none`이라 credential 개념이
+  // Codex 모델은 계정·모델과 무관하게 YUKI, OpenCode Go는 NOVA로 표시한다. hive는 API 키
+  // 하나를 읽는 custom provider이고(2026-10-18 ISANA가 b-ai에서 옮겨 왔다) web6는 `auth: none`이라 credential 개념이
   // 없다. Antigravity(Gemini)는 보조 계정 하나라 HIKARI 고정이다. 반면 Anthropic은 실제 계정이
   // 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
   { alias: "NOVA(노바)", file: "nova.webp", provider: "opencode-go" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
-  { alias: "ISANA(이사나)", file: "isana.webp", provider: "b-ai" },
+  { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
   { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
   { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-antigravity" },
 ] as const;
@@ -253,8 +253,8 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
   {
     seed: 4,
     alias: ACCOUNT_FACES[4].alias,
-    provider: "b-ai",
-    model: "deepseek-v4.1-flash",
+    provider: "hive",
+    model: "deepseek-ai/deepseek-v4.1-flash-1017",
     voice: "호기심과 실행력·생기 있는 관찰·솔직함",
     summonExample: "이사나 불러와",
     switchExample: "이사나로 교체해",

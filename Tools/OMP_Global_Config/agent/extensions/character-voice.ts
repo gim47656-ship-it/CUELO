@@ -79,7 +79,7 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
     toolCapable: true,
   },
   "ISANA(이사나)": {
-    model: "b-ai/deepseek-v4.1-flash",
+    model: "hive/deepseek-ai/deepseek-v4.1-flash-1017",
     toolCapable: true,
   },
   "MIO(미오)": {
@@ -108,7 +108,7 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
 
 const PROVIDER_CHARACTER: Readonly<Record<string, CharacterAlias>> = {
   "openai-codex": "YUKI(유키)",
-  "b-ai": "ISANA(이사나)",
+  hive: "ISANA(이사나)",
   "opencode-go": "NOVA(노바)",
   web6: "SHION(시온)",
   "google-antigravity": "HIKARI(히카리)",

@@ -55,7 +55,7 @@ test("캐릭터가 기본 선택되고 일곱 얼굴·한글 이름·말투·호
 test("연결 해제로 사용량 행이 없어져도 미연결 캐릭터 상태를 표시한다", () => {
   const html = renderToStaticMarkup(createElement(CharacterRosterView, {
     reports: [{ provider: "openai-codex", credentialId: 8, disabled: false }],
-    providerConnections: new Map([["opencode-go", false], ["openai-codex", true], ["b-ai", true]]),
+    providerConnections: new Map([["opencode-go", false], ["openai-codex", true], ["hive", true]]),
   }));
   const nova = html.match(/<article[^>]*aria-labelledby="character-roster-2"[\s\S]*?<\/article>/)?.[0];
   assert.ok(nova, "NOVA 카드가 남아 있어야 한다");

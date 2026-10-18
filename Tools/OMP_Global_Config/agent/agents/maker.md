@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=313d6218eb54
+<!-- omp-global-config:generated source-hash=c2e943c28cb5
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -28,7 +28,7 @@ is yours end to end.
 - Use `web_search` to discover current external information, then use `read` on the primary source.
 - When the slice needs a document draft (Markdown, CSV, Excel, Word, PDF report or table), write it
   with `draft(instruction, output, paths?)` first: Gemini Flash writes it (DeepSeek once on
-  failure; reference text goes to Google or B.AI) and the tool saves the file inside the cwd.
+  failure; reference text goes to Google or Hive) and the tool saves the file inside the cwd.
   Open and review the produced file before you use or hand it over. Code, configuration, rules,
   `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
   `edit`/`write` for them.

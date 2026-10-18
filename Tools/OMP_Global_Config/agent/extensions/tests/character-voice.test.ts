@@ -52,7 +52,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
   const models = [
     { provider: "openai-codex", id: "gpt-6-astra" },
     { provider: "anthropic", id: "claude-opus-5-5" },
-    { provider: "b-ai", id: "deepseek-v4.1-flash" },
+    { provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" },
     { provider: "opencode-go", id: "muse-spark-1.3-contributor" },
   ];
   const accounts = [
@@ -111,7 +111,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     },
     modelRegistry: {
       authStorage,
-      hasProvider: (provider: string) => provider === "b-ai",
+      hasProvider: (provider: string) => provider === "hive",
       async refreshDiscoverableProviders(providers: Iterable<string>) {
         calls.push(`discover:${[...providers].join(",")}`);
         if (options.discoveryError) throw new Error(options.discoveryError);
@@ -165,7 +165,7 @@ describe("character voice identity", () => {
   test("character targets use exact runtime selectors", () => {
     expect(CHARACTER_TARGETS).toEqual({
       "YUKI(유키)": { model: "openai-codex/gpt-6-astra", toolCapable: true },
-      "ISANA(이사나)": { model: "b-ai/deepseek-v4.1-flash", toolCapable: true },
+      "ISANA(이사나)": { model: "hive/deepseek-ai/deepseek-v4.1-flash-1017", toolCapable: true },
       "MIO(미오)": { model: "anthropic/claude-opus-5-5", oauthPosition: 1, toolCapable: true },
       "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
       "NOVA(노바)": { model: "opencode-go/muse-spark-1.3-contributor", toolCapable: true },
@@ -173,7 +173,7 @@ describe("character voice identity", () => {
       "HIKARI(히카리)": { model: "google-antigravity/gemini-3.8-flash", toolCapable: true },
     });
     expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-    expect(characterForProvider("b-ai")).toBe("ISANA(이사나)");
+    expect(characterForProvider("hive")).toBe("ISANA(이사나)");
     expect(characterForProvider("opencode-go")).toBe("NOVA(노바)");
     expect(characterForProvider("web6")).toBe("SHION(시온)");
     expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
@@ -834,14 +834,14 @@ describe("character voice identity", () => {
   });
 
   test("ISANA summon recovers its discovery model without a helper role assignment", async () => {
-    const harness = createRuntimeHarness({ recoverableSelector: "b-ai/deepseek-v4.1-flash" });
+    const harness = createRuntimeHarness({ recoverableSelector: "hive/deepseek-ai/deepseek-v4.1-flash-1017" });
     await harness.emit("before_agent_start", {
       type: "before_agent_start",
       prompt: buildCharacterSummonBrief("인사한다.", "ISANA(이사나)"),
       systemPrompt: ["base"],
     });
-    expect(harness.ctx.model).toEqual({ provider: "b-ai", id: "deepseek-v4.1-flash" });
-    expect(harness.calls.filter((call) => call.startsWith("discover:"))).toEqual(["discover:b-ai"]);
+    expect(harness.ctx.model).toEqual({ provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" });
+    expect(harness.calls.filter((call) => call.startsWith("discover:"))).toEqual(["discover:hive"]);
     const result = await harness.emit("before_provider_request", {
       type: "before_provider_request",
       payload: { messages: [], instructions: "base" },
@@ -852,7 +852,7 @@ describe("character voice identity", () => {
 
   test("failed ISANA discovery preserves the previous model and does not switch providers", async () => {
     const harness = createRuntimeHarness({
-      recoverableSelector: "b-ai/deepseek-v4.1-flash",
+      recoverableSelector: "hive/deepseek-ai/deepseek-v4.1-flash-1017",
       discoveryError: "discovery unavailable",
     });
     const result = await harness.emit("input", {
@@ -861,7 +861,7 @@ describe("character voice identity", () => {
       source: "rpc",
     });
     expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
-    expect(harness.calls).toEqual(["discover:b-ai"]);
+    expect(harness.calls).toEqual(["discover:hive"]);
     expect(JSON.stringify(result)).toContain("discovery unavailable");
   });
 

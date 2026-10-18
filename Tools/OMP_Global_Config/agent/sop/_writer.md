@@ -11,7 +11,7 @@
 - Use `web_search` to discover current external information, then use `read` on the primary source.
 - When the slice needs a document draft (Markdown, CSV, Excel, Word, PDF report or table), write it
   with `draft(instruction, output, paths?)` first: Gemini Flash writes it (DeepSeek once on
-  failure; reference text goes to Google or B.AI) and the tool saves the file inside the cwd.
+  failure; reference text goes to Google or Hive) and the tool saves the file inside the cwd.
   Open and review the produced file before you use or hand it over. Code, configuration, rules,
   `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
   `edit`/`write` for them.

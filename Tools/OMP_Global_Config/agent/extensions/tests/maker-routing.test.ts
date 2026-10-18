@@ -18,7 +18,7 @@ const candidates = [
   { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5", efforts: allStrengths },
   { profile: "HARD_CODE_SONNET", model: "openai-codex/gpt-6-sol", efforts: allStrengths },
-  { profile: "NORMAL_DEEPSEEK", model: "b-ai/deepseek-v4.1-flash", efforts: allStrengths },
+  { profile: "NORMAL_DEEPSEEK", model: "hive/deepseek-ai/deepseek-v4.1-flash-1017", efforts: allStrengths },
   { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   { profile: "HARD_CODE_ASTRA", model: "openai-codex/gpt-6-astra", efforts: allStrengths },
 ];
@@ -397,7 +397,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       modelRoles[slot] = `${candidates.find((candidate) => candidate.profile === profile)!.model}:auto`;
     }
     // DeepSeek는 운영 models.yml처럼 low·high만 선언한다. 후보 강도는 그 선언 그대로다.
-    const ladders: Record<string, string[]> = { "b-ai/deepseek-v4.1-flash": ["low", "high"] };
+    const ladders: Record<string, string[]> = { "hive/deepseek-ai/deepseek-v4.1-flash-1017": ["low", "high"] };
     const registry = {
       find: (provider: string, id: string) => {
         const found = candidates.find((candidate) => candidate.model === `${provider}/${id}`);
@@ -1257,7 +1257,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_UI_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_OPUS: "anthropic/claude-opus-5-5",
     HARD_CODE_SONNET: "openai-codex/gpt-6-sol",
-    NORMAL_DEEPSEEK: "b-ai/deepseek-v4.1-flash",
+    NORMAL_DEEPSEEK: "hive/deepseek-ai/deepseek-v4.1-flash-1017",
     NORMAL_SOL: "openai-codex/gpt-6.1-sol",
     HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
   };
@@ -1427,18 +1427,18 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       state: "unavailable", profile: "NORMAL_SONNET", reason: expect.stringContaining("한도 미관측은 소진이 아닙니다"),
     });
   });
-  test("Sonnet이 없거나 소진되면 Astra 코드 후보, 그다음 DeepSeek를 추천하고 모두 불가하면 null이다", async () => {
+  test("Sonnet이 없거나 소진되면 Hive DeepSeek, 그다음 Astra 코드 후보를 추천하고 모두 불가하면 null이다", async () => {
     const live = candidates.map((candidate) => candidate.profile === "NORMAL_SONNET"
       ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
     const spent = { limitReached: true, limits: [] };
     const cases: [string[], Record<string, unknown[]>, string | null][] = [
-      [["NORMAL_SONNET"], {}, "NORMAL_SOL"],
-      [[], { anthropic: [spent] }, "NORMAL_SOL"],
+      [["NORMAL_SONNET"], {}, "NORMAL_DEEPSEEK"],
+      [[], { anthropic: [spent] }, "NORMAL_DEEPSEEK"],
       // Sonnet이 쓸 수 있으면 대체 후보 provider의 소진은 추천을 바꾸지 않는다.
-      [[], { "openai-codex": [spent] }, "NORMAL_SONNET"],
-      [["NORMAL_SONNET", "NORMAL_SOL"], {}, "NORMAL_DEEPSEEK"],
-      [[], { "openai-codex": [spent], anthropic: [spent] }, "NORMAL_DEEPSEEK"],
-      [[], { "openai-codex": [spent], anthropic: [spent], "b-ai": [spent] }, null],
+      [[], { "openai-codex": [spent], hive: [spent] }, "NORMAL_SONNET"],
+      [["NORMAL_SONNET", "NORMAL_DEEPSEEK"], {}, "NORMAL_SOL"],
+      [[], { anthropic: [spent], hive: [spent] }, "NORMAL_SOL"],
+      [[], { "openai-codex": [spent], anthropic: [spent], hive: [spent] }, null],
       [["NORMAL_SONNET", "NORMAL_SOL", "NORMAL_DEEPSEEK"], {}, null],
     ];
     for (const [missing, providers, expected] of cases) {
@@ -1452,9 +1452,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     }
     // 한도를 관측하지 못해도 registry에 없는 후보는 추천하지 않는다.
     const noSonnet = harness({ candidates: live.filter((candidate) => candidate.profile !== "NORMAL_SONNET") });
-    expect((await noSonnet.prepare("미관측·Sonnet 없음", [noSonnet.task], {} as never))[0]!.profile).toBe("NORMAL_SOL");
+    expect((await noSonnet.prepare("미관측·Sonnet 없음", [noSonnet.task], {} as never))[0]!.profile).toBe("NORMAL_DEEPSEEK");
     const noSol = harness({ candidates: live.filter((candidate) => candidate.profile !== "NORMAL_SOL") });
     expect((await noSol.prepare("미관측·Sol 없음", [noSol.task], {} as never))[0]!.profile).toBe("NORMAL_SONNET");
+    const noDeepSeek = harness({ candidates: live.filter((candidate) => candidate.profile !== "NORMAL_SONNET" && candidate.profile !== "NORMAL_DEEPSEEK") });
+    expect((await noDeepSeek.prepare("미관측·Sonnet·DeepSeek 없음", [noDeepSeek.task], {} as never))[0]!.profile).toBe("NORMAL_SOL");
   });
   test("UI·HARD의 Opus와 active owner 충돌은 Sonnet 우선 추천에도 바뀌지 않는다", async () => {
     for (const [options, expected] of [
@@ -1488,7 +1490,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const [spentRoute] = await spent.prepare("소진", [spent.task], {} as never);
     // 이 fixture의 Sonnet·Sol은 둘 다 Codex라 함께 소진됐다. 다음 대체인 DeepSeek를 추천한다.
     expect(spentRoute!.profile).toBe("NORMAL_DEEPSEEK");
-    // Anthropic primary만 소진되고 Codex가 살아 있으면 DeepSeek보다 Sol을 먼저 추천한다.
+    // Anthropic primary만 소진되면 Hive DeepSeek를 먼저 추천하고, Hive도 소진돼야 Sol을 추천한다(2026-10-18 순서).
     const anthropicSonnet = candidates
       .map((candidate) => candidate.profile === "NORMAL_SONNET" ? { ...candidate, model: "anthropic/claude-sonnet-5-5" } : candidate);
     const solFirst = harness({
@@ -1496,7 +1498,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       candidates: anthropicSonnet,
       quota: async () => ({
         state: "observed", observedAt: 1,
-        providers: { anthropic: [{ disabled: false, limitReached: true, limits: [] }] },
+        providers: { anthropic: [{ disabled: false, limitReached: true, limits: [] }], hive: [{ disabled: false, limitReached: true, limits: [] }] },
       }) as never,
     });
     const [solFirstRoute] = await solFirst.prepare("Sol 먼저", [solFirst.task], {} as never);
@@ -1576,12 +1578,12 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const deepseek = candidates;
     const build = (providers: Record<string, unknown[]>) => harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "b-ai/deepseek-v4.1-flash": "deepseek" },
+      families: { ...families, "hive/deepseek-ai/deepseek-v4.1-flash-1017": "deepseek" },
       quota: async () => ({ state: "observed", observedAt: 1, providers }),
     });
 
     // 1) Luna가 사용 가능하면 대안 여유가 더 커도(0.8 대 0.2) primary NORMAL을 유지한다.
-    const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], "b-ai": [account(0.2)] });
+    const usable = build({ "openai-codex": [account(0.8)], anthropic: [account(0.2)], hive: [account(0.2)] });
     const first = await usable.prepareBatch("한도 배분", [usable.task], {} as never);
     expect(first.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "observed", profile: "NORMAL_SONNET" } });
     expect(await usable.dispatch("openai-codex/gpt-6-sol:auto")).toBeUndefined();
@@ -1589,7 +1591,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
 
     // 2) Luna provider 계정이 실제로 소진(limitReached)되면 사용 가능한 NORMAL 대안을 추천한다.
     const spent = build({
-      "openai-codex": [account(1, { limitReached: true })], anthropic: [account(0.2)], "b-ai": [account(0.2)],
+      "openai-codex": [account(1, { limitReached: true })], anthropic: [account(0.2)], hive: [account(0.2)],
     });
     const second = await spent.prepareBatch("한도 배분", [spent.task], {} as never);
     expect(second.routes[0]).toMatchObject({ profile: "NORMAL_DEEPSEEK", normalAllocation: { state: "observed", profile: "NORMAL_DEEPSEEK" } });
@@ -1597,7 +1599,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 3) 미관측은 소진으로 간주하지 않는다. primary를 유지한다.
     const blind = harness({
       workClass: "NORMAL", candidates: deepseek,
-      families: { ...families, "b-ai/deepseek-v4.1-flash": "deepseek" },
+      families: { ...families, "hive/deepseek-ai/deepseek-v4.1-flash-1017": "deepseek" },
       quota: async () => ({ state: "unavailable", observedAt: 0, reason: "관측 실패" }),
     });
     const third = await blind.prepareBatch("한도 배분", [blind.task], {} as never);
@@ -1625,7 +1627,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const open = { credentialId: 2, disabled: false, autoBlockedUntilMs: null, limitReached: null, fetchedAt: 1, limits: [] };
     const build = (anthropic: unknown[], codex: unknown[], options: NonNullable<Parameters<typeof harness>[0]>) => harness({
       candidates: live,
-      quota: async () => ({ state: "observed", observedAt: 10, providers: { anthropic, "openai-codex": codex, "b-ai": [open] } }) as never,
+      quota: async () => ({ state: "observed", observedAt: 10, providers: { anthropic, "openai-codex": codex, hive: [open] } }) as never,
       ...options,
     });
 
@@ -1649,7 +1651,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
 
     test("실제 공유 한도 소진만 NORMAL 대안을 고르고 HARD·UI 전문성은 자동 전환하지 않는다", async () => {
       const cases: [unknown[], string][] = [
-        [[anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], "NORMAL_SOL"],
+        [[anthropicAccount(1), anthropicAccount(1.02, { credentialId: 3 })], "NORMAL_DEEPSEEK"],
         [[anthropicAccount(1), anthropicAccount(0.4, { credentialId: 3 }, slot(30))], "NORMAL_SONNET"],
         [[anthropicAccount(0, { limits: [{ id: "anthropic:7d", usedFraction: 1, resetsAt: 5, windowId: "7d", shared: true }] })], "NORMAL_SONNET"],
         [[anthropicAccount(0, { limits: [{ id: "anthropic:7d:fable", usedFraction: 1, resetsAt: 500, windowId: "7d", shared: false }] })], "NORMAL_SONNET"],

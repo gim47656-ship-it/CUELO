@@ -101,7 +101,7 @@ SHION은 역할이 아니라 선택적 상담이다. 사용자가 명시했을 �
 | 별칭 | exact selector | `호출해` | `교체해` |
 |---|---|---|---|
 | **YUKI(유키)** | `openai-codex/gpt-6-astra` | 이 모델의 task child | 현재 세션만 전환 |
-| **ISANA(이사나)** | `b-ai/deepseek-v4.1-flash` | 이 모델의 task child | 현재 세션만 전환 |
+| **ISANA(이사나)** | `hive/deepseek-ai/deepseek-v4.1-flash-1017` | 이 모델의 task child | 현재 세션만 전환 |
 | **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **NOVA(노바)** | `opencode-go/muse-spark-1.3-contributor` | 이 모델의 task child | 현재 세션만 전환 |

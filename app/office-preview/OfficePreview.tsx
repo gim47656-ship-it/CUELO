@@ -48,7 +48,7 @@ const SCENARIOS: Record<string, Scenario> = {
     makers: [
       { id: "YukiTests", status: "running", model: "openai-codex/gpt-6-astra", intent: "Running focused tests" },
       { id: "NovaDraft", status: "completed", model: "opencode-go/muse-spark-1.3-contributor" },
-      { id: "IsanaScan", status: "pending", model: "b-ai/deepseek-v4.1-flash" },
+      { id: "IsanaScan", status: "pending", model: "hive/deepseek-ai/deepseek-v4.1-flash-1017" },
     ],
   },
   crowd: {
@@ -59,7 +59,7 @@ const SCENARIOS: Record<string, Scenario> = {
       { id: "RinSameB", status: "pending", model: "anthropic/claude-opus-5-5", credentialId: 1 },
       { id: "YukiTests", status: "running", model: "openai-codex/gpt-6-astra" },
       { id: "NovaDraft", status: "completed", model: "opencode-go/muse-spark-1.3-contributor" },
-      { id: "IsanaScan", status: "failed", model: "b-ai/deepseek-v4.1-flash" },
+      { id: "IsanaScan", status: "failed", model: "hive/deepseek-ai/deepseek-v4.1-flash-1017" },
       { id: "HikariRetry", status: "running", model: "google-antigravity/gemini-3.8-flash", retrying: true },
       { id: "ShionStopped", status: "aborted", model: "web6/gpt-6-pro" },
       { id: "AnthropicNoCredential", status: "running", model: "anthropic/claude-opus-5-5" },

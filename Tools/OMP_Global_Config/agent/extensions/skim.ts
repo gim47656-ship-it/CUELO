@@ -23,7 +23,7 @@ export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-antigravity/gemini-3.8-flash";
 // 조사 도구 한정 대체. retry.fallbackChains의 모델 키 체인은 같은 모델을 쓰는 다른 slot까지 바꾸므로 사용하지 않는다.
-export const DEEPSEEK = "b-ai/deepseek-v4.1-flash";
+export const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 /**
  * 모델 요청 표지다. GEMINI는 "역할 slot(modelRoles.skim·draft)으로 부른다"는 뜻이고 기본 설정의 모델 이름을 겸한다.
  * slot이 가리키는 실제 모델은 응답의 `model`이 말한다. DEEPSEEK는 고정 대체이며 항상 정확히 그 모델만 부른다.
@@ -323,7 +323,7 @@ export default function skim(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "skim", label: "Skim", loadMode: "essential", approval: "read",
-    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 조사하고 실패 시 B.AI DeepSeek로 한 번 대체합니다. 허용 파일 내용은 그 모델 제공자(Hive, 대체 B.AI)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
+    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 조사하고 실패하면 같은 모델이 아닌 경우에 한해 Hive의 DeepSeek 1017로 한 번 대체합니다(skim 역할이 이미 이 모델이면 다시 부르지 않습니다). 허용 파일 내용은 그 모델 제공자(Hive)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
     parameters: z.object({ paths: z.array(z.string()), question: z.string() }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await skimQuestion(params as SkimInput, ctx, signal ?? new AbortController().signal));

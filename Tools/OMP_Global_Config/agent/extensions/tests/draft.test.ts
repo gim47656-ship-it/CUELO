@@ -8,7 +8,7 @@ import { draftDocument, type DraftCompletion } from "../draft";
 import type { HelperAnswer } from "../skim";
 
 const GEMINI = "google-antigravity/gemini-3.8-flash";
-const DEEPSEEK = "b-ai/deepseek-v4.1-flash";
+const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 const directories: string[] = [];
 const signal = new AbortController().signal;
 function fixture() {

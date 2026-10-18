@@ -79,10 +79,10 @@
   문서 조회는 익명으로 가능하며 인증은 rate limit 상향이 필요할 때만 선택한다. `ctx7 setup`이나
   MCP·Skill을 추가하지 않는다.
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
-  내용은 `skim` 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로, 그 호출이 실패해 한 번
-  대체되면 B.AI(DeepSeek)로도 전송된다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
+  내용은 `skim` 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 전송된다. 이 모델이 고정 대체 모델과 같아
+  실패해도 다시 부르지 않고 오류로 끝난다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
 - 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft`로 쓴다. Gemini가
-  작성해 cwd 안에 저장하고, 실패하면 DeepSeek로 한 번 대체한다(참고 텍스트는 Google 또는 B.AI로 전송).
+  작성해 cwd 안에 저장하고, 실패하면 Hive의 DeepSeek 1017로 한 번 대체한다(참고 텍스트는 Google 또는 Hive로 전송).
   만들어진 파일은 직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이
   아니므로 `edit`/`write`를 쓴다. Gemini는 번역·문서 다듬기(`draft`)와 OCR(`ocr`)에만 쓰며 같은 Antigravity
   계정 할당량을 공유한다.

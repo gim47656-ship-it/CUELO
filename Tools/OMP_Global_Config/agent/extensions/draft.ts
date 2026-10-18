@@ -190,7 +190,7 @@ export default function draft(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "draft", label: "Draft", loadMode: "essential", approval: "write",
-    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Gemini Flash)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 DeepSeek로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL의 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체 B.AI)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
+    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Gemini Flash)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 Hive의 DeepSeek 1017로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL의 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체 Hive)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
     parameters: z.object({
       instruction: z.string().describe("무엇을 쓸지: 목적·독자·구성·분량·언어"),
       output: z.string().describe("cwd 기준 저장 경로. 확장자가 형식을 정함: .md .txt .csv .xlsx .docx .pdf"),
