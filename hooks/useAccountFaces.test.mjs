@@ -88,7 +88,7 @@ test("a session that switches provider re-asks instead of answering from the sta
     assert.equal(resolveAccountFace("switch", "openai-codex", 8)?.alias, "YUKI(유키)");
     // 자식 발화와 WEB6 상담이 지나는 길도 그대로다 — 예약 얼굴은 provider 만으로 나온다.
     assert.equal(resolveAccountFace("switch", "web6", undefined)?.alias, "SHION(시온)");
-    assert.equal(resolveAccountFace("switch", "b-ai", undefined)?.alias, "ISANA(이사나)");
+    assert.equal(resolveAccountFace("switch", "hive", undefined)?.alias, "ISANA(이사나)");
     assert.equal(resolveAccountFace("switch", "google-antigravity", undefined)?.alias, "HIKARI(히카리)");
   } finally {
     route.restore();
