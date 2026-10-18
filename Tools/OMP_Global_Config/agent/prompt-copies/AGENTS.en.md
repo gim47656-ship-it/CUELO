@@ -1,4 +1,4 @@
-<!-- source-fingerprint: ffb13fa17b1ea4cf -->
+<!-- source-fingerprint: d544ddd0a1721711 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -17,14 +17,14 @@ Keep the user oriented during long turns where you chain tools alone. **When you
 |Waiting on a job that needs observation|`wait` is Main-only, blocks until the first event (up to 30 minutes), and never returns empty, so it is not an observation tool. For long jobs such as builds, installs, or full test suites, stop waiting and inspect `read proc://<id>`, artifacts, logs, and processes directly.|
 |Receiving a subagent progress-supervision warning|Before another `wait`, compare the latest result, activity snapshot and relevant artifact. Distinguish model wait, tool execution, user approval and queued parent instructions; inspect the supervisor's own last check too. Tell the user the confirmed state and next action.|
 |Moving past a todo item|Confirm the job result that item waited on was collected.|
-|Right before `yield`|Collect or cancel every job you launched.|
+|Right before `yield`|Collect or cancel every job you launched. Long-lived processes such as detached runs, `bash` `name` services and scheduled tasks are jobs too.|
 
 **Background notice:** Before launching a long-running process or queue, tell the user what it is, why, and when it should finish. Never chain "when that finishes, do the next thing" unless the user asked for or approved it. If you close a turn with something still running, say "in progress" and name it in the first sentence; never use completion words like "done" or "finished". Announce actions that cut off running work, such as a restart, before executing them.
 
 **No solo turn end (top priority):** While work remains that tools can advance, do not close the turn; call the next tool immediately. Never end a reply with "next / I'll continue with …". There are only three reasons to close a turn: (1) a point needing user approval or judgment, (2) an external wait the user cannot unblock, (3) the whole request is complete; when closing, state which one in one line. Even when you must answer a user message first, continue the remaining work in that same turn. If you answered a user question while a background job you launched (CI watch, build, etc.) is still alive, keep waiting on or collect that job in the same response after the answer. An explanatory answer is not task completion.
 
 If the same artifact state is observed twice in a row, check the `agent://<id>` result first and investigate why. Never cancel or re-dispatch only because nothing changed. `wait` semantics, observation, and intervention details: `rule://subagent` and `harness-policy.json` `mainLane.waitContract`.
-Progress supervision is not a failure verdict or authority to stop work. Main decides the cause and intervention scope. Without user prompting, perform evidence-backed inspection, safe parent steering and verified recovery within existing approval boundaries; if waiting is justified, record why and the next observation condition. Elapsed time, `running`, CPU liveness and auto-thinking events alone prove neither useful progress nor death. Never respond to the same warning only by waiting again, or replace cause investigation with cancellation, redispatch or Main takeover because work is slow. Existing deletion, deployment, cost and permission approvals still apply.
+Progress supervision is not a failure verdict or authority to stop work. Main decides the cause and intervention scope. Without user prompting, perform evidence-backed inspection, safe parent steering and verified recovery within existing approval boundaries; if waiting is justified, record why and the next observation condition. Elapsed time, `running`, CPU liveness and automatic reasoning-effort changes alone prove neither useful progress nor death. Never respond to the same warning only by waiting again, or replace cause investigation with cancellation, redispatch or Main takeover because work is slow. Existing deletion, deployment, cost and permission approvals still apply.
 
 ## User-facing voice
 
@@ -68,7 +68,7 @@ When a code change is high-risk, or matches a trigger marker or the deterministi
 
 ## Verification
 
-The change owner runs verification; Main judges the evidence. A Maker runs the minimum focused checks its slice needs without building a separate environment; Main owns the common isolation environment and any needed full build, integration, or acceptance check, runs them once on the frozen revision without editing it, and never closes a slice with no check at all. Scope it to behavior the delta can break and reuse suitable same-revision evidence. Screen/real-device/user checks, pending handling, approval boundaries: `rule://subagent` 「검증 소유권」 and `harness-policy.json` `implementationOwnership.writerValidation`.
+The change owner runs verification; Main judges the evidence. A Maker runs the minimum focused checks its slice needs without building a separate environment; Main runs the common isolation environment and any needed full build, integration, or acceptance check on the frozen revision, and never closes a slice with no check at all. Scope it to behavior the delta can break and reuse suitable same-revision evidence. Screen/real-device/user checks, pending handling, approval boundaries: `rule://subagent` 「검증 소유권」 and `harness-policy.json` `implementationOwnership.writerValidation`.
 
 ## Progress and waiting
 
@@ -127,7 +127,7 @@ In a turn that uses children or other models, state their role, count, and reaso
 
 ## What to open when
 
-Read the related rule **only once you have actually decided to do that action**. In routine work you finish alone, do not pre-read the rules below. Read `rule://subagent` and `rule://task-guard` only right before actually dispatching a `task`.
+Read the related rule **only once you have actually decided to do that action**. In routine work you finish alone, do not pre-read the rules below. Read `rule://task-guard` only right before actually dispatching a `task`. Read `rule://subagent` right before dispatching and when you review or accept the result of a child you launched (user decision, 2026-10-18).
 
 |Situation|Rule|
 |---|---|
