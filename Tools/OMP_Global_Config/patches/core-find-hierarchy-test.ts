@@ -137,7 +137,7 @@ interface Hit {
 }
 interface Result {
 	hits: Hit[];
-	stats: { failures: string[]; errors: number; requests: number };
+	stats: { failures: string[]; errors: number; requests: number; failed?: number };
 }
 async function search(root: string, judge: unknown, signal?: AbortSignal): Promise<Result> {
 	const filesystem = new InternalUrlFilesystem({ context: { cwd: root }, tier: "read" });
@@ -263,7 +263,8 @@ try {
 			// name 실패는 baseline 파일명 판정에도 닿으므로 baseline 이 줄 수 있다. 예외 없이 끝나고 실패가 기록된다.
 			assert.equal(result.stats.failures.some(message => message.startsWith("filenames:")), true);
 		}
-		assert.equal(result.stats.errors > 0, true);
+		// 18.12.0+ upstream 은 실패한 판정 요청을 `failed` 로 세고(coverage 근거), 이전 core 는 `errors` 로 셌다.
+		assert.equal((result.stats.failed ?? result.stats.errors) > 0, true);
 	}
 	ok("provider 실패는 던지지 않고 stats.failures 에 남으며 폴더 실패 시 baseline hit 이 그대로다");
 

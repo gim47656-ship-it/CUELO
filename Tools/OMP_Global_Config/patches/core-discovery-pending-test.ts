@@ -6,7 +6,7 @@
 // 실제 ModelRegistry 두 개를 같은 scratch models.db로 띄운다: 첫째가 mock `/v1/models` 조회로 캐시를
 // 쓰고, 둘째(다음 시작)가 그 캐시로 만든 상태를 본다. 실제 네트워크·`~/.omp` 접근 없음.
 // 동적 import 예외: core-bai-retry-test.ts와 같은 이유(지정한 사본만 검증).
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSettingsTestScope } from "./core-test-settings";
@@ -83,9 +83,21 @@ check(
 	headeredState?.status === "cached" && headeredState.models.length === 0,
 	JSON.stringify(headeredState),
 );
-check("[3] 모델이 하나도 복원되지 않은 cached provider는 조회 중이다", restarted.isProviderDiscoveryPending(HEADERED) === true);
 check("[4] 모델이 복원된 cached provider는 조회 중이 아니다", restarted.find(RESTORABLE, "probe-model") !== undefined && restarted.isProviderDiscoveryPending(RESTORABLE) === false);
 check("[5] 선언되지 않은 provider는 조회 중이 아니다", restarted.isProviderDiscoveryPending(MISSING) === false);
+// 18.12.1+: upstream #16061 이 CUELO 패치를 대신한다(패치는 no-op 로 retire). cached·unavailable provider 는
+// 첫 백그라운드 조회가 끝날 때까지 조회 중이고, 끝난 뒤에는 아니다. 시작 시 fallback 체인 검사가 도는 구간이 앞쪽이다.
+const upstreamPending = readFileSync(`${CORE}/config/model-registry.ts`, "utf8").includes(
+	"return this.#backgroundRefresh !== undefined && !this.#initialRefreshSettled;",
+);
+if (upstreamPending) {
+	restarted.refreshInBackground("online");
+	check("[3] 첫 백그라운드 조회가 끝나기 전 cached provider는 조회 중이다(upstream #16061)", restarted.isProviderDiscoveryPending(HEADERED) === true);
+	await restarted.awaitBackgroundRefresh();
+	check("[3b] 첫 백그라운드 조회가 끝나면 조회 중이 아니다", restarted.isProviderDiscoveryPending(HEADERED) === false);
+} else {
+	check("[3] 모델이 하나도 복원되지 않은 cached provider는 조회 중이다", restarted.isProviderDiscoveryPending(HEADERED) === true);
+}
 
 // Windows는 열린 sqlite 핸들이 남아 있으면 임시 폴더 삭제가 EBUSY로 실패한다. 검증 결과와 무관한 정리다.
 try {
