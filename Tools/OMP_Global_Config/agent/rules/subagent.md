@@ -48,7 +48,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   아래 셋 중 하나가 걸리면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017)를 먼저 추천하고, `normalAllocation.reason`이 걸린 트리거를 적는다.
   DeepSeek는 Sonnet과 통과 품질이 같았지만 벽시계 시간이 중앙값 약 4.5배라(SJF eval, 소표본) 아무도 기다리지 않는 조각에만 쓴다.
   (1) Sonnet이 맡았던 이전 attempt의 `FINDING_ID` 재작업: 원장 dispatch row의 `chosenModel`이 Sonnet일 때다. 원장이 기록하는 모델은 이 값뿐이라 core retry 체인이 실행 중 Sonnet을 Hive로 바꾼 경우는 보이지 않고, 이전 모델을 모르면 Sonnet을 유지한다.
-  (2) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 병렬 조각이나 다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업이면 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). Jev 불가·답 없음은 Sonnet 유지다.
+  (2) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
   (3) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
   `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 2026-10-11 사용자 지시로 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6-astra:auto`다. Sol의 과거 평가 수치를 Astra의 성능 증거로 옮기지 않는다.
   Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,

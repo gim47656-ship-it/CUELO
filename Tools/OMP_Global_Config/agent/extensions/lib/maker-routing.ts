@@ -554,12 +554,12 @@ const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SONN
 
 const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
   "sonnet-rework": "Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 Sonnet을 다른 모델로 바꾼 경우는 보이지 않음)",
-  "off-critical-path": "Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 병렬·다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업)",
+  "off-critical-path": "Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 같은 요청에서 통합·커밋·보고에 쓰는 병렬 조각은 해당하지 않음)",
   "anthropic-over-share": "관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김",
 };
 
 /** INSTRUCTION과 도구 description이 같은 트리거 설명을 쓴다. */
-const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 모델을 바꾼 경우는 보이지 않음), (2) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 병렬 조각이나 다른 남은 작업이 더 오래 걸리거나 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다), (3) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않습니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
+const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 모델을 바꾼 경우는 보이지 않음), (2) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다. 같은 요청에서 Main이 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌아도 기다리는 조각입니다), (3) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않습니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
 
 const DAY_MS = 86_400_000;
 const WEEKLY_WINDOW_MS = 7 * DAY_MS;
