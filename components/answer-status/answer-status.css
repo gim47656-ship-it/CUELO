@@ -573,6 +573,7 @@
   border-left: 2px solid var(--border-strong);
 }
 .flow-stage[data-state="waiting"]::before,
+.flow-stage[data-state="skipped"]::before,
 .flow-stage[data-state="active"]::before { border-left-style: dashed; border-left-color: var(--border); }
 .flow-stage[data-reentry]::before { border-left-style: solid; border-left-color: var(--border-strong); }
 .flow-stage:last-child::before { content: none; }
@@ -598,6 +599,7 @@
 .flow [data-state="done"] > .flow-node { background: var(--border-strong); }
 .flow [data-state="active"] > .flow-node { width: 24px; height: 24px; margin-top: 0; box-shadow: 0 0 0 5px var(--accent-soft); }
 [data-state="waiting"] > .flow-node { border: 2px dashed var(--border-strong); }
+[data-state="skipped"] > .flow-node { border: 2px dashed var(--border); color: var(--text-dim); }
 [data-state="approval"] > .flow-node { width: 16px; height: 16px; margin-top: 4px; border-radius: 2px; border: 2px solid var(--text-dim); transform: rotate(45deg); }
 .flow-stage-name { grid-area: name; font-size: 16px; font-weight: 600; line-height: 24px; color: var(--text); }
 .flow-stage[data-state="done"] > .flow-stage-name,
@@ -606,8 +608,10 @@
 .flow-stage-state { grid-area: state; min-width: 0; font-size: 15px; line-height: 24px; color: var(--text-muted); overflow-wrap: anywhere; }
 .flow-stage[data-state="waiting"] > .flow-stage-name,
 .flow-stage[data-state="approval"] > .flow-stage-name,
+.flow-stage[data-state="skipped"] > .flow-stage-name,
 .flow-stage[data-state="waiting"] > .flow-stage-state,
-.flow-stage[data-state="approval"] > .flow-stage-state { color: var(--text-dim); }
+.flow-stage[data-state="approval"] > .flow-stage-state,
+.flow-stage[data-state="skipped"] > .flow-stage-state { color: var(--text-dim); }
 .flow-now { color: var(--text); font-weight: 600; }
 .flow-tone[data-tone="passed"] { color: var(--success); font-weight: 600; }
 .flow-tone[data-tone="failed"] { color: var(--danger); font-weight: 600; }
@@ -659,7 +663,8 @@ details[open] > summary .flow-chevron,
 .flow-link { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; text-align: center; overflow-wrap: anywhere; }
 .flow-link::after { content: ""; position: absolute; top: 11px; left: calc(50% + 16px); right: calc(-50% + 16px); border-top: 2px solid var(--border-strong); }
 .flow-link[data-state="active"]::after,
-.flow-link[data-state="waiting"]::after { border-top-style: dashed; border-top-color: var(--border); }
+.flow-link[data-state="waiting"]::after,
+.flow-link[data-state="skipped"]::after { border-top-style: dashed; border-top-color: var(--border); }
 .flow-link:last-child::after { content: none; }
 .flow-link[data-state="approval"] > .flow-node { margin: 4px 0 2px; }
 .flow-link-name { font-size: 15px; font-weight: 500; line-height: 22px; color: var(--text-muted); }
@@ -668,8 +673,10 @@ details[open] > summary .flow-chevron,
 .flow-link[data-state="active"] .flow-link-state { color: var(--text); font-weight: 600; }
 .flow-link[data-state="waiting"] .flow-link-name,
 .flow-link[data-state="approval"] .flow-link-name,
+.flow-link[data-state="skipped"] .flow-link-name,
 .flow-link[data-state="waiting"] .flow-link-state,
-.flow-link[data-state="approval"] .flow-link-state { color: var(--text-dim); }
+.flow-link[data-state="approval"] .flow-link-state,
+.flow-link[data-state="skipped"] .flow-link-state { color: var(--text-dim); }
 .flow-loop { position: relative; margin-top: 24px; margin-left: calc(100% / 7 * 1.5); width: calc(100% / 7 * (var(--loop-from) - 1)); height: 32px; border: 3px solid var(--text); border-top: 0; border-radius: 0 0 8px 8px; }
 .flow-loop > svg { position: absolute; left: -12px; top: -14px; color: var(--text); }
 .flow-loop-count { position: absolute; left: 50%; bottom: 0; transform: translate(-50%, calc(50% + 1.5px)); display: inline-flex; padding: 0 8px; border: 1px solid var(--text); border-radius: var(--radius-control); background: var(--bg); font-size: 15px; font-weight: 700; line-height: 24px; white-space: nowrap; color: var(--text); }
@@ -695,7 +702,8 @@ details[open] > summary .flow-chevron,
   .flow-link { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(0, 1fr); text-align: left; gap: 10px; }
   .flow-link::after { top: 26px; bottom: -10px; left: 11px; right: auto; border-top: 0; border-left: 2px solid var(--border-strong); }
   .flow-link[data-state="active"]::after,
-  .flow-link[data-state="waiting"]::after { border-left-style: dashed; border-left-color: var(--border); }
+  .flow-link[data-state="waiting"]::after,
+  .flow-link[data-state="skipped"]::after { border-left-style: dashed; border-left-color: var(--border); }
   .flow-link .flow-node { grid-area: auto; }
   .flow-loop { display: none; }
   .flow-loop-caption { text-align: left; margin-top: 16px; }

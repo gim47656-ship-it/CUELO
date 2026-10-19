@@ -13119,6 +13119,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-20 18.12.3: TPe는 같은 isAdvisorTranscriptName 함수다(`e===SPe||e.startsWith(...)`). minified 이름만 바뀌었다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -17482,6 +17488,115 @@ for (const update of EDITS.splice(watchFollowupStart, watchFollowupEnd - watchFo
 	if (cutSchema === 0) throw new Error("isolated 마커 단축: schema 대상 후보가 없다");
 	if (cutRequest === 0) throw new Error("isolated 마커 단축: 요청 no-op 후보가 없다");
 }
+// 2026-10-20 18.12.3 이식. 18.12.2 이하 후보는 한 바이트도 바꾸지 않고, 18.12.3 순정에서 앵커를 잃은 7개 항목마다 그 판에만 성립하는
+// 후보를 더한다. marker 를 공유하는 후보는 18.12.3 에만 있는 문자열로 requires(새 후보)·excludes(옛 후보)를 짝지어 서로 배타적으로 둔다.
+//  - RETIRE: computer.md 의 control.acquire 줄은 upstream 이 반환 모양({active:false, reason})을 덧붙였을 뿐 takeover 안내는 이미 upstream 이
+//    맡는다(18.12.2 RETIRE 유지). 번들의 advisor transcript filter 는 minified 이름만 TPe 로 바뀌었다.
+//  - ADAPT: upstream 이 #16305 로 "부모 mid-turn 요청이 소비된 뒤에야 그 turn 이 부모의 것"을 자기 방식(IrcBridge.#parentSteers·
+//    session.isParentIrcSteer·ownerPrompted)으로 구현했다. CUELO 의 PARENT_REQUEST_STEER 표식(부모 요청 preemption)·입양(bracket) 장부는
+//    같은 의미 위에 그대로 올리고, upstream 의 broadcast 구분(광고 leg 는 부모의 요청이 아니다)을 따른다. 입양 bracket 의 첫 등록은
+//    yield 시점으로 미룬다(consumed 등록은 upstream 의 ownerPrompted 가 맡는다).
+//    computer worker 의 confirmControl 반환형이 boolean → ControlVerdict 로 바뀌었고 supervisor 가 그 타입을 import 한다.
+{
+	const one = (predicate, label) => {
+		const found = EDITS.filter(predicate);
+		if (found.length !== 1) throw new Error(`18.12.3 후보를 만들 수 없다: ${label} ${found.length}/1`);
+		return found[0];
+	};
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.12.3 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, () => to);
+	};
+	const noop = (file, text, extra = {}) => ({ file, marker: text, anchor: text, patched: text, ...extra });
+	const exclude = (candidate, text) => {
+		candidate.excludes = candidate.excludes === undefined ? text : [candidate.excludes, text].flat().concat();
+	};
+
+	// RETIRE: computer.md control.acquire 줄(반환 모양 설명만 늘었다).
+	const acquireDoc = one(entry => entry.file === "src/prompts/tools/computer.md" && entry.marker === "NEVER acquire control to work around", "computer.md acquire");
+	acquireDoc.alternates.push(noop(acquireDoc.file, "- `computer.control.acquire({reason})` requires live human confirmation for task-scoped control and returns `{active: true}` or `{active: false, reason}`:"));
+
+	// ADAPT: IrcBridge.deliver 의 부모 steer. upstream 은 steer 를 `#parentSteers` WeakSet 에 올린다(broadcast leg 제외).
+	const PARENT_STEERS_18123 = "readonly #parentSteers = new WeakSet<AgentMessage>();";
+	const bridge = one(entry => entry.file === "src/session/irc-bridge.ts" && entry.marker === "Reflect.set(steered, PARENT_REQUEST_STEER, true)", "irc-bridge parent steer");
+	const bridgeLegacy = bridge.alternates[0];
+	exclude(bridgeLegacy, PARENT_STEERS_18123);
+	const BRIDGE_TAIL = bridgeLegacy.patched.slice(bridgeLegacy.patched.indexOf("\t\t\t\tthis.#host.agent.steer(steered);\n") + "\t\t\t\tthis.#host.agent.steer(steered);\n".length);
+	const bridgeAnchor = "\t\t\t\t// A broadcast leg asks no one in particular: consuming it never makes the turn the parent's.\n\t\t\t\tif (msg.broadcast !== true) this.#parentSteers.add(steer);\n\t\t\t\tthis.#host.agent.steer(steer);\n";
+	bridge.alternates.push({
+		file: bridge.file,
+		requires: PARENT_STEERS_18123,
+		marker: "Reflect.set(steer, PARENT_REQUEST_STEER, true)",
+		anchor: bridgeAnchor + "\t\t\t} else {",
+		patched: swap(
+			bridgeAnchor +
+				swap(BRIDGE_TAIL, "\t\t\t\tif (msg.wakeRelay !== true) {\n", "\t\t\t\tif (parentRequest) {\n").replaceAll("{ steered, record }", "{ steered: steer, record }"),
+			bridgeAnchor,
+			"\t\t\t\t// A relay (wakeRelay) or a broadcast leg is no new request to the parent: only a direct parent request marks the steer.\n\t\t\t\tconst parentRequest = msg.wakeRelay !== true && msg.broadcast !== true;\n\t\t\t\tif (parentRequest) Reflect.set(steer, PARENT_REQUEST_STEER, true);\n" +
+				bridgeAnchor,
+		),
+	});
+	{
+		// patched 본문이 그 자리에 들어갔는지 방어한다(BRIDGE_TAIL 은 18.12.2 후보의 "steer 뒤" 구간 그대로다).
+		const added = bridge.alternates.at(-1);
+		if (!added.patched.includes("this.queueParentSteerRelay({ steered: steer, record });") || !added.patched.includes("if (parentRequest) {")) {
+			throw new Error("18.12.3 irc-bridge 후보 본문이 기대와 다르다");
+		}
+	}
+
+	// ADAPT: 입양된 bracket(runningTurn)은 부모가 깨운 일이 아니다. 소비된 steer 는 upstream 의 ownerPrompted 가 등록하고,
+	// 그 전에는 yield 시점 등록(onYieldAccepted)만 남긴다.
+	const OWNER_PROMPTED = "let ownerPrompted = false;";
+	const wakeJob = one(entry => entry.file === "src/task/executor.ts" && entry.marker === "if (bracket?.runningTurn !== true && wakeSources(records, id).some(source => source.from === ownerId)) {", "executor ownerWoken register");
+	wakeJob.alternates.push({
+		file: wakeJob.file,
+		requires: OWNER_PROMPTED,
+		marker: "if (bracket?.runningTurn !== true && ownerWoken) registerWakeJob();",
+		anchor: "\t\tif (ownerWoken) registerWakeJob();\n",
+		patched:
+			"\t\t// A bracket opened over a turn that was already running (a parent steer\n\t\t// adopted mid-turn) is not parent-woken work: that turn may leave the steer\n\t\t// queued, and the continuation that consumes it owns the answer (ownerPrompted\n\t\t// registers it then). Keep the yield-time registration for it so a stranded turn\n\t\t// stays silent.\n\t\tif (bracket?.runningTurn !== true && ownerWoken) registerWakeJob();\n",
+	});
+
+	// ADAPT: wake turn 마감의 ircWakeTurn 표식. upstream 의 publishMessageResult 줄이 ownerPrompted 를 품었다.
+	const PUBLISH_18123 = "\t\t\t\t\tpublishMessageResult: ownerWoken || ownerPrompted || userPrompted,";
+	const wakeFlag = one(entry => entry.file === "src/task/executor.ts" && entry.marker === "\t\t\t\t\tircWakeTurn: true,", "executor ircWakeTurn");
+	exclude(wakeFlag, PUBLISH_18123);
+	wakeFlag.alternates.push({
+		file: wakeFlag.file,
+		requires: PUBLISH_18123,
+		marker: "\t\t\t\t\tircWakeTurn: true,",
+		anchor: "\t\t\t\t\tfollowUpTurn: true,\n" + PUBLISH_18123 + "\n",
+		patched: "\t\t\t\t\tfollowUpTurn: true,\n\t\t\t\t\tircWakeTurn: true,\n" + PUBLISH_18123 + "\n",
+	});
+
+	// ADAPT: computer worker 의 ComputerRunContext. confirmControl 이 boolean 대신 ControlVerdict 를 돌려준다.
+	const VERDICT_18123 = "confirmControl(reason: string): Promise<ControlVerdict>;";
+	const runContext = one(entry => entry.file === "src/tools/computer/worker.ts" && entry.marker === "\tgoalProbe?: boolean;", "worker goalProbe");
+	const runContextBool = runContext.alternates[0];
+	exclude(runContext, VERDICT_18123);
+	runContext.alternates.push({
+		file: runContext.file,
+		requires: VERDICT_18123,
+		marker: runContextBool.marker,
+		anchor: swap(runContextBool.anchor, "confirmControl(reason: string): Promise<boolean>;", VERDICT_18123),
+		patched: swap(runContextBool.patched, "confirmControl(reason: string): Promise<boolean>;", VERDICT_18123),
+	});
+
+	// ADAPT: computer supervisor import. upstream 이 `type ControlVerdict` 를 더했다. CUELO 가 더하는 두 이름은 그대로다.
+	const VERDICT_IMPORT = "\ttype ControlVerdict,\n";
+	const supervisorImport = one(entry => entry.file === "src/tools/computer/supervisor.ts" && entry.marker === "\tComputerFrameReader,\n\ttype ComputerRunOk,", "supervisor import");
+	const supervisorEscape = supervisorImport.alternates[0];
+	exclude(supervisorEscape, VERDICT_IMPORT);
+	supervisorImport.alternates.push({
+		file: supervisorImport.file,
+		requires: VERDICT_IMPORT,
+		marker: supervisorEscape.marker,
+		anchor: swap(supervisorEscape.anchor, "\ttype ComputerWorkerOutbound,\n", "\ttype ComputerWorkerOutbound,\n" + VERDICT_IMPORT),
+		patched: swap(supervisorEscape.patched, "\tencodeComputerFrame,\n", "\t" + "encodeComputerFrame,\n" + VERDICT_IMPORT),
+	});
+}
+
 
 
 /**

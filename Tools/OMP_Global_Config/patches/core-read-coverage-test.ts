@@ -2,7 +2,7 @@
 // 안내문이 실제로 전달한 범위만 말하는지 본다.
 // [과장] hashline 모드에서 첫 줄이 read 예산보다 크면 본문은 거부 문구뿐인데 "partial, 150.0KB" 전달로 보고했다 → 0 B.
 // [보존] :raw 의 첫 줄 preview 크기 보고, 첫 줄 미전달 시 재개 offset 미제공, 전달 단계 재잘림(spill)에서 재개 offset이
-//        실제 마지막 전달 행 다음이고 중간 생략은 artifact로 회수 가능하다는 안내.
+//        실제 마지막 전달 행 다음이고 전달한 범위를 안내가 그대로 밝힌다(18.12.3 부터 upstream 은 중간 생략 대신 줄 경계에서 멈춘다).
 // [안내] 2026-10-17: 'file:1484:1545' 같은 범위 문법 실수의 not-found 오류에 바른 범위 형태(:N-M, :N+K)를 덧붙인다.
 // patch는 임시 source fixture에만 적용한다. READ_COVERAGE_BASELINE=1 이면 target 설치본 원본을 읽는다(수정 전 RED 확인용).
 import { spawnSync } from "node:child_process";
@@ -141,10 +141,12 @@ check(
 	shown.length > 0 && resume === shown.at(-1)! + 1,
 	`last=${shown.at(-1)} resume=${resume}`,
 );
-const artifactId = wide.match(/artifact:\/\/(\d+)/)?.[1];
 check(
-	"spill 재잘림: 생략한 중간 행은 안내에 밝히고 artifact에 원문이 있다",
-	/middle lines? \([^)]*\) elided/.test(wide) && artifactId !== undefined && (artifacts.get(artifactId) ?? "").includes(row(200, 400)),
+	"spill 재잘림: 중간 행을 건너뛰지 않고 전달한 범위를 안내가 그대로 밝힌다",
+	shown.length > 1 &&
+		shown.every((n, i) => i === 0 || n === shown[i - 1]! + 1) &&
+		!/elided/.test(wide) &&
+		new RegExp(`Showing lines ${shown[0]}-${shown.at(-1)} of 2000`).test(wide),
 	JSON.stringify(wide.slice(-240)),
 );
 

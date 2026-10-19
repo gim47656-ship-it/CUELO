@@ -411,6 +411,8 @@ const subSession = {
 	// subprocess 핸들러로 직접 태우므로 세션 툴을 모델링하지 않는다 - 관찰자가 요구하는
 	// 세션 표면만 채운다(`resetYieldTurnState` 는 undefined 를 받아들이는 계약이다).
 	getToolByName: () => undefined,
+	// 18.12.3 의 wake 관찰자는 message_end 마다 session.isParentIrcSteer 로 부모 steer 소비를 판정한다. 이 하네스는 그 소비를 큐로 따로 흉내 낸다.
+	isParentIrcSteer: () => false,
 } as never;
 globalReg.register({ id: "Sol", displayName: "maker", kind: "sub", parentId: MAIN_AGENT_ID, session: subSession });
 
@@ -2200,6 +2202,7 @@ const novaSession = {
 	abort: async () => {},
 	waitForIdle: async () => {},
 	getToolByName: () => undefined,
+	isParentIrcSteer: () => false,
 } as never;
 globalReg.register({ id: "Nova", displayName: "maker", kind: "sub", parentId: MAIN_AGENT_ID, session: novaSession });
 attachIrcWakeTurnMonitor(novaSession, {

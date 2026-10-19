@@ -480,17 +480,59 @@ function runnerTarget(words: readonly string[], from: number): string | undefine
   return undefined;
 }
 
+/** 실행하지 않고 도움말·버전만 보이는 옵션. `npm test --help`는 검사를 돌리지 않는다. */
+const INFO_OPTIONS: Record<string, true> = { "--help": true, "-h": true, "--version": true };
+
 /**
- * 프로그램 자리에서 검사를 실행하는지: 검사 프로그램이거나, 실행기가 검사 이름의 대상을 실행한다. 인자 안의 글자는 보지 않는다.
- * 셸의 조건 명령 `test`·`[`는 검사가 아니다.
+ * node 옵션 가운데 값을 다음 낱말로 받는 것(`--import tsx`). `--test` 앞에 와도 그 값은 실행 대상이 아니다.
+ * Node v24.21.0 `node --help`에서 값이 필수(`--opt=...`)인 옵션 전부에, 도움말에 없는 `--loader`·`--experimental-loader`를 더했다.
+ * 값이 선택인 옵션(`--inspect[=port]`)은 다음 낱말을 받지 않는다. 인라인 코드 옵션(`-e`·`--eval`)은 테스트 실행이 아니라 뺐다.
+ */
+const NODE_VALUE_OPTIONS: Record<string, true> = Object.fromEntries([
+  "-C", "-r", "--allow-fs-read", "--allow-fs-write", "--build-snapshot-config", "--conditions", "--cpu-prof-dir",
+  "--debug-port", "--inspect-port", "--experimental-config-file", "--experimental-default-config-file",
+  "--experimental-test-isolation", "--test-isolation", "--report-dir", "--report-directory",
+  "--cpu-prof-interval", "--cpu-prof-name", "--diagnostic-dir", "--disable-proto", "--disable-warning", "--dns-result-order",
+  "--env-file", "--env-file-if-exists", "--experimental-loader", "--experimental-package-map",
+  "--experimental-sea-config", "--experimental-test-tag-filter", "--heap-prof-dir", "--heap-prof-interval", "--heap-prof-name",
+  "--heapsnapshot-near-heap-limit", "--heapsnapshot-signal", "--icu-data-dir", "--import", "--input-type",
+  "--inspect-publish-uid", "--loader", "--localstorage-file", "--max-http-header-size", "--max-old-space-size-percentage",
+  "--network-family-autoselection-attempt-timeout", "--openssl-config", "--redirect-warnings", "--report-filename",
+  "--report-signal", "--require", "--run", "--secure-heap", "--secure-heap-min", "--snapshot-blob", "--test-concurrency",
+  "--test-coverage-branches", "--test-coverage-exclude", "--test-coverage-functions", "--test-coverage-include",
+  "--test-coverage-lines", "--test-global-setup", "--test-name-pattern", "--test-random-seed", "--test-reporter",
+  "--test-reporter-destination", "--test-rerun-failures", "--test-shard", "--test-skip-pattern", "--test-timeout", "--title",
+  "--tls-cipher-list", "--tls-keylog", "--trace-event-categories", "--trace-event-file-pattern", "--trace-require-module",
+  "--unhandled-rejections", "--use-largepages", "--v8-pool-size", "--watch-kill-signal", "--watch-path",
+].map((option) => [option, true]));
+
+/**
+ * `node --test …`: 실행 대상 앞의 `--test` 옵션은 파일 이름과 관계없이(대상이 없으면 기본 검색으로) 테스트를 실행한다.
+ * `--`는 옵션의 끝이라 그 뒤의 `--test`는 실행 대상이다.
+ */
+function nodeTestMode(words: readonly string[], from: number): boolean {
+  for (let i = from; i < words.length; i += 1) {
+    const word = words[i];
+    if (word === "--test") return true;
+    if (word === "--" || !word.startsWith("-")) return false;
+    if (Object.hasOwn(NODE_VALUE_OPTIONS, word)) i += 1;
+  }
+  return false;
+}
+
+/**
+ * 프로그램 자리에서 검사를 실행하는지: 검사 프로그램이거나, 실행기가 검사 이름의 대상을 실행하거나, `node --test`다. 인자 안의
+ * 글자는 보지 않는다. 셸의 조건 명령 `test`·`[`와 도움말·버전만 보이는 명령은 검사가 아니다.
  */
 function invokesCheck(words: readonly string[]): boolean {
   const at = programIndex(words);
   if (at < 0) return false;
   const program = basename(words[at]);
   if (program === "test" || program === "[") return false;
+  if (words.slice(at + 1).some((word) => Object.hasOwn(INFO_OPTIONS, word))) return false;
   if (CHECK_COMMAND.test(program)) return true;
   if (!Object.hasOwn(CHECK_RUNNERS, program)) return false;
+  if (program === "node" && nodeTestMode(words, at + 1)) return true;
   const target = runnerTarget(words, at + 1);
   return target !== undefined && CHECK_COMMAND.test(target);
 }
@@ -575,11 +617,13 @@ function judgeCommand(command: string, result: ToolResultMessage | undefined): O
     : parsed.commands.some(({ words }) => runsCheck(words)) ? "check" : null;
   if (stage === null) return null;
   const trace = traceStatus(parsed, DECISIVE_COMMAND[stage]);
+  // `--if-present`는 스크립트가 없으면 아무것도 실행하지 않고 0으로 끝난다. 그 0은 검사가 돌았다는 증거가 아니다.
+  const optional = stage === "check" && trace.decisive.some(({ words }) => words.includes("--if-present"));
   const exitCode = result ? readExitCode(result) : null;
   // 종료 코드가 기록되지 않은 결과(백그라운드로 넘어간 실행 등)는 성공으로 치지 않는다.
   const state: CheckState = exitCode === null
     ? (result?.isError ? "failed" : "unobserved")
-    : exitCode !== 0 ? "failed" : trace.reach === "carried" ? "passed" : "unverified";
+    : exitCode !== 0 ? "failed" : trace.reach === "carried" && !optional ? "passed" : "unverified";
   return { stage, state, exitCode, labels: stage === "check" ? readCheckLabels(trace.decisive) : [] };
 }
 
@@ -617,18 +661,25 @@ export interface CommandStep extends StepCore {
   labels: CheckLabel[];
 }
 
-/** 교차리뷰: review는 받은 지적 수, resolve는 남은 지적 수. 결과를 못 읽었으면 null. */
+/**
+ * 교차리뷰: review는 받은 지적 수, resolve는 남은 지적 수. 결과를 못 읽었으면 null. `unusable`은 리뷰어 답을 쓸 수
+ * 없었던 review(호출 실패·파싱 불가, `passable:false`)다 — 지적이 0건이어도 리뷰가 성립하지 않았으므로 판정 미확인이다.
+ */
 export interface ReviewStep extends StepCore {
   stage: "review";
   action: "review" | "resolve";
   findings: number | null;
+  unusable?: true;
 }
 
-/** 커밋·푸시: 결과에 기록된 커밋. */
+/** 커밋·푸시: 결과에 기록된 커밋. `docsOnly`는 넘긴 파일이 모두 문서(.md·.mdx·.txt)인 성공한 커밋이다. */
 export interface CommitStep extends StepCore {
   stage: "commit";
   commit: string | null;
+  docsOnly: boolean;
 }
+
+const DOC_FILE = /\.(?:md|mdx|markdown|txt)$/i;
 
 export type WorkStep = PlainStep | CommandStep | ReviewStep | CommitStep;
 
@@ -670,12 +721,19 @@ function readStep(block: ToolCallContent, result: ToolResultMessage | undefined,
       return { ...core, stage: "review", action, findings: open, outcome: details.pass === false ? "failed" : "unobserved" };
     }
     const findings = Array.isArray(details.findings) ? details.findings.length : null;
-    return { ...core, stage: "review", action, findings, outcome: findings === null ? "unobserved" : findings > 0 ? "failed" : "done" };
+    if (findings !== null && findings > 0) return { ...core, stage: "review", action, findings, outcome: "failed" };
+    const reviewers: unknown[] = Array.isArray(details.reviewers) ? details.reviewers : [];
+    const unusable = details.passable === false
+      || reviewers.some((reviewer) => !reviewer || typeof reviewer !== "object" || !("status" in reviewer) || reviewer.status !== "ok");
+    if (unusable) return { ...core, stage: "review", action, findings, outcome: "unverified", unusable: true };
+    return { ...core, stage: "review", action, findings, outcome: findings === null ? "unobserved" : "done" };
   }
   if (name === "git_finalize") {
-    if (!result) return { ...core, stage: "commit", commit: null, outcome: pending };
+    if (!result) return { ...core, stage: "commit", commit: null, docsOnly: false, outcome: pending };
     const ok = !result.isError && details.ok !== false;
-    return { ...core, stage: "commit", commit: ok && typeof details.commitSha === "string" ? details.commitSha : null, outcome: ok ? "done" : "failed" };
+    const files: unknown = block.input.files;
+    const docsOnly = ok && Array.isArray(files) && files.length > 0 && files.every((file) => typeof file === "string" && DOC_FILE.test(file));
+    return { ...core, stage: "commit", commit: ok && typeof details.commitSha === "string" ? details.commitSha : null, docsOnly, outcome: ok ? "done" : "failed" };
   }
   if (isEditCall(block, name)) {
     // 실패한 수정과 거절된 발주는 아무것도 바꾸지 않았다.
@@ -696,7 +754,8 @@ export interface LoopBack {
   attempt: number;
 }
 
-export type StageStatus = "waiting" | StepOutcome;
+/** `skipped`: 이번 회차에 뒤 단계가 이미 지나간 빈 단계, 또는 문서만 바꾼 커밋 뒤의 배포(필요 없음). */
+export type StageStatus = "waiting" | "skipped" | StepOutcome;
 
 export interface StageView {
   stage: WorkStage;
@@ -822,17 +881,31 @@ export function deriveWorkFlow(
     };
   });
 
+  // 이번 회차의 마지막 성공한 커밋이 문서뿐이면 배포할 실행 코드가 없다.
+  const commits = stages[WORK_STAGES.indexOf("commit")].steps.filter((step): step is CommitStep => step.stage === "commit" && step.outcome === "done");
+  const deploy = stages[WORK_STAGES.indexOf("deploy")];
+  if (commits.at(-1)?.docsOnly && deploy.status === "waiting") deploy.status = "skipped";
+
   let furthest = -1;
   stages.forEach((view, index) => {
-    if (view.status !== "waiting" && view.status !== "failed") furthest = index;
+    if (view.status !== "waiting" && view.status !== "failed" && view.status !== "skipped") furthest = index;
   });
   let next: NextStage | null = null;
   if (steps.length > 0) {
     if (latestFailure(segment)) next = { stage: "edit", returning: true };
     // 지난 단계가 모두 실패했으면(커밋만 실패한 턴 등) 그 단계를 다시 할 차례다.
     else if (furthest < 0) next = { stage: stages.find((view) => view.status !== "waiting")?.stage ?? WORK_STAGES[0], returning: false };
-    else if (furthest < WORK_STAGES.length - 1) next = { stage: WORK_STAGES[furthest + 1], returning: false };
+    else if (furthest < WORK_STAGES.length - 1) {
+      const last = stages[furthest].steps.at(-1);
+      // 리뷰어 답을 쓸 수 없던 리뷰는 다시 받을 차례다. 그 결과로 커밋에 넘어가지 않는다.
+      if (last?.stage === "review" && last.unusable) next = { stage: "review", returning: false };
+      else if (stages[furthest + 1].status !== "skipped") next = { stage: WORK_STAGES[furthest + 1], returning: false };
+    }
   }
+  // 뒤 단계가 이미 지나간 빈 단계는 대기가 아니라 건너뛴 것이다.
+  stages.forEach((view, index) => {
+    if (index < furthest && view.status === "waiting") view.status = "skipped";
+  });
 
   return {
     steps,

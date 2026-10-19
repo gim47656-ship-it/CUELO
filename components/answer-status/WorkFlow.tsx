@@ -16,15 +16,16 @@ import type { AnswerStatusTranslate } from "./i18n";
  */
 
 /** 단계 행의 표시 상태. 노드 모양과 글자색이 이것을 따른다. */
-export type StageLook = "done" | "active" | "running" | "waiting" | "approval" | "unverified" | "failed";
+export type StageLook = "done" | "active" | "running" | "waiting" | "skipped" | "approval" | "unverified" | "failed";
 
 /**
  * 끝난 턴은 다음 차례 단계 하나를, 진행 중인 턴은 지금 단계 하나를 active로 둔다. 판정이 남은 지난 단계는 노드가
- * 중립이고 글자가 판정을 전한다. 아직 오지 않은 배포는 마름모 노드다.
+ * 중립이고 글자가 판정을 전한다. 아직 오지 않은 배포는 마름모 노드다. 건너뛴 단계와 필요 없는 배포는 흐린 대시 노드다.
  */
 export function stageLook(view: StageView, flow: WorkFlow, live: boolean): StageLook {
   if (live ? flow.current === view.stage : flow.next?.stage === view.stage) return "active";
   if (view.status === "waiting") return view.stage === "deploy" ? "approval" : "waiting";
+  if (view.status === "skipped") return "skipped";
   if (view.status === "done" || view.status === "passed") return "done";
   if (view.status === "failed" || view.status === "running") return view.status;
   return "unverified";
@@ -56,6 +57,11 @@ export function StageNode({ look }: { look: StageLook }) {
           <line x1="17" y1="7" x2="7" y2="17" />
         </svg>
       )}
+      {look === "skipped" && (
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+          <line x1="6" y1="12" x2="18" y2="12" />
+        </svg>
+      )}
     </span>
   );
 }
@@ -85,6 +91,8 @@ function StepVerdict({ step, st }: { step: WorkStep; st: AnswerStatusTranslate }
   let word = st(`flow.state.${step.outcome}`);
   if (step.stage === "review" && step.outcome === "failed" && step.findings !== null) {
     word = st(step.action === "resolve" ? "flow.state.open" : "flow.state.findings", { count: step.findings });
+  } else if (step.stage === "review" && step.unusable) {
+    word = st("flow.state.reviewUnusable");
   } else if (step.stage === "review" && step.outcome === "done") {
     word = st("flow.state.noFindings");
   }
@@ -190,6 +198,8 @@ export function StageWord({ view, flow, live, st, compact = false }: {
 }): ReactNode {
   if (live && flow.current === view.stage) return st("flow.state.running");
   if (view.status === "waiting") return st("flow.state.waiting");
+  // 마지막 배포는 뒤 단계가 없어 건너뛸 수 없다. 배포의 skipped는 문서만 바꾼 커밋이라 필요 없다는 뜻이다.
+  if (view.status === "skipped") return st(view.stage === "deploy" ? "flow.state.notNeeded" : "flow.state.skipped");
   const latest = view.steps[view.steps.length - 1];
   if (view.stage === "investigate") return st(view.status === "running" ? "flow.state.running" : "flow.state.done");
   if (view.stage === "edit" && view.status === "done") return st(flow.attempt > 1 ? "flow.state.redone" : "flow.state.done");
