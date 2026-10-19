@@ -8,6 +8,7 @@ import { AnswerStatusContext } from "./AnswerStatusContext";
 import { MakerStatusPair } from "./DispatchCard";
 import { useAnswerStatusText } from "./i18n";
 import { elapsedText } from "./SubagentProgress";
+import { EarlierAttempts, NextMark, StageNode, StageWord, stageLook, StepRows } from "./WorkFlow";
 
 /** 막대 자리(0~1 비율)를 CSS 길이로. */
 function percent(value: number): string {
@@ -15,11 +16,12 @@ function percent(value: number): string {
 }
 
 /**
- * 끝난 턴 아래 결과 카드. 접힌 한 줄에는 변경 파일·검사·Maker·남은 일·미확인 수만 보이고, 펼치면 Maker별 실행
- * 시간 막대, 파일, 검사, 남은 일, 미확인 목록이 나온다. 수는 전부 도구 호출·결과·발주 원장에서 온다 — 답변
- * 글은 읽지 않는다. 가장 나중에 끝난 턴의 카드만 처음부터 펼쳐 두고, 누르면 어느 카드든 접고 편다.
- * 미확인은 관측된 근거만 센다: 실패했거나 결과를 못 본 검사, 실행이 실패·중단·미관측인 Maker,
- * Main 판정이 수용이 아니거나 없는 Maker.
+ * 끝난 턴 아래 결과 카드. 접힌 한 줄의 기존 파일·검사·실패·Maker·남은 일·미확인 순서와 수를 유지하고
+ * 판정 미확인 검사 수만 덧붙인다. 펼치면 조사 → 수정 → 검사 → 교차리뷰 → 커밋·푸시 → CI → 배포와 남은 일이 나온다.
+ * Maker와 변경 파일, 검사·CI·배포 아래에는 판정이 먼저 오는 행이 붙는다. 수는 전부 도구 호출·결과·발주 원장에서
+ * 온다 — 답변 글은 읽지 않는다. 가장 나중에 끝난 턴의 카드만 처음부터 펼쳐 두고, 누르면 어느 카드든 접고 편다.
+ * 미확인 수는 실패·결과 미관측 검사와 실행 실패·중단·미관측 또는 수용되지 않은 Maker다.
+ * 셸 exit 0이지만 검사 자체의 성공을 증명하지 못한 것은 별도 판정 미확인 수다.
  */
 export function TurnSummaryLine({ summary, onOpenFile }: { summary: FinishedTurnSummary; onOpenFile?: (filePath: string) => void }) {
   const { ledger, subagents, toolResults } = useContext(AnswerStatusContext);
@@ -42,21 +44,56 @@ export function TurnSummaryLine({ summary, onOpenFile }: { summary: FinishedTurn
     [makers, ledger],
   );
   const bars = useMemo(() => layoutMakerBars(summary.span, timings), [summary.span, timings]);
-  const remaining = summary.remaining;
-  const failedChecks = summary.checks.filter((check) => check.state === "failed");
-  const unverifiedChecks = summary.checks.filter((check) => check.state !== "passed");
-  const unverifiedMakers = makers.filter((maker) => (
+  const { flow, remaining } = summary;
+  const failedChecks = summary.checks.filter((check) => check.state === "failed").length;
+  const unconfirmedChecks = summary.checks.filter((check) => check.state === "failed" || check.state === "unobserved").length;
+  const unverifiedVerdicts = summary.checks.filter((check) => check.state === "unverified").length;
+  const unconfirmedMakers = makers.filter((maker) => (
     maker.run === "failed" || maker.run === "aborted" || maker.run === "unobserved"
     || maker.verdict?.verdict !== "accepted"
-  ));
-  const unverifiedCount = unverifiedChecks.length + unverifiedMakers.length;
-  if (summary.files.length === 0 && summary.checks.length === 0 && makers.length === 0 && !remaining?.length) return null;
+  )).length;
+  const unconfirmed = unconfirmedChecks + unconfirmedMakers;
+  // CI·배포 명령은 검사가 아니므로, 그것만 있던 턴도 교차리뷰 뒤 단계가 있으면 카드를 보인다.
+  const laterStages = flow.steps.some((step) => step.stage === "review" || step.stage === "commit" || step.stage === "ci" || step.stage === "deploy");
+  if (summary.files.length === 0 && summary.checks.length === 0 && makers.length === 0 && !remaining?.length && !laterStages) return null;
 
   const parts = [st("summary.files", { count: summary.files.length }), st("summary.checks", { count: summary.checks.length })];
-  if (failedChecks.length > 0) parts.push(st("summary.checksFailed", { count: failedChecks.length }));
+  if (failedChecks > 0) parts.push(st("summary.checksFailed", { count: failedChecks }));
   if (makers.length > 0) parts.push(st("summary.makers", { count: makers.length }));
   if (remaining) parts.push(st("summary.remaining", { count: remaining.length }));
-  if (unverifiedCount > 0) parts.push(st("summary.unverified", { count: unverifiedCount }));
+  if (unconfirmed > 0) parts.push(st("summary.unverified", { count: unconfirmed }));
+  if (unverifiedVerdicts > 0) parts.push(st("summary.verdictUnverified", { count: unverifiedVerdicts }));
+
+  const makerFact = makers.length > 0 && (
+    <div className="flow-fact">
+      <span className="flow-fact-label">Maker</span>
+      <ul className="flow-fact-value flow-makers">
+        {makers.map((maker, index) => {
+          const bar = bars[index];
+          const durationMs = timings[index].durationMs;
+          const stillRunning = maker.run === "running" || maker.run === "pending" || maker.run === "dispatching";
+          return (
+            <li key={maker.member.key} className="answer-maker-time" data-run={maker.run}>
+              <span className="answer-maker-time-name" title={maker.title}>{maker.title}</span>
+              {bar && durationMs !== null ? (
+                <>
+                  <span className="answer-maker-time-track" aria-hidden="true">
+                    <span className="answer-maker-time-bar" style={{ left: percent(bar.offset), width: percent(bar.width) }} />
+                  </span>
+                  <span className="answer-maker-time-value">{elapsedText(st, durationMs)}</span>
+                </>
+              ) : (
+                <span className="answer-maker-time-missing">
+                  {st(stillRunning ? "summary.time.running" : "summary.time.unobserved")}
+                </span>
+              )}
+              <MakerStatusPair maker={maker} st={st} />
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 
   return (
     <div className="answer-summary" data-open={open ? "" : undefined}>
@@ -68,75 +105,72 @@ export function TurnSummaryLine({ summary, onOpenFile }: { summary: FinishedTurn
         title={st(open ? "summary.collapse" : "summary.expand")}
         onClick={() => setToggled(!open)}
       >
-        <span className="answer-summary-text" data-unverified={unverifiedCount > 0 ? "" : undefined}>{parts.join(" · ")}</span>
-        <svg className="answer-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <span className="answer-summary-text" data-unverified={unconfirmed > 0 || unverifiedVerdicts > 0 ? "" : undefined}>
+          {parts.join(" · ")}
+        </span>
+        <svg className="answer-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
       {open && (
         <div className="answer-summary-body" id={bodyId}>
-          {makers.length > 0 && (
-            <section>
-              <h4 className="answer-summary-heading">{st("summary.heading.makers")}</h4>
-              <ul className="answer-summary-list answer-maker-times">
-                {makers.map((maker, index) => {
-                  const bar = bars[index];
-                  const durationMs = timings[index].durationMs;
-                  const ended = maker.run === "failed" || maker.run === "aborted" ? st(`run.${maker.run}`) : null;
-                  const stillRunning = maker.run === "running" || maker.run === "pending" || maker.run === "dispatching";
+          {flow.steps.length > 0 && (
+            <section className="flow-section">
+              <h4 className="flow-heading">{st("flow.heading")}</h4>
+              <ol className="flow" aria-label={st("flow.aria")}>
+                {flow.stages.map((view) => {
+                  const look = stageLook(view, flow, false);
+                  const rows = view.stage === "check" || view.stage === "ci" || view.stage === "deploy" ? view.steps : [];
+                  const facts = view.stage === "edit" && (makerFact || summary.files.length > 0);
                   return (
-                    <li key={maker.member.key} className="answer-maker-time" data-run={maker.run}>
-                      <span className="answer-maker-time-name" title={maker.title}>{maker.title}</span>
-                      {bar && durationMs !== null ? (
-                        <>
-                          <span className="answer-maker-time-track" aria-hidden="true">
-                            <span className="answer-maker-time-bar" style={{ left: percent(bar.offset), width: percent(bar.width) }} />
-                          </span>
-                          <span className="answer-maker-time-value">
-                            {ended ? `${elapsedText(st, durationMs)} · ${ended}` : elapsedText(st, durationMs)}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="answer-maker-time-missing">
-                          {st(stillRunning ? "summary.time.running" : "summary.time.unobserved")}
-                        </span>
+                    <li
+                      key={view.stage}
+                      className="flow-stage"
+                      data-state={look}
+                      data-reentry={look === "active" && flow.next?.returning ? "" : undefined}
+                      aria-current={look === "active" ? "step" : undefined}
+                    >
+                      <StageNode look={look} />
+                      <span className="flow-stage-name">{st(`flow.stage.${view.stage}`)}</span>
+                      <span className="flow-stage-state">
+                        {look === "active" ? <NextMark view={view} flow={flow} st={st} /> : <StageWord view={view} flow={flow} live={false} st={st} />}
+                      </span>
+                      {(facts || rows.length > 0 || view.earlier.length > 0) && (
+                        <div className="flow-stage-body">
+                          {facts && (
+                            <>
+                              {makerFact}
+                              {summary.files.length > 0 && (
+                                <div className="flow-fact">
+                                  <span className="flow-fact-label">{st("summary.heading.files")}</span>
+                                  <div className="flow-fact-value">
+                                    <TurnWrittenFiles files={summary.files} onOpenFile={onOpenFile} />
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {(rows.length > 0 || view.earlier.length > 0) && (
+                            <div className="flow-stage-rows">
+                              {rows.length > 0 && <StepRows steps={rows} st={st} />}
+                              <EarlierAttempts steps={view.earlier} st={st} />
+                            </div>
+                          )}
+                        </div>
                       )}
                     </li>
                   );
                 })}
-              </ul>
-            </section>
-          )}
-          {summary.files.length > 0 && (
-            <section>
-              <h4 className="answer-summary-heading">{st("summary.heading.files")}</h4>
-              <TurnWrittenFiles files={summary.files} onOpenFile={onOpenFile} />
-            </section>
-          )}
-          {summary.checks.length > 0 && (
-            <section>
-              <h4 className="answer-summary-heading">{st("summary.heading.checks")}</h4>
-              <ul className="answer-summary-list">
-                {summary.checks.map((check) => (
-                  <li key={check.toolCallId} className="answer-check" data-state={check.state}>
-                    <code className="answer-check-command" title={check.command}>{check.command}</code>
-                    <span className="answer-check-result">
-                      {check.exitCode !== null
-                        ? st("summary.check.exit", { code: check.exitCode })
-                        : st(check.state === "failed" ? "summary.check.error" : "summary.check.unobserved")}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              </ol>
             </section>
           )}
           {remaining && (
-            <section>
-              <h4 className="answer-summary-heading">{st("summary.heading.remaining")}</h4>
+            <section className="flow-remaining">
+              <h4 className="flow-heading">{st("summary.heading.remaining")}</h4>
               {remaining.length === 0 ? (
                 <p className="answer-summary-empty">{st("summary.todo.none")}</p>
               ) : (
-                <ul className="answer-summary-list">
+                <ul className="flow-remaining-list">
                   {remaining.map((task, index) => (
                     <li key={`${task.phase}#${index}`} className="answer-remaining" data-status={task.status} title={task.phase || undefined}>
                       <span className="answer-remaining-status">{st(`summary.todo.${task.status}`)}</span>
@@ -146,24 +180,6 @@ export function TurnSummaryLine({ summary, onOpenFile }: { summary: FinishedTurn
                   ))}
                 </ul>
               )}
-            </section>
-          )}
-          {unverifiedCount > 0 && (
-            <section>
-              <h4 className="answer-summary-heading">{st("summary.heading.unverified")}</h4>
-              <ul className="answer-summary-list">
-                {unverifiedChecks.map((check) => (
-                  <li key={`check-${check.toolCallId}`}>
-                    {st(check.state === "failed" ? "summary.u.checkFailed" : "summary.u.checkUnobserved", { command: check.command })}
-                  </li>
-                ))}
-                {unverifiedMakers.map((maker) => (
-                  <li key={`maker-${maker.member.key}`} className="answer-summary-maker">
-                    <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
-                    <MakerStatusPair maker={maker} st={st} />
-                  </li>
-                ))}
-              </ul>
             </section>
           )}
         </div>

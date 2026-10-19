@@ -936,6 +936,7 @@
  "makerDetail.archiveUnobserved": "기록에 도구 결과가 없어 확인할 수 없습니다",
  "makerDetail.unavailable": "이 시도와 정확히 맞는 실행 기록이 없어 상세를 열 수 없습니다",
  "makerDetail.checkPassed": "통과",
+ "makerDetail.checkUnverified": "판정 미확인",
  "makerDetail.checkFailed": "실패",
  "makerDetail.checkUnobserved": "결과 미관측",
  "dispatchLane.label": "Maker 시도",

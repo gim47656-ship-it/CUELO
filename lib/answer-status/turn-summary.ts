@@ -1,29 +1,13 @@
 import type { ConversationRenderItem } from "@/lib/transcript-plan";
 import { isTodoToolName, resolveTodoSnapshot, type TodoPhase } from "@/lib/todo-state";
-import { readExitCode } from "@/lib/tool-exit-code";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolCallContent, ToolResultMessage } from "@/lib/types";
+import { deriveWorkFlow, readCheckRun, type CheckRun, type WorkFlow } from "./work-flow";
 
 /**
- * 끝난 턴 하나의 관측 요약: 실제로 쓴 파일, 실제로 실행한 검사 명령과 그 결과, 그 턴이 띄운 발주.
+ * 끝난 턴 하나의 관측 요약: 실제로 쓴 파일, 실제로 실행한 검사 명령과 그 판정, 그 턴이 띄운 발주.
  * 모델이 답변에 적은 말은 읽지 않는다 — 전부 도구 호출과 그 결과에서 온다.
  */
-
-/**
- * 검사로 세는 bash 명령: 명령 문자열에 test·typecheck·tsc·lint·eslint·vitest·jest·pytest·
- * build·check·verify·smoke 가운데 하나가 단어로 들어 있는 것.
- */
-const CHECK_COMMAND = /(?:^|[^\w-])(?:tests?|typecheck|tsc|lint|eslint|vitest|jest|pytest|build|check|verify|smoke)(?![\w])/i;
-
-export type CheckState = "passed" | "failed" | "unobserved";
-
-export interface CheckRun {
-  toolCallId: string;
-  command: string;
-  state: CheckState;
-  /** 결과에 기록된 종료 코드. 없으면 null. */
-  exitCode: number | null;
-}
 
 /** 그 턴의 마지막 todo 목록에서 끝나지 않은 일. 완료·포기한 일은 남은 일이 아니다. */
 export interface RemainingTask {
@@ -69,16 +53,8 @@ export function summarizeTurn(
       if (snapshot.kind === "authoritative") lastTodo = snapshot.phases;
       continue;
     }
-    if (block.toolName !== "bash") continue;
-    const command = typeof block.input.command === "string" ? block.input.command.trim() : "";
-    if (!command || !CHECK_COMMAND.test(command)) continue;
-    const result = toolResults.get(block.toolCallId);
-    const exitCode = result ? readExitCode(result) : null;
-    // 종료 코드가 기록되지 않은 결과(백그라운드로 넘어간 실행 등)는 성공으로 치지 않는다.
-    const state: CheckState = exitCode === null
-      ? (result?.isError ? "failed" : "unobserved")
-      : exitCode === 0 ? "passed" : "failed";
-    checks.push({ toolCallId: block.toolCallId, command, state, exitCode });
+    const check = readCheckRun(block, toolResults.get(block.toolCallId));
+    if (check) checks.push(check);
   }
   return {
     checks,
@@ -150,6 +126,8 @@ export function readTurnSpan(messages: readonly AgentMessage[], from: number, to
 
 export interface FinishedTurnSummary extends TurnSummary {
   span: TurnSpan;
+  /** 그 턴의 작업 단계와 회차. */
+  flow: WorkFlow;
   /** 끝난 턴 가운데 가장 나중 것. 그 카드만 처음부터 펼친다. */
   latest: boolean;
 }
@@ -167,9 +145,11 @@ export function summarizeFinishedTurns(
   for (const position of places.keys()) if (position > latest) latest = position;
   const summaries = new Map<number, FinishedTurnSummary>();
   for (const [position, range] of places) {
+    const blocks = collectTurnBlocks(messages, range.from, range.to);
     summaries.set(position, {
-      ...summarizeTurn(collectTurnBlocks(messages, range.from, range.to), toolResults, cwd),
+      ...summarizeTurn(blocks, toolResults, cwd),
       span: readTurnSpan(messages, range.from, range.to),
+      flow: deriveWorkFlow(blocks, toolResults),
       latest: position === latest,
     });
   }

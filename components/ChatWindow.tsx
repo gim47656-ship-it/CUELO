@@ -32,7 +32,8 @@ import "./answer-status/answer-status.css";
 import { DispatchDockLine } from "./answer-status/DispatchDockLine";
 import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { DispatchCard } from "./answer-status/DispatchCard";
-import { summarizeFinishedTurns, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
+import { collectTurnBlocks, summarizeFinishedTurns, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
+import { deriveWorkFlow } from "@/lib/answer-status/work-flow";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
 import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
@@ -1314,6 +1315,20 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // 실행이 실제로 무언가 하기 시작한 순간 — 답의 글이 흐르거나 도구 호출이 뜬 때 — 한 번만
   // 착수를 알린다. 재렌더·도구마다 다시 부르지 않고, 새 활동 없이 타이머로 반복하지도 않는다.
   const streamingAssistant = streamingMessage?.role === "assistant" ? streamingMessage as AssistantMessage : null;
+  // 입력창 위 줄의 작업 단계: 마지막 사용자 메시지 뒤 이 턴의 도구 호출에, 아직 흐르는 답의 도구 호출을 더한다.
+  // 진행 중이면 결과가 오지 않은 호출을 진행 중으로 보고, 멈췄으면 끝난 턴처럼 다음 차례를 고른다.
+  const stripFlow = useMemo(() => {
+    let lastUser = -1;
+    for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+      if (messages[idx].role === "user") {
+        lastUser = idx;
+        break;
+      }
+    }
+    const blocks = collectTurnBlocks(messages, lastUser + 1, messages.length);
+    if (streamingAssistant) blocks.push(...(streamingAssistant.content ?? []));
+    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy);
+  }, [messages, streamingAssistant, toolResultsMap, sessionBusy]);
   const progressStarted = agentRunning && (
     agentPhase?.kind === "running_tools"
     || (streamingAssistant?.content ?? []).some((block) => (block.type === "text" && /\S/.test(block.text)) || block.type === "toolCall")
@@ -1466,7 +1481,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         // 바깥 칸은 0까지 줄 수 있어야 한다: 세로 여백을 여기 두면 그만큼은 줄지 않아, 높이가 낮은 가로 폰에서
         // 입력란과 도구 줄을 밀어냈다. 여백은 안쪽에 두고 my-auto로 가운데 맞춘다(넘치면 이 칸 안에서 스크롤된다).
         <div className="flex flex-1 flex-col items-center overflow-y-auto px-4">
-          <div className="my-auto w-full max-w-[820px] py-8">
+          <div className="my-auto w-full max-w-[860px] py-8">
             <div
               className="mb-3"
               style={{
@@ -1517,7 +1532,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             pointerEvents: "none",
           }}
         >
-          <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
             <ChatSearchBar
               open={searchOpen}
               onClose={closeSearch}
@@ -1540,7 +1555,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         {/* relative: 메시지 안의 absolute 요소(sr-only 등)가 이 스크롤 상자를 기준으로 잘리게 한다. 아니면 바깥 overflow-hidden 상자가 늘어나고 scrollIntoView가 그 상자를 밀어 대화가 화면 밖으로 사라진다. */}
         <div ref={scrollContainerRef} className="chat-session-scroll relative min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 860, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             <AnswerStatusContext.Provider value={answerStatus}>
@@ -1637,7 +1652,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
       <div ref={composerDockRef} className="relative chat-composer-dock flex min-h-0 flex-col">
         {extensionDialog && (
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
               <ExtensionDialog
                 request={extensionDialog}
                 onRespond={respondToExtensionUi}
@@ -1653,12 +1668,12 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
           }}
         >
-          <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
+          <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
             {!keyboardCompact && <DispatchDockLine summary={dispatchDock} onJump={jumpToItem} onOpenPanel={openSubagentsPanel} />}
             <ExtensionWidgets widgets={belowEditorWidgets} />
-            {todoPhases && !keyboardCompact && <TodoStrip phases={todoPhases} />}
+            {(todoPhases || stripFlow.steps.length > 0) && !keyboardCompact && <TodoStrip phases={todoPhases} flow={stripFlow} busy={sessionBusy} />}
           </div>
         </div>
         {chatInputElement}

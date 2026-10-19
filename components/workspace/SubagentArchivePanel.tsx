@@ -22,7 +22,8 @@ import {
   type SubagentTranscriptState,
 } from "@/hooks/useSubagentTranscripts";
 import { useI18n } from "@/hooks/useI18n";
-import type { CheckState, TurnSummary } from "@/lib/answer-status/turn-summary";
+import type { TurnSummary } from "@/lib/answer-status/turn-summary";
+import type { CheckState } from "@/lib/answer-status/work-flow";
 import { useAnswerStatusText } from "@/components/answer-status/i18n";
 import type { MakerSelection } from "@/components/answer-status/AnswerStatusContext";
 import { MakerStatusPair, summarizeMakerRun } from "@/components/answer-status/DispatchCard";
@@ -192,8 +193,9 @@ function MakerOutcome({ state, summary, reason, onOpenFile }: {
   );
 }
 
-const CHECK_STATE_LABEL: Record<CheckState, "makerDetail.checkPassed" | "makerDetail.checkFailed" | "makerDetail.checkUnobserved"> = {
+const CHECK_STATE_LABEL: Record<CheckState, "makerDetail.checkPassed" | "makerDetail.checkUnverified" | "makerDetail.checkFailed" | "makerDetail.checkUnobserved"> = {
   passed: "makerDetail.checkPassed",
+  unverified: "makerDetail.checkUnverified",
   failed: "makerDetail.checkFailed",
   unobserved: "makerDetail.checkUnobserved",
 };

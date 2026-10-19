@@ -1,4 +1,4 @@
-<!-- source-fingerprint: a23e3904aee81900 -->
+<!-- source-fingerprint: 3a3ea35f2d33ece5 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -73,6 +73,8 @@ The change owner runs verification; Main judges the evidence. A Maker runs the m
 ## Progress and waiting
 
 Use Main-only `wait` (subagents have none) only at real dependency/synthesis barriers; do other remaining work first. Observe long jobs through `read proc://<id>` and artifacts; never conclude progress from silence or `running` alone. Peer messages are `write agent://<id>`, cancellation is `write proc://<id>/kill`, and processes that must stay up are `bash` `name` services with a session-unique name. Delivery, cancellation, intervention, collecting jobs before yield: `rule://subagent` 「병렬과 대기」 and `harness-policy.json` `mainLane.waitContract`.
+
+**What Main does first while a Maker runs:** never move straight to `wait` after dispatching. First finish Main's own share that does not overlap the Maker's owned paths: user-visible docs (CHANGELOG, README, `docs/`), `HANDOFF.md`·`doc/README.md` and work-record drafts, read-only interim review of settled deltas, and the next step's check commands and acceptance. `wait` only when everything left depends on the Maker's result. Never treat "check status on each progress-supervision notice, then `wait` again" as Main's work (user feedback, 2026-10-19: for over 30 minutes of Maker implementation, Main only repeated wait and status checks). Never edit a Maker's owned paths on its behalf; to take a piece over, get it handed over by that Maker first.
 
 **TODO is a live work board.** Main updates the relevant item as soon as it observes a transition: starting, verified completion, external waiting, resuming, or failure/rework. Do not postpone updates until the next phase or final report, or substitute chat narration for them. On a user interjection, reply first and then make the needed update in the same turn. During progress reports, check that TODO matches the actual state.
 

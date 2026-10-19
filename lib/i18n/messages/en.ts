@@ -942,6 +942,7 @@ export const enLocale = {
     "makerDetail.archiveUnobserved": "The record holds no tool results, so this cannot be confirmed",
     "makerDetail.unavailable": "No run record matches this attempt exactly, so its detail cannot be opened",
     "makerDetail.checkPassed": "passed",
+    "makerDetail.checkUnverified": "verdict not confirmed",
     "makerDetail.checkFailed": "failed",
     "makerDetail.checkUnobserved": "result not observed",
     "dispatchLane.label": "Maker attempts",

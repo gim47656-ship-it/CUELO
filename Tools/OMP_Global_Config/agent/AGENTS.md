@@ -71,6 +71,8 @@ Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수�
 
 실제 dependency/synthesis barrier에서만 Main 전용 `wait`를 쓰고(SubAgent에는 없다), 다른 일이 남으면 먼저 한다. 장기 job은 `read proc://<id>`와 산출물로 관측하며 침묵·`running`만으로 진행을 단정하지 않는다. peer 메시지는 `write agent://<id>`, 취소는 `write proc://<id>/kill`, 살아 있어야 하는 프로세스는 세션마다 고유한 이름의 `bash` `name` 서비스다. 결과 전달·취소·개입·yield 전 job 회수는 `rule://subagent` 「병렬과 대기」와 `harness-policy.json` `mainLane.waitContract`가 정본이다.
 
+**Maker가 도는 동안 Main이 먼저 할 일:** 발주 직후 곧바로 `wait`로 넘어가지 않는다. Maker 소유 경로와 겹치지 않는 Main 몫을 먼저 끝낸다. 사용자에게 보일 문서(CHANGELOG·README·`docs/`), `HANDOFF.md`·`doc/README.md`와 작업 기록 초안, 확정된 delta의 읽기 전용 중간 검수, 다음 단계의 검사 명령·acceptance 준비가 여기에 든다. 남은 일이 모두 Maker 결과에 달렸을 때만 `wait`한다. 진행 감시 알림마다 상태만 확인하고 다시 `wait`하는 순환을 Main의 일로 삼지 않는다(2026-10-19 사용자 지적: Maker 구현 30분 넘게 Main이 wait·상태 확인만 반복했다). Maker 소유 경로는 대신 고치지 않으며, 떼어 오려면 그 Maker에게 먼저 넘겨받는다.
+
 **TODO는 실시간 작업 현황판이다.** Main은 착수·검증 완료·외부 대기·재개·실패/재작업의 상태 전환을 관측한 자리에서 해당 항목을 즉시 갱신한다. 다음 단계나 최종 보고까지 미루거나 채팅 설명으로 대신하지 않는다. 사용자 interjection에는 먼저 즉답한 뒤 같은 턴에서 필요한 갱신을 잇고, 진행 보고 때는 TODO와 실제 상태가 일치하는지 확인한다.
 
 - 완료 증거를 수용하면 바로 `done`한다. child의 종료만으로 완료 처리하지 않으며, 국소 구현·검증과 통합·배포 완료를 구분한다.

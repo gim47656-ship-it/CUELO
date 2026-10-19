@@ -942,6 +942,7 @@ export const zhCNLocale: LocalePlugin = {
     "makerDetail.archiveUnobserved": "记录中没有工具结果，无法确认",
     "makerDetail.unavailable": "没有与此次尝试完全对应的运行记录，无法打开详情",
     "makerDetail.checkPassed": "通过",
+    "makerDetail.checkUnverified": "判定未确认",
     "makerDetail.checkFailed": "失败",
     "makerDetail.checkUnobserved": "结果未观测",
     "dispatchLane.label": "Maker 尝试",

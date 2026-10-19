@@ -870,12 +870,44 @@ pre, code {
   margin-bottom: 8px;
   border-block-end: 1px solid var(--hairline);
 }
+.todo-strip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  min-height: 36px;
+  padding: 4px 2px 8px;
+  font-size: 15px;
+}
+.todo-strip-lead { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.todo-strip-flow-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.todo-strip-flow-toggle[aria-expanded="true"] { border-color: var(--border-strong); color: var(--text); }
+.todo-strip-flow-toggle:hover { background: var(--bg-hover); }
+.todo-strip-flow-toggle:focus-visible,
+.todo-strip-summary:focus-visible,
+.todo-strip-completed-toggle:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
 .todo-strip-summary {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  width: 100%;
+  flex: 1 1 14rem;
+  min-width: 0;
   padding: 4px 2px;
   border: none;
   background: none;
@@ -917,13 +949,14 @@ pre, code {
   flex: 0 0 auto;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: var(--readout-size);
+  font-size: 14px;
 }
 
 /* Narrow shells cannot fit the goal and the numbers on one row. Rather than shrink the task name
    away until only a percent is left, phase and numbers keep the first row and the task drops to
    its own row below them, where it may run to two lines. */
 @media (max-width: 640px) {
+  .todo-strip-summary { order: 1; flex-basis: 100%; }
   .todo-strip-task {
     display: -webkit-box;
     flex: 1 1 100%;
@@ -946,7 +979,7 @@ pre, code {
   border: none;
   background: none;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 14px;
   cursor: pointer;
 }
 .todo-strip-completed-toggle:hover {
@@ -1377,7 +1410,7 @@ span.linenumber {
   --workspace-min-transcript: 550px;
   --workspace-min-navigator: 240px;
   --workspace-min-deck: 384px;
-  /* Transcript measure stays 43em; 550px is only the pinning floor. */
+  /* The transcript measure is 860px, the composer's cap; 550px is only the pinning floor. */
   container-name: workspace-shell;
   container-type: inline-size;
   isolation: isolate;
@@ -1612,12 +1645,12 @@ span.linenumber {
 
 .chat-session-column .chat-session-scroll > div {
   inline-size: 100%;
-  max-inline-size: calc(43em + 32px);
+  max-inline-size: calc(860px + 32px);
   margin-inline: auto;
 }
 
 .chat-session-column .chat-session-scroll > div > div {
-  max-inline-size: 43em !important;
+  max-inline-size: 860px !important;
 }
 
 .workspace-auxiliary-deck-slot {

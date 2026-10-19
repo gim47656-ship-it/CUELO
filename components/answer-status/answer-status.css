@@ -83,8 +83,7 @@
   border-top: 1px solid var(--border);
 }
 
-.answer-dispatch-line,
-.answer-summary-maker {
+.answer-dispatch-line {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -368,7 +367,7 @@
 
 .answer-summary-text {
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--seed-font-size-t4-static, 14px);
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
@@ -377,21 +376,18 @@
   color: var(--warning);
 }
 
+/* 펼친 결과 카드: 작업 흐름과 남은 일을 담는 판. 단계 줄의 세 칸(노드 | 단계 이름 | 상태)을 여기서 정한다. */
 .answer-summary-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 6px 0 4px;
+  --flow-col-node: 24px;
+  --flow-col-name: 104px;
+  --flow-col-gap: 12px;
+  margin-top: 4px;
   min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
   container-name: answer-summary;
   container-type: inline-size;
-}
-
-.answer-summary-heading {
-  margin: 0 0 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
 }
 
 .answer-summary-list {
@@ -439,13 +435,17 @@
   color: var(--danger);
 }
 
+.answer-check[data-state="unverified"] .answer-check-result {
+  color: var(--warning);
+}
+
 /*
  * Maker 실행 시간: 모든 막대가 그 턴 하나의 시간축을 같이 쓴다. 같이 돈 Maker는 겹쳐 보이고 차례로 돈 Maker는
  * 이어져 보인다. 소요는 막대 옆 글자로도 적어 색과 길이만으로 뜻을 전하지 않는다.
  */
 .answer-maker-time {
   display: grid;
-  grid-template-columns: minmax(0, 12rem) minmax(3rem, 1fr) auto;
+  grid-template-columns: minmax(0, 12rem) minmax(3rem, 1fr) auto auto;
   align-items: center;
   column-gap: 10px;
   row-gap: 2px;
@@ -498,7 +498,7 @@
 }
 
 .answer-maker-time-missing {
-  grid-column: 2 / -1;
+  grid-column: 2 / 4;
   color: var(--text-dim);
 }
 
@@ -508,7 +508,8 @@
   }
 
   .answer-maker-time-name,
-  .answer-maker-time-missing {
+  .answer-maker-time-missing,
+  .answer-maker-time > .answer-status-pair {
     grid-column: 1 / -1;
   }
 }
@@ -547,8 +548,163 @@
 
 .answer-summary-empty {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--seed-font-size-t4-static, 14px);
   color: var(--text-dim);
+}
+
+/* Shared work-stage rail and verdict-first command rows. */
+.flow-section { padding: 14px 18px 10px; }
+.flow-heading { margin: 0 0 10px; font-size: 15px; font-weight: 600; color: var(--text); }
+.flow { list-style: none; margin: 0; padding: 4px 0 0; }
+.flow-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--flow-col-node) var(--flow-col-name) minmax(0, 1fr);
+  grid-template-areas: "node name state" ". body body";
+  column-gap: var(--flow-col-gap);
+  padding-bottom: 18px;
+}
+.flow-stage::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 24px;
+  bottom: 2px;
+  border-left: 2px solid var(--border-strong);
+}
+.flow-stage[data-state="waiting"]::before,
+.flow-stage[data-state="active"]::before { border-left-style: dashed; border-left-color: var(--border); }
+.flow-stage[data-reentry]::before { border-left-style: solid; border-left-color: var(--border-strong); }
+.flow-stage:last-child::before { content: none; }
+.flow-stage:last-child { padding-bottom: 4px; }
+.flow-node {
+  grid-area: node;
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border-radius: 50%;
+}
+[data-state="done"] > .flow-node { background: var(--text); color: var(--bg); }
+[data-state="unverified"] > .flow-node,
+[data-state="failed"] > .flow-node { border: 2px solid var(--border-strong); color: var(--text-muted); }
+[data-state="active"] > .flow-node,
+[data-state="running"] > .flow-node { border: 2px solid var(--text); box-shadow: 0 0 0 4px var(--accent-soft); }
+[data-state="active"] > .flow-node::after,
+[data-state="running"] > .flow-node::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text); }
+.flow [data-state="done"] > .flow-node { background: var(--border-strong); }
+.flow [data-state="active"] > .flow-node { width: 24px; height: 24px; margin-top: 0; box-shadow: 0 0 0 5px var(--accent-soft); }
+[data-state="waiting"] > .flow-node { border: 2px dashed var(--border-strong); }
+[data-state="approval"] > .flow-node { width: 16px; height: 16px; margin-top: 4px; border-radius: 2px; border: 2px solid var(--text-dim); transform: rotate(45deg); }
+.flow-stage-name { grid-area: name; font-size: 16px; font-weight: 600; line-height: 24px; color: var(--text); }
+.flow-stage[data-state="done"] > .flow-stage-name,
+.flow-stage[data-state="unverified"] > .flow-stage-name { color: var(--text-muted); font-weight: 500; }
+.flow-stage[data-state="active"] > .flow-stage-name { font-size: 17px; font-weight: 700; }
+.flow-stage-state { grid-area: state; min-width: 0; font-size: 15px; line-height: 24px; color: var(--text-muted); overflow-wrap: anywhere; }
+.flow-stage[data-state="waiting"] > .flow-stage-name,
+.flow-stage[data-state="approval"] > .flow-stage-name,
+.flow-stage[data-state="waiting"] > .flow-stage-state,
+.flow-stage[data-state="approval"] > .flow-stage-state { color: var(--text-dim); }
+.flow-now { color: var(--text); font-weight: 600; }
+.flow-tone[data-tone="passed"] { color: var(--success); font-weight: 600; }
+.flow-tone[data-tone="failed"] { color: var(--danger); font-weight: 600; }
+.flow-tone[data-tone="unverified"] { color: var(--warning); font-weight: 600; }
+.flow-tone[data-tone="unobserved"] { color: var(--text-dim); }
+.flow-sha { font: inherit; font-family: var(--font-mono); }
+.flow-stage-body { grid-area: body; display: grid; grid-template-columns: var(--flow-col-name) minmax(0, 1fr); column-gap: var(--flow-col-gap); row-gap: 6px; min-width: 0; padding-top: 6px; }
+.flow-fact { display: contents; }
+.flow-fact-label { grid-column: 1; font-size: 14px; line-height: 24px; color: var(--text-dim); }
+.flow-fact-value { grid-column: 2; min-width: 0; font-size: 15px; line-height: 24px; color: var(--text); overflow-wrap: anywhere; }
+.flow-makers { list-style: none; margin: 0; padding: 0; }
+.flow-makers .answer-status-pair { font-size: 14px; }
+.flow-makers .answer-maker-time > .answer-status-pair { grid-column: 1 / -1; }
+.flow-makers .answer-maker-time { grid-template-columns: minmax(0, 12rem) minmax(3rem, 1fr) auto; }
+.flow-stage-rows { grid-column: 2; min-width: 0; }
+.flow-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.flow-check-head { display: grid; grid-template-columns: 18px 96px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 40px; margin: 0 -8px; padding: 4px 8px; border-radius: var(--radius-control); font-size: 14px; list-style: none; }
+summary.flow-check-head { cursor: pointer; }
+.flow-check-head::-webkit-details-marker,
+.flow-earlier-toggle::-webkit-details-marker { display: none; }
+summary.flow-check-head:hover,
+.flow-earlier-toggle:hover { background: var(--bg-hover); }
+.flow-check-head:focus-visible,
+.flow-earlier-toggle:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
+.flow-check-head > .flow-tone { font-weight: 600; overflow-wrap: anywhere; }
+.flow-check[data-result="passed"] .flow-check-icon { color: var(--success); }
+.flow-check[data-result="failed"] .flow-check-icon { color: var(--danger); }
+.flow-check[data-result="unverified"] .flow-check-icon { color: var(--warning); }
+.flow-check-label { min-width: 0; font-size: 15px; color: var(--text); overflow-wrap: anywhere; }
+.flow-disclose { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); white-space: nowrap; }
+.flow-chevron { flex-shrink: 0; color: var(--text-dim); }
+details[open] > summary .flow-chevron,
+[aria-expanded="true"] > .flow-chevron { transform: rotate(180deg); }
+.flow-raw { margin: 4px 0 8px 134px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); font-size: 14px; color: var(--text-muted); min-width: 0; }
+.flow-raw-command { display: block; font-size: 14px; color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; }
+.flow-exit { margin-top: 4px; color: var(--text-dim); }
+.flow-why { margin: 0 0 8px; }
+.flow-why b { color: var(--text); font-weight: 600; }
+.flow-earlier { margin-top: 6px; }
+.flow-earlier-toggle { display: flex; align-items: center; gap: 6px; width: fit-content; min-height: 32px; padding: 4px; font-size: 14px; color: var(--text-dim); cursor: pointer; list-style: none; border-radius: var(--radius-control); }
+.flow-remaining { padding: 12px 18px 16px; border-top: 1px solid var(--hairline); }
+.flow-remaining:first-child { border-top: none; }
+.flow-remaining-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 15px; overflow-wrap: anywhere; }
+
+/* The strip's horizontal stage chain; connectors stay inside their positioned link. */
+.flow-chain-panel { margin-bottom: 10px; padding: 16px 8px 4px; border: 1px solid var(--border); border-radius: var(--radius-surface); background: var(--bg); container: flow-chain / inline-size; }
+.flow-chain-wrap { position: relative; padding-bottom: 12px; }
+.flow-chain { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.flow-link { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; text-align: center; overflow-wrap: anywhere; }
+.flow-link::after { content: ""; position: absolute; top: 11px; left: calc(50% + 16px); right: calc(-50% + 16px); border-top: 2px solid var(--border-strong); }
+.flow-link[data-state="active"]::after,
+.flow-link[data-state="waiting"]::after { border-top-style: dashed; border-top-color: var(--border); }
+.flow-link:last-child::after { content: none; }
+.flow-link[data-state="approval"] > .flow-node { margin: 4px 0 2px; }
+.flow-link-name { font-size: 15px; font-weight: 500; line-height: 22px; color: var(--text-muted); }
+.flow-link[data-state="active"] .flow-link-name { font-size: 18px; font-weight: 700; color: var(--text); }
+.flow-link-state { font-size: 14px; line-height: 21px; color: var(--text-muted); }
+.flow-link[data-state="active"] .flow-link-state { color: var(--text); font-weight: 600; }
+.flow-link[data-state="waiting"] .flow-link-name,
+.flow-link[data-state="approval"] .flow-link-name,
+.flow-link[data-state="waiting"] .flow-link-state,
+.flow-link[data-state="approval"] .flow-link-state { color: var(--text-dim); }
+.flow-loop { position: relative; margin-top: 24px; margin-left: calc(100% / 7 * 1.5); width: calc(100% / 7 * (var(--loop-from) - 1)); height: 32px; border: 3px solid var(--text); border-top: 0; border-radius: 0 0 8px 8px; }
+.flow-loop > svg { position: absolute; left: -12px; top: -14px; color: var(--text); }
+.flow-loop-count { position: absolute; left: 50%; bottom: 0; transform: translate(-50%, calc(50% + 1.5px)); display: inline-flex; padding: 0 8px; border: 1px solid var(--text); border-radius: var(--radius-control); background: var(--bg); font-size: 15px; font-weight: 700; line-height: 24px; white-space: nowrap; color: var(--text); }
+.flow-loop-caption { margin: 24px 0 0; text-align: center; font-size: 15px; color: var(--text-muted); overflow-wrap: anywhere; }
+.flow-loop-caption-count { display: none; }
+.flow-chain-attempts { margin: 0 8px; padding: 6px 8px 4px; border-top: 1px solid var(--hairline); }
+
+@container answer-summary (max-width: 620px) {
+  .flow-stage-rows { grid-column: 1 / -1; }
+}
+@container answer-summary (max-width: 520px) {
+  .flow-section { padding-inline: 12px; }
+  .flow-stage { grid-template-columns: 24px minmax(0, 1fr); grid-template-areas: "node name" ". state" ". body"; column-gap: 10px; }
+  .flow-stage-body { grid-template-columns: minmax(0, 1fr); }
+  .flow-fact-label, .flow-fact-value { grid-column: 1; }
+  .flow-stage .flow-check-head { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 8px; }
+  .flow-stage .flow-check-label { grid-column: 2 / -1; grid-row: 2; }
+  .flow-stage .flow-disclose { grid-column: 3; grid-row: 1; }
+  .flow-stage .flow-raw { margin-left: 0; }
+}
+@container flow-chain (max-width: 520px) {
+  .flow-chain { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .flow-link { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(0, 1fr); text-align: left; gap: 10px; }
+  .flow-link::after { top: 26px; bottom: -10px; left: 11px; right: auto; border-top: 0; border-left: 2px solid var(--border-strong); }
+  .flow-link[data-state="active"]::after,
+  .flow-link[data-state="waiting"]::after { border-left-style: dashed; border-left-color: var(--border); }
+  .flow-link .flow-node { grid-area: auto; }
+  .flow-loop { display: none; }
+  .flow-loop-caption { text-align: left; margin-top: 16px; }
+  .flow-loop-caption-count { display: block; font-weight: 700; color: var(--text); }
+  .flow-chain-attempts { margin-inline: 0; padding-inline: 0; }
+  .flow-check-head { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 8px; margin-inline: 0; }
+  .flow-check-label { grid-column: 2 / -1; grid-row: 2; }
+  .flow-disclose { grid-column: 3; grid-row: 1; }
+  .flow-raw { margin-left: 0; }
 }
 
 /* 입력창 위 큐 패널의 행. */

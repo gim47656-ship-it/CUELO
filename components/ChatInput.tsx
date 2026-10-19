@@ -2634,7 +2634,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           e.target.value = "";
         }}
       />
-      <div className="chat-column-cap" style={{ maxWidth: 820, margin: "0 auto" }}>
+      <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
         {/* Inputs sent while busy: queued (server queue) and their observed delivery stage */}

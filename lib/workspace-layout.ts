@@ -154,7 +154,7 @@ export interface WorkspacePinDecision {
 /**
  * Resolves region presentation in priority order. Width is the shell's
  * available inline size, not a device classification or user-agent signal.
- * The 43em transcript measure is normative; 550px is only its descriptive
+ * The 860px transcript measure is normative; 550px is only its descriptive
  * content floor for pin priority.
  */
 export function getWorkspacePinDecision(availableWidth: number): WorkspacePinDecision {
