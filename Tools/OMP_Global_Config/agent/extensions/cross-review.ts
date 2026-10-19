@@ -84,6 +84,7 @@ export interface CrossReviewParams {
   highRisk?: boolean;
   previousReviewId?: string;
   references?: string[];
+  probeResults?: { findingId: string; command: string; exitCode: number; output: string }[];
   reviewId?: string;
   resolutions?: { id: string; status: string; evidence: string }[];
 }
@@ -94,7 +95,7 @@ export async function executeCrossReview(params: CrossReviewParams, ctx: Extensi
   if (params.action === "review") {
     const input: ReviewInput = {
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
-      highRisk: params.highRisk, previousReviewId: params.previousReviewId, references: params.references,
+      highRisk: params.highRisk, previousReviewId: params.previousReviewId, references: params.references, probeResults: params.probeResults,
     };
     return runReview(input, deps, signal);
   }
@@ -110,7 +111,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Main 전용 계열 교차검증. action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector 또는 \"main\"이며 두 계열이면 둘 다 돌린다. previousReviewId를 주면 2회차(1회차 이후 delta만)이고 3회차는 거절한다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 비밀 경로·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve: reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다. git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
+    description: "Main 전용 계열 교차검증. action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector 또는 \"main\"이며 두 계열이면 둘 다 돌린다. previousReviewId를 주면 다음 라운드이고 체인은 최대 3회(probe 라운드 1회 + probe가 아닌 라운드 2회)다: probe가 아닌 라운드는 직전 라운드가 본 내용 이후의 delta만 보며 바뀐 것이 없으면 거절한다. reviewer는 코드만으로 가릴 수 없는 의심에 finding.probe{steps, expectIfReal, expectIfNot?}(재현 실험)를 붙일 수 있다. Main이나 기존 Maker가 그 실험을 돌린 뒤 previousReviewId와 probeResults[{findingId, command, exitCode, output}]를 주면 probe 라운드가 되어 코드 변경이 없어도 실험 결과로 한 번 더 판단받고, reviewer가 finding마다 verdicts{confirmed|withdrawn|unresolved}를 낸다(판단이 빠지면 unresolved). 체인에 없는 findingId·중복 결과·두 번째 probe 라운드·개인키 블록이 든 결과는 거절하며, output은 발췌로 결과당 8KB(넘으면 앞뒤만 남김)·합계 40KB(넘으면 거절)이고 비밀 값은 가려 신뢰하지 않는 자료로 전달한다. verdict는 자문일 뿐 finding을 자동으로 닫거나 통과시키지 않는다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 비밀 경로·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve: reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다(withdrawn 판단도 자동으로 닫지 않는다). git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -119,6 +120,7 @@ export default function crossReview(pi: ExtensionAPI): void {
       highRisk: z.boolean().optional(),
       previousReviewId: z.string().optional(),
       references: z.array(z.string()).optional(),
+      probeResults: z.array(z.object({ findingId: z.string(), command: z.string(), exitCode: z.number(), output: z.string() })).optional(),
       reviewId: z.string().optional(),
       resolutions: z.array(z.object({ id: z.string(), status: z.string(), evidence: z.string() })).optional(),
     }) as never,

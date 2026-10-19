@@ -113,7 +113,32 @@ export interface CrossReviewFinding {
   why: string;
   /** 이 지적을 낸 reviewer 모델(provider/id). */
   reviewer: string;
+  /** 코드만으로 가릴 수 없는 의심에 reviewer가 붙인 실험. 없으면 코드 읽기만으로 낸 지적이다. */
+  probe?: CrossReviewProbe;
 }
+
+/** reviewer가 제안한 재현 실험. Main(또는 기존 Maker)이 돌려 결과를 probeResults로 되돌린다. */
+export interface CrossReviewProbe {
+  /** 구체적 재현 절차(이벤트 순서·입력·돌릴 테스트). */
+  steps: string;
+  /** 지적이 사실이면 관찰될 결과. */
+  expectIfReal: string;
+  /** 지적이 틀렸다면 관찰될 결과(선택). */
+  expectIfNot?: string;
+}
+
+/** probe 라운드에서 reviewer가 finding 하나에 내린 판단. 자문일 뿐이며 어떤 finding도 자동으로 닫지 않는다. */
+export interface CrossReviewVerdict {
+  /** probe 결과를 받은 finding id. */
+  id: string;
+  verdict: "confirmed" | "withdrawn" | "unresolved";
+  why: string;
+  /** 판단한 reviewer 모델(provider/id). 답에 판단이 없어 도구가 채운 unresolved는 그 reviewer 모델이다. */
+  reviewer: string;
+}
+
+/** 원장에 남기는 probe 결과 요약. 출력 발췌 전문은 사본 디렉터리의 probe-results.json에 있다. */
+export interface CrossReviewProbeResultMeta { findingId: string; command: string; exitCode: number; outputBytes: number; truncated: boolean }
 
 export interface CrossReviewReviewer {
   family: "openai" | "anthropic";
@@ -138,7 +163,8 @@ export interface CrossReviewRecord {
   sessionId: string;
   /** 파일 경로의 기준이 되는 저장소 루트(호출 cwd 이름공간). */
   root: string;
-  round: 1 | 2;
+  /** 1부터 시작. 최대 3(probe 라운드 하나 포함 가능). */
+  round: 1 | 2 | 3;
   previousReviewId?: string;
   authors: string[];
   highRisk: boolean;
@@ -152,6 +178,10 @@ export interface CrossReviewRecord {
   redacted?: { path: string; matches: number }[];
   reviewers: CrossReviewReviewer[];
   findings: CrossReviewFinding[];
+  /** probe 라운드(probeResults를 받은 라운드)에서만 있다. 이 필드가 비어 있지 않으면 그 라운드가 체인의 probe 라운드다. */
+  probeResults?: CrossReviewProbeResultMeta[];
+  /** probe 라운드에서 reviewer가 결과를 받은 finding마다 내린 판단(자문). resolve 규칙에는 영향이 없다. */
+  verdicts?: CrossReviewVerdict[];
   /** 2회차 diff의 기준이 되는 검토 시점 내용 사본 위치. */
   snapshotDir: string;
   /** 모든 reviewer가 ok여야 true. false면 이 체인은 통과할 수 없다. */

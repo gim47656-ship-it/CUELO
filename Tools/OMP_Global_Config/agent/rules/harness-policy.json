@@ -269,7 +269,7 @@
         "exclusions": "documentation-comments-and-tests-are-excluded",
         "reviewerInput": "clean-input-the-frozen-diff-and-the-acceptance-conditions-without-profile-or-persona-text",
         "pass": "every-finding-is-closed-by-main-as-fixed-refuted-or-limit-with-evidence-through-cross_review-resolve",
-        "rounds": "at-most-two-and-round-two-reviews-only-the-delta-since-round-one",
+        "rounds": "at-most-three-per-chain-with-at-most-one-probe-round-and-at-most-two-non-probe-rounds-a-probe-round-is-any-round-submitted-with-non-empty-probeResults-even-when-it-also-carries-a-code-delta-a-non-probe-later-round-reviews-only-the-delta-since-the-latest-content-the-reviewer-was-shown-and-is-refused-when-nothing-changed-a-probe-round-carries-the-results-of-experiments-the-reviewer-proposed-through-finding-probe-may-have-no-code-change-and-returns-a-confirmed-withdrawn-or-unresolved-verdict-per-submitted-result-that-is-advisory-only-and-never-closes-a-finding",
         "gate": "git_finalize-stage-cross-review-runs-before-the-commit-and-blocks-a-required-change-without-a-passing-record",
         "waiver": "only-on-an-explicit-user-instruction-through-crossReviewWaiver-and-recorded-in-the-ledger-never-chosen-by-main-or-a-maker-on-its-own",
         "ledger": "cross-review-cross-review-resolve-and-cross-review-waiver-records",

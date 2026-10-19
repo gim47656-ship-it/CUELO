@@ -584,9 +584,17 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. 통과는 모든
-  finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 최대 2회이며 2회차는 1회차 이후 delta만 본다.
+  finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 한 체인은 최대 3회이며 probe 라운드는 그중 하나,
+  probe가 아닌 라운드는 둘이다. probe가 아닌 후속 라운드는 직전에 reviewer가 본 내용 이후의 delta만 본다.
+  reviewer는 코드만으로 가릴 수 없는 의심에 finding의 `probe`(재현 절차와 `expectIfReal`)를 붙일 수 있다.
+  그 의심은 Main이 직접 또는 기존 Maker(새 역할 없음)로 실험해 결과를 `cross_review`의 `probeResults`
+  (`findingId`·`command`·`exitCode`·`output`)로 `previousReviewId`와 함께 되돌린다. 이것이 probe 라운드이고
+  코드가 그대로여도 되며, reviewer가 결과를 받은 finding마다 `confirmed`·`withdrawn`·`unresolved` verdict를 낸다.
+  `output`은 발췌(결과당 8 KB, 합계 40 KB)이고 비밀 값은 가려진다. verdict는 자문이다: `withdrawn`도 finding을
+  자동으로 닫지 않으므로 Main이 실험 근거로 `refuted`를 `resolve`에 남긴다. 흐름은 reviewer 의심 → 실험 →
+  probe 라운드 → `confirmed`만 수정 → delta 라운드다.
   `fixed`로 닫은 finding은 owner에게 `finding_id=<review가 준 ID>`를 붙인 기존 `REWORK` 주문으로 보내고
-  Main이 새 revision의 delta를 검토한다(2회차 `cross_review`는 선택이며 필수가 아니다). 통과 지문은 `resolve` 시점
+  Main이 새 revision의 delta를 검토한다(후속 `cross_review`는 선택이며 필수가 아니다). 통과 지문은 `resolve` 시점
   파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
   사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
   `mainLane.workerReview.crossFamilyReview`다.
