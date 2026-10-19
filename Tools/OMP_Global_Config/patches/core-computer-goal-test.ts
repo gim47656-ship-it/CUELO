@@ -69,6 +69,13 @@ const press = () => {
 };
 const session = {
 	capabilities: {},
+	// 18.12.2 worker 는 run 마다 사용자 Escape 중지 횟수(`escapeStops`)가 확인된 횟수를 넘었는지 본다. 없으면 undefined 가 "중지됨"으로 읽힌다.
+	escapeStops: 0,
+	// 18.12.2 worker 는 run 마다 입력 대기 한도(setRunDeadline)를 정하고 화면 상태·표시 유지를 session 에서 읽는다.
+	screenState: { screenLocked: false, displayAsleep: false },
+	setRunDeadline: () => {},
+	holdDisplayUntilReleased: () => {},
+	releaseDisplayAwake: () => {},
 	listDisplays: async () => [],
 	listWindows: async () => {
 		state.windowLists++;
@@ -134,7 +141,7 @@ const run = (code: string, options: { abortAfter?: number; timeoutMs?: number } 
 	const started = performance.now();
 	const { promise: done, resolve: resolveRun } = Promise.withResolvers<RunResult>();
 	waiters.set(id, result => resolveRun({ ...result, ms: performance.now() - started }));
-	deliver({ type: "run", id, code, timeoutMs: options.timeoutMs ?? 10_000, session: snapshot });
+	deliver({ type: "run", id, code, timeoutMs: options.timeoutMs ?? 10_000, session: snapshot, escape: { key: "goal", acknowledged: 0 } });
 	if (options.abortAfter === 0) deliver({ type: "abort", id });
 	else if (options.abortAfter !== undefined) setTimeout(() => deliver({ type: "abort", id }), options.abortAfter);
 	return done;

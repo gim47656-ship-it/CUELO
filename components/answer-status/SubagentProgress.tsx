@@ -123,7 +123,7 @@ function durationText(st: AnswerStatusTranslate, ms: number): string {
 }
 
 /** 경과는 흐르는 게 보이도록 1시간 안에서는 초까지 쓴다. */
-function elapsedText(st: AnswerStatusTranslate, ms: number): string {
+export function elapsedText(st: AnswerStatusTranslate, ms: number): string {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return st("duration.seconds", { seconds });
   if (seconds < 3600) return st("duration.minutesSeconds", { minutes: Math.floor(seconds / 60), seconds: seconds % 60 });

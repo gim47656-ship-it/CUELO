@@ -100,6 +100,9 @@ const OPUS55_ROW_1891 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":98
 // controls 는 그대로라 RETIRE 를 유지한다(no-op 후보).
 const OPUS55_ROW_18103 = OPUS55_ROW_1891.replace('"tps":98.8,', '"tps":95.6,').replace('"firstPartyProvider":true,', '"firstPartyProvider":true,"honorsClaudeCodeBetaKillSwitch":true,');
 
+// 2026-10-19 18.12.2: 측정값 tps 필드가 행에서 빠졌다(95.6 → 없음). 나머지는 18.10.3 행 그대로라 RETIRE 를 유지한다(no-op 후보).
+const OPUS55_ROW_18122 = OPUS55_ROW_18103.replace('"tps":95.6,', "");
+
 /**
  * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
  * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
@@ -10851,6 +10854,24 @@ function goalProbeRefusal(method: string): ToolError {
 				throwIfAborted(active.signal);
 				if (this.#runContexts.getStore()?.goalProbe) throw goalProbeRefusal(\`tool:\${name}\`);
 				return this.#callTool(active, name, args);`,
+		// 2026-10-19 18.12.2: upstream 이 callTool 에서 사용자 Escape 를 먼저 확인한다(#checkEscape). 그 줄 뒤 순서(throwIfAborted → goalProbe)는 그대로다.
+		excludes: "// A bridged tool acts outside the desktop session, so the user's Escape is checked here too.",
+		alternates: [{
+			file: "src/tools/computer/worker.ts",
+			requires: "// A bridged tool acts outside the desktop session, so the user's Escape is checked here too.",
+			marker: "if (this.#runContexts.getStore()?.goalProbe) throw goalProbeRefusal(`tool:${name}`);",
+			anchor: `			callTool: (name, args) => {
+				// A bridged tool acts outside the desktop session, so the user's Escape is checked here too.
+				this.#checkEscape();
+				throwIfAborted(active.signal);
+				return this.#callTool(active, name, args);`,
+			patched: `			callTool: (name, args) => {
+				// A bridged tool acts outside the desktop session, so the user's Escape is checked here too.
+				this.#checkEscape();
+				throwIfAborted(active.signal);
+				if (this.#runContexts.getStore()?.goalProbe) throw goalProbeRefusal(\`tool:\${name}\`);
+				return this.#callTool(active, name, args);`,
+		}],
 	},
 	{
 		file: "src/tools/computer/worker.ts",
@@ -11115,6 +11136,39 @@ export class ComputerFrameReader {
 	encodeComputerFrame,
 	type RunErrorPayload,
 } from "./protocol";`,
+		// 2026-10-19 18.12.2: upstream 이 사용자 Escape 중지(ComputerEscapeScope·ESCAPE_*_MESSAGE)를 import 에 더했다. CUELO 가 더하는 두 이름은 그대로다.
+		excludes: "\ttype ComputerEscapeScope,\n",
+		alternates: [{
+			file: "src/tools/computer/supervisor.ts",
+			requires: "\ttype ComputerEscapeScope,\n",
+			marker: "\tComputerFrameReader,\n\ttype ComputerRunOk,",
+			anchor: `import {
+	COMPUTER_WORKER_ARG,
+	type ComputerEscapeScope,
+	type ComputerRunOk,
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerOutbound,
+	ESCAPE_AFTER_CALL_MESSAGE,
+	ESCAPE_REFUSED_MESSAGE,
+	ESCAPE_STOPPED_MESSAGE,
+	type RunErrorPayload,
+} from "./protocol";`,
+			patched: `import {
+	COMPUTER_WORKER_ARG,
+	type ComputerEscapeScope,
+	ComputerFrameReader,
+	type ComputerRunOk,
+	type ComputerSessionSnapshot,
+	type ComputerWorkerInbound,
+	type ComputerWorkerOutbound,
+	encodeComputerFrame,
+	ESCAPE_AFTER_CALL_MESSAGE,
+	ESCAPE_REFUSED_MESSAGE,
+	ESCAPE_STOPPED_MESSAGE,
+	type RunErrorPayload,
+} from "./protocol";`,
+		}],
 	},
 	{
 		// linux + CUELO_WINDOWS_COMPUTER_HOST 일 때만 helper를 쓴다. 다른 OS·변수 없음은 upstream Worker 경로 그대로이고,
@@ -12586,6 +12640,7 @@ function parentSubagentServiceTiers(
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1884, anchor: OPUS55_ROW_1884, patched: OPUS55_ROW_1884 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1891, anchor: OPUS55_ROW_1891, patched: OPUS55_ROW_1891 },
 			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_18103, anchor: OPUS55_ROW_18103, patched: OPUS55_ROW_18103 },
+			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_18122, anchor: OPUS55_ROW_18122, patched: OPUS55_ROW_18122 },
 		],
 	},
 	{
@@ -13053,6 +13108,13 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-19 18.12.2: D_e는 같은 isAdvisorTranscriptName 함수다(`e===L_e||e.startsWith(\`${N_e}.\`)&&e.endsWith(Oue)`).
+			// minified 이름만 바뀌었다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
@@ -15491,6 +15553,1750 @@ interface ComputerElementRef
 	// e===J_e||e.startsWith(`${Y_e}.`)&&e.endsWith(cue), Y_e="__advisor", cue=".jsonl").
 	const advisorFilter = one(candidate => candidate.file === "dist/cli.js" && candidate.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
 	advisorFilter.alternates.push(noop(advisorFilter.file, 'if(!a.endsWith(".jsonl")||a.includes(".bak")||X_e(a))continue;let l=a.slice(0,-6),'));
+}
+// 2026-10-19 18.12.2 이식. 18.12.1 후보는 한 바이트도 바꾸지 않고, 18.12.2 순정에서 앵커를 잃은 13개 항목마다 그 판에만 성립하는
+// 후보를 더한다(이 블록 9개 + 위 항목 안의 4개: Opus 5.5 행·번들 advisor filter·goalProbe callTool·supervisor import). marker 를
+// 공유하는 후보는 18.12.2 에만 있는 문자열로 requires(새 후보)·excludes(옛 후보)를 짝지어 서로 배타적으로 둔다.
+//  - RETIRE: upstream 이 릴레이 browser.open 의 새 배경 탭(#16119)과 close 를 직접 맡는다(CUELO createRelayTab 패치·browser.md 문구).
+//    computer.backgroundFallback 이 BackgroundUnavailable 뒤 takeover 안내(computer.md 줄)를 대신한다. judgment 의 Vercel 두 항목은
+//    이웃 줄(Box 질문·이미지 요청 길이)만 바뀌었다.
+//  - ADAPT: computer worker 의 El·ElRef(행동 결과·재획득)와 Win 입력 helper 를 upstream 의 sendInput(takeover 재실행)·refuse* 검사·
+//    el.type·el.press(chord)·#guardInput 위에 그대로 올린다. 입력이 takeover 로 다시 실행되면 결과 증거도 takeover 경로로 적는다.
+//    interop supervisor 의 spawn 시작부와 computer.md 의 재획득 문구도 새 모양에 둔다.
+{
+	const one = (predicate, label) => {
+		const found = EDITS.filter(predicate);
+		if (found.length !== 1) throw new Error(`18.12.2 후보를 만들 수 없다: ${label} ${found.length}/1`);
+		return found[0];
+	};
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.12.2 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, () => to);
+	};
+	const noop = (file, text, extra = {}) => ({ file, marker: text, anchor: text, patched: text, ...extra });
+
+	// RETIRE: 릴레이 새 탭. upstream 이 target 없는 relay open 에 자기 배경 탭을 열고 close 가 그 탭을 닫는다.
+	const relayTab = one(entry => entry.file === "src/tools/browser/tab-supervisor.ts" && entry.marker === "createRelayTab", "relay tab");
+	relayTab.alternates.push(noop(relayTab.file, "\t\t// A relay open without a target gets its own background tab, leaving the user's\n\t\t// selected tab alone, in the browser of the tab omp used last on this relay.\n"));
+	const relayDoc = one(entry => entry.file === "src/prompts/tools/browser.md" && entry.marker === "opens a new tab", "browser.md relay");
+	(relayDoc.alternates ??= []).push(noop(relayDoc.file, "- `app.relay: true`: drive the user's Chrome through the omp relay. Without `app.target`, a new name opens omp's own background tab, leaving the user's tab alone (an outdated relay extension selects it instead); `url` navigates that tab. `app.target` borrows an existing tab by URL/title substring. Reopening an open name keeps its tab."));
+	// RETIRE: 사용자 설정이 takeover 를 정하고, control.acquire 는 전달 방식을 바꾸지 않는다고 upstream 이 직접 적는다.
+	const acquireDoc = one(entry => entry.file === "src/prompts/tools/computer.md" && entry.marker === "NEVER acquire control to work around", "computer.md acquire");
+	(acquireDoc.alternates ??= []).push(noop(acquireDoc.file, "- `computer.control.acquire({reason})` requires live human confirmation for task-scoped control;"));
+	// RETIRE: judgment Vercel 항목 둘(legacyPatched 는 옛 설치본의 --revert 용). 순정 쪽 이웃 줄만 바뀌었다.
+	const judgeImport = one(entry => entry.file === "src/judgment/index.ts" && entry.marker === "\ttype AssistantMessage,\n\tchatTextBackend,\n", "judgment import");
+	(judgeImport.alternates ??= []).push(noop(judgeImport.file, "\ttype AssistantMessage,\n\ttype BoxEdges,\n\tchatTextBackend,\n"));
+	const judgeImages = one(entry => entry.file === "src/judgment/index.ts" && entry.marker === "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n", "judgment images");
+	(judgeImages.alternates ??= []).push(noop(judgeImages.file, "\t\tconst requiresImages = (request?.images?.length ?? 0) > 0;\n\t\tconst signal = options.signal;\n"));
+
+	// ADAPT: computer.md 의 재획득 문구. upstream 줄은 macOS 에서 파괴된 요소의 후보 이름을 덧붙였다.
+	const STALE_18122 = "`StaleRef` may name a candidate";
+	const MAC_TAIL = " On macOS, when the app destroyed the element, `StaleRef` may name a candidate (`eN destroyed; eM is the one element in the window with the role, labels and value eN was read with`), only for a ref from a read of the whole window (never one cut short by `maxDepth` or a node limit). Equal fields do not prove `eM` is the same control: check it before acting on it.";
+	const staleDoc = one(entry => entry.file === "src/prompts/tools/computer.md" && entry.marker === "Actions return `{ action, status, suggestedNext", "computer.md stale");
+	const staleDoc1812 = staleDoc.alternates.find(candidate => candidate.marker === "snapshots is reacquired only when its saved fingerprint");
+	staleDoc1812.excludes = STALE_18122;
+	staleDoc.alternates.push({
+		file: staleDoc1812.file,
+		requires: STALE_18122,
+		marker: staleDoc1812.marker,
+		anchor: swap(staleDoc1812.anchor, "Re-snapshot; NEVER guess.\n", "Re-snapshot; NEVER guess." + MAC_TAIL + "\n"),
+		patched: swap(staleDoc1812.patched, "re-snapshot; NEVER guess.\n- Element actions", "re-snapshot; NEVER guess." + MAC_TAIL + "\n- Element actions"),
+	});
+
+	// ADAPT: interop spawn. upstream 의 spawnComputerWorker 가 macOS event tap 을 닫는 블록(closesEventTapsAtExit)으로 시작한다.
+	// CUELO 의 Windows host 분기는 그 앞에서 돌려보낸다(host 는 자기 프로세스에서 tap 을 닫는다).
+	const TAPS_18122 = "closesEventTapsAtExit";
+	const HOST_HEAD = "\tconst hostEntry = workerHostEntry();";
+	const TAPS_HEAD = "\tif (!closesEventTapsAtExit) {";
+	// 사용자의 물리 Escape 는 Windows host 의 native 가 센다. WSL supervisor 는 자기(Linux) native 의 0 만 읽으므로, 그대로 두면 한 번 멈춘 뒤
+	// 사용자의 다음 메시지가 확인(acknowledge)한 횟수가 0 에 머물러 host 의 worker 가 그 세션의 모든 run 을 계속 거절한다. host 가 모든 frame 에
+	// `hostEscape: { key, stops }` 를 싣고(wsl/windows-computer/host.ts), interop 수신부가 그 횟수를 INTEROP_ESCAPE_STOPS 에 두며,
+	// supervisor 의 기본 ComputerEscapeStops(NATIVE_ESCAPE_STOPS)가 Linux native 와 그 값 중 큰 쪽을 읽는다.
+	const STDERR_TAIL = "const INTEROP_STDERR_TAIL_CHARS = 2_000;\n";
+	const FRAME_HANDOFF = "\t\t\t\t\tconst outbound = message as ComputerWorkerOutbound;\n";
+	const interop = one(entry => entry.marker === "export function spawnInteropComputerWorker(command: string[]): ComputerWorkerHandle {", "interop spawn");
+	interop.excludes = TAPS_18122;
+	(interop.alternates ??= []).push({
+		file: interop.file,
+		requires: TAPS_18122,
+		marker: interop.marker,
+		anchor: swap(interop.anchor, HOST_HEAD, TAPS_HEAD),
+		patched: swap(
+			swap(swap(interop.patched, HOST_HEAD, TAPS_HEAD), STDERR_TAIL, STDERR_TAIL + "/** CUELO: the physical-Escape stop counts the Windows host reported, by the key the supervisor gave its sessions. */\nconst INTEROP_ESCAPE_STOPS = new Map<string, number>();\n"),
+			FRAME_HANDOFF,
+			FRAME_HANDOFF + "\t\t\t\t\tconst hostEscape = (outbound as { hostEscape?: { key: string; stops: number } }).hostEscape;\n\t\t\t\t\tif (hostEscape) INTEROP_ESCAPE_STOPS.set(hostEscape.key, hostEscape.stops);\n",
+		),
+	});
+	const ESCAPE_STOPS_18122 = "export interface ComputerEscapeStops";
+	EDITS.push({
+		file: interop.file,
+		requires: ESCAPE_STOPS_18122,
+		marker: "read: key => Math.max(desktopEscapeStops(key), INTEROP_ESCAPE_STOPS.get(key) ?? 0),",
+		anchor: "const NATIVE_ESCAPE_STOPS: ComputerEscapeStops = { read: desktopEscapeStops, forget: forgetDesktopEscapeStops };",
+		patched: `const NATIVE_ESCAPE_STOPS: ComputerEscapeStops = {
+	// CUELO: a Windows host counts the user's Escape out of this process's reach (INTEROP_ESCAPE_STOPS); the larger count wins.
+	read: key => Math.max(desktopEscapeStops(key), INTEROP_ESCAPE_STOPS.get(key) ?? 0),
+	forget: key => {
+		INTEROP_ESCAPE_STOPS.delete(key);
+		forgetDesktopEscapeStops(key);
+	},
+};`,
+		// 18.12.1 까지는 사용자 Escape 중지 자체가 없다: 이 항목은 할 일이 없다(no-op 후보).
+		alternates: [noop(interop.file, "const START_TIMEOUT_MS = 10_000;\n", { excludes: ESCAPE_STOPS_18122 })],
+	});
+
+	// ADAPT: El·ElRef(재획득·행동 결과). upstream 이 el.perform(action, menu)·el.press(chord)·el.type·el.selectText 와 sendInput 을 더했다.
+	// 행동 메서드는 CUELO 의 #act(재획득·readback·결과)로 감싸고 sendInput 은 그 안에서 부른다. selectText 는 결과를 돌려주지 않는다.
+	const SELECT_TEXT_18122 = "async selectText(text: string, options?: AxSelectTextOptions)";
+	const element = one(entry => entry.marker === "class RefBook {", "computer element");
+	const element1810 = element.alternates.find(candidate => candidate.requires === "function foundElements(");
+	element1810.excludes = SELECT_TEXT_18122;
+	element.alternates.push({
+		file: element1810.file,
+		requires: SELECT_TEXT_18122,
+		marker: element1810.marker,
+		anchor: `class El {
+	readonly ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	readonly #session: NativeDesktopSession;
+	readonly #getContext: RunContextAccessor;
+
+	constructor(session: NativeDesktopSession, getContext: RunContextAccessor, node: AxNode) {
+		this.#session = session;
+		this.#getContext = getContext;
+		this.ref = node.ref;
+		this.role = node.role;
+		this.nativeRole = node.nativeRole;
+		this.title = node.title;
+		this.description = node.description;
+		this.enabled = node.enabled;
+		this.focused = node.focused;
+		this.childCount = node.childCount;
+	}
+
+	async value(): Promise<string | undefined> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).value;
+	}
+
+	async setValue(value: string): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "setValue");
+		validateString(value, "setValue(value)");
+		// Native chooses a popup's option by opening its menu and pressing the item.
+		if (this.nativeRole === "AXPopUpButton")
+			refuseControlMenu(this.#session, context, "setValue()", this.nativeRole, \`element \${this.ref}\`);
+		await nativeCall(context.signal, () => this.#session.axSetValue(this.ref, value));
+	}
+
+	async selectText(text: string, options?: AxSelectTextOptions): Promise<AxTextSelection> {
+		const context = this.#getContext();
+		guardRun(context, "selectText");
+		validateString(text, "selectText(text)");
+		return await nativeCall(context.signal, () => this.#session.axSelectText(this.ref, text, options));
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axNode(this.ref));
+		if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+			return null;
+		return { x: node.x, y: node.y, width: node.width, height: node.height };
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		const { signal } = this.#getContext();
+		return Object.fromEntries(await nativeCall(signal, () => this.#session.axAttributes(this.ref)));
+	}
+
+	async actions(): Promise<string[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).actions ?? [];
+	}
+
+	async perform(action: string, options?: MenuOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
+		// The names native \`axPerform\` runs as \`AXRaise\` (its \`action_name\` mapping).
+		if (action.trim().toLowerCase() === "raise" || action === "AXRaise") {
+			refuseForeground(
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"bring the window's application to the front",
+				RAISE_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		// The names native \`axPerform\` runs as \`AXOpen\` (\`action_name\` prefixes "AX"
+		// to any other name). On an item in Chrome's Open panel it brings the
+		// panel's application to the front, even when the action fails, and it
+		// stays there.
+		if (this.#session.capabilities.backend === "quartz" && (action === "AXOpen" || action === "Open")) {
+			refuseForeground(
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"bring the window's application to the front, as it can on an item in an Open panel even when the action fails",
+				OPEN_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		const menu = menuOption(options);
+		// The names native \`axPerform\` runs as \`AXShowMenu\`, which opens the element's context menu.
+		if (["showmenu", "show_menu"].includes(action.trim().toLowerCase()) || action === "AXShowMenu") {
+			refuseMenu(
+				this.#session,
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"a context menu",
+				MENU_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		if (menu !== undefined)
+			refuseMenu(this.#session, context, "perform with menu", "a menu", MENU_ROUTE, \`element \${this.ref}\`);
+		// The names native \`axPerform\` runs as \`AXPress\`.
+		if (action.trim().toLowerCase() === "press" || action === "AXPress") {
+			refuseControlMenu(
+				this.#session,
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				this.nativeRole,
+				\`element \${this.ref}\`,
+			);
+		}
+		await nativeCall(context.signal, () => this.#session.axPerform(this.ref, action, menu));
+	}
+
+	/**
+	 * Without a chord, the element's native press action, choosing \`menu\`'s item in the menu it opens;
+	 * with one, that chord typed into the element.
+	 */
+	async press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "press");
+		if (chord === undefined || isMenuOptions(chord)) {
+			const menu = menuOption(chord);
+			if (menu !== undefined)
+				refuseMenu(this.#session, context, "press with menu", "a menu", MENU_ROUTE, \`element \${this.ref}\`);
+			refuseControlMenu(this.#session, context, "press()", this.nativeRole, \`element \${this.ref}\`);
+			await nativeCall(context.signal, () => this.#session.axPerform(this.ref, "press", menu));
+			return;
+		}
+		const keys = chordKeys(chord);
+		const native = pointerOptions(options);
+		await sendInput(this.#session, context, "press", native.takeover, fallback =>
+			this.#session.axKeyChord(this.ref, keys, { ...native, ...fallback }),
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "type");
+		validateString(text, "type(text)");
+		const native = pointerOptions(options);
+		await sendInput(this.#session, context, "type", native.takeover, fallback =>
+			this.#session.axType(this.ref, text, { ...native, ...fallback }),
+		);
+	}
+
+	async click(options?: ClickOptions): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "click");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "click", native, \`element \${this.ref}\`, this.nativeRole);
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(this.#session, context, "click", native.takeover, fallback =>
+			this.#session.axClick(this.ref, { ...native, ...fallback }),
+		);
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "doubleClick");
+		const native = { ...pointerOptions(options), count: 2 };
+		refusePointerMenu(this.#session, context, "doubleClick", native, \`element \${this.ref}\`, this.nativeRole);
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(this.#session, context, "doubleClick", native.takeover, fallback =>
+			this.#session.axClick(this.ref, { ...native, ...fallback }),
+		);
+	}
+
+	async focus(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "focus");
+		// macOS sets AXFocused inside the app without activating it; Windows
+		// (UIA SetFocus) and Linux (AT-SPI grab_focus) move keyboard focus.
+		if (this.#session.capabilities.backend !== "quartz") {
+			refuseForeground(
+				context,
+				"focus()",
+				"move the user's keyboard focus to this element",
+				"Use setValue(), press() or another AX action, which need no focus.",
+				\`element \${this.ref}\`,
+			);
+		}
+		await nativeCall(context.signal, () => this.#session.axFocus(this.ref));
+	}
+
+	async parent(): Promise<El | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axParent(this.ref));
+		return node ? new El(this.#session, this.#getContext, node) : null;
+	}
+
+	async children(): Promise<El[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axChildren(this.ref))).map(
+			node => new El(this.#session, this.#getContext, node),
+		);
+	}
+}
+
+const ELEMENT_FIELDS = ["ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount"];
+
+/** \`find()\`'s array answers element field reads and calls with how to pick one, instead of \`undefined\` or "is not a function". */
+function foundElements(elements: El[]): El[] {
+	const pickOne = (member: string): TypeError =>
+		new TypeError(
+			\`find() returns an array (length \${elements.length}), not one element, so it has no \${member}; pick one first: const [el] = await win.find(query)\`,
+		);
+	for (const method of Object.getOwnPropertyNames(El.prototype)) {
+		if (method === "constructor") continue;
+		Object.defineProperty(elements, method, {
+			value: () => {
+				throw pickOne(\`\${method}()\`);
+			},
+		});
+	}
+	for (const field of ELEMENT_FIELDS) {
+		Object.defineProperty(elements, field, {
+			get: () => {
+				throw pickOne(field);
+			},
+		});
+	}
+	return elements;
+}
+
+/** \`await ref("e5")\` resolves the element; its methods chain on the handle and await the lookup first. */
+class ElRef implements PromiseLike<El> {
+	readonly ref: string;
+	readonly #getContext: RunContextAccessor;
+	readonly #lookup: () => Promise<El>;
+	#element?: Promise<El>;
+
+	constructor(ref: string, getContext: RunContextAccessor, lookup: () => Promise<El>) {
+		this.ref = ref;
+		this.#getContext = getContext;
+		this.#lookup = lookup;
+	}
+
+	#resolve(): Promise<El> {
+		this.#element ??= this.#lookup();
+		return this.#element;
+	}
+
+	// oxlint-disable-next-line unicorn/no-thenable -- the handle is awaitable by design: \`await ref("e5")\` resolves the element.
+	then<A = El, B = never>(
+		onFulfilled?: ((element: El) => A | PromiseLike<A>) | null,
+		onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+	): Promise<A | B> {
+		return this.#resolve().then(onFulfilled, onRejected);
+	}
+
+	catch<B = never>(onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<El | B> {
+		return this.#resolve().catch(onRejected);
+	}
+
+	finally(onFinally?: (() => void) | null): Promise<El> {
+		return this.#resolve().finally(onFinally);
+	}
+
+	async value(): Promise<string | undefined> {
+		return (await this.#resolve()).value();
+	}
+
+	async setValue(value: string): Promise<void> {
+		// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.
+		guardRun(this.#getContext(), "setValue");
+		validateString(value, "setValue(value)");
+		await (await this.#resolve()).setValue(value);
+	}
+
+	async selectText(text: string, options?: AxSelectTextOptions): Promise<AxTextSelection> {
+		guardRun(this.#getContext(), "selectText");
+		validateString(text, "selectText(text)");
+		return (await this.#resolve()).selectText(text, options);
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		return (await this.#resolve()).bounds();
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		return (await this.#resolve()).attributes();
+	}
+
+	async actions(): Promise<string[]> {
+		return (await this.#resolve()).actions();
+	}
+
+	async perform(action: string, options?: MenuOptions): Promise<void> {
+		guardRun(this.#getContext(), "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
+		await (await this.#resolve()).perform(action, options);
+	}
+
+	async press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<void> {
+		guardRun(this.#getContext(), "press");
+		if (chord !== undefined && !isMenuOptions(chord)) chordKeys(chord);
+		await (await this.#resolve()).press(chord, options);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<void> {
+		guardRun(this.#getContext(), "type");
+		validateString(text, "type(text)");
+		await (await this.#resolve()).type(text, options);
+	}
+
+	async click(options?: ClickOptions): Promise<void> {
+		await (await this.#resolve()).click(options);
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {
+		await (await this.#resolve()).doubleClick(options);
+	}
+
+	async focus(): Promise<void> {
+		await (await this.#resolve()).focus();
+	}
+
+	async parent(): Promise<El | null> {
+		return (await this.#resolve()).parent();
+	}
+
+	async children(): Promise<El[]> {
+		return (await this.#resolve()).children();
+	}
+}`,
+		patched: `type AxBounds = { x: number; y: number; width: number; height: number };
+
+/** Outcome of one computer action. Delivery is not proof of effect: only an AX readback makes it \`verified\`. */
+interface ComputerActionResult {
+	action: string;
+	/** verified: a readback shows the change. unverified: delivered, effect not observed. suspected_noop: the readback contradicts the intended change. */
+	status: "verified" | "unverified" | "suspected_noop";
+	suggestedNext: "continue" | "reobserve" | "escalate";
+	escalation?: { target: "pixel" | "takeover"; reason: string };
+	evidence?: string;
+	ref?: string;
+	reacquired?: ComputerReacquired;
+}
+
+interface ComputerReacquired {
+	from: string;
+	to: string;
+	matchedBy: string;
+}
+
+type ReacquireRefusal = "no-fingerprint" | "no-window" | "no-candidate" | "parent-mismatch" | "ambiguous";
+
+interface ComputerRefCandidate {
+	ref: string;
+	role: string;
+	title?: string;
+	bounds?: AxBounds;
+}
+
+/** Facts attached to a failed action as \`error.computerAction\`; the error type and first message line stay unchanged. */
+interface ComputerActionRefusal {
+	action: string;
+	status: "refused";
+	suggestedNext: "reobserve" | "escalate";
+	escalation?: { target: "takeover"; reason: string };
+	ref?: string;
+	reacquire?: { outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] };
+}
+
+/** Identity kept for an issued ref so a stale ref can be found again with a fresh AX query. */
+interface AxFingerprint {
+	windowId?: string;
+	role: string;
+	/** Undefined when the source (an ax() text line) does not carry the field. */
+	nativeRole?: string;
+	title: string;
+	description?: string;
+	bounds?: AxBounds;
+	automationId?: string;
+	runtimeId?: string;
+	/** Named ancestors inside the window, nearest first, ending with "window" when the window is reached. */
+	parentPath?: string[];
+}
+
+type IdentityAttributes = Pick<AxFingerprint, "automationId" | "runtimeId">;
+type Judged = Pick<ComputerActionResult, "status" | "suggestedNext" | "escalation" | "evidence">;
+type ReacquireOutcome =
+	| { node: AxNode; matchedBy: string; print: AxFingerprint }
+	| { node?: undefined; outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] };
+
+const REF_BOOK_LIMIT = 4000;
+const PARENT_WALK_LIMIT = 12;
+const PARENT_NAMED_LIMIT = 3;
+/** Walking parents costs a native call per level, so bulk issues (large find results) skip it. */
+const PARENT_WALK_BATCH = 8;
+const REACQUIRE_QUERY_LIMIT = 500;
+const CANDIDATE_REPORT_LIMIT = 5;
+/** Element fields whose change after press/click/perform counts as readback evidence; focus alone does not. */
+const ELEMENT_STATE_KEYS = ["value", "title", "enabled", "childCount", "x", "y", "width", "height"] as const;
+/** One ax() text line: indentation, role, optional quoted title, ref. */
+const SNAPSHOT_LINE = /^( *)- ([^ ]+)(?: "(.*?)")? [[]ref=(e[0-9]+)/;
+
+const refBooks = new WeakMap<NativeDesktopSession, RefBook>();
+
+function refBook(session: NativeDesktopSession): RefBook {
+	let book = refBooks.get(session);
+	if (!book) {
+		book = new RefBook();
+		refBooks.set(session, book);
+	}
+	return book;
+}
+
+function trimOldest(map: Map<string, unknown>): void {
+	if (map.size > REF_BOOK_LIMIT) map.delete(map.keys().next().value as string);
+}
+
+function boundsOf(node: AxNode): AxBounds | undefined {
+	if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+		return undefined;
+	return { x: node.x, y: node.y, width: node.width, height: node.height };
+}
+
+function nodePrint(node: AxNode): AxFingerprint {
+	return {
+		role: node.role,
+		nativeRole: node.nativeRole,
+		title: node.title ?? "",
+		description: node.description ?? "",
+		bounds: boundsOf(node),
+	};
+}
+
+function decodeTitle(raw: string | undefined): string {
+	if (raw === undefined) return "";
+	try {
+		const decoded: unknown = JSON.parse('"' + raw + '"');
+		return typeof decoded === "string" ? decoded : raw;
+	} catch {
+		return raw;
+	}
+}
+
+/** Nearest named ancestors, stopping at the enclosing window; unnamed containers are skipped because ax() text may hide them. */
+function namedPath(ancestors: Iterable<{ role: string; title?: string }>): string[] {
+	const path: string[] = [];
+	for (const ancestor of ancestors) {
+		if (ancestor.role === "window") {
+			path.push("window");
+			break;
+		}
+		if (ancestor.title) path.push(ancestor.role + ":" + ancestor.title);
+		if (path.length === PARENT_NAMED_LIMIT) break;
+	}
+	return path;
+}
+
+function samePath(left: string[], right: string[]): boolean {
+	return left.length === right.length && left.every((entry, index) => entry === right[index]);
+}
+
+function attributeText(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	const value = /^[A-Z0-9_]+[(](.*)[)]$/s.exec(raw)?.[1] ?? raw;
+	return value === "" ? undefined : value;
+}
+
+function isStaleRef(error: unknown): error is ToolError {
+	return error instanceof ToolError && error.message.startsWith("StaleRef:");
+}
+
+function candidateOf(node: AxNode): ComputerRefCandidate {
+	return { ref: node.ref, role: node.role, title: node.title, bounds: boundsOf(node) };
+}
+
+function nearBounds(node: AxNode, bounds: AxBounds): boolean {
+	const now = boundsOf(node);
+	if (!now) return false;
+	const dx = Math.abs(now.x + now.width / 2 - (bounds.x + bounds.width / 2));
+	const dy = Math.abs(now.y + now.height / 2 - (bounds.y + bounds.height / 2));
+	return dx <= Math.max(8, bounds.width / 2) && dy <= Math.max(8, bounds.height / 2);
+}
+
+/** Session-scoped fingerprints of issued refs and where reacquired stale refs now point. Bounded; oldest entries drop first. */
+class RefBook {
+	readonly #prints = new Map<string, AxFingerprint>();
+	readonly #moved = new Map<string, ComputerReacquired>();
+
+	get(ref: string): AxFingerprint | undefined {
+		return this.#prints.get(ref);
+	}
+
+	remember(ref: string, print: AxFingerprint): void {
+		const merged: Record<string, unknown> = { ...this.#prints.get(ref) };
+		for (const [key, value] of Object.entries(print)) {
+			if (value !== undefined) merged[key] = value;
+		}
+		this.#prints.delete(ref);
+		this.#prints.set(ref, merged as unknown as AxFingerprint);
+		trimOldest(this.#prints);
+	}
+
+	movedTo(ref: string): ComputerReacquired | undefined {
+		return this.#moved.get(ref);
+	}
+
+	move(reacquired: ComputerReacquired): void {
+		this.#moved.delete(reacquired.from);
+		this.#moved.set(reacquired.from, reacquired);
+		trimOldest(this.#moved);
+	}
+
+	/** Every ax() line carries role, title, and ancestry; refs picked from the text keep a fingerprint without extra native calls. */
+	noteSnapshot(windowId: string, text: string): void {
+		const ancestors: Array<{ depth: number; role: string; title: string }> = [];
+		for (const line of text.split("\\n")) {
+			const match = SNAPSHOT_LINE.exec(line);
+			if (!match) continue;
+			const depth = match[1]!.length;
+			while (ancestors.length > 0 && ancestors[ancestors.length - 1]!.depth >= depth) ancestors.pop();
+			const role = match[2]!;
+			const title = decodeTitle(match[3]);
+			this.remember(match[4]!, { windowId, role, title, parentPath: namedPath([...ancestors].reverse()) });
+			ancestors.push({ depth, role, title });
+		}
+	}
+}
+
+async function identityAttributes(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+): Promise<IdentityAttributes> {
+	try {
+		const attributes = new Map(await nativeCall(signal, () => session.axAttributes(ref)));
+		return {
+			automationId: attributeText(attributes.get("AutomationId") ?? attributes.get("AXIdentifier")),
+			runtimeId: attributeText(attributes.get("RuntimeId")),
+		};
+	} catch (error) {
+		if (error instanceof ToolAbortError) throw error;
+		return {};
+	}
+}
+
+async function walkParentPath(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+): Promise<string[] | undefined> {
+	const ancestors: AxNode[] = [];
+	let current = ref;
+	for (let level = 0; level < PARENT_WALK_LIMIT; level++) {
+		let parent: AxNode | null | undefined;
+		try {
+			parent = await nativeCall(signal, () => session.axParent(current));
+		} catch (error) {
+			if (error instanceof ToolAbortError) throw error;
+			return undefined;
+		}
+		if (!parent) return namedPath(ancestors);
+		ancestors.push(parent);
+		const path = namedPath(ancestors);
+		if (parent.role === "window" || path.length === PARENT_NAMED_LIMIT) return path;
+		current = parent.ref;
+	}
+	return undefined;
+}
+
+/**
+ * Finds the element a stale fingerprint names, narrowing like browser-use's re-identification:
+ * exact instance (RuntimeId), then role+name, AutomationId, named parent path, and position only to
+ * break ties. Anything short of exactly one candidate is refused, never guessed.
+ */
+async function reacquire(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	print: AxFingerprint | undefined,
+): Promise<ReacquireOutcome> {
+	if (!print) return { outcome: "no-fingerprint", candidates: [] };
+	const windowId = print.windowId;
+	if (!windowId) return { outcome: "no-window", candidates: [] };
+	const report = (nodes: AxNode[]): ComputerRefCandidate[] => nodes.slice(0, CANDIDATE_REPORT_LIMIT).map(candidateOf);
+	const sameRole = (
+		await nativeCall(signal, () => session.axQuery(windowId, { role: print.role, limit: REACQUIRE_QUERY_LIMIT }))
+	).filter(node => node.role === print.role && (print.nativeRole === undefined || node.nativeRole === print.nativeRole));
+	let pool = sameRole.filter(
+		node =>
+			(node.title ?? "") === print.title &&
+			(print.description === undefined || (node.description ?? "") === print.description),
+	);
+	if (pool.length === 0) return { outcome: "no-candidate", candidates: report(sameRole) };
+	const attributes = new Map<string, IdentityAttributes>();
+	for (const node of pool) attributes.set(node.ref, await identityAttributes(session, signal, node.ref));
+	const matched = (node: AxNode, matchedBy: string[]): ReacquireOutcome => ({
+		node,
+		matchedBy: matchedBy.join("+"),
+		print: { ...print, ...nodePrint(node), ...attributes.get(node.ref), parentPath: print.parentPath },
+	});
+	if (print.runtimeId) {
+		const exact = pool.filter(node => attributes.get(node.ref)?.runtimeId === print.runtimeId);
+		if (exact.length === 1) return matched(exact[0]!, ["runtimeId"]);
+	}
+	const matchedBy = ["role", "name"];
+	if (print.automationId) {
+		const named = pool;
+		pool = pool.filter(node => attributes.get(node.ref)?.automationId === print.automationId);
+		if (pool.length === 0) return { outcome: "no-candidate", candidates: report(named) };
+		matchedBy.push("automationId");
+	}
+	if (print.parentPath && pool.length <= PARENT_WALK_BATCH) {
+		const expected = print.parentPath;
+		const kept: AxNode[] = [];
+		for (const node of pool) {
+			const path = await walkParentPath(session, signal, node.ref);
+			if (path && samePath(path, expected)) kept.push(node);
+		}
+		if (kept.length === 0) return { outcome: "parent-mismatch", candidates: report(pool) };
+		pool = kept;
+		matchedBy.push("parent");
+	}
+	const weak = !print.title && !print.description && !print.automationId && !matchedBy.includes("parent");
+	if (pool.length === 1 && !weak) return matched(pool[0]!, matchedBy);
+	if (print.bounds) {
+		const bounds = print.bounds;
+		const near = pool.filter(node => nearBounds(node, bounds));
+		if (near.length === 1) return matched(near[0]!, [...matchedBy, "position"]);
+	}
+	return { outcome: "ambiguous", candidates: report(pool) };
+}
+
+function attachRefusal(error: ToolError, refusal: ComputerActionRefusal): ToolError {
+	(error as ToolError & { computerAction?: ComputerActionRefusal }).computerAction = refusal;
+	return error;
+}
+
+function refuseStale(
+	error: ToolError,
+	ref: string,
+	refusal: { outcome: ReacquireRefusal; candidates: ComputerRefCandidate[] },
+): ToolError {
+	const detail = refusal.candidates
+		.map(candidate => candidate.ref + " " + candidate.role + (candidate.title ? " " + JSON.stringify(candidate.title) : ""))
+		.join(", ");
+	const refused = new ToolError(error.message + "\\nreacquire refused (" + refusal.outcome + ")" + (detail ? ": " + detail : ""));
+	return attachRefusal(refused, {
+		action: "ref",
+		status: "refused",
+		suggestedNext: "reobserve",
+		ref,
+		reacquire: { outcome: refusal.outcome, candidates: refusal.candidates },
+	});
+}
+
+/** Keeps the thrown error and adds structured facts; aborts and non-tool errors pass through untouched. */
+function refuseAction(error: unknown, action: string, ref?: string, takeover?: boolean): unknown {
+	if (!(error instanceof ToolError)) return error;
+	const previous = (error as ToolError & { computerAction?: ComputerActionRefusal }).computerAction;
+	const routeUnavailable = !takeover && error.message.startsWith("BackgroundUnavailable:");
+	return attachRefusal(error, {
+		...previous,
+		action,
+		status: "refused",
+		suggestedNext: routeUnavailable ? "escalate" : "reobserve",
+		...(routeUnavailable ? { escalation: { target: "takeover" as const, reason: "route_unavailable" } } : {}),
+		...(ref ? { ref } : {}),
+	});
+}
+
+/** Resolves a ref, following an earlier reacquisition or reacquiring a stale ref from its fingerprint. */
+async function resolveNode(
+	session: NativeDesktopSession,
+	signal: AbortSignal,
+	ref: string,
+	windowHint?: string,
+): Promise<{ node: AxNode; reacquired?: ComputerReacquired }> {
+	const book = refBook(session);
+	const moved = book.movedTo(ref);
+	const live = moved?.to ?? ref;
+	try {
+		const node = await nativeCall(signal, () => session.axNode(live));
+		return moved ? { node, reacquired: moved } : { node };
+	} catch (error) {
+		if (!isStaleRef(error)) throw error;
+		const known = book.get(live) ?? book.get(ref);
+		const print = known && !known.windowId && windowHint ? { ...known, windowId: windowHint } : known;
+		const outcome = await reacquire(session, signal, print);
+		if (outcome.node === undefined) throw refuseStale(error, live, outcome);
+		const reacquired = { from: ref, to: outcome.node.ref, matchedBy: outcome.matchedBy };
+		book.move(reacquired);
+		book.remember(outcome.node.ref, outcome.print);
+		return { node: outcome.node, reacquired };
+	}
+}
+
+/** Wraps nodes as elements and records their fingerprints; attributes are cheap, parent walks only for small batches. */
+async function issueElements(
+	session: NativeDesktopSession,
+	getContext: RunContextAccessor,
+	nodes: AxNode[],
+	windowId?: string,
+	reacquired?: ComputerReacquired,
+): Promise<El[]> {
+	const { signal } = getContext();
+	const book = refBook(session);
+	for (const node of nodes) {
+		const known = book.get(node.ref);
+		const parentPath =
+			known?.parentPath === undefined && nodes.length <= PARENT_WALK_BATCH
+				? await walkParentPath(session, signal, node.ref)
+				: undefined;
+		book.remember(node.ref, {
+			...nodePrint(node),
+			windowId: known?.windowId ?? windowId,
+			...(await identityAttributes(session, signal, node.ref)),
+			parentPath,
+		});
+	}
+	return nodes.map(node => new El(session, getContext, node, reacquired));
+}
+
+async function resolveElement(
+	session: NativeDesktopSession,
+	getContext: RunContextAccessor,
+	ref: string,
+	windowHint?: string,
+): Promise<El> {
+	const { signal } = getContext();
+	const { node, reacquired } = await resolveNode(session, signal, ref, windowHint);
+	const [element] = await issueElements(session, getContext, [node], windowHint, reacquired);
+	return element!;
+}
+
+function verified(evidence: string): Judged {
+	return { status: "verified", suggestedNext: "continue", evidence };
+}
+
+function unverified(evidence: string): Judged {
+	return { status: "unverified", suggestedNext: "reobserve", evidence };
+}
+
+function suspectedNoop(evidence: string, reason: string): Judged {
+	return { status: "suspected_noop", suggestedNext: "escalate", escalation: { target: "pixel", reason }, evidence };
+}
+
+function judgeStateChange(before: AxNode | undefined, after: AxNode | undefined): Judged {
+	if (!before || !after) return unverified("element could not be read back around the action");
+	const changed = ELEMENT_STATE_KEYS.filter(key => before[key] !== after[key]);
+	return changed.length > 0
+		? verified("element " + changed.join(", ") + " changed")
+		: unverified("element state unchanged; the effect may be elsewhere");
+}
+
+/** \`tookOver\`: the tool itself reran a refused background call in takeover (\`computer.backgroundFallback\`). */
+function windowInputResult(action: string, target: string, takeover?: boolean, tookOver?: boolean): ComputerActionResult {
+	const route = target === "desktop" ? "desktop" : takeover || tookOver ? "takeover" : "background";
+	return { action, ...unverified("input accepted via the " + route + " route; application effect not observed") };
+}
+
+class El {
+	/** Updated when an action reacquires this element after its ref went stale. */
+	ref: string;
+	readonly role: string;
+	readonly nativeRole: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	readonly focused: boolean;
+	readonly childCount: number;
+	/** Stale ref this element was reacquired from; present only after a reacquisition. */
+	declare reacquiredFrom?: string;
+	readonly #session: NativeDesktopSession;
+	readonly #getContext: RunContextAccessor;
+	#reacquired?: ComputerReacquired;
+
+	constructor(session: NativeDesktopSession, getContext: RunContextAccessor, node: AxNode, reacquired?: ComputerReacquired) {
+		this.#session = session;
+		this.#getContext = getContext;
+		this.ref = node.ref;
+		this.role = node.role;
+		this.nativeRole = node.nativeRole;
+		this.title = node.title;
+		this.description = node.description;
+		this.enabled = node.enabled;
+		this.focused = node.focused;
+		this.childCount = node.childCount;
+		if (reacquired) this.#noteReacquired(reacquired);
+	}
+
+	#noteReacquired(reacquired: ComputerReacquired): void {
+		this.#reacquired = this.#reacquired ? { ...reacquired, from: this.#reacquired.from } : reacquired;
+		this.reacquiredFrom = this.#reacquired.from;
+	}
+
+	/**
+	 * One readback before and one after the delivery, no polling. The before read doubles as the stale
+	 * check that may reacquire; once input reaches the native layer nothing is retried. A failed
+	 * readback never turns a delivered action into an error; it leaves the result unverified.
+	 */
+	async #act(
+		action: string,
+		deliver: (ref: string) => Promise<void>,
+		judge: (before: AxNode | undefined, after: AxNode | undefined) => Judged,
+		takeover?: boolean,
+	): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, action);
+		let before: AxNode | undefined;
+		try {
+			const live = await resolveNode(this.#session, context.signal, this.ref);
+			before = live.node;
+			if (live.reacquired) {
+				this.ref = live.node.ref;
+				this.#noteReacquired(live.reacquired);
+			}
+		} catch (error) {
+			if (isStaleRef(error)) throw refuseAction(error, action, this.ref, takeover);
+			if (error instanceof ToolAbortError) throw error;
+		}
+		try {
+			await nativeCall(context.signal, () => deliver(this.ref));
+		} catch (error) {
+			throw refuseAction(error, action, this.ref, takeover);
+		}
+		let after: AxNode | undefined;
+		try {
+			after = await nativeCall(context.signal, () => this.#session.axNode(this.ref));
+		} catch (error) {
+			if (error instanceof ToolAbortError) throw error;
+		}
+		return {
+			action,
+			...judge(before, after),
+			ref: this.ref,
+			...(this.#reacquired ? { reacquired: this.#reacquired } : {}),
+		};
+	}
+
+	async value(): Promise<string | undefined> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).value;
+	}
+
+	async setValue(value: string): Promise<ComputerActionResult> {
+		guardRun(this.#getContext(), "setValue");
+		validateString(value, "setValue(value)");
+		// Native chooses a popup's option by opening its menu and pressing the item.
+		if (this.nativeRole === "AXPopUpButton")
+			refuseControlMenu(this.#session, this.#getContext(), "setValue()", this.nativeRole, \`element \${this.ref}\`);
+		return this.#act(
+			"setValue",
+			ref => this.#session.axSetValue(ref, value),
+			(_before, after) => {
+				if (after?.value === undefined) return unverified("value could not be read back");
+				return after.value === value
+					? verified("value read back as requested")
+					: suspectedNoop("value read back as " + JSON.stringify(after.value), "value_mismatch");
+			},
+		);
+	}
+
+	async selectText(text: string, options?: AxSelectTextOptions): Promise<AxTextSelection> {
+		const context = this.#getContext();
+		guardRun(context, "selectText");
+		validateString(text, "selectText(text)");
+		return await nativeCall(context.signal, () => this.#session.axSelectText(this.ref, text, options));
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axNode(this.ref));
+		if (node.x === undefined || node.y === undefined || node.width === undefined || node.height === undefined)
+			return null;
+		return { x: node.x, y: node.y, width: node.width, height: node.height };
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		const { signal } = this.#getContext();
+		return Object.fromEntries(await nativeCall(signal, () => this.#session.axAttributes(this.ref)));
+	}
+
+	async actions(): Promise<string[]> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axNode(this.ref))).actions ?? [];
+	}
+
+	async perform(action: string, options?: MenuOptions): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
+		// The names native \`axPerform\` runs as \`AXRaise\` (its \`action_name\` mapping).
+		if (action.trim().toLowerCase() === "raise" || action === "AXRaise") {
+			refuseForeground(
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"bring the window's application to the front",
+				RAISE_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		// The names native \`axPerform\` runs as \`AXOpen\` (\`action_name\` prefixes "AX"
+		// to any other name). On an item in Chrome's Open panel it brings the
+		// panel's application to the front, even when the action fails, and it
+		// stays there.
+		if (this.#session.capabilities.backend === "quartz" && (action === "AXOpen" || action === "Open")) {
+			refuseForeground(
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"bring the window's application to the front, as it can on an item in an Open panel even when the action fails",
+				OPEN_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		const menu = menuOption(options);
+		// The names native \`axPerform\` runs as \`AXShowMenu\`, which opens the element's context menu.
+		if (["showmenu", "show_menu"].includes(action.trim().toLowerCase()) || action === "AXShowMenu") {
+			refuseMenu(
+				this.#session,
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				"a context menu",
+				MENU_ROUTE,
+				\`element \${this.ref}\`,
+			);
+		}
+		if (menu !== undefined)
+			refuseMenu(this.#session, context, "perform with menu", "a menu", MENU_ROUTE, \`element \${this.ref}\`);
+		// The names native \`axPerform\` runs as \`AXPress\`.
+		if (action.trim().toLowerCase() === "press" || action === "AXPress") {
+			refuseControlMenu(
+				this.#session,
+				context,
+				\`perform(\${JSON.stringify(action)})\`,
+				this.nativeRole,
+				\`element \${this.ref}\`,
+			);
+		}
+		return this.#act("perform", ref => this.#session.axPerform(ref, action, menu), judgeStateChange);
+	}
+
+	/**
+	 * Without a chord, the element's native press action, choosing \`menu\`'s item in the menu it opens;
+	 * with one, that chord typed into the element.
+	 */
+	async press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "press");
+		if (chord === undefined || isMenuOptions(chord)) {
+			const menu = menuOption(chord);
+			if (menu !== undefined)
+				refuseMenu(this.#session, context, "press with menu", "a menu", MENU_ROUTE, \`element \${this.ref}\`);
+			refuseControlMenu(this.#session, context, "press()", this.nativeRole, \`element \${this.ref}\`);
+			return this.#act("press", ref => this.#session.axPerform(ref, "press", menu), judgeStateChange);
+		}
+		const keys = chordKeys(chord);
+		const native = pointerOptions(options);
+		return this.#act(
+			"press",
+			ref =>
+				sendInput(this.#session, context, "press", native.takeover, fallback =>
+					this.#session.axKeyChord(ref, keys, { ...native, ...fallback }),
+				),
+			judgeStateChange,
+			native.takeover,
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "type");
+		validateString(text, "type(text)");
+		const native = pointerOptions(options);
+		return this.#act(
+			"type",
+			ref =>
+				sendInput(this.#session, context, "type", native.takeover, fallback =>
+					this.#session.axType(ref, text, { ...native, ...fallback }),
+				),
+			judgeStateChange,
+			native.takeover,
+		);
+	}
+
+	async click(options?: ClickOptions): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "click");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "click", native, \`element \${this.ref}\`, this.nativeRole);
+		refuseMenuPress(this.#session, context, native);
+		return this.#act(
+			"click",
+			ref =>
+				sendInput(this.#session, context, "click", native.takeover, fallback =>
+					this.#session.axClick(ref, { ...native, ...fallback }),
+				),
+			judgeStateChange,
+			native.takeover,
+		);
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "doubleClick");
+		const native = { ...pointerOptions(options), count: 2 };
+		refusePointerMenu(this.#session, context, "doubleClick", native, \`element \${this.ref}\`, this.nativeRole);
+		refuseMenuPress(this.#session, context, native);
+		return this.#act(
+			"doubleClick",
+			ref =>
+				sendInput(this.#session, context, "doubleClick", native.takeover, fallback =>
+					this.#session.axClick(ref, { ...native, ...fallback }),
+				),
+			judgeStateChange,
+			native.takeover,
+		);
+	}
+
+	async focus(): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "focus");
+		// macOS sets AXFocused inside the app without activating it; Windows
+		// (UIA SetFocus) and Linux (AT-SPI grab_focus) move keyboard focus.
+		if (this.#session.capabilities.backend !== "quartz") {
+			refuseForeground(
+				context,
+				"focus()",
+				"move the user's keyboard focus to this element",
+				"Use setValue(), press() or another AX action, which need no focus.",
+				\`element \${this.ref}\`,
+			);
+		}
+		return this.#act(
+			"focus",
+			ref => this.#session.axFocus(ref),
+			(_before, after) => {
+				if (!after) return unverified("focus could not be read back");
+				return after.focused
+					? verified("element reports focus")
+					: suspectedNoop("element does not report focus", "focus_not_observed");
+			},
+		);
+	}
+
+	async parent(): Promise<El | null> {
+		const { signal } = this.#getContext();
+		const node = await nativeCall(signal, () => this.#session.axParent(this.ref));
+		if (!node) return null;
+		const [parent] = await issueElements(this.#session, this.#getContext, [node], refBook(this.#session).get(this.ref)?.windowId);
+		return parent!;
+	}
+
+	async children(): Promise<El[]> {
+		const { signal } = this.#getContext();
+		const nodes = await nativeCall(signal, () => this.#session.axChildren(this.ref));
+		return issueElements(this.#session, this.#getContext, nodes, refBook(this.#session).get(this.ref)?.windowId);
+	}
+}
+
+const ELEMENT_FIELDS = ["ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount"];
+
+/** \`find()\`'s array answers element field reads and calls with how to pick one, instead of \`undefined\` or "is not a function". */
+function foundElements(elements: El[]): El[] {
+	const pickOne = (member: string): TypeError =>
+		new TypeError(
+			\`find() returns an array (length \${elements.length}), not one element, so it has no \${member}; pick one first: const [el] = await win.find(query)\`,
+		);
+	for (const method of Object.getOwnPropertyNames(El.prototype)) {
+		if (method === "constructor") continue;
+		Object.defineProperty(elements, method, {
+			value: () => {
+				throw pickOne(\`\${method}()\`);
+			},
+		});
+	}
+	for (const field of ELEMENT_FIELDS) {
+		Object.defineProperty(elements, field, {
+			get: () => {
+				throw pickOne(field);
+			},
+		});
+	}
+	return elements;
+}
+
+/** \`await ref("e5")\` resolves the element; its methods chain on the handle and await the lookup first. Action methods return the element's ComputerActionResult. */
+class ElRef implements PromiseLike<El> {
+	readonly ref: string;
+	readonly #getContext: RunContextAccessor;
+	readonly #lookup: () => Promise<El>;
+	#element?: Promise<El>;
+
+	constructor(ref: string, getContext: RunContextAccessor, lookup: () => Promise<El>) {
+		this.ref = ref;
+		this.#getContext = getContext;
+		this.#lookup = lookup;
+	}
+
+	#resolve(): Promise<El> {
+		this.#element ??= this.#lookup();
+		return this.#element;
+	}
+
+	// oxlint-disable-next-line unicorn/no-thenable -- the handle is awaitable by design: \`await ref("e5")\` resolves the element.
+	then<A = El, B = never>(
+		onFulfilled?: ((element: El) => A | PromiseLike<A>) | null,
+		onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+	): Promise<A | B> {
+		return this.#resolve().then(onFulfilled, onRejected);
+	}
+
+	catch<B = never>(onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<El | B> {
+		return this.#resolve().catch(onRejected);
+	}
+
+	finally(onFinally?: (() => void) | null): Promise<El> {
+		return this.#resolve().finally(onFinally);
+	}
+
+	async value(): Promise<string | undefined> {
+		return (await this.#resolve()).value();
+	}
+
+	async setValue(value: string): Promise<ComputerActionResult> {
+		// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.
+		guardRun(this.#getContext(), "setValue");
+		validateString(value, "setValue(value)");
+		return (await this.#resolve()).setValue(value);
+	}
+
+	async selectText(text: string, options?: AxSelectTextOptions): Promise<AxTextSelection> {
+		guardRun(this.#getContext(), "selectText");
+		validateString(text, "selectText(text)");
+		return (await this.#resolve()).selectText(text, options);
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		return (await this.#resolve()).bounds();
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		return (await this.#resolve()).attributes();
+	}
+
+	async actions(): Promise<string[]> {
+		return (await this.#resolve()).actions();
+	}
+
+	async perform(action: string, options?: MenuOptions): Promise<ComputerActionResult> {
+		guardRun(this.#getContext(), "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
+		return (await this.#resolve()).perform(action, options);
+	}
+
+	async press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<ComputerActionResult> {
+		guardRun(this.#getContext(), "press");
+		if (chord !== undefined && !isMenuOptions(chord)) chordKeys(chord);
+		return (await this.#resolve()).press(chord, options);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<ComputerActionResult> {
+		guardRun(this.#getContext(), "type");
+		validateString(text, "type(text)");
+		return (await this.#resolve()).type(text, options);
+	}
+
+	async click(options?: ClickOptions): Promise<ComputerActionResult> {
+		return (await this.#resolve()).click(options);
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {
+		return (await this.#resolve()).doubleClick(options);
+	}
+
+	async focus(): Promise<ComputerActionResult> {
+		return (await this.#resolve()).focus();
+	}
+
+	async parent(): Promise<El | null> {
+		return (await this.#resolve()).parent();
+	}
+
+	async children(): Promise<El[]> {
+		return (await this.#resolve()).children();
+	}
+}`,
+	});
+
+	// ADAPT: Win 입력 helper. upstream 이 #guardInput·refusePointerMenu·refuseMenuPress·sendInput(takeover 재실행)·raise 의 refuseForeground 를
+	// 더했다. 입력 메서드는 #input 한 곳에서 sendInput 을 부르고, 재실행 여부를 windowInputResult 의 증거 경로에 싣는다.
+	const GUARD_INPUT_18122 = "#guardInput(method: string): ComputerRunContext";
+	const win = one(entry => entry.marker === "return windowInputResult(action, this.id, options);", "computer window input");
+	win.alternates.push({
+		file: win.file,
+		requires: GUARD_INPUT_18122,
+		marker: "return windowInputResult(action, this.id, takeover, tookOver);",
+		anchor: `	async click(x: number, y: number, options?: ClickOptions): Promise<void> {
+		const context = this.#guardInput("click");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "click", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(
+			this.#session,
+			context,
+			"click",
+			native.takeover,
+			fallback => this.#session.click(this.id, x, y, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<void> {
+		const context = this.#guardInput("doubleClick");
+		const native = { ...pointerOptions(options), count: 2 };
+		refusePointerMenu(this.#session, context, "doubleClick", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(
+			this.#session,
+			context,
+			"doubleClick",
+			native.takeover,
+			fallback => this.#session.click(this.id, x, y, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async move(x: number, y: number, options?: InputOptions): Promise<void> {
+		const context = this.#guardInput("move");
+		const native = pointerOptions(options);
+		await sendInput(
+			this.#session,
+			context,
+			"move",
+			native.takeover,
+			fallback => this.#session.moveMouse(this.id, x, y, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async drag(points: Array<[number, number]>, options?: DragOptions): Promise<void> {
+		const context = this.#guardInput("drag");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "drag", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(
+			this.#session,
+			context,
+			"drag",
+			native.takeover,
+			fallback =>
+				this.#session.drag(
+					this.id,
+					points.map(([x, y]) => ({ x, y })),
+					{ ...native, ...fallback },
+				),
+			this.pid,
+		);
+	}
+
+	async scroll(x: number, y: number, options: ScrollOptions = {}): Promise<void> {
+		const context = this.#guardInput("scroll");
+		const dx = options.dx ?? 0;
+		const dy = options.dy ?? 0;
+		const native = pointerOptions(options);
+		await sendInput(
+			this.#session,
+			context,
+			"scroll",
+			native.takeover,
+			fallback => this.#session.scroll(this.id, x, y, dx, dy, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<void> {
+		const context = this.#guardInput("type");
+		validateString(text, "type(text)");
+		const native = pointerOptions(options);
+		await sendInput(
+			this.#session,
+			context,
+			"type",
+			native.takeover,
+			fallback => this.#session.typeText(this.id, text, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async press(chord: string | string[], options?: InputOptions): Promise<void> {
+		const context = this.#guardInput("press");
+		const keys = chordKeys(chord);
+		const native = pointerOptions(options);
+		await sendInput(
+			this.#session,
+			context,
+			"press",
+			native.takeover,
+			fallback => this.#session.keyChord(this.id, keys, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async holdKeys(keys: string[], options: HoldOptions): Promise<void> {
+		const context = this.#guardInput("holdKeys");
+		// One read of each option, so the \`refuse\` check and the native call agree.
+		const { duration, takeover } = { ...options };
+		validateHold({ duration, takeover });
+		validateKeys(keys, "keys");
+		await sendInput(
+			this.#session,
+			context,
+			"holdKeys",
+			takeover,
+			fallback => this.#session.holdKeys(this.id, keys, { duration, takeover, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async holdMouse(x: number, y: number, options: HoldMouseOptions): Promise<void> {
+		const context = this.#guardInput("holdMouse");
+		const { duration, button, keys, takeover } = { ...options };
+		validateHold({ duration, takeover });
+		if (keys !== undefined) validateKeys(keys, "keys");
+		refusePointerMenu(this.#session, context, "holdMouse", { button, keys }, \`window \${this.id}\`);
+		const native: NativeHoldOptions = { duration, button, keys, takeover };
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(
+			this.#session,
+			context,
+			"holdMouse",
+			takeover,
+			fallback => this.#session.holdMouse(this.id, x, y, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async observe(options?: ScreenshotOptions & AxOptions): Promise<ObservationResult> {
+		const context = this.#getContext();
+		const result = await nativeCall(context.signal, () =>
+			this.#session.observe(
+				this.id,
+				{
+					maxWidth: context.snapshot.captureMaxWidth,
+					maxHeight: context.snapshot.captureMaxHeight,
+				},
+				options && { all: options.all, maxDepth: options.maxDepth },
+			),
+		);
+		const screenshot = await emitScreenshot(context, result.capture, options);
+		if (!options?.silent) context.output.push({ type: "text", text: result.accessibility.text });
+		return {
+			...screenshot,
+			ax: result.accessibility.text,
+			nodeCount: result.accessibility.nodeCount,
+			truncated: result.accessibility.truncated,
+		};
+	}
+
+	get menu() {
+		return {
+			items: async (...path: string[] | [path?: string | string[]]): Promise<MenuItem[]> => {
+				const context = this.#getContext();
+				// On macOS the read makes the window key first, so it is not inspection-only.
+				guardRun(context, "menu.items");
+				// An omitted path, or one passed on as \`undefined\`, lists the top-level menus.
+				const segments =
+					path.length <= 1 && path[0] === undefined
+						? undefined
+						: menuPath("menu.items", path, { allowEmpty: true });
+				return await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));
+			},
+			select: async (...path: [string, ...string[]] | [string[]]): Promise<void> => {
+				const context = this.#getContext();
+				guardRun(context, "menu.select");
+				const segments = menuPath("menu.select", path);
+				await nativeCall(context.signal, () => this.#session.menuSelect(this.id, segments));
+			},
+		};
+	}
+
+	async bringToCurrentSpace(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "bringToCurrentSpace");
+		await nativeCall(context.signal, () => this.#session.bringToCurrentSpace(this.id));
+	}
+
+	async raise(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "raise");
+		refuseForeground(
+			context,
+			"raise()",
+			"bring the window's application to the front",
+			RAISE_ROUTE,
+			\`window \${this.id}\`,
+		);
+		await nativeCall(context.signal, () => this.#session.raiseWindow(this.id));
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		return (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		return foundElements(
+			(await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(
+				node => new El(this.#session, this.#getContext, node),
+			),
+		);
+	}
+
+	ref(ref: string): ElRef {
+		validateString(ref, "ref(ref)", { nonEmpty: true });
+		return new ElRef(ref, this.#getContext, async () => {
+			const { signal } = this.#getContext();
+			return new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));
+		});
+	}`,
+		patched: `	/**
+	 * One window input call through \`sendInput\`, so the setting decides a takeover rerun of a refused background route.
+	 * A delivered call is \`unverified\` by construction: the effect lives in the application, not in a readback.
+	 */
+	async #input(
+		action: string,
+		context: ComputerRunContext,
+		takeover: boolean | undefined,
+		send: (fallback?: Fallback) => InputCall,
+	): Promise<ComputerActionResult> {
+		let tookOver = false;
+		try {
+			await sendInput(
+				this.#session,
+				context,
+				action,
+				takeover,
+				fallback => {
+					tookOver ||= fallback !== undefined;
+					return send(fallback);
+				},
+				this.pid,
+			);
+		} catch (error) {
+			throw refuseAction(error, action, undefined, takeover);
+		}
+		return windowInputResult(action, this.id, takeover, tookOver);
+	}
+
+	async click(x: number, y: number, options?: ClickOptions): Promise<ComputerActionResult> {
+		const context = this.#guardInput("click");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "click", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		return this.#input("click", context, native.takeover, fallback =>
+			this.#session.click(this.id, x, y, { ...native, ...fallback }),
+		);
+	}
+
+	async doubleClick(x: number, y: number, options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {
+		const context = this.#guardInput("doubleClick");
+		const native = { ...pointerOptions(options), count: 2 };
+		refusePointerMenu(this.#session, context, "doubleClick", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		return this.#input("doubleClick", context, native.takeover, fallback =>
+			this.#session.click(this.id, x, y, { ...native, ...fallback }),
+		);
+	}
+
+	async move(x: number, y: number, options?: InputOptions): Promise<ComputerActionResult> {
+		const context = this.#guardInput("move");
+		const native = pointerOptions(options);
+		return this.#input("move", context, native.takeover, fallback =>
+			this.#session.moveMouse(this.id, x, y, { ...native, ...fallback }),
+		);
+	}
+
+	async drag(points: Array<[number, number]>, options?: DragOptions): Promise<ComputerActionResult> {
+		const context = this.#guardInput("drag");
+		const native = pointerOptions(options);
+		refusePointerMenu(this.#session, context, "drag", native, \`window \${this.id}\`);
+		refuseMenuPress(this.#session, context, native);
+		return this.#input("drag", context, native.takeover, fallback =>
+			this.#session.drag(
+				this.id,
+				points.map(([x, y]) => ({ x, y })),
+				{ ...native, ...fallback },
+			),
+		);
+	}
+
+	async scroll(x: number, y: number, options: ScrollOptions = {}): Promise<ComputerActionResult> {
+		const context = this.#guardInput("scroll");
+		const dx = options.dx ?? 0;
+		const dy = options.dy ?? 0;
+		const native = pointerOptions(options);
+		return this.#input("scroll", context, native.takeover, fallback =>
+			this.#session.scroll(this.id, x, y, dx, dy, { ...native, ...fallback }),
+		);
+	}
+
+	async type(text: string, options?: InputOptions): Promise<ComputerActionResult> {
+		const context = this.#guardInput("type");
+		validateString(text, "type(text)");
+		const native = pointerOptions(options);
+		return this.#input("type", context, native.takeover, fallback =>
+			this.#session.typeText(this.id, text, { ...native, ...fallback }),
+		);
+	}
+
+	async press(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {
+		const context = this.#guardInput("press");
+		const keys = chordKeys(chord);
+		const native = pointerOptions(options);
+		return this.#input("press", context, native.takeover, fallback =>
+			this.#session.keyChord(this.id, keys, { ...native, ...fallback }),
+		);
+	}
+
+	async holdKeys(keys: string[], options: HoldOptions): Promise<void> {
+		const context = this.#guardInput("holdKeys");
+		// One read of each option, so the \`refuse\` check and the native call agree.
+		const { duration, takeover } = { ...options };
+		validateHold({ duration, takeover });
+		validateKeys(keys, "keys");
+		await sendInput(
+			this.#session,
+			context,
+			"holdKeys",
+			takeover,
+			fallback => this.#session.holdKeys(this.id, keys, { duration, takeover, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async holdMouse(x: number, y: number, options: HoldMouseOptions): Promise<void> {
+		const context = this.#guardInput("holdMouse");
+		const { duration, button, keys, takeover } = { ...options };
+		validateHold({ duration, takeover });
+		if (keys !== undefined) validateKeys(keys, "keys");
+		refusePointerMenu(this.#session, context, "holdMouse", { button, keys }, \`window \${this.id}\`);
+		const native: NativeHoldOptions = { duration, button, keys, takeover };
+		refuseMenuPress(this.#session, context, native);
+		await sendInput(
+			this.#session,
+			context,
+			"holdMouse",
+			takeover,
+			fallback => this.#session.holdMouse(this.id, x, y, { ...native, ...fallback }),
+			this.pid,
+		);
+	}
+
+	async observe(options?: ScreenshotOptions & AxOptions): Promise<ObservationResult> {
+		const context = this.#getContext();
+		const result = await nativeCall(context.signal, () =>
+			this.#session.observe(
+				this.id,
+				{
+					maxWidth: context.snapshot.captureMaxWidth,
+					maxHeight: context.snapshot.captureMaxHeight,
+				},
+				options && { all: options.all, maxDepth: options.maxDepth },
+			),
+		);
+		const screenshot = await emitScreenshot(context, result.capture, options);
+		// Same tree text as ax(): every ref it shows gets a fingerprint, and a goal probe stays silent.
+		refBook(this.#session).noteSnapshot(this.id, result.accessibility.text);
+		if (!options?.silent && !context.goalProbe) context.output.push({ type: "text", text: result.accessibility.text });
+		return {
+			...screenshot,
+			ax: result.accessibility.text,
+			nodeCount: result.accessibility.nodeCount,
+			truncated: result.accessibility.truncated,
+		};
+	}
+
+	get menu() {
+		return {
+			items: async (...path: string[] | [path?: string | string[]]): Promise<MenuItem[]> => {
+				const context = this.#getContext();
+				// On macOS the read makes the window key first, so it is not inspection-only.
+				guardRun(context, "menu.items");
+				// An omitted path, or one passed on as \`undefined\`, lists the top-level menus.
+				const segments =
+					path.length <= 1 && path[0] === undefined
+						? undefined
+						: menuPath("menu.items", path, { allowEmpty: true });
+				return await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));
+			},
+			select: async (...path: [string, ...string[]] | [string[]]): Promise<void> => {
+				const context = this.#getContext();
+				guardRun(context, "menu.select");
+				const segments = menuPath("menu.select", path);
+				await nativeCall(context.signal, () => this.#session.menuSelect(this.id, segments));
+			},
+		};
+	}
+
+	async bringToCurrentSpace(): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "bringToCurrentSpace");
+		await nativeCall(context.signal, () => this.#session.bringToCurrentSpace(this.id));
+	}
+
+	async raise(): Promise<ComputerActionResult> {
+		const context = this.#getContext();
+		guardRun(context, "raise");
+		refuseForeground(
+			context,
+			"raise()",
+			"bring the window's application to the front",
+			RAISE_ROUTE,
+			\`window \${this.id}\`,
+		);
+		try {
+			await nativeCall(context.signal, () => this.#session.raiseWindow(this.id));
+		} catch (error) {
+			throw refuseAction(error, "raise");
+		}
+		return windowInputResult("raise", this.id);
+	}
+
+	async ax(options?: AxOptions): Promise<string> {
+		const { signal } = this.#getContext();
+		const text = (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;
+		refBook(this.#session).noteSnapshot(this.id, text);
+		return text;
+	}
+
+	async find(query: AxQuery): Promise<El[]> {
+		const { signal } = this.#getContext();
+		const nodes = await nativeCall(signal, () => this.#session.axQuery(this.id, query));
+		return foundElements(await issueElements(this.#session, this.#getContext, nodes, this.id));
+	}
+
+	ref(ref: string): ElRef {
+		validateString(ref, "ref(ref)", { nonEmpty: true });
+		return new ElRef(ref, this.#getContext, () => resolveElement(this.#session, this.#getContext, ref, this.id));
+	}`,
+	});
 }
 // 18.9.1 MCPManager 는 deferred 전역 로더에 `static #deferred` 를 새로 둔다. JS 는 같은 class 안에서 static 과 instance
 // private 이름을 겹쳐 둘 수 없어("#deferred" has already been declared) 모듈 적재가 실패한다. 요청별 MCP 선택이 쓰는

@@ -99,7 +99,7 @@ export function getTodoPhases(block: ToolCallContent, result?: ToolResultMessage
 }
 
 /** Whether a tool name is the todo tool, including an extension-namespaced one. */
-function isTodoToolName(name: string | undefined): boolean {
+export function isTodoToolName(name: string | undefined): boolean {
   if (!name) return false;
   const normalized = name.toLowerCase();
   return normalized === "todo" || normalized.endsWith(".todo") || normalized.endsWith("_todo");

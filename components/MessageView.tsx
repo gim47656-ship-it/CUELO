@@ -34,7 +34,7 @@ import { normalizeCustomPanelLines, parseAnsiLine, stripAnsi } from "@/lib/ansi"
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import type { DispatchSlot } from "@/lib/answer-status/dispatch";
-import type { TurnSummary } from "@/lib/answer-status/turn-summary";
+import type { FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { DispatchCard } from "./answer-status/DispatchCard";
 import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
 import {
@@ -242,7 +242,7 @@ interface Props {
   /** `task` calls whose in-answer card sits in this answer, and on which side of the text. */
   dispatchSlot?: DispatchSlot;
   /** Observed summary of the finished turn this answer closes; replaces the segment file chips. */
-  turnSummary?: TurnSummary;
+  turnSummary?: FinishedTurnSummary;
 }
 
 // One formatter per shape: `toLocale*String` with options builds a new
@@ -589,7 +589,7 @@ function AssistantMessageView({
   entryId?: string;
   writtenFiles?: WrittenFile[];
   dispatchSlot?: DispatchSlot;
-  turnSummary?: TurnSummary;
+  turnSummary?: FinishedTurnSummary;
 }) {
   const { t } = useI18n();
   const { hideThinkingBlock } = useDisplaySettings();

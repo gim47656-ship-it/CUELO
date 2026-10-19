@@ -383,6 +383,8 @@
   gap: 10px;
   padding: 6px 0 4px;
   min-width: 0;
+  container-name: answer-summary;
+  container-type: inline-size;
 }
 
 .answer-summary-heading {
@@ -435,6 +437,118 @@
 
 .answer-check[data-state="failed"] .answer-check-result {
   color: var(--danger);
+}
+
+/*
+ * Maker 실행 시간: 모든 막대가 그 턴 하나의 시간축을 같이 쓴다. 같이 돈 Maker는 겹쳐 보이고 차례로 돈 Maker는
+ * 이어져 보인다. 소요는 막대 옆 글자로도 적어 색과 길이만으로 뜻을 전하지 않는다.
+ */
+.answer-maker-time {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(3rem, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+
+.answer-maker-time-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-maker-time-track {
+  position: relative;
+  height: 6px;
+  min-width: 0;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.answer-maker-time-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--text-dim);
+}
+
+.answer-maker-time[data-run="completed"] .answer-maker-time-bar {
+  background: var(--accent);
+}
+
+.answer-maker-time[data-run="failed"] .answer-maker-time-bar,
+.answer-maker-time[data-run="aborted"] .answer-maker-time-bar {
+  background: var(--danger);
+}
+
+.answer-maker-time-value {
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-maker-time[data-run="failed"] .answer-maker-time-value,
+.answer-maker-time[data-run="aborted"] .answer-maker-time-value {
+  color: var(--danger);
+}
+
+.answer-maker-time-missing {
+  grid-column: 2 / -1;
+  color: var(--text-dim);
+}
+
+@container answer-summary (max-width: 420px) {
+  .answer-maker-time {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .answer-maker-time-name,
+  .answer-maker-time-missing {
+    grid-column: 1 / -1;
+  }
+}
+
+.answer-remaining {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+
+.answer-remaining-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.answer-remaining[data-status="in_progress"] .answer-remaining-status {
+  color: var(--accent);
+}
+
+.answer-remaining[data-status="blocked"] .answer-remaining-status,
+.answer-remaining-blocker {
+  color: var(--warning);
+}
+
+.answer-remaining-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+}
+
+.answer-remaining-blocker {
+  flex-basis: 100%;
+}
+
+.answer-summary-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 /* 입력창 위 큐 패널의 행. */
@@ -544,7 +658,8 @@
     height: 44px;
   }
 
-  .answer-delivery-toggle {
+  .answer-delivery-toggle,
+  .answer-summary-toggle {
     min-height: 44px;
   }
 

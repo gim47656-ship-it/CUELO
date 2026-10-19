@@ -17,6 +17,31 @@ function readToolPath(input: Record<string, unknown> | undefined): string | null
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function readResultPath(entry: unknown): string | null {
+  if (!entry || typeof entry !== "object") return null;
+  const record = entry as Record<string, unknown>;
+  if (record.op === "delete") return null;
+  const value = record.path ?? record.resolvedPath;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * The paths a write/edit call wrote. A path argument wins; the hashline `edit` carries its targets
+ * only inside `input` text, so its result `details` (`path`, or `perFileResults[].path` for a
+ * multi-file edit) is the record of what was written. Files the edit deleted are not listed.
+ */
+function readWrittenPaths(input: Record<string, unknown> | undefined, result: ToolResultMessage): string[] {
+  const details = result.details as Record<string, unknown> | undefined;
+  const argument = readToolPath(input);
+  if (argument) return details && typeof details === "object" && details.op === "delete" ? [] : [argument];
+  if (!details || typeof details !== "object") return [];
+  if (Array.isArray(details.perFileResults)) {
+    return details.perFileResults.map(readResultPath).filter((path): path is string => path !== null);
+  }
+  const single = readResultPath(details);
+  return single ? [single] : [];
+}
+
 /**
  * 도구의 path 인자는 파일시스템 리터럴이다. `xd://recall` 같은 내부/디바이스 URI를
  * 상대경로로 resolve하면 실제로는 없는 파일이 "Files changed"에 올라 열기가 Not found로
@@ -55,17 +80,18 @@ export function extractTurnWrittenFiles(
     const result = toolResults?.get(block.toolCallId);
     if (!result || result.isError) continue;
 
-    const rawPath = readToolPath(block.input);
-    if (!rawPath || !isFilesystemPathLiteral(rawPath)) continue;
+    for (const rawPath of readWrittenPaths(block.input, result)) {
+      if (!isFilesystemPathLiteral(rawPath)) continue;
 
-    // Tool arguments are filesystem paths, not hrefs: preserve characters such
-    // as #, ?, and :digits that have special meaning in links and source refs.
-    const filePath = resolveLocalFilePath(rawPath, cwd);
-    if (!filePath) continue;
+      // Tool arguments are filesystem paths, not hrefs: preserve characters such
+      // as #, ?, and :digits that have special meaning in links and source refs.
+      const filePath = resolveLocalFilePath(rawPath, cwd);
+      if (!filePath) continue;
 
-    if (seen.has(filePath)) continue;
-    seen.add(filePath);
-    writtenFiles.push({ filePath });
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      writtenFiles.push({ filePath });
+    }
   }
 
   return writtenFiles;

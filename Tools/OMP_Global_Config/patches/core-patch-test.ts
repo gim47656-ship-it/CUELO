@@ -266,8 +266,16 @@ async function openAndCatch(name: string, handle: never, opts: Record<string, un
 // 케이스의 실패가 뒤 케이스까지 빨갛게 만들어 원인이 흐려진다.
 let createdBefore = createdCount;
 const openDefault = await openAndCatch("relay-default", relayHandle, { url: "https://example.com/docs" });
-check("target 없는 Relay open은 새 탭을 만든다", createdCount === createdBefore + 1, `delta=${createdCount - createdBefore} err=${openDefault}`);
-check("작업은 새로 만든 탭에서 진행된다", picked.at(-1)?.startsWith("created-") === true, `picked=${JSON.stringify(picked)}`);
+// 18.12.2 부터 upstream(#16119)이 target 없는 Relay open 의 배경 탭을 워커 안에서 직접 만든다. supervisor 는 `page: { kind: "create" }` 만 넘기므로
+// 이 시험의 가짜 `browser.newPage` 는 불리지 않고, 워커가 가짜 endpoint 에 붙다 실패한 사유가 err 로 남는다. 순정 본문이 있는 판은 "supervisor 가
+// 사용자 탭을 고르지도 새 탭을 만들지도 않는다"를 보고, 없는 판(18.12.1 이하 CUELO 패치)은 기존대로 새 탭을 만들어 진행하는지 본다.
+const upstreamRelayTab = readFileSync(`${CORE}/tools/browser/tab-supervisor.ts`, "utf8").includes('page = { kind: "create"');
+if (upstreamRelayTab) {
+	check("target 없는 Relay open 은 upstream 이 워커 안에서 새 탭을 만든다(supervisor 는 탭을 고르지도 만들지도 않는다)", createdCount === createdBefore && picked.length === 0, `delta=${createdCount - createdBefore} picked=${JSON.stringify(picked)} err=${openDefault}`);
+} else {
+	check("target 없는 Relay open은 새 탭을 만든다", createdCount === createdBefore + 1, `delta=${createdCount - createdBefore} err=${openDefault}`);
+	check("작업은 새로 만든 탭에서 진행된다", picked.at(-1)?.startsWith("created-") === true, `picked=${JSON.stringify(picked)}`);
+}
 check("사용자가 보던 탭을 채택하지 않는다", !picked.some(id => id.startsWith("user-")), `picked=${JSON.stringify(picked)}`);
 
 createdBefore = createdCount;
@@ -3296,7 +3304,19 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 		{ id: "329350", app: "STAR PLUTO", title: "STAR PLUTO", x: 0, y: 0, width: 1, height: 1, focused: false },
 	];
 	// 18.6.3 worker 는 run 이 끝날 때 native session 의 retire()(성공)·cancel()(실패·취소)을 부른다.
-	const session = { capabilities: {}, listDisplays: async () => [], listWindows: async () => windows, close: async () => {}, cancel: () => {}, retire: () => {} };
+	const session = {
+		capabilities: {},
+		escapeStops: 0,
+		screenState: { screenLocked: false, displayAsleep: false },
+		setRunDeadline: () => {},
+		holdDisplayUntilReleased: () => {},
+		releaseDisplayAwake: () => {},
+		listDisplays: async () => [],
+		listWindows: async () => windows,
+		close: async () => {},
+		cancel: () => {},
+		retire: () => {},
+	};
 	type RunResult = { ok: boolean; payload?: { returnValue: unknown }; error?: { message: string } };
 	const waiters = new Map<string, (result: RunResult) => void>();
 	let deliver: (message: unknown) => void = () => {};
@@ -3318,7 +3338,7 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 		new Promise<RunResult>(resolve => {
 			const id = `filter-${++runs}`;
 			waiters.set(id, resolve);
-			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot });
+			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot, escape: { key: "patch-test", acknowledged: 0 } });
 		});
 	const numeric = await run("return (await desktop.window(65822)).id;");
 	const numericFilter = await run("return (await desktop.window({ id: 65822 })).id;");
@@ -3385,6 +3405,11 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	};
 	const session = {
 		capabilities: {},
+		escapeStops: 0,
+		screenState: { screenLocked: false, displayAsleep: false },
+		setRunDeadline: () => {},
+		holdDisplayUntilReleased: () => {},
+		releaseDisplayAwake: () => {},
 		listDisplays: async () => [],
 		listWindows: async () => [{ id: "w1", app: "Fixture", title: "Fixture", x: 0, y: 0, width: 400, height: 300, focused: false }],
 		close: async () => {},
@@ -3463,7 +3488,7 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		new Promise<RunResult>(resolve => {
 			const id = `action-${++runs}`;
 			waiters.set(id, resolve);
-			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot });
+			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot, escape: { key: "patch-test", acknowledged: 0 } });
 		});
 	const caught = "catch (e) { return { ok: false, message: e.message, name: e.name, info: e.computerAction }; }";
 

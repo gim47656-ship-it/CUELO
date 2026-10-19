@@ -31,7 +31,7 @@ import "./answer-status/answer-status.css";
 import { DispatchDockLine } from "./answer-status/DispatchDockLine";
 import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { DispatchCard } from "./answer-status/DispatchCard";
-import { collectTurnBlocks, placeTurnSummaries, summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
+import { summarizeFinishedTurns, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
 import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
@@ -348,24 +348,20 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     return notices;
   }, [main, process, messages, toolResultsMap, t]);
 
-  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에(dispatchSlots), 요약은 끝난 턴의 마지막 답변에 붙는다.
-  // 실행 중인 마지막 턴은 아직 끝난 답변이 아니므로 요약하지 않는다.
+  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에(dispatchSlots), 결과 카드는 끝난 턴의 마지막 답변에 붙는다.
+  // 실행 중인 마지막 턴은 아직 끝난 답변이 아니므로 요약하지 않는다. 끝난 턴 가운데 가장 나중 것만 처음에 펼친다.
   const turnSummaries = useMemo(() => {
     let liveTurnAnchor: number | null = null;
     if (sessionBusy) {
       for (const item of main) if (item.kind === "message" && messages[item.idx]?.role === "user") liveTurnAnchor = item.idx;
     }
-    const summaries = new Map<number, TurnSummary>();
-    for (const [position, range] of placeTurnSummaries(main, messages, liveTurnAnchor)) {
-      summaries.set(position, summarizeTurn(collectTurnBlocks(messages, range.from, range.to), toolResultsMap, messageCwd));
-    }
-    return summaries;
+    return summarizeFinishedTurns(main, messages, liveTurnAnchor, toolResultsMap, messageCwd);
   }, [main, messages, toolResultsMap, messageCwd, sessionBusy]);
 
   // Window the lightweight ordered items, not an already-built JSX transcript.
   const hasMore = startIndex > 0;
   const hasLater = endIndex < main.length;
-  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; dispatchSlot?: DispatchSlot; turnSummary?: TurnSummary } = {}): ReactNode => {
+  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; dispatchSlot?: DispatchSlot; turnSummary?: FinishedTurnSummary } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
     // A tab-local command result between the answer and the next prompt does
     // not take away the prompt's "edit from here" target.

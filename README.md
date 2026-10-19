@@ -16,7 +16,7 @@ Use the same `~/.omp/agent` sessions, credentials and model configuration from t
 
 **한국어:** CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 웹 앱은 omp SDK를 서버 안에서 실행하고, `omp` CLI와 같은 `~/.omp/agent` 디렉터리를 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도 기록·계정·모델 설정을 공유합니다.
 
-내장 OMP 코어는 **18.12.1**입니다. 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적이며, 앱에 포함된 CLI를 `omp` 명령으로 사용하는 설치에서는 웹과 같은 코어를 사용합니다.
+내장 OMP 코어는 **18.12.2**입니다. 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적이며, 앱에 포함된 CLI를 `omp` 명령으로 사용하는 설치에서는 웹과 같은 코어를 사용합니다.
 
 문서 하네스는 기존 Word·Excel·PowerPoint 문서를 열고 편집하거나 변환할 때 LibreOffice를 우선 사용합니다. 원본은 보존하고 출력 결과를 확인하며, 매크로·전용 기능·서식 호환성이 필요하거나 사용자가 지정하면 MS Office를 사용합니다.
 

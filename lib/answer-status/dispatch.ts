@@ -63,18 +63,27 @@ export interface DispatchLedger {
   runs: ReadonlyMap<string, ObservedRun>;
   /** agentId별 가장 최근 발주 key. parentToolCallId 없는 옛 스냅샷을 그 발주에만 붙인다. */
   latestByAgent: ReadonlyMap<string, string>;
+  /** 발주 key별 spawn 결과가 기록된 시각(ms). 비동기 Maker 작업은 이 결과와 함께 시작된다. */
+  spawnedAt: ReadonlyMap<string, number>;
+  /**
+   * 발주 key별 끝난 실행의 기록된 소요(ms): `wait` 결과와 `async-result` 전달이 싣는 작업 기록의 `durationMs`.
+   * 그 key의 첫 종료 기록만 쓴다 — spawn 시각에서 시작한 실행이 그것이다.
+   */
+  durations: ReadonlyMap<string, number>;
 }
 
 export const EMPTY_DISPATCH_LEDGER: DispatchLedger = {
   verdicts: new Map(),
   runs: new Map(),
   latestByAgent: new Map(),
+  spawnedAt: new Map(),
+  durations: new Map(),
 };
 
 /** 기록에 실린 task 입력·결과·판정·wait 결과의 모양. 쓰는 필드만 `typeof`로 확인해 읽는다. */
 interface TaskEntryShape { index?: unknown; id?: unknown; name?: unknown; agent?: unknown; task?: unknown }
 interface VerdictRecordShape { verdict?: unknown; assignmentId?: unknown; attempt?: unknown; reason?: unknown }
-interface WaitJobShape { type?: unknown; id?: unknown; status?: unknown }
+interface WaitJobShape { type?: unknown; id?: unknown; jobId?: unknown; status?: unknown; durationMs?: unknown }
 
 /** 배열이면 그 안의 객체 항목만, 아니면 빈 배열. 기록 필드는 런타임에 모양이 보장되지 않는다. */
 function objectEntries<T>(value: unknown): T[] {
@@ -262,11 +271,23 @@ export function buildDispatchLedger(
   const verdicts = new Map<string, VerdictRecord[]>();
   const runs = new Map<string, ObservedRun>();
   const latestByAgent = new Map<string, string>();
+  const spawnedAt = new Map<string, number>();
+  const durations = new Map<string, number>();
 
   const observe = (agentId: string, status: SubagentStatus | null, order: number) => {
     const key = latestByAgent.get(agentId);
     if (!key || !status) return;
     runs.set(key, { status, order });
+  };
+  // 실행 중 작업의 durationMs는 그 시점까지의 경과라 소요가 아니다. 끝난 기록만 받는다.
+  // 소요는 그 key의 첫 종료 기록에서만 읽는다. 그 기록에 소요가 없으면 뒤 기록(같은 Maker를 다시 깨운 실행 등)으로 채우지 않는다.
+  const terminalSeen = new Set<string>();
+  const observeDuration = (job: WaitJobShape, agentId: string | null) => {
+    const key = agentId ? latestByAgent.get(agentId) : undefined;
+    const status = normalizeStatus(job.status);
+    if (!key || terminalSeen.has(key) || (status !== "completed" && status !== "failed" && status !== "aborted")) return;
+    terminalSeen.add(key);
+    if (typeof job.durationMs === "number" && Number.isFinite(job.durationMs) && job.durationMs >= 0) durations.set(key, job.durationMs);
   };
 
   messages.forEach((message, order) => {
@@ -275,7 +296,10 @@ export function buildDispatchLedger(
         if (block.type !== "toolCall" || block.toolName !== "task") continue;
         const result = toolResults.get(block.toolCallId);
         if (!result) continue;
-        for (const member of readDispatchMembers(block, result) ?? []) latestByAgent.set(member.agentId, member.key);
+        for (const member of readDispatchMembers(block, result) ?? []) {
+          latestByAgent.set(member.agentId, member.key);
+          if (typeof result.timestamp === "number") spawnedAt.set(member.key, result.timestamp);
+        }
       }
       return;
     }
@@ -293,6 +317,7 @@ export function buildDispatchLedger(
           if (job.type !== "task") continue;
           const agentId = readString(job.id);
           if (agentId) observe(agentId, normalizeStatus(job.status), order);
+          observeDuration(job, agentId);
         }
       }
       return;
@@ -302,10 +327,13 @@ export function buildDispatchLedger(
         const attributes = Object.fromEntries([...tag[1].matchAll(TAG_ATTRIBUTE)].map((match) => [match[1], match[2]]));
         if (attributes.id) observe(attributes.id, normalizeStatus(attributes.status), order);
       }
+      for (const job of objectEntries<WaitJobShape>((message.details as { jobs?: unknown } | undefined)?.jobs)) {
+        if (job.type === "task") observeDuration(job, readString(job.jobId));
+      }
     }
   });
 
-  return { verdicts, runs, latestByAgent };
+  return { verdicts, runs, latestByAgent, spawnedAt, durations };
 }
 
 export type MakerRunState = "dispatching" | "pending" | "running" | "completed" | "failed" | "aborted" | "unobserved";

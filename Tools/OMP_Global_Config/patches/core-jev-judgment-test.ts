@@ -74,8 +74,10 @@ const request = {
 		return Settings.loadIsolated({ inMemory: true, cwd, agentDir, configFiles: [file] });
 	};
 
+	// upstream migration 이 주입하는 judge 는 18.12.1 까지 `typesafe/jev-latest`, 18.12.2 부터 고정판 `typesafe/jev-1.14.0` 이다. 판 번호는 상류 몫이다.
+	const JEV_MIGRATED_JUDGE = /^typesafe\/jev-(latest|\d+(\.\d+)+)$/;
 	const vercel = await load("vercel");
-	assert.equal(modelRoles.get(vercel).judge, "typesafe/jev-latest");
+	assert.match(modelRoles.get(vercel).judge ?? "", JEV_MIGRATED_JUDGE);
 	assert.deepEqual(fallbackChains.get(vercel).judge, ["@tiny", "@smol", "@default"]);
 	ok("옛 vercel 설정은 upstream migration 이 받아 던지지 않고 typesafe judge chain 으로 옮긴다");
 
@@ -84,7 +86,7 @@ const request = {
 	ok("이미 judge role 이 있는 프로필은 vercel 값이 남아도 그 judge 를 바꾸지 않는다");
 
 	const typesafe = await load("typesafe");
-	assert.equal(modelRoles.get(typesafe).judge, "typesafe/jev-latest");
+	assert.match(modelRoles.get(typesafe).judge ?? "", JEV_MIGRATED_JUDGE);
 	assert.deepEqual(fallbackChains.get(typesafe).judge, ["@tiny", "@smol", "@default"]);
 	ok("upstream migration 은 typesafe 입력에서 그대로 동작한다");
 
