@@ -120,22 +120,21 @@ export function reduceWorkspaceLayout(
 }
 
 /**
- * Whether the deck takes the transcript's place. View-stack and the office
- * page always do; a pinned deck does only while the user has widened it.
- * `staleExpansion` is true when a widened deck can no longer be widened (the
- * window narrowed to view-stack, or the office page): the shell clears the
- * flag then, so widening the window again does not silently re-expand it.
+ * Whether the deck takes the transcript's place. View-stack always does; a
+ * pinned deck does only while the user has widened it. `staleExpansion` is
+ * true when a widened deck can no longer be widened (the window narrowed to
+ * view-stack): the shell clears the flag then, so widening the window again
+ * does not silently re-expand it.
  */
 export function getDeckPresentation(input: {
   deckVisible: boolean;
   pinDecision: WorkspacePinDecision;
-  officePage: boolean;
   deckExpanded: boolean;
 }): { replacesTranscript: boolean; expandable: boolean; expanded: boolean; staleExpansion: boolean } {
-  const expandable = input.deckVisible && input.pinDecision.deck === "pinned" && !input.officePage;
+  const expandable = input.deckVisible && input.pinDecision.deck === "pinned";
   const expanded = expandable && input.deckExpanded;
   return {
-    replacesTranscript: input.deckVisible && (input.officePage || input.pinDecision.deck === "view-stack" || expanded),
+    replacesTranscript: input.deckVisible && (input.pinDecision.deck === "view-stack" || expanded),
     expandable,
     expanded,
     staleExpansion: input.deckExpanded && !expandable,

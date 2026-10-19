@@ -6,8 +6,8 @@ import { translateMessage } from "@/lib/i18n/format";
 import type { Locale, TranslationParams } from "@/lib/i18n/types";
 
 /**
- * 통역 모드 전용 문구. 오피스(`components/office/i18n.ts`)와 같은 방식으로 앱 공용 언어 팩을
- * 건드리지 않고 여기서 따로 들며, 조회·보간·영어 대체는 공용 `translateMessage`를 그대로 쓴다.
+ * 통역 모드 전용 문구. 앱 공용 언어 팩을 건드리지 않고 여기서 따로 들며, 조회·보간·영어 대체는
+ * 공용 `translateMessage`를 그대로 쓴다.
  */
 const ko = {
   "translator.tab": "통역",

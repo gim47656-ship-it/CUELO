@@ -10,4 +10,4 @@ export function proxy(request: NextRequest) {
  * every request the proxy sees, so the route runs `rejectUnauthorizedRequest` itself before it reads
  * the body. Its sub-routes, such as `/api/attachments/draft`, still pass through here.
  */
-export const config = { matcher: ["/", "/office", "/recover", "/api", "/api/:path((?!attachments$).*)"] };
+export const config = { matcher: ["/", "/recover", "/api", "/api/:path((?!attachments$).*)"] };

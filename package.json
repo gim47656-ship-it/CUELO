@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.38",
+  "version": "0.10.39",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -112,8 +112,6 @@
   },
   "devDependencies": {
     "@lobehub/icons": "^5.16.0",
-    "@pixiv/three-vrm": "^3.5.5",
-    "@react-three/fiber": "^9.8.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/bun": "^1.4.0",
     "@types/busboy": "1.5.4",
@@ -122,7 +120,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@types/three": "^0.186.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.2.12",
     "jiti": "^2.7.0",
@@ -138,7 +135,6 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwindcss": "^4.3.3",
-    "three": "^0.186.1",
     "typescript": "^5.9.3",
     "typescript-language-server": "^6.0.1"
   }

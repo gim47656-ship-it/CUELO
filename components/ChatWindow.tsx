@@ -38,7 +38,7 @@ import { QuestionRail, type RailQuestion } from "./QuestionRail";
 import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
-import { resolveAccountFace, resolveLiveAccountFace, useAccountFace, type AccountFace } from "@/hooks/useAccountFaces";
+import { resolveAccountFace, resolveLiveAccountFace, useAccountFace } from "@/hooks/useAccountFaces";
 import { MAIN_PRESETS } from "@/lib/hanse-resource-client";
 import {
   buildInlineTurns,
@@ -111,8 +111,6 @@ interface Props {
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
   onSubagentsChange?: (subagents: SubagentSnapshot[]) => void;
-  /** Publishes the observed Main identity (model, character face, preset seat). Read-only; null on unmount. */
-  onMainIdentityChange?: (identity: MainIdentity | null) => void;
   /** Opens an existing detail panel (subagents, work log) from an in-answer status card. */
   onOpenWorkspaceView?: (view: "subagents" | "process") => void;
   /** Opens one Maker's detail in the deck from an in-answer dispatch card; passed through to the cards unchanged. */
@@ -143,14 +141,6 @@ interface Props {
   /** Open this session at a message found by the palette's transcript search. */
   jumpRequest?: ChatJumpRequest | null;
   onJumpHandled?: (id: number) => void;
-}
-
-export interface MainIdentity {
-  provider: string;
-  modelId: string;
-  face: AccountFace | null;
-  presetAlias: string | null;
-  isNew: boolean;
 }
 
 export interface ChatJumpRequest {
@@ -528,7 +518,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onMainIdentityChange, onOpenWorkspaceView, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
+export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onOpenWorkspaceView, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 서브에이전트 줄과 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -697,21 +687,6 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         && (entry.oauthPosition === undefined || entry.oauthPosition === accountPosition),
     )?.alias ?? null;
   }, [displayModelValue, isNew, newSessionAccount, sessionAccountFace]);
-
-  // 오피스 보기 등 바깥 화면이 관측된 Main 정체성만 읽어 가도록 원시값이 바뀔 때만 발행한다.
-  const identityProvider = displayModelValue?.provider;
-  const identityModelId = displayModelValue?.modelId;
-  const identityFaceAlias = sessionAccountFace?.alias;
-  const identityFaceSeed = sessionAccountFace?.seed;
-  const sessionAccountFaceRef = useRef(sessionAccountFace);
-  sessionAccountFaceRef.current = sessionAccountFace;
-  useEffect(() => {
-    if (!onMainIdentityChange) return;
-    onMainIdentityChange(identityProvider && identityModelId
-      ? { provider: identityProvider, modelId: identityModelId, face: sessionAccountFaceRef.current, presetAlias: mainPresetActiveAlias, isNew }
-      : null);
-  }, [onMainIdentityChange, identityProvider, identityModelId, identityFaceAlias, identityFaceSeed, mainPresetActiveAlias, isNew]);
-  useEffect(() => () => { onMainIdentityChange?.(null); }, [onMainIdentityChange]);
 
   const sessionBusy = agentRunning || bashRunning;
   const cueSessionId = session?.id;

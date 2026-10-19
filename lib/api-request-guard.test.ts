@@ -58,7 +58,7 @@ test("asks for the password with the Basic challenge and lets the right one thro
   expect(api?.headers.get("cache-control")).toBe("no-store");
   expect(await api?.json()).toEqual({ error: "Authentication required", recoveryPath: "/recover" });
 
-  const page = rejectUnauthorizedRequest(request("/office"), "/office", locked);
+  const page = rejectUnauthorizedRequest(request("/"), "/", locked);
   expect(page?.status).toBe(401);
   expect(page?.headers.get("content-type")).toBe("text/html; charset=utf-8");
 
@@ -78,7 +78,7 @@ test("keeps recovery reachable while locked and refuses everything else when the
 });
 
 test("the proxy skips only the streaming upload path and still covers its sub-routes", () => {
-  const pathnames = ["/api/attachments", "/", "/office", "/recover", "/api", "/api/files", "/api/attachments/draft", "/api/attachments/att_0/transcription", "/api/attachment-settings", "/api/attachmentsx", "/api/web-access/recovery"];
+  const pathnames = ["/api/attachments", "/", "/recover", "/api", "/api/files", "/api/attachments/draft", "/api/attachments/att_0/transcription", "/api/attachment-settings", "/api/attachmentsx", "/api/web-access/recovery"];
   // Next's matcher compiler loads its node environment, which wraps the process-wide console around
   // request storage this test process already created without it; later test files would then throw
   // on every console call. Compile the real `proxy.ts` matcher in a child process instead.

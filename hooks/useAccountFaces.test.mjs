@@ -139,7 +139,7 @@ test("a turn that rotated accounts gets the runtime account, not the previous tu
 
     route.answer({ state: "resolved", provider: "anthropic", credentialId: 11 });
     assert.equal((await resolveLiveAccountFace("rotated", "anthropic", undefined))?.alias, "MIO(미오)");
-    // 같은 답으로 저장소 pin 도 고쳐, 오피스처럼 pin 을 읽는 화면이 직전 계정에 머물지 않는다.
+    // 같은 답으로 저장소 pin 도 고쳐, pin 을 읽는 화면이 직전 계정에 머물지 않는다.
     assert.equal(resolveAccountFace("rotated", "anthropic", undefined)?.alias, "MIO(미오)");
 
     // 메시지가 기록한 credential 이 있으면 그 계정이 답을 만든 것이라 묻지 않는다.
