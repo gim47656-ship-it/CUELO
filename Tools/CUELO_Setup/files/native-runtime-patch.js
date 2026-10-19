@@ -35,6 +35,8 @@ const SDK_UPSTREAM = [
         ].join('\n'),
     },
     {
+        // 18.12.3 puts the root manager's job-widget setup between the manager and the
+        // scoped line, so the two halves are verified separately.
         key: 'sessionAsyncOwnership',
         text: [
             '\tconst asyncJobManager = !options.parentTaskPrefix',
@@ -42,9 +44,12 @@ const SDK_UPSTREAM = [
             '\t\t\t\tmaxRunningJobs: () => Math.min(100, cfgAsyncMaxJobs.get(settings)),',
             '\t\t\t})',
             '\t\t: undefined;',
-            '\tconst scopedAsyncJobManager = asyncJobManager ?? options.asyncJobManager;',
             '',
         ].join('\n'),
+    },
+    {
+        key: 'sessionAsyncScope',
+        text: '\tconst scopedAsyncJobManager = asyncJobManager ?? options.asyncJobManager;\n',
     },
     {
         key: 'sessionAsyncSingleton',
