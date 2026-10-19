@@ -380,7 +380,7 @@ omp는 세션마다 스킬의 이름과 짧은 설명만 system prompt에 넣고
 bun Tools/OMP_Global_Config/skill-cost/skill-cost.mjs [--days 30] [--json] [--agent-dir <dir>]
 ```
 
-토큰은 토크나이저 없이 ASCII 4자당 1, 그 밖의 문자는 1자당 1로 추정하므로 순위 비교용입니다. 실제로 주입되는 짧은 설명의 합계는 `skill-descriptions.db` 기준으로 마지막 줄에 따로 나옵니다.
+토큰은 토크나이저 없이 ASCII 4자당 1, 그 밖의 문자는 1자당 1로 추정하므로 순위 비교용입니다. 마지막 줄은 `skill-descriptions.db`에 저장된 설명 캐시 전체의 합계이며, 이전 설명이나 모델별 캐시가 남아 있으면 현재 세션의 실제 주입량과 다를 수 있습니다. `--days`는 세션 파일 수정일 기준이고, 읽기 횟수는 직접 `read` 호출만 셉니다. 병렬 도구나 eval 안에서 읽은 경우는 누락될 수 있으므로 `[never read]`를 모든 접근의 부재로 해석하지 않습니다.
 
 ## 기억 주제 갱신
 

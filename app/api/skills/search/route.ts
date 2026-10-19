@@ -36,19 +36,22 @@ function formatInstalls(count?: number): string {
   return `${count} install${count === 1 ? "" : "s"}`;
 }
 
+// Upstream `skills find` prints "<source>@<skill>[ N install(s)]" followed by an
+// "└ <url>" line; formatInstalls() omits the count for 0 and uses the singular
+// for 1. A line must still look like a package identity (owner/repo@skill) so
+// guidance text is never mistaken for a skill.
 function parseSearchOutput(raw: string): SkillSearchResult[] {
   const clean = raw.replace(ANSI_RE, "");
   const results: SkillSearchResult[] = [];
   const lines = clean.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    // package line: "owner/repo@skill  NNK installs"
-    const pkgMatch = line.match(/^([\w.\-]+\/[\w.\-@:]+)\s+([\d.,]+[KMB]?\s+installs)$/);
+    const pkgMatch = line.match(/^([\w.\-]+\/[\w.\-:]+@[\w.\-@:]+)(?:\s+([\d.,]+[KMB]?\s+installs?))?$/);
     if (pkgMatch) {
       const urlLine = lines[i + 1]?.trim().replace(/^└\s*/, "");
       results.push({
         package: pkgMatch[1],
-        installs: pkgMatch[2],
+        installs: pkgMatch[2] ?? "",
         url: urlLine?.startsWith("https://") ? urlLine : "",
       });
     }
@@ -56,13 +59,44 @@ function parseSearchOutput(raw: string): SkillSearchResult[] {
   return results;
 }
 
+// The CLI hides upstream failures behind the same "No skills found" text as a real
+// empty search, so only a non-empty parse proves it succeeded; anything else is an
+// error that keeps the original API failure.
+async function searchSkillsCli(query: string, limit: number, apiFailure: string): Promise<Response> {
+  let output: string;
+  let cliFailure: string | null = null;
+  try {
+    const { stdout, stderr } = await runNpx(["skills", "find", query], {
+      timeout: 20000,
+      env: getSafeNpxEnv({ FORCE_COLOR: "0" }),
+    });
+    output = stdout + stderr;
+  } catch (e: unknown) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    output = (err.stdout ?? "") + (err.stderr ?? "");
+    cliFailure = err.message ?? "unknown error";
+  }
+
+  const results = parseSearchOutput(redactNpxOutput(output)).slice(0, limit);
+  if (results.length > 0) return NextResponse.json({ results });
+
+  const detail = cliFailure ? `failed: ${cliFailure}` : "returned no skill results";
+  // Redact the whole message first, then bound it, so a secret is never clipped
+  // into an unredactable fragment. skills.sh's failure stays last so it survives the bound.
+  return NextResponse.json({
+    error: redactNpxOutput(`Skill search failed. CLI fallback ${detail}. skills.sh: ${apiFailure}`).slice(-500),
+  }, { status: 502 });
+}
+
 async function searchSkillsApi(query: string, limit: number): Promise<SkillSearchResult[]> {
   const url = `${SEARCH_API_BASE}/api/search?q=${encodeURIComponent(query)}&limit=${limit}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`skills.sh search failed: HTTP ${res.status}`);
 
-  const data = (await res.json()) as SkillsApiResponse;
-  return (data.skills ?? [])
+  const data = (await res.json()) as SkillsApiResponse | null;
+  // Only a real skills list proves success; a 200 without one is not a valid empty result.
+  if (!Array.isArray(data?.skills)) throw new Error("skills.sh returned no skills list");
+  return data.skills
     .map((skill) => {
       const name = skill.name?.trim();
       const source = skill.source?.trim();
@@ -110,21 +144,12 @@ export async function POST(req: Request) {
     try {
       const results = await searchSkillsApi(query, limit);
       return NextResponse.json({ results });
-    } catch {
-      const { stdout, stderr } = await runNpx(["skills", "find", query], {
-        timeout: 20000,
-        env: getSafeNpxEnv({ FORCE_COLOR: "0" }),
-      });
-
-      const output = redactNpxOutput(stdout + stderr).replace(ANSI_RE, "");
-      const results = parseSearchOutput(output).slice(0, limit);
-      return NextResponse.json({ results });
+    } catch (e: unknown) {
+      const apiFailure = e instanceof Error ? e.message : String(e);
+      return await searchSkillsCli(query, limit, apiFailure);
     }
   } catch (e: unknown) {
-    const err = e as { stdout?: string; stderr?: string; message?: string };
-    const raw = redactNpxOutput((err.stdout ?? "") + (err.stderr ?? ""));
-    const results = raw ? parseSearchOutput(raw) : [];
-    if (results.length > 0) return NextResponse.json({ results });
+    const err = e as { message?: string };
     return NextResponse.json({
       error: redactNpxOutput(err.message ?? "Skill search failed").slice(-500),
     }, { status: 500 });
