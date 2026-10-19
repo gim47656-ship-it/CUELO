@@ -1523,7 +1523,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   background: active ? "var(--bg-selected)" : "transparent",
                   color: active ? "var(--text)" : "var(--text-dim)",
                   cursor: "pointer",
-                  fontSize: 10,
+                  fontSize: 11,
                   fontWeight: active ? 600 : 500,
                   whiteSpace: "nowrap",
                 }}
@@ -1550,7 +1550,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 background: translatorOn ? "var(--bg-selected)" : "transparent",
                 color: translatorOn ? "var(--text)" : "var(--text-dim)",
                 cursor: "pointer",
-                fontSize: 10,
+                fontSize: 11,
                 fontWeight: translatorOn ? 600 : 500,
                 whiteSpace: "nowrap",
               }}
@@ -1758,7 +1758,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {t("sidebar.temporaryProjects")}
                   </span>
-                  <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 10, flexShrink: 0 }}>
+                  <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, flexShrink: 0 }}>
                     {temporaryProjectGroups.length}
                   </span>
                   {showProjectActivity(temporaryProjectActivity, t)}
