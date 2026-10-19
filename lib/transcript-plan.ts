@@ -1,5 +1,6 @@
 import { countToolCallBlocks, createToolImageCollector, getAssistantErrorMessage, splitAssistantBlockRuns, type DisplayOptions } from "./message-display";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage } from "./types";
+import { isAttachedReplyTranslation } from "./reply-translation";
 
 export interface ProcessEntry {
   idx: number;
@@ -195,6 +196,8 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
       // A `toolResult` is not its own item: the renderer shows it with the
       // `toolCall` block it answers. User messages never reach here because
       // each one anchors its own turn.
+      // 원문 말풍선에 붙은 번역은 그 말풍선이 그린다(lib/reply-translation.ts).
+      if (isAttachedReplyTranslation(message)) continue;
       if (isConversationCustomMessage(message)) {
         flushProcess();
         items.push({ kind: "message", idx, anchorIdx });
@@ -363,7 +366,7 @@ export function partitionTranscriptPlan(
       // conversation is the user's turns and the agent's answers. A
       // `toolResult` is rendered with the `toolCall` it answers, so it is never
       // an entry of its own here either.
-      if (message.role !== "toolResult") addEntries(anchorIdx, [{ idx: item.idx }], 0);
+      if (message.role !== "toolResult" && !isAttachedReplyTranslation(message)) addEntries(anchorIdx, [{ idx: item.idx }], 0);
       continue;
     }
 

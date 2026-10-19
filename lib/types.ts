@@ -79,6 +79,12 @@ export interface AssistantMessage {
    * 생기기 전 통화 기록에는 없다.
    */
   liveSpeaker?: { alias: string; mode: "character" | "native" };
+  /**
+   * 화면 전용. 이 답에 연결된 korean-reply-guard 번역(lib/reply-translation.ts가 붙인다).
+   * 세션 기록에는 없고 번역 통지의 details 연결에서 매번 다시 만든다. `original`은 번역 대상이 된
+   * 이 메시지 전체의 텍스트 블록이다(답이 여러 말풍선으로 나뉘어도 번역은 하나다).
+   */
+  replyTranslation?: { kind: "translated" | "skipped" | "failed"; text: string; original: string };
   usage?: {
     input: number;
     output: number;

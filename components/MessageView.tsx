@@ -657,10 +657,16 @@ function AssistantMessageView({
     [message, toolResults],
   );
 
-  const textContent = blocks
-    .filter((b): b is TextContent => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  const replyTranslation = message.replyTranslation;
+  const translatedReply = replyTranslation?.kind === "translated" ? replyTranslation : undefined;
+  const firstTextIndex = translatedReply ? blockItems.findIndex(({ block }) => block.type === "text") : -1;
+  // 번역이 본문이 된 답은 보이는 한국어를 복사한다.
+  const textContent = translatedReply
+    ? translatedReply.text
+    : blocks
+      .filter((b): b is TextContent => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
 
   const copyContent = () => {
     copyText(textContent).then(() => {
@@ -764,9 +770,17 @@ function AssistantMessageView({
       {dispatchSlot?.placement === "before" && <DispatchCard calls={dispatchSlot.calls} />}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {blockItems.map(({ block, originalIndex }) => (
-          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} runStartedAt={message.completedAt} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
-        ))}
+        {blockItems.map(({ block, originalIndex }, itemIndex) => {
+          if (translatedReply && block.type === "text") {
+            return itemIndex === firstTextIndex
+              ? <TranslatedReplyBody key={`${entryId ?? "stream"}-${originalIndex}`} translation={translatedReply.text} original={translatedReply.original} cwd={cwd} onOpenFile={onOpenFile} />
+              : null;
+          }
+          return <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} runStartedAt={message.completedAt} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />;
+        })}
+        {replyTranslation && !translatedReply && (
+          <div className="reply-translation-note" style={{ fontSize: 12, color: "var(--text-dim)" }}>{replyTranslation.text}</div>
+        )}
       </div>
 
       {dispatchSlot?.placement === "after" && <DispatchCard calls={dispatchSlot.calls} />}
@@ -882,6 +896,37 @@ function AssistantMessageView({
           <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: "auto" }}>{time}</span>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 영어로 나간 답의 한국어 번역을 본문으로 두고 영어 원문은 접어 둔다(korean-reply-guard). */
+function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { translation: string; original: string; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+  const { t } = useI18n();
+  const [originalOpen, setOriginalOpen] = useState(false);
+  return (
+    <div className="reply-translation" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <SafeMarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{translation}</SafeMarkdownBody>
+      <button
+        type="button"
+        onClick={() => setOriginalOpen((open) => !open)}
+        aria-expanded={originalOpen}
+        style={{
+          alignSelf: "flex-start",
+          padding: "2px 0",
+          background: "none", border: "none",
+          color: "var(--text-dim)",
+          cursor: "pointer",
+          fontSize: 11,
+        }}
+      >
+        {originalOpen ? t("i18n.hideOriginalReply") : t("i18n.showOriginalReply")}
+      </button>
+      {originalOpen && (
+        <div className="reply-translation-original" style={{ paddingLeft: 10, borderLeft: "2px solid var(--border)", color: "var(--text-muted)" }}>
+          <SafeMarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{original}</SafeMarkdownBody>
+        </div>
+      )}
     </div>
   );
 }

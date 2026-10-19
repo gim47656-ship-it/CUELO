@@ -65,6 +65,22 @@ describe("korean reply guard", () => {
     expect(h.sent[1]).toMatchObject({ customType: TRANSLATION_TYPE, display: true, content: "[한국어 번역]\n번역문" });
   });
 
+  test("번역·생략·실패 통지는 원문 메시지의 timestamp와 텍스트 hash를 details로 가리킨다", async () => {
+    const sent: { details?: unknown }[] = [];
+    const handlers: Record<string, Handler[]> = {};
+    createKoreanReplyGuard(async () => "번역문")({
+      on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
+      sendMessage: (message: { details?: unknown }) => { sent.push(message); },
+    } as unknown as ExtensionAPI);
+    const ctx = { agent: { kind: "main" }, isIdle: () => true };
+    handlers.message_end![0]!({ message: { role: "assistant", timestamp: 1234, content: [{ type: "text", text: ENGLISH }, { type: "text", text: "Second part." }] } }, ctx);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const text = `${ENGLISH}\nSecond part.`;
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    expect(sent.at(-1)!.details).toEqual({ sourceTimestamp: 1234, sourceHash: `${text.length}:${h}` });
+  });
+
   test("도구 호출이 이어지는 드리프트 알림은 aside로 끼운다", async () => {
     const h = harness(ok);
     await h.assistant(ENGLISH, true);

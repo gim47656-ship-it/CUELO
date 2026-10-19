@@ -19,6 +19,7 @@ import type {
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
+import { attachReplyTranslations } from "@/lib/reply-translation";
 import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
 import { collectSavedLessonPlacements } from "@/lib/turn-saved-lessons";
 import { buildChatSearchIndex } from "@/lib/chat-search";
@@ -177,6 +178,20 @@ const CHAT_COLUMN_PADDING = 16;
 interface CueTrigger {
   sessionId: string;
   turn: number;
+}
+
+/**
+ * 한 답이 도구 호출로 나뉘어 말풍선이 여럿이 돼도 번역은 그 답 전체에 하나다. 번역은 첫 텍스트 블록을
+ * 가진 말풍선이 그리고, 번역이 된 답의 나머지 말풍선은 영어 텍스트를 다시 보이지 않는다.
+ */
+function answerRunMessage(message: AssistantMessage, blocks: AssistantContentBlock[]): AssistantMessage {
+  const run = withAssistantBlocks(message, blocks);
+  if (!message.replyTranslation) return run;
+  const firstText = message.content.find((block) => block.type === "text");
+  if (firstText && blocks.includes(firstText)) return run;
+  run.replyTranslation = undefined;
+  if (message.replyTranslation.kind === "translated") run.content = blocks.filter((block) => block.type !== "text");
+  return run;
 }
 
 function getUserInputText(message: AgentMessage): string | null {
@@ -490,7 +505,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
             {compactedCard}
             {holder(position, renderMessage(item.idx, {
               keyPrefix: `answer-${item.runIndex}`,
-              messageOverride: withAssistantBlocks(messages[item.idx] as AssistantMessage, item.blocks),
+              messageOverride: answerRunMessage(messages[item.idx] as AssistantMessage, item.blocks),
               writtenFiles,
               dispatchSlot: dispatchSlots.get(position),
               turnSummary: turnSummaries.get(position),
@@ -634,7 +649,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }, [chatInputRef]);
 
   const {
-    loading, error, messages, entryIds, streamState,
+    loading, error, messages: sessionMessages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, modelRoles, toolPreset, thinkingLevel,
     effectiveThinkingLevel, thinkingCeiling, fastMode, fastModeBusy, handleFastModeToggle,
     retryInfo, contextUsage, forkingEntryId,
@@ -659,6 +674,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     session, newSessionCwd, initialData: initialSessionData, transitioning, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   });
+  // 영어로 나간 답에 연결된 한국어 번역은 그 말풍선 본문이 된다. 라이브와 기록 로드가 같은 목록을 거친다.
+  const messages = useMemo(() => attachReplyTranslations(sessionMessages), [sessionMessages]);
   // 지금 대화가 어느 Main 프리셋 자리인지. provider와 계정 자리가 프리셋과 같으면 그 자리다 —
   // 모델 칩으로 같은 provider의 다른 모델을 고르거나 추론 강도를 바꿔도 프리셋은 그대로 보인다.
   // 세션에서는 런타임이 답한 실제 계정 자리를, 새 대화에서는 이 대화에 대기 중인 선택만 본다 —

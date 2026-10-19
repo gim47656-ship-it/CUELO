@@ -731,6 +731,8 @@ export const enLocale = {
     "i18n.modifiedFiles": "Modified files",
     "i18n.hiddenExtensionMessage": "hidden extension message",
     "i18n.noMessage": "(no message)",
+    "i18n.showOriginalReply": "Show English original",
+    "i18n.hideOriginalReply": "Hide English original",
     "i18n.showExtensionMessage": "Show extension message",
     "i18n.collapse": "Collapse",
     "i18n.expand": "Expand",

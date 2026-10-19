@@ -31,7 +31,7 @@ const SEEN_LIMIT = 50;
 const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bearer|secret|token|credential|client[_ -]?secret)\b|(?:비밀번호|자격증명|인증키|토큰)|(?:sk-[A-Za-z0-9_-]{12,})|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[opusr]_|github_pat_)[A-Za-z0-9_-]{12,}/i;
 const ENGLISH_REQUEST = /(?:in\s+english|answer\s+in\s+english|reply\s+in\s+english|영어로|영문으로|영어\s*(?:답|응답|번역))/i;
 
-type Message = { role?: string; content?: unknown; synthetic?: boolean; attribution?: string };
+type Message = { role?: string; content?: unknown; synthetic?: boolean; attribution?: string; timestamp?: number };
 export type DriftKind = "drift" | "korean" | "neutral";
 
 function textOf(content: unknown): string {
@@ -112,9 +112,11 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       skipEnglish = false;
       translated.clear();
     };
-    const show = (ctx: ExtensionContext, content: string) => {
+    // details는 화면이 번역을 원문 말풍선에 붙이는 연결이다. 번역은 순서가 뒤바뀌어 도착할 수 있어 위치로 짝짓지 않는다.
+    // sourceHash는 원문 텍스트 블록을 "\n"으로 이은 값의 hash()이며 CUELO lib/reply-translation.ts가 같은 식으로 다시 계산한다.
+    const show = (ctx: ExtensionContext, content: string, source: { sourceTimestamp: number | undefined; sourceHash: string }) => {
       pi.sendMessage(
-        { customType: TRANSLATION_TYPE, content, display: true, attribution: "agent" },
+        { customType: TRANSLATION_TYPE, content, display: true, attribution: "agent", details: source },
         ctx.isIdle() ? undefined : { deliverAs: "aside" },
       );
     };
@@ -149,8 +151,9 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
         { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
         { deliverAs: hasToolCall ? "aside" : "nextTurn" },
       );
+      const source = { sourceTimestamp: typeof message.timestamp === "number" ? message.timestamp : undefined, sourceHash: key };
       if (SECRET_PATTERN.test(text)) {
-        show(ctx, "[번역 생략] 민감 정보처럼 보이는 내용이 있어 외부 모델로 보내지 않았다. 원문만 표시된다.");
+        show(ctx, "[번역 생략] 민감 정보처럼 보이는 내용이 있어 외부 모델로 보내지 않았다. 원문만 표시된다.", source);
         return;
       }
       const controller = new AbortController();
@@ -160,9 +163,9 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       void (async () => {
         try {
           const result = await translate(text.trim(), ctx, controller.signal);
-          if (pending.has(controller)) show(ctx, `[한국어 번역]\n${result}`);
+          if (pending.has(controller)) show(ctx, `[한국어 번역]\n${result}`, source);
         } catch {
-          if (pending.has(controller)) show(ctx, "[번역 실패] 한국어 번역을 얻지 못했다. 원문만 표시된다.");
+          if (pending.has(controller)) show(ctx, "[번역 실패] 한국어 번역을 얻지 못했다. 원문만 표시된다.", source);
         } finally {
           clearTimeout(timer);
           pending.delete(controller);

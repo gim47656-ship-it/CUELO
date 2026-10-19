@@ -724,6 +724,8 @@
  "i18n.modifiedFiles": "수정된 파일",
  "i18n.hiddenExtensionMessage": "숨겨진 확장 메시지",
  "i18n.noMessage": "(메시지 없음)",
+ "i18n.showOriginalReply": "영어 원문 보기",
+ "i18n.hideOriginalReply": "영어 원문 접기",
  "i18n.showExtensionMessage": "확장 메시지 표시",
  "i18n.collapse": "접기",
  "i18n.expand": "펼치기",
