@@ -71,16 +71,17 @@ describe("korean reply guard", () => {
     expect(h.deliveries[0]).toEqual({ deliverAs: "aside" });
   });
 
-  test("연속 드리프트는 알림 없이 메시지마다 번역하고 같은 메시지는 두 번 번역하지 않는다", async () => {
+  test("연속 드리프트는 응답마다 알림·번역하고 같은 메시지는 다시 처리하지 않는다", async () => {
     const seen: string[] = [];
     const h = harness(async (text) => { seen.push(text); return "한국어 번역"; });
     await h.assistant(ENGLISH);
     await h.assistant(ENGLISH + " Second part.");
     expect(seen).toEqual([ENGLISH, ENGLISH + " Second part."]);
-    expect(h.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE, TRANSLATION_TYPE]);
+    expect(h.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE, REMINDER_TYPE, TRANSLATION_TYPE]);
     h.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: ENGLISH + " Second part." }] } });
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(seen).toHaveLength(2);
+    expect(h.sent).toHaveLength(4);
   });
 
   test("긴 드리프트도 앞부분만 자르지 않고 전체를 번역기에 넘긴다", async () => {
@@ -104,25 +105,18 @@ describe("korean reply guard", () => {
     expect(h.sent.filter((m) => m.customType === TRANSLATION_TYPE).map((m) => m.content)).toEqual(["[한국어 번역]\n둘째", "[한국어 번역]\n첫째"]);
   });
 
-  test("번역 메시지는 모델 문맥에서 빠진다", () => {
+  test("번역 메시지는 모델 문맥에서 빠지고 알림은 마지막 하나만 남는다", () => {
     const h = harness(ok);
     const messages = [
       { role: "user", content: "q" },
+      { role: "custom", customType: REMINDER_TYPE, content: "알림1" },
       { role: "custom", customType: TRANSLATION_TYPE, content: "번역" },
       { role: "custom", customType: "other", content: "유지" },
+      { role: "custom", customType: REMINDER_TYPE, content: "알림2" },
     ];
     const result = h.emit("context", { messages })[0] as { messages: unknown[] };
-    expect(result.messages).toEqual([messages[0], messages[2]]);
-    expect(h.emit("context", { messages: [messages[0]] })[0]).toBeUndefined();
-  });
-
-  test("한국어로 돌아오면 리셋되어 다음 드리프트는 다시 알림을 보낸다", async () => {
-    const h = harness(ok);
-    await h.assistant(ENGLISH);
-    await h.assistant(KOREAN);
-    await h.assistant("Now I will inspect another module and then summarize the remaining open risks.");
-    expect(h.sent.filter((m) => m.customType === REMINDER_TYPE)).toHaveLength(2);
-    expect(h.sent.filter((m) => m.customType === TRANSLATION_TYPE)).toHaveLength(2);
+    expect(result.messages).toEqual([messages[0], messages[3], messages[4]]);
+    expect(h.emit("context", { messages: [messages[0], messages[4]] })[0]).toBeUndefined();
   });
 
   test("서브에이전트 세션은 건너뛴다", async () => {

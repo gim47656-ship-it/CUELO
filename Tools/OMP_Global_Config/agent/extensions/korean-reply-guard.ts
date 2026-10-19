@@ -5,7 +5,9 @@ import { onSessionLifecycle } from "./lib/session-identity";
 /**
  * 응답 언어 가드. Main이 영어 브리프를 쓰다 사용자에게 보이는 진행 문장까지 영어로 새는 일(2026-10-02)을 막는다.
  * 1) 감지: 사용자에게 보이는 산문에서 원문 보존 대상(코드·URL·경로·식별자)을 뺀 글자 중 한글 비율이 낮으면 드리프트.
- * 2) 교정: 첫 드리프트 뒤 다음 요청에 한국어 복귀 알림을 한 번 넣는다(모델 호출 없음).
+ * 2) 교정: 드리프트한 응답마다 다음 요청에 한국어 복귀 알림을 넣는다(모델 호출 없음). 모델 문맥에는 마지막 알림만 남긴다.
+ *    2026-10-19 사무실 세션에서 알림 뒤 한 응답만 한국어로 돌아오고 다시 영어로 빠졌는데, 알림이 영어 구간당 한 번이라
+ *    마지막 알림 뒤 영어 응답 40여 개(최종 보고 포함)가 알림 없이 나갔다.
  * 3) 번역: 드리프트한 메시지는 첫 번째부터 @tiny(HIKARI)로 번역해 원문 아래에 표시한다(모델 문맥 제외).
  *    이미 나간 영어 문장을 그대로 두지 않는다(2026-10-09 사용자 요청: 다음 답만 한국어로 돌아오는 것으로는 부족하다).
  */
@@ -100,7 +102,6 @@ export async function translateWithTiny(text: string, ctx: ExtensionContext, sig
 
 export function createKoreanReplyGuard(translate: TranslateReply = translateWithTiny) {
   return function koreanReplyGuard(pi: ExtensionAPI): void {
-    let reminded = false;
     let skipEnglish = false;
     const translated = new Set<string>();
     const pending = new Set<AbortController>();
@@ -108,7 +109,6 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
     const reset = () => {
       for (const controller of pending) controller.abort();
       pending.clear();
-      reminded = false;
       skipEnglish = false;
       translated.clear();
     };
@@ -127,31 +127,28 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       const text = textOf(message.content);
       if (text.trim()) skipEnglish = userWroteEnglish(text);
     });
-    // 번역은 사람이 읽는 표시용이다. 이후 요청의 모델 문맥에서는 뺀다(autolearn-saved와 같은 취급).
+    // 번역은 사람이 읽는 표시용이라 모델 문맥에서 뺀다(autolearn-saved와 같은 취급). 알림은 응답마다 쌓이므로 마지막 것만 남긴다.
     pi.on("context", (event) => {
       const messages = event.messages as { role?: string; customType?: string }[];
-      const kept = messages.filter((m) => !(m.role === "custom" && m.customType === TRANSLATION_TYPE));
+      const isCustom = (m: { role?: string; customType?: string }, type: string) => m.role === "custom" && m.customType === type;
+      const lastReminder = messages.findLastIndex((m) => isCustom(m, REMINDER_TYPE));
+      const kept = messages.filter((m, i) => !isCustom(m, TRANSLATION_TYPE) && (i === lastReminder || !isCustom(m, REMINDER_TYPE)));
       return kept.length === messages.length ? undefined : { messages: kept as typeof event.messages };
     });
     pi.on("message_end", (event, ctx) => {
       const message = event.message as Message;
       if (message.role !== "assistant" || ctx.agent.kind !== "main" || skipEnglish) return;
       const text = textOf(message.content);
-      const kind = classify(text);
-      if (kind === "korean") { reminded = false; return; }
-      if (kind !== "drift") return;
-      if (!reminded) {
-        reminded = true;
-        const hasToolCall = Array.isArray(message.content) && message.content.some((b) => b?.type === "toolCall");
-        pi.sendMessage(
-          { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
-          { deliverAs: hasToolCall ? "aside" : "nextTurn" },
-        );
-      }
+      if (classify(text) !== "drift") return;
       const key = hash(text);
       if (translated.has(key)) return;
       translated.add(key);
       if (translated.size > SEEN_LIMIT) translated.delete(translated.values().next().value as string);
+      const hasToolCall = Array.isArray(message.content) && message.content.some((b) => b?.type === "toolCall");
+      pi.sendMessage(
+        { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
+        { deliverAs: hasToolCall ? "aside" : "nextTurn" },
+      );
       if (SECRET_PATTERN.test(text)) {
         show(ctx, "[번역 생략] 민감 정보처럼 보이는 내용이 있어 외부 모델로 보내지 않았다. 원문만 표시된다.");
         return;
