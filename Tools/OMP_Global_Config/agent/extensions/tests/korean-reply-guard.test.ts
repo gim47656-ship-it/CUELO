@@ -100,6 +100,33 @@ describe("korean reply guard", () => {
     expect(h.sent).toHaveLength(4);
   });
 
+  test("한국어 복귀·새 사용자 요청 뒤 같은 문구의 별도 영어 응답에도 알림이 다시 나가고 번역 호출은 늘지 않는다(#39)", async () => {
+    const seen: string[] = [];
+    const h = harness(async (text) => { seen.push(text); return "번역문"; });
+    const reminders = () => h.sent.filter((m) => m.customType === REMINDER_TYPE).length;
+    const send = async (role: "user" | "assistant", text: string, timestamp: number) => {
+      const message = { role, content: [{ type: "text", text }], timestamp };
+      h.emit("message_start", { message });
+      h.emit("message_end", { message });
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    };
+    await send("user", "충전 로그를 확인하고 한국어로 알려줘", 1);
+    await send("assistant", "Looking at the refill logs now.", 2);
+    await send("assistant", "현재 충전 로그를 확인했고 오류가 발생한 부분을 정리했습니다.", 3);
+    await send("user", "조금 뒤 바뀐 충전 로그를 다시 확인하고 한국어로 알려줘", 4);
+    await send("assistant", "Looking at the refill logs now.", 5);
+    expect(reminders()).toBe(2);
+    expect(seen).toEqual(["Looking at the refill logs now."]);
+    // 도구 결과를 사이에 둔 같은 문구의 별도 응답도 새 응답이다.
+    h.emit("message_end", { message: { role: "toolResult", content: [{ type: "text", text: "ok" }], timestamp: 6 } });
+    await send("assistant", "Looking at the refill logs now.", 7);
+    expect(reminders()).toBe(3);
+    // 사이에 다른 이벤트 없이 같은 메시지가 다시 전달되면 알림을 더 넣지 않는다.
+    h.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "Looking at the refill logs now." }], timestamp: 7 } });
+    expect(reminders()).toBe(3);
+    expect(seen).toHaveLength(1);
+  });
+
   test("긴 드리프트도 앞부분만 자르지 않고 전체를 번역기에 넘긴다", async () => {
     const seen: string[] = [];
     const h = harness(async (text) => { seen.push(text); return "번역문"; });

@@ -103,14 +103,20 @@ export async function translateWithTiny(text: string, ctx: ExtensionContext, sig
 export function createKoreanReplyGuard(translate: TranslateReply = translateWithTiny) {
   return function koreanReplyGuard(pi: ExtensionAPI): void {
     let skipEnglish = false;
+    // 번역 호출 억제(텍스트 기준, 세션 동안)와 알림 중복 억제(같은 메시지의 재전달)는 다르다. 2026-10-19 이슈 #39:
+    // 한 집합으로 둘 다 막아 한국어 복귀·새 사용자 요청 뒤 같은 문구의 별도 영어 응답에 알림이 빠졌다.
     const translated = new Set<string>();
     const pending = new Set<AbortController>();
+    // 직전 message_end가 이 드리프트 응답이었는지. 사이에 다른 메시지 이벤트가 오면 비우므로, 남아 있을 때 같은
+    // hash·timestamp가 다시 오면 같은 메시지의 재전달이다. timestamp 하나만으로 응답을 구별하지 않는다.
+    let lastDrift: { key: string; timestamp: number | undefined } | undefined;
 
     const reset = () => {
       for (const controller of pending) controller.abort();
       pending.clear();
       skipEnglish = false;
       translated.clear();
+      lastDrift = undefined;
     };
     // details는 화면이 번역을 원문 말풍선에 붙이는 연결이다. 번역은 순서가 뒤바뀌어 도착할 수 있어 위치로 짝짓지 않는다.
     // sourceHash는 원문 텍스트 블록을 "\n"으로 이은 값의 hash()이며 CUELO lib/reply-translation.ts가 같은 식으로 다시 계산한다.
@@ -126,6 +132,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
     pi.on("message_start", (event) => {
       const message = event.message as Message;
       if (message.role !== "user" || message.synthetic === true || message.attribution === "agent") return;
+      lastDrift = undefined;
       const text = textOf(message.content);
       if (text.trim()) skipEnglish = userWroteEnglish(text);
     });
@@ -139,18 +146,23 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
     });
     pi.on("message_end", (event, ctx) => {
       const message = event.message as Message;
+      const previous = lastDrift;
+      lastDrift = undefined;
       if (message.role !== "assistant" || ctx.agent.kind !== "main" || skipEnglish) return;
       const text = textOf(message.content);
       if (classify(text) !== "drift") return;
       const key = hash(text);
-      if (translated.has(key)) return;
-      translated.add(key);
-      if (translated.size > SEEN_LIMIT) translated.delete(translated.values().next().value as string);
+      const timestamp = typeof message.timestamp === "number" ? message.timestamp : undefined;
+      lastDrift = { key, timestamp };
+      if (previous?.key === key && previous.timestamp === timestamp) return;
       const hasToolCall = Array.isArray(message.content) && message.content.some((b) => b?.type === "toolCall");
       pi.sendMessage(
         { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
         { deliverAs: hasToolCall ? "aside" : "nextTurn" },
       );
+      if (translated.has(key)) return;
+      translated.add(key);
+      if (translated.size > SEEN_LIMIT) translated.delete(translated.values().next().value as string);
       const source = { sourceTimestamp: typeof message.timestamp === "number" ? message.timestamp : undefined, sourceHash: key };
       if (SECRET_PATTERN.test(text)) {
         show(ctx, "[번역 생략] 민감 정보처럼 보이는 내용이 있어 외부 모델로 보내지 않았다. 원문만 표시된다.", source);
