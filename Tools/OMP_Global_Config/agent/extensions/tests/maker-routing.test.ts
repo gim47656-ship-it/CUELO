@@ -884,6 +884,13 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       [{ context: "c", isolated: true, tasks: [item("Left", { isolated: false }), item("Right")] }, ["shared", "isolated"]],
       [{ context: "c", isolated: true, tasks: [item("Left", { isolated: false }), item("Right", { isolated: false })] }, null],
       [{ context: "c", isolated: false, tasks: [item("Left"), item("Right")] }, null],
+      // 경쟁 후보: isolated "capture" 도 별도 worktree scope라 같은 OWNED_PATHS 둘이 한 배치에서 겹침으로 막히지 않는다.
+      [{ context: "c", tasks: [item("Left", { isolated: "capture" }), item("Right", { isolated: "capture" })] }, ["isolated", "isolated"]],
+      [{ context: "c", isolated: "capture", tasks: [item("Left"), item("Right")] }, ["isolated", "isolated"]],
+      [{ context: "c", isolated: "capture", tasks: [item("Left", { isolated: false }), item("Right")] }, ["shared", "isolated"]],
+      [{ context: "c", tasks: [item("Left", { isolated: "capture" }), item("Right")] }, ["isolated", "shared"]],
+      // 알 수 없는 문자열은 격리로 보지 않는다(core schema 도 거절한다). 같은 OWNED_PATHS 공유 둘은 그대로 막힌다.
+      [{ context: "c", tasks: [item("Left", { isolated: "apply" }), item("Right", { isolated: "apply" })] }, null],
     ];
     for (const [batch, workspaces] of cases) {
       const ledger = memoryLedger();

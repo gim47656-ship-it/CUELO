@@ -15002,6 +15002,109 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {`,
 		anchor: '{value:"spruce",label:"Spruce"},{value:"vale",label:"Vale"}]',
 		patched: `{value:"spruce",label:"Spruce"},{value:"vale",label:"Vale"}${CODEX_V3_LIVE_VOICES.map(([value, label]) => `,{value:"${value}",label:"${label}"}`).join("")}]`,
 	},
+	// 2026-10-19 경쟁 후보(capture 격리): task 도구의 `isolated` 가 `true | false | "capture"` 를 받는다. "capture" 는 격리 실행하되
+	// 변경을 부모 체크아웃에 적용하지 않고 patch·branch 산출물만 남긴다(structured-subagent 가 request.isolation.apply=false 를 이미
+	// 처리하고 describeCapturedChanges 가 root patch 경로를 부모 결과에 싣는다). 전역 task.isolation.apply 는 true 로 두어야 해서
+	// (격리 실행이 이미 쓰이고 있다) 호출별로만 apply=false 를 건다. 대상은 아래 묶음이다.
+	//   (1) types.ts 정적 schema 두 곳과 동적 schema(item·단일) 두 곳. 동적 batch item 줄은 위 model 항목(entry 92)의 marker 가
+	//       품고 있어 파일 끝 "isolated 마커 단축" 블록이 그 marker 를 줄 앞에서 자른다. (2) index.ts 요청 두 곳(원본 줄은 두고 새 줄을
+	//       덧붙여 다른 항목의 marker 와 겹치지 않게 했다), (3) index.ts follow-up 힌트, (4) task.md 안내 한 줄,
+	//   (5) pi-tui 렌더러의 isolated 배지·타입(소스 task.ts 와 타입 소비자가 읽는 dist/types/tools/task.d.ts 둘 다).
+	{
+		file: "src/task/types.ts",
+		marker: '\t"isolated?": "boolean | \'capture\'",\n\t"+": "delete",\n});\n\nexport const taskSchema = type({',
+		anchor: '\t"isolated?": "boolean",\n\t"+": "delete",\n});\n\nexport const taskSchema = type({',
+		patched: '\t"isolated?": "boolean | \'capture\'",\n\t"+": "delete",\n});\n\nexport const taskSchema = type({',
+	},
+	{
+		file: "src/task/types.ts",
+		marker: '\t"isolated?": "boolean | \'capture\'",\n\t"+": "delete",\n});\nconst taskSchemaNoIsolation = type({',
+		anchor: '\t"isolated?": "boolean",\n\t"+": "delete",\n});\nconst taskSchemaNoIsolation = type({',
+		patched: '\t"isolated?": "boolean | \'capture\'",\n\t"+": "delete",\n});\nconst taskSchemaNoIsolation = type({',
+	},
+	{
+		file: "src/task/types.ts",
+		marker: '\n\t\t\t\t"isolated?": "boolean | \'capture\'",\n\t\t\t\t"+": "delete",',
+		anchor: '\n\t\t\t\t"isolated?": "boolean",\n\t\t\t\t"+": "delete",',
+		patched: '\n\t\t\t\t"isolated?": "boolean | \'capture\'",\n\t\t\t\t"+": "delete",',
+	},
+	{
+		file: "src/task/types.ts",
+		marker: '\n\t\t\t"isolated?": "boolean | \'capture\'",\n\t\t\t"+": "delete",',
+		anchor: '\n\t\t\t"isolated?": "boolean",\n\t\t\t"+": "delete",',
+		patched: '\n\t\t\t"isolated?": "boolean | \'capture\'",\n\t\t\t"+": "delete",',
+	},
+	{
+		// 원본 `{ requested: params.isolated }` 를 그대로 두고 줄을 덧붙이면 params.isolated 의 넓어진 타입(boolean | "capture")이
+		// 원본 줄로 흘러 StructuredSubagentIsolationControls.requested(boolean)와 어긋난다(TS2345). 그래서 줄 자체를 바꿔 capture 분기에서
+		// 타입이 좁혀지게 한다. boolean 요청의 런타임 결과는 같다. 이 줄을 marker 로 품은 기존 no-op 후보는 파일 끝 블록이 줄 앞에서 자른다.
+		file: "src/task/index.ts",
+		marker: '\n\t\t\t...("isolated" in params ? { isolation: params.isolated === "capture" ? { requested: true, apply: false } : { requested: params.isolated } } : {}),',
+		anchor: '\n\t\t\t...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),',
+		patched: '\n\t\t\t...("isolated" in params ? { isolation: params.isolated === "capture" ? { requested: true, apply: false } : { requested: params.isolated } } : {}),',
+	},
+	{
+		file: "src/task/index.ts",
+		marker: '\n\t\t\t\t...("isolated" in params ? { isolation: params.isolated === "capture" ? { requested: true, apply: false } : { requested: params.isolated } } : {}),',
+		anchor: '\n\t\t\t\t...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),',
+		patched: '\n\t\t\t\t...("isolated" in params ? { isolation: params.isolated === "capture" ? { requested: true, apply: false } : { requested: params.isolated } } : {}),',
+	},
+	{
+		file: "src/task/index.ts",
+		marker: 'const isolated = spawnParams.isolated === true || spawnParams.isolated === "capture";',
+		anchor: "const isolated = spawnParams.isolated === true;",
+		patched: 'const isolated = spawnParams.isolated === true || spawnParams.isolated === "capture";',
+	},
+	{
+		file: "src/prompts/tools/task.md",
+		marker: 'changes retained, not applied.\n{{/if}}`isolated: "capture"`',
+		anchor: "changes retained, not applied.\n{{/if}}{{/if}}Children start blank;",
+		patched: 'changes retained, not applied.\n{{/if}}`isolated: "capture"`: worktree; keeps the candidate patch without applying it; the caller applies the chosen one.\n{{/if}}Children start blank;',
+	},
+	{
+		file: "../pi-tui/src/tools/task.ts",
+		marker: '\tisolated?: boolean | "capture";\n}\n\n/**\n * Runtime params union',
+		anchor: "\tisolated?: boolean;\n}\n\n/**\n * Runtime params union",
+		patched: '\tisolated?: boolean | "capture";\n}\n\n/**\n * Runtime params union',
+	},
+	{
+		file: "../pi-tui/src/tools/task.ts",
+		marker: '\t/** Run in an isolated worktree (flat form; per-item in batch form). */\n\tisolated?: boolean | "capture";',
+		anchor: "\t/** Run in an isolated worktree (flat form; per-item in batch form). */\n\tisolated?: boolean;",
+		patched: '\t/** Run in an isolated worktree (flat form; per-item in batch form). */\n\tisolated?: boolean | "capture";',
+	},
+	{
+		file: "../pi-tui/src/tools/task.ts",
+		marker: 'if (item?.isolated === true || item?.isolated === "capture") {',
+		anchor: "if (item?.isolated === true) {",
+		patched: 'if (item?.isolated === true || item?.isolated === "capture") {',
+	},
+	{
+		file: "../pi-tui/src/tools/task.ts",
+		marker: 'const showIsolated = "isolated" in args && (args.isolated === true || args.isolated === "capture");',
+		anchor: 'const showIsolated = "isolated" in args && args.isolated === true;',
+		patched: 'const showIsolated = "isolated" in args && (args.isolated === true || args.isolated === "capture");',
+	},
+	{
+		file: "../pi-tui/src/tools/task.ts",
+		marker: 'badges: agentBadges(false, isolated === true || isolated === "capture"),',
+		anchor: "badges: agentBadges(false, isolated === true),",
+		patched: 'badges: agentBadges(false, isolated === true || isolated === "capture"),',
+	},
+	{
+		// 타입 소비자(task/index.ts 의 params.isolated === "capture" 비교)는 pi-tui 의 소스가 아니라 dist/types 선언을 읽는다
+		// (package.json exports.types). 소스만 넓히면 TS2367(boolean 과 "capture" 가 겹치지 않음)이 새로 생기므로 선언도 같이 넓힌다.
+		file: "../pi-tui/dist/types/tools/task.d.ts",
+		marker: '/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */\n    isolated?: boolean | "capture";',
+		anchor: "/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */\n    isolated?: boolean;",
+		patched: '/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */\n    isolated?: boolean | "capture";',
+	},
+	{
+		file: "../pi-tui/dist/types/tools/task.d.ts",
+		marker: '/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean | "capture";',
+		anchor: "/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean;",
+		patched: '/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean | "capture";',
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
@@ -17352,6 +17455,32 @@ for (const update of EDITS.splice(watchFollowupStart, watchFollowupEnd - watchFo
 	if (!owner) throw new Error(`Missing activity-watch patch owner: ${update.marker}`);
 	owner.legacyPatched ??= owner.patched;
 	owner.patched = owner.patched.replace(update.anchor, update.patched);
+}
+// 2026-10-19 isolated 마커 단축: task schema·요청의 `isolated` 줄을 넓히는 항목(위 capture 묶음)이 기존 항목의 marker 와 같은 줄을 바꾼다.
+//  (1) 동적 task schema(batch item)의 `"isolated?": "boolean"` 줄은 model 항목(entry 92)의 marker 가 줄 끝까지 품고 있다. 후보 marker 는
+//      "이미 적용됨"을 가르는 앞부분(`"model?": "string",` 이후 `...toolsField,`)이면 충분하므로 isolated 줄 앞에서 자른다.
+//      patched·anchor 는 그대로라 적용·복원 경로가 변하지 않는다.
+//  (2) index.ts 의 model 전달 no-op 후보(upstream 이 이미 model 줄을 가진 판용, marker=anchor=patched)는 끝에 원본 `isolation` 줄을
+//      품는다. 세 문자열이 같은 no-op 이므로 그 줄만 셋 다에서 잘라도 의미가 같고, capture 항목이 줄을 바꾼 뒤에도 applied 로 읽힌다.
+//      주 후보(model 줄을 우리가 넣는 판)의 marker 는 `...("isolated" in params` 까지만이라 이미 영향이 없다.
+{
+	const ISOLATED_BOOLEAN = '"isolated?": "boolean"';
+	const ISOLATION_REQUEST_TAIL = /\n\t+\.\.\.\("isolated" in params \? \{ isolation: \{ requested: params\.isolated \} \} : \{\}\),$/;
+	let cutSchema = 0;
+	let cutRequest = 0;
+	for (const entry of EDITS) {
+		for (const candidate of [entry, ...(entry.alternates ?? [])]) {
+			if (candidate.file === "src/task/types.ts" && candidate.marker.includes(ISOLATED_BOOLEAN)) {
+				candidate.marker = candidate.marker.slice(0, candidate.marker.indexOf(ISOLATED_BOOLEAN)).trimEnd();
+				cutSchema++;
+			} else if (candidate.file === "src/task/index.ts" && candidate.anchor === candidate.patched && candidate.marker === candidate.anchor && ISOLATION_REQUEST_TAIL.test(candidate.marker)) {
+				candidate.anchor = candidate.patched = candidate.marker = candidate.marker.replace(ISOLATION_REQUEST_TAIL, "");
+				cutRequest++;
+			}
+		}
+	}
+	if (cutSchema === 0) throw new Error("isolated 마커 단축: schema 대상 후보가 없다");
+	if (cutRequest === 0) throw new Error("isolated 마커 단축: 요청 no-op 후보가 없다");
 }
 
 

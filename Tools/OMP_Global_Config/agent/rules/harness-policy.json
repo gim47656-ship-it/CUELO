@@ -781,6 +781,39 @@
       "redirectPreservesUsage": true,
       "concurrencyIsSeparate": true
     },
+    "competingCandidates": {
+      "owner": "main-user-decision-2026-10-19-main-judges-the-conditions-there-is-no-automatic-detector-new-tool-new-agent-role-or-permanent-gate",
+      "purpose": "for-a-problem-that-already-failed-once-and-observation-cannot-separate-run-two-captured-candidate-patches-and-let-requirement-derived-executable-tests-choose-one-never-a-default-way-to-implement-and-never-a-vote",
+      "trigger": {
+        "allRequired": [
+          "the-same-problem-already-failed-once-a-rework-of-the-same-FINDING_ID-failed-again-or-a-regression-appeared-right-after-a-fix",
+          "two-or-more-causes-or-designs-remain-and-observation-cannot-separate-them",
+          "the-correct-behaviour-can-be-expressed-as-executable-tests-such-as-async-cancel-state-transition-or-parser-and-not-ui-feel-real-equipment-or-environment-bound-behaviour"
+        ],
+        "evidence": "the-brief-and-the-routing-reason-cite-the-observed-evidence-for-each-of-the-three-conditions",
+        "neverBy": "the-hard-or-difficulty-score-alone-or-by-two-conditions-out-of-three"
+      },
+      "run": {
+        "candidates": "exactly-two-makers-with-the-same-brief-and-acceptance-in-one-task-batch-each-with-isolated-capture-and-neither-sees-the-other-no-third-candidate",
+        "isolation": "isolated-capture-runs-in-a-worktree-keeps-the-patch-or-branch-artifact-and-never-applies-it-to-the-parent-checkout-core-task-isolation-apply-and-merge-defaults-stay-unchanged-the-parent-result-names-the-root-patch-path-or-branch",
+        "model": "prefer-two-different-model-families-among-the-available-code-candidates-and-state-the-pair-in-ROUTING_REASON",
+        "deliverable": "each-candidate-delivers-its-patch-and-the-boundary-tests-it-wrote-named-in-its-report",
+        "budget": "counts-as-two-primary-makers-in-routing.taskBudget",
+        "workspaceScope": "capture-is-an-isolated-workspace-so-two-candidates-with-identical-OWNED_PATHS-are-not-a-shared-workspace-overlap"
+      },
+      "select": {
+        "crossMatrix": "main-applies-each-captured-patch-in-a-scratch-worktree-outside-the-repository-and-runs-every-candidate-s-tests-and-the-existing-focused-checks-against-both-patches",
+        "disagreement": "where-results-differ-main-first-judges-whether-each-disagreeing-test-matches-the-user-requirement-or-acceptance-a-test-that-encodes-one-implementation-s-choice-is-discarded-with-its-reason",
+        "discriminatingTests": "main-adds-tests-derived-from-the-requirement-never-from-either-implementation-if-the-requirement-itself-is-ambiguous-ask-the-user-without-autoSelectRecommended",
+        "choice": "the-one-patch-that-passes-all-requirement-valid-tests-on-a-tie-prefer-the-smaller-diff-never-by-test-count-majority-requirement-valid-tests-from-the-other-candidate-may-be-kept-with-the-chosen-patch"
+      },
+      "finish": {
+        "apply": "main-git-applies-the-chosen-patch-to-the-parent-checkout-then-runs-the-normal-acceptance-checks-and-cross_review",
+        "record": "the-matrix-the-discarded-tests-with-reasons-and-the-choice-go-into-doc-history-and-scratch-worktrees-are-cleaned",
+        "bothFail": "if-both-candidates-fail-there-is-no-third-candidate-return-to-diagnosis"
+      },
+      "observation": "each-use-records-the-trigger-evidence-wall-time-tokens-if-observable-the-outcome-and-later-regressions-so-the-user-can-judge-whether-it-pays-off"
+    },
     "effortSelection": {
       "owner": "user-decision-2026-10-08-the-dispatched-maker-child-auto-classifier-chooses-the-level-main-chooses-only-the-candidate-model-and-never-a-concrete-maker-effort",
       "mechanism": "tasks-item-model-is-the-candidate-selector-with-the-auto-suffix-task-enableEffort-false-keeps-coarse-effort-from-overriding-it-and-the-task-hook-blocks-a-concrete-suffix-or-coarse-effort",

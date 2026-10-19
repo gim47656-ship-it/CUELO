@@ -474,9 +474,11 @@ type Workspace = DispatchOwnership["workspace"];
 /**
  * core spawnParamsFor와 같은 우선순위로 task 항목의 격리 요청을 읽는다. 항목 값이 있으면 그것, 없으면 상위 값이다.
  * isolated 요청은 격리 준비 실패 시 공유 cwd로 fallback하지 않고 실패하므로(structured-subagent) 별도 worktree scope다.
+ * `"capture"`(경쟁 후보: 격리 실행 뒤 patch만 보존하고 부모 checkout에 적용하지 않음)도 같은 worktree scope이므로 isolated다.
  */
 export function workspaceOf(input: Record<string, unknown>, item: Record<string, unknown>): Workspace {
-  return (item.isolated !== undefined ? item.isolated : input.isolated) === true ? "isolated" : "shared";
+  const requested = item.isolated !== undefined ? item.isolated : input.isolated;
+  return requested === true || requested === "capture" ? "isolated" : "shared";
 }
 
 /** 같은 checkout을 동시에 쓰는 경우만 충돌이다. 격리 worktree는 서로·공유 작업공간과 별도 scope다. */
