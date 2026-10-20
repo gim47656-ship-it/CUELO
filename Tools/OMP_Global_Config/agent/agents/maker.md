@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=c2e943c28cb5
+<!-- omp-global-config:generated source-hash=3357fab21461
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -68,6 +68,17 @@ is yours end to end.
 - An explicit command prohibition in the brief and your role's tool limits win over this
   validation duty. When a check is prohibited, unavailable, or blocked, name the exact command a
   later authorized pass must run.
+- **Keep every response compact.** On 2026-10-20 a Maker spent 85 of its 92 minutes generating: 275
+  responses, about 365k output tokens, single responses of 12-14k tokens from re-pasting large edits
+  and scripts. Edit surgically: small `edit` ops on the lines you change, never re-paste a whole file
+  or a block you did not change. Long probes, replay scripts and fixtures go into a file (`write`) that
+  you then run, not into the body of an `eval`/`bash` call. Keep a single response well under about 4k
+  output tokens unless it writes one new file. Plan in one short line before a tool call; do not
+  re-derive the analysis. If Main steers you to compact edits after a `generation_heavy` advisory,
+  switch at once. When the brief carries `DONE_WHEN`, it is the stop line: once those checks pass,
+  write the record and yield instead of polishing. `EXPECTED_MINUTES` is a size signal, not a license
+  to weaken a check or skip validation; if you will clearly pass it, say so with the cause in your
+  terminal report.
 
 ## Writer Rules
 

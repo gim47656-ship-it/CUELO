@@ -1,9 +1,10 @@
+import { isHarnessResumeNotice } from "@/lib/harness-notices";
 import type { ConversationRenderItem } from "@/lib/transcript-plan";
 import { isTodoToolName, resolveTodoSnapshot, type TodoPhase } from "@/lib/todo-state";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolCallContent, ToolResultMessage } from "@/lib/types";
-import { userMessageDeliveryKind } from "./delivery";
-import { deriveWorkFlow, readCheckRun, readCiSuccessHeads, type CheckRun, type CiSuccessHead, type WorkFlow } from "./work-flow";
+import { userMessageDeliveryKind, userMessageText } from "./delivery";
+import { deriveWorkFlow, readCheckRun, readCiSuccessHeads, type CheckRun, type CiSuccessHead, type JobNotice, type WorkFlow } from "./work-flow";
 
 /**
  * 끝난 턴 하나의 관측 요약: 실제로 쓴 파일, 실제로 실행한 검사 명령과 그 판정, 그 턴이 띄운 발주.
@@ -76,12 +77,39 @@ export function collectTurnBlocks(messages: readonly AgentMessage[], from: numbe
 }
 
 /**
- * 그 사용자 메시지가 속한 요청을 연 메시지. 실행 중에 끼어든 입력(omp가 `steering: true`를 단 user 메시지)은 새 요청이 아니라
- * 그 앞 요청의 이어짐이다 — 앞 user 메시지로 거슬러 올라간다. 완료 후 요청(follow-up)과 큐 밖 입력은 새 요청을 연다.
+ * 백그라운드 job 완료 통지(async-result custom 메시지)와 그 앞 마지막 도구 호출, 메시지 순서대로. 이 통지는 assistant 블록 밖에
+ * 기록되므로 작업 흐름이 백그라운드 실행의 결과를 읽으려면 따로 넘겨야 한다(`deriveWorkFlow`의 `jobNotices`).
+ */
+export function collectJobNotices(messages: readonly AgentMessage[], from: number, to: number): JobNotice[] {
+  const notices: JobNotice[] = [];
+  let after: string | null = null;
+  for (let idx = Math.max(0, from); idx < Math.min(messages.length, to); idx++) {
+    const message = messages[idx];
+    if (message.role === "assistant") {
+      for (const block of (message as AssistantMessage).content ?? []) if (block.type === "toolCall") after = block.toolCallId;
+    } else if (message.role === "custom" && message.customType === "async-result") {
+      const text = typeof message.content === "string"
+        ? message.content
+        : message.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+      notices.push({ text, after });
+    }
+  }
+  return notices;
+}
+
+/** 진행 중인 요청을 잇는 user 메시지: 실행 중에 끼어든 입력(steer)과, 하네스가 재개하며 넣은 통지(`isHarnessResumeNotice`). */
+function continuesRequest(message: AgentMessage | undefined): boolean {
+  return message?.role === "user" && (userMessageDeliveryKind(message) === "steer" || isHarnessResumeNotice(userMessageText(message)));
+}
+
+/**
+ * 그 사용자 메시지가 속한 요청을 연 메시지. 실행 중에 끼어든 입력(omp가 `steering: true`를 단 user 메시지)과 업데이트·재시작
+ * 뒤 하네스가 넣은 재개·통지 메시지는 새 요청이 아니라 그 앞 요청의 이어짐이다 — 앞 user 메시지로 거슬러 올라간다. 완료 후
+ * 요청(follow-up)과 큐 밖 입력은 새 요청을 연다. 재개 통지와 비슷한 말을 쓴 사용자 입력도 새 요청이다.
  */
 export function findRequestStart(messages: readonly AgentMessage[], userIdx: number): number {
   let start = userIdx;
-  while (messages[start]?.role === "user" && userMessageDeliveryKind(messages[start]) === "steer") {
+  while (continuesRequest(messages[start])) {
     let previous = start - 1;
     while (previous >= 0 && messages[previous].role !== "user") previous -= 1;
     if (previous < 0) break;
@@ -189,7 +217,7 @@ export function summarizeFinishedTurns(
     summaries.set(position, {
       ...summarizeTurn(blocks, toolResults, cwd),
       span: readTurnSpan(messages, range.from, range.to),
-      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads, cwd),
+      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads, cwd, collectJobNotices(messages, range.from, range.to)),
       latest: position === latest,
     });
   }

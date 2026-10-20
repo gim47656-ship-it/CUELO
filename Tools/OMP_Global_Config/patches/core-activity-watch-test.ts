@@ -15,6 +15,7 @@ interface FixtureEvent {
   partialResult?: { content: { type: string; text?: string }[]; details: { waitingForUser?: boolean } };
   args?: unknown;
   result?: unknown;
+  message?: { role: string; usage?: { output: number } };
   isError?: boolean;
 }
 interface ReceivedMessage { body: string; from: string; to: string }
@@ -76,7 +77,7 @@ class Clock {
     await Promise.resolve(); await Promise.resolve();
   }
 }
-function fixture() {
+function fixture(assignment?: string) {
   const clock = new Clock(), registry = new AgentRegistry(), bus = new IrcBus(registry);
   const events = new Set<(event: FixtureEvent) => void>();
   const parentEvents = new Set<(event: FixtureEvent) => void>();
@@ -96,7 +97,7 @@ function fixture() {
     subscribe: (fn: (event: FixtureEvent) => void) => { parentEvents.add(fn); return () => parentEvents.delete(fn); },
   } });
   const ref = registry.register({ id: "Child", displayName: "Child", kind: "sub", parentId: "Main", session });
-  const watch = new SubagentActivityWatch(session, ref, registry, bus, clock);
+  const watch = new SubagentActivityWatch(session, ref, registry, bus, clock, assignment);
   return { clock, registry, bus, agent, session, ref, watch, emit, messages, parentEmit,
     close() { watch.dispose(); stopQueue(); },
     text(text = "progress") { emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: text } }); },
@@ -259,6 +260,94 @@ await check("failed advisory is not buffered; ordinary failed messages keep inbo
     await f.bus.send({ from: "Child", to: "Main", body: "ORDINARY_PENDING" });
     assert.equal(f.bus.unreadCount("Main"), 1);
     assert.equal(f.bus.take("Main").body, "ORDINARY_PENDING");
+  } finally { f.close(); }
+});
+// Generation-heavy supervision (2026-10-20): a Maker spent 92 min with 92% model time and 275 long responses while the
+// only advisories were quiet_model. One cycle = streaming deltas every 30 s, a response end with `tokens` output, then a tool.
+interface WatchFixture {
+  clock: Clock; messages: ReceivedMessage[];
+  emit(event: FixtureEvent): void; text(): void; tool(type: string, extra?: object): void;
+}
+async function cycle(f: WatchFixture, modelMs: number, tokens: number, toolMs = 0) {
+  for (let left = modelMs; left > 0; left -= 30_000) { f.text(); await f.clock.advance(Math.min(30_000, left)); }
+  f.emit({ type: "message_end", message: { role: "assistant", usage: { output: tokens } } });
+  if (toolMs > 0) { f.tool("tool_execution_start"); await f.clock.advance(toolMs); f.tool("tool_execution_end"); }
+}
+const advisories = (f: WatchFixture) => f.messages.map(m => JSON.parse(m.body.slice(m.body.indexOf("\n") + 1)));
+await check("generation_heavy fires once on the measured long-response pattern, with numbers", async () => {
+  const f = fixture();
+  try {
+    // Measured Task D shape: ~170 s responses of 13k tokens, ~10 s tools => ~94% model time.
+    for (let i = 0; i < 4; i++) await cycle(f, 170_000, 13_000 + i * 100, 10_000);
+    assert.equal(f.messages.length, 1, "fires within ~12 min, before any quiet reason");
+    const [advice] = advisories(f);
+    assert.equal(advice.reason, "generation_heavy");
+    assert.ok(advice.stats.elapsedMs >= 600_000 && advice.stats.elapsedMs <= 900_000, String(advice.stats.elapsedMs));
+    assert.ok(advice.stats.modelShare >= 0.9, String(advice.stats.modelShare));
+    assert.ok(advice.stats.modelMs > advice.stats.toolMs * 10);
+    assert.ok(advice.stats.responses >= 3 && advice.stats.outputTokens >= 39_000);
+    assert.equal(advice.stats.maxResponseOutputTokens >= 13_000, true);
+    assert.equal(advice.stats.heavyResponses15m >= 3, true);
+    assert.deepEqual(advice.stats.recentOutputTokens.slice(0, 3), [13_000, 13_100, 13_200]);
+    assert.equal(advice.stats.expectedMinutes, null);
+    assert.match(advice.intervention, /compact/i);
+    // Same episode: more long responses never repeat the advisory.
+    for (let i = 0; i < 6; i++) await cycle(f, 170_000, 13_000, 10_000);
+    assert.equal(f.messages.length, 1);
+    // The episode ends once long responses stop for the window; the next burst is a new episode.
+    for (let i = 0; i < 6; i++) await cycle(f, 60_000, 500, 60_000);
+    for (let i = 0; i < 5; i++) await cycle(f, 170_000, 13_000, 10_000);
+    assert.deepEqual(advisories(f).map(a => a.reason), ["generation_heavy", "generation_heavy"]);
+  } finally { f.close(); }
+});
+await check("normal runs do not report generation_heavy", async () => {
+  for (const [name, model, tokens, tool] of [
+    ["short responses, mixed tools", 40_000, 600, 20_000],
+    ["short responses, model bound", 60_000, 1_500, 5_000],
+    ["long responses but tool bound", 60_000, 13_000, 120_000],
+    ["mid-size responses, model bound", 100_000, 6_000, 8_000],
+  ] as const) {
+    const f = fixture();
+    try {
+      for (let elapsed = 0; elapsed < 45 * 60_000; elapsed += model + tool) await cycle(f, model, tokens, tool);
+      assert.equal(f.messages.length, 0, `${name}: ${f.messages.map(m => m.body).join("|")}`);
+    } finally { f.close(); }
+  }
+});
+await check("over_expected needs EXPECTED_MINUTES in the assignment and fires once when exceeded", async () => {
+  const run = async (assignment: string | undefined, minutes: number) => {
+    const f = fixture(assignment);
+    try { for (let i = 0; i < minutes; i++) await cycle(f, 50_000, 400, 10_000); return advisories(f); }
+    finally { f.close(); }
+  };
+  assert.deepEqual(await run("TASK_GUARD:\nWORK_CLASS: feature\nEXPECTED_MINUTES: 20\nDONE_WHEN: tests pass", 19), []);
+  const over = await run("TASK_GUARD:\nWORK_CLASS: feature\nEXPECTED_MINUTES: 20\nDONE_WHEN: tests pass", 30);
+  assert.deepEqual(over.map(a => a.reason), ["over_expected"]);
+  assert.equal(over[0].stats.expectedMinutes, 20);
+  assert.ok(over[0].stats.elapsedMs > 20 * 60_000 && over[0].stats.elapsedMs < 22 * 60_000, String(over[0].stats.elapsedMs));
+  assert.deepEqual(await run(undefined, 30), [], "no field: behaviour unchanged");
+  assert.deepEqual(await run("EXPECTED_MINUTES: soon", 30), [], "unparseable value is ignored");
+  assert.deepEqual(await run("see EXPECTED_MINUTES: 5 in the text", 30), [], "only a metadata line counts");
+  for (const bad of ["20.5", "1e9", "1440.5", "0", "1441", "20min", "-5"]) {
+    assert.deepEqual(await run(`EXPECTED_MINUTES: ${bad}`, 30), [], `${bad} is not a whole integer token in 1..1440`);
+  }
+  assert.deepEqual((await run("EXPECTED_MINUTES: 20  \nDONE_WHEN: x", 30)).map(a => a.reason), ["over_expected"], "trailing whitespace is fine");
+});
+await check("over_expected never aborts a pending generation_heavy delivery", async () => {
+  const f = fixture("EXPECTED_MINUTES: 10");
+  const sends: { reason: string; signal: AbortSignal }[] = [];
+  // First send stays pending (a parked Main being revived) and rejects only if it is aborted; later sends succeed at once.
+  f.bus.send = (msg: { body: string }, opts: { signal: AbortSignal }) => {
+    sends.push({ reason: JSON.parse(msg.body.slice(msg.body.indexOf("\n") + 1)).reason, signal: opts.signal });
+    if (sends.length > 1) return Promise.resolve({ to: "Main", outcome: "woken" });
+    const { promise, reject } = Promise.withResolvers<never>();
+    opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    return promise;
+  };
+  try {
+    for (let i = 0; i < 12; i++) await cycle(f, 100_000, 13_000, 10_000);
+    assert.deepEqual(sends.map(s => s.reason), ["generation_heavy", "over_expected"]);
+    assert.equal(sends[0].signal.aborted, false, "the pending generation_heavy delivery must survive the over_expected send");
   } finally { f.close(); }
 });
 await check("agent/proc inspection exposes current monitoring and preserves JSON extraction", async () => {

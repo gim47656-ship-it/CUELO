@@ -127,12 +127,24 @@ function stepLabel(step: WorkStep, st: AnswerStatusTranslate): string {
 
 /**
  * 펼친 검사 행: 판정 미확인이면 무엇이 확인됐고 무엇이 없는지, 그리고 원래 명령과 셸 종료 코드. 여러 단계를 한 명령으로
- * 돌려 실패했으면 명령 전체의 실패만 확인됐고, 어느 단계의 실패인지는 없다.
+ * 돌려 실패했으면 명령 전체의 실패만 확인됐고, 어느 단계의 실패인지는 없다. 기다린 실행이 이 커밋의 CI가 아니었으면 그 실행이
+ * 끝난 결과만 확인됐다. 셸 종료 코드가 아닌 기록(echo한 종료 코드, 백그라운드 job의 완료, 배포 로그 줄, 이어진 CI 실행)으로
+ * 판정했으면 그 기록 한 줄을 함께 보인다.
  */
 function CommandDetail({ step, label, st }: { step: CommandStep; label: string; st: AnswerStatusTranslate }) {
   const compoundFailed = isCompoundFailure(step);
   const stages = step.compound?.stages.map((stage) => st(`flow.stage.${stage}`)).join("·") ?? "";
-  const why = step.stage === "check" ? st("flow.why.check", { label }) : st(`flow.why.${step.stage}`);
+  const other = step.otherRun;
+  const confirmed = compoundFailed ? st("flow.why.compoundConfirmed", { stages })
+    : other?.kind === "unjudged" ? st("flow.why.watched.unjudged", { conclusion: other.conclusion })
+    : other ? st(`flow.why.watched.${other.outcome}`)
+    : st("flow.why.exitZero");
+  const why = compoundFailed ? st("flow.why.compoundMissing")
+    : step.stage === "check" ? st("flow.why.check", { label })
+    : other?.kind === "commit" ? st("flow.why.ciOtherRun", { sha: other.sha })
+    : other?.kind === "publish" ? st("flow.why.ciPublishRun")
+    : other?.kind === "unjudged" ? st("flow.why.ciUnjudged", { conclusion: other.conclusion })
+    : st(`flow.why.${step.stage}`);
   const exit = step.exitCode !== null
     ? st("flow.exit", { code: step.exitCode })
     : st(step.outcome === "failed" ? "flow.exit.error" : step.outcome === "running" ? "flow.state.running" : "flow.exit.none");
@@ -140,14 +152,15 @@ function CommandDetail({ step, label, st }: { step: CommandStep; label: string; 
     <div className="flow-raw">
       {step.outcome === "unverified" && (
         <p className="flow-why">
-          <b>{st("flow.why.confirmed")}</b> {compoundFailed ? st("flow.why.compoundConfirmed", { stages }) : st("flow.why.exitZero")}
+          <b>{st("flow.why.confirmed")}</b> {confirmed}
           <br />
-          <b>{st("flow.why.missing")}</b> {compoundFailed ? st("flow.why.compoundMissing") : why}
+          <b>{st("flow.why.missing")}</b> {why}
         </p>
       )}
       {step.stale && <p className="flow-why">{st("flow.why.stale")}</p>}
       <code className="flow-raw-command">{step.command}</code>
       <div className="flow-exit">{exit}</div>
+      {step.evidence && <div className="flow-exit">{st("flow.evidence")} <code className="flow-evidence">{step.evidence}</code></div>}
     </div>
   );
 }

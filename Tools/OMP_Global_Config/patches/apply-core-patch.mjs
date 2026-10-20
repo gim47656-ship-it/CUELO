@@ -14893,6 +14893,281 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {`,
 		anchor: "\t\t\t\t\tidentityLimitations: this.snapshot.identityLimitations,",
 		patched: "\t\t\t\t\tidentityLimitations: this.snapshot.identityLimitations,\n\t\t\t\t\tepisode: this.snapshot.episode, inspectedAt: this.snapshot.inspectedAt, actionAt: this.snapshot.actionAt,",
 	},
+	// 2026-10-20 generation-heavy supervision: running stats in every advisory, `generation_heavy` and `over_expected` reasons.
+	// Folded into the original watch block like the followups above. Stat advisories keep their own once-per-episode flags and
+	// delivery controller: ordinary model progress (every delta) must not recover or cancel them.
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "export interface AgentActivityStats {",
+		anchor: "export interface AgentActivityWatchSnapshot {\n\tid: string;",
+		patched: String.raw`export interface AgentActivityStats {
+	startedAt: number | null;
+	elapsedMs: number;
+	modelMs: number;
+	toolMs: number;
+	userWaitMs: number;
+	modelShare: number;
+	responses: number;
+	outputTokens: number;
+	recentOutputTokens: number[];
+	maxResponseOutputTokens: number;
+	heavyResponses15m: number;
+	expectedMinutes: number | null;
+}
+
+export interface AgentActivityWatchSnapshot {
+	id: string;`,
+	},
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "\tstats: AgentActivityStats;",
+		anchor: '\taction: "parent_directive_delivered" | null;',
+		patched: '\taction: "parent_directive_delivered" | null;\n\tstats: AgentActivityStats;',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "const HEAVY_RESPONSE_TOKENS = 8_000;",
+		anchor: "const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>();",
+		patched: String.raw`// CUELO: generation-heavy supervision. Thresholds were measured on 50 Maker sessions (2026-10-20): a run is generation-heavy when
+// at least 3 responses of >= 8k output tokens landed within 15 min while >= 80% of >= 10 min elapsed was model time.
+const HEAVY_RESPONSE_TOKENS = 8_000;
+const HEAVY_RESPONSE_COUNT = 3;
+const HEAVY_WINDOW_MS = 900_000;
+const HEAVY_MODEL_SHARE = 0.8;
+const HEAVY_MIN_ELAPSED_MS = 600_000;
+const EXPECTED_MINUTES_LINE = /^[ \t>*-]*EXPECTED_MINUTES:[ \t]*(\d{1,4})(?![^\s])/m;
+function parseExpectedMinutes(text: string | undefined): number | null {
+	const minutes = text === undefined ? Number.NaN : Number(EXPECTED_MINUTES_LINE.exec(text)?.[1]);
+	return Number.isInteger(minutes) && minutes > 0 && minutes <= 1440 ? minutes : null;
+}
+function emptyActivityStats(startedAt: number | null, expectedMinutes: number | null): AgentActivityWatchSnapshot["stats"] {
+	return {
+		startedAt, elapsedMs: 0, modelMs: 0, toolMs: 0, userWaitMs: 0, modelShare: 0, responses: 0, outputTokens: 0,
+		recentOutputTokens: [], maxResponseOutputTokens: 0, heavyResponses15m: 0, expectedMinutes,
+	};
+}
+const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>();`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#heavyAt: number[] = [];",
+		anchor: "\t#running = false;\n\t#disposed = false;",
+		patched: "\t#markAt: number | null = null;\n\t#heavyAt: number[] = [];\n\t#heavyFired = false;\n\t#overFired = false;\n\t#expectedMinutes: number | null = null;\n\treadonly #statDeliveries = new Map<string, AbortController>();\n\t#running = false;\n\t#disposed = false;",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "clock = activityWatchClock, assignment?: string) {",
+		anchor: "bus = IrcBus.global(), clock = activityWatchClock) {",
+		patched: "bus = IrcBus.global(), clock = activityWatchClock, assignment?: string) {",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tstats: emptyActivityStats(null, null),",
+		anchor: '\t\t\tepisodeState: "none", inspectedAt: null, actionAt: null, action: null,\n\t\t};',
+		patched: '\t\t\tepisodeState: "none", inspectedAt: null, actionAt: null, action: null,\n\t\t\tstats: emptyActivityStats(null, null),\n\t\t};\n\t\tthis.setAssignment(assignment);',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tthis.#account(this.#clock.now());\n\t\t\tif (!this.#running) this.#start();",
+		anchor: "\t\t\tif (!this.#running) this.#start();\n\t\t\tif (this.#tools.size === 0) this.snapshot.phase = \"model_waiting\";",
+		patched: "\t\t\tthis.#account(this.#clock.now());\n\t\t\tif (!this.#running) this.#start();\n\t\t\tif (this.#tools.size === 0) this.snapshot.phase = \"model_waiting\";",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#publish(): void {\n\t\tthis.#account(this.#clock.now());",
+		anchor: "\t#publish(): void {\n",
+		patched: "\t#publish(): void {\n\t\tthis.#account(this.#clock.now());\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#start(): void {\n\t\tthis.#account(this.#clock.now());",
+		anchor: "\t#start(): void {\n",
+		patched: "\t#start(): void {\n\t\tthis.#account(this.#clock.now());\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.#resetStats(this.#clock.now());",
+		anchor: "\t\tthis.#running = true;\n\t\tthis.#tools.clear();",
+		patched: "\t\tthis.#running = true;\n\t\tthis.#resetStats(this.#clock.now());\n\t\tthis.#tools.clear();",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tfor (const delivery of this.#statDeliveries.values()) delivery.abort();\n\t\tthis.#statDeliveries.clear();\n\t\tthis.#cancelTimer?.();",
+		anchor: "\t\tthis.#parentCalls.clear();\n\t\tthis.#running = false;\n\t\tthis.#cancelTimer?.();",
+		patched: "\t\tthis.#parentCalls.clear();\n\t\tthis.#account(this.#clock.now());\n\t\tthis.#running = false;\n\t\tfor (const delivery of this.#statDeliveries.values()) delivery.abort();\n\t\tthis.#statDeliveries.clear();\n\t\tthis.#cancelTimer?.();",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.#account(this.#clock.now());\n\t\tif (event.type === \"agent_start\") { this.#start(); return; }",
+		anchor: "\t\tif (event.type === \"agent_start\") { this.#start(); return; }",
+		patched: "\t\tthis.#account(this.#clock.now());\n\t\tif (event.type === \"agent_start\") { this.#start(); return; }",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t} else if (event.type === \"message_end\") {",
+		anchor: "\t\t} else if (event.type === \"message_update\") {\n\t\t\tconst delta = event.assistantMessageEvent;",
+		patched: String.raw`		} else if (event.type === "message_end") {
+			// Usage rides the final assistant message only; it never counts as progress (a response end is not a delta).
+			const message = event.message;
+			if (message.role === "assistant" && typeof message.usage?.output === "number") this.#response(this.#clock.now(), message.usage.output);
+		} else if (event.type === "message_update") {
+			const delta = event.assistantMessageEvent;`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#statReason(now: number)",
+		anchor: "\t#reason(now: number): string | undefined {",
+		patched: String.raw`	setAssignment(assignment: string | undefined): void {
+		this.#expectedMinutes = parseExpectedMinutes(assignment);
+		this.snapshot.stats.expectedMinutes = this.#expectedMinutes;
+	}
+
+	#resetStats(now: number): void {
+		this.snapshot.stats = emptyActivityStats(now, this.#expectedMinutes);
+		this.#markAt = now;
+		this.#heavyAt = [];
+		this.#heavyFired = false;
+		this.#overFired = false;
+	}
+
+	// Attribute the time since the last mark to the phase that was current, then refresh the derived numbers.
+	#account(now: number): void {
+		const stats = this.snapshot.stats;
+		if (!this.#running || stats.startedAt === null) { this.#markAt = now; return; }
+		const delta = Math.max(0, now - (this.#markAt ?? now));
+		this.#markAt = now;
+		const phase = this.snapshot.phase;
+		if (phase === "tool_execution") stats.toolMs += delta;
+		else if (phase === "user_waiting") stats.userWaitMs += delta;
+		else if (phase !== "idle") stats.modelMs += delta;
+		stats.elapsedMs = Math.max(0, now - stats.startedAt);
+		stats.modelShare = Math.round(stats.modelMs / Math.max(1, stats.elapsedMs - stats.userWaitMs) * 1000) / 1000;
+		this.#heavyAt = this.#heavyAt.filter(at => now - at <= HEAVY_WINDOW_MS);
+		stats.heavyResponses15m = this.#heavyAt.length;
+	}
+
+	#response(now: number, output: number): void {
+		const stats = this.snapshot.stats;
+		stats.responses++;
+		stats.outputTokens += output;
+		stats.maxResponseOutputTokens = Math.max(stats.maxResponseOutputTokens, output);
+		stats.recentOutputTokens.push(output);
+		if (stats.recentOutputTokens.length > 5) stats.recentOutputTokens.shift();
+		if (output >= HEAVY_RESPONSE_TOKENS) this.#heavyAt.push(now);
+	}
+
+	// Each stat reason fires once per episode: generation_heavy re-arms when the condition lapses, over_expected once per run.
+	#statReason(now: number): "generation_heavy" | "over_expected" | undefined {
+		if (this.snapshot.phase === "user_waiting") return undefined;
+		this.#account(now);
+		const stats = this.snapshot.stats;
+		const heavy = stats.elapsedMs >= HEAVY_MIN_ELAPSED_MS && stats.modelShare >= HEAVY_MODEL_SHARE
+			&& stats.heavyResponses15m >= HEAVY_RESPONSE_COUNT;
+		if (!heavy) this.#heavyFired = false;
+		else if (!this.#heavyFired) { this.#heavyFired = true; return "generation_heavy"; }
+		if (stats.expectedMinutes !== null && !this.#overFired && stats.elapsedMs > stats.expectedMinutes * 60_000) {
+			this.#overFired = true;
+			return "over_expected";
+		}
+		return undefined;
+	}
+
+	#advisoryBody(now: number, reason: string): string {
+		this.#account(now);
+		const intervention = reason === "generation_heavy"
+			? "Generation-heavy: most elapsed time is long model responses. Read stats, then steer the owner to compact edits (small surgical edits, no whole-file re-pastes, long scripts in files); no automatic kill, retry or reassignment."
+			: reason === "over_expected"
+				? "Elapsed passed the brief's EXPECTED_MINUTES. Compare stats with DONE_WHEN and inspect the activity before deciding; no automatic kill, retry or reassignment."
+				: "Inspect the current activity before another wait; no automatic kill, retry or reassignment.";
+		return "[Child activity advisory; not a failure verdict]\n" + JSON.stringify({
+			id: this.#ref.id, sessionId: this.snapshot.sessionId, reason,
+			identityLimitations: this.snapshot.identityLimitations,
+			episode: this.snapshot.episode, inspectedAt: this.snapshot.inspectedAt, actionAt: this.snapshot.actionAt,
+			phase: this.snapshot.phase, quietAgeMs: Math.max(0, now - this.snapshot.quietSince),
+			pendingParentAgeMs: this.snapshot.pendingParentSince === null ? null : Math.max(0, now - this.snapshot.pendingParentSince),
+			activeTools: this.snapshot.activeTools, transportProgress: "unknown", stats: { ...this.snapshot.stats },
+			lastCheckAt: now, nextRead: "read agent://" + this.#ref.id + " or proc://" + this.#ref.id,
+			intervention,
+		});
+	}
+
+	// One controller per reason: model progress recovers quiet episodes (cancelling #delivery) and a sibling stat reason must not cancel these.
+	#sendStat(now: number, reason: "generation_heavy" | "over_expected"): void {
+		const parent = this.#ref.parentId;
+		if (!parent) return;
+		this.#statDeliveries.get(reason)?.abort();
+		const delivery = new AbortController();
+		this.#statDeliveries.set(reason, delivery);
+		const lost = (): void => {
+			if (delivery.signal.aborted) return;
+			if (reason === "generation_heavy") this.#heavyFired = false;
+			else this.#overFired = false;
+		};
+		void this.#bus.send({ from: this.#ref.id, to: parent, body: this.#advisoryBody(now, reason), wakeRelay: true }, { signal: delivery.signal, countsAsReply: false })
+			.then(receipt => { if (receipt.outcome === "failed") lost(); }, lost)
+			.finally(() => { if (this.#statDeliveries.get(reason) === delivery) this.#statDeliveries.delete(reason); });
+	}
+
+	#reason(now: number): string | undefined {`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\tat = Math.min(at, stats.startedAt + stats.expectedMinutes * 60_000 + 1);",
+		anchor: "\t\tthis.snapshot.watcher = \"scheduled\";\n\t\tconst nextCheckAt = Math.max(now + 1, at);",
+		patched: String.raw`		const stats = this.snapshot.stats;
+		if (this.snapshot.phase !== "user_waiting" && stats.expectedMinutes !== null && stats.startedAt !== null && !this.#overFired) {
+			if (stats.startedAt + stats.expectedMinutes * 60_000 + 1 > now) {
+				at = Math.min(at, stats.startedAt + stats.expectedMinutes * 60_000 + 1);
+			}
+		}
+		this.snapshot.watcher = "scheduled";
+		const nextCheckAt = Math.max(now + 1, at);`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.#account(now);\n\t\tthis.snapshot.lastCheckAt = now;",
+		anchor: "\t\tthis.snapshot.lastCheckAt = now;\n\t\tthis.#refreshParentQueue();\n\t\tconst reason = this.#reason(now);",
+		patched: "\t\tthis.#account(now);\n\t\tthis.snapshot.lastCheckAt = now;\n\t\tthis.#refreshParentQueue();\n\t\tconst reason = this.#reason(now);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\tconst body = this.#advisoryBody(now, reason);",
+		anchor: String.raw`				const body = "[Child activity advisory; not a failure verdict]\n" + JSON.stringify({
+					id: this.#ref.id, sessionId: this.snapshot.sessionId, reason,
+					identityLimitations: this.snapshot.identityLimitations,
+					episode: this.snapshot.episode, inspectedAt: this.snapshot.inspectedAt, actionAt: this.snapshot.actionAt,
+					phase: this.snapshot.phase, quietAgeMs: Math.max(0, now - this.snapshot.quietSince),
+					pendingParentAgeMs: this.snapshot.pendingParentSince === null ? null : Math.max(0, now - this.snapshot.pendingParentSince),
+					activeTools: this.snapshot.activeTools, transportProgress: "unknown",
+					lastCheckAt: now, nextRead: "read agent://" + this.#ref.id + " or proc://" + this.#ref.id,
+					intervention: "Inspect the current activity before another wait; no automatic kill, retry or reassignment.",
+				});`,
+		patched: "\t\t\t\tconst body = this.#advisoryBody(now, reason);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tif (statReason) this.#sendStat(now, statReason);",
+		anchor: "\t\t\t} else this.snapshot.delivery = \"failed\";\n\t\t}\n\t\tthis.#schedule();",
+		patched: "\t\t\t} else this.snapshot.delivery = \"failed\";\n\t\t} else if (!reason) {\n\t\t\tconst statReason = this.#statReason(now);\n\t\t\tif (statReason) this.#sendStat(now, statReason);\n\t\t}\n\t\tthis.#schedule();",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "clock?: ActivityWatchClock, assignment?: string): () => void {",
+		anchor: "clock?: ActivityWatchClock): () => void {",
+		patched: "clock?: ActivityWatchClock, assignment?: string): () => void {",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t} else watch.setAssignment(assignment);",
+		anchor: "\t\twatch = new SubagentActivityWatch(session, ref, registry, IrcBus.global(), clock);\n\t\tsessionActivityWatches.set(session, watch);\n\t}",
+		patched: "\t\twatch = new SubagentActivityWatch(session, ref, registry, IrcBus.global(), clock, assignment);\n\t\tsessionActivityWatches.set(session, watch);\n\t} else watch.setAssignment(assignment);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t}, undefined, assignment);",
+		anchor: "\t\t\tprogress.activityWatch = snapshot;\n\t\t\tscheduleProgress(true);\n\t\t});",
+		patched: "\t\t\tprogress.activityWatch = snapshot;\n\t\t\tscheduleProgress(true);\n\t\t}, undefined, assignment);",
+	},
 	// Full terminal evidence stays on the exact existing async run, separate from its preview.
 	{
 		file: "src/async/job-manager.ts",
@@ -17454,14 +17729,22 @@ class ElRef implements PromiseLike<El> {
 // These deltas amend code introduced by the original watch patch, not upstream code.
 // Fold before preflight so clean installs see upstream anchors; retain the old whole
 // injected block for upgrades instead of requiring an intermediate patch application.
+// The 2026-10-20 stats deltas fold in a second pass: an install already patched by the previous apply-core-patch carries the
+// first pass's result, so that result (not the pre-followup block) becomes each touched owner's legacyPatched. Re-applying then
+// upgrades the watch body, and --check reports the previous body as not applied instead of passing it by marker.
+const foldWatchFollowups = (from, to, retainDeployed) => {
+	const touched = new Set();
+	for (const update of EDITS.splice(from, to - from)) {
+		const owner = EDITS.find(entry => entry.file === update.file && entry.patched.includes(update.anchor));
+		if (!owner) throw new Error(`Missing activity-watch patch owner: ${update.marker}`);
+		if (retainDeployed ? !touched.has(owner) : owner.legacyPatched === undefined) owner.legacyPatched = owner.patched;
+		touched.add(owner);
+		owner.patched = owner.patched.replace(update.anchor, update.patched);
+	}
+};
 const watchFollowupStart = EDITS.findIndex(entry => entry.marker === '\tepisodeState: "none" | "attention" | "progress" | "terminal";');
-const watchFollowupEnd = EDITS.findIndex(entry => entry.marker === "\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;");
-for (const update of EDITS.splice(watchFollowupStart, watchFollowupEnd - watchFollowupStart)) {
-	const owner = EDITS.find(entry => entry.file === update.file && entry.patched.includes(update.anchor));
-	if (!owner) throw new Error(`Missing activity-watch patch owner: ${update.marker}`);
-	owner.legacyPatched ??= owner.patched;
-	owner.patched = owner.patched.replace(update.anchor, update.patched);
-}
+foldWatchFollowups(watchFollowupStart, EDITS.findIndex(entry => entry.marker === "export interface AgentActivityStats {"), false);
+foldWatchFollowups(watchFollowupStart, EDITS.findIndex(entry => entry.marker === "\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;"), true);
 // 2026-10-19 isolated 마커 단축: task schema·요청의 `isolated` 줄을 넓히는 항목(위 capture 묶음)이 기존 항목의 marker 와 같은 줄을 바꾼다.
 //  (1) 동적 task schema(batch item)의 `"isolated?": "boolean"` 줄은 model 항목(entry 92)의 marker 가 줄 끝까지 품고 있다. 후보 marker 는
 //      "이미 적용됨"을 가르는 앞부분(`"model?": "string",` 이후 `...toolsField,`)이면 충분하므로 isolated 줄 앞에서 자른다.

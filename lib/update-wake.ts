@@ -9,6 +9,7 @@ import {
 } from "./update-maintenance";
 import { getRpcSession, startRpcSession } from "./rpc-manager";
 import { resolveSessionPath } from "./session-reader";
+import { UPDATE_FAILURE_HEADLINE, UPDATE_WAKE_HEADLINE } from "./harness-notices";
 
 declare global {
   // 같은 request·세션으로 준비 중인 Wake 발화. settle되면 바로 지운다 — 결과를 남기지 않는다.
@@ -26,7 +27,7 @@ function getWakeDispatches(): Map<string, Promise<void>> {
  */
 function wakeMessage(requestId: string, stageHash: string): string {
   return [
-    "[하네스 통지] 이 세션이 시작한 CUELO 업데이트가 끝나 런타임이 새 버전으로 교체됐고, 이 세션이 그 위에서 재개됐습니다.",
+    UPDATE_WAKE_HEADLINE,
     `requestId=${requestId} stageHash=${stageHash}`,
     "사용자 발화가 아니라 재개 통지입니다. 업데이트 직전에 하던 작업을 이어가세요.",
     "산출물 정리는 백그라운드로 따로 진행되며 그 상태는 화면 상단 줄에 표시됩니다. 정리 결과를 기다리지 마세요.",
@@ -123,7 +124,7 @@ async function resolveSessionPathOrThrow(sessionId: string): Promise<string> {
  */
 function failureMessage(requestId: string, stageHash: string, terminalError: string | null): string {
   return [
-    "[하네스 통지] 이 세션이 시작한 CUELO 업데이트가 실패했습니다.",
+    UPDATE_FAILURE_HEADLINE,
     `requestId=${requestId} stageHash=${stageHash}`,
     terminalError
       ? `원인: ${terminalError}`

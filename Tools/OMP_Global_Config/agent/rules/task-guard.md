@@ -19,12 +19,15 @@ OWNED_PATHS: <maker의 소유 경로를 콤마로 나열>   # 필수, 파생 불
 FINDING_ID: <rework일 때만 기존 finding id>
 TASK_TITLE: <이 조각의 업무 한 줄 — 한국어>
 TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
+EXPECTED_MINUTES: <이 조각의 예상 소요 분, 정수 — 권장>
+DONE_WHEN: <이 조각이 끝났다고 볼 조건 한 줄 — 권장>
 ```
 
 - **`TASK_GUARD:` 바로 뒤에 정본 필드가 연속되는 구간이 guard 블록이다.** 필드 일부는 생략·상속될
   수 있으므로 줄 수는 고정이 아니고, 연속이 끊기는 줄부터는 guard 블록이 아니다. `TASK_TITLE`·`TODO_TASKS`는 그 구간 **밖**의 공유 메타데이터이고 guard 필드가 아니다 — 빈 줄 없이 이어 써도 런타임은 블록 밖으로 읽는다. 이 둘은 `TASK_GUARD` 필드로 만들지 않고 `task` API의 새 인자로도 만들지 않는다. 위치가 뒤바뀌어 guard 필드 사이에 끼면 그 뒤 guard 필드가 블록에서 잘리므로 반드시 마지막 guard 필드 **뒤**에 적는다.
 - `TASK_TITLE`은 **조각마다 다른 그 조각의 stable 업무 정체성**이다. 앞뒤 공백 없는 한 줄 한국어여야 하고 본문에 정확히 한 번만 나와야 한다. subagent 카드 제목이 이 값이고, follow-up `write agent://<id>` 메시지의 진행 단계(마지막 의도·현재 도구)가 이 값을 덮지 않는다. 없으면 카드는 업무 미확인으로 표시된다.
 - `TODO_TASKS`는 **현재 Main TODO 항목의 exact 문자열** JSON 배열이다. 비어 있지 않은 고유 문자열이어야 하고 trim·유사도 정규화 없이 그대로 비교되므로 Main이 실제로 가진 문자열을 그대로 쓴다. 두 메타 중 하나라도 있으면 런타임이 TODO 진행 관측을 시작한다.
+- `EXPECTED_MINUTES`·`DONE_WHEN`도 `TASK_TITLE`·`TODO_TASKS`처럼 `TASK_GUARD` 블록 **밖**의 공유 메타데이터이고 **권장**이다(2026-10-20 사용자 결정). 런타임은 검증하지 않고 없다고 거부하지도 않으며 `TASK_GUARD` 필드로도 `task` 인자로도 만들지 않는다. `EXPECTED_MINUTES`는 줄 첫머리의 `EXPECTED_MINUTES: <1~1440 정수>` 한 줄이어야 child 활동 감시가 읽는다(문장 속에 섞인 값·정수가 아닌 값은 무시). 읽히면 감시가 모든 경고의 `stats.expectedMinutes`에 그 값을 싣고, 경과가 그 값을 넘는 순간 `over_expected` 경고를 한 번 보낸다. 값은 Main이 조각의 크기를 보고 정직하게 적는다(조사·구현·검증을 합친 벽시계 분). `DONE_WHEN`은 "무엇이 통과하면 끝인가"를 한 줄로 적어 Maker가 끝없이 다듬지 않게 하고 Main이 경고 때 진척을 대조하는 기준이 된다. 둘 다 시간 제한이 아니며 어떤 child도 이 값 때문에 중단·취소·재발주되지 않는다.
 - `TASK_GUARD` **안에서** Main이 직접 판단해야 하는 값만 적는다. **무엇을 만드는가**(`WORK_CLASS`·`PRIMARY_DELIVERABLE`)와 **어디까지 고치는가**(`OWNED_PATHS`)가 그것이고, 나머지는 런타임이 승인된 값에서 조립한다. 한 요청의 첫 child가 앞의 둘로 lock을 세우면 그 다음 child부터는 `OWNED_PATHS`(와 rework면 `FINDING_ID`)만 적어도 된다. 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock 값으로 채워지고, `PURPOSE`는 `FINDING_ID` 유무에서(`FINDING_ID` 있으면 `rework`, 그 밖엔 `primary`) 파생되며, `BLOCKS_PRIMARY`는 `yes`로 채워진다. 조립이 일어난 항목은 런타임이 그 브리프의 `TASK_GUARD` 블록을 실제 적용된 값으로 다시 써서 실행하므로 child와 기록이 같은 계약을 본다.
 - 비어 있는 것과 잘못 적은 것은 다르다. 생략은 조립되지만 enum 밖의 값(`WORK_CLASS: feat` 같은)은 거부된다. 허용 child는 `maker`뿐이다. lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`, `BLOCKS_PRIMARY:no`, `OWNED_PATHS` 누락, `FINDING_ID` 없는 rework도 거부된다.
 - `agent`는 생략하면 `maker`로 읽히고 반환 input에도 `maker`로 기록된다. 명시한 다른 값(`task`·`scout` 등)은 거부된다. `maker_route` 준비도 같은 `WORK_CLASS` enum으로 명시 오값을 거절해 준비 성공처럼 보이지 않는다.

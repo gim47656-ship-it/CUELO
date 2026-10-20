@@ -33,7 +33,7 @@ import { DispatchDockLine } from "./answer-status/DispatchDockLine";
 import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { DispatchCard } from "./answer-status/DispatchCard";
 import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
-import { collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
+import { collectJobNotices, collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { deriveWorkFlow } from "@/lib/answer-status/work-flow";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
@@ -1328,12 +1328,18 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
       }
     }
     const start = lastUser < 0 ? -1 : findRequestStart(messages, lastUser);
-    // 앞선 기록의 공개 CI 성공은 기록이 바뀔 때만 다시 훑는다. 흐르는 답마다 세션 전체를 읽지 않는다.
-    return { start, blocks: collectTurnBlocks(messages, start + 1, messages.length), priorCiHeads: collectPriorCiHeads(messages, toolResultsMap, start + 1) };
+    // 앞선 기록의 공개 CI 성공은 기록이 바뀔 때만 다시 훑는다. 흐르는 답마다 세션 전체를 읽지 않는다. 백그라운드 job의 완료
+    // 통지는 assistant 블록 밖에 기록되므로 그 요청 범위에서 따로 모은다.
+    return {
+      start,
+      blocks: collectTurnBlocks(messages, start + 1, messages.length),
+      priorCiHeads: collectPriorCiHeads(messages, toolResultsMap, start + 1),
+      jobNotices: collectJobNotices(messages, start + 1, messages.length),
+    };
   }, [messages, toolResultsMap]);
   const stripFlow = useMemo(() => {
     const blocks = streamingAssistant ? [...stripRequest.blocks, ...(streamingAssistant.content ?? [])] : stripRequest.blocks;
-    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads, messageCwd);
+    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads, messageCwd, stripRequest.jobNotices);
   }, [stripRequest, streamingAssistant, toolResultsMap, sessionBusy, messageCwd]);
   // 실행 중인 요청의 카드. 끝난 요청 카드와 같은 모양으로 기록 끝(흐르는 답 위)에 두고, 단계는 입력창 위 줄과 같은 흐름이다.
   // 파일·검사·발주는 기록된 호출에서만 센다. 끝나면 사라지고 그 요청의 마지막 답 아래 끝난 카드가 이어받는다.

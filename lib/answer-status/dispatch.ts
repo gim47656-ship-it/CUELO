@@ -686,6 +686,8 @@ export interface DockSummary {
   awaiting: number;
   /** 눌렀을 때 갈 Maker: 카드 자리가 있는 가장 최근 발주, 없으면 가장 최근 발주. */
   target: DockMaker;
+  /** dock에 올린 모든 Maker(발주 순서). 둘 이상이면 줄이 「외 N」을 붙이고 펼쳐서 전부 보인다. */
+  makers: DockMaker[];
 }
 
 /** 실행 상태가 dock에서 어느 쪽 후보인가. 미관측은 실행 중인지 끝났는지 모르므로 올리지 않는다. */
@@ -752,5 +754,6 @@ export function collectDockMakers(
     running,
     awaiting: dock.length - running,
     target: placed.length > 0 ? placed[placed.length - 1] : dock[dock.length - 1],
+    makers: dock,
   };
 }
