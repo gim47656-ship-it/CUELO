@@ -29,7 +29,7 @@ export const RUN_LABEL: Record<MakerRunState, AnswerStatusMessageKey> = {
   unobserved: "run.unobserved",
 };
 
-const VERDICT_LABEL: Record<"accepted" | "rework" | "held" | "none", AnswerStatusMessageKey> = {
+export const VERDICT_LABEL: Record<"accepted" | "rework" | "held" | "none", AnswerStatusMessageKey> = {
   accepted: "verdict.accepted",
   rework: "verdict.rework",
   held: "verdict.held",

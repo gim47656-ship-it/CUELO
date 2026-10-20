@@ -2,7 +2,8 @@ import type { ConversationRenderItem } from "@/lib/transcript-plan";
 import { isTodoToolName, resolveTodoSnapshot, type TodoPhase } from "@/lib/todo-state";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolCallContent, ToolResultMessage } from "@/lib/types";
-import { deriveWorkFlow, readCheckRun, type CheckRun, type WorkFlow } from "./work-flow";
+import { userMessageDeliveryKind } from "./delivery";
+import { deriveWorkFlow, readCheckRun, readCiSuccessHeads, type CheckRun, type CiSuccessHead, type WorkFlow } from "./work-flow";
 
 /**
  * 끝난 턴 하나의 관측 요약: 실제로 쓴 파일, 실제로 실행한 검사 명령과 그 판정, 그 턴이 띄운 발주.
@@ -75,8 +76,23 @@ export function collectTurnBlocks(messages: readonly AgentMessage[], from: numbe
 }
 
 /**
- * 요약을 붙일 자리: 각 턴의 마지막 답변. 아직 진행 중인 마지막 턴(`liveTurnAnchor`)은 끝난 답변이
- * 아니므로 뺀다. 값은 그 턴의 메시지 범위 [from, to)다.
+ * 그 사용자 메시지가 속한 요청을 연 메시지. 실행 중에 끼어든 입력(omp가 `steering: true`를 단 user 메시지)은 새 요청이 아니라
+ * 그 앞 요청의 이어짐이다 — 앞 user 메시지로 거슬러 올라간다. 완료 후 요청(follow-up)과 큐 밖 입력은 새 요청을 연다.
+ */
+export function findRequestStart(messages: readonly AgentMessage[], userIdx: number): number {
+  let start = userIdx;
+  while (messages[start]?.role === "user" && userMessageDeliveryKind(messages[start]) === "steer") {
+    let previous = start - 1;
+    while (previous >= 0 && messages[previous].role !== "user") previous -= 1;
+    if (previous < 0) break;
+    start = previous;
+  }
+  return start;
+}
+
+/**
+ * 요약을 붙일 자리: 각 요청의 마지막 답변. 스티어링으로 나뉜 조각들은 한 요청이라 카드 하나가 그 전체 범위를 요약한다.
+ * 아직 진행 중인 마지막 요청(`liveTurnAnchor`가 속한 요청)은 끝난 답변이 아니므로 뺀다. 값은 그 요청의 메시지 범위 [from, to)다.
  */
 export function placeTurnSummaries(
   main: readonly ConversationRenderItem[],
@@ -84,19 +100,38 @@ export function placeTurnSummaries(
   liveTurnAnchor: number | null,
 ): Map<number, { from: number; to: number }> {
   const places = new Map<number, { from: number; to: number }>();
-  const userIndexes = main
-    .filter((item) => item.kind === "message" && messages[item.idx]?.role === "user")
+  const requestStarts = main
+    .filter((item) => item.kind === "message" && messages[item.idx]?.role === "user" && findRequestStart(messages, item.idx) === item.idx)
     .map((item) => item.idx);
-  const lastAnswerByTurn = new Map<number, number>();
+  const liveRequest = liveTurnAnchor === null ? null : findRequestStart(messages, liveTurnAnchor);
+  const lastAnswerByRequest = new Map<number, number>();
   main.forEach((item, position) => {
-    if (item.kind === "answer") lastAnswerByTurn.set(item.anchorIdx, position);
+    if (item.kind === "answer") lastAnswerByRequest.set(findRequestStart(messages, item.anchorIdx), position);
   });
-  for (const [anchor, position] of lastAnswerByTurn) {
-    if (anchor === liveTurnAnchor) continue;
-    const next = userIndexes.find((idx) => idx > anchor);
+  for (const [anchor, position] of lastAnswerByRequest) {
+    if (anchor === liveRequest) continue;
+    const next = requestStarts.find((idx) => idx > anchor);
     places.set(position, { from: anchor + 1, to: next ?? messages.length });
   }
   return places;
+}
+
+/** `to` 앞 기록의 성공한 CI 실행. 비공개 게시 판정이 그 요청보다 앞선 공개 CI 기록을 쓴다. */
+export function collectPriorCiHeads(
+  messages: readonly AgentMessage[],
+  toolResults: ReadonlyMap<string, ToolResultMessage>,
+  to: number,
+  from = 0,
+  into: CiSuccessHead[] = [],
+): CiSuccessHead[] {
+  for (let idx = Math.max(0, from); idx < Math.min(messages.length, to); idx++) {
+    const message = messages[idx];
+    if (message.role !== "assistant") continue;
+    for (const block of (message as AssistantMessage).content ?? []) {
+      if (block.type === "toolCall") into.push(...readCiSuccessHeads(block, toolResults.get(block.toolCallId)));
+    }
+  }
+  return into;
 }
 
 /** 턴의 기록된 시각 범위(ms). 기록에 시각이 하나도 없으면 null. */
@@ -126,13 +161,13 @@ export function readTurnSpan(messages: readonly AgentMessage[], from: number, to
 
 export interface FinishedTurnSummary extends TurnSummary {
   span: TurnSpan;
-  /** 그 턴의 작업 단계와 회차. */
+  /** 그 요청의 작업 단계와 회차. 스티어링으로 나뉜 조각을 모두 포함한다. */
   flow: WorkFlow;
-  /** 끝난 턴 가운데 가장 나중 것. 그 카드만 처음부터 펼친다. */
+  /** 끝난 요청 가운데 가장 나중 것. 그 카드만 처음부터 펼친다. */
   latest: boolean;
 }
 
-/** 끝난 턴마다 그 턴의 마지막 답변 자리(`placeTurnSummaries`)에 붙일 요약. */
+/** 끝난 요청마다 그 요청의 마지막 답변 자리(`placeTurnSummaries`)에 붙일 요약. */
 export function summarizeFinishedTurns(
   main: readonly ConversationRenderItem[],
   messages: readonly AgentMessage[],
@@ -144,12 +179,17 @@ export function summarizeFinishedTurns(
   let latest = -1;
   for (const position of places.keys()) if (position > latest) latest = position;
   const summaries = new Map<number, FinishedTurnSummary>();
-  for (const [position, range] of places) {
+  // 앞선 기록의 공개 CI 성공은 요청 차례로 한 번만 훑어 쌓는다.
+  const priorCiHeads: CiSuccessHead[] = [];
+  let scanned = 0;
+  for (const [position, range] of [...places].sort((a, b) => a[1].from - b[1].from)) {
+    collectPriorCiHeads(messages, toolResults, range.from, scanned, priorCiHeads);
+    scanned = Math.max(scanned, range.from);
     const blocks = collectTurnBlocks(messages, range.from, range.to);
     summaries.set(position, {
       ...summarizeTurn(blocks, toolResults, cwd),
       span: readTurnSpan(messages, range.from, range.to),
-      flow: deriveWorkFlow(blocks, toolResults),
+      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads),
       latest: position === latest,
     });
   }

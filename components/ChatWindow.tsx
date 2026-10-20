@@ -32,7 +32,8 @@ import "./answer-status/answer-status.css";
 import { DispatchDockLine } from "./answer-status/DispatchDockLine";
 import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { DispatchCard } from "./answer-status/DispatchCard";
-import { collectTurnBlocks, summarizeFinishedTurns, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
+import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
+import { collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { deriveWorkFlow } from "@/lib/answer-status/work-flow";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { QuestionRail, type RailQuestion } from "./QuestionRail";
@@ -1315,9 +1316,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // 실행이 실제로 무언가 하기 시작한 순간 — 답의 글이 흐르거나 도구 호출이 뜬 때 — 한 번만
   // 착수를 알린다. 재렌더·도구마다 다시 부르지 않고, 새 활동 없이 타이머로 반복하지도 않는다.
   const streamingAssistant = streamingMessage?.role === "assistant" ? streamingMessage as AssistantMessage : null;
-  // 입력창 위 줄의 작업 단계: 마지막 사용자 메시지 뒤 이 턴의 도구 호출에, 아직 흐르는 답의 도구 호출을 더한다.
-  // 진행 중이면 결과가 오지 않은 호출을 진행 중으로 보고, 멈췄으면 끝난 턴처럼 다음 차례를 고른다.
-  const stripFlow = useMemo(() => {
+  // 입력창 위 줄의 작업 단계: 마지막 요청(스티어링으로 끼어든 입력은 앞 요청을 잇는다) 뒤 도구 호출에, 아직 흐르는 답의 도구 호출을 더한다.
+  // 진행 중이면 결과가 오지 않은 호출을 진행 중으로 보고, 멈췄으면 끝난 턴처럼 다음 차례를 고른다. 끝난 요청 카드와 같은 범위다.
+  const stripRequest = useMemo(() => {
     let lastUser = -1;
     for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
       if (messages[idx].role === "user") {
@@ -1325,10 +1326,24 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         break;
       }
     }
-    const blocks = collectTurnBlocks(messages, lastUser + 1, messages.length);
-    if (streamingAssistant) blocks.push(...(streamingAssistant.content ?? []));
-    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy);
-  }, [messages, streamingAssistant, toolResultsMap, sessionBusy]);
+    const start = lastUser < 0 ? -1 : findRequestStart(messages, lastUser);
+    // 앞선 기록의 공개 CI 성공은 기록이 바뀔 때만 다시 훑는다. 흐르는 답마다 세션 전체를 읽지 않는다.
+    return { start, blocks: collectTurnBlocks(messages, start + 1, messages.length), priorCiHeads: collectPriorCiHeads(messages, toolResultsMap, start + 1) };
+  }, [messages, toolResultsMap]);
+  const stripFlow = useMemo(() => {
+    const blocks = streamingAssistant ? [...stripRequest.blocks, ...(streamingAssistant.content ?? [])] : stripRequest.blocks;
+    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads);
+  }, [stripRequest, streamingAssistant, toolResultsMap, sessionBusy]);
+  // 실행 중인 요청의 카드. 끝난 요청 카드와 같은 모양으로 기록 끝(흐르는 답 위)에 두고, 단계는 입력창 위 줄과 같은 흐름이다.
+  // 파일·검사·발주는 기록된 호출에서만 센다. 끝나면 사라지고 그 요청의 마지막 답 아래 끝난 카드가 이어받는다.
+  const liveTurn = useMemo(() => (sessionBusy ? {
+    ...summarizeTurn(stripRequest.blocks, toolResultsMap, messageCwd),
+    span: readTurnSpan(messages, stripRequest.start + 1, messages.length),
+  } : null), [sessionBusy, stripRequest, toolResultsMap, messageCwd, messages]);
+  const liveSummary = useMemo<FinishedTurnSummary | null>(
+    () => (liveTurn ? { ...liveTurn, flow: stripFlow, latest: true } : null),
+    [liveTurn, stripFlow],
+  );
   const progressStarted = agentRunning && (
     agentPhase?.kind === "running_tools"
     || (streamingAssistant?.content ?? []).some((block) => (block.type === "text" && /\S/.test(block.text)) || block.type === "toolCall")
@@ -1590,6 +1605,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 onProcessLogChange={publishProcessLog}
               />
             </InlineUtterancesProvider>
+            {!detached && liveSummary && <TurnSummaryLine summary={liveSummary} live onOpenFile={onOpenFile} />}
             </AnswerStatusContext.Provider>
             {/* A detached window ends above the live tail; the run keeps streaming and shows on return. */}
             {!detached && streamState.isStreaming && streamState.streamingMessage && liveAnswerBlocks.length > 0 && (

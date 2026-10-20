@@ -593,6 +593,19 @@ function readCheckLabels(commands: readonly ShellCommand[]): CheckLabel[] {
  */
 export type CheckState = "passed" | "unverified" | "failed" | "unobserved";
 
+type CommandStage = "check" | "ci" | "deploy";
+
+/**
+ * 명령 하나가 검사·CI·배포 가운데 둘 이상에 걸친 것. 셸 종료 코드는 명령 전체의 결과 하나뿐이라, 0이 아니면 명령이
+ * 실패했다는 것만 알고 어느 단계의 명령이 실패했는지는 모른다(`failed`). 그때 단계마다의 판정은 미확인이다.
+ */
+export interface CompoundCommand {
+  /** 이 명령이 닿은 단계, 단계 차례. */
+  stages: CommandStage[];
+  /** 명령 전체가 실패로 끝났는지: 0이 아닌 종료 코드, 또는 종료 코드 없이 오류로 끝난 호출. */
+  failed: boolean;
+}
+
 export interface CheckRun {
   toolCallId: string;
   command: string;
@@ -601,6 +614,8 @@ export interface CheckRun {
   exitCode: number | null;
   /** 명령 낱말에서 읽은 검사 이름, 나온 차례대로. 못 읽었으면 빈 배열. */
   labels: CheckLabel[];
+  /** 검사와 CI·배포를 한 명령으로 실행했을 때만 있다. */
+  compound?: CompoundCommand;
 }
 
 function readBashCommand(block: ToolCallContent | null | undefined): string | null {
@@ -609,30 +624,48 @@ function readBashCommand(block: ToolCallContent | null | undefined): string | nu
   return command || null;
 }
 
-/** bash 명령 하나가 속한 단계(배포 > CI > 검사 차례로 하나)와 그 판정. 셋 다 아니면 null. 단계는 실행 위치로만 찾는다. */
-function judgeCommand(command: string, result: ToolResultMessage | undefined): Omit<CheckRun, "toolCallId" | "command"> & { stage: CommandStep["stage"] } | null {
-  const parsed = parseShell(command);
-  const stage = parsed.commands.some(DECISIVE_COMMAND.deploy) ? "deploy"
-    : parsed.commands.some(({ words }) => runsCi(words)) ? "ci"
-    : parsed.commands.some(({ words }) => runsCheck(words)) ? "check" : null;
-  if (stage === null) return null;
-  const trace = traceStatus(parsed, DECISIVE_COMMAND[stage]);
-  // `--if-present`는 스크립트가 없으면 아무것도 실행하지 않고 0으로 끝난다. 그 0은 검사가 돌았다는 증거가 아니다.
-  const optional = stage === "check" && trace.decisive.some(({ words }) => words.includes("--if-present"));
-  const exitCode = result ? readExitCode(result) : null;
-  // 종료 코드가 기록되지 않은 결과(백그라운드로 넘어간 실행 등)는 성공으로 치지 않는다.
-  const state: CheckState = exitCode === null
-    ? (result?.isError ? "failed" : "unobserved")
-    : exitCode !== 0 ? "failed" : trace.reach === "carried" && !optional ? "passed" : "unverified";
-  return { stage, state, exitCode, labels: stage === "check" ? readCheckLabels(trace.decisive) : [] };
+interface CommandJudgement {
+  stage: CommandStage;
+  state: CheckState;
+  exitCode: number | null;
+  labels: CheckLabel[];
+  compound?: CompoundCommand;
 }
 
-/** bash 호출 하나를 검사로 읽는다. 검사 명령이 아니거나 CI·배포 명령이면 null. */
+/**
+ * bash 명령 하나가 닿은 단계(검사·CI·배포, 단계 차례)마다의 판정. 단계는 실행 위치로만 찾는다. 아무 단계도 아니면 빈 배열.
+ * 한 단계뿐인 명령은 0이 아닌 종료 코드가 그 단계의 실패다. 여러 단계에 걸친 명령은 종료 코드가 어느 단계 것인지 모르므로
+ * 실패를 어느 단계에도 붙이지 않고(`compound.failed`), 0으로 끝났을 때만 단계마다 기존 증명 규칙으로 통과를 가린다.
+ */
+function judgeCommand(command: string, result: ToolResultMessage | undefined): CommandJudgement[] {
+  const parsed = parseShell(command);
+  const stages: CommandStage[] = [];
+  if (parsed.commands.some(({ words }) => runsCheck(words))) stages.push("check");
+  if (parsed.commands.some(({ words }) => runsCi(words))) stages.push("ci");
+  if (parsed.commands.some(DECISIVE_COMMAND.deploy)) stages.push("deploy");
+  if (stages.length === 0) return [];
+  const exitCode = result ? readExitCode(result) : null;
+  const failed = exitCode === null ? Boolean(result?.isError) : exitCode !== 0;
+  const compound = stages.length > 1 ? { stages, failed } : undefined;
+  return stages.map((stage) => {
+    const trace = traceStatus(parsed, DECISIVE_COMMAND[stage]);
+    // `--if-present`는 스크립트가 없으면 아무것도 실행하지 않고 0으로 끝난다. 그 0은 검사가 돌았다는 증거가 아니다.
+    const optional = stage === "check" && trace.decisive.some(({ words }) => words.includes("--if-present"));
+    // 종료 코드가 기록되지 않은 결과(백그라운드로 넘어간 실행 등)는 성공으로 치지 않는다.
+    const state: CheckState = failed
+      ? (compound ? "unverified" : "failed")
+      : exitCode === null ? "unobserved"
+      : trace.reach === "carried" && !optional ? "passed" : "unverified";
+    return { stage, state, exitCode, labels: stage === "check" ? readCheckLabels(trace.decisive) : [], ...(compound ? { compound } : {}) };
+  });
+}
+
+/** bash 호출 하나를 검사로 읽는다. 검사 명령이 없으면 null. CI·배포와 한 명령이면 `compound`가 붙는다. */
 export function readCheckRun(block: ToolCallContent | null | undefined, result: ToolResultMessage | undefined): CheckRun | null {
   const command = readBashCommand(block);
-  const judged = command === null ? null : judgeCommand(command, result);
-  if (command === null || judged?.stage !== "check") return null;
-  return { toolCallId: block!.toolCallId, command, state: judged.state, exitCode: judged.exitCode, labels: judged.labels };
+  const judged = command === null ? undefined : judgeCommand(command, result).find((entry) => entry.stage === "check");
+  if (command === null || !judged) return null;
+  return { toolCallId: block!.toolCallId, command, state: judged.state, exitCode: judged.exitCode, labels: judged.labels, ...(judged.compound ? { compound: judged.compound } : {}) };
 }
 
 /* ---------- 단계 사건 ---------- */
@@ -645,6 +678,11 @@ interface StepCore {
   /** 이 사건이 일어난 회차(1부터). */
   attempt: number;
   outcome: StepOutcome;
+  /**
+   * 통과·완료로 끝났지만 그 뒤에 성공한 직접 수정이 있었다. 결과는 사실이지만 마지막 수정본을 보증하지 않는다.
+   * 문서만 고친 수정도 예외가 아니다.
+   */
+  stale?: true;
 }
 
 export interface PlainStep extends StepCore {
@@ -655,10 +693,12 @@ export interface PlainStep extends StepCore {
 
 /** 검사·CI·배포: 실행한 bash 명령과 기록된 종료 코드. 검사 이름은 검사 단계에서만 읽는다. */
 export interface CommandStep extends StepCore {
-  stage: "check" | "ci" | "deploy";
+  stage: CommandStage;
   command: string;
   exitCode: number | null;
   labels: CheckLabel[];
+  /** 여러 단계에 걸친 명령이면 그 단계들과 명령 전체의 실패 여부. 같은 호출이 단계마다 사건 하나씩 남긴다. */
+  compound?: CompoundCommand;
 }
 
 /**
@@ -699,15 +739,27 @@ function isEditCall(block: ToolCallContent, name: string): boolean {
   return typeof target !== "string" || /^[a-zA-Z]:[\\/]/.test(target) || !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(target);
 }
 
-function readStep(block: ToolCallContent, result: ToolResultMessage | undefined, live: boolean): WorkStep | null {
+function readSteps(block: ToolCallContent, result: ToolResultMessage | undefined, live: boolean): WorkStep[] {
+  const step = readStep(block, result, live);
+  if (Array.isArray(step)) return step;
+  return step ? [step] : [];
+}
+
+function readStep(block: ToolCallContent, result: ToolResultMessage | undefined, live: boolean): WorkStep | WorkStep[] | null {
   if (!block.input || typeof block.input !== "object" || Array.isArray(block.input) || typeof block.toolName !== "string") return null;
   const core = { toolCallId: block.toolCallId, attempt: 0 };
   const pending: StepOutcome = live ? "running" : "unobserved";
   const command = readBashCommand(block);
   if (command !== null) {
-    const judged = judgeCommand(command, result);
-    if (judged === null) return null;
-    return { ...core, stage: judged.stage, command, exitCode: judged.exitCode, labels: judged.labels, outcome: result ? judged.state : pending };
+    return judgeCommand(command, result).map((judged): CommandStep => ({
+      ...core,
+      stage: judged.stage,
+      command,
+      exitCode: judged.exitCode,
+      labels: judged.labels,
+      outcome: result ? judged.state : pending,
+      ...(judged.compound ? { compound: judged.compound } : {}),
+    }));
   }
   // 확장 이름공간(`ext.edit` 등)은 마지막 이름만 본다.
   const name = block.toolName.toLowerCase().split(/[.:/]/).pop() ?? "";
@@ -754,8 +806,11 @@ export interface LoopBack {
   attempt: number;
 }
 
-/** `skipped`: 이번 회차에 뒤 단계가 이미 지나간 빈 단계, 또는 문서만 바꾼 커밋 뒤의 배포(필요 없음). */
-export type StageStatus = "waiting" | "skipped" | StepOutcome;
+/**
+ * `skipped`: 이번 회차에 뒤 단계가 이미 지나간 빈 단계, 문서만 바꾼 커밋 뒤의 배포(필요 없음), 공개 저장소가 바뀌지 않은
+ * 비공개 게시 뒤의 CI(필요 없음, `WorkFlow.publication`). `stale`: 이 단계의 결과가 모두 그 뒤의 수정보다 앞선다.
+ */
+export type StageStatus = "waiting" | "skipped" | "stale" | StepOutcome;
 
 export interface StageView {
   stage: WorkStage;
@@ -772,6 +827,18 @@ export interface NextStage {
   returning: boolean;
 }
 
+/**
+ * 비공개 커밋의 게시가 공개 저장소를 바꾸지 않았다는 관측. 마지막 커밋 뒤 그 커밋의 「Publish public mirror」 실행이 성공했고,
+ * 그 뒤 공개 저장소 `repo`의 `ref`가 커밋 전부터 CI 성공이 기록된 `sha` 그대로였다.
+ */
+export interface PublicationEvidence {
+  repo: string;
+  ref: string;
+  sha: string;
+  /** 게시 실행 id. */
+  runId: string;
+}
+
 export interface WorkFlow {
   steps: WorkStep[];
   /** 지금 회차(1부터). */
@@ -781,10 +848,12 @@ export interface WorkFlow {
   stages: StageView[];
   /** 가장 나중 사건의 단계. 사건이 없으면 null. */
   current: WorkStage | null;
-  /** 지금 회차에서 실패하지 않고 지난 가장 뒤 단계(조사는 모든 회차). 없으면 null. */
+  /** 지금 회차에서 실패하지 않고 마지막 수정 뒤에 지난 가장 뒤 단계(조사는 모든 회차). 없으면 null. */
   reached: WorkStage | null;
   /** 다음 차례 단계. 사건이 없거나 배포까지 지났으면 null. */
   next: NextStage | null;
+  /** CI가 필요 없다는 관측. 있으면 CI 단계는 skipped다. */
+  publication: PublicationEvidence | null;
 }
 
 type VerifyStage = LoopBack["from"];
@@ -817,58 +886,299 @@ export function latestChecks(steps: readonly WorkStep[]): CommandStep[] {
   return [...latest.values()];
 }
 
-/** 단계 상태가 여럿 섞이면 가장 주의가 필요한 것을 보인다. 실패는 다른 검사가 진행 중이어도 가려지지 않는다. */
-const OUTCOME_WEIGHT: Record<StepOutcome, number> = { failed: 5, running: 4, unverified: 3, unobserved: 2, passed: 1, done: 0 };
+/** 여러 단계에 걸친 명령이 실패로 끝난 사건. 어느 단계의 실패인지 모르므로 그 단계를 지난 것으로 치지 않는다. */
+export function isCompoundFailure(step: WorkStep): boolean {
+  return "compound" in step && step.compound?.failed === true;
+}
 
+/** 단계 상태가 여럿 섞이면 가장 주의가 필요한 것을 보인다. 실패는 다른 검사가 진행 중이어도 가려지지 않는다. */
+const STATUS_WEIGHT: Record<StepOutcome | "stale", number> = { failed: 6, running: 5, unverified: 4, unobserved: 3, stale: 2, passed: 1, done: 0 };
+
+/** 단계 상태. 수정 전 통과·완료는 stale로 센다. */
 function stageStatus(stage: WorkStage, steps: readonly WorkStep[]): StageStatus {
   if (steps.length === 0) return "waiting";
   if (stage !== "check") {
     // 다시 돌린 CI·배포·리뷰가 아직 판정 전이면 앞선 실패를 그대로 보인다.
-    let status: StepOutcome = steps[0].outcome;
-    for (const { outcome } of steps.slice(1)) if (status !== "failed" || settles(outcome)) status = outcome;
+    let status: StepOutcome | "stale" = steps[0].stale ? "stale" : steps[0].outcome;
+    for (const step of steps.slice(1)) if (status !== "failed" || settles(step.outcome)) status = step.stale ? "stale" : step.outcome;
     return status;
   }
-  let status: StepOutcome = "done";
-  for (const { outcome } of latestChecks(steps)) if (OUTCOME_WEIGHT[outcome] > OUTCOME_WEIGHT[status]) status = outcome;
+  let status: StepOutcome | "stale" = "done";
+  for (const step of latestChecks(steps)) {
+    const own = step.stale ? "stale" : step.outcome;
+    if (STATUS_WEIGHT[own] > STATUS_WEIGHT[status]) status = own;
+  }
   return status;
+}
+
+/** 마지막 수정 뒤에 실제로 지난 단계인지: 실패·수정 전 결과·여러 단계 명령의 실패가 아닌 사건이 하나라도 있다. */
+function passedSinceEdit(view: StageView): boolean {
+  if (view.status === "waiting" || view.status === "failed" || view.status === "skipped" || view.status === "stale") return false;
+  return view.steps.some((step) => !step.stale && step.outcome !== "failed" && !isCompoundFailure(step));
+}
+
+/* ---------- 비공개 게시와 공개 CI ---------- */
+
+/** 기록된 성공한 CI 실행 하나: 저장소(`owner/name`, 소문자), 실행의 headSha, 기록으로 밝혀진 브랜치와 워크플로 이름(소문자). */
+export interface CiSuccessHead {
+  repo: string;
+  sha: string;
+  branch: string;
+  workflow: string;
+}
+
+const PUBLISH_WORKFLOWS: Record<string, true> = { "publish public mirror": true, "publish-public.yml": true, ".github/workflows/publish-public.yml": true };
+const CI_WORKFLOWS: Record<string, true> = { ci: true, "ci.yml": true, ".github/workflows/ci.yml": true };
+const FULL_SHA = /^[0-9a-f]{40}$/i;
+
+function resultText(result: ToolResultMessage): string {
+  const content: unknown = result.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("\n") : "";
+}
+
+/** 출력에서 줄 하나가 통째로 JSON인 것만 읽어, 객체와 배열 안의 객체를 나온 차례대로. */
+function readJsonObjects(text: string): Record<string, unknown>[] {
+  const objects: Record<string, unknown>[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) objects.push(entry as Record<string, unknown>);
+    }
+  }
+  return objects;
+}
+
+/** 실제로 실행되는 `gh` 명령마다 `gh` 뒤 낱말. `sh -c` 스크립트 안도 본다. */
+function ghInvocations(words: readonly string[], depth = 0): string[][] {
+  const script = readShellScript(words);
+  if (script !== null) return depth < 3 ? parseShell(script).commands.flatMap((command) => ghInvocations(command.words, depth + 1)) : [];
+  const at = programIndex(words);
+  return at >= 0 && basename(words[at]) === "gh" ? [words.slice(at + 1)] : [];
+}
+
+/** `--repo X`·`--repo=X`·`-R X` 같은 옵션 값. */
+function optionValue(args: readonly string[], names: readonly string[]): string | null {
+  for (let i = 0; i < args.length; i += 1) {
+    for (const name of names) {
+      if (args[i] === name) return args[i + 1] ?? null;
+      if (name.startsWith("--") && args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+    }
+  }
+  return null;
+}
+
+const GH_RUN_VALUE_OPTIONS: Record<string, true> = {
+  "-R": true, "--repo": true, "-j": true, "--job": true, "--interval": true, "-i": true, "--json": true, "-q": true, "--jq": true, "-t": true, "--template": true,
+};
+
+/** `gh run <sub> <id>`의 실행 id: 하위 명령 뒤 옵션이 아닌 첫 낱말. 값을 받는 옵션의 값은 건너뛴다. */
+function runIdArgument(args: readonly string[]): string | null {
+  for (let i = 2; i < args.length; i += 1) {
+    if (Object.hasOwn(GH_RUN_VALUE_OPTIONS, args[i])) {
+      i += 1;
+      continue;
+    }
+    if (!args[i].startsWith("-")) return /^\d+$/.test(args[i]) ? args[i] : null;
+  }
+  return null;
+}
+
+const RUN_URL_REPO = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/\d+/i;
+
+interface RunRecord {
+  id: string | null;
+  repo: string | null;
+  sha: string | null;
+  status: unknown;
+  conclusion: unknown;
+  branch: string | null;
+  workflow: string | null;
+}
+
+/**
+ * 성공한 `gh run list|view --json` 출력의 실행들. 실행 저장소는 JSON의 url, 없으면 그 명령에 `gh run` 호출이 하나뿐일 때 그 `-R`.
+ * 워크플로는 JSON의 workflowName, 없으면 그 호출의 `--workflow`. 출력이 어느 호출 것인지 모를 때는 JSON에 실린 값만 쓴다.
+ */
+function readRunRecords(command: string, result: ToolResultMessage | undefined): RunRecord[] {
+  if (!result || result.isError || !/\bgh\b/.test(command) || readExitCode(result) !== 0) return [];
+  const text = resultText(result);
+  if (!text.includes("headSha")) return [];
+  const calls = parseShell(command).commands.flatMap(({ words }) => ghInvocations(words)).filter((args) => args[0] === "run" && (args[1] === "list" || args[1] === "view"));
+  if (calls.length === 0) return [];
+  const sole = calls.length === 1 ? calls[0] : null;
+  return readJsonObjects(text).flatMap((entry): RunRecord[] => {
+    if (typeof entry.headSha !== "string") return [];
+    const url = typeof entry.url === "string" ? RUN_URL_REPO.exec(entry.url)?.[1] ?? null : null;
+    const id = typeof entry.databaseId === "number" || typeof entry.databaseId === "string" ? String(entry.databaseId)
+      : sole?.[1] === "view" ? runIdArgument(sole) : null;
+    return [{
+      id,
+      repo: (url ?? (sole ? optionValue(sole, ["-R", "--repo"]) : null))?.toLowerCase() ?? null,
+      sha: entry.headSha.toLowerCase(),
+      status: entry.status,
+      conclusion: entry.conclusion,
+      branch: typeof entry.headBranch === "string" ? entry.headBranch : sole ? optionValue(sole, ["-b", "--branch"]) : null,
+      workflow: (typeof entry.workflowName === "string" ? entry.workflowName : sole ? optionValue(sole, ["-w", "--workflow"]) : null)?.toLowerCase() ?? null,
+    }];
+  });
+}
+
+/**
+ * bash 호출 하나가 기록한 성공한 CI 실행들. 완료·success이고 저장소·브랜치·워크플로가 기록(JSON이나 그 호출의 `-R`·`--branch`·
+ * `--workflow`)으로 밝혀졌으며 그 워크플로가 CI인 것만이다. 워크플로나 브랜치를 모르면 CI 성공의 증거가 아니다.
+ */
+export function readCiSuccessHeads(block: AssistantContentBlock, result: ToolResultMessage | undefined): CiSuccessHead[] {
+  if (block?.type !== "toolCall") return [];
+  const command = readBashCommand(block);
+  if (command === null) return [];
+  return readRunRecords(command, result).flatMap((run): CiSuccessHead[] => (
+    run.repo && run.sha && run.branch && run.workflow && run.status === "completed" && run.conclusion === "success" && Object.hasOwn(CI_WORKFLOWS, run.workflow)
+      ? [{ repo: run.repo, sha: run.sha, branch: run.branch, workflow: run.workflow }]
+      : []
+  ));
+}
+
+/** 공개 ref 조회의 마지막 관측. 읽을 수 없는 응답도 이전 SHA를 확정 근거로 쓰지 못하게 무효화한다. */
+function readPublicHeads(command: string, result: ToolResultMessage | undefined): { repo: string; ref: string; sha: string | null }[] {
+  const parsed = parseShell(command);
+  const calls = parsed.commands.flatMap(({ words }) => ghInvocations(words)).filter((args) => args[0] === "api");
+  const plain = !parsed.uncertain && parsed.commands.length === 1 && calls.length === 1;
+  const text = result && !result.isError && readExitCode(result) === 0 ? resultText(result).trim() : "";
+  const heads: { repo: string; ref: string; sha: string | null }[] = [];
+  for (const args of calls) {
+    const path = args.slice(1).find((arg) => /^\/?repos\//.test(arg));
+    const match = path ? /^\/?repos\/([^/]+\/[^/]+)\/commits\/([^/?\s]+)$/.exec(path) : null;
+    if (!match) continue;
+    const query = optionValue(args, ["-q", "--jq"]);
+    let value: unknown = null;
+    if (plain && query === ".sha") value = text.split("\n")[0]?.trim();
+    else if (plain && query === null && text.startsWith("{")) {
+      try {
+        // bash 결과의 시간·종료 코드 footer는 JSON 본문 뒤에 붙는다.
+        value = JSON.parse(text.slice(0, text.lastIndexOf("}") + 1)).sha;
+      } catch {
+        // 최신 조회의 SHA를 모르면 이전 일치 결과로 생략하지 않는다.
+      }
+    }
+    const sha = typeof value === "string" && FULL_SHA.test(value) ? value.toLowerCase() : null;
+    heads.push({ repo: match[1].toLowerCase(), ref: match[2], sha });
+  }
+  return heads;
+}
+
+/** 흐름 안에서 차례(블록 순번)와 함께 모은 게시 관련 관측. */
+interface PublicationTrail {
+  /** 게시 워크플로 실행 id → 그 실행이 게시한 커밋, 관측 순번. */
+  publishRuns: Map<string, { sha: string; order: number }>;
+  /** 성공으로 끝난 `gh run watch <id> --exit-status`. */
+  watched: { id: string; order: number }[];
+  heads: { repo: string; ref: string; sha: string | null; order: number }[];
+  ciHeads: (CiSuccessHead & { order: number })[];
+}
+
+function observePublication(trail: PublicationTrail, block: ToolCallContent, result: ToolResultMessage | undefined, order: number) {
+  const command = readBashCommand(block);
+  if (command === null || !command.includes("gh")) return;
+  for (const run of readRunRecords(command, result)) {
+    if (run.id && run.sha && run.workflow && Object.hasOwn(PUBLISH_WORKFLOWS, run.workflow)) trail.publishRuns.set(run.id, { sha: run.sha, order });
+  }
+  for (const head of readCiSuccessHeads(block, result)) trail.ciHeads.push({ ...head, order });
+  for (const head of readPublicHeads(command, result)) trail.heads.push({ ...head, order });
+}
+
+/**
+ * 마지막 커밋 C 뒤에: C를 게시한 「Publish public mirror」 실행(`gh run list|view`가 headSha C로 기록한 id)의
+ * `gh run watch <id> --exit-status`가 성공했고, 그 뒤 공개 저장소·ref의 마지막으로 읽은 head가 C 전에 같은 저장소·브랜치의
+ * CI 성공이 기록된 커밋이면 그 증거. 같은 저장소·ref를 나중에 다시 읽어 다른 커밋이 나왔으면 그 마지막 값만 본다.
+ */
+function findPublication(trail: PublicationTrail, commit: { sha: string; order: number }, prior: readonly CiSuccessHead[]): PublicationEvidence | null {
+  const watch = trail.watched.find(({ id, order }) => {
+    const run = trail.publishRuns.get(id);
+    return order > commit.order && run?.sha === commit.sha && run.order > commit.order && run.order <= order;
+  });
+  if (!watch) return null;
+  const latest = new Map<string, { repo: string; ref: string; sha: string | null }>();
+  for (const head of trail.heads) if (head.order > watch.order) latest.set(`${head.repo}#${head.ref}`, head);
+  const before = [...prior, ...trail.ciHeads.filter((head) => head.order < commit.order)];
+  for (const head of latest.values()) {
+    if (head.sha === null || head.sha === commit.sha) continue;
+    if (before.some((run) => run.repo === head.repo && run.sha === head.sha && run.branch === head.ref)) {
+      return { repo: head.repo, ref: head.ref, sha: head.sha, runId: watch.id };
+    }
+  }
+  return null;
 }
 
 /**
  * 턴 블록을 차례로 읽어 작업 흐름을 만든다. 마지막 수정 뒤에 풀리지 않은 실패(검사 실패, 교차리뷰 지적이나 미해결,
- * CI 실패)가 있는데 다시 수정하면 회차가 하나 늘고 되돌아온 일(loop)이 남는다. `live`는 아직 진행 중인 턴이다 —
- * 결과가 아직 오지 않은 호출을 진행 중으로 본다.
+ * CI 실패)가 있는데 다시 수정하면 회차가 하나 늘고 되돌아온 일(loop)이 남는다. 성공한 직접 수정보다 앞선 통과·완료는
+ * stale이다. `live`는 아직 진행 중인 턴이다 — 결과가 아직 오지 않은 호출을 진행 중으로 본다. `priorCiHeads`는 이 블록들보다
+ * 앞선 기록의 성공한 CI 실행이다(비공개 게시 판정에만 쓴다).
  */
 export function deriveWorkFlow(
   blocks: readonly AssistantContentBlock[],
   toolResults: ReadonlyMap<string, ToolResultMessage>,
   live = false,
+  priorCiHeads: readonly CiSuccessHead[] = [],
 ): WorkFlow {
   const steps: WorkStep[] = [];
   const loops: LoopBack[] = [];
   let attempt = 1;
   let segment = new Map<string, SegmentEntry>();
+  let lastEdit = -1;
+  const stepOrder = new Map<WorkStep, number>();
+  const trail: PublicationTrail = { publishRuns: new Map(), watched: [], heads: [], ciHeads: [] };
   const results: ReadonlyMap<string, ToolResultMessage> = toolResults instanceof Map ? toolResults : new Map();
-  for (const block of Array.isArray(blocks) ? blocks : []) {
-    if (!block || block.type !== "toolCall") continue;
-    const step = readStep(block, results.get(block.toolCallId), live);
-    if (!step) continue;
-    if (step.stage === "edit" && step.outcome === "done" && !step.dispatch) {
-      const failed = latestFailure(segment);
-      if (failed) {
-        loops.push({ from: failed, attempt });
-        attempt += 1;
+  (Array.isArray(blocks) ? blocks : []).forEach((block, order) => {
+    if (!block || block.type !== "toolCall") return;
+    const result = results.get(block.toolCallId);
+    observePublication(trail, block, result, order);
+    for (let step of readSteps(block, result, live)) {
+      if (step.stage === "ci") {
+        const words = parseShell(step.command).commands.flatMap(({ words: command }) => ghInvocations(command));
+        const watch = words.find((args) => args[0] === "run" && args[1] === "watch");
+        const id = watch ? runIdArgument(watch) : null;
+        if (id && step.outcome === "passed") trail.watched.push({ id, order });
+        const query = words.length === 1 && words[0][0] === "run" && (words[0][1] === "list" || words[0][1] === "view") ? words[0] : null;
+        const workflow = query ? optionValue(query, ["-w", "--workflow"])?.toLowerCase() : null;
+        const publishQuery = query && ((workflow && Object.hasOwn(PUBLISH_WORKFLOWS, workflow)) || trail.publishRuns.has(runIdArgument(query) ?? ""));
+        // 게시 실행을 관찰한 것이지 CI를 실행한 것은 아니다. 원 도구 로그와 실패/진행 상태는 조사에 남긴다.
+        if (words.length === 1 && ((id && trail.publishRuns.has(id)) || publishQuery) && !step.compound) {
+          step = { toolCallId: step.toolCallId, attempt: step.attempt, stage: "investigate", outcome: step.outcome === "passed" ? "done" : step.outcome };
+        }
       }
-      segment = new Map();
-    } else if (step.stage === "check" || step.stage === "review" || step.stage === "ci") {
-      const key = step.stage === "check" ? `check:${step.command}` : step.stage;
-      const previous = segment.get(key);
-      if (previous?.outcome !== "failed" || settles(step.outcome)) {
-        segment.set(key, { stage: step.stage, outcome: step.outcome, order: steps.length });
+      if (step.stage === "edit" && step.outcome === "done" && !step.dispatch) {
+        const failed = latestFailure(segment);
+        if (failed) {
+          loops.push({ from: failed, attempt });
+          attempt += 1;
+        }
+        segment = new Map();
+        lastEdit = steps.length;
+      } else if (step.stage === "check" || step.stage === "review" || step.stage === "ci") {
+        const key = step.stage === "check" ? `check:${step.command}` : step.stage;
+        const previous = segment.get(key);
+        if (previous?.outcome !== "failed" || settles(step.outcome)) {
+          segment.set(key, { stage: step.stage, outcome: step.outcome, order: steps.length });
+        }
       }
+      step.attempt = attempt;
+      stepOrder.set(step, order);
+      steps.push(step);
     }
-    step.attempt = attempt;
-    steps.push(step);
-  }
+  });
+  // 성공한 직접 수정보다 앞선 통과·완료는 그 수정본을 보증하지 않는다.
+  steps.forEach((step, index) => {
+    if (index < lastEdit && step.stage !== "investigate" && step.stage !== "edit" && (step.outcome === "passed" || step.outcome === "done")) step.stale = true;
+  });
 
   const stages = WORK_STAGES.map((stage): StageView => {
     const own = steps.filter((step) => step.stage === stage);
@@ -881,25 +1191,37 @@ export function deriveWorkFlow(
     };
   });
 
-  // 이번 회차의 마지막 성공한 커밋이 문서뿐이면 배포할 실행 코드가 없다.
+  // 이번 회차의 마지막 성공한 커밋. 그 뒤에 수정했으면 그 커밋은 마지막 수정본이 아니다.
   const commits = stages[WORK_STAGES.indexOf("commit")].steps.filter((step): step is CommitStep => step.stage === "commit" && step.outcome === "done");
+  const commit = commits.at(-1);
   const deploy = stages[WORK_STAGES.indexOf("deploy")];
-  if (commits.at(-1)?.docsOnly && deploy.status === "waiting") deploy.status = "skipped";
+  // 문서만 바꾼 커밋이면 배포할 실행 코드가 없다.
+  if (commit?.docsOnly && !commit.stale && deploy.status === "waiting") deploy.status = "skipped";
+  let publication = commit && !commit.stale && commit.commit && FULL_SHA.test(commit.commit)
+    ? findPublication(trail, { sha: commit.commit.toLowerCase(), order: stepOrder.get(commit) ?? -1 }, priorCiHeads)
+    : null;
+  const ci = stages[WORK_STAGES.indexOf("ci")];
+  const priorCiOnly = commit && (ci.status === "unverified" || ci.status === "stale") && ci.steps.every((step) => (stepOrder.get(step) ?? Infinity) < (stepOrder.get(commit) ?? -1));
+  if (publication && (ci.status === "waiting" || priorCiOnly)) ci.status = "skipped";
+  else publication = null;
 
   let furthest = -1;
   stages.forEach((view, index) => {
-    if (view.status !== "waiting" && view.status !== "failed" && view.status !== "skipped") furthest = index;
+    if (passedSinceEdit(view)) furthest = index;
   });
   let next: NextStage | null = null;
   if (steps.length > 0) {
     if (latestFailure(segment)) next = { stage: "edit", returning: true };
     // 지난 단계가 모두 실패했으면(커밋만 실패한 턴 등) 그 단계를 다시 할 차례다.
     else if (furthest < 0) next = { stage: stages.find((view) => view.status !== "waiting")?.stage ?? WORK_STAGES[0], returning: false };
-    else if (furthest < WORK_STAGES.length - 1) {
+    else {
       const last = stages[furthest].steps.at(-1);
       // 리뷰어 답을 쓸 수 없던 리뷰는 다시 받을 차례다. 그 결과로 커밋에 넘어가지 않는다.
       if (last?.stage === "review" && last.unusable) next = { stage: "review", returning: false };
-      else if (stages[furthest + 1].status !== "skipped") next = { stage: WORK_STAGES[furthest + 1], returning: false };
+      else {
+        const following = stages.slice(furthest + 1).find((view) => view.status !== "skipped");
+        next = following ? { stage: following.stage, returning: false } : null;
+      }
     }
   }
   // 뒤 단계가 이미 지나간 빈 단계는 대기가 아니라 건너뛴 것이다.
@@ -915,5 +1237,6 @@ export function deriveWorkFlow(
     current: steps.length > 0 ? steps[steps.length - 1].stage : null,
     reached: furthest < 0 ? null : WORK_STAGES[furthest],
     next,
+    publication,
   };
 }

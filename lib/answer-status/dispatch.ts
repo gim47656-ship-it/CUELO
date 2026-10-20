@@ -54,8 +54,35 @@ export interface DispatchMember {
   agent: string | null;
   /** 발주 원문. TASK_TITLE을 여기서만 읽는다. */
   task: string;
+  /** 발주 원문 TASK_GUARD의 WORK_CLASS. 원문에 없으면 null — 제목이나 산문에서 짐작하지 않는다. */
+  workClass: WorkClass | null;
   /** 이 호출의 spawn 결과가 왔는가. 없으면 아직 발주 중이다. */
   spawned: boolean;
+}
+
+/** TASK_GUARD의 WORK_CLASS가 허용하는 값(rule task-guard). */
+export const WORK_CLASSES = ["feature", "maintenance", "diagnostic"] as const;
+export type WorkClass = (typeof WORK_CLASSES)[number];
+
+const GUARD_FIELD = /^[\t ]*([A-Z_]+)[\t ]*:[\t ]*(.*?)[\t ]*$/;
+
+/**
+ * 발주 원문의 TASK_GUARD 블록에서 WORK_CLASS를 읽는다. `TASK_GUARD:` 줄 바로 뒤에 빈 줄 없이 이어진 `필드: 값` 줄만
+ * 블록이다 — 블록 밖이나 다른 필드 값 안의 같은 글자는 읽지 않는다. 허용 값이 아니면 null.
+ */
+export function readWorkClass(task: unknown): WorkClass | null {
+  if (typeof task !== "string") return null;
+  const lines = task.split(/\r?\n/);
+  const marker = lines.findIndex((line) => /^\s*TASK_GUARD\s*:\s*$/.test(line));
+  if (marker < 0) return null;
+  for (let index = marker + 1; index < lines.length; index += 1) {
+    const field = GUARD_FIELD.exec(lines[index]);
+    if (!field) break;
+    if (field[1] !== "WORK_CLASS") continue;
+    const value = field[2].toLowerCase();
+    return (WORK_CLASSES as readonly string[]).includes(value) ? value as WorkClass : null;
+  }
+  return null;
 }
 
 export interface DispatchLedger {
@@ -70,6 +97,8 @@ export interface DispatchLedger {
    * 그 key의 첫 종료 기록만 쓴다 — spawn 시각에서 시작한 실행이 그것이다.
    */
   durations: ReadonlyMap<string, number>;
+  /** 같은 wait 스냅샷에서 동시에 running으로 관측된 발주 쌍. 종료 뒤에도 관측 사실은 남는다. */
+  parallelWith: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export const EMPTY_DISPATCH_LEDGER: DispatchLedger = {
@@ -78,6 +107,7 @@ export const EMPTY_DISPATCH_LEDGER: DispatchLedger = {
   latestByAgent: new Map(),
   spawnedAt: new Map(),
   durations: new Map(),
+  parallelWith: new Map(),
 };
 
 /** 기록에 실린 task 입력·결과·판정·wait 결과의 모양. 쓰는 필드만 `typeof`로 확인해 읽는다. */
@@ -143,6 +173,7 @@ export function readDispatchMembers(call: ToolCallContent, result: ToolResultMes
       agentId,
       agent: readString(spawn?.agent) ?? readString(input?.agent),
       task: readString(spawn?.task) ?? readString(input?.task) ?? "",
+      workClass: readWorkClass(input?.task) ?? readWorkClass(spawn?.task),
       spawned: Boolean(result),
     });
   }
@@ -189,15 +220,21 @@ function readVerdict(result: ToolResultMessage): { key: string; record: Omit<Ver
 const TASK_RESULT_TAG = /<task-result\b([^>]*)>/g;
 const TAG_ATTRIBUTE = /(\w+)="([^"]*)"/g;
 
-/** 발주 원문 대신 남길 제목 한 줄. 카드 제목은 `readExplicitTaskTitle`만 읽으므로 같은 제목이 나온다. */
+/**
+ * 발주 원문 대신 남길 메타데이터 줄. 카드 제목은 `readExplicitTaskTitle`만, 업무 종류는 `readWorkClass`만 읽으므로
+ * 원문과 같은 제목·종류가 나온다. 원문에 없는 줄은 만들지 않는다.
+ */
 function titleLine(task: unknown): string {
   const title = typeof task === "string" ? readExplicitTaskTitle(task) : null;
-  return title ? `TASK_TITLE: ${title}` : "";
+  const workClass = readWorkClass(task);
+  const lines = workClass ? ["TASK_GUARD:", `WORK_CLASS: ${workClass}`] : [];
+  if (title) lines.push(`TASK_TITLE: ${title}`);
+  return lines.join("\n");
 }
 
 /**
  * 압축이 가린 기록 한 건을 원장·dock·발주 카드가 읽는 최소 모양으로 줄인다(`CompactedWork.messages`).
- * user는 본문 없는 턴 경계 마커, assistant는 `task` 호출만(원문은 TASK_TITLE 한 줄), 결과는 원장이
+ * user는 본문 없는 턴 경계 마커, assistant는 `task` 호출만(원문은 WORK_CLASS·TASK_TITLE 메타데이터 줄만), 결과는 원장이
  * 읽는 필드만 남긴다. 이 원장이 읽지 않는 기록이면 null.
  */
 export function reduceDispatchRecord(message: AgentMessage): AgentMessage | null {
@@ -273,6 +310,7 @@ export function buildDispatchLedger(
   const latestByAgent = new Map<string, string>();
   const spawnedAt = new Map<string, number>();
   const durations = new Map<string, number>();
+  const parallelWith = new Map<string, Set<string>>();
 
   const observe = (agentId: string, status: SubagentStatus | null, order: number) => {
     const key = latestByAgent.get(agentId);
@@ -313,11 +351,24 @@ export function buildDispatchLedger(
         return;
       }
       if (message.toolName === "wait") {
+        const running = new Set<string>();
         for (const job of objectEntries<WaitJobShape>((message.details as { jobs?: unknown } | undefined)?.jobs)) {
           if (job.type !== "task") continue;
           const agentId = readString(job.id);
           if (agentId) observe(agentId, normalizeStatus(job.status), order);
           observeDuration(job, agentId);
+          if (agentId && normalizeStatus(job.status) === "running") {
+            const key = latestByAgent.get(agentId);
+            if (key) running.add(key);
+          }
+        }
+        for (const key of running) {
+          for (const other of running) {
+            if (key === other) continue;
+            let peers = parallelWith.get(key);
+            if (!peers) parallelWith.set(key, peers = new Set());
+            peers.add(other);
+          }
         }
       }
       return;
@@ -333,7 +384,7 @@ export function buildDispatchLedger(
     }
   });
 
-  return { verdicts, runs, latestByAgent, spawnedAt, durations };
+  return { verdicts, runs, latestByAgent, spawnedAt, durations, parallelWith };
 }
 
 export type MakerRunState = "dispatching" | "pending" | "running" | "completed" | "failed" | "aborted" | "unobserved";
@@ -348,6 +399,8 @@ export interface MakerPresentation {
   /** 실행 상태의 출처. 미관측이면 null. */
   runSource: "live" | "record" | null;
   verdict: VerdictRecord | null;
+  /** 실제 동시 실행 스냅샷에 함께 등장한 발주 key. 발주 시각·소요로 추정하지 않는다. */
+  observedParallelWith?: ReadonlySet<string>;
 }
 
 /** 이 발주에 속한 실시간 스냅샷. parentToolCallId가 있으면 그것으로만 잇는다. */
@@ -409,6 +462,7 @@ export function presentMaker(
     run,
     runSource,
     verdict: verdicts && verdicts.length > 0 ? verdicts[verdicts.length - 1] : null,
+    observedParallelWith: ledger.parallelWith.get(member.key),
   };
 }
 
