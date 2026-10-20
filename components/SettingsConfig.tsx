@@ -7,6 +7,7 @@ import { PluginsConfig } from "./PluginsConfig";
 import { AccessConfig } from "./AccessConfig";
 import { LiveVoiceConfig } from "./LiveVoiceConfig";
 import { AttachmentSettings } from "./AttachmentSettings";
+import { CharacterModeSettings } from "./CharacterModeSettings";
 import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { SearchableSelect } from "./SearchableSelect";
 import { refreshOmpTheme, useTheme } from "@/hooks/useTheme";
@@ -26,7 +27,7 @@ import type {
 } from "@/lib/settings-api";
 import styles from "./SettingsConfig.module.css";
 
-type SettingsSection = "models" | "themes" | "skills" | "plugins" | "mcp" | "access" | "trust" | "live-voice" | "attachments" | `settings:${string}`;
+type SettingsSection = "models" | "themes" | "skills" | "plugins" | "mcp" | "access" | "trust" | "live-voice" | "attachments" | "characters" | `settings:${string}`;
 
 interface SettingsConfigProps {
   cwd?: string | null;
@@ -49,6 +50,7 @@ const CORE_SECTIONS: Array<{ id: SettingsSection; label: string; labelKey?: stri
   { id: "trust", label: "Project trust", labelKey: "trust.settingsNav", icon: "trust" },
   { id: "live-voice", label: "Call voice", labelKey: "chat.liveVoiceSettingsNav", icon: "liveVoice" },
   { id: "attachments", label: "Attachments", labelKey: "chat.attachmentSettingsNav", icon: "attachments" },
+  { id: "characters", label: "Characters", labelKey: "characterMode.nav", icon: "characters" },
 ];
 
 const ICON_PATHS: Record<string, React.ReactNode> = {
@@ -60,6 +62,7 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
   access: <><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></>,
   trust: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></>,
   liveVoice: <><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></>,
+  characters: <><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
   attachments: <path d="m21 12-8.6 8.6a5 5 0 0 1-7-7l8.5-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/>,
   appearance: <><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></>,
   interaction: <><path d="M4 5h16v11H9l-5 4V5Z"/><path d="M8 9h8m-8 3h5"/></>,
@@ -524,7 +527,9 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
                             ? <LiveVoiceConfig />
                             : section === "attachments"
                               ? <AttachmentSettings />
-                              : renderGenericSettings()}
+                              : section === "characters"
+                                ? <CharacterModeSettings />
+                                : renderGenericSettings()}
         </main>
       </div>
     </div>

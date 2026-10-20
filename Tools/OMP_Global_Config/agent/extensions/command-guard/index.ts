@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import {
-  CHARACTER_TARGETS,
+  characterTarget,
   malformedSummonMarkerReason,
   parseCharacterSummonMarker,
   parseCharacterIntent,
@@ -704,12 +704,17 @@ export default function commandGuard(pi: ExtensionAPI): void {
   // provider/model 오류까지 pending으로 되돌리면 read/todo/진단을 전부 막아 원인 확인도
   // 사용자의 원래 작업 재개도 불가능해진다.
   const restoreRetryableSummons = (claimedAliases: readonly CharacterAlias[]): void => {
-    const retryableAliases = claimedAliases.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
+    // 모드·roster가 바뀌어 지금 target을 풀 수 없는 alias도 버리지 않는다. 아래 fail-closed 검사가 계속 막는다.
+    const retryableAliases = claimedAliases.filter((alias) => characterTarget(alias)?.toolCapable !== false);
     pendingSummons = [
       ...retryableAliases,
       ...pendingSummons.filter((alias) => !retryableAliases.includes(alias)),
     ];
   };
+
+  const unresolvedSummonReason = (aliases: readonly CharacterAlias[]): string =>
+    `[CharacterSummonGuard] ${aliases.join(", ")} 호출을 받은 뒤 캐릭터 모드나 roster가 바뀌어 대상 모델을 확인할 수 없습니다. ` +
+    "다른 도구나 모델로 우회하지 말고, 사용자에게 모드가 바뀌었다고 알린 뒤 다시 호출을 요청받으세요.";
 
   /**
    * task 호출 결과를 TaskBudget과 OwnershipGuard에 함께 반영한다. 해제된 항목은 뜨지 않은 child의 임시
@@ -874,6 +879,8 @@ export default function commandGuard(pi: ExtensionAPI): void {
       }
       bindSession(ctx);
 
+      const unresolvedSummons = pendingSummons.filter((alias) => characterTarget(alias) === undefined);
+      if (unresolvedSummons.length > 0) return { block: true, reason: unresolvedSummonReason(unresolvedSummons) };
       let guardedInput = canonicalInput;
       const claimedAliases: CharacterAlias[] = [];
       if (pendingSummons.length > 0) {
@@ -915,8 +922,11 @@ export default function commandGuard(pi: ExtensionAPI): void {
       return;
     }
 
-    const pendingCapable = pendingSummons.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
-    const pendingWebOnly = pendingSummons.filter((alias) => !CHARACTER_TARGETS[alias].toolCapable);
+    // 호출을 받은 뒤 모드·roster가 바뀌어 alias의 target을 더는 풀 수 없으면 우회하지 않고 막는다(다음 사용자 입력이 새로 정한다).
+    const unresolvedSummons = pendingSummons.filter((alias) => characterTarget(alias) === undefined);
+    if (unresolvedSummons.length > 0) return { block: true, reason: unresolvedSummonReason(unresolvedSummons) };
+    const pendingCapable = pendingSummons.filter((alias) => characterTarget(alias)?.toolCapable === true);
+    const pendingWebOnly = pendingSummons.filter((alias) => characterTarget(alias)?.toolCapable === false);
 
     if (pendingWebOnly.length > 0) {
       if (isToolCallEventType("read", event)) {
@@ -925,12 +935,13 @@ export default function commandGuard(pi: ExtensionAPI): void {
       }
       if (isToolCallEventType<"eval", EvalCallInput>("eval", event)) {
         const code = typeof event.input.code === "string" ? event.input.code : "";
-        const target = CHARACTER_TARGETS["SHION(시온)"].model;
-        if (!code.includes("SHION(시온)") || !code.includes("character-voice")) {
+        const webAlias = pendingWebOnly[0]!;
+        const target = characterTarget(webAlias)!.model;
+        if (!code.includes(webAlias) || !code.includes("character-voice")) {
           return {
             block: true,
             reason:
-              "[CharacterSummonGuard] effective prompt에 SHION(시온)의 `<character-voice>` block을 넣어야 합니다.",
+              `[CharacterSummonGuard] effective prompt에 ${webAlias}의 \`<character-voice>\` block을 넣어야 합니다.`,
           };
         }
         if (!hasOnlyExactCompletionCalls(event.input, target)) {
@@ -944,7 +955,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
         const reason = matchBlockedEvalModelBridge(event.input);
         if (reason) return { block: true, reason };
         summonCalls.set(event.toolCallId, [...pendingWebOnly]);
-        pendingSummons = pendingSummons.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
+        pendingSummons = pendingSummons.filter((alias) => characterTarget(alias)?.toolCapable !== false);
         return;
       }
     }

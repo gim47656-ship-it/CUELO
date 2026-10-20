@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useOfficeCharacters } from "@/hooks/useAccountFaces";
 import { useI18n } from "@/hooks/useI18n";
 import { aliasForSeed, avatarSrcForSeed, providerDisplayName } from "../../lib/hanse-resource-client";
 
@@ -33,7 +34,11 @@ const TILE_TONES = 6;
 const FULL_SIZE = 256;
 
 export function AccountAvatar({ seed, size, provider }: { seed: number; size: number; provider?: string }) {
-  const [failed, setFailed] = useState(false);
+  // 사무실 모드가 켜지면 같은 seed 가 다른 그림을 가리킨다. 실패는 그림 경로별로 기억해 바뀐 그림은 다시 시도한다.
+  useOfficeCharacters();
+  const src = avatarSrcForSeed(seed);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = failedSrc === src;
   const [zoomed, setZoomed] = useState(false);
 
   // 그림이 없는 계정은 이니셜 타일이다. 크게 열어 보여줄 원본이 없으므로 누르는 자리도
@@ -67,13 +72,13 @@ export function AccountAvatar({ seed, size, provider }: { seed: number; size: nu
       >
         <img
           className="account-avatar"
-          src={avatarSrcForSeed(seed)}
+          src={src}
           width={size}
           height={size}
           alt=""
           aria-hidden="true"
           draggable={false}
-          onError={() => setFailed(true)}
+          onError={() => setFailedSrc(src)}
         />
       </button>
       {zoomed && <AccountAvatarDialog seed={seed} provider={provider} onClose={() => setZoomed(false)} />}

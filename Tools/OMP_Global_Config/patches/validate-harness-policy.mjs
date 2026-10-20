@@ -497,6 +497,7 @@ const requiredPolicyShapes = [
   ["mainLane.characterRouting.failure", "string"],
   ["mainLane.characterRouting.conversationalPrecedence", "string"],
   ["mainLane.characterRouting.voiceEnforcement", "string"],
+  ["mainLane.characterRouting.officeMode", "string"],
   ["routing.reviewPacket.acceptanceEvidenceMap", "string"],
   ["routing.reviewPacket.taskProgress.metadataLocation", "string"],
   ["routing.reviewPacket.taskProgress.taskTitle", "string"],
@@ -681,6 +682,7 @@ const characterRoutingKeys = [
   "failure",
   "conversationalPrecedence",
   "voiceEnforcement",
+  "officeMode",
 ];
 // 최종 판정 직전의 stateless 상담 계약. child가 아니라 도구 없는 1회 질의이므로 TaskBudget이
 // 세지 않는다 - 그래서 "판정을 대신 맡기지 않는다"와 "raw를 넣지 않는다"를 이 키집합이 지킨다.

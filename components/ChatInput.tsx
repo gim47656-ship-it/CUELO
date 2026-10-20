@@ -65,12 +65,14 @@ import { FREQUENT_MODEL_MIN_PICKS, modelPickKey, rankFrequentModels, readModelPi
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePopupPlacement } from "@/hooks/usePopupPlacement";
 import { computePopupPlacement, preferredPopupHeight, POPUP_GAP_PX, type PopupSide } from "@/lib/popup-placement";
+import { useOfficeCharacters } from "@/hooks/useAccountFaces";
 import { useI18n } from "@/hooks/useI18n";
 import { PRESET_DEFAULT, PRESET_FULL } from "@/lib/tool-presets";
 import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
 import {
   MAIN_PRESETS,
   avatarSrcForSeed,
+  displayAlias,
   mainPresetSelection,
   type MainPresetSelection,
 } from "@/lib/hanse-resource-client";
@@ -660,6 +662,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onLiveTranscriptPersisted,
 }: Props, ref) {
   const { t } = useI18n();
+  // 사무실 모드에서는 openai-codex 자리의 이름과 얼굴이 바뀐다.
+  useOfficeCharacters();
   const { st } = useAnswerStatusText();
   const hasQueuedDelivery = deliveryRows.some((row) => row.removable);
   const isMobile = useIsMobile();
@@ -2357,7 +2361,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
                                 : <span style={{ width: 10, flexShrink: 0 }} />}
                               <img className="account-avatar" src={avatarSrcForSeed(entry.seed)} width={20} height={20} alt="" aria-hidden="true" draggable={false} />
-                              <span>{entry.alias}</span>
+                              <span>{displayAlias(entry.alias)}</span>
                               <span style={{
                                 marginLeft: "auto",
                                 paddingLeft: 12,

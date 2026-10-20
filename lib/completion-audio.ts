@@ -109,6 +109,9 @@ export const CUE_MANIFEST_PATH = "/audio/completion/voices.json";
 /** 매니페스트의 `clips[].file`·`stickers[].file`이 각각 어디 기준 상대 경로인지. */
 const VOICE_ROOT = "/audio/completion/";
 const STICKER_ROOT = "/stickers/";
+/** 사무실 모드 매니페스트는 음성·스티커 모두 비공개 프로필을 서빙하는 이 라우트 기준 상대 경로다. */
+export const OFFICE_CUE_ROOT = "/api/office-characters/";
+const DEFAULT_CUE_ROOTS = { voice: VOICE_ROOT, sticker: STICKER_ROOT };
 
 /** 태그가 없는 옛 항목은 완료 대사로 본다. */
 const DEFAULT_CUE_TAG: CueTag = "done";
@@ -191,7 +194,7 @@ function readCueCaptions(entries: unknown): Map<CueTag, string[]> {
  * 매니페스트를 캐릭터별 태그 세트로 읽는다. 형식이 어긋난 항목은 건너뛰고 나머지를 살린다 —
  * 자산 하나가 잘못 적혔다고 그 캐릭터의 다른 대사까지 잃을 이유가 없다.
  */
-export function parseCueManifest(raw: unknown): CueManifest {
+export function parseCueManifest(raw: unknown, roots: { voice: string; sticker: string } = DEFAULT_CUE_ROOTS): CueManifest {
   const manifest = new Map<string, ReadonlyMap<CueTag, CueSet>>();
   if (typeof raw !== "object" || raw === null) return manifest;
   const { characters } = raw as { characters?: unknown };
@@ -202,8 +205,8 @@ export function parseCueManifest(raw: unknown): CueManifest {
     const { id, clips, stickers, captions } = character as { id?: unknown; clips?: unknown; stickers?: unknown; captions?: unknown };
     if (typeof id !== "string" || id === "") continue;
 
-    const voices = readCueFiles(clips, VOICE_ROOT);
-    const stickerFiles = readCueFiles(stickers, STICKER_ROOT);
+    const voices = readCueFiles(clips, roots.voice);
+    const stickerFiles = readCueFiles(stickers, roots.sticker);
     const captionLines = readCueCaptions(captions);
     const sets = new Map<CueTag, CueSet>();
     for (const tag of CUE_TAGS) {
@@ -232,6 +235,11 @@ export function cueSetFor(
 ): CueSet | null {
   const characterId = characterIdForAlias(alias);
   if (!characterId) return null;
+  return manifest.get(characterId)?.get(tag) ?? null;
+}
+
+/** 별칭이 아니라 캐릭터 id를 이미 아는 경우(사무실 캐릭터). */
+export function cueSetForId(manifest: CueManifest, characterId: string, tag: CueTag): CueSet | null {
   return manifest.get(characterId)?.get(tag) ?? null;
 }
 

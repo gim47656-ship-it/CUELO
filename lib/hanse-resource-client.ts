@@ -1,3 +1,5 @@
+import { OFFICE_CUE_ROOT, parseCueManifest, type CueManifest } from "./completion-audio";
+
 export const HANSE_RESOURCE_ORIGIN = "/api/sidecars/resource";
 export const USAGE_POLL_INTERVAL_MS = 60_000;
 export const MODEL_REQUEST_TIMEOUT_MS = 120_000;
@@ -225,7 +227,7 @@ export const ACCOUNT_FACES = [
 
 export interface CharacterRosterEntry {
   seed: number;
-  alias: (typeof ACCOUNT_FACES)[number]["alias"];
+  alias: string;
   provider: string;
   model: string;
   oauthPosition?: 0 | 1;
@@ -324,7 +326,7 @@ export const MAIN_PRESETS: readonly CharacterRosterEntry[] = CHARACTER_ROSTER.fi
  * 계정 자리(`oauthPosition`)는 계정이 여럿인 provider에서만 있다.
  */
 export interface MainPresetSelection {
-  alias: CharacterRosterEntry["alias"];
+  alias: string;
   provider: string;
   modelId: string;
   oauthPosition?: 0 | 1;
@@ -338,6 +340,167 @@ export function mainPresetSelection(entry: CharacterRosterEntry): MainPresetSele
     modelId: entry.model,
     ...(entry.oauthPosition !== undefined ? { oauthPosition: entry.oauthPosition } : {}),
   };
+}
+
+/**
+ * 사무실 모드의 캐릭터 대체. 서버가 「기본 / 사무실 모드」와 비공개 프로필의 로스터를 알려 주면,
+ * 로스터가 가리킨 자리(openai-codex 의 YUKI)만 그 캐릭터의 이름·얼굴·호출 문구로 바뀌고
+ * 나머지 자리는 그대로다. 기본 모드·로스터 없음·요청 실패에서는 아래 모든 함수가 예전과 같은
+ * 값(같은 객체)을 돌려준다. 얼굴과 이름은 이 저장소 한 곳에서 같이 나오므로 어긋나지 않는다.
+ */
+export interface OfficeSeat {
+  /** 대신 앉는 기본 자리의 별칭(`YUKI(유키)`). */
+  seat: string;
+  id: string;
+  alias: string;
+  names: readonly string[];
+  faceUrl: string;
+  voice: { temperament: string; expression: string };
+  /** `parseCueManifest(manifest, { voice: OFFICE_CUE_ROOT, sticker: OFFICE_CUE_ROOT })` 로 읽는 원본. */
+  manifest: unknown;
+}
+
+export interface OfficeCharactersState {
+  mode: "default" | "office";
+  rosterAvailable: boolean;
+  seats: readonly OfficeSeat[];
+}
+
+export const DEFAULT_OFFICE_STATE: OfficeCharactersState = { mode: "default", rosterAvailable: false, seats: [] };
+
+let officeState = DEFAULT_OFFICE_STATE;
+/** 자리 번호 → 대체 캐릭터. 상태가 바뀔 때만 다시 만들어 얼굴 객체가 스냅샷으로 안정적이다. */
+let officeBySlot: ReadonlyMap<number, OfficeSeat> = new Map();
+let officeProviderFaces: ReadonlyMap<string, AccountFace> = new Map();
+let officeRoster: readonly CharacterRosterEntry[] = CHARACTER_ROSTER;
+const officeListeners = new Set<() => void>();
+let officeLoad: Promise<void> | null = null;
+let officeSignature: string | null = null;
+let officeRefreshInstalled = false;
+
+/** 받침이 있으면 「으로」, 없거나 ㄹ 받침이면 「로」. */
+function withDirectionalParticle(name: string): string {
+  const code = name.charCodeAt(name.length - 1) - 0xac00;
+  const jongseong = code >= 0 && code <= 11171 ? code % 28 : 0;
+  return `${name}${jongseong === 0 || jongseong === 8 ? "로" : "으로"}`;
+}
+
+function officeRosterEntry(base: CharacterRosterEntry, seat: OfficeSeat): CharacterRosterEntry {
+  const callName = seat.names.findLast((name) => /[가-힣]/.test(name)) ?? seat.names[0] ?? seat.alias.split("(", 1)[0];
+  return {
+    ...base,
+    alias: seat.alias,
+    voice: seat.voice.temperament.split(/(?<=[.。])\s/, 1)[0].replace(/[.。]$/, ""),
+    summonExample: `${callName} 불러와`,
+    switchExample: `${withDirectionalParticle(callName)} 교체해`,
+  };
+}
+
+/** 서버가 알려 준 상태를 반영한다. 기본 모드면 아무것도 대체하지 않는다. */
+export function applyOfficeCharacters(next: OfficeCharactersState): void {
+  // 서버가 이미 거르지만, 기본 자리의 별칭을 쓰는 항목은 여기서도 버려 어떤 기본 자리도 가로채지 못하게 한다.
+  const seats = next.mode === "office"
+    ? next.seats.filter((seat) => !ACCOUNT_FACES.some((face) => face.alias === seat.alias))
+    : [];
+  const signature = JSON.stringify([next.mode, next.rosterAvailable, seats]);
+  if (signature === officeSignature) return;
+  officeSignature = signature;
+  officeState = { ...next, seats };
+  officeBySlot = new Map(seats.flatMap((seat) => {
+    const slot = ACCOUNT_FACES.findIndex((face) => face.alias === seat.seat);
+    return slot >= 0 ? [[slot, seat] as const] : [];
+  }));
+  officeProviderFaces = new Map([...officeBySlot].flatMap(([slot, seat]) => {
+    const face = ACCOUNT_FACES[slot];
+    return "provider" in face ? [[face.provider, { seed: slot, alias: seat.alias }] as const] : [];
+  }));
+  officeRoster = officeBySlot.size === 0
+    ? CHARACTER_ROSTER
+    : CHARACTER_ROSTER.map((entry) => {
+      const seat = officeBySlot.get(ACCOUNT_FACES.findIndex((face) => face.alias === entry.alias));
+      return seat ? officeRosterEntry(entry, seat) : entry;
+    });
+  for (const listener of officeListeners) listener();
+}
+
+export function getOfficeCharacters(): OfficeCharactersState {
+  return officeState;
+}
+
+export function subscribeOfficeCharacters(listener: () => void): () => void {
+  officeListeners.add(listener);
+  return () => {
+    officeListeners.delete(listener);
+  };
+}
+
+/** 사무실 캐릭터 상태를 읽어 반영한다. 실패하면 지금 상태를 그대로 둔다 — 기본 화면이 계속 동작한다. */
+export async function loadOfficeCharacters(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const response = await fetchImpl("/api/character-mode", { cache: "no-store" });
+    if (!response.ok) return false;
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null) return false;
+    const { mode, rosterAvailable, seats } = body as Partial<OfficeCharactersState>;
+    applyOfficeCharacters({
+      mode: mode === "office" ? "office" : "default",
+      rosterAvailable: rosterAvailable === true,
+      seats: Array.isArray(seats) ? seats : [],
+    });
+    return true;
+  } catch {
+    // 장식이다. 기본 캐릭터로 남는다.
+    return false;
+  }
+}
+
+/**
+ * 화면이 뜰 때 한 번 받고, 창이 다시 보이거나 포커스를 받을 때마다 다시 받는다 — 다른 창이나
+ * 설정 화면에서 서버의 모드를 바꿨을 때 열려 있던 클라이언트가 따라온다. 첫 요청이 실패해도
+ * 그것을 최종으로 굳히지 않는다. 상태가 같으면 `applyOfficeCharacters`가 아무도 다시 그리지 않는다.
+ */
+export function ensureOfficeCharactersLoaded(): Promise<void> {
+  if (!officeRefreshInstalled && typeof window !== "undefined") {
+    officeRefreshInstalled = true;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadOfficeCharacters();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+  }
+  if (officeLoad === null) {
+    officeLoad = loadOfficeCharacters().then((loaded) => {
+      if (!loaded) officeLoad = null;
+    });
+  }
+  return officeLoad;
+}
+
+/** 사무실 캐릭터의 음성·스티커 목록. 같은 자리 객체에는 같은 결과를 돌려준다. */
+const officeCueManifests = new WeakMap<OfficeSeat, CueManifest>();
+export function officeCueManifest(seat: OfficeSeat): CueManifest {
+  let manifest = officeCueManifests.get(seat);
+  if (!manifest) {
+    manifest = parseCueManifest(seat.manifest, { voice: OFFICE_CUE_ROOT, sticker: OFFICE_CUE_ROOT });
+    officeCueManifests.set(seat, manifest);
+  }
+  return manifest;
+}
+
+/** 별칭이 지금 대체 중인 자리(기본 별칭이든 사무실 별칭이든)를 가리키면 그 캐릭터. */
+export function officeSeatForAlias(alias: string | null | undefined): OfficeSeat | null {
+  if (!alias) return null;
+  return officeState.seats.find((seat) => seat.seat === alias || seat.alias === alias) ?? null;
+}
+
+/** 화면에 쓸 별칭. 대체 중인 자리의 기본 별칭만 사무실 별칭으로 바뀌고 나머지는 그대로다. */
+export function displayAlias(alias: string): string {
+  return officeState.seats.find((seat) => seat.seat === alias)?.alias ?? alias;
+}
+
+/** 지금 화면에 쓸 호출 가능 캐릭터 목록. 대체가 없으면 `CHARACTER_ROSTER` 그 자체다. */
+export function characterRoster(): readonly CharacterRosterEntry[] {
+  return officeRoster;
 }
 
 /** 순서대로 나눠 쓰는 자리의 수. 예약 얼굴을 뺀 앞쪽 풀이다. */
@@ -372,17 +535,19 @@ function faceSlot(seed: number): number {
  * 그리지 않는다. 같은 provider 에는 늘 같은 객체를 돌려준다.
  */
 export function providerAccountFace(provider: string): AccountFace | null {
-  return PROVIDER_FACES.get(provider) ?? null;
+  return officeProviderFaces.get(provider) ?? PROVIDER_FACES.get(provider) ?? null;
 }
 
 /** 그 자리의 별칭. 배정된 seed 로 부르면 화면에 보이는 이름과 항상 같다. */
 export function aliasForSeed(seed: number): string {
-  return ACCOUNT_FACES[faceSlot(seed)].alias;
+  const slot = faceSlot(seed);
+  return officeBySlot.get(slot)?.alias ?? ACCOUNT_FACES[slot].alias;
 }
 
 /** 그 별칭과 짝인 그림의 경로. 이름과 얼굴은 같은 자리에서 나오므로 늘 함께 움직인다. */
 export function avatarSrcForSeed(seed: number): string {
-  return `/avatars/${ACCOUNT_FACES[faceSlot(seed)].file}`;
+  const slot = faceSlot(seed);
+  return officeBySlot.get(slot)?.faceUrl ?? `/avatars/${ACCOUNT_FACES[slot].file}`;
 }
 
 /** 첫 글자와 끝 글자만 남긴다. 1~2 글자는 끝 글자도 남기지 않는다. */
@@ -461,7 +626,7 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
     const masked = raw.length > 0 ? maskAccountIdentifier(raw) : "";
 
     const reserved = reservedSlot(report.provider);
-    if (reserved >= 0) return { seed: reserved, alias: ACCOUNT_FACES[reserved].alias, masked, raw };
+    if (reserved >= 0) return { seed: reserved, alias: aliasForSeed(reserved), masked, raw };
 
     let position = report.oauthPosition!;
     if (!Number.isSafeInteger(position) || position < 0) {

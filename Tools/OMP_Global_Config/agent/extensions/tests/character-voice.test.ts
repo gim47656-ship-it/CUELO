@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // 이 회귀는 설치된(또는 격리 패치된) core가 실제로 조립하는 system prompt를 검사한다.
@@ -877,5 +877,218 @@ describe("character voice identity", () => {
       "set:anthropic/claude-opus-5-5",
       "pin:13:exact:MIO(미오)",
     ]);
+  });
+});
+
+// 사무실 모드: 모드 파일 + roster를 임시 agentDir에서 읽는다. 이름은 가상이며 실존 인물과 무관하다.
+const OFFICE_ALIAS = "TESTA(테스타)";
+const OFFICE_ROSTER = {
+  seats: {
+    "YUKI(유키)": {
+      id: "testa",
+      face: "testa.png",
+      alias: OFFICE_ALIAS,
+      names: ["testa", "테스타"],
+      voice: { temperament: "FIXTURE-TEMPERAMENT 느긋하고 정리 잘하는 선배형", expression: "FIXTURE-EXPRESSION 낮은 목소리의 반말" },
+    },
+  },
+};
+
+async function withOfficeProfile<T>(
+  profile: { mode?: unknown; roster?: unknown; rosterRaw?: string; noFace?: boolean },
+  run: (dir: string) => Promise<T> | T,
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "office-mode-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    if (profile.mode !== undefined) writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: profile.mode }));
+    if (profile.roster !== undefined || profile.rosterRaw !== undefined) {
+      mkdirSync(join(dir, "characters-office"));
+      writeFileSync(join(dir, "characters-office", "roster.json"), profile.rosterRaw ?? JSON.stringify(profile.roster));
+      if (!profile.noFace) writeFileSync(join(dir, "characters-office", "testa.png"), "png");
+    }
+    return await run(dir);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("office mode character seat", () => {
+  test("openai-codex seat renders the roster voice in the provider request", async () => {
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, async () => {
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+      const block = renderCharacterVoice(OFFICE_ALIAS);
+      expect(block).toContain(`<character-voice alias="${OFFICE_ALIAS}">`);
+      expect(block).toContain("FIXTURE-TEMPERAMENT");
+      expect(block).toContain("FIXTURE-EXPRESSION");
+      expect(block).not.toContain("YUKI");
+      const harness = createRuntimeHarness();
+      const result = JSON.stringify(
+        await harness.emit("before_provider_request", {
+          type: "before_provider_request",
+          payload: { messages: [], instructions: "base" },
+        }),
+      );
+      expect(result).toContain(OFFICE_ALIAS);
+      expect(result).not.toContain("YUKI");
+      // 다른 6자리는 사무실 모드에서도 기본이다.
+      expect(characterForProvider("hive")).toBe("ISANA(이사나)");
+      expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
+    });
+  });
+
+  test("summon by the roster name emits a marker with the roster alias and the seat model", async () => {
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, () => {
+      const intent = parseCharacterIntent("테스타 불러와");
+      expect(intent).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
+      expect(parseCharacterIntent("testa 호출해")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
+      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6-astra"]`;
+      const routing = renderCharacterSummonRouting([OFFICE_ALIAS]);
+      expect(routing).toContain(`[character-summon-intent alias="${OFFICE_ALIAS}"]`);
+      expect(routing).toContain("FIXTURE-TEMPERAMENT");
+      expect(renderCharacterSummonRouting([OFFICE_ALIAS, "ISANA(이사나)"])).toContain(marker);
+      expect(buildCharacterSummonBrief("인사한다.", OFFICE_ALIAS).startsWith(marker)).toBe(true);
+      expect(parseCharacterSummonDirectives(routing)).toEqual([OFFICE_ALIAS]);
+      const rewritten = rewriteTaskInputForCharacterSummon({ agent: "maker", task: `${marker}\n인사한다.` }, [OFFICE_ALIAS]);
+      expect(rewritten.ok).toBe(true);
+      expect(JSON.stringify(rewritten)).toContain("FIXTURE-TEMPERAMENT");
+    });
+  });
+
+  test("switch by the roster name sets the seat model and the roster voice", async () => {
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, async () => {
+      expect(parseCharacterIntent("테스타로 교체해")).toEqual({ kind: "switch", alias: OFFICE_ALIAS });
+      const harness = createRuntimeHarness();
+      harness.selectModel("anthropic/claude-opus-5-5");
+      const result = await harness.emit("input", { type: "input", text: "테스타로 교체해", source: "rpc" });
+      expect(harness.calls).toContain("set:openai-codex/gpt-6-astra");
+      expect(JSON.stringify(result)).toContain(OFFICE_ALIAS);
+      const wire = await harness.emit("before_provider_request", {
+        type: "before_provider_request",
+        payload: { messages: [], instructions: "base" },
+      });
+      expect(JSON.stringify(wire)).toContain(`alias=\\"${OFFICE_ALIAS}\\"`);
+    });
+  });
+
+  test("the seat's default name still resolves to the roster seat", async () => {
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, () => {
+      expect(parseCharacterIntent("유키 불러와")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
+      expect(parseCharacterIntent("yuki로 교체해")).toEqual({ kind: "switch", alias: OFFICE_ALIAS });
+      expect(parseCharacterSummonDirectives('[character-summon-intent alias="YUKI(유키)"]')).toEqual([OFFICE_ALIAS]);
+    });
+  });
+
+  test("an entry whose names take another seat's default name is invalid and the seat stays default", async () => {
+    const hijack = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], names: ["미오", "테스타"] } } };
+    await withOfficeProfile({ mode: "office", roster: hijack }, () => {
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+      expect(parseCharacterIntent("미오 불러와")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
+      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
+    });
+    const ownName = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], names: ["유키", "테스타"] } } };
+    await withOfficeProfile({ mode: "office", roster: ownName }, () => {
+      expect(parseCharacterIntent("테스타 불러와")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
+    });
+  });
+
+  test("an entry breaking any part of the validity rule keeps the seat default without throwing", async () => {
+    const entry = OFFICE_ROSTER.seats["YUKI(유키)"];
+    const withSeat = (patch: Record<string, unknown>) => ({ seats: { "YUKI(유키)": { ...entry, ...patch } } });
+    const withoutKey = (key: string) => {
+      const { [key]: _omitted, ...rest } = entry as Record<string, unknown>;
+      return { seats: { "YUKI(유키)": rest } };
+    };
+    const profiles: Array<{ mode?: unknown; roster?: unknown; rosterRaw?: string; noFace?: boolean }> = [
+      { mode: "office" },
+      { mode: "office", rosterRaw: "{not json" },
+      { mode: "office", roster: { seats: {} } },
+      { mode: "office", roster: { seats: { "NOBODY(없음)": entry } } },
+      { mode: "office", roster: { seats: { "ISANA(이사나)": entry } } },
+      { mode: "broken", roster: OFFICE_ROSTER },
+      { mode: "office", roster: withoutKey("id") },
+      { mode: "office", roster: withSeat({ id: "Bad_Id" }) },
+      { mode: "office", roster: withoutKey("names") },
+      { mode: "office", roster: withSeat({ names: [] }) },
+      { mode: "office", roster: withSeat({ names: ["테스타", " "] }) },
+      { mode: "office", roster: withSeat({ names: ["테스타", "MIO(미오)"] }) },
+      { mode: "office", roster: withSeat({ alias: "RIN(린)" }) },
+      { mode: "office", roster: withSeat({ alias: 'BAD"(테스타)' }) },
+      { mode: "office", roster: withSeat({ alias: "TES'TA(테스타)" }) },
+      { mode: "office", roster: withSeat({ alias: "TES`TA(테스타)" }) },
+      { mode: "office", roster: withSeat({ alias: "TES\u2019TA(테스타)" }) },
+      { mode: "office", roster: withSeat({ alias: `${"A".repeat(65)}` }) },
+      { mode: "office", roster: withSeat({ id: " Bad Id " }) },
+      { mode: "office", roster: withoutKey("face") },
+      { mode: "office", roster: withSeat({ face: "../outside.png" }) },
+      { mode: "office", roster: withSeat({ face: "/etc/passwd" }) },
+      { mode: "office", roster: withSeat({ face: "missing.png" }) },
+      { mode: "office", roster: OFFICE_ROSTER, noFace: true },
+      { mode: "office", roster: withSeat({ voice: { temperament: "x", expression: "" } }) },
+    ];
+    for (const profile of profiles) {
+      await withOfficeProfile(profile, () => {
+        expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+        expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
+        expect(parseCharacterIntent("유키 불러와")).toEqual({ kind: "summon", aliases: ["YUKI(유키)"] });
+      });
+    }
+  });
+
+  test("a face that resolves outside characters-office through a symlink is rejected, and a later deleted face invalidates the entry", async () => {
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER, noFace: true }, (dir) => {
+      const outside = join(dir, "outside.png");
+      writeFileSync(outside, "png");
+      symlinkSync(outside, join(dir, "characters-office", "testa.png"));
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+      rmSync(join(dir, "characters-office", "testa.png"));
+      writeFileSync(join(dir, "characters-office", "testa.png"), "png");
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+      rmSync(join(dir, "characters-office", "testa.png"));
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+    });
+  });
+
+  test("a padded id is trimmed before the id rule, and a roster.json symlinked outside characters-office gives no office state", async () => {
+    const padded = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], id: "  testa  ", alias: `  ${OFFICE_ALIAS}  ` } } };
+    await withOfficeProfile({ mode: "office", roster: padded }, () => {
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+    });
+    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, (dir) => {
+      const rosterPath = join(dir, "characters-office", "roster.json");
+      const outside = join(dir, "roster-outside.json");
+      writeFileSync(outside, JSON.stringify(OFFICE_ROSTER));
+      rmSync(rosterPath);
+      symlinkSync(outside, rosterPath);
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
+      rmSync(rosterPath);
+      writeFileSync(rosterPath, JSON.stringify(OFFICE_ROSTER, null, 1));
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+    });
+  });
+
+  test("default mode ignores a present roster and keeps the built-in output", async () => {
+    await withOfficeProfile({ mode: "default", roster: OFFICE_ROSTER }, () => {
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
+      expect(renderCharacterVoice("YUKI(유키)")).toContain(CHARACTER_VOICES["YUKI(유키)"].temperament);
+      expect(buildCharacterSummonBrief("인사한다.", "YUKI(유키)").startsWith(
+        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]',
+      )).toBe(true);
+    });
+  });
+
+  test("switching the mode file takes effect on the next request", async () => {
+    await withOfficeProfile({ mode: "default", roster: OFFICE_ROSTER }, (dir) => {
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+      writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "office" }));
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+      writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "default" }));
+      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+    });
   });
 });

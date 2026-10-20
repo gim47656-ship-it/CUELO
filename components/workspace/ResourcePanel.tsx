@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { ActionButton, Tabs } from "@seed-design/react";
 import type { UsageSnapshotController } from "@/hooks/useUsageSnapshot";
+import { useOfficeCharacters } from "@/hooks/useAccountFaces";
 import { useNow } from "@/hooks/useNow";
 import type { ApiKeyProviderListing, OAuthProviderListing } from "@/lib/provider-listing";
 import {
   accountIdentities,
   acquireCredentialAction,
   createSessionAccountPoller,
-  CHARACTER_ROSTER,
+  characterRoster,
   limitExhausted,
   loadModelStats,
   providerDisplayName,
@@ -851,6 +852,8 @@ export function UsageView({
 }) {
   // 리셋·만료 카운트다운은 분 단위라 10초 시계로 충분하다.
   const now = useNow(10_000);
+  // 사무실 모드가 바뀌면 계정 별칭을 다시 배정해야 한다.
+  useOfficeCharacters();
   const data = state.data;
   const activeCredentialId = currentCredentialId(accountState);
   // 별칭·얼굴은 화면에 뜬 계정 전체를 한 번에 보고 배정해야 서로 겹치지 않는다.
@@ -1016,6 +1019,7 @@ export function CharacterRosterView({ reports, providerConnections }: {
   reports?: readonly UsageReport[];
   providerConnections?: ReadonlyMap<string, boolean> | null;
 }) {
+  useOfficeCharacters();
   return (
     <>
       <section className="character-roster-intro" aria-labelledby="character-roster-heading">
@@ -1026,7 +1030,7 @@ export function CharacterRosterView({ reports, providerConnections }: {
         </p>
       </section>
       <div className="character-roster" role="list" aria-label="호출 가능한 캐릭터 목록">
-        {CHARACTER_ROSTER.map((character) => {
+        {characterRoster().map((character) => {
           const headingId = `character-roster-${character.seed}`;
           const statusId = `character-roster-${character.seed}-status`;
           const model = `${character.provider}/${character.model}`;

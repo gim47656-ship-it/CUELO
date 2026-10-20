@@ -1,6 +1,9 @@
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-export type CharacterAlias =
+export type BuiltinCharacterAlias =
   | "YUKI(유키)"
   | "ISANA(이사나)"
   | "MIO(미오)"
@@ -8,6 +11,9 @@ export type CharacterAlias =
   | "NOVA(노바)"
   | "SHION(시온)"
   | "HIKARI(히카리)";
+
+/** 내장 7개 + 사무실 모드가 PC 프로필(roster)에서 자리마다 들여오는 동적 alias. */
+export type CharacterAlias = BuiltinCharacterAlias | (string & {});
 
 interface OAuthAccountLike {
   position?: number;
@@ -42,7 +48,7 @@ type CharacterSwitchResult =
   | { ok: true; target: CharacterTarget }
   | { ok: false; reason: string };
 
-export const CHARACTER_VOICES: Readonly<Record<CharacterAlias, CharacterVoice>> = {
+export const CHARACTER_VOICES: Readonly<Record<BuiltinCharacterAlias, CharacterVoice>> = {
   "YUKI(유키)": {
     temperament: "판단이 빠르고 자신감이 있으며, 정확한 결론 뒤에 영리한 장난기가 비치는 지휘형",
     expression: "짧고 선명한 결론, 재치 있는 반응, 필요할 때만 부드럽게 풀어 주는 리듬",
@@ -73,7 +79,7 @@ export const CHARACTER_VOICES: Readonly<Record<CharacterAlias, CharacterVoice>> 
   },
 };
 
-export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>> = {
+export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, CharacterTarget>> = {
   "YUKI(유키)": {
     model: "openai-codex/gpt-6-astra",
     toolCapable: true,
@@ -106,7 +112,7 @@ export const CHARACTER_TARGETS: Readonly<Record<CharacterAlias, CharacterTarget>
   },
 };
 
-const PROVIDER_CHARACTER: Readonly<Record<string, CharacterAlias>> = {
+const PROVIDER_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "openai-codex": "YUKI(유키)",
   hive: "ISANA(이사나)",
   "opencode-go": "NOVA(노바)",
@@ -114,7 +120,7 @@ const PROVIDER_CHARACTER: Readonly<Record<string, CharacterAlias>> = {
   "google-antigravity": "HIKARI(히카리)",
 };
 
-const NAME_TO_ALIAS: Readonly<Record<string, CharacterAlias>> = {
+const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {
   yuki: "YUKI(유키)",
   유키: "YUKI(유키)",
   isana: "ISANA(이사나)",
@@ -131,7 +137,7 @@ const NAME_TO_ALIAS: Readonly<Record<string, CharacterAlias>> = {
   히카리: "HIKARI(히카리)",
 };
 
-const ANTHROPIC_POSITION_CHARACTER: Readonly<Record<number, CharacterAlias>> = {
+const ANTHROPIC_POSITION_CHARACTER: Readonly<Record<number, BuiltinCharacterAlias>> = {
   0: "RIN(린)",
   1: "MIO(미오)",
 };
@@ -143,32 +149,238 @@ const SUMMON_MARKER = /\[character-summon\s+alias="([^"]+)"\s+model="([^"]+)"(?:
 const SUMMON_MARKER_GLOBAL = /\n?\[character-summon\s+alias="[^"]+"\s+model="[^"]+"(?:\s+oauth-position="\d+")?\]\n?/gu;
 const SUMMON_DIRECTIVE = /^\[character-summon-intent alias="([^"]+)"\]/gmu;
 const CHARACTER_NAME_PATTERN = "(유키|yuki|이사나|isana|미오|mio|린|rin|노바|nova|시온|shion|히카리|hikari)";
-const CHARACTER_NAME_IN_COMMAND = new RegExp(
-  `(?<![가-힣A-Za-z0-9])${CHARACTER_NAME_PATTERN}(?=(?:으로|로|을|를|와|과|랑|이랑|하고|이|가|은|는|도)?(?:\\s|$|[.!?,]|교체|호출|불러|소환|${CHARACTER_NAME_PATTERN}))`,
-  "giu",
-);
 const SUMMON_ACTION = /(?:호출|불러|소환)/u;
 // 교체 명령은 명령·청유형 어미 뒤에서 절이 끝나는 직접 발화만 인정한다. 어미 뒤에는 문장 부호·줄 끝이나
 // 대상·강조 단어("…교체해봐 미오로", "…교체해 메인을", "…교체해 지금")만 올 수 있다. 그래서
 // "교체됐었어"(과거·수동), "안 교체해"·"못 교체해"·"교체하지 마"·"교체해 주지 마"(부정), "교체하는 방법"·
 // "교체해 줘야 하는지 설명해줘"(설명), "교체해도 돼?"(허가 질문), "교체해 달라는 말"(인용)은 명령이 아니다.
-const SWITCH_CLAUSE_END = `(?:\\s+(?:${CHARACTER_NAME_PATTERN}|메인|main|지금|바로|당장|좀|빨리|제발|[ㄱ-ㅎㅏ-ㅣ]+)(?:으로|로|을|를)?)*\\s*(?:[.!?~…,\\n]|$)`;
-const SWITCH_COMMAND = new RegExp(
-  `(?<!(?:^|[^가-힣])(?:안|못)\\s*)(?:교체(?:를|\\s*좀)?\\s*(?:해(?:\\s*(?:주세요|줘요|줘|줄래|주라|봐요|봐|라|요))?|하자|하라|하세요|합시다|부탁(?:해요|해|합니다|드려요|드립니다)?)(?=${SWITCH_CLAUSE_END})|교체(?=\\s*(?:[.!]|$)))`,
-  "iu",
-);
+function buildNameRegexes(pattern: string): { nameInCommand: RegExp; switchCommand: RegExp } {
+  const switchClauseEnd = `(?:\\s+(?:${pattern}|메인|main|지금|바로|당장|좀|빨리|제발|[ㄱ-ㅎㅏ-ㅣ]+)(?:으로|로|을|를)?)*\\s*(?:[.!?~…,\\n]|$)`;
+  return {
+    nameInCommand: new RegExp(
+      `(?<![가-힣A-Za-z0-9])${pattern}(?=(?:으로|로|을|를|와|과|랑|이랑|하고|이|가|은|는|도)?(?:\\s|$|[.!?,]|교체|호출|불러|소환|${pattern}))`,
+      "giu",
+    ),
+    switchCommand: new RegExp(
+      `(?<!(?:^|[^가-힣])(?:안|못)\\s*)(?:교체(?:를|\\s*좀)?\\s*(?:해(?:\\s*(?:주세요|줘요|줘|줄래|주라|봐요|봐|라|요))?|하자|하라|하세요|합시다|부탁(?:해요|해|합니다|드려요|드립니다)?)(?=${switchClauseEnd})|교체(?=\\s*(?:[.!]|$)))`,
+      "iu",
+    ),
+  };
+}
 // 리뷰·설명이 인용한 문장(따옴표·백틱·코드 펜스·`>` 인용줄)은 교체 명령 판정에서 뺀다.
 const QUOTED_SPAN = /```[\s\S]*?```|`[^`\n]*`|'[^'\n]*'|"[^"\n]*"|‘[^’\n]*’|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|^[ \t]*>.*$/gmu;
 const SUMMON_MARKER_PREFIX = /\[character-summon\s/u;
 
-function aliasFromName(name: string): CharacterAlias | undefined {
-  return NAME_TO_ALIAS[name.toLocaleLowerCase("en-US")];
+// ── 사무실 모드 ───────────────────────────────────────────────────────────────
+// 서버 전체 「기본 / 사무실 모드」. 사무실 모드에서는 roster에 항목이 있는 자리의 캐릭터만 PC 프로필의 것으로
+// 바뀐다(자리의 모델·oauth 위치·toolCapable은 그대로). 모드 파일 `<agentDir>/cuelo-character-mode.json`
+// {"mode":"default"|"office"}과 `<agentDir>/characters-office/roster.json`을 요청마다 mtime 캐시로 읽고,
+// 없거나 깨졌으면 그 자리는 기본이다. 실존 인물에서 온 이름·자산은 저장소가 아니라 프로필에만 둔다.
+interface OfficeSeat {
+  seat: BuiltinCharacterAlias;
+  alias: string;
+  voice: CharacterVoice;
 }
 
-function aliasesFromCommand(text: string): CharacterAlias[] {
+interface OfficeState {
+  byAlias: ReadonlyMap<string, OfficeSeat>;
+  bySeat: ReadonlyMap<BuiltinCharacterAlias, OfficeSeat>;
+  /** roster `names`(소문자) → 사무실 alias. 자리의 기본 이름은 NAME_TO_ALIAS가 같은 자리로 푼다. */
+  extraNames: ReadonlyMap<string, string>;
+  /** 채택한 face 파일과 그 stamp. 파일이 바뀌거나 지워지면 캐시를 다시 만든다. */
+  watched: ReadonlyArray<readonly [string, string]>;
+  nameInCommand: RegExp;
+  switchCommand: RegExp;
+}
+
+const DEFAULT_OFFICE_STATE: OfficeState = {
+  watched: [],
+  byAlias: new Map(),
+  bySeat: new Map(),
+  extraNames: new Map(),
+  ...buildNameRegexes(CHARACTER_NAME_PATTERN),
+};
+const OFFICE_MODE_FILE = "cuelo-character-mode.json";
+const OFFICE_ROSTER_FILE = join("characters-office", "roster.json");
+// alias는 `alias="…"` 속성과 summon marker의 `[^"]+`에 그대로 들어가므로 따옴표(앱 lib/character-mode.ts와 같은 집합)·꺾쇠·줄바꿈을 막는다.
+const OFFICE_ALIAS_UNSAFE = /["'`\u201C\u201D\u2018\u2019<>[\]\r\n]/u;
+const OFFICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u;
+/** 사무실 모드가 바꿀 수 있는 자리. roster의 다른 자리 항목은 무시한다. */
+const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)"];
+let officeCache: { key: string; state: OfficeState } | undefined;
+
+function officeAgentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent");
+}
+
+function fileStamp(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "-";
+  }
+}
+
+function readJsonFile(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
+  } catch {
+    return undefined;
+  }
+}
+
+function voiceText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  // voice block 경계 태그가 들어 있으면 block을 깨므로 항목째 버린다.
+  return text && !/<\/?character-voice/iu.test(text) ? text : undefined;
+}
+
+function hasOwn(record: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** face는 characters-office 안의 실재하는 일반 파일이어야 한다. 안전하면 realpath, 아니면 undefined. */
+function officeFile(dir: string, face: unknown): string | undefined {
+  if (typeof face !== "string" || !face.trim() || isAbsolute(face) || /^[A-Za-z]:/u.test(face)) return undefined;
+  if (face.split(/[\\/]/u).includes("..")) return undefined;
+  try {
+    const root = realpathSync(join(dir, "characters-office"));
+    const real = realpathSync(join(root, face));
+    const inside = relative(root, real);
+    if (!inside || inside.startsWith("..") || isAbsolute(inside) || inside.split(sep).includes("..")) return undefined;
+    return statSync(real).isFile() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildOfficeState(dir: string, roster: unknown): OfficeState {
+  const seats = roster && typeof roster === "object" ? (roster as { seats?: unknown }).seats : undefined;
+  if (!seats || typeof seats !== "object" || Array.isArray(seats)) return DEFAULT_OFFICE_STATE;
+  const byAlias = new Map<string, OfficeSeat>();
+  const bySeat = new Map<BuiltinCharacterAlias, OfficeSeat>();
+  const extraNames = new Map<string, string>();
+  const watched: Array<readonly [string, string]> = [];
+  const builtinAliases = new Map(Object.keys(CHARACTER_TARGETS).map((builtin) => [builtin.toLocaleLowerCase("en-US"), builtin]));
+  for (const [seatKey, entry] of Object.entries(seats)) {
+    if (!OFFICE_SEATS.includes(seatKey as BuiltinCharacterAlias) || !entry || typeof entry !== "object") continue;
+    const raw = entry as {
+      id?: unknown;
+      alias?: unknown;
+      names?: unknown;
+      face?: unknown;
+      voice?: { temperament?: unknown; expression?: unknown };
+    };
+    const seat = seatKey as BuiltinCharacterAlias;
+    const alias = typeof raw.alias === "string" ? raw.alias.trim() : "";
+    const temperament = voiceText(raw.voice?.temperament);
+    const expression = voiceText(raw.voice?.expression);
+    const face = officeFile(dir, raw.face);
+    // 아직 없거나 무효인 face도 나중에 생기면 항목이 유효해질 수 있어 후보 경로의 stamp를 감시한다.
+    if (typeof raw.face === "string" && raw.face.trim() && !isAbsolute(raw.face) && !raw.face.split(/[\\/]/u).includes("..")) {
+      const candidate = join(dir, "characters-office", raw.face);
+      watched.push([candidate, fileStamp(candidate)]);
+    }
+    if (
+      typeof raw.id !== "string" || !OFFICE_ID.test(raw.id.trim()) ||
+      !alias || alias.length > 64 || OFFICE_ALIAS_UNSAFE.test(alias) || hasOwn(CHARACTER_TARGETS, alias) || byAlias.has(alias) ||
+      !temperament || !expression || !face ||
+      !Array.isArray(raw.names) || raw.names.length === 0
+    ) {
+      continue;
+    }
+    // names: 전부 비지 않은 문자열이어야 하고 다른 자리의 내장 alias·호출 이름이면 항목 전체가 무효다.
+    const names: string[] = [];
+    let namesValid = true;
+    for (const name of raw.names) {
+      const lower = typeof name === "string" ? name.trim().toLocaleLowerCase("en-US") : "";
+      if (!lower || (builtinAliases.has(lower) && builtinAliases.get(lower) !== seat) || (hasOwn(NAME_TO_ALIAS, lower) && NAME_TO_ALIAS[lower] !== seat)) {
+        namesValid = false;
+        break;
+      }
+      names.push(lower);
+    }
+    if (!namesValid) continue;
+    const office: OfficeSeat = { seat, alias, voice: { temperament, expression } };
+    byAlias.set(alias, office);
+    bySeat.set(seat, office);
+    // face 후보 stamp는 위에서 이미 감시 목록에 넣었다.
+    // 자리의 기본 이름은 NAME_TO_ALIAS가 이미 같은 자리로 푼다.
+    for (const lower of names) if (!hasOwn(NAME_TO_ALIAS, lower) && !extraNames.has(lower)) extraNames.set(lower, alias);
+  }
+  if (byAlias.size === 0) return { ...DEFAULT_OFFICE_STATE, watched };
+  const escaped = [...extraNames.keys()]
+    .sort((left, right) => right.length - left.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  const pattern = escaped.length > 0 ? `(${escaped.join("|")}|${CHARACTER_NAME_PATTERN.slice(1)}` : CHARACTER_NAME_PATTERN;
+  return { byAlias, bySeat, extraNames, watched, ...buildNameRegexes(pattern) };
+}
+
+function officeState(): OfficeState {
+  try {
+    const dir = officeAgentDir();
+    const modePath = join(dir, OFFICE_MODE_FILE);
+    const rosterPath = join(dir, OFFICE_ROSTER_FILE);
+    const key = `${dir}\0${fileStamp(modePath)}\0${fileStamp(rosterPath)}`;
+    // face 파일이 지워지거나 바뀌면 같은 roster여도 항목이 무효가 될 수 있어 그 stamp도 확인한다.
+    if (officeCache?.key === key && officeCache.state.watched.every(([path, stamp]) => fileStamp(path) === stamp)) {
+      return officeCache.state;
+    }
+    const mode = readJsonFile(modePath);
+    const office = !!mode && typeof mode === "object" && (mode as { mode?: unknown }).mode === "office";
+    // roster도 face와 같이 characters-office 안의 실재 파일일 때만 읽는다(symlink로 밖을 가리키면 사무실 상태 없음).
+    const rosterReal = office ? officeFile(dir, "roster.json") : undefined;
+    const state = rosterReal ? buildOfficeState(dir, readJsonFile(rosterReal)) : DEFAULT_OFFICE_STATE;
+    officeCache = { key, state };
+    return state;
+  } catch {
+    return DEFAULT_OFFICE_STATE;
+  }
+}
+
+function seatOf(alias: string, state: OfficeState): BuiltinCharacterAlias | undefined {
+  const office = state.byAlias.get(alias);
+  if (office) return office.seat;
+  return hasOwn(CHARACTER_TARGETS, alias) ? (alias as BuiltinCharacterAlias) : undefined;
+}
+
+/** 자리(내장 alias)나 사무실 alias를 지금 모드의 화면용 alias로 정규화한다. 모르는 alias는 undefined. */
+function canonicalAlias(alias: string, state: OfficeState): CharacterAlias | undefined {
+  const seat = seatOf(alias, state);
+  return seat === undefined ? undefined : (state.bySeat.get(seat)?.alias ?? seat);
+}
+
+/** alias가 가리키는 자리의 모델·oauth 위치·toolCapable. 사무실 alias도 자리의 target을 쓴다. */
+export function characterTarget(alias: string): CharacterTarget | undefined {
+  const seat = seatOf(alias, officeState());
+  return seat === undefined ? undefined : CHARACTER_TARGETS[seat];
+}
+
+function requireTarget(alias: string): CharacterTarget {
+  const target = characterTarget(alias);
+  if (!target) throw new Error(`알 수 없는 character alias: ${alias}`);
+  return target;
+}
+
+function voiceFor(alias: string): CharacterVoice | undefined {
+  const state = officeState();
+  const office = state.byAlias.get(alias);
+  if (office) return office.voice;
+  return hasOwn(CHARACTER_VOICES, alias) ? CHARACTER_VOICES[alias as BuiltinCharacterAlias] : undefined;
+}
+
+function aliasFromName(name: string, state: OfficeState): CharacterAlias | undefined {
+  const lower = name.toLocaleLowerCase("en-US");
+  const base = state.extraNames.get(lower) ?? NAME_TO_ALIAS[lower];
+  return base ? canonicalAlias(base, state) : undefined;
+}
+
+function aliasesFromCommand(text: string, state: OfficeState): CharacterAlias[] {
   const aliases = new Set<CharacterAlias>();
-  for (const match of text.matchAll(CHARACTER_NAME_IN_COMMAND)) {
-    const alias = aliasFromName(match[1]!);
+  for (const match of text.matchAll(state.nameInCommand)) {
+    const alias = aliasFromName(match[1]!, state);
     if (alias) aliases.add(alias);
   }
   return [...aliases];
@@ -247,15 +459,14 @@ function injectVoiceIntoSystemBlocks(parts: readonly unknown[], block: string): 
 }
 
 function characterAliasForContext(ctx: ExtensionContext, selectedAlias: CharacterAlias | undefined): CharacterAlias | undefined {
-  if (selectedAlias) {
-    const target = CHARACTER_TARGETS[selectedAlias];
-    if (modelMatches(ctx.model, target.model)) {
-      if (target.oauthPosition === undefined) return selectedAlias;
-      const accounts = activeAccounts(ctx, "anthropic");
-      const active = accounts.find((account) => account.active);
-      const activeIndex = active ? accounts.indexOf(active) : -1;
-      if (active && accountPosition(active, activeIndex) === target.oauthPosition) return selectedAlias;
-    }
+  const canonical = selectedAlias ? canonicalAlias(selectedAlias, officeState()) : undefined;
+  const target = canonical ? characterTarget(canonical) : undefined;
+  if (canonical && target && modelMatches(ctx.model, target.model)) {
+    if (target.oauthPosition === undefined) return canonical;
+    const accounts = activeAccounts(ctx, "anthropic");
+    const active = accounts.find((account) => account.active);
+    const activeIndex = active ? accounts.indexOf(active) : -1;
+    if (active && accountPosition(active, activeIndex) === target.oauthPosition) return canonical;
   }
   const provider = ctx.model?.provider;
   return provider ? characterForProvider(provider, activeAccounts(ctx, provider)) : undefined;
@@ -266,7 +477,8 @@ async function switchCharacterForSession(
   ctx: ExtensionContext,
   alias: CharacterAlias,
 ): Promise<CharacterSwitchResult> {
-  const target = CHARACTER_TARGETS[alias];
+  const target = characterTarget(alias);
+  if (!target) return { ok: false, reason: `${alias}은(는) 현재 모드에서 알 수 없는 캐릭터입니다.` };
   if (!target.toolCapable) {
     return {
       ok: false,
@@ -344,13 +556,14 @@ async function switchCharacterForSession(
 }
 
 export function parseCharacterIntent(text: string): CharacterIntent | undefined {
-  const aliases = aliasesFromCommand(text);
+  const state = officeState();
+  const aliases = aliasesFromCommand(text, state);
   if (aliases.length === 0) return undefined;
   if (text.includes("교체")) {
     // alias도 인용 밖에서만 뽑아 인용 속 이름과 인용 밖 명령어가 결합되지 않게 한다.
     const command = text.replace(QUOTED_SPAN, " ");
-    const switchAliases = aliasesFromCommand(command);
-    if (!SWITCH_COMMAND.test(command) || switchAliases.length !== 1) return undefined;
+    const switchAliases = aliasesFromCommand(command, state);
+    if (!state.switchCommand.test(command) || switchAliases.length !== 1) return undefined;
     return { kind: "switch", alias: switchAliases[0]! };
   }
   return SUMMON_ACTION.test(text) ? { kind: "summon", aliases } : undefined;
@@ -358,11 +571,11 @@ export function parseCharacterIntent(text: string): CharacterIntent | undefined 
 
 /** 다른 input handler가 자연어 summon을 routing prompt로 바꾼 뒤에도 순서와 무관하게 복구한다. */
 export function parseCharacterSummonDirectives(text: string): CharacterAlias[] {
+  const state = officeState();
   const aliases = new Set<CharacterAlias>();
   for (const match of text.matchAll(SUMMON_DIRECTIVE)) {
-    if (Object.prototype.hasOwnProperty.call(CHARACTER_TARGETS, match[1])) {
-      aliases.add(match[1] as CharacterAlias);
-    }
+    const alias = canonicalAlias(match[1]!, state);
+    if (alias) aliases.add(alias);
   }
   return [...aliases];
 }
@@ -373,7 +586,8 @@ export function anthropicCharacterForAccounts(
   for (let index = 0; index < accounts.length; index += 1) {
     const account = accounts[index]!;
     if (!account.active) continue;
-    return ANTHROPIC_POSITION_CHARACTER[accountPosition(account, index)];
+    const seat = ANTHROPIC_POSITION_CHARACTER[accountPosition(account, index)];
+    return seat && canonicalAlias(seat, officeState());
   }
   return undefined;
 }
@@ -383,11 +597,13 @@ export function characterForProvider(
   accounts: readonly OAuthAccountLike[] = [],
 ): CharacterAlias | undefined {
   if (provider === "anthropic") return anthropicCharacterForAccounts(accounts);
-  return PROVIDER_CHARACTER[provider];
+  const seat = PROVIDER_CHARACTER[provider];
+  return seat && canonicalAlias(seat, officeState());
 }
 
 export function renderCharacterVoice(alias: CharacterAlias): string {
-  const voice = CHARACTER_VOICES[alias];
+  const voice = voiceFor(alias);
+  if (!voice) throw new Error(`알 수 없는 character alias: ${alias}`);
   return `<character-voice alias="${alias}">
 당신이 사용자 화면에 보이는 캐릭터는 **${alias}**다.
 - 성격: ${voice.temperament}
@@ -407,7 +623,7 @@ export function renderCharacterSummonRouting(aliases: CharacterAlias | readonly 
   const list: CharacterAlias[] = Array.isArray(aliases) ? [...aliases] : [aliases];
   if (list.length > 1) return renderMultiCharacterSummonRouting(list);
   const alias = list[0]!;
-  const target = CHARACTER_TARGETS[alias];
+  const target = requireTarget(alias);
   if (!target.toolCapable) {
     return [
       `[character-summon-intent alias="${alias}"]`,
@@ -433,7 +649,7 @@ export function renderCharacterSummonRouting(aliases: CharacterAlias | readonly 
 }
 
 function summonMarkerFor(alias: CharacterAlias): string {
-  const target = CHARACTER_TARGETS[alias];
+  const target = requireTarget(alias);
   return `[character-summon alias="${alias}" model="${target.model}"${
     target.oauthPosition === undefined ? "" : ` oauth-position="${target.oauthPosition}"`
   }]`;
@@ -441,8 +657,8 @@ function summonMarkerFor(alias: CharacterAlias): string {
 
 /** 명시적으로 여러 캐릭터를 부른 summon: 각 tool-capable 캐릭터를 exact marker task로 연결한다. */
 function renderMultiCharacterSummonRouting(aliases: readonly CharacterAlias[]): string {
-  const capable = aliases.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
-  const webOnly = aliases.filter((alias) => !CHARACTER_TARGETS[alias].toolCapable);
+  const capable = aliases.filter((alias) => characterTarget(alias)?.toolCapable === true);
+  const webOnly = aliases.filter((alias) => characterTarget(alias)?.toolCapable === false);
   const lines: string[] = [
     ...aliases.map((alias) => `[character-summon-intent alias="${alias}"]`),
     `[CharacterSummon] 사용자가 ${aliases.join(", ")}을(를) 인라인으로 함께 호출했다.`,
@@ -459,7 +675,7 @@ function renderMultiCharacterSummonRouting(aliases: readonly CharacterAlias[]): 
     );
   }
   for (const alias of webOnly) {
-    const target = CHARACTER_TARGETS[alias];
+    const target = requireTarget(alias);
     lines.push(
       `${alias}은 task child가 아니라 \`rule://web6-consult\` 계약의 WEB6 상담 경로로 \`${target.model}\`을(를) 호출한다. task 호출과 순서는 자유지만 누락하지 않는다. WEB6 요청의 effective prompt 끝에는 아래 character voice block을 정확히 한 번 넣고, 이전 character voice block은 제거한다.`,
       renderCharacterVoice(alias),
@@ -476,7 +692,7 @@ export function rewriteTaskInputForCharacterSummon(
   pending: CharacterAlias | readonly CharacterAlias[],
 ): SummonTaskRewrite {
   const pendingAliases: CharacterAlias[] = Array.isArray(pending) ? [...pending] : [pending];
-  const capable = pendingAliases.filter((alias) => CHARACTER_TARGETS[alias].toolCapable);
+  const capable = pendingAliases.filter((alias) => characterTarget(alias)?.toolCapable === true);
   if (capable.length === 0) {
     return {
       ok: false,
@@ -490,7 +706,7 @@ export function rewriteTaskInputForCharacterSummon(
   const claimItem = (task: string): { task: string; alias: CharacterAlias } | string => {
     const marked = parseCharacterSummonMarker(task);
     if (marked !== undefined) {
-      if (!CHARACTER_TARGETS[marked].toolCapable) {
+      if (!requireTarget(marked).toolCapable) {
         return `[CharacterSummonGuard] ${marked}은 task child가 아니라 WEB6 상담 계약으로 호출해야 합니다.`;
       }
       if (!capable.includes(marked)) {
@@ -554,7 +770,7 @@ export function rewriteTaskInputForCharacterSummon(
 }
 
 export function buildCharacterSummonBrief(brief: string, alias: CharacterAlias): string {
-  const target = CHARACTER_TARGETS[alias];
+  const target = requireTarget(alias);
   const marker = summonMarkerFor(alias);
   const cleanBrief = stripPromptStyleBlocks(brief.replace(SUMMON_MARKER_GLOBAL, "\n"));
   return [
@@ -577,10 +793,9 @@ export function buildCharacterSummonBrief(brief: string, alias: CharacterAlias):
 
 export function parseCharacterSummonMarker(prompt: string): CharacterAlias | undefined {
   const match = SUMMON_MARKER.exec(prompt);
-  if (!match || !Object.prototype.hasOwnProperty.call(CHARACTER_TARGETS, match[1])) return undefined;
-  const alias = match[1] as CharacterAlias;
-  const target = CHARACTER_TARGETS[alias];
-  if (target.model !== match[2]) return undefined;
+  const alias = match ? canonicalAlias(match[1]!, officeState()) : undefined;
+  const target = alias === undefined ? undefined : characterTarget(alias);
+  if (!match || alias === undefined || !target || target.model !== match[2]) return undefined;
   const position = match[3] === undefined ? undefined : Number(match[3]);
   return target.oauthPosition === position ? alias : undefined;
 }
@@ -591,8 +806,10 @@ export function parseCharacterSummonMarker(prompt: string): CharacterAlias | und
  */
 export function malformedSummonMarkerReason(task: string): string | undefined {
   if (!SUMMON_MARKER_PREFIX.test(task) || parseCharacterSummonMarker(task) !== undefined) return undefined;
-  const expected = (Object.keys(CHARACTER_TARGETS) as CharacterAlias[])
-    .filter((alias) => CHARACTER_TARGETS[alias].toolCapable)
+  const state = officeState();
+  const expected = (Object.keys(CHARACTER_TARGETS) as BuiltinCharacterAlias[])
+    .filter((seat) => CHARACTER_TARGETS[seat].toolCapable)
+    .map((seat) => state.bySeat.get(seat)?.alias ?? seat)
     .map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``);
   return [
     "[CharacterSummonGuard] task의 character-summon marker가 exact target과 맞지 않습니다. " +
