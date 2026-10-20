@@ -349,6 +349,38 @@ function DispatchLaneLine({ maker, phase, checks, onOpen }: {
   );
 }
 
+/**
+ * Maker 한 명의 단계 흐름(조사 → 구현 → 검증 → 보고 → Main 판정)과 시도 차례. 발주 카드를 펼쳤을 때와 같은 자료를 같은
+ * 규칙으로 읽는다: 실시간으로 실행 중이면 진행 관측의 기록, 끝났으면 그 발주가 정확히 띄운 실행의 실시간 기록이다.
+ * 마운트된 동안만 기록을 읽으므로, 작업 흐름 그래프는 Maker 줄을 골랐을 때만 이것을 그린다.
+ */
+export function MakerRunFlow({ maker }: { maker: MakerPresentation }) {
+  const { ledger, subagents, sessionId, cwd } = useContext(AnswerStatusContext);
+  const client = useMemo(() => createHanseSubagentClient(), []);
+  const active = maker.run === "pending" || maker.run === "running";
+  const liveRun = active && maker.runSource === "live";
+  const liveSnapshot = active ? findLiveSnapshot(maker.member, subagents, ledger) : undefined;
+  const runningSnapshots = useMemo(() => (liveSnapshot ? [liveSnapshot] : []), [liveSnapshot]);
+  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: true, transcripts: true, cwd });
+  const exact = findExactLiveSnapshot(maker.member, subagents);
+  const targets = useMemo(
+    () => (exact && !isActiveSubagentStatus(exact.status)
+      ? [{ key: maker.member.key, liveId: exact.id, status: exact.status, archiveName: sessionFileName(exact) }]
+      : []),
+    [exact, maker.member.key],
+  );
+  const reads = useSubagentTranscripts(targets, { sessionId: sessionId ?? "", client, enabled: Boolean(sessionId) && targets.length > 0 });
+  const view = liveSnapshot ? progressViews.get(liveSnapshot.id) : undefined;
+  const flow = buildSubagentFlow(liveRun ? view?.trace ?? null : finishedRunTrace(reads.get(maker.member.key), cwd), liveRun);
+  const attempts = listMakerAttempts(maker.member, ledger);
+  return (
+    <>
+      <SubagentFlowGraph flow={flow} live={liveRun} verdict={maker.verdict} attempts={attempts} />
+      <AttemptChain attempts={attempts} />
+    </>
+  );
+}
+
 /** 같은 assignment에 판정이 둘 이상 남았을 때 시도를 순서대로 잇는다(시도 1 재작업 → 시도 2 수용). */
 function AttemptChain({ attempts }: { attempts: readonly MakerAttempt[] }) {
   const { t } = useI18n();

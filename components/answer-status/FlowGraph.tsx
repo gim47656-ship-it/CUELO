@@ -6,7 +6,7 @@ import { isCompoundFailure, WORK_STAGES, type StageView, type WorkFlow, type Wor
 import { TurnWrittenFiles } from "../TurnWrittenFiles";
 import { AnswerStatusContext } from "./AnswerStatusContext";
 import { FlowMotionToggle, useFlowMotionPaused } from "./flow-motion";
-import { MakerStatusPair, VERDICT_LABEL } from "./DispatchCard";
+import { MakerRunFlow, MakerStatusPair, VERDICT_LABEL } from "./DispatchCard";
 import { useAnswerStatusText, type AnswerStatusTranslate } from "./i18n";
 import { elapsedText } from "./SubagentProgress";
 import { EarlierAttempts, StageNode, StageWord, stageLook, StepRows } from "./WorkFlow";
@@ -263,6 +263,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
           <MakerTags entry={entry} together={graph.makers.length > 1} batch st={st} />
           <p className="flow-graph-detail-line"><MakerStatusPair maker={entry.maker} st={st} /></p>
           <div className="flow-graph-maker-time"><MakerTime entry={entry} st={st} /></div>
+          <MakerRunFlow maker={entry.maker} />
           {exact && onOpenMaker ? (
             <button
               type="button"
