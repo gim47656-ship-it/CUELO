@@ -1,6 +1,6 @@
-import { useContext, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { findExactLiveSnapshot, type MakerPresentation } from "@/lib/answer-status/dispatch";
-import { buildFlowGraph, type GraphMaker } from "@/lib/answer-status/flow-graph";
+import { buildFlowGraph, replayBeats, type GraphMaker, type ReplayBeat } from "@/lib/answer-status/flow-graph";
 import type { FinishedTurnSummary, MakerTiming } from "@/lib/answer-status/turn-summary";
 import { isCompoundFailure, WORK_STAGES, type StageView, type WorkFlow, type WorkStage } from "@/lib/answer-status/work-flow";
 import { TurnWrittenFiles } from "../TurnWrittenFiles";
@@ -13,6 +13,9 @@ import { EarlierAttempts, StageNode, StageWord, stageLook, StepRows } from "./Wo
 
 /** 그래프에서 고를 수 있는 노드: 단계, Maker 하나, 변경 파일 묶음, 변경 문서 묶음. */
 type NodeKey = `stage:${WorkStage}` | `maker:${string}` | "files" | "docs";
+
+/** 재생에서 한 자리를 밝히는 시간. 일곱 단계와 갈래·귀환·결과까지 열 남짓 차례라 한 번 재생이 10초 안쪽이다. */
+const REPLAY_BEAT_MS = 800;
 
 /** 막대 자리(0~1 비율)를 CSS 길이로. */
 function percent(value: number): string {
@@ -102,7 +105,8 @@ function NodeButton({ selectable, selected, detailId, onSelect, className, child
  * 한 줄씩 쌓는 로그 레일이고, 되돌아온 회차 구간의 레일이 노랗다. 노드를 누르면 아래 한 자리에 그 노드의 실제 기록이 나온다.
  * 동시 실행은 같은 wait 스냅샷에서 함께 실행 중이었거나 지금 둘 다 실행 중일 때만 말하고, 같은 발주 묶음은 그렇게만 적는다.
  * 움직임은 지금 도는 자리에만 있다. `live`(이 요청이 실행 중)이면 지금 단계 상자의 진행 막대(좁으면 줄 끝 커서), 지금 실행
- * 중인 Maker 갈래의 진행 막대다. 움직임 멈춤 단추와 동작 줄이기 설정에서는 멈춘다.
+ * 중인 Maker 갈래의 진행 막대다. 움직임 멈춤 단추와 동작 줄이기 설정에서는 멈춘다. 끝난 요청은 정적이고, 사용자가 「재생」을
+ * 누를 때만 실제로 지난 자리를 차례로(`replayBeats`) 다시 밝힌 뒤 정적 그래프로 돌아온다.
  */
 export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }: {
   summary: FinishedTurnSummary;
@@ -132,6 +136,26 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
   const makerFlowing = graph.makers.some((entry) => entry.liveRunning);
   const moving = currentIndex >= 0 || makerFlowing;
 
+  const hasOutputs = graph.files.length > 0 || graph.docs.length > 0;
+  const beats = useMemo(
+    () => (live ? [] : replayBeats(flow.stages, flow.loops, graph.makers.length > 0, hasOutputs)),
+    [live, flow.stages, flow.loops, graph.makers.length, hasOutputs],
+  );
+  const [replay, setReplay] = useState<number | null>(null);
+  // 카드가 다시 그려져 차례가 줄었거나 요청이 다시 실행 중이면 재생은 끝난 것이다.
+  const replaying = replay !== null && replay < beats.length ? replay : null;
+  useEffect(() => {
+    if (replaying === null) return;
+    const timer = window.setTimeout(() => setReplay(replaying + 1 < beats.length ? replaying + 1 : null), REPLAY_BEAT_MS);
+    return () => window.clearTimeout(timer);
+  }, [replaying, beats.length]);
+  /** 재생 중 그 자리의 차례: 지금, 지났음, 아직. 재생 차례에 없는 자리(가지 않은 단계)와 재생하지 않을 때는 표시가 없다. */
+  const beatOf = (beat: ReplayBeat): "now" | "past" | "ahead" | undefined => {
+    if (replaying === null || !beats.includes(beat)) return undefined;
+    if (beats[replaying] === beat) return "now";
+    return beats.slice(0, replaying).includes(beat) ? "past" : "ahead";
+  };
+
   // 갈래가 Main으로 돌아오는 자리: Maker마다 Main 판정(routing_verdict)을 센다. 실행 완료만으로는 수용이 아니다.
   const verdictCounts = new Map<keyof typeof VERDICT_LABEL, number>();
   for (const entry of graph.makers) {
@@ -144,7 +168,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
   const mergeLook = mergeView ? stageLook(mergeView, flow, live) : "skipped";
   const quietMerge = mergeLook === "skipped" || mergeLook === "waiting" || mergeLook === "approval";
   const branch = graph.makers.length > 0 && (
-    <li key="branch" className="flow-graph-branch" data-loop={loop && loopFrom > editIndex ? "" : undefined} data-merge={quietMerge ? "quiet" : undefined}>
+    <li key="branch" className="flow-graph-branch" data-loop={loop && loopFrom > editIndex ? "" : undefined} data-merge={quietMerge ? "quiet" : undefined} data-beat={beatOf("branch")}>
       <p className="flow-graph-branch-head">
         <span>{st(graph.makers.length === 1 ? "graph.branch.one" : "graph.branch", { count: graph.makers.length })}</span>
         {graph.parallel !== "none" && <span className="flow-graph-chip" data-parallel={graph.parallel}>{st(`graph.parallel.${graph.parallel}`)}</span>}
@@ -177,7 +201,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
   );
 
   const returnEdge = loop && (
-    <li key="return" className="flow-graph-return" style={{ "--from": editIndex + 1, "--to": loopFrom + 1 } as CSSProperties}>
+    <li key="return" className="flow-graph-return" data-beat={beatOf("return")} style={{ "--from": editIndex + 1, "--to": loopFrom + 1 } as CSSProperties}>
       <span className="flow-graph-return-line" aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="5 12 12 5 19 12" />
@@ -203,6 +227,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
         data-state={look}
         data-again={view.earlier.length > 0 ? "" : undefined}
         data-loop={loop && index >= editIndex && index < loopFrom ? "" : undefined}
+        data-beat={beatOf(view.stage)}
         aria-current={look === "active" ? "step" : undefined}
         style={{ "--col": index + 1 } as CSSProperties}
       >
@@ -302,12 +327,23 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
       <div className="flow-graph-head">
         <h4 className="flow-heading">{st("flow.heading")}</h4>
         {moving && <FlowMotionToggle paused={paused} />}
+        {beats.length > 1 && (
+          <button type="button" className="flow-graph-replay" onClick={() => setReplay(replaying === null ? 0 : null)}>
+            {st(replaying === null ? "graph.replay" : "graph.replay.stop")}
+          </button>
+        )}
       </div>
       <div className="flow-graph-frame">
-        <ol className="flow-graph" aria-label={st("flow.aria")} data-live={live ? "" : undefined} data-motion={paused ? "paused" : undefined}>
+        <ol
+          className="flow-graph"
+          aria-label={st("flow.aria")}
+          data-live={live ? "" : undefined}
+          data-motion={paused ? "paused" : undefined}
+          data-replay={replaying === null ? undefined : ""}
+        >
           {items}
-          {(graph.files.length > 0 || graph.docs.length > 0) && (
-            <li className="flow-graph-outputs">
+          {hasOutputs && (
+            <li className="flow-graph-outputs" data-beat={beatOf("outputs")}>
               <span className="flow-graph-outputs-label">{st("graph.outputs")}</span>
               {graph.files.length > 0 && (
                 <NodeButton selectable selected={selected === "files"} detailId={detailId} onSelect={() => setChosen("files")} className="flow-graph-output">

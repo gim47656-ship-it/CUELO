@@ -1184,7 +1184,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
                   const isBlock = className?.includes("language-") || raw.includes("\n");
                   if (isBlock) {
                     if (lang === "mermaid") {
-                      return <MermaidBlock code={raw.replace(/\n$/, "")} defaultPreview />;
+                      return <MermaidBlock code={raw.replace(/\n$/, "")} />;
                     }
                     return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} />;
                   }

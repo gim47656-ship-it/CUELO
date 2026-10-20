@@ -26,16 +26,8 @@ function renderMermaid(props) {
   );
 }
 
-test("MermaidBlock renders source by default", () => {
+test("MermaidBlock renders the diagram, not the source, by default", () => {
   const html = renderMermaid({ code: mermaidSrc });
-
-  assert.match(html, />Preview</);
-  assert.match(html, /Alice/);
-  assert.doesNotMatch(html, /mermaid-block-loading/);
-});
-
-test("MermaidBlock can render preview by default", () => {
-  const html = renderMermaid({ code: mermaidSrc, defaultPreview: true });
 
   assert.match(html, />Source</);
   assert.match(html, /mermaid-block-loading/);
@@ -43,7 +35,7 @@ test("MermaidBlock can render preview by default", () => {
 });
 
 test("MermaidBlock with isStreaming falls back to source view", () => {
-  const html = renderMermaid({ code: mermaidSrc, isStreaming: true, defaultPreview: true });
+  const html = renderMermaid({ code: mermaidSrc, isStreaming: true });
 
   assert.match(html, /disabled/);
   assert.match(html, />Preview</);
@@ -52,7 +44,7 @@ test("MermaidBlock with isStreaming falls back to source view", () => {
 });
 
 test("MermaidBlock renders empty graph without error", () => {
-  const html = renderMermaid({ code: "graph TD", defaultPreview: true });
+  const html = renderMermaid({ code: "graph TD" });
 
   assert.doesNotMatch(html, /mermaid-block-error/);
   assert.match(html, /mermaid-block-loading/);
@@ -87,7 +79,7 @@ test("MermaidBlock handles Chinese characters in diagram", () => {
     participant PC as PC客户端
     PC->>SV: 请求登录`;
 
-  const html = renderMermaid({ code: chineseMermaid, defaultPreview: true });
+  const html = renderMermaid({ code: chineseMermaid });
 
   assert.doesNotMatch(html, /mermaid-block-error/);
   assert.match(html, /mermaid-block/);

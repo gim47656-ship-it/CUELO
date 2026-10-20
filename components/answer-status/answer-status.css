@@ -449,7 +449,8 @@ button.flow-graph-stop:focus-visible,
 .flow-graph-maker:focus-visible,
 .flow-graph-output:focus-visible,
 .flow-graph-open:focus-visible,
-.flow-graph-motion:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
+.flow-graph-motion:focus-visible,
+.flow-graph-replay:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
 .flow-graph-stop-name { font-size: 15px; font-weight: 600; line-height: 20px; color: var(--text); word-break: keep-all; overflow-wrap: break-word; }
 .flow-graph-stop-state { display: flex; align-items: flex-start; gap: 4px; min-width: 0; font-size: 13px; line-height: 18px; color: var(--text-muted); word-break: keep-all; overflow-wrap: break-word; }
 .flow-graph-stop-word { min-width: 0; }
@@ -538,11 +539,15 @@ button.flow-graph-stop:focus-visible,
 .flow-graph[data-motion="paused"] { --flow-motion: paused; }
 .flow-graph-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin: 0 0 10px; }
 .flow-graph-head > .flow-heading { margin: 0; }
-.flow-graph-motion { min-height: 36px; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: none; color: var(--text-muted); font: inherit; font-size: 14px; cursor: pointer; }
-.flow-graph-motion:hover { background: var(--bg-hover); }
+.flow-graph-motion,
+.flow-graph-replay { min-height: 36px; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: none; color: var(--text-muted); font: inherit; font-size: 14px; cursor: pointer; }
+.flow-graph-motion:hover,
+.flow-graph-replay:hover { background: var(--bg-hover); }
 .flow-graph-motion[aria-pressed="true"] { border-color: var(--text); background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after,
-.flow-graph-lane[data-live] > .flow-graph-maker::after {
+.flow-graph-lane[data-live] > .flow-graph-maker::after,
+.flow-graph[data-replay] .flow-graph-station[data-beat="now"] > .flow-graph-stop::after,
+.flow-graph[data-replay] .flow-graph-branch[data-beat="now"] .flow-graph-maker::after {
   content: "";
   position: absolute;
   left: 5px;
@@ -554,9 +559,23 @@ button.flow-graph-stop:focus-visible,
   animation: flow-graph-run 1.6s ease-in-out infinite;
   animation-play-state: var(--flow-motion, running);
 }
-.flow-graph-lane[data-live] > .flow-graph-maker::after { left: 0; right: 0; bottom: 0; border-radius: 0; }
+.flow-graph-lane[data-live] > .flow-graph-maker::after,
+.flow-graph[data-replay] .flow-graph-branch[data-beat="now"] .flow-graph-maker::after { left: 0; right: 0; bottom: 0; border-radius: 0; }
 @keyframes flow-graph-run { from { background-position: -50% 0, 0 0; } to { background-position: 150% 0, 0 0; } }
 @keyframes flow-graph-cursor { 50% { opacity: 0; } }
+
+/*
+ * 끝난 요청의 재생(「재생」을 누를 때만): 실제로 지난 자리를 차례로 밝힌다. 아직 오지 않은 자리는 옅고, 지금 자리는 실행 중
+ * 요청과 같은 파란 테두리와 진행 막대이며, 귀환선은 되돌아오게 한 단계 쪽에서 수정 쪽으로 그려진다. 상태 글은 최종 판정
+ * 그대로다. 재생이 끝나면 속성이 빠져 정적 그래프로 돌아온다.
+ */
+.flow-graph[data-replay] > li { transition: opacity 0.25s ease; }
+.flow-graph[data-replay] > li[data-beat="ahead"] { opacity: 0.3; }
+.flow-graph[data-replay] .flow-graph-station[data-beat="now"] > .flow-graph-stop,
+.flow-graph[data-replay] .flow-graph-branch[data-beat="now"] .flow-graph-maker,
+.flow-graph[data-replay] .flow-graph-outputs[data-beat="now"] .flow-graph-output { border-color: var(--metric); }
+.flow-graph[data-replay] .flow-graph-return[data-beat="now"] .flow-graph-return-line { animation: flow-graph-return-in 0.6s ease-out both; }
+@keyframes flow-graph-return-in { from { clip-path: inset(-12px -12px -12px 100%); } to { clip-path: inset(-12px); } }
 
 /* 변경 결과: 문서가 아닌 파일과 문서를 따로 고른다. */
 .flow-graph-outputs { grid-row: 4; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
@@ -682,8 +701,10 @@ details[open] > summary .flow-chevron,
   .flow-graph-station[data-again] > .flow-graph-stop { box-shadow: none; }
   .flow-graph-stop > .flow-compound { grid-column: 2; justify-self: start; }
   .flow-graph-stop-state > .flow-node { position: absolute; top: 9px; left: 3px; margin-top: 0; }
-  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after { content: none; }
-  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after {
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after,
+  .flow-graph[data-replay] .flow-graph-station[data-beat="now"] > .flow-graph-stop::after { content: none; }
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after,
+  .flow-graph[data-replay] .flow-graph-station[data-beat="now"] .flow-graph-stop-word::after {
     content: "";
     display: inline-block;
     width: 7px;
@@ -895,12 +916,24 @@ details[open] > summary .flow-chevron,
 
   /* 동작 줄이기: 진행 막대는 왼쪽 끝에 선 조각으로, 커서는 켜진 채로 멈춘다. 멈출 움직임이 없으니 멈춤 단추도 없다. */
   .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after,
-  .flow-graph-lane[data-live] > .flow-graph-maker::after {
+  .flow-graph-lane[data-live] > .flow-graph-maker::after,
+  .flow-graph[data-replay] .flow-graph-station[data-beat="now"] > .flow-graph-stop::after,
+  .flow-graph[data-replay] .flow-graph-branch[data-beat="now"] .flow-graph-maker::after {
     animation: none;
     background-position: 0 0, 0 0;
   }
 
-  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after {
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after,
+  .flow-graph[data-replay] .flow-graph-station[data-beat="now"] .flow-graph-stop-word::after {
+    animation: none;
+  }
+
+  /* 재생은 움직임 없이 차례로 밝히기만 한다. */
+  .flow-graph[data-replay] > li {
+    transition: none;
+  }
+
+  .flow-graph[data-replay] .flow-graph-return[data-beat="now"] .flow-graph-return-line {
     animation: none;
   }
 

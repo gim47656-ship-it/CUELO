@@ -11,7 +11,6 @@ import { copyText } from "@/lib/clipboard";
 interface MermaidBlockProps {
   code: string;
   isStreaming?: boolean;
-  defaultPreview?: boolean;
 }
 
 const ZOOM_STEP = 0.25;
@@ -36,10 +35,11 @@ type RenderState =
   | { key: string; status: "error" }
   | { key: string; status: "ready"; svg: string };
 
-export function MermaidBlock({ code, isStreaming, defaultPreview = false }: MermaidBlockProps) {
+/** 다 받은 mermaid 블록은 그림부터 보인다(스트리밍 중에는 원문). 「원문」 단추로 코드를 볼 수 있다. */
+export function MermaidBlock({ code, isStreaming }: MermaidBlockProps) {
   const { isDark } = useTheme();
   const { t } = useI18n();
-  const [showPreview, setShowPreview] = useState(defaultPreview);
+  const [showPreview, setShowPreview] = useState(true);
   const [renderState, setRenderState] = useState<RenderState | null>(null);
   const [zoomOpen, setZoomOpen] = useState(false);
   const currentKey = `${isDark ? "dark" : "light"}\n${code}`;
