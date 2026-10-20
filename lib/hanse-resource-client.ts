@@ -640,8 +640,8 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
     // 계정이 자산보다 많으면 자리가 돌아 같은 얼굴을 다시 쓴다. 그때만 뒤에 번호를 붙여
     // 이름만은 갈라 둔다.
     const alias = position < POOL_SIZE
-      ? ACCOUNT_FACES[slot].alias
-      : `${ACCOUNT_FACES[slot].alias}${position + 1}`;
+      ? aliasForSeed(slot)
+      : `${aliasForSeed(slot)}${position + 1}`;
     return { seed: slot, alias, masked, raw };
   });
 }
