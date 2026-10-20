@@ -38,6 +38,8 @@ export interface VerdictRecord {
   reason: string | null;
   /** 세션 메시지 순서. 마지막 판정이 현재 판정이다. */
   order: number;
+  /** 판정 결과가 기록된 시각(ms). 옛 기록처럼 시각이 없으면 null. */
+  at: number | null;
 }
 
 export interface ObservedRun {
@@ -99,6 +101,11 @@ export interface DispatchLedger {
   durations: ReadonlyMap<string, number>;
   /** 같은 wait 스냅샷에서 동시에 running으로 관측된 발주 쌍. 종료 뒤에도 관측 사실은 남는다. */
   parallelWith: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * 발주 key별 가장 늦게 시작한 것으로 관측된 실행의 시작 시각(ms): running으로 관측된 `wait` 작업의 `결과 시각 − durationMs`.
+   * 다시 깨운 실행은 그 깨운 때부터 경과를 다시 센다. 끝난 작업의 소요나 경과 없는 기록은 시작을 알려 주지 않아 쓰지 않는다.
+   */
+  runStartedAt: ReadonlyMap<string, number>;
 }
 
 export const EMPTY_DISPATCH_LEDGER: DispatchLedger = {
@@ -108,6 +115,7 @@ export const EMPTY_DISPATCH_LEDGER: DispatchLedger = {
   spawnedAt: new Map(),
   durations: new Map(),
   parallelWith: new Map(),
+  runStartedAt: new Map(),
 };
 
 /** 기록에 실린 task 입력·결과·판정·wait 결과의 모양. 쓰는 필드만 `typeof`로 확인해 읽는다. */
@@ -122,6 +130,11 @@ function objectEntries<T>(value: unknown): T[] {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+/** 작업 기록의 durationMs. 끝난 작업이면 소요, 실행 중이면 그때까지의 경과다. 숫자가 아니면 null. */
+function jobDuration(job: WaitJobShape): number | null {
+  return typeof job.durationMs === "number" && Number.isFinite(job.durationMs) && job.durationMs >= 0 ? job.durationMs : null;
 }
 
 function normalizeStatus(value: unknown): SubagentStatus | null {
@@ -195,7 +208,7 @@ function readVerdictShape(result: ToolResultMessage): VerdictRecordShape | null 
   return typeof record === "object" && record !== null ? record : null;
 }
 
-function readVerdict(result: ToolResultMessage): { key: string; record: Omit<VerdictRecord, "order"> } | null {
+function readVerdict(result: ToolResultMessage): { key: string; record: Omit<VerdictRecord, "order" | "at"> } | null {
   const record = readVerdictShape(result);
   if (!record) return null;
   const verdict = record.verdict;
@@ -276,7 +289,7 @@ export function reduceDispatchRecord(message: AgentMessage): AgentMessage | null
       if (message.toolName === "wait") {
         const jobs = objectEntries<WaitJobShape>((message.details as { jobs?: unknown } | undefined)?.jobs)
           .filter((job) => job.type === "task")
-          .map((job) => ({ type: job.type, id: job.id, status: job.status }));
+          .map((job) => ({ type: job.type, id: job.id, status: job.status, ...(job.durationMs === undefined ? {} : { durationMs: job.durationMs }) }));
         return jobs.length > 0 ? { ...base, details: { jobs } } : null;
       }
       return null;
@@ -311,6 +324,7 @@ export function buildDispatchLedger(
   const spawnedAt = new Map<string, number>();
   const durations = new Map<string, number>();
   const parallelWith = new Map<string, Set<string>>();
+  const runStartedAt = new Map<string, number>();
 
   const observe = (agentId: string, status: SubagentStatus | null, order: number) => {
     const key = latestByAgent.get(agentId);
@@ -325,7 +339,15 @@ export function buildDispatchLedger(
     const status = normalizeStatus(job.status);
     if (!key || terminalSeen.has(key) || (status !== "completed" && status !== "failed" && status !== "aborted")) return;
     terminalSeen.add(key);
-    if (typeof job.durationMs === "number" && Number.isFinite(job.durationMs) && job.durationMs >= 0) durations.set(key, job.durationMs);
+    const duration = jobDuration(job);
+    if (duration !== null) durations.set(key, duration);
+  };
+  // 실행 중 작업의 경과는 그 실행의 시작을 알려 준다. 끝난 작업의 소요는 결과 시각과 끝난 시각이 달라 시작을 알려 주지 않는다.
+  const observeRunStart = (job: WaitJobShape, agentId: string | null, at: number | undefined) => {
+    const key = agentId ? latestByAgent.get(agentId) : undefined;
+    const elapsed = jobDuration(job);
+    if (!key || typeof at !== "number" || elapsed === null || normalizeStatus(job.status) !== "running") return;
+    runStartedAt.set(key, Math.max(runStartedAt.get(key) ?? -Infinity, at - elapsed));
   };
 
   messages.forEach((message, order) => {
@@ -346,7 +368,7 @@ export function buildDispatchLedger(
         const read = readVerdict(message);
         if (!read) return;
         const list = verdicts.get(read.key) ?? [];
-        list.push({ ...read.record, order });
+        list.push({ ...read.record, order, at: typeof message.timestamp === "number" ? message.timestamp : null });
         verdicts.set(read.key, list);
         return;
       }
@@ -357,6 +379,7 @@ export function buildDispatchLedger(
           const agentId = readString(job.id);
           if (agentId) observe(agentId, normalizeStatus(job.status), order);
           observeDuration(job, agentId);
+          observeRunStart(job, agentId, message.timestamp);
           if (agentId && normalizeStatus(job.status) === "running") {
             const key = latestByAgent.get(agentId);
             if (key) running.add(key);
@@ -384,7 +407,7 @@ export function buildDispatchLedger(
     }
   });
 
-  return { verdicts, runs, latestByAgent, spawnedAt, durations, parallelWith };
+  return { verdicts, runs, latestByAgent, spawnedAt, durations, parallelWith, runStartedAt };
 }
 
 export type MakerRunState = "dispatching" | "pending" | "running" | "completed" | "failed" | "aborted" | "unobserved";
@@ -398,9 +421,33 @@ export interface MakerPresentation {
   run: MakerRunState;
   /** 실행 상태의 출처. 미관측이면 null. */
   runSource: "live" | "record" | null;
+  /** 지금 실행의 Main 판정. 마지막 판정보다 뒤에 시작한 실행이 관측되면 null이다(그 판정은 `priorVerdict`). */
   verdict: VerdictRecord | null;
+  /**
+   * 지금 실행보다 앞선 실행에 내린 마지막 판정. 판정 뒤에 시작한 실행이 시각과 함께 관측될 때만 채운다 —
+   * 시각을 모르면 판정은 지금 판정으로 남는다.
+   */
+  priorVerdict: VerdictRecord | null;
+  /**
+   * `priorVerdict`가 있을 때 지금 실행의 TASK_TITLE: 그 실행을 깨운 메시지(`progress.task`)에 제 줄로 적힌 제목.
+   * 없으면 null — 화면은 지금 실행의 제목이 기록되지 않았다고 말하고, `title`은 첫 발주의 제목으로 남는다.
+   */
+  runTitle: string | null;
   /** 실제 동시 실행 스냅샷에 함께 등장한 발주 key. 발주 시각·소요로 추정하지 않는다. */
   observedParallelWith?: ReadonlySet<string>;
+}
+
+/**
+ * 이 발주의 실행이 가장 늦게 시작한 것으로 관측된 시각(ms): Main wait의 running 작업과, 실행 중 스냅샷의
+ * `마지막 보고 시각 − 경과`. 끝난 스냅샷의 경과는 마지막 진행 보고 시점 값이라 시작이 아니다. 관측이 없으면 null.
+ */
+function observedRunStart(key: string, live: SubagentSnapshot | undefined, ledger: DispatchLedger): number | null {
+  const recorded = ledger.runStartedAt.get(key) ?? null;
+  const elapsed = live?.progress?.durationMs;
+  const active = live && (live.status === "pending" || live.status === "running");
+  const fromLive = active && typeof elapsed === "number" && live.lastUpdate > 0 ? live.lastUpdate - elapsed : null;
+  if (recorded === null) return fromLive;
+  return fromLive === null ? recorded : Math.max(recorded, fromLive);
 }
 
 /** 이 발주에 속한 실시간 스냅샷. parentToolCallId가 있으면 그것으로만 잇는다. */
@@ -453,6 +500,10 @@ export function presentMaker(
     run = member.spawned ? "unobserved" : "dispatching";
   }
   const verdicts = ledger.verdicts.get(member.key);
+  const latest = verdicts && verdicts.length > 0 ? verdicts[verdicts.length - 1] : null;
+  const latestAt = latest?.at ?? null;
+  const runStart = latestAt === null ? null : observedRunStart(member.key, live, ledger);
+  const earlier = latestAt !== null && runStart !== null && runStart > latestAt;
   return {
     member,
     title: presentation.title,
@@ -461,7 +512,9 @@ export function presentMaker(
     model: live ? resolveSubagentModelMeta(record) : null,
     run,
     runSource,
-    verdict: verdicts && verdicts.length > 0 ? verdicts[verdicts.length - 1] : null,
+    verdict: earlier ? null : latest,
+    priorVerdict: earlier ? latest : null,
+    runTitle: earlier ? readExplicitTaskTitle(live?.progress?.task) : null,
     observedParallelWith: ledger.parallelWith.get(member.key),
   };
 }

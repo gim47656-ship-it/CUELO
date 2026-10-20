@@ -1,4 +1,6 @@
+import { readCheckRun } from "./answer-status/work-flow";
 import { selectCurrentTodo, summarizeTodo } from "./todo-state";
+import { isScratchOnlyWrite } from "./turn-written-files";
 import type { AgentMessage, AssistantMessage, SubagentSnapshot, ToolCallContent, ToolResultMessage } from "./types";
 
 /**
@@ -7,6 +9,7 @@ import type { AgentMessage, AssistantMessage, SubagentSnapshot, ToolCallContent,
  *
  * - 단계: 자식 자신의 도구 호출 흐름. 첫 edit/write 전은 조사, edit/write가 보이면 구현,
  *   마지막 edit 뒤 bash/eval은 검증, yield는 보고. 다시 고치면 구현으로 돌아간다 - 단조롭지 않다.
+ *   작업용 임시 경로에만 쓴 edit/write(`isScratchOnlyWrite`)는 조사 산출물이라 고친 것으로 세지 않는다.
  *   자식은 todo를 거의 쓰지 않아(2026-09-07 이후 자식 기록 1,987개 중 9개) todo는 기준이 아니라
  *   있을 때만 덧붙인다.
  * - 남은 시간: routing ledger의 같은 모델·같은 작업 등급(NORMAL/HARD) 첫 시도 완료 기록 가운데
@@ -167,36 +170,179 @@ export type SubagentPhase = (typeof SUBAGENT_PHASES)[number];
 const EDIT_TOOLS: Record<string, true> = { edit: true, write: true, ast_edit: true, multiedit: true, notebookedit: true };
 const RUN_TOOLS: Record<string, true> = { bash: true, eval: true };
 
+/** 자식 기록의 도구 호출(순서대로)과 호출 id별 결과. */
+function readToolCalls(messages: readonly AgentMessage[]): { blocks: ToolCallContent[]; results: Map<string, ToolResultMessage> } {
+  const blocks: ToolCallContent[] = [];
+  const results = new Map<string, ToolResultMessage>();
+  for (const message of messages) {
+    if (message.role === "toolResult") results.set(message.toolCallId, message);
+    if (message.role !== "assistant" || !Array.isArray((message as AssistantMessage).content)) continue;
+    for (const block of (message as AssistantMessage).content) {
+      if (block.type === "toolCall") blocks.push(block);
+    }
+  }
+  return { blocks, results };
+}
+
+/**
+ * 고친 것으로 치는 호출: 수정 도구이면서 작업용 임시 경로에만 쓴 것이 아니다. `cwd`는 자식의 작업 폴더이며, 모르면
+ * 절대 경로를 작업 폴더 밖 규칙으로 읽는다(`isScratchPath`).
+ */
+function isWorkEdit(block: ToolCallContent, name: string, results: ReadonlyMap<string, ToolResultMessage>, cwd: string | undefined): boolean {
+  return EDIT_TOOLS[name] === true && !isScratchOnlyWrite(block.input, results.get(block.toolCallId), cwd);
+}
+
 /**
  * 자식 자신의 도구 호출로 지금 단계를 읽는다. 순서대로 따라가며 edit/write는 구현, 구현 뒤의
  * bash/eval은 검증, yield는 보고로 옮긴다. 첫 edit 전의 bash/eval은 아직 조사다. 고친 뒤 다시
- * 고치면 구현으로 돌아가므로 지금 단계만 말할 뿐 앞으로만 간다고 주장하지 않는다.
+ * 고치면 구현으로 돌아가므로 지금 단계만 말할 뿐 앞으로만 간다고 주장하지 않는다. 작업용 임시
+ * 경로에만 쓴 호출은 읽기처럼 단계를 옮기지 않는다. `cwd`는 자식의 작업 폴더(알 때만).
  * 기록이 비었으면 null.
  */
-export function classifySubagentPhase(messages: readonly AgentMessage[]): SubagentPhase | null {
+export function classifySubagentPhase(messages: readonly AgentMessage[], cwd?: string): SubagentPhase | null {
   if (messages.length === 0) return null;
+  const { blocks, results } = readToolCalls(messages);
   let phase: SubagentPhase = "investigate";
   let editedSinceReport = false;
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    const blocks = (message as AssistantMessage).content;
-    if (!Array.isArray(blocks)) continue;
-    for (const block of blocks) {
-      if (block.type !== "toolCall") continue;
-      // 확장 이름공간(`ext.edit` 등)은 마지막 이름만 본다.
-      const name = ((block as ToolCallContent).toolName ?? "").toLowerCase().split(/[.:/]/).pop() ?? "";
-      if (EDIT_TOOLS[name]) {
-        editedSinceReport = true;
-        phase = "implement";
-      } else if (RUN_TOOLS[name]) {
-        phase = editedSinceReport ? "verify" : "investigate";
-      } else if (name === "yield") {
-        phase = "report";
-        editedSinceReport = false;
-      }
+  for (const block of blocks) {
+    const name = toolBaseName(block);
+    if (isWorkEdit(block, name, results, cwd)) {
+      editedSinceReport = true;
+      phase = "implement";
+    } else if (RUN_TOOLS[name]) {
+      phase = editedSinceReport ? "verify" : "investigate";
+    } else if (name === "yield") {
+      phase = "report";
+      editedSinceReport = false;
     }
   }
   return phase;
+}
+
+/** 실행 하나에서 자식 자신의 도구 호출로 읽은 단계 흐름. */
+export interface SubagentRunTrace {
+  /** 단계별 도구 호출 수. 호출은 그 호출을 처리한 뒤의 단계에 센다. 0이면 그 단계에 들어가지 않았다. */
+  calls: Record<SubagentPhase, number>;
+  /** 이 실행의 마지막 단계. `classifySubagentPhase`와 같은 규칙이다. */
+  phase: SubagentPhase;
+  /** 끝맺는 보고(yield, 부분 보고가 아닌 것)로 끝난 실행이다. */
+  ended: boolean;
+  /** 검증 단계에서 다시 고친 횟수. */
+  reedits: number;
+  /** 검증 단계 검사 명령의 판정 수. 결과가 기록에 없거나 판정할 수 없는 검사는 unknown이다. */
+  checks: { passed: number; failed: number; unknown: number };
+  /** 마지막 수정 뒤에 검증 단계 호출이 있다. false면 앞선 검증은 수정 전 것이다. */
+  verifiedAfterEdit: boolean;
+}
+
+function toolBaseName(block: ToolCallContent): string {
+  // 확장 이름공간(`ext.edit` 등)은 마지막 이름만 본다.
+  return (block.toolName ?? "").toLowerCase().split(/[.:/]/).pop() ?? "";
+}
+
+/** 실행을 끝맺는 보고. 부분 보고(`type`이 배열)는 실행을 끝내지 않는다. */
+function endsRun(block: ToolCallContent): boolean {
+  return toolBaseName(block) === "yield" && !Array.isArray(block.input?.type);
+}
+
+/**
+ * 자식 기록에서 지금 실행의 흐름을 읽는다. 실행은 끝맺는 보고(yield)로 나뉜다 — 다시 깨운 자식의 새 실행은 앞 실행의
+ * 보고 뒤에서 조사부터 시작한다. 마지막 보고 뒤에 도구 호출이 없으면 그 보고로 끝난 실행이 기록의 마지막 실행이다.
+ * 단계 규칙은 `classifySubagentPhase`와 같고, 검증 단계 bash 가운데 검사 명령만 그 결과로 판정한다. 기록이 비었으면 null.
+ */
+export function traceSubagentRun(messages: readonly AgentMessage[], cwd?: string): SubagentRunTrace | null {
+  if (messages.length === 0) return null;
+  const { blocks, results } = readToolCalls(messages);
+  let lastEnd = -1;
+  blocks.forEach((block, index) => {
+    if (endsRun(block)) lastEnd = index;
+  });
+  // 보고 뒤에 아직 호출이 없으면 그 보고로 끝난 실행을 읽는다.
+  const ended = lastEnd >= 0 && lastEnd === blocks.length - 1;
+  const from = ended ? blocks.findLastIndex((block, index) => index < lastEnd && endsRun(block)) + 1 : lastEnd + 1;
+  const trace: SubagentRunTrace = {
+    calls: { investigate: 0, implement: 0, verify: 0, report: 0 },
+    phase: "investigate",
+    ended,
+    reedits: 0,
+    checks: { passed: 0, failed: 0, unknown: 0 },
+    verifiedAfterEdit: false,
+  };
+  let edited = false;
+  for (const block of blocks.slice(from)) {
+    const name = toolBaseName(block);
+    if (isWorkEdit(block, name, results, cwd)) {
+      if (trace.phase === "verify") trace.reedits += 1;
+      edited = true;
+      trace.phase = "implement";
+      trace.verifiedAfterEdit = false;
+    } else if (RUN_TOOLS[name]) {
+      trace.phase = edited ? "verify" : "investigate";
+      if (edited) {
+        trace.verifiedAfterEdit = true;
+        const check = readCheckRun(block, results.get(block.toolCallId));
+        if (check?.state === "passed") trace.checks.passed += 1;
+        else if (check?.state === "failed") trace.checks.failed += 1;
+        else if (check) trace.checks.unknown += 1;
+      }
+    } else if (name === "yield") {
+      trace.phase = "report";
+      edited = false;
+    }
+    trace.calls[trace.phase] += 1;
+  }
+  return trace;
+}
+
+/**
+ * 그래프 한 칸의 상태. done: 이 실행에서 들어갔다, stale: 검증했지만 그 뒤에 다시 고쳤다, active: 실행 중인 지금 단계,
+ * waiting: 실행 중이고 아직 닿지 않았다, skipped: 들어가지 않고 뒤 단계로 갔다, none: 끝난 실행이 닿지 못했다,
+ * unobserved: 자식 기록을 읽지 못했다.
+ */
+export type SubagentStationState = "done" | "stale" | "active" | "waiting" | "skipped" | "none" | "unobserved";
+
+export interface SubagentStation {
+  phase: SubagentPhase;
+  state: SubagentStationState;
+  calls: number;
+}
+
+export interface SubagentFlow {
+  /** 그래프가 그리는 실행. 기록을 읽지 못했으면 null. */
+  run: SubagentRunTrace | null;
+  stations: SubagentStation[];
+}
+
+/**
+ * 서브에이전트 카드 그래프의 조사 → 구현 → 검증 → 보고 칸. 기록이 보고로 끝났는데 자식이 다시 실행 중이면 새 실행이 아직
+ * 도구를 부르지 않은 것이라 빈 실행(조사)을 그린다. 그 밖에는 기록된 호출만 칸을 채우고, 들어간 적 없는 칸은 건너뜀,
+ * 실행 중에 아직 닿지 않은 칸만 대기다.
+ */
+export function buildSubagentFlow(trace: SubagentRunTrace | null, live: boolean): SubagentFlow {
+  if (!trace) return { run: null, stations: SUBAGENT_PHASES.map((phase) => ({ phase, state: "unobserved", calls: 0 })) };
+  const run: SubagentRunTrace = live && trace.ended
+    ? {
+      calls: { investigate: 0, implement: 0, verify: 0, report: 0 },
+      phase: "investigate",
+      ended: false,
+      reedits: 0,
+      checks: { passed: 0, failed: 0, unknown: 0 },
+      verifiedAfterEdit: false,
+    }
+    : trace;
+  const reached = live
+    ? SUBAGENT_PHASES.indexOf(run.phase)
+    : SUBAGENT_PHASES.findLastIndex((phase) => run.calls[phase] > 0);
+  const stations = SUBAGENT_PHASES.map((phase, index): SubagentStation => {
+    const calls = run.calls[phase];
+    let state: SubagentStationState;
+    if (live && phase === run.phase) state = "active";
+    else if (calls > 0) state = phase === "verify" && !run.verifiedAfterEdit ? "stale" : "done";
+    else if (index < reached) state = "skipped";
+    else state = live ? "waiting" : "none";
+    return { phase, state, calls };
+  });
+  return { run, stations };
 }
 
 export interface SubagentTodoProgress {

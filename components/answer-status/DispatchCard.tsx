@@ -7,17 +7,20 @@ import {
   listMakerAttempts,
   presentMaker,
   readDispatchMembers,
+  type MakerAttempt,
   type MakerPresentation,
   type MakerRunState,
+  type VerdictRecord,
 } from "@/lib/answer-status/dispatch";
 import { summarizeTurn, type TurnSummary } from "@/lib/answer-status/turn-summary";
 import { createHanseSubagentClient } from "@/lib/hanse-subagent-client";
+import { buildSubagentFlow, traceSubagentRun, type SubagentRunTrace } from "@/lib/subagent-progress";
 import type { AssistantContentBlock, SubagentSnapshot, ToolCallContent, ToolResultMessage } from "@/lib/types";
 import { isActiveSubagentStatus, useSubagentTranscripts, type LiveTranscriptView, type SubagentTranscriptRead } from "@/hooks/useSubagentTranscripts";
 import { useI18n } from "@/hooks/useI18n";
 import { AnswerStatusContext } from "./AnswerStatusContext";
 import { useAnswerStatusText, type AnswerStatusMessageKey, type AnswerStatusTranslate } from "./i18n";
-import { SubagentLiveEta, SubagentPhaseSteps, todoText, useSubagentProgress } from "./SubagentProgress";
+import { SubagentFlowGraph, SubagentLiveEta, todoText, useSubagentProgress } from "./SubagentProgress";
 
 export const RUN_LABEL: Record<MakerRunState, AnswerStatusMessageKey> = {
   dispatching: "run.dispatching",
@@ -74,18 +77,47 @@ function sessionFileName(snapshot: SubagentSnapshot): string | undefined {
 
 type LaneChecks = { kind: "running" } | { kind: "loading" } | { kind: "unobserved" } | { kind: "counted"; passed: number; total: number };
 
-function laneChecks(read: SubagentTranscriptRead | undefined, snapshot: SubagentSnapshot | undefined): LaneChecks {
+function laneChecks(read: SubagentTranscriptRead | undefined, snapshot: SubagentSnapshot | undefined, cwd: string | undefined): LaneChecks {
   if (!snapshot) return { kind: "unobserved" };
   // 실행 중인 Maker의 기록은 단계 표시(useSubagentProgress)가 이미 읽는다. 검사 수는 끝난 뒤에 센다.
   if (isActiveSubagentStatus(snapshot.status)) return { kind: "running" };
   const state = read?.state;
   if (!state || state.kind === "loading") return { kind: "loading" };
   if (state.kind === "ready-live") {
-    const { checks } = summarizeMakerRun(state.entries);
+    const { checks } = summarizeMakerRun(state.entries, cwd);
     return { kind: "counted", passed: checks.filter((check) => check.state === "passed").length, total: checks.length };
   }
   if (state.kind === "empty" && state.source === "live") return { kind: "counted", passed: 0, total: 0 };
   return { kind: "unobserved" };
+}
+
+/**
+ * 끝난 실행의 실시간 기록에서 읽은 마지막 실행 흐름. 디스크 기록은 도구 결과가 없고 앞부분이 잘릴 수 있어 쓰지 않는다 —
+ * 그때 그래프는 기록 미관측이다.
+ */
+function finishedRunTrace(read: SubagentTranscriptRead | undefined, cwd: string | undefined): SubagentRunTrace | null {
+  const state = read?.state;
+  if (state?.kind !== "ready-live") return null;
+  return traceSubagentRun(state.entries.flatMap((entry) => ("message" in entry ? [entry.message] : [])), cwd);
+}
+
+/**
+ * Maker 이름 자리. 지난 판정 뒤에 다시 깨운 실행이면 그 실행의 제목을 쓰고, 그 제목이 기록에 없으면 보이는 제목이 첫 발주의
+ * 제목임을 밝힌다.
+ */
+function MakerName({ maker, st }: { maker: MakerPresentation; st: AnswerStatusTranslate }) {
+  const name = maker.runTitle ?? maker.title;
+  return (
+    <>
+      <span className="answer-dispatch-name" title={name}>{name}</span>
+      {maker.priorVerdict && !maker.runTitle && <span className="answer-dispatch-title-note">{st("subflow.firstTitle")}</span>}
+    </>
+  );
+}
+
+function verdictText(st: AnswerStatusTranslate, verdict: VerdictRecord): string {
+  const attempt = verdict.attempt !== null && verdict.attempt > 1 ? ` · ${st("verdict.attempt", { attempt: verdict.attempt })}` : "";
+  return `${st(VERDICT_LABEL[verdict.verdict])}${attempt}${verdict.reason ? ` · ${verdict.reason}` : ""}`;
 }
 
 /**
@@ -95,7 +127,7 @@ function laneChecks(read: SubagentTranscriptRead | undefined, snapshot: Subagent
  * 재작업이 있었으면 시도가 차례로 묶인다. 그 아래 모델·판정 사유와 패널 링크가 이어진다.
  */
 export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
-  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch, sessionId, onOpenMaker, selectedMaker } = useContext(AnswerStatusContext);
+  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch, sessionId, cwd, onOpenMaker, selectedMaker } = useContext(AnswerStatusContext);
   const { st } = useAnswerStatusText();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -117,7 +149,7 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
     }),
     [makers, subagents, ledger],
   );
-  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: true, transcripts: open });
+  const progressViews = useSubagentProgress({ sessionId, snapshots: runningSnapshots, client, enabled: true, transcripts: open, cwd });
   // 펼친 카드의 검사 수는 그 발주가 정확히 띄운 실행의 기록에서만 센다. 이름이 같은 다른 실행은 쓰지 않는다.
   const exactSnapshots = useMemo(
     () => new Map(makers.flatMap((maker) => {
@@ -184,14 +216,19 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
           const view = snapshot ? progressViews.get(snapshot.id) : undefined;
           const exact = exactSnapshots.get(maker.member.key);
           const focused = maker.member.key === focusedDispatch || maker.member.key === selectedMaker?.origin;
+          // 기록만 실행 중이라고 하는 것은 실시간 관측이 아니다. 진행·대기 칸과 움직임은 실시간 스냅샷이 있을 때만 그린다.
+          const liveRun = active && maker.runSource === "live";
+          // 펼친 카드만 자식 기록을 읽는다. 실행 중이면 진행 관측의 기록, 끝났으면 그 발주가 띄운 실행의 실시간 기록이다.
+          const flow = open ? buildSubagentFlow(liveRun ? view?.trace ?? null : finishedRunTrace(laneReads.get(maker.member.key), cwd), liveRun) : null;
+          const attempts = open ? listMakerAttempts(maker.member, ledger) : [];
           return (
           <li key={maker.member.key} className="answer-dispatch-row" data-dispatch-key={maker.member.key} data-focused={focused ? "" : undefined}>
             {open
               ? (
                 <DispatchLaneLine
                   maker={maker}
-                  phase={view?.phase ? st(`phase.${view.phase}`) : null}
-                  checks={laneChecks(laneReads.get(maker.member.key), exact)}
+                  phase={liveRun && flow?.run ? st(`phase.${flow.run.phase}`) : null}
+                  checks={laneChecks(laneReads.get(maker.member.key), exact, cwd)}
                   onOpen={exact && onOpenMaker
                     ? () => onOpenMaker({
                       key: `live:${exact.id}`,
@@ -204,16 +241,17 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
               )
               : (
                 <div className="answer-dispatch-line">
-                  <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
+                  <MakerName maker={maker} st={st} />
                   <MakerStatusPair maker={maker} st={st} />
                 </div>
               )}
-            {open && <AttemptChain maker={maker} />}
+            {flow && (
+              <SubagentFlowGraph flow={flow} live={liveRun} verdict={maker.verdict} attempts={attempts} />
+            )}
+            {open && <AttemptChain attempts={attempts} />}
             {snapshot && view && (
               <div className="answer-dispatch-progress">
-                {view.phase && <SubagentPhaseSteps phase={view.phase} />}
-                {view.phase && view.todo ? ` · ${todoText(st, view.todo)}` : null}
-                {view.phase ? " · " : null}
+                {view.todo ? `${todoText(st, view.todo)} · ` : null}
                 <SubagentLiveEta snapshot={snapshot} view={view} />
               </div>
             )}
@@ -241,6 +279,18 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
                     {maker.runSource ? ` · ${st(maker.runSource === "live" ? "detail.source.live" : "detail.source.record")}` : ""}
                   </dd>
                 </div>
+                {maker.priorVerdict && (
+                  <div>
+                    <dt>{st("subflow.prior")}</dt>
+                    <dd>{verdictText(st, maker.priorVerdict)}</dd>
+                  </div>
+                )}
+                {maker.priorVerdict && (
+                  <div>
+                    <dt>{st(maker.runTitle ? "subflow.firstTitle" : "subflow.runTitle")}</dt>
+                    <dd>{maker.runTitle ? maker.title : st("detail.stageNone")}</dd>
+                  </div>
+                )}
                 {maker.verdict?.reason && (
                   <div>
                     <dt>{st("detail.reason")}</dt>
@@ -281,7 +331,7 @@ function DispatchLaneLine({ maker, phase, checks, onOpen }: {
       : t(checks.kind === "loading" ? "dispatchLane.checksLoading" : "dispatchLane.checksUnobserved");
   return (
     <div className="answer-dispatch-line is-lane">
-      <span className="answer-dispatch-name" title={maker.title}>{maker.title}</span>
+      <MakerName maker={maker} st={st} />
       <span className="answer-status-pair">
         <span className="answer-status-run" data-state={maker.run}>{phase ? t("dispatchLane.runPhase", { run, phase }) : run}</span>
         {checksLabel && <span className="answer-dispatch-checks" data-checks={checks.kind === "counted" && checks.passed < checks.total ? "failed" : checks.kind}>{checksLabel}</span>}
@@ -300,10 +350,8 @@ function DispatchLaneLine({ maker, phase, checks, onOpen }: {
 }
 
 /** 같은 assignment에 판정이 둘 이상 남았을 때 시도를 순서대로 잇는다(시도 1 재작업 → 시도 2 수용). */
-function AttemptChain({ maker }: { maker: MakerPresentation }) {
-  const { ledger } = useContext(AnswerStatusContext);
+function AttemptChain({ attempts }: { attempts: readonly MakerAttempt[] }) {
   const { t } = useI18n();
-  const attempts = listMakerAttempts(maker.member, ledger);
   if (attempts.length < 2) return null;
   return (
     <ol className="answer-dispatch-attempts" aria-label={t("dispatchLane.label")}>

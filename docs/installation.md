@@ -102,7 +102,7 @@ task:
 eval: { autoBackground: { enabled: true } }
 ```
 
-1~3단계는 사용자 프로필이 아니라 CUELO 폴더 안의 `.runtime-patch-home`을 home으로 써서 실행합니다(CI와 같은 격리 방식). 그래서 빌드는 사용자의 omp 설정을 읽지 않고, Windows 보호 폴더를 건드리다 EPERM으로 실패하지도 않습니다. `--home`은 4단계에서 하네스를 복사할 위치만 정합니다.
+1~3단계는 사용자 프로필이 아니라 CUELO 폴더 안의 `.runtime-patch-home`을 home으로 써서 실행합니다(CI와 같은 격리 방식). 그래서 빌드는 사용자의 omp 설정을 읽지 않고, Windows 보호 폴더를 건드리다 EPERM으로 실패하지도 않습니다. `--home`은 4단계에서 하네스를 복사할 위치만 정합니다. Bun 설치 캐시만은 평소 위치(`BUN_INSTALL_CACHE_DIR`, 없으면 `~/.bun/install/cache`)를 그대로 씁니다. 캐시가 CUELO 폴더 안에 쌓이면 빌드가 그것까지 훑어서 크게 느려지기 때문입니다. 예전 설치가 폴더 안에 남긴 `.runtime-patch-home/.bun/install/cache`는 `setup`이 지웁니다.
 
 ### 모델 역할 지정(선택)
 

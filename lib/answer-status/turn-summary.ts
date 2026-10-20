@@ -189,7 +189,7 @@ export function summarizeFinishedTurns(
     summaries.set(position, {
       ...summarizeTurn(blocks, toolResults, cwd),
       span: readTurnSpan(messages, range.from, range.to),
-      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads),
+      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads, cwd),
       latest: position === latest,
     });
   }

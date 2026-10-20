@@ -34,6 +34,8 @@ export interface AnswerStatusContextValue {
   focusedDispatch?: string | null;
   /** 이 대화의 세션 id. 실행 중 Maker의 진행률·예상 시간을 읽을 때 쓴다. 없으면 그 줄을 숨긴다. */
   sessionId?: string | null;
+  /** 이 대화의 작업 폴더. 자식 기록에서 임시 파일 쓰기를 가를 때 쓴다(밖의 임시 폴더만 임시로 본다). */
+  cwd?: string;
   /**
    * Maker 상세를 덱에 연다. `reveal`이 false면 이미 열린 같은 대상의 상태만 갱신하고 보기를 옮기지 않는다.
    * 없으면 카드에 자세히 버튼이 없다.

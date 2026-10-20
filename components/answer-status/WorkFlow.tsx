@@ -20,14 +20,15 @@ import type { AnswerStatusTranslate } from "./i18n";
 export type StageLook = "done" | "active" | "running" | "waiting" | "skipped" | "approval" | "stale" | "unverified" | "failed";
 
 /**
- * 끝난 턴은 다음 차례 단계 하나를, 진행 중인 턴은 지금 단계 하나를 active로 둔다. 판정이 남은 지난 단계는 노드가
- * 중립이고 글자가 판정을 전한다. 아직 오지 않은 배포는 마름모 노드다. 건너뛴 단계와 필요 없는 배포는 흐린 대시 노드다.
- * 수정 전에 통과한 단계는 점선 체크 노드다 — 마지막 수정본을 보증하지 않는다.
+ * 진행 중인 턴은 지금 단계 하나를 active로 둔다. 끝난 턴에는 active가 없다 — 다음 차례도 진행 중도 없다. 판정이 남은 지난
+ * 단계는 노드가 중립이고 글자가 판정을 전한다. 아직 오지 않은 배포는 마름모 노드다. 건너뛴 단계와 필요 없는 단계는 흐린 대시
+ * 노드다. 수정 전에 통과한 단계는 점선 체크 노드다 — 마지막 수정본을 보증하지 않는다.
  */
 export function stageLook(view: StageView, flow: WorkFlow, live: boolean): StageLook {
-  if (live ? flow.current === view.stage : flow.next?.stage === view.stage) return "active";
+  if (live && flow.current === view.stage) return "active";
   if (view.status === "waiting") return view.stage === "deploy" ? "approval" : "waiting";
-  if (view.status === "skipped" || view.status === "stale") return view.status;
+  if (view.status === "skipped" || view.status === "notNeeded") return "skipped";
+  if (view.status === "stale") return "stale";
   if (view.status === "done" || view.status === "passed") return "done";
   if (view.status === "failed" || view.status === "running") return view.status;
   return "unverified";
@@ -102,7 +103,8 @@ function StepVerdict({ step, st }: { step: WorkStep; st: AnswerStatusTranslate }
   if (step.stale) {
     word = st(step.outcome === "passed" ? "flow.state.stale" : "flow.state.staleDone");
   } else if (step.stage === "review" && step.outcome === "failed" && step.findings !== null) {
-    word = st(step.action === "resolve" ? "flow.state.open" : "flow.state.findings", { count: step.findings });
+    const findingsKey = step.findings === 1 ? "flow.state.findings.one" : "flow.state.findings";
+    word = st(step.action === "resolve" ? "flow.state.open" : findingsKey, { count: step.findings });
   } else if (step.stage === "review" && step.unusable) {
     word = st("flow.state.reviewUnusable");
   } else if (step.stage === "review" && step.outcome === "done") {
@@ -111,7 +113,7 @@ function StepVerdict({ step, st }: { step: WorkStep; st: AnswerStatusTranslate }
   return (
     <span className="flow-tone" data-tone={stepTone(step)}>
       {word}
-      {step.stage === "commit" && step.commit && <> · <code className="flow-sha">{step.commit.slice(0, 7)}</code></>}
+      {step.stage === "commit" && step.commit && <> <span className="flow-sha-tail">·&nbsp;<code className="flow-sha">{step.commit.slice(0, 7)}</code></span></>}
     </span>
   );
 }
@@ -220,11 +222,7 @@ export function StageWord({ view, flow, live, st, compact = false }: {
 }): ReactNode {
   if (live && flow.current === view.stage) return st("flow.state.running");
   if (view.status === "waiting") return st("flow.state.waiting");
-  // 마지막 배포는 뒤 단계가 없어 건너뛸 수 없다. 배포의 skipped는 문서만 바꾼 커밋이라 필요 없다는 뜻이다.
-  // CI의 skipped는 공개 저장소가 바뀌지 않은 비공개 게시가 관측됐을 때(publication)만 필요 없음이다.
-  if (view.status === "skipped") {
-    return st(view.stage === "deploy" || (view.stage === "ci" && flow.publication) ? "flow.state.notNeeded" : "flow.state.skipped");
-  }
+  if (view.status === "skipped" || view.status === "notNeeded") return st(`flow.state.${view.status}`);
   const latest = view.steps[view.steps.length - 1];
   if (view.stage === "investigate") return st(view.status === "running" ? "flow.state.running" : "flow.state.done");
   if (view.stage === "edit" && view.status === "done") return st(flow.attempt > 1 ? "flow.state.redone" : "flow.state.done");
@@ -242,32 +240,11 @@ export function StageWord({ view, flow, live, st, compact = false }: {
   return <StepVerdict step={latest} st={st} />;
 }
 
-/**
- * 끝난 턴의 다음 차례 단계에 붙는 말. 수정으로 돌아가는 차례면 몇 번째 수정까지 끝났는지 함께 적는다.
- */
-export function NextMark({ view, flow, st }: { view: StageView; flow: WorkFlow; st: AnswerStatusTranslate }) {
-  if (flow.next?.returning) {
-    return (
-      <>
-        <span className="flow-now">{st("flow.next.returning")}</span>
-        {" · "}
-        {st(flow.attempt > 1 ? "flow.next.attemptDone" : "flow.next.firstDone", { attempt: flow.attempt })}
-      </>
-    );
-  }
-  const now = <span className="flow-now">{st("flow.next")}</span>;
-  return view.status === "waiting" ? now : <>{now} · <StageWord view={view} flow={flow} live={false} st={st} /></>;
-}
-
-/** 입력창 위 줄의 맨 앞 말: 진행 중이면 지금 단계(2회차부터 회차도), 멈췄으면 다음 차례 단계. 둘 다 없으면 null. */
+/** 입력창 위 줄의 맨 앞 말: 진행 중일 때만 지금 단계(2회차부터 회차도). 끝난 턴이나 단계가 없으면 null. */
 export function stripLead(flow: WorkFlow, busy: boolean, st: AnswerStatusTranslate): string | null {
-  if (busy) {
-    if (!flow.current) return null;
-    const running = st("flow.strip.running", { stage: st(`flow.stage.${flow.current}`) });
-    return flow.attempt > 1 ? `${running} · ${st("flow.attempt", { attempt: flow.attempt })}` : running;
-  }
-  if (!flow.next) return null;
-  return flow.next.returning ? st("flow.strip.returning") : st("flow.strip.next", { stage: st(`flow.stage.${flow.next.stage}`) });
+  if (!busy || !flow.current) return null;
+  const running = st("flow.strip.running", { stage: st(`flow.stage.${flow.current}`) });
+  return flow.attempt > 1 ? `${running} · ${st("flow.attempt", { attempt: flow.attempt })}` : running;
 }
 
 /**
@@ -293,7 +270,7 @@ export function WorkFlowChain({ flow, live, st, id }: { flow: WorkFlow; live: bo
                 <StageNode look={look} />
                 <span className="flow-link-name">{st(`flow.stage.${view.stage}`)}</span>
                 <span className="flow-link-state">
-                  {!live && look === "active" ? st("flow.next") : <StageWord view={view} flow={flow} live={live} st={st} compact />}
+                  <StageWord view={view} flow={flow} live={live} st={st} compact />
                 </span>
               </li>
             );

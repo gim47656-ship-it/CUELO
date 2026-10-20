@@ -55,7 +55,7 @@ export function DeliveryRows({ rows, removeLabel, onRemove }: {
           const written = parsed
             ? [parsed.message, parsed.documents.map((document) => document.name).join(", ")].filter(Boolean).join(" · ")
             : row.text.trim();
-          const displayText = [written, row.images > 0 ? st("delivery.images", { count: row.images }) : ""]
+          const displayText = [written, row.images > 0 ? st(row.images === 1 ? "delivery.images.one" : "delivery.images", { count: row.images }) : ""]
             .filter(Boolean)
             .join(" · ");
           return (

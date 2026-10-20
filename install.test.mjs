@@ -7,6 +7,7 @@ import YAML from "yaml";
 import {
   createProfileConfig,
   checkHealth,
+  dropInTreeBunCache,
   portEnv,
   servicePorts,
   copyHarness,
@@ -25,6 +26,31 @@ function write(root, relative, text) {
   fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
   fs.writeFileSync(path.join(root, relative), text);
 }
+
+test("the in-tree bun cache is removed, but a cache reached through a link is left alone", () => {
+  const tree = tempDir("tree");
+  const outside = tempDir("outside");
+  try {
+    write(tree, "own/.bun/install/cache/pkg/index.js", "stale\n");
+    write(tree, "own/.bun/keep.txt", "keep\n");
+    dropInTreeBunCache(path.join(tree, "own"));
+    assert.equal(fs.existsSync(path.join(tree, "own/.bun/install/cache")), false);
+    assert.equal(fs.readFileSync(path.join(tree, "own/.bun/keep.txt"), "utf8"), "keep\n");
+
+    // A user who moved `.bun` (or `install`) out with a link points it at a shared cache.
+    write(outside, "install/cache/pkg/index.js", "shared\n");
+    for (const [link, target] of [[".bun", outside], [".bun/install", path.join(outside, "install")]]) {
+      const home = path.join(tree, `linked-${link.replace(/\W/g, "")}`);
+      fs.mkdirSync(path.dirname(path.join(home, link)), { recursive: true });
+      fs.symlinkSync(target, path.join(home, link), "junction");
+      dropInTreeBunCache(home);
+      assert.equal(fs.readFileSync(path.join(outside, "install/cache/pkg/index.js"), "utf8"), "shared\n", link);
+    }
+  } finally {
+    fs.rmSync(tree, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
 
 test("the installer and the Model roles panel name the same harness slots", () => {
   // install.mjs runs before dependencies exist and cannot import the app's TypeScript list.

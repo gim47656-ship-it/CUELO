@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import type { MakerAttempt, VerdictRecord } from "@/lib/answer-status/dispatch";
 import type { HanseSubagentClient } from "@/lib/hanse-subagent-client";
 import {
   classifySubagentPhase,
@@ -9,16 +10,23 @@ import {
   readSubagentTodoProgress,
   splitApproxDuration,
   subagentElapsedMs,
+  traceSubagentRun,
   SUBAGENT_PHASES,
   type EtaHistory,
   type SubagentEtaResponse,
+  type SubagentFlow,
   type SubagentPhase,
+  type SubagentRunTrace,
+  type SubagentStation,
+  type SubagentStationState,
   type SubagentTodoProgress,
 } from "@/lib/subagent-progress";
 import type { SubagentSnapshot } from "@/lib/types";
 import { isActiveSubagentStatus, useSubagentTranscripts } from "@/hooks/useSubagentTranscripts";
 import { useNow } from "@/hooks/useNow";
+import { FlowMotionToggle, useFlowMotionPaused } from "./flow-motion";
 import { useAnswerStatusText, type AnswerStatusTranslate } from "./i18n";
+import { StageNode, type StageLook } from "./WorkFlow";
 
 /** 경과·남은 시간을 다시 그리는 간격. 진행 보고가 없는 동안에도 경과가 흐른다. */
 const LIVE_TICK_MS = 5_000;
@@ -26,6 +34,8 @@ const LIVE_TICK_MS = 5_000;
 /** 실행 중 자식 하나의 관측: 도구 흐름으로 읽은 단계, 있으면 todo, 같은 묶음의 과거 소요 시간. */
 export interface SubagentProgressView {
   phase: SubagentPhase | null;
+  /** 자식 기록에서 읽은 지금 실행의 흐름. 기록을 읽지 않았으면 null. */
+  trace: SubagentRunTrace | null;
   todo: SubagentTodoProgress | null;
   history: EtaHistory | null;
 }
@@ -43,12 +53,15 @@ export function useSubagentProgress({
   client,
   enabled,
   transcripts = true,
+  cwd,
 }: {
   sessionId: string | null | undefined;
   snapshots: readonly SubagentSnapshot[];
   client: HanseSubagentClient;
   enabled: boolean;
   transcripts?: boolean;
+  /** 이 대화의 작업 폴더. 자식의 임시 파일 쓰기 판정에 쓴다. */
+  cwd?: string;
 }): ReadonlyMap<string, SubagentProgressView> {
   const active = useMemo(() => snapshots.filter((snapshot) => isActiveSubagentStatus(snapshot.status)), [snapshots]);
   const on = enabled && Boolean(sessionId) && active.length > 0;
@@ -103,13 +116,14 @@ export function useSubagentProgress({
       const entries = transcripts ? reads.get(snapshot.id)?.entries ?? [] : [];
       const messages = entries.flatMap((entry) => ("message" in entry ? [entry.message] : []));
       views.set(snapshot.id, {
-        phase: classifySubagentPhase(messages),
+        phase: classifySubagentPhase(messages, cwd),
+        trace: traceSubagentRun(messages, cwd),
         todo: readSubagentTodoProgress(messages),
         history: sessionHistories?.[snapshot.id] ?? null,
       });
     }
     return views;
-  }, [active, histories, on, reads, sessionId, transcripts]);
+  }, [active, cwd, histories, on, reads, sessionId, transcripts]);
 }
 
 /** 대략의 길이(분 단위). 1분 미만은 따로 말한다. */
@@ -167,6 +181,121 @@ export function SubagentPhaseSteps({ phase }: { phase: SubagentPhase }) {
         ))}
       </span>
     </span>
+  );
+}
+
+/** 칸 상태 → 노드 모양. 닿지 못한 칸은 건너뜀(—), 기록을 읽지 못한 칸은 본 그래프의 미확인(!)과 같은 모양이다. */
+const STATION_LOOK: Record<SubagentStationState, StageLook> = {
+  done: "done",
+  stale: "stale",
+  active: "active",
+  waiting: "waiting",
+  skipped: "skipped",
+  none: "skipped",
+  unobserved: "unverified",
+};
+
+function checksWord(st: AnswerStatusTranslate, checks: SubagentRunTrace["checks"]): ReactNode {
+  const total = checks.passed + checks.failed + checks.unknown;
+  const tone = checks.failed > 0 ? "failed" : checks.unknown > 0 ? "unverified" : "passed";
+  return <span className="flow-tone" data-tone={tone}>{st("subflow.checks", { passed: checks.passed, total })}</span>;
+}
+
+/** 한 칸의 상태 말. 색만으로 나누지 않도록 상태마다 글이 다르다. */
+function stationWord(st: AnswerStatusTranslate, station: SubagentStation, run: SubagentRunTrace | null): ReactNode {
+  const checked = station.phase === "verify" && run !== null && run.checks.passed + run.checks.failed + run.checks.unknown > 0;
+  switch (station.state) {
+    case "active":
+      return checked && run ? <>{st("flow.state.running")} · {checksWord(st, run.checks)}</> : st("flow.state.running");
+    case "waiting":
+      return st("flow.state.waiting");
+    case "skipped":
+      return st("flow.state.skipped");
+    case "none":
+      return st("detail.stageNone");
+    case "unobserved":
+      return st("subflow.unobserved");
+    case "stale":
+      return st(run && run.checks.passed > 0 ? "flow.state.stale" : "flow.state.staleDone");
+    case "done":
+      if (station.phase === "report") return st("subflow.reported");
+      if (checked && run) return checksWord(st, run.checks);
+      if (station.phase === "implement" && run && run.reedits > 0) {
+        return `${st("subflow.calls", { count: station.calls })} · ${st("subflow.reedits", { count: run.reedits })}`;
+      }
+      return st("subflow.calls", { count: station.calls });
+  }
+}
+
+/**
+ * 서브에이전트 한 실행의 그래프: 조사 → 구현 → 검증 → 보고 칸은 자식 자신의 도구 호출(`buildSubagentFlow`)에서, 마지막
+ * Main 판정 칸은 이 실행의 routing_verdict에서 온다. Main 재작업 요청이 있었으면 판정에서 구현으로 되돌아온 노란 화살표를
+ * 그린다(좁으면 구현부터 판정까지 레일이 노랗다). 지난 실행의 판정은 이 칸에 넣지 않는다(카드의 「이전 판정」). 움직임은
+ * 자식이 실행 중일 때 지금 칸의 진행 막대(좁으면 줄 끝 커서)에만 있고, 움직임 멈춤과 동작 줄이기 설정을 따른다.
+ */
+export function SubagentFlowGraph({ flow, live, verdict, attempts }: {
+  flow: SubagentFlow;
+  /** 이 발주가 띄운 자식이 지금 실시간으로 실행 중이다. 진행 중·대기 칸과 움직임은 이때만 있다. */
+  live: boolean;
+  verdict: VerdictRecord | null;
+  attempts: readonly MakerAttempt[];
+}) {
+  const { st } = useAnswerStatusText();
+  const paused = useFlowMotionPaused();
+  const activeIndex = flow.stations.findIndex((station) => station.state === "active");
+  const implementIndex = SUBAGENT_PHASES.indexOf("implement");
+  const reworks = attempts.filter((entry) => entry.verdict === "rework").length;
+  const verdictLook: StageLook = verdict ? (verdict.verdict === "accepted" ? "done" : "unverified") : "waiting";
+  const verdictWord = verdict
+    ? `${st(`verdict.${verdict.verdict}`)}${verdict.attempt !== null && verdict.attempt > 1 ? ` · ${st("verdict.attempt", { attempt: verdict.attempt })}` : ""}`
+    : st(live ? "flow.state.waiting" : "verdict.none");
+  return (
+    <div className="subagent-flow">
+      {live && activeIndex >= 0 && <FlowMotionToggle paused={paused} />}
+      <ol className="flow-graph" aria-label={st("subflow.aria")} data-live={live ? "" : undefined} data-motion={paused ? "paused" : undefined}>
+        {flow.stations.map((station, index) => {
+          const look = STATION_LOOK[station.state];
+          return (
+            <li
+              key={station.phase}
+              className="flow-graph-station"
+              data-stage={station.phase}
+              data-state={look}
+              data-loop={reworks > 0 && index >= implementIndex ? "" : undefined}
+              aria-current={station.state === "active" ? "step" : undefined}
+              style={{ "--col": index + 1 } as CSSProperties}
+            >
+              <div className="flow-graph-stop">
+                <span className="flow-graph-stop-name">{st(`phase.${station.phase}`)}</span>
+                <span className="flow-graph-stop-state">
+                  <StageNode look={look} />
+                  <span className="flow-graph-stop-word">{stationWord(st, station, flow.run)}</span>
+                </span>
+              </div>
+            </li>
+          );
+        })}
+        <li className="flow-graph-station" data-stage="verdict" data-state={verdictLook} style={{ "--col": SUBAGENT_PHASES.length + 1 } as CSSProperties}>
+          <div className="flow-graph-stop">
+            <span className="flow-graph-stop-name">{st("graph.join")}</span>
+            <span className="flow-graph-stop-state">
+              <StageNode look={verdictLook} />
+              <span className="flow-graph-stop-word">{verdictWord}</span>
+            </span>
+          </div>
+        </li>
+        {reworks > 0 && (
+          <li className="flow-graph-return" style={{ "--from": implementIndex + 1, "--to": SUBAGENT_PHASES.length + 1 } as CSSProperties}>
+            <span className="flow-graph-return-line" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="5 12 12 5 19 12" />
+              </svg>
+            </span>
+            <span className="flow-graph-return-text">{st("subflow.rework", { count: reworks })}</span>
+          </li>
+        )}
+      </ol>
+    </div>
   );
 }
 

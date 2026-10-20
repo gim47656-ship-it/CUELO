@@ -9,9 +9,9 @@ import { TodoChecklistRow } from "./TodoChecklistRow";
 import { summarizeTodo, type TodoPhase } from "@/lib/todo-state";
 
 /**
- * The one line above the composer that says where this session is in its work. It leads with the work stage read
- * from the last turn's own tool calls - the stage in progress while the agent runs (with the attempt once a failure
- * sent it back to edit), or the stage that comes next once it stopped - and then the task in hand from the todo the
+ * The one line above the composer that says where this session is in its work. While the agent runs it leads with the
+ * stage in progress, read from the turn's own tool calls (with the attempt once a failure sent it back to edit); a
+ * finished turn has no lead, since nothing is in progress or up next. Then comes the task in hand from the todo the
  * agent's tool reported, with how many are left. No timer, no separate store. Opening the task shows the full list;
  * 「작업 흐름」 opens the stage chain.
  */
@@ -27,7 +27,7 @@ export function TodoStrip({ phases, flow, busy }: { phases: TodoPhase[] | null; 
   const hasFlow = flow.steps.length > 0;
   const lead = stripLead(flow, busy, st);
 
-  // A turn that went all the way through deploy has nothing next; its card in the transcript keeps the stages.
+  // A finished turn without a todo shows nothing here; its card in the transcript keeps the stages.
   if (total === 0 && lead === null) return null;
 
   const done = total > 0 && remaining === 0;

@@ -1113,9 +1113,10 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     onOpenPanel: onOpenWorkspaceView,
     focusedDispatch: flashDispatch,
     sessionId: session?.id ?? null,
+    cwd: session?.cwd ?? newSessionCwd ?? undefined,
     onOpenMaker,
     selectedMaker,
-  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id, onOpenMaker, selectedMaker]);
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id, session?.cwd, newSessionCwd, onOpenMaker, selectedMaker]);
   // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
   const dispatchDock = useMemo(
     () => collectDockMakers(workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch),
@@ -1317,7 +1318,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // 착수를 알린다. 재렌더·도구마다 다시 부르지 않고, 새 활동 없이 타이머로 반복하지도 않는다.
   const streamingAssistant = streamingMessage?.role === "assistant" ? streamingMessage as AssistantMessage : null;
   // 입력창 위 줄의 작업 단계: 마지막 요청(스티어링으로 끼어든 입력은 앞 요청을 잇는다) 뒤 도구 호출에, 아직 흐르는 답의 도구 호출을 더한다.
-  // 진행 중이면 결과가 오지 않은 호출을 진행 중으로 보고, 멈췄으면 끝난 턴처럼 다음 차례를 고른다. 끝난 요청 카드와 같은 범위다.
+  // 진행 중이면 결과가 오지 않은 호출을 진행 중으로 보고, 멈췄으면 끝난 턴처럼 들어가지 않은 단계를 닫는다. 끝난 요청 카드와 같은 범위다.
   const stripRequest = useMemo(() => {
     let lastUser = -1;
     for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
@@ -1332,8 +1333,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   }, [messages, toolResultsMap]);
   const stripFlow = useMemo(() => {
     const blocks = streamingAssistant ? [...stripRequest.blocks, ...(streamingAssistant.content ?? [])] : stripRequest.blocks;
-    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads);
-  }, [stripRequest, streamingAssistant, toolResultsMap, sessionBusy]);
+    return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads, messageCwd);
+  }, [stripRequest, streamingAssistant, toolResultsMap, sessionBusy, messageCwd]);
   // 실행 중인 요청의 카드. 끝난 요청 카드와 같은 모양으로 기록 끝(흐르는 답 위)에 두고, 단계는 입력창 위 줄과 같은 흐름이다.
   // 파일·검사·발주는 기록된 호출에서만 센다. 끝나면 사라지고 그 요청의 마지막 답 아래 끝난 카드가 이어받는다.
   const liveTurn = useMemo(() => (sessionBusy ? {

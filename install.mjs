@@ -230,6 +230,19 @@ function bunPath() {
   return bun;
 }
 
+/**
+ * Removes the bun install cache older setups left inside the isolated build HOME. Only when every
+ * folder on the way is a real directory: a `.bun` the user replaced with a link (or junction)
+ * points at a shared cache that is not ours to delete.
+ */
+export function dropInTreeBunCache(buildHome) {
+  const cache = path.join(buildHome, ".bun", "install", "cache");
+  const steps = [buildHome, path.join(buildHome, ".bun"), path.dirname(cache), cache];
+  if (steps.every((step) => fs.lstatSync(step, { throwIfNoEntry: false })?.isDirectory())) {
+    fs.rmSync(cache, { recursive: true, force: true });
+  }
+}
+
 function prepareRuntime() {
   const node = process.versions.bun ? "node" : process.execPath;
   const sourceCheckout = fs.existsSync(path.join(ROOT, "bun.lock")) && fs.existsSync(path.join(ROOT, "app", "layout.tsx"));
@@ -243,6 +256,12 @@ function prepareRuntime() {
   // `--home` names where the harness goes, never what the build sees.
   const buildHome = path.join(ROOT, ".runtime-patch-home");
   fs.mkdirSync(buildHome, { recursive: true });
+  // Bun keeps its install cache under HOME, so with HOME inside ROOT it grew with every new
+  // dependency version inside the tree (6.8GB on the office PC, 2026-10-20) and the build walked
+  // it: compile 8.9 min, 101 s with it hidden. The cache is not omp state, so it stays the
+  // user's own; the copy older setups left in the tree is dropped (bun refills from there).
+  const bunCache = process.env.BUN_INSTALL_CACHE_DIR || path.join(os.homedir(), ".bun", "install", "cache");
+  dropInTreeBunCache(buildHome);
   const buildRoot = path.parse(buildHome).root;
   const { PI_CODING_AGENT_DIR: _profile, ...inherited } = process.env;
   const buildEnv = {
@@ -251,6 +270,7 @@ function prepareRuntime() {
     USERPROFILE: buildHome,
     HOMEDRIVE: buildRoot.replace(/[\\/]+$/, ""),
     HOMEPATH: buildHome.slice(buildRoot.length - 1),
+    BUN_INSTALL_CACHE_DIR: bunCache,
     NEXT_TELEMETRY_DISABLED: "1",
   };
   const bun = bunPath();

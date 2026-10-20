@@ -483,28 +483,31 @@
 .flow-section { padding: 14px 18px 10px; }
 .flow-heading { margin: 0 0 10px; font-size: 15px; font-weight: 600; color: var(--text); }
 /*
- * 결과 카드의 작업 흐름 그래프. 넓으면 위 줄이 일곱 단계 노드이고, 그 아래 줄에 되돌아온 화살표(되돌아오게 한 단계 → 수정),
- * 수정 단계에서 맡긴 Maker 갈래, 변경 결과가 차례로 붙는다. 좁으면 레일 | 내용 두 칸으로 세로로 쌓는다.
- * 고를 수 있는 노드는 테두리 있는 단추이고, 고른 노드는 채움과 진한 테두리로 보인다(aria-pressed).
+ * 결과 카드의 작업 흐름 그래프(CI 파이프라인형). 넓으면 둘째 줄이 단계 상자 일곱 개이고, 첫째 줄에 되돌아온 화살표(되돌아오게 한
+ * 단계 → 수정, 노란 선), 셋째 줄에 수정에서 갈라져 검사로 합류하는 Maker 갈래, 넷째 줄에 변경 결과가 붙는다. 상자는 단계 이름과
+ * 상태 표지 + 상태 말 두 줄이고, 앞 회차에도 돈 단계 상자는 뒤에 테두리가 한 장 더 겹친다. 좁으면(아래 @container) 레일 하나에
+ * 한 줄씩 쌓는 로그 레일이다. 고를 수 있는 상자·줄은 단추이고, 고른 것은 채움과 진한 테두리로 보인다(aria-pressed).
+ * 칸은 가장 긴 낱말보다 좁아지지 않는다(min-content) — 단계 이름과 상태 말은 낱말 가운데서 끊지 않는다.
  */
-.flow-graph { list-style: none; margin: 0; padding: 4px 0 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); column-gap: 4px; row-gap: 12px; }
-.flow-graph-station { grid-row: 2; grid-column: var(--col); position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; text-align: center; }
-.flow-graph-station::after { content: ""; position: absolute; top: 11px; left: calc(50% + 16px); right: calc(-50% + 12px); border-top: 2px solid var(--border-strong); }
+.flow-graph { --flow-gap: 10px; list-style: none; margin: 0; padding: 4px 0 0; display: grid; grid-template-columns: repeat(7, minmax(min-content, 1fr)); column-gap: var(--flow-gap); row-gap: 10px; }
+.flow-graph-station { grid-row: 2; grid-column: var(--col); position: relative; display: flex; min-width: 0; }
+/* 다음 상자로 가는 연결선. 지나온 길은 진한 2px, 지금·대기·건너뜀 뒤로 아직 가지 않은 길은 옅은 1px 실선이다. */
+.flow-graph-station::after { content: ""; position: absolute; top: 16px; left: 100%; width: var(--flow-gap); border-top: 2px solid var(--border-strong); }
 .flow-graph-station[data-state="active"]::after,
 .flow-graph-station[data-state="waiting"]::after,
-.flow-graph-station[data-state="skipped"]::after { border-top-style: dashed; border-top-color: var(--border); }
-.flow-graph-station[data-reentry]::after { border-top-style: solid; border-top-color: var(--border-strong); }
+.flow-graph-station[data-state="approval"]::after,
+.flow-graph-station[data-state="skipped"]::after { top: 17px; border-top-width: 1px; border-top-color: var(--border); }
 .flow-graph-station[data-stage="deploy"]::after { content: none; }
-.flow-graph-station > .flow-node { grid-area: auto; }
-.flow-graph-station[data-state="done"] > .flow-node { background: var(--border-strong); }
-.flow-graph-station[data-state="active"] > .flow-node { width: 24px; height: 24px; margin-top: 0; box-shadow: 0 0 0 5px var(--accent-soft); }
 .flow-graph-stop,
 .flow-graph-maker,
 .flow-graph-output { border: 1px solid transparent; border-radius: var(--radius-control); background: none; color: inherit; font: inherit; }
-.flow-graph-stop { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; min-width: 0; min-height: 44px; padding: 4px 4px 6px; text-align: center; overflow-wrap: anywhere; }
+.flow-graph-stop { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; min-width: 0; min-height: 56px; padding: 6px 5px 9px; border-color: var(--border); background: var(--bg); text-align: left; }
+.flow-graph-station[data-again] > .flow-graph-stop { box-shadow: 3px 3px 0 -1px var(--bg-panel), 3px 3px 0 0 var(--border-strong); }
+.flow-graph-station[data-state="active"] > .flow-graph-stop { border-color: var(--metric); }
 button.flow-graph-stop,
 .flow-graph-maker,
 .flow-graph-output { border-color: var(--border); cursor: pointer; }
+button.flow-graph-stop { border-color: var(--border-strong); }
 button.flow-graph-stop:hover,
 .flow-graph-maker:hover,
 .flow-graph-output:hover { background: var(--bg-hover); }
@@ -516,9 +519,10 @@ button.flow-graph-stop:focus-visible,
 .flow-graph-output:focus-visible,
 .flow-graph-open:focus-visible,
 .flow-graph-motion:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
-.flow-graph-stop-name { font-size: 15px; font-weight: 600; line-height: 22px; color: var(--text); }
-.flow-graph-stop-state { font-size: 13px; line-height: 19px; color: var(--text-muted); }
-.flow-graph-station[data-state="active"] .flow-graph-stop-name { font-size: 16px; font-weight: 700; }
+.flow-graph-stop-name { font-size: 15px; font-weight: 600; line-height: 20px; color: var(--text); word-break: keep-all; overflow-wrap: break-word; }
+.flow-graph-stop-state { display: flex; align-items: flex-start; gap: 4px; min-width: 0; font-size: 13px; line-height: 18px; color: var(--text-muted); word-break: keep-all; overflow-wrap: break-word; }
+.flow-graph-stop-word { min-width: 0; }
+.flow-graph-station[data-state="active"] .flow-graph-stop-name { font-weight: 700; }
 .flow-graph-station[data-state="waiting"] .flow-graph-stop-name,
 .flow-graph-station[data-state="approval"] .flow-graph-stop-name,
 .flow-graph-station[data-state="skipped"] .flow-graph-stop-name,
@@ -526,26 +530,50 @@ button.flow-graph-stop:focus-visible,
 .flow-graph-station[data-state="approval"] .flow-graph-stop-state,
 .flow-graph-station[data-state="skipped"] .flow-graph-stop-state { color: var(--text-dim); }
 .flow-compound { display: inline-flex; align-items: center; max-width: 100%; margin-left: 6px; padding: 0 6px; border: 1px solid var(--danger); border-radius: var(--radius-control); font-size: 12px; font-weight: 600; line-height: 18px; color: var(--danger); overflow-wrap: anywhere; }
-.flow-graph-stop > .flow-compound { margin-left: 0; text-align: center; }
+.flow-graph-stop > .flow-compound { margin-left: 0; }
+/*
+ * 상태 표지(14px). 지난 단계는 중립 채움 체크이고 판정은 글자가 전한다. 지금은 파란 고리와 점, 대기는 빈 고리, 배포 대기는
+ * 마름모, 건너뜀은 대시, 수정 전 통과는 점선 체크, 미확인은 노란 「!」, 실패는 빨간 ×다.
+ */
+.flow-graph-stop-state > .flow-node { flex: none; width: 14px; height: 14px; margin-top: 2px; justify-self: auto; }
+.flow-graph-stop-state > .flow-node > svg { width: 10px; height: 10px; }
+.flow-graph-station[data-state="done"] .flow-graph-stop-state > .flow-node { background: var(--text-muted); color: var(--bg); }
+.flow-graph-station[data-state="stale"] .flow-graph-stop-state > .flow-node { border: 1.5px dashed var(--border-strong); color: var(--text-muted); }
+.flow-graph-station[data-state="active"] .flow-graph-stop-state > .flow-node,
+.flow-graph-station[data-state="running"] .flow-graph-stop-state > .flow-node { border: 2px solid var(--metric); }
+.flow-graph-station[data-state="active"] .flow-graph-stop-state > .flow-node::after,
+.flow-graph-station[data-state="running"] .flow-graph-stop-state > .flow-node::after { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--metric); }
+.flow-graph-station[data-state="waiting"] .flow-graph-stop-state > .flow-node { border: 1.5px solid var(--border-strong); }
+.flow-graph-station[data-state="approval"] .flow-graph-stop-state > .flow-node { width: 10px; height: 10px; margin: 4px 2px 0; border: 1.5px solid var(--text-dim); border-radius: 2px; transform: rotate(45deg); }
+.flow-graph-station[data-state="skipped"] .flow-graph-stop-state > .flow-node { color: var(--text-dim); }
+.flow-graph-station[data-state="unverified"] .flow-graph-stop-state > .flow-node { border: 1.5px solid var(--warning); color: var(--warning); }
+.flow-graph-station[data-state="failed"] .flow-graph-stop-state > .flow-node { background: var(--danger); color: var(--bg); }
 
-/* 되돌아온 화살표: 단계 줄 위에서, 되돌아오게 한 단계에서 올라가 수정으로 내려온다. 넓을 때만 선을 긋고, 좁으면 글만 남는다. */
-.flow-graph-return { grid-row: 1; grid-column: var(--from) / calc(var(--to) + 1); position: relative; display: flex; flex-direction: column-reverse; align-items: center; gap: 4px; min-width: 0; margin-bottom: -8px; }
-.flow-graph-return-line { position: relative; align-self: stretch; height: 16px; margin-inline: calc(100% / (2 * (var(--to) - var(--from) + 1))); border: 3px solid var(--text); border-bottom: 0; border-radius: 8px 8px 0 0; color: var(--text); }
-.flow-graph-return-line > svg { position: absolute; left: -8.5px; bottom: -10px; transform: rotate(180deg); }
-.flow-graph-return-text { font-size: 14px; line-height: 20px; color: var(--text-muted); text-align: center; overflow-wrap: anywhere; }
-.flow-graph-return-text > b { color: var(--text); font-weight: 700; }
+/* 되돌아온 화살표: 단계 줄 위에서, 되돌아오게 한 단계에서 올라가 수정으로 내려오는 노란 선. 좁으면 레일 옆 글 한 줄이 된다. */
+.flow-graph-return { grid-row: 1; grid-column: var(--from) / calc(var(--to) + 1); position: relative; display: flex; flex-direction: column-reverse; align-items: center; gap: 2px; min-width: 0; margin-bottom: -4px; }
+.flow-graph-return-line { position: relative; align-self: stretch; height: 14px; margin-inline: calc((100% - (var(--to) - var(--from)) * var(--flow-gap)) / (2 * (var(--to) - var(--from) + 1))); border: 2px solid var(--warning); border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--warning); }
+.flow-graph-return-line > svg { position: absolute; left: -8px; bottom: -9px; transform: rotate(180deg); }
+.flow-graph-return-text { font-size: 13px; line-height: 18px; color: var(--text-muted); text-align: center; overflow-wrap: anywhere; }
+.flow-graph-return-text > b { color: var(--warning); font-weight: 700; }
 
 /*
- * Maker 갈래: 수정 단계에서 내려와(점선) 펼치고, Main 판정 자리를 거쳐 검사 단계로 올라가 합류한다(실선 화살표).
- * 막대는 그 요청 하나의 시간축을 같이 쓰지만 동시 실행의 증거는 아니다. 합류는 판정 기록을 보일 뿐 통합이 끝났다는 뜻이 아니다.
+ * Maker 갈래: 수정 상자 가운데에서 내려와 펼치고, Main 판정 자리를 거쳐 검사 상자로 올라가 합류한다(화살촉). 갈래는 2~7번째
+ * 칸에 걸치니 칸 너비 = (갈래 너비 − 칸 사이 5개) ÷ 6이다. 막대는 그 요청 하나의 시간축을 같이 쓰지만 동시 실행의 증거는
+ * 아니다. 합류는 판정 기록을 보일 뿐 통합이 끝났다는 뜻이 아니다.
  */
-.flow-graph-branch { grid-row: 3; grid-column: 2 / -1; position: relative; min-width: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg); }
-.flow-graph-branch::before,
-.flow-graph-branch::after { content: ""; position: absolute; top: -13px; height: 12px; border-left: 2px dashed var(--border-strong); }
-.flow-graph-branch::before { left: calc(100% / 12 - 1px); }
-.flow-graph-branch::after { left: calc(100% / 4 - 1px); border-left-style: solid; }
+.flow-graph-branch { --flow-lane: calc((100% - 5 * var(--flow-gap)) / 6); grid-row: 3; grid-column: 2 / -1; position: relative; min-width: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); }
+.flow-graph-branch-head::before,
+.flow-graph-branch::before { content: ""; position: absolute; top: -11px; height: 10px; border-left: 2px solid var(--border-strong); }
+.flow-graph-branch-head::before { left: calc(var(--flow-lane) / 2 - 1px); }
+.flow-graph-branch::before { left: calc(var(--flow-lane) * 1.5 + var(--flow-gap) - 1px); }
+.flow-graph-branch::after { content: ""; position: absolute; top: -10px; left: calc(var(--flow-lane) * 1.5 + var(--flow-gap) - 4px); width: 8px; height: 8px; border-left: 2px solid var(--border-strong); border-top: 2px solid var(--border-strong); transform: rotate(45deg); }
+/* 합류할 검사 단계가 건너뜀·대기면 합류선은 그 단계로 가는 다른 연결선처럼 옅은 1px 선이고 화살촉이 없다. 넓은 배치에만 그린다. */
+@container answer-summary (width > 740px) {
+  .flow-graph-branch[data-merge="quiet"]::before { border-left: 1px solid var(--border); }
+  .flow-graph-branch[data-merge="quiet"]::after { content: none; }
+}
 .flow-graph-branch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--text); }
-.flow-graph-join { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 8px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 14px; }
+.flow-graph-join { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--border); font-size: 14px; }
 .flow-graph-join > .flow-node { margin-top: 0; }
 .flow-graph-join-label { font-weight: 600; color: var(--text); }
 .flow-graph-join-counts { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
@@ -555,6 +583,7 @@ button.flow-graph-stop:focus-visible,
  * 실행·판정 짝(오른쪽 끝 고정). 줄마다 제목 시작과 시간 칸이 같은 자리에 오고, 칩이나 판정 글이 길어도 제목을 줄이지 않는다.
  */
 .flow-graph-maker { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(6rem, 11rem); grid-template-areas: "name name time" "tags pair pair"; align-items: center; gap: 4px 10px; width: 100%; min-height: 44px; padding: 8px 10px; overflow: hidden; background: var(--bg-panel); text-align: left; }
+.flow-graph-lane[data-live] > .flow-graph-maker { border-color: var(--metric); }
 .flow-graph-maker-name { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; color: var(--text); }
 .flow-graph-maker-tags { grid-area: tags; display: flex; flex-wrap: wrap; gap: 4px; margin: 0; }
 .flow-graph-maker-time { grid-area: time; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--text-muted); }
@@ -569,24 +598,11 @@ button.flow-graph-stop:focus-visible,
 .flow-graph-lane[data-run="aborted"] .flow-graph-bar { background: var(--danger); }
 .flow-graph-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .flow-graph-time-missing { color: var(--text-dim); }
-/* 지금 실행 중인 Maker 갈래에만 흐르는 꼬리 달린 빛. 동작 줄이기에서는 멈춘 선이다. */
-.flow-graph-packet {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) -64px 0 / 64px 100% no-repeat;
-  animation: flow-graph-packet 1.6s linear infinite;
-  animation-play-state: var(--flow-motion, running);
-}
-@keyframes flow-graph-packet { from { background-position: -64px 0; } to { background-position: calc(100% + 64px) 0; } }
 
 /*
- * 실행 중인 요청의 흐름: 지금 단계로 들어오는 연결선, 되돌아온 뒤 수정 중일 때의 되돌아온 화살표, 실행 중인 Maker로 내려가는
- * 선이 강조색 선으로 바뀌고, 그 위로 꼬리 달린 빛이 바깥에서 들어와 지나간다. 지금 노드는 강조색으로 채우고 둘레가 번진다.
- * 선 자체는 배경 한 겹으로 그리고 빛만 배경 위치로 옮긴다(배치 계산 없음). 카드 전체는 깜빡이지 않는다.
- * 실행이 끝나면 빛과 번짐만 사라지고 선은 남는다. 움직임 멈춤은 --flow-motion으로 모두 그 자리에 세운다.
+ * 실행 중인 요청의 움직임은 지금 도는 자리에만 있다: 지금 단계 상자 아래 끝과 실행 중인 Maker 줄 아래 끝의 진행 막대(좁은
+ * 배치의 단계 줄은 상태 말 끝의 커서). 연결선과 화살표는 움직이지 않고, 카드 전체도 깜빡이지 않는다. 실행이 끝나면 막대와
+ * 커서만 사라진다. 움직임 멈춤은 --flow-motion으로 모두 그 자리에 세운다.
  */
 .flow-graph[data-motion="paused"] { --flow-motion: paused; }
 .flow-graph-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin: 0 0 10px; }
@@ -594,46 +610,22 @@ button.flow-graph-stop:focus-visible,
 .flow-graph-motion { min-height: 36px; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: none; color: var(--text-muted); font: inherit; font-size: 14px; cursor: pointer; }
 .flow-graph-motion:hover { background: var(--bg-hover); }
 .flow-graph-motion[aria-pressed="true"] { border-color: var(--text); background: var(--accent-soft); color: var(--text); font-weight: 600; }
-.flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-node { position: relative; border-color: var(--accent); box-shadow: 0 0 0 5px var(--accent-soft); }
-.flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-node::after { background: var(--accent); }
-.flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-node::before { content: ""; position: absolute; inset: -5px; border: 2px solid var(--accent); border-radius: 50%; opacity: 0; pointer-events: none; animation: flow-graph-ring 1.8s ease-out infinite; animation-play-state: var(--flow-motion, running); }
-.flow-graph-station[data-feeds]::after {
-  top: 8px;
-  height: 8px;
-  border-top: 0;
-  background:
-    linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) -44px 50% / 44px 5px no-repeat,
-    linear-gradient(var(--accent-line), var(--accent-line)) 0 50% / 100% 3px no-repeat;
-  animation: flow-graph-comet-forward 1.4s linear infinite;
-  animation-play-state: var(--flow-motion, running);
-}
-.flow-graph-branch[data-flowing]::before {
-  width: 8px;
-  margin-left: -3px;
-  border-left: 0;
-  background:
-    linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) 50% -28px / 5px 28px no-repeat,
-    linear-gradient(var(--accent-line), var(--accent-line)) 50% 0 / 3px 100% no-repeat;
-  animation: flow-graph-comet-down 1.4s linear infinite;
-  animation-play-state: var(--flow-motion, running);
-}
-.flow-graph-return[data-flowing] .flow-graph-return-line { border-color: var(--accent-line); color: var(--accent); }
-.flow-graph-return[data-flowing] .flow-graph-return-line::after {
+.flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after,
+.flow-graph-lane[data-live] > .flow-graph-maker::after {
   content: "";
   position: absolute;
-  top: -4px;
-  left: -3px;
-  right: -3px;
-  height: 5px;
-  background: linear-gradient(270deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) calc(100% + 56px) 0 / 56px 100% no-repeat;
-  animation: flow-graph-comet-back 2s linear infinite;
+  left: 5px;
+  right: 5px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(var(--metric), var(--metric)) -50% 0 / 30% 100% no-repeat, var(--border);
+  animation: flow-graph-run 1.6s ease-in-out infinite;
   animation-play-state: var(--flow-motion, running);
 }
-@keyframes flow-graph-ring { from { opacity: 0.8; transform: scale(0.9); } to { opacity: 0; transform: scale(1.5); } }
-@keyframes flow-graph-comet-forward { from { background-position: -44px 50%, 0 50%; } to { background-position: calc(100% + 44px) 50%, 0 50%; } }
-@keyframes flow-graph-comet-down { from { background-position: 50% -28px, 50% 0; } to { background-position: 50% calc(100% + 28px), 50% 0; } }
-@keyframes flow-graph-comet-up { from { background-position: 50% calc(100% + 28px), 50% 0; } to { background-position: 50% -28px, 50% 0; } }
-@keyframes flow-graph-comet-back { from { background-position: calc(100% + 56px) 0; } to { background-position: -56px 0; } }
+.flow-graph-lane[data-live] > .flow-graph-maker::after { left: 0; right: 0; bottom: 0; border-radius: 0; }
+@keyframes flow-graph-run { from { background-position: -50% 0, 0 0; } to { background-position: 150% 0, 0 0; } }
+@keyframes flow-graph-cursor { 50% { opacity: 0; } }
 
 /* 변경 결과: 문서가 아닌 파일과 문서를 따로 고른다. */
 .flow-graph-outputs { grid-row: 4; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
@@ -671,13 +663,14 @@ button.flow-graph-stop:focus-visible,
 [data-state="waiting"] > .flow-node { border: 2px dashed var(--border-strong); }
 [data-state="skipped"] > .flow-node { border: 2px dashed var(--border); color: var(--text-dim); }
 [data-state="approval"] > .flow-node { width: 16px; height: 16px; margin-top: 4px; border-radius: 2px; border: 2px solid var(--text-dim); transform: rotate(45deg); }
-.flow-now { color: var(--text); font-weight: 600; }
 .flow-tone[data-tone="passed"] { color: var(--success); font-weight: 600; }
 .flow-tone[data-tone="failed"] { color: var(--danger); font-weight: 600; }
 .flow-tone[data-tone="unverified"] { color: var(--warning); font-weight: 600; }
 .flow-tone[data-tone="unobserved"] { color: var(--text-dim); }
 .flow-tone[data-tone="stale"] { color: var(--text-muted); font-weight: 600; }
 .flow-sha { font: inherit; font-family: var(--font-mono); }
+/* 「완료 · 4c570d7」이 줄을 넘기면 가운뎃점은 커밋 번호와 함께 다음 줄로 간다(줄 끝에 「·」만 남지 않게). */
+.flow-sha-tail { white-space: nowrap; }
 .flow-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .flow-check-head { display: grid; grid-template-columns: 18px 96px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 40px; margin: 0 -8px; padding: 4px 8px; border-radius: var(--radius-control); font-size: 14px; list-style: none; }
 summary.flow-check-head { cursor: pointer; }
@@ -737,55 +730,54 @@ details[open] > summary .flow-chevron,
 .flow-chain-attempts { margin: 0 8px; padding: 6px 8px 4px; border-top: 1px solid var(--hairline); }
 
 /*
- * 일곱 단계 가로 줄은 한 칸이 가장 긴 단계 이름(영어 「Investigate」, 15px 600)과 묶은 명령 실패 표지의 낱말을 쪼개지 않고
- * 담을 때만 쓴다. 칸 = (판 너비 − 좌우 여백 36 − 칸 사이 24) ÷ 7, 칸 안 = 칸 − 단추 여백·테두리 10. 칸 안이 약 93px
- * (굵게 보이는 다음 차례 이름 16px 700 기준)이 되는 판 너비 780px 이하에서는 레일 | 내용 두 칸 세로 배치로 바꾼다.
+ * 일곱 단계 상자 줄은 상자마다 가장 긴 낱말(영어 「Investigate」 15px 700 약 86px, 상태 말 13px + 표지 18px)을 쪼개지 않고
+ * 담을 때만 쓴다. 판 안 너비(이 쿼리가 재는 값)에서 좌우 여백 36을 빼면 그래프 너비이고, 판 안 741px이면 705px에 칸 사이
+ * 60px을 빼고 일곱 칸이 각자 낱말 폭 이상을 받는다. 그보다 좁으면 레일 하나에 한 줄씩 쌓는 로그 레일로 바꾼다:
+ * 레일 위 상태 표지 | 단계 이름 | 상태 말. 고를 수 있는 줄만 옅은 테두리가 있고, 지금 줄은 파란 테두리와 상태 말 끝 커서다.
  */
-@container answer-summary (max-width: 780px) {
+@container answer-summary (max-width: 740px) {
   .flow-graph { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
   .flow-graph > li { grid-row: auto; grid-column: 1; }
-  .flow-graph-station { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 10px; align-items: start; padding-bottom: 10px; text-align: left; }
-  .flow-graph-station::after { top: 26px; bottom: -2px; left: 11px; right: auto; border-top: 0; border-left: 2px solid var(--border-strong); }
+  .flow-graph-station { display: block; padding: 0 0 6px 30px; }
+  .flow-graph-station::after { top: 25px; bottom: -7px; left: 9px; width: 0; border-top: 0; border-left: 2px solid var(--border-strong); }
   .flow-graph-station[data-state="active"]::after,
   .flow-graph-station[data-state="waiting"]::after,
-  .flow-graph-station[data-state="skipped"]::after { border-left-style: dashed; border-left-color: var(--border); }
-  .flow-graph-station[data-reentry]::after { border-left-style: solid; border-left-color: var(--border-strong); }
-  .flow-graph-stop { align-items: flex-start; min-height: 40px; text-align: left; }
+  .flow-graph-station[data-state="approval"]::after,
+  .flow-graph-station[data-state="skipped"]::after { top: 25px; left: 9.5px; border-left-width: 1px; border-left-color: var(--border); }
+  .flow-graph-station[data-loop]::after { left: 9px; border-left: 2px solid var(--warning); }
+  .flow-graph-stop { position: static; display: grid; grid-template-columns: 104px minmax(0, 1fr); column-gap: 10px; align-items: start; min-height: 32px; padding: 5px 8px; border-color: transparent; background: none; }
+  button.flow-graph-stop { border-color: var(--border); }
+  .flow-graph-station[data-again] > .flow-graph-stop { box-shadow: none; }
+  .flow-graph-stop > .flow-compound { grid-column: 2; justify-self: start; }
+  .flow-graph-stop-state > .flow-node { position: absolute; top: 9px; left: 3px; margin-top: 0; }
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after { content: none; }
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 13px;
+    margin-left: 4px;
+    vertical-align: -2px;
+    background: var(--metric);
+    animation: flow-graph-cursor 1.1s step-end infinite;
+    animation-play-state: var(--flow-motion, running);
+  }
   .flow-graph-branch,
   .flow-graph-return,
-  .flow-graph-outputs { margin: 0 0 10px 34px; }
-  .flow-graph-return { flex-direction: column; margin-bottom: 10px; }
-  .flow-graph-branch::before,
-  .flow-graph-return::before { content: ""; position: absolute; top: -10px; bottom: -12px; left: -25px; height: auto; border-left: 2px solid var(--border-strong); }
+  .flow-graph-outputs { margin: 0 0 8px 30px; }
+  /* 레일은 갈래·되돌아온 줄 옆으로 이어지고, 갈래는 레일에서 꺾여 나온다. */
+  .flow-graph-branch::before { top: 0; bottom: -15px; left: -22px; height: auto; }
+  .flow-graph-branch[data-loop]::before { border-left-color: var(--warning); }
   .flow-graph-branch::after { content: none; }
-  .flow-graph-branch { border-left-width: 1px; }
-  .flow-graph-return { align-items: flex-start; }
+  .flow-graph-branch-head::before { top: 0; left: -22px; width: 21px; height: 16px; border-bottom: 2px solid var(--border-strong); border-bottom-left-radius: 8px; }
+  .flow-graph-branch[data-loop] .flow-graph-branch-head::before { border-left-color: var(--warning); }
+  .flow-graph-return { display: block; padding: 2px 0 2px 10px; border-left: 2px solid var(--warning); }
+  .flow-graph-return::before { content: ""; position: absolute; top: 0; bottom: -15px; left: -23px; border-left: 2px solid var(--border-strong); }
   .flow-graph-return-line { display: none; }
   .flow-graph-return-text { text-align: left; }
   .flow-graph-outputs { padding-top: 8px; }
   .flow-graph-maker { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "tags" "time" "pair"; }
   .flow-graph-maker > .answer-status-pair { justify-self: start; }
-  .flow-graph-station[data-feeds]::after {
-    top: 26px;
-    left: 8px;
-    width: 8px;
-    height: auto;
-    border-left: 0;
-    background:
-      linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) 50% -28px / 5px 28px no-repeat,
-      linear-gradient(var(--accent-line), var(--accent-line)) 50% 0 / 3px 100% no-repeat;
-    animation-name: flow-graph-comet-down;
-  }
-  .flow-graph-return[data-flowing]::before {
-    width: 8px;
-    margin-left: -3px;
-    border-left: 0;
-    background:
-      linear-gradient(0deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent) 60%, var(--accent) 85%) 50% calc(100% + 28px) / 5px 28px no-repeat,
-      linear-gradient(var(--accent-line), var(--accent-line)) 50% 0 / 3px 100% no-repeat;
-    animation: flow-graph-comet-up 2s linear infinite;
-    animation-play-state: var(--flow-motion, running);
-  }
 }
 @container answer-summary (max-width: 560px) {
   .flow-section { padding-inline: 12px; }
@@ -811,6 +803,44 @@ details[open] > summary .flow-chevron,
   .flow-check-label { grid-column: 2 / -1; grid-row: 2; }
   .flow-disclose { grid-column: 3; grid-row: 1; }
   .flow-raw { margin-left: 0; }
+}
+
+/*
+ * 서브에이전트 카드의 실행 흐름: 조사 → 구현 → 검증 → 보고 → Main 판정 다섯 상자. 상자·표지·선·되돌아온 화살표는 요청 카드
+ * 그래프 규칙을 그대로 쓰고, 칸 수와 좁을 때의 로그 레일만 여기 둔다. 다섯 칸이 각자 가장 긴 낱말 폭(약 100px 이하)과 칸 사이
+ * 40px을 받는 너비가 약 520px이라, 카드 안 너비 520px 이하에서 레일로 바꾼다. 좁은 배치 규칙은 이 카드 안에만 걸린다.
+ */
+.subagent-flow { margin: 8px 0 4px; min-width: 0; container: subagent-flow / inline-size; }
+.subagent-flow > .flow-graph-motion { margin-bottom: 6px; }
+.subagent-flow > .flow-graph { grid-template-columns: repeat(5, minmax(min-content, 1fr)); }
+.subagent-flow .flow-graph-station[data-stage="verdict"]::after { content: none; }
+.answer-dispatch-title-note { flex-shrink: 0; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+@container subagent-flow (max-width: 520px) {
+  .subagent-flow > .flow-graph { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+  .flow-graph > li { grid-row: auto; grid-column: 1; }
+  .flow-graph-station { display: block; padding: 0 0 6px 30px; }
+  .flow-graph-station::after { top: 25px; bottom: -7px; left: 9px; width: 0; border-top: 0; border-left: 2px solid var(--border-strong); }
+  .flow-graph-station[data-state="active"]::after,
+  .flow-graph-station[data-state="waiting"]::after,
+  .flow-graph-station[data-state="skipped"]::after { top: 25px; left: 9.5px; border-left-width: 1px; border-left-color: var(--border); }
+  .flow-graph-station[data-loop]::after { left: 9px; border-left: 2px solid var(--warning); }
+  .flow-graph-stop { position: static; display: grid; grid-template-columns: 104px minmax(0, 1fr); column-gap: 10px; align-items: start; min-height: 32px; padding: 5px 8px; border-color: transparent; background: none; }
+  .flow-graph-stop-state > .flow-node { position: absolute; top: 9px; left: 3px; margin-top: 0; }
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after { content: none; }
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 13px;
+    margin-left: 4px;
+    vertical-align: -2px;
+    background: var(--metric);
+    animation: flow-graph-cursor 1.1s step-end infinite;
+    animation-play-state: var(--flow-motion, running);
+  }
+  .flow-graph-return { display: block; margin: 0 0 8px 30px; padding: 2px 0 2px 10px; border-left: 2px solid var(--warning); }
+  .flow-graph-return-line { display: none; }
+  .flow-graph-return-text { text-align: left; }
 }
 
 /* 입력창 위 큐 패널의 행. */
@@ -941,27 +971,14 @@ details[open] > summary .flow-chevron,
     outline-offset: 2px;
   }
 
-  .flow-graph-packet {
+  /* 동작 줄이기: 진행 막대는 왼쪽 끝에 선 조각으로, 커서는 켜진 채로 멈춘다. 멈출 움직임이 없으니 멈춤 단추도 없다. */
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-graph-stop::after,
+  .flow-graph-lane[data-live] > .flow-graph-maker::after {
     animation: none;
-    background: var(--text);
+    background-position: 0 0, 0 0;
   }
 
-  /* 움직임 없이 지금 들어오는 길을 진한 선으로만 보인다. 빛과 번짐은 없고, 멈출 움직임이 없으니 멈춤 단추도 없다. */
-  .flow-graph-station[data-feeds]::after,
-  .flow-graph-branch[data-flowing]::before,
-  .flow-graph-return[data-flowing]::before {
-    animation: none;
-    background-image: none, linear-gradient(var(--text), var(--text));
-  }
-
-  .flow-graph-return[data-flowing] .flow-graph-return-line {
-    border-color: var(--text);
-    color: var(--text);
-  }
-
-  .flow-graph-return[data-flowing] .flow-graph-return-line::after,
-  .flow-graph[data-live] .flow-graph-station[data-state="active"] > .flow-node::before {
-    content: none;
+  .flow-graph[data-live] .flow-graph-station[data-state="active"] .flow-graph-stop-word::after {
     animation: none;
   }
 

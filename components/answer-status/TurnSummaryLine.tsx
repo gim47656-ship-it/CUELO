@@ -57,14 +57,17 @@ export function TurnSummaryLine({ summary, live = false, onOpenFile }: {
   // 단계도 파일·검사·Maker·남은 일도 없는 대화만 숨긴다. 실행 중 카드는 단계가 생기기 전에는 보이지 않는다.
   if (flow.steps.length === 0 && (live || (summary.files.length === 0 && summary.checks.length === 0 && makers.length === 0 && !remaining?.length))) return null;
 
-  const parts = [st("summary.files", { count: summary.files.length }), st("summary.checks", { count: summary.checks.length })];
+  const parts = [
+    st(summary.files.length === 1 ? "summary.files.one" : "summary.files", { count: summary.files.length }),
+    st(summary.checks.length === 1 ? "summary.checks.one" : "summary.checks", { count: summary.checks.length }),
+  ];
   if (live) parts.unshift(st("summary.live"));
   if (failedChecks > 0) parts.push(st("summary.checksFailed", { count: failedChecks }));
   if (compoundFailed > 0) parts.push(st("summary.compoundFailed", { count: compoundFailed }));
-  if (makers.length > 0) parts.push(st("summary.makers", { count: makers.length }));
+  if (makers.length > 0) parts.push(st(makers.length === 1 ? "summary.makers.one" : "summary.makers", { count: makers.length }));
   if (remaining) parts.push(st("summary.remaining", { count: remaining.length }));
   if (!live && unconfirmed > 0) parts.push(st("summary.unverified", { count: unconfirmed }));
-  if (unverifiedVerdicts > 0) parts.push(st("summary.verdictUnverified", { count: unverifiedVerdicts }));
+  if (unverifiedVerdicts > 0) parts.push(st(unverifiedVerdicts === 1 ? "summary.verdictUnverified.one" : "summary.verdictUnverified", { count: unverifiedVerdicts }));
   if (staleChecks > 0) parts.push(st("summary.stale", { count: staleChecks }));
   const attention = (!live && unconfirmed > 0) || failedChecks > 0 || unverifiedVerdicts > 0 || compoundFailed > 0 || staleChecks > 0;
 

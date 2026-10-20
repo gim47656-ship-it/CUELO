@@ -534,7 +534,7 @@ export function SubagentArchivePanel({
   const found = selection ? records.find((record) => record.key === selection.key) ?? null : null;
   // 발주 카드에서 연 선택은 그 task 호출이 띄운 실행일 때만 보인다. 이름이 같은 다른 실행으로 바꿔 보이지 않는다.
   const selected = found && selection?.toolCallId && found.live?.parentToolCallId !== selection.toolCallId ? null : found;
-  const progressViews = useSubagentProgress({ sessionId, snapshots: effectiveLive, client: resolvedClient, enabled: visible && !selection });
+  const progressViews = useSubagentProgress({ sessionId, snapshots: effectiveLive, client: resolvedClient, enabled: visible && !selection, cwd: sessionCwd ?? undefined });
 
   useEffect(() => {
     const key = returnRowRef.current;
