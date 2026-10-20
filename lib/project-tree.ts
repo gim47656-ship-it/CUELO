@@ -72,6 +72,23 @@ function previewForEntry(entry: ProjectableEntry): BranchPreview | undefined {
   return { ...(role ? { role } : {}), text };
 }
 
+// The client reads only identity and the message role from a tree entry; the
+// label comes from branchPreview. Copying whole entries resent every message
+// body on the branch points (over 0.5 MB for one session), so keep the skeleton.
+function slimEntry(entry: ProjectableEntry): ProjectableEntry {
+  const { id, type } = entry;
+  const source = entry as ProjectableEntry & { parentId?: unknown; timestamp?: unknown };
+  return {
+    id,
+    type,
+    ...(source.parentId !== undefined ? { parentId: source.parentId } : {}),
+    ...(source.timestamp !== undefined ? { timestamp: source.timestamp } : {}),
+    ...(isRecord(entry.message) && typeof entry.message.role === "string"
+      ? { message: { role: entry.message.role } }
+      : {}),
+  } as ProjectableEntry;
+}
+
 /**
  * Project the session tree into the shallow navigation tree sent to the client.
  * Keeps roots, branch points, and leaves while contracting single-child chains
@@ -105,6 +122,7 @@ export function projectTreeForResponse<T extends ProjectableTreeNode<T>>(
 
   const cloneNode = (node: T, compressedEntryIds?: string[], branchPreview?: BranchPreview): T => ({
     ...node,
+    entry: slimEntry(node.entry),
     children: [],
     ...(compressedEntryIds?.length ? { compressedEntryIds } : {}),
     ...(branchPreview ? { branchPreview } : {}),

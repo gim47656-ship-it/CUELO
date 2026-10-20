@@ -476,10 +476,15 @@ export function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void
 
 /** One decoded sideband event. Exported so the relay to the live model can be tested without a socket. */
 export function handleServerEvent(call: LiveCall, wrapper: AgentSessionWrapper, event: LiveServerEvent, wireId: string | undefined): void {
+  // `session.started` can arrive before the sideband connects and never reach
+  // us (seen on interpreter calls); any later non-error frame still proves the
+  // session is up. Leave "connecting" once, sending the history digest once.
+  if (call.state === "connecting" && event.type !== "error") {
+    setState(call, "live");
+    sendSessionHistory(call, wrapper);
+  }
   switch (event.type) {
     case "session.started":
-      setState(call, "live");
-      sendSessionHistory(call, wrapper);
       return;
     case "input_transcript.added": {
       const text = updateTranscript(call, "user", event.item.text, false, wireId);

@@ -781,6 +781,24 @@ function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
   return { ...message, content };
 }
 
+// Provider replay data (`providerPayload`, thinking/text signatures) is opaque
+// ciphertext the provider needs on the next request; the browser never shows
+// it. It was over 60% of one session's history payload and barely compresses,
+// so the UI projection drops it. The session file and the live agent keep it.
+function omitOpaqueReplayData(message: AgentMessage): AgentMessage {
+  if (message.role !== "assistant") return message;
+  const { providerPayload: _payload, ...rest } = message as AgentMessage & { providerPayload?: unknown };
+  const content = message.content.map((block) => {
+    if (!("thinkingSignature" in block) && !("textSignature" in block)) return block;
+    const { thinkingSignature: _thinking, textSignature: _text, ...kept } = block as typeof block & {
+      thinkingSignature?: unknown;
+      textSignature?: unknown;
+    };
+    return kept as typeof block;
+  });
+  return { ...rest, content } as AgentMessage;
+}
+
 // A live session's entries are the in-memory originals; omp caps oversized
 // strings only when it writes them to the session file. Apply the same
 // 500,000-character cap to the history payload so a live session cannot answer
@@ -835,9 +853,10 @@ function entryToUiMessage(
   // normalizeToolCalls is a secondary guard (returns non-assistant messages as-is).
   switch (entry.type) {
     case "message": {
+      const normalized = omitOpaqueReplayData(normalizeToolCalls(entry.message));
       const message = options.deferToolResultImages
-        ? omitToolResultBase64Images(normalizeToolCalls(entry.message))
-        : normalizeToolCalls(entry.message);
+        ? omitToolResultBase64Images(normalized)
+        : normalized;
       if (!options.deferThinking || message.role !== "assistant") return message;
       return {
         ...message,
