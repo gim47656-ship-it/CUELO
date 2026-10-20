@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -213,10 +213,12 @@ function officeAgentDir(): string {
   return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent");
 }
 
+// 시각·크기만으로는 링크를 같은 크기의 일반 파일로 바꾼 것을 놓친다(Windows 파일 시각은 시스템 tick 단위라 같게 나올 수 있다).
+// 그래서 경로 자체가 링크인지와 대상 inode도 함께 본다.
 function fileStamp(path: string): string {
   try {
     const stat = statSync(path);
-    return `${stat.mtimeMs}:${stat.size}`;
+    return `${lstatSync(path).isSymbolicLink() ? "l" : "f"}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
   } catch {
     return "-";
   }

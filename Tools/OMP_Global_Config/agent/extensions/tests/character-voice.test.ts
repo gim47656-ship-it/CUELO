@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -32,6 +32,17 @@ import characterVoice, {
   rewriteTaskInputForCharacterSummon,
 } from "../character-voice";
 import type { CharacterAlias } from "../character-voice";
+
+// 사무실 모드는 agent dir의 모드 파일·명단을 요청마다 읽는다. 실제 프로필이 사무실 모드여도 기본 출력 회귀가 흔들리지 않게
+// 이 파일은 빈 agent dir에서 돈다(사무실 모드 테스트는 withOfficeProfile이 따로 덮는다).
+const realAgentDir = process.env.PI_CODING_AGENT_DIR;
+const isolatedAgentDir = mkdtempSync(join(tmpdir(), "character-voice-agent-"));
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+afterAll(() => {
+  if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = realAgentDir;
+  rmSync(isolatedAgentDir, { recursive: true, force: true });
+});
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -1041,11 +1052,15 @@ describe("office mode character seat", () => {
   test("a face that resolves outside characters-office through a symlink is rejected, and a later deleted face invalidates the entry", async () => {
     await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER, noFace: true }, (dir) => {
       const outside = join(dir, "outside.png");
+      // Windows는 파일 시각이 시스템 tick 단위라, 같은 크기의 새 파일이 링크 대상과 같은 mtime을 받을 수 있다. 두 파일을 같은 시각에 고정한다.
+      const tick = new Date("2026-01-01T00:00:00.000Z");
       writeFileSync(outside, "png");
+      utimesSync(outside, tick, tick);
       symlinkSync(outside, join(dir, "characters-office", "testa.png"));
       expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
       rmSync(join(dir, "characters-office", "testa.png"));
       writeFileSync(join(dir, "characters-office", "testa.png"), "png");
+      utimesSync(join(dir, "characters-office", "testa.png"), tick, tick);
       expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
       rmSync(join(dir, "characters-office", "testa.png"));
       expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
