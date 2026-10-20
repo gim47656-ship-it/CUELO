@@ -2296,6 +2296,15 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		patched: "- After `BackgroundUnavailable`, follow the setting the error names. Under `takeover`, a per-call `takeover: true` needs no confirmation; use it instead of `computer.control.acquire`. Under `refuse` nothing was sent, and `takeover: true`, `raise()` and `control.acquire` are refused too: drive web pages through `browser` (relay) and controls through AX, or hand that step to the user. Acquired control requires live human confirmation; acquire only on user request and release it when finished.\n- Check the outcome in the same eval cell as the action: `wait()` for exact AX/DOM text or properties first. Only when the wording varies, pass the relevant AX text (not a screenshot) to `judge(state, {outcome: {type: \"choice\", instructions, criteria: {done, not_done, unknown}}})` instead of spending a model turn; treat `unknown` or low confidence as not done. Never let `judge()` decide focus, window or process identity, permissions, or whether input may be sent; those come from the OS and tool results.",
 	},
 	{
+		// 2026-10-21 사무실 실측(doc/history/2026/10/21-computer-background): WinForms에서 AX press·setValue는 refuse에서도
+		// 창을 앞으로 가져왔고, 게시된 win.click은 오류 없이 무시됐다(status unverified). 한 동작이 0.1~0.4초인데
+		// 체감 지연은 동작 사이 모델 턴(p50 6.5~8.5초)이라, 한 셀 묶음과 windows_control 도구를 안내한다.
+		file: "src/prompts/system/computer-use.md",
+		marker: "Classic Win32 windows (WinForms, VB6, MFC)",
+		anchor: "- Use AX for exposed semantic controls; use window screenshots and pixels for canvas/custom-drawn surfaces. Group predictable actions with verification in `computer.run`.",
+		patched: "- Use AX for exposed semantic controls; use window screenshots and pixels for canvas/custom-drawn surfaces. Group predictable actions with verification in `computer.run`: one cell per act-wait-check sequence, not one model turn per click; each action takes well under a second, the turns between them are what the user waits for.\n- Classic Win32 windows (WinForms, VB6, MFC) on Windows: AX `press()`/`setValue()` on a window that is not in front either bring it to the foreground (even under `refuse`) or, on newer cores, fail with `BackgroundUnavailable`; a posted `win.click` on their buttons is silently ignored (`unverified`, no error). When the `windows_control` tool is available, use it for their buttons, check boxes and text boxes: it keeps the user's foreground and works while the window is covered. Treat any `unverified` action as not done until AX or the tool's readback shows the change.",
+	},
+	{
 		// 빚의 정체(어느 steer 메시지인가)를 표현하는 최소 타입.
 		file: "src/session/irc-bridge.ts",
 		marker: "export interface ParentSteerRelay",
