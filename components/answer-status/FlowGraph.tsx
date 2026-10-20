@@ -117,13 +117,14 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
   const detailId = useId();
   const { flow } = summary;
   const graph = useMemo(() => buildFlowGraph(makers, timings, summary.span, summary.files), [makers, timings, summary.span, summary.files]);
-  const [chosen, setChosen] = useState<NodeKey | null>(null);
+  const [chosen, setChosen] = useState<NodeKey | null | undefined>(undefined);
   const paused = useFlowMotionPaused();
   const fileCount = summary.files.length;
   const currentView = live && flow.current ? flow.stages.find((view) => view.stage === flow.current) : undefined;
-  // 실행 중이면 처음 자세히는 지금 단계다(볼 기록이 있을 때).
-  const selected = chosen
-    ?? (currentView && stageHasDetail(currentView, flow, fileCount) ? `stage:${currentView.stage}` as const : defaultNode(flow, fileCount));
+  // undefined는 처음의 자동 선택, null은 사용자가 명시적으로 접은 상태다.
+  const selected = chosen === undefined
+    ? (currentView && stageHasDetail(currentView, flow, fileCount) ? `stage:${currentView.stage}` as const : defaultNode(flow, fileCount))
+    : chosen;
   const loop = flow.loops[flow.loops.length - 1];
   const loopFrom = loop ? WORK_STAGES.indexOf(loop.from) : -1;
   const editIndex = WORK_STAGES.indexOf("edit");
@@ -153,7 +154,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
           const key: NodeKey = `maker:${entry.maker.member.key}`;
           return (
             <li key={entry.maker.member.key} className="flow-graph-lane" data-run={entry.maker.run} data-live={entry.liveRunning ? "" : undefined}>
-              <NodeButton selectable selected={selected === key} detailId={detailId} onSelect={() => setChosen(key)} className="flow-graph-maker">
+              <NodeButton selectable selected={selected === key} detailId={detailId} onSelect={() => setChosen(selected === key ? null : key)} className="flow-graph-maker">
                 <span className="flow-graph-maker-name" title={entry.maker.title}>{entry.maker.title}</span>
                 <MakerTags entry={entry} together={graph.makers.length > 1} st={st} />
                 <span className="flow-graph-maker-time"><MakerTime entry={entry} st={st} /></span>

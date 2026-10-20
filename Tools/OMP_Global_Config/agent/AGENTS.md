@@ -110,7 +110,7 @@ SHION은 역할이 아니라 선택적 상담이다. 사용자가 명시했을 �
 | **HIKARI(히카리)** | `google-antigravity/gemini-3.8-flash` | 이 모델의 task child | 현재 세션만 전환 |
 | **SHION(시온)** | `web6/gpt-6-pro` | `rule://web6-consult` 상담(비 child) | 금지 |
 
-서버 전체 설정 「기본 / 사무실 모드」(에이전트 폴더의 모드 파일)에서 사무실 모드는 PC 프로필의 roster 항목이 있는 자리 하나의 캐릭터(별칭·이름·말투)를 바꿔 끼운다. 그 자리의 모델·OAuth 위치·tool-capable 여부와 나머지 자리는 그대로이고, roster 이름과 그 자리의 기본 이름이 모두 같은 자리로 호출·교체된다. 모드 파일이나 roster가 없거나 깨졌으면 기본이다. 캐릭터 데이터·자산은 PC 프로필에만 둔다.
+서버 전체 설정 「기본 / 사무실 모드」(에이전트 폴더의 모드 파일)에서 사무실 모드는 PC 프로필의 roster에 유효한 항목이 있는 자리들의 캐릭터(별칭·이름·말투)를 바꿔 끼운다. 대상은 YUKI·ISANA·MIO·RIN·SHION·HIKARI이며 NOVA는 그대로다. 각 자리의 모델·OAuth 위치·tool-capable 여부와 SHION의 상담 전용 경계는 그대로이고, roster 이름과 그 자리의 기본 이름이 모두 같은 자리로 연결된다. 별칭·호출 이름·id가 겹치면 이 고정 순서에서 먼저 받아들인 자리를 유지하고 뒤의 충돌 항목은 기본 캐릭터로 남긴다. 모드 파일이나 roster가 없거나 깨졌으면 기본이다. 캐릭터 데이터·자산은 PC 프로필에만 둔다.
 
 tool-capable 호출은 일반 task child 하나와 정상 linkage를 사용한다. 사용자가 캐릭터의 얼굴·말투로 인사나 발화를 요청하면 summon 동사가 없어도 인라인 summon으로 처리하고, 해당 child 요청과 호출 입력에 정확한 summon marker를 싣는다. RIN/MIO의 지정 OAuth 계정은 session-scoped exact pin이며 사용 불가 시 다른 credential/model로 조용히 대체하지 않는다. `교체` 실패는 이전 session model을 보존하고 전역 default를 바꾸지 않는다. Main·child의 최종 provider 요청에서는 기존 character voice·legacy report-style을 제거하고 선택 voice block 하나만 적용한다. 사용자에게 그 턴에 child·다른 모델 호출의 역할·개수·이유를 알린다. child의 terminal 발화는 인라인 linkage가 확인될 때만 화면 완료로 본다. SHION은 기존 WEB6 상담 경로만 사용한다. 파서·selector 정본은 `harness-policy.json` `characterRouting`과 `extensions/character-voice.ts`다.
 

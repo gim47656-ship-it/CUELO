@@ -30,8 +30,6 @@ export interface AnswerStatusContextValue {
   toolResults: Map<string, ToolResultMessage>;
   /** 기존 상세 패널(서브에이전트·작업 기록)을 연다. 없으면 링크를 숨긴다. */
   onOpenPanel?: (view: AnswerStatusPanelView) => void;
-  /** dock 줄에서 막 건너온 발주(`DispatchMember.key`). 그 카드와 행이 한 번 강조된다. */
-  focusedDispatch?: string | null;
   /** 이 대화의 세션 id. 실행 중 Maker의 진행률·예상 시간을 읽을 때 쓴다. 없으면 그 줄을 숨긴다. */
   sessionId?: string | null;
   /** 이 대화의 작업 폴더. 자식 기록에서 임시 파일 쓰기를 가를 때 쓴다(밖의 임시 폴더만 임시로 본다). */

@@ -127,7 +127,7 @@ function verdictText(st: AnswerStatusTranslate, verdict: VerdictRecord): string 
  * 재작업이 있었으면 시도가 차례로 묶인다. 그 아래 모델·판정 사유와 패널 링크가 이어진다.
  */
 export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
-  const { ledger, subagents, toolResults, onOpenPanel, focusedDispatch, sessionId, cwd, onOpenMaker, selectedMaker } = useContext(AnswerStatusContext);
+  const { ledger, subagents, toolResults, onOpenPanel, sessionId, cwd, onOpenMaker, selectedMaker } = useContext(AnswerStatusContext);
   const { st } = useAnswerStatusText();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -192,7 +192,7 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
 
   return (
     <section
-      className={focusedDispatch && makers.some((maker) => maker.member.key === focusedDispatch) ? "answer-dispatch answer-dispatch-flash" : "answer-dispatch"}
+      className="answer-dispatch"
       aria-label={st("dispatch.title", { count: makers.length })}
     >
       <button
@@ -215,7 +215,7 @@ export function DispatchCard({ calls }: { calls: readonly ToolCallContent[] }) {
           const snapshot = active ? runningSnapshots.find((entry) => entry.id === maker.member.agentId) : undefined;
           const view = snapshot ? progressViews.get(snapshot.id) : undefined;
           const exact = exactSnapshots.get(maker.member.key);
-          const focused = maker.member.key === focusedDispatch || maker.member.key === selectedMaker?.origin;
+          const focused = maker.member.key === selectedMaker?.origin;
           // 기록만 실행 중이라고 하는 것은 실시간 관측이 아니다. 진행·대기 칸과 움직임은 실시간 스냅샷이 있을 때만 그린다.
           const liveRun = active && maker.runSource === "live";
           // 펼친 카드만 자식 기록을 읽는다. 실행 중이면 진행 관측의 기록, 끝났으면 그 발주가 띄운 실행의 실시간 기록이다.

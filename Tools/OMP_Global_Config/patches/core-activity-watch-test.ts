@@ -85,10 +85,12 @@ function fixture(assignment?: string) {
   const disposers: (() => void)[] = [];
   const messages: ReceivedMessage[] = [];
   const agent = new Agent();
+  const jobs: { running: object[] } = { running: [] };
   const session = {
     agent, isStreaming: true, sessionManager: { getSessionId: () => "generation-1", getArtifactsDir: () => undefined },
     subscribe: (fn: (event: FixtureEvent) => void) => { events.add(fn); return () => events.delete(fn); },
     addDisposer: (fn: () => void) => disposers.push(fn),
+    getAsyncJobSnapshot: () => ({ running: jobs.running }),
   };
   const emit = (event: FixtureEvent) => { for (const fn of events) fn(event); };
   const stopQueue = agent.onQueueChange(() => emit({ type: "queue_update" }));
@@ -98,7 +100,7 @@ function fixture(assignment?: string) {
   } });
   const ref = registry.register({ id: "Child", displayName: "Child", kind: "sub", parentId: "Main", session });
   const watch = new SubagentActivityWatch(session, ref, registry, bus, clock, assignment);
-  return { clock, registry, bus, agent, session, ref, watch, emit, messages, parentEmit,
+  return { clock, registry, bus, agent, session, ref, watch, emit, messages, parentEmit, jobs,
     close() { watch.dispose(); stopQueue(); },
     text(text = "progress") { emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: text } }); },
     tool(type: string, extra = {}) { emit({ type, toolCallId: "call-1", toolName: "bash", ...extra }); },
@@ -348,6 +350,46 @@ await check("over_expected never aborts a pending generation_heavy delivery", as
     for (let i = 0; i < 12; i++) await cycle(f, 100_000, 13_000, 10_000);
     assert.deepEqual(sends.map(s => s.reason), ["generation_heavy", "over_expected"]);
     assert.equal(sends[0].signal.aborted, false, "the pending generation_heavy delivery must survive the over_expected send");
+  } finally { f.close(); }
+});
+// A child that ends its turn on its OWN background job (agent_end awaitingAsyncWork) stays inert until the job settles.
+// Main cannot read or cancel owner-scoped jobs, so the watch must keep supervising instead of reporting idle. 2026-10-20.
+await check("awaiting_own_job: child waiting on its own job gets one attention advisory, wake resets quiet time, terminal stops", async () => {
+  const f = fixture();
+  f.jobs.running = [{ id: "bg_7", type: "eval", status: "running", label: "S2-S10 batch", startTime: f.clock.time }];
+  try {
+    f.tool("tool_execution_start", { toolName: "eval" }); f.tool("tool_execution_end", { toolName: "eval" });
+    const before = { ...f.watch.snapshot.stats };
+    f.emit({ type: "agent_end", isTerminal: false, yielded: true, awaitingAsyncWork: true });
+    assert.equal(f.watch.snapshot.phase, "awaiting_own_job");
+    assert.equal(f.watch.snapshot.watcher, "scheduled");
+    assert.deepEqual(f.watch.snapshot.ownedJobs.map((job: { id: string }) => job.id), ["bg_7"]);
+    await f.clock.advance(299_999); assert.equal(f.messages.length, 0);
+    await f.clock.advance(1); assert.equal(f.messages.length, 1);
+    const [advice] = advisories(f);
+    assert.equal(advice.reason, "awaiting_own_job");
+    assert.deepEqual(advice.ownedJobs.map((job: { id: string; ageMs: number }) => [job.id, job.ageMs]), [["bg_7", 300_000]]);
+    assert.match(advice.intervention, /no automatic kill/);
+    // Waiting on a job is not model time: it must not inflate modelShare toward generation_heavy.
+    assert.equal(f.watch.snapshot.stats.modelMs, before.modelMs);
+    assert.ok(f.watch.snapshot.stats.toolMs >= before.toolMs + 300_000);
+    // The job settles and its delivery wakes the child: that is progress, not 5 minutes of a quiet model.
+    f.jobs.running = [];
+    f.emit({ type: "agent_start" });
+    assert.equal(f.watch.snapshot.phase, "model_waiting");
+    assert.deepEqual(f.watch.snapshot.ownedJobs, []);
+    await f.clock.advance(119_999); assert.equal(f.messages.length, 1);
+    await f.clock.advance(1); assert.equal(f.messages.length, 2);
+    assert.equal(advisories(f)[1].reason, "quiet_model");
+    // Back on a job, then the run ends for good: no late advisory and no stale job list.
+    f.text();
+    f.jobs.running = [{ id: "bg_8", type: "bash", status: "running", label: "bun test", startTime: f.clock.time }];
+    f.emit({ type: "agent_end", isTerminal: false, yielded: true, awaitingAsyncWork: true });
+    assert.equal(f.watch.snapshot.phase, "awaiting_own_job");
+    f.emit({ type: "agent_end", isTerminal: true, yielded: true });
+    assert.equal(f.watch.snapshot.phase, "idle"); assert.equal(f.watch.snapshot.watcher, "inactive");
+    assert.deepEqual(f.watch.snapshot.ownedJobs, []);
+    await f.clock.advance(30 * 60_000); assert.equal(f.messages.length, 2);
   } finally { f.close(); }
 });
 await check("agent/proc inspection exposes current monitoring and preserves JSON extraction", async () => {

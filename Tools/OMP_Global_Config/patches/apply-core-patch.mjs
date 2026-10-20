@@ -15175,6 +15175,146 @@ const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>(
 		anchor: "export interface AsyncJob {\n\tid: string;",
 		patched: "export interface AsyncJob {\n\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;\n\tid: string;",
 	},
+	// 2026-10-20 awaiting_own_job: a child that ends its turn on its OWN background job (agent_end awaitingAsyncWork) used to fall
+	// into #stop(): phase idle, no timer, no advisory, while Main can neither read nor cancel the owner-scoped job. These deltas amend
+	// the watch body and fold in a third pass (see foldWatchFollowups below), so the previously deployed body stays the legacy text.
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "export interface AgentActivityOwnedJob {",
+		anchor: "export interface AgentActivityWatchSnapshot {\n\tid: string;",
+		patched: ["export interface AgentActivityOwnedJob {", "\tid: string;", "\ttype: string;", "\tlabel: string;", "\tstartTime: number;", "}", "", "export interface AgentActivityWatchSnapshot {", "\tid: string;"].join("\n"),
+	},
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "\townedJobs: AgentActivityOwnedJob[];",
+		anchor: "\tphase: \"idle\" | \"model_waiting\" | \"model_streaming\" | \"tool_execution\" | \"user_waiting\";\n\tactiveTools: string[];",
+		patched: ["\tphase: \"idle\" | \"model_waiting\" | \"model_streaming\" | \"tool_execution\" | \"awaiting_own_job\" | \"user_waiting\";", "\tactiveTools: string[];", "\t/** Running async jobs the child itself owns while it waits on them (awaiting_own_job); Main can neither read nor cancel them. */", "\townedJobs: AgentActivityOwnedJob[];"].join("\n"),
+	},
+	{
+		file: "src/registry/agent-registry.ts",
+		marker: "\t\townedJobs: snapshot.ownedJobs.map(job => ({ ...job, ageMs: Math.max(0, now - job.startTime) })),",
+		anchor: "\t\tquietAgeMs: snapshot.phase === \"idle\" ? null : Math.max(0, now - snapshot.quietSince),",
+		patched: "\t\tquietAgeMs: snapshot.phase === \"idle\" ? null : Math.max(0, now - snapshot.quietSince),\n\t\townedJobs: snapshot.ownedJobs.map(job => ({ ...job, ageMs: Math.max(0, now - job.startTime) })),",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\townedJobs: [],",
+		anchor: "\t\t\tstats: emptyActivityStats(null, null),",
+		patched: "\t\t\tstats: emptyActivityStats(null, null),\n\t\t\townedJobs: [],",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\tthis.#leaveAwaiting();\n\t\t\tif (this.#tools.size === 0) this.snapshot.phase = \"model_waiting\";\n\t\t\tthis.#schedule();",
+		anchor: "\t\t\tif (!this.#running) this.#start();\n\t\t\tif (this.#tools.size === 0) this.snapshot.phase = \"model_waiting\";",
+		patched: "\t\t\tif (!this.#running) this.#start();\n\t\t\tthis.#leaveAwaiting();\n\t\t\tif (this.#tools.size === 0) this.snapshot.phase = \"model_waiting\";",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "not new progress.\n\t\t\tthis.#leaveAwaiting();",
+		anchor: "\t\t\t// Retry/compaction continuations are still the same quiet episode, not new progress.\n",
+		patched: "\t\t\t// Retry/compaction continuations are still the same quiet episode, not new progress.\n\t\t\tthis.#leaveAwaiting();\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\tthis.#awaitOwnJobs();",
+		anchor: "\t\t\tif (event.isTerminal === false && event.yielded !== true) {\n",
+		patched: "\t\t\tif (event.isTerminal === false && event.awaitingAsyncWork === true && this.#running) {\n\t\t\t\tthis.#awaitOwnJobs();\n\t\t\t} else if (event.isTerminal === false && event.yielded !== true) {\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t#awaitOwnJobs(): void {",
+		anchor: "\t#stop(): void {\n",
+		patched: [
+			"\t// The child ended its turn while its own background job still runs (agent_end awaitingAsyncWork). That job is owner-scoped, so Main",
+			"\t// can neither see nor cancel it: keep watching with the tool-execution threshold instead of reporting idle. Advisory only.",
+			"\t#awaitOwnJobs(): void {",
+			"\t\tthis.#tools.clear();",
+			"\t\tthis.snapshot.activeTools = [];",
+			"\t\tthis.snapshot.phase = \"awaiting_own_job\";",
+			"\t\tthis.#refreshOwnedJobs();",
+			"\t\tthis.snapshot.quietSince = this.#clock.now();",
+			"\t\tif (this.#episodeReason !== \"parent_directive_pending\") this.#recover();",
+			"\t\tthis.#schedule();",
+			"\t\tthis.#publish();",
+			"\t}",
+			"",
+			"\t// Its own job settling wakes the child; that wake is progress, so quiet time restarts there instead of counting the wait.",
+			"\t#leaveAwaiting(): void {",
+			"\t\tif (this.snapshot.phase !== \"awaiting_own_job\") return;",
+			"\t\tthis.snapshot.ownedJobs = [];",
+			"\t\tthis.snapshot.quietSince = this.#clock.now();",
+			"\t\tif (this.#episodeReason !== \"parent_directive_pending\") this.#recover();",
+			"\t}",
+			"",
+			"\t#refreshOwnedJobs(): void {",
+			"\t\tconst running = this.#session.getAsyncJobSnapshot?.()?.running ?? [];",
+			"\t\tthis.snapshot.ownedJobs = running.map(job => ({",
+			"\t\t\tid: job.id, type: String(job.type), label: (job.label ?? \"\").slice(0, 120), startTime: job.startTime,",
+			"\t\t}));",
+			"\t}",
+			"",
+			"\t#stop(): void {",
+			"",
+		].join("\n"),
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tthis.snapshot.ownedJobs = [];\n\t\tthis.snapshot.watcher",
+		anchor: "\t\tthis.snapshot.phase = \"idle\";\n\t\tthis.snapshot.watcher = \"inactive\";",
+		patched: "\t\tthis.snapshot.phase = \"idle\";\n\t\tthis.snapshot.ownedJobs = [];\n\t\tthis.snapshot.watcher = \"inactive\";",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tif (waitingOnJob) return \"awaiting_own_job\";",
+		anchor: "\t\tconst threshold = this.snapshot.phase === \"tool_execution\" ? 300_000 : 120_000;\n\t\tif (now - this.snapshot.quietSince < threshold) return undefined;\n\t\treturn this.snapshot.phase === \"tool_execution\" ? \"quiet_tool\" : \"quiet_model\";",
+		patched: [
+			"\t\tconst waitingOnJob = this.snapshot.phase === \"awaiting_own_job\";",
+			"\t\tconst threshold = this.snapshot.phase === \"tool_execution\" || waitingOnJob ? 300_000 : 120_000;",
+			"\t\tif (now - this.snapshot.quietSince < threshold) return undefined;",
+			"\t\tif (waitingOnJob) return \"awaiting_own_job\";",
+			"\t\treturn this.snapshot.phase === \"tool_execution\" ? \"quiet_tool\" : \"quiet_model\";",
+		].join("\n"),
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "this.snapshot.phase === \"tool_execution\" || this.snapshot.phase === \"awaiting_own_job\" ? 300_000 : 120_000);",
+		anchor: "\t\t\t: this.#nextAdvisoryAt ?? this.snapshot.quietSince + (this.snapshot.phase === \"tool_execution\" ? 300_000 : 120_000);",
+		patched: "\t\t\t: this.#nextAdvisoryAt ?? this.snapshot.quietSince + (this.snapshot.phase === \"tool_execution\" || this.snapshot.phase === \"awaiting_own_job\" ? 300_000 : 120_000);",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tif (phase === \"tool_execution\" || phase === \"awaiting_own_job\") stats.toolMs += delta;",
+		anchor: "\t\tif (phase === \"tool_execution\") stats.toolMs += delta;",
+		patched: "\t\tif (phase === \"tool_execution\" || phase === \"awaiting_own_job\") stats.toolMs += delta;",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tif (this.snapshot.phase === \"awaiting_own_job\") this.#refreshOwnedJobs();\n\t\tconst intervention",
+		anchor: "\t#advisoryBody(now: number, reason: string): string {\n\t\tthis.#account(now);",
+		patched: "\t#advisoryBody(now: number, reason: string): string {\n\t\tthis.#account(now);\n\t\tif (this.snapshot.phase === \"awaiting_own_job\") this.#refreshOwnedJobs();",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\t\t: reason === \"awaiting_own_job\"",
+		anchor: "\t\t\t\t: \"Inspect the current activity before another wait; no automatic kill, retry or reassignment.\";",
+		patched: [
+			"\t\t\t\t: reason === \"awaiting_own_job\"",
+			"\t\t\t\t\t? \"The child ended its turn and waits on its OWN background job(s) listed in ownedJobs. You cannot read or cancel them (owner-scoped). Ask the child with write agent://\" + this.#ref.id + \" to read proc://<job> and report or cancel; no automatic kill, retry or reassignment.\"",
+			"\t\t\t\t\t: \"Inspect the current activity before another wait; no automatic kill, retry or reassignment.\";",
+		].join("\n"),
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\t\townedJobs: this.snapshot.ownedJobs.map(job => ({ ...job, ageMs: Math.max(0, now - job.startTime) })),",
+		anchor: "\t\t\tactiveTools: this.snapshot.activeTools, transportProgress: \"unknown\", stats: { ...this.snapshot.stats },",
+		patched: "\t\t\tactiveTools: this.snapshot.activeTools, transportProgress: \"unknown\", stats: { ...this.snapshot.stats },\n\t\t\townedJobs: this.snapshot.ownedJobs.map(job => ({ ...job, ageMs: Math.max(0, now - job.startTime) })),",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tif (this.snapshot.phase === \"awaiting_own_job\") this.#refreshOwnedJobs();\n\t\tthis.#refreshParentQueue();",
+		anchor: "\t\tthis.snapshot.lastCheckAt = now;\n\t\tthis.#refreshParentQueue();",
+		patched: "\t\tthis.snapshot.lastCheckAt = now;\n\t\tif (this.snapshot.phase === \"awaiting_own_job\") this.#refreshOwnedJobs();\n\t\tthis.#refreshParentQueue();",
+	},
 	{
 		file: "src/task/index.ts",
 		marker: "\t\t\t\t\tconst completionJob = manager.getJob(jobId);",
@@ -17732,12 +17872,15 @@ class ElRef implements PromiseLike<El> {
 // The 2026-10-20 stats deltas fold in a second pass: an install already patched by the previous apply-core-patch carries the
 // first pass's result, so that result (not the pre-followup block) becomes each touched owner's legacyPatched. Re-applying then
 // upgrades the watch body, and --check reports the previous body as not applied instead of passing it by marker.
-const foldWatchFollowups = (from, to, retainDeployed) => {
+const foldWatchFollowups = (from, to, retainDeployed, previousLegacy) => {
 	const touched = new Set();
 	for (const update of EDITS.splice(from, to - from)) {
 		const owner = EDITS.find(entry => entry.file === update.file && entry.patched.includes(update.anchor));
 		if (!owner) throw new Error(`Missing activity-watch patch owner: ${update.marker}`);
-		if (retainDeployed ? !touched.has(owner) : owner.legacyPatched === undefined) owner.legacyPatched = owner.patched;
+		if (retainDeployed ? !touched.has(owner) : owner.legacyPatched === undefined) {
+			if (previousLegacy && owner.legacyPatched !== undefined) previousLegacy.set(owner, owner.legacyPatched);
+			owner.legacyPatched = owner.patched;
+		}
 		touched.add(owner);
 		owner.patched = owner.patched.replace(update.anchor, update.patched);
 	}
@@ -17745,6 +17888,19 @@ const foldWatchFollowups = (from, to, retainDeployed) => {
 const watchFollowupStart = EDITS.findIndex(entry => entry.marker === '\tepisodeState: "none" | "attention" | "progress" | "terminal";');
 foldWatchFollowups(watchFollowupStart, EDITS.findIndex(entry => entry.marker === "export interface AgentActivityStats {"), false);
 foldWatchFollowups(watchFollowupStart, EDITS.findIndex(entry => entry.marker === "\tcompletion?: Readonly<{ agentId: string; startTime: number; output: string }>;"), true);
+// The 2026-10-20 awaiting_own_job deltas fold in a third pass for the same reason: the second pass's result (stats included) is the body
+// an up-to-date install carries, so it becomes each touched owner's legacyPatched and re-applying upgrades it. The body from before the
+// stats pass (0.10.43 and earlier) is kept as an alternate candidate: with only the marker, such an install would read as applied and
+// silently keep the old watch. `requires`/`excludes` on that body keep the candidates mutually exclusive.
+const awaitOwnJobsStart = EDITS.findIndex(entry => entry.marker === "export interface AgentActivityOwnedJob {");
+const awaitOwnJobsEnd = EDITS.findIndex(entry => entry.marker === '\t\tif (this.snapshot.phase === "awaiting_own_job") this.#refreshOwnedJobs();\n\t\tthis.#refreshParentQueue();');
+if (awaitOwnJobsStart < 0 || awaitOwnJobsEnd < awaitOwnJobsStart) throw new Error("awaiting_own_job patch entries are missing or out of order");
+const preStatsWatchBodies = new Map();
+foldWatchFollowups(awaitOwnJobsStart, awaitOwnJobsEnd + 1, true, preStatsWatchBodies);
+for (const [owner, older] of preStatsWatchBodies) {
+	owner.excludes = owner.excludes === undefined ? older : [owner.excludes, older].flat();
+	owner.alternates = [...(owner.alternates ?? []), { file: owner.file, marker: owner.marker, anchor: owner.anchor, patched: owner.patched, legacyPatched: older, requires: older }];
+}
 // 2026-10-19 isolated 마커 단축: task schema·요청의 `isolated` 줄을 넓히는 항목(위 capture 묶음)이 기존 항목의 marker 와 같은 줄을 바꾼다.
 //  (1) 동적 task schema(batch item)의 `"isolated?": "boolean"` 줄은 model 항목(entry 92)의 marker 가 줄 끝까지 품고 있다. 후보 marker 는
 //      "이미 적용됨"을 가르는 앞부분(`"model?": "string",` 이후 `...toolsField,`)이면 충분하므로 isolated 줄 앞에서 자른다.

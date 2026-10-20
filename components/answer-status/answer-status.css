@@ -217,19 +217,7 @@
   background: var(--bg-hover);
 }
 
-/* dock 줄에서 건너온 발주 카드: 잠깐 강조를 유지했다가 옅어지고, 그 Maker 행 제목은 남아 있는 동안 굵게. */
-.answer-dispatch-flash {
-  animation: answer-dispatch-flash 1.8s ease-out;
-}
-
-@keyframes answer-dispatch-flash {
-  0%,
-  35% {
-    background-color: var(--accent-soft);
-    box-shadow: 0 0 0 2px var(--accent-line);
-  }
-}
-
+/* 덱에 열린 Maker의 행 제목은 굵게. */
 .answer-dispatch-row[data-focused] .answer-dispatch-name {
   font-weight: 600;
 }
@@ -293,160 +281,6 @@
 .answer-dispatch-attempts > li[data-verdict="rework"],
 .answer-dispatch-attempts > li[data-verdict="held"] {
   color: var(--warning);
-}
-
-/* 입력창 위 dock 한 줄. 모양은 같은 칸의 상태 줄(.run-status-line)을 따르고, 누를 수 있는 버튼이다. */
-.run-status-line.answer-dock-line {
-  align-items: center;
-  inline-size: 100%;
-  font-weight: inherit;
-  line-height: inherit;
-  text-align: start;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.run-status-line.answer-dock-line:hover {
-  background: var(--bg-hover);
-}
-
-.run-status-line.answer-dock-line:focus-visible {
-  outline: 2px solid var(--accent-ring, var(--accent));
-  outline-offset: 2px;
-}
-
-.answer-dock-counts {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 6px;
-}
-
-.answer-dock-count {
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  white-space: nowrap;
-}
-
-.answer-dock-count[data-phase="running"] {
-  color: var(--accent);
-  border-color: var(--accent-line, var(--border));
-}
-
-.answer-dock-count[data-phase="awaiting"] {
-  border-style: dashed;
-  color: var(--text-muted);
-}
-
-.answer-dock-title {
-  flex: 1;
-  min-inline-size: 0;
-  overflow: hidden;
-  color: var(--text);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.answer-dock-go {
-  flex-shrink: 0;
-  color: var(--text-dim);
-}
-
-/* dock 바깥 칸: 펼친 목록(줄 위) + 줄과 펼침 버튼 한 행. 여백은 칸이 갖는다. */
-.answer-dock {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-block-end: 8px;
-  min-inline-size: 0;
-}
-
-.answer-dock-row {
-  display: flex;
-  gap: 6px;
-  min-inline-size: 0;
-}
-
-.answer-dock .run-status-line.answer-dock-line {
-  flex: 1;
-  min-inline-size: 0;
-  margin-block-end: 0;
-}
-
-.answer-dock-others {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.answer-dock-toggle {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  inline-size: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-panel);
-  color: var(--text-muted);
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.answer-dock-toggle:hover {
-  background: var(--bg-hover);
-}
-
-.answer-dock-toggle[data-open="true"] {
-  border-color: var(--accent-line, var(--accent));
-  background: var(--bg-selected);
-  color: var(--accent);
-}
-
-.answer-dock-toggle:focus-visible,
-.answer-dock-item:focus-visible {
-  outline: 2px solid var(--accent-ring, var(--accent));
-  outline-offset: 2px;
-}
-
-.answer-dock-list {
-  display: flex;
-  flex-direction: column;
-  max-block-size: 40vh;
-  margin: 0;
-  padding: 4px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-panel);
-  list-style: none;
-}
-
-.answer-dock-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  inline-size: 100%;
-  padding: 5px 6px;
-  border: 0;
-  border-radius: 5px;
-  background: none;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-align: start;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.answer-dock-item:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.answer-dock-item:disabled {
-  cursor: default;
 }
 
 /* 끝난 턴 요약: 카드보다 한 단계 조용하게, 테두리 없이 답변 아래 한 줄. */
@@ -1052,26 +886,11 @@ details[open] > summary .flow-chevron,
   .answer-summary-toggle {
     min-height: 44px;
   }
-
-  .run-status-line.answer-dock-line,
-  .answer-dock-item {
-    min-block-size: 44px;
-  }
-
-  .answer-dock-toggle {
-    inline-size: 44px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .answer-chevron {
     transition: none;
-  }
-
-  .answer-dispatch-flash {
-    animation: none;
-    outline: 2px solid var(--accent-line);
-    outline-offset: 2px;
   }
 
   /* 동작 줄이기: 진행 막대는 왼쪽 끝에 선 조각으로, 커서는 켜진 채로 멈춘다. 멈출 움직임이 없으니 멈춤 단추도 없다. */

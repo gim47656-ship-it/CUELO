@@ -16,8 +16,11 @@ export type CharacterMode = "default" | "office";
 export const CHARACTER_MODE_FILE_NAME = "cuelo-character-mode.json";
 export const OFFICE_DIR_NAME = "characters-office";
 export const OFFICE_ROSTER_FILE_NAME = "roster.json";
-/** 사무실 캐릭터가 대신 앉는 자리. 나머지 자리는 두 모드 모두 기본이다. */
-export const OFFICE_SEAT_ALIAS = "YUKI(유키)";
+/**
+ * 사무실 캐릭터가 대신 앉을 수 있는 자리(NOVA 제외). 나머지 자리는 두 모드 모두 기본이다.
+ * 이 순서가 자리 사이 충돌을 가리는 우선순위다 — harness(`character-voice.ts` `OFFICE_SEATS`)와 같아야 한다.
+ */
+export const OFFICE_SEAT_ALIASES = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHION(시온)", "HIKARI(히카리)"] as const;
 
 /** 사무실 자산으로 내보낼 수 있는 확장자와 content type. */
 const ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -28,7 +31,7 @@ const ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
 };
 
 export interface OfficeSeatPayload {
-  /** 대신 앉는 기본 자리(`YUKI(유키)`). */
+  /** 대신 앉는 기본 자리의 별칭(`YUKI(유키)`). */
   seat: string;
   id: string;
   alias: string;
@@ -249,12 +252,28 @@ async function buildSeat(agentDir: string, seat: string, raw: unknown): Promise<
   };
 }
 
-/** 로스터를 읽는다. 파일이 없거나 깨졌으면 빈 목록이고, 사무실 자리(`YUKI(유키)`) 밖의 항목은 무시한다. */
+/**
+ * 로스터를 읽는다. 파일이 없거나 깨졌으면 빈 목록이고, 사무실 자리(`OFFICE_SEAT_ALIASES`) 밖의 항목은 무시한다.
+ * 사무실 자리끼리의 충돌: 별칭과 호출 이름은 한 이름 공간(소문자), id 는 따로다. 이미 채택된 자리와 하나라도
+ * 겹치면 뒤 자리 항목 전체가 무효다 — `OFFICE_SEAT_ALIASES` 순서상 앞 자리가 이긴다.
+ */
 export async function readOfficeSeats(agentDir: string): Promise<OfficeSeatPayload[]> {
   const seats = asRecord(asRecord(await readOfficeJson(agentDir, OFFICE_ROSTER_FILE_NAME))?.seats);
   if (!seats) return [];
-  const seat = await buildSeat(agentDir, OFFICE_SEAT_ALIAS, seats[OFFICE_SEAT_ALIAS]);
-  return seat ? [seat] : [];
+  const accepted: OfficeSeatPayload[] = [];
+  const tokens = new Set<string>();
+  const ids = new Set<string>();
+  for (const seatAlias of OFFICE_SEAT_ALIASES) {
+    if (!Object.hasOwn(seats, seatAlias)) continue;
+    const seat = await buildSeat(agentDir, seatAlias, seats[seatAlias]);
+    if (!seat || ids.has(seat.id)) continue;
+    const own = [seat.alias, ...seat.names].map((token) => token.toLowerCase());
+    if (own.some((token) => tokens.has(token))) continue;
+    ids.add(seat.id);
+    for (const token of own) tokens.add(token);
+    accepted.push(seat);
+  }
+  return accepted;
 }
 
 /** 사무실 모드여도 자리가 하나도 유효하지 않으면 기본과 같다 — 사용자에게 오류를 내지 않는다. */

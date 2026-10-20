@@ -23,6 +23,7 @@ import characterVoice, {
   CHARACTER_TARGETS,
   CHARACTER_VOICES,
   characterForProvider,
+  characterTarget,
   buildCharacterSummonBrief,
   injectCharacterVoice,
   parseCharacterIntent,
@@ -1006,6 +1007,91 @@ describe("office mode character seat", () => {
     });
   });
 
+  const officeSeat = (id: string, alias: string, names: string[]) => ({
+    id,
+    face: `${id}.png`,
+    alias,
+    names,
+    voice: { temperament: `FIXTURE-${id} 성향`, expression: `FIXTURE-${id} 말투` },
+  });
+  const writeFaces = (dir: string, ids: string[]) => {
+    for (const id of ids) writeFileSync(join(dir, "characters-office", `${id}.png`), "png");
+  };
+  const MULTI_ROSTER = {
+    seats: {
+      "HIKARI(히카리)": officeSeat("delta", "DELTA(델타)", ["delta", "델타"]),
+      "SHION(시온)": officeSeat("cedar", "CEDAR(시더)", ["cedar", "시더"]),
+      "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "버치"]),
+      "MIO(미오)": officeSeat("alder", "ALDER(앨더)", ["alder", "앨더"]),
+      "ISANA(이사나)": officeSeat("elm", "ELM(엘름)", ["elm", "엘름"]),
+      "YUKI(유키)": officeSeat("testa", OFFICE_ALIAS, ["testa", "테스타"]),
+      "NOVA(노바)": officeSeat("tiber", "TIBER(티버)", ["tiber", "티버"]),
+    },
+  };
+
+  test("six seats change independently, NOVA stays default, and every seat keeps its own model, account and consult limits", async () => {
+    await withOfficeProfile({ mode: "office", roster: MULTI_ROSTER }, (dir) => {
+      writeFaces(dir, ["delta", "cedar", "birch", "alder", "elm", "tiber"]);
+      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
+      expect(characterForProvider("hive")).toBe("ELM(엘름)");
+      expect(characterForProvider("web6")).toBe("CEDAR(시더)");
+      expect(characterForProvider("google-antigravity")).toBe("DELTA(델타)");
+      expect(characterForProvider("opencode-go")).toBe("NOVA(노바)");
+      expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
+      expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
+      expect(characterTarget("CEDAR(시더)")).toEqual(CHARACTER_TARGETS["SHION(시온)"]);
+      expect(characterTarget("CEDAR(시더)")?.toolCapable).toBe(false);
+      expect(characterTarget("BIRCH(버치)")).toEqual(CHARACTER_TARGETS["RIN(린)"]);
+      expect(characterTarget("ALDER(앨더)")).toEqual(CHARACTER_TARGETS["MIO(미오)"]);
+      expect(characterTarget("TIBER(티버)")).toBeUndefined();
+      for (const [alias, id] of [["ELM(엘름)", "elm"], ["DELTA(델타)", "delta"], ["BIRCH(버치)", "birch"]]) {
+        expect(renderCharacterVoice(alias)).toContain(`FIXTURE-${id} 성향`);
+      }
+      expect(renderCharacterVoice("NOVA(노바)")).toContain(CHARACTER_VOICES["NOVA(노바)"].temperament);
+      expect(parseCharacterIntent("앨더랑 버치 불러와")).toEqual({ kind: "summon", aliases: ["ALDER(앨더)", "BIRCH(버치)"] });
+      expect(parseCharacterIntent("시더로 교체해")).toEqual({ kind: "switch", alias: "CEDAR(시더)" });
+      expect(parseCharacterIntent("미오 불러와")).toEqual({ kind: "summon", aliases: ["ALDER(앨더)"] });
+      expect(parseCharacterIntent("nova 불러와")).toEqual({ kind: "summon", aliases: ["NOVA(노바)"] });
+      expect(parseCharacterIntent("티버 불러와")).toBeUndefined();
+      expect(buildCharacterSummonBrief("인사한다.", "ALDER(앨더)").startsWith(
+        '[character-summon alias="ALDER(앨더)" model="anthropic/claude-opus-5-5" oauth-position="1"]',
+      )).toBe(true);
+    });
+  });
+
+  test("a later seat colliding with an earlier one stays default, in fixed seat order and not roster key order", async () => {
+    const base = {
+      "MIO(미오)": officeSeat("alder", "ALDER(앨더)", ["alder", "앨더"]),
+      "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "버치"]),
+    };
+    const collisions: Array<[string, Record<string, unknown>]> = [
+      ["alias", { "RIN(린)": officeSeat("birch", "alder(앨더)", ["birch"]) }],
+      ["name", { "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "앨더"]) }],
+      ["alias against name", { "RIN(린)": officeSeat("birch", "ALDER", ["birch"]) }],
+      ["id", { "RIN(린)": officeSeat("alder", "BIRCH(버치)", ["birch"]) }],
+    ];
+    for (const [label, override] of collisions) {
+      await withOfficeProfile({ mode: "office", roster: { seats: { ...base, ...override } } }, (dir) => {
+        writeFaces(dir, ["alder", "birch"]);
+        expect(anthropicCharacterForAccounts([{ active: true, position: 1 }]), label).toBe("ALDER(앨더)");
+        expect(anthropicCharacterForAccounts([{ active: true, position: 0 }]), label).toBe("RIN(린)");
+      });
+    }
+    // The roster lists SHION before RIN, but RIN comes first in seat order, so RIN keeps the shared name.
+    const reversed = {
+      seats: {
+        "SHION(시온)": officeSeat("cedar", "CEDAR(시더)", ["cedar", "birch"]),
+        "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch"]),
+      },
+    };
+    await withOfficeProfile({ mode: "office", roster: reversed }, (dir) => {
+      writeFaces(dir, ["cedar", "birch"]);
+      expect(characterForProvider("web6")).toBe("SHION(시온)");
+      expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
+      expect(parseCharacterIntent("birch 불러와")).toEqual({ kind: "summon", aliases: ["BIRCH(버치)"] });
+    });
+  });
+
   test("an entry breaking any part of the validity rule keeps the seat default without throwing", async () => {
     const entry = OFFICE_ROSTER.seats["YUKI(유키)"];
     const withSeat = (patch: Record<string, unknown>) => ({ seats: { "YUKI(유키)": { ...entry, ...patch } } });
@@ -1018,7 +1104,7 @@ describe("office mode character seat", () => {
       { mode: "office", rosterRaw: "{not json" },
       { mode: "office", roster: { seats: {} } },
       { mode: "office", roster: { seats: { "NOBODY(없음)": entry } } },
-      { mode: "office", roster: { seats: { "ISANA(이사나)": entry } } },
+      { mode: "office", roster: { seats: { "NOVA(노바)": entry } } },
       { mode: "broken", roster: OFFICE_ROSTER },
       { mode: "office", roster: withoutKey("id") },
       { mode: "office", roster: withSeat({ id: "Bad_Id" }) },

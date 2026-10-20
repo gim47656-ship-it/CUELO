@@ -205,8 +205,11 @@ const OFFICE_ROSTER_FILE = join("characters-office", "roster.json");
 // alias는 `alias="…"` 속성과 summon marker의 `[^"]+`에 그대로 들어가므로 따옴표(앱 lib/character-mode.ts와 같은 집합)·꺾쇠·줄바꿈을 막는다.
 const OFFICE_ALIAS_UNSAFE = /["'`\u201C\u201D\u2018\u2019<>[\]\r\n]/u;
 const OFFICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u;
-/** 사무실 모드가 바꿀 수 있는 자리. roster의 다른 자리 항목은 무시한다. */
-const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)"];
+/**
+ * 사무실 모드가 바꿀 수 있는 자리(NOVA 제외). roster의 다른 자리 항목은 무시한다. 이 순서가 자리 사이 충돌을
+ * 가리는 우선순위이며 앱(`lib/character-mode.ts` `OFFICE_SEAT_ALIASES`)과 같아야 한다.
+ */
+const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHION(시온)", "HIKARI(히카리)"];
 let officeCache: { key: string; state: OfficeState } | undefined;
 
 function officeAgentDir(): string {
@@ -266,8 +269,12 @@ function buildOfficeState(dir: string, roster: unknown): OfficeState {
   const extraNames = new Map<string, string>();
   const watched: Array<readonly [string, string]> = [];
   const builtinAliases = new Map(Object.keys(CHARACTER_TARGETS).map((builtin) => [builtin.toLocaleLowerCase("en-US"), builtin]));
-  for (const [seatKey, entry] of Object.entries(seats)) {
-    if (!OFFICE_SEATS.includes(seatKey as BuiltinCharacterAlias) || !entry || typeof entry !== "object") continue;
+  // 별칭과 호출 이름은 한 이름 공간(소문자), id는 따로다. 이미 채택된 자리와 하나라도 겹치면 뒤 자리 항목 전체가 무효다.
+  const claimedTokens = new Set<string>();
+  const claimedIds = new Set<string>();
+  for (const seat of OFFICE_SEATS) {
+    const entry = hasOwn(seats, seat) ? (seats as Record<string, unknown>)[seat] : undefined;
+    if (!entry || typeof entry !== "object") continue;
     const raw = entry as {
       id?: unknown;
       alias?: unknown;
@@ -275,7 +282,6 @@ function buildOfficeState(dir: string, roster: unknown): OfficeState {
       face?: unknown;
       voice?: { temperament?: unknown; expression?: unknown };
     };
-    const seat = seatKey as BuiltinCharacterAlias;
     const alias = typeof raw.alias === "string" ? raw.alias.trim() : "";
     const temperament = voiceText(raw.voice?.temperament);
     const expression = voiceText(raw.voice?.expression);
@@ -287,7 +293,7 @@ function buildOfficeState(dir: string, roster: unknown): OfficeState {
     }
     if (
       typeof raw.id !== "string" || !OFFICE_ID.test(raw.id.trim()) ||
-      !alias || alias.length > 64 || OFFICE_ALIAS_UNSAFE.test(alias) || hasOwn(CHARACTER_TARGETS, alias) || byAlias.has(alias) ||
+      !alias || alias.length > 64 || OFFICE_ALIAS_UNSAFE.test(alias) || hasOwn(CHARACTER_TARGETS, alias) ||
       !temperament || !expression || !face ||
       !Array.isArray(raw.names) || raw.names.length === 0
     ) {
@@ -305,12 +311,17 @@ function buildOfficeState(dir: string, roster: unknown): OfficeState {
       names.push(lower);
     }
     if (!namesValid) continue;
+    const id = raw.id.trim();
+    const tokens = [alias.toLocaleLowerCase("en-US"), ...names];
+    if (claimedIds.has(id) || tokens.some((token) => claimedTokens.has(token))) continue;
+    claimedIds.add(id);
+    for (const token of tokens) claimedTokens.add(token);
     const office: OfficeSeat = { seat, alias, voice: { temperament, expression } };
     byAlias.set(alias, office);
     bySeat.set(seat, office);
     // face 후보 stamp는 위에서 이미 감시 목록에 넣었다.
-    // 자리의 기본 이름은 NAME_TO_ALIAS가 이미 같은 자리로 푼다.
-    for (const lower of names) if (!hasOwn(NAME_TO_ALIAS, lower) && !extraNames.has(lower)) extraNames.set(lower, alias);
+    // 자리의 기본 이름은 NAME_TO_ALIAS가 이미 같은 자리로 푼다. 사무실 이름은 위에서 자리 사이 유일함이 확인됐다.
+    for (const lower of names) if (!hasOwn(NAME_TO_ALIAS, lower)) extraNames.set(lower, alias);
   }
   if (byAlias.size === 0) return { ...DEFAULT_OFFICE_STATE, watched };
   const escaped = [...extraNames.keys()]

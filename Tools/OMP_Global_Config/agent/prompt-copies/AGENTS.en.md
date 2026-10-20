@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 6cd5e3ec7196b91d -->
+<!-- source-fingerprint: a0cdecda8a5f746c -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -113,7 +113,7 @@ Alias + `교체` switches the current Main session; alias + `호출`·`불러`·
 |**HIKARI(히카리)**|`google-antigravity/gemini-3.8-flash`|task child on this model|switch current session only|
 |**SHION(시온)**|`web6/gpt-6-pro`|`rule://web6-consult` consult (not a child)|forbidden|
 
-Under the server-wide setting 「기본 / 사무실 모드」 (default / office mode; a mode file in the agent dir), office mode replaces the character (alias, names, voice) of one seat that has a roster entry in the PC profile. That seat's model, OAuth position, tool-capable flag, and the other seats stay unchanged, and both the roster names and the seat's default name call or switch to the same seat. A missing or broken mode file or roster means default. Character data and assets live only in the PC profile.
+Under the server-wide setting 「기본 / 사무실 모드」 (default / office mode; a mode file in the agent dir), office mode replaces characters (aliases, names, voice) for valid PC-profile roster entries in the fixed order YUKI, ISANA, MIO, RIN, SHION, HIKARI; NOVA stays unchanged. Each seat keeps its model, OAuth position and tool capability, including SHION's consult-only boundary. Both roster names and the seat's default name resolve to that seat. When aliases, call names or ids collide, the first accepted seat in that order wins and later conflicting entries stay default. A missing or broken mode file or roster means default. Character data and assets live only in the PC profile.
 
 Tool-capable calls use one ordinary task child with normal linkage. If the user asks for a greeting or line in a character's face/voice, treat it as an inline summon even without a summon verb, and put the exact summon marker in that child request and call input. RIN/MIO's designated OAuth account is a session-scoped exact pin; if unavailable, never silently substitute another credential/model. A failed `교체` keeps the previous session model and never changes the global default. In the final provider request of Main and children, strip existing character voice and legacy report-style and apply exactly one selected voice block. Tell the user, in that turn, the role, count, and reason of each child/other-model call. A child's terminal line counts as shown only once inline linkage is confirmed. SHION uses only the existing WEB6 consult path. Parser/selector source of truth: `harness-policy.json` `characterRouting` and `extensions/character-voice.ts`.
 

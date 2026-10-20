@@ -29,8 +29,7 @@ import { selectCurrentTodo } from "@/lib/todo-state";
 import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
-import { DispatchDockLine } from "./answer-status/DispatchDockLine";
-import { buildDispatchLedger, collectDockMakers, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
+import { buildDispatchLedger, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
 import { DispatchCard } from "./answer-status/DispatchCard";
 import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
 import { collectJobNotices, collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
@@ -218,7 +217,7 @@ interface HistoricalTranscriptProps {
   /** The conversation (user turns and answer runs) and the work log behind it. */
   main: ConversationRenderItem[];
   process: ProcessTurnGroup[];
-  /** 발주 카드 자리(`placeDispatchCards`). dock 줄도 같은 값으로 카드를 찾아간다. */
+  /** 발주 카드 자리(`placeDispatchCards`). */
   dispatchSlots: ReadonlyMap<number, DispatchSlot>;
   /** Dispatches the latest compaction hid that no shown answer carries, drawn at the compaction point. */
   compactedDispatch: CompactedDispatchPlacement | null;
@@ -522,7 +521,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
 
 export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onOpenWorkspaceView, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
-  // 휴대폰 키보드가 올라와 있으면 dock의 서브에이전트 줄과 할 일 줄을 잠시 접어 대화가 보이게 한다.
+  // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
   const isMobile = useIsMobile();
   const keyboardCompact = softKeyboardOpen && isMobile;
@@ -816,7 +815,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     ),
     [messages, sessionBusy, streamState.isStreaming, displayOptions],
   );
-  // 발주 카드 자리는 대화와 입력창 위 dock 줄이 함께 쓴다.
+  // 발주 카드 자리: 그 발주가 붙을 답변 위치.
   const dispatchSlots = useMemo(
     () => placeDispatchCards(main, messages, compactedWork?.messages),
     [main, messages, compactedWork],
@@ -890,49 +889,32 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
 
   // --- Jumps: search hits, question rail, palette results ---
   const [flashItem, setFlashItem] = useState<number | null>(null);
-  // dock 줄에서 건너온 발주: 항목 전체 대신 그 발주 카드가 강조된다.
-  const [flashDispatch, setFlashDispatch] = useState<string | null>(null);
   const [jumpTick, setJumpTick] = useState(0);
-  const pendingJumpRef = useRef<{ item: number; dispatchKey: string | null } | null>(null);
-  const jumpToItem = useCallback((item: number, dispatchKey: string | null = null) => {
+  const pendingJumpRef = useRef<number | null>(null);
+  const jumpToItem = useCallback((item: number) => {
     pauseAutoFollow();
-    pendingJumpRef.current = { item, dispatchKey };
+    pendingJumpRef.current = item;
     setFlashItem(null);
-    setFlashDispatch(null);
     setRenderWindow((current) => windowAround(mainLengthRef.current, item, current));
     setJumpTick((tick) => tick + 1);
   }, [pauseAutoFollow]);
   useLayoutEffect(() => {
-    const jump = pendingJumpRef.current;
+    const item = pendingJumpRef.current;
     const container = scrollContainerRef.current;
-    if (jump === null || !container) return;
-    const holder = container.querySelector<HTMLElement>(`[data-chat-item="${jump.item}"]`);
+    if (item === null || !container) return;
+    const holder = container.querySelector<HTMLElement>(`[data-chat-item="${item}"]`);
     if (!holder) return;
     pendingJumpRef.current = null;
-    // 한 답변에는 발주 카드가 하나다. 카드가 그려져 있으면 답변 맨 위 대신 카드로 간다.
-    const card = jump.dispatchKey ? holder.querySelector<HTMLElement>(".answer-dispatch") : null;
-    let top: number;
-    if (card) {
-      top = card.getBoundingClientRect().top;
-    } else {
-      const range = document.createRange();
-      range.selectNodeContents(holder);
-      top = range.getBoundingClientRect().top;
-    }
-    container.scrollTop += top - container.getBoundingClientRect().top - 24;
-    if (card && jump.dispatchKey) setFlashDispatch(jump.dispatchKey);
-    else setFlashItem(jump.item);
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    container.scrollTop += range.getBoundingClientRect().top - container.getBoundingClientRect().top - 24;
+    setFlashItem(item);
   }, [jumpTick, renderWindow, main, scrollContainerRef]);
   useEffect(() => {
     if (flashItem === null) return;
     const timer = setTimeout(() => setFlashItem(null), 1800);
     return () => clearTimeout(timer);
   }, [flashItem]);
-  useEffect(() => {
-    if (flashDispatch === null) return;
-    const timer = setTimeout(() => setFlashDispatch(null), 1800);
-    return () => clearTimeout(timer);
-  }, [flashDispatch]);
   // Back from a detached window: swap in the tail and land on its bottom at
   // once, so the new window's top sentinel never sees the viewport and
   // prepends mid-scroll. An attached window keeps its loaded range.
@@ -1092,8 +1074,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // (the streaming message lives in streamState), so memoized MessageViews
   // skip re-rendering on every message_update event. An inline `new Map()`
   // here used to defeat MessageView's memo() on each streamed chunk.
-  // Dispatch, verdict and wait records the latest compaction hid come first; only the ledger, dock
-  // and tool results read them. The transcript, input history and search keep `messages`.
+  // Dispatch, verdict and wait records the latest compaction hid come first; only the ledger and
+  // tool results read them. The transcript, input history and search keep `messages`.
   const workMessages = useMemo(() => withCompactedWork(compactedWork?.messages, messages), [compactedWork, messages]);
   const toolResultsMap = useMemo(() => {
     const map = new Map<string, ToolResultMessage>();
@@ -1111,21 +1093,11 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     subagents,
     toolResults: toolResultsMap,
     onOpenPanel: onOpenWorkspaceView,
-    focusedDispatch: flashDispatch,
     sessionId: session?.id ?? null,
     cwd: session?.cwd ?? newSessionCwd ?? undefined,
     onOpenMaker,
     selectedMaker,
-  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, flashDispatch, session?.id, session?.cwd, newSessionCwd, onOpenMaker, selectedMaker]);
-  // 입력창 위 dock 줄: 실행 중·판정 대기 Maker만. 누르면 그 발주 카드로 간다.
-  const dispatchDock = useMemo(
-    () => collectDockMakers(workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch),
-    [workMessages, toolResultsMap, dispatchSlots, subagents, dispatchLedger, sessionBusy, compactedDispatch],
-  );
-  const openSubagentsPanel = useMemo(
-    () => (onOpenWorkspaceView ? () => onOpenWorkspaceView("subagents") : undefined),
-    [onOpenWorkspaceView],
-  );
+  }), [dispatchLedger, subagents, toolResultsMap, onOpenWorkspaceView, session?.id, session?.cwd, newSessionCwd, onOpenMaker, selectedMaker]);
   const inputHistory = useMemo(() => {
     const seen = new Set<string>();
     const history: string[] = [];
@@ -1694,7 +1666,6 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
           <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
-            {!keyboardCompact && <DispatchDockLine summary={dispatchDock} onJump={jumpToItem} onOpenPanel={openSubagentsPanel} />}
             <ExtensionWidgets widgets={belowEditorWidgets} />
             {(todoPhases || stripFlow.steps.length > 0) && !keyboardCompact && <TodoStrip phases={todoPhases} flow={stripFlow} busy={sessionBusy} />}
           </div>

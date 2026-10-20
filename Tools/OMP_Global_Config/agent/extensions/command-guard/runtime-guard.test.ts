@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import { existsSync, watch } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,16 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 }));
 
 const { default: commandGuard } = await import("./index");
+
+// 캐릭터 이름은 실제 프로필의 사무실 모드를 따라 풀린다. 기본 캐릭터 테스트가 이 PC의 프로필에 흔들리지 않도록 빈 agent dir에서 돌린다.
+const realAgentDir = process.env.PI_CODING_AGENT_DIR;
+const isolatedAgentDir = await mkdtemp(join(tmpdir(), "runtime-guard-agent-"));
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+afterAll(async () => {
+  if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = realAgentDir;
+  await rm(isolatedAgentDir, { recursive: true, force: true });
+});
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -798,6 +808,50 @@ describe("command guard runtime gates", () => {
       const wrongSeat = createGuardHarness();
       await wrongSeat.emit("input", { type: "input", text: "테스타 불러와", source: "rpc" });
       expect(await call(wrongSeat, '[character-summon alias="ISANA(이사나)" model="hive/deepseek-ai/deepseek-v4.1-flash-1017"]', "office-seat")).toMatchObject({ block: true });
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("office mode: several seats keep their own model, account position and consult-only limit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "office-guard-multi-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
+      await writeFile(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "office" }));
+      await mkdir(join(dir, "characters-office"));
+      const voice = { temperament: "느긋한 선배형", expression: "낮은 반말" };
+      const seats: Record<string, unknown> = {};
+      for (const [seat, id, alias, name] of [["MIO(미오)", "alder", "ALDER(앨더)", "앨더"], ["SHION(시온)", "cedar", "CEDAR(시더)", "시더"]]) {
+        await writeFile(join(dir, "characters-office", `${id}.png`), "png");
+        seats[seat] = { id, face: `${id}.png`, alias, names: [id, name], voice };
+      }
+      await writeFile(join(dir, "characters-office", "roster.json"), JSON.stringify({ seats }));
+      const body = "TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.";
+      const call = (harness: ReturnType<typeof createGuardHarness>, marker: string, id: string) =>
+        harness.emit("tool_call", {
+          type: "tool_call",
+          toolName: "task",
+          toolCallId: id,
+          input: { agent: "maker", task: `${marker}\n${body}` },
+        }) as Promise<{ block?: boolean; input?: { task?: string } } | undefined>;
+      const alderMarker = (position: number) => `[character-summon alias="ALDER(앨더)" model="anthropic/claude-opus-5-5" oauth-position="${position}"]`;
+
+      const accepted = createGuardHarness();
+      await accepted.emit("input", { type: "input", text: "앨더 불러와", source: "rpc" });
+      const allowed = await call(accepted, alderMarker(1), "alder-ok");
+      expect(allowed?.block).toBeUndefined();
+      expect(allowed?.input?.task).toContain('alias="ALDER(앨더)"');
+
+      const wrongPosition = createGuardHarness();
+      await wrongPosition.emit("input", { type: "input", text: "앨더 불러와", source: "rpc" });
+      expect(await call(wrongPosition, alderMarker(0), "alder-bad")).toMatchObject({ block: true });
+
+      const consultOnly = createGuardHarness();
+      await consultOnly.emit("input", { type: "input", text: "시더 불러와", source: "rpc" });
+      expect(await call(consultOnly, '[character-summon alias="CEDAR(시더)" model="web6/gpt-6-pro"]', "cedar-task")).toMatchObject({ block: true });
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
