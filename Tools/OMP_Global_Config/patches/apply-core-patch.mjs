@@ -17862,6 +17862,71 @@ class ElRef implements PromiseLike<El> {
 	}`,
 	});
 }
+// 2026-10-21 computer 정확도: (1) 모델이 win.click({x, y}) 처럼 부르면 native 가 "Failed to convert napi value Object into rust type f64"
+// 만 돌려줘 올바른 형태를 알 수 없었다(세션 01a15353). 이미 입력 경로(#input → sendInput → nativeCall)가 던진 ToolError 중
+// native 변환 오류이고 x·y 가 숫자가 아닐 때만 호출 형태를 덧붙인다. 가드·오류 코드·computerAction·doubleClick 은 그대로다.
+// (2) 목표 확인 지시를 "대상·목표 확인 → 한 번 행동 → 읽기 대기" 하나로 고친다(덧붙이지 않고 기존 문단을 바꾼다).
+// 이미 배포된 본문은 legacyPatched 로 두어 재적용이 새 본문으로 바꾼다. 바꿀 조각이 없으면 조용히 어긋나지 않고 여기서 실패한다.
+{
+	const swapOnce = (text, from, to) => {
+		if (!text.includes(from)) throw new Error(`computer 정확도 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))}`);
+		return text.replace(from, () => to);
+	};
+	const win = EDITS.find(entry => entry.marker === "return windowInputResult(action, this.id, options);")
+		.alternates.find(candidate => candidate.requires === "#guardInput(method: string): ComputerRunContext");
+	const clickCall = `		return this.#input("click", context, native.takeover, fallback =>
+			this.#session.click(this.id, x, y, { ...native, ...fallback }),
+		);
+	}
+
+	async doubleClick(`;
+	win.legacyPatched = win.patched;
+	win.marker = "Failed to convert napi value";
+	win.patched = swapOnce(win.patched, clickCall, `		try {
+			return await this.#input("click", context, native.takeover, fallback =>
+				this.#session.click(this.id, x, y, { ...native, ...fallback }),
+			);
+		} catch (error) {
+			// Native rejected a non-number x or y: name the call shape. Any other error passes through unchanged.
+			if (error instanceof ToolError && (typeof x !== "number" || typeof y !== "number") && error.message.startsWith("Failed to convert napi value"))
+				error.message += "\\nclick takes numeric coordinates: win.click(x, y, options), e.g. win.click(120, 80); got (" + typeof x + ", " + typeof y + ").";
+			throw error;
+		}
+	}
+
+	async doubleClick(`);
+
+	const system = EDITS.find(entry => entry.marker === "follow the setting the error names");
+	// 2026-10-19 이전에 배포된 가장 오래된 본문(legacyPatched)은 새 판으로도 올라가야 한다. 지금 배포본이 legacyPatched 를 차지하므로
+	// 옛 본문은 requires 로 가르는 후보가 맡는다(pristine·배포본·새 판에는 그 본문이 없어 후보에서 빠진다).
+	const oldestPatched = system.legacyPatched;
+	if (!oldestPatched) throw new Error("computer-use 옛 legacyPatched 를 찾을 수 없다");
+	system.legacyPatched = system.patched;
+	system.patched = swapOnce(
+		system.patched,
+		"- Check the outcome in the same eval cell as the action: `wait()` for exact AX/DOM text or properties first. Only when",
+		"- Bind the target and the goal before input. The target is a local window/app/PID, or a remote-desktop window whose canvas is only pixels and whose input and clipboard reach another machine; the goal is the observable result the user asked for. Act once, then check in the same eval cell: `wait()` for exact AX/DOM text or properties first (a remote canvas: zoom on the pixels). NEVER resend or vary input (another shortcut, click or paste) while waiting for focus or a delayed effect; if the window, title or focus is not what you expect, stop and reobserve. Report the goal done only from what you observed on the target: delivered input, a clipboard write, or `verified` on one element is not it (the value can revert, and an AX action can still bring its window forward). Only when",
+	);
+	(system.alternates ??= []).push({
+		file: system.file,
+		requires: oldestPatched,
+		marker: system.marker,
+		anchor: system.anchor,
+		legacyPatched: oldestPatched,
+		patched: system.patched,
+	});
+
+	const GOAL_OLD = "- Goal after an action: act ONCE, then `await wait(async () => …read…, { timeout })` for the row, text, or value the user asked for; it resolves with that value.";
+	const GOAL_NEW = "- Target and goal: before input name the target (a local window/app/PID from `computer.window(...)`, or a remote-desktop window, where input and the local clipboard reach another machine) and the result the user asked for. Window coordinate clicks use `win.click(x, y, options)`, never `click({ x, y })`. Act ONCE, then `await wait(async () => …read…, { timeout })` for the row, text, or value that shows the goal; it resolves with that value.";
+	const STOP_OLD = "On `wait(predicate) timed out` NEVER re-click, take over, or switch windows: reobserve and report. A button state change alone does not prove a save.";
+	const STOP_NEW = "On `wait(predicate) timed out`, or when the window or focus is not the target, NEVER re-click, resend keys, take over, or switch windows: reobserve and report what you saw. A local effect (a button state change, a clipboard write, `verified` on one element) proves neither the goal nor remote delivery. In a remote command line: check the target is focused, paste, read the pasted text back, press Enter only then, and read the output.";
+	const goal = EDITS.find(entry => entry.marker === "- Goal after an action: act ONCE");
+	for (const candidate of [goal, ...goal.alternates]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.marker = "- Target and goal: before input";
+		candidate.patched = swapOnce(swapOnce(candidate.patched, GOAL_OLD, GOAL_NEW), STOP_OLD, STOP_NEW);
+	}
+}
 // 18.9.1 MCPManager 는 deferred 전역 로더에 `static #deferred` 를 새로 둔다. JS 는 같은 class 안에서 static 과 instance
 // private 이름을 겹쳐 둘 수 없어("#deferred" has already been declared) 모듈 적재가 실패한다. 요청별 MCP 선택이 쓰는
 // instance 표(나중에 띄울 서버)의 이름만 #deferredServers 로 바꾼 18.9.1 후보를 만든다. 의미·위치는 같다(ADAPT).

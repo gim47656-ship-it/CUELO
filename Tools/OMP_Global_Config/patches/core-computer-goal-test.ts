@@ -50,9 +50,12 @@ const state = {
 	windowLists: 0,
 	captures: 0,
 	slowMs: 0,
+	windowClicks: [] as Array<[number, number]>,
+	keys: 0,
+	nativeFailure: "",
 };
 const reset = (goalDelay: number) => {
-	Object.assign(state, { clicks: 0, goalDelay, goalVisible: false, rowProbes: [], afterSlowReads: 0, windowLists: 0, captures: 0, slowMs: 0 });
+	Object.assign(state, { clicks: 0, goalDelay, goalVisible: false, rowProbes: [], afterSlowReads: 0, windowLists: 0, captures: 0, slowMs: 0, windowClicks: [], keys: 0, nativeFailure: "" });
 };
 type FakeNode = { ref: string; role: string; nativeRole: string; title: string; enabled: boolean; focused: boolean; childCount: number; x: number; y: number; width: number; height: number; actions: string[] };
 const node = (ref: string, role: string, title: string): FakeNode => ({ ref, role, nativeRole: role, title, enabled: true, focused: false, childCount: 0, x: 0, y: 0, width: 80, height: 20, actions: ["press"] });
@@ -106,6 +109,15 @@ const session = {
 	axChildren: async () => [],
 	axPerform: async () => press(),
 	axClick: async () => press(),
+	// 창 좌표 입력: 실제 native(napi)처럼 x·y 가 숫자가 아니면 전달 전에 변환 오류로 거절한다. nativeFailure 는 그 밖의 native 실패를 흉내 낸다.
+	click: async (_target: string, x: unknown, y: unknown) => {
+		// napi 는 처음 변환에 실패한 인자의 JS 타입을 오류에 적는다(객체는 Object, 빠진 인자는 Undefined).
+		const bad = typeof x !== "number" ? x : typeof y !== "number" ? y : undefined;
+		if (typeof x !== "number" || typeof y !== "number") throw new Error(`Failed to convert napi value ${bad === undefined ? "Undefined" : typeof bad === "object" ? "Object" : typeof bad} into rust type f64`);
+		if (state.nativeFailure) throw new Error(state.nativeFailure);
+		state.windowClicks.push([x, y]);
+	},
+	keyChord: async () => void state.keys++,
 	close: async () => {},
 	// 18.6.3 worker 는 run 이 끝날 때 native session 의 retire()(성공)·cancel()(실패·취소)을 부른다.
 	cancel: () => {},
@@ -305,6 +317,31 @@ realConsole.log("[7] 기존 wait(ms)·assert·잘못된 인자는 그대로다")
 	const clamped = await run(`${prologue}
 return await wait(rowTitle, { timeout: 60_000 });`, { timeoutMs: 1500 });
 	check("predicate 제한 시간은 run 예산보다 먼저 끝난다(이름 붙은 timeout)", !clamped.ok && /^wait\(predicate\) timed out after 500ms/.test(clamped.error?.message ?? ""), show(clamped));
+}
+
+realConsole.log("[8] 잘못된 좌표 호출: click({x, y}) 는 그대로 거절하되 올바른 호출 형태를 알려 주고, 이어진 입력은 전달되지 않는다");
+{
+	const clickRun = (call: string) => run(`const win = await desktop.window({ title: "Goal Fixture" });
+try { await ${call}; await win.press("enter"); return { ok: true }; } catch (e) { return { ok: false, message: e.message, name: e.name }; }`);
+	const outcome = (result: RunResult) => (result.payload?.returnValue ?? {}) as { ok?: boolean; message?: string; name?: string };
+	const sent = () => JSON.stringify({ clicks: state.windowClicks, keys: state.keys });
+	reset(0);
+	for (const [label, call, nativeType] of [["객체형", "win.click({ x: 120, y: 80 })", "Object"], ["좌표 하나 빠짐", "win.click(120)", "Undefined"]] as const) {
+		state.windowClicks.length = 0;
+		state.keys = 0;
+		const misuse = outcome(await clickRun(call));
+		check(`${label}: 원래 native 오류(${nativeType})에 win.click(x, y, options) 형태를 덧붙여 거절한다`, misuse.ok === false && misuse.name === "ToolError" && misuse.message?.startsWith(`Failed to convert napi value ${nativeType} into rust type f64`) === true && misuse.message.includes("win.click(x, y, options)"), JSON.stringify(misuse));
+		check(`${label}: 입력이 전달되지 않고 이어진 press 도 실행되지 않는다`, sent() === '{"clicks":[],"keys":0}', sent());
+	}
+	state.windowClicks.length = 0;
+	state.keys = 0;
+	const valid = outcome(await clickRun("win.click(120, 80, { button: 'left' })"));
+	check("올바른 호출은 그대로 한 번 전달된다", valid.ok === true && sent() === '{"clicks":[[120,80]],"keys":1}', `${JSON.stringify(valid)} ${sent()}`);
+	state.windowClicks.length = 0;
+	state.nativeFailure = "Internal: window is gone";
+	const unrelated = outcome(await clickRun("win.click(120, 80)"));
+	state.nativeFailure = "";
+	check("숫자 좌표의 다른 native 실패는 문구를 바꾸지 않는다", unrelated.ok === false && unrelated.message === "Internal: window is gone" && state.windowClicks.length === 0, JSON.stringify(unrelated));
 }
 
 clearInterval(keepAlive);
