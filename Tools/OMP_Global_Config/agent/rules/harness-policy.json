@@ -595,7 +595,7 @@
     },
     "typedJudgmentRouting": {
       "mode": "live-decision-support",
-      "backendConfigPath": "providers.judgmentProvider",
+      "backendConfigPath": "modelRoles.judge",
       "evidence": "existing-session-trace-eval-judge-tool-evidence",
       "input": "minimal-structured-summary-created-by-main-or-maker-including-only-applicable-skill-name-guidance-locator-relevant-risk-observed-failure-and-proposed-action-never-raw-user-or-system-prompt-source-diff-secret-or-tool-output",
       "batching": "explicit-pre-dispatch-maker_route-batches-all-independent-meaning-and-placement-questions-once-pre-dispatch-existing-owner-message-classifies-each-new-instruction-in-the-background-auto-retry-and-review-structural-advisories-are-local-and-do-not-call-judge",
