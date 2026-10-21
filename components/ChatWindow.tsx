@@ -1313,7 +1313,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     const blocks = streamingAssistant ? [...stripRequest.blocks, ...(streamingAssistant.content ?? [])] : stripRequest.blocks;
     return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads, messageCwd, stripRequest.jobNotices);
   }, [stripRequest, streamingAssistant, toolResultsMap, sessionBusy, messageCwd]);
-  // 실행 중인 요청의 카드. 끝난 요청 카드와 같은 모양으로 기록 끝(흐르는 답 위)에 두고, 단계는 입력창 위 줄과 같은 흐름이다.
+  // 실행 중인 요청의 카드. 끝난 요청 카드처럼 답 아래(흐르는 답까지 지난 기록 끝)에 두고, 단계는 입력창 위 줄과 같은 흐름이다.
+  // 흐르는 글이 기록으로 넘어가도 카드 위에 있던 자리 그대로라 글이 카드 아래에서 위로 건너뛰지 않는다.
   // 파일·검사·발주는 기록된 호출에서만 센다. 끝나면 사라지고 그 요청의 마지막 답 아래 끝난 카드가 이어받는다.
   const liveTurn = useMemo(() => (sessionBusy ? {
     ...summarizeTurn(stripRequest.blocks, toolResultsMap, messageCwd),
@@ -1584,8 +1585,6 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 onProcessLogChange={publishProcessLog}
               />
             </InlineUtterancesProvider>
-            {!detached && liveSummary && <TurnSummaryLine summary={liveSummary} live onOpenFile={onOpenFile} />}
-            </AnswerStatusContext.Provider>
             {/* A detached window ends above the live tail; the run keeps streaming and shows on return. */}
             {!detached && streamState.isStreaming && streamState.streamingMessage && liveAnswerBlocks.length > 0 && (
               <MessageView
@@ -1597,6 +1596,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 onOpenFile={onOpenFile}
               />
             )}
+            {!detached && liveSummary && <TurnSummaryLine summary={liveSummary} live onOpenFile={onOpenFile} />}
+            </AnswerStatusContext.Provider>
             {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}
 
             <div ref={messagesEndRef} />

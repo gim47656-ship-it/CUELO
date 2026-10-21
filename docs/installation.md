@@ -6,7 +6,7 @@
 
 - **소스 설치**: checkout 후 `node install.mjs setup`을 실행합니다(아래 절차).
 - **npm 설치**: 패키지명은 [`cuelo`](https://www.npmjs.com/package/cuelo)입니다. production 빌드가 포함되며 설치 때 패키지 자체 SDK를 준비합니다. `cuelo setup`은 빌드를 건너뛰고 준비된 런타임을 검사한 뒤 공개 하네스의 없는 파일만 추가합니다.
-- **개발·검증 환경**: Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Windows에서 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. 아래 단계별 안내는 Windows 기준이며, Linux에서는 Node.js·Bun·Git을 배포판의 공식 방법으로 설치한 뒤 같은 `setup`·`start` 명령을 씁니다.
+- **개발·검증 환경**: Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux에서 전체 검사를 실행하고, Windows에서는 설치·빌드 확인을 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. 아래 단계별 안내는 Windows 기준이며, Linux에서는 Node.js·Bun·Git을 배포판의 공식 방법으로 설치한 뒤 같은 `setup`·`start` 명령을 씁니다.
 
 ## 대표 경로: `omp`만 있는 Windows PC (`omp-web` 없음)
 

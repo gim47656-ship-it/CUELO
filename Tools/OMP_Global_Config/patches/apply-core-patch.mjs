@@ -3220,6 +3220,23 @@ export interface IrcBridgeHost {
 			// agent with no job row.
 			if (manager && jobs.length > 0)
 				return buildJobResult(this.session, manager, "wait", jobs, [], runningAgentsOutsideJobs(this.session));`,
+		// 2026-10-21 18.12.5: 메시지 회신 wait(#16445)를 넣으면서 이 return 이 블록 안의
+		// `const result = …` 로 바뀌었다(서비스 종료 깨움이면 useless 를 뗀다). 같은 6번째 인자를 싣는다.
+		alternates: [{
+			file: "src/tools/wait.ts",
+			requires: "const replyWait = messaging !== undefined",
+			marker: "A job-backed wait result must not hide a running agent with no job row.",
+			anchor: `				const result = buildJobResult(this.session, manager, "wait", jobs, []);`,
+			patched: `				// A job-backed wait result must not hide a running agent with no job row.
+				const result = buildJobResult(
+					this.session,
+					manager,
+					"wait",
+					jobs,
+					[],
+					runningAgentsOutsideJobs(this.session),
+				);`,
+		}],
 	},
 	// 18.3.0 RETIRE: 수신 메시지 id 노출·`replyTo` 회신 지시(옛 #57~#59). 18.3.0 메시징 진입점
 	// `write agent://` 는 `replyTo` 를 싣지 못하고(irc/messaging.ts:43-46,66) 회신 안내도
@@ -12725,6 +12742,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 			patched: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+		}, {
+			// 2026-10-21 18.12.5: 출처 줄만 kdl:219로 이동했으며 prefixBinding 의미는 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:219","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:219","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
+			patched: '{"source":"classes/anthropic.kdl:219","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
 		}],
 	},
 	{
@@ -12804,6 +12827,12 @@ function parentSubagentServiceTiers(
 			marker: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			anchor: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 			patched: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+		}, {
+			// 2026-10-21 18.12.5: 출처 줄만 kdl:332로 이동했으며 provider·revision 경계도 동일하다(no-op).
+			file: "../pi-catalog/src/compat/rules.json",
+			marker: '{"source":"classes/anthropic.kdl:332","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			anchor: '{"source":"classes/anthropic.kdl:332","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
+			patched: '{"source":"classes/anthropic.kdl:332","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		}],
 	},
 	// 위 세 항목과 짝: modelOverrides의 thinking은 buildModel이 규칙으로 채운 thinking을 통째로 덮어써서, override가
@@ -13134,6 +13163,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-21 18.12.5: qPe는 같은 isAdvisorTranscriptName 함수다. minified 이름만 바뀌었다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

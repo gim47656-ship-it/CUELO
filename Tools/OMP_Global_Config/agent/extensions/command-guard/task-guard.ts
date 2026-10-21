@@ -143,14 +143,14 @@ function normalizeDeliverable(value: string): string {
 }
 
 /**
- * OWNED_PATHS 값을 콤마로 나눠 빈 항목을 버리고 선행 `./`를 떼어낸다. `/` 구분 상대경로 계약은
- * 그대로 두고, 실제 소유 판정은 isPathOwned가 정규화하며 수행한다.
+ * OWNED_PATHS 값을 콤마로 나눠 빈 항목을 버리고 collapseOwnedPath로 동등 표기(`//`, `/./`, 선행 `./`)를
+ * 접는다. 실제 소유 판정은 isPathOwned가 같은 정규화로 수행한다.
  */
 export function parseOwnedPaths(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
     .split(",")
-    .map((entry) => entry.trim().replace(/^\.\//, ""))
+    .map((entry) => collapseOwnedPath(entry))
     .filter((entry) => entry.length > 0);
 }
 
@@ -813,8 +813,24 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
 /** 세션 cwd 기준 working tree 스냅샷: 정규화된 상대경로 → 내용 지문(삭제·부재는 undefined). */
 export type TreeSnapshot = ReadonlyMap<string, string | undefined>;
 
+/**
+ * 어휘적 정규화: 구분자를 `/`로 통일하고 반복 `/`와 `.` 세그먼트를 접는다. 후행 `/`(디렉터리)와
+ * 선행 `/`·드라이브 루트 `X:/`(절대경로 표시)는 유지하고, `..`는 건드리지 않으며(해석 없음), 비면 `.`(cwd)이다.
+ * 대소문자는 바꾸지 않는다.
+ */
+export function collapseOwnedPath(value: string): string {
+  const slashed = value.trim().replace(/\\/g, "/");
+  const drive = /^[A-Za-z]:\//.exec(slashed)?.[0] ?? "";
+  const rest = slashed.slice(drive.length);
+  const segments = rest.split("/").filter((segment) => segment.length > 0 && segment !== ".");
+  const lead = drive || (rest.startsWith("/") ? "/" : "");
+  if (segments.length === 0) return lead || (slashed.length > 0 ? "." : "");
+  const trail = rest.endsWith("/") ? "/" : "";
+  return `${lead}${segments.join("/")}${trail}`;
+}
+
 function normalizeOwnedPath(value: string): string {
-  return value.trim().replace(/\\/g, "/").toLowerCase();
+  return collapseOwnedPath(value).toLowerCase();
 }
 
 /**

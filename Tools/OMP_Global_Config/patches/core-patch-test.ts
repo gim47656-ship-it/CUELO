@@ -925,7 +925,8 @@ console.log("\n[12] wait 대기 근거 — 남의 트리 실행 중 에이전트
 // 18.3.0 `wait` 는 job 이 없어도 실행 중 peer 가 있으면 첫 사건까지(최대 30분) 막는다
 // (tools/wait.ts:83-88). 그 peer 판정은 listVisibleTo 라 범위가 없으면 다른 세션의
 // 실행 중 SubAgent 가 이 세션을 붙잡는다(HubMigrationMap 실행 증거 X1). 18.5.1 의 `wait` 는 자기 job·service 만
-// 기다리고, 없으면 peer 와 무관하게 즉시 "Nothing to wait for" ToolError 로 끝난다. 두 판 모두 즉시 돌아와야 한다.
+// 기다리고, 없으면 peer 와 무관하게 즉시 "Nothing to wait for" ToolError 로 끝난다. 18.12.4(#16445)부터는 같은 경우를
+// 오류 대신 "Nothing to wait for: …" 결과(useless)로 돌려준다. 어느 판이든 즉시 돌아와야 한다.
 const lonelyRoot = new RoundTripSession("Main#3");
 registerRoundTrip(lonelyRoot, "main");
 const lonelyOut = await Promise.race([
@@ -937,7 +938,7 @@ const lonelyOut = await Promise.race([
 const lonelyText = JSON.stringify(lonelyOut.content ?? "");
 check(
 	"자기 트리에 대기 대상이 없으면 즉시 돌아온다",
-	lonelyText.includes("No running background jobs") || lonelyText.includes("THROWN: Nothing to wait for"),
+	lonelyText.includes("No running background jobs") || lonelyText.includes("THROWN: Nothing to wait for") || lonelyText.includes("Nothing to wait for: "),
 	lonelyText.slice(0, 200),
 );
 reg11.unregister("Main#3");

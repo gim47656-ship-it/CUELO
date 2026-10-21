@@ -533,6 +533,18 @@ describe("OWNED_PATHS", () => {
     expect(parseOwnedPaths(undefined)).toEqual([]);
   });
 
+  test("반복 구분자와 내부 .는 한 표기로 접고 isPathOwned도 같은 소유로 본다", () => {
+    expect(parseOwnedPaths("src//view.ts, src/./view.ts, a//b/, .")).toEqual(["src/view.ts", "src/view.ts", "a/b/", "."]);
+    expect(isPathOwned(["src//view.ts"], "src/view.ts")).toBe(true);
+    expect(isPathOwned(["src/view.ts"], "src/./view.ts")).toBe(true);
+    expect(isPathOwned(["a//b/"], "a/b/c.ts")).toBe(true);
+    expect(isPathOwned(["a//b"], "a/b/c.ts")).toBe(false);
+    const state = createTaskGuardState();
+    for (const escaping of ["a/./../../x", "//etc/x", "./../x", "/", "//", "\\", "/./", "C:\\", "C:/.", "C:/./.", "C:\\."]) {
+      expect(reserveTaskCall(state, escaping, flat("maker", brief({ OWNED_PATHS: escaping }))).ok).toBe(false);
+    }
+  });
+
   test("절대경로 OWNED_PATHS는 거부한다", () => {
     const state = createTaskGuardState();
     for (const absolute of ["C:\\proj\\a/", "/etc/x", "\\\\server\\share\\a"]) {

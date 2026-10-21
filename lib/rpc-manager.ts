@@ -695,6 +695,11 @@ export class AgentSessionWrapper {
   private extensionStatuses = new Map<string, string>();
   private extensionWidgets = new Map<string, ExtensionWidgetItem>();
   private promptRunning = false;
+  /**
+   * 수락했지만 아직 SDK `input` hook을 기다리는 genuine 프롬프트 수. 그 사이에도 세션은 실행
+   * 중이어야 idle 전용 삭제·idle 종료가 받은 입력을 버리지 않는다(#42). 겹칠 수 있어 개수로 센다.
+   */
+  private pendingInputAdmissions = 0;
   /** 진행 중인 모델 mutation 수. 평범한 변경끼리는 겹칠 수 있으므로 개수로 센다. */
   private modelMutations = 0;
   /**
@@ -852,6 +857,7 @@ export class AgentSessionWrapper {
   isRunning(): boolean {
     return this._alive && (
       this.promptRunning
+      || this.pendingInputAdmissions > 0
       || this.handoffRunning
       || this.inner.isStreaming
       || this.inner.isCompacting
@@ -1341,8 +1347,9 @@ export class AgentSessionWrapper {
     const type = command.type as string;
     if (this.shouldWaitForExtensions(type)) await this.waitForExtensionsBound();
     // 확장 바인딩을 기다리는 동안 삭제가 예약될 수 있으므로 그 await 뒤에서 판정한다.
-    // 여기를 통과한 prompt는 동기적으로 promptRunning을 세우므로, 반대로 예약이
-    // 먼저 잡혔다면 이 명령이 작업을 시작하는 일은 없다.
+    // 여기를 통과한 prompt는 동기적으로 실행 중이 된다(genuine 입력은 input hook 동안
+    // pendingInputAdmissions로, 그 뒤 promptRunning으로). 반대로 예약이 먼저 잡혔다면
+    // 이 명령이 작업을 시작하는 일은 없다.
     if (this.closing && CLOSING_REJECTED_COMMAND_TYPES[type] === true) {
       throw new Error("Session is closing");
     }
@@ -1386,35 +1393,53 @@ export class AgentSessionWrapper {
         const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
         // genuine 사용자 요청일 때만 SDK `input` 이벤트(요청 단위 guard 리셋)를 발화한다.
         // 내부 지시문과 실행 중 턴에 큐잉되는 steer/follow_up 입력은 새 요청이 아니다.
-        if (isGenuineUserRequest(internalPrompt, streamingBehavior)) {
-          // 요청 경계를 세우기 전에 SDK의 `input` 이벤트를 실제로 전달한다. 요청 단위
-          // 상태(예: command-guard의 task budget)를 이 요청에서 리셋하는 유일한 지원
-          // 경로이고, 대화형 호스트와 같은 계약(변환/handled)을 그대로 따른다.
-          const applied = await this.emitGenuineUserInput(promptMessage, promptImages);
-          if (applied === null) return null;
-          promptMessage = applied.text;
-          promptImages = applied.images;
-          if (!promptMessage && !promptImages?.length) return null;
+        const genuine = isGenuineUserRequest(internalPrompt, streamingBehavior);
+        // hook을 기다리는 동안에도 실행 중으로 센다. 해제는 모델 턴 없이 끝나는 분기이거나
+        // promptRunning을 세우는 같은 동기 구간이라 그 사이에 idle로 보이는 틈이 없다.
+        if (genuine) {
+          this.pendingInputAdmissions += 1;
+          notifyRunningChange();
         }
-        const skill = resolveRpcSkillInvocation(this.inner, promptMessage);
-        const promptRun = skill
-          ? buildSkillPromptMessage(skill.skill, skill, "user").then((built) =>
-              this.inner.promptCustomMessage({
-                customType: SKILL_PROMPT_MESSAGE_TYPE,
-                content: promptImages?.length
-                  ? [{ type: "text" as const, text: built.message }, ...promptImages]
-                  : built.message,
-                display: true,
-                details: built.details,
-                attribution: "user",
-              }, { ...(streamingBehavior ? { streamingBehavior } : {}), queueChipText: promptMessage })
-            )
-          : this.inner.prompt(promptMessage, {
-              ...(promptImages?.length ? { images: promptImages } : {}),
-              ...(streamingBehavior ? { streamingBehavior } : {}),
-              userInitiated: true,
-            });
-        this.promptRunning = true;
+        let promptRun: Promise<unknown>;
+        try {
+          if (genuine) {
+            // 요청 경계를 세우기 전에 SDK의 `input` 이벤트를 실제로 전달한다. 요청 단위
+            // 상태(예: command-guard의 task budget)를 이 요청에서 리셋하는 유일한 지원
+            // 경로이고, 대화형 호스트와 같은 계약(변환/handled)을 그대로 따른다.
+            const applied = await this.emitGenuineUserInput(promptMessage, promptImages);
+            if (applied === null) return null;
+            promptMessage = applied.text;
+            promptImages = applied.images;
+            if (!promptMessage && !promptImages?.length) return null;
+            // 강제 삭제·종료는 실행 중인 세션도 기다리지 않으므로, hook 사이에 닫힘이
+            // 잡혔거나 세션이 끝났으면 늦은 모델 턴을 열지 않는다.
+            if (this.closing || !this._alive) throw new Error("Session is closing");
+          }
+          const skill = resolveRpcSkillInvocation(this.inner, promptMessage);
+          promptRun = skill
+            ? buildSkillPromptMessage(skill.skill, skill, "user").then((built) =>
+                this.inner.promptCustomMessage({
+                  customType: SKILL_PROMPT_MESSAGE_TYPE,
+                  content: promptImages?.length
+                    ? [{ type: "text" as const, text: built.message }, ...promptImages]
+                    : built.message,
+                  display: true,
+                  details: built.details,
+                  attribution: "user",
+                }, { ...(streamingBehavior ? { streamingBehavior } : {}), queueChipText: promptMessage })
+              )
+            : this.inner.prompt(promptMessage, {
+                ...(promptImages?.length ? { images: promptImages } : {}),
+                ...(streamingBehavior ? { streamingBehavior } : {}),
+                userInitiated: true,
+              });
+          this.promptRunning = true;
+        } finally {
+          if (genuine) {
+            this.pendingInputAdmissions -= 1;
+            if (!this.promptRunning) notifyRunningChange();
+          }
+        }
         notifyRunningChange();
         promptRun.then(() => {
           this.promptRunning = false;

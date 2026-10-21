@@ -373,6 +373,26 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       .toMatchObject({ block: true, reason: expect.stringContaining("'Left' ↔ 'Right'") });
     expect(await h.beforeTask({ context: "같은 batch", tasks: [item(tasks[0]!), item(tasks[2]!)] }, {} as never, "pair")).toBeUndefined();
   });
+  test("같은 파일의 동등한 표기(//, /./)도 exact와 똑같이 겹침으로 알리고 막되, 다른 파일은 통과시킨다", async () => {
+    const make = (name: string, paths: string) => ({
+      name,
+      task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
+      assessment: { ...facts, paths: paths.split(",") },
+    });
+    const item = (task: { name: string; task: string }) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" });
+    for (const [right, overlaps] of [
+      ["src/view.ts", true], ["src//view.ts", true], ["src/./view.ts", true], ["./src\\view.ts", true],
+      ["src/view.tsx", false], ["src/other.ts", false],
+    ] as const) {
+      const h = harness();
+      const tasks = [make("Left", "src/view.ts"), make("Right", right)];
+      const batch = await h.prepareBatch("같은 batch", tasks, {} as never);
+      expect(batch.routes.map((route) => route.ownershipOverlaps !== null)).toEqual([overlaps, overlaps]);
+      const result = await h.beforeTask({ context: "같은 batch", tasks: tasks.map(item) }, {} as never, "batch");
+      if (overlaps) expect(result).toMatchObject({ block: true, reason: expect.stringContaining("'Left' ↔ 'Right'") });
+      else expect(result).toBeUndefined();
+    }
+  });
   test("OWNED_PATHS에 설명 괄호·glob이 섞이면 briefGaps로 경로가 아니라고 알리고, Next 경로 그룹·동적 세그먼트는 그대로 둔다", async () => {
     const h = harness();
     const paths = "app/globals.css (panel,deck blocks only),lib/i18n/messages/*,app/(chat)/page.tsx,app/api/agent/[id]/route.ts";
