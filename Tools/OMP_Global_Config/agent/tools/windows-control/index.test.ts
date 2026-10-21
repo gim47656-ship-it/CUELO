@@ -4,6 +4,9 @@ import { buildRequest, formatControlResult, runWindowsControl, type ChildControl
 const apply: ChildControl = { Hwnd: 11, ClassName: "WindowsForms10.BUTTON.app.0.x", Text: "Apply", ControlId: 11, Visible: true, Enabled: true, Check: -1 };
 const enable: ChildControl = { ...apply, Hwnd: 12, Text: "Enable", ControlId: 12 };
 
+// 검증 범위: 요청 검증(buildRequest), PowerShell 후보 선택·재시도 규칙(runWindowsControl), 결과 문구(formatControlResult).
+// 가짜 경계: fakeExec는 pi.exec를 대신한다. 실제 Windows 창·컨트롤·BM_CLICK 효과는 여기서 증명하지 않는다.
+// 미증명: 실제 Windows 창에서의 클릭 효과, 전면 창 유지, 모델의 도구 선택. 이 테스트는 어느 것도 증명하지 않는다.
 function fakeExec(answers: Record<string, ExecResult | Error>): { exec: Exec; calls: { command: string; args: string[] }[] } {
   const calls: { command: string; args: string[] }[] = [];
   const exec: Exec = async (command, args) => {
@@ -88,6 +91,7 @@ describe("formatControlResult", () => {
     expect(text).toContain("전면 창 유지");
   });
 
+  // 계약: "전달"은 메시지가 컨트롤에 도착했다는 뜻이다. 작업이 끝났거나 화면 효과가 났다는 뜻이 아니다.
   test("a handler still running after the wait is reported as delivered, not as a failure to retry", () => {
     const text = formatControlResult({ ok: false, action: "click", window: 5, target: apply, win32Error: 1460, foregroundUnchanged: false, changes: [] });
     expect(text).toContain("전달됐지만");

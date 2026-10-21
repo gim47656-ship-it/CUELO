@@ -338,13 +338,121 @@ async function ordinaryIdleAsideCase(): Promise<void> {
 	}
 }
 
+// 계약(실제 AgentSession 스케줄러·context 조립 증명): 한 assistant 메시지의 두 tool call 중 뒤의 호출이 먼저 끝나도
+// 다음 provider 요청에 원래 두 id가 각자 맞는 결과로 정확히 한 번씩 실리고, system prompt와 thinking/text 구분이 유지된다.
+// 가짜 경계: streamFn(provider 전송)과 tool 본문. 미증명: 실제 provider의 id 규칙, 모델 품질, 청구 사용량.
+async function reversedToolResultsCase(): Promise<void> {
+	const root = mkdtempSync(join(fixtureRoot, "omp-yield-terminal-reversed-"));
+	const gate = Promise.withResolvers<void>();
+	const bothStarted = Promise.withResolvers<void>();
+	const started: string[] = [];
+	const tool = (name: string, label: string, waitsForGate: boolean) => ({
+		name,
+		label: name,
+		description: `local fixture tool ${name}`,
+		parameters: { type: "object", properties: {} },
+		async execute() {
+			started.push(name);
+			if (started.length === 2) bothStarted.resolve();
+			// 첫 호출은 둘째의 tool_execution_end가 gate를 열 때까지 기다린다. 둘이 동시에 실행 중일 때만 풀린다.
+			await (waitsForGate ? gate.promise : bothStarted.promise);
+			return { content: [{ type: "text" as const, text: label }], details: {} };
+		},
+	});
+	const created = await createAgentSession({
+		cwd: join(root, "work"),
+		agentDir: join(root, "agent"),
+		model,
+		getApiKey: () => "example",
+		requireYieldTool: false,
+		toolNames: ["slow_first", "fast_second"],
+		restrictToolNames: true,
+		allowRestrictedCustomTools: true,
+		customTools: [tool("slow_first", "RESULT-OF-FIRST", true), tool("fast_second", "RESULT-OF-SECOND", false)],
+		disableExtensionDiscovery: true,
+		enableMCP: false,
+		enableLsp: false,
+		skipPythonPreflight: true,
+		skills: [],
+		rules: [],
+		contextFiles: [],
+	});
+	const requests: Array<{ systemPrompt: unknown; messages: Array<Record<string, unknown>> }> = [];
+	const base = { api: model.api, provider: model.provider, model: model.id, usage: usage(), timestamp: Date.now() };
+	created.session.agent.streamFn = ((_model: unknown, context: { systemPrompt: unknown; messages: Array<Record<string, unknown>> }) => {
+		const stream = createAssistantMessageEventStream();
+		requests.push({ systemPrompt: JSON.parse(JSON.stringify(context.systemPrompt)), messages: structuredClone(context.messages) });
+		const count = requests.length;
+		queueMicrotask(() => {
+			if (count > 2) {
+				stream.fail(new Error("unexpected provider continuation"));
+				return;
+			}
+			const content =
+				count === 1
+					? [
+							{ type: "thinking" as const, thinking: "THINKING-TEXT" },
+							{ type: "text" as const, text: "VISIBLE-TEXT" },
+							{ type: "toolCall" as const, id: "call-first", name: "slow_first", arguments: {} },
+							{ type: "toolCall" as const, id: "call-second", name: "fast_second", arguments: {} },
+						]
+					: [{ type: "text" as const, text: "done" }];
+			const stopReason = count === 1 ? ("toolUse" as const) : ("stop" as const);
+			const message = { ...base, role: "assistant" as const, content, stopReason };
+			stream.push({ type: "start", partial: message });
+			stream.push({ type: "done", reason: stopReason, message });
+			stream.end();
+		});
+		return stream;
+	}) as never;
+	// 완료 순서는 tool 본문이 아니라 스케줄러가 내보낸 tool_execution_end 이벤트로 잰다. gate도 그 이벤트가 연다.
+	const endedIds: string[] = [];
+	const unsubscribe = created.session.subscribe((event: { type: string; toolCallId?: string }) => {
+		if (event.type !== "tool_execution_end" || !event.toolCallId) return;
+		endedIds.push(event.toolCallId);
+		if (event.toolCallId === "call-second") gate.resolve();
+	});
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		// 스케줄러가 두 호출을 직렬화하면 첫 호출이 gate에서 영원히 기다리므로 멈춤 대신 실패로 만든다.
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error("두 tool이 동시에 실행되지 않았다")), 5000);
+		});
+		await Promise.race([created.session.prompt("reversed tool completion probe"), timeout]);
+		await created.session.waitForIdle();
+		assert.deepEqual(endedIds, ["call-second", "call-first"], "스케줄러가 낸 tool_execution_end 순서가 뒤 호출 먼저여야 한다");
+		assert.equal(requests.length, 2, "tool 결과 뒤 provider 요청은 정확히 한 번 더 나간다");
+		const [firstRequest, nextRequest] = requests;
+		assert.deepEqual(nextRequest!.systemPrompt, firstRequest!.systemPrompt, "다음 요청도 같은 system prompt를 유지한다");
+		const results = nextRequest!.messages.filter(message => message.role === "toolResult") as Array<{ toolCallId: string; content: Array<{ text: string }> }>;
+		assert.equal(results.length, 2, `toolResult는 호출당 정확히 하나: ${JSON.stringify(results)}`);
+		const byId = Object.fromEntries(results.map(result => [result.toolCallId, result.content.map(part => part.text).join("")]));
+		assert.deepEqual(byId, { "call-first": "RESULT-OF-FIRST", "call-second": "RESULT-OF-SECOND" }, "각 id는 자기 결과에 연결된다");
+		const assistant = nextRequest!.messages.find(message => message.role === "assistant") as { content: Array<{ type: string; thinking?: string; text?: string; id?: string }> };
+		assert.deepEqual(
+			assistant.content.map(part => [part.type, part.thinking ?? part.text ?? part.id]),
+			[["thinking", "THINKING-TEXT"], ["text", "VISIBLE-TEXT"], ["toolCall", "call-first"], ["toolCall", "call-second"]],
+			"thinking과 text는 구분된 블록으로 남고 tool call id가 보존된다",
+		);
+		console.log("PASS 뒤 tool이 먼저 끝나도 다음 provider 요청에 두 결과가 id별로 정확히 한 번씩 실린다");
+	} finally {
+		// 직렬화 회귀로 gate가 안 풀려도 dispose가 멈추지 않도록 대기 중인 tool을 모두 풀고 타이머를 지운다.
+		clearTimeout(timer);
+		gate.resolve();
+		bothStarted.resolve();
+		unsubscribe();
+		await created.session.dispose();
+	}
+}
+
 try {
 	await terminalAsideCase();
 	await queuedSteerCase();
 	await incrementalCase();
 	await errorRetryCase();
 	await ordinaryIdleAsideCase();
-	console.log("결과 5 pass");
+	await reversedToolResultsCase();
+	console.log("결과 6 pass");
 } finally {
 	if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
 	else process.env.OPENAI_API_KEY = previousOpenAiKey;

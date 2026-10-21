@@ -221,7 +221,7 @@ jobs:
       - name: Extension, guard, finalizer and skill-cost tests
         if: matrix.suite == 'extensions'
         run: |
-          bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./skill-cost
+          bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./skill-cost
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Core patch regression tests
@@ -291,7 +291,7 @@ jobs:
           test -d "$RUNNER_TEMP/core/node_modules/@oh-my-pi/pi-natives-linux-x64" || { echo "pi-natives-linux-x64 is missing"; exit 1; }
 
       - name: Extension, guard, finalizer and skill-cost tests
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./skill-cost
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./skill-cost
 
       - name: Core patch regression tests
         run: |
