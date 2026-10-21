@@ -4,6 +4,7 @@
 //   GET  /models                       CLI 모델 집계 (기존 fallback 유지)
 //   POST /credential/<id>/{enable,disable,reset}
 // 추론 discovery/config는 건드리지 않는다. 관리 초기화 장애는 이 sidecar에만 국한한다.
+// 만료 1시간 전 리셋권 자동 사용은 agent 디렉터리의 cuelo-reset-expiry.json이 {"enabled":true}일 때만 돈다.
 'use strict';
 const http = require('http');
 const { execFile } = require('child_process');
@@ -11,6 +12,7 @@ const path = require('path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
+const { randomUUID } = require('node:crypto');
 
 // 포트는 고정 30142 다. 환경변수는 두 번째 인스턴스를 띄워 새 라우트를 시험할 때만 쓴다
 // (돌고 있는 사이드카를 죽이지 않아도 된다). OMP_EXE 와 같은 성격의 탈출구다.
@@ -99,6 +101,19 @@ const PRIOR_DEFAULT_BLOCK_SCOPE = 'ompweb:manual-off:prior-default';
 const IDENTITY_KEYS = ['email', 'accountId', 'orgId', 'projectId'];
 const CONTROL_TIMEOUT_MS = 15_000;
 const RESET_PROVIDERS = ['openai-codex', 'anthropic'];
+const EXPIRY_POLICY_FILE = 'cuelo-reset-expiry.json';
+const RESET_LEDGER_FILE = 'cuelo-reset-expiry-attempts.json';
+const EXPIRY_WINDOW_MS = 3_600_000;
+const EXPIRY_SWEEP_MS = 60_000;
+// provider가 소비하지 않았다고 확정한 결과(SDK pi-ai auth/resets.ts·usage/claude-reset.ts·usage/openai-codex-reset.ts의 코드). 자동 점검은
+// 즉시 다시 보내지 않고 다음 60초 점검에서 forced fresh 목록의 eligibility·쿨다운으로 다시 판단한다. 한도 거절도 여기 든다:
+// Anthropic 429는 rate_limited(SDK가 새 claim의 pending을 지운다), 본문 code가 없는 Codex 429는 http_429다. 목록 조회가 한도에 걸린
+// 계정(status.error, retryAfterMs)은 점검이 건너뛰므로 그 재시도 시점을 지킨다. 불확실(unknown_outcome·http_5xx·reset_unconfirmed·던짐),
+// 이미 사용(already_redeemed), 인증(auth_error·http_401·http_403·no_account·account_unavailable)과 그 밖의 4xx는 자동으로 다시 보내지 않는다.
+// cooldown은 Anthropic 목록이 쿨다운 동안 usable:false를 내므로 그 판정이 재시도 시점을 지킨다.
+const DEFINITE_NOT_CONSUMED = ['nothing_to_reset', 'ineligible', 'cooldown', 'unavailable', 'offer_changed',
+    'credit_list_failed', 'no_credit', 'rate_limited', 'http_429', 'not_sent'];
+const ATTEMPT_STATES = ['sending', 'reset', 'refused', 'unknown'];
 
 function pick(source, keys) {
     return Object.fromEntries(keys.filter(key => source?.[key] !== undefined).map(key => [key, source[key]]));
@@ -171,6 +186,119 @@ function controlError(status, code, outcomeUnknown = false) {
     return Object.assign(new Error(code), { status, code, outcomeUnknown });
 }
 
+// 파일 없음·읽기 실패·잘못된 형식·enabled가 true가 아니면 모두 꺼짐이다.
+function expiryPolicyEnabled(agentDir) {
+    try {
+        const policy = JSON.parse(fs.readFileSync(path.join(agentDir, EXPIRY_POLICY_FILE), 'utf8'));
+        return policy !== null && typeof policy === 'object' && policy.enabled === true;
+    } catch {
+        return false;
+    }
+}
+
+// 정책을 켰거나 예전에 켜서 기록이 남은 profile만 전송 기록을 쓴다. 기본 OFF 설치는 파일을 만들지 않는다.
+function resetLedgerFile(control) {
+    if (!control.agentDir) return null;
+    const file = path.join(control.agentDir, RESET_LEDGER_FILE);
+    return expiryPolicyEnabled(control.agentDir) || fs.existsSync(file) ? file : null;
+}
+
+// 권리 하나의 실체. 같은 id라도 만료(juniper 주간 재발급)나 남은 횟수(cedar)가 다르면 다른 권리다.
+function resetGrant(provider, credentialId, credit) {
+    return { provider, credentialId, creditId: credit.id,
+        expiresAt: credit.expiresAt ?? null, remainingCount: credit.remainingCount ?? null };
+}
+const grantKey = grant => JSON.stringify([grant.provider, grant.credentialId, grant.creditId, grant.expiresAt, grant.remainingCount]);
+// 같은 권리 실체의 미해결 시도는 수동·자동 모두 막는다. 자동은 그 밖에 이미 리셋됐거나 다시 보내면 안 되는 거절로 끝난
+// 같은 권리도 다시 보내지 않는다(provider 목록이 늦게 반영돼도 재시작 뒤 중복 전송하지 않는다).
+const blockingAttempt = (ledger, grant, origin) => ledger.attempts.find(entry => grantKey(entry) === grantKey(grant)
+    && (entry.state === 'sending' || entry.state === 'unknown' || (origin === 'auto'
+        && (entry.state === 'reset' || !DEFINITE_NOT_CONSUMED.includes(entry.code)))));
+const blockingCode = entry => (entry.state === 'reset' ? 'already_reset'
+    : entry.state === 'refused' ? 'attempt_settled' : 'attempt_unresolved');
+// 같은 프로세스에 보관된 결과가 자동 재전송을 막는가. 소비하지 않았다고 확정한 결과만 막지 않는다.
+const autoFinal = retained => !!retained && !(retained.result && DEFINITE_NOT_CONSUMED.includes(retained.result.code));
+
+// 사용량·예비량은 보지 않는다. 만료가 양수로 남고 1시간 이내이며 provider가 지금 쓸 수 있다고 한 권리만 대상이다.
+function expiryDue(provider, status, credit, now) {
+    const left = (typeof credit.expiresAt === 'string' ? Date.parse(credit.expiresAt) : NaN) - now;
+    if (!(left > 0 && left <= EXPIRY_WINDOW_MS)) return false;
+    // SDK도 이 조건이면 보내지 않고 ineligible을 낸다(pi-ai auth/resets.ts). 쓸 수 없는 동안 시도를 소모하지 않는다.
+    return provider !== 'anthropic' || (status.eligible === true && credit.usable === true
+        && (status.redeemableCount ?? 0) >= 1 && status.nextCreditId === credit.id);
+}
+
+function readResetLedger(file) {
+    let ledger;
+    try {
+        ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (error) {
+        if (error.code === 'ENOENT') return { version: 1, attempts: [] };
+        ledger = null;
+    }
+    // 행 하나라도 신원·상태가 깨졌으면 그 행이 막아야 할 권리를 알 수 없으므로 전체를 읽지 못한 것으로 본다(버리지 않는다).
+    if (ledger?.version !== 1 || !Array.isArray(ledger.attempts) || !ledger.attempts.every(validAttempt)) {
+        throw controlError(503, 'attempt_record_unavailable');
+    }
+    return ledger;
+}
+
+function validAttempt(entry) {
+    return entry !== null && typeof entry === 'object' && typeof entry.id === 'string' && entry.id !== ''
+        && RESET_PROVIDERS.includes(entry.provider) && Number.isSafeInteger(entry.credentialId) && entry.credentialId > 0
+        && typeof entry.creditId === 'string' && entry.creditId !== ''
+        && (entry.expiresAt === null || typeof entry.expiresAt === 'string')
+        && (entry.remainingCount === null || Number.isFinite(entry.remainingCount))
+        && (entry.origin === 'auto' || entry.origin === 'manual') && ATTEMPT_STATES.includes(entry.state)
+        && (entry.state === 'sending' || typeof entry.code === 'string');
+}
+
+function writeResetLedger(file, ledger) {
+    const temp = `${file}.${process.pid}.tmp`;
+    const fd = fs.openSync(temp, 'w');
+    try {
+        fs.writeSync(fd, `${JSON.stringify(ledger, null, 2)}\n`);
+        fs.fsyncSync(fd);
+    } finally {
+        fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+}
+
+// 전송 전 기록. 미해결 확인과 추가는 SDK의 프로세스 간 배타 잠금(withFileLock) 안에서 한 번에 한다.
+async function claimResetAttempt(file, withFileLock, grant, origin, at) {
+    if (typeof withFileLock !== 'function') throw controlError(503, 'attempt_record_unavailable');
+    const id = randomUUID();
+    try {
+        await withFileLock(file, async () => {
+            const ledger = readResetLedger(file);
+            const blocking = blockingAttempt(ledger, grant, origin);
+            if (blocking) throw controlError(409, blockingCode(blocking));
+            ledger.attempts.push({ id, ...grant, origin, state: 'sending', claimedAt: new Date(at).toISOString() });
+            writeResetLedger(file, ledger);
+        });
+    } catch (error) {
+        throw error.status ? error : controlError(503, 'attempt_record_unavailable');
+    }
+    return id;
+}
+
+// 기록을 고치지 못하면 sending으로 남아 그 권리를 계속 막는다.
+async function settleResetAttempt(file, withFileLock, id, state, code, at) {
+    await withFileLock(file, async () => {
+        const ledger = readResetLedger(file);
+        const entry = ledger.attempts.find(value => value.id === id && value.state === 'sending');
+        if (!entry) return;
+        Object.assign(entry, { state, code, settledAt: new Date(at).toISOString() });
+        writeResetLedger(file, ledger);
+    });
+}
+
+function ledgerState(result, error) {
+    if (error || result.outcomeUnknown || result.code === 'reset_unconfirmed') return 'unknown';
+    return result.code === 'reset' ? 'reset' : 'refused';
+}
+
 // 인증 실패 tombstone의 사유를 화면용 코드로 줄인다. core의 원문 사유(provider 응답 조각)는 내보내지 않는다.
 // 자리를 지키는 tombstone은 모두 인증 실패이므로 다시 로그인해야 쓸 수 있다.
 function authError(cause) {
@@ -185,13 +313,14 @@ function authError(cause) {
 }
 
 // 동일 storage의 reload/cache도 함께 직렬화한다. 외부 CLI의 mutation까지 잠그지는 않는다.
-function createControlFacade(getControl, invalidate = invalidateUsage) {
+function createControlFacade(getControl, invalidate = invalidateUsage, { now = Date.now } = {}) {
     let tail = Promise.resolve();
     let epoch = 0;
     let snapshot;
     let resets = new Map();
     const lastGoodResets = new Map();
-    const resetRequests = new Map();
+    const resetRequests = new Map(); // 진행 중인 `${id}:${creditId}` 요청. 끝나면 지운다.
+    const settledResets = new Map(); // grantKey -> 전송한 권리의 결과. 같은 권리 실체에만 다시 돌려준다.
     const invalidateAll = () => {
         epoch += 1;
         snapshot = undefined;
@@ -406,48 +535,117 @@ function createControlFacade(getControl, invalidate = invalidateUsage) {
             || body.creditId.length > 512 || Object.keys(body).some(key => key !== 'confirm' && key !== 'creditId')) {
             return Promise.reject(controlError(400, 'confirmation_required'));
         }
-        const creditId = body.creditId;
+        return requestReset(id, body.creditId, null);
+    }
+    // 같은 계정·권리의 수동/자동 요청은 진행 중인 하나를 함께 기다린다.
+    function requestReset(id, creditId, auto) {
         const key = `${id}:${creditId}`;
-        if (resetRequests.has(key)) return resetRequests.get(key);
-        let invoked = false;
-        const request = serialize(async () => {
-            const { storage, entry, manual } = await mutationCredential(id);
-            if (!RESET_PROVIDERS.includes(entry.provider) || entry.credential.type !== 'oauth') {
-                throw controlError(400, 'unsupported_provider');
-            }
-            if (manual) throw controlError(409, 'account_disabled');
-            const signal = AbortSignal.timeout(CONTROL_TIMEOUT_MS);
-            const live = await creditStatuses(entry.provider, true, signal);
-            const status = live.statuses.find(value => value.credentialId === id);
-            if (!status || status.error) throw controlError(502, 'credit_list_failed');
-            if (!savedReset(status, live.at, entry.provider).credits.some(credit => credit.id === creditId)
-                || (entry.provider === 'anthropic' && status.nextCreditId !== creditId)) {
-                throw controlError(409, 'credit_unavailable');
-            }
-            invoked = true;
-            try {
-                const result = await storage.resets.redeem({
-                    target: { provider: entry.provider, credentialId: id, creditId },
-                    baseUrlResolver: control().baseUrlResolver,
-                    signal,
-                });
-                const known = ['reset', 'already_redeemed', 'no_credit', 'nothing_to_reset',
-                    'no_account', 'account_unavailable', 'credit_list_failed',
-                    'ineligible', 'offer_changed', 'reset_unconfirmed', 'cooldown', 'rate_limited', 'auth_error', 'unavailable'];
-                const code = known.includes(result.code) || /^http_[1-5]\d\d$/.test(result.code)
-                    ? result.code : 'unknown_outcome';
-                return { ok: code === 'reset', credentialId: id, creditId, code,
-                    ...(code === 'unknown_outcome' || /^http_5/.test(code) ? { outcomeUnknown: true } : {}) };
-            } catch {
-                throw controlError(502, 'reset_outcome_unknown', true);
-            }
-        });
+        const pending = resetRequests.get(key);
+        if (pending) {
+            // 자동 요청이 전송 직전 재확인에서 멈췄으면 수동 요청은 자기 확인 절차로 다시 시작한다.
+            return auto ? pending : pending.catch(error => error.code === 'expiry_not_due'
+                ? requestReset(id, creditId, null) : Promise.reject(error));
+        }
+        const request = serialize(() => sendReset(id, creditId, auto));
         resetRequests.set(key, request);
-        // 전송 이후 결과는 보관한다. 같은 credit의 불확실한 결과를 자동 재시도하지 않는다.
-        void request.catch(() => { if (!invoked) resetRequests.delete(key); });
+        const forget = () => { if (resetRequests.get(key) === request) resetRequests.delete(key); };
+        request.then(forget, forget);
         return request;
     }
-    return { enrich, setDisabled, redeem, invalidate: invalidateAll };
+    async function sendReset(id, creditId, auto) {
+        const { storage, entry, manual } = await mutationCredential(id);
+        if (!RESET_PROVIDERS.includes(entry.provider) || entry.credential.type !== 'oauth') {
+            throw controlError(400, 'unsupported_provider');
+        }
+        if (manual) throw controlError(409, 'account_disabled');
+        const signal = AbortSignal.timeout(CONTROL_TIMEOUT_MS);
+        const live = await creditStatuses(entry.provider, true, signal);
+        const status = live.statuses.find(value => value.credentialId === id);
+        if (!status || status.error) throw controlError(502, 'credit_list_failed');
+        const credit = savedReset(status, live.at, entry.provider).credits.find(value => value.id === creditId);
+        if (!credit || (entry.provider === 'anthropic' && status.nextCreditId !== creditId)) {
+            throw controlError(409, 'credit_unavailable');
+        }
+        // 전송한 결과는 그 권리 실체에 묶어 보관한다. 불확실한 결과를 다시 보내지 않고,
+        // 새로 발급된 같은 id의 권리나 남은 다음 회차에는 지난 결과를 돌려주지 않는다.
+        const grant = resetGrant(entry.provider, id, credit);
+        const retained = settledResets.get(grantKey(grant));
+        // 자동 점검은 provider가 소비하지 않았다고 확정한 결과만 넘어가 fresh eligibility로 다시 판단한다. 수동은 예전처럼 보관 결과를 받는다.
+        if (retained && (!auto || autoFinal(retained))) {
+            if (retained.error) throw retained.error;
+            return retained.result;
+        }
+        const ctl = control();
+        const autoAllowed = () => !auto.stopped() && expiryPolicyEnabled(ctl.agentDir)
+            && expiryDue(entry.provider, status, credit, now());
+        if (auto && !autoAllowed()) throw controlError(409, 'expiry_not_due');
+        // 자동 전송은 항상 durable 기록을 잡은 뒤에만 나간다. 정책 파일을 다시 읽은 결과로 기록을 건너뛰지 않는다.
+        const ledger = auto ? path.join(ctl.agentDir, RESET_LEDGER_FILE) : resetLedgerFile(ctl);
+        const attempt = ledger && await claimResetAttempt(ledger, ctl.withFileLock, grant, auto ? 'auto' : 'manual', now());
+        if (auto && !autoAllowed()) {
+            await settleResetAttempt(ledger, ctl.withFileLock, attempt, 'refused', 'not_sent', now());
+            throw controlError(409, 'expiry_not_due');
+        }
+        let result;
+        let error;
+        try {
+            const outcome = await storage.resets.redeem({
+                target: { provider: entry.provider, credentialId: id, creditId },
+                baseUrlResolver: ctl.baseUrlResolver,
+                signal,
+            });
+            const known = ['reset', 'already_redeemed', 'no_credit', 'nothing_to_reset',
+                'no_account', 'account_unavailable', 'credit_list_failed',
+                'ineligible', 'offer_changed', 'reset_unconfirmed', 'cooldown', 'rate_limited', 'auth_error', 'unavailable'];
+            const code = known.includes(outcome.code) || /^http_[1-5]\d\d$/.test(outcome.code)
+                ? outcome.code : 'unknown_outcome';
+            result = { ok: code === 'reset', credentialId: id, creditId, code,
+                ...(code === 'unknown_outcome' || /^http_5/.test(code) ? { outcomeUnknown: true } : {}) };
+        } catch {
+            error = controlError(502, 'reset_outcome_unknown', true);
+        }
+        settledResets.set(grantKey(grant), error ? { error } : { result });
+        if (ledger) {
+            await settleResetAttempt(ledger, ctl.withFileLock, attempt, ledgerState(result, error), (result ?? error).code, now())
+                .catch(() => console.warn('[reset-expiry] attempt record not settled; it keeps blocking that credit'));
+        }
+        if (error) throw error;
+        return result;
+    }
+    // 만료 임박 리셋권 점검 한 번. 정책이 꺼져 있으면 계정도 provider도 조회하지 않는다.
+    async function sweepExpiring(stopped = () => false) {
+        const ctl = getControl();
+        if (!ctl?.agentDir || !expiryPolicyEnabled(ctl.agentDir)) return { enabled: false, outcomes: [] };
+        const outcomes = [];
+        const accounts = (await credentials(true)).filter(account => RESET_PROVIDERS.includes(account.provider)
+            && account.credentialType === 'oauth' && !account.disabled && !account.authError);
+        const ledger = readResetLedger(path.join(ctl.agentDir, RESET_LEDGER_FILE));
+        for (const provider of RESET_PROVIDERS) {
+            const ids = new Set(accounts.filter(account => account.provider === provider).map(account => account.credentialId));
+            if (!ids.size) continue;
+            // 점검마다 provider 목록을 새로 읽는다(쿨다운·usable 변화를 만료 창 안에서 놓치지 않는다). 전송 직전 확인은 따로 한다.
+            let statuses;
+            try { statuses = (await creditStatuses(provider, true)).statuses; } catch { continue; }
+            for (const status of statuses) {
+                if (!ids.has(status.credentialId) || status.error) continue;
+                for (const credit of savedReset(status, now(), provider).credits) {
+                    const grant = resetGrant(provider, status.credentialId, credit);
+                    if (!expiryDue(provider, status, credit, now()) || autoFinal(settledResets.get(grantKey(grant)))
+                        || blockingAttempt(ledger, grant, 'auto')) continue;
+                    if (stopped() || !expiryPolicyEnabled(ctl.agentDir)) return { enabled: true, outcomes };
+                    try {
+                        const result = await requestReset(status.credentialId, credit.id, { stopped });
+                        outcomes.push({ provider, credentialId: status.credentialId, code: result.code });
+                    } catch (error) {
+                        outcomes.push({ provider, credentialId: status.credentialId, code: error.code || 'management_unavailable',
+                            ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) });
+                    }
+                }
+            }
+        }
+        return { enabled: true, outcomes };
+    }
+    return { enrich, setDisabled, redeem, sweepExpiring, invalidate: invalidateAll };
 }
 
 let localControl;
@@ -475,6 +673,8 @@ async function initializeControl() {
         const registry = new sdk.ModelRegistry(storage);
         localControl = {
             storage, baseUrlResolver: provider => registry.getProviderBaseUrl(provider),
+            // 만료 정책·전송 기록은 agent.db와 같은 profile의 agent 디렉터리에 둔다. 잠금은 SDK의 프로세스 간 배타 잠금이다.
+            agentDir: utils.getAgentDir(), withFileLock: utils.withFileLock,
         };
     } catch {
         storage?.close?.();
@@ -1033,9 +1233,42 @@ function startServer(port = PORT, controls = facade, readUsage) {
     return server;
 }
 
+// 만료 임박 리셋권 점검. 첫 점검은 바로, 이후 앞 점검이 끝난 뒤 interval마다 한 번씩만 돈다(겹치지 않는다).
+// 브라우저가 열려 있지 않아도 돌고, 서버가 닫히면 멈춘다. 서버가 꺼져 있던 동안의 만료는 보장하지 못한다.
+function startExpirySweep(server, controls = facade, intervalMs = EXPIRY_SWEEP_MS) {
+    let stopped = false;
+    let timer;
+    let enabled = false;
+    let running = Promise.resolve();
+    const run = () => {
+        running = controls.sweepExpiring(() => stopped).then(summary => {
+            if (summary.enabled !== enabled) {
+                enabled = summary.enabled;
+                console.log(`[reset-expiry] policy ${enabled ? 'enabled' : 'off'}`);
+            }
+            for (const outcome of summary.outcomes) {
+                console.log(`[reset-expiry] ${outcome.provider} credential ${outcome.credentialId}: ${outcome.code}`);
+            }
+        }, error => {
+            console.warn(`[reset-expiry] sweep skipped: ${error?.code || 'management_unavailable'}`);
+        }).finally(() => {
+            if (stopped) return;
+            timer = setTimeout(run, intervalMs);
+            timer.unref?.();
+        });
+    };
+    const stop = () => {
+        stopped = true;
+        clearTimeout(timer);
+    };
+    server.once('close', stop);
+    run();
+    return { stop, settled: () => running };
+}
+
 if (require.main === module) {
-    startServer();
-    void initializeControl();
+    const server = startServer();
+    void initializeControl().then(() => startExpirySweep(server));
     // `omp stats --json` 은 세션 파일 동기화 때문에 콜드 실행이 2분을 넘는다(실측 133s).
     // 패널이 처음 열릴 때 그 비용을 물면 클라이언트(120s)가 먼저 끊긴다. 기동 시 한 번
     // 데워 두고, 실패는 로그로만 남긴다.
@@ -1046,6 +1279,8 @@ if (require.main === module) {
 
 module.exports = {
     startServer,
+    startExpirySweep,
+    claimResetAttempt,
     createControlFacade,
     matchCredential,
     MANUAL_UNTIL_MS,

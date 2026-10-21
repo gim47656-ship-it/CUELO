@@ -47,7 +47,7 @@ function readWrittenPaths(input: Record<string, unknown> | undefined, result: To
  * Every path a write/edit call touched, deleted files included, as the raw tool path. Before the result
  * arrives only a path argument is known (a hashline edit in flight names none). Scheme targets are left out.
  */
-function readTouchedPaths(input: Record<string, unknown> | undefined, result: ToolResultMessage | undefined): string[] {
+export function readTouchedPaths(input: Record<string, unknown> | undefined, result: ToolResultMessage | undefined): string[] {
   const argument = readToolPath(input);
   const paths = result ? readWrittenPaths(input, result, true) : argument ? [argument] : [];
   return paths.filter(isFilesystemPathLiteral);

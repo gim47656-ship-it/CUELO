@@ -158,7 +158,9 @@ function CommandDetail({ step, label, st }: { step: CommandStep; label: string; 
         </p>
       )}
       {step.stale && <p className="flow-why">{st("flow.why.stale")}</p>}
-      <code className="flow-raw-command">{step.command}</code>
+      {step.commandKey === undefined
+        ? <code className="flow-raw-command">{step.command}</code>
+        : <p className="flow-why">{st("flow.commandOmitted")}</p>}
       <div className="flow-exit">{exit}</div>
       {step.evidence && <div className="flow-exit">{st("flow.evidence")} <code className="flow-evidence">{step.evidence}</code></div>}
     </div>

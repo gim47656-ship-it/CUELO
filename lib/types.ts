@@ -1,3 +1,5 @@
+import type { FinishedTurnSummary } from "./answer-status/turn-summary";
+import type { CiSuccessHead } from "./answer-status/work-flow";
 import type { TodoPhase } from "./todo-state";
 
 // Types mirrored from pi-mono coding-agent session-manager
@@ -132,6 +134,15 @@ export interface BashExecutionMessage {
 }
 
 export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage | CustomMessage | BashExecutionMessage;
+
+/**
+ * 화면 전용. 활성 가지에서 이 메시지 바로 뒤에 기록된 omp tracker todo 목록들, 기록 순서대로(lib/session-reader.ts가
+ * 붙인다). 출처는 코어가 남기는 `user_todo_edit` 항목뿐이다 — eval 안의 `tool.todo`, `/todo` 편집, RPC `set_todos`처럼
+ * todo 도구 결과가 남지 않는 변경. 세션 기록에는 없고 읽을 때마다 다시 만든다. 어느 역할의 메시지에도 붙을 수 있다.
+ */
+export interface TrackerTodoRecords {
+  trackerTodos?: unknown[];
+}
 export interface ExtensionAskDialogOption {
   label: string;
   description?: string;
@@ -458,6 +469,20 @@ export interface CompactedWork {
   messages: AgentMessage[];
   /** 가려진 구간의 마지막 durable todo(omp tracker가 가지에서 되살리는 규칙). 없으면 null. */
   todoPhases: TodoPhase[] | null;
+  /**
+   * 압축 경계를 가로지른 요청 전체를 서버가 판정한 카드. 화면에 남은 마지막 메시지 ID가 맞을 때만 쓰며,
+   * 대화 본문에는 넣지 않는다. 없으면 생략하거나 null이다.
+   */
+  openRequest?: OpenRequestEvidence | null;
+}
+
+/** 압축된 요청의 완료 카드용 사실. 원문·명령 본문·파서의 중간 상태는 전송하지 않는다. */
+export interface OpenRequestEvidence {
+  /** 이 요청 안에서 서버가 읽은 마지막 화면 메시지. 더 새 기록이나 다른 가지에 이 판정을 적용하지 않는다. */
+  throughEntryId: string;
+  summary: Omit<FinishedTurnSummary, "latest" | "dispatchCalls">;
+  /** 기존 비공개 게시 판정이 뒤 요청에서 재사용할 수 있는 실제 CI 성공 기록. */
+  ciHeads: CiSuccessHead[];
 }
 
 export interface SessionContext {

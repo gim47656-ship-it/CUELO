@@ -2,7 +2,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { once } = require('node:events');
-const { createControlFacade, matchCredential, startServer, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog } = require('./usage-server');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -341,6 +345,320 @@ test('missing Anthropic reset API keeps account rows and reports only that reset
     assert.equal(result.reports[0].credentialId, 1);
     assert.equal(result.reports[0].savedReset.state, 'unavailable');
     assert.equal(result.reports[0].savedReset.availableCount, null);
+});
+
+const HOUR = 3_600_000;
+const T0 = Date.parse('2099-01-01T00:00:00Z');
+const iso = ms => new Date(ms).toISOString();
+// bun에서는 실제 SDK 프로세스 간 잠금을 쓴다. node는 SDK .ts를 읽지 못하므로 같은 프로세스 안의 직렬 실행만 쓴다.
+const SDK_UTILS = path.join(__dirname, '../../../node_modules/@oh-my-pi/pi-utils/src/index.ts');
+const sdkLock = async () => (process.versions.bun ? (await import(SDK_UTILS)).withFileLock : (file, fn) => fn());
+const ledgerFile = dir => path.join(dir, 'cuelo-reset-expiry-attempts.json');
+const ledgerOf = dir => JSON.parse(fs.readFileSync(ledgerFile(dir), 'utf8')).attempts;
+
+function tempProfile(t, policy) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reset-expiry-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    if (policy != null) fs.writeFileSync(path.join(dir, 'cuelo-reset-expiry.json'), policy);
+    return dir;
+}
+
+// 계정 하나에 권리 하나. accounts[i]가 credential id i+1이다. 실제 provider·SDK·자격 증명은 쓰지 않는다.
+async function expiryFixture(t, accounts, policy = '{"enabled":true}') {
+    const agentDir = tempProfile(t, policy);
+    const entries = accounts.map((account, index) => ({ id: index + 1, provider: account.provider ?? 'openai-codex',
+        credential: { type: 'oauth', accountId: `acct-${index + 1}` } }));
+    const statusOf = (entry, { expiresAt, creditId = `credit-${entry.id}`, credit, status }) => (entry.provider === 'anthropic'
+        ? { provider: 'anthropic', credentialId: entry.id, availableCount: 1, redeemableCount: 1, eligible: true, nextCreditId: creditId,
+            credits: [{ id: creditId, expiresAt, status: 'available', remainingCount: 1, usable: true, ...credit }], ...status }
+        : { provider: entry.provider, credentialId: entry.id, availableCount: 1,
+            credits: [{ id: creditId, expiresAt, status: 'available', ...credit }], ...status });
+    const fx = { agentDir, calls: [], lists: [], blocks: [], clock: { now: T0 } };
+    fx.setAccounts = next => { fx.statuses = next.map((account, index) => statusOf(entries[index], account)); };
+    fx.setAccounts(accounts);
+    fx.storage = {
+        reload: async () => {},
+        credentials: { snapshot: () => ({ credentials: entries }) },
+        blocks: { list: ids => fx.blocks.filter(block => ids.includes(block.credentialId)), upsert() {}, delete() {} },
+        usage: { providerFor: () => ({}) },
+        resets: {
+            list: async options => { fx.lists.push(options.provider); return fx.statuses.filter(value => value.provider === options.provider); },
+            redeem: async options => { fx.calls.push(options.target); return { code: 'reset' }; },
+        },
+    };
+    fx.control = { storage: fx.storage, agentDir, withFileLock: await sdkLock() };
+    fx.make = () => createControlFacade(() => fx.control, () => {}, { now: () => fx.clock.now });
+    fx.controls = fx.make();
+    return fx;
+}
+
+test('expiry sweep without an explicit enabled policy reads nothing and redeems nothing; default-off manual reset writes no record', async t => {
+    for (const policy of [null, '', 'not json', 'null', '[true]', '{"enabled":false}', '{"enabled":"true"}']) {
+        const fx = await expiryFixture(t, [{ expiresAt: iso(T0 + 30 * 60_000) }], policy);
+        assert.deepEqual(await fx.controls.sweepExpiring(), { enabled: false, outcomes: [] });
+        assert.deepEqual([fx.lists, fx.calls], [[], []]);
+        assert.equal(fs.existsSync(ledgerFile(fx.agentDir)), false);
+    }
+    const fx = await expiryFixture(t, [{ expiresAt: iso(T0 + 30 * 60_000) }], null);
+    assert.equal((await fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
+    assert.equal(fs.existsSync(ledgerFile(fx.agentDir)), false);
+});
+
+test('enabled sweep redeems every due credit by exact target and skips outside, expired, unknown, unusable and OFF accounts', async t => {
+    const fx = await expiryFixture(t, [
+        { expiresAt: iso(T0 + 30 * 60_000) },
+        { expiresAt: iso(T0 + HOUR) },
+        { expiresAt: iso(T0 + HOUR + 1) },
+        { expiresAt: iso(T0 - 1) },
+        { expiresAt: undefined },
+        { expiresAt: 'not-a-date' },
+        { provider: 'anthropic', expiresAt: iso(T0 + 10 * 60_000) },
+        { provider: 'anthropic', expiresAt: iso(T0 + 10 * 60_000), credit: { usable: false } },
+        { expiresAt: iso(T0 + 5 * 60_000) },
+    ]);
+    // 9번은 수동 OFF, 1번은 한도 소진 쿨다운 중이다. 쿨다운은 대상에서 빼지 않는다.
+    fx.blocks.push({ credentialId: 9, providerKey: 'openai-codex:oauth', blockScope: '', blockedUntilMs: MANUAL_UNTIL_MS },
+        { credentialId: 1, providerKey: 'openai-codex:oauth', blockScope: 'chat', blockedUntilMs: Date.now() + HOUR });
+    const summary = await fx.controls.sweepExpiring();
+    assert.deepEqual(fx.calls, [
+        { provider: 'openai-codex', credentialId: 1, creditId: 'credit-1' },
+        { provider: 'openai-codex', credentialId: 2, creditId: 'credit-2' },
+        { provider: 'anthropic', credentialId: 7, creditId: 'credit-7' },
+    ]);
+    assert.deepEqual(summary.outcomes.map(outcome => [outcome.credentialId, outcome.code]), [[1, 'reset'], [2, 'reset'], [7, 'reset']]);
+    assert.deepEqual(ledgerOf(fx.agentDir).map(entry => [entry.credentialId, entry.origin, entry.state, entry.code]),
+        [[1, 'auto', 'reset', 'reset'], [2, 'auto', 'reset', 'reset'], [7, 'auto', 'reset', 'reset']]);
+    await fx.controls.sweepExpiring();
+    assert.equal(fx.calls.length, 3);
+    // 재시작해 보관 결과가 없고 목록이 아직 같은 권리를 보여도 자동으로 다시 보내지 않는다.
+    await fx.make().sweepExpiring();
+    assert.equal(fx.calls.length, 3);
+});
+
+test('point-of-send recheck refuses when the fresh expiry moved, the policy went off, or the sweep stopped', async t => {
+    const due = [{ expiresAt: iso(T0 + 30 * 60_000) }];
+    const cases = {
+        moved: fx => fx.setAccounts([{ expiresAt: iso(T0 + 2 * HOUR) }]),
+        policyOff: fx => fs.rmSync(path.join(fx.agentDir, 'cuelo-reset-expiry.json')),
+        stopped: fx => { fx.stop = true; },
+    };
+    for (const [name, change] of Object.entries(cases)) {
+        const fx = await expiryFixture(t, due);
+        const list = fx.storage.resets.list;
+        fx.storage.resets.list = async options => { if (fx.lists.length === 1) change(fx); return list(options); };
+        const summary = await fx.controls.sweepExpiring(() => fx.stop === true);
+        assert.deepEqual([name, summary.outcomes.map(outcome => outcome.code), fx.calls], [name, ['expiry_not_due'], []]);
+        assert.equal(fs.existsSync(ledgerFile(fx.agentDir)), false, name);
+    }
+    // 기록을 잡은 뒤 정책이 꺼지면 보내지 않고 그 기록을 미전송으로 닫는다.
+    const fx = await expiryFixture(t, due);
+    const lock = fx.control.withFileLock;
+    fx.control.withFileLock = async (file, fn) => {
+        const value = await lock(file, fn);
+        fs.rmSync(path.join(fx.agentDir, 'cuelo-reset-expiry.json'), { force: true });
+        return value;
+    };
+    assert.deepEqual((await fx.controls.sweepExpiring()).outcomes.map(outcome => outcome.code), ['expiry_not_due']);
+    assert.deepEqual(fx.calls, []);
+    assert.deepEqual(ledgerOf(fx.agentDir).map(entry => [entry.state, entry.code]), [['refused', 'not_sent']]);
+});
+
+test('an unknown outcome blocks manual and automatic sends after restart and policy OFF, but not a renewed grant', async t => {
+    const fx = await expiryFixture(t, [{ expiresAt: iso(T0 + 30 * 60_000) }]);
+    fx.storage.resets.redeem = async options => { fx.calls.push(options.target); throw new Error('ACCESS_SECRET'); };
+    assert.deepEqual((await fx.controls.sweepExpiring()).outcomes, [
+        { provider: 'openai-codex', credentialId: 1, code: 'reset_outcome_unknown', outcomeUnknown: true }]);
+    assert.deepEqual(ledgerOf(fx.agentDir).map(entry => [entry.origin, entry.state]), [['auto', 'unknown']]);
+    assert.equal(fs.readFileSync(ledgerFile(fx.agentDir), 'utf8').includes('SECRET'), false);
+    const restarted = fx.make();
+    assert.deepEqual((await restarted.sweepExpiring()).outcomes, []);
+    await assert.rejects(restarted.redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'attempt_unresolved' });
+    fs.rmSync(path.join(fx.agentDir, 'cuelo-reset-expiry.json'));
+    await assert.rejects(fx.make().redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'attempt_unresolved' });
+    assert.equal(fx.calls.length, 1);
+    fx.storage.resets.redeem = async options => { fx.calls.push(options.target); return { code: 'reset' }; };
+    fx.setAccounts([{ expiresAt: iso(T0 + 7 * 24 * HOUR) }]);
+    assert.equal((await fx.make().redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
+    assert.deepEqual(ledgerOf(fx.agentDir).map(entry => [entry.origin, entry.state]), [['auto', 'unknown'], ['manual', 'reset']]);
+    const renewed = { provider: 'openai-codex', credentialId: 1, creditId: 'credit-1', expiresAt: iso(T0 + 7 * 24 * HOUR), remainingCount: null };
+    await assert.rejects(claimResetAttempt(ledgerFile(fx.agentDir), fx.control.withFileLock, renewed, 'auto', T0), { code: 'already_reset' });
+});
+
+test('a retained result answers only the same grant: a renewed juniper week and the next cedar unit are really sent', async t => {
+    const fx = await expiryFixture(t, [{ provider: 'anthropic', creditId: 'juniper_tide', expiresAt: iso(T0 + 30 * 60_000) }]);
+    const redeem = () => fx.controls.redeem(1, { confirm: true, creditId: fx.statuses[0].nextCreditId });
+    assert.equal((await redeem()).code, 'reset');
+    assert.equal((await redeem()).code, 'reset');
+    assert.equal(fx.calls.length, 1);
+    fx.setAccounts([{ provider: 'anthropic', creditId: 'juniper_tide', expiresAt: iso(T0 + 7 * 24 * HOUR) }]);
+    assert.equal((await redeem()).code, 'reset');
+    assert.equal(fx.calls.length, 2);
+    fx.setAccounts([{ provider: 'anthropic', creditId: 'cedar-1', expiresAt: iso(T0 + 30 * 60_000), credit: { remainingCount: 2 } }]);
+    await redeem();
+    fx.setAccounts([{ provider: 'anthropic', creditId: 'cedar-1', expiresAt: iso(T0 + 30 * 60_000), credit: { remainingCount: 1 } }]);
+    await redeem();
+    assert.equal(fx.calls.length, 4);
+});
+
+test('concurrent manual and automatic requests share one send, and a second facade on the profile is refused', async t => {
+    const fx = await expiryFixture(t, [{ expiresAt: iso(T0 + 30 * 60_000) }]);
+    let release;
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const hold = new Promise(resolve => { release = resolve; });
+    fx.storage.resets.redeem = async options => { fx.calls.push(options.target); entered(); await hold; return { code: 'reset' }; };
+    const sweeping = fx.controls.sweepExpiring();
+    await started;
+    const manual = fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' });
+    const other = fx.make();
+    assert.deepEqual((await other.sweepExpiring()).outcomes, []);
+    await assert.rejects(other.redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'attempt_unresolved' });
+    release();
+    assert.equal((await manual).code, 'reset');
+    assert.deepEqual((await sweeping).outcomes.map(outcome => outcome.code), ['reset']);
+    assert.equal(fx.calls.length, 1);
+    assert.deepEqual(ledgerOf(fx.agentDir).map(entry => [entry.origin, entry.state]), [['auto', 'reset']]);
+});
+
+test('definite non-consumption, including rate limits, is re-evaluated on the next sweep; auth refusals never resend', async t => {
+    const due = { expiresAt: iso(T0 + 30 * 60_000) };
+    // 같은 프로세스 경로: 1 nothing_to_reset, 2 auth_error(Anthropic 401/403), 3 rate_limited(Anthropic 429), 4 http_429(본문 없는 Codex 429), 5 http_403(Codex).
+    const fx = await expiryFixture(t, [due, due, due, due, due]);
+    const first = { 1: 'nothing_to_reset', 2: 'auth_error', 3: 'rate_limited', 4: 'http_429', 5: 'http_403' };
+    const refuseOnce = target => {
+        fx.calls.push(target);
+        return fx.calls.filter(call => call.credentialId === target.credentialId).length === 1 ? first[target.credentialId] : 'reset';
+    };
+    fx.storage.resets.redeem = async options => ({ code: refuseOnce(options.target) });
+    await fx.controls.sweepExpiring();
+    assert.deepEqual(fx.calls.map(call => call.credentialId), [1, 2, 3, 4, 5]);
+    fx.clock.now += 60_000;
+    assert.deepEqual((await fx.controls.sweepExpiring()).outcomes.map(outcome => [outcome.credentialId, outcome.code]),
+        [[1, 'reset'], [3, 'reset'], [4, 'reset']]);
+    await fx.make().sweepExpiring();
+    assert.deepEqual(fx.calls.map(call => call.credentialId), [1, 2, 3, 4, 5, 1, 3, 4]);
+    // 수동은 예전처럼 같은 권리의 보관 결과를 받는다.
+    assert.equal((await fx.controls.redeem(2, { confirm: true, creditId: 'credit-2' })).code, 'auth_error');
+    assert.equal(fx.calls.length, 8);
+});
+
+test('after restart a recorded rate-limit refusal is re-evaluated on the next sweep while an auth refusal stays blocked', async t => {
+    const due = { expiresAt: iso(T0 + 30 * 60_000) };
+    // 한도 거절 기록만 남은 profile을 새 프로세스가 다음 점검에서 다시 판단한다. 인증 거절 기록은 계속 막는다.
+    const restart = await expiryFixture(t, [due, due, due]);
+    const firstRestart = { 1: 'rate_limited', 2: 'http_429', 3: 'auth_error' };
+    restart.storage.resets.redeem = async options => {
+        restart.calls.push(options.target);
+        const tries = restart.calls.filter(call => call.credentialId === options.target.credentialId).length;
+        return { code: tries === 1 ? firstRestart[options.target.credentialId] : 'reset' };
+    };
+    await restart.controls.sweepExpiring();
+    restart.clock.now += 60_000;
+    assert.deepEqual((await restart.make().sweepExpiring()).outcomes.map(outcome => [outcome.credentialId, outcome.code]),
+        [[1, 'reset'], [2, 'reset']]);
+    assert.deepEqual(ledgerOf(restart.agentDir).map(entry => [entry.credentialId, entry.state, entry.code]), [
+        [1, 'refused', 'rate_limited'], [2, 'refused', 'http_429'], [3, 'refused', 'auth_error'],
+        [1, 'reset', 'reset'], [2, 'reset', 'reset'],
+    ]);
+});
+
+test('a credit that becomes usable with under ten minutes left is sent on the next sweep', async t => {
+    const expiresAt = iso(T0 + 8 * 60_000);
+    const fx = await expiryFixture(t, [{ provider: 'anthropic', expiresAt, credit: { usable: false } }]);
+    assert.deepEqual((await fx.controls.sweepExpiring()).outcomes, []);
+    fx.setAccounts([{ provider: 'anthropic', expiresAt }]);
+    fx.clock.now += 60_000;
+    assert.deepEqual((await fx.controls.sweepExpiring()).outcomes.map(outcome => outcome.code), ['reset']);
+});
+
+test('a ledger row with a malformed identity or state fails closed for manual and automatic sends and is kept', async t => {
+    const valid = { id: 'a1', provider: 'openai-codex', credentialId: 1, creditId: 'credit-1', expiresAt: iso(T0 + 30 * 60_000),
+        remainingCount: null, origin: 'auto', state: 'unknown', code: 'reset_outcome_unknown', claimedAt: iso(T0) };
+    for (const row of [{ state: 'sending ' }, { credentialId: undefined }, { creditId: 7 }, { origin: 'cli' }]) {
+        const fx = await expiryFixture(t, [{ expiresAt: valid.expiresAt }]);
+        const text = JSON.stringify({ version: 1, attempts: [{ ...valid, ...row }] });
+        fs.writeFileSync(ledgerFile(fx.agentDir), text);
+        await assert.rejects(fx.controls.sweepExpiring(), { code: 'attempt_record_unavailable' });
+        await assert.rejects(fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'attempt_record_unavailable' });
+        assert.deepEqual(fx.calls, []);
+        assert.equal(fs.readFileSync(ledgerFile(fx.agentDir), 'utf8'), text);
+    }
+});
+
+test('a transient policy read failure at any point of an automatic send never lets a send out without a durable claim', async t => {
+    const realRead = fs.readFileSync;
+    t.after(() => { fs.readFileSync = realRead; });
+    for (let failAt = 1; failAt <= 4; failAt += 1) {
+        const fx = await expiryFixture(t, [{ expiresAt: iso(T0 + 30 * 60_000) }]);
+        const policy = path.join(fx.agentDir, 'cuelo-reset-expiry.json');
+        let armed = false;
+        let reads = 0;
+        fs.readFileSync = function (file, ...rest) {
+            if (armed && file === policy && ++reads === failAt) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+            return realRead.call(this, file, ...rest);
+        };
+        // 점검의 목록 조회 다음, 전송 직전 fresh 조회부터 정책 읽기 하나를 실패시킨다.
+        const list = fx.storage.resets.list;
+        fx.storage.resets.list = async options => { if (fx.lists.length === 1) armed = true; return list(options); };
+        let unclaimed = 0;
+        fx.storage.resets.redeem = async options => {
+            fx.calls.push(options.target);
+            if (!fs.existsSync(ledgerFile(fx.agentDir)) || !ledgerOf(fx.agentDir).some(entry => entry.state === 'sending')) unclaimed += 1;
+            return { code: 'reset' };
+        };
+        await fx.controls.sweepExpiring();
+        fs.readFileSync = realRead;
+        assert.equal(unclaimed, 0, `failAt=${failAt}`);
+    }
+});
+
+(process.versions.bun ? test : test.skip)('simultaneous claims from separate processes on one profile admit exactly one', async t => {
+    const dir = tempProfile(t);
+    const script = path.join(dir, 'claim.js');
+    fs.writeFileSync(script, `const { claimResetAttempt } = require(${JSON.stringify(path.join(__dirname, 'usage-server.js'))});
+(async () => {
+    const { withFileLock } = await import(${JSON.stringify(SDK_UTILS)});
+    await Bun.sleep(Math.max(0, Number(process.argv[3]) - Date.now()));
+    const grant = { provider: 'openai-codex', credentialId: 1, creditId: 'credit-1', expiresAt: null, remainingCount: null };
+    try { await claimResetAttempt(process.argv[2], withFileLock, grant, 'auto', Date.now()); console.log('claimed'); }
+    catch (error) { console.log(error.code); }
+})();
+`);
+    const startAt = String(Date.now() + 2000);
+    const results = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [script, ledgerFile(dir), startAt], { stdio: ['ignore', 'pipe', 'inherit'] });
+        let out = '';
+        child.stdout.on('data', chunk => { out += chunk; });
+        child.on('error', reject);
+        child.on('exit', () => resolve(out.trim()));
+    })));
+    assert.deepEqual(results.sort(), [...Array(7).fill('attempt_unresolved'), 'claimed']);
+    assert.equal(ledgerOf(dir).length, 1);
+});
+
+test('the expiry sweep runs at once, never overlaps, and stops when the server closes', async () => {
+    let runs = 0;
+    let active = 0;
+    let peak = 0;
+    const controls = { sweepExpiring: async () => {
+        runs += 1;
+        peak = Math.max(peak, ++active);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        active -= 1;
+        return { enabled: true, outcomes: [] };
+    } };
+    const server = startServer(0, controls);
+    await once(server, 'listening');
+    const sweep = startExpirySweep(server, controls, 5);
+    assert.equal(runs, 1);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.ok(runs >= 3, `runs=${runs}`);
+    assert.equal(peak, 1);
+    await new Promise(resolve => server.close(resolve));
+    await sweep.settled();
+    const stoppedAt = runs;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(runs, stoppedAt);
 });
 
 // `omp stats --json` 원본 한 줄. core 의 cacheRate 는 cacheWrite 를 분모에서 뺀 값이라 일부러 그 값을 싣는다.

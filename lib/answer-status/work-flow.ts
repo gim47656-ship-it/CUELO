@@ -1,6 +1,8 @@
 import { readExitCode } from "@/lib/tool-exit-code";
 import { isEditToolName, isWriteToolName } from "@/lib/tool-names";
-import { isScratchOnlyWrite } from "@/lib/turn-written-files";
+import { isScratchOnlyWrite, readTouchedPaths } from "@/lib/turn-written-files";
+import { resolveLocalFilePath } from "@/lib/file-links";
+import { getRelativeFilePath } from "@/lib/file-paths";
 import type { AssistantContentBlock, ToolCallContent, ToolResultMessage } from "@/lib/types";
 
 /**
@@ -837,12 +839,19 @@ export interface PlainStep extends StepCore {
   stage: "investigate" | "edit";
   /** 발주(task). 결과가 와도 맡긴 수정이 끝났다는 뜻은 아니어서 회차를 늘리지 않는다. */
   dispatch?: boolean;
+  /**
+   * 작업 기록(`isWorkRecordFile`)만 고친 수정. 앞선 커밋의 CI·배포 결과는 그대로 그 커밋의 사실이라 수정 전 결과로 돌리지
+   * 않는다. 검사·리뷰는 다른 수정처럼 수정 전 결과가 된다.
+   */
+  recordOnly?: true;
 }
 
 /** 검사·CI·배포: 실행한 bash 명령과 기록된 종료 코드. 검사 이름은 검사 단계에서만 읽는다. */
 export interface CommandStep extends StepCore {
   stage: CommandStage;
   command: string;
+  /** 압축된 요청의 명령 본문을 생략해도 같은 검사 명령끼리 묶기 위한 요청 안의 식별자. */
+  commandKey?: string;
   exitCode: number | null;
   labels: CheckLabel[];
   /** 여러 단계에 걸친 명령이면 그 단계들과 명령 전체의 실패 여부. 같은 호출이 단계마다 사건 하나씩 남긴다. */
@@ -888,6 +897,29 @@ const DOC_FOLDER = /^docs?$/i;
 
 function isDocFile(file: string): boolean {
   return DOC_FILE.test(file) || file.split(/[\\/]/).slice(0, -1).some((segment) => DOC_FOLDER.test(segment));
+}
+
+/**
+ * 실행에 쓰이지 않는다고 정해진 작업 기록: `doc/history/` 아래와 `HANDOFF.md`. 다른 문서(AGENTS·규칙·skill·프롬프트·README 등)는
+ * 빌드·실행 입력일 수 있어 기록이 아니다.
+ */
+function isWorkRecordFile(file: string, cwd: string | undefined): boolean {
+  // 위로 올라가는 원 경로는 정규화해서 작업 기록으로 승격하지 않는다.
+  if (file.split(/[\\/]/).includes("..")) return false;
+  const base = cwd ? resolveLocalFilePath(cwd) ?? cwd : undefined;
+  const own = getRelativeFilePath(resolveLocalFilePath(file, cwd) ?? file, base);
+  // 작업 폴더 밖이거나, 절대 경로를 상대화할 폴더를 모르면 기록이라고 단정하지 않는다.
+  if (/^[\\/]/.test(own) || /^[a-zA-Z]:[\\/]/.test(own)) return false;
+  const segments = own.split(/[\\/]/).filter((segment) => segment !== "" && segment !== ".");
+  return segments.at(-1) === "HANDOFF.md"
+    || (segments[0] === "doc" && segments[1] === "history" && segments.length > 2);
+}
+
+/** 고친 경로를 모두 알고(지운 파일 포함) 그것이 모두 작업 기록인 쓰기·수정. */
+function isRecordOnlyEdit(block: ToolCallContent, result: ToolResultMessage | undefined, cwd: string | undefined): boolean {
+  if (!result || !(isWriteToolName(block.toolName) || isEditToolName(block.toolName))) return false;
+  const paths = readTouchedPaths(block.input, result);
+  return paths.length > 0 && paths.every((path) => isWorkRecordFile(path, cwd));
 }
 
 export type WorkStep = PlainStep | CommandStep | ReviewStep | CommitStep;
@@ -991,7 +1023,13 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
     // 관측된 수정이 아니라서 앞선 통과를 수정 전 통과로 돌리지 않고 회차도 늘리지 않는다.
     if (!skipped && recorded?.isError) return null;
     if (isScratchWrite(block, result, cwd)) return { ...core, stage: "investigate", outcome: skipped ? "unobserved" : recorded || !live ? "done" : "running" };
-    return { ...core, stage: "edit", outcome: result ? "done" : pending, ...(name === "task" ? { dispatch: true } : {}) };
+    return {
+      ...core,
+      stage: "edit",
+      outcome: result ? "done" : pending,
+      ...(name === "task" ? { dispatch: true } : {}),
+      ...(isRecordOnlyEdit(block, result, cwd) ? { recordOnly: true as const } : {}),
+    };
   }
   if (Object.hasOwn(INVESTIGATE_TOOLS, name)) return { ...core, stage: "investigate", outcome: skipped ? "unobserved" : recorded || !live ? "done" : "running" };
   return null;
@@ -1297,9 +1335,10 @@ export function latestChecks(steps: readonly WorkStep[]): CommandStep[] {
   const latest = new Map<string, CommandStep>();
   for (const step of steps) {
     if (step.stage !== "check") continue;
-    const previous = latest.get(step.command);
+    const key = step.commandKey ?? step.command;
+    const previous = latest.get(key);
     if (previous?.outcome === "failed" && !settles(step.outcome)) continue;
-    latest.set(step.command, step);
+    latest.set(key, step);
   }
   return [...latest.values()];
 }
@@ -1834,7 +1873,7 @@ function linkCiRuns(read: ReadStep[], trail: PublicationTrail): void {
       commit = { step: { ...step, commit: step.commit }, order };
       editedSince = false;
     }
-    if (step.stage === "edit" && step.outcome === "done" && !step.dispatch) editedSince = true;
+    if (step.stage === "edit" && step.outcome === "done" && !step.dispatch && !step.recordOnly) editedSince = true;
     if (step.stage !== "ci" || !commit) return;
     const base: CommitMark = commit;
     const calls = parseShell(step.command).commands.flatMap(({ words }) => ghInvocations(words));
@@ -1961,6 +2000,7 @@ export function deriveWorkFlow(
   let attempt = 1;
   let segment = new Map<string, SegmentEntry>();
   let lastEdit = -1;
+  let lastSourceEdit = -1;
   const stepOrder = new Map<WorkStep, number>();
   const trail: PublicationTrail = { publishRuns: new Map(), watched: [], heads: [], ciHeads: [], nothingToPublish: [], runs: [] };
   const list = Array.isArray(blocks) ? blocks : [];
@@ -1998,6 +2038,7 @@ export function deriveWorkFlow(
       }
       segment = new Map();
       lastEdit = steps.length;
+      if (!step.recordOnly) lastSourceEdit = steps.length;
     } else if (step.stage === "check" || step.stage === "review" || step.stage === "ci") {
       const key = step.stage === "check" ? `check:${step.command}` : step.stage;
       const previous = segment.get(key);
@@ -2009,9 +2050,13 @@ export function deriveWorkFlow(
     stepOrder.set(step, order);
     steps.push(step);
   }
-  // 성공한 직접 수정보다 앞선 통과·완료는 그 수정본을 보증하지 않는다.
+  // 성공한 직접 수정보다 앞선 통과·완료는 그 수정본을 보증하지 않는다. 커밋과 그 뒤의 CI·배포는 그 커밋의 사실이라 작업 기록만
+  // 고친 수정은 그것을 바꾸지 않는다. 커밋 앞의 CI 결과는 어느 커밋 것인지 모르니 다른 수정처럼 수정 전 결과다.
+  let committedBefore = false;
   steps.forEach((step, index) => {
-    if (index < lastEdit && step.stage !== "investigate" && step.stage !== "edit" && (step.outcome === "passed" || step.outcome === "done")) step.stale = true;
+    const ofCommit = step.stage === "commit" || (committedBefore && (step.stage === "ci" || step.stage === "deploy"));
+    if (index < (ofCommit ? lastSourceEdit : lastEdit) && step.stage !== "investigate" && step.stage !== "edit" && (step.outcome === "passed" || step.outcome === "done")) step.stale = true;
+    if (step.stage === "commit" && step.outcome === "done") committedBefore = true;
   });
 
   // 이번 회차의 마지막 성공한 커밋. 그 뒤에 수정했으면 그 커밋은 마지막 수정본이 아니다.
@@ -2045,8 +2090,9 @@ export function deriveWorkFlow(
   });
 
   const deploy = stages[WORK_STAGES.indexOf("deploy")];
-  // 문서만 바꾼 커밋이면 배포할 실행 코드가 없다.
-  if (commit?.docsOnly && !commit.stale && deploy.status === "waiting") deploy.status = "notNeeded";
+  // 문서만 바꾼 커밋이면 배포할 실행 코드가 없다. 이 요청이 앞서 실행 코드를 커밋했으면 뒤의 문서 커밋이 그 배포를 지우지 않는다.
+  const shippedSource = steps.some((step) => step.stage === "commit" && step.outcome === "done" && !step.docsOnly);
+  if (commit?.docsOnly && !commit.stale && !shippedSource && deploy.status === "waiting") deploy.status = "notNeeded";
   const ci = stages[WORK_STAGES.indexOf("ci")];
   // 게시 증거가 있어도 커밋 뒤의 CI 결과는 그대로 보인다. 커밋 앞의 판정 미확인·수정 전 결과는 이 커밋의 CI가 아니다.
   const ciAfterCommit = ci.steps.some((step) => (stepOrder.get(step) ?? Infinity) > commitOrder);
@@ -2076,11 +2122,10 @@ export function deriveWorkFlow(
   stages.forEach((view, index) => {
     if (index < furthest && view.status === "waiting") view.status = "skipped";
   });
-  // 끝난 턴에는 기다리는 단계가 없다. 들어가지 않은 단계는 건너뛴 것이고, CI·배포는 성공한 커밋이 없거나 마지막 성공한
-  // 커밋이 문서만 바꿨으면 할 일이 없다. 실패·판정 미확인·수정 전 결과는 그대로 남는다.
+  // 끝난 턴에는 기다리는 단계가 없다. 들어가지 않은 단계는 건너뛴 것이고, CI·배포는 성공한 커밋이 없거나 성공한 커밋이 모두
+  // 문서만 바꿨으면 할 일이 없다. 실패·판정 미확인·수정 전 결과는 그대로 남는다.
   if (!live && steps.length > 0) {
-    const lastCommit = steps.filter((step): step is CommitStep => step.stage === "commit" && step.outcome === "done").at(-1);
-    const nothingToShip = !lastCommit || lastCommit.docsOnly;
+    const nothingToShip = !shippedSource;
     for (const view of stages) {
       if (view.status === "waiting") view.status = nothingToShip && (view.stage === "ci" || view.stage === "deploy") ? "notNeeded" : "skipped";
     }

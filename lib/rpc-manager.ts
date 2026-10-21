@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
 import { executeAcpBuiltinSlashCommand, type AcpBuiltinSlashCommandResult } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
+import { parseSlashCommand, parseSubcommand } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/parse";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { buildSkillPromptMessage } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { resolveRpcSkillInvocation } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
@@ -1828,8 +1829,20 @@ export class AgentSessionWrapper {
       }
 
       case "execute_slash_command": {
+        const message = command.message as string;
+        // The web client buffers command output and has no host-local OAuth callback/cancel flow.
+        // Keep its existing refusal; the local CLI can drive upstream's interactive reauthentication.
+        if (message.startsWith("/mcp")) {
+          const parsed = parseSlashCommand(message);
+          if (parsed?.name === "mcp" && parseSubcommand(parsed.args).verb === "reauth") {
+            return {
+              handled: true,
+              output: ["MCP reauthentication is not supported in the CUELO web client. Run /mcp reauth <name> in the server's local omp terminal."],
+            };
+          }
+        }
         const output: string[] = [];
-        const result: AcpBuiltinSlashCommandResult = await executeAcpBuiltinSlashCommand(command.message as string, {
+        const result: AcpBuiltinSlashCommandResult = await executeAcpBuiltinSlashCommand(message, {
           session: this.inner as never,
           sessionManager: this.inner.sessionManager,
           settings: this.inner.settings,

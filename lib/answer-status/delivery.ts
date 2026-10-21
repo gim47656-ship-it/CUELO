@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@/lib/types";
+import { isHarnessResumeNotice } from "../harness-notices";
 
 /**
  * 실행 중에 보낸 입력(지금 지시 = steer, 완료 후 요청 = follow-up)이 어디까지 갔는지의 관측 기록.
@@ -228,4 +229,14 @@ export function userMessageImageCount(message: AgentMessage): number {
  */
 export function userMessageDeliveryKind(message: AgentMessage): DeliveryKind {
   return "steering" in message && message.steering === true ? "steer" : "followUp";
+}
+
+/**
+ * 진행 중인 요청을 잇는 메시지: 실행 중에 끼어든 입력(steer), 하네스가 재개하며 넣은 통지(`isHarnessResumeNotice`), 압축 요약.
+ * 압축은 요청을 열지 않는다 — 그때 진행 중이던 요청의 기록을 줄인 것이다. 화면의 요청 범위(turn-summary)와 압축이 가린
+ * 진행 중 요청의 범위(session-reader)가 같은 경계를 쓴다.
+ */
+export function continuesRequest(message: AgentMessage | undefined): boolean {
+  if (message?.role === "custom") return message.customType === "compaction";
+  return message?.role === "user" && (userMessageDeliveryKind(message) === "steer" || isHarnessResumeNotice(userMessageText(message)));
 }

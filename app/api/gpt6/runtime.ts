@@ -53,6 +53,7 @@ function wrap(session: AgentSessionWrapper): Gpt6SessionHandle {
           buildSessionContext(entries, manager.getLeafId(), {
             deferThinking: true,
             deferToolResultImages: true,
+            cwd: session.cwd,
           }),
         );
       }

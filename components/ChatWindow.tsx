@@ -10,6 +10,7 @@ import type {
   CustomMessage,
   BlockingExtensionUiRequest,
   ExtensionUiRequest,
+  OpenRequestEvidence,
   SessionInfo,
   SessionTreeNode,
   SubagentSnapshot,
@@ -224,6 +225,8 @@ interface HistoricalTranscriptProps {
   dispatchSlots: ReadonlyMap<number, DispatchSlot>;
   /** Dispatches the latest compaction hid that no shown answer carries, drawn at the compaction point. */
   compactedDispatch: CompactedDispatchPlacement | null;
+  /** The request the latest compaction cut into, classified from its full records (`CompactedWork.openRequest`); finished cards only. */
+  openRequest: OpenRequestEvidence | null;
   /** Rendered conversation items: [startIndex, endIndex). */
   startIndex: number;
   endIndex: number;
@@ -321,7 +324,7 @@ function writeDismissedInterruption(sessionId: string, entryId: string): void {
 const HistoricalTranscript = memo(function HistoricalTranscript({
   messages, entryIds, toolResultsMap, modelNames, messageCwd, onOpenFile,
   sessionBusy, isNew, isStreaming, handleFork, forkingEntryId, handleNavigate,
-  handleEditContent, sessionId, main, process, dispatchSlots, compactedDispatch, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
+  handleEditContent, sessionId, main, process, dispatchSlots, compactedDispatch, openRequest, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
   onProcessLogChange, cues, cueFollowRef,
 }: HistoricalTranscriptProps) {
   useEffect(() => {
@@ -364,8 +367,8 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     if (sessionBusy) {
       for (const item of main) if (item.kind === "message" && messages[item.idx]?.role === "user") liveTurnAnchor = item.idx;
     }
-    return summarizeFinishedTurns(main, messages, liveTurnAnchor, toolResultsMap, messageCwd);
-  }, [main, messages, toolResultsMap, messageCwd, sessionBusy]);
+    return summarizeFinishedTurns(main, messages, liveTurnAnchor, toolResultsMap, messageCwd, openRequest, entryIds);
+  }, [main, messages, toolResultsMap, messageCwd, sessionBusy, openRequest, entryIds]);
 
   // Window the lightweight ordered items, not an already-built JSX transcript.
   const hasMore = startIndex > 0;
@@ -1591,6 +1594,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
                 main={main}
                 dispatchSlots={dispatchSlots}
                 compactedDispatch={compactedDispatch}
+                openRequest={compactedWork?.openRequest ?? null}
                 process={processGroups}
                 startIndex={startIndex}
                 endIndex={endIndex}

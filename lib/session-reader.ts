@@ -8,13 +8,14 @@ import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-
 import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync } from "fs";
 import { stat } from "fs/promises";
 import { dirname, join, normalize as normalizePath } from "path";
-import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
+import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext, TrackerTodoRecords } from "./types";
 import type { TodoPhase } from "./todo-state";
 import { reduceDispatchRecord } from "./answer-status/dispatch";
+import { readOpenRequest, type RequestItem } from "./answer-status/open-request";
 import type { ContextUsage } from "./omp-types";
 import type { SessionEntry as OmpSessionEntry, SessionInfo as OmpSessionInfo } from "@oh-my-pi/pi-coding-agent";
 import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
-import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
 import { deferredToolImageText } from "./message-display";
@@ -551,11 +552,18 @@ export function collectDisplayEntries<T extends DisplayLink>(
  * verdict records, and the last durable todo. Only this branch's hidden
  * entries are read, so nothing shown and nothing from another branch repeats.
  */
-function collectCompactedWork(hidden: SessionEntry[]): CompactedWork | null {
+function collectCompactedWork(hidden: SessionEntry[], displayed: readonly RequestItem[], cwd: string | undefined): CompactedWork | null {
   const messages: AgentMessage[] = [];
+  const items: RequestItem[] = [];
   let hasWork = false;
   for (const entry of hidden) {
+    if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+      const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
+      if (Array.isArray(phases)) items.push({ trackerTodo: phases });
+      continue;
+    }
     const message = entryToUiMessage(entry, {});
+    if (message) items.push({ message, entryId: entry.id });
     const record = message ? reduceDispatchRecord(message) : null;
     if (!record) continue;
     // Consecutive turn boundaries say no more than one does.
@@ -568,8 +576,10 @@ function collectCompactedWork(hidden: SessionEntry[]): CompactedWork | null {
   const todoPhases = getLatestTodoSnapshotIdentity(ompHidden)
     ? getLatestTodoPhasesFromEntries(ompHidden) as TodoPhase[]
     : null;
-  if (!hasWork && !todoPhases) return null;
-  return { messages: hasWork ? messages : [], todoPhases };
+  // Classify the full request across the cut, not a parser state to reconstruct in the browser.
+  const openRequest = readOpenRequest(items, displayed, cwd);
+  if (!hasWork && !todoPhases && !openRequest) return null;
+  return { messages: hasWork ? messages : [], todoPhases, ...(openRequest ? { openRequest } : {}) };
 }
 
 /** `models.default` as the UI's `{ provider, modelId }` pair. */
@@ -584,7 +594,8 @@ function parseDefaultModel(models: Record<string, string>): { provider: string; 
 export function buildSessionContext(
   entries: SessionEntry[],
   leafId?: string | null,
-  options: { deferThinking?: boolean; deferToolResultImages?: boolean } = {},
+  /** `cwd`: the session working folder; the hidden open request's write paths resolve against it like the screen's cards. */
+  options: { deferThinking?: boolean; deferToolResultImages?: boolean; cwd?: string } = {},
 ): SessionContext {
   const byId = new Map<string, SessionEntry>();
   for (const e of entries) byId.set(e.id, e);
@@ -603,9 +614,24 @@ export function buildSessionContext(
   const { displayed, hidden } = collectDisplayEntries(path);
   const messages: AgentMessage[] = [];
   const entryIds: string[] = [];
+  const workItems: RequestItem[] = [];
   for (const entry of displayed) {
+    // A todo change no tool result records (`tool.todo` inside eval, `/todo`, `set_todos`): core keeps the
+    // committed list only as this entry. It rides on the message shown before it, so request cards can
+    // order it with the todo tool results around it without adding a transcript row.
+    if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+      const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
+      if (hidden.length > 0 && Array.isArray(phases)) workItems.push({ trackerTodo: phases });
+      const last = messages.at(-1) as (AgentMessage & TrackerTodoRecords) | undefined;
+      if (Array.isArray(phases) && last) {
+        const carried: AgentMessage & TrackerTodoRecords = { ...last, trackerTodos: [...(last.trackerTodos ?? []), phases] };
+        messages[messages.length - 1] = carried;
+      }
+      continue;
+    }
     const m = entryToUiMessage(entry, options);
     if (m) {
+      if (hidden.length > 0) workItems.push({ message: m, entryId: entry.id });
       messages.push(capDisplayStrings(m) as AgentMessage);
       entryIds.push(entry.id);
     }
@@ -618,7 +644,7 @@ export function buildSessionContext(
     configuredThinkingLevel: ompCtx.configuredThinkingLevel ?? ompCtx.thinkingLevel ?? "off",
     thinkingCeiling: latestThinkingCeiling(path),
     model: parseDefaultModel(ompCtx.models),
-    compactedWork: collectCompactedWork(hidden),
+    compactedWork: collectCompactedWork(hidden, workItems, options.cwd),
   };
 }
 

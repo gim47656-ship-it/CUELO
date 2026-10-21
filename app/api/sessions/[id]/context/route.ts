@@ -27,6 +27,7 @@ export async function GET(
     const context = buildSessionContext(entries, leafId, {
       deferThinking,
       deferToolResultImages,
+      cwd: sm.getCwd(),
     });
     const contextUsage = await getHistoricalContextUsage(entries, leafId);
 

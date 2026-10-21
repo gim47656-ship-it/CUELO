@@ -1321,8 +1321,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     store.seq += 1;
     store.outputs.push({ entryId: `${LOCAL_COMMAND_ENTRY_PREFIX}${store.seq}`, baseEntryId, message });
-    updateMessages((previous) => [...previous, message]);
-  }, [updateMessages]);
+    const transcript = withLocalCommandOutputs(messagesRef.current, entryIdsRef.current, store.outputs);
+    updateMessages(transcript.messages);
+    updateEntryIds(transcript.entryIds);
+  }, [updateMessages, updateEntryIds]);
 
   const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest) => {
     if (request.method !== "custom" && "closed" in request && request.closed) {

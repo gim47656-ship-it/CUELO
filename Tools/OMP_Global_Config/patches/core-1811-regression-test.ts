@@ -443,11 +443,32 @@ await section("[4] 공유 브라우저 타깃 소유권과 수확 경계", async
 	const registryDir = join(runtimeDir, `${daemonName}.targets`);
 	const deadPid = 0x7ff0_0000;
 
-	function cdpStub(options: { closed?: boolean; closeThrows?: boolean; targets?: string[]; queryThrows?: boolean }) {
+	// 18.12.6 (#16680): `Target.closeTarget` answering `success` only means the page started closing. closeCdpTarget now counts
+	// the close confirmed once `Target.targetDestroyed` arrives (or `Target.getTargets` no longer lists the id). The stub reports
+	// the event after an accepted close, like Chromium does, unless `destroyed: false` models a page that stays listed.
+	function cdpStub(options: {
+		closed?: boolean;
+		destroyed?: boolean;
+		closeThrows?: boolean;
+		targets?: string[];
+		queryThrows?: boolean;
+	}) {
+		const listeners = new Set<(event: { targetId: string }) => void>();
 		const session = {
-			async send(method: string): Promise<Record<string, unknown>> {
+			on(event: string, handler: (event: { targetId: string }) => void): void {
+				if (event === "Target.targetDestroyed") listeners.add(handler);
+			},
+			off(event: string, handler: (event: { targetId: string }) => void): void {
+				if (event === "Target.targetDestroyed") listeners.delete(handler);
+			},
+			async send(method: string, params?: { targetId?: string }): Promise<Record<string, unknown>> {
 				if (method === "Target.closeTarget") {
 					if (options.closeThrows === true) throw new Error("harness CDP close failed");
+					if (options.closed === true && options.destroyed !== false) {
+						setTimeout(() => {
+							for (const listener of [...listeners]) listener({ targetId: params?.targetId ?? "" });
+						}, 0);
+					}
 					return { success: options.closed === true };
 				}
 				if (method === "Target.getTargets") {
@@ -512,6 +533,14 @@ await section("[4] 공유 브라우저 타깃 소유권과 수확 경계", async
 		check(
 			"타깃이 아직 살아 있으면 재시도용으로 남긴다",
 			(await closeCdpTarget(cdpStub({ targets: ["harness-orphan-1"] }) as never, "harness-orphan-1")) === false,
+		);
+		check(
+			"close 를 받아들였지만 Chromium 이 destroyed 를 알리지 않고 타깃도 계속 보이면 재시도용으로 남긴다",
+			(await closeCdpTarget(cdpStub({ closed: true, destroyed: false, targets: ["harness-orphan-1"] }) as never, "harness-orphan-1", 20)) === false,
+		);
+		check(
+			"close 를 받아들였고 destroyed 는 못 받았지만 타깃이 목록에서 사라졌으면 수확 완료로 센다",
+			(await closeCdpTarget(cdpStub({ closed: true, destroyed: false, targets: [] }) as never, "harness-orphan-1", 20)) === true,
 		);
 		const unopenableBrowser = {
 			target: () => ({

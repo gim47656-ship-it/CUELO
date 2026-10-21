@@ -63,6 +63,7 @@ test("live detail and state routes work without a persisted JSONL file", async (
   };
   const sessionManager = {
     getHeader: () => ({ type: "session", id, cwd: "/tmp", timestamp }),
+    getCwd: () => "/tmp",
     getEntries: () => [entry],
     getLeafId: () => entry.id,
     getTree: () => [],

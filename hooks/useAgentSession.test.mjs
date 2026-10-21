@@ -1203,6 +1203,31 @@ test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번�
   assert.deepEqual(completions, [MIO_DONE], "로컬 명령 결과 뒤 정상 응답");
   renderer.unmount();
 
+  // A local command must not hide the completed compacted request before any reload.
+  const { readOpenRequest } = await jiti.import("../lib/answer-status/open-request.ts");
+  const { summarizeFinishedTurns } = await jiti.import("../lib/answer-status/turn-summary.ts");
+  const { buildTranscriptRenderPlan, partitionTranscriptPlan } = await jiti.import("../lib/transcript-plan.ts");
+  mount([finalReply], { running: false });
+  await settle();
+  const snapshot = readOpenRequest([
+    { entryId: "hidden-user", message: user },
+    { entryId: "hidden-write", message: { role: "assistant", content: [{ type: "toolCall", toolCallId: "write", toolName: "write", input: { path: "src/a.ts" } }] } },
+    { entryId: "hidden-result", message: { role: "toolResult", toolCallId: "write", toolName: "write", content: [{ type: "text", text: "ok" }], isError: false } },
+  ], [{ entryId: `${SESSION}-1`, message: finalReply }], "/tmp");
+  const visibleFiles = () => {
+    const { main } = partitionTranscriptPlan(hook.messages, buildTranscriptRenderPlan(hook.messages));
+    return [...summarizeFinishedTurns(main, hook.messages, null, new Map(), "/tmp", snapshot, hook.entryIds).values()]
+      .flatMap((summary) => summary.files.map((file) => file.filePath));
+  };
+  assert.deepEqual(visibleFiles(), ["/tmp/src/a.ts"]);
+  for (const output of ["No MCP servers configured.", "Fast mode is on."]) {
+    server.slashOutput = [output];
+    await hook.handleBuiltinSlashCommand("/fast status");
+    await settle();
+    assert.deepEqual(visibleFiles(), ["/tmp/src/a.ts"], "local command output preserves the completed request card immediately");
+  }
+  renderer.unmount();
+
   // 4) 응답 없이 끝나는 명령 run: 지난 턴의 응답으로 완료를 판정하지 않는다.
   mount([user, toolTurn, toolResult, finalReply], { running: false });
   await settle();

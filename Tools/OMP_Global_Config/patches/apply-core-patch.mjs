@@ -3539,6 +3539,35 @@ function resolveSubagentRetryFallbackCandidates(
 						(typeof options.modelPattern === "string" ? options.modelPattern : options.modelPattern?.[0]),
 				);
 			}`,
+		// 18.12.6 에서만 성립하는 후보가 있어 옛 후보는 그 문자열이 있는 sdk.ts 를 후보에서 뺀다(excludes). 18.12.5 이하의 라이브 적용본은
+		// 한 바이트도 바뀌지 않고, 옛 후보의 anchor·patched 도 그대로다.
+		excludes: "const initialModel = `${model.provider}/${model.id}`;",
+		alternates: [
+			{
+				// 2026-10-22 18.12.6 (ADAPT): upstream #16548 이 새 세션의 첫 model_change 를 `initialModel` 로 한 번 쓰고, 지연 패턴의 retry role 이
+				// 있으면 같은 모델을 그 role 로 한 번 더 남기게 했다(체인 조회가 패턴 자신의 체인을 먼저 보게 하려는 것이다). 우리 몫은 첫 항목의
+				// `resolvedModelIsFallback`·`requestedModel` 증거뿐이다. 둘째 항목(role)은 upstream 그대로 두고 첫 호출만 같은 증거를 싣는다.
+				// 첫 항목이 기본 role 항목이라는 사실(재개 시 그 모델을 기본으로 복원)과 증거 계약은 18.12.5 와 같다.
+				file: "src/sdk.ts",
+				requires: "const initialModel = `${model.provider}/${model.id}`;",
+				marker: "options.modelPatternAuthFallbackUsed === true",
+				anchor: `				const initialModel = \`\${model.provider}/\${model.id}\`;
+				sessionManager.appendModelChange(initialModel);`,
+				patched: `				const initialModel = \`\${model.provider}/\${model.id}\`;
+				// Both facts come from the caller's own report (\`modelPatternAuthFallbackUsed\`
+				// / \`modelPatternRequested\`), because the resolution that produced them
+				// runs inside a closure below. \`resolvedModelIsFallback\` is passed as
+				// \`undefined\` unless a substitution is known, and \`requestedModel\` only when
+				// a caller named a model: an unobserved value is never persisted as \`false\`.
+				sessionManager.appendModelChange(
+					initialModel,
+					undefined,
+					options.modelPatternAuthFallbackUsed === true ? true : undefined,
+					options.modelPatternRequested ??
+						(typeof options.modelPattern === "string" ? options.modelPattern : options.modelPattern?.[0]),
+				);`,
+			},
+		],
 	},
 	{
 		// 실행부가 계산해 넘긴 대체 사실과 요청 selector 를 sdk 가 받는 옵션 필드.
@@ -13169,6 +13198,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-22 18.12.6: nMe는 같은 isAdvisorTranscriptName 함수다(`e===tMe||e.startsWith(\`${eMe}.\`)&&e.endsWith(kpe)`). minified 이름만 바뀌었다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

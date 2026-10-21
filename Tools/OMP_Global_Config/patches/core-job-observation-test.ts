@@ -164,18 +164,23 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
     assert.ok(results.get("wait-2")!.text.includes("[JevRuntime:pre-wait-observation]"), results.get("wait-2")!.text);
     assert.equal(inspectedStatus, "running", "the proc read saw the job still running after the wake");
     assert.equal(results.get("wait-3")?.isError, false);
-    assert.ok(results.get("wait-3")!.text.includes(jobId) && results.get("wait-3")!.text.includes("observation-step-2"), results.get("wait-3")!.text);
+    const waitDelivered = results.get("wait-3")!.text.includes(jobId) && results.get("wait-3")!.text.includes("observation-step-2");
     const job = active.asyncJobManager!.getJob(jobId)!;
     assert.equal(job.status, "completed");
     assert.equal(active.asyncJobManager!.isJobResultConsumed(jobId), true);
     const asyncDeliveries = active.messages.filter((message: unknown) => field(message, "customType") === "async-result" && JSON.stringify(message).includes(jobId));
-    assert.equal(asyncDeliveries.length, 0, "the wait consumed the terminal result; no second async delivery");
+    // The job may finish between the proc read and wait-3. Either the wait or the normal async
+    // delivery owns the result; requiring the wait to win makes a valid earlier delivery fail.
+    assert.equal(Number(waitDelivered) + asyncDeliveries.length, 1, "the terminal result is delivered exactly once, by wait or async delivery");
+    if (asyncDeliveries.length) {
+      assert.ok(JSON.stringify(asyncDeliveries[0]).includes("observation-step-2"), "the async delivery carries the completed job output");
+    }
     const count = requests.length;
     clock.advance(60 * MIN); await Bun.sleep(300);
     assert.equal(requests.length, count, "no late observation wake after completion");
     assert.equal(clock.jobs.size, 0);
     assert.deepEqual(extensionErrors, [], "the extension sends and handlers raised no error");
-    console.log(`SDK observation: ${jobId} wait woke at virtual +5min, re-wait refused, proc read saw running, final wait returned completion once (${requests.length} requests)`);
+    console.log(`SDK observation: ${jobId} wait woke at virtual +5min, re-wait refused, proc read saw running, completion delivered once via ${waitDelivered ? "wait" : "async-result"} (${requests.length} requests)`);
   } finally {
     // Let the fixture job end even when an assertion failed, so settling never waits on its deadline.
     writeFileSync(gate, "");

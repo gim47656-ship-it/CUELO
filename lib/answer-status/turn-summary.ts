@@ -1,9 +1,8 @@
-import { isHarnessResumeNotice } from "@/lib/harness-notices";
-import type { ConversationRenderItem } from "@/lib/transcript-plan";
-import { isTodoToolName, resolveTodoSnapshot, type TodoPhase } from "@/lib/todo-state";
+import { isLocalCommandEntryId, type ConversationRenderItem } from "@/lib/transcript-plan";
+import { isTodoToolName, readTrackerPhases, resolveTodoSnapshot, type TodoPhase } from "@/lib/todo-state";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
-import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolCallContent, ToolResultMessage } from "@/lib/types";
-import { userMessageDeliveryKind, userMessageText } from "./delivery";
+import type { AgentMessage, AssistantContentBlock, AssistantMessage, OpenRequestEvidence, ToolCallContent, ToolResultMessage, TrackerTodoRecords } from "@/lib/types";
+import { continuesRequest } from "./delivery";
 import { deriveWorkFlow, readCheckRun, readCiSuccessHeads, type CheckRun, type CiSuccessHead, type JobNotice, type WorkFlow } from "./work-flow";
 
 /**
@@ -97,25 +96,58 @@ export function collectJobNotices(messages: readonly AgentMessage[], from: numbe
   return notices;
 }
 
-/** 진행 중인 요청을 잇는 user 메시지: 실행 중에 끼어든 입력(steer)과, 하네스가 재개하며 넣은 통지(`isHarnessResumeNotice`). */
-function continuesRequest(message: AgentMessage | undefined): boolean {
-  return message?.role === "user" && (userMessageDeliveryKind(message) === "steer" || isHarnessResumeNotice(userMessageText(message)));
-}
-
 /**
- * 그 사용자 메시지가 속한 요청을 연 메시지. 실행 중에 끼어든 입력(omp가 `steering: true`를 단 user 메시지)과 업데이트·재시작
- * 뒤 하네스가 넣은 재개·통지 메시지는 새 요청이 아니라 그 앞 요청의 이어짐이다 — 앞 user 메시지로 거슬러 올라간다. 완료 후
- * 요청(follow-up)과 큐 밖 입력은 새 요청을 연다. 재개 통지와 비슷한 말을 쓴 사용자 입력도 새 요청이다.
+ * 그 메시지가 속한 요청을 연 메시지. 실행 중에 끼어든 입력(omp가 `steering: true`를 단 user 메시지), 업데이트·재시작 뒤 하네스가
+ * 넣은 재개·통지 메시지, 압축 요약은 새 요청이 아니라 그 앞 요청의 이어짐이다 — 앞 user 메시지로 거슬러 올라간다. 앞에 user
+ * 메시지가 없으면 그 요청은 압축이 가린 기록에서 시작했다: -1(대화 앞)이다. 완료 후 요청(follow-up)과 큐 밖 입력은 새 요청을
+ * 연다. 재개 통지와 비슷한 말을 쓴 사용자 입력도 새 요청이다.
  */
-export function findRequestStart(messages: readonly AgentMessage[], userIdx: number): number {
-  let start = userIdx;
-  while (continuesRequest(messages[start])) {
+export function findRequestStart(messages: readonly AgentMessage[], idx: number): number {
+  let start = idx;
+  while (start >= 0 && continuesRequest(messages[start])) {
     let previous = start - 1;
     while (previous >= 0 && messages[previous].role !== "user") previous -= 1;
-    if (previous < 0) break;
     start = previous;
   }
   return start;
+}
+
+/**
+ * 요청 범위 [from, to)가 마지막으로 보고받은 todo 목록. 출처는 목록을 보고한 todo 도구 결과와, 도구 결과 없이 tracker가 남긴
+ * 기록(`trackerTodos`: eval 안의 `tool.todo` 등)뿐이고 기록된 차례로 나중 것이 답이다. 요청을 연 메시지(`from - 1`) 뒤의 기록은
+ * 이 요청 것이고, 다음 요청을 연 메시지(`to`) 뒤의 기록은 아니다. 출력 글·eval 화면 값은 읽지 않는다. 없으면 null.
+ */
+export function lastRequestTodo(
+  messages: readonly AgentMessage[],
+  toolResults: ReadonlyMap<string, ToolResultMessage>,
+  from: number,
+  to: number,
+): TodoPhase[] | null {
+  const end = Math.min(messages.length, to);
+  const resultAt = new Map<string, number>();
+  for (let idx = Math.max(0, from); idx < end; idx++) {
+    const message = messages[idx];
+    if (message.role === "toolResult") resultAt.set(message.toolCallId, idx);
+  }
+  const reports: { at: number; phases: TodoPhase[] }[] = [];
+  for (let idx = Math.max(0, from - 1); idx < end; idx++) {
+    const message = messages[idx];
+    if (idx >= from && message.role === "assistant") {
+      for (const block of (message as AssistantMessage).content ?? []) {
+        if (block.type !== "toolCall" || !isTodoToolName(block.toolName)) continue;
+        const snapshot = resolveTodoSnapshot(block, toolResults.get(block.toolCallId));
+        if (snapshot.kind === "authoritative") reports.push({ at: resultAt.get(block.toolCallId) ?? idx, phases: snapshot.phases });
+      }
+    }
+    // 그 메시지 바로 뒤에 기록된 것이라 같은 자리의 도구 결과보다 나중이다.
+    for (const record of (message as AgentMessage & TrackerTodoRecords).trackerTodos ?? []) {
+      const phases = readTrackerPhases(record);
+      if (phases) reports.push({ at: idx + 0.5, phases });
+    }
+  }
+  let last: { at: number; phases: TodoPhase[] } | null = null;
+  for (const report of reports) if (!last || report.at >= last.at) last = report;
+  return last ? last.phases : null;
 }
 
 /**
@@ -195,13 +227,37 @@ export interface FinishedTurnSummary extends TurnSummary {
   latest: boolean;
 }
 
-/** 끝난 요청마다 그 요청의 마지막 답변 자리(`placeTurnSummaries`)에 붙일 요약. */
+/** 화면과 서버가 같은 요청 범위를 같은 원 기록으로 판정한다. */
+export function summarizeRequest(
+  messages: readonly AgentMessage[],
+  toolResults: Map<string, ToolResultMessage>,
+  from: number,
+  to: number,
+  cwd?: string,
+  priorCiHeads: readonly CiSuccessHead[] = [],
+): Omit<FinishedTurnSummary, "latest"> {
+  const blocks = collectTurnBlocks(messages, from, to);
+  const todo = lastRequestTodo(messages, toolResults, from, to);
+  return {
+    ...summarizeTurn(blocks, toolResults, cwd),
+    remaining: todo ? remainingTasks(todo) : null,
+    span: readTurnSpan(messages, from, to),
+    flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads, cwd, collectJobNotices(messages, from, to)),
+  };
+}
+
+/**
+ * 끝난 요청마다 마지막 답변 자리에 요약을 붙인다. 압축된 요청은 서버가 원 기록 전체로 판정한다.
+ * 화면의 요청 끝 ID가 같은 스냅샷만 사용한다. 더 새 기록이 왔으면 새 스냅샷이 올 때까지 그 카드는 보류한다.
+ */
 export function summarizeFinishedTurns(
   main: readonly ConversationRenderItem[],
   messages: readonly AgentMessage[],
   liveTurnAnchor: number | null,
   toolResults: Map<string, ToolResultMessage>,
   cwd?: string,
+  openRequest?: OpenRequestEvidence | null,
+  entryIds: readonly string[] = [],
 ): Map<number, FinishedTurnSummary> {
   const places = placeTurnSummaries(main, messages, liveTurnAnchor);
   let latest = -1;
@@ -213,11 +269,26 @@ export function summarizeFinishedTurns(
   for (const [position, range] of [...places].sort((a, b) => a[1].from - b[1].from)) {
     collectPriorCiHeads(messages, toolResults, range.from, scanned, priorCiHeads);
     scanned = Math.max(scanned, range.from);
-    const blocks = collectTurnBlocks(messages, range.from, range.to);
+    if (range.from === 0 && openRequest) {
+      let lastPersisted = range.to - 1;
+      while (lastPersisted >= range.from && isLocalCommandEntryId(entryIds[lastPersisted])) lastPersisted -= 1;
+      if (entryIds[lastPersisted] !== openRequest.throughEntryId) continue;
+      const dispatchCalls = collectTurnBlocks(messages, range.from, range.to)
+        .filter((block): block is ToolCallContent => block.type === "toolCall" && block.toolName === "task");
+      // tracker-only changes append no visible entry ID. Their current authoritative list still wins.
+      const todo = lastRequestTodo(messages, toolResults, range.from, range.to);
+      summaries.set(position, {
+        ...openRequest.summary,
+        ...(todo ? { remaining: remainingTasks(todo) } : {}),
+        dispatchCalls,
+        latest: position === latest,
+      });
+      priorCiHeads.push(...openRequest.ciHeads);
+      scanned = range.to;
+      continue;
+    }
     summaries.set(position, {
-      ...summarizeTurn(blocks, toolResults, cwd),
-      span: readTurnSpan(messages, range.from, range.to),
-      flow: deriveWorkFlow(blocks, toolResults, false, priorCiHeads, cwd, collectJobNotices(messages, range.from, range.to)),
+      ...summarizeRequest(messages, toolResults, range.from, range.to, cwd, priorCiHeads),
       latest: position === latest,
     });
   }

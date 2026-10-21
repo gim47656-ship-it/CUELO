@@ -93,6 +93,7 @@ export async function GET(
             context: buildSessionContext(manager.getEntries() as never, entryId, {
               deferThinking: true,
               deferToolResultImages: true,
+              cwd: session.cwd,
             }),
           });
         }

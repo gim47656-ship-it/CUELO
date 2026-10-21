@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantMessage, ToolCallContent, ToolResultMessage } from "./types";
+import type { AgentMessage, AssistantMessage, ToolCallContent, ToolResultMessage, TrackerTodoRecords } from "./types";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
@@ -46,6 +46,16 @@ function readReportedPhases(reported: unknown[]): { phases: TodoPhase[]; malform
     if (read.length > 0) phases.push({ name, tasks: read });
   }
   return { phases, malformed: false };
+}
+
+/**
+ * One tracker record's list (`AgentMessage.trackerTodos` entry): the phases the omp tracker committed, read
+ * with the same rules as a todo tool result. A shape we cannot read says nothing, so it is null.
+ */
+export function readTrackerPhases(value: unknown): TodoPhase[] | null {
+  if (!Array.isArray(value)) return null;
+  const { phases, malformed } = readReportedPhases(value);
+  return malformed ? null : phases;
 }
 
 function readRequestedPhases(input: unknown): TodoPhase[] {
@@ -140,6 +150,11 @@ function selectTodoFromTranscript(
 ): TodoPhase[] | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
+    const records = (message as AgentMessage & TrackerTodoRecords).trackerTodos ?? [];
+    for (let at = records.length - 1; at >= 0; at -= 1) {
+      const phases = readTrackerPhases(records[at]);
+      if (phases) return phases;
+    }
     if (message.role !== "assistant") continue;
     const blocks = (message as AssistantMessage).content;
     if (!Array.isArray(blocks)) continue;
