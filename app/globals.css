@@ -1526,23 +1526,127 @@ span.linenumber {
 }
 
 .workspace-session-identity strong,
-.workspace-session-identity span {
+.workspace-session-project,
+.workspace-session-status {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-session-identity strong {
+  min-inline-size: 0;
   color: var(--text);
   font-size: 12px;
   font-weight: 650;
 }
 
-.workspace-session-identity span {
+/* Project first, then the title; the project yields width before the title does. */
+.workspace-session-identity-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.workspace-session-project {
+  flex: 0 100 auto;
+  min-inline-size: 3ch;
+  max-inline-size: 40%;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.workspace-session-project::after {
+  content: " /";
+  color: var(--text-dim);
+}
+
+.workspace-session-status {
   margin-block-start: 2px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+/* Empty new-session screen: which folder the first message will start in. */
+.empty-workspace-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 52px 12px 16px;
+  padding: 12px 14px;
+  min-inline-size: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-subtle);
+}
+
+.empty-workspace-context-text {
+  display: flex;
+  flex: 1 1 240px;
+  flex-direction: column;
+  gap: 3px;
+  min-inline-size: 0;
+}
+
+.empty-workspace-context-kicker {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.empty-workspace-context-text strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-workspace-context-text code {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.empty-workspace-context-text p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.empty-workspace-context-action {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 6px);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.empty-workspace-context-action:hover {
+  background: var(--bg-hover);
+}
+
+.empty-workspace-context-action:focus-visible,
+.model-role-disclosure:focus-visible,
+.models-nav-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 640px) {
+  .empty-workspace-context {
+    margin-inline: 8px;
+  }
 }
 
 
@@ -2459,7 +2563,7 @@ span.linenumber {
 .resource-panel h2,
 .message-assistant-role,
 .resource-account-state,
-.workspace-session-identity span {
+.workspace-session-status {
   font-size: var(--readout-size);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--readout-track);
@@ -2978,7 +3082,7 @@ span.linenumber {
   letter-spacing: -0.004em;
 }
 
-.workspace-session-identity span {
+.workspace-session-status {
   text-transform: none;
 }
 
@@ -5326,7 +5430,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
   /* Phone: the status line and the numeric readout yield to the controls, but
      the meter and its accessible name stay. */
-  .workspace-session-identity span,
+  .workspace-session-status,
   .workspace-context-readout {
     display: none !important;
   }

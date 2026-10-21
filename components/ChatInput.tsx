@@ -77,6 +77,9 @@ import {
   type MainPresetSelection,
 } from "@/lib/hanse-resource-client";
 
+/** Whether the picker's role list is unfolded; kept per browser like the pick counts. */
+const ROLES_EXPANDED_STORAGE_KEY = "omp-web:model-roles-expanded";
+
 export interface AttachedImage {
   data: string;   // base64, no prefix
   mimeType: string;
@@ -676,6 +679,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     if (modelDropdownOpen) setModelPicks(readModelPicks());
   }, [modelDropdownOpen]);
+  // Role rows stay folded until this browser opens them once; the choice is remembered locally.
+  const [rolesExpanded, setRolesExpanded] = useState(false);
+  useEffect(() => {
+    if (!modelDropdownOpen) return;
+    try { setRolesExpanded(window.localStorage.getItem(ROLES_EXPANDED_STORAGE_KEY) === "1"); } catch { /* default folded */ }
+  }, [modelDropdownOpen]);
+  const toggleRolesExpanded = () => {
+    setRolesExpanded((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem(ROLES_EXPANDED_STORAGE_KEY, next ? "1" : "0"); } catch { /* stays for this view */ }
+      return next;
+    });
+  };
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
   const [presetDropdownRect, setPresetDropdownRect] = useState<{ top: number; bottom: number; left: number; width: number } | null>(null);
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
@@ -3599,18 +3615,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                             {frequentModels.map(({ option, count }) => renderModelOption(option, "frequent", count))}
                           </div>
                         )}
-                        {/* omp assigns a model per scope of work; offer those first
-                            so picking "Fast" or "Architect" stays one click, and
-                            record the role so the transcript matches `/model`. */}
+                        {/* omp assigns a model per scope of work. The role list folds behind a
+                            header that still names the active role; picking a role records it so
+                            the transcript matches `/model`. */}
                         {roleRows.length > 0 && !modelFilter.trim() && onRoleModelChange && (
                           <div style={{ borderTop: frequentModels.length > 0 ? "1px solid var(--border)" : "none" }}>
-                            <div style={{
-                              padding: "6px 12px 4px",
-                              fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
-                              textTransform: "uppercase", letterSpacing: "0.07em",
-                            }}>
-                              {t("chat.modelRoles")}
-                            </div>
+                            <button
+                              type="button"
+                              className="model-role-disclosure"
+                              aria-expanded={rolesExpanded}
+                              aria-controls="model-role-rows"
+                              onClick={toggleRolesExpanded}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 6,
+                                width: "100%", minHeight: 32, padding: "6px 12px 4px",
+                                background: "none", border: "none", cursor: "pointer", textAlign: "left",
+                                fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
+                                letterSpacing: "0.07em", whiteSpace: "nowrap",
+                              }}
+                            >
+                              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, transform: rolesExpanded ? "rotate(90deg)" : "none", transition: "transform 120ms" }}><polyline points="3 1.5 7 5 3 8.5" /></svg>
+                              <span style={{ textTransform: "uppercase" }}>{t("chat.modelRoles")}</span>
+                              <span style={{ fontFamily: "var(--font-mono)" }}>{roleRows.length}</span>
+                              {activeRole && (
+                                <span style={{ marginLeft: "auto", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-muted)", letterSpacing: 0 }}>
+                                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)", marginRight: 6 }}>{activeRole.tag ?? activeRole.role.toUpperCase()}</span>
+                                  {activeRole.name}
+                                </span>
+                              )}
+                            </button>
+                            <div id="model-role-rows" hidden={!rolesExpanded}>
                             {roleRows.map((role) => {
                               const isActive = activeRole?.role === role.role;
                               const resolvedName = role.resolved?.name ?? role.resolved?.modelId ?? "";
@@ -3669,6 +3703,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 </button>
                               );
                             })}
+                            </div>
                             <div style={{
                               padding: "6px 12px 4px",
                               fontSize: 10, fontWeight: 600, color: "var(--text-dim)",

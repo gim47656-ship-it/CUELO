@@ -12,7 +12,7 @@
 
 1. 기존 `omp --version`과 본인 `~/.omp/agent`의 `config.yml`·계정·세션이 있는지 확인합니다. **`omp-web`은 설치할 필요가 없습니다.** 독립 `omp.exe`가 있다고 Node.js/npm·Bun이 따라오는 것은 아니므로, 아래 필요 조건도 설치·확인합니다.
 2. `npm install -g cuelo` → `cuelo setup` → `cuelo start`를 실행합니다. `setup`은 기존 `config.yml`과 동명 하네스 파일을 **덮어쓰지 않고**, 현재 `omp` 프로필에 없는 공개 파일만 더합니다. 기존 `agent.db`, `models.yml`, skills, 세션도 보존합니다. 앱 패치는 설치된 `cuelo` 패키지의 SDK에만 적용되며, 별도 `omp.exe`에는 적용되지 않습니다.
-3. 브라우저에서 출력 주소를 열고 **Settings > Models**에서 기존 로그인 상태와 사용할 모델을 확인합니다. `cuelo health`는 네 서비스 응답만 검사하므로 로그인과 대화 성공을 뜻하지 않습니다.
+3. 브라우저에서 출력 주소를 열고 **설정 > 모델·계정**에서 기존 로그인 상태와 사용할 모델을 확인합니다. `cuelo health`는 네 서비스 응답만 검사하므로 로그인과 대화 성공을 뜻하지 않습니다.
 4. 기존 `config.yml`이면 `--model`·`--role`을 다시 줘도 설치기가 무시합니다. 아래 [기존 프로필의 역할과 Jev 보완](#기존-프로필의-역할과-jev-보완)대로 **현재 모델 역할과 제공자 자격을 직접 확인**해야 Main/Maker/Jev가 동작합니다. 기존 로그인·세션을 삭제하거나 프로필을 새로 복사할 필요는 없습니다.
 
 이 경로는 **기존 프로필을 흉내 낸 격리 HOME**에서 설정 보존/누락 보고를 확인하는 경계 검사입니다. 실제 사용자 `omp` 홈을 수정하거나 `omp-web`이 없는 새 Windows OS를 부팅해 end-to-end로 검증한 결과는 아닙니다.
@@ -119,8 +119,8 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
 `omp`만 설치했던 프로필에는 `config.yml`이 이미 있을 수 있습니다. `setup` 출력의 `Model roles not set`은 **사용자에게 남은 작업**이지 자동 설정 성공이 아닙니다. 자신의 `~/.omp/agent/config.yml`을 백업하고, 현재 키를 삭제하지 말고 다음을 대조합니다. 다른 `--home`을 썼다면 그 안의 `.omp/agent/config.yml`을 봅니다.
 
-1. 대화용 `modelRoles.default`를 **Settings > Models > Model roles**에서 현재 로그인한 제공자의 모델로 정합니다. 기존 설정이 올바르면 유지합니다. 앱에서 프로젝트별 역할로 저장할 수도 있으므로, Main/Maker가 읽을 **global** 설정인지 확인하세요.
-2. Maker 후보는 같은 **Settings > Models > Model roles** 화면에서 고릅니다. 아래 여섯 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
+1. 대화용 `modelRoles.default`를 **설정 > 모델·계정 > 모델 역할**에서 현재 로그인한 제공자의 모델로 정합니다. 기존 설정이 올바르면 유지합니다. 앱에서 프로젝트별 역할로 저장할 수도 있으므로, Main/Maker가 읽을 **global** 설정인지 확인하세요.
+2. Maker 후보는 같은 **설정 > 모델·계정 > 모델 역할** 화면에서 고릅니다. 아래 여섯 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
@@ -132,7 +132,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
    | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
 
    일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 여섯 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
-3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 권장 경로는 OpenRouter입니다. 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **Settings > Models > OpenRouter > API Key**에 입력하고, 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
+3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 권장 경로는 OpenRouter입니다. 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **설정 > 모델·계정 > OpenRouter > API Key**에 입력하고, 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
 
    ```yaml
    modelRoles:
@@ -216,7 +216,7 @@ node install.mjs health
 
 ## 6. 로그인 (사람이 할 일)
 
-제공자 계정 로그인은 브라우저 OAuth나 API 키 입력이 필요하므로 사람이 직접 합니다. `start`로 띄운 CUELO를 브라우저에서 열고 **Settings > Models**에서 쓸 제공자의 로그인 버튼을 누릅니다. 로그인 정보는 `start`가 쓰는 프로필에 저장되며, `--home`을 썼다면 그 프로필입니다.
+제공자 계정 로그인은 브라우저 OAuth나 API 키 입력이 필요하므로 사람이 직접 합니다. `start`로 띄운 CUELO를 브라우저에서 열고 **설정 > 모델·계정**에서 쓸 제공자의 로그인 버튼을 누릅니다. 로그인 정보는 `start`가 쓰는 프로필에 저장되며, `--home`을 썼다면 그 프로필입니다.
 
 공식 omp CLI(`@oh-my-pi/pi-coding-agent`)를 이미 설치해 두었다면 `omp login`을 써도 됩니다. 이 안내는 CLI를 따로 설치하지 않습니다. 캐릭터 확장이 쓰는 Anthropic OAuth 0번·1번 자리의 의미는 [하네스 안내](harness.md)를 참고하세요.
 
@@ -230,6 +230,6 @@ node install.mjs health
 | `[btw] omp SDK not found` | `node install.mjs start`로 실행합니다. 이 스크립트가 `CUELO_DIR`를 CUELO 폴더로 설정합니다. |
 | 사용량 패널 오류 | 같은 패키지 SDK/계정 경로가 실패한 경우 CLI fallback은 `OMP_EXE`, 기본 위치 또는 PATH의 `omp.exe`를 찾습니다. `omp --version`과 본인 계정 로그인을 확인합니다. `stats` 집계는 독립 CLI가 필요합니다. |
 | 사이드채팅이 입력을 받지 않음 | 세션 파일이 생성될 때까지 기다립니다. `health`에서 `btw`가 OK인지 확인합니다. |
-| 모델 역할이 비어 있음 | 설정 > Model roles에서 고릅니다. `setup`은 기존 `config.yml`을 바꾸지 않습니다. |
+| 모델 역할이 비어 있음 | 설정 > 모델·계정 > 모델 역할에서 고릅니다. `setup`은 기존 `config.yml`을 바꾸지 않습니다. |
 
 exit code: `0` 성공, `1` 실행 실패, `2` 잘못된 인자(사용법 출력).

@@ -1,12 +1,12 @@
 {
 	"tabs": {
 		"appearance": "외관",
-		"model": "모델",
+		"model": "모델 동작",
 		"interaction": "상호작용",
 		"context": "컨텍스트",
 		"memory": "메모리",
 		"files": "파일",
-		"shell": "Shell",
+		"shell": "셸",
 		"tools": "도구",
 		"tasks": "작업",
 		"providers": "제공자"
@@ -82,7 +82,8 @@
 		"Global configuration": "전역 구성",
 		"Settings": "설정",
 		"Search": "검색",
-		"Models": "모델",
+		"Models & accounts": "모델·계정",
+		"Access": "접속 암호",
 		"Themes": "테마",
 		"Skills": "스킬",
 		"Plugins": "플러그인",

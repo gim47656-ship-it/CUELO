@@ -11,9 +11,12 @@ export type UpdateWaitPageInput = {
  * 보여야 하므로 외부 CSS·폰트·이미지·스크립트를 하나도 참조하지 않고 스타일·로고·동작을
  * 모두 inline으로 둔다. 색은 `@seed-design/css` 다크 역할 토큰과 앱 아이콘의 실제 리터럴이고,
  * 나선 고리 path와 램프 색은 `components/OmpWordmark.tsx`·`public/icons/cuelo-icon.svg`와 같다.
- * 큰 심볼이 이 화면의 진행 표시다: 램프는 진행 중에 대기 신호처럼 숨 쉬고 실패면 붉게 바뀌며,
- * 고리는 관측한 완료 단계만큼만 채운다. 둘 다 스크립트가 이미 쓰는 `#state`의 tone과 단계의
- * `data-state`를 CSS `:has()`로 읽을 뿐 판정은 더하지 않는다.
+ * 큰 심볼이 이 화면의 진행 표시다. 고리는 관측한 완료 단계만큼만 채우고, 현재 단계가 차지하는
+ * 고리 4분의 1 구간만 램프색으로 표시한다. 서버가 응답하고 진행 단계를 관측한 동안에만 그 구간 안을
+ * 주행선이 돌고 램프에서 파문이 퍼진다. 서버 무응답이면 마지막 단계 구간과 램프를 경고색으로 멈춰 두고,
+ * 실패면 중단 구간과 램프를 붉게 고정하며, 상태를 모르면 움직이지 않는다. 동작 줄이기 설정에서는 모든
+ * 애니메이션·전환을 끄고 같은 색 구간으로만 상태를 보인다. 모두 스크립트가 이미 쓰는 `#state`·`#link`의
+ * tone과 단계의 `data-state`를 CSS `:has()`로 읽을 뿐 판정은 더하지 않는다.
  *
  * 표시 규칙:
  * - 화면에 쓰는 진행 정보는 `/api/update-maintenance` 응답에서 실제로 관측한 값뿐이다.
@@ -97,7 +100,7 @@ body{
   gap:28px;
 }
 .hero{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:24px;align-items:center}
-.mark{width:104px;height:104px;display:block;overflow:visible}
+.mark{width:120px;height:120px;display:block;overflow:visible}
 .ring{fill:none;stroke-width:10;stroke-linecap:round}
 .ring-base{stroke:var(--line-strong)}
 .ring-fill{
@@ -105,26 +108,58 @@ body{
   stroke-dasharray:100;
   stroke-dashoffset:100;
   opacity:0;
-  transition:stroke-dashoffset .7s cubic-bezier(.2,.7,.2,1),opacity .2s,stroke .3s;
+  transition:stroke-dashoffset .7s cubic-bezier(0,0,.15,1),opacity .2s,stroke .3s;
 }
+/* 현재(또는 중단된) 단계가 차지하는 고리 4분의 1 구간. --q는 그 구간의 시작 위치다. 이 구간과
+   그 안을 도는 주행선은 "지금 이 단계에 있다"만 뜻하고, 채움(완료)은 위 .ring-fill만 맡는다.
+   대시 주기를 경로 길이(100)보다 길게 잡아 다음 대시가 경로 끝점에 둥근 점으로 새지 않게 한다. */
+.ring-zone,.ring-run{opacity:0;stroke:var(--lamp);stroke-dashoffset:calc(var(--q,0) * -1)}
+.ring-zone{stroke-dasharray:25 175}
+.ring-run{stroke-dasharray:7 193}
 .lamp{fill:var(--lamp);opacity:.35;transition:fill .3s,opacity .3s}
-.halo{fill:var(--lamp);opacity:0;transform-box:fill-box;transform-origin:center}
+.ripple{fill:none;stroke:var(--lamp);stroke-width:1.5;opacity:0;transform-box:fill-box;transform-origin:center}
 /* 고리는 관측한 완료 단계만큼만 채운다(4단계 = 25씩). 없는 퍼센트를 만들지 않는다. */
 .shell:has(.step:nth-child(1)[data-state="done"]) .ring-fill{opacity:1;stroke-dashoffset:75}
 .shell:has(.step:nth-child(2)[data-state="done"]) .ring-fill{stroke-dashoffset:50}
 .shell:has(.step:nth-child(3)[data-state="done"]) .ring-fill{stroke-dashoffset:25}
 .shell:has(.step:nth-child(4)[data-state="done"]) .ring-fill{stroke-dashoffset:0}
+.shell:has(.step:nth-child(2):is([data-state="current"],[data-state="stopped"])){--q:25}
+.shell:has(.step:nth-child(3):is([data-state="current"],[data-state="stopped"])){--q:50}
+.shell:has(.step:nth-child(4):is([data-state="current"],[data-state="stopped"])){--q:75}
+.shell:has(.step[data-state="current"]) .ring-zone{opacity:.5}
+.shell:has(.step[data-state="stopped"]) .ring-zone{opacity:.8;stroke:var(--stop)}
 .shell:has(#state[data-tone="info"]) .lamp,
 .shell:has(#state[data-tone="warn"]) .lamp{opacity:1}
-.shell:has(#state[data-tone="info"]) .halo{opacity:.2}
 .shell:has(#state[data-tone="stop"]) .lamp{fill:var(--stop);opacity:1}
 .shell:has(#state[data-tone="stop"]) .ring-fill{stroke:var(--text-dim)}
+/* 서버 무응답: 마지막으로 본 단계를 그대로 두고 램프·구간을 경고색으로 고정한다. 움직임은 없다. */
+.shell:has(#link[data-tone="warn"]) .lamp{fill:var(--warn)}
+.shell:has(#link[data-tone="warn"]) .ring-zone{stroke:var(--warn)}
 @media (prefers-reduced-motion:no-preference){
-  .shell:has(#state[data-tone="info"]) .halo{animation:cue-standby 2.4s ease-in-out infinite}
-  @keyframes cue-standby{
-    0%,100%{opacity:.06;transform:scale(.75)}
-    50%{opacity:.3;transform:scale(1.25)}
+  /* 모든 움직임(반복·1회 모두)은 서버가 응답하고 있고 진행 중 단계를 실제로 관측한 동안에만 돈다.
+     무응답(#link warn)·실패(stop)·상태 미확인(neutral)에서는 아무것도 움직이지 않는다. */
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])) .ripple{animation:cue-ripple 2.4s cubic-bezier(0,0,.15,1) infinite}
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])) .ripple+.ripple{animation-delay:1.2s}
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])):has(.step[data-state="current"]) .ring-zone{opacity:.22}
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])):has(.step[data-state="current"]) .ring-run{animation:cue-run 1.8s cubic-bezier(.35,0,.35,1) infinite}
+  /* 단계가 바뀌는 순간에만 한 번: 새 진행 단계의 표시선이 내려오고, 끝난 단계의 번호가 자리 잡는다. */
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])) .step[data-state="current"]::before{animation:cue-bar .3s cubic-bezier(0,0,.15,1)}
+  .shell:has(#state[data-tone="info"]):not(:has(#link[data-tone="warn"])):not(:has(#link[data-tone="stop"])) .step[data-state="done"] :is(.cue,.step-state){animation:cue-settle .45s cubic-bezier(0,0,.15,1)}
+  @keyframes cue-ripple{
+    0%{opacity:.55;transform:scale(1)}
+    100%{opacity:0;transform:scale(3.2)}
   }
+  @keyframes cue-run{
+    0%{opacity:0;stroke-dashoffset:calc(var(--q,0) * -1)}
+    20%,80%{opacity:1}
+    100%{opacity:0;stroke-dashoffset:calc(var(--q,0) * -1 - 18)}
+  }
+  @keyframes cue-bar{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  @keyframes cue-settle{from{opacity:.4;transform:translateY(3px)}to{opacity:1;transform:none}}
+}
+@media (prefers-reduced-motion:reduce){
+  /* 동작 줄이기: 반복·공간 움직임과 전환을 모두 끄고, 현재 단계 구간과 램프 색으로만 상태를 보인다. */
+  *,*::before,*::after{animation:none!important;transition:none!important}
 }
 .brand-line{display:flex;align-items:baseline;gap:8px;margin:0 0 14px;min-width:0}
 .brand-name{
@@ -162,7 +197,7 @@ h1{
   transition:background .3s;
 }
 .step+.step{border-top:1px solid var(--line)}
-.step::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent}
+.step::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent;transform-origin:top}
 .cue{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-faint);font-variant-numeric:tabular-nums}
 .step-name{min-width:0;font-size:14px;font-weight:500;color:var(--text-faint)}
 .step-state{font-size:12px;font-weight:500;color:var(--text-faint);white-space:nowrap}
@@ -224,7 +259,7 @@ h1{
 @media (max-width:480px){
   .shell{padding:36px 20px 24px;gap:22px}
   .hero{column-gap:16px}
-  .mark{width:68px;height:68px}
+  .mark{width:76px;height:76px}
   .brand-line{margin-bottom:8px}
   h1{font-size:20px}
   .step{padding:11px 16px;grid-template-columns:28px minmax(0,1fr) auto}
@@ -238,7 +273,10 @@ h1{
 <svg class="mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
 <path class="ring ring-base" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
 <path class="ring ring-fill" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
-<circle class="halo" cx="42" cy="50" r="16"></circle>
+<path class="ring ring-zone" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
+<path class="ring ring-run" pathLength="100" d="M77.9 30.5 A34 34 0 0 0 16 50 A26 26 0 0 0 68 50"></path>
+<circle class="ripple" cx="42" cy="50" r="9" vector-effect="non-scaling-stroke"></circle>
+<circle class="ripple" cx="42" cy="50" r="9" vector-effect="non-scaling-stroke"></circle>
 <circle class="lamp" cx="42" cy="50" r="8.5"></circle>
 </svg>
 <div>

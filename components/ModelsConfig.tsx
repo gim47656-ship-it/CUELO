@@ -1715,6 +1715,16 @@ interface AddProviderPickerProps {
   onClose: () => void;
 }
 
+// Left-panel rows are buttons so the keyboard reaches them; the reset keeps the old row look.
+const navRowReset: React.CSSProperties = {
+  display: "flex", alignItems: "center", width: "100%", borderRadius: 5,
+  border: "none", cursor: "pointer", textAlign: "left", font: "inherit", color: "inherit",
+};
+
+const navGroupLabelStyle: React.CSSProperties = {
+  padding: "6px 8px 3px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)", letterSpacing: "0.04em",
+};
+
 function AddProviderPicker({
   oauthProviders, apiKeyProviders,
   onSelectOAuth, onSelectApiKey, onAddCustom, onClose,
@@ -2101,9 +2111,14 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
           }}>
             <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px" }}>
               {/* omp routes work by role; keep that the first thing in the panel. */}
-              <div
+              <div role="group" aria-labelledby="models-nav-roles">
+              <div id="models-nav-roles" style={navGroupLabelStyle}>{t("models.navGroupRoles")}</div>
+              <button
+                type="button"
+                className="models-nav-row"
+                aria-current={selection?.type === "roles" ? "true" : undefined}
                 onClick={() => setSelection({ type: "roles" })}
-                style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 5, cursor: "pointer", background: selection?.type === "roles" ? "var(--bg-selected)" : "none" }}
+                style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: selection?.type === "roles" ? "var(--bg-selected)" : "none" }}
                 onMouseEnter={(e) => { if (selection?.type !== "roles") e.currentTarget.style.background = "var(--bg-hover)"; }}
                 onMouseLeave={(e) => { if (selection?.type !== "roles") e.currentTarget.style.background = "none"; }}
               >
@@ -2112,23 +2127,31 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                   <line x1="4" y1="17" x2="20" y2="17" /><circle cx="15" cy="17" r="2.2" />
                 </svg>
                 <span style={{ fontSize: 12, color: "var(--text)", flex: 1 }}>{t("roles.title")}</span>
+              </button>
               </div>
               <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
+
+              {(activeOAuth.length > 0 || activeApiKey.length > 0) && (
+                <div id="models-nav-accounts" style={navGroupLabelStyle}>{t("models.navGroupAccounts")}</div>
+              )}
 
               {/* Active OAuth subscriptions */}
               {activeOAuth.map((p) => {
                 const isSelected = selection?.type === "oauth" && selection.providerId === p.id;
                 return (
-                  <div
+                  <button
+                    type="button"
+                    className="models-nav-row"
                     key={p.id}
+                    aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelection({ type: "oauth", providerId: p.id })}
-                    style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 5, cursor: "pointer", background: isSelected ? "var(--bg-selected)" : "none" }}
+                    style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: isSelected ? "var(--bg-selected)" : "none" }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "none"; }}
                   >
                     <ProviderIcon id={p.id} size={16} />
                     <span style={{ fontSize: 12, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                  </div>
+                  </button>
                 );
               })}
 
@@ -2136,16 +2159,19 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
               {activeApiKey.map((p) => {
                 const isSelected = selection?.type === "apikey" && selection.providerId === p.id;
                 return (
-                  <div
+                  <button
+                    type="button"
+                    className="models-nav-row"
                     key={p.id}
+                    aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelection({ type: "apikey", providerId: p.id })}
-                    style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 5, cursor: "pointer", background: isSelected ? "var(--bg-selected)" : "none" }}
+                    style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: isSelected ? "var(--bg-selected)" : "none" }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "none"; }}
                   >
                     <ProviderIcon id={p.id} size={16} />
                     <span style={{ fontSize: 12, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.displayName}</span>
-                  </div>
+                  </button>
                 );
               })}
 
@@ -2154,6 +2180,9 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
               )}
 
+              {!loading && providers.length > 0 && (
+                <div style={navGroupLabelStyle}>{t("models.navGroupCustom")}</div>
+              )}
               {/* Custom providers */}
               {loading ? (
                  <div style={{ padding: "10px 8px", fontSize: 12, color: "var(--text-muted)" }}>{t("i18n.loading")}</div>
@@ -2163,9 +2192,12 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 return (
                   <div key={pName} style={{ marginBottom: 2 }}>
                     {/* Provider row */}
-                    <div
+                    <button
+                      type="button"
+                      className="models-nav-row"
+                      aria-current={isProviderSelected ? "true" : undefined}
                       onClick={() => setSelection({ type: "provider", name: pName })}
-                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 8px", borderRadius: 5, cursor: "pointer", background: isProviderSelected ? "var(--bg-selected)" : "none" }}
+                      style={{ ...navRowReset, gap: 6, padding: "7px 8px", background: isProviderSelected ? "var(--bg-selected)" : "none" }}
                       onMouseEnter={(e) => { if (!isProviderSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
                       onMouseLeave={(e) => { if (!isProviderSelected) e.currentTarget.style.background = "none"; }}
                     >
@@ -2179,16 +2211,19 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                       <span style={{ fontSize: 12, fontWeight: isProviderSelected ? 600 : 400, color: "var(--text)", fontFamily: "var(--font-mono)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {pName}
                       </span>
-                    </div>
+                    </button>
 
                     {/* Model rows */}
                     {models.map((m, i) => {
                       const isModelSelected = selection?.type === "model" && selection.providerName === pName && selection.index === i;
                       return (
-                        <div
+                        <button
+                          type="button"
+                          className="models-nav-row"
                           key={i}
+                          aria-current={isModelSelected ? "true" : undefined}
                           onClick={() => setSelection({ type: "model", providerName: pName, index: i })}
-                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px 5px 26px", borderRadius: 5, cursor: "pointer", background: isModelSelected ? "var(--bg-selected)" : "none" }}
+                          style={{ ...navRowReset, gap: 6, padding: "5px 8px 5px 26px", background: isModelSelected ? "var(--bg-selected)" : "none" }}
                           onMouseEnter={(e) => { if (!isModelSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
                           onMouseLeave={(e) => { if (!isModelSelected) e.currentTarget.style.background = "none"; }}
                         >
@@ -2198,7 +2233,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                           {m.reasoning && (
                             <span style={{ fontSize: 9, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: 3, flexShrink: 0 }}>T</span>
                           )}
-                        </div>
+                        </button>
                       );
                     })}
 

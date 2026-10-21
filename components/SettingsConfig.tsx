@@ -41,7 +41,7 @@ interface SettingsConfigProps {
 // `labelKey` names an app message for sections whose copy lives with the feature
 // rather than in the settings shell dictionary.
 const CORE_SECTIONS: Array<{ id: SettingsSection; label: string; labelKey?: string; icon: string; requiresCwd?: boolean }> = [
-  { id: "models", label: "Models", icon: "model" },
+  { id: "models", label: "Models & accounts", icon: "model" },
   { id: "themes", label: "Themes", icon: "theme" },
   { id: "skills", label: "Skills", icon: "skill", requiresCwd: true },
   { id: "plugins", label: "Plugins", icon: "plugin", requiresCwd: true },
@@ -470,6 +470,7 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
                   type="button"
                   className={styles.navButton}
                   data-active={!query && section === item.id}
+                  aria-current={!query && section === item.id ? "page" : undefined}
                   disabled={item.requiresCwd && !cwd}
                   title={item.requiresCwd && !cwd ? `${label} ${shellText("requires a project")}` : label}
                   onClick={() => {
@@ -489,6 +490,7 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
                 type="button"
                 className={styles.navButton}
                 data-active={!query && activeTab === tab.id}
+                aria-current={!query && activeTab === tab.id ? "page" : undefined}
                 onClick={() => {
                   setQuery("");
                   setSection(`settings:${tab.id}`);

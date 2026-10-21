@@ -1606,6 +1606,9 @@ export function AppShell({
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
+  // The project this conversation actually runs in, which can differ from the navigator's folder.
+  const conversationCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
+  const conversationProjectName = conversationCwd ? getFileName(conversationCwd) || conversationCwd : null;
   const sessionTitle = selectedSession?.name?.trim()
     || selectedSession?.firstMessage?.trim()
     || (effectiveNewSessionCwd ? translate("i18n.newSession") : activeCwdName)
@@ -2014,8 +2017,13 @@ export function AppShell({
               )}
             </ActionButton>
             <div className="workspace-session-identity" title={sessionIdentityTooltip}>
-              <strong>{boundedSessionTitle}</strong>
-              <span aria-live="polite">{mainStatusSummary}</span>
+              <div className="workspace-session-identity-line">
+                {conversationProjectName && (
+                  <em className="workspace-session-project">{conversationProjectName}</em>
+                )}
+                <strong>{boundedSessionTitle}</strong>
+              </div>
+              <span className="workspace-session-status" aria-live="polite">{mainStatusSummary}</span>
             </div>
             {/* Title generation reports through the menu label; keep one live region mounted. */}
             <span className="sr-only" role="status">
@@ -2434,6 +2442,7 @@ export function AppShell({
               onContextUsageChange={handleContextUsageChange}
               onSubagentsChange={setSubagents}
               onOpenWorkspaceView={openWorkspaceView}
+              onOpenSessionList={navigatorPresentation.presented ? undefined : handleSidebarToggle}
               onOpenMaker={openMaker}
               selectedMaker={selectedMaker}
               onProcessLogChange={setProcessLog}
