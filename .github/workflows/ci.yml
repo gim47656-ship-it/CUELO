@@ -263,9 +263,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # run-service.sh runs the WSL install's /usr/bin/node by absolute path; the
+      # runner's Node comes from setup-node elsewhere, so point that path at it.
       - name: WSL deploy tooling tests
         working-directory: Tools/CUELO_Setup
-        run: bun test ./wsl/migrate-profile.test.mjs ./wsl/run-service.test.mjs ./wsl/update-state.test.mjs ./wsl/update.test.mjs ./wsl/windows-bridge/bridge.test.mjs ./wsl/windows-bridge/profile.test.mjs
+        run: |
+          sudo ln -sf "$(command -v node)" /usr/bin/node
+          bun test ./wsl/migrate-profile.test.mjs ./wsl/run-service.test.mjs ./wsl/update-state.test.mjs ./wsl/update.test.mjs ./wsl/windows-bridge/bridge.test.mjs ./wsl/windows-bridge/profile.test.mjs
 
   # content-scan.test.ts replays setup.ps1/verify.ps1 helpers through powershell.exe.
   private-windows:
