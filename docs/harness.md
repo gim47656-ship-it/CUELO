@@ -276,6 +276,12 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 [`windows_control`](../Tools/OMP_Global_Config/agent/tools/windows-control/)은 WinForms·VB6·MFC 같은 클래식 Win32 창의 버튼·체크박스·입력칸을 사용자 전면 창과 포커스를 건드리지 않고 조작합니다. Windows의 `computer` 요소 동작(`press`·`setValue`)은 이런 창을 앞으로 가져오고, 창 클릭은 WinForms 버튼이 조용히 무시하기 때문입니다. 대상 컨트롤의 자식 창에 `WM_SETTEXT`·`BM_CLICK`을 보내고, 창 안 컨트롤을 다시 읽어 바뀐 글자·체크·활성 상태와 전면 창 유지 여부를 돌려줍니다. 대상 창이 다른 창에 가려져 있어도 동작합니다. 창은 `computer.window()`의 id로 고르고, 컨트롤은 정확한 글자나 클래스 이름 일부로 고릅니다. 후보가 여럿이면 `index` 없이는 아무것도 보내지 않습니다. 버튼이 모달 창을 열면 기다린 시간(기본 2초) 뒤에 "전달됐지만 처리 중"으로 돌아오고, 그 대화상자도 같은 도구로 누를 수 있습니다. 한 번 부르는 데 PowerShell 시작과 컴파일로 약 1초가 걸립니다. WPF·WinUI·웹처럼 컨트롤마다 창이 없는 화면은 다루지 않습니다. 입력 권한은 `computer`와 같습니다.
 
+## ego lite 브라우저 `ego_browser`
+
+[`ego_browser`](../Tools/OMP_Global_Config/agent/tools/ego-browser/)는 ego lite가 설치된 PC에서 에이전트가 ego의 TaskSpace(사용자 탭과 떨어진 작업 공간)를 직접 다루는 세션 도구입니다. 스크립트 본문만 넘기면 도구가 공간 생성과 `task`·`page` 연결을 앞에 붙여 `ego-browser nodejs`로 실행하고, 출력과 종료 상태를 돌려줍니다. 공간은 세션과 프로필마다 하나를 이어 쓰며(호출 사이에 변수는 남지 않고 탭은 남습니다), `finish: true`를 주면 오류가 나도 공간을 닫습니다. 세션이 끝날 때 열려 있는 공간도 닫지만, 사람에게 넘긴(`task.handOff()`) 공간은 닫지 않습니다.
+
+`profile: "user"`(기본)는 사용자의 ego 프로필이고, `profile: "verify"`는 CUELO 화면 검증 전용으로 따로 둔 프로필입니다. 화면 검증은 사용자 프로필을 쓰지 않습니다. ego lite가 없는 PC에서는 이 PC에서 쓸 수 없다고 알리고 기존 `browser` 도구를 쓰도록 안내합니다. 쿠키·캐시·저장소 삭제는 프로필 전체에 닿으므로 하지 않습니다.
+
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. WSL에서는 Windows 콘솔 프로그램(`git.exe` 제외)을 부르는 `bash` 명령을 새 bash로 감싸 실행해, CP949로 나온 한글 출력을 UTF-8로 바꿉니다. UTF-8로 나온 줄과 종료 코드는 그대로입니다. 감싸지 못한 명령의 출력이 깨졌거나 시스템 `python3`에 모듈이 없어 실패했으면, 다시 실행할 방법(`iconv`, 관리 Python 환경 경로)을 결과에 한 줄 덧붙입니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
