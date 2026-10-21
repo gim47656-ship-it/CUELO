@@ -14127,11 +14127,38 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 		anchor: "/** Resolve the vision model used by `read <image>?q=<question>`. */\nexport function resolveImageQuestionModel(session: ToolSession): ResolvedImageQuestionModel {\n",
 		patched: "/**\n * CUELO: `read` tags an `?ocr=` question with this prefix so the question kind travels as one string down to the image\n * call. `#loadImageContent` strips it before the question reaches the model.\n */\nexport const OCR_QUESTION_MARK = \"\\u0000ocr:\";\n\n/**\n * Resolve the vision model used by `read <image>?q=<question>`. `ocr` (an `?ocr=` question) tries `modelRoles.ocr`\n * first and falls back to the `?q=` order when that role is unset, unavailable or cannot take images.\n */\nexport function resolveImageQuestionModel(session: ToolSession, ocr = false): ResolvedImageQuestionModel {\n",
 	},
+	// 2026-10-21 OCR 후보군: `@ocr` 다음에 `retry.fallbackChains.ocr` 를 순서대로 보고, 그다음이 `?q=` 순서다. 고른 모델이 실패하면
+	// 남은 OCR 후보와 `?q=` 모델을 차례로 묻는다(아래 askImageQuestion 항목). 옛 적용본은 legacyPatched 로 바꾼다.
 	{
 		file: "src/utils/image-question.ts",
-		marker: "...(ocr ? [\"@ocr\"] : []), \"@vision\"",
+		marker: "const ocrPatterns = ocr ?",
 		anchor: "\tfor (const pattern of [\"@vision\", \"@default\", activeModelPattern]) {\n",
-		patched: "\t// CUELO: `?ocr=` asks the OCR role first; an unset `@ocr` resolves to nothing and falls through to the `?q=` order.\n\tfor (const pattern of [...(ocr ? [\"@ocr\"] : []), \"@vision\", \"@default\", activeModelPattern]) {\n",
+		legacyPatched: "\t// CUELO: `?ocr=` asks the OCR role first; an unset `@ocr` resolves to nothing and falls through to the `?q=` order.\n\tfor (const pattern of [...(ocr ? [\"@ocr\"] : []), \"@vision\", \"@default\", activeModelPattern]) {\n",
+		patched: "\t// CUELO: `?ocr=` asks the OCR role, then `retry.fallbackChains.ocr` in order; unset or unusable entries fall through to\n\t// the `?q=` order.\n\tconst ocrChain = ocr ? cfgRetryFallbackChains.get(session.settings).ocr : undefined;\n\tconst ocrPatterns = ocr ? [\"@ocr\", ...(Array.isArray(ocrChain) ? ocrChain : [])] : [];\n\tfor (const pattern of [...ocrPatterns, \"@vision\", \"@default\", activeModelPattern]) {\n",
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "import { cfgRetryFallbackChains } from \"../session/settings\";",
+		anchor: "import { cfgImagesQuestionTimeoutMs } from \"../tools/settings\";\n",
+		patched: "import { cfgImagesQuestionTimeoutMs } from \"../tools/settings\";\nimport { cfgRetryFallbackChains } from \"../session/settings\";\n",
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "fallbacks?: ResolvedImageQuestionModel[];",
+		anchor: "export interface ResolvedImageQuestionModel {\n\tmodel: Model<Api>;\n\tselectedPattern: string | undefined;\n}\n",
+		patched: "export interface ResolvedImageQuestionModel {\n\tmodel: Model<Api>;\n\tselectedPattern: string | undefined;\n\t/** CUELO: further `?ocr=` candidates asked in order when this model fails (none for `?q=`). */\n\tfallbacks?: ResolvedImageQuestionModel[];\n}\n",
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "const fallbacks: ResolvedImageQuestionModel[] = [];",
+		anchor: "\n\treturn { model, selectedPattern };\n}\n",
+		patched: "\n\t// CUELO: an `?ocr=` question keeps the other usable OCR candidates, then the `?q=` model, as fallbacks asked in order\n\t// when the chosen model fails (askImageQuestion). `?q=` has none.\n\tconst fallbacks: ResolvedImageQuestionModel[] = [];\n\tif (ocr) {\n\t\tconst seen = new Set([`${model.provider}/${model.id}`]);\n\t\tfor (const pattern of [...ocrPatterns, \"@vision\"]) {\n\t\t\tconst candidate = resolvePattern(pattern);\n\t\t\tif (!candidate || !sendsImageInputOnWire(candidate)) continue;\n\t\t\tconst key = `${candidate.provider}/${candidate.id}`;\n\t\t\tif (seen.has(key)) continue;\n\t\t\tseen.add(key);\n\t\t\tfallbacks.push({ model: candidate, selectedPattern: pattern });\n\t\t}\n\t}\n\treturn { model, selectedPattern, fallbacks };\n}\n",
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "async function askImageQuestionOnce(",
+		anchor: "/** Ask the resolved vision model a question about an already-loaded image. */\nexport async function askImageQuestion(\n",
+		patched: "/**\n * Ask the resolved vision model a question about an already-loaded image. CUELO: when that model fails and\n * `resolved.fallbacks` (an `?ocr=` question) holds more candidates, the next one is asked and the answer names the models\n * that failed. A caller abort is never retried.\n */\nexport async function askImageQuestion(\n\tsession: ToolSession,\n\tresolved: ResolvedImageQuestionModel,\n\timage: LoadedImageInput,\n\tquestion: string,\n\tsignal: AbortSignal | undefined,\n\tcompleteImpl: typeof completeSimple = completeSimple,\n): Promise<ImageQuestionResult> {\n\tconst attempts = [resolved, ...(resolved.fallbacks ?? [])];\n\tconst failures: string[] = [];\n\tfor (const [index, attempt] of attempts.entries()) {\n\t\ttry {\n\t\t\tconst answer = await askImageQuestionOnce(session, attempt, image, question, signal, completeImpl);\n\t\t\tif (failures.length === 0) return answer;\n\t\t\treturn { ...answer, text: `[OCR fallback: ${failures.join(\"; \")}; answered by ${answer.model}]\\n${answer.text}` };\n\t\t} catch (error) {\n\t\t\tif (signal?.aborted) throw error;\n\t\t\t// Provider errors can span lines; the notice above the answer stays one line.\n\t\t\tconst reason = (error instanceof Error ? error.message : String(error)).replace(/\\s+/g, \" \");\n\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);\n\t\t\tif (index < attempts.length - 1) continue;\n\t\t\tif (failures.length === 1) throw error;\n\t\t\tthrow new ToolError(`Every OCR candidate failed: ${failures.join(\"; \")}`);\n\t\t}\n\t}\n\tthrow new ToolError(\"Image question has no model to ask.\");\n}\n\n/** One image question against one model; see {@link askImageQuestion}. */\nasync function askImageQuestionOnce(\n",
 	},
 	{
 		file: "src/tools/read.ts",

@@ -25,7 +25,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 - 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft(instruction, output, paths?)`로
   Gemini Flash에 쓰게 하고(실패 시 Hive의 DeepSeek 1017로 한 번 대체, 참고 텍스트는 Google 또는 Hive로 전송) 만들어진 파일을
   직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이 아니므로 `edit`/`write`를
-  그대로 쓴다. Gemini 할당량은 같은 Antigravity 계정의 `ocr`과 공유한다.
+  그대로 쓴다. Gemini 할당량은 같은 Antigravity 계정의 OCR 후보(`retry.fallbackChains.ocr`)와 공유한다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
   하나뿐이며 다섯 개를 모두 뺀다. 그 결과 코어 `/security` 자동 스캔은 이 프로필에서 쓸 수 없고,
@@ -267,8 +267,9 @@ commit 전에 재생성 명령과 함께 멈추고, `maker_route`·`task`의 Tas
 2026-09-28 사용자 결정으로 좁은 사전 차단 한 자리를 더했다(JEV 밖의 결정론 규칙).
 - **이미지 직접 읽기 전환(`image-question-router`, 로컬):** Main·Maker가 이미지(png·jpg·gif·webp·bmp)를 `?q=`·`?ocr=`
   없이 `read`하려 하면 이미지가 컨텍스트에 실리기 전에 막고 질문으로 묻게 한다. `경로?q=<질문>`은 `modelRoles.vision`,
-  `경로?ocr=<질문>`은 `modelRoles.ocr`(없으면 vision 순서)이 답한다(2026-10-18 사용자 결정: vision은 Opus 5.5 low,
-  OCR은 Gemini 3.8 Flash). 글자·숫자·표 전사는 `?ocr=`, 레이아웃·간격·색·정렬·잘림·좌표 같은 형태 판단은 `?q=`로
+  `경로?ocr=<질문>`은 `modelRoles.ocr`(없으면 `retry.fallbackChains.ocr` 후보, 그다음 vision 순서)이 답한다(vision은
+  Opus 5.5 low. 2026-10-21 사용자 결정으로 OCR도 Opus 5.5 low이고, 실패하면 OCR 후보와 vision 모델에 차례로 묻는다).
+  글자·숫자·표 전사는 `?ocr=`, 레이아웃·간격·색·정렬·잘림·좌표 같은 형태 판단은 `?q=`로
   묻는다. 직접 읽기는 그 경로로 질문을 한 번 한 뒤에만 통과한다(2026-10-04: 한 번 막은 뒤 재read를 통과시키던
   방식에서는 막힌 Maker 대부분이 질문 없이 바로 다시 읽었다). 이미지 입력 불가 모델과 `browser`·`computer`
   스크린샷은 대상이 아니다. 승인이나 권한을 만들지 않는다.

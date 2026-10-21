@@ -86,8 +86,8 @@
 - 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft`로 쓴다. Gemini가
   작성해 cwd 안에 저장하고, 실패하면 Hive의 DeepSeek 1017로 한 번 대체한다(참고 텍스트는 Google 또는 Hive로 전송).
   만들어진 파일은 직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이
-  아니므로 `edit`/`write`를 쓴다. Gemini는 번역·문서 다듬기(`draft`)와 OCR(`ocr`)에만 쓰며 같은 Antigravity
-  계정 할당량을 공유한다.
+  아니므로 `edit`/`write`를 쓴다. Gemini는 번역·문서 다듬기(`draft`)와 OCR 후보(`retry.fallbackChains.ocr`)에만
+  쓰며 같은 Antigravity 계정 할당량을 공유한다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.
