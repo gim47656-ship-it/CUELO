@@ -120,10 +120,14 @@ export interface DocmapRoute {
   render(kept: readonly DocmapCandidate[]): string;
 }
 
-/** 소문자 ASCII 낱말(2자 이상)과 한글 연속 구간의 2글자 조각. */
+/**
+ * 소문자 ASCII 낱말(2자 이상), 점으로 이은 숫자열(`18.12.6`, `0.10.7`), 한글 연속 구간의 2글자 조각.
+ * 점으로 이은 숫자열은 통째로도 낱말이다. 한 글자 낱말을 버리면 마지막 자리만 다른 버전이 구분되지 않는다.
+ */
 export function docmapTokens(text: string): string[] {
   const lower = text.toLowerCase();
   const out: string[] = lower.match(/[a-z0-9_]{2,}/g) ?? [];
+  out.push(...(lower.match(/\d+(?:\.\d+)+/g) ?? []));
   for (const run of lower.match(/[가-힣]+/g) ?? []) {
     if (run.length === 1) { out.push(run); continue; }
     for (let i = 0; i < run.length - 1; i++) out.push(run.slice(i, i + 2));
@@ -257,6 +261,17 @@ function unitText(unit: DocmapUnit): string {
   return [...unit.mapLines, unit.title, f.SCOPE, f.PATHS, f.DATE, f.STATUS].filter(Boolean).join(" ");
 }
 
+/** 저장소 안에 있고 history 밖이며 지도 자신이 아닌 실제 .md 파일. */
+function isCanonicalTarget(root: string, target: string, maps: ReadonlySet<string>): boolean {
+  return target.endsWith(".md") && target.startsWith(root + sep) && !target.includes(`${sep}history${sep}`) && !maps.has(target) && isFile(target);
+}
+
+function canonicalUnit(file: string): DocmapUnit {
+  const head = readHead(file, HEAD_BYTES);
+  const { title, fields } = parseHead(head);
+  return { file, files: [file], key: file, title, fields, mapLines: [], body: head.toLowerCase(), date: "" };
+}
+
 export function buildDocmapCorpus(root: string, maps: readonly string[]): DocmapCorpus {
   const units: DocmapUnit[] = [];
   const seen = new Set<string>();
@@ -267,11 +282,18 @@ export function buildDocmapCorpus(root: string, maps: readonly string[]): Docmap
     units.push(...collectUnits(historyDir));
   }
   const byKey = new Map(units.map((u) => [u.key, u] as const));
+  const mapSet = new Set(maps);
   for (const map of maps) {
     const base = dirname(map);
     for (const line of readFileSync(map, "utf8").split("\n")) {
       for (const target of mapLinks(line, base)) {
-        const unit = byKey.get(target) ?? byKey.get(dirname(target));
+        let unit = byKey.get(target) ?? byKey.get(dirname(target));
+        // 지도 줄이 가리키는 history 밖의 정본 문서(HANDOFF·규칙·운영 문서)도 그 줄의 글로 찾을 수 있게 단위로 둔다.
+        if (!unit && isCanonicalTarget(root, target, mapSet)) {
+          unit = canonicalUnit(target);
+          byKey.set(target, unit);
+          units.push(unit);
+        }
         if (unit && !unit.mapLines.includes(line)) unit.mapLines.push(line);
       }
     }

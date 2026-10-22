@@ -205,6 +205,43 @@ describe("docmap route", () => {
     }
   });
 
+  test("버전 번호의 마지막 한 자리만 다른 기록을 가른다", () => {
+    // 회귀(2026-10-23 실측): 한 글자 낱말을 버려 「18.12.6」이 18·12로만 남았고, 18.12.x 기록이 모두 같은 점수라 새 기록이 앞섰다.
+    const versions = ["18.12.4", "18.12.5", "18.12.6"];
+    const cores = Object.fromEntries(
+      versions.map((v, i) => [`doc/history/2026/10/2${i}-core/main.md`, record(`OMP ${v} 코어 갱신`, `omp core ${v}, 앵커 이식`, "accepted", "## 결과\n\n앵커를 옮겼다.", `2026-10-2${i}`)]),
+    );
+    const fillers = Object.fromEntries(FILLERS.map(([title, scope], i) => [`doc/history/2026/09/${10 + i}-other${i}/main.md`, record(title, scope, "accepted", "## 경과\n\n일반 진행.")]));
+    const dir = repo({ "doc/README.md": "# 지도\n", ...cores, ...fillers });
+    try {
+      expect(picked(dir, "코어 18.12.4 이식할 때 앵커")[0]).toBe("doc/history/2026/10/20-core");
+      expect(picked(dir, "코어 18.12.5 이식할 때 앵커")[0]).toBe("doc/history/2026/10/21-core");
+      expect(picked(dir, "코어 18.12.6 이식할 때 앵커")[0]).toBe("doc/history/2026/10/22-core");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("지도 줄이 가리키는 history 밖의 정본 문서도 그 줄의 글로 후보가 되고, 지도 자신은 단위가 아니다", () => {
+    // 회귀(2026-10-23 실측): history 기록만 단위여서 지도 표의 정본(HANDOFF·규칙 문서)은 요청에 어떤 낱말을 써도 후보가 되지 못했다.
+    const fillers = Object.fromEntries(FILLERS.map(([title, scope], i) => [`doc/history/2026/09/${10 + i}-other${i}/main.md`, record(title, scope, "accepted", "## 경과\n\n일반 진행.")]));
+    const dir = repo({
+      "doc/README.md": "# 지도\n\n| 찾는 정보 | 정본 |\n|---|---|\n| 영수증 재발행 절차와 금액 한도 | [영수증 규칙](../rules/receipt.md) |\n| 하위 지도 | [Sub 지도](../Tools/Sub/doc/README.md) |\n",
+      "rules/receipt.md": "# 영수증 재발행 규칙\n\n## 절차\n\n접수 뒤 한도를 확인한다.\n",
+      "Tools/Sub/doc/README.md": "# Sub 지도\n",
+      "Tools/Sub/doc/history/2026/09/01-x/main.md": record("하위 기록", "하위 기록", "accepted", "## 경과\n\n진행."),
+      ...fillers,
+    });
+    try {
+      expect(picked(dir, "영수증 재발행 절차 어디 있어")[0]).toBe("rules/receipt.md");
+      const files = buildDocmapCorpus(dir, findDocmapMaps(dir, dir)).units.map((u) => relative(dir, u.file).split(sep).join("/"));
+      expect(files).not.toContain("Tools/Sub/doc/README.md");
+      expect(files).not.toContain("doc/README.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("긴 배경 뒤에 놓인 질문도 검색한다", () => {
     // 회귀: 앞 1000자만 질의로 써서 붙여 넣은 로그 뒤의 질문에는 후보가 없었다.
     const prompt = `${"at worker.run(job.ts:42) retry=3 code=E_TIMEOUT pid=7781\n".repeat(60)}\n위 로그는 무시하고, ${WAKE_Q}`;
