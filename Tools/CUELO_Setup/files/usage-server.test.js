@@ -435,6 +435,22 @@ test('enabled sweep redeems every due credit by exact target and skips outside, 
     assert.equal(fx.calls.length, 3);
 });
 
+test('a rate-limited expiry sweep keeps the last good reset display, and a sent reset drops it', async t => {
+    const fx = await expiryFixture(t, [{ provider: 'anthropic', expiresAt: iso(T0 + 2 * HOUR) }]);
+    const shown = async () => (await fx.controls.enrich({ reports: [{ provider: 'anthropic', fetchedAt: Date.now(),
+        metadata: { accountId: 'acct-1' }, limits: [] }] })).reports[0].savedReset;
+    const good = fx.statuses;
+    const limited = good.map(status => ({ ...status, availableCount: 0, credits: [], error: 'Failed to load saved resets', retryAfterMs: 60_000 }));
+    assert.equal((await shown()).state, 'available');
+    fx.statuses = limited;
+    assert.deepEqual(await fx.controls.sweepExpiring(), { enabled: true, outcomes: [] });
+    assert.deepEqual([(await shown()).state, (await shown()).availableCount], ['available', 1]);
+    fx.statuses = good;
+    assert.equal((await fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
+    fx.statuses = limited;
+    assert.equal((await shown()).state, 'unavailable');
+});
+
 test('point-of-send recheck refuses when the fresh expiry moved, the policy went off, or the sweep stopped', async t => {
     const due = [{ expiresAt: iso(T0 + 30 * 60_000) }];
     const cases = {

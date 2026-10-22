@@ -395,17 +395,19 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             provider, baseUrlResolver, signal: signal ?? AbortSignal.timeout(CONTROL_TIMEOUT_MS),
         });
         // 조회 한도(429 등)로 한 계정이 실패하면 30분 안의 직전 성공값을 표시에 유지한다. "확인 불가"로 깜빡이지 않게 한다.
-        // 무효화와 무관한 별도 map이며, 리딤(force) 판정에는 쓰지 않는다.
+        // 무효화와 무관한 별도 map이다. 강제(force) 조회의 호출자(리딤 확인·만료 점검)는 받은 그대로를 판정에 쓰고,
+        // 표시 캐시에는 직전 성공값을 채운 결과만 넣는다. 강제 결과를 그대로 넣으면 60초 만료 점검이 429를 한 번
+        // 맞을 때마다 다음 점검까지 표시가 "확인 불가"로 덮인다.
         const now = Date.now();
-        const statuses = fetched.map(status => {
+        const shown = fetched.map(status => {
             const key = `${provider}:${status.credentialId}`;
             if (!status.error) { lastGoodResets.set(key, { at: now, status }); return status; }
             const prior = lastGoodResets.get(key);
-            return !force && prior && now - prior.at < 30 * 60_000 ? prior.status : status;
+            return prior && now - prior.at < 30 * 60_000 ? prior.status : status;
         });
-        const result = { at: Date.now(), statuses };
-        if (currentEpoch === epoch) resets.set(provider, result);
-        return result;
+        const at = Date.now();
+        if (currentEpoch === epoch) resets.set(provider, { at, statuses: shown });
+        return { at, statuses: force ? fetched : shown };
     }
     // mutation 내부에서는 tail을 기다리는 조회 helper를 호출하지 않는다.
     async function mutationCredential(id) {
@@ -605,6 +607,8 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             error = controlError(502, 'reset_outcome_unknown', true);
         }
         settledResets.set(grantKey(grant), error ? { error } : { result });
+        // 보낸 뒤에는 provider 쪽 잔량이 바뀌었을 수 있다. 보내기 전 성공값으로 표시를 메우지 않는다.
+        lastGoodResets.delete(`${entry.provider}:${id}`);
         if (ledger) {
             await settleResetAttempt(ledger, ctl.withFileLock, attempt, ledgerState(result, error), (result ?? error).code, now())
                 .catch(() => console.warn('[reset-expiry] attempt record not settled; it keeps blocking that credit'));
