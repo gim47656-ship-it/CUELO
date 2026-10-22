@@ -2,8 +2,9 @@ name: CI
 
 # Both live PCs run CUELO under WSL (Linux), so Linux carries the full checks:
 # `verify-linux` (install, typecheck, lint, app and sidecar tests, production build,
-# web runtime compatibility) and `harness-linux` (extension, guard, finalizer and
-# core patch tests, including the user-shell PTY path). `verify-windows` is one smoke
+# web runtime compatibility) and `harness-linux` (two runners side by side: the extension,
+# guard and finalizer tests, and the core patch tests including the user-shell PTY path,
+# which run several files at once). `verify-windows` is one smoke
 # job for native Windows installs: install, SDK preparation, typecheck, build and the
 # web runtime patch. Public jobs run only on the public mirror, where Actions minutes
 # are free. `scope` runs only for `main` pushes and decides whether the two app jobs run:
@@ -118,9 +119,15 @@ jobs:
           OMP_CORE_PATCH_TARGET="$PWD/node_modules/@oh-my-pi/pi-coding-agent" bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
 
   harness-linux:
-    name: Verify harness (Linux)
+    name: Verify harness (Linux, ${{ matrix.suite }})
     if: github.repository == 'gim47656-ship-it/CUELO'
     runs-on: ubuntu-latest
+    # The two suites share the same setup and run on separate runners, so the job's wall
+    # time is the slower suite, not their sum.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [extensions, core]
     defaults:
       run:
         shell: bash
@@ -172,21 +179,32 @@ jobs:
           test -d "$RUNNER_TEMP/core/node_modules/@oh-my-pi/pi-natives-linux-x64" || { echo "pi-natives-linux-x64 is missing"; exit 1; }
 
       - name: Extension duplicate declarations
+        if: matrix.suite == 'extensions'
         run: node patches/check-extension-duplicates.mjs
 
       - name: Extension, guard, finalizer and skill-cost tests
+        if: matrix.suite == 'extensions'
         run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./skill-cost
 
+      # Every file is its own process with its own temporary HOME/roots, so the files run
+      # side by side (one per CPU); each log is printed whole, in file order, afterwards.
       - name: Core patch regression tests
+        if: matrix.suite == 'core'
         run: |
+          tests=(patches/core-*-test.ts patches/apply-core-patch-cli-test.ts)
+          # A worker killed before it writes its exit code makes xargs fail. Keep going so the
+          # loop below still prints every log and names that file as having no exit code.
+          printf '%s\0' "${tests[@]}" | xargs -0 -P "$(nproc)" -I{} bash -c \
+            'name=$(basename "$1"); bun run "$1" >"$RUNNER_TEMP/$name.log" 2>&1; echo $? >"$RUNNER_TEMP/$name.code"' _ {} \
+            || echo "xargs exited $?; checking every file below"
           failed=()
-          for test in patches/core-*-test.ts patches/apply-core-patch-cli-test.ts; do
+          for test in "${tests[@]}"; do
             name=$(basename "$test")
             echo "::group::$name"
-            bun run "$test" 2>&1 | tee "$RUNNER_TEMP/$name.log"
-            code=${PIPESTATUS[0]}
+            cat "$RUNNER_TEMP/$name.log" 2>/dev/null || echo "(no log)"
             echo "::endgroup::"
-            [ "$code" -eq 0 ] || failed+=("$name (exit $code)")
+            code=$(cat "$RUNNER_TEMP/$name.code" 2>/dev/null || echo "no exit code")
+            [ "$code" = 0 ] || failed+=("$name (exit $code)")
           done
           # The user-shell PTY check must have run and passed here, not been skipped.
           grep -q "PASS  사용자 셸 PTY" "$RUNNER_TEMP/core-patch-test.ts.log" || failed+=("user-shell PTY check did not run")

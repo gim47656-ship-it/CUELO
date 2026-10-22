@@ -403,17 +403,22 @@ describe("호출·child 단위 정산", () => {
   });
 
   test("결과가 child 없음을 보이면 해제하고, receipt를 잃은 실행 오류는 묶이지 않은 새 job이 없을 때만 해제한다", () => {
-    const settleOne = (outcome: Parameters<typeof settleTaskCall>[2]) => {
+    type Outcome = Parameters<typeof settleTaskCall>[2];
+    // job 시각을 실제 예약 시각에서 만들어야 실행 지연과 무관하게 '예약 이후 job'이 된다.
+    const settleOne = (outcome: Outcome | ((reservedAt: number) => Outcome)) => {
       const state = createTaskGuardState();
       expect(reserveTaskCall(state, "call", named("Fix")).ok).toBe(true);
-      settleTaskCall(state, "call", outcome);
+      const reservedAt = state.reservations.get("call")!.reservedAt;
+      settleTaskCall(state, "call", typeof outcome === "function" ? outcome(reservedAt) : outcome);
       return getTaskGuardUsage(state).total;
     };
     // 모드 오류·전부 등록 실패는 isError 없이 child 기록이 빈 details를 돌려준다.
     expect(settleOne({ executed: true, isError: false, details: { results: [] }, registry: [] })).toBe(0);
     expect(settleOne({ executed: true, isError: true, details: undefined, registry: [] })).toBe(0);
-    const lateJob = [{ id: "Fix", agentId: "Fix", startTime: Date.now() + 1 }];
-    expect(settleOne({ executed: true, isError: true, details: undefined, registry: lateJob })).toBe(1);
+    const lateJob = (reservedAt: number) => [{ id: "Fix", agentId: "Fix", startTime: reservedAt + 1 }];
+    expect(
+      settleOne((reservedAt) => ({ executed: true, isError: true, details: undefined, registry: lateJob(reservedAt) })),
+    ).toBe(1);
     expect(settleOne({ executed: true, isError: true, details: undefined })).toBe(1);
   });
 

@@ -18250,7 +18250,8 @@ function main() {
 	const unknown = args.find(arg => !["--check", "--revert", "--help"].includes(arg));
 	if (unknown !== undefined || (args.includes("--check") && args.includes("--revert"))) {
 		console.error(unknown !== undefined ? `알 수 없는 인자: ${unknown}` : "--check 와 --revert 를 함께 지정할 수 없다.");
-		process.exit(1);
+		process.exitCode = 1;
+		return;
 	}
 	if (args.includes("--help")) {
 		console.log("사용법: node apply-core-patch.mjs [--check | --revert | --help]");
@@ -18264,10 +18265,13 @@ function main() {
 
 	// 종료 코드: 0 정상, 1 적용 필요 또는 앵커 상실, 2 CUELO 미설치.
 	// setup.ps1 은 2를 실패가 아니라 SKIP 으로 처리한다.
+	// process.exit() 는 파이프로 아직 나가지 않은 출력을 버린다(spawnSync 로 읽은 --check 에서
+	// 마지막 APPLIED 줄이 100회 중 3회 빠졌다). 종료 코드만 정하고 돌아가 출력이 다 나간 뒤 끝낸다.
 	if (!existsSync(join(TARGET, "src/registry/agent-registry.ts"))) {
 		console.error(`NOTFOUND  CUELO 전역 설치를 찾지 못했다: ${TARGET}`);
 		console.error("          CUELO_Setup\\update.ps1 후 다시 실행하거나, OMP_CORE_PATCH_TARGET 로 경로를 지정한다.");
-		process.exit(2);
+		process.exitCode = 2;
+		return;
 	}
 	console.log(`  대상 ${TARGET}`);
 
@@ -18278,7 +18282,8 @@ function main() {
 	if (mode === "check") {
 		const allApplied = state.every(s => s.status === "applied");
 		console.log(allApplied ? "APPLIED  전부 적용됨" : "MISSING  적용 필요");
-		process.exit(allApplied ? 0 : 1);
+		process.exitCode = allApplied ? 0 : 1;
+		return;
 	}
 
 	// 복원은 백업이 아니라 앵커 역치환으로 한다. 백업 기반은 두 가지로 무너진다.
@@ -18325,7 +18330,8 @@ function main() {
 			failed = true;
 		}
 		console.log(failed ? "복원 미완료." : "복원 완료. CUELO를 재시작한다.");
-		process.exit(failed ? 1 : 0);
+		process.exitCode = failed ? 1 : 0;
+		return;
 	}
 
 	// 어느 후보가 정본인지 정할 수 없는 상태(ambiguous)도 조용히 넘기지 않는다.
@@ -18336,7 +18342,7 @@ function main() {
 	}
 	if (state.every(s => s.status === "applied")) {
 		console.log("SKIP  이미 적용돼 있다.");
-		process.exit(0);
+		return;
 	}
 
 	for (const s of state) {
