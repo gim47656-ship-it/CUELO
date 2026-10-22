@@ -25,10 +25,17 @@ const MIN_SCOPE_FOCUS = 0.2;
 const HEAD_BYTES = 8192;
 const DEFAULT_LIMIT = 15;
 const SNAPSHOT_NAME = /-handoff-closure\.md$/;
+const ALIAS_FILE = "docmap-aliases.json";
 
 export interface LinkRef { readonly source: string; readonly line: number; readonly href: string; readonly target: string }
 export interface SupersedeProblem { readonly record: string; readonly ref: string; readonly chain: readonly string[] }
-export interface SynthesisCandidate { readonly term: string; readonly records: number; readonly samples: readonly string[] }
+export interface SynthesisCandidate {
+  readonly term: string;
+  readonly records: number;
+  readonly samples: readonly string[];
+  /** 별칭 묶음이면 `term`과 같은 주제로 합친 나머지 표기. 별칭 파일이 없으면 이 필드는 없다. */
+  readonly merged?: readonly string[];
+}
 
 export interface DocmapLintReport {
   readonly root: string;
@@ -257,7 +264,7 @@ export function lintDocmap(cwd: string): DocmapLintReport | undefined {
     const text = readText(f, bad);
     coverText.push([/^#\s+(.+)$/m.exec(text)?.[1] ?? "", headings(text)].join(" "));
   }
-  const synthesis = synthesisCandidates(root, records, new Set(coverText.flatMap(docmapTokens)));
+  const synthesis = synthesisCandidates(root, records, new Set(coverText.flatMap(docmapTokens)), loadAliases(join(project, "doc", ALIAS_FILE), bad));
 
   return {
     root,
@@ -276,6 +283,40 @@ function stripLinks(line: string): string {
   return line.replace(/\]\([^)]*\)/g, "]");
 }
 
+/** 별칭 항목은 낱말 하나다: 한글만 2글자 이상이거나, 영문자·밑줄로 시작하는 영문·숫자·밑줄 2글자 이상. 공백·하이픈·점이 든 구절은 낱말 단위로 매칭·제거할 수 없어 받지 않는다. */
+const ALIAS_MEMBER = /^(?:[가-힣]{2,}|[a-z_][a-z0-9_]+)$/;
+
+/**
+ * 선택 파일 `doc/docmap-aliases.json`: `{"groups": [["steering", "스티어링", "steer"], ...]}`. 한 묶음은 같은 주제의 다른 표기이고
+ * 첫 항목이 표시 이름이다. 파일이 없으면 빈 목록이다. 읽거나 해석하지 못하거나 구조가 잘못되면 파일 전체를 무시하고 `unreadable.files`에 올린다:
+ * 묶음이 배열이 아니거나 항목이 둘 미만, 항목이 낱말 하나(ALIAS_MEMBER, 소문자·앞뒤 공백 정리 뒤)가 아님(빈 문자열·구절·문자열 아닌 값 포함),
+ * 같은 항목이 한 묶음 안이나 묶음 사이에 두 번. 일부만 적용하면 쓴 사람이 의도한 병합과 실제가 어긋나는데 알 길이 없기 때문이다.
+ * 묶음은 일반 경로에서 항목의 낱말만 정확히 빼므로 항목을 낱말 하나로 제한한다. 구절을 받으면 구성 낱말(예: "quantum flux"의 quantum)까지 빼서
+ * 묶음과 무관한 후보를 지울 수 있다.
+ */
+function loadAliases(file: string, bad: Unreadable): string[][] {
+  if (!existsSync(file)) return [];
+  try {
+    const data: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof data !== "object" || data === null || !("groups" in data) || !Array.isArray(data.groups)) throw new Error("groups는 배열이어야 한다");
+    const seen = new Set<string>();
+    const out: string[][] = [];
+    for (const group of data.groups) {
+      if (!Array.isArray(group) || group.length < 2) throw new Error("묶음은 항목이 둘 이상인 배열이어야 한다");
+      const members = group.map((m: unknown) => (typeof m === "string" ? m.trim().toLowerCase() : ""));
+      for (const m of members) {
+        if (!ALIAS_MEMBER.test(m) || seen.has(m)) throw new Error(`잘못되었거나 겹치는 항목: ${m}`);
+        seen.add(m);
+      }
+      out.push(members);
+    }
+    return out;
+  } catch {
+    bad.files.add(file);
+    return [];
+  }
+}
+
 function containsTerm(body: string, term: string): boolean {
   if (!/^[a-z0-9_]+$/.test(term)) return body.includes(term);
   return new RegExp(`(?<![a-z0-9_])${term}(?![a-z0-9_])`).test(body);
@@ -285,8 +326,11 @@ function containsTerm(body: string, term: string): boolean {
  * 여러 기록의 SCOPE에 되풀이되지만 `covered`(정본 문서 제목·절 제목 낱말)에 없는 주제.
  * 낱말은 docmapTokens로 나눈다. 한글 2글자 조각은 읽기 어려우므로 조각이 나온 실제 낱말 중 가장 흔한 것으로 보여 주고,
  * 같은 낱말에서 나온 조각은 한 후보로 합친다. 일반어는 SCOPE 기록 비율 상한과 본문 대비 SCOPE 집중도 하한으로 뺀다.
+ * 별칭 묶음은 이 모든 판정보다 먼저 한 낱말처럼 다룬다: 묶음의 기록 집합(SCOPE)과 본문 언급 기록 집합을 각각 합집합으로 세어
+ * 두 표기가 한 기록에 있어도 한 번이고, 어느 한 항목이라도 정본에 있으면 묶음 전체가 정본에 있는 것이다. 항목의 낱말(한글 조각 포함)은
+ * 일반 경로에서 빼므로 묶음 이름으로만 한 번 나온다. 기록이 항목을 담는지는 본문 집중도와 같은 containsTerm(영문은 낱말 경계, 한글은 부분 문자열)으로 본다.
  */
-function synthesisCandidates(root: string, records: readonly DocmapUnit[], covered: ReadonlySet<string>): SynthesisCandidate[] {
+function synthesisCandidates(root: string, records: readonly DocmapUnit[], covered: ReadonlySet<string>, aliases: readonly (readonly string[])[]): SynthesisCandidate[] {
   const headerCut = Math.max(SYNTHESIS_MIN_RECORDS, GENERIC_SHARE * records.length);
   const texts = new Map<DocmapUnit, string>();
   const recordsByTerm = new Map<string, Set<DocmapUnit>>();
@@ -300,9 +344,11 @@ function synthesisCandidates(root: string, records: readonly DocmapUnit[], cover
       if (set) set.add(r); else recordsByTerm.set(tok, new Set([r]));
     }
   }
+  // 별칭 묶음 항목의 낱말은 묶음이 따로 판정하므로 일반 경로에서 뺀다.
+  const aliasTokens = new Set(aliases.flatMap((g) => g.flatMap(docmapTokens)));
   const eligible = new Set<string>();
   for (const [term, set] of recordsByTerm) {
-    if (set.size < SYNTHESIS_MIN_RECORDS || set.size > headerCut || covered.has(term)) continue;
+    if (aliasTokens.has(term) || set.size < SYNTHESIS_MIN_RECORDS || set.size > headerCut || covered.has(term)) continue;
     // 집중도: 본문에서 그 낱말을 말하는 기록 중 SCOPE에도 적은 기록의 몫. 주제는 그것을 다루는 기록이 SCOPE에 적고,
     // 과정·상태·호스트 이름 같은 낱말은 본문 곳곳에 나오지만 SCOPE에는 드물게만 적힌다.
     const mentions = records.filter((r) => containsTerm(r.body, term)).length;
@@ -335,10 +381,22 @@ function synthesisCandidates(root: string, records: readonly DocmapUnit[], cover
   const out: SynthesisCandidate[] = [];
   for (const [term, set] of groups) {
     if (set.size < SYNTHESIS_MIN_RECORDS) continue;
-    const samples = [...set].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map((u) => rel(root, u.file));
-    out.push({ term, records: set.size, samples });
+    out.push({ term, records: set.size, samples: sampleRecords(root, set) });
+  }
+  // 별칭 묶음: 기록 집합과 본문 언급 집합을 합집합으로 세고, 어느 항목이든 정본에 있으면 정본에 있는 것으로 본다.
+  for (const [label, ...rest] of aliases) {
+    const own = records.filter((r) => [label!, ...rest].some((m) => containsTerm(texts.get(r)!, m)));
+    if (own.length < SYNTHESIS_MIN_RECORDS || own.length > headerCut) continue;
+    if ([label!, ...rest].some((m) => docmapTokens(m).every((t) => covered.has(t)))) continue;
+    const mentions = records.filter((r) => [label!, ...rest].some((m) => containsTerm(r.body, m))).length;
+    if (own.length < MIN_SCOPE_FOCUS * mentions) continue;
+    out.push({ term: label!, records: own.length, samples: sampleRecords(root, own), merged: rest });
   }
   return out.sort((a, b) => b.records - a.records || a.term.localeCompare(b.term));
+}
+
+function sampleRecords(root: string, records: Iterable<DocmapUnit>): string[] {
+  return [...records].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map((u) => rel(root, u.file));
 }
 
 function section(title: string, count: number, items: readonly string[], limit: number, note?: string): string[] {
@@ -366,7 +424,7 @@ export function renderDocmapLint(r: DocmapLintReport, limit = DEFAULT_LIMIT): st
   lines.push(...section(`  사슬 ${MAX_SUPERSEDE_HOPS}단 초과`, r.superseded.tooLong.length, r.superseded.tooLong.map(chain), limit));
   lines.push(...section("  순환", r.superseded.cycles.length, r.superseded.cycles.map(chain), limit));
   lines.push("", `4. 종합 절 후보 (기록 ${SYNTHESIS_MIN_RECORDS}건 이상의 SCOPE에 나오지만 정본 문서 제목·절 제목에 없는 낱말)`);
-  lines.push(...section("  후보", r.synthesis.length, r.synthesis.map((c) => `${c.term} (${c.records}건): ${c.samples.join(", ")}`), limit));
+  lines.push(...section("  후보", r.synthesis.length, r.synthesis.map((c) => `${c.term}${c.merged ? ` [같은 주제: ${c.merged.join(", ")}]` : ""} (${c.records}건): ${c.samples.join(", ")}`), limit));
   const bad = [...r.unreadable.dirs.map((d) => `폴더 ${d}`), ...r.unreadable.files.map((f) => `파일 ${f}`)];
   lines.push("", ...section("읽지 못해 점검에서 빠진 경로", bad.length, bad, limit));
   return lines.join("\n");

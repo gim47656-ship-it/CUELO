@@ -151,7 +151,9 @@ const oldLearn = latestLearn
 	.replace(
 		'if (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : ""})`;',
 		'if (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;',
-	);
+	)
+	// The 0.5.4 text predates the similar-memory hint call as well.
+	.replace(/\t\t\t\t\/\/ HANSE: learn lists similar existing memories\n\t\t\t\tif \(memoryId\) memoryMessage \+= await learnSimilarHint\([^\n]*\n/, "");
 check("0.5.4 learn-id 본문을 재현한다", oldLearn !== latestLearn && !oldLearn.includes("const topicResult ="));
 writeFileSync(learnPath, oldLearn);
 const oldCheck = run(["--check"]);

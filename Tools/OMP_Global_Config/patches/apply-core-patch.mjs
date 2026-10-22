@@ -260,9 +260,10 @@ function recallRevisionFooter(results: readonly RecallResult[]): string {
 
 /**
  * 2026-10-17: 근거형 learn 의 citations 를 회상 줄에 `근거 후보:` 로 싣는다. 확인할 위치이지 근거가 아니라는 안내는 줄이 하나라도
- * 있을 때 한 번만 붙는다. 위 legacy 본문(정정 표시만)을 쓰던 설치는 legacyPatched 로 이 본문으로 바뀐다.
+ * 있을 때 한 번만 붙는다. 위 legacy 본문(정정 표시만)을 쓰던 설치는 legacyPatched 로 이 본문으로 바뀌었다.
+ * 2026-10-23: 근거 사라짐 표시 판(recallProvenanceBlock)이 이 본문을 대체한다(legacyPatched). 이 본문은 배포된 그대로 둔다.
  */
-const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+const recallProvenanceCitationsBlock = String.raw`// HANSE: recall provenance note
 type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string; citations: string[] };
 function recallProvenance(result: RecallResult): RecallProvenance {
 	const scope = (result as { recallScope?: string }).recallScope;
@@ -327,6 +328,256 @@ function attachFactCitations(memory: { conn: { query(sql: string): { get(...para
 			const row = memory.conn.query("SELECT metadata_json FROM working_memory WHERE id = ?").get(origin) as { metadata_json?: string | null } | null;
 			const cited: unknown = row?.metadata_json ? (JSON.parse(row.metadata_json) as { citations?: unknown }).citations : undefined;
 			if (Array.isArray(cited) && cited.length > 0) result.metadata = { citations: cited };
+		} catch {
+			// A fact whose origin row cannot be read simply shows no citation.
+		}
+	}
+}
+
+`;
+
+/**
+ * 2026-10-23 근거 사라짐 표시. 회상 줄은 기억이 단 citations 를 지금 프로젝트 트리에 다시 대 보고, 파일이나 절 제목이 없어진 것은
+ * 근거 후보 대신 근거 사라짐으로 싣는다(기억은 그대로 싣는다: 표시만 하고 지우거나 숨기지 않는다). 읽기 전용이며 DB 를 쓰지 않는다.
+ * 경로는 기억이 저장될 때의 cwd(metadata updated_cwd 우선, 없으면 cwd)의 git 최상위에서 푼다. learn 이 저장할 때 쓴 규칙과 같다.
+ * 세션 cwd 가 아닌 기억 자신의 cwd 를 쓰므로 전역 기억도 맞고, 중첩 cwd 에서도 흔들리지 않는다. cwd 를 모르거나 그 폴더가 없으면 판정하지
+ * 않는다(근거 후보로 남는다). 앵커 규칙은 learn 의 learnAnchorFound 와 같게 유지한다(두 사본: 이 블록과 learnEvidenceBlock).
+ * 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(이 파일의 String.raw 안이다).
+ */
+const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+// HANSE: recall marks gone citations
+type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string; citations: string[]; gone: string[] };
+function recallMetadata(result: RecallResult): Record<string, unknown> | null {
+	try {
+		const raw: unknown = result.metadata ?? (result.metadata_json ? JSON.parse(result.metadata_json) : null);
+		if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+	} catch {
+		// Unreadable metadata shows no provenance.
+	}
+	return null;
+}
+function recallCitationText(entry: unknown): string | undefined {
+	const item = entry as { path?: unknown; anchor?: unknown } | null;
+	if (!item || typeof item.path !== "string" || item.path === "") return undefined;
+	return item.path + (typeof item.anchor === "string" && item.anchor !== "" ? "#" + item.anchor : "");
+}
+function recallProvenance(result: RecallResult): RecallProvenance {
+	const scope = (result as { recallScope?: string }).recallScope;
+	const meta = recallMetadata(result);
+	const day = (value: unknown): string | undefined =>
+		typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : undefined;
+	const revision = Number(meta?.revision);
+	const cited: unknown[] = Array.isArray(meta?.citations) ? (meta?.citations as unknown[]) : [];
+	const goneKeys = new Set((result as { citationsGone?: string[] }).citationsGone ?? []);
+	const citations: string[] = [];
+	const gone: string[] = [];
+	for (const entry of cited) {
+		const text = recallCitationText(entry);
+		if (text === undefined) continue;
+		(goneKeys.has(text) ? gone : citations).push(text.length > 120 ? text.slice(0, 119) + "…" : text);
+	}
+	return {
+		scope,
+		revision: Number.isInteger(revision) ? revision : 0,
+		first: day(meta?.first_timestamp),
+		corrected: day(meta?.updated_at),
+		citations,
+		gone,
+	};
+}
+function recallProvenanceNote(result: RecallResult): string {
+	const info = recallProvenance(result);
+	const parts: string[] = [];
+	if (info.scope) parts.push(info.scope);
+	if (info.revision > 1) {
+		parts.push("corrected r" + info.revision);
+		parts.push("first " + (info.first ?? "unknown"));
+		if (info.corrected) parts.push("corrected " + info.corrected);
+	}
+	if (info.citations.length > 0) {
+		const more = info.citations.length > 3 ? " 외 " + (info.citations.length - 3) + "건" : "";
+		parts.push("근거 후보: " + info.citations.slice(0, 3).join(", ") + more);
+	}
+	if (info.gone.length > 0) {
+		const more = info.gone.length > 3 ? " 외 " + (info.gone.length - 3) + "건" : "";
+		parts.push("근거 사라짐: " + info.gone.slice(0, 3).join(", ") + more);
+	}
+	return parts.length > 0 ? " {" + parts.join("; ") + "}" : "";
+}
+function recallRevisionFooter(results: readonly RecallResult[]): string {
+	const notes: string[] = [];
+	if (results.some(result => recallProvenance(result).revision > 1))
+		notes.push("Corrected rows: read memory://<id> for the full metadata and correction reason.");
+	if (results.some(result => recallProvenance(result).citations.length > 0))
+		notes.push("근거 후보 paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
+	if (results.some(result => recallProvenance(result).gone.length > 0))
+		notes.push("근거 사라짐 means a file or heading this memory cites no longer exists in the project, so the memory may be stale: check it against the current files before relying on it.");
+	return notes.length > 0 ? "\n\n" + notes.join("\n") : "";
+}
+
+const CITATION_MAX_ANCHOR_FILE_BYTES = 8 * 1024 * 1024;
+const citationRoots = new Map<string, string>();
+/**
+ * True only when no directory from dir up to the filesystem root holds a .git entry of any kind (directory, file,
+ * symlink, dangling or not), so git cannot have found a work tree there. lstat does not follow links; any error other
+ * than a plain absence counts as "an entry may exist".
+ */
+function citationOutsideGit(dir: string): boolean {
+	for (let cur = dir; ; ) {
+		try {
+			nodeFs.lstatSync(nodePath.join(cur, ".git"));
+			return false;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT" && code !== "ENOTDIR") return false;
+		}
+		const parent = nodePath.dirname(cur);
+		if (parent === cur) return true;
+		cur = parent;
+	}
+}
+/**
+ * The project root learn would have used for a session that ran in cwd: the git top level, else cwd itself when the
+ * directory is definitely outside any git work tree (learn falls back to cwd there too). Undefined when the root cannot
+ * be known: cwd is gone, or git failed although a .git entry exists above it (permissions, ownership, damage). Only
+ * known roots are cached, so a transient git failure is retried on the next recall.
+ */
+function citationRootOf(cwd: string): string | undefined {
+	let real: string;
+	try {
+		real = nodeFs.realpathSync(cwd);
+	} catch {
+		return undefined;
+	}
+	const known = citationRoots.get(real);
+	if (known) return known;
+	let top = "";
+	try {
+		const out = Bun.spawnSync(["git", "-C", real, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
+		if (out.exitCode === 0) top = out.stdout.toString().trim();
+	} catch {
+		top = "";
+	}
+	let root: string;
+	if (top) {
+		try {
+			root = nodeFs.realpathSync(top);
+		} catch {
+			return undefined;
+		}
+	} else if (citationOutsideGit(real)) {
+		root = real;
+	} else {
+		return undefined;
+	}
+	citationRoots.set(real, root);
+	return root;
+}
+function citationHeadings(text: string): string[] {
+	const headings: string[] = [];
+	for (const line of text.split(/\r?\n/)) {
+		const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+		if (match) headings.push(match[1]!.replace(/\s+/g, " "));
+	}
+	return headings;
+}
+function citationAnchorFound(text: string, anchor: string): boolean {
+	const lines = text.split(/\r?\n/);
+	const range = /^(\d+)(?:-(\d+))?$/.exec(anchor);
+	if (range) {
+		const start = Number(range[1]);
+		const end = Number(range[2] ?? range[1]);
+		return start >= 1 && end >= start && end <= lines.length;
+	}
+	if (/^(RECORD|DATE|SCOPE|PATHS|STATUS)$/.test(anchor)) {
+		return lines.slice(0, 40).some(line => line.startsWith(anchor + ":") || line.startsWith("*" + anchor + ":"));
+	}
+	const want = anchor.replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim().toLowerCase();
+	if (!want) return false;
+	return citationHeadings(text).some(heading => {
+		const have = heading.toLowerCase();
+		return have === want || have.startsWith(want);
+	});
+}
+type CitationFile = { gone: boolean; text(): string | undefined };
+/** Re-checks one cited path: a file inside the root is present, anything missing or not a file is gone; an unreadable or oversized file is not judged. */
+function citationFileOf(root: string, rel: string): CitationFile {
+	const unchecked: CitationFile = { gone: false, text: () => undefined };
+	const missing: CitationFile = { gone: true, text: () => undefined };
+	try {
+		const real = nodeFs.realpathSync(nodePath.resolve(root, rel.replaceAll("\\", "/")));
+		const inside = nodePath.relative(root, real);
+		if (inside === "" || inside === ".." || inside.startsWith(".." + nodePath.sep) || nodePath.isAbsolute(inside)) return missing;
+		const stat = nodeFs.statSync(real);
+		if (!stat.isFile()) return missing;
+		if (stat.size > CITATION_MAX_ANCHOR_FILE_BYTES) return unchecked;
+		let body: string | undefined;
+		let read = false;
+		return {
+			gone: false,
+			text: () => {
+				if (!read) {
+					read = true;
+					try {
+						body = nodeFs.readFileSync(real, "utf8");
+					} catch {
+						body = undefined;
+					}
+				}
+				return body;
+			},
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ENOENT" || code === "ENOTDIR" ? missing : unchecked;
+	}
+}
+/** Stamps each recalled result with the citations (path#anchor text) whose file or heading no longer exists. Each distinct path is checked once per call. */
+function markGoneCitations(results: RecallResult[]): void {
+	const files = new Map<string, CitationFile>();
+	for (const result of results) {
+		const meta = recallMetadata(result);
+		const cited: unknown[] = Array.isArray(meta?.citations) ? (meta?.citations as unknown[]) : [];
+		if (cited.length === 0) continue;
+		const cwd = typeof meta?.updated_cwd === "string" ? meta.updated_cwd : typeof meta?.cwd === "string" ? meta.cwd : undefined;
+		const root = cwd ? citationRootOf(cwd) : undefined;
+		if (!root) continue;
+		const gone: string[] = [];
+		for (const entry of cited) {
+			const text = recallCitationText(entry);
+			if (text === undefined) continue;
+			const item = entry as { path: string; anchor?: unknown };
+			const key = JSON.stringify([root, item.path]);
+			let file = files.get(key);
+			if (!file) {
+				file = citationFileOf(root, item.path);
+				files.set(key, file);
+			}
+			let missing = file.gone;
+			if (!missing && typeof item.anchor === "string" && item.anchor !== "") {
+				const body = file.text();
+				missing = body !== undefined && !citationAnchorFound(body, item.anchor);
+			}
+			if (missing) gone.push(text);
+		}
+		if (gone.length > 0) (result as { citationsGone?: string[] }).citationsGone = gone;
+	}
+}
+
+/**
+ * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no 근거 후보 even when the
+ * lesson it came from cites a record. Copy just the citations (and the cwd they were checked against) of that origin row onto the fact result.
+ */
+function attachFactCitations(memory: { conn: { query(sql: string): { get(...params: string[]): unknown } } }, results: RecallResult[]): void {
+	for (const result of results) {
+		const origin = (result as { source_memory_id?: unknown }).source_memory_id;
+		if (result.tier !== "fact" || typeof origin !== "string" || result.metadata) continue;
+		try {
+			const row = memory.conn.query("SELECT metadata_json FROM working_memory WHERE id = ?").get(origin) as { metadata_json?: string | null } | null;
+			const parsed = row?.metadata_json ? (JSON.parse(row.metadata_json) as { citations?: unknown; cwd?: unknown; updated_cwd?: unknown }) : undefined;
+			if (Array.isArray(parsed?.citations) && parsed.citations.length > 0) {
+				result.metadata = { citations: parsed.citations, cwd: parsed.cwd, updated_cwd: parsed.updated_cwd };
+			}
 		} catch {
 			// A fact whose origin row cannot be read simply shows no citation.
 		}
@@ -538,6 +789,47 @@ const learnEvidenceBlock = (() => {
 	);
 	return text;
 })();
+
+/**
+ * 2026-10-23 비슷한 기억 알림. learn 이 저장한 뒤 같은 bank 에서 새 글과 가장 비슷한 기존 기억을 찾아 결과 문구에 id 와 앞 80자를 붙인다.
+ * 저장은 막지도 바꾸지도 않는다: 어떤 실패도 빈 문자열로 삼킨다. 조회는 기억을 강화하지 않는다(updateRecallCounts false).
+ * 임베딩이 꺼졌거나 e5 가 아니면(코사인 범위가 다르다) 알리지 않는다. 기준은 원시 dense 코사인 0.90 이상이며
+ * mnemopi.recallDenseGate 가 그보다 높으면 그 값을 따른다(게이트 0.80 은 무관 질의를 거르는 선이라 비슷한 기억을 가르기에는 낮다).
+ * 방금 쓴 행(id)과 그 행에서 뽑은 fact 는 후보에서 뺀다(topic 갱신은 같은 행을 고치므로 id 로 충분하다). 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(String.raw 안이다).
+ */
+const learnSimilarBlock = String.raw`// HANSE: learn lists similar existing memories
+const LEARN_SIMILAR_MIN_DENSE = 0.9;
+const LEARN_SIMILAR_MAX_LINES = 3;
+
+async function learnSimilarHint(
+	state: MnemopiSessionState,
+	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]> | undefined,
+	text: string,
+	savedId: string,
+): Promise<string> {
+	try {
+		const provider = state.config.providerOptions;
+		if (!provider || provider.noEmbeddings || !/(^|[/_-])e5([-_]|$)/i.test(provider.embeddingModel ?? "")) return "";
+		const floor = Math.max(LEARN_SIMILAR_MIN_DENSE, Number(state.config.recallDenseGate) || 0);
+		const where = target ?? state.getScopedRetainTarget();
+		const rows = await where.memory.recall(text, 8, { channelId: where.bank, updateRecallCounts: false } as never);
+		const lines: string[] = [];
+		for (const row of rows) {
+			if (lines.length >= LEARN_SIMILAR_MAX_LINES) break;
+			if (!row.id || row.id === savedId || (row as { source_memory_id?: unknown }).source_memory_id === savedId) continue;
+			if (typeof row.dense_score !== "number" || row.dense_score < floor) continue;
+			const oneLine = String(row.content ?? "").replace(/\s+/g, " ").trim();
+			lines.push("비슷한 기존 기억: " + row.id + " — " + (oneLine.length > 80 ? oneLine.slice(0, 79) + "…" : oneLine));
+		}
+		if (lines.length === 0) return "";
+		return "\n" + lines.join("\n") + "\nIf any of these is the same lesson, update that memory (reuse its topic key, or edit it with xd://memory_edit) instead of keeping near-duplicates";
+	} catch {
+		// A failed lookup never changes the result of a lesson that is already stored.
+		return "";
+	}
+}
+
+`;
 /** 새 판에만 있는 줄. #32 판·그 이전 판에는 없다. */
 const LEARN_EVIDENCE_MASKED_MARKER = String.raw`+ " is outside the project root.");`;
 /** #32 판과 새 판에만 있는 줄. 그 이전 판(learnEvidenceLegacyBlock)과 순정에는 없다. */
@@ -8250,18 +8542,37 @@ function operationFromNative(op: string): Operation | undefined {
 		}],
 	},
 	{
-		// 위 항목의 짝. 범위·정정 표시 보조 함수와 정정 행이 있을 때만 붙는 한 줄 안내(상세는 memory://<id>).
+		// 위 항목의 짝. 범위·정정·근거 표시 보조 함수와 안내 줄(상세는 memory://<id>). 본문은 recallProvenanceBlock 이다.
+		// 2026-10-23: 배포본 둘이 이 본문으로 올라온다. 근거 후보 판(recallProvenanceCitationsBlock)이 본 후보와 18.9.1 후보의 legacyPatched 이고,
+		// 정정 표시만 있던 첫 판(recallProvenanceLegacyBlock)은 requires 로 가른 두 후보가 받는다. 두 옛 판이 서로의 순정으로 읽히지 않게
+		// 본 후보와 18.9.1 후보는 첫 판 본문이 있으면 후보에서 빠진다.
 		file: "src/mnemopi/state.ts",
 		// 18.9.1: 반환형이 { text, offsets } 로 바뀌고 JSDoc 이 붙었다. 보조 함수는 JSDoc 앞에 둔다(ADAPT).
-		excludes: "findPersistedRecall",
-		marker: "// HANSE: recall provenance note",
+		excludes: ["findPersistedRecall", recallProvenanceLegacyBlock],
+		marker: "// HANSE: recall marks gone citations",
 		anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
 		patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
-		legacyPatched: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+		legacyPatched: recallProvenanceCitationsBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 		alternates: [{
 			file: "src/mnemopi/state.ts",
 			requires: "findPersistedRecall",
-			marker: "// HANSE: recall provenance note",
+			excludes: recallProvenanceLegacyBlock,
+			marker: "// HANSE: recall marks gone citations",
+			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			legacyPatched: recallProvenanceCitationsBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+		}, {
+			// 정정 표시만 있던 첫 판에서 바로 올리는 후보. requires 가 그 판의 적용 본문 전체라 위 두 후보와 겹치지 않는다.
+			file: "src/mnemopi/state.ts",
+			requires: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+			marker: "// HANSE: recall marks gone citations",
+			anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
+			patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+			legacyPatched: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+		}, {
+			file: "src/mnemopi/state.ts",
+			requires: recallProvenanceLegacyBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			marker: "// HANSE: recall marks gone citations",
 			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			legacyPatched: recallProvenanceLegacyBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
@@ -8318,6 +8629,21 @@ function operationFromNative(op: string): Operation | undefined {
 		marker: "// HANSE: facts carry the citations of the memory they were taken from",
 		anchor: "targetSucceeded = true;\n",
 		patched: "targetSucceeded = true;\n\t\t\t\t\t// HANSE: facts carry the citations of the memory they were taken from\n\t\t\t\t\tattachFactCitations(target.memory, results);\n",
+	},
+	{
+		// 2026-10-23 근거 사라짐 표시(doc/history/2026/10/23-memory-citation-freshness): 블록의 경로 확인에 쓰는 node:fs·node:path 이름공간 import.
+		file: "src/mnemopi/state.ts",
+		marker: 'import * as nodeFs from "node:fs";',
+		anchor: 'import { dirname } from "node:path";\n',
+		patched: 'import * as nodeFs from "node:fs";\nimport { dirname } from "node:path";\nimport * as nodePath from "node:path";\n',
+	},
+	{
+		// 2026-10-23: 명시 recall 도구·자동 첫 턴 주입·압축 회상이 모두 거치는 collectScopedRecallResults 의 끝에서, 줄에 실릴 결과(recallLimit 으로 자른 뒤)만
+		// 근거 사라짐 판정을 받는다. 앵커는 들여쓰기에 기대지 않는다.
+		file: "src/mnemopi/state.ts",
+		marker: "markGoneCitations(merged);",
+		anchor: "if (merged.length > this.config.recallLimit) merged.length = this.config.recallLimit;\n",
+		patched: "if (merged.length > this.config.recallLimit) merged.length = this.config.recallLimit;\n\t\t\t// HANSE: gone-citation stamp on the results that will be shown\n\t\t\tmarkGoneCitations(merged);\n",
 	},
 	{
 		// 2026-10-17 턴 단위 주입 게이트(doc/history/2026/10/17-memory-gate-citations): 자동 첫 턴 회상에서 상위 후보의 원시 dense
@@ -8442,11 +8768,36 @@ function operationFromNative(op: string): Operation | undefined {
 		],
 	},
 	{
+		// 2026-10-23 비슷한 기억 알림: 저장 직후 같은 bank 의 비슷한 기존 기억을 결과 문구에 덧붙인다(저장은 바꾸지 않는다: 조회 실패는 learnSimilarHint 가 삼킨다).
+		// legacyPatched 는 revision 까지 알리던 배포본이고, 더 옛 판(id 만 알림)은 아래 alternate 가 받는다.
 		file: "src/tools/learn.ts",
-		marker: "memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ?",
+		marker: "memoryMessage += await learnSimilarHint(",
 		anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
-		legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
-		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t} catch (error) {\n",
+		excludes: "\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n",
+		legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t} catch (error) {\n",
+		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t\t// HANSE: learn lists similar existing memories\n\t\t\t\tif (memoryId) memoryMessage += await learnSimilarHint(state, target, params.memory, memoryId);\n\t\t\t} catch (error) {\n",
+		alternates: [{
+			file: "src/tools/learn.ts",
+			requires: "\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n",
+			marker: "memoryMessage += await learnSimilarHint(",
+			anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
+			legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
+			patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t\t// HANSE: learn lists similar existing memories\n\t\t\t\tif (memoryId) memoryMessage += await learnSimilarHint(state, target, params.memory, memoryId);\n\t\t\t} catch (error) {\n",
+		}],
+	},
+	{
+		// 위 항목의 짝. learnSimilarHint 는 managed skill schema 바로 뒤에 둔다(근거 블록·topic 블록의 anchor 와 겹치지 않는 순정 줄이다).
+		file: "src/tools/learn.ts",
+		marker: "async function learnSimilarHint(",
+		anchor: "}).describe(\"also create or enhance a managed skill in the same call\");\n",
+		patched: "}).describe(\"also create or enhance a managed skill in the same call\");\n\n" + learnSimilarBlock.replace(/\n+$/, "\n"),
+	},
+	{
+		// 비슷한 기억 조회는 기억을 강화하지 않아야 한다. facade 의 recall 옵션 변환이 updateRecallCounts 를 버려 recall_count·last_recalled 가 올라가므로 false 만 그대로 넘긴다.
+		file: "../pi-mnemopi/src/core/memory.ts",
+		marker: "// HANSE: recall without counting",
+		anchor: "\tif (\"queryEmbedding\" in options) beamOptions.queryEmbedding = options.queryEmbedding;\n\treturn beamOptions;\n",
+		patched: "\tif (\"queryEmbedding\" in options) beamOptions.queryEmbedding = options.queryEmbedding;\n\t// HANSE: recall without counting\n\tif ((options as { updateRecallCounts?: boolean }).updateRecallCounts === false) (beamOptions as { updateRecallCounts?: boolean }).updateRecallCounts = false;\n\treturn beamOptions;\n",
 	},
 	{
 		// 2026-10-17 근거형 learn: 검증·metadata 보조 함수와 kind·citations schema 는 learnSchemaBase 앞에 한 덩어리로 둔다.

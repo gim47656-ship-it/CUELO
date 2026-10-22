@@ -263,6 +263,89 @@ describe("종합 절 후보", () => {
     expect(worm.samples.every((s) => s.startsWith("doc/history/2026/10/0"))).toBe(true);
   });
 
+  describe("별칭 묶음(doc/docmap-aliases.json)", () => {
+    const alias = (groups: string[][]) => ({ "doc/docmap-aliases.json": JSON.stringify({ groups }) });
+    // 일반어 상한은 기록 수의 15%이므로 합친 기록 4건이 상한에 걸리지 않도록 기록을 더 둔다.
+    const extra = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [hist(`${String(40 + i)}-pad`), record(`pad ${i}`, `padscope${i}`)]));
+    const base = { "HANDOFF.md": "# HANDOFF\n", "doc/README.md": "# 지도\n", ...fillers, ...extra };
+    const spellings = {
+      ...base,
+      [hist("01-a")]: record("a", "wormhole"),
+      [hist("02-b")]: record("b", "wormhole 웜홀"),
+      [hist("03-c")]: record("c", "웜홀"),
+      [hist("04-d")]: record("d", "웜홀"),
+    };
+
+    test("별칭 파일이 없거나 비어 있으면 출력이 같고 merged 필드도 없다", () => {
+      const none = lintDocmap(repo(spellings))!;
+      const empty = lintDocmap(repo({ ...spellings, ...alias([]) }))!;
+      expect(empty).toEqual({ ...none, root: empty.root });
+      expect(none.synthesis.map((c) => c.term)).toContain("웜홀");
+      expect(none.synthesis.map((c) => c.term)).not.toContain("wormhole");
+      expect(none.synthesis.some((c) => "merged" in c)).toBe(false);
+    });
+
+    test("표기가 둘 다 든 기록은 한 번만 세고, 합치면 한 후보로 나오며 항목은 따로 나오지 않는다", () => {
+      const r = lintDocmap(repo({ ...spellings, ...alias([["wormhole", "웜홀"]]) }))!;
+      const worm = r.synthesis.find((c) => c.term === "wormhole")!;
+      // 2(wormhole) + 3(웜홀) - 1(둘 다 든 02-b) = 4. 더하기만 하면 5다.
+      expect(worm.records).toBe(4);
+      expect(worm.merged).toEqual(["웜홀"]);
+      expect(r.synthesis.map((c) => c.term)).not.toContain("웜홀");
+      expect(r.synthesis.filter((c) => c.term === "wormhole")).toHaveLength(1);
+    });
+
+    test("항목 하나라도 정본 제목에 있으면 묶음 전체가 정본에 있는 것이다", () => {
+      const files = {
+        ...base,
+        "docs/guide.md": "# 안내\n\n## gizmo 안내\n",
+        [hist("01-a")]: record("a", "gizmo"),
+        [hist("02-b")]: record("b", "gizmo"),
+        [hist("04-d")]: record("d", "기즈모"),
+        [hist("05-e")]: record("e", "기즈모"),
+        [hist("06-f")]: record("f", "기즈모"),
+      };
+      expect(lintDocmap(repo(files))!.synthesis.map((c) => c.term)).toContain("기즈모");
+      const merged = lintDocmap(repo({ ...files, ...alias([["gizmo", "기즈모"]]) }))!.synthesis.map((c) => c.term);
+      expect(merged).not.toContain("gizmo");
+      expect(merged).not.toContain("기즈모");
+    });
+
+    test("해석하지 못하거나 묶음이 잘못된 별칭 파일은 통째로 무시하고 읽지 못한 파일로 알린다", () => {
+      const bad: unknown[] = [
+        "{ not json",
+        JSON.stringify({ groups: "wormhole" }),
+        JSON.stringify({ groups: [["wormhole", 3]] }),
+        // 다른 묶음은 멀쩡해도 항목이 없는·하나뿐인 묶음, 빈 문자열·중복 항목(대소문자·공백 차이, 묶음 사이 포함)이 하나라도 있으면 파일 전체가 잘못이다.
+        JSON.stringify({ groups: [["wormhole", "웜홀"], []] }),
+        JSON.stringify({ groups: [["wormhole", "웜홀"], ["lonely"]] }),
+        JSON.stringify({ groups: [["wormhole", "웜홀"], ["other", ""]] }),
+        JSON.stringify({ groups: [["wormhole", "웜홀", " Wormhole "]] }),
+        JSON.stringify({ groups: [["wormhole", "웜홀"], ["other", "웜홀"]] }),
+      ];
+      for (const text of bad) {
+        const r = lintDocmap(repo({ ...spellings, "doc/docmap-aliases.json": String(text) }))!;
+        expect(r.unreadable.files).toEqual(["doc/docmap-aliases.json"]);
+        // 파일 전체를 무시하므로 멀쩡한 묶음도 적용되지 않는다.
+        expect(r.synthesis.map((c) => c.term)).toContain("웜홀");
+        expect(r.synthesis.map((c) => c.term)).not.toContain("wormhole");
+      }
+    });
+
+    test("낱말 하나가 아닌 항목은 잘못된 파일이고, 항목 낱말이 없는 일반 후보를 지우지 않는다", () => {
+      const quantum = Object.fromEntries(["a", "b", "c"].map((k, i) => [hist(`1${i}-q${k}`), record(k, "quantum")]));
+      for (const group of [["quantum flux", "양자"], ["x-ray", "엑스레이"], ["q", "큐큐"]]) {
+        const r = lintDocmap(repo({ ...base, ...quantum, ...alias([group]) }))!;
+        expect(r.unreadable.files).toEqual(["doc/docmap-aliases.json"]);
+        expect(r.synthesis.map((c) => c.term)).toContain("quantum");
+      }
+      // 낱말 하나짜리 항목의 유효한 파일은 다른 후보를 지우지 않는다.
+      const ok = lintDocmap(repo({ ...base, ...quantum, ...spellings, ...alias([["wormhole", "웜홀"]]) }))!;
+      expect(ok.unreadable.files).toEqual([]);
+      expect(ok.synthesis.map((c) => c.term)).toContain("quantum");
+    });
+  });
+
   test("한글 조각은 조각이 나온 실제 낱말 하나로 합쳐 보여 준다", () => {
     const r = lintDocmap(
       repo({
