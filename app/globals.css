@@ -4538,16 +4538,29 @@ span.linenumber {
   background: var(--bg-panel);
 }
 
+/* 섹션 제목은 띠가 아니라 글자 크기·굵기로 구분한다. 섹션 사이는 가는 선 하나만 둔다. */
 .efficiency-section-title {
   margin: 0;
-  border-block-end: 1px solid var(--border);
-  background: var(--bg-raised);
-  padding: 6px 16px;
-  color: var(--text-muted);
-  font-size: 10px;
+  padding: 14px 16px 4px;
+  color: var(--text);
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.efficiency-detail > section + section {
+  margin-block-start: 6px;
+  border-block-start: 1px solid var(--border);
+}
+
+/* 좁은 패널에서는 한 열, 넓으면 두 열 이상으로 흐른다. 라벨은 자르지 않고 접는다. */
+.efficiency-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
+  column-gap: 28px;
+  margin: 0;
+  padding: 2px 16px 4px;
+  min-inline-size: 0;
 }
 
 .efficiency-empty {
@@ -4668,6 +4681,7 @@ ul.efficiency-stack {
 }
 
 .efficiency-detail {
+  container: efficiency-detail / inline-size;
   display: flex;
   flex-direction: column;
   min-inline-size: 0;
@@ -4703,7 +4717,7 @@ ul.efficiency-stack {
   overflow-wrap: anywhere;
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -4716,26 +4730,6 @@ ul.efficiency-stack {
   border: 1px solid var(--border);
   border-radius: var(--radius-surface);
   background: var(--bg);
-  overflow-wrap: anywhere;
-}
-
-.efficiency-card-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-inline-size: 0;
-}
-
-.efficiency-card-title {
-  margin: 0;
-  min-inline-size: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   overflow-wrap: anywhere;
 }
 
@@ -4754,32 +4748,252 @@ ul.efficiency-stack {
   line-height: 1.5;
 }
 
-.efficiency-bottleneck {
+.efficiency-bottlenecks {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 16px 8px;
+  list-style: none;
   min-inline-size: 0;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--bg);
 }
 
+/* 좁으면 이름·시간 한 줄 + 막대 한 줄, 넓으면 이름 | 막대 | 시간 한 줄. 시간은 한 번만 적는다. */
+.efficiency-bottleneck {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "label value" "meter meter";
+  align-items: baseline;
+  gap: 4px 12px;
+  min-inline-size: 0;
+}
+
+.efficiency-bottleneck-label {
+  grid-area: label;
+  min-inline-size: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-bottleneck[data-kind="unmeasured-gap"] .efficiency-bottleneck-label {
+  color: var(--text-muted);
+}
+
+.efficiency-bottleneck-value {
+  grid-area: value;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.efficiency-meter {
+  grid-area: meter;
+  display: block;
+  align-self: center;
+  block-size: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+.efficiency-meter-fill {
+  display: block;
+  block-size: 100%;
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+/* 넓으면 줄들이 한 격자를 나눠 써서 막대 시작점이 맞는다. 이름 칸은 가장 긴 이름에 맞추되 40%를 넘지 않는다. */
+@container efficiency-detail (min-width: 520px) {
+  .efficiency-bottlenecks {
+    display: grid;
+    grid-template-columns: fit-content(40%) minmax(0, 1fr) 6rem;
+    gap: 10px 16px;
+  }
+
+  .efficiency-bottleneck {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    grid-template-areas: none;
+    align-items: center;
+  }
+
+  .efficiency-bottleneck-label { grid-area: 1 / 1; }
+  .efficiency-meter { grid-area: 1 / 2; }
+  .efficiency-bottleneck-value { grid-area: 1 / 3; }
+}
+
+/* 역할: 접힌 줄은 정체와 주요 수치, 펼치면 나머지 기록. 화살표는 움직임 없이 방향만 바뀐다. */
+.efficiency-roles {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 8px 6px;
+  min-inline-size: 0;
+}
+
+.efficiency-role + .efficiency-role {
+  border-block-start: 1px solid var(--border);
+}
+
+.efficiency-role-summary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 3px 6px;
+  padding: 8px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.efficiency-role-summary::-webkit-details-marker {
+  display: none;
+}
+
+.efficiency-role-summary::before {
+  content: "";
+  grid-area: 1 / 1;
+  align-self: center;
+  justify-self: center;
+  inline-size: 6px;
+  block-size: 6px;
+  border-inline-end: 1.5px solid var(--text-dim);
+  border-block-end: 1.5px solid var(--text-dim);
+  transform: rotate(-45deg);
+}
+
+.efficiency-role[open] > .efficiency-role-summary::before {
+  transform: rotate(45deg);
+}
+
+.efficiency-role-summary > * {
+  grid-column: 2;
+}
+
+.efficiency-role-summary:hover {
+  background: var(--bg-hover);
+}
+
+.efficiency-role-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-inline-size: 0;
+}
+
+.efficiency-role-id {
+  min-inline-size: 0;
+  margin-inline-end: 2px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-role-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.efficiency-role-stat-value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.efficiency-role-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 10px 26px;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-role-body .efficiency-metrics {
+  padding: 0;
+}
+
+.efficiency-role-body > .efficiency-dim {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.efficiency-role-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-helpers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.efficiency-helpers-title {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.efficiency-helper-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.efficiency-helper {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-block: 5px;
+  border-block-end: 1px solid var(--border);
+  min-inline-size: 0;
+}
+
+.efficiency-helper:last-child {
+  border-block-end: 0;
+}
+
+.efficiency-helper-name {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.efficiency-helper-value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 실험 카드(lab)의 run 수·비율 줄. */
 .efficiency-bottleneck-top {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 8px;
   min-inline-size: 0;
-}
-
-.efficiency-bottleneck-label {
-  min-inline-size: 0;
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  overflow-wrap: anywhere;
 }
 
 /* 비율 막대: 숫자를 함께 적으므로 색만으로 의미를 전달하지 않는다. */

@@ -905,7 +905,9 @@
         "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL" },
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
-        "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD" }
+        "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD" },
+        "NORMAL_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "NORMAL" },
+        "HARD_CODE_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "HARD" }
       },
       "candidateResolution": "each-candidate-lists-the-levels-its-registry-model-declares-for-maker-auto-a-model-without-declared-levels-is-unavailable-the-task-hook-accepts-only-the-auto-suffix-and-resolves-a-shared-model-to-the-recommended-profile-then-a-profile-of-the-recommended-work-class-then-its-first-profile",
       "criteria": {
@@ -939,7 +941,7 @@
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
       },
       "hardSelection": {
-        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_SONNET-and-HARD_CODE_ASTRA-are-offered-only-as-alternatives-and-require-ROUTING_REASON-HARD_CODE_ASTRA-is-for-complex-non-UI-code-or-system-reasoning-when-main-wants-that-model-family-existing-eval-evidence-is-small-n-and-older-main-benchmarks-and-never-proves-Astra-dominance",
+        "selection": "expertise-first-hardFocus-UI_UX-selects-HARD_UI_OPUS-and-CODE_SYSTEM-selects-HARD_CODE_OPUS-regardless-of-main-model-family-HARD_CODE_SONNET-and-HARD_CODE_ASTRA-are-offered-only-as-alternatives-and-require-ROUTING_REASON-HARD_CODE_DAYBREAK-is-an-explicit-only-Sol-plus-automatic-Daybreak-alternative-user-decision-2026-10-22-also-requiring-ROUTING_REASON-NORMAL_DAYBREAK-shares-its-slot-is-never-recommended-and-is-excluded-from-the-NORMAL-fallback-order-eligibility-follows-the-account-access-program-and-is-never-forced-HARD_CODE_ASTRA-is-for-complex-non-UI-code-or-system-reasoning-when-main-wants-that-model-family-existing-eval-evidence-is-small-n-and-older-main-benchmarks-and-never-proves-Astra-dominance",
         "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-selection-only-effort-is-the-child-auto-and-access-program-fields-are-omitted"

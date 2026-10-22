@@ -89,8 +89,8 @@ function harnessSummary(harnesses: ExperimentHarnessCount[], t: (key: string) =>
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-border py-1.5 last:border-b-0">
-      <dt className="min-w-0 flex-1 truncate text-xs text-text-muted">{label}</dt>
-      <dd className="m-0 flex-none font-mono text-xs tabular-nums text-text">{value}</dd>
+      <dt className="min-w-0 flex-1 text-xs text-text-muted [overflow-wrap:anywhere]">{label}</dt>
+      <dd className="m-0 flex-none text-right font-mono text-xs tabular-nums text-text">{value}</dd>
     </div>
   );
 }
@@ -189,69 +189,76 @@ function RoleRow({ role, t }: {
   const efforts = role.efforts.length > 0 ? role.efforts.join(", ") : t("efficiency.unmeasuredShort");
   // 역할 `outputTokens`는 보조 호출을 포함한 합계다. 답 길이·왕복 판단용 칸에는 대화 요청 몫만 보인다.
   const conversationOutputTokens = role.outputTokens - role.helpers.reduce((sum, helper) => sum + helper.outputTokens, 0);
+  const roleLabel = t(`efficiency.role${role.kind === "main" ? "Main" : role.kind === "maker" ? "Maker" : role.kind === "checker" ? "Checker" : role.kind === "advisor" ? "Advisor" : "Unattributed"}`);
+  // 접힌 줄은 역할 정체와 주요 수치 세 개만 보이고, 나머지 기록은 펼쳐야 보인다. 같은 수를 두 번 적지 않는다.
   return (
-    <section className="efficiency-card">
-      <div className="efficiency-card-top">
-        <h4 className="efficiency-card-title" title={role.id}>{role.id}</h4>
-        <Badge tone={ROLE_TONES[role.kind] ?? "neutral"} variant="weak" size="medium">
-          {t(`efficiency.role${role.kind === "main" ? "Main" : role.kind === "maker" ? "Maker" : role.kind === "checker" ? "Checker" : role.kind === "advisor" ? "Advisor" : "Unattributed"}`)}
-        </Badge>
-        <PurposeBadge purpose={role.purpose} t={t} />
+    <details className="efficiency-role">
+      <summary className="efficiency-role-summary">
+        <span className="efficiency-role-head">
+          <span className="efficiency-role-id">{role.id}</span>
+          <Badge tone={ROLE_TONES[role.kind] ?? "neutral"} variant="weak" size="medium">{roleLabel}</Badge>
+          <PurposeBadge purpose={role.purpose} t={t} />
+        </span>
+        <span className="efficiency-model-line" title={models}>{models}</span>
+        <span className="efficiency-role-stats">
+          <span>{t("efficiency.busyTime")} <span className="efficiency-role-stat-value">{formatDurationMs(role.busyMs)}</span></span>
+          <span>{t("efficiency.estimatedCost")} <span className="efficiency-role-stat-value">{formatMoney(role.estimatedCostUsd)}</span></span>
+          <span>{t("efficiency.tokens")} <span className="efficiency-role-stat-value">{formatTokens(role.totalTokens)}</span></span>
+        </span>
+      </summary>
+      <div className="efficiency-role-body">
+        <p className="efficiency-dim">
+          {t("efficiency.effortLabel").replace("{value}", efforts)}
+          {` · ${t("efficiency.requestsValue").replace("{value}", String(role.requestCount))}`}
+          {` · ${t("efficiency.toolCallsValue").replace("{value}", String(role.toolCalls))}`}
+        </p>
+        <dl className="efficiency-metrics">
+          <Metric label={t("efficiency.unpricedRequests")} value={formatNumber(role.unpricedRequests)} />
+          {/* 요청 시작→첫 토큰 평균. 각 요청 생성시간의 일부라 경과와 더하지 않고, 미기록은 0이 아니라 미측정이다. */}
+          <Metric
+            label={t("efficiency.firstTokenAvg")}
+            value={role.ttftMs !== null && role.ttftRequests > 0
+              ? formatDurationMs(role.ttftMs / role.ttftRequests)
+              : t("efficiency.unmeasuredShort")}
+          />
+          <Metric label={t("efficiency.outputTokens")} value={formatTokens(conversationOutputTokens)} />
+        </dl>
+        {role.ttftRequests > 0 && role.ttftRequests < role.requestCount ? (
+          <p className="efficiency-role-note">
+            {t("efficiency.firstTokenPartial", { recorded: role.ttftRequests, total: role.requestCount })}
+          </p>
+        ) : null}
+        {role.untimedRequests > 0 ? (
+          <p className="efficiency-role-note">
+            {t("efficiency.untimedLowerBound").replace("{value}", formatNumber(role.untimedRequests))}
+          </p>
+        ) : null}
+        {role.unpricedRequests > 0 ? (
+          <p className="efficiency-role-note">{t("efficiency.unpricedLowerBound")}</p>
+        ) : null}
+        {role.helpers.length > 0 ? (
+          <section className="efficiency-helpers" aria-label={t("efficiency.helpersTitle")}>
+            <h4 className="efficiency-helpers-title">{t("efficiency.helpersTitle")}</h4>
+            <ul className="efficiency-helper-list">
+              {role.helpers.map((helper) => (
+                <li key={`${helper.purpose}:${helper.role ?? ""}:${helper.model}`} className="efficiency-helper">
+                  <span className="efficiency-helper-name">{`${helper.purpose} · ${helper.model}`}</span>
+                  <span className="efficiency-helper-value">
+                    {t("efficiency.helperCallsValue", {
+                      count: helper.requestCount,
+                      output: formatTokens(helper.outputTokens),
+                      tokens: formatTokens(helper.totalTokens),
+                      cost: formatMoney(helper.estimatedCostUsd),
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="efficiency-role-note">{t("efficiency.helpersIncludedNote")}</p>
+          </section>
+        ) : null}
       </div>
-      <p className="efficiency-model-line" title={models}>{models}</p>
-      <p className="efficiency-dim">
-        {t("efficiency.effortLabel").replace("{value}", efforts)}
-        {` · ${t("efficiency.requestsValue").replace("{value}", String(role.requestCount))}`}
-        {` · ${t("efficiency.toolCallsValue").replace("{value}", String(role.toolCalls))}`}
-      </p>
-      <dl className="m-0 grid grid-cols-2 gap-x-4">
-        <Metric label={t("efficiency.busyTime")} value={formatDurationMs(role.busyMs)} />
-        <Metric label={t("efficiency.estimatedCost")} value={formatMoney(role.estimatedCostUsd)} />
-        <Metric label={t("efficiency.tokens")} value={formatTokens(role.totalTokens)} />
-        <Metric label={t("efficiency.unpricedRequests")} value={formatNumber(role.unpricedRequests)} />
-        {/* 요청 시작→첫 토큰 평균. 각 요청 생성시간의 일부라 경과와 더하지 않고, 미기록은 0이 아니라 미측정이다. */}
-        <Metric
-          label={t("efficiency.firstTokenAvg")}
-          value={role.ttftMs !== null && role.ttftRequests > 0
-            ? formatDurationMs(role.ttftMs / role.ttftRequests)
-            : t("efficiency.unmeasuredShort")}
-        />
-        <Metric label={t("efficiency.outputTokens")} value={formatTokens(conversationOutputTokens)} />
-      </dl>
-      {role.ttftRequests > 0 && role.ttftRequests < role.requestCount ? (
-        <p className="efficiency-note">
-          {t("efficiency.firstTokenPartial", { recorded: role.ttftRequests, total: role.requestCount })}
-        </p>
-      ) : null}
-      {role.untimedRequests > 0 ? (
-        <p className="efficiency-note">
-          {t("efficiency.untimedLowerBound").replace("{value}", formatNumber(role.untimedRequests))}
-        </p>
-      ) : null}
-      {role.unpricedRequests > 0 ? (
-        <p className="efficiency-note">{t("efficiency.unpricedLowerBound")}</p>
-      ) : null}
-      {role.helpers.length > 0 ? (
-        <section aria-label={t("efficiency.helpersTitle")}>
-          <p className="efficiency-dim">{t("efficiency.helpersTitle")}</p>
-          <dl className="m-0">
-            {role.helpers.map((helper) => (
-              <Metric
-                key={`${helper.purpose}:${helper.role ?? ""}:${helper.model}`}
-                label={`${helper.purpose} · ${helper.model}`}
-                value={t("efficiency.helperCallsValue", {
-                  count: helper.requestCount,
-                  output: formatTokens(helper.outputTokens),
-                  tokens: formatTokens(helper.totalTokens),
-                  cost: formatMoney(helper.estimatedCostUsd),
-                })}
-              />
-            ))}
-          </dl>
-          <p className="efficiency-note">{t("efficiency.helpersIncludedNote")}</p>
-        </section>
-      ) : null}
-    </section>
+    </details>
   );
 }
 
@@ -263,13 +270,16 @@ function BottleneckRow({ item, t }: {
     ? t("efficiency.unmeasuredGap")
     : item.id;
   return (
-    <li className="efficiency-bottleneck">
-      <div className="efficiency-bottleneck-top">
-        <span className="efficiency-bottleneck-label" title={label}>{label}</span>
-        <span className="font-mono text-xs tabular-nums text-text">{formatDurationMs(item.ms)}</span>
-      </div>
+    <li className="efficiency-bottleneck" data-kind={item.kind}>
+      <span className="efficiency-bottleneck-label">{label}</span>
       {/* 1위 대비 길이일 뿐이라 백분율을 쓰지 않는다. 생성시간을 경과로 나누면 병렬 역할에서 합이 100%를 넘는다. */}
-      <RatioBar share={item.relative} label={formatDurationMs(item.ms)} />
+      <span className="efficiency-meter" aria-hidden="true">
+        <span
+          className="efficiency-meter-fill"
+          style={{ inlineSize: `${Number.isFinite(item.relative) ? Math.max(1, Math.min(100, item.relative * 100)) : 1}%` }}
+        />
+      </span>
+      <span className="efficiency-bottleneck-value">{formatDurationMs(item.ms)}</span>
     </li>
   );
 }
@@ -293,7 +303,7 @@ export function GovernorDetail({ detail, t }: {
           </div>
         </div>
         <p className="efficiency-note">{t("efficiency.noSumNote")}</p>
-        <dl className="m-0 grid grid-cols-2 gap-x-4">
+        <dl className="efficiency-metrics">
           <Metric label={t("efficiency.estimatedCost")} value={formatMoney(detail.estimatedCostUsd)} />
           <Metric label={t("efficiency.tokens")} value={formatTokens(detail.totalTokens)} />
           <Metric label={t("efficiency.harness")} value={harnessLabel(detail.harnessRevision, t)} />
@@ -302,25 +312,15 @@ export function GovernorDetail({ detail, t }: {
           <p className="efficiency-note">{t("efficiency.unpricedLowerBound")}</p>
         ) : null}
       </section>
-      <section aria-label={t("efficiency.rolesSection")}>
-        <h3 className="efficiency-section-title">{t("efficiency.rolesSection")}</h3>
-        {detail.roles.length > 0 ? (
-          <div className="efficiency-stack">
-            {detail.roles.map((role) => <RoleRow key={role.id} role={role} t={t} />)}
-          </div>
-        ) : (
-          <p className="efficiency-empty">{t("efficiency.rolesEmpty")}</p>
-        )}
-      </section>
       <section aria-label={t("efficiency.bottlenecksSection")}>
         <h3 className="efficiency-section-title">{t("efficiency.bottlenecksSection")}</h3>
         <p className="efficiency-note">{t("efficiency.bottleneckOrderNote")}</p>
         {detail.bottlenecks.length > 0 ? (
-          <ul className="efficiency-stack">
+          <ol className="efficiency-bottlenecks">
             {detail.bottlenecks.map((item) => (
               <BottleneckRow key={`${item.kind}:${item.id}`} item={item} t={t} />
             ))}
-          </ul>
+          </ol>
         ) : (
           <p className="efficiency-empty">{t("efficiency.bottlenecksEmpty")}</p>
         )}
@@ -330,10 +330,21 @@ export function GovernorDetail({ detail, t }: {
           </p>
         ) : null}
       </section>
+      <section aria-label={t("efficiency.rolesSection")}>
+        <h3 className="efficiency-section-title">{t("efficiency.rolesSection")}</h3>
+        {detail.roles.length > 0 ? (
+          // run이 바뀌면 펼침 상태를 이어받지 않고 모두 접힌 채로 다시 시작한다.
+          <div key={detail.runId} className="efficiency-roles">
+            {detail.roles.map((role) => <RoleRow key={role.id} role={role} t={t} />)}
+          </div>
+        ) : (
+          <p className="efficiency-empty">{t("efficiency.rolesEmpty")}</p>
+        )}
+      </section>
       {detail.toolTotals.length > 0 ? (
         <section aria-label={t("efficiency.toolsSection")}>
           <h3 className="efficiency-section-title">{t("efficiency.toolsSection")}</h3>
-          <dl className="m-0 grid grid-cols-2 gap-x-4">
+          <dl className="efficiency-metrics">
             {detail.toolTotals.map((tool) => (
               <Metric
                 key={tool.toolName}

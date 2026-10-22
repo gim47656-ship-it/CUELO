@@ -22,6 +22,8 @@ const candidates = [
   { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   { profile: "HARD_CODE_ASTRA", model: "openai-codex/gpt-6-astra", efforts: allStrengths },
 ];
+/** 명시 선택 전용 Daybreak 후보 fixture. 실제 설정은 gpt-6-sol이다. */
+const daybreakFixtures = ["NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"].map((profile) => ({ profile, model: "openai-codex/gpt-6-sol", efforts: allStrengths }));
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
 const families: Record<string, string> = {
   "openai-codex/gpt-6-astra": "openai",
@@ -410,7 +412,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const modelRoles: Record<string, string> = {};
     for (const profile of profiles) {
       const slot = policy.modelSelection.profiles[profile]!.modelConfigPath.slice("modelRoles.".length);
-      modelRoles[slot] = candidates.find((candidate) => candidate.profile === profile)!.model;
+      modelRoles[slot] = [...candidates, ...daybreakFixtures].find((candidate) => candidate.profile === profile)!.model;
     }
     // 다른 후보와 모델을 공유하지 않는 후보를 registry에서 뺀다.
     const missing = candidates.find((candidate) => candidate.profile === "NORMAL_DEEPSEEK")!;
@@ -449,7 +451,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     for (const profile of Object.keys(policy.modelSelection.profiles)) {
       const slot = policy.modelSelection.profiles[profile]!.modelConfigPath.slice("modelRoles.".length);
       // 설정 slot은 운영처럼 :auto suffix다. 후보 해석은 suffix를 떼고 registry를 찾는다.
-      modelRoles[slot] = `${candidates.find((candidate) => candidate.profile === profile)!.model}:auto`;
+      modelRoles[slot] = `${[...candidates, ...daybreakFixtures].find((candidate) => candidate.profile === profile)!.model}:auto`;
     }
     // DeepSeek는 운영 models.yml처럼 low·high만 선언한다. 후보 강도는 그 선언 그대로다.
     const ladders: Record<string, string[]> = { "hive/deepseek-ai/deepseek-v4.1-flash-1017": ["low", "high"] };
@@ -474,7 +476,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     });
     const batch = await route.prepareBatch("계약", [{ name: "Deep", task: brief, assessment: facts }], ctx);
     // 정책 구간으로 좁히지 않는다. Opus·Sonnet·Sol·DeepSeek 모두 registry가 선언한 단계 그대로다.
-    expect(batch.candidates).toEqual(candidates.map((candidate) => ({ ...candidate, efforts: ladders[candidate.model] ?? candidate.efforts })));
+    expect(batch.candidates).toEqual([...candidates, ...daybreakFixtures].map((candidate) => ({ ...candidate, efforts: ladders[candidate.model] ?? candidate.efforts })));
     expect(Object.keys(asked[0]!).filter((key) => /effort/i.test(key))).toEqual([]);
     expect(batch.routes[0]!.profile).toBe("HARD_CODE_OPUS");
     const dispatch = (model: string) => ({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
@@ -1322,17 +1324,22 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     NORMAL_DEEPSEEK: "hive/deepseek-ai/deepseek-v4.1-flash-1017",
     NORMAL_SOL: "openai-codex/gpt-6.1-sol",
     HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
+    NORMAL_DAYBREAK: "openai-codex/gpt-6-sol",
+    HARD_CODE_DAYBREAK: "openai-codex/gpt-6-sol",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
   const normalAnswers = {
     workClass: { choice: "NORMAL" }, hardFocus: { choice: "CODE_SYSTEM" },
     uiUxBoundary: { noul: 0 },
   };
-  function registryHarness(options: { registry: unknown; useSidecar?: boolean; sessionId?: string }) {
+  function registryHarness(options: { registry: unknown; useSidecar?: boolean; sessionId?: string; omitRoles?: string[] }) {
     const routingPolicy = loadRoutingPolicy();
     const modelRoles: Record<string, string> = {};
     for (const [profile, entry] of Object.entries(routingPolicy.modelSelection.profiles)) {
-      modelRoles[entry.modelConfigPath.slice("modelRoles.".length)] = profileModels[profile]!;
+      const model = profileModels[profile];
+      if (!model) throw new Error(`fixture에 ${profile} 모델 매핑이 없다`);
+      const slot = entry.modelConfigPath.slice("modelRoles.".length);
+      if (!options.omitRoles?.includes(slot)) modelRoles[slot] = model;
     }
     const questions: Record<string, unknown>[] = [];
     const ctx = {
@@ -1380,6 +1387,17 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     // 순서는 정본 profile 순서 그대로다.
     expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(Object.keys(h.policy.modelSelection.profiles));
     expect(batch.unavailableCandidates).toEqual([]);
+  });
+
+  test("implDaybreak slot이 없으면 Daybreak 후보만 unavailable이고 다른 모델로 대체되지 않는다", async () => {
+    const registry = { find: (provider: string) => provider ? { thinking: { efforts: strengths } } : undefined, refreshDiscoverableProviders: async () => {} };
+    const h = registryHarness({ registry, omitRoles: ["implDaybreak"] });
+    const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
+    expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
+      { profile: "NORMAL_DAYBREAK", model: "" },
+      { profile: "HARD_CODE_DAYBREAK", model: "" },
+    ]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).not.toContain("NORMAL_DAYBREAK");
   });
 
   test("준비에서 실패한 provider는 같은 발주에서 재조회하지 않고 새 준비에서는 다시 시도한다", async () => {
@@ -1432,7 +1450,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA", "NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1577,6 +1595,29 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(await h.dispatch(`${base}:auto`, reasoned)).toBeUndefined();
       expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ block: true });
     }
+  });
+  test("Daybreak Blue는 명시 선택 전용이다: 추천·폴백에 오르지 않고 ROUTING_REASON과 auto가 있어야 발주된다", async () => {
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 명시 후보로 Daybreak를 선택함");
+    const base = "openai-codex/gpt-6-daybreak-fixture";
+    const withDaybreak = [
+      ...candidates,
+      { profile: "NORMAL_DAYBREAK", model: base, efforts: allStrengths },
+      { profile: "HARD_CODE_DAYBREAK", model: base, efforts: allStrengths },
+    ];
+    for (const [workClass, expected] of [["NORMAL", "NORMAL_SONNET"], ["HARD", "HARD_CODE_OPUS"]] as const) {
+      const h = harness({ workClass, hardFocuses: ["CODE_SYSTEM"], candidates: withDaybreak });
+      const [route] = await h.prepare("Daybreak", [h.task], {} as never);
+      expect(route!.profile).toBe(expected);
+      expect(await h.dispatch(`${base}:auto`)).toMatchObject({ block: true });
+      expect(await h.dispatch(`${base}:auto`, reasoned)).toBeUndefined();
+      expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ block: true });
+    }
+    // NORMAL 후보가 모두 없으면 Daybreak로 조용히 대체하지 않고 null이다.
+    const only = harness({
+      workClass: "NORMAL",
+      candidates: withDaybreak.filter((c) => !["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"].includes(c.profile)),
+    });
+    expect((await only.prepare("Daybreak만", [only.task], {} as never))[0]!.profile).toBeNull();
   });
   test("준비 참조도 다음 줄 ROUTING_REASON 한 줄로 추천 변경 근거를 붙여 발주하고 그 밖의 덧붙임은 거절한다", async () => {
     const h = harness({ workClass: "NORMAL" });
