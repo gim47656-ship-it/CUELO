@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint]
 ---
 
-<!-- omp-global-config:generated source-hash=67ab1620ae1e
+<!-- omp-global-config:generated source-hash=4d1d3ea9db16
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -304,7 +304,10 @@ is yours end to end.
   location, reusing existing fixtures/mock setup. Never let a scratch directory's bare imports silently
   auto-install a different SDK. After an environment error, check resolution before rerunning the full smoke.
 - Read exact edit ranges with `read` before patching. A declaration-only read or snapshot tag does not
-  expose omitted lines; shell `cat`/`head`/`tail` is not an anchored read. Batch independent needed ranges.
+  expose omitted lines; shell `cat`/`head`/`tail` is not an anchored read. Batch independent needed ranges,
+  investigation reads included: ranges you already know go in one comma-range call (`path:5-16,960-973`)
+  or one parallel turn. Reads that depend on an earlier result stay sequential, and the exact anchored read
+  before an edit is unchanged. Use `:raw` first only when you already know the whole file is needed.
   If an edit rejection supplies the missing line and authorizes resubmission, use that evidence directly.
 - Resolve ambiguity with evidence first: the explicit requirement, the approved contract, real
   callers and data flow, tests and reproductions, and current behavior with its documentation.

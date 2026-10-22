@@ -266,6 +266,8 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 
 개발 서버를 쓰는 동안 같은 출력 경로에 `bun run build`를 돌리지 마세요. `.next/`를 덮어써서 개발 서버가 깨집니다. 검증용 production 빌드는 별도 소스 복사본이나 격리된 `CUELO_DIST_DIR`에서 실행하세요.
 
+공개 CI는 이전에 앱 검사까지 성공한 소스와 비교해 실행 범위를 정합니다. `main`의 변경이 확인된 문서·하네스 지시문뿐이면 앱 빌드는 생략하고 하네스 검사는 유지합니다. 코드·의존성·버전·워크플로우 변경, PR, 수동 실행이나 분류가 불확실한 경우에는 전체 검사를 실행합니다. 공개 보안 검사와 private 검증은 줄이지 않습니다.
+
 의존성을 다시 설치하거나 갱신한 뒤에는 `bun run prepare:source`를 다시 실행하세요. 이미 설치된 작업 사본에서도 `bun install`은 패치된 SDK 패키지를 원본으로 다시 깔기 때문에, 준비 단계를 빼면 호환 패치가 빠진 채로 실행됩니다. 이 준비 단계는 작업 사본의 SDK만 다루며 사용자 프로필이나 실행 중인 설치본을 변경하지 않습니다.
 
 참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md) · [Maker 코드 품질 평가](./docs/maker-quality.md)

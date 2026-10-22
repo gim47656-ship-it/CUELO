@@ -6,7 +6,11 @@ name: CI
 # core patch tests, including the user-shell PTY path). `verify-windows` is one smoke
 # job for native Windows installs: install, SDK preparation, typecheck, build and the
 # web runtime patch. Public jobs run only on the public mirror, where Actions minutes
-# are free.
+# are free. `scope` runs only for `main` pushes and decides whether the two app jobs run:
+# they are skipped only when every path differing from the last revision whose app jobs
+# passed is a known regular docs or harness-instruction file (see
+# .github/scripts/ci-scope.mjs). Pull requests, manual runs, anything unknown and any
+# classifier problem run everything. `harness-linux` always runs.
 #
 # CUELO-private is billed per minute. Its `private` job runs on Linux for every
 # `main` push and checks the files the mirror does not carry: the setup source
@@ -35,9 +39,39 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
+  scope:
+    name: Select app jobs
+    if: github.repository == 'gim47656-ship-it/CUELO' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Last resort only: the selector bounds itself to 20 s, and a scope job that
+    # fails or times out leaves the app jobs running.
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      app: ${{ steps.scope.outputs.app }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # The selector decides what is skipped, so its own tests gate it: a failure here
+      # leaves the app jobs running (see their `if`) and turns this run red.
+      - name: Selector tests
+        run: node --test .github/scripts/ci-scope.test.mjs
+
+      - name: Select app jobs
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-scope.mjs
+
   verify-linux:
     name: Verify build (Linux)
-    if: github.repository == 'gim47656-ship-it/CUELO'
+    needs: scope
+    if: >-
+      !cancelled() && github.repository == 'gim47656-ship-it/CUELO' &&
+      (github.event_name != 'push' || needs.scope.result != 'success' || needs.scope.outputs.app != 'false')
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -163,7 +197,10 @@ jobs:
     # Native Windows installs (PC-SETUP, installation guide) still build from source.
     # Behaviour tests run on Linux above; this job proves install, SDK preparation,
     # typecheck, build and the web runtime patch still work on Windows.
-    if: github.repository == 'gim47656-ship-it/CUELO'
+    needs: scope
+    if: >-
+      !cancelled() && github.repository == 'gim47656-ship-it/CUELO' &&
+      (github.event_name != 'push' || needs.scope.result != 'success' || needs.scope.outputs.app != 'false')
     runs-on: windows-latest
     defaults:
       run:
