@@ -572,8 +572,8 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         // 새로 발급된 같은 id의 권리나 남은 다음 회차에는 지난 결과를 돌려주지 않는다.
         const grant = resetGrant(entry.provider, id, credit);
         const retained = settledResets.get(grantKey(grant));
-        // 자동 점검은 provider가 소비하지 않았다고 확정한 결과만 넘어가 fresh eligibility로 다시 판단한다. 수동은 예전처럼 보관 결과를 받는다.
-        if (retained && (!auto || autoFinal(retained))) {
+        // provider가 소비하지 않았다고 확정한 결과(DEFINITE_NOT_CONSUMED)만 자동·수동 모두 보관 결과를 넘어 fresh 상태로 다시 판단한다.
+        if (retained && autoFinal(retained)) {
             if (retained.error) throw retained.error;
             return retained.result;
         }

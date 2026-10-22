@@ -266,6 +266,19 @@ test('uncertain consume outcome is retained without retry or secret exposure', a
     assert.equal(calls, 1);
 });
 
+test('confirmed manual retry after a definitely unconsumed result reaches the provider again', async () => {
+    const { controls, storage } = fixture();
+    const codes = ['credit_list_failed', 'reset'];
+    let calls = 0;
+    storage.resets.redeem = async () => ({ code: codes[calls++] });
+    const confirmed = { confirm: true, creditId: 'credit-1' };
+    assert.equal((await controls.redeem(1, confirmed)).code, 'credit_list_failed');
+    assert.deepEqual(await controls.redeem(1, confirmed), { ok: true, credentialId: 1, creditId: 'credit-1', code: 'reset' });
+    // 성공 결과는 보관되어 세 번째 호출은 provider에 가지 않는다.
+    assert.equal((await controls.redeem(1, confirmed)).code, 'reset');
+    assert.equal(calls, 2);
+});
+
 test('business non-success remains a typed result and refresh observes post-mutation credit state', async () => {
     const { controls, storage, setStatuses } = fixture();
     const before = await controls.enrich({ reports: [report()] });
