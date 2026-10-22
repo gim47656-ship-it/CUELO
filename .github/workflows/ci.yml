@@ -141,7 +141,7 @@ jobs:
         run: node patches/check-extension-duplicates.mjs
 
       - name: Extension, guard, finalizer and skill-cost tests
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./skill-cost
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./skill-cost
 
       - name: Core patch regression tests
         run: |
