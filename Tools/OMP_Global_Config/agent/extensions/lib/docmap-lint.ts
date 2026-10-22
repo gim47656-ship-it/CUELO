@@ -106,7 +106,8 @@ export function extractRelativeLinks(text: string): Array<{ line: number; href: 
     }
     if (fence) continue;
     const plain = lines[i]!.replace(/`[^`]*`/g, "");
-    for (const m of plain.matchAll(/\]\(\s*(<[^>]+>|[^)\s]+)/g)) {
+    // CommonMark: 목적지(공백 없는 글 또는 <…>) 뒤에는 공백과 따옴표·괄호 제목, 그리고 `)`만 올 수 있다. `[x](읽은 줄)`은 링크가 아니다.
+    for (const m of plain.matchAll(/\]\(\s*(<[^<>\n]+>|[^<)\s][^)\s]*)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g)) {
       let href = m[1]!;
       if (href.startsWith("<")) href = href.slice(1, -1);
       if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("#") || href.startsWith("/")) continue;

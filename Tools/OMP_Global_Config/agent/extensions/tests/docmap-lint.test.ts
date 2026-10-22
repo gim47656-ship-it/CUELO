@@ -117,6 +117,16 @@ describe("끊어진 링크", () => {
     ]);
   });
 
+  test("extractRelativeLinks는 목적지 뒤에 글이 이어지는 `[x](읽은 줄)` 같은 것은 링크로 세지 않고, 제목이 붙은 링크와 한 낱말 목적지는 센다", () => {
+    const text = [
+      "[코드](읽은 줄) [측정](베이스 .blend 읽기 전용 측정) [6]~[8](Main 조건의 경합 창) [23e](접두·stamp·옛 stamp 2종 재구축)",
+      '[a](a.md "제목") [b](b.md \'제목\') [c](c.md (제목)) [d](<d e.md> "t") [23d](dense) [13](r2)',
+      // 닫히지 않은 `<` 목적지와 `<`가 든 꺾쇠 목적지는 링크가 아니다.
+      "[x](<broken.md) [y](<a<b>) [z](<ok.md>)",
+    ].join("\n");
+    expect(extractRelativeLinks(text).map((l) => `${l.line}:${l.href}`)).toEqual(["2:a.md", "2:b.md", "2:c.md", "2:d e.md", "2:dense", "2:r2", "3:ok.md"]);
+  });
+
   test("extractRelativeLinks는 ```` 안의 짧은 ```로 코드 블록이 닫히지 않고, 같은 길이 이상으로 닫으면 끝난다", () => {
     // 앞쪽은 ```` 안에서 ```가 닫지 못함, 뒤쪽은 ```ts를 더 긴 ````가 닫음, 마지막 ```는 닫히지 않아 끝까지 코드다.
     const text = "````md\n```\n[in1](in1.md)\n```\n[in2](in2.md)\n````\n[out](out.md)\n\n```ts\n[c](c.md)\n```` \n[d](d.md)\n```\n[e](e.md)";
