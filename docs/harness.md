@@ -288,7 +288,7 @@ Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)
 
 [`ego_browser`](../Tools/OMP_Global_Config/agent/tools/ego-browser/)는 ego lite가 설치된 PC에서 에이전트가 ego의 TaskSpace(사용자 탭과 떨어진 작업 공간)를 직접 다루는 세션 도구입니다. 스크립트 본문만 넘기면 도구가 공간 생성과 `task`·`page` 연결을 앞에 붙여 `ego-browser nodejs`로 실행하고, 출력과 종료 상태를 돌려줍니다. 공간은 세션과 프로필마다 하나를 이어 쓰며(호출 사이에 변수는 남지 않고 탭은 남습니다), `finish: true`를 주면 오류가 나도 공간을 닫습니다. 세션이 끝날 때 열려 있는 공간도 닫지만, 사람에게 넘긴(`task.handOff()`) 공간은 닫지 않습니다.
 
-`profile: "user"`(기본)는 사용자의 ego 프로필이고, `profile: "verify"`는 CUELO 화면 검증 전용으로 따로 둔 프로필입니다. 화면 검증은 사용자 프로필을 쓰지 않습니다. ego lite가 없는 PC에서는 이 PC에서 쓸 수 없다고 알리고 기존 `browser` 도구를 쓰도록 안내합니다. 쿠키·캐시·저장소 삭제는 프로필 전체에 닿으므로 하지 않습니다.
+`profile: "user"`(기본)는 사용자의 ego 프로필이고, `profile: "verify"`는 CUELO 화면 검증 전용으로 따로 둔 프로필입니다. 검증 프로필은 PC마다 디렉터리 id가 다르므로 ego 프로필 이름 「CUELO 검증」으로 찾고, 그 이름의 프로필이 없으면 다른 프로필로 넘어가지 않고 실패합니다. 화면 검증은 사용자 프로필을 쓰지 않습니다. ego lite가 없는 PC에서는 이 PC에서 쓸 수 없다고 알리고 기존 `browser` 도구를 쓰도록 안내합니다. 쿠키·캐시·저장소 삭제는 프로필 전체에 닿으므로 하지 않습니다.
 
 ## Task Guard와 command guard
 

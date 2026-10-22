@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, runEgoBrowser, spaceName, type Exec, type ExecResult } from "./index";
+import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
 
 // 검증 범위: 스크립트 조립(공간 이름·프로필 id·finish), 종료 코드별 결과 문구, stdin 전달과 ENOENT·시간 초과(가짜 ego-browser 실행 파일).
 // 가짜 경계: fakeExec는 ego-browser를 대신한다. 실제 TaskSpace·프로필 격리·페이지 동작은 여기서 증명하지 않는다(실제 스모크는 작업 기록 참고).
@@ -20,7 +20,7 @@ const UUID_B = "0199f6a1-2b3c-7d4e-8f50-123456789abd"; // 앞 32자가 같고 �
 const ok = (stdout: string, stderr = ""): ExecResult => ({ code: 0, stdout, stderr, killed: false });
 
 describe("runEgoBrowser script assembly", () => {
-  test("binds one stable space per session and profile; verify pins Profile 2, user leaves the profile to ego", async () => {
+  test("binds one stable space per session and profile; user leaves the profile to ego", async () => {
     const { exec, calls } = fakeExec(ok("x"));
     await runEgoBrowser({ script: "console.log(1)" }, { exec, sessionId: UUID_A });
     await runEgoBrowser({ script: "console.log(2)", profile: "verify" }, { exec, sessionId: UUID_A });
@@ -29,7 +29,6 @@ describe("runEgoBrowser script assembly", () => {
     expect(calls.every((call) => call.args.join(" ") === "nodejs")).toBe(true);
     expect(calls[0].input).toContain(`taskSpace("cuelo-${UUID_A}-user")`);
     expect(calls[0].input).not.toContain("profileId");
-    expect(calls[1].input).toContain(`taskSpace("cuelo-${UUID_A}-verify", { profileId: "Profile 2" })`);
     expect(calls[2].input.split("\n")[0]).toBe(calls[1].input.split("\n")[0]);
     expect(calls[3].input).toContain(`taskSpace("cuelo-${UUID_B}-verify"`);
     expect(calls[0].input).toContain('const page = task.page("p1");');
@@ -50,19 +49,26 @@ describe("runEgoBrowser script assembly", () => {
     expect(await execute(false, "const task2 = task; void task2;")).toEqual({ finished: [], outcome: "ok" });
   });
 
-  test("the prelude resumes an existing space instead of failing on profileId, and still surfaces other errors", async () => {
+  test("verify picks the profile by name, resumes an existing space, and never falls back to another profile", async () => {
     // ego의 실제 계약: profileId를 준 taskSpace()는 이미 있는 이름이면 거절한다(0.6.0.16 실측).
-    const spaces = new Map<string, { profileId?: string }>();
-    const fakeTaskSpace = async (name: string, options?: { profileId?: string }) => {
-      if (name === "broken") throw new Error("EGO_BACKEND_DOWN");
-      if (spaces.has(name) && options?.profileId) throw new Error(`taskSpace profileId only applies when creating a new task space; "${name}" already exists`);
-      if (!spaces.has(name)) spaces.set(name, { profileId: options?.profileId });
-      return { name, profileId: spaces.get(name)!.profileId, page: () => ({}) };
+    // 프로필 목록은 10-22 집 PC 모양이다: `Profile 2`가 사용자 프로필이고 검증 프로필은 다른 id다.
+    const home = [{ id: "Profile 2", isDefault: false, name: "영수 김" }, { id: "Profile 1", isDefault: true, name: "내 Chrome" }, { id: "Profile 3", isDefault: false, name: VERIFY_PROFILE_NAME }];
+    const run = (name: string, list: { id: string; isDefault: boolean; name: string }[], spaces = new Map<string, { profileId?: string }>()) => {
+      const fakeTaskSpace = async (spaceName: string, options?: { profileId?: string }) => {
+        if (spaceName === "broken") throw new Error("EGO_BACKEND_DOWN");
+        if (spaces.has(spaceName) && options?.profileId) throw new Error(`taskSpace profileId only applies when creating a new task space; "${spaceName}" already exists`);
+        if (!spaces.has(spaceName)) spaces.set(spaceName, { profileId: options?.profileId });
+        return { name: spaceName, profileId: spaces.get(spaceName)!.profileId, page: () => ({}) };
+      };
+      return { spaces, task: new Function("taskSpace", "profiles", `return (async () => { ${buildPrelude(name, "verify")} return task; })()`)(fakeTaskSpace, async () => list) };
     };
-    const run = (name: string) => new Function("taskSpace", `return (async () => { ${buildPrelude(name, "verify")} return task; })()`)(fakeTaskSpace);
-    expect((await run("s-verify")).profileId).toBe("Profile 2");
-    expect((await run("s-verify")).profileId).toBe("Profile 2"); // 두 번째 호출: 만들 때의 프로필을 그대로 이어 쓴다
-    await expect(run("broken")).rejects.toThrow("EGO_BACKEND_DOWN");
+    const first = run("s-verify", home);
+    expect((await first.task).profileId).toBe("Profile 3");
+    expect((await run("s-verify", home, first.spaces).task).profileId).toBe("Profile 3"); // 두 번째 호출: 만들 때의 프로필을 그대로 이어 쓴다
+    await expect(run("broken", home).task).rejects.toThrow("EGO_BACKEND_DOWN");
+    const missing = run("s-missing", home.filter((item) => item.name !== VERIFY_PROFILE_NAME));
+    await expect(missing.task).rejects.toThrow(VERIFY_PROFILE_MISSING);
+    expect(missing.spaces.size).toBe(0);
   });
 
   test("session ids that differ only at the end never share a space", () => {
@@ -112,7 +118,7 @@ describe("runEgoBrowser results", () => {
     const { exec } = fakeExec(ok(long, "warn"));
     const run = await runEgoBrowser({ script: "1", profile: "verify", finish: true }, { exec, sessionId: "s" });
     expect(run.finished).toBe(true);
-    expect(run.text).toContain("Profile 2");
+    expect(run.text).toContain(VERIFY_PROFILE_NAME);
     expect(run.text).toContain("정리됨");
     expect(run.text).toContain("HEAD");
     expect(run.text).toContain("TAIL");

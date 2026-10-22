@@ -25,8 +25,13 @@ export interface EgoDeps {
   sessionId: string;
 }
 
-/** 프로필 정본: "user"는 ego 기본 프로필(사용자 로그인), "verify"는 사용자가 CUELO 화면 검증 전용으로 지정한 `Profile 2`. */
-export const VERIFY_PROFILE_ID = "Profile 2";
+/**
+ * 프로필 정본: "user"는 ego 기본 프로필(사용자 로그인), "verify"는 사용자가 CUELO 화면 검증 전용으로 만든, 어디에도 로그인하지 않은 프로필.
+ * 디렉터리 id(`Profile 2` 등)는 PC마다 다르다(10-22 집은 `Profile 2`가 사용자 프로필이었다). 그래서 표시 이름으로 찾는다.
+ */
+export const VERIFY_PROFILE_NAME = "CUELO 검증";
+/** 검증 프로필이 없을 때의 오류 표지. 다른 프로필로 넘어가지 않는다(사용자 로그인이 든 프로필로 검증하지 않는다). */
+export const VERIFY_PROFILE_MISSING = "ego_browser: 검증 프로필이 없다";
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 600_000;
 const MAX_HEAD = 20_000;
@@ -43,13 +48,23 @@ export function spaceName(sessionId: string, profile: EgoProfile): string {
 /** 이미 있는 공간에 profileId를 주면 ego가 거절한다. 그 거절만 profileId 없이 이어 쓰기로 바꾼다(그 밖의 오류는 그대로 던진다). */
 export const RESUME_ERROR_MARKER = "only applies when creating";
 
-/** 모델 스크립트 앞에 붙이는 머리말. `task`와 `page`(p1)를 묶는다. profileId는 공간을 처음 만들 때만 적용된다. */
+/**
+ * 모델 스크립트 앞에 붙이는 머리말. `task`와 `page`(p1)를 묶는다. profileId는 공간을 처음 만들 때만 적용된다.
+ * verify는 ego `profiles()`에서 이름이 VERIFY_PROFILE_NAME인 프로필의 id를 쓴다. 없으면 공간을 만들지 않고 던진다.
+ */
 export function buildPrelude(name: string, profile: EgoProfile): string {
   const quoted = JSON.stringify(name);
-  const create = profile === "verify"
-    ? `taskSpace(${quoted}, { profileId: ${JSON.stringify(VERIFY_PROFILE_ID)} }).catch((error) => {\n  if (String(error?.message).includes(${JSON.stringify(RESUME_ERROR_MARKER)})) return taskSpace(${quoted});\n  throw error;\n})`
-    : `taskSpace(${quoted})`;
-  return `const task = await ${create};\nconst page = task.page("p1");\n`;
+  if (profile !== "verify") return `const task = await taskSpace(${quoted});\nconst page = task.page("p1");\n`;
+  const wanted = JSON.stringify(VERIFY_PROFILE_NAME);
+  const missing = JSON.stringify(`${VERIFY_PROFILE_MISSING}(이름 「${VERIFY_PROFILE_NAME}」). ego lite에서 로그인하지 않은 새 프로필을 이 이름으로 만들어야 한다. 사용자 프로필로 대신 검증하지 않는다.`);
+  return `const verifyProfile = (await profiles()).find((item) => item.name === ${wanted});
+if (!verifyProfile) throw new Error(${missing});
+const task = await taskSpace(${quoted}, { profileId: verifyProfile.id }).catch((error) => {
+  if (String(error?.message).includes(${JSON.stringify(RESUME_ERROR_MARKER)})) return taskSpace(${quoted});
+  throw error;
+});
+const page = task.page("p1");
+`;
 }
 
 /** finish가 true면 스크립트가 던져도 공간을 정리한다. 본문은 블록 안에서 돈다. */
@@ -116,7 +131,7 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     const detail = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
     throw new Error(`${UNAVAILABLE}${detail ? `\n${detail}` : ""}`);
   }
-  const label = `TaskSpace ${name} (${profile === "verify" ? `${VERIFY_PROFILE_ID}, 검증 전용` : "사용자 기본 프로필"})`;
+  const label = `TaskSpace ${name} (${profile === "verify" ? `${VERIFY_PROFILE_NAME}, 검증 전용` : "사용자 기본 프로필"})`;
   // ego-browser nodejs는 console.log를 stderr로 보낸다. 성공 때는 두 스트림이 모두 스크립트 출력이다.
   const clean = (text: string) => clip(text.trim());
   const failed = result.killed || result.code !== 0;
@@ -193,13 +208,13 @@ export function createFactory(exec: Exec): CustomToolFactory {
         + "`script` is the body of an `ego-browser nodejs` script (ESM, top-level await, Node.js, not the page): the tool has already run `const task = await taskSpace(<name>)` and `const page = task.page(\"p1\")`, so use `task`/`page` directly. Browser-side JS goes inside `page.evaluate()`. "
         + "Run `ego-browser skill` once in bash to read the API guide. "
         + "One TaskSpace is kept per session and profile and resumed on every call (variables do not persist between calls, tabs and pages do). "
-        + "`profile: \"user\"` (default) is the user's own ego profile with their logins; `profile: \"verify\"` is the dedicated verification profile (Profile 2, logged out everywhere) and MUST be used for CUELO screen/UI verification. "
+        + `\`profile: "user"\` (default) is the user's own ego profile with their logins; \`profile: "verify"\` is the dedicated verification profile (the ego profile named "${VERIFY_PROFILE_NAME}", logged out everywhere) and MUST be used for CUELO screen/UI verification. If that profile does not exist the call fails; do not fall back to the user profile, tell the user to create it. `
         + "Never clear cookies, cache or storage (it hits the whole profile). For login, permission or CAPTCHA steps call `task.handOff()` and tell the user (it stops the script; do not retry or take control back until the user says continue). "
         + "Set `finish: true` on the last call to close the space (`task.finish({ keep: [] })`, also on error); spaces still open when the session ends are closed automatically unless they were handed off to the user. "
         + "Do not use relay (`browser.open`) for this unless the user names a tab that is already open.",
       parameters: pi.zod.object({
         script: pi.zod.string().describe("Script body; `task` and `page` (p1) are already defined"),
-        profile: pi.zod.enum(["user", "verify"]).optional().describe("user = the user's default ego profile (default); verify = Profile 2, verification only"),
+        profile: pi.zod.enum(["user", "verify"]).optional().describe(`user = the user's default ego profile (default); verify = the ego profile named "${VERIFY_PROFILE_NAME}", verification only`),
         finish: pi.zod.boolean().optional().describe("Close the TaskSpace after this script, even if it throws"),
         timeoutMs: pi.zod.number().optional().describe(`Kill the script after this many ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS})`),
       }),
