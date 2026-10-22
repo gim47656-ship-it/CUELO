@@ -344,7 +344,7 @@ function attachFactCitations(memory: { conn: { query(sql: string): { get(...para
  * 않는다(근거 후보로 남는다). 앵커 규칙은 learn 의 learnAnchorFound 와 같게 유지한다(두 사본: 이 블록과 learnEvidenceBlock).
  * 주석·문자열에 백틱과 달러 중괄호를 쓰지 않는다(이 파일의 String.raw 안이다).
  */
-const recallProvenanceBlock = String.raw`// HANSE: recall provenance note
+const recallProvenanceFreshnessBlock = String.raw`// HANSE: recall provenance note
 // HANSE: recall marks gone citations
 type RecallProvenance = { scope?: string; revision: number; first?: string; corrected?: string; citations: string[]; gone: string[] };
 function recallMetadata(result: RecallResult): Record<string, unknown> | null {
@@ -585,6 +585,28 @@ function attachFactCitations(memory: { conn: { query(sql: string): { get(...para
 }
 
 `;
+
+/**
+ * 2026-10-23 (0.10.58): attachFactCitations 가 cwd·updated_cwd 를 unknown 그대로 metadata(JsonValue) 에 넣어 코어 tsc 에서 TS2322 두 건이
+ * 났다. 문자열일 때만 옮긴다. 위 근거 사라짐 판(recallProvenanceFreshnessBlock, 배포본 df065810)에서 그 몇 줄만 바꾼 본문이다.
+ * 배포본은 legacyPatched 로 이 본문으로 올라온다. 새 marker 줄을 하나 더해 옛 판과 구분한다.
+ */
+const recallProvenanceBlock = (() => {
+	const from = [
+		"// HANSE: recall marks gone citations\n",
+		"\t\t\t\tresult.metadata = { citations: parsed.citations, cwd: parsed.cwd, updated_cwd: parsed.updated_cwd };\n",
+	];
+	const to = [
+		"// HANSE: recall marks gone citations\n// HANSE: recall fact citation metadata is typed\n",
+		"\t\t\t\tconst metadata: NonNullable<RecallResult[\"metadata\"]> = { citations: parsed.citations };\n\t\t\t\tif (typeof parsed.cwd === \"string\") metadata.cwd = parsed.cwd;\n\t\t\t\tif (typeof parsed.updated_cwd === \"string\") metadata.updated_cwd = parsed.updated_cwd;\n\t\t\t\tresult.metadata = metadata;\n",
+	];
+	let text = recallProvenanceFreshnessBlock;
+	for (let i = 0; i < from.length; i++) {
+		if (text.split(from[i]).length !== 2) throw new Error(`recallProvenanceBlock: expected exactly one ${JSON.stringify(from[i])}`);
+		text = text.replace(from[i], () => to[i]);
+	}
+	return text;
+})();
 
 /**
  * 2026-10-17 근거형 learn(이슈 #32 배포본). kind 와 citations 를 받아 저장 전에 검증하고 metadata 에 남긴다. 존재(경로·앵커)만 보며
@@ -8545,19 +8567,19 @@ function operationFromNative(op: string): Operation | undefined {
 		// 위 항목의 짝. 범위·정정·근거 표시 보조 함수와 안내 줄(상세는 memory://<id>). 본문은 recallProvenanceBlock 이다.
 		// 2026-10-23: 배포본 둘이 이 본문으로 올라온다. 근거 후보 판(recallProvenanceCitationsBlock)이 본 후보와 18.9.1 후보의 legacyPatched 이고,
 		// 정정 표시만 있던 첫 판(recallProvenanceLegacyBlock)은 requires 로 가른 두 후보가 받는다. 두 옛 판이 서로의 순정으로 읽히지 않게
-		// 본 후보와 18.9.1 후보는 첫 판 본문이 있으면 후보에서 빠진다.
+		// 본 후보와 18.9.1 후보는 첫 판 본문이 있으면 후보에서 빠진다. 0.10.58: 근거 사라짐 판(recallProvenanceFreshnessBlock)에서 올리는 후보 둘을 끝에 더했다.
 		file: "src/mnemopi/state.ts",
 		// 18.9.1: 반환형이 { text, offsets } 로 바뀌고 JSDoc 이 붙었다. 보조 함수는 JSDoc 앞에 둔다(ADAPT).
-		excludes: ["findPersistedRecall", recallProvenanceLegacyBlock],
-		marker: "// HANSE: recall marks gone citations",
+		excludes: ["findPersistedRecall", recallProvenanceLegacyBlock, recallProvenanceFreshnessBlock],
+		marker: "// HANSE: recall fact citation metadata is typed",
 		anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
 		patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 		legacyPatched: recallProvenanceCitationsBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 		alternates: [{
 			file: "src/mnemopi/state.ts",
 			requires: "findPersistedRecall",
-			excludes: recallProvenanceLegacyBlock,
-			marker: "// HANSE: recall marks gone citations",
+			excludes: [recallProvenanceLegacyBlock, recallProvenanceFreshnessBlock],
+			marker: "// HANSE: recall fact citation metadata is typed",
 			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			legacyPatched: recallProvenanceCitationsBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
@@ -8565,17 +8587,33 @@ function operationFromNative(op: string): Operation | undefined {
 			// 정정 표시만 있던 첫 판에서 바로 올리는 후보. requires 가 그 판의 적용 본문 전체라 위 두 후보와 겹치지 않는다.
 			file: "src/mnemopi/state.ts",
 			requires: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
-			marker: "// HANSE: recall marks gone citations",
+			marker: "// HANSE: recall fact citation metadata is typed",
 			anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
 			patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 			legacyPatched: recallProvenanceLegacyBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
 		}, {
 			file: "src/mnemopi/state.ts",
 			requires: recallProvenanceLegacyBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
-			marker: "// HANSE: recall marks gone citations",
+			marker: "// HANSE: recall fact citation metadata is typed",
 			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 			legacyPatched: recallProvenanceLegacyBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+		}, {
+			// 2026-10-23 (0.10.58): 배포본 df065810(recallProvenanceFreshnessBlock)에서 올리는 두 후보(본 후보, 18.9.1 후보). requires 가 그 판의 적용 본문
+			// 전체라 다른 후보와 겹치지 않고, 위 후보들은 그 본문이 있으면 후보에서 빠진다.
+			file: "src/mnemopi/state.ts",
+			requires: recallProvenanceFreshnessBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+			marker: "// HANSE: recall fact citation metadata is typed",
+			anchor: "function formatRecallBlock(results: RecallResult[]): string {\n",
+			patched: recallProvenanceBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+			legacyPatched: recallProvenanceFreshnessBlock + "function formatRecallBlock(results: RecallResult[]): string {\n",
+		}, {
+			file: "src/mnemopi/state.ts",
+			requires: recallProvenanceFreshnessBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			marker: "// HANSE: recall fact citation metadata is typed",
+			anchor: "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			patched: recallProvenanceBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
+			legacyPatched: recallProvenanceFreshnessBlock + "/** Renders a recall block and the offset where each result's text starts in it. */\nfunction formatRecallBlock(results: RecallResult[]): { text: string; offsets: number[] } {\n",
 		}],
 	},
 	{
