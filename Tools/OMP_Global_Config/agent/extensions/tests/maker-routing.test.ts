@@ -1651,12 +1651,38 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(reasoned.input!.context).toBe("원래 batch context");
     expect(reasoned.input!.tasks[0]!.task).toBe(`${brief}\n${reason}`);
 
-    const misplaced = await h.beforeTask({
+    // 참조가 하나면 context에 실은 근거(다음 줄·같은 줄·근거 한 줄만)를 그 task 참조의 근거로 옮겨 같은 게이트를 통과한다.
+    for (const context of [`PREPARED_CONTEXT\n${reason}`, `PREPARED_CONTEXT ${reason}`, reason]) {
+      const moved = await h.beforeTask({
+        context,
+        tasks: [{ name: h.task.name, task: `PREPARED_TASK: ${preparedId}`, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }],
+      }, {} as never) as { block?: boolean; input?: { context: string; tasks: Array<{ task: string }> } };
+      expect(moved.block).toBeUndefined();
+      expect(moved.input!.context).toBe("원래 batch context");
+      expect(moved.input!.tasks[0]!.task).toBe(`${brief}\n${reason}`);
+    }
+    // 참조에도 근거가 있거나 context 근거 뒤에 다른 줄이 붙으면 옮기지 않고 거절한다.
+    for (const [context, task] of [
+      [`PREPARED_CONTEXT\n${reason}`, `PREPARED_TASK: ${preparedId}\n${reason}`],
+      [`PREPARED_CONTEXT\n${reason}\n덧붙인 본문`, `PREPARED_TASK: ${preparedId}`],
+    ]) {
+      const rejected = await h.beforeTask({
+        context,
+        tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }],
+      }, {} as never) as { block: boolean; reason: string };
+      expect(rejected.block).toBe(true);
+      expect(rejected.reason).toContain("task 참조의 다음 줄 'ROUTING_REASON: <근거>'");
+    }
+    // 참조가 여럿이면 근거를 붙일 task를 정할 수 없으므로 거절한다.
+    const second = { name: "Second", task: brief.replace("src/view.ts", "src/second.ts"), assessment: { ...facts, paths: ["src/second.ts"] } };
+    const pair = await h.prepare("두 task context", [h.task, second], {} as never) as Array<{ preparedId: string }>;
+    expect(() => resolvePreparedTaskInput({
       context: `PREPARED_CONTEXT\n${reason}`,
-      tasks: [{ name: h.task.name, task: `PREPARED_TASK: ${preparedId}`, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }],
-    }, {} as never) as { block: boolean; reason: string };
-    expect(misplaced.block).toBe(true);
-    expect(misplaced.reason).toContain("task 참조의 다음 줄 'ROUTING_REASON: <근거>'");
+      tasks: [
+        { name: h.task.name, task: `PREPARED_TASK: ${pair[0]!.preparedId}` },
+        { name: second.name, task: `PREPARED_TASK: ${pair[1]!.preparedId}` },
+      ],
+    }, h.sessionId)).toThrow("참조 2개");
   });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [
