@@ -8807,6 +8807,60 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\t\t\tconst recall = await this.#recallBlock(truncated, undefined, true);\n",
 	},
 	{
+		// 2026-10-23 결과별 dense 대역(doc/history/2026/10/23-memory-recall-precision): 턴 게이트를 통과한 자동 첫 턴 회상이 후보 8개를 그대로 싣던 것을,
+		// 최고 후보의 원시 dense 보다 대역(기본 0.03) 넘게 뒤처지는 결과는 싣지 않게 한다. 0 이면 끈다(옛 동작). 앵커는 게이트 항목의 앵커와 겹치지 않는 줄만 쓴다.
+		file: "src/mnemopi/settings.ts",
+		marker: "cfgMnemopiRecallDenseBand",
+		anchor: "export const cfgMnemopiRecallLimit = register({ id: \"mnemopi.recallLimit\", type: \"number\", default: 8 });\n",
+		patched: "export const cfgMnemopiRecallLimit = register({ id: \"mnemopi.recallLimit\", type: \"number\", default: 8 });\n\n// HANSE: per-result dense band setting (0 disables)\nexport const cfgMnemopiRecallDenseBand = register({ id: \"mnemopi.recallDenseBand\", type: \"number\", default: 0.035 });\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\tcfgMnemopiRecallDenseBand,\n",
+		anchor: "\tcfgMnemopiRecallLimit,\n",
+		patched: "\tcfgMnemopiRecallLimit,\n\tcfgMnemopiRecallDenseBand,\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\trecallDenseBand: number;\n",
+		anchor: "\trecallLimit: number;\n",
+		patched: "\trecallLimit: number;\n\t/** HANSE: per-result dense band; the first-turn injection drops results whose raw dense cosine trails the best by more than this. 0 disables. */\n\trecallDenseBand: number;\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "\t\trecallDenseBand: Math.min(1, Math.max(0, Number(cfgMnemopiRecallDenseBand.get(settings)) || 0)),\n",
+		anchor: "\t\trecallLimit: Math.max(1, Math.floor(cfgMnemopiRecallLimit.get(settings))),\n",
+		patched: "\t\trecallLimit: Math.max(1, Math.floor(cfgMnemopiRecallLimit.get(settings))),\n\t\trecallDenseBand: Math.min(1, Math.max(0, Number(cfgMnemopiRecallDenseBand.get(settings)) || 0)),\n",
+	},
+	{
+		// 메서드는 게이트·recallForContext 항목이 바꾸는 구간 밖(budgetRecallBlock 앞)에 둔다.
+		file: "src/mnemopi/state.ts",
+		marker: "#recallBanded(results: RecallResult[]): RecallResult[] {",
+		anchor: "\t/**\n\t * Cuts a recall block to what the prompt carries next to the memory instructions: the\n",
+		patched: "\t// HANSE: per-result dense band\n"
+			+ "\t/**\n\t * Per-result cut for the automatic first-turn recall, applied after the turn gate passed: a result whose raw dense cosine trails\n\t * the best candidate's by more than `mnemopi.recallDenseBand` is not shown. The best result always stays, and a result with no\n\t * dense signal (facts, rows not embedded yet) stays too. Same e5-only calibration as the turn gate; 0 disables.\n\t */\n"
+			+ "\t#recallBanded(results: RecallResult[]): RecallResult[] {\n"
+			+ "\t\tconst band = this.config.recallDenseBand;\n"
+			+ "\t\tconst provider = this.config.providerOptions;\n"
+			+ "\t\tif (!(typeof band === \"number\" && band > 0)) return results;\n"
+			+ "\t\tif (!provider || provider.noEmbeddings || provider.embeddingApiUrl || !/(^|[/_-])e5([-_]|$)/i.test(provider.embeddingModel ?? \"\")) return results;\n"
+			+ "\t\tlet best = 0;\n"
+			+ "\t\tfor (const result of results) if (typeof result.dense_score === \"number\" && result.dense_score > best) best = result.dense_score;\n"
+			+ "\t\tif (best <= 0) return results;\n"
+			+ "\t\tconst kept = results.filter(result => {\n\t\t\tconst dense = result.dense_score;\n\t\t\treturn typeof dense !== \"number\" || !(dense > 0) || dense >= best - band;\n\t\t});\n"
+			+ "\t\tif (kept.length < results.length) logger.debug(\"Mnemopi: first-turn recall trimmed by dense band\", { best, band, shown: kept.length, candidates: results.length });\n"
+			+ "\t\treturn kept;\n"
+			+ "\t}\n\n"
+			+ "\t/**\n\t * Cuts a recall block to what the prompt carries next to the memory instructions: the\n",
+	},
+	{
+		// 자동 첫 턴 경로(autoInjection)만 대역을 받는다. 줄에 실리는 shown 으로 본문과 전달 기억 목록을 함께 만든다.
+		file: "src/mnemopi/state.ts",
+		marker: "const shown = autoInjection ? this.#recallBanded(results) : results;",
+		anchor: "\t\tconst { text, offsets } = formatRecallBlock(results);\n\t\tconst memories = results.flatMap((result, index) =>\n",
+		patched: "\t\t// HANSE: per-result dense band\n\t\tconst shown = autoInjection ? this.#recallBanded(results) : results;\n\t\tconst { text, offsets } = formatRecallBlock(shown);\n\t\tconst memories = shown.flatMap((result, index) =>\n",
+	},
+	{
 		file: "src/tools/learn.ts",
 		marker: 'import { redactMemorySecrets } from "../memory-backend/redact";',
 		anchor: 'import { localBackend } from "../memory-backend/local-backend";',

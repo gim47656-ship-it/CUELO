@@ -85,6 +85,7 @@ export interface CrossReviewParams {
   authors?: string[];
   highRisk?: boolean;
   previousReviewId?: string;
+  inputs?: string[];
   references?: string[];
   probeResults?: { findingId: string; command: string; exitCode: number; output: string }[];
   reviewId?: string;
@@ -116,7 +117,7 @@ export async function executeCrossReview(
   if (params.action === "review") {
     const input: ReviewInput = {
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
-      highRisk: params.highRisk, previousReviewId: params.previousReviewId, references: params.references, probeResults: params.probeResults,
+      highRisk: params.highRisk, previousReviewId: params.previousReviewId, inputs: params.inputs, references: params.references, probeResults: params.probeResults,
     };
     return runReview(input, deps, signal);
   }
@@ -132,7 +133,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 high-risk 코드의 review 체인을 돌린 뒤 reviewId 체인과 finding별 제안 status·근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector이며 두 계열이면 둘 다 돌린다. Main 세션은 \"main\"(자기 현재 모델)도 쓸 수 있지만 subagent 세션에서 \"main\"은 거절되므로 자기 모델 selector를 주고, subagent 세션의 1회차 authors에 세션 자신의 모델과 같은 계열이 없으면 거절된다. previousReviewId를 주면 다음 라운드이고 체인은 최대 3회(probe 라운드 1회 + probe가 아닌 라운드 2회)다: probe가 아닌 라운드는 직전 라운드가 본 내용 이후의 delta만 보며 바뀐 것이 없으면 거절한다. reviewer는 코드만으로 가릴 수 없는 의심에 finding.probe{steps, expectIfReal, expectIfNot?}(재현 실험)를 붙일 수 있다. Main이나 Maker가 그 실험을 돌린 뒤 previousReviewId와 probeResults[{findingId, command, exitCode, output}]를 주면 probe 라운드가 되어 코드 변경이 없어도 실험 결과로 한 번 더 판단받고, reviewer가 finding마다 verdicts{confirmed|withdrawn|unresolved}를 낸다(판단이 빠지면 unresolved). 체인에 없는 findingId·중복 결과·두 번째 probe 라운드·개인키 블록이 든 결과는 거절하며, output은 발췌로 결과당 8KB(넘으면 앞뒤만 남김)·합계 40KB(넘으면 거절)이고 비밀 값은 가려 신뢰하지 않는 자료로 전달한다. verdict는 자문일 뿐 finding을 자동으로 닫거나 통과시키지 않는다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 비밀 경로·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve(Main 전용, 다른 세션이 시작한 체인도 닫을 수 있다): reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다(withdrawn 판단도 자동으로 닫지 않는다). git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
+    description: "계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 high-risk 코드의 review 체인을 돌린 뒤 reviewId 체인과 finding별 제안 status·근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→Astra, OpenAI·그 밖의 저자→Opus)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. authors는 코드를 쓴 모델 selector이며 두 계열이면 둘 다 돌린다. Main 세션은 \"main\"(자기 현재 모델)도 쓸 수 있지만 subagent 세션에서 \"main\"은 거절되므로 자기 모델 selector를 주고, subagent 세션의 1회차 authors에 세션 자신의 모델과 같은 계열이 없으면 거절된다. previousReviewId를 주면 다음 라운드이고 체인은 최대 3회(probe 라운드 1회 + probe가 아닌 라운드 2회)다: probe가 아닌 라운드는 직전 라운드가 본 내용 이후의 delta만 보며 바뀐 것이 없으면 거절한다. reviewer는 코드만으로 가릴 수 없는 의심에 finding.probe{steps, expectIfReal, expectIfNot?}(재현 실험)를 붙일 수 있다. Main이나 Maker가 그 실험을 돌린 뒤 previousReviewId와 probeResults[{findingId, command, exitCode, output}]를 주면 probe 라운드가 되어 코드 변경이 없어도 실험 결과로 한 번 더 판단받고, reviewer가 finding마다 verdicts{confirmed|withdrawn|unresolved}를 낸다(판단이 빠지면 unresolved). 체인에 없는 findingId·중복 결과·두 번째 probe 라운드·개인키 블록이 든 결과는 거절하며, output은 발췌로 결과당 8KB(넘으면 앞뒤만 남김)·합계 40KB(넘으면 거절)이고 비밀 값은 가려 신뢰하지 않는 자료로 전달한다. verdict는 자문일 뿐 finding을 자동으로 닫거나 통과시키지 않는다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 비밀 경로·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). inputs(선택, 최대 10개)는 변경이 일관돼야 하는 명세·계약·스키마·호출자 파일이며, references와 같은 읽기·필터·제한으로 별도 블록에 싣고(심사 대상 아님, 빠진 것은 skippedInputs) files와 겹치면 거절한다. references와 달리 통과에 묶여서, resolve 뒤 입력이 바뀌거나 지워지면 git_finalize가 그 통과를 덮지 않는 것으로 보고 다시 검토를 요구한다(inputs 없는 검토는 그대로). 이어지는 라운드는 앞 라운드의 입력을 이어받고 더할 수 있으며, 이어받은 입력을 더 읽을 수 없으면 거절하므로 빼려면 previousReviewId 없이 새로 시작한다. 파일 내용은 OpenAI 또는 Anthropic으로 전송되며 비밀 이름·내용·바이너리·큰 입력은 거절/제외한다. action=resolve(Main 전용, 다른 세션이 시작한 체인도 닫을 수 있다): reviewId 체인의 모든 finding에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다(withdrawn 판단도 자동으로 닫지 않는다). git_finalize는 trigger·표본에 걸린 코드 파일에 이 통과 기록을 요구한다. reviewer의 PASS 표현은 근거가 아니다.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -140,6 +141,7 @@ export default function crossReview(pi: ExtensionAPI): void {
       authors: z.array(z.string()).optional(),
       highRisk: z.boolean().optional(),
       previousReviewId: z.string().optional(),
+      inputs: z.array(z.string()).optional(),
       references: z.array(z.string()).optional(),
       probeResults: z.array(z.object({ findingId: z.string(), command: z.string(), exitCode: z.number(), output: z.string() })).optional(),
       reviewId: z.string().optional(),

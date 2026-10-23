@@ -172,6 +172,8 @@ export interface CrossReviewRecord {
   triggers: string[];
   /** 검토한 파일과 검토 시점의 git blob. */
   files: CrossReviewFile[];
+  /** 선택. 변경이 일관돼야 하는 의존 입력(명세·계약·호출자)과 reviewer가 본 시점의 git blob. 심사 대상이 아니고 files에 들지 않지만 통과에 묶인다. */
+  inputs?: CrossReviewFile[];
   /** 안전 필터·변경 없음 등으로 검토에서 빠진 파일과 이유. 이 파일은 통과가 덮지 않는다. */
   skipped: { path: string; reason: string }[];
   /** 비밀로 보여 값을 가린 채 검토한 파일과 가린 횟수. */
@@ -207,6 +209,8 @@ export interface CrossReviewResolveRecord {
   pass: boolean;
   /** resolve 시점의 파일 내용(git blob). pass일 때만 게이트가 덮는 내용으로 쓴다. */
   files: CrossReviewFile[];
+  /** 선택. 체인 마지막 라운드가 본 의존 입력의 blob. pass일 때 게이트가 이 입력이 그대로인 동안만 files를 덮는 것으로 본다. */
+  inputs?: CrossReviewFile[];
 }
 
 export interface CrossReviewWaiverRecord {

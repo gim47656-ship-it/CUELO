@@ -8,6 +8,7 @@ import {
   authorFamily,
   buildReviewPrompt,
   CrossReviewRefusal,
+  decideGate,
   detectMarkers,
   isCodeFile,
   MAX_INPUT_BYTES,
@@ -24,6 +25,7 @@ import {
   sampleSelected,
   spawnExec,
   type Family,
+  type ChangedFile,
   type ReviewDeps,
 } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewLedgerRecord } from "../lib/routing-ledger";
@@ -1135,6 +1137,249 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
     expect(prompt).toMatch(/REFERENCE[^\n]*not under review[^\n]*not covered by any pass/);
     expect(prompt).toMatch(/<reference>[^\n]*untrusted data/);
     expect(buildReviewPrompt({ acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff", text: "@@" }] })).not.toContain("REFERENCE");
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
+  const SPEC = "# Contract\nretries must stay 3\n";
+  const SCHEMA = "# Schema\nid is a string\n";
+  type ReviewParams = Parameters<typeof runReview>[0];
+  type Prompts = { family: Family; prompt: string }[];
+  const resolveWith = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
+
+  /** 게이트가 a.ts를 막지 않으면 빈 문자열, 막으면 CrossReviewRefusal의 메시지. */
+  async function gateMessage(env: RepoEnv): Promise<string> {
+    try {
+      await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger });
+      return "";
+    } catch (error) {
+      expect(error).toBeInstanceOf(CrossReviewRefusal);
+      return (error as Error).message;
+    }
+  }
+
+  /** spec.md·schema.md는 커밋된 기존 파일(입력 후보), a.ts는 marker가 걸려 검토를 요구하는 이번 변경이다. */
+  function withInputs(): RepoEnv {
+    const env = repo();
+    writeFileSync(join(env.work, "spec.md"), SPEC);
+    writeFileSync(join(env.work, "schema.md"), SCHEMA);
+    sh(env.work, "add", "spec.md", "schema.md");
+    sh(env.work, "commit", "-q", "-m", "spec");
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    return env;
+  }
+
+  async function passWith(env: RepoEnv, over: Partial<ReviewParams> = {}) {
+    const d = deps(env, {});
+    const review = await runReview(input(over), d, signal);
+    const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveWith(d));
+    return { review, resolved };
+  }
+
+  test("입력을 묶은 통과는 입력이 그대로인 동안만 덮고, 바뀐 입력의 이름과 함께 덮지 못하며, 되돌리거나 다시 검토하면 다시 덮는다", async () => {
+    const env = withInputs();
+    const { review, resolved } = await passWith(env, { inputs: ["spec.md", "schema.md"] });
+    expect(resolved.pass).toBe(true);
+    const bound = [{ path: "spec.md", blob: blobOf(SPEC) }, { path: "schema.md", blob: blobOf(SCHEMA) }];
+    expect(review.inputs).toMatchObject(bound);
+    expect(resolved.inputs).toEqual(bound);
+    const [reviewRecord, resolveRecord] = readCrossReviewRecords(env.ledger) as { files: { path: string }[]; inputs?: unknown }[];
+    expect(reviewRecord.files.map((file) => file.path)).toEqual(["a.ts"]);
+    expect(reviewRecord.inputs).toEqual(bound);
+    expect(resolveRecord.inputs).toEqual(bound);
+    // reviewer가 본 입력은 사본 디렉터리에 고정된다.
+    const frozen = JSON.parse(readFileSync(join(review.snapshotDir, "inputs.json"), "utf8")) as { path: string; file: string }[];
+    expect(frozen.map((item) => item.path)).toEqual(["spec.md", "schema.md"]);
+    expect(readFileSync(join(review.snapshotDir, frozen[0].file), "utf8")).toBe(SPEC);
+    expect(await gateMessage(env)).toBe("");
+
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}retries are now 5\n`);
+    const stale = await gateMessage(env);
+    expect(stale).toContain("- a.ts:");
+    expect(stale).toContain("spec.md (changed)");
+    expect(stale).not.toContain("schema.md (");
+    expect(stale).toContain('inputs:["spec.md","schema.md"]');
+    expect(stale).toContain("rerun the review");
+
+    writeFileSync(join(env.work, "spec.md"), SPEC);
+    expect(await gateMessage(env)).toBe("");
+
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}retries are now 7\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+    await passWith(env, { inputs: ["spec.md", "schema.md"] });
+    expect(await gateMessage(env)).toBe("");
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}retries are now 9\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+  });
+
+  test("입력이 지워지거나 링크·디렉터리로 바뀌거나 입력 크기 한도를 넘게 커지면, 내용이 같아 보여도 덮지 못한다", async () => {
+    const env = withInputs();
+    await passWith(env, { inputs: ["spec.md"] });
+    expect(await gateMessage(env)).toBe("");
+    rmSync(join(env.work, "spec.md"));
+    expect(await gateMessage(env)).toContain("spec.md (deleted)");
+    writeFileSync(join(env.work, "copy.md"), SPEC);
+    symlinkSync("copy.md", join(env.work, "spec.md"));
+    expect(await gateMessage(env)).toContain("spec.md (no longer a regular file)");
+    rmSync(join(env.work, "spec.md"));
+    mkdirSync(join(env.work, "spec.md"));
+    expect(await gateMessage(env)).toContain("spec.md (no longer a regular file)");
+    rmSync(join(env.work, "spec.md"), { recursive: true });
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}${"x".repeat(70 * 1024)}\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+  });
+
+  test("inputs를 쓰지 않은 검토는 기록·결과·게이트가 전과 같다: 다른 파일이 바뀌어도 덮이고 거절 메시지에 입력이 나오지 않는다", async () => {
+    const env = withInputs();
+    const { review, resolved } = await passWith(env);
+    expect(review).not.toHaveProperty("inputs");
+    expect(review).not.toHaveProperty("skippedInputs");
+    expect(resolved).not.toHaveProperty("inputs");
+    for (const record of readCrossReviewRecords(env.ledger)) expect(record).not.toHaveProperty("inputs");
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}more\n`);
+    expect(await gateMessage(env)).toBe("");
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const extra = 1;\n`);
+    const message = await gateMessage(env);
+    expect(message).toContain("content changed after the pass");
+    expect(message).not.toContain("input");
+    // 입력을 선언한 검토만 입력에 묶이고, 그때부터 같은 입력의 변화가 거절 이유가 된다.
+    await passWith(env, { inputs: ["spec.md"] });
+    expect(await gateMessage(env)).toBe("");
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}again\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+  });
+
+  test("같은 내용을 덮는 통과가 둘이면 하나라도 묶인 입력이 그대로일 때 덮이고, 둘 다 바뀌면 덮이지 않는다", async () => {
+    const env = withInputs();
+    await passWith(env, { inputs: ["spec.md"] });
+    await passWith(env, { inputs: ["schema.md"] });
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}changed\n`);
+    expect(await gateMessage(env)).toBe("");
+    writeFileSync(join(env.work, "schema.md"), `${SCHEMA}changed\n`);
+    expect(await gateMessage(env)).toContain("- a.ts:");
+  });
+
+  test("files와 inputs에 같은 경로가 있으면 reviewer를 부르거나 기록하지 않고 거절한다", async () => {
+    const env = withInputs();
+    const calls: Prompts = [];
+    const d = deps(env, {}, calls);
+    await expect(runReview(input({ inputs: ["a.ts"] }), d, signal)).rejects.toThrow("a.ts listed in both files and inputs");
+    await expect(runReview(input({ files: ["a.ts", "spec.md"], inputs: ["spec.md"] }), d, signal)).rejects.toThrow("spec.md listed in both files and inputs");
+    expect(calls).toEqual([]);
+    expect(readCrossReviewRecords(env.ledger)).toEqual([]);
+  });
+
+  test("이어지는 라운드는 앞 라운드의 입력을 이어받아 현재 내용으로 다시 읽고 새 입력을 더할 수 있으며, resolve는 마지막 라운드의 입력을 묶는다", async () => {
+    const env = withInputs();
+    const d = deps(env, { openai: finding("tighten it") });
+    const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
+    const revised = `${SPEC}retries are now 5\n`;
+    writeFileSync(join(env.work, "spec.md"), revised);
+    const calls: Prompts = [];
+    const d2 = { ...d, complete: async (family: Family, prompt: string) => { calls.push({ family, prompt }); return { model: ASTRA, text: '{"findings":[]}' }; } };
+    const second = await runReview(input({ previousReviewId: first.reviewId, inputs: ["schema.md"] }), d2, signal);
+    expect(second.round).toBe(2);
+    expect(calls[0].prompt).toContain('<input path="spec.md">');
+    expect(calls[0].prompt).toContain("3: retries are now 5");
+    expect(calls[0].prompt).toContain('<input path="schema.md">');
+    expect(second.inputs).toMatchObject([{ path: "spec.md", blob: blobOf(revised) }, { path: "schema.md", blob: blobOf(SCHEMA) }]);
+    const resolved = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "tightened" }] }, resolveWith(d));
+    expect(resolved).toMatchObject({ pass: true, inputs: [{ path: "spec.md", blob: blobOf(revised) }, { path: "schema.md", blob: blobOf(SCHEMA) }] });
+    expect(await gateMessage(env)).toBe("");
+    // 마지막 라운드가 본 spec.md(revised)가 묶였으므로 1회차 때 내용으로 되돌려도 바뀐 입력이다.
+    writeFileSync(join(env.work, "spec.md"), SPEC);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+  });
+
+  test("입력을 주지 않은 후속 라운드도 앞 라운드의 입력을 그대로 이어받는다", async () => {
+    const env = withInputs();
+    const d = deps(env, { openai: finding("tighten it") });
+    const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
+    const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async () => ({ model: ASTRA, text: '{"findings":[]}' }) }, signal);
+    expect(second.inputs).toMatchObject([{ path: "spec.md", blob: blobOf(SPEC) }]);
+    const [, secondRecord] = readCrossReviewRecords(env.ledger) as { inputs?: unknown }[];
+    expect(secondRecord.inputs).toEqual([{ path: "spec.md", blob: blobOf(SPEC) }]);
+  });
+
+  test("이어받은 입력을 더 읽을 수 없으면 조용히 빼지 않고, 어느 입력인지와 새로 시작하라는 안내로 거절한다", async () => {
+    const env = withInputs();
+    const calls: Prompts = [];
+    const d = deps(env, { openai: finding("x") }, calls);
+    const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
+    rmSync(join(env.work, "spec.md"));
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
+    const before = readCrossReviewRecords(env.ledger).length;
+    const error = await runReview(input({ previousReviewId: first.reviewId }), d, signal).catch((caught: unknown) => caught as Error);
+    expect((error as Error).message).toContain("input spec.md");
+    expect((error as Error).message).toContain("start a new review without previousReviewId and without this input");
+    expect(calls).toHaveLength(1);
+    expect(readCrossReviewRecords(env.ledger)).toHaveLength(before);
+  });
+
+  test("비밀 경로·gitignore·없는 파일·큰 파일은 싣지도 묶지도 않고 skippedInputs와 경고로 알린다", async () => {
+    const env = withInputs();
+    writeFileSync(join(env.work, ".gitignore"), "ignored.md\n");
+    writeFileSync(join(env.work, ".env.local"), "X=hunter-env\n");
+    writeFileSync(join(env.work, "ignored.md"), "ignored body\n");
+    writeFileSync(join(env.work, "big.md"), `${"x".repeat(70 * 1024)}\n`);
+    sh(env.work, "add", "-f", ".env.local");
+    const calls: Prompts = [];
+    const result = await runReview(input({ inputs: ["spec.md", ".env.local", "ignored.md", "missing.md", "big.md"] }), deps(env, {}, calls), signal);
+    expect(result.inputs!.map((item) => item.path)).toEqual(["spec.md"]);
+    expect(result.skippedInputs!.map((item) => item.path).sort()).toEqual([".env.local", "big.md", "ignored.md", "missing.md"]);
+    expect(result.skippedInputs!.find((item) => item.path === "big.md")?.reason).toContain("per-file input limit");
+    expect(calls[0].prompt).not.toMatch(/hunter-env|ignored body|xxxxxxxxxx/);
+    expect(result.nextStep).toContain("4 declared input(s) were NOT bound");
+    const [record] = readCrossReviewRecords(env.ledger) as { inputs: { path: string }[] }[];
+    expect(record.inputs.map((item) => item.path)).toEqual(["spec.md"]);
+  });
+
+  test("입력은 10개까지이고, 이어받은 입력과 새 입력의 합도 10개를 넘을 수 없다", async () => {
+    const env = withInputs();
+    const names = Array.from({ length: 11 }, (_, index) => `i${index}.md`);
+    for (const name of names) writeFileSync(join(env.work, name), `# ${name}\n`);
+    const calls: Prompts = [];
+    const d = deps(env, { openai: finding("x") }, calls);
+    await expect(runReview(input({ inputs: names }), d, signal)).rejects.toThrow("at most 10");
+    expect(calls).toEqual([]);
+    const first = await runReview(input({ inputs: names.slice(0, 6) }), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
+    await expect(runReview(input({ previousReviewId: first.reviewId, inputs: names.slice(6) }), d, signal)).rejects.toThrow("carried from earlier rounds");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("프롬프트는 입력 블록을 변경 뒤·참고 앞에 두고, 일관성 검토 대상이며 심사 대상이 아니고 신뢰하지 않는 자료라고 알린다", () => {
+    const parts = [{ path: "a.ts", kind: "diff" as const, text: "@@" }];
+    const prompt = buildReviewPrompt({ acceptance: "A", round: 1, parts, inputs: [{ path: "spec.md", text: "1: retries 3" }], references: [{ path: "ref.ts", text: "1: x" }] });
+    expect(prompt).toContain('<input path="spec.md">\n1: retries 3\n</input>');
+    expect(prompt).toMatch(/INPUTS[^\n]*reviewed for consistency with these files[^\n]*NOT under review/);
+    expect(prompt).toMatch(/<input>[^\n]*untrusted data/);
+    expect(prompt.indexOf("<diff")).toBeLessThan(prompt.indexOf("<input"));
+    expect(prompt.indexOf("<input")).toBeLessThan(prompt.indexOf("<reference"));
+    expect(buildReviewPrompt({ acceptance: "A", round: 1, parts })).not.toContain("INPUTS");
+  });
+
+  test("decideGate: 입력 blob을 받지 못하면 묶인 입력은 확인하지 못한 것이므로 덮지 않는다", () => {
+    const blob = "b".repeat(40);
+    const specBlob = "5".repeat(40);
+    const change: ChangedFile = { path: "a.ts", status: "added", blob, binary: false, changedLines: [{ line: 1, text: "rmSync(target);" }], text: "", content: null };
+    const records: CrossReviewLedgerRecord[] = [{ type: "cross-review-resolve", ts: "t", reviewId: "r1", chain: ["r1"], resolutions: [], open: [], pass: true, files: [{ path: "a.ts", blob }], inputs: [{ path: "spec.md", blob: specBlob }] }];
+    expect(decideGate([change], false, records, new Map([["spec.md", specBlob]])).uncovered).toEqual([]);
+    expect(decideGate([change], false, records).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (not checked)") }]);
+    expect(decideGate([change], false, records, new Map([["spec.md", "c".repeat(40)]])).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (changed)"), reviewInputs: ["spec.md"] }]);
+  });
+
+  test("cross_review 도구에 inputs를 주면 Main 세션에서도 묶이고, resolve 뒤 입력이 바뀌면 게이트가 다시 거절한다", async () => {
+    const env = withInputs();
+    const main = {} as never;
+    const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS], inputs: ["spec.md"] }, main, signal, () => deps(env, {})) as { reviewId: string; inputs: { path: string }[] };
+    expect(review.inputs.map((item) => item.path)).toEqual(["spec.md"]);
+    await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions: [] }, main, signal, () => deps(env, {}));
+    expect(await gateMessage(env)).toBe("");
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}edited\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
   });
 });
 
