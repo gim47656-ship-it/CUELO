@@ -96,12 +96,16 @@ const TEST_FILE = /[.\-_](?:test|spec)\.[^/]+$/i;
 const TEST_DIR: Record<string, true> = { test: true, tests: true, __tests__: true };
 // 생성물과 잠금 파일은 사람이 쓴 코드가 아니고 검토 뒤에 다시 만들어지므로(release 때 manifest) 대상이 아니다.
 const GENERATED_FILE = /(?:^|\/)(?:source-integrity\.json|runtime-integrity\.json|package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|memories\.jsonl)$/i;
+// 하위 프로젝트의 작업 기록(`Tools/X/doc/history/…`)에 남긴 측정·판정 데이터는 코드가 아니다(사용자 결정, 2026-10-23).
+// 같은 자리의 스크립트는 그대로 코드로 본다. 맨 위 `doc/`는 아래에서 통째로 빠진다.
+const RECORD_DATA_FILE = /(?:^|\/)doc\/history\/.+\.(?:jsonl|ndjson|json|csv|tsv|log)$/i;
 
-/** 문서·테스트·생성물은 게이트 대상이 아니다. 나머지는 모두 코드로 본다. */
+/** 문서·테스트·생성물·작업 기록 데이터는 게이트 대상이 아니다. 나머지는 모두 코드로 본다. */
 export function isCodeFile(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/");
   if (DOC_FILE.test(normalized) || segments[0] === "doc" || segments[0] === "docs") return false;
+  if (RECORD_DATA_FILE.test(normalized)) return false;
   if (TEST_FILE.test(normalized) || segments.slice(0, -1).some((segment) => Object.hasOwn(TEST_DIR, segment))) return false;
   return !GENERATED_FILE.test(normalized);
 }

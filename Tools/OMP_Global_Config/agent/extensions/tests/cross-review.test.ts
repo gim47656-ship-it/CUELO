@@ -97,11 +97,11 @@ describe("계열 매핑", () => {
 });
 
 describe("파일 분류", () => {
-  test("문서·테스트·생성물은 제외하고 나머지는 모두 코드다", () => {
-    for (const path of ["README.md", "notes.txt", "doc/history/a.ts", "docs/harness.md", "a/b.test.ts", "x.spec.mjs", "pkg/tests/helper.ts", "test/a.js", "__tests__/z.ts", "Tools/CUELO_Setup/files/source-integrity.json", "bun.lock", "patches/core-x-test.ts", "Tools/deploy-live-test.ps1"]) {
+  test("문서·테스트·생성물·작업 기록 데이터는 제외하고 나머지는 모두 코드다", () => {
+    for (const path of ["README.md", "notes.txt", "doc/history/a.ts", "docs/harness.md", "a/b.test.ts", "x.spec.mjs", "pkg/tests/helper.ts", "test/a.js", "__tests__/z.ts", "Tools/CUELO_Setup/files/source-integrity.json", "bun.lock", "patches/core-x-test.ts", "Tools/deploy-live-test.ps1", "Tools/OMP_Global_Config/doc/history/2026/10/23-stale-memory-audit/evidence/actions.jsonl", "Tools/X/doc/history/r/evidence/runs.csv", "Tools/X/doc/history/r/result.json"]) {
       expect(isCodeFile(path), path).toBe(false);
     }
-    for (const path of ["a.ts", "Tools/x/setup.ps1", "config.yml", "package.json", "src/doc/render.ts", "src/testing.ts", "deploy.sh"]) {
+    for (const path of ["a.ts", "Tools/x/setup.ps1", "config.yml", "package.json", "src/doc/render.ts", "src/testing.ts", "deploy.sh", "Tools/X/doc/history/r/probe.ts", "Tools/X/doc/history/r/run.py", "src/history/state.json"]) {
       expect(isCodeFile(path), path).toBe(true);
     }
   });
