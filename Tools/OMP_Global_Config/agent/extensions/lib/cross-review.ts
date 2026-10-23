@@ -34,9 +34,14 @@ import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
 export type Family = "openai" | "anthropic";
 export type Exec = (command: string, args: string[], options: { cwd: string; stdin?: Buffer }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
-/** 한 체인의 최대 라운드 수. probe 라운드는 이 중 최대 하나이고, probe가 아닌 라운드는 최대 MAX_PLAIN_ROUNDS다. */
-export const MAX_ROUNDS = 3;
-export const MAX_PLAIN_ROUNDS = 2;
+/**
+ * 한 체인의 최대 라운드 수. probe 라운드는 이 중 최대 하나이고, probe가 아닌 라운드는 최대 MAX_PLAIN_ROUNDS다.
+ * 2026-10-23 실측(10-11~10-23, 체인 135개): 여러 라운드를 돈 체인 69개 중 64개가 non-probe 2회를 다 썼고 26개는 마지막 라운드에 finding이
+ * 남은 채 한도에서 끝나 그 수정은 reviewer가 보지 못했다(non-probe 2회차의 finding 비율 26/62). 같은 비율이 이어진다고 보면 4회에서 한도에 걸려
+ * 수정이 안 보이는 체인은 전체의 약 2%다. 이전 체인(최대 3회, non-probe 2회)은 그대로 읽힌다.
+ */
+export const MAX_ROUNDS = 5;
+export const MAX_PLAIN_ROUNDS = 4;
 export const MAX_PROBE_ROUNDS = 1;
 /** probe 결과 한 건의 출력 발췌 상한(UTF-8 바이트, 비밀 가림 뒤). 넘으면 앞뒤 절반씩 남기고 가운데를 자른다. */
 export const MAX_PROBE_OUTPUT_BYTES = 8 * 1024;
@@ -327,6 +332,62 @@ export async function hashBytes(exec: Exec, git: string, root: string, path: str
   const blob = result.stdout.trim();
   if (result.code !== 0 || !/^[0-9a-f]{40,64}$/.test(blob)) throw new Error(`git hash-object failed for ${path}: ${(result.stderr || result.stdout).trim()}`);
   return blob;
+}
+
+/** base 심사의 커밋 범위. 둘 다 전체 sha이며, headSha는 호출 시점의 HEAD를 한 번 고정한 값이다(수집 도중 HEAD가 옮겨져도 이 값만 쓴다). */
+export interface BaseRange { baseSha: string; headSha: string }
+
+/**
+ * 이미 커밋된 변경을 심사하려는 1회차용 기준 revision. HEAD 또는 HEAD의 조상 커밋만 받는다. 값은 다듬지 않고 검사한다(앞뒤 공백도 거절).
+ * 옵션처럼 읽히는 값·커밋이 아닌 값·조상이 아닌 값은 reviewer를 부르기 전에 거절한다. 조상 확인과 이후 수집이 같은 HEAD를 쓰도록 HEAD를 sha로 고정해 돌려준다.
+ */
+export async function resolveBaseRevision(exec: Exec, git: string, root: string, base: string): Promise<BaseRange> {
+  if (!base || base.startsWith("-") || /[\s\0]/.test(base)) throw new Error(`base ${JSON.stringify(base)} is not a usable git revision (no whitespace, must not start with "-").`);
+  const [baseParsed, headParsed] = await Promise.all([`${base}^{commit}`, "HEAD^{commit}"].map((revision) => exec(git, ["rev-parse", "--verify", "--quiet", revision], { cwd: root })));
+  const baseSha = baseParsed.stdout.trim();
+  const headSha = headParsed.stdout.trim();
+  if (baseParsed.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseSha)) throw new Error(`base ${base} is not a commit in ${root}.`);
+  if (headParsed.code !== 0 || !/^[0-9a-f]{40,64}$/.test(headSha)) throw new Error(`HEAD is not a commit in ${root}.`);
+  const ancestor = await exec(git, ["merge-base", "--is-ancestor", baseSha, headSha], { cwd: root });
+  if (ancestor.code === 1) throw new Error(`base ${base} is not HEAD or one of its ancestors; a base must be an earlier commit of the checked-out history.`);
+  if (ancestor.code !== 0) throw new Error(`could not check that base ${base} is an ancestor of HEAD: ${(ancestor.stderr || ancestor.stdout).trim()}`);
+  return { baseSha, headSha };
+}
+
+/**
+ * 커밋된 변경(baseSha→headSha)을 collectChanges와 같은 모양으로 모은다. 작업 트리가 headSha와 같은 파일만 받는다: 그래야 reviewer가 보는 diff가
+ * 기록하는 blob(작업 트리 내용)의 HEAD 기준 변경 전부이고, 기준을 골라 변경 일부(예: HEAD의 수정을 기준 값으로 되돌린 부분)를 가리지 못한다.
+ * 작업 트리가 HEAD와 다르면(수정·삭제·추적 안 한 새 파일) 거절한다. git이 무시하는 새 파일은 collectChanges처럼 변경으로 보지 않는다.
+ * reviewer가 보는 본문은 모두 고정한 커밋의 git 객체에서 만들고(수정·삭제는 객체끼리의 diff, 새 파일은 객체 내용), 작업 트리 내용은 한 번만 읽어
+ * 그 blob이 headSha의 blob과 같을 때만 사본·기록에 쓴다. 게이트(collectChanges·decideGate)는 건드리지 않는다.
+ */
+export async function collectChangesSince(exec: Exec, git: string, root: string, paths: string[], range: BaseRange): Promise<{ changed: ChangedFile[]; unchanged: string[] }> {
+  const { baseSha, headSha } = range;
+  const changed: ChangedFile[] = [];
+  const unchanged: string[] = [];
+  for (const path of paths) {
+    const absolute = join(root, ...path.split("/"));
+    const [inHead, inBase] = await Promise.all([headSha, baseSha].map(async (revision) => (await exec(git, ["rev-parse", "--verify", "--quiet", `${revision}:${path}`], { cwd: root })).stdout.trim()));
+    const content = existsSync(absolute) ? await readFile(absolute) : null;
+    // HEAD에 없는 파일이 작업 트리에 있으면 git이 무시하는 파일(종료 코드 0)만 건너뛰고, 그 밖의 추적 안 한/스테이지된 새 파일은 아래에서 커밋 전 내용으로 거절한다.
+    if (!inHead && content !== null && (await exec(git, ["check-ignore", "-q", "--", path], { cwd: root })).code === 0) { unchanged.push(path); continue; }
+    const blob = content ? await hashBytes(exec, git, root, path, content) : DELETED_BLOB;
+    if (content === null ? inHead !== "" : blob !== inHead) throw new Error(`${path} has uncommitted or untracked content (the working tree differs from HEAD); a base review covers committed content only. Commit it first, or review without base.`);
+    if (inHead === inBase) { unchanged.push(path); continue; }
+    const kind: ChangedFile["status"] = !inHead ? "deleted" : !inBase ? "added" : "modified";
+    if (content && kind === "added") {
+      const shown = await exec(git, ["cat-file", "blob", inHead], { cwd: root });
+      if (shown.code !== 0) throw new Error(`git cat-file blob ${inHead} failed for ${path}: ${(shown.stderr || shown.stdout).trim()}`);
+      const binary = shown.stdout.includes("\0");
+      const text = binary ? "" : shown.stdout.replace(/^\uFEFF/, "");
+      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text: binary ? "" : numbered(text), content });
+      continue;
+    }
+    const diff = await exec(git, ["--literal-pathspecs", "diff", baseSha, headSha, "--full-index", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path], { cwd: root });
+    if (diff.code !== 0) throw new Error(`git diff ${baseSha.slice(0, 12)} ${headSha.slice(0, 12)} failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
+    changed.push({ path, status: kind, blob, binary: /^Binary files /m.test(diff.stdout), changedLines: parseChangedLines(diff.stdout), text: diff.stdout, content });
+  }
+  return { changed, unchanged };
 }
 
 // ── 게이트 판정 ──────────────────────────────────────────────────────────────
@@ -721,7 +782,7 @@ export const MAX_REFERENCE_TOTAL_BYTES = 100 * 1024;
  * probeResults: 앞 라운드 finding의 probe를 실제로 돌린 결과. 있으면 이 호출이 체인의 probe 라운드이며 코드 변경이 없어도 된다.
  */
 export interface ProbeResultInput { findingId: string; command: string; exitCode: number; output: string }
-export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[] }
+export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[] }
 export interface ReviewerCompletion { model: string; text: string }
 export class ReviewerCallError extends Error {
   /** partial: 모델이 중간까지 낸 답(출력 한도·오류로 끝난 경우). 통과는 못 하지만 원문은 기록한다. */
@@ -746,7 +807,7 @@ export interface ReviewDeps {
 
 export interface ReviewResult {
   reviewId: string;
-  round: 1 | 2 | 3;
+  round: number;
   reviewers: { family: Family; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string }[];
   triggers: string[];
   highRisk: boolean;
@@ -761,6 +822,8 @@ export interface ReviewResult {
   references: { path: string; bytes: number; blob: string; redacted?: number }[];
   /** 참고에서 빠진 파일과 이유. */
   skippedReferences: { path: string; reason: string }[];
+  /** base를 줬을 때만: 변경을 비교한 기준 커밋(전체 sha). */
+  base?: string;
   /** 입력을 선언했거나 앞 라운드가 묶은 입력이 있을 때만: reviewer가 본 입력(경로·크기·blob)과 읽히지 않아 묶이지 않은 입력. 입력은 심사 대상이 아니다. */
   inputs?: { path: string; bytes: number; blob: string; redacted?: number }[];
   skippedInputs?: { path: string; reason: string }[];
@@ -840,13 +903,13 @@ function describeNext(state: NextState): string {
   const limit = "Round limit reached: no further review is allowed. Close every finding with resolve (fixed / refuted with evidence / limit documented).";
   if (state.probeRound) {
     const counts = (["confirmed", "withdrawn", "unresolved"] as const).map((kind) => `${state.verdicts.filter((verdict) => verdict.verdict === kind).length} ${kind}`).join(", ");
-    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${canDelta ? `, then optionally ${delta}` : ""}. Then ${RESOLVE_HINT} (withdrawn: refuted with the probe evidence; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}`;
+    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${canDelta ? `, then ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left)` : ""}. Then ${RESOLVE_HINT} (withdrawn: refuted with the probe evidence; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}`;
   }
   if (state.findings === 0) return "No findings. Call cross_review {action:\"resolve\", reviewId, resolutions:[]} to record the pass for the current file contents.";
   if (!canProbe && !canDelta) return `${limit} Findings of this chain still open need resolve before the pass.`;
   const parts = ["Fix or refute each finding."];
   if (state.probeFindings > 0 && canProbe) parts.push(`${state.probeFindings} finding(s) carry a probe: run it yourself or through the existing Maker, then call cross_review review with previousReviewId and probeResults:[{findingId, command, exitCode, output}] (one probe round per chain; no code change needed; output is an excerpt of at most ${MAX_PROBE_OUTPUT_BYTES} bytes per result, ${MAX_PROBE_TOTAL_BYTES} in total).`);
-  if (canDelta) parts.push(`Optionally ${delta}.`);
+  if (canDelta) parts.push(`After fixing, ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left): a finding closed as fixed with no later round leaves that fix unreviewed, and resolve reports the files that changed since the last reviewed round.`);
   parts.push(`Then ${RESOLVE_HINT}.`);
   if (!canDelta) parts.push("After this no further non-probe review is allowed: close any remaining finding with resolve (refuted with evidence, or limit documented).");
   return parts.join(" ");
@@ -1050,7 +1113,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const records = deps.readAll();
   const probeRound = (input.probeResults?.length ?? 0) > 0;
   if (probeRound && !input.previousReviewId) throw new Error("probeResults need previousReviewId: a probe round answers findings of an earlier round in the same chain.");
-  let round: 1 | 2 | 3 = 1;
+  // 빈 문자열은 base를 주지 않은 것으로 읽는다. 그 밖의 값은 다듬지 않고 그대로 검사한다(공백뿐인 값·앞뒤 공백은 resolveBaseRevision이 거절한다).
+  const suppliedBase = input.base || undefined;
+  if (suppliedBase !== undefined && input.previousReviewId) throw new Error("base applies to the first round only: a later round compares the current content with the previous round's snapshot, so a committed fix is reviewed by simply continuing the chain with previousReviewId.");
+  let resolvedBase: string | undefined;
+  let round = 1;
   let previous: CrossReviewRecord | undefined;
   let chain: CrossReviewRecord[] = [];
   let families: Family[];
@@ -1066,7 +1133,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     if (records.some((record) => record.type === "cross-review" && record.previousReviewId === previous!.reviewId)) throw new Error(`${previous.reviewId} already has a round ${previous.round + 1}.`);
     if (probeRound && probesUsed >= MAX_PROBE_ROUNDS) throw new Error(`Round limit: this chain already used its one probe round (${chain.find((record) => record.probeResults?.length)!.reviewId}). Close the remaining findings with cross_review resolve, or review the fix as a delta round without probeResults.`);
     if (!probeRound && plainUsed >= MAX_PLAIN_ROUNDS) throw new Error(`Round limit: this chain already used its ${MAX_PLAIN_ROUNDS} non-probe rounds. ${probesUsed === 0 ? "Only one probe round is left: pass probeResults, or close the remaining findings with cross_review resolve." : "Close the remaining findings with cross_review resolve."}`);
-    round = (previous.round + 1) as 2 | 3;
+    round = previous.round + 1;
     families = previous.reviewers.map((reviewer) => reviewer.family);
   } else {
     families = reviewerFamilies(input.authors, deps.mainModel);
@@ -1115,8 +1182,10 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   };
 
   if (!previous) {
-    const { changed, unchanged } = await collectChanges(deps.exec, git, root, safe);
-    for (const path of unchanged) skipped.push({ path, reason: "no changes against HEAD; nothing to review" });
+    const range = suppliedBase === undefined ? undefined : await resolveBaseRevision(deps.exec, git, root, suppliedBase);
+    const { changed, unchanged } = range ? await collectChangesSince(deps.exec, git, root, safe, range) : await collectChanges(deps.exec, git, root, safe);
+    for (const path of unchanged) skipped.push({ path, reason: range ? `no changes against ${suppliedBase} (${range.baseSha.slice(0, 12)}); nothing to review` : "no changes against HEAD; nothing to review" });
+    resolvedBase = range?.baseSha;
     for (const change of changed) {
       if (change.binary) { skipped.push({ path: change.path, reason: "binary file" }); continue; }
       if (!addPart(change.path, change.status === "added" ? "new-file" : "diff", change.text, change.changedLines)) continue;
@@ -1257,7 +1326,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
-    skippedReferences, passable, snapshotDir, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}),
+    skippedReferences, passable, snapshotDir, ...(resolvedBase ? { base: resolvedBase } : {}), ...(probeRound ? { probeResults: probeMeta, verdicts } : {}),
     nextStep: withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),
@@ -1284,6 +1353,9 @@ export interface ResolveResult {
   files: CrossReviewFile[];
   /** 선택. 이 pass 기록에 묶인 의존 입력(체인 마지막 라운드가 본 blob). */
   inputs?: CrossReviewFile[];
+  /** 안내(통과 판정과 무관): resolve 시점 내용이 체인 마지막 라운드 reviewer가 본 내용과 다른 파일. 있으면 그 수정은 reviewer가 보지 못했다. */
+  unreviewedChanges?: { path: string; state: "changed" | "deleted" }[];
+  unreviewedNote?: string;
   /** 체인의 probe 라운드 판단(정보). withdrawn이어도 finding은 여전히 resolve로 닫아야 하며 pass 규칙에는 쓰이지 않는다. */
   verdicts?: CrossReviewVerdict[];
 }
@@ -1340,5 +1412,11 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
   };
   if (!deps.append(record)) throw new Error("The resolution could not be recorded in the routing ledger; nothing was saved. Retry.");
   const verdicts = chain.flatMap((item) => item.verdicts ?? []);
-  return { reviewId: input.reviewId, pass, open, rejected, ...(unusable ? { unusable } : {}), files, ...(record.inputs ? { inputs: record.inputs } : {}), ...(verdicts.length > 0 ? { verdicts } : {}) };
+  // 안내용(통과 판정에는 쓰지 않는다): 통과 지문은 resolve 시점 내용이므로, 마지막 라운드 reviewer가 본 내용과 다른 파일은 reviewer가 보지 못한 수정을 덮는다.
+  const lastSeen = new Map(head.files.map((file) => [file.path, file.blob]));
+  const unreviewedChanges = files.filter((file) => lastSeen.get(file.path) !== file.blob).map((file) => ({ path: file.path, state: file.blob === DELETED_BLOB ? "deleted" as const : "changed" as const }));
+  return {
+    reviewId: input.reviewId, pass, open, rejected, ...(unusable ? { unusable } : {}), files, ...(record.inputs ? { inputs: record.inputs } : {}), ...(verdicts.length > 0 ? { verdicts } : {}),
+    ...(unreviewedChanges.length > 0 ? { unreviewedChanges, unreviewedNote: `${unreviewedChanges.length} file(s) changed after the last reviewed round (${head.reviewId}); the pass records their current content although the reviewer never saw it. If rounds are left, run a review with previousReviewId first, then resolve again.` } : {}),
+  };
 }

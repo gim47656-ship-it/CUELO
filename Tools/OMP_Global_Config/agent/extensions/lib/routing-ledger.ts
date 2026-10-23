@@ -163,8 +163,8 @@ export interface CrossReviewRecord {
   sessionId: string;
   /** 파일 경로의 기준이 되는 저장소 루트(호출 cwd 이름공간). */
   root: string;
-  /** 1부터 시작. 최대 3(probe 라운드 하나 포함 가능). */
-  round: 1 | 2 | 3;
+  /** 1부터 시작. 최대 MAX_ROUNDS(probe 라운드 하나 포함 가능). 옛 체인은 최대 3이었다. */
+  round: number;
   previousReviewId?: string;
   authors: string[];
   highRisk: boolean;
