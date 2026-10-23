@@ -14,7 +14,7 @@ export const COMPLETION_AUDIO_ALIASES = [
   "ISANA(이사나)",
   "MIO(미오)",
   "RIN(린)",
-  "NOVA(노바)",
+  "MITSU(미츠)",
   "SHION(시온)",
   "HIKARI(히카리)",
 ] as const;
@@ -27,7 +27,7 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "ISANA(이사나)": "isana",
   "MIO(미오)": "mio",
   "RIN(린)": "rin",
-  "NOVA(노바)": "nova",
+  "MITSU(미츠)": "mitsu",
   "SHION(시온)": "shion",
   "HIKARI(히카리)": "hikari",
 };
@@ -109,9 +109,6 @@ export const CUE_MANIFEST_PATH = "/audio/completion/voices.json";
 /** 매니페스트의 `clips[].file`·`stickers[].file`이 각각 어디 기준 상대 경로인지. */
 const VOICE_ROOT = "/audio/completion/";
 const STICKER_ROOT = "/stickers/";
-/** 사무실 모드 매니페스트는 음성·스티커 모두 비공개 프로필을 서빙하는 이 라우트 기준 상대 경로다. */
-export const OFFICE_CUE_ROOT = "/api/office-characters/";
-const DEFAULT_CUE_ROOTS = { voice: VOICE_ROOT, sticker: STICKER_ROOT };
 
 /** 태그가 없는 옛 항목은 완료 대사로 본다. */
 const DEFAULT_CUE_TAG: CueTag = "done";
@@ -194,7 +191,7 @@ function readCueCaptions(entries: unknown): Map<CueTag, string[]> {
  * 매니페스트를 캐릭터별 태그 세트로 읽는다. 형식이 어긋난 항목은 건너뛰고 나머지를 살린다 —
  * 자산 하나가 잘못 적혔다고 그 캐릭터의 다른 대사까지 잃을 이유가 없다.
  */
-export function parseCueManifest(raw: unknown, roots: { voice: string; sticker: string } = DEFAULT_CUE_ROOTS): CueManifest {
+export function parseCueManifest(raw: unknown): CueManifest {
   const manifest = new Map<string, ReadonlyMap<CueTag, CueSet>>();
   if (typeof raw !== "object" || raw === null) return manifest;
   const { characters } = raw as { characters?: unknown };
@@ -205,8 +202,8 @@ export function parseCueManifest(raw: unknown, roots: { voice: string; sticker: 
     const { id, clips, stickers, captions } = character as { id?: unknown; clips?: unknown; stickers?: unknown; captions?: unknown };
     if (typeof id !== "string" || id === "") continue;
 
-    const voices = readCueFiles(clips, roots.voice);
-    const stickerFiles = readCueFiles(stickers, roots.sticker);
+    const voices = readCueFiles(clips, VOICE_ROOT);
+    const stickerFiles = readCueFiles(stickers, STICKER_ROOT);
     const captionLines = readCueCaptions(captions);
     const sets = new Map<CueTag, CueSet>();
     for (const tag of CUE_TAGS) {
@@ -235,11 +232,6 @@ export function cueSetFor(
 ): CueSet | null {
   const characterId = characterIdForAlias(alias);
   if (!characterId) return null;
-  return manifest.get(characterId)?.get(tag) ?? null;
-}
-
-/** 별칭이 아니라 캐릭터 id를 이미 아는 경우(사무실 캐릭터). */
-export function cueSetForId(manifest: CueManifest, characterId: string, tag: CueTag): CueSet | null {
   return manifest.get(characterId)?.get(tag) ?? null;
 }
 
@@ -380,15 +372,16 @@ export function resolveCueAnchor(
   return null;
 }
 
-/** 큐를 낼 화자 — 그 순간 말하고 있는 쪽의 provider와, 알면 그 답을 만든 계정. */
+/** 큐를 낼 화자 — 그 순간 말하고 있는 쪽의 provider·모델과, 알면 그 답을 만든 계정. */
 export interface CueSpeaker {
   readonly provider: string | undefined;
+  readonly model: string | undefined;
   readonly credentialId: number | undefined;
 }
 
 /**
  * 지금 턴의 화자. 흐르는 답이 있으면 그것, 없으면 마지막 사용자 메시지 뒤의 마지막 assistant
- * 메시지가 기록한 provider·계정이다. 이 턴에 아직 답이 없을 때만 세션 모델(`fallbackProvider`)로
+ * 메시지가 기록한 provider·모델·계정이다. 이 턴에 아직 답이 없을 때만 세션 모델(`fallbackProvider`·`fallbackModel`)로
  * 물러난다. 세션 모델은 세션이 고른 모델이지 지금 말한 쪽이 아니고, 지난 재시도 폴백이 남아
  * 낡을 수 있다 — Opus 턴의 선택지 큐에 Codex 계정 얼굴이 뜬 적이 있다(2026-10-18).
  * 6PRO 상담 답변은 에이전트 턴의 화자가 아니므로 건너뛴다.
@@ -397,17 +390,18 @@ export function cueSpeaker(
   messages: readonly AgentMessage[],
   streaming: AssistantMessage | null,
   fallbackProvider: string | undefined,
+  fallbackModel?: string,
 ): CueSpeaker {
   if (streaming && !(streaming.provider === "web6" && streaming.model === CONSULT_REPLY_MODEL)) {
-    return { provider: streaming.provider, credentialId: streaming.credentialId };
+    return { provider: streaming.provider, model: streaming.model, credentialId: streaming.credentialId };
   }
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role === "user") break;
     if (message.role !== "assistant" || (message.provider === "web6" && message.model === CONSULT_REPLY_MODEL)) continue;
-    return { provider: message.provider, credentialId: message.credentialId };
+    return { provider: message.provider, model: message.model, credentialId: message.credentialId };
   }
-  return { provider: fallbackProvider, credentialId: undefined };
+  return { provider: fallbackProvider, model: fallbackModel, credentialId: undefined };
 }
 
 /**

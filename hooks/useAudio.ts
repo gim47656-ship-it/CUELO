@@ -1,12 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useOfficeCharacters } from "@/hooks/useAccountFaces";
-import { officeCueManifest, officeSeatForAlias } from "@/lib/hanse-resource-client";
 import {
   CUE_TAGS,
   cueSetFor,
-  cueSetForId,
   loadCueManifest,
   selectCueAsset,
   NO_TONE_FALLBACK_CUE_TAGS,
@@ -62,9 +59,6 @@ export function useAudio() {
   const previousStickerPathsRef = useRef(new Map<string, string>());
   const previousCaptionsRef = useRef(new Map<string, string>());
   const manifestRef = useRef<Promise<CueManifest> | null>(null);
-  // 사무실 모드가 켜져 있으면 대체 캐릭터의 스티커·음성은 비공개 프로필에서 온 별도 목록이다.
-  // 모드가 바뀔 때 갱신하려고 이 훅이 상태를 구독하고, 그 덕에 앱 전체가 다시 그려진다.
-  useOfficeCharacters();
   const bufferCacheRef = useRef(new Map<string, Promise<AudioBuffer>>());
   // 미리 받아 둔 음원 바이트. 디코딩은 AudioContext가 필요해 재생 때 한다.
   const bytesCacheRef = useRef(new Map<string, Promise<ArrayBuffer>>());
@@ -109,9 +103,8 @@ export function useAudio() {
   const preloadCue = useCallback(async (alias: string | null | undefined) => {
     if (!alias || typeof window === "undefined") return;
     const manifest = await getManifest();
-    const office = officeSeatForAlias(alias);
     for (const tag of CUE_TAGS) {
-      const set = office ? cueSetForId(officeCueManifest(office), office.id, tag) : cueSetFor(manifest, alias, tag);
+      const set = cueSetFor(manifest, alias, tag);
       if (!set) continue;
       for (const url of set.stickers) {
         if (preloadedImagesRef.current.has(url)) continue;
@@ -213,11 +206,8 @@ export function useAudio() {
   ): Promise<CuePresentation> => {
     const manifest = await getManifest();
 
-    const office = officeSeatForAlias(alias);
-    const set = tag === null
-      ? null
-      : office ? cueSetForId(officeCueManifest(office), office.id, tag) : cueSetFor(manifest, alias, tag);
-    const cueKey = `${office?.alias ?? alias ?? ""}\u0000${tag ?? ""}`;
+    const set = tag === null ? null : cueSetFor(manifest, alias, tag);
+    const cueKey = `${alias ?? ""}\u0000${tag ?? ""}`;
     const sticker = set
       ? selectCueAsset(set.stickers, previousStickerPathsRef.current.get(cueKey) ?? null)
       : null;

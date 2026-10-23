@@ -95,7 +95,7 @@ function InlineUtteranceBlock({
   onOpenFile?: (filePath: string) => void;
 }) {
   const accountSessionId = utterance.accountSessionId === null ? undefined : utterance.accountSessionId ?? sessionId;
-  const accountFace = useAccountFace(accountSessionId, utterance.provider, utterance.credentialId);
+  const accountFace = useAccountFace(accountSessionId, utterance.provider, utterance.credentialId, utterance.model);
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);

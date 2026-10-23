@@ -268,6 +268,8 @@ export interface AgentCompletionResult {
   sessionId: string | null;
   provider?: string;
   credentialId?: number;
+  /** 그 답을 만든 모델 id. hive처럼 provider 하나가 모델마다 다른 캐릭터를 가질 때 얼굴을 고르는 근거다. */
+  model?: string;
 }
 
 export interface UseAgentSessionOptions {
@@ -687,7 +689,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const rpcPromptPendingRef = useRef(false);
   const notifiedPromptRunIdRef = useRef(-1);
   const completionOutcomeRef = useRef<AgentCompletionOutcome>("unknown");
-  const completionAssistantRef = useRef<{ provider: string; credentialId?: number } | null>(null);
+  const completionAssistantRef = useRef<{ provider: string; model?: string; credentialId?: number } | null>(null);
   // run이 시작될 때 이미 있던 마지막 기록 메시지. 그 메시지는 이 run의 응답이 아니다.
   // 라이브로 붙어 아직 id가 없을 수 있으므로 id와 함께 메시지 열쇠도 둔다.
   const completionBaselineRef = useRef<{ entryId: string | null; key: string } | null>(null);
@@ -1429,6 +1431,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         outcome = completionOutcomeFor(message);
         assistant ??= {
           provider: message.provider,
+          ...(message.model ? { model: message.model } : {}),
           ...(message.credentialId !== undefined ? { credentialId: message.credentialId } : {}),
         };
       }
@@ -1438,6 +1441,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       sessionId: sessionIdRef.current,
       ...(assistant ? {
         provider: assistant.provider,
+        ...(assistant.model ? { model: assistant.model } : {}),
         ...(assistant.credentialId !== undefined ? { credentialId: assistant.credentialId } : {}),
       } : {}),
     };
@@ -1946,6 +1950,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (completed?.role === "assistant") {
           completionAssistantRef.current = {
             provider: completed.provider,
+            ...(completed.model ? { model: completed.model } : {}),
             ...(completed.credentialId !== undefined ? { credentialId: completed.credentialId } : {}),
           };
           completionOutcomeRef.current = completionOutcomeFor(completed);

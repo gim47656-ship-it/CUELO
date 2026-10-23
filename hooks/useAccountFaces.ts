@@ -3,14 +3,10 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   accountIdentities,
-  DEFAULT_OFFICE_STATE,
-  ensureOfficeCharactersLoaded,
-  getOfficeCharacters,
   loadSessionAccount,
   providerAccountFace,
-  subscribeOfficeCharacters,
+  providerModelFace,
   type AccountFace,
-  type OfficeCharactersState,
   type UsageReport,
 } from "@/lib/hanse-resource-client";
 
@@ -60,7 +56,6 @@ const PIN_RETRY_MS = 30_000;
 
 let state: FaceState = EMPTY_STATE;
 let rosterSignature: string | null = null;
-let lastReports: readonly UsageReport[] = NO_REPORTS;
 const pinAttemptedAt = new Map<string, number>();
 const listeners = new Set<() => void>();
 
@@ -69,16 +64,6 @@ function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-  };
-}
-
-/** 얼굴 저장소와 사무실 캐릭터 저장소 둘 중 어느 쪽이 바뀌어도 얼굴을 다시 읽는다. */
-function subscribeFacesAndOffice(listener: () => void): () => void {
-  const unsubscribeFaces = subscribe(listener);
-  const unsubscribeOffice = subscribeOfficeCharacters(listener);
-  return () => {
-    unsubscribeFaces();
-    unsubscribeOffice();
   };
 }
 
@@ -101,7 +86,6 @@ function accountKey(provider: string, credentialId: number): string {
  */
 export function syncAccountFaces(reports: readonly UsageReport[] | undefined): void {
   const list = reports ?? NO_REPORTS;
-  lastReports = list;
   // 폴러는 60초마다 새 배열을 준다. 배열이 새것이라는 사실은 계정이 달라졌다는 뜻이 아니므로,
   // 얼굴 배정에 실제로 쓰이는 값만 모아 비교한다. 같으면 아무도 다시 그리지 않는다.
   const signature = list
@@ -177,8 +161,12 @@ export function resolveAccountFace(
   sessionId: string | undefined,
   provider: string | undefined,
   credentialId: number | undefined,
+  model?: string,
 ): AccountFace | null {
   if (!provider) return null;
+  // 모델이 자기 얼굴을 가진 경우(hive 의 GLM → MITSU)는 계정 얼굴보다 먼저다 — 같은 계정이 두 캐릭터를 모두 돌린다.
+  const modelFace = providerModelFace(provider, model);
+  if (modelFace) return modelFace;
   if (isCredentialId(credentialId)) {
     const face = state.faces.get(accountKey(provider, credentialId));
     if (face) return face;
@@ -200,8 +188,9 @@ export async function resolveLiveAccountFace(
   sessionId: string,
   provider: string | undefined,
   credentialId: number | undefined,
+  model?: string,
 ): Promise<AccountFace | null> {
-  if (!provider || isCredentialId(credentialId) || providerAccountFace(provider)) return resolveAccountFace(sessionId, provider, credentialId);
+  if (!provider || isCredentialId(credentialId) || providerAccountFace(provider)) return resolveAccountFace(sessionId, provider, credentialId, model);
   try {
     const { data } = await loadSessionAccount(sessionId);
     if (data?.state === "resolved" && data.provider === provider && isCredentialId(data.credentialId)) {
@@ -212,7 +201,7 @@ export async function resolveLiveAccountFace(
   } catch {
     // 얼굴은 장식이다. 실패하면 저장소가 아는 것으로 답한다.
   }
-  return resolveAccountFace(sessionId, provider, undefined);
+  return resolveAccountFace(sessionId, provider, undefined, model);
 }
 
 /**
@@ -233,6 +222,7 @@ export function useAccountFace(
   sessionId: string | undefined,
   provider: string | undefined,
   credentialId: number | undefined,
+  model?: string,
 ): AccountFace | null {
   const needsPin = Boolean(provider) && !isCredentialId(credentialId) && Boolean(sessionId);
 
@@ -242,25 +232,8 @@ export function useAccountFace(
   }, [needsPin, sessionId, provider]);
 
   return useSyncExternalStore(
-    subscribeFacesAndOffice,
-    () => resolveAccountFace(sessionId, provider, credentialId),
+    subscribe,
+    () => resolveAccountFace(sessionId, provider, credentialId, model),
     () => null,
   );
-}
-
-// 사무실 모드가 바뀌면 credential 별로 구워 둔 얼굴의 별칭도 다시 만든다.
-subscribeOfficeCharacters(() => {
-  rosterSignature = null;
-  syncAccountFaces(lastReports);
-});
-
-/**
- * 사무실 캐릭터 상태를 읽는 훅. 처음 쓰이면 서버에서 한 번 받아 오고, 모드가 바뀌면 다시 그린다.
- * 서버 렌더는 기본 상태다.
- */
-export function useOfficeCharacters(): OfficeCharactersState {
-  useEffect(() => {
-    void ensureOfficeCharactersLoaded();
-  }, []);
-  return useSyncExternalStore(subscribeOfficeCharacters, getOfficeCharacters, () => DEFAULT_OFFICE_STATE);
 }

@@ -1027,7 +1027,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       { ...h.input.tasks[0], model: "openai-codex/gpt-6-sol:medium" },
       { ...h.input.tasks[0], effort: "hi" },
       { ...h.input.tasks[0], model: "devin/swe-2:auto" },
-      { ...h.input.tasks[0], model: "", task: '[character-summon alias="NOVA" model="devin/swe-2"]' },
+      { ...h.input.tasks[0], model: "", task: '[character-summon alias="TESTA" model="devin/swe-2"]' },
     ]) expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
   });
   test("0.5 이상 판정과 식별 가능한 실재 owner가 함께 있을 때만 기존 owner를 우선한다", async () => {

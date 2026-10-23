@@ -116,7 +116,7 @@ test("한 task 호출의 tasks[] 배치는 name으로 각 자식의 요청을 �
       input: {
         tasks: [
           { name: "ISANA", agent: "maker", task: '[character-summon alias="ISANA(이사나)" model="b-ai/deepseek-v4.1-flash"]\n인사해 줘.' },
-          { name: "NOVA", agent: "maker", task: '[character-summon alias="NOVA(노바)" model="opencode-go/muse-spark-1.3-contributor"]\n인사해 줘.' },
+          { name: "MITSU", agent: "maker", task: '[character-summon alias="MITSU(미츠)" model="hive/zai-org/glm-5.3-flash"]\n인사해 줘.' },
           { name: "Helper", agent: "maker", task: "TASK_GUARD:\nWORK_CLASS: feature\n\n마커 없는 일반 작업" },
         ],
       },
@@ -126,7 +126,7 @@ test("한 task 호출의 tasks[] 배치는 name으로 각 자식의 요청을 �
     [{ role: "user", content: "모두 불러 줘" }, parent],
     ["entry-user", "entry-assistant"],
   );
-  const snapshots = ["ISANA", "NOVA", "Helper"].map((id) => ({
+  const snapshots = ["ISANA", "MITSU", "Helper"].map((id) => ({
     ...child("running").snapshot,
     id,
     parentToolCallId: "call_batch",
@@ -138,8 +138,8 @@ test("한 task 호출의 tasks[] 배치는 name으로 각 자식의 요청을 �
   assert.equal(anchored.length, 2);
   assert.equal(anchored[0].snapshot.id, "ISANA");
   assert.equal(anchored[0].summon.model, "b-ai/deepseek-v4.1-flash");
-  assert.equal(anchored[1].snapshot.id, "NOVA");
-  assert.equal(anchored[1].summon.model, "opencode-go/muse-spark-1.3-contributor");
+  assert.equal(anchored[1].snapshot.id, "MITSU");
+  assert.equal(anchored[1].summon.model, "hive/zai-org/glm-5.3-flash");
 });
 test("이름 없는 마커 하나가 든 다항목 배치는 근거 없는 child에 요청을 배정하지 않는다", () => {
   const parent = {
@@ -238,7 +238,7 @@ test("실패한 호출은 요청 대상의 자리로 고정하고 다른 provide
   anchored.snapshot.progress.retryFailure = { attempt: 2, errorMessage: "B.AI 모델 해석 실패" };
   const fallbackGreeting = {
     id: "entry-1",
-    message: { role: "assistant", model: "swe-2", provider: "devin", content: [{ type: "text", text: "안녕, 노바야." }] },
+    message: { role: "assistant", model: "swe-2", provider: "devin", content: [{ type: "text", text: "안녕, 미츠야." }] },
   };
 
   const utterances = utterancesForChild(anchored, read([fallbackGreeting]), "devin");
@@ -249,6 +249,28 @@ test("실패한 호출은 요청 대상의 자리로 고정하고 다른 provide
   assert.equal(utterances[0].status, "failed");
   assert.equal(utterances[0].text, "B.AI 모델 해석 실패");
   assert.equal(utterances[0].credentialId, undefined);
+});
+
+test("provider 하나가 모델마다 다른 캐릭터를 가질 때 발화는 모델을 싣는다: 말 전에는 요청 모델, 말한 뒤에는 그 답의 모델", () => {
+  const turns = turnsForTask([
+    '[character-summon alias="MITSU(미츠)" model="hive/zai-org/glm-5.3-flash"]',
+    "인사해 줘.",
+  ].join("\n"));
+  const [anchored] = anchorCharacterSummonChildren(turns, [child("running").snapshot]);
+  anchored.snapshot.progress.resolvedModel = "hive/zai-org/glm-5.3-flash";
+
+  const pending = utterancesForChild(anchored, read([]), "hive");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].provider, "hive");
+  assert.equal(pending[0].model, "zai-org/glm-5.3-flash");
+
+  const greeting = {
+    id: "entry-1",
+    message: { role: "assistant", model: "zai-org/glm-5.3-flash", provider: "hive", content: [{ type: "text", text: "배달 완료!" }] },
+  };
+  const spoke = utterancesForChild(anchored, read([greeting]), "hive");
+  assert.equal(spoke.length, 1);
+  assert.equal(spoke[0].model, "zai-org/glm-5.3-flash");
 });
 
 test("첫 요청부터 거절된 호출은 메시지의 errorMessage를 본문으로 쓴다", () => {

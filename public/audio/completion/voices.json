@@ -800,197 +800,198 @@
       ]
     },
     {
-      "id": "nova",
-      "speaker": "わかな(現実20代女子AIボイチェン@リアボVC公式モデル)",
-      "style": "嬉しい",
-      "styleId": 1138003202,
-      "modelId": "f83c385c-829b-40c4-8c11-639027e61636",
+      "id": "mitsu",
+      "speaker": "かりん(現実20代女子AIボイチェン@リアボVC公式モデル)",
+      "style": "uresii_uresii",
+      "styleId": 2110072450,
+      "modelId": "18972473-ca36-4e06-a33a-5cc14adba0c4",
       "modelVersion": "1.0.0",
-      "source": "https://hub.aivis-project.com/aivm-models/f83c385c-829b-40c4-8c11-639027e61636",
-      "license": "# Aivis Common Model License (ACML) 1.0; AivisHub credit request: 声は(x.com/dopoiro)のAI音声",
-      "creators": ["ぽいロード（リアボVC公式） (https://x.com/dopoiro)"],
-      "speedScale": 1.12,
-      "tempoDynamicsScale": 1.15,
+      "engineVersion": "1.2.0",
+      "source": "https://hub.aivis-project.com/aivm-models/18972473-ca36-4e06-a33a-5cc14adba0c4",
+      "license": "# Aivis Common Model License (ACML) 1.0",
+      "creators": ["ぽいロード(リアボVC公式)  x.com/dopoiro"],
+      "speedScale": 1.1,
+      "tempoDynamicsScale": 1.12,
       "pitchScale": 0,
       "clips": [
         {
-          "file": "nova/01.wav",
+          "file": "mitsu/01.wav",
           "tag": "done",
-          "text": "ひらめいた！これで完成だ！",
-          "ko": "번뜩였어! 이걸로 완성이야!",
-          "bytes": 167344
+          "text": "配達完了！ちゃんと届けたよ！",
+          "ko": "배달 완료! 제대로 전해 줬어!",
+          "bytes": 207568
         },
         {
-          "file": "nova/02.wav",
+          "file": "mitsu/02.wav",
           "tag": "done",
-          "text": "試作成功！次もいけるよ！",
-          "ko": "시제품 성공! 다음도 해보자!",
-          "bytes": 188848
+          "text": "お届けしました！次もまかせて！",
+          "ko": "배달했어! 다음도 맡겨 줘!",
+          "bytes": 220880
         },
         {
-          "file": "nova/03.wav",
+          "file": "mitsu/03.wav",
           "tag": "done",
-          "text": "できた！この仕組み、いい感じ！",
-          "ko": "됐다! 이 구조, 느낌 좋아!",
-          "bytes": 201136
+          "text": "できたよ！ハチミツみたいにばっちり！",
+          "ko": "됐어! 꿀처럼 딱 좋아!",
+          "bytes": 232144
         },
         {
-          "file": "nova/04.wav",
+          "file": "mitsu/04.wav",
           "tag": "done",
-          "text": "完成！さっそく確かめよう！",
-          "ko": "완성! 바로 확인해 보자!",
-          "bytes": 174512
+          "text": "ぶーん、到着！ぜんぶそろってるよ！",
+          "ko": "부웅, 도착! 다 갖춰져 있어!",
+          "bytes": 227024
         },
         {
-          "file": "nova/05.wav",
+          "file": "mitsu/05.wav",
           "tag": "done",
-          "text": "よし、組み上がった！見てみて！",
-          "ko": "좋아, 조립 끝! 어서 봐!",
-          "bytes": 187824
+          "text": "終わったよ！確かめてみて！",
+          "ko": "끝났어! 확인해 봐!",
+          "bytes": 184016
         },
         {
-          "file": "nova/06.wav",
+          "file": "mitsu/06.wav",
           "tag": "done",
-          "text": "いけた！ひらめきが形になった！",
-          "ko": "됐다! 번뜩임이 형태가 됐어!",
-          "bytes": 219568
+          "text": "はい、完了！寄り道なしで届いたよ！",
+          "ko": "자, 완료! 한눈팔지 않고 도착했어!",
+          "bytes": 257744
         },
         {
-          "file": "nova/working/01.wav",
+          "file": "mitsu/working/01.wav",
           "tag": "working",
-          "text": "ひらめき検証中！ちょっと待ってて！",
-          "ko": "번뜩인 아이디어 시험 중! 잠깐만!",
-          "bytes": 205232
+          "text": "いま運んでるよ！もうちょっと待ってて！",
+          "ko": "지금 나르는 중이야! 조금만 기다려!",
+          "bytes": 215760
         },
         {
-          "file": "nova/working/02.wav",
+          "file": "mitsu/working/02.wav",
           "tag": "working",
-          "text": "いま組み立ててるよ！もう少し！",
-          "ko": "지금 조립 중이야! 조금만!",
-          "bytes": 202160
+          "text": "よーし、ひとっ飛びしてくるね！",
+          "ko": "좋아, 한달음에 다녀올게!",
+          "bytes": 164560
         },
         {
-          "file": "nova/working/03.wav",
+          "file": "mitsu/working/03.wav",
           "tag": "working",
-          "text": "よし、試作スタート！動かしてみるね！",
-          "ko": "좋아, 시제품 시작! 움직여 볼게!",
-          "bytes": 217520
+          "text": "せっせと集めてるとこ！すぐ戻るよ！",
+          "ko": "부지런히 모으는 중! 금방 돌아올게!",
+          "bytes": 234192
         },
         {
-          "file": "nova/approval/01.wav",
+          "file": "mitsu/approval/01.wav",
           "tag": "approval",
-          "text": "ここで確認！どっちに進める？",
-          "ko": "여기서 확인! 어느 쪽으로 갈까?",
-          "bytes": 201136
+          "text": "ここでいったんストップ！進めていい？",
+          "ko": "여기서 잠깐 스톱! 진행해도 돼?",
+          "bytes": 205520
         },
         {
-          "file": "nova/approval/02.wav",
+          "file": "mitsu/approval/02.wav",
           "tag": "approval",
-          "text": "この案で進む？決めてくれる？",
-          "ko": "이 안으로 갈까? 정해 줄래?",
-          "bytes": 187824
+          "text": "この荷物、届けてもいいかな？",
+          "ko": "이 짐, 배달해도 될까?",
+          "bytes": 178896
         },
         {
-          "file": "nova/approval/03.wav",
+          "file": "mitsu/approval/03.wav",
           "tag": "approval",
-          "text": "ひらめき待ち！選んでくれたら再開！",
-          "ko": "번뜩임 대기 중! 골라 주면 다시 시작할게!",
-          "bytes": 230832
+          "text": "確認待ちだよ！オーケーもらったら飛んでく！",
+          "ko": "확인 대기야! OK 받으면 날아갈게!",
+          "bytes": 253648
         },
         {
-          "file": "nova/failed/01.wav",
+          "file": "mitsu/failed/01.wav",
           "tag": "failed",
-          "text": "ごめん、失敗！原因見てもう一回！",
-          "ko": "미안, 실패! 원인 보고 다시 해볼게!",
-          "bytes": 225712
+          "text": "ごめん、届けそこねた！すぐやり直すね！",
+          "ko": "미안, 배달 못 했어! 바로 다시 할게!",
+          "bytes": 248528
         },
         {
-          "file": "nova/failed/02.wav",
+          "file": "mitsu/failed/02.wav",
           "tag": "failed",
-          "text": "おっと失敗！これもデータ、次いこう！",
-          "ko": "어라, 실패! 이것도 데이터야, 다음 가자!",
-          "bytes": 212400
+          "text": "あれっ、道をまちがえた！別のルートで行くね！",
+          "ko": "어라, 길을 잘못 들었어! 다른 길로 갈게!",
+          "bytes": 256720
         },
         {
-          "file": "nova/failed/03.wav",
+          "file": "mitsu/failed/03.wav",
           "tag": "failed",
-          "text": "ごめんね、うまくいかなかった！すぐ直す！",
-          "ko": "미안, 잘 안 됐어! 바로 고칠게!",
-          "bytes": 232880
+          "text": "ごめんね、うまくいかなかった。もう一回飛ぶよ！",
+          "ko": "미안, 잘 안 됐어. 한 번 더 날아갈게!",
+          "bytes": 274128
         },
         {
-          "file": "nova/choice/01.wav",
+          "file": "mitsu/choice/01.wav",
           "tag": "choice",
-          "text": "ひらめき二択！どっちを試そう？",
-          "ko": "번뜩이는 두 안! 어느 걸 시험할까?",
-          "bytes": 208304
+          "text": "ルートが二つ！どっちで行く？",
+          "ko": "길이 두 개야! 어느 쪽으로 갈까?",
+          "bytes": 180944
         },
         {
-          "file": "nova/choice/02.wav",
+          "file": "mitsu/choice/02.wav",
           "tag": "choice",
-          "text": "案が二つ！選んだ方を組み立てるよ！",
-          "ko": "안이 둘이야! 고른 쪽으로 만들어볼게!",
-          "bytes": 224688
+          "text": "どっちを届けよう？選んでくれる？",
+          "ko": "어느 걸 배달할까? 골라 줄래?",
+          "bytes": 203472
         },
         {
-          "file": "nova/choice/03.wav",
+          "file": "mitsu/choice/03.wav",
           "tag": "choice",
-          "text": "どっちも面白そう！選んで進めよう！",
-          "ko": "둘 다 재밌어 보여! 골라서 진행하자!",
-          "bytes": 228784
+          "text": "選んでくれたら、すぐ飛んでくよ！",
+          "ko": "골라 주면 바로 날아갈게!",
+          "bytes": 191184
         }
       ],
       "stickers": [
         {
-          "file": "nova/done/01.webp",
+          "file": "mitsu/done/01.webp",
           "tag": "done"
         },
         {
-          "file": "nova/done/02.webp",
+          "file": "mitsu/done/02.webp",
           "tag": "done"
         },
         {
-          "file": "nova/done/03.webp",
+          "file": "mitsu/done/03.webp",
           "tag": "done"
         },
         {
-          "file": "nova/approval/01.webp",
+          "file": "mitsu/approval/01.webp",
           "tag": "approval"
         },
         {
-          "file": "nova/approval/02.webp",
+          "file": "mitsu/approval/02.webp",
           "tag": "approval"
         },
         {
-          "file": "nova/approval/03.webp",
+          "file": "mitsu/approval/03.webp",
           "tag": "approval"
         },
         {
-          "file": "nova/choice/01.webp",
+          "file": "mitsu/choice/01.webp",
           "tag": "choice"
         },
         {
-          "file": "nova/choice/02.webp",
+          "file": "mitsu/choice/02.webp",
           "tag": "choice"
         },
         {
-          "file": "nova/choice/03.webp",
+          "file": "mitsu/choice/03.webp",
           "tag": "choice"
         },
         {
-          "file": "nova/failed/01.webp",
+          "file": "mitsu/failed/01.webp",
           "tag": "failed"
         },
         {
-          "file": "nova/failed/02.webp",
+          "file": "mitsu/failed/02.webp",
           "tag": "failed"
         },
         {
-          "file": "nova/failed/03.webp",
+          "file": "mitsu/failed/03.webp",
           "tag": "failed"
         },
         {
-          "file": "nova/working/01.webp",
+          "file": "mitsu/working/01.webp",
           "tag": "working"
         }
       ]

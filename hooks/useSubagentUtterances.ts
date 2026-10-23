@@ -130,6 +130,18 @@ function childProvider(
   if (requestedSlash > 0) return requested.slice(0, requestedSlash);
   return sessionProvider?.trim() || undefined;
 }
+/**
+ * 그 provider 로 도는 자식이 쓴 모델 id. 기록된 모델(`provider/model`)이 먼저, 없으면 호출이 요청한 모델이다.
+ * hive 처럼 provider 하나가 모델마다 다른 캐릭터를 가질 때 얼굴을 고르는 근거이며, provider 가 다르면 모른다.
+ */
+function childModel(snapshot: SubagentSnapshot, summon: CharacterSummonRequest | undefined, provider: string): string | undefined {
+  const recorded = typeof snapshot.progress?.resolvedModel === "string" ? snapshot.progress.resolvedModel.trim() : "";
+  for (const selector of [recorded, summon?.model.trim() ?? ""]) {
+    const slash = selector.indexOf("/");
+    if (slash > 0 && selector.slice(0, slash) === provider) return selector.slice(slash + 1).trim() || undefined;
+  }
+  return undefined;
+}
 function utteranceStatus(status: SubagentSnapshot["status"]): InlineUtteranceStatus {
   // 기록이 끝난 자식의 발화는 최종이다 - completed와 마찬가지로 settled로 그린다.
   // 종료 근거가 없는 기록(unknown)도 발화 자체는 더 이상 변하지 않는다.
@@ -256,8 +268,10 @@ export function utterancesForChild(
     if (failed && requestedProvider && messageProvider !== requestedProvider) return;
     const text = answerText(entry.message) || (failed ? entry.message.errorMessage?.trim() ?? "" : "");
     if (text.length === 0) return;
+    const messageModel = entry.message.model || childModel(snapshot, summon, messageProvider);
     utterances.push({
       key: `${snapshot.id}:${index}`, turnIndex: currentTurn, speakerId, provider: messageProvider,
+      ...(messageModel ? { model: messageModel } : {}),
       credentialId: entry.message.credentialId, accountSessionId: null,
       label: failed && summon ? summon.alias : label, text, status,
     });
@@ -267,8 +281,11 @@ export function utterancesForChild(
   // 다만 실패한 호출은 요청 대상과 실패 이유를 남겨야 사용자가 무엇이 끊겼는지 안다.
   if (utterances.length === 0 && status !== "settled" && provider) {
     const failureReason = failed ? snapshot.progress?.retryFailure?.errorMessage?.trim() : undefined;
+    const pendingModel = childModel(snapshot, summon, provider);
     utterances.push({
-      key: `${snapshot.id}:pending`, turnIndex: currentTurn, speakerId, provider, accountSessionId: null,
+      key: `${snapshot.id}:pending`, turnIndex: currentTurn, speakerId, provider,
+      ...(pendingModel ? { model: pendingModel } : {}),
+      accountSessionId: null,
       label: failed && summon ? summon.alias : label,
       text: failureReason || "",
       status,

@@ -602,16 +602,16 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
    * 큐를 낼 캐릭터. 메시지가 기록한 계정이 없으면(스트리밍 중 착수·대화상자) 런타임에 지금 계정을
    * 묻는다 — 계정이 회전한 턴에서 직전 턴의 pin 으로 얼굴을 고르지 않게.
    */
-  const resolveCueAlias = useCallback(async (sessionId: string, provider: string | undefined, credentialId: number | undefined): Promise<string | null> => {
-    const alias = (await resolveLiveAccountFace(sessionId, provider, credentialId))?.alias ?? null;
+  const resolveCueAlias = useCallback(async (sessionId: string, provider: string | undefined, credentialId: number | undefined, model: string | undefined): Promise<string | null> => {
+    const alias = (await resolveLiveAccountFace(sessionId, provider, credentialId, model))?.alias ?? null;
     if (alias) void preloadCueSoundRef.current?.(alias);
     return alias;
   }, []);
 
   /** 지금 화면의 마지막 메시지 뒤를 자리로 잡고, 캐릭터를 정한 뒤 큐를 낸다. */
-  const requestCue = useCallback((tag: CueTag | null, trigger: CueTrigger, provider: string | undefined, credentialId: number | undefined) => {
+  const requestCue = useCallback((tag: CueTag | null, trigger: CueTrigger, provider: string | undefined, credentialId: number | undefined, model?: string) => {
     const capture = captureCueAnchor(cueMessagesRef.current, cueEntryIdsRef.current);
-    void resolveCueAlias(trigger.sessionId, provider, credentialId).then((alias) => {
+    void resolveCueAlias(trigger.sessionId, provider, credentialId, model).then((alias) => {
       playCue(alias, tag, trigger, capture);
     });
   }, [playCue, resolveCueAlias]);
@@ -635,7 +635,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     for (const { completion, trigger } of pendingCompletionsRef.current.splice(0)) {
       const outcomeCue = cueForOutcome(completion.outcome);
       const tag = outcomeCue === "neutral" ? null : outcomeCue;
-      if (trigger) requestCue(tag, trigger, completion.provider, completion.credentialId);
+      if (trigger) requestCue(tag, trigger, completion.provider, completion.credentialId, completion.model);
       else void playCueSoundRef.current(null, tag).catch(() => {});
     }
   }, [completionTick, requestCue]);
@@ -677,7 +677,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // 모델 칩으로 같은 provider의 다른 모델을 고르거나 추론 강도를 바꿔도 프리셋은 그대로 보인다.
   // 세션에서는 런타임이 답한 실제 계정 자리를, 새 대화에서는 이 대화에 대기 중인 선택만 본다 —
   // 브라우저 전역 기억이나 「유일한 활성 계정」 추측으로 계정 자리를 메우지 않는다.
-  const sessionAccountFace = useAccountFace(session?.id, displayModelValue?.provider, undefined);
+  const sessionAccountFace = useAccountFace(session?.id, displayModelValue?.provider, undefined, displayModelValue?.modelId);
   // 세션 캐릭터가 정해지면 그 캐릭터의 스티커·음성을 미리 받아 둔다. 턴이 끝난 뒤 받으면 늦다.
   const sessionCueAlias = sessionAccountFace?.alias;
   useEffect(() => {
@@ -688,10 +688,13 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     const accountPosition = isNew
       ? newSessionAccount
       : MAIN_PRESETS.find((entry) => entry.alias === sessionAccountFace?.alias)?.oauthPosition;
+    // provider 하나가 모델마다 다른 캐릭터를 가질 때(hive: ISANA·MITSU)는 세션 얼굴(모델로 정한다)의 자리와 같은 항목만 고른다.
     return MAIN_PRESETS.find(
       (entry) =>
         entry.provider === displayModelValue.provider
-        && (entry.oauthPosition === undefined || entry.oauthPosition === accountPosition),
+        && (entry.oauthPosition === undefined
+          ? sessionAccountFace === null || sessionAccountFace.seed === entry.seed
+          : entry.oauthPosition === accountPosition),
     )?.alias ?? null;
   }, [displayModelValue, isNew, newSessionAccount, sessionAccountFace]);
 
@@ -788,9 +791,9 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     // 얼굴은 이 대화상자를 낸 이번 턴의 답이 기록한 계정으로 고른다. 세션 모델은 낡을 수 있다.
     priorityCueTurnRef.current = trigger.turn;
     const streaming = streamState.streamingMessage?.role === "assistant" ? streamState.streamingMessage as AssistantMessage : null;
-    const speaker = cueSpeaker(cueMessagesRef.current, streaming, displayModelValue?.provider);
-    requestCue(cueTagForDialog(extensionDialog.method), trigger, speaker.provider, speaker.credentialId);
-  }, [extensionDialog, streamState.streamingMessage, displayModelValue?.provider, currentCueTrigger, requestCue]);
+    const speaker = cueSpeaker(cueMessagesRef.current, streaming, displayModelValue?.provider, displayModelValue?.modelId);
+    requestCue(cueTagForDialog(extensionDialog.method), trigger, speaker.provider, speaker.credentialId, speaker.model);
+  }, [extensionDialog, streamState.streamingMessage, displayModelValue?.provider, displayModelValue?.modelId, currentCueTrigger, requestCue]);
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
@@ -1334,16 +1337,17 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     agentPhase?.kind === "running_tools"
     || (streamingAssistant?.content ?? []).some((block) => (block.type === "text" && /\S/.test(block.text)) || block.type === "toolCall")
   );
-  const progressSpeaker = cueSpeaker(messages, streamingAssistant, displayModelValue?.provider);
+  const progressSpeaker = cueSpeaker(messages, streamingAssistant, displayModelValue?.provider, displayModelValue?.modelId);
   const progressProvider = progressSpeaker.provider;
+  const progressModel = progressSpeaker.model;
   const progressCredentialId = progressSpeaker.credentialId;
   useEffect(() => {
     if (!progressStarted) return;
     const trigger = currentCueTrigger();
     if (!trigger || workingCueTurnRef.current === trigger.turn || priorityCueTurnRef.current === trigger.turn) return;
     workingCueTurnRef.current = trigger.turn;
-    requestCue("working", trigger, progressProvider, progressCredentialId);
-  }, [progressStarted, progressProvider, progressCredentialId, currentCueTrigger, requestCue]);
+    requestCue("working", trigger, progressProvider, progressCredentialId, progressModel);
+  }, [progressStarted, progressProvider, progressModel, progressCredentialId, currentCueTrigger, requestCue]);
   const [settledLog, setSettledLog] = useState<ProcessLogData | null>(null);
   const publishProcessLog = useCallback((data: ProcessLogData) => {
     setSettledLog(data);

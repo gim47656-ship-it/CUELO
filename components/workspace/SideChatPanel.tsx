@@ -95,7 +95,7 @@ function SideChatReply({
   utteranceKey: string;
   children: React.ReactNode;
 }) {
-  const face = useAccountFace(identity?.sessionId, identity?.provider, identity?.credentialId);
+  const face = useAccountFace(identity?.sessionId, identity?.provider, identity?.credentialId, identity?.model);
   const sticker = inlineStickerFor(face?.alias, status, utteranceKey);
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 5 }}>

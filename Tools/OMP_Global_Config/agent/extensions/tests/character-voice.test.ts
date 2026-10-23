@@ -1,5 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -34,17 +34,6 @@ import characterVoice, {
 } from "../character-voice";
 import type { CharacterAlias } from "../character-voice";
 
-// 사무실 모드는 agent dir의 모드 파일·명단을 요청마다 읽는다. 실제 프로필이 사무실 모드여도 기본 출력 회귀가 흔들리지 않게
-// 이 파일은 빈 agent dir에서 돈다(사무실 모드 테스트는 withOfficeProfile이 따로 덮는다).
-const realAgentDir = process.env.PI_CODING_AGENT_DIR;
-const isolatedAgentDir = mkdtempSync(join(tmpdir(), "character-voice-agent-"));
-process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
-afterAll(() => {
-  if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-  else process.env.PI_CODING_AGENT_DIR = realAgentDir;
-  rmSync(isolatedAgentDir, { recursive: true, force: true });
-});
-
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
 interface HarnessOptions {
@@ -65,7 +54,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     { provider: "openai-codex", id: "gpt-6-astra" },
     { provider: "anthropic", id: "claude-opus-5-5" },
     { provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" },
-    { provider: "opencode-go", id: "muse-spark-1.3-contributor" },
+    { provider: "hive", id: "zai-org/glm-5.3-flash" },
   ];
   const accounts = [
     { position: 0, credentialId: 11, active: false },
@@ -180,13 +169,15 @@ describe("character voice identity", () => {
       "ISANA(이사나)": { model: "hive/deepseek-ai/deepseek-v4.1-flash-1017", toolCapable: true },
       "MIO(미오)": { model: "anthropic/claude-opus-5-5", oauthPosition: 1, toolCapable: true },
       "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
-      "NOVA(노바)": { model: "opencode-go/muse-spark-1.3-contributor", toolCapable: true },
+      "MITSU(미츠)": { model: "hive/zai-org/glm-5.3-flash", toolCapable: true },
       "SHION(시온)": { model: "web6/gpt-6-pro", toolCapable: false },
       "HIKARI(히카리)": { model: "google-antigravity/gemini-3.8-flash", toolCapable: true },
     });
     expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
     expect(characterForProvider("hive")).toBe("ISANA(이사나)");
-    expect(characterForProvider("opencode-go")).toBe("NOVA(노바)");
+    expect(characterForProvider("hive", [], "deepseek-ai/deepseek-v4.1-flash-1017")).toBe("ISANA(이사나)");
+    expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
+    expect(characterForProvider("opencode-go")).toBeUndefined();
     expect(characterForProvider("web6")).toBe("SHION(시온)");
     expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
   });
@@ -816,6 +807,29 @@ describe("character voice identity", () => {
     expect(await voiceOf()).toBe("YUKI(유키)");
   });
 
+  test("Hive models split by model: MITSU on glm-5.3-flash, ISANA on the DeepSeek model", async () => {
+    const harness = createRuntimeHarness();
+    const voiceOf = async (): Promise<string | undefined> => {
+      const started = await harness.emit("before_agent_start", { type: "before_agent_start", prompt: "안녕", systemPrompt: ["base"] });
+      if (!started || typeof started !== "object" || !("systemPrompt" in started) || !Array.isArray(started.systemPrompt)) return undefined;
+      const block = started.systemPrompt.find((part) => typeof part === "string" && part.startsWith("<character-voice"));
+      return typeof block === "string" ? block.match(/alias="([^"]+)"/u)?.[1] : undefined;
+    };
+    await harness.emit("input", { type: "input", text: "미츠로 교체해", source: "rpc" });
+    expect(harness.ctx.model).toEqual({ provider: "hive", id: "zai-org/glm-5.3-flash" });
+    expect(await voiceOf()).toBe("MITSU(미츠)");
+    // 선택 기록이 없는 새 세션에서도 모델만으로 같은 캐릭터가 나온다.
+    await harness.emit("input", { type: "input", text: "이사나로 교체해", source: "rpc" });
+    expect(harness.ctx.model).toEqual({ provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" });
+    expect(await voiceOf()).toBe("ISANA(이사나)");
+    harness.selectModel("hive/zai-org/glm-5.3-flash");
+    await harness.emit("session_switch", { type: "session_switch", reason: "new", previousSessionFile: "old.jsonl" });
+    expect(await voiceOf()).toBe("MITSU(미츠)");
+    harness.selectModel("hive/deepseek-ai/deepseek-v4.1-flash-1017");
+    await harness.emit("session_switch", { type: "session_switch", reason: "new", previousSessionFile: "old.jsonl" });
+    expect(await voiceOf()).toBe("ISANA(이사나)");
+  });
+
   test("summoned task child receives the same final payload enforcement", async () => {
     const harness = createRuntimeHarness();
     await harness.emit("before_agent_start", {
@@ -859,7 +873,7 @@ describe("character voice identity", () => {
       payload: { messages: [], instructions: "base" },
     });
     expect(JSON.stringify(result)).toContain("ISANA(이사나)");
-    expect(JSON.stringify(result)).not.toContain("NOVA(노바)");
+    expect(JSON.stringify(result)).not.toContain("MITSU(미츠)");
   });
 
   test("failed ISANA discovery preserves the previous model and does not switch providers", async () => {
@@ -892,304 +906,26 @@ describe("character voice identity", () => {
   });
 });
 
-// 사무실 모드: 모드 파일 + roster를 임시 agentDir에서 읽는다. 이름은 가상이며 실존 인물과 무관하다.
-const OFFICE_ALIAS = "TESTA(테스타)";
-const OFFICE_ROSTER = {
-  seats: {
-    "YUKI(유키)": {
-      id: "testa",
-      face: "testa.png",
-      alias: OFFICE_ALIAS,
-      names: ["testa", "테스타"],
-      voice: { temperament: "FIXTURE-TEMPERAMENT 느긋하고 정리 잘하는 선배형", expression: "FIXTURE-EXPRESSION 낮은 목소리의 반말" },
-    },
-  },
-};
-
-async function withOfficeProfile<T>(
-  profile: { mode?: unknown; roster?: unknown; rosterRaw?: string; noFace?: boolean },
-  run: (dir: string) => Promise<T> | T,
-): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), "office-mode-"));
-  const previous = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = dir;
-  try {
-    if (profile.mode !== undefined) writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: profile.mode }));
-    if (profile.roster !== undefined || profile.rosterRaw !== undefined) {
-      mkdirSync(join(dir, "characters-office"));
-      writeFileSync(join(dir, "characters-office", "roster.json"), profile.rosterRaw ?? JSON.stringify(profile.roster));
-      if (!profile.noFace) writeFileSync(join(dir, "characters-office", "testa.png"), "png");
-    }
-    return await run(dir);
-  } finally {
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previous;
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-describe("office mode character seat", () => {
-  test("openai-codex seat renders the roster voice in the provider request", async () => {
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, async () => {
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-      const block = renderCharacterVoice(OFFICE_ALIAS);
-      expect(block).toContain(`<character-voice alias="${OFFICE_ALIAS}">`);
-      expect(block).toContain("FIXTURE-TEMPERAMENT");
-      expect(block).toContain("FIXTURE-EXPRESSION");
-      expect(block).not.toContain("YUKI");
-      const harness = createRuntimeHarness();
-      const result = JSON.stringify(
-        await harness.emit("before_provider_request", {
-          type: "before_provider_request",
-          payload: { messages: [], instructions: "base" },
-        }),
-      );
-      expect(result).toContain(OFFICE_ALIAS);
-      expect(result).not.toContain("YUKI");
-      // 다른 6자리는 사무실 모드에서도 기본이다.
-      expect(characterForProvider("hive")).toBe("ISANA(이사나)");
-      expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
-    });
-  });
-
-  test("summon by the roster name emits a marker with the roster alias and the seat model", async () => {
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, () => {
-      const intent = parseCharacterIntent("테스타 불러와");
-      expect(intent).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-      expect(parseCharacterIntent("testa 호출해")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6-astra"]`;
-      const routing = renderCharacterSummonRouting([OFFICE_ALIAS]);
-      expect(routing).toContain(`[character-summon-intent alias="${OFFICE_ALIAS}"]`);
-      expect(routing).toContain("FIXTURE-TEMPERAMENT");
-      expect(renderCharacterSummonRouting([OFFICE_ALIAS, "ISANA(이사나)"])).toContain(marker);
-      expect(buildCharacterSummonBrief("인사한다.", OFFICE_ALIAS).startsWith(marker)).toBe(true);
-      expect(parseCharacterSummonDirectives(routing)).toEqual([OFFICE_ALIAS]);
-      const rewritten = rewriteTaskInputForCharacterSummon({ agent: "maker", task: `${marker}\n인사한다.` }, [OFFICE_ALIAS]);
-      expect(rewritten.ok).toBe(true);
-      expect(JSON.stringify(rewritten)).toContain("FIXTURE-TEMPERAMENT");
-    });
-  });
-
-  test("switch by the roster name sets the seat model and the roster voice", async () => {
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, async () => {
-      expect(parseCharacterIntent("테스타로 교체해")).toEqual({ kind: "switch", alias: OFFICE_ALIAS });
-      const harness = createRuntimeHarness();
-      harness.selectModel("anthropic/claude-opus-5-5");
-      const result = await harness.emit("input", { type: "input", text: "테스타로 교체해", source: "rpc" });
-      expect(harness.calls).toContain("set:openai-codex/gpt-6-astra");
-      expect(JSON.stringify(result)).toContain(OFFICE_ALIAS);
-      const wire = await harness.emit("before_provider_request", {
-        type: "before_provider_request",
-        payload: { messages: [], instructions: "base" },
-      });
-      expect(JSON.stringify(wire)).toContain(`alias=\\"${OFFICE_ALIAS}\\"`);
-    });
-  });
-
-  test("the seat's default name still resolves to the roster seat", async () => {
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, () => {
-      expect(parseCharacterIntent("유키 불러와")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-      expect(parseCharacterIntent("yuki로 교체해")).toEqual({ kind: "switch", alias: OFFICE_ALIAS });
-      expect(parseCharacterSummonDirectives('[character-summon-intent alias="YUKI(유키)"]')).toEqual([OFFICE_ALIAS]);
-    });
-  });
-
-  test("an entry whose names take another seat's default name is invalid and the seat stays default", async () => {
-    const hijack = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], names: ["미오", "테스타"] } } };
-    await withOfficeProfile({ mode: "office", roster: hijack }, () => {
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-      expect(parseCharacterIntent("미오 불러와")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
-      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
-    });
-    const ownName = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], names: ["유키", "테스타"] } } };
-    await withOfficeProfile({ mode: "office", roster: ownName }, () => {
-      expect(parseCharacterIntent("테스타 불러와")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-    });
-  });
-
-  const officeSeat = (id: string, alias: string, names: string[]) => ({
-    id,
-    face: `${id}.png`,
-    alias,
-    names,
-    voice: { temperament: `FIXTURE-${id} 성향`, expression: `FIXTURE-${id} 말투` },
-  });
-  const writeFaces = (dir: string, ids: string[]) => {
-    for (const id of ids) writeFileSync(join(dir, "characters-office", `${id}.png`), "png");
-  };
-  const MULTI_ROSTER = {
-    seats: {
-      "HIKARI(히카리)": officeSeat("delta", "DELTA(델타)", ["delta", "델타"]),
-      "SHION(시온)": officeSeat("cedar", "CEDAR(시더)", ["cedar", "시더"]),
-      "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "버치"]),
-      "MIO(미오)": officeSeat("alder", "ALDER(앨더)", ["alder", "앨더"]),
-      "ISANA(이사나)": officeSeat("elm", "ELM(엘름)", ["elm", "엘름"]),
-      "YUKI(유키)": officeSeat("testa", OFFICE_ALIAS, ["testa", "테스타"]),
-      "NOVA(노바)": officeSeat("tiber", "TIBER(티버)", ["tiber", "티버"]),
-    },
-  };
-
-  test("six seats change independently, NOVA stays default, and every seat keeps its own model, account and consult limits", async () => {
-    await withOfficeProfile({ mode: "office", roster: MULTI_ROSTER }, (dir) => {
-      writeFaces(dir, ["delta", "cedar", "birch", "alder", "elm", "tiber"]);
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-      expect(characterForProvider("hive")).toBe("ELM(엘름)");
-      expect(characterForProvider("web6")).toBe("CEDAR(시더)");
-      expect(characterForProvider("google-antigravity")).toBe("DELTA(델타)");
-      expect(characterForProvider("opencode-go")).toBe("NOVA(노바)");
-      expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
-      expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
-      expect(characterTarget("CEDAR(시더)")).toEqual(CHARACTER_TARGETS["SHION(시온)"]);
-      expect(characterTarget("CEDAR(시더)")?.toolCapable).toBe(false);
-      expect(characterTarget("BIRCH(버치)")).toEqual(CHARACTER_TARGETS["RIN(린)"]);
-      expect(characterTarget("ALDER(앨더)")).toEqual(CHARACTER_TARGETS["MIO(미오)"]);
-      expect(characterTarget("TIBER(티버)")).toBeUndefined();
-      for (const [alias, id] of [["ELM(엘름)", "elm"], ["DELTA(델타)", "delta"], ["BIRCH(버치)", "birch"]]) {
-        expect(renderCharacterVoice(alias)).toContain(`FIXTURE-${id} 성향`);
-      }
-      expect(renderCharacterVoice("NOVA(노바)")).toContain(CHARACTER_VOICES["NOVA(노바)"].temperament);
-      expect(parseCharacterIntent("앨더랑 버치 불러와")).toEqual({ kind: "summon", aliases: ["ALDER(앨더)", "BIRCH(버치)"] });
-      expect(parseCharacterIntent("시더로 교체해")).toEqual({ kind: "switch", alias: "CEDAR(시더)" });
-      expect(parseCharacterIntent("미오 불러와")).toEqual({ kind: "summon", aliases: ["ALDER(앨더)"] });
-      expect(parseCharacterIntent("nova 불러와")).toEqual({ kind: "summon", aliases: ["NOVA(노바)"] });
-      expect(parseCharacterIntent("티버 불러와")).toBeUndefined();
-      expect(buildCharacterSummonBrief("인사한다.", "ALDER(앨더)").startsWith(
-        '[character-summon alias="ALDER(앨더)" model="anthropic/claude-opus-5-5" oauth-position="1"]',
-      )).toBe(true);
-    });
-  });
-
-  test("a later seat colliding with an earlier one stays default, in fixed seat order and not roster key order", async () => {
-    const base = {
-      "MIO(미오)": officeSeat("alder", "ALDER(앨더)", ["alder", "앨더"]),
-      "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "버치"]),
-    };
-    const collisions: Array<[string, Record<string, unknown>]> = [
-      ["alias", { "RIN(린)": officeSeat("birch", "alder(앨더)", ["birch"]) }],
-      ["name", { "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "앨더"]) }],
-      ["alias against name", { "RIN(린)": officeSeat("birch", "ALDER", ["birch"]) }],
-      ["id", { "RIN(린)": officeSeat("alder", "BIRCH(버치)", ["birch"]) }],
-    ];
-    for (const [label, override] of collisions) {
-      await withOfficeProfile({ mode: "office", roster: { seats: { ...base, ...override } } }, (dir) => {
-        writeFaces(dir, ["alder", "birch"]);
-        expect(anthropicCharacterForAccounts([{ active: true, position: 1 }]), label).toBe("ALDER(앨더)");
-        expect(anthropicCharacterForAccounts([{ active: true, position: 0 }]), label).toBe("RIN(린)");
-      });
-    }
-    // The roster lists SHION before RIN, but RIN comes first in seat order, so RIN keeps the shared name.
-    const reversed = {
-      seats: {
-        "SHION(시온)": officeSeat("cedar", "CEDAR(시더)", ["cedar", "birch"]),
-        "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch"]),
-      },
-    };
-    await withOfficeProfile({ mode: "office", roster: reversed }, (dir) => {
-      writeFaces(dir, ["cedar", "birch"]);
-      expect(characterForProvider("web6")).toBe("SHION(시온)");
-      expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
-      expect(parseCharacterIntent("birch 불러와")).toEqual({ kind: "summon", aliases: ["BIRCH(버치)"] });
-    });
-  });
-
-  test("an entry breaking any part of the validity rule keeps the seat default without throwing", async () => {
-    const entry = OFFICE_ROSTER.seats["YUKI(유키)"];
-    const withSeat = (patch: Record<string, unknown>) => ({ seats: { "YUKI(유키)": { ...entry, ...patch } } });
-    const withoutKey = (key: string) => {
-      const { [key]: _omitted, ...rest } = entry as Record<string, unknown>;
-      return { seats: { "YUKI(유키)": rest } };
-    };
-    const profiles: Array<{ mode?: unknown; roster?: unknown; rosterRaw?: string; noFace?: boolean }> = [
-      { mode: "office" },
-      { mode: "office", rosterRaw: "{not json" },
-      { mode: "office", roster: { seats: {} } },
-      { mode: "office", roster: { seats: { "NOBODY(없음)": entry } } },
-      { mode: "office", roster: { seats: { "NOVA(노바)": entry } } },
-      { mode: "broken", roster: OFFICE_ROSTER },
-      { mode: "office", roster: withoutKey("id") },
-      { mode: "office", roster: withSeat({ id: "Bad_Id" }) },
-      { mode: "office", roster: withoutKey("names") },
-      { mode: "office", roster: withSeat({ names: [] }) },
-      { mode: "office", roster: withSeat({ names: ["테스타", " "] }) },
-      { mode: "office", roster: withSeat({ names: ["테스타", "MIO(미오)"] }) },
-      { mode: "office", roster: withSeat({ alias: "RIN(린)" }) },
-      { mode: "office", roster: withSeat({ alias: 'BAD"(테스타)' }) },
-      { mode: "office", roster: withSeat({ alias: "TES'TA(테스타)" }) },
-      { mode: "office", roster: withSeat({ alias: "TES`TA(테스타)" }) },
-      { mode: "office", roster: withSeat({ alias: "TES\u2019TA(테스타)" }) },
-      { mode: "office", roster: withSeat({ alias: `${"A".repeat(65)}` }) },
-      { mode: "office", roster: withSeat({ id: " Bad Id " }) },
-      { mode: "office", roster: withoutKey("face") },
-      { mode: "office", roster: withSeat({ face: "../outside.png" }) },
-      { mode: "office", roster: withSeat({ face: "/etc/passwd" }) },
-      { mode: "office", roster: withSeat({ face: "missing.png" }) },
-      { mode: "office", roster: OFFICE_ROSTER, noFace: true },
-      { mode: "office", roster: withSeat({ voice: { temperament: "x", expression: "" } }) },
-    ];
-    for (const profile of profiles) {
-      await withOfficeProfile(profile, () => {
-        expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-        expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
-        expect(parseCharacterIntent("유키 불러와")).toEqual({ kind: "summon", aliases: ["YUKI(유키)"] });
-      });
-    }
-  });
-
-  test("a face that resolves outside characters-office through a symlink is rejected, and a later deleted face invalidates the entry", async () => {
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER, noFace: true }, (dir) => {
-      const outside = join(dir, "outside.png");
-      // Windows는 파일 시각이 시스템 tick 단위라, 같은 크기의 새 파일이 링크 대상과 같은 mtime을 받을 수 있다. 두 파일을 같은 시각에 고정한다.
-      const tick = new Date("2026-01-01T00:00:00.000Z");
-      writeFileSync(outside, "png");
-      utimesSync(outside, tick, tick);
-      symlinkSync(outside, join(dir, "characters-office", "testa.png"));
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-      rmSync(join(dir, "characters-office", "testa.png"));
-      writeFileSync(join(dir, "characters-office", "testa.png"), "png");
-      utimesSync(join(dir, "characters-office", "testa.png"), tick, tick);
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-      rmSync(join(dir, "characters-office", "testa.png"));
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-    });
-  });
-
-  test("a padded id is trimmed before the id rule, and a roster.json symlinked outside characters-office gives no office state", async () => {
-    const padded = { seats: { "YUKI(유키)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], id: "  testa  ", alias: `  ${OFFICE_ALIAS}  ` } } };
-    await withOfficeProfile({ mode: "office", roster: padded }, () => {
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-    });
-    await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, (dir) => {
-      const rosterPath = join(dir, "characters-office", "roster.json");
-      const outside = join(dir, "roster-outside.json");
-      writeFileSync(outside, JSON.stringify(OFFICE_ROSTER));
-      rmSync(rosterPath);
-      symlinkSync(outside, rosterPath);
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
-      rmSync(rosterPath);
-      writeFileSync(rosterPath, JSON.stringify(OFFICE_ROSTER, null, 1));
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-    });
-  });
-
-  test("default mode ignores a present roster and keeps the built-in output", async () => {
-    await withOfficeProfile({ mode: "default", roster: OFFICE_ROSTER }, () => {
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
-      expect(renderCharacterVoice("YUKI(유키)")).toContain(CHARACTER_VOICES["YUKI(유키)"].temperament);
-      expect(buildCharacterSummonBrief("인사한다.", "YUKI(유키)").startsWith(
-        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]',
-      )).toBe(true);
-    });
-  });
-
-  test("switching the mode file takes effect on the next request", async () => {
-    await withOfficeProfile({ mode: "default", roster: OFFICE_ROSTER }, (dir) => {
-      expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
+describe("retired office mode", () => {
+  test("a leftover mode file and roster in the agent dir change nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "character-voice-retired-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
       writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "office" }));
-      expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
-      writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "default" }));
+      mkdirSync(join(dir, "characters-office"));
+      writeFileSync(join(dir, "characters-office", "testa.png"), "png");
+      writeFileSync(join(dir, "characters-office", "roster.json"), JSON.stringify({
+        seats: { "YUKI(유키)": { id: "testa", face: "testa.png", alias: "TESTA(테스타)", names: ["테스타"], voice: { temperament: "t", expression: "e" } } },
+      }));
       expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
-    });
+      expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
+      expect(parseCharacterIntent("유키 불러와")).toEqual({ kind: "summon", aliases: ["YUKI(유키)"] });
+      expect(characterTarget("TESTA(테스타)")).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

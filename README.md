@@ -140,8 +140,7 @@ Anthropic 구독 계정이 모두 주간 한도에 닿으면, 미리 둔 예비 
 
 **알림과 표현**
 
-- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI).
-- **설정 → 캐릭터**에서 「기본 / 사무실 모드」를 고르면 PC 서버 전체에 적용됩니다. 사무실 모드는 이 PC의 프로필(`characters-office/`)에 준비한 여러 자리의 얼굴·이름·말투·스티커·알림 음성을 함께 바꿉니다. 세트가 없는 자리는 기본 캐릭터를 쓰며, 각 자리의 모델과 호출 권한은 바뀌지 않습니다. 기본 모드로 돌아가면 기존 캐릭터 이름과 그림을 다시 씁니다.
+- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · MITSU · SHION · HIKARI).
 - 브라우저 알림과 PWA 설치를 지원합니다.
 - 직접 저장한 교훈·스킬은 저장한 답변이나 과정 바로 뒤의 카드에서 확인합니다. 교훈 자동 기록을 켠 경우 자동 저장 알림도 작업 과정을 접어도 대화에 남습니다. 요청에 이름이 없고 필요성도 확인되지 않은 MCP 후보는 보류 안내로 나열하지 않습니다.
 - 교훈 자동 기록의 응답 수·토큰·캐시·보고 비용·소요 시간을 기존 로그에서 확인할 수 있습니다. 본대화의 과거 사용량은 제외하며, 보고되지 않은 값은 0으로 추정하지 않습니다. 모델이나 학습 예산을 자동 변경하지는 않습니다. [하네스 안내](./docs/harness.md)를 참고하세요.
@@ -283,7 +282,7 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
-캐릭터(RIN · MIO · YUKI · ISANA · NOVA · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
+캐릭터(RIN · MIO · YUKI · ISANA · MITSU · SHION · HIKARI)의 그림·음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
 
 함께 싣는 글꼴은 모두 SIL Open Font License 1.1입니다. 본문은 [Wanted Sans](https://github.com/wanteddev/wanted-sans), 코드는 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)이고, 제목은 [G마켓 산스](https://corp.gmarket.com/fonts/)를 웹용으로 나누고 변환한 것입니다. 원래 이름은 수정본에 쓸 수 없어서 "CUELO Display"라는 이름으로 싣습니다. 라이선스 전문은 [`public/fonts/`](./public/fonts/) 아래 각 글꼴 폴더에 있습니다.
 

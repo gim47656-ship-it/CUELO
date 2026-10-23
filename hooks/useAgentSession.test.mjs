@@ -627,6 +627,7 @@ test("distinguishes an ambiguous transport failure from an explicit maintenance 
     outcome: "completed",
     sessionId: "session-id",
     provider: "openai-codex",
+    model: "gpt",
     credentialId: 8,
   });
 });
@@ -1141,7 +1142,7 @@ test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번�
     role: "assistant", content: [{ type: "text", text: "확인했어요." }],
     provider: "anthropic", model: "claude-opus-5-5", credentialId: 11, stopReason: "stop", timestamp: 4,
   };
-  const MIO_DONE = { outcome: "completed", sessionId: SESSION, provider: "anthropic", credentialId: 11 };
+  const MIO_DONE = { outcome: "completed", sessionId: SESSION, provider: "anthropic", model: "claude-opus-5-5", credentialId: 11 };
 
   let props;
   let hook;

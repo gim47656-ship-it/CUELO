@@ -16,6 +16,8 @@ export interface SideChatTurn {
 
 export interface SideChatAssistantIdentity {
   provider: string;
+  /** 답을 만든 모델 id. provider 하나가 모델마다 다른 캐릭터를 가질 때(hive) 얼굴을 고르는 근거다. */
+  model?: string;
   credentialId?: number;
 }
 
@@ -47,8 +49,10 @@ export function latestSideChatAssistantIdentity(value: unknown): SideChatAssista
     if (!message || typeof message !== "object" || !("role" in message) || message.role !== "assistant") continue;
     if (!("provider" in message) || typeof message.provider !== "string" || !message.provider) return null;
     const credentialId = "credentialId" in message ? message.credentialId : undefined;
+    const model = "model" in message ? message.model : undefined;
     return {
       provider: message.provider,
+      ...(typeof model === "string" && model ? { model } : {}),
       ...(typeof credentialId === "number" && Number.isSafeInteger(credentialId) && credentialId > 0
         ? { credentialId }
         : {}),

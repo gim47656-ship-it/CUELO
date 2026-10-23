@@ -1,4 +1,4 @@
-import { CHARACTER_ROSTER, providerAccountFace } from "./hanse-resource-client";
+import { CHARACTER_ROSTER, providerAccountFace, providerModelFace } from "./hanse-resource-client";
 import type { AgentSessionLike } from "./omp-types";
 
 /**
@@ -19,7 +19,7 @@ export async function resolveLiveCharacter(
 ): Promise<string | null> {
   const provider = session.model?.provider;
   if (!provider) return null;
-  const reserved = providerAccountFace(provider);
+  const reserved = providerModelFace(provider, session.model?.id) ?? providerAccountFace(provider);
   if (reserved) return reserved.alias;
 
   const seats = CHARACTER_ROSTER.filter((entry) => entry.provider === provider && entry.oauthPosition !== undefined);

@@ -40,7 +40,7 @@ test("캐릭터가 기본 선택되고 일곱 얼굴·한글 이름·말투·호
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>캐릭터</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>계정 한도</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>모델 통계</);
-  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "NOVA(노바)", "HIKARI(히카리)", "SHION(시온)"]) {
+  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "HIKARI(히카리)", "SHION(시온)"]) {
     assert.match(html, new RegExp(alias.replace(/[()]/g, "\\$&")));
   }
   assert.equal(html.match(/class="account-avatar"/g)?.length, 7);
@@ -55,14 +55,15 @@ test("캐릭터가 기본 선택되고 일곱 얼굴·한글 이름·말투·호
 test("연결 해제로 사용량 행이 없어져도 미연결 캐릭터 상태를 표시한다", () => {
   const html = renderToStaticMarkup(createElement(CharacterRosterView, {
     reports: [{ provider: "openai-codex", credentialId: 8, disabled: false }],
-    providerConnections: new Map([["opencode-go", false], ["openai-codex", true], ["hive", true]]),
+    providerConnections: new Map([["hive", false], ["openai-codex", true]]),
   }));
-  const nova = html.match(/<article[^>]*aria-labelledby="character-roster-2"[\s\S]*?<\/article>/)?.[0];
-  assert.ok(nova, "NOVA 카드가 남아 있어야 한다");
-  assert.match(nova, /is-unavailable/);
-  assert.match(nova, /aria-describedby="character-roster-2-status"/);
-  assert.match(nova, /연결 안 됨/);
-  assert.equal(html.match(/is-unavailable/g)?.length, 1);
+  // hive 하나가 ISANA(DeepSeek)와 MITSU(GLM)를 모두 돌리므로 둘 다 미연결로 표시된다.
+  const mitsu = html.match(/<article[^>]*aria-labelledby="character-roster-2"[\s\S]*?<\/article>/)?.[0];
+  assert.ok(mitsu, "MITSU 카드가 남아 있어야 한다");
+  assert.match(mitsu, /is-unavailable/);
+  assert.match(mitsu, /aria-describedby="character-roster-2-status"/);
+  assert.match(mitsu, /연결 안 됨/);
+  assert.equal(html.match(/is-unavailable/g)?.length, 2);
 });
 
 test("패널은 자체 레이어를 만들지 않고 셸의 배치와 닫기 동작을 따른다", () => {

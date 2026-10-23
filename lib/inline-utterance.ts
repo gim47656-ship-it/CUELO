@@ -7,7 +7,7 @@ import type { AgentMessage, AssistantMessage, SubagentSnapshot } from "./types";
  * 하나로 정규화한 뒤 렌더러 한 곳이 그린다. 출처를 아는 코드는 어댑터 안에만 있고
  * 렌더러에는 없다 — 화자가 늘어도 렌더러는 그대로다.
  *
- * 얼굴을 고르는 입력은 `provider` 와 `credentialId` 둘뿐이다. `label` 은 화면에 붙는
+ * 얼굴을 고르는 입력은 `provider`·`model`·`credentialId` 셋뿐이다. `label` 은 화면에 붙는
  * 표시 텍스트일 뿐 얼굴 해소에 관여하지 않는다.
  */
 export interface InlineUtterance {
@@ -15,8 +15,9 @@ export interface InlineUtterance {
   key: string;
   /** 발화가 붙을 턴 — 그 턴을 연 사용자 메시지의 인덱스. */
   turnIndex: number;
-  /** 계정을 가리키는 입력. 얼굴은 이 둘로만 고른다. */
+  /** 계정을 가리키는 입력. 얼굴은 이 셋으로만 고른다. `model` 은 provider 하나가 모델마다 다른 캐릭터를 가질 때(hive)만 쓴다. */
   provider: string;
+  model?: string;
   credentialId?: number;
   /** 계정 pin의 소유 세션. null이면 부모 세션 계정을 대체 근거로 쓰지 않는다. */
   accountSessionId?: string | null;

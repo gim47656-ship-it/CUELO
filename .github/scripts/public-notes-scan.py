@@ -21,7 +21,7 @@ from pathlib import Path
 # word characters to `re`, so `\b` would miss them. Boundaries here are ASCII-only.
 L = r"(?<![A-Za-z0-9_])"
 R = r"(?![A-Za-z0-9_])"
-CHARACTERS = L + r"(?:RIN|MIO|YUKI|ISANA|NOVA|SHION|HIKARI)" + R
+CHARACTERS = L + r"(?:RIN|MIO|YUKI|ISANA|NOVA|MITSU|SHION|HIKARI)" + R
 
 # (kind, pattern, files it applies to)
 RULES = [

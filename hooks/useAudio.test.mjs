@@ -11,7 +11,6 @@ const jiti = createJiti(import.meta.url, {
 });
 const { useAudio } = await jiti.import("./useAudio.ts");
 const { CUE_MANIFEST_PATH } = await jiti.import("../lib/completion-audio.ts");
-const { applyOfficeCharacters } = await jiti.import("../lib/hanse-resource-client.ts");
 
 const MANIFEST = {
   characters: [
@@ -273,49 +272,6 @@ test("제스처 전 resume()이 끝나지 않아도 스티커·대사는 바로 
     assert.equal(sources.length, 1, "같은 트리거가 유효하면 풀린 뒤 소리를 낸다");
     assert.equal(sources[0].started, true);
   } finally {
-    restoreGlobal("AudioContext", previousAudioContext);
-    restoreGlobal("fetch", previousFetch);
-  }
-});
-
-test("사무실 모드에서는 YUKI 자리의 큐가 비공개 프로필 라우트의 음성·스티커를 쓰고, 다른 자리는 그대로다", async () => {
-  const previousAudioContext = globalThis.AudioContext;
-  const previousFetch = globalThis.fetch;
-  const { context, sources } = fakeContext();
-  const fetched = [];
-  globalThis.AudioContext = class { constructor() { return context; } };
-  globalThis.fetch = manifestFetch(fetched);
-  applyOfficeCharacters({
-    mode: "office",
-    rosterAvailable: true,
-    seats: [{
-      seat: "YUKI(유키)",
-      id: "kiri",
-      alias: "KIRI(키리)",
-      names: ["kiri", "키리"],
-      faceUrl: "/api/office-characters/kiri/face.webp",
-      voice: { temperament: "t", expression: "e" },
-      manifest: { characters: [{
-        id: "kiri",
-        clips: [{ file: "kiri/audio/01.wav", tag: "done", ko: "끝났어. 한번 봐." }],
-        stickers: [{ file: "kiri/stickers/done/01.webp", tag: "done" }],
-        captions: [],
-      }] },
-    }],
-  });
-
-  try {
-    const audio = renderAudioHook();
-    const office = await audio.playCueSound("YUKI(유키)");
-    await settle(0);
-    assert.deepEqual(office, { sticker: "/api/office-characters/kiri/stickers/done/01.webp", text: "끝났어. 한번 봐." });
-    assert.deepEqual(fetched.filter((url) => url !== CUE_MANIFEST_PATH), ["/api/office-characters/kiri/audio/01.wav"]);
-    assert.equal(sources.length, 1);
-
-    const other = await audio.playCueSound("MIO(미오)");
-    assert.ok(other.sticker === null || other.sticker.startsWith("/stickers/mio/"), "다른 자리는 기본 자산을 쓴다");
-  } finally {
-    applyOfficeCharacters({ mode: "default", rosterAvailable: false, seats: [] });
     restoreGlobal("AudioContext", previousAudioContext);
     restoreGlobal("fetch", previousFetch);
   }
