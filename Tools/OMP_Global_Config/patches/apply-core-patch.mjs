@@ -7767,6 +7767,69 @@ import { getActiveRules } from "../capability/rule";`,
 				: rawOutput;
 	}`,
 	},
+	{
+		// --- 실제 취소 뒤에 끝난 yield 가 성공 종료·수용 결과로 바뀌는 결함(2026-10-23 late-result-audit D1) ---
+		// caller 취소·shutdown·runtime timeout·budget 강제 중단을 먼저 보낸 뒤 진행 중이던 yield 가 끝나면
+		// finalizeSubprocessOutput 이 stderr 없는 exit 1 을 0 으로 올리고(caller·shutdown), 후속 턴
+		// (runSubagentFollowUpTurn·IRC wake)은 이미 수용된 <id>.md·<id>.json 을 그 늦은 내용으로 덮어썼다.
+		// 판별은 yield 를 수용한 순간 이미 terminate 가 아닌 abort 가 나갔는지다. 정상 yield 는 수용 뒤
+		// requestAbort("terminate") 를 보내므로 그대로 성공이고, 수용 뒤에 온 caller 취소도 결과를 뺏지 않는다.
+		// 늦은 payload·usage 는 result.output·extractedToolData·usage 로 진단용으로 남긴다. 첫 실행의 <id>.md 는
+		// 덮을 수용 결과가 없어 지금처럼 그 실행의 진단 출력으로 쓴다. 검증: core-cancelled-yield-test.ts.
+		file: "src/task/executor.ts",
+		marker: "\tyieldAcceptedAfterAbort(): boolean;",
+		anchor: "\tyieldCalled(): boolean;\n",
+		patched: `	yieldCalled(): boolean;
+	/** The accepted yield arrived after a caller/shutdown/timeout/budget abort was already sent: diagnostic only. */
+	yieldAcceptedAfterAbort(): boolean;
+`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\tlet yieldAfterAbort = false;",
+		anchor: "\tlet yieldAcceptedAt: number | undefined;\n",
+		patched: "\tlet yieldAcceptedAt: number | undefined;\n\tlet yieldAfterAbort = false;\n",
+	},
+	{
+		// 첫 수용 시점에 고정한다. 수용 뒤 caller 취소는 requestAbort 가 terminate 를 signal 로 올리므로,
+		// 그 뒤에 끝난 두 번째 yield 가 다시 계산하면 이미 수용된 결과까지 취소로 뒤집는다(cross-review R1-OAI-1 probe).
+		file: "src/task/executor.ts",
+		marker: "if (yieldAcceptedAt === undefined) yieldAfterAbort = abortSent && abortReason !== \"terminate\";",
+		anchor: "\t\t\t\tyieldAcceptedAt = Date.now();\n",
+		patched: "\t\t\t\tif (yieldAcceptedAt === undefined) yieldAfterAbort = abortSent && abortReason !== \"terminate\";\n\t\t\t\tyieldAcceptedAt = Date.now();\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "\t\tyieldAcceptedAfterAbort: () => yieldAfterAbort,",
+		anchor: "\t\tyieldCalled: () => yieldCalled,\n",
+		patched: "\t\tyieldCalled: () => yieldCalled,\n\t\tyieldAcceptedAfterAbort: () => yieldAfterAbort,\n",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "const yieldAfterAbort = hasYield && monitor.yieldAcceptedAfterAbort();",
+		anchor: "\tconst { abortedViaYield, hasYield } = finalized;\n",
+		patched: `	const { abortedViaYield, hasYield } = finalized;
+	// A yield accepted only after a real cancellation is not the run's result: keep the
+	// run failed and leave an earlier accepted artifact in place (payload stays in output).
+	const yieldAfterAbort = hasYield && monitor.yieldAcceptedAfterAbort();
+	if (yieldAfterAbort) {
+		if (exitCode === 0) exitCode = 1;
+		stderr ||= "Subagent was cancelled before its yield was accepted; the late payload is diagnostic output only.";
+	}
+`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "(!args.followUpTurn || (hasYield && !yieldAfterAbort) || hasMessageResult)",
+		anchor: "(!args.followUpTurn || hasYield || hasMessageResult)",
+		patched: "(!args.followUpTurn || (hasYield && !yieldAfterAbort) || hasMessageResult)",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "abortedViaYield || yieldAfterAbort || (!hasYield && Boolean(signal?.aborted));",
+		anchor: "abortedViaYield || (!hasYield && Boolean(signal?.aborted));",
+		patched: "abortedViaYield || yieldAfterAbort || (!hasYield && Boolean(signal?.aborted));",
+	},
 	// 18.3.4 RETIRE: OAuth 64K 출력 상한 해제(옛 2026-09-25 항목). pi-ai 18.3.4 anthropic.ts:4743 이
 	// OAuth·API key 모두 `model.maxTokens ?? 64_000` 을 요청한다(CHANGELOG 18.3.4 "Fixed Anthropic OAuth
 	// requests capping output at 64k tokens"; Opus 5.5 128k).
