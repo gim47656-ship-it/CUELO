@@ -991,13 +991,21 @@ export function AppShell({
     returnToComposer();
   }, [returnToComposer]);
 
-  // 스크린샷 확대창의 「이 화면 수정 요청」: 붙여넣기와 같은 첨부 경로로 붙이고 입력창으로 돌아간다. 보내지 않는다.
-  const attachToComposer = useCallback((files: File[]) => {
+  // 스크린샷 확대창의 「이 화면 수정 요청」: 붙여넣기와 같은 첨부 경로로 붙이고, 표시한 구역 설명이 있으면
+  // 커서 자리에 넣은 뒤 입력창으로 돌아간다. 보내지 않는다.
+  const attachToComposer = useCallback((files: File[], text?: string) => {
     const input = chatInputRef.current;
     if (!input) return false;
     input.addAttachments(files);
+    if (text) input.insertText(text);
     returnToComposer();
     return true;
+  }, [returnToComposer]);
+
+  // 파일 보기 「이 요소 수정 요청」: 위치 설명을 커서 자리에 넣고 입력창으로 돌아간다(줄 멘션과 같은 길).
+  const insertIntoComposer = useCallback((text: string) => {
+    chatInputRef.current?.insertText(text);
+    returnToComposer();
   }, [returnToComposer]);
 
   const initialSessionId = initialNavigation.sessionId;
@@ -1738,6 +1746,7 @@ export function AppShell({
             viewStateKey={activeFileTab.id}
             onMentionLines={handleFileLineMention}
             onAtMention={handleAtMention}
+            onInsertText={insertIntoComposer}
             onOpenFile={(filePath) => handleOpenFile(
               filePath,
               getFileName(filePath),

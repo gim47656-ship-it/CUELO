@@ -27,6 +27,9 @@ import { parseUnifiedPatch } from "@/lib/patch";
 import type { GitFileDiffResponse } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
 import { PanelHeader, type PanelHeaderAction, type PanelHeaderViewSwitch } from "./workspace/PanelHeader";
+import { HtmlElementPicker } from "./HtmlElementPicker";
+import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
+import { buildElementLocatorText, findStartTagLine, type PickedElement } from "@/lib/html-element-pick";
 
 interface Props {
   filePath: string;
@@ -36,6 +39,8 @@ interface Props {
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   /** Insert this file's relative path into the chat input (@ mention). */
   onAtMention?: (relativePath: string, isDir: boolean) => void;
+  /** Insert text at the chat input's cursor and return focus there (HTML 「이 요소 수정 요청」). */
+  onInsertText?: (text: string) => void;
   gitRefreshKey?: number;
   initialDisplayMode?: DisplayMode;
   /**
@@ -287,6 +292,13 @@ const WRAP_ICON = (
     <path d="M3 12h15a3 3 0 1 1 0 6h-4" />
     <path d="m16 16-2 2 2 2" />
     <path d="M3 18h7" />
+  </svg>
+);
+
+const PICK_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 4h6M4 4v6M20 4h-6M20 4v6M4 20h6M4 20v-6" />
+    <path d="m13 13 7 3-3 1-1 3z" />
   </svg>
 );
 
@@ -811,7 +823,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
+export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, onInsertText, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
   if (isImagePath(filePath)) {
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
@@ -821,10 +833,10 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMenti
   if (isDocumentPreviewPath(filePath)) {
     return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
-  return <TextFileViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onOpenFile={onOpenFile} onMentionLines={onMentionLines} onAtMention={onAtMention} gitRefreshKey={gitRefreshKey} initialDisplayMode={initialDisplayMode} viewStateStore={viewStateStore} viewStateKey={viewStateKey} />;
+  return <TextFileViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onOpenFile={onOpenFile} onMentionLines={onMentionLines} onAtMention={onAtMention} onInsertText={onInsertText} gitRefreshKey={gitRefreshKey} initialDisplayMode={initialDisplayMode} viewStateStore={viewStateStore} viewStateKey={viewStateKey} />;
 }
 
-function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
+function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, onInsertText, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
   const { isDark } = useTheme();
   const { t } = useI18n();
   // 사용자가 고른 보기와 스크롤. 넓게 보기로 덱이 다시 마운트돼도 탭 단위 저장소에서 이어 받는다.
@@ -841,6 +853,9 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const [error, setError] = useState<string | null>(null);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("source");
   const [wrapLines, setWrapLines] = useState(false);
+  // HTML 미리보기 「요소 지정」. 켜면 미리보기를 고르기 스크립트와 함께 다시 그린다.
+  const [pickingElement, setPickingElement] = useState(false);
+  const stopPicking = useCallback(() => setPickingElement(false), []);
   const [watching, setWatching] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const gitDiffRequestRef = useRef(0);
@@ -1104,6 +1119,20 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const metadata = isDeletedDiff
     ? t("files.deleted")
     : `${language} · ${lines.length} lines · ${formatSize(data!.size)}`;
+  const canPickElement = isHtml && effectiveDisplayMode === "preview" && Boolean(onInsertText);
+  const picking = canPickElement && pickingElement;
+  // 고른 요소의 여는 태그가 원문에 한 번만 있으면 그 줄을, 아니면 파일을 멘션하고 요소·글자·위치를 덧붙인다.
+  const requestElementEdit = (element: PickedElement) => {
+    if (!onInsertText) return;
+    const relativePath = getRelativeFilePath(filePath, cwd);
+    const line = findStartTagLine(content, element.startTag);
+    const mention = line === null ? buildAtMentionText(relativePath, false) : buildFileLineMentionText(relativePath, line, line);
+    onInsertText(buildElementLocatorText(mention, element, {
+      element: (selector) => t("files.pickLocatorElement", { selector }),
+      text: (text) => t("files.pickLocatorText", { text }),
+      position: (values) => t("files.pickLocatorPosition", values),
+    }));
+  };
 
   return (
     <div className="file-viewer-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -1124,6 +1153,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
           })),
           onChange: (mode) => {
             setDisplayMode(mode);
+            setPickingElement(false);
             rememberViewState({ mode });
           },
         }}
@@ -1149,6 +1179,13 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             pressed: wrapLines,
             onClick: () => setWrapLines((value) => !value),
           }] : []),
+          ...(canPickElement ? [{
+            id: "pick-element",
+            label: t("files.pickElement"),
+            icon: PICK_ICON,
+            pressed: pickingElement,
+            onClick: () => setPickingElement((value) => !value),
+          }] : []),
         ]}
       />
 
@@ -1162,11 +1199,12 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
         ) : isHtml && effectiveDisplayMode === "preview" ? (
-          <iframe
-            srcDoc={content}
-            sandbox="allow-scripts"
-            style={{ width: "100%", height: "100%", border: "none", background: "var(--bg)" }}
-             title={t("i18n.htmlPreview")}
+          <HtmlElementPicker
+            content={content}
+            title={t("i18n.htmlPreview")}
+            picking={picking}
+            onExitPick={stopPicking}
+            onRequestEdit={requestElementEdit}
           />
         ) : isMarkdown && effectiveDisplayMode === "preview" ? (
           <div

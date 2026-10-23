@@ -4316,6 +4316,61 @@ span.linenumber {
   border-radius: var(--radius-control);
 }
 
+/* 고칠 곳 표시: 그림 위에 끌어 그린 상자. 상자는 그림 크기에 대한 비율로 놓여 창 크기를 따라간다. */
+.tool-image-marker {
+  position: relative;
+  display: inline-block;
+  max-inline-size: 100%;
+  vertical-align: top;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tool-image-marker[data-drawing="true"] {
+  cursor: crosshair;
+  /* 끄는 동안 화면이 밀리지 않게 한다. 그림 밖(행동 줄)은 그대로 스크롤·탭된다. */
+  touch-action: none;
+}
+
+.tool-image-region {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--danger);
+  /* 어떤 바탕의 스크린샷에서도 선이 보이도록 바깥에 패널색 한 줄을 덧댄다. */
+  box-shadow: 0 0 0 1px var(--bg-panel);
+  pointer-events: none;
+}
+
+.tool-image-region[data-draft="true"] {
+  border-style: dashed;
+}
+
+.tool-image-region-number {
+  position: absolute;
+  inset-block-start: -1px;
+  inset-inline-start: -1px;
+  min-inline-size: 18px;
+  padding: 0 4px;
+  background: var(--danger);
+  color: var(--bg-panel);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-image-hint {
+  margin: 10px auto 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  word-break: keep-all;
+}
+
+.tool-image-hint[data-hidden="true"] {
+  visibility: hidden;
+}
+
 /* 확대창 아래 행동 줄: 「이 화면 수정 요청」(이 창의 단 하나의 solid)과 닫기. 좁은 화면에서는 줄을 바꾼다. */
 .tool-image-actions {
   display: flex;
@@ -4328,6 +4383,73 @@ span.linenumber {
 .tool-image-actions button:focus-visible {
   outline: 2px solid var(--accent-ring, var(--accent));
   outline-offset: 2px;
+}
+
+/* 파일 보기 HTML 미리보기와 「요소 지정」 선택 줄. 줄은 한 줄이고 넘치면 말줄임, 좁으면 단추가 아래로 내려간다. */
+.html-pick-shell {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+}
+
+.html-pick-frame {
+  flex: 1;
+  inline-size: 100%;
+  min-block-size: 0;
+  border: none;
+  background: var(--bg);
+}
+
+.html-pick-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 12px;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 13px;
+}
+
+.html-pick-summary {
+  flex: 1 1 220px;
+  min-inline-size: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.html-pick-tag {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.html-pick-selector {
+  margin-inline-start: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.html-pick-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.html-pick-actions button:focus-visible {
+  outline: 2px solid var(--accent-ring, var(--accent));
+  outline-offset: 2px;
+}
+
+.html-pick-hint {
+  margin: 0;
+  color: var(--text-muted);
+  word-break: keep-all;
 }
 
 .tool-image-error {

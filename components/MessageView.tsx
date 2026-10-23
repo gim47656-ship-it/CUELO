@@ -11,6 +11,9 @@ import { useTheme } from "@/hooks/useTheme";
 import { useNow } from "@/hooks/useNow";
 import { ActionButton, Badge } from "@seed-design/react";
 import { ComposerAttachContext } from "./ComposerAttachContext";
+import { ImageRegionMarker, renderRegionImages } from "./ImageRegionMarker";
+import type { Region, Size } from "@/lib/image-regions";
+import { MAX_ATTACHED_IMAGES } from "@/lib/image-attachments";
 import { readExitCode } from "@/lib/tool-exit-code";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { formatTokenCount } from "@/lib/format-tokens";
@@ -1044,9 +1047,14 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
   "image/gif": "gif",
 };
 
+/** 표시할 수 있는 구역 수. 표시한 그림 1장 + 구역마다 자른 그림 1장이 입력창의 이미지 한도 안에 들게 한다. */
+const MAX_IMAGE_REGIONS = MAX_ATTACHED_IMAGES - 1;
+
 /**
- * 도구 이미지 확대창. 「이 화면 수정 요청」은 그 이미지를 지금 세션의 입력창에 붙이고 입력창으로
- * 돌아간다(보내지 않는다). 붙일 입력창이 없거나 이미지를 가져오지 못하면 창을 닫지 않고 이유를 보인다.
+ * 도구 이미지 확대창. 그림 위를 끌어 고칠 곳을 상자로 표시할 수 있다. 「이 화면 수정 요청」은 표시가 없으면
+ * 원본 그림 하나를, 있으면 상자를 새긴 원본 해상도 그림과 구역마다 자른 원본 조각을 붙이고, 구역 위치 설명을
+ * 커서 자리에 넣은 뒤 입력창으로 돌아간다(보내지 않는다). 붙일 입력창이 없거나 이미지를 가져오지 못하면 창을
+ * 닫지 않고 이유를 보인다.
  */
 function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: string; onClose: () => void }) {
   const { t } = useI18n();
@@ -1054,6 +1062,8 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [attaching, setAttaching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [regions, setRegions] = useState<Region[]>([]);
+  const [natural, setNatural] = useState<Size | null>(null);
   // 받는 중인 이미지. 창을 닫거나(세션을 바꿔 창이 사라지는 경우 포함) 다시 누르면 끊고, 늦게 온 결과는 붙이지 않는다.
   const requestRef = useRef<AbortController | null>(null);
 
@@ -1085,14 +1095,30 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
     requestRef.current = controller;
     setAttaching(true);
     setError(null);
-    let file: File;
+    let files: File[];
+    let text: string | undefined;
     try {
       const response = await fetch(src, { signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
       const extension = IMAGE_EXT_BY_MIME[blob.type];
       if (!extension) throw new Error(`unsupported ${blob.type}`);
-      file = new File([blob], `${fileName}.${extension}`, { type: blob.type });
+      if (regions.length === 0 || !natural) {
+        files = [new File([blob], `${fileName}.${extension}`, { type: blob.type })];
+      } else {
+        const rendered = await renderRegionImages(blob, regions);
+        files = [
+          new File([rendered.marked], `${fileName}-marked.png`, { type: "image/png" }),
+          ...rendered.crops.map((crop, index) => new File([crop], `${fileName}-region-${index + 1}.png`, { type: "image/png" })),
+        ];
+        const range = regions.length === 1 ? "1" : `1~${regions.length}`;
+        text = [
+          t("toolImage.locatorIntro", { range }),
+          ...regions.map((region, index) => t("toolImage.locatorRegion", {
+            n: index + 1, x: region.x, y: region.y, w: region.w, h: region.h, width: natural.width, height: natural.height,
+          })),
+        ].join("\n") + "\n";
+      }
     } catch {
       if (controller.signal.aborted) return;
       setAttaching(false);
@@ -1100,7 +1126,7 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
       return;
     }
     if (controller.signal.aborted || !dialogRef.current?.open) return;
-    if (!attachToComposer([file])) {
+    if (!attachToComposer(files, text)) {
       setAttaching(false);
       setError(t("toolImage.noComposer"));
       return;
@@ -1121,9 +1147,22 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
         if (event.target === event.currentTarget) close();
       }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="tool-image-full" src={src} alt="" draggable={false} />
-      {error && <p role="alert" className="tool-image-error">{error}</p>}
+      <ImageRegionMarker
+        src={src}
+        regions={regions}
+        max={MAX_IMAGE_REGIONS}
+        onAdd={(region) => setRegions((current) => (current.length < MAX_IMAGE_REGIONS ? [...current, region] : current))}
+        onNaturalSize={setNatural}
+        regionLabel={(n) => t("toolImage.regionLabel", { n })}
+      />
+      {/* 안내 줄은 자리를 늘 지킨다. 상자를 그려 안내가 사라져도 창이 다시 가운데로 옮겨 그림이 밀리지 않게 한다. */}
+      {error ? (
+        <p role="alert" className="tool-image-error">{error}</p>
+      ) : (
+        <p className="tool-image-hint" data-hidden={regions.length > 0 && regions.length < MAX_IMAGE_REGIONS ? "true" : undefined}>
+          {regions.length >= MAX_IMAGE_REGIONS ? t("toolImage.markLimit", { count: MAX_IMAGE_REGIONS }) : t("toolImage.markHint")}
+        </p>
+      )}
       <div className="tool-image-actions">
         <ActionButton
           variant="neutralSolid"
@@ -1133,6 +1172,10 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
           title={t("toolImage.requestEditHint")}
         >
           {t("toolImage.requestEdit")}
+        </ActionButton>
+        {/* 표시가 없을 때도 (꺼진 채) 자리를 지켜, 첫 상자를 그릴 때 행동 줄이 줄바꿈되며 그림이 밀리지 않게 한다. */}
+        <ActionButton variant="neutralWeak" size="medium" disabled={regions.length === 0} onClick={() => setRegions([])}>
+          {t("toolImage.clearMarks")}
         </ActionButton>
         <ActionButton variant="neutralWeak" size="medium" onClick={close}>
           {t("i18n.close")}
