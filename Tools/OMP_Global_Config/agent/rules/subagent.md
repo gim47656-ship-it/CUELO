@@ -507,12 +507,13 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   자기 것을 새로 만들지 않고 그 산출물을 요청한다. owner는 재사용할 대상이 생길 예정인지 알 방법이
   없으므로, 적지 않으면 규칙을 지키려 해도 같은 빌드를 두 번 돌리게 된다. 정본은
   `implementationOwnership.writerValidation.heavyArtifactOwner`다.
-- 웹 화면은 **headless Chromium**(`app.relay: false`)에서 확인한다. localhost·격리 검증 서버·
-  빌드 산출물처럼 로그인 세션이 필요 없는 대상이 여기 해당하고, Maker의 검증은 거의 전부
-  여기다. **`app.relay: false`를 빼면 relay가 기본이라 사용자 브라우저에 탭이 열린다** —
+- 웹 화면 확인 경로는 `RULES.md` 브라우저 항목이 정한다. `ego_browser`를 쓸 수 있는 PC에서는 ego
+  TaskSpace의 검증 프로필(`profile: "verify"`), 없으면 **headless Chromium**(`app.relay: false`)이며,
+  localhost·격리 검증 서버·빌드 산출물처럼 로그인 세션이 필요 없는 대상과 Maker의 검증은 거의 전부
+  여기다. **`browser.open`에 `app.relay: false`를 빼면 relay가 기본이라 사용자 브라우저에 탭이 열린다** —
   빌드가 깨진 중간 상태를 사용자 화면에 띄우는 사고가 실제로 있었다. 사용자 세션이 실제로
-  필요하거나 Main이 사용자 판단을 받으라고 지시한 **완성된** 표면만 사용자 브라우저(Whale)의
-  새 작업 탭을 쓴다. 그때도 코어 패치가 `app.target` 없는 relay open을 새 탭 생성으로 만들므로
+  필요하거나 Main이 사용자 판단을 받으라고 지시한 **완성된** 표면만 사용자 프로필(ego `profile: "user"`
+  또는 relay 새 작업 탭)에서 연다. relay에서는 코어 패치가 `app.target` 없는 open을 새 탭 생성으로 만들므로
   기존 탭·쿠키·로그인 세션은 건드리지 않고, 기존 탭을 대상으로 해야 하면 `app.target`을
   명시하고 그 사실을 보고한다. owner가 스스로 사용자 브라우저를 열어 판단을 요구하지 않는다.
 - 격리 검증 서버는 프로젝트의 `package.json` script를 그대로 쓰고 포트만 바꾼다. 명령을 손으로

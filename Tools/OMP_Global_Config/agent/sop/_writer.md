@@ -158,13 +158,15 @@
   memory. Use the locators Main already put in the brief before searching again, and do not add a
   judge call, index, or wiki for document lookup.
   `agent/AGENTS.md` 「프로젝트 문서 지도와 기록」 is authoritative.
-- Verify web surfaces in HEADLESS Chromium (`app.relay: false`). Localhost, isolated verification
-  servers, and build output all qualify — that is nearly every check you run. `browser.relay: true`
-  is the profile default, so OMITTING `app.relay: false` opens a tab in the USER'S OWN browser; a
-  maker once exposed a server whose every stylesheet failed to parse and the user stared at the
-  build error. Never put a broken intermediate state on the user's screen. Use the user's browser
-  only when their live session is genuinely required, or when Main tells you to hand a FINISHED
-  surface over for judgement — do not open it on your own initiative.
+- Verify web surfaces where the user cannot see them. When the `ego_browser` tool is available, use an
+  ego TaskSpace with `profile: "verify"` (never the user profile); otherwise use HEADLESS Chromium
+  (`app.relay: false`). Localhost, isolated verification servers, and build output all qualify — that
+  is nearly every check you run. `browser.relay: true` is the profile default, so OMITTING
+  `app.relay: false` in `browser.open` opens a tab in the USER'S OWN browser; a maker once exposed a
+  server whose every stylesheet failed to parse and the user stared at the build error. Never put a
+  broken intermediate state on the user's screen. Use the user's browser profile only when their live
+  session is genuinely required, or when Main tells you to hand a FINISHED surface over for
+  judgement — do not open it on your own initiative.
   Do not launch Chrome/Edge executables directly from bash or eval (including `Bun.spawn`) for
   verification. Use the managed browser helpers or the project's supported verification commands.
   Such commands must use an absolute, isolated profile path: even headless startup can show a
