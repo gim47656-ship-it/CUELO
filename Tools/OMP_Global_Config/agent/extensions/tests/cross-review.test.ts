@@ -292,13 +292,13 @@ describe("runReview", () => {
     expect(record.files.map((file) => file.path).sort()).toEqual(["a.ts", "b.ts", "c.json"]);
   });
 
-  test("입력이 상한을 넘으면 모델을 부르지 않고 나누라고 거절한다(긴 acceptance도 포함)", async () => {
+  test("입력이 상한을 넘으면 모델을 부르지 않고 나누라고 거절하며, 큰 조각부터 바이트를 보여 준다(긴 acceptance도 포함)", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), `${"const x = 1;\n".repeat(Math.ceil(MAX_INPUT_BYTES / 10))}`);
     const calls: { family: Family; prompt: string }[] = [];
-    await expect(runReview(input(), deps(env, {}, calls), signal)).rejects.toThrow("Split the change");
+    await expect(runReview(input(), deps(env, {}, calls), signal)).rejects.toThrow(/Split the change[^]*Largest pieces: a\.ts \(new-file\) \d+ bytes, acceptance \d+ bytes/);
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    await expect(runReview(input({ acceptance: "criterion ".repeat(MAX_INPUT_BYTES / 5) }), deps(env, {}, calls), signal)).rejects.toThrow("Split the change");
+    await expect(runReview(input({ acceptance: "criterion ".repeat(MAX_INPUT_BYTES / 5) }), deps(env, {}, calls), signal)).rejects.toThrow(/Largest pieces: acceptance \d+ bytes, a\.ts \(new-file\) \d+ bytes/);
     expect(calls).toEqual([]);
   });
 

@@ -1250,7 +1250,16 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   });
   const promptBytes = utf8(prompt);
   if (promptBytes > MAX_INPUT_BYTES) {
-    throw new Error(`Review input is ${promptBytes} bytes (acceptance, previous findings, the change and references together), above the ${MAX_INPUT_BYTES} byte limit (about 75k-100k tokens: one model call must finish within the ${REVIEW_TIMEOUT_MS / 60000} minute timeout and still leave room for the reviewer's reasoning). Split the change into separate reviews by file or topic.`);
+    // 전체 바이트만 알리면 작은 파일을 빼도 줄지 않는 이유를 Main이 직접 재야 했다(10-23, 13→6→5개 파일에 490KB→472KB).
+    const pieces = [
+      ...parts.map((part) => ({ label: `${part.path} (${part.kind})`, bytes: utf8(part.text) })),
+      ...inputEntries.map((entry) => ({ label: `${entry.path} (input)`, bytes: utf8(entry.text) })),
+      ...references.map((reference) => ({ label: `${reference.path} (reference)`, bytes: utf8(reference.text) })),
+      { label: "acceptance", bytes: utf8(input.acceptance) },
+    ].sort((a, b) => b.bytes - a.bytes);
+    const largest = pieces.slice(0, 5).map((piece) => `${piece.label} ${piece.bytes} bytes`).join(", ");
+    const more = pieces.length > 5 ? `, and ${pieces.length - 5} more` : "";
+    throw new Error(`Review input is ${promptBytes} bytes (acceptance, previous findings, the change and references together), above the ${MAX_INPUT_BYTES} byte limit (about 75k-100k tokens: one model call must finish within the ${REVIEW_TIMEOUT_MS / 60000} minute timeout and still leave room for the reviewer's reasoning). Split the change into separate reviews by file or topic. Largest pieces: ${largest}${more}.`);
   }
   // 검토 본문을 모은 뒤 파일이 바뀌었으면 reviewer가 본 내용과 사본이 어긋나므로 쓰지 않고 다시 하게 한다.
   const settledBlobs = await currentBlobs(deps.exec, git, root, reviewedFiles.map((file) => file.path));
