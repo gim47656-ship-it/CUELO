@@ -5893,9 +5893,20 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     padding-inline: max(var(--seed-dimension-x2), env(safe-area-inset-left)) max(var(--seed-dimension-x2), env(safe-area-inset-right));
   }
 
+  /* 버튼 좌우 여백을 줄여 세션 제목 자리를 넓힌다(390px에서 61→93px). 표적은 44px 이상, 토글 글자는 그대로다.
+     Seed 크기 클래스가 같은 특이도로 뒤에 오므로 머리줄 조상을 붙인다. */
   .workspace-panel-toggle {
     flex: 0 1 auto;
     min-inline-size: 44px;
+  }
+
+  .workspace-header-seam .workspace-panel-toggle {
+    padding-inline: 8px;
+  }
+
+  .workspace-header-seam .workspace-context-usage {
+    --seed-box-padding-left: 6px;
+    --seed-box-padding-right: 6px;
   }
 
   .workspace-panel-toggle-label {

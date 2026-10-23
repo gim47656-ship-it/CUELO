@@ -322,7 +322,7 @@ export const enLocale = {
     "chat.indexTruncated": " · index truncated",
     "chat.steerPlaceholder": "Steer now / queue follow-up...",
     "chat.agentPlaceholder": "Agent is running…",
-    "chat.messagePlaceholder": "Message… Type / for commands, @ for files",
+    "chat.messagePlaceholder": "Message… / commands · @ files",
     "chat.steer": "Steer",
     "chat.followUp": "Follow-up",
     "chat.send": "Send",

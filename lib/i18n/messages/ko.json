@@ -311,7 +311,7 @@
  "chat.indexTruncated": " · 인덱스 일부 생략됨",
  "chat.steerPlaceholder": "지금 지시하거나 후속 메시지를 대기열에 추가하세요...",
  "chat.agentPlaceholder": "Agent 실행 중…",
- "chat.messagePlaceholder": "메시지 입력… 명령어는 /, 파일은 @ 입력",
+ "chat.messagePlaceholder": "메시지 입력… / 명령어 · @ 파일",
  "chat.steer": "지시",
  "chat.followUp": "후속 메시지",
  "chat.send": "보내기",
