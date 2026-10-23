@@ -98,6 +98,8 @@ export function buildPrioritySessionGroups(
   priorityLabel = "Priority",
   pinnedSessionIds: ReadonlySet<string> = new Set(),
   pinnedLabel = "Pinned",
+  /** 날짜 묶음에 넣는 최근 세션 수. 「확인할 결과」처럼 이미 걸러 온 목록은 다 보여 준다(`Infinity`). */
+  recentLimit = PRIORITY_RECENT_SESSION_LIMIT,
 ): PrioritySessionGroup[] {
   const ordered = sessions
     .filter((session) => !session.transient)
@@ -120,7 +122,7 @@ export function buildPrioritySessionGroups(
       continue;
     }
     const modified = new Date(session.modified);
-    if (recentSessionCount >= PRIORITY_RECENT_SESSION_LIMIT) continue;
+    if (recentSessionCount >= recentLimit) continue;
     recentSessionCount += 1;
     const key = [
       modified.getFullYear(),

@@ -2212,13 +2212,6 @@ describe("비-UI NORMAL의 DeepSeek 우선 트리거(2026-10-18, 2026-10-11 항�
   };
   const single = (task: string, model: string) => ({ context: "c", tasks: [{ name: "ViewFix", task, agent: "maker", model }] });
   const reworkBrief = brief.replace("OWNED_PATHS:", "FINDING_ID: f-1\nOWNED_PATHS:");
-  const dispatchRow = (h: { sessionId: string }, overrides: Record<string, unknown> = {}) => ({
-    type: "dispatch", ts: "2026-10-18T00:00:00.000Z", name: "ViewFix", workClass: "NORMAL", focus: null,
-    recommendedProfile: "NORMAL_SONNET", recommendedModel: sonnetModel, recommendedEffort: "auto",
-    chosenModel: sonnetModel, chosenEffort: "auto", routingReason: false, purpose: null,
-    sessionId: h.sessionId, assignmentId: `${h.sessionId}#old#0`, attempt: 1, attemptId: `${h.sessionId}#old#0#a1`, agentId: "agent-old", jobId: "job-old",
-    ...overrides,
-  }) as unknown as LedgerRecord;
 
   test("트리거가 없으면 Sonnet이고 UI·HARD는 트리거가 걸려도 그대로 NORMAL_OPUS·HARD Opus다", async () => {
     const plain = await route({});
@@ -2233,7 +2226,7 @@ describe("비-UI NORMAL의 DeepSeek 우선 트리거(2026-10-18, 2026-10-11 항�
     expect(hard.route.normalAllocation).toBeNull();
   });
 
-  test("Sonnet이 서빙한 attempt 뒤 FINDING_ID 재작업은 DeepSeek이고 이유에 트리거와 관측 한계를 남긴다", async () => {
+  test("Sonnet이 맡았던 attempt의 FINDING_ID 재작업도 트리거가 아니라 Sonnet이다(2026-10-23 재작업 트리거 제거)", async () => {
     const ledger = memoryLedger();
     const h = harness({ candidates: live, ledger });
     await h.prepare("첫 발주", [h.task], {} as never);
@@ -2241,65 +2234,14 @@ describe("비-UI NORMAL의 DeepSeek 우선 트리거(2026-10-18, 2026-10-11 항�
     h.noteSpawned(single(brief, `${sonnetModel}:auto`), "call-a");
 
     const [rework] = await h.prepare("재작업", [{ ...h.task, task: reworkBrief }], {} as never);
-    expect(rework!.profile).toBe("NORMAL_DEEPSEEK");
-    const reasonText = rework!.normalAllocation!.reason;
-    expect(reasonText).toContain("FINDING_ID");
-    expect(reasonText).toContain("chosenModel");
-    expect(rework!.normalAllocation).toMatchObject({ profile: "NORMAL_DEEPSEEK", triggers: ["sonnet-rework"] });
-    // 트리거가 걸린 DeepSeek 선택은 ROUTING_REASON 없이 통과하고, Sonnet으로 되돌리려면 근거가 필요하다.
-    expect(await h.beforeTask(single(reworkBrief, `${hiveModel}:auto`), {} as never, "call-b")).toBeUndefined();
-    expect(await h.beforeTask(single(reworkBrief, `${sonnetModel}:auto`), {} as never, "call-c")).toMatchObject({ block: true });
-    h.releaseCall("call-b");
-    const overridden = reworkBrief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 같은 모델로 이어서 수정");
-    expect(await h.beforeTask(single(overridden, `${sonnetModel}:auto`), {} as never, "call-d")).toBeUndefined();
+    expect(rework!.profile).toBe("NORMAL_SONNET");
+    expect(rework!.normalAllocation!.triggers).toEqual([]);
+    // 추천 그대로인 Sonnet 재발주는 ROUTING_REASON 없이 통과한다.
+    expect(await h.beforeTask(single(reworkBrief, `${sonnetModel}:auto`), {} as never, "call-b")).toBeUndefined();
 
-    // FINDING_ID 없는 같은 이름의 새 발주는 재작업이 아니므로 Sonnet을 유지한다.
-    const [fresh] = await h.prepare("새 발주", [h.task], {} as never);
-    expect(fresh!.profile).toBe("NORMAL_SONNET");
-  });
-
-  test("이전 attempt의 모델이 Sonnet이 아니거나 미관측이면 재작업도 Sonnet을 유지한다", async () => {
-    const cases: [string, LedgerRecord[] | ((h: { sessionId: string }) => LedgerRecord[])][] = [
-      ["원장에 이전 발주 없음", []],
-      ["이전 attempt 모델 미기록", (h) => [dispatchRow(h, { chosenModel: "" })]],
-      ["이전 attempt가 DeepSeek", (h) => [dispatchRow(h, { chosenModel: hiveModel })]],
-      ["다른 session의 Sonnet attempt", (h) => [dispatchRow(h, { sessionId: `${h.sessionId}-other`, attemptId: "x", assignmentId: "other" })]],
-      ["agentId 미관측 attempt", (h) => [dispatchRow(h, { agentId: "" })]],
-    ];
-    for (const [label, rows] of cases) {
-      const ledger = memoryLedger();
-      const h = harness({ candidates: live, ledger });
-      ledger.records.push(...(typeof rows === "function" ? rows(h) : rows));
-      const [rework] = await h.prepare(label, [{ ...h.task, task: reworkBrief }], {} as never);
-      expect(rework!.profile, label).toBe("NORMAL_SONNET");
-      expect(rework!.normalAllocation!.triggers, label).toEqual([]);
-    }
-    // 같은 assignment에서는 가장 높은 attempt의 모델을 본다: 1회차 Sonnet, 2회차 DeepSeek이면 3회차는 Sonnet 트리거가 아니다.
-    const ledger = memoryLedger();
-    const h = harness({ candidates: live, ledger });
-    ledger.records.push(
-      dispatchRow(h),
-      dispatchRow(h, { chosenModel: hiveModel, attempt: 2, attemptId: `${h.sessionId}#old#0#a2` }),
-    );
-    const [third] = await h.prepare("3회차", [{ ...h.task, task: reworkBrief }], {} as never);
-    expect(third!.profile).toBe("NORMAL_SONNET");
-    ledger.records.push(dispatchRow(h, { attempt: 3, attemptId: `${h.sessionId}#old#0#a3` }));
-    const [fourth] = await h.prepare("4회차", [{ ...h.task, task: reworkBrief }], {} as never);
-    expect(fourth!.profile).toBe("NORMAL_DEEPSEEK");
-
-    // 판별은 모델 이름의 `sonnet` 토큰으로 한다: 옛 이름 형식·effort 접미사도 Sonnet이고, 다른 낱말 속 글자는 아니다.
-    const variants: [string, string][] = [
-      ["anthropic/claude-3-7-sonnet-20250219", "NORMAL_DEEPSEEK"],
-      ["anthropic/claude-sonnet-5-5:auto", "NORMAL_DEEPSEEK"],
-      ["openrouter/acme/unsonnetlike-1", "NORMAL_SONNET"],
-    ];
-    for (const [chosenModel, expected] of variants) {
-      const variantLedger = memoryLedger();
-      const v = harness({ candidates: live, ledger: variantLedger });
-      variantLedger.records.push(dispatchRow(v, { chosenModel }));
-      const [variant] = await v.prepare(chosenModel, [{ ...v.task, task: reworkBrief }], {} as never);
-      expect(variant!.profile, chosenModel).toBe(expected);
-    }
+    // 재작업이라도 Main이 기다리지 않는 조각이면 기존 트리거로 DeepSeek다.
+    const [background] = await harness({ candidates: live, mainWaits: 0.2 }).prepare("배경 재작업", [{ ...h.task, task: reworkBrief }], {} as never);
+    expect(background!.normalAllocation).toMatchObject({ profile: "NORMAL_DEEPSEEK", triggers: ["off-critical-path"] });
   });
 
   test("Main이 결과를 기다리지 않는다는 판단(mainWaits<0.5)만 DeepSeek이고 불가·미응답·경계값은 Sonnet이다", async () => {

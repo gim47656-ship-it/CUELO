@@ -263,7 +263,7 @@
       },
       "crossFamilyReview": {
         "purpose": "code-written-by-one-model-family-is-reviewed-by-the-other-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled",
-        "tool": "cross_review-with-actions-review-and-resolve-a-tool-never-a-revived-reviewer-role-and-never-an-eval-completion-call",
+        "tool": "cross_review-with-actions-review-and-resolve-a-tool-never-a-revived-reviewer-role-and-never-an-eval-completion-call-review-including-probe-and-delta-rounds-runs-from-main-or-a-maker-session-resolve-is-main-only-and-refused-in-subagent-sessions",
         "familyMapping": {
           "anthropic-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
           "openai-or-any-other-provider-authored": "reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
@@ -273,7 +273,18 @@
         "exclusions": "documentation-comments-and-tests-are-excluded",
         "reviewerInput": "clean-input-the-frozen-diff-and-the-acceptance-conditions-without-profile-or-persona-text",
         "contextReferences": "the-reviewer-sees-only-the-diff-with-twelve-lines-of-context-and-cannot-run-tests-so-when-a-change-interacts-with-code-outside-the-diff-main-passes-that-context-as-cross_review-references-in-round-one-choosing-caller-files-maker-records-or-contract-docs-under-the-64kb-per-file-limit-references-are-neither-reviewed-nor-part-of-the-pass-fingerprint-and-behaviour-outside-the-diff-is-still-proven-by-main-or-owner-execution",
-        "pass": "every-finding-is-closed-by-main-as-fixed-refuted-or-limit-with-evidence-through-cross_review-resolve",
+        "pass": "every-finding-is-closed-by-main-as-fixed-refuted-or-limit-with-evidence-through-cross_review-resolve-main-may-resolve-a-chain-another-session-started",
+        "makerReview": {
+          "when": "the-brief-acceptance-asks-for-it-as-a-plain-line-main-asks-for-high-risk-slices-code-nature-triggers-or-project-material-risk-no-task-guard-field-or-task-argument",
+          "order": "after-the-makers-own-focused-checks-pass-and-before-its-completion-report",
+          "scope": "the-makers-changed-code-files-docs-comments-and-tests-excluded-the-same-scope-git_finalize-gates",
+          "authors": "the-makers-own-model-selector-main-is-refused-in-a-subagent-session-because-it-would-resolve-to-the-childs-model-and-a-first-round-whose-authors-list-no-model-of-the-sessions-own-family-is-refused",
+          "rounds": "the-maker-fixes-or-refutes-each-finding-with-evidence-may-use-the-one-probe-round-and-runs-a-delta-round-after-fixes-within-the-same-chain-limits",
+          "report": "the-reviewId-chain-and-per-finding-a-proposed-status-fixed-refuted-or-limit-with-an-evidence-locator-the-maker-never-calls-resolve",
+          "freeze": "reviewed-files-do-not-change-after-the-last-round-without-another-round-because-the-pass-binds-to-the-exact-blobs-at-resolve",
+          "main": "main-checks-that-evidence-and-resolves-the-makers-chain-instead-of-starting-a-duplicate-review-of-the-same-content-and-starts-a-new-round-only-when-content-changed-after-the-makers-last-round",
+          "gate": "git_finalize-stage-cross-review-is-unchanged"
+        },
         "rounds": "at-most-three-per-chain-with-at-most-one-probe-round-and-at-most-two-non-probe-rounds-a-probe-round-is-any-round-submitted-with-non-empty-probeResults-even-when-it-also-carries-a-code-delta-a-non-probe-later-round-reviews-only-the-delta-since-the-latest-content-the-reviewer-was-shown-and-is-refused-when-nothing-changed-a-probe-round-carries-the-results-of-experiments-the-reviewer-proposed-through-finding-probe-may-have-no-code-change-and-returns-a-confirmed-withdrawn-or-unresolved-verdict-per-submitted-result-that-is-advisory-only-and-never-closes-a-finding",
         "gate": "git_finalize-stage-cross-review-runs-before-the-commit-and-blocks-a-required-change-without-a-passing-record",
         "waiver": "only-on-an-explicit-user-instruction-through-crossReviewWaiver-and-recorded-in-the-ledger-never-chosen-by-main-or-a-maker-on-its-own",
@@ -852,7 +863,7 @@
       "codeAndPolicyReviewOwner": "main",
       "designJudgment": "main-or-the-owning-maker-reads-the-design-rules-and-skills-there-is-no-separate-design-role",
       "repositoryAccess": "owner-writable-inside-its-brief-boundary-only",
-      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "windows_control", "ego_browser", "checkpoint"],
+      "tools": ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "windows_control", "ego_browser", "checkpoint", "cross_review"],
       "runtimeAutoPair": "checkpoint-in-frontmatter-causes-core-createTools-to-add-rewind-to-the-restricted-session-tool-surface-rewind-is-intentionally-absent-from-frontmatter",
       "execution": "async",
       "broadValidation": "the-owner-runs-the-ordinary-project-checks-its-slice-needs-and-skips-unrelated-project-wide-suites",
@@ -931,7 +942,7 @@
       "normalAllocation": {
         "selection": "UI-UX-boundary-selects-NORMAL_OPUS-independently-of-difficulty-never-promote-to-HARD-to-use-Opus-otherwise-recommend-NORMAL_SONNET-for-non-UI-NORMAL-by-default-and-NORMAL_DEEPSEEK-first-when-a-deepSeekTriggers-entry-fires-user-decision-2026-10-18-revoking-the-2026-10-11-always-Sonnet-rule-no-per-task-model-suitability-judgment-NORMAL_SOL-resolves-to-the-configured-code-candidate-and-is-only-the-last-substitute-after-NORMAL_SONNET-then-NORMAL_DEEPSEEK-user-decision-2026-10-18-when-each-is-not-an-available-candidate-or-its-provider-limit-exhaustion-is-observed-all-unavailable-means-null-profile-choosing-NORMAL_SOL-while-NORMAL_SONNET-or-NORMAL_DEEPSEEK-is-usable-is-a-recommendation-change-that-needs-ROUTING_REASON-no-quota-percentage-balancing-or-historical-success-rate-superiority-inference-unobserved-quota-is-never-exhaustion",
         "deepSeekTriggers": {
-          "rework": "a-FINDING_ID-rework-linked-in-the-routing-ledger-to-an-assignment-whose-last-attempt-dispatch-row-chosenModel-is-a-Sonnet-model-chosenModel-is-the-only-model-the-ledger-records-so-a-core-retry-chain-swap-from-Sonnet-to-the-fallback-model-is-invisible-and-an-unobserved-previous-model-keeps-Sonnet",
+          "reworkNotATrigger": "user-decision-2026-10-23-a-FINDING_ID-rework-is-not-a-trigger-even-when-the-previous-attempt-ran-on-NORMAL_SONNET-because-main-waits-for-rework-and-NORMAL_DEEPSEEK-is-only-for-slices-nobody-waits-for-the-2026-10-18-rework-trigger-is-revoked",
           "offCriticalPath": "the-pre-dispatch-mainWaits-question-answers-below-0.5-main-states-through-assessment-facts-that-the-current-request-finishes-without-this-result-never-a-task-guard-field-or-a-task-argument-parallel-work-alone-keeps-Sonnet-a-judge-failure-or-a-missing-answer-keeps-Sonnet",
           "anthropicOverShare": "every-observed-anthropic-account-has-a-live-7d-shared-window-with-usedFraction-greater-than-the-core-selector-day-share-min-1-floor-elapsed-days-plus-1-over-7-measured-from-resetsAt-and-any-unobserved-or-under-share-account-keeps-Sonnet",
           "precedence": "UI-UX-NORMAL_OPUS-first-HARD-unchanged-a-fired-trigger-orders-NORMAL_DEEPSEEK-then-NORMAL_SONNET-then-NORMAL_SOL-and-normalAllocation.reason-names-the-trigger",

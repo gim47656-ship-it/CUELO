@@ -14,6 +14,16 @@ import {
   prioritySessionTitle,
   type NavigatorMode,
 } from "@/lib/navigator-modes";
+import {
+  forgetSessions,
+  isResultToCheck,
+  markSessionOpened,
+  parseResultReviewState,
+  RESULT_REVIEW_STORAGE_KEY,
+  mergeResultReviewStates,
+  resultReviewToStore,
+  type ResultReviewState,
+} from "@/lib/result-review";
 import { ambiguousProjectNames, mergeProjectOrder, normalizeProjectKey, projectParentPath, recentProjectPaths } from "@/lib/project-ordering";
 import type { ProjectRegistryFile, ProjectRegistryUpdate } from "@/lib/project-registry";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -384,9 +394,12 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
-  const sessionsForDisplay = optimisticSession && !allSessions.some((session) => session.id === optimisticSession.id)
-    ? [optimisticSession, ...allSessions]
-    : allSessions;
+  const sessionsForDisplay = useMemo(
+    () => (optimisticSession && !allSessions.some((session) => session.id === optimisticSession.id)
+      ? [optimisticSession, ...allSessions]
+      : allSessions),
+    [allSessions, optimisticSession],
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
@@ -430,6 +443,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
+  // 「확인할 결과」 필터: 세션마다 이 브라우저에서 마지막으로 연 때. 저장소는 hydration 뒤에 읽는다.
+  const [resultReview, setResultReview] = useState<ResultReviewState | null>(null);
+  const [reviewFilterOn, setReviewFilterOn] = useState(false);
   const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
   // Once polling has delivered a snapshot it is the source of truth for
   // running state; late /api/sessions responses must not overwrite it.
@@ -437,6 +453,23 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     setPinnedSessionIds(loadPinnedSessionIds());
+  }, []);
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage.getItem(RESULT_REVIEW_STORAGE_KEY);
+    } catch {
+      // 저장소를 못 쓰면 이 탭에서만 센다.
+    }
+    setResultReview(parseResultReviewState(raw, Date.now()));
+    // 다른 탭이 연 세션도 이 탭의 판정에 바로 반영한다. 더할 것이 없으면 같은 객체라 다시 쓰지 않는다.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== RESULT_REVIEW_STORAGE_KEY || event.newValue === null) return;
+      const other = parseResultReviewState(event.newValue, Date.now());
+      setResultReview((prev) => (prev ? mergeResultReviewStates(prev, other) : prev));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const loadProjectRegistry = useCallback(async () => {
@@ -568,6 +601,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       next.delete(sessionId);
       return next;
     });
+    setResultReview((current) => current && forgetSessions(current, [sessionId]));
     onSessionDeleted?.(sessionId);
     void loadSessions();
   }, [loadSessions, onSessionDeleted]);
@@ -625,6 +659,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       };
       setUnreadSessionIds(dropRemoved);
       setPinnedSessionIds(dropRemoved);
+      setResultReview((current) => current && forgetSessions(current, deleted));
       // 선택 중이던 세션이 사라지면 상위 화면이 스스로 정리하도록 알린다.
       for (const id of deleted) onSessionDeleted?.(id);
     }
@@ -699,6 +734,16 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   useEffect(() => {
     savePinnedSessionIds(pinnedSessionIds);
   }, [pinnedSessionIds]);
+
+  useEffect(() => {
+    if (!resultReview) return;
+    try {
+      const storage = window.localStorage;
+      storage.setItem(RESULT_REVIEW_STORAGE_KEY, resultReviewToStore(storage.getItem(RESULT_REVIEW_STORAGE_KEY), resultReview, Date.now()));
+    } catch {
+      // ignore storage quota / privacy-mode errors
+    }
+  }, [resultReview]);
 
   const togglePinnedSession = useCallback((sessionId: string) => {
     setPinnedSessionIds((current) => {
@@ -803,6 +848,16 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       return next;
     });
   }, [selectedSessionId]);
+
+  // 열어 둔 세션은 본 것이다. 연 동안 활동이 늘어도(그 세션이 끝나도) 다시 남긴다.
+  const selectedActivity = selectedSessionId
+    ? sessionsForDisplay.find((session) => session.id === selectedSessionId)?.modified
+    : undefined;
+  const resultReviewReady = resultReview !== null;
+  useEffect(() => {
+    if (!selectedSessionId || selectedActivity === undefined || !resultReviewReady) return;
+    setResultReview((prev) => prev && markSessionOpened(prev, { id: selectedSessionId, modified: selectedActivity }, Date.now()));
+  }, [selectedSessionId, selectedActivity, resultReviewReady]);
 
   useEffect(() => {
     fetch("/api/home").then((r) => r.json()).then((d: { home?: string; cloudProjects?: boolean }) => {
@@ -1286,18 +1341,35 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const ambiguousNames = ambiguousProjectNames(
     projectSections.flatMap((section) => (section.kind === "project" ? [section.group.name] : [])),
   );
+  const resultsToCheck = useMemo(
+    () => (resultReview
+      ? sessionsForDisplay.filter((session) => isResultToCheck(session, runningSessionIds, resultReview))
+      : []),
+    [resultReview, runningSessionIds, sessionsForDisplay],
+  );
+  // 「확인할 결과」를 켜면 같은 목록·묶음 그대로, 이미 걸러 온 세션만 개수 제한 없이 보인다. 이 목록에서
+  // 눌러 연 세션은 확인한 것이 되지만, 다른 세션을 누를 때까지 그 줄을 남겨 눈앞에서 사라지지 않게 한다.
+  const reviewFilterActive = reviewFilterOn && resultReview !== null;
+  const [keptReviewId, setKeptReviewId] = useState<string | null>(null);
   const priorityGroups = useMemo(
     () => buildPrioritySessionGroups(
-      sessionsForDisplay,
+      reviewFilterActive
+        ? sessionsForDisplay.filter((session) => (session.id === keptReviewId && !runningSessionIds.has(session.id)) || resultsToCheck.includes(session))
+        : sessionsForDisplay,
       runningSessionIds,
       new Date(),
       locale,
       t("navigator.priority"),
       pinnedSessionIds,
       t("sidebar.pinned"),
+      reviewFilterActive ? Infinity : undefined,
     ),
-    [locale, pinnedSessionIds, runningSessionIds, sessionsForDisplay, t],
+    [keptReviewId, locale, pinnedSessionIds, resultsToCheck, reviewFilterActive, runningSessionIds, sessionsForDisplay, t],
   );
+  const selectSessionFromReview = useCallback((session: SessionInfo) => {
+    setKeptReviewId(session.id);
+    handleSelectSessionFromList(session);
+  }, [handleSelectSessionFromList]);
 
 
   const showWorktreeSwitcher = Boolean(
@@ -2562,7 +2634,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 >
                   {t("sidebar.newScratchSession")}
                 </button>
-                {priorityGroups.length > 0 && (
+                {priorityGroups.length > 0 && !reviewFilterActive && (
                   <button
                     type="button"
                     disabled={clearable === 0 || bulkClearBusy}
@@ -2578,6 +2650,49 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               </div>
             );
           })()}
+          {!loading && !error && resultReview && (
+            <div style={{ display: "flex", padding: "6px 2px 4px" }}>
+              <button
+                type="button"
+                aria-pressed={reviewFilterActive}
+                aria-label={t("navigator.resultsToCheckCount", { count: resultsToCheck.length })}
+                title={t("navigator.resultsToCheckHint")}
+                onClick={() => {
+                  setKeptReviewId(null);
+                  setReviewFilterOn((on) => !on);
+                }}
+                style={{
+                  ...bulkClearButtonStyle(false, isMobile),
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderColor: reviewFilterActive ? "var(--border-strong)" : "var(--border)",
+                  background: reviewFilterActive ? "var(--bg-selected)" : "transparent",
+                  color: reviewFilterActive || resultsToCheck.length > 0 ? "var(--text)" : "var(--text-muted)",
+                  fontWeight: reviewFilterActive ? 600 : 500,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t("navigator.resultsToCheck")}
+                <span
+                  aria-hidden="true"
+                  style={{
+                    minWidth: 18,
+                    padding: "0 5px",
+                    borderRadius: 9,
+                    background: resultsToCheck.length > 0 ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-subtle)",
+                    color: resultsToCheck.length > 0 ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-muted)",
+                    fontSize: 11,
+                    fontVariantNumeric: "tabular-nums",
+                    lineHeight: "18px",
+                    textAlign: "center",
+                  }}
+                >
+                  {resultsToCheck.length}
+                </span>
+              </button>
+            </div>
+          )}
           {scratchSessionError && (
             <div role="alert" style={{ padding: "6px 8px", color: "var(--danger)", fontSize: 12 }}>
               {scratchSessionError}
@@ -2585,7 +2700,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           )}
           {!loading && !error && priorityGroups.length === 0 && (
             <div style={{ padding: "12px 8px", color: "var(--text-muted)", fontSize: 12 }}>
-              {t("sidebar.noSessions")}
+              {reviewFilterActive ? t("navigator.resultsToCheckEmpty") : t("sidebar.noSessions")}
             </div>
           )}
           {!loading && !error && priorityGroups.map((group, index) => (
@@ -2610,7 +2725,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   running={runningSessionIds.has(session.id)}
                   unread={unreadSessionIds.has(session.id)}
                   pinned={pinnedSessionIds.has(session.id)}
-                  onSelect={handleSelectSessionFromList}
+                  onSelect={reviewFilterActive ? selectSessionFromReview : handleSelectSessionFromList}
                   onTogglePin={togglePinnedSession}
                 />
               ))}

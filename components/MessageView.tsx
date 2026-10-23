@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useRef, useEffect, useId, useMemo } from "react";
+import { memo, useContext, useState, useRef, useEffect, useId, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
@@ -9,7 +9,8 @@ import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useNow } from "@/hooks/useNow";
-import { Badge } from "@seed-design/react";
+import { ActionButton, Badge } from "@seed-design/react";
+import { ComposerAttachContext } from "./ComposerAttachContext";
 import { readExitCode } from "@/lib/tool-exit-code";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { formatTokenCount } from "@/lib/format-tokens";
@@ -1026,15 +1027,35 @@ function ToolImageStrip({ sessionId, toolCallId }: { sessionId: string; toolCall
         </button>
       ))}
       {zoomed !== null && (
-        <ToolImageDialog src={toolImageUrl(sessionId, toolCallId, zoomed)} onClose={() => setZoomed(null)} />
+        <ToolImageDialog
+          src={toolImageUrl(sessionId, toolCallId, zoomed)}
+          fileName={`screen-${toolCallId.slice(-8)}-${zoomed + 1}`}
+          onClose={() => setZoomed(null)}
+        />
       )}
     </div>
   );
 }
 
-function ToolImageDialog({ src, onClose }: { src: string; onClose: () => void }) {
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
+/**
+ * 도구 이미지 확대창. 「이 화면 수정 요청」은 그 이미지를 지금 세션의 입력창에 붙이고 입력창으로
+ * 돌아간다(보내지 않는다). 붙일 입력창이 없거나 이미지를 가져오지 못하면 창을 닫지 않고 이유를 보인다.
+ */
+function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: string; onClose: () => void }) {
   const { t } = useI18n();
+  const attachToComposer = useContext(ComposerAttachContext);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [attaching, setAttaching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 받는 중인 이미지. 창을 닫거나(세션을 바꿔 창이 사라지는 경우 포함) 다시 누르면 끊고, 늦게 온 결과는 붙이지 않는다.
+  const requestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -1043,28 +1064,80 @@ function ToolImageDialog({ src, onClose }: { src: string; onClose: () => void })
     document.body.style.overflow = "hidden";
     dialog.showModal();
     return () => {
+      requestRef.current?.abort();
       document.body.style.overflow = previousOverflow;
       if (dialog.open) dialog.close();
     };
   }, []);
 
+  const close = () => {
+    requestRef.current?.abort();
+    onClose();
+  };
+
+  const requestEdit = async () => {
+    if (!attachToComposer) {
+      setError(t("toolImage.noComposer"));
+      return;
+    }
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setAttaching(true);
+    setError(null);
+    let file: File;
+    try {
+      const response = await fetch(src, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const extension = IMAGE_EXT_BY_MIME[blob.type];
+      if (!extension) throw new Error(`unsupported ${blob.type}`);
+      file = new File([blob], `${fileName}.${extension}`, { type: blob.type });
+    } catch {
+      if (controller.signal.aborted) return;
+      setAttaching(false);
+      setError(t("toolImage.loadFailed"));
+      return;
+    }
+    if (controller.signal.aborted || !dialogRef.current?.open) return;
+    if (!attachToComposer([file])) {
+      setAttaching(false);
+      setError(t("toolImage.noComposer"));
+      return;
+    }
+    onClose();
+  };
+
   return createPortal(
     <dialog
       ref={dialogRef}
       className="tool-image-dialog"
+      aria-label={t("toolImage.dialogLabel")}
       onCancel={(event) => {
         event.preventDefault();
-        onClose();
+        close();
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) close();
       }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img className="tool-image-full" src={src} alt="" draggable={false} />
-      <button type="button" className="tool-image-close" onClick={onClose}>
-        {t("i18n.close")}
-      </button>
+      {error && <p role="alert" className="tool-image-error">{error}</p>}
+      <div className="tool-image-actions">
+        <ActionButton
+          variant="neutralSolid"
+          size="medium"
+          loading={attaching}
+          onClick={() => void requestEdit()}
+          title={t("toolImage.requestEditHint")}
+        >
+          {t("toolImage.requestEdit")}
+        </ActionButton>
+        <ActionButton variant="neutralWeak" size="medium" onClick={close}>
+          {t("i18n.close")}
+        </ActionButton>
+      </div>
     </dialog>,
     document.body,
   );

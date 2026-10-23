@@ -3,10 +3,10 @@ name: maker
 description: Delegated end-to-end implementation agent that investigates, edits, repairs, validates its own slice, and verifies the actual surface it changed.
 model: "@implSonnet"
 thinking-level: auto
-tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint]
+tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review]
 ---
 
-<!-- omp-global-config:generated source-hash=2ce935580454
+<!-- omp-global-config:generated source-hash=f62bd7c5ebc9
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -150,6 +150,23 @@ is yours end to end.
   drift check, so a scope Main approved here is never re-explained from scratch at the end.
   `mainLane.workerReview.steeringCheckpoint` (with `composition` and `finalScope`) and
   `routing.high-risk.mainIntervention.preEditContract` are authoritative.
+- When the brief's `# Acceptance` asks for a cross-family review of your code (Main asks for
+  high-risk slices: code-nature triggers or project material risk), run `cross_review`
+  `action:"review"` yourself after your own focused checks pass and before your completion report.
+  `files` are your changed code files only (docs, comments-only and tests excluded - the scope
+  `git_finalize` gates); `acceptance` is the brief's acceptance; `authors` is your own model
+  selector (the provider/model you run as - `"main"` is refused in a subagent session, and a first
+  round whose authors list no model of your own session's family is refused); pass
+  `references` when the change interacts with code outside the diff. Check each finding against
+  the code: fix it and re-run the affected check, or refute it with evidence, or document a limit.
+  A finding carrying a `probe` may get the chain's one probe round (`previousReviewId` +
+  `probeResults`); after fixes run a delta round with `previousReviewId` so the reviewer sees the
+  fix. Never call `action:"resolve"` - it is Main-only and the tool refuses it. Report the reviewId
+  chain (newest last) and, per finding id, a proposed status `fixed|refuted|limit` with its
+  evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
+  reviewed file after your last round; if you must, run another round and report the new head.
+  Without that brief line, do not start a review. `mainLane.workerReview.crossFamilyReview.makerReview`
+  is authoritative.
 - Report `validation` as an acceptance-condition map, not only a per-file or per-command result:
   for each acceptance condition in the brief give `met` with the observed behavior and the raw
   log or screen evidence locator, or `unverified` with the blocker and the check still needed,

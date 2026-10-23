@@ -45,11 +45,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
   비-UI NORMAL의 기본 추천은 `NORMAL_SONNET`(Sonnet)이다. 2026-10-11의 "항상 Sonnet" 결정은 2026-10-18 사용자 결정으로 철회했다. 과제별 모델 적합성 판단은 하지 않는다.
-  아래 셋 중 하나가 걸리면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017)를 먼저 추천하고, `normalAllocation.reason`이 걸린 트리거를 적는다.
+  아래 둘 중 하나가 걸리면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017)를 먼저 추천하고, `normalAllocation.reason`이 걸린 트리거를 적는다.
   DeepSeek는 Sonnet과 통과 품질이 같았지만 벽시계 시간이 중앙값 약 4.5배라(SJF eval, 소표본) 아무도 기다리지 않는 조각에만 쓴다.
-  (1) Sonnet이 맡았던 이전 attempt의 `FINDING_ID` 재작업: 원장 dispatch row의 `chosenModel`이 Sonnet일 때다. 원장이 기록하는 모델은 이 값뿐이라 core retry 체인이 실행 중 Sonnet을 Hive로 바꾼 경우는 보이지 않고, 이전 모델을 모르면 Sonnet을 유지한다.
-  (2) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
-  (3) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
+  `FINDING_ID` 재작업은 이전 attempt가 Sonnet이었어도 트리거가 아니다. 재작업은 Main이 결과를 기다리는 조각이라 2026-10-23 사용자 결정으로 그 트리거를 뺐다.
+  (1) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
+  (2) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
   `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 2026-10-11 사용자 지시로 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6-astra:auto`다. Sol의 과거 평가 수치를 Astra의 성능 증거로 옮기지 않는다.
   Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,
   그것도 쓸 수 없을 때만 코드 후보 Astra(`NORMAL_SOL`)를 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
@@ -298,6 +298,9 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   원인·구현 방향을 확정 사실처럼 적었는가 ③ 요구하지 않은 작업을 넣거나 수용 조건을 바꿨는가.
   정본은 `harness-policy.json`의 `briefContextRelay.preDispatchCrossCheck`다. 수용 조건을 낮추는
   것은 사용자만 할 수 있고, 조각을 쉽게 만들려고 낮추지 않는다.
+- high-risk 조각(코드 성질 trigger 또는 프로젝트 material risk)이면 `# Acceptance`에 Maker의 보고 전
+  `cross_review` 요청을 평문 한 줄로 넣는다. 새 `TASK_GUARD` 필드나 task 인자는 쓰지 않는다. 절차는
+  「검수와 수용」의 「Maker의 보고 전 교차검증」이다.
 - 수용 조건은 **관측 경로가 실재하는 것만** 적는다. 통과 경로가 없는 조건은 조건이 아니라 미확인
   항목이다. 새 계약을 정본·발주문에 단정으로 쓰기 전에 그 계약을 **소비하는 경로**(도구 스키마·
   설정 키·코드)를 증거로 확인하고, 확인하지 못했으면 미확인으로 표시한다. 이 확인을 건너뛴 결과가
@@ -623,10 +626,12 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
   뽑힌 코드 변경(문서·주석·테스트 제외)은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다.
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. Main은 frozen revision에서
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
-  각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. 통과는 모든
+  각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. `resolve`는
+  Main 전용이고 subagent 세션에서는 도구가 거절하며, Main은 다른 세션(Maker)이 시작한 체인도 닫을 수 있다.
+  통과는 모든
   finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 한 체인은 최대 3회이며 probe 라운드는 그중 하나,
   probe가 아닌 라운드는 둘이다. probe가 아닌 후속 라운드는 직전에 reviewer가 본 내용 이후의 delta만 본다.
   reviewer는 코드만으로 가릴 수 없는 의심에 finding의 `probe`(재현 절차와 `expectIfReal`)를 붙일 수 있다.
@@ -646,6 +651,18 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
   사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
   `mainLane.workerReview.crossFamilyReview`다.
+- **Maker의 보고 전 교차검증.** high-risk 조각(코드 성질 trigger 또는 프로젝트 material risk)을 맡길 때
+  Main은 브리프 `# Acceptance`에 평문 한 줄(예: "Before reporting, run cross_review review on your
+  changed code files and report the chain")로 요청한다. 새 `TASK_GUARD` 필드나 task 인자는 두지 않는다.
+  그 줄을 받은 Maker는 자기 집중 검사가 통과한 뒤 완료 보고 전에 바뀐 코드 파일(문서·주석·테스트 제외,
+  `git_finalize` 게이트와 같은 범위)로 `review`를 돌린다. `authors`는 자기 모델 selector이며 subagent
+  세션의 `"main"`은 자식 모델로 풀리므로 도구가 거절한다. finding마다 고치거나 근거로 반박하고, probe
+  라운드를 쓸 수 있으며, 고친 뒤에는 같은 체인의 delta 라운드를 돌린다. `resolve`는 부르지 않고
+  reviewId 체인과 finding별 제안 status(`fixed`·`refuted`·`limit`)·근거 locator를 보고한다. 마지막
+  라운드 뒤 검토한 파일을 바꾸려면 라운드를 하나 더 돌린다(통과 지문은 resolve 시점 blob이다).
+  Main은 그 근거를 코드로 확인하고 같은 내용을 다시 review하지 않고 Maker의 체인을 `resolve`한다.
+  Maker의 마지막 라운드 뒤 내용이 바뀐 경우에만 Main이 새 라운드를 시작한다. `git_finalize` 게이트는
+  그대로다. 정본은 `mainLane.workerReview.crossFamilyReview.makerReview`다.
 - Main은 각 finding을 `ACCEPTED`·`REJECTED_WITH_EVIDENCE`·`ESCALATED`로 판정한다. 재작업 주문에는
   사용자 관측·재현 결과 또는 실제 diff와 요구 계약의 모순 및 정확한 locator가 필요하다.
   미확인 가설은 Main이 조사하거나 증거만 묻고, 근거 없이 구현을 바꾸도록 보내지 않는다.

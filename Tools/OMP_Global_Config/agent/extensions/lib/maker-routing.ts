@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/p
 import { extractGuardBlock, isPathOwned, isSummonCall, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
-import { assignmentsByName, lastAttemptChosenModel, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
+import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 
 export interface RoutingFacts {
   goal: string;
@@ -76,7 +76,7 @@ interface Candidate { profile: string; model: string; efforts: readonly string[]
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
 /** 비-UI NORMAL을 DeepSeek(Hive 1017)로 먼저 보내는 트리거. 하나라도 걸리면 순서가 DeepSeek → Sonnet → 코드 후보(Astra)가 된다. */
-export type DeepSeekTrigger = "sonnet-rework" | "off-critical-path" | "anthropic-over-share";
+export type DeepSeekTrigger = "off-critical-path" | "anthropic-over-share";
 export interface NormalAllocation {
   state: "observed" | "unavailable";
   profile: string | null;
@@ -555,13 +555,13 @@ const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SONNET", "NORMAL_DEEPS
 const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SONNET", "NORMAL_SOL"];
 
 const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
-  "sonnet-rework": "Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 Sonnet을 다른 모델로 바꾼 경우는 보이지 않음)",
+  // 2026-10-23 사용자 결정: Sonnet 재작업 트리거를 뺐다. 재작업은 Main이 결과를 기다리는 조각이라 "기다리는 조각에는 DeepSeek를 쓰지 않는다"와 충돌했다.
   "off-critical-path": "Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 같은 요청에서 통합·커밋·보고에 쓰는 병렬 조각은 해당하지 않음)",
   "anthropic-over-share": "관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김",
 };
 
 /** INSTRUCTION과 도구 description이 같은 트리거 설명을 쓴다. */
-const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Sonnet이 맡았던 이전 attempt의 FINDING_ID 재작업(원장 dispatch row의 chosenModel 기준이며 core retry 체인이 실행 중 모델을 바꾼 경우는 보이지 않음), (2) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다. 같은 요청에서 Main이 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌아도 기다리는 조각입니다), (3) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않습니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
+const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다. 같은 요청에서 Main이 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌아도 기다리는 조각입니다), (2) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않으며, FINDING_ID 재작업도 이 둘이 걸리지 않으면 Sonnet입니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
 
 const DAY_MS = 86_400_000;
 const WEEKLY_WINDOW_MS = 7 * DAY_MS;
@@ -1014,20 +1014,15 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
-      // 트리거 입력은 모두 관측된 사실이다. 재작업 연결은 noteSpawned와 같은 이름·FINDING_ID·session 원장 조회를 쓰고,
-      // 이전 attempt의 모델이나 mainWaits 답이 없으면 트리거가 아니다.
-      const planSession = plans[0]?.sessionId ?? "";
-      const knownAssignments = ledgerRecords && planSession ? assignmentsByName(ledgerRecords, planSession) : undefined;
+      // 트리거 입력은 모두 관측된 사실이다. mainWaits 답이 없으면 트리거가 아니다.
       const anthropicOver = anthropicOverDayShare(quota);
-      for (const [index, publication] of publications.entries()) {
+      for (const publication of publications) {
         const answers = publication.prepared.answers;
         const normal = answers?.workClass?.choice === "NORMAL";
         const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
         const triggers: DeepSeekTrigger[] = [];
         if (normal && !uiUxBoundary) {
-          const linked = contracts[index]!.findingId !== null ? knownAssignments?.get(tasks[index]!.name.trim()) : undefined;
-          const previousModel = linked && ledgerRecords ? lastAttemptChosenModel(ledgerRecords, planSession, linked.assignmentId) : null;
-          if (previousModel !== null && /(?:^|[/-])sonnet(?:[-.:\d]|$)/i.test(previousModel)) triggers.push("sonnet-rework");
+          // 2026-10-23: 이전 attempt가 Sonnet이었던 FINDING_ID 재작업은 더는 트리거가 아니다(재작업은 Main이 기다린다).
           const mainWaits = answers?.mainWaits?.noul;
           if (typeof mainWaits === "number" && mainWaits < 0.5) triggers.push("off-critical-path");
           if (anthropicOver) triggers.push("anthropic-over-share");

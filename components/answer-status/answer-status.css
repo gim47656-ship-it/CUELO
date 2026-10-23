@@ -312,6 +312,155 @@
   color: var(--warning);
 }
 
+/* 결과 먼저: 이 턴이 만든 화면·문서·이미지를 수와 과정보다 앞에 크게 둔다. 판 하나에 미리보기와
+ * 이름·「결과 보기」 줄이 붙고, 과정 줄(.answer-summary-toggle)은 그 아래 조용히 남는다. */
+.answer-result {
+  margin: 8px 0 2px;
+  max-width: 760px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  overflow: hidden;
+  container-name: answer-result;
+  container-type: inline-size;
+}
+
+.answer-result-frame {
+  position: relative;
+  height: clamp(220px, 40vh, 380px);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.answer-result-frame[data-kind="image"] {
+  background: var(--bg-raised);
+}
+
+.answer-result-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
+.answer-result-media[data-fit="contain"] {
+  object-fit: contain;
+  background: transparent;
+}
+
+/* 그림을 받는 동안은 안내 줄만 보인다(위의 display: block이 hidden 속성을 덮지 않게). */
+.answer-result-media[hidden] {
+  display: none;
+}
+
+/* 미리보기 위를 덮는 투명 단추. 프레임 안 스크롤·클릭 대신 열기로 받는다. */
+.answer-result-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.answer-result-cover:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.answer-result-cover:active {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.answer-result-fallback {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  margin: 0;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  /* 한국어 문장이 글자 단위로 꺾이지 않게 어절에서만 줄을 바꾼다. */
+  word-break: keep-all;
+}
+
+.answer-result-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 12px;
+}
+
+/* 무엇을 받았는지(화면·문서·이미지·PDF)가 먼저, 파일 이름은 그 뒤 보조 정보다. */
+.answer-result-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.answer-result-kind {
+  flex-shrink: 0;
+  color: var(--text);
+  font-size: var(--seed-font-size-t4-static, 14px);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.answer-result-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-result-open {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.answer-result-open:focus-visible {
+  outline: 2px solid var(--accent-ring, var(--accent));
+  outline-offset: 2px;
+}
+
+.answer-result-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  padding: 0 12px 10px;
+}
+
+.answer-result-more-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .answer-result-frame {
+    height: 220px;
+  }
+}
+
+/* 아주 좁은 칸에서는 이름 아래에 「결과 보기」를 칸 너비로 둔다. 글자 단위로 꺾이지 않게 한 줄씩 쌓는다. */
+@container answer-result (max-width: 300px) {
+  .answer-result-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 12px;
+  }
+}
+
 /* 펼친 결과 카드: 작업 흐름 그래프와 남은 일을 담는 판. */
 .answer-summary-body {
   margin-top: 4px;

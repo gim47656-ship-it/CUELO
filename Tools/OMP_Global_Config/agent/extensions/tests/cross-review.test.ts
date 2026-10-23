@@ -27,6 +27,7 @@ import {
   type ReviewDeps,
 } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewLedgerRecord } from "../lib/routing-ledger";
+import { executeCrossReview } from "../cross-review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
@@ -1307,5 +1308,49 @@ describe("참고 증거: Linux 밖에서는 닫힌 채 건너뛴다", () => {
     } finally {
       Object.defineProperty(process, "platform", platform);
     }
+  });
+});
+
+describe("Maker(subagent) 세션", () => {
+  const subOn = (provider: string, id: string) => ({ agent: { kind: "sub" }, model: { provider, id } }) as never;
+  const sub = subOn("anthropic", "claude-opus-5-5");
+  const main = {} as never;
+  const as = (env: RepoEnv, sessionId: string, answers: Partial<Record<Family, string>> = {}) => () => ({ ...deps(env, answers), sessionId, mainModel: undefined });
+  type Reviewed = { reviewId: string; findings: { id: string }[] };
+
+  test("review는 돌리고 resolve는 거절되며, Main이 그 체인을 resolve하면 git_finalize 게이트가 통과한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    const maker = as(env, "maker-1", { openai: finding("bad") });
+    const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, sub, signal, maker) as Reviewed;
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ type: "cross-review", reviewId: review.reviewId, sessionId: "maker-1" }]);
+    const resolutions = [{ id: review.findings[0].id, status: "refuted", evidence: "rmSync target is a temp dir the caller created" }];
+    await expect(executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions }, sub, signal, maker)).rejects.toThrow("resolve is Main-only");
+    expect(readCrossReviewRecords(env.ledger).filter((record) => record.type === "cross-review-resolve")).toHaveLength(0);
+    await expect(runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).rejects.toThrow(CrossReviewRefusal);
+    const resolved = await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions }, main, signal, as(env, "main-1"));
+    expect(resolved).toMatchObject({ pass: true, open: [], files: [{ path: "a.ts", blob: blobOf(MARKER_BASE) }] });
+    expect(await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).toMatchObject({ checked: true, decision: { uncovered: [] } });
+  });
+
+  test("author \"main\"은 Maker 자신의 모델로 오인되므로 거절하고, 자기 selector를 주면 돈다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const maker = as(env, "maker-1");
+    await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: ["Main"] }, subOn("openai-codex", "gpt-6-astra"), signal, maker)).rejects.toThrow("own model selector");
+    expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
+    const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [ASTRA] }, subOn("openai-codex", "gpt-6-astra"), signal, maker) as Reviewed;
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, sessionId: "maker-1", reviewers: [{ family: "anthropic" }] }]);
+  });
+
+  test("선언한 저자 중 세션 자신의 모델과 같은 계열이 없으면 같은 계열 reviewer를 받게 되므로 거절한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const maker = as(env, "maker-1");
+    await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [ASTRA] }, sub, signal, maker)).rejects.toThrow("anthropic/claude-opus-5-5");
+    await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, { agent: { kind: "sub" } } as never, signal, maker)).rejects.toThrow("could not be resolved");
+    expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
+    const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [`${OPUS}:high`] }, sub, signal, maker) as Reviewed;
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);
   });
 });

@@ -68,6 +68,7 @@ import type { ProjectTrustState } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/omp-types";
 import type { AgentCompletionResult, SessionData } from "@/hooks/useAgentSession";
+import { ComposerAttachContext } from "./ComposerAttachContext";
 import {
   describeUpdateCleanup,
   dismissUpdateReturn,
@@ -990,6 +991,15 @@ export function AppShell({
     returnToComposer();
   }, [returnToComposer]);
 
+  // 스크린샷 확대창의 「이 화면 수정 요청」: 붙여넣기와 같은 첨부 경로로 붙이고 입력창으로 돌아간다. 보내지 않는다.
+  const attachToComposer = useCallback((files: File[]) => {
+    const input = chatInputRef.current;
+    if (!input) return false;
+    input.addAttachments(files);
+    returnToComposer();
+    return true;
+  }, [returnToComposer]);
+
   const initialSessionId = initialNavigation.sessionId;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
   useTheme({
@@ -1890,7 +1900,7 @@ export function AppShell({
     : null;
 
   return (
-    <>
+    <ComposerAttachContext.Provider value={attachToComposer}>
     {serverRestarting ? (
       <div className="server-restart-overlay" role="status" aria-live="polite">
         <div className="server-restart-card">
@@ -2633,6 +2643,6 @@ export function AppShell({
         onCancelSchedule={() => void sendProjectTrustAction("cancel")}
       />
     )}
-    </>
+    </ComposerAttachContext.Provider>
   );
 }
