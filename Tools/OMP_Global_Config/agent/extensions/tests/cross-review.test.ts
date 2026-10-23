@@ -1443,6 +1443,68 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
     expect(reviewed.pass).toBe(true);
     expect(reviewed).not.toHaveProperty("unreviewedChanges");
   });
+
+  test("이미 검토한 삭제는 다른 파일만 바뀐 3·4회차 뒤에도 알리지 않고, 마지막 검토 뒤 실제로 바뀐 파일(수정·되살림·삭제)은 계속 알린다", async () => {
+    const env = repo();
+    const calls: { family: Family; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    const resolve = (reviewId: string) => runResolve({ reviewId, resolutions: [] }, rd(d));
+    const a = (n: number) => `${MARKER_BASE}export const a = ${n};\n`;
+    const b = `${MARKER_BASE}export const b = 1;\n`;
+    writeFileSync(join(env.work, "a.ts"), a(1));
+    writeFileSync(join(env.work, "b.ts"), b);
+    const first = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
+    rmSync(join(env.work, "b.ts"));
+    const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
+    expect(calls[1].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다
+    expect(await resolve(second.reviewId)).not.toHaveProperty("unreviewedChanges");
+    writeFileSync(join(env.work, "a.ts"), a(3));
+    const third = await runReview(input({ previousReviewId: second.reviewId }), d, signal);
+    expect(await resolve(third.reviewId)).not.toHaveProperty("unreviewedChanges");
+    writeFileSync(join(env.work, "a.ts"), a(4));
+    const fourth = await runReview(input({ previousReviewId: third.reviewId }), d, signal);
+    const settled = await resolve(fourth.reviewId);
+    expect(settled.pass).toBe(true);
+    expect(settled).not.toHaveProperty("unreviewedChanges");
+    expect(settled).not.toHaveProperty("unreviewedNote");
+    // 마지막 검토 뒤 실제로 바뀐 것은 계속 알린다: 수정, 지운 파일을 되살림(검토 때 본 원래 내용 그대로여도), 검토한 파일의 새 삭제.
+    writeFileSync(join(env.work, "a.ts"), a(5));
+    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }]);
+    writeFileSync(join(env.work, "b.ts"), b);
+    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }, { path: "b.ts", state: "changed" }]);
+    rmSync(join(env.work, "a.ts"));
+    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "deleted" }, { path: "b.ts", state: "changed" }]);
+  });
+
+  test("1회차에 이미 지워진 파일로 검토한 삭제도 뒤 라운드가 그 경로를 건너뛰면 다시 알리지 않는다", async () => {
+    const env = repo();
+    const calls: { family: Family; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    writeFileSync(join(env.work, "gone.ts"), `${MARKER_BASE}export const gone = 1;\n`);
+    sh(env.work, "add", "gone.ts");
+    sh(env.work, "commit", "-q", "-m", "gone");
+    rmSync(join(env.work, "gone.ts"));
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const a = 1;\n`);
+    const first = await runReview(input({ files: ["a.ts", "gone.ts"] }), d, signal);
+    expect(calls[0].prompt).toContain("<diff path=\"gone.ts\">"); // 지운 파일의 삭제 diff를 reviewer가 봤다
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const a = 2;\n`);
+    const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
+    expect(await runResolve({ reviewId: second.reviewId, resolutions: [] }, rd(d))).not.toHaveProperty("unreviewedChanges");
+  });
+
+  test("검토한 뒤 바이너리가 되거나 개인키 블록이 든 파일은 뒤 라운드가 건너뛰어도 검토 완료로 보지 않고 계속 알린다", async () => {
+    const env = repo();
+    const d = deps(env, {});
+    for (const name of ["a.ts", "bin.ts", "key.ts"]) writeFileSync(join(env.work, name), `${MARKER_BASE}// ${name}\n`);
+    const first = await runReview(input({ files: ["a.ts", "bin.ts", "key.ts"] }), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
+    writeFileSync(join(env.work, "bin.ts"), Buffer.from([0, 1, 2]));
+    writeFileSync(join(env.work, "key.ts"), `const pem = \`${["-----BEGIN RSA PRIV", "ATE KEY-----"].join("")}\`;\n`);
+    const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
+    expect(second.skipped.map((item) => item.path).sort()).toEqual(["bin.ts", "key.ts"]);
+    const settled = await runResolve({ reviewId: second.reviewId, resolutions: [] }, rd(d));
+    expect(settled.unreviewedChanges).toEqual([{ path: "bin.ts", state: "changed" }, { path: "key.ts", state: "changed" }]);
+  });
 });
 
 describe("이미 커밋된 변경(base)", () => {

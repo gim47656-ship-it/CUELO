@@ -1353,7 +1353,7 @@ export interface ResolveResult {
   files: CrossReviewFile[];
   /** 선택. 이 pass 기록에 묶인 의존 입력(체인 마지막 라운드가 본 blob). */
   inputs?: CrossReviewFile[];
-  /** 안내(통과 판정과 무관): resolve 시점 내용이 체인 마지막 라운드 reviewer가 본 내용과 다른 파일. 있으면 그 수정은 reviewer가 보지 못했다. */
+  /** 안내(통과 판정과 무관): resolve 시점 내용이 reviewer가 그 파일에서 마지막으로 본 내용(체인에서 그 경로를 가장 늦게 기록한 blob, 검토한 삭제 포함)과 다른 파일. 있으면 그 수정은 reviewer가 보지 못했다. */
   unreviewedChanges?: { path: string; state: "changed" | "deleted" }[];
   unreviewedNote?: string;
   /** 체인의 probe 라운드 판단(정보). withdrawn이어도 finding은 여전히 resolve로 닫아야 하며 pass 규칙에는 쓰이지 않는다. */
@@ -1412,8 +1412,10 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
   };
   if (!deps.append(record)) throw new Error("The resolution could not be recorded in the routing ledger; nothing was saved. Retry.");
   const verdicts = chain.flatMap((item) => item.verdicts ?? []);
-  // 안내용(통과 판정에는 쓰지 않는다): 통과 지문은 resolve 시점 내용이므로, 마지막 라운드 reviewer가 본 내용과 다른 파일은 reviewer가 보지 못한 수정을 덮는다.
-  const lastSeen = new Map(head.files.map((file) => [file.path, file.blob]));
+  // 안내용(통과 판정에는 쓰지 않는다): 통과 지문은 resolve 시점 내용이므로, reviewer가 그 경로에서 마지막으로 본 내용과 다른 파일은 reviewer가 보지 못한 수정을 덮는다.
+  // 마지막으로 본 내용은 체인에서 그 경로를 가장 늦게 기록한 라운드의 blob이다. 이어지는 라운드는 계속 없는 경로(이미 검토한 삭제)나 필터로 빠진 경로를 files에서 빼므로 head.files만 보면 검토한 삭제가 새 삭제로 보인다.
+  const lastSeen = new Map<string, string>();
+  for (const item of chain) for (const file of item.files) lastSeen.set(file.path, file.blob);
   const unreviewedChanges = files.filter((file) => lastSeen.get(file.path) !== file.blob).map((file) => ({ path: file.path, state: file.blob === DELETED_BLOB ? "deleted" as const : "changed" as const }));
   return {
     reviewId: input.reviewId, pass, open, rejected, ...(unusable ? { unusable } : {}), files, ...(record.inputs ? { inputs: record.inputs } : {}), ...(verdicts.length > 0 ? { verdicts } : {}),
