@@ -11,7 +11,8 @@ import {
   updateLiveCallTranscript,
   type LiveCallCore,
 } from "./live-session";
-import type { LiveEvent, LiveTranscriptRole } from "./live-types";
+import { livePaceInstructions, readLivePace } from "./live-pace";
+import type { LiveEvent, LivePace, LiveTranscriptRole } from "./live-types";
 import {
   EMPTY_INTERPRETER_CONTEXT,
   type InterpreterContext,
@@ -84,6 +85,7 @@ export function interpreterInstructions(
   mine: TranslatorLanguage,
   theirs: TranslatorLanguage,
   context: InterpreterContext = EMPTY_INTERPRETER_CONTEXT,
+  pace: LivePace = "normal",
 ): string {
   const a = mine.englishName;
   const b = theirs.englishName;
@@ -126,6 +128,8 @@ The call was reconnected. These turns were already interpreted; use them only to
 ${lines.join("\n")}
 </conversation_so_far>`);
   }
+  const paceSection = livePaceInstructions(pace);
+  if (paceSection) blocks.push(paceSection);
   return blocks.join("\n\n");
 }
 
@@ -234,7 +238,7 @@ export interface InterpreterOfferResponse {
 export async function createInterpreterCall(request: InterpreterOfferRequest): Promise<InterpreterOfferResponse> {
   const { answer, callId, headers } = await signalLiveCall({
     sdp: request.sdp,
-    instructions: interpreterInstructions(request.mine, request.theirs, request.context),
+    instructions: interpreterInstructions(request.mine, request.theirs, request.context, await readLivePace()),
     voice: await configuredLiveVoice(undefined),
     // A fresh thread per call; no credential pin is stored for a session that does not exist.
     threadId: crypto.randomUUID(),

@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import type { LiveVoices } from "@/lib/live-types";
+import { LIVE_PACES, type LivePace, type LiveVoices } from "@/lib/live-types";
 import { SearchableSelect } from "./SearchableSelect";
 import styles from "./SettingsConfig.module.css";
 
 /**
  * Call voice, from the settings dialog.
  *
- * Picks which Codex voice speaks live and interpreter calls. The choice is the
- * core `live.voice` setting, saved on change and applied from the next call.
+ * Picks which Codex voice speaks live and interpreter calls (the core `live.voice`
+ * setting) and how fast it speaks (CUELO's own pace, saved through `/api/live/voices`).
+ * Both are saved on change and applied from the next call.
  */
 
 const VOICES_URL = "/api/live/voices";
@@ -28,7 +29,8 @@ export function LiveVoiceConfig() {
       if (!response.ok || !Array.isArray(body.voices) || typeof body.defaultVoice !== "string") {
         throw new Error(`HTTP ${response.status}`);
       }
-      setVoices({ voices: body.voices, defaultVoice: body.defaultVoice });
+      const pace = (LIVE_PACES as readonly unknown[]).includes(body.pace) ? body.pace as LivePace : "normal";
+      setVoices({ voices: body.voices, defaultVoice: body.defaultVoice, pace });
     } catch (loadError) {
       setVoiceError(loadError instanceof Error ? loadError.message : String(loadError));
     }
@@ -52,6 +54,25 @@ export function LiveVoiceConfig() {
       if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
       const saved = typeof result.value === "string" ? result.value : value;
       setVoices((current) => current ? { ...current, defaultVoice: saved } : current);
+    } catch (saveError) {
+      setVoiceError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const choosePace = async (pace: LivePace) => {
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      const response = await fetch(VOICES_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pace }),
+      });
+      const result = await response.json().catch(() => ({})) as Partial<LiveVoices> & { error?: string };
+      if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
+      setVoices((current) => current ? { ...current, pace: result.pace ?? pace } : current);
     } catch (saveError) {
       setVoiceError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -91,6 +112,26 @@ export function LiveVoiceConfig() {
                 options={voices.voices}
                 onChange={(value) => {
                   if (value !== voices.defaultVoice) void chooseVoice(value);
+                }}
+              />
+            </div>
+          </div>
+          <div className={styles.settingRow}>
+            <div style={{ minWidth: 0 }}>
+              <div className={styles.settingLabel}>{t("chat.livePaceLabel")}</div>
+              <div className={styles.settingDescription}>{t("chat.livePaceHelp")}</div>
+            </div>
+            <div className={styles.settingControl}>
+              <SearchableSelect
+                value={voices.pace}
+                disabled={voiceBusy}
+                ariaLabel={t("chat.livePaceLabel")}
+                options={[
+                  { value: "normal", label: t("chat.livePaceNormal") },
+                  { value: "slow", label: t("chat.livePaceSlow") },
+                ]}
+                onChange={(value) => {
+                  if (value !== voices.pace && (LIVE_PACES as readonly string[]).includes(value)) void choosePace(value as LivePace);
                 }}
               />
             </div>

@@ -227,11 +227,17 @@ export interface LiveVoiceOption {
   label: string;
 }
 
+/** How fast the Codex voice speaks. `slow` adds a slow-delivery rule to the call's instructions. */
+export const LIVE_PACES = ["normal", "slow"] as const;
+export type LivePace = (typeof LIVE_PACES)[number];
+
 /** `GET /api/live/voices`. */
 export interface LiveVoices {
   voices: LiveVoiceOption[];
   /** The Codex voice a call uses when the request names none: the configured `live.voice`. */
   defaultVoice: string;
+  /** The speaking pace of live and interpreter calls (`<agentDir>/cuelo-live-settings.json`). */
+  pace: LivePace;
 }
 
 export type LiveEvent =

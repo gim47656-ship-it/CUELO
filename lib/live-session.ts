@@ -31,6 +31,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { getRpcSession, startRpcSession, type AgentSessionWrapper } from "./rpc-manager";
+import { livePaceInstructions, readLivePace } from "./live-pace";
 import { invalidateSessionListCache, resolveSessionPath } from "./session-reader";
 import { getOmpRuntime, getSettingsForCwd } from "./omp-runtime";
 import { resolveLiveCharacter } from "./live-character";
@@ -43,6 +44,7 @@ import {
   updateLiveTranscript,
   type LiveEvent,
   type LiveOfferRequest,
+  type LivePace,
   type LiveOfferResponse,
   type LiveState,
   type LiveTranscriptDetails,
@@ -143,6 +145,7 @@ export async function getLiveVoices(): Promise<LiveVoices> {
   return {
     voices: LIVE_VOICE_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
     defaultVoice: await configuredLiveVoice(undefined),
+    pace: await readLivePace(),
   };
 }
 
@@ -214,7 +217,7 @@ function spokenLanguageSection(locale: string | undefined): string {
  * surface speaks with exactly the persona the TUI does, including the rule that
  * all repository work is delegated rather than attempted in the voice turn.
  */
-function liveInstructions(locale: string | undefined): string {
+function liveInstructions(locale: string | undefined, pace: LivePace): string {
   const packageDir = getPackageDir();
   if (!packageDir) {
     throw new Error("omp package assets are unavailable, so live instructions cannot be loaded.");
@@ -228,7 +231,8 @@ function liveInstructions(locale: string | undefined): string {
     // Sandboxed runtimes may not expose OS account information.
   }
   const firstName = username.split(/[._\-\s]+/).find((part) => part.length > 0) ?? "there";
-  return prompt.render(template, { username, firstName }) + spokenLanguageSection(locale);
+  const paceSection = livePaceInstructions(pace);
+  return prompt.render(template, { username, firstName }) + spokenLanguageSection(locale) + (paceSection ? `\n\n${paceSection}` : "");
 }
 
 /** Marks the agent's visible answer so the live model reads it out as its own. */
@@ -669,7 +673,7 @@ export async function createLiveCall(request: LiveOfferRequest): Promise<LiveOff
   const alias = await resolveCallAlias(wrapper);
   const { answer, callId, headers } = await signalLiveCall({
     sdp: request.sdp,
-    instructions: liveInstructions(request.locale),
+    instructions: liveInstructions(request.locale, await readLivePace()),
     voice: request.voice?.trim() || await configuredLiveVoice(wrapper.cwd),
     threadId: request.sessionId,
     credentialSessionId: request.sessionId,
