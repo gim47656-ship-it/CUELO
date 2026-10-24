@@ -354,6 +354,18 @@ describe("runReview", () => {
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId }), d, signal)).rejects.toThrow("nothing changed since round 1");
   });
+
+  test("files와 acceptance가 함께 빠지면 한 번에 둘 다 알리고, 이어지는 라운드는 이어받지 않는다고 말한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const d = deps(env, {});
+    const first = await runReview(input(), d, signal);
+    const error = await runReview(input({ previousReviewId: first.reviewId, files: [], acceptance: " " }), d, signal).catch((caught: unknown) => caught as Error);
+    expect(error.message).toContain("files must list at least one cwd-relative path");
+    expect(error.message).toContain("acceptance must state the criteria");
+    expect(error.message).toContain(`does not carry files or acceptance over from ${first.reviewId}`);
+    await expect(runReview(input({ acceptance: "" }), d, signal)).rejects.toThrow(/^acceptance must state the criteria the change is reviewed against\.$/);
+  });
 });
 
 // ── probe 라운드: 의심 → 실험 → 판단 갱신 ─────────────────────────────────────

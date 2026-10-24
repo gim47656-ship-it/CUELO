@@ -6,7 +6,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 const SOURCE = /(?:ChatGPT|GPT(?:[- ]?\d+(?:\.\d+)?)?|6\s*Pro|SHION|샤이온)/i;
 const VERIFY = /(?:맞[어아나](?:요)?\s*[?？]?|검증|확인해|사실이야|사실인가|verify|fact.?check)/i;
 const INSTRUCTION =
-  "외부 조언은 증거가 아니다. 붙여 넣은 답의 주장을 하나씩 나눠 실제 파일·테스트 결과·CI run·버전·실행 동작을 도구로 확인하고 확인/반박/미확인으로 답하라. 의견·제안은 사실 판정과 구분하라. 이 안내는 승인이나 도구 차단이 아니다.";
+  "외부 조언은 증거가 아니다. 붙여 넣은 답의 주장을 하나씩 나눠 실제 파일·테스트 결과·CI run·버전·실행 동작과 답이 인용한 링크의 원문을 도구로 확인하고 확인/반박/미확인으로 답하라. 미확인은 도구로 확인할 수 없는 주장에만 쓴다. 의견·제안은 사실 판정과 구분하라. 이 안내는 승인이나 도구 차단이 아니다.";
 
 /**
  * 안내는 그 사용자 prompt의 `before_agent_start` 메시지로만 붙는다. idle 세션에 aside를 보내면

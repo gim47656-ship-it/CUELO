@@ -1107,8 +1107,15 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
 export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: AbortSignal): Promise<ReviewResult> {
   const now = deps.now ?? (() => new Date());
   const files = [...new Set(input.files.map((file) => file.trim()).filter(Boolean))];
-  if (files.length === 0) throw new Error("files must list at least one cwd-relative path.");
-  if (!input.acceptance.trim()) throw new Error("acceptance must state the criteria the change is reviewed against.");
+  // 둘을 따로 알리면 이어지는 라운드에서 한 번에 하나씩 두 번 거절됐다(10-24 01:36). 원장은 acceptance를 저장하지 않아 이어받을 수 없다.
+  const missing = [
+    ...(files.length === 0 ? ["files must list at least one cwd-relative path."] : []),
+    ...(!input.acceptance.trim() ? ["acceptance must state the criteria the change is reviewed against."] : []),
+  ];
+  if (missing.length > 0) {
+    const later = input.previousReviewId ? ` A later round does not carry files or acceptance over from ${input.previousReviewId}; send them again (usually the same files and criteria).` : "";
+    throw new Error(`${missing.join(" ")}${later}`);
+  }
 
   const records = deps.readAll();
   const probeRound = (input.probeResults?.length ?? 0) > 0;
