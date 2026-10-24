@@ -1,19 +1,12 @@
 /**
- * 통역 통화에 함께 보내는 맥락: 대화 장소(상황), 내 성별·나이대, 앞선 대화. 화면이 만들고
+ * 통역 통화에 함께 보내는 맥락: 대화 분위기, 내 성별·나이대, 앞선 대화. 화면이 만들고
  * `/api/live/interpret`가 그대로 믿지 않고 이 파일의 `parseInterpreterContext`로 다시 거른다.
  * 앞선 대화는 Codex가 무음으로 끊었거나 언어를 바꿔 새로 연결한 통화가 앞 맥락을 잇게 한다.
  */
 
-export const TRANSLATOR_SITUATIONS = [
-  "restaurant",
-  "transport",
-  "hotel",
-  "shopping",
-  "medical",
-  "directions",
-  "business",
-] as const;
-export type TranslatorSituation = (typeof TRANSLATOR_SITUATIONS)[number];
+/** 말투의 결(편하게·정중하게·격식)과 말투가 달라지는 두 목적(흥정·급함). 장소는 묻지 않는다. */
+export const TRANSLATOR_MOODS = ["casual", "polite", "formal", "haggling", "urgent"] as const;
+export type TranslatorMood = (typeof TRANSLATOR_MOODS)[number];
 
 export const SPEAKER_GENDERS = ["male", "female"] as const;
 export type SpeakerGender = (typeof SPEAKER_GENDERS)[number];
@@ -23,7 +16,7 @@ export type SpeakerAge = (typeof SPEAKER_AGES)[number];
 
 /** 내가 고른 설정. 고르지 않은 칸은 비운다. */
 export interface InterpreterProfile {
-  situation?: TranslatorSituation;
+  mood?: TranslatorMood;
   gender?: SpeakerGender;
   age?: SpeakerAge;
 }
@@ -63,10 +56,10 @@ export function parseInterpreterProfile(value: unknown): InterpreterProfile {
   if (!value || typeof value !== "object") return {};
   const raw = value as Record<string, unknown>;
   const profile: InterpreterProfile = {};
-  const situation = pick(TRANSLATOR_SITUATIONS, raw.situation);
+  const mood = pick(TRANSLATOR_MOODS, raw.mood);
   const gender = pick(SPEAKER_GENDERS, raw.gender);
   const age = pick(SPEAKER_AGES, raw.age);
-  if (situation) profile.situation = situation;
+  if (mood) profile.mood = mood;
   if (gender) profile.gender = gender;
   if (age) profile.age = age;
   return profile;

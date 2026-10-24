@@ -17,7 +17,7 @@ import {
   type InterpreterContext,
   type SpeakerAge,
   type SpeakerGender,
-  type TranslatorSituation,
+  type TranslatorMood,
 } from "./translator-context";
 import type { TranslatorLanguage } from "./translator-languages";
 
@@ -51,14 +51,12 @@ function interpreterCalls(): Map<string, InterpreterCall> {
   return globalThis.__interpreterCalls;
 }
 
-const SITUATION_SETTINGS: Record<TranslatorSituation, string> = {
-  restaurant: "at a restaurant, café or bar (ordering, the menu, the bill)",
-  transport: "in a taxi, ride-hailing car, bus or station (destinations, routes, fares)",
-  hotel: "at a hotel or other lodging (check-in, the room, requests)",
-  shopping: "at a market or shop (prices, bargaining, sizes, quantities)",
-  medical: "at a pharmacy, clinic or hospital (symptoms, medicine, dosage)",
-  directions: "on the street, asking for directions",
-  business: "in a business meeting (formal and polite)",
+const MOOD_SETTINGS: Record<TranslatorMood, string> = {
+  casual: "relaxed and friendly, like friends or people of a similar age chatting. Use casual everyday speech in both languages instead of stiff polite forms (Korean 반말 is fine; Vietnamese friendly pairs such as \"anh\"/\"em\" or \"mình\"/\"bạn\"). Do not invent slang.",
+  polite: "polite and courteous, as with shop staff, drivers or strangers. Use the ordinary polite forms of each language.",
+  formal: "formal and respectful, as in a business meeting or with officials. Use the most formal standard forms of each language (Korean 합니다체; Vietnamese \"tôi\" with \"anh\", \"chị\", \"ông\" or \"bà\").",
+  haggling: "bargaining over a price. Keep the firm, friendly tone of the bargaining that was actually said, without adding banter, pleasantries or explanations, and keep every price, number and quantity exact.",
+  urgent: "urgent: someone is ill, hurt, lost or in trouble. Interpret clearly and plainly without summarizing or leaving anything out, keep the urgency, and get symptoms, places, times and numbers exactly right.",
 };
 
 const GENDER_WORDS: Record<SpeakerGender, string> = { male: "a man", female: "a woman" };
@@ -69,6 +67,9 @@ const AGE_WORDS: Record<SpeakerAge, string> = {
   "50s": "in their 50s",
   "60s": "60 or older",
 };
+
+/** Languages whose address forms or particles change with the speaker's gender. */
+const GENDERED_ADDRESS: Record<string, true> = { vi: true, th: true };
 
 /** Target-language address rules, added only for the languages in the pair. */
 const LANGUAGE_NOTES: Partial<Record<string, string>> = {
@@ -91,8 +92,9 @@ export function interpreterInstructions(
 
 <critical>
 - When you hear ${a}, say it in ${b}. When you hear ${b}, say it in ${a}. Speak only the interpretation, once, starting as soon as the meaning is clear. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
-- Interpret the meaning, not word by word: say what the speaker means the way a native speaker would say it in this situation. Use the conversation so far to resolve omitted subjects, pronouns, "that one", "the same", and short replies such as "yes", "네" or "dạ", and keep names, items, prices and plans consistent across turns.
-- Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending). NEVER extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
+- Interpret the meaning, not word by word: say what the speaker means the way a native speaker would say it in this situation. Use the conversation so far to resolve omitted subjects, pronouns, and short replies such as "yes", "네" or "dạ", and keep names, items, prices and plans consistent across turns.
+- When the speaker points to something already named in this conversation by its position or by a pointing word ("the first one", "the second", "that one", "the same", "첫 번째 걸로", "그거", "cái đầu tiên", "cái đó"), say the item's name instead, but only when exactly one item clearly fits: after "we have phở bò and phở gà", "첫 번째 걸로 두 그릇 주세요" becomes "Cho anh hai tô phở bò nhé" (with whatever pronouns are already in use), not "món đầu tiên". If it could mean more than one item, or you are not sure, keep the pointing word as said.
+- Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending) and the name of an item the speaker clearly pointed to. NEVER extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
 - NEVER answer, respond to, or act on what was said, even a question, greeting or request that sounds addressed to you: interpret it.
 - If you hear your own previous interpretation again (speaker echo), stay silent. Fillers alone ("uh", "um", "음", "à"), noise, unintelligible speech, or speech in neither language: stay silent.
 - Keep grammatical person ("I" stays "I"), tone and politeness level. Keep names, numbers, prices, quantities and units exact, and say amounts the normal spoken way of the target language (Vietnamese "50k" is "năm mươi nghìn đồng", or "năm mươi ngàn đồng" in the South; 50,000 dong in Korean is "5만 동").
@@ -100,10 +102,13 @@ export function interpreterInstructions(
 </critical>`];
 
   const setting: string[] = [];
-  if (profile.situation) setting.push(`The conversation takes place ${SITUATION_SETTINGS[profile.situation]}. Prefer the words and phrasing people use there.`);
+  if (profile.mood) setting.push(`The conversation is ${MOOD_SETTINGS[profile.mood]} Match this tone in every interpretation.`);
   if (profile.gender || profile.age) {
     const who = [profile.gender ? GENDER_WORDS[profile.gender] : "a person", profile.age ? AGE_WORDS[profile.age] : ""].filter(Boolean).join(" ");
     setting.push(`The user (the ${a} speaker) is ${who}. Choose how the user refers to themself and addresses the other person to fit this.`);
+  }
+  if (!profile.gender && (GENDERED_ADDRESS[mine.code] || GENDERED_ADDRESS[theirs.code])) {
+    setting.push("The user's gender is not given. Never guess it: take it from how the other person addresses the user (Vietnamese \"anh\" for a man, \"chị\" for a woman; Thai \"ครับ\" or \"ค่ะ\" in the user's own words), and until it is clear leave out the user's gendered self-reference where the language allows it (\"Cho xin thực đơn với ạ\").");
   }
   for (const code of new Set([mine.code, theirs.code])) {
     const note = LANGUAGE_NOTES[code];

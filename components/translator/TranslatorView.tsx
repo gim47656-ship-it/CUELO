@@ -6,7 +6,7 @@ import {
   HISTORY_MAX_TURNS,
   SPEAKER_AGES,
   SPEAKER_GENDERS,
-  TRANSLATOR_SITUATIONS,
+  TRANSLATOR_MOODS,
   parseInterpreterProfile,
   type InterpreterProfile,
   type InterpreterTurn,
@@ -181,7 +181,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     call.start(next.mine, next.theirs, next.profile);
   };
 
-  /** 통화 중에 언어나 상황·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
+  /** 통화 중에 언어나 분위기·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
   const changeCallSettings = (next: Settings) => {
     if (next.mine.code === next.theirs.code) return;
     setSettings(next);
@@ -319,14 +319,14 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
         </div>
         <div className="translator-context">
           <label className="translator-language">
-            <span>{tt("translator.situation")}</span>
+            <span>{tt("translator.mood")}</span>
             <select
-              value={profile.situation ?? ""}
-              onChange={(event) => changeProfile({ situation: event.target.value as InterpreterProfile["situation"] })}
+              value={profile.mood ?? ""}
+              onChange={(event) => changeProfile({ mood: event.target.value as InterpreterProfile["mood"] })}
             >
               <option value="">{tt("translator.notSet")}</option>
-              {TRANSLATOR_SITUATIONS.map((situation) => (
-                <option key={situation} value={situation}>{tt(`translator.situation.${situation}`)}</option>
+              {TRANSLATOR_MOODS.map((mood) => (
+                <option key={mood} value={mood}>{tt(`translator.mood.${mood}`)}</option>
               ))}
             </select>
           </label>

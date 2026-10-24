@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  * POST /api/live/interpret - open a sessionless interpreter call.
  *
  * Body `{ sdp, mine, theirs, context? }`; the two language codes must be distinct
- * entries of `lib/translator-languages.ts`. `context` (situation, the user's
+ * entries of `lib/translator-languages.ts`. `context` (mood, the user's
  * profile, earlier turns) is filtered by `parseInterpreterContext`; unknown
  * values are dropped, not rejected. The answer SDP comes back with the
  * call id, and the call is then read and ended through `/api/live/events` and

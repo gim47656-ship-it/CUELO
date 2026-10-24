@@ -86,7 +86,7 @@ interface LostCall {
 }
 
 const targetKey = ({ mine, theirs, profile }: CallTarget) =>
-  `${mine.code}>${theirs.code}|${profile.situation ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
+  `${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
 
 export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: InterpreterCallOptions): InterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
