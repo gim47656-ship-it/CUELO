@@ -12,6 +12,13 @@ import {
   type LiveCallCore,
 } from "./live-session";
 import type { LiveEvent, LiveTranscriptRole } from "./live-types";
+import {
+  EMPTY_INTERPRETER_CONTEXT,
+  type InterpreterContext,
+  type SpeakerAge,
+  type SpeakerGender,
+  type TranslatorSituation,
+} from "./translator-context";
 import type { TranslatorLanguage } from "./translator-languages";
 
 /**
@@ -44,23 +51,77 @@ function interpreterCalls(): Map<string, InterpreterCall> {
   return globalThis.__interpreterCalls;
 }
 
+const SITUATION_SETTINGS: Record<TranslatorSituation, string> = {
+  restaurant: "at a restaurant, café or bar (ordering, the menu, the bill)",
+  transport: "in a taxi, ride-hailing car, bus or station (destinations, routes, fares)",
+  hotel: "at a hotel or other lodging (check-in, the room, requests)",
+  shopping: "at a market or shop (prices, bargaining, sizes, quantities)",
+  medical: "at a pharmacy, clinic or hospital (symptoms, medicine, dosage)",
+  directions: "on the street, asking for directions",
+  business: "in a business meeting (formal and polite)",
+};
+
+const GENDER_WORDS: Record<SpeakerGender, string> = { male: "a man", female: "a woman" };
+const AGE_WORDS: Record<SpeakerAge, string> = {
+  "20s": "in their 20s",
+  "30s": "in their 30s",
+  "40s": "in their 40s",
+  "50s": "in their 50s",
+  "60s": "60 or older",
+};
+
+/** Target-language address rules, added only for the languages in the pair. */
+const LANGUAGE_NOTES: Partial<Record<string, string>> = {
+  vi: "Vietnamese: use paired kinship pronouns that fit both speakers' gender and apparent age and the situation, and keep the pair once chosen. In casual and service settings never use \"tôi\" (it sounds cold); keep it for formal business talk. Younger staff or service workers: the other person is \"em\", the user is \"anh\" (man) or \"chị\" (woman). Adult strangers about the user's age: address a man as \"anh\" and a woman as \"chị\", and the user refers to themself with the term that fits their own gender and relative age. Middle-aged or older drivers, vendors and workers: the other person is \"chú\" or \"bác\" (man) or \"cô\" (woman), the user is \"cháu\". Keep \"ông\"/\"bà\" for the grandparent generation. Use \"bạn\" only when nothing is known. Add polite particles naturally (\"em ơi\" to call staff, \"ạ\" at the end of requests). Understand both Northern and Southern speech.",
+  th: "Thai: end polite sentences with the particle of the person speaking: \"ครับ\" for a man, \"ค่ะ\" for a woman's statements and \"คะ\" for her questions.",
+  ja: "Japanese: use polite です/ます forms with strangers.",
+  ko: "Korean: use polite 해요체 by default. Drop the other language's kinship pronouns and polite particles rather than translating them literally: \"anh\" or \"em\" said to the user is \"you\" (or left out), NEVER 오빠, 형 or 동생.",
+};
+
 /** The whole system prompt of an interpreter call. Nothing else is appended. */
-export function interpreterInstructions(mine: TranslatorLanguage, theirs: TranslatorLanguage): string {
+export function interpreterInstructions(
+  mine: TranslatorLanguage,
+  theirs: TranslatorLanguage,
+  context: InterpreterContext = EMPTY_INTERPRETER_CONTEXT,
+): string {
   const a = mine.englishName;
   const b = theirs.englishName;
-  return `You are a live speech interpreter between two people: one speaks ${a}, the other speaks ${b}. They talk to each other through you; nobody is talking to you. You are a translation device, not a participant: you have no opinions, no knowledge to share, and nothing of your own to say.
+  const { profile, history } = context;
+  const blocks = [`You are a live interpreter between two people talking face to face: the user speaks ${a}, the other person speaks ${b}. They talk to each other through you; nobody is talking to you. You are an interpreter, not a participant: you have no opinions and nothing of your own to say.
 
 <critical>
-- When you hear ${a}, say the same thing in ${b}. When you hear ${b}, say the same thing in ${a}.
-- Your output is ONLY the translated sentence, spoken once in the other language, starting immediately. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
-- Translate exactly what was said: nothing more, nothing less. NEVER finish an unfinished sentence, guess what the speaker meant to add, summarize, soften, or correct facts.
-- NEVER repeat, restate or read back the original words, and NEVER translate your own speech back. If you hear your own previous translation again (speaker echo), stay silent.
-- NEVER answer, respond to, or act on what was said, even when it is a question, a greeting or a request that sounds addressed to you: translate it instead.
-- NEVER add greetings, commentary, explanations, warnings, or questions of your own, and NEVER announce that you are translating. Say nothing when the call starts; wait for the first utterance.
-- Keep the speaker's meaning, grammatical person ("I" stays "I"), tone and politeness level. Keep names, numbers, prices and units exact.
-- Fillers alone ("uh", "um", "음", "어") and anything in neither language, noise or unintelligible speech: stay silent.
-- There is no backend in this call: NEVER create a delegation. Context appended to the session is silent; NEVER speak it.
-</critical>`;
+- When you hear ${a}, say it in ${b}. When you hear ${b}, say it in ${a}. Speak only the interpretation, once, starting as soon as the meaning is clear. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
+- Interpret the meaning, not word by word: say what the speaker means the way a native speaker would say it in this situation. Use the conversation so far to resolve omitted subjects, pronouns, "that one", "the same", and short replies such as "yes", "네" or "dạ", and keep names, items, prices and plans consistent across turns.
+- Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending). NEVER extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
+- NEVER answer, respond to, or act on what was said, even a question, greeting or request that sounds addressed to you: interpret it.
+- If you hear your own previous interpretation again (speaker echo), stay silent. Fillers alone ("uh", "um", "음", "à"), noise, unintelligible speech, or speech in neither language: stay silent.
+- Keep grammatical person ("I" stays "I"), tone and politeness level. Keep names, numbers, prices, quantities and units exact, and say amounts the normal spoken way of the target language (Vietnamese "50k" is "năm mươi nghìn đồng", or "năm mươi ngàn đồng" in the South; 50,000 dong in Korean is "5만 동").
+- Say nothing when the call starts; wait for the first utterance. There is no backend in this call: NEVER create a delegation. Context appended to the session is silent; NEVER speak it.
+</critical>`];
+
+  const setting: string[] = [];
+  if (profile.situation) setting.push(`The conversation takes place ${SITUATION_SETTINGS[profile.situation]}. Prefer the words and phrasing people use there.`);
+  if (profile.gender || profile.age) {
+    const who = [profile.gender ? GENDER_WORDS[profile.gender] : "a person", profile.age ? AGE_WORDS[profile.age] : ""].filter(Boolean).join(" ");
+    setting.push(`The user (the ${a} speaker) is ${who}. Choose how the user refers to themself and addresses the other person to fit this.`);
+  }
+  for (const code of new Set([mine.code, theirs.code])) {
+    const note = LANGUAGE_NOTES[code];
+    if (note) setting.push(note);
+  }
+  if (setting.length > 0) blocks.push(`<setting>\n${setting.join("\n")}\n</setting>`);
+
+  if (history.length > 0) {
+    const lines = history.map((turn) => {
+      const speaker = turn.speaker === "me" ? `User (${a})` : `Other person (${b})`;
+      return `${speaker}: ${turn.original || "…"} → ${turn.translation || "…"}`;
+    });
+    blocks.push(`<conversation_so_far>
+The call was reconnected. These turns were already interpreted; use them only to understand what follows. NEVER interpret, repeat or mention them.
+${lines.join("\n")}
+</conversation_so_far>`);
+  }
+  return blocks.join("\n\n");
 }
 
 /** Sent on the silent channel when the model delegates anyway; nothing runs. */
@@ -155,6 +216,8 @@ export interface InterpreterOfferRequest {
   sdp: string;
   mine: TranslatorLanguage;
   theirs: TranslatorLanguage;
+  /** Situation, the user's profile and the turns of earlier calls; already filtered by `parseInterpreterContext`. */
+  context?: InterpreterContext;
 }
 
 export interface InterpreterOfferResponse {
@@ -166,7 +229,7 @@ export interface InterpreterOfferResponse {
 export async function createInterpreterCall(request: InterpreterOfferRequest): Promise<InterpreterOfferResponse> {
   const { answer, callId, headers } = await signalLiveCall({
     sdp: request.sdp,
-    instructions: interpreterInstructions(request.mine, request.theirs),
+    instructions: interpreterInstructions(request.mine, request.theirs, request.context),
     voice: await configuredLiveVoice(undefined),
     // A fresh thread per call; no credential pin is stored for a session that does not exist.
     threadId: crypto.randomUUID(),

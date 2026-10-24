@@ -271,6 +271,21 @@ export function recordServerRestartReturn(sessionId: string | null): void {
 }
 
 /**
+ * heartbeat가 다시 성공했을 때 할 일. 서버가 바뀌었으면(재시작·배포) 새 빌드로 다시 연다. 같은 서버인데
+ * 재시작 대기 화면이 떠 있었으면 폰 망이 잠깐 끊긴 것이라 대기 화면만 걷는다: 새로고침하면 통역 중인
+ * 대화와 마이크가 사라진다. 서버 식별값을 모르면 재시작 대기 뒤에는 예전처럼 다시 연다.
+ */
+export function heartbeatRecovery(
+  restarting: boolean,
+  knownBootId: string | null,
+  bootId: string | undefined,
+): "reload" | "resume" | "continue" {
+  const bootKnown = Boolean(bootId && knownBootId);
+  if (bootKnown ? bootId !== knownBootId : restarting) return "reload";
+  return restarting ? "resume" : "continue";
+}
+
+/**
  * 재시작 복귀 기록을 현재 세션 화면이 한 번만 가져간다. 세션 복원이 끝나기 전(다른 세션)에는
  * 기록을 남겨 두고, 오래됐거나 손상된 기록은 버린다.
  */

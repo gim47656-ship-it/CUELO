@@ -3,14 +3,17 @@ import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security"
 import { LiveError } from "@/lib/live-session";
 import { createInterpreterCall } from "@/lib/translator-live";
 import { findTranslatorLanguage } from "@/lib/translator-languages";
+import { parseInterpreterContext } from "@/lib/translator-context";
 
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/live/interpret - open a sessionless interpreter call.
  *
- * Body `{ sdp, mine, theirs }`; the two language codes must be distinct
- * entries of `lib/translator-languages.ts`. The answer SDP comes back with the
+ * Body `{ sdp, mine, theirs, context? }`; the two language codes must be distinct
+ * entries of `lib/translator-languages.ts`. `context` (situation, the user's
+ * profile, earlier turns) is filtered by `parseInterpreterContext`; unknown
+ * values are dropped, not rejected. The answer SDP comes back with the
  * call id, and the call is then read and ended through `/api/live/events` and
  * `/api/live/call/[callId]` like a session call.
  */
@@ -25,12 +28,14 @@ export async function POST(req: Request) {
   let sdp = "";
   let mineCode: unknown;
   let theirsCode: unknown;
+  let contextValue: unknown;
   try {
     const body: unknown = await req.json();
     if (body && typeof body === "object") {
       if ("sdp" in body && typeof body.sdp === "string") sdp = body.sdp;
       if ("mine" in body) mineCode = body.mine;
       if ("theirs" in body) theirsCode = body.theirs;
+      if ("context" in body) contextValue = body.context;
     }
   } catch {
     return NextResponse.json({ error: "bad-request" }, { status: 400 });
@@ -42,7 +47,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await createInterpreterCall({ sdp, mine, theirs });
+    const result = await createInterpreterCall({ sdp, mine, theirs, context: parseInterpreterContext(contextValue) });
     return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof LiveError) {

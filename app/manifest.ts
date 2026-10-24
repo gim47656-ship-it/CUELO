@@ -43,5 +43,14 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "any",
       },
     ],
+    // Long-press menu of the installed app (Android Chrome); opens the interpreter directly.
+    shortcuts: [
+      {
+        name: "통역 · Interpreter",
+        short_name: "통역",
+        url: "/?view=translator",
+        icons: [{ src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+      },
+    ],
   };
 }

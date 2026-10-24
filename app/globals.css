@@ -6111,6 +6111,102 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   margin-inline-start: auto;
 }
 
+/* 상황·내 성별·내 나이대. 언어 줄 아래를 통째로 쓴다. */
+.translator-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5) var(--seed-dimension-x3);
+  inline-size: 100%;
+}
+
+.translator-context .translator-language > span {
+  white-space: nowrap;
+}
+
+.translator-face-toggle {
+  min-block-size: 32px;
+  padding: 0 var(--seed-dimension-x2_5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.translator-face-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.translator-face-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  color: var(--text);
+}
+
+/* 마주보기: 위 칸은 뒤집어 맞은편 사람이, 아래 칸은 내가 읽는다. 칸마다 최근 말이 아래에 붙는다. */
+.translator-face {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-rows: 1fr 1fr;
+  min-block-size: 0;
+}
+
+.translator-face-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x2);
+  min-block-size: 0;
+  padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
+  overflow: hidden;
+}
+
+.translator-face-pane[data-flipped="true"] {
+  background: var(--bg-subtle);
+  transform: rotate(180deg);
+}
+
+.translator-face-pane + .translator-face-pane {
+  border-block-start: 1px solid var(--border);
+}
+
+.translator-face-label {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.translator-face-lines {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--seed-dimension-x2);
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.translator-face-line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t5-static);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.translator-face-line[data-side="me"] {
+  text-align: end;
+}
+
+.translator-face-line[data-latest="true"] {
+  color: var(--text);
+  font-size: var(--seed-font-size-t7-static);
+  font-weight: 600;
+}
+
 .translator-banner {
   margin: var(--seed-dimension-x2) var(--seed-dimension-x4) 0;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
@@ -6274,6 +6370,23 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .translator-languages {
     order: 3;
     inline-size: 100%;
+  }
+
+  /* 폰에서는 세 칸을 같은 폭으로 나누고 라벨을 선택칸 위에 둔다. 옆에 두면 라벨이 글자마다 꺾인다. */
+  .translator-context {
+    display: grid;
+    order: 4;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .translator-context .translator-language {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .translator-face-toggle {
+    min-block-size: 44px;
   }
 
   .translator-language {

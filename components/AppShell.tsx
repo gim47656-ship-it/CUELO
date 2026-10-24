@@ -73,6 +73,7 @@ import {
   describeUpdateCleanup,
   dismissUpdateReturn,
   enterUpdateMaintenance,
+  heartbeatRecovery,
   heartbeatUpdateClient,
   readUpdateResumeIntent,
   readUpdateReturn,
@@ -253,12 +254,17 @@ export function AppShell({
     setTranslatorOpen(active);
     if (!active) requestComposerFocus();
   }, [requestComposerFocus]);
+  // 홈 화면 앱의 「통역」 바로가기(`/?view=translator`, `app/manifest.ts`)로 열면 처음부터 통역 화면을 띄운다.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("view") === "translator") setTranslatorActive(true);
+  }, [setTranslatorActive]);
   const registerComposerFocus = useCallback((focus: (() => void) | null) => {
     composerFocusRef.current = focus;
   }, []);
   const maintenanceEnteredRef = useRef(false);
   // 재시작 중에는 서버가 receipt를 쓸 수 없어 heartbeat가 그냥 실패한다. 한 번이라도 성공한 뒤
-  // 연속으로 실패하면 끊긴 화면 대신 재시작 대기 화면을 띄우고, 다시 성공하면 새 빌드로 새로고침한다.
+  // 연속으로 실패하면 끊긴 화면 대신 재시작 대기 화면을 띄운다. 다시 성공했을 때 서버가 바뀌었으면
+  // 새 빌드로 새로고침하고, 같은 서버면(폰 망이 잠깐 끊긴 경우) 대기 화면만 걷어 통역·작업 화면을 지킨다.
   const [serverRestarting, setServerRestarting] = useState(false);
   const serverRestartingRef = useRef(false);
   const heartbeatOkRef = useRef(false);
@@ -318,13 +324,18 @@ export function AppShell({
           update: followed ? { requestId: followed.requestId, stageHash: followed.stageHash } : null,
         });
         heartbeatFailuresRef.current = 0;
-        const bootChanged = Boolean(state.serverBootId && serverBootIdRef.current && state.serverBootId !== serverBootIdRef.current);
-        if (serverRestartingRef.current || bootChanged) {
+        const recovery = heartbeatRecovery(serverRestartingRef.current, serverBootIdRef.current, state.serverBootId);
+        if (recovery === "reload") {
           // 재시작이 짧아 대기 화면이 뜨지 않았어도 서버가 바뀌었으면 새 빌드·새 연결로 다시 연다.
           // 코어 배포 복귀처럼 draft를 먼저 남기고, 다시 열린 같은 세션 화면이 복귀를 알린다.
           recordServerRestartReturn(selectedSession?.id ?? null);
           window.location.reload();
           return;
+        }
+        if (recovery === "resume") {
+          serverRestartingRef.current = false;
+          setServerRestarting(false);
+          setServerRestartSlow(false);
         }
         if (state.serverBootId) serverBootIdRef.current = state.serverBootId;
         heartbeatOkRef.current = true;
