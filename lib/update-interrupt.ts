@@ -32,10 +32,15 @@ import { isRunInterrupted } from "./run-interruption";
 import type { AgentMessage } from "./types";
 import { markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
 import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE } from "./harness-notices";
+import { wakeInitiatorWithoutReturningTab } from "./update-wake";
 
 const POLL_MS = 1000;
 // 초기 재개 지연이자 재시도 최소 간격이다. 재시도 간격을 새로 만들지 않으려고 같은 값을 쓴다.
 const RESUME_DELAY_MS = 3000;
+// 서버 대체 Wake를 미루는 시간. 보이는 탭은 새 서버를 보자마자 새로고침해 복귀하므로 이 안에 먼저 깨운다.
+const SERVER_WAKE_GRACE_MS = 30_000;
+// 이 시간 안에 배포 완료가 기록되지 않으면 서버 대체 Wake를 포기한다. 탭 복귀 경로는 그대로 남는다.
+const SERVER_WAKE_GIVE_UP_MS = 10 * 60_000;
 const ID_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const MAX_ERROR_CHARS = 200;
@@ -210,6 +215,11 @@ let resumedGeneration = "";
 
 let resumeInFlight: Promise<string[]> | null = null;
 
+/** 중단 재개가 맡았거나 이미 이은 세션인지. 서버 대체 Wake가 같은 세션에 통지를 겹쳐 넣지 않게 한다. */
+function continuedByInterruptResume(sessionId: string): boolean {
+  return resumedHere.has(sessionId) || readPending()?.sessionIds.includes(sessionId) === true;
+}
+
 /** 이전 프로세스가 남긴 재개 목록을 이어 간다. 이 프로세스가 쓴 목록(아직 교체 전)은 건드리지 않는다. */
 export async function resumeInterruptedSessions(): Promise<string[]> {
   // 동시 호출은 같은 시도를 공유한다. 두 번 시작하면 같은 세션에 재개 prompt가 두 번 들어간다.
@@ -328,9 +338,33 @@ export function ensureInterruptWatcher(): void {
   let busy = false;
   // 시작 시각을 재개 시도 시각으로 둔다. 초기 지연 동안 tick이 앞질러 시도하지 않게 한다.
   let lastResumeAt = Date.now();
+  const watcherStartedAt = lastResumeAt;
+  const serverStartedAtMs = Date.now() - process.uptime() * 1000;
+  let serverWakeDone = false;
+  let serverWakeInFlight = false;
   const attemptResume = async () => {
     lastResumeAt = Date.now();
     await resumeInterruptedSessions();
+  };
+  // 탭이 하나도 복귀하지 않은 배포의 주도 세션 Wake. 한 번 판정하면(깨움·건너뜀·실패) 다시 보지 않는다.
+  // 세션 재기동을 기다리므로 아래 tick의 busy 밖에서 따로 돈다. 여기서 멈춰도 interrupt 요청 처리(drain ack)는 막히지 않는다.
+  const attemptServerWake = async () => {
+    const elapsed = Date.now() - watcherStartedAt;
+    if (serverWakeDone || serverWakeInFlight || elapsed < SERVER_WAKE_GRACE_MS) return;
+    if (elapsed > SERVER_WAKE_GIVE_UP_MS) {
+      serverWakeDone = true;
+      return;
+    }
+    serverWakeInFlight = true;
+    try {
+      serverWakeDone = await wakeInitiatorWithoutReturningTab({ serverStartedAtMs, continuedByInterruptResume });
+    } catch (error) {
+      // 발화 실패는 claim 반납과 `.failed.json`이 남긴다. 매초 되살리지 않고 탭 복귀 경로에 맡긴다.
+      serverWakeDone = true;
+      console.error("[update-interrupt] server wake failed:", error);
+    } finally {
+      serverWakeInFlight = false;
+    }
   };
   // 요청 처리와 재개를 한 번에 하나만 돌린다. 새 요청이 목록을 합치는 동안 옛 snapshot으로 저장하지 않는다.
   const tick = async () => {
@@ -354,7 +388,10 @@ export function ensureInterruptWatcher(): void {
       busy = false;
     }
   };
-  setInterval(() => void tick(), POLL_MS).unref?.();
+  setInterval(() => {
+    void tick();
+    void attemptServerWake();
+  }, POLL_MS).unref?.();
   setTimeout(() => void tick(), RESUME_DELAY_MS).unref?.();
 }
 

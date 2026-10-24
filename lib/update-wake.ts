@@ -1,14 +1,19 @@
+import type { SessionEntry } from "./types";
 import {
   claimUpdateFailureNotice,
   claimUpdateWake,
+  getDeployedServiceIdentity,
   getUpdateInitiatorSessionId,
+  getUpdateStatus,
+  getUpdateMutationBlock,
+  hasUpdateWakeOutcome,
   releaseUpdateFailureNoticeClaim,
   releaseUpdateWakeClaim,
   type UpdateFailureNoticeDecision,
   type UpdateWakeDecision,
 } from "./update-maintenance";
 import { getRpcSession, startRpcSession } from "./rpc-manager";
-import { resolveSessionPath } from "./session-reader";
+import { getSessionEntries, resolveSessionPath } from "./session-reader";
 import { UPDATE_FAILURE_HEADLINE, UPDATE_WAKE_HEADLINE } from "./harness-notices";
 
 declare global {
@@ -54,6 +59,8 @@ export async function wakeUpdateInitiatorSession(input: {
   stageHash: string;
   clientId: string;
   sessionId: string | null;
+  /** 런타임 실행 여부 밖에서 이미 이어진 것으로 확인된 경우(서버 대체 경로). */
+  alreadyContinued?: boolean;
 }): Promise<UpdateWakeDecision> {
   const sessionId = input.sessionId?.trim().toLowerCase() || null;
   const initiator = getUpdateInitiatorSessionId(input.requestId);
@@ -63,7 +70,7 @@ export async function wakeUpdateInitiatorSession(input: {
     stageHash: input.stageHash,
     clientId: input.clientId,
     sessionId,
-    sessionBusy: live?.isAlive() === true && live.isRunning(),
+    sessionBusy: input.alreadyContinued === true || (live?.isAlive() === true && live.isRunning()),
   });
   const dispatches = getWakeDispatches();
   const dispatchKey = `${input.requestId}:${sessionId}`;
@@ -109,6 +116,50 @@ export async function wakeUpdateInitiatorSession(input: {
     if (dispatches.get(dispatchKey) === dispatch) dispatches.delete(dispatchKey);
   }
   return decision;
+}
+
+/** 서버 대체 경로가 claim·skip 기록에 남기는 client id. 탭 client id와 같은 형식이다. */
+export const SERVER_WAKE_CLIENT_ID = "server_fallback_wake";
+
+/**
+ * 대기 화면을 본 탭이 하나도 복귀하지 않은 배포에서, 새 서버가 주도 세션을 한 번 깨운다.
+ * 2026-10-24: 가려 둔 탭 하나뿐이라 heartbeat가 늦어 활성으로 세지지 않았고, drain이 3초 만에
+ * 끝나 대기 화면에 들어간 탭이 없었다. 그래서 Wake 호출이 아예 없었다.
+ *
+ * 돌려주는 값은 이 경로가 끝났는지다. 배포 완료가 아직 기록되지 않았으면 false를 돌려주고, 다음
+ * 확인에서 다시 본다. 탭이 이미 claim했거나 건너뛰었으면 손대지 않는다. 중복 방지는 탭과 같은 claim
+ * 파일이 맡는다. 새 서버가 뜬 뒤 주도 세션 기록이 바뀌었거나 중단 재개가 그 세션을 이미 이었으면,
+ * 먼저 이어진 것으로 보고 `user-already-active`로 남긴다.
+ */
+export async function wakeInitiatorWithoutReturningTab(input: {
+  serverStartedAtMs: number;
+  continuedByInterruptResume: (sessionId: string) => boolean;
+}): Promise<boolean> {
+  const service = getDeployedServiceIdentity();
+  if (!service.ready || !service.requestId || !service.stageHash) return true;
+  const initiator = getUpdateInitiatorSessionId(service.requestId);
+  if (!initiator) return true;
+  if (getUpdateStatus(service.requestId, service.stageHash).deploymentCompleted !== true) return false;
+  const sessionPath = await resolveSessionPath(initiator);
+  // 파일 수정 시각은 세션을 여는 것만으로도 바뀔 수 있어, 새 서버가 뜬 뒤의 사용자 메시지로 본다.
+  const userSpokeSinceStart = sessionPath !== null && (await getSessionEntries(sessionPath)).some((entry: SessionEntry) =>
+    entry.type === "message"
+    && entry.message.role === "user"
+    && Date.parse(entry.timestamp) > input.serverStartedAtMs);
+  // 아래 두 검사와 claim(`wakeUpdateInitiatorSession`의 첫 await 전) 사이에는 await가 없다. 위 기록을 읽는 동안
+  // 탭이 판정했거나 다음 배포가 정지 단계에 들어갔어도 놓치지 않는다.
+  if (hasUpdateWakeOutcome(service.requestId)) return true;
+  // 다음 배포가 이미 정지 단계에 들어갔으면 그 drain 중에 세션을 깨우지 않는다. 그 배포의 Wake가 이어 받는다.
+  const block = getUpdateMutationBlock();
+  if (block && block.requestId !== service.requestId) return true;
+  await wakeUpdateInitiatorSession({
+    requestId: service.requestId,
+    stageHash: service.stageHash,
+    clientId: SERVER_WAKE_CLIENT_ID,
+    sessionId: initiator,
+    alreadyContinued: userSpokeSinceStart || input.continuedByInterruptResume(initiator),
+  });
+  return true;
 }
 
 async function resolveSessionPathOrThrow(sessionId: string): Promise<string> {

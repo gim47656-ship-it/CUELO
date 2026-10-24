@@ -595,6 +595,23 @@ export function getUpdateInitiatorSessionId(requestId: string): string | null {
 }
 
 /**
+ * 이 request의 성공 Wake가 이미 정해졌는지. 주도 세션 claim이 있거나, 배포 미완료가 아닌 이유로
+ * 건너뛴 기록이 있으면 정해진 것이다. 발화에 실패해 반납된 claim(`.failed.json`)은 다시 시도할 수
+ * 있으므로 정해진 것으로 보지 않는다. 신원이 잘못된 request는 깨울 대상이 없으므로 정해진 것이다.
+ */
+export function hasUpdateWakeOutcome(requestId: string): boolean {
+  const request = normalizeRequest(requestId);
+  if (!request) return true;
+  const wakeDirectory = join(request.maintenanceDirectory, "wake");
+  if (!existsSync(wakeDirectory)) return false;
+  for (const name of readdirSync(wakeDirectory)) {
+    if (request.initiatorSessionId && name === `${request.initiatorSessionId}.json`) return true;
+    if (name.endsWith(".skipped.json") && readJson(join(wakeDirectory, name))?.reason !== "deployment-incomplete") return true;
+  }
+  return false;
+}
+
+/**
  * 발화에 실패한 claim을 반납한다.
  *
  * claim 파일은 동시 복귀 탭 사이의 배타성 때문에 발화 **전에** 만들어야 한다. 그래서
