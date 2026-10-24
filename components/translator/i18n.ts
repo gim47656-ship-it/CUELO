@@ -56,6 +56,12 @@ const ko = {
   "translator.faceHint": "상대 쪽 자막을 뒤집어 마주 앉은 사람이 읽게 합니다",
   "translator.reconnecting": "다시 연결 중…",
   "translator.idleStopped": "한동안 대화가 없어 통역을 멈췄습니다. 다시 시작하면 앞 대화에 이어집니다.",
+  "translator.setup": "언어·상황 설정",
+  "translator.sizeDown": "글자 작게",
+  "translator.sizeUp": "글자 크게",
+  "translator.faceExit": "마주보기 끄기",
+  "translator.translating": "옮기는 중…",
+  "translator.errorStatus": "통역이 멈췄습니다",
 } as const;
 
 type TranslatorMessageKey = keyof typeof ko;
@@ -107,6 +113,12 @@ const en: Record<TranslatorMessageKey, string> = {
   "translator.faceHint": "Flip the other side's captions so the person across from you can read them",
   "translator.reconnecting": "Reconnecting…",
   "translator.idleStopped": "Interpreting stopped after a long silence. Start again to continue the conversation.",
+  "translator.setup": "Languages and setting",
+  "translator.sizeDown": "Smaller text",
+  "translator.sizeUp": "Larger text",
+  "translator.faceExit": "Leave face to face",
+  "translator.translating": "Interpreting…",
+  "translator.errorStatus": "Interpreting stopped",
 };
 
 const zhCN: Record<TranslatorMessageKey, string> = {
@@ -156,6 +168,12 @@ const zhCN: Record<TranslatorMessageKey, string> = {
   "translator.faceHint": "翻转对方字幕，方便对面阅读",
   "translator.reconnecting": "重新连接中…",
   "translator.idleStopped": "因长时间无发言已暂停口译。重新开始即可继续先前的对话。",
+  "translator.setup": "语言与场景设置",
+  "translator.sizeDown": "缩小文字",
+  "translator.sizeUp": "放大文字",
+  "translator.faceExit": "退出面对面",
+  "translator.translating": "正在翻译…",
+  "translator.errorStatus": "口译已停止",
 };
 
 const TRANSLATOR_MESSAGES: Record<string, Record<string, string>> = { ko, en, "zh-CN": zhCN };
