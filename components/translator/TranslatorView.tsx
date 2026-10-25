@@ -330,10 +330,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     }));
   }, [face, mine, profile, provider, size, theirs]);
 
-  // Cloud를 고르면 서버가 Cloud 통화를 열 준비가 됐는지만 읽는다(프로젝트 id·자격은 오지 않는다).
-  // 준비되지 않았으면 미리 연결하지도 시작하지도 않고 까닭을 보인다. 다른 엔진으로 가면 버린다.
+  // 화면이 열리면 서버가 Cloud 통화를 열 준비가 됐는지 읽는다(프로젝트 id·자격은 오지 않는다). Cloud를 고른
+  // 상태에서 준비되지 않았으면 미리 연결하지도 시작하지도 않고 까닭을 보인다. 베트남어 짝의 자동 전환도
+  // 준비된 서버에서만 한다(Cloud 설정이 없는 폰 서버에서 Cloud로 넘어가 통역이 막혔다, 2026-10-25).
   useEffect(() => {
-    if (!visible || provider !== "cloud") {
+    if (!visible) {
       setCloudStatus(null);
       return;
     }
@@ -354,7 +355,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     return () => {
       cancelled = true;
     };
-  }, [provider, visible]);
+  }, [visible]);
 
   const cloudReady = cloudStatus !== null && !cloudStatus.error && cloudStatus.configured && cloudStatus.signedIn;
 
@@ -387,8 +388,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   /** 통화 중에 언어나 분위기·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
   const changeCallSettings = (next: Settings) => {
     if (next.mine.code === next.theirs.code) return;
-    // 통역 중에는 엔진 칸이 잠겨 있고 열린 통화의 엔진을 바꾸지 않는다. 쉬는 중에만 짝을 따라 엔진을 바꾼다.
-    const provider = active ? next.provider : engineForPairChange(settings, next, next.provider);
+    // 통역 중에는 엔진 칸이 잠겨 있고 열린 통화의 엔진을 바꾸지 않는다. 쉬는 중에만 짝을 따라 엔진을 바꾸고,
+    // 이 서버에서 Cloud를 쓸 수 없으면 Cloud로 넘기지 않는다.
+    const paired = active ? next.provider : engineForPairChange(settings, next, next.provider);
+    const provider = paired === "cloud" && next.provider !== "cloud" && !cloudReady ? next.provider : paired;
     setSettings({ ...next, provider });
     if (active) startCall(next);
   };
