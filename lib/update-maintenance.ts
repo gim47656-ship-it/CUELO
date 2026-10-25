@@ -707,19 +707,13 @@ export function claimUpdateFailureNotice(input: {
     return { notice: false, reason };
   };
 
-  const result = readJson(request.resultPath);
-  const terminalStatus = result && typeof result.status === "string" ? result.status : null;
-  if (terminalStatus === null) return skip("no-terminal-result");
-  const command = normalizeCommand(request);
-  const deployment = command && command.stageHash === input.stageHash.toLowerCase()
-    ? normalizeDeploymentCompletion(request, command)
-    : null;
-  if (terminalStatus === "succeeded" || deployment?.writeSafe === true) return skip("deployment-succeeded");
+  const failure = readUpdateFailure(request, input.stageHash);
+  if (!failure.failed) return skip(failure.reason);
   if (!request.initiatorSessionId) return skip("no-initiator");
   // 성공 Wake와 같이 복귀 탭의 세션과 무관하게 주도 세션에 알린다. sessionBusy는 주도 세션 기준이다.
   if (input.sessionBusy) return skip("user-already-active");
 
-  const terminalError = typeof result?.error === "string" ? result.error : null;
+  const { terminalStatus, terminalError } = failure;
   mkdirSync(wakeDirectory, { recursive: true });
   try {
     const handle = openSync(join(wakeDirectory, `${request.initiatorSessionId}.failure.json`), "wx");
@@ -748,6 +742,50 @@ export function claimUpdateFailureNotice(input: {
     sessionId: request.initiatorSessionId,
     terminalError,
   };
+}
+
+/** result가 있고 성공도 배포 완료도 아니면 실패다. 실패 통지와 실패 뒤 중단 재개가 같은 판정을 쓴다. */
+function readUpdateFailure(
+  request: ExternalUpdateRequest,
+  stageHash: string,
+): { failed: true; terminalStatus: string; terminalError: string | null } | { failed: false; reason: "no-terminal-result" | "deployment-succeeded" } {
+  const result = readJson(request.resultPath);
+  const terminalStatus = result && typeof result.status === "string" ? result.status : null;
+  if (terminalStatus === null) return { failed: false, reason: "no-terminal-result" };
+  const command = normalizeCommand(request);
+  const deployment = command && command.stageHash === stageHash.toLowerCase()
+    ? normalizeDeploymentCompletion(request, command)
+    : null;
+  if (terminalStatus === "succeeded" || deployment?.writeSafe === true) return { failed: false, reason: "deployment-succeeded" };
+  return { failed: true, terminalStatus, terminalError: typeof result?.error === "string" ? result.error : null };
+}
+
+const UPDATE_INTERRUPT_ID_PATTERN = /^update-([0-9a-f]{32})$/;
+
+/**
+ * 업데이트 drain이 쓴 interrupt id(`update-<requestId>`)의 업데이트가 교체 없이 실패로 끝났는지.
+ * 그렇다면 drain에서 세션을 멈춘 서버가 그대로 살아 있으므로, 그 서버가 멈춘 세션을 다시 이어야 한다
+ * (2026-10-25: drain 시간 초과로 실패한 배포에서 abort된 세션을 아무도 깨우지 않았다).
+ * 결과가 아직 없거나(drain 진행 중) 배포가 완료됐으면 null이다.
+ */
+export function getFailedUpdateForInterrupt(interruptId: string | undefined): {
+  requestId: string;
+  stageHash: string;
+  initiatorSessionId: string | null;
+} | null {
+  const requestId = UPDATE_INTERRUPT_ID_PATTERN.exec(interruptId ?? "")?.[1];
+  const request = requestId ? normalizeRequest(requestId) : null;
+  const command = request ? normalizeCommand(request) : null;
+  if (!request || !command || !readUpdateFailure(request, command.stageHash).failed) return null;
+  return { requestId: request.requestId, stageHash: command.stageHash, initiatorSessionId: request.initiatorSessionId };
+}
+
+/** 이 업데이트의 drain이 중단 요청으로 그 세션을 abort했는지. 서버 ack(`update-<requestId>.ack.json`)로 본다. */
+export function wasAbortedByUpdateDrain(requestId: string, sessionId: string): boolean {
+  if (!REQUEST_ID_PATTERN.test(requestId)) return false;
+  const ack = readJson(join(externalUpdateRoot(), "interrupts", `update-${requestId}.ack.json`));
+  const target = sessionId.trim().toLowerCase();
+  return Array.isArray(ack?.aborted) && ack.aborted.some((id) => String(id).toLowerCase() === target);
 }
 
 /**

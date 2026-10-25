@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { UPDATE_FAILED_RESUME_MESSAGE, UPDATE_FAILURE_HEADLINE } from "./harness-notices";
 
 const SID = (n: number): string => `a0000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 
@@ -149,6 +150,36 @@ function writeActivity(
 function activityConsumed(pid: number): boolean {
   const receipt = JSON.parse(readFileSync(join(root, "runtime-activity", `${pid}.json`), "utf8")) as { recovery?: { consumedAtUtc?: string } };
   return typeof receipt.recovery?.consumedAtUtc === "string";
+}
+
+/** 업데이트 request·command·drain ack를 update.sh가 쓰는 계약대로 만든다. 결과(result)는 `failUpdate`가 따로 쓴다. */
+function seedUpdate(requestId: string, options: { initiator?: string; aborted: string[] }): void {
+  const maintenance = join(root, "maintenance", requestId);
+  mkdirSync(join(root, "requests"), { recursive: true });
+  mkdirSync(maintenance, { recursive: true });
+  writeFileSync(join(root, "requests", `${requestId}.json`), JSON.stringify({
+    schemaVersion: 2,
+    completionContractVersion: 1,
+    requestId,
+    maintenanceDirectory: maintenance,
+    transactionReceiptPath: join(root, "transactions", `${requestId}.json`),
+    resultPath: join(root, "results", `${requestId}.json`),
+    initiatorSessionId: options.initiator ?? null,
+  }), "utf8");
+  writeFileSync(join(maintenance, "command.json"), JSON.stringify({
+    schemaVersion: 2, requestId, stageHash: "c".repeat(64), phase: "DRAINING", revision: 1, updatedAtUtc: new Date().toISOString(),
+  }), "utf8");
+  writeFileSync(ackPath(`update-${requestId}`), JSON.stringify({
+    schemaVersion: 1, id: `update-${requestId}`, processId: process.pid, aborted: options.aborted, failed: [], unsettled: [], atUtc: new Date().toISOString(),
+  }), "utf8");
+}
+
+/** drain 실패로 끝난 update.sh의 result. 서비스는 교체되지 않았다. */
+function failUpdate(requestId: string): void {
+  mkdirSync(join(root, "results"), { recursive: true });
+  writeFileSync(join(root, "results", `${requestId}.json`), JSON.stringify({
+    schemaVersion: 2, requestId, status: "failed", phase: "FAILED", success: false, error: "CUELO drain 시간 초과",
+  }), "utf8");
 }
 
 /** 케이스 표. 자식 프로세스에서 하나만 실행한다. 각 케이스는 자기 root를 새로 받는다. */
@@ -507,6 +538,55 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     seedPending([sid], { requestId: "probe-abrupt-done", writerPid: 999999 });
     const pending = readPendingFile() as Record<string, unknown>;
     writeFileSync(pendingPath(), JSON.stringify({ ...pending, abruptSessionIds: [sid] }), "utf8");
+
+    expect(await mod.resumeInterruptedSessions()).toEqual([]);
+    expect(control.prompts).toEqual([]);
+    expect(readPendingFile()).toBeNull();
+  },
+
+  "업데이트가 교체 없이 실패하면 이 프로세스가 쓴 목록도 이 서버가 잇는다": async (mod) => {
+    // 2026-10-25 사고: 주도 세션 없이 시작한 배포가 drain 시간 초과로 실패했고, abort된 세션이 깨어나지 않았다.
+    const requestId = "a".repeat(32);
+    seedPending([SID(90)], { writerPid: process.pid, requestId: `update-${requestId}` });
+    seedUpdate(requestId, { aborted: [SID(90)] });
+
+    // 결과가 아직 없으면(drain·교체 진행 중) 새 서버 몫일 수 있어 손대지 않는다.
+    expect(await mod.resumeInterruptedSessions()).toEqual([]);
+    expect(control.startCalls).toEqual([]);
+
+    failUpdate(requestId);
+    expect(await mod.resumeInterruptedSessions()).toEqual([SID(90)]);
+    expect(control.fullPrompts).toEqual([UPDATE_FAILED_RESUME_MESSAGE]);
+    expect(readPendingFile()).toBeNull();
+    expect(await mod.resumeInterruptedSessions()).toEqual([]);
+    expect(control.fullPrompts.length).toBe(1);
+  },
+
+  "실패한 업데이트의 주도 세션은 실패 통지로, 나머지는 실패 재개 문구로 한 번씩 잇는다": async (mod) => {
+    const requestId = "b".repeat(32);
+    seedPending([SID(92), SID(93)], { writerPid: process.pid, requestId: `update-${requestId}` });
+    seedUpdate(requestId, { initiator: SID(92), aborted: [SID(92), SID(93)] });
+    failUpdate(requestId);
+
+    expect(await mod.resumeInterruptedSessions()).toEqual([SID(92), SID(93)]);
+    const [notice, other] = control.fullPrompts;
+    expect(notice.split("\n")[0]).toBe(UPDATE_FAILURE_HEADLINE);
+    expect(notice).toContain("원인: CUELO drain 시간 초과");
+    expect(notice).toContain("중단(abort)했습니다");
+    expect(other).toBe(UPDATE_FAILED_RESUME_MESSAGE);
+    expect(control.fullPrompts.length).toBe(2);
+    // 대기 화면 탭의 실패 통지와 같은 claim이라, 탭이 뒤늦게 관측해도 다시 보내지 않는다.
+    expect(existsSync(join(root, "maintenance", requestId, "wake", `${SID(92)}.failure.json`))).toBe(true);
+    expect(readPendingFile()).toBeNull();
+  },
+
+  "대기 화면 탭이 먼저 실패를 알렸으면 주도 세션에 다시 보내지 않는다": async (mod) => {
+    const requestId = "d".repeat(32);
+    seedPending([SID(94)], { writerPid: process.pid, requestId: `update-${requestId}` });
+    seedUpdate(requestId, { initiator: SID(94), aborted: [SID(94)] });
+    failUpdate(requestId);
+    mkdirSync(join(root, "maintenance", requestId, "wake"), { recursive: true });
+    writeFileSync(join(root, "maintenance", requestId, "wake", `${SID(94)}.failure.json`), "{}\n", "utf8");
 
     expect(await mod.resumeInterruptedSessions()).toEqual([]);
     expect(control.prompts).toEqual([]);

@@ -30,9 +30,9 @@ import { getRpcSession, getRunningRpcSessionIds, startRpcSession } from "./rpc-m
 import { buildSessionContext, getSessionEntries, resolveSessionPath } from "./session-reader";
 import { isRunInterrupted } from "./run-interruption";
 import type { AgentMessage } from "./types";
-import { markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
-import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE } from "./harness-notices";
-import { wakeInitiatorWithoutReturningTab } from "./update-wake";
+import { getFailedUpdateForInterrupt, markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
+import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE, UPDATE_FAILED_RESUME_MESSAGE } from "./harness-notices";
+import { notifyUpdateFailureToInitiator, SERVER_FAILURE_CLIENT_ID, wakeInitiatorWithoutReturningTab } from "./update-wake";
 
 const POLL_MS = 1000;
 // 초기 재개 지연이자 재시도 최소 간격이다. 재시도 간격을 새로 만들지 않으려고 같은 값을 쓴다.
@@ -220,7 +220,10 @@ function continuedByInterruptResume(sessionId: string): boolean {
   return resumedHere.has(sessionId) || readPending()?.sessionIds.includes(sessionId) === true;
 }
 
-/** 이전 프로세스가 남긴 재개 목록을 이어 간다. 이 프로세스가 쓴 목록(아직 교체 전)은 건드리지 않는다. */
+/**
+ * 이전 프로세스가 남긴 재개 목록을 이어 간다. 이 프로세스가 쓴 목록은 보통 교체 뒤 새 서버 몫이라 건드리지 않는다.
+ * 단, 그 목록을 쓴 업데이트가 교체 없이 실패로 끝났으면 이 서버가 그대로 살아 있으므로 직접 잇는다.
+ */
 export async function resumeInterruptedSessions(): Promise<string[]> {
   // 동시 호출은 같은 시도를 공유한다. 두 번 시작하면 같은 세션에 재개 prompt가 두 번 들어간다.
   if (resumeInFlight) return resumeInFlight;
@@ -271,7 +274,10 @@ function commitResumeProgress(snapshot: PendingResume, failures: Map<string, Pen
 
 async function runResumePass(): Promise<string[]> {
   const snapshot = readPending();
-  if (!snapshot || snapshot.writerPid === process.pid) return [];
+  if (!snapshot) return [];
+  // 2026-10-25: drain 시간 초과로 배포가 실패하자, abort된 세션의 목록을 쓴 서버가 살아남아 아무도 그 세션을 깨우지 않았다.
+  const failedUpdate = snapshot.writerPid === process.pid ? getFailedUpdateForInterrupt(snapshot.requestId) : null;
+  if (snapshot.writerPid === process.pid && !failedUpdate) return [];
   const generation = snapshot.requestId ?? `pid:${snapshot.writerPid}`;
   if (generation !== resumedGeneration) {
     resumedGeneration = generation;
@@ -291,6 +297,22 @@ async function runResumePass(): Promise<string[]> {
   for (const sessionId of snapshot.sessionIds) {
     if (resumedHere.has(sessionId)) continue;
     try {
+      if (failedUpdate && sessionId === failedUpdate.initiatorSessionId) {
+        // 주도 세션은 실패 통지가 재개를 겸한다. 대기 화면 탭과 같은 claim을 써서 한 번만 보낸다.
+        // 탭이 먼저 알렸거나(already-claimed) 세션이 이미 돌고 있으면(user-already-active) 이어진 것으로 본다.
+        const notice = await notifyUpdateFailureToInitiator({
+          requestId: failedUpdate.requestId,
+          stageHash: failedUpdate.stageHash,
+          clientId: SERVER_FAILURE_CLIENT_ID,
+          sessionId,
+        });
+        if (notice.notice) resumed.push(sessionId);
+        // 그 밖의 건너뜀(결과를 다시 읽지 못함 등)은 이어진 것이 아니다. 실패로 남겨 다음 시도가 다시 본다.
+        else if (notice.reason !== "already-claimed" && notice.reason !== "user-already-active") throw new Error(`failure notice skipped: ${notice.reason}`);
+        resumedHere.add(sessionId);
+        commit();
+        continue;
+      }
       const live = getRpcSession(sessionId);
       const session = live?.isAlive()
         ? live
@@ -313,7 +335,7 @@ async function runResumePass(): Promise<string[]> {
         commit();
         continue;
       }
-      await session.sendInternalPrompt(abrupt ? ABRUPT_RESUME_MESSAGE : INTERRUPT_RESUME_MESSAGE);
+      await session.sendInternalPrompt(abrupt ? ABRUPT_RESUME_MESSAGE : failedUpdate ? UPDATE_FAILED_RESUME_MESSAGE : INTERRUPT_RESUME_MESSAGE);
       resumed.push(sessionId);
       resumedHere.add(sessionId);
       // 성공마다 저장하고 결과를 확인한다. 실패하면 resumedHere가 중복 전송을 막는다.

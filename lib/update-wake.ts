@@ -9,6 +9,7 @@ import {
   hasUpdateWakeOutcome,
   releaseUpdateFailureNoticeClaim,
   releaseUpdateWakeClaim,
+  wasAbortedByUpdateDrain,
   type UpdateFailureNoticeDecision,
   type UpdateWakeDecision,
 } from "./update-maintenance";
@@ -121,6 +122,9 @@ export async function wakeUpdateInitiatorSession(input: {
 /** 서버 대체 경로가 claim·skip 기록에 남기는 client id. 탭 client id와 같은 형식이다. */
 export const SERVER_WAKE_CLIENT_ID = "server_fallback_wake";
 
+/** 실패한 업데이트 뒤 살아 있는 서버가 중단 재개로 주도 세션에 실패 통지를 낼 때 claim·skip 기록에 남기는 client id. */
+export const SERVER_FAILURE_CLIENT_ID = "server_failure_resume";
+
 /**
  * 대기 화면을 본 탭이 하나도 복귀하지 않은 배포에서, 새 서버가 주도 세션을 한 번 깨운다.
  * 2026-10-24: 가려 둔 탭 하나뿐이라 heartbeat가 늦어 활성으로 세지지 않았고, drain이 3초 만에
@@ -173,7 +177,7 @@ async function resolveSessionPathOrThrow(sessionId: string): Promise<string> {
  * 사용자 발화가 아니라 하네스 통지이므로 그 사실을 밝힌다. 실패 원인과 "live runtime은
  * 변경하지 않았다"는 사실을 그대로 전해야 세션이 다음 행동을 원인에 맞춰 정할 수 있다.
  */
-function failureMessage(requestId: string, stageHash: string, terminalError: string | null): string {
+function failureMessage(requestId: string, stageHash: string, terminalError: string | null, interrupted: boolean): string {
   return [
     UPDATE_FAILURE_HEADLINE,
     `requestId=${requestId} stageHash=${stageHash}`,
@@ -181,6 +185,9 @@ function failureMessage(requestId: string, stageHash: string, terminalError: str
       ? `원인: ${terminalError}`
       : "원인: 배포 결과 receipt에 오류 문장이 없습니다. 배포 evidence를 확인하세요.",
     "실패한 업데이트는 live runtime을 변경하지 않았으므로, 새 버전으로 교체되지 않았다면 기존 서비스가 그대로 살아 있습니다.",
+    ...(interrupted
+      ? ["업데이트의 세션 정지 단계가 이 세션의 진행 중 작업과 SubAgent·bash를 중단(abort)했습니다. 파일·프로세스 상태를 먼저 확인하고, 결과를 받지 못한 child에는 `write agent://<id>`로 이어서 하라고 보내 되살리세요."]
+      : []),
     "사용자 발화가 아니라 하네스 통지입니다. 사용자에게 실패를 보고하고, 원인에 맞춰 다음 행동을 정하세요.",
   ].join("\n");
 }
@@ -219,7 +226,8 @@ export async function notifyUpdateFailureToInitiator(input: {
       ? live
       : (await startRpcSession(decision.sessionId, await resolveSessionPathOrThrow(decision.sessionId), undefined)).session;
     stage = "prompt";
-    await session.sendInternalPrompt(failureMessage(decision.requestId, decision.stageHash, decision.terminalError));
+    const interrupted = wasAbortedByUpdateDrain(decision.requestId, decision.sessionId);
+    await session.sendInternalPrompt(failureMessage(decision.requestId, decision.stageHash, decision.terminalError, interrupted));
   } catch (error) {
     releaseUpdateFailureNoticeClaim({
       requestId: decision.requestId,
