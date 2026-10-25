@@ -25,22 +25,6 @@ export function findTranslatorLanguage(code: unknown): TranslatorLanguage | unde
   return typeof code === "string" ? TRANSLATOR_LANGUAGES.find((language) => language.code === code) : undefined;
 }
 
-/**
- * 언어 짝을 바꿀 때의 엔진. 짝에 베트남어가 새로 들어가면 Cloud로, 빠지면 Codex로 바꾼다(2026-10-25 엔진
- * 비교에서 베트남어만 Cloud가 나았다: 사실 전달 89% 대 76%). 베트남어 포함 여부가 그대로면 지금 엔진
- * (사용자가 직접 고른 값)을 둔다.
- */
-export function engineForPairChange<P extends string>(
-  previous: { mine: TranslatorLanguage; theirs: TranslatorLanguage },
-  next: { mine: TranslatorLanguage; theirs: TranslatorLanguage },
-  current: P,
-): P | "codex" | "cloud" {
-  const before = previous.mine.code === "vi" || previous.theirs.code === "vi";
-  const after = next.mine.code === "vi" || next.theirs.code === "vi";
-  if (after === before) return current;
-  return after ? "cloud" : "codex";
-}
-
 /** 베트남어에만 있는 글자(성조·모음 부호, đ). 라틴 문자만 보고는 영어와 가를 수 없어 이것으로 가른다. */
 const VIETNAMESE_LETTERS = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/giu;
 

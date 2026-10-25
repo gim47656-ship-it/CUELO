@@ -316,6 +316,17 @@ describe("live session", () => {
     expect(log.at(-1)).toBe("interrupted");
   });
 
+  test("Gemini's <no speech>{pause} markers never reach the screen, even split across pieces", () => {
+    const { socket, transcripts } = openSession();
+    socket.receive({ serverContent: { outputTranscription: { text: "<no spe" } } });
+    socket.receive({ serverContent: { outputTranscription: { text: "ech>{pause}" } } });
+    socket.receive({ serverContent: { generationComplete: true } });
+    socket.receive({ serverContent: { outputTranscription: { text: "Em bận{pause} quá ạ." } } });
+    socket.receive({ serverContent: { generationComplete: true } });
+    expect(transcripts.map((event) => event.text).join("|")).not.toMatch(/<|\{/u);
+    expect(finals(transcripts)).toEqual([["assistant", "Em bận quá ạ."]]);
+  });
+
   test("after close() nothing reaches the handlers: late frames, timers or the socket's own close", async () => {
     const { session, socket, log, timers } = openSession();
     socket.receive({ serverContent: { inputTranscription: { text: "abc" } } });

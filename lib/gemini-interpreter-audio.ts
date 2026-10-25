@@ -19,6 +19,13 @@ export const GEMINI_DEFAULT_OUTPUT_RATE = 24_000;
 export const USER_TRANSCRIPT_SETTLE_MS = 1_200;
 /** An open user turn with no new input transcription for this long closes even without `turnComplete`. */
 export const USER_TRANSCRIPT_IDLE_MS = 5_000;
+
+/**
+ * Gemini Live가 말 대신 전사에 넣는 표시(`<no speech>`, `{pause}`)를 지운다. 2026-10-25 폰 실기에서
+ * 통역 칸에 `<no speech>{pause}`가 그대로 나왔다. 공백만 남으면 그 줄은 내지 않는다.
+ */
+const visibleTranscript = (text: string) => text.replace(/<no[ _]speech>|\{pause\}/giu, "");
+
 /**
  * Unsent bytes the socket may hold before the session fails instead of piling up. About 20 s of
  * base64 PCM16 at 16 kHz; a network that cannot keep up for that long is reconnected.
@@ -283,7 +290,9 @@ export class GeminiLiveSession {
       turn.open = true;
     }
     turn.text += piece;
-    this.#handlers.onTranscript({ role, text: turn.text, final: false });
+    // 조각 끝에 반쯤 온 표시(`<no spe`)는 다음 조각을 볼 때까지 화면에 내지 않는다.
+    const text = visibleTranscript(turn.text).replace(/<[^>]*$|\{[^}]*$/u, "");
+    if (text.trim()) this.#handlers.onTranscript({ role, text, final: false });
   }
 
   #finish(role: GeminiTranscriptRole): void {
@@ -294,7 +303,8 @@ export class GeminiLiveSession {
     }
     if (!turn.open) return;
     turn.open = false;
-    if (turn.text.trim()) this.#handlers.onTranscript({ role, text: turn.text, final: true });
+    const text = visibleTranscript(turn.text);
+    if (text.trim()) this.#handlers.onTranscript({ role, text, final: true });
     turn.text = "";
   }
 
