@@ -401,7 +401,7 @@ describe("command guard runtime gates", () => {
       input: { tasks: [{ agent: "maker", task }] },
     }) as { block?: boolean; reason?: string } | undefined;
     expect(blocked).toMatchObject({ block: true });
-    expect(blocked?.reason).toContain('[character-summon alias="HIKARI(히카리)" model="google-antigravity/gemini-3.8-flash"]');
+    expect(blocked?.reason).toContain('[character-summon alias="HIKARI(히카리)" model="google-vertex/gemini-4-argon"]');
   });
 
   describe("character-summon marker는 실제 사용자 summon이 있을 때만 통과한다", () => {

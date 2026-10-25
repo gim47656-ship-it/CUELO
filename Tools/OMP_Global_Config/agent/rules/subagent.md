@@ -24,11 +24,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   편집 대상의 정확한 줄은 `read`로 다시 확인한다.
 - 글씨가 들어가는 콘텐츠를 새로 쓰거나 한 문단 이상 다시 쓸 때(README·CHANGELOG·`docs/`·보고서·소개 글, `HANDOFF.md`·작업
   기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드·HTML·UI 문구)는 Main·Maker 모두 먼저
-  `draft(instruction, output, paths?)`로 Gemini Flash에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 Hive의 DeepSeek 1017로
+  `draft(instruction, output, paths?)`로 Gemini(Vertex Gemini 4 Argon)에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 Hive의 DeepSeek 1017로
   한 번 대체, 참고 텍스트는 Google 또는 Hive로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
   AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
-  몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Gemini 할당량은 같은 Antigravity 계정의 OCR 후보
-  (`retry.fallbackChains.ocr`)와 공유한다.
+  몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
+  같은 프로젝트를 쓴다(2026-10-26 사용자 결정).
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
   하나뿐이며 다섯 개를 모두 뺀다. 그 결과 코어 `/security` 자동 스캔은 이 프로필에서 쓸 수 없고,
@@ -64,7 +64,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
   `HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
   GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
-  Gemini 3.8 Flash(`implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)와 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
+  Gemini 4 Argon(Vertex, `implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)과 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
   `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때 Main이 명시적으로 고른다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. Main 계열만으로
@@ -630,7 +630,10 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
   뽑힌 코드 변경(문서·주석·테스트 제외)은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다.
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. Main 또는 그 코드를 쓴 Maker가
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 Google·Gemini 모델이 쓴 코드가 아니면
+  모든 라운드(이어지는 라운드·probe 라운드 포함)에 `modelRoles.crossReviewGoogle`(Gemini 4 Argon, Vertex)이 자문
+  reviewer로 함께 돈다. Argon의 호출 실패·해석 불가는 `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 하고
+  통과 가능 여부를 막지 않으며 다음 라운드가 다시 부르지만, Argon이 낸 finding(`R*-GGL-*`)은 다른 것과 똑같이 닫는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. `resolve`는

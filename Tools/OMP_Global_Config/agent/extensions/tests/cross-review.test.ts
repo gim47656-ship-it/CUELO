@@ -33,6 +33,8 @@ import { executeCrossReview } from "../cross-review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
+const GEMINI = "google-vertex/gemini-4-argon";
+const modelOf = (family: Family) => (family === "openai" ? ASTRA : family === "google" ? GEMINI : OPUS);
 const roots: string[] = [];
 const signal = new AbortController().signal;
 afterEach(() => { for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -75,22 +77,30 @@ const MARKER_BASE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p
 const PLAIN_BASE = "export const add = (a: number, b: number) => a + b;\n";
 
 describe("계열 매핑", () => {
-  test("anthropic 저자는 OpenAI reviewer, openai·그 밖의 provider는 Anthropic reviewer로 간다", () => {
+  test("anthropic 저자는 OpenAI reviewer, openai·그 밖의 provider는 Anthropic reviewer로 가고, Google 저자가 없으면 Google reviewer가 늘 붙는다", () => {
     expect(authorFamily(`${OPUS}:high`)).toBe("anthropic");
     expect(authorFamily(ASTRA)).toBe("openai");
     expect(authorFamily("openai/gpt-5")).toBe("openai");
     expect(authorFamily("b-ai/deepseek-v4.1-flash")).toBe("other");
-    expect(authorFamily("google-antigravity/gemini-3.8-flash")).toBe("other");
-    expect(reviewerFamilies([OPUS], undefined)).toEqual(["openai"]);
-    expect(reviewerFamilies([ASTRA], undefined)).toEqual(["anthropic"]);
-    expect(reviewerFamilies(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic"]);
+    expect(authorFamily("google-antigravity/gemini-3.8-flash")).toBe("google");
+    expect(authorFamily(`${GEMINI}:auto`)).toBe("google");
+    expect(authorFamily("gemini-4-argon")).toBe("google");
+    expect(authorFamily("openrouter/google/gemini-2.5-pro")).toBe("google");
+    expect(authorFamily("openai/gemini-4-argon")).toBe("google");
+    expect(reviewerFamilies(["openai/gemini-4-argon"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerFamilies([OPUS], undefined)).toEqual(["openai", "google"]);
+    expect(reviewerFamilies([ASTRA], undefined)).toEqual(["anthropic", "google"]);
+    expect(reviewerFamilies(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic", "google"]);
     expect(reviewerFamilies(["google-antigravity/gemini-3.8-flash"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerFamilies([GEMINI], undefined)).toEqual(["anthropic"]);
   });
 
   test("저자가 두 계열에 걸치면 둘 다 돌리고, main은 현재 모델로 풀며 풀 수 없으면 던진다", () => {
-    expect(reviewerFamilies([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
-    expect(reviewerFamilies(["main"], OPUS)).toEqual(["openai"]);
-    expect(reviewerFamilies(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai"]);
+    expect(reviewerFamilies([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai", "google"]);
+    expect(reviewerFamilies(["main"], OPUS)).toEqual(["openai", "google"]);
+    expect(reviewerFamilies(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai", "google"]);
+    expect(reviewerFamilies([OPUS, GEMINI], undefined)).toEqual(["anthropic", "openai"]);
+    expect(reviewerFamilies(["main"], GEMINI)).toEqual(["anthropic"]);
     expect(() => reviewerFamilies(["main"], undefined)).toThrow("current model");
     expect(() => reviewerFamilies([], OPUS)).toThrow("at least one");
   });
@@ -193,7 +203,7 @@ function deps(env: RepoEnv, answers: Partial<Record<Family, string | Error>>, ca
     complete: async (family, prompt) => {
       calls.push({ family, prompt });
       const answer = answers[family];
-      const model = family === "openai" ? ASTRA : OPUS;
+      const model = modelOf(family);
       if (answer instanceof ReviewerCallError) throw answer;
       if (answer instanceof Error) throw new ReviewerCallError(answer.message, model);
       return { model, text: answer ?? '{"findings":[]}' };
@@ -205,18 +215,18 @@ const finding = (claim: string, severity = "major") => JSON.stringify({ findings
 const input = (over: Partial<Parameters<typeof runReview>[0]> = {}) => ({ files: ["a.ts"], acceptance: "Never delete user files.", authors: ["main"], ...over });
 
 describe("runReview", () => {
-  test("Anthropic 저자의 변경은 OpenAI reviewer 한 명에게만 가고 diff·acceptance·체크리스트만 담는다", async () => {
+  test("Anthropic 저자의 변경은 필수 OpenAI reviewer와 자문 Google reviewer에게 가고 diff·acceptance·체크리스트만 담는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     const calls: { family: Family; prompt: string }[] = [];
     const result = await runReview(input(), deps(env, { openai: finding("rmSync can delete the wrong dir", "blocker") }, calls), signal);
-    expect(calls.map((call) => call.family)).toEqual(["openai"]);
+    expect(calls.map((call) => call.family)).toEqual(["openai", "google"]);
     expect(calls[0].prompt).toContain("Never delete user files.");
     expect(calls[0].prompt).toContain("<new-file path=\"a.ts\">");
     expect(calls[0].prompt).toContain("2: export const wipe");
     expect(calls[0].prompt).toContain("CHECKLIST");
     expect(result).toMatchObject({ reviewId: expect.stringMatching(/^xr-test-\d+$/), round: 1, passable: true, triggers: ["deletion"] });
-    expect(result.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
+    expect(result.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }, { family: "google", model: GEMINI, status: "ok", advisory: true }]);
     expect(result.findings).toMatchObject([{ id: "R1-OAI-1", severity: "blocker", reviewer: ASTRA, claim: "rmSync can delete the wrong dir" }]);
     expect(existsSync(join(result.snapshotDir, "manifest.json"))).toBe(true);
     const [record] = readCrossReviewRecords(env.ledger);
@@ -228,7 +238,7 @@ describe("runReview", () => {
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     const calls: { family: Family; prompt: string }[] = [];
     const result = await runReview(input({ authors: [OPUS, ASTRA] }), deps(env, { openai: finding("x"), anthropic: finding("y") }, calls), signal);
-    expect(calls.map((call) => call.family).sort()).toEqual(["anthropic", "openai"]);
+    expect(calls.map((call) => call.family).sort()).toEqual(["anthropic", "google", "openai"]);
     expect(result.findings.map((item) => item.id).sort()).toEqual(["R1-ANT-1", "R1-OAI-1"]);
   });
 
@@ -252,7 +262,7 @@ describe("runReview", () => {
     expect(partial.passable).toBe(false);
     expect(partial.reviewers.find((item) => item.family === "openai")).toMatchObject({ status: "error", error: "timeout" });
     const all = await runReview(input(), deps(env, { openai: new Error("down") }), signal);
-    expect(all).toMatchObject({ passable: false, reviewers: [{ status: "error", error: "down" }] });
+    expect(all).toMatchObject({ passable: false, reviewers: [{ status: "error", error: "down" }, { family: "google", status: "ok" }] });
     expect(all.nextStep).toContain("can never pass");
     const records = readCrossReviewRecords(env.ledger).filter((record) => record.type === "cross-review");
     expect(records).toHaveLength(2);
@@ -381,7 +391,7 @@ function scripted(base: ReviewDeps, answers: string[], calls: { family: Family; 
   let index = 0;
   return { ...base, complete: async (family, prompt) => {
     calls.push({ family, prompt });
-    return { model: family === "openai" ? ASTRA : OPUS, text: answers[index++] ?? '{"findings":[]}' };
+    return { model: modelOf(family), text: answers[index++] ?? '{"findings":[]}' };
   } };
 }
 
@@ -597,7 +607,7 @@ describe("probe 라운드", () => {
     const { base, first } = await firstWithProbe([OPUS, ASTRA]);
     expect(first.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
     // 두 reviewer 중 openai(finding 소유)는 판단을 안 냈고 anthropic은 판단을 냈다.
-    const answers: Record<Family, string> = { openai: '{"findings":[],"summary":"s"}', anthropic: verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed", why: "agree" }]) };
+    const answers: Record<Family, string> = { openai: '{"findings":[],"summary":"s"}', anthropic: verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed", why: "agree" }]), google: '{"findings":[]}' };
     const mixed: ReviewDeps = { ...base, complete: async (family) => ({ model: family === "openai" ? ASTRA : OPUS, text: answers[family] }) };
     const second = await runReview(input({ authors: [OPUS, ASTRA], previousReviewId: first.reviewId, probeResults: probeOutput() }), mixed, signal);
     expect(second.passable).toBe(true);
@@ -761,7 +771,7 @@ describe("runResolve", () => {
     const d = deps(env, { openai: finding("first") });
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const fixed = true;\n`);
-    const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async () => ({ model: ASTRA, text: finding("second") }) }, signal);
+    const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async (family) => ({ model: modelOf(family), text: family === "openai" ? finding("second") : '{"findings":[]}' }) }, signal);
     const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
     expect(second.findings.map((item) => item.id)).toEqual(["R2-OAI-1"]);
     const partial = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R2-OAI-1", status: "refuted", evidence: "e" }] }, rd);
@@ -1140,7 +1150,7 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
     expect(calls[0].prompt).not.toContain("xxxxxxxxxx");
     const many = Array.from({ length: 11 }, (_, index) => `r${index}.ts`);
     await expect(runReview(input({ references: many }), deps(env, {}, calls), signal)).rejects.toThrow("at most");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   test("2회차도 명시한 참고만 싣고, 참고 파일의 변화는 delta가 아니라 현재 내용으로만 보낸다", async () => {
@@ -1353,7 +1363,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const error = await runReview(input({ previousReviewId: first.reviewId }), d, signal).catch((caught: unknown) => caught as Error);
     expect((error as Error).message).toContain("input spec.md");
     expect((error as Error).message).toContain("start a new review without previousReviewId and without this input");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(before);
   });
 
@@ -1386,7 +1396,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const first = await runReview(input({ inputs: names.slice(0, 6) }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
     await expect(runReview(input({ previousReviewId: first.reviewId, inputs: names.slice(6) }), d, signal)).rejects.toThrow("carried from earlier rounds");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   test("프롬프트는 입력 블록을 변경 뒤·참고 앞에 두고, 일관성 검토 대상이며 심사 대상이 아니고 신뢰하지 않는 자료라고 알린다", () => {
@@ -1565,7 +1575,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
     const first = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
     rmSync(join(env.work, "b.ts"));
     const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
-    expect(calls[1].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다
+    expect(calls[2].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다(1회차 호출 2개 뒤)
     expect(await resolve(second.reviewId)).not.toHaveProperty("unreviewedChanges");
     writeFileSync(join(env.work, "a.ts"), a(3));
     const third = await runReview(input({ previousReviewId: second.reviewId }), d, signal);
@@ -1745,7 +1755,7 @@ describe("이미 커밋된 변경(base)", () => {
     writeFileSync(join(env.work, "a.ts"), "export const retries = 7;\n");
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId, base: "  " }), d, signal)).rejects.toThrow("base applies to the first round only");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   test("커밋이 아닌 값·옵션처럼 읽히는 값·HEAD의 조상이 아닌 커밋·이어지는 라운드의 base는 reviewer 호출과 기록 없이 거절한다", async () => {
@@ -1767,7 +1777,7 @@ describe("이미 커밋된 변경(base)", () => {
     writeFileSync(join(env.work, "a.ts"), "export const retries = 7;\n");
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId, base: "HEAD~1" }), d, signal)).rejects.toThrow("base applies to the first round only");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   test("기준에 없던 파일 중 git이 무시하는 파일은 base로도 심사 대상이 되지 않고 reviewer로 나가지 않는다", async () => {
@@ -1997,7 +2007,7 @@ describe("Maker(subagent) 세션", () => {
     await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: ["Main"] }, subOn("openai-codex", "gpt-6-astra"), signal, maker)).rejects.toThrow("own model selector");
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [ASTRA] }, subOn("openai-codex", "gpt-6-astra"), signal, maker) as Reviewed;
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, sessionId: "maker-1", reviewers: [{ family: "anthropic" }] }]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, sessionId: "maker-1", reviewers: [{ family: "anthropic" }, { family: "google" }] }]);
   });
 
   test("선언한 저자 중 세션 자신의 모델과 같은 계열이 없으면 같은 계열 reviewer를 받게 되므로 거절한다", async () => {
@@ -2008,6 +2018,70 @@ describe("Maker(subagent) 세션", () => {
     await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, { agent: { kind: "sub" } } as never, signal, maker)).rejects.toThrow("could not be resolved");
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [`${OPUS}:high`] }, sub, signal, maker) as Reviewed;
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }, { family: "google" }] }]);
+  });
+});
+
+describe("Argon 상시 reviewer(google 계열)", () => {
+  const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
+
+  test("Argon 실패는 기록·안내만 하고 통과를 막지 않으며, 다음 라운드가 Argon을 다시 부른다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const d = deps(env, { google: new Error("quota") });
+    const first = await runReview(input(), d, signal);
+    expect(first.passable).toBe(true);
+    expect(first.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "google", model: GEMINI, status: "error", error: "quota" }]);
+    expect(first.advisoryReviewers).toContain(GEMINI);
+    expect(first.nextStep).not.toContain("can never pass");
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ passable: true, reviewers: [{ family: "openai", status: "ok" }, { family: "google", status: "error", advisory: true }] }]);
+    expect(await runResolve({ reviewId: first.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: true, open: [] });
+    const junk = await runReview(input(), deps(env, { google: "PASS - looks fine" }), signal);
+    expect(junk.passable).toBe(true);
+    expect(junk.reviewers[1]).toMatchObject({ family: "google", status: "unparsable" });
+    writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
+    const calls: { family: Family; prompt: string }[] = [];
+    const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, {}, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["openai", "google"]);
+    expect(second.reviewers).toMatchObject([{ status: "ok" }, { family: "google", status: "ok" }]);
+    expect(second).not.toHaveProperty("advisoryReviewers");
+  });
+
+  test("필수 reviewer가 실패하면 Argon이 ok여도 통과할 수 없다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const result = await runReview(input(), deps(env, { openai: new Error("down"), google: finding("g") }), signal);
+    expect(result.passable).toBe(false);
+    expect(result.nextStep).toContain("can never pass");
+  });
+
+  test("Argon이 답한 finding은 다른 reviewer의 것처럼 resolve가 닫아야 통과한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const d = deps(env, { google: finding("argon objection") });
+    const review = await runReview(input(), d, signal);
+    expect(review.findings).toMatchObject([{ id: "R1-GGL-1", reviewer: GEMINI, claim: "argon objection" }]);
+    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false, open: ["R1-GGL-1"] });
+    expect(await runResolve({ reviewId: review.reviewId, resolutions: [{ id: "R1-GGL-1", status: "refuted", evidence: "add stays pure" }] }, rd(d))).toMatchObject({ pass: true, open: [] });
+  });
+
+  test("probe 라운드에서 R*-GGL-* finding의 판단은 Google reviewer가 소유한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const base = deps(env, {});
+    const first = await runReview(input(), { ...base, complete: async (family) => ({ model: modelOf(family), text: family === "google" ? withProbe("two is racy") : '{"findings":[]}' }) }, signal);
+    expect(first.findings.map((item) => item.id)).toEqual(["R1-GGL-1"]);
+    const probe = probeOutput({ findingId: "R1-GGL-1" });
+    // 소유자가 아닌 openai가 판단을 안 내면 채우지 않고, google의 판단만 남는다.
+    const confirmed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probe }), { ...base, complete: async (family) => ({ model: modelOf(family), text: family === "google" ? verdictAnswer([{ id: "R1-GGL-1", verdict: "confirmed", why: "failed" }]) : '{"findings":[]}' }) }, signal);
+    expect(confirmed.verdicts).toEqual([{ id: "R1-GGL-1", verdict: "confirmed", why: "failed", reviewer: GEMINI }]);
+    // 소유자 google이 실패하면 그 finding은 unresolved로 채워지지만 통과 가능성은 그대로다.
+    const env2 = repo();
+    writeFileSync(join(env2.work, "a.ts"), versionOf(2));
+    const base2 = deps(env2, {});
+    const first2 = await runReview(input(), { ...base2, complete: async (family) => ({ model: modelOf(family), text: family === "google" ? withProbe("two is racy") : '{"findings":[]}' }) }, signal);
+    const failed = await runReview(input({ previousReviewId: first2.reviewId, probeResults: probe }), deps(env2, { google: new Error("quota") }), signal);
+    expect(failed.passable).toBe(true);
+    expect(failed.verdicts).toEqual([{ id: "R1-GGL-1", verdict: "unresolved", why: expect.stringContaining("unusable (error)"), reviewer: GEMINI }]);
   });
 });

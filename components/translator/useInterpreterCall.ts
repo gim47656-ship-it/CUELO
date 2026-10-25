@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { failureFromOffer, isLiveState, waitForIceGathering, type LiveFailure } from "@/hooks/useLiveVoice";
 import type { LiveState, LiveTranscriptRole } from "@/lib/live-types";
-import type { InterpreterLine, InterpreterProfile } from "@/lib/translator-context";
+import type { InterpreterProfile } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
+import type { HistoryLine } from "./transcript-log";
 
 /**
  * 통역 통화의 브라우저 쪽. `hooks/useLiveVoice.ts`와 같은 방식으로 마이크·WebRTC 피어는 화면이,
@@ -25,7 +26,7 @@ export interface InterpreterTranscript {
 export interface InterpreterCallOptions {
   onTranscript: (transcript: InterpreterTranscript) => void;
   /** The lines heard and interpreted so far, in spoken order; read each time a call opens. */
-  getHistory: () => InterpreterLine[];
+  getHistory: () => HistoryLine[];
   /** A started call was replaced by a reconnect: new transcripts belong to a new call. */
   onReconnect: () => void;
 }
@@ -80,6 +81,30 @@ const MAX_RECONNECTS_WITHOUT_SPEECH = 10;
 /** Pause before reopening after a failed attempt: a Wi-Fi/mobile handoff takes a moment. */
 const RECONNECT_RETRY_DELAY_MS = 2_000;
 
+/**
+ * Reconnects after Codex stopped an interpretation, in a row with nobody speaking in between,
+ * before interpreting stops with an error. A stopped turn is never sent back (see
+ * `stoppedTurnLines`), so this only guards against a call that keeps getting stopped by itself.
+ */
+const MAX_STOPS_WITHOUT_SPEECH = 2;
+
+/** The lines of the turn Codex just stopped: the last heard line and what was interpreted after it. */
+export function stoppedTurnLines(history: HistoryLine[]): HistoryLine[] {
+  const start = history.findLastIndex((line) => line.role === "user");
+  return start < 0 ? [] : history.slice(start);
+}
+
+/**
+ * The history a new call gets, without the lines of stopped turns: sent back as context, the
+ * words that got an interpretation stopped could get the new call stopped again. Lines go by
+ * segment id, so the same words said in another turn stay.
+ */
+export function historyWithout(history: HistoryLine[], dropped: readonly HistoryLine[]): HistoryLine[] {
+  if (dropped.length === 0) return history;
+  const gone = new Set(dropped.map((line) => line.id));
+  return history.filter((line) => !gone.has(line.id));
+}
+
 interface LostCall {
   reason: LiveFailure;
   message?: string;
@@ -88,13 +113,20 @@ interface LostCall {
 const targetKey = ({ mine, theirs, profile }: CallTarget) =>
   `${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
 
-export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: InterpreterCallOptions): InterpreterCallController {
+/** The Codex controller also tells when Codex stopped one interpretation and the call kept going. */
+export interface CodexInterpreterCallController extends InterpreterCallController {
+  /** Codex stopped the latest interpretation (moderation); cleared by the next interpretation. */
+  skipped: boolean;
+}
+
+export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: InterpreterCallOptions): CodexInterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
   const [failure, setFailure] = useState<LiveFailure | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [ended, setEnded] = useState<"idle" | null>(null);
+  const [skipped, setSkipped] = useState(false);
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
   /** The audio sender; it carries no track until Start attaches the microphone. */
@@ -113,6 +145,10 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
   /** The microphone track is on the call's sender (`replaceTrack` resolved). */
   const micAttachedRef = useRef(false);
   const reconnectsRef = useRef(0);
+  /** Lines of turns Codex stopped in this started call; never sent to a new call as history. */
+  const stoppedLinesRef = useRef<HistoryLine[]>([]);
+  /** Reconnects after a stopped interpretation since anyone last spoke. */
+  const stopsWithoutSpeechRef = useRef(0);
   /** The started call has been live at least once: from then on a drop reconnects instead of failing. */
   const hadLiveRef = useRef(false);
   const retryTimerRef = useRef<number | undefined>(undefined);
@@ -175,6 +211,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
   const teardown = useCallback((next: LiveState) => {
     release();
     setReconnecting(false);
+    setSkipped(false);
     setState(next);
   }, [release]);
 
@@ -274,7 +311,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
           sdp: offer,
           mine: target.mine.code,
           theirs: target.theirs.code,
-          context: { profile: target.profile, history: getHistoryRef.current() },
+          context: { profile: target.profile, history: historyWithout(getHistoryRef.current(), stoppedLinesRef.current) },
         }),
       });
       const body: unknown = await response.json().catch(() => ({}));
@@ -336,8 +373,26 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
         if (parsed.type === "transcript" && "role" in parsed && "text" in parsed && "final" in parsed) {
           if (startedRef.current && (parsed.role === "user" || parsed.role === "assistant") && typeof parsed.text === "string") {
             if (parsed.text.trim()) reconnectsRef.current = 0;
+            if (parsed.role === "user" && parsed.text.trim()) stopsWithoutSpeechRef.current = 0;
+            // A stopped bubble's own final comes before `generation-stopped`, and the stopped call's
+            // later events are dropped by the generation check after the reconnect, so any
+            // interpretation that reaches here is a new one.
+            if (parsed.role === "assistant" && parsed.text.trim()) setSkipped(false);
             onTranscriptRef.current({ role: parsed.role, text: parsed.text, final: parsed.final === true });
           }
+          return;
+        }
+        // Codex stopped one interpretation (moderation) and then ends the call by itself a few
+        // seconds later (seen 4.5 s on 2026-10-26): say so, and reconnect at once with the
+        // conversation so far, minus the stopped turn, instead of waiting for that end and the
+        // failure retry delay.
+        if (parsed.type === "generation-stopped") {
+          if (!startedRef.current) return;
+          setSkipped(true);
+          stoppedLinesRef.current.push(...stoppedTurnLines(getHistoryRef.current()));
+          stopsWithoutSpeechRef.current += 1;
+          if (stopsWithoutSpeechRef.current > MAX_STOPS_WITHOUT_SPEECH) fail("upstream", "Codex stopped the interpretation repeatedly.");
+          else if (hadLiveRef.current && streamRef.current) resumeRef.current();
           return;
         }
         if (parsed.type === "error" && "message" in parsed && typeof parsed.message === "string") {
@@ -356,7 +411,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
       if (genRef.current === gen) lost("failed", error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [attachRemote, isListening, lost, release, settleLive, teardown]);
+  }, [attachRemote, fail, isListening, lost, release, settleLive, teardown]);
 
   /**
    * Replace a started call that dropped, keeping the microphone and the conversation.
@@ -445,12 +500,15 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
     preparedTimerRef.current = undefined;
     startedRef.current = true;
     reconnectsRef.current = 0;
+    stoppedLinesRef.current = [];
+    stopsWithoutSpeechRef.current = 0;
     hadLiveRef.current = false;
     const gen = genRef.current;
     setFailure(null);
     setDetail(null);
     setEnded(null);
     setReconnecting(false);
+    setSkipped(false);
     setState("connecting");
     // Created inside the click so autoplay policy lets the interpreted voice play.
     const audio = document.createElement("audio");
@@ -466,5 +524,5 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
 
   useEffect(() => () => release(), [release]);
 
-  return { state, failure, detail, supported, reconnecting, ended, prepare, start, stop };
+  return { state, failure, detail, supported, reconnecting, ended, skipped, prepare, start, stop };
 }

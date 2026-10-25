@@ -95,7 +95,7 @@ test("a session that switches provider re-asks instead of answering from the sta
     syncAccountFaces([{ provider: "hive", credentialId: 31, metadata: { email: "hive@example.com" } }]);
     assert.equal(resolveAccountFace("switch", "hive", 31)?.alias, "ISANA(이사나)");
     assert.equal(resolveAccountFace("switch", "hive", 31, "zai-org/glm-5.3-flash")?.alias, "MITSU(미츠)");
-    assert.equal(resolveAccountFace("switch", "google-antigravity", undefined)?.alias, "HIKARI(히카리)");
+    assert.equal(resolveAccountFace("switch", "google-vertex", undefined, "gemini-4-argon")?.alias, "HIKARI(히카리)");
   } finally {
     route.restore();
   }

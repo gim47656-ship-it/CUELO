@@ -49,9 +49,12 @@ export function beginTranscriptCall(log: TranscriptLog): TranscriptLog {
   return { ...log, open: { user: null, assistant: null }, call: log.call + 1 };
 }
 
-/** 조각을 모두 지운다. 진행 중인 통화의 번호는 이어 쓴다. */
+/**
+ * 조각을 모두 지운다. 진행 중인 통화의 번호와 조각 id는 이어 쓴다. 멈춘 턴을 id로 기억하는 쪽
+ * (`useInterpreterCall`)이 있어, 지운 뒤의 새 조각이 옛 id를 다시 쓰면 안 된다.
+ */
 export function clearTranscripts(log: TranscriptLog): TranscriptLog {
-  return { ...emptyTranscriptLog(), call: log.call };
+  return { ...emptyTranscriptLog(), call: log.call, nextId: log.nextId };
 }
 
 /**
@@ -100,10 +103,15 @@ export function segmentSpeaker(segment: TranscriptSegment): "me" | "them" | unde
   return (segment.role === "user") === mineLanguage ? "me" : "them";
 }
 
-/** 새 통화에 넘길 앞선 대화: 글이 있는 조각을 말해진 차례대로 역할과 글만 남겨 최근 `max`줄. */
-export function transcriptHistory(log: TranscriptLog, max: number): InterpreterLine[] {
+/** A history line with the id of the segment it came from, so one turn can be told from the same words said again. */
+export interface HistoryLine extends InterpreterLine {
+  id: number;
+}
+
+/** 새 통화에 넘길 앞선 대화: 글이 있는 조각을 말해진 차례대로 조각 id·역할·글만 남겨 최근 `max`줄. 서버는 id를 버린다. */
+export function transcriptHistory(log: TranscriptLog, max: number): HistoryLine[] {
   return log.segments
     .filter((segment) => segment.text.trim())
     .slice(-max)
-    .map(({ role, text }) => ({ role, text }));
+    .map(({ id, role, text }) => ({ id, role, text }));
 }

@@ -10,7 +10,6 @@ import {
   SPEAKER_GENDERS,
   TRANSLATOR_MOODS,
   parseInterpreterProfile,
-  type InterpreterLine,
   type InterpreterProfile,
 } from "@/lib/translator-context";
 import {
@@ -28,6 +27,7 @@ import {
   segmentLanguage,
   segmentSpeaker,
   transcriptHistory,
+  type HistoryLine,
   type TranscriptSegment,
 } from "./transcript-log";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
@@ -381,7 +381,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setSegments(transcriptRef.current.segments);
   }, []);
 
-  const getHistory = useCallback((): InterpreterLine[] => transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES), []);
+  const getHistory = useCallback((): HistoryLine[] => transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES), []);
 
   const handleReconnect = useCallback(() => {
     transcriptRef.current = beginTranscriptCall(transcriptRef.current);
@@ -472,6 +472,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const insecure = typeof window !== "undefined" && !window.isSecureContext;
   const notice = call.state === "error" && call.failure
     ? failureText(tt, provider, call.failure, call.detail)
+    : provider === "codex" && codexCall.skipped && active ? tt("translator.generationSkipped")
     : call.ended === "idle" && !active ? tt("translator.idleStopped")
     : insecure ? tt("translator.insecure") : unsupported ? tt("translator.unsupported") : null;
 

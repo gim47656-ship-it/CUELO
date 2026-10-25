@@ -21,7 +21,7 @@ const BINARY_EXTENSION = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svg|pdf|zip
 const SKIP_DIR: Record<string, true> = { ".git": true, node_modules: true, ".next": true, ".cache": true, dist: true, build: true, coverage: true };
 export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
 const decoder = new TextDecoder("utf-8", { fatal: true });
-export const GEMINI = "google-antigravity/gemini-3.8-flash";
+export const GEMINI = "google-vertex/gemini-4-argon";
 // 조사 도구 한정 대체. retry.fallbackChains의 모델 키 체인은 같은 모델을 쓰는 다른 slot까지 바꾸므로 사용하지 않는다.
 export const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 /**

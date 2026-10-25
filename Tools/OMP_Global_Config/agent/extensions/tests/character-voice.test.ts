@@ -171,7 +171,7 @@ describe("character voice identity", () => {
       "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
       "MITSU(미츠)": { model: "hive/zai-org/glm-5.3-flash", toolCapable: true },
       "SHION(시온)": { model: "web6/gpt-6-pro", toolCapable: false },
-      "HIKARI(히카리)": { model: "google-antigravity/gemini-3.8-flash", toolCapable: true },
+      "HIKARI(히카리)": { model: "google-vertex/gemini-4-argon", toolCapable: true },
     });
     expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
     expect(characterForProvider("hive")).toBe("ISANA(이사나)");
@@ -179,7 +179,9 @@ describe("character voice identity", () => {
     expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
     expect(characterForProvider("opencode-go")).toBeUndefined();
     expect(characterForProvider("web6")).toBe("SHION(시온)");
-    expect(characterForProvider("google-antigravity")).toBe("HIKARI(히카리)");
+    expect(characterForProvider("google-antigravity")).toBeUndefined();
+    expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
+    expect(characterForProvider("google-vertex", [], "claude-opus-4-6")).toBeUndefined();
   });
 
   test("Anthropic stable storage positions map 0 to RIN and 1 to MIO", () => {

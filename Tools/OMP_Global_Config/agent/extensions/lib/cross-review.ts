@@ -31,7 +31,7 @@ import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
  * 있고, 그것을 막는 것은 command-guard와 규칙의 몫이다. marker는 정규식이라 난독화·간접 호출은 못 잡는다.
  */
 
-export type Family = "openai" | "anthropic";
+export type Family = "openai" | "anthropic" | "google";
 export type Exec = (command: string, args: string[], options: { cwd: string; stdin?: Buffer }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
 /**
@@ -55,7 +55,10 @@ const MAX_PROBE_TEXT_CHARS = 2_000;
 export const MAX_INPUT_BYTES = 300 * 1024;
 export const SAMPLE_MODULUS = 10;
 export const REVIEW_TIMEOUT_MS = 600_000;
-export const SLOT: Record<Family, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic" };
+export const SLOT: Record<Family, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic", google: "crossReviewGoogle" };
+/** 늘 함께 도는 자문 reviewer 계열. 답하면 finding은 다른 reviewer와 똑같이 닫아야 하지만, 실패(error·unparsable)는 기록만 하고 통과 가능 여부를 정하지 않는다. */
+export const ADVISORY_FAMILY: Family = "google";
+const FAMILY_TAG: Record<Family, string> = { openai: "OAI", anthropic: "ANT", google: "GGL" };
 export const DELETED_BLOB = "deleted";
 /** 원장에 남기는 reviewer 원문 발췌 길이. 전문은 사본 디렉터리의 raw-<계열>.txt에 둔다. */
 const RAW_EXCERPT_CHARS = 20_000;
@@ -64,33 +67,39 @@ const RESULT_EXCERPT_CHARS = 2_000;
 
 // ── 계열 매핑 ────────────────────────────────────────────────────────────────
 
-/** `provider/model[:effort]` 또는 모델 id만 온 selector에서 저자의 계열을 읽는다. 모르는 provider는 other다. */
+/** `provider/model[:effort]` 또는 모델 id만 온 selector에서 저자의 계열을 읽는다. Gemini 모델 id는 어느 provider에 실려 있어도 google이고, 모르는 provider는 other다. */
 export function authorFamily(selector: string): Family | "other" {
   const base = selector.trim().toLowerCase().split(":")[0];
   const provider = base.includes("/") ? base.slice(0, base.indexOf("/")) : "";
   const id = base.includes("/") ? base.slice(base.indexOf("/") + 1) : base;
+  if (/(^|\/)gemini/.test(id)) return "google";
   if (provider === "anthropic" || (!provider && id.startsWith("claude"))) return "anthropic";
   if (provider === "openai-codex" || provider === "openai" || (!provider && /^(gpt|o\d)/.test(id))) return "openai";
+  if (provider === "google" || provider.startsWith("google-")) return "google";
   return "other";
 }
 
 /**
- * 저자 계열의 반대 계열이 reviewer다. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider는 Anthropic이 본다.
+ * 저자 계열의 반대 계열이 필수 reviewer다. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google 포함)는 Anthropic이 본다.
+ * 여기에 저자 중 Google 모델이 없으면 자문 reviewer(google)를 늘 마지막에 붙인다.
  * "main"은 이 세션의 현재 모델로 풀고, 풀 수 없으면 추측하지 않고 던진다. 저자가 두 계열에 걸치면 둘 다 돌린다.
  */
 export function reviewerFamilies(authors: string[], mainModel: string | undefined): Family[] {
   const cleaned = authors.map((author) => author.trim()).filter(Boolean);
   if (cleaned.length === 0) throw new Error("authors must list at least one model selector (or \"main\").");
   const out = new Set<Family>();
+  let googleAuthor = false;
   for (const author of cleaned) {
     let selector = author;
     if (author.toLowerCase() === "main") {
       if (!mainModel) throw new Error("authors includes \"main\" but the session's current model could not be resolved; pass its selector explicitly.");
       selector = mainModel;
     }
-    out.add(authorFamily(selector) === "anthropic" ? "openai" : "anthropic");
+    const family = authorFamily(selector);
+    if (family === "google") googleAuthor = true;
+    out.add(family === "anthropic" ? "openai" : "anthropic");
   }
-  return [...out].sort();
+  return googleAuthor ? [...out].sort() : [...out].sort().concat(ADVISORY_FAMILY);
 }
 
 // ── 파일 분류와 marker ───────────────────────────────────────────────────────
@@ -808,7 +817,9 @@ export interface ReviewDeps {
 export interface ReviewResult {
   reviewId: string;
   round: number;
-  reviewers: { family: Family; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string }[];
+  reviewers: { family: Family; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string; advisory?: true }[];
+  /** 자문 reviewer(google)의 답을 쓸 수 없었을 때만: 기록만 했고 통과를 막지 않으며 다음 라운드가 다시 부른다는 안내. */
+  advisoryReviewers?: string;
   triggers: string[];
   highRisk: boolean;
   findings: CrossReviewFinding[];
@@ -895,7 +906,7 @@ interface NextState {
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
 
 function describeNext(state: NextState): string {
-  if (!state.passable) return "At least one reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
+  if (!state.passable) return "At least one required (non-advisory) reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
   const roundsLeft = state.round < MAX_ROUNDS;
   const canProbe = roundsLeft && state.probeUsed < MAX_PROBE_ROUNDS;
   const canDelta = roundsLeft && state.plainUsed < MAX_PLAIN_ROUNDS;
@@ -973,8 +984,8 @@ export function prepareProbeResults(results: readonly ProbeResultInput[], chainF
 
 /** finding id(`R1-OAI-2`)의 계열 표지에서 그 finding을 낸 reviewer 계열을 읽는다. 읽지 못하면 undefined. */
 function findingFamily(id: string): Family | undefined {
-  const tag = /^R\d+-(OAI|ANT)-\d+$/.exec(id)?.[1];
-  return tag === "OAI" ? "openai" : tag === "ANT" ? "anthropic" : undefined;
+  const tag = /^R\d+-([A-Z]+)-\d+$/.exec(id)?.[1];
+  return (Object.keys(FAMILY_TAG) as Family[]).find((family) => FAMILY_TAG[family] === tag);
 }
 
 const NO_FOLLOW = fsConstants.O_NOFOLLOW ?? 0;
@@ -1303,12 +1314,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
   };
   for (const item of settled) {
-    if (item.error !== undefined) { reviewers.push({ family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw(item) : {}) }); continue; }
+    const advisory = item.family === ADVISORY_FAMILY ? { advisory: true as const } : {};
+    if (item.error !== undefined) { reviewers.push({ family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw(item) : {}), ...advisory }); continue; }
     const parsed = parseReviewerOutput(item.text);
-    if (!parsed.ok) { reviewers.push({ family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(item) }); continue; }
-    reviewers.push({ family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs });
-    const tag = item.family === "openai" ? "OAI" : "ANT";
-    parsed.findings.forEach((finding, index) => findings.push({ id: `R${round}-${tag}-${index + 1}`, reviewer: item.model, ...finding }));
+    if (!parsed.ok) { reviewers.push({ family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(item), ...advisory }); continue; }
+    reviewers.push({ family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory });
+    parsed.findings.forEach((finding, index) => findings.push({ id: `R${round}-${FAMILY_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding }));
     parsedByFamily.set(item.family, parsed.verdicts ?? []);
   }
   // 결과를 받은 finding마다 판단을 모은다. finding을 낸 reviewer가 판단을 안 냈거나 모양이 틀리면 unresolved로 채운다(답 전체를 버리지 않는다).
@@ -1325,7 +1336,9 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     }
   }
   const probeMeta: CrossReviewProbeResultMeta[] = preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated }));
-  const passable = reviewers.every((reviewer) => reviewer.status === "ok");
+  // 통과 가능 여부는 필수(반대 계열) reviewer만으로 정한다. 자문 reviewer의 실패는 기록·안내만 하고, 답한 finding은 resolve에서 똑같이 닫아야 한다.
+  const passable = reviewers.every((reviewer) => reviewer.advisory || reviewer.status === "ok");
+  const advisoryFailed = reviewers.filter((reviewer) => reviewer.advisory && reviewer.status !== "ok");
   const record: CrossReviewRecord = {
     type: "cross-review", ts: now().toISOString(), reviewId, sessionId: deps.sessionId, root, round,
     ...(previous ? { previousReviewId: previous.reviewId } : {}),
@@ -1338,7 +1351,9 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
       ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
       ...(reviewer.error ? { error: reviewer.error } : {}),
+      ...(reviewer.advisory ? { advisory: true as const } : {}),
     })),
+    ...(advisoryFailed.length > 0 ? { advisoryReviewers: `${advisoryFailed.map((reviewer) => `${reviewer.model} (${reviewer.family}, ${reviewer.status}${reviewer.error ? `: ${reviewer.error}` : ""})`).join("; ")} gave no usable answer. It is an advisory reviewer: the failure is only recorded, does not affect passable, and any later round of this chain asks it again.` } : {}),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
@@ -1426,7 +1441,7 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
     }
   }
   const open = findings.filter((finding) => !state.has(finding.id)).map((finding) => finding.id);
-  const unusable = chain.every((record) => record.passable) ? undefined : "A reviewer answer in this chain was unparsable or failed; the chain can never pass. Start a new review.";
+  const unusable = chain.every((record) => record.passable) ? undefined : "A required (non-advisory) reviewer answer in this chain was unparsable or failed; the chain can never pass. Start a new review.";
 
   const paths = [...new Set(chain.flatMap((record) => record.files.map((file) => file.path)))];
   const root = head.root;

@@ -7,7 +7,7 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { draftDocument, type DraftCompletion } from "../draft";
 import type { HelperAnswer } from "../skim";
 
-const GEMINI = "google-antigravity/gemini-3.8-flash";
+const GEMINI = "google-vertex/gemini-4-argon";
 const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 const directories: string[] = [];
 const signal = new AbortController().signal;

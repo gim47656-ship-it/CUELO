@@ -90,8 +90,8 @@
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
-  하는 대화 답변은 대상이 아니다. Gemini는 이 글쓰기·번역과 OCR 후보(`retry.fallbackChains.ocr`)에 쓰며 같은
-  Antigravity 계정 할당량을 공유한다.
+  하는 대화 답변은 대상이 아니다. 이 Gemini는 2026-10-26부터 Google Cloud Vertex의 Gemini 4 Argon이며(크레딧으로
+  과금) OCR 역할에도 쓴다. 이미지 질문(vision)은 Opus를 유지하고, Antigravity OAuth는 계정 정지 위험으로 쓰지 않는다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.

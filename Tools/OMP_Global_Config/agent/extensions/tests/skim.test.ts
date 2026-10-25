@@ -15,7 +15,7 @@ function fixture() {
 }
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function context(cwd: string): ExtensionContext { return { cwd } as ExtensionContext; }
-const GEMINI = "google-antigravity/gemini-3.8-flash";
+const GEMINI = "google-vertex/gemini-4-argon";
 /** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
 const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
 async function skimText(...args: Parameters<typeof skimQuestion>): Promise<string> { return (await skimQuestion(...args)).text; }
@@ -35,11 +35,11 @@ describe("skim", () => {
     writeFileSync(join(cwd, "docs", "note.md"), ["api", "key"].join("_") + " = \"not-a-real-key\"");
     let prompt = "";
     const answer = await skimText({ paths: ["docs", "docs/ignored.md", "docs/credentials.json", ".env.local", "private"], question: "두 번째 줄은?" },
-      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe("google-antigravity/gemini-3.8-flash"); prompt = input; return reply("Second fact (docs/guide.md:L2)"); });
+      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe(GEMINI); prompt = input; return reply("Second fact (docs/guide.md:L2)"); });
     expect(prompt).toContain("<file path=\"docs/guide.md\">");
     expect(prompt).toContain("2: Second fact");
     expect(prompt).not.toMatch(/IGNORED_SECRET_MARKER|CREDENTIAL_SECRET_MARKER|ENV_SECRET_MARKER|PRIVATE_SECRET_MARKER|not-a-real-key/);
-    expect(answer.startsWith("model: google-antigravity/gemini-3.8-flash")).toBe(true);
+    expect(answer.startsWith(`model: ${GEMINI}`)).toBe(true);
     expect(answer).toContain("Second fact (docs/guide.md:L2)");
     expect(answer).toContain("docs/ignored.md: gitignore로 건너뜀");
     expect(answer).toContain("docs/credentials.json: 비밀 경로 제외");
@@ -102,10 +102,10 @@ describe("skim", () => {
     const result = await skimText({ paths: ["guide.md", ".env.local"], question: "근거?" }, context(cwd), signal,
       async (prompt, _ctx, _signal, model) => {
         calls.push({ prompt, model });
-        if (model === "google-antigravity/gemini-3.8-flash") throw new Error("Gemini original 429");
+        if (model === GEMINI) throw new Error("Gemini original 429");
         return reply("Public fact (guide.md:L1)", model);
       });
-    expect(calls.map(({ model }) => model)).toEqual(["google-antigravity/gemini-3.8-flash", "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(calls.map(({ model }) => model)).toEqual([GEMINI, "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
     expect(result.startsWith("model: hive/deepseek-ai/deepseek-v4.1-flash-1017")).toBe(true);
@@ -123,7 +123,7 @@ describe("skim", () => {
         called.push(model);
         throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "DeepSeek original 403");
       });
-    expect(called).toEqual(["google-antigravity/gemini-3.8-flash", "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(called).toEqual([GEMINI, "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
     expect(result).toContain("model: none");
     expect(result).toContain("Gemini 실패: Gemini original timeout");
     expect(result).toContain("DeepSeek 실패: DeepSeek original 403");

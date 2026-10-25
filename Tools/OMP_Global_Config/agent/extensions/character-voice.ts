@@ -103,7 +103,7 @@ export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, Character
     toolCapable: false,
   },
   "HIKARI(히카리)": {
-    model: "google-antigravity/gemini-3.8-flash",
+    model: "google-vertex/gemini-4-argon",
     toolCapable: true,
   },
 };
@@ -114,12 +114,14 @@ const PROVIDER_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "openai-codex": "YUKI(유키)",
   hive: "ISANA(이사나)",
   web6: "SHION(시온)",
-  "google-antigravity": "HIKARI(히카리)",
 };
 
 /** provider 안에서 특정 모델이 다른 캐릭터를 갖는 자리. 키는 `provider/model id` 선택자다. */
+// Vertex는 Gemini 밖의 모델(Claude 등)도 싣으므로 provider 전체가 아니라 Argon 모델 하나만 HIKARI다(2026-10-26).
+// Antigravity OAuth는 같은 날 사용자 결정으로 걷어 냈다(계정 정지 위험).
 const MODEL_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "hive/zai-org/glm-5.3-flash": "MITSU(미츠)",
+  "google-vertex/gemini-4-argon": "HIKARI(히카리)",
 };
 
 const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {

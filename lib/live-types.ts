@@ -254,7 +254,9 @@ export type LiveEvent =
   | { type: "state"; state: LiveState }
   | { type: "transcript"; role: LiveTranscriptRole; text: string; final: boolean }
   | { type: "delegation"; status: "started" | "completed"; request?: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** Codex stopped one generation (moderation) but the call stays up; that utterance went uninterpreted. */
+  | { type: "generation-stopped" };
 
 export interface LiveErrorBody {
   error: "bad-request" | "live-auth" | "not-found" | "live-upstream";

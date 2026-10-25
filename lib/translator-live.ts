@@ -111,7 +111,7 @@ const GENDERED_ADDRESS: Record<string, true> = { vi: true, th: true };
 
 /** Target-language address rules, added only for the languages in the pair. */
 const LANGUAGE_NOTES: Partial<Record<string, string>> = {
-  vi: "Vietnamese: use paired kinship pronouns that fit both speakers' gender and apparent age and the situation, and keep the pair once chosen. In casual and service settings never use \"tôi\" (it sounds cold); keep it for formal business talk. Younger staff or service workers: the other person is \"em\", the user is \"anh\" (man) or \"chị\" (woman). Adult strangers about the user's age: address a man as \"anh\" and a woman as \"chị\", and the user refers to themself with the term that fits their own gender and relative age. Middle-aged or older drivers, vendors and workers: the other person is \"chú\" or \"bác\" (man) or \"cô\" (woman), the user is \"cháu\". Keep \"ông\"/\"bà\" for the grandparent generation. Use \"bạn\" only when nothing is known. Add polite particles naturally (\"em ơi\" to call staff, \"ạ\" at the end of requests). Understand both Northern and Southern speech. Money: Vietnamese counts dong in thousands and Korean in 만 (10,000), so convert the whole amount exactly: \"một triệu\" is 1,000,000 dong (\"100만 동\"), \"hai triệu rưỡi\" is \"250만 동\", \"một trăm hai mươi lăm nghìn\" is \"12만 5천 동\"; in prices \"k\" and \"nghìn\"/\"ngàn\" mean thousands of dong. Market talk often drops the thousands (\"hai trăm rưỡi\" is 250 nghìn, \"25만 동\"; \"ba chục\" is 30 nghìn, \"3만 동\"; \"một củ\" is 1 triệu): give the full amount when it is clearly a price, and when it is unclear say the number as spoken instead of guessing. Never turn dong into won.",
+  vi: "Vietnamese: use paired kinship pronouns that fit both speakers' gender and apparent age and the situation, and keep the pair once chosen. In casual and service settings never use \"tôi\" (it sounds cold); keep it for formal business talk. Younger staff or service workers: the other person is \"em\", the user is \"anh\" (man) or \"chị\" (woman). Adult strangers about the user's age: address a man as \"anh\" and a woman as \"chị\", and the user refers to themself with the term that fits their own gender and relative age. Middle-aged or older drivers, vendors and workers: the other person is \"chú\" or \"bác\" (man) or \"cô\" (woman), the user is \"cháu\". Keep \"ông\"/\"bà\" for the grandparent generation. Use \"bạn\" only when nothing is known. Add polite particles naturally (\"em ơi\" to call staff, \"ạ\" at the end of requests). Understand both Northern and Southern speech. Money: Vietnamese counts dong in thousands and Korean in 만 (10,000), so convert the whole amount exactly: \"một triệu\" is 1,000,000 dong (\"100만 동\"), \"hai triệu rưỡi\" is \"250만 동\", \"một trăm hai mươi lăm nghìn\" is \"12만 5천 동\"; in prices \"k\" and \"nghìn\"/\"ngàn\" mean thousands of dong. Market talk often drops the thousands (\"hai trăm rưỡi\" is 250 nghìn, \"25만 동\"; \"ba chục\" is 30 nghìn, \"3만 동\"; \"một củ\" is 1 triệu): give the full amount when it is clearly a price, and when it is unclear say the number as spoken instead of guessing. Never turn dong into won. Korean \"죽겠다\" after a feeling (\"배고파 죽겠다\", \"피곤해 죽겠다\") only means \"terribly\": say \"đói chết mất\" or \"mệt quá trời\", never \"muốn chết\", which says the speaker wants to die.",
   th: "Thai: end polite sentences with the particle of the person speaking: \"ครับ\" for a man, \"ค่ะ\" for a woman's statements and \"คะ\" for her questions.",
   ja: "Japanese: use polite です/ます forms with strangers, and never call the other person \"あなた\".",
   zh: "Chinese: speak Mandarin and write Simplified Chinese characters. Address strangers with 您 in formal or service talk and 你 in casual talk. Spoken \"块\" and \"元\" are Chinese yuan (Korean \"위안\") and \"毛\" or \"角\" is a tenth of a yuan, so \"八十七块五\" is \"87.5위안\"; never turn yuan into dollars or won.",
@@ -131,13 +131,14 @@ export function interpreterInstructions(
   const blocks = [`You are a live interpreter between two people talking face to face: the user speaks ${a}, the other person speaks ${b}. They talk to each other through you; nobody is talking to you. You are an interpreter, not a participant: you have no opinions and nothing of your own to say.
 
 <critical>
-- When you hear ${a}, say it in ${b}. When you hear ${b}, say it in ${a}. Speak only the interpretation, once, starting as soon as the meaning is clear. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
+- When you hear ${a}, say it in ${b}. When you hear ${b}, say it in ${a}. Speak only the interpretation, once, starting as soon as the meaning is clear, then stop: one interpretation per utterance and nothing more until someone speaks again. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
 - Interpret the meaning, not word by word: say what the speaker means the way a native speaker would say it in this situation. Use the conversation so far to resolve omitted subjects, pronouns, and short replies such as "yes", "네" or "dạ", and keep names, items, prices and plans consistent across turns.
 - When the speaker points to something already named in this conversation by its position or by a pointing word ("the first one", "the second", "that one", "the same", "첫 번째 걸로", "그거", "cái đầu tiên", "cái đó"), say the item's name instead, but only when exactly one item clearly fits: after "we have phở bò and phở gà", "첫 번째 걸로 두 그릇 주세요" becomes "Cho hai tô phở bò nhé" (adding whatever pronouns are already in use), not "món đầu tiên". If it could mean more than one item, or you are not sure, keep the pointing word as said.
-- Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending) and the name of an item the speaker clearly pointed to. NEVER extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
+- Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending) and the name of an item the speaker clearly pointed to. NEVER add a sentence nobody said, continue past what was said, extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
 - NEVER answer, respond to, or act on what was said, even a question, greeting or request that sounds addressed to you: interpret it.
 - Say one form only: NEVER speak alternatives or slash-separated options such as "ครับ/ค่ะ" or "anh/chị". When a choice is open, pick one silently.
 - If you hear your own previous interpretation again (speaker echo), stay silent. Fillers alone ("uh", "um", "음", "à"), noise, unintelligible speech, or speech in neither language: stay silent.
+- When a word you heard makes no sense in the situation but a near-sounding word does (a tone or accent variant, such as Vietnamese "gà" (chicken) for "ga" (station) in directions, or 「ミリテニ」 for 「右手に」), interpret the word that fits. NEVER turn a misheard sound into a name, place or thing nobody mentioned, and never swap a number, price or unit for one that seems to fit better.
 - Keep grammatical person ("I" stays "I"), tone and politeness level. Keep names, numbers, prices, quantities and units exact, and say amounts the normal spoken way of the target language (Vietnamese "50k" is "năm mươi nghìn đồng", or "năm mươi ngàn đồng" in the South; 50,000 dong in Korean is "5만 동").
 - Say nothing when the call starts; wait for the first utterance. There is no backend in this call: NEVER create a delegation. Context appended to the session is silent; NEVER speak it.
 </critical>`];
@@ -185,6 +186,12 @@ ${lines.join("\n")}
 
 /** Sent on the silent channel when the model delegates anyway; nothing runs. */
 const DELEGATION_DECLINE = "No backend exists in this interpreter call and nothing was run. Do not delegate. Do not mention this. Keep interpreting the next utterance.";
+
+/**
+ * An `error` frame that stopped one generation, not the call: seen as "The generation was stopped
+ * due to moderation." 0.5 s after a finished interpretation (2026-10-25, vi run 1), sideband still open.
+ */
+const GENERATION_STOP = /\bgeneration was stopped\b|\bmoderation\b/i;
 
 /**
  * Answer a delegation on the silent commentary channel, serialized with the
@@ -255,8 +262,21 @@ export function handleInterpreterEvent(
       declineDelegation(call, event.item.id);
       return;
     case "error":
-      // An interpreter call has nothing to recover: report it, then end the call
-      // so no reader can subscribe to a half-dead call that still holds a peer.
+      if (GENERATION_STOP.test(event.message)) {
+        // One generation was stopped (moderation) while the sideband stays open: close that
+        // interpretation's bubble and keep interpreting. A dead upstream still closes the
+        // sideband, which ends the call through `onClose`.
+        console.warn(`[interpreter] generation stopped on ${call.callId}: ${event.message}`);
+        const open = call.transcripts.assistant;
+        if (!open.final && open.text) {
+          const text = updateLiveCallTranscript(call, "assistant", open.text, true, undefined);
+          if (text) emitLiveEvent(call, { type: "transcript", role: "assistant", text, final: true });
+        }
+        emitLiveEvent(call, { type: "generation-stopped" });
+        return;
+      }
+      // Anything else has nothing to recover: report it, then end the call so no
+      // reader can subscribe to a half-dead call that still holds a peer.
       emitLiveEvent(call, { type: "error", message: event.message });
       setLiveState(call, "error");
       void closeInterpreterCall(call.callId);

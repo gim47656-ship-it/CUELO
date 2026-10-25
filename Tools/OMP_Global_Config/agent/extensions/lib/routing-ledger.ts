@@ -320,7 +320,7 @@ export interface CrossReviewVerdict {
 export interface CrossReviewProbeResultMeta { findingId: string; command: string; exitCode: number; outputBytes: number; truncated: boolean }
 
 export interface CrossReviewReviewer {
-  family: "openai" | "anthropic";
+  family: "openai" | "anthropic" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
   /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. */
@@ -331,6 +331,8 @@ export interface CrossReviewReviewer {
   /** reviewer 답 전문 파일(사본 디렉터리의 raw-<계열>.txt). */
   rawFile?: string;
   error?: string;
+  /** 자문 reviewer(google)만 true. 그 reviewer의 error·unparsable은 passable을 정하지 않지만, 답한 finding은 똑같이 닫아야 한다. */
+  advisory?: true;
 }
 
 export interface CrossReviewFile { path: string; blob: string }
@@ -365,7 +367,7 @@ export interface CrossReviewRecord {
   verdicts?: CrossReviewVerdict[];
   /** 2회차 diff의 기준이 되는 검토 시점 내용 사본 위치. */
   snapshotDir: string;
-  /** 모든 reviewer가 ok여야 true. false면 이 체인은 통과할 수 없다. */
+  /** advisory가 아닌(필수) reviewer가 모두 ok여야 true. false면 이 체인은 통과할 수 없다. */
   passable: boolean;
 }
 

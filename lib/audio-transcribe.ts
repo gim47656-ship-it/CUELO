@@ -1,7 +1,7 @@
 /**
  * Server-side speech-to-text for audio pasted into the composer. Chat models (Opus and the like)
- * take no audio input, so the file is transcribed once by Gemini 3.8 Flash on the Antigravity
- * account and the text rides the normal document attachment.
+ * take no audio input, so the file is transcribed once by Gemini 4 Argon on Google Cloud Vertex
+ * and the text rides the normal document attachment.
  *
  * pi-ai's `transcribeAudio` only dispatches the `openai-transcriptions` API, so there is no Gemini
  * transcription transport. The Google converters (`google-shared.ts` `convertGoogleImagePart`) put
@@ -10,8 +10,8 @@
  */
 import { MAX_TRANSCRIBE_AUDIO_BYTES } from "./attachment-audio-types";
 
-export const TRANSCRIBE_PROVIDER = "google-antigravity";
-export const TRANSCRIBE_MODEL = "gemini-3.8-flash";
+export const TRANSCRIBE_PROVIDER = "google-vertex";
+export const TRANSCRIBE_MODEL = "gemini-4-argon";
 /** One request's deadline; a split recording makes one request per part. */
 export const TRANSCRIBE_TIMEOUT_MS = 180_000;
 const TRANSCRIBE_MAX_TOKENS = 32_768;
@@ -33,7 +33,7 @@ type TranscribeResult = {
 const MAX_ATTEMPTS = 2;
 const ERROR_TEXT_CHARS = 160;
 
-/** A reply that stopped with an error; Antigravity's safety filter trips on some clips at random. */
+/** A reply that stopped with an error; Gemini's safety filter trips on some clips at random. */
 export class TranscriptStoppedError extends Error {}
 
 /** Turns one model reply into the transcript, or throws when it is unusable. */
@@ -52,7 +52,7 @@ export function readTranscript(result: TranscribeResult): string {
   return result.stopReason === "length" ? `${text}\n[transcript truncated at the output limit]` : text;
 }
 
-/** One transcription through CUELO's shared omp runtime and its stored Antigravity credentials. */
+/** One transcription through CUELO's shared omp runtime and the Vertex credentials it resolves. */
 export async function transcribeAudioWithGemini(audio: Uint8Array, mimeType: string, signal?: AbortSignal): Promise<string> {
   if (audio.byteLength > MAX_TRANSCRIBE_AUDIO_BYTES) {
     throw new Error(`audio exceeds the ${MAX_TRANSCRIBE_AUDIO_BYTES / 1024 / 1024} MB transcription limit`);

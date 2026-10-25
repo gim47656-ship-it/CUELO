@@ -215,13 +215,13 @@ export const ACCOUNT_FACES = [
   // Codex 모델은 계정·모델과 무관하게 YUKI로 표시한다. hive는 API 키 하나를 읽는 custom provider이고
   // (2026-10-18 ISANA가 b-ai에서 옮겨 왔다) 모델마다 얼굴이 다르다 — `model` 이 붙은 MITSU는 그 모델만, provider
   // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다. web6는 `auth: none`이라 credential
-  // 개념이 없다. Antigravity(Gemini)는 보조 계정 하나라 HIKARI 고정이다. 반면 Anthropic은 실제 계정이
-  // 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
+  // 개념이 없다. HIKARI는 Vertex의 Gemini 4 Argon 모델 하나만 맡는다(Vertex는 Claude 등도 싣는다. 2026-10-26 Antigravity
+  // OAuth를 걷어 내며 옮겼다). 반면 Anthropic은 실제 계정이 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
   { alias: "MITSU(미츠)", file: "mitsu.webp", provider: "hive", model: "zai-org/glm-5.3-flash" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
   { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
-  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-antigravity" },
+  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-vertex", model: "gemini-4-argon" },
 ] as const;
 
 export interface CharacterRosterEntry {
@@ -292,8 +292,8 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
   {
     seed: 6,
     alias: ACCOUNT_FACES[6].alias,
-    provider: "google-antigravity",
-    model: "gemini-3.8-flash",
+    provider: "google-vertex",
+    model: "gemini-4-argon",
     voice: "빠른 관찰·톡 쏘는 한마디·장난스러운 여유",
     summonExample: "히카리 불러와",
     switchExample: "히카리로 교체해",
@@ -671,21 +671,6 @@ async function requestJson<T>(
   }
 }
 
-/**
- * Antigravity 카드에 남길 한도 줄. 이 계정은 채팅 계정이 아니라 vision·이미지 확인용 Gemini
- * 보조 계정이라, 같은 계정을 거치는 Claude·GPT 공유 한도 줄은 카드에 필요 없다(2026-09-28
- * 사용자 결정). 코어 사용량 제공자는 한도 id를 `<provider>:<counter>:<tier>:<window>`로 짓고
- * Gemini 카운터는 `google`이다(`pi-ai/src/usage/google-antigravity.ts`).
- */
-const ANTIGRAVITY_PROVIDER = "google-antigravity";
-const GEMINI_LIMIT_PREFIX = `${ANTIGRAVITY_PROVIDER}:google:`;
-
-function usageReportForDisplay(report: UsageReport): UsageReport {
-  if (report.provider !== ANTIGRAVITY_PROVIDER || !Array.isArray(report.limits)) return report;
-  const limits = report.limits.filter((limit) => typeof limit.id === "string" && limit.id.startsWith(GEMINI_LIMIT_PREFIX));
-  return limits.length === report.limits.length ? report : { ...report, limits };
-}
-
 export async function loadUsage(
   options: ResourceRequestOptions<UsageSnapshot> = {},
 ): Promise<ResourceLoadState<UsageSnapshot>> {
@@ -694,8 +679,7 @@ export async function loadUsage(
     if (!data || !Array.isArray(data.reports)) {
       throw new ResourceClientError("사용량 응답 형식이 올바르지 않습니다.", "invalid-response");
     }
-    const reports = data.reports.map(usageReportForDisplay);
-    return { status: "fresh", data: reports.every((report, index) => report === data.reports[index]) ? data : { ...data, reports }, error: null };
+    return { status: "fresh", data, error: null };
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }

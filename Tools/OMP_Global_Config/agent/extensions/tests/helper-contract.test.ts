@@ -30,7 +30,7 @@ let onRequest: (() => void) | undefined;
 beforeAll(() => {
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const body = await request.json() as { model: string };
-    // antigravity 계열은 wire 이름에 추론 강도 접미사(-low)를 붙인다. 모델 id 비교는 접미사를 뗀 값으로 한다.
+    // 일부 provider는 wire 이름에 추론 강도 접미사(-low)를 붙인다. 모델 id 비교는 접미사를 뗀 값으로 한다.
     body.model = body.model.replace(/-low$/, "");
     requested.push(body.model);
     onRequest?.();
@@ -78,7 +78,7 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   const provider = { baseUrl, apiKey: "local", api: "openai-completions" as const };
   registry.registerProvider("fakeparent", { ...provider, models: [spec("parent")] });
   registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("image-only", ["image"])] });
-  registry.registerProvider("google-antigravity", { ...provider, models: [spec("gemini-3.8-flash")] });
+  registry.registerProvider("google-vertex", { ...provider, models: [spec("gemini-4-argon")] });
   registry.registerProvider("hive", { ...provider, models: [spec("deepseek-ai/deepseek-v4.1-flash-1017")] });
   const model = registry.find("fakeparent", "parent")!;
   const getApiKey = registry.getApiKey.bind(registry);
@@ -138,8 +138,8 @@ describe("helper tool result contract through the SDK", () => {
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GEMINI });
     expect(out.isError).toBe(false);
     expect(out.text).toContain(`model: ${GEMINI}`);
-    expect(requested).toEqual(["gemini-3.8-flash"]);
-    expect(out.usage).toEqual([["skim", "skim", "google-antigravity", "gemini-3.8-flash"]]);
+    expect(requested).toEqual(["gemini-4-argon"]);
+    expect(out.usage).toEqual([["skim", "skim", "google-vertex", "gemini-4-argon"]]);
   });
 
   test("역할만 바꾼 설정: 해석된 다른 모델이 실제로 불리고 표시·사용량이 그 모델이다", async () => {

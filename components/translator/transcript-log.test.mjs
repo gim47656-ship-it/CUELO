@@ -134,6 +134,12 @@ describe("interpreter transcript streams", () => {
     expect(replayLog([["u", "네", 1]], log).segments[0].call).toBe(2);
   });
 
+  test("segment ids keep counting after the log is cleared, so a new line never takes an old line's id", () => {
+    const before = replayLog([["u", "네.", 1], ["a", "Vâng.", 1]]);
+    const after = replayLog([["u", "네.", 1]], clearTranscripts(before));
+    expect(after.segments[0].id).toBeGreaterThan(Math.max(...before.segments.map((segment) => segment.id)));
+  });
+
   test("language and speaker come from the segment's own text only", () => {
     const [mineSaid, mineInterpreted, theirsSaid, theirsInterpreted, unknownSaid, unknownInterpreted] = replayLog([
       ["u", "안녕하세요", 1], ["a", "Xin chào.", 1],
@@ -146,9 +152,9 @@ describe("interpreter transcript streams", () => {
       .toEqual([[undefined, undefined], [undefined, undefined]]);
   });
 
-  test("history hands the latest lines over in spoken order without pairing them", () => {
+  test("history hands the latest lines over in spoken order without pairing them, each with its segment id", () => {
     const log = replayLog([["u", "안녕하세요", 1], ["a", "Xin ch", 0], ["u", "근처", 0]]);
-    expect(transcriptHistory(log, 2)).toEqual([{ role: "assistant", text: "Xin ch" }, { role: "user", text: "근처" }]);
+    expect(transcriptHistory(log, 2)).toEqual([{ id: 1, role: "assistant", text: "Xin ch" }, { id: 2, role: "user", text: "근처" }]);
     expect(transcriptHistory(log, 24)).toHaveLength(3);
   });
 });
