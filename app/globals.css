@@ -6257,6 +6257,86 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   overscroll-behavior: contain;
 }
 
+/* 통역과 원문은 따로 흐른다. 폰에서는 통역이 위, 넓은 화면에서는 나란히 둔다. 두 칸의 줄은 서로 맞추지 않는다. */
+.translator-streams {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  min-block-size: 0;
+}
+
+.translator-stream {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+}
+
+.translator-stream + .translator-stream {
+  border-block-start: 1px solid var(--border);
+}
+
+.translator-stream-label {
+  margin: 0;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x4) 0;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: 600;
+}
+
+/* 위로 올려 읽는 동안 새 말이 오면 자리를 지키고 이 단추로만 내려간다. */
+.translator-jump {
+  position: absolute;
+  inset-block-end: var(--seed-dimension-x2);
+  inset-inline-start: 50%;
+  min-block-size: 32px;
+  padding: 0 var(--seed-dimension-x3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--seed-font-size-t3-static);
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.translator-jump:hover {
+  background: var(--bg-hover);
+}
+
+@media (min-width: 900px) {
+  .translator-streams {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .translator-stream + .translator-stream {
+    border-block-start: 0;
+    border-inline-start: 1px solid var(--border);
+  }
+}
+
+/* 통역 엔진과 Gemini에 쓸 Google 키. 통역 중에는 바꿀 수 없다. */
+.translator-engine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+}
+
+/* 안내는 늘 고르기 칸 아래 한 줄을 쓴다. 같은 줄에 두면 폰에서 고르기 칸이 눌려 사라진다. */
+.translator-engine-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.translator-language select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .translator-empty {
   max-inline-size: 36ch;
   margin: auto;
@@ -6340,10 +6420,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .translator-entry[data-latest="true"] .translator-original {
   color: var(--text-muted);
   font-size: calc(var(--seed-font-size-t5-static) * var(--translator-scale));
-}
-
-.translator-entry[data-latest="true"] .translator-pending {
-  font-size: calc(var(--seed-font-size-t6-static) * var(--translator-scale));
 }
 
 .translator-dock {
@@ -6504,6 +6580,19 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   text-align: end;
 }
 
+/* 글자로 언어를 가를 수 없는 말(숫자·이름만)은 두 칸 모두에 보이고, 어느 언어로 정해진 것처럼 보이지 않게 표시한다. */
+.translator-face-unknown {
+  display: inline-block;
+  margin-inline-end: var(--seed-dimension-x1_5);
+  padding: 0 var(--seed-dimension-x1_5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: 400;
+  vertical-align: middle;
+}
+
 .translator-face-line[data-latest="true"] {
   color: var(--text);
   font-size: calc(var(--seed-font-size-t12-static) * var(--translator-scale));
@@ -6594,8 +6683,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     min-block-size: 44px;
   }
 
-  /* 언어 고르기는 한 줄을 통째로 쓴다. */
-  .translator-languages {
+  /* 언어 고르기와 엔진 고르기는 한 줄을 통째로 쓴다. */
+  .translator-languages,
+  .translator-engine {
     inline-size: 100%;
   }
 
@@ -6606,7 +6696,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .translator-context .translator-language {
+  .translator-context .translator-language,
+  .translator-engine .translator-language {
     flex-direction: column;
     align-items: stretch;
     gap: 2px;

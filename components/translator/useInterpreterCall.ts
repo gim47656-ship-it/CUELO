@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { failureFromOffer, isLiveState, waitForIceGathering, type LiveFailure } from "@/hooks/useLiveVoice";
 import type { LiveState, LiveTranscriptRole } from "@/lib/live-types";
-import type { InterpreterProfile, InterpreterTurn } from "@/lib/translator-context";
+import type { InterpreterLine, InterpreterProfile } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
 
 /**
@@ -24,8 +24,8 @@ export interface InterpreterTranscript {
 
 export interface InterpreterCallOptions {
   onTranscript: (transcript: InterpreterTranscript) => void;
-  /** The turns interpreted so far, read each time a call opens. */
-  getHistory: () => InterpreterTurn[];
+  /** The lines heard and interpreted so far, in spoken order; read each time a call opens. */
+  getHistory: () => InterpreterLine[];
   /** A started call was replaced by a reconnect: new transcripts belong to a new call. */
   onReconnect: () => void;
 }

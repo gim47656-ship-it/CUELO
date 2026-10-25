@@ -20,7 +20,7 @@ import {
   type SpeakerGender,
   type TranslatorMood,
 } from "./translator-context";
-import type { TranslatorLanguage } from "./translator-languages";
+import { guessTranslatorLanguage, type TranslatorLanguage } from "./translator-languages";
 
 /**
  * 통역 모드의 Codex 라이브 통화. 신호 교환·사이드밴드·종료는 `lib/live-session.ts`의 공용 부분을
@@ -119,12 +119,16 @@ export function interpreterInstructions(
   if (setting.length > 0) blocks.push(`<setting>\n${setting.join("\n")}\n</setting>`);
 
   if (history.length > 0) {
-    const lines = history.map((turn) => {
-      const speaker = turn.speaker === "me" ? `User (${a})` : `Other person (${b})`;
-      return `${speaker}: ${turn.original || "…"} → ${turn.translation || "…"}`;
+    // Heard lines are labelled by their own script; interpretations stay unlabelled because
+    // neither live provider says which utterance an interpretation belongs to.
+    const lines = history.map(({ role, text }) => {
+      if (role === "assistant") return `Interpreter: ${text}`;
+      const spoken = guessTranslatorLanguage(text, mine, theirs);
+      const speaker = spoken === mine ? `User (${a})` : spoken === theirs ? `Other person (${b})` : "Heard";
+      return `${speaker}: ${text}`;
     });
     blocks.push(`<conversation_so_far>
-The call was reconnected. These turns were already interpreted; use them only to understand what follows. NEVER interpret, repeat or mention them.
+The call was reconnected. These lines were already heard and interpreted, in the order they were spoken; use them only to understand what follows. NEVER interpret, repeat or mention them.
 ${lines.join("\n")}
 </conversation_so_far>`);
   }

@@ -21,22 +21,25 @@ export interface InterpreterProfile {
   age?: SpeakerAge;
 }
 
-/** 앞선 대화 한 차례: 누가 말했는지, 들은 말, 통역한 말. */
-export interface InterpreterTurn {
-  speaker: "me" | "them";
-  original: string;
-  translation: string;
+/**
+ * 앞선 대화의 한 줄: 들은 말(`user`) 또는 모델이 옮겨 말한 것(`assistant`). 말해진 차례대로 두며
+ * 원문과 통역을 서로 짝짓지 않는다. Codex·Gemini 라이브 모두 어느 통역이 어느 원문의 것인지 알려 주지
+ * 않는다.
+ */
+export interface InterpreterLine {
+  role: "user" | "assistant";
+  text: string;
 }
 
 export interface InterpreterContext {
   profile: InterpreterProfile;
-  history: InterpreterTurn[];
+  history: InterpreterLine[];
 }
 
-/** 새 통화에 넘기는 앞선 대화의 최대 차례 수. 오래된 것부터 버린다. */
-export const HISTORY_MAX_TURNS = 12;
-/** 한 차례 글의 최대 길이. 더 길면 뒤를 자른다. */
-export const TURN_MAX_CHARS = 300;
+/** 새 통화에 넘기는 앞선 대화의 최대 줄 수. 오래된 것부터 버린다. */
+export const HISTORY_MAX_LINES = 24;
+/** 한 줄 글의 최대 길이. 더 길면 뒤를 자른다. */
+export const LINE_MAX_CHARS = 300;
 
 export const EMPTY_INTERPRETER_CONTEXT: InterpreterContext = { profile: {}, history: [] };
 
@@ -45,11 +48,11 @@ const pick = <T extends string>(allowed: readonly T[], value: unknown): T | unde
 
 /**
  * 전사는 지시문 안의 태그 블록에 들어간다. 꺾쇠를 빼서 블록을 닫거나 새 태그를 여는 일이 없게 하고,
- * 줄바꿈을 한 칸으로 접어 한 차례가 한 줄에 머물게 한다.
+ * 줄바꿈을 한 칸으로 접어 앞선 대화 한 줄이 지시문에서도 한 줄로 남게 한다.
  */
-function cleanTurnText(value: unknown): string {
+function cleanLineText(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, TURN_MAX_CHARS);
+  return value.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, LINE_MAX_CHARS);
 }
 
 export function parseInterpreterProfile(value: unknown): InterpreterProfile {
@@ -65,21 +68,29 @@ export function parseInterpreterProfile(value: unknown): InterpreterProfile {
   return profile;
 }
 
-/** 요청 본문의 `context`를 거른다. 모르는 값은 버리고, 앞선 대화는 최근 것만 남긴다. */
+/**
+ * 요청 본문의 `context`를 거른다. 모르는 값은 버리고, 앞선 대화는 최근 줄만 남긴다. 이전 화면이
+ * 보내는 짝 모양(`{ speaker, original, translation }`)은 들은 말과 통역 두 줄로 풀어 글만 살린다.
+ */
 export function parseInterpreterContext(value: unknown): InterpreterContext {
   if (!value || typeof value !== "object") return EMPTY_INTERPRETER_CONTEXT;
   const raw = value as Record<string, unknown>;
-  const history: InterpreterTurn[] = [];
+  const history: InterpreterLine[] = [];
+  const push = (role: InterpreterLine["role"], text: unknown) => {
+    const clean = cleanLineText(text);
+    if (clean) history.push({ role, text: clean });
+  };
   if (Array.isArray(raw.history)) {
     for (const item of raw.history) {
       if (!item || typeof item !== "object") continue;
-      const turn = item as Record<string, unknown>;
-      if (turn.speaker !== "me" && turn.speaker !== "them") continue;
-      const original = cleanTurnText(turn.original);
-      const translation = cleanTurnText(turn.translation);
-      if (!original && !translation) continue;
-      history.push({ speaker: turn.speaker, original, translation });
+      const line = item as Record<string, unknown>;
+      if (line.role === "user" || line.role === "assistant") {
+        push(line.role, line.text);
+      } else if (line.speaker === "me" || line.speaker === "them") {
+        push("user", line.original);
+        push("assistant", line.translation);
+      }
     }
   }
-  return { profile: parseInterpreterProfile(raw.profile), history: history.slice(-HISTORY_MAX_TURNS) };
+  return { profile: parseInterpreterProfile(raw.profile), history: history.slice(-HISTORY_MAX_LINES) };
 }

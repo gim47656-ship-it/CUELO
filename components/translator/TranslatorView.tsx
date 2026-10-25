@@ -1,15 +1,17 @@
 "use client";
 
 import { ActionButton } from "@seed-design/react";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useGeminiInterpreterCall } from "@/hooks/useGeminiInterpreterCall";
+import { useCloudInterpreterCall } from "@/hooks/useCloudInterpreterCall";
 import {
-  HISTORY_MAX_TURNS,
+  HISTORY_MAX_LINES,
   SPEAKER_AGES,
   SPEAKER_GENDERS,
   TRANSLATOR_MOODS,
   parseInterpreterProfile,
+  type InterpreterLine,
   type InterpreterProfile,
-  type InterpreterTurn,
 } from "@/lib/translator-context";
 import {
   TRANSLATOR_LANGUAGES,
@@ -22,17 +24,21 @@ import {
   beginTranscriptCall,
   clearTranscripts,
   emptyTranscriptLog,
-  spokenLanguage,
-  type TranscriptEntry,
+  segmentLanguage,
+  segmentSpeaker,
+  transcriptHistory,
+  type TranscriptSegment,
 } from "./transcript-log";
+import { parseGeminiCredentials, resolveGeminiCredential, type GeminiCredential } from "./gemini-key-choice";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
 
 /**
- * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
- * Codex 라이브 통화(`/api/live/interpret`)를 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로
- * 바로 소리 내어 옮긴다. 화면은 그 통화의 전사로 말풍선을 만든다: 들은 말이 원문, 모델이 말한 것이
- * 통역이다. 기록은 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에 저장하지 않는다. 통화를 새로
- * 열 때(재연결·언어 변경)만 최근 대화를 그 통화의 지시에 실어 앞 맥락을 잇는다.
+ * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 고른 엔진의
+ * 세션 없는 라이브 통화(Codex 라이브: `/api/live/interpret`, Gemini 라이브: `/api/live/interpret/gemini`)를
+ * 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로 바로 소리 내어 옮긴다. 화면은 그 통화의 전사를
+ * 들은 말(원문)과 모델이 말한 것(통역)의 두 흐름으로 따로 보인다. 어느 엔진도 어느 통역이 어느 원문의
+ * 것인지 알려 주지 않으므로 둘을 짝짓지 않는다. 기록은 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에
+ * 저장하지 않는다. 통화를 새로 열 때(재연결·언어 변경)만 최근 줄을 그 통화의 지시에 실어 앞 맥락을 잇는다.
  *
  * 「마주보기」는 화면을 위아래로 나눠 위쪽을 뒤집어 보인다. 폰을 탁자에 두면 맞은편 사람은 위쪽에서
  * 자기 언어로, 나는 아래쪽에서 내 언어로 대화를 읽는다.
@@ -44,6 +50,14 @@ const SETTINGS_KEY = "cuelo-translator";
 const TEXT_SCALES = [0.85, 1, 1.3] as const;
 const DEFAULT_TEXT_SIZE = 1;
 
+/**
+ * 통역 엔진. Codex 라이브가 기본이다. Gemini 라이브는 모델 설정에 저장한 Google API 키(AI Studio)로,
+ * Cloud는 같은 Gemini 라이브 모델을 Google Cloud 프로젝트의 Vertex AI로 연다(Cloud 크레딧이 붙는 쪽).
+ */
+type InterpreterProvider = "codex" | "gemini" | "cloud";
+
+const parseProvider = (value: unknown): InterpreterProvider => (value === "gemini" || value === "cloud" ? value : "codex");
+
 interface Settings {
   mine: TranslatorLanguage;
   theirs: TranslatorLanguage;
@@ -51,10 +65,21 @@ interface Settings {
   face: boolean;
   /** `TEXT_SCALES`의 칸 번호. */
   size: number;
+  provider: InterpreterProvider;
+  /** Gemini에 쓸 저장된 Google 자격 번호. 키 자체는 화면에 두지 않는다. Cloud는 서버의 로그인을 쓰므로 고를 키가 없다. */
+  credentialId: number | null;
 }
 
 function readSettings(): Settings {
-  const fallback: Settings = { mine: TRANSLATOR_LANGUAGES[0], theirs: TRANSLATOR_LANGUAGES[1], profile: {}, face: false, size: DEFAULT_TEXT_SIZE };
+  const fallback: Settings = {
+    mine: TRANSLATOR_LANGUAGES[0],
+    theirs: TRANSLATOR_LANGUAGES[1],
+    profile: {},
+    face: false,
+    size: DEFAULT_TEXT_SIZE,
+    provider: "codex",
+    credentialId: null,
+  };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
     if (!saved || typeof saved !== "object") return fallback;
@@ -64,10 +89,31 @@ function readSettings(): Settings {
     const size = typeof saved.size === "number" && Number.isInteger(saved.size) && saved.size >= 0 && saved.size < TEXT_SCALES.length
       ? saved.size
       : DEFAULT_TEXT_SIZE;
-    return { ...pair, profile: parseInterpreterProfile(saved.profile), face: saved.face === true, size };
+    const credentialId = typeof saved.credentialId === "number" && Number.isInteger(saved.credentialId) ? saved.credentialId : null;
+    return {
+      ...pair,
+      profile: parseInterpreterProfile(saved.profile),
+      face: saved.face === true,
+      size,
+      provider: parseProvider(saved.provider),
+      credentialId,
+    };
   } catch {
     return fallback;
   }
+}
+
+/** `GET /api/live/interpret/gemini`의 답. 읽지 못하면 `error`에 까닭을 둔다. */
+interface GeminiKeys {
+  credentials: GeminiCredential[];
+  error: string | null;
+}
+
+/** `GET /api/live/interpret/cloud`의 답: 서버에 프로젝트·위치(`configured`)와 Google Cloud 로그인(`signedIn`)이 있는지. */
+interface CloudStatus {
+  configured: boolean;
+  signedIn: boolean;
+  error: string | null;
 }
 
 function MicIcon() {
@@ -124,66 +170,142 @@ function CloseIcon() {
 /** 화면이 보이는 통역 단계. 색 점과 글로 함께 보인다. */
 type Phase = "idle" | "connecting" | "reconnecting" | "listening" | "translating" | "error";
 
-function failureText(tt: TranslatorTranslate, failure: string, detail: string | null): string {
+function failureText(tt: TranslatorTranslate, provider: InterpreterProvider, failure: string, detail: string | null): string {
   switch (failure) {
     case "mic-denied":
       return tt("translator.micDenied");
     case "mic-unavailable":
       return tt("translator.micUnavailable");
     case "auth":
-      return tt("translator.auth");
+      return tt(provider === "gemini" ? "translator.geminiAuth" : provider === "cloud" ? "translator.cloudAuth" : "translator.auth");
     case "upstream":
-      return tt("translator.upstream", { error: detail ?? "" });
+      return tt(
+        provider === "gemini" ? "translator.geminiUpstream" : provider === "cloud" ? "translator.cloudUpstream" : "translator.upstream",
+        { error: detail ?? "" },
+      );
     default:
       return tt("translator.failed", { error: detail ?? "" });
   }
-}
-
-/**
- * 말풍선의 글을 그 언어로: 그 언어로 말했으면 원문, 그 언어로 통역됐으면 통역. 언어를 바꾸기 전의
- * 다른 짝으로 생겨 그 언어가 없는 말풍선은 `null`이다. 말한 언어를 모르면 있는 쪽을 쓴다.
- */
-function entryTextIn(entry: TranscriptEntry, code: string): string | null {
-  if (entry.mine.code !== code && entry.theirs.code !== code) return null;
-  const spoken = spokenLanguage(entry);
-  if (!spoken) return entry.translation || entry.original;
-  return spoken.code === code ? entry.original : entry.translation;
 }
 
 /** 마주보기 화면에 한쪽마다 보이는 최근 말 수. */
 const FACE_LINES = 3;
 
 interface FacePaneProps {
-  entries: TranscriptEntry[];
-  /** 이 칸의 지금 언어. 그 언어가 든 말풍선만 보인다. */
+  segments: TranscriptSegment[];
+  /** 이 칸의 지금 언어. 그 언어로 된 조각과 언어를 가를 수 없는 조각만 보인다. */
   language: TranslatorLanguage;
+  /** 언어를 가를 수 없는 조각(숫자·이름만 있는 말)에 붙이는 표시. */
+  unknownLabel: string;
   flipped?: boolean;
   /** 아직 말이 없을 때 이 칸에 보일 안내. 화면 언어로 쓰므로 내 쪽 칸에만 준다. */
   emptyHint?: string;
 }
 
-function FacePane({ entries, language, flipped, emptyHint }: FacePaneProps) {
-  const lines = entries
-    .map((entry) => ({ entry, text: entryTextIn(entry, language.code) }))
-    .filter((line) => line.text !== null)
+/**
+ * 마주보기 한쪽: 들은 말이든 통역이든 이 칸 언어로 된 조각을 생긴 차례대로 보인다. 조각의 언어는 그
+ * 조각의 글자로만 가르고, 가를 수 없으면 두 칸 모두에 「언어 모름」을 붙여 보인다.
+ */
+function FacePane({ segments, language, unknownLabel, flipped, emptyHint }: FacePaneProps) {
+  // 언어를 가를 수 없는 조각은 그 조각의 언어 짝과 상관없이 두 칸 모두에 보인다.
+  const lines = segments
+    .map((segment) => ({ segment, known: segmentLanguage(segment) }))
+    .filter(({ known }) => known === undefined || known.code === language.code)
     .slice(-FACE_LINES);
   return (
     <div className="translator-face-pane" data-flipped={flipped ? "true" : undefined} lang={language.tag}>
       <p className="translator-face-label">{language.nativeName}</p>
       <div className="translator-face-lines">
         {lines.length === 0 && emptyHint ? <p className="translator-face-empty">{emptyHint}</p> : null}
-        {lines.map(({ entry, text }, index) => (
+        {lines.map(({ segment, known }, index) => (
           <p
-            key={entry.id}
+            key={segment.id}
             className="translator-face-line"
             data-latest={index === lines.length - 1 ? "true" : undefined}
-            data-side={spokenLanguage(entry)?.code === entry.mine.code ? "me" : "them"}
+            data-side={segmentSpeaker(segment) ?? "them"}
+            data-language={known ? undefined : "unknown"}
+            lang={known ? undefined : ""}
           >
-            {text || "…"}
+            {known ? null : <span className="translator-face-unknown">{unknownLabel}</span>}
+            {segment.text}
           </p>
         ))}
       </div>
     </div>
+  );
+}
+
+/** 맨 아래에서 이만큼(px) 안이면 맨 아래를 보고 있는 것으로 친다. */
+const STICK_THRESHOLD = 32;
+
+interface StreamLogProps {
+  role: TranscriptSegment["role"];
+  label: string;
+  segments: TranscriptSegment[];
+  /** 이 흐름 맨 끝에 보일 진행 표시. */
+  pending: string | null;
+  jumpLabel: string;
+  /** 글자 크기·설정 칸처럼 칸 높이를 바꾸는 값. 바뀌면 맨 아래를 보던 칸은 다시 맨 아래로 간다. */
+  layoutKey: string;
+}
+
+/**
+ * 한 역할의 흐름(통역 또는 원문). 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는
+ * 중이면 자리를 지키고 「최근 말로」 단추를 보인다.
+ */
+function StreamLog({ role, label, segments, pending, jumpLabel, layoutKey }: StreamLogProps) {
+  const logRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const [behind, setBehind] = useState(false);
+
+  useEffect(() => {
+    const log = logRef.current;
+    if (log && stickRef.current) log.scrollTop = log.scrollHeight;
+  }, [segments, pending, layoutKey]);
+
+  const onScroll = () => {
+    const log = logRef.current;
+    if (!log) return;
+    stickRef.current = log.scrollHeight - log.scrollTop - log.clientHeight <= STICK_THRESHOLD;
+    setBehind(!stickRef.current);
+  };
+
+  return (
+    <section className="translator-stream" data-role={role} aria-label={label}>
+      <h3 className="translator-stream-label">{label}</h3>
+      <div ref={logRef} className="translator-log" role="log" aria-label={label} onScroll={onScroll}>
+        {segments.map((segment, index) => {
+          const language = segmentLanguage(segment);
+          return (
+            <div
+              key={segment.id}
+              className="translator-entry"
+              data-side={segmentSpeaker(segment) ?? "them"}
+              data-latest={index === segments.length - 1 ? "true" : undefined}
+            >
+              <div className="translator-bubble">
+                <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
+                  {segment.text}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+        {pending ? <p className="translator-pending">{pending}</p> : null}
+      </div>
+      {behind ? (
+        <button
+          type="button"
+          className="translator-jump"
+          onClick={() => {
+            const log = logRef.current;
+            if (log) log.scrollTop = log.scrollHeight;
+          }}
+        >
+          {jumpLabel}
+        </button>
+      ) : null}
+    </section>
   );
 }
 
@@ -195,43 +317,108 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
-  const { mine, theirs, profile, face, size } = settings;
-  const [entries, setEntries] = useState<TranscriptEntry[]>([]);
+  const { mine, theirs, profile, face, size, provider } = settings;
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
   const [setupOpen, setSetupOpen] = useState(false);
-  /** 말풍선 목록과 열린 차례. 전사가 올 때마다 고쳐 쓰고 목록만 화면 상태로 넘긴다. */
+  /** 두 흐름의 조각과 역할별 열린 턴. 전사가 올 때마다 고쳐 쓰고 조각 목록만 화면 상태로 넘긴다. */
   const transcriptRef = useRef(emptyTranscriptLog());
-  /** 지금 통화의 번호. 이 통화의 말풍선만 「통역 중…」을 보인다. */
+  /** 지금 통화의 번호. 이 통화에서 들은 말이 통역을 기다릴 때만 「옮기는 중」이다. */
   const [currentCall, setCurrentCall] = useState(0);
-  /** 지금 통화를 연 언어 짝. 새 말풍선에 붙인다. */
+  /** 지금 통화를 연 언어 짝. 새 조각에 붙인다. */
   const pairRef = useRef<Settings>(settings);
-  const logRef = useRef<HTMLDivElement>(null);
+  /** Gemini 엔진을 고른 동안 읽은 저장된 Google 자격 목록. 읽기 전에는 `null`이다. */
+  const [geminiKeys, setGeminiKeys] = useState<GeminiKeys | null>(null);
+  /** Cloud 엔진을 고른 동안 읽은 서버 준비 상태. 읽기 전에는 `null`이다. */
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
 
   useEffect(() => {
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ mine: mine.code, theirs: theirs.code, profile, face, size }));
-  }, [face, mine, profile, size, theirs]);
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      mine: mine.code,
+      theirs: theirs.code,
+      profile,
+      face,
+      size,
+      provider,
+      credentialId: settings.credentialId,
+    }));
+  }, [face, mine, profile, provider, settings.credentialId, size, theirs]);
+
+  // Gemini를 고르면 모델 설정에 저장된 Google 자격의 번호와 이름만 읽는다(키는 서버에만 있다).
+  // 다른 엔진으로 가거나 화면을 떠나면 읽은 목록을 버린다. 돌아온 첫 화면부터 새 목록이 올 때까지
+  // 고른 키가 없는 상태라, 지난 목록으로 미리 연결하거나 시작하지 않는다.
+  useEffect(() => {
+    if (!visible || provider !== "gemini") {
+      setGeminiKeys(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/live/interpret/gemini", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return parseGeminiCredentials(await response.json());
+      })
+      .then((credentials) => {
+        if (!cancelled) setGeminiKeys({ credentials, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setGeminiKeys({ credentials: [], error: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, visible]);
+
+  // Cloud를 고르면 서버가 Cloud 통화를 열 준비가 됐는지만 읽는다(프로젝트 id·자격은 오지 않는다).
+  // 준비되지 않았으면 미리 연결하지도 시작하지도 않고 까닭을 보인다. 다른 엔진으로 가면 버린다.
+  useEffect(() => {
+    if (!visible || provider !== "cloud") {
+      setCloudStatus(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/live/interpret/cloud", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body: unknown = await response.json();
+        const flag = (key: string) => body !== null && typeof body === "object" && key in body && (body as Record<string, unknown>)[key] === true;
+        return { configured: flag("configured"), signedIn: flag("signedIn") };
+      })
+      .then((status) => {
+        if (!cancelled) setCloudStatus({ ...status, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setCloudStatus({ configured: false, signedIn: false, error: error instanceof Error ? error.message : String(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, visible]);
+
+  const geminiCredentials = geminiKeys?.credentials ?? [];
+  // 고른 키가 목록에 없으면 다른 키로 바꾸지 않고 다시 고르게 한다. 고른 적이 없으면 키가 하나일 때만 그것을 쓴다.
+  const { id: credentialId, missing: credentialMissing } = resolveGeminiCredential(settings.credentialId, geminiCredentials);
+  const cloudReady = cloudStatus !== null && !cloudStatus.error && cloudStatus.configured && cloudStatus.signedIn;
 
   const handleTranscript = useCallback((transcript: InterpreterTranscript) => {
     transcriptRef.current = addTranscript(transcriptRef.current, transcript, pairRef.current);
-    setEntries(transcriptRef.current.entries);
+    setSegments(transcriptRef.current.segments);
   }, []);
 
-  const getHistory = useCallback((): InterpreterTurn[] => transcriptRef.current.entries
-    .filter((entry) => entry.original && entry.translation)
-    .slice(-HISTORY_MAX_TURNS)
-    .map((entry) => ({
-      speaker: spokenLanguage(entry)?.code === entry.mine.code ? "me" : "them",
-      original: entry.original,
-      translation: entry.translation,
-    })), []);
+  const getHistory = useCallback((): InterpreterLine[] => transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES), []);
 
   const handleReconnect = useCallback(() => {
     transcriptRef.current = beginTranscriptCall(transcriptRef.current);
     setCurrentCall(transcriptRef.current.call);
   }, []);
 
-  const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
+  // 세 엔진의 훅은 늘 함께 있고, 고른 엔진만 미리 연결하거나 시작한다. Cloud는 서버의 로그인을 쓴다.
+  const codexCall = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
+  const geminiCall = useGeminiInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, credentialId });
+  const cloudCall = useCloudInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
+  const call = provider === "gemini" ? geminiCall : provider === "cloud" ? cloudCall : codexCall;
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
+  const providerReady = provider === "codex" || (provider === "gemini" ? credentialId !== null : cloudReady);
 
   const startCall = (next: Settings) => {
     pairRef.current = next;
@@ -251,17 +438,42 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     changeCallSettings({ ...settings, profile: parseInterpreterProfile({ ...profile, ...patch }) });
   };
 
-  // 대화 화면으로 돌아가면 통화(마이크)를 끝낸다. 화면이 사라질 때는 훅이 정리한다.
-  const { prepare, stop, supported } = call;
+  const { prepare, supported } = call;
+  // 끊기는 값이 바뀔 때만 일어나야 한다. 훅이 새 `stop`을 돌려줄 때마다 돌면 진행 중인 통화를 끊는다.
+  const stopsRef = useRef({ codex: codexCall.stop, gemini: geminiCall.stop, cloud: cloudCall.stop });
+  const activeRef = useRef(active);
   useEffect(() => {
-    if (!visible) stop();
-  }, [stop, visible]);
+    stopsRef.current = { codex: codexCall.stop, gemini: geminiCall.stop, cloud: cloudCall.stop };
+    activeRef.current = active;
+  });
+
+  // 대화 화면으로 돌아가면 통화(마이크)를 끝낸다. 화면이 사라질 때는 훅이 정리한다.
+  useEffect(() => {
+    if (visible) return;
+    stopsRef.current.codex();
+    stopsRef.current.gemini();
+    stopsRef.current.cloud();
+  }, [visible]);
+
+  // 엔진이나 키를 바꾸면 고르지 않은 쪽, 또는 다른 키로 미리 열어 둔 통화를 끊는다.
+  // 통역 중에는 둘 다 바꿀 수 없다. 키 목록을 다시 읽어 고른 키가 바뀌어도 진행 중인 통화는 처음 키로
+  // 이어 가고 끊지 않는다. 아래의 미리 연결보다 먼저 돈다.
+  useEffect(() => {
+    if (provider !== "codex") stopsRef.current.codex();
+    if (provider !== "gemini") stopsRef.current.gemini();
+    if (provider !== "cloud") stopsRef.current.cloud();
+  }, [provider]);
+  useEffect(() => {
+    if (!activeRef.current) stopsRef.current.gemini();
+  }, [credentialId]);
 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
+  // Cloud는 미리 열지 않는다. 연 세션은 Cloud 프로젝트의 사용량이 되므로 「통역 시작」에서만 연다.
   useEffect(() => {
-    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, mine, prepare, profile, supported, theirs, visible]);
+    if (provider === "cloud") return;
+    if (visible && !active && providerReady && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
+  }, [active, credentialId, mine, prepare, profile, provider, providerReady, supported, theirs, visible]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -287,22 +499,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     };
   }, [active]);
 
-  // 새 말이 오거나 글자 크기·보기가 바뀌면 맨 아래(방금 한 말)를 보인다.
-  useEffect(() => {
-    const log = logRef.current;
-    if (log) log.scrollTop = log.scrollHeight;
-  }, [entries, face, size, setupOpen, active]);
-
   const unsupported = call.supported === false;
   const insecure = typeof window !== "undefined" && !window.isSecureContext;
   const notice = call.state === "error" && call.failure
-    ? failureText(tt, call.failure, call.detail)
+    ? failureText(tt, provider, call.failure, call.detail)
     : call.ended === "idle" && !active ? tt("translator.idleStopped")
     : insecure ? tt("translator.insecure") : unsupported ? tt("translator.unsupported") : null;
 
-  // 지금 통화의 마지막 말풍선이 통역을 기다리면 「옮기는 중」이다.
-  const latest = entries.length > 0 ? entries[entries.length - 1] : null;
-  const awaitingTranslation = active && latest !== null && latest.call === currentCall && !latest.translation;
+  // 지금 통화에서 가장 나중에 생긴 조각이 들은 말이면 아직 그 뒤 통역이 오지 않은 것이다.
+  const latest = segments.at(-1);
+  const awaitingTranslation = active && latest !== undefined && latest.call === currentCall && latest.role === "user";
   const phase: Phase = call.state === "error"
     ? "error"
     : call.reconnecting ? "reconnecting"
@@ -319,7 +525,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const showSetup = !active || setupOpen;
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
-  const canStart = active || !(unsupported || insecure || call.supported === null);
+  const canStart = active || !(unsupported || insecure || call.supported === null || !providerReady);
+  const translations = useMemo(() => segments.filter((segment) => segment.role === "assistant"), [segments]);
+  const originals = useMemo(() => segments.filter((segment) => segment.role === "user"), [segments]);
+  const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
   const toggleCall = () => {
     if (active) {
       call.stop();
@@ -359,7 +568,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       <section className="translator-view" data-face="true" aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
         <h2 className="sr-only">{tt("translator.title")}</h2>
         <div className="translator-face" role="log" aria-label={tt("translator.conversation")}>
-          <FacePane entries={entries} language={theirs} flipped />
+          <FacePane segments={segments} language={theirs} unknownLabel={tt("translator.unknownLanguage")} flipped />
           <div className="translator-face-bar">
             {notice ? (
               <p className="translator-face-notice" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
@@ -377,7 +586,12 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               </button>
             </div>
           </div>
-          <FacePane entries={entries} language={mine} emptyHint={active ? undefined : tt("translator.empty")} />
+          <FacePane
+            segments={segments}
+            language={mine}
+            unknownLabel={tt("translator.unknownLanguage")}
+            emptyHint={active ? undefined : tt("translator.empty")}
+          />
         </div>
       </section>
     );
@@ -524,14 +738,57 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 </select>
               </label>
             </div>
-            {entries.length > 0 ? (
+            <div className="translator-engine">
+              <label className="translator-language">
+                <span>{tt("translator.engine")}</span>
+                <select
+                  value={provider}
+                  disabled={active}
+                  onChange={(event) => setSettings({ ...settings, provider: parseProvider(event.target.value) })}
+                >
+                  <option value="codex">{tt("translator.engine.codex")}</option>
+                  <option value="gemini">{tt("translator.engine.gemini")}</option>
+                  <option value="cloud">{tt("translator.engine.cloud")}</option>
+                </select>
+              </label>
+              {provider === "gemini" && geminiCredentials.length > 0 ? (
+                <label className="translator-language">
+                  <span>{tt("translator.geminiKey")}</span>
+                  <select
+                    value={credentialId ?? ""}
+                    disabled={active}
+                    onChange={(event) => setSettings({ ...settings, credentialId: Number(event.target.value) })}
+                  >
+                    {credentialId === null ? <option value="" disabled>{tt("translator.geminiKeyChoose")}</option> : null}
+                    {geminiCredentials.map((credential) => (
+                      <option key={credential.id} value={credential.id}>{credential.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {provider === "gemini" && geminiKeys !== null && (geminiCredentials.length === 0 || credentialMissing) ? (
+                <p className="translator-engine-note" role="status">
+                  {geminiKeys.error
+                    ? tt("translator.geminiKeysFailed", { error: geminiKeys.error })
+                    : geminiCredentials.length === 0 ? tt("translator.geminiNoKey") : tt("translator.geminiKeyMissing")}
+                </p>
+              ) : null}
+              {provider === "cloud" && cloudStatus !== null && !cloudReady ? (
+                <p className="translator-engine-note" role="status">
+                  {cloudStatus.error
+                    ? tt("translator.cloudStatusFailed", { error: cloudStatus.error })
+                    : !cloudStatus.configured ? tt("translator.cloudNotConfigured") : tt("translator.cloudSignedOut")}
+                </p>
+              ) : null}
+            </div>
+            {segments.length > 0 ? (
               <ActionButton
                 variant="ghost"
                 size="small"
                 className="translator-clear"
                 onClick={() => {
                   transcriptRef.current = clearTranscripts(transcriptRef.current);
-                  setEntries([]);
+                  setSegments([]);
                 }}
               >
                 {tt("translator.clear")}
@@ -543,35 +800,30 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       {notice ? (
         <p className="translator-banner" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
       ) : null}
-      <div ref={logRef} className="translator-log" role="log" aria-label={tt("translator.conversation")}>
-        {entries.length === 0 && !active ? <p className="translator-empty">{tt("translator.empty")}</p> : null}
-        {entries.map((entry, index) => {
-          const spoken = spokenLanguage(entry);
-          const target = spoken ? (spoken === entry.mine ? entry.theirs : entry.mine) : undefined;
-          return (
-            <div
-              key={entry.id}
-              className="translator-entry"
-              data-side={spoken === entry.mine ? "me" : "them"}
-              data-latest={index === entries.length - 1 ? "true" : undefined}
-            >
-              <div className="translator-bubble">
-                {entry.translation ? (
-                  <p className="translator-translation" lang={target?.tag}>{entry.translation}</p>
-                ) : active && entry.call === currentCall ? (
-                  <p className="translator-pending">{tt("translator.translationPending")}</p>
-                ) : null}
-                {entry.original ? (
-                  <p className="translator-original" lang={spoken?.tag}>
-                    <span className="sr-only">{tt("translator.original")}: </span>
-                    {entry.original}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {segments.length === 0 && !active ? (
+        <div className="translator-log">
+          <p className="translator-empty">{tt("translator.empty")}</p>
+        </div>
+      ) : (
+        <div className="translator-streams" aria-label={tt("translator.conversation")}>
+          <StreamLog
+            role="assistant"
+            label={tt("translator.translation")}
+            segments={translations}
+            pending={phase === "translating" ? tt("translator.translationPending") : null}
+            jumpLabel={tt("translator.jumpLatest")}
+            layoutKey={layoutKey}
+          />
+          <StreamLog
+            role="user"
+            label={tt("translator.original")}
+            segments={originals}
+            pending={null}
+            jumpLabel={tt("translator.jumpLatest")}
+            layoutKey={layoutKey}
+          />
+        </div>
+      )}
       <div className="translator-dock">
         {statusLine}
         {callButton(active)}
