@@ -122,9 +122,15 @@ export function updateLiveTranscript(
     const base = previous.raw ?? previous.text;
     const head = text.trimStart();
     const body = head.trimEnd();
+    // A leading space is the frame's own word boundary: " 아니" after "아니" is the word said
+    // again, so it is a resend only when the stored text already ends with a boundary and that
+    // word, and it is never a cumulative frame that adds nothing (issue #47).
+    const bounded = head !== text;
+    const resent = previous.text.endsWith(body) &&
+      (!bounded || /\s/.test(previous.text.charAt(previous.text.length - body.length - 1)));
     if (!body) next = /\s$/.test(base) ? base : base + text;
-    else if (previous.text.endsWith(body)) next = /\s$/.test(head) && !/\s$/.test(base) ? base + head.slice(body.length) : base;
-    else if (head.startsWith(previous.text)) next = head;
+    else if (resent) next = /\s$/.test(head) && !/\s$/.test(base) ? base + head.slice(body.length) : base;
+    else if (head.startsWith(previous.text) && body.length > previous.text.length) next = head;
     else next = /\s$/.test(base) ? base + head : base + text;
   }
   const shown = next.trim();
