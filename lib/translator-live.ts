@@ -77,6 +77,7 @@ const LANGUAGE_NOTES: Partial<Record<string, string>> = {
   vi: "Vietnamese: use paired kinship pronouns that fit both speakers' gender and apparent age and the situation, and keep the pair once chosen. In casual and service settings never use \"tôi\" (it sounds cold); keep it for formal business talk. Younger staff or service workers: the other person is \"em\", the user is \"anh\" (man) or \"chị\" (woman). Adult strangers about the user's age: address a man as \"anh\" and a woman as \"chị\", and the user refers to themself with the term that fits their own gender and relative age. Middle-aged or older drivers, vendors and workers: the other person is \"chú\" or \"bác\" (man) or \"cô\" (woman), the user is \"cháu\". Keep \"ông\"/\"bà\" for the grandparent generation. Use \"bạn\" only when nothing is known. Add polite particles naturally (\"em ơi\" to call staff, \"ạ\" at the end of requests). Understand both Northern and Southern speech.",
   th: "Thai: end polite sentences with the particle of the person speaking: \"ครับ\" for a man, \"ค่ะ\" for a woman's statements and \"คะ\" for her questions.",
   ja: "Japanese: use polite です/ます forms with strangers.",
+  zh: "Chinese: speak Mandarin and write Simplified Chinese characters. Address strangers with 您 in formal or service talk and 你 in casual talk.",
   ko: "Korean: use polite 해요체 by default. Drop the other language's kinship pronouns and polite particles rather than translating them literally: \"anh\" or \"em\" said to the user is \"you\" (or left out), NEVER 오빠, 형 or 동생.",
 };
 

@@ -294,7 +294,7 @@ Main과 Maker는 [`skim.ts`](../Tools/OMP_Global_Config/agent/extensions/skim.ts
 
 ## 문서 초안 작성 `draft`
 
-Main과 Maker는 문서 초안(Markdown·CSV·Excel·Word·PDF 보고서와 표)이 필요하면 먼저 [`draft.ts`](../Tools/OMP_Global_Config/agent/extensions/draft.ts)의 `draft(instruction, output, paths?, overwrite?)`로 `modelRoles.draft`의 모델(기본 Gemini Flash)에 쓰게 하고, 만들어진 파일을 직접 열어 검토한 뒤 씁니다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이 아니어서 계속 `edit`/`write`를 씁니다.
+Main과 Maker는 글씨가 들어가는 콘텐츠를 새로 쓰거나 한 문단 이상 다시 쓸 때 먼저 [`draft.ts`](../Tools/OMP_Global_Config/agent/extensions/draft.ts)의 `draft(instruction, output, paths?, overwrite?)`로 `modelRoles.draft`의 모델(기본 Gemini Flash)에 쓰게 합니다. README·CHANGELOG·문서·보고서·소개 글, 인계 문서와 작업 기록의 서술, Markdown·CSV·Excel·Word·PDF 보고서와 표, PPT 슬라이드 문구, HTML·화면 문구가 모두 대상입니다. 사실·수치·경로·커밋은 지시나 참고 파일로 넘겨 모델이 지어내지 않게 하고, 만들어진 파일은 직접 열어 사실을 검토한 뒤 AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop` 스킬)을 거쳐 반영합니다. 코드·설정·규칙 파일, 몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니어서 계속 `edit`/`write`를 씁니다.
 
 형식은 `output` 확장자로 정합니다. `.md`·`.txt`는 받은 글을 그대로, `.csv`는 RFC 4180으로 파싱되는지 확인한 뒤 Excel이 한글을 깨뜨리지 않도록 UTF-8 BOM을 붙여 저장합니다. `.xlsx`는 모델에게 시트·행 JSON을 받아, `.docx`는 Markdown 부분집합(제목, 굵게·기울임·코드, 글머리·번호 목록, 표, 코드 블록, 인용)을 받아 도구가 직접 OOXML 파일을 만듭니다. 새 패키지는 쓰지 않으며 글꼴은 맑은 고딕입니다. `.pdf`는 같은 Markdown을 HTML로 바꿔 WSL에서 Windows Edge headless 인쇄(`--print-to-pdf`)로 A4 PDF를 만듭니다. WSL이 아니거나 Edge가 없으면 모델을 부르기 전에 오류로 끝나며 다른 형식으로 몰래 바꾸지 않습니다.
 

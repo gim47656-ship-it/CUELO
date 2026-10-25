@@ -18,6 +18,7 @@ export const TRANSLATOR_LANGUAGES: readonly TranslatorLanguage[] = [
   { code: "vi", tag: "vi-VN", englishName: "Vietnamese", nativeName: "Tiếng Việt" },
   { code: "ja", tag: "ja-JP", englishName: "Japanese", nativeName: "日本語" },
   { code: "th", tag: "th-TH", englishName: "Thai", nativeName: "ไทย" },
+  { code: "zh", tag: "zh-CN", englishName: "Chinese", nativeName: "中文" },
 ];
 
 export function findTranslatorLanguage(code: unknown): TranslatorLanguage | undefined {
@@ -27,19 +28,26 @@ export function findTranslatorLanguage(code: unknown): TranslatorLanguage | unde
 /** 베트남어에만 있는 글자(성조·모음 부호, đ). 라틴 문자만 보고는 영어와 가를 수 없어 이것으로 가른다. */
 const VIETNAMESE_LETTERS = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/giu;
 
+/** 가나(히라가나·가타카나, 가타카나 음성 확장, 반각 가타카나). 한자만으로는 일본어와 중국어를 가를 수 없어 이것으로 가른다. */
+const KANA = /[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9d]/u;
+
 const SCRIPT_BY_CODE: Record<string, RegExp> = {
   ko: /[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]/gu,
-  ja: /[\u3040-\u30ff\u4e00-\u9fff]/gu,
+  ja: /[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9d\u4e00-\u9fff]/gu,
+  zh: /[\u4e00-\u9fff]/gu,
   th: /[\u0e00-\u0e7f]/gu,
   vi: VIETNAMESE_LETTERS,
   en: /[a-z]/giu,
 };
 
-function scriptScore(text: string, code: string): number {
+function scriptScore(text: string, code: string, other: string): number {
   const pattern = SCRIPT_BY_CODE[code];
   if (!pattern) return 0;
   // 베트남어 부호가 하나라도 있으면 그 라틴 글자는 영어 근거가 아니다. (`g` 정규식이라 `test` 대신 `match`.)
   if (code === "en" && text.match(VIETNAMESE_LETTERS)) return 0;
+  // 가나가 있으면 그 한자는 일본어 글이다. 일본어·중국어 짝에서 가나 없는 한자만의 말은 중국어로 본다.
+  if (code === "zh" && KANA.test(text)) return 0;
+  if (code === "ja" && other === "zh" && !KANA.test(text)) return 0;
   return text.match(pattern)?.length ?? 0;
 }
 
@@ -52,8 +60,8 @@ export function guessTranslatorLanguage(
   first: TranslatorLanguage,
   second: TranslatorLanguage,
 ): TranslatorLanguage | undefined {
-  const a = scriptScore(text, first.code);
-  const b = scriptScore(text, second.code);
+  const a = scriptScore(text, first.code, second.code);
+  const b = scriptScore(text, second.code, first.code);
   if (a === b) return undefined;
   return a > b ? first : second;
 }

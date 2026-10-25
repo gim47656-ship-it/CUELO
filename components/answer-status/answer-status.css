@@ -916,6 +916,10 @@ details[open] > summary .flow-chevron,
 .subagent-flow > .flow-graph-motion { margin-bottom: 6px; }
 .subagent-flow > .flow-graph { grid-template-columns: repeat(5, minmax(min-content, 1fr)); }
 .subagent-flow .flow-graph-station[data-stage="verdict"]::after { content: none; }
+/* 요청 카드가 레일로 바뀌면 안의 Maker 흐름도 같은 레일을 쓴다. 위 다섯 칸 규칙보다 뒤에 있어야 이긴다. */
+@container answer-summary (max-width: 740px) {
+  .subagent-flow > .flow-graph { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+}
 .answer-dispatch-title-note { flex-shrink: 0; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 @container subagent-flow (max-width: 520px) {
   .subagent-flow > .flow-graph { grid-template-columns: minmax(0, 1fr); row-gap: 0; }

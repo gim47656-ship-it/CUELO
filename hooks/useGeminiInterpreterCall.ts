@@ -16,28 +16,25 @@ import {
 } from "@/lib/gemini-interpreter-audio";
 
 /**
- * Gemini Live 통역의 브라우저 쪽. Codex 통역(`components/translator/useInterpreterCall.ts`)과 같은
- * 컨트롤러를 돌려준다. 다른 점은 전송뿐이다: 서버(`/api/live/interpret/gemini`)가 고른 Google API 키로
- * 설정을 잠근 일회용 토큰을 만들고, 브라우저는 그 토큰으로 Gemini Live에 WebSocket을 직접 연다.
- * 마이크는 AudioWorklet이 16kHz PCM16으로 줄여 보내고, 받은 PCM(보통 24kHz)은 같은 AudioContext로
- * 이어 붙여 재생한다.
+ * Gemini Live 통역(Google Cloud, Vertex AI)의 브라우저 쪽. Codex 통역(`components/translator/useInterpreterCall.ts`)과
+ * 같은 컨트롤러를 돌려준다. 연결은 전송(`LiveInterpreterTransport`)이 정한다: 서버 라우트가 통화를 열고,
+ * 그 답이 Live 소켓이 된다(`hooks/useCloudInterpreterCall.ts`). 마이크는 AudioWorklet이 16kHz PCM16으로
+ * 줄여 보내고, 받은 PCM(보통 24kHz)은 같은 AudioContext로 이어 붙여 재생한다.
  *
- * - `prepare`는 토큰과 연결만 미리 연다. 마이크도 AudioContext도 만들지 않는다.
+ * - `prepare`는 연결만 미리 연다. 마이크도 AudioContext도 만들지 않는다.
  * - `start`는 클릭 안에서 AudioContext를 만들어 재생을 연다. 마이크는 세션이 준비된 뒤에야 캡처에
  *   이어진다. 준비 전 소리를 쌓아 두다 버리는 일이 없다.
- * - 통화가 끊기거나 Gemini가 GoAway를 보내면 마이크를 놓지 않고 새 토큰으로 다시 연다. 새 연결은
+ * - 통화가 끊기거나 Gemini가 GoAway를 보내면 마이크를 놓지 않고 새로 연다. 새 연결은
  *   지금까지의 대화(`getHistory`)만 맥락으로 받는다(세션 재개 없음). 재생 중이던 옛 통역은 멈춘다.
- * - 키를 고르지 않았거나 고른 키를 쓸 수 없으면 `auth` 실패로 멈춘다. 다른 키나 Codex로 넘어가지 않는다.
+ * - 서버 설정이 없으면 `auth` 실패로 멈추고 다른 엔진으로 넘어가지 않는다.
  */
-
-export type GeminiInterpreterCallOptions = InterpreterCallOptions & { credentialId: number | null };
 
 const WORKLET_URL = "/gemini-interpreter-worklet.js";
 const WORKLET_PROCESSOR = "gemini-capture";
 
 /**
  * An unused prepared session is closed after this, so a view left open does not keep a Gemini
- * session alive. The token's own new-session window is 60 s; the socket opens well inside it.
+ * session alive.
  */
 const PREPARED_SESSION_MAX_IDLE_MS = 60_000;
 
@@ -51,7 +48,6 @@ interface CallTarget {
   mine: TranslatorLanguage;
   theirs: TranslatorLanguage;
   profile: InterpreterProfile;
-  credentialId: number;
 }
 
 interface LostCall {
@@ -59,41 +55,24 @@ interface LostCall {
   message?: string;
 }
 
-const targetKey = ({ mine, theirs, profile, credentialId }: CallTarget) =>
-  `${credentialId}|${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
+const targetKey = ({ mine, theirs, profile }: CallTarget) =>
+  `${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
 
 /**
- * What differs between the Gemini Developer API and the Google Cloud(Vertex AI) paths: the server
- * route that opens a call, and how its answer becomes a Live socket. Everything else (microphone,
- * worklet, playback, transcripts, reconnects) is shared.
+ * How a call is opened: the server route, and how its answer becomes a Live socket. Everything
+ * else (microphone, worklet, playback, transcripts, reconnects) is the hook's.
  */
 export interface LiveInterpreterTransport {
-  /** POST `{ mine, theirs, context }` here to open a call, plus `credentialId` when `needsCredential`. */
+  /** POST `{ mine, theirs, context }` here to open a call. */
   endpoint: string;
-  /** The user picks a stored key (`credentialId`); without one the call does not open. */
-  needsCredential: boolean;
-  /** Shown when no key is selected. */
-  noKeyMessage: string;
-  /** The session arguments from the route's answer, or `null` when it lacks them. */
-  session(record: Record<string, unknown>): { token: string; model: string; createSocket?: (url: string) => GeminiSocketLike } | null;
+  /** How to open the Live socket for the route's answer, or `null` when the answer lacks what it needs. */
+  session(record: Record<string, unknown>): { createSocket: () => GeminiSocketLike } | null;
   /** Release what a successful answer allocated when that answer arrives after the open was cancelled. */
   discard?(record: Record<string, unknown>): void;
 }
 
-/** Gemini Developer API: a single-use token, and the browser opens Gemini's socket itself. */
-export const GEMINI_DEVELOPER_TRANSPORT: LiveInterpreterTransport = {
-  endpoint: "/api/live/interpret/gemini",
-  needsCredential: true,
-  noKeyMessage: "Choose a Google API key for Gemini interpreting.",
-  session: (record) => {
-    const token = typeof record.token === "string" ? record.token : "";
-    const model = typeof record.model === "string" ? record.model : "";
-    return token && model ? { token, model } : null;
-  },
-};
-
-/** After these another attempt cannot help: the key or the server setup must change first. */
-const isSetupError = (error: unknown) => error === "credential-unavailable" || error === "not-configured";
+/** After this another attempt cannot help: the server setup must change first. */
+const isSetupError = (error: unknown) => error === "not-configured";
 
 type AudioContextConstructor = typeof AudioContext;
 
@@ -102,12 +81,8 @@ function audioContextClass(): AudioContextConstructor | undefined {
   return window.AudioContext ?? (window as unknown as { webkitAudioContext?: AudioContextConstructor }).webkitAudioContext;
 }
 
-export function useGeminiInterpreterCall(options: GeminiInterpreterCallOptions): InterpreterCallController {
-  return useLiveInterpreterCall(options, GEMINI_DEVELOPER_TRANSPORT);
-}
-
 export function useLiveInterpreterCall(
-  { onTranscript, getHistory, onReconnect, credentialId }: GeminiInterpreterCallOptions,
+  { onTranscript, getHistory, onReconnect }: InterpreterCallOptions,
   transport: LiveInterpreterTransport,
 ): InterpreterCallController {
   const transportRef = useRef(transport);
@@ -139,15 +114,13 @@ export function useLiveInterpreterCall(
   const onTranscriptRef = useRef(onTranscript);
   const getHistoryRef = useRef(getHistory);
   const onReconnectRef = useRef(onReconnect);
-  const credentialIdRef = useRef(credentialId);
 
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
     getHistoryRef.current = getHistory;
     onReconnectRef.current = onReconnect;
-    credentialIdRef.current = credentialId;
     transportRef.current = transport;
-  }, [credentialId, getHistory, onReconnect, onTranscript, transport]);
+  }, [getHistory, onReconnect, onTranscript, transport]);
 
   useEffect(() => {
     setSupported(
@@ -240,7 +213,7 @@ export function useLiveInterpreterCall(
   }, [fail]);
 
   /**
-   * Mint a token for this target and open the session. Every step is gated on
+   * Ask the transport's route for a call for this target and open the session. Every step is gated on
    * `genRef.current === gen` so a cancelled open never touches the session that replaced it.
    */
   const openSession = useCallback(async (gen: number, target: CallTarget): Promise<void> => {
@@ -253,7 +226,6 @@ export function useLiveInterpreterCall(
         body: JSON.stringify({
           mine: target.mine.code,
           theirs: target.theirs.code,
-          ...(transportRef.current.needsCredential ? { credentialId: target.credentialId } : {}),
           context: { profile: target.profile, history: getHistoryRef.current() },
         }),
       });
@@ -315,9 +287,9 @@ export function useLiveInterpreterCall(
       },
     };
     try {
-      session = new GeminiLiveSession(opened.token, opened.model, handlers, opened.createSocket);
+      session = new GeminiLiveSession(opened.createSocket, handlers);
     } catch (error) {
-      // A blocked or malformed socket URL throws synchronously from the WebSocket constructor.
+      // A socket that cannot be created throws synchronously (a WebSocket constructor does).
       lost("failed", error instanceof Error ? error.message : String(error));
       return;
     }
@@ -403,9 +375,7 @@ export function useLiveInterpreterCall(
   }, [fail, wireCapture]);
 
   const prepare = useCallback((mine: TranslatorLanguage, theirs: TranslatorLanguage, profile: InterpreterProfile) => {
-    const selected = transportRef.current.needsCredential ? credentialIdRef.current : 0;
-    if (selected === null) return;
-    const target: CallTarget = { mine, theirs, profile, credentialId: selected };
+    const target: CallTarget = { mine, theirs, profile };
     if (targetRef.current && targetKey(targetRef.current) === targetKey(target)) return;
     // A started call is never replaced from here; changing the pair mid-call goes through `start`.
     if (startedRef.current) return;
@@ -419,17 +389,7 @@ export function useLiveInterpreterCall(
   }, [openSession, release]);
 
   const start = useCallback((mine: TranslatorLanguage, theirs: TranslatorLanguage, profile: InterpreterProfile) => {
-    const selected = transportRef.current.needsCredential ? credentialIdRef.current : 0;
-    if (selected === null) {
-      release();
-      setReconnecting(false);
-      setEnded(null);
-      setFailure("auth");
-      setDetail(transportRef.current.noKeyMessage);
-      setState("error");
-      return;
-    }
-    const target: CallTarget = { mine, theirs, profile, credentialId: selected };
+    const target: CallTarget = { mine, theirs, profile };
     const reuse = targetRef.current !== null
       && targetKey(targetRef.current) === targetKey(target)
       && !startedRef.current

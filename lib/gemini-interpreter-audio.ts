@@ -1,18 +1,14 @@
 /**
- * Gemini 통역의 브라우저 쪽 전송부: 제약 토큰으로 여는 Live WebSocket, 서버 메시지 해석, 받은 PCM 재생.
+ * Gemini 통역의 브라우저 쪽 전송부: Live 소켓 위의 세션(서버 메시지 해석), 받은 PCM 재생, Cloud 중계 소켓.
  * React와 무관하게 두어 테스트가 가짜 소켓·오디오 컨텍스트로 수명주기를 검사한다.
  *
- * - 설정(setup)은 서버가 토큰에 잠가 두었다. 브라우저는 모델 이름만 담은 setup을 보내고, Gemini는
- *   토큰의 설정을 쓴다(빈 fieldMask).
+ * - 설정(setup)은 상류 연결을 연 쪽(Cloud 중계 서버)이 보낸다. 브라우저 세션은 setup을 보내지 않는다.
  * - 전사는 역할마다 따로 쌓는다. Gemini의 `inputTranscription`·`outputTranscription`은 조각(delta)이라
  *   이어 붙여 누적 글로 내보내고, 역할마다 따로 끝낸다. 통역(assistant)은 `generationComplete`·
  *   `interrupted`·`turnComplete`에서, 원문(user)은 `turnComplete` 뒤 잠깐 더 조각이 없을 때 끝낸다.
  *   입력 전사는 다른 메시지와 순서가 보장되지 않아 `turnComplete` 뒤에 늦게 올 수 있기 때문이다.
  * - `close()` 뒤에는 어떤 처리기도 부르지 않는다. 늦게 온 메시지·타이머는 버린다.
  */
-
-export const GEMINI_LIVE_WS_URL =
-  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
 
 /** Gemini Live's input format. */
 export const GEMINI_INPUT_MIME = "audio/pcm;rate=16000";
@@ -43,9 +39,9 @@ export interface GeminiTranscriptEvent {
 
 /** Why the socket closed, from the client's point of view. */
 export interface GeminiCloseInfo {
-  /** `auth`: the token or key was refused. `upstream`: quota or service refusal. `failed`: anything else. */
+  /** `auth`: the sign-in or permission was refused. `upstream`: quota or service refusal. `failed`: anything else. */
   failure: "auth" | "upstream" | "failed";
-  /** A new token and connection may heal it. */
+  /** A new connection may heal it. */
   retry: boolean;
   /** The server ended the session cleanly (expiry or after GoAway). */
   ended: boolean;
@@ -93,7 +89,6 @@ const defaultTimers: GeminiTimers = {
 /** Strip anything token- or key-shaped from text that may reach the screen. */
 export function sanitizeGeminiMessage(text: string): string {
   return text
-    .replace(/auth_tokens\/\S+/g, "auth_tokens/[redacted]")
     .replace(/[A-Za-z0-9_\-.]{32,}/g, "[redacted]")
     .slice(0, 300);
 }
@@ -180,16 +175,15 @@ export class GeminiLiveSession {
   #userSawTurnComplete = false;
   #lastTurnCompleteAt = Number.NEGATIVE_INFINITY;
 
+  /** `createSocket` opens the Live connection; whoever opens it owns the session setup. */
   constructor(
-    token: string,
-    model: string,
+    createSocket: () => GeminiSocketLike,
     handlers: GeminiLiveHandlers,
-    createSocket: (url: string) => GeminiSocketLike = (url) => new WebSocket(url) as unknown as GeminiSocketLike,
     timers: GeminiTimers = defaultTimers,
   ) {
     this.#handlers = handlers;
     this.#timers = timers;
-    const socket = createSocket(`${GEMINI_LIVE_WS_URL}?access_token=${encodeURIComponent(token)}`);
+    const socket = createSocket();
     this.#socket = socket;
     // Text frames decode synchronously from an ArrayBuffer; a Blob would need an await that
     // could outlive `close()`.
@@ -198,11 +192,8 @@ export class GeminiLiveSession {
       this.#setupTimer = undefined;
       if (!this.#ready) this.#fail({ failure: "failed", retry: true, ended: false, message: "Gemini did not finish setting up the session." });
     }, SETUP_TIMEOUT_MS);
-    socket.onopen = () => {
-      if (this.#closed) return;
-      // The token carries the whole setup; Gemini ignores everything here but needs the frame.
-      socket.send(JSON.stringify({ setup: { model: `models/${model}` } }));
-    };
+    // The setup is sent by the side that opened the upstream connection (the Cloud relay).
+    socket.onopen = () => {};
     socket.onmessage = (event) => {
       if (this.#closed) return;
       const raw = typeof event.data === "string"

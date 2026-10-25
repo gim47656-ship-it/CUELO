@@ -12,7 +12,6 @@ import {
   arrayBufferToBase64,
   classifyGeminiClose,
   decodePcm16Base64Into,
-  GEMINI_LIVE_WS_URL,
   GeminiAudioPlayer,
   GeminiLiveSession,
   MAX_SOCKET_BACKLOG_BYTES,
@@ -214,7 +213,7 @@ function openSession() {
   const log: string[] = [];
   const timers = new ManualTimers();
   let socket!: FakeSocket;
-  const session = new GeminiLiveSession("auth_tokens/abc", "gemini-3.8-live", {
+  const session = new GeminiLiveSession(() => (socket = new FakeSocket("wss://live.test")), {
     onReady: () => log.push("ready"),
     onTranscript: (event) => {
       transcripts.push(event);
@@ -227,7 +226,7 @@ function openSession() {
       closes.push(info);
       log.push("close");
     },
-  }, (url) => (socket = new FakeSocket(url)), timers);
+  }, timers);
   socket.open();
   return { session, socket, transcripts, closes, log, timers };
 }
@@ -235,11 +234,11 @@ function openSession() {
 const finals = (events: GeminiTranscriptEvent[]) => events.filter((event) => event.final).map((event) => [event.role, event.text]);
 
 describe("live session", () => {
-  test("connects with the token and sends only the model in its setup frame", () => {
+  test("uses the socket it is given in binary mode and sends nothing of its own on open", () => {
     const { socket } = openSession();
-    expect(socket.url).toBe(`${GEMINI_LIVE_WS_URL}?access_token=auth_tokens%2Fabc`);
+    expect(socket.url).toBe("wss://live.test");
     expect(socket.binaryType).toBe("arraybuffer");
-    expect(socket.sent).toEqual([{ setup: { model: "models/gemini-3.8-live" } }]);
+    expect(socket.sent).toEqual([]);
   });
 
   test("audio is refused before setupComplete and sent as 16 kHz PCM after it", () => {
@@ -247,7 +246,7 @@ describe("live session", () => {
     expect(session.sendAudio(new ArrayBuffer(4))).toBe(false);
     socket.receive({ setupComplete: {} }, true);
     expect(session.sendAudio(Uint8Array.from([1, 2, 3, 4]).buffer)).toBe(true);
-    expect(socket.sent[1]).toEqual({ realtimeInput: { audio: { data: "AQIDBA==", mimeType: "audio/pcm;rate=16000" } } });
+    expect(socket.sent[0]).toEqual({ realtimeInput: { audio: { data: "AQIDBA==", mimeType: "audio/pcm;rate=16000" } } });
   });
 
   test("each role accumulates and completes on its own; late input after turnComplete stays in its turn", () => {
@@ -344,7 +343,7 @@ describe("live session", () => {
     socket.receive({ setupComplete: {} });
     socket.bufferedAmount = MAX_SOCKET_BACKLOG_BYTES + 1;
     expect(session.sendAudio(new ArrayBuffer(4))).toBe(false);
-    expect(socket.sent).toHaveLength(1);
+    expect(socket.sent).toHaveLength(0);
     expect(closes).toEqual([expect.objectContaining({ failure: "failed", retry: true })]);
     expect(session.sendAudio(new ArrayBuffer(4))).toBe(false);
   });
@@ -358,8 +357,7 @@ describe("live session", () => {
     expect(classifyGeminiClose(1000, "")).toMatchObject({ failure: "failed", retry: true, ended: true });
     expect(classifyGeminiClose(1011, "Internal error")).toMatchObject({ failure: "failed", retry: true, ended: false });
     const longValue = `example${"0123456789".repeat(4)}`;
-    const message = classifyGeminiClose(1007, `bad token auth_tokens/abcdef and ${longValue}`).message;
-    expect(message).not.toContain("abcdef");
+    const message = classifyGeminiClose(1007, `bad token ${longValue}`).message;
     expect(message).not.toContain(longValue);
   });
 });
@@ -459,12 +457,10 @@ interface HookOptions {
   onTranscript: (event: GeminiTranscriptEvent) => void;
   getHistory: () => { role: string; text: string }[];
   onReconnect: () => void;
-  credentialId: number | null;
 }
 
-type HookTransport = { endpoint: string; needsCredential: boolean };
+type HookTransport = { endpoint: string; session: (record: Record<string, unknown>) => { createSocket: () => GeminiSocketLike } | null };
 type HookModule = {
-  useGeminiInterpreterCall: (options: HookOptions) => HookController;
   useLiveInterpreterCall: (options: HookOptions, transport: HookTransport) => HookController;
 };
 
@@ -593,13 +589,20 @@ const flush = async () => {
   for (let round = 0; round < 6; round += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-const tokenReply = () => Response.json({ token: "auth_tokens/t", model: "gemini-3.8-live" });
+const openReply = () => Response.json({ callId: "call-1" });
+/** A transport whose answer opens a browser WebSocket (the global `FakeSocket`), for the lifecycle tests. */
+const SOCKET_TRANSPORT: HookTransport = {
+  endpoint: "/api/live/interpret/test",
+  session: (record) => (typeof record.callId === "string"
+    ? { createSocket: () => new WebSocket(`wss://live.test/${record.callId}`) as unknown as GeminiSocketLike }
+    : null),
+};
 const KO = { code: "ko", tag: "ko-KR", englishName: "Korean", nativeName: "한국어" };
 const EN = { code: "en", tag: "en-US", englishName: "English", nativeName: "English" };
 const PROFILE = { mood: "polite", gender: "male", age: "40s" };
 
-async function mountHook(credentialId: number | null = 27, transport?: HookTransport) {
-  const { useGeminiInterpreterCall, useLiveInterpreterCall } = await loadHook();
+async function mountHook(transport: HookTransport = SOCKET_TRANSPORT) {
+  const { useLiveInterpreterCall } = await loadHook();
   const browser = installBrowser();
   const events: string[] = [];
   const transcripts: GeminiTranscriptEvent[] = [];
@@ -612,14 +615,13 @@ async function mountHook(credentialId: number | null = 27, transport?: HookTrans
       },
       getHistory: () => [{ role: "user", text: "earlier" }],
       onReconnect: () => events.push("reconnect"),
-      credentialId,
     };
-    controller = transport ? useLiveInterpreterCall(options, transport) : useGeminiInterpreterCall(options);
+    controller = useLiveInterpreterCall(options, transport);
   });
   return { browser, events, transcripts, current: () => controller };
 }
 
-describe("useGeminiInterpreterCall lifecycle", () => {
+describe("useLiveInterpreterCall lifecycle", () => {
   test("prepare opens the session without the microphone; start reuses it and goes live once both are ready", async () => {
     const hook = await mountHook();
     try {
@@ -628,10 +630,9 @@ describe("useGeminiInterpreterCall lifecycle", () => {
       expect(hook.browser.fetches[0]!.body).toEqual({
         mine: "ko",
         theirs: "en",
-        credentialId: 27,
         context: { profile: PROFILE, history: [{ role: "user", text: "earlier" }] },
       });
-      hook.browser.fetches[0]!.resolve(tokenReply());
+      hook.browser.fetches[0]!.resolve(openReply());
       await flush();
       const socket = FakeSocket.instances[0]!;
       socket.open();
@@ -656,7 +657,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
     const hook = await mountHook();
     try {
       hook.current().start(KO, EN, PROFILE);
-      hook.browser.fetches[0]!.resolve(tokenReply());
+      hook.browser.fetches[0]!.resolve(openReply());
       await flush();
       const socket = FakeSocket.instances[0]!;
       socket.open();
@@ -686,7 +687,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
     try {
       hook.current().start(KO, EN, PROFILE);
       hook.current().stop();
-      hook.browser.fetches[0]!.resolve(tokenReply());
+      hook.browser.fetches[0]!.resolve(openReply());
       await flush();
       expect(FakeSocket.instances).toHaveLength(0);
       expect(hook.browser.tracks.every((track) => track.stopped)).toBe(true);
@@ -699,7 +700,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
     const hook = await mountHook();
     try {
       hook.current().start(KO, EN, PROFILE);
-      hook.browser.fetches[0]!.resolve(tokenReply());
+      hook.browser.fetches[0]!.resolve(openReply());
       await flush();
       const first = FakeSocket.instances[0]!;
       first.open();
@@ -720,7 +721,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
       first.receive({ serverContent: { outputTranscription: { text: "stale" } } });
       expect(hook.transcripts.map((event) => event.text)).not.toContain("stale");
 
-      hook.browser.fetches[1]!.resolve(tokenReply());
+      hook.browser.fetches[1]!.resolve(openReply());
       await flush();
       const second = FakeSocket.instances[1]!;
       second.open();
@@ -750,7 +751,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
         },
       });
       hook.current().start(KO, EN, PROFILE);
-      hook.browser.fetches[0]!.resolve(tokenReply());
+      hook.browser.fetches[0]!.resolve(openReply());
       await flush();
       expect([hook.current().state, hook.current().failure, hook.current().detail]).toEqual(["error", "failed", "blocked"]);
       expect(hook.browser.tracks.every((track) => track.stopped)).toBe(true);
@@ -762,39 +763,28 @@ describe("useGeminiInterpreterCall lifecycle", () => {
     }
   });
 
-  test("no selected key or an unavailable key stops with an auth failure and no fallback", async () => {
-    const none = await mountHook(null);
+  test("a server without the interpreter setup stops with an auth failure, no retry and no fallback", async () => {
+    const hook = await mountHook();
     try {
-      none.current().start(KO, EN, PROFILE);
-      await flush();
-      expect([none.current().state, none.current().failure]).toEqual(["error", "auth"]);
-      expect(none.browser.fetches).toHaveLength(0);
-      expect(none.browser.micRequests()).toBe(0);
-    } finally {
-      none.browser.restore();
-    }
-
-    const unavailable = await mountHook(27);
-    try {
-      unavailable.current().start(KO, EN, PROFILE);
-      unavailable.browser.fetches[0]!.resolve(Response.json(
-        { error: "credential-unavailable", message: "The selected Google API key is not available." },
-        { status: 409 },
+      hook.current().start(KO, EN, PROFILE);
+      hook.browser.fetches[0]!.resolve(Response.json(
+        { error: "not-configured", message: "Google Cloud interpreting is not set up on this server." },
+        { status: 503 },
       ));
       await flush();
-      expect([unavailable.current().state, unavailable.current().failure]).toEqual(["error", "auth"]);
-      expect(unavailable.browser.fetches).toHaveLength(1);
+      expect([hook.current().state, hook.current().failure]).toEqual(["error", "auth"]);
+      expect(hook.browser.fetches).toHaveLength(1);
       expect(FakeSocket.instances).toHaveLength(0);
-      expect(unavailable.browser.tracks.every((track) => track.stopped)).toBe(true);
-      expect(unavailable.browser.contexts[0]!.closed).toBe(true);
+      expect(hook.browser.tracks.every((track) => track.stopped)).toBe(true);
+      expect(hook.browser.contexts[0]!.closed).toBe(true);
     } finally {
-      unavailable.browser.restore();
+      hook.browser.restore();
     }
   });
 
-  test("Cloud opens without a chosen key, sends no credential, and reads the relay's events for the returned call", async () => {
+  test("Cloud opens a call with the pair and context only, and reads the relay's events for the returned call", async () => {
     const { CLOUD_TRANSPORT } = await import("../hooks/useCloudInterpreterCall");
-    const hook = await mountHook(null, CLOUD_TRANSPORT);
+    const hook = await mountHook(CLOUD_TRANSPORT);
     try {
       hook.current().prepare(KO, EN, PROFILE);
       expect(hook.browser.fetches.map((fetch) => [fetch.url, fetch.body])).toEqual([[
@@ -813,7 +803,7 @@ describe("useGeminiInterpreterCall lifecycle", () => {
 
   test("a Cloud call whose open answer arrives after stop is released on the server", async () => {
     const { CLOUD_TRANSPORT } = await import("../hooks/useCloudInterpreterCall");
-    const hook = await mountHook(null, CLOUD_TRANSPORT);
+    const hook = await mountHook(CLOUD_TRANSPORT);
     try {
       hook.current().prepare(KO, EN, PROFILE);
       hook.current().stop();

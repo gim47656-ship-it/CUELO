@@ -2,7 +2,6 @@
 
 import { ActionButton } from "@seed-design/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useGeminiInterpreterCall } from "@/hooks/useGeminiInterpreterCall";
 import { useCloudInterpreterCall } from "@/hooks/useCloudInterpreterCall";
 import {
   HISTORY_MAX_LINES,
@@ -29,12 +28,11 @@ import {
   transcriptHistory,
   type TranscriptSegment,
 } from "./transcript-log";
-import { parseGeminiCredentials, resolveGeminiCredential, type GeminiCredential } from "./gemini-key-choice";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 고른 엔진의
- * 세션 없는 라이브 통화(Codex 라이브: `/api/live/interpret`, Gemini 라이브: `/api/live/interpret/gemini`)를
+ * 세션 없는 라이브 통화(Codex 라이브: `/api/live/interpret`, Google Cloud: `/api/live/interpret/cloud`)를
  * 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로 바로 소리 내어 옮긴다. 화면은 그 통화의 전사를
  * 들은 말(원문)과 모델이 말한 것(통역)의 두 흐름으로 따로 보인다. 어느 엔진도 어느 통역이 어느 원문의
  * 것인지 알려 주지 않으므로 둘을 짝짓지 않는다. 기록은 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에
@@ -51,12 +49,13 @@ const TEXT_SCALES = [0.85, 1, 1.3] as const;
 const DEFAULT_TEXT_SIZE = 1;
 
 /**
- * 통역 엔진. Codex 라이브가 기본이다. Gemini 라이브는 모델 설정에 저장한 Google API 키(AI Studio)로,
- * Cloud는 같은 Gemini 라이브 모델을 Google Cloud 프로젝트의 Vertex AI로 연다(Cloud 크레딧이 붙는 쪽).
+ * 통역 엔진. Codex 라이브가 기본이다. Cloud는 Gemini 라이브 모델을 Google Cloud 프로젝트의 Vertex AI로
+ * 연다(Cloud 크레딧이 붙는 쪽).
  */
-type InterpreterProvider = "codex" | "gemini" | "cloud";
+type InterpreterProvider = "codex" | "cloud";
 
-const parseProvider = (value: unknown): InterpreterProvider => (value === "gemini" || value === "cloud" ? value : "codex");
+/** 모르는 값은 Codex다. 없어진 AI Studio 엔진(`"gemini"`)도 여기로 온다. Cloud는 서버 로그인이 필요하고 시작마다 과금되므로 조용히 고르지 않는다. */
+const parseProvider = (value: unknown): InterpreterProvider => (value === "cloud" ? "cloud" : "codex");
 
 interface Settings {
   mine: TranslatorLanguage;
@@ -66,8 +65,6 @@ interface Settings {
   /** `TEXT_SCALES`의 칸 번호. */
   size: number;
   provider: InterpreterProvider;
-  /** Gemini에 쓸 저장된 Google 자격 번호. 키 자체는 화면에 두지 않는다. Cloud는 서버의 로그인을 쓰므로 고를 키가 없다. */
-  credentialId: number | null;
 }
 
 function readSettings(): Settings {
@@ -78,7 +75,6 @@ function readSettings(): Settings {
     face: false,
     size: DEFAULT_TEXT_SIZE,
     provider: "codex",
-    credentialId: null,
   };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
@@ -89,24 +85,16 @@ function readSettings(): Settings {
     const size = typeof saved.size === "number" && Number.isInteger(saved.size) && saved.size >= 0 && saved.size < TEXT_SCALES.length
       ? saved.size
       : DEFAULT_TEXT_SIZE;
-    const credentialId = typeof saved.credentialId === "number" && Number.isInteger(saved.credentialId) ? saved.credentialId : null;
     return {
       ...pair,
       profile: parseInterpreterProfile(saved.profile),
       face: saved.face === true,
       size,
       provider: parseProvider(saved.provider),
-      credentialId,
     };
   } catch {
     return fallback;
   }
-}
-
-/** `GET /api/live/interpret/gemini`의 답. 읽지 못하면 `error`에 까닭을 둔다. */
-interface GeminiKeys {
-  credentials: GeminiCredential[];
-  error: string | null;
 }
 
 /** `GET /api/live/interpret/cloud`의 답: 서버에 프로젝트·위치(`configured`)와 Google Cloud 로그인(`signedIn`)이 있는지. */
@@ -177,10 +165,10 @@ function failureText(tt: TranslatorTranslate, provider: InterpreterProvider, fai
     case "mic-unavailable":
       return tt("translator.micUnavailable");
     case "auth":
-      return tt(provider === "gemini" ? "translator.geminiAuth" : provider === "cloud" ? "translator.cloudAuth" : "translator.auth");
+      return tt(provider === "cloud" ? "translator.cloudAuth" : "translator.auth");
     case "upstream":
       return tt(
-        provider === "gemini" ? "translator.geminiUpstream" : provider === "cloud" ? "translator.cloudUpstream" : "translator.upstream",
+        provider === "cloud" ? "translator.cloudUpstream" : "translator.upstream",
         { error: detail ?? "" },
       );
     default:
@@ -327,8 +315,6 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const [currentCall, setCurrentCall] = useState(0);
   /** 지금 통화를 연 언어 짝. 새 조각에 붙인다. */
   const pairRef = useRef<Settings>(settings);
-  /** Gemini 엔진을 고른 동안 읽은 저장된 Google 자격 목록. 읽기 전에는 `null`이다. */
-  const [geminiKeys, setGeminiKeys] = useState<GeminiKeys | null>(null);
   /** Cloud 엔진을 고른 동안 읽은 서버 준비 상태. 읽기 전에는 `null`이다. */
   const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
 
@@ -340,34 +326,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       face,
       size,
       provider,
-      credentialId: settings.credentialId,
     }));
-  }, [face, mine, profile, provider, settings.credentialId, size, theirs]);
-
-  // Gemini를 고르면 모델 설정에 저장된 Google 자격의 번호와 이름만 읽는다(키는 서버에만 있다).
-  // 다른 엔진으로 가거나 화면을 떠나면 읽은 목록을 버린다. 돌아온 첫 화면부터 새 목록이 올 때까지
-  // 고른 키가 없는 상태라, 지난 목록으로 미리 연결하거나 시작하지 않는다.
-  useEffect(() => {
-    if (!visible || provider !== "gemini") {
-      setGeminiKeys(null);
-      return;
-    }
-    let cancelled = false;
-    fetch("/api/live/interpret/gemini", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return parseGeminiCredentials(await response.json());
-      })
-      .then((credentials) => {
-        if (!cancelled) setGeminiKeys({ credentials, error: null });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setGeminiKeys({ credentials: [], error: error instanceof Error ? error.message : String(error) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [provider, visible]);
+  }, [face, mine, profile, provider, size, theirs]);
 
   // Cloud를 고르면 서버가 Cloud 통화를 열 준비가 됐는지만 읽는다(프로젝트 id·자격은 오지 않는다).
   // 준비되지 않았으면 미리 연결하지도 시작하지도 않고 까닭을 보인다. 다른 엔진으로 가면 버린다.
@@ -395,9 +355,6 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     };
   }, [provider, visible]);
 
-  const geminiCredentials = geminiKeys?.credentials ?? [];
-  // 고른 키가 목록에 없으면 다른 키로 바꾸지 않고 다시 고르게 한다. 고른 적이 없으면 키가 하나일 때만 그것을 쓴다.
-  const { id: credentialId, missing: credentialMissing } = resolveGeminiCredential(settings.credentialId, geminiCredentials);
   const cloudReady = cloudStatus !== null && !cloudStatus.error && cloudStatus.configured && cloudStatus.signedIn;
 
   const handleTranscript = useCallback((transcript: InterpreterTranscript) => {
@@ -412,13 +369,12 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setCurrentCall(transcriptRef.current.call);
   }, []);
 
-  // 세 엔진의 훅은 늘 함께 있고, 고른 엔진만 미리 연결하거나 시작한다. Cloud는 서버의 로그인을 쓴다.
+  // 두 엔진의 훅은 늘 함께 있고, 고른 엔진만 미리 연결하거나 시작한다. Cloud는 서버의 로그인을 쓴다.
   const codexCall = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
-  const geminiCall = useGeminiInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, credentialId });
   const cloudCall = useCloudInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
-  const call = provider === "gemini" ? geminiCall : provider === "cloud" ? cloudCall : codexCall;
+  const call = provider === "cloud" ? cloudCall : codexCall;
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
-  const providerReady = provider === "codex" || (provider === "gemini" ? credentialId !== null : cloudReady);
+  const providerReady = provider === "codex" || cloudReady;
 
   const startCall = (next: Settings) => {
     pairRef.current = next;
@@ -440,10 +396,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   const { prepare, supported } = call;
   // 끊기는 값이 바뀔 때만 일어나야 한다. 훅이 새 `stop`을 돌려줄 때마다 돌면 진행 중인 통화를 끊는다.
-  const stopsRef = useRef({ codex: codexCall.stop, gemini: geminiCall.stop, cloud: cloudCall.stop });
+  const stopsRef = useRef({ codex: codexCall.stop, cloud: cloudCall.stop });
   const activeRef = useRef(active);
   useEffect(() => {
-    stopsRef.current = { codex: codexCall.stop, gemini: geminiCall.stop, cloud: cloudCall.stop };
+    stopsRef.current = { codex: codexCall.stop, cloud: cloudCall.stop };
     activeRef.current = active;
   });
 
@@ -451,21 +407,15 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   useEffect(() => {
     if (visible) return;
     stopsRef.current.codex();
-    stopsRef.current.gemini();
     stopsRef.current.cloud();
   }, [visible]);
 
-  // 엔진이나 키를 바꾸면 고르지 않은 쪽, 또는 다른 키로 미리 열어 둔 통화를 끊는다.
-  // 통역 중에는 둘 다 바꿀 수 없다. 키 목록을 다시 읽어 고른 키가 바뀌어도 진행 중인 통화는 처음 키로
-  // 이어 가고 끊지 않는다. 아래의 미리 연결보다 먼저 돈다.
+  // 엔진을 바꾸면 고르지 않은 쪽에 미리 열어 둔 통화를 끊는다. 통역 중에는 바꿀 수 없다.
+  // 아래의 미리 연결보다 먼저 돈다.
   useEffect(() => {
     if (provider !== "codex") stopsRef.current.codex();
-    if (provider !== "gemini") stopsRef.current.gemini();
     if (provider !== "cloud") stopsRef.current.cloud();
   }, [provider]);
-  useEffect(() => {
-    if (!activeRef.current) stopsRef.current.gemini();
-  }, [credentialId]);
 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
@@ -473,7 +423,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   useEffect(() => {
     if (provider === "cloud") return;
     if (visible && !active && providerReady && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, credentialId, mine, prepare, profile, provider, providerReady, supported, theirs, visible]);
+  }, [active, mine, prepare, profile, provider, providerReady, supported, theirs, visible]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -747,32 +697,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                   onChange={(event) => setSettings({ ...settings, provider: parseProvider(event.target.value) })}
                 >
                   <option value="codex">{tt("translator.engine.codex")}</option>
-                  <option value="gemini">{tt("translator.engine.gemini")}</option>
                   <option value="cloud">{tt("translator.engine.cloud")}</option>
                 </select>
               </label>
-              {provider === "gemini" && geminiCredentials.length > 0 ? (
-                <label className="translator-language">
-                  <span>{tt("translator.geminiKey")}</span>
-                  <select
-                    value={credentialId ?? ""}
-                    disabled={active}
-                    onChange={(event) => setSettings({ ...settings, credentialId: Number(event.target.value) })}
-                  >
-                    {credentialId === null ? <option value="" disabled>{tt("translator.geminiKeyChoose")}</option> : null}
-                    {geminiCredentials.map((credential) => (
-                      <option key={credential.id} value={credential.id}>{credential.label}</option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {provider === "gemini" && geminiKeys !== null && (geminiCredentials.length === 0 || credentialMissing) ? (
-                <p className="translator-engine-note" role="status">
-                  {geminiKeys.error
-                    ? tt("translator.geminiKeysFailed", { error: geminiKeys.error })
-                    : geminiCredentials.length === 0 ? tt("translator.geminiNoKey") : tt("translator.geminiKeyMissing")}
-                </p>
-              ) : null}
               {provider === "cloud" && cloudStatus !== null && !cloudReady ? (
                 <p className="translator-engine-note" role="status">
                   {cloudStatus.error

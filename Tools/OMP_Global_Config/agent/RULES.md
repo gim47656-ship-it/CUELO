@@ -82,11 +82,16 @@
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
   내용은 `skim` 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 전송된다. 이 모델이 고정 대체 모델과 같아
   실패해도 다시 부르지 않고 오류로 끝난다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
-- 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft`로 쓴다. Gemini가
-  작성해 cwd 안에 저장하고, 실패하면 Hive의 DeepSeek 1017로 한 번 대체한다(참고 텍스트는 Google 또는 Hive로 전송).
-  만들어진 파일은 직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이
-  아니므로 `edit`/`write`를 쓴다. Gemini는 번역·문서 다듬기(`draft`)와 OCR 후보(`retry.fallbackChains.ocr`)에만
-  쓰며 같은 Antigravity 계정 할당량을 공유한다.
+- **글씨가 들어가는 콘텐츠는 Gemini가 먼저 쓰고 AI 슬롭 점검을 거친다(2026-10-25 사용자 결정).** 새로 쓰거나 한 문단
+  이상 다시 쓰는 글은 Main·Maker 모두 먼저 `draft`로 쓴다. README·CHANGELOG·`docs/`·보고서·안내서·소개 글·게시물,
+  `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
+  UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
+  Gemini가 작성해 cwd 안에 저장하고, 실패하면 Hive의 DeepSeek 1017로 한 번 대체한다(참고 텍스트는 Google 또는 Hive로
+  전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
+  `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
+  `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
+  하는 대화 답변은 대상이 아니다. Gemini는 이 글쓰기·번역과 OCR 후보(`retry.fallbackChains.ocr`)에 쓰며 같은
+  Antigravity 계정 할당량을 공유한다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.

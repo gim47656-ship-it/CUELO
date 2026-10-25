@@ -22,10 +22,13 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 - 여러 파일·문서·README를 훑는 조사는 Main·Maker 모두 `skim(paths, question)`으로 시작할 수 있다.
   허용 텍스트는 `skim` 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 전송된다. 이 모델이 고정 대체 모델과 같아 그 호출이 실패하면 다시 부르지 않고 오류로 끝난다.
   편집 대상의 정확한 줄은 `read`로 다시 확인한다.
-- 문서 초안(md·csv·Excel·Word·PDF 보고서·표)이 필요하면 Main·Maker 모두 먼저 `draft(instruction, output, paths?)`로
-  Gemini Flash에 쓰게 하고(실패 시 Hive의 DeepSeek 1017로 한 번 대체, 참고 텍스트는 Google 또는 Hive로 전송) 만들어진 파일을
-  직접 열어 검토한 뒤 쓴다. 코드·설정·규칙·`HANDOFF.md`·작업 기록·정확한 줄 수정은 초안이 아니므로 `edit`/`write`를
-  그대로 쓴다. Gemini 할당량은 같은 Antigravity 계정의 OCR 후보(`retry.fallbackChains.ocr`)와 공유한다.
+- 글씨가 들어가는 콘텐츠를 새로 쓰거나 한 문단 이상 다시 쓸 때(README·CHANGELOG·`docs/`·보고서·소개 글, `HANDOFF.md`·작업
+  기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드·HTML·UI 문구)는 Main·Maker 모두 먼저
+  `draft(instruction, output, paths?)`로 Gemini Flash에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 Hive의 DeepSeek 1017로
+  한 번 대체, 참고 텍스트는 Google 또는 Hive로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
+  AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
+  몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Gemini 할당량은 같은 Antigravity 계정의 OCR 후보
+  (`retry.fallbackChains.ocr`)와 공유한다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
   하나뿐이며 다섯 개를 모두 뺀다. 그 결과 코어 `/security` 자동 스캔은 이 프로필에서 쓸 수 없고,
