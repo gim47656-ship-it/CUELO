@@ -45,8 +45,25 @@ describe("interpreter transcript log", () => {
   });
 
   test("lets a late utterance transcript fill the bubble its translation opened", () => {
-    const entries = replay([["a", "Xin chào.", 1], ["u", "안녕하세요", 1]]);
+    const entries = replay([["a", "Xin ch", 0], ["u", "안녕하세요", 1], ["a", "Xin chào.", 1]]);
     expect(entries.map((e) => [e.original, e.translation])).toEqual([["안녕하세요", "Xin chào."]]);
+  });
+
+  test("keeps later pairs aligned when one utterance's transcript never arrives", () => {
+    // 2026-10-25 폰 실기기 통역(ko↔en)에서 본 순서. 첫 말의 전사가 끝내 오지 않았고, 다음 말들이
+    // 앞 말풍선을 하나씩 채워 원문이 모두 한 칸 앞 통역 밑에 붙었다.
+    const english = { mine: findTranslatorLanguage("ko"), theirs: findTranslatorLanguage("en") };
+    const first = "Well, if they don't even offer an apology, I think it's only right to expose them through the media and social networks myself. So, what do you think I should do about that?";
+    const log = replayLog([
+      ["a", "Well, if they don't even offer an apology,", 0], ["a", first, 1],
+      ["u", "잘 모르겠어요", 0], ["u", "잘 모르겠어요", 1], ["a", "I'm not", 0], ["a", "I'm not really sure.", 1],
+      ["u", "뭘 해야 될지 모르겠어요", 1], ["a", "I don't know what I should do.", 1],
+    ], emptyTranscriptLog(), english);
+    expect(bubbles(log)).toEqual([
+      ["", first],
+      ["잘 모르겠어요", "I'm not really sure."],
+      ["뭘 해야 될지 모르겠어요", "I don't know what I should do."],
+    ]);
   });
 
   test("skips a finished utterance the model left untranslated", () => {
@@ -70,7 +87,7 @@ describe("interpreter transcript log", () => {
     let log = replayLog([["u", "안녕하세요", 1]], beginTranscriptCall(emptyTranscriptLog()));
     log = beginTranscriptCall(log);
     const english = { mine: findTranslatorLanguage("ko"), theirs: findTranslatorLanguage("en") };
-    log = replayLog([["a", "Hello.", 1], ["u", "안녕", 1]], log, english);
+    log = replayLog([["a", "Hel", 0], ["u", "안녕", 1], ["a", "Hello.", 1]], log, english);
     expect(bubbles(log)).toEqual([["안녕하세요", ""], ["안녕", "Hello."]]);
     expect(log.entries.map((e) => [e.call, e.theirs.code])).toEqual([[1, "vi"], [2, "en"]]);
   });

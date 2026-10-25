@@ -143,9 +143,11 @@ function placeTranscript(
   let id = log.open[transcript.role];
   if (id === null) {
     if (transcript.role === "user") {
-      // 들은 말의 전사가 늦게 와 모델이 먼저 말하기 시작했으면 원문이 빈 말풍선이 이미 있다.
+      // 들은 말의 전사가 늦게 와 모델이 먼저 말하기 시작했으면 원문이 빈 말풍선이 이미 있다. 그 통역이
+      // 아직 말해지는 중일 때만 채운다. 이미 끝난 통역의 빈 원문은 전사가 오지 않은 말이라, 채우면 다음
+      // 말이 앞 말풍선에 붙고 그 뒤 짝이 모두 한 칸씩 밀린다(2026-10-25 폰 실기기).
       const last = current.at(-1);
-      if (last && last.original === "") id = last.id;
+      if (last && last.original === "" && log.open.assistant === last.id) id = last.id;
     } else {
       // 모델은 들은 순서대로 옮긴다. 다음 말이 이미 들어오기 시작했어도 통역은 다 듣고 아직 옮기지
       // 않은 가장 최근 말의 것이다. 그런 말이 없으면(전사가 통역보다 늦게 끝나는 경우) 아직 옮기지
