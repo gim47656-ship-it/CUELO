@@ -64,6 +64,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
   `HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
   GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
+  Gemini 3.8 Flash(`implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)와 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
   `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때 Main이 명시적으로 고른다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. Main 계열만으로

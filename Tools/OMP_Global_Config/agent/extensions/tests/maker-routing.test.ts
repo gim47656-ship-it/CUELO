@@ -23,7 +23,11 @@ const candidates = [
   { profile: "HARD_CODE_ASTRA", model: "openai-codex/gpt-6-astra", efforts: allStrengths },
 ];
 /** 명시 선택 전용 Daybreak 후보 fixture. 실제 설정은 gpt-6-sol이다. */
-const daybreakFixtures = ["NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"].map((profile) => ({ profile, model: "openai-codex/gpt-6-sol", efforts: allStrengths }));
+const daybreakFixtures = [
+  ...["NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"].map((profile) => ({ profile, model: "openai-codex/gpt-6-sol", efforts: allStrengths })),
+  ...["NORMAL_GEMINI", "HARD_CODE_GEMINI"].map((profile) => ({ profile, model: "google-antigravity/gemini-3.8-flash", efforts: allStrengths })),
+  ...["NORMAL_GLM", "HARD_CODE_GLM"].map((profile) => ({ profile, model: "hive/zai-org/glm-5.3-flash", efforts: allStrengths })),
+];
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
 const families: Record<string, string> = {
   "openai-codex/gpt-6-astra": "openai",
@@ -420,7 +424,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       find: (provider: string, id: string) => {
         const model = `${provider}/${id}`;
         if (model === missing.model) return undefined;
-        const found = candidates.find((candidate) => candidate.model === model);
+        const found = [...candidates, ...daybreakFixtures].find((candidate) => candidate.model === model);
         return found ? { thinking: { efforts: found.efforts } } : undefined;
       },
       refreshDiscoverableProviders: async () => {},
@@ -457,7 +461,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const ladders: Record<string, string[]> = { "hive/deepseek-ai/deepseek-v4.1-flash-1017": ["low", "high"] };
     const registry = {
       find: (provider: string, id: string) => {
-        const found = candidates.find((candidate) => candidate.model === `${provider}/${id}`);
+        const found = [...candidates, ...daybreakFixtures].find((candidate) => candidate.model === `${provider}/${id}`);
         return found ? { thinking: { efforts: ladders[found.model] ?? found.efforts } } : undefined;
       },
       refreshDiscoverableProviders: async () => {},
@@ -1326,6 +1330,10 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
     NORMAL_DAYBREAK: "openai-codex/gpt-6-sol",
     HARD_CODE_DAYBREAK: "openai-codex/gpt-6-sol",
+    NORMAL_GEMINI: "google-antigravity/gemini-3.8-flash",
+    HARD_CODE_GEMINI: "google-antigravity/gemini-3.8-flash",
+    NORMAL_GLM: "hive/zai-org/glm-5.3-flash",
+    HARD_CODE_GLM: "hive/zai-org/glm-5.3-flash",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
   const normalAnswers = {
@@ -1450,7 +1458,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA", "NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA", "NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK", "NORMAL_GEMINI", "HARD_CODE_GEMINI", "NORMAL_GLM", "HARD_CODE_GLM"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1618,6 +1626,39 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       candidates: withDaybreak.filter((c) => !["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"].includes(c.profile)),
     });
     expect((await only.prepare("Daybreak만", [only.task], {} as never))[0]!.profile).toBeNull();
+  });
+  test("Gemini·GLM은 명시 선택 전용이다: 추천·NORMAL 폴백에 오르지 않고 ROUTING_REASON과 auto가 있어야 NORMAL·HARD 모두 발주된다", async () => {
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 명시 후보로 선택함");
+    const models = { gemini: "google-antigravity/gemini-3.8-flash", glm: "hive/zai-org/glm-5.3-flash" };
+    const explicit = [
+      { profile: "NORMAL_GEMINI", model: models.gemini, efforts: allStrengths },
+      { profile: "HARD_CODE_GEMINI", model: models.gemini, efforts: allStrengths },
+      { profile: "NORMAL_GLM", model: models.glm, efforts: allStrengths },
+      { profile: "HARD_CODE_GLM", model: models.glm, efforts: allStrengths },
+    ];
+    for (const [workClass, expected] of [["NORMAL", "NORMAL_SONNET"], ["HARD", "HARD_CODE_OPUS"]] as const) {
+      const h = harness({ workClass, hardFocuses: ["CODE_SYSTEM"], candidates: [...candidates, ...explicit] });
+      const [route] = await h.prepare("명시 후보", [h.task], {} as never);
+      expect(route!.profile).toBe(expected);
+      for (const model of Object.values(models)) {
+        expect(await h.dispatch(`${model}:auto`)).toMatchObject({ block: true });
+        expect(await h.dispatch(`${model}:auto`, reasoned)).toBeUndefined();
+        expect(await h.dispatch(`${model}:high`, reasoned)).toMatchObject({ block: true });
+      }
+    }
+    // 일반 후보가 모두 없어도 Gemini·GLM으로 조용히 대체하지 않는다.
+    const only = harness({
+      workClass: "NORMAL",
+      candidates: [...candidates, ...explicit].filter((c) => !["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"].includes(c.profile)),
+    });
+    expect((await only.prepare("명시 후보만", [only.task], {} as never))[0]!.profile).toBeNull();
+  });
+  test("정본에 Gemini·GLM profile이 없으면 해당 모델 발주는 후보 밖이라 막힌다", async () => {
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 명시 후보로 선택함");
+    const h = harness({ workClass: "NORMAL", candidates });
+    await h.prepare("후보 없음", [h.task], {} as never);
+    expect(await h.dispatch("google-antigravity/gemini-3.8-flash:auto", reasoned)).toMatchObject({ block: true });
+    expect(await h.dispatch("hive/zai-org/glm-5.3-flash:auto", reasoned)).toMatchObject({ block: true });
   });
   test("준비 참조도 다음 줄 ROUTING_REASON 한 줄로 추천 변경 근거를 붙여 발주하고 그 밖의 덧붙임은 거절한다", async () => {
     const h = harness({ workClass: "NORMAL" });

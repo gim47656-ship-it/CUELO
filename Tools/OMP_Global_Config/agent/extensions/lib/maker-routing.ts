@@ -545,7 +545,7 @@ const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
 };
 
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
-const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_DAYBREAK: true };
+const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_DAYBREAK: true, NORMAL_GEMINI: true, NORMAL_GLM: true };
 
 /**
  * 비-UI NORMAL 후보 순서. 기본은 Sonnet → DeepSeek(Hive 1017) → 코드 후보(Astra)다(2026-10-18 사용자 결정으로 2026-10-11의
@@ -1309,7 +1309,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)를 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 선택 전용 Daybreak Blue 후보(NORMAL_DAYBREAK·HARD_CODE_DAYBREAK, 자동 추천·폴백 순서에는 없음)·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)를 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 선택 전용 Daybreak Blue 후보(NORMAL_DAYBREAK·HARD_CODE_DAYBREAK, 자동 추천·폴백 순서에는 없음)·명시 선택 전용 Gemini·GLM 후보(NORMAL_GEMINI·HARD_CODE_GEMINI·NORMAL_GLM·HARD_CODE_GLM, 같은 방식)·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.
