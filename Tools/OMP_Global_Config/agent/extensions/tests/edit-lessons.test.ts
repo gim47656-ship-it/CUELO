@@ -10,11 +10,12 @@ interface Item {
   timestamp?: string;
   score?: number;
 }
-type Search = (query: string, options?: { limit?: number; signal?: AbortSignal }) => Promise<{ items: Item[] }>;
+type Search = (query: string, options?: { limit?: number; signal?: AbortSignal }) => Promise<{ items: Item[]; message?: string }>;
+type ReadMemory = (ctx: unknown, id: string, signal: AbortSignal) => Promise<string>;
 
 const CWD = "/repo";
 
-function setup(search?: Search, deps: { searchTimeoutMs?: number } = {}) {
+function setup(search?: Search, deps: { searchTimeoutMs?: number; readMemory?: ReadMemory } = {}) {
   const handlers: Record<string, Handler[]> = {};
   const pi = {
     on: (name: string, handler: Handler) => (handlers[name] ??= []).push(handler),
@@ -191,11 +192,125 @@ describe("edit-lessons", () => {
     expect(await t.call("edit", { path: "x.ts" })).toBeDefined();
   });
 
-  test("검색이 실패한 경로도 같은 세션에서 다시 기다리지 않는다", async () => {
-    const t = setup(() => Promise.reject(new Error("down")));
+  test("끝나지 못한 검색(오류·시간 초과·사용 불가 메시지)은 다음 편집에서 다시 찾고, 성공하면 붙인다", async () => {
+    let calls = 0;
+    const t = setup(async () => {
+      calls++;
+      if (calls === 1) throw new Error("db locked");
+      if (calls === 2) return Promise.withResolvers<{ items: Item[] }>().promise; // 시간 초과
+      return { items: [lesson("a1", "x.ts 교훈")] };
+    }, { searchTimeoutMs: 20 });
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    // 두 번째 시도(시간 초과)가 상한이라 세 번째 편집은 다시 찾지 않는다.
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(t.queries).toEqual(["x.ts", "x.ts"]);
+
+    let n = 0;
+    const retry = setup(async () => {
+      n++;
+      if (n === 1) return Promise.withResolvers<{ items: Item[] }>().promise;
+      return { items: [lesson("a1", "x.ts 교훈")] };
+    }, { searchTimeoutMs: 20 });
+    expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("id: a1");
+    expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(retry.queries).toEqual(["x.ts", "x.ts"]);
+
+    let m = 0;
+    const unavailable = setup(async () => (++m === 1 ? { items: [], message: "Mnemopi backend is not initialised for this session." } : { items: [lesson("a1", "x.ts 교훈")] }));
+    expect(await unavailable.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(await unavailable.call("edit", { path: "x.ts" })).toBeDefined();
+  });
+
+  test("끝난 빈 결과나 교훈 없는 결과는 같은 세션에서 다시 찾지 않는다", async () => {
+    const empty = setup(async () => ({ items: [] }));
+    await empty.call("edit", { path: "x.ts" });
+    await empty.call("edit", { path: "x.ts" });
+    expect(empty.queries).toEqual(["x.ts"]);
+    const unrelated = setup(async () => ({ items: [lesson("c3", "다른 파일 이야기만 한다")] }));
+    await unrelated.call("edit", { path: "x.ts" });
+    await unrelated.call("edit", { path: "x.ts" });
+    expect(unrelated.queries).toEqual(["x.ts"]);
+  });
+
+  test("ctx.memory가 없으면 다음 편집에서 다시 시도하되 상한이 있다", async () => {
+    const t = setup(undefined);
     await t.call("edit", { path: "x.ts" });
     await t.call("edit", { path: "x.ts" });
-    expect(t.queries).toEqual(["x.ts"]);
+    // 상한 뒤에는 이 경로를 더 건드리지 않는다(상태가 남아 있어도 던지지 않는다).
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+  });
+
+  test("미리보기 밖에 파일명이 있는 잘린 교훈은 전문을 읽어 붙이고, 전문에도 없으면 거른다", async () => {
+    const preview = (head: string) => `${head} ${"가".repeat(480)}…`;
+    const reads: string[] = [];
+    const fulls: Record<string, string> = {
+      far: `${preview("앞부분")}`.slice(0, -1) + "…… 끝에서 setup.ps1은 -ValidateOnly를 먼저 돌린다.",
+      other: `${preview("딴 얘기")}`.slice(0, -1) + "…… 끝까지 다른 파일 이야기만 한다.",
+    };
+    const t = setup(
+      async () => ({
+        items: [
+          lesson("far", preview("앞부분"), { score: 0.9 }),
+          lesson("other", preview("딴 얘기"), { score: 0.8 }),
+          lesson("whole", "온전한 미리보기에는 파일명이 없다", { score: 0.7 }),
+          lesson("near", "setup.ps1은 앞쪽에 있다", { score: 0.6 }),
+        ],
+      }),
+      { readMemory: async (_ctx, id) => (reads.push(id), fulls[id] ?? (() => { throw new Error("no row"); })()) },
+    );
+    const lines = (await t.call("edit", { path: "Tools/setup.ps1" }))!.additionalContext!.split("\n");
+    expect(reads.sort()).toEqual(["far", "other"]); // 온전한(잘리지 않은) 무관 미리보기와 이미 파일명이 보이는 것은 읽지 않는다
+    expect(lines[0]).toContain("묶인 기억 2건");
+    expect(lines[1]).toStartWith(`- ${preview("앞부분")} [전문에서 setup.ps1 언급: …`);
+    expect(lines[1]).toContain("setup.ps1은 -ValidateOnly를 먼저 돌린다.…] (id: far, 2026-10-05)");
+    expect(lines[2]).toBe("- setup.ps1은 앞쪽에 있다 (id: near, 2026-10-05)");
+    expect(lines).toHaveLength(3);
+  });
+
+  test("전문에서 비밀 패턴이 나오면 내용 없이 id만 알린다", async () => {
+    const clipped = `${"가".repeat(499)}…`;
+    const t = setup(
+      async () => ({ items: [lesson("sec", clipped)] }),
+      { readMemory: async () => `${"가".repeat(499)} x.ts의 비밀번호는 환경 파일에서 읽는다` },
+    );
+    const lines = (await t.call("edit", { path: "x.ts" }))!.additionalContext!.split("\n");
+    expect(lines.slice(1)).toEqual(["- 비밀 패턴이 있어 보이지 않음: sec"]);
+  });
+
+  test("전문 읽기가 실패하거나 시간 초과면 그 경로는 다음 편집에서 다시 읽는다", async () => {
+    const clipped = `${"가".repeat(499)}…`;
+    let reads = 0;
+    const t = setup(
+      async () => ({ items: [lesson("far", clipped)] }),
+      {
+        searchTimeoutMs: 20,
+        readMemory: (_ctx, _id, signal) => {
+          reads++;
+          if (reads === 1) return Promise.reject(new Error("not found"));
+          if (reads === 2) {
+            const hang = Promise.withResolvers<string>();
+            signal.addEventListener("abort", () => hang.reject(new Error("aborted")));
+            return hang.promise;
+          }
+          return Promise.resolve(`${"가".repeat(499)} x.ts 교훈`);
+        },
+      },
+    );
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(reads).toBe(2); // 시도 상한(2) 뒤에는 읽지 않는다
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect(reads).toBe(2);
+
+    let n = 0;
+    const retry = setup(
+      async () => ({ items: [lesson("far", clipped)] }),
+      { readMemory: async () => { if (++n === 1) throw new Error("not found"); return `${"가".repeat(499)} x.ts 교훈`; } },
+    );
+    expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
+    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("id: far");
   });
 
   test("같은 파일의 다른 표기는 한 번만 찾는다 (R1-OAI-4)", async () => {

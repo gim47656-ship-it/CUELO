@@ -1352,7 +1352,13 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
 
 // ── 판정(resolve) ────────────────────────────────────────────────────────────
 
-export interface ResolveInput { reviewId: string; resolutions: { id: string; status: string; evidence: string }[] }
+export interface UnreviewedAcknowledgement { path: string; blob: string; evidence: string }
+export interface ResolveInput {
+  reviewId: string;
+  resolutions: { id: string; status: string; evidence: string }[];
+  /** 더 돌릴 non-probe 라운드가 없는 체인에서만 받는다: 마지막 라운드 뒤에 바뀐 코드 파일마다 그 내용에 대해 한 검사를 근거로 적는다. */
+  unreviewedAcknowledgements?: { path: string; evidence: string }[];
+}
 export interface ResolveDeps {
   exec: Exec;
   gitFor?: (root: string) => Promise<string>;
@@ -1369,14 +1375,22 @@ export interface ResolveResult {
   files: CrossReviewFile[];
   /** 선택. 이 pass 기록에 묶인 의존 입력(체인 마지막 라운드가 본 blob). */
   inputs?: CrossReviewFile[];
-  /** 안내(통과 판정과 무관): resolve 시점 내용이 reviewer가 그 파일에서 마지막으로 본 내용(체인에서 그 경로를 가장 늦게 기록한 blob, 검토한 삭제 포함)과 다른 파일. 있으면 그 수정은 reviewer가 보지 못했다. */
+  /** 안내: resolve 시점 내용이 reviewer가 그 파일에서 마지막으로 본 내용(체인에서 그 경로를 가장 늦게 기록한 blob, 검토한 삭제 포함)과 다른 파일. 있으면 그 수정은 reviewer가 보지 못했다. 코드 파일이면 unreviewedBlocking이 통과를 막는다. */
   unreviewedChanges?: { path: string; state: "changed" | "deleted" }[];
   unreviewedNote?: string;
+  /** unreviewedChanges 중 통과를 막는 코드 파일(확인 응답이 받아들여지지 않은 것). 있으면 pass는 false다. */
+  unreviewedBlocking?: string[];
+  /** 입력에 unreviewedAcknowledgements가 있을 때만: 거절된 확인 응답과 이유. */
+  rejectedAcknowledgements?: { path: string; reason: string }[];
+  /** 받아들인 확인 응답(경로, 확인 시점 blob, 근거). resolve 기록에도 남는다. */
+  acknowledgedUnreviewed?: UnreviewedAcknowledgement[];
   /** 체인의 probe 라운드 판단(정보). withdrawn이어도 finding은 여전히 resolve로 닫아야 하며 pass 규칙에는 쓰이지 않는다. */
   verdicts?: CrossReviewVerdict[];
 }
 
 const STATUSES = new Set<CrossReviewResolution["status"]>(["fixed", "refuted", "limit"]);
+/** head 라운드가 reviewer에게 보일 수 없어 건너뛴 파일의 skipped 이유(바이너리·개인키 블록·비밀 경로). 이런 경로는 다음 라운드도 보지 못한다. */
+const UNSHOWABLE_SKIP = /^(?:binary file|private key block excluded|secret-looking path excluded)/;
 
 /**
  * 체인(1회차~reviewId)의 모든 finding에 근거 있는 판정이 있어야 통과다. 판정은 여러 번에 나눠 보낼 수 있고 같은 id는 나중 것이
@@ -1413,28 +1427,57 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
   }
   const open = findings.filter((finding) => !state.has(finding.id)).map((finding) => finding.id);
   const unusable = chain.every((record) => record.passable) ? undefined : "A reviewer answer in this chain was unparsable or failed; the chain can never pass. Start a new review.";
-  const pass = !unusable && open.length === 0;
 
   const paths = [...new Set(chain.flatMap((record) => record.files.map((file) => file.path)))];
   const root = head.root;
   const git = (await deps.gitFor?.(root)) ?? "git";
   const blobs = await currentBlobs(deps.exec, git, root, paths);
   const files = paths.map((path) => ({ path, blob: blobs.get(path)! }));
-  const record: CrossReviewResolveRecord = {
-    type: "cross-review-resolve", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: input.reviewId,
-    chain: chain.map((item) => item.reviewId), resolutions: accepted, open, pass, files,
-    // 입력은 체인 마지막 라운드가 reviewer에게 보인 blob 그대로 옮긴다(앞 라운드의 입력은 이어받아 다시 읽은 것이다). resolve 시점 내용으로 바꾸지 않는다.
-    ...(head.inputs?.length ? { inputs: head.inputs.map(({ path, blob }) => ({ path, blob })) } : {}),
-  };
-  if (!deps.append(record)) throw new Error("The resolution could not be recorded in the routing ledger; nothing was saved. Retry.");
-  const verdicts = chain.flatMap((item) => item.verdicts ?? []);
-  // 안내용(통과 판정에는 쓰지 않는다): 통과 지문은 resolve 시점 내용이므로, reviewer가 그 경로에서 마지막으로 본 내용과 다른 파일은 reviewer가 보지 못한 수정을 덮는다.
+  // 통과 지문은 resolve 시점 내용이므로, reviewer가 그 경로에서 마지막으로 본 내용과 다른 파일은 reviewer가 보지 못한 수정을 덮는다.
   // 마지막으로 본 내용은 체인에서 그 경로를 가장 늦게 기록한 라운드의 blob이다. 이어지는 라운드는 계속 없는 경로(이미 검토한 삭제)나 필터로 빠진 경로를 files에서 빼므로 head.files만 보면 검토한 삭제가 새 삭제로 보인다.
   const lastSeen = new Map<string, string>();
   for (const item of chain) for (const file of item.files) lastSeen.set(file.path, file.blob);
   const unreviewedChanges = files.filter((file) => lastSeen.get(file.path) !== file.blob).map((file) => ({ path: file.path, state: file.blob === DELETED_BLOB ? "deleted" as const : "changed" as const }));
+
+  // 코드 파일(게이트와 같은 isCodeFile)의 미검토 수정은 통과를 막는다. 문서·테스트·생성물은 안내만 한다.
+  // 막힌 것은 다음 라운드로 reviewer에게 보이면 풀린다. 더 돌릴 non-probe 라운드가 없거나 head 라운드가 그 경로를 안전 필터로 건너뛴(다음 라운드도 못 보는) 경우에만 경로별 근거 있는 확인 응답으로 통과한다.
+  const probesUsed = chain.filter((item) => item.probeResults?.length).length;
+  const roundLeft = head.passable && head.round < MAX_ROUNDS && chain.length - probesUsed < MAX_PLAIN_ROUNDS;
+  const unshowable = new Set(head.skipped.filter((item) => UNSHOWABLE_SKIP.test(item.reason)).map((item) => item.path));
+  const codeUnreviewed = new Map(unreviewedChanges.filter((change) => isCodeFile(change.path)).map((change) => [change.path, change] as const));
+  const acknowledgements = new Map<string, UnreviewedAcknowledgement>();
+  const rejectedAcknowledgements: { path: string; reason: string }[] = [];
+  for (const item of input.unreviewedAcknowledgements ?? []) {
+    const path = item.path?.trim() ?? "";
+    const evidence = item.evidence?.trim() ?? "";
+    if (!codeUnreviewed.has(path)) rejectedAcknowledgements.push({ path, reason: "not a code file whose current content the reviewer never saw (see unreviewedChanges)" });
+    else if (!evidence) rejectedAcknowledgements.push({ path, reason: "evidence is required and must not be empty" });
+    else if (roundLeft && !unshowable.has(path)) rejectedAcknowledgements.push({ path, reason: `round(s) are left in this chain: run cross_review review with previousReviewId=${head.reviewId} so the reviewer sees this change; an acknowledgement is allowed only when no further non-probe round can be run` });
+    else acknowledgements.set(path, { path, blob: files.find((file) => file.path === path)!.blob, evidence });
+  }
+  const blocking = [...codeUnreviewed.keys()].filter((path) => !acknowledgements.has(path));
+  const acknowledged = [...acknowledgements.values()];
+  const pass = !unusable && open.length === 0 && blocking.length === 0;
+
+  const record: CrossReviewResolveRecord & { unreviewedAcknowledgements?: UnreviewedAcknowledgement[] } = {
+    type: "cross-review-resolve", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: input.reviewId,
+    chain: chain.map((item) => item.reviewId), resolutions: accepted, open, pass, files,
+    // 입력은 체인 마지막 라운드가 reviewer에게 보인 blob 그대로 옮긴다(앞 라운드의 입력은 이어받아 다시 읽은 것이다). resolve 시점 내용으로 바꾸지 않는다.
+    ...(head.inputs?.length ? { inputs: head.inputs.map(({ path, blob }) => ({ path, blob })) } : {}),
+    ...(acknowledged.length > 0 ? { unreviewedAcknowledgements: acknowledged } : {}),
+  };
+  if (!deps.append(record)) throw new Error("The resolution could not be recorded in the routing ledger; nothing was saved. Retry.");
+  const verdicts = chain.flatMap((item) => item.verdicts ?? []);
+  const unreviewedNote = blocking.length > 0
+    ? (roundLeft
+      ? `${blocking.length} code file(s) changed after the last reviewed round (${head.reviewId}) and the reviewer never saw them (${blocking.join(", ")}): no pass is recorded. Run cross_review review with previousReviewId=${head.reviewId} so the reviewer sees the change, then resolve the new round.`
+      : `${blocking.length} code file(s) changed after the last reviewed round (${head.reviewId}) and no further non-probe review can be run (${blocking.join(", ")}): no pass is recorded. Resolve again with unreviewedAcknowledgements:[{path, evidence}] for each of these paths (evidence = the check you ran on that exact content), or start a new review chain.`)
+    : `${unreviewedChanges.length} file(s) changed after the last reviewed round (${head.reviewId}); the pass records their current content although the reviewer never saw it${acknowledged.length > 0 ? ` (code files acknowledged with evidence: ${acknowledged.map((item) => item.path).join(", ")})` : " (documents/tests/generated files only)"}.`;
   return {
     reviewId: input.reviewId, pass, open, rejected, ...(unusable ? { unusable } : {}), files, ...(record.inputs ? { inputs: record.inputs } : {}), ...(verdicts.length > 0 ? { verdicts } : {}),
-    ...(unreviewedChanges.length > 0 ? { unreviewedChanges, unreviewedNote: `${unreviewedChanges.length} file(s) changed after the last reviewed round (${head.reviewId}); the pass records their current content although the reviewer never saw it. If rounds are left, run a review with previousReviewId first, then resolve again.` } : {}),
+    ...(unreviewedChanges.length > 0 ? { unreviewedChanges, unreviewedNote } : {}),
+    ...(blocking.length > 0 ? { unreviewedBlocking: blocking } : {}),
+    ...(rejectedAcknowledgements.length > 0 || (input.unreviewedAcknowledgements?.length ?? 0) > 0 ? { rejectedAcknowledgements } : {}),
+    ...(acknowledged.length > 0 ? { acknowledgedUnreviewed: acknowledged } : {}),
   };
 }

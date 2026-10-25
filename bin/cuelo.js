@@ -51,6 +51,8 @@ Usage: cuelo [options]
        cuelo setup [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>]
        cuelo start [--home <dir>]
        cuelo health
+       cuelo harness-diff [--home <dir>] [--json]
+       cuelo harness-update [--home <dir>] [--dry-run] [--json]
 
 Options:
   -p, --port <port>         Server port (default: 30141)
@@ -66,7 +68,7 @@ If install scripts did not run, use \"npm run prepare:runtime\" from the install
 }
 
 // 설치·서비스 묶음 명령은 공개 install.mjs가 소유한다. 인자·신호·종료 코드를 전달한다.
-if (["setup", "start", "health"].includes(process.argv[2])) {
+if (["setup", "start", "health", "harness-diff", "harness-update"].includes(process.argv[2])) {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "install.mjs"), ...process.argv.slice(2)], {
     cwd: path.join(__dirname, ".."),
     stdio: "inherit",

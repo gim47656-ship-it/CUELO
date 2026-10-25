@@ -1257,6 +1257,28 @@ describe("jev-runtime pre-dispatch", () => {
         expect((await harness.prepare(BETA, "Beta")).details.routes[0]!.history).toMatchObject({ attempts: 1, followed: { ok: 0, held: 1 } });
       });
 
+      test("object revision은 대표 id로 읽고, 블록 없는 job이 앞선 알림에서도 자기 블록의 원 revision을 읽으며, 관계 원인을 원장에 남긴다", async () => {
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        // 첫 job은 블록 없는 재개 job이다. 순서로 짝지으면 Alpha가 블록을 잃는다.
+        const block = `<task-result id="job-alpha" agent="maker" status="completed">\n<output>\n{"revision":{"id":"r1","base_head":"0e7fa41a164a555f6b70cc40db9290639e7cad5a"},"validation":{}}\n</output>\n</task-result>`;
+        await harness.emit("message_start", {
+          type: "message_start",
+          message: { role: "custom", customType: "async-result", attribution: "agent", content: `── Job resume-2 ──\n재개 보고(prose)\n\n── Job job-alpha ──\n${block}`, details: { jobs: [
+            { jobId: "resume-2", type: "task", status: "completed", durationMs: 1 },
+            { jobId: "job-alpha", agentId: "agent-alpha", type: "task", status: "completed", durationMs: 1_000 },
+          ] } },
+        });
+        expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome")).toMatchObject({ ...alpha, sourceRevision: "r1" });
+        const accept = async (extra: Record<string, unknown>) => (await harness.verdict({
+          ...alpha, verdict: "accepted", reason: "검수", evidenceLocators: ["artifact://review"], ...extra,
+        })).details as { ok: boolean; record?: Record<string, unknown>; diagnostic?: string };
+        expect(await accept({ revision: "R1" })).toMatchObject({ ok: true, record: { revisionRelation: "same", revisionRelationCause: "exact" } });
+        const unlinked = await accept({ revision: "0e7fa41a + docs" });
+        expect(unlinked).toMatchObject({ ok: true, record: { revisionRelation: "mismatch", revisionRelationCause: "unlinked" } });
+        expect(unlinked.diagnostic).toContain("integratedFrom='r1'");
+      });
+
       test("원 revision 미관측과 과거 outcome은 unknown으로 두고 재작업 attempt의 revision은 섞지 않는다", async () => {
         const running: Array<Record<string, unknown>> = [];
         const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });

@@ -39,7 +39,7 @@ Windows에 `winget`이 있으면 Node·Git 설치에 써도 됩니다. 위 공�
 | `cuelo` 앱(`.next`, `bin/`, `install.mjs`)·고정된 `@oh-my-pi/*` SDK | 앱 파일은 npm 패키지에 포함, SDK는 npm 의존성으로 함께 설치. 소스는 `bun install`·빌드로 생성 | `setup`을 완료하고 `start` 뒤 주소를 엽니다. npm은 해당 패키지의 SDK에 `postinstall` 패치를 적용합니다. |
 | `Tools/CUELO_Setup/files/{usage,btw,subagent}-server.js` | GitHub·npm 모두 포함. `start`가 네 서비스 중 세 사이드카를 함께 시작 | `health`로 네 포트의 응답을 확인합니다. 사이드챗은 모델 인증, 사용량 수치는 계정/SDK 또는 `omp` CLI 경로가 별도로 필요합니다. |
 | `native-runtime-patch.js`, `apply-core-patch.mjs`, `apply-notices.mjs`·공개 notices | GitHub·npm 포함. 소스 `setup`은 빌드 뒤 적용, npm `postinstall`은 설치된 패키지 SDK에 적용 | 패치 실패 시 오류를 해결하고 재설치/준비합니다. 독립 설치한 `omp.exe`에는 CUELO의 앱 SDK 패치가 적용되지 않습니다. |
-| 공개 `Tools/OMP_Global_Config/agent/`의 규칙·SOP·확장·도구 | GitHub·npm 포함. `setup`이 없는 파일만 `~/.omp/agent`에 추가 | 기존 프로필에 오래된 동명 파일이 있으면 자동 갱신되지 않으므로 직접 대조합니다. 제공자·역할·Jev 설정은 아래에서 따로 지정합니다. |
+| 공개 `Tools/OMP_Global_Config/agent/`의 규칙·SOP·확장·도구 | GitHub·npm 포함. `setup`이 없는 파일만 `~/.omp/agent`에 추가 | 기존 프로필에 오래된 동명 파일이 있으면 자동 갱신되지 않습니다. [기존 프로필의 하네스 갱신](#기존-프로필의-하네스-갱신)의 `harness-diff`로 차이를 보고 `harness-update`로 반영합니다. 제공자·역할·Jev 설정은 아래에서 따로 지정합니다. |
 | 개인 `config.yml`·`models.yml`·skills·`agent.db`·세션 | 공개본에 **없음**. `setup`은 빈 프로필의 운영 기본값 `config.yml`만 생성 | 본인 계정으로 로그인하고 본인 모델을 선택합니다. 타인의 프로필·인증·대화는 복사하지 않습니다. |
 | Mnemopi 로컬 임베딩 `fastembed`/모델 | **기능별 외부 첫 사용 다운로드**, npm에 모델 파일을 동봉하지 않음 | 메모리 임베딩을 쓸 PC에서 첫 사용 시 네트워크·다운로드/캐시 공간을 허용합니다. `fastembed`가 없으면 SDK가 Bun으로 별도 런타임 캐시에 설치하고 모델 파일은 내려받습니다. 설치/다운로드 실패를 벡터 검색 성공으로 혼동하지 않습니다. |
 | 큰 음성 처리용 FFmpeg | `ffmpeg-static` 의존성 설치 때 플랫폼 실행 파일 다운로드 | 설치 중 다운로드와 디스크 공간이 필요합니다. 별도 실행 파일로 사용하며 해당 배포물의 GPL-3.0-or-later 라이선스가 적용됩니다. 다운로드·변환 실패는 [음성 첨부 안내](./attachments.md)에서 확인합니다. |
@@ -80,7 +80,7 @@ node install.mjs setup
 2. `node bin/prepare-runtime.js --source`로 이 작업 사본의 SDK를 빌드 전에 준비합니다. 공유 패키지 캐시와 연결된 파일은 분리한 뒤 패치하므로 캐시 원본은 바뀌지 않습니다.
 3. `bun run build`
 4. SDK 런타임 패치 적용 뒤 `--check` 확인(`native-runtime-patch.js`, `apply-core-patch.mjs`, `apply-notices.mjs`)
-5. 공개 하네스(`Tools/OMP_Global_Config/agent/`)를 `~/.omp/agent`에 복사. 없는 파일만 추가하고, 이미 있는 파일은 바꾸거나 지우지 않습니다.
+5. 공개 하네스(`Tools/OMP_Global_Config/agent/`)를 `~/.omp/agent`에 복사. 없는 파일만 추가하고, 이미 있는 파일은 바꾸거나 지우지 않습니다. 이때 추가한 파일과 그 내용을 프로필의 `.cuelo-harness-installed.json`에 기록해, 나중에 [기존 프로필의 하네스 갱신](#기존-프로필의-하네스-갱신)이 사용자가 고치지 않은 파일을 알아볼 수 있게 합니다.
 6. `~/.omp/agent/config.yml`이 없으면 새로 만듭니다. 기본 운영 설정을 넣고, 넘긴 모델 역할이 있으면 함께 적습니다(아래 참고). 파일이 이미 있으면 바꾸지 않습니다.
 
 새 `config.yml`에 들어가는 기본값은 다음과 같습니다. 하네스의 Maker 역할이 번들 에이전트(`scout`, `sonic`, `task`, `reviewer`, `security-reviewer`)를 대신하고, task 실행은 격리 환경에서 돌도록 설정합니다. Maker가 정해진 형식의 완료 보고를 돌려주도록 `task.structured`를 켭니다(omp 기본값은 꺼짐). 60초를 넘긴 `eval` 셀은 사용자 말이 도착하면 background로 넘어가 대화가 막히지 않습니다(`eval.autoBackground`, omp 기본값은 꺼짐). 제공자 요청을 스스로 쓰는 자동 기능(`autolearn.autoContinue`, `mnemopi.autoRetain`)은 꺼 둡니다. omp 기본값과 같은 설정은 적지 않습니다.
@@ -144,13 +144,21 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
    예전 설정의 `providers.judgmentProvider`(`auto`·`vercel`)는 이제 쓰지 않습니다. 값이 남은 프로필은 설정을 읽을 때 upstream의 이전 규칙이 키를 지우며, `modelRoles.judge`가 이미 있으면 그 값을 그대로 두고 없을 때만 `typesafe/jev-latest` 후보 체인을 채웁니다(이 경우 TypeSafe API 키가 필요합니다). Vercel AI Gateway 고정 모드는 제거되어 `vercel-ai-gateway` 자격은 판정에 쓰이지 않습니다. 판정 요청은 외부 전송·과금 대상이므로 본인 승인과 요금 확인 없이 시험 호출하지 않습니다.
 4. `cuelo health` 또는 하네스 파일 복사 성공은 Jev 성공 증거가 아닙니다. 실제 로그인 상태, 모델 후보 해석, 첫 판정/응답은 사용자가 준비한 자격으로 별도 확인해야 합니다. 키가 없거나 실패하면 Jev가 무언가를 조용히 대체해 설치 성공으로 만드는 계약도 없습니다.
 
-### 0.6.1로 기존 하네스 갱신
+### 기존 프로필의 하네스 갱신
 
-앱 버전만 올려서는 기존 프로필의 하네스 파일과 역할 설정이 바뀌지 않습니다. `setup`은 같은 이름의 파일과 기존 `config.yml`을 덮어쓰지 않습니다.
+앱 버전만 올려서는 기존 프로필의 하네스 파일과 역할 설정이 바뀌지 않습니다. `setup`은 같은 이름의 파일과 기존 `config.yml`을 덮어쓰지 않습니다. 새 버전의 하네스는 다음 두 명령으로 반영합니다(npm 설치는 `cuelo harness-diff`·`cuelo harness-update`).
 
-- 프로필을 백업하고, 기존 하네스 파일을 새 배포본과 대조해 사용자 수정은 보존하면서 변경 사항을 반영하세요.
-- `modelRoles.implSol`을 쓰던 설정은 `implSonnet`으로, `makerHardCodeSol`은 `makerHardCodeSonnet`으로 바꾸고, 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요. 옛 키를 별칭으로 읽지는 않습니다.
-- CUELO와 `omp`를 다시 시작한 뒤 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
+```sh
+node install.mjs harness-diff
+node install.mjs harness-update --dry-run
+node install.mjs harness-update
+```
+
+`harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·skills는 바꾸지 않으며, `--dry-run`은 무엇이 바뀔지만 보여 줍니다. `--json`은 결과를 JSON으로 냅니다.
+
+설치 기록은 이 기능이 생긴 뒤의 `setup`부터 남습니다. 그 전에 설치한 프로필은 이미 있던 파일이 모두 `untracked`로 나오므로, 그 파일들은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
+
+`modelRoles.implSol`을 쓰던 설정은 `implSonnet`으로, `makerHardCodeSol`은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). 역할 설정은 `harness-update`가 바꾸지 않습니다.
 
 
 ### 다른 프로필에 설치(`--home`)

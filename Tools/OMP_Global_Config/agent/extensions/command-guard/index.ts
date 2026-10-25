@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
@@ -24,8 +24,12 @@ import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
   bindTaskGuardSession,
+  bindWriterOwners,
+  claimSharedWriters,
   createOwnershipState,
   createTaskGuardState,
+  createWriterClaimState,
+  decideOwnerWrite,
   dropOwnedChildren,
   hasUnreportedChildren,
   matchBlockedEvalModelBridge,
@@ -40,16 +44,23 @@ import {
   reservedMakers,
   resetOwnershipState,
   resetTaskGuardState,
+  resetWriterClaimState,
+  settleSharedWriters,
   settleTaskCall,
   stripScopePrefix,
   unbindTaskGuardSession,
+  unbindWriterOwners,
+  writerOwnersOf,
   type EvalCallInput,
   type MakerSpawn,
+  type OwnershipOutsideRow,
   type OwnershipState,
+  type RunningTaskJob,
   type TaskCallInput,
   type TaskCallOutcome,
   type TaskJobRow,
   type TreeSnapshot,
+  type WriterOwnerView,
 } from "./task-guard";
 
 /** WSL에서 Windows 실행 파일을 부를 수 있는지(binfmt interop 등록). Windows 출력 변환을 이때만 붙인다. */
@@ -106,6 +117,52 @@ function readTaskJobRegistry(ctx: unknown): TaskJobRow[] | undefined {
 }
 
 /**
+ * 세션이 소유한 실행 중 task job만 읽는다. core snapshot은 소유 세션 기준이라 child가 아니라 부모 ctx로 읽어야 한다.
+ * 조회 API가 없거나 실패하면 undefined(소유자 미상)이며, 빈 목록으로 대신하지 않는다.
+ */
+function readRunningTaskJobs(ctx: unknown): RunningTaskJob[] | undefined {
+  if (!ctx || typeof ctx !== "object" || !("getAsyncJobSnapshot" in ctx)) return undefined;
+  const read = ctx.getAsyncJobSnapshot;
+  if (typeof read !== "function") return undefined;
+  let snapshot: unknown;
+  try {
+    snapshot = read.call(ctx, { recentLimit: 0 });
+  } catch {
+    return undefined;
+  }
+  if (!snapshot || typeof snapshot !== "object" || !("running" in snapshot) || !Array.isArray(snapshot.running)) {
+    return undefined;
+  }
+  const jobs: RunningTaskJob[] = [];
+  for (const job of snapshot.running) {
+    if (!job || typeof job !== "object" || !("type" in job) || job.type !== "task") continue;
+    if (!("id" in job) || typeof job.id !== "string" || !job.id) continue;
+    const agentId = "agentId" in job && typeof job.agentId === "string" && job.agentId ? job.agentId : undefined;
+    jobs.push({ id: job.id, ...(agentId ? { agentId } : {}) });
+  }
+  return jobs;
+}
+
+/** edit·write 대상. core가 edit 이벤트 입력에 hashline 헤더를 풀어 `path`(한 파일)·`paths`(여러 파일)로 넣는다. */
+function writeTargets(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const record = input as Record<string, unknown>;
+  const raw: unknown[] = [...(Array.isArray(record.paths) ? record.paths : []), record.path];
+  return [...new Set(raw.flatMap((value) => (typeof value === "string" && value.trim() ? [value.trim()] : [])))];
+}
+
+/**
+ * OwnershipGuard의 `outside=none`이 아닌 완료 보고를 한 줄씩 덧붙이는 기록. 실행 프로필의 agent 루트
+ * (routing-ledger.jsonl·steering-gate-miss.jsonl과 같은 자리)에 둔다. 원장 레코드 종류는 늘리지 않는다.
+ */
+export const OWNERSHIP_OUTSIDE_LOG_PATH = join(import.meta.dir, "..", "..", "ownership-outside.jsonl");
+
+export interface CommandGuardDeps {
+  /** 범위 밖 변경 기록 파일. 테스트만 바꾼다. 기본은 OWNERSHIP_OUTSIDE_LOG_PATH다. */
+  ownershipOutsideLog?: string;
+}
+
+/**
  * bash 도구의 `cwd` 인자를 코어 bash와 같은 규칙으로 푼다. WSL에서 `E:/x`·`E:\x`는 코어가
  * `/mnt/e/x`에서 실행하므로, `path.resolve`로 `<세션 cwd>/E:/x`를 만들면 없는 경로의 저장소를
  * 증명하지 못해 다른 저장소의 git까지 막는다. 첫 판정 전에 명령을 동기적으로 읽어야 하므로 sync다.
@@ -159,6 +216,7 @@ function sameMakerReservation(
       !right ||
       left.name !== right.name ||
       left.index !== right.index ||
+      left.isolated !== right.isolated ||
       left.ownedPaths.length !== right.ownedPaths.length
     ) {
       return false;
@@ -671,12 +729,105 @@ function hasOnlyExactCompletionCalls(input: EvalCallInput, target: string): bool
  * 그 뒤 기존 task budget/ownership, eval bridge, bash guard를 같은 순서로 적용한다.
  * 이 index.ts만 자동 로드되며 matcher/guard 오류는 잡지 않아 OMP 코어의 fail-closed 동작을 보존한다.
  */
-export default function commandGuard(pi: ExtensionAPI): void {
+function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
   const taskGuard = createTaskGuardState();
   const ownership = createOwnershipState();
   const summonCalls = new Map<string, CharacterAlias[]>();
   let pendingSummons: CharacterAlias[] = [];
   let ownershipGeneration = 0;
+  const ownershipOutsideLog = deps.ownershipOutsideLog ?? OWNERSHIP_OUTSIDE_LOG_PATH;
+
+  // OwnerWriteGuard: 이 세션이 띄운 공유 작업공간 Maker의 쓰기 소유. child 세션은 자기 parentId로 이 view를 찾는다.
+  // 실행 중 job은 소유 세션 기준 snapshot에만 보이므로 이 세션이 최근 받은 ctx로 읽는다.
+  const writers = createWriterClaimState();
+  let ownerCtx: unknown;
+  let ownerCwd = "";
+  let boundOwnerId = "";
+  const writerView: WriterOwnerView = {
+    get cwd() {
+      return ownerCwd;
+    },
+    state: writers,
+    running: () => readRunningTaskJobs(ownerCtx),
+  };
+  const bindWriterView = (ctx: { cwd?: string; agent?: { id?: string } }): void => {
+    ownerCtx = ctx;
+    ownerCwd = eventSessionCwd(ctx);
+    const id = (ctx.agent?.id ?? "").trim();
+    if (!id || id === boundOwnerId) return;
+    if (boundOwnerId) unbindWriterOwners(boundOwnerId, writerView);
+    bindWriterOwners(id, writerView);
+    boundOwnerId = id;
+  };
+
+  /** 소유 밖 변경·미관측 보고 한 건을 덧붙인다. 진단 기록 실패가 보고 전달을 막지 않는다. */
+  const recordOwnershipOutside = (
+    row: OwnershipOutsideRow,
+    ctx: { sessionManager?: { getSessionId?: () => string } } | undefined,
+  ): void => {
+    try {
+      const sessionId = (ctx?.sessionManager?.getSessionId?.() ?? "").trim();
+      appendFileSync(ownershipOutsideLog, `${JSON.stringify({ ts: new Date().toISOString(), sessionId, ...row })}\n`);
+    } catch (error) {
+      pi.logger?.debug("command-guard: ownership-outside 기록 실패", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * 공유 작업공간 Maker child의 edit·write가 같은 부모의 다른 활성 Maker 소유 경로를 건드리면 막을 이유를 돌린다.
+   * Main·Maker가 아닌 agent·격리 child(부모와 cwd가 다름)는 대상이 아니고, 부모 view나 job snapshot이 없어 소유자를
+   * 확정하지 못하면 debug 기록만 남기고 막지 않는다. bash 쓰기는 대상 경로를 믿을 만하게 풀 수 없어 보지 않는다.
+   */
+  const ownerWriteBlockReason = (
+    toolName: string,
+    input: unknown,
+    ctx: { cwd?: string; agent?: { kind?: string; id?: string; name?: string; parentId?: string } },
+  ): string | undefined => {
+    const agent = ctx.agent;
+    if (!agent) {
+      pi.logger?.debug("command-guard: OwnerWriteGuard 판정 생략(ctx.agent 없음)");
+      return undefined;
+    }
+    if (agent.kind !== "sub" || agent.name !== "maker") return undefined;
+    const skip = (why: string, detail?: Record<string, unknown>): undefined => {
+      pi.logger?.debug(`command-guard: OwnerWriteGuard 판정 생략(${why})`, { agentId: agent.id, ...detail });
+      return undefined;
+    };
+    const selfId = (agent.id ?? "").trim();
+    const parentId = (agent.parentId ?? "").trim();
+    if (!selfId || !parentId) return skip("agent id 미상");
+    const view = writerOwnersOf(parentId);
+    if (!view) return skip("부모 view 없음", { parentId });
+    const cwd = eventSessionCwd(ctx);
+    if (!view.cwd || normalizeRepositoryPath(cwd) !== normalizeRepositoryPath(view.cwd)) {
+      return skip("공유 checkout 아님", { cwd, parentCwd: view.cwd });
+    }
+    const targets: string[] = [];
+    for (const path of writeTargets(input)) {
+      let absolute: string;
+      try {
+        absolute = resolveToCwd(path, cwd);
+      } catch {
+        continue; // agent://·proc:// 같은 내부 URL은 작업 트리 파일이 아니다.
+      }
+      const rel = relative(view.cwd, absolute);
+      if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+      targets.push(rel);
+    }
+    if (targets.length === 0) return undefined;
+    const decision = decideOwnerWrite(view, selfId, targets);
+    if (!decision) return skip("부모 job snapshot 없음", { parentId });
+    if (decision.unknown.length > 0) skip("소유 주장 없는 실행 중 child", { unknown: decision.unknown });
+    if (!decision.conflict) return undefined;
+    const { owner, path } = decision.conflict;
+    return (
+      `[OwnerWriteGuard] ${path}은(는) 지금 실행 중인 다른 Maker ${owner}의 OWNED_PATHS 안이라 ${toolName}을 막았습니다. ` +
+      `직접 고치지 말고 필요한 변경·이유·근거 위치를 write agent://${parentId}로 Main에 보고하세요. ` +
+      "자기 OWNED_PATHS 안이나 다른 실행 중 Maker가 소유하지 않은 경로는 그대로 쓸 수 있습니다."
+    );
+  };
 
   /**
    * 한 terminal event의 exact child들은 스냅샷 하나를 공유한다. await 중 reset되거나 다른
@@ -684,7 +835,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
    */
   const reportPendingOwnedChildren = async (
     ids: readonly string[],
-    ctx: { cwd?: string } | undefined,
+    ctx: { cwd?: string; sessionManager?: { getSessionId?: () => string } } | undefined,
   ): Promise<string[]> => {
     const pendingKeys = exactUnreportedOwnedChildKeys(ownership, ids);
     if (pendingKeys.length === 0) return [];
@@ -696,7 +847,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
       return entry !== undefined && !entry.reported;
     });
     if (stillPendingKeys.length === 0) return [];
-    return reportOwnedChildren(ownership, stillPendingKeys, tree);
+    return reportOwnedChildren(ownership, stillPendingKeys, tree, (row) => recordOwnershipOutside(row, ctx));
   };
 
   // tool-capable child가 실제로 뜨지 못했으면 첫 행동 계약을 다시 요구한다.
@@ -725,6 +876,8 @@ export default function commandGuard(pi: ExtensionAPI): void {
     outcome: TaskCallOutcome,
     progress: readonly { index: number; id: string }[],
   ): void => {
+    // 쓰기 소유 주장은 요청 경계와 무관하게 이 호출의 결과로 in-flight를 내리고 canonical id를 묶는다.
+    settleSharedWriters(writers, toolCallId, progress);
     const before = reservedMakers(taskGuard, toolCallId) ?? [];
     const settlement = settleTaskCall(taskGuard, toolCallId, outcome);
     if (!settlement) return;
@@ -760,6 +913,7 @@ export default function commandGuard(pi: ExtensionAPI): void {
       ownershipGeneration += 1;
       resetTaskGuardState(taskGuard);
       resetOwnershipState(ownership);
+      resetWriterClaimState(writers);
       summonCalls.clear();
       pendingSummons = [];
       bindSession(ctx);
@@ -768,6 +922,8 @@ export default function commandGuard(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => {
     if (boundSessionId) unbindTaskGuardSession(boundSessionId, taskGuard);
     boundSessionId = "";
+    if (boundOwnerId) unbindWriterOwners(boundOwnerId, writerView);
+    boundOwnerId = "";
   });
 
   // 실제 사용자 입력 하나를 budget 단위로 본다. extension 내부 주입은 같은 요청의
@@ -915,11 +1071,18 @@ export default function commandGuard(pi: ExtensionAPI): void {
           };
         }
         registerSpawnedMakers(ownership, event.toolCallId, currentMakers, snapshot);
+        claimSharedWriters(writers, event.toolCallId, currentMakers);
+        bindWriterView(ctx);
       }
       // task guard의 metadata 파생이 character summon brief보다 나중에 적용돼야 둘 다 보존된다.
       if (decision.input) return { input: decision.input };
       if (guardedInput !== event.input) return { input: guardedInput };
       return;
+    }
+
+    if (event.toolName === "edit" || event.toolName === "write") {
+      const reason = ownerWriteBlockReason(event.toolName, event.input, ctx);
+      if (reason) return { block: true, reason };
     }
 
     // 호출을 받은 뒤 모드·roster가 바뀌어 alias의 target을 더는 풀 수 없으면 우회하지 않고 막는다(다음 사용자 입력이 새로 정한다).
@@ -1108,3 +1271,9 @@ export default function commandGuard(pi: ExtensionAPI): void {
     );
   });
 }
+
+export function createCommandGuard(deps: CommandGuardDeps = {}): (pi: ExtensionAPI) => void {
+  return (pi) => commandGuardWith(pi, deps);
+}
+
+export default createCommandGuard();

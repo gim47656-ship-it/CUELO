@@ -4,6 +4,8 @@
 //   node install.mjs [setup] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>]...
 //   node install.mjs start [--home <dir>] [--port-base <n>]
 //   node install.mjs health [--port-base <n>]
+//   node install.mjs harness-diff [--home <dir>] [--json]
+//   node install.mjs harness-update [--home <dir>] [--dry-run] [--json]
 //
 // setup: in a source checkout installs dependencies, builds, applies and checks
 // the SDK patches (same steps as ci.yml and bin/prepare-runtime.js); in an
@@ -18,6 +20,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(ROOT, "package.json"));
@@ -81,17 +84,25 @@ class UsageError extends Error {}
 export function parseArgs(argv) {
   const args = [...argv];
   const command = args[0] && !args[0].startsWith("--") ? args.shift() : "setup";
-  if (!["setup", "start", "health"].includes(command)) throw new UsageError(`unknown command: ${command}`);
-  const options = { command, home: null, roles: {}, portBase: null, hostname: "127.0.0.1" };
+  if (!["setup", "start", "health", "harness-diff", "harness-update"].includes(command)) throw new UsageError(`unknown command: ${command}`);
+  const options = { command, home: null, roles: {}, portBase: null, hostname: "127.0.0.1", json: false, dryRun: false };
   while (args.length > 0) {
     const flag = args.shift();
+    if (flag === "--json" && command.startsWith("harness-")) {
+      options.json = true;
+      continue;
+    }
+    if (flag === "--dry-run" && command === "harness-update") {
+      options.dryRun = true;
+      continue;
+    }
     const value = args.shift();
     if (value === undefined || value.startsWith("--")) throw new UsageError(`${flag} needs a value`);
     if (flag === "--home" && command !== "health") {
       options.home = path.resolve(value);
     } else if (flag === "--hostname" && command === "start") {
       options.hostname = value;
-    } else if (flag === "--port-base" && command !== "setup") {
+    } else if (flag === "--port-base" && (command === "start" || command === "health")) {
       options.portBase = parsePort(value, MAX_PORT_BASE);
       if (options.portBase === null) throw new UsageError(`--port-base takes a number from 1 to ${MAX_PORT_BASE}`);
     } else if (flag === "--model" && command === "setup") {
@@ -131,31 +142,271 @@ export function harnessEntries(packageFiles) {
     .map((entry) => entry.slice(HARNESS_PREFIX.length));
 }
 
-/** Copies the public harness file by file; an existing profile file is always kept as it is. */
-export function copyHarness(sourceDir, agentDir, entries) {
-  const report = { created: [], kept: [] };
-  const copy = (rel) => {
+/** Every distributed harness file as a forward-slash path relative to the agent folder, in walk order. */
+export function listHarnessFiles(sourceDir, entries) {
+  const files = [];
+  const walk = (rel) => {
     const name = path.basename(rel);
     // Same exclusions as the `!…/**/tests` and `!…/**/*.test.*` entries of `files`; npm
     // never packs a nested node_modules either.
     if (name === "tests" || name === "node_modules" || /\.test\./.test(name)) return;
     const source = path.join(sourceDir, rel);
     if (fs.statSync(source).isDirectory()) {
-      for (const child of fs.readdirSync(source)) copy(path.join(rel, child));
+      for (const child of fs.readdirSync(source)) walk(path.join(rel, child));
       return;
     }
-    const target = path.join(agentDir, rel);
+    files.push(rel.split(path.sep).join("/"));
+  };
+  for (const entry of entries) walk(entry);
+  return files;
+}
+
+/** Copies the public harness file by file; an existing profile file is always kept as it is. */
+export function copyHarness(sourceDir, agentDir, entries) {
+  const report = { created: [], kept: [] };
+  for (const rel of listHarnessFiles(sourceDir, entries)) {
+    const target = path.join(agentDir, ...rel.split("/"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
     try {
-      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+      fs.copyFileSync(path.join(sourceDir, ...rel.split("/")), target, fs.constants.COPYFILE_EXCL);
       report.created.push(rel);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       report.kept.push(rel);
     }
-  };
-  for (const entry of entries) copy(entry);
+  }
   return report;
+}
+
+export const HARNESS_MANIFEST = ".cuelo-harness-installed.json";
+const HARNESS_BACKUP_DIR = ".cuelo-harness-backup";
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function hashBytes(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function fileHash(file) {
+  return hashBytes(fs.readFileSync(file));
+}
+
+/**
+ * What setup / harness-update installed: relative path -> sha256 of the bytes it copied, or null for a
+ * file that already existed and so is not ours to update. Absent file = nothing recorded; an unreadable
+ * one throws, because treating it as empty and rewriting it would destroy what it said.
+ */
+export function readHarnessManifest(agentDir) {
+  const file = path.join(agentDir, HARNESS_MANIFEST);
+  if (!fs.existsSync(file)) return { cuelo: null, files: {} };
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Error(`${file} is not readable (${error.message}). Delete it to treat every harness file as untracked.`);
+  }
+  const files = {};
+  for (const [rel, hash] of Object.entries(parsed?.files ?? {})) files[rel] = typeof hash === "string" && SHA256.test(hash) ? hash : null;
+  return { cuelo: typeof parsed?.cuelo === "string" ? parsed.cuelo : null, files };
+}
+
+export function writeHarnessManifest(agentDir, files, version) {
+  fs.mkdirSync(agentDir, { recursive: true });
+  const file = path.join(agentDir, HARNESS_MANIFEST);
+  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify({ version: 1, cuelo: version, files: sorted }, null, 2)}\n`);
+  fs.renameSync(temp, file);
+}
+
+/**
+ * Records a setup run: files copied now get their hash, files that were already there stay as they were
+ * recorded (or null). An existing record that cannot be read is left exactly as it is and nothing is
+ * recorded (the returned `skipped` says why); setup prints that as a warning and carries on.
+ */
+export function recordHarnessInstall(agentDir, report, version) {
+  let previous;
+  try {
+    previous = readHarnessManifest(agentDir).files;
+  } catch (error) {
+    return { skipped: error.message };
+  }
+  const files = {};
+  for (const rel of report.kept) files[rel] = previous[rel] ?? null;
+  for (const rel of report.created) files[rel] = fileHash(path.join(agentDir, ...rel.split("/")));
+  writeHarnessManifest(agentDir, files, version);
+  return { skipped: null };
+}
+
+/** False when a folder between the profile and the file is a link or not a folder; a path that does not exist yet is fine. */
+function isProfilePathSafe(agentDir, rel) {
+  let dir;
+  try {
+    dir = fs.realpathSync(agentDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return true;
+    throw error;
+  }
+  for (const part of rel.split("/").slice(0, -1)) {
+    dir = path.join(dir, part);
+    const stat = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (!stat) return true;
+    if (!stat.isDirectory()) return false;
+  }
+  return true;
+}
+
+const HARNESS_STATES = ["identical", "missing", "update-available", "user-modified", "untracked"];
+
+/**
+ * Compares the profile with the distributed harness and the install record.
+ *   missing           not in the profile: would be added
+ *   identical         same bytes as the distribution
+ *   update-available  still the bytes we installed, the distribution has changed
+ *   user-modified     differs from the bytes we installed
+ *   untracked         exists with no install record (or is not a plain file): never updated
+ */
+export function diffHarness(sourceDir, agentDir, entries) {
+  const manifest = readHarnessManifest(agentDir);
+  const files = listHarnessFiles(sourceDir, entries).sort().map((rel) => {
+    const target = path.join(agentDir, ...rel.split("/"));
+    const distHash = fileHash(path.join(sourceDir, ...rel.split("/")));
+    const recorded = manifest.files[rel] ?? null;
+    // The user's own arrangement (a linked folder or file, a folder in place of a file) is never written through:
+    // a write could land outside the profile.
+    if (!isProfilePathSafe(agentDir, rel)) return { path: rel, status: "untracked", distHash, profileHash: null, recorded };
+    const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (!stat) return { path: rel, status: "missing", distHash, profileHash: null, recorded };
+    if (!stat.isFile()) return { path: rel, status: "untracked", distHash, profileHash: null, recorded };
+    const profileHash = fileHash(target);
+    const status = profileHash === distHash ? "identical"
+      : recorded === null ? "untracked"
+      : profileHash === recorded ? "update-available" : "user-modified";
+    return { path: rel, status, distHash, profileHash, recorded };
+  });
+  const counts = Object.fromEntries(HARNESS_STATES.map((state) => [state, files.filter((file) => file.status === state).length]));
+  return { installedVersion: manifest.cuelo, manifest, files, counts };
+}
+
+/**
+ * Brings the profile up to the distribution for the two safe states only: `update-available` files are
+ * backed up and overwritten, `missing` files are added. Everything else, config.yml included, is not touched.
+ * The plan comes from `diffHarness`, but a profile file can change between that read and the write, so each
+ * write re-checks first: an overwrite happens only if the bytes read right now still hash to the recorded
+ * installed hash (the backup is made from those same bytes), and an addition never replaces a file that
+ * appeared meanwhile. A file that fails its re-check is reported as user-modified / untracked instead.
+ */
+export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = false, now = new Date() } = {}) {
+  const diff = diffHarness(sourceDir, agentDir, entries);
+  const planned = (status) => diff.files.filter((file) => file.status === status);
+  const skipped = {
+    "user-modified": planned("user-modified").map((file) => file.path),
+    untracked: planned("untracked").map((file) => file.path),
+    "backup-unsafe": [],
+  };
+  const backupStamp = now.toISOString().replace(/[:.]/g, "-");
+  let backupDir = null;
+  const updated = [];
+  const added = [];
+  if (dryRun) {
+    updated.push(...planned("update-available").map((file) => file.path));
+    added.push(...planned("missing").map((file) => file.path));
+  } else {
+    for (const file of planned("update-available")) {
+      const target = path.join(agentDir, ...file.path.split("/"));
+      let current = null;
+      if (isProfilePathSafe(agentDir, file.path) && fs.lstatSync(target, { throwIfNoEntry: false })?.isFile()) current = fs.readFileSync(target);
+      if (current === null) skipped.untracked.push(file.path);
+      else if (hashBytes(current) !== file.recorded) skipped["user-modified"].push(file.path);
+      else if (!isProfilePathSafe(agentDir, `${HARNESS_BACKUP_DIR}/${backupStamp}/${file.path}`)) skipped["backup-unsafe"].push(file.path);
+      else {
+        backupDir ??= path.join(agentDir, HARNESS_BACKUP_DIR, backupStamp);
+        const backup = path.join(backupDir, ...file.path.split("/"));
+        fs.mkdirSync(path.dirname(backup), { recursive: true });
+        fs.writeFileSync(backup, current, { flag: "wx" });
+        fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target);
+        updated.push(file.path);
+      }
+    }
+    for (const file of planned("missing")) {
+      const target = path.join(agentDir, ...file.path.split("/"));
+      if (!isProfilePathSafe(agentDir, file.path)) {
+        skipped.untracked.push(file.path);
+        continue;
+      }
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      try {
+        fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target, fs.constants.COPYFILE_EXCL);
+        added.push(file.path);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        skipped.untracked.push(file.path);
+      }
+    }
+    // Records follow what is on disk now: written files and identical tracked files carry the distributed
+    // hash, every other file keeps the record it had.
+    const written = new Set([...updated, ...added]);
+    const files = {};
+    for (const file of diff.files) {
+      const tracked = file.status === "identical" && file.recorded !== null;
+      files[file.path] = written.has(file.path) || tracked ? file.distHash : file.recorded;
+    }
+    writeHarnessManifest(agentDir, files, version);
+  }
+  return { dryRun, updated, added, skipped, backupDir, identical: diff.counts.identical };
+}
+
+function packageInfo() {
+  return JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+}
+
+function harnessSource() {
+  return {
+    sourceDir: path.join(ROOT, "Tools", "OMP_Global_Config", "agent"),
+    entries: harnessEntries(packageInfo().files ?? []),
+  };
+}
+
+function printList(label, files) {
+  if (files.length === 0) return;
+  console.log(`${label} (${files.length}):`);
+  for (const file of files) console.log(`  ${file}`);
+}
+
+function harnessDiff(options) {
+  const { agentDir } = resolveProfile(options.home);
+  const { sourceDir, entries } = harnessSource();
+  const diff = diffHarness(sourceDir, agentDir, entries);
+  if (options.json) {
+    const files = diff.files.map(({ path: file, status }) => ({ path: file, status }));
+    console.log(JSON.stringify({ agentDir, cuelo: packageInfo().version, installedVersion: diff.installedVersion, counts: diff.counts, files }, null, 2));
+    return;
+  }
+  const by = (state) => diff.files.filter((file) => file.status === state).map((file) => file.path);
+  console.log(`Harness in ${agentDir} against CUELO ${packageInfo().version} (installed by CUELO ${diff.installedVersion ?? "unknown"}):`);
+  printList("update-available: unmodified, a newer version is distributed; `harness-update` replaces it", by("update-available"));
+  printList("missing: not in the profile; `harness-update` adds it", by("missing"));
+  printList("user-modified: differs from what was installed; never changed automatically", by("user-modified"));
+  printList("untracked: exists with no install record; never changed automatically", by("untracked"));
+  console.log(`${diff.counts.identical} files identical to the distribution.`);
+}
+
+function harnessUpdate(options) {
+  const { agentDir } = resolveProfile(options.home);
+  const { sourceDir, entries } = harnessSource();
+  const result = updateHarness(sourceDir, agentDir, entries, packageInfo().version, { dryRun: options.dryRun });
+  if (options.json) {
+    console.log(JSON.stringify({ agentDir, ...result }, null, 2));
+    return;
+  }
+  const prefix = result.dryRun ? "Would be " : "";
+  printList(`${prefix}updated`, result.updated);
+  printList(`${prefix}added`, result.added);
+  printList("Left as it is, user-modified", result.skipped["user-modified"]);
+  printList("Left as it is, untracked", result.skipped.untracked);
+  printList("Left as it is, the backup folder inside the profile is a link or not a folder", result.skipped["backup-unsafe"]);
+  if (result.updated.length + result.added.length === 0) console.log("Nothing to update.");
+  if (result.backupDir) console.log(`Previous versions of the updated files were saved under ${result.backupDir}.`);
+  if (result.dryRun) console.log("Dry run: no file was changed.");
 }
 
 /**
@@ -295,9 +546,11 @@ function prepareRuntime() {
 function setup(options) {
   prepareRuntime();
   const { agentDir } = resolveProfile(options.home);
-  const packageFiles = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).files ?? [];
-  const harness = copyHarness(path.join(ROOT, "Tools", "OMP_Global_Config", "agent"), agentDir, harnessEntries(packageFiles));
-  console.log(`Harness: ${harness.created.length} files added to ${agentDir}, ${harness.kept.length} existing files kept unchanged.`);
+  const pkg = packageInfo();
+  const harness = copyHarness(path.join(ROOT, "Tools", "OMP_Global_Config", "agent"), agentDir, harnessEntries(pkg.files ?? []));
+  const recorded = recordHarnessInstall(agentDir, harness, pkg.version);
+  if (recorded.skipped) console.log(`Warning: the harness install record was left unchanged because it cannot be read (${recorded.skipped}). harness-diff and harness-update refuse to run until you fix or delete it.`);
+  console.log(`Harness: ${harness.created.length} files added to ${agentDir}, ${harness.kept.length} existing files kept unchanged. Later: \`node install.mjs harness-diff\` shows how the profile differs from this version.`);
   const roles = createProfileConfig(agentDir, options.roles);
   if (roles.written) console.log(`Profile config: wrote ${roles.configPath}.`);
   if (roles.ignored.length > 0) console.log(`Profile config: ${roles.configPath} already exists and was not changed; ignored ${roles.ignored.join(", ")}.`);
@@ -402,12 +655,20 @@ async function main(argv) {
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     console.error(error.message);
-    console.error("Usage: node install.mjs [setup|start|health] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>] [--hostname <address>]");
+    console.error("Usage: node install.mjs [setup|start|health|harness-diff|harness-update] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>] [--hostname <address>] [--json] [--dry-run]");
     return 2;
   }
   try {
     if (options.command === "setup") {
       setup(options);
+      return 0;
+    }
+    if (options.command === "harness-diff") {
+      harnessDiff(options);
+      return 0;
+    }
+    if (options.command === "harness-update") {
+      harnessUpdate(options);
       return 0;
     }
     if (options.command === "start") return await start(options);

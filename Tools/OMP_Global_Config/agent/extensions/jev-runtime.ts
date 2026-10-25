@@ -14,7 +14,7 @@ import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { onSessionLifecycle } from "./lib/session-identity";
-import { createRoutingLedger, DEFAULT_LEDGER_PATH, openHeldVerdicts, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
+import { assignTaskResultBlocks, createRoutingLedger, DEFAULT_LEDGER_PATH, deriveRevisionRelation, openHeldVerdicts, pickReportRevision, revisionRelationDiagnostic, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
   assessTodoProgress,
@@ -440,9 +440,7 @@ function readTerminalReport(data: unknown, resultText: string): TerminalReportMe
   // schema.data든 완결된 본문 JSON이든 같은 규칙으로 읽는다(#21).
   if (record) {
     return {
-      ...(typeof record.revision === "string" && record.revision.trim()
-        ? { revision: record.revision.trim() }
-        : {}),
+      ...(pickReportRevision(record) ? { revision: pickReportRevision(record) } : {}),
       validation: readTerminalValidation(record),
       ...(Array.isArray(record.unresolved) ? { unresolvedCount: record.unresolved.length } : {}),
     };
@@ -472,6 +470,13 @@ function readSettledTaskJobs(
   if (!Array.isArray(jobs)) return [];
   const resultBlocks = [...textContent(content).matchAll(/<task-result\b[\s\S]*?<\/task-result>/gi)]
     .map((match) => match[0]);
+  // 한 알림에 블록 없는 재개 job이 섞이면 순서 짝짓기가 어긋난다. 블록 id를 jobId·agentId·label과 맞춘다.
+  const blockByJob = assignTaskResultBlocks(resultBlocks, jobs.flatMap((job) => {
+    const record = job && typeof job === "object" ? job as Record<string, unknown> : undefined;
+    if (!record || (record.type !== undefined && record.type !== "task") || record.status === "running" || record.status === "pending") return [];
+    const jobId = typeof record.jobId === "string" ? record.jobId : typeof record.id === "string" ? record.id : undefined;
+    return jobId ? [{ jobId, ...(typeof record.agentId === "string" ? { agentId: record.agentId } : {}), ...(typeof record.label === "string" ? { label: record.label } : {}) }] : [];
+  }));
   const settled: SettledJobMeta[] = [];
   let resultBlockIndex = 0;
   for (const job of jobs) {
@@ -491,7 +496,7 @@ function readSettledTaskJobs(
     const resultText =
       typeof record.resultText === "string"
         ? record.resultText
-        : resultBlocks[resultBlockIndex] ?? (jobs.length === 1 ? textContent(content) : "");
+        : blockByJob[resultBlockIndex] ?? (jobs.length === 1 ? textContent(content) : "");
     resultBlockIndex += 1;
     const completion = completionFor?.(jobId, record.completion);
     if (completion?.ignore) continue;
@@ -1309,16 +1314,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // 원 revision과 검수 revision의 관계는 advisory 기록이다. 다르거나 미상이어도 막지 않고, 조용히 같은 결과로 취급하지 않도록
       // 관계와 진단을 남긴다. integratedFrom은 Main의 명시 연결 주장일 뿐이며 실제 검수 근거는 reason·evidenceLocators가 담당한다.
       const sourceRevision = observed.sourceRevision;
-      const revisionRelation: RevisionRelation = !sourceRevision || !revision ? "unknown"
-        : revision === sourceRevision ? "same"
-          : integratedFrom === sourceRevision ? "integrated" : "mismatch";
-      const diagnostic = revisionRelation === "mismatch"
-        ? integratedFrom
-          ? `integratedFrom '${integratedFrom}'이 이 attempt에서 관측한 Maker 원 revision '${sourceRevision}'과 다릅니다. 검수 revision '${revision}'은 mismatch로 기록했습니다. 이 attempt의 원 revision을 통합한 검수라면 integratedFrom='${sourceRevision}'로 다시 기록하고, 다른 attempt의 결과라면 그 attempt identity로 기록하세요.`
-          : `Maker 원 revision '${sourceRevision}'과 검수 revision '${revision}'이 다르고 연결 주장이 없어 mismatch로 기록했습니다. 통합 뒤 새 revision을 직접 검수했다면 integratedFrom='${sourceRevision}'로 연결을 명시하고 그 검수 근거를 reason·evidenceLocators에 남기세요.`
-        : revisionRelation === "unknown" && revision
-          ? `이 attempt의 terminal report revision이 미관측이라 검수 revision '${revision}'과의 관계를 unknown으로 기록했습니다. 원 revision을 추정해 채우지 않습니다.`
-          : undefined;
+      const relation = deriveRevisionRelation({ sourceRevision, revision, integratedFrom });
+      const revisionRelation: RevisionRelation = relation.relation;
+      const diagnostic = revisionRelationDiagnostic(relation, { sourceRevision, revision, integratedFrom, attempt: observed.attempt });
       const record: VerdictRecord = {
         type: "verdict",
         ts: new Date().toISOString(),
@@ -1332,6 +1330,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         revision: revision || null,
         sourceRevision,
         revisionRelation,
+        revisionRelationCause: relation.cause,
         ...(integratedFrom ? { integratedFrom } : {}),
         evidenceLocators,
         reason,

@@ -64,6 +64,8 @@ export type MakerSpawn = {
   /** 원본 tasks[] 안의 위치. progress[].index가 같은 기준을 쓰므로 이 값으로 대응시킨다. */
   index: number;
   ownedPaths: string[];
+  /** 격리 worktree에서 실행한다(`isolated: true|"capture"`). 공유 checkout의 쓰기 소유자가 아니다. */
+  isolated?: true;
 };
 
 export type TaskGuardState = {
@@ -105,6 +107,8 @@ type SpawnItem = {
   name?: string;
   /** 호출이 agent를 생략했다. 위임 정의가 maker 하나뿐이라 maker로 해석하고 반환 input에도 기록한다. */
   agentOmitted?: true;
+  /** 항목 값이 있으면 그것, 없으면 상위 `isolated`가 격리를 요청했다(core spawnParamsFor와 같은 우선순위). */
+  isolated?: true;
 };
 
 export type TaskCallInput = Record<string, unknown>;
@@ -297,6 +301,11 @@ function canonicalizeTask(
   return task.slice(0, raw.span.start) + rendered + task.slice(raw.span.end);
 }
 
+/** `isolated: true`와 `"capture"`(patch만 보존)는 둘 다 별도 worktree scope다(maker-routing workspaceOf와 같은 기준). */
+function isolationRequested(value: unknown): boolean {
+  return value === true || value === "capture";
+}
+
 function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
   if (Array.isArray(input.tasks)) {
     if (input.tasks.length === 0) return "[SpawnGuard] tasks[]가 비어 있습니다.";
@@ -316,6 +325,9 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
         ...(typeof item.name === "string" && item.name.trim()
           ? { name: item.name.trim() }
           : {}),
+        ...(isolationRequested(item.isolated !== undefined ? item.isolated : input.isolated)
+          ? { isolated: true as const }
+          : {}),
       });
     }
     return items;
@@ -332,6 +344,7 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
       ...(typeof input.name === "string" && input.name.trim()
         ? { name: input.name.trim() }
         : {}),
+      ...(isolationRequested(input.isolated) ? { isolated: true as const } : {}),
     },
   ];
 }
@@ -467,6 +480,7 @@ export function reserveTaskCall(
         ...(item.name ? { name: item.name } : {}),
         index,
         ownedPaths: metadata.ownedPaths,
+        ...(item.isolated ? { isolated: true as const } : {}),
       });
     }
 
@@ -907,10 +921,15 @@ function outsidePaths(ownedPaths: readonly string[], changedPaths: readonly stri
     .sort();
 }
 
+/** 정규화한 소유 경로와 소유 밖 변경. 스냅샷이 없으면 판정할 수 없어 `unobserved`다. */
+function ownershipOutcome(input: OwnershipReportInput): { owned: string[]; outside: string[] | "unobserved" } {
+  const owned = input.ownedPaths.map(normalizeOwnedPath).filter((entry) => entry.length > 0);
+  return { owned, outside: input.changedPaths === undefined ? "unobserved" : outsidePaths(owned, input.changedPaths) };
+}
+
 /** OwnershipGuard 보고 한 줄. 공백 구분 key=value이며 인용부호를 쓰지 않는다. */
 export function buildOwnershipReport(input: OwnershipReportInput): string {
-  const owned = input.ownedPaths.map(normalizeOwnedPath).filter((entry) => entry.length > 0);
-  const outside = input.changedPaths === undefined ? "unobserved" : outsidePaths(owned, input.changedPaths);
+  const { owned, outside } = ownershipOutcome(input);
   return (
     `[OwnershipGuard] child=${encodeReportToken(input.child)}` +
     ` owned=${owned.map(encodeReportToken).join(",")}` +
@@ -1104,13 +1123,28 @@ function findOwnedChildKey(state: OwnershipState, id: string): string | undefine
 }
 
 /**
+ * 소유 밖 변경이 있었거나(`outside` 목록) 변경을 관측하지 못한(`unobserved`) 완료 보고 한 건.
+ * 보고 줄은 그 턴의 대화에만 남으므로 빈도를 셀 수 있게 index.ts가 이 행을 JSONL로 덧붙인다.
+ */
+export type OwnershipOutsideRow = {
+  child: string;
+  /** spawn 이름과 task 결과 progress id(canonical agent id). */
+  childIds: string[];
+  owned: string[];
+  outside: string[] | "unobserved";
+  concurrent: string[];
+};
+
+/**
  * 종료가 관측된 child들의 OwnershipGuard 줄을 만든다. child마다 정확히 한 번만 보고하고
- * (보고 후 스냅샷을 버리고 reported로 표시) 모르는 id는 무시한다.
+ * (보고 후 스냅샷을 버리고 reported로 표시) 모르는 id는 무시한다. `outside=none`이 아닌 보고는
+ * onOutside에도 넘긴다.
  */
 export function reportOwnedChildren(
   state: OwnershipState,
   ids: readonly string[],
   tree: TreeSnapshot | undefined,
+  onOutside?: (row: OwnershipOutsideRow) => void,
 ): string[] {
   const lines: string[] = [];
   for (const id of ids) {
@@ -1124,14 +1158,185 @@ export function reportOwnedChildren(
     const concurrent = concurrentChildNames(state, entry, entry.endOrder);
     const changedPaths = entry.snapshot && tree ? diffTreeSnapshots(entry.snapshot, tree) : undefined;
     entry.snapshot = undefined;
-    lines.push(
-      buildOwnershipReport({
-        child: entry.child,
-        ownedPaths: entry.ownedPaths,
-        ...(changedPaths ? { changedPaths } : {}),
-        concurrent,
-      }),
-    );
+    const input: OwnershipReportInput = {
+      child: entry.child,
+      ownedPaths: entry.ownedPaths,
+      ...(changedPaths ? { changedPaths } : {}),
+      concurrent,
+    };
+    lines.push(buildOwnershipReport(input));
+    const { owned, outside } = ownershipOutcome(input);
+    if (onOutside && (outside === "unobserved" || outside.length > 0)) {
+      onOutside({ child: entry.child, childIds: [...entry.aliases], owned, outside, concurrent });
+    }
   }
   return lines;
+}
+
+// ============================================================================
+// OwnerWriteGuard: 공유 작업공간 Maker child가 같은 부모의 다른 실행 중 Maker가 소유한 경로에 edit·write하는 것을 막는다.
+// OWNED_PATHS 겹침은 발주 때만(maker-routing) 검사됐고, 실행 중 범위 밖 쓰기는 완료 뒤 OwnershipGuard 보고로만 드러났다.
+// 다른 활성 owner가 없는 범위 밖 경로(직접 원인인 인접 파일)는 그대로 허용한다. 소유자를 확정하지 못하면 막지 않는다.
+// ============================================================================
+
+/** 공유 작업공간 maker spawn 하나의 쓰기 소유 주장. */
+type WriterClaim = {
+  /** 보고 라벨: tasks[].name 또는 `unnamed`. */
+  child: string;
+  name?: string;
+  ownedPaths: string[];
+  /** spawn한 task 호출 id와 원본 tasks[] 위치. */
+  callId: string;
+  index: number;
+  /** task 결과 progress가 준 canonical agent id. 실행 중 job과는 이 값으로만 대응시킨다. */
+  ids: string[];
+  /** 등록 순서. 같은 id를 가진 주장이 여럿이면 가장 최근 것이 그 job의 주장이다. */
+  order: number;
+  /** spawn한 task 호출이 아직 끝나지 않았다. foreground child는 job snapshot에 보이지 않으므로 이 표시로 실행 중이다. */
+  inFlight: boolean;
+};
+
+/**
+ * 한 부모 세션의 쓰기 소유 주장. 완료 보고용 OwnershipState와 달리 사용자 입력마다 비우지 않는다:
+ * 앞 요청이 띄운 Maker도 아직 실행 중이면 그 경로의 owner다. 세션이 바뀔 때만 비운다.
+ */
+export type WriterClaimState = { claims: Map<string, WriterClaim>; order: number };
+
+export function createWriterClaimState(): WriterClaimState {
+  return { claims: new Map(), order: 0 };
+}
+
+export function resetWriterClaimState(state: WriterClaimState): void {
+  state.claims.clear();
+  state.order = 0;
+}
+
+/** spawn 직전 공유 작업공간 maker 항목을 in-flight 주장으로 등록한다. 격리 항목은 공유 checkout을 쓰지 않아 주장하지 않는다. */
+export function claimSharedWriters(state: WriterClaimState, callId: string, makers: readonly MakerSpawn[]): void {
+  for (const maker of makers) {
+    if (maker.isolated) continue;
+    const key = ownedChildKey(callId, maker.index);
+    if (state.claims.has(key)) continue;
+    state.order += 1;
+    state.claims.set(key, {
+      child: maker.name ?? "unnamed",
+      ...(maker.name ? { name: maker.name } : {}),
+      ownedPaths: [...maker.ownedPaths],
+      callId,
+      index: maker.index,
+      ids: [],
+      order: state.order,
+      inFlight: true,
+    });
+  }
+}
+
+/**
+ * spawn한 task 호출이 끝났다(tool_result 또는 실행 전 종료). progress id를 canonical id로 묶고 in-flight를 내린다.
+ * 이후 활성 여부는 부모의 실행 중 job으로만 정하므로, 뜨지 못한 child의 주장은 저절로 비활성이다.
+ */
+export function settleSharedWriters(
+  state: WriterClaimState,
+  callId: string,
+  progress: readonly { index: number; id: string }[],
+): void {
+  for (const claim of state.claims.values()) {
+    if (claim.callId !== callId) continue;
+    claim.inFlight = false;
+    const id = progress.find((row) => row.index === claim.index)?.id;
+    if (id && !claim.ids.includes(id)) claim.ids.push(id);
+  }
+}
+
+/** 부모 세션이 소유한 실행 중 task job 한 건(core async job snapshot 행). */
+export type RunningTaskJob = { id: string; agentId?: string };
+
+/** child가 부모 agent id로 찾는 부모 세션의 쓰기 소유 창구. */
+export type WriterOwnerView = {
+  /** 부모 세션 cwd(절대경로). 같은 cwd의 child만 공유 checkout을 쓴다. */
+  cwd: string;
+  state: WriterClaimState;
+  /** 부모 세션이 소유한 실행 중 task job. 읽지 못하면 undefined(소유자 미상). */
+  running(): RunningTaskJob[] | undefined;
+};
+
+/** 부모와 child 세션은 같은 프로세스에서 확장 module을 공유한다. 여러 번 평가되어도 같은 map을 보도록 globalThis에 둔다. */
+const WRITER_OWNERS = Symbol.for("@oh-my-pi/omp/writer-owners/v1");
+const writerOwners: Map<string, WriterOwnerView> = (() => {
+  const existing = Reflect.get(globalThis, WRITER_OWNERS) as Map<string, WriterOwnerView> | undefined;
+  if (existing) return existing;
+  const created = new Map<string, WriterOwnerView>();
+  Reflect.set(globalThis, WRITER_OWNERS, created);
+  return created;
+})();
+
+export function bindWriterOwners(agentId: string, view: WriterOwnerView): void {
+  const key = agentId.trim();
+  if (key) writerOwners.set(key, view);
+}
+
+/** 자기 view일 때만 푼다. 같은 agent id를 이어받은 새 세션의 연결을 옛 인스턴스의 늦은 정리가 지우지 않는다. */
+export function unbindWriterOwners(agentId: string, view: WriterOwnerView): void {
+  const key = agentId.trim();
+  if (key && writerOwners.get(key) === view) writerOwners.delete(key);
+}
+
+export function writerOwnersOf(agentId: string): WriterOwnerView | undefined {
+  return writerOwners.get(agentId.trim());
+}
+
+export type OwnerWriteDecision = {
+  /** 다른 활성 owner가 가진 첫 대상. 없으면 허용이다. */
+  conflict?: { owner: string; path: string };
+  /** 소유 주장을 찾지 못한 실행 중 job·이름 없는 in-flight spawn. 막을 근거가 아니며 진단에만 쓴다. */
+  unknown: string[];
+};
+
+/**
+ * child `selfId`가 부모 cwd 기준 상대경로 `targets`에 쓰려 할 때 다른 활성 owner와 충돌하는지 본다. 부모의 job snapshot을
+ * 읽지 못하면 undefined(소유자 미상)다. 활성 owner는 spawn 호출이 아직 끝나지 않은 주장과, canonical id의 job이 지금
+ * 실행 중인 주장(REWORK 재개 포함)이다. 자기 소유 경로는 겹쳐도 허용하고, 자기일 수 있는 주장은 다른 owner로 보지 않는다.
+ */
+export function decideOwnerWrite(
+  view: WriterOwnerView,
+  selfId: string,
+  targets: readonly string[],
+): OwnerWriteDecision | undefined {
+  const running = view.running();
+  if (!running) return undefined;
+  const own: WriterClaim[] = [];
+  const others: WriterClaim[] = [];
+  const unknown: string[] = [];
+  for (const claim of view.state.claims.values()) {
+    if (!claim.inFlight) continue;
+    if (!claim.name) {
+      unknown.push(`in-flight:${claim.callId}#${claim.index}`);
+      continue;
+    }
+    // 이름 있는 child의 agent id는 이름이거나 충돌 변형(`이름-2`, `이름-3` …)이다. 자기일 수 있으면 자기로 본다.
+    const suffix = selfId.startsWith(`${claim.name}-`) ? selfId.slice(claim.name.length + 1) : "";
+    (selfId === claim.name || /^\d+$/.test(suffix) ? own : others).push(claim);
+  }
+  for (const job of running) {
+    // job id는 실행 handle이라 agent id와 다를 수 있다(충돌 시 `이름-2` 등). 주장과 자기 판정은 canonical agent id로만 하고,
+    // snapshot에 agentId가 없는 옛 행만 job id를 대신 쓴다.
+    const agentId = job.agentId ?? job.id;
+    let match: WriterClaim | undefined;
+    for (const claim of view.state.claims.values()) {
+      if (!claim.ids.includes(agentId)) continue;
+      if (!match || claim.order > match.order) match = claim;
+    }
+    if (!match) {
+      if (agentId !== selfId) unknown.push(agentId);
+      continue;
+    }
+    (agentId === selfId ? own : others).push(match);
+  }
+  const ownPaths = own.flatMap((claim) => claim.ownedPaths);
+  for (const path of targets) {
+    if (isPathOwned(ownPaths, path)) continue;
+    const owner = others.find((claim) => isPathOwned(claim.ownedPaths, path));
+    if (owner) return { conflict: { owner: owner.child, path: collapseOwnedPath(path) }, unknown };
+  }
+  return { unknown };
 }

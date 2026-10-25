@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import { existsSync, watch } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,11 +14,25 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
   isToolCallEventType: (toolName: string, event: { toolName?: string }) => event.toolName === toolName,
 }));
 
-const { default: commandGuard } = await import("./index");
+const { createCommandGuard } = await import("./index");
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
-function createGuardHarness(options: { cwd?: string; sessionId?: string } = {}) {
+// 범위 밖 변경 기록(ownership-outside.jsonl)이 저장소 agent 루트에 쌓이지 않도록 모든 harness가 임시 파일에 쓴다.
+const OUTSIDE_LOG_DIR = await mkdtemp(join(tmpdir(), "runtime-guard-outside-"));
+afterAll(() => rm(OUTSIDE_LOG_DIR, { recursive: true, force: true }));
+
+function createGuardHarness(
+  options: {
+    cwd?: string;
+    sessionId?: string;
+    /** ctx.agent(core ExtensionAgentIdentity). 없으면 identity 없는 옛 host다. */
+    agent?: Record<string, unknown>;
+    /** 주면 ctx.getAsyncJobSnapshot이 이 배열을 실행 중 job으로 돌려준다(호출 시점의 내용). */
+    runningJobs?: Array<Record<string, unknown>>;
+    outsideLog?: string;
+  } = {},
+) {
   const handlers: Record<string, Handler[]> = {};
   const sentMessages: Array<{ message: unknown; options: unknown }> = [];
   const pi = {
@@ -29,11 +43,14 @@ function createGuardHarness(options: { cwd?: string; sessionId?: string } = {}) 
       sentMessages.push({ message, options: sendOptions });
     },
   };
-  commandGuard(pi as never);
+  createCommandGuard({ ownershipOutsideLog: options.outsideLog ?? join(OUTSIDE_LOG_DIR, "default.jsonl") })(pi as never);
   let sessionId = options.sessionId ?? "runtime-guard-session";
+  const runningJobs = options.runningJobs;
   const ctx = {
     cwd: options.cwd ?? process.cwd(),
     sessionManager: { getSessionId: () => sessionId },
+    ...(options.agent ? { agent: options.agent } : {}),
+    ...(runningJobs ? { getAsyncJobSnapshot: () => ({ running: [...runningJobs], recent: [] }) } : {}),
   };
   return {
     sentMessages,
@@ -180,6 +197,41 @@ function settledTaskResult(toolCallId: string, name: string) {
     isError: false,
     details: { progress: [{ index: 0, id: name, status: "completed" }] },
   };
+}
+
+type GuardHarness = { emit(name: string, event: unknown): Promise<unknown> };
+
+/** 부모 harness가 공유(또는 isolated) Maker 하나를 async로 띄우고, 그 child job을 실행 중 snapshot에 올린다. */
+async function spawnRunningMaker(
+  parent: GuardHarness,
+  running: Array<Record<string, unknown>>,
+  toolCallId: string,
+  name: string,
+  ownedPaths: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const event = makerTaskEvent(toolCallId, name);
+  const task = event.input.task.replace("OWNED_PATHS: owned/", `OWNED_PATHS: ${ownedPaths}`);
+  expect(blockReason(await parent.emit("tool_call", { ...event, input: { ...event.input, ...extra, task } }))).toBe("");
+  running.push({ id: name, type: "task", status: "running", agentId: name });
+  await parent.emit("tool_result", {
+    ...settledTaskResult(toolCallId, name),
+    details: { progress: [{ index: 0, id: name, status: "running" }], async: { jobId: name } },
+  });
+}
+
+function makerChild(cwd: string, id: string, parentId: string): GuardHarness {
+  return createGuardHarness({ cwd, agent: { kind: "sub", id, name: "maker", depth: 1, parentId } });
+}
+
+function fileCall(toolName: "edit" | "write", toolCallId: string, input: Record<string, unknown>) {
+  return { type: "tool_call", toolName, toolCallId, input };
+}
+
+function blockReason(result: unknown): string {
+  return result && typeof result === "object" && "reason" in result && typeof result.reason === "string"
+    ? result.reason
+    : "";
 }
 
 function renderedText(value: unknown): string {
@@ -867,11 +919,17 @@ describe("prepared task guard glue", () => {
   });
 });
 
+async function readOutsideRows(path: string): Promise<unknown[]> {
+  if (!existsSync(path)) return [];
+  return (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
 describe("async ownership snapshots", () => {
   test("실제 지연 Git child 동안 event loop를 열어 두고 cwd 전체 내용 변화를 보고한다", async () => {
     const fixture = await createDelayedGitFixture();
     try {
-      const harness = createGuardHarness({ cwd: fixture.workspace });
+      const outsideLog = join(fixture.root, "ownership-outside.jsonl");
+      const harness = createGuardHarness({ cwd: fixture.workspace, outsideLog });
       const delay = await armStatusDelay(fixture);
       let dispatchSettled = false;
       const dispatch = harness.emit(
@@ -917,6 +975,19 @@ describe("async ownership snapshots", () => {
       );
       expect(outside).not.toContain("outside/unchanged.txt");
       expect(outside).not.toContain("owned/kept.txt");
+      // 대화에만 남던 범위 밖 보고가 한 행으로 파일에 남는다.
+      const rows = await readOutsideRows(outsideLog);
+      expect(rows).toEqual([
+        {
+          ts: expect.any(String),
+          sessionId: "runtime-guard-session",
+          child: "SnapshotFullScan",
+          childIds: ["SnapshotFullScan"],
+          owned: ["owned/"],
+          outside,
+          concurrent: [],
+        },
+      ]);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -925,7 +996,8 @@ describe("async ownership snapshots", () => {
   test("Git 관측 오류는 성공이나 빈 스냅샷 대신 unobserved로 남긴다", async () => {
     const directory = await mkdtemp(join(tmpdir(), "omp-ownership-nongit-"));
     try {
-      const harness = createGuardHarness({ cwd: directory });
+      const outsideLog = join(directory, "ownership-outside.jsonl");
+      const harness = createGuardHarness({ cwd: directory, outsideLog });
       await harness.emit("tool_call", makerTaskEvent("snapshot-error", "SnapshotError"));
       const result = await harness.emit(
         "tool_result",
@@ -935,6 +1007,9 @@ describe("async ownership snapshots", () => {
       expect(text).toContain(
         "[OwnershipGuard] child=SnapshotError owned=owned/ outside=unobserved concurrent=none",
       );
+      expect(await readOutsideRows(outsideLog)).toMatchObject([
+        { child: "SnapshotError", owned: ["owned/"], outside: "unobserved", concurrent: [] },
+      ]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -1332,6 +1407,70 @@ describe("WSL drive repository git executor", () => {
       expect(await bash("drive-other-windows-add", `git.exe -C "${other}" add tracked.txt`)).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("OwnerWriteGuard", () => {
+  test("공유 Maker child는 다른 실행 중 Maker 소유 경로 쓰기만 막히고 자기·인접 경로, 끝난 owner, Main은 허용된다", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omp-owner-write-"));
+    const running: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({ cwd, agent: { kind: "main", id: "Main-OW1", name: "main", depth: 0 }, runningJobs: running });
+      await spawnRunningMaker(main, running, "ow1-alpha", "Alpha", "src/a.ts,docs/");
+      await spawnRunningMaker(main, running, "ow1-beta", "Beta", "src/b.ts");
+      const beta = makerChild(cwd, "Beta", "Main-OW1");
+
+      const blocked = await beta.emit("tool_call", fileCall("edit", "ow1-e1", { input: "[src/a.ts#1A2B]", path: "src/a.ts", paths: ["src/a.ts"] }));
+      expect(blocked).toMatchObject({ block: true });
+      expect(blockReason(blocked)).toContain("src/a.ts");
+      expect(blockReason(blocked)).toContain("Alpha");
+      expect(blockReason(blocked)).toContain("agent://Main-OW1");
+      // 여러 파일 edit의 한 대상, 디렉터리 소유 아래 절대경로 write도 같은 소유 판정을 탄다.
+      expect(await beta.emit("tool_call", fileCall("edit", "ow1-e2", { paths: ["src/b.ts", "docs/guide.md"] }))).toMatchObject({ block: true });
+      expect(await beta.emit("tool_call", fileCall("write", "ow1-w1", { path: join(cwd, "docs", "new.md"), content: "x" }))).toMatchObject({ block: true });
+
+      expect(await beta.emit("tool_call", fileCall("edit", "ow1-own", { path: "src/b.ts", paths: ["src/b.ts"] }))).toBeUndefined();
+      expect(await beta.emit("tool_call", fileCall("write", "ow1-adjacent", { path: "src/c.ts", content: "x" }))).toBeUndefined();
+      expect(await beta.emit("tool_call", fileCall("write", "ow1-dm", { path: "agent://Main-OW1", content: "report" }))).toBeUndefined();
+      expect(await main.emit("tool_call", fileCall("edit", "ow1-main", { path: "src/a.ts", paths: ["src/a.ts"] }))).toBeUndefined();
+
+      running.splice(running.findIndex((job) => job.agentId === "Alpha"), 1);
+      expect(await beta.emit("tool_call", fileCall("edit", "ow1-finished", { path: "src/a.ts", paths: ["src/a.ts"] }))).toBeUndefined();
+      // 완료한 Maker가 REWORK로 같은 agent id에서 다시 실행되면 다시 그 경로의 writer다.
+      running.push({ id: "Alpha-rework", type: "task", status: "running", agentId: "Alpha" });
+      expect(await beta.emit("tool_call", fileCall("edit", "ow1-rework", { path: "src/a.ts", paths: ["src/a.ts"] }))).toMatchObject({ block: true });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("격리 child·격리 owner와 소유 상태를 확정할 수 없는 경우는 막지 않는다", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omp-owner-write-"));
+    const worktree = await mkdtemp(join(tmpdir(), "omp-owner-write-wt-"));
+    const running: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({ cwd, agent: { kind: "main", id: "Main-OW2", name: "main", depth: 0 }, runningJobs: running });
+      await spawnRunningMaker(main, running, "ow2-alpha", "Alpha", "src/a.ts");
+      await spawnRunningMaker(main, running, "ow2-iso", "Iso", "src/i.ts", { isolated: true });
+      const beta = makerChild(cwd, "Beta", "Main-OW2");
+      // 같은 부모의 공유 owner는 살아 있다(이 test의 허용 결과가 빈 상태 때문이 아님을 보인다).
+      expect(await beta.emit("tool_call", fileCall("edit", "ow2-live", { path: "src/a.ts" }))).toMatchObject({ block: true });
+      // 격리 owner의 소유 경로는 공유 checkout의 쓰기 소유가 아니다.
+      expect(await beta.emit("tool_call", fileCall("edit", "ow2-iso-owned", { path: "src/i.ts" }))).toBeUndefined();
+      // 격리 child는 자기 worktree(cwd가 부모와 다름)에 쓴다.
+      expect(await makerChild(worktree, "Iso", "Main-OW2").emit("tool_call", fileCall("edit", "ow2-iso-child", { path: "src/a.ts" }))).toBeUndefined();
+      // 부모 view가 없는 child, identity가 없는 옛 host는 판정하지 않는다.
+      expect(await makerChild(cwd, "Beta", "Main-missing").emit("tool_call", fileCall("edit", "ow2-no-parent", { path: "src/a.ts" }))).toBeUndefined();
+      expect(await createGuardHarness({ cwd }).emit("tool_call", fileCall("edit", "ow2-no-agent", { path: "src/a.ts" }))).toBeUndefined();
+
+      // 부모의 job snapshot을 읽을 수 없으면 실행 중 여부를 모르므로 막지 않는다.
+      const blind = createGuardHarness({ cwd, agent: { kind: "main", id: "Main-OW3", name: "main", depth: 0 } });
+      await spawnRunningMaker(blind, [], "ow3-alpha", "Alpha", "src/a.ts");
+      expect(await makerChild(cwd, "Beta", "Main-OW3").emit("tool_call", fileCall("edit", "ow3-blind", { path: "src/a.ts" }))).toBeUndefined();
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(worktree, { recursive: true, force: true });
     }
   });
 });

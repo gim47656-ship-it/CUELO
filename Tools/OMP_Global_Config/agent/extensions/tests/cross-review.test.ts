@@ -1425,7 +1425,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
 describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
   const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
 
-  test("마지막 라운드 reviewer가 본 내용과 다른 파일은 resolve 결과에 알리되, 통과 판정과 게이트 결과는 그대로다", async () => {
+  test("마지막 라운드 reviewer가 본 내용과 다른 코드 파일(수정·삭제)이 남으면 라운드가 남은 동안 통과하지 못하고, 게이트도 덮지 않는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     writeFileSync(join(env.work, "b.ts"), `${MARKER_BASE}export const b = 1;\n`);
@@ -1434,12 +1434,109 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
     rmSync(join(env.work, "b.ts"));
     const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "edited" }] }, rd(d));
-    expect(resolved.pass).toBe(true);
+    expect(resolved).toMatchObject({ pass: false, open: [] });
     expect(resolved.unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }, { path: "b.ts", state: "deleted" }]);
-    expect(resolved.unreviewedNote).toContain(review.reviewId);
-    expect(resolved.files[0].blob).toBe(blobOf(`${MARKER_BASE}export const fixed = 1;\n`)); // 통과 지문은 그대로 resolve 시점 내용
-    await expect(runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).resolves.toMatchObject({ decision: { uncovered: [] } });
+    expect(resolved.unreviewedNote).toContain("previousReviewId");
+    expect(resolved.files[0].blob).toBe(blobOf(`${MARKER_BASE}export const fixed = 1;\n`));
+    expect(d.readAll().filter((record) => record.type === "cross-review-resolve")).toMatchObject([{ pass: false }]);
+    await expect(runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).rejects.toBeInstanceOf(CrossReviewRefusal);
   });
+
+  test("문서·테스트만 마지막 라운드 뒤에 바뀌었으면 알리기만 하고 통과한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    writeFileSync(join(env.work, "notes.md"), "# v1\n");
+    writeFileSync(join(env.work, "a.test.ts"), "export const t = 1;\n");
+    const d = deps(env, {});
+    const review = await runReview(input({ files: ["a.ts", "notes.md", "a.test.ts"] }), d, signal);
+    writeFileSync(join(env.work, "notes.md"), "# v2\n");
+    writeFileSync(join(env.work, "a.test.ts"), "export const t = 2;\n");
+    const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d));
+    expect(resolved.pass).toBe(true);
+    expect(resolved.unreviewedChanges).toEqual([{ path: "notes.md", state: "changed" }, { path: "a.test.ts", state: "changed" }]);
+    expect(resolved).not.toHaveProperty("unreviewedBlocking");
+  });
+
+  test("수정을 새 라운드로 보이면 같은 체인이 통과한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    const d = deps(env, { openai: finding("fix me") });
+    const first = await runReview(input(), d, signal);
+    writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
+    const blocked = await runResolve({ reviewId: first.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "edited" }] }, rd(d));
+    expect(blocked.pass).toBe(false);
+    const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async () => ({ model: ASTRA, text: '{"findings":[]}' }) }, signal);
+    const passed = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "edited" }] }, rd(d));
+    expect(passed).toMatchObject({ pass: true, open: [] });
+    expect(passed).not.toHaveProperty("unreviewedChanges");
+  });
+});
+
+describe("라운드를 다 쓴 체인의 미검토 코드 수정(unreviewedAcknowledgements)", () => {
+  const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
+  const a = (n: number) => `${MARKER_BASE}export const a = ${n};\n`;
+
+  /** non-probe 4회를 모두 써서 더 라운드를 돌 수 없는 체인과, 마지막 라운드 뒤에 바뀐 a.ts. */
+  async function exhausted() {
+    const env = repo();
+    const d = deps(env, {});
+    writeFileSync(join(env.work, "a.ts"), a(1));
+    let review = await runReview(input(), d, signal);
+    for (const n of [2, 3, 4]) {
+      writeFileSync(join(env.work, "a.ts"), a(n));
+      review = await runReview(input({ previousReviewId: review.reviewId }), d, signal);
+    }
+    writeFileSync(join(env.work, "a.ts"), a(5));
+    return { env, d, review };
+  }
+
+  test("라운드가 남았으면 근거를 붙여도 확인 응답은 거절되고 통과하지 못한다", async () => {
+    const env = repo();
+    const d = deps(env, {});
+    writeFileSync(join(env.work, "a.ts"), a(1));
+    const first = await runReview(input(), d, signal);
+    writeFileSync(join(env.work, "a.ts"), a(2));
+    const resolved = await runResolve({ reviewId: first.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "a.ts", evidence: "bun test 3/3 passed" }] }, rd(d));
+    expect(resolved).toMatchObject({ pass: false, rejectedAcknowledgements: [{ path: "a.ts" }] });
+    expect(resolved.rejectedAcknowledgements![0].reason).toContain("round");
+  });
+
+  test("라운드를 다 썼으면 경로별 근거가 있는 확인 응답으로 통과하고 resolve 기록에 남는다", async () => {
+    const { d, review } = await exhausted();
+    const blocked = await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d));
+    expect(blocked).toMatchObject({ pass: false, unreviewedChanges: [{ path: "a.ts", state: "changed" }] });
+    const passed = await runResolve({ reviewId: review.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "a.ts", evidence: "  bun test a.test.ts 5/5 exit 0  " }] }, rd(d));
+    expect(passed).toMatchObject({ pass: true, rejectedAcknowledgements: [], acknowledgedUnreviewed: [{ path: "a.ts", blob: blobOf(a(5)), evidence: "bun test a.test.ts 5/5 exit 0" }] });
+    const record = d.readAll().filter((item) => item.type === "cross-review-resolve").at(-1) as unknown as { pass: boolean; unreviewedAcknowledgements: unknown };
+    expect(record).toMatchObject({ pass: true, unreviewedAcknowledgements: [{ path: "a.ts", blob: blobOf(a(5)), evidence: "bun test a.test.ts 5/5 exit 0" }] });
+  });
+
+  test("근거가 비었거나 미검토 코드 변경이 아닌 경로의 확인 응답은 거절되고 통과하지 못한다", async () => {
+    const { d, review } = await exhausted();
+    const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "a.ts", evidence: " " }, { path: "other.ts", evidence: "e" }] }, rd(d));
+    expect(resolved.pass).toBe(false);
+    expect(resolved.rejectedAcknowledgements?.map((item) => item.path)).toEqual(["a.ts", "other.ts"]);
+    expect(resolved).not.toHaveProperty("acknowledgedUnreviewed");
+  });
+
+  test("검토 라운드가 다시 볼 수 없는 파일(바이너리가 된 코드)은 라운드가 남아도 근거로 확인할 수 있다", async () => {
+    const env = repo();
+    const d = deps(env, {});
+    writeFileSync(join(env.work, "a.ts"), a(1));
+    writeFileSync(join(env.work, "bin.ts"), `${MARKER_BASE}// bin\n`);
+    const first = await runReview(input({ files: ["a.ts", "bin.ts"] }), d, signal);
+    writeFileSync(join(env.work, "a.ts"), a(2));
+    writeFileSync(join(env.work, "bin.ts"), Buffer.from([0, 1, 2]));
+    const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
+    expect(second.skipped.map((item) => item.path)).toEqual(["bin.ts"]);
+    expect(await runResolve({ reviewId: second.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false });
+    const passed = await runResolve({ reviewId: second.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "bin.ts", evidence: "generated binary, hashed by build" }] }, rd(d));
+    expect(passed).toMatchObject({ pass: true, acknowledgedUnreviewed: [{ path: "bin.ts" }] });
+  });
+});
+
+describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
+  const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
 
   test("마지막 라운드가 본 내용 그대로면 알리지 않고, 수정을 다음 라운드로 보이면 알림이 사라진다", async () => {
     const env = repo();

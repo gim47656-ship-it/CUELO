@@ -4,8 +4,11 @@ import {
   bindSpawnAliases,
   buildOwnershipReport,
   CANCEL_REFUND_LIMIT,
+  claimSharedWriters,
   createOwnershipState,
   createTaskGuardState,
+  createWriterClaimState,
+  decideOwnerWrite,
   diffTreeSnapshots,
   getTaskGuardUsage,
   hasUnreportedChildren,
@@ -21,12 +24,16 @@ import {
   reportOwnedChildren,
   reserveTaskCall,
   reservedMakers,
+  settleSharedWriters,
   settleTaskCall,
   stripScopePrefix,
   TASK_BUDGET_LIMITS,
+  type OwnershipOutsideRow,
+  type RunningTaskJob,
   type TaskGuardDecision,
   type TaskGuardState,
   type TreeSnapshot,
+  type WriterClaimState,
   unreportedOwnedChildIds,
 } from "./task-guard";
 
@@ -751,6 +758,87 @@ describe("child 완료 보고", () => {
     reportOwnedChildren(state, ["Alpha"], snap([]));
     expect(unreportedOwnedChildIds(state, ["Alpha", "Unknown"])).toEqual([]);
     expect(hasUnreportedChildren(state)).toBe(false);
+  });
+});
+
+describe("범위 밖 완료 보고 기록", () => {
+  test("outside 목록과 unobserved 보고만 행으로 넘기고 outside=none은 넘기지 않는다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "Clean", index: 0, ownedPaths: ["src/", "docs/"] }], snap([]));
+    registerSpawnedMakers(state, "call-2", [{ name: "Stray", index: 0, ownedPaths: ["src/"] }], snap([]));
+    registerSpawnedMakers(state, "call-3", [{ name: "Blind", index: 0, ownedPaths: ["SRC/"] }], undefined);
+    bindSpawnAliases(state, "call-2", [{ name: "Stray", index: 0, ownedPaths: ["src/"] }], [{ index: 0, id: "Stray-2" }]);
+    const rows: OwnershipOutsideRow[] = [];
+    reportOwnedChildren(state, ["Clean", "Stray-2", "Blind"], snap([["src/a.ts", "h1"], ["docs/b.md", "h2"]]), (row) => rows.push(row));
+    expect(rows).toEqual([
+      { child: "Stray", childIds: ["Stray", "Stray-2"], owned: ["src/"], outside: ["docs/b.md"], concurrent: ["Blind", "Clean"] },
+      { child: "Blind", childIds: ["Blind"], owned: ["src/"], outside: "unobserved", concurrent: ["Clean", "Stray"] },
+    ]);
+  });
+});
+
+describe("OwnerWriteGuard 판정", () => {
+  const view = (state: WriterClaimState, running: RunningTaskJob[] | undefined) => ({
+    cwd: "/repo",
+    state,
+    running: () => running,
+  });
+
+  test("spawn 호출이 끝나기 전(foreground) child도 owner이고, 이름 충돌 변형 id는 자기로 본다", () => {
+    const state = createWriterClaimState();
+    claimSharedWriters(state, "call-1", [
+      { name: "Alpha", index: 0, ownedPaths: ["src/a.ts"] },
+      { index: 1, ownedPaths: ["src/u.ts"] },
+    ]);
+    // foreground child는 job snapshot에 보이지 않는다.
+    const foreground = view(state, []);
+    expect(decideOwnerWrite(foreground, "Beta", ["src/a.ts"])?.conflict).toEqual({ owner: "Alpha", path: "src/a.ts" });
+    expect(decideOwnerWrite(foreground, "Alpha-2", ["src/a.ts"])?.conflict).toBeUndefined();
+    // 이름 없는 in-flight spawn은 자기일 수 있어 막을 근거가 아니다.
+    expect(decideOwnerWrite(foreground, "Beta", ["src/u.ts"])).toEqual({ unknown: ["in-flight:call-1#1"] });
+    settleSharedWriters(state, "call-1", [{ index: 0, id: "Alpha" }]);
+    expect(decideOwnerWrite(foreground, "Beta", ["src/a.ts"])?.conflict).toBeUndefined();
+    expect(decideOwnerWrite(view(state, undefined), "Beta", ["src/a.ts"])).toBeUndefined();
+  });
+
+  test("같은 canonical id를 다시 쓴 spawn은 가장 최근 주장으로 판정하고, 주장 없는 실행 중 job은 미상으로만 남긴다", () => {
+    const state = createWriterClaimState();
+    claimSharedWriters(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["old/"] }]);
+    settleSharedWriters(state, "call-1", [{ index: 0, id: "Alpha" }]);
+    claimSharedWriters(state, "call-2", [{ name: "Alpha", index: 0, ownedPaths: ["new/"] }]);
+    settleSharedWriters(state, "call-2", [{ index: 0, id: "Alpha" }]);
+    const live = view(state, [{ id: "job-alpha", agentId: "Alpha" }, { id: "job-ghost", agentId: "Ghost" }]);
+    expect(decideOwnerWrite(live, "Beta", ["old/x.ts"])).toEqual({ unknown: ["Ghost"] });
+    expect(decideOwnerWrite(live, "Beta", ["NEW/x.ts"])?.conflict).toEqual({ owner: "Alpha", path: "NEW/x.ts" });
+  });
+
+  test("실행 중 job은 job id가 아니라 canonical agent id로 주장과 자기를 가른다", () => {
+    const state = createWriterClaimState();
+    claimSharedWriters(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }]);
+    settleSharedWriters(state, "call-1", [{ index: 0, id: "Alpha" }]);
+    claimSharedWriters(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }]);
+    settleSharedWriters(state, "call-2", [{ index: 0, id: "Beta" }]);
+    // job handle 이름이 다른 agent id와 같아도 실행 중인 것은 agent Alpha뿐이다.
+    const live = view(state, [{ id: "Beta", agentId: "Alpha" }]);
+    expect(decideOwnerWrite(live, "Gamma", ["a/x.ts"])?.conflict).toEqual({ owner: "Alpha", path: "a/x.ts" });
+    expect(decideOwnerWrite(live, "Gamma", ["b/x.ts"])?.conflict).toBeUndefined();
+    expect(decideOwnerWrite(live, "Beta", ["a/x.ts"])?.conflict).toEqual({ owner: "Alpha", path: "a/x.ts" });
+  });
+
+  test("격리 요청 spawn은 쓰기 소유를 주장하지 않으며 항목 값이 상위 isolated보다 우선한다", () => {
+    const state = createTaskGuardState();
+    const decision = reserveTaskCall(state, "iso", {
+      isolated: true,
+      tasks: [
+        { agent: "maker", name: "Kept", task: brief({ OWNED_PATHS: "a/" }) },
+        { agent: "maker", name: "Shared", isolated: false, task: brief({ OWNED_PATHS: "b/" }) },
+        { agent: "maker", name: "Capture", isolated: "capture", task: brief({ OWNED_PATHS: "c/" }) },
+      ],
+    });
+    expect(decision.ok).toBe(true);
+    const writers = createWriterClaimState();
+    claimSharedWriters(writers, "iso", reservedMakers(state, "iso") ?? []);
+    expect([...writers.claims.values()].map((claim) => claim.child)).toEqual(["Shared"]);
   });
 });
 

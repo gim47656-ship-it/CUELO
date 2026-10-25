@@ -634,8 +634,10 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   통과는 모든
   finding이 닫힌 상태이고 깨끗한 검토도 PASS 판정이 아니다. 한 체인은 최대 5회이며 probe 라운드는 그중 하나,
   probe가 아닌 라운드는 넷이다(2026-10-23 실측에 맞춰 3·2에서 올렸고 옛 체인은 그대로 읽힌다). 수정은 닫기 전에
-  다음 라운드로 reviewer에게 다시 보인다. resolve 결과의 `unreviewedChanges`는 마지막 라운드 뒤에 바뀐 파일을 알리는 안내일 뿐
-  통과 판정을 바꾸지 않는다. 이미 커밋된 변경은 1회차에 `base`(HEAD 또는 그 조상)를 주어 그 커밋부터 HEAD까지를 심사하고
+  다음 라운드로 reviewer에게 다시 보인다. 마지막 라운드 뒤에 바뀐 코드 파일이 남으면 finding이 모두 닫혀도 resolve는
+  통과시키지 않는다(`unreviewedBlocking`). 같은 체인의 다음 라운드로 보인 뒤 다시 resolve한다. 더 돌릴 라운드가 없거나
+  reviewer가 볼 수 없는 파일(바이너리·개인키·비밀 경로)만 `unreviewedAcknowledgements`에 경로별 검사 근거를 적어 통과하며,
+  문서·테스트·생성물의 미검토 수정은 안내만 한다. 이미 커밋된 변경은 1회차에 `base`(HEAD 또는 그 조상)를 주어 그 커밋부터 HEAD까지를 심사하고
   (대상 파일의 작업 트리가 HEAD와 같아야 한다), 이어지는 라운드는
   `previousReviewId`만으로 이어 간다. probe가 아닌 후속 라운드는 직전에 reviewer가 본 내용 이후의 delta만 본다.
   reviewer는 코드만으로 가릴 수 없는 의심에 finding의 `probe`(재현 절차와 `expectIfReal`)를 붙일 수 있다.

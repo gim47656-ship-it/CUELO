@@ -74,6 +74,19 @@ export interface OutcomeRecord extends AttemptIdentity {
 export type RevisionRelation = "same" | "integrated" | "mismatch" | "unknown";
 
 /**
+ * revisionRelation이 그 값이 된 원인. 원장 한 행만으로 원인별 집계를 하려는 기록이며 판정이 아니다.
+ * - exact: 두 revision 문자열이 공백·대소문자를 빼고 같다.
+ * - same-commit: 같은 commit id(앞 7자 이상 일치)를 가리키고 작업 트리 여부도 같다.
+ * - linked: 다르지만 integratedFrom이 원 revision과 이어진다(통합 검수).
+ * - source-unobserved: 원 revision을 관측하지 못했다.
+ * - no-review-revision: Main 검수 revision이 없다(held 등).
+ * - unlinked: 다르고 integratedFrom이 없다.
+ * - link-mismatch: 다르고 integratedFrom이 있지만 원 revision과 이어지지 않는다.
+ */
+export type RevisionRelationCause =
+  | "exact" | "same-commit" | "linked" | "source-unobserved" | "no-review-revision" | "unlinked" | "link-mismatch";
+
+/**
  * Main의 명시 수용 판정. 실행 상태(outcome)와 따로 남기며 자동 추정으로 만들지 않는다.
  * - accepted: 그 attempt가 완료되었고 Main이 revision·evidence와 함께 수용했다.
  * - rework: 그 attempt를 다시 해야 한다고 Main이 reason·evidence로 판정했다.
@@ -93,8 +106,174 @@ export interface VerdictRecord extends AttemptIdentity {
   sourceRevision?: string | null;
   /** revision과 sourceRevision의 관계. 이 필드가 생기기 전 판정에는 없으며 그 판정은 재작성하지 않는다. */
   revisionRelation?: RevisionRelation;
+  /** revisionRelation이 그 값이 된 원인. 이 필드가 생기기 전 판정에는 없다. */
+  revisionRelationCause?: RevisionRelationCause;
   /** Main이 통합 검수라고 명시한 원 revision. 연결 주장일 뿐이며 검수 근거는 reason·evidenceLocators다. */
   integratedFrom?: string;
+}
+
+// ---------------------------------------------------------------------------
+// revision 관계 — 두 revision은 둘 다 자유 서술 문자열이라 문자열 동등 비교만으로는 같은 commit도 mismatch가 된다.
+// ---------------------------------------------------------------------------
+
+const HEX_TOKEN = /(?<![0-9A-Za-z])[0-9a-f]{7,64}(?![0-9A-Za-z])/gi;
+const CLEAN_TREE = /(?:working[- ]?tree|worktree|워킹\s?트리|작업\s?트리)\s*(?:is\s+)?(?:clean|깨끗)/gi;
+const WORKING_TREE = /working[- ]?tree|worktree|uncommitted|작업\s?트리|워킹\s?트리|미커밋|커밋\s?(?:안|전|없)/i;
+const MIN_LINK_PREFIX = 8;
+/** YYYYMMDD 또는 YYYYMMDDHHMMSS 모양의 날짜·시각은 commit id가 아니다. */
+const DATE_LIKE = /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:(?:[01]\d|2[0-3])[0-5]\d[0-5]\d)?$/;
+
+interface RevisionFacts {
+  /** 공백을 접고 소문자로 만든 문자열. */
+  text: string;
+  /** 문장 속 commit id 후보(7~64자 hex, 숫자와 a-f 문자를 모두 포함). 파일 해시도 같은 규칙으로 잡힌다. */
+  commits: string[];
+  /**
+   * 숫자만이나 a-f 글자만으로 된 7자 이상 hex 토큰(날짜 모양 제외). 진짜 짧은 해시일 수 있지만 숫자·단어와 구분되지 않으므로
+   * 다른 쪽의 commits 토큰과 앞부분이 맞을 때만 같은 commit 증거로 쓴다(weak끼리는 쓰지 않는다).
+   */
+  weak: string[];
+  /** 커밋하지 않은 작업 트리를 가리키는가. "working tree clean"은 작업 트리 변경이 아니다. */
+  workingTree: boolean;
+}
+
+function revisionFacts(revision: string): RevisionFacts {
+  const text = revision.trim().replace(/\s+/g, " ").toLowerCase();
+  const tokens = [...new Set(text.match(HEX_TOKEN) ?? [])];
+  const mixed = (id: string) => /\d/.test(id) && /[a-f]/.test(id);
+  return {
+    text,
+    commits: tokens.filter(mixed),
+    weak: tokens.filter((id) => !mixed(id) && !DATE_LIKE.test(id)),
+    workingTree: WORKING_TREE.test(text.replace(CLEAN_TREE, "")),
+  };
+}
+
+const prefixRelated = (x: string, y: string) => x.startsWith(y) || y.startsWith(x);
+
+/** 같은 revision인가: 문자열이 같거나, 같은 commit id(앞 7자 이상 일치)를 가리키고 작업 트리 여부가 같다. */
+function sameFacts(a: RevisionFacts, b: RevisionFacts): "exact" | "same-commit" | null {
+  if (a.text === b.text) return "exact";
+  const sharesCommit = a.commits.some((x) => [...b.commits, ...b.weak].some((y) => prefixRelated(x, y)))
+    || a.weak.some((x) => b.commits.some((y) => prefixRelated(x, y)));
+  return sharesCommit && a.workingTree === b.workingTree ? "same-commit" : null;
+}
+
+/** integratedFrom이 원 revision과 이어지는가: 같은 revision이거나 한쪽이 다른 쪽의 앞부분이다(최소 8자). */
+function linksTo(from: RevisionFacts, source: RevisionFacts): boolean {
+  if (sameFacts(from, source)) return true;
+  const [shorter, longer] = from.text.length <= source.text.length ? [from.text, source.text] : [source.text, from.text];
+  return shorter.length >= MIN_LINK_PREFIX && longer.startsWith(shorter);
+}
+
+export interface RevisionRelationResult {
+  relation: RevisionRelation;
+  cause: RevisionRelationCause;
+  /** mismatch일 때 Main이 integratedFrom에 그대로 넘기면 이 attempt의 원 revision으로 이어지는 값. */
+  integratedFromHint?: string;
+}
+
+/**
+ * Main 검수 revision과 Maker 원 revision의 관계를 정한다. 순수 함수이며 advisory 기록용이다(게이트가 아니다).
+ * 문자열 동등 비교만 하지 않고 같은 commit id(앞 7자 이상)·작업 트리 여부를 함께 본다. commit이 다른 통합 검수는
+ * 텍스트만으로 확인할 수 없으므로 여전히 integratedFrom 명시를 요구한다.
+ */
+export function deriveRevisionRelation(args: {
+  sourceRevision?: string | null;
+  revision?: string | null;
+  integratedFrom?: string | null;
+}): RevisionRelationResult {
+  const source = (args.sourceRevision ?? "").trim();
+  const revision = (args.revision ?? "").trim();
+  const from = (args.integratedFrom ?? "").trim();
+  if (!source) return { relation: "unknown", cause: "source-unobserved" };
+  if (!revision) return { relation: "unknown", cause: "no-review-revision" };
+  const sourceFacts = revisionFacts(source);
+  const same = sameFacts(revisionFacts(revision), sourceFacts);
+  const linked = Boolean(from) && linksTo(revisionFacts(from), sourceFacts);
+  // Main이 명시한 통합 연결은 같은 commit 추정으로 덮지 않는다. 문자열이 똑같을 때만 same이 우선한다.
+  if (same === "exact" || (same && !linked)) return { relation: "same", cause: same };
+  if (linked) return { relation: "integrated", cause: "linked" };
+  const hint = source.length <= 200 ? source : sourceFacts.commits[0] ?? sourceFacts.weak[0] ?? source.slice(0, 200);
+  return { relation: "mismatch", cause: from ? "link-mismatch" : "unlinked", integratedFromHint: hint };
+}
+
+/**
+ * mismatch·unknown 기록에 붙이는 설명. mismatch는 관측한 원 revision과 그대로 넘길 integratedFrom 값을 알려 준다.
+ * 원 revision 미관측(unknown)은 attempt 번호가 1보다 크면 연속 보고가 prose였을 수 있음을 함께 말한다.
+ * 검수 revision이 없는 unknown(held 등)과 same·integrated는 설명이 없다.
+ */
+export function revisionRelationDiagnostic(
+  result: RevisionRelationResult,
+  args: { sourceRevision?: string | null; revision?: string | null; integratedFrom?: string | null; attempt?: number },
+): string | undefined {
+  const revision = (args.revision ?? "").trim();
+  const hint = result.integratedFromHint;
+  if (result.cause === "link-mismatch" && hint) {
+    return `integratedFrom '${(args.integratedFrom ?? "").trim()}'이 이 attempt에서 관측한 Maker 원 revision '${(args.sourceRevision ?? "").trim()}'과 이어지지 않습니다. 검수 revision '${revision}'은 mismatch로 기록했습니다. 이 attempt의 원 revision을 통합한 검수라면 integratedFrom='${hint}'로 다시 기록하고, 다른 attempt의 결과라면 그 attempt identity로 기록하세요.`;
+  }
+  if (result.cause === "unlinked" && hint) {
+    return `Maker 원 revision '${(args.sourceRevision ?? "").trim()}'과 검수 revision '${revision}'이 다르고 연결 주장이 없어 mismatch로 기록했습니다. 통합·커밋 뒤 새 revision을 직접 검수했다면 integratedFrom='${hint}'로 연결을 명시하고 그 검수 근거를 reason·evidenceLocators에 남기세요.`;
+  }
+  if (result.cause === "source-unobserved" && revision) {
+    const continuation = (args.attempt ?? 1) > 1 ? " 재작업·연속 attempt의 보고가 구조화 JSON이 아니면 revision을 읽지 못합니다." : "";
+    return `이 attempt의 terminal report revision이 미관측이라 검수 revision '${revision}'과의 관계를 unknown으로 기록했습니다. terminal report의 최상위 revision 문자열만 읽으며 원 revision을 추정해 채우지 않습니다.${continuation}`;
+  }
+  return undefined;
+}
+
+/**
+ * report 객체가 revision을 object로 낼 때 먼저 찾는 대표 문자열 필드(대소문자 무시). 실제 보고의 `HEAD`·`base`·`id` 모양을 따른다.
+ * 이 목록에 없는 object(파일 해시 묶음 등)는 아래 압축 JSON으로 읽는다.
+ */
+const REVISION_OBJECT_KEYS = ["id", "revision", "commit", "sha", "head", "base_head", "base"];
+/** revision 대신 같은 뜻으로 쓰인 key. alembic_revision 같은 다른 뜻의 key는 넣지 않는다. */
+const REVISION_ALIAS_KEYS = ["sourceRevision", "source_revision"];
+
+/**
+ * Maker terminal report 객체에서 원 revision 문자열을 읽는다. 순서: 최상위 `revision` 문자열 → revision object의
+ * 대표 필드 → `sourceRevision`·`source_revision` 별칭 → revision object 압축 JSON(500자까지).
+ * 압축 JSON은 object 안에 `*revision*` key가 하나라도 있으면 쓰지 않는다(alembic_revision 같은 뜻이 다른 값을 원 revision으로 읽지 않는다).
+ * 읽을 수 없으면 undefined이며 추정으로 채우지 않는다.
+ */
+export function pickReportRevision(record: Record<string, unknown>): string | undefined {
+  const str = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+  const direct = str(record.revision);
+  if (direct) return direct;
+  const object = record.revision && typeof record.revision === "object" && !Array.isArray(record.revision)
+    ? record.revision as Record<string, unknown> : undefined;
+  if (object) {
+    const lower = new Map(Object.entries(object).map(([key, value]) => [key.toLowerCase(), value]));
+    for (const key of REVISION_OBJECT_KEYS) { const found = str(lower.get(key)); if (found) return found; }
+  }
+  for (const key of REVISION_ALIAS_KEYS) { const found = str(record[key]); if (found) return found; }
+  if (object && !Object.keys(object).some((key) => /revision/i.test(key))) {
+    const json = JSON.stringify(object);
+    if (json !== "{}") return json.length > 500 ? json.slice(0, 500) : json;
+  }
+  return undefined;
+}
+
+/**
+ * 한 알림에 task-result 블록이 jobs보다 적거나 순서가 다를 수 있다(블록 없는 재개 job이 섞인다).
+ * 먼저 블록의 id를 job의 jobId·agentId·label과 맞춘다. id로 못 맞춘 job은 id로 소비되지 않은 블록을 순서대로 받는다.
+ */
+export function assignTaskResultBlocks(
+  blocks: readonly string[],
+  jobs: ReadonlyArray<{ jobId: string; agentId?: string; label?: string }>,
+): Array<string | undefined> {
+  const idOf = (block: string) => /<task-result\b[^>]*?\bid="([^"]*)"/i.exec(block)?.[1];
+  const used = new Set<number>();
+  const assigned = jobs.map((job) => {
+    const keys = [job.jobId, job.agentId, job.label].filter((key): key is string => Boolean(key));
+    for (const key of keys) {
+      const index = blocks.findIndex((block, i) => !used.has(i) && idOf(block) === key);
+      if (index >= 0) { used.add(index); return blocks[index]; }
+    }
+    return undefined;
+  });
+  const leftover = blocks.filter((_, i) => !used.has(i));
+  return assigned.map((block) => block ?? leftover.shift());
 }
 
 export type LedgerRecord = DispatchRecord | OutcomeRecord | VerdictRecord;
