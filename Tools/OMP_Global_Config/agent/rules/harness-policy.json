@@ -267,7 +267,7 @@
           "anthropic-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
           "openai-or-any-other-provider-authored": "reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
           "mixed-authors": "reviewed-by-both-reviewers",
-          "always-on-google-reviewer": "every-round-including-later-and-probe-rounds-also-runs-the-google-reviewer-slot-modelRoles.crossReviewGoogle-gemini-4-argon-on-vertex-unless-any-author-is-a-google-or-gemini-model-its-finding-ids-carry-GGL-and-must-be-closed-at-resolve-like-any-other-but-it-is-advisory-its-error-or-unparsable-answer-is-recorded-in-reviewers-with-advisory-true-and-in-the-result-advisoryReviewers-note-and-never-makes-passable-false-passable-is-decided-by-the-opposite-family-reviewers-only-and-a-later-round-asks-it-again"
+          "always-on-google-reviewer": "every-round-including-later-and-probe-rounds-also-runs-the-google-reviewer-slot-modelRoles.crossReviewGoogle-unless-any-author-is-a-google-family-model-its-finding-ids-carry-GGL-and-must-be-closed-at-resolve-like-any-other-but-it-is-advisory-its-error-or-unparsable-answer-is-recorded-in-reviewers-with-advisory-true-and-in-the-result-advisoryReviewers-note-and-never-makes-passable-false-passable-is-decided-by-the-opposite-family-reviewers-only-and-a-later-round-asks-it-again"
         },
         "required": "any-of-declared-high-risk-or-a-trigger-marker-in-the-changed-code-lines-or-the-deterministic-ten-percent-sample",
         "exclusions": "documentation-comments-tests-generated-files-and-measurement-or-verdict-data-under-any-doc-history-record-folder-are-excluded-scripts-there-stay-in-scope",
