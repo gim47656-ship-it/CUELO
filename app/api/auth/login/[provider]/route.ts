@@ -92,9 +92,15 @@ export async function GET(
 
   const stream = new ReadableStream({
     async start(controller) {
-      const loginId = resolveOAuthLoginId(provider);
+      // `?login=` 는 같은 자격증명 칸에 저장하는 다른 로그인(예: 기기 코드 `openai-codex-device`)을 고른다.
+      // 이 제공자 칸에 저장하지 않는 id 는 거절해 다른 제공자의 로그인을 시작하지 못하게 한다.
+      const requestedLogin = new URL(req.url).searchParams.get("login");
+      const loginId = resolveOAuthLoginId(provider, requestedLogin);
       if (!loginId) {
-        send(controller, { type: "error", message: `Unknown provider: ${provider}` });
+        send(controller, {
+          type: "error",
+          message: requestedLogin !== null ? `Unknown login for ${provider}: ${requestedLogin}` : `Unknown provider: ${provider}`,
+        });
         controller.close();
         return;
       }

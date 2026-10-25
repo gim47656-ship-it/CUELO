@@ -707,6 +707,8 @@
  "i18n.submit": "제출",
  "i18n.login": "로그인",
  "i18n.relogin": "다시 로그인",
+ "i18n.deviceLogin": "기기 코드로 로그인",
+ "i18n.deviceLoginGuide": "아래 주소를 열어 로그인한 뒤 이 코드를 입력하세요. 이 서버의 localhost로 돌아올 필요가 없어서 원격 서버에서도 됩니다.",
  "i18n.disconnect": "연결 해제",
  "i18n.networkError": "네트워크 오류",
  "i18n.continuing": "계속 진행 중…",

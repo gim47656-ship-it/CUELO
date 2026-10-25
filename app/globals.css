@@ -6395,6 +6395,16 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   overflow-wrap: anywhere;
 }
 
+/* 숫자·금액·전화번호는 받아쓰기가 틀리기 쉬워 한눈에 확인하도록 옅게 칠한다. 줄 굵기와 색은 그대로 따른다. */
+.translator-number {
+  padding: 0 0.12em;
+  border-radius: var(--seed-radius-r1, 4px);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  font-variant-numeric: tabular-nums;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .translator-pending {
   margin: 0;
   color: var(--text-dim);

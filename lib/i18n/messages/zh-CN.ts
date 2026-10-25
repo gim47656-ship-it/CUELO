@@ -713,6 +713,8 @@ export const zhCNLocale: LocalePlugin = {
     "i18n.submit": "提交",
     "i18n.login": "登录",
     "i18n.relogin": "重新登录",
+    "i18n.deviceLogin": "使用设备码登录",
+    "i18n.deviceLoginGuide": "打开下面的页面登录，然后输入此代码。无需回到此服务器的 localhost，因此远程服务器上也能使用。",
     "i18n.disconnect": "断开连接",
     "i18n.networkError": "网络错误",
     "i18n.continuing": "继续中…",

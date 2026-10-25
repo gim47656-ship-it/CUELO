@@ -104,6 +104,8 @@ interface OAuthProvider {
   loggedIn: boolean;
   /** Provider also accepts an API key, so it appears in both picker sections. */
   supportsApiKey?: boolean;
+  /** Alternative login id that needs no localhost callback (device code), when the provider has one. */
+  deviceLoginId?: string;
 }
 
 interface ApiKeyProvider {
@@ -119,7 +121,9 @@ interface ApiKeyProvider {
 type OAuthLoginState =
   | { phase: "idle" }
   | { phase: "connecting" }
-  | { phase: "auth"; url: string; instructions: string | null; token: string }
+  // `device`: 기기 코드 로그인. core 가 onAuth 의 instructions 로 코드를 주고 곧바로 진행 문구를 보내므로,
+  // 그 진행 문구(`progress`)는 이 상태에 붙여 코드와 주소가 화면에 남게 한다.
+  | { phase: "auth"; url: string; instructions: string | null; token: string; device: boolean; progress: string | null }
   | { phase: "device_code"; userCode: string; verificationUri: string; intervalSeconds: number | null; expiresInSeconds: number | null }
   | { phase: "prompt"; message: string; placeholder: string | null; token: string }
   | { phase: "select"; message: string; options: { id: string; label: string }[]; token: string }
@@ -1256,13 +1260,16 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
     onLoginSucceeded?.();
   }, [onRefresh, onLoginSucceeded]);
 
-  const handleLogin = useCallback(() => {
+  /** `loginId` 는 같은 자격증명 칸에 저장하는 다른 로그인(기기 코드)이다. 없으면 기본 로그인이다. */
+  const handleLogin = useCallback((loginId?: string) => {
     eventSourceRef.current?.close();
     loginSettledRef.current = false;
     setLoginState({ phase: "connecting" });
     setInputValue("");
 
-    const es = new EventSource(`/api/auth/login/${encodeURIComponent(provider.id)}`);
+    const device = loginId !== undefined;
+    const query = device ? `?login=${encodeURIComponent(loginId)}` : "";
+    const es = new EventSource(`/api/auth/login/${encodeURIComponent(provider.id)}${query}`);
     eventSourceRef.current = es;
 
     es.onmessage = (e) => {
@@ -1273,7 +1280,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         options?: { id: string; label: string }[];
       };
       if (data.type === "auth") {
-        setLoginState({ phase: "auth", url: data.url!, instructions: data.instructions ?? null, token: data.token! });
+        setLoginState({ phase: "auth", url: data.url!, instructions: data.instructions ?? null, token: data.token!, device, progress: null });
         openExternal(data.url!);
       } else if (data.type === "device_code") {
         setLoginState({
@@ -1289,7 +1296,9 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
       } else if (data.type === "select_request") {
         setLoginState({ phase: "select", message: data.message!, options: data.options ?? [], token: data.token! });
       } else if (data.type === "progress") {
-        setLoginState({ phase: "progress", message: data.message! });
+        const message = data.message!;
+        setLoginState((prev) =>
+          prev.phase === "auth" && prev.device ? { ...prev, progress: message } : { phase: "progress", message });
       } else if (data.type === "success") {
         finishLoginSuccess();
       } else if (data.type === "error") {
@@ -1426,7 +1435,25 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             </div>
           </div>
         )}
-        {(loginState.phase === "auth" || loginState.phase === "prompt") && (
+        {loginState.phase === "auth" && loginState.device && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              {t("i18n.deviceLoginGuide")}
+            </p>
+            {loginState.instructions && (
+              <div role="status" style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0, overflowWrap: "anywhere" }}>
+                {loginState.instructions}
+              </div>
+            )}
+            <a href={loginState.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--accent)", wordBreak: "break-all" }}>
+              {loginState.url}
+            </a>
+            {loginState.progress && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>{loginState.progress}</p>
+            )}
+          </div>
+        )}
+        {((loginState.phase === "auth" && !loginState.device) || loginState.phase === "prompt") && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
               {loginState.phase === "auth"
@@ -1512,11 +1539,19 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
           <>
             <button
               ref={loginButtonRef}
-              onClick={handleLogin}
+              onClick={() => handleLogin()}
               style={{ padding: "5px 14px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: 5, color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
             >
                {provider.loggedIn ? t("i18n.relogin") : t("i18n.login")}
             </button>
+            {provider.deviceLoginId && (
+              <button
+                onClick={() => handleLogin(provider.deviceLoginId)}
+                style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12 }}
+              >
+                {t("i18n.deviceLogin")}
+              </button>
+            )}
             {provider.loggedIn && !relogin && (
               <button
                 onClick={handleLogout}

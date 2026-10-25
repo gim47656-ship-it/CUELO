@@ -38,6 +38,65 @@ export interface ProviderListingInput {
   /** Type of the credential stored for this provider, when there is one. */
   credentialType?: ProviderCredentialType;
   modelCount: number;
+  /** Alternative login storing under this provider that needs no localhost callback (device code). */
+  deviceLoginId?: string;
+}
+
+/** One available OAuth-registry login, reduced to what the listing needs. */
+export interface OAuthLoginInfo {
+  id: string;
+  name: string;
+  /** Credential id the login stores under (`storeCredentialsAs ?? id`). */
+  storedAs: string;
+  /** The login yields a plain key: an `api-key` login, or an OAuth login whose result is stored as one. */
+  yieldsApiKey: boolean;
+  /** The login needs no localhost callback (device-code style). */
+  callbackFree: boolean;
+}
+
+/** All logins that store under one credential id. */
+export interface OAuthLoginGroup {
+  /** The login whose own id is the stored id (else the first declared); it names the provider. */
+  primary: OAuthLoginInfo;
+  /** Other logins storing under the same id, in registry order. */
+  alternatives: OAuthLoginInfo[];
+}
+
+/**
+ * Group logins by the credential id they store under. `openai-codex` and
+ * `openai-codex-device` both store as `openai-codex`; the listing name and the
+ * default login must both come from `openai-codex`, not whichever came last.
+ */
+export function groupOAuthLogins(logins: readonly OAuthLoginInfo[]): Map<string, OAuthLoginGroup> {
+  const groups = new Map<string, OAuthLoginGroup>();
+  for (const login of logins) {
+    const group = groups.get(login.storedAs);
+    if (!group) {
+      groups.set(login.storedAs, { primary: login, alternatives: [] });
+    } else if (login.id === login.storedAs && group.primary.id !== login.storedAs) {
+      group.alternatives.unshift(group.primary);
+      group.primary = login;
+    } else {
+      group.alternatives.push(login);
+    }
+  }
+  return groups;
+}
+
+/**
+ * The login id to start for `provider`. Without `requested` it is the primary
+ * login; an explicit id is accepted only when that login stores under `provider`.
+ */
+export function pickOAuthLoginId(
+  groups: ReadonlyMap<string, OAuthLoginGroup>,
+  provider: string,
+  requested?: string | null,
+): string | undefined {
+  const group = groups.get(provider);
+  if (!group) return undefined;
+  // Only an omitted id falls back to the primary login; an explicit empty id (`?login=`) is rejected.
+  if (requested === undefined || requested === null) return group.primary.id;
+  return [group.primary, ...group.alternatives].some((login) => login.id === requested) ? requested : undefined;
 }
 
 export interface ApiKeyProviderListing {
@@ -57,6 +116,8 @@ export interface OAuthProviderListing {
   loggedIn: boolean;
   /** True when the same provider can also be authenticated with an API key. */
   supportsApiKey: boolean;
+  /** Alternative login id for the device-code flow, when the provider has one. */
+  deviceLoginId?: string;
 }
 
 function dedupeById(providers: readonly ProviderListingInput[]): ProviderListingInput[] {
@@ -112,6 +173,7 @@ export function buildOAuthProviderList(
       usesCallbackServer: false,
       loggedIn: provider.credentialType === "oauth",
       supportsApiKey: provider.hasApiKeyLogin,
+      ...(provider.deviceLoginId ? { deviceLoginId: provider.deviceLoginId } : {}),
     });
   }
   return result;

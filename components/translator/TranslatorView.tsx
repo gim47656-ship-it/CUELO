@@ -18,6 +18,7 @@ import {
   findTranslatorLanguage,
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
+import { splitNumberSpans } from "@/lib/translator-numbers";
 import { useTranslatorText, type TranslatorTranslate } from "./i18n";
 import {
   addTranscript,
@@ -216,11 +217,28 @@ function FacePane({ segments, language, unknownLabel, flipped, emptyHint }: Face
             lang={known ? undefined : ""}
           >
             {known ? null : <span className="translator-face-unknown">{unknownLabel}</span>}
-            {segment.text}
+            <NumberMarked text={segment.text} />
           </p>
         ))}
       </div>
     </div>
+  );
+}
+
+/** 숫자와 붙은 단위를 강조해 받아쓰기가 틀린 숫자를 바로 알아보게 한다. 값은 바꾸지 않는다. */
+function NumberMarked({ text }: { text: string }) {
+  return (
+    <>
+      {splitNumberSpans(text).map((span, index) =>
+        span.number ? (
+          <span key={index} className="translator-number">
+            {span.text}
+          </span>
+        ) : (
+          span.text
+        ),
+      )}
+    </>
   );
 }
 
@@ -274,7 +292,7 @@ function StreamLog({ role, label, segments, pending, jumpLabel, layoutKey }: Str
             >
               <div className="translator-bubble">
                 <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
-                  {segment.text}
+                  <NumberMarked text={segment.text} />
                 </p>
               </div>
             </div>

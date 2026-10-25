@@ -713,6 +713,8 @@ export const enLocale = {
     "i18n.submit": "Submit",
     "i18n.login": "Login",
     "i18n.relogin": "Re-login",
+    "i18n.deviceLogin": "Log in with device code",
+    "i18n.deviceLoginGuide": "Open the page below, sign in, and enter this code. Nothing has to reach this server's localhost, so it also works on a remote server.",
     "i18n.disconnect": "Disconnect",
     "i18n.networkError": "Network error",
     "i18n.continuing": "Continuing…",
