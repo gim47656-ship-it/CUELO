@@ -14,6 +14,7 @@ import {
 } from "@/lib/translator-context";
 import {
   TRANSLATOR_LANGUAGES,
+  engineForPairChange,
   findTranslatorLanguage,
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
@@ -386,7 +387,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   /** 통화 중에 언어나 분위기·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
   const changeCallSettings = (next: Settings) => {
     if (next.mine.code === next.theirs.code) return;
-    setSettings(next);
+    // 통역 중에는 엔진 칸이 잠겨 있고 열린 통화의 엔진을 바꾸지 않는다. 쉬는 중에만 짝을 따라 엔진을 바꾼다.
+    const provider = active ? next.provider : engineForPairChange(settings, next, next.provider);
+    setSettings({ ...next, provider });
     if (active) startCall(next);
   };
 
