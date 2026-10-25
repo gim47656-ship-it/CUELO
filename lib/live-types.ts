@@ -78,6 +78,11 @@ export interface LiveTranscriptTurn {
   itemId?: string;
   /** Shared per-role set of every `turn.id` already finalized in this call. */
   finalizedTurnIds?: Set<string>;
+  /**
+   * The unfinished turn's text before trimming. The next delta is appended to this, so a
+   * delta that ends with a space ("감사합니다. ") keeps it before "체크인은".
+   */
+  raw?: string;
 }
 
 /**
@@ -111,17 +116,22 @@ export function updateLiveTranscript(
   } else if (final) {
     if (wireId !== undefined && previous.finalizedTurnIds?.has(wireId)) return undefined;
     next = previous.text.startsWith(text) && previous.text.length > text.length ? previous.text : text;
-  } else if (text.startsWith(previous.text)) {
-    next = text;
-  } else if (previous.text.endsWith(text)) {
-    next = previous.text;
   } else {
-    next = previous.text + text;
+    // Compare without surrounding spaces, but append the frame as sent so its separator
+    // survives; a frame that adds nothing keeps the stored trailing space.
+    const base = previous.raw ?? previous.text;
+    const head = text.trimStart();
+    const body = head.trimEnd();
+    if (!body) next = /\s$/.test(base) ? base : base + text;
+    else if (previous.text.endsWith(body)) next = /\s$/.test(head) && !/\s$/.test(base) ? base + head.slice(body.length) : base;
+    else if (head.startsWith(previous.text)) next = head;
+    else next = /\s$/.test(base) ? base + head : base + text;
   }
-  next = next.trim();
-  if (!next) return undefined;
+  const shown = next.trim();
+  if (!shown) return undefined;
   return {
-    text: next,
+    text: shown,
+    raw: final ? undefined : next.trimStart(),
     final,
     itemId: final ? previous?.itemId : (wireId ?? previous?.itemId),
     // One set per role, created lazily and shared by every state of that

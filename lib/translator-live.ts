@@ -16,6 +16,8 @@ import type { LiveEvent, LivePace, LiveTranscriptRole } from "./live-types";
 import {
   EMPTY_INTERPRETER_CONTEXT,
   type InterpreterContext,
+  type InterpreterProfile,
+  type PartnerAge,
   type SpeakerAge,
   type SpeakerGender,
   type TranslatorMood,
@@ -68,6 +70,41 @@ const AGE_WORDS: Record<SpeakerAge, string> = {
   "50s": "in their 50s",
   "60s": "60 or older",
 };
+const PARTNER_AGE_WORDS: Record<Exclude<PartnerAge, "child">, string> = {
+  younger: "younger than the user or about the same age",
+  older: "older than the user but not of their parents' generation",
+  parent: "of the user's parents' generation",
+  grandparent: "of the user's grandparents' generation",
+};
+
+function describePartner(profile: InterpreterProfile): string {
+  const { partnerGender: gender, partnerAge: age } = profile;
+  if (age === "child") return gender === "male" ? "a boy" : gender === "female" ? "a girl" : "a child";
+  const who = gender ? GENDER_WORDS[gender] : "a person";
+  return age ? `${who} ${PARTNER_AGE_WORDS[age]}` : who;
+}
+
+/**
+ * The one Vietnamese address pair the settings decide, so the model never has to pick between
+ * options while speaking. `undefined` when a setting the pair depends on is missing; the general
+ * rule in `LANGUAGE_NOTES.vi` applies then. Reviewed with Gemini 3.8 on 2026-10-25
+ * (doc/history/2026/10/25-interpreter-oss-research/gemini-linguistic-review-r3.md).
+ */
+function vietnameseAddressPair(profile: InterpreterProfile): { partner: string; self: string } | undefined {
+  const { gender, partnerGender, partnerAge } = profile;
+  const byPartner = (female: string, male: string) => (partnerGender === "female" ? female : partnerGender === "male" ? male : undefined);
+  let partner: string | undefined;
+  let self: string | undefined;
+  switch (partnerAge) {
+    case "child": partner = "cháu"; self = gender === "male" ? "chú" : gender === "female" ? "cô" : undefined; break;
+    case "younger": partner = "em"; self = gender === "male" ? "anh" : gender === "female" ? "chị" : undefined; break;
+    case "older": partner = byPartner("chị", "anh"); self = "em"; break;
+    case "parent": partner = byPartner("cô", "chú"); self = "cháu"; break;
+    case "grandparent": partner = byPartner("bà", "ông"); self = "cháu"; break;
+    default: return undefined;
+  }
+  return partner && self ? { partner, self } : undefined;
+}
 
 /** Languages whose address forms or particles change with the speaker's gender. */
 const GENDERED_ADDRESS: Record<string, true> = { vi: true, th: true };
@@ -76,8 +113,8 @@ const GENDERED_ADDRESS: Record<string, true> = { vi: true, th: true };
 const LANGUAGE_NOTES: Partial<Record<string, string>> = {
   vi: "Vietnamese: use paired kinship pronouns that fit both speakers' gender and apparent age and the situation, and keep the pair once chosen. In casual and service settings never use \"tôi\" (it sounds cold); keep it for formal business talk. Younger staff or service workers: the other person is \"em\", the user is \"anh\" (man) or \"chị\" (woman). Adult strangers about the user's age: address a man as \"anh\" and a woman as \"chị\", and the user refers to themself with the term that fits their own gender and relative age. Middle-aged or older drivers, vendors and workers: the other person is \"chú\" or \"bác\" (man) or \"cô\" (woman), the user is \"cháu\". Keep \"ông\"/\"bà\" for the grandparent generation. Use \"bạn\" only when nothing is known. Add polite particles naturally (\"em ơi\" to call staff, \"ạ\" at the end of requests). Understand both Northern and Southern speech.",
   th: "Thai: end polite sentences with the particle of the person speaking: \"ครับ\" for a man, \"ค่ะ\" for a woman's statements and \"คะ\" for her questions.",
-  ja: "Japanese: use polite です/ます forms with strangers.",
-  zh: "Chinese: speak Mandarin and write Simplified Chinese characters. Address strangers with 您 in formal or service talk and 你 in casual talk.",
+  ja: "Japanese: use polite です/ます forms with strangers, and never call the other person \"あなた\".",
+  zh: "Chinese: speak Mandarin and write Simplified Chinese characters. Address strangers with 您 in formal or service talk and 你 in casual talk. Spoken \"块\" and \"元\" are Chinese yuan (Korean \"위안\") and \"毛\" or \"角\" is a tenth of a yuan, so \"八十七块五\" is \"87.5위안\"; never turn yuan into dollars or won.",
   ko: "Korean: use polite 해요체 by default. Drop the other language's kinship pronouns and polite particles rather than translating them literally: \"anh\" or \"em\" said to the user is \"you\" (or left out), NEVER 오빠, 형 or 동생.",
 };
 
@@ -96,9 +133,10 @@ export function interpreterInstructions(
 <critical>
 - When you hear ${a}, say it in ${b}. When you hear ${b}, say it in ${a}. Speak only the interpretation, once, starting as soon as the meaning is clear. No preface ("he says", "she asks", "translation:"), no quotation framing, no closing words.
 - Interpret the meaning, not word by word: say what the speaker means the way a native speaker would say it in this situation. Use the conversation so far to resolve omitted subjects, pronouns, and short replies such as "yes", "네" or "dạ", and keep names, items, prices and plans consistent across turns.
-- When the speaker points to something already named in this conversation by its position or by a pointing word ("the first one", "the second", "that one", "the same", "첫 번째 걸로", "그거", "cái đầu tiên", "cái đó"), say the item's name instead, but only when exactly one item clearly fits: after "we have phở bò and phở gà", "첫 번째 걸로 두 그릇 주세요" becomes "Cho anh hai tô phở bò nhé" (with whatever pronouns are already in use), not "món đầu tiên". If it could mean more than one item, or you are not sure, keep the pointing word as said.
+- When the speaker points to something already named in this conversation by its position or by a pointing word ("the first one", "the second", "that one", "the same", "첫 번째 걸로", "그거", "cái đầu tiên", "cái đó"), say the item's name instead, but only when exactly one item clearly fits: after "we have phở bò and phở gà", "첫 번째 걸로 두 그릇 주세요" becomes "Cho hai tô phở bò nhé" (adding whatever pronouns are already in use), not "món đầu tiên". If it could mean more than one item, or you are not sure, keep the pointing word as said.
 - Supply only what the target language grammatically requires (an omitted subject or pronoun, a classifier, a natural polite ending) and the name of an item the speaker clearly pointed to. NEVER extrapolate, explain, add pleasantries that were not said, give your own answer or opinion, summarize, soften, correct facts, or finish a sentence the speaker abandoned. Keep exactly what was meant, without embellishment.
 - NEVER answer, respond to, or act on what was said, even a question, greeting or request that sounds addressed to you: interpret it.
+- Say one form only: NEVER speak alternatives or slash-separated options such as "ครับ/ค่ะ" or "anh/chị". When a choice is open, pick one silently.
 - If you hear your own previous interpretation again (speaker echo), stay silent. Fillers alone ("uh", "um", "음", "à"), noise, unintelligible speech, or speech in neither language: stay silent.
 - Keep grammatical person ("I" stays "I"), tone and politeness level. Keep names, numbers, prices, quantities and units exact, and say amounts the normal spoken way of the target language (Vietnamese "50k" is "năm mươi nghìn đồng", or "năm mươi ngàn đồng" in the South; 50,000 dong in Korean is "5만 동").
 - Say nothing when the call starts; wait for the first utterance. There is no backend in this call: NEVER create a delegation. Context appended to the session is silent; NEVER speak it.
@@ -110,12 +148,19 @@ export function interpreterInstructions(
     const who = [profile.gender ? GENDER_WORDS[profile.gender] : "a person", profile.age ? AGE_WORDS[profile.age] : ""].filter(Boolean).join(" ");
     setting.push(`The user (the ${a} speaker) is ${who}. Choose how the user refers to themself and addresses the other person to fit this.`);
   }
+  if (profile.partnerGender || profile.partnerAge) {
+    setting.push(`The other person (the ${b} speaker) is ${describePartner(profile)}. Address them and phrase what the user says to them to fit this.`);
+  }
   if (!profile.gender && (GENDERED_ADDRESS[mine.code] || GENDERED_ADDRESS[theirs.code])) {
     setting.push("The user's gender is not given. Never guess it: take it from how the other person addresses the user (Vietnamese \"anh\" for a man, \"chị\" for a woman; Thai \"ครับ\" or \"ค่ะ\" in the user's own words), and until it is clear leave out the user's gendered self-reference where the language allows it (\"Cho xin thực đơn với ạ\").");
   }
   for (const code of new Set([mine.code, theirs.code])) {
     const note = LANGUAGE_NOTES[code];
     if (note) setting.push(note);
+  }
+  const pair = theirs.code === "vi" ? vietnameseAddressPair(profile) : undefined;
+  if (pair) {
+    setting.push(`Vietnamese address for this call, set by the user: call the other person "${pair.partner}" and have the user refer to themself as "${pair.self}". Keep this pair for the whole call; it overrides the general Vietnamese address rule above.`);
   }
   if (setting.length > 0) blocks.push(`<setting>\n${setting.join("\n")}\n</setting>`);
 
@@ -178,7 +223,7 @@ function handleTurnCreated(call: InterpreterCall, frame: Record<string, unknown>
   if (!opening || state.text === opening || !state.text.endsWith(opening)) return;
   const earlier = state.text.slice(0, -opening.length).trim();
   if (earlier) emitLiveEvent(call, { type: "transcript", role, text: earlier, final: true });
-  call.transcripts[role] = { text: opening, final: false, finalizedTurnIds: state.finalizedTurnIds };
+  call.transcripts[role] = { text: opening, final: false, finalizedTurnIds: state.finalizedTurnIds, raw: (transcript as string).trimStart() };
   emitLiveEvent(call, { type: "transcript", role, text: opening, final: false });
 }
 

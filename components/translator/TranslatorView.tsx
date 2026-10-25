@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useCloudInterpreterCall } from "@/hooks/useCloudInterpreterCall";
 import {
   HISTORY_MAX_LINES,
+  PARTNER_AGES,
   SPEAKER_AGES,
   SPEAKER_GENDERS,
   TRANSLATOR_MOODS,
@@ -684,6 +685,32 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                   <option value="">{tt("translator.notSet")}</option>
                   {SPEAKER_AGES.map((age) => (
                     <option key={age} value={age}>{tt(`translator.age.${age}`)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="translator-context">
+              <label className="translator-language">
+                <span>{tt("translator.partnerGender")}</span>
+                <select
+                  value={profile.partnerGender ?? ""}
+                  onChange={(event) => changeProfile({ partnerGender: event.target.value as InterpreterProfile["partnerGender"] })}
+                >
+                  <option value="">{tt("translator.notSet")}</option>
+                  {SPEAKER_GENDERS.map((gender) => (
+                    <option key={gender} value={gender}>{tt(`translator.gender.${gender}`)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="translator-language">
+                <span>{tt("translator.partnerAge")}</span>
+                <select
+                  value={profile.partnerAge ?? ""}
+                  onChange={(event) => changeProfile({ partnerAge: event.target.value as InterpreterProfile["partnerAge"] })}
+                >
+                  <option value="">{tt("translator.notSet")}</option>
+                  {PARTNER_AGES.map((age) => (
+                    <option key={age} value={age}>{tt(`translator.partnerAge.${age}`)}</option>
                   ))}
                 </select>
               </label>
