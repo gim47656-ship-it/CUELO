@@ -182,7 +182,7 @@ test("a saved provider and model reach the rebuilt runtime without a restart", (
   try {
     const result = spawnSync(process.execPath, ["-e", script], {
       cwd: join(import.meta.dir, "..", "..", ".."),
-      env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: childAgentDir, PI_TEST_RUNTIME: "1" },
+      env: { PATH: process.env.PATH, HOME: home, NODE_ENV: "test", PI_CODING_AGENT_DIR: childAgentDir, PI_TEST_RUNTIME: "1" },
       encoding: "utf8",
       timeout: 60_000,
     });
