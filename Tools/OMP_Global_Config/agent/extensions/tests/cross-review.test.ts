@@ -14,6 +14,7 @@ import {
   detectHidingLeads,
   detectMarkers,
   hardSecretPath,
+  redactSecrets,
   isCodeFile,
   MAX_INPUT_BYTES,
   MAX_REFERENCE_FILE_BYTES,
@@ -2696,5 +2697,115 @@ describe("숨김 단서(C1)", () => {
     const cleanResult = await runReview(input({ files: ["c.ts"] }), deps(clean, {}, cleanCalls), signal);
     expect(cleanResult.hidingLeads).toBeUndefined();
     expect(cleanCalls[0].prompt).not.toContain("hiding-leads");
+  });
+});
+
+// 공개 이슈 #50: 이름만 걸린 경로를 값만 가려 심사하도록 바꾼 뒤, `.aws/credentials`의 aws_secret_access_key와 config/auth.json의 단독 token이
+// 가려지지 않은 채 reviewer prompt에 닿았다. redacted 개수가 아니라 모든 reviewer prompt에 sentinel이 없는지 직접 본다.
+describe("자격 증명 파일 값 전송 차단(#50)", () => {
+  const AWS = "FAKE_AWS_SECRET_SENTINEL_1234567890";
+  const TOKEN = "FAKE_AUTH_TOKEN_SENTINEL_1234567890";
+  const writeAt = (env: RepoEnv, path: string, content: string) => {
+    mkdirSync(join(env.work, path.split("/").slice(0, -1).join("/") || "."), { recursive: true });
+    writeFileSync(join(env.work, path), content);
+  };
+  const whole = (calls: { prompt: string }[]) => calls.map((call) => call.prompt).join("\n=====\n");
+  type Shape = { path: string; body: (value: string) => string; sentinel: string; hard: boolean };
+  const shapes: Shape[] = [
+    { path: ".aws/credentials", body: (v) => `[default]\naws_secret_access_key = ${v}\n`, sentinel: AWS, hard: true },
+    { path: "config/auth.json", body: (v) => `{"token":"${v}"}\n`, sentinel: TOKEN, hard: false },
+    { path: "config/aws.ini", body: (v) => `[default]\naws_session_token = ${v}\n`, sentinel: AWS, hard: false },
+    { path: "config/auth.yml", body: (v) => `token: ${v}\nname: kept-name\n`, sentinel: TOKEN, hard: false },
+    { path: "config/auth.env.json", body: (v) => `{\n  "sessionToken": "${v}",\n  "secretKey": "${v}",\n  "name": "kept-name"\n}\n`, sentinel: TOKEN, hard: false },
+    { path: "config/auth.cfg", body: (v) => `export CLIENT_SECRET=${v}\nSECRET='${v}'\n`, sentinel: AWS, hard: false },
+  ];
+
+  for (const shape of shapes) {
+    for (const mode of ["untracked", "staged-added", "tracked-modified"] as const) {
+      test(`files: ${shape.path} (${mode})의 값은 어떤 reviewer prompt에도 닿지 않는다`, async () => {
+        const env = repo();
+        if (mode === "tracked-modified") {
+          writeAt(env, shape.path, shape.body("OLDVALUE"));
+          sh(env.work, "add", "-f", shape.path);
+          sh(env.work, "commit", "-q", "-m", "creds");
+        }
+        writeAt(env, shape.path, shape.body(shape.sentinel));
+        if (mode === "staged-added") sh(env.work, "add", "-f", shape.path);
+        const calls: { family: Lane; prompt: string }[] = [];
+        const run = runReview(input({ files: [shape.path] }), deps(env, {}, calls), signal);
+        if (shape.hard) await expect(run).rejects.toThrow(/cannot be reviewed by policy/);
+        else {
+          const result = await run;
+          expect(result.redacted.map((item) => item.path)).toEqual([shape.path]);
+          expect(whole(calls)).not.toContain("OLDVALUE");
+          if (shape.body("x").includes("kept-name")) expect(whole(calls)).toContain("kept-name");
+        }
+        expect(whole(calls)).not.toContain(shape.sentinel);
+        expect(calls.length > 0 || shape.hard).toBe(true);
+      });
+    }
+
+    test(`references·inputs: ${shape.path}의 값은 참고·입력 경로로도 prompt에 닿지 않는다`, async () => {
+      const env = repo();
+      writeAt(env, "a.ts", PLAIN_BASE);
+      writeAt(env, shape.path, shape.body(shape.sentinel));
+      sh(env.work, "add", "-f", shape.path);
+      for (const channel of ["references", "inputs"] as const) {
+        const calls: { family: Lane; prompt: string }[] = [];
+        const result = await runReview(input({ files: ["a.ts"], [channel]: [shape.path] }), deps(env, {}, calls), signal);
+        expect(calls.length).toBeGreaterThan(0);
+        expect(whole(calls), `${channel} ${shape.path}`).not.toContain(shape.sentinel);
+        const listed = channel === "references" ? result.references : result.inputs!;
+        const skippedList = channel === "references" ? result.skippedReferences : result.skippedInputs!;
+        if (shape.hard) {
+          expect(listed).toEqual([]);
+          expect(skippedList).toMatchObject([{ path: shape.path, reason: expect.stringContaining("cannot be reviewed by policy") }]);
+        } else expect(listed.map((item) => item.path)).toEqual([shape.path]);
+      }
+    });
+  }
+
+  test("자격 증명 저장소 경로는 정책 제외이고, 이름만 걸린 일반 파일은 제외하지 않는다", () => {
+    for (const path of [".aws/credentials", ".aws/config", "home/.ssh/config", ".gnupg/pubring.kbx", ".kube/config", "a/.azure/accessTokens.json", "deploy/credentials", ".docker/config.json", ".pgpass", "web/.htpasswd"]) expect(hardSecretPath(path), path).toBe(true);
+    for (const path of ["config/auth.json", "config/credentials.json", "lib/credentials.ts", "docs/aws-credentials.md", "app/api/auth/login/route.ts", "src/docker/config.json", "src/kubeconfig.ts", "src/credentials/provider.ts", "lib/credentials/aws.ts"]) expect(hardSecretPath(path), path).toBe(false);
+  });
+
+  test("redactSecrets는 단독 token·secret 키의 값을 가리고 token을 품은 일반 코드는 남긴다", () => {
+    for (const text of [`{"token":"${TOKEN}"}`, `  "authToken": '${TOKEN}',`, `aws_secret_access_key = ${TOKEN}`, `aws_session_token=${TOKEN}`, `token: ${TOKEN}`, `const token = "${TOKEN}";`, `SECRET_KEY: "${TOKEN}"`, `{"secretAccessKey":"${TOKEN}"}`, `{"token":"head\\"${TOKEN}"}`, `{'token': 'it\\'s ${TOKEN}'}`, `+token: ${TOKEN}`, `12: token: ${TOKEN}`, ` aws_secret_access_key = ${TOKEN}`]) {
+      const out = redactSecrets(text);
+      expect(out.text, text).not.toContain(TOKEN);
+      expect(out.count, text).toBeGreaterThan(0);
+    }
+    const code = [
+      "export async function login(user: string) {", "  const token = await issue(user);", "  const tokenCount = 4;", "  return { token, tokenizer: lex(token) };", "}",
+      "interface Session {", "  token: string;", "  tokens: string[];", "}", "interface Bare {", "  token: string", "  secret: number,", "  tokenId: bigint", "  token2: symbol", "  token: bigint", "  secret: symbol", "}", "const secretary = lookup(1);", `const kind = "token";`,
+    ].join("\n");
+    expect(redactSecrets(code)).toEqual({ text: code, count: 0, blocked: false });
+    // 길게 이어진 단어에서 정규식이 느려지지 않는다.
+    const started = performance.now();
+    redactSecrets(`${"a.".repeat(30_000)}\n${"ab-".repeat(30_000)}\n${" ".repeat(60_000)}!\n${"1:".repeat(30_000)}\n${"+ ".repeat(30_000)}!`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  test("대조군: 일반 auth 구현은 그대로 심사하고 password는 가리며 .env.local은 막고, 선택하지 않은·gitignore·변경 없는 비밀 파일은 보내지 않는다", async () => {
+    const env = repo();
+    const passwordKey = ["pass", "word"].join("");
+    writeAt(env, "app/api/auth/login/route.ts", "export async function login(user: string) {\n  const token = await issue(user);\n  return { token };\n}\n");
+    writeAt(env, "config/credentials.json", `{"${passwordKey}":"FAKE_PASSWORD_SENTINEL_1234567890","name":"kept-name"}\n`);
+    writeAt(env, "config/.env.local", "TOKEN=FAKE_ENV_SENTINEL_1234567890\n");
+    writeAt(env, ".gitignore", "ignored/\n");
+    writeAt(env, "ignored/auth.json", `{"token":"FAKE_IGNORED_SENTINEL_1234567890"}\n`);
+    writeAt(env, "unselected/auth.json", `{"token":"FAKE_UNSELECTED_SENTINEL_1234567890"}\n`);
+    writeAt(env, "committed/auth.json", `{"token":"FAKE_UNCHANGED_SENTINEL_1234567890"}\n`);
+    sh(env.work, "add", "committed/auth.json", ".gitignore");
+    sh(env.work, "commit", "-q", "-m", "committed");
+    const calls: { family: Lane; prompt: string }[] = [];
+    const result = await runReview(input({ files: ["app/api/auth/login/route.ts", "config/credentials.json", "config/.env.local", "ignored/auth.json", "committed/auth.json"] }), deps(env, {}, calls), signal);
+    const prompt = whole(calls);
+    expect(prompt).toContain("const token = await issue(user);");
+    expect(prompt).toContain("kept-name");
+    expect(prompt).not.toMatch(/FAKE_[A-Z]+_SENTINEL/);
+    expect(result.redacted.map((item) => item.path)).toEqual(["config/credentials.json"]);
+    expect(result.skipped.map((item) => item.path).sort()).toEqual(["committed/auth.json", "config/.env.local", "ignored/auth.json"]);
   });
 });

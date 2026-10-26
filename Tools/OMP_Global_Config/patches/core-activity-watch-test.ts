@@ -558,7 +558,8 @@ try {
 } finally { server.stop(true); }
 await check("actual SDK task producer preserves long terminal evidence through async delivery and proc", async () => {
   AgentRegistry.resetGlobalForTests(); IrcBus.resetGlobalForTests();
-  const report = { revision: "completion-fixture", padding: "evidence ".repeat(1200), validation: { smoke: "observed" } };
+  // 18.13.0 (#16599) hands a result up to 11,500 chars to the parent whole; 18.12.x cut the preview at 5,000. 13.5k chars exceed both caps.
+  const report = { revision: "completion-fixture", padding: "evidence ".repeat(1500), validation: { smoke: "observed" } };
   let parentRequests = 0;
   const local = Bun.serve({ port: 0, async fetch(request) {
     const input = await request.json() as { tools?: { name: string }[] };
@@ -607,8 +608,24 @@ await check("actual SDK task producer preserves long terminal evidence through a
     const { snapshotJobs } = await import(`${core}/async/job-control.ts`);
     const toolSession = { asyncJobManager: session.asyncJobManager, agentRegistry: AgentRegistry.global(),
       settings: createSettingsTestScope(key => key === "launch.enabled" ? false : undefined), getAgentId: () => "Main" };
-    assert.deepEqual(snapshotJobs(toolSession, [job], { includeResults: true })[0].completion, job.completion);
-    assert.equal(snapshotJobs(toolSession, [job], { includeResults: false })[0].completion, undefined);
+    // 18.13.0 (#16763) dropped snapshotJobs' third `options` argument. The CUELO completion row must not reference it (public issue #51:
+    // `ReferenceError: options is not defined` for every non-empty list), so execute the patched function for each job shape.
+    const hasIncludeResults = Bun.semver.order(String((await Bun.file(resolve(target, "package.json")).json()).version), "18.13.0") < 0;
+    const snapshot = (sess: unknown, jobs: unknown[], includeResults?: boolean) =>
+      hasIncludeResults && includeResults !== undefined ? snapshotJobs(sess, jobs, { includeResults }) : snapshotJobs(sess, jobs);
+    assert.deepEqual(snapshot(toolSession, []), [], "empty list");
+    const completedRow = snapshot(toolSession, [job], true)[0];
+    assert.deepEqual(completedRow.completion, job.completion);
+    assert.equal(completedRow.agentUrlId, job.completion.agentId, "canonical agent id comes from the completion");
+    if (hasIncludeResults) assert.equal(snapshot(toolSession, [job], false)[0].completion, undefined, "18.12.x includeResults:false contract");
+    const consumedRow = snapshot({ ...toolSession, asyncJobManager: { getJob: () => job, isJobResultConsumed: () => true } }, [job], true)[0];
+    assert.deepEqual(consumedRow.completion, job.completion, "a consumed result still carries its completion provenance");
+    assert.equal(consumedRow.resultText, undefined, "upstream consumed-result filter is kept");
+    assert.ok(completedRow.resultText, "an unconsumed result is still reported");
+    const runningJob = { ...job, status: "running", endTime: undefined, resultText: undefined, completion: undefined };
+    const runningRow = snapshot({ ...toolSession, asyncJobManager: { getJob: () => runningJob, isJobResultConsumed: () => false } }, [runningJob], true)[0];
+    assert.equal(runningRow.status, "running");
+    assert.equal(runningRow.completion, undefined);
     const { ProcProtocolHandler } = await import(`${core}/internal-urls/proc-protocol.ts`);
     const uri = Object.assign(new URL(`proc://${job.id}`), { rawHost: job.id });
     const proc = await new ProcProtocolHandler().resolve(uri, { session: toolSession, agentRegistry: AgentRegistry.global() });
@@ -617,7 +634,7 @@ await check("actual SDK task producer preserves long terminal evidence through a
     const newer = { ...job, startTime: job.startTime + 1, completion: { agentId: job.agentId, startTime: job.startTime + 1, output: "new run" } };
     const staleView = snapshotJobs({ ...toolSession, asyncJobManager: {
       getJob: () => newer, isJobResultConsumed: () => false,
-    } }, [job], { includeResults: true })[0];
+    } }, [job], hasIncludeResults ? { includeResults: true } : undefined)[0];
     assert.deepEqual(staleView.completion, job.completion, "old row never reads replacement run evidence");
     assert.equal(buildAsyncResultBatchMessage([{ jobId: "unknown", result: "preview", durationMs: 1 }]).details.jobs[0].completion, undefined);
     await session.agent.waitForIdle();

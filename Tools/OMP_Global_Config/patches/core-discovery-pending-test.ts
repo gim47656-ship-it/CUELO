@@ -77,12 +77,24 @@ check("[0] 온라인 조회는 두 provider 모델을 모두 채운다", seeded.
 // 다음 시작: 같은 캐시로 새 레지스트리를 만든다(온라인 조회 전 상태).
 const restarted = open();
 const headeredState = restarted.getProviderDiscoveryState(HEADERED);
-check("[1] 복원 불가 헤더 모델은 시작 카탈로그에 없다", restarted.find(HEADERED, "probe-model") === undefined);
-check(
-	"[2] 그 provider 상태는 cached·모델 0개",
-	headeredState?.status === "cached" && headeredState.models.length === 0,
-	JSON.stringify(headeredState),
-);
+// 18.13.0 (model-discovery.ts): the discovery bearer no longer rides on discovered models, so a cache row is not dropped for headers the
+// cache cannot persist. Upstream fixed what this fixture reproduced: the model is restored at startup. 18.12.x still drops it.
+const headersRestored = readFileSync(`${CORE}/config/model-discovery.ts`, "utf8").includes("The bearer authenticates only the discovery request");
+if (headersRestored) {
+	check("[1] 헤더 때문에 버려지던 모델도 시작 카탈로그에 복원된다(18.13.0)", restarted.find(HEADERED, "probe-model") !== undefined);
+	check(
+		"[2] 그 provider 상태는 cached·모델 1개",
+		headeredState?.status === "cached" && headeredState.models.length === 1,
+		JSON.stringify(headeredState),
+	);
+} else {
+	check("[1] 복원 불가 헤더 모델은 시작 카탈로그에 없다", restarted.find(HEADERED, "probe-model") === undefined);
+	check(
+		"[2] 그 provider 상태는 cached·모델 0개",
+		headeredState?.status === "cached" && headeredState.models.length === 0,
+		JSON.stringify(headeredState),
+	);
+}
 check("[4] 모델이 복원된 cached provider는 조회 중이 아니다", restarted.find(RESTORABLE, "probe-model") !== undefined && restarted.isProviderDiscoveryPending(RESTORABLE) === false);
 check("[5] 선언되지 않은 provider는 조회 중이 아니다", restarted.isProviderDiscoveryPending(MISSING) === false);
 // 18.12.1+: upstream #16061 이 CUELO 패치를 대신한다(패치는 no-op 로 retire). cached·unavailable provider 는

@@ -14,7 +14,6 @@ import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-com
 import { executeAcpBuiltinSlashCommand, type AcpBuiltinSlashCommandResult } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { parseSlashCommand, parseSubcommand } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/parse";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
-import { buildSkillPromptMessage } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { resolveRpcSkillInvocation } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
@@ -1448,7 +1447,7 @@ export class AgentSessionWrapper {
           }
           const skill = resolveRpcSkillInvocation(this.inner, promptMessage);
           promptRun = skill
-            ? buildSkillPromptMessage(skill.skill, skill, "user").then((built) =>
+            ? this.inner.buildUserSkillPrompt(skill.skill, skill).then((built) =>
                 this.inner.promptCustomMessage({
                   customType: SKILL_PROMPT_MESSAGE_TYPE,
                   content: promptImages?.length

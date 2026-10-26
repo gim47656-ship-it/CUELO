@@ -972,22 +972,26 @@ export function secretPath(path: string): boolean {
   return parts.some((part, index) => part === ".omp" && parts[index + 1] === "agent");
 }
 
-// cross_review가 내용을 절대 보내지 않는 이름: 비밀을 담는 파일 형식·위치(.env*, 키·인증서·상태 파일, id_*, agent.db, 자격 증명 설정, ~/.omp/agent).
+// cross_review가 내용을 절대 보내지 않는 이름: 비밀을 담는 파일 형식·위치(.env*, 키·인증서·상태 파일, id_*, agent.db, 자격 증명 설정, ~/.omp/agent)와
+// 값만 가릴 수 없는 자격 증명 저장소(.aws/·.ssh/·.gnupg/·.kube/·.azure/ 아래, 확장자 없는 `credentials`, .pgpass·.htpasswd 같은 저장 파일, .docker/config.json).
 // secretPath가 잡는 나머지 이름(credential·secret·password·api-key를 품은 이름, 단독 auth·token)은 이름일 뿐이라 내용을 redactSecrets로 가린 채 심사한다.
 const HARD_SECRET_NAME = /^(?:\.env.*|id_[^/\\]*|agent\.db|\.npmrc|\.netrc|\.pypirc|\.git-credentials)$/i;
+// 저장 파일 이름은 마지막 경로 조각(파일 이름)에서만 본다: `src/credentials/provider.ts`처럼 이름만 같은 디렉터리의 구현 파일은 제외하지 않는다.
+const HARD_SECRET_FILE = /^(?:credentials|kubeconfig|\.pgpass|\.htpasswd|\.dockercfg|\.s3cfg|\.boto|\.vault-token)$/i;
+const HARD_SECRET_DIR: Record<string, true> = { ".aws": true, ".ssh": true, ".gnupg": true, ".kube": true, ".azure": true };
 
 /** 정책상 심사할 수 없는 경로인가: 어떤 심사 라운드도 이 파일에 통과를 줄 수 없다. */
 export function hardSecretPath(path: string): boolean {
   const parts = path.replaceAll("\\", "/").toLowerCase().split("/");
-  if (parts.some((part) => HARD_SECRET_NAME.test(part) || SECRET_EXTENSION.test(part))) return true;
-  return parts.some((part, index) => part === ".omp" && parts[index + 1] === "agent");
+  if (parts.some((part) => HARD_SECRET_NAME.test(part) || SECRET_EXTENSION.test(part) || Object.hasOwn(HARD_SECRET_DIR, part)) || HARD_SECRET_FILE.test(parts[parts.length - 1])) return true;
+  return parts.some((part, index) => (part === ".omp" && parts[index + 1] === "agent") || (part === ".docker" && parts[index + 1] === "config.json"));
 }
 
 const POLICY_SKIP_REASON = "cannot be reviewed by policy (secret-bearing file name, type or location); it is never sent and is NOT covered by any pass";
 
 /** 정책상 심사할 수 없는 파일을 알리는 다음 단계 안내. 같은 파일에 심사 라운드를 더 돌려도 통과가 나오지 않는다는 점을 먼저 말한다. */
 function policyGuidance(paths: readonly string[]): string {
-  return `${paths.join(", ")} cannot be reviewed by policy: files named .env*, id_*, agent.db, .npmrc/.netrc/.pypirc/.git-credentials, key/certificate types (.pem .key .p12 ...) and anything under ~/.omp/agent are never sent to a reviewer, so no review round can give them a pass. Do not run more rounds for them: rename or move the file out of that name or location, leave it out of the commit, or use a waiver only on the user's explicit instruction (git_finalize crossReviewWaiver).`;
+  return `${paths.join(", ")} cannot be reviewed by policy: files named .env*, id_*, agent.db, .npmrc/.netrc/.pypirc/.git-credentials, credential stores (.aws/, .ssh/, .gnupg/, .kube/, .azure/, a bare "credentials" file, .pgpass, .htpasswd), key/certificate types (.pem .key .p12 ...) and anything under ~/.omp/agent are never sent to a reviewer, so no review round can give them a pass. Do not run more rounds for them: rename or move the file out of that name or location, leave it out of the commit, or use a waiver only on the user's explicit instruction (git_finalize crossReviewWaiver).`;
 }
 
 // skim의 SECRET_CONTENT는 이름 뒤에 값이 바로 오는 `apiKey: x`·`password = x` 모양만 잡는다. JSON처럼 이름에 따옴표가 붙은
@@ -995,7 +999,17 @@ function policyGuidance(paths: readonly string[]): string {
 // 걸렸다고 파일 전체를 빼면 그 파일은 통과를 받을 수 없어 게이트가 영영 막힌다(실제 심사 중 확인).
 const SECRET_REDACT = new RegExp(SECRET_CONTENT.source, "gi");
 // 이름 뒤에 식별자 문자가 더 붙은 변수(`password2`, `apiKeyOld`)도 잡는다. 과하게 가리는 쪽은 심사 품질만 조금 떨어뜨리고 누출은 아니다.
-const QUOTED_SECRET = /(["']?)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\w*\1\s*[:=]\s*(?:"[^"\n]*"|'[^'\n]*'|[^"'\s,}]+)/gi;
+// 따옴표 값은 이스케이프된 따옴표(`"a\"b"`)까지 한 값으로 본다: 첫 `\"`에서 끊으면 값의 뒷부분이 그대로 남는다.
+const STRING_VALUE = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'`;
+const QUOTED_SECRET = new RegExp(String.raw`(["']?)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\w*\1\s*[:=]\s*(?:${STRING_VALUE}|[^"'\s,}]+)`, "gi");
+// 단독 token·secret으로 끝나는 키(`token`, `authToken`, `aws_session_token`, `secret`, `aws_secret_access_key`, `secretKey`)는 평범한 코드에도 많아
+// 값이 문자열 리터럴일 때(JSON·YAML·따옴표 값)와, 줄 머리의 `key = value`/`key: value` 한 단어가 줄 끝까지 이어질 때(INI·YAML·.env 모양)만 가린다.
+// `const token = await login()`·`token: string;` 같은 코드는 남긴다(줄 끝 `;`가 없는 `token: string`도 타입 이름이면 남긴다). 키 앞부분은 길이를 제한해 긴 단어에서 정규식이 느려지지 않게 한다.
+const TOKEN_KEY = String.raw`[\w.-]{0,40}?(?:token|secret(?:[_-]?(?:access[_-]?)?key)?)`;
+const QUOTED_TOKEN = new RegExp(String.raw`(["']?)${TOKEN_KEY}\1\s*[:=]\s*(?:${STRING_VALUE})`, "gi");
+// 줄 머리 앞에는 심사 본문이 붙이는 `12: `(전체 파일)와 diff 표식(`+`·`-`)이 올 수 있다. 공백 반복이 겹치지 않게 표식 뒤 공백은 표식과 묶는다.
+const TYPE_WORD = String.raw`(?:string|number|bigint|symbol|boolean|any|unknown|never|object|void|null|undefined|true|false)`;
+const LINE_TOKEN = new RegExp(String.raw`^((?:\d+:)?[ \t]*(?:[+\-][ \t]*)?)(?:export[ \t]+)?["']?${TOKEN_KEY}["']?[ \t]*[:=][ \t]*(?!${TYPE_WORD}[ \t]*,?[ \t]*$)[^\s"',;]+(?=[ \t]*,?[ \t]*$)`, "gim");
 const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 /** 비밀로 보이는 값을 `[REDACTED]`로 바꾼다. 개인키 블록은 값만 가릴 수 없어 blocked로 돌려주며 호출자가 그 파일을 뺀다. */
@@ -1004,7 +1018,7 @@ export function redactSecrets(text: string): { text: string; count: number; bloc
   let count = 0;
   const swap = () => { count += 1; return "[REDACTED]"; };
   // 따옴표로 감싼 값은 공백이 있어도 통째로 지워야 하므로 skim 패턴(공백 앞까지만 지운다)보다 먼저 적용한다.
-  return { text: text.replace(QUOTED_SECRET, swap).replace(SECRET_REDACT, swap), count, blocked: false };
+  return { text: text.replace(QUOTED_SECRET, swap).replace(QUOTED_TOKEN, swap).replace(LINE_TOKEN, (_match: string, prefix: string) => { count += 1; return `${prefix}[REDACTED]`; }).replace(SECRET_REDACT, swap), count, blocked: false };
 }
 
 // ── 리뷰 실행 ────────────────────────────────────────────────────────────────

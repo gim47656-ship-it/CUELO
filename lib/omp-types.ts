@@ -334,6 +334,10 @@ export interface AgentSessionLike {
   setGoalModeState?(state: GoalModeState | undefined): void;
   sendGoalModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;
   promptCustomMessage: AgentSession["promptCustomMessage"];
+  // 18.13.0: a user-typed skill command renders through the session so model tags in its arguments are authorized
+  // (`resolveRpcSkillInvocation` now demands both of these on its session parameter).
+  buildUserSkillPrompt: AgentSession["buildUserSkillPrompt"];
+  renderUserSkillPrompt: AgentSession["renderUserSkillPrompt"];
 }
 
 /** The subset of omp's `GoalRuntime` CUELO drives. */

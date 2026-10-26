@@ -88,6 +88,8 @@ class FakeSession {
 	subscribeRunState() { return () => {}; }
 	isAdvisorActive() { return false; }
 	isParentIrcSteer() { return false; }
+	/** 18.13.0 executor holds peer wakes while it drives the run (AgentSession.holdIrcWakes); this fake never wakes. */
+	holdIrcWakes() { return () => {}; }
 	async setWorkPoolYieldItems() {}
 	getToolByName() { return undefined; }
 	hasPendingAsyncWork() { return false; }

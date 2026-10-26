@@ -19025,6 +19025,219 @@ for (const [owner, older] of preStatsWatchBodies) {
 		patched: swap(supervisorEscape.patched, "\tencodeComputerFrame,\n", "\t" + "encodeComputerFrame,\n" + VERDICT_IMPORT),
 	});
 }
+// 2026-10-27 18.13.0 이식(공개 이슈 #51 포함). 18.12.6 이하 후보는 앵커·marker·patched 를 한 바이트도 바꾸지 않고, 18.13.0 순정에서 앵커를 잃었거나
+// (anchor-lost) 앵커는 남았지만 본문이 깨지는 항목마다 그 판에만 성립하는 후보를 더한다. marker 를 공유하는 후보는 18.13.0 에만 있는 문자열로
+// requires(새 후보)·excludes(옛 후보)를 짝지어 서로 배타적으로 둔다(옛 후보에는 excludes 만 더한다).
+//  - ADAPT: agent-session 의 IRC steer continuation bracket 3개 항목. upstream 이 bare continuation 도 `onStart → #startTurnObservation([])`
+//    로 관찰하기 시작했지만(agent-session.ts:5249-5253), 그 관찰은 빈 records 로 열려 "부모 steer 를 소비한 turn" 만 ownerPrompted 로 뒤늦게
+//    등록한다. CUELO 의 부모 steer 장부(queueParentSteerRelay·#ircTurnBracketOpen·입양 레코드)는 그 위에 그대로 올리고, 한 turn 에 관찰이 둘 열리지
+//    않도록 기존 #startTurnObservation 후보(`else if (this.#ircTurnBracketOpen) return undefined`)에 맡긴다. in-flight epoch(#endInFlight(epoch,
+//    onSettled))와 upstream 의 `void this.#finishTurnObservation(...)` 는 그대로 둔다.
+//    irc-bridge: upstream 이 peer 메시지를 부모 steer 분기에서 뺐다(`fromParent && !peerMessage`, `#peerMessages`). 그 분기에서만 부모 요청 표식과
+//    relay 빚을 남기면 되므로 broadcast 조건은 방어로만 둔다. todo-tracker: upstream 이 setPhases 에서 nudge 예산을 되살리는 줄을 더했다(#16962).
+//    eval-judge.md: completion 시그니처 줄이 py/js 분기로 바뀌어 effort 를 두 분기 모두에 더한다. edit/index.ts: 오류 반환이 details 를 싣는다.
+//    proc-protocol.ts: 작업 목록 행이 runningTaskProgressSuffix 를 붙인다(CUELO 의 activity watch 는 그 뒤에 잇는다).
+//  - 공개 이슈 #51(ADAPT): 18.13.0 `snapshotJobs(session, jobs)` 에는 options 가 없다(#16763). 옛 후보가 주입하는 `options.includeResults` 는
+//    비어 있지 않은 목록에서 ReferenceError 를 낸다. 새 후보는 upstream 의 consumed 결과 필터(`!resultConsumed`)와 현재 run 선택(`latest`)은 그대로 두고
+//    CUELO 의 completion(j.completion 은 소비 여부와 무관하게 18.12.6 의 includeResults 기본값과 같이 싣는다)과 canonical agentUrlId 만 얹는다.
+//    회귀: patches/core-activity-watch-test.ts "SDK terminal evidence".
+{
+	const one = (predicate, label) => {
+		const found = EDITS.filter(predicate);
+		if (found.length !== 1) throw new Error(`18.13.0 후보를 만들 수 없다: ${label} ${found.length}/1`);
+		return found[0];
+	};
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.13.0 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, () => to);
+	};
+	const exclude = (candidate, text) => {
+		candidate.excludes = candidate.excludes === undefined ? text : [candidate.excludes, text].flat();
+	};
+	// 같은 항목의 옛 후보 전부가 새 후보의 판별 문자열이 있는 파일에서는 후보가 아니게 한다.
+	const excludeOld = (entry, text) => {
+		for (const candidate of [entry, ...(entry.alternates ?? [])]) exclude(candidate, text);
+	};
+	const SESSION = "src/session/agent-session.ts";
+	const HOLD_18130 = "#ircWakeHolds = 0;";
+
+	// ADAPT: IrcBridge.deliver 의 부모 steer. upstream 은 부모 외 메시지를 peerMessage 로 가르고 steer 분기에서는 무조건 #parentSteers 에 올린다.
+	const PEERS_18130 = "readonly #peerMessages = new WeakSet<AgentMessage>();";
+	const bridge = one(entry => entry.file === "src/session/irc-bridge.ts" && entry.marker === "Reflect.set(steered, PARENT_REQUEST_STEER, true)", "irc-bridge parent steer");
+	const bridgeSteers = bridge.alternates.find(candidate => candidate.marker === "Reflect.set(steer, PARENT_REQUEST_STEER, true)");
+	if (bridgeSteers === undefined) throw new Error("18.13.0 후보를 만들 수 없다: irc-bridge 18.12.3 후보");
+	const BROADCAST_ADD = "\t\t\t\t// A broadcast leg asks no one in particular: consuming it never makes the turn the parent's.\n\t\t\t\tif (msg.broadcast !== true) this.#parentSteers.add(steer);\n";
+	exclude(bridgeSteers, PEERS_18130);
+	bridge.alternates.push({
+		file: bridge.file,
+		requires: PEERS_18130,
+		marker: bridgeSteers.marker,
+		anchor: swap(bridgeSteers.anchor, BROADCAST_ADD, "\t\t\t\tthis.#parentSteers.add(steer);\n"),
+		patched: swap(bridgeSteers.patched, BROADCAST_ADD, "\t\t\t\tthis.#parentSteers.add(steer);\n"),
+	});
+
+	// ADAPT: setIrcWakeTurnObserver. upstream 은 이 setter 의 설명만 바꿨다(bare continuation 도 관찰). 시그니처와 우리 장부는 18.6.3 후보 그대로다.
+	const setter = one(entry => entry.file === SESSION && entry.marker === "#beginIrcSteerContinuationObservation", "setter");
+	const setterOpen = setter.alternates.find(candidate => candidate.requires === "#openTurnObservation");
+	if (setterOpen === undefined) throw new Error("18.13.0 후보를 만들 수 없다: setter 18.6.3 후보");
+	const SETTER_DOC_OLD = "\t * Installs task-executor monitoring around turns no executor drives: autonomous IRC\n\t * wake turns and user prompts (focused-session steering of a kept-alive subagent).\n";
+	const SETTER_DOC_NEW = "\t * Installs task-executor monitoring around kept-alive subagent turns that\n\t * have no executor caller: IRC wakes, focused prompts and bare continuations.\n";
+	excludeOld(setter, HOLD_18130);
+	setter.alternates.push({
+		file: SESSION,
+		requires: HOLD_18130,
+		marker: setterOpen.marker,
+		anchor: swap(setterOpen.anchor, SETTER_DOC_OLD, SETTER_DOC_NEW),
+		patched: swap(setterOpen.patched, SETTER_DOC_OLD, SETTER_DOC_NEW),
+	});
+
+	// ADAPT: 부모 steer continuation bracket 의 여는 쪽. upstream 은 bare continuation 마다 onStart 에서 자기 관찰(빈 records)을 연다. CUELO bracket 이
+	// 먼저 열려 있으면(#ircTurnBracketOpen) 그 관찰은 시작하지 않는다(위 #startTurnObservation 후보), 아니면 upstream 관찰이 열리고 같은 장부를 올린다.
+	const EPOCH_18113 = "#endInFlight(epoch: number";
+	const steerOpen = one(entry => entry.marker === "const steerObservation = this.#beginIrcSteerContinuationObservation()", "steer bracket open");
+	const steerOpenEpoch = steerOpen.alternates.find(candidate => candidate.requires === EPOCH_18113);
+	if (steerOpenEpoch === undefined) throw new Error("18.13.0 후보를 만들 수 없다: steer bracket open epoch 후보");
+	const RUN_OLD = "\t\t\t\tconst promise = this.#runAgentContinue(signal, request, coalescedSources);\n";
+	const RUN_NEW =
+		"\t\t\t\tlet observation: TurnObservation | undefined;\n" +
+		"\t\t\t\tconst onStart = this.#ircWakeTurnObserver\n" +
+		"\t\t\t\t\t? () => {\n" +
+		"\t\t\t\t\t\t\tobservation = this.#startTurnObservation([]);\n" +
+		"\t\t\t\t\t\t}\n" +
+		"\t\t\t\t\t: undefined;\n" +
+		"\t\t\t\tconst promise = this.#runAgentContinue(signal, request, coalescedSources, onStart);\n";
+	const OUTCOME_ANCHOR_OLD = "\t\t\t\ttry {\n\t\t\t\t\tthis.#handleAgentContinueOutcome(await promise, request);\n";
+	const OUTCOME_ANCHOR_NEW = "\t\t\t\tlet outcome: AgentContinueOutcome | undefined;\n\t\t\t\ttry {\n\t\t\t\t\toutcome = await promise;\n\t\t\t\t\tthis.#handleAgentContinueOutcome(outcome, request);\n";
+	const OUTCOME_PATCHED_OLD = "\t\t\t\tlet steerObservationError: unknown;\n\t\t\t\ttry {\n\t\t\t\t\tconst outcome = await promise;\n";
+	const OUTCOME_PATCHED_NEW = "\t\t\t\tlet outcome: AgentContinueOutcome | undefined;\n\t\t\t\tlet steerObservationError: unknown;\n\t\t\t\ttry {\n\t\t\t\t\toutcome = await promise;\n";
+	exclude(steerOpenEpoch, HOLD_18130);
+	steerOpen.alternates.push({
+		file: SESSION,
+		requires: HOLD_18130,
+		marker: steerOpen.marker,
+		anchor: swap(swap(steerOpenEpoch.anchor, RUN_OLD, RUN_NEW), OUTCOME_ANCHOR_OLD, OUTCOME_ANCHOR_NEW),
+		patched: swap(swap(steerOpenEpoch.patched, RUN_OLD, RUN_NEW), OUTCOME_PATCHED_OLD, OUTCOME_PATCHED_NEW),
+	});
+
+	// ADAPT: 같은 bracket 의 닫는 쪽. epoch 를 넘기는 #endInFlight 와 upstream 의 `void this.#finishTurnObservation(...)` 를 둘 다 지킨다.
+	const steerClose = one(entry => entry.marker === "IRC steer continuation observer failed to finish", "steer bracket close");
+	const steerCloseEpoch = steerClose.alternates.find(candidate => candidate.requires === EPOCH_18113);
+	if (steerCloseEpoch === undefined) throw new Error("18.13.0 후보를 만들 수 없다: steer bracket close epoch 후보");
+	const FINISH_UPSTREAM = '\t\t\t\t\tvoid this.#finishTurnObservation(observation, outcome?.status === "failed" ? outcome.error : undefined);\n';
+	exclude(steerCloseEpoch, HOLD_18130);
+	steerClose.alternates.push({
+		file: SESSION,
+		requires: HOLD_18130,
+		marker: steerClose.marker,
+		anchor: swap(steerCloseEpoch.anchor, "\t\t\t\t\tthis.#endInFlight(inFlightEpoch);\n", "\t\t\t\t\tthis.#endInFlight(inFlightEpoch);\n" + FINISH_UPSTREAM),
+		patched: swap(steerCloseEpoch.patched, "\t\t\t\t\telse this.#endInFlight(inFlightEpoch, finishSteerObservation);\n", "\t\t\t\t\telse this.#endInFlight(inFlightEpoch, finishSteerObservation);\n" + FINISH_UPSTREAM),
+	});
+
+	// ADAPT: onStart 의 `#startTurnObservation([])` 는 turn 이 끝나 정산(settle)을 기다리는 열린 관찰을 "새 turn 이 대체한다"며 지금 닫는다.
+	// 그런데 형제 wake turn 도중 도착해 소비되지 않은 부모 steer 는 그 wake 관찰의 입양 장부에 올라 있고, 이어받는 continuation 이 같은 정산으로
+	// 답해야 한다(18.12.x 는 continuation 이 열린 wake bracket 안에서 시작해 입양분을 함께 닫는다). 대체로 닫으면 입양분 0건으로 먼저 닫히고, 그 steer 는
+	// 이어받는 관찰에 연결되지 않아 부모가 답을 받지 못하거나(core-relay-regression [4]) 두 번 받는다([5]). 부모 steer 가 아직 relay 장부에 남아 있으면
+	// 그 열린 관찰을 대체하지 않고 계속 쓴다. 새 관찰을 따로 열지 않으므로 turn 당 관찰 하나라는 상류 계약도 그대로다.
+	const startObs = one(entry => entry.marker === "if (finishObservation) this.#ircTurnBracketOpen = true;", "startTurnObservation");
+	const startObsOpen = startObs.alternates.find(candidate => candidate.marker.startsWith("this.#openTurnObservation = observation;"));
+	if (startObsOpen === undefined) throw new Error("18.13.0 후보를 만들 수 없다: startTurnObservation 후보");
+	const SUPERSEDE_OLD = "\t\t\tif (!open.turnEnded) return undefined;\n\t\t\tvoid this.#closeTurnObservation(open);\n";
+	const SUPERSEDE_NEW = "\t\t\tif (!open.turnEnded) return undefined;\n\t\t\t// A parent steer still parked in the relay ledger rides this open observation's one finalization: the continuation that\n\t\t\t// resumes it is part of the bracket, so superseding now would close it with that steer unadopted.\n\t\t\tif (this.#irc.peekParentSteerRelays().length > 0) return undefined;\n\t\t\tvoid this.#closeTurnObservation(open);\n";
+	exclude(startObsOpen, HOLD_18130);
+	startObs.alternates.push({
+		file: SESSION,
+		requires: HOLD_18130,
+		marker: startObsOpen.marker,
+		anchor: startObsOpen.anchor,
+		patched: swap(startObsOpen.patched, SUPERSEDE_OLD, SUPERSEDE_NEW),
+	});
+
+	// ADAPT: todo_changed 발행. upstream 의 nudge 예산 되살림 줄(#16962)을 setPhases 에 그대로 두고 우리 발행을 잇는다.
+	const NUDGE_18130 = "so the nudge budget re-arms on the progress it";
+	const todo = one(entry => entry.file === "src/session/todo-tracker.ts" && entry.marker === 'type: "todo_changed"', "todo setPhases");
+	const NUDGE_LINES =
+		"\t\t// Every state write lands here — the native tool, a Cursor sync, or a\n" +
+		"\t\t// bridged call — so the nudge budget re-arms on the progress it\n" +
+		"\t\t// rations. Views, failed batches, and unchanged reads never arrive.\n" +
+		"\t\tthis.#midRunNudgeCount = 0;\n";
+	excludeOld(todo, NUDGE_18130);
+	todo.alternates = [
+		...(todo.alternates ?? []),
+		{
+			file: todo.file,
+			requires: NUDGE_18130,
+			marker: todo.marker,
+			anchor: swap(todo.anchor, "\t\tthis.#phases = this.#clonePhases(phases);\n", "\t\tthis.#phases = this.#clonePhases(phases);\n" + NUDGE_LINES),
+			patched: swap(todo.patched, "\t\tthis.#phases = this.#clonePhases(phases);\n", "\t\tthis.#phases = this.#clonePhases(phases);\n" + NUDGE_LINES),
+		},
+	];
+
+	// ADAPT: eval completion 문서 줄. py/js 분기 둘 다에 effort 를 더한다(prelude 의 positional 목록·bridge 는 이미 effort 를 받는다).
+	const JUDGE_18130 = "Without `await completion(…)`, `.id` is undefined.";
+	const judgeDoc = one(entry => entry.file === "src/prompts/tools/eval-judge.md" && entry.marker === "effort?=None", "eval-judge completion");
+	excludeOld(judgeDoc, JUDGE_18130);
+	judgeDoc.alternates = [
+		...(judgeDoc.alternates ?? []),
+		{
+			file: judgeDoc.file,
+			requires: JUDGE_18130,
+			marker: judgeDoc.marker,
+			anchor:
+				'{{#if py}}completion(prompt, *, model?="default"|"smol"|"slow", system?=None, schema?=None){{else}}await completion(prompt, { model?: "default"|"smol"|"slow", system?, schema? }){{/if}} → handle\n' +
+				"    Returns at once; `.wait()` returns text (parsed with `schema`). Stateless, no tools/history.",
+			patched:
+				'{{#if py}}completion(prompt, *, model?="default"|"smol"|"slow", system?=None, schema?=None, effort?=None){{else}}await completion(prompt, { model?: "default"|"smol"|"slow", system?, schema?, effort? }){{/if}} → handle\n' +
+				"    Returns at once; `.wait()` returns text (parsed with `schema`). Stateless, no tools/history. `effort`: explicit reasoning effort \"off\"|\"minimal\"|\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\", clamped per model; omit for the tier default.",
+		},
+	];
+
+	// ADAPT: edit 거부 반환. upstream 이 같은 반환에 details({diff, errorKind})를 실었다. 우리는 text 만 배치 전체 거부 문구로 바꾼다.
+	const seenLine = one(entry => entry.file === "src/edit/index.ts" && entry.marker === "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };", "edit seen-line return");
+	const SEEN_RETURN_HEAD = "\t\t\treturn {\n\t\t\t\tcontent: [{ type: \"text\", text: ";
+	const SEEN_RETURN_TAIL = " }],\n\t\t\t\tdetails: { diff: \"\", errorKind: outcome.errorKind },\n\t\t\t\tisError: true,\n\t\t\t};\n";
+	seenLine.alternates = [
+		...(seenLine.alternates ?? []),
+		{
+			file: seenLine.file,
+			marker: "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }],\n\t\t\t\tdetails: { diff: \"\", errorKind: outcome.errorKind },",
+			anchor: SEEN_RETURN_HEAD + "outcome.text" + SEEN_RETURN_TAIL,
+			patched: SEEN_RETURN_HEAD + "await this.#seenLineRejection(params, argsJson, outcome.text, signal)" + SEEN_RETURN_TAIL,
+		},
+	];
+
+	// ADAPT: proc:// 작업 목록 행. upstream 이 `${progress}`(runningTaskProgressSuffix)를 행 끝에 붙인다. CUELO 의 activity watch 는 그 뒤에 잇는다.
+	const PROGRESS_18130 = "runningTaskProgressSuffix(snapshots[index]";
+	const procRow = one(entry => entry.file === "src/internal-urls/proc-protocol.ts" && entry.marker === "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}", "proc job row");
+	const PROC_PROGRESS = "\t\t\t\t\tconst progress = runningTaskProgressSuffix(snapshots[index], { duration: false });\n";
+	excludeOld(procRow, PROGRESS_18130);
+	procRow.alternates = [
+		...(procRow.alternates ?? []),
+		{
+			file: procRow.file,
+			requires: PROGRESS_18130,
+			marker: procRow.marker,
+			anchor: PROC_PROGRESS + swap(procRow.anchor, '")}`;', '")}${progress}`;'),
+			patched: PROC_PROGRESS + swap(procRow.patched, '")}${formatAgentActivityWatch', '")}${progress}${formatAgentActivityWatch'),
+		},
+	];
+
+	// 공개 이슈 #51(ADAPT): snapshotJobs 의 새 두 인자 시그니처. 옛 후보는 `options.includeResults` 를 주입해 비어 있지 않은 목록에서
+	// ReferenceError 를 낸다. 새 후보는 upstream 의 `!resultConsumed` 결과 필터와 `latest` 선택을 건드리지 않고 completion 과 canonical agentUrlId 만 싣는다.
+	const SNAPSHOT_2ARG = "export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobSnapshot[] {";
+	const completionRow = one(entry => entry.file === "src/async/job-control.ts" && entry.marker === "\t\t\t...(options.includeResults !== false && j.completion ? { completion: j.completion } : {}),", "job-control completion");
+	excludeOld(completionRow, SNAPSHOT_2ARG);
+	completionRow.alternates = [
+		...(completionRow.alternates ?? []),
+		{
+			file: completionRow.file,
+			requires: SNAPSHOT_2ARG,
+			marker: "\t\t\t...(j.completion ? { completion: j.completion } : {}),",
+			anchor: completionRow.anchor,
+			patched: swap(completionRow.patched, "...(options.includeResults !== false && j.completion ?", "...(j.completion ?"),
+		},
+	];
+}
 
 
 
