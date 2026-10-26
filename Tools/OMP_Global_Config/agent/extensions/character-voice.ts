@@ -1,3 +1,4 @@
+import { findScopedSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -106,11 +107,33 @@ export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, Character
     model: "web6/gpt-6-pro",
     toolCapable: false,
   },
+  // 기본값이다. 실제 호출 대상은 `characterTarget`이 `modelRoles.implGemini`로 바꿔 돌려준다(아래 hikariModel).
   "HIKARI(히카리)": {
     model: "google-vertex/gemini-4-argon",
     toolCapable: true,
   },
 };
+
+/** HIKARI의 호출 대상을 PC별로 정하는 모델 역할. 선택자를 공개 저장소에 적지 않고 각 PC의 config.yml이 정한다. */
+const HIKARI_ROLE = "implGemini";
+const ROLE_THINKING_SUFFIX = /:(?:auto|inherit|off|minimal|low|medium|high|xhigh|max)$/u;
+
+/** 역할 선택자에서 `:level` 접미사를 떼고 `provider/model`만 남긴다. 비었거나 `provider/model` 모양이 아니면 undefined. */
+export function roleModelSelector(selector: string | undefined): string | undefined {
+  const bare = selector?.trim().replace(ROLE_THINKING_SUFFIX, "");
+  return bare && /^[^\s/]+\/\S+$/u.test(bare) ? bare : undefined;
+}
+
+/** HIKARI summon·marker가 쓰는 모델. `modelRoles.implGemini`(접미사 제거)를 따르고, 없거나 해석 못 하면 기본 상수다. */
+function hikariModel(): string {
+  let selector: string | undefined;
+  try {
+    selector = findScopedSettings()?.getModelRole(HIKARI_ROLE);
+  } catch {
+    selector = undefined;
+  }
+  return roleModelSelector(selector) ?? CHARACTER_TARGETS["HIKARI(히카리)"].model;
+}
 
 // provider 하나가 캐릭터 하나인 자리. `hive`는 모델마다 캐릭터가 다르므로 아래 MODEL_CHARACTER가 먼저 걸리고,
 // 여기의 `hive`는 그 밖의 Hive 모델(DeepSeek)의 기본 자리다.
@@ -121,11 +144,17 @@ const PROVIDER_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
 };
 
 /** provider 안에서 특정 모델이 다른 캐릭터를 갖는 자리. 키는 `provider/model id` 선택자다. */
-// Vertex는 Gemini 밖의 모델(Claude 등)도 싣으므로 provider 전체가 아니라 Argon 모델 하나만 HIKARI다(2026-10-26).
-// Antigravity OAuth는 같은 날 사용자 결정으로 걷어 냈다(계정 정지 위험).
 const MODEL_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "hive/zai-org/glm-5.3-flash": "MITSU(미츠)",
-  "google-vertex/gemini-4-argon": "HIKARI(히카리)",
+};
+
+/**
+ * provider와 무관하게 모델 id 하나가 캐릭터를 갖는 자리. HIKARI는 같은 Argon 모델이 Vertex든 PC별 다른 공급자든 HIKARI다.
+ * Vertex는 Gemini 밖의 모델(Claude 등)도 싣기 때문에 provider 전체가 아니라 이 모델 id만 건다(2026-10-26).
+ * Antigravity OAuth는 같은 날 사용자 결정으로 걷어 냈다(계정 정지 위험).
+ */
+const MODEL_ID_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
+  "gemini-4-argon": "HIKARI(히카리)",
 };
 
 const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {
@@ -157,7 +186,8 @@ const SUMMON_MARKER = /\[character-summon\s+alias="([^"]+)"\s+model="([^"]+)"(?:
 const SUMMON_MARKER_GLOBAL = /\n?\[character-summon\s+alias="[^"]+"\s+model="[^"]+"(?:\s+oauth-position="\d+")?\]\n?/gu;
 const SUMMON_DIRECTIVE = /^\[character-summon-intent alias="([^"]+)"\]/gmu;
 const CHARACTER_NAME_PATTERN = "(유키|yuki|이사나|isana|미오|mio|린|rin|미츠|mitsu|시온|shion|히카리|hikari)";
-const SUMMON_ACTION = /(?:호출|불러|소환)/u;
+// 호출·불러·소환 바로 뒤에 조사(도·은·는·을·를·이·가)가 오면 동사가 아니라 명사다("히카리호출도 프록시로 바꿔").
+const SUMMON_ACTION = /(?:호출|불러|소환)(?![도은는을를이가])/u;
 // 교체 명령은 명령·청유형 어미 뒤에서 절이 끝나는 직접 발화만 인정한다. 어미 뒤에는 문장 부호·줄 끝이나
 // 대상·강조 단어("…교체해봐 미오로", "…교체해 메인을", "…교체해 지금")만 올 수 있다. 그래서
 // "교체됐었어"(과거·수동), "안 교체해"·"못 교체해"·"교체하지 마"·"교체해 주지 마"(부정), "교체하는 방법"·
@@ -376,7 +406,9 @@ function canonicalAlias(alias: string, state: OfficeState): CharacterAlias | und
 /** alias가 가리키는 자리의 모델·oauth 위치·toolCapable. 사무실 alias도 자리의 target을 쓴다. */
 export function characterTarget(alias: string): CharacterTarget | undefined {
   const seat = seatOf(alias, officeState());
-  return seat === undefined ? undefined : CHARACTER_TARGETS[seat];
+  if (seat === undefined) return undefined;
+  const target = CHARACTER_TARGETS[seat];
+  return seat === "HIKARI(히카리)" ? { ...target, model: hikariModel() } : target;
 }
 
 function requireTarget(alias: string): CharacterTarget {
@@ -619,7 +651,9 @@ export function characterForProvider(
   modelId?: string,
 ): CharacterAlias | undefined {
   if (provider === "anthropic") return anthropicCharacterForAccounts(accounts);
-  const seat = (modelId === undefined ? undefined : MODEL_CHARACTER[`${provider}/${modelId}`]) ?? PROVIDER_CHARACTER[provider];
+  const bySelector = modelId === undefined ? undefined : MODEL_CHARACTER[`${provider}/${modelId}`];
+  const byModelId = modelId === undefined ? undefined : MODEL_ID_CHARACTER[modelId];
+  const seat = bySelector ?? byModelId ?? PROVIDER_CHARACTER[provider];
   return seat && canonicalAlias(seat, officeState());
 }
 

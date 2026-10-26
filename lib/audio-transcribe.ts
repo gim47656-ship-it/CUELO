@@ -1,6 +1,7 @@
 /**
  * Server-side speech-to-text for audio pasted into the composer. Chat models (Opus and the like)
- * take no audio input, so the file is transcribed once by Gemini 4 Argon on Google Cloud Vertex
+ * take no audio input, so the file is transcribed once by the model of the `draft` role (falling
+ * back to Gemini 4 Argon on Google Cloud Vertex when the role is unset or names no known model)
  * and the text rides the normal document attachment.
  *
  * pi-ai's `transcribeAudio` only dispatches the `openai-transcriptions` API, so there is no Gemini
@@ -8,8 +9,13 @@
  * an `ImageContent` block on the wire as `inlineData { mimeType, data }` verbatim, which is exactly
  * Gemini's inline audio part, so the audio travels as that block with its real `audio/*` MIME type.
  */
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { MAX_TRANSCRIBE_AUDIO_BYTES } from "./attachment-audio-types";
 
+/** Role whose model transcribes; the same slot that writes drafts. */
+export const TRANSCRIBE_ROLE = "draft";
+/** Used when the role is unset or its model is not in the registry. */
 export const TRANSCRIBE_PROVIDER = "google-vertex";
 export const TRANSCRIBE_MODEL = "gemini-4-argon";
 /** One request's deadline; a split recording makes one request per part. */
@@ -52,7 +58,20 @@ export function readTranscript(result: TranscribeResult): string {
   return result.stopReason === "length" ? `${text}\n[transcript truncated at the output limit]` : text;
 }
 
-/** One transcription through CUELO's shared omp runtime and the Vertex credentials it resolves. */
+/**
+ * The model that transcribes: the `draft` role's `provider/model` (any `:level` suffix dropped),
+ * or the built-in Vertex Gemini when the role is unset, malformed, or names a model the registry lacks.
+ */
+export function resolveTranscribeModel(
+  settings: { getModelRole(role: string): string | undefined },
+  registry: { find(provider: string, modelId: string): Model<Api> | undefined },
+): Model<Api> | undefined {
+  const parsed = parseModelString(settings.getModelRole(TRANSCRIBE_ROLE)?.trim() ?? "");
+  const configured = parsed ? registry.find(parsed.provider, parsed.id) : undefined;
+  return configured ?? registry.find(TRANSCRIBE_PROVIDER, TRANSCRIBE_MODEL);
+}
+
+/** One transcription through CUELO's shared omp runtime and the credentials of the model it resolves. */
 export async function transcribeAudioWithGemini(audio: Uint8Array, mimeType: string, signal?: AbortSignal): Promise<string> {
   if (audio.byteLength > MAX_TRANSCRIBE_AUDIO_BYTES) {
     throw new Error(`audio exceeds the ${MAX_TRANSCRIBE_AUDIO_BYTES / 1024 / 1024} MB transcription limit`);
@@ -61,12 +80,13 @@ export async function transcribeAudioWithGemini(audio: Uint8Array, mimeType: str
     import("@oh-my-pi/pi-ai"),
     import("@/lib/omp-runtime"),
   ]);
-  const { modelRegistry } = await getOmpRuntime();
-  const model = modelRegistry.find(TRANSCRIBE_PROVIDER, TRANSCRIBE_MODEL);
+  const { modelRegistry, settings } = await getOmpRuntime();
+  const model = resolveTranscribeModel(settings, modelRegistry);
   if (!model) throw new Error(`${TRANSCRIBE_PROVIDER}/${TRANSCRIBE_MODEL} is not available`);
-  if (!model.input.includes("image")) throw new Error(`${TRANSCRIBE_MODEL} does not accept inline media`);
+  const name = `${model.provider}/${model.id}`;
+  if (!model.input.includes("image")) throw new Error(`${name} does not accept inline media`);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No credentials for ${TRANSCRIBE_PROVIDER}` : auth.error);
+  if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No credentials for ${name}` : auth.error);
   const deadline = AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS);
   const context = {
     messages: [{

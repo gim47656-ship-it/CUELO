@@ -10,7 +10,7 @@
 
 ## 음성 파일
 
-음성 받아쓰기는 Google Cloud Vertex 자격(`gcloud auth application-default login`과 `GOOGLE_CLOUD_PROJECT`)이 필요하며 그 프로젝트에 과금됩니다.
+음성 받아쓰기는 모델 역할 `draft`가 가리키는 모델이 맡고, 그 모델 제공자의 자격이 필요하며 그 계정에 과금됩니다. 역할이 비어 있거나 모델을 찾지 못하면 Google Cloud Vertex 자격(`gcloud auth application-default login`과 `GOOGLE_CLOUD_PROJECT`)으로 기본 모델을 씁니다.
 
 - 작은 음성 파일은 첨부 후 받아쓰기를 시작합니다.
 - 큰 음성 파일은 먼저 길이와 예상 전사 요청 수, 과금 안내를 보여 줍니다. **전사 시작**을 눌러야 외부 전사 요청을 보냅니다. 전사를 하지 않고 원본만 첨부할 수도 있습니다.

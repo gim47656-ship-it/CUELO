@@ -145,7 +145,7 @@ export async function planAudioTranscription(source: AudioSource, { resolveFfmpe
       estimatedCalls: 1,
       requiresConfirmation: false,
       processing: "direct",
-      notice: "The audio is sent as it is in one transcription request to Google Cloud Vertex.",
+      notice: "The audio is sent as it is in one transcription request to the model service of the draft role.",
     };
   }
   const durationSeconds = await probeAudioDurationSeconds(await resolveFfmpeg(), source.path, signal);
@@ -158,7 +158,7 @@ export async function planAudioTranscription(source: AudioSource, { resolveFfmpe
     notice: [
       `The audio is ${formatDuration(durationSeconds)} long.`,
       `A compressed copy is split into ${estimatedCalls} part${estimatedCalls === 1 ? "" : "s"} of up to ${SEGMENT_SECONDS / 60} minutes,`,
-      `sent one after another as ${estimatedCalls} transcription request${estimatedCalls === 1 ? "" : "s"} billed to the Google Cloud project.`,
+      `sent one after another as ${estimatedCalls} transcription request${estimatedCalls === 1 ? "" : "s"} billed to that model service's account.`,
       `Each request can take up to ${TRANSCRIBE_TIMEOUT_MS / 60_000} minutes. The original file stays unchanged.`,
     ].join(" "),
   };

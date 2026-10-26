@@ -223,14 +223,20 @@ export const ACCOUNT_FACES = [
   // Codex 모델은 계정·모델과 무관하게 YUKI로 표시한다. hive는 API 키 하나를 읽는 custom provider이고
   // (2026-10-18 ISANA가 b-ai에서 옮겨 왔다) 모델마다 얼굴이 다르다 — `model` 이 붙은 MITSU는 그 모델만, provider
   // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다. web6는 `auth: none`이라 credential
-  // 개념이 없다. HIKARI는 Vertex의 Gemini 4 Argon 모델 하나만 맡는다(Vertex는 Claude 등도 싣는다. 2026-10-26 Antigravity
-  // OAuth를 걷어 내며 옮겼다). 반면 Anthropic은 실제 계정이 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
+  // 개념이 없다. HIKARI는 Gemini 4 Argon 모델 하나만 맡는다. 표의 `provider`는 기본 선택자일 뿐이고, 같은 모델 id는
+  // 어느 공급자 아래에서든 `MODEL_ID_FACE_ALIASES`로 같은 얼굴을 받는다(Vertex는 Claude 등도 싣기 때문에 provider 전체는
+  // 예약하지 않는다). 반면 Anthropic은 실제 계정이 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
   { alias: "MITSU(미츠)", file: "mitsu.webp", provider: "hive", model: "zai-org/glm-5.3-flash" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
   { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
   { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-vertex", model: "gemini-4-argon" },
 ] as const;
+
+/** 공급자와 무관하게 모델 id 하나가 얼굴을 갖는 자리. 값은 얼굴 별칭이다. */
+const MODEL_ID_FACE_ALIASES: Readonly<Record<string, string>> = {
+  "gemini-4-argon": "HIKARI(히카리)",
+};
 
 export interface CharacterRosterEntry {
   seed: number;
@@ -386,6 +392,8 @@ let officeLoad: Promise<void> | null = null;
 let officeEpoch = 0;
 /** `provider/model` → 사무실 얼굴. 모델이 얼굴을 가르는 자리(HIKARI/Argon)의 대체다. */
 let officeModelFaces: ReadonlyMap<string, AccountFace> = new Map();
+/** 모델 id → 사무실 얼굴. 공급자와 무관하게 모델 id가 얼굴을 갖는 자리(HIKARI/Argon)의 대체다. */
+let officeModelIdFaces: ReadonlyMap<string, AccountFace> = new Map();
 let officeSignature: string | null = null;
 let officeRefreshInstalled = false;
 
@@ -431,6 +439,11 @@ export function applyOfficeCharacters(next: OfficeCharactersState): void {
   officeModelFaces = new Map([...officeBySlot].flatMap(([slot, seat]) => {
     const face = ACCOUNT_FACES[slot];
     return "model" in face ? [[`${face.provider}/${face.model}`, { seed: slot, alias: seat.alias }] as const] : [];
+  }));
+  officeModelIdFaces = new Map(Object.entries(MODEL_ID_FACE_ALIASES).flatMap(([modelId, alias]) => {
+    const slot = ACCOUNT_FACES.findIndex((face) => face.alias === alias);
+    const seat = officeBySlot.get(slot);
+    return seat ? [[modelId, { seed: slot, alias: seat.alias }] as const] : [];
   }));
   officeRoster = officeBySlot.size === 0
     ? CHARACTER_ROSTER
@@ -539,6 +552,14 @@ const MODEL_FACES: ReadonlyMap<string, AccountFace> = new Map(
   )),
 );
 
+/** 공급자와 무관하게 모델 id가 얼굴을 갖는 자리. 키는 모델 id. */
+const MODEL_ID_FACES: ReadonlyMap<string, AccountFace> = new Map(
+  Object.entries(MODEL_ID_FACE_ALIASES).map(([modelId, alias]) => {
+    const slot = ACCOUNT_FACES.findIndex((face) => face.alias === alias);
+    return [modelId, { seed: slot, alias }] as const;
+  }),
+);
+
 /**
  * 예약 얼굴의 완성된 값. 미리 만들어 두는 이유는 이 값이 `useSyncExternalStore` 의 스냅샷으로
  * 쓰이기 때문이다 — 부를 때마다 새 객체를 주면 스냅샷이 매번 달라져 리렌더가 멈추지 않는다.
@@ -564,7 +585,7 @@ function faceSlot(seed: number): number {
 export function providerModelFace(provider: string, model: string | undefined): AccountFace | null {
   if (model === undefined) return null;
   const key = `${provider}/${model}`;
-  return officeModelFaces.get(key) ?? MODEL_FACES.get(key) ?? null;
+  return officeModelFaces.get(key) ?? officeModelIdFaces.get(model) ?? MODEL_FACES.get(key) ?? MODEL_ID_FACES.get(model) ?? null;
 }
 
 /**

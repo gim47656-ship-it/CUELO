@@ -18,6 +18,7 @@ if (!existsSync(systemPromptModule)) {
 }
 const { buildSystemPrompt } = await import(systemPromptModule);
 
+import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import characterVoice, {
   anthropicCharacterForAccounts,
   CHARACTER_TARGETS,
@@ -29,6 +30,9 @@ import characterVoice, {
   parseCharacterIntent,
   parseCharacterSummonDirectives,
   renderCharacterSummonRouting,
+  parseCharacterSummonMarker,
+  roleModelSelector,
+  malformedSummonMarkerReason,
   renderCharacterVoice,
   rewriteTaskInputForCharacterSummon,
 } from "../character-voice";
@@ -192,6 +196,10 @@ describe("character voice identity", () => {
     expect(characterForProvider("web6")).toBe("SHION(시온)");
     expect(characterForProvider("google-antigravity")).toBeUndefined();
     expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
+    // 모델 id로 거는 얼굴이라 다른 공급자 아래의 같은 모델도 HIKARI다. 모델이 없거나 다른 모델이면 아니다.
+    expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
+    expect(characterForProvider("localproxy")).toBeUndefined();
+    expect(characterForProvider("localproxy", [], "other-model")).toBeUndefined();
     expect(characterForProvider("google-vertex", [], "claude-opus-4-6")).toBeUndefined();
   });
 
@@ -273,6 +281,77 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("린으로 교체해줘 지금")).toEqual({ kind: "switch", alias: "RIN(린)" });
     expect(parseCharacterIntent("미오로 교체 좀 부탁해")).toEqual({ kind: "switch", alias: "MIO(미오)" });
     expect(parseCharacterIntent("린으로 교체하자")).toEqual({ kind: "switch", alias: "RIN(린)" });
+  });
+
+  test("a summon verb followed by a particle is a noun, not a summon command", () => {
+    // 2026-10-26: `히카리호출도 프록시로바꿔임마`(히카리 호출 모델을 프록시로 바꾸라는 설정 요청)가 소환으로 읽혔다.
+    expect(parseCharacterIntent("히카리호출도 프록시로바꿔임마")).toBeUndefined();
+    expect(parseCharacterIntent("히카리 호출은 프록시로 바꿔")).toBeUndefined();
+    expect(parseCharacterIntent("미오 소환이 안 돼")).toBeUndefined();
+    expect(parseCharacterIntent("린 호출을 막아줘")).toBeUndefined();
+    expect(parseCharacterIntent("시온 호출가")).toBeUndefined();
+    // 명령형·청유형 어미는 그대로 소환이다.
+    expect(parseCharacterIntent("히카리 호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
+    expect(parseCharacterIntent("히카리호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
+    expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
+    expect(parseCharacterIntent("미오 소환")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
+    expect(parseCharacterIntent("린 호출하자")).toEqual({ kind: "summon", aliases: ["RIN(린)"] });
+  });
+
+  describe("HIKARI target follows modelRoles.implGemini", () => {
+    const withRole = <T>(selector: string | undefined, fn: () => T): T =>
+      withActiveSettings(Settings.isolated(selector === undefined ? {} : { modelRoles: { implGemini: selector } }), fn);
+    const markerFor = (model: string) => `[character-summon alias="HIKARI(히카리)" model="${model}"]`;
+
+    test("the role selector wins with any :level suffix stripped", () => {
+      expect(withRole("localproxy/gemini-4-argon:auto", () => characterTarget("HIKARI(히카리)"))).toEqual({
+        model: "localproxy/gemini-4-argon",
+        toolCapable: true,
+      });
+      expect(withRole("localproxy/gemini-4-argon:high", () => characterTarget("HIKARI(히카리)")?.model)).toBe("localproxy/gemini-4-argon");
+      expect(withRole("localproxy/gemini-4-argon", () => characterTarget("HIKARI(히카리)")?.model)).toBe("localproxy/gemini-4-argon");
+      // 모델 id에 들어 있는 콜론은 접미사가 아니다.
+      expect(roleModelSelector("localproxy/vendor/model:free:low")).toBe("localproxy/vendor/model:free");
+    });
+
+    test("an unset or malformed role falls back to the built-in selector", () => {
+      const fallback = CHARACTER_TARGETS["HIKARI(히카리)"].model;
+      expect(withRole(undefined, () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
+      expect(withRole("", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
+      expect(withRole("no-provider-part", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
+      expect(withRole("localproxy/", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
+      expect(roleModelSelector(undefined)).toBeUndefined();
+    });
+
+    test("the marker writer and validator use the same resolved selector, and other seats are untouched", () => {
+      withRole("localproxy/gemini-4-argon:auto", () => {
+        expect(renderCharacterSummonRouting(["HIKARI(히카리)"])).toContain("localproxy/gemini-4-argon을(를) 호출한다고");
+        expect(rewriteTaskInputForCharacterSummon({ tasks: [{ agent: "maker", task: `${markerFor("localproxy/gemini-4-argon")}\n인사` }] }, ["HIKARI(히카리)"]).ok).toBe(true);
+        // 낡은 marker(이전 선택자)는 단일 호출에서 지금 role의 exact marker로 다시 쓰인다.
+        const restamped = rewriteTaskInputForCharacterSummon({ tasks: [{ agent: "maker", task: `${markerFor("google-vertex/gemini-4-argon")}\n인사` }] }, ["HIKARI(히카리)"]);
+        expect(JSON.stringify(restamped)).toContain("model=\\\"localproxy/gemini-4-argon\\\"");
+        expect(malformedSummonMarkerReason(markerFor("google-vertex/gemini-4-argon"))).toContain(markerFor("localproxy/gemini-4-argon"));
+        expect(parseCharacterSummonMarker(markerFor("localproxy/gemini-4-argon"))).toBe("HIKARI(히카리)");
+        expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBeUndefined();
+        expect(characterTarget("MIO(미오)")).toEqual(CHARACTER_TARGETS["MIO(미오)"]);
+      });
+      withRole(undefined, () => {
+        expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBe("HIKARI(히카리)");
+      });
+    });
+
+    test("a role pointing at another model does not hand HIKARI's face to it", () => {
+      withRole("google-vertex/claude-opus-5-5:low", () => {
+        expect(characterForProvider("google-vertex", [], "claude-opus-5-5")).toBeUndefined();
+        expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
+      });
+    });
+
+    test("a selector with a blank provider or model part is malformed", () => {
+      expect(roleModelSelector("google-vertex/ :low")).toBeUndefined();
+      expect(roleModelSelector(" /gemini-4-argon")).toBeUndefined();
+      expect(withRole("google-vertex/ :low", () => characterTarget("HIKARI(히카리)")?.model)).toBe(CHARACTER_TARGETS["HIKARI(히카리)"].model);
+    });
   });
 
   test("review paragraphs that quote switch sentences never become a switch command", () => {
@@ -1063,6 +1142,8 @@ describe("office mode character seat", () => {
       expect(characterForProvider("hive")).toBe("ELM(엘름)");
       expect(characterForProvider("web6")).toBe("CEDAR(시더)");
       expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("DELTA(델타)");
+      expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("DELTA(델타)");
+      expect(withActiveSettings(Settings.isolated({ modelRoles: { implGemini: "localproxy/gemini-4-argon:auto" } }), () => characterTarget("DELTA(델타)")?.model)).toBe("localproxy/gemini-4-argon");
       expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
