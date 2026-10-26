@@ -5,6 +5,7 @@ import { failureFromOffer, isLiveState, waitForIceGathering, type LiveFailure } 
 import type { LiveState, LiveTranscriptRole } from "@/lib/live-types";
 import type { InterpreterProfile } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
+import { EchoGate, REMOTE_SPEECH_RMS, rms } from "@/lib/interpreter-echo-gate";
 import type { HistoryLine } from "./transcript-log";
 
 /**
@@ -29,6 +30,12 @@ export interface InterpreterCallOptions {
   getHistory: () => HistoryLine[];
   /** A started call was replaced by a reconnect: new transcripts belong to a new call. */
   onReconnect: () => void;
+  /**
+   * Block the microphone while the interpreted voice plays and briefly after it, so a phone
+   * speaker is not heard and interpreted again (`lib/interpreter-echo-gate.ts`). Read on every
+   * check, so turning it on or off applies to the call in progress.
+   */
+  muteMicWhilePlaying?: boolean;
 }
 
 export interface InterpreterCallController {
@@ -63,6 +70,20 @@ const hangUp = (callId: string) => {
     // The call also expires server-side once no reader remains.
   });
 };
+
+/** How often the hook measures the interpreted voice to open or block the microphone. */
+const ECHO_CHECK_MS = 50;
+
+/** Measures the remote (interpreted) voice of a started call. */
+interface RemoteMonitor {
+  context: AudioContext;
+  analyser: AnalyserNode;
+  samples: Float32Array<ArrayBuffer>;
+  source: MediaStreamAudioSourceNode | null;
+  remote: MediaStream | null;
+  gate: EchoGate;
+  timer: number;
+}
 
 /**
  * Codex ends a call that carries no speech about 30 s after it answers (measured 32 s and
@@ -119,7 +140,7 @@ export interface CodexInterpreterCallController extends InterpreterCallControlle
   skipped: boolean;
 }
 
-export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: InterpreterCallOptions): CodexInterpreterCallController {
+export function useInterpreterCall({ onTranscript, getHistory, onReconnect, muteMicWhilePlaying = false }: InterpreterCallOptions): CodexInterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
   const [failure, setFailure] = useState<LiveFailure | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
@@ -134,6 +155,8 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
   const remoteRef = useRef<MediaStream | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /** Created inside Start's click, like the audio element, so the context runs. */
+  const monitorRef = useRef<RemoteMonitor | null>(null);
   const eventsRef = useRef<EventSource | null>(null);
   const callIdRef = useRef<string | null>(null);
   /** Pair and profile of the call that is open or opening, prepared or started. */
@@ -158,12 +181,14 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
   const onTranscriptRef = useRef(onTranscript);
   const getHistoryRef = useRef(getHistory);
   const onReconnectRef = useRef(onReconnect);
+  const muteRef = useRef(muteMicWhilePlaying);
 
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
     getHistoryRef.current = getHistory;
     onReconnectRef.current = onReconnect;
-  }, [getHistory, onReconnect, onTranscript]);
+    muteRef.current = muteMicWhilePlaying;
+  }, [getHistory, muteMicWhilePlaying, onReconnect, onTranscript]);
 
   useEffect(() => {
     setSupported(
@@ -193,9 +218,66 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
     if (callId) hangUp(callId);
   }, []);
 
+  const stopMonitor = useCallback(() => {
+    const monitor = monitorRef.current;
+    monitorRef.current = null;
+    if (!monitor) return;
+    window.clearInterval(monitor.timer);
+    monitor.source?.disconnect();
+    if (monitor.context.state !== "closed") void monitor.context.close().catch(() => {});
+  }, []);
+
+  /** One echo check: block the microphone track while the interpreted voice is audible, else open it. */
+  const checkEcho = useCallback(() => {
+    const monitor = monitorRef.current;
+    const track = streamRef.current?.getAudioTracks()[0];
+    if (!monitor || !track) return;
+    // Playback is tracked even while the guard is off, so turning it on mid-call keeps the hold
+    // after an interpretation that just ended.
+    monitor.analyser.getFloatTimeDomainData(monitor.samples);
+    const held = monitor.gate.update(rms(monitor.samples) >= REMOTE_SPEECH_RMS, performance.now());
+    const blocked = muteRef.current && held;
+    // A disabled track sends silence on the same sender: no renegotiation, and the call keeps going.
+    if (track.enabled === blocked) track.enabled = !blocked;
+  }, []);
+
+  /**
+   * Start measuring the interpreted voice. Without Web Audio the microphone simply stays open:
+   * the guard is a help against a loud speaker, not a condition for interpreting.
+   */
+  const startMonitor = useCallback(() => {
+    stopMonitor();
+    if (typeof window.AudioContext !== "function") return;
+    let context: AudioContext | null = null;
+    try {
+      context = new window.AudioContext();
+      void context.resume().catch(() => {});
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      // Chrome processes an unconnected analyser, Safari does not: a silent path to the output keeps it pulled.
+      const silent = context.createGain();
+      silent.gain.value = 0;
+      analyser.connect(silent);
+      silent.connect(context.destination);
+      monitorRef.current = {
+        context,
+        analyser,
+        samples: new Float32Array(analyser.fftSize),
+        source: null,
+        remote: null,
+        gate: new EchoGate(),
+        timer: window.setInterval(checkEcho, ECHO_CHECK_MS),
+      };
+    } catch (error) {
+      if (context && context.state !== "closed") void context.close().catch(() => {});
+      console.warn("[interpreter] echo guard unavailable:", error instanceof Error ? error.message : String(error));
+    }
+  }, [checkEcho, stopMonitor]);
+
   /** Release the microphone, peer, audio element, event stream and server call. */
   const release = useCallback(() => {
     dropCall();
+    stopMonitor();
     targetRef.current = null;
     startedRef.current = false;
     for (const track of streamRef.current?.getTracks() ?? []) track.stop();
@@ -206,7 +288,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
       audio.srcObject = null;
       audio.remove();
     }
-  }, [dropCall]);
+  }, [dropCall, stopMonitor]);
 
   const teardown = useCallback((next: LiveState) => {
     release();
@@ -239,12 +321,23 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
     setState("live");
   }, [isListening]);
 
-  /** Hand the interpreted voice to the audio element once both exist. */
+  /** Hand the interpreted voice to the audio element and the echo monitor once they exist. */
   const attachRemote = useCallback(() => {
     const remote = remoteRef.current;
+    if (!remote) return;
     const audio = audioRef.current;
-    if (!remote || !audio) return;
-    if (audio.srcObject !== remote) audio.srcObject = remote;
+    if (audio && audio.srcObject !== remote) audio.srcObject = remote;
+    const monitor = monitorRef.current;
+    if (!monitor || monitor.remote === remote) return;
+    monitor.source?.disconnect();
+    monitor.source = null;
+    monitor.remote = remote;
+    try {
+      monitor.source = monitor.context.createMediaStreamSource(remote);
+      monitor.source.connect(monitor.analyser);
+    } catch (error) {
+      console.warn("[interpreter] echo guard cannot read the interpreted voice:", error instanceof Error ? error.message : String(error));
+    }
   }, []);
 
   /** Put the microphone on the current call's sender: no renegotiation, the call hears it at once. */
@@ -514,11 +607,12 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect }: In
     const audio = document.createElement("audio");
     audio.autoplay = true;
     audioRef.current = audio;
+    startMonitor();
     attachRemote();
     // The microphone and a cold call open side by side; a prepared call only needs the mic.
     if (!reuse) void openCall(gen, target);
     void attachMic(gen);
-  }, [attachMic, attachRemote, openCall, release]);
+  }, [attachMic, attachRemote, openCall, release, startMonitor]);
 
   const stop = useCallback(() => teardown("idle"), [teardown]);
 

@@ -2,7 +2,6 @@
 
 import { ActionButton } from "@seed-design/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useCloudInterpreterCall } from "@/hooks/useCloudInterpreterCall";
 import {
   HISTORY_MAX_LINES,
   PARTNER_AGES,
@@ -33,12 +32,12 @@ import {
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
 
 /**
- * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 고른 엔진의
- * 세션 없는 라이브 통화(Codex 라이브: `/api/live/interpret`, Google Cloud: `/api/live/interpret/cloud`)를
- * 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로 바로 소리 내어 옮긴다. 화면은 그 통화의 전사를
- * 들은 말(원문)과 모델이 말한 것(통역)의 두 흐름으로 따로 보인다. 어느 엔진도 어느 통역이 어느 원문의
- * 것인지 알려 주지 않으므로 둘을 짝짓지 않는다. 기록은 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에
- * 저장하지 않는다. 통화를 새로 열 때(재연결·언어 변경)만 최근 줄을 그 통화의 지시에 실어 앞 맥락을 잇는다.
+ * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
+ * Codex 라이브 통화(`/api/live/interpret`)를 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로
+ * 바로 소리 내어 옮긴다. 화면은 그 통화의 전사를 들은 말(원문)과 모델이 말한 것(통역)의 두 흐름으로
+ * 따로 보인다. 통화는 어느 통역이 어느 원문의 것인지 알려 주지 않으므로 둘을 짝짓지 않는다. 기록은
+ * 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에 저장하지 않는다. 통화를 새로 열 때(재연결·언어
+ * 변경)만 최근 줄을 그 통화의 지시에 실어 앞 맥락을 잇는다.
  *
  * 「마주보기」는 화면을 위아래로 나눠 위쪽을 뒤집어 보인다. 폰을 탁자에 두면 맞은편 사람은 위쪽에서
  * 자기 언어로, 나는 아래쪽에서 내 언어로 대화를 읽는다.
@@ -50,15 +49,6 @@ const SETTINGS_KEY = "cuelo-translator";
 const TEXT_SCALES = [0.85, 1, 1.3] as const;
 const DEFAULT_TEXT_SIZE = 1;
 
-/**
- * 통역 엔진. Codex 라이브가 기본이다. Cloud는 Gemini 라이브 모델을 Google Cloud 프로젝트의 Vertex AI로
- * 연다(Cloud 크레딧이 붙는 쪽).
- */
-type InterpreterProvider = "codex" | "cloud";
-
-/** 모르는 값은 Codex다. 없어진 AI Studio 엔진(`"gemini"`)도 여기로 온다. Cloud는 서버 로그인이 필요하고 시작마다 과금되므로 조용히 고르지 않는다. */
-const parseProvider = (value: unknown): InterpreterProvider => (value === "cloud" ? "cloud" : "codex");
-
 interface Settings {
   mine: TranslatorLanguage;
   theirs: TranslatorLanguage;
@@ -66,7 +56,8 @@ interface Settings {
   face: boolean;
   /** `TEXT_SCALES`의 칸 번호. */
   size: number;
-  provider: InterpreterProvider;
+  /** 통역 음성이 나오는 동안 마이크를 막는다(`lib/interpreter-echo-gate.ts`). 폰 스피커로 쓰는 것이 보통이라 처음 값은 켬이다. */
+  echoGuard: boolean;
 }
 
 function readSettings(): Settings {
@@ -76,7 +67,7 @@ function readSettings(): Settings {
     profile: {},
     face: false,
     size: DEFAULT_TEXT_SIZE,
-    provider: "codex",
+    echoGuard: true,
   };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
@@ -92,18 +83,11 @@ function readSettings(): Settings {
       profile: parseInterpreterProfile(saved.profile),
       face: saved.face === true,
       size,
-      provider: parseProvider(saved.provider),
+      echoGuard: saved.echoGuard !== false,
     };
   } catch {
     return fallback;
   }
-}
-
-/** `GET /api/live/interpret/cloud`의 답: 서버에 프로젝트·위치(`configured`)와 Google Cloud 로그인(`signedIn`)이 있는지. */
-interface CloudStatus {
-  configured: boolean;
-  signedIn: boolean;
-  error: string | null;
 }
 
 function MicIcon() {
@@ -160,19 +144,16 @@ function CloseIcon() {
 /** 화면이 보이는 통역 단계. 색 점과 글로 함께 보인다. */
 type Phase = "idle" | "connecting" | "reconnecting" | "listening" | "translating" | "error";
 
-function failureText(tt: TranslatorTranslate, provider: InterpreterProvider, failure: string, detail: string | null): string {
+function failureText(tt: TranslatorTranslate, failure: string, detail: string | null): string {
   switch (failure) {
     case "mic-denied":
       return tt("translator.micDenied");
     case "mic-unavailable":
       return tt("translator.micUnavailable");
     case "auth":
-      return tt(provider === "cloud" ? "translator.cloudAuth" : "translator.auth");
+      return tt("translator.auth");
     case "upstream":
-      return tt(
-        provider === "cloud" ? "translator.cloudUpstream" : "translator.upstream",
-        { error: detail ?? "" },
-      );
+      return tt("translator.upstream", { error: detail ?? "" });
     default:
       return tt("translator.failed", { error: detail ?? "" });
   }
@@ -324,7 +305,7 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
-  const { mine, theirs, profile, face, size, provider } = settings;
+  const { mine, theirs, profile, face, size, echoGuard } = settings;
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
   const [setupOpen, setSetupOpen] = useState(false);
@@ -334,8 +315,6 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const [currentCall, setCurrentCall] = useState(0);
   /** 지금 통화를 연 언어 짝. 새 조각에 붙인다. */
   const pairRef = useRef<Settings>(settings);
-  /** Cloud 엔진을 고른 동안 읽은 서버 준비 상태. 읽기 전에는 `null`이다. */
-  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
 
   useEffect(() => {
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
@@ -344,37 +323,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       profile,
       face,
       size,
-      provider,
+      echoGuard,
     }));
-  }, [face, mine, profile, provider, size, theirs]);
-
-  // Cloud를 고르면 서버가 Cloud 통화를 열 준비가 됐는지만 읽는다(프로젝트 id·자격은 오지 않는다).
-  // 준비되지 않았으면 미리 연결하지도 시작하지도 않고 까닭을 보인다. 다른 엔진으로 가면 버린다.
-  useEffect(() => {
-    if (!visible || provider !== "cloud") {
-      setCloudStatus(null);
-      return;
-    }
-    let cancelled = false;
-    fetch("/api/live/interpret/cloud", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body: unknown = await response.json();
-        const flag = (key: string) => body !== null && typeof body === "object" && key in body && (body as Record<string, unknown>)[key] === true;
-        return { configured: flag("configured"), signedIn: flag("signedIn") };
-      })
-      .then((status) => {
-        if (!cancelled) setCloudStatus({ ...status, error: null });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setCloudStatus({ configured: false, signedIn: false, error: error instanceof Error ? error.message : String(error) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [provider, visible]);
-
-  const cloudReady = cloudStatus !== null && !cloudStatus.error && cloudStatus.configured && cloudStatus.signedIn;
+  }, [echoGuard, face, mine, profile, size, theirs]);
 
   const handleTranscript = useCallback((transcript: InterpreterTranscript) => {
     transcriptRef.current = addTranscript(transcriptRef.current, transcript, pairRef.current);
@@ -388,12 +339,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setCurrentCall(transcriptRef.current.call);
   }, []);
 
-  // 두 엔진의 훅은 늘 함께 있고, 고른 엔진만 미리 연결하거나 시작한다. Cloud는 서버의 로그인을 쓴다.
-  const codexCall = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
-  const cloudCall = useCloudInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect });
-  const call = provider === "cloud" ? cloudCall : codexCall;
+  const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard });
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
-  const providerReady = provider === "codex" || cloudReady;
 
   const startCall = (next: Settings) => {
     pairRef.current = next;
@@ -413,36 +360,23 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     changeCallSettings({ ...settings, profile: parseInterpreterProfile({ ...profile, ...patch }) });
   };
 
-  const { prepare, supported } = call;
+  const { prepare, supported, stop } = call;
   // 끊기는 값이 바뀔 때만 일어나야 한다. 훅이 새 `stop`을 돌려줄 때마다 돌면 진행 중인 통화를 끊는다.
-  const stopsRef = useRef({ codex: codexCall.stop, cloud: cloudCall.stop });
-  const activeRef = useRef(active);
+  const stopRef = useRef(stop);
   useEffect(() => {
-    stopsRef.current = { codex: codexCall.stop, cloud: cloudCall.stop };
-    activeRef.current = active;
+    stopRef.current = stop;
   });
 
   // 대화 화면으로 돌아가면 통화(마이크)를 끝낸다. 화면이 사라질 때는 훅이 정리한다.
   useEffect(() => {
-    if (visible) return;
-    stopsRef.current.codex();
-    stopsRef.current.cloud();
+    if (!visible) stopRef.current();
   }, [visible]);
-
-  // 엔진을 바꾸면 고르지 않은 쪽에 미리 열어 둔 통화를 끊는다. 통역 중에는 바꿀 수 없다.
-  // 아래의 미리 연결보다 먼저 돈다.
-  useEffect(() => {
-    if (provider !== "codex") stopsRef.current.codex();
-    if (provider !== "cloud") stopsRef.current.cloud();
-  }, [provider]);
 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
-  // Cloud는 미리 열지 않는다. 연 세션은 Cloud 프로젝트의 사용량이 되므로 「통역 시작」에서만 연다.
   useEffect(() => {
-    if (provider === "cloud") return;
-    if (visible && !active && providerReady && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, mine, prepare, profile, provider, providerReady, supported, theirs, visible]);
+    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
+  }, [active, mine, prepare, profile, supported, theirs, visible]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -471,8 +405,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const unsupported = call.supported === false;
   const insecure = typeof window !== "undefined" && !window.isSecureContext;
   const notice = call.state === "error" && call.failure
-    ? failureText(tt, provider, call.failure, call.detail)
-    : provider === "codex" && codexCall.skipped && active ? tt("translator.generationSkipped")
+    ? failureText(tt, call.failure, call.detail)
+    : call.skipped && active ? tt("translator.generationSkipped")
     : call.ended === "idle" && !active ? tt("translator.idleStopped")
     : insecure ? tt("translator.insecure") : unsupported ? tt("translator.unsupported") : null;
 
@@ -495,7 +429,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const showSetup = !active || setupOpen;
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
-  const canStart = active || !(unsupported || insecure || call.supported === null || !providerReady);
+  const canStart = active || !(unsupported || insecure || call.supported === null);
   const translations = useMemo(() => segments.filter((segment) => segment.role === "assistant"), [segments]);
   const originals = useMemo(() => segments.filter((segment) => segment.role === "user"), [segments]);
   const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
@@ -734,25 +668,17 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 </select>
               </label>
             </div>
-            <div className="translator-engine">
-              <label className="translator-language">
-                <span>{tt("translator.engine")}</span>
-                <select
-                  value={provider}
-                  disabled={active}
-                  onChange={(event) => setSettings({ ...settings, provider: parseProvider(event.target.value) })}
-                >
-                  <option value="codex">{tt("translator.engine.codex")}</option>
-                  <option value="cloud">{tt("translator.engine.cloud")}</option>
-                </select>
+            <div className="translator-options">
+              <label className="translator-toggle">
+                <input
+                  type="checkbox"
+                  checked={echoGuard}
+                  aria-describedby="translator-echo-guard-hint"
+                  onChange={(event) => setSettings({ ...settings, echoGuard: event.target.checked })}
+                />
+                <span>{tt("translator.echoGuard")}</span>
               </label>
-              {provider === "cloud" && cloudStatus !== null && !cloudReady ? (
-                <p className="translator-engine-note" role="status">
-                  {cloudStatus.error
-                    ? tt("translator.cloudStatusFailed", { error: cloudStatus.error })
-                    : !cloudStatus.configured ? tt("translator.cloudNotConfigured") : tt("translator.cloudSignedOut")}
-                </p>
-              ) : null}
+              <p id="translator-echo-guard-hint" className="translator-options-note">{tt("translator.echoGuardHint")}</p>
             </div>
             {segments.length > 0 ? (
               <ActionButton
