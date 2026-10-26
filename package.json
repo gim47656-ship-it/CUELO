@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.89",
+  "version": "0.10.90",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -87,7 +87,7 @@
     "start": "bun bin/cuelo.js --no-open -H 127.0.0.1 -p 30141",
     "start:lan": "bun bin/cuelo.js --no-open -H 0.0.0.0 -p 30141",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "bun test ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs",
     "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs"
   },

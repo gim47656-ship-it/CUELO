@@ -803,87 +803,19 @@ test('rows the catalog does not know never turn into a measured zero', () => {
 
 // ---------------------------------------------------------------------------
 // API 크레딧 추정
-const { createCreditsService, validateCreditSetting, googleRows, hiveRows, walletTotals, expiryDaysLeft } = require('./usage-server');
+const { createCreditsService, validateCreditSetting, hiveRows, walletTotals } = require('./usage-server');
 
 const CREDIT_NOW = new Date(2026, 9, 26, 10, 30).getTime(); // 로컬 2026-10-26 10:30
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
-/** Monitoring timeSeries 가짜. 버킷은 endTime에서 period씩 거꾸로 끊고 (start, end]의 원시 기록을 더한다. */
-function fakeMonitoring(events, calls = []) {
-    return async (url, init) => {
-        const parsed = new URL(url);
-        calls.push({ url: parsed, headers: init.headers });
-        const q = parsed.searchParams;
-        const filter = q.get('filter');
-        const refusals = filter.includes('response_code="429"');
-        const start = Date.parse(q.get('interval.startTime'));
-        const end = Date.parse(q.get('interval.endTime'));
-        const period = Number(q.get('aggregation.alignmentPeriod').replace('s', '')) * 1000;
-        const series = new Map();
-        for (const event of events) {
-            if (!!event.refused !== refusals || event.ms <= start || event.ms > end) continue;
-            const bucketEnd = end - Math.floor((end - event.ms) / period) * period;
-            const key = `${event.model}|${event.location}|${event.type}`;
-            const points = series.get(key) ?? new Map();
-            points.set(bucketEnd, (points.get(bucketEnd) ?? 0) + event.value);
-            series.set(key, points);
-        }
-        const timeSeries = [...series].map(([key, points]) => {
-            const [model, location, type] = key.split('|');
-            return {
-                metric: { labels: refusals ? { response_code: '429' } : { type } },
-                resource: { labels: { model_user_id: model, location } },
-                points: [...points].map(([bucketEnd, value]) => ({
-                    interval: { startTime: new Date(bucketEnd - period).toISOString(), endTime: new Date(bucketEnd).toISOString() },
-                    value: { int64Value: String(value) },
-                })),
-            };
-        });
-        return new Response(JSON.stringify({ timeSeries }), { status: 200 });
-    };
-}
-
-function creditFixture(t, { events = [], now = () => CREDIT_NOW, fetchImpl } = {}) {
+function creditFixture(t, { now = () => CREDIT_NOW } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'credits-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const settingsFile = path.join(dir, 'cuelo-api-credits.json');
-    const calls = [];
-    const service = createCreditsService({
-        agentDir: () => dir,
-        settingsFile: () => settingsFile,
-        googleAuth: async () => ({ project: 'proj-1', token: 'ACCESS_TOKEN_SECRET' }),
-        fetchImpl: fetchImpl ?? fakeMonitoring(events, calls),
-        now,
-    });
-    return { dir, settingsFile, ledgerFile: path.join(dir, 'cuelo-api-credits-google-days.json'), service, calls };
+    const service = createCreditsService({ agentDir: () => dir, settingsFile: () => settingsFile, now });
+    return { dir, settingsFile, service };
 }
-
-test('Vertex prices: Argon at gross list price by location, Live at the audio rate, TTS exact, unknown model never 0', () => {
-    const days = { '2026-10-20': {
-        'gemini-4-argon|global|input': 1_000_000, 'gemini-4-argon|global|output': 100_000,
-        'gemini-4-argon|us-central1|input': 1_000_000,
-        'gemini-3.8-live|us-central1|input': 2_000_000, 'gemini-3.8-live|us-central1|output': 500_000,
-        'gemini-2.5-flash-tts|us-central1|input': 1_000_000, 'gemini-2.5-flash-tts|us-central1|output': 1_000_000,
-        'gemini-9-mystery|global|input': 10, 'gemini-2.5-flash-tts|us-central1|thinking': 0,
-    } };
-    const rows = googleRows(days, '2026-10-01', { 'gemini-2.5-flash-tts': 3 });
-    const byModel = Object.fromEntries(rows.map(row => [row.model, row]));
-    assert.deepEqual(rows.map(row => row.role), ['hikari', 'interpreter', 'tts', null]);
-    near(byModel['gemini-4-argon'].costUsd, 4 + 2 + 4.4); // $4/M in + $20/M out (global), $4.4/M in (non-global)
-    assert.equal(byModel['gemini-4-argon'].pricing, 'upper-bound');
-    near(byModel['gemini-3.8-live'].costUsd, 2 * 3 + 0.5 * 12); // audio $3 / $12, never the $0.75 / $4.5 text rate
-    assert.equal(byModel['gemini-3.8-live'].pricingReason, 'audio-rate');
-    near(byModel['gemini-2.5-flash-tts'].costUsd, 0.5 + 10);
-    assert.equal(byModel['gemini-2.5-flash-tts'].pricing, 'exact');
-    assert.equal(byModel['gemini-2.5-flash-tts'].errors429, 3);
-    assert.equal(byModel['gemini-9-mystery'].costUsd, null);
-    assert.equal(byModel['gemini-9-mystery'].inputTokens, 10, 'unknown model tokens stay visible');
-
-    const odd = googleRows({ '2026-10-20': { 'gemini-4-argon|global|input': 100, 'gemini-4-argon|global|cached': 5 } }, '2026-10-01');
-    assert.equal(odd[0].costUsd, null, 'an unpriced token type makes the row cost unknown, not partial');
-    assert.equal(odd[0].otherTokens, 5);
-});
 
 test('Hive prices recompute from the official table per model and purpose; days before the start are excluded', () => {
     const events = [
@@ -909,7 +841,7 @@ test('Hive prices recompute from the official table per model and purpose; days 
     near(totals.remainingUsd, 10 - totals.spentUsd);
 });
 
-test('remaining = total - spent, no total means no remaining, expiry D-n counts calendar days', () => {
+test('remaining = total - spent, no total means no remaining', () => {
     const rows = [{ costUsd: 12.5, pricing: 'exact' }, { costUsd: 7.5, pricing: 'upper-bound' }];
     const totals = walletTotals(rows, { totalUsd: 300 });
     assert.deepEqual([totals.spentUsd, totals.remainingUsd, totals.spentComplete, totals.remainingUpperBound, totals.upperBoundRows],
@@ -918,21 +850,13 @@ test('remaining = total - spent, no total means no remaining, expiry D-n counts 
     const mixed = walletTotals([{ costUsd: 3, pricing: 'upper-bound' }, { costUsd: null, pricing: 'unknown' }], { totalUsd: 300 });
     assert.equal(mixed.spentComplete, false);
     assert.equal(mixed.remainingUpperBound, false, 'an upper-bound subtotal plus unknown usage bounds neither side');
-    assert.equal(expiryDaysLeft('2026-11-05', CREDIT_NOW), 10);
-    assert.equal(expiryDaysLeft('2026-10-26', CREDIT_NOW), 0);
-    assert.equal(expiryDaysLeft('2026-10-25', CREDIT_NOW), -1);
-    assert.equal(expiryDaysLeft(null, CREDIT_NOW), null);
 });
 
-test('credit settings validation rejects bad totals and dates and keeps Hive without an expiry', () => {
+test('credit settings validation rejects bad totals and dates and drops any expiry', () => {
     const today = '2026-10-26';
-    assert.deepEqual(validateCreditSetting('google', { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' }, today),
-        { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' });
-    assert.deepEqual(validateCreditSetting('google', { totalUsd: 300, startDate: '2026-10-01', expiryDate: '' }, today),
-        { totalUsd: 300, startDate: '2026-10-01', expiryDate: null });
-    assert.deepEqual(validateCreditSetting('hive', { totalUsd: 20, startDate: '2026-10-18', expiryDate: '2027-01-01' }, today),
+    assert.deepEqual(validateCreditSetting({ totalUsd: 20, startDate: '2026-10-18', expiryDate: '2027-01-01' }, today),
         { totalUsd: 20, startDate: '2026-10-18' });
-    assert.equal(validateCreditSetting('hive', null, today), null);
+    assert.equal(validateCreditSetting(null, today), null);
     const cases = [
         [{ totalUsd: 0, startDate: '2026-10-01' }, 'invalid_total'],
         [{ totalUsd: '300', startDate: '2026-10-01' }, 'invalid_total'],
@@ -941,10 +865,8 @@ test('credit settings validation rejects bad totals and dates and keeps Hive wit
         [{ totalUsd: 300, startDate: '2026-02-30' }, 'invalid_start_date'],
         [{ totalUsd: 300, startDate: '10/01/2026' }, 'invalid_start_date'],
         [{ totalUsd: 300, startDate: '2026-10-27' }, 'start_date_in_future'],
-        [{ totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-13-01' }, 'invalid_expiry_date'],
-        [{ totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-09-30' }, 'expiry_before_start'],
     ];
-    for (const [value, code] of cases) assert.throws(() => validateCreditSetting('google', value, today), { code });
+    for (const [value, code] of cases) assert.throws(() => validateCreditSetting(value, today), { code });
 });
 
 test('credit settings persist through the sidecar as a private file; bad input and foreign Origin leave it unchanged', async t => {
@@ -957,162 +879,51 @@ test('credit settings persist through the sidecar as a private file; bad input a
         method: 'POST', headers: { 'Content-Type': 'application/json', ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify(body),
     });
 
-    let response = await post({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' } });
-    assert.equal(response.status, 200);
-    response = await post({ wallet: 'hive', value: { totalUsd: 25, startDate: '2026-10-18' } });
-    assert.deepEqual((await response.json()).settings.hive, { totalUsd: 25, startDate: '2026-10-18' });
+    let response = await post({ wallet: 'hive', value: { totalUsd: 25, startDate: '2026-10-18' } });
+    assert.deepEqual((await response.json()).settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
     assert.equal(fs.statSync(settingsFile).mode & 0o777, 0o600);
     const saved = fs.readFileSync(settingsFile, 'utf8');
-    assert.deepEqual(JSON.parse(saved).google, { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' });
 
-    response = await post({ wallet: 'google', value: { totalUsd: -1, startDate: '2026-10-01' } });
+    response = await post({ wallet: 'hive', value: { totalUsd: -1, startDate: '2026-10-01' } });
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'invalid_total');
-    response = await post({ wallet: 'google', value: null }, 'https://attacker.test');
+    response = await post({ wallet: 'hive', value: null }, 'https://attacker.test');
     assert.equal(response.status, 403);
-    response = await post({ wallet: 'other', value: null });
+    response = await post({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-01' } });
     assert.equal((await response.json()).code, 'invalid_wallet');
     assert.equal(fs.readFileSync(settingsFile, 'utf8'), saved, 'rejected requests never touch the file');
     assert.deepEqual(fs.readdirSync(path.dirname(settingsFile)).filter(name => name.endsWith('.tmp')), []);
 
-    response = await post({ wallet: 'google', value: null });
-    assert.equal((await response.json()).settings.google, null);
     const body = await (await fetch(`${base}/credits`)).json();
-    assert.equal(body.settings.google, null);
-    assert.deepEqual(body.settings.hive, { totalUsd: 25, startDate: '2026-10-18' });
+    assert.deepEqual(body.settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
+    assert.equal('google' in body, false);
 
     fs.writeFileSync(settingsFile, '{broken');
     const broken = await (await fetch(`${base}/credits`)).json();
     assert.equal(broken.settingsError, 'settings_unreadable');
     assert.equal(broken.settings.hive, null);
 
-    // 한 지갑만 깨진 파일: 다른 지갑은 살고, 다른 지갑을 저장해도 깨진 원본을 지우지 않는다.
-    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google: { totalUsd: 'x', startDate: '2026-10-01' }, hive: { totalUsd: 25, startDate: '2026-10-18' } }));
-    const half = await (await fetch(`${base}/credits`)).json();
-    assert.equal(half.settingsError, 'settings_unreadable');
-    assert.deepEqual(half.settings.hive, { totalUsd: 25, startDate: '2026-10-18' }, 'a broken Google entry does not hide a valid Hive entry');
+    // 옛 파일에 google 항목이 남아 있어도 Hive는 그대로 읽히고, 다음 저장에서 google 항목이 사라진다.
+    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google: { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' }, hive: { totalUsd: 25, startDate: '2026-10-18' } }));
+    const legacy = await (await fetch(`${base}/credits`)).json();
+    assert.equal(legacy.settingsError, null);
+    assert.deepEqual(legacy.settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
     response = await post({ wallet: 'hive', value: { totalUsd: 30, startDate: '2026-10-18' } });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).settings.google, null, 'the response carries only validated settings');
-    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).google, { totalUsd: 'x', startDate: '2026-10-01' }, 'saving Hive keeps the unreadable Google entry');
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')), { version: 1, hive: { totalUsd: 30, startDate: '2026-10-18' } });
 
     // 파일을 읽을 수 없으면(일시적 I/O 실패) 저장이 덮어쓰지 않는다.
     if (process.getuid?.() === 0) return;
     const before = fs.readFileSync(settingsFile, 'utf8');
     fs.chmodSync(settingsFile, 0o000);
     try {
-        response = await post({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-01' } });
+        response = await post({ wallet: 'hive', value: { totalUsd: 300, startDate: '2026-10-01' } });
     } finally {
         fs.chmodSync(settingsFile, 0o600);
     }
     assert.equal(response.status, 503);
     assert.equal((await response.json()).code, 'settings_unreadable');
     assert.equal(fs.readFileSync(settingsFile, 'utf8'), before);
-});
-
-test('a Monitoring point without a usable value or time is a wallet error and never rewrites the ledger', async t => {
-    const events = [{ ms: at(2026, 10, 25, 12), model: 'gemini-3.8-live', location: 'us-central1', type: 'input', value: 300 }];
-    const good = fakeMonitoring(events);
-    let malformed = null;
-    const fixture = creditFixture(t, { fetchImpl: async (url, init) => {
-        if (!malformed) return good(url, init);
-        const point = { interval: { startTime: '2026-10-25T03:00:00Z', endTime: '2026-10-25T04:00:00Z' }, value: { int64Value: '1' }, ...malformed };
-        return new Response(JSON.stringify({ timeSeries: [{ metric: { labels: { type: 'input' } },
-            resource: { labels: { model_user_id: 'gemini-3.8-live', location: 'us-central1' } }, points: [point] }] }), { status: 200 });
-    } });
-    await fixture.service.snapshot({ refresh: true });
-    const ledger = fs.readFileSync(fixture.ledgerFile, 'utf8');
-    assert.match(ledger, /gemini-3\.8-live\|us-central1\|input/);
-    for (const bad of [{ value: {} }, { value: { int64Value: '' } }, { value: { doubleValue: -1 } }, { interval: {} }]) {
-        malformed = bad;
-        const google = (await fixture.service.snapshot({ refresh: true })).google;
-        assert.equal(google.error, 'monitoring_error', JSON.stringify(bad));
-        assert.equal(fs.readFileSync(fixture.ledgerFile, 'utf8'), ledger, 'the frozen days stay as they were');
-    }
-});
-
-test('Google usage sums local-day buckets since the start date and the ledger is idempotent and final-only', async t => {
-    const events = [
-        { ms: at(2026, 10, 1, 9), model: 'gemini-4-argon', location: 'global', type: 'input', value: 1000 },
-        { ms: at(2026, 10, 25, 23, 50), model: 'gemini-3.8-live', location: 'us-central1', type: 'input', value: 300 },
-        { ms: at(2026, 10, 26, 0, 10), model: 'gemini-3.8-live', location: 'us-central1', type: 'input', value: 40 },
-        { ms: at(2026, 10, 26, 10, 20), model: 'gemini-3.8-live', location: 'us-central1', type: 'output', value: 7 },
-        { ms: at(2026, 9, 30, 9), model: 'gemini-4-argon', location: 'global', type: 'input', value: 999 },
-        { ms: at(2026, 10, 26, 9), model: 'gemini-2.5-flash-tts', location: 'us-central1', refused: true, value: 2 },
-    ];
-    const { settingsFile, ledgerFile, service, calls } = creditFixture(t, { events });
-    await service.saveSettings({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-11-05' } });
-    const first = (await service.snapshot({ refresh: true })).google;
-    const rows = Object.fromEntries(first.rows.map(row => [row.model, row]));
-    assert.equal(rows['gemini-4-argon'].inputTokens, 1000, 'the 09-30 call is before the start date');
-    assert.equal(rows['gemini-3.8-live'].inputTokens, 340, 'the day boundary splits nothing twice');
-    assert.equal(rows['gemini-3.8-live'].outputTokens, 7, 'today counts up to the last whole minute');
-    assert.equal(rows['gemini-2.5-flash-tts'].errors429, 2);
-    near(first.spentUsd, 1000 * 4 / 1e6 + 340 * 3 / 1e6 + 7 * 12 / 1e6);
-    near(first.remainingUsd, 300 - first.spentUsd);
-    assert.equal(first.expiryDays, 10);
-    assert.equal(first.unobserved, null);
-    for (const call of calls) {
-        assert.equal(call.headers['x-goog-user-project'], 'proj-1');
-        const period = Number(call.url.searchParams.get('aggregation.alignmentPeriod').replace('s', ''));
-        assert.ok(period === 3600 || period === 60, 'only hour or minute buckets aligned to local midnight');
-    }
-
-    const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
-    assert.equal(fs.statSync(ledgerFile).mode & 0o777, 0o600);
-    assert.equal(ledger.project, 'proj-1');
-    assert.deepEqual(ledger.days['2026-10-25'], { 'gemini-3.8-live|us-central1|input': 300 });
-    assert.equal(ledger.days['2026-10-26'], undefined, 'today is never written as final');
-
-    const second = (await service.snapshot({ refresh: true })).google;
-    assert.equal(second.spentUsd, first.spentUsd, 'refetching replaces day buckets instead of adding to them');
-    assert.deepEqual(JSON.parse(fs.readFileSync(ledgerFile, 'utf8')), ledger);
-    assert.ok(!JSON.stringify(await service.snapshot()).includes('ACCESS_TOKEN_SECRET'));
-
-    // 시작일을 바꾸면 그 구간만 다시 더한다.
-    await service.saveSettings({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-25' } });
-    const moved = (await service.snapshot()).google;
-    assert.equal(moved.rows.find(row => row.model === 'gemini-4-argon'), undefined);
-    assert.equal(moved.rows.find(row => row.model === 'gemini-3.8-live').inputTokens, 340);
-    assert.ok(fs.existsSync(settingsFile));
-});
-
-test('days outside Monitoring retention come from the ledger or are reported as not observed, never as 0', async t => {
-    const events = [{ ms: at(2026, 10, 20, 12), model: 'gemini-4-argon', location: 'global', type: 'input', value: 500 }];
-    const fixture = creditFixture(t, { events });
-    await fixture.service.saveSettings({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-08-01' } });
-    const blind = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.deepEqual(blind.unobserved, { days: 46, from: '2026-08-01', to: '2026-09-15' });
-    assert.equal(blind.spentComplete, false);
-    assert.equal(blind.remainingUpperBound, false, 'Argon is upper-bound priced, so the unobserved gap bounds neither side');
-
-    // 앞서 확정된 날이 장부에 있으면 보관 기간이 지나도 합계에 남는다.
-    const ledger = JSON.parse(fs.readFileSync(fixture.ledgerFile, 'utf8'));
-    for (let day = 1; day <= 31; day += 1) ledger.days[`2026-08-${String(day).padStart(2, '0')}`] = {};
-    for (let day = 1; day <= 15; day += 1) ledger.days[`2026-09-${String(day).padStart(2, '0')}`] = {};
-    ledger.days['2026-08-10'] = { 'gemini-4-argon|global|input': 1_000_000 };
-    fs.writeFileSync(fixture.ledgerFile, JSON.stringify(ledger));
-    const kept = (await fixture.service.snapshot()).google;
-    assert.equal(kept.unobserved, null);
-    assert.equal(kept.rows[0].inputTokens, 1_000_500);
-    assert.equal(kept.spentComplete, true);
-
-    fs.writeFileSync(fixture.ledgerFile, '{"version":1,"project":"proj-1","days":{"2026-10-01":{"x|y|input":-5}}}');
-    const degraded = (await fixture.service.snapshot()).google;
-    assert.equal(degraded.status, 'ok');
-    assert.equal(degraded.ledgerNote, 'ledger_unreadable');
-    assert.equal(degraded.rows[0].inputTokens, 500);
-    assert.equal(JSON.parse(fs.readFileSync(fixture.ledgerFile, 'utf8')).version, 1, 'a readable ledger is written back');
-});
-
-test('a wallet error stays inside that wallet and the other wallet still answers', async t => {
-    const fixture = creditFixture(t, { fetchImpl: async () => new Response('{}', { status: 403 }) });
-    fs.mkdirSync(path.join(fixture.dir, 'sessions'));
-    const body = await fixture.service.snapshot({ refresh: true });
-    assert.equal(body.google.status, 'error');
-    assert.equal(body.google.error, 'monitoring_denied');
-    assert.equal(body.google.remainingUsd, null);
-    assert.equal(body.hive.status, 'ok');
 });
 
 test('Hive session scan counts this PC records once across appends and defers a half-written line', async t => {
@@ -1142,56 +953,12 @@ test('Hive session scan counts this PC records once across appends and defers a 
     assert.equal(hive.scope, 'this-pc');
 });
 
-test('ledger and Monitoring names never reach Object.prototype prices; a crash inside one wallet stays there', async t => {
-    const fixture = creditFixture(t, { events: [{ ms: at(2026, 10, 20, 12), model: 'constructor', location: 'global', type: 'input', value: 9 }] });
-    fs.writeFileSync(fixture.ledgerFile, JSON.stringify({ version: 1, project: 'proj-1', days: { '2026-08-01': { 'toString|__proto__|input': 1 } } }));
-    await fixture.service.saveSettings({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-08-01' } });
-    const body = await fixture.service.snapshot({ refresh: true });
-    assert.equal(body.google.status, 'ok');
-    const rows = Object.fromEntries(body.google.rows.map(row => [row.model, row]));
-    assert.equal(rows.constructor.costUsd, null);
-    assert.equal(rows.constructor.role, null);
-    assert.equal(rows.toString.costUsd, null);
-    assert.equal(body.google.spentComplete, false);
-
-    const broken = createCreditsService({
-        agentDir: () => fixture.dir, settingsFile: () => fixture.settingsFile, now: () => CREDIT_NOW,
-        googleAuth: async () => ({ project: 'proj-1', token: 't' }),
-        fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ timeSeries: [{ points: [{ get interval() { throw new Error('boom'); } }] }] }) }),
-    });
-    const isolated = await broken.snapshot({ refresh: true });
-    assert.equal(isolated.google.status, 'error');
-    assert.equal(isolated.google.remainingUsd, null);
-    assert.equal(isolated.hive.wallet, 'hive');
-});
-
-test('Monitoring pages that never end become a wallet error and nothing is frozen', async t => {
-    let calls = 0;
-    const fixture = creditFixture(t, { fetchImpl: async () => {
-        calls += 1;
-        return new Response(JSON.stringify({ timeSeries: [], nextPageToken: `p${calls}` }), { status: 200 });
-    } });
-    const google = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(google.status, 'error');
-    assert.equal(google.error, 'monitoring_error');
-    assert.equal(fs.existsSync(fixture.ledgerFile), false);
-});
-
-test('a day is frozen only when it was observed past the ingestion delay, not when a cached window is reused later', async t => {
-    let clock = at(2026, 10, 26, 2, 58);
-    const events = [{ ms: at(2026, 10, 25, 22), model: 'gemini-4-argon', location: 'global', type: 'input', value: 10 }];
-    const fixture = creditFixture(t, { events, now: () => clock });
-    await fixture.service.snapshot({ refresh: true });
-    const before = fs.existsSync(fixture.ledgerFile) ? JSON.parse(fs.readFileSync(fixture.ledgerFile, 'utf8')).days : {};
-    assert.equal(before['2026-10-25'], undefined, 'at 02:58 yesterday is still arriving');
-    clock = at(2026, 10, 26, 3, 1);
-    const callsBefore = fixture.calls.length;
-    const reused = (await fixture.service.snapshot()).google;
-    assert.equal(fixture.calls.length, callsBefore, 'the cached window is reused');
-    assert.equal(reused.rows[0].inputTokens, 10);
-    assert.equal(JSON.parse(fs.readFileSync(fixture.ledgerFile, 'utf8')).days['2026-10-25'], undefined);
-    await fixture.service.snapshot({ refresh: true });
-    assert.deepEqual(JSON.parse(fs.readFileSync(fixture.ledgerFile, 'utf8')).days['2026-10-25'], { 'gemini-4-argon|global|input': 10 });
+test('session model names never reach Object.prototype prices', () => {
+    const rows = hiveRows([
+        { ts: at(2026, 10, 20, 12), model: 'constructor', purpose: 'session', input: 9, output: 0, cacheRead: 0, cacheWrite: 0 },
+        { ts: at(2026, 10, 20, 12), model: 'toString', purpose: 'session', input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ], at(2026, 8, 1));
+    for (const row of rows) assert.equal(row.costUsd, null, row.model);
 });
 
 test('unreadable session folders make Hive a partial error that keeps what was read; an earlier start waits for a fresh scan', async t => {

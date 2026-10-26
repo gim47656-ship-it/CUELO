@@ -2,7 +2,6 @@ import {
   isApiCreditsSnapshot,
   type ApiCreditsSnapshot,
   type CreditSettingInput,
-  type CreditWalletId,
 } from "./api-credits";
 import { OFFICE_CUE_ROOT, parseCueManifest, type CueManifest } from "./completion-audio";
 
@@ -957,9 +956,8 @@ export async function loadApiCredits(
   }
 }
 
-/** 지갑 하나의 총액·시작일(·만료일)을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
+/** Hive 지갑의 총액·시작일을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
 export async function saveApiCreditSetting(
-  wallet: CreditWalletId,
   value: CreditSettingInput | null,
   options: CredentialActionOptions = {},
 ): Promise<void> {
@@ -969,7 +967,7 @@ export async function saveApiCreditSetting(
     fetchImpl: async (url, init) => {
       const headers = new Headers(init?.headers);
       headers.set("Content-Type", "application/json");
-      return (options.fetchImpl ?? fetch)(url, { ...init, method: "POST", headers, body: JSON.stringify({ wallet, value }) });
+      return (options.fetchImpl ?? fetch)(url, { ...init, method: "POST", headers, body: JSON.stringify({ wallet: "hive", value }) });
     },
   });
 }

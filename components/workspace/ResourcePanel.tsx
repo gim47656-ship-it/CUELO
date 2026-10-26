@@ -11,11 +11,7 @@ import {
   creditSettingFromForm,
   spentIsMinimum,
   type ApiCreditsSnapshot,
-  type CreditPricing,
   type CreditSettingInput,
-  type CreditWalletId,
-  type GoogleCreditSetting,
-  type GoogleCreditWallet,
   type HiveCreditSetting,
   type HiveCreditWallet,
 } from "@/lib/api-credits";
@@ -924,10 +920,8 @@ type Translate = (key: string, params?: TranslationParams) => string;
 
 // 번역이 있는 사이드카 코드. 목록 밖의 코드는 원문 그대로 보인다(없는 키를 조회하지 않는다).
 const CREDIT_ERROR_CODES: Record<string, true> = {
-  invalid_total: true, invalid_start_date: true, start_date_in_future: true, invalid_expiry_date: true,
-  expiry_before_start: true, no_project: true, adc_unavailable: true, core_unavailable: true, monitoring_denied: true,
-  monitoring_unreachable: true, monitoring_error: true, session_scan_failed: true, session_scan_partial: true, internal: true,
-  settings_unreadable: true,
+  invalid_total: true, invalid_start_date: true, start_date_in_future: true,
+  session_scan_failed: true, session_scan_partial: true, internal: true, settings_unreadable: true,
 };
 const CREDIT_PURPOSES: Record<string, true> = { session: true, memory: true, "korean-reply-translation": true };
 
@@ -936,42 +930,28 @@ function creditReason(t: Translate, code: string | null | undefined, fallback = 
   return Object.hasOwn(CREDIT_ERROR_CODES, code) ? t(`credits.error.${code}`) : fallback || code;
 }
 
-function creditDayLabel(day: string): string {
-  const [, month, date] = day.split("-");
-  return `${Number(month)}/${Number(date)}`;
-}
-
 function CreditRowLine({
   face,
-  provider,
   title,
   model,
   cost,
-  pricing,
-  pricingTitle,
   detail,
   t,
 }: {
   face: { seed: number; alias: string } | null;
-  provider: string;
   title: string;
   model: string;
   cost: number | null;
-  pricing: CreditPricing;
-  pricingTitle?: string;
   detail: string;
   t: Translate;
 }) {
   return (
     <li className="flex min-w-0 items-start gap-2 py-1.5">
-      {face ? <AccountAvatar seed={face.seed} size={28} provider={provider} /> : <span className="w-7 shrink-0" aria-hidden="true" />}
+      {face ? <AccountAvatar seed={face.seed} size={28} provider="hive" /> : <span className="w-7 shrink-0" aria-hidden="true" />}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-1.5">
           <span className="shrink-0 text-[13px] font-medium text-text">{title}</span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-dim">{model}</span>
-          {pricing === "upper-bound" ? (
-            <span className="usage-chip" title={pricingTitle}>{t("credits.upperBound")}</span>
-          ) : null}
           <span className="shrink-0 font-mono text-xs tabular-nums text-text">
             {cost === null ? t("credits.priceUnknown") : formatMoney(cost)}
           </span>
@@ -983,24 +963,21 @@ function CreditRowLine({
 }
 
 function CreditEditor({
-  wallet,
   walletName,
   setting,
   onSave,
   onClose,
   t,
 }: {
-  wallet: CreditWalletId;
   walletName: string;
-  setting: GoogleCreditSetting | HiveCreditSetting | null;
-  onSave: (wallet: CreditWalletId, value: CreditSettingInput | null) => Promise<void>;
+  setting: HiveCreditSetting | null;
+  onSave: (value: CreditSettingInput | null) => Promise<void>;
   onClose: () => void;
   t: Translate;
 }) {
   const formId = useId();
   const [total, setTotal] = useState(setting ? String(setting.totalUsd) : "");
   const [start, setStart] = useState(setting?.startDate ?? "");
-  const [expiry, setExpiry] = useState(setting && "expiryDate" in setting ? setting.expiryDate ?? "" : "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputClass = "min-h-8 w-full min-w-0 border border-border bg-bg px-2 font-mono text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
@@ -1008,7 +985,7 @@ function CreditEditor({
     setPending(true);
     setError(null);
     try {
-      await onSave(wallet, value);
+      await onSave(value);
       onClose();
     } catch (cause) {
       const code = cause instanceof ResourceClientError ? cause.code : undefined;
@@ -1025,7 +1002,7 @@ function CreditEditor({
       aria-label={t("credits.formLabel", { wallet: walletName })}
       onSubmit={(event) => {
         event.preventDefault();
-        const value = creditSettingFromForm(wallet, { totalUsd: total, startDate: start, expiryDate: expiry });
+        const value = creditSettingFromForm({ totalUsd: total, startDate: start });
         if (!value) {
           setError(t("credits.invalid.total"));
           return;
@@ -1033,7 +1010,7 @@ function CreditEditor({
         void submit(value);
       }}
     >
-      <div className={classNames("grid gap-2", wallet === "google" ? "grid-cols-3" : "grid-cols-2")}>
+      <div className="grid grid-cols-2 gap-2">
         <label className="grid gap-1 text-[11px] text-text-muted" htmlFor={`${formId}-total`}>
           {t("credits.totalUsd")}
           <input id={`${formId}-total`} className={inputClass} inputMode="decimal" value={total} onChange={(event) => setTotal(event.target.value)} placeholder="300" required />
@@ -1042,12 +1019,6 @@ function CreditEditor({
           {t("credits.startDate")}
           <input id={`${formId}-start`} className={inputClass} type="date" value={start} onChange={(event) => setStart(event.target.value)} required />
         </label>
-        {wallet === "google" ? (
-          <label className="grid gap-1 text-[11px] text-text-muted" htmlFor={`${formId}-expiry`}>
-            {t("credits.expiryDate")}
-            <input id={`${formId}-expiry`} className={inputClass} type="date" value={expiry} onChange={(event) => setExpiry(event.target.value)} />
-          </label>
-        ) : null}
       </div>
       {error ? <div className="text-xs text-danger" role="alert">{error}</div> : null}
       <div className="flex flex-wrap justify-end gap-1.5">
@@ -1069,27 +1040,20 @@ function CreditWalletCard({
   onSave,
   t,
 }: {
-  wallet: GoogleCreditWallet | HiveCreditWallet;
-  setting: GoogleCreditSetting | HiveCreditSetting | null;
-  onSave: (wallet: CreditWalletId, value: CreditSettingInput | null) => Promise<void>;
+  wallet: HiveCreditWallet;
+  setting: HiveCreditSetting | null;
+  onSave: (value: CreditSettingInput | null) => Promise<void>;
   t: Translate;
 }) {
   const headingId = useId();
   const [editing, setEditing] = useState(false);
-  const walletName = t(`credits.wallet.${wallet.wallet}`);
-  const google = wallet.wallet === "google" ? wallet : null;
-  const expiryDays = google?.expiryDays ?? null;
-  const meter = creditMeter(wallet, expiryDays);
+  const walletName = t("credits.wallet.hive");
+  const meter = creditMeter(wallet);
   const since = wallet.sinceSource === "start-date" ? t("credits.since", { date: wallet.since }) : t("credits.sinceDefault");
   const spent = spentIsMinimum(wallet) ? `≥${formatMoney(wallet.spentUsd)}` : formatMoney(wallet.spentUsd);
   const remaining = wallet.remainingUsd === null
     ? null
     : `${wallet.remainingUpperBound ? "≤" : ""}${formatMoney(Math.max(0, wallet.remainingUsd))}`;
-  const expiryText = google?.expiryDate == null || expiryDays === null
-    ? null
-    : expiryDays > 0
-      ? t("credits.expiryDays", { date: google.expiryDate, days: expiryDays })
-      : expiryDays === 0 ? t("credits.expiryToday", { date: google.expiryDate }) : t("credits.expired", { date: google.expiryDate });
   // 잔액을 낼 수 없는 상태(조회 실패)에서는 0%짜리 막대를 그리지 않는다.
   const pct = meter.spentFraction === null || wallet.remainingUsd === null ? null : Math.round(meter.spentFraction * 100);
 
@@ -1131,70 +1095,36 @@ function CreditWalletCard({
       <dl className="m-0 mt-1">
         {wallet.totalUsd !== null ? <Metric label={t("credits.total")} value={formatMoney(wallet.totalUsd)} /> : null}
         <Metric label={t("credits.spent")} value={spent} />
-        {expiryText ? <Metric label={t("credits.expiry")} value={expiryText} /> : null}
       </dl>
       {!setting && !editing ? <p className="m-0 mt-1.5 text-xs text-text-muted">{t("credits.enterPrompt")}</p> : null}
-      {google?.unobserved ? (
-        <p className="m-0 mt-1.5 text-xs text-text" role="note">
-          {t("credits.unobserved", {
-            from: creditDayLabel(google.unobserved.from), to: creditDayLabel(google.unobserved.to), days: google.unobserved.days,
-          })}
-        </p>
-      ) : null}
-      {google?.ledgerNote ? <p className="m-0 mt-1.5 text-xs text-text-muted" role="note">{t(`credits.ledger.${google.ledgerNote}`)}</p> : null}
       {editing ? (
-        <CreditEditor wallet={wallet.wallet} walletName={walletName} setting={setting} onSave={onSave} onClose={() => setEditing(false)} t={t} />
+        <CreditEditor walletName={walletName} setting={setting} onSave={onSave} onClose={() => setEditing(false)} t={t} />
       ) : null}
       {wallet.rows.length > 0 ? (
         <ul className="m-0 mt-1.5 list-none border-t border-border p-0">
-          {google
-            ? google.rows.map((row) => {
-              const face = providerModelFace("google-vertex", row.model);
-              const roleLabel = row.role === "interpreter" || row.role === "tts" ? t(`credits.role.${row.role}`) : null;
-              const detail = [
-                t("credits.tokens", { input: formatTokens(row.inputTokens), output: formatTokens(row.outputTokens) }),
-                row.errors429 > 0 ? t("credits.errors429", { count: formatNumber(row.errors429) }) : null,
-              ].filter(Boolean).join(" · ");
-              return (
-                <CreditRowLine
-                  key={row.model}
-                  face={face}
-                  provider="google-vertex"
-                  title={face?.alias ?? roleLabel ?? row.model}
-                  model={row.model}
-                  cost={row.costUsd}
-                  pricing={row.pricing}
-                  pricingTitle={row.pricingReason ? t(`credits.reason.${row.pricingReason}`) : undefined}
-                  detail={detail}
-                  t={t}
-                />
-              );
-            })
-            : (wallet as HiveCreditWallet).rows.map((row) => {
-              const face = providerModelFace("hive", row.model) ?? providerAccountFace("hive");
-              const purposes = row.purposes.map((item) => {
-                const label = Object.hasOwn(CREDIT_PURPOSES, item.purpose) ? t(`credits.purpose.${item.purpose}`) : item.purpose;
-                return `${label} ${item.costUsd === null ? t("credits.priceUnknown") : formatMoney(item.costUsd)}`;
-              });
-              const detail = [
-                t("credits.requests", { count: formatNumber(row.requests) }),
-                t("credits.tokens", { input: formatTokens(row.inputTokens), output: formatTokens(row.outputTokens) }),
-                row.cacheReadTokens > 0 ? t("credits.cacheTokens", { cache: formatTokens(row.cacheReadTokens) }) : null,
-              ].filter(Boolean).join(" · ");
-              return (
-                <CreditRowLine
-                  key={row.model}
-                  face={face}
-                  provider="hive"
-                  title={face?.alias ?? row.model}
-                  model={row.model}
-                  cost={row.costUsd}
-                  pricing={row.pricing}
-                  detail={purposes.length > 0 ? `${detail}\n${purposes.join(" · ")}` : detail}
-                  t={t}
-                />
-              );
-            })}
+          {wallet.rows.map((row) => {
+            const face = providerModelFace("hive", row.model) ?? providerAccountFace("hive");
+            const purposes = row.purposes.map((item) => {
+              const label = Object.hasOwn(CREDIT_PURPOSES, item.purpose) ? t(`credits.purpose.${item.purpose}`) : item.purpose;
+              return `${label} ${item.costUsd === null ? t("credits.priceUnknown") : formatMoney(item.costUsd)}`;
+            });
+            const detail = [
+              t("credits.requests", { count: formatNumber(row.requests) }),
+              t("credits.tokens", { input: formatTokens(row.inputTokens), output: formatTokens(row.outputTokens) }),
+              row.cacheReadTokens > 0 ? t("credits.cacheTokens", { cache: formatTokens(row.cacheReadTokens) }) : null,
+            ].filter(Boolean).join(" · ");
+            return (
+              <CreditRowLine
+                key={row.model}
+                face={face}
+                title={face?.alias ?? row.model}
+                model={row.model}
+                cost={row.costUsd}
+                detail={purposes.length > 0 ? `${detail}\n${purposes.join(" · ")}` : detail}
+                t={t}
+              />
+            );
+          })}
         </ul>
       ) : null}
     </section>
@@ -1210,7 +1140,7 @@ export function ApiCreditsCards({
 }: {
   state: PanelState<ApiCreditsSnapshot>;
   loading: boolean;
-  onSave: (wallet: CreditWalletId, value: CreditSettingInput | null) => Promise<void>;
+  onSave: (value: CreditSettingInput | null) => Promise<void>;
   t: Translate;
 }) {
   const data = state.data;
@@ -1223,12 +1153,7 @@ export function ApiCreditsCards({
         <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.loadFailed", { reason: state.error.message })}</div>
       ) : null}
       {data?.settingsError ? <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.settingsError")}</div> : null}
-      {data ? (
-        <>
-          <CreditWalletCard wallet={data.google} setting={data.settings.google} onSave={onSave} t={t} />
-          <CreditWalletCard wallet={data.hive} setting={data.settings.hive} onSave={onSave} t={t} />
-        </>
-      ) : null}
+      {data ? <CreditWalletCard wallet={data.hive} setting={data.settings.hive} onSave={onSave} t={t} /> : null}
     </>
   );
 }
@@ -1258,8 +1183,8 @@ export function ApiCreditsView({ refreshToken }: { refreshToken: number }) {
 
   useEffect(() => () => controllerRef.current?.abort(), []);
 
-  const save = useCallback(async (wallet: CreditWalletId, value: CreditSettingInput | null) => {
-    await saveApiCreditSetting(wallet, value);
+  const save = useCallback(async (value: CreditSettingInput | null) => {
+    await saveApiCreditSetting(value);
     await load(false);
   }, [load]);
 

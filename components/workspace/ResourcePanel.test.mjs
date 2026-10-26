@@ -431,25 +431,14 @@ test("confirmation has explicit irreversible copy, two actions, and a focus-retu
 const koMessages = { ko: getLocalePlugin("ko").messages, en: getLocalePlugin("en").messages };
 const tKo = (key, params) => translateMessage("ko", key, koMessages, params);
 
-function creditSnapshot({ googleSetting = null, hiveSetting = null, googleExtra = {}, hiveExtra = {} } = {}) {
+function creditSnapshot({ hiveSetting = null, hiveExtra = {} } = {}) {
   const totals = (spentUsd, setting, complete = true) => ({
     spentUsd, spentComplete: complete, totalUsd: setting?.totalUsd ?? null,
-    remainingUsd: setting ? setting.totalUsd - spentUsd : null, remainingUpperBound: Boolean(setting) && !complete, upperBoundRows: true,
+    remainingUsd: setting ? setting.totalUsd - spentUsd : null, remainingUpperBound: Boolean(setting) && !complete, upperBoundRows: false,
   });
   return {
     generatedAt: 1, settingsError: null, priceCheckedAt: "2026-10-26",
-    settings: { google: googleSetting, hive: hiveSetting },
-    google: {
-      wallet: "google", scope: "project", source: "cloud-monitoring", since: googleSetting?.startDate ?? "2026-09-26",
-      sinceSource: googleSetting ? "start-date" : "default", status: "ok", error: null, observedAt: 1, priceSources: [],
-      expiryDate: googleSetting?.expiryDate ?? null, expiryDays: googleSetting?.expiryDate ? 65 : null, unobserved: null, ledgerNote: null,
-      rows: [
-        { model: "gemini-4-argon", role: "hikari", inputTokens: 39_677, outputTokens: 3_511, otherTokens: 0, costUsd: 0.2289, pricing: "upper-bound", pricingReason: "gross-price", errors429: 0 },
-        { model: "gemini-3.8-live", role: "interpreter", inputTokens: 343_546, outputTokens: 38_938, otherTokens: 0, costUsd: 1.4979, pricing: "upper-bound", pricingReason: "audio-rate", errors429: 0 },
-        { model: "gemini-2.5-flash-tts", role: "tts", inputTokens: 1_464, outputTokens: 7_562, otherTokens: 0, costUsd: 0.0764, pricing: "exact", pricingReason: null, errors429: 6 },
-      ],
-      ...totals(1.8032, googleSetting), ...googleExtra,
-    },
+    settings: { hive: hiveSetting },
     hive: {
       wallet: "hive", scope: "this-pc", source: "session-logs", since: hiveSetting?.startDate ?? "2026-09-26",
       sinceSource: hiveSetting ? "start-date" : "default", status: "ok", error: null, observedAt: 1, priceSources: [],
@@ -471,75 +460,50 @@ function renderCredits(data) {
   }));
 }
 
-test("API 크레딧은 두 지갑 카드에 캐릭터 얼굴·범위·추정 잔액·만료 D-n을 보여 준다", () => {
-  const html = renderCredits(creditSnapshot({
-    googleSetting: { totalUsd: 300, startDate: "2026-10-01", expiryDate: "2026-12-30" },
-    hiveSetting: { totalUsd: 25, startDate: "2026-10-18" },
-  }));
+test("API 크레딧은 Hive 카드 하나에 캐릭터 얼굴·범위·추정 잔액을 보여 주고 Google Cloud 칸은 없다", () => {
+  const html = renderCredits(creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } }));
   assert.match(html, /API 크레딧/);
   assert.match(html, /추정치입니다\. 청구서 금액이 아닙니다\./);
-  const google = html.match(/<section[^>]*data-credit-wallet="google"[\s\S]*?<\/section>/)?.[0];
+  assert.equal(html.match(/<section[^>]*data-credit-wallet=/g)?.length, 1);
   const hive = html.match(/<section[^>]*data-credit-wallet="hive"[\s\S]*?<\/section>/)?.[0];
-  assert.ok(google && hive);
-  assert.match(google, /프로젝트 전체 · Cloud Monitoring · 2026-10-01부터/);
-  assert.match(google, /\$298/);
-  assert.match(google, /2026-12-30 · D-65/);
-  assert.match(google, /aria-valuenow="1"/);
-  assert.match(google, />사용 1%</, "the bar fills with spent share, so its caption says used, not remaining");
-  assert.match(google, /HIKARI\(히카리\)/);
-  assert.match(google, /통역/);
-  assert.match(google, /음성 합성/);
-  assert.match(google, /429 거절 6회/);
-  assert.equal(google.match(/class="account-avatar"/g)?.length, 1, "통역·TTS 행에는 캐릭터 얼굴이 없다");
-  assert.equal(google.match(/>최대</g)?.length, 2, "상한 단가 행만 최대 표시가 붙는다");
-  assert.match(google, /title="텍스트와 오디오 토큰을 가를 수 없어 모두 오디오 단가로 계산했습니다"/);
+  assert.ok(hive);
+  assert.doesNotMatch(html, /Google Cloud|Cloud Monitoring/);
   assert.match(hive, /이 PC 기록 · 2026-10-18부터/);
   assert.match(hive, /ISANA\(이사나\)/);
   assert.match(hive, /MITSU\(미츠\)/);
   assert.match(hive, /대화·에이전트 \$1\.78 · skim \$0\.705/);
   assert.match(hive, /\$22\.39/);
+  assert.match(hive, />사용 10%</, "the bar fills with spent share, so its caption says used, not remaining");
   assert.doesNotMatch(html, /총액과 시작일을 넣으면/);
+  assert.doesNotMatch(html, /만료일/, "the editor has no expiry field");
 });
 
-test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나온다; 미상·미관측은 하한·상한으로 표시한다", () => {
+test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나온다; 미상은 하한·상한으로, 조회 실패는 오류로 표시한다", () => {
   const empty = renderCredits(creditSnapshot());
-  assert.equal(empty.match(/총액과 시작일을 넣으면 추정 잔액을 계산합니다\./g)?.length, 2);
+  assert.equal(empty.match(/총액과 시작일을 넣으면 추정 잔액을 계산합니다\./g)?.length, 1);
   assert.doesNotMatch(empty, /role="progressbar"/);
   assert.match(empty, /최근 30일/);
-  assert.equal(empty.match(/>크레딧 입력</g)?.length, 2);
-  assert.match(empty, /추정 사용[\s\S]*?\$1\.80/);
+  assert.equal(empty.match(/>크레딧 입력</g)?.length, 1);
+  assert.match(empty, /추정 사용[\s\S]*?\$2\.61/);
 
   const partial = renderCredits(creditSnapshot({
-    googleSetting: { totalUsd: 300, startDate: "2026-08-01", expiryDate: null },
-    googleExtra: {
-      spentComplete: false, remainingUpperBound: true, remainingUsd: 299, upperBoundRows: false,
-      unobserved: { days: 46, from: "2026-08-01", to: "2026-09-15" }, ledgerNote: "ledger_unreadable",
-      rows: [{ model: "gemini-9-mystery", role: null, inputTokens: 10, outputTokens: 0, otherTokens: 0, costUsd: null, pricing: "unknown", pricingReason: null, errors429: 0 }],
-      spentUsd: 1,
+    hiveSetting: { totalUsd: 300, startDate: "2026-08-01" },
+    hiveExtra: {
+      spentComplete: false, remainingUpperBound: true, remainingUsd: 299, spentUsd: 1,
+      rows: [{ model: "acme/new-model", requests: 1, inputTokens: 10, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, pricing: "unknown", purposes: [] }],
     },
   }));
   assert.match(partial, /≤\$299/);
   assert.match(partial, /≥\$1\.00/);
   assert.match(partial, /단가 미상/);
-  assert.match(partial, /8\/1~9\/15\(46일\)은 기록이 없습니다/);
-  assert.match(partial, /일별 사용량 파일을 읽지 못해 새로 만들었습니다/);
-
-  // 상한 단가 행과 미상이 섞이면 알려진 합계가 실제보다 클 수 있어 ≥·≤ 어느 쪽도 붙이지 않는다.
-  const mixed = renderCredits(creditSnapshot({
-    googleSetting: { totalUsd: 300, startDate: "2026-08-01", expiryDate: null },
-    googleExtra: { spentComplete: false, remainingUpperBound: false, upperBoundRows: true, remainingUsd: 297, spentUsd: 3 },
-  }));
-  const mixedGoogle = mixed.match(/<section[^>]*data-credit-wallet="google"[\s\S]*?<\/section>/)?.[0];
-  assert.doesNotMatch(mixedGoogle, /[≥≤]\$/);
 
   const failed = renderCredits(creditSnapshot({
-    googleSetting: { totalUsd: 300, startDate: "2026-10-01", expiryDate: null },
-    googleExtra: { status: "error", error: "monitoring_denied", rows: [], spentUsd: 0, spentComplete: false, remainingUsd: null },
+    hiveSetting: { totalUsd: 300, startDate: "2026-10-01" },
+    hiveExtra: { status: "error", error: "session_scan_failed", rows: [], spentUsd: 0, spentComplete: false, remainingUsd: null },
   }));
-  const failedGoogle = failed.match(/<section[^>]*data-credit-wallet="google"[\s\S]*?<\/section>/)?.[0];
-  assert.match(failedGoogle, /사용량을 읽지 못했습니다: Cloud Monitoring을 읽을 권한이 없습니다/);
-  assert.doesNotMatch(failedGoogle, /role="progressbar"/, "잔액을 모르면 0% 막대를 그리지 않는다");
-  assert.doesNotMatch(failedGoogle, /추정 잔액/);
+  assert.match(failed, /사용량을 읽지 못했습니다: 세션 기록을 읽지 못했습니다/);
+  assert.doesNotMatch(failed, /role="progressbar"/, "잔액을 모르면 0% 막대를 그리지 않는다");
+  assert.doesNotMatch(failed, /추정 잔액/);
 });
 
 test("계정 한도 탭은 구독 계정 아래에 API 크레딧 구역을 단다", () => {

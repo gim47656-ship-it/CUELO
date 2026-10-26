@@ -1,16 +1,9 @@
 /**
- * API 크레딧(Google Cloud Vertex·Hive) 추정 응답의 모양과 화면용 계산.
+ * API 크레딧(Hive) 추정 응답의 모양과 화면용 계산.
  * 금액 계산은 사이드카(`Tools/CUELO_Setup/files/usage-server.js` /credits)가 하고, 여기서는 받은 값을 화면 값으로만 바꾼다.
  */
 
-export type CreditWalletId = "google" | "hive";
 export type CreditPricing = "exact" | "upper-bound" | "unknown";
-
-export interface GoogleCreditSetting {
-  totalUsd: number;
-  startDate: string;
-  expiryDate: string | null;
-}
 
 export interface HiveCreditSetting {
   totalUsd: number;
@@ -43,29 +36,6 @@ interface WalletBase extends WalletTotals {
   priceSources: string[];
 }
 
-export interface GoogleCreditRow {
-  model: string;
-  role: "hikari" | "interpreter" | "tts" | null;
-  inputTokens: number;
-  outputTokens: number;
-  otherTokens: number;
-  costUsd: number | null;
-  pricing: CreditPricing;
-  pricingReason: "gross-price" | "audio-rate" | null;
-  errors429: number;
-}
-
-export interface GoogleCreditWallet extends WalletBase {
-  wallet: "google";
-  scope: "project";
-  source: "cloud-monitoring";
-  rows: GoogleCreditRow[];
-  expiryDate: string | null;
-  expiryDays: number | null;
-  unobserved: { days: number; from: string; to: string } | null;
-  ledgerNote: "ledger_unreadable" | "ledger_write_failed" | null;
-}
-
 export interface HiveUsageCounts {
   requests: number;
   inputTokens: number;
@@ -90,20 +60,18 @@ export interface HiveCreditWallet extends WalletBase {
 
 export interface ApiCreditsSnapshot {
   generatedAt: number;
-  settings: { google: GoogleCreditSetting | null; hive: HiveCreditSetting | null };
+  settings: { hive: HiveCreditSetting | null };
   settingsError: string | null;
   priceCheckedAt: string;
-  google: GoogleCreditWallet;
   hive: HiveCreditWallet;
 }
 
-export type CreditSettingInput = { totalUsd: number; startDate: string; expiryDate?: string | null };
+export type CreditSettingInput = { totalUsd: number; startDate: string };
 
 export function isApiCreditsSnapshot(value: unknown): value is ApiCreditsSnapshot {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ApiCreditsSnapshot>;
   return Boolean(record.settings && typeof record.settings === "object"
-    && record.google && Array.isArray(record.google.rows)
     && record.hive && Array.isArray(record.hive.rows));
 }
 
@@ -113,13 +81,11 @@ export interface CreditMeter {
   tone: "normal" | "warning" | "danger";
 }
 
-/** 남은 추정이 10% 아래면 경고, 다 썼으면 위험이다. 만료가 7일 안이면 경고로 올린다. */
-export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">, expiryDays: number | null = null): CreditMeter {
+/** 남은 추정이 10% 아래면 경고, 다 썼으면 위험이다. */
+export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">): CreditMeter {
   if (wallet.totalUsd === null || wallet.totalUsd <= 0) return { spentFraction: null, tone: "normal" };
   const fraction = wallet.spentUsd / wallet.totalUsd;
-  const tone = fraction >= 1 || (expiryDays !== null && expiryDays < 0)
-    ? "danger"
-    : fraction >= 0.9 || (expiryDays !== null && expiryDays <= 7) ? "warning" : "normal";
+  const tone = fraction >= 1 ? "danger" : fraction >= 0.9 ? "warning" : "normal";
   return { spentFraction: Math.max(0, Math.min(1, fraction)), tone };
 }
 
@@ -127,13 +93,8 @@ export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">,
  * 입력 칸 문자열을 저장 요청 값으로 바꾼다. 형식 오류는 사이드카가 최종 판정하고, 여기서는 숫자로 못 읽는 총액만 막는다.
  * 쉼표와 `$`는 허용한다(`$1,000` → 1000).
  */
-export function creditSettingFromForm(
-  wallet: CreditWalletId,
-  form: { totalUsd: string; startDate: string; expiryDate?: string },
-): CreditSettingInput | null {
+export function creditSettingFromForm(form: { totalUsd: string; startDate: string }): CreditSettingInput | null {
   const total = Number(form.totalUsd.replace(/[$,\s]/g, ""));
   if (!form.totalUsd.trim() || !Number.isFinite(total)) return null;
-  const value: CreditSettingInput = { totalUsd: total, startDate: form.startDate.trim() };
-  if (wallet === "google") value.expiryDate = form.expiryDate?.trim() ? form.expiryDate.trim() : null;
-  return value;
+  return { totalUsd: total, startDate: form.startDate.trim() };
 }
