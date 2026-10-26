@@ -29,6 +29,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
   몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
   같은 프로젝트를 쓴다(2026-10-26 사용자 결정).
+- 문서의 `slop_check`·교차검수는 공개 배포·공유용 산출물에만 적용한다. 비공개·내부 문서는 사용자에게 파일로 전달해도 제외하며
+  공개 여부가 불명확하면 자동 전송·게이트 대상이 아니다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
+  검토 응답이 깨지면 실패 원문·파싱 오류를 확인하고 같은 조건 재호출이나 산출물 따옴표·쉼표 변경으로 우회하지 않는다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
   하나뿐이며 다섯 개를 모두 뺀다. 그 결과 코어 `/security` 자동 스캔은 이 프로필에서 쓸 수 없고,
@@ -630,10 +633,11 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
   뽑힌 코드 변경(문서·주석·테스트 제외)은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다.
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 Google·Gemini 모델이 쓴 코드가 아니면
-  모든 라운드(이어지는 라운드·probe 라운드 포함)에 `modelRoles.crossReviewGoogle`(Gemini 4 Argon, Vertex)이 자문
-  reviewer로 함께 돈다. Argon의 호출 실패·해석 불가는 `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 하고
-  통과 가능 여부를 막지 않으며 다음 라운드가 다시 부르지만, Argon이 낸 finding(`R*-GGL-*`)은 다른 것과 똑같이 닫는다. Main 또는 그 코드를 쓴 Maker가
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 모든 라운드(이어지는 라운드·probe 라운드 포함)에
+  `modelRoles.crossReviewAdvisory`(Fable)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
+  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 시작 후 120초에서 끊고 호출 실패·해석 불가는
+  `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 한다. 필수 검토의 실패를 대신 통과시키지 않으며,
+  받은 자문 finding(`R*-ADV-*`, 옛 기록은 `R*-GGL-*`)도 다른 지적처럼 근거로 닫는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. `resolve`는

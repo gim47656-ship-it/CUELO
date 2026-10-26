@@ -27,6 +27,7 @@ import {
 import { mergeRestoredQueuedMessages, type SubmissionOutcome } from "@/lib/draft-store";
 import { UPDATE_WAKE_EVENT } from "@/lib/update-maintenance-client";
 import { type TodoPhase } from "@/lib/todo-state";
+import { clearToolProgress, setToolProgress, toolProgressKey } from "@/hooks/useToolProgress";
 import type { MainPresetSelection } from "@/lib/hanse-resource-client";
 import type { ThinkingCeiling } from "@/lib/thinking-ceiling";
 import { buildDeliveryRows, deliveryReducer, userMessageDeliveryKind, userMessageImageCount, userMessageText } from "@/lib/answer-status/delivery";
@@ -112,6 +113,8 @@ type AgentStateResponse = {
   /** Elapsed time of the compaction in flight, as the server saw it start. */
   compaction?: { elapsedMs: number; reason: string | null } | null;
   isHandoffRunning?: boolean;
+  /** Tool calls the SDK is executing now (agent.state.pendingToolCalls). A reloaded view registers their progress keys. */
+  pendingToolCalls?: string[];
   extensionStatuses?: ExtensionStatusItem[];
   extensionWidgets?: ExtensionWidgetItem[];
   queuedMessages?: { steering?: string[]; followUp?: string[] } | null;
@@ -570,6 +573,23 @@ type SlashCommandsResponse = {
   commands?: SlashCommandInfo[];
 };
 
+/** 실행이 멈추면 이 훅이 시작을 본 도구 호출의 진행 줄을 등록한 키 그대로 모두 지운다. 세션이 바뀐 뒤 남은 옛 세션 키도 함께다. */
+function releaseToolProgress(keys: Set<string>): void {
+  clearToolProgress(keys);
+  keys.clear();
+}
+
+/**
+ * 새로 고치거나 다시 붙은 화면은 이미 시작된 호출의 tool_execution_start를 받지 못한다. 서버가 지금 실행 중이라고 한 호출
+ * (SDK pendingToolCalls)만 그 세션 키로 등록해 이어지는 진행을 받는다. 끝난 호출·모르는 id·다른 세션은 들어오지 않는다.
+ */
+function registerRestoredToolProgress(keys: Set<string>, sessionId: string, toolCallIds: readonly string[] | undefined): void {
+  for (const id of toolCallIds ?? []) {
+    const key = toolProgressKey(sessionId, id);
+    if (key) keys.add(key);
+  }
+}
+
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
     session, newSessionCwd, initialData, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
@@ -685,6 +705,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     seq: 0,
   });
   const agentRunningRef = useRef(false);
+  // 이 훅이 시작을 본 실행 중 도구 호출의 진행 키(세션 id+호출 id). 세션이 바뀌어 같은 호출 id가 다시 와도 옛 키를 덮지 않는다.
+  const liveToolKeysRef = useRef(new Set<string>());
+  useEffect(() => () => releaseToolProgress(liveToolKeysRef.current), []);
   const sdkAgentActiveRef = useRef(false);
   const rpcPromptPendingRef = useRef(false);
   const notifiedPromptRunIdRef = useRef(-1);
@@ -1397,6 +1420,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunningRef.current = false;
     setAgentRunning(false);
     setAgentPhase(null);
+    releaseToolProgress(liveToolKeysRef.current);
     setRetryInfo(null);
     dispatch({ type: "end" });
     return wasRunning;
@@ -1681,6 +1705,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setAgentRunning(true);
     setAgentPhase(state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
     dispatch({ type: "start" });
+    registerRestoredToolProgress(liveToolKeysRef.current, sid, state.pendingToolCalls);
     void connectEvents(sid);
     if (!state.isStreaming && state.isPromptRunning) void waitForPromptSettlement(sid);
     return true;
@@ -1852,6 +1877,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         // Keep the stream open until prompt_done/agent_settled and the idle grace.
         if (!agentRunningRef.current) break;
         setAgentPhase(null);
+        releaseToolProgress(liveToolKeysRef.current);
         setRetryInfo(null);
         dispatch({ type: "end" });
         if (sessionIdRef.current) {
@@ -1990,7 +2016,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const sid = sessionIdRef.current;
         if (sid) void refreshContextUsage(sid);
         dispatch({ type: "reset" });
-        setAgentPhase({ kind: "waiting_model" });
+        // 병렬 도구는 끝난 순서대로 결과 메시지가 온다. 결과 하나가 아직 도는 다른 호출을 실행 목록에서 지우지 않게 한다.
+        setAgentPhase((prev) => (completed?.role === "toolResult" && prev?.kind === "running_tools" ? prev : { kind: "waiting_model" }));
         break;
       }
       case "thinking_level_changed": {
@@ -2016,6 +2043,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const id = event.toolCallId as string;
         const name = event.toolName as string;
         const args = event.args as unknown;
+        const progressKey = toolProgressKey(sessionIdRef.current, id);
+        if (progressKey) liveToolKeysRef.current.add(progressKey);
         setAgentPhase((prev) => {
           const tools = prev?.kind === "running_tools" ? [...prev.tools] : [];
           if (!tools.some((t) => t.id === id)) tools.push({ id, name, args });
@@ -2023,8 +2052,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
         break;
       }
+      case "tool_execution_update": {
+        // 서버가 한 줄로 줄인 진행(app/api/agent/[id]/events). 끝난 뒤 늦게 온 갱신은 붙이지 않는다.
+        const progressKey = toolProgressKey(sessionIdRef.current, typeof event.toolCallId === "string" ? event.toolCallId : null);
+        if (progressKey && liveToolKeysRef.current.has(progressKey) && typeof event.text === "string") setToolProgress(progressKey, event.text);
+        break;
+      }
       case "tool_execution_end": {
         const id = event.toolCallId as string;
+        const progressKey = toolProgressKey(sessionIdRef.current, id);
+        if (progressKey && liveToolKeysRef.current.delete(progressKey)) clearToolProgress([progressKey]);
         setAgentPhase((prev) => {
           if (prev?.kind !== "running_tools") return prev;
           const tools = prev.tools.filter((t) => t.id !== id);
@@ -3170,6 +3207,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             setAgentRunning(true);
             setAgentPhase(agentState.state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
             dispatch({ type: "start" });
+            registerRestoredToolProgress(liveToolKeysRef.current, session.id, agentState.state.pendingToolCalls);
             void connectEvents(session.id);
             if (!agentState.state.isStreaming && agentState.state.isPromptRunning) {
               void waitForPromptSettlement(session.id);

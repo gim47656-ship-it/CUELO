@@ -155,9 +155,31 @@ export interface EventSubscriptionOptions {
 }
 
 const MESSAGE_UPDATE_FRAME_MS = 33;
+/** 도구 진행 한 줄의 상한. 화면은 실행 중 카드에 한 줄만 보이므로 bash처럼 누적 출력을 보내는 도구도 이만큼만 나른다. */
+const TOOL_PROGRESS_MAX_CHARS = 240;
+
+/**
+ * core의 tool_execution_update(args 전체와 누적 partialResult를 싣는다)를 화면용 진행 한 줄로 줄인다. 글 내용의 마지막
+ * 비지 않은 줄만 남기고, 글이 없으면(bash 터미널 카드처럼 details만 있는 갱신) 보내지 않는다.
+ */
+export function toToolProgressEvent(event: AgentEvent): AgentEvent | null {
+  const partial = event.partialResult as { content?: unknown } | undefined;
+  const parts = Array.isArray(partial?.content) ? partial.content as { type?: unknown; text?: unknown }[] : [];
+  const text = parts.filter((part) => part.type === "text" && typeof part.text === "string").map((part) => part.text as string).join("\n");
+  const line = text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).at(-1);
+  if (!line || typeof event.toolCallId !== "string") return null;
+  return {
+    type: "tool_execution_update",
+    toolCallId: event.toolCallId,
+    toolName: event.toolName,
+    text: line.length > TOOL_PROGRESS_MAX_CHARS ? `${line.slice(0, TOOL_PROGRESS_MAX_CHARS - 1)}…` : line,
+  };
+}
 
 export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdateCoalescer {
   let pendingUpdate: AgentEvent | null = null;
+  // 도구마다 마지막 진행만 남긴다. 다른 이벤트(tool_execution_end 포함) 앞에서 먼저 내보내 순서를 지킨다.
+  const pendingTools = new Map<string, AgentEvent>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
@@ -166,16 +188,23 @@ export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdate
       clearTimeout(timer);
       timer = undefined;
     }
-    if (closed || !pendingUpdate) return;
+    if (closed) return;
     const event = pendingUpdate;
     pendingUpdate = null;
-    emit(event);
+    if (event) emit(event);
+    const tools = [...pendingTools.values()];
+    pendingTools.clear();
+    for (const tool of tools) emit(tool);
   };
 
   const push = (event: AgentEvent) => {
     if (closed) return;
-    if (event.type === "message_update") {
-      pendingUpdate = event;
+    if (event.type === "message_update" || (event.type === "tool_execution_update" && typeof event.toolCallId === "string")) {
+      if (event.type === "message_update") pendingUpdate = event;
+      else {
+        pendingTools.delete(event.toolCallId as string);
+        pendingTools.set(event.toolCallId as string, event);
+      }
       if (!timer) {
         timer = setTimeout(() => {
           timer = undefined;
@@ -191,6 +220,7 @@ export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdate
   const close = () => {
     closed = true;
     pendingUpdate = null;
+    pendingTools.clear();
     clearTimeout(timer);
     timer = undefined;
   };
@@ -1476,6 +1506,10 @@ export class AgentSessionWrapper {
           isPromptRunning: this.promptRunning,
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
+          // The tool calls the SDK is executing now (it adds them at tool_execution_start and drops them at the
+          // end or when the run stops), so a reloaded view can attach the progress that follows. omp-types narrows
+          // agent.state to the fields CUELO already read; this one is read through the same SDK object.
+          pendingToolCalls: [...((this.inner.agent.state as { pendingToolCalls?: ReadonlySet<string> } | undefined)?.pendingToolCalls ?? [])],
           // Elapsed rather than a timestamp: the browser may run on a device whose clock differs.
           compaction: this.inner.isCompacting && this.compactionStarted
             ? { elapsedMs: Math.max(0, Date.now() - this.compactionStarted.at), reason: this.compactionStarted.reason }

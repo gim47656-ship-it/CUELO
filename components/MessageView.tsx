@@ -9,6 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useNow } from "@/hooks/useNow";
+import { toolProgressKey, useToolProgress } from "@/hooks/useToolProgress";
 import { ActionButton, Badge } from "@seed-design/react";
 import { ComposerAttachContext } from "./ComposerAttachContext";
 import { ImageRegionMarker, renderRegionImages } from "./ImageRegionMarker";
@@ -948,7 +949,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} runStartedAt={runStartedAt} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} runStartedAt={runStartedAt} sessionId={sessionId} />;
   }
   if (block.type === "image") {
     if (isToolImageBlock(block)) {
@@ -1266,12 +1267,14 @@ type ToolRunState = "running" | "done" | "failed";
 /** 실행 중 단어를 늦게 띄우는 시간. 바로 끝나는 호출이 깜빡이지 않게 한다. */
 const RUNNING_WORD_DELAY_MS = 400;
 
-function ToolCallBlock({ block, result, duration, runStartedAt }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; runStartedAt?: number }) {
+function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; runStartedAt?: number; sessionId?: string }) {
   const { t } = useI18n();
   const bodyId = useId();
   // 결과가 없을 때 경과를 셀 기준. 생성 종료 시각이 없으면 이 줄이 처음 그려진 때로 대신한다.
   const [mountedAt] = useState(() => Date.now());
   const [toggled, setToggled] = useState<boolean | null>(null);
+  // 실행 중 도구가 알린 최근 진행 한 줄. 이 화면의 세션 것만 읽고, 결과가 오면 읽지 않으므로 결과가 진행을 대신한다.
+  const progress = useToolProgress(result ? null : toolProgressKey(sessionId, block.toolCallId));
   const normalizedToolName = block.toolName.toLowerCase();
   const inputStr = JSON.stringify(block.input, null, 2);
   const isTodoTool = normalizedToolName === "todo" || normalizedToolName.endsWith(".todo") || normalizedToolName.endsWith("_todo");
@@ -1356,6 +1359,15 @@ function ToolCallBlock({ block, result, duration, runStartedAt }: { block: ToolC
           <polyline points="2 3.5 5 6.5 8 3.5" />
         </svg>
       </button>
+      {state === "running" && progress && (
+        <div
+          className="tool-call-progress"
+          title={progress}
+          style={{ padding: "0 10px 6px 29px", color: "var(--text-dim)", fontSize: 11, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+        >
+          {progress}
+        </div>
+      )}
 
       {expanded && (
         <div id={bodyId} className="tool-call-body">

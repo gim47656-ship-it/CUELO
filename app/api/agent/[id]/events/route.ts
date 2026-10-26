@@ -1,14 +1,16 @@
 import { buildSessionContext, resolveSessionPath } from "@/lib/session-reader";
-import { createMessageUpdateCoalescer, getRpcSession, startRpcSession, type AgentEvent } from "@/lib/rpc-manager";
+import { createMessageUpdateCoalescer, getRpcSession, startRpcSession, toToolProgressEvent, type AgentEvent } from "@/lib/rpc-manager";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 
 export const dynamic = "force-dynamic";
 
-const OMITTED_EVENT_TYPES = new Set(["turn_start", "turn_end", "tool_execution_update"]);
+const OMITTED_EVENT_TYPES = new Set(["turn_start", "turn_end"]);
 
 function toClientEvent(event: AgentEvent): AgentEvent | null {
   if (OMITTED_EVENT_TYPES.has(event.type)) return null;
+  // 실행 중 도구의 진행은 한 줄로 줄여 보낸다(args·누적 출력은 싣지 않는다). 도구마다 마지막 줄만 coalescer가 남긴다.
+  if (event.type === "tool_execution_update") return toToolProgressEvent(event);
   if (event.type === "message_update") {
     const clientEvent = { ...event };
     delete clientEvent.assistantMessageEvent;

@@ -53,8 +53,8 @@ export function owningRoot(sessionFile: string, roots: Iterable<string>): string
 }
 
 /**
- * core는 디스크에서 복원한 parked child의 `parentId`를 항상 `Main`으로 적는다. top-level이 둘 이상이면
- * `Main#3` 같은 root의 child가 `Main` 소유로 보여 자기 Main의 write는 거절되고 다른 Main이 통과한다.
+ * root가 등록되기 전에 디스크에서 복원한 parked child는 아직 실제 소유 root에 연결되지 않을 수 있다.
+ * root가 열릴 때 artifact 디렉터리로 소유권을 확인해 실제 agent id에 연결한다.
  * root artifact 디렉터리 *직속* child만 그 root의 실제 agent id로 고친다. 더 깊은 child의 부모는
  * 이미 child id라 그대로 둔다. 열린 root가 아닌 child는 건드리지 않는다.
  */

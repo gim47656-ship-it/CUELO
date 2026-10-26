@@ -1901,6 +1901,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(
     relogin ? { type: "oauth", providerId: relogin.target.provider } : { type: "roles" },
@@ -1934,11 +1935,14 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
 
   useEffect(() => {
     fetch("/api/models-config")
-      .then((r) => r.json())
-      .then((d: ModelsJson) => {
+      .then(async (r) => {
+        const d = await r.json().catch(() => null) as (ModelsJson & { error?: string }) | null;
+        // The starting config is an empty placeholder; saving it after a failed read would erase
+        // models.yml, so Save stays off until a real load succeeds.
+        if (!r.ok || !d || d.error) throw new Error(d?.error ?? `HTTP ${r.status}`);
         setConfig(d.providers ? d : { ...d, providers: {} });
       })
-      .catch(() => setConfig({ providers: {} }))
+      .catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
     refreshAuthProviders();
   }, [refreshAuthProviders]);
@@ -2057,6 +2061,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
   const providers = Object.entries(config.providers ?? {});
   const activeOAuth = oauthProviders.filter((p) => p.loggedIn);
   const activeApiKey = apiKeyProviders.filter((p) => p.configured);
+  const saveBlocked = loading || loadError !== null;
 
   // Resolve current detail
   const detailContent = (() => {
@@ -2313,18 +2318,18 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
 
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, padding: "10px 18px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-          {saveError && <span style={{ fontSize: 12, color: "#f87171", flex: 1 }}>{saveError}</span>}
+          {(loadError ?? saveError) && <span style={{ fontSize: 12, color: "#f87171", flex: 1 }}>{loadError ?? saveError}</span>}
           <button onClick={onClose} style={{ padding: "6px 14px", background: "none", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", cursor: "pointer", fontSize: 13 }}>
              {t("i18n.cancel")}
           </button>
-          <button onClick={handleSave} disabled={saving || savedOk} style={{
+          <button onClick={handleSave} disabled={saving || savedOk || saveBlocked} style={{
             position: "relative",
             padding: "6px 16px",
             minWidth: 92,
-            background: savedOk ? "#16a34a" : saving ? "var(--bg-panel)" : "var(--seed-color-bg-neutral-inverted)",
+            background: savedOk ? "#16a34a" : saving || saveBlocked ? "var(--bg-panel)" : "var(--seed-color-bg-neutral-inverted)",
             border: "none", borderRadius: 6,
-            color: savedOk ? "#fff" : saving ? "var(--text-muted)" : "var(--seed-color-fg-neutral-inverted)",
-            cursor: (saving || savedOk) ? "default" : "pointer", fontSize: 13, fontWeight: 600,
+            color: savedOk ? "#fff" : saving || saveBlocked ? "var(--text-muted)" : "var(--seed-color-fg-neutral-inverted)",
+            cursor: saveBlocked ? "not-allowed" : (saving || savedOk) ? "default" : "pointer", fontSize: 13, fontWeight: 600,
             display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
             transition: "background-color 0.2s ease, color 0.2s ease",
             animation: savedOk ? "saved-pop 0.45s ease" : undefined,

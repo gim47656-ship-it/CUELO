@@ -1225,8 +1225,15 @@ describe("AI-slop gate", () => {
     appendSlopRecord(ledger, { type: "slop-pass", path: abs, sha256: sha256(content), reviewedAt: "2026-10-26T00:00:00Z", model: "fake/reviewer", reviewId: "slop-test", findings: [] });
   }
 
+  /** The slop gate covers public artifacts only: the work tree gets a root .publicignore (as CUELO-private has), so its README/docs are public. */
+  async function publicRepository() {
+    const repository = await createRepository();
+    await writeFile(join(repository.work, ".publicignore"), "/private/\n");
+    return repository;
+  }
+
   test("refuses a visible artifact without a pass, commits it after the pass, and refuses again once a byte changes", async () => {
-    const { root, work, remote } = await createRepository();
+    const { root, work, remote } = await publicRepository();
     const ledger = join(root, "slop.jsonl");
     process.env.OMP_SLOP_GATE_LEDGER = ledger;
     const before = git(work, ["rev-parse", "HEAD"]);
@@ -1251,7 +1258,7 @@ describe("AI-slop gate", () => {
   }, TEST_TIMEOUT_MS);
 
   test("never gates code, tests, internal records or data files, and the gate hands finalizer the blob of the checked bytes", async () => {
-    const { root, work } = await createRepository();
+    const { root, work } = await publicRepository();
     process.env.OMP_SLOP_GATE_LEDGER = join(root, "slop.jsonl");
     await mkdir(join(work, "doc", "history"), { recursive: true });
     await writeFile(join(work, "doc", "history", "record.md"), "내부 기록\n");
@@ -1269,7 +1276,7 @@ describe("AI-slop gate", () => {
   }, TEST_TIMEOUT_MS);
 
   test("a mixed commit keeps the cross-review gate in force: reviewed code and a passed document are committed together, and an unreviewed code file is still refused at cross-review", async () => {
-    const { root, work, remote } = await createRepository();
+    const { root, work, remote } = await publicRepository();
     const slopLedger = join(root, "slop.jsonl");
     const crossLedger = join(root, "cross.jsonl");
     process.env.OMP_SLOP_GATE_LEDGER = slopLedger;
@@ -1295,7 +1302,7 @@ describe("AI-slop gate", () => {
   }, TEST_TIMEOUT_MS);
 
   test("a recorded waiver lets the commit through and names the files and hashes in the ledger", async () => {
-    const { root, work } = await createRepository();
+    const { root, work } = await publicRepository();
     const ledger = join(root, "slop.jsonl");
     process.env.OMP_SLOP_GATE_LEDGER = ledger;
     await writeFile(join(work, "README.md"), readme);
@@ -1305,7 +1312,7 @@ describe("AI-slop gate", () => {
   }, TEST_TIMEOUT_MS);
 
   test("a pass for the content does not cover a file whose bytes differ at the lock: the blob check still refuses", async () => {
-    const { root, remote, work } = await createRepository();
+    const { root, remote, work } = await publicRepository();
     const ledger = join(root, "slop.jsonl");
     process.env.OMP_SLOP_GATE_LEDGER = ledger;
     const before = git(work, ["rev-parse", "HEAD"]);

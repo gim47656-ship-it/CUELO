@@ -92,16 +92,20 @@
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
   하는 대화 답변은 대상이 아니다. 이 Gemini는 2026-10-26부터 Google Cloud Vertex의 Gemini 4 Argon이며(크레딧으로
   과금) OCR 역할에도 쓴다. 이미지 질문(vision)은 Opus를 유지하고, Antigravity OAuth는 계정 정지 위험으로 쓰지 않는다.
-  **밖에서 보이는 산출물은 AI 슬롭 게이트를 통과해야 한다(2026-10-26 사용자 결정).** 소스 코드 밖에서 사람이 읽는
-  모든 것이 대상이다: README·CHANGELOG·`docs/`·공개 md, HTML·웹 화면, PPT, Word·Excel·PDF·HWPX·csv 보고서와 표,
-  사용자에게 보이는 UI 문구(로캘 팩 등). 코드·주석·로그·테스트·생성물·내부 프롬프트와 규칙·스킬, 내부 기록
-  (`HANDOFF.md`·`doc/history`·`doc/README.md`)은 게이트 대상이 아니다(위 `draft`·점검 규칙은 그대로 적용된다).
-  점검은 `slop_check` 도구로 하고, 검토 모델은 `cross_review`와 같은 교차검증 경로(쓴 모델의 반대 계열 + Argon 보조)다.
-  지적이 없으면 그 파일 내용 그대로 통과가 기록된다. 고친 파일은 내용이 바뀌었으니 다시 점검하고, 내용을 바꾸지 않은 채
-  닫을 수 있는 건 Main이 근거를 적어 반박(`refuted`)한 지적뿐이다. git이 추적하는 파일은 HEAD 대비 바뀐 글만 본다.
-  `git_finalize`는 통과 기록이 없는 대상 파일을 커밋하지 않고(단계 `slop-gate`), 저장소 밖에
-  내보낸 결과물에 통과 기록이 없으면 턴을 끝내지 않고 이어서 점검하게 한다. 이 게이트는 사용자가 명시적으로 지시할
-  때만 면제하며 면제는 기록된다.
+  **문서의 AI 슬롭·교차검수는 공개 배포·공유용 산출물에만 적용한다(2026-10-26 사용자 정정).** 비공개·내부 문서는
+  파일로 사용자에게 전달하더라도 제외한다. 소스 코드 밖에 있거나 md·HTML·PPT·Word·Excel·PDF·HWPX·csv·UI 문구
+  형식이라는 이유만으로 공개 산출물로 보지 않는다. 공개 미러의 `.publicignore`(부정 규칙 포함), 프로젝트의
+  `.slop-gate.json` `visible` 선언, 명시적인 공개용 지정으로 판별한다. 공개 여부가 불명확하면 자동으로 검토 모델에
+  보내거나 게이트로 막지 않는다. 비공개·내부 제외는 명시적 공개 지정으로 우회하지 않는다. 코드·주석·로그·테스트·생성물,
+  내부 프롬프트·규칙·스킬과 `HANDOFF.md`·`doc/history`·`doc/README.md`도 제외한다. 위 초안 작성·직접 교정 규칙과
+  코드 변경의 `cross_review`는 그대로 유지한다.
+  공개 산출물 점검은 `slop_check`로 하고 검토 모델은 필수 반대 계열 + Fable 보조 자문 경로를 쓴다. 지적이 없으면
+  그 파일 내용에 통과가 기록된다. 고친 파일은 다시 점검하며 내용을 바꾸지 않고 닫을 수 있는 것은 Main이 근거로
+  반박(`refuted`)한 지적뿐이다. git 추적 파일은 HEAD 대비 바뀐 글만 본다. 공개 대상만 `git_finalize`의 `slop-gate`와
+  저장소 밖 산출물의 턴 종료 검사에 걸린다. 공개 대상의 게이트 면제는 사용자의 명시 지시가 있을 때만 기록해 적용한다.
+  검토 응답이 JSON으로 해석되지 않으면 실패 원문·파싱 오류를 먼저 확인한다. 토큰 길이로 원인을 추측하거나 같은 조건으로
+  반복 호출하지 않는다. 검토 응답의 형식 오류를 피하려고 산출물의 따옴표·쉼표·내용을 바꾸지 않는다. 실제 내용상 지적에
+  근거한 교정은 별개다. 불완전한 JSON을 임의로 보완하거나 필수 검토가 실패한 상태에서 통과시키지 않는다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.
@@ -155,7 +159,7 @@
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
 - 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면(문서·주석·테스트 제외) `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
-  **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic`·`crossReviewGoogle` 슬롯에서 `cross_review`와 같은 계열 규칙으로 읽는다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
+  **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic` 슬롯(필수, `cross_review`와 같은 계열 규칙)과 자문 슬롯 `crossReviewAdvisory`(2026-10-26 Argon에서 Fable로 교체, 저자가 그 모델 자체일 때만 빠짐)에서 읽는다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
 - `git_finalize`는 상대경로 canonical target만 받고 한 호출에서 저장소 하나만 마감한다. 경로
   해석과 거부 대상, cwd 밖 별도 Git 저장소 허용, Main의 raw Git fallback 4조건과 사전 확인,
   remote·upstream·ancestry·mutex 계약의 정본은 `rule://subagent`의 「프로젝트와 Git 경계」다.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createEditLessons, EDIT_LESSONS_PER_PATH, relativeTarget } from "../edit-lessons";
+import { createEditLessons, EDIT_LESSONS_PER_PATH, lessonTarget, relativeTarget } from "../edit-lessons";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 interface Item {
@@ -361,6 +361,53 @@ describe("edit-lessons", () => {
       expect((await fresh)!.additionalContext).toContain("id: old");
       expect(t.queries).toEqual(["x.ts", "x.ts"]);
     }
+  });
+
+  test("파일이 아닌 대상(proc://·agent://·conflict:// 등)은 기억을 찾지 않고 무관한 교훈도 붙이지 않는다", async () => {
+    // 2026-10-26 관측: `proc://bg_19/kill`이 `proc:/bg_19/kill`로 접혀 basename `kill`·`Main`·`1`이 무관한 기억에 걸렸다.
+    const t = setup(async () => ({
+      items: [lesson("k", "kill 신호는 먼저 보낸다"), lesson("m", "Main은 병합한다"), lesson("one", "1번 충돌은 양쪽을 합친다"), lesson("x", "x.md 교훈")],
+    }));
+    const targets = [
+      "proc://bg_19/kill", "proc:/bg_19/kill", "agent://Main", "conflict://1", "conflict:/1", "local://x.md", "local:/x.md",
+      "xd://recall", "memory://abc", "skill://hallmark", "artifact://3", "ssh://host/etc/x.md", "mcp://srv/Main",
+      "PROC://bg/kill", "/repo/local://x.md", "C:\\repo\\local://x.md", "https://example.com/x.md",
+    ];
+    for (const target of targets) {
+      expect(await t.call("write", { path: target, content: "" })).toBeUndefined();
+      expect(await t.call("edit", { path: target, paths: [target] })).toBeUndefined();
+    }
+    expect(t.queries).toEqual([]);
+  });
+
+  test("같은 호출의 파일 대상은 그대로 찾고 비파일 대상만 건너뛴다", async () => {
+    const t = setup(async () => ({ items: [lesson("a1", "x.ts 교훈"), lesson("k", "kill 교훈")] }));
+    const result = await t.call("edit", { paths: ["proc://bg/kill", "x.ts", "agent://Main"] });
+    expect(t.queries).toEqual(["x.ts"]);
+    expect(result!.additionalContext).toStartWith("[edit-lessons] x.ts에 묶인 기억 1건");
+    expect(result!.additionalContext).not.toContain("id: k");
+  });
+
+  test("file:// URI는 실제 파일 경로로 풀어 찾는다 (Windows 드라이브·UNC·퍼센트 인코딩 포함)", async () => {
+    const t = setup(async () => ({ items: [lesson("a1", "x.ts 교훈"), lesson("sp", "a b.ts 교훈"), lesson("w", "w.ts 교훈")] }));
+    expect(await t.call("write", { path: "file:///repo/src/x.ts" })).toBeDefined();
+    expect(await t.call("write", { path: "FILE:///repo/a%20b.ts" })).toBeDefined();
+    expect(await t.call("write", { path: "file:///C:/proj/w.ts" })).toBeDefined();
+    expect(t.queries).toEqual(["src/x.ts", "a b.ts", "C:/proj/w.ts"]);
+    expect(lessonTarget("C:\\repo", "file:///C:/repo/src/x.ts")).toBe("src/x.ts");
+    expect(lessonTarget("C:\\repo", "file://server/share/u.ts")).toBe("//server/share/u.ts");
+    expect(lessonTarget("/repo", "file://localhost/repo/x.ts")).toBe("x.ts");
+    expect(lessonTarget("/repo", "file:///repo/%E0%A4%A")).toBeUndefined(); // 깨진 퍼센트 인코딩
+  });
+
+  test("Windows 드라이브 경로와 상대·절대 파일 경로는 계속 찾는다", async () => {
+    const t = setup(async (query) => ({ items: [lesson(query, `${query.slice(query.lastIndexOf("/") + 1)} 교훈`)] }));
+    expect(await t.call("edit", { path: "C:\\proj\\w.ts" })).toBeDefined();
+    expect(await t.call("edit", { path: "c:/proj/x.ts" })).toBeDefined();
+    expect(await t.call("edit", { path: "src/dir:name/x.ts" })).toBeDefined();
+    // core는 접두 경로 뒤의 단일 슬래시 `local:/`을 URL로 풀지 않는다(router.ts PREFIXED_URL_SEGMENT_RE는 `://`만): 실제 경로다.
+    expect(await t.call("edit", { path: "/repo/local:/y.md" })).toBeDefined();
+    expect(t.queries).toEqual(["C:/proj/w.ts", "c:/proj/x.ts", "src/dir:name/x.ts", "local:/y.md"]);
   });
 });
 

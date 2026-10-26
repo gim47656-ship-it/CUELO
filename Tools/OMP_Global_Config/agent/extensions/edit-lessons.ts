@@ -104,6 +104,37 @@ export function relativeTarget(cwd: string | undefined, path: string): string {
   return rel.split(p.sep).join("/");
 }
 
+/** `scheme://…`·`scheme:/…`(단일 슬래시 별칭). 한 글자 scheme은 Windows 드라이브(`C:/…`)라 뺀다. */
+const URI_TARGET_RE = /^[A-Za-z][A-Za-z0-9+.-]+:\//;
+/** core가 받아 주는, URL 앞에 경로가 붙은 철자(`/repo/local://x`). */
+const PREFIXED_URI_TARGET_RE = /[\\/][A-Za-z][A-Za-z0-9+.-]+:\/\/(?=[^/]|$)/;
+
+/** `file://` URI를 로컬 경로로 푼다(드라이브 `file:///C:/x`→`C:/x`, 호스트는 UNC `//host/x`). 풀 수 없으면 undefined. */
+function fileUriPath(uri: string): string | undefined {
+  try {
+    const url = new URL(uri);
+    const path = decodeURIComponent(url.pathname);
+    if (url.hostname && url.hostname !== "localhost") return `//${url.hostname}${path}`;
+    return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * edit·write 입력 경로가 가리키는 교훈 검색 대상(`relativeTarget` 형식). 파일이 아니면 undefined다.
+ * 파일은 실제 경로와 `file://`뿐이다. `proc://<id>/kill`·`agent://Main`·`conflict://1`·`local://…`·`xd://…` 같은 core 내부·원격 URI는
+ * 프로젝트 파일이 아니라서 경로로 접으면 basename(`kill`·`Main`·`1`)이 무관한 기억에 걸린다(2026-10-26 관측, 블록의 22%).
+ */
+export function lessonTarget(cwd: string | undefined, path: string): string | undefined {
+  if (/^file:\/\//i.test(path)) {
+    const local = fileUriPath(path);
+    return local === undefined ? undefined : relativeTarget(cwd, local);
+  }
+  if (URI_TARGET_RE.test(path) || PREFIXED_URI_TARGET_RE.test(path)) return undefined;
+  return relativeTarget(cwd, path);
+}
+
 /** 검색 결과에서 교훈 후보만 남긴다(출처·id 필요, 같은 id는 처음 것만). basename 필터는 부르는 쪽이 건다. */
 function lessonCandidates(items: readonly MemoryItem[]): MemoryItem[] {
   const seen = new Set<string>();
@@ -199,7 +230,7 @@ export function createEditLessons(deps: EditLessonsDeps = {}) {
         // 같은 경로·같은 id는 병렬 호출에서도 한 번만 다루도록 await 전에 표시한다.
         const targets: string[] = [];
         for (const path of inputPaths(event.input)) {
-          const target = relativeTarget(ctx.cwd, path);
+          const target = lessonTarget(ctx.cwd, path);
           if (!target || lookedUp.has(target) || inFlight.has(target)) continue;
           inFlight.add(target);
           targets.push(target);

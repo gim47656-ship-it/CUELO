@@ -3751,5 +3751,278 @@ console.log("\n[34] live.voice — Codex v3 목소리(haetsal·hanul 등)를 받
 	check("목록 밖 값(nova·대문자 Haetsal·v2 marin·빈 값)은 계속 거절한다", rejected === 4 && parseRejected, `rejected=${rejected} parse=${parseRejected}`);
 }
 
+// 2026-10-26 실사고: CUELO 재시작 직후 root 세션 여럿이 함께 떴고, 옛 claim(이름 확인 → 수 초 뒤 register 덮어쓰기)이 모두에게
+// `Main` 을 줬다. 나중 register 가 앞 root 의 ref 를 지워 실제 dispatcher 는 registry 에 없이 `Main` 으로 돌았다(history:// 의
+// Main 은 다른 세션). 그 자식의 `write agent://Main`·broadcast 는 다른 root 로 갔고, 다른 root 자식의 `Main` 메시지는 dispatcher 의
+// wait 가 받았다(IrcBus waiter·mailbox 가 id 키). 실제 createAgentSession 을 같은 tick 에 띄워 그 경로를 탄다. 모델 호출은 없다.
+console.log("\n[35] 재시작 뒤 root 동시 기동 — root 마다 자기 id, `Main`·wait·broadcast·복원 child 가 남의 root 로 새지 않는다");
+{
+	const { ensurePersistedRoster } = await import(`${CORE}/registry/persisted-agents.ts`);
+	AgentRegistry.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+	const reg35 = AgentRegistry.global();
+	const bus35 = IrcBus.global();
+	type RootSession = { getAgentId(): string; sessionFile?: string; dispose(): Promise<void>; deliverIrcMessage: unknown };
+	const open = async (cwd: string): Promise<RootSession> => (await csCreateAgentSession({ ...csSessionOptions("anthropic"), cwd })).session;
+	const inbox = new Map<RootSession, string[]>();
+	const record = (root: RootSession): RootSession => {
+		inbox.set(root, []);
+		root.deliverIrcMessage = async (m: { body: string }) => {
+			inbox.get(root)!.push(m.body);
+			return "injected";
+		};
+		return root;
+	};
+	const otherCwd = csMkdtemp(csJoin(fixtureRoot, "omp-root-other-cwd-"));
+	// 같은 cwd 둘 + 다른 cwd 하나를 같은 tick 에 띄운다(재시작 직후 재개 순서).
+	const started = await Promise.allSettled([open(csCwd), open(csCwd), open(otherCwd)]);
+	const roots = started.flatMap(r => (r.status === "fulfilled" ? [record(r.value)] : []));
+	const startErrors = started.flatMap(r => (r.status === "rejected" ? [r.reason instanceof Error ? r.reason.message : String(r.reason)] : []));
+	const ids = roots.map(root => root.getAgentId());
+	check("동시에 뜬 root 셋이 모두 기동한다", roots.length === 3, startErrors.join(" | ").slice(0, 200));
+	check("root id 가 서로 다르다", new Set(ids).size === ids.length, JSON.stringify(ids));
+	check(
+		"각 root 의 id 가 registry 에서 그 root 자신을 가리킨다",
+		roots.every(root => reg35.get(root.getAgentId())?.session === root),
+		JSON.stringify(roots.map(root => [root.getAgentId(), reg35.get(root.getAgentId())?.session === root])),
+	);
+
+	// executor 처럼 자식의 parentId 는 부모 세션의 getAgentId() 다.
+	const kids = roots.map((root, i) => {
+		const kid = new RoundTripSession(`Kid35-${i}`);
+		reg35.register({ id: kid.id, displayName: "sub", kind: "sub", parentId: root.getAgentId(), session: kid as never });
+		return kid;
+	});
+	for (const [i, kid] of kids.entries()) await executeSend({ registry: reg35, senderId: kid.id }, { to: "Main", message: `to-main-${i}` });
+	check(
+		"(1) 자식의 `Main` 은 자기 root 만 받는다",
+		roots.every((root, i) => JSON.stringify(inbox.get(root)) === JSON.stringify([`to-main-${i}`])),
+		JSON.stringify(roots.map(root => inbox.get(root))),
+	);
+
+	if (roots.length === 3) {
+		const [rootA, rootB, rootC] = roots as [RootSession, RootSession, RootSession];
+		const [kidA, kidB] = kids as [RoundTripSession, RoundTripSession];
+		for (const root of roots) inbox.get(root)!.length = 0;
+		// (2) wait 자리: B 가 기다리는 중에 A 자식이 `Main` 에게 보내면 B 의 wait 가 아니라 A 가 받는다.
+		const waitB = bus35.wait(rootB.getAgentId(), {}, 300, undefined, { drainPending: false });
+		await executeSend({ registry: reg35, senderId: kidA.id }, { to: "Main", message: "A-child-question" });
+		const caughtByB = await waitB;
+		check("(2) 남의 root 자식 메시지가 이 root 의 wait 를 깨우지 않는다", caughtByB === null, JSON.stringify(caughtByB?.body));
+		check("(2) 그 메시지는 자기 root 가 받는다", JSON.stringify(inbox.get(rootA)) === JSON.stringify(["A-child-question"]), JSON.stringify(inbox.get(rootA)));
+
+		// (3) broadcast 는 자기 트리만, 등록 없는 호출자의 broadcast 는 아무에게도 가지 않는다.
+		for (const root of roots) inbox.get(root)!.length = 0;
+		const kidsBefore = kids.map(kid => kid.received.length);
+		await executeSend({ registry: reg35, senderId: kidB.id }, { to: "all", message: "B-broadcast" });
+		check(
+			"(3) broadcast 는 자기 root 에 닿고 남의 root·자식에는 닿지 않는다",
+			JSON.stringify(inbox.get(rootB)) === JSON.stringify(["B-broadcast"]) &&
+				inbox.get(rootA)!.length === 0 &&
+				inbox.get(rootC)!.length === 0 &&
+				kids[0]!.received.length === kidsBefore[0] &&
+				kids[2]!.received.length === kidsBefore[2],
+			JSON.stringify({ a: inbox.get(rootA), b: inbox.get(rootB), c: inbox.get(rootC) }),
+		);
+		await executeSend({ registry: reg35, senderId: "Ghost35" }, { to: "all", message: "ghost-broadcast" });
+		check(
+			"(3) registry 에 없는 호출자는 남의 root 를 보지 못한다(전역 목록 fallback 없음)",
+			reg35.listVisibleTo("Ghost35").length === 0 && roots.every(root => !inbox.get(root)!.includes("ghost-broadcast")),
+			JSON.stringify(reg35.listVisibleTo("Ghost35").map(ref => ref.id)),
+		);
+
+		// (4) 같은 root 안의 손자·형제는 그대로 통한다.
+		const grandB = new RoundTripSession("Grand35-B");
+		reg35.register({ id: grandB.id, displayName: "sub", kind: "sub", parentId: kidB.id, session: grandB as never });
+		await executeSend({ registry: reg35, senderId: grandB.id }, { to: "Main", message: "grand-to-main" });
+		await executeSend({ registry: reg35, senderId: grandB.id }, { to: kidB.id, message: "grand-to-parent" });
+		check(
+			"(4) 손자의 `Main`·부모 메시지는 같은 root 안에서 전달된다",
+			inbox.get(rootB)!.includes("grand-to-main") && kidB.received.some(m => m.body === "grand-to-parent"),
+			JSON.stringify({ b: inbox.get(rootB), kidB: kidB.received.map(m => m.body) }),
+		);
+
+		// (5) root 를 닫으면 lifecycle 이 그 트리(rootOf 범위)를 함께 놓으므로 id 재사용 자체는 정상이다. 그래도 사라진 root 를
+		// 부모로 가리키는 ref 가 남으면(늦게 복원된 parked child 등) 새 root 는 그 id 를 받지 않고, 그 ref 의 `Main` 은 실패로 돌아온다.
+		const goneId = rootA.getAgentId();
+		await rootA.dispose();
+		const straggler = new RoundTripSession("Straggler35");
+		reg35.register({ id: straggler.id, displayName: "sub", kind: "sub", parentId: goneId, session: straggler as never });
+		const rootD = record(await open(csCwd));
+		const orphanSend = await executeSend({ registry: reg35, senderId: straggler.id }, { to: "Main", message: "orphan-to-main" });
+		check(
+			"(5) 새 root 는 남은 ref 가 부모로 가리키는 사라진 root 의 id 를 받지 않는다",
+			rootD.getAgentId() !== goneId,
+			`gone=${goneId} new=${rootD.getAgentId()}`,
+		);
+		check(
+			"(5) 부모 root 가 없는 ref 의 `Main` 은 명시적 실패이고 새 root 는 받지 않는다",
+			orphanSend.isError === true && !inbox.get(rootD)!.includes("orphan-to-main"),
+			JSON.stringify(orphanSend.content).slice(0, 200),
+		);
+		const kidASend = await executeSend({ registry: reg35, senderId: kidA.id }, { to: "Main", message: "released-kid-to-main" });
+		check(
+			"(5) 닫힌 root 와 함께 놓인 자식의 `Main` 도 새 root 로 가지 않는다",
+			kidASend.isError === true && !inbox.get(rootD)!.includes("released-kid-to-main"),
+			JSON.stringify(kidASend.content).slice(0, 200),
+		);
+
+		// (6) 재개 순서: `Main` 이 아닌 root 의 디스크 child 를 복원하면 그 root 아래로 들어간다(상수 `Main` 아래가 아니다).
+		const owner = [rootB, rootC, rootD].find(root => root.getAgentId() !== MAIN_AGENT_ID && typeof root.sessionFile === "string");
+		if (!owner) {
+			check("(6) `Main` 이 아닌 root 와 그 세션 파일이 있다", false, JSON.stringify([rootB, rootC, rootD].map(root => [root.getAgentId(), root.sessionFile])));
+		} else {
+			const ownerFile = owner.sessionFile!;
+			const childDir = ownerFile.slice(0, -".jsonl".length);
+			mkdirSync(childDir, { recursive: true });
+			const stamp = new Date().toISOString();
+			await Bun.write(
+				join(childDir, "Restored35.jsonl"),
+				`${JSON.stringify({ type: "session", timestamp: stamp })}\n${JSON.stringify({ type: "session_init", timestamp: stamp, task: "restored child" })}\n`,
+			);
+			await ensurePersistedRoster(reg35, ownerFile);
+			const restored = reg35.get("Restored35");
+			check(
+				"(6) 복원한 child 는 자기 transcript 를 가진 root 아래로 들어간다",
+				restored?.parentId === owner.getAgentId() && reg35.rootOf("Restored35") === owner.getAgentId(),
+				`owner=${owner.getAgentId()} parent=${restored?.parentId}`,
+			);
+		}
+		await Promise.allSettled([rootB, rootC, rootD].map(root => root.dispose()));
+	}
+	AgentRegistry.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+}
+
+console.log("\n[36] root 경계 읽기 — history://·agent://·proc:// 는 자기 root 트리만 보고, 복원 advisor·힌트 없는 roster 갱신은 남의 root 를 고르지 않는다");
+// 한 프로세스의 top-level 둘(`Main`=A, `Main#2`=B)과 각자의 디스크 트리. 호출자 신원은 도구 세션의 getAgentId 다(write agent://·proc:// 와 같다).
+{
+	AgentRegistry.resetGlobalForTests();
+	const reg36 = AgentRegistry.global();
+	const { HistoryProtocolHandler } = await import(`${CORE}/internal-urls/history-protocol.ts`);
+	const { AgentProtocolHandler } = await import(`${CORE}/internal-urls/agent-protocol.ts`);
+	const { ProcProtocolHandler } = await import(`${CORE}/internal-urls/proc-protocol.ts`);
+	const { parseInternalUrl } = await import(`${CORE}/internal-urls/parse.ts`);
+	const { ensurePersistedRoster: ensureRoster36 } = await import(`${CORE}/registry/persisted-agents.ts`);
+	const base36 = mkdtempSync(join(fixtureRoot, "root-boundary-"));
+	const fileA = join(base36, "A.jsonl"), fileB = join(base36, "B.jsonl");
+	const dirA = fileA.slice(0, -".jsonl".length), dirB = fileB.slice(0, -".jsonl".length);
+	const transcript = async (file: string, text: string) => {
+		mkdirSync(join(file, ".."), { recursive: true });
+		const at = new Date().toISOString();
+		await Bun.write(file, [
+			{ type: "session", timestamp: at, id: "s" },
+			{ type: "session_init", timestamp: at, task: text },
+			{ type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: text } },
+		].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+	};
+	await transcript(fileA, "A-ROOT-TEXT");
+	await transcript(fileB, "B-ROOT-TEXT");
+	await transcript(join(dirA, "ChildA.jsonl"), "A-CHILD-TEXT");
+	await transcript(join(dirB, "KidB.jsonl"), "B-KID-TEXT");
+	await transcript(join(dirA, "__advisor.jsonl"), "A-ADVISOR");
+	await transcript(join(dirB, "__advisor.jsonl"), "B-ADVISOR");
+	await Bun.write(join(dirA, "ChildA.md"), "A-OUTPUT\n");
+	reg36.register({ id: MAIN_AGENT_ID, displayName: "Main", kind: "main", session: null, sessionFile: fileA, status: "idle" });
+	reg36.register({ id: "Main#2", displayName: "Main", kind: "main", session: null, sessionFile: fileB, status: "idle" });
+	await ensureRoster36(reg36, fileA);
+	await ensureRoster36(reg36, fileB);
+	// 두 roster 가 latch 된 뒤 생긴 transcript 는 registry 에 없고 디스크 경로로만 보인다.
+	await transcript(join(dirA, "LateA.jsonl"), "A-LATE-TEXT");
+	await transcript(join(dirB, "LateB.jsonl"), "B-LATE-TEXT");
+	reg36.register({ id: "RunA", displayName: "sub", kind: "sub", parentId: MAIN_AGENT_ID, session: null, status: "running" });
+	reg36.register({ id: "RunB", displayName: "sub", kind: "sub", parentId: "Main#2", session: null, status: "running" });
+
+	const settings36 = createSettingsTestScope(key => (key === "launch.enabled" ? false : undefined));
+	const caller = (id: string | null, sessionFile?: string) => ({
+		sessionFile,
+		agentRegistry: reg36,
+		session: { getAgentId: () => id, agentRegistry: reg36, settings: settings36 } as never,
+	});
+	const kidB = caller("KidB", join(dirB, "KidB.jsonl"));
+	const ghost = caller("Ghost36");
+	const history = new HistoryProtocolHandler();
+	const agent = new AgentProtocolHandler();
+	const read = async (handler: { resolve(url: unknown, context?: unknown): Promise<{ content: string }> }, url: string, context?: unknown) => {
+		try {
+			return (await handler.resolve(parseInternalUrl(url), context)).content;
+		} catch (error) {
+			return `ERROR ${error instanceof Error ? error.message : String(error)}`;
+		}
+	};
+	const rows = (index: string) => [...index.matchAll(/^\| ([^|]+?) \|/gm)].map(match => match[1]).filter(id => id !== "id");
+
+	const indexB = rows(await read(history, "history://", kidB));
+	check(
+		"(1) history:// 목록은 호출자 root 트리(등록·디스크)만 담는다",
+		["Main#2", "KidB", "LateB", "RunB"].every(id => indexB.includes(id)) &&
+			![MAIN_AGENT_ID, "ChildA", "LateA", "RunA"].some(id => indexB.includes(id)),
+		JSON.stringify(indexB),
+	);
+	const mainFromB = await read(history, "history://Main", kidB);
+	check("(2) root 안의 history://Main 은 자기 root transcript 다", mainFromB.includes("B-ROOT-TEXT") && !mainFromB.includes("A-ROOT-TEXT"), mainFromB.slice(0, 200));
+	const foreignChild = await read(history, "history://ChildA", kidB);
+	const foreignDisk = await read(history, "history://LateA", kidB);
+	check(
+		"(3) 남의 root 의 등록 agent 와 디스크 transcript 는 조회되지 않는다",
+		foreignChild.startsWith("ERROR Unknown agent: ChildA") &&
+			foreignDisk.startsWith("ERROR Unknown agent: LateA") &&
+			(foreignChild.match(/Known agents: (.*)/)?.[1].split(", ") ?? []).every(id => indexB.includes(id)),
+		`${foreignChild.slice(0, 160)} / ${foreignDisk.slice(0, 80)}`,
+	);
+	check("(4) 자기 root 의 디스크 전용 transcript 는 그대로 읽힌다", (await read(history, "history://LateB", kidB)).includes("B-LATE-TEXT"));
+	const ghostIndex = rows(await read(history, "history://", ghost));
+	const ghostMain = await read(history, "history://Main", ghost);
+	check(
+		"(5) registry 에 없는 호출자는 어느 root 도 보지 못하고 history://Main 은 실패한다",
+		ghostIndex.length === 0 && ghostMain.startsWith("ERROR Unknown agent: Main"),
+		`${JSON.stringify(ghostIndex)} / ${ghostMain.slice(0, 120)}`,
+	);
+	const anonymous = rows(await read(history, "history://", { agentRegistry: reg36 }));
+	check("(6) 도구 세션 신원이 없는 읽기는 프로세스 전체 목록을 유지한다", [MAIN_AGENT_ID, "Main#2", "ChildA", "KidB"].every(id => anonymous.includes(id)), JSON.stringify(anonymous));
+
+	const agentMain = await read(agent, "agent://Main", kidB);
+	check("(7) root 안의 agent://Main 진행 상황은 자기 root 것이다", agentMain.includes("Main#2"), agentMain.slice(0, 200));
+	const agentForeign = await read(agent, "agent://ChildA", kidB);
+	check(
+		"(7) 남의 root 의 출력·진행은 읽히지 않고, 아는 id 목록에도 남의 root 가 없다",
+		agentForeign.startsWith("ERROR") && !agentForeign.includes("A-OUTPUT") && !agentForeign.includes("RunA"),
+		agentForeign.slice(0, 240),
+	);
+	// 파일 없는 도구 세션(registry 에도 없음)은 root transcript 가 없어도 다른 root 트리의 출력을 읽지 못하고, 자기 임시 lease 출력은 읽는다.
+	const { registerArtifactsDir } = await import(`${CORE}/internal-urls/registry-helpers.ts`);
+	const leaseDir = mkdtempSync(join(fixtureRoot, "lease-"));
+	await Bun.write(join(leaseDir, "TempOut.md"), "TEMP-OUTPUT\n");
+	const dropLease = registerArtifactsDir(leaseDir);
+	const ghostForeign = await read(agent, "agent://ChildA", ghost);
+	const ghostOwn = await read(agent, "agent://TempOut", ghost);
+	dropLease();
+	check(
+		"(11) root transcript 없는 신원 호출자도 남의 root 출력은 못 읽고, 어느 root 에도 속하지 않은 자기 임시 출력은 읽는다",
+		!ghostForeign.includes("A-OUTPUT") && ghostOwn.includes("TEMP-OUTPUT"),
+		`${ghostForeign.slice(0, 160)} / ${ghostOwn.slice(0, 80)}`,
+	);
+
+	const proc = new ProcProtocolHandler();
+	const procB = await read(proc, "proc://", kidB);
+	const procGhost = await read(proc, "proc://", ghost);
+	check(
+		"(8) proc:// 의 실행 중 agent 는 호출자 root 것만 보이고, registry 에 없는 호출자에게는 없다",
+		procB.includes("RunB") && !procB.includes("RunA") && !procGhost.includes("RunA") && !procGhost.includes("RunB"),
+		`${procB.slice(0, 200)} / ${procGhost.slice(0, 120)}`,
+	);
+
+	const advisorA = reg36.get(`${MAIN_AGENT_ID}/advisor`);
+	const advisorB = reg36.get("Main#2/advisor");
+	check(
+		"(9) 두 root 의 복원 advisor 는 각자 root 아래에 남고 서로를 덮지 않는다",
+		advisorA?.sessionFile === join(dirA, "__advisor.jsonl") && advisorB?.parentId === "Main#2" && advisorB?.sessionFile === join(dirB, "__advisor.jsonl"),
+		JSON.stringify([advisorA?.sessionFile, advisorB?.parentId, advisorB?.sessionFile]),
+	);
+	const hintless = await ensureRoster36(reg36, undefined);
+	check("(10) 힌트 없는 roster 갱신은 `Main` 을 잡은 남의 root 를 고르지 않는다", hintless === undefined, String(hintless));
+	AgentRegistry.resetGlobalForTests();
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

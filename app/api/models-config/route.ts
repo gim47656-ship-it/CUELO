@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { randomUUID } from "crypto";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { ModelsConfigFile } from "@oh-my-pi/pi-coding-agent/config/models-config";
+import { YAMLParseError, parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { invalidateOmpRuntime } from "@/lib/omp-runtime";
@@ -19,31 +21,40 @@ export const dynamic = "force-dynamic";
 const CANONICAL_FILE = "models.yml";
 const READ_CANDIDATES = ["models.yml", "models.yaml", "models.json"] as const;
 
-function getModelsPath(): string {
-  const agentDir = getAgentDir();
-  for (const candidate of READ_CANDIDATES) {
-    const path = join(agentDir, candidate);
-    if (existsSync(path)) return path;
-  }
-  return join(agentDir, CANONICAL_FILE);
-}
-
 function getWritePath(): string {
   return join(getAgentDir(), CANONICAL_FILE);
 }
 
-function readModelsConfig(): Record<string, unknown> {
-  const path = getModelsPath();
-  if (!existsSync(path)) return { providers: {} };
-  try {
-    // `parse` handles JSON too — it is a subset of YAML — so a not-yet-migrated
-    // `models.json` still loads.
-    const parsed: unknown = parseYaml(readFileSync(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { providers: {} };
-    return parsed as Record<string, unknown>;
-  } catch {
-    return { providers: {} };
+type ModelsConfigRead = { config: Record<string, unknown> } | { error: string };
+
+// Only a file that is not there counts as "no config yet". Anything else that stops the read (no
+// permission, a non-directory in the path, a parse failure) is an error: the editor must never get an
+// empty config it could save over the real file.
+function readModelsConfig(): ModelsConfigRead {
+  const agentDir = getAgentDir();
+  for (const name of READ_CANDIDATES) {
+    let text: string;
+    try {
+      text = readFileSync(join(agentDir, name), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return { error: `Unable to read ${name}` };
+    }
+    let parsed: unknown;
+    try {
+      // `parse` handles JSON too — it is a subset of YAML — so a not-yet-migrated
+      // `models.json` still loads.
+      parsed = parseYaml(text);
+    } catch (error) {
+      // Report only the position; the parser's own message quotes the line, which can hold a key.
+      const at = error instanceof YAMLParseError ? error.linePos?.[0] : undefined;
+      return { error: `${name} is not valid YAML${at ? ` (line ${at.line}, column ${at.col})` : ""}` };
+    }
+    if (parsed === null || parsed === undefined) return { config: { providers: {} } };
+    if (!isRecord(parsed)) return { error: `${name} is not a YAML mapping` };
+    return { config: parsed };
   }
+  return { config: { providers: {} } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,18 +78,49 @@ function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unk
   return { ...data, providers };
 }
 
-function writeModelsConfig(data: Record<string, unknown>): void {
+// omp ignores the whole of models.yml when one provider breaks its rules, so a half-filled draft (a
+// provider without an endpoint, a model under a provider without a baseUrl) would drop every provider
+// at runtime. Check the exact text with omp's own loader first; on rejection models.yml keeps its
+// bytes and the loader's reason is returned.
+function writeModelsConfig(data: Record<string, unknown>): string | null {
   const path = getWritePath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writePrivateFileAtomicSync(path, stringifyYaml(sanitizeModelsConfig(data), { lineWidth: 0 }));
+  const text = stringifyYaml(sanitizeModelsConfig(data), { lineWidth: 0 });
+  const rejection = checkModelsYaml(dir, text);
+  if (rejection === null) {
+    writePrivateFileAtomicSync(path, text);
+    // omp keeps one parsed models.yml per path and a new ModelRegistry reuses it; drop it so the runtime
+    // rebuilt after this save loads what was just written instead of the providers from before.
+    ModelsConfigFile.relocate(path).invalidate();
+  }
+  return rejection;
+}
+
+// The loader only reads files, and parses YAML only from a `.yml` name.
+function checkModelsYaml(dir: string, text: string): string | null {
+  const checkPath = join(dir, `.models-check-${randomUUID()}.yml`);
+  writeFileSync(checkPath, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  try {
+    const result = ModelsConfigFile.relocate(checkPath).tryLoad();
+    if (result.status !== "error") return null;
+    const { schemaErrors, other } = result.error;
+    if (schemaErrors?.length) {
+      return schemaErrors.map((problem) => `${problem.instancePath}: ${problem.message ?? "invalid value"}`).join("; ");
+    }
+    return other?.err instanceof Error ? other.err.message : result.error.message;
+  } finally {
+    unlinkSync(checkPath);
+  }
 }
 
 export async function GET(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
-  return NextResponse.json(readModelsConfig());
+  const read = readModelsConfig();
+  if ("error" in read) return NextResponse.json({ error: read.error }, { status: 500 });
+  return NextResponse.json(read.config);
 }
 
 export async function PUT(req: Request) {
@@ -101,7 +143,8 @@ export async function PUT(req: Request) {
     ) {
       return NextResponse.json({ error: "providers must be an object" }, { status: 400 });
     }
-    writeModelsConfig(config);
+    const rejection = writeModelsConfig(config);
+    if (rejection !== null) return NextResponse.json({ error: rejection }, { status: 400 });
     invalidateModelsCache();
     // The registry caches models.yml at construction; drop it so the next
     // request rebuilds against the edited providers.

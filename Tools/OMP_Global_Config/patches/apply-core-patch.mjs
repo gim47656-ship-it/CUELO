@@ -2002,6 +2002,45 @@ Project-wide validation is the main agent's job, run once after all subagents la
 	 * are observability-only transcripts, never peers, so they are excluded.
 	 * Scoped namespace: only agents sharing the caller's root ancestor are
 	 * visible, so a subagent of one top-level session never sees or addresses
+	 * another session's tree. A caller with no registered ref is its own root:
+	 * it sees only agents that still name it as an ancestor, never every
+	 * session's tree (no silent cross-root fallback).
+	 */
+	listVisibleTo(id: string): AgentRef[] {
+		const root = this.rootOf(id);
+		return this.list().filter(
+			ref =>
+				ref.id !== id &&
+				ref.kind !== "advisor" &&
+				(ref.status === "running" || ref.status === "idle") &&
+				this.rootOf(ref.id) === root,
+		);
+	}`,
+		// 2026-10-26 판: 미등록 호출자의 전역(flat) 목록을 없앴다. 그 판은 아래 본문이고, 설치본에 남아 있으면 이 본문으로 올린다.
+		legacyPatched: `	/**
+	 * Root ancestor id of an agent: walk \`parentId\` to the top-level agent that
+	 * owns this subtree. Cycles and missing parents terminate the walk, so an
+	 * orphaned ref resolves to itself. Used to keep peers of one top-level
+	 * session invisible to another when several sessions share one process
+	 * (omp-web hosts N sessions per process; see OMP cross-session IRC routing).
+	 */
+	rootOf(id: string): string {
+		const seen = new Set<string>();
+		let cur = id;
+		for (;;) {
+			if (seen.has(cur)) return cur;
+			seen.add(cur);
+			const parent = this.#refs.get(cur)?.parentId;
+			if (!parent || parent === cur) return cur;
+			cur = parent;
+		}
+	}
+
+	/**
+	 * Returns every alive agent (running | idle) except the caller. Advisor refs
+	 * are observability-only transcripts, never peers, so they are excluded.
+	 * Scoped namespace: only agents sharing the caller's root ancestor are
+	 * visible, so a subagent of one top-level session never sees or addresses
 	 * another session's tree. A caller with no registered ref keeps the legacy
 	 * flat view rather than silently seeing nothing.
 	 */
@@ -2015,10 +2054,70 @@ Project-wide validation is the main agent's job, run once after all subagents la
 	}`,
 	},
 	{
+		// 2026-10-26 사고: 재시작 직후 root 세션들이 함께 뜨면 옛 claim(이름이 비었는지 확인 → 수 초 뒤 register 로 덮어쓰기)이
+		// 같은 `Main` 을 여러 root 에 주고, 나중 register 가 앞 root 의 ref 를 지웠다. 그 root 는 `Main` 으로 계속 돌았고 자식
+		// parentId·`Main` 별칭·IrcBus wait/mailbox 키가 모두 다른 root 로 풀렸다. claim 과 등록을 한 동기 구간으로 묶어 즉시 예약하고,
+		// 남의 트리가 아직 부모로 가리키는 id 는 내주지 않는다. 앵커는 upstream 세 줄이고 옛 판(legacyPatched)은 이 판으로 올린다.
 		file: "src/sdk.ts",
-		marker: "claimTopLevelAgentId",
-		anchor: `	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;`,
+		marker: "const reserveTopLevelAgentId = (): string => {",
+		anchor: `	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
+	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
+	let registeredAgentRef: AgentRef | undefined;`,
 		patched: `	/**
+	 * External SDK callers (omp-web, embedders) pass neither \`agentId\` nor
+	 * \`expectedAgentRef\`, so with the default global registry the constant
+	 * \`Main\` would be one process-wide slot shared by every top-level session.
+	 * Claim a distinct id and reserve it in the registry in the same synchronous
+	 * step. Checking first and registering seconds later let roots that started
+	 * together (after a restart) all claim \`Main\`: the last \`register()\`
+	 * replaced the others, and a live root kept running as \`Main\` with no ref
+	 * of its own, so its children, \`wait\` slot and \`Main\` alias resolved to
+	 * another root. An id is free only when no ref holds it and no ref outside
+	 * this session's own transcript tree still names it as parent, so a new
+	 * root never adopts a disposed root's children. Explicit \`agentId\`,
+	 * subagents (\`parentTaskPrefix\`) and guarded registrations
+	 * (\`expectedAgentRef\` supplied) keep their requested id.
+	 */
+	let reservedTopLevelRef: AgentRef | undefined;
+	const reserveTopLevelAgentId = (): string => {
+		if (options.agentId) return options.agentId;
+		if (options.parentTaskPrefix) return options.parentTaskPrefix;
+		if (options.expectedAgentRef !== undefined) return MAIN_AGENT_ID;
+		const ownFile = sessionManager.getSessionFile();
+		const ownTree =
+			typeof ownFile === "string" && ownFile.endsWith(".jsonl")
+				? \`\${path.resolve(ownFile).slice(0, -".jsonl".length)}\${path.sep}\`
+				: undefined;
+		const refs = agentRegistry.list();
+		const foreignChildOf = (id: string): boolean =>
+			refs.some(
+				ref =>
+					ref.parentId === id &&
+					!(ownTree !== undefined && typeof ref.sessionFile === "string" && path.resolve(ref.sessionFile).startsWith(ownTree)),
+			);
+		for (let n = 1; n < 1000; n++) {
+			const candidate = n === 1 ? MAIN_AGENT_ID : \`\${MAIN_AGENT_ID}#\${n}\`;
+			if (agentRegistry.get(candidate) || foreignChildOf(candidate)) continue;
+			reservedTopLevelRef = agentRegistry.register({
+				id: candidate,
+				displayName: options.agentDisplayName ?? agentKind,
+				kind: agentKind,
+				parentId: options.parentAgentId,
+				session: null,
+				sessionFile: ownFile ?? null,
+				status: "running",
+			});
+			return candidate;
+		}
+		throw new Error("No free top-level agent id: Main..Main#999 are all held or still parent another session's agents.");
+	};
+	const resolvedAgentId = reserveTopLevelAgentId();
+	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
+	// The reservation is this session's registry ref from here on, so a startup
+	// failure before the registration below still releases it.
+	let registeredAgentRef: AgentRef | undefined = reservedTopLevelRef;
+	if (reservedTopLevelRef) hasRegistered = true;`,
+		legacyPatched: `	/**
 	 * External SDK callers (omp-web, embedders) do not pass \`expectedAgentRef\`,
 	 * so registration below takes the unconditional \`register()\` path and
 	 * overwrites any existing ref with the same id. With the default global
@@ -2041,7 +2140,221 @@ Project-wide validation is the main agent's job, run once after all subagents la
 		}
 		return MAIN_AGENT_ID;
 	};
-	const resolvedAgentId = claimTopLevelAgentId();`,
+	const resolvedAgentId = claimTopLevelAgentId();
+	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
+	let registeredAgentRef: AgentRef | undefined;`,
+	},
+	{
+		// 위 예약과 짝: 예약한 top-level ref 를 그대로 쓰고, 그 사이 다른 세션이 같은 id 를 덮었으면 되덮지 않고
+		// 아래 "already owned by another session generation" 으로 실패한다.
+		file: "src/sdk.ts",
+		marker: "registeredAgentRef = reservedTopLevelRef",
+		anchor: `		registeredAgentRef =
+			options.expectedAgentRef === undefined
+				? agentRegistry.register(registrationInput)
+				: agentRegistry.registerIfAvailable(registrationInput, options.expectedAgentRef);`,
+		patched: `		// A top-level id reserved at claim time is already this session's ref:
+		// keep it, never re-register over whoever holds the id now, and fail
+		// closed (below) if another session replaced the reservation meanwhile.
+		registeredAgentRef = reservedTopLevelRef
+			? agentRegistry.get(resolvedAgentId) === reservedTopLevelRef
+				? reservedTopLevelRef
+				: undefined
+			: options.expectedAgentRef === undefined
+				? agentRegistry.register(registrationInput)
+				: agentRegistry.registerIfAvailable(registrationInput, options.expectedAgentRef);`,
+	},
+	{
+		// 디스크에서 복원한 ref 의 소유 root 는 그 transcript 트리를 가진 등록 root 다(아래 세 항목이 이 helper 를 쓴다). upstream 은
+		// 상수 `Main` 을 적어 한 프로세스에 root 가 둘 이상이면 남의 root 트리로 복원했고, 힌트 없는 roster 갱신도 `Main` 을 잡은
+		// 남의 세션 파일을 썼다. 소유 root 를 못 찾으면 `Main` 이 비어 있을 때만 쓰고, 힌트가 없으면 root 를 고르지 않는다(fail closed).
+		file: "src/registry/persisted-agents.ts",
+		marker: "function registeredRootOwnerId(registry: AgentRegistry, rootSessionFile: string)",
+		anchor: `async function resolveRootSessionFile(registry: AgentRegistry, hint?: string | null): Promise<string | undefined> {
+\tconst mainFile = registry.get(MAIN_AGENT_ID)?.sessionFile;
+\tconst candidate =
+\t\ttypeof hint === "string" && hint.endsWith(".jsonl")
+\t\t\t? hint
+\t\t\t: typeof mainFile === "string" && mainFile.endsWith(".jsonl")
+\t\t\t\t? mainFile
+\t\t\t\t: undefined;
+`,
+		patched: `/**
+ * CUELO: the registered top-level ref that owns \`rootSessionFile\` (its live
+ * session's current file first: an in-session switch does not refresh the ref).
+ * With no owner registered, \`Main\` only while no session holds that id;
+ * otherwise undefined, so restored refs stay unlinked and messages to and from
+ * them fail closed instead of joining another top-level session's tree.
+ */
+function registeredRootOwnerId(registry: AgentRegistry, rootSessionFile: string): string | undefined {
+\tconst root = path.resolve(rootSessionFile);
+\tconst owner = registry.list().find(ref => {
+\t\tconst file = ref.session?.sessionFile ?? ref.sessionFile;
+\t\treturn ref.kind === "main" && typeof file === "string" && path.resolve(file) === root;
+\t});
+\tif (owner) return owner.id;
+\treturn registry.get(MAIN_AGENT_ID) === undefined ? MAIN_AGENT_ID : undefined;
+}
+
+async function resolveRootSessionFile(_registry: AgentRegistry, hint?: string | null): Promise<string | undefined> {
+\t// CUELO: no hint, no root. The registry's \`Main\` can be another top-level
+\t// session in a multi-session host; refreshing its roster for this caller would
+\t// restore that other tree. Every caller that has a transcript passes it.
+\tconst candidate = typeof hint === "string" && hint.endsWith(".jsonl") ? hint : undefined;
+`,
+	},
+	{
+		file: "src/registry/persisted-agents.ts",
+		marker: "parentId: parentId ?? registeredRootOwnerId(registry, rootSessionFile),",
+		anchor: "\t\t\t\t\tparentId: parentId ?? MAIN_AGENT_ID,\n",
+		patched: "\t\t\t\t\t// CUELO: a direct child belongs to the root that owns this transcript tree.\n\t\t\t\t\tparentId: parentId ?? registeredRootOwnerId(registry, rootSessionFile),\n",
+	},
+	{
+		// root transcript 의 advisor 도 같은 소유 root 아래로 간다. upstream 은 늘 `Main/advisor` 라 두 root 의 advisor 가 서로의
+		// ref 를 unregister·재등록하며 덮었다.
+		file: "src/registry/persisted-agents.ts",
+		marker: "const owner = parentId ?? registeredRootOwnerId(registry, rootSessionFile);",
+		anchor: "\t\t\tconst owner = parentId ?? MAIN_AGENT_ID;\n",
+		patched: "\t\t\t// CUELO: the root transcript's advisor belongs to the root that owns it; with no\n\t\t\t// owner it is skipped, never filed under another top-level session's `Main`.\n\t\t\tconst owner = parentId ?? registeredRootOwnerId(registry, rootSessionFile);\n\t\t\tif (owner === undefined) continue;\n",
+	},
+	{
+		// 파일 없는 subagent 의 roster root 마지막 후보는 `Main` 을 잡은 세션이 아니라 그 subagent 자신의 root 다(단일 root 에선 같다).
+		file: "src/task/executor.ts",
+		marker: "registry.get(registry.rootOf(inputs.id))?.sessionFile,",
+		anchor: "\t\t\tregistry.get(MAIN_AGENT_ID)?.sessionFile,\n",
+		patched: "\t\t\t// CUELO: the subagent's own root, not whichever top-level session holds `Main`.\n\t\t\tregistry.get(registry.rootOf(inputs.id))?.sessionFile,\n",
+	},
+	{
+		// history:// 와 agent:// 읽기도 `write agent://`·proc:// 와 같은 호출자 신원(session.getAgentId)으로 자기 root 트리만 보고,
+		// 그 안에서 `Main` 은 자기 root 다. 신원 없는 호출자(도구 세션 없는 읽기)는 프로세스 전체 보기를 그대로 둔다.
+		file: "src/internal-urls/registry-helpers.ts",
+		marker: "export function callerRootId(",
+		anchor: `import { AgentRegistry } from "../registry/agent-registry";\n`,
+		patched: `import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+
+/**
+ * CUELO: the top-level root a calling tool session belongs to, from the same
+ * agent identity \`write agent://\` and \`proc://\` use. Undefined without one:
+ * such a caller keeps the process-wide view.
+ */
+export function callerRootId(
+\tregistry: AgentRegistry,
+\tsession: { getAgentId?: () => string | null } | undefined,
+): string | undefined {
+\tconst id = session?.getAgentId?.();
+\treturn id ? registry.rootOf(id) : undefined;
+}
+
+/** CUELO: inside a root, \`Main\` names that root, as it does for \`write agent://Main\`. */
+export function rootScopedAgentId(agentId: string, callerRoot: string | undefined): string {
+\treturn callerRoot !== undefined && agentId === MAIN_AGENT_ID ? callerRoot : agentId;
+}
+
+/** CUELO: whether \`dir\` is a root's artifacts dir \`rootDir\` or lies inside it. */
+export function isInArtifactsTree(dir: string, rootDir: string): boolean {
+\tconst resolved = path.resolve(dir);
+\tconst root = path.resolve(rootDir);
+\treturn resolved === root || resolved.startsWith(root + path.sep);
+}
+`,
+	},
+	{
+		file: "src/internal-urls/history-protocol.ts",
+		marker: "import { artifactsDirsFromRegistry, callerRootId, rootScopedAgentId, sessionFilesFromDisk } from",
+		anchor: `import { artifactsDirsFromRegistry, sessionFilesFromDisk } from "./registry-helpers";`,
+		patched: `import { artifactsDirsFromRegistry, callerRootId, rootScopedAgentId, sessionFilesFromDisk } from "./registry-helpers";`,
+	},
+	{
+		file: "src/internal-urls/history-protocol.ts",
+		marker: "return { visible, preferredArtifactDir, onlyPreferred: callerRoot !== undefined };",
+		anchor: `\t\tconst visible = registry.list().filter(ref => ref.kind !== "advisor");\n\t\treturn { visible, preferredArtifactDir };\n`,
+		patched: `\t\t// CUELO: a caller with an agent id sees only its own root's tree (several
+\t\t// top-level sessions share this registry), on disk as well: the scan stays
+\t\t// inside its root's artifact dir, and without one there is nothing to scan.
+\t\tconst callerRoot = callerRootId(registry, context?.session);
+\t\tconst visible = registry
+\t\t\t.list()
+\t\t\t.filter(ref => ref.kind !== "advisor" && (callerRoot === undefined || registry.rootOf(ref.id) === callerRoot));
+\t\treturn { visible, preferredArtifactDir, onlyPreferred: callerRoot !== undefined };
+`,
+	},
+	{
+		file: "src/internal-urls/history-protocol.ts",
+		marker: "rootScopedAgentId(agentId, callerRootId(AgentRegistry.global(), context?.session))",
+		anchor: `\t\tlet ref = onlyPreferred ? undefined : AgentRegistry.global().get(agentId);
+\t\tif (ref?.kind === "advisor") ref = undefined;
+\t\tif (!ref) {
+\t\t\t// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
+\t\t\tconst lower = agentId.toLowerCase();
+`,
+		patched: `\t\t// CUELO: inside a root, \`Main\` is that root, and a root-scoped caller
+\t\t// (\`onlyPreferred\`) resolves only refs it can see, never another root's.
+\t\tconst id = rootScopedAgentId(agentId, callerRootId(AgentRegistry.global(), context?.session));
+\t\tlet ref = onlyPreferred ? visible.find(candidate => candidate.id === id) : AgentRegistry.global().get(id);
+\t\tif (ref?.kind === "advisor") ref = undefined;
+\t\tif (!ref) {
+\t\t\t// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
+\t\t\tconst lower = id.toLowerCase();
+`,
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "import { artifactsDirsFromRegistry, callerRootId, isInArtifactsTree, rootScopedAgentId } from",
+		anchor: `import { artifactsDirsFromRegistry } from "./registry-helpers";`,
+		patched: `import { artifactsDirsFromRegistry, callerRootId, isInArtifactsTree, rootScopedAgentId } from "./registry-helpers";`,
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "if (ref && ref.kind !== \"advisor\" && (callerRoot === undefined || registry.rootOf(ref.id) === callerRoot))",
+		anchor: `\t\t\tconst ref = registry.get(outputId);
+\t\t\tif (ref && ref.kind !== "advisor") return this.#resolveProgress(url, ref, extraction);
+\t\t\tif (!scan) throw new Error("No session - agent outputs unavailable");
+\t\t\tif (!scan.anyDirExists) throw new Error("No artifacts directory found");
+\t\t\tconst registered = registry
+\t\t\t\t.list()
+\t\t\t\t.filter(candidate => candidate.kind !== "advisor")
+`,
+		patched: `\t\t\t// CUELO: progress and the known-id list cover the caller's own root only
+\t\t\t// (\`Main\` is that root); other top-level sessions' agents are not its peers.
+\t\t\tconst callerRoot = callerRootId(registry, context?.session);
+\t\t\tconst ref = registry.get(rootScopedAgentId(outputId, callerRoot));
+\t\t\tif (ref && ref.kind !== "advisor" && (callerRoot === undefined || registry.rootOf(ref.id) === callerRoot)) {
+\t\t\t\treturn this.#resolveProgress(url, ref, extraction);
+\t\t\t}
+\t\t\tif (!scan) throw new Error("No session - agent outputs unavailable");
+\t\t\tif (!scan.anyDirExists) throw new Error("No artifacts directory found");
+\t\t\tconst registered = registry
+\t\t\t\t.list()
+\t\t\t\t.filter(
+\t\t\t\t\tcandidate =>
+\t\t\t\t\t\tcandidate.kind !== "advisor" && (callerRoot === undefined || registry.rootOf(candidate.id) === callerRoot),
+\t\t\t\t)
+`,
+	},
+	{
+		file: "src/internal-urls/agent-protocol.ts",
+		marker: "const foreignRootDirs = registry",
+		anchor: `\t\treturn artifactsDirsFromRegistry(rootSessionFile ? { preferredDir: rootSessionFile.slice(0, -6) } : undefined);\n`,
+		patched: `\t\tconst dirs = artifactsDirsFromRegistry(rootSessionFile ? { preferredDir: rootSessionFile.slice(0, -6) } : undefined);
+\t\t// CUELO: a caller with an agent id reads outputs only inside its own root's
+\t\t// artifact tree (nested children included), not other top-level sessions'.
+\t\t// Without a root transcript it still never reads inside another registered
+\t\t// root's tree; dirs no root owns (a file-less session's temp lease) stay.
+\t\tconst registry = AgentRegistry.global();
+\t\tconst callerRoot = callerRootId(registry, context?.session);
+\t\tif (callerRoot === undefined) return dirs;
+\t\tif (rootSessionFile) {
+\t\t\tconst rootDir = rootSessionFile.slice(0, -6);
+\t\t\treturn dirs.filter(dir => isInArtifactsTree(dir, rootDir));
+\t\t}
+\t\tconst foreignRootDirs = registry
+\t\t\t.list()
+\t\t\t.filter(ref => ref.kind === "main" && ref.id !== callerRoot)
+\t\t\t.flatMap(ref => [ref.sessionFile, ref.session?.sessionFile])
+\t\t\t.filter((file): file is string => typeof file === "string" && file.endsWith(".jsonl"))
+\t\t\t.map(file => file.slice(0, -".jsonl".length));
+\t\treturn dirs.filter(dir => !foreignRootDirs.some(rootDir => isInArtifactsTree(dir, rootDir)));
+`,
 	},
 	{
 		file: "src/irc/bus.ts",
