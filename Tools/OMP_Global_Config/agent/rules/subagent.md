@@ -636,7 +636,7 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   이미지·미디어·오피스·글꼴 자산도 제외한다(타입만 바꾼 수정·줄 끝 주석·다른 언어·실행 파일은 그대로 코드다).
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
   `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 모든 라운드(이어지는 라운드·probe 라운드 포함)에
-  `modelRoles.crossReviewAdvisory`(Fable)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
+  `modelRoles.crossReviewAdvisory`(Argon)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
   다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 필수 검토와 함께 시작하고, 시작 후 120초가 지나거나 필수 검토가 모두
   끝나면 그 자리에서 끊는다. 그 전에 온 자문 답은 쓰고, 호출 실패·해석 불가·시간 초과·중단은
   `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 한다. 필수 검토의 실패를 대신 통과시키지 않으며,

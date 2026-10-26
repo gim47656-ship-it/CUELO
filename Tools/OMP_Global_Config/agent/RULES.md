@@ -99,7 +99,7 @@
   보내거나 게이트로 막지 않는다. 비공개·내부 제외는 명시적 공개 지정으로 우회하지 않는다. 코드·주석·로그·테스트·생성물,
   내부 프롬프트·규칙·스킬과 `HANDOFF.md`·`doc/history`·`doc/README.md`도 제외한다. 위 초안 작성·직접 교정 규칙과
   코드 변경의 `cross_review`는 그대로 유지한다.
-  공개 산출물 점검은 `slop_check`로 하고 검토 모델은 필수 반대 계열 + Fable 보조 자문 경로를 쓴다. 지적이 없으면
+  공개 산출물 점검은 `slop_check`로 하고 검토 모델은 필수 반대 계열 + Argon 보조 자문 경로를 쓴다. 지적이 없으면
   그 파일 내용에 통과가 기록된다. 고친 파일은 다시 점검하며 내용을 바꾸지 않고 닫을 수 있는 것은 Main이 근거로
   반박(`refuted`)한 지적뿐이다. git 추적 파일은 HEAD 대비 바뀐 글만 본다. 공개 대상만 `git_finalize`의 `slop-gate`와
   저장소 밖 산출물의 턴 종료 검사에 걸린다. 공개 대상의 게이트 면제는 사용자의 명시 지시가 있을 때만 기록해 적용한다.
@@ -159,7 +159,7 @@
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
 - 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면 `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 문서·테스트·생성물, 게이트가 주석만 바꿨다고 증명한 TS/JS 수정, git이 바이너리로 본 이미지·미디어·오피스·글꼴 자산은 제외한다. 타입만 바꾼 수정과 다른 언어의 주석 수정은 코드로 본다. 검토 대상은 바뀐 실행 코드·설정이고, 관련된 바뀌지 않은 호출부·계약은 `inputs`·`references`로 넘긴다. 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
-  **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic` 슬롯(필수, `cross_review`와 같은 계열 규칙)과 자문 슬롯 `crossReviewAdvisory`(2026-10-26 Argon에서 Fable로 교체, 저자가 그 모델 자체일 때만 빠짐)에서 읽는다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
+  **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic` 슬롯(필수, `cross_review`와 같은 계열 규칙)과 자문 슬롯 `crossReviewAdvisory`(2026-10-26 Argon→Fable→AI Studio 프록시 Argon으로 교체, 저자가 그 모델 자체일 때만 빠짐)에서 읽는다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
 - `git_finalize`는 상대경로 canonical target만 받고 한 호출에서 저장소 하나만 마감한다. 경로
   해석과 거부 대상, cwd 밖 별도 Git 저장소 허용, Main의 raw Git fallback 4조건과 사전 확인,
   remote·upstream·ancestry·mutex 계약의 정본은 `rule://subagent`의 「프로젝트와 Git 경계」다.
