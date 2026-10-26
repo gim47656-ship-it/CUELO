@@ -63,6 +63,11 @@ export const SAMPLE_MODULUS = 10;
 export const REVIEW_TIMEOUT_MS = 600_000;
 /** 자문 reviewer 한 명을 기다리는 상한(그 호출 시작부터). 필수 reviewer는 REVIEW_TIMEOUT_MS 그대로다. 넘으면 호출을 abort하고 timeout으로 기록만 한다. */
 export const ADVISORY_TIMEOUT_MS = 120_000;
+/**
+ * 필수 reviewer가 모두 끝난 뒤 아직 답하지 않은 자문 reviewer를 더 기다리는 시간(2026-10-27 사용자 결정). 곧바로 끊으면 자문이 거의 늘 버려지고
+ * 프록시에 499가 쌓였다(하루 36건 중 10건). 자문 자체 기한 ADVISORY_TIMEOUT_MS는 그대로라 이 유예가 그 기한을 늘리지 않는다.
+ */
+export const ADVISORY_GRACE_MS = 20_000;
 export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic", advisory: "crossReviewAdvisory" };
 /** 늘 함께 도는 자문 자리. 답하면 finding은 다른 reviewer와 똑같이 닫아야 하지만, 실패(error·unparsable)는 기록만 하고 통과 가능 여부를 정하지 않는다. */
 export const ADVISORY_LANE: Lane = "advisory";
@@ -1037,6 +1042,8 @@ export interface ReviewDeps {
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
   /** 자문 reviewer 기한(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_TIMEOUT_MS. */
   advisoryTimeoutMs?: number;
+  /** 필수 reviewer가 끝난 뒤 자문을 더 기다리는 시간(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_GRACE_MS. */
+  advisoryGraceMs?: number;
   /** reviewer 호출 시작·reviewer마다의 끝(답·실패·timeout·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
   onProgress?: (progress: ReviewProgress) => void;
   now?: () => Date;
@@ -1063,7 +1070,7 @@ class AdvisoryStopError extends ReviewerCallError {
  */
 export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, model: string, requiredSettled?: AbortSignal): Promise<T> {
   const cancelled = () => new AdvisoryStopError("advisory reviewer cancelled: the review was aborted, so its call was aborted without waiting for the provider", model, "cancelled");
-  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished, so the review did not wait for it; the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
+  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished and the grace wait after them ran out, so the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
   if (signal.aborted) throw cancelled();
   if (requiredSettled?.aborted) throw settled();
   const controller = new AbortController();
@@ -1090,11 +1097,11 @@ export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Pr
 }
 
 /**
- * 한 라운드의 reviewer를 모두 함께 시작하고, 필수 reviewer가 모두 끝나면(답·실패 무관) 아직 기다리는 자문 reviewer를 끊는다.
- * 그 전에 끝난 자문 답은 그대로 남는다. start는 자문 자리에 requiredSettled를 withAdvisoryDeadline으로 넘겨야 한다. 모든 호출을
- * 끝까지 기다린 뒤(끊긴 자문은 곧바로 끝난다) 자리 순서대로 돌려주며, start가 던진 오류는 모든 호출이 끝난 다음에 다시 던진다.
+ * 한 라운드의 reviewer를 모두 함께 시작하고, 필수 reviewer가 모두 끝나면(답·실패 무관) 자문 reviewer가 끝나기를 graceMs까지만 더 기다린 뒤
+ * 그래도 기다리는 자문을 끊는다. 그 전에 끝난 자문 답은 그대로 남는다. start는 자문 자리에 requiredSettled를 withAdvisoryDeadline으로 넘겨야 한다.
+ * 모든 호출을 끝까지 기다린 뒤(끊긴 자문은 곧바로 끝난다) 자리 순서대로 돌려주며, start가 던진 오류는 모든 호출이 끝난 다음에 다시 던진다.
  */
-export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: Lane, index: number, requiredSettled: AbortSignal) => Promise<R>): Promise<R[]> {
+export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: Lane, index: number, requiredSettled: AbortSignal) => Promise<R>, graceMs = ADVISORY_GRACE_MS): Promise<R[]> {
   const requiredSettled = new AbortController();
   const runs = lanes.map((lane, index) => start(lane, index, requiredSettled.signal));
   // 모든 호출에 곧바로 처리기를 붙인다. 필수 reviewer를 기다리는 동안 끝난 자문 실패가 처리되지 않은 거절이 되지 않게 한다.
@@ -1102,6 +1109,12 @@ export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: L
   const required = runs.filter((_, index) => lanes[index] !== ADVISORY_LANE);
   if (required.length > 0) {
     await Promise.allSettled(required);
+    if (graceMs > 0) {
+      const grace = Promise.withResolvers<void>();
+      const timer = setTimeout(grace.resolve, graceMs);
+      await Promise.race([outcomesPending, grace.promise]);
+      clearTimeout(timer);
+    }
     requiredSettled.abort();
   }
   const outcomes = await outcomesPending;
@@ -1110,10 +1123,10 @@ export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: L
   return outcomes.map((outcome) => (outcome as PromiseFulfilledResult<R>).value);
 }
 
-function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number): string {
+function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number, graceMs: number): string {
   const parts = reviewers.map((reviewer) => {
     const who = reviewer.advisory ? "advisory" : `${reviewer.family} (required)`;
-    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (gives up at ${advisoryMs / 1000} s or when every required reviewer has finished, nonblocking)` : ""}`;
+    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (gives up at ${advisoryMs / 1000} s, or ${graceMs / 1000} s after every required reviewer has finished, nonblocking)` : ""}`;
     return `${who} ${reviewer.state} after ${reviewer.elapsedSec} s`;
   });
   return `cross_review round ${round}: ${parts.join("; ")}`;
@@ -1620,10 +1633,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }
 
-  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs에서, 또는 필수 reviewer가 모두 끝나면 끊어 전체 호출을 붙잡지 않는다.
+  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs에서, 또는 필수 reviewer가 모두 끝나고 유예가 지나면 끊어 전체 호출을 붙잡지 않는다.
   const advisoryMs = deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS;
   const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, advisory: family === ADVISORY_LANE, state: "waiting" }));
-  const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs) });
+  const graceMs = deps.advisoryGraceMs ?? ADVISORY_GRACE_MS;
+  const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs, graceMs) });
   report();
   const settled = await settleReviewers(families, async (family, index, requiredSettled) => {
     const started = Date.now();
@@ -1642,7 +1656,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
       return { family, model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
     }
-  });
+  }, graceMs);
 
   const reviewers: (CrossReviewReviewer & { family: Lane })[] = [];
   const parsedByFamily = new Map<Lane, ParsedVerdict[]>();

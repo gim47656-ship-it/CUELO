@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { ADVISORY_LANE, ADVISORY_TIMEOUT_MS, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, settleReviewers, SLOT, spawnExec, withAdvisoryDeadline, type Lane } from "../lib/cross-review";
+import { ADVISORY_GRACE_MS, ADVISORY_LANE, ADVISORY_TIMEOUT_MS, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, settleReviewers, SLOT, spawnExec, withAdvisoryDeadline, type Lane } from "../lib/cross-review";
 import {
   appendSlopRecord, passFor, publicationOf, readSlopRecords, sha256, trackable, wslPath,
   type SlopFindingRecord, type SlopRecord, type SlopReviewRecord,
@@ -48,6 +48,8 @@ export interface SlopDeps {
   advisoryModel?: string;
   /** 자문 reviewer 기한(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_TIMEOUT_MS. */
   advisoryTimeoutMs?: number;
+  /** 필수 reviewer가 끝난 뒤 자문을 더 기다리는 시간(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_GRACE_MS. */
+  advisoryGraceMs?: number;
   /** slop_check public:true. 선언 없는 git 밖 보이는 산출물만 공개로 본다(비공개·내부 판정은 못 바꾼다). */
   publish?: boolean;
   /** 이번 입력에서 public:true로 선언한 실제 경로. 고친 뒤 다시 심사할 때도 같은 선언으로 본다. */
@@ -357,7 +359,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     const fail = (error: string) => { for (const item of batch) outcomes.push({ file: item.rel, sha256: item.hash, status: "error", error }); };
     if (names.length === 0) { fail("no rubric applies: the text has too little Korean or English prose to judge (pass lang to force one)"); continue; }
     const prompt = buildPrompt(batch, names);
-    const answers = await settleReviewers(families, (family, _index, requiredSettled) => ask(family, prompt, deps, signal, requiredSettled));
+    const answers = await settleReviewers(families, (family, _index, requiredSettled) => ask(family, prompt, deps, signal, requiredSettled), deps.advisoryGraceMs ?? ADVISORY_GRACE_MS);
     for (const asked of answers) {
       // 여러 묶음에서 한 자리가 한 번이라도 실패했으면 그 상태를 남긴다(뒤 묶음의 성공이 덮지 않는다).
       if ((reviewers.get(asked.family)?.status ?? "ok") === "ok") reviewers.set(asked.family, asked.status);

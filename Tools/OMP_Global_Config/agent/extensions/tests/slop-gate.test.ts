@@ -238,7 +238,7 @@ describe("reviewer 배정: cross_review와 같은 reviewerLanes", () => {
     expect(advisoryAttempt?.aborted).toBe(true);
   }, 5_000);
 
-  test("필수 reviewer가 모두 끝나면 기다리던 자문 reviewer는 기한 전이라도 끊겨 성공이 아닌 중단으로 기록되고 통과를 막지 않는다", async () => {
+  test("필수 reviewer가 모두 끝나면 기다리던 자문 reviewer는 기한 전이라도 유예가 지나면 끊겨 성공이 아닌 중단으로 기록되고 통과를 막지 않는다", async () => {
     const cwd = scratch();
     write(cwd);
     let advisoryAttempt: AbortSignal | undefined;
@@ -246,7 +246,7 @@ describe("reviewer 배정: cross_review와 같은 reviewerLanes", () => {
       if (lane === "advisory") { advisoryAttempt = attempt; return new Promise<never>(() => {}); }
       return { model: "fixture/openai", text: JSON.stringify(clean([...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!))) };
     };
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, stalled, { advisoryTimeoutMs: 60_000 }), signal);
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, stalled, { advisoryTimeoutMs: 60_000, advisoryGraceMs: 30 }), signal);
     expect(out.files[0]!.status).toBe("pass");
     expect(out.advisoryReviewers?.[0]).toContain("advisory: error");
     expect(out.advisoryReviewers?.[0]).toContain("every required reviewer had finished");

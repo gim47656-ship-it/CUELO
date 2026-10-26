@@ -2333,7 +2333,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     expect(result.advisoryReviewers).toContain("timed out");
     // 시작 알림에는 두 reviewer가 기다리는 중으로, 마지막 알림에는 자문 timeout이 보인다.
     expect(progress[0]).toContain("openai (required) waiting");
-    expect(progress[0]).toContain("advisory waiting (gives up at 0.04 s or when every required reviewer has finished, nonblocking)");
+    expect(progress[0]).toContain("advisory waiting (gives up at 0.04 s, or 20 s after every required reviewer has finished, nonblocking)");
     expect(progress.at(-1)).toContain("advisory timed out");
     const count = progress.length;
     late.resolve({ model: FABLE, text: finding("late advisory finding") });
@@ -2343,7 +2343,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ passable: true, findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
   }, 5_000);
 
-  test("필수 reviewer가 모두 끝나면 아직 기다리는 자문은 기한 전이라도 곧바로 끊겨 성공이 아닌 중단으로 기록되고, 늦게 온 자문 답은 버린다", async () => {
+  test("필수 reviewer가 모두 끝나면 아직 기다리는 자문은 기한 전이라도 유예가 지나면 끊겨 성공이 아닌 중단으로 기록되고, 늦게 온 자문 답은 버린다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     let advisoryAttempt: AbortSignal | undefined;
@@ -2351,7 +2351,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     const progress: string[] = [];
     const started = Date.now();
     const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000, onProgress: (update) => progress.push(update.text),
+      ...deps(env, {}), advisoryTimeoutMs: 60_000, advisoryGraceMs: 30, onProgress: (update) => progress.push(update.text),
       complete: async (family, _prompt, attempt) => {
         if (family !== "advisory") return { model: ASTRA, text: finding("required finding") };
         advisoryAttempt = attempt;
@@ -2371,6 +2371,28 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     await Promise.resolve();
     expect(progress).toHaveLength(count);
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
+  }, 5_000);
+
+  test("필수 reviewer가 끝난 뒤 유예 안에 온 자문 답은 버리지 않고 finding으로 남는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    let advisoryAttempt: AbortSignal | undefined;
+    const required = Promise.withResolvers<{ model: string; text: string }>();
+    const result = await runReview(input(), {
+      ...deps(env, {}), advisoryTimeoutMs: 60_000, advisoryGraceMs: 60_000,
+      complete: async (family, _prompt, attempt) => {
+        if (family !== "advisory") return required.promise;
+        advisoryAttempt = attempt;
+        // 필수 reviewer를 끝낸 뒤에야 자문이 답한다. 예전 동작이면 이 답은 끊겨 버려진다.
+        required.resolve({ model: ASTRA, text: finding("required finding") });
+        await required.promise;
+        for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+        return { model: FABLE, text: finding("advisory finding") };
+      },
+    }, signal);
+    expect(advisoryAttempt?.aborted).toBe(false);
+    expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1", "R1-ADV-1"]);
+    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "ok", advisory: true }]);
   }, 5_000);
 
   test("필수 reviewer보다 먼저 온 자문 답은 필수 reviewer를 기다린 뒤에도 그대로 쓰이고, 필수 실패는 자문 답이 있어도 통과할 수 없다", async () => {
