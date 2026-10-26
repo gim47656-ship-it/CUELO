@@ -10,7 +10,7 @@ import * as realPdf from "../draft/pdf";
 import skim, { DEEPSEEK, GEMINI } from "../skim";
 
 // bun `mock.module`은 이미 import한 모듈의 live export를 바꾼다. 되돌릴 원본은 어떤 mock보다 먼저 값으로 잡아 둔다.
-const ORIGINAL_PDF = { findEdge: realPdf.findEdge, renderPdf: realPdf.renderPdf };
+const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPdf.renderPdf };
 
 // 실제 SDK 경로 통합 회귀: 모델이 skim·draft 도구를 부르면 AgentSession의 tool 실행 → 확장 wrapper →
 // 세션 toolResult(isError)까지 간다. 부모·helper 모델은 모두 무과금 fake다(부모는 stream 함수, helper는
@@ -235,20 +235,20 @@ describe("helper tool result contract through the SDK", () => {
     behavior["glm-fake"] = "fail";
     const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
     roots.push(root);
-    // 실제 Windows Edge를 띄우지 않도록 PDF 백엔드만 대체한다. 끝나면 미리 잡아 둔 원본 값으로 되돌리고 identity를 확인한다.
-    mock.module("../draft/pdf", () => ({ findEdge: async () => "mock-edge", renderPdf: async () => { throw new Error("mock Edge print failed"); } }));
+    // 실제 ego lite·Windows Edge를 띄우지 않도록 PDF 백엔드만 대체한다. 끝나면 미리 잡아 둔 원본 값으로 되돌리고 identity를 확인한다.
+    mock.module("../draft/pdf", () => ({ findPdfBackend: async () => "ego", renderPdf: async () => { throw new Error("mock PDF print failed"); } }));
     try {
       expect(realPdf.renderPdf).not.toBe(ORIGINAL_PDF.renderPdf);
       const out = await callTool("draft", { instruction: "보고서", output: "out.pdf" }, { draft: GLM }, root);
       expect(out.isError).toBe(true);
       expect(out.text).toContain(`${GLM} 실패:`);
-      expect(out.text).toContain(`${DEEPSEEK}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: mock Edge print failed`);
+      expect(out.text).toContain(`${DEEPSEEK}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: mock PDF print failed`);
       expect(existsSync(join(root, "out.pdf"))).toBe(false);
       expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
     } finally {
       mock.module("../draft/pdf", () => ORIGINAL_PDF);
     }
-    expect(realPdf.findEdge).toBe(ORIGINAL_PDF.findEdge);
+    expect(realPdf.findPdfBackend).toBe(ORIGINAL_PDF.findPdfBackend);
     expect(realPdf.renderPdf).toBe(ORIGINAL_PDF.renderPdf);
   });
 

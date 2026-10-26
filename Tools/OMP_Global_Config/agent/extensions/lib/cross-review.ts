@@ -58,7 +58,7 @@ export const REVIEW_TIMEOUT_MS = 600_000;
 export const SLOT: Record<Family, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic", google: "crossReviewGoogle" };
 /** 늘 함께 도는 자문 reviewer 계열. 답하면 finding은 다른 reviewer와 똑같이 닫아야 하지만, 실패(error·unparsable)는 기록만 하고 통과 가능 여부를 정하지 않는다. */
 export const ADVISORY_FAMILY: Family = "google";
-const FAMILY_TAG: Record<Family, string> = { openai: "OAI", anthropic: "ANT", google: "GGL" };
+export const FAMILY_TAG: Record<Family, string> = { openai: "OAI", anthropic: "ANT", google: "GGL" };
 export const DELETED_BLOB = "deleted";
 /** 원장에 남기는 reviewer 원문 발췌 길이. 전문은 사본 디렉터리의 raw-<계열>.txt에 둔다. */
 const RAW_EXCERPT_CHARS = 20_000;

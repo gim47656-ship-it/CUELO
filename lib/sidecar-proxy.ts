@@ -44,7 +44,7 @@ export function resolveSidecarTarget(
     if (
       normalizedMethod === "GET"
       && segments.length === 1
-      && (segments[0] === "usage" || segments[0] === "models")
+      && (segments[0] === "usage" || segments[0] === "models" || segments[0] === "credits")
     ) {
       return {
         url: `${RESOURCE_ORIGIN}/${segments[0]}`,
@@ -65,6 +65,15 @@ export function resolveSidecarTarget(
       return {
         url: `${RESOURCE_ORIGIN}/credential/${credentialId}/${segments[2]}`,
         body: segments[2] === "reset" ? "json" : "none",
+        accept: "application/json",
+        origin: CUELO_LOOPBACK_ORIGIN,
+      };
+    }
+
+    if (normalizedMethod === "POST" && segments.length === 2 && segments[0] === "credits" && segments[1] === "settings") {
+      return {
+        url: `${RESOURCE_ORIGIN}/credits/settings`,
+        body: "json",
         accept: "application/json",
         origin: CUELO_LOOPBACK_ORIGIN,
       };

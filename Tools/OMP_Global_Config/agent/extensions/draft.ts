@@ -3,7 +3,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
 import { docx, parseCsv, parseWorkbook, xlsx } from "./draft/ooxml";
-import { findEdge, renderPdf } from "./draft/pdf";
+import { findPdfBackend, renderPdf } from "./draft/pdf";
 import { collect, completeRole, HelperCallError, SECRET_EXTENSION, SECRET_NAME, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
@@ -132,7 +132,7 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
   try {
     const target = await resolveTarget(ctx.cwd, input.output, overwrite);
     // PDF 인쇄 수단이 없으면 모델 할당량을 쓰기 전에 멈춘다.
-    if (target.format === "pdf") await findEdge();
+    if (target.format === "pdf") await findPdfBackend(signal);
     let chunks: string[] = [];
     if (input.paths?.length) {
       const gathered = await collect({ paths: input.paths }, ctx.cwd, signal, "draft");
@@ -165,13 +165,15 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
     }
     const { model: used, value: prepared, failures } = outcome;
     let bytes = prepared.bytes;
+    let printWarnings: string[] = [];
     if (prepared.html !== undefined) {
-      try { bytes = await renderPdf(prepared.html, signal); } catch (error) {
+      try { ({ pdf: bytes, warnings: printWarnings } = await renderPdf(prepared.html, signal)); } catch (error) {
         return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
       }
     }
+    const warned = () => printWarnings.map((warning) => `경고: ${warning}`);
     try { await save(target, bytes!, overwrite); } catch (error) {
-      return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 ${target.rel} 저장에 실패했습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: true };
+      return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 ${target.rel} 저장에 실패했습니다: ${message(error)}`, ...warned(), ...skipped()].join("\n\n"), isError: true };
     }
     return { text: [
       `model: ${used}`,
@@ -179,6 +181,7 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       `저장: ${target.rel} (${bytes!.length}바이트, ${target.format}${target.exists ? ", 덮어씀" : ""})`,
       ["개요:", ...prepared.summary.map((line) => `- ${line}`)].join("\n"),
       `검토: 초안입니다. 사용 전에 파일을 직접 열어 사실·수치·형식을 확인하세요.${chunks.length ? ` 참고 자료 내용은 ${used}의 제공자로 전송됐습니다.` : ""}`,
+      ...warned(),
       ...skipped(),
     ].join("\n\n"), isError: false };
   } catch (error) {
@@ -190,7 +193,7 @@ export default function draft(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "draft", label: "Draft", loadMode: "essential", approval: "write",
-    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Vertex Gemini 4 Argon)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 Hive의 DeepSeek 1017로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL의 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체 Hive)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
+    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Vertex Gemini 4 Argon)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 Hive의 DeepSeek 1017로 한 번 대체합니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL에서 ego lite TaskSpace로 인쇄하고 ego lite가 없는 PC에서만 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체 Hive)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·규칙·HANDOFF·정확한 줄 수정에는 edit/write를 쓰세요.",
     parameters: z.object({
       instruction: z.string().describe("무엇을 쓸지: 목적·독자·구성·분량·언어"),
       output: z.string().describe("cwd 기준 저장 경로. 확장자가 형식을 정함: .md .txt .csv .xlsx .docx .pdf"),

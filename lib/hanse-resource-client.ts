@@ -1,3 +1,10 @@
+import {
+  isApiCreditsSnapshot,
+  type ApiCreditsSnapshot,
+  type CreditSettingInput,
+  type CreditWalletId,
+} from "./api-credits";
+
 export const HANSE_RESOURCE_ORIGIN = "/api/sidecars/resource";
 export const USAGE_POLL_INTERVAL_MS = 60_000;
 export const MODEL_REQUEST_TIMEOUT_MS = 120_000;
@@ -729,6 +736,43 @@ export async function loadModelStats(
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }
+}
+
+export const API_CREDITS_TIMEOUT_MS = 60_000;
+
+/** API 크레딧 추정. 지갑별 실패는 본문의 status/error로 오고, 여기서 실패하는 것은 사이드카 자체의 실패다. */
+export async function loadApiCredits(
+  options: ResourceRequestOptions<ApiCreditsSnapshot> = {},
+): Promise<ResourceLoadState<ApiCreditsSnapshot>> {
+  try {
+    const data = await requestJson<ApiCreditsSnapshot>(
+      `${HANSE_RESOURCE_ORIGIN}/credits${options.refresh === true ? "?refresh=1" : ""}`,
+      { ...options, timeoutMs: options.timeoutMs ?? API_CREDITS_TIMEOUT_MS },
+    );
+    if (!isApiCreditsSnapshot(data)) {
+      throw new ResourceClientError("API 크레딧 응답 형식이 올바르지 않습니다.", "invalid-response");
+    }
+    return { status: "fresh", data, error: null };
+  } catch (error) {
+    return fallback(options.previous, toClientError(error, false));
+  }
+}
+
+/** 지갑 하나의 총액·시작일(·만료일)을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
+export async function saveApiCreditSetting(
+  wallet: CreditWalletId,
+  value: CreditSettingInput | null,
+  options: CredentialActionOptions = {},
+): Promise<void> {
+  await requestJson<{ ok: true }>(`${HANSE_RESOURCE_ORIGIN}/credits/settings`, {
+    ...options,
+    timeoutMs: options.timeoutMs ?? CREDENTIAL_ACTION_TIMEOUT_MS,
+    fetchImpl: async (url, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Content-Type", "application/json");
+      return (options.fetchImpl ?? fetch)(url, { ...init, method: "POST", headers, body: JSON.stringify({ wallet, value }) });
+    },
+  });
 }
 
 export interface CredentialActionResult {

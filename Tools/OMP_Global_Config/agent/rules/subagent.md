@@ -302,8 +302,8 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   원인·구현 방향을 확정 사실처럼 적었는가 ③ 요구하지 않은 작업을 넣거나 수용 조건을 바꿨는가.
   정본은 `harness-policy.json`의 `briefContextRelay.preDispatchCrossCheck`다. 수용 조건을 낮추는
   것은 사용자만 할 수 있고, 조각을 쉽게 만들려고 낮추지 않는다.
-- high-risk 조각(코드 성질 trigger 또는 프로젝트 material risk)이면 `# Acceptance`에 Maker의 보고 전
-  `cross_review` 요청을 평문 한 줄로 넣는다. 새 `TASK_GUARD` 필드나 task 인자는 쓰지 않는다. 절차는
+- 코드 파일을 바꾸는 Maker 조각은 지시서에 적지 않아도 Maker가 보고 전에 자기 바뀐 코드로 `cross_review`를 돌린다
+  (2026-10-26 사용자 지적: 지시서에 줄을 빠뜨려 Main이 직접 검토를 돌렸고, 그동안 대화가 멈췄다). 절차는
   「검수와 수용」의 「Maker의 보고 전 교차검증」이다.
 - 수용 조건은 **관측 경로가 실재하는 것만** 적는다. 통과 경로가 없는 조건은 조건이 아니라 미확인
   항목이다. 새 계약을 정본·발주문에 단정으로 쓰기 전에 그 계약을 **소비하는 경로**(도구 스키마·
@@ -664,17 +664,17 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
   사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
   `mainLane.workerReview.crossFamilyReview`다.
-- **Maker의 보고 전 교차검증.** high-risk 조각(코드 성질 trigger 또는 프로젝트 material risk)을 맡길 때
-  Main은 브리프 `# Acceptance`에 평문 한 줄(예: "Before reporting, run cross_review review on your
-  changed code files and report the chain")로 요청한다. 새 `TASK_GUARD` 필드나 task 인자는 두지 않는다.
-  그 줄을 받은 Maker는 자기 집중 검사가 통과한 뒤 완료 보고 전에 바뀐 코드 파일(문서·주석·테스트 제외,
-  `git_finalize` 게이트와 같은 범위)로 `review`를 돌린다. `authors`는 자기 모델 selector이며 subagent
+- **Maker의 보고 전 교차검증.** 코드 파일을 바꾼 Maker는 지시서의 요청 여부와 관계없이(Maker SOP 기본 동작)
+  자기 집중 검사가 통과한 뒤 완료 보고 전에 바뀐 코드 파일(문서·주석·테스트 제외, `git_finalize` 게이트와
+  같은 범위)로 `review`를 돌린다. Main은 Maker 소유 코드에 `cross_review`를 직접 돌리지 않는다. 한 라운드가
+  수 분씩 걸려 그동안 Main이 사용자와 대화하지 못하기 때문이다(2026-10-26 사용자 지적). 지적을 전하거나 다음
+  라운드가 필요하면 그 Maker에게 메시지로 넘기고, Main은 resolve만 한다. `authors`는 자기 모델 selector이며 subagent
   세션의 `"main"`은 자식 모델로 풀리므로 도구가 거절한다. finding마다 고치거나 근거로 반박하고, probe
   라운드를 쓸 수 있으며, 고친 뒤에는 같은 체인의 delta 라운드를 돌린다. `resolve`는 부르지 않고
   reviewId 체인과 finding별 제안 status(`fixed`·`refuted`·`limit`)·근거 locator를 보고한다. 마지막
   라운드 뒤 검토한 파일을 바꾸려면 라운드를 하나 더 돌린다(통과 지문은 resolve 시점 blob이다).
   Main은 그 근거를 코드로 확인하고 같은 내용을 다시 review하지 않고 Maker의 체인을 `resolve`한다.
-  Maker의 마지막 라운드 뒤 내용이 바뀐 경우에만 Main이 새 라운드를 시작한다. `git_finalize` 게이트는
+  Maker의 마지막 라운드 뒤 내용이 바뀌었으면 Main이 직접 돌리지 않고 그 Maker에게 새 라운드를 시키며, Maker가 이미 끝나 다시 깨울 수 없을 때만 Main이 돌린다. `git_finalize` 게이트는
   그대로다. 정본은 `mainLane.workerReview.crossFamilyReview.makerReview`다.
 - Main은 각 finding을 `ACCEPTED`·`REJECTED_WITH_EVIDENCE`·`ESCALATED`로 판정한다. 재작업 주문에는
   사용자 관측·재현 결과 또는 실제 diff와 요구 계약의 모순 및 정확한 locator가 필요하다.

@@ -95,7 +95,7 @@ function clip(text: string): string {
   return `${text.slice(0, MAX_HEAD)}\n… ${text.length - MAX_HEAD - MAX_TAIL}자 생략 …\n${text.slice(-MAX_TAIL)}`;
 }
 
-function isUnavailable(error: unknown): boolean {
+export function isUnavailable(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 

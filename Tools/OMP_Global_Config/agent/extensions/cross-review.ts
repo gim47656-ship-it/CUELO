@@ -30,7 +30,10 @@ const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: t
 const GOOGLE_PROVIDERS: Record<string, true> = { "google-vertex": true, google: true, "google-antigravity": true, "google-gemini-cli": true };
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
-async function completeReviewer(family: Family, prompt: string, ctx: ExtensionContext, signal: AbortSignal): Promise<{ model: string; text: string }> {
+/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. */
+export async function completeReviewer(
+  family: Family, prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string } = {},
+): Promise<{ model: string; text: string; usage: { input: number; output: number; cacheRead: number; cost: number } }> {
   const slot = SLOT[family];
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
@@ -46,7 +49,7 @@ async function completeReviewer(family: Family, prompt: string, ctx: ExtensionCo
   const sessionId = ctx.sessionManager.getSessionId();
   if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new ReviewerCallError(`No credentials for ${name}.`, name);
   const response = await completeSimple(model, {
-    systemPrompt: [REVIEW_SYSTEM],
+    systemPrompt: [options.system ?? REVIEW_SYSTEM],
     messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
   }, {
     apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined,
@@ -55,14 +58,14 @@ async function completeReviewer(family: Family, prompt: string, ctx: ExtensionCo
   });
   // 응답이 돌아온 시도는 오류·빈 답도 청구되므로 먼저 장부에 남긴다(skim completeRole과 같다).
   (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-    purpose: "cross-review", role: slot, api: model.api, provider: model.provider, model: model.id,
+    purpose: options.purpose ?? "cross-review", role: slot, api: model.api, provider: model.provider, model: model.id,
     usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
   }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
   const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
   // 출력 한도·오류로 끝나도 모델이 낸 부분 답은 원문으로 남긴다(통과는 못 한다).
   if (response.stopReason !== "stop") throw new ReviewerCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, text || undefined);
   if (!text) throw new ReviewerCallError(`${name} returned an empty answer.`, name);
-  return { model: name, text };
+  return { model: name, text, usage: { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cost: response.usage.cost?.total ?? 0 } };
 }
 
 function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): ReviewDeps {

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
+import { appendSlopRecord, readSlopRecords, runSlopGate, sha256 } from "../../extensions/lib/slop-gate";
 import factory, { hasPosixGitdirWorktree, windowsDrivePaths } from "./index";
 import { selectGitExecutor, windowsPathToPosix } from "./wsl-git";
 
@@ -1133,26 +1134,26 @@ describe("WSL drive git executor selection", () => {
   });
 });
 
+const wipe = "import { rmSync } from \"node:fs\";\nexport const wipe = (path: string) => rmSync(path, { recursive: true });\n";
+
+async function reviewAndResolve(work: string, ledger: string, files: string[]) {
+  const store = createRoutingLedger(ledger);
+  const deps = {
+    cwd: work, sessionId: "gate-test", mainModel: "anthropic/claude-opus-5-5", exec: spawnExec(),
+    readAll: () => readCrossReviewRecords(ledger), append: (record: Parameters<typeof store.append>[0]) => store.append(record),
+    snapshotRoot: join(dirname(ledger), "snapshots"),
+    complete: async () => ({ model: "openai-codex/gpt-6-astra", text: "{\"findings\":[]}" }),
+  };
+  const review = await runReview({ files, acceptance: "must not delete", authors: ["main"] }, deps, new AbortController().signal);
+  return runResolve({ reviewId: review.reviewId, resolutions: [] }, deps);
+}
+
 describe("cross-family review gate", () => {
   const savedLedger = process.env.OMP_CROSS_REVIEW_LEDGER;
   afterEach(() => {
     if (savedLedger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER;
     else process.env.OMP_CROSS_REVIEW_LEDGER = savedLedger;
   });
-
-  const wipe = "import { rmSync } from \"node:fs\";\nexport const wipe = (path: string) => rmSync(path, { recursive: true });\n";
-
-  async function reviewAndResolve(work: string, ledger: string, files: string[]) {
-    const store = createRoutingLedger(ledger);
-    const deps = {
-      cwd: work, sessionId: "gate-test", mainModel: "anthropic/claude-opus-5-5", exec: spawnExec(),
-      readAll: () => readCrossReviewRecords(ledger), append: (record: Parameters<typeof store.append>[0]) => store.append(record),
-      snapshotRoot: join(dirname(ledger), "snapshots"),
-      complete: async () => ({ model: "openai-codex/gpt-6-astra", text: "{\"findings\":[]}" }),
-    };
-    const review = await runReview({ files, acceptance: "must not delete", authors: ["main"] }, deps, new AbortController().signal);
-    return runResolve({ reviewId: review.reviewId, resolutions: [] }, deps);
-  }
 
   test("refuses a marker-hitting code change, passes after review+resolve, and never gates docs", async () => {
     const { root, work, remote } = await createRepository();
@@ -1209,5 +1210,113 @@ describe("cross-family review gate", () => {
     const waived = await startTool(work, ["plain.ts"], { crossReviewHighRisk: true, crossReviewWaiver: "user approved skipping review" });
     expect(waived.error).toBeUndefined();
     expect(readCrossReviewRecords(join(root, "ledger.jsonl"))).toMatchObject([{ type: "cross-review-waiver", reason: "user approved skipping review" }]);
+  }, TEST_TIMEOUT_MS);
+});
+
+describe("AI-slop gate", () => {
+  const savedLedger = process.env.OMP_SLOP_GATE_LEDGER;
+  afterEach(() => {
+    if (savedLedger === undefined) delete process.env.OMP_SLOP_GATE_LEDGER;
+    else process.env.OMP_SLOP_GATE_LEDGER = savedLedger;
+  });
+  const readme = "# 소개\n\n저장 버튼을 누르면 파일이 내려받기 폴더에 들어간다.\n";
+
+  function passFor(ledger: string, abs: string, content: string): void {
+    appendSlopRecord(ledger, { type: "slop-pass", path: abs, sha256: sha256(content), reviewedAt: "2026-10-26T00:00:00Z", model: "fake/reviewer", reviewId: "slop-test", findings: [] });
+  }
+
+  test("refuses a visible artifact without a pass, commits it after the pass, and refuses again once a byte changes", async () => {
+    const { root, work, remote } = await createRepository();
+    const ledger = join(root, "slop.jsonl");
+    process.env.OMP_SLOP_GATE_LEDGER = ledger;
+    const before = git(work, ["rev-parse", "HEAD"]);
+
+    await writeFile(join(work, "README.md"), readme);
+    const refused = await startTool(work, ["README.md"]);
+    expect(refused.error?.message).toContain("git_finalize failed at slop-gate");
+    expect(refused.error?.message).toContain("- README.md");
+    expect(refused.error?.message).toContain("slop_check");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+
+    passFor(ledger, join(work, "README.md"), readme);
+    const passed = await startTool(work, ["README.md"]);
+    expect(passed.error).toBeUndefined();
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(git(work, ["rev-parse", "HEAD"]));
+
+    await writeFile(join(work, "README.md"), `${readme}한 줄을 더했다.\n`);
+    const stale = await startTool(work, ["README.md"]);
+    expect(stale.error?.message).toContain("failed at slop-gate");
+    expect(stale.error?.message).toContain("older version");
+  }, TEST_TIMEOUT_MS);
+
+  test("never gates code, tests, internal records or data files, and the gate hands finalizer the blob of the checked bytes", async () => {
+    const { root, work } = await createRepository();
+    process.env.OMP_SLOP_GATE_LEDGER = join(root, "slop.jsonl");
+    await mkdir(join(work, "doc", "history"), { recursive: true });
+    await writeFile(join(work, "doc", "history", "record.md"), "내부 기록\n");
+    await writeFile(join(work, "HANDOFF.md"), "# handoff\n");
+    await writeFile(join(work, "a.txt"), "data change\n");
+    const internal = await startTool(work, ["doc/history/record.md", "HANDOFF.md", "a.txt"]);
+    expect(internal.error).toBeUndefined();
+
+    await writeFile(join(work, "b.txt"), "plain data\n");
+    await writeFile(join(work, "guide.md"), readme);
+    passFor(join(root, "slop.jsonl"), join(work, "guide.md"), readme);
+    const outcome = await runSlopGate({ cwd: work, files: ["guide.md", "b.txt"], ledgerPath: join(root, "slop.jsonl") });
+    expect(outcome.artifacts).toEqual([{ path: "guide.md", sha256: sha256(readme) }]);
+    expect(outcome.gateBlobs).toEqual({ "guide.md": git(work, ["hash-object", "guide.md"]), "b.txt": git(work, ["hash-object", "b.txt"]) });
+  }, TEST_TIMEOUT_MS);
+
+  test("a mixed commit keeps the cross-review gate in force: reviewed code and a passed document are committed together, and an unreviewed code file is still refused at cross-review", async () => {
+    const { root, work, remote } = await createRepository();
+    const slopLedger = join(root, "slop.jsonl");
+    const crossLedger = join(root, "cross.jsonl");
+    process.env.OMP_SLOP_GATE_LEDGER = slopLedger;
+    const savedCross = process.env.OMP_CROSS_REVIEW_LEDGER;
+    process.env.OMP_CROSS_REVIEW_LEDGER = crossLedger;
+    try {
+      await writeFile(join(work, "wipe.ts"), wipe);
+      await writeFile(join(work, "README.md"), readme);
+      passFor(slopLedger, join(work, "README.md"), readme);
+      const refused = await startTool(work, ["wipe.ts", "README.md"]);
+      expect(refused.error?.message).toContain("failed at cross-review");
+
+      expect((await reviewAndResolve(work, crossLedger, ["wipe.ts"])).pass).toBe(true);
+      const passed = await startTool(work, ["wipe.ts", "README.md"]);
+      expect(passed.error).toBeUndefined();
+      const sha = git(work, ["rev-parse", "HEAD"]);
+      expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(sha);
+      expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).split(/\r?\n/).sort()).toEqual(["README.md", "wipe.ts"]);
+    } finally {
+      if (savedCross === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER;
+      else process.env.OMP_CROSS_REVIEW_LEDGER = savedCross;
+    }
+  }, TEST_TIMEOUT_MS);
+
+  test("a recorded waiver lets the commit through and names the files and hashes in the ledger", async () => {
+    const { root, work } = await createRepository();
+    const ledger = join(root, "slop.jsonl");
+    process.env.OMP_SLOP_GATE_LEDGER = ledger;
+    await writeFile(join(work, "README.md"), readme);
+    const waived = await startTool(work, ["README.md"], { slopGateWaiver: "user approved skipping the slop check" });
+    expect(waived.error).toBeUndefined();
+    expect(readSlopRecords(ledger)).toMatchObject([{ type: "slop-waiver", reason: "user approved skipping the slop check", files: [{ path: "README.md", sha256: sha256(readme) }] }]);
+  }, TEST_TIMEOUT_MS);
+
+  test("a pass for the content does not cover a file whose bytes differ at the lock: the blob check still refuses", async () => {
+    const { root, remote, work } = await createRepository();
+    const ledger = join(root, "slop.jsonl");
+    process.env.OMP_SLOP_GATE_LEDGER = ledger;
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "README.md"), readme);
+    passFor(ledger, join(work, "README.md"), readme);
+    const outcome = await runSlopGate({ cwd: work, files: ["README.md"], ledgerPath: ledger });
+    await writeFile(join(work, "README.md"), `${readme}게이트 뒤에 바뀐 줄\n`);
+    const { result, output } = await startFinalizer(root, work, "slop-late-change", ["README.md"], "late change", { gateBlobs: outcome.gateBlobs });
+    expect(result.code).toBe(1);
+    expect(output.stage).toBe("cross-review-verify");
+    expect(output.error).toContain("README.md changed after the review check");
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
   }, TEST_TIMEOUT_MS);
 });
