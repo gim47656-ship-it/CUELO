@@ -61,7 +61,7 @@ export interface ReviewOutcome { /** "main"을 푼 저자 selector. reviewer 계
 // ── 기준(스킬 본문) ──────────────────────────────────────────────────────────
 
 const RUBRIC_FILES: Record<string, string[]> = {
-  humanizer: ["humanizer/SKILL.md"],
+  humanizer: ["humanizer/SKILL.md", "humanizer/references/punctuation-patterns.md", "humanizer/references/spacing-patterns.md", "humanizer/references/pos-patterns.md", "humanizer/references/vocabulary-patterns.md", "humanizer/references/structure-patterns.md", "humanizer/references/translation-ese-patterns.md"],
   "stop-slop": ["stop-slop/SKILL.md", "stop-slop/references/phrases.md", "stop-slop/references/structures.md"],
   "kill-ai-slop": ["kill-ai-slop/SKILL.md", "kill-ai-slop/references/taxonomy.md"],
 };

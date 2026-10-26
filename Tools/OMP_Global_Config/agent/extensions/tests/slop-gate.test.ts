@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import slopGate, { CONTINUATION_TYPE, executeSlopCheck, WARNING_TYPE } from "../slop-gate";
 import { appendSlopRecord, candidatesOf, classify, loadSlopConfig, mergeGateBlobs, passFor, readSlopRecords, sha256, SlopGateRefusal, trackable } from "../lib/slop-gate";
 import { htmlText, jsonStrings, literalStrings, pythonPath, extractVisible } from "../slop-gate/extract";
-import { parseAnswer, resolveFiles, reviewFiles, resolveFindings, type Complete, type SlopDeps } from "../slop-gate/review";
+import { buildPrompt, parseAnswer, resolveFiles, reviewFiles, resolveFindings, type Complete, type SlopDeps } from "../slop-gate/review";
 
 // 모델은 가짜다(결정론). 심사 흐름·원장·추적은 실제 코드가 실제 파일로 돈다.
 
@@ -506,7 +506,8 @@ describe("심사 정확성: 같은 바이트·중복 id·html 크기와 속성",
     }), signal);
     expect(out.files[0]).toMatchObject({ status: "pass", sha256: sha256(KO_PLAIN) });
     expect(reviewer.calls[0]).toContain("저장 버튼을 누르면");
-    expect(reviewer.calls[0]).not.toContain("혁신적인 솔루션");
+    // The rubric block carries humanizer's reference examples; the extracted-away text must be absent from the artifact the reviewer reads.
+    expect(reviewer.calls[0]!.slice(reviewer.calls[0]!.indexOf("<artifact "))).not.toContain("혁신적인 솔루션");
     const records = readSlopRecords(join(cwd, "ledger.jsonl"));
     expect(passFor(records, sha256(KO_PLAIN))).toBeDefined();
     expect(passFor(records, sha256(KO_SLOP))).toBeUndefined();
@@ -593,5 +594,15 @@ describe("원장 형식", () => {
     appendSlopRecord(path, { type: "slop-pass", path: "/x/b.md", sha256: "bb", reviewedAt: "t", model: "m", reviewId: "r", findings: [] });
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readSlopRecords(path).map((record) => record.type === "slop-pass" && record.sha256)).toEqual(["aa", "bb"]);
+  });
+});
+
+describe("reviewer 기준: 채점에 필요한 세부 기준이 프롬프트에 실린다", () => {
+  test("humanizer 프롬프트에 SKILL.md가 가리키는 references 여섯 파일이 그대로 들어간다", () => {
+    const skills = join(import.meta.dir, "..", "..", "skills", "humanizer");
+    const prompt = buildPrompt([], ["humanizer"]);
+    for (const file of ["punctuation", "spacing", "pos", "vocabulary", "structure", "translation-ese"]) {
+      expect(prompt).toContain(readFileSync(join(skills, "references", `${file}-patterns.md`), "utf8"));
+    }
   });
 });

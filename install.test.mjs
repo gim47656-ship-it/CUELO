@@ -12,6 +12,7 @@ import {
   portEnv,
   servicePorts,
   copyHarness,
+  listHarnessFiles,
   harnessEntries,
   HARNESS_ROLES,
   parseArgs,
@@ -460,5 +461,31 @@ test("health reports each service by its own contract and a closed port as a fai
     ]);
   } finally {
     for (const server of listening) server.stop(true);
+  }
+});
+
+test("the package ships the three slop-gate rubric skills, and a copied profile can load every rubric", async () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  const sourceDir = path.join(path.dirname(new URL(import.meta.url).pathname), "Tools", "OMP_Global_Config", "agent");
+  const entries = harnessEntries(pkg.files);
+  const agentDir = tempDir("rubrics");
+  try {
+    copyHarness(sourceDir, agentDir, entries);
+    const { loadRubric } = await import("./Tools/OMP_Global_Config/agent/extensions/slop-gate/review.ts");
+    for (const name of ["humanizer", "stop-slop", "kill-ai-slop"]) {
+      const installed = path.join(agentDir, "skills");
+      const original = path.join(sourceDir, "skills");
+      assert.equal(loadRubric(name, installed), loadRubric(name, original), `${name} rubric text`);
+      // Every shipped file (references, examples, scripts, license, upstream record) must be a byte-exact copy.
+      for (const rel of listHarnessFiles(path.join(original, name), ["."])) {
+        assert.deepEqual(fs.readFileSync(path.join(installed, name, rel)), fs.readFileSync(path.join(original, name, rel)), `${name}/${rel}`);
+      }
+      assert.ok(["LICENSE", "LICENSE.txt"].some((file) => fs.existsSync(path.join(agentDir, "skills", name, file))), `${name} license`);
+    }
+    assert.equal(fs.existsSync(path.join(agentDir, "skills", "kill-ai-slop", "scripts", "scan.mjs")), true);
+    assert.equal(fs.existsSync(path.join(agentDir, "skills", "kill-ai-slop", "scripts", "scan.test.mjs")), false);
+    assert.equal(fs.readdirSync(path.join(agentDir, "skills")).sort().join(), "humanizer,kill-ai-slop,stop-slop");
+  } finally {
+    fs.rmSync(agentDir, { recursive: true, force: true });
   }
 });

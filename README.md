@@ -51,7 +51,7 @@ Requires Node.js 22.19+ and Bun 1.4.2+. Open http://127.0.0.1:30141 and sign in 
 | 앱·런타임 설치 뒤 동작 | 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, 비밀번호 잠금, 캐릭터 알림 등. 대화에는 별도 제공자 인증이 필요합니다 |
 | 사용자가 준비할 것 | Node.js·Bun과 자신의 모델 제공자 계정·모델 선택. 소스 checkout/전체 Git 기능에는 Git(Windows는 Git for Windows)도 필요합니다. 인증정보·세션·설정은 사용자의 로컬 `~/.omp/agent`에 저장합니다 |
 | 로컬 사이드카 (공개) | 계정 사용량 카드, 사이드 챗(`/btw`), SubAgent 아카이브의 실행 소스도 포함합니다. `start`가 앱과 함께 실행합니다. usage의 CLI fallback·`stats`에는 별도 `omp` CLI가 필요합니다 |
-| OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 말투, 명령 가드의 규칙·SOP·확장과 앱 SDK core 패치입니다. `setup`으로 설치합니다. [하네스 안내](./docs/harness.md)에 Jev의 외부 자격 경계가 있습니다 |
+| OMP 하네스 (공개) | Main/Maker 역할 분담, 발주·검수 계약, task guard, 판단 라우팅(Jev), 캐릭터 말투, 명령 가드의 규칙·SOP·확장과 앱 SDK core 패치입니다. `setup`으로 설치합니다. npm 배포본에는 문서·화면 문구 점검용 공개 스킬과 참조 자료·라이선스도 포함하며, 개인 스킬은 제외합니다. [하네스 안내](./docs/harness.md)에 Jev의 외부 자격 경계가 있습니다 |
 | 포함하지 않는 것 | 개발자의 로그인 정보·API 키·개인 계정 및 모델 설정·개인 skill·대화와 작업 기록·PC별 운영 자료. 공개 설치는 필요한 비개인 운영 기본값만 제공하고 모델은 사용자가 고릅니다 |
 
 ## CUELO에서 할 수 있는 것
