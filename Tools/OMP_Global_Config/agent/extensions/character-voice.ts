@@ -1,3 +1,6 @@
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 export type BuiltinCharacterAlias =
@@ -9,7 +12,8 @@ export type BuiltinCharacterAlias =
   | "SHION(시온)"
   | "HIKARI(히카리)";
 
-export type CharacterAlias = BuiltinCharacterAlias;
+/** 내장 7개 + 사무실 모드가 PC 프로필(roster)에서 자리마다 들여오는 동적 alias. */
+export type CharacterAlias = BuiltinCharacterAlias | (string & {});
 
 interface OAuthAccountLike {
   position?: number;
@@ -175,20 +179,203 @@ function buildNameRegexes(pattern: string): { nameInCommand: RegExp; switchComma
 const QUOTED_SPAN = /```[\s\S]*?```|`[^`\n]*`|'[^'\n]*'|"[^"\n]*"|‘[^’\n]*’|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|^[ \t]*>.*$/gmu;
 const SUMMON_MARKER_PREFIX = /\[character-summon\s/u;
 
-const NAME_REGEXES = buildNameRegexes(CHARACTER_NAME_PATTERN);
+// ── 사무실 모드 ───────────────────────────────────────────────────────────────
+// 서버 전체 「기본 / 사무실 모드」. 사무실 모드에서는 roster에 항목이 있는 자리의 캐릭터만 PC 프로필의 것으로
+// 바뀐다(자리의 모델·oauth 위치·toolCapable은 그대로). 모드 파일 `<agentDir>/cuelo-character-mode.json`
+// {"mode":"default"|"office"}과 `<agentDir>/characters-office/roster.json`을 요청마다 mtime 캐시로 읽고,
+// 없거나 깨졌으면 그 자리는 기본이다. 실존 인물에서 온 이름·자산은 저장소가 아니라 프로필에만 둔다.
+interface OfficeSeat {
+  seat: BuiltinCharacterAlias;
+  alias: string;
+  voice: CharacterVoice;
+}
+
+interface OfficeState {
+  byAlias: ReadonlyMap<string, OfficeSeat>;
+  bySeat: ReadonlyMap<BuiltinCharacterAlias, OfficeSeat>;
+  /** roster `names`(소문자) → 사무실 alias. 자리의 기본 이름은 NAME_TO_ALIAS가 같은 자리로 푼다. */
+  extraNames: ReadonlyMap<string, string>;
+  /** 채택한 face 파일과 그 stamp. 파일이 바뀌거나 지워지면 캐시를 다시 만든다. */
+  watched: ReadonlyArray<readonly [string, string]>;
+  nameInCommand: RegExp;
+  switchCommand: RegExp;
+}
+
+const DEFAULT_OFFICE_STATE: OfficeState = {
+  watched: [],
+  byAlias: new Map(),
+  bySeat: new Map(),
+  extraNames: new Map(),
+  ...buildNameRegexes(CHARACTER_NAME_PATTERN),
+};
+const OFFICE_MODE_FILE = "cuelo-character-mode.json";
+const OFFICE_ROSTER_FILE = join("characters-office", "roster.json");
+// alias는 `alias="…"` 속성과 summon marker의 `[^"]+`에 그대로 들어가므로 따옴표(앱 lib/character-mode.ts와 같은 집합)·꺾쇠·줄바꿈을 막는다.
+const OFFICE_ALIAS_UNSAFE = /["'`\u201C\u201D\u2018\u2019<>[\]\r\n]/u;
+const OFFICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u;
+/**
+ * 사무실 모드가 바꿀 수 있는 자리(MITSU 제외). roster의 다른 자리 항목은 무시한다. 이 순서가 자리 사이 충돌을
+ * 가리는 우선순위이며 앱(`lib/character-mode.ts` `OFFICE_SEAT_ALIASES`)과 같아야 한다.
+ */
+const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHION(시온)", "HIKARI(히카리)"];
+let officeCache: { key: string; state: OfficeState } | undefined;
+
+function officeAgentDir(): string {
+  return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent");
+}
+
+// 시각·크기만으로는 링크를 같은 크기의 일반 파일로 바꾼 것을 놓친다(Windows 파일 시각은 시스템 tick 단위라 같게 나올 수 있다).
+// 그래서 경로 자체가 링크인지와 대상 inode도 함께 본다.
+function fileStamp(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${lstatSync(path).isSymbolicLink() ? "l" : "f"}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "-";
+  }
+}
+
+function readJsonFile(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
+  } catch {
+    return undefined;
+  }
+}
+
+function voiceText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  // voice block 경계 태그가 들어 있으면 block을 깨므로 항목째 버린다.
+  return text && !/<\/?character-voice/iu.test(text) ? text : undefined;
+}
 
 function hasOwn(record: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-/** 내장 alias만 인정한다. 모르는 alias는 undefined. */
-function canonicalAlias(alias: string): CharacterAlias | undefined {
-  return hasOwn(CHARACTER_TARGETS, alias) ? (alias as CharacterAlias) : undefined;
+/** face는 characters-office 안의 실재하는 일반 파일이어야 한다. 안전하면 realpath, 아니면 undefined. */
+function officeFile(dir: string, face: unknown): string | undefined {
+  if (typeof face !== "string" || !face.trim() || isAbsolute(face) || /^[A-Za-z]:/u.test(face)) return undefined;
+  if (face.split(/[\\/]/u).includes("..")) return undefined;
+  try {
+    const root = realpathSync(join(dir, "characters-office"));
+    const real = realpathSync(join(root, face));
+    const inside = relative(root, real);
+    if (!inside || inside.startsWith("..") || isAbsolute(inside) || inside.split(sep).includes("..")) return undefined;
+    return statSync(real).isFile() ? real : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-/** alias가 가리키는 자리의 모델·oauth 위치·toolCapable. */
+function buildOfficeState(dir: string, roster: unknown): OfficeState {
+  const seats = roster && typeof roster === "object" ? (roster as { seats?: unknown }).seats : undefined;
+  if (!seats || typeof seats !== "object" || Array.isArray(seats)) return DEFAULT_OFFICE_STATE;
+  const byAlias = new Map<string, OfficeSeat>();
+  const bySeat = new Map<BuiltinCharacterAlias, OfficeSeat>();
+  const extraNames = new Map<string, string>();
+  const watched: Array<readonly [string, string]> = [];
+  const builtinAliases = new Map(Object.keys(CHARACTER_TARGETS).map((builtin) => [builtin.toLocaleLowerCase("en-US"), builtin]));
+  // 별칭과 호출 이름은 한 이름 공간(소문자), id는 따로다. 이미 채택된 자리와 하나라도 겹치면 뒤 자리 항목 전체가 무효다.
+  const claimedTokens = new Set<string>();
+  const claimedIds = new Set<string>();
+  for (const seat of OFFICE_SEATS) {
+    const entry = hasOwn(seats, seat) ? (seats as Record<string, unknown>)[seat] : undefined;
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as {
+      id?: unknown;
+      alias?: unknown;
+      names?: unknown;
+      face?: unknown;
+      voice?: { temperament?: unknown; expression?: unknown };
+    };
+    const alias = typeof raw.alias === "string" ? raw.alias.trim() : "";
+    const temperament = voiceText(raw.voice?.temperament);
+    const expression = voiceText(raw.voice?.expression);
+    const face = officeFile(dir, raw.face);
+    // 아직 없거나 무효인 face도 나중에 생기면 항목이 유효해질 수 있어 후보 경로의 stamp를 감시한다.
+    if (typeof raw.face === "string" && raw.face.trim() && !isAbsolute(raw.face) && !raw.face.split(/[\\/]/u).includes("..")) {
+      const candidate = join(dir, "characters-office", raw.face);
+      watched.push([candidate, fileStamp(candidate)]);
+    }
+    if (
+      typeof raw.id !== "string" || !OFFICE_ID.test(raw.id.trim()) ||
+      !alias || alias.length > 64 || OFFICE_ALIAS_UNSAFE.test(alias) || hasOwn(CHARACTER_TARGETS, alias) ||
+      !temperament || !expression || !face ||
+      !Array.isArray(raw.names) || raw.names.length === 0
+    ) {
+      continue;
+    }
+    // names: 전부 비지 않은 문자열이어야 하고 다른 자리의 내장 alias·호출 이름이면 항목 전체가 무효다.
+    const names: string[] = [];
+    let namesValid = true;
+    for (const name of raw.names) {
+      const lower = typeof name === "string" ? name.trim().toLocaleLowerCase("en-US") : "";
+      if (!lower || (builtinAliases.has(lower) && builtinAliases.get(lower) !== seat) || (hasOwn(NAME_TO_ALIAS, lower) && NAME_TO_ALIAS[lower] !== seat)) {
+        namesValid = false;
+        break;
+      }
+      names.push(lower);
+    }
+    if (!namesValid) continue;
+    const id = raw.id.trim();
+    const tokens = [alias.toLocaleLowerCase("en-US"), ...names];
+    if (claimedIds.has(id) || tokens.some((token) => claimedTokens.has(token))) continue;
+    claimedIds.add(id);
+    for (const token of tokens) claimedTokens.add(token);
+    const office: OfficeSeat = { seat, alias, voice: { temperament, expression } };
+    byAlias.set(alias, office);
+    bySeat.set(seat, office);
+    // face 후보 stamp는 위에서 이미 감시 목록에 넣었다.
+    // 자리의 기본 이름은 NAME_TO_ALIAS가 이미 같은 자리로 푼다. 사무실 이름은 위에서 자리 사이 유일함이 확인됐다.
+    for (const lower of names) if (!hasOwn(NAME_TO_ALIAS, lower)) extraNames.set(lower, alias);
+  }
+  if (byAlias.size === 0) return { ...DEFAULT_OFFICE_STATE, watched };
+  const escaped = [...extraNames.keys()]
+    .sort((left, right) => right.length - left.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  const pattern = escaped.length > 0 ? `(${escaped.join("|")}|${CHARACTER_NAME_PATTERN.slice(1)}` : CHARACTER_NAME_PATTERN;
+  return { byAlias, bySeat, extraNames, watched, ...buildNameRegexes(pattern) };
+}
+
+function officeState(): OfficeState {
+  try {
+    const dir = officeAgentDir();
+    const modePath = join(dir, OFFICE_MODE_FILE);
+    const rosterPath = join(dir, OFFICE_ROSTER_FILE);
+    const key = `${dir}\0${fileStamp(modePath)}\0${fileStamp(rosterPath)}`;
+    // face 파일이 지워지거나 바뀌면 같은 roster여도 항목이 무효가 될 수 있어 그 stamp도 확인한다.
+    if (officeCache?.key === key && officeCache.state.watched.every(([path, stamp]) => fileStamp(path) === stamp)) {
+      return officeCache.state;
+    }
+    const mode = readJsonFile(modePath);
+    const office = !!mode && typeof mode === "object" && (mode as { mode?: unknown }).mode === "office";
+    // roster도 face와 같이 characters-office 안의 실재 파일일 때만 읽는다(symlink로 밖을 가리키면 사무실 상태 없음).
+    const rosterReal = office ? officeFile(dir, "roster.json") : undefined;
+    const state = rosterReal ? buildOfficeState(dir, readJsonFile(rosterReal)) : DEFAULT_OFFICE_STATE;
+    officeCache = { key, state };
+    return state;
+  } catch {
+    return DEFAULT_OFFICE_STATE;
+  }
+}
+
+function seatOf(alias: string, state: OfficeState): BuiltinCharacterAlias | undefined {
+  const office = state.byAlias.get(alias);
+  if (office) return office.seat;
+  return hasOwn(CHARACTER_TARGETS, alias) ? (alias as BuiltinCharacterAlias) : undefined;
+}
+
+/** 자리(내장 alias)나 사무실 alias를 지금 모드의 화면용 alias로 정규화한다. 모르는 alias는 undefined. */
+function canonicalAlias(alias: string, state: OfficeState): CharacterAlias | undefined {
+  const seat = seatOf(alias, state);
+  return seat === undefined ? undefined : (state.bySeat.get(seat)?.alias ?? seat);
+}
+
+/** alias가 가리키는 자리의 모델·oauth 위치·toolCapable. 사무실 alias도 자리의 target을 쓴다. */
 export function characterTarget(alias: string): CharacterTarget | undefined {
-  const seat = canonicalAlias(alias);
+  const seat = seatOf(alias, officeState());
   return seat === undefined ? undefined : CHARACTER_TARGETS[seat];
 }
 
@@ -199,18 +386,22 @@ function requireTarget(alias: string): CharacterTarget {
 }
 
 function voiceFor(alias: string): CharacterVoice | undefined {
-  return hasOwn(CHARACTER_VOICES, alias) ? CHARACTER_VOICES[alias as CharacterAlias] : undefined;
+  const state = officeState();
+  const office = state.byAlias.get(alias);
+  if (office) return office.voice;
+  return hasOwn(CHARACTER_VOICES, alias) ? CHARACTER_VOICES[alias as BuiltinCharacterAlias] : undefined;
 }
 
-function aliasFromName(name: string): CharacterAlias | undefined {
-  const base = NAME_TO_ALIAS[name.toLocaleLowerCase("en-US")];
-  return base ? canonicalAlias(base) : undefined;
+function aliasFromName(name: string, state: OfficeState): CharacterAlias | undefined {
+  const lower = name.toLocaleLowerCase("en-US");
+  const base = state.extraNames.get(lower) ?? NAME_TO_ALIAS[lower];
+  return base ? canonicalAlias(base, state) : undefined;
 }
 
-function aliasesFromCommand(text: string): CharacterAlias[] {
+function aliasesFromCommand(text: string, state: OfficeState): CharacterAlias[] {
   const aliases = new Set<CharacterAlias>();
-  for (const match of text.matchAll(NAME_REGEXES.nameInCommand)) {
-    const alias = aliasFromName(match[1]!);
+  for (const match of text.matchAll(state.nameInCommand)) {
+    const alias = aliasFromName(match[1]!, state);
     if (alias) aliases.add(alias);
   }
   return [...aliases];
@@ -289,7 +480,7 @@ function injectVoiceIntoSystemBlocks(parts: readonly unknown[], block: string): 
 }
 
 function characterAliasForContext(ctx: ExtensionContext, selectedAlias: CharacterAlias | undefined): CharacterAlias | undefined {
-  const canonical = selectedAlias ? canonicalAlias(selectedAlias) : undefined;
+  const canonical = selectedAlias ? canonicalAlias(selectedAlias, officeState()) : undefined;
   const target = canonical ? characterTarget(canonical) : undefined;
   if (canonical && target && modelMatches(ctx.model, target.model)) {
     if (target.oauthPosition === undefined) return canonical;
@@ -386,13 +577,14 @@ async function switchCharacterForSession(
 }
 
 export function parseCharacterIntent(text: string): CharacterIntent | undefined {
-  const aliases = aliasesFromCommand(text);
+  const state = officeState();
+  const aliases = aliasesFromCommand(text, state);
   if (aliases.length === 0) return undefined;
   if (text.includes("교체")) {
     // alias도 인용 밖에서만 뽑아 인용 속 이름과 인용 밖 명령어가 결합되지 않게 한다.
     const command = text.replace(QUOTED_SPAN, " ");
-    const switchAliases = aliasesFromCommand(command);
-    if (!NAME_REGEXES.switchCommand.test(command) || switchAliases.length !== 1) return undefined;
+    const switchAliases = aliasesFromCommand(command, state);
+    if (!state.switchCommand.test(command) || switchAliases.length !== 1) return undefined;
     return { kind: "switch", alias: switchAliases[0]! };
   }
   return SUMMON_ACTION.test(text) ? { kind: "summon", aliases } : undefined;
@@ -400,9 +592,10 @@ export function parseCharacterIntent(text: string): CharacterIntent | undefined 
 
 /** 다른 input handler가 자연어 summon을 routing prompt로 바꾼 뒤에도 순서와 무관하게 복구한다. */
 export function parseCharacterSummonDirectives(text: string): CharacterAlias[] {
+  const state = officeState();
   const aliases = new Set<CharacterAlias>();
   for (const match of text.matchAll(SUMMON_DIRECTIVE)) {
-    const alias = canonicalAlias(match[1]!);
+    const alias = canonicalAlias(match[1]!, state);
     if (alias) aliases.add(alias);
   }
   return [...aliases];
@@ -415,7 +608,7 @@ export function anthropicCharacterForAccounts(
     const account = accounts[index]!;
     if (!account.active) continue;
     const seat = ANTHROPIC_POSITION_CHARACTER[accountPosition(account, index)];
-    return seat && canonicalAlias(seat);
+    return seat && canonicalAlias(seat, officeState());
   }
   return undefined;
 }
@@ -427,7 +620,7 @@ export function characterForProvider(
 ): CharacterAlias | undefined {
   if (provider === "anthropic") return anthropicCharacterForAccounts(accounts);
   const seat = (modelId === undefined ? undefined : MODEL_CHARACTER[`${provider}/${modelId}`]) ?? PROVIDER_CHARACTER[provider];
-  return seat && canonicalAlias(seat);
+  return seat && canonicalAlias(seat, officeState());
 }
 
 export function renderCharacterVoice(alias: CharacterAlias): string {
@@ -622,7 +815,7 @@ export function buildCharacterSummonBrief(brief: string, alias: CharacterAlias):
 
 export function parseCharacterSummonMarker(prompt: string): CharacterAlias | undefined {
   const match = SUMMON_MARKER.exec(prompt);
-  const alias = match ? canonicalAlias(match[1]!) : undefined;
+  const alias = match ? canonicalAlias(match[1]!, officeState()) : undefined;
   const target = alias === undefined ? undefined : characterTarget(alias);
   if (!match || alias === undefined || !target || target.model !== match[2]) return undefined;
   const position = match[3] === undefined ? undefined : Number(match[3]);
@@ -635,8 +828,10 @@ export function parseCharacterSummonMarker(prompt: string): CharacterAlias | und
  */
 export function malformedSummonMarkerReason(task: string): string | undefined {
   if (!SUMMON_MARKER_PREFIX.test(task) || parseCharacterSummonMarker(task) !== undefined) return undefined;
+  const state = officeState();
   const expected = (Object.keys(CHARACTER_TARGETS) as BuiltinCharacterAlias[])
     .filter((seat) => CHARACTER_TARGETS[seat].toolCapable)
+    .map((seat) => state.bySeat.get(seat)?.alias ?? seat)
     .map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``);
   return [
     "[CharacterSummonGuard] task의 character-summon marker가 exact target과 맞지 않습니다. " +

@@ -1,10 +1,12 @@
 import {
   COMPLETION_AUDIO_ALIASES,
   CUE_TAG_MEANING,
+  cueSetForId,
   selectCueAsset,
   type CompletionAudioAlias,
   type CueTag,
 } from "./completion-audio";
+import { officeCueManifest, officeSeatForAlias } from "./hanse-resource-client";
 import type { InlineUtteranceStatus } from "./inline-utterance";
 
 const STICKER_VARIANTS = ["01", "02", "03"] as const;
@@ -30,6 +32,14 @@ export function inlineStickerFor(
   status: InlineUtteranceStatus,
   utteranceKey: string,
 ): InlineSticker | null {
+  if (alias && status !== "streaming") {
+    const office = officeSeatForAlias(alias);
+    if (office) {
+      const tag: CueTag = status === "failed" ? "failed" : "done";
+      const src = selectCueAsset(cueSetForId(officeCueManifest(office), office.id, tag)?.stickers ?? [], null, () => stableRandom(utteranceKey));
+      return src ? { src, alt: CUE_TAG_MEANING[tag] } : null;
+    }
+  }
   if (!alias || status === "streaming" || !COMPLETION_AUDIO_ALIASES.includes(alias as CompletionAudioAlias)) {
     return null;
   }

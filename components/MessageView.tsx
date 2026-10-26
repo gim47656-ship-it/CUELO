@@ -28,7 +28,7 @@ import {
 } from "@/lib/message-display";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
-import { CHARACTER_ROSTER, providerDisplayName } from "@/lib/hanse-resource-client";
+import { CHARACTER_ROSTER, characterRoster, displayAlias, providerDisplayName } from "@/lib/hanse-resource-client";
 import { useAnswerStatusText } from "./answer-status/i18n";
 import { AccountAvatar } from "./workspace/AccountAvatar";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
@@ -604,9 +604,11 @@ function AssistantMessageView({
   // 음성 통화 답은 Codex가 만들지만(푸터 그대로) 얼굴·이름은 실제로 말한 캐릭터다. 기록에 화자가
   // 없거나 목록에 없는 별칭이면 계정 얼굴을 그대로 쓴다.
   const liveSpeakerEntry = message.liveSpeaker
-    ? CHARACTER_ROSTER.find((entry) => entry.alias === message.liveSpeaker?.alias)
+    ? characterRoster().find((entry) => entry.alias === message.liveSpeaker?.alias)
+      ?? CHARACTER_ROSTER.find((entry) => entry.alias === message.liveSpeaker?.alias)
     : undefined;
-  const accountFace = liveSpeakerEntry ? { seed: liveSpeakerEntry.seed, alias: liveSpeakerEntry.alias } : recordedFace;
+  // 사무실 모드에서는 기본 자리의 별칭으로 기록된 화자도 그 자리를 대신하는 캐릭터로 보인다.
+  const accountFace = liveSpeakerEntry ? { seed: liveSpeakerEntry.seed, alias: displayAlias(liveSpeakerEntry.alias) } : recordedFace;
   const nativeVoice = Boolean(liveSpeakerEntry) && message.liveSpeaker?.mode === "native";
   const { st } = useAnswerStatusText();
   const modelLabel = modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model;
