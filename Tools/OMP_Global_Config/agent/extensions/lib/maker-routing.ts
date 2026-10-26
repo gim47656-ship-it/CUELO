@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { extractGuardBlock, isPathOwned, isSummonCall, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
@@ -96,6 +96,8 @@ interface RoutingPolicy {
     mainWaitsCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
+    /** 교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN). 답은 Main의 지시서 판단을 돕는 자문이며 게이트를 바꾸지 않는다. */
+    crossReviewNeedCriteria: Record<string, string>;
   };
 }
 export interface RoutingQuestion {
@@ -268,7 +270,30 @@ function decisionQuestions(policy: RoutingPolicy) {
     type: "noul",
     instructions: `${policy.modelSelection.mainWaitsCriteria}. facts·remainingJudgments·paths에 적힌 사실만 근거로 하고, 그런 사실이 없으면 Main이 기다린다고 본다.`,
   };
+  // 교차검증 필요성은 같은 판단 묶음의 typed choice로만 묻는다(추가 모델 호출 없음). 답은 자문이며 git_finalize 게이트는 이 답을 읽지 않는다.
+  questions.crossReviewNeed = {
+    type: "choice",
+    criteria: policy.modelSelection.crossReviewNeedCriteria,
+    instructions: "위 criteria를 정본으로 이 조각의 바뀔 실행 코드·설정이 다른 계열 교차검증을 필요로 하는지 facts·paths·invariants·remainingJudgments에 적힌 사실만으로 판단한다. 파일 확장자나 작업 크기만으로 정하지 않고, 위험을 적은 사실이 없으면 UNKNOWN이다. 결과는 Main의 조언이며 게이트 면제나 강제가 아니다.",
+  };
   return questions;
+}
+
+/** Jev의 crossReviewNeed 선택을 Main이 읽을 자문으로 바꾼다. 이유는 정책 기준 문장, 다음 행동은 선택마다 정해진 문장이며 Jev의 자유 문장은 없다. */
+export interface CrossReviewAdvice { choice: string | null; reason: string; nextAction: string; missingEvidence?: string }
+const CROSS_REVIEW_NEXT: Record<string, string> = {
+  REQUIRED: "Put a plain cross-family review line in the brief's # Acceptance (and highRisk if Main declares it); the owning Maker runs cross_review before reporting and Main only resolves.",
+  RECOMMENDED: "Main decides: add the review line when the slice changes a contract or behaviour other code relies on; otherwise leave it out. The git_finalize markers and sample still apply either way.",
+  NOT_NEEDED: "Leave the review line out. The Maker still reviews if a git_finalize trigger marker hits its diff or Main forwards a sample hit; this advice never waives the gate.",
+  UNKNOWN: "Main decides from the brief; the git_finalize markers and sample still apply.",
+};
+const CROSS_REVIEW_MISSING = "Add to assessment facts what the changed code does (process termination, deletion, destructive SQL, deploy/release/migration, credentials/auth, encoding, device I/O, state transitions or a shared contract) and the paths it touches, then re-run maker_route.";
+export function crossReviewAdviceOf(answers: Record<string, RoutingAnswer> | null, criteria: Record<string, string>): CrossReviewAdvice {
+  const choice = answers?.crossReviewNeed?.choice;
+  if (!choice || !(choice in criteria) || !(choice in CROSS_REVIEW_NEXT)) {
+    return { choice: null, reason: "Jev gave no usable crossReviewNeed answer (unavailable or missing).", nextAction: CROSS_REVIEW_NEXT.UNKNOWN!, missingEvidence: CROSS_REVIEW_MISSING };
+  }
+  return { choice, reason: criteria[choice]!, nextAction: CROSS_REVIEW_NEXT[choice]!, ...(choice === "UNKNOWN" ? { missingEvidence: CROSS_REVIEW_MISSING } : {}) };
 }
 function placementQuestions(owners: Owner[]) {
   if (owners.length === 0) return {};
@@ -344,10 +369,25 @@ export function contractGapReason(task: string, lock: DispatchContractLock | und
   if (!field("WORK_CLASS") && !lock?.workClass) missing.push("WORK_CLASS(아직 lock이 없어 이 child에 필요)");
   if (!field("PRIMARY_DELIVERABLE") && !lock?.primaryDeliverable) missing.push("PRIMARY_DELIVERABLE(아직 lock이 없어 이 child에 필요)");
   if (parseOwnedPaths(field("OWNED_PATHS")).length === 0) missing.push("OWNED_PATHS(모든 child 필수)");
+  const inherit = !field("WORK_CLASS") || !field("PRIMARY_DELIVERABLE")
+    ? " 두 값을 생략한 child는 같은 maker_route·task batch에서 두 값을 적은 앞 child 뒤에 있거나, 이 요청의 첫 child가 이미 발주돼 TaskGuard lock이 있을 때만 상속합니다. 따로 준비한다면 요청의 WORK_CLASS·PRIMARY_DELIVERABLE을 글자 그대로 다시 적으세요."
+    : "";
   const detail = missing.length > 0
-    ? `빠진 필드: ${missing.join(", ")}`
-    : "필드가 블록 안에서 읽히지 않습니다(`TASK_GUARD:` 뒤 빈 줄이나 guard 필드 사이에 끼어든 줄이 있는지 확인)";
-  return `task ${label}: ${detail}. ${GUARD_TEMPLATE}`;
+    ? `빠진 필드: ${missing.join(", ")}.${inherit}`
+    : "필드가 블록 안에서 읽히지 않습니다(`TASK_GUARD:` 뒤 빈 줄이나 guard 필드 사이에 끼어든 줄이 있는지 확인).";
+  return `task ${label}: ${detail} ${GUARD_TEMPLATE}`;
+}
+
+/**
+ * TaskGuard(SideQuestGuard)와 같은 비교로, 이 child의 WORK_CLASS·PRIMARY_DELIVERABLE이 요청 lock(없으면 같은 batch에서 먼저 계약을
+ * 정한 child)과 다르면 거절 사유를 돌려준다. 준비와 발주가 같은 함수를 써서 Jev 판단이나 spawn 전에 같은 결론을 낸다.
+ */
+export function contractLockConflict(name: string, contract: DispatchContract, lock: DispatchContractLock | undefined, lockSource: "request" | "batch"): string | null {
+  if (!lock) return null;
+  if (contract.workClass === lock.workClass && normalizeDeliverable(contract.primaryDeliverable) === normalizeDeliverable(lock.primaryDeliverable)) return null;
+  const label = name.trim() ? `'${name.trim().slice(0, 60)}'` : "(이름 없음)";
+  const source = lockSource === "request" ? "이 요청의 TaskGuard lock" : "같은 batch에서 먼저 계약을 정한 child";
+  return `[SideQuestGuard] task ${label}: 한 사용자 요청의 모든 child는 같은 WORK_CLASS·PRIMARY_DELIVERABLE을 씁니다. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 이대로 발주하면 task 전체가 거절됩니다. 고치기: 이 child의 두 줄을 기준 값 그대로 적거나 지우고(같은 batch 안이거나 lock이 있을 때만 상속), 조각마다 다른 완료물은 TASK_TITLE·TODO_TASKS·# Acceptance로 구분하세요.`;
 }
 
 /**
@@ -839,12 +879,18 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
     let candidateLock = lockFor(sessionIdOf(ctx));
+    const lockSource = candidateLock ? "request" : "batch";
+    const conflicts: string[] = [];
     const contracts = tasks.map((task) => {
       const contract = dispatchContract(task.task, candidateLock);
       if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
+      // TaskGuard는 lock과 다른 child가 하나라도 있으면 batch 전체를 거절한다. Jev를 부르기 전에 같은 비교로 모두 알린다.
+      const conflict = contractLockConflict(task.name, contract, candidateLock, lockSource);
+      if (conflict) conflicts.push(conflict);
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
+    if (conflicts.length > 0) throw new Error(conflicts.join("\n"));
     const keys = tasks.map((task, index) => briefKey(task.name, contracts[index]!));
     // 준비 handle. 실제 발주 identity는 spawn에서 task 호출 id·index·session으로 캡처한다.
     // 이 값으로 실제 발주를 식별하지 않으며, 중첩 prepare가 서로를 덮지 않도록 공유 map에 두지 않는다.
@@ -1065,6 +1111,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
             ? "기존 owner가 Opus인지 확인하세요. 비-Opus면 미완 변경·증거를 freeze하고 소유권을 넘깁니다. active owner를 동시에 새 발주하거나 실행 중 모델을 바꾸지 않습니다."
             : null,
           history: historyOf(publication.prepared.answers),
+          crossReviewAdvice: crossReviewAdviceOf(publication.prepared.answers, current.modelSelection.crossReviewNeedCriteria),
           preparedId: preparedIds[index],
           plan: plans[index] ?? { sessionId, planId: null },
         })),
@@ -1095,6 +1142,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
     const refreshAttempts: RefreshAttempts = new Map();
     let candidateLock = lockFor(sessionIdOf(ctx));
+    const lockSource = candidateLock ? "request" : "batch";
     const locksBefore: (DispatchContractLock | undefined)[] = [];
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
@@ -1117,6 +1165,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
+      const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource);
+      if (conflict) return { block: true, reason: conflict };
       const name = String(item.name ?? "").trim();
       const key = briefKey(String(item.name ?? ""), contract);
       const pending = bindings.get(key);
@@ -1309,7 +1359,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)를 기존 한 배치에서 독립 판단한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 선택 전용 Daybreak Blue 후보(NORMAL_DAYBREAK·HARD_CODE_DAYBREAK, 자동 추천·폴백 순서에는 없음)·명시 선택 전용 Gemini·GLM 후보(NORMAL_GEMINI·HARD_CODE_GEMINI·NORMAL_GLM·HARD_CODE_GLM, 같은 방식)·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)·교차검증 필요성(crossReviewNeed)을 기존 한 배치에서 독립 판단한다. crossReviewAdvice{choice, reason, nextAction, missingEvidence?}는 브리프에 review 줄을 넣을지 정하는 Main의 자문일 뿐 git_finalize 게이트(high-risk·marker·표본)를 면제하거나 강제하지 않는다. 같은 batch의 child가 요청 lock(없으면 같은 batch에서 먼저 계약을 정한 child)과 다른 WORK_CLASS·PRIMARY_DELIVERABLE을 적으면 Jev 호출 전에 거절하며, 두 값을 생략한 child는 같은 batch 안이거나 lock이 있을 때만 상속한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 선택 전용 Daybreak Blue 후보(NORMAL_DAYBREAK·HARD_CODE_DAYBREAK, 자동 추천·폴백 순서에는 없음)·명시 선택 전용 Gemini·GLM 후보(NORMAL_GEMINI·HARD_CODE_GEMINI·NORMAL_GLM·HARD_CODE_GLM, 같은 방식)·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

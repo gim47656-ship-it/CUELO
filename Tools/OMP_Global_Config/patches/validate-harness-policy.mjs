@@ -835,6 +835,8 @@ const userAbsentAcceptanceKeys = [
 // criteria 객체를 그대로 choice로 쓰고 `recommendations.delegation`으로 돌려준다). 키가 늘면 유령 선택지가
 // 생기고, 키가 사라지면 기준이 조용히 약해진다.
 const delegationCriteriaKeys = ["MAIN", "MAKER", "UNKNOWN"];
+// 교차검증 필요성 자문의 선택지 도메인. runtime crossReviewAdviceOf가 키마다 정해진 다음 행동을 붙이므로 키가 어긋나면 자문이 비어 버린다.
+const crossReviewNeedCriteriaKeys = ["NOT_NEEDED", "RECOMMENDED", "REQUIRED", "UNKNOWN"];
 
 // 누적 child budget의 기계 판독 계약. 새 범용 숫자 설정 엔진을 만들지 않고 이 네 자리만 runtime과
 // 운영 규칙에 맞춘다. 키가 늘면 역할별 예외 budget 같은 두 번째 계약이 조용히 생긴 것이므로 거부한다.
@@ -1490,6 +1492,7 @@ if (policy !== null) {
     ["routing.modelSelection.preparedReference", preparedReferenceKeys, "준비 참조 복원 계약"],
     ["routing.modelSelection.judgmentReuse", judgmentReuseKeys, "판단 재사용·owner 충돌 계약"],
     ["routing.modelSelection.delegationCriteria", delegationCriteriaKeys, "위임 판단 기준(MAIN·MAKER·UNKNOWN)"],
+    ["routing.modelSelection.crossReviewNeedCriteria", crossReviewNeedCriteriaKeys, "교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN)"],
     ["implementationOwnership.writerValidation.userObservation", userObservationKeys, "사용자 관찰 우선 계약"],
     ["implementationOwnership.writerValidation.deviceVerificationHandoff", deviceVerificationHandoffKeys, "실장비 확인 인계 계약"],
     ["implementationOwnership.writerValidation.userAbsentAcceptance", userAbsentAcceptanceKeys, "사용자 미참여 인수 실행 계약"],

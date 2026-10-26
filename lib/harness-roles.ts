@@ -1,10 +1,9 @@
 /**
- * Model role slots the public CUELO harness routes Makers to.
+ * Model role slots used by the public CUELO harness.
  *
- * omp's core does not know these ids, so a profile that never assigned one would not list it.
- * The Model roles panel shows each missing slot as "not set" so the user can pick a model there
- * instead of editing YAML first. `install.mjs` runs before dependencies exist and keeps its own
- * copy; `install.test.mjs` checks that the two lists stay identical.
+ * The Model roles panel exposes unassigned tool and Maker slots so users can choose their own
+ * models without editing YAML. Built-in roles such as `judge` retain the core's presentation.
+ * `install.mjs` also accepts `judge` explicitly and runs before dependencies exist.
  */
 export const HARNESS_ROLES = [
   "implSonnet",
@@ -13,4 +12,10 @@ export const HARNESS_ROLES = [
   "makerHardUiOpus",
   "makerHardCodeOpus",
   "makerHardCodeSonnet",
+  "crossReviewOpenAI",
+  "crossReviewAnthropic",
+  "crossReviewAdvisory",
+  "skim",
+  "draft",
+  "ocr",
 ] as const;

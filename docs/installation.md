@@ -111,7 +111,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 ```
 
 - `--model`은 core의 `default` 역할만 설정합니다.
-- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. 사용할 수 있는 이름은 `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`입니다.
+- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. Maker 역할은 `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [도구·검토·판정 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
 - 역할은 `config.yml`을 새로 만들 때만 기본값과 함께 기록됩니다. 파일이 이미 있으면 절대 고치지 않고, 무시한 역할과 아직 지정되지 않은 역할을 출력합니다.
 - 지정하지 않은 역할은 나중에 CUELO 설정의 Model roles 화면에서 고릅니다. 설치 스크립트는 모델을 추측해서 채우지 않습니다.
 
@@ -143,6 +143,24 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    예전 설정의 `providers.judgmentProvider`(`auto`·`vercel`)는 이제 쓰지 않습니다. 값이 남은 프로필은 설정을 읽을 때 upstream의 이전 규칙이 키를 지우며, `modelRoles.judge`가 이미 있으면 그 값을 그대로 두고 없을 때만 `typesafe/jev-latest` 후보 체인을 채웁니다(이 경우 TypeSafe API 키가 필요합니다). Vercel AI Gateway 고정 모드는 제거되어 `vercel-ai-gateway` 자격은 판정에 쓰이지 않습니다. 판정 요청은 외부 전송·과금 대상이므로 본인 승인과 요금 확인 없이 시험 호출하지 않습니다.
 4. `cuelo health` 또는 하네스 파일 복사 성공은 Jev 성공 증거가 아닙니다. 실제 로그인 상태, 모델 후보 해석, 첫 판정/응답은 사용자가 준비한 자격으로 별도 확인해야 합니다. 키가 없거나 실패하면 Jev가 무언가를 조용히 대체해 설치 성공으로 만드는 계약도 없습니다.
+
+### 하네스 도구·검토·판정 역할
+
+공개 설치기(`node install.mjs setup`·`cuelo setup`의 `--role <키>=<provider/model>`)와 **설정 > 모델·계정 > 모델 역할** 화면은 Maker 역할에 더해 아래 역할도 지원합니다. `--role`은 새 `config.yml`을 만들 때만 기록하며 기존 프로필은 덮어쓰지 않습니다. 기존 프로필에서는 모델 역할 화면에서 미설정 슬롯을 확인하고 실제로 쓸 슬롯만 직접 골라 저장하세요.
+
+코어가 이미 알고 있는 `judge`는 화면에서 중복 표시하지 않습니다. 저장해도 제공자 로그인이나 시험 호출은 실행되지 않습니다. 계정 자격과 과금 조건은 사용자가 직접 확인합니다.
+
+| `modelRoles` 키 | 기능 | 설정 기준 |
+| --- | --- | --- |
+| `crossReviewOpenAI` | 교차검토·슬롭 검사의 OpenAI 계열 필수 검토자 | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
+| `crossReviewAnthropic` | 교차검토·슬롭 검사의 Anthropic 계열 필수 검토자 | `anthropic` 제공자의 모델을 고릅니다. |
+| `crossReviewAdvisory` | 보조 자문 검토자 | 필수 검토를 대신하지 않습니다. 자문 실패만으로 통과를 막지는 않지만 받은 지적은 처리해야 합니다. |
+| `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
+| `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
+| `ocr` | 이미지의 글자·숫자·표 전사 | 시각 입력을 지원하는 모델을 고릅니다. |
+| `judge` | 라우팅 등 구조화 판정 | Jev를 쓰려면 위의 [역할과 Jev 보완](#기존-프로필의-역할과-jev-보완) 절차를 따릅니다. |
+
+필수 검토자는 작성 모델의 반대 계열을 사용합니다. 한 제공자에 로그인했다는 사실만으로 다른 계열의 검토 모델까지 사용할 수 있는 것은 아닙니다.
 
 ### 기존 프로필의 하네스 갱신
 

@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review, slop_check]
 ---
 
-<!-- omp-global-config:generated source-hash=98516841d639
+<!-- omp-global-config:generated source-hash=95589f18419f
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -17,7 +17,7 @@ is yours end to end.
 
 Publicly published/shared artifacts you write (README/CHANGELOG/docs and other public markdown, html, pptx/docx/xlsx/pdf/hwpx, report csv, UI copy packs) must pass `slop_check` before you report. Private/internal documents are excluded even when delivered as files to the user; code, tests and internal records such as `doc/history` are also excluded. Use the repository's publication declaration (`.publicignore` or `.slop-gate.json`); outside git, `public:true` may declare an otherwise unknown artifact public but never override a known private/internal exclusion. Unknown publication status does not trigger automatic review or a gate. Run the check on public files with your own model selector as `authors`, fix genuine findings and review changed content again (a pass is tied to exact bytes). Report false positives to Main with evidence; resolve is Main-only. If a reviewer response is malformed, inspect its raw response and parse error: do not retry unchanged input or alter artifact punctuation to work around the protocol failure. `git_finalize` and the outside-git turn-end gate apply only to public artifacts. Drafting and direct prose correction remain unchanged.
 
-Code files you changed (the same scope `git_finalize` gates: no docs, comments or tests) get a `cross_review` `review` from you before you report, whether or not the brief asks for it: run it after your focused checks pass, with your own model selector as `authors` (never `"main"`), fix or refute each finding with evidence, use the probe round when a reviewer proposes one, and run a delta round on the same chain after fixes. Report the reviewId chain and a proposed status (`fixed`/`refuted`/`limit`) with an evidence locator for every finding; `resolve` is Main-only. Main does not start a duplicate review of your code: when Main forwards findings or later rounds, you run them.
+Run a `cross_review` `review` of your changed code files before you report when the review is required: the brief marks the slice high-risk or carries a plain cross-family review line, a trigger marker the `git_finalize` gate uses hits your changed lines or paths (process termination, deletion, destructive SQL, deploy/release/migration, credentials/auth, encoding, device I/O), or Main forwards a finalizer sample hit for your files. Other code changes are reviewed only when Main's brief asks for it; Main decides from the `maker_route` review-necessity advice. Targets are changed executable code and config; pass relevant unchanged callers or contracts as `inputs`/`references`, not as targets. Docs, tests, generated files, git-detected binary media/office assets and TS/JS edits the gate proves comment-only are not targets. Run it after your focused checks pass, with your own model selector as `authors` (never `"main"`), fix or refute each finding with evidence, use the probe round when a reviewer proposes one, and run a delta round on the same chain after fixes. Report the reviewId chain and a proposed status (`fixed`/`refuted`/`limit`) with an evidence locator for every finding; `resolve` is Main-only. Main does not start a duplicate review of your code: when Main forwards findings or later rounds, you run them.
 
 ## Maker Contract
 
@@ -154,14 +154,20 @@ Code files you changed (the same scope `git_finalize` gates: no docs, comments o
   drift check, so a scope Main approved here is never re-explained from scratch at the end.
   `mainLane.workerReview.steeringCheckpoint` (with `composition` and `finalScope`) and
   `routing.high-risk.mainIntervention.preEditContract` are authoritative.
-- When the brief's `# Acceptance` asks for a cross-family review of your code (Main asks for
-  high-risk slices: code-nature triggers or project material risk), run `cross_review`
-  `action:"review"` yourself after your own focused checks pass and before your completion report.
-  `files` are your changed code files only (docs, comments-only and tests excluded - the scope
-  `git_finalize` gates); `acceptance` is the brief's acceptance; `authors` is your own model
+- Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
+  completion report when the review is required for your slice: the brief's `# Acceptance` asks
+  for a cross-family review (Main asks for declared high-risk slices: code-nature triggers or
+  project material risk), a `git_finalize` trigger marker hits your changed lines or paths, or
+  Main forwards a finalizer sample hit for your files. Any other code change is reviewed only when
+  the brief asks; Main decides that from the `maker_route` review-necessity advice, and a Maker
+  never starts a blanket review of every edit. `files` are your changed executable code and config
+  files only (docs, tests, generated files, git-detected binary media/office assets and TS/JS edits
+  the gate proves comment-only are excluded - the scope `git_finalize` gates); `acceptance` is the
+  brief's acceptance; `authors` is your own model
   selector (the provider/model you run as - `"main"` is refused in a subagent session, and a first
-  round whose authors list no model of your own session's family is refused); pass
-  `references` when the change interacts with code outside the diff. Check each finding against
+  round whose authors list no model of your own session's family is refused); pass relevant
+  unchanged callers, specs or contracts as `inputs` (bound to the pass) or `references` (context
+  only) instead of adding them as targets. Check each finding against
   the code: fix it and re-run the affected check, or refute it with evidence, or document a limit.
   A finding carrying a `probe` may get the chain's one probe round (`previousReviewId` +
   `probeResults`); after fixes run a delta round with `previousReviewId` so the reviewer sees the
@@ -169,8 +175,7 @@ Code files you changed (the same scope `git_finalize` gates: no docs, comments o
   chain (newest last) and, per finding id, a proposed status `fixed|refuted|limit` with its
   evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
   reviewed file after your last round; if you must, run another round and report the new head.
-  Without that brief line, do not start a review. `mainLane.workerReview.crossFamilyReview.makerReview`
-  is authoritative.
+  `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative.
 - Report `validation` as an acceptance-condition map, not only a per-file or per-command result:
   for each acceptance condition in the brief give `met` with the observed behavior and the raw
   log or screen evidence locator, or `unverified` with the blocker and the check still needed,

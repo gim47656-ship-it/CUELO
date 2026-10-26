@@ -631,11 +631,14 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   승인된 편집 전 계약 없이 트리거 코드를 고친 revision은 닫지 않는다. 정본은
   `routing.high-risk.mainIntervention`이다.
 - **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
-  뽑힌 코드 변경(문서·주석·테스트 제외)은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다.
+  뽑힌 코드 변경은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다. 문서·테스트·생성물은 제외하고,
+  게이트는 HEAD와 작업 트리의 Bun 변환 결과가 같고 바뀐 줄이 모두 주석 줄뿐인 TS/JS 수정과 git이 바이너리로 본
+  이미지·미디어·오피스·글꼴 자산도 제외한다(타입만 바꾼 수정·줄 끝 주석·다른 언어·실행 파일은 그대로 코드다).
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
   `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 모든 라운드(이어지는 라운드·probe 라운드 포함)에
   `modelRoles.crossReviewAdvisory`(Fable)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
-  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 시작 후 120초에서 끊고 호출 실패·해석 불가는
+  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 필수 검토와 함께 시작하고, 시작 후 120초가 지나거나 필수 검토가 모두
+  끝나면 그 자리에서 끊는다. 그 전에 온 자문 답은 쓰고, 호출 실패·해석 불가·시간 초과·중단은
   `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 한다. 필수 검토의 실패를 대신 통과시키지 않으며,
   받은 자문 finding(`R*-ADV-*`, 옛 기록은 `R*-GGL-*`)도 다른 지적처럼 근거로 닫는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
@@ -668,9 +671,14 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
   사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
   `mainLane.workerReview.crossFamilyReview`다.
-- **Maker의 보고 전 교차검증.** 코드 파일을 바꾼 Maker는 지시서의 요청 여부와 관계없이(Maker SOP 기본 동작)
-  자기 집중 검사가 통과한 뒤 완료 보고 전에 바뀐 코드 파일(문서·주석·테스트 제외, `git_finalize` 게이트와
-  같은 범위)로 `review`를 돌린다. Main은 Maker 소유 코드에 `cross_review`를 직접 돌리지 않는다. 한 라운드가
+- **Maker의 보고 전 교차검증.** Maker는 검토가 필요한 조각에서만 자기 집중 검사가 통과한 뒤 완료 보고 전에
+  바뀐 실행 코드·설정 파일(`git_finalize` 게이트와 같은 범위)로 `review`를 돌린다. 필요한 경우는 지시서가
+  high-risk로 표시했거나 `# Acceptance`에 교차검증 한 줄을 넣었을 때, 게이트의 트리거 marker가 바뀐 줄·경로에
+  걸렸을 때, Main이 finalizer 표본 적중을 그 Maker 파일로 넘겼을 때다. 그 밖의 코드 수정은 Main이 `maker_route`의
+  검토 필요성 자문(`crossReviewAdvice`)을 보고 지시서에 요청했을 때만 검토한다(2026-10-26 사용자 결정. 같은 날 넣은
+  "모든 코드 조각 검토" 기본값은 게이트보다 범위를 넓혔고, 원래 목적은 검토를 Main 대화 밖으로 옮기는 것뿐이었다).
+  바뀌지 않은 호출부·명세·계약은 대상에 넣지 않고 `inputs`·`references`로 넘긴다. Main은 Maker 소유 코드에
+  `cross_review`를 직접 돌리지 않는다. 한 라운드가
   수 분씩 걸려 그동안 Main이 사용자와 대화하지 못하기 때문이다(2026-10-26 사용자 지적). 지적을 전하거나 다음
   라운드가 필요하면 그 Maker에게 메시지로 넘기고, Main은 resolve만 한다. `authors`는 자기 모델 selector이며 subagent
   세션의 `"main"`은 자식 모델로 풀리므로 도구가 거절한다. finding마다 고치거나 근거로 반박하고, probe

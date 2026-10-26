@@ -142,7 +142,8 @@ export function resetTaskGuardState(state: TaskGuardState): void {
   state.refunded = 0;
 }
 
-function normalizeDeliverable(value: string): string {
+/** SideQuestGuard가 PRIMARY_DELIVERABLE을 비교하는 정규형. maker_route 준비·발주 검사도 같은 함수를 쓴다. */
+export function normalizeDeliverable(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
 

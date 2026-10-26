@@ -3,7 +3,7 @@
 // The fixture owns its server and temporary profile; no provider credentials or paid requests.
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, loadavg, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
@@ -52,6 +52,8 @@ interface WireCase {
   requests: string[];
   controller?: ReadableStreamDefaultController<Uint8Array>;
   cancelled: number;
+  requestAt?: number;
+  streamAt?: number;
   finishFirst: () => void;
 }
 let current: WireCase;
@@ -68,10 +70,12 @@ const server = Bun.serve({
   async fetch(request) {
     assert.equal(new URL(request.url).pathname, "/v1/messages");
     const state = current;
+    state.requestAt ??= performance.now();
     state.requests.push(await request.text());
     const first = state.requests.length === 1;
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) {
+        state.streamAt ??= performance.now();
         send(controller, turnStart(`fixture-${state.requests.length}`));
         if (!first) {
           send(controller, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
@@ -163,16 +167,36 @@ async function scenario(mode: WireCase["mode"], run: (context: ScenarioContext) 
   AgentRegistry.global().register({ id: child, kind: "sub", parentId: parent, session });
   let agentEnds = 0;
   let assistantEnds = 0;
+  const eventCounts: Record<string, number> = {};
   const unsubscribe = agent.subscribe(event => {
+    eventCounts[event.type] = (eventCounts[event.type] ?? 0) + 1;
     if (event.type === "message_update" && event.message.role === "assistant" && event.message.content.some(block => block.type === "thinking" || block.type === "toolCall")) ready.resolve();
     if (event.type === "agent_end") agentEnds++;
     if (event.type === "message_end" && event.message?.role === "assistant") assistantEnds++;
   });
+  const promptAt = performance.now();
+  const cpuStart = process.cpuUsage();
   const done = session.prompt("Keep working on this local fixture").then(() => agent.waitForIdle());
   void done.catch(error => ready.reject(error));
   const deliver = (from: string, body: string, wakeRelay = false) => session.deliverIrcMessage({ id: `${child}-${body}`, from, to: child, body, ts: Date.now(), ...(wakeRelay ? { wakeRelay: true } : {}) });
   try {
-    await within(ready.promise, "first real SSE content");
+    try { await within(ready.promise, "first real SSE content"); }
+    catch (error) {
+      // Failure path only. The same deadline still decides pass or fail; this says which phase never happened
+      // (no request, request without stream, stream without events) and whether the process was busy or waiting.
+      const cpu = process.cpuUsage(cpuStart);
+      // A phase that never happened has no timestamp: NaN serializes as null.
+      console.error("DIAG first-SSE wait failed", JSON.stringify({
+        scenario: sequence, mode, waitedMs: Math.round(performance.now() - promptAt),
+        requestsSeen: state.requests.length, requestAtMs: Math.round((state.requestAt ?? Number.NaN) - promptAt),
+        streamOpenedAtMs: Math.round((state.streamAt ?? Number.NaN) - promptAt),
+        streaming: session.isStreaming, events: eventCounts, messages: agent.state.messages.map(m => m.role),
+        cpuUserMs: Math.round(cpu.user / 1000), cpuSystemMs: Math.round(cpu.system / 1000),
+        rssMb: Math.round(process.memoryUsage().rss / 1048576), loadavg: loadavg().map(n => Number(n.toFixed(2))), cpuCount: cpus().length,
+        error: String(error),
+      }));
+      throw error;
+    }
     await run({ state, session, agent, done, deliver, parent, toolEntered, toolRelease, toolRuns: () => toolRuns, toolAborts: () => toolAborts, agentEnds: () => agentEnds, assistantEnds: () => assistantEnds });
   } finally {
     agent.clearAllQueues();

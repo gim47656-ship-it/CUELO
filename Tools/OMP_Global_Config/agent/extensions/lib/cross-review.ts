@@ -168,6 +168,53 @@ export function isCodeFile(path: string): boolean {
   return !GENERATED_FILE.test(normalized);
 }
 
+// git이 바이너리로 본 이 확장자의 파일은 사람이 읽는 실행 코드가 아니다(이미지·미디어·오피스·글꼴). 실행 파일·라이브러리는 그대로 코드다.
+const BINARY_ASSET = /\.(?:png|jpe?g|gif|webp|bmp|ico|tiff?|psd|pdf|docx|xlsx|pptx|hwpx|odt|ods|odp|mp3|wav|ogg|flac|mp4|webm|mov|avi|woff2?|ttf|otf|eot)$/i;
+
+/** 게이트가 보는 대상인가: 경로가 코드이고, 주석만 바뀐 TS/JS로 증명되지 않았고, 바이너리 자산이 아니다. */
+export function isGateTarget(change: Pick<ChangedFile, "path" | "binary" | "commentOnly">): boolean {
+  if (!isCodeFile(change.path) || change.commentOnly) return false;
+  return !(change.binary && BINARY_ASSET.test(change.path.replaceAll("\\", "/")));
+}
+
+const TRANSPILE_LOADER: Record<string, "ts" | "tsx" | "js" | "jsx"> = { ts: "ts", mts: "ts", cts: "ts", tsx: "tsx", js: "js", mjs: "js", cjs: "js", jsx: "jsx" };
+
+/**
+ * 줄 하나가 의미 없는 주석 줄인가. 줄 전체가 `// …`이거나 한 줄 `/* … *\/`(닫는 표시는 줄 끝 하나뿐)이고, 컴파일러·린트·번들러
+ * 지시(`@`·`#`·`///`·`/*!`)나 템플릿 보간·JSX 식이 될 수 있는 글자가 없어야 한다. `*`로 시작하는 여러 줄 주석의 가운데 줄은
+ * 그 줄이 주석 안이라는 것을 이 줄만으로 증명할 수 없어(`*values(v: string)` 같은 generator 메서드) 받지 않는다. 빈 줄은 된다.
+ */
+function isPureCommentLine(text: string, jsx: boolean): boolean {
+  const line = text.trim();
+  if (line === "") return true;
+  if (/[`@#]|\$\{/.test(line) || (jsx && /[{}]/.test(line))) return false;
+  if (line.startsWith("//")) return !line.startsWith("///") && !line.includes("*/");
+  return line.length >= 4 && line.startsWith("/*") && !line.startsWith("/*!") && line.indexOf("*/") === line.length - 2 && line.lastIndexOf("/*") === 0;
+}
+
+// 줄을 넘는 리터럴을 만들 수 있는 글자: 템플릿 리터럴의 백틱, 문자열의 줄 잇기(줄 끝 역슬래시). 이것이 없으면 따옴표 문자열은 한 줄 안에서 끝나므로
+// `//`로 시작하는 줄은 코드나 블록 주석 안에서 시작한다. 있으면 그 줄이 리터럴(타입 위치면 Bun이 통째로 지운다) 안일 수 있어 증명하지 않는다.
+// git은 \n으로만 줄을 나누지만 JS는 단독 \r·U+2028·U+2029에서도 줄을 끝낸다. 그러면 git의 주석 줄 하나에 지워지는 타입 선언이 숨을 수 있어 같이 거절한다.
+const MULTILINE_LITERAL = /`|\\\r?\n|\r(?!\n)|[\u2028\u2029]/;
+
+/**
+ * TS/JS 수정이 주석만 바꿨음을 보수적으로 증명한다. 바뀐 줄(추가·삭제 모두)이 전부 위의 주석 줄이고, HEAD와 지금 내용 어느 쪽에도 줄을 넘는
+ * 리터럴을 만들 글자(백틱·줄 잇기)가 없으며, 두 내용의 Bun 변환 결과가 같아야 한다. 변환 결과가 같다는 것만으로는 부족하다(타입만 바꾼
+ * 수정, 여러 줄 템플릿 리터럴 타입이나 줄 잇기 문자열 타입 안의 `// …` 줄도 같게 나온다). 그런 파일, 변환에 실패한 파일, 지원하지 않는
+ * 확장자는 코드로 남는다. 줄 문맥을 읽는 별도 lexer는 두지 않는다.
+ */
+export function commentOnlyEdit(path: string, before: string, after: string, lines: readonly ChangedLine[]): boolean {
+  const loader = TRANSPILE_LOADER[path.slice(path.lastIndexOf(".") + 1).toLowerCase()];
+  if (!loader || lines.length === 0 || !lines.every(({ text }) => isPureCommentLine(text, loader === "tsx" || loader === "jsx"))) return false;
+  if (MULTILINE_LITERAL.test(before) || MULTILINE_LITERAL.test(after)) return false;
+  try {
+    const transpiler = new Bun.Transpiler({ loader, minifyWhitespace: true, deadCodeElimination: false, trimUnusedImports: false });
+    return transpiler.transformSync(before) === transpiler.transformSync(after);
+  } catch {
+    return false;
+  }
+}
+
 export type TriggerId = "process-termination" | "deletion" | "destructive-sql" | "deploy-release-migration" | "credentials-auth" | "encoding" | "device-io";
 
 interface Marker { id: TriggerId; line?: RegExp; path?: RegExp }
@@ -297,6 +344,8 @@ export interface ChangedFile {
   /** git blob(작업 트리 내용을 git이 커밋할 모양으로 해시한 값). 삭제는 "deleted". */
   blob: string;
   binary: boolean;
+  /** HEAD 대비 주석만 바뀐 TS/JS 수정으로 증명됐을 때만 true(commentOnlyEdit). 게이트 대상이 아니다. */
+  commentOnly?: true;
   /** marker 판정에 쓰는 바뀐 줄. 새 파일은 전체, 수정은 추가·삭제 줄, 파일 삭제는 HEAD 내용이 삭제 줄이다. */
   changedLines: ChangedLine[];
   /** 검토 본문: 수정·삭제는 통합 diff, 새 파일은 줄 번호를 붙인 전체 내용. */
@@ -344,8 +393,20 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
     // 내용은 한 번만 읽는다. blob은 그 바이트에서 내고, 검토 본문(새 파일은 전체, 수정은 diff)도 같은 내용인지 확인한다.
     const content = await readFile(join(root, ...path.split("/")));
     const blob = await hashBytes(exec, git, root, path, content);
-    const binary = content.includes(0);
     if (kind === "added") {
+      // 바이너리 판정은 수정·삭제처럼 git 규칙을 따르되 이미 읽은 바이트로 한다(다시 읽으면 그 사이에 바뀐 내용을 볼 수 있다).
+      // git 규칙: diff 속성이 꺼져 있으면(-diff·binary) 바이너리, 켜져 있으면 텍스트, 드라이버 이름이면 diff.<이름>.binary 설정을 따르고,
+      // 그 설정도 속성도 없으면 앞 8000바이트에 NUL이 있을 때 바이너리다.
+      const attr = await run(["check-attr", "diff", "--", path]);
+      if (attr.code !== 0) throw new Error(`git check-attr failed for ${path}: ${(attr.stderr || attr.stdout).trim()}`);
+      const diffAttr = attr.stdout.trim().split(": ").at(-1) ?? "unspecified";
+      let forced: boolean | undefined = diffAttr === "unset" ? true : diffAttr === "set" ? false : undefined;
+      if (forced === undefined && diffAttr !== "unspecified") {
+        const driver = await exec(git, ["config", "--type=bool", "--get", `diff.${diffAttr}.binary`], { cwd: root });
+        if (driver.code === 0) forced = driver.stdout.trim() === "true";
+        else if (driver.code !== 1) throw new Error(`git config diff.${diffAttr}.binary failed for ${path}: ${(driver.stderr || driver.stdout).trim()}`);
+      }
+      const binary = forced ?? content.subarray(0, 8000).includes(0);
       const text = binary ? "" : content.toString("utf8").replace(/^\uFEFF/, "");
       changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text: binary ? "" : numbered(text), content });
       continue;
@@ -353,9 +414,18 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
     const diff = await run(["diff", "HEAD", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path]);
     if (diff.code !== 0) throw new Error(`git diff failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
     // diff의 새 blob(index 줄)이 읽은 바이트의 blob과 다르면 diff를 만드는 동안 파일이 바뀐 것이다.
-    const diffBlob = /^index [0-9a-f]+\.\.([0-9a-f]+)/m.exec(diff.stdout)?.[1];
+    const diffBlobs = /^index ([0-9a-f]+)\.\.([0-9a-f]+)/m.exec(diff.stdout);
+    const diffBlob = diffBlobs?.[2];
     if (diffBlob && diffBlob !== blob) throw new Error(`${path} changed while it was being read for the review; run it again once the file is stable.`);
-    changed.push({ path, status: kind, blob, binary: /^Binary files /m.test(diff.stdout), changedLines: parseChangedLines(diff.stdout), text: diff.stdout, content });
+    const isBinary = /^Binary files /m.test(diff.stdout);
+    const changedLines = parseChangedLines(diff.stdout);
+    // 주석만 바뀐 TS/JS인지는 HEAD blob(diff index 줄의 이전 blob)과 지금 바이트로 증명한다. 읽지 못하면 코드로 남는다.
+    let commentOnly = false;
+    if (!isBinary && diffBlobs?.[1] && /\.[cm]?[jt]sx?$/i.test(path)) {
+      const head = await exec(git, ["cat-file", "blob", diffBlobs[1]], { cwd: root });
+      commentOnly = head.code === 0 && commentOnlyEdit(path, head.stdout, content.toString("utf8"), changedLines);
+    }
+    changed.push({ path, status: kind, blob, binary: isBinary, ...(commentOnly ? { commentOnly: true as const } : {}), changedLines, text: diff.stdout, content });
   }
   return { changed, unchanged };
 }
@@ -431,7 +501,9 @@ export async function collectChangesSince(exec: Exec, git: string, root: string,
     if (content && kind === "added") {
       const shown = await exec(git, ["cat-file", "blob", inHead], { cwd: root });
       if (shown.code !== 0) throw new Error(`git cat-file blob ${inHead} failed for ${path}: ${(shown.stderr || shown.stdout).trim()}`);
-      const binary = shown.stdout.includes("\0");
+      const numstat = await exec(git, ["--literal-pathspecs", "diff", "--numstat", baseSha, headSha, "--", path], { cwd: root });
+      if (numstat.code !== 0) throw new Error(`git diff --numstat failed for ${path}: ${(numstat.stderr || numstat.stdout).trim()}`);
+      const binary = numstat.stdout.startsWith("-\t-\t");
       const text = binary ? "" : shown.stdout.replace(/^\uFEFF/, "");
       changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text: binary ? "" : numbered(text), content });
       continue;
@@ -522,11 +594,12 @@ export async function currentInputBlobs(exec: Exec, git: string, root: string, p
 }
 
 export function decideGate(changes: readonly ChangedFile[], highRisk: boolean, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map()): GateDecision {
+  // 표본은 지금처럼 커밋의 코드 경로 전체(path+blob)로 뽑는다. 뽑힌 뒤 검토를 요구하는 것은 게이트 대상(주석만 바뀐 TS/JS·바이너리 자산 제외)뿐이다.
   const code = changes.filter((change) => isCodeFile(change.path));
   const key = sampleKey(code);
   const sampled = sampleSelected(code);
   const required: RequiredFile[] = [];
-  for (const change of code) {
+  for (const change of code.filter(isGateTarget)) {
     const reasons: string[] = [];
     if (highRisk) reasons.push("declared high-risk (crossReviewHighRisk)");
     for (const hit of detectMarkers(change.path, change.changedLines).slice(0, 3)) {
@@ -631,7 +704,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   // 의존 입력이 바뀌어 덮이지 않은 파일이 있으면, 다시 검토할 때 같은 입력을 선언하도록 cwd 기준 경로로 알려 준다.
   const reviewInputs = [...new Set(decision.uncovered.flatMap((file) => file.reviewInputs ?? []))].map((path) => relative(options.cwd, join(resolved.root, ...path.split("/"))).split(sep).join("/"));
   throw new CrossReviewRefusal([
-    `cross-family review required before this commit (docs, tests and generated files are excluded). ${decision.uncovered.length} file(s) have no passed review for their current content:`,
+    `cross-family review required before this commit (docs, tests, generated files, binary media/office/font assets and TS/JS edits proven comment-only are excluded). ${decision.uncovered.length} file(s) have no passed review for their current content:`,
     ...list,
     `Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${decision.uncovered.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`,
     "A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction and is recorded in the routing ledger.",
@@ -864,7 +937,7 @@ export interface ReviewDeps {
   newId?: () => string;
 }
 
-export type ReviewerProgressState = "waiting" | "answered" | "failed" | "timed out" | "cancelled";
+export type ReviewerProgressState = "waiting" | "answered" | "failed" | "timed out" | "cancelled" | "stopped";
 export interface ReviewProgress {
   round: number;
   reviewers: { family: Lane; advisory: boolean; state: ReviewerProgressState; elapsedSec?: number }[];
@@ -872,19 +945,21 @@ export interface ReviewProgress {
   text: string;
 }
 
-/** 자문 reviewer 호출이 기한·취소로 멈춘 경우. 늦게 끝난 호출의 답·오류는 버린다. */
+/** 자문 reviewer 호출이 기한·취소·필수 검토 종료로 멈춘 경우. 늦게 끝난 호출의 답·오류는 버린다. */
 class AdvisoryStopError extends ReviewerCallError {
-  constructor(message: string, model: string, readonly reason: "timed out" | "cancelled") { super(message, model); }
+  constructor(message: string, model: string, readonly reason: "timed out" | "cancelled" | "stopped") { super(message, model); }
 }
 
 /**
- * 자문 reviewer 한 명의 대기를 ms로 묶는다. 기한이 지나거나 review가 취소되면 밑의 호출을 abort하고, 제공자가 abort를
- * 확인해 주기를 기다리지 않고 곧바로 AdvisoryStopError로 끝낸다. 멈춘 이유가 한 번 정해지면 같은 틱에 끝난 호출의 답·오류도,
- * 늦게 끝난 호출의 답·오류도 그 이유를 이기지 못한다. 이미 취소된 review는 호출하지 않는다.
+ * 자문 reviewer 한 명의 대기를 ms로 묶는다. 기한이 지나거나 review가 취소되거나 requiredSettled가 켜지면(필수 reviewer가 모두 끝남)
+ * 밑의 호출을 abort하고, 제공자가 abort를 확인해 주기를 기다리지 않고 곧바로 AdvisoryStopError로 끝낸다. 멈춘 이유가 한 번 정해지면
+ * 같은 틱에 끝난 호출의 답·오류도, 늦게 끝난 호출의 답·오류도 그 이유를 이기지 못한다. 이미 취소된 review는 호출하지 않는다.
  */
-export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, model: string): Promise<T> {
+export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, model: string, requiredSettled?: AbortSignal): Promise<T> {
   const cancelled = () => new AdvisoryStopError("advisory reviewer cancelled: the review was aborted, so its call was aborted without waiting for the provider", model, "cancelled");
+  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished, so the review did not wait for it; the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
   if (signal.aborted) throw cancelled();
+  if (requiredSettled?.aborted) throw settled();
   const controller = new AbortController();
   const stopped = Promise.withResolvers<never>();
   let stoppedBy: AdvisoryStopError | undefined;
@@ -892,7 +967,9 @@ export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Pr
   const stop = (error: AdvisoryStopError) => { stoppedBy ??= error; stopped.reject(error); controller.abort(error); };
   const timer = setTimeout(() => stop(new AdvisoryStopError(`advisory reviewer timed out: no answer within ${ms / 1000} s of its start; the call was aborted and any late answer is ignored (nonblocking)`, model, "timed out")), ms);
   const onAbort = () => stop(cancelled());
+  const onSettled = () => stop(settled());
   signal.addEventListener("abort", onAbort, { once: true });
+  requiredSettled?.addEventListener("abort", onSettled, { once: true });
   try {
     const answer = await Promise.race([stopped.promise, call(AbortSignal.any([signal, controller.signal]))]);
     if (stoppedBy) throw stoppedBy;
@@ -902,13 +979,35 @@ export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Pr
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
+    requiredSettled?.removeEventListener("abort", onSettled);
   }
+}
+
+/**
+ * 한 라운드의 reviewer를 모두 함께 시작하고, 필수 reviewer가 모두 끝나면(답·실패 무관) 아직 기다리는 자문 reviewer를 끊는다.
+ * 그 전에 끝난 자문 답은 그대로 남는다. start는 자문 자리에 requiredSettled를 withAdvisoryDeadline으로 넘겨야 한다. 모든 호출을
+ * 끝까지 기다린 뒤(끊긴 자문은 곧바로 끝난다) 자리 순서대로 돌려주며, start가 던진 오류는 모든 호출이 끝난 다음에 다시 던진다.
+ */
+export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: Lane, index: number, requiredSettled: AbortSignal) => Promise<R>): Promise<R[]> {
+  const requiredSettled = new AbortController();
+  const runs = lanes.map((lane, index) => start(lane, index, requiredSettled.signal));
+  // 모든 호출에 곧바로 처리기를 붙인다. 필수 reviewer를 기다리는 동안 끝난 자문 실패가 처리되지 않은 거절이 되지 않게 한다.
+  const outcomesPending = Promise.allSettled(runs);
+  const required = runs.filter((_, index) => lanes[index] !== ADVISORY_LANE);
+  if (required.length > 0) {
+    await Promise.allSettled(required);
+    requiredSettled.abort();
+  }
+  const outcomes = await outcomesPending;
+  const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+  if (failed) throw failed.reason;
+  return outcomes.map((outcome) => (outcome as PromiseFulfilledResult<R>).value);
 }
 
 function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number): string {
   const parts = reviewers.map((reviewer) => {
     const who = reviewer.advisory ? "advisory" : `${reviewer.family} (required)`;
-    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (gives up at ${advisoryMs / 1000} s, nonblocking)` : ""}`;
+    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (gives up at ${advisoryMs / 1000} s or when every required reviewer has finished, nonblocking)` : ""}`;
     return `${who} ${reviewer.state} after ${reviewer.elapsedSec} s`;
   });
   return `cross_review round ${round}: ${parts.join("; ")}`;
@@ -1394,12 +1493,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }
 
-  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs에서 끊어 전체 호출을 붙잡지 않는다.
+  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs에서, 또는 필수 reviewer가 모두 끝나면 끊어 전체 호출을 붙잡지 않는다.
   const advisoryMs = deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS;
   const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, advisory: family === ADVISORY_LANE, state: "waiting" }));
   const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs) });
   report();
-  const settled = await Promise.all(families.map(async (family, index) => {
+  const settled = await settleReviewers(families, async (family, index, requiredSettled) => {
     const started = Date.now();
     const finish = (state: ReviewerProgressState) => {
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
@@ -1407,7 +1506,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     };
     try {
       const completion = family === ADVISORY_LANE
-        ? await withAdvisoryDeadline((attempt) => deps.complete(family, prompt, attempt), advisoryMs, signal, `@${SLOT[family]}`)
+        ? await withAdvisoryDeadline((attempt) => deps.complete(family, prompt, attempt), advisoryMs, signal, `@${SLOT[family]}`, requiredSettled)
         : await deps.complete(family, prompt, signal);
       finish("answered");
       return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, error: undefined as string | undefined };
@@ -1416,7 +1515,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
       return { family, model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
     }
-  }));
+  });
 
   const reviewers: (CrossReviewReviewer & { family: Lane })[] = [];
   const parsedByFamily = new Map<Lane, ParsedVerdict[]>();

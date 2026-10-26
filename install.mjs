@@ -26,9 +26,9 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(ROOT, "package.json"));
 
 /**
- * The model slots the public harness routes Makers to; `--model` sets omp's core `default` separately.
- * Same list as `lib/harness-roles.ts`, which the Model roles panel lists as "not set" until chosen;
- * this file runs before dependencies exist, so `install.test.mjs` keeps the two equal.
+ * Model slots used by the public harness; `--model` sets omp's core `default` separately.
+ * Keep these available through both the installer and `lib/harness-roles.ts`.
+ * The installer cannot import that TypeScript module before dependencies exist.
  */
 export const HARNESS_ROLES = [
   "implSonnet",
@@ -37,6 +37,13 @@ export const HARNESS_ROLES = [
   "makerHardUiOpus",
   "makerHardCodeOpus",
   "makerHardCodeSonnet",
+  "crossReviewOpenAI",
+  "crossReviewAnthropic",
+  "crossReviewAdvisory",
+  "skim",
+  "draft",
+  "ocr",
+  "judge",
 ];
 const SELECTOR = /^[^/\s:]+\/[^\s:]+(?::[a-z]+)?$/;
 
@@ -555,7 +562,7 @@ function setup(options) {
   if (roles.written) console.log(`Profile config: wrote ${roles.configPath}.`);
   if (roles.ignored.length > 0) console.log(`Profile config: ${roles.configPath} already exists and was not changed; ignored ${roles.ignored.join(", ")}.`);
   if (roles.missing.length > 0) {
-    console.log(`Model roles not set: ${roles.missing.join(", ")}. They are listed as not set in CUELO Settings > Models > Model roles; choose your own models there.`);
+    console.log(`Model roles not set: ${roles.missing.join(", ")}. Choose only the roles you use in CUELO Settings > Models > Model roles; built-in roles may use core defaults.`);
   }
   console.log("Next: run `node install.mjs start`, open the address it prints, and sign in to your providers under Settings > Models.");
 }

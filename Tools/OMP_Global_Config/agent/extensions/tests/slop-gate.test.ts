@@ -217,7 +217,28 @@ describe("reviewer 배정: cross_review와 같은 reviewerLanes", () => {
     expect(families(self)).toEqual(["openai"]);
   });
 
-  test("자문 reviewer는 cross_review와 같은 기한에서 끊기고, 시간 초과는 기록만 하며 통과를 막지 않는다", async () => {
+  test("자문 reviewer는 cross_review와 같은 기한에서 끊기고(필수 reviewer가 더 오래 걸릴 때), 시간 초과는 기록만 하며 통과를 막지 않는다", async () => {
+    const cwd = scratch();
+    write(cwd);
+    let advisoryAttempt: AbortSignal | undefined;
+    const advisoryAborted = Promise.withResolvers<void>();
+    const stalled: Complete = async (lane, _system, prompt, attempt) => {
+      if (lane === "advisory") {
+        advisoryAttempt = attempt;
+        attempt.addEventListener("abort", () => advisoryAborted.resolve(), { once: true });
+        return new Promise<never>(() => {});
+      }
+      await advisoryAborted.promise;
+      return { model: "fixture/openai", text: JSON.stringify(clean([...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!))) };
+    };
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, stalled, { advisoryTimeoutMs: 20 }), signal);
+    expect(out.files[0]!.status).toBe("pass");
+    expect(out.advisoryReviewers?.[0]).toContain("advisory: error");
+    expect(out.advisoryReviewers?.[0]).toContain("timed out");
+    expect(advisoryAttempt?.aborted).toBe(true);
+  }, 5_000);
+
+  test("필수 reviewer가 모두 끝나면 기다리던 자문 reviewer는 기한 전이라도 끊겨 성공이 아닌 중단으로 기록되고 통과를 막지 않는다", async () => {
     const cwd = scratch();
     write(cwd);
     let advisoryAttempt: AbortSignal | undefined;
@@ -225,10 +246,10 @@ describe("reviewer 배정: cross_review와 같은 reviewerLanes", () => {
       if (lane === "advisory") { advisoryAttempt = attempt; return new Promise<never>(() => {}); }
       return { model: "fixture/openai", text: JSON.stringify(clean([...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!))) };
     };
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, stalled, { advisoryTimeoutMs: 20 }), signal);
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, stalled, { advisoryTimeoutMs: 60_000 }), signal);
     expect(out.files[0]!.status).toBe("pass");
     expect(out.advisoryReviewers?.[0]).toContain("advisory: error");
-    expect(out.advisoryReviewers?.[0]).toContain("timed out");
+    expect(out.advisoryReviewers?.[0]).toContain("every required reviewer had finished");
     expect(advisoryAttempt?.aborted).toBe(true);
   }, 5_000);
 

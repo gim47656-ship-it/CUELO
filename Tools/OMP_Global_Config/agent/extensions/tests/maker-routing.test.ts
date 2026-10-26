@@ -68,6 +68,8 @@ function harness(options: {
   delegation?: string;
   /** Jev의 mainWaits 확률. 기본 1(Main이 기다린다), null이면 답에서 생략한다. */
   mainWaits?: number | null;
+  /** Jev의 crossReviewNeed 선택. 생략하면 답에 싣지 않는다. */
+  crossReviewNeed?: string;
 } = {}) {
   const sessionId = "example".concat(String(++nextHarnessSession));
   const modelFamilies = options.families ?? families;
@@ -123,6 +125,7 @@ function harness(options: {
         delegation: { choice: options.delegation ?? "MAKER" },
         ...(options.mainWaits === null ? {} : { mainWaits: { noul: options.mainWaits ?? 1 } }),
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
+        ...(options.crossReviewNeed ? { crossReviewNeed: { choice: options.crossReviewNeed } } : {}),
       } };
     },
   });
@@ -2228,6 +2231,66 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
       expect((await h.prepare("후속", second(), {} as never))[0]!.status).toBe("judged");
     } finally {
       unbindTaskGuardSession(h.sessionId, newState);
+    }
+  });
+
+  // 2026-10-26: 한 batch에 다른 PRIMARY_DELIVERABLE을 적은 두 child를 준비하자 TaskGuard가 실제 task 전체를 거절했다.
+  // 준비와 발주는 Jev를 부르기 전에 같은 비교로 그 batch를 거절한다.
+  const child = (name: string, workClass: string, deliverable: string, path: string) => ({
+    name, task: `TASK_GUARD:\nWORK_CLASS: ${workClass}\nPRIMARY_DELIVERABLE: ${deliverable}\nOWNED_PATHS: ${path}\n\n본문`, assessment: { ...facts, paths: [path] },
+  });
+  test.each([
+    ["PRIMARY_DELIVERABLE", "maintenance", "다른 산출물"],
+    ["WORK_CLASS", "feature", "표시 오류 수정"],
+  ])("lock이 없을 때 batch 안에서 %s가 다른 child는 Jev 호출 전에 거절하고 고칠 방법을 알린다", async (_label, workClass, deliverable) => {
+    const h = harness();
+    const error = await h.prepare("", [h.task, child("Other", workClass, deliverable, "src/other.ts")], {} as never).then(() => "", (e: Error) => e.message);
+    expect(error).toContain("[SideQuestGuard] task 'Other'");
+    expect(error).toContain("기준=maintenance:표시 오류 수정(같은 batch에서 먼저 계약을 정한 child)");
+    expect(error).toContain("지우고");
+    expect(h.requests).toHaveLength(0);
+  });
+  test("공백만 다른 PRIMARY_DELIVERABLE과 두 값을 생략한 같은 batch child는 그대로 준비된다", async () => {
+    const h = harness();
+    const routes = await h.prepare("", [h.task, child("Spaced", "maintenance", "  표시   오류 수정 ", "src/spaced.ts"), { name: "Bare", task: inherit, assessment: facts }], {} as never);
+    expect(routes.map((route) => route.status)).toEqual(["judged", "judged", "judged"]);
+  });
+  test("요청 lock과 다른 child는 준비에서 Jev 호출 전에, 준비 없이 섞인 발주는 task 경계에서 거절한다", async () => {
+    const { h, state } = await spawnedSession();
+    try {
+      const before = h.requests.length;
+      const error = await h.prepare("후속", [child("Other", "maintenance", "다른 산출물", "src/other.ts")], {} as never).then(() => "", (e: Error) => e.message);
+      expect(error).toContain("이 요청의 TaskGuard lock");
+      expect(h.requests).toHaveLength(before);
+      const mixed = { context: "같은 계약", tasks: [
+        { name: "ViewFix", task: brief, agent: "maker", model: "openai-codex/gpt-6-sol:auto" },
+        { name: "Other", task: child("Other", "maintenance", "다른 산출물", "src/other.ts").task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" },
+      ] };
+      expect(await h.beforeTask(mixed, {} as never, "call-2")).toMatchObject({ block: true, reason: expect.stringContaining("[SideQuestGuard] task 'Other'") });
+    } finally {
+      unbindTaskGuardSession(h.sessionId, state);
+    }
+  });
+});
+
+describe("교차검증 필요성 자문(crossReviewNeed)은 같은 Jev 묶음의 typed choice이고 게이트가 아니다", () => {
+  test("질문은 정책 기준을 choice로 싣고, 답마다 정해진 이유·다음 행동을 돌려준다", async () => {
+    const asked = harness({ crossReviewNeed: "REQUIRED" });
+    const batch = await asked.prepareBatch("자문", [asked.task], {} as never);
+    const criteria = asked.policy.modelSelection.crossReviewNeedCriteria;
+    expect(Object.keys(criteria).sort()).toEqual(["NOT_NEEDED", "RECOMMENDED", "REQUIRED", "UNKNOWN"]);
+    expect(asked.requests[0]!.questions.crossReviewNeed).toMatchObject({ type: "choice", criteria });
+    expect(batch.routes[0]!.crossReviewAdvice).toEqual({ choice: "REQUIRED", reason: criteria.REQUIRED, nextAction: expect.stringContaining("cross_review") });
+    const unknown = harness({ crossReviewNeed: "UNKNOWN" });
+    expect((await unknown.prepareBatch("자문", [unknown.task], {} as never)).routes[0]!.crossReviewAdvice)
+      .toMatchObject({ choice: "UNKNOWN", reason: criteria.UNKNOWN, missingEvidence: expect.stringContaining("assessment facts") });
+    const notNeeded = harness({ crossReviewNeed: "NOT_NEEDED" });
+    expect((await notNeeded.prepareBatch("자문", [notNeeded.task], {} as never)).routes[0]!.crossReviewAdvice!.nextAction).toContain("never waives the gate");
+  });
+  test("답이 없거나 Jev가 불가하면 선택 없이 빠진 근거만 알린다", async () => {
+    for (const h of [harness(), harness({ fail: true })]) {
+      expect((await h.prepareBatch("자문", [h.task], {} as never)).routes[0]!.crossReviewAdvice)
+        .toMatchObject({ choice: null, missingEvidence: expect.stringContaining("assessment facts") });
     }
   });
 });

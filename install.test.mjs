@@ -23,7 +23,6 @@ import {
   diffHarness,
   updateHarness,
 } from "./install.mjs";
-import { HARNESS_ROLES as PANEL_HARNESS_ROLES } from "./lib/harness-roles.ts";
 
 function tempDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cuelo-install-${name}-`));
@@ -57,11 +56,6 @@ test("the in-tree bun cache is removed, but a cache reached through a link is le
     fs.rmSync(tree, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
   }
-});
-
-test("the installer and the Model roles panel name the same harness slots", () => {
-  // install.mjs runs before dependencies exist and cannot import the app's TypeScript list.
-  assert.deepEqual(HARNESS_ROLES, [...PANEL_HARNESS_ROLES]);
 });
 
 test("harness copy adds only the listed public files and keeps every existing profile file", () => {
@@ -342,6 +336,28 @@ test("harness-diff and harness-update take --home, --json and (update only) --dr
   );
   assert.throws(() => parseArgs(["harness-diff", "--dry-run"]), /needs a value|unknown option/);
   assert.throws(() => parseArgs(["setup", "--json"]), /unknown option|needs a value/);
+});
+
+test("a new profile accepts explicitly selected review and document tool roles", () => {
+  const agentDir = tempDir("tool-roles");
+  const selected = {
+    crossReviewOpenAI: "openai/fixture-review",
+    crossReviewAnthropic: "anthropic/fixture-review",
+    crossReviewAdvisory: "fixture/advisory",
+    skim: "fixture/reader",
+    draft: "fixture/writer",
+    ocr: "fixture/vision",
+    judge: "fixture/judge",
+  };
+  try {
+    const args = ["setup", ...Object.entries(selected).flatMap(([role, model]) => ["--role", `${role}=${model}`])];
+    const result = createProfileConfig(agentDir, parseArgs(args).roles);
+    const config = YAML.parse(fs.readFileSync(result.configPath, "utf8"));
+    assert.deepEqual(config.modelRoles, selected);
+    assert.deepEqual(result.missing, ["default", "implSonnet", "implOpus", "implDeepSeek", "makerHardUiOpus", "makerHardCodeOpus", "makerHardCodeSonnet"]);
+  } finally {
+    fs.rmSync(agentDir, { recursive: true, force: true });
+  }
 });
 
 test("a new profile gets the safe defaults and exactly the named model roles; an existing config is never touched", () => {

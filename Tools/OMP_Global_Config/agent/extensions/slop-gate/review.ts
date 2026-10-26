@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { ADVISORY_LANE, ADVISORY_TIMEOUT_MS, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, SLOT, spawnExec, withAdvisoryDeadline, type Lane } from "../lib/cross-review";
+import { ADVISORY_LANE, ADVISORY_TIMEOUT_MS, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, settleReviewers, SLOT, spawnExec, withAdvisoryDeadline, type Lane } from "../lib/cross-review";
 import {
   appendSlopRecord, passFor, publicationOf, readSlopRecords, sha256, trackable, wslPath,
   type SlopFindingRecord, type SlopRecord, type SlopReviewRecord,
@@ -257,13 +257,13 @@ function shownFor(extracted: Extracted, delta: Delta | undefined): Shown {
 
 interface Ask { family: Lane; status: ReviewerStatus; parsed?: ParsedAnswer; usage?: Usage }
 
-/** 한 reviewer를 한 번 부른다. 실패·해석 불가는 던지지 않고 상태로 돌려준다(필수 reviewer만 호출부가 막는다). 자문 reviewer는 cross_review와 같은 기한에서 끊는다. */
-async function ask(family: Lane, prompt: string, deps: SlopDeps, signal: AbortSignal): Promise<Ask> {
+/** 한 reviewer를 한 번 부른다. 실패·해석 불가는 던지지 않고 상태로 돌려준다(필수 reviewer만 호출부가 막는다). 자문 reviewer는 cross_review와 같은 기한, 또는 필수 reviewer가 모두 끝난 때에 끊는다. */
+async function ask(family: Lane, prompt: string, deps: SlopDeps, signal: AbortSignal, requiredSettled: AbortSignal): Promise<Ask> {
   const advisory = family === ADVISORY_LANE ? { advisory: true as const } : {};
   const started = Date.now();
   try {
     const answer = family === ADVISORY_LANE
-      ? await withAdvisoryDeadline((attempt) => deps.complete(family, SLOP_SYSTEM, prompt, attempt), deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS, signal, `@${SLOT[family]}`)
+      ? await withAdvisoryDeadline((attempt) => deps.complete(family, SLOP_SYSTEM, prompt, attempt), deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS, signal, `@${SLOT[family]}`, requiredSettled)
       : await deps.complete(family, SLOP_SYSTEM, prompt, signal);
     const read = readAnswer(answer.text);
     if (!read.parsed) return { family, usage: answer.usage, status: { family, model: answer.model, status: "unparsable", error: `answer is not the expected JSON: ${read.problem}`, raw: excerpt(answer.text), usage: answer.usage, ms: Date.now() - started, ...advisory } };
@@ -357,7 +357,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     const fail = (error: string) => { for (const item of batch) outcomes.push({ file: item.rel, sha256: item.hash, status: "error", error }); };
     if (names.length === 0) { fail("no rubric applies: the text has too little Korean or English prose to judge (pass lang to force one)"); continue; }
     const prompt = buildPrompt(batch, names);
-    const answers = await Promise.all(families.map((family) => ask(family, prompt, deps, signal)));
+    const answers = await settleReviewers(families, (family, _index, requiredSettled) => ask(family, prompt, deps, signal, requiredSettled));
     for (const asked of answers) {
       // 여러 묶음에서 한 자리가 한 번이라도 실패했으면 그 상태를 남긴다(뒤 묶음의 성공이 덮지 않는다).
       if ((reviewers.get(asked.family)?.status ?? "ok") === "ok") reviewers.set(asked.family, asked.status);
