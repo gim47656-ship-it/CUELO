@@ -1,0 +1,37 @@
+{
+  "name": "humanizer",
+  "version": "1.6.0",
+  "source": "https://github.com/DaleSeo/korean-skills",
+  "tag": null,
+  "commit": "ae12ba27982ebeff03b46dc738365aaa34260d9a",
+  "sourcePath": "skills/humanizer/SKILL.md",
+  "sourceBlob": "cc6a9a6c3e3cb7ffb32f90b2303d4780d6c8245d",
+  "license": "MIT",
+  "licenseFiles": [
+    {
+      "path": "LICENSE.txt",
+      "sourcePath": "LICENSE",
+      "sourceBlob": "554cb6c1ec8b76c4d907152fec5bc57cb2e94b77"
+    }
+  ],
+  "importedFrom": "selective port of 1 of the 3 skills at the pinned commit (humanizer); see doc/history/2026/10/16-korean-slop-skill/main.md",
+  "adaptedFiles": [
+    "SKILL.md",
+    "references/structure-patterns.md"
+  ],
+  "excluded": [
+    "grammar-checker and style-guide skills",
+    "repository .claude-plugin, .github workflows, AGENTS.md and README files"
+  ],
+  "downstreamAdaptations": [
+    "LICENSE stored as LICENSE.txt without changing its contents, matching the harness text-file convention",
+    "SKILL.md frontmatter: dropped upstream 'license', 'metadata' and 'allowed-tools' keys, which omp does not read, matching the local name+description convention",
+    "SKILL.md frontmatter: description shortened to one trigger sentence of at most 150 characters; upstream text begins \"AI가 생성한 한국어 텍스트의 특징적인 패턴을 감지하고 자연스러운 인간의 글쓰기로 변환합니다.\"",
+    "SKILL.md: added a vendored provenance line and an 'OMP local contract' section under the H1 (adds to rule://frontend and never replaces it; detect mode prints only the analysis block and edits nothing, rewrite mode covers every Korean user-facing string in scope including data-file strings; S1 table of patterns 14/16/27/30/31/35/37 drawn from references/*.md, overriding the skip-references hint for grading; script counts are leads, not the analysis; exclusions listed with location; split or delegate instead of shrinking criteria; ask tool for the change-rate guard; missing style-guide link; findings are model judgment)",
+    "references/structure-patterns.md: the markdown link to ../../../style-guide/references/tone-consistency.md (a skill not ported here) is reduced to its plain link text, so the published mirror has no broken link; the wording is otherwise unchanged"
+  ],
+  "unchanged": [
+    "SKILL.md H1 and every line of the body after the inserted section",
+    "references/*.md except structure-patterns.md (5 files) and examples/*.md (8 files), byte-identical to the pinned commit"
+  ]
+}
