@@ -621,7 +621,11 @@ await check("actual SDK task producer preserves long terminal evidence through a
     const consumedRow = snapshot({ ...toolSession, asyncJobManager: { getJob: () => job, isJobResultConsumed: () => true } }, [job], true)[0];
     assert.deepEqual(consumedRow.completion, job.completion, "a consumed result still carries its completion provenance");
     assert.equal(consumedRow.resultText, undefined, "upstream consumed-result filter is kept");
-    assert.ok(completedRow.resultText, "an unconsumed result is still reported");
+    // The session's own delivery loop consumes the result once it reaches the parent (job-manager #deliverDelivery), which can
+    // land before this point on a loaded runner, so pin the unconsumed state the same way the consumed case above does.
+    const unconsumedRow = snapshot({ ...toolSession, asyncJobManager: { getJob: () => job, isJobResultConsumed: () => false } }, [job], true)[0];
+    assert.deepEqual(unconsumedRow.completion, job.completion);
+    assert.equal(unconsumedRow.resultText, job.resultText, "an unconsumed result is still reported");
     const runningJob = { ...job, status: "running", endTime: undefined, resultText: undefined, completion: undefined };
     const runningRow = snapshot({ ...toolSession, asyncJobManager: { getJob: () => runningJob, isJobResultConsumed: () => false } }, [runningJob], true)[0];
     assert.equal(runningRow.status, "running");
