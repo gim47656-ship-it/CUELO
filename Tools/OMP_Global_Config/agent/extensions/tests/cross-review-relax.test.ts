@@ -140,6 +140,16 @@ describe("A3 device-io는 문자열 리터럴 안에서만 맞으면 세지 않�
     // 다른 marker는 문자열 안이어도 그대로 센다.
     expect(hit("a.ts", "run(\"rm -rf build\")")).toEqual(["deletion"]);
   });
+  test("HTML(.html·.htm)은 단어만으로 세지 않고 브라우저에서 실제로 여는 연결 호출만 센다", () => {
+    // 닫는 태그의 `/` 때문에 문자열 제거가 줄 끝까지 코드로 남기던 덱 문구·덱 스크립트 줄.
+    expect(hit("deck/index.html", "<li>PLC 연결 흐름</li>")).toEqual([]);
+    expect(hit("deck/index.html", "<td>COM3</td><td>MSComm 응답 대기</td>")).toEqual([]);
+    expect(hit("deck/index.htm", "box.innerHTML = \"<b>PLC</b>\" + note + \"</p>\";")).toEqual([]);
+    expect(hit("deck/index.html", "const plc = steps.PLC; // COM1 단계")).toEqual([]);
+    expect(hit("deck/index.html", "const ws = new WebSocket(url);")).toEqual(["device-io"]);
+    // 서버 코드가 섞이는 Razor는 지금 규칙 그대로다.
+    expect(hit("Views/Home.cshtml", "<li>PLC 연결</li>")).toEqual(["device-io"]);
+  });
 });
 
 describe("A4 버전 문자열만 바뀐 diff는 대상이 아니다", () => {

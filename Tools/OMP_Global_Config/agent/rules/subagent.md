@@ -639,6 +639,7 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   지시 주석(`@ts-`·lint 무시·`/*!`·`#__PURE__` 등)과 JS의 JSDoc 타입 수정, 파싱 실패, 다른 언어, 실행 파일은 그대로 코드다.
   `typescript` 패키지를 찾지 못하는 설치(npm 공개 설치·단독 omp CLI)에서는 증명하지 않고 코드로 본다.
   VB 주석 줄은 marker 판정에서만 빠지고, device-io marker는 문자열 리터럴 안에서만 맞은 글자(화면 문구)를 세지 않는다.
+  `.html`·`.htm`·`.xhtml`의 device-io는 PLC·COM 같은 단어가 아니라 연결을 여는 호출 모양(`new WebSocket(` 등)만 센다.
   `git_finalize`의 `crossReviewHighRisk`는 high-risk인 파일 경로 목록이며 그 파일에만 걸린다. 표본에 뽑힌 커밋은
   프로젝트·스타일·디자이너 파일(`.sln`·`.vbproj`·`.csproj`·`.resx`·`.css`·`*.Designer.*` 등)을 빼고 바뀐 줄이 많은
   코드 파일 5개까지만 요구한다. marker나 high-risk가 걸린 파일은 이 제외·상한과 무관하게 요구된다(2026-10-27 사용자 결정).

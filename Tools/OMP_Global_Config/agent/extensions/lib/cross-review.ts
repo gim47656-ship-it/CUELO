@@ -312,6 +312,8 @@ export type TriggerId = "process-termination" | "deletion" | "destructive-sql" |
 
 interface Marker { id: TriggerId; line?: RegExp; path?: RegExp }
 
+// device-io 중 실제 연결을 여는 호출 모양. 브라우저 HTML에서는 이것만 센다(아래 BROWSER_MARKUP_FILE).
+const DEVICE_IO_CALL_SOURCE = String.raw`\bnet\.(?:Socket|connect|createServer)\b|\bnew\s+(?:WebSocket|WebSocketServer|Socket)\s*\(|\bBun\.(?:listen|connect)\s*\(|\.createConnection\s*\(|\bsocket\.(?:write|send|connect|bind)\s*\(`;
 // "token" 단독은 일부러 뺐다: 이 저장소에는 LLM 토큰이 어디에나 있다. 인증 token은 접두(access/refresh/id/auth/bearer)가 붙을 때만 본다.
 export const MARKERS: readonly Marker[] = [
   { id: "process-termination", line: /\b(?:taskkill|Stop-Process|pkill|killall|killpg|SIGKILL|TerminateProcess)\b|\bkill\s+-\d|\bprocess\.kill\s*\(|\.kill\s*\(|\bos\.kill\s*\(|Process\.Kill\b/ },
@@ -328,13 +330,17 @@ export const MARKERS: readonly Marker[] = [
     path: /(?:^|\/)(?:auth|login|credentials?|oauth|secrets?)[^/]*\.[a-z]+$/i,
   },
   { id: "encoding", line: /\bBOM\b|\\uFEFF|\bEF\s?BB\s?BF\b|\bcp\d{3,4}\b|\bcode\s?page\b|\bcodepage\b|\beuc-?kr\b|Encoding\.(?:Default|GetEncoding)|\biconv\b|\blatin1\b|\butf-?16\b|\bchcp\b|\bTextDecoder\s*\(\s*["'](?!utf-?8)/i },
-  { id: "device-io", line: /\b(?:SerialPort|serialport|MSComm|Winsock|modbus|NI-?DAQ|dgram)\b|\bPLC\b|\bCOM\d{1,2}\b|\/dev\/tty|\bnet\.(?:Socket|connect|createServer)\b|\bnew\s+(?:WebSocket|WebSocketServer|Socket)\s*\(|\bBun\.(?:listen|connect)\s*\(|\.createConnection\s*\(|\bsocket\.(?:write|send|connect|bind)\s*\(/ },
+  { id: "device-io", line: new RegExp(String.raw`\b(?:SerialPort|serialport|MSComm|Winsock|modbus|NI-?DAQ|dgram)\b|\bPLC\b|\bCOM\d{1,2}\b|\/dev\/tty|` + DEVICE_IO_CALL_SOURCE) },
 ];
 
 const COMMENT_LINE = /^\s*(?:\/\/|#|\*|\/\*|<!--|--|;)/;
 // VB 계열(VB.NET·VB6·VBScript)의 줄 전체 주석: `'`로 시작하거나 REM 문(2026-10-27 사용자 결정). marker 판정에서만 뺀다.
 const VB_FILE = /\.(?:vb|bas|frm|cls|ctl|vbs)$/i;
 const VB_COMMENT_LINE = /^\s*(?:'|rem(?:\s|$))/i;
+// 브라우저 HTML(덱·보고서 페이지)의 JS는 PLC·COM 포트를 직접 열 수 없고, 닫는 태그의 `/` 때문에 문자열 제거가 줄 끝까지 코드로 남는다.
+// 그래서 이 파일들의 device-io는 단어가 아니라 실제 연결을 여는 호출 모양만 센다(2026-10-27 사용자 지적). 서버 코드가 섞이는 .cshtml 등은 그대로다.
+const BROWSER_MARKUP_FILE = /\.(?:html?|xhtml)$/i;
+const DEVICE_IO_CALL = new RegExp(DEVICE_IO_CALL_SOURCE);
 
 /**
  * 한 줄에서 문자열 리터럴의 내용을 지운다(따옴표는 남긴다). VB는 큰따옴표만 문자열이고 `""`가 따옴표 하나다. 그 밖의 언어는 `"`·`'`·`` ` ``를
@@ -418,7 +424,7 @@ export function detectMarkers(path: string, lines: readonly ChangedLine[]): Mark
     if (COMMENT_LINE.test(text) || (vb && VB_COMMENT_LINE.test(text))) continue;
     for (const marker of MARKERS) {
       if (!marker.line?.test(text)) continue;
-      if (marker.id === "device-io" && !marker.line.test(stripStringLiterals(text, vb))) continue;
+      if (marker.id === "device-io" && !(BROWSER_MARKUP_FILE.test(normalized) ? DEVICE_IO_CALL : marker.line).test(stripStringLiterals(text, vb))) continue;
       hits.push({ trigger: marker.id, line, removed, text: text.trim().slice(0, 100) });
     }
   }
