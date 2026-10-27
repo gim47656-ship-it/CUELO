@@ -8,14 +8,14 @@
 - **npm 설치**: 패키지명은 [`cuelo`](https://www.npmjs.com/package/cuelo)입니다. production 빌드가 포함되며 설치 때 패키지 자체 SDK를 준비합니다. `cuelo setup`은 빌드를 건너뛰고 준비된 런타임을 검사한 뒤 공개 하네스의 없는 파일만 추가합니다.
 - **개발·검증 환경**: Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux에서 전체 검사를 실행하고, Windows에서는 설치·빌드 확인을 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. 아래 단계별 안내는 Windows 기준이며, Linux에서는 Node.js·Bun·Git을 배포판의 공식 방법으로 설치한 뒤 같은 `setup`·`start` 명령을 씁니다.
 
-## 대표 경로: `omp`만 있는 Windows PC (`omp-web` 없음)
+## 대표 경로: `omp`만 있는 Windows PC
 
 1. 기존 `omp --version`과 본인 `~/.omp/agent`의 `config.yml`·계정·세션이 있는지 확인합니다. **`omp-web`은 설치할 필요가 없습니다.** 독립 `omp.exe`가 있다고 Node.js/npm·Bun이 따라오는 것은 아니므로, 아래 필요 조건도 설치·확인합니다.
 2. `npm install -g cuelo` → `cuelo setup` → `cuelo start`를 실행합니다. `setup`은 기존 `config.yml`과 동명 하네스 파일을 **덮어쓰지 않고**, 현재 `omp` 프로필에 없는 공개 파일만 더합니다. 기존 `agent.db`, `models.yml`, skills, 세션도 보존합니다. 앱 패치는 설치된 `cuelo` 패키지의 SDK에만 적용되며, 별도 `omp.exe`에는 적용되지 않습니다.
 3. 브라우저에서 출력 주소를 열고 **설정 > 모델·계정**에서 기존 로그인 상태와 사용할 모델을 확인합니다. `cuelo health`는 네 서비스 응답만 검사하므로 로그인과 대화 성공을 뜻하지 않습니다.
 4. 기존 `config.yml`이면 `--model`·`--role`을 다시 줘도 설치기가 무시합니다. 아래 [기존 프로필의 역할과 Jev 보완](#기존-프로필의-역할과-jev-보완)대로 **현재 모델 역할과 제공자 자격을 직접 확인**해야 Main/Maker/Jev가 동작합니다. 기존 로그인·세션을 삭제하거나 프로필을 새로 복사할 필요는 없습니다.
 
-이 경로는 **기존 프로필을 흉내 낸 격리 HOME**에서 설정 보존/누락 보고를 확인하는 경계 검사입니다. 실제 사용자 `omp` 홈을 수정하거나 `omp-web`이 없는 새 Windows OS를 부팅해 end-to-end로 검증한 결과는 아닙니다.
+이 경로는 **기존 프로필을 흉내 낸 격리 HOME**에서 설정 보존/누락 보고를 확인하는 경계 검사입니다. 실제 사용자 `omp` 홈을 수정하거나 새 Windows OS를 부팅해 end-to-end로 검증한 결과는 아닙니다.
 
 ## 새 Windows PC에서 먼저 준비할 것
 
@@ -102,7 +102,7 @@ task:
 eval: { autoBackground: { enabled: true } }
 ```
 
-1~3단계는 사용자 프로필이 아니라 CUELO 폴더 안의 `.runtime-patch-home`을 home으로 써서 실행합니다(CI와 같은 격리 방식). 그래서 빌드는 사용자의 omp 설정을 읽지 않고, Windows 보호 폴더를 건드리다 EPERM으로 실패하지도 않습니다. `--home`은 4단계에서 하네스를 복사할 위치만 정합니다. Bun 설치 캐시만은 평소 위치(`BUN_INSTALL_CACHE_DIR`, 없으면 `~/.bun/install/cache`)를 그대로 씁니다. 캐시가 CUELO 폴더 안에 쌓이면 빌드가 그것까지 훑어서 크게 느려지기 때문입니다. 예전 설치가 폴더 안에 남긴 `.runtime-patch-home/.bun/install/cache`는 `setup`이 지웁니다.
+1~3단계는 사용자 프로필이 아니라 CUELO 폴더 안의 `.runtime-patch-home`을 home으로 써서 실행합니다(CI와 같은 격리 방식). 그래서 빌드는 사용자의 omp 설정을 읽지 않고, Windows 보호 폴더를 건드리다 EPERM으로 실패하지도 않습니다. `--home`은 5·6단계에서 하네스를 복사하고 `config.yml`을 만들 프로필 위치만 정합니다. Bun 설치 캐시만은 평소 위치(`BUN_INSTALL_CACHE_DIR`, 없으면 `~/.bun/install/cache`)를 그대로 씁니다. 캐시가 CUELO 폴더 안에 쌓이면 빌드가 그것까지 훑어서 크게 느려지기 때문입니다. 예전 설치가 폴더 안에 남긴 `.runtime-patch-home/.bun/install/cache`는 `setup`이 지웁니다.
 
 ### 모델 역할 지정(선택)
 
@@ -174,7 +174,7 @@ node install.mjs harness-update
 
 `harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·skills는 바꾸지 않으며, `--dry-run`은 무엇이 바뀔지만 보여 줍니다. `--json`은 결과를 JSON으로 냅니다.
 
-설치 기록은 이 기능이 생긴 뒤의 `setup`부터 남습니다. 그 전에 설치한 프로필은 이미 있던 파일이 모두 `untracked`로 나오므로, 그 파일들은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
+설치 기록은 이 기능이 생긴 뒤의 `setup`부터 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
 `makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 지금 별도 코드 후보(`NORMAL_SOL`) 자리로 쓰이므로 이름을 바꾸지 말고, Sonnet 후보는 `implSonnet`에 따로 지정합니다. 역할 설정은 `harness-update`가 바꾸지 않습니다.
 
@@ -197,13 +197,13 @@ node install.mjs setup --home <dir>
 node install.mjs start
 ```
 
-- 앱(`bin/cuelo.js --no-open --hostname 127.0.0.1`), `usage`, `btw`, `subagent`를 포그라운드로 함께 띄웁니다. 앱 주소는 환경의 `CUELO_HOSTNAME`과 무관하게 항상 `127.0.0.1`입니다.
+- 앱(`bin/cuelo.js --no-open --hostname 127.0.0.1`), `usage`, `btw`, `subagent`를 포그라운드로 함께 띄웁니다. 앱 주소는 환경의 `CUELO_HOSTNAME`과 무관하게 기본 `127.0.0.1`입니다. `start --hostname <주소>`를 줄 때만 바뀝니다.
 - 로그는 `[web]`·`[usage]`·`[btw]`·`[subagent]` 접두어를 붙여 출력합니다.
 - 브라우저는 자동으로 열지 않습니다. 시작할 때 출력되는 주소(기본 `http://127.0.0.1:30141`)를 직접 엽니다.
 - Ctrl+C를 누르면 네 프로세스를 모두 종료합니다.
 - 빌드(`.next/BUILD_ID`)가 없거나 포트가 이미 사용 중이면 시작하지 않고 exit code 1로 끝납니다.
 
-기본 포트는 다음과 같으며, 모두 `127.0.0.1`에서만 listen합니다.
+기본 포트는 다음과 같습니다. 세 사이드카는 항상 `127.0.0.1`에서만 listen합니다. 앱도 `--hostname`을 주지 않으면 `127.0.0.1`입니다.
 
 | 서비스 | 포트 | 변수 |
 | --- | --- | --- |
