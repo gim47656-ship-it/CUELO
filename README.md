@@ -277,14 +277,6 @@ Windows의 WSL Ubuntu에서 실행 중인 CUELO를 갱신하는 동안에는 WSL
 WSL 갱신에서는 시스템 시각이 보정되어도 실행 중인 서버를 같은 서버로 인식해, 진행 중인 대화의 중단·재개 절차를 건너뛰지 않습니다.
 WSL 갱신은 실행 중인 서버와 분리해 새 버전을 미리 빌드한 뒤 교체합니다. 빌드 캐시는 재사용하고 다시 만들 산출물은 복사하지 않아 준비 과정의 디스크 쓰기를 줄입니다.
 
-기존 프로필의 하네스·역할 설정은 앱 업데이트만으로 자동 덮어쓰지 않습니다. 새 버전의 하네스는 `node install.mjs harness-diff`로 차이를 보고 `node install.mjs harness-update`로 반영합니다. 사용자가 고치지 않은 파일만 백업 후 바꾸고, 고친 파일과 `config.yml`은 그대로 둡니다([기존 프로필의 하네스 갱신](./docs/installation.md#기존-프로필의-하네스-갱신)). 반영 후 CUELO와 `omp`를 다시 시작하세요.
-
-```bash
-git pull --ff-only
-node install.mjs setup
-node install.mjs start
-```
-
 공개 웹 소스 릴리스와 변경 내용은 [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases)에서 확인하세요. 새 `package.json` 버전이 공개 `main`에 올라가 CI가 성공하면 GitHub 릴리스와 npm `cuelo` 게시가 자동으로 실행됩니다([릴리스 절차](./docs/release.md)).
 
 ### 사이드카 서비스
