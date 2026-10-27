@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT-6.1 Terra·Sol·Opus 5.5 비교 — CUELO 평가 자료</title>
+<meta name="description" content="GPT-6.1 Terra와 GPT-6.1 Sol, Opus 5.5를 코딩, 이미지 읽기, 데스크톱 조작 조건에서 비교한 측정 결과입니다.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/">
+<link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/">
+<link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="../../../assets/icon-64.png">
+<link rel="stylesheet" href="../../../assets/site.css">
+<link rel="stylesheet" href="../../../assets/evals.css">
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="../../">CUELO</a>
+    <nav class="site-nav" aria-label="주요 메뉴">
+      <ul>
+        <li><a href="../">평가 자료</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">하네스 문서</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO">GitHub</a></li>
+        <li><a href="../../../evals/terra-sol-2026-10/" hreflang="en" lang="en">English</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="page-head">
+    <div class="wrap">
+      <p class="crumb"><a href="../">평가 자료 목록으로</a></p>
+      <h1>GPT-6.1 Terra·Sol·Opus 5.5 비교</h1>
+      <p class="dateline">측정일 <time datetime="2026-10-27">2026-10-27</time> · CUELO 관리자</p>
+      <p class="lede">2026년 10월 26일에 출시된 GPT-6.1 Terra가 CUELO에서 맡을 역할을 정하기 위해 GPT-6.1 Sol, Opus 5.5와 같은 조건에서 비교했습니다. 코딩의 mega-six 과제에서 Terra는 패키지 6개 중 4개만 구현하고 일찍 멈췄습니다(숨김 테스트 585/960개 통과). Sol은 957/960개를 통과했습니다. 작은 글자 OCR에서는 Terra(138/153)가 문자를 일관되게 정규화해 틀렸고 Opus 5.5(149/153)가 더 많이 맞혔습니다.</p>
+    </div>
+  </div>
+
+  <section class="study-section" aria-labelledby="coding">
+    <div class="wrap">
+      <h2 id="coding">코딩</h2>
+      <p class="question">위임 없이 단독으로 큰 코딩 과제를 수행할 때 GPT-6.1 Terra(high)와 GPT-6.1 Sol(high)의 테스트 통과 수, 소요 시간, 토큰 사용량이 어떻게 다른지 확인했습니다.</p>
+      <h3>조건</h3>
+      <ul>
+        <li>내장 omp 코어 18.13.0에서 격리 설정으로 비대화형 CLI(<code>omp -p --no-session</code>)를 실행했습니다. 두 모델 모두 추론 강도는 high, 제한 시간은 90분입니다.</li>
+        <li>도구를 <code>read</code>, <code>bash</code>, <code>edit</code>, <code>write</code>, <code>find</code>, <code>grep</code>, <code>eval</code>, <code>todo</code>로 제한해 위임(<code>task</code>)과 <code>ask</code>를 막았습니다.</li>
+        <li>이 옵션은 <code>skim</code>, <code>cross_review</code> 같은 확장 도구를 막지 않아 모델이 호출할 수 있었습니다.</li>
+        <li><code>large-sheet</code> 과제는 명세서를 보고 TypeScript와 Bun으로 스프레드시트 수식 엔진(파서, 평가기, 의존성 그래프, 구조 편집, CSV)을 구현하며 사후 숨김 테스트 200개로 채점합니다.</li>
+        <li><code>mega-six</code> 과제는 독립 패키지 6개(스프레드시트, 마크다운, JSON 스키마, cron, semver, diff)를 명세서대로 구현하며 사후 숨김 테스트 960개로 채점합니다.</li>
+        <li>과제당 모델별 1회씩 순서를 번갈아 연속 실행했습니다(한 과제는 Sol 다음 Terra, 다른 과제는 Terra 다음 Sol).</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>막대는 숨김 테스트 통과 수와 걸린 시간, API 단가 환산 비용을 나타냅니다. Sol 시간 막대의 빗금 부분은 <code>cross_review</code> 결과를 기다린 시간입니다.</figcaption>
+<!-- data:coding-chart -->
+<div class="chart-grid">
+<div class="chart-block"><h4>large-sheet</h4>
+<div class="metric"><p class="metric-name">숨김 테스트 통과 (200개 중)</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99.5%"></span></span><span class="val">199/200</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99%"></span></span><span class="val">198/200</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">걸린 시간</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:9.5%"></span></span><span class="val">128초</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:60.5%"></span><span class="fill wait" style="--w:39.5%"></span></span><span class="val">1,348초</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">API 단가 환산 비용</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:19.3%"></span></span><span class="val">$0.146</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">$0.756</span></dd></div></dl></div>
+</div>
+<div class="chart-block"><h4>mega-six</h4>
+<div class="metric"><p class="metric-name">숨김 테스트 통과 (960개 중)</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:60.9%"></span></span><span class="val">585/960</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99.7%"></span></span><span class="val">957/960</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">걸린 시간</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:15.3%"></span></span><span class="val">171초</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:64.8%"></span><span class="fill wait" style="--w:35.2%"></span></span><span class="val">1,118초</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">API 단가 환산 비용</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:23.7%"></span></span><span class="val">$0.251</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">$1.057</span></dd></div></dl></div>
+</div>
+</div>
+<ul class="legend"><li><span class="swatch fill wait" aria-hidden="true"></span>cross_review 대기 시간</li></ul>
+<!-- /data:coding-chart -->
+      </figure>
+      <h3>결과</h3>
+      <ul>
+        <li><code>large-sheet</code>에서 Terra는 128초 만에 199/200개(환산 비용 $0.146)를 통과했습니다. Sol은 1,348초 만에 198/200개($0.756)를 통과했습니다.</li>
+        <li><code>mega-six</code>에서 Terra는 171초 동안 패키지 6개 중 4개만 구현해 585/960개($0.251)를 통과했고 작업이 미완성이라고 보고하고 멈췄습니다. Sol은 1,118초 만에 957/960개($1.057)를 통과했습니다.</li>
+        <li>Sol은 스스로 <code>cross_review</code>를 호출해 다른 모델의 리뷰를 기다리는 데 533초(large-sheet)와 394초(mega-six)를 썼습니다. 이를 뺀 실행 시간은 815초와 724초입니다. 요청당 평균 응답 시간은 Terra가 약 6~7초, Sol이 약 22~24초였습니다.</li>
+      </ul>
+<!-- data:coding-table -->
+<table class="data-table">
+<thead><tr><th scope="col">과제 · 모델</th><th scope="col">통과</th><th scope="col">걸린 시간</th><th scope="col">검토 대기</th><th scope="col">요청 수</th><th scope="col">요청당 시간(초)</th><th scope="col">출력 토큰</th><th scope="col">추론 토큰</th><th scope="col">비용</th></tr></thead>
+<tbody>
+<tr><th scope="row">large-sheet · Terra</th><td data-label="통과">199/200</td><td data-label="걸린 시간">128초</td><td data-label="검토 대기">0초</td><td data-label="요청 수">18</td><td data-label="요청당 시간(초)">6.4</td><td data-label="출력 토큰">10,318</td><td data-label="추론 토큰">427</td><td data-label="비용">$0.146</td></tr>
+<tr><th scope="row">large-sheet · Sol</th><td data-label="통과">198/200</td><td data-label="걸린 시간">1,348초</td><td data-label="검토 대기">533초</td><td data-label="요청 수">33</td><td data-label="요청당 시간(초)">24.1</td><td data-label="출력 토큰">34,286</td><td data-label="추론 토큰">9,636</td><td data-label="비용">$0.756</td></tr>
+<tr><th scope="row">mega-six · Terra</th><td data-label="통과">585/960</td><td data-label="걸린 시간">171초</td><td data-label="검토 대기">0초</td><td data-label="요청 수">21</td><td data-label="요청당 시간(초)">7.1</td><td data-label="출력 토큰">15,521</td><td data-label="추론 토큰">1,297</td><td data-label="비용">$0.251</td></tr>
+<tr><th scope="row">mega-six · Sol</th><td data-label="통과">957/960</td><td data-label="걸린 시간">1,118초</td><td data-label="검토 대기">394초</td><td data-label="요청 수">32</td><td data-label="요청당 시간(초)">21.9</td><td data-label="출력 토큰">45,066</td><td data-label="추론 토큰">7,936</td><td data-label="비용">$1.057</td></tr>
+</tbody>
+</table>
+<!-- /data:coding-table -->
+      <h3>한계</h3>
+      <ul>
+        <li>과제당 모델별 1회(n = 1)만 실행해 편차를 알 수 없습니다. <code>mega-six</code>에서 Terra가 일찍 멈춘 것이 모델의 경향인지 우연인지 이 데이터만으로는 판단할 수 없습니다.</li>
+        <li>2026년 9월 30일에 측정한 Sol 기록이 있지만 실행기와 omp 코어 버전이 달라 기준선으로 쓰지 않았습니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="study-section" aria-labelledby="vision">
+    <div class="wrap">
+      <h2 id="vision">이미지 읽기</h2>
+      <p class="question">omp 코어의 이미지 질문 경로에서 Terra(low, high)가 현재 비전 모델인 Opus 5.5(low)를 대체할 수 있는지 확인했습니다.</p>
+      <h3>조건</h3>
+      <ul>
+        <li>2026년 10월 18일 조사와 같은 omp 코어 이미지 질문 경로를 썼고 정답지도 바이트 단위로 동일하게 재생성했습니다.</li>
+        <li>합성 이미지 4장(게임 스타일 능력치 화면, 일부러 틀리게 그린 빨간 박스가 있는 같은 화면, 홍보 배너, 작은 문서 표)과 질문 유형 8가지를 썼습니다.</li>
+        <li>Opus 5.5 low, Terra low, Terra high를 각 3회씩 실행해 총 72회 호출했고 오류는 0건이었습니다.</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>3회 실행을 합산해 작은 글자 OCR 153개 중 맞힌 개수와 호출당 응답 시간 중앙값입니다.</figcaption>
+<!-- data:vision-chart -->
+<div class="chart-grid single">
+<div class="chart-block">
+<div class="metric"><p class="metric-name">작은 글자 OCR 정답 수 (153개 중)</p><dl class="bars"><div class="bar-row"><dt>Opus 5.5 low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:97.4%"></span></span><span class="val">149/153</span></dd></div><div class="bar-row"><dt>Terra low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:90.2%"></span></span><span class="val">138/153</span></dd></div><div class="bar-row"><dt>Terra high</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:90.2%"></span></span><span class="val">138/153</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">응답 시간 중앙값</p><dl class="bars"><div class="bar-row"><dt>Opus 5.5 low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">4.0초</span></dd></div><div class="bar-row"><dt>Terra low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:57.5%"></span></span><span class="val">2.3초</span></dd></div><div class="bar-row"><dt>Terra high</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:80%"></span></span><span class="val">3.2초</span></dd></div></dl></div>
+</div>
+</div>
+<!-- /data:vision-chart -->
+      </figure>
+      <h3>결과</h3>
+      <ul>
+        <li>3회 합계 기준 좌표 찾기(27/27)와 박스 검수(12/12)는 세 후보 모두 전부 맞혔습니다. 응답 시간 중앙값은 Terra low 2.3초, Terra high 3.2초, Opus 5.5 low 4.0초였습니다.</li>
+        <li>작은 글자 OCR은 Opus 5.5가 149/153개, Terra low와 Terra high가 둘 다 138/153개를 맞혔습니다. 3회 모두 똑같은 답을 낸 OCR 문항은 Opus 5.5가 3개 중 1개, Terra는 두 강도 모두 3개 중 3개였습니다.</li>
+        <li>Terra의 오독은 <code>Lv.45</code>를 <code>Lv45</code>로, <code>×12</code>를 <code>x12</code>로 읽거나 일부러 비슷하게 만든 회사 이름을 더 흔한 철자로 바꾸는 식의 일관된 정규화였습니다. 오답은 배너의 작은 글자에 몰렸습니다(Terra 15/24 대 Opus 24/24).</li>
+      </ul>
+<!-- data:vision-table -->
+<table class="data-table">
+<thead><tr><th scope="col">모델</th><th scope="col">좌표</th><th scope="col">박스 검수</th><th scope="col">작은 글자 OCR</th><th scope="col">3회 모두 같은 답</th><th scope="col">응답 시간 중앙값</th></tr></thead>
+<tbody>
+<tr><th scope="row">Opus 5.5 low</th><td data-label="좌표">27/27</td><td data-label="박스 검수">12/12</td><td data-label="작은 글자 OCR">149/153</td><td data-label="3회 모두 같은 답">1/3</td><td data-label="응답 시간 중앙값">4.0초</td></tr>
+<tr><th scope="row">Terra low</th><td data-label="좌표">27/27</td><td data-label="박스 검수">12/12</td><td data-label="작은 글자 OCR">138/153</td><td data-label="3회 모두 같은 답">3/3</td><td data-label="응답 시간 중앙값">2.3초</td></tr>
+<tr><th scope="row">Terra high</th><td data-label="좌표">27/27</td><td data-label="박스 검수">12/12</td><td data-label="작은 글자 OCR">138/153</td><td data-label="3회 모두 같은 답">3/3</td><td data-label="응답 시간 중앙값">3.2초</td></tr>
+</tbody>
+</table>
+<!-- /data:vision-table -->
+      <h3>한계</h3>
+      <ul>
+        <li>실제 화면이 아닌 합성 이미지 한 세트만 사용해 측정했습니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="study-section" aria-labelledby="desktop">
+    <div class="wrap">
+      <h2 id="desktop">데스크톱 조작</h2>
+      <p class="question">Windows 창을 열고 값을 입력한 뒤 상태를 읽어오는 데스크톱 조작 과제를 Terra(high)와 Opus 5.5(high)가 정확히 수행하는지 확인했습니다.</p>
+      <h3>조건</h3>
+      <ul>
+        <li>새 Windows 문자표(Character Map) 창을 열고 "복사할 문자" 칸에 <code>가Ω→42</code>를 입력한 뒤 칸의 값과 선택된 글꼴 이름을 읽고 창을 열어 둔 채 JSON 한 줄로 끝내는 과제입니다.</li>
+        <li>실행 명령은 <code>omp -p --mode json --tools=eval,read,bash,windows_control</code>이고 추론 강도는 high입니다.</li>
+        <li>Terra, Opus, Opus, Terra 순서로 총 4회 실행했습니다. 매 실행 뒤 Main 에이전트가 직접 창 컨트롤을 읽어 독립 채점하고 해당 창만 닫았습니다.</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>실행 순서(Terra, Opus, Opus, Terra)대로 나타낸 회차별 소요 시간입니다.</figcaption>
+<!-- data:desktop-chart -->
+<div class="chart-grid single">
+<div class="chart-block">
+<div class="metric"><p class="metric-name">회차별 걸린 시간(초)</p><dl class="bars"><div class="bar-row"><dt>1 · Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:71.7%"></span></span><span class="val">38초</span></dd></div><div class="bar-row"><dt>2 · Opus 5.5</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:81.1%"></span></span><span class="val">43초</span></dd></div><div class="bar-row"><dt>3 · Opus 5.5</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">53초</span></dd></div><div class="bar-row"><dt>4 · Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:56.6%"></span></span><span class="val">30초</span></dd></div></dl></div>
+</div>
+</div>
+<!-- /data:desktop-chart -->
+      </figure>
+      <h3>결과</h3>
+      <ul>
+        <li>네 번의 실행 모두 입력값과 글꼴(Arial), 보고한 창이 일치했습니다.</li>
+        <li>Terra는 1회차에 38초(도구 호출 6회, 오류 0회), 4회차에 30초(8회, 오류 0회)가 걸렸습니다. Opus는 2회차에 43초(9회, 오류 1회), 3회차에 53초(10회, 오류 0회)가 걸렸습니다.</li>
+      </ul>
+<!-- data:desktop-table -->
+<table class="data-table">
+<thead><tr><th scope="col">회차</th><th scope="col">모델</th><th scope="col">결과</th><th scope="col">걸린 시간</th><th scope="col">도구 호출</th><th scope="col">도구 오류</th></tr></thead>
+<tbody>
+<tr><th scope="row">1</th><td data-label="모델">GPT-6.1 Terra</td><td data-label="결과">일치</td><td data-label="걸린 시간">38초</td><td data-label="도구 호출">6</td><td data-label="도구 오류">0</td></tr>
+<tr><th scope="row">2</th><td data-label="모델">Opus 5.5</td><td data-label="결과">일치</td><td data-label="걸린 시간">43초</td><td data-label="도구 호출">9</td><td data-label="도구 오류">1</td></tr>
+<tr><th scope="row">3</th><td data-label="모델">Opus 5.5</td><td data-label="결과">일치</td><td data-label="걸린 시간">53초</td><td data-label="도구 호출">10</td><td data-label="도구 오류">0</td></tr>
+<tr><th scope="row">4</th><td data-label="모델">GPT-6.1 Terra</td><td data-label="결과">일치</td><td data-label="걸린 시간">30초</td><td data-label="도구 호출">8</td><td data-label="도구 오류">0</td></tr>
+</tbody>
+</table>
+<!-- /data:desktop-table -->
+      <h3>한계</h3>
+      <ul>
+        <li>쉬운 과제 하나를 모델당 2회만 실행했습니다. 원격 데스크톱 창이나 파일 탐색기 같은 더 어려운 대상은 측정하지 않았습니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="data">
+    <div class="wrap">
+      <h2 id="data">데이터 및 출처</h2>
+      <p>요약 숫자는 이 페이지 옆의 <a href="../../../evals/terra-sol-2026-10/data.json" type="application/json">data.json</a>에 있습니다. 원본 실행 기록과 기기 정보가 담긴 프롬프트, 계정 정보는 공개하지 않습니다. 표와 차트의 비용은 토큰 수에 카탈로그 단가를 곱한 환산값이며 구독을 사용해 실행했으므로 실제 청구액이 아닙니다.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>CUELO는 @ddallabenetta의 <a href="https://github.com/ddallabenetta/omp-web">omp-web</a>을 기반으로 하고, omp-web은 @agegr의 <a href="https://github.com/agegr/pi-web">pi-web</a>에서 갈라져 나왔습니다. 에이전트 엔진은 <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a>이며 <code>@oh-my-pi/*</code> npm 패키지로 씁니다.</p>
+  </div>
+</footer>
+</body>
+</html>

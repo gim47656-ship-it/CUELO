@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT-6.1 Terra vs GPT-6.1 Sol and Opus 5.5 — CUELO Evals</title>
+<meta name="description" content="2026-10-27 comparison of GPT-6.1 Terra, GPT-6.1 Sol and Opus 5.5 across coding, image reading and desktop control for CUELO role assignment.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/">
+<link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/">
+<link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="../../assets/icon-64.png">
+<link rel="stylesheet" href="../../assets/site.css">
+<link rel="stylesheet" href="../../assets/evals.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="../../">CUELO</a>
+    <nav class="site-nav" aria-label="Primary">
+      <ul>
+        <li><a href="../">Evals</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">Harness docs</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO">GitHub</a></li>
+        <li><a href="../../ko/evals/terra-sol-2026-10/" hreflang="ko" lang="ko">한국어</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="page-head">
+    <div class="wrap">
+      <p class="crumb"><a href="../">Back to evals</a></p>
+      <h1>GPT-6.1 Terra vs GPT-6.1 Sol and Opus 5.5</h1>
+      <p class="dateline">Measured <time datetime="2026-10-27">2026-10-27</time> by the CUELO maintainer</p>
+      <p class="lede">GPT-6.1 Terra was released on 2026-10-26. This study compared it with GPT-6.1 Sol and Opus 5.5 to decide which CUELO roles it should take. On coding, Terra finished large-sheet in 128 s with 199/200 hidden tests, but on mega-six it stopped after 4 of 6 packages (585/960, Sol 957/960) and reported the work incomplete. On image reading, Terra matched Opus on coordinates and box checks but got 138/153 small-text OCR items to Opus's 149/153.</p>
+    </div>
+  </div>
+
+  <section class="study-section" aria-labelledby="coding">
+    <div class="wrap">
+      <h2 id="coding">Coding</h2>
+      <p class="question">How does GPT-6.1 Terra compare with GPT-6.1 Sol, both at high effort, on two large coding tasks under the same harness conditions?</p>
+      <h3>Setup</h3>
+      <ul>
+        <li>Runner: the omp CLI run non-interactively (<code>omp -p --no-session</code>) with an isolation config, embedded omp core 18.13.0, reasoning effort high for both models, 90-minute cap.</li>
+        <li>Tools limited to <code>read</code>, <code>bash</code>, <code>edit</code>, <code>write</code>, <code>find</code>, <code>grep</code>, <code>eval</code> and <code>todo</code>, which blocks delegation (<code>task</code>) and <code>ask</code>. Extension tools such as <code>skim</code> and <code>cross_review</code> stayed callable.</li>
+        <li><code>large-sheet</code>: build a spreadsheet formula engine (parser, evaluator, dependency graph, structural edits, CSV) from a spec in TypeScript + Bun, graded by 200 hidden tests after the run.</li>
+        <li><code>mega-six</code>: build six independent packages (spreadsheet, markdown, JSON schema, cron, semver, diff) from specs, graded by 960 hidden tests after the run.</li>
+        <li>One run per model per task, one after another, with the order alternated (Sol then Terra on one task, Terra then Sol on the other).</li>
+        <li>Cost is token counts times catalogue prices per 1M tokens (Terra: input $1, output $5, cache read $0.05; Sol: input $2, output $10, cache read $0.10). The runs used a Codex subscription, so these are not billed amounts.</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>Bars show hidden tests passed, wall time and API-price cost for each run. The hatched part of Sol's time bar is time spent waiting for <code>cross_review</code>.</figcaption>
+<!-- data:coding-chart -->
+<div class="chart-grid">
+<div class="chart-block"><h4>large-sheet</h4>
+<div class="metric"><p class="metric-name">Hidden tests passed (of 200)</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99.5%"></span></span><span class="val">199/200</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99%"></span></span><span class="val">198/200</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">Wall time</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:9.5%"></span></span><span class="val">128 s</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:60.5%"></span><span class="fill wait" style="--w:39.5%"></span></span><span class="val">1,348 s</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">API-price cost</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:19.3%"></span></span><span class="val">$0.146</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">$0.756</span></dd></div></dl></div>
+</div>
+<div class="chart-block"><h4>mega-six</h4>
+<div class="metric"><p class="metric-name">Hidden tests passed (of 960)</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:60.9%"></span></span><span class="val">585/960</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:99.7%"></span></span><span class="val">957/960</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">Wall time</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:15.3%"></span></span><span class="val">171 s</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:64.8%"></span><span class="fill wait" style="--w:35.2%"></span></span><span class="val">1,118 s</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">API-price cost</p><dl class="bars"><div class="bar-row"><dt>Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:23.7%"></span></span><span class="val">$0.251</span></dd></div><div class="bar-row"><dt>Sol</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">$1.057</span></dd></div></dl></div>
+</div>
+</div>
+<ul class="legend"><li><span class="swatch fill wait" aria-hidden="true"></span>Waiting for cross_review</li></ul>
+<!-- /data:coding-chart -->
+      </figure>
+      <h3>Results</h3>
+      <ul>
+        <li>On <code>large-sheet</code> both models were close to full marks: Terra 199/200 in 128 s, Sol 198/200 in 1,348 s.</li>
+        <li>On <code>mega-six</code> Terra implemented 4 of the 6 packages, stopped, and said in its final report that the work was incomplete (585/960). Sol passed 957/960.</li>
+        <li>Sol called <code>cross_review</code> on its own and waited 533 s and 394 s for another model's review; without that wait its runs took 815 s and 724 s. Terra did not call it. Terra averaged about 6–7 s per model request, Sol about 22–24 s.</li>
+      </ul>
+<!-- data:coding-table -->
+<table class="data-table">
+<thead><tr><th scope="col">Task · model</th><th scope="col">Passed</th><th scope="col">Time</th><th scope="col">Review wait</th><th scope="col">Requests</th><th scope="col">Seconds per request</th><th scope="col">Output tokens</th><th scope="col">Reasoning tokens</th><th scope="col">Cost</th></tr></thead>
+<tbody>
+<tr><th scope="row">large-sheet · Terra</th><td data-label="Passed">199/200</td><td data-label="Time">128 s</td><td data-label="Review wait">0 s</td><td data-label="Requests">18</td><td data-label="Seconds per request">6.4</td><td data-label="Output tokens">10,318</td><td data-label="Reasoning tokens">427</td><td data-label="Cost">$0.146</td></tr>
+<tr><th scope="row">large-sheet · Sol</th><td data-label="Passed">198/200</td><td data-label="Time">1,348 s</td><td data-label="Review wait">533 s</td><td data-label="Requests">33</td><td data-label="Seconds per request">24.1</td><td data-label="Output tokens">34,286</td><td data-label="Reasoning tokens">9,636</td><td data-label="Cost">$0.756</td></tr>
+<tr><th scope="row">mega-six · Terra</th><td data-label="Passed">585/960</td><td data-label="Time">171 s</td><td data-label="Review wait">0 s</td><td data-label="Requests">21</td><td data-label="Seconds per request">7.1</td><td data-label="Output tokens">15,521</td><td data-label="Reasoning tokens">1,297</td><td data-label="Cost">$0.251</td></tr>
+<tr><th scope="row">mega-six · Sol</th><td data-label="Passed">957/960</td><td data-label="Time">1,118 s</td><td data-label="Review wait">394 s</td><td data-label="Requests">32</td><td data-label="Seconds per request">21.9</td><td data-label="Output tokens">45,066</td><td data-label="Reasoning tokens">7,936</td><td data-label="Cost">$1.057</td></tr>
+</tbody>
+</table>
+<!-- /data:coding-table -->
+      <h3>Limits</h3>
+      <ul>
+        <li>Each model ran each task once, so variance is unknown, and the maintainer cannot tell from this data whether Terra stopping early on <code>mega-six</code> is a tendency or chance.</li>
+        <li>The maintainer did not use an earlier Sol measurement from 2026-09-30 as a baseline because its runner and the omp core version had changed.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="study-section" aria-labelledby="vision">
+    <div class="wrap">
+      <h2 id="vision">Image reading</h2>
+      <p class="question">Can GPT-6.1 Terra at low or high effort replace Opus 5.5 at low effort for image questions in the omp core?</p>
+      <h3>Setup</h3>
+      <ul>
+        <li>Same harness as a 2026-10-18 study: the omp core image-question path, with the answer key regenerated byte-identical.</li>
+        <li>Four synthetic images (a game-style stats screen, the same screen with a deliberately wrong red box, a promotional banner and a small document table) and 8 question types.</li>
+        <li>Opus 5.5 low (CUELO's current vision model), Terra low and Terra high, each run 3 times: 72 calls, 0 errors.</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>Small-text OCR items correct out of 153, summed over 3 runs, and median latency per call.</figcaption>
+<!-- data:vision-chart -->
+<div class="chart-grid single">
+<div class="chart-block">
+<div class="metric"><p class="metric-name">Small-text OCR correct (of 153)</p><dl class="bars"><div class="bar-row"><dt>Opus 5.5 low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:97.4%"></span></span><span class="val">149/153</span></dd></div><div class="bar-row"><dt>Terra low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:90.2%"></span></span><span class="val">138/153</span></dd></div><div class="bar-row"><dt>Terra high</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:90.2%"></span></span><span class="val">138/153</span></dd></div></dl></div>
+<div class="metric"><p class="metric-name">Median latency</p><dl class="bars"><div class="bar-row"><dt>Opus 5.5 low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">4.0 s</span></dd></div><div class="bar-row"><dt>Terra low</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:57.5%"></span></span><span class="val">2.3 s</span></dd></div><div class="bar-row"><dt>Terra high</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:80%"></span></span><span class="val">3.2 s</span></dd></div></dl></div>
+</div>
+</div>
+<!-- /data:vision-chart -->
+      </figure>
+      <h3>Results</h3>
+      <ul>
+        <li>All three candidates got 27/27 coordinates and 12/12 box checks.</li>
+        <li>On small-text OCR, Opus 5.5 low got 149/153 and both Terra settings 138/153. Most of Terra's misses were on the banner's small text (15/24, Opus 24/24).</li>
+        <li>Terra gave the same OCR answers in all 3 runs, and its misreads were the same each time: <code>Lv.45</code> read as <code>Lv45</code>, <code>×12</code> as <code>x12</code>, and a deliberately near-duplicate company name changed to the more common spelling.</li>
+      </ul>
+<!-- data:vision-table -->
+<table class="data-table">
+<thead><tr><th scope="col">Model</th><th scope="col">Coordinates</th><th scope="col">Box check</th><th scope="col">Small-text OCR</th><th scope="col">Same answer, 3 runs</th><th scope="col">Median latency</th></tr></thead>
+<tbody>
+<tr><th scope="row">Opus 5.5 low</th><td data-label="Coordinates">27/27</td><td data-label="Box check">12/12</td><td data-label="Small-text OCR">149/153</td><td data-label="Same answer, 3 runs">1/3</td><td data-label="Median latency">4.0 s</td></tr>
+<tr><th scope="row">Terra low</th><td data-label="Coordinates">27/27</td><td data-label="Box check">12/12</td><td data-label="Small-text OCR">138/153</td><td data-label="Same answer, 3 runs">3/3</td><td data-label="Median latency">2.3 s</td></tr>
+<tr><th scope="row">Terra high</th><td data-label="Coordinates">27/27</td><td data-label="Box check">12/12</td><td data-label="Small-text OCR">138/153</td><td data-label="Same answer, 3 runs">3/3</td><td data-label="Median latency">3.2 s</td></tr>
+</tbody>
+</table>
+<!-- /data:vision-table -->
+      <h3>Limits</h3>
+      <ul>
+        <li>Synthetic images only, from a single image set.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="study-section" aria-labelledby="desktop">
+    <div class="wrap">
+      <h2 id="desktop">Desktop control</h2>
+      <p class="question">How does GPT-6.1 Terra compare with Opus 5.5, both at high effort, on a short Windows desktop task?</p>
+      <h3>Setup</h3>
+      <ul>
+        <li>Task: open a new Windows Character Map window, type <code>가Ω→42</code> into the “Characters to copy” box, read the box back, read the selected font name, leave the window open, and end with one JSON line.</li>
+        <li>Command: <code>omp -p --mode json --tools=eval,read,bash,windows_control</code> at high effort.</li>
+        <li>Four runs in the order Terra, Opus, Opus, Terra. After each run the main agent graded it independently by reading the window's controls, then closed only that run's window.</li>
+      </ul>
+      <figure class="chart">
+        <figcaption>Wall time in seconds for each run, in run order.</figcaption>
+<!-- data:desktop-chart -->
+<div class="chart-grid single">
+<div class="chart-block">
+<div class="metric"><p class="metric-name">Seconds per run</p><dl class="bars"><div class="bar-row"><dt>1 · Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:71.7%"></span></span><span class="val">38 s</span></dd></div><div class="bar-row"><dt>2 · Opus 5.5</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:81.1%"></span></span><span class="val">43 s</span></dd></div><div class="bar-row"><dt>3 · Opus 5.5</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:100%"></span></span><span class="val">53 s</span></dd></div><div class="bar-row"><dt>4 · Terra</dt><dd><span class="track" aria-hidden="true"><span class="fill" style="--w:56.6%"></span></span><span class="val">30 s</span></dd></div></dl></div>
+</div>
+</div>
+<!-- /data:desktop-chart -->
+      </figure>
+      <h3>Results</h3>
+      <ul>
+        <li>All four runs matched the expected input value, the font (Arial) and the reported window.</li>
+        <li>Terra completed run 1 in 38 s (6 tool calls, 0 tool errors) and run 4 in 30 s (8 calls, 0 errors), while Opus completed run 2 in 43 s (9 calls, 1 error) and run 3 in 53 s (10 calls, 0 errors).</li>
+      </ul>
+<!-- data:desktop-table -->
+<table class="data-table">
+<thead><tr><th scope="col">Run</th><th scope="col">Model</th><th scope="col">Result</th><th scope="col">Time</th><th scope="col">Tool calls</th><th scope="col">Tool errors</th></tr></thead>
+<tbody>
+<tr><th scope="row">1</th><td data-label="Model">GPT-6.1 Terra</td><td data-label="Result">Matched</td><td data-label="Time">38 s</td><td data-label="Tool calls">6</td><td data-label="Tool errors">0</td></tr>
+<tr><th scope="row">2</th><td data-label="Model">Opus 5.5</td><td data-label="Result">Matched</td><td data-label="Time">43 s</td><td data-label="Tool calls">9</td><td data-label="Tool errors">1</td></tr>
+<tr><th scope="row">3</th><td data-label="Model">Opus 5.5</td><td data-label="Result">Matched</td><td data-label="Time">53 s</td><td data-label="Tool calls">10</td><td data-label="Tool errors">0</td></tr>
+<tr><th scope="row">4</th><td data-label="Model">GPT-6.1 Terra</td><td data-label="Result">Matched</td><td data-label="Time">30 s</td><td data-label="Tool calls">8</td><td data-label="Tool errors">0</td></tr>
+</tbody>
+</table>
+<!-- /data:desktop-table -->
+      <h3>Limits</h3>
+      <ul>
+        <li>One easy task with 2 runs per model. The maintainer did not test harder targets such as remote desktop windows or File Explorer.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="data">
+    <div class="wrap">
+      <h2 id="data">Data and sources</h2>
+      <p>The summary numbers for this page are in <a href="data.json" type="application/json">data.json</a>. Raw run logs, prompts with machine details and account data stay private. All costs are catalogue-price conversions from token counts, not bills.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>CUELO is based on <a href="https://github.com/ddallabenetta/omp-web">omp-web</a> by @ddallabenetta, which forked <a href="https://github.com/agegr/pi-web">pi-web</a> by @agegr. The agent engine is <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a>, used through the <code>@oh-my-pi/*</code> npm packages.</p>
+  </div>
+</footer>
+</body>
+</html>

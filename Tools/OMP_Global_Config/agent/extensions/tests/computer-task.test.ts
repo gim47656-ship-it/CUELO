@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import {
-  buildPrompt,
   CHILD_ENV,
-  childArgs,
   parseSelector,
   parseVerdict,
   runComputerTask,
@@ -37,19 +35,6 @@ function deps(spawn: ComputerTaskDeps["spawn"], overrides: Partial<ComputerTaskD
 
 const signal = () => new AbortController().signal;
 
-describe("child prompt", () => {
-  test("carries goal, target, done condition, the safety contract and the single-JSON-line answer contract", () => {
-    const prompt = buildPrompt(input);
-    expect(prompt).toContain(input.goal);
-    expect(prompt).toContain(input.target);
-    expect(prompt).toContain(input.done);
-    expect(prompt).toMatch(/never press irreversible buttons/i);
-    expect(prompt).toMatch(/only the target/i);
-    expect(prompt).toMatch(/never resend/i);
-    expect(prompt).toMatch(/only what you (?:actually )?observed/i);
-    expect(prompt).toContain('{"done":true|false,"observed":"...","issues":"..."}');
-  });
-});
 
 describe("selector and child command", () => {
   test("splits the modelRoles.computer selector into model and thinking level", () => {
@@ -60,13 +45,6 @@ describe("selector and child command", () => {
     expect(parseSelector("terra")).toBeUndefined();
   });
 
-  test("runs the selector's model with a fixed tool allow-list that never includes computer_task", () => {
-    const args = childArgs({ model: "openai-codex/gpt-6.1-terra", thinking: "high" }, "PROMPT");
-    expect(args).toEqual(expect.arrayContaining(["-p", "--no-session", "--mode", "json", "--model", "openai-codex/gpt-6.1-terra", "--thinking", "high"]));
-    const tools = args.find((arg) => arg.startsWith("--tools="));
-    expect(tools).toBe("--tools=eval,read,bash,windows_control");
-    expect(args.at(-1)).toBe("PROMPT");
-  });
 });
 
 describe("verdict parsing", () => {

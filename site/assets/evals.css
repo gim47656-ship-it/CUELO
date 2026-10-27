@@ -1,0 +1,124 @@
+/* Hallmark · macrostructure: Catalogue (study ledger) · tone: plain technical · anchor hue: existing link blue
+ * Hallmark · pre-emit critique: P4 H4 E4 S5 R5 V4
+ * Eval pages only, loaded after site.css. Every colour comes from site.css tokens;
+ * the two bar tokens below are aliases so charts follow light and dark themes. */
+:root {
+  --bar: var(--muted);
+  --bar-track: var(--rule);
+}
+
+html, body { overflow-x: clip; }
+
+.page-head { padding: 3rem 0 2rem; }
+.crumb { margin: 0 0 1rem; font-size: 0.925rem; }
+.crumb a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.page-head h1 {
+  margin: 0;
+  max-width: 24ch;
+  font-size: clamp(1.9rem, 5vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.page-head .lede { margin-top: 1rem; }
+.page-head .dateline { margin: 0.75rem 0 0; font-size: 0.925rem; color: var(--muted); }
+
+.site-nav a[aria-current="page"] { color: var(--ink); text-decoration: underline; text-decoration-thickness: 2px; }
+
+/* Catalogue: one ruled entry per study. The four rows are fixed so the
+   limits of every study sit at the same weight as its finding. */
+.studies { margin: 0; padding: 0; list-style: none; }
+.study {
+  display: grid;
+  grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
+  gap: 1rem 2.5rem;
+  padding: 2rem 0;
+  border-top: 1px solid var(--rule);
+}
+.study:first-child { border-top: 0; padding-top: 0.5rem; }
+.study h3 { margin: 0 0 0.75rem; font-size: 1.15rem; line-height: 1.3; }
+.study h3 a { color: var(--ink); text-decoration-color: var(--rule-strong); }
+.study h3 a:hover { text-decoration-color: currentColor; }
+.study-meta { margin: 0; font-size: 0.875rem; color: var(--muted); }
+.study-meta div { display: flex; flex-wrap: wrap; gap: 0 0.4rem; }
+.study-meta dt::after { content: ":"; }
+.study-meta dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.ledger { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 0.6rem 1.25rem; margin: 0; }
+.ledger dt { font-size: 0.875rem; font-weight: 600; color: var(--muted); padding-top: 0.1rem; }
+.ledger dd { margin: 0; max-width: var(--measure); }
+
+.study-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1.25rem; margin: 1.1rem 0 0; padding: 0; list-style: none; }
+.study-links a:not(.btn) { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.study-links .btn { white-space: nowrap; }
+
+/* Study page sections */
+.study-section h3 { margin: 1.75rem 0 0.5rem; font-size: 1.05rem; }
+.study-section ul { max-width: var(--measure); margin: 0 0 1rem; padding-left: 1.1rem; }
+.study-section li { margin-bottom: 0.4rem; }
+.study-section .question { max-width: var(--measure); font-size: 1.05rem; }
+
+/* Charts: plain bars with the exact value printed next to each one. */
+.chart { margin: 1.5rem 0; }
+.chart figcaption { max-width: var(--measure); margin: 0 0 1rem; font-size: 0.925rem; color: var(--muted); }
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem 2.5rem; }
+.chart-grid.single { grid-template-columns: minmax(0, 1fr); max-width: 40rem; }
+.chart-block h4 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+.metric { margin: 0 0 1rem; }
+.metric-name { margin: 0 0 0.3rem; font-size: 0.85rem; color: var(--muted); }
+.bars { margin: 0; }
+.bar-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr) 5.25rem;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 1.6rem;
+  font-size: 0.9rem;
+}
+.bar-row dt { overflow-wrap: anywhere; }
+.bar-row dd { display: contents; }
+.track { display: flex; height: 0.75rem; background: var(--bar-track); border-radius: 2px; overflow: hidden; }
+.fill { width: var(--w); background: var(--bar); }
+.fill.wait {
+  /* Hatching marks the wait segment without relying on colour. deslop-ignore-next-line 06 */
+  background: repeating-linear-gradient(135deg, var(--bar) 0 2px, transparent 2px 5px);
+  box-shadow: inset 0 0 0 1px var(--bar);
+}
+.val { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0.25rem 0 0; padding: 0; list-style: none; font-size: 0.85rem; color: var(--muted); }
+.legend .swatch { display: inline-block; width: 1.1rem; height: 0.7rem; margin-right: 0.4rem; vertical-align: -0.05rem; border-radius: 2px; }
+
+/* Data tables. On narrow screens each row becomes a labelled block so no
+   column is clipped and the page never scrolls sideways. */
+.data-table { margin: 1.25rem 0; font-variant-numeric: tabular-nums; }
+.data-table caption { caption-side: top; text-align: left; padding: 0 0 0.5rem; font-size: 0.925rem; color: var(--muted); }
+.data-table td { text-align: right; white-space: nowrap; }
+.data-table th[scope="row"] { width: auto; }
+
+.sources { margin: 0; padding-left: 1.1rem; }
+.sources li { margin-bottom: 0.35rem; }
+
+@media (max-width: 760px) {
+  .study { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+  .chart-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 560px) {
+  .ledger { grid-template-columns: minmax(0, 1fr); gap: 0.1rem; }
+  .ledger dd + dt { margin-top: 0.6rem; }
+  .bar-row { grid-template-columns: 5.5rem minmax(0, 1fr) 4.75rem; gap: 0.45rem; font-size: 0.85rem; }
+  .data-table, .data-table tbody, .data-table tr, .data-table th, .data-table td { display: block; width: auto; }
+  .data-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .data-table tr { padding: 0.75rem 0; border-bottom: 1px solid var(--rule); }
+  .data-table th[scope="row"] { padding: 0 0 0.35rem; border: 0; }
+  .data-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.15rem 0;
+    border: 0;
+    white-space: normal;
+  }
+  .data-table td::before { content: attr(data-label); color: var(--muted); text-align: left; }
+}

@@ -1,0 +1,3 @@
+# Per-invocation overlay; never writes the user's profile or stored memories.
+memory:
+  backend: "off"

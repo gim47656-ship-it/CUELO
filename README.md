@@ -179,6 +179,8 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 검증 결과는 [연결 검사·실환경 확인·모델 평가](./docs/harness.md#검증-결과-읽기)로 구분해 읽습니다. 도구에 요청을 전달했다는 표시만으로 사용자가 원한 작업까지 끝났다고 판단하지 않습니다.
 
+컴퓨터 조작을 맡은 모델은 지정한 대상과 완료 조건에 맞춰 전담 도구만 사용합니다.
+
 교차 검토를 닫을 때 검토 이후의 파일 변경·삭제를 알려 줍니다. 앞선 라운드에서 이미 검토한 삭제는 다른 파일의 후속 검토를 이어 가도 다시 경고하지 않습니다. 이 안내는 검토 통과 판정을 바꾸지 않습니다.
 
 일반 코드 변경은 발주 준비 단계가 검토 필요성과 이유, 다음 행동을 권고하고 Main이 검토 여부를 정합니다. 고위험 변경·위험 표식·표본 검토는 필수로 유지합니다. 검토는 변경된 코드와 설정을 대상으로 하며 관련 호출부나 명세는 참고 입력으로 함께 넘깁니다. 필수 반대 계열 검토가 모두 끝나면 아직 진행 중인 보조 자문은 중단하고 이미 받은 지적은 처리합니다.
@@ -316,6 +318,8 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 의존성을 다시 설치하거나 갱신한 뒤에는 `bun run prepare:source`를 다시 실행하세요. 이미 설치된 작업 사본에서도 `bun install`은 패치된 SDK 패키지를 원본으로 다시 깔기 때문에, 준비 단계를 빼면 호환 패치가 빠진 채로 실행됩니다. 이 준비 단계는 작업 사본의 SDK만 다루며 사용자 프로필이나 실행 중인 설치본을 변경하지 않습니다.
 
 참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md) · [Maker 코드 품질 평가](./docs/maker-quality.md)
+
+평가 자료: [한국어 소개 페이지](https://gim47656-ship-it.github.io/CUELO/ko/evals/) · [English Evals](https://gim47656-ship-it.github.io/CUELO/evals/) · [skim 후보 비교](./docs/evals/skim-2026-10-27.md)
 
 ## 계보와 라이선스
 

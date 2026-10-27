@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUELO Evals</title>
+<meta name="description" content="Measurements the CUELO maintainer ran while building CUELO. Each study tests one question under stated conditions, with findings and limits.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/evals/">
+<link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/">
+<link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="../assets/icon-64.png">
+<link rel="stylesheet" href="../assets/site.css">
+<link rel="stylesheet" href="../assets/evals.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="../">CUELO</a>
+    <nav class="site-nav" aria-label="Primary">
+      <ul>
+        <li><a href="./" aria-current="page">Evals</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/harness.md">Harness docs</a></li>
+        <li><a href="https://github.com/gim47656-ship-it/CUELO">GitHub</a></li>
+        <li><a href="../ko/evals/" hreflang="ko" lang="ko">한국어</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="page-head">
+    <div class="wrap">
+      <h1>CUELO Evals</h1>
+      <p class="lede">These pages collect measurements the CUELO maintainer ran while building CUELO. Each study answers one question under stated conditions.</p>
+    </div>
+  </div>
+
+  <section aria-labelledby="howto">
+    <div class="wrap">
+      <h2 id="howto">How to read them</h2>
+      <p>Tasks, models, tool versions and run counts differ between studies, so numbers do not compare across studies and there is no overall ranking. Each entry lists its question, setup, finding and limits. Raw run logs, accounts and machine details stay private.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="studies">
+    <div class="wrap">
+      <h2 id="studies">Studies</h2>
+      <ol class="studies">
+        <li>
+          <article class="study" aria-labelledby="study-terra">
+            <div>
+              <h3 id="study-terra"><a href="terra-sol-2026-10/">GPT-6.1 Terra vs GPT-6.1 Sol and Opus 5.5</a></h3>
+              <dl class="study-meta">
+                <div><dt>Measured</dt><dd><time datetime="2026-10-27">2026-10-27</time></dd></div>
+                <div><dt>Language</dt><dd>English, Korean</dd></div>
+              </dl>
+            </div>
+            <div>
+              <dl class="ledger">
+                <dt>Question</dt>
+                <dd>After GPT-6.1 Terra was released on 2026-10-26, which CUELO roles should it take compared with GPT-6.1 Sol and Opus 5.5?</dd>
+                <dt>Setup</dt>
+                <dd>Tested coding (Terra high vs Sol high on two TypeScript + Bun tasks, n = 1), image reading (Opus 5.5 low vs Terra low and high across 4 synthetic images, 3 runs), and Windows Character Map desktop control (Terra vs Opus, 2 runs each).</dd>
+                <dt>Finding</dt>
+                <dd>On large-sheet, Terra passed 199/200 tests in 128 s vs Sol's 198/200 in 1,348 s, and all 4 desktop runs matched. On mega-six Terra stopped after 4 of 6 packages (585/960 vs Sol's 957/960) and trailed Opus on small-text OCR (138/153 vs 149/153).</dd>
+                <dt>Limits</dt>
+                <dd>Each model ran each coding task once, so variance is unknown and Terra stopping early may be a tendency or chance. Image reading used one synthetic image set, and desktop control tested one easy task over two runs per model.</dd>
+              </dl>
+              <ul class="study-links">
+                <li><a class="btn" href="terra-sol-2026-10/" aria-describedby="study-terra">Read study</a></li>
+                <li><a href="terra-sol-2026-10/data.json" type="application/json" aria-describedby="study-terra">Summary data (JSON)</a></li>
+              </ul>
+            </div>
+          </article>
+        </li>
+        <li>
+          <article class="study" aria-labelledby="study-skim">
+            <div>
+              <h3 id="study-skim">Skim role candidate comparison</h3>
+              <dl class="study-meta">
+                <div><dt>Measured</dt><dd><time datetime="2026-10-27">2026-10-27</time></dd></div>
+                <div><dt>Language</dt><dd>Korean</dd></div>
+              </dl>
+            </div>
+            <div>
+              <dl class="ledger">
+                <dt>Question</dt>
+                <dd>This study compares DeepSeek V4.1 Flash 1017, Argon, Haiku 5.5, GPT-6 Luna, and GPT-6.1 Terra for CUELO's <code>skim</code> role, which reads multiple source files and answers questions about them.</dd>
+                <dt>Setup</dt>
+                <dd>The main agent ran two static question sets covering five source files five times each, using the omp core 18.13.1 <code>skim</code> call path with identical input bytes and rotated call orders. It judged responses against a pre-written rubric without blind review, accepting only raw JSON arrays as format-compliant.</dd>
+                <dt>Finding</dt>
+                <dd>GPT-6.1 Terra, GPT-6 Luna, and Argon answered consistently with the sources across all judged items, whereas faster models DeepSeek V4.1 Flash 1017 and Haiku 5.5 produced some contradictory or unnecessary "unknown" responses. Terra's and Luna's latency ranges overlapped. The main agent recommended Terra or Luna and did not change the skim setting.</dd>
+                <dt>Limits</dt>
+                <dd>Two question sets repeated five times are not a general coding-model ranking, and the main agent did not verify provider build fingerprints. Network variance, cache state and different reasoning-setting mappings are mixed into the latency figures, so the gaps do not show cause.</dd>
+              </dl>
+              <ul class="study-links">
+                <li><a class="btn" href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/evals/skim-2026-10-27.md" hreflang="ko" aria-describedby="study-skim">GitHub Markdown (KO)</a></li>
+              </ul>
+            </div>
+          </article>
+        </li>
+        <li>
+          <article class="study" aria-labelledby="study-maker">
+            <div>
+              <h3 id="study-maker">Maker sub-agent code quality comparison</h3>
+              <dl class="study-meta">
+                <div><dt>Published</dt><dd><time datetime="2026-10-10">2026-10-10</time></dd></div>
+                <div><dt>Language</dt><dd>Korean</dd></div>
+              </dl>
+            </div>
+            <div>
+              <dl class="ledger">
+                <dt>Question</dt>
+                <dd>Which of six Maker sub-agent implementer candidates writes code that is easier to change later?</dd>
+                <dt>Setup</dt>
+                <dd>Six models ran 3 times at high effort on a 200-test spreadsheet formula engine. Scoring followed the VulcanBench code-quality method: 108 code-quoting AI reviews (L1) by three judges from other vendors (MiMo V2.6 Flash, Muse Spark 1.3, Grok 4.6) and two real-change tickets (L3).</dd>
+                <dt>Finding</dt>
+                <dd>AI review split into a top three (GPT-6.1 Sol 76.2, DeepSeek V4.1 Flash 75.2, Opus 5.5 74.5) and bottom three (GPT-6 Astra 72.0, Daybreak Blue 70.3, Sonnet 5.5 68.4) with overlapping ranges inside each group. Real-change scores clustered at 98.8 to 99.6 (rank correlation ρ = −0.03 with L1).</dd>
+                <dt>Limits</dt>
+                <dd>An L3 ceiling effect leaves open whether AI review predicts how hard code is to change. The study used one task with three runs per model. Its ranking was the reverse of VulcanBench, where Sonnet came first, and counting only one judge changes the order.</dd>
+              </dl>
+              <ul class="study-links">
+                <li><a class="btn" href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/maker-quality.md" hreflang="ko" aria-describedby="study-maker">GitHub Markdown (KO)</a></li>
+              </ul>
+            </div>
+          </article>
+        </li>
+        <li>
+          <article class="study" aria-labelledby="study-harness">
+            <div>
+              <h3 id="study-harness">Harness comparison: CUELO vs Claude Code vs Codex</h3>
+              <dl class="study-meta">
+                <div><dt>Published</dt><dd><time datetime="2026-09-24">2026-09-24</time></dd></div>
+                <div><dt>Updated</dt><dd><time datetime="2026-09-26">2026-09-26</time></dd></div>
+                <div><dt>Language</dt><dd>Korean</dd></div>
+              </dl>
+            </div>
+            <div>
+              <dl class="ledger">
+                <dt>Question</dt>
+                <dd>With the same model and the same coding tasks, does the tool around the model change the result?</dd>
+                <dt>Setup</dt>
+                <dd>76 total runs across six coding tasks ranging from a one-feature fix to six independent packages, graded by hidden tests after the run. Values are medians of repeated runs, and costs are API-price conversions from 2026-09-25 because runs used subscriptions.</dd>
+                <dt>Finding</dt>
+                <dd>On the hard task with Opus 5.5, CUELO finished 42% faster than Claude Code with the same correctness. After fixing bottlenecks and re-measuring, CUELO's six-package delegation time fell from 25 min 39 s to 16 min 13 s, while on the one-feature fix its API-price cost was 43% higher than Claude Code.</dd>
+                <dt>Limits</dt>
+                <dd>The tables mark the runs labeled "solo" that used sub-agents. The page keeps before-fix numbers and two reverted attempts, and all cost figures are API-price conversions, not billed subscription amounts.</dd>
+              </dl>
+              <ul class="study-links">
+                <li><a class="btn" href="https://gim47656-ship-it.github.io/cuelo-benchmark/" hreflang="ko" aria-describedby="study-harness">Web report (KO)</a></li>
+                <li><a href="https://gim47656-ship-it.github.io/cuelo-benchmark/cuelo-benchmark.pdf" hreflang="ko" type="application/pdf" aria-describedby="study-harness">PDF (KO, 0.67 MB)</a></li>
+                <li><a href="https://github.com/gim47656-ship-it/cuelo-benchmark" aria-describedby="study-harness">Source repository</a></li>
+              </ul>
+            </div>
+          </article>
+        </li>
+      </ol>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>CUELO is based on <a href="https://github.com/ddallabenetta/omp-web">omp-web</a> by @ddallabenetta, which forked <a href="https://github.com/agegr/pi-web">pi-web</a> by @agegr. The agent engine is <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a>, used through the <code>@oh-my-pi/*</code> npm packages.</p>
+  </div>
+</footer>
+</body>
+</html>

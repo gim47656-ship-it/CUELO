@@ -10,4 +10,24 @@
     <xhtml:link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/"/>
     <xhtml:link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/"/>
   </url>
+  <url>
+    <loc>https://gim47656-ship-it.github.io/CUELO/evals/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/"/>
+  </url>
+  <url>
+    <loc>https://gim47656-ship-it.github.io/CUELO/ko/evals/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/"/>
+  </url>
+  <url>
+    <loc>https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/"/>
+  </url>
+  <url>
+    <loc>https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/evals/terra-sol-2026-10/"/>
+    <xhtml:link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/evals/terra-sol-2026-10/"/>
+  </url>
 </urlset>

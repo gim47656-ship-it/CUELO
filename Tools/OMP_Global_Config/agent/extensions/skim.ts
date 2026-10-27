@@ -323,7 +323,7 @@ export default function skim(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "skim", label: "Skim", loadMode: "essential", approval: "read",
-    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(Hive의 DeepSeek v4.1 Flash 1017)로 조사하고 실패하면 같은 모델이 아닌 경우에 한해 Hive의 DeepSeek 1017로 한 번 대체합니다(skim 역할이 이미 이 모델이면 다시 부르지 않습니다). paths는 세션 cwd 안의 경로만 받습니다(cwd 자체·cwd 밖 절대 경로는 거절. 다른 프로젝트는 read로 읽거나 그 프로젝트를 cwd로 둔 세션에서 씁니다). 허용 파일 내용은 그 모델 제공자(Hive)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
+    description: "여러 텍스트 파일·디렉터리·glob을 skim 역할 모델(기본 Codex의 GPT-6.1 Terra)로 조사하고 실패하면 같은 모델이 아닌 경우에 한해 Hive의 DeepSeek 1017로 한 번 대체합니다(skim 역할이 이미 이 모델이면 다시 부르지 않습니다). paths는 세션 cwd 안의 경로만 받습니다(cwd 자체·cwd 밖 절대 경로는 거절. 다른 프로젝트는 read로 읽거나 그 프로젝트를 cwd로 둔 세션에서 씁니다). 허용 파일 내용은 지정한 모델 제공자(기본 OpenAI, 대체 Hive)로 전송됩니다. 비밀·gitignore·바이너리·큰 파일은 제외/제한하고 실제 응답 모델·근거 경로·빠진 목록을 돌려줍니다. 두 모델이 모두 실패하면 오류 결과로 돌려줍니다. 수정할 정확한 줄은 read로 확인하세요.",
     parameters: z.object({ paths: z.array(z.string()), question: z.string() }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await skimQuestion(params as SkimInput, ctx, signal ?? new AbortController().signal));

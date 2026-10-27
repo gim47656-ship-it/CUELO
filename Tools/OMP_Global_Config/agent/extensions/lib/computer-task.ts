@@ -5,8 +5,8 @@ import { join } from "node:path";
 /**
  * computer_task: hand ONE multi-step desktop goal to a child omp session that runs on `modelRoles.computer`
  * (2026-10-27 user decision, evidence doc/history/2026/10/27-terra-sol-eval/computer) and return what it observed.
- * The child only gets eval (the `computer` global), read, bash and windows_control; it never gets computer_task
- * (tool allow-list plus the CHILD_ENV guard), so it cannot recurse.
+ * The trusted scope extension selects eval (the `computer` global), read, bash and windows_control after tool
+ * discovery. --tools alone does not exclude extension/custom tools. CHILD_ENV also refuses recursive calls.
  */
 
 /** Set in the child's environment; the tool refuses to run when it is present. */
@@ -74,7 +74,12 @@ export function buildPrompt(input: ComputerTaskInput): string {
 
 export function childArgs(selector: { model: string; thinking?: string }, prompt: string): string[] {
   return ["-p", "--no-session", "--mode", "json", "--model", selector.model,
-    ...(selector.thinking ? ["--thinking", selector.thinking] : []), `--tools=${CHILD_TOOLS}`, prompt];
+    ...(selector.thinking ? ["--thinking", selector.thinking] : []),
+    "--trusted-extension", join(import.meta.dir, "computer-task-scope.ts"),
+    "--config", join(import.meta.dir, "computer-task.config.yml"),
+    "--no-context-files", "--no-skills", "--no-rules",
+    "--system-prompt", "You are a desktop-operation tool worker. The caller owns the overall task. Follow its bounded goal, target and observable done condition; do not plan or dispatch unrelated work.",
+    `--tools=${CHILD_TOOLS}`, prompt];
 }
 
 /** The last non-empty line must be a JSON object with a boolean `done` and string `observed` and `issues`. */

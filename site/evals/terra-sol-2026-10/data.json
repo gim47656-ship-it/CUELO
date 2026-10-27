@@ -1,0 +1,49 @@
+{
+  "study": "GPT-6.1 Terra vs GPT-6.1 Sol and Opus 5.5",
+  "measured": "2026-10-27",
+  "notes": [
+    "Single runs unless stated. Costs are token counts multiplied by catalogue prices; the runs used a subscription, so they are not billed amounts.",
+    "seconds is wall time; reviewWaitSeconds is time spent waiting for the cross_review tool the model called itself; responseSeconds is summed model response time."
+  ],
+  "coding": {
+    "runner": "omp -p --no-session with an isolation config, omp core 18.13.0",
+    "effort": "high",
+    "tools": ["read", "bash", "edit", "write", "find", "grep", "eval", "todo"],
+    "timeLimitMinutes": 90,
+    "pricesPerMillionTokensUSD": {
+      "gpt-6.1-terra": { "input": 1, "output": 5, "cacheRead": 0.05 },
+      "gpt-6.1-sol": { "input": 2, "output": 10, "cacheRead": 0.1 }
+    },
+    "tasks": {
+      "large-sheet": { "hiddenTests": 200, "description": "Spreadsheet formula engine from a spec (parser, evaluator, dependency graph, structural edits, CSV), TypeScript + Bun" },
+      "mega-six": { "hiddenTests": 960, "description": "Six independent packages from specs: spreadsheet, markdown, JSON schema, cron, semver, diff, TypeScript + Bun" }
+    },
+    "runs": [
+      { "task": "large-sheet", "model": "GPT-6.1 Terra", "passed": 199, "seconds": 128, "reviewWaitSeconds": 0, "requests": 18, "responseSeconds": 116, "inputTokens": 54466, "cacheReadTokens": 792448, "outputTokens": 10318, "reasoningTokens": 427, "costUSD": 0.146 },
+      { "task": "large-sheet", "model": "GPT-6.1 Sol", "passed": 198, "seconds": 1348, "reviewWaitSeconds": 533, "requests": 33, "responseSeconds": 796, "inputTokens": 83331, "cacheReadTokens": 2465536, "outputTokens": 34286, "reasoningTokens": 9636, "costUSD": 0.756 },
+      { "task": "mega-six", "model": "GPT-6.1 Terra", "passed": 585, "seconds": 171, "reviewWaitSeconds": 0, "requests": 21, "responseSeconds": 149, "inputTokens": 79767, "cacheReadTokens": 1882368, "outputTokens": 15521, "reasoningTokens": 1297, "costUSD": 0.251, "note": "Implemented 4 of the 6 packages, then stopped and said in its final report that the work was incomplete." },
+      { "task": "mega-six", "model": "GPT-6.1 Sol", "passed": 957, "seconds": 1118, "reviewWaitSeconds": 394, "requests": 32, "responseSeconds": 700, "inputTokens": 116630, "cacheReadTokens": 3734400, "outputTokens": 45066, "reasoningTokens": 7936, "costUSD": 1.057 }
+    ]
+  },
+  "vision": {
+    "harness": "omp core image-question path; four synthetic images; 8 question types; 3 runs per candidate; 72 calls, 0 errors",
+    "totals": { "coordinates": 27, "boxCheck": 12, "smallTextOcr": 153, "ocrQuestions": 3 },
+    "candidates": [
+      { "model": "Opus 5.5", "effort": "low", "coordinates": 27, "boxCheck": 12, "smallTextOcr": 149, "bannerOcr": 24, "sameAnswerAllRuns": 1, "medianLatencySeconds": 4.0 },
+      { "model": "GPT-6.1 Terra", "effort": "low", "coordinates": 27, "boxCheck": 12, "smallTextOcr": 138, "bannerOcr": 15, "sameAnswerAllRuns": 3, "medianLatencySeconds": 2.3 },
+      { "model": "GPT-6.1 Terra", "effort": "high", "coordinates": 27, "boxCheck": 12, "smallTextOcr": 138, "bannerOcr": 15, "sameAnswerAllRuns": 3, "medianLatencySeconds": 3.2 }
+    ],
+    "bannerOcrTotal": 24
+  },
+  "desktop": {
+    "task": "Open a new Windows Character Map, type 가Ω→42 into Characters to copy, read it back, read the selected font, leave the window open, end with one JSON line",
+    "command": "omp -p --mode json --tools=eval,read,bash,windows_control",
+    "effort": "high",
+    "runs": [
+      { "run": 1, "model": "GPT-6.1 Terra", "matched": true, "seconds": 38, "toolCalls": 6, "toolErrors": 0 },
+      { "run": 2, "model": "Opus 5.5", "matched": true, "seconds": 43, "toolCalls": 9, "toolErrors": 1 },
+      { "run": 3, "model": "Opus 5.5", "matched": true, "seconds": 53, "toolCalls": 10, "toolErrors": 0 },
+      { "run": 4, "model": "GPT-6.1 Terra", "matched": true, "seconds": 30, "toolCalls": 8, "toolErrors": 0 }
+    ]
+  }
+}
