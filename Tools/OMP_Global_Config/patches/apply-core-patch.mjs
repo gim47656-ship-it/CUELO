@@ -7760,6 +7760,26 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 			// not constitute Main acceptance and therefore never change TodoTracker.
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);`,
+		}, {
+			// 18.13.1(공개 이슈 #52): flush 가 badge·todo·HUD 변화 flag(`badgeChanged`/`todoChanged`/`hudChanged`)를 모아 바뀐 것이
+			// 있을 때만 다시 그린다. 그 redraw 최적화는 그대로 두고, lifecycle 분기에서 #reconcileTodosWithSubagents() 호출만 뺀다.
+			// `#observerUiSyncNeedsTodoReconcile` 는 계속 세우고 내려 lifecycle 이벤트에서는 HUD 동기화(#syncTodoHudState)와 다시 그림을 유지한다.
+			// 18.8.0 후보의 marker(`\t\t\t// Lifecycle changes only refresh ... They do\n`)가 이 적용본의 부분문자열이 되면 두 후보가 모두
+			// applied 로 성립해 ambiguous 가 되므로, 주석 문구를 그 marker 와 겹치지 않게 했다.
+			file: "src/modes/interactive-mode.ts",
+			requires: "const badgeChanged = this.syncRunningSubagentBadge({ requestRender: false });",
+			marker: "\t\t\t\t// A child lifecycle event refreshes observer and TODO presentation. A finished child is review evidence,\n",
+			anchor: `			if (this.#observerUiSyncNeedsTodoReconcile) {
+				this.#observerUiSyncNeedsTodoReconcile = false;
+				this.#reconcileTodosWithSubagents();
+				this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
+			}`,
+			patched: `			if (this.#observerUiSyncNeedsTodoReconcile) {
+				// A child lifecycle event refreshes observer and TODO presentation. A finished child is review evidence,
+				// not Main acceptance, so this path never changes TodoTracker.
+				this.#observerUiSyncNeedsTodoReconcile = false;
+				this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
+			}`,
 		}],
 	},
 	{
@@ -14023,6 +14043,12 @@ function parentSubagentServiceTiers(
 			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
 			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
 			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
+		}, {
+			// 2026-10-27 18.13.1: WMe는 같은 isAdvisorTranscriptName 함수다(`e===HMe||e.startsWith(\`${$Me}.\`)&&e.endsWith(dfe)`). minified 이름만 바뀌었다(RETIRE 유지).
+			file: "dist/cli.js",
+			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
+			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
+			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
 		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로

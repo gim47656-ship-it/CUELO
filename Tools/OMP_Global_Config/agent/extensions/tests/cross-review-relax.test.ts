@@ -444,3 +444,83 @@ describe("교차검토 3회차(xr-20261027020031-ef6308) 지적 회귀", () => {
     expect(hit("const label = `PLC ${name} Communication`;")).toEqual([]);
   });
 });
+
+// 공개 이슈 #53: Python f-string·C#/VB 보간 문자열의 `{…}` 안은 실행식이라 문자열 제거가 지우면 안 된다.
+describe("#53 보간 문자열의 실행식은 device-io로 남는다", () => {
+  const hit = (path: string, text: string) => detectMarkers(path, [{ line: 1, text }]).map((item) => item.trigger);
+
+  test.each([
+    ["Python f-string", "ports.py", "    return f\"{socket.send(data)}\""],
+    ["C# $\"", "ports.cs", "    static string Show(string path) => $\"{new SerialPort(path).PortName}\";"],
+    ["VB $\"", "ports.vb", "        Return $\"{New SerialPort(path).PortName}\""],
+    ["JS 백틱(대조군)", "ports.ts", "export const show = (path: string) => `${new SerialPort(path).port}`;"],
+    ["직접 호출(대조군)", "ports-direct.py", "    return socket.send(data)"],
+  ])("보간 안의 장치 코드는 센다: %s", (_label, path, text) => {
+    expect(hit(path, text)).toContain("device-io");
+  });
+
+  test.each([
+    ["ports.ts", "export const text = \"SerialPort status\";"],
+    ["ports.py", "    return \"SerialPort status\""],
+    ["ports.py", "    return f\"SerialPort status {name}\""],
+    ["ports.py", "    return f\"{{SerialPort}} {name}\""],
+    ["ports.cs", "    var s = $\"PLC {name} ready\";"],
+    ["ports.cs", "    var s = $\"{{SerialPort}} {name}\";"],
+    ["ports.vb", "        Return $\"PLC {name} said \"\"COM1\"\"\""],
+  ])("보간 밖의 글자 부분은 세지 않는다: %s %s", (path, text) => {
+    expect(hit(path, text)).toEqual([]);
+  });
+
+  test.each([
+    ["Python rf/Rf/fR/Fr 접두사", "a.py", ["rf\"\\d{socket.send(x)}\"", "Rf\"{socket.send(x)}\"", "fR'{socket.send(x)}'", "Fr\"{socket.send(x)}\""]],
+    ["Python 식 안의 같은 따옴표·중첩 중괄호·서식", "a.py", ["f\"{d[\"k\"]} {socket.send(x)}\"", "f\"{x:{w}} {socket.send(x)}\"", "f\"{ {'a': 1}['a'] }{socket.send(x)}\""]],
+    ["C# $@·@$ 축자 보간", "a.cs", ["$@\"C:\\{new SerialPort(p)}\"", "@$\"{new SerialPort(p)}\""]],
+    ["C# 식 안의 중첩 문자열", "a.cs", ["$\"{(ok ? \"a\" : \"b\")} {new SerialPort(p)}\""]],
+    ["VB 식 안의 중첩 문자열", "a.vb", ["$\"{If(ok, \"a\", \"b\")} {New SerialPort(p)}\""]],
+    ["여러 보간 중 뒤쪽 식", "a.py", ["f\"{a} text {socket.send(b)}\""]],
+  ])("지원하는 접두사·문법: %s", (_label, path, lines) => {
+    for (const text of lines) expect(hit(path, text), text).toContain("device-io");
+  });
+
+  test.each([
+    ["식이 줄 안에서 닫히지 않음", "a.py", "x = f\"{socket.send(data)"],
+    ["식 안의 `/`(나눗셈·주석)", "a.py", "x = f\"{a / b}\"; socket.send(data)"],
+    ["식 안의 닫히지 않은 따옴표", "a.cs", "var s = $\"{(a + \"}\"; new SerialPort(p);"],
+    ["닫히지 않은 보간 문자열", "a.cs", "var s = $\"PLC {x}"],
+    ["삼중 따옴표·C# raw 보간", "a.cs", "var s = $\"\"\"PLC {x}\"\"\";"],
+    ["Python 삼중 따옴표 f-string", "a.py", "x = f\"\"\"{socket.send(d)}\"\"\""],
+  ])("경계를 확신할 수 없으면 줄 끝까지 코드로 둔다(닫힌 쪽): %s", (_label, path, text) => {
+    expect(hit(path, text)).toContain("device-io");
+  });
+
+  test("1회차 지적(xr-20261027063952-f2c9d6): 보간 앞의 역슬래시와 `$$` raw 보간도 실행식을 지우지 않는다", () => {
+    // R1-OAI-1: Python에서 `\{`의 역슬래시는 글자일 뿐이고 `{`는 여전히 보간을 연다. `\\{`·`\"`는 그대로 이스케이프다.
+    expect(hit("a.py", "s = rf\"\\{SerialPort(p)}\"")).toContain("device-io");
+    expect(hit("a.py", "s = f\"x\\{socket.send(d)}\"")).toContain("device-io");
+    expect(hit("a.py", "s = f\"\\\\{socket.send(d)}\"")).toContain("device-io");
+    expect(hit("a.py", "s = f\"say \\\"SerialPort\\\" {name}\"")).toEqual([]);
+    // R1-OAI-2: `$$"""`처럼 `$`가 여럿인 raw 보간은 삼중 따옴표라 줄 끝까지 코드로 둔다.
+    expect(hit("a.cs", "var s = $$\"\"\"{{new SerialPort(p)}}\"\"\";")).toContain("device-io");
+  });
+
+  test.each([
+    ["ports.py", "def show(socket, data):\n    return f\"{socket.send(data)}\"\n# /*v*/\n"],
+    ["ports.cs", "class D {\n    static string Show(string p) => $\"{new SerialPort(p).PortName}\";\n}\n// /*v*/\n"],
+    ["ports.vb", "Module D\n    Function Show(p As String) As String\n        Return $\"{New SerialPort(p).PortName}\"\n    End Function\nEnd Module\n' /*v*/\n"],
+  ])("표본이 아니고 통과 원장이 비어도 runGate가 검토를 요구한다: %s", async (path, content) => {
+    const env = repo();
+    const files = pickSample({ [path]: content }, path, false);
+    writeFileSync(join(env.work, path), files[path]!);
+    const error = await runGate({ cwd: env.work, files: [path], ledgerPath: env.ledger }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CrossReviewRefusal);
+    expect((error as Error).message).toContain("device-io");
+  });
+
+  test("순수 문자열 문구만 있는 파일은 같은 조건에서 검토를 요구하지 않는다", async () => {
+    const env = repo();
+    const files = pickSample({ "label.py": "TEXT = \"SerialPort status\"\n# /*v*/\n" }, "label.py", false);
+    writeFileSync(join(env.work, "label.py"), files["label.py"]!);
+    const outcome = (await runGate({ cwd: env.work, files: ["label.py"], ledgerPath: env.ledger })) as GateOutcome;
+    expect(outcome.decision?.required).toEqual([]);
+  });
+});

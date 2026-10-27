@@ -342,6 +342,64 @@ const VB_COMMENT_LINE = /^\s*(?:'|rem(?:\s|$))/i;
 const BROWSER_MARKUP_FILE = /\.(?:html?|xhtml)$/i;
 const DEVICE_IO_CALL = new RegExp(DEVICE_IO_CALL_SOURCE);
 
+// 보간 문자열(Python f-string, C#·VB `$"`)의 `{…}` 안은 문자열이 아니라 실행식이다(공개 이슈 #53). 접두사는 따옴표 바로 앞에서 읽는다.
+const PY_FSTRING_PREFIX = /(?<![\w$])(?:[fF][rR]?|[rR][fF])$/;
+const CS_INTERPOLATED_PREFIX = /(?<![\w$@])(?:\$+@?|@\$+)$/;
+const VB_INTERPOLATED_PREFIX = /(?<![\w$])\$$/;
+
+/**
+ * 보간 문자열 하나를 지운다: 글자 부분은 비우고 `{…}` 식은 닫는 `}`까지(중괄호 깊이를 세고 안의 "…"·'…'는 건너뛴다) 남긴다. `{{`는 글자 `{`다.
+ * 줄 안에서 문자열이나 식이 안 닫히거나 식 안에 `/`(나눗셈·주석)가 있으면 경계를 믿을 수 없으므로 undefined를 돌려주고, 부르는 쪽이 줄 끝까지 코드로 둔다.
+ * escape: backslash는 `\"`·`\\`만 두 글자로 건너뛰는 문법(Python·C# 일반; `\{`의 `{`는 여전히 보간을 연다), double은 `""`가 따옴표 하나인 문법(VB·C# 축자).
+ */
+function stripInterpolated(text: string, start: number, escape: "backslash" | "double"): { kept: string; next: number } | undefined {
+  const quote = text[start]!;
+  let kept = quote;
+  let cursor = start + 1;
+  while (cursor < text.length) {
+    const char = text[cursor]!;
+    if (escape === "backslash" && char === "\\") { cursor += text[cursor + 1] === "\\" || text[cursor + 1] === quote ? 2 : 1; continue; }
+    if (char === quote) {
+      if (escape === "double" && text[cursor + 1] === quote) { cursor += 2; continue; }
+      return { kept: kept + quote, next: cursor + 1 };
+    }
+    if (char !== "{") { cursor += 1; continue; }
+    if (text[cursor + 1] === "{") { cursor += 2; continue; }
+    let depth = 1;
+    let end = cursor + 1;
+    while (end < text.length && depth > 0) {
+      const inner = text[end]!;
+      if (inner === "/") return undefined;
+      if (inner === "\"" || inner === "'") {
+        end += 1;
+        while (end < text.length && text[end] !== inner) end += text[end] === "\\" ? 2 : 1;
+        if (end >= text.length) return undefined;
+      } else if (inner === "{") depth += 1;
+      else if (inner === "}") depth -= 1;
+      end += 1;
+    }
+    if (depth > 0) return undefined;
+    kept += text.slice(cursor, end);
+    cursor = end;
+  }
+  return undefined;
+}
+
+/** index의 따옴표가 보간 문자열의 시작이면 그 escape 문법을, 삼중 따옴표라 경계를 믿을 수 없으면 "triple"을, 아니면 undefined를 돌려준다. */
+function interpolatedStart(text: string, index: number, quote: string, vb: boolean): "backslash" | "double" | "triple" | undefined {
+  if (quote !== "\"" && (vb || quote !== "'")) return undefined;
+  const before = text.slice(0, index);
+  let escape: "backslash" | "double" | undefined;
+  if (vb) escape = VB_INTERPOLATED_PREFIX.test(before) ? "double" : undefined;
+  else if (PY_FSTRING_PREFIX.test(before)) escape = "backslash";
+  else if (quote === "\"") {
+    const cs = CS_INTERPOLATED_PREFIX.exec(before);
+    if (cs) escape = cs[0].includes("@") ? "double" : "backslash";
+  }
+  if (!escape) return undefined;
+  return !vb && text.startsWith(quote.repeat(3), index) ? "triple" : escape;
+}
+
 /**
  * 한 줄에서 문자열 리터럴의 내용을 지운다(따옴표는 남긴다). VB는 큰따옴표만 문자열이고 `""`가 따옴표 하나다. 그 밖의 언어는 `"`·`'`·`` ` ``를
  * 보고 역슬래시 이스케이프를 따르며, 템플릿은 글자 부분만 지우고 `${…}` 보간 식은 코드로 남긴다. 문자열 밖의 VB `'`, 그 밖 언어의 `/`(주석·정규식·
@@ -390,6 +448,14 @@ export function stripStringLiterals(text: string, vb: boolean): string {
       continue;
     }
     const quote = vb ? char === "\"" : char === "\"" || char === "'";
+    const interpolation = interpolatedStart(text, index, char, vb);
+    if (interpolation) {
+      const stripped = interpolation === "triple" ? undefined : stripInterpolated(text, index, interpolation);
+      if (!stripped) return out + text.slice(index);
+      out += stripped.kept;
+      index = stripped.next;
+      continue;
+    }
     if (!quote) { out += char; index += 1; continue; }
     let end = index + 1;
     let closed = -1;
