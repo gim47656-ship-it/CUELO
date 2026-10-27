@@ -21,6 +21,7 @@ interface FinalizerResult {
 }
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
+const syncCheckoutPath = fileURLToPath(new URL("./sync-checkout.ts", import.meta.url));
 const helperPath = "Tools/CUELO_Setup/files/source-build-helper.js";
 const manifestPath = "Tools/CUELO_Setup/files/source-integrity.json";
 const excludedSourcePaths: Record<string, true> = {
@@ -37,6 +38,7 @@ Then include Tools/CUELO_Setup/files/source-integrity.json in the same commit.`;
 const memorySyncScript = "Tools/OMP_Global_Config/memory-sync/sync.ts";
 const memoryTransport = "Tools/OMP_Global_Config/memory-sync/memories.jsonl";
 const pathKey = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+const shellArg = (value: string) => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 
 type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
@@ -294,6 +296,18 @@ const factory: CustomToolFactory = (pi) => ({
         const detail = parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
         throw new Error(`git_finalize failed${parsed?.stage ? ` at ${parsed.stage}` : ""}: ${detail}`);
       }
+      // 게시 뒤 Windows 대응 사본 반영(deploy-ops)에 붙여 넣을 명령: 손으로 40자 리비전을 옮기던 일을 덜어 준다(10-25~27 54회).
+      // 대응 사본은 PC·저장소마다 달라 정본이 없으므로 대상만 자리표시로 두고, 짝이 있는지는 Main이 운영 문서로 정한다.
+      // Windows 드라이브 저장소는 그 자체가 Windows 사본이라 반영할 짝이 없다.
+      // 커밋·push는 이미 끝났으므로 저장소 조회가 실패해도 힌트만 빼고 성공 응답은 그대로 둔다.
+      let syncHint = "";
+      if (!windows && process.platform !== "win32" && parsed.commitSha) {
+        const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
+        if (repo && !("failure" in repo)) {
+          syncHint = `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
+            + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${parsed.commitSha}`;
+        }
+      }
       return {
         content: [
           {
@@ -303,6 +317,7 @@ const factory: CustomToolFactory = (pi) => ({
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")
               + (handoffNote ? ` ${handoffNote}` : "")
+              + syncHint
           },
         ],
         details: parsed,

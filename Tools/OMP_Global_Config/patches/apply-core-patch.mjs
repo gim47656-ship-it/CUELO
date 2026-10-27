@@ -19264,6 +19264,182 @@ for (const [owner, older] of preStatsWatchBodies) {
 		},
 	];
 }
+// 2026-10-28 18.13.2 이식(공개 이슈 #54 포함). 18.13.1 이하 후보는 앵커·marker·patched 를 한 바이트도 바꾸지 않고, 18.13.2 순정에서 앵커를 잃은 8개 항목마다
+// 그 판에만 성립하는 후보를 더한다. marker 를 공유하는 후보는 18.13.2 에만 있는 문자열로 requires(새 후보)·excludes(옛 후보)를 짝지어 서로 배타적으로 둔다.
+//  - ADAPT: workflow-notice.md 의 completion 줄이 py/js 분기(`{{#if py}}…{{else}}…{{/if}}`)로 바뀌어 effort 를 두 분기와 py+js 합본 안내 모두에 더한다.
+//  - ADAPT: skill-protocol.ts 의 skills import 가 stale-skill 재검색 헬퍼(findStaleSkillStandIn 등)로 여러 줄이 됐다. getActiveRules import 만 그 뒤에 더한다.
+//  - ADAPT: embeddings.ts 의 fastembed-runtime import 에 withEmbedSessionBudget 이 붙었다(세션 스레드 예산). fastembedRuntimeInstallPlan 만 더한다.
+//  - ADAPT: task/types.ts 의 SeanceTaskSchemaFields 가 export 되고 SeanceItemKey 가 생겼다. agent optional 후보는 그 모양을 그대로 두고 agent 규칙만 걷어 낸다.
+//  - ADAPT: async/job-manager.ts jobSnapshot 의 Pick 에 agentOutputPublished 가 생겼다(여러 줄). completion 을 그 목록 끝에 더한다.
+//    async-job-delivery.ts 는 agentUrlId 를 지역 변수로 옮기고 showAgentUrl/showHistoryUrl 을 더했다. completion 은 그 다음 줄에 싣는다.
+//  - ADAPT: read.ts. upstream 은 filesystem 경로의 `?q=` 를 execute 에서 떼지 않고 리터럴 파일·JSON 판별 뒤(#readFilesystem) 에서 뗀다(local/artifact 는 media
+//    대상일 때만 execute 에서 뗀다). 그래서 execute 쪽 conflict 검사는 새 삼항식 뒤로 옮기고, 판별 뒤 블록이 `?ocr=` 와 q/ocr 동시 지정을 같은 계약으로 처리한다.
+//    판별 뒤 블록 후보는 옛 판에서는 no-op(옛 판은 execute 의 splitImageQuestionTarget 이 이미 뗀다)이고 isMediaQuestionTarget 이 있는 판에서만 패치를 싣는다.
+//  - RETIRE 유지: dist/cli.js 의 advisor transcript filter 는 minified 이름만 vOe 로 바뀌었다.
+{
+	const one = (predicate, label) => {
+		const found = EDITS.filter(predicate);
+		if (found.length !== 1) throw new Error(`18.13.2 후보를 만들 수 없다: ${label} ${found.length}/1`);
+		return found[0];
+	};
+	const swap = (text, from, to) => {
+		const found = text.split(from).length - 1;
+		if (found !== 1) throw new Error(`18.13.2 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
+		return text.replace(from, () => to);
+	};
+	const exclude = (candidate, text) => {
+		candidate.excludes = candidate.excludes === undefined ? text : [candidate.excludes, text].flat();
+	};
+
+	// workflow-notice.md: completion 줄.
+	const WORKPOOL_PY_18132 = "- {{#if py}}`workpool(";
+	const workflow = one(entry => entry.file === "src/prompts/system/workflow-notice.md" && entry.marker === "effort=None)", "workflow-notice completion");
+	const WORKFLOW_ANCHOR =
+		'- {{#if py}}`completion(prompt, *, model="default", system=None, schema=None)`{{else}}`await completion(prompt, { model?, system?, schema? })`{{/if}}: immediate `CompletionHandle` for a tool-free one-shot call. Tiers: `"smol"`, `"default"`, `"slow"`.{{#if js}}{{#if py}} JS: `await completion(prompt, { model, system, schema })`; handle{{else}} Handle{{/if}} methods are async (`await h.wait()`).{{/if}}\n';
+	let workflowPatched = swap(WORKFLOW_ANCHOR, 'schema=None)`{{else}}', 'schema=None, effort=None)`{{else}}');
+	workflowPatched = swap(workflowPatched, "{ model?, system?, schema? })`{{/if}}", "{ model?, system?, schema?, effort? })`{{/if}}");
+	workflowPatched = swap(workflowPatched, 'Tiers: `"smol"`, `"default"`, `"slow"`.{{#if js}}', 'Tiers: `"smol"`, `"default"`, `"slow"`. `effort` pins an explicit reasoning level (`"off"`..`"max"`), clamped per model.{{#if js}}');
+	workflowPatched = swap(workflowPatched, "{ model, system, schema })`; handle", "{ model, system, schema, effort })`; handle");
+	exclude(workflow, WORKPOOL_PY_18132);
+	workflow.alternates = [
+		...(workflow.alternates ?? []),
+		{
+			file: workflow.file,
+			requires: WORKPOOL_PY_18132,
+			marker: "effort=None)`{{else}}",
+			anchor: WORKFLOW_ANCHOR,
+			patched: workflowPatched,
+		},
+	];
+
+	// skill-protocol.ts: skills import.
+	const skillProtocol = one(entry => entry.file === "src/internal-urls/skill-protocol.ts" && entry.marker === 'import { getActiveSkills } from "../extensibility/skills";\nimport { getActiveRules } from "../capability/rule";', "skill-protocol import");
+	const SKILL_IMPORT_TAIL = '\ttype SkillRediscoveryHost,\n} from "../extensibility/skills";\n';
+	skillProtocol.alternates = [
+		...(skillProtocol.alternates ?? []),
+		{
+			file: skillProtocol.file,
+			marker: SKILL_IMPORT_TAIL + 'import { getActiveRules } from "../capability/rule";',
+			anchor: SKILL_IMPORT_TAIL,
+			patched: SKILL_IMPORT_TAIL + 'import { getActiveRules } from "../capability/rule";\n',
+		},
+	];
+
+	// pi-mnemopi embeddings.ts: fastembed-runtime import.
+	const embeddingsImport = one(entry => entry.file === "../pi-mnemopi/src/core/embeddings.ts" && entry.marker === "import { fastembedRuntimeInstallPlan, loadFastembed } from", "embeddings import");
+	embeddingsImport.alternates = [
+		...(embeddingsImport.alternates ?? []),
+		{
+			file: embeddingsImport.file,
+			marker: "import { fastembedRuntimeInstallPlan, loadFastembed, withEmbedSessionBudget } from",
+			anchor: 'import { loadFastembed, withEmbedSessionBudget } from "./fastembed-runtime";\n',
+			patched: 'import { fastembedRuntimeInstallPlan, loadFastembed, withEmbedSessionBudget } from "./fastembed-runtime";\n',
+		},
+	];
+
+	// task/types.ts: agent optional. 18.13.0/18.13.1 후보(seanceFields)에는 SeanceItemKey 가 없는 판만 남긴다.
+	const SEANCE_ITEM_KEY_18132 = "type SeanceItemKey =";
+	const agentOptional = one(entry => entry.marker === "// CUELO: task schema agent is optional on the wire.", "agent optional");
+	const agentOptionalSeance = agentOptional.alternates.find(candidate => candidate.requires === "const seanceFields = options.seanceFields;");
+	if (agentOptionalSeance === undefined) throw new Error("18.13.2 후보를 만들 수 없다: agent optional 18.13.0 후보");
+	const SEANCE_TYPE_OLD = 'type SeanceTaskSchemaFields = {\n\t"sourceSession?"?: FluentType<string>;\n\t"model?"?: FluentType<string | string[]>;\n};\n\n';
+	const SEANCE_TYPE_NEW =
+		"/** Seance-only task fields; `seanceTaskSchemaFields` in ./seance must match it exactly. */\n" +
+		'export type SeanceTaskSchemaFields = {\n\t"sourceSession?"?: FluentType<string>;\n\t"model?"?: FluentType<string | string[]>;\n};\n\n' +
+		"type SeanceItemKey = {\n\t[K in keyof SeanceTaskSchemaFields]-?: K extends `${infer Name}?` ? Name : never;\n}[keyof SeanceTaskSchemaFields];\n\n";
+	exclude(agentOptionalSeance, SEANCE_ITEM_KEY_18132);
+	agentOptional.alternates.push({
+		file: agentOptional.file,
+		requires: SEANCE_ITEM_KEY_18132,
+		marker: agentOptional.marker,
+		anchor: swap(agentOptionalSeance.anchor, SEANCE_TYPE_OLD, SEANCE_TYPE_NEW),
+		patched: swap(agentOptionalSeance.patched, SEANCE_TYPE_OLD, SEANCE_TYPE_NEW),
+	});
+
+	// async/job-manager.ts: jobSnapshot Pick.
+	const snapshotPick = one(entry => entry.file === "src/async/job-manager.ts" && entry.marker === '"structured" | "agentId" | "latestDetails" | "completion"', "jobSnapshot pick");
+	const PICK_TAIL = '\t\t| "agentOutputPublished"\n\t\t| "latestDetails"\n';
+	snapshotPick.alternates = [
+		...(snapshotPick.alternates ?? []),
+		{
+			file: snapshotPick.file,
+			marker: '\t\t| "latestDetails"\n\t\t| "completion"\n',
+			anchor: PICK_TAIL,
+			patched: PICK_TAIL + '\t\t| "completion"\n',
+		},
+	];
+
+	// async-job-delivery.ts: completion 은 showHistoryUrl 다음 줄. 옛 후보의 marker 는 새 patched 의 부분 문자열이라 새 판에서는 후보가 아니게 한다.
+	const SHOW_HISTORY_18132 = '\t\t\tshowHistoryUrl: handles === "history",\n';
+	const deliveryCompletion = one(entry => entry.file === "src/session/async-job-delivery.ts" && entry.marker === "\t\t\tcompletion: entry.job?.completion,", "delivery completion");
+	exclude(deliveryCompletion, SHOW_HISTORY_18132);
+	deliveryCompletion.alternates = [
+		...(deliveryCompletion.alternates ?? []),
+		{
+			file: deliveryCompletion.file,
+			requires: SHOW_HISTORY_18132,
+			marker: SHOW_HISTORY_18132 + "\t\t\tcompletion: entry.job?.completion,",
+			anchor: SHOW_HISTORY_18132,
+			patched: SHOW_HISTORY_18132 + "\t\t\tcompletion: entry.job?.completion,\n",
+		},
+	];
+
+	// read.ts execute: conflict 검사. 새 삼항식(`: splitImageQuestionTarget(readPath);`)은 media 대상 local/artifact 와 scheme 이 있는 URL 에서만 질문을 뗀다.
+	const MEDIA_QUESTION_18132 = "function isMediaQuestionTarget(readPath: string): boolean {";
+	const readConflict = one(entry => entry.file === "src/tools/read.ts" && entry.marker === "\t\tif (imageQuestion.conflict) throw", "read conflict");
+	exclude(readConflict, MEDIA_QUESTION_18132);
+	const READ_TERNARY_TAIL = "\t\t\t\t: splitImageQuestionTarget(readPath);\n";
+	const READ_CONFLICT_LINE = '\t\tif (imageQuestion.conflict) throw new ToolError("Pass either ?q= or ?ocr= to an image read, not both.");\n';
+	readConflict.alternates = [
+		...(readConflict.alternates ?? []),
+		{
+			file: readConflict.file,
+			requires: MEDIA_QUESTION_18132,
+			marker: READ_TERNARY_TAIL + "\t\tif (imageQuestion.conflict) throw",
+			anchor: READ_TERNARY_TAIL,
+			patched: READ_TERNARY_TAIL + READ_CONFLICT_LINE,
+		},
+	];
+
+	// read.ts 판별 뒤 블록: 새 판은 파일 경로의 `?q=` 를 여기서 뗀다. `?ocr=`(OCR_QUESTION_MARK)와 q/ocr 동시 지정은 splitImageQuestionTarget 과 같은 계약이다.
+	const READ_STABLE_LINE = "export type ReadToolInput = typeof readSchema.infer;\n";
+	const READ_QUESTION_ANCHOR =
+		"\t\t\tconst questionTarget = splitJsonQueryTarget(located?.url ?? readPath);\n" +
+		'\t\t\tconst imageQuestion = questionTarget ? new URLSearchParams(questionTarget.queryString).get("q") : null;\n' +
+		"\t\t\tif (questionTarget && imageQuestion) {\n";
+	const READ_QUESTION_PATCHED =
+		"\t\t\tconst questionTarget = splitJsonQueryTarget(located?.url ?? readPath);\n" +
+		"\t\t\t// CUELO: `?ocr=<question>` asks the OCR role (the kind rides on OCR_QUESTION_MARK); both keys at once is rejected rather than guessed.\n" +
+		"\t\t\tconst questionParams = questionTarget ? new URLSearchParams(questionTarget.queryString) : null;\n" +
+		'\t\t\tif (questionParams?.has("q") && questionParams.has("ocr")) throw new ToolError("Pass either ?q= or ?ocr= to an image read, not both.");\n' +
+		"\t\t\t// NUL leads OCR_QUESTION_MARK: drop it from both user values so a `?q=` question can never begin with the mark.\n" +
+		'\t\t\tconst plainQuestion = questionParams?.get("q")?.replaceAll("\\u0000", "");\n' +
+		'\t\t\tconst ocrQuestion = questionParams?.get("ocr")?.replaceAll("\\u0000", "");\n' +
+		"\t\t\tconst imageQuestion = ocrQuestion ? OCR_QUESTION_MARK + ocrQuestion : plainQuestion;\n" +
+		"\t\t\tif (questionTarget && imageQuestion) {\n";
+	EDITS.push({
+		// 옛 판(isMediaQuestionTarget 이 없는 판): 질문은 execute 가 이미 뗐으므로 이 자리는 손대지 않는다.
+		file: "src/tools/read.ts",
+		excludes: MEDIA_QUESTION_18132,
+		marker: READ_STABLE_LINE,
+		anchor: READ_STABLE_LINE,
+		patched: READ_STABLE_LINE,
+		alternates: [
+			{
+				file: "src/tools/read.ts",
+				requires: MEDIA_QUESTION_18132,
+				marker: "const questionParams = questionTarget ? new URLSearchParams(questionTarget.queryString) : null;",
+				anchor: READ_QUESTION_ANCHOR,
+				patched: READ_QUESTION_PATCHED,
+			},
+		],
+	});
+
+	// dist/cli.js: advisor transcript filter(RETIRE 유지). minified 이름만 바뀌었다.
+	const advisorFilter = one(entry => entry.file === "dist/cli.js" && entry.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
+	const ADVISOR_18132 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||vOe(a))continue;let l=a.slice(0,-6),';
+	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18132, anchor: ADVISOR_18132, patched: ADVISOR_18132 });
+}
 
 
 

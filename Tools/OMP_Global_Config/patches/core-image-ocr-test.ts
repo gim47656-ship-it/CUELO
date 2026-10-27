@@ -227,6 +227,9 @@ check("ocr 모델이 이미지 입력을 못 받으면 vision 으로 폴백한�
 
 const both = await ask({ roles: split, path: "shot.png?q=a&ocr=b" });
 check("?q= 와 ?ocr= 를 함께 주면 모델을 부르지 않고 오류를 낸다", both.calls.length === 0 && /\?q=.*\?ocr=|\?ocr=.*\?q=/.test(both.error ?? "") && /not both|only one|either/i.test(both.error ?? ""), JSON.stringify(both));
+// 18.13.2: 파일 경로의 질문은 리터럴 파일 판별 뒤에, media 대상 `local://`·`artifact://` 의 질문은 execute 에서 뗀다. 두 키 거절은 두 자리에서 같아야 한다.
+const localBoth = await ask({ roles: split, path: "local://shot.png?q=a&ocr=b" });
+check("local:// 이미지 대상도 ?q= 와 ?ocr= 를 함께 주면 모델을 부르지 않고 같은 오류를 낸다", localBoth.calls.length === 0 && /not both/.test(localBoth.error ?? ""), JSON.stringify(localBoth));
 // 두 키가 "있는지"로 거절한다. 빈 값이어도 어느 쪽 의도인지 추측하지 않는다.
 for (const path of ["shot.png?q=&ocr=transcribe", "shot.png?q=describe&ocr="]) {
 	const empty = await ask({ roles: split, path });

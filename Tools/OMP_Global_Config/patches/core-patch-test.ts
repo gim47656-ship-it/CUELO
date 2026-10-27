@@ -4024,5 +4024,41 @@ console.log("\n[36] root 경계 읽기 — history://·agent://·proc:// 는 자
 	AgentRegistry.resetGlobalForTests();
 }
 
+// 18.13.2 이식(공개 이슈 #54): 순정에서 앵커를 잃어 후보를 새로 만든 항목 중 다른 곳에서 행동으로 지키지 않던 둘.
+//  (1) workflowz 알림의 completion 줄이 py/js 분기 템플릿이 되어도 우리 `effort` 안내가 두 언어와 합본에 모두 보인다.
+//  (2) 스킬이 아닌 규칙 이름을 skill:// 로 읽으면 `read rule://<name>` 안내가 붙는다(skill-protocol import 후보가 getActiveRules 를 계속 들여온다).
+{
+	const { renderWorkflowNotice } = await import(`${CORE}/modes/magic-keywords.ts`);
+	const completionLine = (flags: { py: boolean; js: boolean }): string => {
+		const text: string = renderWorkflowNotice({ taskBatch: true, scoutAvailable: false, evalTools: false, freshAgents: false, ...flags });
+		return text.split("\n").find(line => line.includes("`CompletionHandle`")) ?? "";
+	};
+	const py = completionLine({ py: true, js: false });
+	check("(11) Python 전용 workflowz 알림은 completion(..., effort=None) 을 보인다", py.includes("effort=None)") && py.includes("`effort` pins"), py);
+	const js = completionLine({ py: false, js: true });
+	check("(11) JS 전용 workflowz 알림은 completion(prompt, { ..., effort? }) 을 보인다", js.includes("effort? })") && js.includes("`effort` pins") && !js.includes("effort=None"), js);
+	const both = completionLine({ py: true, js: true });
+	check("(11) 두 언어 workflowz 알림은 py 서명과 합본 JS 서명 모두에 effort 를 보인다", both.includes("effort=None)") && both.includes("{ model, system, schema, effort }"), both);
+
+	const { SkillProtocolHandler } = await import(`${CORE}/internal-urls/skill-protocol.ts`);
+	const { parseInternalUrl } = await import(`${CORE}/internal-urls/parse.ts`);
+	const { setActiveRules, resetActiveRulesForTests } = await import(`${CORE}/capability/rule.ts`);
+	setActiveRules([{ name: "deploy-ops", path: "/rules/deploy-ops.md", content: "rule body", _source: {} } as never]);
+	const skillHandler = new SkillProtocolHandler();
+	const skillFailure = async (name: string): Promise<string> => {
+		try {
+			await skillHandler.resolve(parseInternalUrl(`skill://${name}`), { skills: [] } as never);
+			return "resolved";
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	};
+	const ruleName = await skillFailure("deploy-ops");
+	check("(12) 규칙 이름을 skill:// 로 읽으면 rule://deploy-ops 로 안내한다", ruleName.startsWith("Unknown skill: deploy-ops") && ruleName.includes("deploy-ops is a rule, not a skill: read rule://deploy-ops"), ruleName);
+	const unknownName = await skillFailure("no-such-name");
+	check("(12) 규칙도 스킬도 아닌 이름에는 규칙 안내를 붙이지 않는다", unknownName.startsWith("Unknown skill: no-such-name") && !unknownName.includes("is a rule"), unknownName);
+	resetActiveRulesForTests();
+}
+
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
