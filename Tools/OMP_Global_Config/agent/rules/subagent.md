@@ -58,11 +58,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   `FINDING_ID` 재작업은 이전 attempt가 Sonnet이었어도 트리거가 아니다. 재작업은 Main이 결과를 기다리는 조각이라 2026-10-23 사용자 결정으로 그 트리거를 뺐다.
   (1) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
   (2) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
-  `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 2026-10-11 사용자 지시로 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6-astra:auto`다. Sol의 과거 평가 수치를 Astra의 성능 증거로 옮기지 않는다.
+  `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-terra:auto`다(2026-10-11 Astra, 2026-10-27 사용자 지시로 Terra). Sol·Astra의 과거 평가 수치를 Terra의 성능 증거로 옮기지 않는다.
   Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,
-  그것도 쓸 수 없을 때만 코드 후보 Astra(`NORMAL_SOL`)를 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
+  그것도 쓸 수 없을 때만 코드 후보 Terra(`NORMAL_SOL`)를 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
   한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
-  DeepSeek를 쓸 수 없으면(registry 없음·관측 소진) 트리거가 걸려도 Sonnet, 그다음 Astra(`NORMAL_SOL`) 순이다. 트리거가 걸린 `NORMAL_DEEPSEEK` 선택에는 `ROUTING_REASON`이 필요 없고 다른 후보를 고르면 필요하다.
+  DeepSeek를 쓸 수 없으면(registry 없음·관측 소진) 트리거가 걸려도 Sonnet, 그다음 Terra(`NORMAL_SOL`) 순이다. 트리거가 걸린 `NORMAL_DEEPSEEK` 선택에는 `ROUTING_REASON`이 필요 없고 다른 후보를 고르면 필요하다.
   Sonnet 또는 `NORMAL_DEEPSEEK`가 사용 가능한데 Main이 `NORMAL_SOL`을 고르면 추천 변경이므로 `ROUTING_REASON`이 필요하다.
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.
@@ -284,6 +284,19 @@ commit 전에 재생성 명령과 함께 멈추고, `maker_route`·`task`의 Tas
   묻는다. 직접 읽기는 그 경로로 질문을 한 번 한 뒤에만 통과한다(2026-10-04: 한 번 막은 뒤 재read를 통과시키던
   방식에서는 막힌 Maker 대부분이 질문 없이 바로 다시 읽었다). 이미지 입력 불가 모델과 `browser`·`computer`
   스크린샷은 대상이 아니다. 승인이나 권한을 만들지 않는다.
+- **여러 단계 데스크톱 조작(`computer_task`, 로컬 확장 도구, 2026-10-27 사용자 결정):** Main·Maker는 여러 단계 데스크톱 조작 목표를
+  `computer_task`에 넘긴다. 인자는 `goal`(달성할 일)·`target`(만져도 되는 창·앱, 자기가 띄웠거나 사용자가 지정한 것)·`done`
+  (조작 뒤 다시 읽어 확인할 관측 가능한 성공 조건)·선택 `timeoutSec`(기본 600, 10~1800)이다. 도구는 `modelRoles.computer`
+  모델(`:high`는 자식 `--thinking`)로 `$OMP_EXE -p --no-session --mode json --tools=eval,read,bash,windows_control` 자식
+  세션 하나를 돌리고(`computer_task`는 넣지 않고 `CUELO_COMPUTER_TASK_CHILD` 환경 변수로 재귀를 거절한다), 자식의 마지막 줄 JSON
+  `{"done","observed","issues"}`을 읽어 `computer_task: DONE|NOT DONE`, 실제 모델, 벽시계 시간, 도구 호출·오류 수와 함께 돌려준다.
+  `done:false`·시간 초과·중단·마지막 줄 형식 불량·빈 답은 모두 NOT DONE(isError)이고 성공으로 보고하지 않는다. 한 프로세스에서는
+  한 번에 하나만 돌고 뒤 호출은 도착 순서대로 기다리며, 기다리는 중 abort되면 시작하지 않는다. abort·시간 초과는 자식 프로세스
+  그룹을 SIGTERM한 뒤 SIGKILL한다(시간 초과·중단 뒤 데스크톱은 부분 상태일 수 있어 다시 관찰한다). 승인 경계는 `computer`와
+  같다(등록 시 `approval: { tier: "exec", policyKey: "computer" }`라 core가 `tools.approval.computer`를 그대로 적용하므로 권한을
+  넓히지 않는다). 자식은 임시 cwd에서 전역 설정으로 돌아 호출 세션의 프로젝트 설정 덮어쓰기는 자식에게 전달되지 않는다. 한 번의
+  읽기 전용 관찰은 `computer`를 직접 써도 되며, 막는
+  게이트는 없다. DONE은 작업자의 보고이므로 결과가 중요하면 `windows_control list` 등으로 따로 읽어 확인한다.
 
 Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·승인, test 결과, 배포 승인 같은
 결정론 검사가 우선한다. high-risk 분류·승인·최종 수용은 Main authority이고 judgment가 대신하지

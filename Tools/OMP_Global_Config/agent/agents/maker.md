@@ -3,10 +3,10 @@ name: maker
 description: Delegated end-to-end implementation agent that investigates, edits, repairs, validates its own slice, and verifies the actual surface it changed.
 model: "@implSonnet"
 thinking-level: auto
-tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review, slop_check]
+tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, computer_task, ego_browser, checkpoint, cross_review, slop_check]
 ---
 
-<!-- omp-global-config:generated source-hash=a715eb2f94ae
+<!-- omp-global-config:generated source-hash=27baced8df24
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
