@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { copyText } from "@/lib/clipboard";
-import type { CueloUpdateResponse } from "@/lib/api-types";
+import type { CueloUpdateApplyState, CueloUpdateJob, CueloUpdateResponse } from "@/lib/api-types";
 import { computePopupPlacement, preferredPopupHeight } from "@/lib/popup-placement";
 import { MarkdownBody } from "./MarkdownBody";
 
@@ -13,6 +13,17 @@ type LoadState = "idle" | "loading" | "ready";
 
 /** 소스 체크아웃에서 수동으로 갱신할 때 안내하는 명령. */
 const SOURCE_UPDATE_COMMAND = "git pull && bun install && bun run build && node Tools/CUELO_Setup/files/native-runtime-patch.js --target .";
+
+const TERMINAL_PHASE: Record<string, true> = {
+  done: true,
+  "handed-off": true,
+  "restart-required": true,
+  failed: true,
+};
+/** 서버가 내려간 동안에도 진행 상황을 놓치지 않도록 계속 묻는다. 실패하면 간격을 늘린다. */
+const APPLY_POLL_MS = 2000;
+const APPLY_POLL_IDLE_MS = 5000;
+
 
 function displayVersion(version: string): string {
   return version === "unknown" ? version : `v${version}`;
@@ -31,6 +42,11 @@ export function OmpUpdateIndicator() {
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [panelPosition, setPanelPosition] = useState<{ left: number; width: number; maxHeight: number; top?: number; bottom?: number } | null>(null);
+  const [applyState, setApplyState] = useState<CueloUpdateApplyState | null>(null);
+  const [starting, setStarting] = useState(false);
+  /** 이 탭에서 시작한 업데이트. 서버가 바뀌면 새 버전이 응답할 때 새로 고친다. */
+  const [applyingFrom, setApplyingFrom] = useState<string | null>(null);
+  const [pollFailing, setPollFailing] = useState(false);
 
   const updatePanelPosition = useCallback(() => {
     const rect = rootRef.current?.getBoundingClientRect();
@@ -93,6 +109,97 @@ export function OmpUpdateIndicator() {
     return () => controller.abort();
   }, [loadStatus]);
 
+  const readApplyState = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const response = await fetch("/api/updates/apply", { cache: "no-store", signal });
+      if (!response.ok) return null;
+      return await response.json() as CueloUpdateApplyState;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void readApplyState(controller.signal).then((next) => {
+      if (!next || controller.signal.aborted) return;
+      setApplyState(next);
+      // 다른 탭에서 시작한 업데이트도 이어서 지켜본다.
+      if (next.running && next.job) setApplyingFrom(next.job.currentVersion);
+    });
+    return () => controller.abort();
+  }, [readApplyState]);
+
+  /** 확인 문구에 넣을 실행 중 세션 수. 못 읽으면 수 없이 묻는다. */
+  const askToApply = useCallback(async (version: string) => {
+    setMessage(null);
+    let runningSessions = 0;
+    try {
+      const response = await fetch("/api/agent/running", { cache: "no-store" });
+      if (response.ok) {
+        const data = await response.json() as { runningSessionIds?: string[] };
+        runningSessions = data.runningSessionIds?.length ?? 0;
+      }
+    } catch {
+      runningSessions = 0;
+    }
+    const text = runningSessions > 0
+      ? t("updates.applyConfirmBusy", { version: displayVersion(version), count: runningSessions })
+      : t("updates.applyConfirm", { version: displayVersion(version) });
+    if (!window.confirm(text)) return;
+    setStarting(true);
+    try {
+      const response = await fetch("/api/updates/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const next = await response.json() as CueloUpdateApplyState & { error?: string; state?: string };
+      if (!response.ok) {
+        setMessage(next.error ?? t("updates.applyStartFailed", { reason: String(response.status) }));
+        return;
+      }
+      setApplyState(next);
+      if (next.job) setApplyingFrom(next.job.currentVersion);
+    } catch (error) {
+      setMessage(t("updates.applyStartFailed", { reason: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setStarting(false);
+    }
+  }, [t]);
+
+  // 시작한 업데이트가 끝날 때까지 계속 묻는다. 서버가 내려가면(재시작) 응답이 끊기는데, 그때도
+  // 멈추지 않고 이어서 물어 새 버전이 응답하면(=보고 있던 버전과 다른 버전) 화면을 새로 고친다.
+  useEffect(() => {
+    if (!applyingFrom) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      const next = await readApplyState();
+      if (stopped) return;
+      setPollFailing(next === null);
+      if (next) {
+        setApplyState(next);
+        if (next.runningVersion !== applyingFrom && next.runningVersion !== "unknown") {
+          window.location.reload();
+          return;
+        }
+        // `running` stays true for a WSL hand-off while its own service update works, so the phase
+        // alone is not the end: keep asking until the server has nothing more to report.
+        if (next.job && TERMINAL_PHASE[next.job.phase] && !next.running) {
+          setApplyingFrom(null);
+          return;
+        }
+      }
+      timer = setTimeout(() => void poll(), next ? APPLY_POLL_MS : APPLY_POLL_IDLE_MS);
+    };
+    timer = setTimeout(() => void poll(), APPLY_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [applyingFrom, readApplyState]);
+
   useEffect(() => () => {
     clearTimeout(copiedTimerRef.current ?? undefined);
     copiedTimerRef.current = null;
@@ -125,6 +232,8 @@ export function OmpUpdateIndicator() {
     ? new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(release.publishedAt))
     : null;
   const changelog = release.body.trim() || release.name;
+  const job: CueloUpdateJob | null = applyState?.job ?? null;
+  const busy = starting || Boolean(applyingFrom) || Boolean(applyState?.running);
   const copyCommand = async (command: string) => {
     try {
       await copyText(command);
@@ -235,6 +344,62 @@ export function OmpUpdateIndicator() {
                 {t("updates.viewRelease")}
               </a>
             </div>
+
+            {applyState?.supported && (
+              <div style={{ marginBottom: 11 }}>
+                <button
+                  type="button"
+                  onClick={() => void askToApply(release.version)}
+                  disabled={busy}
+                  style={{
+                    width: "100%",
+                    minHeight: isMobile ? 44 : 32,
+                    padding: "6px 12px",
+                    border: "none",
+                    borderRadius: 7,
+                    background: "var(--accent)",
+                    color: "var(--bg)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: busy ? "not-allowed" : "pointer",
+                    opacity: busy ? 0.65 : 1,
+                  }}
+                >
+                  {busy ? t("updates.applyBusy") : t("updates.apply")}
+                </button>
+                {job && (
+                  <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
+                    <div role="status" aria-live="polite" style={{ color: job.phase === "failed" ? "var(--danger)" : "var(--text)", fontFamily: "var(--font-mono)" }}>
+                      {/* The phase is a fixed key set; an unknown value still falls back to the raw name. */}
+                      {t(`updates.phase.${job.phase}`)}
+                      {job.targetRef ? ` · ${job.targetRef}` : ""}
+                    </div>
+                    {job.phase === "failed" && job.error && (
+                      <div style={{ marginTop: 4, color: "var(--danger)", overflowWrap: "anywhere" }}>{job.error}</div>
+                    )}
+                    {job.phase === "handed-off" && (
+                      <div style={{ marginTop: 4, color: "var(--text-muted)" }}>{t("updates.handedOff")}</div>
+                    )}
+                    {applyingFrom && (
+                      <div style={{ marginTop: 4, color: pollFailing ? "var(--warning)" : "var(--text-muted)" }}>
+                        {t("updates.waitingForRestart")}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 4, color: "var(--text-dim)", overflowWrap: "anywhere", fontFamily: "var(--font-mono)" }}>
+                      {t("updates.logPath", { path: job.logPath })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {applyState && !applyState.supported && applyState.reason && (
+              <div style={{ marginBottom: 10, color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
+                <div>{t("updates.unsupported")}</div>
+                <div style={{ marginTop: 4, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
+                  {t("updates.unsupportedReason", { reason: applyState.reason })}
+                </div>
+              </div>
+            )}
 
             <div style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
               <div style={{ marginBottom: 7, color: "var(--text-dim)" }}>{t("updates.manual")}</div>

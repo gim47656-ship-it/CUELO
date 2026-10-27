@@ -186,8 +186,8 @@ export interface CueloReleaseInfo {
 }
 
 /**
- * `GET /api/updates`. CUELO is installed from source (or a desktop bundle), so
- * the check only announces a newer CUELO GitHub release — it never installs.
+ * `GET /api/updates`. Announces a newer CUELO GitHub release; installing it is a separate
+ * action (`POST /api/updates/apply`), never part of this check.
  * `latestRelease` is null while the repository has no published release.
  */
 export interface CueloUpdateResponse {
@@ -196,6 +196,49 @@ export interface CueloUpdateResponse {
   updateAvailable: boolean;
   checkedAt: string;
 }
+
+/** How the running CUELO was installed; `null` when the server could not recognise it. */
+export type CueloUpdateMode = "npm" | "source" | "wsl";
+
+export type CueloUpdatePhase =
+  | "starting"
+  | "fetching"
+  | "installing"
+  | "building"
+  | "restarting"
+  | "done"
+  | "handed-off"
+  | "restart-required"
+  | "failed";
+
+/** One self-update run, as the detached worker reports it. */
+export interface CueloUpdateJob {
+  mode: CueloUpdateMode;
+  phase: CueloUpdatePhase;
+  currentVersion: string;
+  targetVersion: string;
+  /** The release tag that was checked out, or the npm spec that was installed. */
+  targetRef: string | null;
+  startedAt: string;
+  updatedAt: string;
+  error: string | null;
+  logPath: string;
+}
+
+/**
+ * `GET/POST /api/updates/apply`. `supported` is false for an install the server cannot update by
+ * itself; the panel then keeps the manual command. `job` is the newest run, running or finished.
+ */
+export interface CueloUpdateApplyState {
+  mode: CueloUpdateMode | null;
+  supported: boolean;
+  reason: string | null;
+  running: boolean;
+  /** The version the server answering this request runs; it changes once the update lands. */
+  runningVersion: string;
+  job: CueloUpdateJob | null;
+}
+
 
 /**
  * State of CUELO's password lock, as served by `GET /api/web-access`.

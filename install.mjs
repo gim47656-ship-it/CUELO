@@ -576,6 +576,41 @@ async function portAnswers(port) {
   }
 }
 
+/**
+ * Where the self-update worker keeps its plan, status and log. `--home` moves it with the profile,
+ * because the server under that HOME resolves `os.homedir()` to it. The app reads the same path
+ * from `CUELO_SELF_UPDATE_DIR`, which the supervisor hands down (lib/self-update.ts).
+ */
+function selfUpdateDir(home = null) {
+  // Absolute: the value is handed to children whose cwd is this tree, so a relative `--home` must not
+  // resolve to a different directory on the other side.
+  return path.resolve(home ?? os.homedir(), ".cuelo", "self-update");
+}
+
+/**
+ * Records how this supervisor was started so a self-update can stop it and start it again with the
+ * same options. Plain JSON, read by bin/self-update.js; a write failure must not stop the server.
+ */
+function recordSupervisor(options) {
+  const dir = selfUpdateDir(options.home);
+  const record = {
+    schemaVersion: 1,
+    pid: process.pid,
+    command: process.execPath,
+    args: [path.join(ROOT, "install.mjs"), ...process.argv.slice(2)],
+    // The directory `start` was launched from, which is where `--home` and relative paths resolved.
+    cwd: process.cwd(),
+    recordedAt: new Date().toISOString(),
+  };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "supervisor.json"), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (error) {
+    console.error(`Warning: could not record this start for self-update (${error.message}); an in-app update will only report that CUELO must be restarted by hand.`);
+  }
+  return dir;
+}
+
 async function start(options) {
   if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) throw new Error("No production build found. Run `node install.mjs setup` first.");
   const { env } = resolveProfile(options.home);
@@ -583,11 +618,22 @@ async function start(options) {
   const busy = [];
   for (const service of services) if (await portAnswers(service.port)) busy.push(`${service.name}:${service.port}`);
   if (busy.length > 0) throw new Error(`Already in use: ${busy.join(", ")}. Stop the running CUELO first or pick another --port-base.`);
+  const updateDir = recordSupervisor(options);
 
   const bun = bunPath();
   const node = process.versions.bun ? "node" : process.execPath;
   const files = path.join(ROOT, "Tools", "CUELO_Setup", "files");
-  const childEnv = { ...env, ...portEnv(services), CUELO_DIR: ROOT };
+  // The web server starts the self-update worker and reads its status from this directory; it must
+  // be the same one this supervisor recorded, `--home` included.
+  const childEnv = {
+    ...env,
+    ...portEnv(services),
+    CUELO_DIR: ROOT,
+    CUELO_SELF_UPDATE_DIR: updateDir,
+    CUELO_SUPERVISOR_PID: String(process.pid),
+    // Carried so the worker's `install.mjs setup` writes to the same profile this start resolved.
+    ...(options.home ? { CUELO_PROFILE_HOME: options.home } : {}),
+  };
   const commands = [
     // Only an explicit start flag widens the listener; inherited host settings do not.
     ["web", bun, [path.join(ROOT, "bin", "cuelo.js"), "--no-open", "--hostname", options.hostname]],

@@ -42,7 +42,8 @@ function parseVersion(value: unknown): ParsedVersion | null {
   };
 }
 
-function canonicalVersion(value: unknown): string | null {
+/** The running build's own version string, normalised the same way release tags are. */
+export function canonicalVersion(value: unknown): string | null {
   const parsed = parseVersion(value);
   if (!parsed) return null;
   const core = `${parsed.major}.${parsed.minor}.${parsed.patch}`;
