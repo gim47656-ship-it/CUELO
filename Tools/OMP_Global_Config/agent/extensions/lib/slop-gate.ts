@@ -178,13 +178,27 @@ export function gitRootOf(path: string): string | undefined {
 
 export const sha256 = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 
+/**
+ * 이 바이트를 넘는 csv는 사람이 읽는 보고 표가 아니라 원자료(센서·장비 로그 등)로 보고 슬롭 검사에서 뺀다(2026-10-28 사용자 결정: 59 MB 센서 로그가
+ * 턴 끝 게이트를 띄우고 slop_check 오류를 냈다). 한 번에 심사할 수 있는 글(MAX_FILE_CHARS 100,000자)의 네 배라 통째로 보일 수도 없다. csv만이다.
+ */
+export const MAX_REPORT_CSV_BYTES = 400_000;
+
+/** 원자료 csv로 볼 때의 이유. slop_check·커밋 게이트는 이 이유를 결과에 남기고(조용히 빠지지 않는다), 턴 끝 게이트는 건너뛴다. */
+export function rawDataReason(path: string, bytes: number): string | undefined {
+  return /\.csv$/i.test(path) && bytes > MAX_REPORT_CSV_BYTES
+    ? `raw data file: a csv of ${bytes} bytes (above ${MAX_REPORT_CSV_BYTES}) is treated as data, not a report table; it was not read, not reviewed and has no pass`
+    : undefined;
+}
+
 // ── 원장 ─────────────────────────────────────────────────────────────────────
 
 export interface SlopFindingRecord { id: string; quote: string; rule: string; fix: string; quoteFound?: boolean; reviewer?: string }
 export interface SlopReviewRecord {
   type: "slop-review"; reviewId: string; ts: string; model: string;
   reviewers?: { family: string; model?: string; status: string; error?: string; raw?: string; advisory?: true }[];
-  files: { path: string; sha256: string; scope?: string; findings: SlopFindingRecord[] }[];
+  /** relaxed: 2026-10-28 결정으로 finding에서 뺀 humanizer 패턴 3(연결어미 뒤 쉼표)만 든 지적 수. */
+  files: { path: string; sha256: string; scope?: string; findings: SlopFindingRecord[]; relaxed?: number }[];
   /** 필수 reviewer 실패·누락으로 심사하지 못한 파일과 그 진단. resolve는 files만 보므로 여기 든 파일은 통과가 될 수 없다. */
   failed?: { path: string; sha256: string; error: string; reviewer?: { family: string; model?: string; status: string; error?: string; raw?: string }; diagnostics?: SlopFindingRecord[] }[];
   /** 모든 묶음의 실패한 reviewer 호출(자문 포함). */
@@ -248,6 +262,8 @@ export interface SlopGateOutcome {
   waived?: boolean;
   /** 게이트가 본 보이는 산출물(저장소 상대 경로)과 그 sha256. */
   artifacts: { path: string; sha256: string }[];
+  /** 보이는 형식이지만 원자료 csv(rawDataReason)로 보고 통과를 요구하지 않은 파일과 이유. finalizer가 성공 문구에 남긴다. */
+  rawData?: { path: string; reason: string }[];
   /** 요청한 모든 경로의 blob(보이는 산출물은 통과를 맞춘 바로 그 바이트의 blob). finalizer가 잠금 안에서 stage된 내용과 대조한다. */
   gateBlobs?: Record<string, string>;
 }
@@ -274,12 +290,18 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
 
   const records = readSlopRecords(options.ledgerPath);
   const artifacts: { path: string; sha256: string }[] = [];
+  const rawData: { path: string; reason: string }[] = [];
   const blobs: Record<string, string> = {};
   const uncovered: { input: string; sha256: string; note?: string }[] = [];
   for (const change of gated) {
     const abs = join(resolved.root, ...change.path.split("/"));
     let bytes: Buffer;
-    try { bytes = readFileSync(abs); } catch (error) {
+    try {
+      // 원자료 csv는 바이트를 읽지 않는다(크기만 본다). 그 blob은 collectChanges가 본 값으로 gateBlobs에 남는다.
+      const data = rawDataReason(change.path, statSync(abs).size);
+      if (data) { rawData.push({ path: inputOf.get(change.path) ?? change.path, reason: data }); continue; }
+      bytes = readFileSync(abs);
+    } catch (error) {
       throw new SlopGateRefusal(`could not read ${inputOf.get(change.path) ?? change.path} to check its slop-gate pass: ${error instanceof Error ? error.message : String(error)}`);
     }
     const hash = sha256(bytes);
@@ -290,6 +312,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
       uncovered.push({ input: inputOf.get(change.path) ?? change.path, sha256: hash, note: stale ? "a pass exists for an older version of this file; the content changed after the pass" : undefined });
     }
   }
+  const dataNote = rawData.length > 0 ? { rawData } : {};
   // 요청한 모든 경로의 기준 blob. 바뀐 파일은 게이트가 본 blob, 바뀌지 않은 파일은 지금 blob이다.
   const clean = await currentBlobs(exec, git, resolved.root, unchanged);
   const gateBlobs: Record<string, string> = {
@@ -304,6 +327,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
       throw new SlopGateRefusal([
         `slop-gate: ${uncovered.length} visible artifact(s) have no AI-slop check pass for their current content:`,
         ...uncovered.map((file) => `- ${file.input}${file.note ? ` [${file.note}]` : ""}`),
+        ...rawData.map((file) => `(not gated) ${file.path}: ${file.reason}`),
         `Next: run slop_check {files:${names}, authors:[<the model selectors that wrote the text, or "main">]} (reviewers follow the same author-family rule as cross_review; only text changed since HEAD is reviewed for tracked files), fix or refute every finding (a clean review records the pass by itself; refuted findings are closed with slop_check {action:"resolve"}), then call git_finalize again with the same files. Do not edit these files after the pass: it is tied to their exact content (sha256).`,
         "A waiver (slopGateWaiver) is allowed only on the user's explicit instruction and is recorded in the slop-gate ledger.",
       ].join("\n"));
@@ -311,12 +335,12 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
     try {
       appendSlopRecord(options.ledgerPath, {
         type: "slop-waiver", ts: (options.now?.() ?? new Date()).toISOString(), root: resolved.root, reason,
-        files: gated.map((change) => ({ path: change.path, sha256: artifacts.find((artifact) => artifact.path === change.path)!.sha256 })),
+        files: artifacts.map((artifact) => ({ path: artifact.path, sha256: artifact.sha256 })),
       });
     } catch { throw new SlopGateRefusal("slop-gate waiver could not be recorded in the slop-gate ledger; refusing to commit without a record."); }
-    return { checked: true, waived: true, artifacts, gateBlobs };
+    return { checked: true, waived: true, artifacts, ...dataNote, gateBlobs };
   }
-  return { checked: true, artifacts, gateBlobs };
+  return { checked: true, artifacts, ...dataNote, gateBlobs };
 }
 
 /**
@@ -460,7 +484,8 @@ export function pendingArtifacts(
     let bytes: Buffer;
     try {
       const stat = statSync(real);
-      if (!stat.isFile() || stat.mtimeMs < floor) continue;
+      // 원자료 csv(rawDataReason)는 턴 끝에 묻지 않는다: 10-27 에이전트는 읽기만 하고 로거가 계속 쓰던 59 MB 센서 로그가 이어 가기를 띄웠다. slop_check와 커밋 게이트는 이유를 남긴다.
+      if (!stat.isFile() || stat.mtimeMs < floor || rawDataReason(real, stat.size)) continue;
       bytes = readFileSync(real);
     } catch { continue; }
     const hash = sha256(bytes);

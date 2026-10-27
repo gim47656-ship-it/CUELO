@@ -29,7 +29,7 @@ function harness(branch: unknown[] = [], kind: "main" | "sub" = "main") {
 }
 
 describe("todo nudge", () => {
-  test("사용자 직접 입력마다 세 번째 비-todo 도구에서 한 번만 aside 안내한다", () => {
+  test("사용자 직접 입력마다 다섯 번째 비-todo 도구에서 한 번만 aside 안내한다", () => {
     const h = harness();
     h.input("단일 파일을 읽어줘");
     h.calls(["read", "bash"]);
@@ -39,7 +39,10 @@ describe("todo nudge", () => {
     expect(h.sent[0]).toMatchObject({ customType: "todo-nudge", display: false, attribution: "agent" });
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
     h.input("새 작업을 조사하고 수정하고 검증해줘", "rpc");
-    h.calls(["read", "bash", "read"]);
+    // 2026-10-28 표본: 넷 이하로 끝나는 짧은 조회에는 알리지 않는다.
+    h.calls(["read", "bash", "read", "grep"]);
+    expect(h.sent).toHaveLength(1);
+    h.calls(["edit"]);
     expect(h.sent).toHaveLength(2);
   });
 
@@ -73,7 +76,7 @@ describe("todo nudge", () => {
       details: { phases: [{ tasks: [{ content: "work", status: "completed" }] }] },
     });
     h.input();
-    h.calls(["read", "bash", "read"]);
+    h.calls(["read", "bash", "read", "edit", "bash"]);
     expect(h.sent).toHaveLength(1);
   });
 });
@@ -91,6 +94,17 @@ describe("todo nudge on job-completion notices", () => {
     h.calls(["bash", "todo"]);
     h.notice("irc:incoming");
     expect(h.sent).toHaveLength(2);
+  });
+
+  test("편집 전 체크포인트와 child 활동 advisory DM은 상태 전환이 아니라 안내하지 않는다", () => {
+    const h = harness();
+    h.todoState("in_progress");
+    const dm = (text: string) => h.emit("message_start", { message: { role: "custom", customType: "irc:incoming", content: text } });
+    dm("<irc>\nIncoming IRC message from agent `Maker`:\n\n위치: src/a.ts:1-5\n불변식:\n- keep x");
+    dm("<irc>\nIncoming IRC message from agent `Maker`:\n\n[Child activity advisory; not a failure verdict] {}");
+    expect(h.sent).toHaveLength(0);
+    dm("<irc>\nIncoming IRC message from agent `Maker`:\n\nBlocked: need approval for the deploy step.");
+    expect(h.sent).toHaveLength(1);
   });
 
   test("활성 todo 가 없거나 알림이 아니거나 서브 에이전트면 안내하지 않는다", () => {

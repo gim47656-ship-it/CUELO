@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadRoutingPolicy, registerMakerRouting, routingQuestions, routingState, type Owner, type QuotaSnapshot, type RoutingDeps, type RoutingFacts } from "../lib/maker-routing";
-import { bindTaskGuardSession, createTaskGuardState, releaseCancelledSpawns, reserveTaskCall, settleTaskCall, unbindTaskGuardSession, type TaskGuardState } from "../command-guard/task-guard";
+import { bindTaskGuardSession, createTaskGuardState, noteUserRequestText, releaseCancelledSpawns, reserveTaskCall, settleTaskCall, unbindTaskGuardSession, type TaskGuardState } from "../command-guard/task-guard";
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import type { LedgerRecord, RoutingLedger } from "../lib/routing-ledger";
 
@@ -1717,16 +1717,23 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(rejected.block).toBe(true);
       expect(rejected.reason).toContain("task 참조의 다음 줄 'ROUTING_REASON: <근거>'");
     }
-    // 참조가 여럿이면 근거를 붙일 task를 정할 수 없으므로 거절한다.
+    // 2026-10-17 09:28:47: 참조 둘과 context 근거 한 줄을 보냈다가 거절됐다. 근거 줄이 없는 참조 모두에 그 근거를 옮기고,
+    // 자기 근거가 있는 참조는 그대로 두며, 모든 참조가 근거를 가졌으면 옮길 곳이 없어 거절한다.
     const second = { name: "Second", task: brief.replace("src/view.ts", "src/second.ts"), assessment: { ...facts, paths: ["src/second.ts"] } };
     const pair = await h.prepare("두 task context", [h.task, second], {} as never) as Array<{ preparedId: string }>;
-    expect(() => resolvePreparedTaskInput({
+    const own = "ROUTING_REASON: 두 번째 task만의 근거입니다";
+    const resolvePair = (secondTask: string, firstTask = `PREPARED_TASK: ${pair[0]!.preparedId}`) => resolvePreparedTaskInput({
       context: `PREPARED_CONTEXT\n${reason}`,
       tasks: [
-        { name: h.task.name, task: `PREPARED_TASK: ${pair[0]!.preparedId}` },
-        { name: second.name, task: `PREPARED_TASK: ${pair[1]!.preparedId}` },
+        { name: h.task.name, task: firstTask },
+        { name: second.name, task: secondTask },
       ],
-    }, h.sessionId)).toThrow("참조 2개");
+    }, h.sessionId) as { tasks: Array<{ task: string }> };
+    expect(resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}`).tasks.map((task) => task.task.endsWith(`\n${reason}`))).toEqual([true, true]);
+    const mixedReasons = resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`).tasks;
+    expect(mixedReasons[0]!.task.endsWith(`\n${reason}`)).toBe(true);
+    expect(mixedReasons[1]!.task.endsWith(`\n${own}`)).toBe(true);
+    expect(() => resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`, `PREPARED_TASK: ${pair[0]!.preparedId}\n${own}`)).toThrow("참조 2개 모두");
   });
   test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
     for (const [focus, profile, model] of [
@@ -2267,6 +2274,39 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
         { name: "Other", task: child("Other", "maintenance", "다른 산출물", "src/other.ts").task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" },
       ] };
       expect(await h.beforeTask(mixed, {} as never, "call-2")).toMatchObject({ block: true, reason: expect.stringContaining("[SideQuestGuard] task 'Other'") });
+    } finally {
+      unbindTaskGuardSession(h.sessionId, state);
+    }
+  });
+
+  // 2026-10-28 06:52:53: 사용자가 같은 요청에서 따로 시킨 두 번째 완료물(Pr16573WinVerify)의 maker_route를 SideQuestGuard가 거절했고,
+  // Main은 작업을 바꾸지 않고 라벨만 맞춰 다시 발주했다. 사용자 입력에 글자 그대로 있는 USER_REQUEST 인용은 별도 완료물로 받는다.
+  const requested = (name: string, quote: string) => ({
+    name,
+    task: `TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: PR 16573 Windows 검증 보고\nOWNED_PATHS: doc/pr/\nUSER_REQUEST: ${quote}\n\n본문`,
+    assessment: { ...facts, paths: ["doc/pr/"] },
+  });
+  test("사용자가 이번 요청에서 직접 요구한 다른 완료물은 USER_REQUEST 인용이 맞을 때만 준비·발주·TaskGuard가 받는다", async () => {
+    const { h, state } = await spawnedSession();
+    noteUserRequestText(state, "표시 오류 고치고, 그리고 PR 16573도 윈도우에서   검증해줘.");
+    try {
+      const forged = await h.prepare("후속", [requested("Forged", "PR 16573 검증을 사용자가 원함")], {} as never).then(() => "", (e: Error) => e.message);
+      expect(forged).toContain("[SideQuestGuard] task 'Forged'");
+      expect(forged).toContain("USER_REQUEST");
+      const tooShort = await h.prepare("후속", [requested("Short", "검증해줘")], {} as never).then(() => "", (e: Error) => e.message);
+      expect(tooShort).toContain("[SideQuestGuard] task 'Short'");
+
+      const item = requested("WinVerify", "“PR 16573도 윈도우에서 검증해줘”");
+      expect((await h.prepare("후속", [item], {} as never))[0]!.status).toBe("judged");
+      const call = { context: "후속", tasks: [{ name: "WinVerify", task: item.task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }] };
+      expect(await h.beforeTask(call, {} as never, "call-3")).toBeUndefined();
+      const reserved = reserveTaskCall(state, "call-3", { tasks: [{ agent: "maker", name: "WinVerify", task: item.task }] });
+      expect(reserved.ok).toBe(true);
+      // 받아들인 완료물은 같은 요청의 다음 child가 인용 없이 같은 값으로 이어 쓸 수 있고, 인용 없는 다른 완료물은 여전히 막힌다.
+      const followUp = "TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: PR 16573 Windows 검증 보고\nOWNED_PATHS: doc/pr2/\n\n본문";
+      expect(reserveTaskCall(state, "call-4", { tasks: [{ agent: "maker", name: "WinVerify2", task: followUp }] }).ok).toBe(true);
+      const stray = reserveTaskCall(state, "call-5", { tasks: [{ agent: "maker", name: "Stray", task: followUp.replace("PR 16573 Windows 검증 보고", "곁가지 정리") }] });
+      expect(stray).toMatchObject({ ok: false, reason: expect.stringContaining("USER_REQUEST") });
     } finally {
       unbindTaskGuardSession(h.sessionId, state);
     }

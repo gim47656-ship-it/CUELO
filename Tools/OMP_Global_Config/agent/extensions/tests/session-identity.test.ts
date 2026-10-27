@@ -140,21 +140,21 @@ describe("todo-nudge 세션 전환", () => {
     const session: Session = { id: "session-1", branch: [persistedTodo("in_progress")] };
     const ctx = contextFor(session, { agent: { kind: "main" } });
     const emit = (name: string, event: Record<string, unknown> = {}) => handlers[name]!.forEach((handler) => handler(event, ctx));
-    const threeTools = () => { for (const toolName of ["read", "edit", "bash"]) emit("tool_call", { toolName }); };
-    return { session, emit, sent, threeTools };
+    const fiveTools = () => { for (const toolName of ["read", "edit", "bash", "grep", "read"]) emit("tool_call", { toolName }); };
+    return { session, emit, sent, fiveTools };
   }
 
   test("다른 세션으로 옮기면 이전 세션의 활성 TODO가 새 세션의 todo 안내를 막지 않는다", () => {
     const h = setup();
     h.emit("session_start");
     h.emit("input", { source: "interactive", text: "하나" });
-    h.threeTools();
+    h.fiveTools();
     expect(h.sent).toHaveLength(0);
     h.session.id = "session-2";
     h.session.branch = [];
     h.emit("session_switch", { reason: "new" });
     h.emit("input", { source: "interactive", text: "둘" });
-    h.threeTools();
+    h.fiveTools();
     expect(h.sent).toHaveLength(1);
   });
 
@@ -164,17 +164,17 @@ describe("todo-nudge 세션 전환", () => {
     h.session.branch = [];
     h.emit("session_switch", { reason: "resume" });
     h.emit("input", { source: "interactive", text: "하나" });
-    h.threeTools();
+    h.fiveTools();
     expect(h.sent).toHaveLength(1);
     // reload가 같은 요청의 안내 한 번 제한을 되살리지 않는다.
     h.emit("session_switch", { reason: "resume" });
-    h.threeTools();
+    h.fiveTools();
     expect(h.sent).toHaveLength(1);
     // reload 뒤 durable TODO가 생기면 그 목록이 이미 추적 중이다.
     h.session.branch = [persistedTodo("pending")];
     h.emit("session_switch", { reason: "resume" });
     h.emit("input", { source: "interactive", text: "둘" });
-    h.threeTools();
+    h.fiveTools();
     expect(h.sent).toHaveLength(1);
   });
 });

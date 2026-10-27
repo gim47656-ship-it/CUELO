@@ -2,16 +2,17 @@
 // 2026-10-15 실측: Main이 공개 CI watch job 하나에 `wait`로 약 8분을 막힌 채 중간 관측 없이 지냈다. `wait`는 job 정산·메시지·
 // service 종료·30분 상한에만 깨고, 기존 SubagentActivityWatch(core patch)는 task child만 본다. 이 원장은 jev-runtime이
 // wait 진입 차단과 대기 중 aside 깨우기를 결정론적으로 판단하도록 job incarnation(id+startTime)별 관측 근거만 기록한다.
-// 기대 실행 시간을 받는 API가 없으므로(bash `timeout`은 마감이지 예상 시간이 아니다) 첫 관측은 기존 cadence의 가장 짧은
-// 단계 5분을 보수적 fallback으로 쓴다. 측정한 예상 실행 시간이 아니다. 출력이 바뀐 확인 뒤에만 10·15분으로 넓히고,
-// 바뀌지 않은 확인은 5분 주기로 되돌려 원인 조사를 요구한다. 경과 시간은 실패 근거가 아니다.
+// 기대 실행 시간을 받는 API가 없으므로(bash `timeout`은 마감이지 예상 시간이 아니다) 첫 관측은 10분 fallback을 쓴다. 측정한
+// 예상 실행 시간이 아니다. 2026-10-28 감사(doc/history/2026/10/28-guard-trim/advisory): 5분 기한 알림을 받은 job 중 끝난 시각을
+// 찾은 90개의 61개(68%)가 10분 전에, 78개(87%)가 15분 전에 끝났고 알림 151건 중 137건의 확인은 아직 실행 중이었다. 출력이
+// 바뀐 확인 뒤에만 15·30분으로 넓히고, 바뀌지 않은 확인은 첫 주기로 되돌려 원인 조사를 요구한다. 경과 시간은 실패 근거가 아니다.
 
 export interface JobObservationClock {
   now(): number;
   schedule(callback: () => void, delayMs: number): () => void;
 }
 
-export const JOB_OBSERVATION_INTERVALS_MS: readonly number[] = [5 * 60_000, 10 * 60_000, 15 * 60_000];
+export const JOB_OBSERVATION_INTERVALS_MS: readonly number[] = [10 * 60_000, 15 * 60_000, 30 * 60_000];
 
 // 출력 비교용으로 보관하는 꼬리 길이. core가 이미 진행 출력을 꼬리로 잘라 주므로 비교만을 위한 상한이다.
 const OUTPUT_COMPARE_CHARS = 16_000;
@@ -118,7 +119,7 @@ export class JobObservationLedger {
   /**
    * 같은 incarnation의 성공한 `read proc://<id>`를 확인 근거로 기록한다. 호출 시점에 묶은 incarnation이 지금도 running이
    * 아니면(정산·같은 id 재사용) 기록하지 않는다.
-   * snapshot 확인은 관측을 증명할 뿐 진행을 증명하지 않는다: 출력 변화는 주기만 넓히고, 같은 출력은 5분 주기로 되돌린다.
+   * snapshot 확인은 관측을 증명할 뿐 진행을 증명하지 않는다: 출력 변화는 주기만 넓히고, 같은 출력은 첫 주기로 되돌린다.
    */
   inspect(running: readonly unknown[], incarnation: JobIncarnation, output: string, now: number): ObservedJob | undefined {
     const job = this.sync(running).find((candidate) => candidate.id === incarnation.id);

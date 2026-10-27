@@ -1,4 +1,5 @@
 import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
+import { parsePushPathsFilter, pushStartsWorkflow } from "./paths-filter";
 
 export type CiChainLegState =
   | "completed"
@@ -6,6 +7,7 @@ export type CiChainLegState =
   | "pending"
   | "not-found-within-bound"
   | "skipped-no-public-change"
+  | "skipped-paths-ignored"
   | "error";
 
 export interface CiChainMirrorParams {
@@ -299,6 +301,131 @@ async function fetchCommitInfo(
   return { ok: true, subject, fullSha };
 }
 
+type CommitFacts = {
+  /** Files the commit changed (renames list both names), or null when they cannot stand for its diff: no files, or 300 or more. */
+  paths: string[] | null;
+  /** The only parent, or null for a root commit or a merge commit. */
+  parent: string | null;
+};
+
+type PathsIgnoredCache = {
+  /** `repo workflow sha` -> true once the commit was found to have been skipped by the workflow's filter. */
+  decisions: Map<string, boolean>;
+  /** `repo sha` -> what the commits API said; only successful lookups are kept. */
+  commits: Map<string, CommitFacts>;
+  /** `repo` -> workflow display name -> workflow file path. */
+  workflowFiles?: Map<string, Map<string, string>>;
+  /** `repo path ref` -> workflow file text; a file at a commit never changes, so a poll loop reads it once. */
+  workflowTexts?: Map<string, string>;
+};
+
+/** GitHub lists at most 300 files per commit. */
+const COMMIT_FILE_LIMIT = 300;
+
+async function fetchCommitFacts(deps: CiChainDeps, repo: string, sha: string, cache: PathsIgnoredCache): Promise<CommitFacts | null> {
+  const key = `${repo} ${sha}`;
+  const known = cache.commits.get(key);
+  if (known) return known;
+  const res = await execGhJson<unknown>(deps, ["api", `repos/${repo}/commits/${sha}`], `gh api repos/${repo}/commits/${sha}`);
+  if (!res.ok || typeof res.data !== "object" || res.data === null) return null;
+  const parents: unknown = Reflect.get(res.data, "parents");
+  const files: unknown = Reflect.get(res.data, "files");
+  const onlyParent: unknown = Array.isArray(parents) && parents.length === 1 && typeof parents[0] === "object" && parents[0] !== null ? Reflect.get(parents[0], "sha") : undefined;
+  const facts: CommitFacts = { paths: null, parent: typeof onlyParent === "string" && /^[0-9a-f]{40}$/i.test(onlyParent) ? onlyParent : null };
+  if (Array.isArray(files) && files.length > 0 && files.length < COMMIT_FILE_LIMIT) {
+    const collected: string[] = [];
+    for (const file of files) {
+      const name: unknown = typeof file === "object" && file !== null ? Reflect.get(file, "filename") : undefined;
+      const previous: unknown = typeof file === "object" && file !== null ? Reflect.get(file, "previous_filename") : undefined;
+      if (typeof name !== "string") {
+        collected.length = 0;
+        break;
+      }
+      collected.push(name);
+      if (typeof previous === "string") collected.push(previous);
+    }
+    if (collected.length > 0) facts.paths = collected;
+  }
+  cache.commits.set(key, facts);
+  return facts;
+}
+
+async function fetchWorkflowFile(deps: CiChainDeps, repo: string, workflow: string, sha: string, cache: PathsIgnoredCache): Promise<string | null> {
+  const files = (cache.workflowFiles ??= new Map());
+  if (!files.has(repo)) {
+    const list = await execGhJson<unknown>(deps, ["api", `repos/${repo}/actions/workflows?per_page=100`], `gh api repos/${repo}/actions/workflows`);
+    const byName = new Map<string, string>();
+    const workflows: unknown = list.ok && typeof list.data === "object" && list.data !== null ? Reflect.get(list.data, "workflows") : undefined;
+    if (Array.isArray(workflows)) {
+      for (const item of workflows) {
+        const name: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "name") : undefined;
+        const path: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "path") : undefined;
+        if (typeof name === "string" && typeof path === "string") byName.set(name, path);
+      }
+    }
+    // A failed or malformed listing is not cached, so the next poll asks again.
+    if (!list.ok || !Array.isArray(workflows)) return null;
+    files.set(repo, byName);
+  }
+  const path = files.get(repo)?.get(workflow);
+  if (!path) return null;
+  // The workflow file as of the pushed commit is the one GitHub evaluated.
+  const textKey = `${repo} ${path} ${sha}`;
+  const texts = (cache.workflowTexts ??= new Map());
+  const cached = texts.get(textKey);
+  if (cached !== undefined) return cached;
+  const res = await execGhJson<unknown>(deps, ["api", `repos/${repo}/contents/${path}?ref=${sha}`], `gh api repos/${repo}/contents/${path}`);
+  if (!res.ok || typeof res.data !== "object" || res.data === null) return null;
+  const content: unknown = Reflect.get(res.data, "content");
+  const encoding: unknown = Reflect.get(res.data, "encoding");
+  if (typeof content !== "string" || encoding !== "base64") return null;
+  const text = Buffer.from(content.replace(/\s/g, ""), "base64").toString("utf8");
+  texts.set(textKey, text);
+  return text;
+}
+
+/** How many consecutive commits without a run one verdict may explain; a longer unrun chain stays pending. */
+const MAX_UNRUN_COMMITS = 10;
+
+/**
+ * True only when the workflow has a push path filter and GitHub never created a run for this commit because every file it
+ * changed is filtered out. The commit's own diff is not the push's diff: a push of several commits is one diff over all of
+ * them, so a doc-only tip can sit on top of a code commit that did start a run. The walk therefore goes back through parents
+ * that have no run of this workflow, each of which must also be fully filtered, until it reaches a commit that has such a run
+ * (an earlier push's tip, so the pushes are separate). A commit on the way that the filter lets through, a merge commit, an
+ * oversized diff, an unreadable or unsupported filter, a failed lookup or a chain longer than MAX_UNRUN_COMMITS all end the
+ * walk with false: the leg then stays pending, exactly as before, and is never reported as skipped on a guess.
+ */
+async function isPushPathsIgnored(deps: CiChainDeps, repo: string, workflow: string, sha: string, cache: PathsIgnoredCache): Promise<boolean> {
+  const key = `${repo} ${workflow} ${sha}`;
+  if (cache.decisions.get(key)) return true;
+  let ignored = false;
+  try {
+    const text = await fetchWorkflowFile(deps, repo, workflow, sha, cache);
+    const filter = text === null ? undefined : parsePushPathsFilter(text);
+    if (filter && (filter.paths || filter.pathsIgnore)) {
+      let current = sha;
+      for (let depth = 0; depth < MAX_UNRUN_COMMITS; depth++) {
+        const facts = await fetchCommitFacts(deps, repo, current, cache);
+        if (!facts || !facts.paths || !facts.parent) break;
+        if (pushStartsWorkflow(filter, facts.paths)) break;
+        const parentRuns = await fetchRunList(deps, repo, { sha: facts.parent });
+        if (!parentRuns.ok) break;
+        if (parentRuns.runs.some((run) => run.workflow === workflow && matchesSha(run.headSha, facts.parent!))) {
+          ignored = true;
+          break;
+        }
+        current = facts.parent;
+      }
+    }
+  } catch {
+    ignored = false;
+  }
+  // Only a verdict of "ignored" is kept; a "not ignored" may be a failed lookup and is asked again on the next poll.
+  if (ignored) cache.decisions.set(key, true);
+  return ignored;
+}
+
 type FailureDetails = { failedJobs: string[]; logTail: string[]; error?: string };
 
 async function fetchFailureDetails(
@@ -507,13 +634,14 @@ function isLegTerminal(leg: CiChainLegResult): boolean {
   return (
     leg.state === "completed" ||
     leg.state === "skipped-no-public-change" ||
+    leg.state === "skipped-paths-ignored" ||
     leg.state === "error" ||
     leg.state === "not-found-within-bound"
   );
 }
 
 function isLegOk(leg: CiChainLegResult): boolean {
-  if (leg.state === "skipped-no-public-change") return true;
+  if (leg.state === "skipped-no-public-change" || leg.state === "skipped-paths-ignored") return true;
   if (leg.state !== "completed") return false;
   return leg.conclusion === "success" || leg.conclusion === "skipped" || leg.conclusion === "neutral";
 }
@@ -606,6 +734,7 @@ export async function runCiChain(
   let cachedMirrorTitle: string | undefined = mirror?.title;
   const failureCache = new Map<string, FailureDetails>();
   const publishLogCache = new Map<string, PublishLogCheck>();
+  const pathsCache: PathsIgnoredCache = { decisions: new Map(), commits: new Map() };
 
   let legs: CiChainLegResult[] = [];
 
@@ -655,7 +784,11 @@ export async function runCiChain(
       for (const wf of workflows) {
         const wfRuns = shaRuns.filter((r) => r.workflow === wf);
         const chosen = pickNewestRun(wfRuns);
-        currentLegs.push(await buildLegFromRun(deps, repo, wf, "headSha", chosen, failureCache));
+        if (!chosen && (await isPushPathsIgnored(deps, repo, wf, effectiveSha, pathsCache))) {
+          currentLegs.push({ repo, workflow: wf, runId: null, status: null, conclusion: null, url: null, matchedBy: "headSha", state: "skipped-paths-ignored" });
+        } else {
+          currentLegs.push(await buildLegFromRun(deps, repo, wf, "headSha", chosen, failureCache));
+        }
       }
     }
 
@@ -683,12 +816,15 @@ export async function runCiChain(
         const publishRun = pickNewestRun(shaRuns.filter((r) => r.workflow === PUBLISH_MIRROR_WORKFLOW));
 
         let skippedNoPublicChange = false;
+        let skippedPathsIgnored = false;
         let canQueryMirror = true;
         // A mirror run can never follow a publish run that did not succeed; finish those legs instead of waiting out the bound.
         let mirrorBlockedError: string | undefined;
 
         if (!publishRun || publishRun.runId === null) {
           canQueryMirror = false;
+          // No publish run because the push touched only files the publish workflow ignores: nothing reached the mirror.
+          skippedPathsIgnored = !publishRun && (await isPushPathsIgnored(deps, repo, PUBLISH_MIRROR_WORKFLOW, effectiveSha, pathsCache));
         } else if (publishRun.status !== "completed") {
           canQueryMirror = false;
         } else if (publishRun.conclusion !== "success") {
@@ -705,7 +841,7 @@ export async function runCiChain(
           }
         }
 
-        if (skippedNoPublicChange) {
+        if (skippedNoPublicChange || skippedPathsIgnored) {
           for (const wf of mirror.workflows) {
             currentLegs.push({
               repo: mirror.repo,
@@ -715,7 +851,7 @@ export async function runCiChain(
               conclusion: null,
               url: null,
               matchedBy: "title",
-              state: "skipped-no-public-change",
+              state: skippedNoPublicChange ? "skipped-no-public-change" : "skipped-paths-ignored",
             });
           }
         } else if (mirrorBlockedError) {
@@ -876,6 +1012,7 @@ const factory: CustomToolFactory = (pi) => ({
     "Read-only GitHub Actions CI chain status checker for a commit SHA and its optional public mirror repository. "
     + "Matches source repository runs by headSha for an explicit workflow list (never waits on 'Publish CUELO web release'), "
     + "detects 'nothing to publish' in 'Publish public mirror' logs (reporting mirror legs as skipped-no-public-change), "
+    + "reports a workflow with no run for the commit as skipped-paths-ignored when every file the commit changed matches the workflow's push paths-ignore/paths filter, "
     + "and matches mirror repository runs by commit title created at or after the private publish run. "
     + "On failure, reports failed job names and the last 40 lines of --log-failed.",
   parameters: pi.zod.object({

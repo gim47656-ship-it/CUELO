@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { admitsUserRequestedDeliverable, extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, parseOwnedPaths, readGuardField, taskGuardLockOf, USER_REQUEST_HINT, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
@@ -378,16 +378,42 @@ export function contractGapReason(task: string, lock: DispatchContractLock | und
   return `task ${label}: ${detail} ${GUARD_TEMPLATE}`;
 }
 
+function sameContractLock(lock: DispatchContractLock, contract: DispatchContractLock): boolean {
+  return contract.workClass === lock.workClass && normalizeDeliverable(contract.primaryDeliverable) === normalizeDeliverable(lock.primaryDeliverable);
+}
+
+/**
+ * 같은 요청에서 lock과 다른 완료물을 받아들이는 판정을 TaskGuard와 맞춘다: 이 batch에서 이미 받아들인 완료물이거나,
+ * TaskGuard가 받아들였거나 USER_REQUEST 인용이 이번 사용자 입력에 그대로 있다. 받아들인 완료물은 batchAdmitted에 더한다.
+ */
+function userRequestAdmission(sessionId: string): (task: string, contract: DispatchContract) => boolean {
+  const batchAdmitted: DispatchContractLock[] = [];
+  return (task, contract) => {
+    if (batchAdmitted.some((lock) => sameContractLock(lock, contract))) return true;
+    const quote = guardFields(task)?.("USER_REQUEST") || undefined;
+    if (!admitsUserRequestedDeliverable(sessionId, contract.workClass, contract.primaryDeliverable, quote)) return false;
+    batchAdmitted.push(contract);
+    return true;
+  };
+}
+
 /**
  * TaskGuard(SideQuestGuard)와 같은 비교로, 이 child의 WORK_CLASS·PRIMARY_DELIVERABLE이 요청 lock(없으면 같은 batch에서 먼저 계약을
- * 정한 child)과 다르면 거절 사유를 돌려준다. 준비와 발주가 같은 함수를 써서 Jev 판단이나 spawn 전에 같은 결론을 낸다.
+ * 정한 child)과 다르면 거절 사유를 돌려준다. 사용자가 이번 요청에서 직접 요구한 완료물(admits)은 받아들인다. 준비와 발주가 같은
+ * 함수를 써서 Jev 판단이나 spawn 전에 같은 결론을 낸다.
  */
-export function contractLockConflict(name: string, contract: DispatchContract, lock: DispatchContractLock | undefined, lockSource: "request" | "batch"): string | null {
+export function contractLockConflict(
+  name: string,
+  contract: DispatchContract,
+  lock: DispatchContractLock | undefined,
+  lockSource: "request" | "batch",
+  admits: () => boolean = () => false,
+): string | null {
   if (!lock) return null;
-  if (contract.workClass === lock.workClass && normalizeDeliverable(contract.primaryDeliverable) === normalizeDeliverable(lock.primaryDeliverable)) return null;
+  if (sameContractLock(lock, contract) || admits()) return null;
   const label = name.trim() ? `'${name.trim().slice(0, 60)}'` : "(이름 없음)";
   const source = lockSource === "request" ? "이 요청의 TaskGuard lock" : "같은 batch에서 먼저 계약을 정한 child";
-  return `[SideQuestGuard] task ${label}: 한 사용자 요청의 모든 child는 같은 WORK_CLASS·PRIMARY_DELIVERABLE을 씁니다. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 이대로 발주하면 task 전체가 거절됩니다. 고치기: 이 child의 두 줄을 기준 값 그대로 적거나 지우고(같은 batch 안이거나 lock이 있을 때만 상속), 조각마다 다른 완료물은 TASK_TITLE·TODO_TASKS·# Acceptance로 구분하세요.`;
+  return `[SideQuestGuard] task ${label}: 한 사용자 요청의 모든 child는 같은 WORK_CLASS·PRIMARY_DELIVERABLE을 씁니다. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 이대로 발주하면 task 전체가 거절됩니다. ${USER_REQUEST_HINT} 같은 완료물의 조각이라면 이 child의 두 줄을 기준 값 그대로 적거나 지우고(같은 batch 안이거나 lock이 있을 때만 상속), 조각마다 다른 일은 TASK_TITLE·TODO_TASKS·# Acceptance로 구분하세요.`;
 }
 
 /**
@@ -880,12 +906,13 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
     let candidateLock = lockFor(sessionIdOf(ctx));
     const lockSource = candidateLock ? "request" : "batch";
+    const admission = userRequestAdmission(sessionIdOf(ctx));
     const conflicts: string[] = [];
     const contracts = tasks.map((task) => {
       const contract = dispatchContract(task.task, candidateLock);
       if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
       // TaskGuard는 lock과 다른 child가 하나라도 있으면 batch 전체를 거절한다. Jev를 부르기 전에 같은 비교로 모두 알린다.
-      const conflict = contractLockConflict(task.name, contract, candidateLock, lockSource);
+      const conflict = contractLockConflict(task.name, contract, candidateLock, lockSource, () => admission(task.task, contract));
       if (conflict) conflicts.push(conflict);
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
@@ -1143,6 +1170,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const refreshAttempts: RefreshAttempts = new Map();
     let candidateLock = lockFor(sessionIdOf(ctx));
     const lockSource = candidateLock ? "request" : "batch";
+    const admission = userRequestAdmission(sessionIdOf(ctx));
     const locksBefore: (DispatchContractLock | undefined)[] = [];
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
@@ -1165,7 +1193,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
-      const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource);
+      const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource, () => admission(task, contract));
       if (conflict) return { block: true, reason: conflict };
       const name = String(item.name ?? "").trim();
       const key = briefKey(String(item.name ?? ""), contract);

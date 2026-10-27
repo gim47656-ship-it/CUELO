@@ -221,6 +221,17 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("write", { path: "notes.ts", content: DIRECT.join("\n") })?.block).toBeUndefined();
   });
 
+  // 2026-10-28 감사: 26회 차단 중 20회가 슬롭 게이트 면제 내부 기록(HANDOFF.md·doc/history·maker 기록)이었다.
+  test("슬롭 게이트가 면제하는 내부 기록은 보지 않고, 같은 글의 공개 문서는 계속 멈춘다", () => {
+    const s = session(workdir());
+    s.input();
+    for (const path of ["HANDOFF.md", "Tools/X/HANDOFF.md", "doc/history/2026/10/28-x/main.md", "doc/history/2026/10/28-x/maker-A.md", "doc/README.md"]) {
+      expect(s.call("write", { path, content: markdown(DIRECT) })?.block).toBeUndefined();
+    }
+    expect(s.call("write", { path: "doc/guide.md", content: markdown(DIRECT) })?.block).toBe(true);
+    expect(s.call("write", { path: "CHANGELOG.md", content: markdown(DIRECT) })?.block).toBe(true);
+  });
+
   test("bash가 바꾼 글 파일은 내용을 볼 수 없어 한 번만 알린다", () => {
     const cwd = workdir();
     const s = session(cwd);

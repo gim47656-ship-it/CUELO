@@ -14,15 +14,30 @@ name: CI
 # classifier problem run everything. `harness-linux` always runs.
 #
 # CUELO-private is billed per minute. Its `private` job runs on Linux for every
-# `main` push and checks the files the mirror does not carry: the setup source
-# manifest, policy and generated agents, eval analyzers, setup helpers and the WSL
-# deploy tooling. `private-windows` (content scan, which replays the PowerShell
-# helper) needs Windows PowerShell and runs only when started by hand.
+# `main` push except one that touches only files that job cannot read (`paths-ignore`
+# below: work records, handoff and setup notes, memory exports) and checks the files the
+# mirror does not carry: the setup source manifest, policy and generated agents, eval
+# analyzers, setup helpers and the WSL deploy tooling. `private-windows` (content scan,
+# which replays the PowerShell helper) needs Windows PowerShell and runs only when
+# started by hand. The mirror runs this same file and has none of the ignored paths, so
+# its pushes always start CI.
 on:
   pull_request:
   push:
     branches:
       - main
+    # A push whose changed files ALL match is skipped; one other file starts the run, and
+    # so does a change to this file. Keep every pattern limited to paths that neither the
+    # mirror receives nor the private job reads: the source manifest lists every tracked
+    # file outside doc/, the repository-only names and the unpackaged parts of Tools/.
+    # .github/scripts/ci-paths.test.mjs checks the lists against .publicignore and the manifest.
+    paths-ignore:
+      - "doc/**"
+      - "Tools/*/doc/**"
+      - "HANDOFF.md"
+      - "PC-SETUP.md"
+      - "Tools/*/*.md"
+      - "Tools/OMP_Global_Config/memory-sync/memories.jsonl"
   workflow_dispatch:
 
 permissions:
@@ -184,7 +199,7 @@ jobs:
 
       - name: Extension, guard, finalizer and skill-cost tests
         if: matrix.suite == 'extensions'
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./skill-cost
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./agent/tools/ci-chain ./skill-cost
 
       # Every file is its own process with its own temporary HOME/roots, so the files run
       # side by side (one per CPU); each log is printed whole, in file order, afterwards.
@@ -275,12 +290,26 @@ jobs:
       github.repository == 'gim47656-ship-it/CUELO-private' &&
       (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         shell: bash
     steps:
+      # doc/ holds about 500 MiB of work records that no step reads: the source manifest
+      # lists only git-tracked files outside doc/ and Tools/*/doc/, and no test opens them.
+      # Skip them in the working tree and, with the blob filter, in the download.
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/doc/
+            !/Tools/CUELO_Setup/doc/
+            !/Tools/OMP_Global_Config/doc/
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -304,14 +333,33 @@ jobs:
           node patches/validate-harness-policy.mjs
           node patches/build-agents.mjs --check
 
+      # The analyzers read only evals/, agent/ and patches/ under Tools/OMP_Global_Config, so
+      # a push that changed none of them since the last verified revision skips the step
+      # (see .github/scripts/ci-eval-scope.mjs); every doubt and every manual run runs it.
+      - name: Select eval analyzer tests
+        id: eval-scope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-eval-scope.mjs
+
       # `bun test ./evals` would also pick up the graders' hidden task tests.
       - name: Eval analyzer tests
+        if: steps.eval-scope.outputs.run != 'false'
         working-directory: Tools/OMP_Global_Config
         run: node --test evals/*.test.mjs
 
       - name: Setup helper tests
         working-directory: Tools/CUELO_Setup
         run: node --test files/source-build-helper.test.js files/native-runtime-patch.test.js files/set-release-version.test.js
+
+      # The push path filters above decide which pushes start CI and the mirror publish.
+      # ci-paths.test.mjs keeps them from ignoring a file the mirror receives or this job
+      # reads; it needs .publicignore, so it can only run here. ci-eval-scope.test.mjs covers
+      # the eval-step selector.
+      - name: Push path filter tests
+        run: |
+          node --test .github/scripts/ci-eval-scope.test.mjs
+          bun test ./.github/scripts/ci-paths.test.mjs
 
       # The WSL deploy tooling imports app modules (lib/update-maintenance.ts), so it
       # needs the installed dependencies.

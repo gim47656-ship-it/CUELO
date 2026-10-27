@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, computer_task, ego_browser, checkpoint, cross_review, slop_check]
 ---
 
-<!-- omp-global-config:generated source-hash=27baced8df24
+<!-- omp-global-config:generated source-hash=9b754355fbb0
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -19,7 +19,7 @@ Every outward-facing artifact you write (README/CHANGELOG/docs and other markdow
 
 Draft coverage is per authored block, not per tool invocation. A draft for introductory paragraphs does not cover new explanations, table copy or slide prose you write yourself. Draft every new or paragraph-rewritten block before applying it; splitting edits or minifying HTML is not an exemption. Direct edits remain allowed for exact factual/typo/slop corrections and layout/code changes preserving the copy. New explanations, examples and conclusions are not corrections. Compare the prose being applied with the draft and draft the missing blocks only; a slop pass does not prove draft coverage.
 
-Run a `cross_review` `review` of your changed code files before you report when the review is required: the brief marks the slice high-risk or carries a plain cross-family review line, a trigger marker the `git_finalize` gate uses hits your changed lines or paths (process termination, deletion, destructive SQL, deploy/release/migration, credentials/auth, encoding, device I/O), or Main forwards a finalizer sample hit for your files. Other code changes are reviewed only when Main's brief asks for it; Main decides from the `maker_route` review-necessity advice. Targets are changed executable code and config; pass relevant unchanged callers or contracts as `inputs`/`references`, not as targets. Docs, tests, generated files, git-detected binary media/office assets and TS/JS edits the gate proves comment-only are not targets. Run it after your focused checks pass, with your own model selector as `authors` (never `"main"`), fix or refute each finding with evidence, use the probe round when a reviewer proposes one, and run a delta round on the same chain after fixes. Report the reviewId chain and a proposed status (`fixed`/`refuted`/`limit`) with an evidence locator for every finding; `resolve` is Main-only. Main does not start a duplicate review of your code: when Main forwards findings or later rounds, you run them.
+Run a `cross_review` `review` of your changed code files before you report when the review is required: the brief marks the slice high-risk or carries a plain cross-family review line, a trigger marker the `git_finalize` gate uses hits your changed lines (a path name alone never triggers; process termination, deletion, destructive SQL, deploy/release/migration, credentials/auth, encoding, device I/O), or Main forwards a finalizer sample hit for your files. Other code changes are reviewed only when Main's brief asks for it; Main decides from the `maker_route` review-necessity advice. Targets are changed executable code and config; pass relevant unchanged callers or contracts as `inputs`/`references`, not as targets. Docs, tests, generated files, git-detected binary media/office assets and TS/JS edits the gate proves comment-only are not targets. Run it after your focused checks pass, with your own model selector as `authors` (never `"main"`), fix or refute each finding with evidence, use the probe round when a reviewer proposes one, and run a delta round on the same chain after fixes. Report the reviewId chain and a proposed status (`fixed`/`refuted`/`limit`) with an evidence locator for every finding; `resolve` is Main-only. Main does not start a duplicate review of your code: when Main forwards findings or later rounds, you run them.
 
 ## Maker Contract
 
@@ -159,7 +159,7 @@ Run a `cross_review` `review` of your changed code files before you report when 
 - Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
   completion report when the review is required for your slice: the brief's `# Acceptance` asks
   for a cross-family review (Main asks for declared high-risk slices: code-nature triggers or
-  project material risk), a `git_finalize` trigger marker hits your changed lines or paths, or
+  project material risk), a `git_finalize` trigger marker hits your changed lines (a path name alone never triggers), or
   Main forwards a finalizer sample hit for your files. Any other code change is reviewed only when
   the brief asks; Main decides that from the `maker_route` review-necessity advice, and a Maker
   never starts a blanket review of every edit. `files` are your changed executable code and config

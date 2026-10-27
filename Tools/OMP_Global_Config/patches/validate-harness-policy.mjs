@@ -325,7 +325,7 @@ const requiredPolicyMembers = [
   ]],
   ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.decisionMapping", [
     "input-is-the-original-primary-deliverable-and-owned-paths-and-bounded-acceptance-and-instruction-excerpts-with-code-urls-and-literals-masked-and-each-path-replaced-by-a-local-inside-or-outside-owned-paths-marker-and-no-call-when-a-secret-or-credential-pattern-appears",
-    "same-scope-keeps-the-original-acceptance-scope-change-means-main-rejudges-with-maker_route-from-the-changed-facts-and-uses-the-existing-rework-contract-for-real-rework-acceptance-change-means-main-states-the-changed-condition-to-the-owner-and-reviews-against-it",
+    "same-scope-keeps-the-original-acceptance-and-sends-no-advisory-because-main-has-nothing-to-change-scope-change-means-main-rejudges-with-maker_route-from-the-changed-facts-and-uses-the-existing-rework-contract-for-real-rework-acceptance-change-means-main-states-the-changed-condition-to-the-owner-and-reviews-against-it",
     "judge-failure-timeout-missing-credentials-or-a-secret-candidate-is-unknown-and-never-falls-back-to-another-model",
     "the-advisory-is-an-aside-while-main-runs-and-next-turn-context-while-idle-a-session-change-aborts-pending-classifications-and-discards-late-results",
     "the-advisory-only-informs-main-s-next-action-it-never-approves-blocks-switches-a-model-or-selects-an-owner-and-preserves-the-existing-and-completed-owner-identity-unless-main-determines-a-real-ownership-change",
@@ -404,9 +404,9 @@ const requiredPolicyMembers = [
   ]],
   ["routing.typedJudgmentRouting.placements.pre-turn-memory-application.decisionMapping", [
     "input-is-at-most-eight-recalled-rows-of-500-characters-with-id-scope-and-revision-and-a-1200-character-request-excerpt-with-code-literals-urls-and-paths-removed-secret-pattern-rows-are-withheld-and-a-secret-pattern-request-or-no-sendable-row-makes-no-call",
-    "a-truncated-or-redacted-memory-or-request-excerpt-never-asserts-applies-excepted-or-conflicts-and-is-lowered-to-unconfirmed-with-the-memory-id-detail-lookup",
+    "a-truncated-or-redacted-memory-or-request-excerpt-never-asserts-applies-excepted-or-conflicts-and-is-lowered-to-unconfirmed",
     "conflicts-means-only-between-the-current-request-and-the-memory-excerpt-the-judge-never-claims-a-conflict-with-unseen-repository-canon-and-the-agent-checks-canon-and-approval-itself",
-    "applies-excepted-conflicts-or-unconfirmed-adds-one-same-turn-message-before-the-first-model-call-current-user-instructions-canon-and-approval-take-precedence-and-it-never-approves-blocks-or-edits-memory",
+    "applies-excepted-or-conflicts-adds-one-same-turn-message-before-the-first-model-call-listing-those-and-any-unconfirmed-ids-alongside-current-user-instructions-canon-and-approval-take-precedence-and-it-never-approves-blocks-or-edits-memory-unconfirmed-or-withheld-ids-alone-send-nothing-because-the-recalled-rows-are-already-in-context-2026-10-28-audit-133-of-142-messages-carried-only-those",
     "all-unrelated-or-unknown-judge-failure-missing-credentials-or-the-eight-second-bounded-advisory-latency-timeout-sends-nothing-and-the-prompt-proceeds",
     "a-genuine-interactive-or-rpc-input-session-change-or-shutdown-aborts-the-pending-judgment-and-discards-late-results-only-completed-judgments-are-deduped-by-the-full-judged-input-so-an-aborted-or-timed-out-identical-input-is-retried",
   ]],

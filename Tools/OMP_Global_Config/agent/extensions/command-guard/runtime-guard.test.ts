@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, mock, test } from "bun:test";
 import { existsSync, watch } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isSummonCall, taskGuardLockOf } from "./task-guard";
@@ -1127,6 +1127,8 @@ describe("async ownership snapshots", () => {
           childIds: ["SnapshotFullScan"],
           owned: ["owned/"],
           outside,
+          unattributed: [],
+          elsewhere: [],
           concurrent: [],
         },
       ]);
@@ -1135,7 +1137,7 @@ describe("async ownership snapshots", () => {
     }
   });
 
-  test("Git 관측 오류는 성공이나 빈 스냅샷 대신 unobserved로 남긴다", async () => {
+  test("Git 관측 오류는 성공이나 빈 스냅샷 대신 unobserved로 기록하고 대화에는 줄을 내지 않는다", async () => {
     const directory = await mkdtemp(join(tmpdir(), "omp-ownership-nongit-"));
     try {
       const outsideLog = join(directory, "ownership-outside.jsonl");
@@ -1145,10 +1147,7 @@ describe("async ownership snapshots", () => {
         "tool_result",
         settledTaskResult("snapshot-error", "SnapshotError"),
       );
-      const text = renderedText(result);
-      expect(text).toContain(
-        "[OwnershipGuard] child=SnapshotError owned=owned/ outside=unobserved concurrent=none",
-      );
+      expect(renderedText(result)).not.toContain("[OwnershipGuard]");
       expect(await readOutsideRows(outsideLog)).toMatchObject([
         { child: "SnapshotError", owned: ["owned/"], outside: "unobserved", concurrent: [] },
       ]);
@@ -1247,6 +1246,8 @@ describe("async ownership snapshots", () => {
       await baselineDelay.started;
       await baselineDelay.release();
       await baseline;
+      // 소유 밖 변경이 있어야 보고 줄이 생긴다(없으면 줄을 내지 않는다).
+      await writeFile(join(fixture.workspace, "outside", "terminal.txt"), "after-spawn\n");
 
       const terminalDelay = await armStatusDelay(fixture);
       const toolResult = harness.emit(
@@ -1317,13 +1318,22 @@ describe("async repository matching", () => {
       expect(commonDirectoryStarts).toHaveLength(1);
 
       const slashPath = recoverable.replace(/\\/g, "/");
+      // common-dir을 얻지 못해도 git이 "어느 저장소도 아님"을 증명하면 그 git add는 세션 저장소에 닿지 못하므로 허용한다.
       const failedLookup = await harness.emit("tool_call", {
         type: "tool_call",
         toolName: "bash",
         toolCallId: "unknown-repository",
         input: { command: `git -C "${slashPath}" add tracked.txt`, cwd: deepWorkspace },
       });
-      expect(failedLookup).toMatchObject({ block: true });
+      expect(failedLookup).toBeUndefined();
+      // 세션 저장소 안의 없는 폴더는 common-dir을 얻지 못해도 가장 가까운 기존 조상이 세션 저장소라 막는다.
+      const missingInside = await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "missing-inside",
+        input: { command: `git -C "${deepWorkspace.replace(/\\/g, "/")}/missing" add tracked.txt`, cwd: deepWorkspace },
+      });
+      expect(missingInside).toMatchObject({ block: true });
 
       await runFixtureGit(recoverable, ["init", "--quiet"]);
       const differentRepository = await harness.emit("tool_call", {
@@ -1332,7 +1342,8 @@ describe("async repository matching", () => {
         toolCallId: "different-repository",
         input: { command: `git -C "${slashPath}" add tracked.txt`, cwd: deepWorkspace },
       });
-      // 실패 undefined를 영구 negative cache로 두지 않아 저장소가 확인되면 외부 repo 명령을 허용한다.
+      // 실패 undefined를 영구 negative cache로 두지 않아 저장소가 확인되면 외부 repo 명령을 허용한다(영구 cache였다면
+      // 이제 저장소라 "어느 저장소도 아님"도 증명되지 않아 막혔다).
       expect(differentRepository).toBeUndefined();
 
       const changedTargetEvent = {
@@ -1348,6 +1359,42 @@ describe("async repository matching", () => {
     } finally {
       if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
       else process.env.GIT_TRACE2_EVENT = previousTrace;
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  // Windows CI는 심볼릭 링크 권한이 없을 수 있어 POSIX에서만 돈다.
+  test.skipIf(process.platform === "win32")("임시 루트 아래 세션 밖 작업 트리의 checkout -f는 허용하고, 세션 저장소를 가리키는 임시 링크는 막는다", async () => {
+    const fixture = await createDelayedGitFixture();
+    const scratch = await mkdtemp(join(tmpdir(), "omp-temp-tree-"));
+    try {
+      await symlink(fixture.workspace, join(scratch, "link"));
+      const harness = createGuardHarness({ cwd: fixture.workspace });
+      const bash = (id: string, command: string) =>
+        harness.emit("tool_call", { type: "tool_call", toolName: "bash", toolCallId: id, input: { command } });
+      expect(await bash("temp-checkout", `cd "${scratch}" && git checkout -q --detach -f HEAD`)).toBeUndefined();
+      expect(await bash("temp-link-checkout", `cd "${scratch}/link" && git checkout -f .`)).toMatchObject({ block: true });
+      expect(await bash("session-checkout", "git checkout -f .")).toMatchObject({ block: true });
+      // R1-OAI-5: 세션 cwd가 저장소 하위 폴더여도 같은 작업 트리의 다른 폴더는 임시 작업 트리가 아니다.
+      const nested = createGuardHarness({ cwd: join(fixture.workspace, "owned") });
+      const sibling = await nested.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "sibling-checkout",
+        input: { command: `cd "${join(fixture.workspace, "outside")}" && git checkout -f .` },
+      });
+      expect(sibling).toMatchObject({ block: true });
+      // R2-OAI-3: 세션 작업 트리 root를 알아내지 못하면(여기서는 .git 안이라 --show-toplevel이 실패) 임시 면제를 쓰지 않는다.
+      const unknownRoot = createGuardHarness({ cwd: join(dirname(fixture.workspace), ".git") });
+      const blind = await unknownRoot.emit("tool_call", {
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "unknown-root-checkout",
+        input: { command: `cd "${scratch}" && git checkout -q --detach -f HEAD` },
+      });
+      expect(blind).toMatchObject({ block: true });
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
       await rm(fixture.root, { recursive: true, force: true });
     }
   });
@@ -1614,5 +1661,71 @@ describe("OwnerWriteGuard", () => {
       await rm(cwd, { recursive: true, force: true });
       await rm(worktree, { recursive: true, force: true });
     }
+  });
+});
+
+describe("OwnershipGuard 쓰기 귀속", () => {
+  test("sibling·Main이 edit·write로 쓴 경로는 완료한 child에 붙이지 않고, 쓴 사람을 모르는 경로는 unattributed다", async () => {
+    const fixture = await createDelayedGitFixture();
+    const cwd = fixture.workspace;
+    const running: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({ cwd, agent: { kind: "main", id: "Main-OA1", name: "main", depth: 0 }, runningJobs: running });
+      await spawnRunningMaker(main, running, "oa1-alpha", "Alpha", "owned/");
+      await spawnRunningMaker(main, running, "oa1-beta", "Beta", "beta/");
+      const write = async (harness: GuardHarness, id: string, path: string) => {
+        expect(await harness.emit("tool_call", fileCall("write", id, { path, content: "x" }))).toBeUndefined();
+        await writeFile(join(cwd, path), `${id}\n`);
+      };
+      await write(makerChild(cwd, "Alpha", "Main-OA1"), "oa1-a", "outside/alpha.txt");
+      await write(makerChild(cwd, "Beta", "Main-OA1"), "oa1-b", "outside/beta.txt");
+      await write(main, "oa1-m", "outside/main.txt");
+      await writeFile(join(cwd, "outside", "bash.txt"), "written by bash\n");
+
+      await main.emit("message_start", {
+        type: "message_start",
+        message: {
+          role: "custom",
+          customType: "async-result",
+          details: { jobs: [{ id: "Alpha", type: "task", status: "completed" }] },
+        },
+      });
+      const report = main.sentMessages
+        .map(({ message }) => renderedText(message))
+        .join("\n")
+        .split("\n")
+        .find((text) => text.includes("[OwnershipGuard]"));
+      expect(report).toBe(
+        "[OwnershipGuard] child=Alpha owned=owned/ outside=outside/alpha.txt unattributed=outside/bash.txt concurrent=Beta",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SideQuestGuard USER_REQUEST", () => {
+  test("사용자 입력과 steering 원문에 글자 그대로 있는 인용만 다른 완료물을 받는다", async () => {
+    const harness = createGuardHarness();
+    await harness.emit("input", { type: "input", source: "interactive", text: "소유권 스냅샷 고쳐줘" });
+    expect(blockReason(await harness.emit("tool_call", makerTaskEvent("sq-1", "First")))).toBe("");
+    const second = (id: string, quote: string) => ({
+      type: "tool_call",
+      toolName: "task",
+      toolCallId: id,
+      input: {
+        agent: "maker",
+        name: id,
+        task: `TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 감사 보고서\nOWNED_PATHS: doc/\nUSER_REQUEST: ${quote}\n\n본문`,
+      },
+    });
+    expect(blockReason(await harness.emit("tool_call", second("sq-2", "가드 감사 보고서도 따로 써줘")))).toContain("USER_REQUEST");
+    await harness.emit("message_start", {
+      type: "message_start",
+      message: { role: "user", steering: true, content: [{ type: "text", text: "아 그리고 가드 감사 보고서도 따로 써줘" }] },
+    });
+    // steering은 lock을 풀므로 첫 완료물을 다시 세운 뒤 두 번째 완료물을 인용으로 받는다.
+    expect(blockReason(await harness.emit("tool_call", makerTaskEvent("sq-3", "First2")))).toBe("");
+    expect(blockReason(await harness.emit("tool_call", second("sq-4", "가드 감사 보고서도 따로 써줘")))).toBe("");
   });
 });

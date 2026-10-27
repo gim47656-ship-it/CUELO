@@ -71,6 +71,10 @@ export type MakerSpawn = {
 export type TaskGuardState = {
   usage: Usage;
   lock?: Lock;
+  /** USER_REQUEST 인용으로 이 요청에 더 받아들인 WORK_CLASS·PRIMARY_DELIVERABLE. */
+  admitted: Lock[];
+  /** 이번 요청의 사용자 입력 원문(첫 입력과 끼어든 steering). 모델이 위조할 수 없어 USER_REQUEST 인용의 기준이다. */
+  requestTexts: string[];
   /** toolCallId → 예약. 취소 환불과 뒤늦은 결과 판정에 쓰므로 요청이 끝날 때까지 남긴다. */
   reservations: Map<string, Reservation>;
   /** 이번 요청에서 이미 되돌린 child 슬롯 수. */
@@ -95,6 +99,8 @@ type RawGuardMetadata = {
   purpose?: Purpose;
   blocksPrimary?: boolean;
   primaryDeliverable?: string;
+  /** USER_REQUEST: 이 완료물을 요구한 사용자 문장의 글자 그대로 인용. 다른 완료물을 같은 요청에 받아들이는 근거다. */
+  userRequest?: string;
   ownedPaths: string[];
   findingId?: string;
   /** TASK_GUARD marker와 바로 뒤 정본 필드가 차지한 구간. 후속 본문은 포함하지 않는다. */
@@ -130,6 +136,8 @@ function zeroUsage(): Usage {
 export function createTaskGuardState(): TaskGuardState {
   return {
     usage: zeroUsage(),
+    admitted: [],
+    requestTexts: [],
     reservations: new Map(),
     refunded: 0,
   };
@@ -138,6 +146,8 @@ export function createTaskGuardState(): TaskGuardState {
 export function resetTaskGuardState(state: TaskGuardState): void {
   state.usage = zeroUsage();
   state.lock = undefined;
+  state.admitted = [];
+  state.requestTexts = [];
   state.reservations.clear();
   state.refunded = 0;
 }
@@ -146,6 +156,43 @@ export function resetTaskGuardState(state: TaskGuardState): void {
 export function normalizeDeliverable(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
+
+/** 이번 요청의 사용자 입력 원문을 USER_REQUEST 인용 기준에 더한다. 첫 입력은 reset 뒤에, steering은 그대로 더한다. */
+export function noteUserRequestText(state: TaskGuardState, text: string): void {
+  if (text.trim()) state.requestTexts.push(text);
+}
+
+/** USER_REQUEST 인용 비교형: 대소문자·공백 차이와 인용부호를 지운다. */
+function normalizeQuote(value: string): string {
+  return value
+    .replace(/["'`“”‘’「」『』«»]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase("en-US");
+}
+
+/** 인용으로 인정하는 최소 길이(공백 제외 글자 수). "해줘"처럼 어느 요청에나 들어 있는 조각을 막는다. */
+const MIN_USER_REQUEST_CHARS = 6;
+
+/**
+ * USER_REQUEST 인용이 이번 요청의 사용자 입력 원문(첫 입력 또는 steering) 어느 하나에 그대로 들어 있는지. 기준 글은 모델이
+ * 쓸 수 없는 사용자 입력뿐이라 인용이 맞으면 사용자가 이 요청에서 그 완료물을 직접 요구한 것이다.
+ */
+function quotesUserRequest(state: TaskGuardState, quote: string | undefined): boolean {
+  if (!quote || quote.replace(/\s/g, "").length < MIN_USER_REQUEST_CHARS) return false;
+  const needle = normalizeQuote(quote);
+  if (needle.replace(/\s/g, "").length < MIN_USER_REQUEST_CHARS) return false;
+  return state.requestTexts.some((text) => normalizeQuote(text).includes(needle));
+}
+
+function sameLock(lock: Lock, workClass: string, deliverable: string): boolean {
+  return lock.workClass === workClass && lock.deliverableKey === normalizeDeliverable(deliverable);
+}
+
+/** SideQuestGuard 거절 문구. TaskGuard와 maker_route 준비·발주가 같은 고치기 안내를 낸다. */
+export const USER_REQUEST_HINT =
+  "사용자가 이번 요청에서 이 완료물을 직접 요구했다면 TASK_GUARD 블록에 `USER_REQUEST: <그 요구 문장을 사용자 입력에서 글자 그대로 6자 이상>`을 더하면 별도 완료물로 받아들입니다. " +
+  "사용자가 요구하지 않은 곁가지라면 기준 값으로 맞추거나 backlog로 남기세요.";
 
 /**
  * OWNED_PATHS 값을 콤마로 나눠 빈 항목을 버리고 collapseOwnedPath로 동등 표기(`//`, `/./`, 선행 `./`)를
@@ -193,7 +240,7 @@ export function extractGuardBlock(task: string): { block: string; span: { start:
   if (!marker) return null;
 
   const fieldLine =
-    /^[\t ]*(?:WORK_CLASS|PURPOSE|BLOCKS_PRIMARY|PRIMARY_DELIVERABLE|OWNED_PATHS|FINDING_ID)[\t ]*:[^\r\n]*$/i;
+    /^[\t ]*(?:WORK_CLASS|PURPOSE|BLOCKS_PRIMARY|PRIMARY_DELIVERABLE|OWNED_PATHS|FINDING_ID|USER_REQUEST)[\t ]*:[^\r\n]*$/i;
   let cursor = marker.index + marker[0].length;
   if (task[cursor] === "\r") cursor += 1;
   if (task[cursor] === "\n") cursor += 1;
@@ -244,6 +291,7 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
       : {}),
     ownedPaths: parseOwnedPaths(readGuardField(block, "OWNED_PATHS")),
     ...(readGuardField(block, "FINDING_ID") ? { findingId: readGuardField(block, "FINDING_ID") } : {}),
+    ...(readGuardField(block, "USER_REQUEST") ? { userRequest: readGuardField(block, "USER_REQUEST") } : {}),
     span,
   };
 }
@@ -297,6 +345,7 @@ function canonicalizeTask(
   ];
   if (isMakerAgent(agent)) lines.push(`OWNED_PATHS: ${metadata.ownedPaths.join(",")}`);
   if (metadata.findingId) lines.push(`FINDING_ID: ${metadata.findingId}`);
+  if (raw.userRequest) lines.push(`USER_REQUEST: ${raw.userRequest}`);
   const rendered = lines.join("\n");
   if (!raw.span) return `${rendered}\n\n${task}`;
   return task.slice(0, raw.span.start) + rendered + task.slice(raw.span.end);
@@ -365,21 +414,9 @@ function subtractDelta(target: Usage, delta: Delta): void {
 function validateItem(
   item: SpawnItem,
   metadata: GuardMetadata,
-  expectedLock: Lock,
 ): Delta | string {
   if (!isMakerAgent(item.agent)) {
     return `[SpawnGuard] 허용 child는 maker뿐입니다: ${item.agent || "<empty>"}`;
-  }
-
-  const deliverableKey = normalizeDeliverable(metadata.primaryDeliverable);
-  if (
-    metadata.workClass !== expectedLock.workClass ||
-    deliverableKey !== expectedLock.deliverableKey
-  ) {
-    return (
-      "[SideQuestGuard] 한 사용자 요청 안에서 WORK_CLASS/PRIMARY_DELIVERABLE을 바꿀 수 없습니다. " +
-      `locked=${expectedLock.workClass}:${expectedLock.deliverable}`
-    );
   }
 
   if (!metadata.blocksPrimary) {
@@ -457,6 +494,7 @@ export function reserveTaskCall(
   // 파생이 일어난 항목만 정규 블록으로 교체한다. 나머지 항목은 원본 문자열을 그대로 쓴다.
   const rewritten = new Map<number, string>();
   const agentFilled = new Set<number>();
+  const admitted = [...state.admitted];
 
   for (const [index, item] of normalized.entries()) {
     const raw = parseGuardMetadata(item.task);
@@ -471,8 +509,29 @@ export function reserveTaskCall(
       deliverableKey: normalizeDeliverable(metadata.primaryDeliverable),
       deliverable: metadata.primaryDeliverable,
     };
+    // lock과 다른 완료물은 사용자가 이번 요청에서 직접 요구했다는 USER_REQUEST 인용이 맞을 때만 받는다(SideQuestGuard).
+    if (
+      isMakerAgent(item.agent) &&
+      ![candidateLock, ...admitted].some((lock) => sameLock(lock, metadata.workClass, metadata.primaryDeliverable))
+    ) {
+      if (!quotesUserRequest(state, raw.userRequest)) {
+        return {
+          ok: false,
+          reason:
+            "[SideQuestGuard] 한 사용자 요청 안에서 WORK_CLASS/PRIMARY_DELIVERABLE을 바꿀 수 없습니다. " +
+            `locked=${candidateLock.workClass}:${candidateLock.deliverable}` +
+            (raw.userRequest ? " (USER_REQUEST 인용이 이번 사용자 입력에 글자 그대로 없습니다.)" : "") +
+            ` ${USER_REQUEST_HINT}`,
+        };
+      }
+      admitted.push({
+        workClass: metadata.workClass,
+        deliverableKey: normalizeDeliverable(metadata.primaryDeliverable),
+        deliverable: metadata.primaryDeliverable,
+      });
+    }
 
-    const itemDelta = validateItem(item, metadata, candidateLock);
+    const itemDelta = validateItem(item, metadata);
     if (typeof itemDelta === "string") return { ok: false, reason: itemDelta };
     addDelta(delta, itemDelta);
     children.push({ index, delta: itemDelta, refundable: Boolean(item.name), state: "reserved" });
@@ -499,6 +558,7 @@ export function reserveTaskCall(
   if (overBudget) return { ok: false, reason: overBudget };
 
   if (!state.lock) state.lock = candidateLock;
+  state.admitted = admitted;
   addDelta(state.usage, delta);
   state.reservations.set(toolCallId, { children, makers, reservedAt: Date.now(), executed: false });
   if (rewritten.size === 0 && agentFilled.size === 0) return { ok: true };
@@ -643,7 +703,7 @@ export function settleTaskCall(
       releaseChild(state, child, settlement);
     }
   }
-  if (state.usage.total === 0) state.lock = undefined;
+  if (state.usage.total === 0) releaseLocks(state);
   return settlement;
 }
 
@@ -671,8 +731,14 @@ export function reservedMakers(state: TaskGuardState, toolCallId: string): Maker
  */
 export function noteUserRedirect(state: TaskGuardState): boolean {
   if (!state.lock) return false;
-  state.lock = undefined;
+  releaseLocks(state);
   return true;
+}
+
+/** deliverable lock과 USER_REQUEST로 받아들인 추가 완료물을 함께 푼다. */
+function releaseLocks(state: TaskGuardState): void {
+  state.lock = undefined;
+  state.admitted = [];
 }
 
 /**
@@ -723,7 +789,7 @@ export function releaseCancelledSpawns(state: TaskGuardState, ids: readonly stri
     state.refunded += child.delta.total;
     released += child.delta.total;
   }
-  if (state.usage.total === 0) state.lock = undefined;
+  if (state.usage.total === 0) releaseLocks(state);
   return released;
 }
 
@@ -785,6 +851,21 @@ export function taskGuardLockOf(sessionId: string): { workClass: string; primary
   const state = boundSessions.get(sessionId.trim())?.state;
   if (!state) return undefined;
   return state.lock ? { workClass: state.lock.workClass, primaryDeliverable: state.lock.deliverable } : null;
+}
+
+/**
+ * maker_route 준비·발주가 TaskGuard와 같은 결론을 내도록 쓰는 SideQuestGuard 면제 판정: 이 session이 USER_REQUEST로 이미 받아들인
+ * 완료물이거나, 인용이 이번 요청의 사용자 입력에 글자 그대로 있다. 연결된 session이 없으면 기준 글이 없으므로 false다.
+ */
+export function admitsUserRequestedDeliverable(
+  sessionId: string,
+  workClass: string,
+  deliverable: string,
+  quote: string | undefined,
+): boolean {
+  const state = boundSessions.get(sessionId.trim())?.state;
+  if (!state) return false;
+  return state.admitted.some((lock) => sameLock(lock, workClass, deliverable)) || quotesUserRequest(state, quote);
 }
 
 /**
@@ -913,36 +994,57 @@ export type OwnershipReportInput = {
   /** undefined면 스냅샷을 뜨지 못해 변경 여부를 판정할 수 없다(`outside=unobserved`). */
   changedPaths?: readonly string[];
   concurrent: readonly string[];
+  /**
+   * 소유 밖 변경 경로(정규화)를 누가 edit·write로 썼는지: 이 child(`self`), 다른 writer만(`other`: sibling·Main), 기록 없음
+   * (undefined: bash 쓰기·관측 전 쓰기). 없으면 모두 이 child의 소유 밖 변경으로 본다.
+   */
+  attribute?: (path: string) => "self" | "other" | undefined;
 };
 
-/** 소유 밖 변경 경로(정규화·중복 제거·정렬). */
-function outsidePaths(ownedPaths: readonly string[], changedPaths: readonly string[]): string[] {
-  return [...new Set(changedPaths.map(normalizeOwnedPath).filter((path) => path.length > 0))]
-    .filter((path) => !isPathOwned(ownedPaths, path))
+type OwnershipOutcome = {
+  owned: string[];
+  /** 이 child가 쓴(또는 단독 실행이라 이 child 말고는 쓸 수 없던) 소유 밖 변경. */
+  outside: string[] | "unobserved";
+  /** writer 기록이 없고 동시 실행 child가 있어 누가 썼는지 모르는 소유 밖 변경. */
+  unattributed: string[];
+  /** 다른 writer만 쓴 소유 밖 변경. 보고 줄에는 싣지 않고 진단 기록에만 남긴다. */
+  elsewhere: string[];
+};
+
+/** 정규화한 소유 경로와 소유 밖 변경의 귀속. 스냅샷이 없으면 판정할 수 없어 `unobserved`다. */
+function ownershipOutcome(input: OwnershipReportInput): OwnershipOutcome {
+  const owned = input.ownedPaths.map(normalizeOwnedPath).filter((entry) => entry.length > 0);
+  if (input.changedPaths === undefined) return { owned, outside: "unobserved", unattributed: [], elsewhere: [] };
+  const outside: string[] = [];
+  const unattributed: string[] = [];
+  const elsewhere: string[] = [];
+  const candidates = [...new Set(input.changedPaths.map(normalizeOwnedPath).filter((path) => path.length > 0))]
+    .filter((path) => !isPathOwned(owned, path))
     .sort();
+  for (const path of candidates) {
+    const writer = input.attribute?.(path);
+    if (writer === "other") elsewhere.push(path);
+    else if (writer === undefined && input.attribute && input.concurrent.length > 0) unattributed.push(path);
+    else outside.push(path);
+  }
+  return { owned, outside, unattributed, elsewhere };
 }
 
-/** 정규화한 소유 경로와 소유 밖 변경. 스냅샷이 없으면 판정할 수 없어 `unobserved`다. */
-function ownershipOutcome(input: OwnershipReportInput): { owned: string[]; outside: string[] | "unobserved" } {
-  const owned = input.ownedPaths.map(normalizeOwnedPath).filter((entry) => entry.length > 0);
-  return { owned, outside: input.changedPaths === undefined ? "unobserved" : outsidePaths(owned, input.changedPaths) };
+function formatOwnershipReport(child: string, outcome: OwnershipOutcome, concurrent: readonly string[]): string {
+  const { owned, outside, unattributed } = outcome;
+  const list = (paths: readonly string[]) => paths.map(encodeReportToken).join(",");
+  return (
+    `[OwnershipGuard] child=${encodeReportToken(child)}` +
+    ` owned=${list(owned)}` +
+    ` outside=${Array.isArray(outside) ? (outside.length > 0 ? list(outside) : "none") : outside}` +
+    (unattributed.length > 0 ? ` unattributed=${list(unattributed)}` : "") +
+    ` concurrent=${concurrent.length > 0 ? list(concurrent) : "none"}`
+  );
 }
 
 /** OwnershipGuard 보고 한 줄. 공백 구분 key=value이며 인용부호를 쓰지 않는다. */
 export function buildOwnershipReport(input: OwnershipReportInput): string {
-  const { owned, outside } = ownershipOutcome(input);
-  return (
-    `[OwnershipGuard] child=${encodeReportToken(input.child)}` +
-    ` owned=${owned.map(encodeReportToken).join(",")}` +
-    ` outside=${
-      Array.isArray(outside)
-        ? outside.length > 0
-          ? outside.map(encodeReportToken).join(",")
-          : "none"
-        : outside
-    }` +
-    ` concurrent=${input.concurrent.length > 0 ? input.concurrent.map(encodeReportToken).join(",") : "none"}`
-  );
+  return formatOwnershipReport(input.child, ownershipOutcome(input), input.concurrent);
 }
 
 type OwnershipEntry = {
@@ -957,21 +1059,43 @@ type OwnershipEntry = {
   aliases: string[];
   /** spawn 시점 스냅샷. 보고를 마치면 버린다. git을 못 쓰면 없다. */
   snapshot?: TreeSnapshot;
+  /** 등록 시점의 writes 길이. 그 뒤의 쓰기 기록만 이 child 실행 중의 쓰기다. */
+  writeMark: number;
   reported: boolean;
 };
+
+/** edit·write 도구로 공유 작업 트리의 파일을 쓴 기록. path는 정규화한 부모 cwd 기준 상대경로다. */
+type OwnershipWrite = { writer: string; path: string };
 
 export type OwnershipState = {
   entries: Map<string, OwnershipEntry>;
   order: number;
+  writes: OwnershipWrite[];
 };
 
 export function createOwnershipState(): OwnershipState {
-  return { entries: new Map(), order: 0 };
+  return { entries: new Map(), order: 0, writes: [] };
 }
 
 export function resetOwnershipState(state: OwnershipState): void {
   state.entries.clear();
   state.order = 0;
+  state.writes.length = 0;
+}
+
+/** Main(부모 세션 자신)의 쓰기 기록 writer id. agent id와 겹치지 않는다. */
+export const OWNERSHIP_MAIN_WRITER = "\u0000main";
+
+/**
+ * writer(child agent id 또는 OWNERSHIP_MAIN_WRITER)가 부모 cwd 기준 상대경로 paths를 edit·write했다. 추적 중인 child가
+ * 없으면 남기지 않는다(완료 보고가 볼 일이 없고 기록만 쌓인다).
+ */
+export function noteOwnershipWrites(state: OwnershipState, writer: string, paths: readonly string[]): void {
+  if (!hasUnreportedChildren(state)) return;
+  for (const path of paths) {
+    const normalized = normalizeOwnedPath(path);
+    if (normalized) state.writes.push({ writer, path: normalized });
+  }
 }
 
 /** 아직 완료 보고를 하지 않은 child가 있으면 true. 없으면 git 스냅샷을 뜨지 않는다. */
@@ -1008,6 +1132,7 @@ export function registerSpawnedMakers(
       startOrder: state.order,
       aliases: maker.name ? [maker.name] : [],
       reported: false,
+      writeMark: state.writes.length,
       ...(snapshot ? { snapshot } : {}),
     });
   }
@@ -1124,7 +1249,7 @@ function findOwnedChildKey(state: OwnershipState, id: string): string | undefine
 }
 
 /**
- * 소유 밖 변경이 있었거나(`outside` 목록) 변경을 관측하지 못한(`unobserved`) 완료 보고 한 건.
+ * 소유 밖 변경이 있었거나(`outside`·`unattributed` 목록) 변경을 관측하지 못한(`unobserved`) 완료 보고 한 건.
  * 보고 줄은 그 턴의 대화에만 남으므로 빈도를 셀 수 있게 index.ts가 이 행을 JSONL로 덧붙인다.
  */
 export type OwnershipOutsideRow = {
@@ -1133,13 +1258,32 @@ export type OwnershipOutsideRow = {
   childIds: string[];
   owned: string[];
   outside: string[] | "unobserved";
+  unattributed: string[];
+  /** 다른 writer(sibling·Main)만 쓴 소유 밖 변경. 보고 줄에서 뺀 근거다. */
+  elsewhere: string[];
   concurrent: string[];
 };
 
 /**
+ * 쓰기 기록의 writer가 이 child인지. 이름 있는 child의 agent id는 이름이거나 충돌 변형(`이름-2` …)이다. 다른 child가 그 id를
+ * 별칭으로 가졌으면(`Build`와 `Build-2`를 함께 띄운 경우) 그 child의 것이므로 변형 추정보다 정확한 별칭이 앞선다.
+ */
+function isEntryWriter(state: OwnershipState, entry: OwnershipEntry, writer: string): boolean {
+  if (entry.aliases.includes(writer)) return true;
+  if (entry.child === "unnamed" || !writer.startsWith(`${entry.child}-`)) return false;
+  if (!/^\d+$/.test(writer.slice(entry.child.length + 1))) return false;
+  for (const other of state.entries.values()) {
+    if (other !== entry && (other.aliases.includes(writer) || other.child === writer)) return false;
+  }
+  return true;
+}
+
+/**
  * 종료가 관측된 child들의 OwnershipGuard 줄을 만든다. child마다 정확히 한 번만 보고하고
- * (보고 후 스냅샷을 버리고 reported로 표시) 모르는 id는 무시한다. `outside=none`이 아닌 보고는
- * onOutside에도 넘긴다.
+ * (보고 후 스냅샷을 버리고 reported로 표시) 모르는 id는 무시한다. 줄은 이 child의 소유 밖 변경이나 귀속을 모르는
+ * 변경이 있을 때만 만든다: 없거나(`outside=none`) 관측하지 못했으면(`unobserved`) 알릴 행동이 없어 줄을 내지 않는다.
+ * sibling·Main만 edit·write로 쓴 경로는 이 child의 변경이 아니므로 뺀다. 관측하지 못한 보고와 줄을 낸 보고는
+ * onOutside에 넘긴다.
  */
 export function reportOwnedChildren(
   state: OwnershipState,
@@ -1159,16 +1303,28 @@ export function reportOwnedChildren(
     const concurrent = concurrentChildNames(state, entry, entry.endOrder);
     const changedPaths = entry.snapshot && tree ? diffTreeSnapshots(entry.snapshot, tree) : undefined;
     entry.snapshot = undefined;
-    const input: OwnershipReportInput = {
+    const writes = state.writes.slice(entry.writeMark);
+    const attribute = (path: string): "self" | "other" | undefined => {
+      let other = false;
+      for (const write of writes) {
+        if (write.path !== path) continue;
+        if (isEntryWriter(state, entry, write.writer)) return "self";
+        other = true;
+      }
+      return other ? "other" : undefined;
+    };
+    const outcome = ownershipOutcome({
       child: entry.child,
       ownedPaths: entry.ownedPaths,
       ...(changedPaths ? { changedPaths } : {}),
       concurrent,
-    };
-    lines.push(buildOwnershipReport(input));
-    const { owned, outside } = ownershipOutcome(input);
-    if (onOutside && (outside === "unobserved" || outside.length > 0)) {
-      onOutside({ child: entry.child, childIds: [...entry.aliases], owned, outside, concurrent });
+      attribute,
+    });
+    const { owned, outside, unattributed, elsewhere } = outcome;
+    const reportable = (Array.isArray(outside) && outside.length > 0) || unattributed.length > 0;
+    if (reportable) lines.push(formatOwnershipReport(entry.child, outcome, concurrent));
+    if (onOutside && (reportable || outside === "unobserved")) {
+      onOutside({ child: entry.child, childIds: [...entry.aliases], owned, outside, unattributed, elsewhere, concurrent });
     }
   }
   return lines;
@@ -1259,6 +1415,8 @@ export type WriterOwnerView = {
   state: WriterClaimState;
   /** 부모 세션이 소유한 실행 중 task job. 읽지 못하면 undefined(소유자 미상). */
   running(): RunningTaskJob[] | undefined;
+  /** child가 공유 checkout에 edit·write한 부모 cwd 기준 경로를 부모의 OwnershipGuard 귀속 기록에 남긴다. */
+  noteWrite?(writer: string, paths: readonly string[]): void;
 };
 
 /** 부모와 child 세션은 같은 프로세스에서 확장 module을 공유한다. 여러 번 평가되어도 같은 map을 보도록 globalThis에 둔다. */

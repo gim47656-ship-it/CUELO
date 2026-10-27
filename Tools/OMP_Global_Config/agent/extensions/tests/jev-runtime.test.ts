@@ -75,8 +75,9 @@ function structuralReports(sent: SentMessage[]): Array<Record<string, unknown>> 
   const content = String(sent.at(-1)?.message.content ?? "");
   const startMarker = "structuralSummary=";
   const start = content.indexOf(startMarker);
-  const end = content.indexOf(". 구조 count", start);
-  if (start < 0 || end < 0) throw new Error("pre-review structuralSummary가 없습니다.");
+  const lineEnd = content.indexOf("\n", start);
+  const end = lineEnd < 0 ? content.length : lineEnd;
+  if (start < 0) throw new Error("pre-review structuralSummary가 없습니다.");
   const summary = JSON.parse(content.slice(start + startMarker.length, end)) as {
     details: Array<{
       locator: string;
@@ -1721,8 +1722,8 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     expect(JSON.stringify(judgments[0]!.state)).not.toMatch(/privateWire|src\/c\.ts|example\.test|본문 내용은/);
   });
 
-  test("분류 넷을 한국어 라벨로 안내한다", async () => {
-    for (const [choice, label] of [["same-scope", "동일 범위"], ["scope-change", "범위 변경"], ["acceptance-change", "수용 조건 변경"], ["unknown", "불명"]] as const) {
+  test("범위·수용 조건 변경과 불명은 한국어 라벨로 안내하고 동일 범위는 알리지 않는다", async () => {
+    for (const [choice, label] of [["scope-change", "범위 변경"], ["acceptance-change", "수용 조건 변경"], ["unknown", "불명"]] as const) {
       const harness = createHarness({ judgeAnswers: answer(choice) });
       await registerLiveMaker(harness, "Existing", OWNER_TASK);
       await harness.emit("tool_call", ownerMessage("완료 조건에 회귀 검사를 더해."));
@@ -1730,6 +1731,17 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
       expect(harness.sent).toHaveLength(1);
       expect(String(harness.sent[0]!.message.content)).toContain(`분류: ${label}.`);
     }
+    // 2026-10-28 감사: 392건 중 186건이 동일 범위였다. 분류는 하되 Main에 할 일이 없으니 보내지 않는다.
+    // 첫 분류는 동일 범위, 그 뒤 분류는 불명으로 답한다. 늦게 도착한 불명 한 통만 보이면 동일 범위는 침묵한 것이다.
+    const ordered = [answer("same-scope").ownerInstruction, answer("unknown").ownerInstruction];
+    const harness = createHarness({ judgeAnswers: { get ownerInstruction() { return ordered.length > 1 ? ordered.shift() : ordered[0]; } } });
+    await registerLiveMaker(harness, "Existing", OWNER_TASK);
+    await harness.emit("tool_call", ownerMessage("a.ts 수정 방향을 이렇게 잡아."));
+    await harness.emit("tool_call", ownerMessage("완료 조건에 회귀 검사를 더해."));
+    await untilSent(harness, 1);
+    expect(ownerJudgments(harness)).toHaveLength(2);
+    expect(harness.sent).toHaveLength(1);
+    expect(String(harness.sent[0]!.message.content)).toContain("분류: 불명.");
   });
 
   test("JEV 실패·timeout·자격 없음·secret 후보는 다른 판정 없이 불명으로 안내한다", async () => {
@@ -1771,12 +1783,12 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   });
 
   test("idle 세션에는 새 턴을 열지 않도록 aside 없이 다음 턴 문맥으로 붙인다", async () => {
-    const harness = createHarness({ idle: true, judgeAnswers: answer("same-scope") });
+    const harness = createHarness({ idle: true, judgeAnswers: answer("scope-change") });
     await registerLiveMaker(harness, "Existing", OWNER_TASK);
     await harness.emit("tool_call", ownerMessage("a.ts 수정 방향을 이렇게 잡아."));
     await untilSent(harness, 1);
     expect(harness.sent[0]!.options).toBeUndefined();
-    expect(String(harness.sent[0]!.message.content)).toContain("분류: 동일 범위.");
+    expect(String(harness.sent[0]!.message.content)).toContain("분류: 범위 변경.");
   });
 
   test("세션이 바뀌면 진행 중 분류를 끊고 늦은 결과를 버리며, 복원할 수 없는 owner는 분류하지 않는다", async () => {
@@ -1843,7 +1855,7 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   });
 
   test("같은 정규화 지시만 합치고 서로 다른 경로 업무와 구분 불가능 지시는 각각 분류한다", async () => {
-    const harness = createHarness({ judgeAnswers: answer("same-scope") });
+    const harness = createHarness({ judgeAnswers: answer("scope-change") });
     await registerLiveMaker(harness);
     await harness.emit("tool_call", ownerMessage("src/a.ts도 고쳐 주세요."));
     await harness.emit("tool_call", ownerMessage("src/a.ts도 고쳐 주세요."));
@@ -2273,15 +2285,29 @@ describe("jev-runtime pre-retry", () => {
     expect(harness.sent).toHaveLength(1);
   });
 
+  // 2026-10-28 감사: 알림 180건 중 같은 도구·같은 인자 재시도는 8건뿐이었다. 인자를 바꾼 호출은 이미 다음 행동을 바꿨다.
+  test("인자를 바꾼 다음 호출은 알리지 않고 그 실패 문맥을 닫으며, 의도 i만 다른 같은 호출은 재시도로 본다", async () => {
+    const changed = createHarness();
+    await changed.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
+    await changed.emit("tool_call", bashCall("c2", "bun test --fix"));
+    await changed.emit("tool_call", bashCall("c3", "bun test"));
+    expect(changed.sent).toHaveLength(0);
+    const same = createHarness();
+    await same.emit("tool_result", { ...bashError("c1", "bun test", "1 fail (exit code 1)"), input: { i: "Running tests", command: "bun test", timeout: 60 } });
+    await same.emit("tool_call", { ...bashCall("c2", "bun test"), input: { timeout: 60, command: "bun test", i: "Retrying tests" } });
+    expect(same.sent).toHaveLength(1);
+    expect(String(same.sent[0]!.message.content)).toContain("tool=bash, errorCategory=assertion");
+  });
+
   test("같은 도구의 성공은 실패 문맥을 닫는다", async () => {
     const harness = createHarness();
     await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
-    await harness.emit("tool_call", bashCall("c2", "bun test --fix"));
+    await harness.emit("tool_call", bashCall("c2", "bun test"));
     await harness.emit("tool_result", {
       type: "tool_result",
       toolCallId: "c2",
       toolName: "bash",
-      input: { command: "bun test --fix" },
+      input: { command: "bun test" },
       content: [{ type: "text", text: "ok" }],
       isError: false,
     });
@@ -2357,24 +2383,6 @@ describe("jev-runtime pre-retry", () => {
       input: { path: "missing.ts" },
     });
     expect(harness.judgments).toHaveLength(0);
-  });
-
-  test("running job을 결과 없이 취소하려 하면 결정론 advisory만 한 번 보낸다", async () => {
-    const harness = createHarness({
-      asyncJobs: [{ id: "bash-running", type: "bash", status: "running" }],
-    });
-    const event = {
-      type: "tool_call",
-      toolCallId: "cancel-1",
-      toolName: "write",
-      input: { path: "proc://bash-running/kill" },
-    };
-    await harness.emit("tool_call", event);
-    await harness.emit("tool_call", { ...event, toolCallId: "cancel-2" });
-    expect(harness.judgments).toHaveLength(0);
-    expect(harness.sent).toHaveLength(1);
-    expect(String(harness.sent[0]!.message.content)).toContain("취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인");
-    expect(String(harness.sent[0]!.message.content)).toContain("stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다");
   });
 
   test("사람의 새 입력은 재시도 문맥을 끊는다", async () => {
@@ -2919,19 +2927,14 @@ describe("jev-runtime pre-review", () => {
     expect(harness.sent).toHaveLength(before);
     await harness.emit("message_start", asyncResult("job-Resume", { schema: undefined, completion: { agentId: "agent-Resume", startTime, output } }));
     expect(structuralReports(harness.sent)[0]!.evidenceLocators).toEqual(["artifact://resume-full"]);
-    expect(reviewContexts(harness)[0]).toMatchObject({ originalRequest: { excerpt: "Original full scope" }, attemptId: "session-1#spawn-Resume#0#a2" });
+    expect(reviewSources(harness)).toBe("job-Resume request=session:session-1/message:501 brief=session:session-1/tool-call:spawn-Resume/task conversation=/fixture/session-1.jsonl");
+    expect(String(harness.sent.at(-1)?.message.content)).toContain("session-1#spawn-Resume#0#a2");
   });
 
-  function reviewContexts(harness: { sent: SentMessage[] }) {
+  /** pre-review 한 줄의 "원 요청 위치:" 부분. 2026-10-28부터 발췌 없이 위치만 싣는다. */
+  function reviewSources(harness: { sent: SentMessage[] }): string {
     const text = String(harness.sent.at(-1)?.message.content);
-    return JSON.parse(text.split("\nreviewContext=")[1]!.split("\n")[0]!) as Array<{
-      jobId: string;
-      originalRequest: { source: string; excerpt: string; complete: boolean } | null;
-      explicitSteering: Array<{ excerpt: string }>;
-      acceptance: { excerpt: string; complete: boolean } | null;
-      briefSource: string | null;
-      semanticAlignment: string;
-    }>;
+    return text.split(" 원 요청 위치: ")[1]!.split(". structuralSummary=")[0]!;
   }
 
   async function beginReviewTask(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task = `${GUARDED_TASK}\n# Acceptance\nDeliver all three requested behaviors.`) {
@@ -2952,15 +2955,9 @@ describe("jev-runtime pre-review", () => {
     await finishReviewSpawn(harness, "New", nextTask);
     const judgmentCount = harness.judgments.length;
     await harness.emit("message_start", asyncResult("job-Old"));
-    const old = reviewContexts(harness)[0]!;
-    expect(old.originalRequest).toEqual({ source: "session:session-1/message:101", excerpt: "Do all three.", complete: true });
-    expect(old.explicitSteering).toMatchObject([{ excerpt: "Do not deploy." }]);
-    expect(old.acceptance?.excerpt).toBe("Deliver all three requested behaviors.");
-    expect(old.briefSource).toBe("session:session-1/tool-call:spawn-Old/task");
-    expect(old).toHaveProperty("conversationSource", "/fixture/session-1.jsonl");
-    expect(old.semanticAlignment).toBe("unverified");
+    expect(reviewSources(harness)).toBe("job-Old request=session:session-1/message:101 steering=session:session-1/message:102 brief=session:session-1/tool-call:spawn-Old/task conversation=/fixture/session-1.jsonl");
     await harness.emit("message_start", asyncResult("job-New"));
-    expect(reviewContexts(harness)[0]!.originalRequest?.excerpt).toBe("A separate new request.");
+    expect(reviewSources(harness)).toStartWith("job-New request=session:session-1/message:103 brief=");
     expect(harness.judgments).toHaveLength(judgmentCount);
     expect(readFileSync(harness.ledgerPath, "utf8")).not.toContain("Do all three.");
   });
@@ -2979,11 +2976,7 @@ describe("jev-runtime pre-review", () => {
     const task = await beginReviewTask(harness, "Origin");
     await finishReviewSpawn(harness, "Origin", task);
     await harness.emit("message_start", asyncResult("job-Origin"));
-    expect(reviewContexts(harness)[0]).toMatchObject({
-      originalRequest: { excerpt: "Original request" },
-      explicitSteering: [{ excerpt: "Keep all three" }],
-      semanticAlignment: "unverified",
-    });
+    expect(reviewSources(harness)).toStartWith("job-Origin request=session:session-1/message:201 steering=session:session-1/message:202 brief=");
   });
 
   test("failed calls and reload never attach a later request to an unobserved origin", async () => {
@@ -2994,25 +2987,24 @@ describe("jev-runtime pre-review", () => {
     await harness.emit("message_start", { message: { role: "user", content: "New private request" } });
     await finishReviewSpawn(harness, "Failed", task);
     await harness.emit("message_start", asyncResult("job-Failed"));
-    expect(reviewContexts(harness)[0]!.originalRequest).toBeNull();
+    expect(reviewSources(harness)).toStartWith("job-Failed request=미관측 ");
     await harness.emit("session_start", {});
     await harness.emit("message_start", asyncResult("job-restored"));
-    expect(reviewContexts(harness)[0]!.originalRequest).toBeNull();
+    expect(reviewSources(harness)).toStartWith("job-restored request=미관측 brief=미관측");
   });
 
-  test("long request and acceptance are bounded excerpts with original conversation and brief locators", async () => {
+  // 2026-10-28 감사: pre-review 588K자 중 337K자가 요청·수용 조건 발췌였다. 원문은 위치로만 가리킨다.
+  test("request and acceptance text never enter the advisory; only conversation and brief locators do", async () => {
     const harness = createReviewHarness();
     await harness.emit("message_start", { message: { role: "user", content: "private ".repeat(2000), timestamp: 301 } });
     const task = await beginReviewTask(harness, "Long", `${GUARDED_TASK}\n# Acceptance\n${"criterion ".repeat(1000)}`);
     await finishReviewSpawn(harness, "Long", task);
     await harness.emit("message_start", asyncResult("job-Long"));
-    const context = reviewContexts(harness)[0]!;
-    expect(context.originalRequest?.complete).toBe(false);
-    expect(context.originalRequest!.excerpt.length).toBeLessThanOrEqual(2000);
-    expect(context.acceptance?.complete).toBe(false);
-    expect(context.acceptance!.excerpt.length).toBeLessThanOrEqual(4000);
-    expect(context.originalRequest?.source).toBe("session:session-1/message:301");
-    expect(context.briefSource).toBe("session:session-1/tool-call:spawn-Long/task");
+    const content = String(harness.sent.at(-1)?.message.content);
+    expect(content).not.toContain("private");
+    expect(content).not.toContain("criterion");
+    expect(content.split("\n")).toHaveLength(1);
+    expect(reviewSources(harness)).toBe("job-Long request=session:session-1/message:301 brief=session:session-1/tool-call:spawn-Long/task conversation=/fixture/session-1.jsonl");
   });
 });
 
@@ -3203,13 +3195,12 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
     expect(harness.judgments).toHaveLength(3);
   });
 
-  test("요청 발췌에서 경로·literal이 빠지면 관련 판정을 단정하지 않고 원문 확인으로 낮춘다", async () => {
+  // 2026-10-28 감사: 142건 중 133건이 잘린 발췌의 "조건 미확인" 목록만 실었다. 그 기억은 이미 <memories>로 문맥에 있다.
+  test("요청 발췌에서 경로·literal이 빠지면 관련 판정을 단정하지 않고, 정해진 기억이 없으면 알리지 않는다", async () => {
     const harness = createHarness({ judgeAnswers: { memory0: choice("applies") } });
     const result = await harness.emit("before_agent_start", start("`git push origin main` 으로 src/app.ts 변경을 올려줘.", ["base", block(BRANCH)])) as StartResult;
     expect(harness.judgments[0]!.state).toMatchObject({ requestTruncated: true });
-    const content = String(result?.message?.content);
-    expect(content).not.toMatch(/적용 조건 일치[^\n]*aaa111/);
-    expect(content).toContain("aaa111 → memory://aaa111");
+    expect(result?.message).toBeUndefined();
     expect(JSON.stringify(harness.judgments[0]!.state)).not.toContain("src/app.ts");
   });
 
@@ -3278,6 +3269,8 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
 
 describe("장기 job 관측 요구(wait 경계)", () => {
   const MIN = 60_000;
+  // 첫 관측 기한. 2026-10-28 감사로 5분에서 10분으로 넓혔다(5분 알림 151건 중 137건의 확인이 아직 실행 중이었다).
+  const FIRST = 10 * MIN;
   function manualClock() {
     let now = 0;
     let sequence = 0;
@@ -3330,7 +3323,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
 
   test("기한이 지나면 wait 진입만 막고 같은 job incarnation의 성공한 read proc://<id>만 푼다", async () => {
     const { clock, harness } = setup();
-    clock.advance(5 * MIN - 1);
+    clock.advance(FIRST - 1);
     expect(await blockOf(harness, "w-early")).toBeUndefined();
     clock.advance(1);
     const blocked = await blockOf(harness, "w-due");
@@ -3349,7 +3342,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
     // 표시 selector가 붙은 같은 job 조회는 같은 근거다.
     await readProc(harness, "r-job", "proc://bg_21:-20", "bg_21", "step 1");
     expect(await blockOf(harness, "w-after")).toBeUndefined();
-    clock.advance(5 * MIN);
+    clock.advance(FIRST);
     expect((await blockOf(harness, "w-next"))?.block).toBe(true);
   });
 
@@ -3357,7 +3350,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
     const { clock, harness } = setup();
     expect(await blockOf(harness, "w1")).toBeUndefined();
     await harness.emit("tool_execution_start", started("wait", "w1"));
-    clock.advance(5 * MIN - 1);
+    clock.advance(FIRST - 1);
     expect(asides(harness.sent)).toHaveLength(0);
     clock.advance(1);
     expect(asides(harness.sent)).toHaveLength(1);
@@ -3374,7 +3367,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
   test("대기 중이거나 전달 중인 완료와 정산된 job은 기한 지난 관측보다 먼저다", async () => {
     const delivery = { queued: 1, delivering: false, pendingJobIds: ["bg_7"] };
     const { clock, harness } = setup({ delivery });
-    clock.advance(6 * MIN);
+    clock.advance(FIRST + MIN);
     expect(await blockOf(harness, "w-pending")).toBeUndefined();
     await harness.emit("tool_execution_start", started("wait", "w-pending"));
     clock.advance(1);
@@ -3397,7 +3390,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
     const settled = setup();
     expect(await blockOf(settled.harness, "w-run")).toBeUndefined();
     await settled.harness.emit("tool_execution_start", started("wait", "w-run"));
-    settled.clock.advance(5 * MIN - 10);
+    settled.clock.advance(FIRST - 10);
     settled.asyncJobs.splice(0);
     settled.clock.advance(10);
     expect(asides(settled.harness.sent)).toHaveLength(0);
@@ -3405,12 +3398,12 @@ describe("장기 job 관측 요구(wait 경계)", () => {
   });
 
   test("이전 incarnation에서 시작한 read proc:// 결과는 같은 id의 새 실행 관측 요구를 풀지 않는다", async () => {
-    // read는 incarnation A(startTime 0)에서 시작하고, 결과가 오기 전에 같은 id의 새 실행 B(startTime 4분)로 바뀐다.
+    // read는 incarnation A(startTime 0)에서 시작하고, 결과가 오기 전에 같은 id의 새 실행 B(startTime 첫 기한 1분 전)로 바뀐다.
     const { clock, asyncJobs, harness } = setup();
-    clock.advance(4 * MIN);
+    clock.advance(FIRST - MIN);
     await harness.emit("tool_call", call("read", "r-late", { path: "proc://bg_21" }));
-    asyncJobs.splice(0, 1, running("bg_21", 4 * MIN));
-    clock.advance(4 * MIN);
+    asyncJobs.splice(0, 1, running("bg_21", FIRST - MIN));
+    clock.advance(FIRST - MIN);
     await harness.emit("tool_result", procResult("r-late", "proc://bg_21", "bg_21", "A output"));
     await harness.emit("tool_execution_end", ended("read", "r-late"));
     clock.advance(2 * MIN);
@@ -3421,7 +3414,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
 
   test("session 교체 전에 시작한 read proc:// 결과는 교체 뒤 와도 새 session의 관측 요구를 풀지 않는다", async () => {
     const { clock, harness } = setup();
-    clock.advance(6 * MIN);
+    clock.advance(FIRST + MIN);
     await harness.emit("tool_call", call("read", "r-old", { path: "proc://bg_21" }));
     await harness.emit("session_switch", { type: "session_switch" });
     await harness.emit("tool_result", procResult("r-old", "proc://bg_21", "bg_21", "before switch"));
@@ -3433,7 +3426,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
 
   test("ask가 사용자 답을 기다리는 동안은 막거나 깨우지 않고, 답 뒤 실행 중인 wait에 한 번 알린다", async () => {
     const { clock, harness } = setup();
-    clock.advance(6 * MIN);
+    clock.advance(FIRST + MIN);
     await harness.emit("tool_call", call("ask", "a1"));
     expect(await blockOf(harness, "w1")).toBeUndefined();
     await harness.emit("tool_execution_start", started("ask", "a1"));
@@ -3447,7 +3440,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
 
   test("subagent·task job·재사용된 job id·교체된 session은 다른 실행의 관측 요구로 막거나 깨우지 않는다", async () => {
     const sub = setup({ agentKind: "sub" });
-    sub.clock.advance(6 * MIN);
+    sub.clock.advance(FIRST + MIN);
     expect(await blockOf(sub.harness, "w-sub")).toBeUndefined();
     await sub.harness.emit("tool_execution_start", started("wait", "w-sub"));
     sub.clock.advance(MIN);
@@ -3459,9 +3452,9 @@ describe("장기 job 관측 요구(wait 경계)", () => {
     expect(await blockOf(task.harness, "w-task")).toBeUndefined();
 
     const reused = setup();
-    reused.clock.advance(4 * MIN);
+    reused.clock.advance(FIRST - MIN);
     expect(await blockOf(reused.harness, "w-old")).toBeUndefined();
-    reused.asyncJobs.splice(0, 1, running("bg_21", 4 * MIN));
+    reused.asyncJobs.splice(0, 1, running("bg_21", FIRST - MIN));
     reused.clock.advance(2 * MIN);
     expect(await blockOf(reused.harness, "w-new")).toBeUndefined();
 
@@ -3470,7 +3463,7 @@ describe("장기 job 관측 요구(wait 경계)", () => {
     await replaced.harness.emit("tool_execution_start", started("wait", "w-before"));
     await replaced.harness.emit("session_switch", { type: "session_switch" });
     expect(replaced.clock.pending).toBe(0);
-    replaced.clock.advance(6 * MIN);
+    replaced.clock.advance(FIRST + MIN);
     expect(asides(replaced.harness.sent)).toHaveLength(0);
   });
 });

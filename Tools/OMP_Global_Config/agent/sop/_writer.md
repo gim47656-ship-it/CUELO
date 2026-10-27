@@ -136,7 +136,7 @@
 - Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
   completion report when the review is required for your slice: the brief's `# Acceptance` asks
   for a cross-family review (Main asks for declared high-risk slices: code-nature triggers or
-  project material risk), a `git_finalize` trigger marker hits your changed lines or paths, or
+  project material risk), a `git_finalize` trigger marker hits your changed lines (a path name alone never triggers), or
   Main forwards a finalizer sample hit for your files. Any other code change is reviewed only when
   the brief asks; Main decides that from the `maker_route` review-necessity advice, and a Maker
   never starts a blanket review of every edit. `files` are your changed executable code and config

@@ -496,7 +496,8 @@ async function wslUpdate() {
     return 0;
   }
   const child = spawn("systemd-run", args, { detached: true, stdio: "ignore" });
-  child.unref();
+  // Keep the child referenced until systemd-run returns (it exits once the unit has started): an
+  // unref'd child keeps nothing alive, so this process would exit before it records the hand-off.
   await new Promise((resolve, reject) => {
     child.on("error", reject);
     child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`systemd-run exited ${code}`))));

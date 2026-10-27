@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { matchBlockedCommand, type GuardContext } from "./matcher";
+import { isNotRepositoryDiagnostic, matchBlockedCommand, type GuardContext } from "./matcher";
 
 function expectBlocked(command: string): void {
   const reason = matchBlockedCommand(command);
@@ -975,4 +975,142 @@ describe("옵션 값 걷어내기와 printf 너비·정밀도", () => {
   for (const [name, command] of allowed) {
     test(`allows ${name}`, () => expectAllowed(command));
   }
+});
+
+// 2026-10-28 가드 감사(doc/history/2026/10/28-guard-audit, cg.py.txt)가 원문으로 확인한 command-guard 차단 22건의 회귀 사례.
+// 문맥은 index.ts의 실제 판정을 흉내 낸다: 세션 저장소가 아님을 증명하지 못한 곳은 모두 세션 저장소로 보고(차단), 어느 저장소에도
+// 속하지 않음은 /tmp 아래와 그 세션의 새 저장소 자리에서만, 임시 작업 트리는 /tmp 아래에서만 증명된다.
+describe("2026-10-28 감사 사례: 오탐은 통과, 실제 포착은 차단", () => {
+  const SESSION = "/home/user/src/CUELO-private";
+  const context = (cwd = SESSION): GuardContext => ({
+    cwd,
+    temporaryRoot: "/tmp",
+    isSessionRepository: () => true,
+    isOutsideRepository: (directory) =>
+      directory.startsWith("/tmp/") || directory.startsWith("/home/user/omp-cwd-20261023/"),
+    isTemporaryDirectory: (directory) => directory.startsWith("/tmp/"),
+  });
+
+  const allowed = [
+    [
+      "grep pattern with an escaped quote and deploy words (10-23 13:45:30)",
+      String.raw`grep -rnE "RULES\.md.{0,6}(의|) ?(「|\")?(WSL 작업 결과|WSL 배포|배포 확인|CI 감시)|RULES.md.{0,30}(WSL deploy|Deploy confirmation|CI watching|Reflecting WSL)" --include=*.md . 2>/dev/null | grep -v node_modules`,
+    ],
+    [
+      "checkout --detach -f inside /tmp/xr-sync (10-23 21:39:28)",
+      "cd /tmp/xr-sync && git checkout -q --detach -f 2d27957e9003747e69a0d8e3ba65668b8741ebb6 && git status --porcelain | head -3",
+    ],
+    [
+      "own /tmp worktree removed with --force (10-26 22:02:04)",
+      "git worktree add -q --detach /tmp/cuelo-head HEAD && cd /tmp/cuelo-head && bun test x.test.mjs | grep pass; cd /home/user/src/CUELO-private && git worktree remove --force /tmp/cuelo-head && echo cleaned",
+    ],
+    [
+      "/tmp worktree removed from the repository (10-26 23:06:46)",
+      "cd /home/user/src/CUELO-private && git worktree add -q /tmp/hk-base HEAD 2>&1 | tail -1; cd /home/user/src/CUELO-private && rm /tmp/hk-base/node_modules && git worktree remove --force /tmp/hk-base && git worktree list",
+    ],
+    [
+      "git init and add -A in a mktemp copy (10-26 00:54:37)",
+      'set -e; T=$(mktemp -d /tmp/cuelo-manifest.XXXXXX); git ls-files -z --cached | tar --null -T - -cf - | tar -xf - -C "$T"; (cd "$T" && git init -q && git add -A >/dev/null 2>&1); rm -rf "$T"',
+    ],
+    [
+      "public mirror dry run in a mktemp clone (10-27 07:08:55)",
+      'set -euo pipefail\nW=$PWD; R=$(mktemp -d); public="$R/public"\ngit clone -q --depth 1 https://github.com/x/y.git "$public"\ngit -C "$public" rm -rq --ignore-unmatch .\ngit -C "$public" add -A\n(cd "$public" && python3 "$R/redact.py" && git add -A)\ngit -C "$public" diff --cached --stat | tail -3',
+    ],
+    ["git add -N on the session repository (10-19 19:31:43)", "cd ~/src/CUELO-private && git add -N doc/history/2026/10/19-x && git diff --check"],
+    ["git add -N after an unknown cd (10-28 07:09:34)", "cd /w/m/Tools/CUELO_Setup && grep -n x f.js | head -3; cd ../.. && git add -N Tools/x.ts && git ls-files Tools/x.ts"],
+    ["git add --intent-to-add", "git add --intent-to-add lib/new.ts"],
+  ] as const;
+  for (const [name, command] of allowed) {
+    test(`allows ${name}`, () => expect(matchBlockedCommand(command, context())).toBeUndefined());
+  }
+
+  test("allows git init and commit in a new repository outside any repository (10-23 22:11:53)", () => {
+    const command =
+      'mkdir -p /tmp/plcfix3/hold && git init -q && git add -A && git -c user.name=review -c user.email=review@local commit -qm "sources + empty docs"';
+    expect(matchBlockedCommand(command, context("/home/user/omp-cwd-20261023/plc_review"))).toBeUndefined();
+  });
+
+  const blocked = [
+    ["git.exe stash drop chain (10-19 23:40:16)", "git.exe stash drop stash@{2} && git.exe stash drop stash@{1} && git.exe stash list"],
+    ["quoted stash ref drop (10-24 00:37:15)", "git stash drop 'stash@{1}' && git diff --check"],
+    ["stash drop after restore --staged (10-25 10:14:48)", "git restore --staged . && git stash drop && grep -c x HANDOFF.md"],
+    ["add then stash drop (10-24 07:35:18)", "git add doc/README.md && git stash drop"],
+    ["stash drop from a /tmp worktree still drops the shared stash", "cd /tmp/x && git stash drop"],
+    ["gh release edit publishes release notes (10-18 20:08:45)", "python3 - <<'EOF'\nopen('/tmp/n.md','w').write('x')\nEOF\ngh release edit v0.10.31 -R x/y --notes-file /tmp/n.md"],
+    ["sqlcmd DROP DATABASE (10-23 07:51:09)", `sqlcmd.exe -S 'localhost\\SQLEXPRESS' -d master -E -Q "DROP DATABASE HanseERP_AutoTest_perfgw"`],
+    ["add -A after cd behind ';' may run in the session repository (10-17 21:17:55)", "D=~/omp-cwd-x; mkdir -p $D/.omp && cd $D && git init -q; echo x > README.md; git add -A"],
+    ["worktree remove --force of an unknown path (10-28 00:22:03)", "for n in a b; do git worktree remove --force /home/user/src/dv-scratch/$n; done"],
+    ["worktree remove --force outside the temp root", "git worktree remove --force ../scratch"],
+    ["push from a mktemp clone", 'R=$(mktemp -d) && git clone -q https://github.com/x/y.git "$R/c" && git -C "$R/c" push origin main'],
+    ["commit in a worktree the same command adds", "git worktree add /tmp/w main && cd /tmp/w && git commit -am x"],
+    ["GIT_DIR points the add back at the session repository", "cd /tmp/x && GIT_DIR=/home/user/src/CUELO-private/.git git add -A"],
+    ["GIT_WORK_TREE checkout -f from /tmp", "cd /tmp/x && GIT_WORK_TREE=/home/user/src/CUELO-private git checkout -f ."],
+    ["child shell does not see an unexported mktemp variable", "T=$(mktemp -d); bash -c 'git -C \"$T\" add -A'"],
+    ["mktemp template without --tmpdir is relative to the session cwd", 'T=$(mktemp -d scratch.XXXX) && git -C "$T" add -A'],
+    ["variable reassigned to an unknown value", 'T=$(mktemp -d); T=$PWD; git -C "$T" add -A'],
+    ["escaped git push", "g\\it push origin main"],
+    ["escaped git push inside bash -c", 'bash -c "g\\it push origin main"'],
+    ["escaped git push inside a shell heredoc", "bash <<'EOF'\ng\\it push origin main\nEOF"],
+    // 2026-10-28 교차 검토(xr-20261027230602-20ecef) R1-OAI-2·3·4·7.
+    ["inherited GIT_DIR reaches a child shell's commit", "GIT_DIR=/home/user/src/CUELO-private/.git GIT_WORK_TREE=/home/user/src/CUELO-private bash -c 'git -C /tmp/empty commit --allow-empty -m probe'"],
+    ["commit in a worktree a child shell added", "bash -c 'git worktree add --detach /tmp/nw HEAD' && git -C /tmp/nw commit --allow-empty -m probe"],
+    ["commit through a symlink the same command creates", "ln -s /home/user/src/CUELO-private /tmp/new-link && git -C /tmp/new-link commit --allow-empty -m probe"],
+    ["checkout -f through a symlink the same command creates", "ln -sfn /home/user/src/CUELO-private /tmp/l && git -C /tmp/l checkout -f ."],
+    ["add in a path the same command moved", "mv /tmp/old /tmp/moved && cd /tmp/moved && git add -A"],
+    ["link destination behind a -t cluster", "ln -st /tmp/dir /home/user/src/CUELO-private && git -C /tmp/dir/CUELO-private add -A"],
+    // R2-OAI-1: 피연산자 하나인 ln은 현재 폴더에 원본 이름의 링크를 만든다.
+    ["commit through a single-operand ln link", "cd /tmp && ln -s /home/user/src/CUELO-private && git -C /tmp/CUELO-private commit -m test"],
+    ["intent-to-add turned off again", "git add -N --no-intent-to-add new.ts"],
+    ["intent-to-add turned off before -N", "git add --no-intent-to-add -N new.ts"],
+    // R3-OAI-1: 값을 받는 옵션이 피연산자 하나인 ln을 둘처럼 보이게 하면 안 된다.
+    ["single-operand ln behind --suffix", "cd /tmp && ln -s --suffix .bak /home/user/src/CUELO-private && git -C /tmp/CUELO-private commit -m t"],
+    ["single-operand ln behind a -S cluster", "cd /tmp && ln -sS .bak /home/user/src/CUELO-private && git -C /tmp/CUELO-private commit -m t"],
+    // R4-OAI-1: 다른 옵션의 붙은 값(--backup=none)은 명시한 목적지가 아니다.
+    ["single-operand ln behind an inline option value", "cd /tmp && ln -s --backup=none /home/user/src/CUELO-private && git -C /tmp/CUELO-private commit -m t"],
+    // R2-ADV-1: 같은 명령이 .git 링크·gitdir 파일을 만들면 그 부모 폴더의 git은 세션 저장소를 연다.
+    ["commit beside a linked .git", "mkdir -p /tmp/x && ln -s /home/user/src/CUELO-private/.git /tmp/x/.git && git -C /tmp/x commit -m t"],
+    ["checkout -f beside a gitdir file", 'mkdir -p /tmp/x && echo "gitdir: /home/user/src/CUELO-private/.git" > /tmp/x/.git && git -C /tmp/x checkout -f main'],
+    ["commit beside an escaped .git link", "mkdir -p /tmp/x && ln -s /home/user/src/CUELO-private/.g\\it /tmp/x/.g'i't && git -C /tmp/x commit -m t"],
+  ] as const;
+  for (const [name, command] of blocked) {
+    test(`blocks ${name}`, () => expect(matchBlockedCommand(command, context())).toBeDefined());
+  }
+
+  // R1-OAI-1: 셸이 건너뛰는 대입·cd를 믿으면 세션 저장소 push가 다른 저장소의 push로 보인다.
+  test("a skipped assignment or cd does not move the git target", () => {
+    const elsewhere: GuardContext = { ...context(), isSessionRepository: (directory) => directory.startsWith(SESSION) };
+    for (const command of [
+      `T=${SESSION}; false && T=/tmp/ext; git -C "$T" push`,
+      `T=${SESSION}; true || T=/tmp/ext && git -C "$T" push`,
+      `T=${SESSION}; T=/tmp/ext | cat; git -C "$T" push`,
+      "true || cd /tmp/ext && git push",
+      "cd /tmp/ext | cat && git push",
+    ]) {
+      expect(matchBlockedCommand(command, elsewhere)).toBeDefined();
+    }
+    // 끊기지 않은 && 사슬의 대입은 그대로 따라간다.
+    expect(matchBlockedCommand('mkdir -p /tmp/a && T=/tmp/a/r && git -C "$T" push', elsewhere)).toBeUndefined();
+  });
+
+  test("a link elsewhere in the temporary tree keeps the worktree removal exempt (10-26 22:02:04 원문)", () => {
+    const command =
+      "git worktree add -q --detach /tmp/cuelo-head HEAD && ln -s /home/user/src/CUELO-private/node_modules /tmp/cuelo-head/node_modules && cd /tmp/cuelo-head && bun test x.test.mjs | grep pass; cd /home/user/src/CUELO-private && git worktree remove --force /tmp/cuelo-head";
+    expect(matchBlockedCommand(command, context())).toBeUndefined();
+    // 10-26 23:06:46 원문: ;로 위치를 모르게 된 뒤의 절대경로 링크도 worktree 제거를 막지 않는다.
+    const after =
+      "cd /home/user/src/CUELO-private && git worktree add -q /tmp/hk-base HEAD 2>&1 | tail -1; ln -s /home/user/src/CUELO-private/node_modules /tmp/hk-base/node_modules; cd /tmp/hk-base/Tools && bun test x.test.ts 2>&1 | tail -8; cd /home/user/src/CUELO-private && rm /tmp/hk-base/node_modules && git worktree remove --force /tmp/hk-base && git worktree list";
+    expect(matchBlockedCommand(after, context())).toBeUndefined();
+  });
+
+  // R3-OAI-2: "어느 저장소도 아님"의 증명은 git의 그 진단 전체여야 한다. 경로에 문구가 든 다른 진단은 증명이 아니다.
+  test("only git's whole not-a-repository diagnostic proves the absence of a repository", () => {
+    expect(isNotRepositoryDiagnostic("fatal: not a git repository (or any of the parent directories): .git\n")).toBe(true);
+    expect(
+      isNotRepositoryDiagnostic(
+        "fatal: not a git repository (or any parent up to mount point /tmp)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n",
+      ),
+    ).toBe(true);
+    expect(isNotRepositoryDiagnostic("fatal: detected dubious ownership in repository at '/tmp/not a git repository'\n")).toBe(false);
+    expect(isNotRepositoryDiagnostic("warning: x\nfatal: not a git repository (or any of the parent directories): .git\n")).toBe(false);
+  });
 });

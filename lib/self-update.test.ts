@@ -616,6 +616,32 @@ http.createServer((request, response) => response.end("ok")).listen(Number(args[
     expect(log).toContain("--setenv=WSL_DISTRO_NAME=Ubuntu-24.04");
     expect(log).toContain(script);
   });
+
+  test("wsl mode records the hand-off after systemd-run really returns", async () => {
+    // Not a dry run: the worker spawns `systemd-run` from PATH and must still be alive to record
+    // `handed-off` once it exits. A stub stands in so update.sh never runs here.
+    const stubDir = tempDir("wsl-systemd-run");
+    const argvLog = path.join(stubDir, "argv.txt");
+    fs.writeFileSync(path.join(stubDir, "systemd-run"), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvLog)}\n`, { mode: 0o755 });
+    const stateDir = tempDir("wsl-real-state");
+    const script = touch(tempDir("wsl-real-script"), "cuelo-run/Tools/CUELO_Setup/wsl/update.sh");
+    const job = JSON.parse(await runWorker({
+      schemaVersion: 1,
+      mode: "wsl",
+      appRoot: tempDir("wsl-real-app"),
+      selfUpdateDir: stateDir,
+      currentVersion: "0.10.95",
+      targetVersion: "0.10.96",
+      tagName: "v0.10.96",
+      wsl: { script, distro: "Ubuntu-24.04", port: 30141 },
+    }, { PATH: `${stubDir}:${process.env.PATH ?? ""}` }));
+    expect(job.phase).toBe("handed-off");
+    expect(job.targetRef).toMatch(/^cuelo-update-\d+$/);
+    expect(fs.readFileSync(argvLog, "utf8").trim().split("\n")).toEqual([
+      "--user", `--unit=${job.targetRef}`, "--collect", "--setenv=WSL_DISTRO_NAME=Ubuntu-24.04", "bash", script,
+    ]);
+    expect(fs.readFileSync(path.join(stateDir, "update.log"), "utf8")).toContain(`handed off to ${job.targetRef}`);
+  });
 });
 
 describe("failures after the supervisor stopped", () => {

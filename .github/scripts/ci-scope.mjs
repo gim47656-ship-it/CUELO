@@ -158,7 +158,7 @@ export async function decide({ event, api, git, currentRunId, runLimit = 20, bud
   }
 }
 
-function githubApi(env) {
+export function githubApi(env) {
   const base = env.GITHUB_API_URL || "https://api.github.com";
   return async (path, { timeoutMs }) => {
     const response = await fetch(`${base}/repos/${env.GITHUB_REPOSITORY}${path}`, {

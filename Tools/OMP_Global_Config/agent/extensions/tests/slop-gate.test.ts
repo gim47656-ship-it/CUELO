@@ -899,7 +899,8 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
     const cwd = scratch();
     writeFileSync(join(cwd, "a.md"), KO_PLAIN);
     writeFileSync(join(cwd, "b.md"), "Press Save to store the file in the Downloads folder. Press it again and the app adds a number to the name.\n".repeat(4));
-    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((call, ids) => (call === 0 ? "not json" : JSON.stringify(clean(ids))))), signal);
+    // 첫 묶음은 한 번 다시 물은 답까지 해석할 수 없다(call 0·1). 뒤 묶음은 깨끗하다.
+    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((call, ids) => (call <= 1 ? "not json" : JSON.stringify(clean(ids))))), signal);
     expect(out.reviewers!.find((status) => status.family === "openai")!.status).toBe("unparsable");
     expect(out.files.find((file) => file.file === "a.md")!.status).toBe("error");
     const b = out.files.find((file) => file.file === "b.md")!;

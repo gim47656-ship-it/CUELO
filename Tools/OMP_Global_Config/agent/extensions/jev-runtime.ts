@@ -184,9 +184,10 @@ function extractTaskGuardMeta(task: string): TaskGuardMeta {
   return meta;
 }
 
+/** 원 요청·명시 조향의 대화 위치. 발췌는 싣지 않는다(2026-10-28: pre-review 알림 588K자 중 발췌가 337K자였다). */
 interface ReviewRequest {
-  original: { source: string; excerpt: string; complete: boolean };
-  steering: Array<{ source: string; excerpt: string; complete: boolean }>;
+  original: string;
+  steering: string[];
   omittedSteering: number;
 }
 
@@ -722,6 +723,14 @@ const EXPLORATION_TOOLS: Record<string, true> = {
   web_search: true,
 };
 
+/** 재시도 비교용 인자 열쇠. 의도 필드 `i`만 빼고 객체 키 순서와 무관하게 같은 인자는 같은 열쇠다. */
+function retryInputKey(input: unknown): string {
+  const { i: _intent, ...rest } = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : { value: input };
+  return JSON.stringify(rest, (_key, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : value);
+}
+
 interface OwnerMessageSummary {
   localIdentity: string;
   shouldAdvise: boolean;
@@ -772,8 +781,8 @@ const OWNER_INSTRUCTION_LABELS = {
   unknown: "불명",
 } as const;
 type OwnerInstructionKind = keyof typeof OWNER_INSTRUCTION_LABELS;
-const OWNER_INSTRUCTION_GUIDANCE: Record<OwnerInstructionKind, string> = {
-  "same-scope": "원 계약 안의 지시다. 수용은 원 Acceptance로 검수한다.",
+// 동일 범위는 알리지 않으므로 안내문이 없다.
+const OWNER_INSTRUCTION_GUIDANCE: Record<Exclude<OwnerInstructionKind, "same-scope">, string> = {
   "scope-change": "완료물·목적이나 소유 경로가 원 계약 밖으로 바뀌는 지시다. 기존 owner를 보존한 채 바뀐 사실로 maker_route를 다시 판단하고, 실제 재작업이면 rule://subagent 「검수와 수용」의 REWORK task_id=... 계약을 쓴다.",
   "acceptance-change": "완료물·소유 범위는 같고 수용 조건이 바뀌는 지시다. 바뀐 조건을 owner에게 명시하고 최종 검수 기준을 그 조건으로 맞춘다.",
   unknown: "원 계약 대비 변화를 확정하지 못했다. Main이 실제 지시와 원 계약을 직접 대조한다.",
@@ -965,7 +974,10 @@ function memoryApplicationQuestions(memories: readonly RecalledMemory[]): Record
   }]));
 }
 
-/** 관련 신호가 하나도 없으면 undefined. 잘린 발췌의 관련 판정은 단정하지 않고 원문 확인으로 낮춘다. */
+/**
+ * 적용·예외·충돌로 정해진 기억이 없으면 undefined. 잘린 발췌의 관련 판정은 단정하지 않고 원문 확인으로 낮춘다.
+ * 2026-10-28 감사: 142건 중 133건이 잘린 발췌의 "조건 미확인"·비밀 보류 목록만 실었다. 그 기억은 이미 `<memories>`로 문맥에 있다.
+ */
 function renderMemoryApplication(
   memories: readonly RecalledMemory[],
   requestComplete: boolean,
@@ -984,7 +996,7 @@ function renderMemoryApplication(
     else if (memory.truncated || !requestComplete) groups.unconfirmed.push(memory.id);
     else groups[choice].push(memory.id);
   }
-  if (Object.values(groups).every((ids) => ids.length === 0)) return undefined;
+  if (groups.applies.length + groups.excepted.length + groups.conflicts.length === 0) return undefined;
   const lines = [
     "[JevRuntime:memory-application] 이번 요청 전에 전달된 기억을 JEV가 요청 발췌와 대조했다. 현재 사용자 지시·정본·승인이 우선이며, 이 안내는 실행을 허가하거나 막지 않고 기억을 수정하지 않는다. 저장소 정본·승인 상태와의 대조는 직접 한다.",
   ];
@@ -1044,10 +1056,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }
     }
     /**
-     * 도구별 직전 실패. 같은 도구의 다음 호출이 재시도 경계다.
-     * 해당 도구 성공·경계 소비·사람의 새 입력만 해당 항목을 지운다.
+     * 도구별 직전 실패. 같은 도구·같은 인자(의도 `i` 제외)의 다음 호출만 재시도 경계다.
+     * 해당 도구의 다음 호출·성공·사람의 새 입력이 해당 항목을 지운다.
      */
-    const pendingFailures = new Map<string, { category: string; cancelledWithoutExit: boolean }>();
+    const pendingFailures = new Map<string, { category: string; cancelledWithoutExit: boolean; inputKey: string }>();
     /** TASK_TITLE/TODO_TASKS consumer state: TodoTracker incarnation과 explicit Main `done` receipt. */
     let todoProgressState: TodoProgressState = createTodoProgressState();
     /** 같은 owner+frozen revision의 TODO coverage는 한 번만 판정한다. */
@@ -1056,8 +1068,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const pendingBashCommands = new Map<string, string>();
     const bashJobs = new Map<string, string>();
     const bashServices = new Map<string, string>();
-    /** running job 취소 직전의 근거 공백 advisory 중복 방지. */
-    const advisedRunningCancellations = new Set<string>();
     /**
      * 장기 background bash/eval job의 관측 요구(harness-policy mainLane.waitContract.requiredObservation). 관측 기한이 지난
      * job이 있으면 Main의 `wait` 진입만 막고, 이 session의 wait 실행 중 기한이 오면 aside 하나로 wait를 돌려준다
@@ -1166,11 +1176,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     let reviewMessageSequence = 0;
     const pendingReviewOrigins = new Map<string, ReviewOrigin>();
 
-    function captureReviewRequest(message: { content?: unknown; timestamp?: number; steering?: boolean }, ctx: ExtensionContext): void {
-      const text = textContent(message.content);
-      const excerpt = boundedExcerpt(text, 2000);
-      const source = `session:${ctx.sessionManager.getSessionId()}/message:${message.timestamp ?? `observed-${++reviewMessageSequence}`}`;
-      const item = { source, ...excerpt };
+    function captureReviewRequest(message: { timestamp?: number; steering?: boolean }, ctx: ExtensionContext): void {
+      const item = `session:${ctx.sessionManager.getSessionId()}/message:${message.timestamp ?? `observed-${++reviewMessageSequence}`}`;
       if (message.steering && currentReviewRequest) {
         currentReviewRequest.steering.push(item);
         if (currentReviewRequest.steering.length > 4) {
@@ -1485,7 +1492,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     ): Promise<void> {
       const generation = ownerMessageGeneration;
       const deliver = (kind: OwnerInstructionKind, answers: Record<string, JudgeAnswer> | undefined, reason = "") => {
-        if (generation !== ownerMessageGeneration) return;
+        // 동일 범위는 Main이 할 일이 없다. 2026-10-28 감사: 392건 중 186건이 동일 범위 안내였다.
+        if (generation !== ownerMessageGeneration || kind === "same-scope") return;
         pi.sendMessage(
           {
             customType: ADVISORY_CUSTOM_TYPE,
@@ -1787,11 +1795,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       ctx: ExtensionContext,
       via: "async-result" | "wait" | "read proc://",
       settled: SettledJobMeta[],
-      note: string,
     ): Promise<void> {
       const todoAdvice: string[] = [];
       const identityNotes: string[] = [];
-      const reviewContexts: unknown[] = [];
+      const reviewSources: string[] = [];
       const reports: ReviewStructuralReport[] = settled.map((job) => {
         const ref = jobIndex.get(job.jobId);
         const spawned = ref
@@ -1866,18 +1873,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             && entry.attemptId !== pendingEntry?.attemptId);
         const owner = spawned ?? (identity ? knownMakers.get(identity.assignmentId) : undefined);
         const origin = owner?.reviewOrigin;
-        reviewContexts.push({
-          jobId: job.jobId,
-          attemptId: identity?.attemptId ?? null,
-          originalRequest: origin?.request?.original ?? null,
-          explicitSteering: origin?.request?.steering ?? [],
-          omittedSteering: origin?.request?.omittedSteering ?? 0,
-          briefSource: origin?.briefSource ?? null,
-          conversationSource: origin?.conversationSource ?? null,
-          acceptance: owner?.guard.acceptance ? boundedExcerpt(owner.guard.acceptance, 4000) : null,
-          primaryDeliverable: owner?.guard.primaryDeliverable ?? null,
-          semanticAlignment: "unverified",
-        });
+        const request = origin?.request;
+        const steering = request && request.steering.length > 0
+          ? ` steering=${request.steering.join(",")}${request.omittedSteering > 0 ? `(+${request.omittedSteering} 생략)` : ""}`
+          : "";
+        reviewSources.push(`${job.jobId} request=${request?.original ?? "미관측"}${steering} brief=${origin?.briefSource ?? "미관측"}${origin?.conversationSource ? ` conversation=${origin.conversationSource}` : ""}`);
         // 이 jobId의 다른 실행 row가 보이면 옛 보류는 더는 정산할 수 없다. 그 attempt의 outcome은 미상으로 남는다.
         if (pendingEntry && !deferred && rowStart !== undefined && rowStart !== pendingEntry.runStart) statusPending.delete(job.jobId);
         // 채널과 무관하게 이미 소비한 jobId는 다시 처리하지 않고, 같은 attempt도 한 번만 소비한다.
@@ -1986,14 +1986,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }));
       const structuralSummary = summarizeStructuralReports(reports);
       closeSettledMakers(settled.map((job) => job.jobId));
+      // JEV 판정이 없는 구조 수치만 한 줄로 싣는다(2026-10-28 감사: 192건 전부 판정 생략, 중앙 3,052자). TODO 조치 안내만 이어 붙인다.
       sendAdvisory(
         "pre-review",
-        renderAdvisory(
-          "pre-review",
-          undefined,
-          ["requirementsAndEvidenceAligned", "claimsExceedEvidence", "validationWeakened"],
-          `${note} 구조 관측은 로컬에서 확정했다: via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}, structuralSummary=${JSON.stringify(structuralSummary)}. 구조 count만으로 요구 의미 충족을 판정하지 않는다.${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""} 관측 가능한 JEV 질문이 없어 호출을 생략한다.\nreviewContext=${JSON.stringify(reviewContexts)}\n원 요청·명시 조향·발주 수용 조건을 위 terminal 근거와 Main이 대조한다. 발췌만으로 지시 대상·의미·권한을 추정하지 말고 source의 같은 세션 대화와 task call 원문을 확인한다. 미관측·잘린 문맥은 미상이며 자동 수용·TODO 완료가 아니다.`,
-        ),
+        `[JevRuntime:pre-review] via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}; JEV 판정 없음: 수용·의미 대조는 Main이 원 요청 위치의 원문으로 한다(자동 수용·TODO 완료 아님).${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""} 원 요청 위치: ${reviewSources.join("; ")}. structuralSummary=${JSON.stringify(structuralSummary)}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""}`,
       );
     }
 
@@ -2044,7 +2040,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       bashServices.clear();
       todoProgressState = readPersistedTodoProgress(ctx.sessionManager.getBranch());
       reviewedTodoRevisions.clear();
-      advisedRunningCancellations.clear();
       judgeEnvs.clear();
       resetCancelPoll();
       currentReviewRequest = undefined;
@@ -2192,7 +2187,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         ctx,
         "async-result",
         settled,
-        "maker 보고가 도착했다. Main 검수 전 구조 플래그와 TODO 진행 판단이다.",
       );
     });
 
@@ -2263,22 +2257,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (event.toolName === "write") {
         const input = event.input as Record<string, unknown>;
         const path = typeof input.path === "string" ? input.path.trim() : "";
-        const cancelId = PROC_KILL_URL.exec(path)?.[1];
-        if (cancelId) {
-          const running = (ctx.getAsyncJobSnapshot?.()?.running ?? []).some((job) => job.id === cancelId);
-          if (running && !advisedRunningCancellations.has(cancelId)) {
-            advisedRunningCancellations.add(cancelId);
-            sendAdvisory(
-              "pre-retry",
-              renderAdvisory(
-                "pre-retry",
-                undefined,
-                ["sameCause", "newEvidence", "stallOrHang"],
-                `running job 1건의 취소 직전 구조 event에 terminal exit·실패 결과가 없다. 취소 근거 없음: 실행 결과 회수 또는 다음 한 변수 확인. 산출물·로그·프로세스 생존 중 하나를 새로 확인한 뒤 결정한다. stdout 침묵·낮은 CPU·elapsed만으로 stall을 확정하지 않는다.`,
-              ),
-            );
-          }
-        }
         const target = AGENT_URL.exec(path)?.[1] ?? "";
         if (target && /(?:^|\n)\s*REWORK\s+task_id=\S+/i.test(String(input.content ?? ""))) {
           // 전송 전에 그 actor의 running/recent jobId를 캡처한다. 재개 새 job은 이 집합과의 차집합에서만 고른다.
@@ -2338,12 +2316,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         }
       }
 
-      // pre-retry: 직전 실패 뒤 같은 도구의 다음 호출이 재시도 경계다.
-      // 다른 도구 호출은 문맥을 소비하지 않는다. 범주별 조치가 없는 실패는 알리지 않는다:
-      // 2026-10-10 실측에서 일반 범주 알림 2,004건은 모두 판정 없는 구조 나열(누적 약 123만 자)이었다.
+      // pre-retry: 직전 실패 뒤 같은 도구를 같은 인자(`i` 제외)로 다시 부르는 호출이 재시도 경계다. 인자를 바꾼 호출은 이미
+      // 다음 행동을 바꾼 것이라 알리지 않는다(2026-10-28 감사: 180건 중 동일 인자 재시도는 8건). 다른 도구 호출은 문맥을
+      // 소비하지 않는다. 범주별 조치가 없는 실패는 알리지 않는다: 2026-10-10 실측에서 일반 범주 알림 2,004건은 모두 판정 없는
+      // 구조 나열(누적 약 123만 자)이었다.
       const failure = pendingFailures.get(event.toolName);
       if (!failure) return;
       pendingFailures.delete(event.toolName);
+      if (retryInputKey(event.input) !== failure.inputKey) return;
       const nextAction = failure.category === "windows-shell"
         ? (platform === "win32" ? WINDOWS_SHELL_NEXT_ACTION : POSIX_SHELL_NEXT_ACTION)
         : failure.cancelledWithoutExit
@@ -2656,6 +2636,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           pendingFailures.set(event.toolName, {
             category: classifyError(event.content, event.input, platform),
             cancelledWithoutExit: cancelledWithoutExit(event.details, event.content),
+            inputKey: retryInputKey(event.input),
           });
         }
       } else if (pendingFailures.has(event.toolName)) {
@@ -2690,7 +2671,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         ctx,
         via,
         settled,
-        `${via}가 settled maker 결과를 먼저 보여 줬다. Main 검수 전 구조 플래그와 TODO 진행 판단이다.`,
       );
     });
   };

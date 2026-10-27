@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 
 export interface GuardContext {
   /** bash tool_call이 지정한 cwd. 없으면 세션 cwd. */
@@ -9,6 +9,61 @@ export interface GuardContext {
    * 주어진 디렉터리를 하네스가 Windows `git.exe`로 다루는지(WSL의 `/mnt/<드라이브>` 저장소). 미제공이면 판정하지 않는다.
    */
   usesWindowsGit?: (dir: string) => boolean;
+  /**
+   * 주어진 디렉터리(아직 없을 수 있다)가 git이 찾는 어느 저장소에도 속하지 않음이 증명되는지. 미제공이면 판정하지 않는다.
+   * `isSessionRepository`가 막는 대상 중 이것이 참인 곳의 add·commit·commit-tree·update-ref만 허용한다(push는 제외).
+   */
+  isOutsideRepository?: (dir: string) => boolean;
+  /**
+   * 주어진 디렉터리(아직 없을 수 있다)가 임시 루트(/tmp·os.tmpdir()) 아래의 실제 경로이고 세션 작업 트리가 아닌지.
+   * 미제공이면 임시 면제를 쓰지 않는다. 그 아래 작업 트리를 버리는 checkout·switch·restore·worktree remove만 허용한다.
+   */
+  isTemporaryDirectory?: (dir: string) => boolean;
+  /** 인자 없는 mktemp가 만드는 위치. 미제공이면 /tmp다. */
+  temporaryRoot?: string;
+}
+
+/**
+ * 한 명령 전체(하위 셸 포함)가 앞 세그먼트에서 바꾼 파일 시스템 위치. 실행 전 관측에 기댄 판정을 그 위치에 쓰지 않는다.
+ * 하위 셸(`bash -c`)이 만든 것도 바깥 명령의 뒤 세그먼트에 보여야 하므로 한 객체를 참조로 넘긴다. ""는 어디든이다.
+ */
+interface CommandEffects {
+  /** `git worktree add`가 만든 worktree. 세션 저장소의 것이므로 "저장소 밖" 추론을 쓰지 않는다. */
+  addedWorktrees: string[];
+  /** `ln`·`mv`·`cp`·`rsync`의 피연산자. 심볼릭 링크일 수 있어 실행 전 실제 경로 판정(임시·저장소 밖)을 쓰지 않는다. */
+  relinked: string[];
+  /**
+   * 명령 글(역슬래시·따옴표를 뺀 것)이 git의 저장소 찾기를 바꿀 수 있는 것을 언급한다(`.git` 경로, `gitdir:`, `--git-dir`·
+   * `--work-tree`·`--separate-git-dir`, GIT_* 위치 변수, core.worktree). 같은 명령이 `.git` 링크·파일을 만들면 실행 전
+   * "저장소 밖"·"임시 작업 트리" 관측이 틀리므로 그 두 면제를 쓰지 않는다.
+   */
+  repositoryRedirect: boolean;
+}
+
+const REPOSITORY_REDIRECT =
+  /--git-dir|--work-tree|--separate-git-dir|gitdir|core\.worktree|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM)\b|(?:^|[\s/=:;&|(<>])\.git(?![\w.-])/i;
+
+/**
+ * git이 저장소를 찾지 못했을 때의 stderr 전체(LC_ALL=C)인가. 일반형(git 2.43.0 실측)과 파일 시스템 경계형(setup.c)만 받는다.
+ * 다른 진단(소유권 의심 등)이 경로 속에 이 문구를 담아도 통째로 같아야 하므로 "어느 저장소도 아님"의 증명으로 쓰지 않는다.
+ */
+export function isNotRepositoryDiagnostic(stderr: string): boolean {
+  return /^fatal: not a git repository \((?:or any of the parent directories\): \.git|or any parent up to mount point [^\n]*\)\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.)\n?$/.test(
+    stderr,
+  );
+}
+
+/** 한 세그먼트를 판정할 때의 위치 정보: 앞서 대입한 변수 중 경로로 확정한 값과 같은 명령이 바꾼 위치. */
+interface SegmentContext extends GuardContext {
+  variables?: ReadonlyMap<string, string>;
+  effects?: CommandEffects;
+  /** 명령(또는 그것을 부른 바깥 명령)이 GIT_DIR·GIT_WORK_TREE를 써 위치가 저장소를 정하지 않는다. 위치에 기댄 면제를 쓰지 않는다. */
+  locationOverridden?: boolean;
+}
+
+/** `path`가 `bases` 중 하나이거나 그 아래인가. ""는 어디든이다. */
+function withinAny(path: string, bases: readonly string[]): boolean {
+  return bases.some((base) => base === "" || path === base || path.startsWith(`${base}/`));
 }
 
 type Separator = ";" | "&&" | "||" | "|" | "&" | "\n";
@@ -1134,12 +1189,31 @@ function hasShellExpansion(value: string): boolean {
 }
 
 /**
+ * 셸 확장이 없는 낱말은 그대로, `$NAME`·`${NAME}`(뒤에 `/…`만 올 수 있다)은 같은 명령에서 앞서 경로로 확정한 변수 값으로
+ * 바꾼다. 그 밖의 확장(`~`, 모르는 변수, 글롭, 명령 치환)은 위치를 알 수 없어 undefined다.
+ */
+function expandPath(value: string, variables: ReadonlyMap<string, string> | undefined): string | undefined {
+  if (!hasShellExpansion(value)) return value;
+  const match = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))(\/.*)?$/s.exec(value);
+  const base = match ? variables?.get(match[1] ?? match[2]!) : undefined;
+  const rest = match?.[3] ?? "";
+  if (base === undefined || hasShellExpansion(rest)) return undefined;
+  return base + rest;
+}
+
+/** 절대경로는 그대로, 상대경로는 `directory` 기준으로 푼다. 기준을 모르면 undefined다. */
+function resolveFrom(directory: string | undefined, path: string): string | undefined {
+  return isAbsolute(path) ? resolve(path) : directory === undefined ? undefined : resolve(directory, path);
+}
+
+/**
  * git이 실제로 여는 위치. `cwd`가 null이면(앞선 cd를 확정할 수 없음) 절대경로 `-C`·`--git-dir`만으로 정해질 때만
  * 값을 돌려주고, 그 밖에는 undefined다. undefined `cwd`는 현재 프로세스 위치(".")다.
  */
 function gitTargetDirectory(
   git: GitInvocation,
   cwd: string | null | undefined,
+  variables?: ReadonlyMap<string, string>,
 ): string | undefined {
   let directory = cwd === null ? undefined : resolve(cwd ?? ".");
   let gitDirectoryPath: string | undefined;
@@ -1149,25 +1223,25 @@ function gitTargetDirectory(
     if (value === "--") break;
 
     if (value === "-C" || value === "--git-dir") {
-      const path = git.globalArgs[index + 1];
-      if (path === undefined || hasShellExpansion(path)) return undefined;
-      if (value === "-C") {
-        directory = isAbsolute(path) ? resolve(path) : directory === undefined ? undefined : resolve(directory, path);
-      } else gitDirectoryPath = path;
+      const raw = git.globalArgs[index + 1];
+      const path = raw === undefined ? undefined : expandPath(raw, variables);
+      if (path === undefined) return undefined;
+      if (value === "-C") directory = resolveFrom(directory, path);
+      else gitDirectoryPath = path;
       index += 1;
       continue;
     }
 
     if (value.startsWith("-C") && value.length > 2) {
-      const path = value.slice(2);
-      if (hasShellExpansion(path)) return undefined;
-      directory = isAbsolute(path) ? resolve(path) : directory === undefined ? undefined : resolve(directory, path);
+      const path = expandPath(value.slice(2), variables);
+      if (path === undefined) return undefined;
+      directory = resolveFrom(directory, path);
       continue;
     }
 
     if (value.startsWith("--git-dir=")) {
-      const path = value.slice("--git-dir=".length);
-      if (hasShellExpansion(path)) return undefined;
+      const path = expandPath(value.slice("--git-dir=".length), variables);
+      if (path === undefined) return undefined;
       gitDirectoryPath = path;
       continue;
     }
@@ -1231,39 +1305,80 @@ function isWorktreeWidePathspec(value: string): boolean {
 
 /**
  * 작업 트리·stash의 변경을 되돌릴 수 없게 버리는 git 명령. 파일 하나를 지정한 복원, 브랜치 전환, `restore --staged`처럼
- * index만 바꾸는 명령, 새 stash 저장·적용은 막지 않는다.
+ * index만 바꾸는 명령, 새 stash 저장·적용은 막지 않는다. 버릴 작업 트리가 임시 루트 아래면(discardsTemporaryTree) 막지 않는다.
  */
-function matchWorkDiscard(git: GitInvocation): string | undefined {
+function matchWorkDiscard(git: GitInvocation, context: SegmentContext | undefined): string | undefined {
   const flags = shortFlags(git.args);
   const force = flags.has("f") || hasLongOption(git.args, ["--force"], 3);
   const action = git.args.find((value) => !value.startsWith("-"))?.toLowerCase();
+  let discards: boolean;
 
   switch (git.subcommand) {
     case "checkout":
-      return force || positionalArguments(git.args, {}).some(isWorktreeWidePathspec)
-        ? REASONS.gitDiscard
-        : undefined;
+      discards = force || positionalArguments(git.args, {}).some(isWorktreeWidePathspec);
+      break;
     case "switch":
-      return force || hasLongOption(git.args, ["--discard-changes"], 4) ? REASONS.gitDiscard : undefined;
+      discards = force || hasLongOption(git.args, ["--discard-changes"], 4);
+      break;
     case "restore": {
       const staged = flags.has("S") || hasLongOption(git.args, ["--staged"], 4);
       const worktree = flags.has("W") || hasLongOption(git.args, ["--worktree"], 4);
       const wide = positionalArguments(git.args, {}).some(isWorktreeWidePathspec);
-      return wide && (worktree || !staged) ? REASONS.gitDiscard : undefined;
+      discards = wide && (worktree || !staged);
+      break;
     }
     case "stash":
+      // stash는 저장소 전체가 함께 쓰므로 어느 작업 트리에서 지워도 세션 저장소의 stash가 사라진다. 면제하지 않는다.
       return action === "clear" || action === "drop" ? REASONS.gitDiscard : undefined;
     case "worktree":
-      return action === "remove" && force ? REASONS.gitDiscard : undefined;
+      discards = action === "remove" && force;
+      break;
     default:
       return undefined;
   }
+  return discards && !discardsTemporaryTree(git, context) ? REASONS.gitDiscard : undefined;
+}
+
+/**
+ * 버리는 작업 트리가 임시 루트(/tmp·os.tmpdir()) 아래의 임시 작업공간인가. 2026-10-28 사용자 승인(가드 감사 오탐: /tmp scratch의
+ * checkout -f, 같은 명령이 만든 /tmp worktree의 remove --force). `worktree remove`는 지울 경로를, 나머지는 git이 여는 위치를 본다.
+ * GIT_DIR·GIT_WORK_TREE·`--git-dir`·`--work-tree`를 쓰면 위치가 작업 트리를 정하지 않으므로 면제하지 않는다.
+ */
+function discardsTemporaryTree(git: GitInvocation, context: SegmentContext | undefined): boolean {
+  if (!context?.isTemporaryDirectory || context.locationOverridden) return false;
+  if (git.globalArgs.some((value) => /^--(?:git-dir|work-tree)(?:=|$)/.test(value))) return false;
+  let target: string | undefined;
+  if (git.subcommand === "worktree") {
+    const path = positionalArguments(git.args, {})[1];
+    const expanded = path === undefined ? undefined : expandPath(path, context.variables);
+    const base = gitTargetDirectory(git, context.cwd, context.variables);
+    target = expanded === undefined ? undefined : resolveFrom(base, expanded);
+  } else {
+    target = gitTargetDirectory(git, context.cwd, context.variables);
+  }
+  if (!target || context.effects?.repositoryRedirect || withinAny(target, context.effects?.relinked ?? [])) return false;
+  try {
+    return context.isTemporaryDirectory(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `git add -N`(`--intent-to-add`)는 나중에 더할 경로를 내용 없이 index에 적기만 한다. 내용을 stage하지 않으므로 막지 않는다.
+ * 뒤의 `--no-intent-to-add`는 -N을 끄고 실제 내용을 stage하므로(git 2.x 실측) 어디에 있든 면제하지 않는다.
+ */
+function isIntentToAdd(git: GitInvocation): boolean {
+  if (git.subcommand !== "add") return false;
+  if (hasLongOption(git.args, ["--chmod", "--renormalize"], 5)) return false;
+  if (hasLongOption(git.args, ["--no-intent-to-add"], 6)) return false;
+  return shortFlags(git.args).has("N") || hasLongOption(git.args, ["--intent-to-add"], 8);
 }
 
 function matchGit(
   tokens: ShellToken[],
   invocation: Invocation,
-  context?: GuardContext,
+  context?: SegmentContext,
 ): string | undefined {
   const git = parseGitInvocation(tokens, invocation);
   if (!git) return undefined;
@@ -1274,14 +1389,24 @@ function matchGit(
       (git.subcommand === "add" || git.subcommand === "commit" || git.subcommand === "push") &&
       (hasLongOption(git.args, ["--dry-run"]) ||
         (git.subcommand !== "commit" && shortFlags(git.args).has("n")));
-    if (dryRun) return undefined;
+    if (dryRun || isIntentToAdd(git)) return undefined;
     if (!context?.isSessionRepository) return REASONS.gitFinalize;
-    const targetDirectory = gitTargetDirectory(git, context.cwd);
+    const targetDirectory = gitTargetDirectory(git, context.cwd, context.variables);
     if (!targetDirectory) return REASONS.gitFinalize;
     try {
-      return context.isSessionRepository(targetDirectory)
-        ? REASONS.gitFinalize
-        : undefined;
+      if (!context.isSessionRepository(targetDirectory)) return undefined;
+      // 어느 저장소에도 속하지 않음이 증명된 곳(아직 없는 mktemp 폴더, 같은 명령의 git init 대상)은 세션 저장소가 아니다.
+      // push는 원격에 닿으므로, 같은 명령이 만든 worktree는 세션 저장소의 것이므로, 같은 명령이 링크·이동으로 바꾼 위치는
+      // 실행 전 관측과 다를 수 있으므로, 위치가 저장소를 정하지 않으면 쓰지 않는다.
+      const effects = context.effects;
+      const provenOutside =
+        git.subcommand !== "push" &&
+        !withinAny(targetDirectory, effects?.addedWorktrees ?? []) &&
+        !withinAny(targetDirectory, effects?.relinked ?? []) &&
+        !effects?.repositoryRedirect &&
+        !context.locationOverridden &&
+        context.isOutsideRepository?.(targetDirectory) === true;
+      return provenOutside ? undefined : REASONS.gitFinalize;
     } catch {
       return REASONS.gitFinalize;
     }
@@ -1299,7 +1424,7 @@ function matchGit(
     if (force && !dryRun) return REASONS.gitClean;
   }
 
-  const discardReason = matchWorkDiscard(git);
+  const discardReason = matchWorkDiscard(git, context);
   if (discardReason) return discardReason;
 
   if (git.subcommand === "rm") {
@@ -2124,40 +2249,220 @@ export function invokedCommands(command: string): string[] {
   return invoked;
 }
 
+/** 같은 명령에서 `NAME=…`로 대입한 값 중 경로로 쓸 수 있는 것. 대입 시점의 위치(`cwd`)에 기대는 mktemp 결과만 미리 푼다. */
+function assignedPath(
+  value: string,
+  variables: ReadonlyMap<string, string>,
+  cwd: string | null | undefined,
+  temporaryRoot: string,
+): string | undefined {
+  const substitution = /^\$\(([\s\S]*)\)$/.exec(value) ?? /^`([\s\S]*)`$/.exec(value);
+  if (substitution) return mktempPath(substitution[1]!, variables, cwd, temporaryRoot);
+  return expandPath(value, variables);
+}
+
+/**
+ * `$(mktemp …)`가 만드는 경로(GNU mktemp): 템플릿이 없거나 `-p`·`--tmpdir`·`-t`가 있으면 그 폴더(없으면 임시 루트) 아래,
+ * 템플릿만 있으면 현재 위치 기준이다. mktemp 하나가 아니거나 폴더를 정할 수 없으면 undefined다.
+ */
+function mktempPath(
+  inner: string,
+  variables: ReadonlyMap<string, string>,
+  cwd: string | null | undefined,
+  temporaryRoot: string,
+): string | undefined {
+  const { segments } = tokenizeShell(inner);
+  if (segments.length !== 1) return undefined;
+  const tokens = segments[0]!.tokens;
+  const invocation = resolveInvocation(tokens);
+  if (invocation?.name !== "mktemp") return undefined;
+  const args = tokens.slice(invocation.index + 1).map((token) => token.value);
+  let directory: string | undefined;
+  let inTemporaryDirectory = false;
+  let template: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (value === "-p") {
+      directory = args[(index += 1)];
+      if (directory === undefined) return undefined;
+    } else if (value.startsWith("--tmpdir=")) directory = value.slice("--tmpdir=".length);
+    else if (value === "--tmpdir" || value === "-t") inTemporaryDirectory = true;
+    else if (value === "--suffix") index += 1;
+    else if (value.startsWith("-")) {
+      if (!value.startsWith("--") && value.includes("p")) return undefined;
+    } else template ??= value;
+  }
+  const base = cwd === null ? undefined : resolve(cwd ?? ".");
+  if (template !== undefined && directory === undefined && !inTemporaryDirectory) {
+    const path = expandPath(template, variables);
+    return path === undefined ? undefined : resolveFrom(base, path);
+  }
+  const folder = directory === undefined ? temporaryRoot : expandPath(directory, variables);
+  const resolvedFolder = folder === undefined ? undefined : resolveFrom(base, folder);
+  return resolvedFolder === undefined ? undefined : resolve(resolvedFolder, template ?? "tmp.XXXXXXXXXX");
+}
+
+/** `git worktree add <path>`가 만드는 worktree 경로. worktree add가 아니면 undefined, 경로를 정할 수 없으면 ""(어디든)다. */
+function addedWorktreePath(tokens: ShellToken[], invocation: Invocation, context: SegmentContext | undefined): string | undefined {
+  const git = parseGitInvocation(tokens, invocation);
+  if (git?.subcommand !== "worktree") return undefined;
+  const [action, path] = positionalArguments(git.args, { "-b": true, "-B": true, "--reason": true });
+  if (action?.toLowerCase() !== "add") return undefined;
+  const expanded = path === undefined ? undefined : expandPath(path, context?.variables);
+  const base = context ? gitTargetDirectory(git, context.cwd, context.variables) : undefined;
+  return (expanded === undefined ? undefined : resolveFrom(base, expanded)) ?? "";
+}
+
+const RELINKING_COMMANDS: StringLookup = { ln: true, mv: true, cp: true, rsync: true };
+
+/**
+ * `ln`·`mv`·`cp`·`rsync`가 만들거나 바꿀 수 있는 위치. 목적지만 고르지 않고 옵션이 아닌 인자를 모두 바뀐 위치로 본다(그 자체와
+ * 그 아래). 값을 받는 GNU 옵션 `-S`/`--suffix`(값은 경로가 아니다)와 `-t`/`--target-directory`(값은 목적지)는 줄인 긴 이름까지
+ * 따로 읽는다. rsync는 값 받는 옵션이 많아 옵션 아닌 인자를 모두 넣는다. 피연산자가 하나인 `ln <원본>`은 현재 폴더에 원본의
+ * 이름으로 링크를 만들므로 `cwd/basename`도 넣는다. 이 명령이 아니면 빈 목록, 위치를 정할 수 없으면 ""(어디든)를 넣는다.
+ */
+function relinkedPaths(
+  tokens: ShellToken[],
+  invocation: Invocation,
+  cwd: string | null | undefined,
+  variables: ReadonlyMap<string, string>,
+): string[] {
+  if (!RELINKING_COMMANDS[invocation.name]) return [];
+  const gnu = invocation.name !== "rsync";
+  const longTakes = (option: string, name: string) => option.length >= 4 && name.startsWith(option);
+  const operands: string[] = [];
+  const targets: string[] = [];
+  const inlineValues: string[] = [];
+  const args = tokens.slice(invocation.index + 1).map((token) => token.value);
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (optionsEnded || value === "-" || !value.startsWith("-")) {
+      operands.push(value);
+    } else if (value === "--") {
+      optionsEnded = true;
+    } else if (value.startsWith("--")) {
+      const equals = value.indexOf("=");
+      const option = equals > 0 ? value.slice(0, equals) : value;
+      const inline = equals > 0 ? value.slice(equals + 1) : undefined;
+      if (gnu && longTakes(option, "--target-directory")) {
+        const directory = inline ?? args[(index += 1)];
+        if (directory === undefined) return [""];
+        targets.push(directory);
+      } else if (gnu && longTakes(option, "--suffix")) {
+        if (inline === undefined) index += 1;
+      } else if (inline !== undefined) {
+        // `--backup=none` 같은 다른 옵션의 값: 경로일 수 있어 넣지만 명시한 목적지는 아니다(R4-OAI-1).
+        inlineValues.push(inline);
+      }
+    } else if (gnu) {
+      // 짧은 옵션 묶음: S·t 뒤의 글자는 그 값이고, 끝에 오면 다음 인자가 값이다.
+      const cluster = value.slice(1);
+      const at = cluster.search(/[St]/);
+      if (at >= 0) {
+        const glued = cluster.slice(at + 1);
+        const taken = glued || args[(index += 1)];
+        if (taken === undefined) return [""];
+        if (cluster[at] === "t") targets.push(taken);
+      }
+    }
+  }
+  if (operands.length + targets.length === 0) return [""];
+  const paths: string[] = [];
+  for (const value of [...operands, ...targets, ...inlineValues]) {
+    const expanded = expandPath(value, variables);
+    if (expanded === undefined) return [""];
+    paths.push(resolveFrom(cwd ?? undefined, expanded) ?? "");
+  }
+  if (invocation.name === "ln" && targets.length === 0 && operands.length === 1) {
+    const name = basename(expandPath(operands[0]!, variables) ?? "");
+    paths.push(name ? (resolveFrom(cwd ?? undefined, name) ?? "") : "");
+  }
+  return paths;
+}
+
+/** `export`·`readonly`·`declare`·`local`·`typeset`의 `NAME=…` 인자도 이후 세그먼트가 보는 대입이다. */
+const ASSIGNING_BUILTINS: StringLookup = { export: true, readonly: true, declare: true, local: true, typeset: true };
+
 function matchBlockedCommandInternal(
   command: string,
   depth: number,
-  context: GuardContext | undefined,
+  context: SegmentContext | undefined,
   windowsShell: boolean,
+  effects: CommandEffects,
 ): string | undefined {
   const tokenized = tokenizeShell(command);
   const segments = tokenized.segments;
-  const descend = (script: string, scriptContext: GuardContext | undefined, shell: boolean): string | undefined =>
-    depth < MAX_NESTING ? matchBlockedCommandInternal(script, depth + 1, scriptContext, shell) : undefined;
+  // 하위 셸(`bash -c '…'`)은 export하지 않은 변수를 보지 못하므로 확정한 변수 값을 넘기지 않는다(모르는 위치로 보고 막는다).
+  // 바꾼 위치(effects)와 GIT_DIR·GIT_WORK_TREE 덮어쓰기는 하위 셸에도 그대로 이어진다.
+  const descend = (script: string, scriptContext: SegmentContext | undefined, shell: boolean): string | undefined =>
+    depth < MAX_NESTING
+      ? matchWithUnescape(script, depth + 1, scriptContext && { ...scriptContext, variables: undefined }, shell, effects)
+      : undefined;
   for (const script of tokenized.loose) {
     const reason = descend(script, context, windowsShell);
     if (reason) return reason;
   }
   // `cd <리터럴 경로>` 뒤 `&&`로만 이어진 호출은 그 경로에서 돈다. `;`·`||`·`|`·`&`·줄바꿈으로 이어지면 cd가 실패해도
   // 다음 호출이 돌 수 있어 위치를 모르는 것(null)으로 보고 finalizer 소유 git을 막는다. 괄호 subshell의 cd는 닫히면
-  // 사라진다. GIT_DIR·GIT_WORK_TREE를 쓰는 명령은 위치가 저장소를 정하지 않으므로 cd를 따라가지 않는다.
-  const followCd = !/\bGIT_(?:DIR|WORK_TREE)\b/.test(command);
+  // 사라진다. GIT_DIR·GIT_WORK_TREE를 쓰는 명령(바깥 명령이 쓴 경우 포함)은 위치가 저장소를 정하지 않으므로 cd를 따라가지 않는다.
+  const locationOverridden = Boolean(context?.locationOverridden) || /\bGIT_(?:DIR|WORK_TREE)\b/.test(command);
+  const followCd = !locationOverridden;
   const cwds: (string | null | undefined)[] = [context?.cwd];
   const moved: boolean[] = [false];
+  // 경로로 확정한 변수(`T=$(mktemp -d)`, `P="$T/x"`, `D=/tmp/x`). subshell 안 대입은 닫히면 사라진다(cwds와 같은 규칙).
+  const scopes: Map<string, string>[] = [new Map(context?.variables)];
+  // `a && T=…`처럼 앞 명령이 성공해야 도는 대입. 같은 `&&` 사슬 안에서는 대입이 건너뛰어지면 뒤도 건너뛰지만, 사슬이
+  // `;`·`||`·줄바꿈으로 끊기면 대입 여부를 모르므로 그 변수를 모르는 값으로 돌린다(cwd의 moved와 같은 규칙).
+  const pending: Set<string>[] = [new Set()];
+  const temporaryRoot = context?.temporaryRoot ?? "/tmp";
 
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
     for (let level = cwds.length; level <= segment.depth; level += 1) {
       cwds[level] = cwds[level - 1];
       moved[level] = moved[level - 1];
+      scopes[level] = new Map(scopes[level - 1]);
+      pending[level] = new Set(pending[level - 1]);
     }
-    cwds.length = moved.length = segment.depth + 1;
-    if (index > 0 && segment.separatorBefore !== "&&" && moved[segment.depth]) cwds[segment.depth] = null;
+    cwds.length = moved.length = scopes.length = pending.length = segment.depth + 1;
+    const scope = scopes[segment.depth]!;
+    const conditional = pending[segment.depth]!;
+    const separator = index > 0 ? segment.separatorBefore : undefined;
+    if (separator !== undefined && separator !== "&&") {
+      if (moved[segment.depth]) cwds[segment.depth] = null;
+      for (const name of conditional) scope.delete(name);
+      conditional.clear();
+    }
+    // `a || b`의 b는 a가 성공하면 건너뛰고, 파이프·백그라운드의 원소는 subshell에서 돌아 뒤 세그먼트의 위치·변수를 바꾸지 못한다.
+    const following = segments[index + 1]?.separatorBefore;
+    const unreliable =
+      separator === "||" || separator === "|" || separator === "&" || following === "|" || following === "&";
 
     const invocation = resolveInvocation(segment.tokens);
     const segmentCwd = cwds[segment.depth];
-    const gitContext = segmentCwd === null ? undefined : context && { ...context, cwd: segmentCwd };
-    // 하위 스크립트는 이 세그먼트가 도는 위치에서 실행된다. 이 세그먼트의 `cd`는 그 뒤에 적용한다.
+    const gitContext: SegmentContext | undefined =
+      segmentCwd === null
+        ? undefined
+        : context && { ...context, cwd: segmentCwd, variables: scope, effects, locationOverridden };
+    const assignments = !invocation
+      ? segment.tokens.map((token) => token.value)
+      : ASSIGNING_BUILTINS[invocation.name]
+        ? segment.tokens.slice(invocation.index + 1).map((token) => token.value)
+        : [];
+    for (const value of assignments) {
+      if (!isEnvironmentAssignment(value)) continue;
+      const name = value.slice(0, value.indexOf("="));
+      const path = unreliable ? undefined : assignedPath(value.slice(name.length + 1), scope, segmentCwd, temporaryRoot);
+      if (path === undefined) {
+        scope.delete(name);
+        conditional.delete(name);
+      } else {
+        scope.set(name, path);
+        if (separator === "&&") conditional.add(name);
+        else conditional.delete(name);
+      }
+    }
     const nestedWindowsShell =
       windowsShell ||
       Boolean(
@@ -2177,20 +2482,29 @@ function matchBlockedCommandInternal(
         .map((token) => token.value)
         .filter((value) => value !== "-L" && value !== "-P" && value !== "--");
       const from = cwds[segment.depth];
-      const target = targets[0];
+      const target = targets[0] === undefined ? undefined : expandPath(targets[0], scope);
       const literal =
-        followCd && invocation.name === "cd" && targets.length === 1 && target !== "-" && !hasShellExpansion(target);
-      cwds[segment.depth] = !literal
-        ? null
-        : from === null
-          ? isAbsolute(target) ? resolve(target) : null
-          : resolve(from ?? ".", target);
+        followCd &&
+        !unreliable &&
+        invocation.name === "cd" &&
+        targets.length === 1 &&
+        targets[0] !== "-" &&
+        target !== undefined;
+      cwds[segment.depth] =
+        !literal || target === undefined
+          ? null
+          : from === null
+            ? isAbsolute(target) ? resolve(target) : null
+            : resolve(from ?? ".", target);
       moved[segment.depth] = true;
       continue;
     }
 
     const gitReason = matchGit(segment.tokens, invocation, gitContext);
     if (gitReason) return gitReason;
+    const worktree = addedWorktreePath(segment.tokens, invocation, gitContext);
+    if (worktree !== undefined) effects.addedWorktrees.push(worktree);
+    effects.relinked.push(...relinkedPaths(segment.tokens, invocation, segmentCwd, scope));
     const linuxGitReason = matchLinuxGitOnWindowsDrive(segment.tokens, invocation, context, segmentCwd, windowsShell);
     if (linuxGitReason) return linuxGitReason;
 
@@ -2222,18 +2536,52 @@ function matchBlockedCommandInternal(
   return undefined;
 }
 
+/**
+ * 역슬래시를 POSIX처럼 벗긴다. 따옴표 밖의 `\x`만 벗기고(`g\it` → `git`), 작은따옴표·큰따옴표 안, 주석, heredoc 본문은 그대로
+ * 둔다: 큰따옴표 안 `\"`를 벗기면 따옴표가 일찍 닫혀 grep 패턴의 `|`가 파이프로 읽힌다(2026-10-23 grep 오탐). 큰따옴표 안의 글과
+ * heredoc 본문이 하위 셸 스크립트로 쓰이면 그 스크립트를 판정할 때 다시 벗긴다(matchWithUnescape). `\$`·`\``는 치환이 일어나지
+ * 않게 막은 것이고, heredoc 구분자 낱말(`<<\EOF`, `<<E\OF`, `<<'E'OF`)의 `\`·따옴표는 본문을 확장 없이 두라는 표시라 벗기지 않는다.
+ */
 function unescapePosix(command: string): string {
   let result = "";
+  let quote: "'" | '"' | undefined;
+  let pending: Heredoc[] = [];
   for (let index = 0; index < command.length; index += 1) {
-    const character = command[index];
+    const character = command[index]!;
+    if (quote) {
+      result += character;
+      if (character === quote) quote = undefined;
+      else if (quote === '"' && character === "\\" && index + 1 < command.length) result += command[(index += 1)];
+      continue;
+    }
+    if (character === "\n" && pending.length > 0) {
+      const end = readHeredocBodies(command, index + 1, pending);
+      result += command.slice(index, end);
+      index = end - 1;
+      pending = [];
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === "#" && (index === 0 || /[\s;&|()]/.test(command[index - 1]!))) {
+      const newline = command.indexOf("\n", index);
+      const end = newline < 0 ? command.length : newline;
+      result += command.slice(index, end);
+      index = end - 1;
+      continue;
+    }
     if (character === "<" && command[index + 1] === "<" && command[index + 2] !== "<" && command[index - 1] !== "<") {
-      const wordStart = heredocWordStart(command, index + 2).index;
-      const wordEnd = scanHeredocWord(command, wordStart).end;
+      const read = readHeredocDelimiter(command, index + 2);
+      const wordEnd = read?.end ?? heredocWordStart(command, index + 2).index;
+      if (read) pending.push(read.heredoc);
       result += command.slice(index, wordEnd);
       index = wordEnd - 1;
       continue;
     }
-    if (character === "\\" && index + 1 < command.length && !/[\r\n$`]/.test(command[index + 1])) {
+    if (character === "\\" && index + 1 < command.length && !/[\r\n$`]/.test(command[index + 1]!)) {
       result += command[index + 1];
       index += 1;
       continue;
@@ -2243,16 +2591,31 @@ function unescapePosix(command: string): string {
   return result;
 }
 
+/** 그대로 한 번, 역슬래시를 벗겨 한 번 판정한다. 하위 스크립트도 같은 두 판정을 거친다. */
+function matchWithUnescape(
+  command: string,
+  depth: number,
+  context: SegmentContext | undefined,
+  windowsShell: boolean,
+  effects: CommandEffects,
+): string | undefined {
+  const directReason = matchBlockedCommandInternal(command, depth, context, windowsShell, effects);
+  if (directReason) return directReason;
+  const posixUnescaped = unescapePosix(command);
+  if (posixUnescaped === command) return undefined;
+  // 첫 판정이 모은 바뀐 위치가 남아 있어 둘째 판정은 그만큼 보수적이다.
+  return matchBlockedCommandInternal(posixUnescaped, depth, context, windowsShell, effects);
+}
+
 export function matchBlockedCommand(
   command: string,
   context?: GuardContext,
 ): string | undefined {
-  const directReason = matchBlockedCommandInternal(command, 0, context, false);
-  if (directReason) return directReason;
-
-  // 역슬래시를 POSIX처럼 벗긴 2차 판정. `\$`·`\``는 치환이 일어나지 않게 막은 것이고, heredoc 구분자 낱말(`<<\EOF`,
-  // `<<E\OF`, `<<'E'OF`)의 `\`·따옴표는 본문을 확장 없이 그대로 두라는 표시라 둘 다 벗기지 않는다.
-  const posixUnescaped = unescapePosix(command);
-  if (posixUnescaped === command) return undefined;
-  return matchBlockedCommandInternal(posixUnescaped, 0, context, false);
+  // 역슬래시·따옴표로 낱말을 쪼갠 것(`.g\it`, `.g'i't`)도 셸이 붙이므로 뺀 글로도 본다.
+  const plain = command.replace(/[\\'"]/g, "");
+  return matchWithUnescape(command, 0, context, false, {
+    addedWorktrees: [],
+    relinked: [],
+    repositoryRedirect: REPOSITORY_REDIRECT.test(command) || REPOSITORY_REDIRECT.test(plain),
+  });
 }

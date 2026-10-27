@@ -14,7 +14,9 @@ import {
   hasUnreportedChildren,
   isPathOwned,
   matchBlockedEvalModelBridge,
+  noteOwnershipWrites,
   noteUserRedirect,
+  OWNERSHIP_MAIN_WRITER,
   parseOwnedPaths,
   readCancelledChildIds,
   readSettledTaskIds,
@@ -668,10 +670,18 @@ describe("child 완료 보고", () => {
       [{ name: "Alpha", index: 0, ownedPaths: ["src/"] }],
       snap([["src/a.ts", "h1"]]),
     );
-    expect(reportOwnedChildren(state, ["Alpha"], snap([["src/a.ts", "h2"]]))).toEqual([
-      "[OwnershipGuard] child=Alpha owned=src/ outside=none concurrent=none",
+    expect(reportOwnedChildren(state, ["Alpha"], snap([["src/a.ts", "h2"], ["x.txt", "h1"]]))).toEqual([
+      "[OwnershipGuard] child=Alpha owned=src/ outside=x.txt concurrent=none",
     ]);
-    expect(reportOwnedChildren(state, ["Alpha"], snap([["src/a.ts", "h3"]]))).toEqual([]);
+    expect(reportOwnedChildren(state, ["Alpha"], snap([["src/a.ts", "h3"], ["y.txt", "h1"]]))).toEqual([]);
+  });
+
+  test("소유 밖 변경이 없거나 관측하지 못하면 줄을 내지 않고 보고를 마친다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "Clean", index: 0, ownedPaths: ["src/"] }], snap([]));
+    registerSpawnedMakers(state, "call-2", [{ name: "Blind", index: 0, ownedPaths: ["src/"] }], undefined);
+    expect(reportOwnedChildren(state, ["Clean", "Blind"], snap([["src/a.ts", "h1"]]))).toEqual([]);
+    expect(hasUnreportedChildren(state)).toBe(false);
   });
 
   test("이름 없는 spawn은 progress id 별칭으로 되찾아 child=unnamed로 보고한다", () => {
@@ -679,20 +689,20 @@ describe("child 완료 보고", () => {
     const makers = [{ index: 0, ownedPaths: ["src/"] }];
     registerSpawnedMakers(state, "call-1", makers, snap([["src/a.ts", "h1"]]));
     bindSpawnAliases(state, "call-1", makers, [{ index: 0, id: "BoldFalcon" }]);
-    expect(reportOwnedChildren(state, ["BoldFalcon"], snap([["src/a.ts", "h1"]]))).toEqual([
-      "[OwnershipGuard] child=unnamed owned=src/ outside=none concurrent=none",
+    expect(reportOwnedChildren(state, ["BoldFalcon"], snap([["src/a.ts", "h1"], ["x.txt", "h1"]]))).toEqual([
+      "[OwnershipGuard] child=unnamed owned=src/ outside=x.txt concurrent=none",
     ]);
   });
 
   test("같은 이름을 다시 spawn해도 보고된 항목이 가리지 않는다", () => {
     const state = createOwnershipState();
     registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["src/"] }], snap([]));
-    expect(reportOwnedChildren(state, ["Alpha"], snap([]))).toEqual([
-      "[OwnershipGuard] child=Alpha owned=src/ outside=none concurrent=none",
+    expect(reportOwnedChildren(state, ["Alpha"], snap([["x.txt", "h1"]]))).toEqual([
+      "[OwnershipGuard] child=Alpha owned=src/ outside=x.txt concurrent=none",
     ]);
     registerSpawnedMakers(state, "call-2", [{ name: "Alpha", index: 0, ownedPaths: ["src/"] }], snap([]));
-    expect(reportOwnedChildren(state, ["Alpha"], snap([]))).toEqual([
-      "[OwnershipGuard] child=Alpha owned=src/ outside=none concurrent=none",
+    expect(reportOwnedChildren(state, ["Alpha"], snap([["y.txt", "h1"]]))).toEqual([
+      "[OwnershipGuard] child=Alpha owned=src/ outside=y.txt concurrent=none",
     ]);
   });
 
@@ -707,21 +717,73 @@ describe("child 완료 보고", () => {
       { index: 0, id: "BoldFalcon" },
       { index: 1, id: "CalmOtter" },
     ]);
-    expect(reportOwnedChildren(state, ["BoldFalcon"], snap([]))).toEqual([
-      "[OwnershipGuard] child=unnamed owned=a/ outside=none concurrent=unnamed",
+    noteOwnershipWrites(state, "BoldFalcon", ["x.txt"]);
+    noteOwnershipWrites(state, "CalmOtter", ["y.txt"]);
+    const tree = snap([["x.txt", "h1"], ["y.txt", "h1"]]);
+    expect(reportOwnedChildren(state, ["BoldFalcon"], tree)).toEqual([
+      "[OwnershipGuard] child=unnamed owned=a/ outside=x.txt concurrent=unnamed",
     ]);
-    expect(reportOwnedChildren(state, ["CalmOtter"], snap([]))).toEqual([
-      "[OwnershipGuard] child=unnamed owned=b/ outside=none concurrent=unnamed",
+    expect(reportOwnedChildren(state, ["CalmOtter"], tree)).toEqual([
+      "[OwnershipGuard] child=unnamed owned=b/ outside=y.txt concurrent=unnamed",
     ]);
   });
 
-  test("살아 있는 동안 겹친 sibling을 attribution 후보로 남긴다", () => {
+  test("살아 있는 동안 겹친 sibling이 있고 누가 썼는지 기록이 없으면 unattributed로 남긴다", () => {
     const state = createOwnershipState();
     registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }], snap([]));
     registerSpawnedMakers(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }], snap([]));
     expect(reportOwnedChildren(state, ["Beta"], snap([["a/x.txt", "h1"]]))[0]).toBe(
-      "[OwnershipGuard] child=Beta owned=b/ outside=a/x.txt concurrent=Alpha",
+      "[OwnershipGuard] child=Beta owned=b/ outside=none unattributed=a/x.txt concurrent=Alpha",
     );
+  });
+
+  // 2026-10-27T22:13Z: CiReductionAudit 완료 보고의 outside=에 형제 Maker GuardAudit·Pr16573WinVerify가 쓴 evidence 파일이 올라왔다.
+  test("sibling·Main이 쓴 경로는 완료한 child의 소유 밖 변경으로 보고하지 않는다", () => {
+    const state = createOwnershipState();
+    const spawn = (call: string, name: string, owned: string) =>
+      registerSpawnedMakers(state, call, [{ name, index: 0, ownedPaths: [owned] }], snap([]));
+    spawn("call-1", "CiReductionAudit", "doc/ci/");
+    spawn("call-2", "GuardAudit", "doc/guard/");
+    spawn("call-3", "Pr16573WinVerify", "doc/pr/");
+    noteOwnershipWrites(state, "GuardAudit", ["doc/history/evidence/own.py.txt"]);
+    noteOwnershipWrites(state, "Pr16573WinVerify-2", ["doc/history/evidence/run.ps1"]);
+    noteOwnershipWrites(state, OWNERSHIP_MAIN_WRITER, ["HANDOFF.md"]);
+    noteOwnershipWrites(state, "CiReductionAudit", ["HANDOFF.md", "Doc/Shared.md"]);
+    const rows: OwnershipOutsideRow[] = [];
+    const tree = snap([
+      ["doc/history/evidence/own.py.txt", "h1"],
+      ["doc/history/evidence/run.ps1", "h1"],
+      ["HANDOFF.md", "h2"],
+      ["doc/shared.md", "h3"],
+    ]);
+    expect(reportOwnedChildren(state, ["CiReductionAudit"], tree, (row) => rows.push(row))).toEqual([
+      "[OwnershipGuard] child=CiReductionAudit owned=doc/ci/ outside=doc/shared.md,handoff.md concurrent=GuardAudit,Pr16573WinVerify",
+    ]);
+    expect(rows[0]?.elsewhere).toEqual(["doc/history/evidence/own.py.txt", "doc/history/evidence/run.ps1"]);
+  });
+
+  test("자식이 뜨기 전의 쓰기는 귀속 근거가 아니다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }], snap([]));
+    noteOwnershipWrites(state, "Alpha", ["early.txt"]);
+    registerSpawnedMakers(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }], snap([]));
+    noteOwnershipWrites(state, "Alpha", ["late.txt"]);
+    expect(reportOwnedChildren(state, ["Beta"], snap([["early.txt", "h1"], ["late.txt", "h1"]]))[0]).toBe(
+      "[OwnershipGuard] child=Beta owned=b/ outside=none unattributed=early.txt concurrent=Alpha",
+    );
+  });
+
+  // R1-OAI-6: `Build`와 `Build-2`를 함께 띄우면 `Build-2`의 쓰기는 이름 충돌 변형이 아니라 그 sibling의 것이다.
+  test("다른 child의 정확한 이름은 이름 충돌 변형 추정보다 앞선다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "Build", index: 0, ownedPaths: ["a/"] }], snap([]));
+    registerSpawnedMakers(state, "call-2", [{ name: "Build-2", index: 0, ownedPaths: ["b/"] }], snap([]));
+    noteOwnershipWrites(state, "Build-2", ["b/own.ts"]);
+    noteOwnershipWrites(state, "Build-3", ["c/stray.ts"]);
+    const tree = snap([["b/own.ts", "h1"], ["c/stray.ts", "h1"]]);
+    expect(reportOwnedChildren(state, ["Build"], tree)).toEqual([
+      "[OwnershipGuard] child=Build owned=a/ outside=c/stray.ts concurrent=Build-2",
+    ]);
   });
 
   test("시작 전에 이미 끝난 sibling은 attribution 후보가 아니다", () => {
@@ -729,20 +791,7 @@ describe("child 완료 보고", () => {
     registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }], snap([]));
     reportOwnedChildren(state, ["Alpha"], snap([]));
     registerSpawnedMakers(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }], snap([]));
-    expect(reportOwnedChildren(state, ["Beta"], snap([]))[0]).toContain("concurrent=none");
-  });
-
-  test("스냅샷을 못 뜬 child는 outside=unobserved로 남긴다", () => {
-    const state = createOwnershipState();
-    registerSpawnedMakers(
-      state,
-      "call-1",
-      [{ name: "Alpha", index: 0, ownedPaths: ["src/"] }],
-      undefined,
-    );
-    expect(reportOwnedChildren(state, ["Alpha"], snap([]))).toEqual([
-      "[OwnershipGuard] child=Alpha owned=src/ outside=unobserved concurrent=none",
-    ]);
+    expect(reportOwnedChildren(state, ["Beta"], snap([["x.txt", "h1"]]))[0]).toContain("concurrent=none");
   });
 
   test("등록되지 않은 id는 보고하지 않는다", () => {
@@ -768,11 +817,28 @@ describe("범위 밖 완료 보고 기록", () => {
     registerSpawnedMakers(state, "call-2", [{ name: "Stray", index: 0, ownedPaths: ["src/"] }], snap([]));
     registerSpawnedMakers(state, "call-3", [{ name: "Blind", index: 0, ownedPaths: ["SRC/"] }], undefined);
     bindSpawnAliases(state, "call-2", [{ name: "Stray", index: 0, ownedPaths: ["src/"] }], [{ index: 0, id: "Stray-2" }]);
+    noteOwnershipWrites(state, "Stray-2", ["docs/b.md"]);
     const rows: OwnershipOutsideRow[] = [];
     reportOwnedChildren(state, ["Clean", "Stray-2", "Blind"], snap([["src/a.ts", "h1"], ["docs/b.md", "h2"]]), (row) => rows.push(row));
     expect(rows).toEqual([
-      { child: "Stray", childIds: ["Stray", "Stray-2"], owned: ["src/"], outside: ["docs/b.md"], concurrent: ["Blind", "Clean"] },
-      { child: "Blind", childIds: ["Blind"], owned: ["src/"], outside: "unobserved", concurrent: ["Clean", "Stray"] },
+      {
+        child: "Stray",
+        childIds: ["Stray", "Stray-2"],
+        owned: ["src/"],
+        outside: ["docs/b.md"],
+        unattributed: [],
+        elsewhere: [],
+        concurrent: ["Blind", "Clean"],
+      },
+      {
+        child: "Blind",
+        childIds: ["Blind"],
+        owned: ["src/"],
+        outside: "unobserved",
+        unattributed: [],
+        elsewhere: [],
+        concurrent: ["Clean", "Stray"],
+      },
     ]);
   });
 });

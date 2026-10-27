@@ -254,18 +254,22 @@ const factory: CustomToolFactory = (pi) => ({
     }
     // AI 슬롭 게이트: 보이는 산출물(문서·html·Office·pdf·보고 csv·UI 문구, .slop-gate.json이 더한 것)은 현재 내용의 slop_check 통과가 있어야 한다.
     // 게이트가 맞춘 바이트의 blob을 gateBlobs에 합쳐, 게이트 뒤에 파일이 바뀌면 finalizer가 잠금 안에서 거절한다.
+    let rawDataNote = "";
     try {
       const slop = await runSlopGate({
         cwd: pi.cwd, files: requested, waiver: params.slopGateWaiver, ledgerPath: slopLedgerPath(),
         exec: spawnExec(signal), gitFor: async (root) => (await selectGitExecutor(root)).command,
       });
       gateBlobs = mergeGateBlobs(gateBlobs, slop);
+      // 원자료 csv로 보고 통과를 요구하지 않은 파일도 결과에 남긴다(조용히 빠지지 않게).
+      if (slop.rawData?.length) rawDataNote = `slop-gate가 원자료 csv로 보고 심사를 요구하지 않은 파일: ${slop.rawData.map((file) => `${file.path} (${file.reason})`).join("; ")}.`;
     } catch (error) {
       throw new Error(`git_finalize failed at slop-gate: ${error instanceof Error ? error.message : String(error)}`);
     }
     const memory = await exportMemories(pi.cwd, requested, exec);
     const files = memory.file ? [...requested, memory.file] : requested;
-    const handoffNote = await missingHandoffNote(pi.cwd, requested);
+    // 성공 문구 끝에 붙는 안내(HANDOFF 누락, 원자료 csv). 성공 문구 조립부는 그대로 두고 이 값에 합친다.
+    const handoffNote = [await missingHandoffNote(pi.cwd, requested), rawDataNote].filter(Boolean).join(" ");
     if (gateBlobs && memory.file) {
       // 기억 transport는 게이트 뒤에 방금 만든 생성물(검토 대상 아님)이라 finalizer가 같은 기준으로 비교하도록 지금 blob을 넣는다.
       const transport = await resolveRepoTargets(pi.cwd, [memory.file], exec);

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendFileSync, existsSync, realpathSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
@@ -18,7 +18,7 @@ import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 
-import { matchBlockedCommand } from "./matcher";
+import { isNotRepositoryDiagnostic, matchBlockedCommand } from "./matcher";
 import { interopHint, windowsOutputCommand } from "./interop-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
@@ -34,11 +34,14 @@ import {
   hasUnreportedChildren,
   matchBlockedEvalModelBridge,
   noteUserRedirect,
+  noteUserRequestText,
   readCancelledChildIds,
   readSettledTaskIds,
   readSpawnProgress,
   registerSpawnedMakers,
   releaseCancelledSpawns,
+  noteOwnershipWrites,
+  OWNERSHIP_MAIN_WRITER,
   reportOwnedChildren,
   reserveTaskCall,
   reservedMakers,
@@ -263,10 +266,14 @@ function cachedCommonDirectory(directory: string): Promise<string | undefined> {
   return pending;
 }
 
+/**
+ * 대상 디렉터리가 세션 저장소인지 가르는 판정과, 그 판정이 증명하지 못해 차단으로 기운 대상(세션이나 대상의 common-dir을
+ * 얻지 못함). 후자만 outsideRepositoryMatcher가 "어느 저장소에도 속하지 않음"을 따로 확인한다.
+ */
 async function repositoryMatcher(
   sessionCwd: string,
   targetDirectories: readonly string[],
-): Promise<(directory: string) => boolean> {
+): Promise<{ isSessionRepository: (directory: string) => boolean; unproven: string[] }> {
   const targets = new Map<string, string>();
   for (const directory of targetDirectories) {
     const normalized = normalizeRepositoryPath(directory);
@@ -282,7 +289,10 @@ async function repositoryMatcher(
   const resolvedTargets = new Map(
     targetEntries.map(([normalized], index) => [normalized, targetCommonDirectories[index]]),
   );
-  return (directory: string): boolean => {
+  const unproven = targetEntries.flatMap(([, directory], index) =>
+    !sessionCommonDirectory || !targetCommonDirectories[index] ? [directory] : [],
+  );
+  const isSessionRepository = (directory: string): boolean => {
     if (!directory) return true;
     const normalized = normalizeRepositoryPath(directory);
     // 1차 target 수집 뒤 입력이 달라져 미리 확인하지 않은 directory가 나타나도 허용하지 않는다.
@@ -295,6 +305,7 @@ async function repositoryMatcher(
       commonDirectory === sessionCommonDirectory
     );
   };
+  return { isSessionRepository, unproven };
 }
 
 /**
@@ -309,6 +320,107 @@ async function windowsGitMatcher(targetDirectories: readonly string[]): Promise<
     }),
   );
   return (directory) => verdicts.get(directory) === true;
+}
+
+/** 아직 없을 수 있는 경로의 가장 가까운 기존 조상 폴더(자기 자신 포함). 없으면 undefined. */
+function nearestExistingDirectory(path: string): string | undefined {
+  let current = resolve(path);
+  for (;;) {
+    try {
+      if (statSync(current).isDirectory()) return current;
+    } catch {
+      // 없는 경로는 조상으로 올라간다.
+    }
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/**
+ * 대상 디렉터리(아직 없을 수 있다)가 git이 찾는 어느 저장소에도 속하지 않는지. 가장 가까운 기존 조상에서 git 자신의 저장소
+ * 탐색을 돌려 "not a git repository"로 끝날 때만 참이다. git 실행 실패·시간 초과·다른 오류는 증명이 아니므로 거짓(차단)이다.
+ * 같은 탐색을 실제 명령의 git도 하므로, 참이면 그 위치의 git add·commit은 세션 저장소에 닿지 못한다.
+ */
+async function outsideRepositoryMatcher(targetDirectories: readonly string[]): Promise<(directory: string) => boolean> {
+  const verdicts = new Map<string, boolean>();
+  await Promise.all(
+    [...new Set(targetDirectories)].map(async (directory) => {
+      const ancestor = nearestExistingDirectory(directory);
+      if (!ancestor) return;
+      const git = await selectGitExecutor(ancestor);
+      const { promise, resolve: settle } = Promise.withResolvers<boolean>();
+      execFile(
+        git.command,
+        ["rev-parse", "--git-dir"],
+        {
+          cwd: ancestor,
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: GIT_SPAWN_TIMEOUT_MS,
+          env: { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" },
+        },
+        (error, _stdout, stderr) => settle(Boolean(error) && isNotRepositoryDiagnostic(String(stderr))),
+      );
+      verdicts.set(directory, await promise);
+    }),
+  );
+  return (directory) => verdicts.get(directory) === true;
+}
+
+/**
+ * 대상 디렉터리(아직 없을 수 있다)의 실제 경로가 임시 루트(os.tmpdir()·/tmp) 아래이고 세션 cwd·세션 작업 트리와 겹치지 않는지.
+ * 기존 조상의 realpath로 보므로 /tmp 아래 심볼릭 링크가 세션 저장소를 가리키면 임시로 보지 않는다. 세션 cwd가 저장소의
+ * 하위 폴더일 때 같은 작업 트리의 다른 폴더를 임시로 보지 않도록 작업 트리 root(`sessionRoot`)도 함께 지킨다. root를
+ * 알아내지 못했으면(`undefined`) 무엇도 임시로 보지 않는다. `null`은 세션이 어느 저장소에도 속하지 않음이 증명된 경우다.
+ */
+function temporaryDirectoryMatcher(sessionCwd: string, sessionRoot: string | null | undefined): (directory: string) => boolean {
+  if (sessionRoot === undefined) return () => false;
+  const real = (path: string): string | undefined => {
+    const ancestor = nearestExistingDirectory(path);
+    if (!ancestor) return undefined;
+    try {
+      return join(realpathSync(ancestor), relative(ancestor, resolve(path)));
+    } catch {
+      return undefined;
+    }
+  };
+  const roots = [...new Set([tmpdir(), "/tmp"].flatMap((root) => (existsSync(root) ? [real(root)] : [])))].filter(
+    (root): root is string => root !== undefined,
+  );
+  const protectedPaths = [sessionCwd, ...(sessionRoot ? [sessionRoot] : [])].map((path) => real(path) ?? resolve(path));
+  const within = (path: string, base: string) => path === base || path.startsWith(`${base}${sep}`);
+  return (directory) => {
+    const path = real(directory);
+    if (!path || protectedPaths.some((session) => within(path, session) || within(session, path))) return false;
+    return roots.some((root) => path.startsWith(`${root}${sep}`));
+  };
+}
+
+/**
+ * 세션 cwd가 속한 작업 트리의 root. git이 "not a git repository"로 끝나면 `null`(지킬 작업 트리 없음), 그 밖의 실패·
+ * 시간 초과·work tree 아님은 `undefined`(알 수 없음: 임시 면제를 쓰지 않는다)다.
+ */
+async function sessionWorktreeRoot(sessionCwd: string): Promise<string | null | undefined> {
+  const git = await selectGitExecutor(sessionCwd);
+  const { promise, resolve: settle } = Promise.withResolvers<string | null | undefined>();
+  execFile(
+    git.command,
+    ["rev-parse", "--show-toplevel"],
+    {
+      cwd: sessionCwd,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: GIT_SPAWN_TIMEOUT_MS,
+      env: { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" },
+    },
+    (error, stdout, stderr) => {
+      if (error) return settle(isNotRepositoryDiagnostic(String(stderr)) ? null : undefined);
+      const root = String(stdout).trim();
+      settle(root && isAbsolute(root) ? root : undefined);
+    },
+  );
+  return promise;
 }
 
 /**
@@ -749,6 +861,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     },
     state: writers,
     running: () => readRunningTaskJobs(ownerCtx),
+    noteWrite: (writer, paths) => noteOwnershipWrites(ownership, writer, paths),
   };
   const bindWriterView = (ctx: { cwd?: string; agent?: { id?: string } }): void => {
     ownerCtx = ctx;
@@ -775,10 +888,28 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     }
   };
 
+  /** edit·write 대상 중 base 아래 작업 트리 파일을 base 기준 상대경로로. 내부 URL·base 밖 경로는 뺀다. */
+  const relativeWriteTargets = (input: unknown, cwd: string, base: string): string[] => {
+    const targets: string[] = [];
+    for (const path of writeTargets(input)) {
+      let absolute: string;
+      try {
+        absolute = resolveToCwd(path, cwd);
+      } catch {
+        continue; // agent://·proc:// 같은 내부 URL은 작업 트리 파일이 아니다.
+      }
+      const rel = relative(base, absolute);
+      if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+      targets.push(rel);
+    }
+    return targets;
+  };
+
   /**
    * 공유 작업공간 Maker child의 edit·write가 같은 부모의 다른 활성 Maker 소유 경로를 건드리면 막을 이유를 돌린다.
    * Main·Maker가 아닌 agent·격리 child(부모와 cwd가 다름)는 대상이 아니고, 부모 view나 job snapshot이 없어 소유자를
    * 확정하지 못하면 debug 기록만 남기고 막지 않는다. bash 쓰기는 대상 경로를 믿을 만하게 풀 수 없어 보지 않는다.
+   * 막지 않은 쓰기는 부모의 OwnershipGuard 귀속 기록에 남긴다(Main 자신의 쓰기는 이 세션의 기록에 남긴다).
    */
   const ownerWriteBlockReason = (
     toolName: string,
@@ -786,11 +917,13 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     ctx: { cwd?: string; agent?: { kind?: string; id?: string; name?: string; parentId?: string } },
   ): string | undefined => {
     const agent = ctx.agent;
-    if (!agent) {
-      pi.logger?.debug("command-guard: OwnerWriteGuard 판정 생략(ctx.agent 없음)");
+    if (!agent) pi.logger?.debug("command-guard: OwnerWriteGuard 판정 생략(ctx.agent 없음)");
+    if (agent?.kind !== "sub") {
+      const cwd = eventSessionCwd(ctx);
+      noteOwnershipWrites(ownership, OWNERSHIP_MAIN_WRITER, relativeWriteTargets(input, cwd, cwd));
       return undefined;
     }
-    if (agent.kind !== "sub" || agent.name !== "maker") return undefined;
+    if (agent.name !== "maker") return undefined;
     const skip = (why: string, detail?: Record<string, unknown>): undefined => {
       pi.logger?.debug(`command-guard: OwnerWriteGuard 판정 생략(${why})`, { agentId: agent.id, ...detail });
       return undefined;
@@ -804,29 +937,21 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     if (!view.cwd || normalizeRepositoryPath(cwd) !== normalizeRepositoryPath(view.cwd)) {
       return skip("공유 checkout 아님", { cwd, parentCwd: view.cwd });
     }
-    const targets: string[] = [];
-    for (const path of writeTargets(input)) {
-      let absolute: string;
-      try {
-        absolute = resolveToCwd(path, cwd);
-      } catch {
-        continue; // agent://·proc:// 같은 내부 URL은 작업 트리 파일이 아니다.
-      }
-      const rel = relative(view.cwd, absolute);
-      if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
-      targets.push(rel);
-    }
+    const targets = relativeWriteTargets(input, cwd, view.cwd);
     if (targets.length === 0) return undefined;
     const decision = decideOwnerWrite(view, selfId, targets);
+    if (decision?.conflict) {
+      const { owner, path } = decision.conflict;
+      return (
+        `[OwnerWriteGuard] ${path}은(는) 지금 실행 중인 다른 Maker ${owner}의 OWNED_PATHS 안이라 ${toolName}을 막았습니다. ` +
+        `직접 고치지 말고 필요한 변경·이유·근거 위치를 write agent://${parentId}로 Main에 보고하세요. ` +
+        "자기 OWNED_PATHS 안이나 다른 실행 중 Maker가 소유하지 않은 경로는 그대로 쓸 수 있습니다."
+      );
+    }
+    view.noteWrite?.(selfId, targets);
     if (!decision) return skip("부모 job snapshot 없음", { parentId });
     if (decision.unknown.length > 0) skip("소유 주장 없는 실행 중 child", { unknown: decision.unknown });
-    if (!decision.conflict) return undefined;
-    const { owner, path } = decision.conflict;
-    return (
-      `[OwnerWriteGuard] ${path}은(는) 지금 실행 중인 다른 Maker ${owner}의 OWNED_PATHS 안이라 ${toolName}을 막았습니다. ` +
-      `직접 고치지 말고 필요한 변경·이유·근거 위치를 write agent://${parentId}로 Main에 보고하세요. ` +
-      "자기 OWNED_PATHS 안이나 다른 실행 중 Maker가 소유하지 않은 경로는 그대로 쓸 수 있습니다."
-    );
+    return undefined;
   };
 
   /**
@@ -933,6 +1058,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     bindSession(ctx);
     ownershipGeneration += 1;
     resetTaskGuardState(taskGuard);
+    noteUserRequestText(taskGuard, event.text ?? "");
     resetOwnershipState(ownership);
     summonCalls.clear();
     const intent = parseCharacterIntent(event.text);
@@ -997,6 +1123,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     const intent = parseCharacterIntent(messageText);
     pendingSummons = intent?.kind === "summon" ? intent.aliases : [];
     noteUserRedirect(taskGuard);
+    noteUserRequestText(taskGuard, messageText);
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -1156,10 +1283,14 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       typeof event.input.cwd === "string" ? bashToolCwd(sessionCwd, event.input.cwd) : sessionCwd;
     const targetDirectories: string[] = [];
     const windowsGitTargets: string[] = [];
+    let temporaryTargets = false;
+    const temporaryRoot = tmpdir();
     // 1차는 대상만 모은다. 저장소 콜백이 true(차단)를 돌려주면 그 세그먼트에서 판정이 끝나 같은 git의
     // Windows git 판정과 뒤 세그먼트의 대상을 놓친다. 그래서 둘 다 false로 끝까지 훑고 2차에서 실제 판정을 쓴다.
+    // 임시 작업 트리 면제도 1차에서는 참(면제)으로 두고 끝까지 훑은 뒤 2차에서 실제 경로로 판정한다.
     const preliminaryReason = matchBlockedCommand(event.input.command, {
       cwd,
+      temporaryRoot,
       isSessionRepository: (directory) => {
         targetDirectories.push(directory);
         return false;
@@ -1168,19 +1299,31 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
         windowsGitTargets.push(directory);
         return false;
       },
+      isTemporaryDirectory: () => {
+        temporaryTargets = true;
+        return true;
+      },
     });
     let reason = preliminaryReason;
-    if (targetDirectories.length > 0 || windowsGitTargets.length > 0) {
-      const [isSessionRepository, usesWindowsGit] = await Promise.all([
+    if (targetDirectories.length > 0 || windowsGitTargets.length > 0 || temporaryTargets) {
+      const [repository, usesWindowsGit, sessionRoot] = await Promise.all([
         targetDirectories.length > 0
           ? repositoryMatcher(sessionCwd, targetDirectories)
-          : (_directory: string) => true,
+          : { isSessionRepository: (_directory: string) => true, unproven: [] },
         windowsGitMatcher(windowsGitTargets),
+        temporaryTargets ? sessionWorktreeRoot(sessionCwd) : undefined,
       ]);
+      const { isSessionRepository } = repository;
+      // 세션 저장소임을 증명하지 못해 막힐 대상만 git이 "어느 저장소도 아님"을 증명하는지 따로 본다(보통은 git 호출이 늘지 않는다).
+      const isOutsideRepository =
+        repository.unproven.length > 0 ? await outsideRepositoryMatcher(repository.unproven) : () => false;
       reason = matchBlockedCommand(event.input.command, {
         cwd,
+        temporaryRoot,
         isSessionRepository,
         usesWindowsGit,
+        isOutsideRepository,
+        isTemporaryDirectory: temporaryDirectoryMatcher(sessionCwd, sessionRoot),
       });
     }
     if (reason) return { block: true, reason };

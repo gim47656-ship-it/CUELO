@@ -73,6 +73,8 @@ const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
 const LABEL_LINE = /^\s*(?:#{1,6}\s|\*\*[^*\n]+\*\*[:：]?\s*$)/;
 // 같은 블록 안에 비교 말씨가 있으면 값이 서로 견주어졌다고 본다. 이 말씨나 표·목록 구조가 없는 산문 묶음은 "모호한 후보"다.
 const COMPARATIVE = /(각각|비교|대비|보다|\bvs\b|→|->|전후|변경 전|변경 후|전에는|후에는|차이|늘었|줄었|늘어|줄어|증가|감소|느려|빨라|개선|악화)/;
+// "312건 중 240건"처럼 기록 값 뒤에 "중"이 오면 전체를 나눈 분해다. 앞 값(전체)은 수치로 세지 않지만 블록은 강한 후보다.
+const PART_OF_WHOLE = /\d\s?(?:ms|s|초|분|시간|%|배|건|회|KiB|MiB|GiB|KB|MB|GB)\s?중(?![가-힣])/;
 
 export type ChartCandidate = { kind: string; values: string[]; strong: boolean };
 
@@ -168,7 +170,7 @@ export function chartCandidate(text: string): ChartCandidate | null {
     }
     const items = itemTexts.filter((item) => quantitiesOf(item).some((q) => q.kind === kind)).length;
     const blockText = blockLines.join("\n");
-    return items >= MIN_VALUES || COMPARATIVE.test(blockText) || hasLabelledRun(blockText);
+    return items >= MIN_VALUES || COMPARATIVE.test(blockText) || PART_OF_WHOLE.test(blockText) || hasLabelledRun(blockText);
   };
   let best: ChartCandidate | null = null;
   for (const [key, kinds] of series) {
@@ -183,10 +185,24 @@ export function chartCandidate(text: string): ChartCandidate | null {
   return best;
 }
 
+// 바로 붙일 수 있는 막대 차트 뼈대. 숫자 하나+단위인 값의 단위가 모두 같을 때만 값을 채운다. 단위가 다르거나 "5분 30초"처럼
+// 이어진 값이면 같은 단위로 바꿔 채우도록 자리만 둔다.
+function chartSkeleton(values: readonly string[]): string {
+  const parsed = values.map((value) => /^([\d,.]+)\s?(\D*)$/.exec(value));
+  const units = new Set(parsed.map((match) => match?.[2] ?? ""));
+  const filled = units.size === 1 && parsed.every(Boolean);
+  const bars = filled
+    ? parsed.map((match) => match![1]!.replace(/,/g, "")).join(", ")
+    : values.map(() => "<같은 단위 값>").join(", ");
+  const unit = filled ? [...units][0] : "<단위>";
+  return `\`\`\`mermaid\nxychart-beta\n  title "<무엇의 비교·추이·분해> (출처: <도구 출력·기록>)"\n  x-axis [${values.map(() => "\"<항목>\"").join(", ")}]\n  y-axis "${unit}"\n  bar [${bars}]\n\`\`\``;
+}
+
 export function reminderText(candidate: { values: string[] }): string {
   const shown = candidate.values.slice(0, 6).join(", ");
   return `직전 사용자 표시 문장에 같은 종류의 수치가 ${candidate.values.length}개 있었다(${shown}). 그런데 Mermaid 차트가 없었다. `
-    + "이 값들이 도구 출력·실행 기록·측정 산출물에서 온 비교·추이·분해라면, 바로 다음 응답에 출처와 함께 차트 하나(`xychart-beta` 막대, `gantt` 시간선 등)를 붙인다. "
+    + "이 값들이 도구 출력·실행 기록·측정 산출물에서 온 비교·추이·분해라면, 사용자에게 보이는 바로 다음 문장(중간 보고 포함)에 출처와 함께 아래 뼈대의 <> 자리를 채운 차트 하나를 붙인다(시간선이면 `gantt`):\n"
+    + `${chartSkeleton(candidate.values.slice(0, 6))}\n`
     + "`ask` 질문 앞 근거 문장, 진행 중 중간 보고도 보고다. 비교가 아니거나(서로 무관한 값의 나열) 추정치라면 차트를 그리지 않는다. 그때 답이 이미 끝났다면 아무 문장도 덧붙이지 말고 끝내고, 어느 경우든 이 알림을 사용자에게 언급하지 않는다.";
 }
 
@@ -210,8 +226,9 @@ export default function reportChartGuard(pi: ExtensionAPI): void {
     const calls = Array.isArray(message.content)
       ? message.content.filter((block): block is { type: string; name?: string } => block?.type === "toolCall")
       : [];
-    // 이미 끝난 답을 다시 여는 강제 이어 가기는 표·목록·비교 말씨가 있는 후보에만 쓴다. 값만 나열된 모호한 산문은 조용히 둔다.
-    if (calls.length === 0 && !candidate.strong) return;
+    // 표·목록·비교 말씨·분해("N건 중")가 없는 모호한 산문 후보는 결정을 묻는 `ask` 앞에서만 붙잡는다. 끝난 답을 다시 열거나
+    // 도구 사이 진행 문장에 알리지 않는다: 2026-10-28 표본(25건)에서 값의 뜻이 서로 다른 진행 문장(제한·주기·경과 시간)이 오탐의 대부분이었다.
+    if (!candidate.strong && !calls.some((call) => call.name === "ask")) return;
     reminded = true;
     if (calls.some((call) => call.name === "ask")) {
       askHold = `[report-chart-guard] 질문을 보내지 않았다. ${reminderText(candidate)} 차트가 필요하면 차트를 붙인 응답에서 같은 질문을 다시 보낸다. 필요 없으면 같은 질문을 그대로 다시 보낸다.`;

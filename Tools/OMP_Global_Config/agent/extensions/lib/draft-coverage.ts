@@ -19,8 +19,10 @@ const GRAM = 4;
 
 const PROSE_FILE = /\.(?:md|mdx|markdown|html?|xhtml)$/i;
 const MARKUP_FILE = /\.(?:html?|xhtml)$/i;
-// 규칙·프롬프트·스킬은 draft 대상이 아니다(RULES: code, configuration, rule files 제외). HANDOFF.md·doc/history는 대상이다.
-const RULE_NAME = /^(?:AGENTS|RULES|CLAUDE|SKILL|APPEND_SYSTEM|TITLE_SYSTEM|WATCHDOG)(?:\.[a-z]{2}(?:-[A-Za-z]+)?)?\.md$/i;
+// 규칙·프롬프트·스킬은 draft 대상이 아니다(RULES: code, configuration, rule files 제외). 슬롭 게이트가 면제하는 내부 기록
+// (HANDOFF.md, doc/history/**, doc/README.md)도 이 확인에서 뺀다: 2026-10-28 감사에서 26회 차단 중 20회가 내부 기록이었고
+// 12회는 예외 사유를 적고 같은 호출을 다시 보냈다(doc/history/2026/10/28-guard-audit). 사용자 승인 2026-10-28.
+const RULE_NAME = /^(?:AGENTS|RULES|CLAUDE|SKILL|APPEND_SYSTEM|TITLE_SYSTEM|WATCHDOG|HANDOFF)(?:\.[a-z]{2}(?:-[A-Za-z]+)?)?\.md$/i;
 const SKIP_SEGMENT: Record<string, true> = {
   rules: true, "prompt-copies": true, prompts: true, sop: true, skills: true, agents: true, commands: true, generated: true,
   test: true, tests: true, __tests__: true, fixtures: true, fixture: true, __fixtures__: true, testdata: true,
@@ -40,6 +42,9 @@ export function inScope(abs: string, cwd: string): boolean {
   if (!inside && (p.startsWith(`${slash(tmpdir())}/`) || p.startsWith("/tmp/") || p.startsWith(`${slash(homedir())}/.omp/`))) return false;
   const segments = p.split("/");
   if (RULE_NAME.test(segments.at(-1) ?? "")) return false;
+  // slop-gate internalRecord와 같은 기준: `doc` 바로 아래 history 폴더 안, 또는 `doc/README.md`.
+  const doc = segments.indexOf("doc");
+  if (doc >= 0 && ((segments[doc + 1] === "history" && segments.length > doc + 2) || (segments[doc + 1] === "README.md" && segments.length === doc + 2))) return false;
   return !segments.slice(0, -1).some((segment) => SKIP_SEGMENT[segment]);
 }
 

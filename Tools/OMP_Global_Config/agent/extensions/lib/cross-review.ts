@@ -310,7 +310,8 @@ export function commentOnlyEdit(path: string, before: string, after: string, lin
 
 export type TriggerId = "process-termination" | "deletion" | "destructive-sql" | "deploy-release-migration" | "credentials-auth" | "encoding" | "device-io";
 
-interface Marker { id: TriggerId; line?: RegExp; path?: RegExp }
+// marker는 바뀐 줄에서만 맞는다. 경로 이름만으로는 걸지 않는다(2026-10-28 사용자 결정: `agent/tools/deploy-verify/index.ts`의 설명 문자열 한 줄 수정이 경로의 deploy만으로 걸렸다).
+interface Marker { id: TriggerId; line: RegExp }
 
 // device-io 중 실제 연결을 여는 호출 모양. 브라우저 HTML에서는 이것만 센다(아래 BROWSER_MARKUP_FILE).
 const DEVICE_IO_CALL_SOURCE = String.raw`\bnet\.(?:Socket|connect|createServer)\b|\bnew\s+(?:WebSocket|WebSocketServer|Socket)\s*\(|\bBun\.(?:listen|connect)\s*\(|\.createConnection\s*\(|\bsocket\.(?:write|send|connect|bind)\s*\(`;
@@ -322,12 +323,10 @@ export const MARKERS: readonly Marker[] = [
   {
     id: "deploy-release-migration",
     line: /\b(?:wrangler\s+(?:deploy|publish)|npm\s+publish|gh\s+release|kubectl\s+(?:apply|delete)|terraform\s+apply|alembic\s+(?:upgrade|downgrade)|systemd-run|deploy-live|docker\s+push)\b/i,
-    path: /(?:^|\/)(?:deploy|deployment|release|releases|migrations?|alembic)(?:[/._-]|$)|(?:^|\/)[^/]*(?:deploy|release|migrat)[^/]*\.(?:ps1|sh|mjs|js|ts|py|ya?ml)$/i,
   },
   {
     id: "credentials-auth",
     line: /\b(?:password|passwd|api[_-]?key|private[_-]?key|oauth|bearer|(?:access|refresh|id|auth|session)[_-]?token|auth\.json|agent\.db|\.netrc)\b/i,
-    path: /(?:^|\/)(?:auth|login|credentials?|oauth|secrets?)[^/]*\.[a-z]+$/i,
   },
   { id: "encoding", line: /\bBOM\b|\\uFEFF|\bEF\s?BB\s?BF\b|\bcp\d{3,4}\b|\bcode\s?page\b|\bcodepage\b|\beuc-?kr\b|Encoding\.(?:Default|GetEncoding)|\biconv\b|\blatin1\b|\butf-?16\b|\bchcp\b|\bTextDecoder\s*\(\s*["'](?!utf-?8)/i },
   { id: "device-io", line: new RegExp(String.raw`\b(?:SerialPort|serialport|MSComm|Winsock|modbus|NI-?DAQ|dgram)\b|\bPLC\b|\bCOM\d{1,2}\b|\/dev\/tty|` + DEVICE_IO_CALL_SOURCE) },
@@ -478,18 +477,17 @@ export interface ChangedLine { line: number; text: string; removed?: boolean }
 export interface MarkerHit { trigger: TriggerId; line?: number; text: string; removed?: boolean }
 
 /**
- * 변경 줄(추가·삭제 모두)과 경로에서 marker를 찾는다. 주석만 있는 줄(VB 계열은 `'`·REM 줄도)은 코드가 아니므로 보지 않는다.
+ * 변경 줄(추가·삭제 모두)에서 marker를 찾는다. 경로 이름은 보지 않는다. 주석만 있는 줄(VB 계열은 `'`·REM 줄도)은 코드가 아니므로 보지 않는다.
  * device-io는 문자열 리터럴 내용을 지운 줄에서 다시 맞아야 센다: 화면 문구("PLC Communication")만으로는 장치 입출력이 아니다.
  */
 export function detectMarkers(path: string, lines: readonly ChangedLine[]): MarkerHit[] {
   const hits: MarkerHit[] = [];
   const normalized = path.replaceAll("\\", "/");
   const vb = VB_FILE.test(normalized);
-  for (const marker of MARKERS) if (marker.path?.test(normalized)) hits.push({ trigger: marker.id, text: `path ${normalized}` });
   for (const { line, text, removed } of lines) {
     if (COMMENT_LINE.test(text) || (vb && VB_COMMENT_LINE.test(text))) continue;
     for (const marker of MARKERS) {
-      if (!marker.line?.test(text)) continue;
+      if (!marker.line.test(text)) continue;
       if (marker.id === "device-io" && !(BROWSER_MARKUP_FILE.test(normalized) ? DEVICE_IO_CALL : marker.line).test(stripStringLiterals(text, vb))) continue;
       hits.push({ trigger: marker.id, line, removed, text: text.trim().slice(0, 100) });
     }
@@ -928,12 +926,44 @@ const SAMPLE_EXCLUDED = /\.(?:sln|slnx|csproj|vbproj|vcxproj|props|targets|resx|
 /** 표본에 뽑힌 커밋에서 표본 이유로 요구하는 최대 파일 수(바뀐 줄이 많은 순, 같으면 경로 순). */
 export const SAMPLE_MAX_FILES = 5;
 
-/** 통과한 옛 내용에서 버전 문자열만 바뀐 지금 내용을 덮는 통과(2026-10-27 사용자 결정). */
-export interface CarriedPass { path: string; blob: string; fromBlob: string; reviewId: string }
+/**
+ * 통과한 옛 내용에 사소한 수정만 더한 지금 내용을 덮는 통과. kind는 그 수정이다: version은 버전 문자열만(2026-10-27 사용자 결정), comment는
+ * TypeScript 파서로 증명한 주석·공백만(2026-10-28 사용자 결정) 바뀐 것이다. 게이트가 HEAD에 대해 면제하는 수정과 같은 범위다.
+ */
+export interface CarriedPass { path: string; blob: string; fromBlob: string; reviewId: string; kind: "version" | "comment" }
+
+/**
+ * 두 내용에서 글자가 달라진 줄(줄 다중집합의 차이). 순서만 바뀐 줄은 나오지 않는다. 통과한 옛 내용과 지금 내용을 비교할 때 commentOnlyEdit이
+ * 지시 주석 줄을 찾는 데 쓴다. 옛 내용 쪽 줄은 removed다.
+ */
+export function changedLinesBetween(before: string, after: string): ChangedLine[] {
+  const side = (from: readonly string[], against: readonly string[], removed: boolean): ChangedLine[] => {
+    const left = new Map<string, number>();
+    for (const text of against) left.set(text, (left.get(text) ?? 0) + 1);
+    return from.flatMap((text, index) => {
+      const count = left.get(text) ?? 0;
+      if (count > 0) { left.set(text, count - 1); return []; }
+      return [{ line: index + 1, text: text.replace(/\r$/, ""), ...(removed ? { removed: true } : {}) }];
+    });
+  };
+  const old = before.split("\n");
+  const now = after.split("\n");
+  return [...side(old, now, true), ...side(now, old, false)];
+}
+
+/**
+ * 통과한 옛 내용 → 지금 내용이 게이트가 HEAD에 대해 면제하는 사소한 수정인가: 버전 문자열만 바뀜(versionOnlyChange), 또는 TS/JS에서 주석·공백만
+ * 바뀜(commentOnlyEdit). 둘이 섞였거나 다른 언어의 주석 수정, 순서만 바꾼 수정은 코드로 본다(undefined).
+ */
+export function trivialSincePass(path: string, before: string, after: string, parser: TsParser | null = loadTypeScript()): CarriedPass["kind"] | undefined {
+  if (versionOnlyChange(before, after)) return "version";
+  if (/\.[cm]?[jt]sx?$/i.test(path) && commentOnlyEdit(path, before, after, changedLinesBetween(before, after), parser)) return "comment";
+  return undefined;
+}
 
 /**
  * 검토가 필요한 파일과 덮이지 않은 파일을 정한다. highRisk는 high-risk로 선언한 저장소 상대 경로다. passedContent는 `${path}\0${blob}` → 그 경로의
- * 통과한 옛 내용이며, 지금 내용이 그 내용과 버전 문자열만 다르고 그 통과에 묶인 입력이 그대로면 그 통과가 지금 내용을 덮는다(carried).
+ * 통과한 옛 내용이며, 지금 내용이 그 내용에서 사소한 수정(trivialSincePass)만 다르고 그 통과에 묶인 입력이 그대로면 그 통과가 지금 내용을 덮는다(carried).
  */
 export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map()): GateDecision & { carried?: CarriedPass[] } {
   // 표본은 지금처럼 커밋의 코드 경로 전체(path+blob)로 뽑는다. 뽑힌 뒤 표본 이유로 요구하는 것은 게이트 대상(주석·버전만 바뀐 수정·바이너리 자산 제외) 중
@@ -976,18 +1006,19 @@ export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<s
       const text = now.toString("utf8");
       for (const [fromBlob, older] of blobs) {
         const content = passedContent.get(`${file.path}\0${fromBlob}`);
-        const pass = content !== undefined && versionOnlyChange(content, text) ? older.find((item) => changedInputs(item.inputs, inputBlobs).length === 0) : undefined;
-        if (pass) { carried.push({ path: file.path, blob: file.blob, fromBlob, reviewId: pass.reviewId }); return []; }
+        const kind = content === undefined ? undefined : trivialSincePass(file.path, content, text);
+        const pass = kind ? older.find((item) => changedInputs(item.inputs, inputBlobs).length === 0) : undefined;
+        if (pass && kind) { carried.push({ path: file.path, blob: file.blob, fromBlob, reviewId: pass.reviewId, kind }); return []; }
       }
     }
-    return [{ ...file, note: blobs ? "a passed review exists for an older version of this file; the content changed after the pass" : undefined }];
+    return [{ ...file, note: blobs ? "a passed review exists for an older version of this file; the content changed after the pass by more than version strings or TS/JS comments and whitespace, so the new code needs a review (a later round of the same chain shows only the delta)" : undefined }];
   });
   return { required, uncovered, ...(carried.length > 0 ? { carried } : {}) };
 }
 
 /**
  * 통과한 옛 blob의 내용. git 객체(`git cat-file blob`)에 있으면 그것을, 없으면 그 blob을 기록한 검토 라운드의 사본(manifest)에서 읽는다.
- * 둘 다 없으면 undefined이며 그 통과는 버전만 바뀐 지금 내용을 덮지 못한다.
+ * 둘 다 없으면 undefined이며 그 통과는 사소한 수정(trivialSincePass)만 더한 지금 내용을 덮지 못한다.
  */
 async function passedBlobContent(exec: Exec, git: string, root: string, path: string, blob: string, records: readonly CrossReviewLedgerRecord[]): Promise<string | undefined> {
   const shown = await exec(git, ["cat-file", "blob", blob], { cwd: root });
@@ -1075,7 +1106,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   // 통과에 묶인 의존 입력은 그 통과가 이 변경을 덮을 때만 지금 blob을 읽는다. 입력 없는 통과만 있으면 아무것도 읽지 않는다.
   let inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records));
   let decision = decideGate(changed, highRiskPaths, records, inputBlobs);
-  // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
+  // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열·주석만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
   const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
   if (older.length > 0) {
     const covered = coveredBlobs(records);
@@ -1126,7 +1157,8 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
 
 export const REVIEW_SYSTEM = "You are a careful independent code reviewer. You have no tools; answer only from the material in the user message.";
 
-export interface ReviewPart { path: string; kind: "diff" | "new-file" | "delta" | "new-since-last-round" | "deleted"; text: string }
+/** part: 한 파일을 여러 조각으로 나눠 심사할 때만 `k/m`(m 조각 중 k번째). */
+export interface ReviewPart { path: string; kind: "diff" | "new-file" | "delta" | "new-since-last-round" | "deleted"; text: string; part?: string }
 
 const CHECKLIST = [
   "1. Safety first: any path where the change touches something it must not (wrong process/file/record/user killed, deleted, overwritten or exposed; secret leaked; auth bypassed)? Quote the code.",
@@ -1151,8 +1183,8 @@ const PROBE_ROUND_RULES = [
 
 const MAX_HIDING_LEADS_SHOWN = 20;
 
-export function buildReviewPrompt(input: { acceptance: string; round: number; parts: ReviewPart[]; previousFindings?: CrossReviewFinding[]; inputs?: { path: string; text: string }[]; references?: { path: string; text: string }[]; probeResults?: PreparedProbeResult[]; probeAvailable?: boolean; hidingLeads?: readonly HidingLead[] }): string {
-  const blocks = input.parts.map((part) => `<${part.kind} path="${part.path}">\n${part.text}\n</${part.kind}>`);
+export function buildReviewPrompt(input: { acceptance: string; round: number; parts: ReviewPart[]; previousFindings?: CrossReviewFinding[]; inputs?: { path: string; text: string }[]; references?: { path: string; text: string }[]; probeResults?: PreparedProbeResult[]; probeAvailable?: boolean; hidingLeads?: readonly HidingLead[]; batch?: { index: number; count: number } }): string {
+  const blocks = input.parts.map((part) => `<${part.kind} path="${part.path}"${part.part ? ` part="${part.part}"` : ""}>\n${part.text}\n</${part.kind}>`);
   const references = input.references ?? [];
   const inputs = input.inputs ?? [];
   const inputBlocks = inputs.length > 0
@@ -1212,6 +1244,7 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pa
     input.acceptance.trim(),
     "",
     scope,
+    ...(input.batch ? [`SPLIT REVIEW: this change is larger than one call can hold, so it is reviewed in ${input.batch.count} separate calls with the same criteria and the same earlier findings. This call shows part ${input.batch.index} of ${input.batch.count}. Files or hunks not shown here are reviewed in the other parts: do not report anything as missing or broken only because it is not in this part. A block with part="k/m" is piece k of a file cut into m pieces.`] : []),
     "",
     ...previous,
     "CHECKLIST (apply each; report only real problems you can support with a quote from the code):",
@@ -1234,6 +1267,91 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pa
     ...inputBlocks,
     ...referenceBlocks,
   ].join("\n");
+}
+
+/** 한 라운드를 나눠 심사할 때 reviewer 자리마다 부르는 최대 호출 수(2026-10-28 사용자 결정). 넘으면 나누지 않고 거절한다. */
+export const MAX_REVIEW_BATCHES = 8;
+/** 나눈 호출마다 변경에 남아야 하는 최소 바이트. 공통 부분(기준·앞 지적·입력·참고·probe 결과)이 이보다 적게 남기면 나눠도 심사가 되지 않아 거절한다. */
+const MIN_BATCH_CHANGE_BYTES = 16 * 1024;
+/** 조각 머리표·구분 줄을 어림한 값과 실제 프롬프트의 차이를 덮는 여유. */
+const BATCH_MARGIN_BYTES = 2 * 1024;
+
+/** 한 줄을 limit 바이트 이하 조각으로 자른다(UTF-8 최대 4바이트로 어림해 글자 수로 자른다). 보통의 줄은 그대로다. */
+function cutLine(line: string, limit: number): string[] {
+  if (utf8(line) < limit) return [line];
+  const chars = Math.max(1, Math.floor((limit - 1) / 4));
+  const out: string[] = [];
+  for (let start = 0; start < line.length; start += chars) out.push(line.slice(start, start + chars));
+  return out;
+}
+
+/**
+ * 변경 조각 하나를 budget 바이트 이하 조각으로 자른다. diff·delta는 hunk(`@@`) 단위로 묶고(머리말은 첫 hunk와 함께), 새 파일 전체는 줄 단위로 묶는다.
+ * 한 단위가 budget보다 크면 줄 경계에서, 한 줄이 그보다 크면 줄 안에서 자른다. 나눈 조각에는 part="k/m"이 붙는다. budget 안이면 그대로 돌려준다.
+ */
+export function splitPart(part: ReviewPart, budget: number): ReviewPart[] {
+  if (utf8(part.text) <= budget) return [part];
+  const diffLike = part.kind === "diff" || part.kind === "delta";
+  const units: string[][] = [];
+  let current: string[] = [];
+  let hunk = false;
+  for (const line of part.text.split("\n")) {
+    if (current.length > 0 && (diffLike ? line.startsWith("@@") && hunk : true)) { units.push(current); current = []; hunk = false; }
+    current.push(line);
+    if (line.startsWith("@@")) hunk = true;
+  }
+  units.push(current);
+  const chunks: string[][] = [];
+  let chunk: string[] = [];
+  let used = 0;
+  const close = () => { if (chunk.length > 0) { chunks.push(chunk); chunk = []; used = 0; } };
+  for (const unit of units) {
+    const size = unit.reduce((sum, line) => sum + utf8(line) + 1, 0);
+    if (used + size > budget && size <= budget) close();
+    for (const line of unit) {
+      for (const piece of cutLine(line, budget)) {
+        const bytes = utf8(piece) + 1;
+        if (used + bytes > budget) close();
+        chunk.push(piece);
+        used += bytes;
+      }
+    }
+  }
+  close();
+  return chunks.map((lines, index) => ({ ...part, text: lines.join("\n"), part: `${index + 1}/${chunks.length}` }));
+}
+
+export type ReviewPlan = { prompts: string[] } | { refused: "shared-context" } | { refused: "too-many-batches"; batches: number };
+
+/**
+ * 한 라운드의 reviewer 프롬프트. 한 번에 MAX_INPUT_BYTES 안에 들면 하나다. 넘으면 거절하지 않고(2026-10-28 사용자 결정) 변경 조각을 순서대로 묶어 나눈다:
+ * 큰 파일은 splitPart로 자르고, 공통 부분(기준·앞 지적·입력·참고·probe 결과)은 모든 호출에 싣고, 숨김 단서는 그 호출에 실린 파일 것만 붙인다.
+ * 공통 부분만으로 상한에 가까우면 shared-context, 나눈 호출이 MAX_REVIEW_BATCHES를 넘으면 too-many-batches로 거절 이유를 돌려준다.
+ * build는 조각·단서·나눈 번호로 프롬프트 한 개를 만든다(buildReviewPrompt에 나머지 인자를 묶은 것).
+ */
+export function planReviewPrompts(parts: readonly ReviewPart[], leads: readonly HidingLead[], build: (parts: ReviewPart[], leads: readonly HidingLead[], batch?: { index: number; count: number }) => string): ReviewPlan {
+  const single = build([...parts], leads);
+  if (utf8(single) <= MAX_INPUT_BYTES) return { prompts: [single] };
+  const leadBytes = leads.slice(0, MAX_HIDING_LEADS_SHOWN).reduce((sum, lead) => sum + utf8(lead.path) + utf8(lead.text) + 48, 1024);
+  const budget = MAX_INPUT_BYTES - utf8(build([], [], { index: MAX_REVIEW_BATCHES, count: MAX_REVIEW_BATCHES })) - leadBytes - BATCH_MARGIN_BYTES;
+  if (budget < MIN_BATCH_CHANGE_BYTES) return { refused: "shared-context" };
+  const tag = (part: ReviewPart) => 2 * part.kind.length + utf8(part.path) + 48;
+  const groups: ReviewPart[][] = [];
+  let group: ReviewPart[] = [];
+  let used = 0;
+  for (const piece of parts.flatMap((part) => splitPart(part, budget - tag(part)))) {
+    const size = utf8(piece.text) + tag(piece);
+    if (group.length > 0 && used + size > budget) { groups.push(group); group = []; used = 0; }
+    group.push(piece);
+    used += size;
+  }
+  if (group.length > 0) groups.push(group);
+  if (groups.length > MAX_REVIEW_BATCHES) return { refused: "too-many-batches", batches: groups.length };
+  const prompts = groups.map((batch, index) => {
+    const shown = new Set(batch.map((part) => part.path));
+    return build(batch, leads.filter((lead) => shown.has(lead.path)), groups.length > 1 ? { index: index + 1, count: groups.length } : undefined);
+  });
+  return prompts.some((prompt) => utf8(prompt) > MAX_INPUT_BYTES) ? { refused: "shared-context" } : { prompts };
 }
 
 export interface ParsedFinding { severity: CrossReviewFinding["severity"]; file: string; line?: number; claim: string; why: string; probe?: CrossReviewProbe }
@@ -1511,6 +1629,10 @@ export interface ReviewResult {
   probeResults?: CrossReviewProbeResultMeta[];
   /** probe 라운드에서만: 결과를 받은 finding마다 reviewer의 판단(자문). 어떤 finding도 자동으로 닫지 않는다. */
   verdicts?: CrossReviewVerdict[];
+  /** 이어지는 라운드에서 files·acceptance를 생략해 체인에서 이어받았을 때만: 이어받은 인자 이름. */
+  carriedOver?: ("files" | "acceptance")[];
+  /** 변경이 한 번의 호출 상한을 넘어 나눠 심사했을 때만: reviewer 자리마다 부른 호출 수(모두 같은 기준·같은 라운드). */
+  batches?: number;
 }
 
 interface ReferenceEntry { path: string; blob: string; bytes: number; redacted?: number; text: string; content: Buffer }
@@ -1803,8 +1925,8 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
   writeFileSync(join(dir, manifestName), JSON.stringify(manifest), { mode: 0o600 });
 }
 
-/** reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). */
-interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string }
+/** reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다. */
+interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; batches?: string[] }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
@@ -1820,12 +1942,14 @@ function readReviewerOutcome(item: ReviewerOutcome, round: number, snapshotDir: 
   if (item.error !== undefined) {
     return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}), ...advisory }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
   }
-  const parsed = parseReviewerOutput(item.text);
-  if (!parsed.ok) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory }, findings: [], rawChars: item.text.length };
+  // 나눠 심사했으면 호출마다의 답을 따로 읽고, 하나라도 해석할 수 없으면 그 자리 전체가 해석 불가다(나머지 답만으로 깨끗하다고 볼 수 없다).
+  const answers = (item.batches ?? [item.text]).map((text) => parseReviewerOutput(text));
+  const usable = answers.flatMap((answer) => (answer.ok ? [answer] : []));
+  if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory }, findings: [], rawChars: item.text.length };
   return {
     reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory },
-    findings: parsed.findings.map((finding, index) => ({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding })),
-    verdicts: parsed.verdicts ?? [],
+    findings: usable.flatMap((answer) => answer.findings).map((finding, index) => ({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding })),
+    verdicts: usable.flatMap((answer) => answer.verdicts ?? []),
   };
 }
 
@@ -1858,17 +1982,19 @@ function recordLateAdvisory(outcome: ReviewerOutcome, review: CrossReviewRecord,
   return undefined;
 }
 
+/** 라운드 사본 디렉터리에 남기는 그 라운드의 acceptance. 이어지는 라운드가 acceptance를 생략하면 바로 앞 라운드의 것만 이어받는다(원장에는 싣지 않는다). */
+const ACCEPTANCE_FILE = "acceptance.txt";
+
 export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: AbortSignal): Promise<ReviewResult> {
   const now = deps.now ?? (() => new Date());
-  const files = [...new Set(input.files.map((file) => file.trim()).filter(Boolean))];
-  // 둘을 따로 알리면 이어지는 라운드에서 한 번에 하나씩 두 번 거절됐다(10-24 01:36). 원장은 acceptance를 저장하지 않아 이어받을 수 없다.
-  const missing = [
-    ...(files.length === 0 ? ["files must list at least one cwd-relative path."] : []),
-    ...(!input.acceptance.trim() ? ["acceptance must state the criteria the change is reviewed against."] : []),
-  ];
-  if (missing.length > 0) {
-    const later = input.previousReviewId ? ` A later round does not carry files or acceptance over from ${input.previousReviewId}; send them again (usually the same files and criteria).` : "";
-    throw new Error(`${missing.join(" ")}${later}`);
+  const given = [...new Set(input.files.map((file) => file.trim()).filter(Boolean))];
+  if (!input.previousReviewId) {
+    // 둘을 따로 알리면 한 번에 하나씩 두 번 거절됐다(10-24 01:36).
+    const missing = [
+      ...(given.length === 0 ? ["files must list at least one cwd-relative path."] : []),
+      ...(!input.acceptance.trim() ? ["acceptance must state the criteria the change is reviewed against."] : []),
+    ];
+    if (missing.length > 0) throw new Error(missing.join(" "));
   }
 
   const records = deps.readAll();
@@ -1899,6 +2025,28 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     families = continuedLanes(previous.reviewers, chain[0]!.authors, deps.mainModel, deps.advisoryModel);
   } else {
     families = reviewerLanes(input.authors, deps.mainModel, deps.advisoryModel);
+  }
+  // 이어지는 라운드가 files·acceptance를 생략하면 체인에서 이어받는다(2026-10-28 사용자 결정: 이어받지 않아 거절된 호출 4건). files는 체인의 모든
+  // 라운드가 본 파일, acceptance는 바로 앞 라운드가 사본에 남긴 기준이다. 주면 준 값이 그대로 쓰인다(files는 앞 라운드 파일에 더해진다).
+  const carriedOver: ("files" | "acceptance")[] = [];
+  let files = given;
+  let acceptance = input.acceptance;
+  if (previous) {
+    if (files.length === 0) {
+      const from = previous.root;
+      files = [...new Set(chain.flatMap((record) => record.files.map((file) => file.path)))].map((path) => relative(deps.cwd, join(from, ...path.split("/"))).split(sep).join("/"));
+      if (files.length > 0) carriedOver.push("files");
+    }
+    if (!acceptance.trim()) {
+      // 바로 앞 라운드의 기준만 쓴다. 그것을 읽지 못하면 더 앞 라운드의 기준으로 바꾸지 않는다(라운드마다 기준이 달라질 수 있다).
+      try { acceptance = readFileSync(join(previous.snapshotDir, ACCEPTANCE_FILE), "utf8"); } catch { /* 2026-10-28 전 라운드는 남기지 않았다 */ }
+      if (acceptance.trim()) carriedOver.push("acceptance");
+    }
+    const missing = [
+      ...(files.length === 0 ? [`files must list at least one cwd-relative path: the chain of ${previous.reviewId} has no reviewed file to carry over.`] : []),
+      ...(!acceptance.trim() ? [`acceptance must state the criteria the change is reviewed against: round ${previous.round} (${previous.reviewId}) has no stored acceptance to carry over (rounds recorded before 2026-10-28 did not keep it), so send it again.`] : []),
+    ];
+    if (missing.length > 0) throw new Error(missing.join(" "));
   }
   // 앞 라운드에 늦게 붙은 자문 finding도 체인의 지적이다(프롬프트의 앞 지적·probe 대상·resolve 모두 같은 목록을 쓴다).
   const chainFindings = chainFindingsOf(records, chain);
@@ -2021,28 +2169,35 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     const safeText = redactSecrets(lead.text);
     return { ...lead, text: safeText.blocked ? "" : safeText.text.slice(0, 100) };
   });
-  const prompt = buildReviewPrompt({
-    acceptance: input.acceptance, round, parts,
+  const plan = planReviewPrompts(parts, hidingLeads, (shownParts, shownLeads, batch) => buildReviewPrompt({
+    acceptance, round, parts: shownParts,
     inputs: inputEntries.map(({ path, text }) => ({ path, text })),
     previousFindings: previous ? chainFindings : undefined,
     references: references.map(({ path, text }) => ({ path, text })),
     probeResults: preparedProbes,
     probeAvailable: round < MAX_ROUNDS && !probeRound && probesBefore < MAX_PROBE_ROUNDS,
-    hidingLeads,
-  });
-  const promptBytes = utf8(prompt);
-  if (promptBytes > MAX_INPUT_BYTES) {
+    hidingLeads: shownLeads, batch,
+  }));
+  if ("refused" in plan) {
     // 전체 바이트만 알리면 작은 파일을 빼도 줄지 않는 이유를 Main이 직접 재야 했다(10-23, 13→6→5개 파일에 490KB→472KB).
     const pieces = [
       ...parts.map((part) => ({ label: `${part.path} (${part.kind})`, bytes: utf8(part.text) })),
       ...inputEntries.map((entry) => ({ label: `${entry.path} (input)`, bytes: utf8(entry.text) })),
       ...references.map((reference) => ({ label: `${reference.path} (reference)`, bytes: utf8(reference.text) })),
-      { label: "acceptance", bytes: utf8(input.acceptance) },
+      { label: "acceptance", bytes: utf8(acceptance) },
+      // 앞 지적·probe 결과도 모든 호출에 실린다. 공통 부분 때문에 거절될 때 무엇을 줄일지 보이게 함께 센다.
+      ...(previous && chainFindings.length > 0 ? [{ label: `earlier findings (${chainFindings.length})`, bytes: utf8(chainFindings.map((finding) => `${finding.id} ${finding.file} ${finding.claim}`).join("\n")) }] : []),
+      ...(preparedProbes.length > 0 ? [{ label: `probe results (${preparedProbes.length})`, bytes: preparedProbes.reduce((sum, result) => sum + utf8(result.command) + utf8(result.output), 0) }] : []),
     ].sort((a, b) => b.bytes - a.bytes);
     const largest = pieces.slice(0, 5).map((piece) => `${piece.label} ${piece.bytes} bytes`).join(", ");
     const more = pieces.length > 5 ? `, and ${pieces.length - 5} more` : "";
-    throw new Error(`Review input is ${promptBytes} bytes (acceptance, previous findings, the change and references together), above the ${MAX_INPUT_BYTES} byte limit (about 75k-100k tokens: one model call must finish within the ${REVIEW_TIMEOUT_MS / 60000} minute timeout and still leave room for the reviewer's reasoning). Split the change into separate reviews by file or topic. Largest pieces: ${largest}${more}.`);
+    const total = pieces.reduce((sum, piece) => sum + piece.bytes, 0);
+    const why = plan.refused === "too-many-batches"
+      ? `the change would need ${plan.batches} calls per reviewer, above the limit of ${MAX_REVIEW_BATCHES} (each call holds at most ${MAX_INPUT_BYTES} bytes, about 75k-100k tokens, so one model call finishes within the ${REVIEW_TIMEOUT_MS / 60000} minute timeout)`
+      : `the part shared by every call (acceptance, earlier findings, inputs, references, probe results) leaves less than ${MIN_BATCH_CHANGE_BYTES} of the ${MAX_INPUT_BYTES} bytes one call can hold for the change, so splitting the change cannot help`;
+    throw new Error(`Review input is about ${total} bytes and cannot be reviewed: ${why}. Nothing was sent. Split the change into separate reviews by file or topic, or trim the inputs and references. Largest pieces: ${largest}${more}.`);
   }
+  const { prompts } = plan;
   // 검토 본문을 모은 뒤 파일이 바뀌었으면 reviewer가 본 내용과 사본이 어긋나므로 쓰지 않고 다시 하게 한다.
   const settledBlobs = await currentBlobs(deps.exec, git, root, reviewedFiles.map((file) => file.path));
   const moved = reviewedFiles.filter((file) => settledBlobs.get(file.path) !== file.blob).map((file) => file.path);
@@ -2050,6 +2205,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const reviewId = deps.newId?.() ?? `xr-${now().toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(3).toString("hex")}`;
   const snapshotDir = join(deps.snapshotRoot, reviewId);
   writeSnapshot(snapshotDir, snapshot);
+  writeFileSync(join(snapshotDir, ACCEPTANCE_FILE), acceptance, { mode: 0o600 });
   writeContextFiles(snapshotDir, references, "ref", "references.json");
   writeContextFiles(snapshotDir, inputEntries, "in", "inputs.json");
   if (probeRound) {
@@ -2067,6 +2223,20 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const advisoryCancel = new AbortController();
   const forwardAbort = () => advisoryCancel.abort();
   if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
+  // 나눈 라운드는 한 자리의 호출을 함께 시작하고, 하나가 실패하면 나머지를 끊는다(그 자리는 어차피 쓸 수 있는 답을 낼 수 없다).
+  const askLane = async (family: Lane, attempt: AbortSignal): Promise<ReviewerCompletion & { batches?: string[] }> => {
+    if (prompts.length === 1) return deps.complete(family, prompts[0]!, attempt);
+    const lane = new AbortController();
+    const stop = () => lane.abort();
+    if (attempt.aborted) lane.abort(); else attempt.addEventListener("abort", stop, { once: true });
+    try {
+      const answers = await Promise.all(prompts.map((prompt) => deps.complete(family, prompt, lane.signal).catch((error: unknown) => { lane.abort(); throw error; })));
+      const texts = answers.map((answer) => answer.text);
+      return { model: answers[0]!.model, text: texts.map((text, index) => `===== part ${index + 1}/${texts.length} =====\n${text}`).join("\n\n"), batches: texts };
+    } finally {
+      attempt.removeEventListener("abort", stop);
+    }
+  };
   const runs = families.map(async (family, index): Promise<ReviewerOutcome> => {
     const started = Date.now();
     const finish = (state: ReviewerProgressState) => {
@@ -2075,10 +2245,10 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     };
     try {
       const completion = family === ADVISORY_LANE
-        ? await withAdvisoryDeadline((attempt) => deps.complete(family, prompt, attempt), advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
-        : await deps.complete(family, prompt, signal);
+        ? await withAdvisoryDeadline((attempt) => askLane(family, attempt), advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
+        : await askLane(family, signal);
       finish("answered");
-      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started };
+      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}) };
     } catch (error) {
       // 자문은 멈춘 이유를 그대로, 필수는 review가 취소됐으면 취소로 알린다. 필수의 600 s 제한 초과는 오류 문구로만 구분된다.
       finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
@@ -2166,6 +2336,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
     skippedReferences, passable, snapshotDir, ...(resolvedBase ? { base: resolvedBase } : {}), ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), ...(hidingLeads.length > 0 ? { hidingLeads } : {}),
+    ...(carriedOver.length > 0 ? { carriedOver } : {}), ...(prompts.length > 1 ? { batches: prompts.length } : {}),
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),

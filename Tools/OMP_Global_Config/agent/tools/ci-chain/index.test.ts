@@ -696,3 +696,152 @@ describe("ci_chain review findings", () => {
     expect(jobLogCalls.every((t) => typeof t === "number" && t > 0)).toBe(true);
   });
 });
+
+describe("ci_chain pushes skipped by a workflow path filter", () => {
+  const SHA_P = "d".repeat(40); // the pushed tip, which has no run
+  const SHA_Q = "e".repeat(40); // its parent
+  const SHA_R = "f".repeat(40); // the parent's parent
+  const CI_YAML = `name: CI\non:\n  pull_request:\n  push:\n    branches: [main]\n    paths-ignore:\n      - "doc/**"\n      - HANDOFF.md\n`;
+  const PUBLISH_YAML = `name: Publish public mirror\non:\n  push:\n    branches: [main]\n    paths:\n      - "**"\n      - "!doc/**"\n      - "!HANDOFF.md"\n      - "!Tools/**"\n`;
+  const NO_FILTER_YAML = `name: CI\non:\n  push:\n    branches: [main]\n`;
+  const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
+  const run = (workflowName: string, headSha: string) => ({ databaseId: 7, workflowName, headSha, status: "completed", conclusion: "success", createdAt: "2026-10-28T01:00:00Z", url: "u" });
+
+  type Commit = { files: string[]; parent?: string; parents?: number };
+  /**
+   * Fake gh for one repository. `commits` is the history by sha; `runs` lists which commits have a run of which workflow
+   * (`sha -> workflow names`). By default the tip is doc-only and its parent Q is an earlier push's tip that has runs.
+   */
+  function route(options: { commits?: Record<string, Commit>; runs?: Record<string, string[]>; ciYaml?: string; commitFails?: boolean }) {
+    const commits = options.commits ?? { [SHA_P]: { files: ["doc/a.md", "HANDOFF.md"], parent: SHA_Q } };
+    const runs = options.runs ?? { [SHA_Q]: ["CI", "Publish public mirror"] };
+    const calls: string[] = [];
+    const exec: Exec = async (_cmd, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "run" && args[1] === "list") {
+        const sha = args[args.indexOf("--commit") + 1];
+        return okJson((runs[sha] ?? []).map((name) => run(name, sha)));
+      }
+      const commit = Object.entries(commits).find(([sha]) => args[1] === `repos/${PRIVATE_REPO}/commits/${sha}`);
+      if (args[0] === "api" && commit) {
+        if (options.commitFails) return { code: 1, stdout: "", stderr: "HTTP 502" };
+        const [sha, { files, parent, parents }] = commit;
+        const parentShas = Array.from({ length: parents ?? 1 }, (_, i) => (i === 0 && parent ? parent : "9".repeat(40)));
+        return okJson({ sha, parents: parentShas.map((p) => ({ sha: p })), files: files.map((filename) => ({ filename })), commit: { message: "docs: record" } });
+      }
+      if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/actions/workflows?per_page=100`) {
+        return okJson({ workflows: [{ name: "CI", path: ".github/workflows/ci.yml" }, { name: "Publish public mirror", path: ".github/workflows/publish-public.yml" }] });
+      }
+      if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/contents/.github/workflows/ci.yml?ref=${SHA_P}`) return okJson({ encoding: "base64", content: b64(options.ciYaml ?? CI_YAML) });
+      if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/contents/.github/workflows/publish-public.yml?ref=${SHA_P}`) return okJson({ encoding: "base64", content: b64(PUBLISH_YAML) });
+      throw new Error(`Unexpected gh args: ${args.join(" ")}`);
+    };
+    return { exec, calls };
+  }
+  const params: CiChainParams = {
+    repo: PRIVATE_REPO, sha: SHA_P, workflows: ["CI", "Publish public mirror"],
+    mirror: { repo: PUBLIC_REPO, workflows: ["CI"] }, waitSeconds: 600,
+  } as CiChainParams;
+  const single = { ...params, workflows: ["CI"], mirror: undefined, waitSeconds: 0 } as CiChainParams;
+  const mustNotWait = async () => { throw new Error("a skipped push must not be waited on"); };
+
+  test("a commit whose files are all filtered out, on top of an earlier push's tip, ends every leg at once instead of waiting out the bound", async () => {
+    const { exec } = route({});
+    const res = await runCiChain(params, { exec, cwd: "/tmp", sleep: mustNotWait });
+    expect(res.ok).toBe(true);
+    expect(res.polls).toBe(1);
+    expect(res.legs.map((leg) => [leg.repo, leg.workflow, leg.state, leg.runId])).toEqual([
+      [PRIVATE_REPO, "CI", "skipped-paths-ignored", null],
+      [PRIVATE_REPO, "Publish public mirror", "skipped-paths-ignored", null],
+      [PUBLIC_REPO, "CI", "skipped-paths-ignored", null],
+    ]);
+    expect(res.verdict).toContain("CI=skipped-paths-ignored");
+  });
+
+  test("each workflow is judged by its own filter: a file only the publish filter drops still leaves CI pending", async () => {
+    const { exec } = route({ commits: { [SHA_P]: { files: ["Tools/CUELO_Setup/README.md"], parent: SHA_Q } } });
+    const res = await runCiChain({ ...params, waitSeconds: 0 }, { exec, cwd: "/tmp" });
+    expect(res.legs.map((leg) => [leg.workflow, leg.state])).toEqual([
+      ["CI", "pending"],
+      ["Publish public mirror", "skipped-paths-ignored"],
+      ["CI", "skipped-paths-ignored"],
+    ]);
+    expect(res.ok).toBe(false);
+  });
+
+  test("a file the filter lets through is a run that has not appeared yet, so the wait still times out as not-found", async () => {
+    const { exec, calls } = route({ commits: { [SHA_P]: { files: ["doc/a.md", "lib/rpc-manager.ts"], parent: SHA_Q } } });
+    let clock = 0;
+    const res = await runCiChain(
+      { ...single, waitSeconds: 30, pollSeconds: 15 },
+      { exec, cwd: "/tmp", now: () => clock, sleep: async (ms) => { clock += ms; } },
+    );
+    expect(res.legs[0]?.state).toBe("not-found-within-bound");
+    // Three polls, one lookup each of the workflow list, the workflow file and the commit.
+    expect(calls.filter((call) => call.includes("/contents/") || call.includes("/commits/") || call.includes("actions/workflows")).length).toBe(3);
+  });
+
+  test("a doc-only tip pushed together with a code commit is not skipped: the diff of the whole push needs a run", async () => {
+    // SHA_Q changed code and has no run yet (it is not an earlier push's tip); SHA_P only changed docs.
+    const { exec } = route({
+      commits: { [SHA_P]: { files: ["doc/a.md"], parent: SHA_Q }, [SHA_Q]: { files: ["lib/a.ts"], parent: SHA_R } },
+      runs: { [SHA_R]: ["CI"] },
+    });
+    const res = await runCiChain(single, { exec, cwd: "/tmp" });
+    expect(res.legs[0]?.state).toBe("pending");
+    expect(res.ok).toBe(false);
+  });
+
+  test("several doc-only commits pushed together are skipped, and so are doc-only pushes stacked on one another", async () => {
+    const { exec } = route({
+      commits: { [SHA_P]: { files: ["doc/a.md"], parent: SHA_Q }, [SHA_Q]: { files: ["HANDOFF.md"], parent: SHA_R } },
+      runs: { [SHA_R]: ["CI"] },
+    });
+    const res = await runCiChain(single, { exec, cwd: "/tmp" });
+    expect(res.legs[0]?.state).toBe("skipped-paths-ignored");
+  });
+
+  test("an earlier tip that ran a different workflow only does not end the walk for this workflow", async () => {
+    const { exec } = route({
+      commits: { [SHA_P]: { files: ["doc/a.md"], parent: SHA_Q }, [SHA_Q]: { files: ["lib/a.ts"], parent: SHA_R } },
+      runs: { [SHA_Q]: ["Publish public mirror"], [SHA_R]: ["CI"] },
+    });
+    const res = await runCiChain(single, { exec, cwd: "/tmp" });
+    expect(res.legs[0]?.state).toBe("pending");
+  });
+
+  test("a leg that has a run is never second-guessed by the filter and costs no extra lookups", async () => {
+    const { exec, calls } = route({ runs: { [SHA_P]: ["CI"] } });
+    const res = await runCiChain({ repo: PRIVATE_REPO, sha: SHA_P, workflows: ["CI"] }, { exec, cwd: "/tmp" });
+    expect(res.legs[0]).toMatchObject({ state: "completed", runId: 7 });
+    expect(calls.every((call) => call.startsWith("run list"))).toBe(true);
+  });
+
+  test("anything it cannot read stays pending: a merge commit, a failed commit lookup, a filterless workflow, a root commit", async () => {
+    const cases = [
+      { commits: { [SHA_P]: { files: ["doc/a.md"], parents: 2 } } },
+      { commitFails: true },
+      { ciYaml: NO_FILTER_YAML },
+      { commits: { [SHA_P]: { files: ["doc/a.md"] } }, runs: {} },
+    ];
+    for (const options of cases) {
+      const { exec } = route(options as Parameters<typeof route>[0]);
+      const res = await runCiChain(single, { exec, cwd: "/tmp" });
+      expect(res.legs[0]?.state, JSON.stringify(options)).toBe("pending");
+    }
+  });
+
+  test("a commit with 300 or more files is not trusted as the push diff", async () => {
+    const { exec } = route({ commits: { [SHA_P]: { files: Array.from({ length: 300 }, (_, i) => `doc/${i}.md`), parent: SHA_Q } } });
+    const res = await runCiChain(single, { exec, cwd: "/tmp" });
+    expect(res.legs[0]?.state).toBe("pending");
+  });
+
+  test("a chain of unrun commits longer than the walk limit stays pending", async () => {
+    const shas = Array.from({ length: 12 }, (_, i) => (i === 0 ? SHA_P : i.toString(16).padStart(40, "1")));
+    const commits = Object.fromEntries(shas.map((sha, i) => [sha, { files: ["doc/a.md"], parent: shas[i + 1] ?? SHA_R }]));
+    const { exec } = route({ commits, runs: { [SHA_R]: ["CI"] } });
+    const res = await runCiChain(single, { exec, cwd: "/tmp" });
+    expect(res.legs[0]?.state).toBe("pending");
+  });
+});

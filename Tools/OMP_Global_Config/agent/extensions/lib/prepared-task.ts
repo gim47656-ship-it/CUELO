@@ -42,8 +42,8 @@ const TASK_REFERENCE =
   /^PREPARED_TASK:\s*([A-Za-z0-9._-]+)(?:[ \t]*\r?\n[ \t]*(ROUTING_REASON:[ \t]*\S[^\r\n\u2028\u2029]*\S)[ \t]*(?:\r?\n)?|\s*)$/;
 /**
  * 근거를 task 참조 대신 context에 실은 형태(`PREPARED_CONTEXT` 다음 줄·같은 줄, 또는 근거 한 줄만). 2026-10-10~22에
- * 이 실수로 거절된 발주 6건 중 5건이 참조 하나짜리였다. 참조가 하나이고 그 참조에 근거 줄이 없으면 어느 task의
- * 근거인지 모호하지 않으므로 그 task의 근거로 옮긴다. 근거 문법은 TASK_REFERENCE의 근거 줄과 같다.
+ * 이 실수로 거절된 발주 6건 중 5건이 참조 하나, 1건이 참조 둘이었다. 호출 전체에 단 근거 한 줄이므로 자기 근거 줄이 없는
+ * 참조 모두의 근거로 옮긴다. 근거 문법은 TASK_REFERENCE의 근거 줄과 같다.
  */
 const CONTEXT_REASON =
   /^(?:PREPARED_CONTEXT(?:[ \t]*\r?\n[ \t]*|[ \t]+))?(ROUTING_REASON:[ \t]*\S[^\r\n\u2028\u2029]*\S)[ \t]*(?:\r?\n)?$/;
@@ -166,10 +166,12 @@ export function resolvePreparedTaskInput(
       "원문 context는 참조가 복원하므로 함께 보내지 않습니다. 추천 변경 근거는 context가 아니라 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로 보냅니다.",
     );
   }
-  if (contextReason !== undefined && (items.length !== 1 || matches[0]?.[2] !== undefined)) {
+  // context의 근거 한 줄은 자기 근거 줄이 없는 참조 모두의 근거로 옮긴다(참조가 여럿이어도 뜻이 같다). 모든 참조가 이미 근거를
+  // 가졌으면 옮길 곳이 없어 어느 근거가 맞는지 모르므로 거절한다.
+  if (contextReason !== undefined && matches.every((match) => match?.[2] !== undefined)) {
     throw new Error(
-      `context에 실은 'ROUTING_REASON:'은 참조가 하나이고 그 참조에 근거 줄이 없을 때만 그 task의 근거로 옮깁니다(이번 호출: 참조 ${items.length}개${items.length === 1 ? ", 참조에도 근거 줄 있음" : ""}). ` +
-      `context는 정확히 '${CONTEXT_REFERENCE}'로 두고, 근거는 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로 보냅니다.`,
+      `context에 실은 'ROUTING_REASON:'을 옮길 참조가 없습니다: 참조 ${items.length}개 모두 이미 다음 줄 근거가 있습니다. ` +
+      `context는 정확히 '${CONTEXT_REFERENCE}'로 두고, 근거는 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로만 보냅니다.`,
     );
   }
   if (!hasReference) {

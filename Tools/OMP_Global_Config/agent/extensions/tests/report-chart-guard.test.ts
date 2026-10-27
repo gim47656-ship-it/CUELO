@@ -182,10 +182,14 @@ describe("report chart guard", () => {
     expect(h.sent).toHaveLength(1);
     expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn", triggerTurn: true });
   });
-  test("모호한 후보도 도구를 부르는 중간 보고면 aside로, ask면 한 번 차단으로 기존 정책을 따른다", () => {
+  // 2026-10-28 표본(D5·D18): 뜻이 다른 값(경과·제한·캐시 전후)이 섞인 진행 문장은 도구 사이에 알리지 않는다. ask 차단은 그대로다.
+  test("모호한 후보는 도구를 부르는 중간 보고에서 조용하고, ask면 한 번 차단으로 기존 정책을 따른다", () => {
     const mid = harness();
     mid.assistant(ORIGINAL_FILLER, ["bash"]);
-    expect(mid.deliveries[0]).toEqual({ deliverAs: "aside" });
+    mid.assistant("21분 시험은 10분이 넘었는데 아직 응답이 없어요. 서버 호출 제한을 150분으로 둔 이유가 바로 이거예요.", ["bash"]);
+    expect(mid.sent).toHaveLength(0);
+    mid.assistant(MISSED, ["bash"]);
+    expect(mid.deliveries).toEqual([{ deliverAs: "aside" }]);
     const asked = harness();
     asked.assistant(ORIGINAL_FILLER, ["ask"]);
     expect(asked.toolCall("ask")).toMatchObject({ block: true });
@@ -203,6 +207,22 @@ describe("report chart guard", () => {
       expect(h.sent).toHaveLength(1);
       expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn", triggerTurn: true });
     }
+  });
+  // 2026-10-28 표본(D2·D19): "N건 중 M건" 분해는 비교 말씨가 없어도 강한 후보이고, 알림은 값을 채운 차트 뼈대를 싣는다.
+  test("전체 중 일부로 나눈 기록 수치는 강한 후보이고 알림에 채운 차트 뼈대가 붙는다", () => {
+    const text = "finding 312건 중 240건은 실제 수정, 52건은 반박, 20건은 보류로 처리됐네요.";
+    expect(chartCandidate(text)).toEqual({ kind: "count-건", values: ["240건", "52건", "20건"], strong: true });
+    const h = harness();
+    h.assistant(text, ["bash"]);
+    expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
+    expect(h.sent[0]!.content).toContain("```mermaid\nxychart-beta");
+    expect(h.sent[0]!.content).toContain("bar [240, 52, 20]");
+    expect(chartCandidate("지적 17건 중 16건은 수정, 1건은 철회했다.")).toBeNull();
+    // 이어진 분·초 값은 한 숫자가 아니므로 앞 숫자만 채우지 않고 같은 단위로 바꿔 채울 자리만 둔다.
+    const compound = harness();
+    compound.assistant("빌드 5분 30초, 배포 6분 30초, 검증 7분 30초가 걸렸다.", ["bash"]);
+    expect(compound.sent[0]!.content).toContain("bar [<같은 단위 값>, <같은 단위 값>, <같은 단위 값>]");
+    expect(compound.sent[0]!.content).toContain('y-axis "<단위>"');
   });
   test("차트가 있거나 subagent 응답이면 알리지 않는다", () => {
     const main = harness();
