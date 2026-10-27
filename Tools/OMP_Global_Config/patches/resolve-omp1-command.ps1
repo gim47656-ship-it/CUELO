@@ -97,6 +97,10 @@
 # 9bf5dff5023ba6daff1312090704d64a2564bf0432a47f68b80b7b719eea8875, matching both
 # the GitHub release asset digest and SHA256SUMS.txt (checked 2026-10-27; the
 # downloaded 243997696-byte file hashes to the same value).
+# omp/18.13.1 "omp-windows-x64.exe" (release v18.13.1) SHA-256
+# 9fde2d73099ac3cc124d02982bdbeca697de42c7cd3ebf8b63faec1e2f9926f7, matching both
+# the GitHub release asset digest and SHA256SUMS.txt (checked 2026-10-27; the
+# downloaded 244037632-byte file hashes to the same value).
 # omp/18.3.2 "omp-windows-x64.exe" (release v18.3.2) SHA-256
 # 5d99fe5c11ec3ff1792e427c0e61eeb5a6c84670cadb65d023dd2f5eb8705f40, matching both
 # the GitHub release asset digest and SHA256SUMS.txt (checked 2026-09-26).
@@ -124,7 +128,7 @@
 # 128df4420e9778a9a0712e7969919b782ab47aed04d000efe28ac4cb3e04b071). This file
 # only approves the identity; the absolute path and SHA-256 pin live in ~/.omp/omp1-command.json
 # and are written by setup.ps1 -RefreshOmp1Pin after it verifies the executable.
-$script:AllowedOmp1VersionOutputs = @('omp/18.1.17', 'omp/18.1.18', 'omp/18.1.21', 'omp/18.1.22', 'omp/18.2.0', 'omp/18.2.1', 'omp/18.2.6', 'omp/18.2.7', 'omp/18.2.8', 'omp/18.2.9', 'omp/18.2.10', 'omp/18.2.11', 'omp/18.3.0', 'omp/18.3.1', 'omp/18.3.2', 'omp/18.3.4', 'omp/18.3.5', 'omp/18.4.2', 'omp/18.4.3', 'omp/18.4.4', 'omp/18.4.5', 'omp/18.4.6', 'omp/18.4.10', 'omp/18.4.12', 'omp/18.5.0', 'omp/18.5.1', 'omp/18.6.0', 'omp/18.6.1', 'omp/18.7.0', 'omp/18.8.6', 'omp/18.9.1', 'omp/18.10.3', 'omp/18.10.4', 'omp/18.11.0', 'omp/18.11.1', 'omp/18.11.3', 'omp/18.12.1', 'omp/18.12.2', 'omp/18.12.3', 'omp/18.12.5', 'omp/18.12.6', 'omp/18.13.0')
+$script:AllowedOmp1VersionOutputs = @('omp/18.1.17', 'omp/18.1.18', 'omp/18.1.21', 'omp/18.1.22', 'omp/18.2.0', 'omp/18.2.1', 'omp/18.2.6', 'omp/18.2.7', 'omp/18.2.8', 'omp/18.2.9', 'omp/18.2.10', 'omp/18.2.11', 'omp/18.3.0', 'omp/18.3.1', 'omp/18.3.2', 'omp/18.3.4', 'omp/18.3.5', 'omp/18.4.2', 'omp/18.4.3', 'omp/18.4.4', 'omp/18.4.5', 'omp/18.4.6', 'omp/18.4.10', 'omp/18.4.12', 'omp/18.5.0', 'omp/18.5.1', 'omp/18.6.0', 'omp/18.6.1', 'omp/18.7.0', 'omp/18.8.6', 'omp/18.9.1', 'omp/18.10.3', 'omp/18.10.4', 'omp/18.11.0', 'omp/18.11.1', 'omp/18.11.3', 'omp/18.12.1', 'omp/18.12.2', 'omp/18.12.3', 'omp/18.12.5', 'omp/18.12.6', 'omp/18.13.0', 'omp/18.13.1')
 
 function Get-Omp1CommandPinPath {
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
