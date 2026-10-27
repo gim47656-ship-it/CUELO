@@ -29,8 +29,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
   몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
   같은 프로젝트를 쓴다(2026-10-26 사용자 결정).
-- 문서의 `slop_check`·교차검수는 공개 배포·공유용 산출물에만 적용한다. 비공개·내부 문서는 사용자에게 파일로 전달해도 제외하며
-  공개 여부가 불명확하면 자동 전송·게이트 대상이 아니다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
+- 문서의 `slop_check`는 소스 내부를 뺀 바깥에 보이는 산출물 전부에 적용한다(2026-10-26 사용자 지시, 2026-10-27 재확인). 공개 저장소
+  여부나 `.publicignore`·`.slop-gate.json` 선언과 상관없이 형식(`classify`)으로 정하며, 고객·사용자에게 건네는 덱·보고서도 대상이다.
+  코드·주석·로그·테스트·생성물, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`만 빠진다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
   검토 응답이 깨지면 실패 원문·파싱 오류를 확인하고 같은 조건 재호출이나 산출물 따옴표·쉼표 변경으로 우회하지 않는다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
@@ -632,14 +633,22 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   `routing.high-risk.mainIntervention`이다.
 - **계열 교차검증.** high-risk로 선언했거나, 변경된 코드 줄에 트리거 marker가 있거나, 결정적 10% 표본에
   뽑힌 코드 변경은 `git_finalize` 전에 다른 계열 reviewer의 검토를 통과해야 한다. 문서·테스트·생성물은 제외하고,
-  게이트는 HEAD와 작업 트리의 Bun 변환 결과가 같고 바뀐 줄이 모두 주석 줄뿐인 TS/JS 수정과 git이 바이너리로 본
-  이미지·미디어·오피스·글꼴 자산도 제외한다(타입만 바꾼 수정·줄 끝 주석·다른 언어·실행 파일은 그대로 코드다).
+  게이트는 HEAD와 작업 트리를 TypeScript 파서로 읽어 주석·공백을 뺀 프로그램이 같은 TS/JS 수정, 버전 문자열(semver)만
+  바꾼 수정(HEAD나 마지막 통과본 대비), git이 바이너리로 본 이미지·미디어·오피스·글꼴 자산도 제외한다. 타입만 바꾼 수정,
+  지시 주석(`@ts-`·lint 무시·`/*!`·`#__PURE__` 등)과 JS의 JSDoc 타입 수정, 파싱 실패, 다른 언어, 실행 파일은 그대로 코드다.
+  `typescript` 패키지를 찾지 못하는 설치(npm 공개 설치·단독 omp CLI)에서는 증명하지 않고 코드로 본다.
+  VB 주석 줄은 marker 판정에서만 빠지고, device-io marker는 문자열 리터럴 안에서만 맞은 글자(화면 문구)를 세지 않는다.
+  `git_finalize`의 `crossReviewHighRisk`는 high-risk인 파일 경로 목록이며 그 파일에만 걸린다. 표본에 뽑힌 커밋은
+  프로젝트·스타일·디자이너 파일(`.sln`·`.vbproj`·`.csproj`·`.resx`·`.css`·`*.Designer.*` 등)을 빼고 바뀐 줄이 많은
+  코드 파일 5개까지만 요구한다. marker나 high-risk가 걸린 파일은 이 제외·상한과 무관하게 요구된다(2026-10-27 사용자 결정).
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
   `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 모든 라운드(이어지는 라운드·probe 라운드 포함)에
   `modelRoles.crossReviewAdvisory`(Argon)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
-  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 필수 검토와 함께 시작하고, 시작 후 120초가 지나거나 필수 검토가 모두
-  끝나면 그 자리에서 끊는다. 그 전에 온 자문 답은 쓰고, 호출 실패·해석 불가·시간 초과·중단은
-  `reviewers[]`(`advisory: true`)와 `advisoryReviewers`에 기록만 한다. 필수 검토의 실패를 대신 통과시키지 않으며,
+  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 필수 검토와 함께 시작하지만 `review`는 필수 검토가 모두 끝나면 바로
+  결과를 돌려주고, 자문은 자기 기한(600초)까지 계속 돈다. 늦게 온 자문 finding은 그 라운드에 붙어 체인의 열린 지적이 되고
+  다음 라운드와 `resolve`에 나타난다. `resolve`는 아직 도는 자문을 기다린 뒤 그 지적까지 닫혀야 통과시킨다. 2026-10-27 사용자
+  결정: 필수 뒤 20초만 기다리던 방식은 원장 대입에서 fixed로 닫힌 자문 지적 39건을 모두 버렸다. 자문의 호출 실패·해석 불가·시간 초과,
+  재시작으로 잃은 자문은 기록만 하고 막지 않는다. 필수 검토의 실패를 대신 통과시키지 않으며,
   받은 자문 finding(`R*-ADV-*`, 옛 기록은 `R*-GGL-*`)도 다른 지적처럼 근거로 닫는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤

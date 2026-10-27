@@ -113,53 +113,13 @@ export function loadSlopConfig(root: string): SlopConfig {
   } catch { return {}; }
 }
 
-// ── 공개 여부 ────────────────────────────────────────────────────────────────
+// ── 대상 판정 ────────────────────────────────────────────────────────────────
 
 /**
- * 공개·공유되는 산출물만 슬롭 점검 대상이다(사용자 결정 2026-10-26). 비공개·내부 문서는 사용자에게 건네도 대상이 아니다.
- * 정본은 저장소 루트의 `.publicignore`다: publish-public.yml이 `git ls-files -ci --exclude-from=.publicignore`로 미러에서 지우는 것이 비공개다.
- * 그 밖의 선언은 `.slop-gate.json` visible glob과 slop_check `public:true`(선언 없는 일회성 산출물)뿐이다. 선언이 없으면 모르는 파일이라
- * 공개가 아니다: 모델에 보내지 않고 게이트도 없다. 세 곳(slop_check·커밋 게이트·턴 끝)이 모두 바이트를 읽기 전에 이 판정을 쓴다.
+ * 슬롭 게이트 대상은 classify()가 보이는 산출물로 본 것 전부다(사용자 결정 2026-10-27: "밖으로 나오는 산출물 중 소스코드 내부에 있는 것 말고 다").
+ * 공개 미러 선언(.publicignore)이나 public 선언은 대상을 정하지 않는다. `.slop-gate.json` visible glob은 대상을 더하기만 한다.
+ * 세 곳(slop_check·커밋 게이트·턴 끝)이 모두 바이트를 읽기 전에 이 판정을 쓴다.
  */
-export const PUBLIC_IGNORE = ".publicignore";
-export interface Publication {
-  public: boolean;
-  reason: string;
-  /** 아무 선언도 없다. public:true 선언만 이것을 공개로 바꿀 수 있다. */
-  unknown?: true;
-  /** 저장소 상태를 읽지 못해 판정하지 못했다(공개로 보지 않는다). */
-  error?: true;
-}
-
-const DECLARED: Publication = { public: true, reason: `declared public in ${CONFIG_FILE}` };
-const UNDECLARED: Publication = { public: false, unknown: true, reason: `no publication declaration (${PUBLIC_IGNORE} or ${CONFIG_FILE}), so it is not a public artifact` };
-
-/**
- * 저장소 안 경로(저장소 상대)의 공개 여부. 요청한 경로에만 git ls-files를 돌린다(저장소 전체를 훑지 않는다). `.publicignore`가 있으면 그것이
- * 지운 것(부정 규칙 반영, 추적하지 않는 새 파일 포함)은 비공개이고, 남은 것 중 추적 중이거나 git이 무시하지 않는 새 파일이 공개다.
- * `.publicignore`가 없으면 `.slop-gate.json`이 선언한 경로만 공개다. git이 실패하면 던진다(공개 여부를 모른 채 열어 두지 않는다).
- */
-export async function repoPublication(exec: Exec, git: string, root: string, paths: readonly string[], config: SlopConfig): Promise<Map<string, Publication>> {
-  const out = new Map<string, Publication>();
-  if (paths.length === 0) return out;
-  if (!existsSync(join(root, PUBLIC_IGNORE))) {
-    for (const path of paths) out.set(path, matches(config.visible, path) ? DECLARED : UNDECLARED);
-    return out;
-  }
-  const list = async (args: string[]) => {
-    const result = await exec(git, ["--literal-pathspecs", "ls-files", "-z", ...args, "--", ...paths], { cwd: root });
-    if (result.code !== 0) throw new Error(`git ls-files failed while applying ${PUBLIC_IGNORE}: ${(result.stderr || result.stdout).trim()}`);
-    return new Set(result.stdout.split("\0").filter(Boolean));
-  };
-  const excluded = await list(["--cached", "--others", "--ignored", `--exclude-from=${PUBLIC_IGNORE}`]);
-  const published = await list(["--cached", "--others", "--exclude-standard"]);
-  for (const path of paths) {
-    out.set(path, excluded.has(path) ? { public: false, reason: `excluded from the public mirror by ${PUBLIC_IGNORE} (private)` }
-      : published.has(path) ? { public: true, reason: `published by the ${PUBLIC_IGNORE} mirror` }
-        : { public: false, reason: "ignored by git, so never published" });
-  }
-  return out;
-}
 
 /** 저장소 밖 산출물의 `.slop-gate.json`을 읽는 곳: cwd에서 가장 가까운 git 저장소 루트, 없으면 cwd. */
 export function configRootOf(cwd: string): string {
@@ -172,60 +132,35 @@ export function configRootOf(cwd: string): string {
   }
 }
 
-/** git 밖 파일의 공개 여부: `.slop-gate.json` visible glob이 설정 루트 기준 상대 경로나 절대 경로로 선언하면 공개, 아니면 모르는 파일이다. */
-export function externalPublication(abs: string, root: string, config: SlopConfig): Publication {
-  const inside = relative(root, abs);
-  const local = inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? norm(inside) : undefined;
-  return matches(config.visible, norm(abs)) || (local !== undefined && matches(config.visible, local)) ? DECLARED : UNDECLARED;
+/**
+ * git 밖 파일(실제 절대 경로)의 분류. cwd 안이면 cwd 상대 경로로(폴더 규칙 적용, cwd가 /tmp 아래여도 산출물로 본다), 밖이면 절대 경로로 본다.
+ * 기본 형식이 아니어도 설정 루트의 visible glob이 설정 루트 상대 경로나 절대 경로로 더한 파일은 대상이다(내부·테스트·생성물 판정은 그대로 먼저다).
+ */
+export function classifyExternal(abs: string, cwd: string, root: string, config: SlopConfig): Classification {
+  const within = (base: string) => { const inside = relative(base, abs); return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? inside : undefined; };
+  const local = within(cwd) ?? abs;
+  const kind = classify(local, config);
+  if (kind.visible) return kind;
+  for (const other of [within(root), abs]) {
+    if (other === undefined || other === local) continue;
+    const added = classify(other, config);
+    if (added.visible && added.reason === "project declared") return added;
+  }
+  return kind;
 }
 
 /**
- * 호출자의 명시 선언(slop_check public:true). 선언 없는(unknown) 파일 중 보이는 산출물 형식인 것만 공개로 바꾸고, `.publicignore`가 지운
- * 비공개 파일·git이 무시한 파일·내부 기록·코드는 바꾸지 않는다. path는 classify에 넘길 경로(저장소·cwd 상대 또는 절대)다.
+ * slop_check 대상(실제 절대 경로)의 분류. git 안이면 그 저장소 루트 상대 경로와 그 저장소의 `.slop-gate.json`으로, 밖이면 classifyExternal로 본다.
  */
-export function withDeclaration(publication: Publication, path: string): Publication {
-  if (publication.public || !publication.unknown) return publication;
-  const kind = classify(path);
-  return kind.visible ? { public: true, reason: "declared public by the caller (public:true)" } : { public: false, reason: `${kind.reason}; a public:true declaration cannot make it public` };
-}
-
-/**
- * slop_check 대상(실제 절대 경로)의 공개 여부. git 안이면 그 저장소의 repoPublication(선언은 .publicignore·.slop-gate.json뿐), 밖이면
- * externalPublication이고, declared(public:true 또는 이번 입력에서 그렇게 선언한 파일)는 git 밖의 모르는 파일만 바꾼다.
- * 저장소 상태를 읽지 못한 파일은 error로 돌려준다.
- */
-export async function publicationOf(paths: readonly string[], cwd: string, declared: (abs: string) => boolean, exec: Exec = spawnExec(), gitFor?: (root: string) => Promise<string>): Promise<Map<string, Publication>> {
-  const out = new Map<string, Publication>();
+export function visibilityOf(paths: readonly string[], cwd: string): Map<string, Classification> {
+  const out = new Map<string, Classification>();
   const root = configRootOf(cwd);
   const config = loadSlopConfig(root);
-  // 공개여도 내부·생성물·테스트로 분류되는 파일은 대상이 아니다(게이트들과 같은 분류가 먼저다).
-  const veto = (found: Publication, path: string, cfg: SlopConfig): Publication => {
-    if (!found.public) return found;
-    const kind = classify(path, cfg);
-    return kind.visible ? found : { public: false, reason: `${kind.reason}, not a gated artifact` };
-  };
-  const repos = new Map<string, { abs: string; rel: string }[]>();
+  let base = cwd;
+  try { base = realpathSync(cwd); } catch { /* cwd를 읽지 못하면 적힌 대로 */ }
   for (const abs of paths) {
     const repo = gitRootOf(abs);
-    if (!repo) {
-      const inside = relative(cwd, abs);
-      const local = inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? inside : abs;
-      const found = externalPublication(abs, root, config);
-      out.set(abs, veto(declared(abs) ? withDeclaration(found, local) : found, local, config));
-      continue;
-    }
-    const group = repos.get(repo) ?? [];
-    group.push({ abs, rel: relative(repo, abs).split(sep).join("/") });
-    repos.set(repo, group);
-  }
-  for (const [repo, files] of repos) {
-    let found: Map<string, Publication>;
-    const repoConfig = loadSlopConfig(repo);
-    try { found = await repoPublication(exec, (await gitFor?.(repo)) ?? "git", repo, files.map((file) => file.rel), repoConfig); } catch (error) {
-      for (const file of files) out.set(file.abs, { public: false, error: true, reason: `could not decide whether it is public: ${error instanceof Error ? error.message : String(error)}` });
-      continue;
-    }
-    for (const file of files) out.set(file.abs, veto(found.get(file.rel)!, file.rel, repoConfig));
+    out.set(abs, repo ? classify(relative(repo, abs).split(sep).join("/"), loadSlopConfig(repo)) : classifyExternal(abs, base, root, config));
   }
   return out;
 }
@@ -315,14 +250,12 @@ export interface SlopGateOutcome {
   artifacts: { path: string; sha256: string }[];
   /** 요청한 모든 경로의 blob(보이는 산출물은 통과를 맞춘 바로 그 바이트의 blob). finalizer가 잠금 안에서 stage된 내용과 대조한다. */
   gateBlobs?: Record<string, string>;
-  /** 보이는 형식이지만 공개 산출물이 아니라 게이트가 보지 않은 파일(요청한 경로)과 그 이유. 통과가 아니다. */
-  notPublic?: { path: string; reason: string }[];
 }
 
 /**
- * git_finalize가 cross-review 다음에 부르는 게이트. 새로 커밋할 변경이 없는 파일(resume-push)과 삭제는 대상이 아니고, 공개 산출물이 아닌
- * 파일(repoPublication)은 바이트를 읽지 않고 notPublic으로 알린다. 통과 기록이 없으면 SlopGateRefusal. waiver는 기록을 남기고 통과시킨다.
- * 입력 모양이 잘못된 경우(절대 경로 등)만 finalizer.ps1의 판정에 맡기고, 저장소 상태나 공개 여부를 읽지 못하면 열어 두지 않는다.
+ * git_finalize가 cross-review 다음에 부르는 게이트. 새로 커밋할 변경이 없는 파일(resume-push)과 삭제는 대상이 아니고, 보이는 산출물(classify)이
+ * 아닌 파일은 바이트를 읽지 않는다. 보이는 산출물에 통과 기록이 없으면 SlopGateRefusal. waiver는 기록을 남기고 통과시킨다.
+ * 입력 모양이 잘못된 경우(절대 경로 등)만 finalizer.ps1의 판정에 맡기고, 저장소 상태를 읽지 못하면 열어 두지 않는다.
  */
 export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOutcome> {
   const exec = options.exec ?? spawnExec();
@@ -334,18 +267,10 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
   const git = (await options.gitFor?.(resolved.root)) ?? "git";
   const config = loadSlopConfig(resolved.root);
   const { changed, unchanged } = await collectChanges(exec, git, resolved.root, resolved.targets.map((target) => target.path));
-  const visible = changed.filter((change) => change.status !== "deleted" && classify(change.path, config).visible);
-  if (visible.length === 0) return { checked: true, artifacts: [], notPublic: [] };
+  const gated = changed.filter((change) => change.status !== "deleted" && classify(change.path, config).visible);
+  if (gated.length === 0) return { checked: true, artifacts: [] };
 
   const inputOf = new Map(resolved.targets.map((target) => [target.path, target.input]));
-  let publication: Map<string, Publication>;
-  try { publication = await repoPublication(exec, git, resolved.root, visible.map((change) => change.path), config); } catch (error) {
-    throw new SlopGateRefusal(`could not decide which files are public, so the slop-gate requirement cannot be checked: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const notPublic = visible.filter((change) => !publication.get(change.path)!.public)
-    .map((change) => ({ path: inputOf.get(change.path) ?? change.path, reason: publication.get(change.path)!.reason }));
-  const gated = visible.filter((change) => publication.get(change.path)!.public);
-  if (gated.length === 0) return { checked: true, artifacts: [], notPublic };
 
   const records = readSlopRecords(options.ledgerPath);
   const artifacts: { path: string; sha256: string }[] = [];
@@ -381,7 +306,6 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
         ...uncovered.map((file) => `- ${file.input}${file.note ? ` [${file.note}]` : ""}`),
         `Next: run slop_check {files:${names}, authors:[<the model selectors that wrote the text, or "main">]} (reviewers follow the same author-family rule as cross_review; only text changed since HEAD is reviewed for tracked files), fix or refute every finding (a clean review records the pass by itself; refuted findings are closed with slop_check {action:"resolve"}), then call git_finalize again with the same files. Do not edit these files after the pass: it is tied to their exact content (sha256).`,
         "A waiver (slopGateWaiver) is allowed only on the user's explicit instruction and is recorded in the slop-gate ledger.",
-        ...(notPublic.length > 0 ? [`Not gated because they are not public artifacts (no pass either): ${notPublic.map((file) => `${file.path} (${file.reason})`).join("; ")}.`] : []),
       ].join("\n"));
     }
     try {
@@ -390,9 +314,9 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
         files: gated.map((change) => ({ path: change.path, sha256: artifacts.find((artifact) => artifact.path === change.path)!.sha256 })),
       });
     } catch { throw new SlopGateRefusal("slop-gate waiver could not be recorded in the slop-gate ledger; refusing to commit without a record."); }
-    return { checked: true, waived: true, artifacts, gateBlobs, notPublic };
+    return { checked: true, waived: true, artifacts, gateBlobs };
   }
-  return { checked: true, artifacts, gateBlobs, notPublic };
+  return { checked: true, artifacts, gateBlobs };
 }
 
 /**
@@ -472,20 +396,6 @@ export function candidatesOf(toolName: string, input: Record<string, unknown>, c
   return { files: [...files], dirs: [...dirs] };
 }
 
-/** slop_check {public:true}가 선언한 파일(적힌 경로와 실제 경로). 턴 끝 게이트는 이번 입력 동안 이 파일을 공개로 본다. */
-export function declaredPublic(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
-  if (toolName !== "slop_check" || input.public !== true || !Array.isArray(input.files)) return [];
-  const out: string[] = [];
-  for (const file of input.files) {
-    if (typeof file !== "string" || !file.trim()) continue;
-    const spelled = wslPath(file.trim());
-    const lexical = isAbsolute(spelled) ? resolve(spelled) : resolve(cwd, spelled);
-    out.push(lexical);
-    try { out.push(realpathSync(lexical)); } catch { /* 아직 없는 파일은 적힌 경로만 */ }
-  }
-  return out;
-}
-
 const SKIP_WALK: Record<string, true> = { ...GENERATED_SEGMENT };
 
 /** dir 아래(깊이·개수 제한)에서 since 이후 바뀐 보이는 형식 파일. */
@@ -522,12 +432,11 @@ export function insideGit(path: string): boolean {
 export interface PendingArtifact { path: string; sha256: string; reason: string }
 
 /**
- * 턴 끝 판정. 후보 중 존재하고, 턴 시작 이후 바뀌었고, git 밖이고, 보이는 산출물이며, 공개 선언(`.slop-gate.json` glob 또는 이번 입력의
- * slop_check public:true, declared)이 있고, 현재 내용의 통과가 없는 것. 선언 없는 저장소 밖 문서는 모르는 파일이라 깨우지 않는다.
- * since는 mtime 시계 차이(Windows 드라이브)를 감안해 2초 일찍 잡는다.
+ * 턴 끝 판정. 후보 중 존재하고, 턴 시작 이후 바뀌었고, git 밖이고, 보이는 산출물(classifyExternal)이며, 현재 내용의 통과가 없는 것.
+ * 공개 선언은 필요 없다. since는 mtime 시계 차이(Windows 드라이브)를 감안해 2초 일찍 잡는다.
  */
 export function pendingArtifacts(
-  tracked: { files: Iterable<string>; dirs: Iterable<string> }, cwd: string, since: number, records: readonly SlopRecord[], declared: ReadonlySet<string> = new Set(),
+  tracked: { files: Iterable<string>; dirs: Iterable<string> }, cwd: string, since: number, records: readonly SlopRecord[],
 ): PendingArtifact[] {
   const found = new Set<string>(tracked.files);
   const floor = since - 2_000;
@@ -542,15 +451,12 @@ export function pendingArtifacts(
   try { base = realpathSync(cwd); } catch { /* cwd를 읽지 못하면 적힌 대로 */ }
   const out: PendingArtifact[] = [];
   for (const path of [...found].sort()) {
-    // 링크는 실제 경로로만 판정하고 읽는다: 별칭 이름이 산출물처럼 보여도 대상의 저장소·분류·공개 선언을 따른다.
+    // 링크는 실제 경로로만 판정하고 읽는다: 별칭 이름이 산출물처럼 보여도 대상의 저장소·분류를 따른다.
     let real: string;
     try { real = realpathSync(path); } catch { continue; }
     if (insideGit(real)) continue;
-    // cwd 안 파일은 상대 경로로 분류한다(폴더 규칙이 적용되고, cwd가 /tmp 아래여도 산출물로 본다).
-    const inside = relative(base, real);
-    const kind = classify(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) ? inside : real, config);
+    const kind = classifyExternal(real, base, root, config);
     if (!kind.visible) continue;
-    if (!externalPublication(real, root, config).public && !declared.has(real)) continue;
     let bytes: Buffer;
     try {
       const stat = statSync(real);

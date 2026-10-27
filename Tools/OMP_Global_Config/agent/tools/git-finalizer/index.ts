@@ -221,11 +221,11 @@ const factory: CustomToolFactory = (pi) => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Cross-family review gate (stage `cross-review`): when there is something new to commit, a code file (docs, tests and generated files excluded) needs a passed cross_review resolve for its exact current content if crossReviewHighRisk is true, a high-risk marker hits its changed lines, or the deterministic 10% sample selects the commit; otherwise the call is refused with the files, the reason and the next step. crossReviewWaiver is allowed only on the user's explicit instruction and is recorded. AI-slop gate (stage `slop-gate`, after cross-review): every PUBLIC visible artifact among the files that has something new to commit (README/CHANGELOG/docs and other markdown, html, pptx/docx/xlsx/pdf/hwpx, report csv, UI copy packs; code, tests, generated files and internal records such as HANDOFF.md and doc/history are excluded) needs a slop_check pass for its exact current content (sha256); otherwise the call is refused with the files and the next step. Public means: with a repository-root .publicignore, not excluded by it (the publish-public mirror rule, negations and new files included) and not ignored by git; without one, declared by a .slop-gate.json visible glob. Private, internal and undeclared files are not gated and are reported as not public, never as passed. slopGateWaiver is allowed only on the user's explicit instruction and is recorded. Main only.",
+    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Cross-family review gate (stage `cross-review`): when there is something new to commit, a code file needs a passed cross_review resolve for its exact current content if it is listed in crossReviewHighRisk (paths from files), a high-risk marker hits its changed lines, or the deterministic 10% sample selects the commit (then at most the 5 code files with the most changed lines, project/style/designer files excluded); otherwise the call is refused with the files, the reason and the next step. Docs, tests, generated files, binary media/office/font assets, TS/JS edits the TypeScript parser proves comment-only and edits that only change version strings (against HEAD or the last passed content) are not targets. crossReviewWaiver is allowed only on the user's explicit instruction and is recorded. AI-slop gate (stage `slop-gate`, after cross-review): every visible artifact among the files that has something new to commit (README/CHANGELOG/docs and other markdown, html, pptx/docx/xlsx/pdf/hwpx, report csv, UI copy packs, plus .slop-gate.json visible globs; no publication declaration is needed, and .publicignore does not exempt anything) needs a slop_check pass for its exact current content (sha256); otherwise the call is refused with the files and the next step. Source code, comments, logs, tests, fixtures, generated files and internal records (rules, prompts, skills, HANDOFF.md, doc/history, doc/README.md) are not slop targets. slopGateWaiver is allowed only on the user's explicit instruction and is recorded. Main only.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
-    crossReviewHighRisk: pi.zod.boolean().optional(),
+    crossReviewHighRisk: pi.zod.array(pi.zod.string()).optional(),
     crossReviewWaiver: pi.zod.string().optional(),
     slopGateWaiver: pi.zod.string().optional(),
   }),
@@ -241,7 +241,6 @@ const factory: CustomToolFactory = (pi) => ({
     // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.
     // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
     let gateBlobs: Record<string, string> | undefined;
-    let slopNotPublic: { path: string; reason: string }[] = [];
     try {
       gateBlobs = (await runGate({
         cwd: pi.cwd, files: requested, highRisk: params.crossReviewHighRisk, waiver: params.crossReviewWaiver,
@@ -251,7 +250,7 @@ const factory: CustomToolFactory = (pi) => ({
       // 게이트가 판정하지 못한 오류(git 실패 등)도 열어 두지 않는다: 확인하지 못한 채 커밋하지 않는다.
       throw new Error(`git_finalize failed at cross-review: ${error instanceof Error ? error.message : String(error)}`);
     }
-    // AI 슬롭 게이트: 공개 산출물(.publicignore 미러에 남거나 .slop-gate.json이 선언한 문서·html·Office·pdf·UI 문구)은 현재 내용의 slop_check 통과가 있어야 한다.
+    // AI 슬롭 게이트: 보이는 산출물(문서·html·Office·pdf·보고 csv·UI 문구, .slop-gate.json이 더한 것)은 현재 내용의 slop_check 통과가 있어야 한다.
     // 게이트가 맞춘 바이트의 blob을 gateBlobs에 합쳐, 게이트 뒤에 파일이 바뀌면 finalizer가 잠금 안에서 거절한다.
     try {
       const slop = await runSlopGate({
@@ -259,7 +258,6 @@ const factory: CustomToolFactory = (pi) => ({
         exec: spawnExec(signal), gitFor: async (root) => (await selectGitExecutor(root)).command,
       });
       gateBlobs = mergeGateBlobs(gateBlobs, slop);
-      slopNotPublic = slop.notPublic ?? [];
     } catch (error) {
       throw new Error(`git_finalize failed at slop-gate: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -305,7 +303,6 @@ const factory: CustomToolFactory = (pi) => ({
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")
               + (handoffNote ? ` ${handoffNote}` : "")
-              + (slopNotPublic.length > 0 ? ` 공개 산출물이 아니라 slop-gate가 점검하지 않은 파일(통과 아님): ${slopNotPublic.map((file) => `${file.path} (${file.reason})`).join("; ")}.` : ""),
           },
         ],
         details: parsed,

@@ -324,8 +324,8 @@ export interface CrossReviewReviewer {
   family: "openai" | "anthropic" | "advisory" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
-  /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. */
-  status: "ok" | "unparsable" | "error";
+  /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. pending은 필수 reviewer가 끝났을 때 아직 답하지 않은 자문 자리(뒤에 cross-review-advisory 기록이 붙는다). */
+  status: "ok" | "unparsable" | "error" | "pending";
   elapsedMs: number;
   /** 앞 20 KB 발췌. 전문은 rawFile에 있다. */
   raw?: string;
@@ -404,7 +404,22 @@ export interface CrossReviewWaiverRecord {
   files: { path: string; blob: string; reasons: string[] }[];
 }
 
-export type CrossReviewLedgerRecord = CrossReviewRecord | CrossReviewResolveRecord | CrossReviewWaiverRecord;
+/**
+ * 필수 reviewer가 끝난 뒤에 끝난 자문 reviewer의 결과(2026-10-27). 그 라운드 기록(reviewId)에 붙으며 findings(R<n>-ADV-*)는 그 체인의 열린
+ * 지적이 된다. 한 reviewId에 처음 기록된 것만 유효하다. 재시작 등으로 호출을 잃었으면 status error·findings []로 남는다. 통과 지문과는 무관하다.
+ */
+export interface CrossReviewAdvisoryRecord {
+  type: "cross-review-advisory";
+  ts: string;
+  reviewId: string;
+  round: number;
+  reviewer: CrossReviewReviewer;
+  findings: CrossReviewFinding[];
+  /** probe 라운드에 늦게 답한 자문의 판단(자문). 라운드 기록의 verdicts와 같은 규칙으로 채운다. */
+  verdicts?: CrossReviewVerdict[];
+}
+
+export type CrossReviewLedgerRecord = CrossReviewRecord | CrossReviewResolveRecord | CrossReviewWaiverRecord | CrossReviewAdvisoryRecord;
 export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord;
 
 export interface RoutingLedger {
@@ -479,7 +494,7 @@ export function readCrossReviewRecords(path: string): CrossReviewLedgerRecord[] 
     if (!line.includes('"type":"cross-review')) continue;
     try {
       const parsed = JSON.parse(line) as CrossReviewLedgerRecord;
-      if (parsed && (parsed.type === "cross-review" || parsed.type === "cross-review-resolve" || parsed.type === "cross-review-waiver")) records.push(parsed);
+      if (parsed && (parsed.type === "cross-review" || parsed.type === "cross-review-resolve" || parsed.type === "cross-review-waiver" || parsed.type === "cross-review-advisory")) records.push(parsed);
     } catch {
       // 깨진 줄은 건너뛴다.
     }

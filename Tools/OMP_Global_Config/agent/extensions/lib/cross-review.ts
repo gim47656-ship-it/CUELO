@@ -1,10 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_LEDGER_PATH,
   readCrossReviewRecords,
+  type CrossReviewAdvisoryRecord,
   type CrossReviewFile,
   type CrossReviewFinding,
   type CrossReviewLedgerRecord,
@@ -61,13 +63,35 @@ const MAX_PROBE_TEXT_CHARS = 2_000;
 export const MAX_INPUT_BYTES = 300 * 1024;
 export const SAMPLE_MODULUS = 10;
 export const REVIEW_TIMEOUT_MS = 600_000;
-/** 자문 reviewer 한 명을 기다리는 상한(그 호출 시작부터). 필수 reviewer는 REVIEW_TIMEOUT_MS 그대로다. 넘으면 호출을 abort하고 timeout으로 기록만 한다. */
+/** slop_check 자문 reviewer 한 명을 기다리는 상한(그 호출 시작부터). 필수 reviewer는 REVIEW_TIMEOUT_MS 그대로다. 넘으면 호출을 abort하고 timeout으로 기록만 한다. */
 export const ADVISORY_TIMEOUT_MS = 120_000;
 /**
- * 필수 reviewer가 모두 끝난 뒤 아직 답하지 않은 자문 reviewer를 더 기다리는 시간(2026-10-27 사용자 결정). 곧바로 끊으면 자문이 거의 늘 버려지고
- * 프록시에 499가 쌓였다(하루 36건 중 10건). 자문 자체 기한 ADVISORY_TIMEOUT_MS는 그대로라 이 유예가 그 기한을 늘리지 않는다.
+ * slop_check에서 필수 reviewer가 모두 끝난 뒤 아직 답하지 않은 자문 reviewer를 더 기다리는 시간(2026-10-27 사용자 결정). 곧바로 끊으면 자문이 거의
+ * 늘 버려지고 프록시에 499가 쌓였다(하루 36건 중 10건). 자문 자체 기한 ADVISORY_TIMEOUT_MS는 그대로라 이 유예가 그 기한을 늘리지 않는다.
  */
 export const ADVISORY_GRACE_MS = 20_000;
+/**
+ * cross_review 자문 reviewer의 기한(그 호출 시작부터). cross_review는 필수 reviewer가 끝나면 곧바로 돌아오고 자문은 뒤에서 이 기한까지 돌며, 답하면
+ * 그 finding을 체인의 열린 지적으로 원장에 붙인다(2026-10-27 사용자 결정: 유예 20 s 안에 끊긴 자문 65/90건이 finding 49건을 담았고 39건이 fixed로 닫혔다).
+ */
+export const ADVISORY_LATE_TIMEOUT_MS = 600_000;
+
+/** 이 프로세스에서 아직 도는 cross_review 자문(reviewId → 끝나 원장에 기록되면 풀리는 promise). 확장 모듈을 다시 읽어도 이어지도록 globalThis에 둔다. */
+const PENDING_ADVISORY = Symbol.for("cuelo.crossReview.pendingAdvisory");
+/**
+ * done은 자문이 끝나 결과를 원장에 쓰려 한 뒤 풀린다. 원장 쓰기가 실패하면 unrecorded(못 쓴 기록)를, 결과 처리 중 예외가 나면 error를 남기고
+ * 항목을 지우지 않는다: 이 프로세스가 실제로 받은 답을 잃어버린 것(재시작)으로 처리하지 않게 resolve가 다시 쓰거나 거절한다.
+ */
+interface PendingAdvisory { done: Promise<void>; deadline: number; unrecorded?: CrossReviewAdvisoryRecord; error?: string }
+function pendingAdvisories(): Map<string, PendingAdvisory> {
+  const holder = globalThis as unknown as Record<symbol, Map<string, PendingAdvisory> | undefined>;
+  return (holder[PENDING_ADVISORY] ??= new Map());
+}
+
+/** reviewId 라운드의 자문이 이 프로세스에서 아직 돌면 그 끝(원장 기록 뒤)을 돌려준다. 없으면 undefined. */
+export function advisoryPending(reviewId: string): Promise<void> | undefined {
+  return pendingAdvisories().get(reviewId)?.done;
+}
 export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic", advisory: "crossReviewAdvisory" };
 /** 늘 함께 도는 자문 자리. 답하면 finding은 다른 reviewer와 똑같이 닫아야 하지만, 실패(error·unparsable)는 기록만 하고 통과 가능 여부를 정하지 않는다. */
 export const ADVISORY_LANE: Lane = "advisory";
@@ -176,45 +200,109 @@ export function isCodeFile(path: string): boolean {
 // git이 바이너리로 본 이 확장자의 파일은 사람이 읽는 실행 코드가 아니다(이미지·미디어·오피스·글꼴). 실행 파일·라이브러리는 그대로 코드다.
 const BINARY_ASSET = /\.(?:png|jpe?g|gif|webp|bmp|ico|tiff?|psd|pdf|docx|xlsx|pptx|hwpx|odt|ods|odp|mp3|wav|ogg|flac|mp4|webm|mov|avi|woff2?|ttf|otf|eot)$/i;
 
-/** 게이트가 보는 대상인가: 경로가 코드이고, 주석만 바뀐 TS/JS로 증명되지 않았고, 바이너리 자산이 아니다. */
-export function isGateTarget(change: Pick<ChangedFile, "path" | "binary" | "commentOnly">): boolean {
-  if (!isCodeFile(change.path) || change.commentOnly) return false;
+/** 게이트가 보는 대상인가: 경로가 코드이고, 주석만 바뀐 TS/JS나 버전 문자열만 바뀐 수정으로 증명되지 않았고, 바이너리 자산이 아니다. */
+export function isGateTarget(change: Pick<ChangedFile, "path" | "binary" | "commentOnly" | "versionOnly">): boolean {
+  if (!isCodeFile(change.path) || change.commentOnly || change.versionOnly) return false;
   return !(change.binary && BINARY_ASSET.test(change.path.replaceAll("\\", "/")));
 }
 
-const TRANSPILE_LOADER: Record<string, "ts" | "tsx" | "js" | "jsx"> = { ts: "ts", mts: "ts", cts: "ts", tsx: "tsx", js: "js", mjs: "js", cjs: "js", jsx: "jsx" };
+// 세 자리 semver 문자열(선택 v 접두·-prerelease·+build). 앞뒤가 숫자나 "점+숫자"로 이어지면(IP 주소·네 자리 어셈블리 버전) 버전으로 보지 않는다.
+// 뒤에 점과 글자가 오는 것(`cuelo-0.10.87.tgz`의 확장자)은 버전이다.
+const SEMVER = /(?<![\w.])v?\d+\.\d+\.\d+(?!\.?\d)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/g;
+const SEMVER_PRESENT = new RegExp(SEMVER.source);
 
 /**
- * 줄 하나가 의미 없는 주석 줄인가. 줄 전체가 `// …`이거나 한 줄 `/* … *\/`(닫는 표시는 줄 끝 하나뿐)이고, 컴파일러·린트·번들러
- * 지시(`@`·`#`·`///`·`/*!`)나 템플릿 보간·JSX 식이 될 수 있는 글자가 없어야 한다. `*`로 시작하는 여러 줄 주석의 가운데 줄은
- * 그 줄이 주석 안이라는 것을 이 줄만으로 증명할 수 없어(`*values(v: string)` 같은 generator 메서드) 받지 않는다. 빈 줄은 된다.
+ * before→after가 버전 문자열만 바꿨는가(2026-10-27 사용자 결정). 줄 수가 같고, 같은 자리의 줄끼리 semver 문자열을 같은 표지로 바꾸면 모두
+ * 같으며, 실제로 바뀐 줄이 하나 이상이어야 한다. 줄 끝 형식(CRLF)·BOM·줄 추가/삭제·순서 바꿈은 버전 변경이 아니다.
  */
-function isPureCommentLine(text: string, jsx: boolean): boolean {
-  const line = text.trim();
-  if (line === "") return true;
-  if (/[`@#]|\$\{/.test(line) || (jsx && /[{}]/.test(line))) return false;
-  if (line.startsWith("//")) return !line.startsWith("///") && !line.includes("*/");
-  return line.length >= 4 && line.startsWith("/*") && !line.startsWith("/*!") && line.indexOf("*/") === line.length - 2 && line.lastIndexOf("/*") === 0;
+export function versionOnlyChange(before: string, after: string): boolean {
+  if (before === after) return false;
+  const old = before.split("\n");
+  const now = after.split("\n");
+  if (old.length !== now.length) return false;
+  return old.every((line, index) => line === now[index] || line.replace(SEMVER, "\0v") === now[index]!.replace(SEMVER, "\0v"));
 }
 
-// 줄을 넘는 리터럴을 만들 수 있는 글자: 템플릿 리터럴의 백틱, 문자열의 줄 잇기(줄 끝 역슬래시). 이것이 없으면 따옴표 문자열은 한 줄 안에서 끝나므로
-// `//`로 시작하는 줄은 코드나 블록 주석 안에서 시작한다. 있으면 그 줄이 리터럴(타입 위치면 Bun이 통째로 지운다) 안일 수 있어 증명하지 않는다.
-// git은 \n으로만 줄을 나누지만 JS는 단독 \r·U+2028·U+2029에서도 줄을 끝낸다. 그러면 git의 주석 줄 하나에 지워지는 타입 선언이 숨을 수 있어 같이 거절한다.
-const MULTILINE_LITERAL = /`|\\\r?\n|\r(?!\n)|[\u2028\u2029]/;
+const TS_SCRIPT_KIND: Record<string, "TS" | "TSX" | "JS" | "JSX"> = { ts: "TS", mts: "TS", cts: "TS", tsx: "TSX", js: "JS", mjs: "JS", cjs: "JS", jsx: "JSX" };
+
+/** 이 파일이 쓰는 TypeScript 컴파일러 API의 일부. typescript 패키지를 정적 import하지 않으므로(설치본에 없을 수 있다) 필요한 모양만 적는다. */
+export interface TsParser {
+  ScriptTarget: { Latest: number };
+  ScriptKind: Record<"TS" | "TSX" | "JS" | "JSX", number>;
+  createSourceFile(fileName: string, text: string, target: number, setParentNodes: boolean, kind: number): object;
+  createPrinter(options: { removeComments: boolean }): { printFile(file: object): string };
+  getLeadingCommentRanges(text: string, pos: number): readonly { pos: number; end: number }[] | undefined;
+  getTrailingCommentRanges(text: string, pos: number): readonly { pos: number; end: number }[] | undefined;
+}
+/** 구문 트리 노드에서 이 파일이 쓰는 부분(getChildren은 구두점 토큰까지 돌려준다). */
+interface TsNode { pos: number; getChildren(file: object): readonly TsNode[] }
+
+let tsParser: TsParser | null | undefined;
 
 /**
- * TS/JS 수정이 주석만 바꿨음을 보수적으로 증명한다. 바뀐 줄(추가·삭제 모두)이 전부 위의 주석 줄이고, HEAD와 지금 내용 어느 쪽에도 줄을 넘는
- * 리터럴을 만들 글자(백틱·줄 잇기)가 없으며, 두 내용의 Bun 변환 결과가 같아야 한다. 변환 결과가 같다는 것만으로는 부족하다(타입만 바꾼
- * 수정, 여러 줄 템플릿 리터럴 타입이나 줄 잇기 문자열 타입 안의 `// …` 줄도 같게 나온다). 그런 파일, 변환에 실패한 파일, 지원하지 않는
- * 확장자는 코드로 남는다. 줄 문맥을 읽는 별도 lexer는 두지 않는다.
+ * typescript 컴파일러를 이 모듈 파일, 실행 진입점(Bun.main), argv[1] 순서로 그 위치의 node_modules에서 찾는다. 저장소·테스트는 저장소의
+ * node_modules에서, CUELO WSL 실행본(~/.omp/agent/extensions, 위로 node_modules 없음)은 host 진입점 ~/cuelo-run/node_modules/@oh-my-pi/... 에서
+ * 찾는다. 어디서도 못 찾거나(npm 설치본·standalone omp는 typescript가 devDependency라 없다) 모양이 다르면 null이고, 그때 주석 증명은 늘 실패한다.
+ * 한 번 정한 결과를 프로세스 동안 쓴다.
  */
-export function commentOnlyEdit(path: string, before: string, after: string, lines: readonly ChangedLine[]): boolean {
-  const loader = TRANSPILE_LOADER[path.slice(path.lastIndexOf(".") + 1).toLowerCase()];
-  if (!loader || lines.length === 0 || !lines.every(({ text }) => isPureCommentLine(text, loader === "tsx" || loader === "jsx"))) return false;
-  if (MULTILINE_LITERAL.test(before) || MULTILINE_LITERAL.test(after)) return false;
+export function loadTypeScript(): TsParser | null {
+  if (tsParser !== undefined) return tsParser;
+  tsParser = null;
+  const anchors = [import.meta.path, typeof Bun !== "undefined" ? Bun.main : undefined, process.argv[1]].filter((anchor): anchor is string => typeof anchor === "string" && isAbsolute(anchor) && !anchor.includes("$bunfs"));
+  for (const anchor of anchors) {
+    try {
+      const loaded = createRequire(anchor)("typescript") as Partial<TsParser>;
+      if (typeof loaded?.createSourceFile === "function" && typeof loaded.createPrinter === "function" && typeof loaded.getLeadingCommentRanges === "function" && typeof loaded.getTrailingCommentRanges === "function" && loaded.ScriptTarget && loaded.ScriptKind) {
+        tsParser = loaded as TsParser;
+        break;
+      }
+    } catch { /* 다음 위치에서 찾는다. */ }
+  }
+  return tsParser;
+}
+
+// 컴파일러·린터·포매터·번들러·커버리지 도구가 읽는 지시 주석. 이런 주석이 바뀐 줄에 있으면 주석이어도 동작을 바꿀 수 있어 증명하지 않는다.
+const DIRECTIVE_COMMENT = /@ts-|eslint-|biome-ignore|prettier-ignore|oxlint-|deno-lint|dprint-ignore|\/\*!|@license|@preserve|[#@]__PURE__|[#@]__NO_SIDE_EFFECTS__|@jsx|webpack[A-Z]|@vite-ignore|^\s*\/\/\/|^\s*\/\/[#@]\s*source(?:Mapping)?URL|(?:istanbul|c8|v8)\s+ignore|@flow|@internal/;
+// JS 파일에서 TypeScript(checkJs)가 타입으로 읽는 JSDoc 표현.
+const JSDOC_TYPE = /@(?:type|typedef|template|satisfies|enum|callback|import|overload|this|extends|augments|implements)\b|@(?:param|returns?|property|prop|arg|argument|throws)\s*\{/;
+
+/**
+ * TS/JS 수정이 주석·공백만 바꿨음을 TypeScript 파서로 증명한다. HEAD와 지금 내용을 각각 파싱해 구문 진단이 없고, 주석을 지우고 다시 찍은
+ * 프로그램이 같아야 한다. 바뀐 줄(추가·삭제)에 지시 주석이 있거나 JS 파일의 JSDoc 타입 표현이 있으면, 지시·JSDoc 타입을 담은 주석이 글자 그대로
+ * 같지 않으면, BOM 유무가 바뀌었으면, 지원하지 않는 확장자이거나 파서를 쓸 수 없거나(parser null) 파싱이 실패하면 증명하지 않는다(코드로 남는다).
+ * parser는 시험용 주입이며 기본은 loadTypeScript()다.
+ */
+export function commentOnlyEdit(path: string, before: string, after: string, lines: readonly ChangedLine[], parser: TsParser | null = loadTypeScript()): boolean {
+  const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  const kind = TS_SCRIPT_KIND[extension];
+  if (!kind || !parser || lines.length === 0) return false;
+  if (before.startsWith("\uFEFF") !== after.startsWith("\uFEFF")) return false;
+  const javascript = kind === "JS" || kind === "JSX";
+  if (lines.some(({ text }) => DIRECTIVE_COMMENT.test(text) || (javascript && JSDOC_TYPE.test(text)))) return false;
   try {
-    const transpiler = new Bun.Transpiler({ loader, minifyWhitespace: true, deadCodeElimination: false, trimUnusedImports: false });
-    return transpiler.transformSync(before) === transpiler.transformSync(after);
+    const printer = parser.createPrinter({ removeComments: true });
+    // 여러 줄 블록 주석은 바뀐 줄에 지시·타입 표지가 없어도 그 블록이 지시 주석이거나 JS의 JSDoc 타입일 수 있다(예: `@type {{` 아래 가운데 줄).
+    // 그런 주석은 앞뒤가 글자 그대로 같아야 한다. 주석은 파서가 만든 모든 토큰 앞 trivia에서 모은다(같은 줄의 주석은 trailing, 줄바꿈 뒤는 leading
+    // 범위로 나온다). 문자열·템플릿 안의 `/*`는 주석이 아니다.
+    const guardedComments = (file: object, text: string): string => {
+      const found = new Map<number, string>();
+      const visit = (node: TsNode): void => {
+        for (const range of [...(parser.getTrailingCommentRanges(text, node.pos) ?? []), ...(parser.getLeadingCommentRanges(text, node.pos) ?? [])]) found.set(range.pos, text.slice(range.pos, range.end));
+        for (const child of node.getChildren(file)) visit(child);
+      };
+      visit(file as TsNode);
+      return [...found.entries()].sort(([a], [b]) => a - b).map(([, comment]) => comment)
+        .filter((comment) => DIRECTIVE_COMMENT.test(comment) || (javascript && JSDOC_TYPE.test(comment))).join("\0");
+    };
+    const read = (text: string): { printed: string; guarded: string } | undefined => {
+      const file = parser.createSourceFile(`x.${extension}`, text, parser.ScriptTarget.Latest, true, parser.ScriptKind[kind]) as { parseDiagnostics?: unknown[] };
+      // 구문 진단을 확인할 수 없거나 하나라도 있으면 증명하지 않는다(오류 복구로 만든 트리는 원문과 다를 수 있다).
+      if (!Array.isArray(file.parseDiagnostics) || file.parseDiagnostics.length > 0) return undefined;
+      return { printed: printer.printFile(file), guarded: guardedComments(file, text) };
+    };
+    const old = read(before);
+    const now = old && read(after);
+    return old !== undefined && now !== undefined && old.printed === now.printed && old.guarded === now.guarded;
   } catch {
     return false;
   }
@@ -244,19 +332,95 @@ export const MARKERS: readonly Marker[] = [
 ];
 
 const COMMENT_LINE = /^\s*(?:\/\/|#|\*|\/\*|<!--|--|;)/;
+// VB 계열(VB.NET·VB6·VBScript)의 줄 전체 주석: `'`로 시작하거나 REM 문(2026-10-27 사용자 결정). marker 판정에서만 뺀다.
+const VB_FILE = /\.(?:vb|bas|frm|cls|ctl|vbs)$/i;
+const VB_COMMENT_LINE = /^\s*(?:'|rem(?:\s|$))/i;
+
+/**
+ * 한 줄에서 문자열 리터럴의 내용을 지운다(따옴표는 남긴다). VB는 큰따옴표만 문자열이고 `""`가 따옴표 하나다. 그 밖의 언어는 `"`·`'`·`` ` ``를
+ * 보고 역슬래시 이스케이프를 따르며, 템플릿은 글자 부분만 지우고 `${…}` 보간 식은 코드로 남긴다. 문자열 밖의 VB `'`, 그 밖 언어의 `/`(주석·정규식·
+ * 나눗셈)부터는 줄 끝까지 그대로 둔다(틀려도 코드로 남는 쪽). 줄 안에서 닫히지 않은 따옴표(여러 줄 문자열의 일부)는 문자열로 보지 않는다.
+ */
+export function stripStringLiterals(text: string, vb: boolean): string {
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index]!;
+    // VB 밖에서 문자열 밖의 `/`는 줄 끝 주석·블록 주석·정규식·나눗셈 중 무엇인지 한 줄만으로 가릴 수 없다: 그 뒤 따옴표를 믿으면 실제 코드를
+    // 문자열로 지울 수 있으므로, 그 자리부터 줄 끝까지 코드로 둔다(줄 끝 주석도 지금처럼 코드 줄의 일부다).
+    if (vb ? char === "'" : char === "/") return out + text.slice(index);
+    if (!vb && char === "`") {
+      let end = index + 1;
+      let kept = "`";
+      let closed = -1;
+      while (end < text.length) {
+        const next = text[end]!;
+        if (next === "\\") { end += 2; continue; }
+        if (next === "`") { closed = end; break; }
+        if (next === "$" && text[end + 1] === "{") {
+          // 보간 식은 닫는 `}`까지(중괄호 깊이를 세고, 안의 "…"·'…' 문자열은 건너뛴다) 코드로 남긴다. 줄 안에서 안 닫히면 줄 끝까지 코드다.
+          // 식 안에 `/`(주석·정규식·나눗셈)나 중첩 템플릿이 있으면 따옴표·중괄호를 믿고 셀 수 없으므로 이 템플릿부터 줄 끝까지 코드로 둔다.
+          let depth = 1;
+          let cursor = end + 2;
+          while (cursor < text.length && depth > 0) {
+            const inner = text[cursor]!;
+            if (inner === "/" || inner === "`") return out + text.slice(index);
+            if (inner === "\"" || inner === "'") {
+              cursor += 1;
+              while (cursor < text.length && text[cursor] !== inner) cursor += text[cursor] === "\\" ? 2 : 1;
+            } else if (inner === "{") depth += 1;
+            else if (inner === "}") depth -= 1;
+            cursor += 1;
+          }
+          kept += text.slice(end, cursor);
+          end = cursor;
+          continue;
+        }
+        end += 1;
+      }
+      if (closed < 0) { out += char; index += 1; continue; }
+      out += `${kept}\``;
+      index = closed + 1;
+      continue;
+    }
+    const quote = vb ? char === "\"" : char === "\"" || char === "'";
+    if (!quote) { out += char; index += 1; continue; }
+    let end = index + 1;
+    let closed = -1;
+    while (end < text.length) {
+      const next = text[end]!;
+      if (vb && next === "\"" && text[end + 1] === "\"") { end += 2; continue; }
+      if (!vb && next === "\\") { end += 2; continue; }
+      if (next === char) { closed = end; break; }
+      end += 1;
+    }
+    if (closed < 0) { out += char; index += 1; continue; }
+    out += char + char;
+    index = closed + 1;
+  }
+  return out;
+}
 
 /** 바뀐 줄 하나. removed면 line은 이전 파일의 줄 번호다. */
 export interface ChangedLine { line: number; text: string; removed?: boolean }
 export interface MarkerHit { trigger: TriggerId; line?: number; text: string; removed?: boolean }
 
-/** 변경 줄(추가·삭제 모두)과 경로에서 marker를 찾는다. 주석만 있는 줄은 코드가 아니므로 보지 않는다. */
+/**
+ * 변경 줄(추가·삭제 모두)과 경로에서 marker를 찾는다. 주석만 있는 줄(VB 계열은 `'`·REM 줄도)은 코드가 아니므로 보지 않는다.
+ * device-io는 문자열 리터럴 내용을 지운 줄에서 다시 맞아야 센다: 화면 문구("PLC Communication")만으로는 장치 입출력이 아니다.
+ */
 export function detectMarkers(path: string, lines: readonly ChangedLine[]): MarkerHit[] {
   const hits: MarkerHit[] = [];
   const normalized = path.replaceAll("\\", "/");
+  const vb = VB_FILE.test(normalized);
   for (const marker of MARKERS) if (marker.path?.test(normalized)) hits.push({ trigger: marker.id, text: `path ${normalized}` });
   for (const { line, text, removed } of lines) {
-    if (COMMENT_LINE.test(text)) continue;
-    for (const marker of MARKERS) if (marker.line?.test(text)) hits.push({ trigger: marker.id, line, removed, text: text.trim().slice(0, 100) });
+    if (COMMENT_LINE.test(text) || (vb && VB_COMMENT_LINE.test(text))) continue;
+    for (const marker of MARKERS) {
+      if (!marker.line?.test(text)) continue;
+      if (marker.id === "device-io" && !marker.line.test(stripStringLiterals(text, vb))) continue;
+      hits.push({ trigger: marker.id, line, removed, text: text.trim().slice(0, 100) });
+    }
   }
   return hits;
 }
@@ -361,12 +525,16 @@ export function sampleSelected(files: readonly { path: string; blob: string }[])
 
 // ── git 수집 ─────────────────────────────────────────────────────────────────
 
-/** 호출마다 Bun 프로세스를 띄운다. pi.exec와 달리 큰 diff를 자르지 않는다. 실행 실패는 code -1이다. */
+/**
+ * 호출마다 Bun 프로세스를 띄운다. pi.exec와 달리 큰 diff를 자르지 않는다. 실행 실패는 code -1이다. 출력 맨 앞의 BOM은 지우지 않는다
+ * (`git cat-file blob`으로 읽은 HEAD 내용의 BOM 유무를 주석·버전 비교가 지금 바이트와 같은 기준으로 보아야 한다).
+ */
 export function spawnExec(signal?: AbortSignal): Exec {
+  const decode = async (stream: ReadableStream<Uint8Array>) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(await new Response(stream).arrayBuffer());
   return async (command, args, options) => {
     try {
       const child = Bun.spawn([command, ...args], { cwd: options.cwd, stdout: "pipe", stderr: "pipe", stdin: options.stdin ?? "ignore", signal });
-      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const [stdout, stderr, code] = await Promise.all([decode(child.stdout), decode(child.stderr), child.exited]);
       return { code, stdout, stderr };
     } catch (error) {
       return { code: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
@@ -421,6 +589,8 @@ export interface ChangedFile {
   binary: boolean;
   /** HEAD 대비 주석만 바뀐 TS/JS 수정으로 증명됐을 때만 true(commentOnlyEdit). 게이트 대상이 아니다. */
   commentOnly?: true;
+  /** HEAD 대비 semver 문자열만 바뀐 수정일 때만 true(versionOnlyChange). 게이트 대상이 아니다. */
+  versionOnly?: true;
   /** marker 판정에 쓰는 바뀐 줄. 새 파일은 전체, 수정은 추가·삭제 줄, 파일 삭제는 HEAD 내용이 삭제 줄이다. */
   changedLines: ChangedLine[];
   /** 검토 본문: 수정·삭제는 통합 diff, 새 파일은 줄 번호를 붙인 전체 내용. */
@@ -494,13 +664,19 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
     if (diffBlob && diffBlob !== blob) throw new Error(`${path} changed while it was being read for the review; run it again once the file is stable.`);
     const isBinary = /^Binary files /m.test(diff.stdout);
     const changedLines = parseChangedLines(diff.stdout);
-    // 주석만 바뀐 TS/JS인지는 HEAD blob(diff index 줄의 이전 blob)과 지금 바이트로 증명한다. 읽지 못하면 코드로 남는다.
+    // 주석만 바뀐 TS/JS인지, 버전 문자열만 바뀌었는지는 HEAD blob(diff index 줄의 이전 blob)과 지금 바이트로 증명한다. 읽지 못하면 코드로 남는다.
+    // 버전 비교는 바뀐 줄이 모두 semver 문자열을 품을 때만 HEAD 내용을 읽는다.
     let commentOnly = false;
-    if (!isBinary && diffBlobs?.[1] && /\.[cm]?[jt]sx?$/i.test(path)) {
+    let versionOnly = false;
+    const script = /\.[cm]?[jt]sx?$/i.test(path);
+    const versionCandidate = changedLines.length > 0 && changedLines.every(({ text }) => SEMVER_PRESENT.test(text));
+    if (!isBinary && diffBlobs?.[1] && (script || versionCandidate)) {
       const head = await exec(git, ["cat-file", "blob", diffBlobs[1]], { cwd: root });
-      commentOnly = head.code === 0 && commentOnlyEdit(path, head.stdout, content.toString("utf8"), changedLines);
+      const now = content.toString("utf8");
+      commentOnly = head.code === 0 && script && commentOnlyEdit(path, head.stdout, now, changedLines);
+      versionOnly = head.code === 0 && !commentOnly && versionCandidate && versionOnlyChange(head.stdout, now);
     }
-    changed.push({ path, status: kind, blob, binary: isBinary, ...(commentOnly ? { commentOnly: true as const } : {}), changedLines, text: diff.stdout, content });
+    changed.push({ path, status: kind, blob, binary: isBinary, ...(commentOnly ? { commentOnly: true as const } : {}), ...(versionOnly ? { versionOnly: true as const } : {}), changedLines, text: diff.stdout, content });
   }
   return { changed, unchanged };
 }
@@ -632,11 +808,18 @@ function changedInputs(inputs: readonly CrossReviewFile[], now: ReadonlyMap<stri
   });
 }
 
-/** 게이트가 지금 blob을 확인해야 하는 의존 입력 경로: 바뀐 파일의 (경로, blob)을 덮는 통과 기록에 묶인 입력. 입력 없는 통과만 있으면 비어 있다. */
-export function boundInputPaths(changes: readonly ChangedFile[], records: readonly CrossReviewLedgerRecord[]): string[] {
+/**
+ * 게이트가 지금 blob을 확인해야 하는 의존 입력 경로: 바뀐 파일의 (경로, blob)을 덮는 통과 기록에 묶인 입력. anyBlob이면 그 경로의 옛 내용을 덮은
+ * 통과(버전 문자열만 바뀐 내용으로 이어받을 후보)의 입력도 넣는다. 입력 없는 통과만 있으면 비어 있다.
+ */
+export function boundInputPaths(changes: readonly ChangedFile[], records: readonly CrossReviewLedgerRecord[], anyBlob = false): string[] {
   const covered = coveredBlobs(records);
   const paths = new Set<string>();
-  for (const change of changes) for (const pass of covered.get(change.path)?.get(change.blob) ?? []) for (const input of pass.inputs) paths.add(input.path);
+  for (const change of changes) {
+    const blobs = covered.get(change.path);
+    const passes = anyBlob ? [...(blobs?.values() ?? [])].flat() : blobs?.get(change.blob) ?? [];
+    for (const pass of passes) for (const input of pass.inputs) paths.add(input.path);
+  }
   return [...paths];
 }
 
@@ -668,22 +851,43 @@ export async function currentInputBlobs(exec: Exec, git: string, root: string, p
   return out;
 }
 
-export function decideGate(changes: readonly ChangedFile[], highRisk: boolean, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map()): GateDecision {
-  // 표본은 지금처럼 커밋의 코드 경로 전체(path+blob)로 뽑는다. 뽑힌 뒤 검토를 요구하는 것은 게이트 대상(주석만 바뀐 TS/JS·바이너리 자산 제외)뿐이다.
+/** 표본에서 빼는 프로젝트·스타일·디자이너 파일(2026-10-27 사용자 결정). marker·high-risk가 걸리면 그 이유로는 그대로 요구된다. */
+const SAMPLE_EXCLUDED = /\.(?:sln|slnx|csproj|vbproj|vcxproj|props|targets|resx|settings|myapp|css|scss|sass|less)$|\.designer\.[^/.]+$/i;
+/** 표본에 뽑힌 커밋에서 표본 이유로 요구하는 최대 파일 수(바뀐 줄이 많은 순, 같으면 경로 순). */
+export const SAMPLE_MAX_FILES = 5;
+
+/** 통과한 옛 내용에서 버전 문자열만 바뀐 지금 내용을 덮는 통과(2026-10-27 사용자 결정). */
+export interface CarriedPass { path: string; blob: string; fromBlob: string; reviewId: string }
+
+/**
+ * 검토가 필요한 파일과 덮이지 않은 파일을 정한다. highRisk는 high-risk로 선언한 저장소 상대 경로다. passedContent는 `${path}\0${blob}` → 그 경로의
+ * 통과한 옛 내용이며, 지금 내용이 그 내용과 버전 문자열만 다르고 그 통과에 묶인 입력이 그대로면 그 통과가 지금 내용을 덮는다(carried).
+ */
+export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map()): GateDecision & { carried?: CarriedPass[] } {
+  // 표본은 지금처럼 커밋의 코드 경로 전체(path+blob)로 뽑는다. 뽑힌 뒤 표본 이유로 요구하는 것은 게이트 대상(주석·버전만 바뀐 수정·바이너리 자산 제외) 중
+  // 프로젝트·스타일·디자이너 파일을 뺀, 바뀐 줄이 많은 SAMPLE_MAX_FILES개뿐이다.
+  const declared = new Set(highRisk);
   const code = changes.filter((change) => isCodeFile(change.path));
   const key = sampleKey(code);
-  const sampled = sampleSelected(code);
+  const targets = code.filter(isGateTarget);
+  const sampledPaths = new Set(sampleSelected(code)
+    ? targets.filter((change) => !SAMPLE_EXCLUDED.test(change.path))
+      .sort((a, b) => b.changedLines.length - a.changedLines.length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+      .slice(0, SAMPLE_MAX_FILES).map((change) => change.path)
+    : []);
   const required: RequiredFile[] = [];
-  for (const change of code.filter(isGateTarget)) {
+  for (const change of targets) {
     const reasons: string[] = [];
-    if (highRisk) reasons.push("declared high-risk (crossReviewHighRisk)");
+    if (declared.has(change.path)) reasons.push("declared high-risk (crossReviewHighRisk)");
     for (const hit of detectMarkers(change.path, change.changedLines).slice(0, 3)) {
       reasons.push(`marker ${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}: ${hit.text}`);
     }
-    if (sampled) reasons.push(`sampled (deterministic 1 in ${SAMPLE_MODULUS} by path+blob list, key ${key.slice(0, 8)})`);
+    if (sampledPaths.has(change.path)) reasons.push(`sampled (deterministic 1 in ${SAMPLE_MODULUS} by path+blob list, key ${key.slice(0, 8)}; one of the ${SAMPLE_MAX_FILES} most-changed files after dropping project/style/designer files)`);
     if (reasons.length > 0) required.push({ path: change.path, blob: change.blob, reasons });
   }
   const covered = coveredBlobs(records);
+  const current = new Map(changes.map((change) => [change.path, change.content] as const));
+  const carried: CarriedPass[] = [];
   const uncovered = required.flatMap((file) => {
     const blobs = covered.get(file.path);
     const passes = blobs?.get(file.blob);
@@ -695,9 +899,35 @@ export function decideGate(changes: readonly ChangedFile[], highRisk: boolean, r
       const names = latest.changed.map(({ path, state }) => `${path} (${state})`).join(", ");
       return [{ ...file, note: `a passed review covers this exact content, but input(s) that review was bound to changed after the pass: ${names}; the change was not checked against their current content, so rerun the review`, reviewInputs: latest.pass.inputs.map((input) => input.path) }];
     }
+    const now = current.get(file.path);
+    if (blobs && now) {
+      const text = now.toString("utf8");
+      for (const [fromBlob, older] of blobs) {
+        const content = passedContent.get(`${file.path}\0${fromBlob}`);
+        const pass = content !== undefined && versionOnlyChange(content, text) ? older.find((item) => changedInputs(item.inputs, inputBlobs).length === 0) : undefined;
+        if (pass) { carried.push({ path: file.path, blob: file.blob, fromBlob, reviewId: pass.reviewId }); return []; }
+      }
+    }
     return [{ ...file, note: blobs ? "a passed review exists for an older version of this file; the content changed after the pass" : undefined }];
   });
-  return { required, uncovered };
+  return { required, uncovered, ...(carried.length > 0 ? { carried } : {}) };
+}
+
+/**
+ * 통과한 옛 blob의 내용. git 객체(`git cat-file blob`)에 있으면 그것을, 없으면 그 blob을 기록한 검토 라운드의 사본(manifest)에서 읽는다.
+ * 둘 다 없으면 undefined이며 그 통과는 버전만 바뀐 지금 내용을 덮지 못한다.
+ */
+async function passedBlobContent(exec: Exec, git: string, root: string, path: string, blob: string, records: readonly CrossReviewLedgerRecord[]): Promise<string | undefined> {
+  const shown = await exec(git, ["cat-file", "blob", blob], { cwd: root });
+  if (shown.code === 0) return shown.stdout;
+  for (const record of records) {
+    if (record.type !== "cross-review" || !record.files.some((file) => file.path === path && file.blob === blob)) continue;
+    try {
+      const file = readSnapshot(record.snapshotDir).get(path)?.file;
+      if (file) return readFileSync(file).toString("utf8");
+    } catch { /* 사본이 지워졌으면 다음 기록을 본다. */ }
+  }
+  return undefined;
 }
 
 export const DEFAULT_CROSS_REVIEW_DIR = join(dirname(dirname(import.meta.dir)), "cross-review");
@@ -715,7 +945,8 @@ export interface GateOptions {
   cwd: string;
   /** git_finalize에 넘긴 cwd 기준 파일 목록. */
   files: string[];
-  highRisk?: boolean;
+  /** high-risk로 선언한 파일(files에 적은 그대로 또는 저장소 상대 경로). files에 없는 경로가 있으면 거절한다. */
+  highRisk?: readonly string[];
   waiver?: string;
   ledgerPath: string;
   exec?: Exec;
@@ -743,9 +974,21 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   const resolved = await resolveRepoTargets(options.cwd, options.files, exec);
   if ("failure" in resolved) {
     if (resolved.failure === "git") throw new CrossReviewRefusal(`the repository state could not be read, so the review requirement cannot be checked: ${resolved.detail}`);
+    const listed = new Set(options.files.map((file) => file.trim()));
+    const strays = (options.highRisk ?? []).map((path) => path.trim()).filter((path) => path && !listed.has(path));
+    if (strays.length > 0) throw new CrossReviewRefusal(`crossReviewHighRisk must list only files of this commit (as written in files); not in files: ${strays.join(", ")}.`);
     return { checked: false };
   }
   const git = (await options.gitFor?.(resolved.root)) ?? "git";
+  // high-risk 선언은 이번 files에 든 경로에만 걸린다. files에 적은 그대로나 그 파일의 저장소 상대 경로로 적을 수 있다.
+  const declaredInputs = [...new Set((options.highRisk ?? []).map((path) => path.trim()).filter(Boolean))];
+  const highRiskPaths = new Set<string>();
+  const strays: string[] = [];
+  for (const entry of declaredInputs) {
+    const target = resolved.targets.find((item) => item.input.trim() === entry || item.path === entry);
+    if (target) highRiskPaths.add(target.path); else strays.push(entry);
+  }
+  if (strays.length > 0) throw new CrossReviewRefusal(`crossReviewHighRisk must list only files of this commit (as written in files, or their repository-relative path); not in files: ${strays.join(", ")}.`);
   const { changed, unchanged } = await collectChanges(exec, git, resolved.root, resolved.targets.map((target) => target.path));
   // 코드 파일이 하나라도 있으면 요청한 모든 경로(바뀌지 않은 것 포함)의 blob을 finalizer에 넘긴다. 게이트가 본 뒤에 바뀐 파일을 잠금 안에서
   // 잡으려면 바뀌지 않았던 파일도 기준값이 있어야 한다.
@@ -758,8 +1001,24 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
 
   const records = readCrossReviewRecords(options.ledgerPath);
   // 통과에 묶인 의존 입력은 그 통과가 이 변경을 덮을 때만 지금 blob을 읽는다. 입력 없는 통과만 있으면 아무것도 읽지 않는다.
-  const inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records));
-  const decision = decideGate(changed, options.highRisk === true, records, inputBlobs);
+  let inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records));
+  let decision = decideGate(changed, highRiskPaths, records, inputBlobs);
+  // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
+  const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
+  if (older.length > 0) {
+    const covered = coveredBlobs(records);
+    const passedContent = new Map<string, string>();
+    for (const file of older) {
+      for (const blob of covered.get(file.path)?.keys() ?? []) {
+        const content = await passedBlobContent(exec, git, resolved.root, file.path, blob, records);
+        if (content !== undefined) passedContent.set(`${file.path}\0${blob}`, content);
+      }
+    }
+    if (passedContent.size > 0) {
+      inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, true));
+      decision = decideGate(changed, highRiskPaths, records, inputBlobs, passedContent);
+    }
+  }
   if (decision.uncovered.length === 0) return { checked: true, decision, gateBlobs };
 
   const reason = options.waiver?.trim();
@@ -783,9 +1042,9 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   // 의존 입력이 바뀌어 덮이지 않은 파일이 있으면, 다시 검토할 때 같은 입력을 선언하도록 cwd 기준 경로로 알려 준다.
   const reviewInputs = [...new Set(reviewable.flatMap((file) => file.reviewInputs ?? []))].map((path) => relative(options.cwd, join(resolved.root, ...path.split("/"))).split(sep).join("/"));
   throw new CrossReviewRefusal([
-    `cross-family review required before this commit (docs, tests, generated files, binary media/office/font assets and TS/JS edits proven comment-only are excluded). ${decision.uncovered.length} file(s) have no passed review for their current content:`,
+    `cross-family review required before this commit (docs, tests, generated files, binary media/office/font assets, TS/JS edits proven comment-only and edits that only change version strings are excluded). ${decision.uncovered.length} file(s) have no passed review for their current content:`,
     ...list,
-    ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
+    ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
     "A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction and is recorded in the routing ledger.",
   ].join("\n"));
@@ -1054,12 +1313,12 @@ export interface ReviewDeps {
   snapshotRoot: string;
   /** reviewer 한 명을 부른다. 실패는 ReviewerCallError(model 포함)로 던진다. */
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
-  /** 자문 reviewer 기한(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_TIMEOUT_MS. */
+  /** 자문 reviewer 기한(ms, 그 호출 시작부터). 테스트가 짧게 주입한다. 기본 ADVISORY_LATE_TIMEOUT_MS. */
   advisoryTimeoutMs?: number;
-  /** 필수 reviewer가 끝난 뒤 자문을 더 기다리는 시간(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_GRACE_MS. */
-  advisoryGraceMs?: number;
-  /** reviewer 호출 시작·reviewer마다의 끝(답·실패·timeout·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
+  /** reviewer 호출 시작·reviewer마다의 끝(답·실패·timeout·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다(늦게 끝난 자문은 notify로 알린다). */
   onProgress?: (progress: ReviewProgress) => void;
+  /** 결과를 돌려준 뒤 끝난 자문 reviewer가 finding을 냈을 때 세션에 알릴 한 덩어리 글. 없으면 알리지 않는다(다음 라운드·resolve에는 늘 보인다). */
+  notify?: (text: string) => void;
   now?: () => Date;
   newId?: () => string;
 }
@@ -1084,7 +1343,7 @@ class AdvisoryStopError extends ReviewerCallError {
  */
 export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, model: string, requiredSettled?: AbortSignal): Promise<T> {
   const cancelled = () => new AdvisoryStopError("advisory reviewer cancelled: the review was aborted, so its call was aborted without waiting for the provider", model, "cancelled");
-  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished and the grace wait after them ran out, so the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
+  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished and the advisory was not waited for any longer, so the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
   if (signal.aborted) throw cancelled();
   if (requiredSettled?.aborted) throw settled();
   const controller = new AbortController();
@@ -1137,10 +1396,10 @@ export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: L
   return outcomes.map((outcome) => (outcome as PromiseFulfilledResult<R>).value);
 }
 
-function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number, graceMs: number): string {
+function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number): string {
   const parts = reviewers.map((reviewer) => {
     const who = reviewer.advisory ? "advisory" : `${reviewer.family} (required)`;
-    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (gives up at ${advisoryMs / 1000} s, or ${graceMs / 1000} s after every required reviewer has finished, nonblocking)` : ""}`;
+    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (nonblocking: the review returns when every required reviewer has finished; a later advisory answer, up to ${advisoryMs / 1000} s, is appended to this chain)` : ""}`;
     return `${who} ${reviewer.state} after ${reviewer.elapsedSec} s`;
   });
   return `cross_review round ${round}: ${parts.join("; ")}`;
@@ -1152,6 +1411,10 @@ export interface ReviewResult {
   reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string; advisory?: true }[];
   /** 자문 reviewer의 답을 쓸 수 없었을 때만: 기록만 했고 통과를 막지 않으며 다음 라운드가 다시 부른다는 안내. */
   advisoryReviewers?: string;
+  /** 필수 reviewer가 끝났을 때 자문이 아직 답하지 않았을 때만: 자문이 뒤에서 계속 돌고 답하면 finding이 이 체인에 붙는다는 안내. */
+  advisoryPending?: string;
+  /** 앞 라운드에 늦게 붙은 자문 finding(열린 지적으로 다룬다). */
+  earlierAdvisoryFindings?: CrossReviewFinding[];
   triggers: string[];
   highRisk: boolean;
   findings: CrossReviewFinding[];
@@ -1195,6 +1458,24 @@ export function chainOf(records: readonly CrossReviewLedgerRecord[], reviewId: s
     current = findReview(records, current.previousReviewId);
   }
   return undefined;
+}
+
+/** reviewId마다 처음 기록된 늦은 자문 결과. 같은 reviewId의 뒤 기록(재시작으로 잃었다고 적은 뒤 도착한 답 등)은 무시한다. */
+function lateAdvisories(records: readonly CrossReviewLedgerRecord[]): Map<string, CrossReviewAdvisoryRecord> {
+  const out = new Map<string, CrossReviewAdvisoryRecord>();
+  for (const record of records) if (record.type === "cross-review-advisory" && !out.has(record.reviewId)) out.set(record.reviewId, record);
+  return out;
+}
+
+/** 체인의 모든 finding: 라운드마다 그 라운드 기록의 finding 다음에 그 라운드에 늦게 붙은 자문 finding. */
+export function chainFindingsOf(records: readonly CrossReviewLedgerRecord[], chain: readonly CrossReviewRecord[]): CrossReviewFinding[] {
+  const late = lateAdvisories(records);
+  return chain.flatMap((record) => [...record.findings, ...(late.get(record.reviewId)?.findings ?? [])]);
+}
+
+/** 라운드 기록에 자문 자리가 pending으로 남았는가(필수 reviewer가 끝났을 때 자문이 아직 답하지 않았다). */
+function advisoryLeftPending(record: CrossReviewRecord): CrossReviewReviewer | undefined {
+  return record.reviewers.find((reviewer) => reviewer.advisory && reviewer.status === "pending");
 }
 
 const utf8 = (text: string) => Buffer.byteLength(text, "utf8");
@@ -1450,6 +1731,61 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
   writeFileSync(join(dir, manifestName), JSON.stringify(manifest), { mode: 0o600 });
 }
 
+/** reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). */
+interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string }
+
+/**
+ * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
+ * finding id는 R<round>-<자리 표지>-<번호>다. 라운드 안의 결과와 늦게 끝난 자문 결과가 같은 규칙을 쓴다.
+ */
+function readReviewerOutcome(item: ReviewerOutcome, round: number, snapshotDir: string): { reviewer: CrossReviewReviewer & { family: Lane }; findings: CrossReviewFinding[]; rawChars?: number; verdicts?: ParsedVerdict[] } {
+  const advisory = item.family === ADVISORY_LANE ? { advisory: true as const } : {};
+  const keepRaw = (): { raw: string; rawFile: string } => {
+    const rawFile = join(snapshotDir, `raw-${item.family}.txt`);
+    writeFileSync(rawFile, item.text, { mode: 0o600 });
+    return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
+  };
+  if (item.error !== undefined) {
+    return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}), ...advisory }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
+  }
+  const parsed = parseReviewerOutput(item.text);
+  if (!parsed.ok) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory }, findings: [], rawChars: item.text.length };
+  return {
+    reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory },
+    findings: parsed.findings.map((finding, index) => ({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding })),
+    verdicts: parsed.verdicts ?? [],
+  };
+}
+
+/**
+ * 필수 reviewer가 끝난 뒤에 끝난 자문 결과를 그 라운드에 붙인다. 같은 reviewId에 이미 자문 기록이 있으면(재시작으로 잃었다고 적은 뒤 등) 쓰지 않는다.
+ * finding이 있으면 세션에 알린다. 실패·시간 초과도 기록만 하며 통과를 막지 않는다.
+ */
+function recordLateAdvisory(outcome: ReviewerOutcome, review: CrossReviewRecord, deps: ReviewDeps): CrossReviewAdvisoryRecord | undefined {
+  if (lateAdvisories(deps.readAll()).has(review.reviewId)) return undefined;
+  const read = readReviewerOutcome(outcome, review.round, review.snapshotDir);
+  // probe 라운드면 자문의 늦은 판단도 라운드 안에서처럼 남긴다: 준 판단은 그대로, 자문 자리가 소유한(또는 그 라운드에 소유자가 없는) finding의 빠진 판단은 unresolved.
+  const verdicts: CrossReviewVerdict[] = (review.probeResults ?? []).flatMap(({ findingId }) => {
+    const given = read.reviewer.status === "ok" ? read.verdicts?.find((verdict) => verdict.id === findingId) : undefined;
+    if (given) return [{ id: given.id, verdict: given.verdict, why: given.why, reviewer: read.reviewer.model }];
+    const lane = findingLane(findingId);
+    const owned = lane === ADVISORY_LANE || lane === undefined || !review.reviewers.some((reviewer) => reviewer.family === lane);
+    const why = read.reviewer.status === "ok" ? "The reviewer gave no usable verdict for this probe result." : `The reviewer's answer was unusable (${read.reviewer.status}), so it gave no verdict for this probe result.`;
+    return owned ? [{ id: findingId, verdict: "unresolved" as const, why, reviewer: read.reviewer.model }] : [];
+  });
+  const record: CrossReviewAdvisoryRecord = {
+    type: "cross-review-advisory", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: review.reviewId, round: review.round, reviewer: read.reviewer, findings: read.findings,
+    ...(review.probeResults ? { verdicts } : {}),
+  };
+  if (!deps.append(record)) return record;
+  if (read.findings.length === 0) return undefined;
+  const listed = read.findings.map((finding) => `- ${finding.id} [${finding.severity}] ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.claim.slice(0, 300)}`).join("\n");
+  try {
+    deps.notify?.(`cross_review ${review.reviewId} (round ${review.round}): the advisory reviewer ${read.reviewer.model} answered after the review returned, with ${read.findings.length} finding(s). They are now open findings of this chain: fix or refute each, show fixes with a next round (previousReviewId=${review.reviewId} or the chain head), and close them in resolve.\n${listed}`);
+  } catch { /* 알림 실패는 기록을 무르지 않는다. */ }
+  return undefined;
+}
+
 export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: AbortSignal): Promise<ReviewResult> {
   const now = deps.now ?? (() => new Date());
   const files = [...new Set(input.files.map((file) => file.trim()).filter(Boolean))];
@@ -1492,7 +1828,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   } else {
     families = reviewerLanes(input.authors, deps.mainModel, deps.advisoryModel);
   }
-  const chainFindings = chain.flatMap((record) => record.findings);
+  // 앞 라운드에 늦게 붙은 자문 finding도 체인의 지적이다(프롬프트의 앞 지적·probe 대상·resolve 모두 같은 목록을 쓴다).
+  const chainFindings = chainFindingsOf(records, chain);
   // probe 결과는 코드를 읽기 전에 거른다: 잘못된 입력이 git 수집과 사본 쓰기 뒤에야 드러나지 않게 한다.
   const preparedProbes = probeRound ? prepareProbeResults(input.probeResults!, chainFindings) : [];
 
@@ -1647,13 +1984,18 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }
 
-  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs에서, 또는 필수 reviewer가 모두 끝나고 유예가 지나면 끊어 전체 호출을 붙잡지 않는다.
-  const advisoryMs = deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS;
+  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs까지 돌지만 이 호출은 필수 reviewer가 모두 끝나면
+  // 곧바로 돌아온다. 그때 아직 답하지 않은 자문은 pending으로 기록하고 뒤에서 계속 돌며, 끝나면 cross-review-advisory 기록으로 이 라운드에 붙는다.
+  const advisoryMs = deps.advisoryTimeoutMs ?? ADVISORY_LATE_TIMEOUT_MS;
   const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, advisory: family === ADVISORY_LANE, state: "waiting" }));
-  const graceMs = deps.advisoryGraceMs ?? ADVISORY_GRACE_MS;
-  const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs, graceMs) });
+  let returned = false;
+  const report = () => { if (!returned) deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs) }); };
   report();
-  const settled = await settleReviewers(families, async (family, index, requiredSettled) => {
+  // 자문은 자기 취소 신호를 쓴다: 이 호출이 도는 동안만 review 취소를 따르고, 돌아온 뒤에는 도구 신호와 끊어 기한까지 돈다.
+  const advisoryCancel = new AbortController();
+  const forwardAbort = () => advisoryCancel.abort();
+  if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
+  const runs = families.map(async (family, index): Promise<ReviewerOutcome> => {
     const started = Date.now();
     const finish = (state: ReviewerProgressState) => {
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
@@ -1661,36 +2003,43 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     };
     try {
       const completion = family === ADVISORY_LANE
-        ? await withAdvisoryDeadline((attempt) => deps.complete(family, prompt, attempt), advisoryMs, signal, `@${SLOT[family]}`, requiredSettled)
+        ? await withAdvisoryDeadline((attempt) => deps.complete(family, prompt, attempt), advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
         : await deps.complete(family, prompt, signal);
       finish("answered");
-      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, error: undefined as string | undefined };
+      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started };
     } catch (error) {
       // 자문은 멈춘 이유를 그대로, 필수는 review가 취소됐으면 취소로 알린다. 필수의 600 s 제한 초과는 오류 문구로만 구분된다.
       finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
       return { family, model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
     }
-  }, graceMs);
+  });
+  const advisoryIndex = families.indexOf(ADVISORY_LANE);
+  let advisoryOutcome: ReviewerOutcome | undefined;
+  const advisoryRun = advisoryIndex >= 0 ? runs[advisoryIndex]!.then((outcome) => { advisoryOutcome = outcome; return outcome; }) : undefined;
+  const requiredOutcomes = await Promise.all(runs.filter((_, index) => index !== advisoryIndex));
+  signal.removeEventListener("abort", forwardAbort);
+  // 필수와 거의 같이 끝난 자문(답이 이미 와 있고 마무리만 남은 것)은 이 라운드에 넣는다. 기다리는 것은 이벤트 루프 한 차례뿐이다.
+  if (advisoryRun && !advisoryOutcome) {
+    const tick = Promise.withResolvers<void>();
+    setImmediate(tick.resolve);
+    await tick.promise;
+  }
+  const settled = advisoryIndex < 0 ? requiredOutcomes : [...requiredOutcomes.slice(0, advisoryIndex), advisoryOutcome, ...requiredOutcomes.slice(advisoryIndex)];
 
   const reviewers: (CrossReviewReviewer & { family: Lane })[] = [];
   const parsedByFamily = new Map<Lane, ParsedVerdict[]>();
   const findings: CrossReviewFinding[] = [];
   const rawChars: Partial<Record<Lane, number>> = {};
-  const keepRaw = (item: { family: Lane; text: string }): { raw: string; rawFile: string } => {
-    // 답 전문은 사본 디렉터리의 파일로 남긴다. 원장에는 앞 20 KB 발췌, 결과에는 앞 2,000자와 전체 길이·경로만 준다.
-    const rawFile = join(snapshotDir, `raw-${item.family}.txt`);
-    writeFileSync(rawFile, item.text, { mode: 0o600 });
-    rawChars[item.family] = item.text.length;
-    return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
-  };
-  for (const item of settled) {
-    const advisory = item.family === ADVISORY_LANE ? { advisory: true as const } : {};
-    if (item.error !== undefined) { reviewers.push({ family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw(item) : {}), ...advisory }); continue; }
-    const parsed = parseReviewerOutput(item.text);
-    if (!parsed.ok) { reviewers.push({ family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(item), ...advisory }); continue; }
-    reviewers.push({ family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory });
-    parsed.findings.forEach((finding, index) => findings.push({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding }));
-    parsedByFamily.set(item.family, parsed.verdicts ?? []);
+  for (const [index, item] of settled.entries()) {
+    if (!item) {
+      reviewers.push({ family: families[index]!, model: `@${SLOT[families[index]!]}`, status: "pending", elapsedMs: 0, advisory: true });
+      continue;
+    }
+    const read = readReviewerOutcome(item, round, snapshotDir);
+    reviewers.push(read.reviewer);
+    findings.push(...read.findings);
+    if (read.rawChars !== undefined) rawChars[item.family] = read.rawChars;
+    if (read.verdicts) parsedByFamily.set(item.family, read.verdicts);
   }
   // 결과를 받은 finding마다 판단을 모은다. finding을 낸 reviewer가 판단을 안 냈거나 모양이 틀리면 unresolved로 채운다(답 전체를 버리지 않는다).
   const verdicts: CrossReviewVerdict[] = [];
@@ -1699,7 +2048,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       // finding을 낸 자리가 이번 라운드에 없으면(자문 자리가 빠진 체인의 옛 자문 finding) 모든 reviewer가 소유자처럼 채운다.
       const found = findingLane(result.finding.id);
       const owner = found !== undefined && reviewers.some((reviewer) => reviewer.family === found) ? found : undefined;
-      for (const reviewer of reviewers) {
+      for (const reviewer of reviewers.filter((item) => item.status !== "pending")) {
         const given = reviewer.status === "ok" ? parsedByFamily.get(reviewer.family)?.find((verdict) => verdict.id === result.finding.id) : undefined;
         const filler = reviewer.status === "ok" ? "The reviewer gave no usable verdict for this probe result." : `The reviewer's answer was unusable (${reviewer.status}), so it gave no verdict for this probe result.`;
         if (given) verdicts.push({ id: given.id, verdict: given.verdict, why: given.why, reviewer: reviewer.model });
@@ -1710,7 +2059,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const probeMeta: CrossReviewProbeResultMeta[] = preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated }));
   // 통과 가능 여부는 필수(반대 계열) reviewer만으로 정한다. 자문 reviewer의 실패는 기록·안내만 하고, 답한 finding은 resolve에서 똑같이 닫아야 한다.
   const passable = reviewers.every((reviewer) => reviewer.advisory || reviewer.status === "ok");
-  const advisoryFailed = reviewers.filter((reviewer) => reviewer.advisory && reviewer.status !== "ok");
+  const advisoryFailed = reviewers.filter((reviewer) => reviewer.advisory && reviewer.status !== "ok" && reviewer.status !== "pending");
+  const advisoryWaiting = reviewers.some((reviewer) => reviewer.status === "pending");
   const record: CrossReviewRecord = {
     type: "cross-review", ts: now().toISOString(), reviewId, sessionId: deps.sessionId, root, round,
     ...(previous ? { previousReviewId: previous.reviewId } : {}),
@@ -1718,6 +2068,18 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     files: reviewedFiles, ...(inputEntries.length > 0 ? { inputs: inputEntries.map(({ path, blob }) => ({ path, blob })) } : {}), skipped, ...(redacted.length > 0 ? { redacted } : {}), reviewers, findings, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), snapshotDir, passable,
   };
   if (!deps.append(record)) throw new Error(`The review ran but could not be recorded in the routing ledger (${reviewId}); it cannot be resolved. Re-run it.`);
+  if (advisoryRun && advisoryWaiting) {
+    const entry: PendingAdvisory = { done: Promise.resolve(), deadline: Date.now() + advisoryMs };
+    entry.done = advisoryRun.then((outcome) => {
+      const unrecorded = recordLateAdvisory(outcome, record, deps);
+      if (unrecorded) entry.unrecorded = unrecorded; else pendingAdvisories().delete(reviewId);
+    }).catch((error: unknown) => { entry.error = error instanceof Error ? error.message : String(error); });
+    pendingAdvisories().set(reviewId, entry);
+  }
+  returned = true;
+  // 앞 라운드에 늦게 붙은 자문 finding. 이번 라운드 프롬프트의 앞 지적에도 들어갔고, resolve에서 다른 finding처럼 닫아야 한다.
+  const lateEarlier = lateAdvisories(records);
+  const earlierAdvisoryFindings = chain.flatMap((item) => lateEarlier.get(item.reviewId)?.findings ?? []);
   return {
     reviewId, round, reviewers: reviewers.map((reviewer) => ({
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
@@ -1726,6 +2088,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       ...(reviewer.advisory ? { advisory: true as const } : {}),
     })),
     ...(advisoryFailed.length > 0 ? { advisoryReviewers: `${advisoryFailed.map((reviewer) => `${reviewer.model} (${reviewer.family}, ${reviewer.status}${reviewer.error ? `: ${reviewer.error}` : ""})`).join("; ")} gave no usable answer. It is an advisory reviewer: the failure is only recorded, does not affect passable, and any later round of this chain asks it again.` } : {}),
+    ...(advisoryWaiting ? { advisoryPending: `The advisory reviewer had not answered when every required reviewer finished; it keeps running in the background (up to ${advisoryMs / 1000} s from its start) and does not block. If it answers with findings, they are appended to this chain as open findings (R${round}-ADV-*), shown in the next round, and must be closed in resolve; resolve in this process waits for it first.` } : {}),
+    ...(earlierAdvisoryFindings.length > 0 ? { earlierAdvisoryFindings } : {}),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
@@ -1733,7 +2097,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),
-    }), skippedInputs), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
+    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(advisoryWaiting ? [`NOTE: the advisory reviewer of this round is still running in the background (see advisoryPending); resolve waits for it and then requires any finding it returns to be closed.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }
 
@@ -1752,6 +2116,8 @@ export interface ResolveDeps {
   readAll(): CrossReviewLedgerRecord[];
   append(record: AnyLedgerRecord): boolean;
   now?: () => Date;
+  /** 이 프로세스에서 아직 도는 자문을 기다리는 동안 보일 한 줄 진행 알림. */
+  onProgress?: (text: string) => void;
 }
 export interface ResolveResult {
   reviewId: string;
@@ -1784,14 +2150,48 @@ const UNSHOWABLE_SKIP = /^(?:binary file|private key block excluded|secret-looki
  * 이긴다. 통과 지문은 resolve 시점 파일 내용의 git blob이며, 통과하지 못한 resolve도 기록하되 아무것도 덮지 않는다.
  */
 export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promise<ResolveResult> {
-  const records = deps.readAll();
-  const chain = chainOf(records, input.reviewId);
+  let records = deps.readAll();
+  let chain = chainOf(records, input.reviewId);
   if (!chain) throw new Error(`reviewId ${input.reviewId} is unknown or its chain is broken.`);
   const head = chain.at(-1)!;
   const successor = records.find((record): record is CrossReviewRecord => record.type === "cross-review" && record.previousReviewId === head.reviewId);
   if (successor) throw new Error(`${head.reviewId} was followed by round ${successor.round} (${successor.reviewId}); resolve that review instead.`);
 
-  const findings = chain.flatMap((record) => record.findings);
+  // 이 프로세스에서 아직 도는 자문은 기한까지 기다려 그 finding을 체인에 넣는다. 진행 중 호출도 완료 기록도 없는 pending 자문(재시작 등으로 잃음)은
+  // 실패로 기록하고 막지 않는다. 늦게 붙은 자문 finding은 다른 finding처럼 닫아야 한다.
+  const waiting = chain.map((record) => ({ record, pending: pendingAdvisories().get(record.reviewId) })).filter((item) => item.pending);
+  if (waiting.length > 0) {
+    const latest = Math.max(...waiting.map((item) => item.pending!.deadline));
+    deps.onProgress?.(`cross_review resolve: waiting for the advisory reviewer of ${waiting.map((item) => `${item.record.reviewId} (round ${item.record.round})`).join(", ")} before deciding (nonblocking reviewer, at most ${Math.max(0, Math.ceil((latest - Date.now()) / 1000))} s more); any finding it returns must be closed.`);
+    await Promise.all(waiting.map((item) => item.pending!.done));
+    deps.onProgress?.("cross_review resolve: the advisory reviewer finished; deciding now.");
+    records = deps.readAll();
+    // 기다리는 동안 다음 라운드가 시작됐을 수 있다: 체인 머리를 다시 확인한다.
+    const later = records.find((record): record is CrossReviewRecord => record.type === "cross-review" && record.previousReviewId === head.reviewId);
+    if (later) throw new Error(`${head.reviewId} was followed by round ${later.round} (${later.reviewId}) while resolve waited for its advisory reviewer; resolve that review instead.`);
+  }
+  // 이 프로세스가 받은 자문 답을 원장에 못 썼으면 다시 쓰고, 그래도 못 쓰거나 결과 처리에서 예외가 났으면 거절한다(그 finding을 잃은 채 통과시키지 않는다).
+  for (const record of chain) {
+    const pending = pendingAdvisories().get(record.reviewId);
+    if (!pending) continue;
+    if (pending.unrecorded && deps.append(pending.unrecorded)) { pendingAdvisories().delete(record.reviewId); continue; }
+    if (pending.unrecorded) throw new Error(`The advisory reviewer of ${record.reviewId} answered, but its answer could not be written to the routing ledger; nothing was decided so its findings are not lost. Retry resolve.`);
+    if (pending.error !== undefined) throw new Error(`The advisory answer of ${record.reviewId} could not be processed (${pending.error}); nothing was decided so its findings are not lost. Run another round with previousReviewId=${head.reviewId}.`);
+  }
+  records = deps.readAll();
+  const late = lateAdvisories(records);
+  for (const record of chain) {
+    const left = advisoryLeftPending(record);
+    if (!left || late.has(record.reviewId) || pendingAdvisories().has(record.reviewId)) continue;
+    deps.append({
+      type: "cross-review-advisory", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: record.reviewId, round: record.round, findings: [],
+      reviewer: { family: left.family, model: left.model, status: "error", elapsedMs: 0, advisory: true, error: "advisory call lost: it was still pending when its review returned, and this process has neither the running call nor a completion record (process restart or reload). Recorded as failed; nonblocking." },
+    });
+  }
+  records = deps.readAll();
+  chain = chainOf(records, input.reviewId) ?? chain;
+
+  const findings = chainFindingsOf(records, chain);
   const known = new Set(findings.map((finding) => finding.id));
   const chainIds = new Set(chain.map((record) => record.reviewId));
   const state = new Map<string, CrossReviewResolution>();
@@ -1854,7 +2254,8 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
     ...(acknowledged.length > 0 ? { unreviewedAcknowledgements: acknowledged } : {}),
   };
   if (!deps.append(record)) throw new Error("The resolution could not be recorded in the routing ledger; nothing was saved. Retry.");
-  const verdicts = chain.flatMap((item) => item.verdicts ?? []);
+  const lateByReview = lateAdvisories(records);
+  const verdicts = chain.flatMap((item) => [...(item.verdicts ?? []), ...(lateByReview.get(item.reviewId)?.verdicts ?? [])]);
   const unreviewedNote = blocking.length > 0
     ? (roundLeft
       ? `${blocking.length} code file(s) changed after the last reviewed round (${head.reviewId}) and the reviewer never saw them (${blocking.join(", ")}): no pass is recorded. Run cross_review review with previousReviewId=${head.reviewId} so the reviewer sees the change, then resolve the new round.`

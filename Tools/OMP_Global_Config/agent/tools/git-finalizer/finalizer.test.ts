@@ -1205,9 +1205,9 @@ describe("cross-family review gate", () => {
     const { root, work } = await createRepository();
     process.env.OMP_CROSS_REVIEW_LEDGER = join(root, "ledger.jsonl");
     await writeFile(join(work, "plain.ts"), "export const one = 1;\n");
-    const declared = await startTool(work, ["plain.ts"], { crossReviewHighRisk: true });
+    const declared = await startTool(work, ["plain.ts"], { crossReviewHighRisk: ["plain.ts"] });
     expect(declared.error?.message).toContain("declared high-risk");
-    const waived = await startTool(work, ["plain.ts"], { crossReviewHighRisk: true, crossReviewWaiver: "user approved skipping review" });
+    const waived = await startTool(work, ["plain.ts"], { crossReviewHighRisk: ["plain.ts"], crossReviewWaiver: "user approved skipping review" });
     expect(waived.error).toBeUndefined();
     expect(readCrossReviewRecords(join(root, "ledger.jsonl"))).toMatchObject([{ type: "cross-review-waiver", reason: "user approved skipping review" }]);
   }, TEST_TIMEOUT_MS);

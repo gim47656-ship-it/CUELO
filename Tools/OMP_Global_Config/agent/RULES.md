@@ -92,17 +92,17 @@
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
   하는 대화 답변은 대상이 아니다. 이 Gemini는 2026-10-26부터 Google Cloud Vertex의 Gemini 4 Argon이며(크레딧으로
   과금) OCR 역할에도 쓴다. 이미지 질문(vision)은 Opus를 유지하고, Antigravity OAuth는 계정 정지 위험으로 쓰지 않는다.
-  **문서의 AI 슬롭·교차검수는 공개 배포·공유용 산출물에만 적용한다(2026-10-26 사용자 정정).** 비공개·내부 문서는
-  파일로 사용자에게 전달하더라도 제외한다. 소스 코드 밖에 있거나 md·HTML·PPT·Word·Excel·PDF·HWPX·csv·UI 문구
-  형식이라는 이유만으로 공개 산출물로 보지 않는다. 공개 미러의 `.publicignore`(부정 규칙 포함), 프로젝트의
-  `.slop-gate.json` `visible` 선언, 명시적인 공개용 지정으로 판별한다. 공개 여부가 불명확하면 자동으로 검토 모델에
-  보내거나 게이트로 막지 않는다. 비공개·내부 제외는 명시적 공개 지정으로 우회하지 않는다. 코드·주석·로그·테스트·생성물,
-  내부 프롬프트·규칙·스킬과 `HANDOFF.md`·`doc/history`·`doc/README.md`도 제외한다. 위 초안 작성·직접 교정 규칙과
-  코드 변경의 `cross_review`는 그대로 유지한다.
-  공개 산출물 점검은 `slop_check`로 하고 검토 모델은 필수 반대 계열 + Argon 보조 자문 경로를 쓴다. 지적이 없으면
+  **소스 코드 안에 내장된 내부 말고 바깥에 보여지는 산출물은 모두 AI 슬롭 게이트를 통과한다(2026-10-26 사용자 지시,
+  2026-10-27 재확인).** 대상은 형식으로 정한다: README·CHANGELOG·`docs/`와 그 밖의 md, HTML, PPTX·DOCX·XLSX·PDF·HWPX,
+  보고서 csv, 언어 팩의 화면 문구다. 공개 저장소에 올라가는지, `.publicignore`·`.slop-gate.json` 선언이 있는지는 따지지
+  않는다. 고객·사용자에게 파일로 건네는 덱·보고서·문서도 대상이다(2026-10-27: 공개 선언이 없다는 이유로 고객용 덱이 빠진
+  사례를 사용자가 바로잡았다). 제외는 소스 내부뿐이다: 코드·주석·로그·테스트·fixture·생성물·vendor, 내부 프롬프트·규칙·
+  SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`. `.slop-gate.json` `visible`은 대상을 더하기만 한다. 위 초안 작성·
+  직접 교정 규칙과 코드 변경의 `cross_review`는 그대로 유지한다.
+  점검은 `slop_check`로 하고 검토 모델은 필수 반대 계열 + Argon 보조 자문 경로를 쓴다. 지적이 없으면
   그 파일 내용에 통과가 기록된다. 고친 파일은 다시 점검하며 내용을 바꾸지 않고 닫을 수 있는 것은 Main이 근거로
-  반박(`refuted`)한 지적뿐이다. git 추적 파일은 HEAD 대비 바뀐 글만 본다. 공개 대상만 `git_finalize`의 `slop-gate`와
-  저장소 밖 산출물의 턴 종료 검사에 걸린다. 공개 대상의 게이트 면제는 사용자의 명시 지시가 있을 때만 기록해 적용한다.
+  반박(`refuted`)한 지적뿐이다. git 추적 파일은 HEAD 대비 바뀐 글만 본다. 대상 파일은 `git_finalize`의 `slop-gate`와
+  저장소 밖 산출물의 턴 종료 검사에 걸린다. 게이트 면제는 사용자의 명시 지시가 있을 때만 기록해 적용한다.
   검토 응답이 JSON으로 해석되지 않으면 실패 원문·파싱 오류를 먼저 확인한다. 토큰 길이로 원인을 추측하거나 같은 조건으로
   반복 호출하지 않는다. 검토 응답의 형식 오류를 피하려고 산출물의 따옴표·쉼표·내용을 바꾸지 않는다. 실제 내용상 지적에
   근거한 교정은 별개다. 불완전한 JSON을 임의로 보완하거나 필수 검토가 실패한 상태에서 통과시키지 않는다.
@@ -158,7 +158,7 @@
   `HANDOFF.md`·`doc/README.md`·`doc/history` 기록을 만들어 같은 커밋에 넣는다.
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
-- 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면 `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 문서·테스트·생성물, 게이트가 주석만 바꿨다고 증명한 TS/JS 수정, git이 바이너리로 본 이미지·미디어·오피스·글꼴 자산은 제외한다. 타입만 바꾼 수정과 다른 언어의 주석 수정은 코드로 본다. 검토 대상은 바뀐 실행 코드·설정이고, 관련된 바뀌지 않은 호출부·계약은 `inputs`·`references`로 넘긴다. 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
+- 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면 `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 문서·테스트·생성물, 게이트가 파서로 주석·공백만 바꿨다고 증명한 TS/JS 수정, 버전 문자열(semver)만 바꾼 수정, git이 바이너리로 본 이미지·미디어·오피스·글꼴 자산은 제외한다. 타입만 바꾼 수정, 지시 주석 수정, 다른 언어의 주석 수정은 코드로 본다(VB 주석 줄은 marker 판정에서만 빠진다). high-risk 선언은 `crossReviewHighRisk`에 적은 파일에만 걸리고, 표본은 프로젝트·스타일·디자이너 파일을 빼고 바뀐 줄이 많은 코드 파일 5개까지만 요구한다(2026-10-27 사용자 결정). 검토 대상은 바뀐 실행 코드·설정이고, 관련된 바뀌지 않은 호출부·계약은 `inputs`·`references`로 넘긴다. 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
   **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic` 슬롯(필수, `cross_review`와 같은 계열 규칙)과 자문 슬롯 `crossReviewAdvisory`(2026-10-26 Argon→Fable→AI Studio 프록시 Argon으로 교체, 저자가 그 모델 자체일 때만 빠짐)에서 읽는다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
 - `git_finalize`는 상대경로 canonical target만 받고 한 호출에서 저장소 하나만 마감한다. 경로
   해석과 거부 대상, cwd 밖 별도 Git 저장소 허용, Main의 raw Git fallback 4조건과 사전 확인,

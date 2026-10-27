@@ -49,9 +49,9 @@ const ADVISOR = "anthropic/fixture-advisor";
 const clean = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [] })) });
 const dirty = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [{ quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", fix: "무엇을 하는지 구체적으로 쓴다" }] })) });
 
-/** 기본 fixture는 slop_check {public:true}로 부른 것과 같다(선언 없는 scratch 파일을 심사 흐름에 태운다). 공개 판정 자체는 아래 "공개 산출물만" 묶음이 본다. */
+/** slop_check를 부른 것과 같은 fixture. 대상 판정(classify)은 실제 코드가 한다: scratch의 .md는 공개 선언 없이도 보이는 산출물이다. */
 function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): SlopDeps {
-  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, advisoryModel: ADVISOR, head: async () => undefined, publish: true, ...extra };
+  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, advisoryModel: ADVISOR, head: async () => undefined, ...extra };
 }
 
 describe("classify: 보이는 산출물과 내부·코드", () => {
@@ -453,10 +453,9 @@ describe("턴 끝 게이트: 저장소 밖 산출물", () => {
       end: (extra: Record<string, unknown> = {}) => emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }], ...extra }),
     };
   }
-  /** 저장소 밖 scratch cwd. `.slop-gate.json`이 납품 형식을 공개로 선언해, 아래 판정은 내부 기록·코드·mtime 규칙을 본다. */
+  /** 저장소 밖 scratch cwd. 공개 선언(.slop-gate.json)은 없다: 아래 판정은 보이는 형식·내부 기록·코드·mtime 규칙만 본다. */
   const setup = () => {
     const cwd = scratch();
-    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["**/*.pptx", "**/*.docx", "**/*.html", "**/*.md"] }));
     process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
     return cwd;
   };
@@ -665,7 +664,7 @@ describe("reviewer 기준: 채점에 필요한 세부 기준이 프롬프트에 
   });
 });
 
-describe("공개 산출물만: .publicignore·선언이 정하고, 비공개·모르는 파일은 읽기 전에 빠진다", () => {
+describe("보이는 산출물은 공개 선언 없이 대상이다: .publicignore가 지운 파일도, 내부 기록만 읽기 전에 빠진다(2026-10-27)", () => {
   const git = (cwd: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
   const put = (cwd: string, path: string, text: string) => { mkdirSync(join(cwd, path, ".."), { recursive: true }); writeFileSync(join(cwd, path), text); };
   /** publish-public.yml과 같은 규칙의 작은 미러 저장소. 커밋 뒤 공개·비공개 파일을 고치고 새 파일을 더한다. */
@@ -687,92 +686,76 @@ describe("공개 산출물만: .publicignore·선언이 정하고, 비공개·�
   };
   const passes = (cwd: string) => readSlopRecords(join(cwd, "ledger.jsonl")).filter((record) => record.type === "slop-pass");
 
-  test("비공개 PC-SETUP·내부 README·docx·새 비공개 파일은 바이트·추출·HEAD·reviewer 전에 not-public으로 빠지고, public:true도 이를 못 바꾼다", async () => {
+  test("내부 기록(doc/README.md)은 바이트·추출·HEAD·reviewer 전에 internal로 빠지고, .publicignore가 지운 보이는 문서(PC-SETUP·새 비공개 문서)는 심사한다", async () => {
     const cwd = mirror();
     const reviewer = fakeReviewer(clean);
     const s = spy();
-    const out = await reviewFiles(["PC-SETUP.md", "doc/README.md", "private/guide.docx", "private/new.md"], undefined, deps(cwd, reviewer.complete, { extract: s.extract, head: s.head, publish: true }), signal);
-    expect(reviewer.all).toHaveLength(0);
-    expect(s.extracted).toHaveLength(0);
-    expect(s.heads).toHaveLength(0);
-    expect(out.files.map((file) => file.status)).toEqual(["not-public", "not-public", "not-public", "not-public"]);
-    for (const file of out.files) {
-      expect(file.sha256).toBeUndefined();
-      expect(file.reason).toContain(".publicignore");
-    }
-    expect(passes(cwd)).toHaveLength(0);
+    const out = await reviewFiles(["PC-SETUP.md", "doc/README.md", "private/new.md"], undefined, deps(cwd, reviewer.complete, { extract: s.extract, head: s.head }), signal);
+    expect(out.files.map((file) => [file.file, file.status])).toEqual([["doc/README.md", "internal"], ["PC-SETUP.md", "pass"], ["private/new.md", "pass"]]);
+    const internalFile = out.files.find((file) => file.file === "doc/README.md")!;
+    expect(internalFile).toMatchObject({ reason: "internal record" });
+    expect(internalFile.sha256).toBeUndefined();
+    expect(s.extracted.map((path) => path.endsWith("README.md"))).not.toContain(true);
+    expect(s.heads.some((path) => path.endsWith("doc/README.md"))).toBe(false);
+    expect(reviewer.calls).toHaveLength(1);
+    expect(reviewer.calls[0]).not.toContain("doc/README.md");
   });
 
-  test("섞인 요청은 공개 파일(README·부정 규칙으로 남은 문서·새 공개 파일)만 reviewer에 보내고, 다 통과했다고 말하지 않는다", async () => {
+  test("섞인 요청은 보이는 산출물만 reviewer에 보내고, 내부 기록은 internal로 알리며 다 통과했다고 말하지 않는다", async () => {
     const cwd = mirror();
+    put(cwd, "HANDOFF.md", KO_PLAIN);
     const reviewer = fakeReviewer(clean);
-    const result = await executeSlopCheck({ files: ["README.md", "private/public.md", "guide/new.md", "PC-SETUP.md"] }, { agent: { kind: "main" }, cwd } as never, deps(cwd, reviewer.complete, { publish: undefined }), signal);
+    const result = await executeSlopCheck({ files: ["README.md", "private/public.md", "guide/new.md", "PC-SETUP.md", "HANDOFF.md"] }, { agent: { kind: "main" }, cwd } as never, deps(cwd, reviewer.complete), signal);
     const outcome = JSON.parse(result.text) as { files: { file: string; status: string }[]; next: string };
     expect(reviewer.calls).toHaveLength(1);
-    expect([...reviewer.calls[0]!.matchAll(/<artifact id="a\d+"[^>]*>/g)]).toHaveLength(3);
-    expect(reviewer.calls[0]).not.toContain("PC-SETUP");
-    expect(Object.fromEntries(outcome.files.map((file) => [file.file, file.status]))).toEqual({ "README.md": "pass", "private/public.md": "pass", "guide/new.md": "pass", "PC-SETUP.md": "not-public" });
-    expect(outcome.next).not.toContain("Every file has a pass");
-    expect(outcome.next).toContain("not public");
+    expect([...reviewer.calls[0]!.matchAll(/<artifact id="a\d+"[^>]*>/g)]).toHaveLength(4);
+    expect(reviewer.calls[0]).not.toContain("HANDOFF");
+    expect(Object.fromEntries(outcome.files.map((file) => [file.file, file.status]))).toEqual({ "README.md": "pass", "private/public.md": "pass", "guide/new.md": "pass", "PC-SETUP.md": "pass", "HANDOFF.md": "internal" });
+    expect(outcome.next).toContain("not visible artifacts");
     expect(result.isError).toBe(false);
   });
 
   test("필수 reviewer가 실패하면 공개 파일은 여전히 통과가 없다", async () => {
     const cwd = mirror();
-    const out = await reviewFiles(["README.md"], undefined, deps(cwd, fakeReviewer(clean, { openai: "throw" }).complete, { publish: undefined }), signal);
+    const out = await reviewFiles(["README.md"], undefined, deps(cwd, fakeReviewer(clean, { openai: "throw" }).complete), signal);
     expect(out.files[0]!.status).toBe("error");
     expect(passes(cwd)).toHaveLength(0);
   });
 
-  test("커밋 게이트는 공개 산출물만 막고, 비공개 파일은 통과가 아니라 notPublic으로 알린다", async () => {
+  test("커밋 게이트는 .publicignore와 상관없이 보이는 산출물을 모두 막고, 내부 기록은 보지 않는다", async () => {
     const cwd = mirror();
     const files = ["README.md", "private/public.md", "PC-SETUP.md", "doc/README.md", "private/guide.docx", "private/new.md"];
     const ledgerPath = join(cwd, "ledger.jsonl");
     const refused = await runSlopGate({ cwd, files, ledgerPath }).then(() => "", (error: Error) => { expect(error).toBeInstanceOf(SlopGateRefusal); return error.message; });
-    expect(refused).toContain("2 visible artifact(s)");
-    expect(refused).toContain("- README.md");
-    expect(refused).toContain("- private/public.md");
-    expect(refused).toContain('slop_check {files:["README.md","private/public.md"]');
-    for (const path of ["PC-SETUP.md", "private/guide.docx", "private/new.md"]) {
-      expect(refused).not.toContain(`- ${path}`);
-      expect(refused).toMatch(new RegExp(`Not gated because they are not public artifacts.*${path.replace(".", "\\.")} \\(excluded from the public mirror by \\.publicignore`));
-    }
-    for (const path of ["README.md", "private/public.md"]) appendSlopRecord(ledgerPath, { type: "slop-pass", path: join(cwd, path), sha256: sha256(KO_PLAIN), reviewedAt: "t", model: "m", reviewId: "r", findings: [] });
+    expect(refused).toContain("5 visible artifact(s)");
+    for (const path of ["README.md", "private/public.md", "PC-SETUP.md", "private/guide.docx", "private/new.md"]) expect(refused).toContain(`- ${path}`);
+    expect(refused).not.toContain("- doc/README.md");
+    appendSlopRecord(ledgerPath, { type: "slop-pass", path: join(cwd, "README.md"), sha256: sha256(KO_PLAIN), reviewedAt: "t", model: "m", reviewId: "r", findings: [] });
     const passed = await runSlopGate({ cwd, files, ledgerPath });
-    expect(passed.artifacts.map((artifact) => artifact.path).sort()).toEqual(["README.md", "private/public.md"]);
-    expect(passed.notPublic?.map((item) => item.path).sort()).toEqual(["PC-SETUP.md", "private/guide.docx", "private/new.md"]);
+    expect(passed.artifacts.map((artifact) => artifact.path).sort()).toEqual(["PC-SETUP.md", "README.md", "private/guide.docx", "private/new.md", "private/public.md"]);
   });
 
-  test(".publicignore도 선언도 없는 저장소의 문서는 모르는 파일이라 게이트가 없고, .slop-gate.json이 선언하면 막는다", async () => {
+  test(".publicignore도 선언도 없는 저장소의 문서도 게이트가 막는다", async () => {
     const cwd = scratch();
     git(cwd, "init", "-q");
     put(cwd, ".gitignore", "ledger.jsonl\n");
     put(cwd, "README.md", KO_PLAIN);
-    const ledgerPath = join(cwd, "ledger.jsonl");
-    const open = await runSlopGate({ cwd, files: ["README.md"], ledgerPath });
-    expect(open.artifacts).toHaveLength(0);
-    expect(open.notPublic?.[0]?.path).toBe("README.md");
-    put(cwd, ".slop-gate.json", JSON.stringify({ visible: ["README.md"] }));
-    await expect(runSlopGate({ cwd, files: ["README.md"], ledgerPath })).rejects.toBeInstanceOf(SlopGateRefusal);
+    await expect(runSlopGate({ cwd, files: ["README.md"], ledgerPath: join(cwd, "ledger.jsonl") })).rejects.toBeInstanceOf(SlopGateRefusal);
   });
 
-  test("저장소 밖: 선언 없는 문서는 slop_check에서 not-public이고 public:true로 선언하면 심사한다", async () => {
+  test("저장소 밖: 선언 없는 문서도 slop_check가 심사한다", async () => {
     const dir = mkdtempSync(join(homedir(), ".slop-gate-test-"));
     roots.push(dir);
     const out = join(dir, "보고서.md");
     writeFileSync(out, KO_PLAIN);
-    const cwd = scratch();
     const reviewer = fakeReviewer(clean);
-    const unknown = await reviewFiles([out], undefined, deps(cwd, reviewer.complete, { publish: undefined }), signal);
-    expect(unknown.files[0]).toMatchObject({ status: "not-public" });
-    expect(reviewer.all).toHaveLength(0);
-    const declared = await reviewFiles([out], undefined, deps(cwd, reviewer.complete, { publish: true }), signal);
-    expect(declared.files[0]).toMatchObject({ status: "pass" });
+    const reviewed = await reviewFiles([out], undefined, deps(scratch(), reviewer.complete), signal);
+    expect(reviewed.files[0]).toMatchObject({ status: "pass" });
     expect(reviewer.calls).toHaveLength(1);
   });
 });
 
-describe("턴 끝 게이트: 공개 선언이 있는 저장소 밖 산출물만", () => {
+describe("턴 끝 게이트: 저장소 밖 보이는 산출물(공개 선언 불필요)", () => {
   type Handler = (event: Record<string, unknown>, ctx: unknown) => void;
   function session(cwd: string) {
     const handlers: Record<string, Handler[]> = {};
@@ -792,32 +775,19 @@ describe("턴 끝 게이트: 공개 선언이 있는 저장소 밖 산출물만"
   }
   const home = () => { const dir = mkdtempSync(join(homedir(), ".slop-gate-test-")); roots.push(dir); return dir; };
 
-  test("선언 없는 저장소 밖 비공개 문서는 깨우지 않고, .slop-gate.json 절대 경로 선언이나 slop_check public:true가 있으면 깨운다", () => {
+  test("선언 없는 저장소 밖 문서는 깨우고, 내부 기록 이름(HANDOFF.md)은 깨우지 않는다", () => {
     const cwd = scratch();
     process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
-    const privateDir = home();
-    const shared = home();
-    const declared = home();
-    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: [`${shared}/**`] }));
+    const plain = home();
     const s = session(cwd);
     s.input();
-    writeFileSync(join(privateDir, "PC-SETUP.docx"), "PK-private");
-    s.tool("bash", { command: `cp a.docx ${join(privateDir, "PC-SETUP.docx")}` });
-    s.tool("write", { path: join(cwd, "notes.md") });
-    writeFileSync(join(cwd, "notes.md"), KO_PLAIN);
-    s.end();
-    expect(s.sent).toHaveLength(0);
-
-    s.input();
-    writeFileSync(join(shared, "납품.docx"), "PK-shared");
-    writeFileSync(join(declared, "공유.pptx"), "PK-declared");
-    s.tool("bash", { command: `cp a.docx ${join(shared, "납품.docx")} && cp b.pptx ${join(declared, "공유.pptx")}` });
-    s.tool("slop_check", { files: [join(declared, "공유.pptx")], public: true });
+    writeFileSync(join(plain, "PC-SETUP.docx"), "PK-plain");
+    writeFileSync(join(plain, "HANDOFF.md"), KO_PLAIN);
+    s.tool("bash", { command: `cp a.docx ${join(plain, "PC-SETUP.docx")} && cp h.md ${join(plain, "HANDOFF.md")}` });
     s.end();
     expect(s.sent).toHaveLength(1);
-    expect(s.sent[0]!.content).toContain(join(shared, "납품.docx"));
-    expect(s.sent[0]!.content).toContain(join(declared, "공유.pptx"));
-    expect(s.sent[0]!.content).not.toContain("PC-SETUP");
+    expect(s.sent[0]!.content).toContain(join(plain, "PC-SETUP.docx"));
+    expect(s.sent[0]!.content).not.toContain("HANDOFF");
   });
 
   test(".slop-gate.json이 선언한 기본 비대상 형식(data/*.csv)도 저장소 밖에서 깨운다", () => {
@@ -833,12 +803,11 @@ describe("턴 끝 게이트: 공개 선언이 있는 저장소 밖 산출물만"
     expect(s.sent).toHaveLength(1);
   });
 
-  test("[R1-5] git 밖 별칭(symlink)이 저장소 안 비공개 파일을 가리키면 public:true로도 해시·깨움이 없다", () => {
+  test("[R1-5] git 밖 별칭(symlink)이 저장소 안 파일을 가리키면 턴 끝은 해시·깨움이 없다(커밋 게이트가 맡는다)", () => {
     const cwd = scratch();
     process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
     const repo = scratch();
     spawnSync("git", ["init", "-q"], { cwd: repo });
-    writeFileSync(join(repo, ".publicignore"), "/private.md\n");
     const dir = mkdtempSync(join(homedir(), ".slop-gate-test-"));
     roots.push(dir);
     const alias = join(dir, "alias.md");
@@ -846,7 +815,6 @@ describe("턴 끝 게이트: 공개 선언이 있는 저장소 밖 산출물만"
     const s = session(cwd);
     s.input();
     writeFileSync(join(repo, "private.md"), KO_PLAIN);
-    s.tool("slop_check", { files: [alias], public: true });
     s.tool("bash", { command: `cat > ${alias}` });
     s.end();
     expect(s.sent).toHaveLength(0);
@@ -863,37 +831,16 @@ describe("턴 끝 게이트: 공개 선언이 있는 저장소 밖 산출물만"
     const s = session(cwd);
     s.input();
     writeFileSync(join(dir, "tests/fixtures/page.html"), `<p>${KO_PLAIN}</p>`);
-    s.tool("slop_check", { files: [alias], public: true });
     s.tool("bash", { command: `cat > ${alias}` });
     s.end();
     expect(s.sent).toHaveLength(0);
   });
 });
 
-describe("공개 선언의 경계: 내부 기록·git 안 public:true·이번 입력의 선언 재사용", () => {
+describe("visible glob의 경계", () => {
   test("visible glob도 내부 기록·규칙 파일은 바꾸지 못한다", () => {
     for (const path of ["HANDOFF.md", "doc/history/2026/10/a.md", "Tools/x/rules/r.md"]) expect(classify(path, { visible: ["**"] }).visible).toBe(false);
     expect(classify("data/prices.csv", { visible: ["**"] }).visible).toBe(true);
-  });
-
-  test("public:true는 git 밖 파일만 공개로 만든다: .publicignore·선언 없는 저장소의 README는 not-public", async () => {
-    const cwd = scratch();
-    spawnSync("git", ["init", "-q"], { cwd });
-    writeFileSync(join(cwd, "README.md"), KO_PLAIN);
-    const reviewer = fakeReviewer(clean);
-    const out = await reviewFiles(["README.md"], undefined, deps(cwd, reviewer.complete, { publish: true }), signal);
-    expect(out.files[0]).toMatchObject({ status: "not-public" });
-    expect(reviewer.all).toHaveLength(0);
-  });
-
-  test("이번 입력에서 public:true로 선언한 파일은 고친 뒤 public 없이 다시 심사해도 공개로 본다", async () => {
-    const dir = mkdtempSync(join(homedir(), ".slop-gate-test-"));
-    roots.push(dir);
-    const out = join(dir, "납품.md");
-    writeFileSync(out, KO_PLAIN);
-    const reviewer = fakeReviewer(clean);
-    const again = await reviewFiles([out], undefined, deps(scratch(), reviewer.complete, { publish: undefined, declared: new Set([realpathSync(out)]) }), signal);
-    expect(again.files[0]).toMatchObject({ status: "pass" });
   });
 });
 
@@ -977,7 +924,7 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
   });
 });
 
-describe("[R1] 분류 거부권·.publicignore 정본·호출자 git", () => {
+describe("[R1] 분류 거부권", () => {
   const repoWith = (files: Record<string, string>) => {
     const cwd = scratch();
     spawnSync("git", ["init", "-q"], { cwd });
@@ -992,37 +939,29 @@ describe("[R1] 분류 거부권·.publicignore 정본·호출자 git", () => {
       const reviewer = fakeReviewer(clean);
       const extracted: string[] = [];
       const out = await reviewFiles(Object.keys(internal), undefined, deps(cwd, reviewer.complete, { extract: async (path) => { extracted.push(path); return extractVisible(path); } }), signal);
-      expect(out.files.map((file) => file.status)).toEqual(["not-public", "not-public", "not-public"]);
+      expect(out.files.map((file) => file.status)).toEqual(["internal", "internal", "internal"]);
       expect(extracted).toHaveLength(0);
       expect(reviewer.all).toHaveLength(0);
     }
   });
 
-  test("[R1-2] 저장소 밖 절대 경로도 내부·테스트 폴더는 public:true로 공개가 되지 않는다", async () => {
+  test("[R1-2] 저장소 밖 절대 경로도 내부·테스트 폴더는 대상이 아니다", async () => {
     const dir = mkdtempSync(join(homedir(), ".slop-gate-test-"));
     roots.push(dir);
     for (const [path, text] of Object.entries(internal)) { mkdirSync(join(dir, path, ".."), { recursive: true }); writeFileSync(join(dir, path), text); }
     expect(classify(join(dir, "tests/fixtures/page.html")).visible).toBe(false);
     expect(classify(join(dir, "rules/guide.md")).visible).toBe(false);
     const reviewer = fakeReviewer(clean);
-    const out = await reviewFiles(Object.keys(internal).map((path) => join(dir, path)), undefined, deps(scratch(), reviewer.complete, { publish: true }), signal);
-    expect(out.files.map((file) => file.status)).toEqual(["not-public", "not-public", "not-public"]);
+    const out = await reviewFiles(Object.keys(internal).map((path) => join(dir, path)), undefined, deps(scratch(), reviewer.complete), signal);
+    expect(out.files.map((file) => file.status)).toEqual(["internal", "internal", "internal"]);
     expect(reviewer.all).toHaveLength(0);
   });
 
-  test("[R1-3] .publicignore 저장소에서 git이 무시한 새 파일은 visible glob이 있어도 공개가 아니다", async () => {
-    const cwd = repoWith({ ".publicignore": "", ".gitignore": "notes/\n", ".slop-gate.json": JSON.stringify({ visible: ["notes/**"] }), "notes/a.md": KO_PLAIN });
+  test("[R1-3] git이 무시한 새 파일도 보이는 산출물이면 심사한다(.publicignore는 대상을 정하지 않는다)", async () => {
+    const cwd = repoWith({ ".publicignore": "", ".gitignore": "notes/\n", "notes/a.md": KO_PLAIN });
     const reviewer = fakeReviewer(clean);
     const out = await reviewFiles(["notes/a.md"], undefined, deps(cwd, reviewer.complete), signal);
-    expect(out.files[0]).toMatchObject({ status: "not-public", reason: "ignored by git, so never published" });
-    expect(reviewer.all).toHaveLength(0);
-  });
-
-  test("[R1-4] slop_check의 공개 판정은 호출자가 고른 git으로 저장소 루트에서 돈다", async () => {
-    const cwd = repoWith({ ".publicignore": "", "README.md": KO_PLAIN });
-    const asked: string[] = [];
-    const out = await reviewFiles(["README.md"], undefined, deps(cwd, fakeReviewer(clean).complete, { gitFor: async (root) => { asked.push(root); return "git"; } }), signal);
-    expect(asked).toEqual([realpathSync(cwd)]);
-    expect(out.files[0]!.status).toBe("pass");
+    expect(out.files[0]).toMatchObject({ status: "pass" });
+    expect(reviewer.calls).toHaveLength(1);
   });
 });

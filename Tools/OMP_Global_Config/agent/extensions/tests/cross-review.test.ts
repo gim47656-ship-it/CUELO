@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   ADVISORY_LANE,
+  advisoryPending,
   authorFamily,
   buildReviewPrompt,
   collectChanges,
@@ -875,7 +876,7 @@ describe("게이트", () => {
   test("crossReviewHighRisk 선언은 marker가 없어도 검토를 요구한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), contentWhere("a.ts", PLAIN_BASE, false));
-    await expect(runGate(gateOptions(env, { highRisk: true }))).rejects.toThrow("declared high-risk");
+    await expect(runGate(gateOptions(env, { highRisk: ["a.ts"] }))).rejects.toThrow("declared high-risk");
   });
 
   test("결정적 10% 표본에 뽑힌 코드는 marker가 없어도 검토를 요구한다", async () => {
@@ -976,7 +977,7 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
     sh(env.work, "add", path);
     sh(env.work, "commit", "-q", "-m", "base");
     writeFileSync(join(env.work, path), after);
-    const outcome = await runGate({ cwd: env.work, files: [path], ledgerPath: env.ledger, highRisk: true }).catch((error: unknown) => error);
+    const outcome = await runGate({ cwd: env.work, files: [path], ledgerPath: env.ledger, highRisk: [path] }).catch((error: unknown) => error);
     if (outcome instanceof CrossReviewRefusal) return [path];
     if (outcome instanceof Error) throw outcome;
     return (outcome as GateOutcome).decision!.required.map((file) => file.path);
@@ -989,6 +990,10 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
     ["한 줄 문자열 안의 //와 나눗셈 뒤의 주석 줄", "a.ts", "export const q = \"//no\";\nexport const half = (n: number) => n / 2;\n// old\n", "export const q = \"//no\";\nexport const half = (n: number) => n / 2;\n// new\n"],
     ["TSX의 주석 줄", "a.tsx", "export const A = () => null;\n// old\n", "export const A = () => null;\n// new\n"],
     ["주석 줄 추가·삭제(JS)", "a.mjs", "export const one = 1;\n// gone\n", "// first\nexport const one = 1;\n"],
+    // 2026-10-27: 파서로 주석을 뺀 출력을 비교하므로 백틱이 있는 파일·JSDoc 가운데 줄·줄 끝 주석도 증명된다.
+    ["백틱이 있는 파일의 주석 줄", "a.ts", "export const u = `x`;\n// old\n", "export const u = `x`;\n// new\n"],
+    ["여러 줄 주석의 가운데 줄", "a.ts", `/**\n * old\n */\n${ADD}`, `/**\n * new\n */\n${ADD}`],
+    ["줄 끝 주석", "a.ts", "export const a = 1; // x\n", "export const a = 1; // y\n"],
   ])("주석만 바꾼 수정은 high-risk 선언에도 대상이 아니다: %s", async (_label, path, before, after) => {
     expect(await requiredAfterEdit(path, before, after)).toEqual([]);
   });
@@ -1005,10 +1010,7 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
     ["여러 줄 템플릿 리터럴 타입 안의 // 줄(Bun이 타입째 지움)", "a.ts", "export type Label = `\n// before\n`;\n", "export type Label = `\n// after\n`;\n"],
     ["줄 잇기 문자열 리터럴 타입 안의 // 줄", "a.ts", "export type S = \"a\\\n// before\\\n\";\n", "export type S = \"a\\\n// after\\\n\";\n"],
     ["템플릿 리터럴 타입 보간 뒤 템플릿 본문의 // 줄", "a.ts", "type A = string;\nexport type L = `${A}\n// before\n`;\n", "type A = string;\nexport type L = `${A}\n// after\n`;\n"],
-    ["알려진 한계: 백틱이 있는 파일의 주석 줄은 문맥을 증명하지 않아 코드로 남는다", "a.ts", "export const u = `x`;\n// old\n", "export const u = `x`;\n// new\n"],
     ["템플릿 보간 안의 타입 단언", "a.ts", "type A = string;\ntype B = string;\nexport const s = (v: unknown) => `\n// ${(v as A)}\n`;\n", "type A = string;\ntype B = string;\nexport const s = (v: unknown) => `\n// ${(v as B)}\n`;\n"],
-    ["여러 줄 주석의 가운데 줄(이 줄만으로 주석임을 증명할 수 없음)", "a.ts", `/**\n * old\n */\n${ADD}`, `/**\n * new\n */\n${ADD}`],
-    ["줄 끝 주석", "a.ts", "export const a = 1; // x\n", "export const a = 1; // y\n"],
     ["지원하지 않는 언어(Python)의 주석", "a.py", "x = 1\n# old\n", "x = 1\n# new\n"],
     ["실행 코드 변경", "a.ts", ADD, "export const add = (a: number, b: number) => a - b;\n"],
     ["U+2028 뒤에 숨은 타입 선언(git은 한 줄, JS는 두 줄)", "a.ts", "// note\u2028type Mode = 'old';\n", "// note\u2028type Mode = 'new';\n"],
@@ -1032,10 +1034,12 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
     mkdirSync(join(env.work, "forced"));
     writeFileSync(join(env.work, "forced", "new.png"), Buffer.from("example\0payload\n"));
     writeFileSync(join(env.work, "raw.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
-    const outcome = await runGate({ cwd: env.work, files: ["forced/new.png", "raw.png"], ledgerPath: env.ledger, highRisk: true }).catch((error: unknown) => error);
+    const outcome = await runGate({ cwd: env.work, files: ["forced/new.png", "raw.png"], ledgerPath: env.ledger, highRisk: ["forced/new.png", "raw.png"] }).catch((error: unknown) => error);
     expect(outcome).toBeInstanceOf(CrossReviewRefusal);
     expect((outcome as Error).message).toContain("forced/new.png");
-    expect((outcome as Error).message).not.toContain("raw.png");
+    // raw.png는 high-risk로 선언해도 git이 바이너리로 보는 자산이라 대상 목록에 없다(다시 부를 때 같은 선언을 쓰라는 안내에만 나온다).
+    expect((outcome as Error).message).not.toContain("- raw.png");
+    expect((outcome as Error).message).not.toContain("files:[\"forced/new.png\",\"raw.png\"]");
   });
 
   test("새 파일의 바이너리 판정은 이미 읽은 바이트로 한다: 판정 중 파일이 바이너리로 바뀌어도 읽은 코드가 바이너리로 기록되지 않는다", async () => {
@@ -1220,9 +1224,9 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
     expect(review.references).toMatchObject([{ path: "ref.ts", blob: blobOf(changed) }]);
     const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
     expect(resolved.pass).toBe(true);
-    await expect(runGate(gateOptions(env, { highRisk: true }))).rejects.toThrow(CrossReviewRefusal);
+    await expect(runGate(gateOptions(env, { highRisk: ["ref.ts"] }))).rejects.toThrow(CrossReviewRefusal);
     // 변경 파일 a.ts는 통과 기록이 덮는다.
-    await expect(runGate(gateOptions(env, { files: ["a.ts"], highRisk: true }))).resolves.toBeDefined();
+    await expect(runGate(gateOptions(env, { files: ["a.ts"], highRisk: ["a.ts"] }))).resolves.toBeDefined();
   });
 
   test("files에도 있는 경로는 참고로 또 싣지 않는다", async () => {
@@ -1553,9 +1557,9 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const specBlob = "5".repeat(40);
     const change: ChangedFile = { path: "a.ts", status: "added", blob, binary: false, changedLines: [{ line: 1, text: "rmSync(target);" }], text: "", content: null };
     const records: CrossReviewLedgerRecord[] = [{ type: "cross-review-resolve", ts: "t", reviewId: "r1", chain: ["r1"], resolutions: [], open: [], pass: true, files: [{ path: "a.ts", blob }], inputs: [{ path: "spec.md", blob: specBlob }] }];
-    expect(decideGate([change], false, records, new Map([["spec.md", specBlob]])).uncovered).toEqual([]);
-    expect(decideGate([change], false, records).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (not checked)") }]);
-    expect(decideGate([change], false, records, new Map([["spec.md", "c".repeat(40)]])).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (changed)"), reviewInputs: ["spec.md"] }]);
+    expect(decideGate([change], [], records, new Map([["spec.md", specBlob]])).uncovered).toEqual([]);
+    expect(decideGate([change], [], records).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (not checked)") }]);
+    expect(decideGate([change], [], records, new Map([["spec.md", "c".repeat(40)]])).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (changed)"), reviewInputs: ["spec.md"] }]);
   });
 
   test("cross_review 도구에 inputs를 주면 Main 세션에서도 묶이고, resolve 뒤 입력이 바뀌면 게이트가 다시 거절한다", async () => {
@@ -2334,7 +2338,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     expect(result.advisoryReviewers).toContain("timed out");
     // 시작 알림에는 두 reviewer가 기다리는 중으로, 마지막 알림에는 자문 timeout이 보인다.
     expect(progress[0]).toContain("openai (required) waiting");
-    expect(progress[0]).toContain("advisory waiting (gives up at 0.04 s, or 20 s after every required reviewer has finished, nonblocking)");
+    expect(progress[0]).toContain("advisory waiting (nonblocking: the review returns when every required reviewer has finished; a later advisory answer, up to 0.04 s, is appended to this chain)");
     expect(progress.at(-1)).toContain("advisory timed out");
     const count = progress.length;
     late.resolve({ model: FABLE, text: finding("late advisory finding") });
@@ -2344,7 +2348,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ passable: true, findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
   }, 5_000);
 
-  test("필수 reviewer가 모두 끝나면 아직 기다리는 자문은 기한 전이라도 유예가 지나면 끊겨 성공이 아닌 중단으로 기록되고, 늦게 온 자문 답은 버린다", async () => {
+  test("필수 reviewer가 모두 끝나면 아직 기다리는 자문을 끊지 않고 pending으로 돌아오며, 늦게 온 자문 답은 그 라운드의 finding으로 원장에 붙는다(진행 알림은 더 없다)", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     let advisoryAttempt: AbortSignal | undefined;
@@ -2352,7 +2356,7 @@ describe("자문 reviewer 기한과 진행 알림", () => {
     const progress: string[] = [];
     const started = Date.now();
     const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000, advisoryGraceMs: 30, onProgress: (update) => progress.push(update.text),
+      ...deps(env, {}), advisoryTimeoutMs: 60_000, onProgress: (update) => progress.push(update.text),
       complete: async (family, _prompt, attempt) => {
         if (family !== "advisory") return { model: ASTRA, text: finding("required finding") };
         advisoryAttempt = attempt;
@@ -2360,31 +2364,33 @@ describe("자문 reviewer 기한과 진행 알림", () => {
       },
     }, signal);
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(advisoryAttempt?.aborted).toBe(true);
+    expect(advisoryAttempt?.aborted).toBe(false);
     expect(result.passable).toBe(true);
     expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
-    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true, error: expect.stringContaining("every required reviewer had finished") }]);
-    expect(result.advisoryReviewers).toContain("stopped");
-    expect(progress.at(-1)).toContain("advisory stopped");
+    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "pending", advisory: true }]);
+    expect(result.advisoryReviewers).toBeUndefined();
+    expect(result.advisoryPending).toContain("R1-ADV-*");
     const count = progress.length;
     late.resolve({ model: FABLE, text: finding("late advisory finding") });
-    await late.promise;
-    await Promise.resolve();
+    await advisoryPending(result.reviewId);
     expect(progress).toHaveLength(count);
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([
+      { findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "pending", advisory: true }] },
+      { type: "cross-review-advisory", reviewId: result.reviewId, reviewer: { family: "advisory", status: "ok", model: FABLE }, findings: [{ id: "R1-ADV-1", claim: "late advisory finding" }] },
+    ]);
   }, 5_000);
 
-  test("필수 reviewer가 끝난 뒤 유예 안에 온 자문 답은 버리지 않고 finding으로 남는다", async () => {
+  test("필수 reviewer와 거의 같이 끝난 자문 답은 그 라운드의 finding으로 남는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     let advisoryAttempt: AbortSignal | undefined;
     const required = Promise.withResolvers<{ model: string; text: string }>();
     const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000, advisoryGraceMs: 60_000,
+      ...deps(env, {}), advisoryTimeoutMs: 60_000,
       complete: async (family, _prompt, attempt) => {
         if (family !== "advisory") return required.promise;
         advisoryAttempt = attempt;
-        // 필수 reviewer를 끝낸 뒤에야 자문이 답한다. 예전 동작이면 이 답은 끊겨 버려진다.
+        // 필수 reviewer를 끝낸 직후 자문이 답한다(이벤트 루프 한 차례 안).
         required.resolve({ model: ASTRA, text: finding("required finding") });
         await required.promise;
         for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
@@ -2481,14 +2487,13 @@ describe("자문 reviewer 기한과 진행 알림", () => {
       { action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, {} as never, signal,
       () => ({ ...deps(env, {}), advisoryTimeoutMs: 40, complete: async (family) => (family === "advisory" ? late.promise : { model: ASTRA, text: '{"findings":[]}' }) }),
       (update) => updates.push(update as never),
-    ) as { reviewers: { family: string; status: string }[] };
-    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "error" }]);
+    ) as { reviewId: string; reviewers: { family: string; status: string }[] };
+    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "pending" }]);
     expect(updates.length).toBeGreaterThan(1);
     expect(updates[0].content[0]).toMatchObject({ type: "text", text: expect.stringContaining("waiting") });
     const count = updates.length;
     late.resolve({ model: FABLE, text: '{"findings":[]}' });
-    await late.promise;
-    await Promise.resolve();
+    await advisoryPending(review.reviewId);
     expect(updates).toHaveLength(count);
   }, 5_000);
 
@@ -2605,8 +2610,8 @@ describe("이름만 걸린 경로 심사(C2)", () => {
     const d = deps(env, {});
     const review = await runReview(input({ files: [NAME_ONLY] }), d, signal);
     await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveDeps(d));
-    expect((await runGate({ cwd: env.work, files: [NAME_ONLY], highRisk: true, ledgerPath: env.ledger })).decision?.uncovered).toEqual([]);
-    const refusal = await runGate({ cwd: env.work, files: [NAME_ONLY, ".env.local"], highRisk: true, ledgerPath: env.ledger }).catch((caught: unknown) => caught);
+    expect((await runGate({ cwd: env.work, files: [NAME_ONLY], highRisk: [NAME_ONLY], ledgerPath: env.ledger })).decision?.uncovered).toEqual([]);
+    const refusal = await runGate({ cwd: env.work, files: [NAME_ONLY, ".env.local"], highRisk: [NAME_ONLY, ".env.local"], ledgerPath: env.ledger }).catch((caught: unknown) => caught);
     expect(refusal).toBeInstanceOf(CrossReviewRefusal);
     const message = (refusal as Error).message;
     expect(message).toContain("- .env.local:");
@@ -2614,7 +2619,7 @@ describe("이름만 걸린 경로 심사(C2)", () => {
     expect(message).not.toContain(NAME_ONLY);
     expect(message).not.toMatch(/Next: run cross_review/);
     writeAt(env, "other.ts", PLAIN_BASE);
-    const mixed = await runGate({ cwd: env.work, files: ["other.ts", ".env.local"], highRisk: true, ledgerPath: env.ledger }).catch((caught: unknown) => caught);
+    const mixed = await runGate({ cwd: env.work, files: ["other.ts", ".env.local"], highRisk: ["other.ts", ".env.local"], ledgerPath: env.ledger }).catch((caught: unknown) => caught);
     expect((mixed as Error).message).toMatch(/Next: run cross_review \{action:"review", files:\["other\.ts"\]/);
     expect((mixed as Error).message).toContain(".env.local cannot be reviewed by policy");
   });
