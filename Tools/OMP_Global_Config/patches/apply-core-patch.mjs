@@ -1344,6 +1344,149 @@ const CODEX_V3_LIVE_VOICES = [
 	["viola", "Viola"],
 ];
 
+/**
+ * 2026-10-28 TODO 선행 관계: 할 일 하나에 선행 할 일(내용 문자열) 목록 `dependsOn` 을 붙인다. 선행 할 일이 모두
+ * `completed` 가 아니면 그 할 일은 대기다(빠지거나 버려지거나 이름이 바뀐 선행도 대기로 남는다 - 명시적 `depend` 로만
+ * 바꾼다). 자동 시작은 대기 할 일을 건너뛰고, 선행이 없는 목록은 예전과 같다. 표시 상태일 뿐 권한 경계가 아니다.
+ * 새 op `depend`(task + after, [] 는 해제)를 더하고, clone·tracker clone·markdown 왕복(/todo edit)이 값을 잃지 않게 한다.
+ */
+const TODO_DEPENDENCY_EDITS = [
+	{
+		file: "../pi-tui/src/tools/todo.ts",
+		marker: `| "append" | "view" | "depend";`,
+		anchor: `export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";`,
+		patched: `export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "depend";`,
+	},
+	{
+		file: "../pi-tui/src/tools/todo.ts",
+		marker: "CUELO: contents of prerequisite tasks",
+		anchor: "\tblocker?: string;\n\tdetails?: string;\n",
+		patched: "\tblocker?: string;\n\t/** CUELO: contents of prerequisite tasks; this task waits until every one is `completed`. */\n\tdependsOn?: string[];\n\tdetails?: string;\n",
+	},
+	{
+		file: "../pi-tui/dist/types/tools/todo.d.ts",
+		marker: `| "append" | "view" | "depend";`,
+		anchor: `export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";`,
+		patched: `export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "depend";`,
+	},
+	{
+		file: "../pi-tui/dist/types/tools/todo.d.ts",
+		marker: "CUELO: contents of prerequisite tasks",
+		anchor: "    blocker?: string;\n    details?: string;\n",
+		patched: "    blocker?: string;\n    /** CUELO: contents of prerequisite tasks; this task waits until every one is `completed`. */\n    dependsOn?: string[];\n    details?: string;\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: `| "append" | "view" | "depend"');`,
+		anchor: `const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');`,
+		patched: `const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "depend"');`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: `"after?": type("string").array()`,
+		anchor: `\t"reason?": type("string").describe("blocker note for block"),\n});\n`,
+		patched: `\t"reason?": type("string").describe("blocker note for block"),\n\t"after?": type("string").array().describe("prerequisite task contents for depend; [] clears"),\n});\n`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "// CUELO: todo dependencies - prerequisites ride every clone",
+		anchor: `function cloneTask(task: TodoItem): TodoItem {\n\treturn task.blocker !== undefined\n\t\t? { content: task.content, status: task.status, blocker: task.blocker }\n\t\t: { content: task.content, status: task.status };\n}\n`,
+		patched: `function cloneTask(task: TodoItem): TodoItem {\n\tconst clone: TodoItem =\n\t\ttask.blocker !== undefined\n\t\t\t? { content: task.content, status: task.status, blocker: task.blocker }\n\t\t\t: { content: task.content, status: task.status };\n\t// CUELO: todo dependencies - prerequisites ride every clone so persist and reload keep them.\n\tconst dependsOn = Array.isArray(task.dependsOn) ? task.dependsOn.filter(content => typeof content === "string") : [];\n\tif (dependsOn.length > 0) clone.dependsOn = dependsOn;\n\treturn clone;\n}\n`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "// CUELO: demote active tasks whose prerequisite was reopened",
+		anchor: "\tconst inProgressTasks = orderedTasks.filter(task => task.status === \"in_progress\");\n",
+		patched: "\t// CUELO: demote active tasks whose prerequisite was reopened, removed or edited.\n\tfor (const task of orderedTasks) {\n\t\tif (task.status === \"in_progress\" && unmetTodoDependencies(task, phases).length > 0) task.status = \"pending\";\n\t}\n\tconst inProgressTasks = orderedTasks.filter(task => task.status === \"in_progress\");\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "// CUELO: a waiting task is not the next actionable task",
+		anchor: "\t\t\tif (task.status === \"in_progress\") return task;\n\t\t\tif (!firstPending && task.status === \"pending\") firstPending = task;\n",
+		patched: "\t\t\t// CUELO: a waiting task is not the next actionable task, even after a manual edit.\n\t\t\tif (unmetTodoDependencies(task, phases).length > 0) continue;\n\t\t\tif (task.status === \"in_progress\") return task;\n\t\t\tif (!firstPending && task.status === \"pending\") firstPending = task;\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "// CUELO: dependency-only changes invalidate a dismissed HUD snapshot",
+		anchor: "\t\t\ttasks: phase.tasks.map(task =>\n\t\t\t\ttask.blocker === undefined\n\t\t\t\t\t? { content: task.content, status: task.status }\n\t\t\t\t\t: { content: task.content, status: task.status, blocker: task.blocker },\n\t\t\t),\n",
+		patched: "\t\t\t// CUELO: dependency-only changes invalidate a dismissed HUD snapshot.\n\t\t\ttasks: phase.tasks.map(cloneTask),\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "export function unmetTodoDependencies(",
+		anchor: `\tconst firstPendingTask = orderedTasks.find(task => task.status === "pending");\n\tif (firstPendingTask) firstPendingTask.status = "in_progress";\n}\n`,
+		patched: `\t// CUELO: todo dependencies - auto-start skips a task whose prerequisites are not all completed.\n\tconst firstPendingTask = orderedTasks.find(task => task.status === "pending" && unmetTodoDependencies(task, phases).length === 0);\n\tif (firstPendingTask) firstPendingTask.status = "in_progress";\n}\n\n/** CUELO: prerequisites of \`task\` that are not a \`completed\` task in \`phases\`; a missing prerequisite stays unmet. */\nexport function unmetTodoDependencies(task: TodoItem, phases: readonly TodoPhase[]): string[] {\n\tif (!Array.isArray(task.dependsOn) || task.dependsOn.length === 0) return [];\n\tconst completed = new Set<string>();\n\tfor (const phase of phases) {\n\t\tfor (const candidate of phase.tasks) if (candidate.status === "completed") completed.add(candidate.content);\n\t}\n\treturn task.dependsOn.filter(content => !completed.has(content));\n}\n`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: `case "depend": {`,
+		anchor: `\t\tcase "rm":\n\t\t\treturn removeTasks(phases, entry, errors);\n`,
+		patched: `\t\tcase "depend": {\n\t\t\t// CUELO: todo dependencies. \`after\` replaces the task's prerequisites; [] clears them.\n\t\t\tconst hit = resolveTaskOrError(phases, entry.task, errors);\n\t\t\tif (!hit) return phases;\n\t\t\tif (!entry.after) {\n\t\t\t\terrors.push("depend requires after (prerequisite task contents; [] clears)");\n\t\t\t\treturn phases;\n\t\t\t}\n\t\t\tconst after = [...new Set(entry.after)];\n\t\t\tconst before = errors.length;\n\t\t\tfor (const content of after) {\n\t\t\t\tif (content === hit.task.content) errors.push(\`Task "\${content}" cannot depend on itself\`);\n\t\t\t\telse if (!findTaskByContent(phases, content)) errors.push(\`Prerequisite "\${content}" not found\`);\n\t\t\t}\n\t\t\tif (errors.length > before) return phases;\n\t\t\t// A cycle would leave every task in it waiting forever: walking prerequisites from \`after\` must not reach this task.\n\t\t\tconst seen = new Set<string>();\n\t\t\tconst stack = [...after];\n\t\t\twhile (stack.length > 0) {\n\t\t\t\tconst content = stack.pop() as string;\n\t\t\t\tif (content === hit.task.content) {\n\t\t\t\t\terrors.push(\`Dependency cycle: "\${content}" would wait on itself\`);\n\t\t\t\t\treturn phases;\n\t\t\t\t}\n\t\t\t\tif (seen.has(content)) continue;\n\t\t\t\tseen.add(content);\n\t\t\t\tstack.push(...(findTaskByContent(phases, content)?.task.dependsOn ?? []));\n\t\t\t}\n\t\t\tif (after.length > 0) hit.task.dependsOn = after;\n\t\t\telse delete hit.task.dependsOn;\n\t\t\t// A task that now waits is no longer the work in hand; normalization picks the next ready one.\n\t\t\tif (hit.task.status === "in_progress" && unmetTodoDependencies(hit.task, phases).length > 0) hit.task.status = "pending";\n\t\t\treturn phases;\n\t\t}\n\t\tcase "rm":\n\t\t\treturn removeTasks(phases, entry, errors);\n`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "const afterNote = ",
+		anchor: "\t\t\tout.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}`);\n",
+		patched: "\t\t\t// CUELO: todo dependencies ride a trailing comment the same way, after the blocker note.\n\t\t\tconst afterNote = task.dependsOn && task.dependsOn.length > 0 ? ` <!-- after: ${JSON.stringify(task.dependsOn)} -->` : \"\";\n\t\t\tout.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}${afterNote}`);\n",
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "// CUELO: todo dependency metadata comments are order-independent",
+		anchor: `\t\t\tconst rawContent = taskMatch[2].trim();\n\t\t\tconst blockerMatch = /^(.*?)\\s*<!--\\s*blocker:\\s*(.*?)\\s*-->$/.exec(rawContent);\n\t\t\tif (status === "blocked" && blockerMatch) {\n\t\t\t\tcurrentPhase.tasks.push({ content: blockerMatch[1].trim(), status, blocker: blockerMatch[2].trim() });\n\t\t\t} else {\n\t\t\t\tcurrentPhase.tasks.push({ content: rawContent, status });\n\t\t\t}\n`,
+		patched: `			let rawContent = taskMatch[2].trim();
+			// CUELO: todo dependency metadata comments are order-independent in user-edited markdown.
+			const hasDependencyMetadata = /<!--\\s*after:/.test(rawContent);
+			let dependsOn: string[] | undefined;
+			let blocker: string | undefined;
+			let invalidMetadata = false;
+			let metadata: RegExpExecArray | null;
+			while ((metadata = /^(.*)\\s*<!--\\s*(after|blocker):\\s*(.*?)\\s*-->$/.exec(rawContent))) {
+				if (metadata[2] === "blocker") {
+					if (status !== "blocked" && !hasDependencyMetadata) break;
+					if (status === "blocked") blocker = metadata[3].trim();
+				} else {
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(metadata[3]);
+					} catch {
+						parsed = undefined;
+					}
+					if (!Array.isArray(parsed) || !parsed.every(item => typeof item === "string")) {
+						errors.push(\`Line \${lineNum + 1}: unreadable after list (use a JSON array of task texts)\`);
+						invalidMetadata = true;
+						break;
+					}
+					if (parsed.length > 0) dependsOn = parsed;
+				}
+				rawContent = metadata[1].trim();
+			}
+			if (invalidMetadata) continue;
+			const parsedTask: TodoItem = { content: rawContent, status };
+			if (blocker !== undefined) parsedTask.blocker = blocker;
+			if (dependsOn) parsedTask.dependsOn = dependsOn;
+			currentPhase.tasks.push(parsedTask);
+`,
+	},
+	{
+		file: "src/tools/todo.ts",
+		marker: "const waitTag = ",
+		anchor: "\t\t\tlines.push(`    - ${checkbox} ${task.content}${tag}`);\n",
+		patched: "\t\t\t// CUELO: todo dependencies - name the unfinished prerequisites an open task waits on.\n\t\t\tconst waits = task.status === \"completed\" || task.status === \"abandoned\" ? [] : unmetTodoDependencies(task, phases);\n\t\t\tconst waitTag = waits.length > 0 ? ` (waits for: ${waits.join(\", \")})` : \"\";\n\t\t\tlines.push(`    - ${checkbox} ${task.content}${tag}${waitTag}`);\n",
+	},
+	{
+		file: "src/session/todo-tracker.ts",
+		marker: "// CUELO: todo dependencies ride the tracker clone",
+		anchor: "\t\t\ttasks: phase.tasks.map(task =>\n\t\t\t\ttask.blocker !== undefined\n\t\t\t\t\t? { content: task.content, status: task.status, blocker: task.blocker }\n\t\t\t\t\t: { content: task.content, status: task.status },\n\t\t\t),\n",
+		patched: "\t\t\t// CUELO: todo dependencies ride the tracker clone, so `todo_changed` and state snapshots carry them.\n\t\t\ttasks: phase.tasks.map(task => {\n\t\t\t\tconst clone: TodoPhase[\"tasks\"][number] =\n\t\t\t\t\ttask.blocker !== undefined\n\t\t\t\t\t\t? { content: task.content, status: task.status, blocker: task.blocker }\n\t\t\t\t\t\t: { content: task.content, status: task.status };\n\t\t\t\tif (Array.isArray(task.dependsOn) && task.dependsOn.length > 0) clone.dependsOn = [...task.dependsOn];\n\t\t\t\treturn clone;\n\t\t\t}),\n",
+	},
+	{
+		file: "src/prompts/tools/todo.md",
+		marker: "Dependencies: `depend`",
+		anchor: "Unblock when actionable; append a clearing task for agent-actionable blocker.\n",
+		patched: "Unblock when actionable; append a clearing task for agent-actionable blocker.\nDependencies: `depend` with `task` and `after` (prerequisite task texts; `[]` clears) makes the task wait until every prerequisite is completed. Auto-start skips waiting tasks; done on the last prerequisite makes it ready; reopening one with start makes it wait again. Abandoned, removed or renamed prerequisites keep it waiting until depend changes them. Display state only, not a permission boundary.\n",
+	},
+];
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	{
@@ -9546,6 +9689,7 @@ function operationFromNative(op: string): Operation | undefined {
 		anchor: "\tlet phase = findPhaseByName(phases, entry.phase);\n\tif (!phase) {\n\t\tphase = { name: entry.phase, tasks: [] };\n",
 		patched: "\tlet phase = findPhaseByName(phases, targetPhase);\n\tif (!phase) {\n\t\tphase = { name: targetPhase, tasks: [] };\n",
 	},
+	...TODO_DEPENDENCY_EDITS,
 	{
 		// 2026-09-27 edit 거절 조사: 7일 거절 174건 중 68건이 직전 edit 응답의 새 태그를 기준으로 했다. edit 가
 		// 성공하면 새 스냅샷은 응답에 보인 몇 줄만 '본 줄' 로 갖고, 전에 읽은 바뀌지 않은 줄은 잃었다(1~43줄 read →

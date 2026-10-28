@@ -273,6 +273,8 @@
  "todo.allDone": "{count}개 모두 완료",
  "todo.showCompleted": "완료 {count}개 보기",
  "todo.hideCompleted": "완료 {count}개 접기",
+ "todo.ready": "지금 가능",
+ "todo.waiting": "선행 대기: {tasks}",
  "chat.runningCommand": "명령 실행 중...",
  "chat.thinking": "생각 중...",
  "chat.contextUsageTitle": "컨텍스트 윈도우: {limit} Token 중 {used} 사용 ({percent})",

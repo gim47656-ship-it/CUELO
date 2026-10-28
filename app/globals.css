@@ -864,6 +864,12 @@ pre, code {
 .todo-checklist-blocker {
   color: var(--warning);
 }
+.todo-checklist-readiness {
+  color: var(--text);
+}
+.todo-checklist-readiness.is-waiting {
+  color: var(--text-muted);
+}
 
 /* The composer's goal line. One row when collapsed: it must not eat the composer's space. */
 .todo-strip {

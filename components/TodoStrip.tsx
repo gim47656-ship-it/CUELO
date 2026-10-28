@@ -24,6 +24,8 @@ export function TodoStrip({ phases, flow, busy }: { phases: TodoPhase[] | null; 
   const chainId = useId();
   const todo = phases ?? [];
   const { currentPhase, activeTask, remaining, completed, total, percent } = summarizeTodo(todo);
+  // Legacy lists keep their original presentation. Dependencies opt the whole list into readiness labels.
+  const hasDependencies = todo.some(phase => phase.tasks.some(task => task.dependsOn?.length));
   const hasFlow = flow.steps.length > 0;
   const lead = stripLead(flow, busy, st);
 
@@ -82,7 +84,7 @@ export function TodoStrip({ phases, flow, busy }: { phases: TodoPhase[] | null; 
               <div key={`${phase.name}-${phaseIndex}`} className="todo-checklist-phase" role="list">
                 {todo.length > 1 && <div className="todo-checklist-phase-name">{phase.name}</div>}
                 {visible.map((task, taskIndex) => (
-                  <TodoChecklistRow key={`${task.content}-${taskIndex}`} task={task} />
+                  <TodoChecklistRow key={`${task.content}-${taskIndex}`} task={task} phases={hasDependencies ? todo : undefined} />
                 ))}
               </div>
             );

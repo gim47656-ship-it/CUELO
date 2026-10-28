@@ -431,6 +431,24 @@ describe("추출", () => {
     expect(extracted.text).toContain("매출이 올랐다");
     expect(extracted.text).toContain("[notes] 발표 메모");
   });
+
+  test.skipIf(!existsSync(pythonPath()))("PDF의 페이지별 본문을 JSON 추출 경로로 읽는다(관리 Python 환경)", async () => {
+    const dir = scratch();
+    const pdf = join(dir, "report.pdf");
+    const make = Bun.spawnSync([pythonPath(), "-c", [
+      "import pymupdf",
+      "doc = pymupdf.open()",
+      "doc.new_page().insert_text((72, 72), 'Report first page')",
+      "doc.new_page().insert_text((72, 72), 'Report second page')",
+      `doc.save(${JSON.stringify(pdf)})`,
+      "doc.close()",
+    ].join("\n")]);
+    expect(make.exitCode).toBe(0);
+    const extracted = await extractVisible(pdf);
+    expect(extracted.kind).toBe("office");
+    expect(extracted.text).toContain("[page 1]\nReport first page");
+    expect(extracted.text).toContain("[page 2]\nReport second page");
+  });
 });
 
 describe("턴 끝 게이트: 저장소 밖 산출물", () => {

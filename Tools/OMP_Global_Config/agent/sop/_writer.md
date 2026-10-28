@@ -15,6 +15,10 @@
   Open and review the produced file before you use or hand it over. Code, configuration, rules,
   `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
   `edit`/`write` for them.
+- For web UI, HTML report slides, PPT, Word or PDF creation and template reuse, read
+  `rule://creation-tools` before choosing the workflow, even when the user names no tool.
+  HTML slides are presentation/report artifacts, not landing pages. Preserve the existing
+  design system, originals and requested editability; follow the global draft and approval rules.
 - Use `todo` only when the work has three or more steps. If you invoke `checkpoint`, invoke the
   runtime-paired `rewind` before yielding.
 - In that same first investigation, cross-check the brief itself: does changing the assigned

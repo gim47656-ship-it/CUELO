@@ -55,9 +55,9 @@ def xlsx_text(path):
 
 
 def pdf_text(path):
-    import fitz
+    import pymupdf
 
-    with fitz.open(path) as doc:
+    with pymupdf.open(path) as doc:
         return "\n".join(f"[page {number}]\n{page.get_text()}" for number, page in enumerate(doc, 1))
 
 

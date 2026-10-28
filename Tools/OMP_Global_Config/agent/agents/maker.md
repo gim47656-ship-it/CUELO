@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, computer_task, ego_browser, checkpoint, cross_review, slop_check]
 ---
 
-<!-- omp-global-config:generated source-hash=9b754355fbb0
+<!-- omp-global-config:generated source-hash=e5c138c1f2d3
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -38,6 +38,10 @@ Run a `cross_review` `review` of your changed code files before you report when 
   Open and review the produced file before you use or hand it over. Code, configuration, rules,
   `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
   `edit`/`write` for them.
+- For web UI, HTML report slides, PPT, Word or PDF creation and template reuse, read
+  `rule://creation-tools` before choosing the workflow, even when the user names no tool.
+  HTML slides are presentation/report artifacts, not landing pages. Preserve the existing
+  design system, originals and requested editability; follow the global draft and approval rules.
 - Use `todo` only when the work has three or more steps. If you invoke `checkpoint`, invoke the
   runtime-paired `rewind` before yielding.
 - In that same first investigation, cross-check the brief itself: does changing the assigned

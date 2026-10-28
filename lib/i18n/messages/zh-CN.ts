@@ -279,6 +279,8 @@ export const zhCNLocale: LocalePlugin = {
     "todo.allDone": "{count} 项全部完成",
     "todo.showCompleted": "查看已完成 {count} 项",
     "todo.hideCompleted": "收起已完成 {count} 项",
+    "todo.ready": "可开始",
+    "todo.waiting": "等待：{tasks}",
     "chat.runningCommand": "正在运行命令...",
     "chat.thinking": "正在思考...",
     "chat.contextUsageTitle": "上下文窗口：已用 {used} / {limit} Token（{percent}）",

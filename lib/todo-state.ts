@@ -6,6 +6,7 @@ export interface TodoTask {
   content: string;
   status: TodoStatus;
   blocker?: string;
+  dependsOn?: string[];
 }
 
 export interface TodoPhase {
@@ -24,7 +25,10 @@ function readTasks(value: unknown): TodoTask[] {
     const { content, status } = item;
     if (typeof content !== "string" || !isTodoStatus(status)) return [];
     const blocker = "blocker" in item && typeof item.blocker === "string" ? item.blocker : undefined;
-    return [{ content, status, blocker }];
+    const dependsOn = "dependsOn" in item && Array.isArray(item.dependsOn)
+      ? item.dependsOn.filter((value: unknown): value is string => typeof value === "string")
+      : [];
+    return [{ content, status, blocker, ...(dependsOn.length > 0 ? { dependsOn } : {}) }];
   });
 }
 
@@ -184,6 +188,13 @@ export interface TodoProgress {
   percent: number | null;
 }
 
+/** Missing, abandoned and reopened prerequisites all remain unmet; only explicit completion releases them. */
+export function unmetTodoDependencies(task: TodoTask, phases: readonly TodoPhase[]): string[] {
+  if (!task.dependsOn?.length) return [];
+  const completed = new Set(phases.flatMap(phase => phase.tasks.filter(item => item.status === "completed").map(item => item.content)));
+  return task.dependsOn.filter(content => !completed.has(content));
+}
+
 export function summarizeTodo(phases: TodoPhase[]): TodoProgress {
   let completed = 0;
   let remaining = 0;
@@ -202,7 +213,9 @@ export function summarizeTodo(phases: TodoPhase[]): TodoProgress {
       if (task.status === "abandoned") continue;
       // A blocked task is still owed work, so it stays in the denominator and in what is left.
       remaining += 1;
-      if (task.status === "in_progress") {
+      if (unmetTodoDependencies(task, phases).length > 0) {
+        if (!blocked) blocked = { phase, task };
+      } else if (task.status === "in_progress") {
         if (!running) running = { phase, task };
       } else if (task.status === "blocked") {
         if (!blocked) blocked = { phase, task };

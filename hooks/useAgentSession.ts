@@ -187,6 +187,7 @@ function sameTodoPhases(left: TodoPhase[], right: TodoPhase[]): boolean {
       const x = a.tasks[t];
       const y = b.tasks[t];
       if (!x || !y || x.content !== y.content || x.status !== y.status || x.blocker !== y.blocker) return false;
+      if ((x.dependsOn?.length ?? 0) !== (y.dependsOn?.length ?? 0) || x.dependsOn?.some((content, index) => content !== y.dependsOn?.[index])) return false;
     }
   }
   return true;

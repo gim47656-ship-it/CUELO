@@ -23,6 +23,10 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
 
 ## 디자인 경로
 
+- 웹 UI 제작·템플릿 재사용과 HTML 발표·보고 슬라이드는 사용자가 도구 이름을 말하지 않아도
+  `rule://creation-tools`를 읽고 맞는 소스·스킬을 고른다. HTML 슬라이드는 웹페이지가 아닌
+  발표·보고자료로 다루며, `skill://frontend-slides`의 고정 비율·키보드 넘김·인쇄 검증을 따른다.
+
 - 시각 디자인이 포함된 작업에서는 아래 세 기본 디자인 스킬의 지침을 **반드시** 읽고 그 판단을
   디자인 계약에 반영한다. 세 스킬의 이름과 실제 출처는 다음과 같다: `skill://seed-design`(미러
   vendored, upstream `daangn/seed-design`), `skill://frontend-design`(설치 플러그인

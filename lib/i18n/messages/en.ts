@@ -279,6 +279,8 @@ export const enLocale = {
     "todo.allDone": "All {count} done",
     "todo.showCompleted": "Show {count} completed",
     "todo.hideCompleted": "Hide {count} completed",
+    "todo.ready": "Ready",
+    "todo.waiting": "Waiting for: {tasks}",
     "chat.runningCommand": "Running command...",
     "chat.thinking": "Thinking...",
     "chat.contextUsageTitle": "Context window: {used} of {limit} tokens ({percent})",
