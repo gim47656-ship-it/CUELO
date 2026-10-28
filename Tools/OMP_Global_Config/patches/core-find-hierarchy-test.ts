@@ -81,7 +81,8 @@ function stubJudge(seen: Seen[], options: StubOptions = {}) {
 					p = entry?.[1].includes("GOLD") ? 0.9 : 0.05;
 				} else {
 					const body = (state.passages as Record<string, string>)[key];
-					p = body?.includes("GOLD") ? 0.9 : 0.05;
+					const tagged = /GOLD_SCORE=(\d+)/.exec(body ?? "");
+					p = tagged ? Number(tagged[1]) / 100 : body?.includes("GOLD") ? 0.9 : 0.05;
 				}
 				answers[key] = { noul: p };
 			}
@@ -139,13 +140,13 @@ interface Result {
 	hits: Hit[];
 	stats: { failures: string[]; errors: number; requests: number; failed?: number };
 }
-async function search(root: string, judge: unknown, signal?: AbortSignal): Promise<Result> {
+async function search(root: string, judge: unknown, signal?: AbortSignal, query = "frobnicate widget pipeline"): Promise<Result> {
 	const filesystem = new InternalUrlFilesystem({ context: { cwd: root }, tier: "read" });
 	const searchRoot = await resolveSearchRoot(filesystem, root, root);
 	return runCascade({
 		root: searchRoot,
 		filesystem,
-		query: "frobnicate widget pipeline",
+		query,
 		extraKeywords: [],
 		judge,
 		includeHidden: false,
@@ -168,6 +169,36 @@ const rels = (result: Result) => result.hits.map(hit => hit.rel).sort();
 const ofKind = (seen: Seen[], kind: Seen["kind"]) => seen.filter(entry => entry.kind === kind);
 
 try {
+	// Fixed replay: 3 queries x 5 repetitions, nine independently relevant files.
+	{
+		const root = tree({ noise: 0, billing: 9, insideGold: false, archive: false });
+		for (let i = 0; i < 9; i++) write(root, `billing/gold_${String(i).padStart(3, "0")}.ts`, `// GOLD_SCORE=${21 + i * 5}\nexport const b = ${i};\n`);
+		const counts: number[] = [];
+		for (let run = 0; run < 5; run++) {
+			for (const query of ["frobnicate widget pipeline", "billing implementation", "gold accounting"]) {
+				const seen: Seen[] = [];
+				const result = await search(root, stubJudge(seen), undefined, query);
+				assert.deepEqual(rels(result), Array.from({ length: 9 }, (_, i) => `billing/gold_${String(i).padStart(3, "0")}.ts`));
+				for (const hit of result.hits) {
+					assert.equal(hit.contentScore, (21 + Number(/gold_(\d+)/.exec(hit.rel)![1]) * 5) / 100);
+					assert.ok(hit.ranges.length > 0, `verified passage belongs to ${hit.rel}`);
+				}
+				counts.push(seen.length);
+			}
+		}
+		console.log(JSON.stringify({ replay: "nine-file-three-query", repetitions: 5, calls: counts, total: counts.reduce((a, b) => a + b, 0) }));
+		assert.ok(counts.every(count => count <= 5), "nine full passages require at most three verification requests plus name/sketch");
+		ok("mixed-file batching retains all relevant files while reducing JEV requests");
+	}
+	{
+		const root = tree({ noise: 0, billing: 9, insideGold: false, archive: false });
+		const result = await search(root, stubJudge([], { failKind: "verify" }));
+		assert.deepEqual(result.hits, []);
+		assert.ok(result.stats.failures.some(message => message.includes("verification: stub verify failure")));
+		assert.equal(result.stats.failed, 3);
+		console.log(JSON.stringify({ probe: "verification-provider-failure", failures: result.stats.failures, failed: result.stats.failed, hits: result.hits }));
+		ok("batched verification failure is reported without invalid job field access");
+	}
 	// 1. 폴더 판정이 상한 밖 관련 파일을 hit 에 더하고, 폴더를 허용하지 않은 실행과 비교해 baseline hit 은 그대로다.
 	{
 		const root = tree();

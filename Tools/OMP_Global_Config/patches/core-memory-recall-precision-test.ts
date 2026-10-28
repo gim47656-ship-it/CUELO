@@ -105,6 +105,34 @@ try {
 		const compaction = await scenario([0.9, 0.82], { compaction: true });
 		check("압축 회상(recallForContext 기본 호출)은 대역을 받지 않는다", JSON.stringify(shown(compaction)) === JSON.stringify(["m0", "m1"]), `shown=${JSON.stringify(shown(compaction))}`);
 	}
+	{
+		const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);
+		const { setLocalModelInitializerForTests, resetEmbeddingProviderForTests } = await import(`${CORE}/../../pi-mnemopi/src/core/embeddings.ts`);
+		const query = "포트 재연결 순서 확인 방법";
+		const unrelated = "Bake the chocolate cake with butter.";
+		const relevant = "Close the port before reopening the connection.";
+		setLocalModelInitializerForTests(async () => ({
+			embed: (texts: string[]) => (async function* () {
+				yield texts.map(text => {
+					const dense = text.endsWith(query) ? 1 : text.endsWith(relevant) ? 0.9 : 0.75;
+					return [dense, Math.sqrt(1 - dense ** 2), 0];
+				});
+			})(),
+		}));
+		const memory = new Mnemopi({ dbPath: join(root, "cross-script.db"), bank: "cross", sessionId: "cross", channelId: "cross", llm: false, reconcile: false, embeddings: { model: "intfloat/multilingual-e5-large" } });
+		try {
+			const options = { source: "coding-agent-learn", importance: 0.8, scope: "bank", veracity: "tool", memoryType: "fact" };
+			const bad = memory.remember(unrelated, options);
+			const good = memory.remember(relevant, options);
+			await memory.beam.flushExtractions();
+			const ids = (await memory.recallEnhanced(query, 8, { includeFacts: false, channelId: "cross" })).map((row: { id: string }) => row.id);
+			check("unrelated cross-script memory below dense floor is excluded", !ids.includes(bad), `ids=${ids}`);
+			check("semantically matching cross-script memory above dense floor remains", ids.includes(good), `ids=${ids}`);
+		} finally {
+			memory.close();
+			resetEmbeddingProviderForTests();
+		}
+	}
 } finally {
 	rmSync(root, { recursive: true, force: true });
 }

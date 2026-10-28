@@ -222,7 +222,7 @@ function judgeBy(decide: (request: string, server: string) => Need, fail: { on: 
 	});
 }
 const byRequest = (request: string, server: string): Need => {
-	if (/figma|피그마/i.test(request) && server === "figma-stub") return "needed";
+	if (/figma|피그마|design/i.test(request) && server === "figma-stub") return "needed";
 	if (/Workers/.test(request) && server === "cloudflare-docs") return "needed";
 	if (/broken/.test(request) && server === "broken-stub") return "needed";
 	if (/slow/.test(request) && server === "slow-stub") return "needed";
@@ -314,9 +314,10 @@ const [unrelated] = await turn(a.session, "README 오타만 고쳐줘");
 evidence.unrelatedMcpNames = mcpNames(unrelated);
 evidence.unrelatedPromptBytes = promptBytes(unrelated!);
 check("[2] 무관한 요청: 연결 0, provider 요청의 MCP schema/catalog 0", spawned().length === 0 && mcpNames(unrelated).length === 0, { spawned: spawned(), names: mcpNames(unrelated) });
+check("[2b] unrelated request makes no JEV call", judgeCalls.length === 0, judgeCalls);
 
 // 관련 요청: 선택 서버만 실제 spawn → 같은 턴 provider 요청에 그 장치만 → 실제 tool 호출 결과.
-const [relevant, afterTool] = await turn(a.session, "피그마 시안 노드를 읽어서 버튼 색을 맞춰줘", [
+const [relevant, afterTool] = await turn(a.session, "figma 시안 노드를 읽어서 버튼 색을 맞춰줘", [
 	{ tool: c => ({ name: "write", args: { path: `xd://${mcpNames(c).find(name => name.includes("figma"))}`, content: "{}" } }) },
 	{},
 ]);
@@ -345,13 +346,13 @@ check(
 
 // 꺼진 서버·미설치 카탈로그: 자동 연결·설치 0, 프로젝트 단서로 고른 범위의 명령과 공식 출처 안내만.
 const figmaSpawns = count("figma-stub");
-const [installTurn] = await turn(a.session, "Workers 배포 설정 공식 문서 확인하고 off-stub 도 봐줘");
+const [installTurn] = await turn(a.session, "cloudflare-docs 와 off-stub 공식 문서 확인해줘");
 evidence.installNotice = selectionNotice(installTurn);
 const project = judgeCalls.at(-1)?.project ?? "";
 evidence.projectCue = project;
 check("[5a] 꺼진·미설치 서버는 spawn 0", count("off-stub") === 0 && count("figma-stub") === figmaSpawns && spawned().length === figmaSpawns, spawned());
 check(
-	"[5b] 프로젝트 단서(wrangler·hono)로 프로젝트 범위 설치 명령과 공식 출처를 안내한다(실행 없음은 [5a])",
+	"[5b] explicit uninstalled catalog entry shows manual installation choices and source only",
 	evidence.installNotice.includes("`cloudflare-docs`") &&
 		evidence.installNotice.includes("--scope project --url https://docs.mcp.cloudflare.com/mcp") &&
 		evidence.installNotice.includes("https://github.com/cloudflare/mcp-server-cloudflare"),
@@ -365,7 +366,7 @@ check(
 );
 
 // 실제 연결 실패: '연결됨'으로 보고하지 않고, 후보에서 빠져 자동 재시도하지 않으며, 수동 재연결은 동작한다.
-const [brokenTurn] = await turn(a.session, "broken 도구로 확인해줘");
+const [brokenTurn] = await turn(a.session, "broken-stub 도구로 확인해줘");
 evidence.brokenNotice = selectionNotice(brokenTurn);
 check(
 	"[6a] 연결 실패는 '연결 실패'와 수동 경로로 보고되고 '연결됨'이 아니다",
@@ -387,7 +388,7 @@ check("[6c] 실패 서버의 수동 /mcp reconnect 경로는 유지된다(다시
 // 취소: 이미 abort된 신호는 spawn 0, handshake 중 취소는 늦은 연결·고아 프로세스 없이 후보로 복귀.
 await a.mcpManager.connectDeferred(["slow-stub"], AbortSignal.abort());
 check("[7a] 이미 취소된 요청은 선택 서버를 spawn하지 않는다", count("slow-stub") === 0, spawned());
-const cancelled = turn(a.session, "slow 도구로 처리해줘").catch(() => []);
+const cancelled = turn(a.session, "slow-stub 도구로 처리해줘").catch(() => []);
 await until(() => count("slow-stub") === 1);
 const slowPid = pidOf("slow-stub");
 a.session.abort();
@@ -417,7 +418,7 @@ check(
 const failing = { on: true };
 const b = await open({ selection: "per-request", judge: judgeBy(byRequest, failing), hasUI: true });
 const beforeB = spawned().length;
-const [failedTurn] = await turn(b.session, "피그마 시안 읽어줘");
+const [failedTurn] = await turn(b.session, "figma 시안 읽어줘");
 evidence.failureNotice = selectionNotice(failedTurn);
 check("[9a] 세션 격리: 새 세션 manager는 A의 연결을 공유하지 않는다", b.mcpManager !== a.mcpManager && b.mcpManager.getConnectedServers().length === 0, b.mcpManager?.getConnectedServers());
 check(
@@ -435,7 +436,7 @@ check("[10] 수동 연결 서버는 spawn되고 다음 요청에서도 노출 �
 
 // [11] handshake 중 세션 dispose: 소유 manager가 정리되고 고아 stub이 남지 않는다.
 const c = await open({ selection: "per-request", judge: judgeBy(byRequest) });
-const disposing = turn(c.session, "slow 도구로 처리해줘").catch(() => []);
+const disposing = turn(c.session, "slow-stub 도구로 처리해줘").catch(() => []);
 await until(() => count("slow-stub") === 2);
 const disposedPid = pidOf("slow-stub");
 await c.session.dispose();
@@ -447,7 +448,7 @@ check("[11] handshake 중 dispose: 늦은 연결 없음·stub 프로세스 종�
 // [12] 기본 판정기(실제 core judgment 모듈): judge 역할 첫 후보가 native가 아니면 판정하지 않고 연결 0.
 const d = await open({ selection: "per-request", native: true });
 const beforeD = spawned().length;
-const [nativeTurn] = await turn(d.session, "피그마 시안 읽어줘");
+const [nativeTurn] = await turn(d.session, "figma 시안 읽어줘");
 evidence.nativeNotice = selectionNotice(nativeTurn);
 check(
 	"[12] native JEV 없는 설정: chat/세션 fallback 없이 판정 불가 명시·새 spawn 0",

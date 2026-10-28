@@ -19584,6 +19584,97 @@ for (const [owner, older] of preStatsWatchBodies) {
 	const ADVISOR_18132 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||vOe(a))continue;let l=a.slice(0,-6),';
 	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18132, anchor: ADVISOR_18132, patched: ADVISOR_18132 });
 }
+// 2026-10-29: preserve cross-language ranking without bypassing relevance.
+{
+	const entry = EDITS.find(entry => entry.marker === "// HANSE: cross-script lexical floor and e5 dense floor");
+	entry.legacyPatched = entry.patched;
+	entry.patched = entry.patched.replace(
+		'candidate.tierLabel === "working" &&',
+		'candidate.tierLabel === "working" &&\n\t\tcandidate.signals.dense >= (options.__denseFloor ?? 0.65) &&',
+	);
+}
+{
+	const normalizer = `// HANSE: Korean relative phrases share English date and intent semantics.
+export function normalizeKoreanRelativeTime(text: string): string {
+	const named: Record<string, string> = { "오늘": "today", "어제": "yesterday", "그제": "2 days ago", "그저께": "2 days ago", "지난주": "last week", "이번주": "this week", "지난달": "last month" };
+	return text.replace(/(?<![\\p{L}\\p{N}_])(오늘|어제|그저께|그제|지난\\s*주|이번\\s*주|지난\\s*달|\\d+\\s*(?:일|주|달)\\s*전)(?=$|[^\\p{L}\\p{N}_]|에는|에서|에|의|은|는|을|를|도|부터|까지|이|가|와|과|로)/gu, phrase => {
+		const compact = phrase.replace(/\\s/g, "");
+		if (named[compact]) return " " + named[compact] + " ";
+		const match = /^(\\d+)(일|주|달)전$/.exec(compact)!;
+		const unit = match[2] === "일" ? "days" : match[2] === "주" ? "weeks" : "months";
+		return " " + match[1] + " " + unit + " ago ";
+	});
+}
+
+`;
+	EDITS.push({
+		file: "../pi-mnemopi/src/core/temporal-parser.ts",
+		marker: "export function normalizeKoreanRelativeTime",
+		anchor: "const MS_PER_DAY = 86_400_000;\n",
+		patched: normalizer + "const MS_PER_DAY = 86_400_000;\n",
+	}, {
+		file: "../pi-mnemopi/src/core/temporal-parser.ts",
+		marker: "const textLower = normalizeKoreanRelativeTime(text).toLowerCase().trim();",
+		anchor: "const textLower = text.toLowerCase().trim();",
+		patched: "const textLower = normalizeKoreanRelativeTime(text).toLowerCase().trim();",
+	}, {
+		file: "../pi-mnemopi/src/core/query-intent.ts",
+		marker: 'import { normalizeKoreanRelativeTime } from "./temporal-parser";',
+		anchor: 'export type QueryIntentCategory =',
+		patched: 'import { normalizeKoreanRelativeTime } from "./temporal-parser";\n\nexport type QueryIntentCategory =',
+	}, {
+		file: "../pi-mnemopi/src/core/query-intent.ts",
+		marker: "const queryLower = normalizeKoreanRelativeTime(query).toLowerCase();",
+		anchor: "const queryLower = query.toLowerCase();",
+		patched: "const queryLower = normalizeKoreanRelativeTime(query).toLowerCase();",
+	});
+}
+// ToolCostTrim2: keep orchestrator-only tools out of Maker defaults.
+EDITS.push({
+	file: "src/sdk.ts",
+	marker: "// HANSE: main-only tools excluded from Maker alwaysInclude",
+	anchor: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name));\n\t\tfor (const name of alwaysInclude) {",
+	patched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
+});
+// ToolCostTrim2: batch complete verification passages across selected files.
+{
+	const anchor = [
+		"\t\t// Wave 3: verification of complete passages, grouped per file.",
+		"\t\tconst verifyJobs: { f: number; passages: Passage[]; request: Request }[] = [];",
+		"\t\tfor (const f of [...chosen.keys()].sort((a, b) => a - b)) {",
+		"\t\t\tconst rel = entries[files[f]!.node]!.rel;",
+		"\t\t\tconst ps = chosen.get(f)!.sort((a, b) => a - b);",
+		"\t\t\tfor (const group of chunks(ps, Math.max(1, Math.floor(VERIFY_STATE_BYTES / WINDOW_BYTES)))) {",
+		"\t\t\t\tconst passages = group.map(p => files[f]!.passages[p]!);",
+		"\t\t\t\tverifyJobs.push({ f, passages, request: passageBatch(query, rel, passages) });",
+		"\t\t\t}",
+		"\t\t}",
+	].join("\n");
+	const patched = [
+		"\t\t// HANSE: pack verification passages across files without reducing recall budgets.",
+		"\t\tconst verification: { f: number; passage: Passage }[] = [];",
+		"\t\tfor (const f of [...chosen.keys()].sort((a, b) => a - b)) {",
+		"\t\t\tfor (const p of chosen.get(f)!.sort((a, b) => a - b)) {",
+		"\t\t\t\tverification.push({ f, passage: files[f]!.passages[p]! });",
+		"\t\t\t}",
+		"\t\t}",
+		"\t\tconst verifyJobs = chunks(verification, Math.max(1, Math.floor(VERIFY_STATE_BYTES / WINDOW_BYTES))).map(batch => {",
+		"\t\t\tconst rels = batch.map(({ f }) => entries[files[f]!.node]!.rel);",
+		'\t\t\tconst request = passageBatch(query, [...new Set(rels)].join("\\n"), batch.map(item => item.passage));',
+		"\t\t\tbatch.forEach((_, k) => {",
+		"\t\t\t\trequest.questions[passageKey(k)]!.instructions += ` Source file: ${JSON.stringify(rels[k])}.`;",
+		"\t\t\t});",
+		"\t\t\treturn { batch, request };",
+		"\t\t});",
+	].join("\n");
+	EDITS.push({ file: "src/tools/jfind/cascade.ts", marker: "// HANSE: pack verification passages across files", anchor, patched });
+	EDITS.push({
+		file: "src/tools/jfind/cascade.ts",
+		marker: "job.batch.forEach(({ f, passage }, k) => {",
+		anchor: "\t\t\tlet entry = results.get(job.f);\n\t\t\tif (!entry) {\n\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\tresults.set(job.f, entry);\n\t\t\t}\n\t\t\tjob.passages.forEach((passage, k) => {",
+		patched: "\t\t\tjob.batch.forEach(({ f, passage }, k) => {\n\t\t\t\tlet entry = results.get(f);\n\t\t\t\tif (!entry) {\n\t\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\t\tresults.set(f, entry);\n\t\t\t\t}",
+	});
+}
 
 
 

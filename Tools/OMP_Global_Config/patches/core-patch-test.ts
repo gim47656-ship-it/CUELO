@@ -2788,7 +2788,7 @@ console.log("\n[23g] Mnemopi 회수 — 문자권이 다른 기억은 어휘 하
 		}));
 		const e5 = await recallIds("xscript-e5", "intfloat/multilingual-e5-large");
 		check("로컬 e5: 어휘 겹침 없는 dense 0.75 한국어 기억은 빠진다", !e5.ranked.includes(e5.ids.korean), `ranked=${e5.ranked.join(",")} korean=${e5.ids.korean}`);
-		check("로컬 e5: 기존 하한 0.65 아래(dense 0.6)인 영어 기억도 문자권 하한으로 남는다", e5.ranked.includes(e5.ids.english), `ranked=${e5.ranked.join(",")} english=${e5.ids.english}`);
+		check("로컬 e5: dense 0.6 영어 기억은 문자권 하한으로 구제하지 않는다", !e5.ranked.includes(e5.ids.english), `ranked=${e5.ranked.join(",")} english=${e5.ids.english}`);
 		resetEmbeddingProviderForTests();
 		setEmbeddingProviderForTests({
 			embed: (texts: readonly string[]) => (async function* () {

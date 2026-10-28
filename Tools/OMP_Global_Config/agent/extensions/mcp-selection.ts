@@ -63,6 +63,15 @@ const STACK_DIR_LIMIT = 40;
 const MCP_SELECTION_TIMEOUT_MS = 3_000;
 const JUDGE_TIMEOUT_REASON = "판정이 제한 시간 안에 끝나지 않음";
 
+const GENERIC_TOKENS = new Set("the and for with from this that read search fetch query execute run create update delete tool tools server mcp get list use using please help file files code data documentation docs".split(" "));
+const SERVER_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  figma: ["피그마"], github: ["깃허브"], "microsoft-learn": ["Microsoft Learn"], "cloudflare-docs": ["Cloudflare Docs"],
+};
+function meaningfulTokens(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter(token => (token.length >= 3 || (token.length >= 2 && /[^\x00-\x7f]/.test(token))) && !GENERIC_TOKENS.has(token)));
+}
+
 async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -190,6 +199,12 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
         return true;
       };
 
+      // Pasted artifacts are context, not instructions to connect a server.
+      const requestText = event.prompt
+        .replace(/```[\s\S]*?(?:```|$)/g, " ")
+        .replace(/<([A-Za-z][\w:-]*)\b[^>]*>[\s\S]*?<\/\1>/g, " ")
+        .replace(/\bhttps?:\/\/\S+/gi, " ")
+        .replace(/(?:[A-Za-z]:)?(?:[^\s\\/:]+[\\/])+[^\s\\/]+/g, " ");
       const cue = extractRequestCue(event.prompt);
       if (!cue) {
         finish(undefined);
@@ -198,7 +213,7 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
       const known = new Set([...event.deferred, ...event.connected].map((server) => server.name));
       const disabled = (await readDisabledServers(agentDir, ctx.cwd)).filter((server) => !known.has(server.name));
       const suggested = await (suggestedPromise ??= readSuggested(agentDir));
-      const namedCatalog = mentionedServers(event.prompt, catalog.map((entry) => entry.name));
+      const namedCatalog = mentionedServers(requestText, catalog.map((entry) => entry.name));
       const pendingCatalog = catalog.filter(
         (entry) =>
           !known.has(entry.name) &&
@@ -210,39 +225,80 @@ export function createMcpSelection(deps: McpSelectionDeps = {}) {
         finish(undefined);
         return undefined;
       }
-      const mentioned = mentionedServers(event.prompt, candidates.map((candidate) => candidate.name));
-      const projectStack = (stackPromise ??= readProjectStack(ctx.cwd));
-
+      const mentioned = mentionedServers(requestText, candidates.map((candidate) => candidate.name));
+      for (const server of [...event.deferred, ...event.connected]) {
+        const aliases = Object.entries(SERVER_ALIASES).flatMap(([name, aliases]) =>
+          server.name === name || server.name.startsWith(`${name}-`) ? aliases : []);
+        const toolNames = server.tools.map(tool => tool.name).filter(name =>
+          !/^[a-z]+$/i.test(name) ||
+          (/[a-z][A-Z]/.test(name) && new RegExp(`(?:^|[^a-zA-Z0-9_-])${name}(?:$|[^a-zA-Z0-9_-])`).test(requestText)) ||
+          [["`", "`"], ["'", "'"], ["\"", "\""], ["“", "”"], ["‘", "’"]].some(([open, close]) =>
+            requestText.toLowerCase().includes(`${open}${name.toLowerCase()}${close}`)));
+        if (mentionedServers(requestText, [...aliases, ...toolNames]).size > 0) mentioned.add(server.name);
+      }
+      // A named server's shared suffix is not a capability request for its neighbors.
+      let relevanceText = requestText;
+      for (const name of mentioned) {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        relevanceText = relevanceText.replace(new RegExp(`(^|[^a-z0-9_-])${escaped}(?=$|[^a-z0-9_-])`, "gi"), "$1 ");
+      }
+      const cueTokens = meaningfulTokens(extractRequestCue(relevanceText));
+      const relevant = new Set([...event.deferred, ...event.connected.filter(server => server.selected)].filter(server =>
+        [...meaningfulTokens([server.name, ...server.tools.flatMap(tool => [tool.name, tool.description ?? ""])].join(" "))]
+          .some(token => cueTokens.has(token)),
+      ).map(server => server.name));
       const answers: Record<string, string | undefined> = {};
+      for (const candidate of candidates) answers[candidate.key] = mentioned.has(candidate.name) ? "needed" : "not-needed";
+      // Explicit requests and manual connections need no probabilistic permission.
+      const explicit = candidates.some(candidate => mentioned.has(candidate.name));
+      const judgeCandidates = candidates.filter(candidate => !mentioned.has(candidate.name) && relevant.has(candidate.name));
       const signal = event.signal ? AbortSignal.any([event.signal, token.controller.signal]) : token.controller.signal;
-      // provider가 signal을 무시해도 취소·제한 시간에 바로 돌아온다.
-      const stopped = stoppedBy(signal);
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        token.controller.abort();
-      }, judgeTimeoutMs);
-      try {
-        const judge = await Promise.race([judgeFor(ctx), stopped]);
-        if (judge === JUDGE_STOPPED) throw new Error("판정 취소");
-        if (!judge) throw new Error("JEV 판정기를 해석하지 못함");
-        const stack = await Promise.race([projectStack, stopped]);
-        if (stack === JUDGE_STOPPED) throw new Error("판정 취소");
-        const result = await Promise.race([judge.judge(buildJudgeRequest(cue, stack, candidates), { signal }), stopped]);
-        if (result === JUDGE_STOPPED) throw new Error("판정 취소");
-        for (const [key, answer] of Object.entries(result.answers)) {
-          answers[key] = answer?.type === "choice" ? answer.choice : undefined;
-        }
-      } catch (error) {
-        const reason = timedOut ? JUDGE_TIMEOUT_REASON : error instanceof Error ? error.message : String(error);
-        if (current === token) pi.logger.warn("mcp-selection: JEV 판정 실패, 새 MCP 연결 없음", { error: reason });
-        finish({ lines: [renderJudgeFailure(reason, event.deferred.map((server) => server.name))], requested: false });
+      if (signal.aborted) {
+        finish({ lines: [renderJudgeFailure("판정 취소", event.deferred.map(server => server.name))], requested: false });
         return undefined;
-      } finally {
-        clearTimeout(timer);
+      }
+      const failureLines: string[] = [];
+      if (judgeCandidates.length > 0) {
+        for (const candidate of judgeCandidates) answers[candidate.key] = undefined;
+        const projectStack = (stackPromise ??= readProjectStack(ctx.cwd));
+        // provider가 signal을 무시해도 취소·제한 시간에 바로 돌아온다.
+        const stopped = stoppedBy(signal);
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          token.controller.abort();
+        }, judgeTimeoutMs);
+        try {
+          const judge = await Promise.race([judgeFor(ctx), stopped]);
+          if (judge === JUDGE_STOPPED) throw new Error("판정 취소");
+          if (!judge) throw new Error("JEV 판정기를 해석하지 못함");
+          const stack = await Promise.race([projectStack, stopped]);
+          if (stack === JUDGE_STOPPED) throw new Error("판정 취소");
+          const result = await Promise.race([judge.judge(buildJudgeRequest(cue, stack, judgeCandidates), { signal }), stopped]);
+          if (result === JUDGE_STOPPED) throw new Error("판정 취소");
+          for (const candidate of judgeCandidates) {
+            const answer = result.answers[candidate.key];
+            answers[candidate.key] = answer?.type === "choice" ? answer.choice : undefined;
+          }
+        } catch (error) {
+          const reason = timedOut ? JUDGE_TIMEOUT_REASON : error instanceof Error ? error.message : String(error);
+          if (current === token) pi.logger.warn("mcp-selection: JEV 판정 실패", { error: reason });
+          if (!explicit || event.signal?.aborted || current !== token) {
+            finish({ lines: [renderJudgeFailure(reason, event.deferred.map((server) => server.name))], requested: false });
+            return undefined;
+          }
+          // An unavailable judge cannot revoke an explicit request or existing exposure.
+          for (const candidate of candidates) {
+            if (candidate.kind === "connected" && !mentioned.has(candidate.name)) answers[candidate.key] = undefined;
+          }
+          failureLines.push(`JEV 판정 불가(${reason}) — 명시한 서버만 선택하고 나머지 기존 연결·노출은 유지한다.`);
+        } finally {
+          clearTimeout(timer);
+        }
       }
 
       const plan = planSelection({ candidates, answers, mentioned, catalog: pendingCatalog });
+      plan.lines.unshift(...failureLines);
       if (!finish({ lines: plan.lines, requested: plan.connect.length > 0, outcome: event.outcome })) return undefined;
       const shown = pendingCatalog.filter((entry) => !suggested.has(entry.name) && plan.lines.some((line) => line.includes(`\`${entry.name}\``)));
       if (shown.length > 0) {

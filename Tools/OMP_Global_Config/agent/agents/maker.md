@@ -6,7 +6,7 @@ thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, computer_task, ego_browser, checkpoint, cross_review, slop_check]
 ---
 
-<!-- omp-global-config:generated source-hash=b2c703f19502
+<!-- omp-global-config:generated source-hash=6b812d0a08e2
   이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.
   고칠 곳: agent/sop/maker.md · agent/sop/_writer.md · agent/sop/_common.md
   재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check
@@ -33,11 +33,11 @@ Run a `cross_review` `review` of your changed code files before you report when 
   allowed only when the brief names the exact target and action and applicable user approval exists.
 - Use `web_search` to discover current external information, then use `read` on the primary source.
 - When the slice needs a document draft (Markdown, CSV, Excel, Word, PDF report or table), write it
-  with `draft(instruction, output, paths?)` first: Gemini Flash writes it (one fallback model on
+  with `draft(instruction, output, paths?)` first: the `draft` role model (Gemini 4 Argon by default) writes it (one fallback model on
   failure, `modelRoles.draftFallback` or DeepSeek when unset; reference text goes to Google or the fallback provider) and the tool saves the file inside the cwd.
-  Open and review the produced file before you use or hand it over. Code, configuration, rules,
-  `HANDOFF.md`, your own `doc/history` record, and exact-line edits are not drafts; keep using
-  `edit`/`write` for them.
+  Open and review the produced file before you use or hand it over. Prose you write new or rewrite by a paragraph or more in
+  `HANDOFF.md` and your own `doc/history` record also goes through `draft` first (global rule; those files stay outside the slop gate).
+  Code, configuration, rules and exact-line edits are not drafts; keep using `edit`/`write` for them.
 - For web UI, HTML report slides, PPT, Word or PDF creation and template reuse, read
   `rule://creation-tools` before choosing the workflow, even when the user names no tool.
   HTML slides are presentation/report artifacts, not landing pages. Preserve the existing
