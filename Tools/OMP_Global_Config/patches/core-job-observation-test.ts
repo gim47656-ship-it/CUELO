@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
 import { createJevRuntime } from "../agent/extensions/jev-runtime";
+import { JOB_OBSERVATION_INTERVALS_MS } from "../agent/extensions/lib/job-observation";
 
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required; never test the live core");
@@ -148,9 +149,9 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
     await within((async () => { while (!(waitStarts === 1 && clock.jobs.size === 1)) await Bun.sleep(5); })(), "first wait armed its observation timer");
     await Bun.sleep(300);
     assert.equal(results.has("wait-1"), false, "the wait keeps blocking before the due time");
-    // core stamps job.startTime with the real clock; the one armed due must be exactly start + 5 minutes.
+    // core stamps job.startTime with the real clock; the one armed due must be exactly start + the first interval.
     const [armed] = [...clock.jobs.values()];
-    assert.equal(armed!.at, active.asyncJobManager!.getJob(jobId)!.startTime + 5 * MIN, "first due is the 5-minute fallback from job start");
+    assert.equal(armed!.at, active.asyncJobManager!.getJob(jobId)!.startTime + JOB_OBSERVATION_INTERVALS_MS[0]!, "first due is the first observation interval from job start");
     clock.advance(armed!.at - clock.time - 1);
     await Bun.sleep(300);
     assert.equal(results.has("wait-1"), false, "one millisecond before the due the wait is still running");
@@ -180,7 +181,7 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
     assert.equal(requests.length, count, "no late observation wake after completion");
     assert.equal(clock.jobs.size, 0);
     assert.deepEqual(extensionErrors, [], "the extension sends and handlers raised no error");
-    console.log(`SDK observation: ${jobId} wait woke at virtual +5min, re-wait refused, proc read saw running, completion delivered once via ${waitDelivered ? "wait" : "async-result"} (${requests.length} requests)`);
+    console.log(`SDK observation: ${jobId} wait woke at virtual +${JOB_OBSERVATION_INTERVALS_MS[0]! / MIN}min, re-wait refused, proc read saw running, completion delivered once via ${waitDelivered ? "wait" : "async-result"} (${requests.length} requests)`);
   } finally {
     // Let the fixture job end even when an assertion failed, so settling never waits on its deadline.
     writeFileSync(gate, "");
