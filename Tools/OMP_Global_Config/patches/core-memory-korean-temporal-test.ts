@@ -17,5 +17,12 @@ for (const reference of ["2026-10-29T00:30:00+09:00", "2024-03-01T23:30:00Z", "2
   } catch (error) { failed++; console.error(`FAIL ${ko} @ ${reference}: ${error}`); }
  }
 }
-console.log(`English precedence observation: ${JSON.stringify(extractTemporal("day before yesterday", "2026-10-29T00:00:00Z"))}`);
+for (const reference of ["2026-10-29T00:00:00Z", "2024-03-01T23:30:00Z", "2026-01-01T00:00:00Z"]) {
+ for (const phrase of ["day before yesterday", "the DAY BEFORE YESTERDAY", "day   before   yesterday"]) {
+  try {
+   assert.equal(extractTemporal(phrase, reference).event_date, extractTemporal("2 days ago", reference).event_date);
+   console.log(`PASS ${phrase} is -2 days @ ${reference}`);
+  } catch (error) { failed++; console.error(`FAIL ${phrase} @ ${reference}: ${error}`); }
+ }
+}
 if (failed) process.exit(1);

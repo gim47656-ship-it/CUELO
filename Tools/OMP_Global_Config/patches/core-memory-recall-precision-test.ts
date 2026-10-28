@@ -1,7 +1,7 @@
-// 자동 첫 턴 회상의 결과별 dense 대역(mnemopi.recallDenseBand). 실행:
+// 자동 첫 턴·압축 회상의 결과별 dense 대역(mnemopi.recallDenseBand). 실행:
 //   OMP_CORE_PATCH_TARGET=<patched-core> bun run patches/core-memory-recall-precision-test.ts
 // 턴 게이트를 통과한 뒤에도 후보 8개를 그대로 싣던 것을, 최고 후보의 원시 dense 보다 대역(기본 0.035) 넘게 뒤처지는 결과는 싣지 않게 한다.
-// 최고 후보는 늘 남고, dense 가 없는 결과(fact)는 남는다. 명시 recall·압축 회상은 대역을 받지 않는다. 0 이면 끈다.
+// 최고 후보는 늘 남고, dense 가 없는 결과(fact)는 남는다. 명시 recall 은 대역을 받지 않는다. 0 이면 끈다.
 // 동적 import 예외: core-memory-gate-citations-test.ts 와 같다(지정한 사본만 검증). 네트워크·`~/.omp` 접근 없음(임베딩 끔·임시 폴더).
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -62,7 +62,7 @@ try {
 	{
 		const E5 = "intfloat/multilingual-e5-large";
 		const row = (id: string, dense: number | undefined) => ({ id, content: `기억 ${id}`, source: "coding-agent-learn", timestamp: "2026-10-01T00:00:00Z", score: 0.9, dense_score: dense });
-		const scenario = async (dense: Array<number | undefined>, options: { band?: number; model?: string; compaction?: boolean } = {}) => {
+		const scenario = async (dense: Array<number | undefined>, options: { band?: number; model?: string; compaction?: boolean; explicit?: boolean } = {}) => {
 			const rows = dense.map((d, i) => row(`m${i}`, d));
 			const target = { bank: "bank", memory: { recallEnhanced: async () => rows, get: () => null } };
 			const parentState = {
@@ -80,9 +80,9 @@ try {
 				sessionManager: { getEntries: () => [], getBranch: () => [], appendCustomEntry: () => "entry" },
 			} as never;
 			await mnemopiBackend.start({ session, settings, agentDir: "", taskDepth: 1, parentMnemopiSessionState: parentState } as never);
-			if (options.compaction) {
+			if (options.compaction || options.explicit) {
 				const state = stateMod.getMnemopiSessionState(session);
-				return { text: await state.recallForContext("압축 회상 질의") };
+				return { text: options.compaction ? await mnemopiBackend.preCompactionContext([{ role: "user", content: "압축 회상 질의" }], settings, session) : await state.recallForContext("명시 회상 질의") };
 			}
 			const staged = await mnemopiBackend.beforeAgentStartPrompt(session, "배포 절차 알려줘");
 			return { text: staged?.context };
@@ -103,7 +103,9 @@ try {
 		const noDense = await scenario([0.9, undefined, 0, 0.82]);
 		check("dense 가 없는 결과(undefined·0)는 싣고 뒤처진 0.82 만 뺀다", JSON.stringify(shown(noDense)) === JSON.stringify(["m0", "m1", "m2"]), `shown=${JSON.stringify(shown(noDense))}`);
 		const compaction = await scenario([0.9, 0.82], { compaction: true });
-		check("압축 회상(recallForContext 기본 호출)은 대역을 받지 않는다", JSON.stringify(shown(compaction)) === JSON.stringify(["m0", "m1"]), `shown=${JSON.stringify(shown(compaction))}`);
+		check("압축 회상도 dense 대역 밖의 후보를 제외한다", JSON.stringify(shown(compaction)) === JSON.stringify(["m0"]), `shown=${JSON.stringify(shown(compaction))}`);
+		const explicit = await scenario([0.9, 0.82], { explicit: true });
+		check("명시 회상은 대역을 받지 않는다", JSON.stringify(shown(explicit)) === JSON.stringify(["m0", "m1"]));
 	}
 	{
 		const { Mnemopi } = await import(`${CORE}/../../pi-mnemopi/src/core/memory.ts`);

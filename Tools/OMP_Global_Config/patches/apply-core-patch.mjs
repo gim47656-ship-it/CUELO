@@ -9249,7 +9249,7 @@ function operationFromNative(op: string): Operation | undefined {
 		patched: "\t\trecallContextTurns: Math.max(1, Math.floor(cfgMnemopiRecallContextTurns.get(settings))),\n\t\trecallDenseGate: Math.min(1, Math.max(0, Number(cfgMnemopiRecallDenseGate.get(settings)) || 0)),\n",
 	},
 	{
-		// recallForContext 는 압축 회상도 쓰므로 게이트는 세 번째 인자로 자동 첫 턴 주입 경로만 켠다.
+		// 세 번째 인자는 첫 턴·압축 자동 주입에만 켠다. 아래 2026-10-29 upgrade가 옛 주석·로그 문구도 교체한다.
 		file: "src/mnemopi/state.ts",
 		marker: "// HANSE: turn-level dense gate",
 		anchor: "\tasync recallForContext(query: string, signal?: AbortSignal): Promise<string | undefined> {\n\t\treturn (await this.#recallBlock(query, signal))?.text || undefined;\n\t}\n\n\t/** Recalls `query` into a prompt block plus the memories it holds; undefined when aborted. */\n\tasync #recallBlock(query: string, signal?: AbortSignal): Promise<RecallBlock | undefined> {\n\t\tconst results = await this.collectScopedRecallResults(query);\n\t\tif (signal?.aborted) return undefined;\n\t\tif (results.length === 0) return { text: \"\", memories: [] };\n",
@@ -9330,7 +9330,7 @@ function operationFromNative(op: string): Operation | undefined {
 			+ "\t/**\n\t * Cuts a recall block to what the prompt carries next to the memory instructions: the\n",
 	},
 	{
-		// 자동 첫 턴 경로(autoInjection)만 대역을 받는다. 줄에 실리는 shown 으로 본문과 전달 기억 목록을 함께 만든다.
+		// 첫 턴·압축 자동 주입(autoInjection)만 대역을 받는다. shown 으로 본문과 전달 기억 목록을 함께 만든다.
 		file: "src/mnemopi/state.ts",
 		marker: "const shown = autoInjection ? this.#recallBanded(results) : results;",
 		anchor: "\t\tconst { text, offsets } = formatRecallBlock(results);\n\t\tconst memories = results.flatMap((result, index) =>\n",
@@ -19965,6 +19965,118 @@ export function normalizeKoreanRelativeTime(text: string): string {
 		marker: "const queryLower = normalizeKoreanRelativeTime(query).toLowerCase();",
 		anchor: "const queryLower = query.toLowerCase();",
 		patched: "const queryLower = normalizeKoreanRelativeTime(query).toLowerCase();",
+	});
+}
+// P7: tone-only wording; preserve mandatory find-first and no guessed targets.
+EDITS.push({
+	file: "src/prompts/system/system-prompt.md",
+	marker: "Unknown behavior/location: first use descriptive `{{toolRefs.find}}`. Do not guess `grep`/`glob` targets.",
+	anchor: "Unknown behavior/location: descriptive `{{toolRefs.find}}` FIRST; NEVER guess `grep`/`glob` targets.",
+	patched: "Unknown behavior/location: first use descriptive `{{toolRefs.find}}`. Do not guess `grep`/`glob` targets.",
+});
+// 2026-10-29: defer absent scoped databases until a real write; reads discover peer-created banks.
+{
+	const file = "src/mnemopi/state.ts";
+	EDITS.push(
+		{ file, marker: "exists?(): boolean;", anchor: "interface MnemopiScopedMemory {\n\tbank: string;\n\tmemory: Mnemopi;\n}", patched: "interface MnemopiScopedMemory {\n\tbank: string;\n\tmemory: Mnemopi;\n\texists?(): boolean;\n}" },
+		{ file, marker: "interface MnemopiScopedResources {\n\tclose(): void;", anchor: "interface MnemopiScopedResources {\n", patched: "interface MnemopiScopedResources {\n\tclose(): void;\n" },
+		{ file, marker: "get memory(): Mnemopi", anchor: "\treadonly memory: Mnemopi;\n\treadonly globalMemory?: Mnemopi;", patched: "\tget memory(): Mnemopi { return this.scoped.retain.memory; }\n\tget globalMemory(): Mnemopi | undefined { return this.scoped.global?.memory; }" },
+		{ file, marker: "// HANSE: scoped handles stay lazy until read-existing or write", anchor: "\t\tthis.memory = this.scoped.retain.memory;\n\t\tthis.globalMemory = this.scoped.global?.memory;", patched: "\t\t// HANSE: scoped handles stay lazy until read-existing or write" },
+		{ file, marker: "const owned: Mnemopi[] = [];", anchor: "\tconst memories = new Map<string, MnemopiScopedMemory>();\n", patched: "\tconst memories = new Map<string, MnemopiScopedMemory>();\n\tconst owned: Mnemopi[] = [];\n\tlet closed = false;\n" },
+		{
+			file, marker: "// HANSE: absent banks have a handle, not an empty SQLite file",
+			anchor: "\t\tconst scoped = { bank, memory: createMemory(config, bank) };\n",
+			patched: `		// HANSE: absent banks have a handle, not an empty SQLite file
+		let memory: Mnemopi | undefined;
+		const dbPath = resolveBankDbPath(config, bank);
+		const scoped: MnemopiScopedMemory = {
+			bank,
+			exists: () => memory !== undefined || nodeFs.existsSync(dbPath),
+			get memory() {
+				if (closed) throw new Error("Mnemopi scoped resources are closed.");
+				if (!memory) {
+					memory = createMemory(config, bank);
+					owned.push(memory);
+				}
+				return memory;
+			},
+		};
+		if (scoped.exists!()) void scoped.memory;
+`,
+		},
+		{ file, marker: "\t\towned,\n", anchor: "\t\towned: [...memories.values()].map(entry => entry.memory),\n", patched: "\t\towned,\n\t\tclose() {\n\t\t\tclosed = true;\n\t\t\tfor (const memory of owned) memory.close();\n\t\t},\n" },
+		{ file, marker: "this.scoped.close();", anchor: "\t\t\tfor (const memory of this.scoped.owned) memory.close();\n", patched: "\t\t\tthis.scoped.close();\n" },
+		{ file, marker: "if (target.exists?.() === false) continue;", anchor: "\t\tfor (const target of this.scoped.recall) {\n", patched: "\t\tfor (const target of this.scoped.recall) {\n\t\t\tif (target.exists?.() === false) continue;\n" },
+		{ file, marker: "if (target.exists?.() === false || seen.has(target.bank)) continue;", anchor: "\t\tif (seen.has(target.bank)) continue;\n", patched: "\t\tif (target.exists?.() === false || seen.has(target.bank)) continue;\n" },
+		{ file, marker: "const target = this.scoped.recall.find", anchor: "\t\t\treturn this.memory.beam.formatContext(results, format);", patched: "\t\t\tconst target = this.scoped.recall.find(target => target.exists?.() !== false);\n\t\t\treturn target?.memory.beam.formatContext(results, format);" },
+		{ file, marker: "if (this.scoped.retain.exists?.() === false) return;", anchor: "\t\tthis.#retentionCursorLoaded = true;\n", patched: "\t\tif (this.scoped.retain.exists?.() === false) return;\n\t\tthis.#retentionCursorLoaded = true;\n" },
+	);
+	const backend = "src/mnemopi/backend.ts";
+	EDITS.push(
+		{ file: backend, marker: 'import { existsSync } from "node:fs";', anchor: 'import { rm } from "node:fs/promises";', patched: 'import { existsSync } from "node:fs";\nimport { rm } from "node:fs/promises";' },
+		{ file: backend, marker: "state.getScopedRecallTargets()].filter", anchor: "dedupeStatsTargets([state.getScopedRetainTarget(), ...state.getScopedRecallTargets()])", patched: "dedupeStatsTargets([state.getScopedRetainTarget(), ...state.getScopedRecallTargets()].filter(target => target.exists?.() !== false))" },
+		{ file: backend, marker: "getMnemopiScopedBanks(config).filter", anchor: "getMnemopiScopedBanks(config).map(bank => ({", patched: "getMnemopiScopedBanks(config).filter(bank => existsSync(resolveBankDbPath(config, bank))).map(bank => ({" },
+		{
+			file: backend, marker: "// HANSE: an initialized lazy bank is writable even before its first row",
+			anchor: `			if (targets.length === 0) {
+				return {
+					backend: "mnemopi",
+					active: false,
+					writable: false,
+					searchable: false,
+					message: "Mnemopi backend is configured but not initialised for this session.",
+				};
+			}
+`,
+			patched: "\t\t\t// HANSE: an initialized lazy bank is writable even before its first row\n",
+		},
+	);
+}
+// Compaction is automatic injection too; explicit recall keeps the false default.
+EDITS.push({
+	file: "src/mnemopi/state.ts",
+	marker: "return await this.recallForContext(truncated, undefined, true);",
+	anchor: "return await this.recallForContext(truncated);",
+	patched: "return await this.recallForContext(truncated, undefined, true);",
+});
+{
+	const gate = EDITS.find(entry => entry.marker === "// HANSE: turn-level dense gate");
+	gate.legacyPatched = gate.patched;
+	gate.patched = gate.patched
+		.replace("`autoInjection` is passed only by the first-turn prompt injection; compaction recall and explicit recall never gate.", "`autoInjection` gates first-turn and compaction injection; explicit recall never gates.")
+		.replace("Whole-turn skip for the automatic first-turn recall:", "Whole-turn skip for automatic recall injection:")
+		.replace("Mnemopi: first-turn recall skipped by dense gate", "Mnemopi: automatic recall skipped by dense gate");
+	for (const marker of ["\trecallDenseGate: number;\n", "\trecallDenseBand: number;\n", "#recallBanded(results: RecallResult[]): RecallResult[] {"]) {
+		const entry = EDITS.find(entry => entry.marker === marker);
+		entry.legacyPatched = entry.patched;
+		entry.patched = entry.patched.replaceAll("automatic first-turn", "automatic").replaceAll("first-turn", "automatic");
+	}
+}
+// The specific compound must precede yesterday; keep its existing date/tags semantics.
+{
+	const compound = `	if (/\\bday before yesterday\\b/.test(textLower) || /\\bday\\s+before\\s+yesterday\\b/.test(textLower)) {
+		const d = addDays(ref, -2);
+		return [d, "day", [isoDate(d)]];
+	}
+
+`;
+	const yesterday = `	if (/\\byesterday\\b/.test(textLower)) {
+		const d = addDays(ref, -1);
+		return [d, "day", [isoDate(d), dayName(d), "yesterday"]];
+	}
+
+`;
+	const tomorrow = `	if (/\\btomorrow\\b/.test(textLower)) {
+		const d = addDays(ref, 1);
+		return [d, "day", [isoDate(d), dayName(d), "tomorrow"]];
+	}
+
+`;
+	EDITS.push({
+		file: "../pi-mnemopi/src/core/temporal-parser.ts",
+		marker: "// HANSE: compound relative day precedes yesterday",
+		anchor: yesterday + tomorrow + compound,
+		patched: "\t// HANSE: compound relative day precedes yesterday\n" + compound + yesterday + tomorrow,
 	});
 }
 // ToolCostTrim2: keep orchestrator-only tools out of Maker defaults.

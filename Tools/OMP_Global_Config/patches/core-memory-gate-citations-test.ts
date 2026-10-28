@@ -1,7 +1,7 @@
 // 기억 주입 게이트(턴 단위 원시 dense)와 근거형 learn citations 검증. 실행:
 //   OMP_CORE_PATCH_TARGET=<patched-core> bun run patches/core-memory-gate-citations-test.ts
-// 게이트: 자동 첫 턴 회상에서 상위 후보의 원시 dense 최댓값이 기준 미만이면 그 턴은 기억을 싣지 않는다. 명시 recall·압축 회상은
-// 게이트를 받지 않는다. citations: kind evidence(project)는 존재하는 근거 파일을 요구하고, 회상 줄에 `근거 후보:` 로 나온다.
+// 게이트: 자동 첫 턴과 압축 회상은 dense 게이트를 받는다. 명시 recall 은 받지 않는다.
+// citations: kind evidence(project)는 존재하는 근거 파일을 요구하고, 회상 줄에 `근거 후보:` 로 나온다.
 // 동적 import 예외: core-bai-retry-test.ts 와 같다(지정한 사본만 검증). 네트워크·`~/.omp` 접근 없음(임베딩 끔·임시 폴더).
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -58,7 +58,7 @@ try {
 	{
 		const E5 = "intfloat/multilingual-e5-large";
 		const row = (id: string, dense: number | undefined) => ({ id, content: `기억 ${id}`, source: "coding-agent-learn", timestamp: "2026-10-01T00:00:00Z", score: 0.9, dense_score: dense });
-		const scenario = async (dense: Array<number | undefined>, options: { gate?: number; model?: string; compaction?: boolean } = {}) => {
+		const scenario = async (dense: Array<number | undefined>, options: { gate?: number; model?: string; compaction?: boolean; explicit?: boolean } = {}) => {
 			const rows = dense.map((d, i) => row(`m${i}`, d));
 			const target = { bank: "bank", memory: { recallEnhanced: async () => rows, get: () => null } };
 			const parentState = {
@@ -76,9 +76,9 @@ try {
 				sessionManager: { getEntries: () => [], getBranch: () => [], appendCustomEntry: (customType: string, data: unknown) => { recorded.push({ customType, data }); return "entry"; } },
 			} as never;
 			await mnemopiBackend.start({ session, settings: (session as { settings: never }).settings, agentDir: "", taskDepth: 1, parentMnemopiSessionState: parentState } as never);
-			if (options.compaction) {
+			if (options.compaction || options.explicit) {
 				const state = stateMod.getMnemopiSessionState(session);
-				return { recorded, text: await state.recallForContext("압축 회상 질의"), staged: undefined as never, session };
+				return { recorded, text: options.compaction ? await mnemopiBackend.preCompactionContext([{ role: "user", content: "압축 회상 질의" }], session.settings, session) : await state.recallForContext("명시 회상 질의"), staged: undefined as never, session };
 			}
 			const staged = await mnemopiBackend.beforeAgentStartPrompt(session, "배포 절차 알려줘");
 			return { recorded, staged, text: staged?.context, session };
@@ -105,7 +105,9 @@ try {
 		const noSignal = await scenario([undefined, 0]);
 		check("dense 신호가 전혀 없으면(임베딩 없음) 게이트하지 않는다", noSignal.text?.includes("(id: m0)") === true, `text=${JSON.stringify(noSignal.text)}`);
 		const compaction = await scenario([0.5], { compaction: true });
-		check("압축 회상(recallForContext 기본 호출)은 게이트를 받지 않는다", compaction.text?.includes("(id: m0)") === true, `text=${JSON.stringify(compaction.text)}`);
+		check("압축 회상도 낮은 dense 후보를 싣지 않는다", compaction.text === undefined, `text=${JSON.stringify(compaction.text)}`);
+		const explicit = await scenario([0.5], { explicit: true });
+		check("명시 회상은 게이트를 받지 않는다", explicit.text?.includes("(id: m0)") === true);
 	}
 
 	// ── 3. 근거형 learn ────────────────────────────────────────────────────────
