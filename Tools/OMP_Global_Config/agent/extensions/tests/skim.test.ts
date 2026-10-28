@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { callModel, skimQuestion, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
+import { callModel, skimQuestion, withFallback, DRAFT_FALLBACK, HelperCallError, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
 
 const directories: string[] = [];
 const signal = new AbortController().signal;
@@ -244,6 +244,34 @@ describe("skim", () => {
     expect(cancelled.isError).toBe(false);
     expect(cancelled.text).toContain("model: none");
     expect(called).toEqual([GEMINI]);
+  });
+
+  test("withFallback: 설정한 대체 대상은 사용자 취소 뒤 부르지 않고, 주 모델과 같은 이름이면 다시 부르지 않으며, 표지를 그대로 받는다", async () => {
+    const target = { marker: DRAFT_FALLBACK, name: "x/terra", label: "modelRoles.draftFallback" } as const;
+    const controller = new AbortController();
+    const cancelledCalls: string[] = [];
+    const cancelled = await withFallback(async (requested) => { cancelledCalls.push(requested); controller.abort(); throw new Error("aborted"); }, controller.signal, target);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelledCalls).toEqual([GEMINI]);
+    const sameCalls: string[] = [];
+    const same = await withFallback(async (requested) => { sameCalls.push(requested); throw new HelperCallError("down", "x/terra"); }, signal, target);
+    expect(same).toMatchObject({ status: "failed" });
+    expect(same.failures.at(-1)).toContain("modelRoles.draftFallback 모델과 같아 다시 호출하지 않았습니다");
+    expect(sameCalls).toEqual([GEMINI]);
+    const calls: string[] = [];
+    const done = await withFallback(async (requested) => {
+      calls.push(requested);
+      if (requested === GEMINI) throw new Error("primary down");
+      return { model: "x/terra", value: "ok" };
+    }, signal, target);
+    expect(done).toMatchObject({ status: "done", model: "x/terra", value: "ok" });
+    expect(calls).toEqual([GEMINI, DRAFT_FALLBACK]);
+  });
+
+  test("withFallback: 설정한 대체 대상의 실패는 모델을 밝히지 않는 오류도 대체 모델 이름으로 남긴다", async () => {
+    const target = { marker: DRAFT_FALLBACK, name: "x/terra", label: "modelRoles.draftFallback" } as const;
+    const out = await withFallback(async () => { throw new Error("boom"); }, signal, target);
+    expect(out.failures).toEqual(["Gemini 실패: boom", "x/terra 실패: boom"]);
   });
 
   test("core Settings가 별도 skim 슬롯을 그대로 해석한다", () => {

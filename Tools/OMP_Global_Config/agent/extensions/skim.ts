@@ -24,11 +24,14 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-vertex/gemini-4-argon";
 // 조사 도구 한정 대체. retry.fallbackChains의 모델 키 체인은 같은 모델을 쓰는 다른 slot까지 바꾸므로 사용하지 않는다.
 export const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+/** draft 전용 선택 대체 slot(modelRoles.draftFallback)을 부르라는 요청 표지. skim은 이 표지를 쓰지 않는다. */
+export const DRAFT_FALLBACK = "@draftFallback";
 /**
  * 모델 요청 표지다. GEMINI는 "역할 slot(modelRoles.skim·draft)으로 부른다"는 뜻이고 기본 설정의 모델 이름을 겸한다.
  * slot이 가리키는 실제 모델은 응답의 `model`이 말한다. DEEPSEEK는 고정 대체이며 항상 정확히 그 모델만 부른다.
+ * DRAFT_FALLBACK은 modelRoles.draftFallback이 해석한 모델을 그대로 부르며 다른 모델로 바꾸지 않는다.
  */
-export type HelperModel = typeof GEMINI | typeof DEEPSEEK;
+export type HelperModel = typeof GEMINI | typeof DEEPSEEK | typeof DRAFT_FALLBACK;
 
 export interface SkimInput { paths: string[]; question: string }
 /** 응답이 돌아온 모델의 실제 `provider/id`와 답. 표시·비용 귀속은 요청이 아니라 이 값을 따른다. */
@@ -50,8 +53,8 @@ export class HelperCallError extends Error {
 const DISPLAY_NAME: Record<string, string> = { [GEMINI]: "Gemini", [DEEPSEEK]: "DeepSeek" };
 /** 기본 모델은 짧은 이름으로, 설정으로 바뀐 모델은 provider/id 그대로 표시한다. */
 export function displayName(model: string): string { return DISPLAY_NAME[model] ?? model; }
-/** 실패한 모델의 이름. 호출이 모델을 밝히지 못한 오류(주입 함수 등)는 요청한 표지를 따른다. */
-export function failedModel(error: unknown, requested: HelperModel): string { return error instanceof HelperCallError ? error.model : requested; }
+/** 실패한 모델의 이름. 호출이 모델을 밝히지 못한 오류(주입 함수 등)는 요청한 모델 이름을 따른다. */
+export function failedModel(error: unknown, requested: string): string { return error instanceof HelperCallError ? error.model : requested; }
 /** collect 결과. chunks는 안전 필터를 통과한 `<file>` 블록이며 지시문은 호출 도구가 붙인다. */
 export interface Collected { chunks: string[]; notes: string[] }
 
@@ -211,26 +214,26 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
 export interface RoleCall { role: "skim" | "draft"; maxTokens?: number; acceptTruncated?: boolean }
 
 /**
- * 역할 slot(modelRoles.skim·draft가 가리키는 모델, 기본은 Gemini) 또는 고정 DeepSeek 대체로 한 번 호출하고
- * 응답이 돌아온 시도를 비용 장부에 남긴다. slot은 설정이 해석한 모델을 그대로 부르며 다른 모델로 바꾸지 않는다.
- * 해석·자격·입력 능력이 맞지 않으면 그 모델 이름을 단 오류로 멈춘다.
+ * 역할 slot(modelRoles.skim·draft가 가리키는 모델, 기본은 Gemini)·draft 전용 선택 대체 slot(modelRoles.draftFallback) 또는
+ * 고정 DeepSeek 대체로 한 번 호출하고 응답이 돌아온 시도를 비용 장부에 남긴다. slot은 설정이 해석한 모델을 그대로 부르며
+ * 다른 모델로 바꾸지 않는다. 해석·자격·입력 능력이 맞지 않으면 그 모델 이름을 단 오류로 멈춘다.
  */
 export async function completeRole(prompt: string, ctx: ExtensionContext, signal: AbortSignal, requested: HelperModel, call: RoleCall): Promise<HelperAnswer> {
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
-  const roleSlot = requested === GEMINI;
-  const selector = roleSlot ? findScopedSettings(ctx.cwd)?.getModelRole(call.role) : DEEPSEEK;
-  if (!selector) throw new HelperCallError(`modelRoles.${call.role} 설정을 찾지 못했습니다.`, `@${call.role}`);
+  const slotName = requested === GEMINI ? call.role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
+  const selector = slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : DEEPSEEK;
+  if (!selector) throw new HelperCallError(`modelRoles.${slotName ?? call.role} 설정을 찾지 못했습니다.`, `@${slotName ?? call.role}`);
   // 해석 전에는 설정된 selector가, 해석 뒤에는 실제 provider/id가 이 호출의 이름이다. 그 사이 어디서 던져도(자격 갱신,
   // 호출 예외, 비용 장부 저장 실패) 같은 이름을 단 오류로 다시 던져 호출자가 요청 표지(Gemini)로 오해하지 않게 한다.
   let identity = selector;
   try {
-    const model = ctx.models.resolve(roleSlot ? `@${call.role}` : DEEPSEEK);
-    if (!model) throw new HelperCallError(`modelRoles.${call.role} 모델을 해석하지 못했습니다: ${selector}`, selector);
+    const model = ctx.models.resolve(slotName ? `@${slotName}` : DEEPSEEK);
+    if (!model) throw new HelperCallError(`modelRoles.${slotName} 모델을 해석하지 못했습니다: ${selector}`, selector);
     const name = identity = `${model.provider}/${model.id}`;
     // 고정 대체는 이름이 정확히 같을 때만 부른다. slot은 어떤 모델로 해석되든 그 모델을 부른다.
-    if (!roleSlot && name !== DEEPSEEK) throw new HelperCallError(`${DEEPSEEK} 모델을 해석하지 못했습니다: ${name}`, name);
+    if (!slotName && name !== DEEPSEEK) throw new HelperCallError(`${DEEPSEEK} 모델을 해석하지 못했습니다: ${name}`, name);
     if (!model.input.includes("text")) throw new HelperCallError(`${name}은 텍스트 입력을 지원하지 않아 ${call.role} 도구에 쓸 수 없습니다.`, name);
     const sessionId = ctx.sessionManager.getSessionId();
     if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name);
@@ -244,7 +247,7 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     // 장부 저장 실패는 삼키지 않고 그 모델 이름으로 실패시킨다.
     // ctx 타입은 읽기 전용이지만 런타임 값은 세션의 SessionManager다(extensions/runner.ts).
     (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-      purpose: call.role, role: roleSlot ? call.role : undefined, api: model.api, provider: model.provider,
+      purpose: call.role, role: slotName, api: model.api, provider: model.provider,
       model: model.id, usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
     }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
     const truncated = response.stopReason === "length" && call.acceptTruncated === true;
@@ -272,21 +275,42 @@ export type FallbackOutcome<T> =
   | { status: "cancelled"; failures: string[] }
   | { status: "failed"; failures: string[] };
 
+/** withFallback의 두 번째 시도 대상. name은 같은 모델 재호출을 가르는 실제 `provider/id`(해석 전이면 설정 selector)다. */
+export interface FallbackTarget { marker: HelperModel; name: string; label: string }
+/** 기본 대체: 고정 DeepSeek. skim과 draftFallback이 없는 draft가 쓴다. */
+export const FIXED_FALLBACK: FallbackTarget = { marker: DEEPSEEK, name: DEEPSEEK, label: "고정 대체" };
+
 /**
- * 역할 slot 모델로 한 번, 실패하면 고정 DeepSeek로 한 번만 시도한다. slot이 이미 DeepSeek로 해석돼 실패했다면 같은
- * 모델을 다시 부르지 않는다(재시도 증가 없음). 사용자 취소는 실패로 세지 않고 다음 모델을 부르지 않는다.
+ * draft 전용 선택 대체를 정한다. modelRoles.draftFallback이 없으면 고정 DeepSeek(기존 동작)이고, 값이 있으면(빈 값·해석
+ * 불가 포함) 그 slot만 대체가 되어 실패해도 DeepSeek로 조용히 넘어가지 않는다. 같은 모델 재호출 판정은 별칭을 푼 실제 이름으로 한다.
  */
-export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal): Promise<FallbackOutcome<T>> {
+export async function resolveDraftFallback(ctx: ExtensionContext): Promise<FallbackTarget> {
+  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const selector = findScopedSettings(ctx.cwd)?.getModelRole("draftFallback");
+  if (selector === undefined) return FIXED_FALLBACK;
+  let name = selector;
+  try {
+    const model = ctx.models.resolve("@draftFallback");
+    if (model) name = `${model.provider}/${model.id}`;
+  } catch { /* 해석 실패는 대체 시도가 그 selector 이름으로 보고한다 */ }
+  return { marker: DRAFT_FALLBACK, name, label: "modelRoles.draftFallback" };
+}
+
+/**
+ * 역할 slot 모델로 한 번, 실패하면 대체 모델(기본 고정 DeepSeek)로 한 번만 시도한다. slot이 이미 대체 모델로 해석돼 실패했다면
+ * 같은 모델을 다시 부르지 않는다(재시도 증가 없음). 사용자 취소는 실패로 세지 않고 다음 모델을 부르지 않는다.
+ */
+export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget = FIXED_FALLBACK): Promise<FallbackOutcome<T>> {
   const failures: string[] = [];
-  for (const requested of [GEMINI, DEEPSEEK] as const) {
+  for (const requested of [GEMINI, fallback.marker] as const) {
     try {
       return { status: "done", ...(await attempt(requested)), failures };
     } catch (error) {
-      const model = failedModel(error, requested);
+      const model = failedModel(error, requested === GEMINI ? requested : fallback.name);
       failures.push(`${displayName(model)} 실패: ${(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim()}`);
       if (signal.aborted) return { status: "cancelled", failures };
-      if (model === DEEPSEEK && requested === GEMINI) {
-        failures.push(`${displayName(DEEPSEEK)}는 고정 대체 모델과 같아 다시 호출하지 않았습니다.`);
+      if (model === fallback.name && requested === GEMINI) {
+        failures.push(`${displayName(model)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
         return { status: "failed", failures };
       }
     }

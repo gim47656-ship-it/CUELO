@@ -24,8 +24,8 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   편집 대상의 정확한 줄은 `read`로 다시 확인한다.
 - 글씨가 들어가는 콘텐츠를 새로 쓰거나 한 문단 이상 다시 쓸 때(README·CHANGELOG·`docs/`·보고서·소개 글, `HANDOFF.md`·작업
   기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드·HTML·UI 문구)는 Main·Maker 모두 먼저
-  `draft(instruction, output, paths?)`로 Gemini(Vertex Gemini 4 Argon)에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 Hive의 DeepSeek 1017로
-  한 번 대체, 참고 텍스트는 Google 또는 Hive로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
+  `draft(instruction, output, paths?)`로 Gemini(Vertex Gemini 4 Argon)에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 `modelRoles.draftFallback`이 가리키는
+  모델 — 소스 프로필은 GPT-6.1 Terra, 미설정 설치는 Hive의 DeepSeek 1017 — 로 한 번 대체하고 설정한 대체가 실패해도 DeepSeek로 넘어가지 않는다, 참고 텍스트는 Google 또는 대체 모델의 제공자로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
   AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
   몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
   같은 프로젝트를 쓴다(2026-10-26 사용자 결정).

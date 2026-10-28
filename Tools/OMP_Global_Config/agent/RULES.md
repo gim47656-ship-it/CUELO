@@ -86,7 +86,8 @@
   이상 다시 쓰는 글은 Main·Maker 모두 먼저 `draft`로 쓴다. README·CHANGELOG·`docs/`·보고서·안내서·소개 글·게시물,
   `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
   UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
-  Gemini가 작성해 cwd 안에 저장하고, 실패하면 Hive의 DeepSeek 1017로 한 번 대체한다(참고 텍스트는 Google 또는 Hive로
+  Gemini가 작성해 cwd 안에 저장하고, 실패하면 `modelRoles.draftFallback`이 가리키는 모델(소스 프로필은 GPT-6.1 Terra, 미설정 설치는
+  Hive의 DeepSeek 1017)로 한 번 대체한다. 설정한 대체가 실패하면 DeepSeek로 넘어가지 않는다(참고 텍스트는 Google 또는 대체 모델의 제공자로
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게

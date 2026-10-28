@@ -17,8 +17,9 @@ const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPd
 // 로컬 OpenAI 호환 서버). 역할 설정이 가리키는 모델이 실제로 불리는지, usage가 그 모델에 귀속되는지도 본다.
 
 const GLM = "fakeglm/glm-fake";
+const TERRA = "fakeglm/terra-fake";
 const IMAGE_ONLY = "fakeglm/image-only";
-type Behavior = "ok" | "fail" | "empty";
+type Behavior = "ok" | "fail" | "empty" | "garbage";
 
 const roots: string[] = [];
 const requested: string[] = [];
@@ -38,7 +39,7 @@ beforeAll(() => {
     if (mode === "fail") return new Response(JSON.stringify({ error: { message: `${body.model} synthetic outage` } }), { status: 400, headers: { "content-type": "application/json" } });
     const base = { id: `fake-${requested.length}`, object: "chat.completion.chunk", created: 0, model: body.model };
     const chunks = [
-      { ...base, choices: [{ index: 0, delta: { role: "assistant", content: mode === "empty" ? "" : `# 결과\n\n${body.model} 가 쓴 본문 (guide.md:L1)` }, finish_reason: null }] },
+      { ...base, choices: [{ index: 0, delta: { role: "assistant", content: mode === "empty" ? "" : mode === "garbage" ? 'a,b\n"unclosed,1\n' : `# 결과\n\n${body.model} 가 쓴 본문 (guide.md:L1)` }, finish_reason: null }] },
       { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
       { ...base, choices: [], usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 } },
     ];
@@ -63,7 +64,7 @@ interface Outcome { isError: boolean; text: string; sessionsDir: string; usage: 
 interface Hooks { apiKeyThrows?: string; usageThrows?: string }
 
 /** 부모 모델이 도구를 한 번 부르고 끝나는 세션을 돌려 세션에 남은 toolResult를 읽는다. */
-async function callTool(name: "skim" | "draft", args: Record<string, unknown>, roles: { skim?: string; draft?: string }, cwd?: string, hooks: Hooks = {}): Promise<Outcome> {
+async function callTool(name: "skim" | "draft", args: Record<string, unknown>, roles: { skim?: string; draft?: string; draftFallback?: string }, cwd?: string, hooks: Hooks = {}): Promise<Outcome> {
   const root = mkdtempSync(join(tmpdir(), "helper-contract-"));
   roots.push(root);
   const work = cwd ?? join(root, "work");
@@ -77,7 +78,7 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   const baseUrl = `http://127.0.0.1:${server.port}/v1`;
   const provider = { baseUrl, apiKey: "local", api: "openai-completions" as const };
   registry.registerProvider("fakeparent", { ...provider, models: [spec("parent")] });
-  registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("image-only", ["image"])] });
+  registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("terra-fake"), spec("image-only", ["image"])] });
   registry.registerProvider("google-vertex", { ...provider, models: [spec("gemini-4-argon")] });
   registry.registerProvider("hive", { ...provider, models: [spec("deepseek-ai/deepseek-v4.1-flash-1017")] });
   const model = registry.find("fakeparent", "parent")!;
@@ -250,6 +251,81 @@ describe("helper tool result contract through the SDK", () => {
     }
     expect(realPdf.findPdfBackend).toBe(ORIGINAL_PDF.findPdfBackend);
     expect(realPdf.renderPdf).toBe(ORIGINAL_PDF.renderPdf);
+  });
+
+  test("draft: 주 모델이 실패하면 modelRoles.draftFallback의 모델이 초안을 저장하고 DeepSeek는 부르지 않는다", async () => {
+    behavior["glm-fake"] = "fail";
+    const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM, draftFallback: TERRA }, root);
+    expect(out.isError).toBe(false);
+    expect(out.text.startsWith(`model: ${TERRA}`)).toBe(true);
+    expect(out.text).toContain(`${GLM} 실패:`);
+    expect(readFileSync(join(root, "out.md"), "utf8")).toContain("terra-fake 가 쓴 본문");
+    expect(requested).toEqual(["glm-fake", "terra-fake"]);
+    // 실패한 주 모델 시도도 청구된 응답이라 남고, 대체 시도는 실제로 부른 Terra 대역에 draftFallback slot으로 귀속된다.
+    expect(out.usage).toEqual([["draft", "draft", "fakeglm", "glm-fake"], ["draftFallback", "draft", "fakeglm", "terra-fake"]]);
+  });
+
+  test("draft: 주 모델의 형식 검증 실패(깨진 CSV)도 draftFallback 한 번으로 넘어간다", async () => {
+    behavior["glm-fake"] = "garbage";
+    const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "표", output: "out.csv" }, { draft: GLM, draftFallback: TERRA }, root);
+    expect(out.isError).toBe(false);
+    expect(out.text.startsWith(`model: ${TERRA}`)).toBe(true);
+    expect(out.text).toContain(`${GLM} 실패: CSV: 닫히지 않은 따옴표가 있습니다.`);
+    expect(requested).toEqual(["glm-fake", "terra-fake"]);
+  });
+
+  test("draft: draftFallback도 실패하면 DeepSeek로 넘어가지 않고 두 원인을 담은 오류로 끝난다", async () => {
+    behavior["glm-fake"] = "fail";
+    behavior["terra-fake"] = "fail";
+    const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM, draftFallback: TERRA }, root);
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain(`${GLM} 실패:`);
+    expect(out.text).toContain(`${TERRA} 실패:`);
+    expect(out.text).not.toContain("DeepSeek");
+    expect(requested).toEqual(["glm-fake", "terra-fake"]);
+    expect(existsSync(join(root, "out.md"))).toBe(false);
+  });
+
+  test("draft: 설정한 draftFallback이 해석되지 않거나 텍스트 입력이 없으면 그 이름으로 실패하고 DeepSeek를 부르지 않는다", async () => {
+    for (const [selector, expected] of [
+      [IMAGE_ONLY, `${IMAGE_ONLY} 실패: ${IMAGE_ONLY}은 텍스트 입력을 지원하지 않아`],
+      ["nosuch/none", "nosuch/none 실패: modelRoles.draftFallback 모델을 해석하지 못했습니다: nosuch/none"],
+      ["", "@draftFallback 실패: modelRoles.draftFallback 설정을 찾지 못했습니다."],
+    ] as const) {
+      behavior["glm-fake"] = "fail";
+      const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
+      roots.push(root);
+      const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM, draftFallback: selector }, root);
+      expect(out.isError).toBe(true);
+      expect(out.text).toContain(expected);
+      expect(out.text).not.toContain("DeepSeek");
+      expect(requested).toEqual(["glm-fake"]);
+      requested.length = 0;
+    }
+  });
+
+  test("draft: draftFallback이 별칭을 풀면 주 모델과 같은 모델이라 다시 호출하지 않는다", async () => {
+    behavior["glm-fake"] = "fail";
+    const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM, draftFallback: "glm-fake" }, root);
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain("modelRoles.draftFallback 모델과 같아 다시 호출하지 않았습니다");
+    expect(requested).toEqual(["glm-fake"]);
+  });
+
+  test("skim: draftFallback이 있어도 skim의 대체는 고정 DeepSeek다", async () => {
+    behavior["glm-fake"] = "fail";
+    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM, draftFallback: TERRA });
+    expect(out.isError).toBe(false);
+    expect(out.text.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
+    expect(requested).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
   });
 
   test("slot 모델의 자격 갱신이 던져도 실패는 그 모델 이름으로 남고 DeepSeek 대체는 한 번 이어진다", async () => {
