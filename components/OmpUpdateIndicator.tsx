@@ -12,7 +12,7 @@ import { MarkdownBody } from "./MarkdownBody";
 type LoadState = "idle" | "loading" | "ready";
 
 /** 소스 체크아웃에서 수동으로 갱신할 때 안내하는 명령. */
-const SOURCE_UPDATE_COMMAND = "git pull && bun install && bun run build && node Tools/CUELO_Setup/files/native-runtime-patch.js --target .";
+const SOURCE_UPDATE_COMMAND = "git pull --ff-only && node install.mjs setup";
 
 const TERMINAL_PHASE: Record<string, true> = {
   done: true,

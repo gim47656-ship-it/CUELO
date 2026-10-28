@@ -501,9 +501,19 @@ export function dropInTreeBunCache(buildHome) {
   }
 }
 
+/** A source checkout has the lockfile and the app sources; an installed npm package ships only the build. */
+function isSourceCheckout() {
+  return fs.existsSync(path.join(ROOT, "bun.lock")) && fs.existsSync(path.join(ROOT, "app", "layout.tsx"));
+}
+
+/** How the user runs this installer: `cuelo` from an npm install (no install.mjs in their folder), `node install.mjs` from a checkout. */
+function cliCommand() {
+  return isSourceCheckout() ? "node install.mjs" : "cuelo";
+}
+
 function prepareRuntime() {
   const node = process.versions.bun ? "node" : process.execPath;
-  const sourceCheckout = fs.existsSync(path.join(ROOT, "bun.lock")) && fs.existsSync(path.join(ROOT, "app", "layout.tsx"));
+  const sourceCheckout = isSourceCheckout();
   if (!sourceCheckout) {
     // An installed package ships its production build and patched SDK; only confirm them.
     run(node, [path.join(ROOT, "bin", "prepare-runtime.js"), "--check"], { cwd: ROOT });
@@ -557,14 +567,14 @@ function setup(options) {
   const harness = copyHarness(path.join(ROOT, "Tools", "OMP_Global_Config", "agent"), agentDir, harnessEntries(pkg.files ?? []));
   const recorded = recordHarnessInstall(agentDir, harness, pkg.version);
   if (recorded.skipped) console.log(`Warning: the harness install record was left unchanged because it cannot be read (${recorded.skipped}). harness-diff and harness-update refuse to run until you fix or delete it.`);
-  console.log(`Harness: ${harness.created.length} files added to ${agentDir}, ${harness.kept.length} existing files kept unchanged. Later: \`node install.mjs harness-diff\` shows how the profile differs from this version.`);
+  console.log(`Harness: ${harness.created.length} files added to ${agentDir}, ${harness.kept.length} existing files kept unchanged. Later: \`${cliCommand()} harness-diff\` shows how the profile differs from this version.`);
   const roles = createProfileConfig(agentDir, options.roles);
   if (roles.written) console.log(`Profile config: wrote ${roles.configPath}.`);
   if (roles.ignored.length > 0) console.log(`Profile config: ${roles.configPath} already exists and was not changed; ignored ${roles.ignored.join(", ")}.`);
   if (roles.missing.length > 0) {
     console.log(`Model roles not set: ${roles.missing.join(", ")}. Choose only the roles you use in CUELO Settings > Models > Model roles; built-in roles may use core defaults.`);
   }
-  console.log("Next: run `node install.mjs start`, open the address it prints, and sign in to your providers under Settings > Models.");
+  console.log(`Next: run \`${cliCommand()} start\`, open the address it prints, and sign in to your providers under Settings > Models.`);
 }
 
 async function portAnswers(port) {
@@ -612,7 +622,9 @@ function recordSupervisor(options) {
 }
 
 async function start(options) {
-  if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) throw new Error("No production build found. Run `node install.mjs setup` first.");
+  if (!fs.existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
+    throw new Error(isSourceCheckout() ? "No production build found. Run `node install.mjs setup` first." : "This package has no production build (.next/BUILD_ID). Reinstall it with `npm install -g cuelo`.");
+  }
   const { env } = resolveProfile(options.home);
   const services = servicePorts(options.portBase, env);
   const busy = [];
@@ -708,7 +720,7 @@ async function main(argv) {
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     console.error(error.message);
-    console.error("Usage: node install.mjs [setup|start|health|harness-diff|harness-update] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>] [--hostname <address>] [--json] [--dry-run]");
+    console.error(`Usage: ${cliCommand()} [setup|start|health|harness-diff|harness-update] [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>] [--port-base <n>] [--hostname <address>] [--json] [--dry-run]`);
     return 2;
   }
   try {

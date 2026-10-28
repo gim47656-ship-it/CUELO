@@ -20,13 +20,20 @@ const { randomUUID } = require('node:crypto');
 // (돌고 있는 사이드카를 죽이지 않아도 된다). OMP_EXE 와 같은 성격의 탈출구다.
 const PORT = Number(process.env.OMP_USAGE_PORT || 30142);
 // omp 실행 파일. setup 은 PATH 에 있는 omp 도 허용하므로 기본 위치에만 의존하면
-// 설치는 통과하고 USAGE 만 조용히 실패한다. 기본 위치 -> 환경변수 -> PATH 순으로 쓴다.
-const OMP = (() => {
-    const fixed = path.join(process.env.LOCALAPPDATA || '', 'omp', 'omp.exe');
-    if (process.env.OMP_EXE) return process.env.OMP_EXE;
-    if (fixed && require('node:fs').existsSync(fixed)) return fixed;
-    return 'omp.exe'; // Windows 는 실행 시 PATH 를 뒤진다
-})();
+// 설치는 통과하고 USAGE 만 조용히 실패한다. 환경변수 -> Windows 기본 위치 -> 이 패키지가 설치한
+// omp(Linux/macOS) -> PATH 순으로 쓴다. 마지막 단계가 없으면 Linux/macOS 새 설치는 'omp.exe'를
+// 찾다 실패해 리소스 패널의 모델·통계가 비어 있었다(공개본 신규 설치 시험, 2026-10-28).
+function resolveOmpExecutable({ platform = process.platform, env = process.env, root = path.join(__dirname, '..', '..', '..'), exists = fs.existsSync } = {}) {
+    if (env.OMP_EXE) return env.OMP_EXE;
+    if (platform === 'win32') {
+        const fixed = path.join(env.LOCALAPPDATA || '', 'omp', 'omp.exe');
+        if (env.LOCALAPPDATA && exists(fixed)) return fixed;
+        return 'omp.exe'; // Windows 는 실행 시 PATH 를 뒤진다
+    }
+    const owned = path.join(root, 'node_modules', '.bin', 'omp');
+    return exists(owned) ? owned : 'omp';
+}
+const OMP = resolveOmpExecutable();
 const ORIGIN = 'http://127.0.0.1:' + (Number(process.env.PORT) || 30141);
 const CACHE_MS = 60_000;
 // 만료 뒤 이 나이까지는 직전 스냅샷을 바로 내고 뒤에서 새로 조회한다. 콜드 조회(0.25s~수 초)가
@@ -1711,6 +1718,7 @@ if (require.main === module) {
 
 module.exports = {
     startServer,
+    resolveOmpExecutable,
     startExpirySweep,
     claimResetAttempt,
     createControlFacade,

@@ -51,7 +51,7 @@ export const zhCNLocale: LocalePlugin = {
     "updates.current": "当前 CUELO {version}",
     "updates.changelog": "更新日志",
     "updates.viewRelease": "查看发布",
-    "updates.manual": "从源码运行时，用以下命令更新后重启。",
+    "updates.manual": "从源码运行时，请先停止服务器，运行以下命令更新，然后重新启动。如果使用自定义 --home 路径，请为 setup 添加相同的 --home 选项。",
     "updates.copyCommand": "复制命令",
     "updates.commandCopied": "命令已复制",
     "updates.copyFailed": "无法复制命令",

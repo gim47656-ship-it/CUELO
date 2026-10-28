@@ -28,7 +28,7 @@ Windows 10 1809 이상에서 다음을 사용자가 직접 설치합니다(Bun�
 | [Git for Windows](https://git-scm.com/install/windows) | 전체 코딩·Git 기능 기준 외부 필수. 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화·내장 `bash`만 시험할 때는 생략할 수 있습니다. SDK는 Windows에서 Git Bash가 없어도 `cmd.exe`로 fallback하지만, Git 명령까지 제공하지는 않습니다. |
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
 | Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 권장은 OpenRouter API 키로 `modelRoles.judge`에 OpenRouter의 Jev를 지정하는 방법입니다. |
-| 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업·usage의 CLI fallback·`stats` 집계가 필요할 때 [공식 Windows 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE` 또는 PATH의 `omp.exe`를 실행합니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
+| 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업·usage의 CLI fallback·`stats` 집계가 필요할 때 [공식 Windows 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE`, Windows의 기본 위치 또는 PATH의 `omp.exe`를 실행합니다. Linux·macOS에서는 `OMP_EXE`가 없으면 CUELO 폴더의 `node_modules/.bin/omp`를 쓰고, 없을 때만 PATH의 `omp`를 찾습니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
 
 Windows에 `winget`이 있으면 Node·Git 설치에 써도 됩니다. 위 공식 링크의 설치본을 직접 받아도 됩니다. 네트워크와 설치 권한이 없는 PC에서는 먼저 설치본과 승인된 계정·접속 방법을 준비해야 합니다. 제공자 로그인, Git/CLI·OS 설치, 유료 모델 호출을 `setup`이 대신하지 않습니다.
 
@@ -61,7 +61,19 @@ cuelo start
 
 새 릴리스가 나오면 사이드바의 업데이트 알림에서 「지금 업데이트」 버튼을 눌러 진행할 수 있습니다. 확인 후 CUELO가 스스로 새 버전을 받아 설치하고 서버를 다시 시작합니다. 이 과정에서 실행 중인 세션은 중단되고 서버가 잠시 멈춥니다. 그동안 화면에 단계별 진행이 나오고 새 버전이 응답하면 스스로 새로 고칩니다.
 
-이때 서버는 현재 환경에 맞는 설치 방식을 고릅니다. npm 전역 설치는 `npm install -g cuelo@<버전>`으로 바꾸고, 소스 체크아웃은 작업 트리에 반영하지 않은 변경이 없고 릴리스 태그로 fast-forward할 수 있을 때만 `node install.mjs setup`을 다시 실행합니다. WSL 운영 서비스는 기존 서비스 갱신 스크립트에 넘깁니다. 반면 반영하지 않은 변경이 있거나 설치 방식을 알아볼 수 없으면 버튼 대신 `git pull && bun install && bun run build && node Tools/CUELO_Setup/files/native-runtime-patch.js --target .` 수동 명령을 안내합니다. 프로필의 하네스 갱신은 앱 업데이트와 별개이며 아래 「기존 프로필의 하네스 갱신」을 따릅니다.
+이때 서버는 현재 환경에 맞는 설치 방식을 고릅니다. npm 전역 설치는 `npm install -g cuelo@<버전>`으로 바꿉니다. 소스 체크아웃은 다음 다섯 조건을 모두 갖췄을 때 「지금 업데이트」 버튼으로 갱신합니다.
+
+- 서버를 `node install.mjs start`로 시작했습니다.
+- 개발 서버가 아닌 운영 빌드가 있습니다.
+- 커밋하지 않은 변경이 없습니다.
+- 분리된 HEAD가 아니라 브랜치 위에 있습니다.
+- 알림이 안내한 릴리스 태그가 원격에 있습니다.
+
+버튼이 작동하면 CUELO가 서버를 멈추고 브랜치를 해당 릴리스 태그로 fast-forward한 뒤 `node install.mjs setup`을 실행하고 다시 시작합니다. 시작할 때 `--home <dir>`를 지정했다면 같은 옵션을 `setup`에도 넘기고, 빌드에 실패하면 이전 릴리스로 되돌립니다.
+
+조건을 하나라도 채우지 못하거나 설치 방식을 알아볼 수 없으면 화면에 수동 명령이 나옵니다. `setup`은 서버가 읽는 `.next/` 빌드 폴더를 새로 만들기 때문에 서버(또는 개발 서버)를 먼저 멈춥니다. 그다음 소스 체크아웃에서 `git pull --ff-only && node install.mjs setup`을 실행하고, `--home <dir>`로 시작했다면 `setup`에도 같은 옵션을 붙입니다. `setup`은 `bun install --frozen-lockfile`, SDK 소스 준비, 빌드, 패치와 고지문 적용·검사를 차례로 합니다. 끝나면 `node install.mjs start`로 다시 시작하세요. `git pull --ff-only`는 현재 브랜치 끝까지 가져오므로 아직 릴리스되지 않은 커밋이 포함될 수 있습니다. 특정 릴리스에 맞추려면 `git fetch --tags` 다음 `git merge --ff-only v<버전>`을 사용합니다.
+
+프로필의 하네스 갱신은 앱 업데이트와 별개이며 아래 「기존 프로필의 하네스 갱신」을 따릅니다.
 
 아래 1~3단계는 npm 대신 소스에서 설치할 때의 절차입니다.
 
@@ -235,7 +247,7 @@ node install.mjs health --port-base 31141
 node install.mjs health
 ```
 
-네 서비스에 요청을 하나씩 보내 응답 여부만 확인합니다. 인증을 하거나 모델 제공자를 호출하지는 않습니다.
+네 서비스에 요청을 하나씩 보내 응답 여부만 확인합니다. 모델 제공자를 호출하지는 않습니다.
 
 - 앱: `GET /api/update-maintenance` → 200
 - usage: `OPTIONS /usage` → 204
@@ -243,6 +255,10 @@ node install.mjs health
 - subagent: `GET /health` → 200
 
 모두 응답하면 exit code 0, 하나라도 실패하면 1입니다.
+
+비밀번호 잠금이 켜진 서버(**설정 → 접속 암호**에서 켰거나 `CUELO_PASSWORD`를 지정한 경우)는 앱의 상태 확인 요청에도 비밀번호를 요구합니다. 값이 없거나 틀리면 401을 돌려주어 앱 검사가 실패하고 `health`가 exit code 1로 끝납니다. 사이드카 세 서비스는 영향이 없습니다.
+
+`health`는 앱에 저장된 비밀번호를 읽지 않고, 실행한 셸의 `CUELO_PASSWORD` 값만 사용자 이름 `omp`의 Basic 인증으로 보냅니다. 잠금이 켜진 환경에서는 같은 비밀번호를 환경 변수로 넘겨 실행하세요. 예: `CUELO_PASSWORD='<잠금 비밀번호>' node install.mjs health`(npm 설치는 `CUELO_PASSWORD='<잠금 비밀번호>' cuelo health`).
 
 ## 6. 로그인 (사람이 할 일)
 
@@ -254,11 +270,11 @@ node install.mjs health
 
 | 증상 | 확인할 것 |
 | --- | --- |
-| `No production build found` | `node install.mjs setup`을 먼저 끝냅니다. |
+| `No production build found` | 소스 체크아웃입니다. `node install.mjs setup`을 먼저 끝냅니다. npm 설치에서 `This package has no production build`가 나오면 `npm install -g cuelo`로 다시 설치합니다. |
 | `Already in use: …` | 기존 CUELO를 종료하거나 `--port-base`로 다른 포트를 씁니다. |
 | Bun을 찾을 수 없다는 오류 | Bun `>=1.4.2`를 설치하고 새 셸을 엽니다. |
 | `[btw] omp SDK not found` | `node install.mjs start`로 실행합니다. 이 스크립트가 `CUELO_DIR`를 CUELO 폴더로 설정합니다. |
-| 사용량 패널 오류 | 같은 패키지 SDK/계정 경로가 실패한 경우 CLI fallback은 `OMP_EXE`, 기본 위치 또는 PATH의 `omp.exe`를 찾습니다. `omp --version`과 본인 계정 로그인을 확인합니다. `stats` 집계는 독립 CLI가 필요합니다. |
+| 사용량 패널 오류 | 같은 패키지 SDK/계정 경로가 실패한 경우 CLI fallback은 `OMP_EXE`를 먼저 보고, Windows에서는 기본 위치와 PATH의 `omp.exe`를, Linux·macOS에서는 CUELO 폴더의 `node_modules/.bin/omp`와 PATH의 `omp`를 찾습니다. `omp --version`과 본인 계정 로그인을 확인합니다. `stats` 집계는 독립 CLI가 필요합니다. |
 | 사이드채팅이 입력을 받지 않음 | 세션 파일이 생성될 때까지 기다립니다. `health`에서 `btw`가 OK인지 확인합니다. |
 | 모델 역할이 비어 있음 | 설정 > 모델·계정 > 모델 역할에서 고릅니다. `setup`은 기존 `config.yml`을 바꾸지 않습니다. |
 

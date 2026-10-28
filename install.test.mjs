@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import {
   createProfileConfig,
@@ -413,6 +414,24 @@ test("only start accepts an explicit listener address", () => {
   assert.throws(() => parseArgs(["setup", "--hostname", "0.0.0.0"]), /unknown option for setup/);
   assert.throws(() => parseArgs(["health", "--hostname", "0.0.0.0"]), /unknown option for health/);
   assert.throws(() => parseArgs(["start", "--hostname"]), /needs a value/);
+});
+
+test("start tells an npm install to use `cuelo`, and a source checkout `node install.mjs`, in its own hints", () => {
+  const hint = (layout) => {
+    const root = tempDir(`hint-${layout}`);
+    fs.copyFileSync(path.join(import.meta.dirname, "install.mjs"), path.join(root, "install.mjs"));
+    if (layout === "source") {
+      write(root, "bun.lock", "");
+      write(root, "app/layout.tsx", "");
+    }
+    const result = spawnSync(process.execPath, [path.join(root, "install.mjs"), "start", "--home", path.join(root, "home")], { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } });
+    assert.equal(result.status, 1);
+    return result.stderr;
+  };
+  assert.match(hint("source"), /`node install\.mjs setup`/);
+  const packaged = hint("package");
+  assert.doesNotMatch(packaged, /node install\.mjs/);
+  assert.match(packaged, /npm install -g cuelo/);
 });
 
 test("health authenticates only the web service and never leaks the password to sidecars", async () => {

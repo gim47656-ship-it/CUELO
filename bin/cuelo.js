@@ -49,8 +49,8 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 
 Usage: cuelo [options]
        cuelo setup [--home <dir>] [--model <provider/model>] [--role <name>=<provider/model[:effort]>]
-       cuelo start [--home <dir>]
-       cuelo health
+       cuelo start [--home <dir>] [--port-base <n>] [--hostname <address>]
+       cuelo health [--port-base <n>]
        cuelo harness-diff [--home <dir>] [--json]
        cuelo harness-update [--home <dir>] [--dry-run] [--json]
 

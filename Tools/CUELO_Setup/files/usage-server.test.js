@@ -1000,3 +1000,16 @@ test('unreadable session folders make Hive a partial error that keeps what was r
     assert.equal(partial.spentComplete, false);
     assert.equal(partial.remainingUpperBound, true);
 });
+
+test('the omp CLI is found without OMP_EXE: the package-owned binary on Linux/macOS, the default install or omp.exe on Windows', () => {
+    const { resolveOmpExecutable } = require('./usage-server');
+    const root = path.join(path.sep, 'pkg');
+    const owned = path.join(root, 'node_modules', '.bin', 'omp');
+    const has = (...files) => (file) => files.includes(file);
+    assert.equal(resolveOmpExecutable({ platform: 'linux', env: {}, root, exists: has(owned) }), owned);
+    assert.equal(resolveOmpExecutable({ platform: 'linux', env: {}, root, exists: has() }), 'omp');
+    assert.equal(resolveOmpExecutable({ platform: 'darwin', env: { OMP_EXE: '/opt/omp' }, root, exists: has(owned) }), '/opt/omp');
+    const fixed = path.join('C:\\FixtureLocalAppData', 'omp', 'omp.exe');
+    assert.equal(resolveOmpExecutable({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\FixtureLocalAppData' }, root, exists: has(fixed) }), fixed);
+    assert.equal(resolveOmpExecutable({ platform: 'win32', env: {}, root, exists: has(owned) }), 'omp.exe');
+});
