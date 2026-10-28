@@ -1,0 +1,15 @@
+# CUELO
+
+> Open-source browser workspace and multi-agent harness for omp (oh-my-pi) coding agents, sharing `~/.omp/agent` sessions, credentials, and model settings with the `omp` CLI.
+
+## Documentation
+
+- [Agent Guide](https://raw.githubusercontent.com/gim47656-ship-it/CUELO/main/docs/agent-guide.md): Agent-oriented installation, setup, and operation guide.
+- [Installation Guide](https://raw.githubusercontent.com/gim47656-ship-it/CUELO/main/docs/installation.md): Windows and WSL2 setup, runtime requirements, model roles, and health checks.
+- [README](https://raw.githubusercontent.com/gim47656-ship-it/CUELO/main/README.md): Project overview, features, quick start, sidecar services, and update flow.
+- [Harness Documentation](https://raw.githubusercontent.com/gim47656-ship-it/CUELO/main/docs/harness.md): Public Main/Maker rules, dispatch and review contracts, guards, and routing (Jev).
+
+## Repository Status and Releases
+
+- [GitHub Releases](https://github.com/gim47656-ship-it/CUELO/releases): Published versions and release notes.
+- [GitHub Actions](https://github.com/gim47656-ship-it/CUELO/actions): Public CI runs for Linux checks and Windows installation/build verification.

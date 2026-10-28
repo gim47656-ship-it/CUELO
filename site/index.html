@@ -10,6 +10,7 @@
 <link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
 <link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/">
 <link rel="alternate" hreflang="x-default" href="https://gim47656-ship-it.github.io/CUELO/">
+<link rel="describedby" type="text/plain" href="https://gim47656-ship-it.github.io/CUELO/llms.txt">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
@@ -148,7 +149,7 @@
   <section id="run" aria-labelledby="run-h">
     <div class="wrap">
       <h2 id="run-h">Install and run from source</h2>
-      <p><strong>CUELO is developed and tested on Windows.</strong> macOS and Linux are not development or test environments for this project; operation and support on those platforms are not guaranteed. You need <strong>Node.js 22.19.0 or newer</strong>, <strong>Bun 1.4.2 or newer</strong> and Git for a source installation.</p>
+      <p>CUELO is developed and verified on Windows and Linux (WSL2 Ubuntu 24.04). Public CI runs full checks on Linux and installation and build smoke checks on Windows; these checks do not establish end-to-end support across all native Linux distributions, and macOS is unverified. You need <strong>Node.js 22.19.0 or newer</strong>, <strong>Bun 1.4.2 or newer</strong> and Git for a source installation.</p>
 <pre tabindex="0" aria-label="Install and start commands"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 node install.mjs setup     <span class="c"># install, build, patch the SDK, copy the public harness</span>
@@ -160,6 +161,7 @@ node install.mjs health    <span class="c"># checks that all four services answe
       <p><code>setup</code> copies the public harness into <code>~/.omp/agent</code> but only adds missing files; it never changes or deletes existing ones. When no <code>config.yml</code> exists, it creates one with safe default operating settings (for example, provider-calling automatic features stay off). These defaults ship with the installer; no one's personal configuration is copied, and an existing <code>config.yml</code> is left untouched. Choosing your models also stays with you: pass <code>--model</code>/<code>--role</code> to <code>setup</code>, or pick them later in Settings › Model roles. The installer does not guess models for you.</p>
       <p>CUELO runs agents with broad permissions: do not expose plain HTTP to the internet — put it behind a trusted HTTPS reverse proxy or a VPN. The full guide, including other port sets and troubleshooting, is in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a> (Korean).</p>
       <p>To use the prepared npm build, run <code>npm install -g cuelo</code>, then <code>cuelo setup</code> and <code>cuelo start</code>. Check the services with <code>cuelo health</code>. The <code>omp-web</code> package is the upstream project, not CUELO. Releases are listed on <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>; container use is covered in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>.</p>
+      <p>For agent-assisted installation and operation, see <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/agent-guide.md">docs/agent-guide.md</a>.</p>
     </div>
   </section>
 

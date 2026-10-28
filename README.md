@@ -14,6 +14,8 @@ CUELO is an open-source browser workspace and harness for [omp (oh-my-pi)](https
 
 CUELO는 터미널에서 쓰던 omp 세션·계정·모델 설정을 브라우저에서 그대로 이어 쓰고, 여러 에이전트의 작업과 검수를 한 화면에서 보는 오픈소스 작업 공간이자 하네스입니다.
 
+For agent-assisted setup and operation, see [docs/agent-guide.md](https://github.com/gim47656-ship-it/CUELO/blob/main/docs/agent-guide.md).
+
 ## Why CUELO
 
 - **One agent home, two surfaces**: the terminal `omp` CLI and the browser share the same `~/.omp/agent` sessions, credentials and model settings. Start in one, continue in the other.

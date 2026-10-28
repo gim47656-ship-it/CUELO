@@ -10,6 +10,7 @@
 <link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
 <link rel="alternate" hreflang="ko" href="https://gim47656-ship-it.github.io/CUELO/ko/">
 <link rel="alternate" hreflang="x-default" href="https://gim47656-ship-it.github.io/CUELO/">
+<link rel="describedby" type="text/plain" href="https://gim47656-ship-it.github.io/CUELO/llms.txt">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
@@ -148,7 +149,7 @@
   <section id="run" aria-labelledby="run-h">
     <div class="wrap">
       <h2 id="run-h">소스에서 설치하고 실행하기</h2>
-      <p><strong>CUELO의 개발·검증 환경은 Windows입니다.</strong> macOS·Linux는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. <strong>Node.js 22.19.0 이상</strong>, <strong>Bun 1.4.2 이상</strong>이 필요하며, 소스 설치에는 Git도 필요합니다.</p>
+      <p>CUELO의 개발·검증 환경은 Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux 전체 검사와 Windows 설치·빌드 스모크 확인을 실행하지만, 이것이 모든 네이티브 Linux 배포판의 종단 간 지원을 뜻하지는 않으며 macOS는 검증하지 않았습니다. <strong>Node.js 22.19.0 이상</strong>, <strong>Bun 1.4.2 이상</strong>이 필요하며, 소스 설치에는 Git도 필요합니다.</p>
 <pre tabindex="0" aria-label="설치와 실행 명령"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 node install.mjs setup     <span class="c"># 설치·빌드·SDK 패치·공개 하네스 복사</span>
@@ -160,6 +161,7 @@ node install.mjs health    <span class="c"># 네 서비스가 응답하는지 �
       <p><code>setup</code>은 공개 하네스를 <code>~/.omp/agent</code>에 복사하되 없는 파일만 추가합니다. 이미 있는 파일은 바꾸거나 지우지 않습니다. <code>config.yml</code>이 없을 때만 안전한 기본 운영 설정으로 새로 만듭니다(예: provider를 스스로 호출하는 자동 기능은 꺼 둠). 이 기본값은 설치 스크립트에 들어 있는 것이며 누군가의 개인 설정을 복사하지 않습니다. 이미 있는 <code>config.yml</code>은 그대로 둡니다. 사용할 모델 선택도 사용자가 합니다. <code>setup</code>의 <code>--model</code>/<code>--role</code>로 지정하거나 나중에 설정 › Model roles에서 고릅니다. 설치 스크립트가 모델을 추측해 채우지 않습니다.</p>
       <p>CUELO는 권한이 큰 에이전트를 실행하므로, 평문 HTTP를 인터넷에 열지 말고 신뢰할 수 있는 HTTPS 리버스 프록시나 VPN 뒤에 두세요. 다른 포트 세트와 문제 해결을 포함한 전체 안내는 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a>에 있습니다.</p>
       <p>빌드된 npm 패키지는 <code>npm install -g cuelo</code> 뒤 <code>cuelo setup</code>, <code>cuelo start</code>로 실행하고 <code>cuelo health</code>로 확인합니다. npm의 <code>omp-web</code>은 upstream 프로젝트이며 CUELO와 별개입니다. 릴리스는 <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>에, 컨테이너 실행은 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>에 있습니다.</p>
+      <p>에이전트용 설치·운영 안내는 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/agent-guide.md">docs/agent-guide.md</a>에 있습니다.</p>
     </div>
   </section>
 
