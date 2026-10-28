@@ -103,6 +103,61 @@ export function toolCallDurations(
   return map;
 }
 
+/**
+ * 마지막으로 생성이 끝난 답변의 출력 속도(토큰/초). 출력 토큰을 요청 시작(`timestamp`)부터 생성 종료(`completedAt`)까지의
+ * 시간으로 나누므로 첫 토큰을 기다린 시간도 들어간다. 출력 토큰·두 시각 중 하나라도 없는 답변은 건너뛴다.
+ */
+export function latestOutputTokensPerSecond(messages: readonly { role: string }[]): number | null {
+  for (let idx = messages.length - 1; idx >= 0; idx--) {
+    const message = messages[idx];
+    if (message.role !== "assistant") continue;
+    const { usage, timestamp, completedAt } = message as AssistantMessage;
+    const output = usage?.output ?? 0;
+    if (output <= 0 || !timestamp || !completedAt || completedAt <= timestamp) continue;
+    return output / ((completedAt - timestamp) / 1000);
+  }
+  return null;
+}
+
+// CJK chars ~1 token each (GLM/DeepSeek/GPT-o200k); other chars ~4 chars/token.
+const CJK_PATTERN = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}\uac00-\ud7af]/u;
+function estimateTokens(text: string): number {
+  let cjk = 0;
+  let rest = 0;
+  for (const ch of text) {
+    if (CJK_PATTERN.test(ch)) cjk++;
+    else rest++;
+  }
+  return cjk + rest / 4;
+}
+
+export interface TokenEstimateCacheEntry {
+  text: string;
+  tokens: number;
+}
+
+export function getTokenEstimateText(block: AssistantContentBlock): string | null {
+  if (block.type === "text") return block.text;
+  if (block.type === "thinking") return block.thinking;
+  if (block.type === "toolCall") return JSON.stringify(block.input ?? {}) ?? "";
+  return null;
+}
+
+/**
+ * 흐르는 블록의 토큰 추정. 앞 추정과 공통인 앞부분은 다시 세지 않고, 앞 글의 달라진 꼬리를 빼고 새 꼬리를 더한다.
+ * 도구 호출 인자는 JSON이라 끝의 `"}`가 매 delta마다 바뀌므로 「앞 글이 그대로 앞에 있다」로는 증분을 쓸 수 없다.
+ */
+export function estimateUpdatedTokens(previous: TokenEstimateCacheEntry | undefined, text: string): number {
+  if (!previous) return estimateTokens(text);
+  const limit = Math.min(previous.text.length, text.length);
+  let common = 0;
+  while (common < limit && previous.text.charCodeAt(common) === text.charCodeAt(common)) common++;
+  // 공통 부분이 surrogate pair 가운데서 끝나면(delta가 짝을 완성·변경) 그 pair를 양쪽 꼬리에서 통째로 센다.
+  const highSurrogate = common > 0 ? text.charCodeAt(common - 1) : 0;
+  if (highSurrogate >= 0xd800 && highSurrogate <= 0xdbff) common--;
+  return previous.tokens - estimateTokens(previous.text.slice(common)) + estimateTokens(text.slice(common));
+}
+
 /** 도구 결과 이미지를 개수·바이트로 내주는 라우트(`app/api/tool-image/route.ts`). */
 export const TOOL_IMAGE_ROUTE = "/api/tool-image";
 

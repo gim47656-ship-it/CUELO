@@ -19,7 +19,7 @@ import type {
 } from "@/lib/types";
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { countToolCallBlocks, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
+import { countToolCallBlocks, latestOutputTokensPerSecond, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
 import { attachReplyTranslations } from "@/lib/reply-translation";
 import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
 import { collectSavedLessonPlacements } from "@/lib/turn-saved-lessons";
@@ -42,6 +42,7 @@ import { CompactionBanner, InterruptedRunNotice } from "./RunStatusBanners";
 import { InlineTurnThreads, InlineUtterancesProvider } from "./workspace/InlineUtteranceThread";
 import { useInlineUtterances } from "@/hooks/useInlineUtterances";
 import { resolveAccountFace, resolveLiveAccountFace, useAccountFace } from "@/hooks/useAccountFaces";
+import { useLiveOutputRate } from "@/hooks/useLiveOutputRate";
 import { MAIN_PRESETS } from "@/lib/hanse-resource-client";
 import {
   buildInlineTurns,
@@ -1167,6 +1168,14 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   const inlineUtterances = useInlineUtterances(inlineContext);
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
+  // 입력창 아래 tok/s: 답이 흐르는 동안은 받은 글로 어림한 실시간 값, 아니면 마지막으로 끝난 답의 실제 값.
+  // 실시간 값의 답 구분 키는 끝난 assistant 답의 수다 — 답이 끝날 때만 늘고, 생성 중 끼어든 사용자 메시지로는 바뀌지 않는다.
+  const finishedAnswers = useMemo(() => messages.filter((message) => message.role === "assistant").length, [messages]);
+  const liveOutputRate = useLiveOutputRate(
+    streamState.streamingMessage?.role === "assistant" ? streamState.streamingMessage as AssistantMessage : null,
+    finishedAnswers,
+  );
+  const finishedOutputRate = useMemo(() => latestOutputTokensPerSecond(messages), [messages]);
   const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
 
   const availableThinkingLevels = displayModelValue
@@ -1252,6 +1261,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
         thinkingLevel={thinkingLevel}
         effectiveThinkingLevel={effectiveThinkingLevel}
+        outputTokensPerSecond={liveOutputRate ?? finishedOutputRate}
+        outputSpeedLive={liveOutputRate !== null}
         thinkingCeiling={thinkingCeiling}
         onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
         fastMode={fastMode}

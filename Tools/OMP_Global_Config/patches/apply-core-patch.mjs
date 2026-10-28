@@ -16621,6 +16621,341 @@ const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>(
 		anchor: "/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean;",
 		patched: '/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean | "capture";',
 	},
+	// 2026-10-29 Gemini 도구 스키마 토큰 과대 추정(doc/history/2026/10/29-recall-bottlenecks): Gemini 는 agent.pruneToolDescriptions 로
+	// wire 도구 명세에서 description·examples·중첩 schema description 을 빼고 그 카탈로그를 system prompt 에 싣는다(agent-loop normalizeTools).
+	// 추정기는 그 표지를 보지 않고 description 까지 다시 세어 system prompt 추정과 이중으로 더했다(첫 요청 nonMessage 가 실제 prompt 보다
+	// 10,694~12,683 토큰 큼). pruned 일 때만 wire 와 같은 이름 + description 뺀 schema 를 세고, pruned 가 아니면 계산·캐시 값은 그대로다.
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: 'import { stripSchemaDescriptions, toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";',
+		anchor: 'import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";\n',
+		patched: 'import { stripSchemaDescriptions, toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";\n',
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "// HANSE: wire tool specs drop descriptions",
+		anchor: `export interface NonMessageTokenSource {
+	readonly model?: Model;
+	readonly systemPrompt?: readonly string[];
+	readonly agent?: {
+`,
+		patched: `export interface NonMessageTokenSource {
+	readonly model?: Model;
+	readonly systemPrompt?: readonly string[];
+	readonly agent?: {
+		// HANSE: wire tool specs drop descriptions
+		/** True when the agent loop sends tool specs without descriptions because the catalog rides in the system prompt. */
+		readonly pruneToolDescriptions?: boolean;
+`,
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "byTokenizer: WeakMap<Tokenizer, { revision: number; sourceRevision: number; pruned: boolean; tokens: number }>;",
+		anchor: "\tbyTokenizer: WeakMap<Tokenizer, { revision: number; sourceRevision: number; tokens: number }>;\n",
+		patched: "\tbyTokenizer: WeakMap<Tokenizer, { revision: number; sourceRevision: number; pruned: boolean; tokens: number }>;\n",
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "// HANSE: pruned wire specs carry only the name and the description-stripped schema",
+		anchor: `export function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision = 0): number {
+	const cache = toolSchemaTokenCache(tools);
+	const cached = cache.byTokenizer.get(tokenizer);
+	if (cached?.revision === cache.revision && cached.sourceRevision === sourceRevision) return cached.tokens;
+
+	const fragments = tools.flatMap(tool => toolSchemaFragments(tool).fragments);
+	const tokens = tokenizer.countTokens(fragments);
+	cache.byTokenizer.set(tokenizer, { revision: cache.revision, sourceRevision, tokens });
+	return tokens;
+}
+
+/** Count schemas carried on every request, excluding server-side deferred catalogs. */
+export function estimateContextToolSchemaTokens(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	model: Model | undefined,
+	sourceRevision = 0,
+): number {
+	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+}
+`,
+		patched: `export function estimateToolSchemaTokens(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	sourceRevision = 0,
+	pruneDescriptions = false,
+): number {
+	const cache = toolSchemaTokenCache(tools);
+	const cached = cache.byTokenizer.get(tokenizer);
+	if (cached?.revision === cache.revision && cached.sourceRevision === sourceRevision && cached.pruned === pruneDescriptions)
+		return cached.tokens;
+
+	// HANSE: pruned wire specs carry only the name and the description-stripped schema
+	const fragments = tools.flatMap(tool =>
+		pruneDescriptions ? prunedToolSchemaFragments(tool) : toolSchemaFragments(tool).fragments,
+	);
+	const tokens = tokenizer.countTokens(fragments);
+	cache.byTokenizer.set(tokenizer, { revision: cache.revision, sourceRevision, pruned: pruneDescriptions, tokens });
+	return tokens;
+}
+
+/**
+ * Provider-visible text of one tool when the agent loop prunes descriptions (\`normalizeTools\` with
+ * \`pruneDescriptions\`): the name and the wire schema with every \`description\` annotation stripped. The description
+ * and rendered examples ride in the system prompt's inlined catalog, which the system-prompt estimate already counts.
+ */
+function prunedToolSchemaFragments(tool: ContextTool): string[] {
+	const fragments: string[] = [];
+	if (typeof tool.name === "string") fragments.push(tool.name);
+	try {
+		const wireTool: AiTool = {
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as AiTool["parameters"],
+			examples: tool.examples,
+		};
+		const wireJson = JSON.stringify(stripSchemaDescriptions(toolWireSchema(wireTool) ?? {}));
+		if (typeof wireJson === "string") fragments.push(wireJson);
+	} catch {
+		// Schema may contain functions or cycles; counted like toolSchemaFragments, without the schema.
+	}
+	return fragments;
+}
+
+/** Count schemas carried on every request, excluding server-side deferred catalogs. */
+export function estimateContextToolSchemaTokens(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	model: Model | undefined,
+	sourceRevision = 0,
+	pruneDescriptions = false,
+): number {
+	return model?.toolSchemasInContext === false
+		? 0
+		: estimateToolSchemaTokens(tools, tokenizer, sourceRevision, pruneDescriptions);
+}
+`,
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "\ttoolSchemasInContext: boolean;\n\tpruneToolDescriptions: boolean;\n",
+		anchor: "\ttoolSchemasInContext: boolean;\n\ttoolsRevision: number;\n",
+		patched: "\ttoolSchemasInContext: boolean;\n\tpruneToolDescriptions: boolean;\n\ttoolsRevision: number;\n",
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "// HANSE: non-message cache keys on pruned wire tool specs",
+		anchor: `	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
+	const toolsRevision = getToolSchemaMetadataRevision(toolsRef);
+	const skillsRef = session.renderedSkills ?? session.skills ?? EMPTY_SKILLS;
+	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
+	if (
+		entry &&
+		entry.systemPromptRef === systemPromptRef &&
+		entry.toolsRef === toolsRef &&
+		entry.toolSchemasInContext === toolSchemasInContext &&
+`,
+		patched: `	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
+	// HANSE: non-message cache keys on pruned wire tool specs
+	const pruneToolDescriptions = session.agent?.pruneToolDescriptions === true;
+	const toolsRevision = getToolSchemaMetadataRevision(toolsRef);
+	const skillsRef = session.renderedSkills ?? session.skills ?? EMPTY_SKILLS;
+	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
+	if (
+		entry &&
+		entry.systemPromptRef === systemPromptRef &&
+		entry.toolsRef === toolsRef &&
+		entry.toolSchemasInContext === toolSchemasInContext &&
+		entry.pruneToolDescriptions === pruneToolDescriptions &&
+`,
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "\t\ttoolSchemasInContext,\n\t\tpruneToolDescriptions,\n",
+		anchor: "\t\ttoolSchemasInContext,\n\t\ttoolsRevision,\n",
+		patched: "\t\ttoolSchemasInContext,\n\t\tpruneToolDescriptions,\n\t\ttoolsRevision,\n",
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "\t\testimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision, entry.pruneToolDescriptions);\n",
+		anchor: "\t\testimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);\n\tentry.tokens = tokens;\n",
+		patched: "\t\testimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision, entry.pruneToolDescriptions);\n\tentry.tokens = tokens;\n",
+	},
+	{
+		file: "../pi-tui/src/status-line/context-usage.ts",
+		marker: "\tconst toolsTokens = estimateContextToolSchemaTokens(\n\t\ttools,\n\t\ttokenizer,\n\t\tsession.model,\n\t\tsourceRevision,\n\t\tentry.pruneToolDescriptions,\n\t);\n",
+		anchor: "\tconst toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);\n",
+		patched: "\tconst toolsTokens = estimateContextToolSchemaTokens(\n\t\ttools,\n\t\ttokenizer,\n\t\tsession.model,\n\t\tsourceRevision,\n\t\tentry.pruneToolDescriptions,\n\t);\n",
+	},
+	{
+		// 타입 소비자(session-stats.ts)는 pi-tui 의 src 가 아니라 dist/types 선언을 읽는다(package.json exports.types). 선언도 같이 넓힌다.
+		file: "../pi-tui/dist/types/status-line/context-usage.d.ts",
+		marker: "        /** HANSE: wire tool specs drop descriptions (catalog inlined in the system prompt). */\n        readonly pruneToolDescriptions?: boolean;\n",
+		anchor: "export interface NonMessageTokenSource {\n    readonly model?: Model;\n    readonly systemPrompt?: readonly string[];\n    readonly agent?: {\n",
+		patched: "export interface NonMessageTokenSource {\n    readonly model?: Model;\n    readonly systemPrompt?: readonly string[];\n    readonly agent?: {\n        /** HANSE: wire tool specs drop descriptions (catalog inlined in the system prompt). */\n        readonly pruneToolDescriptions?: boolean;\n",
+	},
+	{
+		file: "../pi-tui/dist/types/status-line/context-usage.d.ts",
+		marker: "export declare function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision?: number, pruneDescriptions?: boolean): number;",
+		anchor: "export declare function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision?: number): number;",
+		patched: "export declare function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision?: number, pruneDescriptions?: boolean): number;",
+	},
+	{
+		file: "../pi-tui/dist/types/status-line/context-usage.d.ts",
+		marker: "export declare function estimateContextToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, model: Model | undefined, sourceRevision?: number, pruneDescriptions?: boolean): number;",
+		anchor: "export declare function estimateContextToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, model: Model | undefined, sourceRevision?: number): number;",
+		patched: "export declare function estimateContextToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, model: Model | undefined, sourceRevision?: number, pruneDescriptions?: boolean): number;",
+	},
+	{
+		// 응답에 기록하는 toolSchemaTokens 도 nonMessageTokens 와 같은 기준이어야 앵커 산식(nonMessage - toolSchema)이 어긋나지 않는다.
+		file: "src/session/session-stats.ts",
+		marker: "\t\t\tsession.agent?.pruneToolDescriptions === true,\n",
+		anchor: "\t\t\tthis.#tokenizer,\n\t\t\tsession.model,\n\t\t\tsession.settings?.revision,\n\t\t);\n",
+		patched: "\t\t\tthis.#tokenizer,\n\t\t\tsession.model,\n\t\t\tsession.settings?.revision,\n\t\t\tsession.agent?.pruneToolDescriptions === true,\n\t\t);\n",
+	},
+	// 2026-10-29 기억 은행 스캔 누락(doc/history/2026/10/29-recall-bottlenecks): (1) legacy 은행 스캔은 readdir 순서로 64개까지 여는데 이 PC 는
+	// 은행 398개 중 372개가 빈 DB 라 working_memory 가 있는 은행 21개 중 3개만 닿았다. 빈 은행은 상한에 세지 않고, 빈 것으로 확인한 은행은
+	// 프로세스 안에서 stat 서명(DB·WAL 크기와 mtime)이 그대로면 다시 열지 않는다. 크기만으로는 못 가른다(빈 DB 372,736~901,120 바이트,
+	// 기억 있는 DB 최소 393,216 바이트). (2) 저장소 하위 폴더 세션은 git 루트의 프로젝트 은행이 이미 있으면 회상 은행에 더한다. 쓰기 은행은 그대로다.
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "// HANSE: a repository subfolder also recalls the repository root's project bank",
+		anchor: "\tconst recallBanks =\n\t\tscoping === \"global\" ? scope.recallBanks : extendRecallWithLegacyBanks(scope.recallBanks, dbPath, cwd);\n",
+		patched: "\t// HANSE: a repository subfolder also recalls the repository root's project bank\n\tconst recallBanks =\n\t\tscoping === \"global\"\n\t\t\t? scope.recallBanks\n\t\t\t: extendRecallWithLegacyBanks(\n\t\t\t\t\twithRepoRootBank(scope.recallBanks, cfgMnemopiBank.get(settings), dbPath, cwd),\n\t\t\t\t\tdbPath,\n\t\t\t\t\tcwd,\n\t\t\t\t);\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "// HANSE: legacy scan counts only banks that hold working memory",
+		anchor: `		for (const entry of entries) {
+			if (!entry.isDirectory() || have.has(entry.name)) continue;
+			if (scanned >= LEGACY_BANK_SCAN_LIMIT) break;
+			scanned++;
+			const candidate = path.join(banksDir, entry.name, "mnemopi.db");
+			if (bankOnlyHasCwd(candidate, cwdAbs)) extras.push(entry.name);
+		}
+`,
+		patched: `		// HANSE: legacy scan counts only banks that hold working memory
+		for (const entry of entries) {
+			if (!entry.isDirectory() || have.has(entry.name)) continue;
+			if (scanned >= LEGACY_BANK_SCAN_LIMIT) break;
+			const candidate = path.join(banksDir, entry.name, "mnemopi.db");
+			const signature = legacyBankSignature(candidate);
+			if (signature === undefined || emptyLegacyBanks.get(candidate) === signature) continue;
+			const probe = probeLegacyBank(candidate, cwdAbs);
+			if (probe === "empty") {
+				// Memoize only when nothing wrote to the bank while it was probed; a changed signature is probed again next scan.
+				if (legacyBankSignature(candidate) === signature) emptyLegacyBanks.set(candidate, signature);
+				continue;
+			}
+			// An unreadable bank (corrupt, locked, no working_memory table) holds no readable working memory either.
+			if (probe === "unreadable") continue;
+			scanned++;
+			if (probe === "safe") extras.push(entry.name);
+		}
+`,
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "function probeLegacyBank(dbPath: string, cwd: string): \"empty\" | \"safe\" | \"unsafe\" | \"unreadable\" {",
+		anchor: `function bankOnlyHasCwd(dbPath: string, cwd: string): boolean {
+	let db: Database | undefined;
+	try {
+		db = new Database(dbPath, { readonly: true });
+		// "Safe" = no row with a different/missing cwd AND at least one matching row. Both probes stop at
+		// the first hit, and CASE skips the matching probe once an unsafe row disqualifies the bank.
+		using statement = db.prepare<{ safe: number }, [string]>(\`
+				SELECT CASE
+					WHEN EXISTS(SELECT 1 FROM working_memory WHERE json_extract(metadata_json, '$.cwd') IS NOT ?1) THEN 0
+					ELSE EXISTS(SELECT 1 FROM working_memory WHERE json_extract(metadata_json, '$.cwd') = ?1)
+				END AS safe
+		\`);
+		const row = statement.get(cwd);
+		return row?.safe === 1;
+	} catch (error) {
+		logger.debug("Mnemopi: legacy bank probe failed", { dbPath, error: String(error) });
+		return false;
+`,
+		patched: `/**
+ * HANSE: recall-only addition for a session opened below a repository root: the root's project bank (the bank a
+ * session at the root writes to) joins the recall set when its database already exists. The nearest directory
+ * holding \`.git\` (a directory, or a worktree's file) is the root. Writes stay on the cwd's own bank, and a root bank
+ * that was never written is not opened, so no new bank database appears.
+ */
+function withRepoRootBank(
+	resolved: readonly string[],
+	configured: string | undefined,
+	dbPath: string,
+	cwd: string,
+): readonly string[] {
+	const start = path.resolve(cwd || ".");
+	let dir = start;
+	while (!fs.existsSync(path.join(dir, ".git"))) {
+		const parent = path.dirname(dir);
+		if (parent === dir) return resolved;
+		dir = parent;
+	}
+	if (dir === start) return resolved;
+	const rootBank = projectBank(configured, dir);
+	if (resolved.includes(rootBank)) return resolved;
+	if (!fs.existsSync(path.join(path.dirname(dbPath), "banks", rootBank, "mnemopi.db"))) return resolved;
+	return [...resolved, rootBank];
+}
+
+/**
+ * HANSE: banks found without working memory in this process, keyed by bank database path, valued by
+ * {@link legacyBankSignature} at that time. An unchanged signature means no write reached the bank since, so the
+ * session-start scan skips it with two \`stat\` calls instead of reopening it.
+ */
+const emptyLegacyBanks = new Map<string, string>();
+
+/** Size and mtime of a bank database and its WAL (any write changes one of them); undefined when the database is missing. */
+function legacyBankSignature(dbPath: string): string | undefined {
+	let db: fs.Stats;
+	try {
+		db = fs.statSync(dbPath);
+	} catch {
+		return undefined;
+	}
+	let wal = "-";
+	try {
+		const stat = fs.statSync(\`\${dbPath}-wal\`);
+		wal = \`\${stat.size}:\${stat.mtimeMs}\`;
+	} catch {
+		// No WAL file: the database file alone carries the state.
+	}
+	return \`\${db.size}:\${db.mtimeMs}:\${wal}\`;
+}
+
+/**
+ * "empty" = no working_memory row; "unreadable" = row existence could not be read (not a database, locked, no
+ * working_memory table). Neither can qualify, and neither counts toward the scan cap. Once rows are known to exist:
+ * "safe" = every working_memory row carries \`cwd\` (and at least one does); "unsafe" = anything else, including a
+ * qualification query that fails on malformed metadata.
+ */
+function probeLegacyBank(dbPath: string, cwd: string): "empty" | "safe" | "unsafe" | "unreadable" {
+	let db: Database | undefined;
+	try {
+		try {
+			db = new Database(dbPath, { readonly: true });
+			using holding = db.prepare<{ holds: number }, []>("SELECT EXISTS(SELECT 1 FROM working_memory) AS holds");
+			if (holding.get()?.holds !== 1) return "empty";
+		} catch (error) {
+			logger.debug("Mnemopi: legacy bank probe failed", { dbPath, error: String(error) });
+			return "unreadable";
+		}
+		// "Safe" = no row with a different/missing cwd AND at least one matching row. Both probes stop at
+		// the first hit, and CASE skips the matching probe once an unsafe row disqualifies the bank.
+		using statement = db.prepare<{ safe: number }, [string]>(\`
+				SELECT CASE
+					WHEN EXISTS(SELECT 1 FROM working_memory WHERE json_extract(metadata_json, '$.cwd') IS NOT ?1) THEN 0
+					ELSE EXISTS(SELECT 1 FROM working_memory WHERE json_extract(metadata_json, '$.cwd') = ?1)
+				END AS safe
+		\`);
+		return statement.get(cwd)?.safe === 1 ? "safe" : "unsafe";
+	} catch (error) {
+		logger.debug("Mnemopi: legacy bank probe failed", { dbPath, error: String(error) });
+		return "unsafe";
+`,
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.

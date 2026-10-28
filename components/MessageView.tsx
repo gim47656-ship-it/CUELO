@@ -19,13 +19,16 @@ import { readExitCode } from "@/lib/tool-exit-code";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { formatTokenCount } from "@/lib/format-tokens";
 import {
+  estimateUpdatedTokens,
   getAssistantErrorMessage,
+  getTokenEstimateText,
   isHiddenAssistantBlock,
   isToolImageBlock,
   knownToolImageCount,
   loadToolImageCount,
   toolCallDurations as measureToolCallDurations,
   toolImageUrl,
+  type TokenEstimateCacheEntry,
 } from "@/lib/message-display";
 import { useDisplaySettings } from "@/hooks/useDisplaySettings";
 import { useAccountFace } from "@/hooks/useAccountFaces";
@@ -63,57 +66,6 @@ import type {
   ToolCallContent,
   ThinkingContent,
 } from "@/lib/types";
-
-// CJK chars ~1 token each (GLM/DeepSeek/GPT-o200k); other chars ~4 chars/token.
-const CJK_PATTERN = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}\uac00-\ud7af]/u;
-function estimateTokens(text: string): number {
-  let cjk = 0;
-  let rest = 0;
-  for (const ch of text) {
-    if (CJK_PATTERN.test(ch)) cjk++;
-    else rest++;
-  }
-  return cjk + rest / 4;
-}
-
-interface TokenEstimateCacheEntry {
-  text: string;
-  tokens: number;
-}
-
-function getTokenEstimateText(block: AssistantContentBlock): string | null {
-  if (block.type === "text") return block.text;
-  if (block.type === "thinking") return block.thinking;
-  if (block.type === "toolCall") return JSON.stringify(block.input ?? {}) ?? "";
-  return null;
-}
-
-function isHighSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
-}
-
-function isLowSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
-}
-
-function estimateUpdatedTokens(previous: TokenEstimateCacheEntry | undefined, text: string): number {
-  if (!previous || !text.startsWith(previous.text)) return estimateTokens(text);
-
-  let baseTokens = previous.tokens;
-  let suffixStart = previous.text.length;
-  // A streamed delta can complete a surrogate pair that was counted as two
-  // non-CJK code points in the previous update.
-  if (
-    suffixStart > 0
-    && suffixStart < text.length
-    && isHighSurrogate(previous.text.charCodeAt(suffixStart - 1))
-    && isLowSurrogate(text.charCodeAt(suffixStart))
-  ) {
-    baseTokens -= 1 / 4;
-    suffixStart--;
-  }
-  return baseTokens + estimateTokens(text.slice(suffixStart));
-}
 
 const MAX_THINKING_CACHE_ENTRIES = 100;
 const thinkingContentCache = new Map<string, Promise<string>>();

@@ -210,6 +210,10 @@ interface Props {
   onToolPresetChange?: (preset: "none" | "default" | "full") => void;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   effectiveThinkingLevel?: string;
+  /** 마지막으로 끝난 답변의 출력 속도(토큰/초). 측정할 답변이 없으면 `null`. */
+  outputTokensPerSecond?: number | null;
+  /** 흐르는 답을 글자량으로 어림한 실시간 값이면 true(앞에 `~`), 끝난 답의 실제 토큰 값이면 false. */
+  outputSpeedLive?: boolean;
   /** 「Auto, 최대 X」의 X. `auto`와만 짝을 이루며 `null`이면 상한 없음. */
   thinkingCeiling?: ThinkingCeiling | null;
   /** `ceiling`은 `auto`와 함께만 온다. 그냥 `auto`나 구체 level은 상한을 푼다. */
@@ -676,7 +680,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   mainPresetActiveAlias,
   modelRoles, onRoleModelChange, modelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
-  thinkingLevel, effectiveThinkingLevel, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
+  thinkingLevel, effectiveThinkingLevel, outputTokensPerSecond = null, outputSpeedLive = false, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   fastMode = null, fastModeBusy = false, onFastModeToggle,
   retryInfo, deliveryRows = [], inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
@@ -3824,6 +3828,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {!isMobile && currentReasoningText && (
               <span style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                 {currentReasoningText}
+              </span>
+            )}
+            {!isMobile && outputTokensPerSecond !== null && (
+              <span title={t(outputSpeedLive ? "chat.outputSpeedLiveTitle" : "chat.outputSpeedTitle")} style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                {t(outputSpeedLive ? "chat.outputSpeedLive" : "chat.outputSpeed", { rate: outputTokensPerSecond >= 10 ? Math.round(outputTokensPerSecond) : outputTokensPerSecond.toFixed(1) })}
               </span>
             )}
             {/* 이 세션이 6 Pro 연결번호에 묶였을 때만 보이는 표시(모델 칩과 같은 줄). */}
