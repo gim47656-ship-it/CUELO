@@ -62,7 +62,7 @@ Options:
       --reset-password      Replace the stored web password
   -h, --help                Show this help
 
-Requires Bun >=1.4.2 to run the server. Node >=22.19.0 may launch the CLI.
+Requires Bun >=1.4.4 to run the server. Node >=22.19.0 may launch the CLI.
 If install scripts did not run, use \"npm run prepare:runtime\" from the installed package before starting.`);
   process.exit(0);
 }

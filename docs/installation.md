@@ -24,7 +24,7 @@ Windows 10 1809 이상에서 다음을 사용자가 직접 설치합니다(Bun�
 | 항목 | 분류·마지막 사용자 행동 |
 | --- | --- |
 | [Node.js](https://nodejs.org/en/download) `>=22.19.0`와 동봉된 npm | 외부 필수. Windows 설치본을 설치하고 `node --version`, `npm --version`을 확인합니다. `install.mjs`와 npm 설치에 사용합니다. |
-| [Bun](https://bun.sh/docs/installation) `>=1.4.2` | 외부 필수. 공식 Windows 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`·`btw`가 사용합니다. |
+| [Bun](https://bun.sh/docs/installation) `>=1.4.4` | 외부 필수. 공식 Windows 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`·`btw`가 사용합니다. |
 | [Git for Windows](https://git-scm.com/install/windows) | 전체 코딩·Git 기능 기준 외부 필수. 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화·내장 `bash`만 시험할 때는 생략할 수 있습니다. SDK는 Windows에서 Git Bash가 없어도 `cmd.exe`로 fallback하지만, Git 명령까지 제공하지는 않습니다. |
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
 | Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 권장은 OpenRouter API 키로 `modelRoles.judge`에 OpenRouter의 Jev를 지정하는 방법입니다. |
@@ -274,7 +274,7 @@ node install.mjs health
 | --- | --- |
 | `No production build found` | 소스 체크아웃입니다. `node install.mjs setup`을 먼저 끝냅니다. npm 설치에서 `This package has no production build`가 나오면 `npm install -g cuelo`로 다시 설치합니다. |
 | `Already in use: …` | 기존 CUELO를 종료하거나 `--port-base`로 다른 포트를 씁니다. |
-| Bun을 찾을 수 없다는 오류 | Bun `>=1.4.2`를 설치하고 새 셸을 엽니다. |
+| Bun을 찾을 수 없다는 오류 | Bun `>=1.4.4`를 설치하고 새 셸을 엽니다. |
 | `[btw] omp SDK not found` | `node install.mjs start`로 실행합니다. 이 스크립트가 `CUELO_DIR`를 CUELO 폴더로 설정합니다. |
 | 사용량 패널 오류 | 같은 패키지 SDK/계정 경로가 실패한 경우 CLI fallback은 `OMP_EXE`를 먼저 보고, Windows에서는 기본 위치와 PATH의 `omp.exe`를, Linux·macOS에서는 CUELO 폴더의 `node_modules/.bin/omp`와 PATH의 `omp`를 찾습니다. `omp --version`과 본인 계정 로그인을 확인합니다. `stats` 집계는 독립 CLI가 필요합니다. |
 | 사이드채팅이 입력을 받지 않음 | 세션 파일이 생성될 때까지 기다립니다. `health`에서 `btw`가 OK인지 확인합니다. |

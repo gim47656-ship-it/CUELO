@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import {
+  bunPath,
   createProfileConfig,
   checkHealth,
   dropInTreeBunCache,
@@ -33,6 +34,19 @@ function write(root, relative, text) {
   fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
   fs.writeFileSync(path.join(root, relative), text);
 }
+
+test("setup refuses a Bun older than the minimum before it builds anything", { skip: process.platform === "win32" }, () => {
+  const dir = tempDir("bun");
+  const fake = (version) => {
+    const file = path.join(dir, `bun-${version}`);
+    fs.writeFileSync(file, `#!/bin/sh\necho ${version}\n`, { mode: 0o755 });
+    return file;
+  };
+  const old = fake("1.4.2");
+  assert.throws(() => bunPath({ ...process.env, CUELO_BUN: old }), /requires Bun 1\.4\.4 or newer[\s\S]*Current Bun version: 1\.4\.2/);
+  const current = fake("1.4.4");
+  assert.equal(bunPath({ ...process.env, CUELO_BUN: current }), current);
+});
 
 test("the in-tree bun cache is removed, but a cache reached through a link is left alone", () => {
   const tree = tempDir("tree");

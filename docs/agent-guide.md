@@ -12,7 +12,7 @@
 | Requirement | Details |
 | --- | --- |
 | **Node.js** | `>=22.19.0` (with npm) |
-| **Bun** | `>=1.4.2` (required to run the server and sidecars) |
+| **Bun** | `>=1.4.4` (required to run the server and sidecars) |
 | **Git** | Required for source checkouts and Git operations (worktrees, commits); optional for npm install and basic chat |
 
 **Verification status**:

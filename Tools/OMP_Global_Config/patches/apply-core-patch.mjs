@@ -19583,6 +19583,9 @@ for (const [owner, older] of preStatsWatchBodies) {
 	const advisorFilter = one(entry => entry.file === "dist/cli.js" && entry.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
 	const ADVISOR_18132 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||vOe(a))continue;let l=a.slice(0,-6),';
 	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18132, anchor: ADVISOR_18132, patched: ADVISOR_18132 });
+	// 2026-10-29 18.13.3: EOe는 같은 isAdvisorTranscriptName 함수다(`e===AOe||e.startsWith(\`${vOe}.\`)…`). minified 이름만 바뀌었다(RETIRE 유지).
+	const ADVISOR_18133 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||EOe(a))continue;let l=a.slice(0,-6),';
+	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18133, anchor: ADVISOR_18133, patched: ADVISOR_18133 });
 }
 // 2026-10-29: preserve cross-language ranking without bypassing relevance.
 {

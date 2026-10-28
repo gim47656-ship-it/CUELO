@@ -481,10 +481,17 @@ function run(command, args, options) {
   }
 }
 
-function bunPath() {
-  const { resolveBunPath, getMissingBunMessage } = require("./bin/runtime.js");
-  const bun = resolveBunPath();
+/**
+ * The Bun this setup or server will run. A source checkout's dependencies can require a newer Bun
+ * than the one installed (core 18.13.3 needs >=1.4.4), so the version is checked here, before the
+ * build: a WSL update prebuilds through this path and stops while the running server is untouched.
+ */
+export function bunPath(env = process.env) {
+  const { resolveBunPath, getMissingBunMessage, isBunVersionSupported, getUnsupportedBunVersionMessage } = require("./bin/runtime.js");
+  const bun = resolveBunPath(env);
   if (!bun) throw new Error(getMissingBunMessage());
+  const version = spawnSync(bun, ["--version"], { encoding: "utf8", env }).stdout?.trim() ?? "";
+  if (!isBunVersionSupported(version)) throw new Error(getUnsupportedBunVersionMessage(version || "unknown"));
   return bun;
 }
 

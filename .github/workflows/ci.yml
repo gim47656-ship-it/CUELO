@@ -49,9 +49,9 @@ concurrency:
 
 env:
   NODE_VERSION: "24"
-  # engines.bun requires >=1.4.2: the omp SDK ships TypeScript that imports `bun:`
+  # engines.bun requires >=1.4.4: the omp SDK ships TypeScript that imports `bun:`
   # builtins, and Bun 1.4 changed loopback proxy handling.
-  BUN_VERSION: "1.4.2"
+  BUN_VERSION: "1.4.4"
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:

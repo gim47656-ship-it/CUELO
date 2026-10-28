@@ -31,7 +31,7 @@ gh workflow run release.yml --repo gim47656-ship-it/CUELO --ref main -f target_s
 
 GitHub의 소스 릴리스는 npm 설치형 패키지가 아닙니다. npm tarball에는 격리된 production 빌드의 `.next/BUILD_ID`, 서버·정적 산출물, `public/`, `bin/` 및 설치 시 쓰는 공개 호환 패치 원본이 들어가야 합니다. 개발용 `.next/dev`, 캐시, 소스맵과 개인 설정·인증 정보·작업 기록은 넣지 않습니다. production `.next/trace`와 `.next/diagnostics/`는 tarball에 포함될 수 있습니다.
 
-서버는 **Bun 1.4.2 이상**이 필수입니다. `cuelo` 실행기는 Node 22.19.0 이상에서도 시작할 수 있지만 실제 Next 서버는 Bun으로 실행합니다. Bun이 설치되지 않았다면 먼저 설치해야 합니다. 소스 체크아웃은 README와 [설치 안내](installation.md)의 `node install.mjs setup` → `node install.mjs start` 경로를 따릅니다. 앱만 따로 실행할 때는 `bun bin/cuelo.js`를 사용할 수 있습니다. `bun run start`와 `bun run start:lan`도 같은 런처를 브라우저 자동 열기 없이 사용합니다.
+서버는 **Bun 1.4.4 이상**이 필수입니다. `cuelo` 실행기는 Node 22.19.0 이상에서도 시작할 수 있지만 실제 Next 서버는 Bun으로 실행합니다. Bun이 설치되지 않았다면 먼저 설치해야 합니다. 소스 체크아웃은 README와 [설치 안내](installation.md)의 `node install.mjs setup` → `node install.mjs start` 경로를 따릅니다. 앱만 따로 실행할 때는 `bun bin/cuelo.js`를 사용할 수 있습니다. `bun run start`와 `bun run start:lan`도 같은 런처를 브라우저 자동 열기 없이 사용합니다.
 
 npm global 설치에서는 SDK가 `cuelo` 패키지 **자체의** `node_modules/@oh-my-pi/` 아래에 놓여야 합니다. 설치 뒤 `postinstall`은 같은 패키지 내부의 `.next`와 SDK에 기존 native/core/notices 패치를 적용·검증합니다. 사용자 `~/.omp`, 다른 전역 `omp`, hoisted 또는 공유 SDK는 건드리지 않으며 그런 해석 구조라면 설치를 실패시킵니다. `--ignore-scripts`나 npm의 script 정책으로 설치 때 패치가 생략됐다면 설치된 `cuelo` 디렉터리에서 `npm run prepare:runtime`을 명시적으로 실행해야 합니다. 준비되지 않은 npm 패키지의 서버 기동은 패치 검사에서 멈추고 안내합니다. 소스 체크아웃의 `bun install`은 패치를 자동 적용하지 않습니다.
 
