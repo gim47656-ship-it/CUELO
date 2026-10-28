@@ -312,11 +312,13 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
 - 문서·코드는 이번 조각의 작업 프로젝트와 실제 의존 프로젝트에서만 고른다. 같은 저장소의 다른
   프로젝트 history를 관성적으로 싣지 않는다. 현행 계약은 현재 설정·소스·HANDOFF를 우선하고,
   과거 memory/history는 결정 배경용이다. `PREPARED_TASK`는 검색이나 원문 축약이 아니라 운반·재사용이다.
-- 브리프는 **사용자 요구와 Main의 해석을 구분해** 적는다. `사용자 요구`에는 원문 인용이나 승인된
-  요구 문서의 해당 부분을, `수용 조건`에는 사용자가 확인할 결과를 항목으로 적고, 그 둘을 발주한
-  owner에게 **같은 내용으로** 준다. Main의 구현 방향·원인 가설은 Main 결정으로 표시해 요구와
+- 브리프는 **사용자 요구와 Main의 해석을 구분해** 적는다. `사용자 요구`에는 사용자의 핵심 문장과 금지사항을
+  **사용자가 쓴 언어 그대로 인용**하거나 승인된 요구 문서의 해당 부분을 붙이고, `수용 조건`에는 사용자가 확인할
+  결과를 항목으로 적어, 그 둘을 발주한 owner에게 **같은 내용으로** 준다. 브리프 산문이 영어여도 인용은 번역·요약·
+  맞춤법 교정 없이 원문 그대로 두고, Main의 영어 해석은 인용 밖에 따로 적는다(2026-10-29 사용자 결정: 「그걸왜함?」
+  같은 말은 번역하면 금지가 질문으로 바뀐다). Main의 구현 방향·원인 가설은 Main 결정으로 표시해 요구와
   섞지 않는다. 전체 대화를 복사하라는 뜻이 아니다. Main이 자기 해석만 기준으로 검수하면 잘못된
-  발주가 그대로 합격하므로, 검수 기준은 요구와 수용 조건이다.
+  발주가 그대로 합격하므로, 검수 기준은 요구와 수용 조건이다. 정본은 `briefContextRelay.userRequirementVerbatim`이다.
 - 발주 전에 브리프를 사용자 요구와 대조한다. ① 요청한 동작·금지사항이 빠졌는가 ② 확인하지 않은
   원인·구현 방향을 확정 사실처럼 적었는가 ③ 요구하지 않은 작업을 넣거나 수용 조건을 바꿨는가.
   정본은 `harness-policy.json`의 `briefContextRelay.preDispatchCrossCheck`다. 수용 조건을 낮추는
@@ -350,7 +352,7 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   내용을 한국어로 옮겨 전한다. 예외는 캐릭터 호출(summon)로 만든 child가 사용자에게 직접 하는 답으로, 사용자에게 하는
   말이라 한국어이며 선택된 character voice를 따른다.
   `TASK_GUARD` field와 `# Target`·`# Change`·`# Acceptance` 같은 구조 heading, 모델 ID, 코드·명령·경로·
-  파일명·API명·원본 오류 메시지는 원문을 유지하고, 같은 브리프를 두 언어로 병기하는 bilingual fallback은 두지 않는다.
+  파일명·API명·원본 오류 메시지, 인용한 사용자 문장은 원문을 유지하고, 같은 브리프를 두 언어로 병기하는 bilingual fallback은 두지 않는다.
   정본은 `harness-policy.json` `briefContextRelay.taskBriefLanguage`·`childVisibleLanguage`·
   `languageVerbatimCarveOut`·`bilingualFallback`이다.
 - 발주 본문 첫 블록은 `rule://task-guard`의 정본 template을 따른다. `TASK_GUARD` 필드 밖의 공유

@@ -560,7 +560,7 @@
     "sharedContract": "send-shared-contract-once-then-owner-deltas-and-artifact-links-never-duplicate-another-owners-report",
     "fullCopy": "never-copy-full-transcripts-or-reports-when-short-delta-and-artifact-link-suffice",
     "originalEvidence": "accessible-for-the-final-acceptance-review",
-    "userRequirementVerbatim": "carry-the-user-requirement-and-its-prohibitions-as-quoted-source-separate-from-mains-interpretation-never-only-as-mains-summary",
+    "userRequirementVerbatim": "carry-the-users-key-sentences-and-prohibitions-as-quotes-in-the-users-original-language-untranslated-and-unedited-beside-mains-english-interpretation-never-only-as-mains-summary-or-translation",
     "acceptanceConditions": "enumerate-what-the-user-will-observe-and-hand-the-same-list-to-the-owner-so-it-compares-against-the-requirement-not-only-against-mains-instruction",
     "interpretationSeparation": "mains-implementation-direction-and-cause-hypothesis-stay-labeled-as-mains-decision-never-as-user-requirement",
     "acceptanceObservability": "every-acceptance-condition-needs-an-existing-observation-path-never-declare-a-condition-whose-pass-route-does-not-exist-in-this-runtime",
@@ -569,7 +569,7 @@
     "acceptanceChangeOwner": "only-the-user-changes-an-acceptance-condition-never-lower-it-to-make-a-slice-easier",
     "taskBriefLanguage": "english-prose-for-the-initial-dispatch-and-every-follow-up-instruction-to-a-child",
     "childVisibleLanguage": "english-progress-narration-final-reports-checkpoints-and-agent-to-agent-messages-read-by-main-main-relays-them-to-the-user-in-korean-only-character-summon-children-answering-the-user-directly-stay-korean",
-    "languageVerbatimCarveOut": "structural-keys-and-headings-model-ids-code-commands-paths-filenames-api-names-and-original-errors-stay-verbatim",
+    "languageVerbatimCarveOut": "structural-keys-and-headings-model-ids-code-commands-paths-filenames-api-names-original-errors-and-quoted-user-sentences-stay-verbatim",
     "conversationalStyle": "selected-character-voice-for-ordinary-dialogue-progress-and-inline-speech-without-default-report-headings-nominal-lists-or-fixed-status-structure",
     "bilingualFallback": "never"
   },
