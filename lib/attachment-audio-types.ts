@@ -21,6 +21,27 @@ export type AudioTranscriptionPlan = {
   notice: string;
 };
 
-export type AudioTranscriptionRequest = { confirmed?: boolean };
+/**
+ * The `POST` body. `{}` starts transcribing (large audio needs `confirmed: true`); a fallback offer
+ * is answered with its token: `approve: true` continues with the fallback, `approve: false` drops it.
+ */
+export type AudioTranscriptionRequest = { confirmed?: boolean } | { fallbackToken: string; approve: boolean };
+
+/**
+ * `409` body when the primary failed and the fallback (another provider) waits for the user. Nothing
+ * has gone to the fallback yet; the offer is bound to this attachment, usable once, and expires.
+ */
+export type AudioFallbackOffer = {
+  code: "fallback_confirmation_required";
+  /** Why the primary failed. */
+  error: string;
+  /** Parts the primary finished; they are kept on the server and not sent again. */
+  completedParts: number;
+  parts: number;
+  fallbackToken: string;
+  /** What continuing sends where, shown before the user decides. */
+  notice: string;
+  expiresInSeconds: number;
+};
 
 export type AudioTranscriptionResult = { transcript: string; parts: number };

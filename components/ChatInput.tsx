@@ -27,7 +27,7 @@ import {
   type SubmissionOutcome,
 } from "@/lib/draft-store";
 import { DEFAULT_ATTACHMENT_SETTINGS, attachmentUploadLimitBytes, fetchAttachmentSettings } from "@/lib/attachment-settings";
-import type { AudioTranscriptionPlan } from "@/lib/attachment-audio-types";
+import type { AudioTranscriptionPlan, AudioTranscriptionRequest } from "@/lib/attachment-audio-types";
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
@@ -141,6 +141,8 @@ type TranscriptionState =
   | { state: "planning" }
   | { state: "confirm"; plan: AudioTranscriptionPlan }
   | { state: "running"; plan: AudioTranscriptionPlan | null }
+  /** The primary failed; the server holds an offer and sends nothing to the fallback until approved. */
+  | { state: "fallback"; token: string; reason: string; notice: string; completedParts: number; parts: number }
   | { state: "failed"; error: string }
   | { state: "skipped" };
 
@@ -159,7 +161,7 @@ interface ComposerDocument extends AttachedDocument {
 /** Transcription is still deciding or running; the message waits for it. */
 function isTranscriptionBusy(document: ComposerDocument): boolean {
   const state = document.transcription?.state;
-  return state === "planning" || state === "confirm" || state === "running";
+  return state === "planning" || state === "confirm" || state === "running" || state === "fallback";
 }
 
 interface ModelOption {
@@ -482,12 +484,16 @@ function formatAudioDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
+/** A `409 fallback_confirmation_required` answer: what the user approves or turns down. */
+type FallbackOfferBody = { token: string; notice: string; completedParts: number; parts: number };
+
 class TranscriptionRequestError extends Error {
   constructor(
     message: string,
     readonly code: string | null,
     readonly completedParts: number | null,
     readonly parts: number | null,
+    readonly offer: FallbackOfferBody | null = null,
   ) {
     super(message);
   }
@@ -500,12 +506,31 @@ async function readTranscriptionBody(response: Response): Promise<Record<string,
   const parsed: unknown = await response.json().catch(() => null);
   const body: Record<string, unknown> = parsed && typeof parsed === "object" ? { ...parsed } : {};
   if (response.ok) return body;
+  const completedParts = typeof body.completedParts === "number" ? body.completedParts : null;
+  const parts = typeof body.parts === "number" ? body.parts : null;
+  const offer = body.code === "fallback_confirmation_required"
+    && typeof body.fallbackToken === "string"
+    && typeof body.notice === "string"
+    && completedParts !== null
+    && parts !== null
+    ? { token: body.fallbackToken, notice: body.notice, completedParts, parts }
+    : null;
   throw new TranscriptionRequestError(
     typeof body.error === "string" ? body.error : `HTTP ${response.status}`,
     typeof body.code === "string" ? body.code : null,
-    typeof body.completedParts === "number" ? body.completedParts : null,
-    typeof body.parts === "number" ? body.parts : null,
+    completedParts,
+    parts,
+    offer,
   );
+}
+
+/** Drops a fallback offer the user turned down or can no longer answer; nothing is sent either way. */
+function discardFallbackOffer(attachmentId: string, token: string): void {
+  void fetch(`/api/attachments/${encodeURIComponent(attachmentId)}/transcription`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fallbackToken: token, approve: false } satisfies AudioTranscriptionRequest),
+  }).catch(() => undefined);
 }
 
 function toTranscriptionPlan(body: Record<string, unknown>): AudioTranscriptionPlan {
@@ -1160,13 +1185,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const transcriptionErrorText = useCallback((error: unknown): string => {
     if (error instanceof TranscriptionRequestError && error.code === "media_tool_unavailable") return t("chat.transcribeToolMissing");
+    if (error instanceof TranscriptionRequestError && error.code === "fallback_confirmation_expired") return t("chat.transcribeFallbackExpired");
     if (error instanceof TranscriptionRequestError && error.code === "transcription_failed" && error.completedParts !== null && error.parts !== null) {
       return t("chat.transcribePartialFailed", { done: error.completedParts, total: error.parts });
     }
     return error instanceof Error ? error.message : String(error);
   }, [t]);
 
-  const runTranscription = useCallback(async (attachmentId: string, confirmed: boolean) => {
+  /** `{}` starts, `{ confirmed: true }` starts large audio, `{ fallbackToken, approve: true }` continues with the fallback. */
+  const runTranscription = useCallback(async (attachmentId: string, request: AudioTranscriptionRequest) => {
     const key = draftKeyRef.current;
     const target = attachedDocumentsRef.current.find((document) => document.attachmentId === attachmentId);
     if (!target?.storedInfo) return;
@@ -1181,7 +1208,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(confirmed ? { confirmed: true } : {}),
+          body: JSON.stringify(request),
           signal: controller.signal,
         },
       ));
@@ -1203,6 +1230,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (error instanceof TranscriptionRequestError && error.code === "confirmation_required") {
         // The server measured more than this composer assumed; ask before any call.
         void requestTranscriptionPlanRef.current?.(attachmentId);
+        return;
+      }
+      const offer = error instanceof TranscriptionRequestError ? error.offer : null;
+      if (offer) {
+        // Nothing went to the fallback; the user decides on the chip's row. A chip that is gone cannot.
+        const pending = { state: "fallback" as const, reason: error instanceof Error ? error.message : "", ...offer };
+        if (!updateByAttachment(attachmentId, (document) => ({ ...document, transcription: pending }))) {
+          discardFallbackOffer(attachmentId, offer.token);
+        }
         return;
       }
       const message = transcriptionErrorText(error);
@@ -1241,7 +1277,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       }
     }
     if (!plan.requiresConfirmation) {
-      await runTranscription(attachmentId, false);
+      await runTranscription(attachmentId, {});
       return;
     }
     updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "confirm", plan } }));
@@ -1250,8 +1286,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const cancelTranscription = useCallback((attachmentId: string) => {
     const controller = transcriptionControllersRef.current.get(attachmentId);
-    if (controller) controller.abort();
-    else updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "skipped" } }));
+    if (controller) {
+      controller.abort();
+      return;
+    }
+    const transcription = attachedDocumentsRef.current.find((document) => document.attachmentId === attachmentId)?.transcription;
+    if (transcription?.state === "fallback") discardFallbackOffer(attachmentId, transcription.token);
+    updateByAttachment(attachmentId, (document) => ({ ...document, transcription: { state: "skipped" } }));
   }, [updateByAttachment]);
 
   /**
@@ -1394,6 +1435,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     uploadControllersRef.current.get(id)?.abort();
     if (removed?.attachmentId) {
       transcriptionControllersRef.current.get(removed.attachmentId)?.abort();
+      if (removed.transcription?.state === "fallback") discardFallbackOffer(removed.attachmentId, removed.transcription.token);
       releaseUploadedAttachment(removed.attachmentId);
     }
     const next = attachedDocumentsRef.current.filter((document) => document.id !== id);
@@ -2892,7 +2934,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     {document.status === "extracting" ? ` · ${t("chat.attachExtracting")}` : ""}
                     {document.status === "uploading" ? ` · ${t("chat.attachUploading")}` : ""}
                     {document.transcription?.state === "planning" ? ` · ${t("chat.transcribeChecking")}` : ""}
-                    {document.transcription?.state === "confirm" ? ` · ${t("chat.attachTranscribePending")}` : ""}
+                    {document.transcription?.state === "confirm" || document.transcription?.state === "fallback" ? ` · ${t("chat.attachTranscribePending")}` : ""}
                     {document.transcription?.state === "running" ? ` · ${t("chat.attachTranscribing")}` : ""}
                     {document.transcription?.state === "failed" && (
                       <span style={{ color: "var(--danger)" }}>{` · ${t("chat.attachTranscribeFailed")}`}</span>
@@ -2946,13 +2988,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 : null;
               const title = transcription?.state === "confirm"
                 ? t("chat.transcribeConfirmTitle", { name: document.name })
-                : transcription?.state === "running"
-                  ? t("chat.transcribeRunning", { name: document.name })
-                  : transcription?.state === "planning"
-                    ? `${document.name} · ${t("chat.transcribeChecking")}`
-                    : transcription?.state === "failed"
-                      ? t("chat.transcribeFailedRow", { name: document.name, error: transcription.error })
-                      : t("chat.transcribeSkipped", { name: document.name });
+                : transcription?.state === "fallback"
+                  ? t("chat.transcribeFallbackTitle", { name: document.name })
+                  : transcription?.state === "running"
+                    ? t("chat.transcribeRunning", { name: document.name })
+                    : transcription?.state === "planning"
+                      ? `${document.name} · ${t("chat.transcribeChecking")}`
+                      : transcription?.state === "failed"
+                        ? t("chat.transcribeFailedRow", { name: document.name, error: transcription.error })
+                        : t("chat.transcribeSkipped", { name: document.name });
               return (
                 <div
                   key={document.id}
@@ -2981,12 +3025,41 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         <div style={{ color: "var(--text-dim)" }}>{t("chat.transcribeUsageNotice")}</div>
                       </>
                     )}
+                    {transcription?.state === "fallback" && (
+                      <>
+                        {transcription.reason && (
+                          <div style={{ color: "var(--text-dim)", overflowWrap: "anywhere" }}>{transcription.reason}</div>
+                        )}
+                        {transcription.completedParts > 0 && (
+                          <div style={{ color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>
+                            {t("chat.transcribeFallbackProgress", { done: transcription.completedParts, total: transcription.parts })}
+                          </div>
+                        )}
+                        <div style={{ color: "var(--text-dim)", overflowWrap: "anywhere" }}>{transcription.notice}</div>
+                        <div style={{ color: "var(--text-dim)" }}>{t("chat.transcribeFallbackUsageNotice")}</div>
+                      </>
+                    )}
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {transcription?.state === "confirm" && (
                       <>
-                        <ActionButton type="button" variant="neutralSolid" size="small" onClick={() => void runTranscription(attachmentId, true)}>
+                        <ActionButton type="button" variant="neutralSolid" size="small" onClick={() => void runTranscription(attachmentId, { confirmed: true })}>
                           {t("chat.transcribeStart")}
+                        </ActionButton>
+                        <ActionButton type="button" variant="neutralWeak" size="small" onClick={() => cancelTranscription(attachmentId)}>
+                          {t("chat.transcribeSkip")}
+                        </ActionButton>
+                      </>
+                    )}
+                    {transcription?.state === "fallback" && (
+                      <>
+                        <ActionButton
+                          type="button"
+                          variant="neutralSolid"
+                          size="small"
+                          onClick={() => void runTranscription(attachmentId, { fallbackToken: transcription.token, approve: true })}
+                        >
+                          {t("chat.transcribeFallbackStart")}
                         </ActionButton>
                         <ActionButton type="button" variant="neutralWeak" size="small" onClick={() => cancelTranscription(attachmentId)}>
                           {t("chat.transcribeSkip")}

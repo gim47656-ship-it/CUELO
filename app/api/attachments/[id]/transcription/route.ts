@@ -44,7 +44,11 @@ export async function GET(req: Request, { params }: Params) {
   }
 }
 
-/** POST { confirmed?: boolean } -> { transcript, parts }. Large audio needs confirmed: true. */
+/**
+ * POST {} | { confirmed: true } -> { transcript, parts }; large audio needs confirmed: true. A primary
+ * failure the fallback could take over answers 409 with an offer, and nothing goes to the fallback
+ * until POST { fallbackToken, approve: true }; { fallbackToken, approve: false } drops the offer.
+ */
 export async function POST(req: Request, { params }: Params) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -52,7 +56,10 @@ export async function POST(req: Request, { params }: Params) {
   const { id } = await params;
   const body = await readAudioTranscriptionRequest(req);
   if (!body) {
-    return NextResponse.json({ code: "invalid_body", error: "Body must be empty or { confirmed?: boolean }" }, { status: 400 });
+    return NextResponse.json(
+      { code: "invalid_body", error: "Body must be empty, { confirmed?: boolean } or { fallbackToken: string, approve: boolean }" },
+      { status: 400 },
+    );
   }
   try {
     return await withManagedAttachment(id, (attachment) =>

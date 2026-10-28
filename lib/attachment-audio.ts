@@ -5,6 +5,7 @@
  * original is only ever read; the copy lives in a private temp folder removed when the run ends.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import ffmpegStaticPath from "ffmpeg-static";
 import { TRANSCRIBE_TIMEOUT_MS, TranscriptBlockedError } from "./audio-transcribe";
 import {
   MAX_TRANSCRIBE_AUDIO_BYTES,
+  type AudioFallbackOffer,
   type AudioTranscriptionPlan,
   type AudioTranscriptionRequest,
   type AudioTranscriptionResult,
@@ -42,6 +44,8 @@ export type AudioTranscriptionErrorCode =
   | "media_tool_unavailable"
   | "part_too_large"
   | "transcription_failed"
+  | "fallback_confirmation_required"
+  | "fallback_confirmation_expired"
   | "aborted";
 
 /** A classified failure; its message is safe to show and never carries FFmpeg output or paths. */
@@ -57,8 +61,18 @@ export class AudioTranscriptionError extends Error {
   }
 }
 
+/** The primary failed and the fallback waits for the user's choice; nothing went to the fallback. */
+export class AudioFallbackOfferError extends AudioTranscriptionError {
+  constructor(readonly offer: AudioFallbackOffer) {
+    super(offer.code, offer.error, 409, { completedParts: offer.completedParts, parts: offer.parts });
+    this.name = "AudioFallbackOfferError";
+  }
+}
+
 const cancelled = () => new AudioTranscriptionError("aborted", "Transcription was cancelled", 499);
 const unreadable = () => new AudioTranscriptionError("media_unreadable", "The attachment has no readable audio stream", 422);
+const offerGone = () =>
+  new AudioTranscriptionError("fallback_confirmation_expired", "This fallback choice expired or was already used; nothing was sent. Start the transcription again.", 409);
 
 type PlanOptions = { resolveFfmpeg: () => Promise<string>; signal?: AbortSignal };
 /** Second transcriber for audio the primary failed on, fed short MP3 chunks cut from that audio. */
@@ -66,8 +80,13 @@ export type AudioFallback = { transcribe: TranscribeAudioPart; chunkSeconds: num
 
 type TranscribeOptions = PlanOptions & {
   confirmed?: boolean;
+  /**
+   * Token of the fallback offer the user approved for this attachment. The run resumes at the part
+   * the primary failed on and sends it and the rest to the fallback only.
+   */
+  fallbackToken?: string;
   transcribe: TranscribeAudioPart;
-  /** Takes over the failed part and every part after it; absent, a primary failure fails the run. */
+  /** Offered for the failed part and every part after it; absent, a primary failure fails the run. */
   fallback?: AudioFallback;
   /** Parent of the per-run temp folder; the OS temp dir by default. */
   tmpRoot?: string;
@@ -142,11 +161,15 @@ function assertAudio(source: AudioSource): void {
   }
 }
 
-/** Added to every plan notice: the fallback is a second provider and its requests are not in the estimate. */
-const FALLBACK_NOTICE =
-  "If primary transcription fails, CUELO may send the failing segment and remaining audio to ChatGPT/Codex using your existing sign-in. " +
+const FALLBACK_DETAILS =
   "It splits fallback audio into 15-second MP3 chunks, which can increase request counts and account usage beyond the estimate. " +
   "This endpoint is private and undocumented. A response included asset_ttl='30d'; actual retention and deletion policies remain unverified.";
+/** Added to every plan notice: the fallback is a second provider and its requests are not in the estimate. */
+const FALLBACK_NOTICE =
+  `If primary transcription fails, CUELO asks before sending the failing segment and remaining audio to ChatGPT/Codex using your existing sign-in. ${FALLBACK_DETAILS}`;
+/** Shown with a fallback offer, before the user decides. */
+const FALLBACK_OFFER_NOTICE =
+  `Continuing sends the failed segment and remaining audio to ChatGPT/Codex using your existing sign-in. ${FALLBACK_DETAILS}`;
 
 export async function planAudioTranscription(source: AudioSource, { resolveFfmpeg, signal }: PlanOptions): Promise<AudioTranscriptionPlan> {
   assertAudio(source);
@@ -181,6 +204,80 @@ function activeTranscriptions(): Set<string> {
   const state = globalThis as typeof globalThis & { __cueloAudioTranscriptions?: Set<string> };
   state.__cueloAudioTranscriptions ??= new Set();
   return state.__cueloAudioTranscriptions;
+}
+
+/** How long an offered fallback can be approved; afterwards the run starts over from the primary. */
+export const FALLBACK_OFFER_TTL_MS = 30 * 60_000;
+
+/** A primary failure the fallback may take over once the user approves it. */
+type FallbackOffer = {
+  token: string;
+  expiresAt: number;
+  /** The leased file the offer was made for; an approval must find the same one. */
+  source: AudioSource;
+  /** Primary transcripts of the parts before `failedIndex`. Kept here, never taken from the client. */
+  texts: string[];
+  failedIndex: number;
+  parts: number;
+  primaryFailure: string;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** At most one open offer per attachment id, in this process only, shared across Next module reloads. */
+function fallbackOffers(): Map<string, FallbackOffer> {
+  const state = globalThis as typeof globalThis & { __cueloAudioFallbackOffers?: Map<string, FallbackOffer> };
+  state.__cueloAudioFallbackOffers ??= new Map();
+  return state.__cueloAudioFallbackOffers;
+}
+
+/** Removes the attachment's offer, or only `offer` when given and still the current one. */
+function dropFallbackOffer(id: string, offer?: FallbackOffer): void {
+  const offers = fallbackOffers();
+  const current = offers.get(id);
+  if (!current || (offer && current !== offer)) return;
+  clearTimeout(current.timer);
+  offers.delete(id);
+}
+
+function offerFallback(source: AudioSource, state: Pick<FallbackOffer, "texts" | "failedIndex" | "parts" | "primaryFailure">): AudioFallbackOffer {
+  dropFallbackOffer(source.id);
+  const offer: FallbackOffer = {
+    ...state,
+    texts: [...state.texts],
+    source: { ...source },
+    token: randomBytes(16).toString("hex"),
+    expiresAt: Date.now() + FALLBACK_OFFER_TTL_MS,
+    timer: setTimeout(() => dropFallbackOffer(source.id, offer), FALLBACK_OFFER_TTL_MS),
+  };
+  offer.timer.unref?.();
+  fallbackOffers().set(source.id, offer);
+  return {
+    code: "fallback_confirmation_required",
+    error: state.primaryFailure,
+    completedParts: state.failedIndex,
+    parts: state.parts,
+    fallbackToken: offer.token,
+    notice: FALLBACK_OFFER_NOTICE,
+    expiresInSeconds: FALLBACK_OFFER_TTL_MS / 1000,
+  };
+}
+
+/** Consumes the attachment's open offer named by `token`; an unknown, used or expired one sends nothing. */
+function takeFallbackOffer(source: AudioSource, token: string): FallbackOffer {
+  const offer = fallbackOffers().get(source.id);
+  if (!offer || offer.token !== token) throw offerGone();
+  dropFallbackOffer(source.id, offer);
+  const sameFile = offer.source.path === source.path && offer.source.size === source.size && offer.source.mimeType === source.mimeType;
+  if (!sameFile || Date.now() >= offer.expiresAt) throw offerGone();
+  return offer;
+}
+
+/** Drops the attachment's open offer named by `token` (the user skipped or removed the audio). */
+export function discardAudioFallback(attachmentId: string, token: string): boolean {
+  const offer = fallbackOffers().get(attachmentId);
+  if (!offer || offer.token !== token) return false;
+  dropFallbackOffer(attachmentId, offer);
+  return true;
 }
 
 /**
@@ -242,50 +339,64 @@ async function transcribeChunks(
 /**
  * Sends each part in order; any failed part fails the whole run with no partial transcript. With a
  * fallback, the first part the primary fails on (a content block excepted, which must not be sent to
- * another provider) and every part after it go to the fallback instead; parts the primary already
- * finished are kept as they are.
+ * another provider) ends the run with an offer instead: nothing goes to the fallback until the user
+ * approves it. `approved` resumes that run, sending the failed part and every part after it to the
+ * fallback and keeping the parts the primary already finished as they are.
  */
 async function transcribeParts(
+  source: AudioSource,
   parts: string[],
   mimeType: string,
   options: Pick<TranscribeOptions, "transcribe" | "fallback" | "resolveFfmpeg" | "tmpRoot" | "signal">,
+  approved: FallbackOffer | null,
 ): Promise<AudioTranscriptionResult> {
   const { transcribe, fallback, signal } = options;
-  const texts: string[] = [];
-  let primaryFailure = "";
   const failure = (message: string, completedParts: number) =>
     new AudioTranscriptionError("transcription_failed", message, 502, { completedParts, parts: parts.length });
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  if (approved) {
+    // A recording re-split into a different number of parts no longer matches the kept transcripts.
+    if (!fallback || approved.parts !== parts.length) throw offerGone();
+    const { failedIndex, primaryFailure } = approved;
+    let fallbackTexts: string[];
+    try {
+      fallbackTexts = await transcribeChunks(parts.slice(failedIndex), fallback, options);
+    } catch (fallbackError) {
+      if (signal?.aborted || (fallbackError instanceof AudioTranscriptionError && fallbackError.code === "aborted")) throw cancelled();
+      throw failure(`${primaryFailure}; fallback transcription failed: ${message(fallbackError)}`, failedIndex);
+    }
+    const transcript = [...approved.texts, ...fallbackTexts].filter(Boolean).join("\n\n");
+    if (!transcript) throw failure(`${primaryFailure}; fallback transcription failed: transcription returned no text`, 0);
+    return { transcript, parts: parts.length };
+  }
+  const texts: string[] = [];
   for (const [index, part] of parts.entries()) {
     if (signal?.aborted) throw cancelled();
     const audio = new Uint8Array(await readFile(part));
     try {
       texts.push(await transcribe(audio, mimeType, signal));
-      continue;
     } catch (error) {
       if (signal?.aborted) throw cancelled();
-      const reason = error instanceof Error ? error.message : String(error);
       const where = parts.length === 1 ? "" : `part ${index + 1} of ${parts.length} failed: `;
-      if (!fallback || error instanceof TranscriptBlockedError) throw failure(`${where}${reason}`, index);
-      primaryFailure = `${where}${reason}`;
+      const primaryFailure = `${where}${message(error)}`;
+      if (!fallback || error instanceof TranscriptBlockedError) throw failure(primaryFailure, index);
+      // The fallback re-cuts the audio with FFmpeg; without it there is nothing to offer.
       try {
-        texts.push(...(await transcribeChunks(parts.slice(index), fallback, options)));
-      } catch (fallbackError) {
-        if (signal?.aborted || (fallbackError instanceof AudioTranscriptionError && fallbackError.code === "aborted")) throw cancelled();
-        const fallbackReason = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-        throw failure(`${primaryFailure}; fallback transcription failed: ${fallbackReason}`, index);
+        await options.resolveFfmpeg();
+      } catch (toolError) {
+        throw failure(`${primaryFailure}; fallback transcription failed: ${message(toolError)}`, index);
       }
-      break;
+      if (signal?.aborted) throw cancelled();
+      throw new AudioFallbackOfferError(offerFallback(source, { texts, failedIndex: index, parts: parts.length, primaryFailure }));
     }
   }
   const transcript = texts.filter(Boolean).join("\n\n");
-  if (!transcript) {
-    throw failure(primaryFailure ? `${primaryFailure}; fallback transcription failed: transcription returned no text` : "transcription returned no text", 0);
-  }
+  if (!transcript) throw failure("transcription returned no text", 0);
   return { transcript, parts: parts.length };
 }
 
 /** Compresses and splits a copy of large audio into the temp folder and transcribes the parts. */
-async function transcribeSplitCopy(source: AudioSource, options: TranscribeOptions): Promise<AudioTranscriptionResult> {
+async function transcribeSplitCopy(source: AudioSource, options: TranscribeOptions, approved: FallbackOffer | null): Promise<AudioTranscriptionResult> {
   const binary = await options.resolveFfmpeg();
   const maxPartBytes = options.maxPartBytes ?? MAX_TRANSCRIBE_AUDIO_BYTES;
   const folder = await mkdtemp(join(options.tmpRoot ?? tmpdir(), "cuelo-audio-"));
@@ -308,7 +419,7 @@ async function transcribeSplitCopy(source: AudioSource, options: TranscribeOptio
         throw new AudioTranscriptionError("part_too_large", "A converted part is larger than the transcription limit", 500);
       }
     }
-    return await transcribeParts(parts, PART_MIME_TYPE, options);
+    return await transcribeParts(source, parts, PART_MIME_TYPE, options, approved);
   } finally {
     await rm(folder, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -316,27 +427,36 @@ async function transcribeSplitCopy(source: AudioSource, options: TranscribeOptio
 
 /**
  * Transcribes one attachment. Large audio needs `confirmed: true`; without it nothing is converted
- * or sent. One run per attachment id at a time.
+ * or sent. A primary failure the fallback could take over ends with an offer; `fallbackToken` names
+ * the approved offer and resumes it (the offer itself proves a confirmed run made it). One run per
+ * attachment id at a time; a new run drops the attachment's open offer.
  */
 export async function transcribeAudioAttachment(source: AudioSource, options: TranscribeOptions): Promise<AudioTranscriptionResult> {
   assertAudio(source);
   const large = source.size > MAX_TRANSCRIBE_AUDIO_BYTES;
-  if (large && options.confirmed !== true) {
+  const token = options.fallbackToken;
+  const resuming = token !== undefined;
+  if (large && !resuming && options.confirmed !== true) {
     throw new AudioTranscriptionError("confirmation_required", "Large audio needs confirmation before it is transcribed", 409);
   }
   const active = activeTranscriptions();
   if (active.has(source.id)) {
     throw new AudioTranscriptionError("in_progress", "This attachment is already being transcribed", 409);
   }
+  const approved = resuming ? takeFallbackOffer(source, token) : null;
+  if (!resuming) dropFallbackOffer(source.id);
   active.add(source.id);
   try {
-    return large ? await transcribeSplitCopy(source, options) : await transcribeParts([source.path], source.mimeType, options);
+    return large
+      ? await transcribeSplitCopy(source, options, approved)
+      : await transcribeParts(source, [source.path], source.mimeType, options, approved);
   } finally {
     active.delete(source.id);
   }
 }
 
 function errorResponse(error: unknown): Response {
+  if (error instanceof AudioFallbackOfferError) return Response.json(error.offer, { status: error.status });
   if (error instanceof AudioTranscriptionError) {
     return Response.json({ code: error.code, error: error.message, ...error.details }, { status: error.status });
   }
@@ -353,14 +473,21 @@ export async function respondAudioPlan(source: AudioSource, options: PlanOptions
   }
 }
 
-/** `POST /api/attachments/{id}/transcription` once the attachment is leased. */
+/**
+ * `POST /api/attachments/{id}/transcription` once the attachment is leased. Answering an offer with
+ * `approve: false` only drops it and sends nothing.
+ */
 export async function respondAudioTranscription(
   source: AudioSource,
-  { confirmed }: AudioTranscriptionRequest,
-  options: Omit<TranscribeOptions, "confirmed">,
+  request: AudioTranscriptionRequest,
+  options: Omit<TranscribeOptions, "confirmed" | "fallbackToken">,
 ): Promise<Response> {
+  if ("fallbackToken" in request && !request.approve) {
+    return Response.json({ discarded: discardAudioFallback(source.id, request.fallbackToken) });
+  }
+  const command = "fallbackToken" in request ? { fallbackToken: request.fallbackToken } : { confirmed: request.confirmed === true };
   try {
-    return Response.json(await transcribeAudioAttachment(source, { ...options, confirmed }));
+    return Response.json(await transcribeAudioAttachment(source, { ...options, ...command }));
   } catch (error) {
     if (!(error instanceof AudioTranscriptionError) || error.code !== "confirmation_required") return errorResponse(error);
     try {
@@ -372,8 +499,15 @@ export async function respondAudioTranscription(
   }
 }
 
-/** The POST body: empty, `{}`, or `{ confirmed: boolean }`; null for anything else. */
-export async function readAudioTranscriptionRequest(request: Request): Promise<{ confirmed: boolean } | null> {
+const FALLBACK_TOKEN = /^[0-9a-f]{32}$/;
+
+/**
+ * The POST body: empty, `{}`, `{ confirmed: boolean }` or `{ fallbackToken, approve: boolean }`;
+ * null for anything else, including a token mixed with `confirmed`.
+ */
+export async function readAudioTranscriptionRequest(
+  request: Request,
+): Promise<{ confirmed: boolean } | { fallbackToken: string; approve: boolean } | null> {
   const text = await request.text();
   if (!text.trim()) return { confirmed: false };
   let body: unknown;
@@ -383,7 +517,12 @@ export async function readAudioTranscriptionRequest(request: Request): Promise<{
     return null;
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  const { confirmed } = body as AudioTranscriptionRequest;
+  const { confirmed, fallbackToken, approve } = body as { confirmed?: unknown; fallbackToken?: unknown; approve?: unknown };
+  if (fallbackToken !== undefined) {
+    if (typeof fallbackToken !== "string" || !FALLBACK_TOKEN.test(fallbackToken) || typeof approve !== "boolean" || confirmed !== undefined) return null;
+    return { fallbackToken, approve };
+  }
+  if (approve !== undefined) return null;
   if (confirmed !== undefined && typeof confirmed !== "boolean") return null;
   return { confirmed: confirmed === true };
 }
