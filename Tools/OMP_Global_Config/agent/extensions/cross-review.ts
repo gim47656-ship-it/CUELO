@@ -30,11 +30,11 @@ import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledge
 const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: true };
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
-/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. */
+/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. slot은 자문 대체(crossReviewAdvisoryFallback)가 lane의 기본 slot 대신 부를 때만 준다. */
 export async function completeReviewer(
-  lane: Lane, prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string } = {},
+  lane: Lane, prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string; slot?: string } = {},
 ): Promise<{ model: string; text: string; usage: { input: number; output: number; cacheRead: number; cost: number } }> {
-  const slot = SLOT[lane];
+  const slot = options.slot ?? SLOT[lane];
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
@@ -74,18 +74,39 @@ export function advisoryModelOf(ctx: ExtensionContext): string | undefined {
   return model ? `${model.provider}/${model.id}` : undefined;
 }
 
-function reviewDeps(ctx: ExtensionContext, signal: AbortSignal, notify?: (text: string) => void): ReviewDeps {
+/** 자문 reviewer 한 번의 대체 slot. 설정이 없으면 자문은 대체 없이 기록만 한다(고정 모델로 넘어가지 않는다). */
+export const ADVISORY_FALLBACK_SLOT = "crossReviewAdvisoryFallback";
+
+/**
+ * 자문 대체 설정. slot이 없으면 빈 객체(대체 없음)다. 설정했으면 해석한 provider/id(못 풀면 설정한 selector)와, 대체가 이 라운드의 필수 reviewer와 겹치지
+ * 않게 보는 필수 자리 slot 모델을 돌려준다. 해석·자격·입력이 맞지 않으면 대체 호출이 그 모델 이름으로 실패한다.
+ */
+export async function advisoryFallbackOf(ctx: ExtensionContext): Promise<{ advisoryFallbackModel?: string; requiredModels?: Partial<Record<Lane, string>> }> {
+  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_FALLBACK_SLOT);
+  if (selector === undefined) return {};
+  const named = (slot: string): string | undefined => { const model = ctx.models.resolve(`@${slot}`); return model ? `${model.provider}/${model.id}` : undefined; };
+  const requiredModels: Partial<Record<Lane, string>> = {};
+  for (const lane of ["openai", "anthropic"] as const) { const name = named(SLOT[lane]); if (name) requiredModels[lane] = name; }
+  // 설정했지만 비었거나 풀리지 않으면 selector(빈 값이면 slot 이름)를 그대로 이름으로 써, 대체 호출이 그 이름으로 실패한다(설정이 없는 것과 다르다).
+  return { advisoryFallbackModel: named(ADVISORY_FALLBACK_SLOT) ?? (selector || `@${ADVISORY_FALLBACK_SLOT}`), requiredModels };
+}
+
+async function reviewDeps(ctx: ExtensionContext, signal: AbortSignal, notify?: (text: string) => void): Promise<ReviewDeps> {
   const path = ledgerPath();
   const ledger = createRoutingLedger(path);
   const current = ctx.models.current() ?? ctx.model;
   mkdirSync(snapshotRoot(), { recursive: true, mode: 0o700 });
   chmodSync(snapshotRoot(), 0o700);
+  const fallback = await advisoryFallbackOf(ctx);
   return {
     cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), mainModel: current ? `${current.provider}/${current.id}` : undefined, advisoryModel: advisoryModelOf(ctx),
     exec: spawnExec(signal), readAll: () => readCrossReviewRecords(path), append: (record) => ledger.append(record),
     snapshotRoot: snapshotRoot(),
     // 자문 호출은 review가 돌아온 뒤에도 기한까지 돈다. ctx는 그 세션의 것이라 비용 장부도 같은 세션에 남는다.
     complete: (family, prompt, attempt) => completeReviewer(family, prompt, ctx, attempt),
+    ...fallback,
+    ...(fallback.advisoryFallbackModel ? { completeAdvisoryFallback: (prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { slot: ADVISORY_FALLBACK_SLOT }) } : {}),
     ...(notify ? { notify } : {}),
   };
 }
@@ -111,7 +132,7 @@ export type CrossReviewUpdate = (partial: { content: { type: "text"; text: strin
 
 export async function executeCrossReview(
   params: CrossReviewParams, ctx: ExtensionContext, signal: AbortSignal,
-  makeDeps: (ctx: ExtensionContext, signal: AbortSignal) => ReviewDeps = reviewDeps,
+  makeDeps: (ctx: ExtensionContext, signal: AbortSignal) => ReviewDeps | Promise<ReviewDeps> = reviewDeps,
   onUpdate?: CrossReviewUpdate,
 ): Promise<unknown> {
   const sub = ctx.agent?.kind === "sub";
@@ -131,7 +152,7 @@ export async function executeCrossReview(
       throw new Error(`authors must include this session's own model: it runs ${own} (${family} family), but authors ${JSON.stringify(params.authors ?? [])} list no ${family} model. List your own model selector so the reviewer is the other family.`);
     }
   }
-  const made = makeDeps(ctx, signal);
+  const made = await makeDeps(ctx, signal);
   // reviewer 시작·끝을 도구의 진행 채널로 알린다. runReview는 결과를 돌려준 뒤에는 부르지 않는다.
   const deps: ReviewDeps = onUpdate ? { ...made, onProgress: (progress) => onUpdate({ content: [{ type: "text", text: progress.text }], details: { progress } }) } : made;
   if (params.action === "review") {
@@ -153,7 +174,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 high-risk 코드의 review 체인을 돌린 뒤 reviewId 체인과 finding별 제안 status·근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→OpenAI 슬롯 Astra, OpenAI·그 밖의 저자→Anthropic 슬롯 Opus)와 늘 함께 도는 자문 슬롯 crossReviewAdvisory(Argon, 저자가 그 모델 자체일 때만 빠진다)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. 결과는 필수 reviewer가 모두 끝나면 바로 돌아온다. 그때 아직 답하지 않은 자문 reviewer는 reviewers[]에 pending(advisoryPending 안내)으로 남고 뒤에서 자기 시작부터 600초까지 계속 돌며, 답한 finding(R<n>-ADV-*)은 원장에 그 라운드의 열린 지적으로 붙고 세션에 알림이 오며 다음 라운드 프롬프트와 earlierAdvisoryFindings에 보인다. 필수 reviewer가 쓸 수 없는 답을 내면 자문은 멈춘다. 자문의 호출 실패·해석 불가·시간 초과·중단은 기록만 하고 통과를 막지 않지만(다음 라운드가 다시 부른다), 답한 finding(옛 기록은 R*-GGL-*)은 다른 reviewer의 것처럼 resolve로 닫아야 한다. authors는 코드를 쓴 모델 selector이며 두 계열이면 둘 다 돌린다. Main 세션은 \"main\"(자기 현재 모델)도 쓸 수 있지만 subagent 세션에서 \"main\"은 거절되므로 자기 모델 selector를 주고, subagent 세션의 1회차 authors에 세션 자신의 모델과 같은 계열이 없으면 거절된다. previousReviewId를 주면 다음 라운드이고 체인은 최대 5회(probe 라운드 1회 + probe가 아닌 라운드 4회)다: probe가 아닌 라운드는 직전 라운드가 본 내용 이후의 delta만 보며 바뀐 것이 없으면 거절한다. 이어지는 라운드에서 files·acceptance를 생략하면 체인이 본 파일과 가장 늦은 라운드의 acceptance를 이어받는다(결과 carriedOver; 2026-10-28 전 라운드는 acceptance를 남기지 않아 다시 줘야 한다). 변경이 한 호출 상한(300KB)을 넘으면 거절하지 않고 파일·hunk 단위로 reviewer 자리마다 최대 8번 나눠 같은 라운드로 심사하며(결과 batches), 8번으로도 모자라거나 공통 부분(기준·앞 지적·입력·참고)만으로 상한에 가까우면 아무것도 보내지 않고 거절한다. finding을 고친 뒤에는 다음 라운드로 그 수정을 reviewer에게 다시 보이는 것이 정상 흐름이며, 마지막 라운드의 내용과 다른 파일이 resolve 때 있으면 결과의 unreviewedChanges로 알리며, 그 중 코드 파일(git_finalize 게이트와 같은 분류)은 통과를 막는다(문서·테스트·생성물만이면 안내일 뿐 통과 판정은 그대로다). base(선택, 1회차 전용, 빈 문자열은 주지 않은 것으로 읽는다)는 이미 커밋된 변경을 심사할 때 쓰는 HEAD 또는 그 조상 커밋이며, 그 커밋부터 HEAD까지의 변경을 보여 준다. 대상 파일의 작업 트리가 HEAD와 같아야 하고(수정·삭제·추적 안 한 새 파일은 거절, git이 무시하는 새 파일은 건너뜀) base가 없으면 HEAD와 작업 트리를 비교한다(커밋 뒤에도 같은 체인을 previousReviewId로 이어 가는 것은 base 없이 된다). reviewer는 코드만으로 가릴 수 없는 의심에 finding.probe{steps, expectIfReal, expectIfNot?}(재현 실험)를 붙일 수 있다. Main이나 Maker가 그 실험을 돌린 뒤 previousReviewId와 probeResults[{findingId, command, exitCode, output}]를 주면 probe 라운드가 되어 코드 변경이 없어도 실험 결과로 한 번 더 판단받고, reviewer가 finding마다 verdicts{confirmed|withdrawn|unresolved}를 낸다(판단이 빠지면 unresolved). 체인에 없는 findingId·중복 결과·두 번째 probe 라운드·개인키 블록이 든 결과는 거절하며, output은 발췌로 결과당 8KB(넘으면 앞뒤만 남김)·합계 40KB(넘으면 거절)이고 비밀 값은 가려 신뢰하지 않는 자료로 전달한다. verdict는 자문일 뿐 finding을 자동으로 닫거나 통과시키지 않는다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 정책상 제외 경로(비밀을 담는 파일)·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). inputs(선택, 최대 10개)는 변경이 일관돼야 하는 명세·계약·스키마·호출자 파일이며, references와 같은 읽기·필터·제한으로 별도 블록에 싣고(심사 대상 아님, 빠진 것은 skippedInputs) files와 겹치면 거절한다. references와 달리 통과에 묶여서, resolve 뒤 입력이 바뀌거나 지워지면 git_finalize가 그 통과를 덮지 않는 것으로 보고 다시 검토를 요구한다(inputs 없는 검토는 그대로). 이어지는 라운드는 앞 라운드의 입력을 이어받고 더할 수 있으며, 이어받은 입력을 더 읽을 수 없으면 거절하므로 빼려면 previousReviewId 없이 새로 시작한다. 파일 내용은 reviewer 슬롯이 가리키는 provider(현재 OpenAI·Anthropic, 자문 자리는 Google AI Studio 프록시)로 전송된다. 비밀을 담는 파일(.env*, 키·인증서 형식, id_*, agent.db, .npmrc·.netrc·.pypirc·.git-credentials, ~/.omp/agent 아래)과 개인키 블록이 든 파일, 바이너리, 큰 입력은 제외한다. 제외한 파일은 정책상 심사할 수 없다는 이유와 다음 단계(이름·위치 바꾸기, 커밋에서 빼기, 사용자 명시 지시의 waiver)를 결과 skipped·nextStep에 바로 알리며, 같은 파일에 라운드를 더 돌려도 통과는 나오지 않고 git_finalize의 거절 메시지도 같은 이유를 말한다. credential·secret·password·api-key를 품은 이름이나 단독 auth·token 이름처럼 이름만 걸린 파일은 제외하지 않고 비밀로 보이는 값을 [REDACTED]로 가려(결과 redacted에 횟수) 심사한다. 이미 시작된 심사에서 바뀐 줄이 테스트 파일 삭제·테스트 호출 순감소·skip 추가·억제 주석 추가·빈 catch 추가 모양이면 결과의 hidingLeads와 reviewer 프롬프트에 판정이 아닌 단서로만 붙으며 trigger·표본·게이트 판정은 바뀌지 않는다. action=resolve(Main 전용, 다른 세션이 시작한 체인도 닫을 수 있다): 이 프로세스에서 체인의 자문 reviewer가 아직 돌면 진행 알림을 내며 그 끝(최대 600초)을 기다린 뒤 판정하고, 진행 중 호출도 완료 기록도 없는 pending 자문(재시작 등)은 실패로 기록하고 막지 않는다. reviewId 체인의 모든 finding(늦게 붙은 자문 finding 포함)에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다(withdrawn 판단도 자동으로 닫지 않는다). 마지막 라운드 reviewer가 본 내용과 다른 코드 파일이 resolve 시점에 남아 있으면 finding이 모두 닫혀도 pass:false(unreviewedBlocking)이고, previousReviewId로 새 라운드를 돌려 그 수정을 reviewer에게 보인 뒤 다시 resolve한다. 더 돌릴 probe가 아닌 라운드가 없는 체인(또는 마지막 라운드가 바이너리·개인키·정책상 제외 경로로 건너뛴 파일)에서만 unreviewedAcknowledgements[{path, evidence}]로 미검토 코드 파일마다 그 내용에 한 검사를 근거로 적어 통과할 수 있고(라운드가 남았거나 근거가 비면 rejectedAcknowledgements로 거절), 받아들인 확인 응답은 resolve 기록에 경로·blob·근거로 남는다. git_finalize는 crossReviewHighRisk로 선언한 파일·trigger(바뀐 줄에 걸린 marker; 경로 이름만으로는 걸지 않는다)·표본(커밋당 바뀐 줄이 많은 코드 파일 최대 5개, 프로젝트·스타일·디자이너 파일 제외)에 걸린 코드 파일에 이 통과 기록을 요구한다. HEAD나 통과한 내용과 비교해 TypeScript 파서로 주석만 바뀐 것이 증명된 TS/JS 수정이나 버전 문자열만 바뀐 수정, git이 바이너리로 보는 미디어·문서·글꼴 자산은 대상이 아니다(통과 뒤 그런 수정만 더한 파일은 그 통과가 그대로 덮는다). reviewer의 PASS 표현은 근거가 아니다.",
+    description: "계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 high-risk 코드의 review 체인을 돌린 뒤 reviewId 체인과 finding별 제안 status·근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 반대 계열 reviewer(Anthropic 저자→OpenAI 슬롯 Astra, OpenAI·그 밖의 저자→Anthropic 슬롯 Opus)와 늘 함께 도는 자문 슬롯 crossReviewAdvisory(Argon, 저자가 그 모델 자체일 때만 빠진다)가 acceptance 기준으로 적대적으로 읽고 {reviewId, reviewer 모델, round, triggers, findings[]}를 돌려준다. 결과는 필수 reviewer가 모두 끝나면 바로 돌아온다. 그때 아직 답하지 않은 자문 reviewer는 reviewers[]에 pending(advisoryPending 안내)으로 남고 뒤에서 자기 시작부터 600초까지 계속 돌며, 답한 finding(R<n>-ADV-*)은 원장에 그 라운드의 열린 지적으로 붙고 세션에 알림이 오며 다음 라운드 프롬프트와 earlierAdvisoryFindings에 보인다. 필수 reviewer가 쓸 수 없는 답을 내면 자문은 멈춘다. 자문의 호출 실패·해석 불가·시간 초과·중단은 기록만 하고 통과를 막지 않지만(다음 라운드가 다시 부른다), 답한 finding(옛 기록은 R*-GGL-*)은 다른 reviewer의 것처럼 resolve로 닫아야 한다. modelRoles.crossReviewAdvisoryFallback이 설정돼 있으면 자문의 호출 오류·빈 답·해석 불가에 한해 같은 기한 안에서 그 모델로 한 번만 바꿔 다시 심사하며(나눠 심사한 라운드는 기존 조각마다 그 모델을 한 번씩 부르므로 요청이 하나라는 뜻은 아니다. reviewers[].fallbackFrom에 앞 실패 이유가 남고 model·finding은 실제로 답한 모델의 것이다), 설정이 없거나 자문 주 모델·이번 라운드의 필수 reviewer·저자와 같은 모델이면 부르지 않고 고정 모델로 넘어가지 않으며, 취소·기한·필수 reviewer 종료로 멈춘 자문은 대체하지 않는다. 설정했지만 비었거나 풀리지 않으면 그 이름의 대체 실패로 기록한다. authors는 코드를 쓴 모델 selector이며 두 계열이면 둘 다 돌린다. Main 세션은 \"main\"(자기 현재 모델)도 쓸 수 있지만 subagent 세션에서 \"main\"은 거절되므로 자기 모델 selector를 주고, subagent 세션의 1회차 authors에 세션 자신의 모델과 같은 계열이 없으면 거절된다. previousReviewId를 주면 다음 라운드이고 체인은 최대 5회(probe 라운드 1회 + probe가 아닌 라운드 4회)다: probe가 아닌 라운드는 직전 라운드가 본 내용 이후의 delta만 보며 바뀐 것이 없으면 거절한다. 이어지는 라운드에서 files·acceptance를 생략하면 체인이 본 파일과 가장 늦은 라운드의 acceptance를 이어받는다(결과 carriedOver; 2026-10-28 전 라운드는 acceptance를 남기지 않아 다시 줘야 한다). 변경이 한 호출 상한(300KB)을 넘으면 거절하지 않고 파일·hunk 단위로 reviewer 자리마다 최대 8번 나눠 같은 라운드로 심사하며(결과 batches), 8번으로도 모자라거나 공통 부분(기준·앞 지적·입력·참고)만으로 상한에 가까우면 아무것도 보내지 않고 거절한다. finding을 고친 뒤에는 다음 라운드로 그 수정을 reviewer에게 다시 보이는 것이 정상 흐름이며, 마지막 라운드의 내용과 다른 파일이 resolve 때 있으면 결과의 unreviewedChanges로 알리며, 그 중 코드 파일(git_finalize 게이트와 같은 분류)은 통과를 막는다(문서·테스트·생성물만이면 안내일 뿐 통과 판정은 그대로다). base(선택, 1회차 전용, 빈 문자열은 주지 않은 것으로 읽는다)는 이미 커밋된 변경을 심사할 때 쓰는 HEAD 또는 그 조상 커밋이며, 그 커밋부터 HEAD까지의 변경을 보여 준다. 대상 파일의 작업 트리가 HEAD와 같아야 하고(수정·삭제·추적 안 한 새 파일은 거절, git이 무시하는 새 파일은 건너뜀) base가 없으면 HEAD와 작업 트리를 비교한다(커밋 뒤에도 같은 체인을 previousReviewId로 이어 가는 것은 base 없이 된다). reviewer는 코드만으로 가릴 수 없는 의심에 finding.probe{steps, expectIfReal, expectIfNot?}(재현 실험)를 붙일 수 있다. Main이나 Maker가 그 실험을 돌린 뒤 previousReviewId와 probeResults[{findingId, command, exitCode, output}]를 주면 probe 라운드가 되어 코드 변경이 없어도 실험 결과로 한 번 더 판단받고, reviewer가 finding마다 verdicts{confirmed|withdrawn|unresolved}를 낸다(판단이 빠지면 unresolved). 체인에 없는 findingId·중복 결과·두 번째 probe 라운드·개인키 블록이 든 결과는 거절하며, output은 발췌로 결과당 8KB(넘으면 앞뒤만 남김)·합계 40KB(넘으면 거절)이고 비밀 값은 가려 신뢰하지 않는 자료로 전달한다. verdict는 자문일 뿐 finding을 자동으로 닫거나 통과시키지 않는다. references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존·신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 정책상 제외 경로(비밀을 담는 파일)·gitignore·심볼릭 링크·바이너리·파일당 64KB/합계 100KB 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). inputs(선택, 최대 10개)는 변경이 일관돼야 하는 명세·계약·스키마·호출자 파일이며, references와 같은 읽기·필터·제한으로 별도 블록에 싣고(심사 대상 아님, 빠진 것은 skippedInputs) files와 겹치면 거절한다. references와 달리 통과에 묶여서, resolve 뒤 입력이 바뀌거나 지워지면 git_finalize가 그 통과를 덮지 않는 것으로 보고 다시 검토를 요구한다(inputs 없는 검토는 그대로). 이어지는 라운드는 앞 라운드의 입력을 이어받고 더할 수 있으며, 이어받은 입력을 더 읽을 수 없으면 거절하므로 빼려면 previousReviewId 없이 새로 시작한다. 파일 내용은 reviewer 슬롯이 가리키는 provider(현재 OpenAI·Anthropic, 자문 자리는 Google AI Studio 프록시, 자문 대체를 설정했으면 그 모델의 provider)로 전송된다. 비밀을 담는 파일(.env*, 키·인증서 형식, id_*, agent.db, .npmrc·.netrc·.pypirc·.git-credentials, ~/.omp/agent 아래)과 개인키 블록이 든 파일, 바이너리, 큰 입력은 제외한다. 제외한 파일은 정책상 심사할 수 없다는 이유와 다음 단계(이름·위치 바꾸기, 커밋에서 빼기, 사용자 명시 지시의 waiver)를 결과 skipped·nextStep에 바로 알리며, 같은 파일에 라운드를 더 돌려도 통과는 나오지 않고 git_finalize의 거절 메시지도 같은 이유를 말한다. credential·secret·password·api-key를 품은 이름이나 단독 auth·token 이름처럼 이름만 걸린 파일은 제외하지 않고 비밀로 보이는 값을 [REDACTED]로 가려(결과 redacted에 횟수) 심사한다. 이미 시작된 심사에서 바뀐 줄이 테스트 파일 삭제·테스트 호출 순감소·skip 추가·억제 주석 추가·빈 catch 추가 모양이면 결과의 hidingLeads와 reviewer 프롬프트에 판정이 아닌 단서로만 붙으며 trigger·표본·게이트 판정은 바뀌지 않는다. action=resolve(Main 전용, 다른 세션이 시작한 체인도 닫을 수 있다): 이 프로세스에서 체인의 자문 reviewer가 아직 돌면 진행 알림을 내며 그 끝(최대 600초)을 기다린 뒤 판정하고, 진행 중 호출도 완료 기록도 없는 pending 자문(재시작 등)은 실패로 기록하고 막지 않는다. reviewId 체인의 모든 finding(늦게 붙은 자문 finding 포함)에 {id, status fixed|refuted|limit, evidence}가 있어야 pass:true이고 그 시점 파일 내용(git blob)이 통과 지문으로 기록된다(withdrawn 판단도 자동으로 닫지 않는다). 마지막 라운드 reviewer가 본 내용과 다른 코드 파일이 resolve 시점에 남아 있으면 finding이 모두 닫혀도 pass:false(unreviewedBlocking)이고, previousReviewId로 새 라운드를 돌려 그 수정을 reviewer에게 보인 뒤 다시 resolve한다. 더 돌릴 probe가 아닌 라운드가 없는 체인(또는 마지막 라운드가 바이너리·개인키·정책상 제외 경로로 건너뛴 파일)에서만 unreviewedAcknowledgements[{path, evidence}]로 미검토 코드 파일마다 그 내용에 한 검사를 근거로 적어 통과할 수 있고(라운드가 남았거나 근거가 비면 rejectedAcknowledgements로 거절), 받아들인 확인 응답은 resolve 기록에 경로·blob·근거로 남는다. git_finalize는 crossReviewHighRisk로 선언한 파일·trigger(바뀐 줄에 걸린 marker; 경로 이름만으로는 걸지 않는다)·표본(커밋당 바뀐 줄이 많은 코드 파일 최대 5개, 프로젝트·스타일·디자이너 파일 제외)에 걸린 코드 파일에 이 통과 기록을 요구한다. HEAD나 통과한 내용과 비교해 TypeScript 파서로 주석만 바뀐 것이 증명된 TS/JS 수정이나 버전 문자열만 바뀐 수정, git이 바이너리로 보는 미디어·문서·글꼴 자산은 대상이 아니다(통과 뒤 그런 수정만 더한 파일은 그 통과가 그대로 덮는다). reviewer의 PASS 표현은 근거가 아니다.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { advisoryModelOf, completeReviewer } from "./cross-review";
+import { ADVISORY_FALLBACK_SLOT, advisoryFallbackOf, advisoryModelOf, completeReviewer } from "./cross-review";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
 import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
@@ -78,7 +78,7 @@ export default function slopGate(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "slop_check", label: "Slop Check", loadMode: "essential", approval: "read",
-    description: "밖에 보이는 산출물(README·CHANGELOG·docs·md·html·pptx·docx·xlsx·pdf·hwpx·보고 csv·UI 문구 언어 팩)의 AI 슬롭 검사. 대상은 파일을 읽기 전에 경로와 형식으로 정한다: 보이는 형식이면 공개 저장소·.publicignore·공개 선언과 상관없이 대상이고(.slop-gate.json visible glob은 대상을 더하기만 한다), 소스 코드·주석·로그·테스트·fixture·생성물·내부 규칙·프롬프트·스킬·HANDOFF.md·doc/history·doc/README.md와 400000바이트를 넘는 csv(보고 표가 아닌 원자료로 본다)는 대상이 아니라 읽지도 모델에 보내지도 않고 status:\"internal\"과 reason을 돌려준다(통과 아님). action=review(기본): files(cwd 안, 또는 홈·/mnt/<드라이브>/ 아래 경로)의 보이는 글을 뽑아 한국어는 humanizer(패턴 3 연결어미 뒤 쉼표는 그것만으로 finding이 아니며 결과 relaxed에 수만 남는다), 영어는 stop-slop, html·UI 문구·슬라이드는 kill-ai-slop 규칙 본문을 기준으로 cross_review와 같은 reviewer slot 규칙(authors의 반대 계열 필수 reviewer + 자문 슬롯 crossReviewAdvisory reviewer, 병렬, 자문은 120초가 지나거나 필수 reviewer가 모두 끝나고 20초 유예가 지나면 끊기고 실패해도 기록만 한다)으로 심사해 finding {id, file, quote, rule, fix}을 돌려준다. 필수 reviewer의 답이 JSON으로 읽히지 않으면 같은 자리에 한 번만 다시 묻고(첫 답의 원문·파서 오류는 failedAttempts에 남는다), 다시 받은 답도 읽히지 않으면 통과가 없다. finding이 없으면 같은 호출에서 파일 내용(sha256)에 묶인 통과를 원장에 남기고, 이미 통과한 내용은 모델을 부르지 않는다. 고친 파일은 바이트가 달라 새로 심사해야 한다. action=resolve(Main 전용): reviewId의 finding을 {id, status:\"refuted\", evidence}로만 닫으며, 모든 finding이 반박되고 파일 내용이 심사한 바이트와 같을 때 통과를 기록한다. git_finalize는 커밋할 보이는 산출물마다 이 통과를 요구하고, 이번 입력에서 저장소 밖에 쓴 보이는 산출물은 통과 없이 턴이 끝나지 않는다.",
+    description: "밖에 보이는 산출물(README·CHANGELOG·docs·md·html·pptx·docx·xlsx·pdf·hwpx·보고 csv·UI 문구 언어 팩)의 AI 슬롭 검사. 대상은 파일을 읽기 전에 경로와 형식으로 정한다: 보이는 형식이면 공개 저장소·.publicignore·공개 선언과 상관없이 대상이고(.slop-gate.json visible glob은 대상을 더하기만 한다), 소스 코드·주석·로그·테스트·fixture·생성물·내부 규칙·프롬프트·스킬·HANDOFF.md·doc/history·doc/README.md와 400000바이트를 넘는 csv(보고 표가 아닌 원자료로 본다)는 대상이 아니라 읽지도 모델에 보내지도 않고 status:\"internal\"과 reason을 돌려준다(통과 아님). action=review(기본): files(cwd 안, 또는 홈·/mnt/<드라이브>/ 아래 경로)의 보이는 글을 뽑아 한국어는 humanizer(패턴 3 연결어미 뒤 쉼표는 그것만으로 finding이 아니며 결과 relaxed에 수만 남는다), 영어는 stop-slop, html·UI 문구·슬라이드는 kill-ai-slop 규칙 본문을 기준으로 cross_review와 같은 reviewer slot 규칙(authors의 반대 계열 필수 reviewer + 자문 슬롯 crossReviewAdvisory reviewer, 병렬, 자문은 120초가 지나거나 필수 reviewer가 모두 끝나고 20초 유예가 지나면 끊기고 실패해도 기록만 한다)으로 심사해 finding {id, file, quote, rule, fix}을 돌려준다. modelRoles.crossReviewAdvisoryFallback이 설정돼 있으면 자문의 호출 오류·빈 답·해석 불가에 한해 같은 기한 안에서 그 모델로 한 번만 바꿔 다시 심사하고(묶음이 여럿이면 기존 묶음마다 그 모델을 한 번씩 부르므로 요청이 하나라는 뜻은 아니다. 앞 실패는 failedAttempts에 남고 통과 기록·reviewer 상태에는 실제로 답한 모델이 적힌다), 설정이 없거나 자문 주 모델·필수 reviewer·저자와 같은 모델이면 부르지 않으며 고정 모델로 넘어가지 않는다. 설정했지만 비었거나 풀리지 않으면 그 이름의 대체 실패로 기록한다. 필수 reviewer의 답이 JSON으로 읽히지 않으면 같은 자리에 한 번만 다시 묻고(첫 답의 원문·파서 오류는 failedAttempts에 남는다), 다시 받은 답도 읽히지 않으면 통과가 없다. finding이 없으면 같은 호출에서 파일 내용(sha256)에 묶인 통과를 원장에 남기고, 이미 통과한 내용은 모델을 부르지 않는다. 고친 파일은 바이트가 달라 새로 심사해야 한다. action=resolve(Main 전용): reviewId의 finding을 {id, status:\"refuted\", evidence}로만 닫으며, 모든 finding이 반박되고 파일 내용이 심사한 바이트와 같을 때 통과를 기록한다. git_finalize는 커밋할 보이는 산출물마다 이 통과를 요구하고, 이번 입력에서 저장소 밖에 쓴 보이는 산출물은 통과 없이 턴이 끝나지 않는다.",
     parameters: z.object({
       action: z.string().optional().describe("review(기본) 또는 resolve"),
       files: z.array(z.string()).optional().describe("review 대상: cwd 기준 경로, 또는 홈 폴더·/mnt/<드라이브>/ 아래 절대 경로(/tmp·~/.omp·~/.cache·node_modules·.git 제외)"),
@@ -89,9 +89,12 @@ export default function slopGate(pi: ExtensionAPI): void {
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const abort = signal ?? new AbortController().signal;
+      const fallback = await advisoryFallbackOf(ctx);
       const result = await executeSlopCheck(params as SlopCheckParams, ctx, {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx), advisoryModel: advisoryModelOf(ctx),
         complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
+        ...fallback,
+        ...(fallback.advisoryFallbackModel ? { completeFallback: (system: string, prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { system, purpose: "slop-gate", slot: ADVISORY_FALLBACK_SLOT }) } : {}),
       }, abort);
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };
     },

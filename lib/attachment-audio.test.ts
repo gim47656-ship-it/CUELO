@@ -21,6 +21,7 @@ import {
   transcribeAudioAttachment,
   type AudioSource,
 } from "./attachment-audio";
+import { TranscriptBlockedError, TranscriptStoppedError } from "./audio-transcribe";
 
 const ffmpeg = await resolveFfmpegPath().catch(() => null);
 const work = mkdtempSync(join(tmpdir(), "cuelo-audio-test-"));
@@ -318,5 +319,249 @@ describe("HTTP responders", () => {
     expect(await readAudioTranscriptionRequest(make('{"confirmed":true}'))).toEqual({ confirmed: true });
     expect(await readAudioTranscriptionRequest(make('{"confirmed":"yes"}'))).toBeNull();
     expect(await readAudioTranscriptionRequest(make("not json"))).toBeNull();
+  });
+});
+
+describe.skipIf(!ffmpeg)("fallback transcriber for audio the primary failed on", () => {
+  const CHUNK_SECONDS = 15;
+  let spoken = "";
+  beforeAll(() => {
+    // 40 s of 8 kHz mono PCM (~640 KB): inline-sized, so the direct path, but longer than one chunk.
+    spoken = makeAudio("spoken40.wav", ["-f", "lavfi", "-i", "sine=frequency=330:sample_rate=8000:duration=40", "-ac", "1", "-c:a", "pcm_s16le"]);
+  });
+
+  const primaryFails = (error: Error = new Error("primary unavailable")) => recorder(() => error);
+
+  /** A fallback that keeps every chunk it receives so its real length can be probed afterwards. */
+  function chunkRecorder(options: { failAt?: number; text?: (index: number) => string; onCall?: (index: number) => void } = {}) {
+    const calls: Call[] = [];
+    const files: string[] = [];
+    const transcribe = async (audio: Uint8Array, mimeType: string) => {
+      const index = calls.length;
+      calls.push({ bytes: audio.byteLength, mimeType, head: Buffer.from(audio.subarray(0, 3)).toString("latin1") });
+      const file = join(work, `fallback-chunk-${files.length}-${Date.now()}.mp3`);
+      writeFileSync(file, audio);
+      files.push(file);
+      options.onCall?.(index);
+      if (index === options.failAt) throw new Error("codex exploded");
+      return options.text ? options.text(index) : `chunk ${index + 1}`;
+    };
+    return { calls, files, transcribe, fallback: { transcribe, chunkSeconds: CHUNK_SECONDS } };
+  }
+
+  type Options = Parameters<typeof transcribeAudioAttachment>[1];
+  const options = (extra: Omit<Options, "resolveFfmpeg" | "tmpRoot">): Options => ({ resolveFfmpeg: async () => ffmpeg!, tmpRoot, ...extra });
+
+  test("a finished primary never reaches the fallback", async () => {
+    const primary = recorder();
+    const chunks = chunkRecorder();
+    const result = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primary.transcribe, fallback: chunks.fallback }));
+    expect(result).toEqual({ transcript: "part 1 text", parts: 1 });
+    expect(chunks.calls).toHaveLength(0);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("a failed direct file is re-cut into 15 s MP3 chunks sent in order, then joined", async () => {
+    const before = sha256(spoken);
+    const primary = primaryFails();
+    const chunks = chunkRecorder();
+    const result = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primary.transcribe, fallback: chunks.fallback }));
+    expect(result).toEqual({ transcript: "chunk 1 chunk 2 chunk 3", parts: 1 });
+    expect(primary.calls).toHaveLength(1);
+    expect(chunks.calls.map((c) => c.mimeType)).toEqual(["audio/mpeg", "audio/mpeg", "audio/mpeg"]);
+    expect(chunks.calls.map((c) => c.head)).toEqual(["ID3", "ID3", "ID3"]);
+    const lengths = await Promise.all(chunks.files.map((file) => probeAudioDurationSeconds(ffmpeg!, file)));
+    // 40 s in ceil(40 / 15) = 3 balanced chunks of about 13.3 s, none above the 15 s cap.
+    for (const length of lengths) {
+      expect(length).toBeLessThanOrEqual(15.1);
+      expect(length).toBeGreaterThan(13);
+    }
+    // Each chunk is encoded on its own, so no audio is lost at the boundaries (a cut MP3 loses ~0.1 s each).
+    expect(lengths.reduce((a, b) => a + b, 0)).toBeGreaterThan(39.85);
+    expect(tmpEntries()).toEqual([]);
+    expect(sha256(spoken)).toBe(before);
+  });
+
+  test("a split recording keeps the finished part, and the failed part and later ones go to the fallback", async () => {
+    const primary = recorder((index) => (index === 1 ? new Error("quota exhausted") : null));
+    const chunks = chunkRecorder({ text: (index) => `c${index + 1}` });
+    const result = await transcribeAudioAttachment(source(large, "audio/wav"), options({ confirmed: true, transcribe: primary.transcribe, fallback: chunks.fallback }));
+    // 1300 s -> parts of 600, 600 and 100 s; parts 2 and 3 -> 40 + 7 chunks; the primary is not tried on part 3.
+    expect(primary.calls).toHaveLength(2);
+    expect(chunks.calls).toHaveLength(47);
+    const part2 = Array.from({ length: 40 }, (_, i) => `c${i + 1}`).join(" ");
+    const part3 = Array.from({ length: 7 }, (_, i) => `c${i + 41}`).join(" ");
+    expect(result.parts).toBe(3);
+    expect(result.transcript).toBe(`part 1 text\n\n${part2}\n\n${part3}`);
+    expect(tmpEntries()).toEqual([]);
+    expect(sha256(large)).toBe(largeSha);
+  });
+
+  test("a content block is not sent to another provider", async () => {
+    const primary = primaryFails(new TranscriptBlockedError("transcription stopped: error (Generation failed with finish reason: SAFETY)"));
+    const chunks = chunkRecorder();
+    const error = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primary.transcribe, fallback: chunks.fallback })).catch((e) => e);
+    expect(error).toMatchObject({ code: "transcription_failed", status: 502, details: { completedParts: 0, parts: 1 } });
+    expect(error.message).toContain("finish reason: SAFETY");
+    expect(chunks.calls).toHaveLength(0);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("an ordinary stopped reply still reaches the fallback", async () => {
+    const primary = primaryFails(new TranscriptStoppedError("transcription stopped: error (Generation failed with finish reason: OTHER)"));
+    const chunks = chunkRecorder();
+    const result = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primary.transcribe, fallback: chunks.fallback }));
+    expect(result.transcript).toBe("chunk 1 chunk 2 chunk 3");
+  });
+
+  test("aborting after the primary failed starts no fallback request", async () => {
+    const controller = new AbortController();
+    const chunks = chunkRecorder();
+    const transcribe = async () => {
+      controller.abort();
+      throw new Error("primary unavailable");
+    };
+    const error = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe, fallback: chunks.fallback, signal: controller.signal })).catch((e) => e);
+    expect(error).toMatchObject({ code: "aborted", status: 499 });
+    expect(chunks.calls).toHaveLength(0);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("aborting during the fallback stops the remaining chunks and removes the chunk folder", async () => {
+    const controller = new AbortController();
+    const chunks = chunkRecorder({ onCall: (index) => index === 1 && controller.abort() });
+    const error = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primaryFails().transcribe, fallback: chunks.fallback, signal: controller.signal })).catch((e) => e);
+    expect(error).toMatchObject({ code: "aborted", status: 499 });
+    expect(chunks.calls).toHaveLength(2);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("a failed chunk fails the whole run with both reasons and no partial transcript", async () => {
+    const chunks = chunkRecorder({ failAt: 1 });
+    const error = await transcribeAudioAttachment(source(spoken, "audio/wav"), options({ transcribe: primaryFails().transcribe, fallback: chunks.fallback })).catch((e) => e);
+    expect(error).toBeInstanceOf(AudioTranscriptionError);
+    expect(error).toMatchObject({ code: "transcription_failed", status: 502, details: { completedParts: 0, parts: 1 } });
+    expect(error.message).toContain("primary unavailable");
+    expect(error.message).toContain("fallback transcription failed: chunk 2 of 3: codex exploded");
+    expect(chunks.calls).toHaveLength(2);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("silent chunks are skipped, and a run where every chunk is empty is a no-text failure", async () => {
+    const mixed = await transcribeAudioAttachment(
+      source(spoken, "audio/wav"),
+      options({ transcribe: primaryFails().transcribe, fallback: chunkRecorder({ text: (index) => (index === 1 ? "  " : `chunk ${index + 1}`) }).fallback }),
+    );
+    expect(mixed.transcript).toBe("chunk 1 chunk 3");
+    const error = await transcribeAudioAttachment(
+      source(spoken, "audio/wav"),
+      options({ transcribe: primaryFails().transcribe, fallback: chunkRecorder({ text: () => "" }).fallback }),
+    ).catch((e) => e);
+    expect(error).toMatchObject({ code: "transcription_failed", status: 502 });
+    expect(error.message).toContain("no text");
+  });
+
+  test("when the primary failed and every chunk is empty, the failure names the primary reason too", async () => {
+    const error = await transcribeAudioAttachment(
+      source(spoken, "audio/wav"),
+      options({ transcribe: primaryFails().transcribe, fallback: chunkRecorder({ text: () => "" }).fallback }),
+    ).catch((e) => e);
+    expect(error.message).toContain("primary unavailable");
+    expect(error.message).toContain("no text");
+  });
+
+  test("an unconfirmed large file starts neither FFmpeg, the primary nor the fallback", async () => {
+    const primary = recorder();
+    const chunks = chunkRecorder();
+    const error = await transcribeAudioAttachment(source(large, "audio/wav"), {
+      resolveFfmpeg: () => Promise.reject(new Error("FFmpeg must not be resolved")),
+      tmpRoot,
+      transcribe: primary.transcribe,
+      fallback: chunks.fallback,
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: "confirmation_required", status: 409 });
+    expect(primary.calls).toHaveLength(0);
+    expect(chunks.calls).toHaveLength(0);
+  });
+
+  test("a playlist whose primary request failed is not opened by the chunker", async () => {
+    const wav = makeAudio("playlist-target.wav", ["-f", "lavfi", "-i", "sine=duration=1", "-c:a", "pcm_s16le"]);
+    const list = join(work, "fallback-list.wav");
+    writeFileSync(list, `ffconcat version 1.0\nfile '${wav.replaceAll("\\", "/")}'\n`);
+    const chunks = chunkRecorder();
+    const error = await transcribeAudioAttachment(source(list, "audio/wav"), options({ transcribe: primaryFails().transcribe, fallback: chunks.fallback })).catch((e) => e);
+    expect(error).toMatchObject({ code: "transcription_failed", status: 502 });
+    expect(error.message).toContain("fallback transcription failed");
+    expect(chunks.calls).toHaveLength(0);
+    expect(tmpEntries()).toEqual([]);
+  });
+
+  test("a missing FFmpeg makes the fallback fail instead of being skipped", async () => {
+    const chunks = chunkRecorder();
+    const error = await transcribeAudioAttachment(source(spoken, "audio/wav"), {
+      resolveFfmpeg: () => Promise.reject(new AudioTranscriptionError("media_tool_unavailable", "FFmpeg is not available", 503)),
+      tmpRoot,
+      transcribe: primaryFails().transcribe,
+      fallback: chunks.fallback,
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: "transcription_failed", status: 502 });
+    expect(error.message).toContain("FFmpeg is not available");
+    expect(tmpEntries()).toEqual([]);
+  });
+});
+
+describe.skipIf(!ffmpeg)("fallback chunk boundaries", () => {
+  /** Dominant frequency of an MP3 chunk, from the zero crossings of its decoded samples. */
+  function toneOf(file: string): number {
+    const decoded = spawnSync(ffmpeg!, ["-hide_banner", "-nostdin", "-v", "error", "-i", file, "-f", "s16le", "-ac", "1", "-ar", "8000", "-"], { maxBuffer: 1 << 26 });
+    const samples = new Int16Array(decoded.stdout.buffer, decoded.stdout.byteOffset, decoded.stdout.byteLength >> 1);
+    let crossings = 0;
+    for (let i = 1; i < samples.length; i += 1) if (samples[i - 1]! < 0 !== samples[i]! < 0) crossings += 1;
+    return crossings / 2 / (samples.length / 8000);
+  }
+
+  /** One tone per equal share of the clip, so a chunk's pitch tells which part of the source it holds. */
+  function toneClip(name: string, tones: number[], totalSeconds: number): string {
+    const each = totalSeconds / tones.length;
+    const inputs = tones.flatMap((hz) => ["-f", "lavfi", "-i", `sine=frequency=${hz}:sample_rate=8000:duration=${each}`]);
+    const concat = `${tones.map((_, i) => `[${i}:a]`).join("")}concat=n=${tones.length}:v=0:a=1`;
+    return makeAudio(name, [...inputs, "-filter_complex", concat, "-ac", "1", "-c:a", "pcm_s16le"]);
+  }
+
+  async function fallbackChunks(clip: string) {
+    const files: string[] = [];
+    const transcribe = async (audio: Uint8Array) => {
+      const file = join(work, `boundary-chunk-${files.length}-${Date.now()}.mp3`);
+      writeFileSync(file, audio);
+      files.push(file);
+      return `chunk ${files.length}`;
+    };
+    await transcribeAudioAttachment(source(clip, "audio/wav"), {
+      resolveFfmpeg: async () => ffmpeg!,
+      tmpRoot,
+      transcribe: async () => { throw new Error("primary unavailable"); },
+      fallback: { transcribe, chunkSeconds: 15 },
+    });
+    const lengths = await Promise.all(files.map((file) => probeAudioDurationSeconds(ffmpeg!, file)));
+    return { lengths, tones: files.map(toneOf) };
+  }
+
+  // Codec padding and frame rounding move a measured length by well under 0.1 s.
+  const PADDING = 0.1;
+
+  test.each([
+    [16.5, [440, 880]],
+    [31, [440, 660, 880]],
+  ])("a %f s source is split into balanced chunks of at most 15 s that cover it in order", async (seconds, tones) => {
+    const clip = toneClip(`boundary-${seconds}.wav`, tones, seconds);
+    const { lengths, tones: heard } = await fallbackChunks(clip);
+    expect(lengths).toHaveLength(Math.ceil(seconds / 15));
+    for (const length of lengths) expect(length).toBeLessThanOrEqual(15 + PADDING);
+    expect(lengths.reduce((a, b) => a + b, 0)).toBeGreaterThan(seconds - PADDING);
+    // Each standalone chunk may carry up to PADDING of encoder padding, so the sum can exceed the source by that much per chunk.
+    expect(lengths.reduce((a, b) => a + b, 0)).toBeLessThan(seconds + PADDING * lengths.length);
+    // The tones change at 1/n of the source, which is exactly where balanced chunks end.
+    heard.forEach((hz, index) => expect(hz).toBeCloseTo(tones[index]!, -1));
+    expect(tmpEntries()).toEqual([]);
   });
 });

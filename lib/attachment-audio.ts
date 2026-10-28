@@ -10,7 +10,7 @@ import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpegStaticPath from "ffmpeg-static";
-import { TRANSCRIBE_TIMEOUT_MS } from "./audio-transcribe";
+import { TRANSCRIBE_TIMEOUT_MS, TranscriptBlockedError } from "./audio-transcribe";
 import {
   MAX_TRANSCRIBE_AUDIO_BYTES,
   type AudioTranscriptionPlan,
@@ -61,9 +61,14 @@ const cancelled = () => new AudioTranscriptionError("aborted", "Transcription wa
 const unreadable = () => new AudioTranscriptionError("media_unreadable", "The attachment has no readable audio stream", 422);
 
 type PlanOptions = { resolveFfmpeg: () => Promise<string>; signal?: AbortSignal };
+/** Second transcriber for audio the primary failed on, fed short MP3 chunks cut from that audio. */
+export type AudioFallback = { transcribe: TranscribeAudioPart; chunkSeconds: number };
+
 type TranscribeOptions = PlanOptions & {
   confirmed?: boolean;
   transcribe: TranscribeAudioPart;
+  /** Takes over the failed part and every part after it; absent, a primary failure fails the run. */
+  fallback?: AudioFallback;
   /** Parent of the per-run temp folder; the OS temp dir by default. */
   tmpRoot?: string;
   maxPartBytes?: number;
@@ -137,6 +142,12 @@ function assertAudio(source: AudioSource): void {
   }
 }
 
+/** Added to every plan notice: the fallback is a second provider and its requests are not in the estimate. */
+const FALLBACK_NOTICE =
+  "If primary transcription fails, CUELO may send the failing segment and remaining audio to ChatGPT/Codex using your existing sign-in. " +
+  "It splits fallback audio into 15-second MP3 chunks, which can increase request counts and account usage beyond the estimate. " +
+  "This endpoint is private and undocumented. A response included asset_ttl='30d'; actual retention and deletion policies remain unverified.";
+
 export async function planAudioTranscription(source: AudioSource, { resolveFfmpeg, signal }: PlanOptions): Promise<AudioTranscriptionPlan> {
   assertAudio(source);
   if (source.size <= MAX_TRANSCRIBE_AUDIO_BYTES) {
@@ -145,7 +156,7 @@ export async function planAudioTranscription(source: AudioSource, { resolveFfmpe
       estimatedCalls: 1,
       requiresConfirmation: false,
       processing: "direct",
-      notice: "The audio is sent as it is in one transcription request to the model service of the draft role.",
+      notice: `The audio is sent as it is in one transcription request to the model service of the draft role. ${FALLBACK_NOTICE}`,
     };
   }
   const durationSeconds = await probeAudioDurationSeconds(await resolveFfmpeg(), source.path, signal);
@@ -160,6 +171,7 @@ export async function planAudioTranscription(source: AudioSource, { resolveFfmpe
       `A compressed copy is split into ${estimatedCalls} part${estimatedCalls === 1 ? "" : "s"} of up to ${SEGMENT_SECONDS / 60} minutes,`,
       `sent one after another as ${estimatedCalls} transcription request${estimatedCalls === 1 ? "" : "s"} billed to that model service's account.`,
       `Each request can take up to ${TRANSCRIBE_TIMEOUT_MS / 60_000} minutes. The original file stays unchanged.`,
+      FALLBACK_NOTICE,
     ].join(" "),
   };
 }
@@ -171,30 +183,105 @@ function activeTranscriptions(): Set<string> {
   return state.__cueloAudioTranscriptions;
 }
 
-/** Sends each part in order; any failed part fails the whole run with no partial transcript. */
+/**
+ * Sends each part to the fallback transcriber as `chunkSeconds` MP3 chunks, in order. Every chunk is
+ * encoded on its own from the source (private temp folder, removed afterwards): cutting a finished MP3
+ * instead drops about 0.1 s of audio at each boundary. Returns one text per part; a part whose chunks
+ * all came back empty (silence) is an empty string. Any failure here fails the run.
+ */
+async function transcribeChunks(
+  parts: string[],
+  fallback: AudioFallback,
+  options: Pick<TranscribeOptions, "resolveFfmpeg" | "tmpRoot" | "signal">,
+): Promise<string[]> {
+  const { signal } = options;
+  const folder = await mkdtemp(join(options.tmpRoot ?? tmpdir(), "cuelo-audio-chunks-"));
+  try {
+    const binary = await options.resolveFfmpeg();
+    const chunkFile = join(folder, "chunk.mp3");
+    const texts: string[] = [];
+    for (const part of parts) {
+      // ceil(duration / chunkSeconds) chunks of equal source length, so none exceeds `chunkSeconds` and
+      // no tiny tail chunk is left over; the last one runs to the end of the source.
+      const duration = await probeAudioDurationSeconds(binary, part, signal);
+      const count = Math.max(1, Math.ceil(duration / fallback.chunkSeconds));
+      const step = duration / count;
+      const starts = Array.from({ length: count }, (_, i) => i * step);
+      const chunkTexts: string[] = [];
+      for (const [chunkIndex, start] of starts.entries()) {
+        if (signal?.aborted) throw cancelled();
+        const isLast = chunkIndex === starts.length - 1;
+        await runFfmpeg(
+          binary,
+          [
+            "-ss", String(start),
+            ...recordingInput(part),
+            ...(isLast ? [] : ["-t", String(step)]),
+            "-map", "0:a:0",
+            ...PART_ENCODING,
+            "-y", chunkFile,
+          ],
+          signal,
+        );
+        try {
+          const text = await fallback.transcribe(await readFile(chunkFile), PART_MIME_TYPE, signal);
+          if (text.trim()) chunkTexts.push(text.trim());
+        } catch (error) {
+          if (error instanceof AudioTranscriptionError) throw error;
+          throw new Error(`chunk ${chunkIndex + 1} of ${starts.length}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      texts.push(chunkTexts.join(" "));
+    }
+    return texts;
+  } finally {
+    await rm(folder, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+/**
+ * Sends each part in order; any failed part fails the whole run with no partial transcript. With a
+ * fallback, the first part the primary fails on (a content block excepted, which must not be sent to
+ * another provider) and every part after it go to the fallback instead; parts the primary already
+ * finished are kept as they are.
+ */
 async function transcribeParts(
   parts: string[],
   mimeType: string,
-  { transcribe, signal }: Pick<TranscribeOptions, "transcribe" | "signal">,
+  options: Pick<TranscribeOptions, "transcribe" | "fallback" | "resolveFfmpeg" | "tmpRoot" | "signal">,
 ): Promise<AudioTranscriptionResult> {
+  const { transcribe, fallback, signal } = options;
   const texts: string[] = [];
+  let primaryFailure = "";
+  const failure = (message: string, completedParts: number) =>
+    new AudioTranscriptionError("transcription_failed", message, 502, { completedParts, parts: parts.length });
   for (const [index, part] of parts.entries()) {
     if (signal?.aborted) throw cancelled();
     const audio = new Uint8Array(await readFile(part));
     try {
       texts.push(await transcribe(audio, mimeType, signal));
+      continue;
     } catch (error) {
       if (signal?.aborted) throw cancelled();
       const reason = error instanceof Error ? error.message : String(error);
-      throw new AudioTranscriptionError(
-        "transcription_failed",
-        parts.length === 1 ? reason : `part ${index + 1} of ${parts.length} failed: ${reason}`,
-        502,
-        { completedParts: index, parts: parts.length },
-      );
+      const where = parts.length === 1 ? "" : `part ${index + 1} of ${parts.length} failed: `;
+      if (!fallback || error instanceof TranscriptBlockedError) throw failure(`${where}${reason}`, index);
+      primaryFailure = `${where}${reason}`;
+      try {
+        texts.push(...(await transcribeChunks(parts.slice(index), fallback, options)));
+      } catch (fallbackError) {
+        if (signal?.aborted || (fallbackError instanceof AudioTranscriptionError && fallbackError.code === "aborted")) throw cancelled();
+        const fallbackReason = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw failure(`${primaryFailure}; fallback transcription failed: ${fallbackReason}`, index);
+      }
+      break;
     }
   }
-  return { transcript: texts.join("\n\n"), parts: parts.length };
+  const transcript = texts.filter(Boolean).join("\n\n");
+  if (!transcript) {
+    throw failure(primaryFailure ? `${primaryFailure}; fallback transcription failed: transcription returned no text` : "transcription returned no text", 0);
+  }
+  return { transcript, parts: parts.length };
 }
 
 /** Compresses and splits a copy of large audio into the temp folder and transcribes the parts. */

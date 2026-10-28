@@ -390,7 +390,7 @@ export function describeStoredAttachment(
 ): string {
   const reference = `${STORED_REFERENCE_PREFIX}${stored.path}\n(${stored.mimeType}, ${stored.size} bytes) Open it with a tool when its contents are needed.`;
   if (stored.transcript !== undefined) {
-    const header = `${reference}\n\nTranscript of the audio (speech-to-text by Gemini; may contain recognition errors):\n`;
+    const header = `${reference}\n\nTranscript of the audio (speech-to-text; may contain recognition errors):\n`;
     const full = header + stored.transcript;
     if (full.length <= maxChars) return full;
     return header + stored.transcript.slice(0, Math.max(0, maxChars - header.length - TRANSCRIPT_TRUNCATED_NOTE.length)) + TRANSCRIPT_TRUNCATED_NOTE;

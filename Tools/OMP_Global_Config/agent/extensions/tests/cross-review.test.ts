@@ -2510,6 +2510,165 @@ describe("자문 reviewer 기한과 진행 알림", () => {
   }, 5_000);
 });
 
+describe("자문 대체(crossReviewAdvisoryFallback)", () => {
+  const TERRA = "openai-codex/gpt-6.1-terra";
+  const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
+  type Step = string | Error | (() => Promise<{ model: string; text: string }>);
+  /** 자문 주 호출은 primary, 대체 호출은 fallback(없으면 깨끗한 답)이 답한다. calls에 주 호출·대체 호출을 순서대로 남긴다. */
+  const withFallback = (env: RepoEnv, primary: Step, fallback: Step | undefined, over: Partial<ReviewDeps> = {}, calls: string[] = [], holdRequired = false): ReviewDeps => {
+    const base = deps(env, {});
+    // holdRequired: 필수 reviewer를 자문 호출이 끊길 때까지 붙잡는다(기한 안에 자문이 끝나야 하는 경우에 pending으로 돌아오지 않게).
+    const advisoryStopped = Promise.withResolvers<void>();
+    const play = async (model: string, step: Step | undefined) => {
+      if (typeof step === "function") return step();
+      if (step instanceof Error) throw new ReviewerCallError(step.message, model);
+      return { model, text: step ?? '{"findings":[]}' };
+    };
+    return {
+      ...base, advisoryFallbackModel: TERRA, requiredModels: { openai: ASTRA, anthropic: OPUS },
+      complete: async (family, prompt, attempt) => {
+        if (family !== "advisory") { calls.push(family); if (holdRequired) await advisoryStopped.promise; return base.complete(family, prompt, attempt); }
+        attempt.addEventListener("abort", () => advisoryStopped.resolve(), { once: true });
+        calls.push("advisory-primary");
+        return play(FABLE, primary);
+      },
+      completeAdvisoryFallback: async (_prompt, attempt) => {
+        attempt.addEventListener("abort", () => advisoryStopped.resolve(), { once: true });
+        calls.push("advisory-fallback");
+        return play(TERRA, fallback);
+      },
+      ...over,
+    };
+  };
+  const plain = () => { const env = repo(); writeFileSync(join(env.work, "a.ts"), PLAIN_BASE); return env; };
+
+  test("자문 주 호출이 쓸 수 있는 답이면 대체를 부르지 않는다", async () => {
+    const calls: string[] = [];
+    const result = await runReview(input(), withFallback(plain(), finding("fable objection"), finding("terra objection"), {}, calls), signal);
+    expect(calls).toEqual(["openai", "advisory-primary"]);
+    expect(result.reviewers[1]).toMatchObject({ model: FABLE, status: "ok", advisory: true });
+    expect(result.reviewers[1]).not.toHaveProperty("fallbackFrom");
+  });
+
+  test("자문 주 호출의 오류·빈 답·해석 불가는 각각 대체를 한 번 부르고, 대체의 모델·finding이 쓰이며 앞 실패 이유가 남고 finding은 똑같이 닫아야 한다", async () => {
+    const cases: [string, Step, "error" | "unparsable", string][] = [
+      ["error", new Error("quota"), "error", "quota"],
+      ["empty", "", "unparsable", "answer is not the expected JSON"],
+      ["unparsable", "PASS - looks fine", "unparsable", "answer is not the expected JSON"],
+    ];
+    for (const [name, primary, status, error] of cases) {
+      const env = plain();
+      const calls: string[] = [];
+      const d = withFallback(env, primary, finding("terra objection"), {}, calls);
+      const result = await runReview(input(), d, signal);
+      expect(calls, name).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+      expect(result.reviewers[1], name).toMatchObject({ family: "advisory", model: TERRA, status: "ok", advisory: true, fallbackFrom: { model: FABLE, status, error: expect.stringContaining(error) } });
+      expect(result.findings, name).toMatchObject([{ id: "R1-ADV-1", reviewer: TERRA, claim: "terra objection" }]);
+      expect(result.advisoryReviewers, name).toBeUndefined();
+      expect(readCrossReviewRecords(env.ledger), name).toMatchObject([{ reviewers: [{ family: "openai" }, { family: "advisory", model: TERRA, fallbackFrom: { model: FABLE, status } }], findings: [{ id: "R1-ADV-1", reviewer: TERRA }] }]);
+      expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d)), name).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
+    }
+  });
+
+  test("해석 불가인 주 답의 원문은 raw-advisory-primary.txt에, 오류의 부분 답은 같은 이름으로 남는다", async () => {
+    const env = plain();
+    const unparsable = await runReview(input(), withFallback(env, "PASS - looks fine", '{"findings":[]}'), signal);
+    const from = unparsable.reviewers[1]!.fallbackFrom!;
+    expect(from.rawFile?.split("/").pop()).toBe("raw-advisory-primary.txt");
+    expect(readFileSync(from.rawFile!, "utf8")).toBe("PASS - looks fine");
+    const partial = await runReview(input(), withFallback(env, () => Promise.reject(new ReviewerCallError("cut off", FABLE, "{\"findings\":[")), '{"findings":[]}'), signal);
+    expect(readFileSync(partial.reviewers[1]!.fallbackFrom!.rawFile!, "utf8")).toBe("{\"findings\":[");
+  });
+
+  test("대체도 실패하면 다시 묻지 않고 두 실패를 기록하며 통과는 그대로다", async () => {
+    const env = plain();
+    const calls: string[] = [];
+    const d = withFallback(env, new Error("quota"), new Error("terra down"), {}, calls);
+    const result = await runReview(input(), d, signal);
+    expect(calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+    expect(result.passable).toBe(true);
+    expect(result.reviewers[1]).toMatchObject({ model: TERRA, status: "error", error: "terra down", fallbackFrom: { model: FABLE, status: "error", error: "quota" } });
+    expect(result.advisoryReviewers).toContain("terra down");
+    expect(result.advisoryReviewers).toContain("after " + FABLE);
+    const unparsable = await runReview(input(), withFallback(env, "junk", "also junk", {}, calls), signal);
+    expect(unparsable.reviewers[1]).toMatchObject({ model: TERRA, status: "unparsable", fallbackFrom: { model: FABLE, status: "unparsable" } });
+    expect(unparsable.passable).toBe(true);
+    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: true, open: [] });
+  });
+
+  test("설정이 없거나 자문 주 모델·필수 reviewer·저자와 같은 모델이면 대체를 부르지 않는다", async () => {
+    const attempt = async (over: Partial<ReviewDeps>, authors = ["main"]) => {
+      const calls: string[] = [];
+      const result = await runReview(input({ authors }), withFallback(plain(), new Error("quota"), undefined, over, calls), signal);
+      return { calls, result };
+    };
+    const unset = await attempt({ advisoryFallbackModel: undefined });
+    expect(unset.calls).toEqual(["openai", "advisory-primary"]);
+    expect(unset.result.reviewers[1]).toMatchObject({ model: FABLE, status: "error", error: "quota" });
+    expect(unset.result.reviewers[1]).not.toHaveProperty("fallbackFrom");
+    expect((await attempt({ advisoryFallbackModel: `${FABLE}:high` })).calls).toEqual(["openai", "advisory-primary"]);
+    expect((await attempt({ advisoryFallbackModel: ASTRA })).calls).toEqual(["openai", "advisory-primary"]);
+    // 저자가 대체 모델 그 자체이면(main은 현재 모델로 푼다) 저자가 자기 글을 보게 되므로 부르지 않는다.
+    expect((await attempt({ advisoryFallbackModel: OPUS })).calls).toEqual(["openai", "advisory-primary"]);
+    expect((await attempt({}, [`${TERRA}:high`])).calls).toEqual(["anthropic", "advisory-primary"]);
+    // 필수 자리 slot이 대체 모델과 같을 때는 그 자리가 이번 라운드에 돌 때만 겹친다.
+    expect((await attempt({ requiredModels: { openai: TERRA } })).calls).toEqual(["openai", "advisory-primary"]);
+    expect((await attempt({ requiredModels: { anthropic: TERRA } })).calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+  });
+
+  test("취소·기한·대체 호출 자체의 기한은 대체를 부르지 않거나 같은 기한 안에서 끊는다", async () => {
+    const stalled = () => new Promise<{ model: string; text: string }>(() => {});
+    const env = plain();
+    const timedOut: string[] = [];
+    const first = await runReview(input(), withFallback(env, stalled, undefined, { advisoryTimeoutMs: 20 }, timedOut, true), signal);
+    expect(timedOut).toEqual(["openai", "advisory-primary"]);
+    expect(first.reviewers[1]).toMatchObject({ status: "error", error: expect.stringContaining("timed out") });
+    expect(first.reviewers[1]).not.toHaveProperty("fallbackFrom");
+    const slowFallback: string[] = [];
+    const second = await runReview(input(), withFallback(env, new Error("quota"), stalled, { advisoryTimeoutMs: 40 }, slowFallback, true), signal);
+    expect(slowFallback).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+    expect(second.passable).toBe(true);
+    expect(second.reviewers[1]).toMatchObject({ model: TERRA, status: "error", error: expect.stringContaining("timed out"), fallbackFrom: { model: FABLE, status: "error", error: "quota" } });
+    const controller = new AbortController();
+    const cancelled: string[] = [];
+    const third = await runReview(input(), withFallback(env, async () => { controller.abort(); throw new ReviewerCallError("aborted", FABLE); }, undefined, { advisoryTimeoutMs: 60_000 }, cancelled), controller.signal).catch((error: Error) => error);
+    void third;
+    expect(cancelled).not.toContain("advisory-fallback");
+  }, 5_000);
+
+  test("필수 reviewer가 끝난 뒤에 주 호출이 실패해도 같은 기한 안에서 대체가 답하면 늦은 자문 기록에 그 모델·finding·앞 실패가 붙는다", async () => {
+    const env = plain();
+    const primary = Promise.withResolvers<{ model: string; text: string }>();
+    const calls: string[] = [];
+    const d = withFallback(env, () => primary.promise, finding("late terra objection"), { advisoryTimeoutMs: 60_000 }, calls);
+    const result = await runReview(input(), d, signal);
+    expect(result.reviewers[1]).toMatchObject({ family: "advisory", status: "pending" });
+    primary.reject(new ReviewerCallError("quota", FABLE));
+    await advisoryPending(result.reviewId);
+    expect(calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([
+      { reviewers: [{ family: "openai" }, { family: "advisory", status: "pending" }] },
+      { type: "cross-review-advisory", reviewId: result.reviewId, reviewer: { family: "advisory", model: TERRA, status: "ok", fallbackFrom: { model: FABLE, status: "error", error: "quota" } }, findings: [{ id: "R1-ADV-1", reviewer: TERRA, claim: "late terra objection" }] },
+    ]);
+    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
+  }, 5_000);
+
+  test("나눠 심사한 라운드는 한 조각이라도 해석할 수 없으면 대체를 한 번 부르고 대체도 나눠 부른다", async () => {
+    const env = plain();
+    const big = "export const x = 1;\n".repeat(12_000);
+    writeFileSync(join(env.work, "a.ts"), big);
+    writeFileSync(join(env.work, "b.ts"), big.replace("x", "y"));
+    const calls: string[] = [];
+    let primaryCalls = 0;
+    const d = withFallback(env, async () => ({ model: FABLE, text: ++primaryCalls === 1 ? "junk" : '{"findings":[]}' }), '{"findings":[]}', {}, calls);
+    const result = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
+    const fallbackCalls = calls.filter((call) => call === "advisory-fallback").length;
+    expect(calls.filter((call) => call === "advisory-primary").length).toBeGreaterThan(1);
+    expect(fallbackCalls).toBe(calls.filter((call) => call === "advisory-primary").length);
+    expect(result.reviewers[1]).toMatchObject({ model: TERRA, status: "ok", fallbackFrom: { model: FABLE, status: "unparsable" } });
+  }, 10_000);
+});
+
 describe("이름만 걸린 경로 심사(C2)", () => {
   const NAME_ONLY = "app/api/auth/login/route.ts";
   const KEY = ["sk", "-abcdefghijklmnop1234"].join("");

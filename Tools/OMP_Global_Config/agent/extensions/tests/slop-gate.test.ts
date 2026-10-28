@@ -943,6 +943,147 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
   });
 });
 
+describe("자문 대체(crossReviewAdvisoryFallback)", () => {
+  const TERRA = "openai-codex/fixture-terra";
+  const ids = (prompt: string) => [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
+  type Step = "throw" | "junk" | "empty" | "stall" | ((ids: string[]) => unknown);
+  const usage = (output: number) => ({ input: 10, output, cacheRead: 0, cost: output / 100 });
+  /** 필수는 늘 깨끗한 답. 자문 주 호출은 primary, 대체 호출은 fallback이 답하고 calls에 순서대로 남긴다. */
+  function setup(cwd: string, primary: Step, fallback: Step | undefined, extra: Partial<SlopDeps> = {}) {
+    const calls: string[] = [];
+    const play = (model: string, step: Step | undefined, prompt: string, attempt: AbortSignal) => {
+      if (step === "throw") return Promise.reject(new ReviewerCallError(`${model} outage`, model));
+      if (step === "stall") { return new Promise<never>(() => {}); }
+      if (step === "junk") return Promise.resolve({ model, text: "looks fine to me", usage: usage(1) });
+      if (step === "empty") return Promise.resolve({ model, text: "", usage: usage(1) });
+      void attempt;
+      return Promise.resolve({ model, text: JSON.stringify(typeof step === "function" ? step(ids(prompt)) : clean(ids(prompt))), usage: usage(2) });
+    };
+    const complete: Complete = (family, _system, prompt, attempt) => {
+      if (family !== "advisory") { calls.push(family); return Promise.resolve({ model: "fixture/openai", text: JSON.stringify(clean(ids(prompt))), usage: usage(3) }); }
+      calls.push("advisory-primary");
+      return play("fixture/advisory", primary, prompt, attempt);
+    };
+    const completeFallback = (_system: string, prompt: string, attempt: AbortSignal) => { calls.push("advisory-fallback"); return play(TERRA, fallback, prompt, attempt); };
+    return { calls, d: deps(cwd, complete, { advisoryFallbackModel: TERRA, requiredModels: { openai: "openai-codex/fixture-required" }, completeFallback, ...extra }) };
+  }
+  const prepare = () => { const cwd = scratch(); writeFileSync(join(cwd, "a.md"), KO_PLAIN); return cwd; };
+
+  test("자문 주 호출이 쓸 수 있는 답이면 대체를 부르지 않는다", async () => {
+    const cwd = prepare();
+    const { calls, d } = setup(cwd, clean, clean);
+    const out = await reviewFiles(["a.md"], undefined, d, signal);
+    expect(calls).toEqual(["openai", "advisory-primary"]);
+    expect(out.files[0]!.status).toBe("pass");
+    expect(out.failedAttempts).toBeUndefined();
+  });
+
+  test("자문 주 호출의 오류·빈 답·해석 불가는 각각 대체를 한 번 부르고, 실제 모델이 통과 기록과 reviewer 상태에 남고 앞 실패는 failedAttempts에 남으며 사용량이 합쳐진다", async () => {
+    for (const mode of ["throw", "empty", "junk"] as const) {
+      const cwd = prepare();
+      const { calls, d } = setup(cwd, mode, clean);
+      const out = await reviewFiles(["a.md"], undefined, d, signal);
+      expect(calls, mode).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+      expect(out.files[0], mode).toMatchObject({ status: "pass" });
+      expect(out.reviewers.find((item) => item.family === "advisory"), mode).toMatchObject({ model: TERRA, status: "ok", advisory: true });
+      expect(out.advisoryReviewers, mode).toBeUndefined();
+      expect(out.failedAttempts, mode).toMatchObject([{ family: "advisory", model: "fixture/advisory", status: mode === "throw" ? "error" : "unparsable" }]);
+      expect(passFor(readSlopRecords(join(cwd, "ledger.jsonl")), sha256(KO_PLAIN)), mode).toMatchObject({ model: `fixture/openai + ${TERRA}` });
+      // 필수 3 + 자문 주(throw는 응답이 없어 0, 나머지 1) + 대체 2.
+      expect(out.usage.output, mode).toBe(3 + (mode === "throw" ? 0 : 1) + 2);
+    }
+  });
+
+  test("대체가 낸 finding은 R-ADV-* id로 열린 지적이 되고 똑같이 반박으로만 닫는다", async () => {
+    const cwd = prepare();
+    const { d } = setup(cwd, "throw", dirty);
+    const out = await reviewFiles(["a.md"], undefined, d, signal);
+    expect(out.files[0]).toMatchObject({ status: "findings" });
+    expect(out.files[0]!.findings!.map((finding) => finding.id)).toEqual(["R-ADV-1"]);
+    expect(resolveFindings(out.reviewId!, [{ id: "R-ADV-1", status: "refuted", evidence: "공식 상품명 인용이라 바꿀 수 없다" }], d).passed).toEqual([join(cwd, "a.md")]);
+  });
+
+  test("대체도 실패하면 다시 묻지 않고 두 시도를 모두 남기며 통과는 막지 않는다", async () => {
+    for (const second of ["throw", "junk"] as const) {
+      const cwd = prepare();
+      const { calls, d } = setup(cwd, "throw", second);
+      const out = await reviewFiles(["a.md"], undefined, d, signal);
+      expect(calls, second).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+      expect(out.files[0]!.status, second).toBe("pass");
+      expect(out.advisoryReviewers?.[0], second).toContain("advisory:");
+      expect(out.failedAttempts, second).toMatchObject([{ model: "fixture/advisory", status: "error" }, { model: TERRA, status: second === "throw" ? "error" : "unparsable" }]);
+    }
+  });
+
+  test("설정이 없거나 자문 주 모델·필수 reviewer·저자와 같은 모델이면 대체를 부르지 않는다", async () => {
+    const attempt = async (extra: Partial<SlopDeps>) => {
+      const cwd = prepare();
+      const { calls, d } = setup(cwd, "throw", clean, extra);
+      await reviewFiles(["a.md"], undefined, d, signal);
+      return calls;
+    };
+    const none = ["openai", "advisory-primary"];
+    expect(await attempt({ advisoryFallbackModel: undefined })).toEqual(none);
+    expect(await attempt({ advisoryFallbackModel: `${ADVISOR}:high` })).toEqual(none);
+    expect(await attempt({ advisoryFallbackModel: "openai-codex/fixture-required" })).toEqual(none);
+    expect(await attempt({ advisoryFallbackModel: AUTHOR })).toEqual(none);
+    expect(await attempt({ authors: [`${TERRA}:high`] })).toEqual(["anthropic", "advisory-primary"]);
+    expect(await attempt({ requiredModels: { anthropic: TERRA } })).toEqual([...none, "advisory-fallback"]);
+  });
+
+  test("기한은 늘지 않는다: 주 호출이 멈추면 대체 없이 끊기고, 대체가 멈추면 같은 기한에 끊기며 앞 실패가 남는다", async () => {
+    const stalledPrimary = prepare();
+    const first = setup(stalledPrimary, "stall", clean, { advisoryTimeoutMs: 20 });
+    const out = await reviewFiles(["a.md"], undefined, { ...first.d, advisoryGraceMs: 60_000 }, signal);
+    expect(first.calls).toEqual(["openai", "advisory-primary"]);
+    expect(out.advisoryReviewers?.[0]).toContain("timed out");
+    const stalledFallback = prepare();
+    const second = setup(stalledFallback, "throw", "stall", { advisoryTimeoutMs: 40 });
+    const slow = await reviewFiles(["a.md"], undefined, { ...second.d, advisoryGraceMs: 60_000 }, signal);
+    expect(second.calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
+    expect(slow.files[0]!.status).toBe("pass");
+    expect(slow.advisoryReviewers?.[0]).toContain("timed out");
+    expect(slow.failedAttempts).toMatchObject([{ model: "fixture/advisory", status: "error" }, { model: TERRA, status: "error", error: expect.stringContaining("timed out") }]);
+  }, 5_000);
+
+  test("대체가 기한에 끊겨도 이미 청구된 주 호출의 사용량은 합계에 남는다", async () => {
+    const cwd = prepare();
+    const { d } = setup(cwd, "junk", "stall", { advisoryTimeoutMs: 40 });
+    const out = await reviewFiles(["a.md"], undefined, { ...d, advisoryGraceMs: 60_000 }, signal);
+    expect(out.failedAttempts).toMatchObject([{ model: "fixture/advisory", status: "unparsable" }, { model: TERRA, status: "error", error: expect.stringContaining("timed out") }]);
+    // 필수 3 + 해석 불가였던 자문 주 호출 1(대체는 끊겨 사용량이 없다).
+    expect(out.usage.output).toBe(4);
+  }, 5_000);
+
+  test("필수 reviewer가 모두 끝나 유예가 지나 끊긴 자문과 취소된 호출은 대체를 부르지 않는다", async () => {
+    const waiting = prepare();
+    const first = setup(waiting, "stall", clean, { advisoryTimeoutMs: 60_000, advisoryGraceMs: 20 });
+    await reviewFiles(["a.md"], undefined, first.d, signal);
+    expect(first.calls).toEqual(["openai", "advisory-primary"]);
+    const cancelled = prepare();
+    const controller = new AbortController();
+    const second = setup(cancelled, "throw", clean, { advisoryTimeoutMs: 60_000 });
+    const cancelling: Complete = async (family, system, prompt, attempt) => { if (family === "advisory") controller.abort(); return second.d.complete(family, system, prompt, attempt); };
+    await reviewFiles(["a.md"], undefined, { ...second.d, complete: cancelling }, controller.signal).catch(() => undefined);
+    expect(second.calls).not.toContain("advisory-fallback");
+  }, 5_000);
+
+  test("필수 reviewer의 다시 묻기와 오류는 자문 대체를 쓰지 않는다", async () => {
+    const cwd = prepare();
+    let call = 0;
+    const calls: string[] = [];
+    const complete: Complete = async (family, _system, prompt) => {
+      calls.push(family);
+      if (family === "advisory") return { model: "fixture/advisory", text: JSON.stringify(clean(ids(prompt))) };
+      return { model: "fixture/openai", text: ++call === 1 ? "junk" : JSON.stringify(clean(ids(prompt))) };
+    };
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, complete, { advisoryFallbackModel: TERRA, completeFallback: async () => { calls.push("advisory-fallback"); return { model: TERRA, text: "x" }; } }), signal);
+    expect(out.files[0]!.status).toBe("pass");
+    expect(calls.filter((name) => name === "openai")).toHaveLength(2);
+    expect(calls).not.toContain("advisory-fallback");
+  });
+});
+
 describe("[R1] 분류 거부권", () => {
   const repoWith = (files: Record<string, string>) => {
     const cwd = scratch();

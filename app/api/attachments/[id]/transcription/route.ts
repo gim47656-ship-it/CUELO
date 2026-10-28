@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { transcribeAudioWithGemini } from "@/lib/audio-transcribe";
+import { CODEX_CHUNK_SECONDS, transcribeAudioWithCodex } from "@/lib/codex-transcribe";
 import {
   readAudioTranscriptionRequest,
   resolveFfmpegPath,
@@ -58,6 +59,7 @@ export async function POST(req: Request, { params }: Params) {
       respondAudioTranscription(attachment, body, {
         resolveFfmpeg: resolveFfmpegPath,
         transcribe: transcribeAudioWithGemini,
+        fallback: { transcribe: transcribeAudioWithCodex, chunkSeconds: CODEX_CHUNK_SECONDS },
         signal: req.signal,
       }));
   } catch (error) {

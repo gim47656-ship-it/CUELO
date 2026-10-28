@@ -10,6 +10,7 @@
  * Gemini's inline audio part, so the audio travels as that block with its real `audio/*` MIME type.
  */
 import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { Flag, is } from "@oh-my-pi/pi-ai/error";
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { MAX_TRANSCRIBE_AUDIO_BYTES } from "./attachment-audio-types";
 
@@ -33,14 +34,43 @@ export const TRANSCRIBE_PROMPT = [
 type TranscribeResult = {
   stopReason: string;
   errorMessage?: string;
+  /** The SDK's structured error classifier (`AssistantMessage.errorId`). */
+  errorId?: number;
   content: ReadonlyArray<{ type: string; text?: string }>;
 };
+
+/**
+ * Only the Google transports put an `image` block on the wire as `inlineData` with its real MIME
+ * type, which is how audio travels. Any other API would transmit the audio as an image or drop it.
+ */
+const INLINE_AUDIO_APIS: Readonly<Record<string, true>> = { "google-generative-ai": true, "google-vertex": true };
+
+/** Throws, before any credential lookup or request, unless the model's API can carry inline audio. */
+export function assertInlineAudioModel(model: Pick<Model<Api>, "provider" | "id" | "api" | "input">): void {
+  const name = `${model.provider}/${model.id}`;
+  if (!Object.hasOwn(INLINE_AUDIO_APIS, model.api)) throw new Error(`${name} (${model.api}) cannot carry audio`);
+  if (!model.input.includes("image")) throw new Error(`${name} does not accept inline media`);
+}
 
 const MAX_ATTEMPTS = 2;
 const ERROR_TEXT_CHARS = 160;
 
 /** A reply that stopped with an error; Gemini's safety filter trips on some clips at random. */
 export class TranscriptStoppedError extends Error {}
+
+/**
+ * A stop the provider reported as a content block. The fallback must not take it as a reason to send
+ * the same audio to another provider.
+ */
+export class TranscriptBlockedError extends TranscriptStoppedError {}
+
+/**
+ * Google finish reasons the SDK maps to an error stop with the message
+ * `Generation failed with finish reason: <reason>` (pi-ai `google-shared.ts` `mapStopReason`). No
+ * structured flag is set for them, so the reason text is the only marker. Other stops (`OTHER`,
+ * `LANGUAGE`, a stream without a finish reason, quota, network, auth) are ordinary failures.
+ */
+const BLOCKED_FINISH_REASON = /finish reason:\s*(?:SAFETY|BLOCKLIST|PROHIBITED_CONTENT|SPII|IMAGE_SAFETY|IMAGE_PROHIBITED_CONTENT|IMAGE_RECITATION|RECITATION)\b/;
 
 /** Turns one model reply into the transcript, or throws when it is unusable. */
 export function readTranscript(result: TranscribeResult): string {
@@ -52,7 +82,9 @@ export function readTranscript(result: TranscribeResult): string {
   if (result.stopReason !== "stop" && result.stopReason !== "length") {
     // The provider puts its reason (for example a filter notice) in the text, not in errorMessage.
     const detail = [result.errorMessage, text.slice(0, ERROR_TEXT_CHARS)].filter(Boolean).join("; ");
-    throw new TranscriptStoppedError(`transcription stopped: ${result.stopReason}${detail ? ` (${detail})` : ""}`);
+    const message = `transcription stopped: ${result.stopReason}${detail ? ` (${detail})` : ""}`;
+    const blocked = is(result.errorId, Flag.ContentBlocked) || BLOCKED_FINISH_REASON.test(result.errorMessage ?? "");
+    throw blocked ? new TranscriptBlockedError(message) : new TranscriptStoppedError(message);
   }
   if (!text) throw new Error("transcription returned no text");
   return result.stopReason === "length" ? `${text}\n[transcript truncated at the output limit]` : text;
@@ -83,8 +115,8 @@ export async function transcribeAudioWithGemini(audio: Uint8Array, mimeType: str
   const { modelRegistry, settings } = await getOmpRuntime();
   const model = resolveTranscribeModel(settings, modelRegistry);
   if (!model) throw new Error(`${TRANSCRIBE_PROVIDER}/${TRANSCRIBE_MODEL} is not available`);
+  assertInlineAudioModel(model);
   const name = `${model.provider}/${model.id}`;
-  if (!model.input.includes("image")) throw new Error(`${name} does not accept inline media`);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No credentials for ${name}` : auth.error);
   const deadline = AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS);
@@ -106,14 +138,17 @@ export async function transcribeAudioWithGemini(audio: Uint8Array, mimeType: str
     cacheRetention: "none" as const,
     signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
   };
+  let blocked: TranscriptBlockedError | undefined;
   let lastError: unknown;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
       return readTranscript(await completeSimple(model, context, options));
     } catch (error) {
-      if (!(error instanceof TranscriptStoppedError) || options.signal.aborted) throw error;
+      if (error instanceof TranscriptBlockedError) blocked = error;
+      // A block the provider reported once is not overturned by a later ordinary failure of the retry.
+      if (!(error instanceof TranscriptStoppedError) || options.signal.aborted) throw blocked ?? error;
       lastError = error;
     }
   }
-  throw lastError;
+  throw blocked ?? lastError;
 }

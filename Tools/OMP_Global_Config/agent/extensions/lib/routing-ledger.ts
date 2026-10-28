@@ -334,6 +334,8 @@ export interface CrossReviewReviewer {
   error?: string;
   /** 자문 자리(advisory, 옛 기록은 google)만 true. 그 reviewer의 error·unparsable은 passable을 정하지 않지만, 답한 finding은 똑같이 닫아야 한다. */
   advisory?: true;
+  /** 자문 자리만, modelRoles.crossReviewAdvisoryFallback이 대신 답했거나 대신 불렸을 때: 먼저 불린 자문 모델이 왜 쓸 수 없었는지. 이때 model·status·raw는 대체 모델의 것이다. rawFile은 그 원문 파일(사본 디렉터리). */
+  fallbackFrom?: { model: string; status: "error" | "unparsable"; error: string; raw?: string; rawFile?: string };
 }
 
 export interface CrossReviewFile { path: string; blob: string }

@@ -178,6 +178,8 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
 필수 검토자는 작성 모델의 반대 계열을 사용합니다. 한 제공자에 로그인했다는 사실만으로 다른 계열의 검토 모델까지 사용할 수 있는 것은 아닙니다.
 
+자문 검토의 대체 모델을 쓰려면 `config.yml`의 `modelRoles` 아래에 선택 사항인 `crossReviewAdvisoryFallback`을 추가하고 모델 선택자를 지정하세요.
+
 ### 기존 프로필의 하네스 갱신
 
 앱 버전만 올려서는 기존 프로필의 하네스 파일과 역할 설정이 바뀌지 않습니다. `setup`은 같은 이름의 파일과 기존 `config.yml`을 덮어쓰지 않습니다. 새 버전의 하네스는 다음 두 명령으로 반영합니다(npm 설치는 `cuelo harness-diff`·`cuelo harness-update`).

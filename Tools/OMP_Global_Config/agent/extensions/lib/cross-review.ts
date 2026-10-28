@@ -146,6 +146,14 @@ function advisoryAuthored(authors: readonly string[], mainModel: string | undefi
 }
 
 /**
+ * 자문 대체 모델(modelRoles.crossReviewAdvisoryFallback)을 부를 수 있는가. 설정이 없으면 대체는 없다. 대체가 avoid(자문 주 모델·이번 라운드의 필수 reviewer 모델·
+ * 저자 모델, "main"은 호출부가 현재 모델로 푼 값)와 같은 모델이면 같은 모델을 다시 부르거나 저자가 자기 글을 보게 되므로 부르지 않는다.
+ */
+export function advisoryFallbackAllowed(fallback: string | undefined, avoid: readonly (string | undefined)[]): fallback is string {
+  return !!fallback && !avoid.some((other) => !!other && isSameModel(other, fallback));
+}
+
+/**
  * 저자 계열의 반대 계열이 필수 reviewer다. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google 포함)는 Anthropic이 본다.
  * 여기에 자문 자리(advisory)를 늘 마지막에 붙인다. 저자 중 하나가 자문 slot의 모델(advisoryModel) 그 자체일 때만 자기 글을 다시 보지 않게 뺀다:
  * 같은 provider의 다른 모델(예: Opus·Sonnet)이 저자라는 이유로는 빼지 않는다.
@@ -1503,6 +1511,12 @@ export interface ReviewDeps {
   snapshotRoot: string;
   /** reviewer 한 명을 부른다. 실패는 ReviewerCallError(model 포함)로 던진다. */
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
+  /** modelRoles.crossReviewAdvisoryFallback가 가리키는 모델(해석했으면 provider/id, 못 했으면 selector). 설정이 없으면 undefined이고 그러면 자문 대체는 없다(고정 모델로 넘어가지 않는다). */
+  advisoryFallbackModel?: string;
+  /** 필수 자리 slot이 가리키는 모델. 자문 대체가 이 라운드의 필수 reviewer와 같은 모델이면 부르지 않는 데만 쓴다. */
+  requiredModels?: Partial<Record<Lane, string>>;
+  /** 자문 대체 모델을 부른다. 자문 주 호출이 쓸 수 없는 답(오류·빈 답·해석 불가)일 때만 대체 단계를 한 번 거치며(나눠 심사한 라운드는 기존 조각마다 한 번씩 불린다) 같은 기한 안에서 돈다. advisoryFallbackModel이 있을 때만 쓴다. */
+  completeAdvisoryFallback?(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
   /** 자문 reviewer 기한(ms, 그 호출 시작부터). 테스트가 짧게 주입한다. 기본 ADVISORY_LATE_TIMEOUT_MS. */
   advisoryTimeoutMs?: number;
   /** reviewer 호출 시작·reviewer마다의 끝(답·실패·timeout·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다(늦게 끝난 자문은 notify로 알린다). */
@@ -1598,7 +1612,7 @@ function describeProgress(round: number, reviewers: ReviewProgress["reviewers"],
 export interface ReviewResult {
   reviewId: string;
   round: number;
-  reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string; advisory?: true }[];
+  reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string; advisory?: true; fallbackFrom?: CrossReviewReviewer["fallbackFrom"] }[];
   /** 자문 reviewer의 답을 쓸 수 없었을 때만: 기록만 했고 통과를 막지 않으며 다음 라운드가 다시 부른다는 안내. */
   advisoryReviewers?: string;
   /** 필수 reviewer가 끝났을 때 자문이 아직 답하지 않았을 때만: 자문이 뒤에서 계속 돌고 답하면 finding이 이 체인에 붙는다는 안내. */
@@ -1925,8 +1939,11 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
   writeFileSync(join(dir, manifestName), JSON.stringify(manifest), { mode: 0o600 });
 }
 
-/** reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다. */
-interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; batches?: string[] }
+/**
+ * reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다.
+ * fallbackFrom은 자문 대체가 불렸을 때 먼저 불린 자문 모델이 쓸 수 없었던 이유(text는 그 모델의 부분·해석 불가 답)이고, 이때 model·text·error는 대체 모델의 것이다.
+ */
+interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; batches?: string[]; fallbackFrom?: { model: string; status: "error" | "unparsable"; error: string; text: string } }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
@@ -1939,15 +1956,24 @@ function readReviewerOutcome(item: ReviewerOutcome, round: number, snapshotDir: 
     writeFileSync(rawFile, item.text, { mode: 0o600 });
     return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
   };
+  // 자문 대체가 불렸으면 먼저 불린 모델의 실패 원인을 모든 결과 모양에 남긴다(원문은 raw-<자리>-primary.txt).
+  const from = item.fallbackFrom;
+  let primaryRaw: { raw: string; rawFile: string } | undefined;
+  if (from?.text) {
+    const rawFile = join(snapshotDir, `raw-${item.family}-primary.txt`);
+    writeFileSync(rawFile, from.text, { mode: 0o600 });
+    primaryRaw = { raw: from.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
+  }
+  const fallbackFrom = from ? { fallbackFrom: { model: from.model, status: from.status, error: from.error, ...primaryRaw } } : {};
   if (item.error !== undefined) {
-    return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}), ...advisory }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
+    return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}), ...advisory, ...fallbackFrom }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
   }
   // 나눠 심사했으면 호출마다의 답을 따로 읽고, 하나라도 해석할 수 없으면 그 자리 전체가 해석 불가다(나머지 답만으로 깨끗하다고 볼 수 없다).
   const answers = (item.batches ?? [item.text]).map((text) => parseReviewerOutput(text));
   const usable = answers.flatMap((answer) => (answer.ok ? [answer] : []));
-  if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory }, findings: [], rawChars: item.text.length };
+  if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory, ...fallbackFrom }, findings: [], rawChars: item.text.length };
   return {
-    reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory },
+    reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory, ...fallbackFrom },
     findings: usable.flatMap((answer) => answer.findings).map((finding, index) => ({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding })),
     verdicts: usable.flatMap((answer) => answer.verdicts ?? []),
   };
@@ -2223,14 +2249,23 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const advisoryCancel = new AbortController();
   const forwardAbort = () => advisoryCancel.abort();
   if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
+  // 자문 대체: modelRoles.crossReviewAdvisoryFallback이 있고(없으면 대체 없음) 자문 주 모델·이번 라운드 필수 reviewer·저자와 다른 모델일 때만, 자문 주 호출이
+  // 쓸 수 없는 답(오류·빈 답·해석 불가)을 낸 경우에 대체 단계를 한 번 거친다(나눠 심사한 라운드는 기존 조각을 모두 그 모델로 한 번씩 다시 본다. 한 자리의 답은 한 모델의 것이어야 한다). 같은 withAdvisoryDeadline 안이라 기한은 늘지 않고, 취소·기한·필수 종료로 멈춘 호출은 대체하지 않는다.
+  const roundAuthors = previous ? chain[0]!.authors : input.authors;
+  const canFallback = families.includes(ADVISORY_LANE) && deps.completeAdvisoryFallback !== undefined && advisoryFallbackAllowed(deps.advisoryFallbackModel, [
+    deps.advisoryModel,
+    ...families.filter((lane) => lane !== ADVISORY_LANE).map((lane) => deps.requiredModels?.[lane]),
+    ...roundAuthors.map((author) => (author.trim().toLowerCase() === "main" ? deps.mainModel : author.trim())),
+  ]);
+  type LaneCompletion = ReviewerCompletion & { batches?: string[]; fallbackFrom?: ReviewerOutcome["fallbackFrom"] };
   // 나눈 라운드는 한 자리의 호출을 함께 시작하고, 하나가 실패하면 나머지를 끊는다(그 자리는 어차피 쓸 수 있는 답을 낼 수 없다).
-  const askLane = async (family: Lane, attempt: AbortSignal): Promise<ReviewerCompletion & { batches?: string[] }> => {
-    if (prompts.length === 1) return deps.complete(family, prompts[0]!, attempt);
+  const askLane = async (call: (prompt: string, attempt: AbortSignal) => Promise<ReviewerCompletion>, attempt: AbortSignal): Promise<LaneCompletion> => {
+    if (prompts.length === 1) return call(prompts[0]!, attempt);
     const lane = new AbortController();
     const stop = () => lane.abort();
     if (attempt.aborted) lane.abort(); else attempt.addEventListener("abort", stop, { once: true });
     try {
-      const answers = await Promise.all(prompts.map((prompt) => deps.complete(family, prompt, lane.signal).catch((error: unknown) => { lane.abort(); throw error; })));
+      const answers = await Promise.all(prompts.map((prompt) => call(prompt, lane.signal).catch((error: unknown) => { lane.abort(); throw error; })));
       const texts = answers.map((answer) => answer.text);
       return { model: answers[0]!.model, text: texts.map((text, index) => `===== part ${index + 1}/${texts.length} =====\n${text}`).join("\n\n"), batches: texts };
     } finally {
@@ -2243,16 +2278,36 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
       report();
     };
+    // 대체가 불린 뒤에는 어떤 끝(답·실패·기한·취소)에서도 먼저 불린 모델의 실패 이유를 결과에 남긴다.
+    let primaryFailure: ReviewerOutcome["fallbackFrom"];
+    const askAdvisory = async (attempt: AbortSignal): Promise<LaneCompletion> => {
+      let first: LaneCompletion | undefined;
+      try {
+        first = await askLane((prompt, signal) => deps.complete(family, prompt, signal), attempt);
+      } catch (error) {
+        if (!canFallback || attempt.aborted || error instanceof AdvisoryStopError) throw error;
+        primaryFailure = { model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, status: "error", error: error instanceof Error ? error.message : String(error), text: error instanceof ReviewerCallError ? error.partial ?? "" : "" };
+      }
+      if (first) {
+        if (!canFallback || attempt.aborted || (first.batches ?? [first.text]).every((text) => parseReviewerOutput(text).ok)) return first;
+        primaryFailure = { model: first.model, status: "unparsable", error: "answer is not the expected JSON", text: first.text };
+      }
+      const second = await askLane(deps.completeAdvisoryFallback!, attempt);
+      return { ...second, fallbackFrom: primaryFailure };
+    };
     try {
       const completion = family === ADVISORY_LANE
-        ? await withAdvisoryDeadline((attempt) => askLane(family, attempt), advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
-        : await askLane(family, signal);
+        ? await withAdvisoryDeadline(askAdvisory, advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
+        : await askLane((prompt, attempt) => deps.complete(family, prompt, attempt), signal);
       finish("answered");
-      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}) };
+      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}), ...(completion.fallbackFrom ? { fallbackFrom: completion.fallbackFrom } : {}) };
     } catch (error) {
       // 자문은 멈춘 이유를 그대로, 필수는 review가 취소됐으면 취소로 알린다. 필수의 600 s 제한 초과는 오류 문구로만 구분된다.
       finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
-      return { family, model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+      // 대체가 불린 뒤 기한·취소로 멈추면 오류가 가진 이름은 자리 표시(@slot)뿐이라, 그때 돌고 있던 모델인 대체 모델로 적는다.
+      const placeholder = `@${SLOT[family]}`;
+      const named = error instanceof ReviewerCallError && error.model !== placeholder ? error.model : undefined;
+      return { family, model: named ?? (primaryFailure ? deps.advisoryFallbackModel ?? placeholder : placeholder), text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error), ...(primaryFailure ? { fallbackFrom: primaryFailure } : {}) };
     }
   });
   const advisoryIndex = families.indexOf(ADVISORY_LANE);
@@ -2328,8 +2383,9 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
       ...(reviewer.error ? { error: reviewer.error } : {}),
       ...(reviewer.advisory ? { advisory: true as const } : {}),
+      ...(reviewer.fallbackFrom ? { fallbackFrom: reviewer.fallbackFrom } : {}),
     })),
-    ...(advisoryFailed.length > 0 ? { advisoryReviewers: `${advisoryFailed.map((reviewer) => `${reviewer.model} (${reviewer.family}, ${reviewer.status}${reviewer.error ? `: ${reviewer.error}` : ""})`).join("; ")} gave no usable answer. It is an advisory reviewer: the failure is only recorded, does not affect passable, and any later round of this chain asks it again.` } : {}),
+    ...(advisoryFailed.length > 0 ? { advisoryReviewers: `${advisoryFailed.map((reviewer) => `${reviewer.model} (${reviewer.family}, ${reviewer.status}${reviewer.error ? `: ${reviewer.error}` : ""}${reviewer.fallbackFrom ? `; the advisory fallback was called after ${reviewer.fallbackFrom.model} ${reviewer.fallbackFrom.status}: ${reviewer.fallbackFrom.error}` : ""})`).join("; ")} gave no usable answer. It is an advisory reviewer: the failure is only recorded, does not affect passable, and any later round of this chain asks it again.` } : {}),
     ...(advisoryWaiting ? { advisoryPending: `The advisory reviewer had not answered when every required reviewer finished; it keeps running in the background (up to ${advisoryMs / 1000} s from its start) and does not block. If it answers with findings, they are appended to this chain as open findings (R${round}-ADV-*), shown in the next round, and must be closed in resolve; resolve in this process waits for it first.` } : {}),
     ...(earlierAdvisoryFindings.length > 0 ? { earlierAdvisoryFindings } : {}),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
