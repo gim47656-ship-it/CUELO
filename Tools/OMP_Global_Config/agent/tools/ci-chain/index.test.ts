@@ -712,7 +712,7 @@ describe("ci_chain pushes skipped by a workflow path filter", () => {
    * Fake gh for one repository. `commits` is the history by sha; `runs` lists which commits have a run of which workflow
    * (`sha -> workflow names`). By default the tip is doc-only and its parent Q is an earlier push's tip that has runs.
    */
-  function route(options: { commits?: Record<string, Commit>; runs?: Record<string, string[]>; ciYaml?: string; commitFails?: boolean }) {
+  function route(options: { commits?: Record<string, Commit>; runs?: Record<string, string[]>; ciYaml?: string; commitFails?: boolean; listing?: unknown }) {
     const commits = options.commits ?? { [SHA_P]: { files: ["doc/a.md", "HANDOFF.md"], parent: SHA_Q } };
     const runs = options.runs ?? { [SHA_Q]: ["CI", "Publish public mirror"] };
     const calls: string[] = [];
@@ -730,7 +730,7 @@ describe("ci_chain pushes skipped by a workflow path filter", () => {
         return okJson({ sha, parents: parentShas.map((p) => ({ sha: p })), files: files.map((filename) => ({ filename })), commit: { message: "docs: record" } });
       }
       if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/actions/workflows?per_page=100`) {
-        return okJson({ workflows: [{ name: "CI", path: ".github/workflows/ci.yml" }, { name: "Publish public mirror", path: ".github/workflows/publish-public.yml" }] });
+        return okJson(options.listing ?? { total_count: 2, workflows: [{ name: "CI", path: ".github/workflows/ci.yml" }, { name: "Publish public mirror", path: ".github/workflows/publish-public.yml" }] });
       }
       if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/contents/.github/workflows/ci.yml?ref=${SHA_P}`) return okJson({ encoding: "base64", content: b64(options.ciYaml ?? CI_YAML) });
       if (args[0] === "api" && args[1] === `repos/${PRIVATE_REPO}/contents/.github/workflows/publish-public.yml?ref=${SHA_P}`) return okJson({ encoding: "base64", content: b64(PUBLISH_YAML) });
@@ -843,5 +843,29 @@ describe("ci_chain pushes skipped by a workflow path filter", () => {
     const { exec } = route({ commits, runs: { [SHA_R]: ["CI"] } });
     const res = await runCiChain(single, { exec, cwd: "/tmp" });
     expect(res.legs[0]?.state).toBe("pending");
+  });
+
+  test("a name the repository has no workflow for ends as an error at once instead of waiting for a run that cannot come", async () => {
+    const { exec } = route({});
+    const res = await runCiChain({ ...params, workflows: ["CI", "Setup source manifest"], mirror: undefined }, { exec, cwd: "/tmp", sleep: mustNotWait });
+    expect(res.polls).toBe(1);
+    expect(res.ok).toBe(false);
+    expect(res.legs[0]).toMatchObject({ workflow: "CI", state: "skipped-paths-ignored" });
+    expect(res.legs[1]).toMatchObject({ workflow: "Setup source manifest", state: "error", error: expect.stringContaining("its workflows are: CI, Publish public mirror") });
+  });
+
+  test("a listing that cannot prove the name absent leaves the leg pending: more than one page, no or a malformed total, an unreadable entry", async () => {
+    const ci = { name: "CI", path: ".github/workflows/ci.yml" };
+    const listings = [
+      { total_count: 150, workflows: [ci] },
+      { workflows: [ci] },
+      { total_count: -1, workflows: [ci] },
+      { total_count: 2, workflows: [ci, { name: "Setup source manifest" }] },
+    ];
+    for (const listing of listings) {
+      const { exec } = route({ listing });
+      const res = await runCiChain({ ...single, workflows: ["Setup source manifest"] }, { exec, cwd: "/tmp" });
+      expect(res.legs[0]?.state).toBe("pending");
+    }
   });
 });

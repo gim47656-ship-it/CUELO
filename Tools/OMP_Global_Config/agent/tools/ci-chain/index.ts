@@ -313,8 +313,8 @@ type PathsIgnoredCache = {
   decisions: Map<string, boolean>;
   /** `repo sha` -> what the commits API said; only successful lookups are kept. */
   commits: Map<string, CommitFacts>;
-  /** `repo` -> workflow display name -> workflow file path. */
-  workflowFiles?: Map<string, Map<string, string>>;
+  /** `repo` -> workflow display name -> workflow file path, and whether the listing held every workflow of the repository. */
+  workflowFiles?: Map<string, { byName: Map<string, string>; complete: boolean }>;
   /** `repo path ref` -> workflow file text; a file at a commit never changes, so a poll loop reads it once. */
   workflowTexts?: Map<string, string>;
 };
@@ -350,24 +350,45 @@ async function fetchCommitFacts(deps: CiChainDeps, repo: string, sha: string, ca
   return facts;
 }
 
-async function fetchWorkflowFile(deps: CiChainDeps, repo: string, workflow: string, sha: string, cache: PathsIgnoredCache): Promise<string | null> {
+/** The repository's workflows by display name, or null when the listing could not be read. */
+async function fetchWorkflowList(deps: CiChainDeps, repo: string, cache: PathsIgnoredCache): Promise<{ byName: Map<string, string>; complete: boolean } | null> {
   const files = (cache.workflowFiles ??= new Map());
-  if (!files.has(repo)) {
-    const list = await execGhJson<unknown>(deps, ["api", `repos/${repo}/actions/workflows?per_page=100`], `gh api repos/${repo}/actions/workflows`);
-    const byName = new Map<string, string>();
-    const workflows: unknown = list.ok && typeof list.data === "object" && list.data !== null ? Reflect.get(list.data, "workflows") : undefined;
-    if (Array.isArray(workflows)) {
-      for (const item of workflows) {
-        const name: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "name") : undefined;
-        const path: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "path") : undefined;
-        if (typeof name === "string" && typeof path === "string") byName.set(name, path);
-      }
+  const known = files.get(repo);
+  if (known) return known;
+  const list = await execGhJson<unknown>(deps, ["api", `repos/${repo}/actions/workflows?per_page=100`], `gh api repos/${repo}/actions/workflows`);
+  const data: unknown = list.ok ? list.data : undefined;
+  const workflows: unknown = typeof data === "object" && data !== null ? Reflect.get(data, "workflows") : undefined;
+  // A failed or malformed listing is not cached, so the next poll asks again.
+  if (typeof data !== "object" || data === null || !Array.isArray(workflows)) return null;
+  const byName = new Map<string, string>();
+  let valid = 0;
+  for (const item of workflows) {
+    const name: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "name") : undefined;
+    const path: unknown = typeof item === "object" && item !== null ? Reflect.get(item, "path") : undefined;
+    if (typeof name === "string" && typeof path === "string") {
+      byName.set(name, path);
+      valid++;
     }
-    // A failed or malformed listing is not cached, so the next poll asks again.
-    if (!list.ok || !Array.isArray(workflows)) return null;
-    files.set(repo, byName);
   }
-  const path = files.get(repo)?.get(workflow);
+  // Only a listing whose stated total equals the entries it holds, none of them unreadable, can prove a name absent.
+  const total: unknown = Reflect.get(data, "total_count");
+  const entry = { byName, complete: total === workflows.length && valid === workflows.length };
+  files.set(repo, entry);
+  return entry;
+}
+
+/**
+ * An error message when the repository has no workflow by this display name, so no run can ever appear; undefined when it
+ * has one or the listing is unreadable or partial (more than one page), in which case the leg is left to the usual checks.
+ */
+async function unknownWorkflowError(deps: CiChainDeps, repo: string, workflow: string, cache: PathsIgnoredCache): Promise<string | undefined> {
+  const list = await fetchWorkflowList(deps, repo, cache);
+  if (!list || !list.complete || list.byName.has(workflow)) return undefined;
+  return `${repo} has no workflow named "${workflow}" (a job or step name is not a workflow name); its workflows are: ${[...list.byName.keys()].join(", ")}`;
+}
+
+async function fetchWorkflowFile(deps: CiChainDeps, repo: string, workflow: string, sha: string, cache: PathsIgnoredCache): Promise<string | null> {
+  const path = (await fetchWorkflowList(deps, repo, cache))?.byName.get(workflow);
   if (!path) return null;
   // The workflow file as of the pushed commit is the one GitHub evaluated.
   const textKey = `${repo} ${path} ${sha}`;
@@ -784,7 +805,10 @@ export async function runCiChain(
       for (const wf of workflows) {
         const wfRuns = shaRuns.filter((r) => r.workflow === wf);
         const chosen = pickNewestRun(wfRuns);
-        if (!chosen && (await isPushPathsIgnored(deps, repo, wf, effectiveSha, pathsCache))) {
+        const unknown = chosen ? undefined : await unknownWorkflowError(deps, repo, wf, pathsCache);
+        if (unknown) {
+          currentLegs.push({ repo, workflow: wf, runId: null, status: null, conclusion: null, url: null, matchedBy: "headSha", state: "error", error: unknown });
+        } else if (!chosen && (await isPushPathsIgnored(deps, repo, wf, effectiveSha, pathsCache))) {
           currentLegs.push({ repo, workflow: wf, runId: null, status: null, conclusion: null, url: null, matchedBy: "headSha", state: "skipped-paths-ignored" });
         } else {
           currentLegs.push(await buildLegFromRun(deps, repo, wf, "headSha", chosen, failureCache));
@@ -1013,6 +1037,7 @@ const factory: CustomToolFactory = (pi) => ({
     + "Matches source repository runs by headSha for an explicit workflow list (never waits on 'Publish CUELO web release'), "
     + "detects 'nothing to publish' in 'Publish public mirror' logs (reporting mirror legs as skipped-no-public-change), "
     + "reports a workflow with no run for the commit as skipped-paths-ignored when every file the commit changed matches the workflow's push paths-ignore/paths filter, "
+    + "ends a source workflow name the repository does not have (a job or step name is not one) as an error listing its real workflows instead of waiting, "
     + "and matches mirror repository runs by commit title created at or after the private publish run. "
     + "On failure, reports failed job names and the last 40 lines of --log-failed.",
   parameters: pi.zod.object({
