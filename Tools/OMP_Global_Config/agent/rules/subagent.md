@@ -52,28 +52,25 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
   접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
-  비-UI NORMAL의 기본 추천은 `NORMAL_SONNET`(Sonnet)이다. 2026-10-11의 "항상 Sonnet" 결정은 2026-10-18 사용자 결정으로 철회했다. 과제별 모델 적합성 판단은 하지 않는다.
-  아래 둘 중 하나가 걸리면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017)를 먼저 추천하고, `normalAllocation.reason`이 걸린 트리거를 적는다.
+  GPT Main은 비-UI NORMAL에서 사용 가능한 GPT 계열 `NORMAL_SOL`을 우선한다. 그 후보가 없거나 관측 소진이면 이전 추천 순서를 따른다.
+  그 밖의 비-UI NORMAL 기본 추천은 `NORMAL_SONNET`이며, 아래 둘 중 하나가 걸리면 `NORMAL_DEEPSEEK`를 먼저 추천한다.
   DeepSeek는 Sonnet과 통과 품질이 같았지만 벽시계 시간이 중앙값 약 4.5배라(SJF eval, 소표본) 아무도 기다리지 않는 조각에만 쓴다.
   `FINDING_ID` 재작업은 이전 attempt가 Sonnet이었어도 트리거가 아니다. 재작업은 Main이 결과를 기다리는 조각이라 2026-10-23 사용자 결정으로 그 트리거를 뺐다.
   (1) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
   (2) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
   `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-terra:auto`다(2026-10-11 Astra, 2026-10-27 사용자 지시로 Terra). Sol·Astra의 과거 평가 수치를 Terra의 성능 증거로 옮기지 않는다.
   Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,
-  그것도 쓸 수 없을 때만 코드 후보 Terra(`NORMAL_SOL`)를 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
+  기존 대체 순서에서는 그것도 쓸 수 없을 때 코드 후보 `NORMAL_SOL`을 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
   한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
-  DeepSeek를 쓸 수 없으면(registry 없음·관측 소진) 트리거가 걸려도 Sonnet, 그다음 Terra(`NORMAL_SOL`) 순이다. 트리거가 걸린 `NORMAL_DEEPSEEK` 선택에는 `ROUTING_REASON`이 필요 없고 다른 후보를 고르면 필요하다.
-  Sonnet 또는 `NORMAL_DEEPSEEK`가 사용 가능한데 Main이 `NORMAL_SOL`을 고르면 추천 변경이므로 `ROUTING_REASON`이 필요하다.
+  기존 대체 순서에서 DeepSeek를 쓸 수 없으면 트리거가 걸려도 Sonnet, 그다음 `NORMAL_SOL` 순이다. 추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
   기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
   다른 모델로 조용히 대체하지 않는다.
-  HARD는 `HARD_UI_OPUS`(`makerHardUiOpus`)·`HARD_CODE_OPUS`(`makerHardCodeOpus`)를 분야에 따라 고른다.
-  `HARD_CODE_SONNET`(`makerHardCodeSonnet`)·`HARD_CODE_ASTRA`(`makerHardCodeAstra`)는 명시적 대안이며 `ROUTING_REASON`이 필요하다.
+  HARD UI는 `HARD_UI_OPUS`, 비-UI 코드는 GPT Main이면 사용 가능한 GPT 계열 `HARD_CODE_ASTRA`를 우선하고 그 외에는 `HARD_CODE_OPUS`를 추천한다.
+  `HARD_CODE_SONNET` 등 추천과 다른 후보를 선택하면 `ROUTING_REASON`이 필요하다.
   GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
   Gemini 4 Argon(Vertex, `implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)과 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
-  `HARD_CODE_ASTRA`는 복잡한 비-UI 코드·시스템 추론에서 그 모델 계열을 쓰려 할 때 Main이 명시적으로 고른다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
-  강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. Main 계열만으로
-  배정을 뒤집지 않고, 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
+  강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
   작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인한다. 비-Opus owner의 미완 변경·증거를
   freeze하고 소유권을 명시적으로 넘긴 뒤 Opus가 이어간다. active owner와 새 writer를 겹치거나 실행 중
   모델을 바꾸지 않는다. 같은 Opus owner와 완료된 비-UI 작업은 재사용한다.
@@ -116,9 +113,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   덧붙일 수 있고 hook이 복원한 원문 끝에 붙인다. 근거는 `context`에 넣지 않는다. 그래도 `context`에 근거 한 줄(`PREPARED_CONTEXT` 다음 줄·같은 줄 또는 근거만)을
   실었으면 hook은 자기 근거 줄이 없는 참조 모두의 근거로 옮긴다(2026-10-23 참조 하나, 2026-10-28 참조 여럿으로 넓힘: 그 실수 거절 6건 중 5건이 참조 하나, 남은 1건이 참조 둘). 모든 참조가 이미 근거 줄을 가졌으면 옮길 곳이 없어 거절한다. 그 밖의 덧붙임·full/ref 혼합, 문법 변형, 다른 session·batch·name, 해제된 참조는
   오류이고 full brief 경로는 그대로 쓸 수 있다. 연결 키는 여전히 session-local task 이름과
-  `TASK_GUARD` 의미 필드이고 `preparedId`는 원문 운반일 뿐이다. 사실·계약·policy·후보가 그대로면
-  준비를 재사용하며 무관한 owner 변화·단순 진행 질문으로 난이도를 다시 묻지 않고, policy·후보가
-  바뀌면 다시 준비하고 owner 조건만 바뀌면 placement만 다시 판단한다. active owner가 그 경로를
+  `TASK_GUARD` 의미 필드이고 `preparedId`는 원문 운반일 뿐이다. 사실·계약·policy·후보·유효 Main 계열이 그대로면
+  준비를 재사용한다. policy·후보·Main 계열이 바뀌면 다시 준비하고 진행 중인 이전 계열 결과도 폐기한다.
+  owner 조건만 바뀌면 placement만 다시 판단한다. active owner가 그 경로를
   소유하면 dispatch-new가 막히고 오래된 owner index로 자동 배정하지 않는다
   (`routing.modelSelection.preparedReference`·`judgmentReuse`). 공유 작업공간 경로는 검사를 통과해
   spawn 결과를 기다리는 **다른 task 호출의 예약**과도 겹치면 막힌다. 예약은 spawn 결과가 실제 owner로

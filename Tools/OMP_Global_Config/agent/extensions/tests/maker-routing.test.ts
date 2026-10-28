@@ -32,6 +32,7 @@ const daybreakFixtures = [
 const families: Record<string, string> = {
   "openai-codex/gpt-6-astra": "openai",
   "openai-codex/gpt-6-sol": "openai",
+  "openai-codex/gpt-6.1-sol": "openai",
   "anthropic/claude-opus-5-5": "anthropic",
 };
 /** 메모리 ledger. 파일 경로 없이 기록·요약 경로를 본다. */
@@ -73,7 +74,7 @@ function harness(options: {
 } = {}) {
   const sessionId = "example".concat(String(++nextHarnessSession));
   const modelFamilies = options.families ?? families;
-  let mainModel = options.main ?? undefined;
+  let mainModel = options.main ? { ...options.main, identity: { class: modelFamilies[`${options.main.provider}/${options.main.id}`] ?? "unknown" } } : undefined;
   const routingCtx = {
     sessionManager: { getSessionId: () => sessionId },
     get model() { return mainModel; },
@@ -84,7 +85,7 @@ function harness(options: {
     },
     modelRegistry: {
       find: (provider: string, id: string) =>
-        (`${provider}/${id}` in modelFamilies ? { provider, id } : undefined),
+        (`${provider}/${id}` in modelFamilies ? { provider, id, identity: { class: modelFamilies[`${provider}/${id}`] } } : undefined),
     },
   } as never;
   const policy = structuredClone(loadRoutingPolicy());
@@ -155,7 +156,7 @@ function harness(options: {
       tasks: [{ name: input.tasks[0]!.name, task, agent: "maker", model }],
     }, routingCtx, "task-call"),
     setOwners(value: typeof owners) { owners = value; },
-    setMain(value: typeof CODEX_MAIN | null) { mainModel = value ?? undefined; },
+    setMain(value: typeof CODEX_MAIN | null) { mainModel = value ? { ...value, identity: { class: modelFamilies[`${value.provider}/${value.id}`] ?? "unknown" } } : undefined; },
   };
 }
 
@@ -433,7 +434,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       refreshDiscoverableProviders: async () => {},
     };
     const sessionId = "sample";
-    const ctx = { sessionManager: { getSessionId: () => sessionId }, modelRegistry: registry } as never;
+    const ctx = { sessionManager: { getSessionId: () => sessionId }, modelRegistry: registry, models: { current: () => undefined } } as never;
     const route = registerMakerRouting({} as never, {
       policy: () => policy,
       settings: async () => ({ getModelRoles: () => modelRoles }),
@@ -469,7 +470,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       },
       refreshDiscoverableProviders: async () => {},
     };
-    const ctx = { sessionManager: { getSessionId: () => "auto-only" }, modelRegistry: registry } as never;
+    const ctx = { sessionManager: { getSessionId: () => "auto-only" }, modelRegistry: registry, models: { current: () => undefined } } as never;
     const asked: Record<string, unknown>[] = [];
     const route = registerMakerRouting({} as never, {
       policy: () => policy,
@@ -1355,6 +1356,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     const questions: Record<string, unknown>[] = [];
     const ctx = {
       sessionManager: { getSessionId: () => options.sessionId ?? "registry-harness" },
+      models: { current: () => undefined },
       modelRegistry: options.registry,
     } as never;
     const route = registerMakerRouting({} as never, {
@@ -1735,19 +1737,55 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(mixedReasons[1]!.task.endsWith(`\n${own}`)).toBe(true);
     expect(() => resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`, `PREPARED_TASK: ${pair[0]!.preparedId}\n${own}`)).toThrow("참조 2개 모두");
   });
-  test("Main 계열이 바뀌어도 HARD의 분야별 모델과 준비 판단을 유지한다", async () => {
-    for (const [focus, profile, model] of [
-      ["UI_UX", "HARD_UI_OPUS", "anthropic/claude-opus-5-5:auto"],
-      ["CODE_SYSTEM", "HARD_CODE_OPUS", "anthropic/claude-opus-5-5:auto"],
-    ]) {
-      const h = harness({ workClass: "HARD", hardFocuses: [focus!], main: CODEX_MAIN });
-      const routes = await h.prepare("분야별 선택", [h.task], {} as never);
-      expect(routes[0]!.profile).toBe(profile);
-      expect(await h.dispatch(model!)).toBeUndefined();
-      h.setMain(ANTHROPIC_MAIN);
-      expect(await h.dispatch(model!)).toBeUndefined();
-      expect(h.requests).toHaveLength(1);
+  test("GPT Main preference respects UI, quota, and actual slot family", async () => {
+    const spent = { limitReached: true, limits: [] };
+    for (const [options, expected] of [
+      [{ main: CODEX_MAIN }, "NORMAL_SOL"],
+      [{ main: CODEX_MAIN, mainWaits: 0 }, "NORMAL_SOL"],
+      [{ main: CODEX_MAIN, uiUxBoundary: 1 }, "NORMAL_OPUS"],
+      [{ main: CODEX_MAIN, workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_UI_OPUS"],
+      [{ main: CODEX_MAIN, workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_ASTRA"],
+      [{ main: ANTHROPIC_MAIN }, "NORMAL_SONNET"],
+      [{ main: CODEX_MAIN, candidates: candidates.filter((c) => c.profile !== "NORMAL_SOL") }, "NORMAL_SONNET"],
+      [{ main: CODEX_MAIN, quota: async () => ({ state: "observed", observedAt: 1, providers: { "openai-codex": [spent] } }) }, "NORMAL_DEEPSEEK"],
+      [{ main: CODEX_MAIN, candidates: candidates.map((c) => c.profile === "NORMAL_SOL" ? { ...c, model: "anthropic/claude-opus-5-5" } : c) }, "NORMAL_SONNET"],
+      [{ main: CODEX_MAIN, workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], quota: async () => ({ state: "observed", observedAt: 1, providers: { "openai-codex": [spent] } }) }, "HARD_CODE_OPUS"],
+      [{ main: CODEX_MAIN, workClass: "UNKNOWN", hardFocuses: ["CODE_SYSTEM"] }, null],
+    ] as [NonNullable<Parameters<typeof harness>[0]>, string | null][]) {
+      const h = harness(options);
+      expect((await h.prepare("matrix", [h.task], {} as never))[0]!.profile).toBe(expected);
     }
+  });
+  test("in-flight preparation cannot publish after the effective family changes", async () => {
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const h = harness({ main: CODEX_MAIN, judgeGate: gate.promise, onJudge: started.resolve });
+    const pending = h.prepare("switch", [h.task], {} as never);
+    await started.promise;
+    h.setMain(ANTHROPIC_MAIN);
+    gate.resolve();
+    await expect(pending).rejects.toThrow("Main 모델 계열");
+    expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toMatchObject({ block: true });
+  });
+  test("family change while quota is pending rejects publication", async () => {
+    const quota = Promise.withResolvers<QuotaSnapshot>();
+    const started = Promise.withResolvers<void>();
+    const h = harness({ main: CODEX_MAIN, quota: () => { started.resolve(); return quota.promise; } });
+    const pending = h.prepare("quota switch", [h.task], {} as never);
+    await started.promise;
+    h.setMain(ANTHROPIC_MAIN);
+    quota.resolve({ state: "unavailable", observedAt: 0, reason: "test" });
+    await expect(pending).rejects.toThrow("Main 모델 계열");
+  });
+  test("Main family switch rejects stale preparations while same-family models reuse them", async () => {
+    const h = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], main: CODEX_MAIN });
+    expect((await h.prepare("family", [h.task], {} as never))[0]!.profile).toBe("HARD_CODE_ASTRA");
+    h.setMain({ provider: "openai-codex", id: "gpt-6-sol" });
+    expect(await h.dispatch("openai-codex/gpt-6-astra:auto")).toBeUndefined();
+    h.setMain(ANTHROPIC_MAIN);
+    expect(await h.dispatch("openai-codex/gpt-6-astra:auto")).toMatchObject({ block: true });
+    expect((await h.prepare("family", [h.task], {} as never))[0]!.profile).toBe("HARD_CODE_OPUS");
+    expect(h.requests).toHaveLength(2);
   });
   test("NORMAL은 사용 가능한 primary Sonnet을 우선하고, Sonnet 소진일 때만 대안을 추천하며 미관측은 소진으로 보지 않는다", async () => {
     const account = (usedFraction: number, extra: Record<string, unknown> = {}) => ({

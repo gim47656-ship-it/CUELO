@@ -687,7 +687,7 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
  * 쓸 수 없으면(registry 없음·관측 소진) Sonnet, 그다음 코드 후보로 내려간다.
  */
 function normalAllocation(
-  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[],
+  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[], gptCandidate?: Candidate,
 ): NormalAllocation {
   const order = triggers.length > 0 ? DEEPSEEK_FIRST_ORDER : NORMAL_FALLBACK_ORDER;
   const rank = (candidate: Candidate) => {
@@ -697,10 +697,13 @@ function normalAllocation(
   const normal = candidates
     .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
     .sort((a, b) => rank(a) - rank(b));
-  const selected = normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
+  const selected = normal.find((candidate) => candidate === gptCandidate && !modelQuotaExhausted(quota, candidate.model))
+    ?? normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
   const state = quota.state === "observed" && selected ? "observed" as const : "unavailable" as const;
   const fired = triggers.map((trigger) => TRIGGER_REASONS[trigger]).join("; ");
-  const reason = !selected
+  const reason = selected && selected === gptCandidate
+    ? "GPT Main의 비-UI NORMAL 추천은 사용 가능한 GPT 계열 NORMAL_SOL입니다."
+    : !selected
     ? triggers.length > 0
       ? `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 사용 가능한 NORMAL 후보가 없습니다.`
       : "사용 가능한 NORMAL 후보가 없습니다."
@@ -858,8 +861,20 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   }
   const candidateList = async (ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts) =>
     (await candidateSet(ctx, current, attempts)).available;
-  const revisionOf = (current: RoutingPolicy, candidates: Candidate[]) =>
-    JSON.stringify([current.modelSelection, candidates]);
+  const familyOf = (ctx: ExtensionContext) => {
+    const model = ctx.models.current() ?? ctx.model;
+    return model ? ctx.models.family(model) : null;
+  };
+  const revisionOf = (current: RoutingPolicy, candidates: Candidate[], family: string | null) =>
+    JSON.stringify([current.modelSelection, candidates, family]);
+  const gptCandidate = (ctx: ExtensionContext, candidates: Candidate[], profile: string, quota: QuotaSnapshot) => {
+    const main = ctx.models.current() ?? ctx.model;
+    const candidate = candidates.find((item) => item.profile === profile);
+    if (!main || main.identity.class !== "openai" || !candidate || modelQuotaExhausted(quota, candidate.model)) return undefined;
+    const slash = candidate.model.indexOf("/");
+    const model = ctx.modelRegistry.find(candidate.model.slice(0, slash), candidate.model.slice(slash + 1));
+    return model?.identity.class === "openai" && ctx.models.family(model) === ctx.models.family(main) ? candidate : undefined;
+  };
 
   const answersFor = (
     answers: Record<string, RoutingAnswer>,
@@ -896,12 +911,13 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. NORMAL 비-UI의 기본 추천은 Sonnet(NORMAL_SONNET)이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL은 호환 식별자이며 실제 모델은 candidates의 selector를 따르고, NORMAL_SONNET과 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 모두 쓸 수 없을 때만 추천합니다. Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천합니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이므로 ROUTING_REASON이 필요합니다. Maker는 auto로만 발주합니다: model은 '<후보 selector>:auto'이고 concrete effort를 붙이지 않습니다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시마다 그 모델의 전체 단계 안에서 다시 고릅니다. 등급 NORMAL/HARD와 모델 이름을 구분합니다. 한도 미관측은 소진이 아니며 오늘 몫은 위 (3)의 Anthropic 전 계정 초과일 때만 후보를 바꿉니다. 기존 NORMAL의 명시적 Opus 선택과 HARD 대안은 ROUTING_REASON으로 유지합니다. 같은 Opus owner와 완료된 비-UI 작업은 재사용하고 계정 쿨다운·리셋은 유지합니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON 한 줄을 남깁니다. 발주는 원문을 재사용하는 참조로 보냅니다: task({context:'PREPARED_CONTEXT', tasks:[{name:'<준비한 name>', task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단의 열린 정도>'}]}). name은 생략하면 준비한 이름으로 복원되고 agent는 생략합니다(생략은 maker, 다른 agent는 거절). model은 추천에서 자동으로 채워지지 않으므로 Main이 후보 selector에 :auto를 붙여 반드시 명시합니다. routes[].briefGaps가 있으면 그 발주는 끝나는 조건·확인 방법이 비었거나 OWNED_PATHS에 경로가 아닌 항목이 있으니, 적힌 항목을 고쳐 다시 준비합니다(경고이며 발주를 막지 않습니다). routes[].ownershipOverlaps가 있으면 이 배치를 공유 작업공간으로 함께 낼 때 task가 배치 전체를 거절하니, 발주 전에 경로를 나누거나 한 owner에게 맡기거나 isolated로 낼지 정하고, OWNED_PATHS를 바꿨다면 maker_route로 다시 준비합니다(경고이며 준비 결과는 그대로 씁니다).`;
+  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. GPT Main은 비-UI NORMAL에 사용 가능한 GPT 계열 NORMAL_SOL, HARD 코드에 HARD_CODE_ASTRA를 우선합니다. 후보가 없거나 관측 소진이면 이전 추천을 유지합니다. 다른 Main의 NORMAL 기본은 Sonnet이며 ${DEEPSEEK_TRIGGER_NOTE}. UI/UX는 Opus를 유지합니다. 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
     const allOwners = deps.owners(ctx);
     const atGeneration = generation;
+    const family = familyOf(ctx);
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
     let candidateLock = lockFor(sessionIdOf(ctx));
@@ -928,6 +944,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const identity = JSON.stringify([
         routingFactsState(task.assessment),
         current.modelSelection,
+        family,
       ]);
       const latest = latestPublications.get(key);
       if (latest?.identity === identity && latest.pending > 0) {
@@ -940,6 +957,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     });
     const requireLatest = () => {
       if (atGeneration !== generation) throw new Error("session이 변경되어 이전 라우팅 판단은 폐기되었습니다.");
+      if (familyOf(ctx) !== family) throw new Error("Main 모델 계열이 바뀌어 이전 라우팅 판단은 폐기되었습니다.");
       if (publicationClaims.some((claim) => latestPublications.get(claim.key)?.token !== claim.token)) {
         throw new Error("같은 task 계약에 더 최신 facts 준비가 있어 이전 라우팅 판단은 폐기되었습니다.");
       }
@@ -987,7 +1005,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const publications = await Promise.all(tasks.map(async (task, index) => {
         const contract = contracts[index]!;
         const owners = ownersByTask[index]!;
-        const revision = revisionOf(current, candidates);
+        const revision = revisionOf(current, candidates, family);
         const key = keys[index]!;
         const decisionState = routingFactsState(task.assessment);
         const decisionKey = JSON.stringify([key, decisionState, revision]);
@@ -1100,10 +1118,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           if (typeof mainWaits === "number" && mainWaits < 0.5) triggers.push("off-critical-path");
           if (anthropicOver) triggers.push("anthropic-over-share");
         }
-        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota, triggers) : null;
+        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota, triggers, gptCandidate(ctx, candidates, "NORMAL_SOL", quota)) : null;
         const preferred = normal
           ? candidates.find((candidate) => candidate.profile === (uiUxBoundary ? "NORMAL_OPUS" : "NORMAL_SONNET"))?.profile ?? null
-          : recommendedProfile(answers, candidates);
+          : (!uiUxBoundary && answers?.workClass?.choice === "HARD" && answers?.hardFocus?.choice === "CODE_SYSTEM"
+            ? gptCandidate(ctx, candidates, "HARD_CODE_ASTRA", quota)?.profile : undefined) ?? recommendedProfile(answers, candidates);
         publication.prepared.profile = allocation ? allocation.profile : preferred;
         publication.route.normalAllocation = allocation;
       }
@@ -1218,7 +1237,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     if (atGeneration !== generation) {
       return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
     }
-    const revision = revisionOf(current, candidates);
+    const revision = revisionOf(current, candidates, familyOf(ctx));
     const allOwners = ready.length > 0 ? deps.owners(ctx) : [];
     // 마지막 await 이후 모든 항목을 같은 snapshot으로 검사하고 예약한다.
     // 앞 항목을 검사한 뒤 뒤 항목의 후보 조회를 기다리는 stale publication 틈도 없앤다.
@@ -1387,7 +1406,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 위임 적합성·NORMAL/HARD 난이도·UI/UX 경계·HARD 지배 분야·owner 중복·Main의 결과 대기 여부(mainWaits)·교차검증 필요성(crossReviewNeed)을 기존 한 배치에서 독립 판단한다. crossReviewAdvice{choice, reason, nextAction, missingEvidence?}는 브리프에 review 줄을 넣을지 정하는 Main의 자문일 뿐 git_finalize 게이트(high-risk·marker·표본)를 면제하거나 강제하지 않는다. 같은 batch의 child가 요청 lock(없으면 같은 batch에서 먼저 계약을 정한 child)과 다른 WORK_CLASS·PRIMARY_DELIVERABLE을 적으면 Jev 호출 전에 거절하며, 두 값을 생략한 child는 같은 batch 안이거나 lock이 있을 때만 상속한다. NORMAL UI/UX는 NORMAL_OPUS, 비-UI NORMAL의 기본 추천은 NORMAL_SONNET이며 ${DEEPSEEK_TRIGGER_NOTE}. 설정된 코드 후보 NORMAL_SOL(호환 식별자, 실제 모델은 후보 selector를 따름)은 NORMAL_SONNET과 NORMAL_DEEPSEEK를 모두 쓸 수 없을 때만 추천하고, Sonnet이 사용 불가·관측 소진이면 NORMAL_DEEPSEEK를 먼저 추천한다. 한도 미관측은 소진이 아니다. Sonnet 또는 NORMAL_DEEPSEEK가 사용 가능한데 NORMAL_SOL을 고르는 것은 추천 변경이라 ROUTING_REASON이 필요하다. 한도 여유·과거 성공률로 우월성을 추정하지 않는다. HARD_UI_OPUS·HARD_CODE_OPUS는 분야에 따른다. HARD_CODE_SONNET·HARD_CODE_ASTRA·명시 선택 전용 Daybreak Blue 후보(NORMAL_DAYBREAK·HARD_CODE_DAYBREAK, 자동 추천·폴백 순서에는 없음)·명시 선택 전용 Gemini·GLM 후보(NORMAL_GEMINI·HARD_CODE_GEMINI·NORMAL_GLM·HARD_CODE_GLM, 같은 방식)·명시 NORMAL Opus와 추천 변경은 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 solutionSpace와 이후 Main 지시로 그 모델의 전체 단계(Opus는 max까지) 안에서 고른다. 새 UI/UX 경계는 기존 비-Opus owner를 freeze해 이관하되 실행 중 모델을 바꾸지 않는다. 소유권·warm/exact pin을 보존한다. Opus unavailable을 조용히 대체하지 않는다. 난이도를 Opus 선택 수단으로 부풀리지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문을 Jev에 보내거나 동일 브리프를 중복 판단하지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 위임 적합성·난이도·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. GPT Main의 비-UI NORMAL은 사용 가능한 GPT 계열 NORMAL_SOL, HARD 코드는 HARD_CODE_ASTRA를 우선한다. 없거나 관측 소진이면 기존 추천을 따른다. 다른 Main의 비-UI NORMAL은 Sonnet이 기본이며 ${DEEPSEEK_TRIGGER_NOTE}. UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

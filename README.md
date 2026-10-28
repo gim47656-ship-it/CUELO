@@ -18,6 +18,7 @@ CUELO는 터미널에서 쓰던 omp 세션·계정·모델 설정을 브라우�
 
 - **One agent home, two surfaces**: the terminal `omp` CLI and the browser share the same `~/.omp/agent` sessions, credentials and model settings. Start in one, continue in the other.
 - **Multi-agent work you can inspect**: Main delegates to Makers; each task gets a card with live status, Main's review verdict, a flow graph and the files it changed.
+- **GPT worker preference**: With a GPT-family main model, code and research tasks prefer configured GPT workers. Design routing stays unchanged, and worker effort stays `Auto`.
 - **Accounts and models at a glance**: per-account usage cards with limit windows and reset guidance, plus model roles you switch from the composer.
 - **Voice call and face-to-face interpreter**: a live voice call with the agent, and an interpreter for Korean with English, Chinese, Vietnamese, Japanese or Thai, using your ChatGPT account.
 - **Phone-ready**: install as a PWA, lock it with a password, and reach it over your own HTTPS proxy or VPN.
@@ -27,6 +28,7 @@ CUELO는 터미널에서 쓰던 omp 세션·계정·모델 설정을 브라우�
 
 - **한 곳의 에이전트, 두 개의 화면**: 터미널 `omp` CLI와 브라우저가 같은 `~/.omp/agent`의 세션·계정·모델 설정을 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고 다시 돌아갈 수 있습니다.
 - **들여다볼 수 있는 여러 에이전트 작업**: Main이 Maker에게 일을 맡기면 작업마다 카드가 붙어 실행 상태, Main의 검수 판정, 흐름 그래프, 바뀐 파일을 보여 줍니다.
+- **GPT 작업자 우선 추천**: 메인 모델이 GPT 계열이면 코드·조사 작업에서 설정된 GPT 후보를 우선합니다. 디자인 작업의 추천은 그대로이며 작업 강도는 `Auto`를 유지합니다.
 - **계정과 모델 한눈에**: 계정별 사용량 카드에서 한도 창과 리셋 권장을 보고, 입력창에서 모델 역할을 바꿉니다.
 - **실시간 통화와 대면 통역**: 에이전트와 음성으로 통화하고, 한국어와 영어·중국어·베트남어·일본어·태국어 사이를 ChatGPT 계정으로 통역합니다.
 - **휴대폰에서도**: PWA로 설치하고 비밀번호로 잠근 뒤, 직접 둔 HTTPS 프록시나 VPN으로 접속합니다.

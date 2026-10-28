@@ -158,11 +158,17 @@ function createHarness(options: HarnessOptions = {}) {
       };
     },
   };
+  const mainModel = { provider: "openai-codex", id: "gpt-6-astra", identity: { class: "openai" } };
 
   const ctx = {
     cwd: "E:/work",
-    model: { provider: "openai-codex", id: "gpt-6-astra" },
-    modelRegistry: { find: () => ({ thinking: { efforts: ["low", "medium", "high"] } }) },
+    model: mainModel,
+    models: {
+      current: () => mainModel,
+      family: (model: { provider: string; identity: { class: string } }) =>
+        model.identity.class === "unknown" ? model.provider.toLowerCase() : model.identity.class,
+    },
+    modelRegistry: { find: (provider: string, id: string) => ({ provider, id, identity: { class: "unknown" }, thinking: { efforts: ["low", "medium", "high"] } }) },
     isIdle: () => options.idle ?? false,
     sessionManager: {
       getSessionId: () => options.session?.current ?? "session-1",
