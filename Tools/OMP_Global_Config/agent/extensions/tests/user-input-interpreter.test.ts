@@ -59,6 +59,10 @@ describe("user-input-interpreter", () => {
     expect(await failing.prompt(KOREAN)).toBeUndefined();
     await failing.userMessage("다른 한국어 끼어들기 메시지");
     expect(failing.sent).toHaveLength(0);
+    // 서버가 넣는 재개·업데이트 통지는 사용자 발화가 아니다. 같은 머리말로 시작해도 사용자가 쓴 글은 번역한다.
+    expect(await h.prompt("[하네스 통지] 이 세션이 시작한 CUELO 업데이트가 끝나 런타임이 새 버전으로 교체됐고, 이 세션이 그 위에서 재개됐습니다.\nrequestId=a stageHash=b")).toBeUndefined();
+    expect(await h.prompt("[자동 재개] CUELO 서버가 예기치 않게 종료돼 이 세션의 진행 중 작업이 중간에 끊겼다. 결과를 받지 못한 child에는 먼저 `write agent://<id>`로 이어서 하라고 보낸다.")).toBeUndefined();
+    expect(await h.prompt("[자동 재개] 기능이 작동하지 않아요. 원인을 찾아주세요.")).toBeDefined();
   });
 
   test("번역기가 abort를 무시해도 기한이 지나면 덧붙이지 않고 원문만 보낸다", async () => {

@@ -27,9 +27,17 @@ function textOf(content: unknown): string {
   return content.map((part) => (part && typeof part === "object" && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "")).join("\n");
 }
 
-/** 통역할 글인가: 한글이 있고 비밀처럼 보이지 않는다. */
+// CUELO 서버가 일반 프롬프트로 넣는 재개·업데이트 통지(lib/harness-notices.ts isHarnessResumeNotice와 같은 기준). 사용자 발화가 아니라 통역하지 않는다.
+// 업데이트 통지는 정해진 첫 줄 뒤 둘째 줄이 requestId=로 시작하고, 재개 지시는 세 문구 모두 같은 머리와 child 되살리기 안내를 담는다.
+function isHarnessNotice(text: string): boolean {
+  const [first = "", second] = text.split("\n", 2);
+  if (first.startsWith("[하네스 통지] 이 세션이 시작한 CUELO 업데이트가") && second?.startsWith("requestId=")) return true;
+  return text.startsWith("[자동 재개] CUELO ") && text.includes("`write agent://<id>`");
+}
+
+/** 통역할 글인가: 한글이 있고 비밀처럼 보이지 않으며 하네스 통지가 아니다. */
 export function needsInterpreting(text: string): boolean {
-  return (text.match(/\p{Script=Hangul}/gu)?.length ?? 0) >= MIN_HANGUL && !SECRET_PATTERN.test(text);
+  return (text.match(/\p{Script=Hangul}/gu)?.length ?? 0) >= MIN_HANGUL && !SECRET_PATTERN.test(text) && !isHarnessNotice(text);
 }
 
 export function translationContent(english: string): string {
