@@ -15,7 +15,7 @@ type ReadMemory = (ctx: unknown, id: string, signal: AbortSignal) => Promise<str
 
 const CWD = "/repo";
 
-function setup(search?: Search, deps: { searchTimeoutMs?: number; readMemory?: ReadMemory } = {}) {
+function setup(search?: Search, deps: { searchTimeoutMs?: number; readMemory?: ReadMemory } = {}, entries: unknown[] = []) {
   const handlers: Record<string, Handler[]> = {};
   const pi = {
     on: (name: string, handler: Handler) => (handlers[name] ??= []).push(handler),
@@ -25,6 +25,7 @@ function setup(search?: Search, deps: { searchTimeoutMs?: number; readMemory?: R
   const queries: string[] = [];
   const ctx = {
     cwd: CWD,
+    sessionManager: { getSessionId: () => "session-1", getEntries: () => entries },
     memory: search ? { search: (query: string, options?: { limit?: number; signal?: AbortSignal }) => (queries.push(query), search(query, options)) } : undefined,
   };
   return {
@@ -118,6 +119,38 @@ describe("edit-lessons", () => {
     expect(second).not.toContain("id: shared");
     expect(second).toContain("id: only-y");
     expect(second).toContain("묶인 기억 1건");
+  });
+
+  test("세션 재시작과 reload에서 이전 교훈만 제외하고 새 세션에는 적용하지 않는다", async () => {
+    const entries: unknown[] = [{
+      type: "message", message: { role: "developer", content: "[edit-lessons] x.ts\n- earlier (id: x, 2026-10-05)" },
+    }];
+    const search = async () => ({ items: [lesson("x", "x.ts 이전 교훈"), lesson("y", "x.ts 새 교훈")] });
+    const t = setup(search, {}, entries);
+    t.fire("session_start");
+    const resumed = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
+    expect(resumed).not.toContain("id: x");
+    expect(resumed).toContain("id: y");
+    entries.push({ type: "message", message: { role: "developer", content: [{ type: "text", text: "[edit-lessons] x.ts\n- newer (id: y)" }] } });
+    t.fire("session_switch");
+    expect(await t.call("edit", { path: "other/x.ts" })).toBeUndefined();
+    const fresh = setup(search);
+    fresh.fire("session_start");
+    expect((await fresh.call("edit", { path: "x.ts" }))!.additionalContext!).toContain("id: x");
+  });
+
+  // 교차검토 R1-ANT-5·R1-OAI-3: 다른 문맥 뒤에 붙은 블록과 비밀 패턴으로 가린 id도 복원한다.
+  test("앞에 다른 문맥이 붙은 블록과 가린 id도 재시작 뒤 다시 붙이지 않는다", async () => {
+    const entries: unknown[] = [{
+      type: "message",
+      message: { role: "developer", content: "[other] 앞선 문맥\n\n[edit-lessons] x.ts\n- earlier (id: x, 2026-10-05)\n- 비밀 패턴이 있어 보이지 않음: s1, s2" },
+    }];
+    const t = setup(async () => ({ items: [lesson("x", "x.ts 이전 교훈"), lesson("s1", "x.ts password=hunter2"), lesson("y", "x.ts 새 교훈")] }), {}, entries);
+    t.fire("session_start");
+    const resumed = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
+    expect(resumed).not.toContain("id: x");
+    expect(resumed).not.toContain("s1");
+    expect(resumed).toContain("id: y");
   });
 
   test("한 호출의 여러 경로는 입력 순서대로 구역을 나눠 한 문맥으로 합치고 같은 id는 한 번만 싣는다", async () => {

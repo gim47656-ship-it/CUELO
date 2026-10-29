@@ -684,6 +684,15 @@ describe("OwnershipGuard 보고 줄", () => {
       "[OwnershipGuard] child=M1 owned=src/ outside=unobserved concurrent=none",
     );
   });
+  test("긴 소유 밖 목록은 20개와 남은 개수를 표시한다", () => {
+    const paths = Array.from({ length: 25 }, (_, i) => `x/${String(i).padStart(2, "0")}.ts`);
+    for (const attribute of [undefined, () => undefined]) {
+      const report = buildOwnershipReport({ child: "A", ownedPaths: ["a/"], changedPaths: paths, concurrent: ["B"], attribute });
+      expect(report).toContain(`${paths.slice(0, 20).join(",")} +5 more`);
+      expect(report).not.toContain(paths[20]);
+    }
+  });
+
 });
 
 describe("트리 스냅샷 diff", () => {
@@ -776,9 +785,41 @@ describe("child 완료 보고", () => {
     const state = createOwnershipState();
     registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }], snap([]));
     registerSpawnedMakers(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }], snap([]));
-    expect(reportOwnedChildren(state, ["Beta"], snap([["a/x.txt", "h1"]]))[0]).toBe(
-      "[OwnershipGuard] child=Beta owned=b/ outside=none unattributed=a/x.txt concurrent=Alpha",
+    expect(reportOwnedChildren(state, ["Beta"], snap([["unknown/x.txt", "h1"]]))[0]).toBe(
+      "[OwnershipGuard] child=Beta owned=b/ outside=none unattributed=unknown/x.txt concurrent=Alpha",
     );
+  });
+
+  test("동시 sibling 소유 경로의 기록 없는 변경은 sibling에 귀속한다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "A", index: 0, ownedPaths: ["a/"] }], snap([]));
+    registerSpawnedMakers(state, "call-2", [{ name: "B", index: 0, ownedPaths: ["b/"] }], snap([]));
+    const rows: OwnershipOutsideRow[] = [];
+    expect(reportOwnedChildren(state, ["A"], snap([["b/x.ts", "h1"], ["unknown.ts", "h1"]]), row => rows.push(row))).toEqual([
+      "[OwnershipGuard] child=A owned=a/ outside=none unattributed=unknown.ts concurrent=B",
+    ]);
+    expect(rows[0]?.elsewhere).toEqual(["b/x.ts"]);
+  });
+
+  test("생략된 경로도 원본 진단 행에는 모두 남는다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "A", index: 0, ownedPaths: ["a/"] }], snap([]));
+    registerSpawnedMakers(state, "call-2", [{ name: "B", index: 0, ownedPaths: ["b/"] }], snap([]));
+    const paths = Array.from({ length: 25 }, (_, i) => `x/${String(i).padStart(2, "0")}.ts`);
+    const rows: OwnershipOutsideRow[] = [];
+    const lines = reportOwnedChildren(state, ["A"], snap(paths.map(path => [path, "h1"])), row => rows.push(row));
+    expect(lines[0]).toContain(" +5 more");
+    expect(rows[0]?.unattributed).toEqual(paths);
+  });
+
+  test("직접 쓴 기록은 sibling 소유 경로보다 우선한다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call", [
+      { name: "A", index: 0, ownedPaths: ["a/"] },
+      { name: "B", index: 1, ownedPaths: ["b/"] },
+    ], snap([]));
+    noteOwnershipWrites(state, "A", ["b/x.ts"]);
+    expect(reportOwnedChildren(state, ["A"], snap([["b/x.ts", "h1"]]))[0]).toContain("outside=b/x.ts");
   });
 
   // 2026-10-27T22:13Z: CiReductionAudit 완료 보고의 outside=에 형제 Maker GuardAudit·Pr16573WinVerify가 쓴 evidence 파일이 올라왔다.
@@ -836,6 +877,18 @@ describe("child 완료 보고", () => {
     reportOwnedChildren(state, ["Alpha"], snap([]));
     registerSpawnedMakers(state, "call-2", [{ name: "Beta", index: 0, ownedPaths: ["b/"] }], snap([]));
     expect(reportOwnedChildren(state, ["Beta"], snap([["x.txt", "h1"]]))[0]).toContain("concurrent=none");
+  });
+
+  // 교차검토 R1-OAI-1: 같은 호출(예약)이라도 먼저 끝난 sibling은 시간이 겹치지 않으므로 그 소유 경로로 귀속하지 않는다.
+  test("같은 호출에서 먼저 끝난 sibling의 소유 경로는 귀속 근거가 아니다", () => {
+    const state = createOwnershipState();
+    registerSpawnedMakers(state, "call-1", [{ name: "Alpha", index: 0, ownedPaths: ["a/"] }], snap([]));
+    reportOwnedChildren(state, ["Alpha"], snap([]));
+    registerSpawnedMakers(state, "call-1", [{ name: "Beta", index: 1, ownedPaths: ["b/"] }], snap([]));
+    const rows: OwnershipOutsideRow[] = [];
+    reportOwnedChildren(state, ["Beta"], snap([["a/x.ts", "h1"]]), row => rows.push(row));
+    expect(rows[0]?.elsewhere).toEqual([]);
+    expect(rows[0]?.outside).toEqual(["a/x.ts"]);
   });
 
   test("등록되지 않은 id는 보고하지 않는다", () => {

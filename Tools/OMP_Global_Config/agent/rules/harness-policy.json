@@ -785,7 +785,7 @@
         }
       },
       "observation": {
-        "autoBoundaries": "the-runtime-extension-emits-the-advisory-without-being-asked-at-pre-retry-on-the-next-call-of-the-failed-tool-with-the-same-arguments-ignoring-the-intent-field-i-pre-review-on-the-main-wait-or-read-proc-recovery-and-the-async-result-auto-delivery-of-a-settled-maker-deduped-by-job-id-and-pre-dispatch-existing-owner-message-on-a-write-agent-id-message-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one",
+        "autoBoundaries": "the-runtime-extension-emits-the-advisory-without-being-asked-at-pre-retry-on-the-next-call-of-the-failed-tool-with-the-same-arguments-ignoring-the-intent-field-i-pre-review-on-the-main-wait-or-read-proc-recovery-and-the-async-result-auto-delivery-of-a-settled-maker-deduped-by-job-id-and-once-per-session-attempt-across-reloads-and-pre-dispatch-existing-owner-message-on-a-write-agent-id-message-to-a-maker-identified-by-a-successful-spawn-in-this-session-including-a-completed-or-parked-one",
         "emission": "one-minimal-structured-advisory-built-only-from-observed-structural-flags-never-the-message-source-code-quotes-document-bodies-raw-paths-secrets-raw-output-or-a-user-or-system-prompt-it-is-produced-at-that-tool-or-message-boundary-and-read-at-the-next-continuation-so-it-never-pre-approves-or-blocks-that-action-the-blocking-exceptions-are-pre-cleanup-where-a-recursive-delete-or-deploy-live-cleanup-whose-target-leaf-or-glob-prefix-appears-in-the-command-of-a-still-running-bash-job-or-named-service-started-by-this-session-is-held-until-that-job-ends-or-is-killed-the-pre-wait-observation-guard-of-mainLane.waitContract.requiredObservation-which-without-a-judge-blocks-only-mains-wait-entry-while-an-own-running-bash-or-eval-job-has-an-overdue-observation-until-a-successful-read-proc-id-of-that-job-and-the-local-image-question-router-which-without-a-judge-blocks-the-first-direct-read-of-each-image-path-in-a-session-and-redirects-it-to-a-q-question-answered-by-modelRoles-vision-a-second-read-of-the-same-path-passes",
         "manualBoundary": "pre-dispatch-maker_route-stays-an-explicit-main-call-because-its-assessment-facts-are-not-observable-from-the-wire",
         "readAndSupplement": "read-the-auto-advisory-and-supplement-only-what-the-runtime-cannot-observe-applicable-skill-guidance-approval-same-cause-new-evidence-validation-weakening-and-final-acceptance-never-re-ask-manually-the-questions-the-runtime-already-answered-from-observed-flags-the-manual-approval-boundary-still-sits-before-the-action",
@@ -928,8 +928,8 @@
         "preserved": "main-model-effort-approval-task-guard-budget-and-path-ownership-are-unchanged"
       },
       "judgmentReuse": {
-        "sameInputs": "reuse-the-prepared-judgment-when-the-facts-contract-policy-candidates-and-effective-main-family-are-unchanged-and-never-ask-again-for-an-unrelated-owner-change-or-a-plain-progress-question",
-        "policyOrCandidateChange": "re-judge-before-the-task-call-and-block-when-the-policy-candidate-or-effective-main-family-revision-moved-discard-in-flight-publications-after-a-family-switch",
+        "sameInputs": "reuse-the-prepared-judgment-when-the-facts-contract-policy-and-candidates-are-unchanged-the-main-model-family-is-not-a-routing-input-since-user-decision-2026-10-30-and-never-ask-again-for-an-unrelated-owner-change-or-a-plain-progress-question",
+        "policyOrCandidateChange": "re-judge-before-the-task-call-and-block-when-the-policy-or-candidate-revision-moved",
         "ownerRevisionChange": "re-judge-only-the-owner-placement-never-the-work-class-or-the-ui-ux-boundary",
         "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
         "sessionChange": "a-new-session-discards-every-previous-judgment"
@@ -944,7 +944,7 @@
         "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL" },
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
-        "HARD_CODE_ASTRA": { "modelConfigPath": "modelRoles.makerHardCodeAstra", "workClass": "HARD" },
+        "HARD_CODE_TERRA": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" },
         "NORMAL_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "NORMAL" },
         "HARD_CODE_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "HARD" },
         "HARD_CODE_SOL61": { "modelConfigPath": "modelRoles.implSol61", "workClass": "HARD" },
@@ -977,23 +977,22 @@
       },
       "uiUxBoundaryCriteria": "an-unsettled-visual-or-interaction-design-decision-remains-for-the-implementer-layout-or-composition-of-a-new-or-restructured-screen-responsive-behavior-information-hierarchy-visual-styling-or-motion-accessibility-focus-or-touch-target-behavior-or-the-shape-of-a-user-interaction-flow-including-mixed-code-and-design-work-even-when-code-is-dominant-not-when-the-UI-files-only-host-code-judgment-such-as-a-state-serialization-race-or-data-semantics-bug-a-read-only-code-review-a-faithful-port-of-existing-UI-behavior-wiring-into-an-existing-screen-pattern-or-placement-and-wording-already-fixed-by-the-pattern-spec-or-main-and-not-file-extension-alone-or-copying-already-settled-wording",
       "mainWaitsCriteria": "main-waits-when-it-must-use-this-slice-result-to-finish-the-current-user-request-including-integrating-reviewing-committing-publishing-deploying-or-reporting-it-in-the-same-request-even-while-main-or-sibling-slices-work-in-parallel-true-when-the-facts-say-the-next-step-or-the-final-answer-depends-on-it-false-only-when-the-facts-say-the-current-request-finishes-without-this-result-such-as-a-detached-background-or-long-batch-job-like-eval-reruns-or-bulk-classification-whose-result-is-reported-later-parallel-work-or-a-longer-sibling-alone-is-not-such-a-fact-user-decision-2026-10-19-no-such-fact-means-main-waits",
+      "designOpenCriteria": "the-implementer-still-must-choose-the-design-approach-or-root-cause-including-open-alternatives-unknown-cause-placement-or-contract-versus-direction-settled-when-the-fix-approach-and-contract-are-given-and-only-implementation-and-verification-remain-when-unclear-treat-as-open",
       "normalAllocation": {
-        "selection": "UI-UX-boundary-selects-NORMAL_OPUS-main-of-family-openai-prefers-available-NORMAL_SOL-of-the-same-family-for-non-UI-NORMAL-otherwise-the-previous NORMAL_SONNET then NORMAL_DEEPSEEK then NORMAL_SOL order applies with a trigger choosing NORMAL_DEEPSEEK first-no-quota-observation-is-exhaustion-no-quota-percentage-balancing-or-historical-success-rate-superiority-inference",
+        "selection": "user-decision-2026-10-30-ui-open-design-and-finding-id-rework-select-NORMAL_OPUS-settled-non-ui-selects-NORMAL_SOL-then-NORMAL_SONNET-then-NORMAL_DEEPSEEK",
         "deepSeekTriggers": {
-          "reworkNotATrigger": "user-decision-2026-10-23-a-FINDING_ID-rework-is-not-a-trigger-even-when-the-previous-attempt-ran-on-NORMAL_SONNET-because-main-waits-for-rework-and-NORMAL_DEEPSEEK-is-only-for-slices-nobody-waits-for-the-2026-10-18-rework-trigger-is-revoked",
-          "offCriticalPath": "the-pre-dispatch-mainWaits-question-answers-below-0.5-main-states-through-assessment-facts-that-the-current-request-finishes-without-this-result-never-a-task-guard-field-or-a-task-argument-parallel-work-alone-keeps-Sonnet-a-judge-failure-or-a-missing-answer-keeps-Sonnet",
-          "anthropicOverShare": "every-observed-anthropic-account-has-a-live-7d-shared-window-with-usedFraction-greater-than-the-core-selector-day-share-min-1-floor-elapsed-days-plus-1-over-7-measured-from-resetsAt-and-any-unobserved-or-under-share-account-keeps-Sonnet",
-          "precedence": "UI-UX-NORMAL_OPUS-first-main-of-family-openai-prefers-eligible-NORMAL_SOL-otherwise-a-fired-trigger-orders-NORMAL_DEEPSEEK-then-NORMAL_SONNET-then-NORMAL_SOL",
+          "offCriticalPath": "mainWaits-below-0.5-on-a-settled-non-ui-non-rework-slice-prefers-NORMAL_DEEPSEEK-then-NORMAL_SOL-then-NORMAL_SONNET",
+          "precedence": "ui-open-design-and-rework-precede-background-selection",
           "override": "choosing-a-profile-other-than-the-prepared-recommendation-requires-ROUTING_REASON"
         },
-        "missing": "UI-UX-Opus-unavailable-is-explicit-no-silent-substitution-missing-quota-is-unknown-not-exhausted-missing-or-observed-exhausted-preferred-candidate-uses-legacy-order-no-eligible-normal-candidate-means-null-profile",
+        "missing": "missing-quota-is-unknown-not-exhausted-skip-unavailable-or-observed-exhausted-candidates-no-eligible-candidate-means-null-profile",
         "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-newly-observed-UI-UX-boundary-requires-main-to-check-existing-owner-model-freeze-unfinished-delta-and-evidence-and-transfer-non-Opus-ownership-never-change-a-running-model-in-place-or-repeat-completed-non-UI-work",
         "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
       },
       "hardSelection": {
         "explicitOnly": "user-decision-2026-10-25-the-four-profiles-sharing-the-implGemini-and-implGlm-slots-are-explicit-only-worker-or-verifier-candidates-never-recommended-excluded-from-the-NORMAL-fallback-and-trigger-first-orders-and-require-ROUTING_REASON-the-UI-UX-Opus-boundary-and-all-roles-are-unchanged",
-        "selection": "UI_UX-selects-HARD_UI_OPUS-non-UI-CODE_SYSTEM-with-main-of-family-openai-prefers-available-HARD_CODE_ASTRA-of-that-family-otherwise-HARD_CODE_OPUS-HARD_CODE_SONNET-and-other-non-recommended-profiles-require-ROUTING_REASON-HARD_CODE_DAYBREAK-and-HARD_CODE_SOL61-are-explicit-only-NORMAL_DAYBREAK-is-excluded-from-fallback-order",
-        "unknown": "mixed-or-unknown-focus-requires-main-to-select-and-record-ROUTING_REASON",
+        "selection": "ui-selects-HARD_UI_OPUS-open-design-and-finding-id-rework-select-HARD_CODE_OPUS-settled-non-ui-selects-HARD_CODE_TERRA-then-HARD_CODE_OPUS-other-profiles-require-ROUTING_REASON",
+        "unknown": "unclear-designOpen-is-open-and-selects-Opus",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-selection-only-effort-is-the-child-auto-and-access-program-fields-are-omitted"
       },

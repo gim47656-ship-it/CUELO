@@ -19,6 +19,10 @@ const GRAM = 4;
 
 const PROSE_FILE = /\.(?:md|mdx|markdown|html?|xhtml)$/i;
 const MARKUP_FILE = /\.(?:html?|xhtml)$/i;
+// 태그 없는 markup 조각에서 CSS로 보는 줄: 선택자 여는 줄, 닫는 줄, 한 줄에 선언 여러 개, 한 줄 규칙. 속성 이름은 CSS처럼 소문자(또는
+// `--` 사용자 속성)만 받고, 세미콜론 없는 마지막 선언은 `}` 바로 앞일 때만 인정한다(`Summary: …;` 같은 산문 줄을 빼지 않게).
+const CSS_DECL = String.raw`(?:--[\w-]+|-?[a-z][a-z-]*)\s*:\s*[^;{}]+`;
+const CSS_LINE = new RegExp(String.raw`^\s*(?:[^{}]*\{|\}[\s;]*|(?:[^{}]*\{\s*)?(?:${CSS_DECL};\s*)+\}?|[^{}]*\{\s*(?:${CSS_DECL};\s*)*${CSS_DECL};?\s*\})\s*$`);
 // 규칙·프롬프트·스킬은 draft 대상이 아니다(RULES: code, configuration, rule files 제외). 슬롭 게이트가 면제하는 내부 기록
 // (HANDOFF.md, doc/history/**, doc/README.md)도 이 확인에서 뺀다: 2026-10-28 감사에서 26회 차단 중 20회가 내부 기록이었고
 // 12회는 예외 사유를 적고 같은 호출을 다시 보냈다(doc/history/2026/10/28-guard-audit). 사용자 승인 2026-10-28.
@@ -55,11 +59,11 @@ export interface ProseChange { path: string; added: string }
  * edit 본문의 파일 머리 `[path#TAG]` 아래 줄은 그 파일 몫이다.
  */
 export function proseChanges(toolName: string, input: Record<string, unknown>, cwd: string): ProseChange[] {
-  const abs = (path: string) => (isAbsolute(path) ? path : resolve(cwd, path));
+  const abs = (path: string) => /^[a-z][a-z\d+.-]*:\/\//i.test(path) ? undefined : (isAbsolute(path) ? path : resolve(cwd, path));
   if (toolName === "write") {
     if (typeof input.path !== "string" || typeof input.content !== "string") return [];
     const path = abs(input.path);
-    return inScope(path, cwd) ? [{ path, added: input.content }] : [];
+    return path && inScope(path, cwd) ? [{ path, added: input.content }] : [];
   }
   if (toolName !== "edit" || typeof input.input !== "string") return [];
   const added = new Map<string, string[]>();
@@ -87,7 +91,12 @@ export function shingles(text: string, into = new Set<string>()): Set<string> {
 export function proseBlocks(source: string, path: string): string[] {
   let lines: string[];
   if (MARKUP_FILE.test(path)) {
-    lines = htmlText(source.replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " ")).split("\n").map((line) => line.replace(/^\[attr\] /, ""));
+    const fragment = /<[a-z!/][^>]*>/i.test(source) ? source : source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(/\r?\n/)
+      .filter((line) => !CSS_LINE.test(line))
+      .join("\n");
+    lines = htmlText(fragment.replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " ")).split("\n").map((line) => line.replace(/^\[attr\] /, ""));
   } else {
     lines = [];
     let paragraph: string[] = [];

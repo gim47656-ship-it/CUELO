@@ -57,20 +57,16 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   UI 파일이 코드 판단만 담는 경우는 경계가 아니다: 상태·직렬화·경쟁·데이터 의미 버그, 읽기 전용 코드 검토,
   기존 UI 동작의 충실한 이식, 기존 화면 패턴에 연결, 패턴·명세·Main이 이미 정한 배치·문구다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
-  GPT Main은 비-UI NORMAL에서 사용 가능한 GPT 계열 `NORMAL_SOL`을 우선한다. 그 후보가 없거나 관측 소진이면 이전 추천 순서를 따른다.
-  그 밖의 비-UI NORMAL 기본 추천은 `NORMAL_SONNET`이며, 아래 둘 중 하나가 걸리면 `NORMAL_DEEPSEEK`를 먼저 추천한다.
-  DeepSeek는 Sonnet과 통과 품질이 같았지만 벽시계 시간이 중앙값 약 4.5배라(SJF eval, 소표본) 아무도 기다리지 않는 조각에만 쓴다.
-  `FINDING_ID` 재작업은 이전 attempt가 Sonnet이었어도 트리거가 아니다. 재작업은 Main이 결과를 기다리는 조각이라 2026-10-23 사용자 결정으로 그 트리거를 뺐다.
-  (1) `maker_route`의 `mainWaits` 질문이 0.5 미만: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). Jev 불가·답 없음은 Sonnet 유지다.
-  (2) 관측된 Anthropic 계정이 모두 7일 공유 구간에서 core 계정 선택기와 같은 오늘 몫(`(경과 일수+1)/7`, 최대 1)을 넘김. 계정 하나라도 미관측이거나 몫 이내면 Sonnet 유지다.
-  `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-terra:auto`다(2026-10-11 Astra, 2026-10-27 사용자 지시로 Terra). Sol·Astra의 과거 평가 수치를 Terra의 성능 증거로 옮기지 않는다.
-  Sonnet이 후보로 쓸 수 없거나 그 provider의 한도 소진이 관측되면 `NORMAL_DEEPSEEK`(Hive의 DeepSeek 1017, 2026-10-18 사용자 결정)를 대체로 추천하고,
-  기존 대체 순서에서는 그것도 쓸 수 없을 때 코드 후보 `NORMAL_SOL`을 추천하며, 셋 다 쓸 수 없으면 후보 없음(null)이다.
-  한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다.
-  기존 대체 순서에서 DeepSeek를 쓸 수 없으면 트리거가 걸려도 Sonnet, 그다음 `NORMAL_SOL` 순이다. 추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
-  기존 NORMAL Opus 명시 선택은 `ROUTING_REASON` 경로를 유지한다. UI/UX의 Opus unavailable은 명시하고
-  다른 모델로 조용히 대체하지 않는다.
-  HARD UI는 `HARD_UI_OPUS`, 비-UI 코드는 GPT Main이면 사용 가능한 GPT 계열 `HARD_CODE_ASTRA`를 우선하고 그 외에는 `HARD_CODE_OPUS`를 추천한다.
+  **2026-10-30 사용자 결정(HARD 4후보 비교 시험, `doc/history/2026/10/29-review-model-compare/hard-trial`):** 등급과 별개로
+  `maker_route`의 `designOpen` 질문(확률형 bool)이 구현자에게 설계·접근·근본 원인 선택이 남았는지 판정한다. 0.5 이상이거나 Jev 불가·답 없음이면 열린 설계다.
+  열린 설계와 `FINDING_ID` 재작업은 NORMAL이면 `NORMAL_OPUS`, HARD이면 `HARD_CODE_OPUS`를 추천한다(추천이므로 `ROUTING_REASON`이 필요 없다).
+  방향이 정해진 비-UI NORMAL은 `NORMAL_SOL`(Terra) → `NORMAL_SONNET` → `NORMAL_DEEPSEEK` 순서로 쓸 수 있는 첫 후보를 추천한다.
+  `NORMAL_DEEPSEEK`는 `maker_route`의 `mainWaits`가 0.5 미만일 때만 맨 앞에 온다: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). DeepSeek는 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에 쓰지 않는다. "Anthropic 계정이 모두 오늘 몫을 넘김" 트리거는 기본이 Anthropic이 아니게 되어 2026-10-30에 뺐다.
+  `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-terra:auto`다(2026-10-27 사용자 지시). Sol·Astra의 과거 평가 수치를 Terra의 성능 증거로 옮기지 않는다.
+  한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다. 쓸 수 있는 후보가 없으면 null이다. 추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
+  UI/UX의 Opus unavailable은 명시하고 다른 모델로 조용히 대체하지 않는다.
+  HARD UI는 `HARD_UI_OPUS`, 방향이 정해진 비-UI 코드(`hardFocus`가 `CODE_SYSTEM`)는 `HARD_CODE_TERRA`(Terra, `implSol` 공용 slot)를 추천하고 Terra를 쓸 수 없으면 `HARD_CODE_OPUS`로 내려간다.
+  `hardFocus`가 `MIXED`·`UNKNOWN`이면 `HARD_CODE_OPUS`다. GPT-6 Astra는 Maker 후보가 아니며 교차검토 slot `crossReviewOpenAI`로만 쓴다(2026-10-30 사용자 결정, Main 계열에 따른 Astra 우선도 없앴다).
   `HARD_CODE_SONNET` 등 추천과 다른 후보를 선택하면 `ROUTING_REASON`이 필요하다.
   GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
   GPT-6.1 Sol(`implSol61`)은 `HARD_CODE_SOL61`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-29 사용자 결정, HARD Maker 기본값 비교 시험). 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
@@ -122,8 +118,8 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   덧붙일 수 있고 hook이 복원한 원문 끝에 붙인다. 근거는 `context`에 넣지 않는다. 그래도 `context`에 근거 한 줄(`PREPARED_CONTEXT` 다음 줄·같은 줄 또는 근거만)을
   실었으면 hook은 자기 근거 줄이 없는 참조 모두의 근거로 옮긴다(2026-10-23 참조 하나, 2026-10-28 참조 여럿으로 넓힘: 그 실수 거절 6건 중 5건이 참조 하나, 남은 1건이 참조 둘). 모든 참조가 이미 근거 줄을 가졌으면 옮길 곳이 없어 거절한다. 그 밖의 덧붙임·full/ref 혼합, 문법 변형, 다른 session·batch·name, 해제된 참조는
   오류이고 full brief 경로는 그대로 쓸 수 있다. 연결 키는 여전히 session-local task 이름과
-  `TASK_GUARD` 의미 필드이고 `preparedId`는 원문 운반일 뿐이다. 사실·계약·policy·후보·유효 Main 계열이 그대로면
-  준비를 재사용한다. policy·후보·Main 계열이 바뀌면 다시 준비하고 진행 중인 이전 계열 결과도 폐기한다.
+  `TASK_GUARD` 의미 필드이고 `preparedId`는 원문 운반일 뿐이다. 사실·계약·policy·후보가 그대로면
+  준비를 재사용한다(Main 모델 계열은 추천에 쓰지 않으므로 계열이 바뀌어도 준비는 유지된다). policy·후보가 바뀌면 다시 준비한다.
   owner 조건만 바뀌면 placement만 다시 판단한다. active owner가 그 경로를
   소유하면 dispatch-new가 막히고 오래된 owner index로 자동 배정하지 않는다
   (`routing.modelSelection.preparedReference`·`judgmentReuse`). 공유 작업공간 경로는 검사를 통과해
@@ -137,12 +133,13 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   전송을 기다리게 하거나 차단하지 않고, 같은 owner·지시는 한 번만 보며, 뒤에서 JEV가 지시를 원 계약
   (`PRIMARY_DELIVERABLE`·`OWNED_PATHS`·Acceptance) 대비 `동일 범위`·`범위 변경`·`수용 조건 변경`·`불명` 중 하나로
   분류해 Main이 실행 중이면 aside, 대기 중이면 다음 턴 문맥으로 알린다(2026-10-08 사용자 결정). `동일 범위`는 Main이 할
-  일이 없으므로 알리지 않는다(2026-10-28 감사: 분류 392건 중 186건이 `동일 범위`).
+  일이 없으므로 알리지 않는다(2026-10-28 감사: 분류 392건 중 186건이 `동일 범위`). `불명`과 확신도 0.5 미만 분류도
+  알리지 않는다(2026-10-30 감사: 범위 안 지시를 확신도 0.41로 `범위 변경`이라 한 오분류 관찰).
   입력은 원 계약과 지시의 발췌이며 코드·URL·literal은 가리고 경로는 `OWNED_PATHS` 안/밖 표시로만 보낸다.
   secret 패턴이면 부르지 않는다. 실패·timeout·자격 없음·secret은 `불명`이고 다른 모델을 부르지 않는다.
   분류는 Main의 다음 판단을 돕는 참고이며 승인·차단·모델 교체·owner 선택이 아니다.
   완료 attempt의 `routing_verdict`가 읽은 원장에 없으면 해당 session·assignment·attempt
-  triple을 후속 지시에서 한 번 더 알린다. reload 뒤에는 같은 session의 durable identity와 outcome만
+  triple을 후속 지시에서 한 번만 알리고, 같은 session·attempt는 reload 뒤에도 다시 알리지 않는다. reload 뒤에는 같은 session의 durable identity와 outcome만
   복원해 확인하며, `held`도 이미 기록된 판정이다. Main이 보고와 원 수용 조건·증거를 검수해
   `accepted`·`rework`·`held` 중 하나를 **직접** 기록한다. 증거 보충·추가 요구·지시 문자열만으로
   재작업을 추정하지 않는다. `범위 변경`이면 Main은 변경된 사실과 기존 owner를 담아 `maker_route`
@@ -236,7 +233,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   확정하고 judge를 호출하지 않으며, 그 비관측 의미는 unknown으로 남아 Main이 직접 판단한다.
 - **기존 Maker에게 자연어 지시를 보낼 때(Main, JEV):** 전송은 붙잡지 않고, 뒤에서 지시를 원 계약
   (`PRIMARY_DELIVERABLE`·`OWNED_PATHS`·Acceptance) 대비 `동일 범위`·`범위 변경`·`수용 조건 변경`·`불명` 중 하나로
-  분류해 알린다(2026-10-08 사용자 결정). `동일 범위`는 알리지 않는다. 분류는 참고이며 의미 판단은 원문을 읽는 Main이 소유한다.
+  분류해 알린다(2026-10-08 사용자 결정). `동일 범위`·`불명`·확신도 0.5 미만은 알리지 않는다. 분류는 참고이며 의미 판단은 원문을 읽는 Main이 소유한다.
   `범위 변경`일 때 바뀐 사실로 `maker_route`를 다시 판단하고, `불명`이라는 이유만으로 호출하거나 재발주하지 않는다.
   완료·parked owner도 보존한다.
 

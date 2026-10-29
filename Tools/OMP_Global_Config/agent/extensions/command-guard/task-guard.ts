@@ -1030,6 +1030,7 @@ export type OwnershipReportInput = {
   /** undefined면 스냅샷을 뜨지 못해 변경 여부를 판정할 수 없다(`outside=unobserved`). */
   changedPaths?: readonly string[];
   concurrent: readonly string[];
+  siblingOwnedPaths?: readonly string[];
   /**
    * 소유 밖 변경 경로(정규화)를 누가 edit·write로 썼는지: 이 child(`self`), 다른 writer만(`other`: sibling·Main), 기록 없음
    * (undefined: bash 쓰기·관측 전 쓰기). 없으면 모두 이 child의 소유 밖 변경으로 본다.
@@ -1059,7 +1060,7 @@ function ownershipOutcome(input: OwnershipReportInput): OwnershipOutcome {
     .sort();
   for (const path of candidates) {
     const writer = input.attribute?.(path);
-    if (writer === "other") elsewhere.push(path);
+    if (writer === "other" || (writer === undefined && isPathOwned(input.siblingOwnedPaths ?? [], path))) elsewhere.push(path);
     else if (writer === undefined && input.attribute && input.concurrent.length > 0) unattributed.push(path);
     else outside.push(path);
   }
@@ -1069,11 +1070,13 @@ function ownershipOutcome(input: OwnershipReportInput): OwnershipOutcome {
 function formatOwnershipReport(child: string, outcome: OwnershipOutcome, concurrent: readonly string[]): string {
   const { owned, outside, unattributed } = outcome;
   const list = (paths: readonly string[]) => paths.map(encodeReportToken).join(",");
+  const limitedList = (paths: readonly string[]) =>
+    list(paths.slice(0, 20)) + (paths.length > 20 ? ` +${paths.length - 20} more` : "");
   return (
     `[OwnershipGuard] child=${encodeReportToken(child)}` +
     ` owned=${list(owned)}` +
-    ` outside=${Array.isArray(outside) ? (outside.length > 0 ? list(outside) : "none") : outside}` +
-    (unattributed.length > 0 ? ` unattributed=${list(unattributed)}` : "") +
+    ` outside=${Array.isArray(outside) ? (outside.length > 0 ? limitedList(outside) : "none") : outside}` +
+    (unattributed.length > 0 ? ` unattributed=${limitedList(unattributed)}` : "") +
     ` concurrent=${concurrent.length > 0 ? list(concurrent) : "none"}`
   );
 }
@@ -1354,6 +1357,10 @@ export function reportOwnedChildren(
       ownedPaths: entry.ownedPaths,
       ...(changedPaths ? { changedPaths } : {}),
       concurrent,
+      siblingOwnedPaths: [...state.entries.values()]
+        .filter((other) => other !== entry && other.startOrder <= entry.endOrder! &&
+          (other.endOrder === undefined || other.endOrder >= entry.startOrder))
+        .flatMap((other) => other.ownedPaths),
       attribute,
     });
     const { owned, outside, unattributed, elsewhere } = outcome;

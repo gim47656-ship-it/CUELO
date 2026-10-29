@@ -6,6 +6,7 @@
  * `install.mjs` also accepts `judge` explicitly and runs before dependencies exist.
  */
 export const HARNESS_ROLES = [
+  "implSol",
   "implSonnet",
   "implOpus",
   "implDeepSeek",

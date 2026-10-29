@@ -173,7 +173,21 @@ export function createEditLessons(deps: EditLessonsDeps = {}) {
       attempts.clear();
       attached.clear();
     };
-    onSessionLifecycle(pi, { start: reset });
+    const restore = (ctx: ExtensionContext): void => {
+      for (const entry of ctx.sessionManager?.getEntries?.() ?? []) {
+        if (entry.type !== "message" || entry.message.role !== "developer") continue;
+        const content = entry.message.content;
+        const text = typeof content === "string" ? content : content.map((part) => part.type === "text" ? part.text : "").join("");
+        const at = text.indexOf("[edit-lessons]");
+        if (at < 0) continue;
+        const body = text.slice(at);
+        for (const match of body.matchAll(/\(id: ([^,\s)]+)(?:, [^)]*)?\)/g)) attached.add(match[1]!);
+        for (const match of body.matchAll(/^- 비밀 패턴이 있어 보이지 않음: (.+)$/gm)) {
+          for (const id of match[1]!.split(/,\s*/)) if (id) attached.add(id);
+        }
+      }
+    };
+    onSessionLifecycle(pi, { start: (ctx) => { reset(); restore(ctx); }, reload: restore });
     pi.on("session_shutdown", reset);
 
     /**

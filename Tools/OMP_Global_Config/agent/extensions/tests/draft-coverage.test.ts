@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import draftCoverage from "../draft-coverage";
-import { proseBlocks } from "../lib/draft-coverage";
+import { proseBlocks, proseChanges } from "../lib/draft-coverage";
 
 // 사용자 보고(2026-10-27) 모양: HTML 앞 네 문단은 draft 결과를 옮기고, 뒤 세 문단은 직접 썼다.
 const DRAFTED = [
@@ -251,6 +251,30 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     s.call("bash", { command: "cat old.md" });
     s.result("bash", { command: "cat old.md" });
     expect(s.sent).toHaveLength(1);
+  });
+
+  test("CSS-only HTML edits pass while visible paragraphs remain gated", () => {
+    const s = session(workdir());
+    s.input();
+    const css = [".card {", "  background-color: lightgoldenrodyellow;", "  font-family: extraordinarilylongfontfamilyname;", "  border-color: rebeccapurple;", "  /* This stylesheet comment describes the visual presentation of the component. */", "}"].join("\n+");
+    expect(s.call("edit", { input: `[report.html#AB12]\nPUT >1:\n+${css}` })?.block).toBeUndefined();
+    expect(s.call("edit", { input: `[report.html#AB12]\nPUT >1:\n+<p>${DIRECT.join(" ")}</p>` })?.block).toBe(true);
+    // 교차검토 R1-OAI-2: 한 줄 규칙과 한 줄에 선언 여러 개도 CSS다.
+    const oneLine = [".card { background-color: lightgoldenrodyellow; font-family: extraordinarilylongfontfamilyname; }", ".badge { border-color: rebeccapurple }", "background-color: lightgoldenrodyellow; font-family: extraordinarilylongfontfamilyname;"];
+    expect(proseBlocks(oneLine.join("\n"), "report.html")).toEqual([]);
+    // 교차검토 R2-OAI-2: 대문자로 시작하는 `Word: …;` 산문 줄은 CSS 선언으로 빼지 않는다.
+    const prose = "Summary: The revised onboarding experience gives every customer clear guidance and explains all available recovery options;";
+    expect(proseBlocks(prose, "report.html")).toEqual([prose]);
+    expect(s.call("edit", { input: `[report.html#AB12]\nPUT >1:\n+${[...oneLine, ...oneLine, ...oneLine].join("\n+")}` })?.block).toBeUndefined();
+  });
+
+  test("URI paths are not resolved or gated for writes and edits", () => {
+    const s = session(workdir());
+    s.input();
+    expect(s.call("write", { path: "local://x.md", content: markdown(DIRECT) })?.block).toBeUndefined();
+    expect(s.call("edit", { input: `[local://x.md#AB12]\nPUT >1:\n+${DIRECT.join(" ")}` })?.block).toBeUndefined();
+    expect(proseChanges("write", { path: "memory://x.md", content: markdown(DIRECT) }, "/project")).toEqual([]);
+    expect(proseChanges("edit", { input: `[artifact://x.md#AB12]\nPUT >1:\n+${DIRECT.join(" ")}` }, "/project")).toEqual([]);
   });
 
   test("한 줄로 압축한 HTML도 블록 태그로 덩어리를 나눈다", () => {

@@ -127,7 +127,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 ```
 
 - `--model`은 core의 `default` 역할만 설정합니다.
-- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. Maker 역할은 `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [도구·검토·판정 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
+- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. Maker 역할은 `implSol`, `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [도구·검토·판정 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
 - 역할은 `config.yml`을 새로 만들 때만 기본값과 함께 기록됩니다. 파일이 이미 있으면 절대 고치지 않고, 무시한 역할과 아직 지정되지 않은 역할을 출력합니다.
 - 지정하지 않은 역할은 나중에 CUELO 설정의 Model roles 화면에서 고릅니다. 설치 스크립트는 모델을 추측해서 채우지 않습니다.
 
@@ -136,18 +136,19 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 `omp`만 설치했던 프로필에는 `config.yml`이 이미 있을 수 있습니다. `setup` 출력의 `Model roles not set`은 **사용자에게 남은 작업**이지 자동 설정 성공이 아닙니다. 자신의 `~/.omp/agent/config.yml`을 백업하고, 현재 키를 삭제하지 말고 다음을 대조합니다. 다른 `--home`을 썼다면 그 안의 `.omp/agent/config.yml`을 봅니다.
 
 1. 대화용 `modelRoles.default`를 **설정 > 모델·계정 > 모델 역할**에서 현재 로그인한 제공자의 모델로 정합니다. 기존 설정이 올바르면 유지합니다. 앱에서 프로젝트별 역할로 저장할 수도 있으므로, Main/Maker가 읽을 **global** 설정인지 확인하세요.
-2. Maker 후보는 같은 **설정 > 모델·계정 > 모델 역할** 화면에서 고릅니다. 아래 여섯 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
+2. Maker 후보는 같은 **설정 > 모델·계정 > 모델 역할** 화면에서 고릅니다. 아래 일곱 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSonnet` | NORMAL 비-UI 우선 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
+   | `implSol` | 방향이 정해진 비-UI 코드(NORMAL·HARD 우선) | 구현 중심 코드 모델(이 저장소 기본은 GPT-6.1 Terra `:auto`). 비어 있으면 NORMAL은 `implSonnet`, HARD 코드는 `makerHardCodeOpus`로 넘어감 |
+   | `implSonnet` | NORMAL 비-UI 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
    | `implOpus` | NORMAL UI/UX | Opus 모델 및 `high` 지원 |
-   | `implDeepSeek` | NORMAL 대안 | DeepSeek 모델 및 `high` 지원. Sonnet을 쓸 수 없을 때, 또는 이번 요청이 그 결과 없이 끝나는 백그라운드·장시간 조각, Anthropic 한도가 오늘 몫을 넘었을 때 먼저 추천 |
+   | `implDeepSeek` | NORMAL 배경 작업·대안 | DeepSeek 모델 및 `high` 지원. 이번 요청이 그 결과 없이 끝나는 백그라운드·장시간 조각이면 먼저 추천하고, 그 밖에는 앞 후보를 쓸 수 없을 때 추천 |
    | `makerHardUiOpus` | HARD UI/UX | Opus 모델 지원 |
-   | `makerHardCodeOpus` | HARD 코드 | Opus 모델 지원 |
-   | `makerHardCodeSonnet` | HARD 코드 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
+   | `makerHardCodeOpus` | HARD 코드(설계가 열린 작업·검토 지적 재작업·시스템 코드 외 초점) | Opus 모델 지원 |
+   | `makerHardCodeSonnet` | HARD 코드 대안(Main이 이유를 적고 고르는 명시 선택) | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
 
-   일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 여섯 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
+   일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 일곱 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 권장 경로는 OpenRouter입니다. 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **설정 > 모델·계정 > OpenRouter > API Key**에 입력하고, 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
 
    ```yaml
@@ -192,7 +193,7 @@ node install.mjs harness-update
 
 설치 기록은 이 기능이 생긴 뒤의 `setup`부터 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
-`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 지금 별도 코드 후보(`NORMAL_SOL`) 자리로 쓰이므로 이름을 바꾸지 말고, Sonnet 후보는 `implSonnet`에 따로 지정합니다. 역할 설정은 `harness-update`가 바꾸지 않습니다.
+`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 지금 방향이 정해진 코드의 기본 후보(`NORMAL_SOL`·`HARD_CODE_TERRA`) 자리로 쓰이므로 이름을 바꾸지 말고, Sonnet 후보는 `implSonnet`에 따로 지정합니다. 역할 설정은 `harness-update`가 바꾸지 않습니다.
 
 
 ### 다른 프로필에 설치(`--home`)

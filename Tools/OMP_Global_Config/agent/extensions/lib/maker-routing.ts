@@ -75,8 +75,8 @@ interface Candidate { profile: string; model: string; efforts: readonly string[]
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
-/** 비-UI NORMAL을 DeepSeek(Hive 1017)로 먼저 보내는 트리거. 하나라도 걸리면 순서가 DeepSeek → Sonnet → 코드 후보(Astra)가 된다. */
-export type DeepSeekTrigger = "off-critical-path" | "anthropic-over-share";
+/** Background slices can prefer DeepSeek. */
+export type DeepSeekTrigger = "off-critical-path";
 export interface NormalAllocation {
   state: "observed" | "unavailable";
   profile: string | null;
@@ -94,6 +94,7 @@ interface RoutingPolicy {
     uiUxBoundaryCriteria: string;
     /** Main이 이 조각의 결과를 기다리는지(mainWaits) 판정 기준. 확률형 bool이며 0.5 미만일 때만 기다리지 않는다고 본다. */
     mainWaitsCriteria: string;
+    designOpenCriteria: string;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
     /** 교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN). 답은 Main의 지시서 판단을 돕는 자문이며 게이트를 바꾸지 않는다. */
@@ -257,6 +258,10 @@ function decisionQuestions(policy: RoutingPolicy) {
     uiUxBoundary: {
       type: "noul",
       instructions: `${policy.modelSelection.uiUxBoundaryCriteria}. 남은 UI/UX 판단의 존재를 난이도·지배 분야와 독립적으로 판단한다. 혼합 작업의 UI/UX 경계도 포함하고 파일 확장자만으로 추정하지 않는다.`,
+    },
+    designOpen: {
+      type: "noul",
+      instructions: `${policy.modelSelection.designOpenCriteria}. 근거가 부족하면 열린 설계로 본다.`,
     },
   };
   // 위임 판정은 정책 정본(delegationCriteria = MAIN·MAKER·UNKNOWN)을 그대로 choice 선택지로 쓴다.
@@ -604,58 +609,17 @@ function placementOf(
 
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-/** Jev hardFocus 답과 HARD 후보 profile의 대응. 값은 `modelSelection.profiles`의 profile 이름이다. */
-const HARD_FOCUS_PROFILES: Readonly<Record<string, string>> = {
-  UI_UX: "HARD_UI_OPUS",
-  CODE_SYSTEM: "HARD_CODE_OPUS",
-};
-
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
 const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_DAYBREAK: true, NORMAL_GEMINI: true, NORMAL_GLM: true };
 
-/**
- * 비-UI NORMAL 후보 순서. 기본은 Sonnet → DeepSeek(Hive 1017) → 코드 후보(Astra)다(2026-10-18 사용자 결정으로 2026-10-11의
- * "항상 Sonnet" 결정을 철회). DeepSeek 트리거가 하나라도 걸리면 DeepSeek를 맨 앞에 두고, 쓸 수 없을 때 Sonnet → Astra로 내려간다.
- */
-const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"];
-const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SONNET", "NORMAL_SOL"];
-
+/** Settled non-UI work prefers Terra; only background work prefers DeepSeek. */
+const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SOL", "NORMAL_SONNET", "NORMAL_DEEPSEEK"];
+const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SOL", "NORMAL_SONNET"];
 const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
-  // 2026-10-23 사용자 결정: Sonnet 재작업 트리거를 뺐다. 재작업은 Main이 결과를 기다리는 조각이라 "기다리는 조각에는 DeepSeek를 쓰지 않는다"와 충돌했다.
-  "off-critical-path": "Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 같은 요청에서 통합·커밋·보고에 쓰는 병렬 조각은 해당하지 않음)",
-  "anthropic-over-share": "관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김",
+  "off-critical-path": "Jev가 Main이 이 결과를 기다리지 않는다고 판단(mainWaits<0.5)",
 };
+const DEEPSEEK_TRIGGER_NOTE = "방향이 정해진 비-UI NORMAL 중 Main이 결과를 기다리지 않는 작업(mainWaits<0.5)만 DeepSeek를 먼저 추천합니다.";
 
-/** INSTRUCTION과 도구 description이 같은 트리거 설명을 쓴다. */
-const DEEPSEEK_TRIGGER_NOTE = "다음 중 하나가 걸리면 NORMAL_DEEPSEEK(Hive의 DeepSeek 1017)를 먼저 추천합니다: (1) Jev가 Main이 이 조각의 결과를 기다리지 않는다고 판단(mainWaits<0.5: 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업이며, 이 사실은 assessment facts에 적습니다. 같은 요청에서 Main이 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌아도 기다리는 조각입니다), (2) 관측된 Anthropic 계정이 모두 7일 공유 구간의 오늘 몫을 넘김. DeepSeek는 Sonnet보다 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에는 쓰지 않으며, FINDING_ID 재작업도 이 둘이 걸리지 않으면 Sonnet입니다. 미관측·Jev 불가는 트리거가 아니며 Sonnet을 유지하고, DeepSeek를 쓸 수 없으면 Sonnet, 그다음 NORMAL_SOL입니다. 트리거가 걸린 DeepSeek 선택에는 ROUTING_REASON이 필요 없고 다른 후보를 고르면 필요합니다";
-
-const DAY_MS = 86_400_000;
-const WEEKLY_WINDOW_MS = 7 * DAY_MS;
-
-/**
- * core 계정 선택기(`pi-ai/src/auth/select.ts` patch, apply-core-patch.mjs의 `elapsedMs`·`allowance`)와 같은 정의의 오늘 몫:
- * 창 시작 = resetsAt − 창 길이, 경과 = clamp(창 길이 − (resetsAt − now), 0, 창 길이), 몫 = min(1, (floor(경과/1일)+1)일 / 창 길이).
- * 누적 몫이라 하루가 지날 때마다 1/7씩 늘고 마지막 날에는 1이다.
- */
-function weeklyDayShare(resetsAt: number, nowMs: number): number {
-  const elapsedMs = Math.min(WEEKLY_WINDOW_MS, Math.max(0, WEEKLY_WINDOW_MS - (resetsAt - nowMs)));
-  return Math.min(1, ((Math.floor(elapsedMs / DAY_MS) + 1) * DAY_MS) / WEEKLY_WINDOW_MS);
-}
-
-/**
- * 관측된 Anthropic 계정이 모두 아직 리셋되지 않은 7일 공유 구간에서 오늘 몫보다 많이 썼다. 계정이 없거나, 어느 계정이든
- * 살아 있는 7일 공유 구간이 없거나 사용량·리셋 시각을 관측하지 못했으면 미관측이므로 false다(Sonnet 유지).
- */
-function anthropicOverDayShare(quota: QuotaSnapshot): boolean {
-  if (quota.state !== "observed") return false;
-  const accounts = quota.providers.anthropic ?? [];
-  return accounts.length > 0 && accounts.every((account) => {
-    const live = liveWeeklyShared(account, quota.observedAt);
-    return live.length > 0 && live.every((limit) =>
-      limit.usedFraction !== null && limit.resetsAt !== null
-      && limit.usedFraction > weeklyDayShare(limit.resetsAt, quota.observedAt));
-  });
-}
 
 /** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
 function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
@@ -682,12 +646,9 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
 }
 
-/**
- * 비-UI NORMAL 추천. 기본은 Sonnet이고 한도는 관측된 사용 불가 후보만 제외한다. 트리거가 걸리면 DeepSeek를 먼저 추천하고,
- * 쓸 수 없으면(registry 없음·관측 소진) Sonnet, 그다음 코드 후보로 내려간다.
- */
+/** Allocate settled non-UI NORMAL work among available candidates. */
 function normalAllocation(
-  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[], gptCandidate?: Candidate,
+  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[],
 ): NormalAllocation {
   const order = triggers.length > 0 ? DEEPSEEK_FIRST_ORDER : NORMAL_FALLBACK_ORDER;
   const rank = (candidate: Candidate) => {
@@ -697,36 +658,25 @@ function normalAllocation(
   const normal = candidates
     .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
     .sort((a, b) => rank(a) - rank(b));
-  const selected = normal.find((candidate) => candidate === gptCandidate && !modelQuotaExhausted(quota, candidate.model))
-    ?? normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
+  const selected = normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
   const state = quota.state === "observed" && selected ? "observed" as const : "unavailable" as const;
   const fired = triggers.map((trigger) => TRIGGER_REASONS[trigger]).join("; ");
-  const reason = selected && selected === gptCandidate
-    ? "GPT Main의 비-UI NORMAL 추천은 사용 가능한 GPT 계열 NORMAL_SOL입니다."
-    : !selected
+  const reason = !selected
     ? triggers.length > 0
       ? `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 사용 가능한 NORMAL 후보가 없습니다.`
       : "사용 가능한 NORMAL 후보가 없습니다."
     : triggers.length > 0
       ? selected.profile === "NORMAL_DEEPSEEK"
-        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(Sonnet보다 벽시계 시간이 길다). Sonnet을 고르면 ROUTING_REASON이 필요합니다.`
+        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(Terra보다 벽시계 시간이 길다). Terra를 고르면 ROUTING_REASON이 필요합니다.`
         : `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 NORMAL_DEEPSEEK를 쓸 수 없어 ${selected.profile}를 추천합니다.`
       : selected.profile !== NORMAL_FALLBACK_ORDER[0]
-        ? "Sonnet이 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
-        : "비-UI NORMAL의 기본 추천은 Sonnet입니다(DeepSeek 트리거 없음).";
+        ? "Terra가 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
+        : "방향이 정해진 비-UI NORMAL의 기본 추천은 Terra입니다.";
   return {
     state, profile: selected?.profile ?? null,
     reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
     triggers: [...triggers],
   };
-}
-
-function recommendedProfile(answers: Record<string, RoutingAnswer> | null, candidates: readonly Candidate[]) {
-  const workClass = answers?.workClass?.choice;
-  const profile = workClass === "HARD"
-    ? HARD_FOCUS_PROFILES[answers?.hardFocus?.choice ?? ""] ?? null
-    : null;
-  return candidates.some((candidate) => candidate.profile === profile) ? profile : null;
 }
 
 
@@ -802,6 +752,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     profiles.forEach(([profile, entry], index) => {
       const selector = modelRoles[entry.modelConfigPath.slice("modelRoles.".length)] ?? "";
       const base = selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max|auto)$/, "");
+      if (!base) { slots[index] = { profile, model: "", reason: "설정되지 않은 Maker slot" }; return; }
       if (isRetired(base)) { slots[index] = { profile, model: base, reason: "SWE-2는 새 작업 후보에서 제외되어 있습니다." }; return; }
       const slash = base.indexOf("/");
       const provider = base.slice(0, slash), id = base.slice(slash + 1);
@@ -861,20 +812,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   }
   const candidateList = async (ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts) =>
     (await candidateSet(ctx, current, attempts)).available;
-  const familyOf = (ctx: ExtensionContext) => {
-    const model = ctx.models.current() ?? ctx.model;
-    return model ? ctx.models.family(model) : null;
-  };
-  const revisionOf = (current: RoutingPolicy, candidates: Candidate[], family: string | null) =>
-    JSON.stringify([current.modelSelection, candidates, family]);
-  const gptCandidate = (ctx: ExtensionContext, candidates: Candidate[], profile: string, quota: QuotaSnapshot) => {
-    const main = ctx.models.current() ?? ctx.model;
-    const candidate = candidates.find((item) => item.profile === profile);
-    if (!main || main.identity.class !== "openai" || !candidate || modelQuotaExhausted(quota, candidate.model)) return undefined;
-    const slash = candidate.model.indexOf("/");
-    const model = ctx.modelRegistry.find(candidate.model.slice(0, slash), candidate.model.slice(slash + 1));
-    return model?.identity.class === "openai" && ctx.models.family(model) === ctx.models.family(main) ? candidate : undefined;
-  };
+  const revisionOf = (current: RoutingPolicy, candidates: Candidate[]) =>
+    JSON.stringify([current.modelSelection, candidates]);
 
   const answersFor = (
     answers: Record<string, RoutingAnswer>,
@@ -911,13 +850,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main은 profile·recommendations.uiUxBoundary·placement·history·normalAllocation을 보고 후보를 지정합니다. GPT Main은 비-UI NORMAL에 사용 가능한 GPT 계열 NORMAL_SOL, HARD 코드에 HARD_CODE_ASTRA를 우선합니다. 후보가 없거나 관측 소진이면 이전 추천을 유지합니다. 다른 Main의 NORMAL 기본은 Sonnet이며 ${DEEPSEEK_TRIGGER_NOTE}. UI/UX는 Opus를 유지합니다. 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
+  const INSTRUCTION = `Main은 profile·recommendations·placement·history·normalAllocation을 보고 후보를 지정합니다. UI/UX와 설계가 열린 작업(designOpen, Jev 불가·불명 포함)·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천하고 Terra가 없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus로 내려갑니다. ${DEEPSEEK_TRIGGER_NOTE} 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
     const allOwners = deps.owners(ctx);
     const atGeneration = generation;
-    const family = familyOf(ctx);
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
     // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
     let candidateLock = lockFor(sessionIdOf(ctx));
@@ -944,7 +882,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const identity = JSON.stringify([
         routingFactsState(task.assessment),
         current.modelSelection,
-        family,
       ]);
       const latest = latestPublications.get(key);
       if (latest?.identity === identity && latest.pending > 0) {
@@ -957,7 +894,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     });
     const requireLatest = () => {
       if (atGeneration !== generation) throw new Error("session이 변경되어 이전 라우팅 판단은 폐기되었습니다.");
-      if (familyOf(ctx) !== family) throw new Error("Main 모델 계열이 바뀌어 이전 라우팅 판단은 폐기되었습니다.");
       if (publicationClaims.some((claim) => latestPublications.get(claim.key)?.token !== claim.token)) {
         throw new Error("같은 task 계약에 더 최신 facts 준비가 있어 이전 라우팅 판단은 폐기되었습니다.");
       }
@@ -1005,7 +941,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const publications = await Promise.all(tasks.map(async (task, index) => {
         const contract = contracts[index]!;
         const owners = ownersByTask[index]!;
-        const revision = revisionOf(current, candidates, family);
+        const revision = revisionOf(current, candidates);
         const key = keys[index]!;
         const decisionState = routingFactsState(task.assessment);
         const decisionKey = JSON.stringify([key, decisionState, revision]);
@@ -1098,31 +1034,35 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const quota = await quotaPending;
       const quotaDoneAt = clock();
       requireLatest();
-      // 이력은 advisory다. revision·identity·Jev state 밖에 두며 읽기 실패는 빈 이력이다.
+      // Historic summaries remain advisory; FINDING_ID is the per-dispatch rework signal.
       const ledgerRecords = deps.ledger?.read();
       const historyOf = (answers: Record<string, RoutingAnswer> | null): RoutingHistory | null => {
         const grade = answers?.workClass?.choice;
         if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
         return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
       };
-      // 트리거 입력은 모두 관측된 사실이다. mainWaits 답이 없으면 트리거가 아니다.
-      const anthropicOver = anthropicOverDayShare(quota);
-      for (const publication of publications) {
+      for (const [index, publication] of publications.entries()) {
         const answers = publication.prepared.answers;
         const normal = answers?.workClass?.choice === "NORMAL";
-        const uiUxBoundary = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5;
+        const hard = answers?.workClass?.choice === "HARD";
+        const ui = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5 || (hard && answers?.hardFocus?.choice === "UI_UX");
+        const design = answers?.designOpen?.noul;
+        const open = typeof design !== "number" || !Number.isFinite(design) || design >= 0.5;
+        const rework = contracts[index]!.findingId !== null;
         const triggers: DeepSeekTrigger[] = [];
-        if (normal && !uiUxBoundary) {
-          // 2026-10-23: 이전 attempt가 Sonnet이었던 FINDING_ID 재작업은 더는 트리거가 아니다(재작업은 Main이 기다린다).
-          const mainWaits = answers?.mainWaits?.noul;
-          if (typeof mainWaits === "number" && mainWaits < 0.5) triggers.push("off-critical-path");
-          if (anthropicOver) triggers.push("anthropic-over-share");
-        }
-        const allocation = normal && !uiUxBoundary ? normalAllocation(current, candidates, quota, triggers, gptCandidate(ctx, candidates, "NORMAL_SOL", quota)) : null;
+        if (normal && !ui && !open && !rework && typeof answers?.mainWaits?.noul === "number" && answers.mainWaits.noul < 0.5) triggers.push("off-critical-path");
+        const allocation = normal && !ui && !open && !rework ? normalAllocation(current, candidates, quota, triggers) : null;
+        const present = (profile: string) => candidates.find((candidate) => candidate.profile === profile)?.profile ?? null;
+        const usable = (profile: string) => candidates.find((candidate) => candidate.profile === profile && !modelQuotaExhausted(quota, candidate.model))?.profile ?? null;
+        // 2026-10-30 사용자 결정: UI·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 Terra. HARD의 MIXED·UNKNOWN 분야는 Opus로 둔다.
+        // Opus 자리는 한도와 무관하게 유지한다(UI/UX Opus 불가는 조용히 대체하지 않는다). Terra만 관측 소진이면 Opus로 내려간다.
         const preferred = normal
-          ? candidates.find((candidate) => candidate.profile === (uiUxBoundary ? "NORMAL_OPUS" : "NORMAL_SONNET"))?.profile ?? null
-          : (!uiUxBoundary && answers?.workClass?.choice === "HARD" && answers?.hardFocus?.choice === "CODE_SYSTEM"
-            ? gptCandidate(ctx, candidates, "HARD_CODE_ASTRA", quota)?.profile : undefined) ?? recommendedProfile(answers, candidates);
+          ? (ui || open || rework ? present("NORMAL_OPUS") : null)
+          : hard
+            ? ui ? present("HARD_UI_OPUS")
+              : open || rework || answers?.hardFocus?.choice !== "CODE_SYSTEM" ? present("HARD_CODE_OPUS")
+                : usable("HARD_CODE_TERRA") ?? present("HARD_CODE_OPUS")
+            : null;
         publication.prepared.profile = allocation ? allocation.profile : preferred;
         publication.route.normalAllocation = allocation;
       }
@@ -1237,7 +1177,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     if (atGeneration !== generation) {
       return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
     }
-    const revision = revisionOf(current, candidates, familyOf(ctx));
+    const revision = revisionOf(current, candidates);
     const allOwners = ready.length > 0 ? deps.owners(ctx) : [];
     // 마지막 await 이후 모든 항목을 같은 snapshot으로 검사하고 예약한다.
     // 앞 항목을 검사한 뒤 뒤 항목의 후보 조회를 기다리는 stale publication 틈도 없앤다.
@@ -1406,7 +1346,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 위임 적합성·난이도·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. GPT Main의 비-UI NORMAL은 사용 가능한 GPT 계열 NORMAL_SOL, HARD 코드는 HARD_CODE_ASTRA를 우선한다. 없거나 관측 소진이면 기존 추천을 따른다. 다른 Main의 비-UI NORMAL은 Sonnet이 기본이며 ${DEEPSEEK_TRIGGER_NOTE}. UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 위임 적합성·난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

@@ -31,6 +31,7 @@ const require = createRequire(path.join(ROOT, "package.json"));
  * The installer cannot import that TypeScript module before dependencies exist.
  */
 export const HARNESS_ROLES = [
+  "implSol",
   "implSonnet",
   "implOpus",
   "implDeepSeek",
@@ -39,7 +40,6 @@ export const HARNESS_ROLES = [
   "makerHardCodeSonnet",
   "crossReviewOpenAI",
   "crossReviewAnthropic",
-  "crossReviewAdvisory",
   "skim",
   "draft",
   "ocr",

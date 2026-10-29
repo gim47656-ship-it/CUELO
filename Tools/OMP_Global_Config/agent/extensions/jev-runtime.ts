@@ -770,8 +770,8 @@ function summarizeOwnerMessage(message: string, answersCheckpoint: boolean): Own
 }
 
 // 2026-10-08 사용자 결정: Main이 known Maker에게 보낸 지시를 JEV가 원 계약(PRIMARY_DELIVERABLE·OWNED_PATHS·
-// Acceptance) 대비 넷으로 분류한다. 실패·timeout·자격 없음·secret 후보는 불명이며 다른 모델로 대체하지 않는다.
-/** 분류가 이 안에 끝나지 않으면 불명으로 안내한다. 도구 호출을 붙잡지 않는 bounded advisory latency다. */
+// Acceptance) 대비 넷으로 분류한다. 실패·timeout·자격 없음·secret 후보는 분류 안내 없이 처리한다.
+/** 도구 호출을 붙잡지 않는 bounded advisory latency다. */
 const OWNER_MESSAGE_TIMEOUT_MS = 8_000;
 const OWNER_EXCERPT_CHARS = 1200;
 const OWNER_INSTRUCTION_LABELS = {
@@ -1030,6 +1030,10 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     /** 이미 판정한 경계. */
     // 발주 판정은 maker_route 한 곳에서만 수행한다.
     const judgedReviews = new Set<string>();
+    /** Session-scoped attempt notices survive same-session reloads independently of settlement. */
+    const advisedReviews = new Set<string>();
+    /** 같은 실행의 startTime이 확인된 경우 session 복귀 후에도 재전달을 구분한다. */
+    const advisedReviewRuns = new Set<string>();
     /** 같은 known owner에게 같은 정규화 지시를 반복할 때 local advisory를 한 번만 만든다. */
     const advisedOwnerMessages = new Set<string>();
     /** 완료된 동일 attempt의 미기록 Main 판정은 owner 후속 지시에서 한 번만 알린다. */
@@ -1492,8 +1496,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     ): Promise<void> {
       const generation = ownerMessageGeneration;
       const deliver = (kind: OwnerInstructionKind, answers: Record<string, JudgeAnswer> | undefined, reason = "") => {
-        // 동일 범위는 Main이 할 일이 없다. 2026-10-28 감사: 392건 중 186건이 동일 범위 안내였다.
-        if (generation !== ownerMessageGeneration || kind === "same-scope") return;
+        if (generation !== ownerMessageGeneration || kind === "same-scope" || kind === "unknown") return;
         pi.sendMessage(
           {
             customType: ADVISORY_CUSTOM_TYPE,
@@ -1556,7 +1559,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           return;
         }
         const answer = result.answers.ownerInstruction;
-        if (answer?.type === "choice" && answer.choice in OWNER_INSTRUCTION_LABELS) {
+        if (answer?.type === "choice" && answer.choice in OWNER_INSTRUCTION_LABELS
+          && Number.isFinite(answer.confidence) && answer.confidence >= 0.5) {
           deliver(answer.choice as OwnerInstructionKind, result.answers);
         } else {
           deliver("unknown", result.answers, "JEV 응답 불완전");
@@ -1799,7 +1803,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const todoAdvice: string[] = [];
       const identityNotes: string[] = [];
       const reviewSources: string[] = [];
-      const reports: ReviewStructuralReport[] = settled.map((job) => {
+      const reports = settled.map((job): ReviewStructuralReport | null => {
         const ref = jobIndex.get(job.jobId);
         const spawned = ref
           ? liveMakers.get(ref.callId)?.find((task) => task.index === ref.taskIndex)
@@ -1877,7 +1881,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const steering = request && request.steering.length > 0
           ? ` steering=${request.steering.join(",")}${request.omittedSteering > 0 ? `(+${request.omittedSteering} 생략)` : ""}`
           : "";
-        reviewSources.push(`${job.jobId} request=${request?.original ?? "미관측"}${steering} brief=${origin?.briefSource ?? "미관측"}${origin?.conversationSource ? ` conversation=${origin.conversationSource}` : ""}`);
+        const identityNoteCount = identityNotes.length;
         // 이 jobId의 다른 실행 row가 보이면 옛 보류는 더는 정산할 수 없다. 그 attempt의 outcome은 미상으로 남는다.
         if (pendingEntry && !deferred && rowStart !== undefined && rowStart !== pendingEntry.runStart) statusPending.delete(job.jobId);
         // 채널과 무관하게 이미 소비한 jobId는 다시 처리하지 않고, 같은 attempt도 한 번만 소비한다.
@@ -1901,6 +1905,15 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             identityNotes.push(`${spawned?.name ?? observed?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
           }
         }
+        const reviewKey = identity ? JSON.stringify([identity.sessionId, identity.attemptId]) : undefined;
+        const runKey = rowStart === undefined ? undefined : JSON.stringify([ctx.sessionManager?.getSessionId?.(), job.jobId, rowStart]);
+        if ((reviewKey && advisedReviews.has(reviewKey)) || (runKey && advisedReviewRuns.has(runKey))) {
+          identityNotes.length = identityNoteCount;
+          return null;
+        }
+        if (reviewKey) advisedReviews.add(reviewKey);
+        if (identity && runKey) advisedReviewRuns.add(runKey);
+        reviewSources.push(`${job.jobId} request=${request?.original ?? "미관측"}${steering} brief=${origin?.briefSource ?? "미관측"}${origin?.conversationSource ? ` conversation=${origin.conversationSource}` : ""}`);
         const todoRevisionKey = spawned && job.terminalRevision
           ? `${spawned.name ?? job.jobId}:${job.terminalRevision}`
           : undefined;
@@ -1953,7 +1966,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           todoPartialCompletion: todoAssessment?.partialCompletion ?? null,
           todoReworkLinked: todoAssessment?.reworkLinked ?? null,
         };
-      });
+      }).filter((report): report is ReviewStructuralReport => report !== null);
+      closeSettledMakers(settled.map((job) => job.jobId));
+      if (reports.length === 0) return;
       const todoGapObservations = reports.flatMap((report): StructuralCountObservation[] => {
         if (!report.todoCoverageObserved) return [];
         const issueCounts = [
@@ -1985,7 +2000,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         value: report.unresolvedCount,
       }));
       const structuralSummary = summarizeStructuralReports(reports);
-      closeSettledMakers(settled.map((job) => job.jobId));
       // JEV 판정이 없는 구조 수치만 한 줄로 싣는다(2026-10-28 감사: 192건 전부 판정 생략, 중앙 3,052자). TODO 조치 안내만 이어 붙인다.
       sendAdvisory(
         "pre-review",
@@ -2031,7 +2045,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       judgedResumeRuns.clear();
       advisedOwnerMessages.clear();
       cancelOwnerMessageJudgments();
-      advisedMissingVerdicts.clear();
       pendingCheckpoints.clear();
       advisedCheckpoints.clear();
       pendingFailures.clear();
@@ -2288,13 +2301,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         // 다만 durable dispatch/outcome으로 확인한 canonical owner의 누락 판정은 여전히 확인할 수 있다.
         const summary = message && (owner || attempt) ? summarizeOwnerMessage(message, answersCheckpoint) : undefined;
         const missingVerdict = summary?.shouldAdvise && attempt?.status === "completed"
-          && !advisedMissingVerdicts.has(attempt.attemptId)
+          && !advisedMissingVerdicts.has(JSON.stringify([attempt.sessionId, attempt.attemptId]))
           && !baseLedger.read().some((record) => record.type === "verdict"
             && record.sessionId === attempt.sessionId
             && record.assignmentId === attempt.assignmentId
             && record.attemptId === attempt.attemptId);
         if (missingVerdict) {
-          advisedMissingVerdicts.add(attempt.attemptId);
+          advisedMissingVerdicts.add(JSON.stringify([attempt.sessionId, attempt.attemptId]));
           sendAdvisory("pre-dispatch-existing-owner-message", renderAdvisory(
             "pre-dispatch-existing-owner-message", undefined, [],
             `명시 판정 미기록(읽은 원장 기준): ${attempt.sessionId}|${attempt.assignmentId}|${attempt.attemptId}. 완료 보고와 해당 수용 조건·증거를 Main이 대조한 뒤 routing_verdict로 accepted/rework/held를 직접 기록한다. 증거 보충·추가 요구만으로 rework를 추정하지 않는다.`,
