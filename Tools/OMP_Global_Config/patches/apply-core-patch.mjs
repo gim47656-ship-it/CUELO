@@ -282,7 +282,7 @@ function recallProvenance(result: RecallResult): RecallProvenance {
 		const item = entry as { path?: unknown; anchor?: unknown } | null;
 		if (!item || typeof item.path !== "string" || item.path === "") return [];
 		const text = item.path + (typeof item.anchor === "string" && item.anchor !== "" ? "#" + item.anchor : "");
-		return [text.length > 120 ? text.slice(0, 119) + "…" : text];
+		return [text.length > 120 ? text.slice(0, 119) + "${"…"}" : text];
 	});
 	return {
 		scope,
@@ -302,8 +302,8 @@ function recallProvenanceNote(result: RecallResult): string {
 		if (info.corrected) parts.push("corrected " + info.corrected);
 	}
 	if (info.citations.length > 0) {
-		const more = info.citations.length > 3 ? " 외 " + (info.citations.length - 3) + "건" : "";
-		parts.push("근거 후보: " + info.citations.slice(0, 3).join(", ") + more);
+		const more = info.citations.length > 3 ? "${" 외 "}" + (info.citations.length - 3) + "${"건"}" : "";
+		parts.push("${"근거 후보: "}" + info.citations.slice(0, 3).join(", ") + more);
 	}
 	return parts.length > 0 ? " {" + parts.join("; ") + "}" : "";
 }
@@ -312,12 +312,12 @@ function recallRevisionFooter(results: readonly RecallResult[]): string {
 	if (results.some(result => recallProvenance(result).revision > 1))
 		notes.push("Corrected rows: read memory://<id> for the full metadata and correction reason.");
 	if (results.some(result => recallProvenance(result).citations.length > 0))
-		notes.push("근거 후보 paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
+		notes.push("${"근거 후보"} paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
 	return notes.length > 0 ? "\n\n" + notes.join("\n") : "";
 }
 
 /**
- * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no 근거 후보 even when the
+ * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no ${"근거 후보"} even when the
  * lesson it came from cites a record. Copy just the citations of that origin row onto the fact result before it is rendered.
  */
 function attachFactCitations(memory: { conn: { query(sql: string): { get(...params: string[]): unknown } } }, results: RecallResult[]): void {
@@ -374,7 +374,7 @@ function recallProvenance(result: RecallResult): RecallProvenance {
 	for (const entry of cited) {
 		const text = recallCitationText(entry);
 		if (text === undefined) continue;
-		(goneKeys.has(text) ? gone : citations).push(text.length > 120 ? text.slice(0, 119) + "…" : text);
+		(goneKeys.has(text) ? gone : citations).push(text.length > 120 ? text.slice(0, 119) + "${"…"}" : text);
 	}
 	return {
 		scope,
@@ -395,12 +395,12 @@ function recallProvenanceNote(result: RecallResult): string {
 		if (info.corrected) parts.push("corrected " + info.corrected);
 	}
 	if (info.citations.length > 0) {
-		const more = info.citations.length > 3 ? " 외 " + (info.citations.length - 3) + "건" : "";
-		parts.push("근거 후보: " + info.citations.slice(0, 3).join(", ") + more);
+		const more = info.citations.length > 3 ? "${" 외 "}" + (info.citations.length - 3) + "${"건"}" : "";
+		parts.push("${"근거 후보: "}" + info.citations.slice(0, 3).join(", ") + more);
 	}
 	if (info.gone.length > 0) {
-		const more = info.gone.length > 3 ? " 외 " + (info.gone.length - 3) + "건" : "";
-		parts.push("근거 사라짐: " + info.gone.slice(0, 3).join(", ") + more);
+		const more = info.gone.length > 3 ? "${" 외 "}" + (info.gone.length - 3) + "${"건"}" : "";
+		parts.push("${"근거 사라짐: "}" + info.gone.slice(0, 3).join(", ") + more);
 	}
 	return parts.length > 0 ? " {" + parts.join("; ") + "}" : "";
 }
@@ -409,9 +409,9 @@ function recallRevisionFooter(results: readonly RecallResult[]): string {
 	if (results.some(result => recallProvenance(result).revision > 1))
 		notes.push("Corrected rows: read memory://<id> for the full metadata and correction reason.");
 	if (results.some(result => recallProvenance(result).citations.length > 0))
-		notes.push("근거 후보 paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
+		notes.push("${"근거 후보"} paths are where a memory says it was recorded, not proof: open one to verify before relying on the memory.");
 	if (results.some(result => recallProvenance(result).gone.length > 0))
-		notes.push("근거 사라짐 means a file or heading this memory cites no longer exists in the project, so the memory may be stale: check it against the current files before relying on it.");
+		notes.push("${"근거 사라짐"} means a file or heading this memory cites no longer exists in the project, so the memory may be stale: check it against the current files before relying on it.");
 	return notes.length > 0 ? "\n\n" + notes.join("\n") : "";
 }
 
@@ -565,7 +565,7 @@ function markGoneCitations(results: RecallResult[]): void {
 }
 
 /**
- * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no 근거 후보 even when the
+ * A fact extracted from an evidence lesson carries only source_memory_id, so the recall line for it would show no ${"근거 후보"} even when the
  * lesson it came from cites a record. Copy just the citations (and the cwd they were checked against) of that origin row onto the fact result.
  */
 function attachFactCitations(memory: { conn: { query(sql: string): { get(...params: string[]): unknown } } }, results: RecallResult[]): void {
@@ -841,7 +841,7 @@ async function learnSimilarHint(
 			if (!row.id || row.id === savedId || (row as { source_memory_id?: unknown }).source_memory_id === savedId) continue;
 			if (typeof row.dense_score !== "number" || row.dense_score < floor) continue;
 			const oneLine = String(row.content ?? "").replace(/\s+/g, " ").trim();
-			lines.push("비슷한 기존 기억: " + row.id + " — " + (oneLine.length > 80 ? oneLine.slice(0, 79) + "…" : oneLine));
+			lines.push("${"비슷한 기존 기억: "}" + row.id + "${" — "}" + (oneLine.length > 80 ? oneLine.slice(0, 79) + "${"…"}" : oneLine));
 		}
 		if (lines.length === 0) return "";
 		return "\n" + lines.join("\n") + "\nIf any of these is the same lesson, update that memory (reuse its topic key, or edit it with xd://memory_edit) instead of keeping near-duplicates";
@@ -20124,6 +20124,26 @@ EDITS.push({
 		anchor: "\t\t\tlet entry = results.get(job.f);\n\t\t\tif (!entry) {\n\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\tresults.set(job.f, entry);\n\t\t\t}\n\t\t\tjob.passages.forEach((passage, k) => {",
 		patched: "\t\t\tjob.batch.forEach(({ f, passage }, k) => {\n\t\t\t\tlet entry = results.get(f);\n\t\t\t\tif (!entry) {\n\t\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\t\tresults.set(f, entry);\n\t\t\t\t}",
 	});
+}
+
+// Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
+// keep future Node/Bun output identical. Accept only the exact previously emitted
+// helper bodies below, never normalize arbitrary installed source on revert.
+for (const marker of ["async function learnSimilarHint(", "// HANSE: recall fact citation metadata is typed"]) {
+	const entry = EDITS.find(edit => edit.marker === marker);
+	const originals = [entry, ...(entry.alternates ?? [])];
+	const historical = new Map();
+	for (const candidate of originals) {
+		for (const body of [candidate.patched, candidate.legacyPatched].filter(Boolean)) {
+			const escaped = body.replace(/[^\x00-\x7f]/g, char => "\\u" + char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0"));
+			if (escaped !== body) historical.set(escaped, {
+				file: candidate.file, marker: candidate.marker, anchor: candidate.anchor,
+				patched: candidate.patched, legacyPatched: escaped, requires: escaped,
+			});
+		}
+	}
+	for (const candidate of originals) candidate.excludes = [...[candidate.excludes ?? []].flat(), ...historical.keys()];
+	entry.alternates = [...originals.slice(1), ...historical.values()];
 }
 
 

@@ -70,8 +70,8 @@ for (const rel of editFiles) {
 const baseEnv = { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, OMP_CORE_PATCH_TARGET: fixture };
 
 type Run = { code: number | null; out: string };
-function run(args: string[], opts: { env?: NodeJS.ProcessEnv; cwd?: string; script?: string } = {}): Run {
-	const r = spawnSync("node", [opts.script ?? SCRIPT, ...args], {
+function run(args: string[], opts: { env?: NodeJS.ProcessEnv; cwd?: string; script?: string; executable?: string } = {}): Run {
+	const r = spawnSync(opts.executable ?? "node", [opts.script ?? SCRIPT, ...args], {
 		encoding: "utf8",
 		env: opts.env ?? baseEnv,
 		cwd: opts.cwd,
@@ -288,6 +288,60 @@ for (const header of ["export const taskSchema = type({", "const taskSchemaNoIso
 	check(`${header}: 복구 뒤 model 줄 수는 기준선과 같다(다른 schema에 중복 추가 없음)`, modelLineCount(recovered) === modelLineCount(baselineTypes));
 	const again = run(["--check"], { env: partialEnv });
 	check(`${header}: 복구 뒤 --check 는 APPLIED 이고 재적용은 SKIP 이다`, again.code === 0 && run([], { env: partialEnv }).out.includes("SKIP"), again.out.slice(-200));
+}
+
+// A deployed Node-applied tree must revert under Bun without borrowing apply's backups.
+// Explicit escaped fixtures also cover helper bodies emitted by older Bun.
+console.log("\n[O] no-backup Node/Bun representation roundtrip and unknown-body refusal");
+for (const [writer, reader, escaped] of [["node", process.execPath, false], [process.execPath, "node", false], ["node", process.execPath, true], ["node", "node", true]] as const) {
+	const crossRoot = join(tmpRoot, `unicode-${writer === "node" ? "node" : "bun"}-${reader === "node" ? "node" : "bun"}-${escaped}`);
+	const crossTarget = join(crossRoot, "target");
+	const applyHome = join(crossRoot, "apply-home");
+	const revertHome = join(crossRoot, "empty-home");
+	mkdirSync(applyHome, { recursive: true });
+	mkdirSync(revertHome, { recursive: true });
+	for (const [rel, bytes] of snapshot) {
+		mkdirSync(dirname(join(crossTarget, rel)), { recursive: true });
+		writeFileSync(join(crossTarget, rel), bytes);
+	}
+	const applyEnv = { ...baseEnv, HOME: applyHome, USERPROFILE: applyHome, OMP_CORE_PATCH_TARGET: crossTarget };
+	const revertEnv = { ...applyEnv, HOME: revertHome, USERPROFILE: revertHome };
+	const applied = run([], { env: applyEnv, executable: writer });
+	if (applied.code !== 0) throw new Error(applied.out);
+	if (escaped) {
+		for (const [rel, startMarker, endMarker] of [
+			["src/tools/learn.ts", "// HANSE: learn lists similar existing memories\nconst", "// HANSE: learn evidence citations"],
+			["src/mnemopi/state.ts", "// HANSE: recall provenance note", "/** Renders a recall block"],
+		]) {
+			const file = join(crossTarget, rel);
+			const text = readFileSync(file, "utf8");
+			const start = text.indexOf(startMarker), end = text.indexOf(endMarker, start);
+			if (start < 0 || end <= start) throw new Error(`legacy fixture boundary missing: ${rel}`);
+			const body = text.slice(start, end);
+			const encoded = body.replace(/[^\x00-\x7f]/g, ch => "\\u" + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0"));
+			if (body === encoded) throw new Error(`legacy fixture has no Unicode: ${rel}`);
+			writeFileSync(file, text.slice(0, start) + encoded + text.slice(end));
+		}
+	}
+	const reverted = run(["--revert"], { env: revertEnv, executable: reader });
+	check(`${writer} -> ${reader}: no-backup revert succeeds`, reverted.code === 0, reverted.out.slice(-700));
+	check(`${writer} -> ${reader}: exact pristine bytes restored`, [...snapshot].every(([rel, bytes]) => readFileSync(join(crossTarget, rel)).equals(bytes)));
+	if (reverted.code !== 0) continue;
+	const reapply = run([], { env: applyEnv, executable: reader });
+	check("reapply/check/idempotent apply after no-backup revert", reapply.code === 0 && run(["--check"], { env: applyEnv, executable: reader }).code === 0 && run([], { env: applyEnv, executable: reader }).out.includes("SKIP"));
+	const altered = join(crossTarget, "src/tools/learn.ts");
+	const normal = readFileSync(altered, "utf8");
+	const changed = normal.replace("const LEARN_SIMILAR_MAX_LINES = 3;", "const LEARN_SIMILAR_MAX_LINES = 4;");
+	if (changed === normal) throw new Error("unknown-body fixture anchor missing");
+	writeFileSync(altered, changed);
+	const stateFile = join(crossTarget, "src/mnemopi/state.ts");
+	const normalState = readFileSync(stateFile, "utf8");
+	const changedState = normalState.replace("const gone: string[] = [];", 'const gone: string[] = ["local"];');
+	if (changedState === normalState) throw new Error("unknown provenance fixture anchor missing");
+	writeFileSync(stateFile, changedState);
+	const refused = run(["--revert"], { env: revertEnv, executable: reader });
+	check("unknown changed helper is refused without backups", refused.code === 1 && readFileSync(altered, "utf8").includes("const LEARN_SIMILAR_MAX_LINES = 4;"), refused.out.slice(-500));
+	check("unknown changed provenance is refused without clobbering", refused.code === 1 && readFileSync(stateFile, "utf8").includes('const gone: string[] = ["local"];'));
 }
 
 rmSync(tmpRoot, { recursive: true, force: true });
