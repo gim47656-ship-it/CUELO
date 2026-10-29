@@ -69,6 +69,41 @@ function isConversationCustomMessage(message: AgentMessage): boolean {
     || (custom.customType === AUTOLEARN_SAVED_CUSTOM_TYPE && custom.display !== false);
 }
 
+/**
+ * user-input-interpreter 확장이 사용자 메시지 뒤에 붙이는 숨은 영어 통역(display:false).
+ * 따로 그리지 않고 가장 가까운 앞 사용자 말풍선 아래 접힌 토글로 보인다. 앞에 사용자
+ * 메시지가 없는 통역만 예전처럼 작업 로그 상자로 남는다.
+ */
+export const USER_INPUT_TRANSLATION_CUSTOM_TYPE = "user-input-translation";
+const USER_INPUT_TRANSLATION_PREAMBLE = "[interpreter] ";
+
+function userInputTranslationTarget(messages: readonly AgentMessage[], idx: number): number {
+  const message = messages[idx];
+  if (message?.role !== "custom" || (message as CustomMessage).customType !== USER_INPUT_TRANSLATION_CUSTOM_TYPE) return -1;
+  for (let j = idx - 1; j >= 0; j--) if (messages[j].role === "user") return j;
+  return -1;
+}
+
+/** 통역 본문: "[interpreter] " 머리말 줄과 빈 줄을 뗀 영어. 형식이 다르면 숨기지 않고 전체를 둔다. */
+export function userInputTranslationText(message: CustomMessage): string {
+  const content = typeof message.content === "string"
+    ? message.content
+    : message.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+  if (!content.startsWith(USER_INPUT_TRANSLATION_PREAMBLE)) return content;
+  const bodyStart = content.indexOf("\n\n");
+  return bodyStart < 0 ? content : content.slice(bodyStart + 2);
+}
+
+/** 사용자 메시지 인덱스 → 그 말풍선 아래 접어 둘 영어 통역. 한 메시지에 여럿이면 나중 것. */
+export function collectUserInputTranslations(messages: readonly AgentMessage[]): Map<number, string> {
+  const translations = new Map<number, string>();
+  for (let idx = 0; idx < messages.length; idx++) {
+    const target = userInputTranslationTarget(messages, idx);
+    if (target >= 0) translations.set(target, userInputTranslationText(messages[idx] as CustomMessage));
+  }
+  return translations;
+}
+
 /** Synthetic entry ids of tab-local command results. They are never server entries. */
 export const LOCAL_COMMAND_ENTRY_PREFIX = "local-command:";
 
@@ -196,8 +231,9 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
       // A `toolResult` is not its own item: the renderer shows it with the
       // `toolCall` block it answers. User messages never reach here because
       // each one anchors its own turn.
-      // 원문 말풍선에 붙은 번역은 그 말풍선이 그린다(lib/reply-translation.ts).
-      if (isAttachedReplyTranslation(message)) continue;
+      // 원문 말풍선에 붙은 번역은 그 말풍선이 그린다(lib/reply-translation.ts). 사용자 입력의
+      // 영어 통역도 그 사용자 말풍선이 접어서 그린다.
+      if (isAttachedReplyTranslation(message) || userInputTranslationTarget(messages, idx) >= 0) continue;
       if (isConversationCustomMessage(message)) {
         flushProcess();
         items.push({ kind: "message", idx, anchorIdx });
@@ -366,7 +402,9 @@ export function partitionTranscriptPlan(
       // conversation is the user's turns and the agent's answers. A
       // `toolResult` is rendered with the `toolCall` it answers, so it is never
       // an entry of its own here either.
-      if (message.role !== "toolResult" && !isAttachedReplyTranslation(message)) addEntries(anchorIdx, [{ idx: item.idx }], 0);
+      if (message.role !== "toolResult" && !isAttachedReplyTranslation(message) && userInputTranslationTarget(messages, item.idx) < 0) {
+        addEntries(anchorIdx, [{ idx: item.idx }], 0);
+      }
       continue;
     }
 

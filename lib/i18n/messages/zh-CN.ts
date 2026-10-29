@@ -816,6 +816,8 @@ export const zhCNLocale: LocalePlugin = {
     "i18n.noMessage": "（无消息）",
     "i18n.showOriginalReply": "查看英文原文",
     "i18n.hideOriginalReply": "收起英文原文",
+    "i18n.showInputTranslation": "查看英文翻译",
+    "i18n.hideInputTranslation": "收起英文翻译",
     "i18n.showExtensionMessage": "显示扩展消息",
     "i18n.collapse": "收起",
     "i18n.expand": "展开",

@@ -44,6 +44,17 @@ function memoryLedger(initial: LedgerRecord[] = []): RoutingLedger & { records: 
 const CODEX_MAIN = { provider: "openai-codex", id: "gpt-6-sol" };
 const ANTHROPIC_MAIN = { provider: "anthropic", id: "claude-opus-5-5" };
 let nextHarnessSession = 0;
+/**
+ * 실제 task 호출은 core schema의 필수 solutionSpace를 싣는다. 이 파일의 발주 fixture는 그 필드가 관심사가 아니라서
+ * 빠진 항목에만 채운다. 키를 명시한 입력(undefined 포함)은 그대로 둬 공백·누락 거절을 시험할 수 있다.
+ */
+function withSolutionSpace(input: Record<string, unknown>): Record<string, unknown> {
+  const fill = (item: unknown) => item && typeof item === "object" && !("solutionSpace" in item)
+    ? { ...(item as Record<string, unknown>), solutionSpace: "one fix: settled" }
+    : item;
+  return Array.isArray(input.tasks) ? { ...input, tasks: input.tasks.map(fill) } : fill(input) as Record<string, unknown>;
+}
+
 function harness(options: {
   fail?: boolean;
   failCalls?: number[];
@@ -52,7 +63,8 @@ function harness(options: {
   ownerTarget?: string;
   workClass?: string;
   workClasses?: string[];
-
+  /** Jev workClass choice의 confidence. 주면 선택 등급에 그 확률, 나머지 등급에 1-그 값을 싣는다. */
+  workClassConfidence?: number;
   hardFocuses?: string[];
   uiUxBoundary?: number;
   candidates?: typeof candidates;
@@ -122,7 +134,14 @@ function harness(options: {
       if (options.judgeGate && call === (options.judgeGateOnCall ?? 1)) await options.judgeGate;
       if (options.fail || options.failCalls?.includes(call)) throw new Error("TimeoutError");
       return { answers: {
-        workClass: { choice: options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL" },
+        workClass: {
+          choice: options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL",
+          ...(options.workClassConfidence === undefined ? {} : (() => {
+            const chosen = options.workClasses?.[call - 1] ?? options.workClass ?? "NORMAL";
+            const other = chosen === "HARD" ? "NORMAL" : "HARD";
+            return { confidence: options.workClassConfidence, probabilities: { [chosen]: options.workClassConfidence, [other]: 1 - options.workClassConfidence } };
+          })()),
+        },
         hardFocus: { choice: options.hardFocuses?.[call - 1] ?? "CODE_SYSTEM" },
         uiUxBoundary: { noul: options.uiUxBoundary ?? 0 },
         duplicate: { noul: options.duplicate ?? 0 }, additionalInstruction: { noul: options.additional ?? 0 },
@@ -150,15 +169,15 @@ function harness(options: {
     prepareBatch: (context: string, tasks: typeof task[], _ctx: unknown, signal?: AbortSignal) =>
       route.prepareBatch(context, tasks, routingCtx, signal, "route"),
     beforeTask: (value: Record<string, unknown>, _ctx: unknown, callId?: string) =>
-      route.beforeTask(value, routingCtx, callId),
+      route.beforeTask(withSolutionSpace(value), routingCtx, callId),
     noteSpawned: (value: Record<string, unknown>, callId = "task-call",
       ids = new Map<number, { agentId: string; jobId: string }>([[0, { agentId: "agent-viewfix", jobId: "job-viewfix" }]])) =>
       route.noteSpawned(value, sessionId, callId, ids),
     // core는 같은 task 호출의 admission과 spawn 결과에 같은 toolCallId를 준다. noteSpawned 기본값과 같은 호출로 낸다.
-    dispatch: (model: string, task: string = brief) => route.beforeTask({
+    dispatch: (model: string, task: string = brief) => route.beforeTask(withSolutionSpace({
       context: input.context,
       tasks: [{ name: input.tasks[0]!.name, task, agent: "maker", model }],
-    }, routingCtx, "task-call"),
+    }), routingCtx, "task-call"),
     setOwners(value: typeof owners) { owners = value; },
     setMain(value: typeof CODEX_MAIN | null) { mainModel = value ? { ...value, identity: { class: modelFamilies[`${value.provider}/${value.id}`] ?? "unknown" } } : undefined; },
   };
@@ -366,6 +385,20 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(batch.routes[0]!.status).toBe("judged");
     expect(await h.beforeTask(h.input, {})).toBeUndefined();
   });
+  test("FINDING_ID 재작업인데 failureEvidence가 비면 briefGaps로 실패 원인과 이전 접근의 한계를 요구하고, 있으면 알리지 않는다", async () => {
+    const h = harness();
+    const rework = { ...h.task, task: reworkTaskBrief };
+    const missing = await h.prepareBatch("재작업", [rework], {});
+    expect(missing.routes[0]!.briefGaps).toEqual([
+      "FINDING_ID 재작업인데 failureEvidence가 비어 있음: 이전 시도가 무엇 때문에 실패했는지와 그 접근의 한계를 적으세요.",
+    ]);
+    const blank = await h.prepareBatch("재작업", [{ ...rework, assessment: { ...facts, failureEvidence: [" "] } }], {});
+    expect(blank.routes[0]!.briefGaps).toHaveLength(1);
+    const given = await h.prepareBatch("재작업", [{ ...rework, assessment: { ...facts, failureEvidence: ["f-1: 캐시 무효화 누락으로 이전 수정이 새로고침 뒤 되돌아감"] } }], {});
+    expect(given.routes[0]!.briefGaps).toBeNull();
+    // 재작업이 아니면 failureEvidence가 없어도 빈칸이 아니다.
+    expect((await h.prepareBatch("새 작업", [h.task], {})).routes[0]!.briefGaps).toBeNull();
+  });
   test("같은 배치의 OWNED_PATHS 겹침은 준비 결과 ownershipOverlaps로 먼저 알리고, 같은 배치 발주는 그대로 막힌다", async () => {
     const make = (name: string, paths: string) => ({
       name,
@@ -452,10 +485,10 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(batch.unavailableCandidates).toEqual([{ profile: "NORMAL_DEEPSEEK", model: missing.model, reason: "registry에 없는 Maker 후보" }]);
     expect(batch.routes[0]!.status).toBe("judged");
     const input = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }] };
-    expect(await route.beforeTask(input, ctx)).toBeUndefined();
+    expect(await route.beforeTask(withSolutionSpace(input), ctx)).toBeUndefined();
     // 불가한 후보를 지정하면 다른 모델로 대체하지 않고 막는다.
     const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:auto` }] };
-    expect(await route.beforeTask(blocked, ctx)).toMatchObject({ block: true });
+    expect(await route.beforeTask(withSolutionSpace(blocked), ctx)).toMatchObject({ block: true });
   });
   test("후보 강도는 registry 단계 전체이고 Jev에 강도를 묻지 않으며 발주는 '<후보 selector>:auto'만 통과한다", async () => {
     const policy = loadRoutingPolicy();
@@ -491,7 +524,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(batch.candidates).toEqual([...candidates, ...daybreakFixtures].map((candidate) => ({ ...candidate, efforts: ladders[candidate.model] ?? candidate.efforts })));
     expect(Object.keys(asked[0]!).filter((key) => /effort/i.test(key))).toEqual([]);
     expect(batch.routes[0]!.profile).toBe("HARD_CODE_OPUS");
-    const dispatch = (model: string) => ({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
+    const dispatch = (model: string) => withSolutionSpace({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
     for (const concrete of ["anthropic/claude-opus-5-5:low", "anthropic/claude-opus-5-5:max", "anthropic/claude-opus-5-5"]) {
       expect(await route.beforeTask(dispatch(concrete), ctx)).toMatchObject({
         block: true, reason: expect.stringContaining("model:'anthropic/claude-opus-5-5:auto'"),
@@ -1043,6 +1076,38 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       { ...h.input.tasks[0], model: "", task: '[character-summon alias="TESTA" model="devin/swe-2"]' },
     ]) expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
   });
+  test("공백·누락·문자열 아닌 solutionSpace는 full·prepared·batch 어디서든 예약 전에 거절하고 내용이 있으면 통과한다(#57)", async () => {
+    // core schema는 공백 문자열을 받고 task 도구는 lenient라 누락·다른 타입도 hook까지 온다. core는 trim 뒤 빈 값을 버리고
+    // child 강도를 brief 전문으로 분류하므로, 준비된 설명이 없는 발주는 여기서 막는다.
+    const h = harness();
+    const other = { name: "OtherFix", task: brief.replace("src/view.ts", "src/other.ts"), assessment: { ...facts, paths: ["src/other.ts"] } };
+    const routes = await h.prepare("같은 계약", [h.task, other], {} as never) as { preparedId: string }[];
+    const view = (solutionSpace: unknown) => ({ ...h.input.tasks[0], solutionSpace });
+    for (const solutionSpace of ["", "   ", "\n\t", undefined, 3]) {
+      const blocked = await h.beforeTask({ ...h.input, tasks: [view(solutionSpace)] }, {} as never, "full") as { block: boolean; reason: string };
+      expect(blocked).toMatchObject({ block: true });
+      expect(blocked.reason).toContain("solutionSpace");
+    }
+    // prepared 참조도 복원한 뒤 같은 검사를 받는다.
+    const referenced = (solutionSpace: unknown) => ({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ task: `PREPARED_TASK: ${routes[0]!.preparedId}`, model: "openai-codex/gpt-6.1-sol:auto", solutionSpace }],
+    });
+    expect(await h.beforeTask(referenced("  "), {} as never, "ref")).toMatchObject({ block: true });
+    // batch 하나라도 비면 배치 전체를 막고 앞 항목도 예약하지 않는다: 같은 경로의 다른 호출이 승인 중 예약에 막히지 않는다.
+    for (const solutionSpace of [" ", undefined]) {
+      const batch = {
+        context: "같은 계약",
+        tasks: [view("one fix: view label"), { name: other.name, task: other.task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto", solutionSpace }],
+      };
+      expect(await h.beforeTask(batch, {} as never, `blank-batch-${String(solutionSpace)}`)).toMatchObject({ block: true, reason: expect.stringContaining("OtherFix") });
+    }
+    expect(await h.beforeTask({ ...h.input, tasks: [view("one fix: view label")] }, {} as never, "next-call")).toBeUndefined();
+    // 위 호출이 이제 그 경로를 예약했으므로 같은 호출 id로 prepared 통과를 확인한다.
+    expect(await h.beforeTask(referenced("one fix: view label"), {} as never, "next-call")).toMatchObject({ input: expect.any(Object) });
+    // 대조: 실제로 남은 예약은 다른 호출 id의 같은 경로 발주를 막는다. 위의 거절된 batch가 예약을 남겼다면 next-call이 이렇게 막혔다.
+    expect(await h.beforeTask({ ...h.input, tasks: [view("one fix: view label")] }, {} as never, "other-call")).toMatchObject({ block: true });
+  });
   test("0.5 이상 판정과 식별 가능한 실재 owner가 함께 있을 때만 기존 owner를 우선한다", async () => {
     const h = harness({ duplicate: 0.5, ownerTarget: "owner0" });
     h.setOwners([{ name: "Existing", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"] }]);
@@ -1436,7 +1501,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       context: "계약",
       tasks: tasks.map((entry) => ({ name: entry.name, task: entry.task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" })),
     };
-    expect(await h.route.beforeTask(input, h.ctx)).toBeUndefined();
+    expect(await h.route.beforeTask(withSolutionSpace(input), h.ctx)).toBeUndefined();
     expect(refreshCalls).toEqual([]);
     await h.route.prepareBatch("새 준비", tasks, h.ctx);
     expect(refreshCalls.filter((provider) => provider === "anthropic")).toHaveLength(1);
@@ -1455,7 +1520,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     const h = registryHarness({ registry });
     await h.route.prepareBatch("계약", [h.task], h.ctx);
     drifted = true;
-    expect(await h.route.beforeTask(dispatchInput(h.task), h.ctx)).toMatchObject({ block: true });
+    expect(await h.route.beforeTask(withSolutionSpace(dispatchInput(h.task)), h.ctx)).toMatchObject({ block: true });
   });
 
   test("갱신 뒤 찾은 후보도 추론 단계를 선언하지 않으면 auto로 고를 수 없어 발주 후보에서 제외된다", async () => {
@@ -1947,7 +2012,7 @@ describe("발주 이력 기록과 history advisory", () => {
       past({ name: "PastUi", focus: "UI_UX" }),
       past({ name: "PastNormal", workClass: "NORMAL", focus: null }),
     ]);
-    const h = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], ledger });
+    const h = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], ledger, workClassConfidence: 0.62 });
     const batch = await h.prepareBatch("이력", [h.task], {} as never);
     expect(batch.routes[0]!.history).toMatchObject({
       workClass: "HARD", focus: "CODE_SYSTEM", attempts: 1, unobserved: 0,
@@ -1973,6 +2038,9 @@ describe("발주 이력 기록과 history advisory", () => {
       type: "dispatch", name: "ViewFix", workClass: "HARD", focus: "CODE_SYSTEM",
       recommendedProfile: "HARD_CODE_TERRA", recommendedModel: "openai-codex/gpt-6.1-sol", recommendedEffort: "auto",
       chosenModel: "anthropic/claude-opus-5-5", chosenEffort: "auto", routingReason: true, purpose: null,
+      // Jev 등급 확신도와 Main의 변경 근거 본문을 같은 attempt 행에 남겨 outcome·verdict와 attemptId로 잇는다.
+      workClassConfidence: 0.62, workClassProbabilities: { HARD: 0.62, NORMAL: 0.38 },
+      routingReasonText: "독립 판단이 필요해 대안을 선택함",
       sessionId: h.sessionId, assignmentId: `${h.sessionId}#task-call#0`, attempt: 1, attemptId: `${h.sessionId}#task-call#0#a1`,
       agentId: "agent-viewfix", jobId: "job-viewfix",
     });
@@ -1981,6 +2049,25 @@ describe("발주 이력 기록과 history advisory", () => {
     expect((await harness().prepareBatch("이력 없음", [harness().task], {} as never)).routes[0]!.history).toBeNull();
     const unavailable = harness({ fail: true, ledger: memoryLedger([past({})]) });
     expect((await unavailable.prepareBatch("Jev 불가", [unavailable.task], {} as never)).routes[0]!.history).toBeNull();
+  });
+  test("Jev가 확신도를 주지 않았거나 불가하면 dispatch 행의 확신도는 null이고 근거 줄이 없으면 본문도 null이다", async () => {
+    const ledger = memoryLedger([]);
+    const h = harness({ ledger });
+    await h.prepare("같은 계약", [h.task], {} as never);
+    expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0] }] });
+    expect(ledger.records.at(-1)).toMatchObject({
+      type: "dispatch", workClass: "NORMAL", workClassConfidence: null, workClassProbabilities: null, routingReason: false, routingReasonText: null,
+    });
+  });
+  test("빈 ROUTING_REASON 줄 다음 줄은 근거 본문으로 기록하지 않는다", async () => {
+    const ledger = memoryLedger([]);
+    const h = harness({ ledger });
+    await h.prepare("같은 계약", [h.task], {} as never);
+    const task = `${brief}\nROUTING_REASON:\n# Target`;
+    expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto", task)).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task }] });
+    expect(ledger.records.at(-1)).toMatchObject({ type: "dispatch", routingReasonText: null });
   });
 });
 

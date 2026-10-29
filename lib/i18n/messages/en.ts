@@ -816,6 +816,8 @@ export const enLocale = {
     "i18n.noMessage": "(no message)",
     "i18n.showOriginalReply": "Show English original",
     "i18n.hideOriginalReply": "Hide English original",
+    "i18n.showInputTranslation": "Show English translation",
+    "i18n.hideInputTranslation": "Hide English translation",
     "i18n.showExtensionMessage": "Show extension message",
     "i18n.collapse": "Collapse",
     "i18n.expand": "Expand",

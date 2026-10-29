@@ -1858,6 +1858,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               chosenModel: sourceDispatch?.chosenModel ?? "",
               chosenEffort: sourceDispatch?.chosenEffort ?? "",
               routingReason: sourceDispatch?.routingReason ?? false,
+              routingReasonText: sourceDispatch?.routingReasonText ?? null,
+              workClassConfidence: sourceDispatch?.workClassConfidence ?? null,
+              workClassProbabilities: sourceDispatch?.workClassProbabilities ?? null,
               purpose: sourceDispatch?.purpose ?? null,
               // 재개 attempt는 원 attempt의 소유 계약을 그대로 잇는다. 미상이면 필드를 만들지 않는다.
               ...(source.ownership ? { ownership: source.ownership } : {}),
@@ -2487,6 +2490,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             chosenModel: source?.chosenModel ?? "",
             chosenEffort: source?.chosenEffort ?? "",
             routingReason: source?.routingReason ?? false,
+            routingReasonText: source?.routingReasonText ?? null,
+            workClassConfidence: source?.workClassConfidence ?? null,
+            workClassProbabilities: source?.workClassProbabilities ?? null,
             purpose: source?.purpose ?? null,
             ...(previous.ownership ? { ownership: previous.ownership } : {}),
           });

@@ -473,6 +473,12 @@ pre, code {
 .markdown-custom-message .markdown-code-block {
   margin: 4px 0;
 }
+/* 사용자 말풍선 아래 펼친 영어 통역은 본문보다 작고 흐리게 둔다. */
+.message-user-translation-body .markdown-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
 
 .markdown-compaction-message {
   line-height: 1.5;

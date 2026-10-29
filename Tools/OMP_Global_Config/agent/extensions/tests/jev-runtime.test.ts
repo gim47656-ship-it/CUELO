@@ -229,14 +229,29 @@ function createHarness(options: HarnessOptions = {}) {
     verdict: (params: Record<string, unknown>) =>
       tools.routing_verdict!.execute("verdict", params, undefined, undefined, ctx) as unknown as Promise<{ details: Record<string, unknown> }>,
     async emit(name: string, event: unknown) {
+      const delivered = name === "tool_call" ? withSolutionSpace(event) : event;
       let result: unknown;
       for (const handler of handlers[name] ?? []) {
-        const candidate = await handler(event, ctx);
+        const candidate = await handler(delivered, ctx);
         if (candidate !== undefined) result = candidate;
       }
       return result;
     },
   };
+}
+
+/**
+ * 실제 task 호출은 core schema의 필수 solutionSpace를 싣는다. 이 파일의 task 입력 fixture는 그 필드가 관심사가 아니라서
+ * 빠진 항목에만 채운다. 키를 명시한 입력(undefined 포함)은 그대로 둬 공백·누락 거절을 시험할 수 있다.
+ */
+function withSolutionSpace(event: unknown): unknown {
+  const call = event as { toolName?: unknown; input?: Record<string, unknown> };
+  if (call?.toolName !== "task" || !call.input || typeof call.input !== "object") return event;
+  const fill = (item: unknown) => item && typeof item === "object" && !("solutionSpace" in item)
+    ? { ...(item as Record<string, unknown>), solutionSpace: "one fix: settled" }
+    : item;
+  const input = Array.isArray(call.input.tasks) ? { ...call.input, tasks: call.input.tasks.map(fill) } : fill(call.input);
+  return { ...call, input };
 }
 
 function taskCall(id: string, task: string, extra: Record<string, unknown> = {}) {

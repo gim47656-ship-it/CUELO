@@ -21,7 +21,7 @@ import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, latestOutputTokensPerSecond, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
 import { attachReplyTranslations } from "@/lib/reply-translation";
-import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
+import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, collectUserInputTranslations, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
 import { collectSavedLessonPlacements } from "@/lib/turn-saved-lessons";
 import { buildChatSearchIndex } from "@/lib/chat-search";
 import { isRunInterrupted } from "@/lib/run-interruption";
@@ -340,6 +340,9 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     });
   }, [onProcessLogChange, process, messages, entryIds, toolResultsMap, modelNames, messageCwd, sessionId]);
 
+  // 사용자 입력의 숨은 영어 통역은 그 사용자 말풍선 아래 접힌 토글로 보인다(lib/transcript-plan.ts).
+  const inputTranslations = useMemo(() => collectUserInputTranslations(messages), [messages]);
+
   // A save the agent made itself folds with its tool call into the work log;
   // it surfaces as the card the auto-learn capture posts, right after the answer
   // or the folded work that holds it - not at the turn's end, which moves.
@@ -419,6 +422,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         writtenFiles={options.writtenFiles}
         dispatchSlot={options.dispatchSlot}
         turnSummary={options.turnSummary}
+        inputTranslation={msg.role === "user" ? inputTranslations.get(idx) : undefined}
       />
     );
   };

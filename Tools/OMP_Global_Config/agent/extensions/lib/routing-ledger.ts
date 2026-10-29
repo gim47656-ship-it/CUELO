@@ -49,6 +49,12 @@ export interface DispatchRecord extends AttemptIdentity {
   chosenModel: string;
   chosenEffort: string;
   routingReason: boolean;
+  /** ROUTING_REASON 줄의 본문(clip). 근거 줄이 없으면 null이고, 이 필드가 생기기 전 기록에는 없다. */
+  routingReasonText?: string | null;
+  /** Jev workClass 답의 confidence(0~1). Jev 불가·미제공·범위 밖이면 null이고, 이 필드가 생기기 전 기록에는 없다. */
+  workClassConfidence?: number | null;
+  /** Jev workClass 등급별 확률(각 0~1). 위와 같은 조건에서 null이거나 없다. */
+  workClassProbabilities?: Record<string, number> | null;
   purpose: string | null;
   /** 이 필드가 생기기 전 기록에는 없다. 없으면 소유 미상이며 빈 소유가 아니다. */
   ownership?: DispatchOwnership;

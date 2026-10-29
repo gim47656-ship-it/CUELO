@@ -24,13 +24,21 @@ export interface RoutingFacts {
 /**
  * 발주 전 빈 조건 경고. acceptance·checks가 비었거나 공백뿐이면 무엇을 만족해야 끝나는지, 어떻게 확인할지가 없는 발주다.
  * 발주를 막지 않는 advisory다(2026-10-17 사용자 결정: 경고로 시작해 실제 누락·재작업이 줄어드는지 본다).
+ * FINDING_ID 재작업인데 failureEvidence가 비면 Jev와 Maker가 재작업이라는 사실만 받고 실패 원인과 이전 접근의 한계를 모른다.
  * OWNED_PATHS에 경로가 아닌 항목(설명 괄호·glob)이 있으면 함께 알린다. 소유 판정은 문자열 정확 일치라
  * `app/globals.css (panel, deck)`은 콤마로 쪼개진 뒤 실제 파일과 일치하지 않아 겹침 검사와 완료 뒤 소유 검사를 모두 빠져나간다(2026-10-18).
  */
-export function briefGaps(assessment: Pick<RoutingFacts, "acceptance" | "checks">, ownedPaths: readonly string[] = []): string[] | null {
+export function briefGaps(
+  assessment: Pick<RoutingFacts, "acceptance" | "checks" | "failureEvidence">,
+  ownedPaths: readonly string[] = [],
+  findingId: string | null = null,
+): string[] | null {
   const gaps: string[] = [];
   if (!assessment.acceptance.some((item) => item.trim())) gaps.push("acceptance가 비어 있음: 무엇을 만족해야 끝나는지 적으세요.");
   if (!assessment.checks.some((item) => item.trim())) gaps.push("checks가 비어 있음: 어떻게 확인할지(명령·관측 대상) 적으세요.");
+  if (findingId && !(assessment.failureEvidence ?? []).some((item) => item.trim())) {
+    gaps.push("FINDING_ID 재작업인데 failureEvidence가 비어 있음: 이전 시도가 무엇 때문에 실패했는지와 그 접근의 한계를 적으세요.");
+  }
   const notPaths = ownedPaths.filter(isNotOwnedPath);
   if (notPaths.length > 0) {
     gaps.push(`OWNED_PATHS에 경로가 아닌 항목: ${clippedList(notPaths.map((entry) => `'${entry}'`))}. 설명·괄호·glob 없이 파일 또는 후행 /의 디렉터리만 콤마로 적으세요. 같은 파일을 블록으로 나눠 맡기는 범위는 소유 검사가 표현하지 못하므로 # Target에 적습니다.`);
@@ -106,7 +114,21 @@ export interface RoutingQuestion {
   instructions: string;
   criteria?: Record<string, string | null>;
 }
-interface RoutingAnswer { type?: string; choice?: string; noul?: number }
+interface RoutingAnswer { type?: string; choice?: string; noul?: number; confidence?: number; probabilities?: Record<string, number> }
+/** 원장에 남기는 ROUTING_REASON 본문 상한. 근거 한 줄이 원장 한 행을 키우지 않게 자른다. */
+const ROUTING_REASON_TEXT_LIMIT = 300;
+/** Jev 답의 확률 하나. 0~1 유한값만 받고 그 밖은 관측 실패로 null이다. */
+function probabilityOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+/** Jev choice 답의 선택지별 확률. 하나라도 0~1 유한값이 아니면 전체를 관측 실패로 본다. */
+function probabilitiesOf(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  return entries.length > 0 && entries.every(([, probability]) => probabilityOf(probability) !== null)
+    ? Object.fromEntries(entries) as Record<string, number>
+    : null;
+}
 export interface RoutingPlacement {
   action: "dispatch-new" | "instruct-existing" | "retarget-existing" | "main-decision";
   ownerIndex: number | null;
@@ -1019,7 +1041,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           prepared,
           route: {
             name: task.name,
-            briefGaps: briefGaps(task.assessment, contracts[index]!.ownedPaths),
+            briefGaps: briefGaps(task.assessment, contracts[index]!.ownedPaths, contracts[index]!.findingId),
             ownershipOverlaps: overlapsByTask[index]!,
             status: prepared.status,
             error: prepared.error,
@@ -1150,6 +1172,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // 면제한다. 그 task는 guard가 pendingSummons로 검증해 요청되지 않은 marker·재사용·혼합 task를 막는다.
       // 정확하지 않은 문자열이나 summon 요청이 없는 marker는 면제하지 않는다.
       if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
+      // core schema는 solutionSpace를 필수 string으로 두지만 task 도구가 lenientArgValidation이라 누락·다른 타입도 원 인자 그대로
+      // 실행에 넘어오고, 공백은 schema를 통과한다. child auto 분류기는 trim 뒤 빈 값이면 brief 전문으로 강도를 고른다.
+      if (typeof item.solutionSpace !== "string" || !item.solutionSpace.trim()) {
+        return { block: true, reason: `'${clipped(String(item.name ?? ""), 40)}'의 solutionSpace가 ${typeof item.solutionSpace === "string" ? "공백뿐" : "없거나 문자열이 아님"}입니다. child auto 강도는 이 설명으로 고르므로 해법이 정해졌는지, 열린 원인·설계가 무엇인지 한 줄로 적어 다시 발주하세요.` };
+      }
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
       const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource, () => admission(task, contract));
@@ -1217,6 +1244,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
       const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
       const routingReason = /^\s*ROUTING_REASON:\s*\S.+$/m.test(task);
+      // 원장 본문은 ROUTING_REASON 줄 안에서만 읽는다(줄바꿈이 아닌 모든 공백 허용). 위 발주 판정은 기존 그대로 두고 다음 줄을 근거로 기록하지 않는다.
+      const reasonText = /^[^\S\r\n\u2028\u2029]*ROUTING_REASON:[^\S\r\n\u2028\u2029]*(\S.*)$/m.exec(task)?.[1]?.trim() ?? null;
       if (changed && !routingReason) return { block: true, reason: existingOwner ? `기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ROUTING_REASON에 근거를 적습니다.` : "Jev 불가·불명확한 지배 판단·추천 변경은 Main이 같은 기준으로 결정하고 ROUTING_REASON 한 줄에 근거를 남깁니다." };
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
       const recommendedCandidate = candidates[recommended];
@@ -1232,6 +1261,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         chosenModel: selected.model,
         chosenEffort: "auto",
         routingReason,
+        routingReasonText: reasonText === null ? null : clipped(reasonText, ROUTING_REASON_TEXT_LIMIT),
+        workClassConfidence: probabilityOf(answers?.workClass?.confidence),
+        workClassProbabilities: probabilitiesOf(answers?.workClass?.probabilities),
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
         ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
       }]);

@@ -200,6 +200,8 @@ interface Props {
   dispatchSlot?: DispatchSlot;
   /** Observed summary of the finished turn this answer closes; replaces the segment file chips. */
   turnSummary?: FinishedTurnSummary;
+  /** Hidden English rendering of this user message (user-input-interpreter); shown collapsed under the bubble. */
+  inputTranslation?: string;
 }
 
 // One formatter per shape: `toLocale*String` with options builds a new
@@ -238,9 +240,9 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary, inputTranslation }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
+    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} inputTranslation={inputTranslation} />;
   }
   if (message.role === "assistant") {
     return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} dispatchSlot={dispatchSlot} turnSummary={turnSummary} />;
@@ -276,10 +278,11 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.prevTimestamp === next.prevTimestamp
     && prev.sessionId === next.sessionId
     && prev.dispatchSlot === next.dispatchSlot
-    && prev.turnSummary === next.turnSummary;
+    && prev.turnSummary === next.turnSummary
+    && prev.inputTranslation === next.inputTranslation;
 });
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent }: {
+function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, inputTranslation }: {
   message: UserMessage;
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
@@ -289,6 +292,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   onNavigate?: (entryId: string) => void;
   prevAssistantEntryId?: string;
   onEditContent?: (message: UserMessage) => void;
+  inputTranslation?: string;
 }) {
   const { t } = useI18n();
   const [hovered, setHovered] = useState(false);
@@ -408,6 +412,8 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 
       </div>
 
+      {inputTranslation !== undefined && <InputTranslationToggle text={inputTranslation} cwd={cwd} onOpenFile={onOpenFile} />}
+
       {/* Bottom row: action buttons + timestamp */}
       {(time || canFork || canNavigate || true) && (
         <div style={{
@@ -513,6 +519,42 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
             </div>
           )}
           {time && <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{time}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 사용자 메시지에 붙은 숨은 영어 통역(user-input-interpreter). 처음엔 접혀 있고 눌러야 펼쳐진다. */
+function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  return (
+    <div className="message-user-translation" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, maxWidth: "85%", marginTop: 3 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-controls={open ? bodyId : undefined}
+        style={{
+          padding: "2px 0",
+          background: "none", border: "none",
+          color: "var(--text-dim)",
+          cursor: "pointer",
+          fontSize: 11,
+        }}
+      >
+        {open ? t("i18n.hideInputTranslation") : t("i18n.showInputTranslation")}
+      </button>
+      {open && (
+        <div
+          id={bodyId}
+          lang="en"
+          className="message-user-translation-body"
+          style={{ alignSelf: "stretch", paddingLeft: 10, borderLeft: "2px solid var(--border)" }}
+        >
+          <SafeMarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{text}</SafeMarkdownBody>
         </div>
       )}
     </div>
