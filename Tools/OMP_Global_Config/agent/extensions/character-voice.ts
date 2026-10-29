@@ -650,7 +650,10 @@ export function characterForProvider(
   accounts: readonly OAuthAccountLike[] = [],
   modelId?: string,
 ): CharacterAlias | undefined {
-  if (provider === "anthropic") return anthropicCharacterForAccounts(accounts);
+  // A character default is not an OAuth selection: keep auth and billing untouched.
+  if (provider === "anthropic") return accounts.some(account => account.active)
+    ? anthropicCharacterForAccounts(accounts)
+    : canonicalAlias("RIN(린)", officeState());
   const bySelector = modelId === undefined ? undefined : MODEL_CHARACTER[`${provider}/${modelId}`];
   const byModelId = modelId === undefined ? undefined : MODEL_ID_CHARACTER[modelId];
   const seat = bySelector ?? byModelId ?? PROVIDER_CHARACTER[provider];

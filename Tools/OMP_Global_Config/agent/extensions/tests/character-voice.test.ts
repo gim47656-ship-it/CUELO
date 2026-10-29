@@ -214,6 +214,12 @@ describe("character voice identity", () => {
     ])).toBe("MIO(미오)");
   });
 
+  test("a known unmapped Anthropic account is not the unselected default", () => {
+    expect(characterForProvider("anthropic", [
+      { position: 2, credentialId: 17, active: true },
+    ])).toBeUndefined();
+  });
+
   test("effective Main prompt omits generic report personality and keeps conversational voice authoritative", async () => {
     const agentsPath = resolve(import.meta.dirname, "../..", "AGENTS.md");
     const built = await buildSystemPrompt({
@@ -1035,6 +1041,30 @@ async function withOfficeProfile<T>(
 }
 
 describe("office mode character seat", () => {
+  test("unselected Anthropic uses RIN or its office alias without pinning an account", async () => {
+    for (const office of [false, true]) {
+      const alias = office ? "POTETO(포테이토)" : "RIN(린)";
+      const roster = { seats: { "RIN(린)": {
+        ...OFFICE_ROSTER.seats["YUKI(유키)"], alias, names: ["poteto", "포테이토"],
+      } } };
+      await withOfficeProfile({ mode: office ? "office" : "default", roster }, async () => {
+        const harness = createRuntimeHarness();
+        harness.selectModel("anthropic/claude-opus-5-5");
+        for (const account of harness.accounts) account.active = false;
+        const result = await harness.emit("before_provider_request", {
+          type: "before_provider_request", payload: { system: "base", messages: [] },
+        });
+        expect(JSON.stringify(result)).toContain(`alias=\\"${alias}\\"`);
+        expect(harness.accounts.some(account => account.active)).toBe(false);
+        expect(harness.calls).toEqual([]);
+        harness.accounts[1]!.active = true;
+        const selected = await harness.emit("before_provider_request", {
+          type: "before_provider_request", payload: { system: "base", messages: [] },
+        });
+        expect(JSON.stringify(selected)).toContain('alias=\\"MIO(미오)\\"');
+      });
+    }
+  });
   test("openai-codex seat renders the roster voice in the provider request", async () => {
     await withOfficeProfile({ mode: "office", roster: OFFICE_ROSTER }, async () => {
       expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);

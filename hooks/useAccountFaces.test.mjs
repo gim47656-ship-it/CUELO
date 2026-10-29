@@ -65,14 +65,14 @@ test("a session that switches provider re-asks instead of answering from the sta
   try {
     syncAccountFaces(REPORTS);
 
-    // 아직 아무것도 모른다. 후보가 여럿인 provider 에서 유일한 활성 계정을 고르지 않는다.
-    assert.equal(resolveAccountFace("switch", "anthropic", undefined), null);
+    // No identity yet: show the configured character default without selecting an account.
+    assert.equal(resolveAccountFace("switch", "anthropic", undefined)?.alias, "RIN(린)");
 
     route.answer({ state: "resolved", provider: "openai-codex", credentialId: 8 });
     requestSessionPin("switch", "openai-codex");
     await settle();
     assert.equal(resolveAccountFace("switch", "openai-codex", undefined)?.alias, "YUKI(유키)");
-    assert.equal(resolveAccountFace("switch", "anthropic", undefined), null);
+    assert.equal(resolveAccountFace("switch", "anthropic", undefined)?.alias, "RIN(린)");
 
     // 세션이 Anthropic 첫 계정으로 갈아탄다. pin 의 provider 가 다르므로 하한선에 막히지 않고
     // 곧바로 다시 묻는다.
@@ -178,4 +178,43 @@ test("a message by the seat-1 account keeps MIO when the seat-0 account turns in
   ]);
   assert.equal(resolveAccountFace(undefined, "anthropic", 11)?.alias, "MIO(미오)");
   assert.equal(resolveAccountFace(undefined, "anthropic", 9)?.alias, "RIN(린)");
+});
+
+test("unselected Anthropic defaults to its roster seat but live B still wins", async () => {
+  const { applyOfficeCharacters } = await jiti.import("../lib/hanse-resource-client.ts");
+  const route = stubSessionAccount();
+  try {
+    syncAccountFaces(REPORTS);
+    assert.equal(resolveAccountFace("default-api", "anthropic", undefined)?.alias, "RIN(린)");
+    applyOfficeCharacters({ mode: "office", rosterAvailable: true, seats: [{
+      seat: "RIN(린)", id: "poteto", alias: "POTETO(포테이토)", names: ["poteto"],
+      faceUrl: "/api/office-characters/poteto/face.webp",
+      voice: { temperament: "fixture", expression: "fixture" },
+      manifest: { characters: [] },
+    }] });
+    const face = resolveAccountFace("default-api", "anthropic", undefined);
+    assert.equal(face?.alias, "POTETO(포테이토)");
+    assert.equal(face?.seed, 0);
+    assert.equal(resolveAccountFace("default-api", "anthropic", undefined), face);
+    route.answer({ state: "resolved", provider: "anthropic", credentialId: 11 });
+    assert.equal((await resolveLiveAccountFace("default-api", "anthropic", undefined))?.alias, "MIO(미오)");
+    route.answer({ state: "unresolved", provider: "anthropic" });
+    assert.equal((await resolveLiveAccountFace("default-api", "anthropic", undefined))?.alias, "MIO(미오)");
+    assert.equal(resolveAccountFace("default-api", "openai-codex", undefined)?.alias, "YUKI(유키)");
+  } finally {
+    applyOfficeCharacters({ mode: "default", rosterAvailable: false, seats: [] });
+    route.restore();
+  }
+});
+
+test("known Anthropic credentials missing from usage never become the default character", async () => {
+  const route = stubSessionAccount();
+  try {
+    syncAccountFaces(REPORTS.filter(report => report.credentialId !== 11));
+    assert.equal(resolveAccountFace(undefined, "anthropic", 11), null);
+    route.answer({ state: "resolved", provider: "anthropic", credentialId: 11 });
+    assert.equal(await resolveLiveAccountFace("missing-b", "anthropic", undefined), null);
+  } finally {
+    route.restore();
+  }
 });

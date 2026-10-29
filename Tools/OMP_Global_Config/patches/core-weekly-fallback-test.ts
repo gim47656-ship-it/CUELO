@@ -112,6 +112,19 @@ const { claudeRankingStrategy } = await import(toUrl(join(aiRoot, "usage/claude.
 const { getEnvApiKey } = await import(toUrl(join(aiRoot, "env-api-key.ts")));
 const { isUsageLimitOutcome } = await import(toUrl(join(aiRoot, "error/rate-limit.ts")));
 const { createApiKeyResolver } = await import(toUrl(join(core, "src/config/api-key-resolver.ts")));
+// Load after the fixture plugin so the extension's core imports use the isolated patched modules.
+const { default: characterVoice } = await import("../agent/extensions/character-voice.ts");
+
+function voicePayload(auth: InstanceType<typeof AuthStorage>, sessionId: string) {
+	type Handler = (event: unknown, ctx: unknown) => unknown;
+	const handlers = new Map<string, Handler>();
+	characterVoice({ on: (name: string, handler: Handler) => handlers.set(name, handler) } as never);
+	return handlers.get("before_provider_request")!(
+		{ payload: { system: "fixture contract", messages: [] } },
+		{ model: { provider: "anthropic", id: "claude-opus-5-5" },
+			modelRegistry: { authStorage: auth }, sessionManager: { getSessionId: () => sessionId } },
+	) as { system?: string } | undefined;
+}
 
 const HOUR = 3_600_000;
 const FILE_KEY = "fake-fallback-key-file";
@@ -240,6 +253,7 @@ console.log("[초기 resolve] 두 좌석 상태 × 키 출처");
 	);
 	const identity = identityOf(s.auth, s.sessionId);
 	check("(a) 폴백 중인 세션은 OAuth account 귀속에서 빠진다", identity === undefined, `identity=${show(identity)}`);
+	check("(a) first API request uses the default RIN voice", voicePayload(s.auth, s.sessionId)?.system?.includes('alias="RIN(린)"') === true, "missing default voice");
 	s.auth.close();
 }
 for (const [tag, key, label] of [
@@ -587,6 +601,8 @@ for (const tier of ["opus", "sonnet"] as const) {
 	const s = await scenario(tag, { rin: seat(0.1, 0.01, 164), mio: seat(0.1, 0.02, 164), key: "file" });
 	const initial = await s.get();
 	check(`${tag}: successful OAuth establishes automatic affinity`, isOAuth(initial, tag) && identityOf(s.auth, s.sessionId) === initial, `actual=${show(initial)}`);
+	const initialVoice = voicePayload(s.auth, s.sessionId)?.system;
+	check(`${tag}: OAuth voice identifies A`, initialVoice?.includes('alias="RIN(린)"') === true, `voice=${show(initialVoice)}`);
 	// Reports refresh after at most 6.25 minutes; Anthropic automatic affinity remains warm for 60.
 	s.seats.rin.weekly = 0.2;
 	s.seats.mio.weekly = 0.3;
@@ -594,11 +610,15 @@ for (const tier of ["opus", "sonnet"] as const) {
 	const paid = await s.get();
 	check(`${tag}: still-warm OAuth yields to daily API fallback`, paid === FILE_KEY, `actual=${show(paid)}`);
 	check(`${tag}: paid request has no OAuth identity`, identityOf(s.auth, s.sessionId) === undefined, "incorrect OAuth attribution");
+	const paidVoice = voicePayload(s.auth, s.sessionId)?.system;
+	check(`${tag}: API preserves A voice`, paidVoice === initialVoice && paidVoice !== undefined, `voice=${show(paidVoice)}`);
+	console.log(JSON.stringify({ phase: "paid-character-probe", accounts: s.auth.oauth.accounts("anthropic", s.sessionId).map(({ credentialId, active, position }) => ({ credentialId, active, position })), hasVoice: paidVoice !== undefined }));
 	s.seats.rin.weekly = 0.01;
 	clockOffsetMs += 10 * 60_000;
 	const recovered = await s.get();
 	check(`${tag}: same session recovers to below-budget OAuth`, recovered === `rin-${tag}`, `actual=${show(recovered)}`);
 	check(`${tag}: recovered identity is OAuth again`, identityOf(s.auth, s.sessionId) === recovered, "stale paid marker");
+	check(`${tag}: recovered OAuth keeps A voice`, voicePayload(s.auth, s.sessionId)?.system === initialVoice, "voice changed on recovery");
 	clockOffsetMs -= 20 * 60_000;
 	s.auth.close();
 }

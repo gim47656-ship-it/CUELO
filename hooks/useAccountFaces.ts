@@ -3,6 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   accountIdentities,
+  characterRoster,
   DEFAULT_OFFICE_STATE,
   ensureOfficeCharactersLoaded,
   getOfficeCharacters,
@@ -171,8 +172,8 @@ export function requestSessionPin(sessionId: string, provider: string): void {
  * 1. 메시지 자신이 기록한 credential — 그 답을 실제로 만든 계정이므로 가장 정확하다.
  * 2. 실행 중인 세션이 쓰고 있다고 런타임이 답한 계정. provider 가 메시지와 같을 때만 쓴다.
  * 3. 얼굴이 예약된 provider — 계정이 구조적으로 하나뿐이라 고를 후보가 하나다. 추측이 아니다.
- * 4. 그 밖에는 모름. 후보가 여럿인 provider 에서 「유일한 활성 계정」을 골라 얼굴을 그리면,
- *    틀렸을 때 사용자는 틀린 것을 알 방법이 없다.
+ * 4. Anthropic의 미선택 상태는 기본 RIN 자리(사무실 모드에서는 해당 roster 별칭).
+ *    표시 기본값일 뿐 계정 pin이나 OAuth 귀속을 만들지 않는다.
  */
 export function resolveAccountFace(
   sessionId: string | undefined,
@@ -193,7 +194,10 @@ export function resolveAccountFace(
     const face = state.faces.get(accountKey(provider, pin.credentialId));
     if (face) return face;
   }
-  return providerAccountFace(provider);
+  return providerAccountFace(provider)
+    ?? (provider === "anthropic" && !isCredentialId(credentialId) && pin?.provider !== provider
+      ? characterRoster().find((entry) => entry.provider === provider && entry.oauthPosition === 0) ?? null
+      : null);
 }
 
 /**
