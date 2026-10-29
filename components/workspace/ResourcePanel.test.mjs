@@ -506,6 +506,69 @@ test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나�
   assert.doesNotMatch(failed, /추정 잔액/);
 });
 
+function anthropicWallet(extra = {}) {
+  return {
+    wallet: "anthropic", scope: "this-pc", source: "session-logs", since: "2026-09-29", sinceSource: "default",
+    status: "ok", error: null, observedAt: 1, coverageSince: Date.parse("2026-10-21T12:00:00Z"), oauthRequests: 12, unattributedRequests: 0,
+    rows: [], spentUsd: 0, spentComplete: true, ...extra,
+  };
+}
+
+function anthropicSection(extra) {
+  const html = renderCredits({ ...creditSnapshot(), anthropic: anthropicWallet(extra) });
+  assert.match(html, /data-credit-wallet="hive"/, "the Hive card stays");
+  return html.match(/<section[^>]*data-credit-wallet="anthropic"[\s\S]*?<\/section>/)?.[0];
+}
+
+test("Anthropic API 카드는 API 키 요청만 보이고 OAuth·미기록 요청은 제외 수로만, 캐시 읽기·쓰기는 따로 보인다", () => {
+  const card = anthropicSection({
+    unattributedRequests: 3, spentUsd: 1.97, spentComplete: false,
+    rows: [{
+      model: "claude-opus-5-5", requests: 2, inputTokens: 2_004, outputTokens: 20_100, cacheReadTokens: 400_000, cacheWriteTokens: 201_000,
+      costUsd: 1.97, unpricedRequests: 1, costs: { input: 0.01, output: 0.5, cacheRead: 0.2, cacheWrite: null },
+      purposes: [{ purpose: "session", requests: 2, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1.97, unpricedRequests: 1 }],
+    }],
+  });
+  assert.ok(card);
+  assert.match(card, /Anthropic API/);
+  assert.match(card, /구독\(OAuth\) 요청과 토큰 없는 실패는 제외/);
+  assert.match(card, /인증 방식 최초 기록: 2026-10-21/);
+  assert.match(card, /구독\(OAuth\) 제외[\s\S]*?12회/);
+  assert.match(card, /인증 미기록 제외[\s\S]*?3회/);
+  assert.match(card, /추정 사용[\s\S]*?≥\$1\.97/, "an unpriced paid request makes the spend a lower bound");
+  assert.match(card, /캐시 읽기 400K \$0\.200 · 캐시 쓰기 201K 단가 미상/);
+  assert.match(card, /대화·에이전트 ≥\$1\.97/);
+  assert.doesNotMatch(card, /role="progressbar"|크레딧 입력|추정 잔액/, "no balance or credit editor for Anthropic");
+});
+
+test("Anthropic API 카드는 기록 없음·요청 없음·조회 실패를 서로 다르게 보인다", () => {
+  const none = anthropicSection({ coverageSince: null, unattributedRequests: 5 });
+  assert.match(none, /data-anthropic-coverage="none"/);
+  assert.match(none, /API 키 사용량을 알 수 없습니다/);
+  assert.doesNotMatch(none, /추정 사용/, "unknown coverage is not a measured $0");
+
+  const quiet = anthropicSection();
+  assert.match(quiet, /data-anthropic-coverage="recorded"/);
+  assert.match(quiet, /이 기간에 기록된 API 키 요청이 없습니다/);
+  assert.match(quiet, /추정 사용[\s\S]*?\$0</);
+  assert.doesNotMatch(quiet, /인증 미기록 제외/);
+
+  const failed = anthropicSection({ status: "error", error: "session_scan_failed", coverageSince: null, spentComplete: false });
+  assert.match(failed, /사용량을 읽지 못했습니다: 세션 기록을 읽지 못했습니다/);
+  assert.doesNotMatch(failed, /data-anthropic-coverage|추정 사용/);
+
+  const partial = anthropicSection({ status: "error", error: "session_scan_partial", spentComplete: false });
+  assert.match(partial, /일부 세션 기록을 읽지 못해/);
+  assert.match(partial, /추정 사용[\s\S]*?≥\$0</);
+
+  const unpricedOnly = anthropicSection({ spentUsd: null, spentComplete: false, rows: [{
+    model: "claude-x", requests: 1, inputTokens: 10, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpricedRequests: 1,
+    costs: { input: null, output: 0, cacheRead: 0, cacheWrite: 0 }, purposes: [],
+  }] });
+  assert.match(unpricedOnly, /추정 사용[\s\S]*?단가 미상/, "paid requests with no known price are unknown, not ≥$0");
+  assert.doesNotMatch(unpricedOnly, /≥\$0/);
+});
+
 test("계정 한도 탭은 구독 계정 아래에 API 크레딧 구역을 단다", () => {
   const panel = render({ activeTab: "usage" });
   assert.match(panel, /<h2 class="resource-group-heading">계정 한도<\/h2>[\s\S]*<h2 class="resource-group-heading">API credits<\/h2>/);

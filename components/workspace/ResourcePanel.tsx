@@ -12,6 +12,7 @@ import {
   spentIsMinimum,
   type ApiCreditsSnapshot,
   type CreditSettingInput,
+  type AnthropicPaidWallet,
   type HiveCreditSetting,
   type HiveCreditWallet,
 } from "@/lib/api-credits";
@@ -935,6 +936,7 @@ function CreditRowLine({
   title,
   model,
   cost,
+  costMinimum = false,
   detail,
   t,
 }: {
@@ -942,6 +944,8 @@ function CreditRowLine({
   title: string;
   model: string;
   cost: number | null;
+  /** 일부 요청 비용이 미상이라 cost가 하한이다. */
+  costMinimum?: boolean;
   detail: string;
   t: Translate;
 }) {
@@ -950,10 +954,10 @@ function CreditRowLine({
       {face ? <AccountAvatar seed={face.seed} size={28} provider="hive" /> : <span className="w-7 shrink-0" aria-hidden="true" />}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-1.5">
-          <span className="shrink-0 text-[13px] font-medium text-text">{title}</span>
+          {title ? <span className="shrink-0 text-[13px] font-medium text-text">{title}</span> : null}
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-dim">{model}</span>
           <span className="shrink-0 font-mono text-xs tabular-nums text-text">
-            {cost === null ? t("credits.priceUnknown") : formatMoney(cost)}
+            {cost === null ? t("credits.priceUnknown") : `${costMinimum ? "≥" : ""}${formatMoney(cost)}`}
           </span>
         </div>
         <div className="mt-0.5 whitespace-pre-line font-mono text-[11px] tabular-nums text-text-muted">{detail}</div>
@@ -1131,6 +1135,87 @@ function CreditWalletCard({
   );
 }
 
+const COST_CATEGORY_TOKENS = {
+  input: "inputTokens", output: "outputTokens", cacheRead: "cacheReadTokens", cacheWrite: "cacheWriteTokens",
+} as const;
+
+function localDate(ms: number): string {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Anthropic 유료 API 카드. core가 api-key로 나갔다고 기록한 요청만 보이고, 구독(OAuth)·자격 미기록 요청은 수만 보인다.
+ * 잔액·총액 입력은 없다(청구서·잔액 자료가 아니다).
+ */
+function AnthropicPaidCard({ wallet, t }: { wallet: AnthropicPaidWallet; t: Translate }) {
+  const headingId = useId();
+  const scanFailed = wallet.status === "error" && wallet.error !== "session_scan_partial";
+  const covered = wallet.coverageSince !== null;
+  const spent = wallet.spentUsd === null
+    ? t("credits.priceUnknown")
+    : `${wallet.spentComplete ? "" : "≥"}${formatMoney(wallet.spentUsd)}`;
+  return (
+    <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet="anthropic">
+      <h3 id={headingId} className="m-0 text-sm font-semibold text-text">{t("credits.wallet.anthropic")}</h3>
+      <div className="mt-0.5 text-xs text-text-muted">{`${t("credits.scope.anthropic")} · ${t("credits.sinceDefault")}`}</div>
+      <p className="m-0 mt-1 text-xs text-text-muted">{t("credits.anthropic.note")}</p>
+      {wallet.status === "error" ? (
+        <div className="mt-1.5 text-xs text-text" role="alert">{t("credits.walletError", { reason: creditReason(t, wallet.error) })}</div>
+      ) : null}
+      {!scanFailed ? (
+        <p className="m-0 mt-1.5 text-xs text-text" data-anthropic-coverage={covered ? "recorded" : "none"}>
+          {covered ? t("credits.anthropic.coverageSince", { date: localDate(wallet.coverageSince!) }) : t("credits.anthropic.noCoverage")}
+        </p>
+      ) : null}
+      {!scanFailed ? (
+        <dl className="m-0 mt-1">
+          {covered ? <Metric label={t("credits.spent")} value={spent} /> : null}
+          <Metric label={t("credits.anthropic.oauthExcluded")} value={t("credits.requests", { count: formatNumber(wallet.oauthRequests) })} />
+          {wallet.unattributedRequests > 0 ? (
+            <Metric label={t("credits.anthropic.unattributedExcluded")} value={t("credits.requests", { count: formatNumber(wallet.unattributedRequests) })} />
+          ) : null}
+        </dl>
+      ) : null}
+      {covered && !scanFailed && wallet.rows.length === 0 ? (
+        <p className="m-0 mt-1.5 text-xs text-text-muted">{t("credits.anthropic.none")}</p>
+      ) : null}
+      {wallet.rows.length > 0 ? (
+        <ul className="m-0 mt-1.5 list-none border-t border-border p-0">
+          {wallet.rows.map((row) => {
+            const part = (key: keyof typeof COST_CATEGORY_TOKENS) => {
+              const cost = row.costs[key];
+              return `${t(`credits.category.${key}`)} ${formatTokens(row[COST_CATEGORY_TOKENS[key]])} ${cost === null ? t("credits.priceUnknown") : formatMoney(cost)}`;
+            };
+            const purposes = row.purposes.map((item) => {
+              const label = Object.hasOwn(CREDIT_PURPOSES, item.purpose) ? t(`credits.purpose.${item.purpose}`) : item.purpose;
+              const cost = item.costUsd === null ? t("credits.priceUnknown") : `${item.unpricedRequests > 0 ? "≥" : ""}${formatMoney(item.costUsd)}`;
+              return `${label} ${cost}`;
+            });
+            const lines = [
+              [t("credits.requests", { count: formatNumber(row.requests) }), part("input"), part("output")].join(" · "),
+              [part("cacheRead"), part("cacheWrite")].join(" · "),
+              purposes.length > 0 ? purposes.join(" · ") : null,
+            ].filter(Boolean);
+            return (
+              <CreditRowLine
+                key={row.model}
+                face={null}
+                title=""
+                model={row.model}
+                cost={row.costUsd}
+                costMinimum={row.unpricedRequests > 0}
+                detail={lines.join("\n")}
+                t={t}
+              />
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
 /** 순수 표시부. 테스트는 이 함수에 번역 함수와 상태를 직접 넣는다. */
 export function ApiCreditsCards({
   state,
@@ -1154,6 +1239,7 @@ export function ApiCreditsCards({
       ) : null}
       {data?.settingsError ? <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.settingsError")}</div> : null}
       {data ? <CreditWalletCard wallet={data.hive} setting={data.settings.hive} onSave={onSave} t={t} /> : null}
+      {data?.anthropic ? <AnthropicPaidCard wallet={data.anthropic} t={t} /> : null}
     </>
   );
 }

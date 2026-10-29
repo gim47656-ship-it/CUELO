@@ -1136,7 +1136,7 @@ async function buildStatsBody() {
 // Google Cloud 지갑은 Gemini가 AI Studio 프록시로 옮겨 가 Cloud Monitoring 조회가 의미 없어 뺐다(2026-10-27 사용자 결정).
 // 금액은 모두 추정이다. 단가를 모르는 모델·토큰 종류는 0이 아니라 미상(null)이고, 그때 잔액은 상한(≤)이다.
 const CREDITS_FILE_NAME = 'cuelo-api-credits.json';
-const HIVE_SCAN_MS = 30_000;
+const USAGE_SCAN_MS = 30_000;
 const DEFAULT_WINDOW_DAYS = 30; // 시작일을 입력하기 전에 보여 줄 기간
 const MAX_CREDIT_USD = 1_000_000;
 const SCAN_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -1292,17 +1292,94 @@ function walletTotals(rows, setting, complete = true) {
     };
 }
 
-function hiveEvent(line) {
+/**
+ * Anthropic 유료 API 사용: core가 api-key로 나갔다고 적은 기록만 모델·용도별로 모은다. 금액은 core가 그 요청에 남긴
+ * usage.cost(공개 단가 추정)이고 청구서·잔액이 아니다. oauth 기록과 자격이 적히지 않은 기록은 세기만 하고 빼며,
+ * coverageSince는 이 기간 안에서 자격 종류가 처음 적힌 기록의 시각이다(그 뒤로 빠짐없이 적혔다는 보증은 아니다).
+ * 토큰이 하나도 없는 응답(한도 거절·오류)은 요청 수에 넣지 않는다.
+ */
+function anthropicUsage(events, sinceMs) {
+    const rows = new Map();
+    const blank = () => ({ requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        costUsd: null, unpricedRequests: 0 });
+    const blankCosts = () => Object.fromEntries(COST_CATEGORIES.map(key => [key, { usd: 0, known: true }]));
+    let coverageSince = null;
+    let oauthRequests = 0;
+    let unattributedRequests = 0;
+    for (const event of events) {
+        if (event.provider !== 'anthropic' || event.ts < sinceMs) continue;
+        // 토큰 없는 응답도 자격 종류가 적혔다면 기록이 남고 있다는 근거다. 요청 수에만 넣지 않는다.
+        if (event.credentialKind !== null) coverageSince = coverageSince === null ? event.ts : Math.min(coverageSince, event.ts);
+        if (event.input + event.output + event.cacheRead + event.cacheWrite === 0) continue;
+        if (event.credentialKind === 'oauth') { oauthRequests += 1; continue; }
+        if (event.credentialKind !== 'api-key') { unattributedRequests += 1; continue; }
+        const key = event.model.toLowerCase();
+        let row = rows.get(key);
+        if (!row) {
+            row = { model: event.model, ...blank(), costs: blankCosts(), purposes: new Map() };
+            rows.set(key, row);
+        }
+        let purpose = row.purposes.get(event.purpose);
+        if (!purpose) {
+            purpose = { purpose: event.purpose, ...blank() };
+            row.purposes.set(event.purpose, purpose);
+        }
+        // 요청 금액은 검증한 범주 금액의 합이다. 한 범주라도 미상이면 그 요청은 미상으로 세고, 아는 부분만 하한에 더한다.
+        const knownParts = COST_CATEGORIES.map(category => event.cost[category]).filter(value => value !== null);
+        const eventComplete = knownParts.length === COST_CATEGORIES.length;
+        const eventKnownUsd = knownParts.reduce((sum, value) => sum + value, 0);
+        for (const target of [row, purpose]) {
+            target.requests += 1;
+            target.inputTokens += event.input;
+            target.outputTokens += event.output;
+            target.cacheReadTokens += event.cacheRead;
+            target.cacheWriteTokens += event.cacheWrite;
+            if (!eventComplete) target.unpricedRequests += 1;
+            if (eventComplete || eventKnownUsd > 0) target.costUsd = (target.costUsd ?? 0) + eventKnownUsd;
+        }
+        for (const category of COST_CATEGORIES) {
+            const value = event.cost[category];
+            if (value === null) row.costs[category].known = false;
+            else row.costs[category].usd += value;
+        }
+    }
+    // 범주 금액은 그 범주의 모든 요청 값이 있을 때만 낸다. 일부만 알면 미상(null)이다.
+    const list = [...rows.values()]
+        .map(row => ({
+            ...row,
+            costs: Object.fromEntries(COST_CATEGORIES.map(key => [key, row.costs[key].known ? row.costs[key].usd : null])),
+            purposes: [...row.purposes.values()].sort((a, b) => b.requests - a.requests),
+        }))
+        .sort((a, b) => b.requests - a.requests);
+    // 유료 요청이 있는데 아는 금액이 하나도 없으면 사용액도 미상(null)이다. 요청이 없을 때만 0이다.
+    const priced = list.filter(row => row.costUsd !== null);
+    return {
+        coverageSince, oauthRequests, unattributedRequests, rows: list,
+        spentUsd: list.length > 0 && priced.length === 0 ? null : priced.reduce((sum, row) => sum + row.costUsd, 0),
+        spentComplete: list.every(row => row.unpricedRequests === 0),
+    };
+}
+
+// 세션 기록에서 읽는 provider. Anthropic은 core가 요청마다 남긴 usage.credentialKind("oauth"|"api-key")로만
+// 유료 API를 가른다(2026-10-29 Main·CoreRemaining 합의). 이 값이 없는 기록은 어느 자격으로 나갔는지 모르는 것이다.
+const USAGE_PROVIDERS = new Set(['hive', 'anthropic']);
+const CREDENTIAL_KINDS = new Set(['oauth', 'api-key']);
+const COST_CATEGORIES = ['input', 'output', 'cacheRead', 'cacheWrite'];
+
+function usageEvent(line) {
     let entry;
     try { entry = JSON.parse(line); } catch { return null; }
     let usage;
     let model;
     let purpose;
-    if (entry?.type === 'model_usage' && entry.provider === 'hive') {
+    let provider;
+    if (entry?.type === 'model_usage' && USAGE_PROVIDERS.has(entry.provider)) {
+        provider = entry.provider;
         usage = entry.usage;
         model = entry.model;
         purpose = typeof entry.purpose === 'string' && entry.purpose ? entry.purpose : 'model_usage';
-    } else if (entry?.type === 'message' && entry.message?.role === 'assistant' && entry.message.provider === 'hive') {
+    } else if (entry?.type === 'message' && entry.message?.role === 'assistant' && USAGE_PROVIDERS.has(entry.message.provider)) {
+        provider = entry.message.provider;
         usage = entry.message.usage;
         model = entry.message.model;
         purpose = 'session';
@@ -1312,18 +1389,34 @@ function hiveEvent(line) {
     const ts = Date.parse(entry.timestamp);
     if (!Number.isFinite(ts) || typeof model !== 'string' || !usage || typeof usage !== 'object') return null;
     const count = value => (Number.isFinite(value) && value > 0 ? value : 0);
-    return { ts, model, purpose, input: count(usage.input), output: count(usage.output),
+    const event = { provider, ts, model, purpose, input: count(usage.input), output: count(usage.output),
         cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite) };
+    if (provider === 'anthropic') {
+        event.credentialKind = CREDENTIAL_KINDS.has(usage.credentialKind) ? usage.credentialKind : null;
+        event.cost = recordedCost(usage.cost, event);
+    }
+    return event;
 }
 
-const HIVE_MARKER = Buffer.from('"hive"');
+/**
+ * core가 기록한 비용(usage.cost)을 범주별로 읽는다. 값이 없거나 숫자가 아니면 미상(null)이다. 토큰이 있는데 0으로
+ * 적힌 범주도 미상이다: core는 가격표를 못 찾으면 0을 남기므로 0을 무료로 볼 수 없다. 요청 합계는 이 범주 값에서만
+ * 만든다(usage.cost.total은 범주가 빠져도 숫자일 수 있어 쓰지 않는다).
+ */
+function recordedCost(cost, tokens) {
+    const known = (value, used) => (Number.isFinite(value) && value >= 0 && (value > 0 || used === 0) ? value : null);
+    const source = cost && typeof cost === 'object' ? cost : {};
+    return Object.fromEntries(COST_CATEGORIES.map(key => [key, known(source[key], tokens[key])]));
+}
+
+const USAGE_MARKERS = [...USAGE_PROVIDERS].map(provider => Buffer.from(`"${provider}"`));
 
 /**
  * 세션 jsonl 증분 스캐너. 파일마다 읽은 바이트 위치와 뽑은 기록을 기억해, 다음 스캔은 늘어난 부분만 읽는다.
  * 마지막 줄이 아직 쓰이는 중이면(개행 없음) 그 줄은 다음 스캔으로 미룬다. floor보다 오래전에 수정된 새 파일은 건너뛰고,
  * floor가 앞당겨지면(시작일을 더 이르게 바꿈) 그때 건너뛰었던 파일만 새로 읽는다. 이미 읽은 파일은 처음부터 끝까지 읽은 것이라 버리지 않는다.
  */
-function createHiveScanner() {
+function createUsageScanner() {
     let root = null;
     let floorMs = Infinity;
     let files = new Map();
@@ -1360,8 +1453,8 @@ function createHiveScanner() {
                 let start = 0;
                 for (let newline = data.indexOf(10); newline !== -1; newline = data.indexOf(10, start)) {
                     const line = data.subarray(start, newline);
-                    if (line.includes(HIVE_MARKER)) {
-                        const event = hiveEvent(line.toString('utf8'));
+                    if (USAGE_MARKERS.some(marker => line.includes(marker))) {
+                        const event = usageEvent(line.toString('utf8'));
                         if (event) record.events.push(event);
                     }
                     start = newline + 1;
@@ -1432,38 +1525,34 @@ function createHiveScanner() {
  *   agentDir(): agent 디렉터리. settingsFile(): 설정 파일 경로.
  */
 function createCreditsService({ agentDir, settingsFile, now = Date.now }) {
-    const scanner = createHiveScanner();
-    let hiveCache = null; // { at, events, sinceMs, error }
-    let hiveInflight = null;
+    const scanner = createUsageScanner();
+    let scanCache = null; // { at, events, sinceMs, error }
+    let scanInflight = null;
 
-    async function hiveEvents(sinceMs, refresh) {
+    async function usageEvents(sinceMs, refresh) {
         const at = now();
-        if (!refresh && hiveCache && at - hiveCache.at < HIVE_SCAN_MS && hiveCache.sinceMs <= sinceMs) return hiveCache;
+        if (!refresh && scanCache && at - scanCache.at < USAGE_SCAN_MS && scanCache.sinceMs <= sinceMs) return scanCache;
         // 더 늦은 시작일로 도는 스캔은 더 이른 기록을 읽지 않았을 수 있다. 끝나기를 기다렸다가 새로 훑는다.
-        while (hiveInflight && hiveInflight.sinceMs > sinceMs) await hiveInflight.promise;
-        if (!hiveInflight) {
+        while (scanInflight && scanInflight.sinceMs > sinceMs) await scanInflight.promise;
+        if (!scanInflight) {
             const promise = (async () => {
                 try {
                     const result = await scanner.scan(path.join(agentDir(), 'sessions'), sinceMs);
-                    hiveCache = { at, events: result.events, sinceMs, error: result.incomplete ? 'session_scan_partial' : null };
+                    scanCache = { at, events: result.events, sinceMs, error: result.incomplete ? 'session_scan_partial' : null };
                 } catch {
-                    hiveCache = { at, events: [], sinceMs, error: 'session_scan_failed' };
+                    scanCache = { at, events: [], sinceMs, error: 'session_scan_failed' };
                 } finally {
-                    hiveInflight = null;
+                    scanInflight = null;
                 }
-                return hiveCache;
+                return scanCache;
             })();
-            hiveInflight = { sinceMs, promise };
+            scanInflight = { sinceMs, promise };
         }
-        return hiveInflight.promise;
+        return scanInflight.promise;
     }
 
-    async function hiveWallet(setting, refresh) {
-        const at = now();
-        const sinceDay = setting?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
-        const sinceMs = dayStartMs(sinceDay);
-        const cached = await hiveEvents(sinceMs, refresh);
-        const rows = hiveRows(cached.events, sinceMs);
+    function hiveWallet(setting, sinceDay, cached) {
+        const rows = hiveRows(cached.events.filter(event => event.provider === 'hive'), dayStartMs(sinceDay));
         return {
             wallet: 'hive', scope: 'this-pc', source: 'session-logs', since: sinceDay,
             sinceSource: setting ? 'start-date' : 'default', status: cached.error ? 'error' : 'ok', error: cached.error,
@@ -1474,22 +1563,46 @@ function createCreditsService({ agentDir, settingsFile, now = Date.now }) {
         };
     }
 
+    function anthropicWallet(sinceDay, cached) {
+        const usage = anthropicUsage(cached.events, dayStartMs(sinceDay));
+        return {
+            wallet: 'anthropic', scope: 'this-pc', source: 'session-logs', since: sinceDay, sinceSource: 'default',
+            status: cached.error ? 'error' : 'ok', error: cached.error, observedAt: cached.at, ...usage,
+            spentComplete: !cached.error && usage.spentComplete,
+        };
+    }
+
     // 예상하지 못한 throw도 그 지갑의 오류로만 끝낸다.
-    function failedWallet(setting, at) {
+    function failedWallet(setting, sinceDay, at) {
         return {
             wallet: 'hive', scope: 'this-pc', source: 'session-logs',
-            since: setting?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS), sinceSource: setting ? 'start-date' : 'default',
+            since: sinceDay, sinceSource: setting ? 'start-date' : 'default',
             status: 'error', error: 'internal', observedAt: at, rows: [], priceSources: CREDIT_PRICE_SOURCES.hive,
             ...walletTotals([], setting, false), remainingUsd: null, remainingUpperBound: false,
+        };
+    }
+
+    function failedAnthropicWallet(sinceDay, at) {
+        return {
+            wallet: 'anthropic', scope: 'this-pc', source: 'session-logs', since: sinceDay, sinceSource: 'default',
+            status: 'error', error: 'internal', observedAt: at, ...anthropicUsage([], 0), spentComplete: false,
         };
     }
 
     async function snapshot({ refresh = false } = {}) {
         const settings = readCreditSettings(settingsFile());
         const at = now();
-        const hive = await hiveWallet(settings.hive, refresh).catch(() => failedWallet(settings.hive, at));
+        const hiveSince = settings.hive?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
+        const anthropicSince = addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
+        // 두 지갑이 한 번 훑은 기록을 같이 쓴다. 더 이른 시작일까지 읽어야 둘 다 빠짐없이 센다.
+        const cached = await usageEvents(Math.min(dayStartMs(hiveSince), dayStartMs(anthropicSince)), refresh).catch(() => null);
+        const build = (make, fail) => {
+            try { return cached ? make() : fail(); } catch { return fail(); }
+        };
+        const hive = build(() => hiveWallet(settings.hive, hiveSince, cached), () => failedWallet(settings.hive, hiveSince, at));
+        const anthropic = build(() => anthropicWallet(anthropicSince, cached), () => failedAnthropicWallet(anthropicSince, at));
         return { generatedAt: now(), settings: { hive: settings.hive },
-            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, hive };
+            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, hive, anthropic };
     }
 
     let writing = Promise.resolve();

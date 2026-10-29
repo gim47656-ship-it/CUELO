@@ -485,5 +485,123 @@ for (const [tag, key, label] of [
 	check("(r4b) lastChance 는 OAuth bearer 를 돌려주지 않는다(파일은 한 번만 읽는다)", apiKey === FILE_KEY, `actual=${show(apiKey)}`);
 }
 
+console.log("[cumulative daily allowance]");
+for (const [tag, left, right, expected] of [
+	["daily-equal", 1 / 7, 1 / 7, "api"],
+	["daily-above", 0.2, 0.3, "api"],
+	["daily-one-below", 0.1, 0.3, "oauth"],
+] as const) {
+	const s = await scenario(tag, { rin: seat(0.1, left, 164), mio: seat(0.1, right, 164), key: "file" });
+	const value = await s.get();
+	check(tag, expected === "api" ? value === FILE_KEY : isOAuth(value, tag), `actual=${show(value)}`);
+	if (expected === "api") {
+		check(`${tag}: no false OAuth attribution`, identityOf(s.auth, s.sessionId) === undefined, "unexpected identity");
+		clockOffsetMs += 24 * HOUR;
+		for (const v of Object.values(s.seats)) v.fiveResetAt = Date.now() + HOUR;
+		const recovered = await s.get();
+		check(`${tag}: next allowance resumes OAuth`, isOAuth(recovered, tag), `actual=${show(recovered)}`);
+		clockOffsetMs -= 24 * HOUR;
+	}
+	await s.auth.close();
+}
+for (const tag of ["daily-unknown", "daily-stale", "daily-unsupported", "daily-pin", "daily-no-key"] as const) {
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: tag === "daily-no-key" ? undefined : "file", exactPin: tag === "daily-pin" });
+	s.hooks.weeklyReport = (_token, report) => {
+		if (tag === "daily-unknown") return null;
+		const usage = report as { fetchedAt: number; limits: unknown[] };
+		if (tag === "daily-stale") return { ...usage, fetchedAt: Date.now() - 86_400_000 };
+		if (tag === "daily-unsupported") return { ...usage, limits: [] };
+		return report;
+	};
+	const value = await s.get();
+	check(tag, isOAuth(value, tag), `actual=${show(value)}`);
+	await s.auth.close();
+}
+
+{
+	const tag = "daily-short-window-blocked";
+	const s = await scenario(tag, { rin: seat(1, 0.2, 164), mio: seat(1, 0.3, 164), key: "file" });
+	check(tag, await s.get() === FILE_KEY, "daily budget fallback must also work when short windows are blocked");
+	s.auth.close();
+}
+
+for (const key of ["empty", "dir"] as const) {
+	const tag = `daily-${key}`;
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key });
+	check(tag, isOAuth(await s.get(), tag), "unusable file must preserve OAuth");
+	s.auth.close();
+}
+{
+	const tag = "daily-disabled";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.01, 164), key: "file" });
+	await s.auth.credentials.disable(s.auth.oauth.accounts("anthropic")[1]!.credentialId, "fixture");
+	check(tag, await s.get() === FILE_KEY, "disabled below-budget account must not block fallback");
+	s.auth.close();
+}
+{
+	const tag = "daily-restricted";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	s.auth.sessions.restrict("anthropic", s.sessionId, [`rin-${tag}`]);
+	check(tag, await s.get() !== FILE_KEY, "restricted session must not use paid fallback");
+	s.auth.close();
+}
+for (const tier of ["opus", "sonnet"] as const) {
+	const tag = `daily-scope-${tier}`;
+	const s = await scenario(tag, { rin: seat(0.1, 0.01, 164), mio: seat(0.1, 0.01, 164), key: "file" });
+	s.hooks.weeklyReport = (_token, report) => {
+		const usage = report as { limits: unknown[] };
+		const scoped = limit("7d", 0.3, Date.now() + 164 * HOUR);
+		return { ...usage, limits: [...usage.limits, { ...scoped, id: `anthropic:7d:${tier}`, scope: { provider: "anthropic", windowId: "7d", shared: false, tier } }] };
+	};
+	const value = await s.get();
+	check(tag, tier === "opus" ? value === FILE_KEY : isOAuth(value, tag), `actual=${show(value)}`);
+	s.auth.close();
+}
+{
+	const tag = "daily-slot-during-await";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.2, 164), key: "file" });
+	s.hooks.weeklyReport = (_token, report) => {
+		if (s.hooks.weeklyReports === 2) clockOffsetMs += 24 * HOUR;
+		return report;
+	};
+	check(tag, isOAuth(await s.get(), tag), "recheck must reject decision crossing daily allowance boundary");
+	clockOffsetMs -= 24 * HOUR;
+	s.auth.close();
+}
+
+{
+	const tag = "daily-usage-recovery";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	check(`${tag}: initial API`, await s.get() === FILE_KEY, "expected fallback");
+	s.seats.rin.weekly = 0.01;
+	clockOffsetMs += 10 * 60_000;
+	const value = await s.get();
+	check(`${tag}: fresh below-budget report`, value === `rin-${tag}`, `actual=${show(value)}`);
+	check(`${tag}: OAuth attribution restored`, identityOf(s.auth, s.sessionId) === `rin-${tag}`, "stale API mark");
+	clockOffsetMs -= 10 * 60_000;
+	s.auth.close();
+}
+
+{
+	const tag = "daily-warm-oauth-api-oauth";
+	const s = await scenario(tag, { rin: seat(0.1, 0.01, 164), mio: seat(0.1, 0.02, 164), key: "file" });
+	const initial = await s.get();
+	check(`${tag}: successful OAuth establishes automatic affinity`, isOAuth(initial, tag) && identityOf(s.auth, s.sessionId) === initial, `actual=${show(initial)}`);
+	// Reports refresh after at most 6.25 minutes; Anthropic automatic affinity remains warm for 60.
+	s.seats.rin.weekly = 0.2;
+	s.seats.mio.weekly = 0.3;
+	clockOffsetMs += 10 * 60_000;
+	const paid = await s.get();
+	check(`${tag}: still-warm OAuth yields to daily API fallback`, paid === FILE_KEY, `actual=${show(paid)}`);
+	check(`${tag}: paid request has no OAuth identity`, identityOf(s.auth, s.sessionId) === undefined, "incorrect OAuth attribution");
+	s.seats.rin.weekly = 0.01;
+	clockOffsetMs += 10 * 60_000;
+	const recovered = await s.get();
+	check(`${tag}: same session recovers to below-budget OAuth`, recovered === `rin-${tag}`, `actual=${show(recovered)}`);
+	check(`${tag}: recovered identity is OAuth again`, identityOf(s.auth, s.sessionId) === recovered, "stale paid marker");
+	clockOffsetMs -= 20 * 60_000;
+	s.auth.close();
+}
+
 console.log(`결과: ${passes} pass, ${failures} fail`);
 process.exit(failures > 0 ? 1 : 0);

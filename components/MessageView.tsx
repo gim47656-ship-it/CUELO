@@ -719,7 +719,7 @@ function AssistantMessageView({
             )}
             {nativeVoice && <span>{st("live.nativeVoice")}</span>}
             {/* 모델 이름은 계속 보이되 별칭 옆의 보조 정보로 남는다. */}
-            <span>{`${providerDisplayName(message.provider)} · ${modelLabel}`}</span>
+            <span>{`${assistantProviderLabel(message, t)} · ${modelLabel}`}</span>
           </>
         )}
         {/* Live token/throughput telemetry is not a per-message label; it
@@ -2294,6 +2294,19 @@ function isIntentToolName(toolName: string): boolean {
   );
 }
 
+
+/**
+ * 답 머리줄의 provider 이름. Anthropic은 코어가 그 요청에 적은 자격 종류(usage.credentialKind)가 있을 때만
+ * 구독과 API를 가른다. 기록이 없거나 다른 값이면 지금 로그인 상태로 짐작하지 않고 그냥 Anthropic이다.
+ */
+function assistantProviderLabel(message: AssistantMessage, t: (key: string) => string): string {
+  if (message.provider === "anthropic") {
+    const kind = message.usage?.credentialKind;
+    if (kind === "oauth") return t("i18n.providerAnthropicSubscription");
+    if (kind === "api-key") return t("i18n.providerAnthropicApi");
+  }
+  return providerDisplayName(message.provider);
+}
 
 function formatUsage(usage: {
   input: number;

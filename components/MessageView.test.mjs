@@ -21,6 +21,12 @@ function renderMessage(message) {
   );
 }
 
+// 머리줄 글자만 본다: 감싸는 태그 구조가 바뀌어도 보이는 인증 표시는 같아야 한다.
+function anthropicHeaderLabel(html, model) {
+  const text = html.replace(/<[^>]*>/g, "");
+  return text.match(new RegExp(`(Anthropic(?: subscription| API)?) · ${model.replaceAll(".", "\\.")}`))?.[1];
+}
+
 test("renders a provider error when the assistant message has no content", () => {
   const html = renderMessage({
     role: "assistant",
@@ -375,4 +381,46 @@ test("a live answer without a recorded speaker, or with an unknown one, renders 
   assert.doesNotMatch(before, /account-avatar|rin\.webp|default voice/);
   assert.match(before, /<span>OpenAI Codex · Codex Live<\/span>/);
   assert.equal(renderMessage(liveAnswer({ liveSpeaker: { alias: "GHOST", mode: "native" } })), before);
+});
+
+test("an Anthropic answer says subscription or API only from the credential kind recorded on that response", () => {
+  const answer = (usage) => renderMessage({
+    role: "assistant", provider: "anthropic", model: "claude-opus-5-5", content: [{ type: "text", text: "답" }], stopReason: "stop",
+    ...(usage ? { usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, ...usage } } : {}),
+  });
+  assert.equal(anthropicHeaderLabel(answer({ credentialKind: "oauth" }), "claude-opus-5-5"), "Anthropic subscription");
+  assert.equal(anthropicHeaderLabel(answer({ credentialKind: "api-key" }), "claude-opus-5-5"), "Anthropic API");
+  for (const old of [answer(undefined), answer({}), answer({ credentialKind: "Api-Key" })]) {
+    assert.equal(anthropicHeaderLabel(old, "claude-opus-5-5"), "Anthropic", "a record without a known credential kind keeps the plain provider name");
+  }
+  const codex = renderMessage(liveAnswer({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, credentialKind: "api-key", cost: { total: 0 } } }));
+  assert.ok(codex.replace(/<[^>]*>/g, "").includes("OpenAI Codex · Codex Live"), "other providers ignore the field");
+  assert.equal(anthropicHeaderLabel(codex, "Codex Live"), undefined);
+});
+
+test("a reloaded session file shows each Anthropic answer with its own recorded credential kind", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { buildSessionContext, getSessionEntries } = await jiti.import("../lib/session-reader.ts");
+  const dir = mkdtempSync(join(tmpdir(), "cuelo-credential-kind-"));
+  try {
+    const filePath = join(dir, "session.jsonl");
+    const usage = (kind) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, ...(kind ? { credentialKind: kind } : {}) });
+    const reply = (id, parentId, kind) => ({ type: "message", id, parentId, timestamp: "2026-10-29T00:00:00.000Z",
+      message: { role: "assistant", provider: "anthropic", api: "anthropic-messages", model: "claude-opus-5-5",
+        content: [{ type: "text", text: id }], stopReason: "stop", usage: usage(kind) } });
+    const ask = (id, parentId) => ({ type: "message", id, parentId, timestamp: "2026-10-29T00:00:00.000Z", message: { role: "user", content: id } });
+    writeFileSync(filePath, [
+      { type: "session", version: 3, id: "credential-kind", timestamp: "2026-10-29T00:00:00.000Z", cwd: "" },
+      ask("u1", null), reply("a1", "u1", "oauth"), ask("u2", "a1"), reply("a2", "u2", "api-key"), ask("u3", "a2"), reply("a3", "u3", null),
+    ].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const { messages } = buildSessionContext(await getSessionEntries(filePath), undefined, { deferThinking: true, deferToolResultImages: true });
+    const labels = messages.filter((message) => message.role === "assistant")
+      .map((message) => anthropicHeaderLabel(renderMessage(message), "claude-opus-5-5"));
+    assert.deepEqual(labels, ["Anthropic subscription", "Anthropic API", "Anthropic"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -92,6 +92,11 @@ export interface AssistantMessage {
     output: number;
     cacheRead: number;
     cacheWrite: number;
+    /**
+     * 코어가 이 요청을 실제로 보낸 자격 종류를 적은 값(Anthropic만, 2026-10-29부터). 구독 OAuth면
+     * "oauth", API 키면 "api-key"이고, 이 필드가 생기기 전 기록과 사용자 지정 client 요청에는 없다(모름).
+     */
+    credentialKind?: "oauth" | "api-key";
     cost: {
       input: number;
       output: number;

@@ -795,6 +795,8 @@
  "i18n.estimatedTokens": "스트리밍 중 예상 Token 수",
  "i18n.messageUsage": "사용량",
  "i18n.messageUsageTitle": "이 메시지의 Token·비용 보기",
+ "i18n.providerAnthropicSubscription": "Anthropic 구독",
+ "i18n.providerAnthropicApi": "Anthropic API",
  "i18n.noOutput": "(출력 없음)",
  "i18n.noSummary": "(요약 없음)",
  "i18n.conversationCompacted": "대화가 압축됨",
@@ -1072,5 +1074,17 @@
  "credits.priceUnknown": "단가 미상",
  "credits.purpose.session": "대화·에이전트",
  "credits.purpose.memory": "기억",
- "credits.purpose.korean-reply-translation": "답변 번역"
+ "credits.purpose.korean-reply-translation": "답변 번역",
+ "credits.wallet.anthropic": "Anthropic API",
+ "credits.scope.anthropic": "이 PC 기록",
+ "credits.anthropic.note": "토큰이 기록된 API 키 요청만 집계하며 구독(OAuth) 요청과 토큰 없는 실패는 제외합니다. 금액은 공개 단가 기준 추정치이며 청구서나 잔액이 아닙니다.",
+ "credits.anthropic.noCoverage": "이 기간에 인증 방식이 기록된 요청이 없어 API 키 사용량을 알 수 없습니다.",
+ "credits.anthropic.coverageSince": "인증 방식 최초 기록: {date} (이후 모든 요청의 기록을 보장하지는 않습니다)",
+ "credits.anthropic.none": "이 기간에 기록된 API 키 요청이 없습니다.",
+ "credits.anthropic.oauthExcluded": "구독(OAuth) 제외",
+ "credits.anthropic.unattributedExcluded": "인증 미기록 제외",
+ "credits.category.input": "입력",
+ "credits.category.output": "출력",
+ "credits.category.cacheRead": "캐시 읽기",
+ "credits.category.cacheWrite": "캐시 쓰기"
 }

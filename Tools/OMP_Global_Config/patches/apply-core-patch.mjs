@@ -6246,8 +6246,8 @@ import { resolveUsedFraction } from "../usage";`,
 			throw new Error(\`[CharacterSummonRuntime] \${exactOAuthLabel}의 지정 OAuth 계정이 현재 사용할 수 없습니다.\`);
 		}`,
 	},
-	// 2026-10-13 사용자 결정: Anthropic 구독 좌석이 모두 주간(7d) 한도로 막혔을 때만 API 키로 요청을 넘긴다. 키 출처는
-	// `<agentDir>/anthropic-fallback-api-key`(한 줄, trim) 파일 하나뿐이다. 주간 소진 판정이 참인 순간에만 읽고, env 에 넣거나
+	// 2026-10-13 주간 소진 폴백에 2026-10-29 누적 일 배분 폴백을 추가한다(아래 업그레이드 블록). 키 출처는
+	// `<agentDir>/anthropic-fallback-api-key`(한 줄, trim) 파일 하나뿐이다. 승인된 배분/소진 판정 뒤에만 읽고, env 에 넣거나
 	// 캐시하지 않는다. env·config fallback·login tier 는 이 판정에 쓰지 않는다(env tier 는 키가 모든 자식 셸에 상속되고
 	// affinity.ts activeOAuth 의 env 가드가 pin 없는 세션의 귀속을 끈다). 파일이 없거나 비었거나 못 읽으면 다른 키가
 	// 설정돼 있어도 upstream last-resort(막힌 좌석으로 요청해 wire 의 usage-limit 의미를 받는다) 그대로다. 5h 단독 소진·
@@ -20123,6 +20123,170 @@ EDITS.push({
 		marker: "job.batch.forEach(({ f, passage }, k) => {",
 		anchor: "\t\t\tlet entry = results.get(job.f);\n\t\t\tif (!entry) {\n\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\tresults.set(job.f, entry);\n\t\t\t}\n\t\t\tjob.passages.forEach((passage, k) => {",
 		patched: "\t\t\tjob.batch.forEach(({ f, passage }, k) => {\n\t\t\t\tlet entry = results.get(f);\n\t\t\t\tif (!entry) {\n\t\t\t\t\tentry = { score: 0, heat: [], lines: 0, bytes: 0 };\n\t\t\t\t\tresults.set(f, entry);\n\t\t\t\t}",
+	});
+}
+
+// Per-request provenance travels with the existing usage object into both durable ledger forms.
+EDITS.push({
+		file: "../pi-catalog/src/types.ts",
+		marker: 'credentialKind?: "oauth" | "api-key";',
+		anchor: "export interface Usage {\n",
+		patched: 'export interface Usage {\n\t/** Actual provider-request credential class; absent means unknown. Never an identifier. */\n\tcredentialKind?: "oauth" | "api-key";\n',
+	}, {
+		file: "../pi-catalog/dist/types/types.d.ts",
+		marker: 'credentialKind?: "oauth" | "api-key";',
+		anchor: "export interface Usage {\n",
+		patched: 'export interface Usage {\n\t/** Actual provider-request credential class; absent means unknown. Never an identifier. */\n\tcredentialKind?: "oauth" | "api-key";\n',
+	});
+EDITS.push({
+	file: "../pi-ai/src/providers/anthropic.ts",
+	marker: 'output.usage.credentialKind = isOAuthToken ? "oauth" : "api-key";',
+	anchor: "\t\t\t\tconst anthropicRequest: unknown =\n",
+	patched: `				// Set after retry resets, from the actual client branch. Custom/transport auth remains unknown.
+				if (!transport && !options?.client && model.provider === "anthropic") {
+					output.usage.credentialKind = isOAuthToken ? "oauth" : "api-key";
+				}
+				const anthropicRequest: unknown =
+`,
+});
+
+// Cumulative daily allowance uses the existing fallback decision and cascade, not a second selector.
+{
+	const entry = EDITS.find(edit => edit.marker === "async cueloWeeklyExhausted(");
+	entry.legacyPatched = entry.patched;
+	entry.patched = entry.patched
+		.replace("CUELO: true when every OAuth seat", "CUELO: dailyBudget checks cumulative daily allocation; default mode returns true when every OAuth seat")
+		.replace("options?: AuthApiKeyOptions,\n\t): Promise<boolean>", "options?: AuthApiKeyOptions,\n\t\tdailyBudget = false,\n\t): Promise<boolean>")
+		.replace("const seats = eligibleSeats();", `const allowedAccounts = options?.accountIds?.length ? new Set(options.accountIds) : undefined;
+		const initial = eligibleSeats();
+		const enforceAccounts = allowedAccounts !== undefined && initial.some(seat => allowedAccounts.has(oauthAccountKey(seat.credential)!));
+		const selectedSeats = () => eligibleSeats().filter(seat => !dailyBudget || !enforceAccounts || allowedAccounts!.has(oauthAccountKey(seat.credential)!));
+		const seats = selectedSeats();`)
+		.replace("if (!allBlocked(seats)) return false;", "if (!dailyBudget && !allBlocked(seats)) return false;")
+		.replace("const weeklyResets: number[] = [];", `const weeklyResets: number[] = [];
+		const dailyReports: UsageReport[] = [];
+		const dailyReached = (usage: UsageReport, at: number): boolean => {
+			if (!Number.isFinite(usage.fetchedAt) || usage.fetchedAt > at || at - usage.fetchedAt > USAGE_REPORT_TTL_MS) return false;
+			const planGate = strategy.planGate?.(rankingContext);
+			if (planGate && planGate(usage) !== true) return false;
+			const weekly = strategy.findWindowLimits(usage, rankingContext).secondary;
+			if (!weekly || weekly.status === "unknown") return false;
+			const duration = weekly.window?.durationMs;
+			const reset = weekly.window?.resetsAt;
+			const used = resolveUsedFraction(weekly);
+			const day = 86_400_000;
+			if (typeof duration !== "number" || !Number.isFinite(duration) || duration < day ||
+				typeof reset !== "number" || !Number.isFinite(reset) || reset <= at || reset - at > duration ||
+				typeof used !== "number" || !Number.isFinite(used) || used < 0) return false;
+			const elapsed = duration - (reset - at);
+			const allowance = Math.min(1, ((Math.floor(elapsed / day) + 1) * day) / duration);
+			return used >= allowance;
+		};`)
+		.replace("if (!usage) return false;", `if (!usage) return false;
+			if (dailyBudget) {
+				if (!dailyReached(usage, Date.now())) return false;
+				dailyReports.push(usage);
+				continue;
+			}`)
+		.replace("const recheckNowMs = Date.now();", "await this.#deps.pool.adoptExternalChanges();\n\t\tconst recheckNowMs = Date.now();")
+		.replace("const current = eligibleSeats();", "const current = selectedSeats();")
+		.replace("return allBlocked(current);", `if (dailyBudget) {
+			if (current.some(seat => !seats.some(before => before.id === seat.id && authCredentialEquals(before.credential, seat.credential)))) return false;
+			return dailyReports.every(usage => dailyReached(usage, Date.now()));
+		}
+		return allBlocked(current);`);
+	const passes = EDITS.find(edit => edit.marker === "options?.cueloOnWeeklyExhausted !== undefined &&");
+	passes.legacyPatched = passes.patched;
+	passes.patched = passes.patched
+		.replace("pass === passes[1] &&", `(pass === passes[0] || pass === passes[1]) &&
+				// A fully exhausted week keeps the established rescue/recheck path.
+				(pass !== passes[0] || !candidates.every(candidate => {
+					const weekly = candidate.usage && strategy?.findWindowLimits(candidate.usage, rankingContext).secondary;
+					return weekly !== undefined && weekly !== null && isUsageLimitReached([weekly]);
+				})) &&`)
+		.replace("this.cueloWeeklyExhausted(provider, sessionId, options)", "this.cueloWeeklyExhausted(provider, sessionId, options, pass === passes[0])")
+		.replace("// CUELO: the strict pass found nothing. A weekly-exhausted Anthropic pool hands the", "// CUELO: daily allocation is checked before strict selection; weekly exhaustion before rescue. Hand the");
+	EDITS.push({
+		file: "../pi-ai/src/auth/select.ts",
+		marker: 'import { USAGE_REPORT_TTL_MS } from "./sqlite-credential-store";',
+		anchor: 'import type { UsageService } from "./usage";',
+		patched: 'import type { UsageService } from "./usage";\nimport { USAGE_REPORT_TTL_MS } from "./sqlite-credential-store";',
+	});
+}
+
+// #17332 (6612331), adapted to the downstream numeric estimator API.
+{
+	const agent = "../pi-agent-core/src/agent.ts";
+	const owned = "(this.#dialectResolver ? this.#dialectResolver(model) : this.#dialect) ??\n\t\t\tresolveOwnedDialectFromEnv(Bun.env.PI_DIALECT)";
+	EDITS.push({
+		file: agent, marker: "prunesToolDescriptions(model: Model | undefined): boolean",
+		anchor: "\t/** Inject/strip the intent field on tool calls; applies from the next prompt run. */",
+		patched: `	/** Effective request pruning: owned dialects carry full definitions in-band. */
+	prunesToolDescriptions(model: Model | undefined): boolean {
+		return this.#pruneToolDescriptions && model !== undefined && !this.#ownedDialect(model);
+	}
+
+	#ownedDialect(model: Model): Dialect | undefined {
+		return (${owned});
+	}
+
+	/** Inject/strip the intent field on tool calls; applies from the next prompt run. */`,
+	}, {
+		file: agent, marker: "const ownedDialect = this.#ownedDialect(model);",
+		anchor: "\t\tconst ownedDialect =\n\t\t\t" + owned + ";",
+		patched: "\t\tconst ownedDialect = this.#ownedDialect(model);",
+	}, {
+		file: agent, marker: "getDialect: model => this.#ownedDialect(model),",
+		anchor: "getDialect: this.#dialectResolver,",
+		patched: "getDialect: model => this.#ownedDialect(model),",
+	}, {
+		file: "../pi-agent-core/dist/types/agent.d.ts",
+		marker: "prunesToolDescriptions(model: Model | undefined): boolean;",
+		anchor: "    set pruneToolDescriptions(value: boolean);\n",
+		patched: "    set pruneToolDescriptions(value: boolean);\n    prunesToolDescriptions(model: Model | undefined): boolean;\n",
+	});
+	// Upgrade existing downstream entries, including already-deployed raw-flag bodies.
+	for (const marker of ["// HANSE: wire tool specs drop descriptions", "// HANSE: non-message cache keys on pruned wire tool specs",
+		"        /** HANSE: wire tool specs drop descriptions (catalog inlined in the system prompt). */\n        readonly pruneToolDescriptions?: boolean;\n",
+		"\t\t\tsession.agent?.pruneToolDescriptions === true,\n"]) {
+		const entry = EDITS.find(edit => edit.marker === marker);
+		entry.legacyPatched = entry.patched;
+		entry.patched = entry.patched
+			.replace("readonly pruneToolDescriptions?: boolean;", "prunesToolDescriptions?(model: Model | undefined): boolean;")
+			.replace("session.agent?.pruneToolDescriptions === true", "session.agent?.prunesToolDescriptions?.(session.model) === true");
+		if (marker.includes("readonly pruneToolDescriptions")) entry.marker = "prunesToolDescriptions?(model: Model | undefined): boolean;";
+		if (marker.includes("session.agent?.")) entry.marker = "\t\t\tsession.agent?.prunesToolDescriptions?.(session.model) === true,\n";
+	}
+	const estimator = EDITS.find(edit => edit.marker === "// HANSE: pruned wire specs carry only the name and the description-stripped schema");
+	estimator.legacyPatched = estimator.patched;
+	estimator.patched = estimator.patched
+		.replace("pruneDescriptions ? prunedToolSchemaFragments(tool) : toolSchemaFragments(tool).fragments", "toolSchemaFragments(tool, undefined, pruneDescriptions).fragments");
+	const start = estimator.patched.indexOf("/**\n * Provider-visible text of one tool when");
+	const end = estimator.patched.indexOf("/** Count schemas carried on every request", start);
+	if (start < 0 || end < start) throw new Error("pruned fragment helper boundaries changed");
+	estimator.patched = estimator.patched.slice(0, start) + estimator.patched.slice(end);
+	const tui = "../pi-tui/src/status-line/context-usage.ts";
+	for (const [anchor, patched] of [
+		["toolSchemaFragments(tool: ContextTool, displayIndent?: number)", "toolSchemaFragments(tool: ContextTool, displayIndent?: number, pruneDescriptions = false)"],
+		['if (typeof description === "string") push(description);', 'if (!pruneDescriptions && typeof description === "string") push(description);'],
+		["const wireSchema = toolWireSchema(wireTool) ?? {};", "const fullSchema = toolWireSchema(wireTool) ?? {};\n\t\tconst wireSchema = pruneDescriptions ? stripSchemaDescriptions(fullSchema) : fullSchema;"],
+		["const examplesBlock = renderToolExamples(wireTool);", "const examplesBlock = pruneDescriptions ? undefined : renderToolExamples(wireTool);"],
+	]) EDITS.push({ file: tui, marker: patched, anchor, patched });
+	EDITS.push({
+		file: "../pi-tui/dist/types/status-line/context-usage.d.ts",
+		marker: "toolSchemaFragments(tool: ContextTool, displayIndent?: number, pruneDescriptions?: boolean)",
+		anchor: "toolSchemaFragments(tool: ContextTool, displayIndent?: number)",
+		patched: "toolSchemaFragments(tool: ContextTool, displayIndent?: number, pruneDescriptions?: boolean)",
+	}, {
+		file: "src/session/context-view.ts",
+		marker: "toolSchemaFragments(tool, 2, session.agent.prunesToolDescriptions(session.model))",
+		anchor: "toolSchemaFragments(tool, 2)",
+		patched: "toolSchemaFragments(tool, 2, session.agent.prunesToolDescriptions(session.model))",
+	}, {
+		file: "src/session/session-advisors.ts",
+		marker: "\t\t\t\t\t\tagent.prunesToolDescriptions(model),",
+		anchor: "\t\t\t\t\t\tthis.#host.settings.revision,\n\t\t\t\t\t) +",
+		patched: "\t\t\t\t\t\tthis.#host.settings.revision,\n\t\t\t\t\t\tagent.prunesToolDescriptions(model),\n\t\t\t\t\t) +",
 	});
 }
 

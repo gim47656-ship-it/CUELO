@@ -1001,6 +1001,93 @@ test('unreadable session folders make Hive a partial error that keeps what was r
     assert.equal(partial.remainingUpperBound, true);
 });
 
+function writeSessionLines(fixture, name, lines) {
+    const dir = path.join(fixture.dir, 'sessions', '--home-proj--');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+    return dir;
+}
+
+const anthropicUsageOf = (credentialKind, tokens, cost) => ({
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...tokens, ...(cost === undefined ? {} : { cost }),
+    ...(credentialKind === undefined ? {} : { credentialKind }),
+});
+const anthropicMessage = (timestamp, usage, model = 'claude-opus-5-5') =>
+    ({ type: 'message', timestamp, message: { role: 'assistant', provider: 'anthropic', api: 'anthropic-messages', model, usage } });
+
+test('Anthropic paid usage counts only api-key records with recorded cost per cache category; OAuth and unattributed stay out', async t => {
+    const fixture = creditFixture(t);
+    const paidCost = { input: 0.01, output: 0.5, cacheRead: 0.2, cacheWrite: 1.25, total: 1.96 };
+    writeSessionLines(fixture, 'a.jsonl', [
+        anthropicMessage('2026-10-20T01:00:00Z', anthropicUsageOf(undefined, { input: 900, output: 900 }, { total: 5 })),
+        anthropicMessage('2026-10-21T01:00:00Z', anthropicUsageOf('oauth', { input: 10, output: 20, cacheWrite: 30 }, { total: 3 })),
+        anthropicMessage('2026-10-22T01:00:00Z', anthropicUsageOf('api-key', { input: 2_000, output: 20_000, cacheRead: 400_000, cacheWrite: 200_000 }, paidCost)),
+        { type: 'model_usage', provider: 'anthropic', api: 'anthropic-messages', model: 'claude-opus-5-5', purpose: 'cross-review',
+            timestamp: '2026-10-23T01:00:00Z', usage: anthropicUsageOf('api-key', { input: 4, output: 100, cacheWrite: 1_000 }, { input: 0.00002, output: 0.0025, cacheRead: 0, cacheWrite: 0.00625, total: 0.00877 }) },
+        // core가 가격을 못 찾아 0을 남긴 요청: 토큰이 있으니 미상이다.
+        anthropicMessage('2026-10-24T01:00:00Z', anthropicUsageOf('api-key', { input: 50, output: 5 }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }), 'claude-new-model'),
+        // 한도 거절처럼 토큰이 없는 응답은 요청으로 세지 않지만, 자격 종류가 적혔으니 기록 시작 시각에는 들어간다.
+        anthropicMessage('2026-10-20T12:00:00Z', anthropicUsageOf('api-key', {}, { total: 0 })),
+        // 범주 하나가 빠지면 total이 있어도 그 요청은 미상이고, 아는 범주만 하한에 들어간다.
+        anthropicMessage('2026-10-24T02:00:00Z', anthropicUsageOf('api-key', { input: 10, output: 10 }, { input: 1, total: 1 }), 'claude-partial'),
+        anthropicMessage('2026-10-24T03:00:00Z', anthropicUsageOf('Api-Key', { input: 1 }, { total: 1 })),
+        // 30일 밖, 다른 provider, Hive 기록.
+        anthropicMessage('2026-09-01T01:00:00Z', anthropicUsageOf('api-key', { input: 1 }, { total: 9 })),
+        { type: 'message', timestamp: '2026-10-22T01:00:00Z', message: { role: 'assistant', provider: 'openrouter', model: 'anthropic', usage: anthropicUsageOf('api-key', { input: 1 }, { total: 7 }) } },
+        { type: 'model_usage', provider: 'hive', model: 'zai-org/glm-5.3-flash', purpose: 'skim', timestamp: '2026-10-20T01:00:00Z', usage: { input: 1e6, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    ]);
+    const snapshot = await fixture.service.snapshot({ refresh: true });
+    const paid = snapshot.anthropic;
+    assert.equal(paid.wallet, 'anthropic');
+    assert.equal(paid.status, 'ok');
+    assert.equal(paid.since, '2026-09-26');
+    assert.equal(paid.coverageSince, Date.parse('2026-10-20T12:00:00Z'), 'first record that names its credential kind, even without tokens');
+    assert.equal(paid.oauthRequests, 1);
+    assert.equal(paid.unattributedRequests, 2, 'a missing or unknown credential kind is never treated as paid');
+    assert.deepEqual(paid.rows.map(row => [row.model, row.requests, row.unpricedRequests]),
+        [['claude-opus-5-5', 2, 0], ['claude-new-model', 1, 1], ['claude-partial', 1, 1]]);
+    const opus = paid.rows[0];
+    assert.deepEqual([opus.inputTokens, opus.outputTokens, opus.cacheReadTokens, opus.cacheWriteTokens], [2_004, 20_100, 400_000, 201_000]);
+    near(opus.costUsd, 1.96 + 0.00877);
+    near(opus.costs.cacheWrite, 1.25 + 0.00625);
+    near(opus.costs.cacheRead, 0.2);
+    assert.deepEqual(opus.purposes.map(item => [item.purpose, item.requests]), [['session', 1], ['cross-review', 1]]);
+    const unpriced = paid.rows[1];
+    assert.equal(unpriced.costUsd, null);
+    assert.deepEqual(unpriced.costs, { input: null, output: null, cacheRead: 0, cacheWrite: 0 });
+    near(paid.rows[2].costUsd, 1);
+    assert.deepEqual(paid.rows[2].costs, { input: 1, output: null, cacheRead: null, cacheWrite: null }, 'an absent category field is unknown, not $0');
+    near(paid.spentUsd, 1.96 + 0.00877 + 1);
+    assert.equal(paid.spentComplete, false, 'an unpriced paid request makes the known spend a lower bound');
+    assert.deepEqual(snapshot.hive.rows.map(row => [row.model, row.requests]), [['zai-org/glm-5.3-flash', 1]], 'Hive totals are unchanged');
+});
+
+test('Anthropic usage with no credential records shows no coverage instead of a measured zero; a failed scan is an error', async t => {
+    const fixture = creditFixture(t);
+    const dir = writeSessionLines(fixture, 'a.jsonl', [
+        anthropicMessage('2026-10-20T01:00:00Z', anthropicUsageOf(undefined, { input: 10, output: 10 }, { total: 1 })),
+    ]);
+    let paid = (await fixture.service.snapshot({ refresh: true })).anthropic;
+    assert.deepEqual([paid.coverageSince, paid.rows.length, paid.unattributedRequests, paid.oauthRequests], [null, 0, 1, 0]);
+
+    // 유료 요청이 있는데 금액을 하나도 모르면 사용액은 0이 아니라 미상이다.
+    fs.writeFileSync(path.join(dir, 'b.jsonl'), `${JSON.stringify(anthropicMessage('2026-10-21T01:00:00Z', anthropicUsageOf('api-key', { input: 10 })))}\n`);
+    paid = (await fixture.service.snapshot({ refresh: true })).anthropic;
+    assert.deepEqual([paid.rows.length, paid.rows[0].costUsd, paid.spentUsd, paid.spentComplete], [1, null, null, false]);
+
+    if (process.getuid?.() === 0) return;
+    fs.mkdirSync(path.join(dir, 'locked'));
+    fs.chmodSync(path.join(dir, 'locked'), 0o000);
+    try {
+        paid = (await fixture.service.snapshot({ refresh: true })).anthropic;
+    } finally {
+        fs.chmodSync(path.join(dir, 'locked'), 0o755);
+    }
+    assert.equal(paid.status, 'error');
+    assert.equal(paid.error, 'session_scan_partial');
+    assert.equal(paid.spentComplete, false);
+});
+
 test('the omp CLI is found without OMP_EXE: the package-owned binary on Linux/macOS, the default install or omp.exe on Windows', () => {
     const { resolveOmpExecutable } = require('./usage-server');
     const root = path.join(path.sep, 'pkg');

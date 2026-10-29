@@ -58,12 +58,56 @@ export interface HiveCreditWallet extends WalletBase {
   rows: HiveCreditRow[];
 }
 
+export type AnthropicCostCategory = "input" | "output" | "cacheRead" | "cacheWrite";
+
+export interface AnthropicUsageCounts {
+  /** 토큰이 기록된 응답 수. 토큰이 없는 거절·오류 응답은 빠진다. */
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** 비용이 기록된 요청의 합. 하나도 없으면 null. */
+  costUsd: number | null;
+  /** 비용이 기록되지 않은(미상) 요청 수. 0보다 크면 costUsd는 하한이다. */
+  unpricedRequests: number;
+}
+
+export interface AnthropicPaidRow extends AnthropicUsageCounts {
+  model: string;
+  /** 범주별 금액. 그 범주 값이 빠진 요청이 하나라도 있으면 null. */
+  costs: Record<AnthropicCostCategory, number | null>;
+  purposes: Array<AnthropicUsageCounts & { purpose: string }>;
+}
+
+/** core가 api-key로 나갔다고 기록한 Anthropic 요청만 모은 이 PC 기록. 잔액·청구서가 아니다. */
+export interface AnthropicPaidWallet {
+  wallet: "anthropic";
+  scope: "this-pc";
+  source: "session-logs";
+  since: string;
+  sinceSource: "default";
+  status: "ok" | "error";
+  error: string | null;
+  observedAt: number;
+  /** 기간 안에서 자격 종류가 처음 기록된 시각(ms). 그 뒤 빠짐없이 기록됐다는 보증은 아니다. 없으면 null. */
+  coverageSince: number | null;
+  oauthRequests: number;
+  unattributedRequests: number;
+  rows: AnthropicPaidRow[];
+  /** 아는 금액의 합. 유료 요청이 있는데 아는 금액이 하나도 없으면 null(미상). */
+  spentUsd: number | null;
+  spentComplete: boolean;
+}
+
 export interface ApiCreditsSnapshot {
   generatedAt: number;
   settings: { hive: HiveCreditSetting | null };
   settingsError: string | null;
   priceCheckedAt: string;
   hive: HiveCreditWallet;
+  /** 이 칸이 없는 옛 사이드카도 받는다. */
+  anthropic?: AnthropicPaidWallet;
 }
 
 export type CreditSettingInput = { totalUsd: number; startDate: string };
@@ -72,7 +116,8 @@ export function isApiCreditsSnapshot(value: unknown): value is ApiCreditsSnapsho
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ApiCreditsSnapshot>;
   return Boolean(record.settings && typeof record.settings === "object"
-    && record.hive && Array.isArray(record.hive.rows));
+    && record.hive && Array.isArray(record.hive.rows)
+    && (record.anthropic === undefined || Array.isArray(record.anthropic?.rows)));
 }
 
 export interface CreditMeter {
