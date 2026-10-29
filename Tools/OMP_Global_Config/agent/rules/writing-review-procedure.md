@@ -21,10 +21,10 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   고객용 덱이 빠진 사례를 사용자가 바로잡았다). 제외는 선언 없는 마크다운과 소스 내부다: 코드·주석·로그·테스트·fixture·
   생성물·vendor, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`. `.slop-gate.json` `visible`은
   대상을 더하기만 한다. 위 초안 작성·직접 교정 규칙과 코드 변경의 `cross_review`는 그대로 유지한다.
-  점검은 `slop_check`로 한다. 검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna)와 `slopReviewGemini`(Gemini 3.8 Flash)다
-  (2026-10-29 사용자 결정: slop에는 Opus·Astra를 쓰지 않는다). Anthropic·Gemini·그 밖 저자는 Luna가 필수이고 Flash가 자문,
-  OpenAI 저자는 Flash가 필수이며(Luna는 같은 계열이라 건너뛴다) Gemini 저자는 Luna만 본다. slot이 비었거나 풀리지 않으면 그
-  자리는 `cross_review`와 같은 옛 slot(`crossReviewOpenAI`·`crossReviewAnthropic`·`crossReviewAdvisory`)으로 돌아가고, 풀린
+  점검은 `slop_check`로 한다. 검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
+  (2026-10-29 사용자 결정: slop에는 Opus·Astra를 쓰지 않고 Gemini Flash와 모든 자문도 없앴다). Anthropic·Gemini·그 밖 저자는 Luna가 필수다.
+  OpenAI 저자는 Luna를 못 쓰므로(같은 계열) 그 자리가 `crossReviewAnthropic`으로 간다. slot이 비었거나 풀리지 않으면 그
+  자리는 `cross_review`와 같은 옛 slot(`crossReviewOpenAI`·`crossReviewAnthropic`)으로 돌아가고, 풀린
   slot이 계열이 맞지 않으면 호출 없이 거절한다. `cross_review`는 이 slot을 읽지 않는다. 규칙 본문은 system 메시지에 고정하고
   파일 글만 user 메시지에 실어 제공자 프리픽스 캐시가 맞게 한다. 지적이 없으면
   그 파일 내용에 통과가 기록된다. 고친 파일은 다시 점검하며 내용을 바꾸지 않고 닫을 수 있는 것은 Main이 근거로

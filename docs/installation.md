@@ -170,17 +170,13 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | --- | --- | --- |
 | `crossReviewOpenAI` | 교차검토의 OpenAI 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
 | `crossReviewAnthropic` | 교차검토의 Anthropic 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `anthropic` 제공자의 모델을 고릅니다. |
-| `crossReviewAdvisory` | 보조 자문 검토자 | 필수 검토를 대신하지 않습니다. 자문 실패만으로 통과를 막지는 않지만 받은 지적은 처리해야 합니다. |
-| `slopReviewOpenAI` | 슬롭 검사의 OpenAI 계열 검토자(선택) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. 비우면 교차검토 슬롯을 씁니다. |
-| `slopReviewGemini` | 슬롭 검사의 Gemini 계열 검토자(선택) | Gemini 모델을 고릅니다. OpenAI 모델이 쓴 글은 이 슬롯이 필수 검토자입니다. 비우면 교차검토 슬롯을 씁니다. |
+| `slopReviewOpenAI` | 슬롭 검사 검토자(선택) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. OpenAI 모델이 쓴 글은 이 슬롯 대신 `crossReviewAnthropic`이 검토합니다. 비우면 교차검토 슬롯을 씁니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `ocr` | 이미지의 글자·숫자·표 전사 | 시각 입력을 지원하는 모델을 고릅니다. |
 | `judge` | 라우팅 등 구조화 판정 | Jev를 쓰려면 위의 [역할과 Jev 보완](#기존-프로필의-역할과-jev-보완) 절차를 따릅니다. |
 
 필수 검토자는 작성 모델의 반대 계열을 사용합니다. 한 제공자에 로그인했다는 사실만으로 다른 계열의 검토 모델까지 사용할 수 있는 것은 아닙니다.
-
-자문 검토의 대체 모델을 쓰려면 `config.yml`의 `modelRoles` 아래에 선택 사항인 `crossReviewAdvisoryFallback`을 추가하고 모델 선택자를 지정하세요.
 
 ### 기존 프로필의 하네스 갱신
 

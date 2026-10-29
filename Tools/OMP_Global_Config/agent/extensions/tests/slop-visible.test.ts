@@ -37,7 +37,7 @@ function reviewer() {
 /** 공개 선언이 없는 호출(slop_check에 public을 주지 않은 것). 추출은 형식과 무관하게 같은 문장을 돌려준다(pptx·docx 추출기 없이도 돈다). */
 function deps(cwd: string, complete: Complete): SlopDeps {
   return {
-    cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: "anthropic/fixture-author", advisoryModel: "anthropic/fixture-advisor",
+    cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: "anthropic/fixture-author",
     head: async () => undefined, extract: async () => ({ text: KO_PLAIN, kind: "prose", leads: [] }),
   } as SlopDeps;
 }

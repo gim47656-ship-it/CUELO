@@ -34,7 +34,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   2026-10-29 범위 축소). 마크다운(README·CHANGELOG·`docs/`·문서 지도)은 `.slop-gate.json` `visible`이 선언하지 않으면 대상이 아니다. 공개 저장소
   여부나 `.publicignore` 선언과 상관없이 형식(`classify`)으로 정하며, 고객·사용자에게 건네는 덱·보고서도 대상이다.
   코드·주석·로그·테스트·생성물, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`는 빠진다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
-  slop 검토 모델은 `slopReviewOpenAI`(Luna)·`slopReviewGemini`(Flash) slot이고 저자 계열의 slot은 건너뛴다. 비면 옛 `cross_review` slot으로 돌아간다(상세는 `rule://writing-review-procedure`).
+  slop 검토 모델은 `slopReviewOpenAI`(Luna) 단독이고 자문은 없다(2026-10-29 사용자 결정). OpenAI 저자는 Luna를 못 쓰므로 `crossReviewAnthropic`으로 간다. 비면 옛 `cross_review` slot으로 돌아간다(상세는 `rule://writing-review-procedure`).
   검토 응답이 깨지면 실패 원문·파싱 오류를 확인하고 같은 조건 재호출이나 산출물 따옴표·쉼표 변경으로 우회하지 않는다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
@@ -673,14 +673,10 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   프로젝트·스타일·디자이너 파일(`.sln`·`.vbproj`·`.csproj`·`.resx`·`.css`·`*.Designer.*` 등)을 빼고 바뀐 줄이 많은
   코드 파일 5개까지만 요구한다. marker나 high-risk가 걸린 파일은 이 제외·상한과 무관하게 요구된다(2026-10-27 사용자 결정).
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 여기에 모든 라운드(이어지는 라운드·probe 라운드 포함)에
-  `modelRoles.crossReviewAdvisory`(Argon)가 보조 자문으로 함께 돈다. 저자가 그 모델 자체일 때만 빠지며 같은 Anthropic 계열의
-  다른 모델이 저자라는 이유로는 빠지지 않는다. 자문은 필수 검토와 함께 시작하지만 `review`는 필수 검토가 모두 끝나면 바로
-  결과를 돌려주고, 자문은 자기 기한(600초)까지 계속 돈다. 늦게 온 자문 finding은 그 라운드에 붙어 체인의 열린 지적이 되고
-  다음 라운드와 `resolve`에 나타난다. `resolve`는 아직 도는 자문을 기다린 뒤 그 지적까지 닫혀야 통과시킨다. 2026-10-27 사용자
-  결정: 필수 뒤 20초만 기다리던 방식은 원장 대입에서 fixed로 닫힌 자문 지적 39건을 모두 버렸다. 자문의 호출 실패·해석 불가·시간 초과,
-  재시작으로 잃은 자문은 기록만 하고 막지 않는다. 필수 검토의 실패를 대신 통과시키지 않으며,
-  받은 자문 finding(`R*-ADV-*`, 옛 기록은 `R*-GGL-*`)도 다른 지적처럼 근거로 닫는다. Main 또는 그 코드를 쓴 Maker가
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 2026-10-29 사용자 결정: 상시 자문 reviewer(`crossReviewAdvisory`)와
+  그 대체 slot은 없앴고 필수 검토자 둘만 쓴다. 이 날짜 전 원장의 자문 기록과 그 finding(`R*-ADV-*`, 더 옛 기록은 `R*-GGL-*`)은
+  그대로 읽히며 다른 지적처럼 근거로 닫아야 하고, `review`·`resolve`는 자문을 기다리지 않는다. 필수 검토의 실패를 대신 통과시키지
+  않는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. `resolve`는

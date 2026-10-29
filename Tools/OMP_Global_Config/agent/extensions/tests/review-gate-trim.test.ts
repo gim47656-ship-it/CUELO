@@ -6,14 +6,13 @@ import { mkdirSync, mkdtempSync, rmSync, truncateSync, unlinkSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { advisoryPending, CrossReviewRefusal, detectMarkers, MAX_INPUT_BYTES, ReviewerCallError, runGate, runResolve, runReview, sampleSelected, spawnExec, type Lane, type ReviewDeps } from "../lib/cross-review";
+import { CrossReviewRefusal, detectMarkers, MAX_INPUT_BYTES, ReviewerCallError, runGate, runResolve, runReview, sampleSelected, spawnExec, type Lane, type ReviewDeps } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../lib/routing-ledger";
 import { appendSlopRecord, MAX_REPORT_CSV_BYTES, pendingArtifacts, rawDataReason, readSlopRecords, runSlopGate, sha256, SlopGateRefusal } from "../lib/slop-gate";
 import { buildReviewRequest, commaOnlyRule, reviewFiles, type Complete, type SlopDeps } from "../slop-gate/review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
-const FABLE = "anthropic/claude-fable-5-1";
 const roots: string[] = [];
 const signal = new AbortController().signal;
 afterEach(() => { for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -47,30 +46,18 @@ function repo(files: Record<string, string> = {}): RepoEnv {
 }
 
 let idCounter = 0;
-/** 필수 reviewer(openai)의 답은 reply가 프롬프트를 보고 정한다. 자문은 늘 깨끗하다. prompts에 필수 reviewer가 받은 프롬프트가 쌓인다. */
+/** 필수 reviewer(openai)의 답은 reply가 프롬프트를 보고 정한다. prompts에 필수 reviewer가 받은 프롬프트가 쌓인다. */
 function deps(env: RepoEnv, reply: (prompt: string) => string = () => '{"findings":[]}', prompts: string[] = []): ReviewDeps {
   const ledger = createRoutingLedger(env.ledger);
   return {
-    cwd: env.work, sessionId: "s1", mainModel: OPUS, advisoryModel: FABLE, exec: spawnExec(), snapshotRoot: env.snapshots,
+    cwd: env.work, sessionId: "s1", mainModel: OPUS, exec: spawnExec(), snapshotRoot: env.snapshots,
     readAll: () => readCrossReviewRecords(env.ledger), append: (record) => ledger.append(record),
     newId: () => `xr-trim-${process.pid}-${++idCounter}`,
     complete: async (family: Lane, prompt: string) => {
-      if (family === "advisory") return { model: FABLE, text: '{"findings":[]}' };
       prompts.push(prompt);
       return { model: family === "openai" ? ASTRA : OPUS, text: reply(prompt) };
     },
   } as ReviewDeps;
-}
-/** 자문 기록은 runReview가 돌아온 뒤 백그라운드에서 원장에 붙는다. 그 쓰기를 알리는 신호가 없어 원장 조건을 짧게 확인한다(보통 첫 확인에서 끝난다). */
-async function advisorySettled(env: RepoEnv, reviewId: string): Promise<void> {
-  for (let i = 0; i < 300 && advisoryPending(reviewId); i++) await Bun.sleep(20);
-  for (let i = 0; i < 300; i++) {
-    const records = readCrossReviewRecords(env.ledger) as { type: string; reviewId: string; reviewers?: { advisory?: true; status: string }[] }[];
-    const review = records.find((record) => record.type === "cross-review" && record.reviewId === reviewId);
-    if (!review?.reviewers?.some((reviewer) => reviewer.advisory && reviewer.status === "pending") || records.some((record) => record.type === "cross-review-advisory" && record.reviewId === reviewId)) return;
-    await Bun.sleep(20);
-  }
-  throw new Error("advisory never settled");
 }
 const finding = (claim: string) => JSON.stringify({ findings: [{ severity: "major", file: "a.ts", line: 1, claim, why: "because" }], summary: "s" });
 
@@ -114,7 +101,6 @@ describe("통과 뒤 TS/JS 주석·공백만 바뀐 파일은 그 통과가 덮�
     put(env.work, "a.ts", REVIEWED);
     const d = deps(env);
     const review = await runReview({ files: ["a.ts"], acceptance: "Never delete user files.", authors: ["main"] }, d, signal);
-    await advisorySettled(env, review.reviewId);
     expect((await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append })).pass).toBe(true);
     return env;
   }
@@ -231,10 +217,9 @@ describe("한 호출 상한을 넘는 변경은 거절하지 않고 나눠 같�
 const KO = "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회에 실패하면 오류로 처리합니다.\n배포가 끝나면 상태를 다시 읽어 맞는지 확인합니다. 맞지 않으면 원인을 적어 알려 줍니다.\n";
 const COMMA = { quote: "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회에 실패하면 오류로 처리합니다.", rule: "humanizer 패턴 3: 연결어미 뒤 쉼표", fix: "쉼표를 뺀다" };
 const AUTHOR = "anthropic/fixture-author";
-const ADVISOR = "anthropic/fixture-advisor";
 const ids = (prompt: string) => [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
 function slopDeps(cwd: string, complete: Complete): SlopDeps {
-  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, advisoryModel: ADVISOR, head: async () => undefined };
+  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, head: async () => undefined };
 }
 
 describe("humanizer 패턴 3(연결어미 뒤 쉼표)만 든 지적은 finding이 아니다", () => {
@@ -270,7 +255,7 @@ describe("humanizer 패턴 3(연결어미 뒤 쉼표)만 든 지적은 finding�
       return { model: `fixture/${family}`, text: JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [COMMA] })) }) };
     };
     const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
-    expect(out.files[0]).toMatchObject({ status: "pass", relaxed: 2 });
+    expect(out.files[0]).toMatchObject({ status: "pass", relaxed: 1 });
     expect(systems[0]).toContain("pattern 3 (a comma after a connective ending");
     expect(readSlopRecords(join(cwd, "ledger.jsonl")).some((record) => record.type === "slop-pass" && record.sha256 === sha256(KO))).toBe(true);
     expect(buildReviewRequest([], ["stop-slop"]).system).not.toContain("Gate adjustment");
@@ -325,7 +310,7 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
       return { model: `fixture/${family}`, text: "not json" };
     };
     const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
-    expect(asked.sort()).toEqual(["advisory", "openai"]);
+    expect(asked.sort()).toEqual(["openai"]);
     expect(out.files[0]!.status).toBe("error");
   });
 });

@@ -143,7 +143,7 @@
   reviewed file after your last round; if you must, run another round and report the new head.
   `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
-  `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (required) and `crossReviewAdvisory`;
+  `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (and `slopReviewOpenAI` for `slop_check` only);
   never name another model for cost or speed, and route changes need the user first.
 - Report `validation` as an acceptance-condition map, not only a per-file or per-command result:
   for each acceptance condition in the brief give `met` with the observed behavior and the raw

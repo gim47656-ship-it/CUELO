@@ -320,11 +320,11 @@ export interface CrossReviewVerdict {
 export interface CrossReviewProbeResultMeta { findingId: string; command: string; exitCode: number; outputBytes: number; truncated: boolean }
 
 export interface CrossReviewReviewer {
-  /** reviewer 자리. openai·anthropic은 필수, advisory는 자문 자리다. google은 2026-10-26 전 기록의 자문 자리로, 읽기·resolve만 한다. */
+  /** reviewer 자리. 새 기록은 openai·anthropic(필수)뿐이다. advisory·google은 2026-10-29 전 기록의 자문 자리로 읽기 전용이다. */
   family: "openai" | "anthropic" | "advisory" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
-  /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. pending은 필수 reviewer가 끝났을 때 아직 답하지 않은 자문 자리(뒤에 cross-review-advisory 기록이 붙는다). */
+  /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. pending은 2026-10-29 전 기록에서 필수 reviewer가 끝났을 때 아직 답하지 않은 자문 자리다. */
   status: "ok" | "unparsable" | "error" | "pending";
   elapsedMs: number;
   /** 앞 20 KB 발췌. 전문은 rawFile에 있다. */
@@ -332,10 +332,8 @@ export interface CrossReviewReviewer {
   /** reviewer 답 전문 파일(사본 디렉터리의 raw-<계열>.txt). */
   rawFile?: string;
   error?: string;
-  /** 자문 자리(advisory, 옛 기록은 google)만 true. 그 reviewer의 error·unparsable은 passable을 정하지 않지만, 답한 finding은 똑같이 닫아야 한다. */
+  /** 2026-10-29 전 기록의 자문 자리만 true. 읽기 전용이며 새 라운드는 쓰지 않는다. 그 finding은 resolve에서 똑같이 닫아야 한다. */
   advisory?: true;
-  /** 자문 자리만, modelRoles.crossReviewAdvisoryFallback이 대신 답했거나 대신 불렸을 때: 먼저 불린 자문 모델이 왜 쓸 수 없었는지. 이때 model·status·raw는 대체 모델의 것이다. rawFile은 그 원문 파일(사본 디렉터리). */
-  fallbackFrom?: { model: string; status: "error" | "unparsable"; error: string; raw?: string; rawFile?: string };
 }
 
 export interface CrossReviewFile { path: string; blob: string }
@@ -407,8 +405,8 @@ export interface CrossReviewWaiverRecord {
 }
 
 /**
- * 필수 reviewer가 끝난 뒤에 끝난 자문 reviewer의 결과(2026-10-27). 그 라운드 기록(reviewId)에 붙으며 findings(R<n>-ADV-*)는 그 체인의 열린
- * 지적이 된다. 한 reviewId에 처음 기록된 것만 유효하다. 재시작 등으로 호출을 잃었으면 status error·findings []로 남는다. 통과 지문과는 무관하다.
+ * 2026-10-29 전 원장에만 있는 기록: 필수 reviewer가 끝난 뒤에 끝난 자문 reviewer의 결과(2026-10-27 도입, 같은 날 사용자 결정으로 자문 자리 제거). 그 라운드
+ * 기록(reviewId)에 붙으며 findings(R<n>-ADV-*)는 그 체인의 열린 지적이다. 한 reviewId에 처음 기록된 것만 유효하다. 새 기록은 쓰지 않고 읽기만 한다.
  */
 export interface CrossReviewAdvisoryRecord {
   type: "cross-review-advisory";

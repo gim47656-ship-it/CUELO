@@ -36,10 +36,10 @@ import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
 /** 저자 모델의 계열. 필수 reviewer 자리를 정하는 데만 쓴다. */
 export type Family = "openai" | "anthropic" | "google";
 /**
- * reviewer 자리. openai·anthropic은 저자의 반대 계열을 보는 필수 자리이고, advisory는 provider와 무관한 자문 자리다.
- * 자리는 provider가 아니므로 필수 Anthropic reviewer와 자문 reviewer가 같은 provider여도 finding id·원문 파일·판단이 섞이지 않는다.
+ * reviewer 자리. 저자의 반대 계열을 보는 필수 자리만 있다(2026-10-29 사용자 결정: 자문 자리 제거, Astra·Opus 필수만).
+ * 옛 원장의 자문 기록(family advisory·google, finding id ADV·GGL)은 읽기 전용이다.
  */
-export type Lane = "openai" | "anthropic" | "advisory";
+export type Lane = "openai" | "anthropic";
 export type Exec = (command: string, args: string[], options: { cwd: string; stdin?: Buffer }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
 /**
@@ -63,46 +63,8 @@ const MAX_PROBE_TEXT_CHARS = 2_000;
 export const MAX_INPUT_BYTES = 300 * 1024;
 export const SAMPLE_MODULUS = 10;
 export const REVIEW_TIMEOUT_MS = 600_000;
-/** slop_check 자문 reviewer 한 명을 기다리는 상한(그 호출 시작부터). 필수 reviewer는 REVIEW_TIMEOUT_MS 그대로다. 넘으면 호출을 abort하고 timeout으로 기록만 한다. */
-export const ADVISORY_TIMEOUT_MS = 120_000;
-/**
- * slop_check에서 필수 reviewer가 모두 끝난 뒤 아직 답하지 않은 자문 reviewer를 더 기다리는 시간(2026-10-27 사용자 결정). 곧바로 끊으면 자문이 거의
- * 늘 버려지고 프록시에 499가 쌓였다(하루 36건 중 10건). 자문 자체 기한 ADVISORY_TIMEOUT_MS는 그대로라 이 유예가 그 기한을 늘리지 않는다.
- */
-export const ADVISORY_GRACE_MS = 20_000;
-/**
- * cross_review 자문 reviewer의 기한(그 호출 시작부터). cross_review는 필수 reviewer가 끝나면 곧바로 돌아오고 자문은 뒤에서 이 기한까지 돌며, 답하면
- * 그 finding을 체인의 열린 지적으로 원장에 붙인다(2026-10-27 사용자 결정: 유예 20 s 안에 끊긴 자문 65/90건이 finding 49건을 담았고 39건이 fixed로 닫혔다).
- */
-export const ADVISORY_LATE_TIMEOUT_MS = 600_000;
-
-/** 이 프로세스에서 아직 도는 cross_review 자문(reviewId → 끝나 원장에 기록되면 풀리는 promise). 확장 모듈을 다시 읽어도 이어지도록 globalThis에 둔다. */
-const PENDING_ADVISORY = Symbol.for("cuelo.crossReview.pendingAdvisory");
-/**
- * done은 자문이 끝나 결과를 원장에 쓰려 한 뒤 풀린다. 원장 쓰기가 실패하면 unrecorded(못 쓴 기록)를, 결과 처리 중 예외가 나면 error를 남기고
- * 항목을 지우지 않는다: 이 프로세스가 실제로 받은 답을 잃어버린 것(재시작)으로 처리하지 않게 resolve가 다시 쓰거나 거절한다.
- */
-interface PendingAdvisory { done: Promise<void>; deadline: number; unrecorded?: CrossReviewAdvisoryRecord; error?: string }
-function pendingAdvisories(): Map<string, PendingAdvisory> {
-  const holder = globalThis as unknown as Record<symbol, Map<string, PendingAdvisory> | undefined>;
-  return (holder[PENDING_ADVISORY] ??= new Map());
-}
-
-/** reviewId 라운드의 자문이 이 프로세스에서 아직 돌면 그 끝(원장 기록 뒤)을 돌려준다. 없으면 undefined. */
-export function advisoryPending(reviewId: string): Promise<void> | undefined {
-  return pendingAdvisories().get(reviewId)?.done;
-}
-export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic", advisory: "crossReviewAdvisory" };
-/** 늘 함께 도는 자문 자리. 답하면 finding은 다른 reviewer와 똑같이 닫아야 하지만, 실패(error·unparsable)는 기록만 하고 통과 가능 여부를 정하지 않는다. */
-export const ADVISORY_LANE: Lane = "advisory";
-export const LANE_TAG: Record<Lane, string> = { openai: "OAI", anthropic: "ANT", advisory: "ADV" };
-/** 2026-10-26 전 원장의 자문 자리(Google slot, finding id GGL). 그 기록은 그대로 읽고 닫으며, 그 체인의 다음 라운드는 advisory 자리로 부른다. */
-const LEGACY_ADVISORY = { family: "google", tag: "GGL" } as const;
-
-/** 원장에 적힌 reviewer 자리를 지금의 자리로 읽는다. 옛 google 자리는 advisory다. */
-export function laneOf(recorded: string): Lane {
-  return recorded === LEGACY_ADVISORY.family ? ADVISORY_LANE : recorded as Lane;
-}
+export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic" };
+export const LANE_TAG: Record<Lane, string> = { openai: "OAI", anthropic: "ANT" };
 export const DELETED_BLOB = "deleted";
 /** 원장에 남기는 reviewer 원문 발췌 길이. 전문은 사본 디렉터리의 raw-<계열>.txt에 둔다. */
 const RAW_EXCERPT_CHARS = 20_000;
@@ -123,43 +85,11 @@ export function authorFamily(selector: string): Family | "other" {
   return "other";
 }
 
-/** selector를 `provider/id`(provider가 없으면 id)로 줄인다. effort 접미사와 대소문자는 버린다. */
-function modelKey(selector: string): { provider: string; id: string } {
-  const base = selector.trim().toLowerCase().split(":")[0];
-  return base.includes("/") ? { provider: base.slice(0, base.indexOf("/")), id: base.slice(base.indexOf("/") + 1) } : { provider: "", id: base };
-}
-
-/** 저자가 자문 slot의 그 모델 자체인가. provider를 둘 다 적었으면 provider까지 같아야 하고, 한쪽이 id만이면 id로 본다. */
-function isSameModel(author: string, advisoryModel: string): boolean {
-  const a = modelKey(author);
-  const b = modelKey(advisoryModel);
-  return a.id === b.id && (!a.provider || !b.provider || a.provider === b.provider);
-}
-
-/** 저자 중 하나가 자문 slot의 모델 그 자체인가. "main"은 현재 모델로 풀고, 풀 수 없는 "main"은 자문 모델로 보지 않는다. */
-function advisoryAuthored(authors: readonly string[], mainModel: string | undefined, advisoryModel: string | undefined): boolean {
-  if (!advisoryModel) return false;
-  return authors.some((author) => {
-    const selector = author.trim().toLowerCase() === "main" ? mainModel : author.trim();
-    return !!selector && isSameModel(selector, advisoryModel);
-  });
-}
-
-/**
- * 자문 대체 모델(modelRoles.crossReviewAdvisoryFallback)을 부를 수 있는가. 설정이 없으면 대체는 없다. 대체가 avoid(자문 주 모델·이번 라운드의 필수 reviewer 모델·
- * 저자 모델, "main"은 호출부가 현재 모델로 푼 값)와 같은 모델이면 같은 모델을 다시 부르거나 저자가 자기 글을 보게 되므로 부르지 않는다.
- */
-export function advisoryFallbackAllowed(fallback: string | undefined, avoid: readonly (string | undefined)[]): fallback is string {
-  return !!fallback && !avoid.some((other) => !!other && isSameModel(other, fallback));
-}
-
 /**
  * 저자 계열의 반대 계열이 필수 reviewer다. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google 포함)는 Anthropic이 본다.
- * 여기에 자문 자리(advisory)를 늘 마지막에 붙인다. 저자 중 하나가 자문 slot의 모델(advisoryModel) 그 자체일 때만 자기 글을 다시 보지 않게 뺀다:
- * 같은 provider의 다른 모델(예: Opus·Sonnet)이 저자라는 이유로는 빼지 않는다.
  * "main"은 이 세션의 현재 모델로 풀고, 풀 수 없으면 추측하지 않고 던진다. 저자가 두 계열에 걸치면 둘 다 돌린다.
  */
-export function reviewerLanes(authors: string[], mainModel: string | undefined, advisoryModel?: string): Lane[] {
+export function reviewerLanes(authors: string[], mainModel: string | undefined): Lane[] {
   const cleaned = authors.map((author) => author.trim()).filter(Boolean);
   if (cleaned.length === 0) throw new Error("authors must list at least one model selector (or \"main\").");
   const out = new Set<Lane>();
@@ -171,16 +101,12 @@ export function reviewerLanes(authors: string[], mainModel: string | undefined, 
     }
     out.add(authorFamily(selector) === "anthropic" ? "openai" : "anthropic");
   }
-  return advisoryAuthored(cleaned, mainModel, advisoryModel) ? [...out].sort() : [...out].sort().concat(ADVISORY_LANE);
+  return [...out].sort();
 }
 
-/**
- * 이어지는 라운드의 reviewer 자리. 필수 자리는 체인 안에서 바꾸지 않고, 자문 자리는 체인 1회차 저자에 지금 규칙을 다시 적용한다:
- * 옛 google 자리는 advisory로 이어 부르고, 옛 규칙으로 자문이 빠졌던 Gemini 저자 체인에는 붙이며, 자문 모델 그 자체가 쓴 체인에서는 뺀다.
- */
-export function continuedLanes(previous: readonly { family: string }[], rootAuthors: readonly string[], mainModel: string | undefined, advisoryModel?: string): Lane[] {
-  const required = previous.map((reviewer) => laneOf(reviewer.family)).filter((lane) => lane !== ADVISORY_LANE);
-  return advisoryAuthored(rootAuthors, mainModel, advisoryModel) ? required : [...required, ADVISORY_LANE];
+/** 이어지는 라운드의 reviewer 자리. 필수 자리는 체인 안에서 바꾸지 않는다. 옛 체인의 자문 자리(advisory·google)는 더 부르지 않는다. */
+export function continuedLanes(previous: readonly { family: string }[]): Lane[] {
+  return previous.map((reviewer) => reviewer.family).filter((family): family is Lane => family === "openai" || family === "anthropic");
 }
 
 // ── 파일 분류와 marker ───────────────────────────────────────────────────────
@@ -1782,8 +1708,6 @@ export interface ReviewDeps {
   sessionId: string;
   /** "main" 저자를 풀 이 세션의 현재 모델 selector. */
   mainModel?: string;
-  /** modelRoles.crossReviewAdvisory가 가리키는 모델 selector. 저자가 이 모델 그 자체일 때만 자문 자리를 뺀다. 모르면 자문 자리는 늘 붙는다. */
-  advisoryModel?: string;
   exec: Exec;
   gitFor?: (root: string) => Promise<string>;
   readAll(): CrossReviewLedgerRecord[];
@@ -1791,113 +1715,30 @@ export interface ReviewDeps {
   snapshotRoot: string;
   /** reviewer 한 명을 부른다. 실패는 ReviewerCallError(model 포함)로 던진다. */
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
-  /** modelRoles.crossReviewAdvisoryFallback가 가리키는 모델(해석했으면 provider/id, 못 했으면 selector). 설정이 없으면 undefined이고 그러면 자문 대체는 없다(고정 모델로 넘어가지 않는다). */
-  advisoryFallbackModel?: string;
-  /** 필수 자리 slot이 가리키는 모델. 자문 대체가 이 라운드의 필수 reviewer와 같은 모델이면 부르지 않는 데만 쓴다. */
-  requiredModels?: Partial<Record<Lane, string>>;
-  /** 자문 대체 모델을 부른다. 자문 주 호출이 쓸 수 없는 답(오류·빈 답·해석 불가)일 때만 대체 단계를 한 번 거치며(나눠 심사한 라운드는 기존 조각마다 한 번씩 불린다) 같은 기한 안에서 돈다. advisoryFallbackModel이 있을 때만 쓴다. */
-  completeAdvisoryFallback?(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
-  /** 자문 reviewer 기한(ms, 그 호출 시작부터). 테스트가 짧게 주입한다. 기본 ADVISORY_LATE_TIMEOUT_MS. */
-  advisoryTimeoutMs?: number;
-  /** reviewer 호출 시작·reviewer마다의 끝(답·실패·timeout·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다(늦게 끝난 자문은 notify로 알린다). */
+  /** reviewer 호출 시작·reviewer마다의 끝(답·실패·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
   onProgress?: (progress: ReviewProgress) => void;
-  /** 결과를 돌려준 뒤 끝난 자문 reviewer가 finding을 냈을 때 세션에 알릴 한 덩어리 글. 없으면 알리지 않는다(다음 라운드·resolve에는 늘 보인다). */
-  notify?: (text: string) => void;
   now?: () => Date;
   newId?: () => string;
 }
 
-export type ReviewerProgressState = "waiting" | "answered" | "failed" | "timed out" | "cancelled" | "stopped";
+export type ReviewerProgressState = "waiting" | "answered" | "failed" | "cancelled";
 export interface ReviewProgress {
   round: number;
-  reviewers: { family: Lane; advisory: boolean; state: ReviewerProgressState; elapsedSec?: number }[];
+  reviewers: { family: Lane; state: ReviewerProgressState; elapsedSec?: number }[];
   /** 사람이 읽는 한 줄. 도구 진행 표시가 그대로 보인다. */
   text: string;
 }
 
-/** 자문 reviewer 호출이 기한·취소·필수 검토 종료로 멈춘 경우. 늦게 끝난 호출의 답·오류는 버린다. */
-class AdvisoryStopError extends ReviewerCallError {
-  constructor(message: string, model: string, readonly reason: "timed out" | "cancelled" | "stopped") { super(message, model); }
-}
-
-/**
- * 자문 reviewer 한 명의 대기를 ms로 묶는다. 기한이 지나거나 review가 취소되거나 requiredSettled가 켜지면(필수 reviewer가 모두 끝남)
- * 밑의 호출을 abort하고, 제공자가 abort를 확인해 주기를 기다리지 않고 곧바로 AdvisoryStopError로 끝낸다. 멈춘 이유가 한 번 정해지면
- * 같은 틱에 끝난 호출의 답·오류도, 늦게 끝난 호출의 답·오류도 그 이유를 이기지 못한다. 이미 취소된 review는 호출하지 않는다.
- */
-export async function withAdvisoryDeadline<T>(call: (attempt: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, model: string, requiredSettled?: AbortSignal): Promise<T> {
-  const cancelled = () => new AdvisoryStopError("advisory reviewer cancelled: the review was aborted, so its call was aborted without waiting for the provider", model, "cancelled");
-  const settled = () => new AdvisoryStopError("advisory reviewer stopped: every required reviewer had finished and the advisory was not waited for any longer, so the call was aborted and any late answer is ignored (nonblocking, not a successful answer)", model, "stopped");
-  if (signal.aborted) throw cancelled();
-  if (requiredSettled?.aborted) throw settled();
-  const controller = new AbortController();
-  const stopped = Promise.withResolvers<never>();
-  let stoppedBy: AdvisoryStopError | undefined;
-  // 이유를 먼저 정하고 race의 멈춤 쪽을 끝낸 뒤에 abort한다. abort 처리에서 바로 끝나는 호출이 그 이유를 앞지르지 못한다.
-  const stop = (error: AdvisoryStopError) => { stoppedBy ??= error; stopped.reject(error); controller.abort(error); };
-  const timer = setTimeout(() => stop(new AdvisoryStopError(`advisory reviewer timed out: no answer within ${ms / 1000} s of its start; the call was aborted and any late answer is ignored (nonblocking)`, model, "timed out")), ms);
-  const onAbort = () => stop(cancelled());
-  const onSettled = () => stop(settled());
-  signal.addEventListener("abort", onAbort, { once: true });
-  requiredSettled?.addEventListener("abort", onSettled, { once: true });
-  try {
-    const answer = await Promise.race([stopped.promise, call(AbortSignal.any([signal, controller.signal]))]);
-    if (stoppedBy) throw stoppedBy;
-    return answer;
-  } catch (error) {
-    throw stoppedBy ?? error;
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener("abort", onAbort);
-    requiredSettled?.removeEventListener("abort", onSettled);
-  }
-}
-
-/**
- * 한 라운드의 reviewer를 모두 함께 시작하고, 필수 reviewer가 모두 끝나면(답·실패 무관) 자문 reviewer가 끝나기를 graceMs까지만 더 기다린 뒤
- * 그래도 기다리는 자문을 끊는다. 그 전에 끝난 자문 답은 그대로 남는다. start는 자문 자리에 requiredSettled를 withAdvisoryDeadline으로 넘겨야 한다.
- * 모든 호출을 끝까지 기다린 뒤(끊긴 자문은 곧바로 끝난다) 자리 순서대로 돌려주며, start가 던진 오류는 모든 호출이 끝난 다음에 다시 던진다.
- */
-export async function settleReviewers<R>(lanes: readonly Lane[], start: (lane: Lane, index: number, requiredSettled: AbortSignal) => Promise<R>, graceMs = ADVISORY_GRACE_MS): Promise<R[]> {
-  const requiredSettled = new AbortController();
-  const runs = lanes.map((lane, index) => start(lane, index, requiredSettled.signal));
-  // 모든 호출에 곧바로 처리기를 붙인다. 필수 reviewer를 기다리는 동안 끝난 자문 실패가 처리되지 않은 거절이 되지 않게 한다.
-  const outcomesPending = Promise.allSettled(runs);
-  const required = runs.filter((_, index) => lanes[index] !== ADVISORY_LANE);
-  if (required.length > 0) {
-    await Promise.allSettled(required);
-    if (graceMs > 0) {
-      const grace = Promise.withResolvers<void>();
-      const timer = setTimeout(grace.resolve, graceMs);
-      await Promise.race([outcomesPending, grace.promise]);
-      clearTimeout(timer);
-    }
-    requiredSettled.abort();
-  }
-  const outcomes = await outcomesPending;
-  const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
-  if (failed) throw failed.reason;
-  return outcomes.map((outcome) => (outcome as PromiseFulfilledResult<R>).value);
-}
-
-function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], advisoryMs: number): string {
-  const parts = reviewers.map((reviewer) => {
-    const who = reviewer.advisory ? "advisory" : `${reviewer.family} (required)`;
-    if (reviewer.state === "waiting") return `${who} waiting${reviewer.advisory ? ` (nonblocking: the review returns when every required reviewer has finished; a later advisory answer, up to ${advisoryMs / 1000} s, is appended to this chain)` : ""}`;
-    return `${who} ${reviewer.state} after ${reviewer.elapsedSec} s`;
-  });
+function describeProgress(round: number, reviewers: ReviewProgress["reviewers"]): string {
+  const parts = reviewers.map((reviewer) => reviewer.state === "waiting" ? `${reviewer.family} (required) waiting` : `${reviewer.family} (required) ${reviewer.state} after ${reviewer.elapsedSec} s`);
   return `cross_review round ${round}: ${parts.join("; ")}`;
 }
 
 export interface ReviewResult {
   reviewId: string;
   round: number;
-  reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string; advisory?: true; fallbackFrom?: CrossReviewReviewer["fallbackFrom"] }[];
-  /** 자문 reviewer의 답을 쓸 수 없었을 때만: 기록만 했고 통과를 막지 않으며 다음 라운드가 다시 부른다는 안내. */
-  advisoryReviewers?: string;
-  /** 필수 reviewer가 끝났을 때 자문이 아직 답하지 않았을 때만: 자문이 뒤에서 계속 돌고 답하면 finding이 이 체인에 붙는다는 안내. */
-  advisoryPending?: string;
-  /** 앞 라운드에 늦게 붙은 자문 finding(열린 지적으로 다룬다). */
+  reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string }[];
+  /** 2026-10-29 전 자문이 앞 라운드에 늦게 붙은 옛 체인에서만: 그 자문 finding(열린 지적으로 다룬다). 새 라운드는 자문을 부르지 않는다. */
   earlierAdvisoryFindings?: CrossReviewFinding[];
   triggers: string[];
   highRisk: boolean;
@@ -1950,7 +1791,7 @@ export function chainOf(records: readonly CrossReviewLedgerRecord[], reviewId: s
   return undefined;
 }
 
-/** reviewId마다 처음 기록된 늦은 자문 결과. 같은 reviewId의 뒤 기록(재시작으로 잃었다고 적은 뒤 도착한 답 등)은 무시한다. */
+/** reviewId마다 처음 기록된 늦은 자문 결과(2026-10-29 전 원장에만 있다. 새 기록은 쓰지 않고 읽기만 한다). */
 function lateAdvisories(records: readonly CrossReviewLedgerRecord[]): Map<string, CrossReviewAdvisoryRecord> {
   const out = new Map<string, CrossReviewAdvisoryRecord>();
   for (const record of records) if (record.type === "cross-review-advisory" && !out.has(record.reviewId)) out.set(record.reviewId, record);
@@ -1963,10 +1804,6 @@ export function chainFindingsOf(records: readonly CrossReviewLedgerRecord[], cha
   return chain.flatMap((record) => [...record.findings, ...(late.get(record.reviewId)?.findings ?? [])]);
 }
 
-/** 라운드 기록에 자문 자리가 pending으로 남았는가(필수 reviewer가 끝났을 때 자문이 아직 답하지 않았다). */
-function advisoryLeftPending(record: CrossReviewRecord): CrossReviewReviewer | undefined {
-  return record.reviewers.find((reviewer) => reviewer.advisory && reviewer.status === "pending");
-}
 
 const utf8 = (text: string) => Buffer.byteLength(text, "utf8");
 
@@ -2011,7 +1848,7 @@ interface NextState {
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
 
 function describeNext(state: NextState): string {
-  if (!state.passable) return "At least one required (non-advisory) reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
+  if (!state.passable) return "At least one required reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
   const roundsLeft = state.round < MAX_ROUNDS;
   const canProbe = roundsLeft && state.probeUsed < MAX_PROBE_ROUNDS;
   const canDelta = roundsLeft && state.plainUsed < MAX_PLAIN_ROUNDS;
@@ -2087,10 +1924,9 @@ export function prepareProbeResults(results: readonly ProbeResultInput[], chainF
   return prepared;
 }
 
-/** finding id(`R1-OAI-2`)의 자리 표지에서 그 finding을 낸 reviewer 자리를 읽는다. 옛 GGL은 advisory다. 읽지 못하면 undefined. */
+/** finding id(`R1-OAI-2`)의 자리 표지에서 그 finding을 낸 reviewer 자리를 읽는다. 옛 자문 표지(ADV·GGL)나 읽지 못하는 id는 undefined다. */
 function findingLane(id: string): Lane | undefined {
   const tag = /^R\d+-([A-Z]+)-\d+$/.exec(id)?.[1];
-  if (tag === LEGACY_ADVISORY.tag) return ADVISORY_LANE;
   return (Object.keys(LANE_TAG) as Lane[]).find((lane) => LANE_TAG[lane] === tag);
 }
 
@@ -2221,73 +2057,31 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
   writeFileSync(join(dir, manifestName), JSON.stringify(manifest), { mode: 0o600 });
 }
 
-/**
- * reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다.
- * fallbackFrom은 자문 대체가 불렸을 때 먼저 불린 자문 모델이 쓸 수 없었던 이유(text는 그 모델의 부분·해석 불가 답)이고, 이때 model·text·error는 대체 모델의 것이다.
- */
-interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; batches?: string[]; fallbackFrom?: { model: string; status: "error" | "unparsable"; error: string; text: string } }
+/** reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다. */
+interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; batches?: string[] }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
- * finding id는 R<round>-<자리 표지>-<번호>다. 라운드 안의 결과와 늦게 끝난 자문 결과가 같은 규칙을 쓴다.
+ * finding id는 R<round>-<자리 표지>-<번호>다.
  */
 function readReviewerOutcome(item: ReviewerOutcome, round: number, snapshotDir: string): { reviewer: CrossReviewReviewer & { family: Lane }; findings: CrossReviewFinding[]; rawChars?: number; verdicts?: ParsedVerdict[] } {
-  const advisory = item.family === ADVISORY_LANE ? { advisory: true as const } : {};
   const keepRaw = (): { raw: string; rawFile: string } => {
     const rawFile = join(snapshotDir, `raw-${item.family}.txt`);
     writeFileSync(rawFile, item.text, { mode: 0o600 });
     return { raw: item.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
   };
-  // 자문 대체가 불렸으면 먼저 불린 모델의 실패 원인을 모든 결과 모양에 남긴다(원문은 raw-<자리>-primary.txt).
-  const from = item.fallbackFrom;
-  let primaryRaw: { raw: string; rawFile: string } | undefined;
-  if (from?.text) {
-    const rawFile = join(snapshotDir, `raw-${item.family}-primary.txt`);
-    writeFileSync(rawFile, from.text, { mode: 0o600 });
-    primaryRaw = { raw: from.text.slice(0, RAW_EXCERPT_CHARS), rawFile };
-  }
-  const fallbackFrom = from ? { fallbackFrom: { model: from.model, status: from.status, error: from.error, ...primaryRaw } } : {};
   if (item.error !== undefined) {
-    return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}), ...advisory, ...fallbackFrom }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
+    return { reviewer: { family: item.family, model: item.model, status: "error", elapsedMs: item.elapsedMs, error: item.error, ...(item.text ? keepRaw() : {}) }, findings: [], ...(item.text ? { rawChars: item.text.length } : {}) };
   }
   // 나눠 심사했으면 호출마다의 답을 따로 읽고, 하나라도 해석할 수 없으면 그 자리 전체가 해석 불가다(나머지 답만으로 깨끗하다고 볼 수 없다).
   const answers = (item.batches ?? [item.text]).map((text) => parseReviewerOutput(text));
   const usable = answers.flatMap((answer) => (answer.ok ? [answer] : []));
-  if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw(), ...advisory, ...fallbackFrom }, findings: [], rawChars: item.text.length };
+  if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw() }, findings: [], rawChars: item.text.length };
   return {
-    reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs, ...advisory, ...fallbackFrom },
+    reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs },
     findings: usable.flatMap((answer) => answer.findings).map((finding, index) => ({ id: `R${round}-${LANE_TAG[item.family]}-${index + 1}`, reviewer: item.model, ...finding })),
     verdicts: usable.flatMap((answer) => answer.verdicts ?? []),
   };
-}
-
-/**
- * 필수 reviewer가 끝난 뒤에 끝난 자문 결과를 그 라운드에 붙인다. 같은 reviewId에 이미 자문 기록이 있으면(재시작으로 잃었다고 적은 뒤 등) 쓰지 않는다.
- * finding이 있으면 세션에 알린다. 실패·시간 초과도 기록만 하며 통과를 막지 않는다.
- */
-function recordLateAdvisory(outcome: ReviewerOutcome, review: CrossReviewRecord, deps: ReviewDeps): CrossReviewAdvisoryRecord | undefined {
-  if (lateAdvisories(deps.readAll()).has(review.reviewId)) return undefined;
-  const read = readReviewerOutcome(outcome, review.round, review.snapshotDir);
-  // probe 라운드면 자문의 늦은 판단도 라운드 안에서처럼 남긴다: 준 판단은 그대로, 자문 자리가 소유한(또는 그 라운드에 소유자가 없는) finding의 빠진 판단은 unresolved.
-  const verdicts: CrossReviewVerdict[] = (review.probeResults ?? []).flatMap(({ findingId }) => {
-    const given = read.reviewer.status === "ok" ? read.verdicts?.find((verdict) => verdict.id === findingId) : undefined;
-    if (given) return [{ id: given.id, verdict: given.verdict, why: given.why, reviewer: read.reviewer.model }];
-    const lane = findingLane(findingId);
-    const owned = lane === ADVISORY_LANE || lane === undefined || !review.reviewers.some((reviewer) => reviewer.family === lane);
-    const why = read.reviewer.status === "ok" ? "The reviewer gave no usable verdict for this probe result." : `The reviewer's answer was unusable (${read.reviewer.status}), so it gave no verdict for this probe result.`;
-    return owned ? [{ id: findingId, verdict: "unresolved" as const, why, reviewer: read.reviewer.model }] : [];
-  });
-  const record: CrossReviewAdvisoryRecord = {
-    type: "cross-review-advisory", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: review.reviewId, round: review.round, reviewer: read.reviewer, findings: read.findings,
-    ...(review.probeResults ? { verdicts } : {}),
-  };
-  if (!deps.append(record)) return record;
-  if (read.findings.length === 0) return undefined;
-  const listed = read.findings.map((finding) => `- ${finding.id} [${finding.severity}] ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.claim.slice(0, 300)}`).join("\n");
-  try {
-    deps.notify?.(`cross_review ${review.reviewId} (round ${review.round}): the advisory reviewer ${read.reviewer.model} answered after the review returned, with ${read.findings.length} finding(s). They are now open findings of this chain: fix or refute each, show fixes with a next round (previousReviewId=${review.reviewId} or the chain head), and close them in resolve.\n${listed}`);
-  } catch { /* 알림 실패는 기록을 무르지 않는다. */ }
-  return undefined;
 }
 
 /** 라운드 사본 디렉터리에 남기는 그 라운드의 acceptance. 이어지는 라운드가 acceptance를 생략하면 바로 앞 라운드의 것만 이어받는다(원장에는 싣지 않는다). */
@@ -2329,10 +2123,9 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     if (probeRound && probesUsed >= MAX_PROBE_ROUNDS) throw new Error(`Round limit: this chain already used its one probe round (${chain.find((record) => record.probeResults?.length)!.reviewId}). Close the remaining findings with cross_review resolve, or review the fix as a delta round without probeResults.`);
     if (!probeRound && plainUsed >= MAX_PLAIN_ROUNDS) throw new Error(`Round limit: this chain already used its ${MAX_PLAIN_ROUNDS} non-probe rounds. ${probesUsed === 0 ? "Only one probe round is left: pass probeResults, or close the remaining findings with cross_review resolve." : "Close the remaining findings with cross_review resolve."}`);
     round = previous.round + 1;
-    // 옛 체인의 google 자리는 지금의 advisory 자리로 이어 부르고(옛 slot은 더 부르지 않는다), 자문 포함 여부는 지금 규칙으로 다시 정한다.
-    families = continuedLanes(previous.reviewers, chain[0]!.authors, deps.mainModel, deps.advisoryModel);
+    families = continuedLanes(previous.reviewers);
   } else {
-    families = reviewerLanes(input.authors, deps.mainModel, deps.advisoryModel);
+    families = reviewerLanes(input.authors, deps.mainModel);
   }
   // 이어지는 라운드가 files·acceptance를 생략하면 체인에서 이어받는다(2026-10-28 사용자 결정: 이어받지 않아 거절된 호출 4건). files는 체인의 모든
   // 라운드가 본 파일, acceptance는 바로 앞 라운드가 사본에 남긴 기준이다. 주면 준 값이 그대로 쓰인다(files는 앞 라운드 파일에 더해진다).
@@ -2555,26 +2348,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }
 
-  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따른다. 자문 reviewer는 자기 시작부터 advisoryMs까지 돌지만 이 호출은 필수 reviewer가 모두 끝나면
-  // 곧바로 돌아온다. 그때 아직 답하지 않은 자문은 pending으로 기록하고 뒤에서 계속 돌며, 끝나면 cross-review-advisory 기록으로 이 라운드에 붙는다.
-  const advisoryMs = deps.advisoryTimeoutMs ?? ADVISORY_LATE_TIMEOUT_MS;
-  const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, advisory: family === ADVISORY_LANE, state: "waiting" }));
-  let returned = false;
-  const report = () => { if (!returned) deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, advisoryMs) }); };
+  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따르고, 모두 끝나야 이 호출이 돌아온다.
+  const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, state: "waiting" }));
+  const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress) });
   report();
-  // 자문은 자기 취소 신호를 쓴다: 이 호출이 도는 동안만 review 취소를 따르고, 돌아온 뒤에는 도구 신호와 끊어 기한까지 돈다.
-  const advisoryCancel = new AbortController();
-  const forwardAbort = () => advisoryCancel.abort();
-  if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
-  // 자문 대체: modelRoles.crossReviewAdvisoryFallback이 있고(없으면 대체 없음) 자문 주 모델·이번 라운드 필수 reviewer·저자와 다른 모델일 때만, 자문 주 호출이
-  // 쓸 수 없는 답(오류·빈 답·해석 불가)을 낸 경우에 대체 단계를 한 번 거친다(나눠 심사한 라운드는 기존 조각을 모두 그 모델로 한 번씩 다시 본다. 한 자리의 답은 한 모델의 것이어야 한다). 같은 withAdvisoryDeadline 안이라 기한은 늘지 않고, 취소·기한·필수 종료로 멈춘 호출은 대체하지 않는다.
-  const roundAuthors = previous ? chain[0]!.authors : input.authors;
-  const canFallback = families.includes(ADVISORY_LANE) && deps.completeAdvisoryFallback !== undefined && advisoryFallbackAllowed(deps.advisoryFallbackModel, [
-    deps.advisoryModel,
-    ...families.filter((lane) => lane !== ADVISORY_LANE).map((lane) => deps.requiredModels?.[lane]),
-    ...roundAuthors.map((author) => (author.trim().toLowerCase() === "main" ? deps.mainModel : author.trim())),
-  ]);
-  type LaneCompletion = ReviewerCompletion & { batches?: string[]; fallbackFrom?: ReviewerOutcome["fallbackFrom"] };
+  type LaneCompletion = ReviewerCompletion & { batches?: string[] };
   // 나눈 라운드는 한 자리의 호출을 함께 시작하고, 하나가 실패하면 나머지를 끊는다(그 자리는 어차피 쓸 수 있는 답을 낼 수 없다).
   const askLane = async (call: (prompt: string, attempt: AbortSignal) => Promise<ReviewerCompletion>, attempt: AbortSignal): Promise<LaneCompletion> => {
     if (prompts.length === 1) return call(prompts[0]!, attempt);
@@ -2595,60 +2373,25 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
       report();
     };
-    // 대체가 불린 뒤에는 어떤 끝(답·실패·기한·취소)에서도 먼저 불린 모델의 실패 이유를 결과에 남긴다.
-    let primaryFailure: ReviewerOutcome["fallbackFrom"];
-    const askAdvisory = async (attempt: AbortSignal): Promise<LaneCompletion> => {
-      let first: LaneCompletion | undefined;
-      try {
-        first = await askLane((prompt, signal) => deps.complete(family, prompt, signal), attempt);
-      } catch (error) {
-        if (!canFallback || attempt.aborted || error instanceof AdvisoryStopError) throw error;
-        primaryFailure = { model: error instanceof ReviewerCallError ? error.model : `@${SLOT[family]}`, status: "error", error: error instanceof Error ? error.message : String(error), text: error instanceof ReviewerCallError ? error.partial ?? "" : "" };
-      }
-      if (first) {
-        if (!canFallback || attempt.aborted || (first.batches ?? [first.text]).every((text) => parseReviewerOutput(text).ok)) return first;
-        primaryFailure = { model: first.model, status: "unparsable", error: "answer is not the expected JSON", text: first.text };
-      }
-      const second = await askLane(deps.completeAdvisoryFallback!, attempt);
-      return { ...second, fallbackFrom: primaryFailure };
-    };
     try {
-      const completion = family === ADVISORY_LANE
-        ? await withAdvisoryDeadline(askAdvisory, advisoryMs, advisoryCancel.signal, `@${SLOT[family]}`)
-        : await askLane((prompt, attempt) => deps.complete(family, prompt, attempt), signal);
+      const completion = await askLane((prompt, attempt) => deps.complete(family, prompt, attempt), signal);
       finish("answered");
-      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}), ...(completion.fallbackFrom ? { fallbackFrom: completion.fallbackFrom } : {}) };
+      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}) };
     } catch (error) {
-      // 자문은 멈춘 이유를 그대로, 필수는 review가 취소됐으면 취소로 알린다. 필수의 600 s 제한 초과는 오류 문구로만 구분된다.
-      finish(error instanceof AdvisoryStopError ? error.reason : signal.aborted ? "cancelled" : "failed");
-      // 대체가 불린 뒤 기한·취소로 멈추면 오류가 가진 이름은 자리 표시(@slot)뿐이라, 그때 돌고 있던 모델인 대체 모델로 적는다.
+      // review가 취소됐으면 취소로 알린다. 600 s 제한 초과는 오류 문구로만 구분된다.
+      finish(signal.aborted ? "cancelled" : "failed");
       const placeholder = `@${SLOT[family]}`;
       const named = error instanceof ReviewerCallError && error.model !== placeholder ? error.model : undefined;
-      return { family, model: named ?? (primaryFailure ? deps.advisoryFallbackModel ?? placeholder : placeholder), text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error), ...(primaryFailure ? { fallbackFrom: primaryFailure } : {}) };
+      return { family, model: named ?? placeholder, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
     }
   });
-  const advisoryIndex = families.indexOf(ADVISORY_LANE);
-  let advisoryOutcome: ReviewerOutcome | undefined;
-  const advisoryRun = advisoryIndex >= 0 ? runs[advisoryIndex]!.then((outcome) => { advisoryOutcome = outcome; return outcome; }) : undefined;
-  const requiredOutcomes = await Promise.all(runs.filter((_, index) => index !== advisoryIndex));
-  signal.removeEventListener("abort", forwardAbort);
-  // 필수와 거의 같이 끝난 자문(답이 이미 와 있고 마무리만 남은 것)은 이 라운드에 넣는다. 기다리는 것은 이벤트 루프 한 차례뿐이다.
-  if (advisoryRun && !advisoryOutcome) {
-    const tick = Promise.withResolvers<void>();
-    setImmediate(tick.resolve);
-    await tick.promise;
-  }
-  const settled = advisoryIndex < 0 ? requiredOutcomes : [...requiredOutcomes.slice(0, advisoryIndex), advisoryOutcome, ...requiredOutcomes.slice(advisoryIndex)];
+  const settled = await Promise.all(runs);
 
   const reviewers: (CrossReviewReviewer & { family: Lane })[] = [];
   const parsedByFamily = new Map<Lane, ParsedVerdict[]>();
   const findings: CrossReviewFinding[] = [];
   const rawChars: Partial<Record<Lane, number>> = {};
-  for (const [index, item] of settled.entries()) {
-    if (!item) {
-      reviewers.push({ family: families[index]!, model: `@${SLOT[families[index]!]}`, status: "pending", elapsedMs: 0, advisory: true });
-      continue;
-    }
+  for (const item of settled) {
     const read = readReviewerOutcome(item, round, snapshotDir);
     reviewers.push(read.reviewer);
     findings.push(...read.findings);
@@ -2659,10 +2402,10 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const verdicts: CrossReviewVerdict[] = [];
   if (probeRound) {
     for (const result of preparedProbes) {
-      // finding을 낸 자리가 이번 라운드에 없으면(자문 자리가 빠진 체인의 옛 자문 finding) 모든 reviewer가 소유자처럼 채운다.
+      // finding을 낸 자리가 이번 라운드에 없으면(2026-10-29 전 자문 finding) 모든 reviewer가 소유자처럼 채운다.
       const found = findingLane(result.finding.id);
       const owner = found !== undefined && reviewers.some((reviewer) => reviewer.family === found) ? found : undefined;
-      for (const reviewer of reviewers.filter((item) => item.status !== "pending")) {
+      for (const reviewer of reviewers) {
         const given = reviewer.status === "ok" ? parsedByFamily.get(reviewer.family)?.find((verdict) => verdict.id === result.finding.id) : undefined;
         const filler = reviewer.status === "ok" ? "The reviewer gave no usable verdict for this probe result." : `The reviewer's answer was unusable (${reviewer.status}), so it gave no verdict for this probe result.`;
         if (given) verdicts.push({ id: given.id, verdict: given.verdict, why: given.why, reviewer: reviewer.model });
@@ -2671,10 +2414,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     }
   }
   const probeMeta: CrossReviewProbeResultMeta[] = preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated }));
-  // 통과 가능 여부는 필수(반대 계열) reviewer만으로 정한다. 자문 reviewer의 실패는 기록·안내만 하고, 답한 finding은 resolve에서 똑같이 닫아야 한다.
-  const passable = reviewers.every((reviewer) => reviewer.advisory || reviewer.status === "ok");
-  const advisoryFailed = reviewers.filter((reviewer) => reviewer.advisory && reviewer.status !== "ok" && reviewer.status !== "pending");
-  const advisoryWaiting = reviewers.some((reviewer) => reviewer.status === "pending");
+  // 통과 가능 여부는 필수(반대 계열) reviewer가 모두 ok일 때만이다.
+  const passable = reviewers.every((reviewer) => reviewer.status === "ok");
   const record: CrossReviewRecord = {
     type: "cross-review", ts: now().toISOString(), reviewId, sessionId: deps.sessionId, root, round,
     ...(previous ? { previousReviewId: previous.reviewId } : {}),
@@ -2682,16 +2423,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     files: reviewedFiles, ...(inputEntries.length > 0 ? { inputs: inputEntries.map(({ path, blob }) => ({ path, blob })) } : {}), skipped, ...(redacted.length > 0 ? { redacted } : {}), reviewers, findings, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), snapshotDir, passable,
   };
   if (!deps.append(record)) throw new Error(`The review ran but could not be recorded in the routing ledger (${reviewId}); it cannot be resolved. Re-run it.`);
-  if (advisoryRun && advisoryWaiting) {
-    const entry: PendingAdvisory = { done: Promise.resolve(), deadline: Date.now() + advisoryMs };
-    entry.done = advisoryRun.then((outcome) => {
-      const unrecorded = recordLateAdvisory(outcome, record, deps);
-      if (unrecorded) entry.unrecorded = unrecorded; else pendingAdvisories().delete(reviewId);
-    }).catch((error: unknown) => { entry.error = error instanceof Error ? error.message : String(error); });
-    pendingAdvisories().set(reviewId, entry);
-  }
-  returned = true;
-  // 앞 라운드에 늦게 붙은 자문 finding. 이번 라운드 프롬프트의 앞 지적에도 들어갔고, resolve에서 다른 finding처럼 닫아야 한다.
+  // 2026-10-29 전 자문이 앞 라운드에 늦게 붙은 옛 체인의 자문 finding. 이번 라운드 프롬프트의 앞 지적에도 들어갔고, resolve에서 다른 finding처럼 닫아야 한다.
   const lateEarlier = lateAdvisories(records);
   const earlierAdvisoryFindings = chain.flatMap((item) => lateEarlier.get(item.reviewId)?.findings ?? []);
   return {
@@ -2699,11 +2431,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
       ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
       ...(reviewer.error ? { error: reviewer.error } : {}),
-      ...(reviewer.advisory ? { advisory: true as const } : {}),
-      ...(reviewer.fallbackFrom ? { fallbackFrom: reviewer.fallbackFrom } : {}),
     })),
-    ...(advisoryFailed.length > 0 ? { advisoryReviewers: `${advisoryFailed.map((reviewer) => `${reviewer.model} (${reviewer.family}, ${reviewer.status}${reviewer.error ? `: ${reviewer.error}` : ""}${reviewer.fallbackFrom ? `; the advisory fallback was called after ${reviewer.fallbackFrom.model} ${reviewer.fallbackFrom.status}: ${reviewer.fallbackFrom.error}` : ""})`).join("; ")} gave no usable answer. It is an advisory reviewer: the failure is only recorded, does not affect passable, and any later round of this chain asks it again.` } : {}),
-    ...(advisoryWaiting ? { advisoryPending: `The advisory reviewer had not answered when every required reviewer finished; it keeps running in the background (up to ${advisoryMs / 1000} s from its start) and does not block. If it answers with findings, they are appended to this chain as open findings (R${round}-ADV-*), shown in the next round, and must be closed in resolve; resolve in this process waits for it first.` } : {}),
     ...(earlierAdvisoryFindings.length > 0 ? { earlierAdvisoryFindings } : {}),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
@@ -2714,7 +2442,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),
-    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(advisoryWaiting ? [`NOTE: the advisory reviewer of this round is still running in the background (see advisoryPending); resolve waits for it and then requires any finding it returns to be closed.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
+    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }
 
@@ -2733,8 +2461,6 @@ export interface ResolveDeps {
   readAll(): CrossReviewLedgerRecord[];
   append(record: AnyLedgerRecord): boolean;
   now?: () => Date;
-  /** 이 프로세스에서 아직 도는 자문을 기다리는 동안 보일 한 줄 진행 알림. */
-  onProgress?: (text: string) => void;
 }
 export interface ResolveResult {
   reviewId: string;
@@ -2767,46 +2493,13 @@ const UNSHOWABLE_SKIP = /^(?:binary file|private key block excluded|secret-looki
  * 이긴다. 통과 지문은 resolve 시점 파일 내용의 git blob이며, 통과하지 못한 resolve도 기록하되 아무것도 덮지 않는다.
  */
 export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promise<ResolveResult> {
-  let records = deps.readAll();
-  let chain = chainOf(records, input.reviewId);
+  const records = deps.readAll();
+  const chain = chainOf(records, input.reviewId);
   if (!chain) throw new Error(`reviewId ${input.reviewId} is unknown or its chain is broken.`);
   const head = chain.at(-1)!;
   const successor = records.find((record): record is CrossReviewRecord => record.type === "cross-review" && record.previousReviewId === head.reviewId);
   if (successor) throw new Error(`${head.reviewId} was followed by round ${successor.round} (${successor.reviewId}); resolve that review instead.`);
-
-  // 이 프로세스에서 아직 도는 자문은 기한까지 기다려 그 finding을 체인에 넣는다. 진행 중 호출도 완료 기록도 없는 pending 자문(재시작 등으로 잃음)은
-  // 실패로 기록하고 막지 않는다. 늦게 붙은 자문 finding은 다른 finding처럼 닫아야 한다.
-  const waiting = chain.map((record) => ({ record, pending: pendingAdvisories().get(record.reviewId) })).filter((item) => item.pending);
-  if (waiting.length > 0) {
-    const latest = Math.max(...waiting.map((item) => item.pending!.deadline));
-    deps.onProgress?.(`cross_review resolve: waiting for the advisory reviewer of ${waiting.map((item) => `${item.record.reviewId} (round ${item.record.round})`).join(", ")} before deciding (nonblocking reviewer, at most ${Math.max(0, Math.ceil((latest - Date.now()) / 1000))} s more); any finding it returns must be closed.`);
-    await Promise.all(waiting.map((item) => item.pending!.done));
-    deps.onProgress?.("cross_review resolve: the advisory reviewer finished; deciding now.");
-    records = deps.readAll();
-    // 기다리는 동안 다음 라운드가 시작됐을 수 있다: 체인 머리를 다시 확인한다.
-    const later = records.find((record): record is CrossReviewRecord => record.type === "cross-review" && record.previousReviewId === head.reviewId);
-    if (later) throw new Error(`${head.reviewId} was followed by round ${later.round} (${later.reviewId}) while resolve waited for its advisory reviewer; resolve that review instead.`);
-  }
-  // 이 프로세스가 받은 자문 답을 원장에 못 썼으면 다시 쓰고, 그래도 못 쓰거나 결과 처리에서 예외가 났으면 거절한다(그 finding을 잃은 채 통과시키지 않는다).
-  for (const record of chain) {
-    const pending = pendingAdvisories().get(record.reviewId);
-    if (!pending) continue;
-    if (pending.unrecorded && deps.append(pending.unrecorded)) { pendingAdvisories().delete(record.reviewId); continue; }
-    if (pending.unrecorded) throw new Error(`The advisory reviewer of ${record.reviewId} answered, but its answer could not be written to the routing ledger; nothing was decided so its findings are not lost. Retry resolve.`);
-    if (pending.error !== undefined) throw new Error(`The advisory answer of ${record.reviewId} could not be processed (${pending.error}); nothing was decided so its findings are not lost. Run another round with previousReviewId=${head.reviewId}.`);
-  }
-  records = deps.readAll();
-  const late = lateAdvisories(records);
-  for (const record of chain) {
-    const left = advisoryLeftPending(record);
-    if (!left || late.has(record.reviewId) || pendingAdvisories().has(record.reviewId)) continue;
-    deps.append({
-      type: "cross-review-advisory", ts: (deps.now?.() ?? new Date()).toISOString(), reviewId: record.reviewId, round: record.round, findings: [],
-      reviewer: { family: left.family, model: left.model, status: "error", elapsedMs: 0, advisory: true, error: "advisory call lost: it was still pending when its review returned, and this process has neither the running call nor a completion record (process restart or reload). Recorded as failed; nonblocking." },
-    });
-  }
-  records = deps.readAll();
-  chain = chainOf(records, input.reviewId) ?? chain;
+  // 2026-10-29 전 원장의 늦게 붙은 자문 finding(chainFindingsOf)은 다른 finding처럼 닫아야 하고, 끝내 답하지 않은 옛 pending 자문은 막지 않는다.
 
   const findings = chainFindingsOf(records, chain);
   const known = new Set(findings.map((finding) => finding.id));
@@ -2830,7 +2523,7 @@ export async function runResolve(input: ResolveInput, deps: ResolveDeps): Promis
     }
   }
   const open = findings.filter((finding) => !state.has(finding.id)).map((finding) => finding.id);
-  const unusable = chain.every((record) => record.passable) ? undefined : "A required (non-advisory) reviewer answer in this chain was unparsable or failed; the chain can never pass. Start a new review.";
+  const unusable = chain.every((record) => record.passable) ? undefined : "A required reviewer answer in this chain was unparsable or failed; the chain can never pass. Start a new review.";
 
   const paths = [...new Set(chain.flatMap((record) => record.files.map((file) => file.path)))];
   const root = head.root;

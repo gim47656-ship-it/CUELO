@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  advisoryPending,
   collectChanges,
   commentOnlyEdit,
   CrossReviewRefusal,
@@ -177,7 +176,6 @@ describe("A4 버전 문자열만 바뀐 diff는 대상이 아니다", () => {
     writeFileSync(join(env.work, "a.ts"), reviewed);
     const d = deps(env, {});
     const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    await advisorySettled(env, review.reviewId);
     expect((await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append })).pass).toBe(true);
     writeFileSync(join(env.work, "a.ts"), reviewed.replace("0.10.83", "0.10.84"));
     const outcome = await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger });
@@ -233,119 +231,38 @@ describe("A6 표본은 프로젝트·스타일·디자이너 파일을 빼고 �
 
 const finding = (claim: string) => JSON.stringify({ findings: [{ severity: "major", file: "a.ts", line: 1, claim, why: "because" }], summary: "s" });
 let idCounter = 0;
-function deps(env: RepoEnv, delays: Partial<Record<Lane, { ms: number; text?: string; error?: string }>>, notices: string[] = []): ReviewDeps {
+function deps(env: RepoEnv, delays: Partial<Record<Lane, { ms: number; text?: string; error?: string }>>): ReviewDeps {
   const ledger = createRoutingLedger(env.ledger);
   return {
-    cwd: env.work, sessionId: "s1", mainModel: OPUS, advisoryModel: FABLE, exec: spawnExec(), snapshotRoot: env.snapshots,
+    cwd: env.work, sessionId: "s1", mainModel: OPUS, exec: spawnExec(), snapshotRoot: env.snapshots,
     readAll: () => readCrossReviewRecords(env.ledger), append: (record) => ledger.append(record),
     newId: () => `xr-relax-${process.pid}-${++idCounter}`,
-    notify: (text: string) => notices.push(text),
     complete: async (family) => {
       const plan = delays[family] ?? { ms: 0 };
-      const model = family === "openai" ? ASTRA : family === "advisory" ? FABLE : OPUS;
+      const model = family === "openai" ? ASTRA : OPUS;
       await Bun.sleep(plan.ms);
       if (plan.error) throw new ReviewerCallError(plan.error, model);
       return { model, text: plan.text ?? '{"findings":[]}' };
     },
   } as ReviewDeps;
 }
-/** 백그라운드 자문이 끝나 원장에 기록될 때까지(최대 15 s) 기다린다. 자문 자리가 없거나 이미 답했으면 곧바로 돌아온다. */
-async function advisorySettled(env: RepoEnv, reviewId: string): Promise<void> {
-  for (let i = 0; i < 300; i++) {
-    const records = readCrossReviewRecords(env.ledger) as { type: string; reviewId: string; reviewers?: { advisory?: true; status: string }[] }[];
-    const review = records.find((record) => record.type === "cross-review" && record.reviewId === reviewId);
-    const pending = review?.reviewers?.some((reviewer) => reviewer.advisory && reviewer.status === "pending");
-    if (!pending || records.some((record) => record.type === "cross-review-advisory" && record.reviewId === reviewId)) return;
-    await Bun.sleep(50);
-  }
-  throw new Error("advisory never settled");
-}
-
-describe("A7 자문은 필수 reviewer를 막지 않고 늦게 도착한다", () => {
-  test("필수 1 s·자문 5 s: review는 약 1 s에 돌아오고 자문 finding은 약 5 s 뒤 원장에 붙으며, 닫기 전에는 resolve가 통과하지 않는다", async () => {
+describe("A7 보조 자문 제거 뒤에도 옛 원장의 자문 기록 줄을 그대로 읽는다", () => {
+  test("옛 pending 자문 자리와 늦은 자문 기록이 섞인 원장도 게이트가 읽고, 늦은 finding은 닫아야 통과한다", async () => {
     const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const notices: string[] = [];
-    const d = deps(env, { openai: { ms: 1_000 }, advisory: { ms: 5_000, text: finding("late advisory objection") } }, notices);
-    const started = Date.now();
+    writeFileSync(join(env.work, "a.ts"), "import { rmSync } from \"node:fs\";\nrmSync(\"x\");\n");
+    const d = deps(env, {});
     const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    const returnedAt = Date.now() - started;
-    expect(returnedAt).toBeGreaterThanOrEqual(900);
-    expect(returnedAt).toBeLessThan(2_500);
-    expect(review.findings).toEqual([]);
-    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "pending", advisory: true }]);
-    await advisorySettled(env, review.reviewId);
-    const arrivedAt = Date.now() - started;
-    expect(arrivedAt).toBeGreaterThanOrEqual(4_900);
-    expect(arrivedAt).toBeLessThan(8_000);
-    const late = readCrossReviewRecords(env.ledger).filter((record) => (record as { type: string }).type === "cross-review-advisory");
-    expect(late).toMatchObject([{ reviewId: review.reviewId, reviewer: { family: "advisory", status: "ok", model: FABLE }, findings: [{ id: "R1-ADV-1", claim: "late advisory objection" }] }]);
-    expect(notices.join("\n")).toContain("R1-ADV-1");
+    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
+    d.append({
+      type: "cross-review-advisory", ts: new Date().toISOString(), reviewId: review.reviewId, round: 1,
+      reviewer: { family: "advisory", model: FABLE, status: "ok", elapsedMs: 1, advisory: true },
+      findings: [{ id: "R1-ADV-1", severity: "major", claim: "late advisory objection", why: "w", reviewer: FABLE }],
+    } as never);
     const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
     expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd)).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
     expect(await runResolve({ reviewId: review.reviewId, resolutions: [{ id: "R1-ADV-1", status: "refuted", evidence: "a is a constant" }] }, rd)).toMatchObject({ pass: true, open: [] });
-  }, 20_000);
-
-  test("다음 라운드는 앞 라운드의 늦은 자문 finding을 열린 지적으로 보여 준다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const first = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, { advisory: { ms: 200, text: finding("late one") } }), signal);
-    await advisorySettled(env, first.reviewId);
-    writeFileSync(join(env.work, "a.ts"), "export const a = 2;\n");
-    const prompts: string[] = [];
-    const base = deps(env, {});
-    const second = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"], previousReviewId: first.reviewId }, { ...base, complete: async (family, prompt, attempt) => { prompts.push(prompt); return base.complete(family, prompt, attempt); } }, signal);
-    expect(prompts[0]).toContain("R1-ADV-1");
-    expect(prompts[0]).toContain("late one");
-    expect((second as { earlierAdvisoryFindings?: { id: string }[] }).earlierAdvisoryFindings).toMatchObject([{ id: "R1-ADV-1" }]);
-    await advisorySettled(env, second.reviewId);
-    expect(await runResolve({ reviewId: second.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: base.readAll, append: base.append })).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-  }, 20_000);
-
-  test("resolve는 이 프로세스에서 아직 도는 자문을 기다리며 진행을 알리고, 그 finding을 닫아야 통과한다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const d = deps(env, { advisory: { ms: 1_500, text: finding("slow advisory") } });
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    const progress: string[] = [];
-    const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append, onProgress: (text: string) => progress.push(text) } as never);
-    expect(progress.join("\n")).toContain("advisory");
-    expect(resolved).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-  }, 20_000);
-
-  test("자문 실패·시간 초과는 기록만 하고 통과를 막지 않는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const d = { ...deps(env, { advisory: { ms: 5_000 } }), advisoryTimeoutMs: 100 };
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    await advisorySettled(env, review.reviewId);
-    expect(readCrossReviewRecords(env.ledger).filter((record) => (record as { type: string }).type === "cross-review-advisory")).toMatchObject([{ reviewer: { status: "error", error: expect.stringContaining("timed out") }, findings: [] }]);
-    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append })).toMatchObject({ pass: true });
-  }, 20_000);
-
-  test("재시작 뒤(진행 중 호출도 완료 기록도 없음) 대기 중이던 자문은 실패로 기록되고 통과를 막지 않는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const d = deps(env, {});
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    // 지난 프로세스가 남긴 것처럼: 자문이 pending인 1회차 기록을 새 id로 복제한다(이 프로세스에는 그 호출이 없다).
-    const lost = { ...(readCrossReviewRecords(env.ledger)[0] as object), reviewId: "xr-lost-1", reviewers: [{ family: "openai", model: ASTRA, status: "ok", elapsedMs: 1 }, { family: "advisory", model: "@crossReviewAdvisory", status: "pending", elapsedMs: 0, advisory: true }], findings: [] };
-    writeFileSync(env.ledger, `${readFileSync(env.ledger, "utf8")}${JSON.stringify(lost)}\n`);
-    void review;
-    const resolved = await runResolve({ reviewId: "xr-lost-1", resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
-    expect(resolved.pass).toBe(true);
-    expect(readCrossReviewRecords(env.ledger).filter((record) => (record as { type: string }).type === "cross-review-advisory" && (record as { reviewId: string }).reviewId === "xr-lost-1")).toMatchObject([{ reviewId: "xr-lost-1", reviewer: { status: "error", error: expect.stringContaining("restart") } }]);
-  }, 20_000);
-
-  test("게이트는 자문 기록 줄이 섞인 원장도 그대로 읽는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "import { rmSync } from \"node:fs\";\nrmSync(\"x\");\n");
-    const d = deps(env, { advisory: { ms: 100 } });
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    await advisorySettled(env, review.reviewId);
-    expect((await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append })).pass).toBe(true);
     expect(((await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })) as GateOutcome).decision?.uncovered).toEqual([]);
-  }, 20_000);
+  });
 });
 
 describe("교차검토 1회차(xr-20261027014753-15a93f) 지적 회귀", () => {
@@ -365,60 +282,6 @@ describe("교차검토 1회차(xr-20261027014753-15a93f) 지적 회귀", () => {
     expect(hit("const label = `${name}: SerialPort ready`;")).toEqual([]);
     expect(hit("const label = `${new SerialPort(path)} ok`;")).toContain("device-io");
   });
-
-  test("R1-OAI-3: 늦은 자문 답을 원장에 못 쓰면 잃지 않고, resolve가 다시 쓰거나 거절한다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const base = deps(env, { advisory: { ms: 200, text: finding("kept despite write failure") } });
-    let failing = true;
-    const d = { ...base, append: (record: Parameters<ReviewDeps["append"]>[0]) => ((record as { type: string }).type === "cross-review-advisory" && failing ? false : base.append(record)) };
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    await advisoryPending(review.reviewId);
-    const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
-    await expect(runResolve({ reviewId: review.reviewId, resolutions: [] }, rd)).rejects.toThrow("could not be written to the routing ledger");
-    failing = false;
-    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd)).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-  }, 20_000);
-
-  test("R1-OAI-4: probe 라운드에 늦게 답한 자문의 판단도 기록되고 resolve 결과에 나온다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const probed = JSON.stringify({ findings: [{ severity: "major", file: "a.ts", line: 1, claim: "c", why: "w", probe: { steps: "run it", expectIfReal: "boom" } }], summary: "s" });
-    const first = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, { openai: { ms: 0, text: probed } }), signal);
-    await advisorySettled(env, first.reviewId);
-    const verdict = JSON.stringify({ findings: [], verdicts: [{ id: "R1-OAI-1", verdict: "confirmed", why: "the output shows boom" }], summary: "s" });
-    const d = deps(env, { advisory: { ms: 300, text: verdict } });
-    const probe = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"], previousReviewId: first.reviewId, probeResults: [{ findingId: "R1-OAI-1", command: "run it", exitCode: 1, output: "boom" }] }, d, signal);
-    await advisorySettled(env, probe.reviewId);
-    const late = readCrossReviewRecords(env.ledger).find((record) => (record as { type: string; reviewId: string }).type === "cross-review-advisory" && (record as { reviewId: string }).reviewId === probe.reviewId);
-    expect(late).toMatchObject({ verdicts: [{ id: "R1-OAI-1", verdict: "confirmed", reviewer: FABLE }] });
-    const resolved = await runResolve({ reviewId: probe.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "x" }] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
-    expect(resolved.verdicts).toEqual(expect.arrayContaining([expect.objectContaining({ id: "R1-OAI-1", verdict: "confirmed", reviewer: FABLE })]));
-  }, 20_000);
-
-  test("R1-OAI-5: 필수 reviewer가 실패해도 도는 자문은 멈추지 않고 늦은 finding을 붙인다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const d = deps(env, { openai: { ms: 0, error: "provider down" }, advisory: { ms: 300, text: finding("still useful") } });
-    const review = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    expect(review.passable).toBe(false);
-    await advisorySettled(env, review.reviewId);
-    expect(readCrossReviewRecords(env.ledger).filter((record) => (record as { type: string }).type === "cross-review-advisory")).toMatchObject([{ reviewer: { status: "ok" }, findings: [{ id: "R1-ADV-1", claim: "still useful" }] }]);
-  }, 20_000);
-
-  test("R1-OAI-6: 자문을 기다리는 사이 다음 라운드가 생기면 resolve는 옛 머리를 판정하지 않는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const a = 1;\n");
-    const d = deps(env, { advisory: { ms: 1_500 } });
-    const first = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, d, signal);
-    let waiting!: () => void;
-    const started = new Promise<void>((resolve) => { waiting = resolve; });
-    const resolving = runResolve({ reviewId: first.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append, onProgress: () => waiting() } as never);
-    await started;
-    writeFileSync(join(env.work, "a.ts"), "export const a = 2;\n");
-    await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"], previousReviewId: first.reviewId }, deps(env, {}), signal);
-    await expect(resolving).rejects.toThrow("while resolve waited for its advisory reviewer");
-  }, 20_000);
 });
 
 describe("교차검토 2회차(xr-20261027015522-8736b8) 지적 회귀", () => {

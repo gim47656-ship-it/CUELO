@@ -433,7 +433,6 @@
  "roles.harness.makerHardCodeSonnet": "Maker · HARD 코드 대안",
  "roles.harness.crossReviewOpenAI": "교차검수 · OpenAI 필수 검토 (openai / openai-codex)",
  "roles.harness.crossReviewAnthropic": "교차검수 · Anthropic 필수 검토 (anthropic)",
- "roles.harness.crossReviewAdvisory": "교차검수 · 보조 자문 (필수 검토 대체 불가)",
  "roles.harness.skim": "도구 · 다중 파일 소스 읽기 (skim)",
  "roles.harness.draft": "도구 · 문서 초안 작성 (draft)",
  "roles.harness.ocr": "도구 · 이미지 글자 전사 (ocr)",

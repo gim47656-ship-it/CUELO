@@ -14,7 +14,6 @@ export const HARNESS_ROLES = [
   "makerHardCodeSonnet",
   "crossReviewOpenAI",
   "crossReviewAnthropic",
-  "crossReviewAdvisory",
   "skim",
   "draft",
   "ocr",

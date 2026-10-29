@@ -444,7 +444,6 @@ export const enLocale = {
     "roles.harness.makerHardCodeSonnet": "Maker · HARD code fallback",
     "roles.harness.crossReviewOpenAI": "Cross-review · required OpenAI reviewer (openai / openai-codex)",
     "roles.harness.crossReviewAnthropic": "Cross-review · required Anthropic reviewer (anthropic)",
-    "roles.harness.crossReviewAdvisory": "Cross-review · supplementary advisory (never substitutes for required review)",
     "roles.harness.skim": "Tool · multi-file source reading (skim)",
     "roles.harness.draft": "Tool · document drafting (draft)",
     "roles.harness.ocr": "Tool · image text transcription (ocr)",

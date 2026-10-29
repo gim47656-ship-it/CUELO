@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { ADVISORY_GRACE_MS, ADVISORY_LANE, ADVISORY_TIMEOUT_MS, advisoryFallbackAllowed, authorFamily, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, settleReviewers, SLOT, withAdvisoryDeadline, type Lane } from "../lib/cross-review";
+import { authorFamily, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, type Lane } from "../lib/cross-review";
 import {
   appendSlopRecord, passFor, rawDataReason, readSlopRecords, sha256, trackable, visibilityOf, wslPath,
   type SlopFindingRecord, type SlopRecord, type SlopReviewRecord,
@@ -13,9 +13,9 @@ import { extractVisible, type Extracted, type ScanLead } from "./extract";
 /**
  * 모델 심사. 기준은 기존 스킬 파일의 규칙 본문을 그대로 싣는다(요약·의역 없음): 한국어 글은 humanizer, 영어 글은 stop-slop,
  * html·UI 문구·슬라이드는 kill-ai-slop. 감지한 언어·형식의 기준만 system 메시지에 고정해 싣고(파일 글은 user 메시지에만) 제공자 프리픽스 캐시가 맞게 한다.
- * reviewer 자리는 planReviewers가 정한다(2026-10-29 사용자 결정): slop 전용 slot(slopReviewOpenAI·slopReviewGemini)이 풀리면 Luna·Flash, 없으면 cross_review와 같은 reviewerLanes·옛 slot이다.
- * 필수 reviewer가 하나라도 실패하면 통과가 없고 자문의 실패·시간 초과(ADVISORY_TIMEOUT_MS)는 기록만 한다. 답한 finding은 R-OAI-n·R-ANT-n·R-GGL-n·R-ADV-n으로 합쳐 똑같이 닫는다
- * (옛 기록의 R-GGL-n도 그대로 닫는다). 단서(scan.mjs)는 판정이 아니라 읽을 자리를 가리킨다.
+ * reviewer 자리는 planReviewers가 정한다(2026-10-29 사용자 결정): slop 전용 slot(slopReviewOpenAI)이 풀리면 Luna, 없으면 cross_review와 같은 reviewerLanes·옛 slot이다.
+ * 필수 reviewer가 하나라도 실패하면 통과가 없다. 답한 finding은 R-OAI-n·R-ANT-n으로 합쳐 똑같이 닫는다
+ * (2026-10-29 전 기록의 R-GGL-n·R-ADV-n도 그대로 닫는다). 단서(scan.mjs)는 판정이 아니라 읽을 자리를 가리킨다.
  * git이 추적하는 파일은 HEAD 대비 바뀐 글만 보낸다(delta.ts). finding이 없으면 같은 호출에서 sha256 통과를 기록하고, 있으면
  * 고친 뒤 다시 심사하거나 resolve로 반박한다.
  */
@@ -28,37 +28,20 @@ const SKILLS_DIR = join(import.meta.dir, "..", "..", "skills");
 
 export interface Usage { input: number; output: number; cacheRead: number; cost: number }
 export interface ReviewerAnswer { model: string; text: string; usage?: Usage }
-/** lane은 reviewer 자리다(openai·anthropic·google=필수, advisory=자문). google은 slop_check 전용 slot(slopReviewGemini)의 필수 자리다. */
-export type SlopLane = Lane | "google";
+export type SlopLane = Lane;
 export const SLOP_OPENAI_SLOT = "slopReviewOpenAI";
-export const SLOP_GEMINI_SLOT = "slopReviewGemini";
-const SLOP_TAG: Record<SlopLane, string> = { ...LANE_TAG, google: "GGL" };
 
 /**
- * slop_check의 reviewer 자리와 자리별 slot(사용자 결정 2026-10-29: Opus·Astra 대신 GPT-6 Luna와 Gemini Flash). 두 전용 slot이 모두 비면 cross_review와 같은 옛 경로(reviewerLanes)다.
- * 필수: OpenAI 저자 → Gemini(slopReviewGemini가 있을 때), Anthropic 저자 → OpenAI 자리(slopReviewOpenAI가 있으면 Luna), Gemini·그 밖의 저자 → slopReviewOpenAI가 있을 때 Luna.
- * 자문: slopReviewGemini가 있고 저자 계열도 필수 자리도 Gemini가 아니면 그 slot이 crossReviewAdvisory 대신 자문이다. 저자 계열이 겹쳐 건너뛴 slot 자리는 비고,
- * 비어 있는 slot의 자리는 옛 slot(crossReviewOpenAI·crossReviewAnthropic·crossReviewAdvisory)으로 돌아간다. slot 값이 없는 lane은 lane의 기본 slot을 쓴다.
+ * slop_check의 reviewer 자리와 자리별 slot(사용자 결정 2026-10-29: Luna 단독, 자문 없음). slopReviewOpenAI가 비면 cross_review와 같은 옛 경로(reviewerLanes)다.
+ * 필수: OpenAI 저자 → Anthropic 자리(crossReviewAnthropic, Opus), 그 밖의 저자(Anthropic·Gemini·기타) → OpenAI 자리에 slopReviewOpenAI(Luna).
+ * 저자 계열이 필수 자리와 겹치면(OpenAI 저자는 OpenAI 자리를 못 쓴다) 그 slot은 건너뛰고 cross_review의 slot으로 돌아간다.
  */
-export function planReviewers(authors: string[], mainModel: string | undefined, advisoryModel: string | undefined, slopSlots: SlopDeps["slopSlots"]): { lanes: SlopLane[]; slots: Partial<Record<SlopLane, string>> } {
-  const base = reviewerLanes(authors, mainModel, advisoryModel);
-  const openai = !!slopSlots?.openai;
-  const google = !!slopSlots?.google;
-  if (!openai && !google) return { lanes: base, slots: {} };
-  const families = new Set(authors.map((author) => authorFamily(author.trim().toLowerCase() === "main" ? mainModel! : author.trim())));
-  const required = new Set<SlopLane>();
-  for (const family of families) {
-    if (family === "openai") required.add(google ? "google" : "anthropic");
-    else if (family === "anthropic") required.add("openai");
-    else required.add(openai ? "openai" : "anthropic");
-  }
-  const slots: Partial<Record<SlopLane, string>> = {};
-  if (required.has("openai") && openai) slots.openai = SLOP_OPENAI_SLOT;
-  if (required.has("google")) slots.google = SLOP_GEMINI_SLOT;
-  let advisory = base.includes(ADVISORY_LANE);
-  if (google && !families.has("google") && !required.has("google")) { advisory = true; slots.advisory = SLOP_GEMINI_SLOT; }
-  else if (google && openai && (families.has("google") || required.has("google"))) advisory = false;
-  return { lanes: [...[...required].sort(), ...(advisory ? [ADVISORY_LANE] : [])], slots };
+export function planReviewers(authors: string[], mainModel: string | undefined, slopSlots: SlopDeps["slopSlots"]): { lanes: Lane[]; slots: Partial<Record<Lane, string>> } {
+  const base = reviewerLanes(authors, mainModel);
+  if (!slopSlots?.openai) return { lanes: base, slots: {} };
+  const required = new Set<Lane>();
+  for (const author of authors) required.add(authorFamily(author.trim().toLowerCase() === "main" ? mainModel! : author.trim()) === "openai" ? "anthropic" : "openai");
+  return { lanes: [...required].sort(), slots: required.has("openai") ? { openai: SLOP_OPENAI_SLOT } : {} };
 }
 export type Complete = (lane: SlopLane, system: string, prompt: string, signal: AbortSignal, slot?: string) => Promise<ReviewerAnswer>;
 export type Lang = "ko" | "en" | "both";
@@ -75,25 +58,13 @@ export interface SlopDeps {
   authors?: string[];
   /** "main"을 풀 이 세션의 현재 모델 selector. */
   mainModel?: string;
-  /** modelRoles.crossReviewAdvisory가 가리키는 모델. 저자가 그 모델 자체일 때만 자문 자리를 뺀다. */
-  advisoryModel?: string;
-  /** modelRoles.crossReviewAdvisoryFallback가 가리키는 모델(해석했으면 provider/id, 못 했으면 selector). 설정이 없으면 undefined이고 그러면 자문 대체는 없다. */
-  advisoryFallbackModel?: string;
-  /** 필수 자리 slot이 가리키는 모델. 자문 대체가 이 호출의 필수 reviewer와 같은 모델이면 부르지 않는 데만 쓴다. */
-  requiredModels?: Partial<Record<SlopLane, string>>;
-  /** slop_check 전용 reviewer slot(slopReviewOpenAI·slopReviewGemini)이 풀린 모델(provider/id). 풀리지 않았거나 설정이 없는 slot은 비어 있고, 그 자리는 cross_review와 같은 옛 slot을 쓴다. 둘 다 비면 옛 경로 그대로다. */
-  slopSlots?: { openai?: string; google?: string };
-  /** 자문 대체 모델을 부른다. 자문 주 호출이 쓸 수 없는 답(오류·빈 답·해석 불가)일 때만 대체 단계를 한 번, 같은 기한 안에서 거친다(묶음마다 한 번씩 불린다). */
-  completeFallback?: (system: string, prompt: string, signal: AbortSignal) => Promise<ReviewerAnswer>;
-  /** 자문 reviewer 기한(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_TIMEOUT_MS. */
-  advisoryTimeoutMs?: number;
-  /** 필수 reviewer가 끝난 뒤 자문을 더 기다리는 시간(ms). 테스트가 짧게 주입한다. 기본 ADVISORY_GRACE_MS. */
-  advisoryGraceMs?: number;
+  /** slop_check 전용 reviewer slot(slopReviewOpenAI)이 풀린 모델(provider/id). 풀리지 않았거나 설정이 없으면 비어 있고, 그 자리는 cross_review와 같은 옛 slot을 쓴다. */
+  slopSlots?: { openai?: string };
 }
 
 export interface FileFinding extends SlopFindingRecord { file: string }
 /** raw: 실패한 답의 원문 발췌(앞뒤만, MAX_RAW_CHARS). error: 실제 원인(깨진 JSON의 파서 오류, JSON은 맞는데 모양이 틀린 곳, 호출 오류). retry: 해석할 수 없던 첫 답 뒤에 같은 자리에 다시 물어 받은 답이다. */
-export interface ReviewerStatus { family: SlopLane; model?: string; status: "ok" | "error" | "unparsable"; error?: string; raw?: string; advisory?: true; retry?: true; usage?: Usage; ms?: number }
+export interface ReviewerStatus { family: Lane; model?: string; status: "ok" | "error" | "unparsable"; error?: string; raw?: string; retry?: true; usage?: Usage; ms?: number }
 export interface FileOutcome {
   file: string;
   sha256?: string;
@@ -109,7 +80,7 @@ export interface FileOutcome {
   diagnosticFindings?: FileFinding[];
   error?: string;
 }
-export interface ReviewOutcome { /** "main"을 푼 저자 selector. reviewer 계열이 왜 그렇게 정해졌는지 보인다. */ authors?: string[]; reviewId?: string; reviewers?: ReviewerStatus[]; /** 모든 묶음의 실패한 호출(자문 포함), 원인·원문 발췌와 함께. */ failedAttempts?: ReviewerStatus[]; advisoryReviewers?: string[]; usage?: Usage; files: FileOutcome[] }
+export interface ReviewOutcome { /** "main"을 푼 저자 selector. reviewer 계열이 왜 그렇게 정해졌는지 보인다. */ authors?: string[]; reviewId?: string; reviewers?: ReviewerStatus[]; /** 모든 묶음의 실패한 호출, 원인·원문 발췌와 함께. */ failedAttempts?: ReviewerStatus[]; usage?: Usage; files: FileOutcome[] }
 
 // ── 기준(스킬 본문) ──────────────────────────────────────────────────────────
 
@@ -324,7 +295,7 @@ function shownFor(extracted: Extracted, delta: Delta | undefined): Shown {
 }
 
 /** firstAttempt: 다시 묻기 전, 해석할 수 없던 첫 답의 상태(failedAttempts에 남는다). */
-interface Ask { family: SlopLane; status: ReviewerStatus; parsed?: ParsedAnswer; usage?: Usage; firstAttempt?: ReviewerStatus }
+interface Ask { family: Lane; status: ReviewerStatus; parsed?: ParsedAnswer; usage?: Usage; firstAttempt?: ReviewerStatus }
 
 /** 두 호출의 사용량을 합친다. 한쪽만 있으면 그쪽이다. */
 function sumUsage(first: Usage | undefined, second: Usage | undefined): Usage | undefined {
@@ -333,74 +304,45 @@ function sumUsage(first: Usage | undefined, second: Usage | undefined): Usage | 
     : second ?? first;
 }
 
-/** 호출 하나를 하고 답을 읽는다. 실패·해석 불가는 던지지 않고 상태로 돌려준다(필수 reviewer만 호출부가 막는다). */
-async function settle(family: SlopLane, call: () => Promise<ReviewerAnswer>): Promise<Ask> {
-  const advisory = family === ADVISORY_LANE ? { advisory: true as const } : {};
+/** 호출 하나를 하고 답을 읽는다. 실패·해석 불가는 던지지 않고 상태로 돌려준다(호출부가 그 파일의 통과를 막는다). */
+async function settle(family: Lane, call: () => Promise<ReviewerAnswer>): Promise<Ask> {
   const started = Date.now();
   try {
     const answer = await call();
     const read = readAnswer(answer.text);
-    if (!read.parsed) return { family, usage: answer.usage, status: { family, model: answer.model, status: "unparsable", error: `answer is not the expected JSON: ${read.problem}`, raw: excerpt(answer.text), usage: answer.usage, ms: Date.now() - started, ...advisory } };
-    return { family, parsed: read.parsed, usage: answer.usage, status: { family, model: answer.model, status: "ok", usage: answer.usage, ms: Date.now() - started, ...advisory } };
+    if (!read.parsed) return { family, usage: answer.usage, status: { family, model: answer.model, status: "unparsable", error: `answer is not the expected JSON: ${read.problem}`, raw: excerpt(answer.text), usage: answer.usage, ms: Date.now() - started } };
+    return { family, parsed: read.parsed, usage: answer.usage, status: { family, model: answer.model, status: "ok", usage: answer.usage, ms: Date.now() - started } };
   } catch (error) {
     // 출력 한도·오류로 끊긴 답도 원문을 남긴다(ReviewerCallError.partial). 통과는 못 한다.
     const failed = error instanceof ReviewerCallError ? { model: error.model, ...(error.partial ? { raw: excerpt(error.partial) } : {}) } : {};
-    return { family, status: { family, ...failed, status: "error", error: error instanceof Error ? error.message : String(error), ms: Date.now() - started, ...advisory } };
+    return { family, status: { family, ...failed, status: "error", error: error instanceof Error ? error.message : String(error), ms: Date.now() - started } };
   }
 }
 
 /**
- * 한 reviewer를 한 번 부른다. 자문 reviewer는 cross_review와 같은 기한, 또는 필수 reviewer가 모두 끝난 때에 끊는다. 자문 주 호출이 쓸 수 없는 답(오류·빈 답·해석 불가)이면
- * deps.completeFallback가 있을 때만 같은 기한 안에서 대체 모델을 한 번 부르고, 먼저 불린 모델의 실패는 firstAttempt로 남긴다. 취소·기한·필수 종료로 멈춘 호출은 대체하지 않는다.
+ * 한 reviewer에게 묻는다. 답을 해석할 수 없으면 같은 자리에 한 번만 다시 묻는다(2026-10-28 사용자 결정: 감사한 26호출 중 6건이 끝 괄호만
+ * 빠진 JSON이었다). 답을 고치거나 다른 모델에 묻지 않고, 다시 받은 답도 해석할 수 없으면 그대로 실패다. 호출 오류는 다시 묻지 않는다.
  */
-async function askOnce(family: SlopLane, { system, prompt }: ReviewRequest, deps: SlopDeps, signal: AbortSignal, requiredSettled: AbortSignal, slot?: string): Promise<Ask> {
-  if (family !== ADVISORY_LANE) return settle(family, () => deps.complete(family, system, prompt, signal, slot));
-  const started = Date.now();
-  let primary: Ask | undefined;
-  const run = async (attempt: AbortSignal): Promise<Ask> => {
-    const first = await settle(family, () => deps.complete(family, system, prompt, attempt, slot));
-    if (first.parsed || !deps.completeFallback || attempt.aborted) return first;
-    primary = first;
-    const second = await settle(family, () => deps.completeFallback!(system, prompt, attempt));
-    const usage = sumUsage(first.usage, second.usage);
-    return { ...second, usage, status: { ...second.status, ...(usage ? { usage } : {}) }, firstAttempt: first.status };
-  };
-  try {
-    return await withAdvisoryDeadline(run, deps.advisoryTimeoutMs ?? ADVISORY_TIMEOUT_MS, signal, `@${slot ?? SLOT.advisory}`, requiredSettled);
-  } catch (error) {
-    const failed = error instanceof ReviewerCallError && error.model !== `@${slot ?? SLOT.advisory}` ? { model: error.model, ...(error.partial ? { raw: excerpt(error.partial) } : {}) } : primary ? { model: deps.advisoryFallbackModel ?? `@${slot ?? SLOT.advisory}` } : {};
-    return { family, ...(primary ? { firstAttempt: primary.status, ...(primary.usage ? { usage: primary.usage } : {}) } : {}), status: { family, ...failed, status: "error", error: error instanceof Error ? error.message : String(error), ms: Date.now() - started, advisory: true } };
-  }
-}
-
-/**
- * 한 reviewer에게 묻는다. 필수 reviewer의 답을 해석할 수 없으면 같은 자리에 한 번만 다시 묻는다(2026-10-28 사용자 결정: 감사한 26호출 중 6건이 끝 괄호만
- * 빠진 JSON이었다). 답을 고치거나 다른 모델에 묻지 않고, 다시 받은 답도 해석할 수 없으면 그대로 실패다. 자문 reviewer와 호출 오류는 다시 묻지 않는다.
- */
-async function ask(family: SlopLane, request: ReviewRequest, deps: SlopDeps, signal: AbortSignal, requiredSettled: AbortSignal, slot?: string): Promise<Ask> {
-  const first = await askOnce(family, request, deps, signal, requiredSettled, slot);
-  if (family === ADVISORY_LANE || first.status.status !== "unparsable" || signal.aborted) return first;
+async function ask(family: Lane, { system, prompt }: ReviewRequest, deps: SlopDeps, signal: AbortSignal, slot?: string): Promise<Ask> {
+  const first = await settle(family, () => deps.complete(family, system, prompt, signal, slot));
+  if (first.status.status !== "unparsable" || signal.aborted) return first;
   const tail = JSON.stringify((first.status.raw ?? "").slice(-160));
-  const again = await askOnce(family, { system: request.system, prompt: `${request.prompt}\n\nYour previous answer to this request could not be read (${first.status.error}). It ended with: ${tail}. Answer again with the complete JSON object in exactly the shape given in your instructions, closing every array and object, and nothing before or after it.` }, deps, signal, requiredSettled, slot);
+  const again = await settle(family, () => deps.complete(family, system, `${prompt}\n\nYour previous answer to this request could not be read (${first.status.error}). It ended with: ${tail}. Answer again with the complete JSON object in exactly the shape given in your instructions, closing every array and object, and nothing before or after it.`, signal, slot));
   const usage = sumUsage(first.usage, again.usage);
   return { ...again, usage, status: { ...again.status, retry: true }, firstAttempt: first.status };
 }
 
 /**
  * 파일들을 심사한다. 이미 통과한 내용은 모델을 부르지 않고, 나머지는 기준 조합이 같은 것끼리 묶어 한 호출에 싣는다.
- * 호출마다 필수(반대 계열)·자문(advisory) reviewer를 병렬로 부른다. 필수 reviewer의 실패·해석 불가·누락은 그 파일의 통과를 막고,
- * 자문 reviewer의 실패는 기록만 한다. finding이 없는 파일은 같은 호출에서 통과 기록을 남긴다.
+ * 호출마다 필수(반대 계열) reviewer를 병렬로 부른다. 필수 reviewer의 실패·해석 불가·누락은 그 파일의 통과를 막는다.
+ * finding이 없는 파일은 같은 호출에서 통과 기록을 남긴다.
  */
 export async function reviewFiles(files: readonly string[], lang: Lang | undefined, deps: SlopDeps, signal: AbortSignal): Promise<ReviewOutcome> {
   const now = deps.now ?? (() => new Date());
   const declared = deps.authors ?? ["main"];
-  const plan = planReviewers(declared, deps.mainModel, deps.advisoryModel, deps.slopSlots);
+  const plan = planReviewers(declared, deps.mainModel, deps.slopSlots);
   const families = plan.lanes;
   const authors = declared.map((author) => (author.trim().toLowerCase() === "main" ? deps.mainModel ?? "main" : author.trim()));
-  // 자문 대체는 설정이 있고 자문 주 모델·이번 호출의 필수 reviewer·저자와 다른 모델일 때만 부른다. 아니면 대체 없이 자문은 기록만 한다.
-  const askDeps: SlopDeps = deps.completeFallback && advisoryFallbackAllowed(deps.advisoryFallbackModel, [
-    plan.slots.advisory ? deps.slopSlots?.google : deps.advisoryModel, ...families.filter((lane) => lane !== ADVISORY_LANE).map((lane) => deps.requiredModels?.[lane]), ...authors,
-  ]) ? deps : { ...deps, completeFallback: undefined };
   const { ok, errors, internal } = resolveFiles(files, deps.cwd);
   const outcomes: FileOutcome[] = [...errors, ...internal];
   // 대상 여부는 바이트를 읽기 전에 정한다: 보이는 산출물이 아닌 파일(내부 기록·코드·테스트 등)은 읽지도, 추출하지도, reviewer에 보내지도 않고 통과도 남기지 않는다.
@@ -472,8 +414,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     const fail = (error: string) => { for (const item of batch) outcomes.push({ file: item.rel, sha256: item.hash, status: "error", error }); };
     if (names.length === 0) { fail("no rubric applies: the text has too little Korean or English prose to judge (pass lang to force one)"); continue; }
     const request = buildReviewRequest(batch, names);
-    // settleReviewers는 lane을 ADVISORY_LANE과 견줄 뿐이라 google 자리도 그대로 돈다(타입만 Lane으로 좁혀 있다).
-    const answers = await settleReviewers(families as Lane[], (family, _index, requiredSettled) => ask(family as SlopLane, request, askDeps, signal, requiredSettled, plan.slots[family as SlopLane]), deps.advisoryGraceMs ?? ADVISORY_GRACE_MS);
+    const answers = await Promise.all(families.map((family) => ask(family, request, deps, signal, plan.slots[family])));
     for (const asked of answers) {
       // 여러 묶음에서 한 자리가 한 번이라도 실패했으면 그 상태를 남긴다(뒤 묶음의 성공이 덮지 않는다).
       if ((reviewers.get(asked.family)?.status ?? "ok") === "ok") reviewers.set(asked.family, asked.status);
@@ -489,10 +430,10 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     const findingsOf = (item: Item, prefix: string): FileFinding[] => answered(item).filter(({ finding }) => !commaOnlyRule(finding.rule)).map(({ source, finding }) => {
       const key = `${prefix}-${source.family}`;
       counters[key] = (counters[key] ?? 0) + 1;
-      return { id: `${prefix}-${SLOP_TAG[source.family]}-${counters[key]}`, file: item.rel, quote: finding.quote, rule: finding.rule, fix: finding.fix, quoteFound: text(item).includes(squash(finding.quote)), reviewer: source.family };
+      return { id: `${prefix}-${LANE_TAG[source.family]}-${counters[key]}`, file: item.rel, quote: finding.quote, rule: finding.rule, fix: finding.fix, quoteFound: text(item).includes(squash(finding.quote)), reviewer: source.family };
     });
     const strip = (findings: FileFinding[]) => findings.map(({ file: _file, ...rest }) => rest);
-    const broken = answers.find((asked) => asked.family !== ADVISORY_LANE && !asked.parsed);
+    const broken = answers.find((asked) => !asked.parsed);
     if (broken) {
       const error = `required reviewer (${broken.family}) ${broken.status.status}: ${broken.status.error ?? ""}`.trim();
       for (const item of batch) {
@@ -503,7 +444,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
       continue;
     }
     for (const item of batch) {
-      const skipped = sources.find((source) => source.family !== ADVISORY_LANE && !source.parsed!.files.some((file) => file.id === item.id));
+      const skipped = sources.find((source) => !source.parsed!.files.some((file) => file.id === item.id));
       if (skipped) {
         const error = `required reviewer (${skipped.family}, model ${skipped.status.model}) skipped this file; a skipped file is not a clean file`;
         const diagnosticFindings = findingsOf(item, "D");
@@ -530,8 +471,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
       reviewers: statuses, files: reviewFilesOut, ...(failedOut.length > 0 ? { failed: failedOut } : {}), ...(failedAttempts.length > 0 ? { failedAttempts } : {}),
     });
   }
-  const advisoryNotes = statuses.filter((status) => status.advisory && status.status !== "ok").map((status) => `${status.family}: ${status.status}${status.error ? ` (${status.error})` : ""}`);
-  return { authors, reviewId, reviewers: statuses, ...(failedAttempts.length > 0 ? { failedAttempts } : {}), ...(advisoryNotes.length > 0 ? { advisoryReviewers: advisoryNotes } : {}), usage, files: outcomes };
+  return { authors, reviewId, reviewers: statuses, ...(failedAttempts.length > 0 ? { failedAttempts } : {}), usage, files: outcomes };
 }
 
 // ── resolve(Main 전용) ───────────────────────────────────────────────────────

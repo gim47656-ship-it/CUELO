@@ -33,7 +33,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: true };
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
-/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. slot은 자문 대체(crossReviewAdvisoryFallback)가 lane의 기본 slot 대신 부를 때만 준다. */
+/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. slot은 slop_check가 lane의 기본 slot 대신 slopReviewOpenAI를 부를 때만 준다. */
 export async function completeReviewer(
   lane: Lane, prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string; slot?: string } = {},
 ): Promise<{ model: string; text: string; usage: { input: number; output: number; cacheRead: number; cost: number } }> {
@@ -46,8 +46,8 @@ export async function completeReviewer(
   const model = ctx.models.resolve(`@${slot}`);
   if (!model) throw new ReviewerCallError(`Could not resolve modelRoles.${slot} (${selector}).`, selector);
   const name = `${model.provider}/${model.id}`;
-  // 필수 자리는 slot 이름의 계열 모델이어야 교차검증이다. 자문 자리는 provider와 무관하다.
-  const ok = lane === "advisory" || (lane === "anthropic" ? model.provider === "anthropic" : Object.hasOwn(OPENAI_PROVIDERS, model.provider));
+  // slot이 가리키는 모델은 lane의 계열이어야 교차검증이다.
+  const ok = lane === "anthropic" ? model.provider === "anthropic" : Object.hasOwn(OPENAI_PROVIDERS, model.provider);
   if (!ok) throw new ReviewerCallError(`modelRoles.${slot} resolved to ${name}, which is not a ${lane} model.`, name);
   const sessionId = ctx.sessionManager.getSessionId();
   if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new ReviewerCallError(`No credentials for ${name}.`, name);
@@ -71,46 +71,17 @@ export async function completeReviewer(
   return { model: name, text, usage: { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cost: response.usage.cost?.total ?? 0 } };
 }
 
-/** 자문 slot이 가리키는 모델(provider/id). 저자가 그 모델 자체일 때 자문 자리를 빼는 데만 쓰며, 풀 수 없으면 자문 자리는 그대로 붙고 호출이 실패로 기록된다. */
-export function advisoryModelOf(ctx: ExtensionContext): string | undefined {
-  const model = ctx.models.resolve(`@${SLOT.advisory}`);
-  return model ? `${model.provider}/${model.id}` : undefined;
-}
-
-/** 자문 reviewer 한 번의 대체 slot. 설정이 없으면 자문은 대체 없이 기록만 한다(고정 모델로 넘어가지 않는다). */
-export const ADVISORY_FALLBACK_SLOT = "crossReviewAdvisoryFallback";
-
-/**
- * 자문 대체 설정. slot이 없으면 빈 객체(대체 없음)다. 설정했으면 해석한 provider/id(못 풀면 설정한 selector)와, 대체가 이 라운드의 필수 reviewer와 겹치지
- * 않게 보는 필수 자리 slot 모델을 돌려준다. 해석·자격·입력이 맞지 않으면 대체 호출이 그 모델 이름으로 실패한다.
- */
-export async function advisoryFallbackOf(ctx: ExtensionContext): Promise<{ advisoryFallbackModel?: string; requiredModels?: Partial<Record<Lane, string>> }> {
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_FALLBACK_SLOT);
-  if (selector === undefined) return {};
-  const named = (slot: string): string | undefined => { const model = ctx.models.resolve(`@${slot}`); return model ? `${model.provider}/${model.id}` : undefined; };
-  const requiredModels: Partial<Record<Lane, string>> = {};
-  for (const lane of ["openai", "anthropic"] as const) { const name = named(SLOT[lane]); if (name) requiredModels[lane] = name; }
-  // 설정했지만 비었거나 풀리지 않으면 selector(빈 값이면 slot 이름)를 그대로 이름으로 써, 대체 호출이 그 이름으로 실패한다(설정이 없는 것과 다르다).
-  return { advisoryFallbackModel: named(ADVISORY_FALLBACK_SLOT) ?? (selector || `@${ADVISORY_FALLBACK_SLOT}`), requiredModels };
-}
-
-async function reviewDeps(ctx: ExtensionContext, signal: AbortSignal, notify?: (text: string) => void): Promise<ReviewDeps> {
+async function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): Promise<ReviewDeps> {
   const path = ledgerPath();
   const ledger = createRoutingLedger(path);
   const current = ctx.models.current() ?? ctx.model;
   mkdirSync(snapshotRoot(), { recursive: true, mode: 0o700 });
   chmodSync(snapshotRoot(), 0o700);
-  const fallback = await advisoryFallbackOf(ctx);
   return {
-    cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), mainModel: current ? `${current.provider}/${current.id}` : undefined, advisoryModel: advisoryModelOf(ctx),
+    cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), mainModel: current ? `${current.provider}/${current.id}` : undefined,
     exec: spawnExec(signal), readAll: () => readCrossReviewRecords(path), append: (record) => ledger.append(record),
     snapshotRoot: snapshotRoot(),
-    // 자문 호출은 review가 돌아온 뒤에도 기한까지 돈다. ctx는 그 세션의 것이라 비용 장부도 같은 세션에 남는다.
     complete: (family, prompt, attempt) => completeReviewer(family, prompt, ctx, attempt),
-    ...fallback,
-    ...(fallback.advisoryFallbackModel ? { completeAdvisoryFallback: (prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { slot: ADVISORY_FALLBACK_SLOT }) } : {}),
-    ...(notify ? { notify } : {}),
   };
 }
 
@@ -130,8 +101,8 @@ export interface CrossReviewParams {
   unreviewedAcknowledgements?: { path: string; evidence: string }[];
 }
 
-/** 진행 알림을 받는 도구 update 콜백(core의 onUpdate와 같은 모양). review는 reviewer 상태, resolve는 자문 대기 한 줄을 보낸다. */
-export type CrossReviewUpdate = (partial: { content: { type: "text"; text: string }[]; details: { progress: ReviewProgress } | { resolveProgress: string } }) => void;
+/** 진행 알림을 받는 도구 update 콜백(core의 onUpdate와 같은 모양). review는 reviewer 상태를 보낸다. */
+export type CrossReviewUpdate = (partial: { content: { type: "text"; text: string }[]; details: { progress: ReviewProgress } }) => void;
 
 export async function executeCrossReview(
   params: CrossReviewParams, ctx: ExtensionContext, signal: AbortSignal,
@@ -168,7 +139,7 @@ export async function executeCrossReview(
   if (params.action === "resolve") {
     if (!params.reviewId) throw new Error("resolve requires reviewId.");
     const input: ResolveInput = { reviewId: params.reviewId, resolutions: params.resolutions ?? [], unreviewedAcknowledgements: params.unreviewedAcknowledgements };
-    return runResolve(input, onUpdate ? { ...deps, onProgress: (text) => onUpdate({ content: [{ type: "text", text }], details: { resolveProgress: text } }) } : deps);
+    return runResolve(input, deps);
   }
   throw new Error(`Unknown action ${JSON.stringify(params.action)}; use "review" or "resolve".`);
 }
@@ -189,7 +160,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Cross-family review. Read rule://cross-review-procedure before calling. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses the configured opposite-family required reviewer and the advisory route. initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused). probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security, late advisory and unreviewed-change handling follow the referenced rule.",
+    description: "Cross-family review. Read rule://cross-review-procedure before calling. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses only the configured opposite-family required reviewer (Anthropic-authored code to the OpenAI reviewer, other authors to the Anthropic reviewer). initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused). probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security and unreviewed-change handling follow the referenced rule.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -206,11 +177,7 @@ export default function crossReview(pi: ExtensionAPI): void {
       unreviewedAcknowledgements: z.array(z.object({ path: z.string(), evidence: z.string() })).optional(),
     }) as never,
     async execute(_id, params, signal, onUpdate, ctx) {
-      // 늦게 끝난 자문 finding은 세션에 알린다: 도는 중이면 다음 단계 경계에, 쉬는 중이면 대화에 바로 보이게(턴을 시작하지 않는다) 남긴다.
-      const notify = (text: string) => {
-        pi.sendMessage({ customType: "cross-review-advisory", content: text, display: true, attribution: "agent" }, ctx.isIdle?.() ? undefined : { deliverAs: "aside" });
-      };
-      const result = await executeCrossReview(params as CrossReviewParams, ctx, signal ?? new AbortController().signal, (c, s) => reviewDeps(c, s, notify), onUpdate as CrossReviewUpdate | undefined);
+      const result = await executeCrossReview(params as CrossReviewParams, ctx, signal ?? new AbortController().signal, reviewDeps, onUpdate as CrossReviewUpdate | undefined);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
     },
   });

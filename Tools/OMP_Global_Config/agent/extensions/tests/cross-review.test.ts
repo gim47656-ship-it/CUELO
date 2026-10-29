@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  ADVISORY_LANE,
-  advisoryPending,
   authorFamily,
   buildReviewPrompt,
   collectChanges,
@@ -28,9 +26,7 @@ import {
   readReferenceFile,
   type ReferenceRead,
   runReview,
-  withAdvisoryDeadline,
   sampleSelected,
-  settleReviewers,
   spawnExec,
   type HidingLead,
   type Lane,
@@ -46,7 +42,7 @@ const ASTRA = "openai-codex/gpt-6-astra";
 const GEMINI = "google-vertex/gemini-4-argon";
 const FABLE = "anthropic/claude-fable-5-1";
 const SONNET = "anthropic/claude-sonnet-5-5";
-const modelOf = (lane: Lane) => (lane === "openai" ? ASTRA : lane === "advisory" ? FABLE : OPUS);
+const modelOf = (lane: Lane) => (lane === "openai" ? ASTRA : OPUS);
 const roots: string[] = [];
 const signal = new AbortController().signal;
 afterEach(() => { for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -89,7 +85,7 @@ const MARKER_BASE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p
 const PLAIN_BASE = "export const add = (a: number, b: number) => a + b;\n";
 
 describe("계열 매핑", () => {
-  test("anthropic 저자는 OpenAI reviewer, openai·그 밖의 provider(google 포함)는 Anthropic reviewer로 가고, 자문 자리는 저자가 그 모델 자체가 아니면 늘 붙는다", () => {
+  test("anthropic 저자는 OpenAI reviewer, openai·그 밖의 provider(google 포함)는 Anthropic reviewer로 가고 자문 자리는 없다", () => {
     expect(authorFamily(`${OPUS}:high`)).toBe("anthropic");
     expect(authorFamily(ASTRA)).toBe("openai");
     expect(authorFamily("openai/gpt-5")).toBe("openai");
@@ -99,35 +95,24 @@ describe("계열 매핑", () => {
     expect(authorFamily("gemini-4-argon")).toBe("google");
     expect(authorFamily("openrouter/google/gemini-2.5-pro")).toBe("google");
     expect(authorFamily("openai/gemini-4-argon")).toBe("google");
-    expect(reviewerLanes(["openai/gemini-4-argon"], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-    expect(reviewerLanes([OPUS], undefined, FABLE)).toEqual(["openai", "advisory"]);
-    expect(reviewerLanes([SONNET], undefined, FABLE)).toEqual(["openai", "advisory"]);
-    expect(reviewerLanes(["anthropic/claude-fable-5"], undefined, FABLE)).toEqual(["openai", "advisory"]);
-    expect(reviewerLanes([ASTRA], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-    expect(reviewerLanes(["b-ai/deepseek-v4.1-flash"], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-    expect(reviewerLanes(["google-antigravity/gemini-3.8-flash"], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-    expect(reviewerLanes([GEMINI], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-  });
-
-  test("자문 모델 그 자체가 쓴 글만 자문 자리를 뺀다(effort·대소문자·provider 생략 무관, 다른 provider면 다른 모델)", () => {
-    expect(reviewerLanes([FABLE], undefined, FABLE)).toEqual(["openai"]);
-    expect(reviewerLanes([`${FABLE}:high`], undefined, FABLE)).toEqual(["openai"]);
-    expect(reviewerLanes(["Claude-Fable-5-1"], undefined, FABLE)).toEqual(["openai"]);
-    expect(reviewerLanes(["main"], FABLE, FABLE)).toEqual(["openai"]);
-    expect(reviewerLanes([FABLE, ASTRA], undefined, FABLE)).toEqual(["anthropic", "openai"]);
-    expect(reviewerLanes(["cursor/claude-fable-5-1"], undefined, FABLE)).toEqual(["anthropic", "advisory"]);
-    // 자문 slot을 풀지 못했으면 누구도 자기 글로 보지 않는다(자문 자리는 붙고 호출이 실패로 기록된다).
-    expect(reviewerLanes([FABLE], undefined, undefined)).toEqual(["openai", "advisory"]);
+    expect(reviewerLanes(["openai/gemini-4-argon"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes([OPUS], undefined)).toEqual(["openai"]);
+    expect(reviewerLanes([SONNET], undefined)).toEqual(["openai"]);
+    expect(reviewerLanes([FABLE], undefined)).toEqual(["openai"]);
+    expect(reviewerLanes([ASTRA], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes(["google-antigravity/gemini-3.8-flash"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes([GEMINI], undefined)).toEqual(["anthropic"]);
   });
 
   test("저자가 두 계열에 걸치면 둘 다 돌리고, main은 현재 모델로 풀며 풀 수 없으면 던진다", () => {
-    expect(reviewerLanes([OPUS, ASTRA], undefined, FABLE)).toEqual(["anthropic", "openai", "advisory"]);
-    expect(reviewerLanes(["main"], OPUS, FABLE)).toEqual(["openai", "advisory"]);
-    expect(reviewerLanes(["main", ASTRA], OPUS, FABLE)).toEqual(["anthropic", "openai", "advisory"]);
-    expect(reviewerLanes([OPUS, GEMINI], undefined, FABLE)).toEqual(["anthropic", "openai", "advisory"]);
-    expect(reviewerLanes(["main"], GEMINI, FABLE)).toEqual(["anthropic", "advisory"]);
-    expect(() => reviewerLanes(["main"], undefined, FABLE)).toThrow("current model");
-    expect(() => reviewerLanes([], OPUS, FABLE)).toThrow("at least one");
+    expect(reviewerLanes([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
+    expect(reviewerLanes(["main"], OPUS)).toEqual(["openai"]);
+    expect(reviewerLanes(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai"]);
+    expect(reviewerLanes([OPUS, GEMINI], undefined)).toEqual(["anthropic", "openai"]);
+    expect(reviewerLanes(["main"], GEMINI)).toEqual(["anthropic"]);
+    expect(() => reviewerLanes(["main"], undefined)).toThrow("current model");
+    expect(() => reviewerLanes([], OPUS)).toThrow("at least one");
   });
 });
 
@@ -220,7 +205,7 @@ describe("reviewer 답 해석", () => {
 function deps(env: RepoEnv, answers: Partial<Record<Lane, string | Error>>, calls: { family: Lane; prompt: string }[] = []): ReviewDeps {
   const ledger = createRoutingLedger(env.ledger);
   return {
-    cwd: env.work, sessionId: "s1", mainModel: OPUS, advisoryModel: FABLE, exec: spawnExec(), snapshotRoot: env.snapshots,
+    cwd: env.work, sessionId: "s1", mainModel: OPUS, exec: spawnExec(), snapshotRoot: env.snapshots,
     readAll: () => readCrossReviewRecords(env.ledger), append: (record) => ledger.append(record),
     newId: () => `xr-test-${++idCounter}`,
     complete: async (family, prompt) => {
@@ -238,18 +223,18 @@ const finding = (claim: string, severity = "major") => JSON.stringify({ findings
 const input = (over: Partial<Parameters<typeof runReview>[0]> = {}) => ({ files: ["a.ts"], acceptance: "Never delete user files.", authors: ["main"], ...over });
 
 describe("runReview", () => {
-  test("Anthropic 저자의 변경은 필수 OpenAI reviewer와 자문 reviewer에게 가고 diff·acceptance·체크리스트만 담는다", async () => {
+  test("Anthropic 저자의 변경은 필수 OpenAI reviewer 하나에게 가고 diff·acceptance·체크리스트만 담는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     const calls: { family: Lane; prompt: string }[] = [];
     const result = await runReview(input(), deps(env, { openai: finding("rmSync can delete the wrong dir", "blocker") }, calls), signal);
-    expect(calls.map((call) => call.family)).toEqual(["openai", "advisory"]);
+    expect(calls.map((call) => call.family)).toEqual(["openai"]);
     expect(calls[0].prompt).toContain("Never delete user files.");
     expect(calls[0].prompt).toContain("<new-file path=\"a.ts\">");
     expect(calls[0].prompt).toContain("2: export const wipe");
     expect(calls[0].prompt).toContain("CHECKLIST");
     expect(result).toMatchObject({ reviewId: expect.stringMatching(/^xr-test-\d+$/), round: 1, passable: true, triggers: ["deletion"] });
-    expect(result.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }, { family: "advisory", model: FABLE, status: "ok", advisory: true }]);
+    expect(result.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
     expect(result.findings).toMatchObject([{ id: "R1-OAI-1", severity: "blocker", reviewer: ASTRA, claim: "rmSync can delete the wrong dir" }]);
     expect(existsSync(join(result.snapshotDir, "manifest.json"))).toBe(true);
     const [record] = readCrossReviewRecords(env.ledger);
@@ -338,7 +323,7 @@ describe("runReview", () => {
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     const calls: { family: Lane; prompt: string }[] = [];
     const result = await runReview(input({ authors: [OPUS, ASTRA] }), deps(env, { openai: finding("x"), anthropic: finding("y") }, calls), signal);
-    expect(calls.map((call) => call.family).sort()).toEqual(["advisory", "anthropic", "openai"]);
+    expect(calls.map((call) => call.family).sort()).toEqual(["anthropic", "openai"]);
     expect(result.findings.map((item) => item.id).sort()).toEqual(["R1-ANT-1", "R1-OAI-1"]);
   });
 
@@ -362,7 +347,7 @@ describe("runReview", () => {
     expect(partial.passable).toBe(false);
     expect(partial.reviewers.find((item) => item.family === "openai")).toMatchObject({ status: "error", error: "timeout" });
     const all = await runReview(input(), deps(env, { openai: new Error("down") }), signal);
-    expect(all).toMatchObject({ passable: false, reviewers: [{ status: "error", error: "down" }, { family: "advisory", status: "ok" }] });
+    expect(all).toMatchObject({ passable: false, reviewers: [{ status: "error", error: "down" }] });
     expect(all.nextStep).toContain("can never pass");
     const records = readCrossReviewRecords(env.ledger).filter((record) => record.type === "cross-review");
     expect(records).toHaveLength(2);
@@ -702,7 +687,7 @@ describe("probe 라운드", () => {
     const { base, first } = await firstWithProbe([OPUS, ASTRA]);
     expect(first.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
     // 두 reviewer 중 openai(finding 소유)는 판단을 안 냈고 anthropic은 판단을 냈다.
-    const answers: Record<Lane, string> = { openai: '{"findings":[],"summary":"s"}', anthropic: verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed", why: "agree" }]), advisory: '{"findings":[]}' };
+    const answers: Record<Lane, string> = { openai: '{"findings":[],"summary":"s"}', anthropic: verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed", why: "agree" }]) };
     const mixed: ReviewDeps = { ...base, complete: async (family) => ({ model: family === "openai" ? ASTRA : OPUS, text: answers[family] }) };
     const second = await runReview(input({ authors: [OPUS, ASTRA], previousReviewId: first.reviewId, probeResults: probeOutput() }), mixed, signal);
     expect(second.passable).toBe(true);
@@ -1136,26 +1121,6 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
   });
 });
 
-describe("settleReviewers", () => {
-  test("필수 reviewer를 기다리는 동안 먼저 실패한 자문 호출도 처리된 거절로 남고, 필수가 끝난 뒤 호출자에게만 전달된다", async () => {
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const required = Promise.withResolvers<string>();
-      const settled = settleReviewers(["openai", ADVISORY_LANE] as Lane[], (lane) => lane === ADVISORY_LANE ? Promise.reject(new Error("advisory failure")) : required.promise);
-      const outcome = settled.then(() => "resolved", (error: Error) => error.message);
-      // 처리되지 않은 거절 감지는 microtask가 비고 다음 이벤트 루프 차례에 일어난다. 그 차례를 실제로 넘긴다.
-      for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-      expect(unhandled).toEqual([]);
-      required.resolve("ok");
-      expect(await outcome).toBe("advisory failure");
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-});
-
 describe("2회차 심사 보강", () => {
   const optionsFor = (env: RepoEnv, files: string[]) => ({ cwd: env.work, files, ledgerPath: env.ledger });
 
@@ -1362,7 +1327,7 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
     expect(calls[0].prompt).not.toContain("xxxxxxxxxx");
     const many = Array.from({ length: 11 }, (_, index) => `r${index}.ts`);
     await expect(runReview(input({ references: many }), deps(env, {}, calls), signal)).rejects.toThrow("at most");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 
   test("2회차도 명시한 참고만 싣고, 참고 파일의 변화는 delta가 아니라 현재 내용으로만 보낸다", async () => {
@@ -1580,7 +1545,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const error = await runReview(input({ previousReviewId: first.reviewId }), d, signal).catch((caught: unknown) => caught as Error);
     expect((error as Error).message).toContain("input spec.md");
     expect((error as Error).message).toContain("start a new review without previousReviewId and without this input");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(before);
   });
 
@@ -1613,7 +1578,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const first = await runReview(input({ inputs: names.slice(0, 6) }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
     await expect(runReview(input({ previousReviewId: first.reviewId, inputs: names.slice(6) }), d, signal)).rejects.toThrow("carried from earlier rounds");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 
   test("프롬프트는 입력 블록을 변경 뒤·참고 앞에 두고, 일관성 검토 대상이며 심사 대상이 아니고 신뢰하지 않는 자료라고 알린다", () => {
@@ -1792,7 +1757,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
     const first = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
     rmSync(join(env.work, "b.ts"));
     const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
-    expect(calls[2].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다(1회차 호출 2개 뒤)
+    expect(calls[1].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다(1회차 호출 1개 뒤)
     expect(await resolve(second.reviewId)).not.toHaveProperty("unreviewedChanges");
     writeFileSync(join(env.work, "a.ts"), a(3));
     const third = await runReview(input({ previousReviewId: second.reviewId }), d, signal);
@@ -1974,7 +1939,7 @@ describe("이미 커밋된 변경(base)", () => {
     writeFileSync(join(env.work, "a.ts"), "export const retries = 7;\n");
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId, base: "  " }), d, signal)).rejects.toThrow("base applies to the first round only");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 
   test("커밋이 아닌 값·옵션처럼 읽히는 값·HEAD의 조상이 아닌 커밋·이어지는 라운드의 base는 reviewer 호출과 기록 없이 거절한다", async () => {
@@ -1996,7 +1961,7 @@ describe("이미 커밋된 변경(base)", () => {
     writeFileSync(join(env.work, "a.ts"), "export const retries = 7;\n");
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId, base: "HEAD~1" }), d, signal)).rejects.toThrow("base applies to the first round only");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 
   test("기준에 없던 파일 중 git이 무시하는 파일은 base로도 심사 대상이 되지 않고 reviewer로 나가지 않는다", async () => {
@@ -2226,7 +2191,7 @@ describe("Maker(subagent) 세션", () => {
     await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: ["Main"] }, subOn("openai-codex", "gpt-6-astra"), signal, maker)).rejects.toThrow("own model selector");
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [ASTRA] }, subOn("openai-codex", "gpt-6-astra"), signal, maker) as Reviewed;
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, sessionId: "maker-1", reviewers: [{ family: "anthropic" }, { family: "advisory" }] }]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, sessionId: "maker-1", reviewers: [{ family: "anthropic" }] }]);
   });
 
   test("선언한 저자 중 세션 자신의 모델과 같은 계열이 없으면 같은 계열 reviewer를 받게 되므로 거절한다", async () => {
@@ -2237,520 +2202,88 @@ describe("Maker(subagent) 세션", () => {
     await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, { agent: { kind: "sub" } } as never, signal, maker)).rejects.toThrow("could not be resolved");
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [`${OPUS}:high`] }, sub, signal, maker) as Reviewed;
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }, { family: "advisory" }] }]);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);
   });
 });
 
-describe("자문 reviewer(advisory 자리, crossReviewAdvisory)", () => {
+describe("보조 자문 제거 뒤의 reviewer 자리", () => {
   const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
 
-  test("자문 실패는 기록·안내만 하고 통과를 막지 않으며, 다음 라운드가 자문 자리를 다시 부른다", async () => {
+  test("필수 자리만 부르고, 필수가 실패하면 통과할 수 없다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const d = deps(env, { advisory: new Error("quota") });
-    const first = await runReview(input(), d, signal);
-    expect(first.passable).toBe(true);
-    expect(first.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", model: FABLE, status: "error", error: "quota" }]);
-    expect(first.advisoryReviewers).toContain(FABLE);
-    expect(first.nextStep).not.toContain("can never pass");
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ passable: true, reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
-    expect(await runResolve({ reviewId: first.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: true, open: [] });
-    const junk = await runReview(input(), deps(env, { advisory: "PASS - looks fine" }), signal);
-    expect(junk.passable).toBe(true);
-    expect(junk.reviewers[1]).toMatchObject({ family: "advisory", status: "unparsable" });
-    writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const ok = await runReview(input(), deps(env, {}, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["openai"]);
+    expect(ok).toMatchObject({ passable: true, reviewers: [{ family: "openai", model: ASTRA, status: "ok" }] });
+    expect(ok).not.toHaveProperty("advisoryReviewers");
+    const down = await runReview(input(), deps(env, { openai: new Error("down") }), signal);
+    expect(down.passable).toBe(false);
+    expect(down.nextStep).toContain("can never pass");
+  });
+
+  test("OpenAI 저자는 Opus 하나만 부르고 finding id·원문 파일이 그 자리 표지를 쓴다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const progress: string[] = [];
+    const review = await runReview(input({ authors: [ASTRA] }), { ...deps(env, { anthropic: finding("opus objection") }, calls), onProgress: (update) => progress.push(update.text) }, signal);
+    expect(calls.map((call) => call.family)).toEqual(["anthropic"]);
+    expect(review.findings).toMatchObject([{ id: "R1-ANT-1", reviewer: OPUS, claim: "opus objection" }]);
+    expect(progress[0]).toContain("anthropic (required) waiting");
+    expect(progress[0]).not.toContain("advisory");
+    const junk = await runReview(input({ authors: [ASTRA] }), deps(env, { anthropic: "opus junk" }), signal);
+    expect(junk.passable).toBe(false);
+    expect(junk.reviewers.map((item) => readFileSync(item.rawFile!, "utf8"))).toEqual(["opus junk"]);
+  });
+
+  test("probe 라운드의 R*-ANT-* 판단은 필수 Opus가 소유한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const base = deps(env, {});
+    const first = await runReview(input({ authors: [ASTRA] }), { ...base, complete: async (family) => ({ model: modelOf(family), text: withProbe("two is racy") }) }, signal);
+    expect(first.findings.map((item) => item.id)).toEqual(["R1-ANT-1"]);
+    const probed = await runReview(input({ authors: [ASTRA], previousReviewId: first.reviewId, probeResults: probeOutput({ findingId: "R1-ANT-1" }) }), { ...base, complete: async (family) => ({ model: modelOf(family), text: verdictAnswer([{ id: "R1-ANT-1", verdict: "confirmed", why: "failed" }]) }) }, signal);
+    expect(probed.verdicts).toEqual([{ id: "R1-ANT-1", verdict: "confirmed", why: "failed", reviewer: OPUS }]);
+  });
+
+  // 2026-10-29 전 원장: 자문 자리(advisory·google)가 낸 R*-ADV-*·R*-GGL-* finding과 늦게 붙은 cross-review-advisory 기록.
+  test("옛 체인의 늦은 자문 finding은 그대로 열린 지적이라 resolve가 닫아야 통과하고, 다음 라운드는 필수 자리만 부른다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const base = deps(env, {});
+    const first = await runReview(input(), base, signal);
+    base.append({
+      type: "cross-review-advisory", ts: new Date().toISOString(), reviewId: first.reviewId, round: 1,
+      reviewer: { family: "advisory", model: FABLE, status: "ok", elapsedMs: 1, advisory: true },
+      findings: [{ id: "R1-ADV-1", severity: "major", claim: "late fable objection", why: "w", reviewer: FABLE }],
+    } as CrossReviewLedgerRecord);
+    expect(await runResolve({ reviewId: first.reviewId, resolutions: [] }, rd(base))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
+    writeFileSync(join(env.work, "a.ts"), `${versionOf(2)}export const more = 1;\n`);
     const calls: { family: Lane; prompt: string }[] = [];
     const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, {}, calls), signal);
-    expect(calls.map((call) => call.family)).toEqual(["openai", "advisory"]);
-    expect(second.reviewers).toMatchObject([{ status: "ok" }, { family: "advisory", status: "ok" }]);
-    expect(second).not.toHaveProperty("advisoryReviewers");
+    expect(calls.map((call) => call.family)).toEqual(["openai"]);
+    expect(second.earlierAdvisoryFindings).toMatchObject([{ id: "R1-ADV-1" }]);
+    expect(await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R1-ADV-1", status: "fixed", evidence: "guarded" }] }, rd(base))).toMatchObject({ pass: true, open: [] });
   });
 
-  test("필수 reviewer가 실패하면 자문이 ok여도 통과할 수 없다", async () => {
+  test("옛 원장의 google 자리(R*-GGL-*) 기록은 읽히고, 거기 걸린 probe 판단은 소유자가 없어 unresolved다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const result = await runReview(input(), deps(env, { openai: new Error("down"), advisory: finding("g") }), signal);
-    expect(result.passable).toBe(false);
-    expect(result.nextStep).toContain("can never pass");
-  });
-
-  test("자문이 답한 finding은 다른 reviewer의 것처럼 resolve가 닫아야 통과한다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const d = deps(env, { advisory: finding("fable objection") });
-    const review = await runReview(input(), d, signal);
-    expect(review.findings).toMatchObject([{ id: "R1-ADV-1", reviewer: FABLE, claim: "fable objection" }]);
-    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-    expect(await runResolve({ reviewId: review.reviewId, resolutions: [{ id: "R1-ADV-1", status: "refuted", evidence: "add stays pure" }] }, rd(d))).toMatchObject({ pass: true, open: [] });
-  });
-
-  test("OpenAI 저자: 필수 Opus와 자문 Fable이 같은 provider여도 finding id·원문 파일·진행 표시가 자리별로 갈린다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const calls: { family: Lane; prompt: string }[] = [];
-    const progress: string[] = [];
-    const review = await runReview(input({ authors: [ASTRA] }), {
-      ...deps(env, { anthropic: finding("opus objection"), advisory: finding("fable objection") }, calls), onProgress: (update) => progress.push(update.text),
-    }, signal);
-    expect(calls.map((call) => call.family)).toEqual(["anthropic", "advisory"]);
-    expect(review.reviewers).toMatchObject([{ family: "anthropic", model: OPUS, status: "ok" }, { family: "advisory", model: FABLE, status: "ok", advisory: true }]);
-    expect(review.findings).toMatchObject([{ id: "R1-ANT-1", reviewer: OPUS, claim: "opus objection" }, { id: "R1-ADV-1", reviewer: FABLE, claim: "fable objection" }]);
-    expect(progress[0]).toContain("anthropic (required) waiting");
-    expect(progress[0]).toContain("advisory waiting");
-    const junk = await runReview(input({ authors: [ASTRA] }), deps(env, { anthropic: "opus junk", advisory: "fable junk" }), signal);
-    expect(junk.passable).toBe(false);
-    expect(junk.reviewers.map((item) => item.rawFile?.split("/").pop())).toEqual(["raw-anthropic.txt", "raw-advisory.txt"]);
-    expect(junk.reviewers.map((item) => readFileSync(item.rawFile!, "utf8"))).toEqual(["opus junk", "fable junk"]);
-  });
-
-  test("자문 모델 그 자체가 쓴 변경만 자문 자리 없이 돌고, 같은 provider의 다른 모델(Sonnet)이 쓴 변경은 자문을 부른다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const own: { family: Lane; prompt: string }[] = [];
-    const self = await runReview(input({ authors: [`${FABLE}:high`] }), deps(env, {}, own), signal);
-    expect(own.map((call) => call.family)).toEqual(["openai"]);
-    expect(self.reviewers).toEqual([expect.objectContaining({ family: "openai", model: ASTRA, status: "ok" })]);
-    const other: { family: Lane; prompt: string }[] = [];
-    await runReview(input({ authors: [SONNET] }), deps(env, {}, other), signal);
-    expect(other.map((call) => call.family)).toEqual(["openai", "advisory"]);
-  });
-
-  test("probe 라운드에서 R*-ADV-* finding의 판단은 자문 reviewer가 소유한다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), versionOf(2));
-    const base = deps(env, {});
-    const first = await runReview(input(), { ...base, complete: async (family) => ({ model: modelOf(family), text: family === "advisory" ? withProbe("two is racy") : '{"findings":[]}' }) }, signal);
-    expect(first.findings.map((item) => item.id)).toEqual(["R1-ADV-1"]);
-    const probe = probeOutput({ findingId: "R1-ADV-1" });
-    // 소유자가 아닌 openai가 판단을 안 내면 채우지 않고, 자문 reviewer의 판단만 남는다.
-    const confirmed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probe }), { ...base, complete: async (family) => ({ model: modelOf(family), text: family === "advisory" ? verdictAnswer([{ id: "R1-ADV-1", verdict: "confirmed", why: "failed" }]) : '{"findings":[]}' }) }, signal);
-    expect(confirmed.verdicts).toEqual([{ id: "R1-ADV-1", verdict: "confirmed", why: "failed", reviewer: FABLE }]);
-    // 소유자인 자문 reviewer가 실패하면 그 finding은 unresolved로 채워지지만 통과 가능성은 그대로다.
-    const env2 = repo();
-    writeFileSync(join(env2.work, "a.ts"), versionOf(2));
-    const base2 = deps(env2, {});
-    const first2 = await runReview(input(), { ...base2, complete: async (family) => ({ model: modelOf(family), text: family === "advisory" ? withProbe("two is racy") : '{"findings":[]}' }) }, signal);
-    const failed = await runReview(input({ previousReviewId: first2.reviewId, probeResults: probe }), deps(env2, { advisory: new Error("quota") }), signal);
-    expect(failed.passable).toBe(true);
-    expect(failed.verdicts).toEqual([{ id: "R1-ADV-1", verdict: "unresolved", why: expect.stringContaining("unusable (error)"), reviewer: FABLE }]);
-  });
-
-  test("옛 원장의 google 자리(R*-GGL-*)는 그대로 읽고 닫으며, 그 체인의 다음 라운드는 Google이 아니라 자문 자리를 부른다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), versionOf(2));
-    const base = deps(env, {});
-    const first = await runReview(input(), { ...base, complete: async (family) => ({ model: modelOf(family), text: family === "advisory" ? withProbe("two is racy") : '{"findings":[]}' }) }, signal);
-    // 2026-10-26 전 기록처럼 자문 자리를 google·GGL·Argon으로 적은 원장 줄로 바꿔 둔다.
-    writeFileSync(env.ledger, readFileSync(env.ledger, "utf8").replaceAll('"family":"advisory"', '"family":"google"').replaceAll("R1-ADV-1", "R1-GGL-1").replaceAll(FABLE, GEMINI));
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewers: [{ family: "openai" }, { family: "google", model: GEMINI, advisory: true }], findings: [{ id: "R1-GGL-1", reviewer: GEMINI }] }]);
-    expect(await runResolve({ reviewId: first.reviewId, resolutions: [] }, rd(base))).toMatchObject({ pass: false, open: ["R1-GGL-1"] });
-    const calls: Lane[] = [];
-    const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput({ findingId: "R1-GGL-1" }) }), { ...base, complete: async (family) => {
-      calls.push(family);
-      return { model: modelOf(family), text: family === "advisory" ? verdictAnswer([{ id: "R1-GGL-1", verdict: "confirmed", why: "failed" }]) : '{"findings":[]}' };
-    } }, signal);
-    expect(calls).toEqual(["openai", "advisory"]);
-    expect(probed.reviewers).toMatchObject([{ family: "openai" }, { family: "advisory", model: FABLE, advisory: true }]);
-    expect(probed.verdicts).toEqual([{ id: "R1-GGL-1", verdict: "confirmed", why: "failed", reviewer: FABLE }]);
-    expect(await runResolve({ reviewId: probed.reviewId, resolutions: [{ id: "R1-GGL-1", status: "fixed", evidence: "guarded" }] }, rd(base))).toMatchObject({ pass: true, open: [] });
-  });
-
-  // R1-OAI-1(xr-20261026065825-557588): 이어지는 라운드는 필수 자리는 그대로 두고 자문 포함 여부만 지금 규칙으로 다시 정한다.
-  test("옛 규칙으로 자문이 빠졌던 Gemini 저자 체인은 다음 라운드에 자문을 받고, 자문 모델 그 자체가 쓴 옛 체인은 google 자리를 Fable로 잇지 않으며 그 GGL finding의 판단은 남은 reviewer가 채운다", async () => {
-    const rewrite = (path: string, edit: (record: { reviewers: { family: string; model: string; status: string; elapsedMs: number; advisory?: true }[]; findings: { id: string; reviewer: string; severity: string; claim: string; why: string }[] }) => void) =>
-      writeFileSync(path, readFileSync(path, "utf8").split("\n").map((line) => { if (!line.trim()) return line; const record = JSON.parse(line); edit(record); return JSON.stringify(record); }).join("\n"));
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const gemini = await runReview(input({ authors: [GEMINI] }), deps(env, {}), signal);
-    rewrite(env.ledger, (record) => { record.reviewers = record.reviewers.filter((reviewer) => !reviewer.advisory); });
-    writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
-    const geminiCalls: { family: Lane; prompt: string }[] = [];
-    await runReview(input({ authors: [GEMINI], previousReviewId: gemini.reviewId }), deps(env, {}, geminiCalls), signal);
-    expect(geminiCalls.map((call) => call.family)).toEqual(["anthropic", "advisory"]);
-
-    const env2 = repo();
-    writeFileSync(join(env2.work, "a.ts"), PLAIN_BASE);
-    const fable = await runReview(input({ authors: [FABLE] }), deps(env2, {}), signal);
-    rewrite(env2.ledger, (record) => {
+    const first = await runReview(input({ authors: [FABLE] }), deps(env, {}), signal);
+    const text = readFileSync(env.ledger, "utf8").trim().split("\n").map((line) => {
+      const record = JSON.parse(line);
       record.reviewers.push({ family: "google", model: GEMINI, status: "ok", elapsedMs: 1, advisory: true });
       record.findings.push({ id: "R1-GGL-1", reviewer: GEMINI, severity: "major", claim: "argon objection", why: "w" });
-    });
-    const fableCalls: { family: Lane; prompt: string }[] = [];
-    const probed = await runReview(input({ authors: [FABLE], previousReviewId: fable.reviewId, probeResults: probeOutput({ findingId: "R1-GGL-1" }) }), deps(env2, {}, fableCalls), signal);
-    expect(fableCalls.map((call) => call.family)).toEqual(["openai"]);
+      return JSON.stringify(record);
+    }).join("\n");
+    writeFileSync(env.ledger, `${text}\n`);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewers: [{ family: "openai" }, { family: "google", model: GEMINI, advisory: true }], findings: [{ id: "R1-GGL-1", reviewer: GEMINI }] }]);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const probed = await runReview(input({ authors: [FABLE], previousReviewId: first.reviewId, probeResults: probeOutput({ findingId: "R1-GGL-1" }) }), deps(env, {}, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["openai"]);
     expect(probed.verdicts).toEqual([{ id: "R1-GGL-1", verdict: "unresolved", why: expect.stringContaining("no usable verdict"), reviewer: ASTRA }]);
   });
-});
-
-// 기한은 주입한 짧은 실제 시간(수십 ms)이다: runReview가 git 하위 프로세스를 부르므로 가짜 시계로 돌리지 않는다. 그 밖의 대기는 모두 신호·promise로 기다린다.
-describe("자문 reviewer 기한과 진행 알림", () => {
-  /** 취소에도 답하지 않고 멈춘 호출(제공자가 abort 확인을 주지 않는 경우). */
-  const stalled = () => new Promise<never>(() => {});
-  /** 기한·취소를 무시하고 테스트가 정한 때에야 끝나는 호출. 결과를 돌려준 뒤 늦게 도착한 답을 흉내 낸다. */
-  const lateAnswer = () => Promise.withResolvers<{ model: string; text: string }>();
-
-  test("필수 reviewer가 자문 기한보다 오래 걸리면 자문은 기한에 끝나 timeout으로 기록만 되고 필수 finding은 남는다. 늦게 온 자문 답은 버린다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    let advisoryAttempt: AbortSignal | undefined;
-    const advisoryAborted = Promise.withResolvers<void>();
-    const late = lateAnswer();
-    const progress: string[] = [];
-    const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 40, onProgress: (update) => progress.push(update.text),
-      complete: async (family, _prompt, attempt) => {
-        if (family !== "advisory") {
-          await advisoryAborted.promise;
-          return { model: ASTRA, text: finding("required finding") };
-        }
-        advisoryAttempt = attempt;
-        attempt.addEventListener("abort", () => advisoryAborted.resolve(), { once: true });
-        return late.promise;
-      },
-    }, signal);
-    expect(advisoryAttempt?.aborted).toBe(true);
-    expect(result.passable).toBe(true);
-    expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
-    expect(result.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }, { family: "advisory", status: "error", advisory: true, error: expect.stringContaining("timed out") }]);
-    expect(result.advisoryReviewers).toContain("timed out");
-    // 시작 알림에는 두 reviewer가 기다리는 중으로, 마지막 알림에는 자문 timeout이 보인다.
-    expect(progress[0]).toContain("openai (required) waiting");
-    expect(progress[0]).toContain("advisory waiting (nonblocking: the review returns when every required reviewer has finished; a later advisory answer, up to 0.04 s, is appended to this chain)");
-    expect(progress.at(-1)).toContain("advisory timed out");
-    const count = progress.length;
-    late.resolve({ model: FABLE, text: finding("late advisory finding") });
-    await late.promise;
-    await Promise.resolve();
-    expect(progress).toHaveLength(count);
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ passable: true, findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }] }]);
-  }, 5_000);
-
-  test("필수 reviewer가 모두 끝나면 아직 기다리는 자문을 끊지 않고 pending으로 돌아오며, 늦게 온 자문 답은 그 라운드의 finding으로 원장에 붙는다(진행 알림은 더 없다)", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    let advisoryAttempt: AbortSignal | undefined;
-    const late = lateAnswer();
-    const progress: string[] = [];
-    const started = Date.now();
-    const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000, onProgress: (update) => progress.push(update.text),
-      complete: async (family, _prompt, attempt) => {
-        if (family !== "advisory") return { model: ASTRA, text: finding("required finding") };
-        advisoryAttempt = attempt;
-        return late.promise;
-      },
-    }, signal);
-    expect(Date.now() - started).toBeLessThan(5_000);
-    expect(advisoryAttempt?.aborted).toBe(false);
-    expect(result.passable).toBe(true);
-    expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
-    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "pending", advisory: true }]);
-    expect(result.advisoryReviewers).toBeUndefined();
-    expect(result.advisoryPending).toContain("R1-ADV-*");
-    const count = progress.length;
-    late.resolve({ model: FABLE, text: finding("late advisory finding") });
-    await advisoryPending(result.reviewId);
-    expect(progress).toHaveLength(count);
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([
-      { findings: [{ id: "R1-OAI-1" }], reviewers: [{ family: "openai", status: "ok" }, { family: "advisory", status: "pending", advisory: true }] },
-      { type: "cross-review-advisory", reviewId: result.reviewId, reviewer: { family: "advisory", status: "ok", model: FABLE }, findings: [{ id: "R1-ADV-1", claim: "late advisory finding" }] },
-    ]);
-  }, 5_000);
-
-  test("필수 reviewer와 거의 같이 끝난 자문 답은 그 라운드의 finding으로 남는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    let advisoryAttempt: AbortSignal | undefined;
-    const required = Promise.withResolvers<{ model: string; text: string }>();
-    const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000,
-      complete: async (family, _prompt, attempt) => {
-        if (family !== "advisory") return required.promise;
-        advisoryAttempt = attempt;
-        // 필수 reviewer를 끝낸 직후 자문이 답한다(이벤트 루프 한 차례 안).
-        required.resolve({ model: ASTRA, text: finding("required finding") });
-        await required.promise;
-        for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
-        return { model: FABLE, text: finding("advisory finding") };
-      },
-    }, signal);
-    expect(advisoryAttempt?.aborted).toBe(false);
-    expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1", "R1-ADV-1"]);
-    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "ok", advisory: true }]);
-  }, 5_000);
-
-  test("필수 reviewer보다 먼저 온 자문 답은 필수 reviewer를 기다린 뒤에도 그대로 쓰이고, 필수 실패는 자문 답이 있어도 통과할 수 없다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    // 필수 reviewer는 자문 답이 기록된(진행 알림의 answered) 뒤에야 끝난다. 실제 시간이 아니라 그 신호를 기다린다.
-    const slowRequired = (required: { model: string; text: string } | Error) => {
-      const advisoryAnswered = Promise.withResolvers<void>();
-      return runReview(input(), {
-        ...deps(env, {}), advisoryTimeoutMs: 60_000,
-        onProgress: (update) => { if (update.reviewers.some((item) => item.advisory && item.state === "answered")) advisoryAnswered.resolve(); },
-        complete: async (family) => {
-          if (family === "advisory") return { model: FABLE, text: finding("advisory finding") };
-          await advisoryAnswered.promise;
-          if (required instanceof Error) throw new ReviewerCallError(required.message, ASTRA);
-          return required;
-        },
-      }, signal);
-    };
-    const ok = await slowRequired({ model: ASTRA, text: '{"findings":[]}' });
-    expect(ok.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "ok", advisory: true }]);
-    expect(ok.findings.map((item) => item.id)).toEqual(["R1-ADV-1"]);
-    expect(ok.passable).toBe(true);
-    const failed = await slowRequired(new Error("provider 500"));
-    expect(failed.reviewers).toMatchObject([{ family: "openai", status: "error" }, { family: "advisory", status: "ok", advisory: true }]);
-    expect(failed.passable).toBe(false);
-  }, 5_000);
-
-  test("자문 기한은 필수 reviewer에 걸리지 않는다: 자문 기한이 지난 뒤에 온 필수 답도 그대로 쓰인다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const advisoryAborted = Promise.withResolvers<void>();
-    const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 20,
-      complete: async (family, _prompt, attempt) => {
-        if (family === "advisory") {
-          attempt.addEventListener("abort", () => advisoryAborted.resolve(), { once: true });
-          return stalled();
-        }
-        await advisoryAborted.promise;
-        return { model: ASTRA, text: finding("slow but real") };
-      },
-    }, signal);
-    expect(result.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "error", advisory: true }]);
-    expect(result.findings.map((item) => item.id)).toEqual(["R1-OAI-1"]);
-    expect(result.passable).toBe(true);
-  }, 5_000);
-
-  test("취소하면 멈춘 자문 호출을 기다리지 않고 끝나며, 끝난 뒤 진행 알림이 남지 않는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const controller = new AbortController();
-    const late = lateAnswer();
-    const progress: string[] = [];
-    const result = await runReview(input(), {
-      ...deps(env, {}), advisoryTimeoutMs: 60_000, onProgress: (update) => progress.push(update.text),
-      complete: (family, _prompt, attempt) => {
-        if (family === "advisory") {
-          controller.abort();
-          return late.promise;
-        }
-        const required = Promise.withResolvers<{ model: string; text: string }>();
-        attempt.addEventListener("abort", () => required.reject(new ReviewerCallError("aborted", ASTRA)), { once: true });
-        return required.promise;
-      },
-    }, controller.signal);
-    expect(result.passable).toBe(false);
-    expect(result.reviewers).toMatchObject([{ family: "openai", status: "error", error: "aborted" }, { family: "advisory", status: "error", advisory: true, error: expect.stringContaining("cancelled") }]);
-    // R1-OAI-2: 취소로 끝난 필수 reviewer도 실패가 아니라 취소로 알린다.
-    expect(progress.at(-1)).toContain("openai (required) cancelled");
-    expect(progress.at(-1)).toContain("advisory cancelled");
-    const count = progress.length;
-    late.resolve({ model: FABLE, text: '{"findings":[]}' });
-    await late.promise;
-    await Promise.resolve();
-    expect(progress).toHaveLength(count);
-  }, 5_000);
-
-  test("cross_review 도구는 진행을 onUpdate로 알리고, 결과를 돌려준 뒤에는 알리지 않는다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const late = lateAnswer();
-    const updates: { content: { type: string; text: string }[] }[] = [];
-    const review = await executeCrossReview(
-      { action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, {} as never, signal,
-      () => ({ ...deps(env, {}), advisoryTimeoutMs: 40, complete: async (family) => (family === "advisory" ? late.promise : { model: ASTRA, text: '{"findings":[]}' }) }),
-      (update) => updates.push(update as never),
-    ) as { reviewId: string; reviewers: { family: string; status: string }[] };
-    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }, { family: "advisory", status: "pending" }]);
-    expect(updates.length).toBeGreaterThan(1);
-    expect(updates[0].content[0]).toMatchObject({ type: "text", text: expect.stringContaining("waiting") });
-    const count = updates.length;
-    late.resolve({ model: FABLE, text: '{"findings":[]}' });
-    await advisoryPending(review.reviewId);
-    expect(updates).toHaveLength(count);
-  }, 5_000);
-
-  // R1-OAI-1·R1-GGL-1(앞 체인 id): 호출의 abort 처리가 같은 틱에 답·오류를 내도, 이미 취소된 채 시작해도 결과는 기한·취소다.
-  test("기한·취소가 정해지면 같은 틱에 끝난 호출의 답·오류가 이기지 못한다", async () => {
-    const answer = { model: FABLE, text: "unexpected answer" };
-    const aborted = new AbortController();
-    aborted.abort();
-    await expect(withAdvisoryDeadline(() => Promise.resolve(answer), 60_000, aborted.signal, FABLE)).rejects.toMatchObject({ reason: "cancelled" });
-    const settlesOnAbort = (outcome: "resolve" | "reject") => (attempt: AbortSignal) => {
-      const call = Promise.withResolvers<typeof answer>();
-      attempt.addEventListener("abort", () => (outcome === "resolve" ? call.resolve(answer) : call.reject(new ReviewerCallError("provider aborted", FABLE))), { once: true });
-      return call.promise;
-    };
-    await expect(withAdvisoryDeadline(settlesOnAbort("resolve"), 10, signal, FABLE)).rejects.toMatchObject({ reason: "timed out" });
-    await expect(withAdvisoryDeadline(settlesOnAbort("reject"), 10, signal, FABLE)).rejects.toMatchObject({ reason: "timed out" });
-    const cancel = new AbortController();
-    const cancelled = withAdvisoryDeadline(settlesOnAbort("resolve"), 60_000, cancel.signal, FABLE);
-    cancel.abort();
-    await expect(cancelled).rejects.toMatchObject({ reason: "cancelled" });
-  }, 5_000);
-});
-
-describe("자문 대체(crossReviewAdvisoryFallback)", () => {
-  const TERRA = "openai-codex/gpt-6.1-terra";
-  const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
-  type Step = string | Error | (() => Promise<{ model: string; text: string }>);
-  /** 자문 주 호출은 primary, 대체 호출은 fallback(없으면 깨끗한 답)이 답한다. calls에 주 호출·대체 호출을 순서대로 남긴다. */
-  const withFallback = (env: RepoEnv, primary: Step, fallback: Step | undefined, over: Partial<ReviewDeps> = {}, calls: string[] = [], holdRequired = false): ReviewDeps => {
-    const base = deps(env, {});
-    // holdRequired: 필수 reviewer를 자문 호출이 끊길 때까지 붙잡는다(기한 안에 자문이 끝나야 하는 경우에 pending으로 돌아오지 않게).
-    const advisoryStopped = Promise.withResolvers<void>();
-    const play = async (model: string, step: Step | undefined) => {
-      if (typeof step === "function") return step();
-      if (step instanceof Error) throw new ReviewerCallError(step.message, model);
-      return { model, text: step ?? '{"findings":[]}' };
-    };
-    return {
-      ...base, advisoryFallbackModel: TERRA, requiredModels: { openai: ASTRA, anthropic: OPUS },
-      complete: async (family, prompt, attempt) => {
-        if (family !== "advisory") { calls.push(family); if (holdRequired) await advisoryStopped.promise; return base.complete(family, prompt, attempt); }
-        attempt.addEventListener("abort", () => advisoryStopped.resolve(), { once: true });
-        calls.push("advisory-primary");
-        return play(FABLE, primary);
-      },
-      completeAdvisoryFallback: async (_prompt, attempt) => {
-        attempt.addEventListener("abort", () => advisoryStopped.resolve(), { once: true });
-        calls.push("advisory-fallback");
-        return play(TERRA, fallback);
-      },
-      ...over,
-    };
-  };
-  const plain = () => { const env = repo(); writeFileSync(join(env.work, "a.ts"), PLAIN_BASE); return env; };
-
-  test("자문 주 호출이 쓸 수 있는 답이면 대체를 부르지 않는다", async () => {
-    const calls: string[] = [];
-    const result = await runReview(input(), withFallback(plain(), finding("fable objection"), finding("terra objection"), {}, calls), signal);
-    expect(calls).toEqual(["openai", "advisory-primary"]);
-    expect(result.reviewers[1]).toMatchObject({ model: FABLE, status: "ok", advisory: true });
-    expect(result.reviewers[1]).not.toHaveProperty("fallbackFrom");
-  });
-
-  test("자문 주 호출의 오류·빈 답·해석 불가는 각각 대체를 한 번 부르고, 대체의 모델·finding이 쓰이며 앞 실패 이유가 남고 finding은 똑같이 닫아야 한다", async () => {
-    const cases: [string, Step, "error" | "unparsable", string][] = [
-      ["error", new Error("quota"), "error", "quota"],
-      ["empty", "", "unparsable", "answer is not the expected JSON"],
-      ["unparsable", "PASS - looks fine", "unparsable", "answer is not the expected JSON"],
-    ];
-    for (const [name, primary, status, error] of cases) {
-      const env = plain();
-      const calls: string[] = [];
-      const d = withFallback(env, primary, finding("terra objection"), {}, calls);
-      const result = await runReview(input(), d, signal);
-      expect(calls, name).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
-      expect(result.reviewers[1], name).toMatchObject({ family: "advisory", model: TERRA, status: "ok", advisory: true, fallbackFrom: { model: FABLE, status, error: expect.stringContaining(error) } });
-      expect(result.findings, name).toMatchObject([{ id: "R1-ADV-1", reviewer: TERRA, claim: "terra objection" }]);
-      expect(result.advisoryReviewers, name).toBeUndefined();
-      expect(readCrossReviewRecords(env.ledger), name).toMatchObject([{ reviewers: [{ family: "openai" }, { family: "advisory", model: TERRA, fallbackFrom: { model: FABLE, status } }], findings: [{ id: "R1-ADV-1", reviewer: TERRA }] }]);
-      expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d)), name).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-    }
-  });
-
-  test("해석 불가인 주 답의 원문은 raw-advisory-primary.txt에, 오류의 부분 답은 같은 이름으로 남는다", async () => {
-    const env = plain();
-    const unparsable = await runReview(input(), withFallback(env, "PASS - looks fine", '{"findings":[]}'), signal);
-    const from = unparsable.reviewers[1]!.fallbackFrom!;
-    expect(from.rawFile?.split("/").pop()).toBe("raw-advisory-primary.txt");
-    expect(readFileSync(from.rawFile!, "utf8")).toBe("PASS - looks fine");
-    const partial = await runReview(input(), withFallback(env, () => Promise.reject(new ReviewerCallError("cut off", FABLE, "{\"findings\":[")), '{"findings":[]}'), signal);
-    expect(readFileSync(partial.reviewers[1]!.fallbackFrom!.rawFile!, "utf8")).toBe("{\"findings\":[");
-  });
-
-  test("대체도 실패하면 다시 묻지 않고 두 실패를 기록하며 통과는 그대로다", async () => {
-    const env = plain();
-    const calls: string[] = [];
-    const d = withFallback(env, new Error("quota"), new Error("terra down"), {}, calls);
-    const result = await runReview(input(), d, signal);
-    expect(calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
-    expect(result.passable).toBe(true);
-    expect(result.reviewers[1]).toMatchObject({ model: TERRA, status: "error", error: "terra down", fallbackFrom: { model: FABLE, status: "error", error: "quota" } });
-    expect(result.advisoryReviewers).toContain("terra down");
-    expect(result.advisoryReviewers).toContain("after " + FABLE);
-    const unparsable = await runReview(input(), withFallback(env, "junk", "also junk", {}, calls), signal);
-    expect(unparsable.reviewers[1]).toMatchObject({ model: TERRA, status: "unparsable", fallbackFrom: { model: FABLE, status: "unparsable" } });
-    expect(unparsable.passable).toBe(true);
-    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: true, open: [] });
-  });
-
-  test("설정이 없거나 자문 주 모델·필수 reviewer·저자와 같은 모델이면 대체를 부르지 않는다", async () => {
-    const attempt = async (over: Partial<ReviewDeps>, authors = ["main"]) => {
-      const calls: string[] = [];
-      const result = await runReview(input({ authors }), withFallback(plain(), new Error("quota"), undefined, over, calls), signal);
-      return { calls, result };
-    };
-    const unset = await attempt({ advisoryFallbackModel: undefined });
-    expect(unset.calls).toEqual(["openai", "advisory-primary"]);
-    expect(unset.result.reviewers[1]).toMatchObject({ model: FABLE, status: "error", error: "quota" });
-    expect(unset.result.reviewers[1]).not.toHaveProperty("fallbackFrom");
-    expect((await attempt({ advisoryFallbackModel: `${FABLE}:high` })).calls).toEqual(["openai", "advisory-primary"]);
-    expect((await attempt({ advisoryFallbackModel: ASTRA })).calls).toEqual(["openai", "advisory-primary"]);
-    // 저자가 대체 모델 그 자체이면(main은 현재 모델로 푼다) 저자가 자기 글을 보게 되므로 부르지 않는다.
-    expect((await attempt({ advisoryFallbackModel: OPUS })).calls).toEqual(["openai", "advisory-primary"]);
-    expect((await attempt({}, [`${TERRA}:high`])).calls).toEqual(["anthropic", "advisory-primary"]);
-    // 필수 자리 slot이 대체 모델과 같을 때는 그 자리가 이번 라운드에 돌 때만 겹친다.
-    expect((await attempt({ requiredModels: { openai: TERRA } })).calls).toEqual(["openai", "advisory-primary"]);
-    expect((await attempt({ requiredModels: { anthropic: TERRA } })).calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
-  });
-
-  test("취소·기한·대체 호출 자체의 기한은 대체를 부르지 않거나 같은 기한 안에서 끊는다", async () => {
-    const stalled = () => new Promise<{ model: string; text: string }>(() => {});
-    const env = plain();
-    const timedOut: string[] = [];
-    const first = await runReview(input(), withFallback(env, stalled, undefined, { advisoryTimeoutMs: 20 }, timedOut, true), signal);
-    expect(timedOut).toEqual(["openai", "advisory-primary"]);
-    expect(first.reviewers[1]).toMatchObject({ status: "error", error: expect.stringContaining("timed out") });
-    expect(first.reviewers[1]).not.toHaveProperty("fallbackFrom");
-    const slowFallback: string[] = [];
-    const second = await runReview(input(), withFallback(env, new Error("quota"), stalled, { advisoryTimeoutMs: 40 }, slowFallback, true), signal);
-    expect(slowFallback).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
-    expect(second.passable).toBe(true);
-    expect(second.reviewers[1]).toMatchObject({ model: TERRA, status: "error", error: expect.stringContaining("timed out"), fallbackFrom: { model: FABLE, status: "error", error: "quota" } });
-    const controller = new AbortController();
-    const cancelled: string[] = [];
-    const third = await runReview(input(), withFallback(env, async () => { controller.abort(); throw new ReviewerCallError("aborted", FABLE); }, undefined, { advisoryTimeoutMs: 60_000 }, cancelled), controller.signal).catch((error: Error) => error);
-    void third;
-    expect(cancelled).not.toContain("advisory-fallback");
-  }, 5_000);
-
-  test("필수 reviewer가 끝난 뒤에 주 호출이 실패해도 같은 기한 안에서 대체가 답하면 늦은 자문 기록에 그 모델·finding·앞 실패가 붙는다", async () => {
-    const env = plain();
-    const primary = Promise.withResolvers<{ model: string; text: string }>();
-    const calls: string[] = [];
-    const d = withFallback(env, () => primary.promise, finding("late terra objection"), { advisoryTimeoutMs: 60_000 }, calls);
-    const result = await runReview(input(), d, signal);
-    expect(result.reviewers[1]).toMatchObject({ family: "advisory", status: "pending" });
-    primary.reject(new ReviewerCallError("quota", FABLE));
-    await advisoryPending(result.reviewId);
-    expect(calls).toEqual(["openai", "advisory-primary", "advisory-fallback"]);
-    expect(readCrossReviewRecords(env.ledger)).toMatchObject([
-      { reviewers: [{ family: "openai" }, { family: "advisory", status: "pending" }] },
-      { type: "cross-review-advisory", reviewId: result.reviewId, reviewer: { family: "advisory", model: TERRA, status: "ok", fallbackFrom: { model: FABLE, status: "error", error: "quota" } }, findings: [{ id: "R1-ADV-1", reviewer: TERRA, claim: "late terra objection" }] },
-    ]);
-    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
-  }, 5_000);
-
-  test("나눠 심사한 라운드는 한 조각이라도 해석할 수 없으면 대체를 한 번 부르고 대체도 나눠 부른다", async () => {
-    const env = plain();
-    const big = "export const x = 1;\n".repeat(12_000);
-    writeFileSync(join(env.work, "a.ts"), big);
-    writeFileSync(join(env.work, "b.ts"), big.replace("x", "y"));
-    const calls: string[] = [];
-    let primaryCalls = 0;
-    const d = withFallback(env, async () => ({ model: FABLE, text: ++primaryCalls === 1 ? "junk" : '{"findings":[]}' }), '{"findings":[]}', {}, calls);
-    const result = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
-    const fallbackCalls = calls.filter((call) => call === "advisory-fallback").length;
-    expect(calls.filter((call) => call === "advisory-primary").length).toBeGreaterThan(1);
-    expect(fallbackCalls).toBe(calls.filter((call) => call === "advisory-primary").length);
-    expect(result.reviewers[1]).toMatchObject({ model: TERRA, status: "ok", fallbackFrom: { model: FABLE, status: "unparsable" } });
-  }, 10_000);
 });
 
 describe("이름만 걸린 경로 심사(C2)", () => {
