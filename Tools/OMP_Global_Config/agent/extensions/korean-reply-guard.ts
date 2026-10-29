@@ -136,12 +136,12 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateWith
       const text = textOf(message.content);
       if (text.trim()) skipEnglish = userWroteEnglish(text);
     });
-    // 번역은 사람이 읽는 표시용이라 모델 문맥에서 뺀다(autolearn-saved와 같은 취급). 알림은 응답마다 쌓이므로 마지막 것만 남긴다.
+    // 번역은 사람이 읽는 표시용이라 모델 문맥에서 뺀다(autolearn-saved와 같은 취급). 처음부터 늘 빠지므로 이미 보낸 문맥이 바뀌지 않는다.
+    // 알림은 지우지 않는다: 이미 보낸 앞쪽 알림을 빼면 그 지점부터 provider 프롬프트 캐시가 깨져 대화 전체를 다시 쓴다
+    // (2026-10-29 실측: 5분 안 캐시 재작성 90턴 중 27턴이 이 직후). 알림 하나는 짧아 쌓여도 재작성보다 싸다.
     pi.on("context", (event) => {
       const messages = event.messages as { role?: string; customType?: string }[];
-      const isCustom = (m: { role?: string; customType?: string }, type: string) => m.role === "custom" && m.customType === type;
-      const lastReminder = messages.findLastIndex((m) => isCustom(m, REMINDER_TYPE));
-      const kept = messages.filter((m, i) => !isCustom(m, TRANSLATION_TYPE) && (i === lastReminder || !isCustom(m, REMINDER_TYPE)));
+      const kept = messages.filter((m) => !(m.role === "custom" && m.customType === TRANSLATION_TYPE));
       return kept.length === messages.length ? undefined : { messages: kept as typeof event.messages };
     });
     pi.on("message_end", (event, ctx) => {

@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 import {
@@ -6,6 +7,7 @@ import {
   REVIEW_SYSTEM,
   REVIEW_TIMEOUT_MS,
   ReviewerCallError,
+  earlyReviewNotice,
   SLOT,
   ledgerPath,
   runResolve,
@@ -19,6 +21,7 @@ import {
   type ResolveInput,
 } from "./lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledger";
+import { onSessionLifecycle } from "./lib/session-identity";
 
 /**
  * 계열 교차검증 도구. review(probe·delta 라운드 포함)는 Main과 Maker child(agents/maker.md tools 목록) 모두 부를 수 있고,
@@ -170,6 +173,18 @@ export async function executeCrossReview(
   throw new Error(`Unknown action ${JSON.stringify(params.action)}; use "review" or "resolve".`);
 }
 
+/** edit·write 호출이 건드린 파일의 절대 경로. edit는 path 인자와 입력 본문의 `[경로#TAG]` 머리에서 읽는다. */
+export function editedPaths(toolName: string, input: unknown, cwd: string): string[] {
+  const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const tokens: string[] = [];
+  if (toolName === "write" && typeof record.path === "string") tokens.push(record.path);
+  else if (toolName === "edit") {
+    if (typeof record.path === "string") tokens.push(record.path);
+    if (typeof record.input === "string") for (const match of record.input.matchAll(/^\[(.+?)#[0-9A-F]{4}\]/gm)) tokens.push(match[1]!);
+  }
+  return [...new Set(tokens.map((token) => (isAbsolute(token) ? resolve(token) : resolve(cwd, token))))];
+}
+
 export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
@@ -198,5 +213,30 @@ export default function crossReview(pi: ExtensionAPI): void {
       const result = await executeCrossReview(params as CrossReviewParams, ctx, signal ?? new AbortController().signal, (c, s) => reviewDeps(c, s, notify), onUpdate as CrossReviewUpdate | undefined);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
     },
+  });
+
+  // 편집 직후 조기 알림(게이트 아님): marker에 맞는 코드 파일은 git_finalize 전에 cross_review가 필요하다는 것을 파일당 세션에 한 번 알린다.
+  // 알림을 낸 파일만 기록하므로, 처음에는 marker가 없다가 나중에 걸리는 파일도 그때 한 번 알린다.
+  const noticed = new Set<string>();
+  const inflight = new Set<string>();
+  onSessionLifecycle(pi, { start: () => { noticed.clear(); inflight.clear(); } });
+  pi.on("tool_result", async (event, ctx) => {
+    // 알림은 보조다: 경로 읽기·git·원장·전달 어느 단계의 실패도 편집 흐름으로 번지지 않고, 전달에 실패한 파일은 다음 편집에서 다시 알릴 수 있다.
+    try {
+      if (event.isError || (event.toolName !== "edit" && event.toolName !== "write")) return;
+      if (!(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
+      for (const path of editedPaths(event.toolName, event.input, ctx.cwd)) {
+        if (noticed.has(path) || inflight.has(path)) continue;
+        inflight.add(path);
+        try {
+          const text = await earlyReviewNotice(ctx.cwd, path, spawnExec(), () => readCrossReviewRecords(ledgerPath()));
+          if (!text) continue;
+          pi.sendMessage({ customType: "cross-review-notice", content: text, display: false, attribution: "agent" }, { deliverAs: "aside" });
+          noticed.add(path);
+        } finally {
+          inflight.delete(path);
+        }
+      }
+    } catch { /* 알림 실패는 편집 결과에 영향을 주지 않는다. */ }
   });
 }

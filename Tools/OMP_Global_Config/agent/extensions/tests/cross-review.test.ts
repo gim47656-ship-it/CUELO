@@ -256,6 +256,83 @@ describe("runReview", () => {
     expect(record).toMatchObject({ type: "cross-review", reviewId: result.reviewId, files: [{ path: "a.ts", blob: blobOf(MARKER_BASE) }] });
   });
 
+  test("files에 섞인 문서(md·HANDOFF·doc 기록)는 심사 대상에서 빠져 참고로만 가고 결과가 그렇게 알린다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    mkdirSync(join(env.work, "doc", "history", "x"), { recursive: true });
+    writeFileSync(join(env.work, "doc", "history", "x", "main.md"), "# record\nlong notes\n");
+    writeFileSync(join(env.work, "HANDOFF.md"), "# handoff\n");
+    const calls: { family: Lane; prompt: string }[] = [];
+    const result = await runReview(input({ files: ["a.ts", "doc/history/x/main.md", "HANDOFF.md"] }), deps(env, {}, calls), signal);
+    const [record] = readCrossReviewRecords(env.ledger);
+    expect(record).toMatchObject({ type: "cross-review", files: [{ path: "a.ts" }] });
+    expect((record as { files: unknown[] }).files).toHaveLength(1);
+    expect(result.docsMovedToReferences).toEqual(["doc/history/x/main.md", "HANDOFF.md"]);
+    expect(result.references.map((item) => item.path)).toEqual(["doc/history/x/main.md", "HANDOFF.md"]);
+    expect(result.nextStep).toContain("reference context only");
+    expect(calls[0]!.prompt).toContain("<reference path=\"HANDOFF.md\">");
+    expect(calls[0]!.prompt).not.toContain("<new-file path=\"HANDOFF.md\">");
+  });
+
+  test("문서뿐인 요청은 그대로 그 문서를 심사하고, 명시한 references와 합쳐 10개를 넘는 문서는 참고에서 뺀다고 알린다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "HANDOFF.md"), "# handoff\n");
+    const only = await runReview(input({ files: ["HANDOFF.md"] }), deps(env, {}), signal);
+    expect(only.docsMovedToReferences).toBeUndefined();
+    expect(readCrossReviewRecords(env.ledger)[0]).toMatchObject({ files: [{ path: "HANDOFF.md" }] });
+
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const docs = Array.from({ length: 11 }, (_, n) => `n${n}.md`);
+    for (const doc of docs) writeFileSync(join(env.work, doc), `# ${doc}\n`);
+    const many = await runReview(input({ files: ["a.ts", ...docs] }), deps(env, {}), signal);
+    expect(many.references).toHaveLength(10);
+    expect(many.skippedReferences).toMatchObject([{ path: "n10.md", reason: expect.stringContaining("references limit") }]);
+  });
+
+  test("이어지는 라운드에서도 앞 라운드가 심사한 문서가 files로 되돌아오지 않고, 바뀐 코드가 없으면 문서를 그대로 심사한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "README.md"), "# v1\n");
+    const d = deps(env, {});
+    const first = await runReview(input({ files: ["README.md"] }), d, signal);
+    writeFileSync(join(env.work, "README.md"), "# v2\n");
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const second = await runReview(input({ files: ["README.md", "a.ts"], previousReviewId: first.reviewId }), d, signal);
+    expect(second.docsMovedToReferences).toEqual(["README.md"]);
+    expect((readCrossReviewRecords(env.ledger).at(-1) as { files: { path: string }[] }).files.map((file) => file.path)).toEqual(["a.ts"]);
+
+    // 코드는 이미 커밋돼 바뀐 것이 없고 문서만 바뀐 요청은 "Nothing to review"가 아니라 그 문서를 심사한다.
+    const other = repo();
+    writeFileSync(join(other.work, "a.ts"), PLAIN_BASE);
+    sh(other.work, "add", "a.ts");
+    sh(other.work, "commit", "-q", "-m", "a");
+    writeFileSync(join(other.work, "NOTES.md"), "# notes\n");
+    const result = await runReview(input({ files: ["a.ts", "NOTES.md"] }), deps(other, {}), signal);
+    expect(result.docsMovedToReferences).toBeUndefined();
+    expect(result.skipped).toMatchObject([{ path: "a.ts", reason: expect.stringContaining("no changes against HEAD") }]);
+    expect((readCrossReviewRecords(other.ledger)[0] as { files: { path: string }[] }).files.map((file) => file.path)).toEqual(["NOTES.md"]);
+  });
+
+  test("앞 라운드가 files로 심사한 문서를 이번에 inputs로 주면 files로 되돌아오지 않고, 참고로 옮기지 못한 문서는 옮겼다고 알리지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "README.md"), "# v1\n");
+    const d = deps(env, {});
+    const first = await runReview(input({ files: ["README.md"] }), d, signal);
+    writeFileSync(join(env.work, "README.md"), "# v2\n");
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const second = await runReview(input({ files: ["./README.md", "a.ts"], inputs: ["README.md"], previousReviewId: first.reviewId }), d, signal);
+    expect(second.docsMovedToReferences).toBeUndefined();
+    expect(second.inputs?.map((item) => item.path)).toEqual(["README.md"]);
+    expect((readCrossReviewRecords(env.ledger).at(-1) as { files: { path: string }[] }).files.map((file) => file.path)).toEqual(["a.ts"]);
+
+    const big = repo();
+    writeFileSync(join(big.work, "a.ts"), PLAIN_BASE);
+    writeFileSync(join(big.work, "big.md"), "x".repeat(MAX_REFERENCE_FILE_BYTES + 1));
+    const result = await runReview(input({ files: ["a.ts", "big.md"] }), deps(big, {}), signal);
+    expect(result.docsMovedToReferences).toBeUndefined();
+    expect(result.nextStep).not.toContain("reference context only");
+    expect(result.skippedReferences).toMatchObject([{ path: "big.md" }]);
+  });
+
   test("저자가 두 계열이면 두 reviewer가 모두 돌고 finding id에 reviewer 표지가 붙는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
@@ -1448,9 +1525,14 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const calls: Prompts = [];
     const d = deps(env, {}, calls);
     await expect(runReview(input({ inputs: ["a.ts"] }), d, signal)).rejects.toThrow("a.ts listed in both files and inputs");
-    await expect(runReview(input({ files: ["a.ts", "spec.md"], inputs: ["spec.md"] }), d, signal)).rejects.toThrow("spec.md listed in both files and inputs");
     expect(calls).toEqual([]);
     expect(readCrossReviewRecords(env.ledger)).toEqual([]);
+    // 문서를 inputs로 이미 선언했으면(철자가 달라도) files에서 빠져 입력으로만 남고, 참고로 옮겼다고 알리지 않는다(거절하지도 않는다).
+    const moved = await runReview(input({ files: ["a.ts", "./spec.md"], inputs: ["spec.md"] }), d, signal);
+    expect(moved.docsMovedToReferences).toBeUndefined();
+    expect(moved.inputs?.map((item) => item.path)).toEqual(["spec.md"]);
+    expect(moved.references).toEqual([]);
+    expect((readCrossReviewRecords(env.ledger)[0] as { files: { path: string }[] }).files.map((file) => file.path)).toEqual(["a.ts"]);
   });
 
   test("이어지는 라운드는 앞 라운드의 입력을 이어받아 현재 내용으로 다시 읽고 새 입력을 더할 수 있으며, resolve는 마지막 라운드의 입력을 묶는다", async () => {
@@ -1587,7 +1669,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
     await expect(runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).rejects.toBeInstanceOf(CrossReviewRefusal);
   });
 
-  test("문서·테스트만 마지막 라운드 뒤에 바뀌었으면 알리기만 하고 통과한다", async () => {
+  test("문서·테스트만 마지막 라운드 뒤에 바뀌었으면 알리기만 하고 통과한다(files에 함께 준 문서는 참고였으므로 심사 대상이 아니다)", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     writeFileSync(join(env.work, "notes.md"), "# v1\n");
@@ -1598,7 +1680,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
     writeFileSync(join(env.work, "a.test.ts"), "export const t = 2;\n");
     const resolved = await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d));
     expect(resolved.pass).toBe(true);
-    expect(resolved.unreviewedChanges).toEqual([{ path: "notes.md", state: "changed" }, { path: "a.test.ts", state: "changed" }]);
+    expect(resolved.unreviewedChanges).toEqual([{ path: "a.test.ts", state: "changed" }]);
     expect(resolved).not.toHaveProperty("unreviewedBlocking");
   });
 
@@ -1790,7 +1872,9 @@ describe("이미 커밋된 변경(base)", () => {
     expect(calls[0].prompt).toContain("-export const retries = 3;");
     expect(calls[0].prompt).toContain("+export const retries = 5;");
     expect(calls[0].prompt).toContain("<new-file path=\"n.ts\">");
-    expect(result.skipped).toMatchObject([{ path: "base.txt", reason: expect.stringContaining(`no changes against HEAD~1 (${c1.slice(0, 12)})`) }]);
+    // .txt는 문서라 files에서 빠져 참고로만 간다(심사 대상이 아니므로 "no changes" 건너뜀 목록에도 없다).
+    expect(result.docsMovedToReferences).toEqual(["base.txt"]);
+    expect(result.skipped).toEqual([]);
     const [record] = readCrossReviewRecords(env.ledger) as { files: { path: string; blob: string }[] }[];
     expect(record.files).toEqual([{ path: "a.ts", blob: blobOf(NEW) }, { path: "n.ts", blob: blobOf("export const fresh = 1;\n") }]);
   });

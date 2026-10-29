@@ -30,9 +30,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
   같은 프로젝트를 쓴다(2026-10-26 사용자 결정).
   일부 문단만 draft로 쓴 뒤 나머지 설명을 직접 작성하지 않는다. 새로 쓰거나 문단 단위로 다시 쓰는 각 블록을 반영 전에 draft로 작성하며, 초안 밖의 설명·예시·결론 추가는 사실·슬롭 교정 예외가 아니다. 짧은 호출 여러 번이나 HTML 한 줄로 나눠도 동일하다. 기존 문구의 정확한 사실·오탈자 교정과 문구가 그대로인 코드·레이아웃 변경은 허용한다. 반영할 문구를 초안과 대조해 빠진 블록만 다시 작성한다.
-- 문서의 `slop_check`는 소스 내부를 뺀 바깥에 보이는 산출물 전부에 적용한다(2026-10-26 사용자 지시, 2026-10-27 재확인). 공개 저장소
-  여부나 `.publicignore`·`.slop-gate.json` 선언과 상관없이 형식(`classify`)으로 정하며, 고객·사용자에게 건네는 덱·보고서도 대상이다.
-  코드·주석·로그·테스트·생성물, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`만 빠진다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
+- 문서의 `slop_check`는 사람이 실제로 보는 산출물(슬라이드·HTML·Office·PDF·보고서 csv·UI 문구·매뉴얼)에 적용한다(2026-10-26 사용자 지시,
+  2026-10-29 범위 축소). 마크다운(README·CHANGELOG·`docs/`·문서 지도)은 `.slop-gate.json` `visible`이 선언하지 않으면 대상이 아니다. 공개 저장소
+  여부나 `.publicignore` 선언과 상관없이 형식(`classify`)으로 정하며, 고객·사용자에게 건네는 덱·보고서도 대상이다.
+  코드·주석·로그·테스트·생성물, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`는 빠진다. 위 초안 작성·직접 교정과 코드 변경 `cross_review`는 그대로 유지한다.
+  slop 검토 모델은 `slopReviewOpenAI`(Luna)·`slopReviewGemini`(Flash) slot이고 저자 계열의 slot은 건너뛴다. 비면 옛 `cross_review` slot으로 돌아간다(상세는 `rule://writing-review-procedure`).
   검토 응답이 깨지면 실패 원문·파싱 오류를 확인하고 같은 조건 재호출이나 산출물 따옴표·쉼표 변경으로 우회하지 않는다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`

@@ -293,6 +293,50 @@ describe("eval spawn bypass", () => {
       expect(matchBlockedEvalModelBridge({ language: "js", code })).toBeUndefined();
     }
   });
+
+  test("eval 안의 Main 게이트 도구 호출은 직접 호출 안내와 함께 차단한다", () => {
+    const blocked = [
+      "finalize_result=await tool.git_finalize({'i':'x','files':files})",
+      'const r = await tool.cross_review({ action: "review", files })',
+      "await tool . slop_check({files: [f]})",
+      'await tool["ci_chain"]({ sha })',
+      'await tool["ci_chain" ]({ sha })',
+      "t = tool\nawait t.git_finalize({})",
+      "const { cross_review: review } = tool; await review({})",
+      'f = getattr(tool, "slop_check")',
+      "const f = (tool.git_finalize); f()",
+      "const t = (tool); t.cross_review()",
+      "const $tools = tool; await $tools.cross_review()",
+      "const finalize = (tool).git_finalize; await finalize()",
+      "await (tool).git_finalize({})",
+      "r = await tool.deploy_verify({})",
+      "fin = tool.git_finalize\nawait fin({})",
+    ];
+    for (const code of blocked) {
+      for (const language of ["py", "js"] as const) {
+        const reason = matchBlockedEvalModelBridge({ language, code });
+        expect(reason).toMatch(/EvalGateGuard/);
+        expect(reason).toMatch(/직접 호출/);
+      }
+    }
+  });
+
+  test("게이트 도구 이름이 문자열·변수명에만 나오는 일반 eval은 허용한다", () => {
+    const allowed = [
+      'print("git_finalize 결과는 직접 호출로 받는다")',
+      "git_finalize_result = None",
+      "const cross_review_ids = []; display(cross_review_ids)",
+      "await tool.read({ path: 'a.ts' })",
+      "await tool.browser({ action: 'screenshot' })",
+      "const local = ignored => ({ ci_chain() { return 42; } }); local(tool).ci_chain();",
+      "completion(packet, { model: 'slow' })",
+      "const ids = tool.cross_review_ids; display(ids)",
+      'const t = tool; completion("Explain cross_review"); const cross_review = 1',
+    ];
+    for (const code of allowed) {
+      expect(matchBlockedEvalModelBridge({ language: "py", code })).toBeUndefined();
+    }
+  });
 });
 
 describe("취소 환불", () => {

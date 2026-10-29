@@ -168,9 +168,11 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
 | `modelRoles` 키 | 기능 | 설정 기준 |
 | --- | --- | --- |
-| `crossReviewOpenAI` | 교차검토·슬롭 검사의 OpenAI 계열 필수 검토자 | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
-| `crossReviewAnthropic` | 교차검토·슬롭 검사의 Anthropic 계열 필수 검토자 | `anthropic` 제공자의 모델을 고릅니다. |
+| `crossReviewOpenAI` | 교차검토의 OpenAI 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
+| `crossReviewAnthropic` | 교차검토의 Anthropic 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `anthropic` 제공자의 모델을 고릅니다. |
 | `crossReviewAdvisory` | 보조 자문 검토자 | 필수 검토를 대신하지 않습니다. 자문 실패만으로 통과를 막지는 않지만 받은 지적은 처리해야 합니다. |
+| `slopReviewOpenAI` | 슬롭 검사의 OpenAI 계열 검토자(선택) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. 비우면 교차검토 슬롯을 씁니다. |
+| `slopReviewGemini` | 슬롭 검사의 Gemini 계열 검토자(선택) | Gemini 모델을 고릅니다. OpenAI 모델이 쓴 글은 이 슬롯이 필수 검토자입니다. 비우면 교차검토 슬롯을 씁니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `ocr` | 이미지의 글자·숫자·표 전사 | 시각 입력을 지원하는 모델을 고릅니다. |

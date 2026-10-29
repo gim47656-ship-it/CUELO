@@ -9,14 +9,17 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import slopGate, { CONTINUATION_TYPE, executeSlopCheck, WARNING_TYPE } from "../slop-gate";
 import { appendSlopRecord, candidatesOf, classify, loadSlopConfig, mergeGateBlobs, passFor, readSlopRecords, runSlopGate, sha256, SlopGateRefusal, trackable } from "../lib/slop-gate";
 import { htmlText, jsonStrings, literalStrings, pythonPath, extractVisible } from "../slop-gate/extract";
-import { buildPrompt, parseAnswer, resolveFiles, reviewFiles, resolveFindings, type Complete, type SlopDeps } from "../slop-gate/review";
+import { buildReviewRequest, parseAnswer, planReviewers, resolveFiles, reviewFiles, resolveFindings, type Complete, type SlopDeps } from "../slop-gate/review";
 import { ReviewerCallError } from "../lib/cross-review";
 
 // 모델은 가짜다(결정론). 심사 흐름·원장·추적은 실제 코드가 실제 파일로 돈다.
 
 const roots: string[] = [];
+// 마크다운은 선언이 없으면 대상이 아니다(2026-10-29). 이 파일의 흐름 검사는 md 본문을 심사 대상으로 쓰므로 scratch마다 md를 visible로 선언한다. 기본 제외는 slop-visible.test.ts가 본다.
+const DECLARE_MD = JSON.stringify({ visible: ["*.md", "**/*.md"] });
 const scratch = (): string => {
   const dir = mkdtempSync(join(tmpdir(), "slop-gate-test-"));
+  writeFileSync(join(dir, ".slop-gate.json"), DECLARE_MD);
   roots.push(dir);
   return dir;
 };
@@ -32,9 +35,9 @@ const KO_PLAIN = "저장 버튼을 누르면 파일이 내려받기 폴더에 �
  */
 function fakeReviewer(answer: (ids: string[], prompt: string, family: string) => unknown, per: Record<string, "throw" | "junk"> = {}) {
   const calls: string[] = [];
-  const all: { family: string; prompt: string }[] = [];
-  const complete: Complete = async (family, _system, prompt) => {
-    all.push({ family, prompt });
+  const all: { family: string; system: string; prompt: string }[] = [];
+  const complete: Complete = async (family, system, prompt) => {
+    all.push({ family, system, prompt });
     if (family !== "advisory") calls.push(prompt);
     if (per[family] === "throw") throw new Error(`${family} outage`);
     if (per[family] === "junk") return { model: `fixture/${family}`, text: "looks fine to me" };
@@ -56,8 +59,8 @@ function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): S
 
 describe("classify: 보이는 산출물과 내부·코드", () => {
   test.each([
-    "README.md", "CHANGELOG.md", "docs/guide/setup.md", "notes/guide.md", "site/index.html", "deck.pptx", "보고서.docx", "sheet.xlsx", "manual.pdf", "공문.hwpx",
-    "lib/i18n/messages/ko.json", "lib/i18n/messages/en.ts", "reports/월간.csv", "doc/guide.md", "Tools/X/doc/manual.pdf", "app/doc/intro.html", "src/lang/ko.json", "web/l10n/en.yaml", "app/translations/fr.po", "src/locales/en.ts", "src/i18n/en.ts", "src/lang/ko.js", "src/i18n/en/index.ts", "lib/i18n/registry.ts", "/home/user/app/locale/ko.json", "i18n/ko.json", "/mnt/c/Users/user/Downloads/보고서.docx", "/mnt/d/Users/x/Desktop/a.csv",
+    "site/index.html", "deck.pptx", "보고서.docx", "sheet.xlsx", "manual.pdf", "공문.hwpx",
+    "lib/i18n/messages/ko.json", "lib/i18n/messages/en.ts", "reports/월간.csv", "Tools/X/doc/manual.pdf", "app/doc/intro.html", "src/lang/ko.json", "web/l10n/en.yaml", "app/translations/fr.po", "src/locales/en.ts", "src/i18n/en.ts", "src/lang/ko.js", "src/i18n/en/index.ts", "lib/i18n/registry.ts", "/home/user/app/locale/ko.json", "i18n/ko.json", "/mnt/c/Users/user/Downloads/보고서.docx", "/mnt/d/Users/x/Desktop/a.csv",
   ])("보이는 산출물: %s", (path) => { expect(classify(path).visible).toBe(true); });
 
   test.each([
@@ -66,6 +69,7 @@ describe("classify: 보이는 산출물과 내부·코드", () => {
     "AGENTS.md", "Tools/OMP_Global_Config/agent/RULES.md", "Tools/OMP_Global_Config/agent/prompt-copies/RULES.en.md",
     "src/app.ts", "src/messages/en.ts", "lib/api-credits.d.ts", "lib/api-credits.test.mjs", "tests/fixtures/page.html", "node_modules/x/README.md", "dist/index.html",
     "data/prices.csv", "run.log", "/tmp/scratch.md", "/mnt/c/Users/user/AppData/Local/x/node_modules/a.md",
+    "README.md", "CHANGELOG.md", "docs/guide/setup.md", "notes/guide.md", "doc/guide.md", "guide/설치.mdx", "/mnt/c/Users/user/Documents/안내.md",
   ])("내부·코드·생성물·데이터: %s", (path) => { expect(classify(path).visible).toBe(false); });
 
   test("프로젝트 설정은 보이는 산출물을 더하기만 하고, ignore 키는 읽지도 않는다", () => {
@@ -75,7 +79,8 @@ describe("classify: 보이는 산출물과 내부·코드", () => {
     expect(config).toEqual({ visible: ["data/*.csv"] });
     expect(classify("data/prices.csv", config).visible).toBe(true);
     expect(classify("data/prices.csv").visible).toBe(false);
-    expect(classify("docs/guide.md", config).visible).toBe(true);
+    expect(classify("docs/guide.md", config).visible).toBe(false);
+    expect(classify("docs/guide.md", { visible: ["docs/*.md"] }).visible).toBe(true);
   });
 
   test("점검 대상 경로: cwd 안, 또는 cwd 밖이어도 시스템 영역이 아닌 절대 경로. 시스템·임시·내부·캐시·의존성은 아니다", () => {
@@ -121,7 +126,7 @@ describe("심사와 통과 기록", () => {
     expect(first.files[0]!.findings!.map((finding) => finding.id)).toEqual(["R-OAI-1", "R-ADV-1"]);
     expect(passFor(readSlopRecords(join(cwd, "ledger.jsonl")), sha256(KO_SLOP))).toBeUndefined();
     // 규칙 본문이 그대로 실린다(의역 없음).
-    expect(reviewer.calls[0]).toContain("humanizer: 한국어 AI 작문 패턴 감지 및 교정기");
+    expect(reviewer.all[0]!.system).toContain("humanizer: 한국어 AI 작문 패턴 감지 및 교정기");
 
     writeFileSync(file, KO_PLAIN);
     const second = await reviewFiles(["guide.md"], undefined, deps(cwd, fakeReviewer(clean).complete), signal);
@@ -675,10 +680,54 @@ describe("원장 형식", () => {
 describe("reviewer 기준: 채점에 필요한 세부 기준이 프롬프트에 실린다", () => {
   test("humanizer 프롬프트에 SKILL.md가 가리키는 references 여섯 파일이 그대로 들어간다", () => {
     const skills = join(import.meta.dir, "..", "..", "skills", "humanizer");
-    const prompt = buildPrompt([], ["humanizer"]);
+    const prompt = buildReviewRequest([], ["humanizer"]).system;
     for (const file of ["punctuation", "spacing", "pos", "vocabulary", "structure", "translation-ese"]) {
       expect(prompt).toContain(readFileSync(join(skills, "references", `${file}-patterns.md`), "utf8"));
     }
+  });
+});
+
+describe("reviewer 요청 구성: 규칙·지시는 system에 고정, 파일 글은 prompt에만(프리픽스 캐시가 맞도록)", () => {
+  const item = (id: string, text: string) => ({ id, abs: `/x/${id}.html`, rel: `${id}.html`, hash: id, extracted: { text, kind: "markup", leads: [] }, shown: { text, scope: "whole", leads: [] }, names: [] }) as never;
+  const names = ["humanizer", "kill-ai-slop"];
+
+  test("system은 감지한 규칙 묶음만 담고 파일 글이 없으며, 같은 묶음이면 파일이 달라도 바이트가 같다", () => {
+    const first = buildReviewRequest([item("a1", "첫 번째 글")], names);
+    const second = buildReviewRequest([item("a1", "전혀 다른 글"), item("a2", "둘째")], names);
+    expect(first.system).toBe(second.system);
+    expect(first.system).toContain('<rubric name="humanizer">');
+    expect(first.system).toContain('<rubric name="kill-ai-slop">');
+    expect(first.system).not.toContain('<rubric name="stop-slop">');
+    expect(first.system).not.toContain('<artifact id="');
+    expect(first.system).not.toContain("첫 번째 글");
+    expect(first.prompt).toBe('<artifact id="a1" path="a1.html" kind="markup" scope="whole">\n첫 번째 글\n</artifact>');
+    expect(buildReviewRequest([item("a1", "x")], ["stop-slop"]).system).not.toContain('<rubric name="humanizer">');
+  });
+});
+
+describe("slop_check reviewer 자리 계획(planReviewers)", () => {
+  const LUNA = "slopReviewOpenAI";
+  const FLASH = "slopReviewGemini";
+  const both = { openai: "openai-codex/gpt-6-luna", google: "aistudio/gemini-3.8-flash" };
+  const plan = (author: string, slots?: { openai?: string; google?: string }) => planReviewers([author], undefined, "aistudio/gemini-4-argon", slots);
+
+  test("slot이 없으면 cross_review와 같은 옛 경로 그대로다", () => {
+    expect(plan("anthropic/claude-opus-5-5")).toEqual({ lanes: ["openai", "advisory"], slots: {} });
+    expect(plan("openai-codex/gpt-6-astra", {})).toEqual({ lanes: ["anthropic", "advisory"], slots: {} });
+  });
+
+  test("두 slot이 있으면 Anthropic·그 밖 저자는 Luna 필수 + Flash 자문, OpenAI 저자는 Flash만, Gemini 저자는 Luna만", () => {
+    expect(plan("anthropic/claude-opus-5-5", both)).toEqual({ lanes: ["openai", "advisory"], slots: { openai: LUNA, advisory: FLASH } });
+    expect(plan("other-provider/some-model", both)).toEqual({ lanes: ["openai", "advisory"], slots: { openai: LUNA, advisory: FLASH } });
+    expect(plan("openai-codex/gpt-6-astra", both)).toEqual({ lanes: ["google"], slots: { google: FLASH } });
+    expect(plan("aistudio/gemini-4-argon", both)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
+  });
+
+  test("한쪽 slot만 있으면 없는 자리는 옛 slot으로 돌아간다", () => {
+    expect(plan("anthropic/claude-opus-5-5", { openai: both.openai })).toEqual({ lanes: ["openai", "advisory"], slots: { openai: LUNA } });
+    expect(plan("anthropic/claude-opus-5-5", { google: both.google })).toEqual({ lanes: ["openai", "advisory"], slots: { advisory: FLASH } });
+    expect(plan("openai-codex/gpt-6-astra", { google: both.google })).toEqual({ lanes: ["google", "advisory"], slots: { google: FLASH } });
+    expect(plan("aistudio/gemini-4-argon", { openai: both.openai })).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
   });
 });
 

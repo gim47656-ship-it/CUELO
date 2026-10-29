@@ -82,7 +82,7 @@
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
   내용은 `skim` 역할 모델(기본 Codex의 GPT-6.1 Terra)로 전송된다. 실패 시 Hive의 DeepSeek 1017로 한 번 대체한다.
   처음부터 대체 모델을 썼다면 같은 모델로 재시도하지 않는다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
-- 새 글 또는 문단 단위 재작성 전에 Main·Maker 모두 `rule://writing-review-procedure`를 읽고 작성 범위별로 `draft`를 적용한다. 코드·설정·규칙·몇 줄의 정확한 수정·대화 답변은 제외다. `HANDOFF.md`·`doc/history` 산문은 draft 대상이지만 slop 게이트에서는 제외다. 바깥에 보이는 산출물은 공개 여부와 관계없이 `slop_check`를 통과해야 하며 면제는 사용자 명시 지시가 필요하다. 실패한 검토를 통과로 바꾸지 않는다. 각 초안은 사실·형식과 해당 언어·UI 슬롭을 검토한 뒤 반영한다.
+- 새 글 또는 문단 단위 재작성 전에 Main·Maker 모두 `rule://writing-review-procedure`를 읽고 작성 범위별로 `draft`를 적용한다. 코드·설정·규칙·몇 줄의 정확한 수정·대화 답변은 제외다. `HANDOFF.md`·`doc/history` 산문은 draft 대상이지만 slop 게이트에서는 제외다. 사람이 실제로 보는 산출물(슬라이드·HTML·Office·PDF·보고서 csv·UI 문구·매뉴얼)은 공개 여부와 관계없이 `slop_check`를 통과해야 하며 면제는 사용자 명시 지시가 필요하다. 마크다운은 `.slop-gate.json` `visible`이 선언한 것만 대상이다. 실패한 검토를 통과로 바꾸지 않는다. 각 초안은 사실·형식과 해당 언어·UI 슬롭을 검토한 뒤 반영한다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.

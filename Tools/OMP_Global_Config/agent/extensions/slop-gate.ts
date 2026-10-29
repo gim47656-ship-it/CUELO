@@ -1,8 +1,42 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { ADVISORY_FALLBACK_SLOT, advisoryFallbackOf, advisoryModelOf, completeReviewer } from "./cross-review";
+import { authorFamily, ReviewerCallError, type Lane } from "./lib/cross-review";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
-import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
+import { reviewFiles, resolveFindings, SLOP_GEMINI_SLOT, SLOP_OPENAI_SLOT, type Lang, type SlopDeps, type SlopLane } from "./slop-gate/review";
+
+/**
+ * slop_check 전용 reviewer slot(사용자 결정 2026-10-29: Opus·Astra 대신 GPT-6 Luna와 Gemini Flash). slopReviewOpenAI·slopReviewGemini가 풀리면 그 모델(provider/id)이고,
+ * 설정이 없거나 풀리지 않으면 비어서 그 자리는 cross_review와 같은 옛 slot으로 돌아간다. cross_review는 이 slot을 읽지 않는다.
+ */
+export async function slopSlotsOf(ctx: Pick<ExtensionContext, "models" | "cwd">): Promise<{ openai?: string; google?: string }> {
+  // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 cross-review.ts처럼 지연 import한다. 설정에 없는 role은 풀기 전에 비어 있는 것으로 본다.
+  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const settings = findScopedSettings(ctx.cwd);
+  const named = (slot: string): string | undefined => {
+    if (!settings?.getModelRole(slot)) return undefined;
+    const model = ctx.models.resolve(`@${slot}`);
+    return model ? `${model.provider}/${model.id}` : undefined;
+  };
+  return { openai: named(SLOP_OPENAI_SLOT), google: named(SLOP_GEMINI_SLOT) };
+}
+
+/**
+ * 한 reviewer 호출. slot이 없으면 lane의 기본 slot(cross_review와 같다)이다. slopReviewOpenAI는 completeReviewer의 OpenAI 계열 검사를 그대로 받고,
+ * slopReviewGemini는 여기서 Google 계열인지 먼저 확인한 뒤(아니면 호출 없이 거절) 계열 검사가 없는 자문 경로로 부른다: 필수든 자문이든 같은 slot이다.
+ */
+export async function completeSlopReviewer(lane: SlopLane, system: string, prompt: string, signal: AbortSignal, slot: string | undefined, ctx: ExtensionContext) {
+  if (slot === SLOP_GEMINI_SLOT) {
+    const model = ctx.models.resolve(`@${slot}`);
+    const name = model ? `${model.provider}/${model.id}` : `@${slot}`;
+    if (model && authorFamily(name) !== "google") throw new ReviewerCallError(`modelRoles.${slot} resolved to ${name}, which is not a google model.`, name);
+    const answer = await completeReviewer("advisory", prompt, ctx, signal, { system, purpose: "slop-gate", slot });
+    // 위 확인과 completeReviewer의 해석은 따로 풀린다. 그 사이 role이 바뀌어 다른 계열이 답했다면 그 답은 쓰지 않는다.
+    if (authorFamily(answer.model) !== "google") throw new ReviewerCallError(`modelRoles.${slot} answered with ${answer.model}, which is not a google model.`, answer.model);
+    return answer;
+  }
+  return completeReviewer(lane as Lane, prompt, ctx, signal, { system, purpose: "slop-gate", ...(slot ? { slot } : {}) });
+}
 
 /**
  * 밖에 보이는 산출물 AI 슬롭 게이트의 세션 쪽. (1) `slop_check` 도구: 보이는 산출물만 모델로 심사하고 sha256 통과를 원장에 남긴다.
@@ -53,7 +87,7 @@ export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<Extens
   const next = errors.length > 0 ? "Some files could not be reviewed (see error); none of them has a pass. For a reviewer failure read reviewers[].error and raw: it says whether the answer was invalid JSON (with the parser error) or valid JSON in the wrong shape. Do not retry with unchanged input and do not change the artifact's punctuation as a protocol workaround. diagnosticFindings come from a reviewer that did answer: they are real style findings you may fix, but they are not a review and never a pass."
     : open.length > 0 ? "Fix each finding in the file (then run slop_check again on the new content), or, for a false positive, have Main close it with slop_check {action:\"resolve\", reviewId, resolutions:[{id, status:\"refuted\", evidence}]}. A changed file needs a new review."
       : reviewed > 0 ? "Every visible artifact reviewed has a pass for its exact content." : "No visible artifact was reviewed.";
-  const note = skipped.length === 0 ? "" : ` ${skipped.length} file(s) are not visible artifacts or are raw data (internal record, code, test, generated, not a visible format, or a csv over 400000 bytes; see reason): they were not read, not sent to a reviewer and have no pass; the slop gate does not apply to them.`;
+  const note = skipped.length === 0 ? "" : ` ${skipped.length} file(s) are not visible artifacts or are raw data (markdown not declared in .slop-gate.json visible, internal record, code, test, generated, not a visible format, or a csv over 400000 bytes; see reason): they were not read, not sent to a reviewer and have no pass; the slop gate does not apply to them.`;
   return { text: JSON.stringify({ ...outcome, next: next + note }, null, 2), isError: errors.length > 0 };
 }
 
@@ -78,22 +112,24 @@ export default function slopGate(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "slop_check", label: "Slop Check", loadMode: "essential", approval: "read",
-    description: "AI-slop check for outward-facing artifacts (README, CHANGELOG, docs, md, html, pptx, docx, xlsx, pdf, hwpx, report csv, UI copy packs). Scope is decided from path and format before reading: a visible format is in scope regardless of public repository, .publicignore or publication declarations (.slop-gate.json visible globs only add targets). Source code, comments, logs, tests, fixtures, generated files, internal rules, prompts, skills, HANDOFF.md, doc/history, doc/README.md and csv over 400000 bytes (treated as raw data, not a report table) are out of scope: not read, not sent to a model, and returned as status:\"internal\" with a reason (not a pass). action=review (default): extracts the visible text of files (inside cwd, or under home or /mnt/<drive>/) and judges it against the rule text of humanizer for Korean (a comma after a pattern-3 connective ending alone is not a finding; only its count stays in relaxed), stop-slop for English, and kill-ai-slop for html, UI copy and slides, using the same reviewer slot rules as cross_review (opposite-family required reviewer for authors plus the crossReviewAdvisory advisory reviewer, in parallel; the advisory is cut after 120 s or 20 s after all required reviewers finish, and its failure is only recorded), returning findings {id, file, quote, rule, fix}. If modelRoles.crossReviewAdvisoryFallback is set, only an advisory call error, empty answer or unparseable answer is re-judged once with that model within the same deadline (with several batches that model is called once for each existing batch, so it is not a single request; the earlier failure stays in failedAttempts and the pass record and reviewer status name the model that actually answered). It is not called when unset or equal to the advisory primary model, a required reviewer or the author, and never falls through to a fixed model; set but empty or unresolvable is recorded as a fallback failure under that name. A required reviewer answer that does not parse as JSON is asked again once in the same slot (the first raw answer and parser error stay in failedAttempts); if the retry also fails to parse there is no pass. With no findings the same call records a pass bound to the file content (sha256) in the ledger, and already-passed content does not call a model. A fixed file has different bytes and needs a new review. action=resolve (Main only): closes reviewId findings only as {id, status:\"refuted\", evidence} and records a pass when every finding is refuted and the file content equals the reviewed bytes. git_finalize requires this pass for every visible artifact it commits, and a turn that wrote a visible artifact outside the repository cannot end without a pass.",
+    description: "AI-slop check for artifacts a person actually sees: slides, html, pptx, docx, pdf, hwpx, report xlsx/csv, UI copy packs, manuals. Markdown of any kind (README, CHANGELOG, docs, doc maps) is out of scope unless a .slop-gate.json visible glob declares it. Scope is decided from path and format before reading, regardless of public repository, .publicignore or publication declarations (.slop-gate.json visible globs only add targets). Markdown, source code, comments, logs, tests, fixtures, generated files, internal rules, prompts, skills, HANDOFF.md, doc/history, doc/README.md and csv over 400000 bytes (treated as raw data, not a report table) are out of scope: not read, not sent to a model, and returned as status:\"internal\" with a reason (not a pass). action=review (default): extracts the visible text of files (inside cwd, or under home or /mnt/<drive>/) and judges it against the rule text of humanizer for Korean (a comma after a pattern-3 connective ending alone is not a finding; only its count stays in relaxed), stop-slop for English, and kill-ai-slop for html, UI copy and slides; only the rule sets for the detected language and format are sent, as a fixed system message ahead of the file text so provider prefix caching can hit across calls. Reviewers come from slop-only slots (user decision 2026-10-29; cross_review is unaffected): slopReviewOpenAI (GPT-6 Luna) and slopReviewGemini (Gemini Flash), each of which must resolve to its own family or the call is refused. The required reviewer is the slot whose family differs from the author (OpenAI author: Gemini only; Gemini author: Luna only; Anthropic or other author: Luna required plus Gemini as the advisory in place of crossReviewAdvisory); a slot of the author's family is skipped, and an unset or unresolvable slot falls back to the cross_review slot for that position (crossReviewOpenAI, crossReviewAnthropic, crossReviewAdvisory), with reviewers[].model naming the model that answered. Required and advisory run in parallel; the advisory is cut after 120 s or 20 s after all required reviewers finish, and its failure is only recorded, returning findings {id, file, quote, rule, fix}. If modelRoles.crossReviewAdvisoryFallback is set, only an advisory call error, empty answer or unparseable answer is re-judged once with that model within the same deadline (with several batches that model is called once for each existing batch, so it is not a single request; the earlier failure stays in failedAttempts and the pass record and reviewer status name the model that actually answered). It is not called when unset or equal to the advisory primary model, a required reviewer or the author, and never falls through to a fixed model; set but empty or unresolvable is recorded as a fallback failure under that name. A required reviewer answer that does not parse as JSON is asked again once in the same slot (the first raw answer and parser error stay in failedAttempts); if the retry also fails to parse there is no pass. With no findings the same call records a pass bound to the file content (sha256) in the ledger, and already-passed content does not call a model. A fixed file has different bytes and needs a new review. action=resolve (Main only): closes reviewId findings only as {id, status:\"refuted\", evidence} and records a pass when every finding is refuted and the file content equals the reviewed bytes. git_finalize requires this pass for every visible artifact it commits, and a turn that wrote a visible artifact outside the repository cannot end without a pass.",
     parameters: z.object({
       action: z.string().optional().describe("review (default) or resolve"),
       files: z.array(z.string()).optional().describe("review targets: paths relative to cwd, or absolute paths under the home folder or /mnt/<drive>/ (excluding /tmp, ~/.omp, ~/.cache, node_modules, .git)"),
       lang: z.enum(["ko", "en", "both"]).optional().describe("Only to force the language; by default it is decided from the characters"),
-      authors: z.array(z.string()).optional().describe("Model selectors that wrote the text, or \"main\" (default [\"main\"]). Reviewer slots follow the cross_review rules"),
+      authors: z.array(z.string()).optional().describe("Model selectors that wrote the text, or \"main\" (default [\"main\"]). Reviewer slots follow the slop_check slot rules in the tool description"),
       reviewId: z.string().optional(),
       resolutions: z.array(z.object({ id: z.string(), status: z.string(), evidence: z.string() })).optional(),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const abort = signal ?? new AbortController().signal;
       const fallback = await advisoryFallbackOf(ctx);
+      const slopSlots = await slopSlotsOf(ctx);
       const result = await executeSlopCheck(params as SlopCheckParams, ctx, {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx), advisoryModel: advisoryModelOf(ctx),
-        complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
-        ...fallback,
+        complete: (lane, system, prompt, attempt, slot) => completeSlopReviewer(lane, system, prompt, attempt, slot, ctx),
+        ...fallback, slopSlots,
+        requiredModels: { ...fallback.requiredModels, ...(slopSlots.openai ? { openai: slopSlots.openai } : {}), ...(slopSlots.google ? { google: slopSlots.google } : {}) },
         ...(fallback.advisoryFallbackModel ? { completeFallback: (system: string, prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { system, purpose: "slop-gate", slot: ADVISORY_FALLBACK_SLOT }) } : {}),
       }, abort);
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };

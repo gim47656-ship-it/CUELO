@@ -148,7 +148,7 @@ describe("korean reply guard", () => {
     expect(h.sent.filter((m) => m.customType === TRANSLATION_TYPE).map((m) => m.content)).toEqual(["[한국어 번역]\n둘째", "[한국어 번역]\n첫째"]);
   });
 
-  test("번역 메시지는 모델 문맥에서 빠지고 알림은 마지막 하나만 남는다", () => {
+  test("번역 메시지는 모델 문맥에서 빠지고, 이미 보낸 알림은 지우지 않는다(캐시 접두 보존)", () => {
     const h = harness(ok);
     const messages = [
       { role: "user", content: "q" },
@@ -158,8 +158,8 @@ describe("korean reply guard", () => {
       { role: "custom", customType: REMINDER_TYPE, content: "알림2" },
     ];
     const result = h.emit("context", { messages })[0] as { messages: unknown[] };
-    expect(result.messages).toEqual([messages[0], messages[3], messages[4]]);
-    expect(h.emit("context", { messages: [messages[0], messages[4]] })[0]).toBeUndefined();
+    expect(result.messages).toEqual([messages[0], messages[1], messages[3], messages[4]]);
+    expect(h.emit("context", { messages: [messages[0], messages[1], messages[4]] })[0]).toBeUndefined();
   });
 
   test("서브에이전트 세션은 건너뛴다", async () => {

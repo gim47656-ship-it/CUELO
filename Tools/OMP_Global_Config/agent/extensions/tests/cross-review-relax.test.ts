@@ -12,6 +12,7 @@ import {
   CrossReviewRefusal,
   detectMarkers,
   isGateTarget,
+  markBlockComments,
   ReviewerCallError,
   runGate,
   runResolve,
@@ -522,5 +523,81 @@ describe("#53 보간 문자열의 실행식은 device-io로 남는다", () => {
     writeFileSync(join(env.work, "label.py"), files["label.py"]!);
     const outcome = (await runGate({ cwd: env.work, files: ["label.py"], ledgerPath: env.ledger })) as GateOutcome;
     expect(outcome.decision?.required).toEqual([]);
+  });
+});
+
+describe("블록 주석 안의 줄은 marker를 걸지 않는다 (2026-10-29 SJF fixture-schema.sql)", () => {
+  const triggers = (change: { path: string; changedLines: Parameters<typeof detectMarkers>[1] }) => detectMarkers(change.path, change.changedLines).map((hit) => hit.trigger);
+  const whole = (path: string, content: string) => detectMarkers(path, markBlockComments(path, content.split("\n").map((text, index) => ({ line: index + 1, text })), content, null)).map((hit) => hit.trigger);
+  const SQL_NOTE = ["/*", "  모드 두 열은 이 스크립트가 만들지 않는다. PLC MAP 에 신호가 없으면 DELETE 대상이 아니다.", "  - 이 파일은 UTF-8 BOM 으로 저장한다.", "*/", ""].join("\n");
+
+  test("SQL의 /* */ 안 한글 PLC·BOM 설명은 marker가 아니고, 같은 파일의 DELETE FROM 코드 줄은 그대로 걸린다", async () => {
+    expect(triggers(await changeOf("fixture-schema.sql", "SELECT 1;\n", `${SQL_NOTE}SELECT 1;\n`))).toEqual([]);
+    expect(triggers(await changeOf("fixture-schema.sql", "SELECT 1;\n", `${SQL_NOTE}DELETE FROM dbo.QrCorrectLog WHERE Id = 1;\n`))).toEqual(["destructive-sql"]);
+  });
+
+  test("새 파일과 CRLF 파일도 같다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "n.sql"), `${SQL_NOTE.replaceAll("\n", "\r\n")}SELECT 1;\r\n`);
+    expect(triggers((await collectChanges(spawnExec(), "git", env.work, ["n.sql"])).changed[0]!)).toEqual([]);
+  });
+
+  test("PowerShell <# #> 블록 설명은 marker가 아니고 블록 밖 Remove-Item은 걸린다", async () => {
+    const note = "<#\n.SYNOPSIS\n  PLC 연결 전에 UTF-8 BOM 상태를 확인한다. password 는 읽지 않는다.\n#>\n";
+    expect(triggers(await changeOf("run.ps1", "Write-Host 1\n", `${note}Write-Host 1\n`))).toEqual([]);
+    expect(triggers(await changeOf("run.ps1", "Write-Host 1\n", `${note}Remove-Item $tmp\n`))).toEqual(["deletion"]);
+  });
+
+  test("블록 주석을 지우는 수정도 HEAD 내용으로 주석 줄을 알아 marker가 아니다", async () => {
+    expect(triggers(await changeOf("fixture-schema.sql", `${SQL_NOTE}SELECT 1;\n`, "SELECT 1;\n"))).toEqual([]);
+    // 이전 내용을 모르면 지금까지처럼 줄 하나로 판정한다.
+    const lines = [{ line: 2, text: "  PLC MAP", removed: true }];
+    expect(detectMarkers("a.sql", markBlockComments("a.sql", lines, null, null)).map((hit) => hit.trigger)).toEqual(["device-io"]);
+  });
+
+  test("줄 맨 앞이 아닌 /*(문자열 안 glob)는 코드를 가리지 않는다", () => {
+    expect(whole("a.ts", "const glob = \"src/**/*.ts\";\nprocess.kill(pid);\nconst end = 1; /* x */\n")).toEqual(["process-termination"]);
+  });
+
+  test("Python은 def·class 바로 아래 docstring만 주석이고 execute(\"\"\"…\"\"\")의 SQL 본문은 코드다", () => {
+    expect(whole("a.py", "def f():\n    \"\"\"\n    PLC 설명, UTF-8 BOM.\n    \"\"\"\n    return 1\n")).toEqual([]);
+    expect(whole("a.py", "\"\"\"모듈 설명: PLC MAP\"\"\"\nx = 1\n")).toEqual([]);
+    expect(whole("a.py", "cur.execute(\n    \"\"\"\n    DELETE FROM t\n    \"\"\"\n)\n")).toEqual(["destructive-sql"]);
+  });
+
+  test("HTML <!-- --> 블록 안 설명은 marker가 아니다", () => {
+    expect(whole("a.html", "<!--\n  PLC 와 UTF-8 BOM 설명\n-->\n<p>x</p>\n")).toEqual([]);
+  });
+
+  test("닫는 표시 뒤에 코드가 있으면 그 줄은 코드로 남는다", () => {
+    expect(whole("a.sql", "/*\nnote */ DELETE FROM t;\n")).toEqual(["destructive-sql"]);
+  });
+
+  // cross_review 1회차 지적(R1-OAI-1·2, R1-ADV-1): 문자열 안의 표시나 docstring이 아닌 삼중 따옴표가 실제 코드를 가리면 안 된다.
+  test("줄을 넘는 문자열 안의 줄 맨 앞 /*는 주석이 아니고 그 뒤 실제 코드 줄은 그대로 걸린다", () => {
+    expect(whole("a.ts", "const banner = `\n/*\n`;\ndb.execute(\"DELETE FROM accounts\");\n")).toEqual(["destructive-sql"]);
+    expect(whole("a.sql", "SELECT '\n/*\n';\nDELETE FROM t;\n")).toEqual(["destructive-sql"]);
+    expect(whole("a.cs", "var s = @\"\n/*\n\";\nFile.Delete(path);\n")).toEqual(["deletion"]);
+    expect(whole("a.java", "String s = \"\"\"\n/*\n\"\"\";\nnew File(p).delete(); Runtime.exec(\"taskkill /F\");\n")).toEqual(["process-termination"]);
+    expect(whole("a.ps1", "$s = @\"\n<#\n\"@\nRemove-Item $x\n")).toEqual(["deletion"]);
+  });
+
+  test("진짜 블록 주석 뒤의 코드는 계속 코드고, 같은 줄 앞쪽의 문자열 /*도 주석을 열지 못한다", () => {
+    expect(whole("a.ts", "/* PLC note */\nprocess.kill(pid);\n")).toEqual(["process-termination"]);
+    // 코드 뒤에서 여는 블록 주석은 줄 맨 앞에서 연 것이 아니므로 믿지 않는다(그 안의 줄은 지금까지처럼 코드로 판정한다).
+    expect(whole("a.ts", "foo(\"x\"); /* tail\nPLC prose\n*/\nbar();\n")).toEqual(["device-io"]);
+    expect(whole("a.ts", "const s = \"/*\"; process.kill(1);\nprocess.kill(2);\n")).toEqual(["process-termination", "process-termination"]);
+  });
+
+  test("Python은 def·class 머리(여러 줄 포함) 바로 아래만 docstring이고, 딕셔너리 값·인자 위치·삼중 문자열 안의 줄은 코드다", () => {
+    expect(whole("a.py", "cursor.execute({\n    \"sql\":\n    \"\"\"\n    DELETE FROM accounts\n    \"\"\"\n}[\"sql\"])\n")).toEqual(["destructive-sql"]);
+    expect(whole("a.py", "def f(a,\n      b):\n    \"\"\"\n    PLC 설명 UTF-8 BOM\n    \"\"\"\n    return a\n")).toEqual([]);
+    expect(whole("a.py", "q = \"\"\"\ndef f():\n    not a docstring\n\"\"\"\ncur.execute(\"\"\"\nDELETE FROM t\n\"\"\")\n")).toEqual(["destructive-sql"]);
+    expect(whole("a.py", "cur.execute(\"\"\"\nDELETE FROM t\n\"\"\"\n)\n\"\"\"\nPLC\n\"\"\"\n")).toEqual(["destructive-sql", "device-io"]);
+  });
+  // 2회차 지적(R2-OAI-1·2): Groovy의 ''' 문자열, Python 문자열 안의 이스케이프한 삼중 따옴표.
+  test("Groovy ''' 문자열 안의 /*와 Python 문자열 안의 이스케이프한 \"\"\"는 뒤의 실제 코드를 가리지 못한다", () => {
+    expect(whole("a.groovy", "def text = '''\n/*\n'''\nprintln('x'); \"taskkill /F\".execute()\n")).toEqual(["process-termination"]);
+    expect(whole("a.py", "payload = \"\"\"\n\\\"\"\"\ndef fake():\n\"\"\"\ncursor.execute(\"DELETE FROM users\")\n")).toEqual(["destructive-sql"]);
   });
 });

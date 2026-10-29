@@ -891,14 +891,50 @@ const EVAL_MODEL_BRIDGE_PATTERNS = [
   /^\s*[A-Za-z_]\w*\s*=\s*(?:agent|workpool)\b/im,
 ] as const;
 
+// 2026-10-29 SJF bg_15: eval cell의 `tool.git_finalize()`가 eval 데드라인(300s)에 걸려 셀이 실패 처리되고
+// 반환값(커밋 SHA)을 잃었다. 길이가 정해지지 않은 Main 게이트 도구는 eval 안에서 부르지 않고 직접
+// 호출한다. 직접 호출에는 eval 셀 데드라인이 없다.
+const EVAL_GATE_TOOL_NAMES = "git_finalize|cross_review|slop_check|ci_chain|deploy_verify";
+const GATE_MEMBER = `(?:\\.\\s*|\\[\\s*["'\`])(?:${EVAL_GATE_TOOL_NAMES})(?![\\w$])(?:["'\`]\\s*\\])?`;
+const EVAL_GATE_TOOL_PATTERNS = [
+  // tool.name(…) / tool["name"](…)
+  new RegExp(`\\btool\\s*${GATE_MEMBER}\\s*\\(`, "i"),
+  // (tool).name(…) — 함수 호출 인자 `f(tool).name(`과 구분하려고 여는 괄호 앞이 식별자·닫는 괄호가 아닐 때만 본다.
+  new RegExp(`(?<![\\w$)\\]])\\(\\s*tool\\s*\\)\\s*${GATE_MEMBER}\\s*\\(`, "i"),
+  // f = tool.name 같은 메서드 alias (괄호로 감싼 형태 포함)
+  new RegExp(`=\\s*\\(*\\s*tool\\s*\\)*\\s*${GATE_MEMBER}`, "i"),
+  // const { name: f } = tool 구조분해
+  new RegExp(`\\{[^}]*\\b(?:${EVAL_GATE_TOOL_NAMES})\\b[^}]*\\}\\s*=\\s*tool\\b`, "i"),
+  // getattr(tool, "name")
+  new RegExp(`\\bgetattr\\s*\\(\\s*tool\\s*,\\s*["'\`](?:${EVAL_GATE_TOOL_NAMES})["'\`]`, "i"),
+] as const;
+
+function callsEvalGateTool(code: string): boolean {
+  if (EVAL_GATE_TOOL_PATTERNS.some((pattern) => pattern.test(code))) return true;
+  // t = tool 처럼 tool 객체를 alias한 경우, 그 alias의 게이트 도구 멤버 접근만 같은 호출로 본다.
+  for (const match of code.matchAll(/([A-Za-z_$][\w$]*)\s*=\s*\(*\s*tool\s*\)*\s*(?:[;,]|$)/gim)) {
+    if (new RegExp(`(?<![\\w$])${match[1].replace(/\$/g, "\\$")}\\s*${GATE_MEMBER}`, "i").test(code)) return true;
+  }
+  return false;
+}
+
 export function matchBlockedEvalModelBridge(input: EvalCallInput): string | undefined {
   if (typeof input.code !== "string") return undefined;
-  if (!EVAL_MODEL_BRIDGE_PATTERNS.some((pattern) => pattern.test(input.code))) return undefined;
-  return (
-    "[SpawnGuard] eval의 agent()/workpool()/tool.task() child 실행은 금지합니다. " +
-    "child는 Main의 task 경로로만 보내 TaskBudget/SideQuestGuard를 통과시키세요. " +
-    "판정 상담용 stateless completion()은 허용합니다."
-  );
+  if (EVAL_MODEL_BRIDGE_PATTERNS.some((pattern) => pattern.test(input.code))) {
+    return (
+      "[SpawnGuard] eval의 agent()/workpool()/tool.task() child 실행은 금지합니다. " +
+      "child는 Main의 task 경로로만 보내 TaskBudget/SideQuestGuard를 통과시키세요. " +
+      "판정 상담용 stateless completion()은 허용합니다."
+    );
+  }
+  if (callsEvalGateTool(input.code)) {
+    return (
+      "[EvalGateGuard] eval 안에서 git_finalize/cross_review/slop_check/ci_chain/deploy_verify를 부르지 마세요. " +
+      "eval 셀 데드라인(30~300s)이 먼저 끝나면 셀이 실패 처리되어 도구 반환값(커밋 SHA·reviewId)을 잃습니다. " +
+      "이 도구들은 eval 밖에서 직접 호출하세요."
+    );
+  }
+  return undefined;
 }
 
 // ============================================================================

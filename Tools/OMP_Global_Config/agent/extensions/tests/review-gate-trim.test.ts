@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { advisoryPending, CrossReviewRefusal, detectMarkers, MAX_INPUT_BYTES, ReviewerCallError, runGate, runResolve, runReview, sampleSelected, spawnExec, type Lane, type ReviewDeps } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../lib/routing-ledger";
 import { appendSlopRecord, MAX_REPORT_CSV_BYTES, pendingArtifacts, rawDataReason, readSlopRecords, runSlopGate, sha256, SlopGateRefusal } from "../lib/slop-gate";
-import { buildPrompt, commaOnlyRule, reviewFiles, type Complete, type SlopDeps } from "../slop-gate/review";
+import { buildReviewRequest, commaOnlyRule, reviewFiles, type Complete, type SlopDeps } from "../slop-gate/review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
@@ -260,19 +260,20 @@ describe("humanizer 패턴 3(연결어미 뒤 쉼표)만 든 지적은 finding�
     ["humanizer 패턴 3: 연결어미 뒤 쉼표; 패턴 1 개선 필요: 과도한 쉼표", false],
   ] as const)("%s → %p", (rule, comma) => { expect(commaOnlyRule(rule)).toBe(comma); });
 
-  test("감사한 지적(10-27 deploy_verify 안내문)만 나온 파일은 통과하고 뺀 수를 남기며, 프롬프트에 조정을 알린다", async () => {
+  test("감사한 지적(10-27 deploy_verify 안내문)만 나온 파일은 통과하고 뺀 수를 남기며, system에 조정을 알린다", async () => {
     const cwd = scratch();
+    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
     writeFileSync(join(cwd, "a.md"), KO);
-    const prompts: string[] = [];
-    const complete: Complete = async (family, _system, prompt) => {
-      prompts.push(prompt);
+    const systems: string[] = [];
+    const complete: Complete = async (family, system, prompt) => {
+      systems.push(system);
       return { model: `fixture/${family}`, text: JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [COMMA] })) }) };
     };
     const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
     expect(out.files[0]).toMatchObject({ status: "pass", relaxed: 2 });
-    expect(prompts[0]).toContain("pattern 3 (a comma after a connective ending");
+    expect(systems[0]).toContain("pattern 3 (a comma after a connective ending");
     expect(readSlopRecords(join(cwd, "ledger.jsonl")).some((record) => record.type === "slop-pass" && record.sha256 === sha256(KO))).toBe(true);
-    expect(buildPrompt([], ["stop-slop"])).not.toContain("Gate adjustment");
+    expect(buildReviewRequest([], ["stop-slop"]).system).not.toContain("Gate adjustment");
   });
 });
 
@@ -282,6 +283,7 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
 
   test("첫 답이 끊겼고 다시 받은 답이 맞으면 통과하며, 첫 답의 원문과 파서 오류는 failedAttempts에 남는다", async () => {
     const cwd = scratch();
+    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
     writeFileSync(join(cwd, "a.md"), KO);
     const asked: { family: string; prompt: string }[] = [];
     const complete: Complete = async (family, _system, prompt) => {
@@ -298,8 +300,23 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
     expect(out.failedAttempts).toMatchObject([{ family: "openai", status: "unparsable", raw: TRUNCATED, error: expect.stringContaining("invalid JSON") }]);
   });
 
+  test("다시 묻는 호출도 같은 slot으로 부른다(slop 전용 slot이 풀린 필수 reviewer)", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
+    writeFileSync(join(cwd, "a.md"), KO);
+    const slots: (string | undefined)[] = [];
+    const complete: Complete = async (family, _system, prompt, _signal, slot) => {
+      if (family === "openai") slots.push(slot);
+      return { model: `fixture/${family}`, text: family === "openai" && slots.length === 1 ? TRUNCATED : JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [] })) }) };
+    };
+    const out = await reviewFiles(["a.md"], undefined, { ...slopDeps(cwd, complete), slopSlots: { openai: "openai-codex/gpt-6-luna" } }, signal);
+    expect(out.files[0]!.status).toBe("pass");
+    expect(slots).toEqual(["slopReviewOpenAI", "slopReviewOpenAI"]);
+  });
+
   test("자문 reviewer와 호출 오류는 다시 묻지 않는다", async () => {
     const cwd = scratch();
+    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
     writeFileSync(join(cwd, "a.md"), KO);
     const asked: string[] = [];
     const complete: Complete = async (family) => {
@@ -350,14 +367,14 @@ describe("400000바이트를 넘는 csv는 원자료로 보고 슬롭 검사를 
   test("커밋 게이트: 큰 csv는 통과 없이 지나가되 결과와 거절 문구에 이유와 함께 남는다", async () => {
     const env = repo();
     put(env.work, "reports/log.csv", rows(MAX_REPORT_CSV_BYTES + 1));
-    put(env.work, "README.md", KO);
+    put(env.work, "page.html", KO);
     const ledgerPath = join(env.work, "..", "slop.jsonl");
-    const refused = await runSlopGate({ cwd: env.work, files: ["reports/log.csv", "README.md"], ledgerPath }).then(() => "", (error: Error) => { expect(error).toBeInstanceOf(SlopGateRefusal); return error.message; });
+    const refused = await runSlopGate({ cwd: env.work, files: ["reports/log.csv", "page.html"], ledgerPath }).then(() => "", (error: Error) => { expect(error).toBeInstanceOf(SlopGateRefusal); return error.message; });
     expect(refused).toContain("1 visible artifact(s)");
     expect(refused).toContain("(not gated) reports/log.csv: raw data file");
-    appendSlopRecord(ledgerPath, { type: "slop-pass", path: join(env.work, "README.md"), sha256: sha256(KO), reviewedAt: "t", model: "m", reviewId: "r", findings: [] });
-    const outcome = await runSlopGate({ cwd: env.work, files: ["reports/log.csv", "README.md"], ledgerPath });
-    expect(outcome.artifacts.map((item) => item.path)).toEqual(["README.md"]);
+    appendSlopRecord(ledgerPath, { type: "slop-pass", path: join(env.work, "page.html"), sha256: sha256(KO), reviewedAt: "t", model: "m", reviewId: "r", findings: [] });
+    const outcome = await runSlopGate({ cwd: env.work, files: ["reports/log.csv", "page.html"], ledgerPath });
+    expect(outcome.artifacts.map((item) => item.path)).toEqual(["page.html"]);
     expect(outcome.rawData).toEqual([{ path: "reports/log.csv", reason: expect.stringContaining("raw data file") }]);
     expect(outcome.gateBlobs?.["reports/log.csv"]).toBe(sh(env.work, "hash-object", "reports/log.csv"));
   });

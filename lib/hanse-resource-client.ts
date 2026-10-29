@@ -237,6 +237,15 @@ const MODEL_ID_FACE_ALIASES: Readonly<Record<string, string>> = {
   "gemini-4-argon": "HIKARI(히카리)",
 };
 
+/**
+ * 계정이 여럿인데 순서 풀(RIN/MIO) 대신 기존 자리 하나의 얼굴을 함께 쓰는 provider. 값은 얼굴 별칭이다.
+ * 계정마다 이름 뒤에 계정 자리 번호(1부터)를 붙여 가른다. 사무실 모드에서는 그 자리의 대체 캐릭터(HIKARI →
+ * HASSABIS) 이름이 그대로 따라간다. 계정이 여럿이라 provider 전체 예약(`providerAccountFace`)은 아니다.
+ */
+const SHARED_SEAT_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  "google-antigravity": "HIKARI(히카리)",
+};
+
 export interface CharacterRosterEntry {
   seed: number;
   alias: string;
@@ -572,6 +581,13 @@ function reservedSlot(provider: string): number {
   return RESERVED_SLOTS.get(provider) ?? -1;
 }
 
+/** provider → 그 계정들이 함께 앉는 자리. */
+const SHARED_SEAT_SLOTS: ReadonlyMap<string, number> = new Map(
+  Object.entries(SHARED_SEAT_PROVIDER_ALIASES).map(([provider, alias]) => (
+    [provider, ACCOUNT_FACES.findIndex((face) => face.alias === alias)] as const
+  )),
+);
+
 /** 자리를 가리키는 값에서 실제 자리로. 배정이 이미 자리를 고르므로 여기서 다시 섞지 않는다. */
 function faceSlot(seed: number): number {
   return seed % ACCOUNT_FACES.length;
@@ -695,6 +711,8 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
       taken.add(position);
       seated.set(report.provider, taken);
     }
+    const shared = SHARED_SEAT_SLOTS.get(report.provider) ?? -1;
+    if (shared >= 0) return { seed: shared, alias: `${aliasForSeed(shared)}${position + 1}`, masked, raw };
     const slot = position % POOL_SIZE;
     // 계정이 자산보다 많으면 자리가 돌아 같은 얼굴을 다시 쓴다. 그때만 뒤에 번호를 붙여
     // 이름만은 갈라 둔다.

@@ -53,7 +53,7 @@ function workspace(): { dir: string; ctx: never } {
   git("add", "."); git("commit", "-qm", "init");
   writeFileSync(join(dir, "a.ts"), "export const a = 2;\n");
   mkdirSync(join(dir, "docs"), { recursive: true });
-  writeFileSync(join(dir, "docs", "new.md"), "새 문서의 본문은 이렇게 짧다. 설치하고 실행하면 된다. 끝이다.\n");
+  writeFileSync(join(dir, "docs", "new.html"), "<p>새 문서의 본문은 이렇게 짧다. 설치하고 실행하면 된다. 끝이다.</p>\n");
   const split = (name: string) => { const [provider, ...rest] = name.split("/"); return { provider: provider!, id: rest.join("/"), api: "x", maxTokens: 1000 }; };
   const ctx = {
     cwd: dir, agent: { kind: "main" }, model: { provider: "anthropic", id: "claude-sonnet-5-5" },
@@ -97,7 +97,7 @@ test("배선 검사는 격리된 자식 프로세스에서 모두 통과한다",
       providerCalls.length = 0;
       let tool: { execute: (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> } | undefined;
       slop.default({ zod, registerTool: (registered: never) => { tool = registered; }, on: () => {}, sendMessage: () => {}, setLabel: () => {} } as never);
-      const result = await tool!.execute("1", { action: "review", files: ["docs/new.md"], authors: ["anthropic/claude-sonnet-5-5"] }, new AbortController().signal, undefined, ctx);
+      const result = await tool!.execute("1", { action: "review", files: ["docs/new.html"], authors: ["anthropic/claude-sonnet-5-5"] }, new AbortController().signal, undefined, ctx);
       const text = result.content[0]!.text;
       const parsed = JSON.parse(text.slice(text.indexOf("{")));
       expect(parsed.failedAttempts).toMatchObject([{ family: "advisory", model: "aistudio/gemini-4-argon", status: "error", error: expect.stringContaining("429") }, { family: "advisory", status: "error", error: expect.stringContaining("crossReviewAdvisoryFallback") }]);
@@ -107,4 +107,61 @@ test("배선 검사는 격리된 자식 프로세스에서 모두 통과한다",
       expect(parsed.files[0].status).toBe("pass");
     });
   }
+});
+
+(inChild ? describe : describe.skip)("slop_check reviewer slot: slopReviewOpenAI(Luna)·slopReviewGemini(Flash)가 있으면 그 모델, 없거나 풀리지 않으면 옛 slot", () => {
+  type Reviewer = { family: string; model?: string; status: string; error?: string; advisory?: true };
+  const runSlop = async (author: string, extra: Record<string, string>) => {
+    const slop = await import("../slop-gate");
+    const { ctx } = workspace();
+    for (const key of Object.keys(roles)) delete roles[key];
+    Object.assign(roles, base, extra);
+    providerCalls.length = 0;
+    let tool: { execute: (id: string, params: unknown, signal: AbortSignal, onUpdate: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> } | undefined;
+    slop.default({ zod, registerTool: (registered: never) => { tool = registered; }, on: () => {}, sendMessage: () => {}, setLabel: () => {} } as never);
+    const result = await tool!.execute("1", { action: "review", files: ["docs/new.html"], authors: [author] }, new AbortController().signal, undefined, ctx);
+    const text = result.content[0]!.text;
+    return JSON.parse(text.slice(text.indexOf("{"))) as { reviewers: Reviewer[]; files: { status: string }[] };
+  };
+  const both = { slopReviewOpenAI: "openai-codex/gpt-6-luna", slopReviewGemini: "aistudio/gemini-3.8-flash" };
+  const answered = (parsed: { reviewers: Reviewer[] }) => parsed.reviewers.map((reviewer) => `${reviewer.family}:${reviewer.model}`).sort();
+
+  test("Anthropic 저자: Luna가 필수, Gemini Flash가 자문(Opus·Astra·Argon은 부르지 않는다)", async () => {
+    const parsed = await runSlop("anthropic/claude-sonnet-5-5", both);
+    expect([...providerCalls].sort()).toEqual(["gemini-3.8-flash", "gpt-6-luna"]);
+    expect(answered(parsed)).toEqual(["advisory:aistudio/gemini-3.8-flash", "openai:openai-codex/gpt-6-luna"]);
+    expect(parsed.reviewers.find((reviewer) => reviewer.family === "advisory")).toMatchObject({ advisory: true });
+    expect(parsed.files[0]!.status).toBe("pass");
+  });
+
+  test("OpenAI 저자: Gemini Flash가 필수이고 Luna(같은 계열)는 건너뛴다", async () => {
+    const parsed = await runSlop("openai-codex/gpt-6-astra", both);
+    expect(providerCalls).toEqual(["gemini-3.8-flash"]);
+    expect(answered(parsed)).toEqual(["google:aistudio/gemini-3.8-flash"]);
+    expect(parsed.files[0]!.status).toBe("pass");
+  });
+
+  test("slot이 없거나 풀리지 않으면 옛 경로(crossReviewOpenAI Astra 필수 + crossReviewAdvisory 자문)", async () => {
+    for (const extra of [{}, { slopReviewOpenAI: "nowhere/missing", slopReviewGemini: "nowhere/missing" }]) {
+      const parsed = await runSlop("anthropic/claude-sonnet-5-5", extra);
+      expect([...providerCalls].sort()).toEqual(["gemini-4-argon", "gpt-6-astra"]);
+      expect(parsed.reviewers.find((reviewer) => reviewer.family === "openai")).toMatchObject({ status: "ok", model: "openai-codex/gpt-6-astra" });
+    }
+  });
+
+  test("한쪽 slot만 있으면 그 자리만 바뀐다: Luna만 → Luna 필수 + Argon 자문", async () => {
+    await runSlop("anthropic/claude-sonnet-5-5", { slopReviewOpenAI: "openai-codex/gpt-6-luna" });
+    expect([...providerCalls].sort()).toEqual(["gemini-4-argon", "gpt-6-luna"]);
+  });
+
+  test("slot이 계열이 맞지 않는 모델로 풀리면 거절되어 통과가 없다", async () => {
+    const luna = await runSlop("anthropic/claude-sonnet-5-5", { slopReviewOpenAI: "anthropic/claude-opus-5-5" });
+    expect(luna.reviewers.find((reviewer) => reviewer.family === "openai")).toMatchObject({ status: "error", error: expect.stringContaining("not a openai model") });
+    expect(luna.files[0]!.status).toBe("error");
+    expect(providerCalls).not.toContain("claude-opus-5-5");
+    const flash = await runSlop("openai-codex/gpt-6-astra", { slopReviewGemini: "anthropic/claude-opus-5-5" });
+    expect(flash.reviewers.find((reviewer) => reviewer.family === "google")).toMatchObject({ status: "error", error: expect.stringContaining("not a google model") });
+    expect(flash.files[0]!.status).toBe("error");
+    expect(providerCalls).not.toContain("claude-opus-5-5");
+  });
 });

@@ -205,6 +205,13 @@ export function isCodeFile(path: string): boolean {
   return !GENERATED_FILE.test(normalized);
 }
 
+/** 게이트 대상이 아닌 까닭이 문서인 경로: 마크다운·txt, 저장소 맨 위 `doc/`·`docs/`, 작업 기록 데이터. 테스트·생성물은 문서가 아니다. */
+export function isDocFile(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  return DOC_FILE.test(normalized) || segments[0] === "doc" || segments[0] === "docs" || RECORD_DATA_FILE.test(normalized);
+}
+
 // git이 바이너리로 본 이 확장자의 파일은 사람이 읽는 실행 코드가 아니다(이미지·미디어·오피스·글꼴). 실행 파일·라이브러리는 그대로 코드다.
 const BINARY_ASSET = /\.(?:png|jpe?g|gif|webp|bmp|ico|tiff?|psd|pdf|docx|xlsx|pptx|hwpx|odt|ods|odp|mp3|wav|ogg|flac|mp4|webm|mov|avi|woff2?|ttf|otf|eot)$/i;
 
@@ -480,8 +487,11 @@ export function stripStringLiterals(text: string, vb: boolean): string {
   return out;
 }
 
-/** 바뀐 줄 하나. removed면 line은 이전 파일의 줄 번호다. */
-export interface ChangedLine { line: number; text: string; removed?: boolean }
+/**
+ * 바뀐 줄 하나. removed면 line은 이전 파일의 줄 번호다. comment는 그 줄이 블록 주석 안의 줄(여는 줄·닫는 줄 포함)이라 marker 판정에서 빼는 표시다
+ * (markBlockComments가 파일 전체 내용으로 상태를 알아 붙인다). 없으면 줄 하나만 보고 판정한다.
+ */
+export interface ChangedLine { line: number; text: string; removed?: boolean; comment?: true }
 export interface MarkerHit { trigger: TriggerId; line?: number; text: string; removed?: boolean }
 
 /**
@@ -492,8 +502,8 @@ export function detectMarkers(path: string, lines: readonly ChangedLine[]): Mark
   const hits: MarkerHit[] = [];
   const normalized = path.replaceAll("\\", "/");
   const vb = VB_FILE.test(normalized);
-  for (const { line, text, removed } of lines) {
-    if (COMMENT_LINE.test(text) || (vb && VB_COMMENT_LINE.test(text))) continue;
+  for (const { line, text, removed, comment } of lines) {
+    if (comment || COMMENT_LINE.test(text) || (vb && VB_COMMENT_LINE.test(text))) continue;
     for (const marker of MARKERS) {
       if (!marker.line.test(text)) continue;
       if (marker.id === "device-io" && !(BROWSER_MARKUP_FILE.test(normalized) ? DEVICE_IO_CALL : marker.line).test(stripStringLiterals(text, vb))) continue;
@@ -501,6 +511,248 @@ export function detectMarkers(path: string, lines: readonly ChangedLine[]): Mark
     }
   }
   return hits;
+}
+
+// ── 블록 주석 ────────────────────────────────────────────────────────────────
+// 블록 주석 안의 산문 줄은 줄 하나만 보면 코드와 구별되지 않는다(2026-10-29 SJF: `/* … */` 설명 안의 "PLC MAP"·"UTF-8 BOM"이 device-io·encoding으로 걸려 25분 검토).
+// 그래서 파일 전체를 훑어 줄마다 주석 안인지 알아낸다. 코드를 가리는 쪽(fail-open)이 가장 나쁜 오류라서 틀릴 때는 늘 "코드"로 남게 한다:
+// 여는 표시가 줄 맨 앞에 있을 때만 주석으로 믿고, 줄을 넘는 문자열(템플릿·SQL 따옴표·here-string·삼중 따옴표) 안의 표시는 주석이 아니며,
+// 닫는 표시 뒤에 코드가 있는 줄·정규식 같이 읽을 수 없는 모양은 코드로 둔다. 열린 채 끝나는 문자열은 파일 끝까지 문자열이라 주석 판정을 멈춘다.
+
+const C_BLOCK_FILE = /\.(?:sql|c|h|cc|cpp|cxx|hpp|hxx|cs|java|[cm]?[jt]sx?|css|scss|less|go|rs|php|swift|kts?|scala|dart|groovy|gradle)$/i;
+const MARKUP_BLOCK_FILE = /\.(?:html?|xhtml|xml|xaml|svg|cshtml|razor|csproj|vbproj|props|targets|config)$/i;
+const POWERSHELL_FILE = /\.(?:ps1|psm1|psd1)$/i;
+const PYTHON_FILE = /\.pyi?$/i;
+const PY_TRIPLE_OPEN = /^\s*[rRuUbB]{0,2}("""|''')/;
+const PY_DEF_LINE = /^\s*(?:async\s+)?(?:def|class)\b/;
+
+/** 줄 훑기 설정: 블록 주석 표시, 줄 주석 표시, 줄을 넘을 수 있는 따옴표, 삼중 따옴표 여부, 이스케이프 방식. */
+interface ScanConfig {
+  open: string;
+  close: string;
+  lineComment: readonly string[];
+  multi: string;
+  triples: readonly string[];
+  escape: "backslash" | "backtick" | "none";
+  doubled: boolean;
+  verbatimAt: boolean;
+  hereString: boolean;
+}
+type BlockEngine = { kind: "scan"; config: ScanConfig } | { kind: "markup" } | { kind: "python" };
+
+function blockEngineOf(path: string): BlockEngine | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  if (POWERSHELL_FILE.test(normalized)) return { kind: "scan", config: { open: "<#", close: "#>", lineComment: ["#"], multi: "'\"", triples: [], escape: "backtick", doubled: true, verbatimAt: false, hereString: true } };
+  if (MARKUP_BLOCK_FILE.test(normalized)) return { kind: "markup" };
+  if (PYTHON_FILE.test(normalized)) return { kind: "python" };
+  if (!C_BLOCK_FILE.test(normalized)) return undefined;
+  const extension = normalized.slice(normalized.lastIndexOf(".") + 1).toLowerCase();
+  const base = { open: "/*", close: "*/", lineComment: ["//"], multi: "`", triples: ["\"\"\""], escape: "backslash" as const, doubled: false, verbatimAt: extension === "cs", hereString: false };
+  if (extension === "sql") return { kind: "scan", config: { ...base, lineComment: ["--"], multi: "'\"", triples: [], escape: "none", doubled: true } };
+  if (extension === "rs") return { kind: "scan", config: { ...base, multi: "`\"" } };
+  if (extension === "php") return { kind: "scan", config: { ...base, lineComment: ["//", "#"], multi: "`'\"" } };
+  if (extension === "groovy" || extension === "gradle" || extension === "dart") return { kind: "scan", config: { ...base, triples: ["\"\"\"", "'''"] } };
+  return { kind: "scan", config: base };
+}
+
+// C 계열 언어와 PowerShell: 문자열·줄 주석을 따라가며 줄마다 "전부 블록 주석 안(맨 앞에서 연 것)"인지 본다.
+function scanBlockCommentLines(lines: readonly string[], config: ScanConfig): Set<number> {
+  const out = new Set<number>();
+  let block: { maskable: boolean } | undefined;
+  let string: { quote: string; multi: boolean; verbatim: boolean } | undefined;
+  let here: string | undefined;
+  for (const [index, text] of lines.entries()) {
+    if (here) {
+      if (text.startsWith(here)) here = undefined;
+      continue;
+    }
+    let code = false;
+    let comment = false;
+    let i = 0;
+    while (i < text.length) {
+      if (block) {
+        const at = text.indexOf(config.close, i);
+        const end = at < 0 ? text.length : at + config.close.length;
+        if (block.maskable) comment = true;
+        else if (text.slice(i, end).trim() !== "") code = true;
+        i = end;
+        if (at >= 0) block = undefined;
+        continue;
+      }
+      if (string) {
+        code = true;
+        const closer = string.quote;
+        let j = i;
+        let closed = false;
+        while (j < text.length) {
+          if (!string.verbatim && config.escape === "backslash" && text[j] === "\\") { j += 2; continue; }
+          if (!string.verbatim && config.escape === "backtick" && text[j] === "`") { j += 2; continue; }
+          if (text.startsWith(closer, j)) {
+            if ((config.doubled || string.verbatim) && closer.length === 1 && text[j + 1] === closer) { j += 2; continue; }
+            j += closer.length;
+            closed = true;
+            break;
+          }
+          j += 1;
+        }
+        i = Math.min(j, text.length);
+        if (closed) string = undefined;
+        continue;
+      }
+      const ch = text[i]!;
+      if (/\s/.test(ch)) { i += 1; continue; }
+      if (text.startsWith(config.open, i)) {
+        block = { maskable: !code };
+        if (!code) comment = true;
+        i += config.open.length;
+        continue;
+      }
+      if (config.lineComment.some((token) => text.startsWith(token, i))) { comment = true; break; }
+      if (ch === "\"" || ch === "'" || ch === "`") {
+        code = true;
+        if (config.hereString && text[i - 1] === "@" && text.slice(i + 1).trim() === "") { here = `${ch}@`; break; }
+        const triple = config.triples.find((delimiter) => text.startsWith(delimiter, i));
+        const verbatim = config.verbatimAt && ch === "\"" && (text[i - 1] === "@" || (text[i - 1] === "$" && text[i - 2] === "@") || text.slice(Math.max(0, i - 2), i) === "$@");
+        string = { quote: triple ?? ch, multi: triple !== undefined || verbatim || config.multi.includes(ch), verbatim };
+        i += string.quote.length;
+        continue;
+      }
+      code = true;
+      i += 1;
+    }
+    // 줄을 넘을 수 없는 따옴표는 줄 끝(역슬래시 이어짐 제외)에서 닫힌 것으로 본다.
+    if (string && !string.multi && !(config.escape === "backslash" && text.endsWith("\\"))) string = undefined;
+    if (!code && comment) out.add(index + 1);
+  }
+  return out;
+}
+
+/** HTML·XML류: 줄 맨 앞의 `<!--`부터 `-->`까지. 문자열 상태는 따지지 않는다(마크업 본문에는 문자열 구분이 없다). */
+function markupBlockCommentLines(lines: readonly string[]): Set<number> {
+  const out = new Set<number>();
+  let open = false;
+  for (const [index, text] of lines.entries()) {
+    const from = open ? 0 : (text.trimStart().startsWith("<!--") ? text.indexOf("<!--") + 4 : -1);
+    if (from < 0) continue;
+    const at = text.indexOf("-->", from);
+    open = at < 0;
+    if (at < 0 || text.slice(at + 3).trim() === "") out.add(index + 1);
+  }
+  return out;
+}
+
+/** from부터 처음 나오는 delimiter의 위치. 역슬래시로 이스케이프한 곳은 건너뛴다(없으면 -1). */
+function indexOfUnescaped(text: string, delimiter: string, from: number): number {
+  for (let i = from; i < text.length; i += 1) {
+    if (text[i] === "\\") { i += 1; continue; }
+    if (text.startsWith(delimiter, i)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Python: `def`·`class` 머리(여러 줄 머리 포함) 바로 아래 또는 파일 맨 앞의 삼중 따옴표 문자열만 주석(docstring)이다. 그 밖의 삼중 따옴표 문자열은
+ * 코드(`execute("""DELETE …""")`의 SQL 본문, 딕셔너리 값)이며, 그 안의 줄은 머리나 docstring으로 읽지 않는다.
+ */
+function pythonDocstringLines(lines: readonly string[]): Set<number> {
+  const out = new Set<number>();
+  let string: { delimiter: string; docstring: boolean } | undefined;
+  let suite = true;
+  let header = false;
+  let depth = 0;
+  let last = "";
+  for (const [index, text] of lines.entries()) {
+    const number = index + 1;
+    if (string) {
+      const at = indexOfUnescaped(text, string.delimiter, 0);
+      if (at < 0) { if (string.docstring) out.add(number); continue; }
+      if (string.docstring && text.slice(at + 3).trim() === "") out.add(number);
+      string = undefined;
+      continue;
+    }
+    const trimmed = text.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (suite && !header) {
+      const open = PY_TRIPLE_OPEN.exec(text);
+      if (open) {
+        const at = indexOfUnescaped(text, open[1]!, open[0].length);
+        if (at < 0) { string = { delimiter: open[1]!, docstring: true }; out.add(number); }
+        else if (text.slice(at + 3).trim() === "") out.add(number);
+        suite = false;
+        continue;
+      }
+    }
+    if (!header && PY_DEF_LINE.test(text)) { header = true; depth = 0; }
+    if (!header) suite = false;
+    last = "";
+    for (let i = 0; i < text.length;) {
+      const ch = text[i]!;
+      if (ch === "#") break;
+      if (ch === "\"" || ch === "'") {
+        const triple = ch.repeat(3);
+        if (text.startsWith(triple, i)) {
+          const at = indexOfUnescaped(text, triple, i + 3);
+          if (at < 0) { string = { delimiter: triple, docstring: false }; last = ch; break; }
+          i = at + 3;
+        } else {
+          let j = i + 1;
+          while (j < text.length && text[j] !== ch) j += text[j] === "\\" ? 2 : 1;
+          i = j + 1;
+        }
+        last = ch;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        if ("([{".includes(ch)) depth += 1;
+        else if (")]}".includes(ch)) depth -= 1;
+        last = ch;
+      }
+      i += 1;
+    }
+    if (header && !string && depth <= 0) {
+      header = false;
+      suite = last === ":";
+    }
+  }
+  return out;
+}
+
+/**
+ * 내용에서 블록 주석 안에 통째로 든 줄 번호(1부터, `\n` 기준)를 모은다. 여는 줄과 닫는 줄도 그 뒤·앞에 코드가 없으면 든 줄이다.
+ * 지원하지 않는 확장자는 빈 집합이다.
+ */
+export function blockCommentLines(path: string, content: string): Set<number> {
+  const engine = blockEngineOf(path);
+  if (!engine) return new Set();
+  const lines = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").split("\n");
+  if (engine.kind === "scan") return scanBlockCommentLines(lines, engine.config);
+  return engine.kind === "markup" ? markupBlockCommentLines(lines) : pythonDocstringLines(lines);
+}
+
+/**
+ * 바뀐 줄 중 블록 주석 안의 줄에 comment 표시를 붙인다. 추가·그대로인 줄은 after(새 내용), 삭제된 줄은 before(이전 내용)의 주석 상태를 따른다.
+ * before를 모르면(null) 삭제된 줄은 줄 하나만 보고 판정한다(지금까지의 동작).
+ */
+export function markBlockComments(path: string, lines: ChangedLine[], after: string | null, before: string | null): ChangedLine[] {
+  if (lines.length === 0 || !blockEngineOf(path)) return lines;
+  const inAfter = after === null ? undefined : blockCommentLines(path, after);
+  const inBefore = before === null ? undefined : blockCommentLines(path, before);
+  if (!inAfter?.size && !inBefore?.size) return lines;
+  return lines.map((item) => ((item.removed ? inBefore : inAfter)?.has(item.line) ? { ...item, comment: true as const } : item));
+}
+
+/**
+ * markBlockComments에 이전 내용을 git에서 필요할 때만 가져다 준다: 삭제된 줄 중 marker 모양이 있을 때만 beforeRef(blob 또는 rev:path)를 읽는다.
+ * 읽지 못하면 삭제된 줄은 지금까지처럼 줄 하나로 판정한다.
+ */
+async function markComments(exec: Exec, git: string, root: string, path: string, lines: ChangedLine[], after: string | null, beforeRef: string | undefined): Promise<ChangedLine[]> {
+  if (lines.length === 0 || !blockEngineOf(path)) return lines;
+  let before: string | null = null;
+  if (beforeRef && lines.some((item) => item.removed && MARKERS.some((marker) => marker.line.test(item.text)))) {
+    const shown = await exec(git, ["cat-file", "blob", beforeRef], { cwd: root });
+    if (shown.code === 0) before = shown.stdout;
+  }
+  return markBlockComments(path, lines, after, before);
 }
 
 // ── 숨김 단서(advisory) ──────────────────────────────────────────────────────
@@ -710,7 +962,7 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
       const diff = await run(["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path]);
       if (diff.code !== 0) throw new Error(`git diff failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
       const binary = /^Binary files /m.test(diff.stdout);
-      changed.push({ path, status: kind, blob: DELETED_BLOB, binary, changedLines: binary ? [] : parseChangedLines(diff.stdout), text: diff.stdout, content: null });
+      changed.push({ path, status: kind, blob: DELETED_BLOB, binary, changedLines: binary ? [] : await markComments(exec, git, root, path, parseChangedLines(diff.stdout), null, `HEAD:${path}`), text: diff.stdout, content: null });
       continue;
     }
     // 내용은 한 번만 읽는다. blob은 그 바이트에서 내고, 검토 본문(새 파일은 전체, 수정은 diff)도 같은 내용인지 확인한다.
@@ -731,7 +983,7 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
       }
       const binary = forced ?? content.subarray(0, 8000).includes(0);
       const text = binary ? "" : content.toString("utf8").replace(/^\uFEFF/, "");
-      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text: binary ? "" : numbered(text), content });
+      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : markBlockComments(path, text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text, null), text: binary ? "" : numbered(text), content });
       continue;
     }
     const diff = await run(["diff", "HEAD", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path]);
@@ -741,7 +993,7 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
     const diffBlob = diffBlobs?.[2];
     if (diffBlob && diffBlob !== blob) throw new Error(`${path} changed while it was being read for the review; run it again once the file is stable.`);
     const isBinary = /^Binary files /m.test(diff.stdout);
-    const changedLines = parseChangedLines(diff.stdout);
+    const changedLines = await markComments(exec, git, root, path, parseChangedLines(diff.stdout), isBinary ? null : content.toString("utf8"), diffBlobs?.[1]);
     // 주석만 바뀐 TS/JS인지, 버전 문자열만 바뀌었는지는 HEAD blob(diff index 줄의 이전 blob)과 지금 바이트로 증명한다. 읽지 못하면 코드로 남는다.
     // 버전 비교는 바뀐 줄이 모두 semver 문자열을 품을 때만 HEAD 내용을 읽는다.
     let commentOnly = false;
@@ -834,12 +1086,13 @@ export async function collectChangesSince(exec: Exec, git: string, root: string,
       if (numstat.code !== 0) throw new Error(`git diff --numstat failed for ${path}: ${(numstat.stderr || numstat.stdout).trim()}`);
       const binary = numstat.stdout.startsWith("-\t-\t");
       const text = binary ? "" : shown.stdout.replace(/^\uFEFF/, "");
-      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text: binary ? "" : numbered(text), content });
+      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : markBlockComments(path, text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text, null), text: binary ? "" : numbered(text), content });
       continue;
     }
     const diff = await exec(git, ["--literal-pathspecs", "diff", baseSha, headSha, "--full-index", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path], { cwd: root });
     if (diff.code !== 0) throw new Error(`git diff ${baseSha.slice(0, 12)} ${headSha.slice(0, 12)} failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
-    changed.push({ path, status: kind, blob, binary: /^Binary files /m.test(diff.stdout), changedLines: parseChangedLines(diff.stdout), text: diff.stdout, content });
+    const binaryDiff = /^Binary files /m.test(diff.stdout);
+    changed.push({ path, status: kind, blob, binary: binaryDiff, changedLines: binaryDiff ? parseChangedLines(diff.stdout) : await markComments(exec, git, root, path, parseChangedLines(diff.stdout), content === null ? null : content.toString("utf8"), inBase ? `${baseSha}:${path}` : undefined), text: diff.stdout, content });
   }
   return { changed, unchanged };
 }
@@ -1039,6 +1292,33 @@ async function passedBlobContent(exec: Exec, git: string, root: string, path: st
     } catch { /* 사본이 지워졌으면 다음 기록을 본다. */ }
   }
   return undefined;
+}
+
+/**
+ * 편집 직후 조기 알림 문구: 이 파일이 지금 내용 그대로 커밋되면 marker 때문에 cross_review가 필요한지 본다. 저장소 안의 게이트 대상 코드 파일이고, 바뀐 줄이 marker에
+ * 맞고, 지금 내용을 덮는 통과가 아직 없을 때만 문구를 돌려준다(아니면 undefined). 알림일 뿐 게이트가 아니며, 1/10 표본은 미리 알 수 없어 다루지 않는다.
+ * 원장은 marker가 맞은 뒤에만 읽는다(readRecords). git이 읽히지 않는 등 어떤 실패도 알림을 내지 않는 쪽으로 끝난다.
+ */
+export async function earlyReviewNotice(cwd: string, absolutePath: string, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[]): Promise<string | undefined> {
+  try {
+    const input = relative(cwd, absolutePath);
+    if (!input || isAbsolute(input)) return undefined;
+    const resolved = await resolveRepoTargets(cwd, [input], exec);
+    if ("failure" in resolved) return undefined;
+    const path = resolved.targets[0]!.path;
+    if (!isCodeFile(path) || hardSecretPath(path)) return undefined;
+    const { changed } = await collectChanges(exec, "git", resolved.root, [path]);
+    const change = changed[0];
+    if (!change || change.status === "deleted" || !isGateTarget(change)) return undefined;
+    const hits = detectMarkers(change.path, change.changedLines);
+    if (hits.length === 0 || coveredBlobs(readRecords()).get(change.path)?.get(change.blob)?.length) return undefined;
+    const seen = new Set<string>();
+    const shown = hits.filter((hit) => !seen.has(hit.trigger) && seen.add(hit.trigger)).slice(0, 3)
+      .map((hit) => `${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}`);
+    return `cross_review early notice: ${change.path} hits a review marker (${shown.join(", ")}), so it will need a passed cross_review before git_finalize. Review it once the file has settled, together with your other changed code files in one call, instead of at publish time (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.`;
+  } catch {
+    return undefined;
+  }
 }
 
 export const DEFAULT_CROSS_REVIEW_DIR = join(dirname(dirname(import.meta.dir)), "cross-review");
@@ -1634,6 +1914,8 @@ export interface ReviewResult {
   references: { path: string; bytes: number; blob: string; redacted?: number }[];
   /** 참고에서 빠진 파일과 이유. */
   skippedReferences: { path: string; reason: string }[];
+  /** 문서라서 게이트 대상이 아니어서 files에서 빼 참고로만 보낸 경로(코드 파일이 함께 있을 때만). 문서·기록은 어떤 통과도 덮지 않는다. */
+  docsMovedToReferences?: string[];
   /** base를 줬을 때만: 변경을 비교한 기준 커밋(전체 sha). */
   base?: string;
   /** 입력을 선언했거나 앞 라운드가 묶은 입력이 있을 때만: reviewer가 본 입력(경로·크기·blob)과 읽히지 않아 묶이지 않은 입력. 입력은 심사 대상이 아니다. */
@@ -2082,9 +2364,23 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const targets = await resolveRepoTargets(deps.cwd, files, deps.exec);
   if ("failure" in targets) throw new Error(`files must be cwd-relative paths of existing parents inside ONE git repository (like git_finalize): ${targets.detail}`);
   const { root } = targets;
+  // 문서(마크다운·HANDOFF·맨 위 doc/ 기록)는 게이트 대상이 아니고 통과가 덮지도 않는다. 심사할 코드가 실제로 실리면 문서는 심사 대상에서 빼 참고(맥락)로만 보낸다
+  // (측정 7일: 기록 문서를 files에 넣은 체인이 지적 115건·추가 라운드 25회를 만들었다). 코드가 하나도 실리지 않으면(문서뿐인 요청·바뀐 코드 없음) 문서를 그대로 심사한다.
+  // 이미 inputs로 준 문서는 어느 경우에나 files에서 빠져 입력으로만 남는다.
+  const docTargets = targets.targets.filter((target) => isDocFile(target.path));
+  const explicitReferences = [...new Set((input.references ?? []).map((item) => item.trim()).filter(Boolean))];
+  const explicitInputs = [...new Set((input.inputs ?? []).map((item) => item.trim()).filter(Boolean))];
+  // 이미 입력·참고인 문서는 철자(./a.md)가 달라도 저장소 경로로 알아본다. 이어받은 입력(앞 라운드가 묶은 것)도 입력이다. 해석하지 못하면 뒤 단계가 그 이유로 거절한다.
+  const repoPathsOf = async (asked: string[]): Promise<Set<string>> => {
+    if (asked.length === 0) return new Set();
+    const resolved = await resolveRepoTargets(deps.cwd, asked, deps.exec);
+    return "failure" in resolved ? new Set() : new Set(resolved.targets.map((target) => target.path));
+  };
+  const inputPaths = new Set([...(previous?.inputs ?? []).map((item) => item.path), ...await repoPathsOf(explicitInputs)]);
+  const referencePaths = await repoPathsOf(explicitReferences);
   // 참고·입력 파일이 있으면 정식 저장소 루트를 첫 비동기 수집 전에 고정한다. 이후 루트가 바뀌어도 이 문자열이 기준이며 다시 풀지 않는다.
   let pinnedRoot: string | undefined;
-  if (input.references?.length || input.inputs?.length || previous?.inputs?.length) {
+  if (explicitReferences.length || docTargets.length > 0 || input.inputs?.length || previous?.inputs?.length) {
     try { pinnedRoot = realpathSync(root); } catch (error) { throw new Error(`references/inputs: repository root ${root} could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
   }
   if (previous && pathKey(previous.root) !== pathKey(root)) throw new Error(`${previous.reviewId} reviewed ${previous.root}, not ${root}; later rounds must stay in the same repository.`);
@@ -2092,6 +2388,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const skipped: { path: string; reason: string }[] = [];
   let paths = targets.targets.map((target) => target.path);
   if (previous) paths = [...new Set([...previous.files.map((file) => file.path), ...paths])];
+  // 이미 입력인 문서는 앞 라운드가 files로 심사한 적이 있어도 files에 되돌리지 않는다(입력은 심사 대상이 아니다).
+  paths = paths.filter((path) => !(isDocFile(path) && inputPaths.has(path)));
   const inputPlan = await planInputs(deps, root, input.inputs ?? [], previous, paths);
   const policyExcluded: string[] = [];
   const safe = paths.filter((path) => {
@@ -2123,51 +2421,64 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     skipped.push({ path, reason: "private key block excluded by the safety filter; it is NOT covered by any pass" });
     return true;
   };
-  const wholeFile = (content: Buffer): { text: string; lines: ChangedLine[] } => {
+  const wholeFile = (path: string, content: Buffer): { text: string; lines: ChangedLine[] } => {
     const raw = content.toString("utf8").replace(/^\uFEFF/, "");
-    return { text: numbered(raw), lines: raw.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })) };
+    return { text: numbered(raw), lines: markBlockComments(path, raw.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), raw, null) };
   };
 
+  const codeSafe = safe.filter((path) => !isDocFile(path));
+  const docSafe = safe.filter((path) => isDocFile(path));
+  let docsDeferred = false;
   if (!previous) {
     const range = suppliedBase === undefined ? undefined : await resolveBaseRevision(deps.exec, git, root, suppliedBase);
     const { changed, unchanged } = range ? await collectChangesSince(deps.exec, git, root, safe, range) : await collectChanges(deps.exec, git, root, safe);
-    for (const path of unchanged) skipped.push({ path, reason: range ? `no changes against ${suppliedBase} (${range.baseSha.slice(0, 12)}); nothing to review` : "no changes against HEAD; nothing to review" });
+    const skipUnchanged = (path: string) => { skipped.push({ path, reason: range ? `no changes against ${suppliedBase} (${range.baseSha.slice(0, 12)}); nothing to review` : "no changes against HEAD; nothing to review" }); };
     resolvedBase = range?.baseSha;
-    for (const change of changed) {
-      if (change.binary) { skipped.push({ path: change.path, reason: "binary file" }); continue; }
-      if (holdsKeyBlock(change.path, change.content)) continue;
-      if (!addPart(change.path, change.status === "added" ? "new-file" : "diff", change.text, change.changedLines, change.status)) continue;
+    const take = (change: ChangedFile): void => {
+      if (change.binary) { skipped.push({ path: change.path, reason: "binary file" }); return; }
+      if (holdsKeyBlock(change.path, change.content)) return;
+      if (!addPart(change.path, change.status === "added" ? "new-file" : "diff", change.text, change.changedLines, change.status)) return;
       reviewedFiles.push({ path: change.path, blob: change.blob });
       snapshot.push({ path: change.path, blob: change.blob, content: change.content });
+    };
+    for (const path of unchanged.filter((item) => !isDocFile(item))) skipUnchanged(path);
+    for (const change of changed.filter((item) => !isDocFile(item.path))) take(change);
+    docsDeferred = parts.length > 0;
+    if (!docsDeferred) {
+      for (const path of unchanged.filter((item) => isDocFile(item))) skipUnchanged(path);
+      for (const change of changed.filter((item) => isDocFile(item.path))) take(change);
     }
   } else {
     const before = readSnapshot(previous.snapshotDir);
-    for (const path of safe) {
+    const take = async (path: string): Promise<void> => {
       const absolute = join(root, ...path.split("/"));
       // 내용은 한 번만 읽고, blob·delta 본문·사본이 모두 그 바이트에서 나온다.
       const content = existsSync(absolute) ? readFileSync(absolute) : null;
       const blob = content ? await hashBytes(deps.exec, git, root, path, content) : DELETED_BLOB;
       const old = before.get(path);
       const oldContent = old?.file ? readFileSync(old.file) : null;
-      if (content?.includes(0)) { skipped.push({ path, reason: "binary file" }); continue; }
-      if (holdsKeyBlock(path, content)) continue;
+      if (content?.includes(0)) { skipped.push({ path, reason: "binary file" }); return; }
+      if (holdsKeyBlock(path, content)) return;
       let ok = true;
       if (content === null && oldContent === null) {
         skipped.push({ path, reason: "absent in the previous round and now" });
-        continue;
+        return;
       } else if (content !== null && oldContent === null) {
-        const whole = wholeFile(content);
+        const whole = wholeFile(path, content);
         ok = addPart(path, "new-since-last-round", whole.text, whole.lines, "added");
       } else if (content === null) {
         ok = addPart(path, "deleted", `The file was deleted after the previous round (it had ${oldContent!.length} bytes).`, [], "deleted");
       } else if (!oldContent!.equals(content)) {
         const delta = await deltaDiff(deps.exec, root, path, old!.file!, content);
-        ok = addPart(path, "delta", delta, parseChangedLines(delta), "modified");
+        ok = addPart(path, "delta", delta, markBlockComments(path, parseChangedLines(delta), content.toString("utf8"), oldContent!.toString("utf8")), "modified");
       }
-      if (!ok) continue;
+      if (!ok) return;
       reviewedFiles.push({ path, blob });
       snapshot.push({ path, blob, content });
-    }
+    };
+    for (const path of codeSafe) await take(path);
+    docsDeferred = parts.length > 0;
+    if (!docsDeferred) for (const path of docSafe) await take(path);
   }
   // probe 라운드는 코드가 그대로여도 실험 결과만으로 판단받을 수 있다. 그 밖의 이어지는 라운드는 바뀐 것이 있어야 한다.
   if (parts.length === 0 && !probeRound) {
@@ -2175,10 +2486,16 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     throw new Error(`Nothing to review (${why}).${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
   }
 
-  const referenceResult = input.references?.length
-    ? await collectReferences(deps, git, root, pinnedRoot!, input.references, new Set(reviewedFiles.map((file) => file.path)))
+  const movable = docsDeferred ? [...new Map(docTargets.map((target) => [target.path, target] as const)).values()].filter((target) => !inputPaths.has(target.path) && !referencePaths.has(target.path)) : [];
+  const movedDocs = movable.slice(0, Math.max(0, MAX_REFERENCES - explicitReferences.length));
+  const droppedDocs = movable.slice(movedDocs.length).map((target) => target.path);
+  const referenceRequests = [...explicitReferences, ...movedDocs.map((target) => target.input)];
+  const referenceResult = referenceRequests.length
+    ? await collectReferences(deps, git, root, pinnedRoot!, referenceRequests, new Set(reviewedFiles.map((file) => file.path)))
     : { references: [], skipped: [] };
-  const { references, skipped: skippedReferences } = referenceResult;
+  const { references } = referenceResult;
+  const sentDocs = movedDocs.filter((target) => references.some((reference) => reference.path === target.path));
+  const skippedReferences = [...referenceResult.skipped, ...droppedDocs.map((path) => ({ path, reason: `references limit (${MAX_REFERENCES}) reached; the doc was removed from files but not sent as context` }))];
   const policyReferences = skippedReferences.filter((item) => item.reason === POLICY_SKIP_REASON).map((item) => item.path);
   const inputResult = inputPlan.paths.length > 0
     ? await collectContextFiles(deps, git, root, pinnedRoot!, inputPlan.paths, new Set(), "input")
@@ -2392,11 +2709,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
     skippedReferences, passable, snapshotDir, ...(resolvedBase ? { base: resolvedBase } : {}), ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), ...(hidingLeads.length > 0 ? { hidingLeads } : {}),
+    ...(sentDocs.length > 0 ? { docsMovedToReferences: sentDocs.map((target) => target.path) } : {}),
     ...(carriedOver.length > 0 ? { carriedOver } : {}), ...(prompts.length > 1 ? { batches: prompts.length } : {}),
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),
-    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(advisoryWaiting ? [`NOTE: the advisory reviewer of this round is still running in the background (see advisoryPending); resolve waits for it and then requires any finding it returns to be closed.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
+    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(advisoryWaiting ? [`NOTE: the advisory reviewer of this round is still running in the background (see advisoryPending); resolve waits for it and then requires any finding it returns to be closed.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }
 

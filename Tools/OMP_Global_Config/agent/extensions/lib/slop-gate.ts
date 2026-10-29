@@ -88,7 +88,8 @@ export function classify(path: string, config: SlopConfig = {}): Classification 
   if (GENERATED_FILE.test(p)) return { visible: false, reason: "generated" };
   if (INTERNAL_NAME.test(name)) return { visible: false, reason: "internal prompt or rule file" };
   if (matches(config.visible, p)) return { visible: true, reason: "project declared" };
-  if (MARKDOWN.test(name)) return { visible: true, reason: "public markdown" };
+  // 마크다운은 사용자 결정 2026-10-29로 대상이 아니다(README·CHANGELOG·docs·문서 지도 모두). `.slop-gate.json` visible이 선언한 것만 위에서 보이는 산출물이 된다.
+  if (MARKDOWN.test(name)) return { visible: false, reason: "markdown is not reviewed unless .slop-gate.json visible declares it" };
   if (MARKUP.test(name)) return { visible: true, reason: "html page" };
   if (OFFICE.test(name)) return { visible: true, reason: "office or pdf document" };
   if (CSV.test(name)) {
@@ -116,11 +117,10 @@ export function loadSlopConfig(root: string): SlopConfig {
 // ── 대상 판정 ────────────────────────────────────────────────────────────────
 
 /**
- * 슬롭 게이트 대상은 classify()가 보이는 산출물로 본 것 전부다(사용자 결정 2026-10-27: "밖으로 나오는 산출물 중 소스코드 내부에 있는 것 말고 다").
- * 공개 미러 선언(.publicignore)이나 public 선언은 대상을 정하지 않는다. `.slop-gate.json` visible glob은 대상을 더하기만 한다.
- * 세 곳(slop_check·커밋 게이트·턴 끝)이 모두 바이트를 읽기 전에 이 판정을 쓴다.
+ * 슬롭 게이트 대상은 classify()가 보이는 산출물로 본 것이다: 슬라이드·html·pptx/docx/pdf/hwpx·보고 xlsx/csv·UI 문구·매뉴얼처럼 사람이 실제로 보는 것(사용자 결정 2026-10-29,
+ * 2026-10-27의 "보이는 형식 전부"를 대체). 마크다운은 위치와 관계없이 대상이 아니고 `.slop-gate.json` visible glob이 선언한 마크다운만 대상이다.
+ * 공개 미러 선언(.publicignore)이나 public 선언은 대상을 정하지 않는다. 세 곳(slop_check·커밋 게이트·턴 끝)이 모두 바이트를 읽기 전에 이 판정을 쓴다.
  */
-
 /** 저장소 밖 산출물의 `.slop-gate.json`을 읽는 곳: cwd에서 가장 가까운 git 저장소 루트, 없으면 cwd. */
 export function configRootOf(cwd: string): string {
   let current = resolve(cwd);
