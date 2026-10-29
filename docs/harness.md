@@ -157,11 +157,13 @@ WSL 갱신은 진행 기록의 서버 세대를 Linux 부팅 ID와 프로세스 
 
 이전 측정은 과제·하네스·모델 조건과 수용 품질, 표본 한계를 함께 봅니다. 합성 과제와 실제 제품 작업을 구분하고, 기존 계약·문맥 재사용 및 발주 준비·재작업·통합 검수 비용을 실제 독립 병렬 구간과 대조합니다. 모델 응답 생성과 도구 실행 시간을 섞지 않으며, 단독 대조군 없는 기록으로 속도 우열을 단정하거나 한 사례를 줄 수·인원수 임계값으로 만들지 않습니다.
 
-라우팅 후보 식별자는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_SOL`, `NORMAL_DEEPSEEK`, `NORMAL_DAYBREAK`, `NORMAL_GEMINI`, `NORMAL_GLM`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `HARD_CODE_ASTRA`, `HARD_CODE_DAYBREAK`, `HARD_CODE_GEMINI`, `HARD_CODE_GLM`입니다. `implSol`·`NORMAL_SOL`·`SOL`은 호환용 식별자이며 실제 모델은 설정 selector로 결정합니다. 현재 Main이 GPT 계열이면 사용 가능한 GPT 후보 중 비-UI 일반 작업에는 `NORMAL_SOL`, 비-UI 고난도 코드 작업에는 `HARD_CODE_ASTRA`를 우선 추천합니다. UI/UX 작업은 일반·고난도 모두 Opus 추천을 유지하며 일반 수준 UI 작업을 고난도로 부풀리지 않습니다. 다른 계열 Main이나 해당 GPT 후보를 쓸 수 없는 경우에는 기존 추천 규칙을 따릅니다. 추천과 다른 후보를 선택할 때는 `ROUTING_REASON`을 남깁니다. 기존 담당자와 계정 pin, `:auto` 강도, 교차검토 규칙은 그대로입니다.
+라우팅 후보 식별자는 `NORMAL_SONNET`, `NORMAL_OPUS`, `NORMAL_SOL`, `NORMAL_DEEPSEEK`, `NORMAL_DAYBREAK`, `NORMAL_GEMINI`, `NORMAL_GLM`, `HARD_UI_OPUS`, `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `HARD_CODE_ASTRA`, `HARD_CODE_DAYBREAK`, `HARD_CODE_SOL61`, `HARD_CODE_GEMINI`, `HARD_CODE_GLM`입니다. `implSol`·`NORMAL_SOL`·`SOL`은 호환용 식별자이며 실제 모델은 설정 selector로 결정합니다. 현재 Main이 GPT 계열이면 사용 가능한 GPT 후보 중 비-UI 일반 작업에는 `NORMAL_SOL`, 비-UI 고난도 코드 작업에는 `HARD_CODE_ASTRA`를 우선 추천합니다. UI/UX 작업은 일반·고난도 모두 Opus 추천을 유지하며 일반 수준 UI 작업을 고난도로 부풀리지 않습니다. 다른 계열 Main이나 해당 GPT 후보를 쓸 수 없는 경우에는 기존 추천 규칙을 따릅니다. 추천과 다른 후보를 선택할 때는 `ROUTING_REASON`을 남깁니다. 기존 담당자와 계정 pin, `:auto` 강도, 교차검토 규칙은 그대로입니다.
 
 일반 작업이 `NORMAL_OPUS`로 라우팅되는 UI/UX 경계는 구현자에게 아직 정해지지 않은 시각·상호작용 설계 판단이 남아 있을 때만 적용합니다. 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션, 접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름이 이에 해당하며, 코드 판단이 지배적이더라도 이런 설계 판단이 섞인 혼합 작업은 포함합니다. 상태·직렬화·경쟁·데이터 의미 버그 수정, 읽기 전용 코드 검토, 기존 UI 동작의 충실한 이식, 기존 화면 패턴에 연결하는 작업, 패턴·명세·Main이 이미 정한 배치나 문구 반영처럼 UI 파일이 코드 판단만 담는 경우는 이 경계에 해당하지 않습니다. 파일 확장자만으로 경계를 정하지 않으며, 설계 판단이 없는 UI 파일 작업은 일반 비-UI 추천 순서를 따릅니다.
 
 `NORMAL_DAYBREAK`·`HARD_CODE_DAYBREAK`는 비-UI 코드 작업에 한해 Main이 이유(`ROUTING_REASON`)를 적고 고르는 대안입니다. 두 후보는 사용자가 지정한 `modelRoles.implDaybreak`를 `:auto`로 실행하며 기본 추천이나 자동 대체 순서에는 들어가지 않습니다. Daybreak 접근 프로그램은 코어가 해당 계정과 모델의 지원 정보를 보고 자동 적용합니다. 후보 이름이 권한을 부여하거나 프로그램 적용을 강제하지는 않습니다.
+
+`HARD_CODE_SOL61`(`modelRoles.implSol61`)도 비-UI 고난도 코드 작업에서 Main이 `ROUTING_REASON`을 적고 고르는 명시 선택 전용 후보입니다. 기본 추천과 자동 대체 순서에는 들어가지 않습니다.
 
 `NORMAL_GEMINI`·`HARD_CODE_GEMINI`(`modelRoles.implGemini`)와 `NORMAL_GLM`·`HARD_CODE_GLM`(`modelRoles.implGlm`)도 같은 방식의 명시 선택 전용 후보입니다. 사용자가 그 모델을 작업자나 검증자로 지목했을 때 Main이 `ROUTING_REASON`을 적고 `:auto`로 발주합니다. 역할 배정, 기본 추천, 자동 대체 순서, UI/UX Opus 경계는 바뀌지 않습니다.
 

@@ -73,6 +73,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   HARD UI는 `HARD_UI_OPUS`, 비-UI 코드는 GPT Main이면 사용 가능한 GPT 계열 `HARD_CODE_ASTRA`를 우선하고 그 외에는 `HARD_CODE_OPUS`를 추천한다.
   `HARD_CODE_SONNET` 등 추천과 다른 후보를 선택하면 `ROUTING_REASON`이 필요하다.
   GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
+  GPT-6.1 Sol(`implSol61`)은 `HARD_CODE_SOL61`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-29 사용자 결정, HARD Maker 기본값 비교 시험). 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
   Gemini 4 Argon(Vertex, `implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)과 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.

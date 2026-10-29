@@ -25,6 +25,7 @@ const candidates = [
 /** 명시 선택 전용 Daybreak 후보 fixture. 실제 설정은 gpt-6-sol이다. */
 const daybreakFixtures = [
   ...["NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK"].map((profile) => ({ profile, model: "openai-codex/gpt-6-sol", efforts: allStrengths })),
+  { profile: "HARD_CODE_SOL61", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   ...["NORMAL_GEMINI", "HARD_CODE_GEMINI"].map((profile) => ({ profile, model: "google-antigravity/gemini-3.8-flash", efforts: allStrengths })),
   ...["NORMAL_GLM", "HARD_CODE_GLM"].map((profile) => ({ profile, model: "hive/zai-org/glm-5.3-flash", efforts: allStrengths })),
 ];
@@ -1334,6 +1335,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_CODE_ASTRA: "openai-codex/gpt-6-astra",
     NORMAL_DAYBREAK: "openai-codex/gpt-6-sol",
     HARD_CODE_DAYBREAK: "openai-codex/gpt-6-sol",
+    HARD_CODE_SOL61: "openai-codex/gpt-6.1-sol",
     NORMAL_GEMINI: "google-antigravity/gemini-3.8-flash",
     HARD_CODE_GEMINI: "google-antigravity/gemini-3.8-flash",
     NORMAL_GLM: "hive/zai-org/glm-5.3-flash",
@@ -1463,7 +1465,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA", "NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK", "NORMAL_GEMINI", "HARD_CODE_GEMINI", "NORMAL_GLM", "HARD_CODE_GLM"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_SONNET", "HARD_CODE_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_ASTRA", "NORMAL_DAYBREAK", "HARD_CODE_DAYBREAK", "HARD_CODE_SOL61", "NORMAL_GEMINI", "HARD_CODE_GEMINI", "NORMAL_GLM", "HARD_CODE_GLM"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_UI_OPUS", model: "anthropic/claude-opus-5-5" },
