@@ -448,6 +448,7 @@ export const enLocale = {
     "roles.harness.skim": "Tool · multi-file source reading (skim)",
     "roles.harness.draft": "Tool · document drafting (draft)",
     "roles.harness.ocr": "Tool · image text transcription (ocr)",
+    "roles.harness.interpreter": "Tool · Korean–English interpreter (interpreter)",
     "chat.moreControls": "Run options",
     "chat.collapseControls": "Close run options",
     "chat.shell": "Shell",

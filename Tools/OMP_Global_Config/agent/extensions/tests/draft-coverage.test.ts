@@ -142,6 +142,22 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(main.write("report.md", markdown(DIRECT))?.block).toBeUndefined();
   });
 
+  // 2026-10-30 사용자 결정(B7): 이미 있는 글을 옮긴 미리보기 사본은 새 글이 아니다. 새로 쓰는 노트는 계속 멈춘다.
+  test("read로 연 기존 파일의 글을 옮긴 미리보기는 통과하고, 실패한 read나 새로 쓴 노트는 덮지 않는다", () => {
+    const cwd = workdir();
+    writeFileSync(join(cwd, "page.html"), html(DIRECT));
+    const listing = `[page.html#1A2B]\n${html(DIRECT).split("\n").map((line, i) => `${i + 1}:${line}`).join("\n")}`;
+    const s = session(cwd);
+    s.input();
+    s.result("read", { path: "page.html" }, true, "error");
+    expect(s.write("preview-a.html", html(DIRECT))?.block).toBe(true);
+    // 출처는 이 세션이 받은 read 결과다: 그 뒤 파일이 바뀌어도 본 글은 덮고, 보지 않은 새 글은 덮지 않는다.
+    writeFileSync(join(cwd, "page.html"), markdown(DRAFTED));
+    s.result("read", { path: "page.html:1-80" }, false, listing);
+    expect(s.write("preview-b.html", html(DIRECT))?.block).toBeUndefined();
+    expect(s.write("facts.md", markdown(DRAFTED))?.block).toBe(true);
+  });
+
   test("같은 경로에 다시 draft해도 앞 draft 결과는 계속 덮는다", () => {
     const s = session(workdir());
     s.input();

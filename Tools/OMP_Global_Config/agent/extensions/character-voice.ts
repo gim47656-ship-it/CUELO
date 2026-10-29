@@ -155,6 +155,8 @@ const MODEL_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
  */
 const MODEL_ID_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "gemini-4-argon": "HIKARI(히카리)",
+  // 2026-10-30 사용자 결정: PC에 따라 Gemini 자리(implGemini)가 Antigravity Gemini 3.8 Flash로 돌아왔다. 그 모델도 HIKARI다.
+  "gemini-3.8-flash": "HIKARI(히카리)",
 };
 
 const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {

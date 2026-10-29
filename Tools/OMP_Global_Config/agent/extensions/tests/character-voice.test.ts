@@ -195,6 +195,7 @@ describe("character voice identity", () => {
     expect(characterForProvider("opencode-go")).toBeUndefined();
     expect(characterForProvider("web6")).toBe("SHION(시온)");
     expect(characterForProvider("google-antigravity")).toBeUndefined();
+    expect(characterForProvider("google-antigravity", [], "gemini-3.8-flash")).toBe("HIKARI(히카리)");
     expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
     // 모델 id로 거는 얼굴이라 다른 공급자 아래의 같은 모델도 HIKARI다. 모델이 없거나 다른 모델이면 아니다.
     expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("HIKARI(히카리)");

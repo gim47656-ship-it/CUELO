@@ -894,6 +894,13 @@ async function requestJson<T>(
   }
 }
 
+// 2026-10-30 사용자 결정: Antigravity 계정은 Gemini만 쓰므로 사용량 표시에서 Claude·GPT 공유 창(계정마다 4줄)을 뺀다.
+// 표시용 필터다. 코어의 계정 차단과 서버 쪽 계정 판단(hanse-account-state)은 원래 보고서를 그대로 쓴다.
+function geminiOnlyAntigravity(report: UsageReport): UsageReport {
+  if (report.provider !== "google-antigravity" || !Array.isArray(report.limits)) return report;
+  return { ...report, limits: report.limits.filter((limit) => limit.id.split(":")[1] === "google" || /gemini/i.test(limit.label ?? "")) };
+}
+
 export async function loadUsage(
   options: ResourceRequestOptions<UsageSnapshot> = {},
 ): Promise<ResourceLoadState<UsageSnapshot>> {
@@ -902,7 +909,7 @@ export async function loadUsage(
     if (!data || !Array.isArray(data.reports)) {
       throw new ResourceClientError("사용량 응답 형식이 올바르지 않습니다.", "invalid-response");
     }
-    return { status: "fresh", data, error: null };
+    return { status: "fresh", data: { ...data, reports: data.reports.map(geminiOnlyAntigravity) }, error: null };
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }

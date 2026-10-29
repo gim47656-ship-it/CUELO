@@ -437,6 +437,7 @@
  "roles.harness.skim": "도구 · 다중 파일 소스 읽기 (skim)",
  "roles.harness.draft": "도구 · 문서 초안 작성 (draft)",
  "roles.harness.ocr": "도구 · 이미지 글자 전사 (ocr)",
+ "roles.harness.interpreter": "도구 · 한영 통역 (interpreter)",
  "chat.moreControls": "실행 옵션",
  "chat.collapseControls": "실행 옵션 닫기",
  "chat.shell": "Shell",

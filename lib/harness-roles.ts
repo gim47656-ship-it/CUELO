@@ -18,4 +18,5 @@ export const HARNESS_ROLES = [
   "skim",
   "draft",
   "ocr",
+  "interpreter",
 ] as const;

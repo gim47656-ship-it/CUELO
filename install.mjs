@@ -43,6 +43,7 @@ export const HARNESS_ROLES = [
   "skim",
   "draft",
   "ocr",
+  "interpreter",
   "judge",
 ];
 const SELECTOR = /^[^/\s:]+\/[^\s:]+(?::[a-z]+)?$/;

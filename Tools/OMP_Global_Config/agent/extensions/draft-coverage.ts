@@ -13,9 +13,12 @@ import { coverage, COVERED_RATIO, denyText, inScope, lettersOf, MIN_UNCOVERED_LE
  * - 바뀌기 전 내용(기준선)은 사용자 입력마다 파일별로 처음 손댈 때 고정한다: 잘게 나눠 직접 더한 글이 기준선으로 씻기지 않는다.
  * - 같은 파일·같은 덩어리 묶음을 그대로 다시 보내면 통과시킨다(예외를 밝힌 경우의 복구 길). 통과는 덮음으로 기록하지 않는다.
  * - bash·eval이 바꾼 글 파일은 내용을 볼 수 없어 알림만 한다. docx·xlsx·pdf draft 결과와 그 밖의 도구가 쓴 글은 범위 밖이다.
+ * - 이 세션이 read로 연 파일의 그때 내용도 덮는 출처다(2026-10-30 사용자 결정 B7): 이미 있는 글을 미리보기 사본으로 옮기는 것은 새 글이 아니다.
+ *   처음부터 새로 쓰는 노트(facts 파일 등)는 그대로 확인한다. 근거: doc/history/2026/10/30-harness-friction.
  */
 
 const MAX_DRAFTS = 64;
+const MAX_READ_SOURCES = 32;
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const SNAPSHOT_FORMAT = /\.(?:md|markdown|txt|csv)$/i;
 
@@ -34,12 +37,19 @@ function readText(path: string): string | undefined {
 const textOf = (content: unknown) => (Array.isArray(content)
   ? content.map((part: unknown) => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : "")).join("\n")
   : "");
+// read 출력에서 hashline 머리줄([path#TAG])과 줄 번호 접두를 떼어, 이 세션이 실제로 본 글만 남긴다.
+const readOutputText = (content: unknown) => textOf(content).split("\n")
+  .filter((line) => !/^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line))
+  .map((line) => line.replace(/^\s*\*?\d+:/, ""))
+  .join("\n");
 
 export default function draftCoverage(pi: ExtensionAPI): void {
   // 세션이 바뀌면 소유 표지도 바꾼다: 앞 세션의 draft는 read해야만 쓸 수 있는 다른 세션의 결과가 된다.
   let owner = {};
   // 쫓겨난 스냅숏을 붙잡지 않도록 약한 참조로 둔다.
   let granted = new WeakSet<DraftSnapshot>();
+  // read로 연 파일의 내용(B7). 세션 단위로 두고 오래된 것부터 지운다.
+  let readSources: Set<string>[] = [];
   let baselines = new Map<string, Set<string>>();
   let pending = new Map<string, Map<string, string>>();
   let acknowledged = new Map<string, Set<string>>();
@@ -51,7 +61,7 @@ export default function draftCoverage(pi: ExtensionAPI): void {
   const resetInput = () => {
     baselines = new Map(); pending = new Map(); acknowledged = new Map(); denied = new Set(); reminded = new Set(); started = new Map(); staged = new Map();
   };
-  const resetSession = () => { owner = {}; granted = new WeakSet(); resetInput(); };
+  const resetSession = () => { owner = {}; granted = new WeakSet(); readSources = []; resetInput(); };
 
   onSessionLifecycle(pi, { start: resetSession });
   pi.on("session_shutdown", resetSession);
@@ -64,7 +74,7 @@ export default function draftCoverage(pi: ExtensionAPI): void {
     if (event.toolName === "bash" || event.toolName === "eval") { started.set(event.toolCallId, Date.now()); return; }
     const changes = proseChanges(event.toolName, input, ctx.cwd);
     if (changes.length === 0) return;
-    const usable = drafts.filter((snap) => snap.owner === owner || granted.has(snap)).map((snap) => snap.grams);
+    const usable = [...drafts.filter((snap) => snap.owner === owner || granted.has(snap)).map((snap) => snap.grams), ...readSources];
     const reasons: string[] = [];
     const accepted: (() => void)[] = [];
     for (const change of changes) {
@@ -130,6 +140,11 @@ export default function draftCoverage(pi: ExtensionAPI): void {
       const bare = input.path.replace(/(?::(?:raw|conflicts|img|-?\d[\d+,:-]*(?::raw)?))+$/, "");
       const path = isAbsolute(bare) ? bare : resolve(ctx.cwd, bare);
       for (const snap of drafts) if (snap.path === path) granted.add(snap);
+      // 파일을 다시 읽지 않고 성공한 read 결과의 본문을 쓴다: 그 사이 파일이 바뀌어도 이 세션이 본 글만 출처가 된다.
+      const text = readOutputText(event.content);
+      if (!text.trim()) return;
+      readSources.push(shingles(text));
+      if (readSources.length > MAX_READ_SOURCES) readSources.splice(0, readSources.length - MAX_READ_SOURCES);
       return;
     }
     if (event.toolName !== "bash" && event.toolName !== "eval") return;

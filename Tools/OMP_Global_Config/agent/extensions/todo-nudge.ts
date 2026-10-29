@@ -18,24 +18,31 @@ const REMINDER =
 const NON_TRANSITION_DM = /(?:^|\n)\s*(?:위치|LOCATION)\s*:|\[Child activity advisory/;
 const NOTICE_REMINDER =
   "작업 종료·Maker 보고·DM 알림이 도착했다. 이 알림으로 todo 항목의 상태가 바뀌었으면(착수·완료·막힘·재개·실패) 사용자에게 보고하거나 다음 도구를 부르기 전에 `todo` 로 바로 갱신하라. todo 메모에 적힌 외부 job 상태는 적은 시각의 값이므로 사실처럼 옮기지 말고 현재 상태를 다시 읽는다.";
+// 2026-10-30 사용자 결정(B5): 코어의 mid-run todo 알림이 2분 안에 이미 왔으면 같은 일깨움이라 도착 알림을 내지 않는다
+// (1.6일 표본에서 11건 중복, doc/history/2026/10/30-harness-friction).
+const CORE_NUDGE_TYPE = "mid-run-todo-nudge";
+const CORE_NUDGE_WINDOW_MS = 2 * 60_000;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   return Array.isArray(content) ? content.map((part) => (part && typeof part === "object" && "text" in part ? String(part.text) : "")).join("\n") : "";
 }
 
-export default function todoNudge(pi: ExtensionAPI): void {
+export function createTodoNudge(now: () => number = Date.now) {
+  return function todoNudge(pi: ExtensionAPI): void {
   let armed = false;
   let usedTodo = false;
   let nudged = false;
   let calls = 0;
   let todos: readonly TodoSnapshotItem[] = [];
   let noticeNudged = false;
+  let coreNudgedAt = Number.NEGATIVE_INFINITY;
 
   onSessionLifecycle(pi, {
     start: (ctx) => {
       armed = false;
       noticeNudged = false;
+      coreNudgedAt = Number.NEGATIVE_INFINITY;
       todos = readPersistedTodoProgress(ctx.sessionManager.getBranch()).currentTodos;
     },
     // 같은 세션을 다시 읽는 reload: 요청 단위 상태는 두고 durable todo만 다시 읽는다.
@@ -60,10 +67,15 @@ export default function todoNudge(pi: ExtensionAPI): void {
   });
   pi.on("message_start", (event, ctx) => {
     const message = event.message as { role?: string; customType?: string; content?: unknown };
+    if (message.role === "custom" && message.customType === CORE_NUDGE_TYPE) {
+      coreNudgedAt = now();
+      return;
+    }
     if (message.role !== "custom" || (message.customType !== "async-result" && message.customType !== "irc:incoming")) return;
     if (message.customType === "irc:incoming" && NON_TRANSITION_DM.test(textOf(message.content))) return;
     if (ctx.agent?.kind !== "main" || noticeNudged) return;
     if (!todos.some((item) => item.status === "pending" || item.status === "in_progress" || item.status === "blocked")) return;
+    if (now() - coreNudgedAt < CORE_NUDGE_WINDOW_MS) return;
     noticeNudged = true;
     pi.sendMessage(
       { customType: "todo-nudge", content: NOTICE_REMINDER, display: false, attribution: "agent" },
@@ -87,4 +99,7 @@ export default function todoNudge(pi: ExtensionAPI): void {
       { deliverAs: "aside" },
     );
   });
+  };
 }
+
+export default createTodoNudge();

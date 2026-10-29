@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import todoNudge from "../todo-nudge";
+import todoNudge, { createTodoNudge } from "../todo-nudge";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => void;
 
-function harness(branch: unknown[] = [], kind: "main" | "sub" = "main") {
+function harness(branch: unknown[] = [], kind: "main" | "sub" = "main", now?: () => number) {
   const handlers: Record<string, Handler[]> = {};
   const sent: unknown[] = [];
   const deliveries: unknown[] = [];
   const ctx = { cwd: "test", agent: { kind }, sessionManager: { getBranch: () => branch, getSessionId: () => "session" } };
-  todoNudge({
+  (now ? createTodoNudge(now) : todoNudge)({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: unknown, options: unknown) => { sent.push(message); deliveries.push(options); },
   } as unknown as ExtensionAPI);
@@ -104,6 +104,32 @@ describe("todo nudge on job-completion notices", () => {
     dm("<irc>\nIncoming IRC message from agent `Maker`:\n\n[Child activity advisory; not a failure verdict] {}");
     expect(h.sent).toHaveLength(0);
     dm("<irc>\nIncoming IRC message from agent `Maker`:\n\nBlocked: need approval for the deploy step.");
+    expect(h.sent).toHaveLength(1);
+  });
+
+  // 2026-10-30 사용자 결정(B5): 코어 mid-run todo 알림 뒤 2분 안의 도착 알림은 같은 일깨움이라 생략한다.
+  test("코어 mid-run todo 알림 뒤 2분 안에는 도착 알림을 내지 않고 2분이 지나면 낸다", () => {
+    let clock = 1_000_000;
+    const h = harness([], "main", () => clock);
+    h.todoState("in_progress");
+    h.notice("mid-run-todo-nudge");
+    clock += 119_000;
+    h.notice("async-result");
+    expect(h.sent).toHaveLength(0);
+    clock += 2_000;
+    h.notice("async-result");
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("코어 알림의 2분 생략은 세션이 바뀌면 이어지지 않는다", () => {
+    let clock = 1_000_000;
+    const h = harness([], "main", () => clock);
+    h.todoState("in_progress");
+    h.notice("mid-run-todo-nudge");
+    h.emit("session_start", {});
+    h.todoState("in_progress");
+    clock += 1_000;
+    h.notice("async-result");
     expect(h.sent).toHaveLength(1);
   });
 

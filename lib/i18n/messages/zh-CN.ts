@@ -448,6 +448,7 @@ export const zhCNLocale: LocalePlugin = {
     "roles.harness.skim": "工具 · 多文件源码阅读（skim）",
     "roles.harness.draft": "工具 · 文档草稿撰写（draft）",
     "roles.harness.ocr": "工具 · 图像文字转写（ocr）",
+    "roles.harness.interpreter": "工具 · 韩英互译（interpreter）",
     "chat.moreControls": "运行选项",
     "chat.collapseControls": "关闭运行选项",
     "chat.shell": "Shell",

@@ -11,8 +11,8 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
-  하는 대화 답변은 대상이 아니다. 이 Gemini는 2026-10-26부터 Google Cloud Vertex의 Gemini 4 Argon이며(크레딧으로
-  과금) OCR 역할에도 쓴다. 이미지 질문(vision)은 Opus를 유지하고, Antigravity OAuth는 계정 정지 위험으로 쓰지 않는다.
+  하는 대화 답변은 대상이 아니다. draft와 OCR 모델은 PC별 `modelRoles.draft`·`ocr`이 정한다(사무실 PC는 2026-10-30
+  사용자 결정으로 속도 때문에 Antigravity Gemini 3.8 Flash, 그 밖의 설치는 Vertex Gemini 4 Argon). 이미지 질문(vision)은 Opus를 유지한다.
   **바깥에서 사람이 실제로 보는 산출물만 AI 슬롭 게이트를 통과한다(2026-10-26 사용자 지시, 2026-10-29 범위 축소로
   2026-10-27 결정을 대체).** 대상은 형식으로 정한다: 슬라이드·PPTX, HTML, DOCX·XLSX·PDF·HWPX, 보고서 csv, 언어 팩의
   화면·메뉴 문구, 매뉴얼이다. **마크다운은 README·CHANGELOG·`docs/`·문서 지도를 포함해 위치와 관계없이 대상이 아니다.**

@@ -361,6 +361,7 @@ test("a new profile accepts explicitly selected review and document tool roles",
     skim: "fixture/reader",
     draft: "fixture/writer",
     ocr: "fixture/vision",
+    interpreter: "fixture/translator",
     judge: "fixture/judge",
   };
   try {
