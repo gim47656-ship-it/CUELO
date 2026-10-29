@@ -308,8 +308,9 @@ writeKeySource(undefined);
 	const rotated = await s.get();
 	check("(e1) 키 파일은 판정마다 다시 읽는다(캐시 없음)", rotated === FILE_KEY_ROTATED, `actual=${show(rotated)}`);
 	clockOffsetMs = 3 * HOUR;
-	s.seats.rin = seat(0, 0.05, 168);
-	s.seats.mio = seat(0, 0.02, 168);
+	// New week, 8h in (pace 4.76 %): both seats are under the over-pace chip.
+	s.seats.rin = seat(0, 0.03, 160);
+	s.seats.mio = seat(0, 0.02, 160);
 	const after = await s.get();
 	const identity = identityOf(s.auth, s.sessionId);
 	clockOffsetMs = 0;
@@ -499,22 +500,28 @@ for (const [tag, key, label] of [
 	check("(r4b) lastChance 는 OAuth bearer 를 돌려주지 않는다(파일은 한 번만 읽는다)", apiKey === FILE_KEY, `actual=${show(apiKey)}`);
 }
 
-console.log("[cumulative daily allowance]");
+// 2026-10-29 user decision: API fallback follows the usage panel's over-pace chip
+// (ResourcePanel paceOf: used − elapsed share of the 7d window ≥ 0.5 %p), not a stepped daily allowance.
+// Fixtures sit 4h into a 168h window: pace 2.38 %, chip at 2.88 %, while the stepped allowance would be 14.3 %.
+console.log("[over-pace allowance]");
 for (const [tag, left, right, expected] of [
-	["daily-equal", 1 / 7, 1 / 7, "api"],
-	["daily-above", 0.2, 0.3, "api"],
-	["daily-one-below", 0.1, 0.3, "oauth"],
+	["pace-over-inside-day", 0.05, 0.05, "api"],
+	["pace-chip-edge", 0.031, 0.3, "api"],
+	["pace-above", 0.2, 0.3, "api"],
+	["pace-under-chip", 0.027, 0.3, "oauth"],
+	["pace-one-below", 0.02, 0.3, "oauth"],
 ] as const) {
 	const s = await scenario(tag, { rin: seat(0.1, left, 164), mio: seat(0.1, right, 164), key: "file" });
 	const value = await s.get();
 	check(tag, expected === "api" ? value === FILE_KEY : isOAuth(value, tag), `actual=${show(value)}`);
 	if (expected === "api") {
 		check(`${tag}: no false OAuth attribution`, identityOf(s.auth, s.sessionId) === undefined, "unexpected identity");
-		clockOffsetMs += 24 * HOUR;
+		// 48h later the pace is 30.95 %, ahead of every left-seat usage above.
+		clockOffsetMs += 48 * HOUR;
 		for (const v of Object.values(s.seats)) v.fiveResetAt = Date.now() + HOUR;
 		const recovered = await s.get();
-		check(`${tag}: next allowance resumes OAuth`, isOAuth(recovered, tag), `actual=${show(recovered)}`);
-		clockOffsetMs -= 24 * HOUR;
+		check(`${tag}: pace catching up resumes OAuth`, isOAuth(recovered, tag), `actual=${show(recovered)}`);
+		clockOffsetMs -= 48 * HOUR;
 	}
 	await s.auth.close();
 }
@@ -575,11 +582,11 @@ for (const tier of ["opus", "sonnet"] as const) {
 	const tag = "daily-slot-during-await";
 	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.2, 164), key: "file" });
 	s.hooks.weeklyReport = (_token, report) => {
-		if (s.hooks.weeklyReports === 2) clockOffsetMs += 24 * HOUR;
+		if (s.hooks.weeklyReports === 2) clockOffsetMs += 48 * HOUR;
 		return report;
 	};
-	check(tag, isOAuth(await s.get(), tag), "recheck must reject decision crossing daily allowance boundary");
-	clockOffsetMs -= 24 * HOUR;
+	check(tag, isOAuth(await s.get(), tag), "recheck must reject decision crossing the pace boundary");
+	clockOffsetMs -= 48 * HOUR;
 	s.auth.close();
 }
 

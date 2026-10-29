@@ -20150,7 +20150,7 @@ EDITS.push({
 `,
 });
 
-// Cumulative daily allowance uses the existing fallback decision and cascade, not a second selector.
+// Daily budget (over-pace since 2026-10-29) uses the existing fallback decision and cascade, not a second selector.
 {
 	const entry = EDITS.find(edit => edit.marker === "async cueloWeeklyExhausted(");
 	entry.legacyPatched = entry.patched;
@@ -20212,6 +20212,31 @@ EDITS.push({
 		anchor: 'import type { UsageService } from "./usage";',
 		patched: 'import type { UsageService } from "./usage";\nimport { USAGE_REPORT_TTL_MS } from "./sqlite-credential-store";',
 	});
+	// 2026-10-29 user decision: switch to the API key when the usage panel shows the over-pace chip
+	// (components/workspace/ResourcePanel.tsx paceOf: used − elapsed share of the 7d window ≥ 0.5 %p) on every
+	// eligible seat, and return to OAuth once a seat is back under it. The stepped allowance above is the
+	// 0.10.106 body (P1); installs carrying it upgrade through the alternate below.
+	const stepped = entry.patched;
+	entry.patched = stepped
+		.replace("CUELO: dailyBudget checks cumulative daily allocation;", "CUELO: dailyBudget checks the usage panel's over-pace rule;")
+		.replace(`			const elapsed = duration - (reset - at);
+			const allowance = Math.min(1, ((Math.floor(elapsed / day) + 1) * day) / duration);
+			return used >= allowance;`, `			// Same rule and operation order as the usage panel's over-pace chip (ResourcePanel paceOf):
+			// usedPct - pacePct >= 0.5, both already in percent, so the 0.5-point boundary agrees exactly.
+			const elapsed = duration - (reset - at);
+			return used * 100 - (elapsed / duration) * 100 >= 0.5;`);
+	if (!entry.patched.includes("return used * 100 - (elapsed / duration) * 100 >= 0.5;") || entry.patched.includes("Math.floor(elapsed / day)")) {
+		throw new Error("over-pace daily budget rewrite did not apply");
+	}
+	entry.excludes = stepped;
+	entry.alternates = [...(entry.alternates ?? []), {
+		file: entry.file,
+		marker: entry.marker,
+		anchor: entry.anchor,
+		requires: stepped,
+		legacyPatched: stepped,
+		patched: entry.patched,
+	}];
 }
 
 // #17332 (6612331), adapted to the downstream numeric estimator API.
