@@ -1,4 +1,4 @@
-// HTML export가 advisor 내부 transcript를 싣지 않는지 본다. 실행:
+// HTML export keeps advisor transcripts distinct from subagent work (18.14.0 trace); older exports omit them.
 //   OMP_CORE_PATCH_TARGET=<isolated-core> bun run patches/core-export-advisor-test.ts
 // advisor는 `<session>/__advisor.jsonl`·`__advisor.<slug>.jsonl`(subagent advisor는 `<session>/<SubId>/__advisor.jsonl`)에
 // 자기 프롬프트·검토를 기록한다. upstream exporter의 subagent 수집은 이 디렉터리의 `*.jsonl`을 전부 subSession으로 넣어,
@@ -27,6 +27,8 @@ function resolvePackage(): string {
 
 const PKG = resolvePackage();
 console.log(`대상 ${PKG}`);
+const [major, minor] = JSON.parse(readFileSync(join(PKG, "package.json"), "utf8")).version.split(".").map(Number);
+const traceExport = major > 18 || (major === 18 && minor >= 14);
 const exporter = await import(`${PKG}/src/export/html/index.ts`);
 const { exportFromFile } = exporter;
 // 18.5.0은 수집 함수를 `session/sub-sessions.ts`로 옮겼다(export/html은 내부 래퍼만 둔다). 두 판 모두 같은 수집 경계를 본다.
@@ -103,6 +105,7 @@ const before = new Map(fixtureFiles.map(file => [file, readFileSync(file, "utf8"
 interface ExportedSession {
 	entries?: Array<{ id: string }>;
 	subSessions?: Record<string, unknown>;
+	trace?: { tracks: Array<{ id: string; label: string; parentId: string | null }> };
 }
 
 /** 내보낸 HTML에 내장된 세션 JSON(base64)을 푼다. 원문 HTML과 함께 검사해 base64 우회도 막는다. */
@@ -118,8 +121,25 @@ function verify(label: string, file: string): void {
 	const { raw, data } = decodeExport(file);
 	const text = `${raw}\n${JSON.stringify(data)}`;
 	const keys = Object.keys(data.subSessions ?? {}).sort();
-	check(`${label} advisor 프롬프트·검토 sentinel이 없다`, ADVISOR.every(s => !text.includes(s)), `found=${ADVISOR.filter(s => text.includes(s))} keys=${keys}`);
-	check(`${label} 진짜 subagent·중첩 subagent는 남는다`, keys.join(",") === "Scout,Scout/Helper" && text.includes(CHILD) && text.includes(NESTED), `keys=${keys}`);
+	if (traceExport) {
+		// Each advisor transcript must live only in its own Advisor track; no advisor content in real subagents or the parent.
+		const expectedAdvisors: Record<string, string> = { "__advisor": ADVISOR[0], "__advisor.reviewer": ADVISOR[1], "Scout/__advisor": ADVISOR[2] };
+		const tracks = data.trace?.tracks ?? [];
+		const sub = (id: string) => JSON.stringify(data.subSessions?.[id] ?? null);
+		check(`${label} advisor transcripts have distinct Advisor tracks`, Object.keys(expectedAdvisors).every(id =>
+			tracks.filter(t => t.id === id).length === 1 && tracks.find(t => t.id === id)?.label === "Advisor") &&
+			tracks.filter(t => t.label === "Advisor").length === 3, `tracks=${JSON.stringify(tracks)}`);
+		check(`${label} each advisor track holds only its own transcript`, Object.entries(expectedAdvisors).every(([id, own]) =>
+			sub(id).includes(own) && ADVISOR.filter(s => s !== own).every(other => !sub(id).includes(other))), `keys=${keys}`);
+		check(`${label} real subagents remain separate and advisor-free`, ["Scout", "Scout/Helper"].every(id =>
+			tracks.some(t => t.id === id && t.label !== "Advisor") && ADVISOR.every(s => !sub(id).includes(s))) &&
+			keys.join(",") === ["Scout", "Scout/Helper", ...Object.keys(expectedAdvisors)].sort().join(",") &&
+			sub("Scout").includes(CHILD) && sub("Scout/Helper").includes(NESTED), `keys=${keys}`);
+		check(`${label} parent entries carry no advisor transcript`, ADVISOR.every(s => !JSON.stringify(data.entries ?? []).includes(s)));
+	} else {
+		check(`${label} advisor 프롬프트·검토 sentinel이 없다`, ADVISOR.every(s => !text.includes(s)), `found=${ADVISOR.filter(s => text.includes(s))} keys=${keys}`);
+		check(`${label} 진짜 subagent·중첩 subagent는 남는다`, keys.join(",") === "Scout,Scout/Helper" && text.includes(CHILD) && text.includes(NESTED), `keys=${keys}`);
+	}
 	const exportedIds = (data.entries ?? []).map(entry => entry.id);
 	check(
 		`${label} 부모 대화 entry는 그대로다(부모에게 전달된 advisor 메시지 포함)`,

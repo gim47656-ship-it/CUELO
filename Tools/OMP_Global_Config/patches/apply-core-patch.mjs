@@ -20742,6 +20742,108 @@ export function cueloIsFallbackKeyBillingRejection(
 	});
 }
 
+// 18.14.0: preserve older bodies, select the new shape before marker matching.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.14.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const excludeOld = (entry, discriminator) => {
+		for (const candidate of [entry, ...(entry.alternates ?? [])]) {
+			candidate.excludes = [...[candidate.excludes ?? []].flat(), discriminator];
+		}
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		excludeOld(entry, discriminator);
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.14.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const port = (entry, previous, from, to, discriminator) => alternate(entry, {
+		marker: previous.marker,
+		anchor: swap(previous.anchor, from, to),
+		patched: swap(previous.patched, from, to),
+	}, discriminator);
+	// An upstream-only alternate must not carry an old body that is already a
+	// substring of upstream. Old candidates retain their own rollback bodies.
+	const absorbed = (entry, text, discriminator = text) =>
+		alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+
+	const steer = byMarker("const steerObservation = this.#beginIrcSteerContinuationObservation()");
+	port(steer, steer.alternates.find(c => c.requires === "#ircWakeHolds = 0;"),
+		"this.#startTurnObservation([])", "this.#startTurnObservation(options.turnRecords ?? [])",
+		"turnRecords?: AgentMessage[];");
+
+	const taskFile = 'const taskFields = options.file ? { "task?": "string", "taskFile?": "string" } : { task: "string" };';
+	for (const indent of ["\t\t\t\t", "\t\t\t"]) {
+		const entry = one(e => e.file === "src/task/types.ts" && e.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`));
+		port(entry, entry.alternates.find(c => c.requires === "const seanceFields = options.seanceFields;"),
+			`${indent}task: "string",`, `${indent}...taskFields,`, taskFile);
+	}
+	const optional = byMarker("// CUELO: task schema agent is optional on the wire.");
+	port(optional, optional.alternates.find(c => c.requires === "type SeanceItemKey ="),
+		"\tstructured: boolean;\n", "\tstructured: boolean;\n\tfile: boolean;\n", taskFile);
+
+	const bash = byMarker('// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(');
+	absorbed(bash, "\t\t} else if (ready !== undefined && (ready.log !== undefined || ready.port !== undefined)) {");
+	const executor = byMarker("import { PARENT_REQUEST_STEER, AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry }");
+	port(executor, executor, "AgentBusyError, EventLoopKeepalive, recordHandoff", "AgentBusyError, recordHandoff",
+		'import { AgentBusyError, recordHandoff, resolveTelemetry }');
+	executor.alternates.at(-1).requires = "import ";
+	executor.alternates.at(-1).excludes = "EventLoopKeepalive";
+	executor.alternates.at(-1).marker = executor.alternates.at(-1).patched;
+
+	const recall = byMarker("return await this.recallForContext(truncated, undefined, true);");
+	alternate(recall, {
+		anchor: "return await this.recallForContext(truncated, signal);",
+		patched: "return await this.recallForContext(truncated, signal, true);",
+		marker: "return await this.recallForContext(truncated, signal, true);",
+	}, "async recallForCompaction(messages: AgentMessage[], signal?: AbortSignal)");
+
+	const billing = byMarker("this.#modelRegistry.authStorage.keys.cueloBeginTurn?.(this.sessionId);");
+	port(billing, billing,
+		"await this.#modelRegistry.getApiKey(this.model, this.sessionId)",
+		'await logger.time("prompt:apiKey", () => this.#modelRegistry.getApiKey(model, this.sessionId))',
+		'logger.time("prompt:apiKey"');
+
+	// #17332 is upstream in 18.14.0: options-object estimators, prune-aware
+	// metadata/cache keys, and all three session call sites now agree.
+	for (const entry of EDITS.filter(e => e.file === "../pi-tui/src/status-line/context-usage.ts" ||
+		e.file === "../pi-tui/dist/types/status-line/context-usage.d.ts")) {
+		absorbed(entry, "export interface ToolSchemaFragmentOptions {");
+	}
+	for (const [marker, upstream] of [
+		["prunesToolDescriptions(model: Model | undefined): boolean", "Whether requests to `model` actually ship description-stripped tool specs."],
+		["const ownedDialect = this.#ownedDialect(model);", "Whether requests to `model` actually ship description-stripped tool specs."],
+		["prunesToolDescriptions(model: Model | undefined): boolean;", "Whether requests to `model` actually ship description-stripped tool specs."],
+		["\t\t\tsession.agent?.prunesToolDescriptions?.(session.model) === true,\n", "pruneDescriptions: session.agent?.prunesToolDescriptions?.(session.model),"],
+		["toolSchemaFragments(tool, 2, session.agent.prunesToolDescriptions(session.model))", "pruneDescriptions: session.agent.prunesToolDescriptions(session.model),"],
+		["\t\t\t\t\t\tagent.prunesToolDescriptions(model),", "pruneDescriptions: agent.prunesToolDescriptions(model),"],
+	]) absorbed(byMarker(marker), upstream);
+	absorbed(byMarker("// CUELO: prefix binding is model lineage, not config surface."),
+		"built.thinking = prefixBinding ? { prefixBinding, ...patch.thinking } : patch.thinking;");
+
+	// Catalog now uses interned nodes. Decoding anthropic/claude-opus-5-5
+	// confirms prefixBinding and both binding controls are already enabled.
+	const catalog = one(e => e.file === "../pi-catalog/src/models.json");
+	absorbed(catalog, '{"version":1,"keys":');
+	// Shared discovery excludes advisors by default; the HTML trace explicitly
+	// opts in and labels advisor roots separately (omp-stats trace.ts).
+	const exportFilter = byMarker("\t\t// Advisor transcripts share this directory but are the advisor's own prompts and reviews, not subagents.\n");
+	alternate(exportFilter, {
+		file: "src/session/sub-sessions.ts",
+		marker: "(!options.includeAdvisors && isAdvisorTranscriptName(transcriptName))",
+		anchor: "(!options.includeAdvisors && isAdvisorTranscriptName(transcriptName))",
+		patched: "(!options.includeAdvisors && isAdvisorTranscriptName(transcriptName))",
+	}, "includeAdvisors?: boolean;");
+	const bundle = one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
+	absorbed(bundle, 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&aNe(c))continue');
+}
+
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
 // keep future Node/Bun output identical. Accept only the exact previously emitted
 // helper bodies below, never normalize arbitrary installed source on revert.

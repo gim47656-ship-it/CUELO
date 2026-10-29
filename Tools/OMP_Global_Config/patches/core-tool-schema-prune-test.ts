@@ -71,9 +71,9 @@ try {
 
 		// The roster cache is keyed on the prune flag, so the same roster and tokenizer answer both ways.
 		const model = gemini.model;
-		const full = usage.estimateContextToolSchemaTokens(tools, tokenizer, model, rev, false);
-		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, rev, true), wirePruned, "pruned after full on one roster");
-		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, rev, false), full, "full again after pruned");
+		const full = usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: false });
+		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: true }), wirePruned, "pruned after full on one roster");
+		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: false }), full, "full again after pruned");
 		assert.ok(full > wirePruned);
 
 		// A model switch that turns pruning off must not reuse the pruned non-message total.
@@ -149,13 +149,13 @@ try {
 					const spec = (entries: WireTool[] | undefined) => entries?.map(t => ({ name: t.name, description: t.description, parameters: t.parameters }));
 					assert.deepEqual(spec(sent?.tools), spec(wire), "actual loop native definitions match expected pruning");
 				}
-				const expected = usage.estimateContextToolSchemaTokens(tools, tokenizer, agent.state.model, dialectSession.settings.revision, pruned);
+				const expected = usage.estimateContextToolSchemaTokens(tools, tokenizer, agent.state.model, { sourceRevision: dialectSession.settings.revision, pruneDescriptions: pruned });
 				const actual = usage.computeNonMessageBreakdown(dialectSession, tokenizer, dialectSession.settings.revision).toolsTokens;
 				assert.equal(actual, expected, `${label}: aggregate follows wire dialect`);
 				assert.equal(new SessionStatsTracker({ session: dialectSession, agent } as never).nonMessageSnapshot().toolSchemaTokens, expected);
 				const view = buildSessionContextView(dialectSession);
 				const toolEntries = view.categories.filter((c: { id: string }) => ["built-in-tools", "custom-tools"].includes(c.id)).flatMap((c: { entries: Array<{ tokens: number }> }) => c.entries);
-				const perTool = tools.reduce((sum: number, tool: never) => sum + usage.estimateToolSchemaTokens([tool], tokenizer, 0, pruned), 0);
+				const perTool = tools.reduce((sum: number, tool: never) => sum + usage.estimateToolSchemaTokens([tool], tokenizer, { pruneDescriptions: pruned }), 0);
 				assert.equal(toolEntries.reduce((sum: number, e: { tokens: number }) => sum + e.tokens, 0), perTool, `${label}: context-view follows wire`);
 				console.log(JSON.stringify({ label, rawPrune, owned, actual, expected }));
 			} catch (error) { failed++; console.error(`FAIL ${label}: ${error}`); }

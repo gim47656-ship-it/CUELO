@@ -319,14 +319,21 @@ await section("[2] lsp diagnostics pull 실패의 정직성", async () => {
 		return client;
 	}
 
+	// 18.14.0부터 upstream은 응답 없는 pull을 예외 대신 `undefined`(보고 없음)로 돌려주고, 호출자는 그 서버를
+	// clean이 아닌 미보고(`unreportedServers`)로 센다. 계약은 "타임아웃이 clean `[]`로 접히지 않는다"이다.
 	const stalled = fakeClient({ pull: true });
 	let stalledMessage = "";
+	let stalledResult: unknown = "not-returned";
 	try {
-		await waitForDiagnostics(stalled as never, FILE_URI, { timeoutMs: 150 });
+		stalledResult = await waitForDiagnostics(stalled as never, FILE_URI, { timeoutMs: 150 });
 	} catch (error) {
 		stalledMessage = error instanceof Error ? error.message : String(error);
 	}
-	check("pull 이 타임아웃하면 빈 결과가 아니라 예외로 알린다", stalledMessage.includes("timed out"), stalledMessage);
+	check(
+		"pull 이 타임아웃하면 clean 빈 결과가 아니라 예외나 미보고(undefined)로 알린다",
+		stalledMessage.includes("timed out") || (stalledMessage === "" && stalledResult === undefined),
+		stalledMessage || JSON.stringify(stalledResult),
+	);
 
 	const broken = fakeClient({ pull: true, writeError: "harness transport down" });
 	let brokenMessage = "";
