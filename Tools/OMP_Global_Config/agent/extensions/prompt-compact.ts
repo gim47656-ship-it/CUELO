@@ -55,13 +55,56 @@ export function loadSwaps(agentDir: string, targets: readonly CompactTarget[]): 
   });
 }
 
+// 영어 사본에서 Main만 지키는 항목(배포·git_finalize·cross_review gate·한국어 응답)을 감싸는 표시. 표시 줄 자체는
+// 모든 세션에서 지우므로 Main이 받는 본문은 표시를 넣기 전과 같다. Maker child는 감싼 항목까지 지운다.
+const MAIN_ONLY_MARK = /^[ \t]*<!-- \/?main-only -->\r?\n/gm;
+const MAIN_ONLY_SPAN = /^[ \t]*<!-- main-only -->\r?\n[\s\S]*?^[ \t]*<!-- \/main-only -->\r?\n/gm;
+
+/** 사본 본문에서 main-only 표시를 처리한다. maker면 감싼 항목을 지우고, 아니면 표시 줄만 지운다. */
+export function applyMainOnly(body: string, maker: boolean): string {
+  return maker ? body.replace(MAIN_ONLY_SPAN, "") : body.replace(MAIN_ONLY_MARK, "");
+}
+
+const SKILLS_OPEN = "<skills>\n";
+const SKILLS_CLOSE = "\n</skills>";
+export const SKILL_NAMES_POINTER =
+  "Names only. Main hands the skills a slice needs in the brief; read `skill://<name>` before using one (an unknown name lists every loaded skill).";
+
+/**
+ * Maker child용 Skill 목록: 설명 없이 이름만 남긴다. 설명 포함 목록은 Maker 첫 요청마다 약 6.3K 토큰이었고,
+ * 필요한 Skill은 Main이 브리프로 넘긴다(rule://subagent 「Skill 인계」). `skill://` 해석은 session.skills에서
+ * 하므로 프롬프트 목록을 줄여도 읽기는 그대로 된다.
+ */
+export function namesOnlySkills(block: string): string {
+  const start = block.indexOf(SKILLS_OPEN);
+  if (start < 0) return block;
+  const from = start + SKILLS_OPEN.length;
+  const end = block.indexOf(SKILLS_CLOSE, from);
+  if (end < 0) return block;
+  const names = block
+    .slice(from, end)
+    .split("\n")
+    .flatMap((line) => /^- ([^:\s][^:]*):/.exec(line)?.[1] ?? []);
+  if (names.length === 0) return block;
+  return `${block.slice(0, from)}${SKILL_NAMES_POINTER}\n${names.join(", ")}${block.slice(end)}`;
+}
+
 export default function promptCompact(pi: ExtensionAPI): void {
   // 코어도 AGENTS.md·RULES.md를 시작할 때 한 번 읽으므로 사본도 같은 시점에 한 번만 읽는다.
   const swaps = loadSwaps(AGENT_DIR, TARGETS);
-  if (swaps.length === 0) return;
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: event.systemPrompt.map((block) =>
-      swaps.reduce((current, swap) => replaceBetween(current, swap.open, swap.close, swap.body), block),
-    ),
-  }));
+  const mainBodies = swaps.map((swap) => applyMainOnly(swap.body, false));
+  const makerBodies = swaps.map((swap) => applyMainOnly(swap.body, true));
+  pi.on("before_agent_start", (event, ctx) => {
+    // Maker child만 줄인다. 다른 subagent(advisor·/tan 복제 등)와 Main은 기존 본문을 받는다.
+    // 사본이 낡아 교체할 것이 없어도 Maker Skill 목록은 줄인다.
+    const maker = ctx?.agent?.kind === "sub" && ctx.agent.name === "maker";
+    if (!maker && swaps.length === 0) return undefined;
+    const bodies = maker ? makerBodies : mainBodies;
+    return {
+      systemPrompt: event.systemPrompt.map((block) => {
+        const swapped = swaps.reduce((current, swap, index) => replaceBetween(current, swap.open, swap.close, bodies[index]!), block);
+        return maker ? namesOnlySkills(swapped) : swapped;
+      }),
+    };
+  });
 }

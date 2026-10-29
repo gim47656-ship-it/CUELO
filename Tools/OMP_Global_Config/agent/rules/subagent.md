@@ -49,8 +49,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 - 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 라우팅 슬롯을 식별한다.
   모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 그 모델이 지원하는 가장 낮은 단계부터 가장 높은 단계(Opus는 max)까지에서 고른다. Main의 auto 범위(medium~xhigh)는 그대로다.
-  **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 레이아웃·반응형·정보구조·시각 디자인·
-  접근성·포커스·터치 표적·사용자 상호작용의 판단이 남는지 보며, 코드 판단과 섞인 경우도 포함한다.
+  **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 구현자에게 아직 정해지지 않은 시각·상호작용 설계
+  판단이 남는지 본다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
+  접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. 코드 판단이 지배적인 혼합 작업도 포함한다.
+  UI 파일이 코드 판단만 담는 경우는 경계가 아니다: 상태·직렬화·경쟁·데이터 의미 버그, 읽기 전용 코드 검토,
+  기존 UI 동작의 충실한 이식, 기존 화면 패턴에 연결, 패턴·명세·Main이 이미 정한 배치·문구다.
   파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
   GPT Main은 비-UI NORMAL에서 사용 가능한 GPT 계열 `NORMAL_SOL`을 우선한다. 그 후보가 없거나 관측 소진이면 이전 추천 순서를 따른다.
   그 밖의 비-UI NORMAL 기본 추천은 `NORMAL_SONNET`이며, 아래 둘 중 하나가 걸리면 `NORMAL_DEEPSEEK`를 먼저 추천한다.
@@ -95,6 +98,9 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   공유 계약·발주 준비·재작업·통합 검수 비용과 실제 동시에 끝낼 수 있는 구간을 대조한다.
   관측되지 않은 절감 시간은 만들지 않으며 한 사례를 줄 수·인원수 임계값이나 항상 단독 규칙으로 바꾸지 않는다.
 - 발주 전 `maker_route`에 `context`·각 `name/task`와 최소 사실 `assessment`를 전달한다.
+  `assessment.remainingJudgments`에는 타당한 설계가 여럿이거나 원인을 모르는 판단과 증거로 확인한 계약 충돌만 적고,
+  기존 패턴·명세·Main 방향이 이미 정한 국소 세부는 `settledImplementation`·`facts`에 주어진 제약으로 적는다
+  (`solutionSpace`와 같은 원칙, `routing.modelSelection.rationale`). 정확한 서술이며 모델이나 강도를 고르는 수단이 아니다.
   이 도구가 정본 criteria의 작업 분류·중심 난제·UI/UX 경계·중복 여부·`ownerTarget`과
   **위임 판단**(`routing.modelSelection.delegationCriteria`)을 한 번에 묻는다. 위임 판단은
   facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 적힌 사실만으로 답하고
@@ -147,7 +153,10 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   실제 core 우선순위는 coarse effort > selector suffix > agent 기본 > pattern-derived이고 생성 기본도
   `thinking-level: auto`다. task hook은 concrete suffix와 coarse `effort`를 막는다.
 - child auto의 분류 입력은 발주 항목의 `solutionSpace`다. 해결 방법·설계가 주어졌는지, 어떤 원인·설계가
-  아직 열려 있는지를 적는다. 작업량으로 넓히지 않고 모델·등급·강도·형제 조정을 적지 않는다.
+  아직 열려 있는지를 적는다. 열린 항목에는 타당한 설계가 여럿이거나 원인을 모르는 판단만 적고, 기존 패턴·명세·Main
+  방향이 이미 정한 국소 세부(열 너비·배치·문구 등)는 열린 항목이 아니라 주어진 제약으로 적어 정해진 조각이
+  정해진 대로 읽히게 한다. 이것은 정확한 서술이며 강도를 올리거나 내리는 수단이 아니다.
+  작업량으로 넓히지 않고 모델·등급·강도·형제 조정을 적지 않는다.
   child는 첫 턴을 `solutionSpace`로 분류하고 이후 Main 지시마다 다시 분류하며 매 도구 호출마다 하지 않는다.
   분류 실패·timeout이면 child의 직전 단계(첫 분류 전에는 잠정 단계)를 유지하고 하네스가 concrete 강도로 대신하지 않는다
   (`routing.effortSelection`).

@@ -195,12 +195,12 @@ export default function draft(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "draft", label: "Draft", loadMode: "essential", approval: "write",
-    description: "문서 초안(md·txt·csv·xlsx·docx·pdf)을 draft 역할 모델(기본 Vertex Gemini 4 Argon)이 쓰게 해 cwd 안 output 경로에 저장하고, 실패 시 modelRoles.draftFallback이 가리키는 모델(소스 프로필 기본 Codex의 GPT-6.1 Terra)로 한 번 대체합니다. draftFallback을 설정하지 않은 설치는 Hive의 DeepSeek 1017로 대체하고, 설정했는데 해석·자격·입력이 맞지 않으면 DeepSeek로 넘어가지 않고 그 모델 이름으로 실패합니다. 대체 모델이 draft 모델과 같으면 다시 부르지 않습니다. 형식은 output 확장자로 정합니다(xlsx·docx는 도구가 직접 생성, pdf는 WSL에서 ego lite TaskSpace로 인쇄하고 ego lite가 없는 PC에서만 Windows Edge로 인쇄, csv는 UTF-8 BOM). paths의 참고 텍스트는 skim과 같은 필터를 거쳐 그 모델 제공자(기본 Google, 대체는 설정한 모델의 제공자)로 전송됩니다. 기존 파일은 overwrite: true일 때만 덮어씁니다. 실제 모델·저장 경로·크기·개요를 돌려주며, 두 모델이 모두 실패하거나 변환·저장에 실패하면 파일을 만들지 않고 오류 결과로 돌려줍니다. 결과 파일은 호출자가 직접 검토해야 합니다. 코드·설정·규칙과 정확한 줄 수정에는 edit/write를 쓰세요. HANDOFF·doc/history 기록이라도 새로 쓰거나 문단 단위로 다시 쓰는 산문은 초안 대상입니다.",
+    description: "Has the draft role model (default Vertex Gemini 4 Argon) write a document draft (md, txt, csv, xlsx, docx, pdf) and saves it at output inside the cwd. On failure it falls back once to the model modelRoles.draftFallback names (source-profile default: GPT-6.1 Terra via Codex). Installs without draftFallback fall back to DeepSeek 1017 on Hive; a draftFallback that is set but fails resolution, credentials or input fails under that model's name without falling through to DeepSeek. A fallback equal to the draft model is not called again. The output extension sets the format (xlsx/docx built by the tool; pdf printed through an ego lite TaskSpace on WSL, through Windows Edge only on PCs without ego lite; csv as UTF-8 BOM). Reference text in paths passes the same filter as skim and goes to that model's provider (default Google; the fallback goes to the configured model's provider). An existing file is overwritten only with overwrite: true. Returns the actual model, saved path, size and outline; if both models fail or conversion/saving fails, no file is created and an error result returns. The caller must review the result file. Use edit/write for code, configuration, rules and exact-line edits. New or paragraph-level rewritten prose is a draft target even in HANDOFF and doc/history records.",
     parameters: z.object({
-      instruction: z.string().describe("무엇을 쓸지: 목적·독자·구성·분량·언어"),
-      output: z.string().describe("cwd 기준 저장 경로. 확장자가 형식을 정함: .md .txt .csv .xlsx .docx .pdf"),
-      paths: z.array(z.string()).optional().describe("참고할 cwd 안 텍스트 파일·디렉터리·glob"),
-      overwrite: z.boolean().optional().describe("기존 파일 덮어쓰기(기본 false)"),
+      instruction: z.string().describe("What to write: purpose, audience, structure, length, language"),
+      output: z.string().describe("Save path relative to cwd. The extension sets the format: .md .txt .csv .xlsx .docx .pdf"),
+      paths: z.array(z.string()).optional().describe("Reference text files, directories or globs inside the cwd"),
+      overwrite: z.boolean().optional().describe("Overwrite an existing file (default false)"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal));

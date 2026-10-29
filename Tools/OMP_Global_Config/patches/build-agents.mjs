@@ -170,16 +170,13 @@ function resolveFrontmatter(role, front, modelRoles) {
 	return resolved;
 }
 
-/** 머리말 다음에 오는 도장 주석. `고칠 곳` 은 그 역할이 실제로 쓰는 조각만 적는다. */
+/**
+ * 머리말 다음에 오는 도장 주석. 생성 파일 본문은 그대로 child 시스템 프롬프트에 실리므로 영어 한 줄로 둔다
+ * (한국어 3줄이 Maker 요청마다 약 90토큰을 더했다). `edit` 는 그 역할이 실제로 쓰는 조각만 적는다.
+ */
 function stamp(role, family) {
 	const sources = [`agent/sop/${role}.md`, ...family.map((name) => `agent/sop/${name}.md`), `agent/sop/${CommonFragment}.md`];
-	return [
-		`${StampMarker}${HashPlaceholder}`,
-		"  이 파일은 patches/build-agents.mjs 가 만든 빌드 산출물이다. 직접 수정하지 마라.",
-		`  고칠 곳: ${sources.join(" · ")}`,
-		"  재생성: node patches/build-agents.mjs   검사: node patches/build-agents.mjs --check",
-		"-->",
-	].join("\n");
+	return `${StampMarker}${HashPlaceholder} generated; edit ${sources.join(", ")} then run node patches/build-agents.mjs -->`;
 }
 
 /**

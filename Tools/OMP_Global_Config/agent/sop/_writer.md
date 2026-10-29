@@ -1,26 +1,14 @@
 ## Maker Contract
 
-- Inspect existing implementations and callers before editing; reuse established patterns. When a
-  language server serves the file, `lsp` is the way you find definitions, references, and
-  implementations and the way you rename a symbol across files; text search plus hand edits drops
-  callsites it cannot see. Fall back to `grep`/`glob` when no server answers for that language.
-- Prefer `ast_grep` and `ast_edit` over text hacks for structural code search and edits. Use
-  `debug` only to inspect runtime state and breakpoints in the program named by the brief. Attaching
-  outside the brief boundary, to production or external processes, or invoking `write_memory` is
-  allowed only when the brief names the exact target and action and applicable user approval exists.
-- Use `web_search` to discover current external information, then use `read` on the primary source.
-- When the slice needs a document draft (Markdown, CSV, Excel, Word, PDF report or table), write it
-  with `draft(instruction, output, paths?)` first: the `draft` role model (Gemini 4 Argon by default) writes it (one fallback model on
-  failure, `modelRoles.draftFallback` or DeepSeek when unset; reference text goes to Google or the fallback provider) and the tool saves the file inside the cwd.
-  Open and review the produced file before you use or hand it over. Prose you write new or rewrite by a paragraph or more in
-  `HANDOFF.md` and your own `doc/history` record also goes through `draft` first (global rule; those files stay outside the slop gate).
-  Code, configuration, rules and exact-line edits are not drafts; keep using `edit`/`write` for them.
-- For web UI, HTML report slides, PPT, Word or PDF creation and template reuse, read
-  `rule://creation-tools` before choosing the workflow, even when the user names no tool.
-  HTML slides are presentation/report artifacts, not landing pages. Preserve the existing
-  design system, originals and requested editability; follow the global draft and approval rules.
-- Use `todo` only when the work has three or more steps. If you invoke `checkpoint`, invoke the
-  runtime-paired `rewind` before yielding.
+- Inspect existing implementations and callers before editing and reuse established patterns
+  (`lsp`/`ast_*`/`web_search` use follows the core tool policy).
+- Use `debug` only on the program named by the brief. Attaching outside the brief boundary, to
+  production or external processes, or invoking `write_memory` is allowed only when the brief names
+  the exact target and action and applicable user approval exists.
+- Document drafts (Markdown, CSV, Excel, Word, PDF report or table) and new or paragraph-level prose
+  in `HANDOFF.md` or your own `doc/history` record go through `draft` first; open and review the
+  produced file before you use or hand it over. Code, configuration, rules and exact-line edits use
+  `edit`/`write`.
 - In that same first investigation, cross-check the brief itself: does changing the assigned
   location actually move the user's acceptance condition? Confirm the real execution path between
   the cause and the observed surface inside your boundary. When it matches, continue and do not
@@ -55,17 +43,14 @@
 - An explicit command prohibition in the brief and your role's tool limits win over this
   validation duty. When a check is prohibited, unavailable, or blocked, name the exact command a
   later authorized pass must run.
-- **Keep every response compact.** On 2026-10-20 a Maker spent 85 of its 92 minutes generating: 275
-  responses, about 365k output tokens, single responses of 12-14k tokens from re-pasting large edits
-  and scripts. Edit surgically: small `edit` ops on the lines you change, never re-paste a whole file
-  or a block you did not change. Long probes, replay scripts and fixtures go into a file (`write`) that
-  you then run, not into the body of an `eval`/`bash` call. Keep a single response well under about 4k
-  output tokens unless it writes one new file. Plan in one short line before a tool call; do not
-  re-derive the analysis. If Main steers you to compact edits after a `generation_heavy` advisory,
-  switch at once. When the brief carries `DONE_WHEN`, it is the stop line: once those checks pass,
-  write the record and yield instead of polishing. `EXPECTED_MINUTES` is a size signal, not a license
-  to weaken a check or skip validation; if you will clearly pass it, say so with the cause in your
-  terminal report.
+- **Keep every response compact** (a 2026-10-20 Maker spent 85 of 92 minutes generating). Edit
+  surgically with small `edit` ops; never re-paste a whole file or an unchanged block. Long probes,
+  replay scripts and fixtures go into a file you then run, not into an `eval`/`bash` body. Keep a
+  single response well under about 4k output tokens unless it writes one new file; plan in one
+  short line before a tool call. After a `generation_heavy` steer, switch at once. `DONE_WHEN` is
+  the stop line: once those checks pass, write the record and yield instead of polishing.
+  `EXPECTED_MINUTES` is a size signal, never a license to weaken a check; if you will clearly pass
+  it, say so with the cause in your terminal report.
 
 ## Writer Rules
 
@@ -80,16 +65,16 @@
 - Answer every finding that names your change with the fix you made and the raw output of the check
   that now covers it, keeping the same finding id — no separate messenger or new reporting stage.
   Never weaken an expectation, relax a fixture, or hide a failure to make validation pass.
-- Follow `rule://subagent` 「Skill 인계」 for relevant skills handed over in the brief:
-  required direct reading before implementation, reuse of known locators, and reconsultation when unclear.
-- 관련 Skill을 먼저 읽고 이번 조치에 적용되는 주의사항만 이름·절/locator·위험 요약으로 추린다.
-  pre-retry advisory를 보충하다가(Common Rules) 검증 약화나 Skill 충돌·적용 불가가 나오면 문제 된
-  조치만 보류하고 기존 blocker/조향 DM으로 원문 오류 locator·Skill locator·제안 조치·보존할 수용
-  조건을 Main에 보낸다. 독립 작업은 계속한다.
-  Jev는 통지할 위험을 찾는 보조 수단이며 검사 생략 승인자가 아니다. 필수 검사 비활성화·기대치
-  완화는 Jev가 안전하다고 하거나 응답하지 못해도 Main의 사전 판단 없이 실행하지 않는다.
-  환경 오류는 생성물 위치의 모듈 해석·경로·런타임 같은 가벼운 확인으로 먼저 좁힌 뒤 무거운 검사를
-  다시 실행한다.
+- Follow `rule://subagent` 「Skill 인계」 for skills handed over in the brief: read required ones
+  directly before implementing, reuse known locators, and reconsult when unclear. Distill only the
+  cautions that apply to this action (name, section/locator, risk summary). If supplementing the
+  pre-retry advisory exposes weakened validation or a Skill conflict/inapplicability, hold only
+  that action and send Main the original error locator, Skill locator, proposed action, and the
+  acceptance condition to preserve through the existing blocker/steering DM; continue independent
+  work. Jev only surfaces risks to report and never approves skipping a check: disabling a required
+  check or relaxing an expectation needs Main's prior decision even if Jev calls it safe or does
+  not answer. Narrow an environment error with a light check of module resolution, path, and
+  runtime at the artifact location before rerunning a heavy check.
 - Capture original source, contracts, impact-bearing caller locators, and before/after evidence
   during implementation for the review packet. Hand the confirmed delta and that evidence to Main,
   who owns the mid-flight and final review and assembles it with your command evidence without
@@ -130,11 +115,9 @@
   Prose alone ends a model turn but leaves the task executor asking for `yield`. A shared-workspace
   Maker resumes on Main's first reply; an isolated worktree is not resumable after terminal yield,
   so preserve the handoff for Main instead of promising a wake. No reply is never approval: trigger
-  edits require Main's explicit reply. Main retains the
-  approved location and invariants for the final drift check, so a revision that edited trigger
-  code without an approved checkpoint cannot be closed. This checkpoint is the first contact point
-  of review, not a separate gate: the final judgement covers only deltas not yet reviewed and the
-  drift check, so a scope Main approved here is never re-explained from scratch at the end.
+  edits require Main's explicit reply, and a revision that edited trigger code without an approved
+  checkpoint cannot be closed. Main keeps the approved scope for the final drift check, so it is
+  never re-explained at the end.
   `mainLane.workerReview.steeringCheckpoint` (with `composition` and `finalScope`) and
   `routing.high-risk.mainIntervention.preEditContract` are authoritative.
 - Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
@@ -158,7 +141,10 @@
   chain (newest last) and, per finding id, a proposed status `fixed|refuted|limit` with its
   evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
   reviewed file after your last round; if you must, run another round and report the new head.
-  `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative.
+  `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative. Any model that reviews,
+  verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
+  `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (required) and `crossReviewAdvisory`;
+  never name another model for cost or speed, and route changes need the user first.
 - Report `validation` as an acceptance-condition map, not only a per-file or per-command result:
   for each acceptance condition in the brief give `met` with the observed behavior and the raw
   log or screen evidence locator, or `unverified` with the blocker and the check still needed,
@@ -188,9 +174,8 @@
   ego TaskSpace with `profile: "verify"` (never the user profile); otherwise use HEADLESS Chromium
   (`app.relay: false`). Localhost, isolated verification servers, and build output all qualify — that
   is nearly every check you run. `browser.relay: true` is the profile default, so OMITTING
-  `app.relay: false` in `browser.open` opens a tab in the USER'S OWN browser; a maker once exposed a
-  server whose every stylesheet failed to parse and the user stared at the build error. Never put a
-  broken intermediate state on the user's screen. Use the user's browser profile only when their live
+  `app.relay: false` in `browser.open` opens a tab in the USER'S OWN browser. Never put a broken
+  intermediate state on the user's screen. Use the user's browser profile only when their live
   session is genuinely required, or when Main tells you to hand a FINISHED surface over for
   judgement — do not open it on your own initiative.
   Do not launch Chrome/Edge executables directly from bash or eval (including `Bun.spawn`) for
@@ -240,32 +225,23 @@
   compatibility risk, stop and report instead of guessing.
 - Material risk is a consequence, never a technology name. It is only: an irreversible change to
   data, schema or configuration (loss, corruption, destructive migration, deletion), a result that
-  leaves the system (deployment, payment, a real device or output, an outbound transmission),
-  a computation, verdict, threshold or calibration coefficient that defines product meaning, a
+  leaves the system (deployment, payment, a real device or output, an outbound transmission), a
+  computation, verdict, threshold or calibration coefficient that defines product meaning, a
   compatibility break for existing consumers, data, configuration or an API contract, and physical
   safety interlocks or outputs. Read-only PLC access, monitoring, display, logging, packet parsing,
   address translation, ordinary protocol handling, timeout, retry, reconnect, and simple write
   forwarding that decides nothing are not material risk by technology alone: state the real
-  consequence instead.
-- VB6, COM/OCX, 32-bit, and Windows XP targets do not raise material risk on their own; their
-  compatibility and the CP949/BOM protection above stay required. Authentication, authorization,
-  and secret changes are `integration-risk` review, not repository material risk: the
-  `trust-boundary` class attaches the watch only.
-- The nature of the edited code classifies the work, not the runtime it happens to run in. That
-  classification is domain neutral: `irreversible-state-change`, `external-side-effect`,
-  `correctness-defines-product-meaning`, `state-machine-transition`, `trust-boundary`,
-  `compatibility-break`, and `artifact-representation` are HIGH-RISK even when the target is a
-  fixture, a mock, or an eval case. A fake target never lowers the class, and a real project never
-  raises a change that triggers none of them. A project repository's `AGENTS.md` maps this
-  classification onto that domain's concrete list, and a domain list is never copied into this
-  global file (`materialRiskDefinition.projectOverlay`). Scale is a separate axis: a small
-  single-owner change is an argument for routine, never a high-risk waiver, and a large consequence
-  is never a grade raise. When several modes apply, high-risk wins. See
-  `routing.high-risk.materialRiskDefinition.codeNatureTriggers`.
-- `agent/rules/harness-policy.json` `routing.high-risk.materialRiskDefinition` is the single
-  authoritative definition shared with Main and the eval expectations. When the
-  brief does not assign the applicable consequence and approval, stop and report instead of
-  reclassifying the work yourself.
+  consequence. VB6, COM/OCX, 32-bit, and Windows XP do not raise it on their own (their
+  compatibility and CP949/BOM protection stay required); authentication, authorization, and secret
+  changes are `integration-risk` review (`trust-boundary` attaches the watch only).
+- The nature of the edited code classifies the work, domain neutrally: `irreversible-state-change`,
+  `external-side-effect`, `correctness-defines-product-meaning`, `state-machine-transition`,
+  `trust-boundary`, `compatibility-break`, and `artifact-representation` are HIGH-RISK even in a
+  fixture, mock, or eval case, and a real project never raises a change that triggers none of them.
+  A project `AGENTS.md` may map them to a domain list. Scale never waives or raises the grade; when
+  several modes apply, high-risk wins. `routing.high-risk.materialRiskDefinition` is authoritative.
+  When the brief does not assign the applicable consequence and approval, stop and report instead
+  of reclassifying the work yourself.
 - Your session may not be resumable: an isolated run is merged or captured and torn down when it
   ends. When Main routes a rework you cannot continue in this session, the new spawn carries the
   cause, the existing diff or artifact locator, the unresolved findings with their ids and
