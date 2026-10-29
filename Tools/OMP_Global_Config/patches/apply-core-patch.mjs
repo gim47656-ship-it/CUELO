@@ -20469,6 +20469,203 @@ EDITS.push({
 	}
 }
 
+// 2026-10-29 user decision (fallback key billing rejection): when Anthropic rejects the fallback key file's key for
+// billing (credits used up, spend limit or tier cap reached; platform.claude.com/docs/en/api/errors and
+// /docs/en/api/rate-limits), that key is parked process-wide for an hour and the same request is re-resolved onto
+// OAuth through the existing stream retry -> resolver path. While parked every fallback decision reads the key file
+// as no key, so turn, over-pace and weekly paths stay on OAuth; a different key in the file is not parked. Retry
+// classification changes only for a bearer equal to the key last read from that file. Installs carrying the
+// turn-fixation bodies upgrade through the alternates below. Verified by core-weekly-fallback-test.ts "[billing park]".
+{
+	const swap = (body, from, to) => {
+		if (!body.includes(from)) throw new Error(`billing park rewrite did not apply: ${from.slice(0, 60)}`);
+		return body.replace(from, to);
+	};
+	// Same upgrade shape as the select entry above: the main candidate keeps upgrading its original legacy body, an
+	// alternate upgrades the turn-fixation body, and the main candidate excludes that body.
+	const upgrade = (edit, body) => {
+		const previous = edit.patched;
+		edit.patched = body;
+		edit.excludes = [edit.excludes ?? []].flat().concat(previous);
+		edit.alternates = [
+			...(edit.alternates ?? []).map(alternate => ({ ...alternate, patched: body })),
+			{ file: edit.file, marker: edit.marker, anchor: edit.anchor, requires: previous, legacyPatched: previous, patched: body },
+		];
+	};
+
+	const helpers = EDITS.find(edit => edit.marker === "async cueloWeeklyApiKeyFallback(");
+	let body = swap(helpers.patched, `	 * CUELO: the fallback key file's one trimmed line. Undefined when missing, empty or
+	 * unreadable. Read per decision, never cached and never copied into the process environment.
+	 */
+	#cueloReadFallbackKeyFile(): string | undefined {
+		try {
+			return fs.readFileSync(this.#cueloFallbackKeyPath(), "utf8").trim() || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+`, `	 * CUELO: the fallback key file's one trimmed line. Undefined when missing, empty, unreadable or parked after a
+	 * billing rejection. Read per decision, never cached and never copied into the process environment.
+	 */
+	#cueloReadFallbackKeyFile(): string | undefined {
+		let key: string | undefined;
+		try {
+			key = fs.readFileSync(this.#cueloFallbackKeyPath(), "utf8").trim() || undefined;
+		} catch {
+			return undefined;
+		}
+		if (key === undefined) return undefined;
+		// The stream retry driver recognizes a failure of this bearer as a fallback key failure.
+		cueloNoteFallbackKey(key);
+		// A key Anthropic rejected for billing reads as no key until its park ends.
+		return (KeyCascade.#cueloParkedKeys.get(key) ?? 0) > Date.now() ? undefined : key;
+	}
+`);
+	body = swap(body, `	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`, `	/** CUELO: process-wide; each fallback key Anthropic rejected for billing -> until when it stays unused. */
+	static #cueloParkedKeys = new Map<string, number>();
+
+	/**
+	 * CUELO: true when previousKey is the fallback key file's key and Anthropic rejected it for billing (credits used
+	 * up, spend limit or cap reached). That key is parked for an hour: every fallback decision then reads the file as
+	 * no key, so the caller's re-resolve of this request and later turns stay on OAuth. A parked key is not re-parked.
+	 */
+	cueloFallbackKeyRejected(provider: string, previousKey: string | undefined, error: unknown): boolean {
+		if (provider !== "anthropic" || previousKey === undefined) return false;
+		const status = AIError.status(error);
+		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+		if (!cueloIsFallbackKeyBillingRejection(previousKey, status, message)) return false;
+		const now = Date.now();
+		const parked = KeyCascade.#cueloParkedKeys;
+		if (!((parked.get(previousKey) ?? 0) > now)) {
+			for (const [key, until] of parked) if (until <= now) parked.delete(key);
+			parked.set(previousKey, now + 3_600_000);
+			logger.warn("CUELO: Anthropic rejected the fallback API key for billing; using OAuth for 1h", { status });
+		}
+		return true;
+	}
+
+	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`);
+	upgrade(helpers, body);
+
+	const keysApi = EDITS.find(edit => edit.marker === "\tcueloWeeklyApiKeyFallback?(\n");
+	upgrade(keysApi, swap(keysApi.patched, "\tcueloEndSession?(sessionId: string): void;\n}\n", `	cueloEndSession?(sessionId: string): void;
+	/**
+	 * CUELO: true when previousKey is the Anthropic fallback key file's key and error is a billing rejection; that key
+	 * is then parked for an hour, so the caller resolves the request again and gets OAuth.
+	 */
+	cueloFallbackKeyRejected?(provider: string, previousKey: string | undefined, error: unknown): boolean;
+}
+`));
+
+	const pick = EDITS.find(edit => edit.marker === "\tauthStorage: Pick<AuthStorage, \"limits\"> & { readonly keys?: Pick<AuthStorage[\"keys\"], \"cueloWeeklyApiKeyFallback\"> };\n");
+	pick.legacyPatched = pick.patched;
+	pick.patched = pick.marker = swap(pick.patched, "\"cueloWeeklyApiKeyFallback\">", "\"cueloWeeklyApiKeyFallback\" | \"cueloFallbackKeyRejected\">");
+
+	const added = [{
+		file: "../pi-ai/src/auth-retry.ts",
+		marker: "export function cueloIsFallbackKeyBillingRejection(",
+		anchor: "/** Resolve a single retry step, swallowing resolver failures into `undefined`. */\n",
+		patched: `/** CUELO: the key KeyCascade last read from the Anthropic fallback key file (process memory only, never logged). */
+let cueloFallbackKey: string | undefined;
+
+/** CUELO: KeyCascade read apiKey from its Anthropic fallback key file. */
+export function cueloNoteFallbackKey(apiKey: string): void {
+	cueloFallbackKey = apiKey;
+}
+
+// CUELO: Anthropic billing rejections (platform.claude.com/docs/en/api/errors, /docs/en/api/rate-limits): 400 "Your
+// credit balance is too low", 400 "You have reached your specified (workspace) API usage limits", the tier cap's 429
+// "You have reached your API usage limits" with error_code enforced_spend_limit_reached, and 402 billing_error.
+const CUELO_ANTHROPIC_BILLING_PATTERN =
+	/\\bcredit balance is too low\\b|\\bexceed\\w* your available credits\\b|\\breached your (?:specified )?(?:workspace )?api usage limits\\b|\\benforced_spend_limit_reached\\b|\\bbilling_error\\b/i;
+
+/**
+ * CUELO: whether a failure is Anthropic rejecting the fallback key file's key for billing (credits used up, spend
+ * limit or cap reached). Only that exact bearer qualifies, so every other credential keeps its classification.
+ */
+export function cueloIsFallbackKeyBillingRejection(
+	apiKey: string | undefined,
+	status: number | undefined,
+	message: string | undefined,
+): boolean {
+	if (apiKey === undefined || apiKey !== cueloFallbackKey) return false;
+	if (status === 402) return true;
+	// The wording counts only on the statuses Anthropic sends it with: 400 (credits, spend limit) and 429 (tier cap).
+	return (status === 400 || status === 429) && message !== undefined && CUELO_ANTHROPIC_BILLING_PATTERN.test(message);
+}
+
+/** Resolve a single retry step, swallowing resolver failures into \`undefined\`. */
+`,
+	}, {
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "cueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey, markAfterSiblingWait,",
+		anchor: "import { type ApiKeyResolver, createOAuthProvenance, markAfterSiblingWait, type ResolvedApiKey } from \"../auth-retry\";\n",
+		patched: "import {\n\ttype ApiKeyResolver,\n\tcreateOAuthProvenance,\n\tcueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey, markAfterSiblingWait,\n\ttype ResolvedApiKey,\n} from \"../auth-retry\";\n",
+	}, {
+		file: "../pi-ai/src/auth/cascade.ts",
+		marker: "if (this.cueloFallbackKeyRejected(provider, previousKey, error)) return resolve({ signal });",
+		anchor: "\t\t\tif (error === undefined) {\n\t\t\t\treturn resolve({ signal });\n\t\t\t}\n",
+		patched: `			if (error === undefined) {
+				return resolve({ signal });
+			}
+			// CUELO: Anthropic rejected the fallback key file's key for billing (credits used up, spend limit or cap
+			// reached). That key is now parked, so resolving this same request again yields OAuth.
+			if (this.cueloFallbackKeyRejected(provider, previousKey, error)) return resolve({ signal });
+`,
+	}, {
+		file: "src/config/api-key-resolver.ts",
+		marker: "registry.authStorage.keys?.cueloFallbackKeyRejected?.(provider, previousKey, error)",
+		anchor: "\t\tif (error === undefined) {\n\t\t\treturn resolveKey(undefined);\n\t\t}\n",
+		patched: `		if (error === undefined) {
+			return resolveKey(undefined);
+		}
+		// CUELO: Anthropic rejected the fallback key file's key for billing. That key is now parked, so resolving this
+		// same request again yields OAuth.
+		if (registry.authStorage.keys?.cueloFallbackKeyRejected?.(provider, previousKey, error)) return resolveKey(undefined);
+`,
+	}, {
+		file: "../pi-ai/src/stream.ts",
+		marker: "import { createAuthRetryKeyState, cueloIsFallbackKeyBillingRejection, isApiKeyResolver,",
+		anchor: "import { createAuthRetryKeyState, isApiKeyResolver, resolvedApiKeyBearer, resolveNextAuthRetryKey } from \"./auth-retry\";\n",
+		patched: "import { createAuthRetryKeyState, cueloIsFallbackKeyBillingRejection, isApiKeyResolver, resolvedApiKeyBearer, resolveNextAuthRetryKey } from \"./auth-retry\";\n",
+	}, {
+		file: "../pi-ai/src/stream.ts",
+		marker: "if (cueloIsFallbackKeyBillingRejection(apiKey, status, message)) return true;",
+		anchor: "\tmessage: string | undefined,\n): boolean {\n\tif (AIError.isAuthRetryableError(error)) return true;\n",
+		patched: `	message: string | undefined,
+	apiKey?: string,
+): boolean {
+	// CUELO: a billing rejection of the Anthropic fallback key file's key retries through the resolver, which parks
+	// that key and serves the same request from OAuth. Every other bearer keeps the upstream classification.
+	if (cueloIsFallbackKeyBillingRejection(apiKey, status, message)) return true;
+	if (AIError.isAuthRetryableError(error)) return true;
+`,
+	}, {
+		file: "../pi-ai/src/stream.ts",
+		marker: "\t\t\t\t\t\t\tevent.error.errorMessage,\n\t\t\t\t\t\t\tapiKey,\n",
+		anchor: "\t\t\t\t\t\t\textractStatusFromAssistantError(event.error),\n\t\t\t\t\t\t\tevent.error.errorMessage,\n\t\t\t\t\t\t)\n",
+		patched: "\t\t\t\t\t\t\textractStatusFromAssistantError(event.error),\n\t\t\t\t\t\t\tevent.error.errorMessage,\n\t\t\t\t\t\t\tapiKey,\n\t\t\t\t\t\t)\n",
+	}, {
+		file: "../pi-ai/src/stream.ts",
+		marker: "\t\t\t\t\t\terror instanceof Error ? error.message : undefined,\n\t\t\t\t\t\tapiKey,\n",
+		anchor: "\t\t\t\t\t\tAIError.status(error),\n\t\t\t\t\t\terror instanceof Error ? error.message : undefined,\n\t\t\t\t\t)\n\t\t\t\t) {\n",
+		patched: "\t\t\t\t\t\tAIError.status(error),\n\t\t\t\t\t\terror instanceof Error ? error.message : undefined,\n\t\t\t\t\t\tapiKey,\n\t\t\t\t\t)\n\t\t\t\t) {\n",
+	}];
+	EDITS.push(...added);
+
+	// Text added here is ASCII-only (Bun 1.4.4 note below); bodies inherited from earlier entries keep their characters.
+	const nonAscii = text => text.match(/[^\x00-\x7f]/g)?.join("") ?? "";
+	for (const edited of [helpers, keysApi, pick, ...added]) {
+		for (const candidate of [edited, ...(edited.alternates ?? [])]) {
+			const before = candidate.legacyPatched ?? candidate.anchor;
+			if (nonAscii(candidate.patched) !== nonAscii(before)) throw new Error(`billing park added non-ASCII text: ${candidate.marker}`);
+			if (candidate.legacyPatched && candidate.patched.includes(candidate.legacyPatched)) throw new Error(`billing park body still contains its legacy body: ${candidate.marker}`);
+		}
+	}
+}
+
 // #17332 (6612331), adapted to the downstream numeric estimator API.
 {
 	const agent = "../pi-agent-core/src/agent.ts";

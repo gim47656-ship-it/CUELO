@@ -112,6 +112,9 @@ const { claudeRankingStrategy } = await import(toUrl(join(aiRoot, "usage/claude.
 const { getEnvApiKey } = await import(toUrl(join(aiRoot, "env-api-key.ts")));
 const { isUsageLimitOutcome } = await import(toUrl(join(aiRoot, "error/rate-limit.ts")));
 const { createApiKeyResolver } = await import(toUrl(join(core, "src/config/api-key-resolver.ts")));
+const { streamSimple } = await import(toUrl(join(aiRoot, "stream.ts")));
+const { getBundledModel } = await import(toUrl(join(dirname(core), "pi-catalog/src/models.ts")));
+const { registerLogSink } = await import(toUrl(join(dirname(core), "pi-utils/src/logger.ts")));
 // Load after the fixture plugin so the extension's core imports use the isolated patched modules.
 const { default: characterVoice } = await import("../agent/extensions/character-voice.ts");
 
@@ -753,6 +756,174 @@ for (const unknown of ["null", "stale", "unsupported"] as const) {
 	check(`${tag}: the rest of the turn follows the recovered OAuth`, isOAuth(after, tag), `actual=${show(after)}`);
 	s.auth.close();
 }
+
+// 2026-10-29 user decision: Anthropic rejecting the fallback key for billing (credits used up, spend limit or tier cap
+// reached) parks that key for an hour; the same request finishes on OAuth through the stream retry -> resolver path and
+// later turns stay on OAuth until the park ends. Wording: platform.claude.com/docs/en/api/errors and /api/rate-limits.
+// The park is process-wide and keyed on the key value, so every case below writes its own key into the file.
+console.log("[billing park]");
+const anthropicError = (status: number, type: string, message: string, details?: object) =>
+	({ status, body: { type: "error", error: { type, message, ...(details ? { details } : {}) }, request_id: "req_fixture" } });
+const BILLING = {
+	"credit-400": anthropicError(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."),
+	"spend-limit-400": anthropicError(400, "invalid_request_error", "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."),
+	"tier-cap-429": anthropicError(429, "rate_limit_error", "You have reached your API usage limits: your organization has crossed its monthly API usage threshold, set based on your organization's API tier. You will regain access on 2026-11-01 at 00:00 UTC.", { error_code: "enforced_spend_limit_reached" }),
+	"billing-402": anthropicError(402, "billing_error", "There is an issue with your billing or payment information."),
+};
+const NOT_BILLING = {
+	"rate-limit-429": anthropicError(429, "rate_limit_error", "This request would exceed the rate limit for your organization of 30,000 input tokens per minute."),
+	"api-error-500": anthropicError(500, "api_error", "Internal server error"),
+	// Billing wording counts only on a billing status (400/402/429); a server error never parks the key.
+	"billing-wording-500": anthropicError(500, "api_error", "Your credit balance is too low to access the Anthropic API."),
+};
+// Local Anthropic Messages endpoint: a bearer listed in `reject` gets that error, every other bearer streams "ok".
+const reject = new Map<string, { status: number; body: object }>();
+const sentKeys: string[] = [];
+const fakeAnthropic = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+	const bearer = request.headers.get("x-api-key") ?? request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+	sentKeys.push(bearer);
+	const failure = reject.get(bearer);
+	if (failure) return Response.json(failure.body, { status: failure.status });
+	const events = [
+		{ type: "message_start", message: { id: "fixture", type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
+		{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+		{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+		{ type: "content_block_stop", index: 0 },
+		{ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+		{ type: "message_stop" },
+	];
+	return new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+} });
+const fakeModel = { ...getBundledModel("anthropic", MODEL), baseUrl: `http://127.0.0.1:${fakeAnthropic.port}` };
+const warnings: string[] = [];
+const disposeSink = registerLogSink((event: { level: string; message: string }) => {
+	if (event.level === "warn" && event.message.includes("fallback API key")) warnings.push(event.message);
+});
+const registryResolver = (s: { auth: InstanceType<typeof AuthStorage>; sessionId: string }) =>
+	createApiKeyResolver(
+		{ getApiKeyWithCredentialForProvider: (provider: string, sessionId?: string, options?: object) => s.auth.keys.getWithCredential(provider, sessionId, options), authStorage: s.auth },
+		"anthropic",
+		{ sessionId: s.sessionId, modelId: MODEL },
+	);
+// One real streamSimple request through the stream retry driver and the anthropic provider.
+async function request(apiKey: unknown) {
+	const before = sentKeys.length;
+	const result = await streamSimple(fakeModel, { systemPrompt: "fixture", messages: [{ role: "user", content: "probe", timestamp: Date.now() }] }, { apiKey, maxTokens: 32 }).result();
+	return { stopReason: result.stopReason as string, errorMessage: result.errorMessage as string | undefined, sent: sentKeys.slice(before) };
+}
+// Over pace on both seats (4h into the week): a turn boundary picks the fallback key.
+const overPace = (tag: string) => scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+const useKey = (key: string) => writeFileSync(KEY_FILE, `${key}\n`);
+for (const [name, failure] of Object.entries(BILLING)) {
+	// (a) credit balance, (b) spend limit / tier cap / 402: the same request finishes on OAuth, later turns stay OAuth.
+	const tag = `park-${name}`;
+	const key = `fake-fallback-key-${tag}`;
+	const s = await overPace(tag);
+	useKey(key);
+	reject.set(key, failure);
+	const warned = warnings.length;
+	beginTurn(s);
+	const result = await request(registryResolver(s));
+	check(`${tag}: the turn's first request went out on the fallback key`, result.sent[0] === key, `sent=${show(result.sent)}`);
+	check(`${tag}: the same request finishes on an OAuth seat`, result.stopReason === "stop" && result.sent.length === 2 && isOAuth(result.sent[1], tag), `stop=${result.stopReason} sent=${show(result.sent)} error=${result.errorMessage}`);
+	check(`${tag}: one warn line, without the key`, warnings.length - warned === 1 && !warnings.at(-1)!.includes(key), `warnings=${show(warnings.slice(warned))}`);
+	const midTurn = await s.get();
+	beginTurn(s);
+	nextReport();
+	const nextTurn = await s.get();
+	check(`${tag}: the rest of the turn and the next over-pace turn stay on OAuth`, isOAuth(midTurn, tag) && isOAuth(nextTurn, tag), `mid=${show(midTurn)} next=${show(nextTurn)}`);
+	check(`${tag}: OAuth attribution is back`, identityOf(s.auth, s.sessionId) === nextTurn, `identity=${show(identityOf(s.auth, s.sessionId))}`);
+	if (name === "credit-400") {
+		// (d) the park lasts an hour; after it the next over-pace turn may try the key again.
+		clockOffsetMs += 45 * 60_000;
+		beginTurn(s);
+		const stillParked = await s.get();
+		clockOffsetMs += 16 * 60_000;
+		beginTurn(s);
+		const reprobe = await s.get();
+		clockOffsetMs -= 61 * 60_000 + 10 * 60_000;
+		check(`${tag}: within the hour the key stays parked`, isOAuth(stillParked, tag), `actual=${show(stillParked)}`);
+		check(`${tag}: after the hour the next over-pace turn tries the key again`, reprobe === key, `actual=${show(reprobe)}`);
+		// A different key in the file is not the rejected one.
+		useKey(`${key}-replaced`);
+		beginTurn(s);
+		nextReport();
+		const replaced = await s.get();
+		clockOffsetMs -= 10 * 60_000;
+		check(`${tag}: a replaced key in the file is not parked`, replaced === `${key}-replaced`, `actual=${show(replaced)}`);
+	} else {
+		clockOffsetMs -= 10 * 60_000;
+	}
+	reject.delete(key);
+	s.auth.close();
+}
+{
+	// (c) while parked, the weekly-exhausted path (selector pass and the lastChance helper) never hands out the key.
+	const tag = "park-weekly";
+	const key = `fake-fallback-key-${tag}`;
+	const s = await scenario(tag, { rin: seat(0.2, 1), mio: seat(0.1, 1), key: "file" });
+	useKey(key);
+	const first = await s.get();
+	const retried = (await registryResolver(s)({ lastChance: false, error: Object.assign(new Error(`400 ${JSON.stringify(BILLING["credit-400"].body)}`), { status: 400 }), previousKey: key })) as { apiKey?: string } | undefined;
+	const after = await s.get();
+	const helper = await s.auth.keys.cueloWeeklyApiKeyFallback?.("anthropic", s.sessionId, { modelId: MODEL });
+	check(`${tag}: weekly exhaustion first served the key`, first === key, `actual=${show(first)}`);
+	check(`${tag}: the rejected request resolves to an OAuth seat, not the key`, isOAuth(retried?.apiKey, tag), `actual=${show(retried?.apiKey)}`);
+	check(`${tag}: weekly selection and the lastChance helper skip the parked key`, isOAuth(after, tag) && helper === undefined, `after=${show(after)} helper=${show(helper)}`);
+	s.auth.close();
+}
+{
+	// Each rejected key keeps its own hour: A rejected, the file moves to B, B rejected, the file goes back to A.
+	const tag = "park-two-keys";
+	const [keyA, keyB] = [`fake-fallback-key-${tag}-a`, `fake-fallback-key-${tag}-b`];
+	const s = await overPace(tag);
+	const credit = Object.assign(new Error(`400 ${JSON.stringify(BILLING["credit-400"].body)}`), { status: 400 });
+	const served: unknown[] = [];
+	for (const key of [keyA, keyB, keyA]) {
+		useKey(key);
+		beginTurn(s);
+		nextReport();
+		const value = await s.get();
+		served.push(value);
+		if (value === key) await registryResolver(s)({ lastChance: false, error: credit, previousKey: key });
+	}
+	clockOffsetMs -= 30 * 60_000;
+	check(`${tag}: A and B were each served once, then A stays parked`, served[0] === keyA && served[1] === keyB && isOAuth(served[2], tag), `served=${show(served)}`);
+	s.auth.close();
+}
+for (const [name, failure] of Object.entries(NOT_BILLING)) {
+	// (e) a transient rate limit or a server error on the key neither retries onto OAuth nor parks the key.
+	const tag = `no-park-${name}`;
+	const key = `fake-fallback-key-${tag}`;
+	const s = await overPace(tag);
+	useKey(key);
+	reject.set(key, failure);
+	const warned = warnings.length;
+	beginTurn(s);
+	const result = await request(registryResolver(s));
+	const error = Object.assign(new Error(`${failure.status} ${JSON.stringify(failure.body)}`), { status: failure.status });
+	const retried = (await s.auth.keys.resolver("anthropic", { sessionId: s.sessionId, modelId: MODEL })({ lastChance: true, error, previousKey: key })) as { apiKey?: string } | string | undefined;
+	beginTurn(s);
+	const next = await s.get();
+	check(`${tag}: the request fails on the key without an OAuth retry`, result.stopReason === "error" && result.sent.every(sent => sent === key), `stop=${result.stopReason} sent=${show(result.sent)}`);
+	check(`${tag}: the key is not parked and nothing is logged`, next === key && warnings.length === warned, `next=${show(next)} retried=${show(retried)} warnings=${warnings.length - warned}`);
+	reject.delete(key);
+	s.auth.close();
+}
+{
+	// Any bearer other than the fallback key file's key keeps the upstream classification: no retry for a credit 400.
+	const other = "fake-other-api-key";
+	reject.set(other, BILLING["credit-400"]);
+	const resolves: string[] = [];
+	const result = await request(({ error }: { error: unknown }) => {
+		resolves.push(error === undefined ? "initial" : "retry");
+		return other;
+	});
+	check("non-fallback api key: a credit-balance 400 is not retried", result.stopReason === "error" && result.sent.length === 1 && resolves.join() === "initial", `stop=${result.stopReason} sent=${show(result.sent)} resolves=${show(resolves)}`);
+	reject.delete(other);
+}
+disposeSink();
+fakeAnthropic.stop(true);
 
 console.log(`결과: ${passes} pass, ${failures} fail`);
 process.exit(failures > 0 ? 1 : 0);
