@@ -1082,6 +1082,8 @@ export const enLocale = {
     "credits.purpose.memory": "Memory",
     "credits.purpose.korean-reply-translation": "Reply translation",
     "credits.wallet.anthropic": "Anthropic API",
+    "credits.billingLink": "Actual balance",
+    "credits.billingLinkLabel": "See the actual {wallet} balance on its billing page (opens in a new tab)",
     "credits.scope.anthropic": "This PC's records",
     "credits.anthropic.note": "Counts only API-key responses with recorded tokens; excludes subscription (OAuth) requests and failed attempts without tokens. Amounts are estimates at published prices, not a bill or balance.",
     "credits.anthropic.noCoverage": "No requests in this window have a recorded credential kind, so API-key usage is unknown.",

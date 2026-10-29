@@ -1082,6 +1082,8 @@ export const zhCNLocale: LocalePlugin = {
     "credits.purpose.memory": "记忆",
     "credits.purpose.korean-reply-translation": "回复翻译",
     "credits.wallet.anthropic": "Anthropic API",
+    "credits.billingLink": "查看实际余额",
+    "credits.billingLinkLabel": "在 {wallet} 账单页面查看实际余额（新标签页）",
     "credits.scope.anthropic": "本机记录",
     "credits.anthropic.note": "仅统计记录了 token 的 API 密钥请求，不含订阅 (OAuth) 请求及无 token 的失败尝试。金额为按公开单价计算的估算值，并非账单或余额。",
     "credits.anthropic.noCoverage": "此期间没有记录凭证类型的请求，无法得知 API 密钥使用量。",

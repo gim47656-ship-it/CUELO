@@ -193,6 +193,8 @@ async function scenario(tag: string, opts: { rin: Seat; mio: Seat; key?: KeySour
 					}
 				: undefined,
 		rankingStrategyResolver: (provider: string) => (provider === "anthropic" ? claudeRankingStrategy : undefined),
+		// A forced re-mint (401 recovery) keeps the fixture token: no network refresh.
+		refreshOAuthCredential: async (_provider: string, _id: number, credential: object) => ({ ...credential, expires: Date.now() + 30 * 86_400_000 }),
 	});
 	for (const identity of ["rin", "mio"]) {
 		await auth.credentials.upsert("anthropic", {
@@ -627,6 +629,128 @@ for (const tier of ["opus", "sonnet"] as const) {
 	check(`${tag}: recovered identity is OAuth again`, identityOf(s.auth, s.sessionId) === recovered, "stale paid marker");
 	check(`${tag}: recovered OAuth keeps A voice`, voicePayload(s.auth, s.sessionId)?.system === initialVoice, "voice changed on recovery");
 	clockOffsetMs -= 20 * 60_000;
+	s.auth.close();
+}
+
+// 2026-10-29 user decisions: a usage report the usage service still serves from its cache counts as current; the
+// OAuth/API answer is fixed per user turn (KeyCascade.cueloBeginTurn, announced by the coding-agent at each user
+// prompt); a turn boundary with unknown usage keeps the session's previous turn answer, and a first turn stays OAuth.
+console.log("[turn fixation]");
+type TurnKeys = { cueloBeginTurn?: (sessionId: string) => void; cueloEndSession?: (sessionId: string) => void };
+const beginTurn = (s: { auth: { keys: unknown }; sessionId: string }) => (s.auth.keys as TurnKeys).cueloBeginTurn?.(s.sessionId);
+// Usage reports are cached for at most 6.25 minutes; ten minutes guarantees a refetch from the scenario seats.
+const nextReport = () => {
+	clockOffsetMs += 10 * 60_000;
+};
+{
+	// (a) usage.ts serves a cached success until TTL + 25% jitter (up to 6.25 min old) as current.
+	const tag = "fresh-cached-5m30";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	s.hooks.weeklyReport = (_token, report) => ({ ...(report as object), fetchedAt: Date.now() - 5.5 * 60_000 });
+	const value = await s.get();
+	check(`${tag}: a 5.5-minute-old cached report over pace -> API key`, value === FILE_KEY, `actual=${show(value)}`);
+	s.auth.close();
+}
+{
+	// (b) one turn keeps its auth through pace changes and unknown reports; the next boundary decides afresh.
+	const tag = "turn-fixed";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	beginTurn(s);
+	const first = await s.get();
+	s.seats.rin.weekly = 0.01;
+	nextReport();
+	const caughtUp = await s.get();
+	s.hooks.weeklyReport = () => null;
+	nextReport();
+	const unknown = await s.get();
+	s.hooks.weeklyReport = undefined;
+	check(`${tag}: turn 1 starts on the API key`, first === FILE_KEY, `actual=${show(first)}`);
+	check(`${tag}: turn 1 keeps the API key after pace catches up mid-turn`, caughtUp === FILE_KEY, `actual=${show(caughtUp)}`);
+	check(`${tag}: turn 1 keeps the API key when a mid-turn report is unknown`, unknown === FILE_KEY, `actual=${show(unknown)}`);
+	beginTurn(s);
+	nextReport();
+	const second = await s.get();
+	s.seats.rin.weekly = 0.2;
+	nextReport();
+	const overAgain = await s.get();
+	check(`${tag}: turn 2 boundary with a seat under pace -> OAuth`, second === `rin-${tag}`, `actual=${show(second)}`);
+	check(`${tag}: turn 2 keeps OAuth after both seats go over pace mid-turn`, overAgain === `rin-${tag}`, `actual=${show(overAgain)}`);
+	beginTurn(s);
+	nextReport();
+	const third = await s.get();
+	check(`${tag}: turn 3 boundary over pace -> API key`, third === FILE_KEY, `actual=${show(third)}`);
+	s.auth.close();
+}
+for (const unknown of ["null", "stale", "unsupported"] as const) {
+	// (c) usage cannot be judged at the boundary: keep the previous turn's auth; a first turn stays OAuth.
+	const tag = `turn-unknown-${unknown}`;
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	beginTurn(s);
+	const first = await s.get();
+	s.hooks.weeklyReport = (_token, report) => {
+		if (unknown === "null") return null;
+		const usage = report as { fetchedAt: number };
+		return unknown === "stale" ? { ...usage, fetchedAt: Date.now() - 30 * 60_000 } : { ...usage, limits: [] };
+	};
+	beginTurn(s);
+	nextReport();
+	const next = await s.get();
+	check(`${tag}: previous turn API`, first === FILE_KEY, `actual=${show(first)}`);
+	check(`${tag}: unknown usage at the next boundary keeps the API key`, next === FILE_KEY, `actual=${show(next)}`);
+	const fresh = { ...s, sessionId: `${s.sessionId}-new` };
+	beginTurn(fresh);
+	const firstTurn = await s.auth.keys.get("anthropic", fresh.sessionId, { modelId: MODEL });
+	check(`${tag}: a first turn with unknown usage stays OAuth`, isOAuth(firstTurn, tag), `actual=${show(firstTurn)}`);
+	(s.auth.keys as TurnKeys).cueloEndSession?.(s.sessionId);
+	beginTurn(s);
+	const afterEnd = await s.get();
+	check(`${tag}: an ended session starts again without a previous answer (OAuth)`, isOAuth(afterEnd, tag), `actual=${show(afterEnd)}`);
+	s.hooks.weeklyReport = undefined;
+	s.auth.close();
+}
+{
+	// An under-pace report from a seat removed while the boundary check awaits is unknown, not an OAuth verdict.
+	const tag = "turn-pool-change";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	beginTurn(s);
+	const first = await s.get();
+	const rinId = s.auth.oauth.accounts("anthropic")[0]!.credentialId;
+	s.hooks.weeklyReport = async (token, report) => {
+		if (!token.startsWith("rin-")) return report;
+		s.hooks.weeklyReport = undefined;
+		await s.auth.credentials.removeById("anthropic", rinId);
+		return { ...(report as object), limits: [limit("5h", 0.1, Date.now() + 2 * HOUR), limit("7d", 0.01, Date.now() + 164 * HOUR)] };
+	};
+	beginTurn(s);
+	nextReport();
+	const next = await s.get();
+	s.hooks.weeklyReport = undefined;
+	check(`${tag}: previous turn API`, first === FILE_KEY, `actual=${show(first)}`);
+	check(`${tag}: a removed seat's under-pace report keeps the API key`, next === FILE_KEY, `actual=${show(next)}`);
+	s.auth.close();
+}
+{
+	// The turn lock never pins a rejected key: a 401 recovery resolve (forceRefresh) decides per request as before.
+	const tag = "turn-auth-recovery";
+	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+	beginTurn(s);
+	const first = await s.get();
+	s.seats.rin.weekly = 0.01;
+	nextReport();
+	const resolver = createApiKeyResolver(
+		{
+			getApiKeyWithCredentialForProvider: (provider: string, sessionId?: string, options?: object) =>
+				s.auth.keys.getWithCredential(provider, sessionId, options),
+			authStorage: s.auth,
+		},
+		"anthropic",
+		{ sessionId: s.sessionId, modelId: MODEL },
+	);
+	const recovered = (await resolver({ error: Object.assign(new Error("401"), { status: 401 }), previousKey: FILE_KEY })) as { apiKey?: string } | undefined;
+	const after = await s.get();
+	check(`${tag}: turn starts on the API key`, first === FILE_KEY, `actual=${show(first)}`);
+	check(`${tag}: 401 recovery with a seat under pace -> OAuth, not the locked key`, isOAuth(recovered?.apiKey, tag), `actual=${show(recovered?.apiKey)}`);
+	check(`${tag}: the rest of the turn follows the recovered OAuth`, isOAuth(after, tag), `actual=${show(after)}`);
 	s.auth.close();
 }
 

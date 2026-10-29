@@ -1076,6 +1076,8 @@
  "credits.purpose.memory": "기억",
  "credits.purpose.korean-reply-translation": "답변 번역",
  "credits.wallet.anthropic": "Anthropic API",
+ "credits.billingLink": "실제 잔액 보기",
+ "credits.billingLinkLabel": "{wallet} 결제 화면에서 실제 잔액 보기(새 탭)",
  "credits.scope.anthropic": "이 PC 기록",
  "credits.anthropic.note": "토큰이 기록된 API 키 요청만 집계하며 구독(OAuth) 요청과 토큰 없는 실패는 제외합니다. 금액은 공개 단가 기준 추정치이며 청구서나 잔액이 아닙니다.",
  "credits.anthropic.noCoverage": "이 기간에 인증 방식이 기록된 요청이 없어 API 키 사용량을 알 수 없습니다.",

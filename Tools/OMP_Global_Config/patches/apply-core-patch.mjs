@@ -20239,6 +20239,236 @@ EDITS.push({
 	}];
 }
 
+// 2026-10-29 user decisions (turn fixation): Anthropic OAuth vs the fallback key file is decided once per announced
+// user turn and kept for every request inside it, so the provider prompt cache is not broken mid-turn. A report the
+// usage service still serves from its cache counts as current; a boundary with unknown usage keeps the session's
+// previous turn answer (first turn: OAuth). Installs carrying the d1925b9d over-pace bodies upgrade through the
+// alternates below. Verified by core-weekly-fallback-test.ts "[turn fixation]".
+{
+	const swap = (body, from, to) => {
+		if (!body.includes(from)) throw new Error(`turn fixation rewrite did not apply: ${from.slice(0, 60)}`);
+		return body.replace(from, to);
+	};
+	const entry = EDITS.find(edit => edit.marker === "async cueloWeeklyExhausted(");
+	const overPace = entry.patched;
+	let body = swap(overPace, "CUELO: dailyBudget checks the usage panel's over-pace rule;",
+		"CUELO: dailyBudget answers the usage panel's over-pace rule (true every compared seat over, false a seat under,\n\t * undefined unknown; plan-ineligible seats are not compared);");
+	body = swap(body, "\t): Promise<boolean> {", "\t): Promise<boolean | undefined> {");
+	body = swap(body, `		const dailyReached = (usage: UsageReport, at: number): boolean => {
+			if (!Number.isFinite(usage.fetchedAt) || usage.fetchedAt > at || at - usage.fetchedAt > USAGE_REPORT_TTL_MS) return false;
+			const planGate = strategy.planGate?.(rankingContext);
+			if (planGate && planGate(usage) !== true) return false;
+			const weekly = strategy.findWindowLimits(usage, rankingContext).secondary;
+			if (!weekly || weekly.status === "unknown") return false;`, `		let dailyUnknown = false;
+		let dailyUnder = false;
+		// Current as long as the usage service itself serves it as current: #fetchUsageCached keeps a success for
+		// USAGE_REPORT_TTL_MS plus up to 25% jitter, and the report is stamped before its fetch (bounded by
+		// requestTimeoutMs) finishes.
+		const dailyFreshMs = USAGE_REPORT_TTL_MS * 1.25 + this.#deps.usage.requestTimeoutMs;
+		// true over pace, false under, "skip" plan cannot serve the request (not compared), undefined unknown.
+		const dailyPace = (usage: UsageReport, at: number): boolean | "skip" | undefined => {
+			if (!Number.isFinite(usage.fetchedAt) || usage.fetchedAt > at || at - usage.fetchedAt > dailyFreshMs) return undefined;
+			const planGate = strategy.planGate?.(rankingContext);
+			const planEligible = planGate?.(usage);
+			if (planGate && planEligible === false) return "skip";
+			if (planGate && planEligible !== true) return undefined;
+			const weekly = strategy.findWindowLimits(usage, rankingContext).secondary;
+			if (!weekly || weekly.status === "unknown") return undefined;`);
+	body = swap(body, `				typeof used !== "number" || !Number.isFinite(used) || used < 0) return false;`,
+		`				typeof used !== "number" || !Number.isFinite(used) || used < 0) return undefined;`);
+	body = swap(body, `			if (!usage) return false;
+			if (dailyBudget) {
+				if (!dailyReached(usage, Date.now())) return false;
+				dailyReports.push(usage);
+				continue;
+			}`, `			if (dailyBudget) {
+				const pace = usage ? dailyPace(usage, Date.now()) : undefined;
+				// An under-pace seat switches to OAuth only after the pool/credential re-check below.
+				if (pace === false) {
+					dailyUnder = true;
+					break;
+				}
+				if (pace === undefined) dailyUnknown = true;
+				if (pace === true) dailyReports.push(usage!);
+				continue;
+			}
+			if (!usage) return false;`);
+	body = swap(body, "\t\t// The awaits may have outlived a weekly reset,", `		// No seat under pace: unknown wins; with every seat plan-ineligible, OAuth stays (as before).
+		if (dailyBudget && !dailyUnder && (dailyUnknown || dailyReports.length === 0)) return dailyUnknown ? undefined : false;
+		// The awaits may have outlived a weekly reset,`);
+	body = swap(body, "if (current.length !== seats.length || current.some(seat => !probedIds.has(seat.id))) return false;",
+		"if (current.length !== seats.length || current.some(seat => !probedIds.has(seat.id))) return dailyBudget ? undefined : false;");
+	body = swap(body, `			if (current.some(seat => !seats.some(before => before.id === seat.id && authCredentialEquals(before.credential, seat.credential)))) return false;
+			return dailyReports.every(usage => dailyReached(usage, Date.now()));`, `			if (current.some(seat => !seats.some(before => before.id === seat.id && authCredentialEquals(before.credential, seat.credential)))) return undefined;
+			if (dailyUnder) return false;
+			const recheck = dailyReports.map(usage => dailyPace(usage, Date.now()));
+			if (recheck.includes(false)) return false;
+			return recheck.every(pace => pace === true) ? true : undefined;`);
+	if (body.includes("dailyReached")) throw new Error("turn fixation rewrite left dailyReached behind");
+	entry.patched = body;
+	entry.excludes = [entry.excludes ?? []].flat().concat(overPace);
+	entry.alternates = [
+		...(entry.alternates ?? []).map(alternate => ({ ...alternate, patched: body })),
+		{ file: entry.file, marker: entry.marker, anchor: entry.anchor, requires: overPace, legacyPatched: overPace, patched: body },
+	];
+
+	const passes = EDITS.find(edit => edit.marker === "options?.cueloOnWeeklyExhausted !== undefined &&");
+	const dailyPasses = passes.patched;
+	passes.patched = `		for (const pass of passes) {
+			// CUELO: at a turn boundary (or on an untracked request) the cascade's cueloTurnVerdict turns the over-pace
+			// answer (true over, false under, undefined unknown) into the auth before strict selection; weekly exhaustion
+			// is checked before rescue. Either hands the request to the cascade's fallback key file, when the cascade read
+			// a key from it, instead of an OAuth seat.
+			if (
+				pass === passes[0] &&
+				options?.cueloTurnVerdict !== undefined &&
+				// A fully exhausted week keeps the established rescue/recheck path.
+				!candidates.every(candidate => {
+					const weekly = candidate.usage && strategy?.findWindowLimits(candidate.usage, rankingContext).secondary;
+					return weekly !== undefined && weekly !== null && isUsageLimitReached([weekly]);
+				}) &&
+				options.cueloTurnVerdict(await this.cueloWeeklyExhausted(provider, sessionId, options, true))
+			) {
+				return undefined;
+			}
+			if (
+				pass === passes[1] &&
+				options?.cueloOnWeeklyExhausted !== undefined &&
+				(await this.cueloWeeklyExhausted(provider, sessionId, options)) &&
+				options.cueloOnWeeklyExhausted()
+			) {
+				return undefined;
+			}
+			for (const candidate of pass.allowBlocked ? lastResortCandidates : candidates) {`;
+	passes.excludes = dailyPasses;
+	passes.alternates = [{ file: passes.file, marker: passes.marker, anchor: passes.anchor, requires: dailyPasses, legacyPatched: dailyPasses, patched: passes.patched }];
+
+	const call = EDITS.find(edit => edit.marker === "cueloOnWeeklyExhausted: () => {");
+	call.legacyPatched = call.patched;
+	call.patched = `		// CUELO: the fallback key file is read only when the selector or this session's turn confirms the decision.
+		// Anthropic OAuth vs that key is decided once per announced user turn (cueloBeginTurn); later requests of the
+		// turn keep the auth the session was last served. Error recovery (forceRefresh) decides per request as before.
+		let cueloFileKey: string | undefined;
+		const cueloAllowed = this.#cueloWeeklyFallbackAllowed(provider, sessionId);
+		const cueloBoundary =
+			cueloAllowed && sessionId !== undefined && !options?.forceRefresh ? this.#cueloTurns.get(sessionId) : undefined;
+		const cueloPreviousKey = cueloBoundary !== undefined && this.#deps.affinity.cueloKeyFallbackActive(provider, sessionId);
+		if (cueloBoundary === false && cueloPreviousKey) cueloFileKey = this.#cueloReadFallbackKeyFile();
+		try {
+			if (cueloFileKey === undefined) {
+				oauthResolved = await this.#deps.selector.resolveOAuth(
+					provider,
+					sessionId,
+					cueloAllowed
+						? {
+								...options,
+								cueloOnWeeklyExhausted: () => {
+									cueloFileKey = this.#cueloReadFallbackKeyFile();
+									return cueloFileKey !== undefined;
+								},
+								...(cueloBoundary === false
+									? {}
+									: {
+											cueloTurnVerdict: (overPace: boolean | undefined) => {
+												if (!(overPace ?? cueloPreviousKey)) return false;
+												cueloFileKey = this.#cueloReadFallbackKeyFile();
+												return cueloFileKey !== undefined;
+											},
+										}),
+							}
+						: options,
+				);
+			}
+			if (cueloBoundary === true && this.#cueloTurns.has(sessionId!)) this.#cueloTurns.set(sessionId!, false);
+`;
+
+	const helpers = EDITS.find(edit => edit.marker === "async cueloWeeklyApiKeyFallback(");
+	helpers.legacyPatched = helpers.patched;
+	helpers.patched = swap(helpers.patched, `	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`, `	/** CUELO: session -> true while its announced turn has not decided Anthropic OAuth vs the fallback key yet. */
+	#cueloTurns = new Map<string, boolean>();
+
+	/** CUELO: a user turn starts in this session; its next Anthropic resolve decides the turn's auth. */
+	cueloBeginTurn(sessionId: string): void {
+		this.#cueloTurns.delete(sessionId);
+		this.#cueloTurns.set(sessionId, true);
+		// Bounded: the longest-idle announced session falls back to the per-request rule.
+		if (this.#cueloTurns.size > 256) this.#cueloTurns.delete(this.#cueloTurns.keys().next().value!);
+	}
+
+	/** CUELO: the session ended; drop its turn state and its fallback mark. */
+	cueloEndSession(sessionId: string): void {
+		this.#cueloTurns.delete(sessionId);
+		this.#deps.affinity.cueloMarkKeyFallback("anthropic", sessionId, false);
+	}
+
+	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`);
+
+	const mark = EDITS.find(edit => edit.marker === "\tcueloMarkKeyFallback(provider: string, sessionId: string | undefined, active: boolean): void {\n");
+	mark.legacyPatched = mark.patched;
+	mark.patched = swap(mark.patched, "\tactiveOAuth(provider: string, sessionId?: string): OAuthCredential | undefined {\n", `	/** CUELO: whether this session's latest bearer is the weekly-fallback key file's key. */
+	cueloKeyFallbackActive(provider: string, sessionId: string | undefined): boolean {
+		return sessionId !== undefined && this.#cueloKeyFallbackSessions.get(provider)?.has(sessionId) === true;
+	}
+
+	activeOAuth(provider: string, sessionId?: string): OAuthCredential | undefined {
+`);
+
+	const options = EDITS.find(edit => edit.marker === "\tcueloOnWeeklyExhausted?: () => boolean;\n");
+	options.legacyPatched = options.patched;
+	options.patched = swap(options.patched, "\tcueloOnWeeklyExhausted?: () => boolean;\n};\n", `	cueloOnWeeklyExhausted?: () => boolean;
+	/**
+	 * CUELO: set by KeyCascade at a turn boundary or on an untracked request. Receives the selector's over-pace
+	 * answer (true over, false under, undefined unknown); true back means the cascade read a key from its fallback
+	 * key file, so the selector returns no OAuth seat.
+	 */
+	cueloTurnVerdict?: (overPace: boolean | undefined) => boolean;
+};
+`);
+
+	const keysApi = EDITS.find(edit => edit.marker === "\tcueloWeeklyApiKeyFallback?(\n");
+	keysApi.legacyPatched = keysApi.patched;
+	keysApi.patched = swap(keysApi.patched, "\t): Promise<ResolvedApiKey | undefined>;\n}\n", `	): Promise<ResolvedApiKey | undefined>;
+	/** CUELO: a user turn starts in \`sessionId\`; Anthropic OAuth vs the fallback key is decided once for it. */
+	cueloBeginTurn?(sessionId: string): void;
+	/** CUELO: \`sessionId\` ended; its turn state is dropped. */
+	cueloEndSession?(sessionId: string): void;
+}
+`);
+
+	EDITS.push({
+		file: "src/session/agent-session.ts",
+		marker: "this.#modelRegistry.authStorage.keys.cueloBeginTurn?.(this.sessionId);",
+		anchor: "\t\t\t// Validate API key\n\t\t\tconst apiKey = await this.#modelRegistry.getApiKey(this.model, this.sessionId);\n",
+		patched: `			// CUELO: a user turn (the auto-thinking isUserTurn rule; subagent task prompts included) announces itself, so
+			// Anthropic OAuth vs the fallback key is decided once for the turn, starting with this resolve.
+			if (message.role === "user" || (message.role === "custom" && isUserInvokedSkillPrompt(message))) {
+				this.#modelRegistry.authStorage.keys.cueloBeginTurn?.(this.sessionId);
+			}
+			// Validate API key
+			const apiKey = await this.#modelRegistry.getApiKey(this.model, this.sessionId);
+`,
+	}, {
+		file: "src/session/agent-session.ts",
+		marker: "this.#modelRegistry.authStorage.keys.cueloEndSession?.(this.sessionId);",
+		anchor: "\tbeginDispose(): void {\n\t\tthis.#isDisposed = true;\n",
+		patched: `	beginDispose(): void {
+		this.#isDisposed = true;
+		// CUELO: drop this session's Anthropic turn state (bounded per-session map in KeyCascade).
+		this.#modelRegistry.authStorage.keys.cueloEndSession?.(this.sessionId);
+`,
+	});
+	// Text added here is ASCII-only (Bun 1.4.4 note below); bodies inherited from earlier entries keep their characters.
+	const nonAscii = text => text.match(/[^\x00-\x7f]/g)?.join("") ?? "";
+	for (const edited of [entry, passes, call, helpers, mark, options, keysApi]) {
+		for (const candidate of [edited, ...(edited.alternates ?? [])]) {
+			if (candidate.legacyPatched && nonAscii(candidate.patched) !== nonAscii(candidate.legacyPatched)) throw new Error(`turn fixation added non-ASCII text: ${candidate.marker}`);
+			if (candidate.legacyPatched && candidate.patched.includes(candidate.legacyPatched)) throw new Error(`turn fixation body still contains its legacy body: ${candidate.marker}`);
+		}
+	}
+}
+
 // #17332 (6612331), adapted to the downstream numeric estimator API.
 {
 	const agent = "../pi-agent-core/src/agent.ts";

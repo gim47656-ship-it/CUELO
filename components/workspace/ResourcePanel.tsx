@@ -1070,6 +1070,7 @@ function CreditWalletCard({
             {setting ? t("credits.edit") : t("credits.enter")}
           </ActionButton>
         ) : null}
+        <BillingLink wallet="hive" walletName={walletName} t={t} />
       </div>
       <div className="mt-0.5 text-xs text-text-muted">{`${t(`credits.scope.${wallet.wallet}`)} · ${since}`}</div>
       {wallet.status === "error" ? (
@@ -1144,6 +1145,27 @@ function localDate(ms: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+/** 공급자는 잔액 API를 주지 않는다(2026-10-29 확인). 실제 잔액은 각 콘솔의 결제 화면에서만 볼 수 있다. */
+const BILLING_URLS = {
+  hive: "https://portal.deploy.com/",
+  anthropic: "https://platform.claude.com/settings/billing",
+} as const;
+
+function BillingLink({ wallet, walletName, t }: { wallet: keyof typeof BILLING_URLS; walletName: string; t: Translate }) {
+  return (
+    <a
+      href={BILLING_URLS[wallet]}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="shrink-0 text-xs text-accent underline-offset-2 hover:underline"
+      aria-label={t("credits.billingLinkLabel", { wallet: walletName })}
+      data-billing-link={wallet}
+    >
+      {t("credits.billingLink")} ↗
+    </a>
+  );
+}
+
 /**
  * Anthropic 유료 API 카드. core가 api-key로 나갔다고 기록한 요청만 보이고, 구독(OAuth)·자격 미기록 요청은 수만 보인다.
  * 잔액·총액 입력은 없다(청구서·잔액 자료가 아니다).
@@ -1157,7 +1179,10 @@ function AnthropicPaidCard({ wallet, t }: { wallet: AnthropicPaidWallet; t: Tran
     : `${wallet.spentComplete ? "" : "≥"}${formatMoney(wallet.spentUsd)}`;
   return (
     <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet="anthropic">
-      <h3 id={headingId} className="m-0 text-sm font-semibold text-text">{t("credits.wallet.anthropic")}</h3>
+      <div className="flex min-w-0 items-center gap-2">
+        <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{t("credits.wallet.anthropic")}</h3>
+        <BillingLink wallet="anthropic" walletName={t("credits.wallet.anthropic")} t={t} />
+      </div>
       <div className="mt-0.5 text-xs text-text-muted">{`${t("credits.scope.anthropic")} · ${t("credits.sinceDefault")}`}</div>
       <p className="m-0 mt-1 text-xs text-text-muted">{t("credits.anthropic.note")}</p>
       {wallet.status === "error" ? (
