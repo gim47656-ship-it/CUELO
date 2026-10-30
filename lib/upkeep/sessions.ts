@@ -38,6 +38,7 @@ type Entry = {
     model?: string;
     provider?: string;
     toolCallId?: string;
+    toolName?: string;
     isError?: boolean;
   };
 };
@@ -71,7 +72,7 @@ export type WindowCounts = {
 
 export type SessionCost = { sessionId: string; sessionPath: string; cost: number };
 
-/** 부모 세션에 도착한 Maker 결과(`async-result`). 원장에 남지 않는 `partial`을 여기서 읽는다. */
+/** 부모 세션에 도착한 Maker 결과(`async-result` 알림, `wait`·`hub` 회수). 원장에 남지 않는 `partial`을 여기서 읽는다. */
 export type MakerResult = { sessionId: string; name: string; timestamp: string; durationSec: number | null; partial: boolean };
 
 export type ScanResult = {
@@ -110,6 +111,24 @@ function durationSeconds(text: string): number | null {
   const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(text);
   if (!match || !text) return null;
   return (+(match[1] ?? 0)) * 3600 + (+(match[2] ?? 0)) * 60 + (+(match[3] ?? 0));
+}
+
+/**
+ * 알림이나 회수 스냅샷 하나에 든 Maker 결과 전부. 한 알림에 여러 결과가 묶이고(`── Job … ──`), 긴 결과는
+ * `<output>` 대신 `<meta/>` 뒤 `<preview>`로 온다. partial은 각 결과 본문의 첫 JSON `status`로 판정한다.
+ */
+function taskResults(text: string): Omit<MakerResult, "sessionId" | "timestamp">[] {
+  const heads = [...text.matchAll(/<task-result id="([^"]+)"[^>]*>/g)];
+  return heads.map((head, i) => {
+    const start = (head.index ?? 0) + head[0].length;
+    const body = text.slice(start, heads[i + 1]?.index ?? text.length);
+    const duration = /duration="([^"]+)"/.exec(head[0]);
+    return {
+      name: head[1],
+      durationSec: duration ? durationSeconds(duration[1]) : null,
+      partial: /^\s*(?:<meta[^>]*\/>\s*)?<(?:output|preview)\b[^>]*>\s*\{\s*"status":\s*"partial"/.test(body),
+    };
+  });
 }
 
 /** 오류 첫 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). */
@@ -273,17 +292,7 @@ export async function scanSessions(dir: string, now: number): Promise<ScanResult
           }
           if (kind === "autolearn-saved") w.saves++;
           if (kind === "async-result" && typeof entry.content === "string") {
-            const head = /<task-result id="([^"]+)"[^>]*>/.exec(entry.content);
-            const duration = head && /duration="([^"]+)"/.exec(head[0]);
-            if (head) {
-              makerResults.push({
-                sessionId,
-                name: head[1],
-                timestamp: entry.timestamp,
-                durationSec: duration ? durationSeconds(duration[1]) : null,
-                partial: /<output>\s*\{\s*"status":\s*"partial"/.test(entry.content),
-              });
-            }
+            for (const r of taskResults(entry.content)) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
           }
         }
 
@@ -347,6 +356,11 @@ export async function scanSessions(dir: string, now: number): Promise<ScanResult
 
         if (m.role === "toolResult") {
           lastResultAt = time;
+          // 자동 알림 대신 wait·hub가 회수한 결과는 `Delivery:` 줄과 함께 온다. 이미 받은 결과를 다시 읽은 출력(read 등)은 세지 않는다.
+          if (m.toolName === "wait" || m.toolName === "hub") {
+            const text = textOf(m.content);
+            if (/^Delivery: /m.test(text)) for (const r of taskResults(text)) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
+          }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;
           if (!call || !m.isError) continue;
           const text = textOf(m.content);
