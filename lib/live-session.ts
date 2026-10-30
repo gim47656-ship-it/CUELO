@@ -607,6 +607,24 @@ export interface LiveSignalingRequest {
   threadId: string;
   /** Session id for Codex credential stickiness; omitted when the call belongs to no session. */
   credentialSessionId?: string;
+  /**
+   * Also send `instructions` as a developer message in `session.initial_items`. Codex Live does not
+   * hold an interpreter to `session.instructions` alone: it answered "근처 식당 추천해 줄 수 있어요?"
+   * itself and created a delegation (5/5 on a phone, 2026-10-30), while the same text as a developer
+   * item kept it interpreting (7/7). `session.update` cannot add it later (`immutable_field_update`).
+   */
+  developerInstructions?: boolean;
+}
+
+/** The `session` object of the signaling body. */
+function liveSessionPayload(request: LiveSignalingRequest): Record<string, unknown> {
+  const session: Record<string, unknown> = { ...buildLiveSessionPayload(request.instructions, request.voice) };
+  if (request.developerInstructions) {
+    session.initial_items = [
+      { type: "message", role: "developer", content: [{ type: "input_text", text: request.instructions }] },
+    ];
+  }
+  return session;
 }
 
 /** Sign the browser's offer with the Codex OAuth credential and post it to Codex signaling. */
@@ -630,7 +648,7 @@ export async function signalLiveCall(request: LiveSignalingRequest): Promise<Liv
       const response = await fetchImpl(SIGNALING_URL, {
         method: "POST",
         headers: { ...headers, Accept: "*/*", "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: request.sdp, session: buildLiveSessionPayload(request.instructions, request.voice) }),
+        body: JSON.stringify({ sdp: request.sdp, session: liveSessionPayload(request) }),
       });
       const body = await response.text();
       if (!response.ok) {

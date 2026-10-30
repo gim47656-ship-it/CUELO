@@ -312,6 +312,8 @@ export async function createInterpreterCall(request: InterpreterOfferRequest): P
     voice: await configuredLiveVoice(undefined),
     // A fresh thread per call; no credential pin is stored for a session that does not exist.
     threadId: crypto.randomUUID(),
+    // The interpreter rules also go in as a developer message; see `developerInstructions`.
+    developerInstructions: true,
   });
 
   const call: InterpreterCall = {

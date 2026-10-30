@@ -1,9 +1,10 @@
 /**
  * GitHub Actions `on.push.paths` / `paths-ignore` filter, evaluated locally.
  *
- * ci_chain uses it to tell "the push has no run because every changed file is filtered out" apart from "the run has
- * not appeared yet". A pattern or filter this module does not fully understand is reported as `undefined` or thrown,
- * and the caller then treats the push as one that does run, so a misread never turns a missing run into a pass.
+ * `.github/scripts/ci-paths.test.mjs` replays both workflow filters over every tracked file with it, and a CI watch can
+ * use it to tell "the push has no run because every changed file is filtered out" apart from "the run has not appeared
+ * yet". A pattern or filter this module does not fully understand is reported as `undefined` or thrown, and the caller
+ * then treats the push as one that does run, so a misread never turns a missing run into a pass.
  */
 
 export interface PushPathsFilter {

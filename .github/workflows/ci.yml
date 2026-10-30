@@ -199,7 +199,7 @@ jobs:
 
       - name: Extension, guard, finalizer and skill-cost tests
         if: matrix.suite == 'extensions'
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./agent/tools/ci-chain ./skill-cost
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./skill-cost
 
       # Every file is its own process with its own temporary HOME/roots, so the files run
       # side by side (one per CPU); each log is printed whole, in file order, afterwards.
@@ -359,7 +359,7 @@ jobs:
       - name: Push path filter tests
         run: |
           node --test .github/scripts/ci-eval-scope.test.mjs
-          bun test ./.github/scripts/ci-paths.test.mjs
+          bun test ./.github/scripts/ci-paths.test.mjs ./.github/scripts/paths-filter.test.ts
 
       # The WSL deploy tooling imports app modules (lib/update-maintenance.ts), so it
       # needs the installed dependencies.

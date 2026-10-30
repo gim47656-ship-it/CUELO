@@ -403,19 +403,11 @@ npm 배포본에는 `humanizer`·`stop-slop`·`kill-ai-slop`과 각 참조 파�
 
 결과는 구간별 JSON과 한 줄 판정(`PASS` 또는 `NOT VERIFIED`와 이유)입니다. 구간마다 실패를 따로 적으므로 도구 전체가 예외로 끝나지는 않습니다. 실행이 끝까지 됐는지도 봅니다. `-Status`는 일치면 exit 0, 불일치면 exit 3이어야 합니다. `health`는 모두 OK면 exit 0, 하나라도 FAIL이면 exit 1이어야 합니다. 종료 코드가 출력과 어긋나거나 시간 초과로 끊기면 그 구간은 오류입니다. `modelRoles`는 Bun 내장 YAML 파서로 읽으며 문자열이 아닌 값은 빠뜨리지 않고 오류로 알립니다. `cwd`가 없으면 서버가 403으로 답하므로 서버를 부르지 않고 `cwd`가 필요하다고 알립니다. 판정은 참고 자료일 뿐이며 배포 성공 여부는 Main이 이 결과를 확인한 뒤 보고합니다.
 
-## CI 사슬 확인 `ci_chain`
-
-[`ci_chain`](../Tools/OMP_Global_Config/agent/tools/ci-chain/)은 Main이 부르는 읽기 전용 세션 도구입니다. 입력으로 원본 저장소 `repo`(owner/name), 커밋 `sha`, 확인할 워크플로 이름 목록 `workflows`를 받습니다. 짧은 SHA는 전체 SHA로 바꿔 조회하고 조회에 실패하면 오류로 처리합니다. 선택 입력은 `mirror`(`repo`, `workflows`, 커밋 제목 `title`; 제목이 없으면 커밋 조회로 얻음), `waitSeconds`(기본 0은 한 번 조회, 최대 1800), `pollSeconds`(기본 15)입니다. 원본 run은 headSha로 맞추고 `Publish CUELO web release`는 기다리지 않습니다. 미러 run은 이름이 정확히 `Publish public mirror`인 원본 run이 만들어진 시각 이후를 워크플로별로 조회해 커밋 제목이 같은 가장 이른 run을 고릅니다. GitHub이 run 제목을 70자(69자+…)로 자르므로 그 경우만 앞부분으로 맞춥니다. 게시 run이 없으면 미러를 조회하지 않고 대기(pending)로 둡니다. 100개 넘게 쌓여 가장 이른 run을 확정할 수 없으면 오류로 알립니다.
-
-게시 로그에서 `##[group]Run` 스크립트 원문 구간을 빼고 "nothing to publish"가 실제 출력으로 찍혔으면 미러 구간을 skipped-no-public-change로 판정합니다. 오래된 run에서 `gh run view --log`가 비면 job 로그 API로 다시 읽습니다. 게시가 실패하면 미러 구간은 따라올 run이 없다는 오류로 둡니다. 실패한 run은 실패 job 이름과 실패 로그 마지막 40줄을 보여 줍니다. 읽지 못한 로그는 그 구간 오류로 적습니다. 모든 gh 호출은 120초가 지나면 끊기고 오류가 됩니다. run을 다시 실행하거나 취소하지 않습니다. 결과는 구간별 JSON과 요약 텍스트입니다. 판정은 참고 자료일 뿐이며 CI 성공 여부는 Main이 이 결과를 확인한 뒤 보고합니다.
-
-`ci_chain`은 해당 SHA에 워크플로 run이 없으면 그 커밋의 변경 파일을 그 SHA 시점의 워크플로 파일 필터에 대 봅니다. 모두 걸러지면 그 구간을 기다리지 않고 `skipped-paths-ignored`로 돌려주며 성공 판정에 포함합니다. 게시 run이 필터로 생략되면 미러 구간도 같은 상태가 됩니다. 필터를 읽지 못하거나 병합 커밋, 변경 파일 300개 이상, 조회 실패처럼 판정할 수 없는 경우는 이전처럼 `pending`으로 남고, 지원하지 않는 패턴은 판정하지 않습니다. 여러 커밋을 한 번에 push했으면 마지막 커밋의 변경만 봅니다. 앞 커밋이 필터를 통과하는 파일을 바꿨다면 run이 이미 있어 그 run이 먼저 잡힙니다. 이 상태는 코드가 바뀌지 않았다는 뜻일 뿐 배포 결정을 바꾸지 않습니다.
-
 ## Task Guard와 command guard
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. WSL에서는 Windows 콘솔 프로그램(`git.exe` 제외)을 부르는 `bash` 명령을 새 bash로 감싸 실행해, CP949로 나온 한글 출력을 UTF-8로 바꿉니다. UTF-8로 나온 줄과 종료 코드는 그대로입니다. 감싸지 못한 명령의 출력이 깨졌거나 시스템 `python3`에 모듈이 없어 실패했으면, 다시 실행할 방법(`iconv`, 관리 Python 환경 경로)을 결과에 한 줄 덧붙입니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
-명령 가드는 `eval` 셀 안에서 `tool.git_finalize`, `tool.cross_review`, `tool.slop_check`, `tool.ci_chain`, `tool.deploy_verify`를 부르는 것을 막고 그 도구를 직접 부르도록 안내합니다. `eval` 셀은 300초가 지나면 끊깁니다. 7일 동안 이 방식으로 부른 `git_finalize` 27건 중 3건이 이렇게 끊겨, 커밋은 됐지만 SHA와 푸시 상태가 사라졌습니다. 이 장치는 사고를 막기 위한 정적 패턴 검사이며 보안 경계가 아닙니다.
+명령 가드는 `eval` 셀 안에서 `tool.git_finalize`, `tool.cross_review`, `tool.slop_check`, `tool.deploy_verify`를 부르는 것을 막고 그 도구를 직접 부르도록 안내합니다. `eval` 셀은 300초가 지나면 끊깁니다. 7일 동안 이 방식으로 부른 `git_finalize` 27건 중 3건이 이렇게 끊겨, 커밋은 됐지만 SHA와 푸시 상태가 사라졌습니다. 이 장치는 사고를 막기 위한 정적 패턴 검사이며 보안 경계가 아닙니다.
 
 요청별 budget(primary 16, rework 8, 합계 24)은 실제로 시작한 Maker만 셉니다. 승인 거부, 승인 창 오류, 하류 guard 거절, 실행 전 중단·건너뛰기로 task가 실행되지 않은 호출과 작업 등록에 실패한 항목은 그 호출의 예약과 임시 소유 추적만 돌려놓습니다. 이미 시작한 Maker는 호출이 오류로 끝나도 계속 셉니다. 실행 도중 예외로 결과가 사라진 호출은 그 뒤 등록된 작업이 없다고 확인될 때만 돌려놓고, 확인할 수 없으면 그대로 남깁니다. `proc://<id>/kill`로 취소가 확인된 Maker는 이름이 같아도 런타임이 붙인 실제 id로 찾아 그 Maker의 primary·rework 몫만 한 번 돌려받습니다. 취소로 돌려받는 몫은 요청당 8개까지입니다.
 

@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parsePushPathsFilter, pushStartsWorkflow } from "../../Tools/OMP_Global_Config/agent/tools/ci-chain/paths-filter.ts";
+import { parsePushPathsFilter, pushStartsWorkflow } from "./paths-filter.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const suite = existsSync(join(root, ".publicignore")) ? describe : describe.skip;

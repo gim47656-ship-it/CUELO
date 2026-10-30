@@ -894,7 +894,7 @@ const EVAL_MODEL_BRIDGE_PATTERNS = [
 // 2026-10-29 SJF bg_15: eval cell의 `tool.git_finalize()`가 eval 데드라인(300s)에 걸려 셀이 실패 처리되고
 // 반환값(커밋 SHA)을 잃었다. 길이가 정해지지 않은 Main 게이트 도구는 eval 안에서 부르지 않고 직접
 // 호출한다. 직접 호출에는 eval 셀 데드라인이 없다.
-const EVAL_GATE_TOOL_NAMES = "git_finalize|cross_review|slop_check|ci_chain|deploy_verify";
+const EVAL_GATE_TOOL_NAMES = "git_finalize|cross_review|slop_check|deploy_verify";
 const GATE_MEMBER = `(?:\\.\\s*|\\[\\s*["'\`])(?:${EVAL_GATE_TOOL_NAMES})(?![\\w$])(?:["'\`]\\s*\\])?`;
 const EVAL_GATE_TOOL_PATTERNS = [
   // tool.name(…) / tool["name"](…)
@@ -929,7 +929,7 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
   }
   if (callsEvalGateTool(input.code)) {
     return (
-      "[EvalGateGuard] eval 안에서 git_finalize/cross_review/slop_check/ci_chain/deploy_verify를 부르지 마세요. " +
+      "[EvalGateGuard] eval 안에서 git_finalize/cross_review/slop_check/deploy_verify를 부르지 마세요. " +
       "eval 셀 데드라인(30~300s)이 먼저 끝나면 셀이 실패 처리되어 도구 반환값(커밋 SHA·reviewId)을 잃습니다. " +
       "이 도구들은 eval 밖에서 직접 호출하세요."
     );
