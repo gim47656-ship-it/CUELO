@@ -1628,7 +1628,8 @@ export function parseReviewerOutput(raw: string): { ok: true; findings: ParsedFi
   return { ok: false };
 }
 
-/** 비밀 이름 검사(skim·slop-gate가 쓰는 넓은 판정). skim과 같은 정규식(SECRET_NAME·SECRET_EXTENSION)에 ~/.omp/agent 경로를 더한다. */
+/** 넓은 비밀 이름 검사. 경로 어느 조각이든 SECRET_NAME·SECRET_EXTENSION에 걸리거나 ~/.omp/agent 아래면 참이다.
+ *  이제 파일 전체에서 개인키 블록을 한 번 더 찾는 안전 검사(holdsKeyBlock)에만 쓴다: 걸려도 키 블록이 없으면 빼지 않으므로 폴더 이름까지 넓게 본다. */
 export function secretPath(path: string): boolean {
   const parts = path.replaceAll("\\", "/").toLowerCase().split("/");
   if (parts.some((part) => SECRET_NAME.test(part) || SECRET_EXTENSION.test(part))) return true;
@@ -1639,14 +1640,16 @@ export function secretPath(path: string): boolean {
 // 값만 가릴 수 없는 자격 증명 저장소(.aws/·.ssh/·.gnupg/·.kube/·.azure/ 아래, 확장자 없는 `credentials`, .pgpass·.htpasswd 같은 저장 파일, .docker/config.json).
 // secretPath가 잡는 나머지 이름(credential·secret·password·api-key를 품은 이름, 단독 auth·token)은 이름일 뿐이라 내용을 redactSecrets로 가린 채 심사한다.
 const HARD_SECRET_NAME = /^(?:\.env.*|id_[^/\\]*|agent\.db|\.npmrc|\.netrc|\.pypirc|\.git-credentials)$/i;
-// 저장 파일 이름은 마지막 경로 조각(파일 이름)에서만 본다: `src/credentials/provider.ts`처럼 이름만 같은 디렉터리의 구현 파일은 제외하지 않는다.
+// 비밀 이름·확장자와 저장 파일 이름은 마지막 경로 조각(파일 이름)에서만 본다: `tools/id_mapping/index.ts`나 `src/credentials/provider.ts`처럼
+// 이름만 닮은 폴더 아래 구현 파일은 제외하지 않는다(2026-10-30 사용자 결정). 자격 증명 폴더와 ~/.omp/agent는 위치로 막는다.
 const HARD_SECRET_FILE = /^(?:credentials|kubeconfig|\.pgpass|\.htpasswd|\.dockercfg|\.s3cfg|\.boto|\.vault-token)$/i;
 const HARD_SECRET_DIR: Record<string, true> = { ".aws": true, ".ssh": true, ".gnupg": true, ".kube": true, ".azure": true };
 
 /** 정책상 심사할 수 없는 경로인가: 어떤 심사 라운드도 이 파일에 통과를 줄 수 없다. */
 export function hardSecretPath(path: string): boolean {
   const parts = path.replaceAll("\\", "/").toLowerCase().split("/");
-  if (parts.some((part) => HARD_SECRET_NAME.test(part) || SECRET_EXTENSION.test(part) || Object.hasOwn(HARD_SECRET_DIR, part)) || HARD_SECRET_FILE.test(parts[parts.length - 1])) return true;
+  const name = parts[parts.length - 1];
+  if (HARD_SECRET_NAME.test(name) || SECRET_EXTENSION.test(name) || HARD_SECRET_FILE.test(name) || parts.some((part) => Object.hasOwn(HARD_SECRET_DIR, part))) return true;
   return parts.some((part, index) => (part === ".omp" && parts[index + 1] === "agent") || (part === ".docker" && parts[index + 1] === "config.json"));
 }
 

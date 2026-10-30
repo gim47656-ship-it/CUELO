@@ -60,10 +60,16 @@ export interface Collected { chunks: string[]; notes: string[] }
 
 function slash(path: string): string { return path.replaceAll("\\", "/"); }
 function inside(rel: string): boolean { return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel); }
-function protectedPath(rel: string): boolean {
+/** 비밀 이름·확장자는 파일 이름(마지막 경로 조각)에서만 본다. 폴더 이름까지 보면 `29-token-saving/` 같은 기록 폴더가
+ *  `token`에 걸려 통째로 빠졌다(2026-10-30 사용자 결정). skim·draft·slop-gate가 같은 판정을 쓴다. */
+export function secretFileName(path: string): boolean {
+  const name = slash(path).split("/").at(-1) ?? "";
+  return SECRET_NAME.test(name) || SECRET_EXTENSION.test(name);
+}
+/** 경로 어디에 있어도 보내지 않는 위치: 생성물·의존성 폴더와 인증 저장소 ~/.omp/agent. */
+function protectedLocation(rel: string): boolean {
   const parts = slash(rel).toLowerCase().split("/");
-  if (parts.some((part) => Object.hasOwn(SKIP_DIR, part) || SECRET_NAME.test(part) || SECRET_EXTENSION.test(part))) return true;
-  return parts.some((part, index) => part === ".omp" && parts[index + 1] === "agent");
+  return parts.some((part, index) => Object.hasOwn(SKIP_DIR, part) || (part === ".omp" && parts[index + 1] === "agent"));
 }
 function globPattern(input: string, cwd: string): { pattern: string; explicit: boolean; absolute: string } {
   const absolute = resolve(cwd, input);
@@ -127,7 +133,8 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
     const value = raw.trim();
     if (!value) continue;
     const target = globPattern(value, root);
-    if (protectedPath(target.pattern)) { notes.push(`${target.pattern}: 비밀 경로 제외`); continue; }
+    // 입력은 폴더·glob일 수 있어 위치만 먼저 보고, 파일 이름 검사는 아래에서 찾은 파일마다 한다.
+    if (protectedLocation(target.pattern)) { notes.push(`${target.pattern}: 비밀 경로 제외`); continue; }
     let pattern = target.pattern;
     if (target.explicit) {
       let info;
@@ -174,7 +181,7 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
   let used = 0;
   for (const rel of [...found].sort()) {
     if (signal.aborted) throw signal.reason;
-    if (protectedPath(rel)) { notes.push(`${rel}: 비밀 경로 제외`); continue; }
+    if (protectedLocation(rel) || secretFileName(rel)) { notes.push(`${rel}: 비밀 경로 제외`); continue; }
     if (BINARY_EXTENSION.test(basename(rel))) { notes.push(`${rel}: 바이너리 제외`); continue; }
     const full = resolve(root, rel);
     try {

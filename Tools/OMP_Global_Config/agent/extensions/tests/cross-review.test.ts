@@ -2300,6 +2300,11 @@ describe("이름만 걸린 경로 심사(C2)", () => {
     for (const path of [NAME_ONLY, "Pages/ForgotPassword.cshtml", "lib/cloud-interpreter-auth.ts", "components/gemini-credentials.ts", "core-api-key-fallback-test.ts", "src/secrets.ts"]) expect(hardSecretPath(path), path).toBe(false);
   });
 
+  test("hardSecretPath는 비밀 이름·확장자를 파일 이름에만 건다: 그 이름을 닮은 폴더 아래 일반 파일은 심사한다", () => {
+    for (const path of ["tools/id_mapping/index.ts", "env/.env.d/loader.ts", "keys/backup.key/notes.md", "src/agent.db/schema.ts"]) expect(hardSecretPath(path), path).toBe(false);
+    for (const path of ["tools/id_mapping/id_rsa", "env/.env.d/.env.prod", "a/b/server.key"]) expect(hardSecretPath(path), path).toBe(true);
+  });
+
   test("값이 없는 이름만 걸린 파일은 심사하고 통과를 받는다", async () => {
     const env = repo();
     writeAt(env, NAME_ONLY, "export const login = (user: string) => user.trim();\n");

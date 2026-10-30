@@ -60,6 +60,26 @@ describe("skim", () => {
     for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) expect(answer).toContain(`docs/${name}: 비밀 경로 제외`);
   });
 
+  test("비밀 이름은 파일 이름에만 걸고 폴더 이름은 보지 않으며, .omp/agent 같은 관리 위치는 그대로 뺀다", async () => {
+    const cwd = fixture();
+    mkdirSync(join(cwd, "doc", "29-token-saving"), { recursive: true });
+    mkdirSync(join(cwd, "secrets"));
+    mkdirSync(join(cwd, ".omp", "agent"), { recursive: true });
+    writeFileSync(join(cwd, "doc", "29-token-saving", "main.md"), "FOLDER_TOKEN_MARKER");
+    writeFileSync(join(cwd, "secrets", "plan.md"), "FOLDER_SECRET_MARKER");
+    writeFileSync(join(cwd, "secrets", "api-key.md"), "NAMED_SECRET_MARKER");
+    writeFileSync(join(cwd, ".omp", "agent", "note.md"), "AGENT_DIR_MARKER");
+    let prompt = "";
+    const answer = await skimText({ paths: ["doc/29-token-saving", "secrets", ".omp/agent/note.md"], question: "?" },
+      context(cwd), signal, async (input) => { prompt = input; return reply("ok"); });
+    // 10-29~30: 기록 폴더 `29-token-saving/`이 `token`에 걸려 통째로 빠졌다.
+    expect(prompt).toContain("FOLDER_TOKEN_MARKER");
+    expect(prompt).toContain("FOLDER_SECRET_MARKER");
+    expect(prompt).not.toMatch(/NAMED_SECRET_MARKER|AGENT_DIR_MARKER/);
+    expect(answer).toContain("secrets/api-key.md: 비밀 경로 제외");
+    expect(answer).toContain(".omp/agent/note.md: 비밀 경로 제외");
+  });
+
   test("하위 cwd에서도 상위 저장소의 gitignore를 명시 파일에 적용한다", async () => {
     const repo = fixture();
     expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);

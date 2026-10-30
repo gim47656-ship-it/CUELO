@@ -191,6 +191,18 @@ describe("심사와 통과 기록", () => {
     expect(result.files.map((file) => file.status)).toEqual(["error", "error", "error"]);
     expect(reviewer.calls).toHaveLength(0);
   });
+
+  test("비밀 이름 검사는 파일 이름에만 건다: 기록 폴더 이름의 token·auth로 보고서를 거절하지 않는다", async () => {
+    const cwd = scratch();
+    mkdirSync(join(cwd, "29-token-saving"));
+    writeFileSync(join(cwd, "29-token-saving", "report.md"), KO_PLAIN);
+    writeFileSync(join(cwd, "29-token-saving", "api-key.md"), KO_PLAIN);
+    const reviewer = fakeReviewer(clean);
+    const result = await reviewFiles(["29-token-saving/report.md", "29-token-saving/api-key.md"], undefined, deps(cwd, reviewer.complete), signal);
+    const status = Object.fromEntries(result.files.map((file) => [file.file, file]));
+    expect(status["29-token-saving/report.md"]!.status).toBe("pass");
+    expect(status["29-token-saving/api-key.md"]!.error).toBe("secret-looking path excluded");
+  });
 });
 
 describe("reviewer 배정: cross_review와 같은 reviewerLanes(보조 자문 없음)", () => {

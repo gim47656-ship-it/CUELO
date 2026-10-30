@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
 import { docx, parseCsv, parseWorkbook, xlsx } from "./draft/ooxml";
 import { findPdfBackend, renderPdf } from "./draft/pdf";
-import { collect, completeRole, HelperCallError, resolveDraftFallback, SECRET_EXTENSION, SECRET_NAME, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
+import { collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
 // 문서 한 편을 통째로 받는다. 출력 상한은 모델 최대치(Gemini 4 Argon 65,536토큰)라 우리 상한 때문에 잘리지
@@ -48,11 +48,10 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
   if (!inside(rel)) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
   const segments = slash(rel).split("/");
   const lower = segments.map((part) => part.toLowerCase());
-  // 관리 폴더는 경로 어디에 있든 막고, 비밀 이름·확장자는 파일 이름만 본다. 폴더 이름까지 보면
-  // `29-token-saving/` 같은 작업 기록 폴더가 `token`에 걸렸다(10-29 3건).
-  const name = segments[segments.length - 1]!;
+  // 관리 폴더는 경로 어디에 있든 막고, 비밀 이름·확장자는 skim과 같은 secretFileName으로 파일 이름만 본다.
+  // 폴더 이름까지 보면 `29-token-saving/` 같은 작업 기록 폴더가 `token`에 걸렸다(10-29 3건).
   if (lower.some((part, i) => part === ".git" || part === "node_modules" || (part === ".omp" && lower[i + 1] === "agent"))
-    || SECRET_NAME.test(name) || SECRET_EXTENSION.test(name)) {
+    || secretFileName(rel)) {
     throw new Error(`비밀·관리 경로처럼 보이는 이름에는 쓸 수 없습니다: ${slash(rel)}`);
   }
   const format = FORMATS[extname(rel).toLowerCase()];

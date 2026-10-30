@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { authorFamily, LANE_TAG, ReviewerCallError, reviewerLanes, secretPath, type Lane } from "../lib/cross-review";
+import { authorFamily, LANE_TAG, ReviewerCallError, reviewerLanes, type Lane } from "../lib/cross-review";
+import { secretFileName } from "../skim";
 import {
   appendSlopRecord, passFor, rawDataReason, readSlopRecords, sha256, trackable, visibilityOf, wslPath,
   type SlopFindingRecord, type SlopRecord, type SlopReviewRecord,
@@ -253,7 +254,8 @@ export function resolveFiles(files: readonly string[], cwd: string): { ok: Resol
     let abs: string;
     try { abs = realpathSync(lexical); } catch { fail("file not found"); continue; }
     if (!trackable(abs, cwd) || !trackable(lexical, cwd)) { fail("outside the session cwd, the home folder and the Windows drives, or a scratch/internal location (/tmp, ~/.omp, ~/.cache, node_modules, .git)"); continue; }
-    if (secretPath(abs)) { fail("secret-looking path excluded"); continue; }
+    // 비밀 이름은 파일 이름에서만 본다. 절대 경로 전체를 보면 `29-token-saving/` 같은 폴더 아래 보고서가 영영 통과를 못 받는다.
+    if (secretFileName(abs)) { fail("secret-looking path excluded"); continue; }
     try {
       const stat = statSync(abs);
       if (!stat.isFile()) { fail("not a regular file"); continue; }
