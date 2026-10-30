@@ -945,8 +945,6 @@
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL" },
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
         "HARD_CODE_TERRA": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" },
-        "NORMAL_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "NORMAL" },
-        "HARD_CODE_DAYBREAK": { "modelConfigPath": "modelRoles.implDaybreak", "workClass": "HARD" },
         "HARD_CODE_SOL61": { "modelConfigPath": "modelRoles.implSol61", "workClass": "HARD" },
         "NORMAL_GEMINI": { "modelConfigPath": "modelRoles.implGemini", "workClass": "NORMAL" },
         "HARD_CODE_GEMINI": { "modelConfigPath": "modelRoles.implGemini", "workClass": "HARD" },

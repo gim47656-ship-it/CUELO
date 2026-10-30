@@ -637,9 +637,9 @@ function placementOf(
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
 /** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
-const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_DAYBREAK: true, NORMAL_GEMINI: true, NORMAL_GLM: true };
+const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_GEMINI: true, NORMAL_GLM: true };
 
-/** Settled non-UI work prefers Terra; only background work prefers DeepSeek. */
+/** Settled non-UI work prefers the implSol slot (GPT-6.1 Sol); only background work prefers DeepSeek. */
 const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SOL", "NORMAL_SONNET", "NORMAL_DEEPSEEK"];
 const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SOL", "NORMAL_SONNET"];
 const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
@@ -694,11 +694,11 @@ function normalAllocation(
       : "사용 가능한 NORMAL 후보가 없습니다."
     : triggers.length > 0
       ? selected.profile === "NORMAL_DEEPSEEK"
-        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(Terra보다 벽시계 시간이 길다). Terra를 고르면 ROUTING_REASON이 필요합니다.`
+        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(GPT-6.1 Sol보다 벽시계 시간이 길다). GPT-6.1 Sol을 고르면 ROUTING_REASON이 필요합니다.`
         : `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 NORMAL_DEEPSEEK를 쓸 수 없어 ${selected.profile}를 추천합니다.`
       : selected.profile !== NORMAL_FALLBACK_ORDER[0]
-        ? "Terra가 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
-        : "방향이 정해진 비-UI NORMAL의 기본 추천은 Terra입니다.";
+        ? "GPT-6.1 Sol이 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
+        : "방향이 정해진 비-UI NORMAL의 기본 추천은 GPT-6.1 Sol입니다.";
   return {
     state, profile: selected?.profile ?? null,
     reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
@@ -877,7 +877,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main은 profile·recommendations·placement·history·normalAllocation을 보고 후보를 지정합니다. UI/UX와 설계가 열린 작업(designOpen, Jev 불가·불명 포함)·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천하고 Terra가 없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus로 내려갑니다. ${DEEPSEEK_TRIGGER_NOTE} 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
+  const INSTRUCTION = `Main은 profile·recommendations·placement·history·normalAllocation을 보고 후보를 지정합니다. UI/UX와 설계가 열린 작업(designOpen, Jev 불가·불명 포함)·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 GPT-6.1 Sol(implSol)을 추천하고 그 후보가 없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus로 내려갑니다. ${DEEPSEEK_TRIGGER_NOTE} 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1082,8 +1082,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const allocation = normal && !ui && !open && !rework ? normalAllocation(current, candidates, quota, triggers) : null;
         const present = (profile: string) => candidates.find((candidate) => candidate.profile === profile)?.profile ?? null;
         const usable = (profile: string) => candidates.find((candidate) => candidate.profile === profile && !modelQuotaExhausted(quota, candidate.model))?.profile ?? null;
-        // 2026-10-30 사용자 결정: UI·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 Terra. HARD의 MIXED·UNKNOWN 분야는 Opus로 둔다.
-        // Opus 자리는 한도와 무관하게 유지한다(UI/UX Opus 불가는 조용히 대체하지 않는다). Terra만 관측 소진이면 Opus로 내려간다.
+        // 2026-10-30 사용자 결정: UI·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 implSol(같은 날 Terra에서 GPT-6.1 Sol로 교체). HARD의 MIXED·UNKNOWN 분야는 Opus로 둔다.
+        // Opus 자리는 한도와 무관하게 유지한다(UI/UX Opus 불가는 조용히 대체하지 않는다). implSol만 관측 소진이면 Opus로 내려간다.
         const preferred = normal
           ? (ui || open || rework ? present("NORMAL_OPUS") : null)
           : hard
@@ -1387,7 +1387,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 GPT-6.1 Sol(implSol)을 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

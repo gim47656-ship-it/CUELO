@@ -6789,3 +6789,504 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     transition: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   보수(upkeep). 사이드바 「보수」로 여는 전체 화면 점검판. 뒤의 작업 화면은 마운트된 채 덮이기만
+   한다. 상태는 색과 함께 항상 글자(정상·주의·문제·미확인)로 적는다.
+   --------------------------------------------------------------------------- */
+.upkeep-view {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.upkeep-view[hidden] {
+  display: none;
+}
+
+.upkeep-view:focus {
+  outline: none;
+}
+
+.upkeep-view {
+  word-break: keep-all;
+}
+
+.upkeep-header {
+  flex: 0 0 auto;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: var(--seed-dimension-x3) var(--seed-dimension-x5);
+}
+
+.upkeep-header-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x3);
+  max-inline-size: 1120px;
+  margin-inline: auto;
+}
+
+.upkeep-header-bar h2 {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.upkeep-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-block-size: 32px;
+  padding-inline: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.upkeep-back:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.upkeep-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--seed-dimension-x4);
+  max-inline-size: 1120px;
+  margin: 6px auto 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--readout-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.upkeep-body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: var(--seed-dimension-x4) var(--seed-dimension-x5) var(--seed-dimension-x10);
+}
+
+.upkeep-body > * {
+  max-inline-size: 1120px;
+  margin-inline: auto;
+}
+
+.upkeep-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x3);
+  margin-block: var(--seed-dimension-x8);
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.upkeep-empty p {
+  margin: 0;
+}
+
+.upkeep-banner {
+  margin-block: 0 var(--seed-dimension-x3);
+  padding: 8px 12px;
+  border: 1px solid var(--warning-line);
+  border-radius: var(--radius-surface);
+  background: var(--warning-soft);
+  font-size: 13px;
+}
+
+.upkeep-button {
+  min-block-size: 32px;
+  padding-inline: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.upkeep-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.upkeep-button:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.upkeep-button[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
+}
+
+.upkeep-button[data-variant="primary"]:hover {
+  background: color-mix(in srgb, var(--seed-color-bg-neutral-inverted) 86%, var(--bg));
+}
+
+.upkeep-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.upkeep-status {
+  flex: 0 0 auto;
+  font-size: var(--readout-size);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.upkeep-status[data-status="ok"] { color: var(--success); }
+.upkeep-status[data-status="watch"] { color: var(--warning); }
+.upkeep-status[data-status="problem"] { color: var(--danger); }
+.upkeep-status[data-status="unknown"] { color: var(--text-muted); font-weight: 400; }
+
+/* 섹션 여섯 개의 한 줄 상태판. 누르면 그 섹션으로 내려간다. */
+.upkeep-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  margin-block-end: var(--seed-dimension-x3);
+}
+
+.upkeep-strip-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-inline-size: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.upkeep-strip-item:hover {
+  background: var(--bg-hover);
+}
+
+.upkeep-strip-item[data-status="watch"] { border-color: var(--warning-line); background: var(--warning-soft); }
+.upkeep-strip-item[data-status="problem"] { border-color: var(--danger-line); background: var(--danger-soft); }
+
+.upkeep-strip-title {
+  max-inline-size: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upkeep-full {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2) var(--seed-dimension-x4);
+  margin-block-end: var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.upkeep-full p {
+  margin: 0;
+}
+
+.upkeep-section {
+  padding-block: var(--seed-dimension-x5) var(--seed-dimension-x2);
+  border-block-start: 1px solid var(--border);
+  scroll-margin-block-start: var(--seed-dimension-x2);
+}
+
+.upkeep-section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px var(--seed-dimension-x4);
+}
+
+.upkeep-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+}
+
+.upkeep-section-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.upkeep-section-title h3:focus {
+  outline: none;
+}
+
+.upkeep-section-head .upkeep-actions {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+}
+
+.upkeep-summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.upkeep-warnings {
+  margin-block-start: var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.upkeep-warnings ul {
+  margin: 2px 0 0;
+  padding-inline-start: 18px;
+}
+
+.upkeep-rows {
+  margin: var(--seed-dimension-x3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upkeep-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block: 12px;
+  border-block-start: 1px solid var(--hairline);
+}
+
+.upkeep-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x3);
+}
+
+.upkeep-row-head h4 {
+  min-inline-size: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.upkeep-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--seed-dimension-x5);
+  margin: 0;
+}
+
+.upkeep-values > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.upkeep-values dt {
+  color: var(--text-muted);
+  font-size: var(--readout-size);
+}
+
+.upkeep-values dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.upkeep-line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.upkeep-line-label {
+  margin-inline-end: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.upkeep-nowrap {
+  white-space: nowrap;
+}
+
+.upkeep-fold {
+  margin-block-start: var(--seed-dimension-x2);
+}
+
+.upkeep-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.upkeep-details summary {
+  inline-size: fit-content;
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.upkeep-details summary:hover {
+  color: var(--text);
+}
+
+.upkeep-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding-inline-start: 18px;
+  font-size: 12px;
+}
+
+.upkeep-evidence li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  min-inline-size: 0;
+}
+
+.upkeep-evidence-detail {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.upkeep-evidence-link {
+  color: var(--text);
+  font-family: var(--font-mono);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.upkeep-quote {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.upkeep-notice {
+  position: fixed;
+  /* 아래쪽은 방금 채운 입력창과 모델 칩 자리라 위에 띄운다. */
+  inset-block-start: calc(var(--seed-dimension-x4) + env(safe-area-inset-top));
+  inset-inline: 0;
+  z-index: 255;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x2);
+  inline-size: fit-content;
+  max-inline-size: min(560px, calc(100vw - 24px));
+  margin-inline: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-float);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.upkeep-notice p {
+  margin: 0;
+}
+
+.upkeep-notice button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.upkeep-view button:focus-visible,
+.upkeep-view summary:focus-visible,
+.upkeep-view a:focus-visible,
+.upkeep-notice button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .upkeep-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .upkeep-header,
+  .upkeep-body {
+    padding-inline: var(--seed-dimension-x3);
+  }
+
+  .upkeep-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .upkeep-section-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .upkeep-section-head .upkeep-actions {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  /* 폰에서 누르기 쉬운 44px, 두 버튼이 한 줄을 나눠 쓴다. */
+  .upkeep-button,
+  .upkeep-back {
+    min-block-size: 44px;
+  }
+
+  .upkeep-actions .upkeep-button {
+    flex: 1 1 0;
+    min-inline-size: 0;
+    white-space: normal;
+  }
+
+  .upkeep-actions .upkeep-button[data-variant="primary"] {
+    flex-grow: 2;
+  }
+
+  .upkeep-full .upkeep-actions {
+    flex-basis: 100%;
+  }
+
+  .upkeep-details summary {
+    padding-block: 12px;
+  }
+}

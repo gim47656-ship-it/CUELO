@@ -60,16 +60,16 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   **2026-10-30 사용자 결정(HARD 4후보 비교 시험, `doc/history/2026/10/29-review-model-compare/hard-trial`):** 등급과 별개로
   `maker_route`의 `designOpen` 질문(확률형 bool)이 구현자에게 설계·접근·근본 원인 선택이 남았는지 판정한다. 0.5 이상이거나 Jev 불가·답 없음이면 열린 설계다.
   열린 설계와 `FINDING_ID` 재작업은 NORMAL이면 `NORMAL_OPUS`, HARD이면 `HARD_CODE_OPUS`를 추천한다(추천이므로 `ROUTING_REASON`이 필요 없다).
-  방향이 정해진 비-UI NORMAL은 `NORMAL_SOL`(Terra) → `NORMAL_SONNET` → `NORMAL_DEEPSEEK` 순서로 쓸 수 있는 첫 후보를 추천한다.
+  방향이 정해진 비-UI NORMAL은 `NORMAL_SOL`(GPT-6.1 Sol) → `NORMAL_SONNET` → `NORMAL_DEEPSEEK` 순서로 쓸 수 있는 첫 후보를 추천한다.
   `NORMAL_DEEPSEEK`는 `maker_route`의 `mainWaits`가 0.5 미만일 때만 맨 앞에 온다: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). DeepSeek는 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에 쓰지 않는다. "Anthropic 계정이 모두 오늘 몫을 넘김" 트리거는 기본이 Anthropic이 아니게 되어 2026-10-30에 뺐다.
-  `SOL`·`NORMAL_SOL`·`implSol`은 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-terra:auto`다(2026-10-27 사용자 지시). Sol·Astra의 과거 평가 수치를 Terra의 성능 증거로 옮기지 않는다.
+  `SOL`·`NORMAL_SOL`·`implSol`·`HARD_CODE_TERRA`는 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-sol:auto`다(2026-10-30 사용자 결정: Terra Maker가 실제 작업에서 두 번 연속 일찍 `partial`로 끝나 Maker 자리에서 뺐다. `skim`·`draftFallback`의 Terra는 그대로다). 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
   한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다. 쓸 수 있는 후보가 없으면 null이다. 추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
   UI/UX의 Opus unavailable은 명시하고 다른 모델로 조용히 대체하지 않는다.
-  HARD UI는 `HARD_UI_OPUS`, 방향이 정해진 비-UI 코드(`hardFocus`가 `CODE_SYSTEM`)는 `HARD_CODE_TERRA`(Terra, `implSol` 공용 slot)를 추천하고 Terra를 쓸 수 없으면 `HARD_CODE_OPUS`로 내려간다.
+  HARD UI는 `HARD_UI_OPUS`, 방향이 정해진 비-UI 코드(`hardFocus`가 `CODE_SYSTEM`)는 `HARD_CODE_TERRA`(GPT-6.1 Sol, `implSol` 공용 slot)를 추천하고 그 후보를 쓸 수 없으면 `HARD_CODE_OPUS`로 내려간다.
   `hardFocus`가 `MIXED`·`UNKNOWN`이면 `HARD_CODE_OPUS`다. GPT-6 Astra는 Maker 후보가 아니며 교차검토 slot `crossReviewOpenAI`로만 쓴다(2026-10-30 사용자 결정, Main 계열에 따른 Astra 우선도 없앴다).
   `HARD_CODE_SONNET` 등 추천과 다른 후보를 선택하면 `ROUTING_REASON`이 필요하다.
-  GPT-6 Sol + 자동 Daybreak(`implDaybreak`, `openai-codex/gpt-6-sol:auto`)은 `NORMAL_DAYBREAK`(비-UI NORMAL)·`HARD_CODE_DAYBREAK`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-22 사용자 결정). 자동 추천·NORMAL 폴백 순서·UI/UX Opus 경계는 그대로다. daybreak_blue program은 core가 계정별 발견 자격에 따라 붙이며 강제하지 않는다(자격이 없으면 일반 Sol 호출).
-  GPT-6.1 Sol(`implSol61`)은 `HARD_CODE_SOL61`(HARD 코드)로 Main이 명시 선택할 때만 쓰며 `ROUTING_REASON`이 필요하다(2026-10-29 사용자 결정, HARD Maker 기본값 비교 시험). 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
+  GPT-6 Sol + 자동 Daybreak 명시 후보(`implDaybreak`, `NORMAL_DAYBREAK`·`HARD_CODE_DAYBREAK`)는 GPT-6 Sol이 은퇴(deprecated) 표시돼 2026-10-30 사용자 결정으로 없앴다.
+  `implSol61`(`HARD_CODE_SOL61`)은 2026-10-29 HARD 비교 시험용 명시 선택 후보로 남아 있으며, 2026-10-30부터 `implSol`과 같은 모델(GPT-6.1 Sol)이다. Main이 고르면 `ROUTING_REASON`이 필요하다.
   Gemini 4 Argon(Vertex, `implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)과 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
   기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.

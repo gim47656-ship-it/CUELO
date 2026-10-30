@@ -140,7 +140,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSol` | 방향이 정해진 비-UI 코드(NORMAL·HARD 우선) | 구현 중심 코드 모델(이 저장소 기본은 GPT-6.1 Terra `:auto`). 비어 있으면 NORMAL은 `implSonnet`, HARD 코드는 `makerHardCodeOpus`로 넘어감 |
+   | `implSol` | 방향이 정해진 비-UI 코드(NORMAL·HARD 우선) | 구현 중심 코드 모델(이 저장소 기본은 GPT-6.1 Sol `:auto`). 비어 있으면 NORMAL은 `implSonnet`, HARD 코드는 `makerHardCodeOpus`로 넘어감 |
    | `implSonnet` | NORMAL 비-UI 대안 | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
    | `implOpus` | NORMAL UI/UX | Opus 모델 및 `high` 지원 |
    | `implDeepSeek` | NORMAL 배경 작업·대안 | DeepSeek 모델 및 `high` 지원. 이번 요청이 그 결과 없이 끝나는 백그라운드·장시간 조각이면 먼저 추천하고, 그 밖에는 앞 후보를 쓸 수 없을 때 추천 |

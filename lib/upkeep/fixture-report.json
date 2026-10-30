@@ -1,0 +1,195 @@
+{
+  "generatedAt": "2026-10-30T03:12:00.000Z",
+  "window": {
+    "currentStart": "2026-10-22T15:00:00.000Z",
+    "currentEnd": "2026-10-29T15:00:00.000Z",
+    "previousStart": "2026-10-15T15:00:00.000Z"
+  },
+  "scannedFiles": 1284,
+  "scanMs": 4210,
+  "repoCwd": "/home/user/src/CUELO-private",
+  "sections": [
+    {
+      "id": "bottleneck",
+      "title": "작업 병목",
+      "status": "problem",
+      "summary": "Maker 대기 시간이 직전 7일의 2.3배입니다.",
+      "metrics": [
+        {
+          "id": "maker-wait",
+          "label": "Maker 결과 대기 중앙값",
+          "unit": "ms",
+          "current": 412000,
+          "previous": 178000,
+          "status": "problem",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "handoff": {
+            "path": "HANDOFF.md",
+            "title": "Terra 기본 Maker 관찰(10-30)",
+            "text": "- **Terra 기본 Maker 관찰(10-30)**: 기본 Maker를 Terra로 바꾼 뒤 7일 동안 결과 대기 중앙값이 5분을 넘으면 Sonnet으로 되돌린다.\n  - 측정: 세션 파일의 task 시작~yield 간격"
+          },
+          "note": "표본 41건, 직전 37건",
+          "evidence": [
+            { "label": "task 대기 21분", "sessionId": "2026-10-27_a1b2c3", "sessionPath": "/home/user/.omp/agent/sessions/home-user-src-CUELO-private/2026-10-27_a1b2c3.jsonl", "timestamp": "2026-10-27T05:40:00.000Z", "detail": "Maker UpkeepScreen yield까지 21분" },
+            { "label": "task 대기 14분", "sessionId": "2026-10-26_d4e5f6", "sessionPath": "/home/user/.omp/agent/sessions/home-user-src-CUELO-private/2026-10-26_d4e5f6.jsonl", "timestamp": "2026-10-26T02:10:00.000Z" }
+          ]
+        },
+        {
+          "id": "tool-retry",
+          "label": "같은 도구 연속 재시도",
+          "unit": "count",
+          "current": 58,
+          "previous": 44,
+          "status": "ok",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "evidence": []
+        },
+        {
+          "id": "early-exit",
+          "label": "턴 중간 조기 종료",
+          "unit": "count",
+          "current": 3,
+          "previous": 1,
+          "status": "watch",
+          "criterion": "7일에 2건 넘게 나오면 주의",
+          "evidence": [
+            { "label": "yield 없이 종료", "count": 2, "sessionId": "2026-10-28_998877", "sessionPath": "/home/user/.omp/agent/sessions/home-user-src-CUELO-private/2026-10-28_998877.jsonl", "detail": "stopReason=length" }
+          ]
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "id": "memory",
+      "title": "기억 회상",
+      "status": "watch",
+      "summary": "회상 결과를 쓰지 않은 턴 비율이 올랐습니다.",
+      "metrics": [
+        {
+          "id": "recall-unused",
+          "label": "회상했지만 쓰지 않은 턴 비율",
+          "unit": "ratio",
+          "current": 0.42,
+          "previous": 0.27,
+          "status": "watch",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "evidence": [
+            { "label": "회상 6건 · 인용 0건", "sessionId": "2026-10-29_112233", "sessionPath": "/home/user/.omp/agent/sessions/home-user-src-CUELO-private/2026-10-29_112233.jsonl" }
+          ]
+        },
+        {
+          "id": "recall-latency",
+          "label": "회상 응답 시간 중앙값",
+          "unit": "ms",
+          "current": 640,
+          "previous": 610,
+          "status": "ok",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "evidence": []
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "id": "cost",
+      "title": "비용",
+      "status": "ok",
+      "summary": "직전 7일과 비슷합니다.",
+      "metrics": [
+        {
+          "id": "api-usd",
+          "label": "API 과금 합계",
+          "unit": "usd",
+          "current": 18.4,
+          "previous": 17.95,
+          "status": "ok",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "evidence": []
+        },
+        {
+          "id": "cache-miss-tokens",
+          "label": "캐시 미적중 입력 토큰",
+          "unit": "tokens",
+          "current": 3120000,
+          "previous": 2980000,
+          "status": "ok",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "evidence": []
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "id": "due",
+      "title": "점검 기한",
+      "status": "problem",
+      "summary": "점검일이 지난 HANDOFF 항목 1건",
+      "metrics": [],
+      "items": [
+        {
+          "ref": { "path": "HANDOFF.md", "title": "회상 품질 재측정(11-05)", "text": "- **회상 품질 재측정(11-05)**: 문서지도 임계값을 바꾼 효과를 11-05에 다시 잰다." },
+          "section": "관찰 대기",
+          "dueDate": "2026-11-05",
+          "dueKind": "date",
+          "overdue": false
+        },
+        {
+          "ref": { "path": "HANDOFF.md", "title": "배포 7일 뒤 CI 시간 확인", "text": "- **배포 7일 뒤 CI 시간 확인**: 10-21 배포 7일 뒤 CI 평균 시간을 직전 주와 비교한다." },
+          "section": "관찰 대기",
+          "dueDate": "2026-10-28",
+          "dueKind": "after-deploy",
+          "overdue": true
+        },
+        {
+          "ref": { "path": "HANDOFF.md", "title": "폰 PWA 재접속 실패 재발 시", "text": "- **폰 PWA 재접속 실패 재발 시**: 다시 나오면 서비스 워커 로그를 받는다." },
+          "section": "다음 행동",
+          "dueDate": null,
+          "dueKind": "condition",
+          "overdue": false
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "id": "complaints",
+      "title": "사용자 지적 반복",
+      "status": "unknown",
+      "summary": "직전 7일 표본이 부족해 비교하지 않았습니다.",
+      "metrics": [
+        {
+          "id": "repeat-complaints",
+          "label": "반복 지적 표현이 든 메시지",
+          "unit": "count",
+          "current": 9,
+          "previous": null,
+          "status": "unknown",
+          "criterion": "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제",
+          "note": "직전 7일 세션 파일 일부를 읽지 못했습니다.",
+          "evidence": [
+            { "label": "「또 」", "count": 5, "sessionId": "2026-10-29_445566", "sessionPath": "/home/user/.omp/agent/sessions/home-user-src-CUELO-private/2026-10-29_445566.jsonl", "timestamp": "2026-10-29T08:01:00.000Z", "detail": "또 같은 오류가 나요" }
+          ]
+        }
+      ],
+      "warnings": ["2026-10-17 세션 파일 3개를 읽지 못함(JSON 오류)"]
+    },
+    {
+      "id": "deploy",
+      "title": "배포·CI",
+      "status": "ok",
+      "summary": "최근 CI 실패 없음",
+      "metrics": [
+        {
+          "id": "ci-failures",
+          "label": "CI 실패",
+          "unit": "count",
+          "current": 0,
+          "previous": 2,
+          "status": "ok",
+          "criterion": "1건 이상이면 주의",
+          "evidence": []
+        }
+      ],
+      "warnings": []
+    }
+  ]
+}

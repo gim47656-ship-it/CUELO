@@ -34,7 +34,10 @@ import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
 import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
+import { UpkeepNotice, UpkeepView } from "./upkeep/UpkeepView";
+import { UPKEEP_TEXT } from "./upkeep/text";
 import { copyText } from "@/lib/clipboard";
+import { getDraft, setDraft } from "@/lib/draft-store";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import {
@@ -159,6 +162,11 @@ export function AppShell({
   // 돌아가도 마운트해 둬 통역 기록이 남는다.
   const [translatorOpen, setTranslatorOpen] = useState(false);
   const [translatorVisited, setTranslatorVisited] = useState(false);
+  // 보수 점검판도 통역처럼 처음 열 때 마운트하고 계속 둬, 다시 열면 읽어 둔 보고서가 바로 보인다.
+  const [upkeepOpen, setUpkeepOpen] = useState(false);
+  const [upkeepVisited, setUpkeepVisited] = useState(false);
+  const [upkeepNotice, setUpkeepNotice] = useState<string | null>(null);
+  const dismissUpkeepNotice = useCallback(() => setUpkeepNotice(null), []);
   const notifiedAttentionRequestIdsRef = useRef(new Set<string>());
   const handleBackgroundTaskDone = useCallback(() => {
     // 다른 workspace에서 끝난 작업은 어느 계정이 했는지 알 수 없다 — 캐릭터 없이 「결과 확인」
@@ -258,6 +266,15 @@ export function AppShell({
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("view") === "translator") setTranslatorActive(true);
   }, [setTranslatorActive]);
+  // 보수 점검판은 화면 전체를 덮는다. 뒤의 작업 화면은 마운트된 채 남고, 닫으면 입력창으로 초점을 돌려준다.
+  const setUpkeepActive = useCallback((active: boolean) => {
+    if (active) setUpkeepVisited(true);
+    setUpkeepOpen(active);
+    if (!active) requestComposerFocus();
+  }, [requestComposerFocus]);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("view") === "upkeep") setUpkeepActive(true);
+  }, [setUpkeepActive]);
   const registerComposerFocus = useCallback((focus: (() => void) | null) => {
     composerFocusRef.current = focus;
   }, []);
@@ -1287,6 +1304,31 @@ export function AppShell({
     router.replace(homePath, { scroll: false });
   }, [homePath, invalidateWorkspaceRestore, isCompactWorkspace, router, setCompactDrawerOpen]);
 
+  // 보수 점검판의 「작업 프롬프트로 새 세션」. 그 저장소의 새 세션 입력창 초안(`new:<cwd>`, ChatWindow의
+  // draftKey)에 프롬프트를 넣고 새 세션 화면을 연다. 보내지는 않는다. 이미 쓰던 초안은 지우지 않고
+  // 빈 줄 뒤에 붙이며 첨부도 그대로 둔다. 저장소를 못 찾았으면 복사해 두고 사이드바에서 고르게 한다.
+  const startUpkeepSession = useCallback((prompt: string, cwd: string | null) => {
+    setUpkeepOpen(false);
+    if (!cwd) {
+      copyText(prompt).then(
+        () => setUpkeepNotice(UPKEEP_TEXT.noticeNoRepo),
+        () => setUpkeepNotice(UPKEEP_TEXT.noticeNoRepoCopyFailed),
+      );
+      if (isCompactWorkspace) setCompactDrawerOpen(true);
+      return;
+    }
+    const draftKey = `new:${cwd}`;
+    const existing = getDraft(draftKey);
+    setDraft(draftKey, {
+      value: existing?.value.trim() ? `${existing.value.trimEnd()}\n\n${prompt}` : prompt,
+      images: existing?.images ?? [],
+      documents: existing?.documents ?? [],
+    });
+    handleNewSession(`upkeep-${Date.now()}`, cwd);
+    requestComposerFocus();
+    setUpkeepNotice(UPKEEP_TEXT.noticeDraft);
+  }, [handleNewSession, isCompactWorkspace, requestComposerFocus, setCompactDrawerOpen]);
+
   const navigateProjectSession = useCallback((direction: -1 | 1) => {
     const projectRoot = selectedSession?.projectRoot
       ?? activeProjectRootRef.current
@@ -1879,6 +1921,27 @@ export function AppShell({
           onRelogin={openRelogin}
         />
         <OmpUpdateIndicator />
+        {/* 「보수」는 설정과 같은 모양으로 나란히 둔다. 누르면 화면 전체를 덮는 보수 점검판이 열린다. */}
+        <div style={{ display: "flex", gap: 6 }}>
+        <button
+          type="button"
+          className="navigator-settings-action"
+          onClick={() => {
+            if (isCompactWorkspace) setCompactDrawerOpen(false);
+            setUpkeepActive(true);
+          }}
+          title={UPKEEP_TEXT.menuTitle}
+          style={{
+            width: "100%", height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            cursor: "pointer", fontSize: 12, fontFamily: "var(--font-mono)",
+            transition: "background 0.12s, color 0.12s, border-color 0.12s",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          {UPKEEP_TEXT.menu}
+        </button>
         <button
           className="navigator-settings-action"
           onClick={() => {
@@ -1903,6 +1966,7 @@ export function AppShell({
           </svg>
           {translate("common.settings")}
         </button>
+        </div>
       </div>
     </>
   );
@@ -2626,6 +2690,10 @@ export function AppShell({
         </div>
       )}
     </div>
+    {upkeepVisited ? (
+      <UpkeepView open={upkeepOpen} onClose={() => setUpkeepActive(false)} onStartSession={startUpkeepSession} />
+    ) : null}
+    <UpkeepNotice message={upkeepNotice} onDismiss={dismissUpkeepNotice} />
     {settingsConfigOpen && (
       <SettingsConfig
         cwd={projectTrustCwd}

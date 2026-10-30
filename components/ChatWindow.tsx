@@ -1192,9 +1192,11 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   const composerRootRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const focusComposer = useCallback(() => {
-    composerRootRef.current
-      ?.querySelector<HTMLTextAreaElement>("textarea")
-      ?.focus({ preventScroll: true });
+    const textarea = composerRootRef.current?.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    // 채워 둔 초안(보수 점검 프롬프트 등) 뒤에 이어 쓰도록 커서를 글 끝에 둔다.
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   }, []);
   useEffect(() => {
     onComposerFocusChange?.(focusComposer);
