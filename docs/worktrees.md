@@ -22,6 +22,8 @@ main checkout이 아닌 항목의 제거 버튼은 linked checkout을 제거하�
 
 세션 여러 개가 checkout 하나를 같이 쓰면 한 세션이 고치던 파일이 다른 세션의 커밋에 그대로 함께 들어갈 수 있습니다. 같은 저장소의 파일을 동시에 고칠 세션은 위의 생성 기능으로 세션마다 worktree(`wt/<주제>` branch)를 하나씩 만들고 그 폴더에서 세션을 엽니다. 새 worktree에는 의존성 폴더가 따라오지 않으므로 처음 한 번 `bun install` 등으로 의존성을 설치합니다.
 
+worktree에서 열린 세션은 메인 checkout과 동일한 프로젝트 기억을 사용합니다. 패치된 내장 코어가 worktree의 `.git` 파일을 읽어 메인 checkout의 동일한 폴더에 있는 기억 은행을 선택하므로, worktree마다 별도의 은행이 생기지 않아 한쪽에서 남긴 교훈을 다른 쪽에서 회상할 수 있고 다른 PC로 내보낼 때도 worktree에서 작성된 기억이 함께 포함됩니다.
+
 작업 중 커밋은 해당 worktree에서 진행하고, `main`에 합치는 작업은 하네스의 `git_integrate` 도구를 사용합니다. 최신 `main` 위에 rebase하고 검사를 통과하면 fast-forward로 게시하며, 충돌이 나면 작업을 멈추고 세션이 직접 충돌을 해결해 이어갑니다. 자세한 동작은 [OMP 하네스](./harness.md) 문서의 Git 마감 도구 절을 참고하세요.
 
 ## 문제 해결

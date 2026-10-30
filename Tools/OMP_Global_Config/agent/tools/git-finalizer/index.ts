@@ -2,7 +2,7 @@ import type { CustomTool, CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
@@ -67,9 +67,23 @@ async function exportMemories(cwd: string, files: string[], exec: Exec): Promise
   const transport = relative(cwd, join(root, ...memoryTransport.split("/"))).split(sep).join("/");
   if (transport.startsWith("../")) return { note: "기억 export 생략: 현재 cwd 밖의 파일이라 이 커밋에 넣을 수 없다." };
   if (files.some((file) => pathKey(file.replace(/\\/g, "/")) === pathKey(transport))) return {};
-  const exported = await exec("bun", [join(root, ...memorySyncScript.split("/")), "export", root], { cwd: root });
+  // sync.ts reaches the mnemopi package through <checkout>/node_modules, which a new linked worktree lacks; the main
+  // checkout's copy resolves it. The export argument stays root, so the transport lands in this worktree's commit.
+  let scriptRoot = root;
+  if (!(await exists(join(root, "node_modules")))) {
+    const common = await exec("git", ["-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root });
+    const commonDir = common.code === 0 ? resolve(root, common.stdout.trim()) : "";
+    const mainRoot = dirname(commonDir);
+    if (basename(commonDir) === ".git" && await exists(join(mainRoot, "node_modules")) && await exists(join(mainRoot, ...memorySyncScript.split("/")))) {
+      scriptRoot = mainRoot;
+    }
+  }
+  const exported = await exec("bun", [join(scriptRoot, ...memorySyncScript.split("/")), "export", root], { cwd: root });
   if (exported.code !== 0) {
-    const reason = (exported.stderr || exported.stdout).trim().split(/\r?\n/).at(-1) || `exit ${exported.code}`;
+    // Bun ends a crash with a blank line and its version banner; the cause is the `error: …` (or `…Error: …`) line.
+    const lines = (exported.stderr || exported.stdout).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const reason = lines.find((line) => /^(?:error|[A-Za-z]*Error)\b/.test(line))
+      ?? lines.findLast((line) => !/^Bun v\d/.test(line)) ?? `exit ${exported.code}`;
     return { note: `기억 export 실패(커밋은 진행): ${reason}` };
   }
   const status = await exec("git", ["-C", root, "status", "--porcelain", "--", memoryTransport], { cwd: root });

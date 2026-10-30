@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -310,6 +310,47 @@ describe("git finalizer", () => {
     expect(error).toBeUndefined();
     expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])).toBe("a.txt");
     expect(JSON.stringify(output)).toContain("bank locked");
+  }, TEST_TIMEOUT_MS);
+
+  test("names the error line of a crashed memory export instead of the runtime banner", async () => {
+    const { work } = await createRepository();
+    const syncDir = join(work, "Tools", "OMP_Global_Config", "memory-sync");
+    await mkdir(syncDir, { recursive: true });
+    await writeFile(join(syncDir, "sync.ts"), "throw new Error('bank schema mismatch');\n");
+    await writeFile(join(work, "a.txt"), "changed-memory-crashes\n");
+
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(error).toBeUndefined();
+    const text = JSON.stringify(output);
+    expect(text).toContain("기억 export 실패(커밋은 진행): error: bank schema mismatch");
+    expect(text).not.toContain("Bun v");
+  }, TEST_TIMEOUT_MS);
+
+  test("exports memories from a linked worktree without node_modules through the main checkout's sync script", async () => {
+    const { root, work } = await createRepository();
+    const syncDir = join(work, "Tools", "OMP_Global_Config", "memory-sync");
+    await mkdir(syncDir, { recursive: true });
+    // Like the real sync.ts, the script reaches its dependency through the checkout's node_modules, which a new worktree lacks.
+    await writeFile(join(syncDir, "sync.ts"),
+      "import { line } from '../../../node_modules/memory-dep/index.ts';\n"
+      + "const [mode, root] = process.argv.slice(2);\n"
+      + "if (mode !== 'export') process.exit(2);\n"
+      + "await Bun.write(root + '/Tools/OMP_Global_Config/memory-sync/memories.jsonl', line);\n");
+    git(work, ["add", "--", "Tools/OMP_Global_Config/memory-sync/sync.ts"]);
+    git(work, ["commit", "-m", "sync script"]);
+    await mkdir(join(work, "node_modules", "memory-dep"), { recursive: true });
+    await writeFile(join(work, "node_modules", "memory-dep", "index.ts"), "export const line = 'lesson-from-a-worktree\\n';\n");
+    const linked = join(root, "work-worktrees", "wt-a");
+    git(work, ["worktree", "add", "-b", "wt/a", linked]);
+    await writeFile(join(linked, "a.txt"), "changed-in-worktree\n");
+
+    const { error, output } = await startTool(linked, ["a.txt"]);
+    expect(error).toBeUndefined();
+    expect(JSON.stringify(output)).not.toContain("기억 export 실패");
+    expect(git(linked, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).split(/\r?\n/).sort())
+      .toEqual(["Tools/OMP_Global_Config/memory-sync/memories.jsonl", "a.txt"]);
+    expect(await readFile(join(linked, "Tools", "OMP_Global_Config", "memory-sync", "memories.jsonl"), "utf8")).toBe("lesson-from-a-worktree\n");
+    await expect(access(join(syncDir, "memories.jsonl"))).rejects.toThrow();
   }, TEST_TIMEOUT_MS);
 
   test("notes a source commit with no HANDOFF.md up to the repository root and stays quiet once one exists", async () => {

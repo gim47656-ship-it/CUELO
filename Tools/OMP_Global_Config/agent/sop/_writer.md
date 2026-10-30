@@ -173,11 +173,17 @@
   memory. Use the locators Main already put in the brief before searching again, and do not add a
   judge call, index, or wiki for document lookup.
   `agent/AGENTS.md` 「프로젝트 문서 지도와 기록」 is authoritative.
-- Verify web surfaces where the user cannot see them. When the `ego_browser` tool is available, use an
-  ego TaskSpace with `profile: "verify"` (never the user profile); otherwise use HEADLESS Chromium
-  (`app.relay: false`). Localhost, isolated verification servers, and build output all qualify — that
-  is nearly every check you run. `browser.relay: true` is the profile default, so OMITTING
-  `app.relay: false` in `browser.open` opens a tab in the USER'S OWN browser. Never put a broken
+- Verify web surfaces where the user cannot see them. On a PC with ego lite (where the `ego_browser`
+  tool runs), every task that opens a browser (logged-in work, screen verification and headless
+  checks included) runs in a separate ego TaskSpace; use the relay (`browser.open`) only to pass an
+  already-open tab the user named as `app.target` (user decision 2026-10-31; command-guard refuses
+  other eval `browser.open` calls). `web_search` and a plain `read` of a URL open no browser and stay
+  as they are; once a found page must be opened or rendered (JS-rendered page, login, screenshot,
+  interaction), move it to the ego TaskSpace. Verify there with `profile: "verify"` (never the user
+  profile); on a PC without ego lite use HEADLESS Chromium (`app.relay: false`). Localhost, isolated
+  verification servers, and build output all qualify — that is nearly every check you run. On such
+  a PC `browser.relay: true` is the profile default, so OMITTING `app.relay: false` in
+  `browser.open` opens a tab in the USER'S OWN browser. Never put a broken
   intermediate state on the user's screen. Use the user's browser profile only when their live
   session is genuinely required, or when Main tells you to hand a FINISHED surface over for
   judgement — do not open it on your own initiative.

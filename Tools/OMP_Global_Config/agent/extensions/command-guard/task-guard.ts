@@ -1,3 +1,5 @@
+import { isUnavailable, type Exec } from "../../tools/ego-browser/index";
+
 /**
  * 한 사용자 요청의 누적 spawn cap. `task.maxConcurrency=8`의 동시 실행 슬롯과는 별개이며,
  * 두 full primary wave와 한 full rework wave까지 허용한 뒤 runaway spawn을 차단한다.
@@ -935,6 +937,89 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
     );
   }
   return undefined;
+}
+
+// 2026-10-31 사용자 결정 「스페이스공간 따로 만들어서 그쪽에다 하는 건 기본으로 두자 하네스정책상」: ego lite PC에서는
+// 브라우저 작업을 별도 ego TaskSpace(`ego_browser`)에서 한다. 규칙(wsl-windows-reference.md)이 10-21부터 그렇게 말했지만
+// 7일 집계에서 eval `browser.open`이 relay 21회·headless 6회 나왔다(코어 relay 안내가 모든 세션에 relay를 기본으로 알린다).
+// relay는 사용자가 지목한 이미 열린 탭(`app.target`)에만 쓴다. ego lite가 없는 PC는 막지 않는다.
+// 패턴은 위 eval 가드처럼 원문에 맞춘다(문자열 안의 `browser.open(`도 호출로 본다). 옵션이 변수·spread라 정적으로
+// 못 보는 호출은 셀 어딘가에 target 키가 있으면 통과시킨다.
+const BROWSER_OPEN_CALLS = [
+  /(?<![\w$.])browser\s*\.\s*open\s*\(/g,
+  /(?<![\w$.])browser\s*\[\s*["'`]open["'`]\s*\]\s*\(/g,
+  /\(\s*browser\s*\)\s*\.\s*open\s*\(/g,
+] as const;
+const TARGET_KEY = /(?:(?<![\w$])target|["'`]target["'`])\s*(?::|=(?!=))/;
+const OPAQUE_OPTIONS = [
+  /\.\.\.|\*\*/,
+  // browser.open(opts) · (opts) · opts, 처럼 변수 하나만 넘기는 형태
+  /^[\s(]*[A-Za-z_$][\w$.]*[\s)]*,?\s*$/,
+  /(?<![\w$])["'`]?app["'`]?\s*(?::|=(?!=))\s*(?!dict\s*\()[A-Za-z_$]/,
+  /[{,]\s*app\s*[,}]/,
+] as const;
+const EGO_PROBE_TIMEOUT_MS = 10_000;
+
+export type EgoLiteProbe = () => Promise<boolean>;
+
+/**
+ * `ego-browser --version`으로 ego lite 설치를 확인한다. 있음(0)·없음(127·실행 파일 없음)은 프로세스 동안 기억하고,
+ * 시간 초과·다른 실패는 막지 않는 쪽(false)으로 답하되 기억하지 않아 다음 호출이 다시 묻는다.
+ */
+export function createEgoLiteProbe(exec: Exec): EgoLiteProbe {
+  let known: boolean | undefined;
+  return async () => {
+    if (known !== undefined) return known;
+    try {
+      const result = await exec(["--version"], "", { timeoutMs: EGO_PROBE_TIMEOUT_MS });
+      if (result.killed) return false;
+      if (result.code === 0 || result.code === 127) known = result.code === 0;
+      return known ?? false;
+    } catch (error) {
+      if (isUnavailable(error)) known = false;
+      return false;
+    }
+  };
+}
+
+/** `(`(open) 다음부터 짝이 맞는 `)` 앞까지의 인자 원문. 따옴표 문자열은 건너뛰고, 짝이 없으면 끝까지다. */
+function callArguments(code: string, open: number): string {
+  let depth = 1;
+  for (let index = open + 1; index < code.length; index++) {
+    const char = code[index]!;
+    if (char === '"' || char === "'" || char === "`") {
+      for (index++; index < code.length && code[index] !== char; index++) {
+        if (code[index] === "\\") index++;
+      }
+    } else if ("([{".includes(char)) depth++;
+    else if (")]}".includes(char) && --depth === 0) return code.slice(open + 1, index);
+  }
+  return code.slice(open + 1);
+}
+
+function browserOpenArguments(code: string): string[] {
+  const calls = BROWSER_OPEN_CALLS.flatMap((pattern) => [...code.matchAll(pattern)]);
+  // b = browser 처럼 browser 객체를 alias한 경우 그 alias의 open 호출도 같은 호출로 본다.
+  for (const match of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*\(*\s*browser\s*\)*\s*(?:[;,\n]|$)/g)) {
+    const alias = match[1]!.replace(/\$/g, "\\$");
+    calls.push(...code.matchAll(new RegExp(`(?<![\\w$.])${alias}\\s*\\.\\s*open\\s*\\(`, "g")));
+  }
+  return calls.map((match) => callArguments(code, match.index! + match[0].length - 1));
+}
+
+export async function matchRelayBrowserOpen(input: EvalCallInput, egoLiteAvailable: EgoLiteProbe): Promise<string | undefined> {
+  if (typeof input.code !== "string") return undefined;
+  const code = input.code;
+  const cellHasTarget = TARGET_KEY.test(code);
+  const untargeted = browserOpenArguments(code).some(
+    (args) => !TARGET_KEY.test(args) && !(cellHasTarget && OPAQUE_OPTIONS.some((pattern) => pattern.test(args))),
+  );
+  if (!untargeted || !(await egoLiteAvailable())) return undefined;
+  return (
+    "[BrowserSpaceGuard] 이 PC에는 ego lite가 있어 브라우저 작업은 `ego_browser` 도구의 별도 TaskSpace에서 합니다" +
+    '(기본 profile "user", CUELO 화면 검증은 profile: "verify"; relay·headless 모두 해당). ' +
+    "사용자가 지목한 이미 열린 탭에서 할 때만 `browser.open`에 그 탭의 URL·제목을 `app.target`으로 넘기세요."
+  );
 }
 
 // ============================================================================

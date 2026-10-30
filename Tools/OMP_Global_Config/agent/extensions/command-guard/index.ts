@@ -17,6 +17,7 @@ import {
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
+import { defaultExec as egoBrowserExec } from "../../tools/ego-browser/index";
 
 import { isNotRepositoryDiagnostic, matchBlockedCommand } from "./matcher";
 import { interopHint, windowsOutputCommand } from "./interop-hint";
@@ -26,6 +27,7 @@ import {
   bindTaskGuardSession,
   bindWriterOwners,
   claimSharedWriters,
+  createEgoLiteProbe,
   createOwnershipState,
   createTaskGuardState,
   createWriterClaimState,
@@ -33,6 +35,7 @@ import {
   dropOwnedChildren,
   hasUnreportedChildren,
   matchBlockedEvalModelBridge,
+  matchRelayBrowserOpen,
   noteUserRedirect,
   noteUserRequestText,
   readCancelledChildIds,
@@ -68,6 +71,9 @@ import {
 
 /** WSL에서 Windows 실행 파일을 부를 수 있는지(binfmt interop 등록). Windows 출력 변환을 이때만 붙인다. */
 const WSL_INTEROP = process.platform === "linux" && existsSync("/proc/sys/fs/binfmt_misc/WSLInterop");
+
+/** ego lite 설치 여부(프로세스당 한 번). `browser.open`이 든 eval 셀에서만 묻는다. */
+const egoLiteAvailable = createEgoLiteProbe(egoBrowserExec);
 
 /** eval이 자동으로 고르는 관리 Python 환경(코어 `getPythonEnvDir()` 기본값). WSL(Linux)에만 안내한다. */
 function managedPythonPath(): string | undefined {
@@ -1268,7 +1274,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       };
     }
     if (isToolCallEventType<"eval", EvalCallInput>("eval", event)) {
-      const reason = matchBlockedEvalModelBridge(event.input);
+      const reason = matchBlockedEvalModelBridge(event.input) ?? (await matchRelayBrowserOpen(event.input, egoLiteAvailable));
       if (reason) return { block: true, reason };
       return;
     }

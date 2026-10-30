@@ -2,9 +2,13 @@
 description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분류나 긴 작업 감시 전에 읽는다.
 ---
 
-- **브라우저 경로는 실행 환경 지침이 정한다.** ego lite TaskSpace(`ego_browser`)를 쓸 수 있는 PC에서는 그것이
-  기본이고 CUELO 화면 검증은 검증 프로필(`profile: "verify"`)에서 한다. 그 밖의 PC에서 화면 검증은
-  `browser.open`에 `app: { relay: false }`를 준 headless로 한다. 이를 빼면 relay가 기본이라 **사용자의 실제
+- **브라우저 경로는 실행 환경 지침이 정한다.** ego lite PC(`ego_browser` 도구가 도는 PC)에서는 브라우저를 여는
+  작업(로그인 작업·화면 검증·headless 확인 포함)을 모두 별도 ego TaskSpace에서 하고, relay(`browser.open`)는 사용자가
+  지목한 이미 열린 탭을 `app.target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
+  command-guard가 막는다). `web_search`와 URL을 그냥 `read`하는 일은 브라우저를 열지 않으므로 그대로 쓰고, 찾은
+  페이지를 열거나 렌더해야 하면(JS 렌더 페이지·로그인·스크린샷·조작) 그때 ego TaskSpace로 옮긴다. CUELO 화면 검증은
+  검증 프로필(`profile: "verify"`)에서 한다. ego lite가 없는 PC에서 화면 검증은 `browser.open`에
+  `app: { relay: false }`를 준 headless로 한다. 이를 빼면 relay가 기본이라 **사용자의 실제
   브라우저**에 탭이 열린다. relay 탭을 닫을 때는 `browser.close({ name })`로 자기 탭만
   닫고 `all`·`kill`·`app.path`는 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.
   빌드가 깨진 화면을 사용자에게 띄우지 않는다. HTML·웹 페이지를 PDF로 인쇄하는 것도 브라우저 작업이라 같은 경로를
@@ -14,7 +18,7 @@ description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분�
   `ocr` 역할 모델)으로, 특정 문구·값 확인과 레이아웃·간격·색·정렬·잘림·좌표 판단은 `?q=`(`vision` 역할 모델)로
   먼저 묻는다. `?q=`·`?ocr=` 없는 이미지 read는 그 경로로 한 번 묻기 전까지 계속 막힌다. 그 답으로 판단할 수
   없을 때만 같은 경로를 다시 읽어 직접 본다.
-- **화면 확인은 모델 턴을 줄이는 순서로 한다(Main·Maker 공통).** 웹은 `browser`, 네이티브 데스크톱
+- **화면 확인은 모델 턴을 줄이는 순서로 한다(Main·Maker 공통).** 웹은 `browser`(ego lite PC는 `ego_browser`), 네이티브 데스크톱
   창(WinForms·WPF·VB6 등)은 `computer`를 쓰고, 로직·API는 테스트와 실제 실행으로 확인한다. 조작·대기·
   확인 여러 단계를 한 `eval` 셀에 묶고, 확인은 DOM 텍스트·AX 트리의 문자열 비교를 먼저 쓴다. 문자열로
   가를 수 없는 판정("오류 대화상자가 떴나", "수용 조건과 맞나")만 같은 셀에서 `judge()`(JEV)에 텍스트로

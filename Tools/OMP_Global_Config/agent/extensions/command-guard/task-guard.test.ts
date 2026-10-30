@@ -5,6 +5,7 @@ import {
   buildOwnershipReport,
   CANCEL_REFUND_LIMIT,
   claimSharedWriters,
+  createEgoLiteProbe,
   createOwnershipState,
   createTaskGuardState,
   createWriterClaimState,
@@ -14,6 +15,7 @@ import {
   hasUnreportedChildren,
   isPathOwned,
   matchBlockedEvalModelBridge,
+  matchRelayBrowserOpen,
   noteOwnershipWrites,
   noteUserRedirect,
   OWNERSHIP_MAIN_WRITER,
@@ -336,6 +338,88 @@ describe("eval spawn bypass", () => {
     ];
     for (const code of allowed) {
       expect(matchBlockedEvalModelBridge({ language: "py", code })).toBeUndefined();
+    }
+  });
+});
+
+describe("BrowserSpaceGuard", () => {
+  const ego = async () => true;
+  const noEgo = async () => false;
+  const result = (code: number, killed = false) => async () => ({ code, stdout: "", stderr: "", killed });
+  const counted = (run: () => Promise<unknown>) => {
+    const calls: string[][] = [];
+    const exec = async (args: string[]) => { calls.push(args); return run(); };
+    return { calls, exec: exec as never };
+  };
+  const relayCells = {
+    js: [
+      'const tab = await browser.open({ name: "check", url: "http://localhost:3000" })',
+      'await browser.open({ name: "h", url, app: { relay: false } })',
+      'await browser["open"]({ name: "x" })',
+      'const b = browser; await b.open({ name: "x" })',
+      'await browser.open({ name: "a", app: { target: "Gmail" } }); await browser.open({ name: "b" })',
+    ],
+    py: [
+      'tab = await browser.open(name="check", url="http://localhost:3000")',
+      'tab = await browser.open(name="h", app={"relay": False})',
+    ],
+  } as const;
+
+  test("ego lite PC에서 app.target 없는 browser.open은 relay·headless 모두 TaskSpace 안내로 막는다", async () => {
+    for (const language of ["js", "py"] as const) {
+      for (const code of relayCells[language]) {
+        const reason = await matchRelayBrowserOpen({ language, code }, ego);
+        expect(reason).toMatch(/BrowserSpaceGuard/);
+        expect(reason).toMatch(/`ego_browser`.*TaskSpace.*`app\.target`/);
+        expect(reason).not.toContain("\n");
+      }
+    }
+  });
+
+  test("사용자가 지목한 탭(app.target)과 browser.open이 없는 셀은 ego lite PC에서도 통과한다", async () => {
+    const allowed = [
+      { language: "js", code: 'await browser.open({ name: "mail", app: { relay: true, target: "Gmail" } })' },
+      { language: "py", code: 'await browser.open(name="mail", app={"relay": True, "target": "Gmail"})' },
+      { language: "py", code: 'await browser.open(name="mail", app=dict(target="Gmail"))' },
+      { language: "js", code: 'const opts = { name: "m", app: { target: "Gmail" } }; await browser.open(opts)' },
+      { language: "js", code: 'const opts = { app: { target: "Gmail" } }; await browser.open(opts,)' },
+      { language: "py", code: 'opts = {"app": {"target": "Gmail"}}\nawait browser.open((opts))' },
+      { language: "js", code: 'await browser.close({ name: "check" })' },
+      { language: "js", code: 'const tab = browser.tab("check"); await tab.goto("http://localhost:3000")' },
+      { language: "js", code: "const pages = await browser.targets({ app: { relay: true } })" },
+      { language: "py", code: 'import webbrowser\nwebbrowser.open("http://localhost:3000")' },
+    ] as const;
+    for (const input of allowed) {
+      expect(await matchRelayBrowserOpen(input, ego)).toBeUndefined();
+    }
+  });
+
+  test("ego lite가 없는 PC(래퍼 127·실행 파일 없음)에서는 막지 않고, browser.open이 없으면 확인하지도 않는다", async () => {
+    const code = relayCells.js[0];
+    for (const run of [result(127), async () => { throw Object.assign(new Error("spawn ego-browser ENOENT"), { code: "ENOENT" }); }]) {
+      const probe = counted(run);
+      expect(await matchRelayBrowserOpen({ language: "js", code }, createEgoLiteProbe(probe.exec))).toBeUndefined();
+      expect(probe.calls).toEqual([["--version"]]);
+    }
+    const unused = counted(result(0));
+    expect(await matchRelayBrowserOpen({ language: "js", code: 'await browser.close({ name: "x" })' }, createEgoLiteProbe(unused.exec))).toBeUndefined();
+    expect(unused.calls).toEqual([]);
+    expect(await matchRelayBrowserOpen({ language: "js", code }, noEgo)).toBeUndefined();
+  });
+
+  test("확인 결과는 프로세스마다 한 번만 묻고, 시간 초과·다른 실패는 막지 않고 다음에 다시 묻는다", async () => {
+    const code = relayCells.py[0];
+    const present = counted(result(0));
+    const available = createEgoLiteProbe(present.exec);
+    expect(await matchRelayBrowserOpen({ language: "py", code }, available)).toMatch(/BrowserSpaceGuard/);
+    expect(await matchRelayBrowserOpen({ language: "py", code }, available)).toMatch(/BrowserSpaceGuard/);
+    expect(present.calls).toHaveLength(1);
+    for (const run of [result(0, true), result(3)]) {
+      const failing = counted(run);
+      const probe = createEgoLiteProbe(failing.exec);
+      expect(await matchRelayBrowserOpen({ language: "py", code }, probe)).toBeUndefined();
+      expect(await matchRelayBrowserOpen({ language: "py", code }, probe)).toBeUndefined();
+      expect(failing.calls).toHaveLength(2);
     }
   });
 });

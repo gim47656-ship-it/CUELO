@@ -475,7 +475,7 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   위반, 입력이 바뀌어 증거가 무효가 된 경우에만 그 job을 띄운 owner가 취소하고 증거를 남긴다.
 - `yield` 직전 자신이 만든 background job을 전부 회수하거나 `write proc://<id>/kill`로 취소한다(한 호출에 id 하나). 미회수 `[async-result]`가 종료 세션을 되살려 텍스트 전용 루프에 빠뜨릴 수 있고, 보고가 끝났는데 job은 `running`으로 남을 수 있다. 확인 결과가 필요 없는 명령은 처음부터 background로 띄우지 않는다.
 - 살아 있어야 하는 서버·watcher·REPL은 `bash`에 `name`(필요하면 `ready`·`env`)을 준 서비스로 띄운다. **이름은 세션마다 고유하게 짓는다** — core 18.3.0은 살아 있는 같은 이름의 서비스를 owner와 무관하게 멈추고 교체하므로 흔한 이름은 다른 세션의 서버를 죽일 수 있다. 상태·최근 로그는 `read proc://<name>`, stdin은 `write proc://<name>`, 중지는 `write proc://<name>/kill`이다.
-- 검증용으로 system Chrome을 `app.path`로 띄우지 않는다. 단일 인스턴스가 사용자의 기존 프로세스를 재사용할 수 있어, `browser.close({all:true, kill:true})`가 성공처럼 보여도 닫히지 않을 수 있다. 정리 실패는 재시도하거나 탭을 다시 열지 말고 남은 PID를 보고한다. managed Chromium 또는 relay를 사용한다.
+- 검증용으로 system Chrome을 `app.path`로 띄우지 않는다. 단일 인스턴스가 사용자의 기존 프로세스를 재사용할 수 있어, `browser.close({all:true, kill:true})`가 성공처럼 보여도 닫히지 않을 수 있다. 정리 실패는 재시도하거나 탭을 다시 열지 말고 남은 PID를 보고한다. ego lite PC는 ego TaskSpace를, 그 밖의 PC는 managed Chromium 또는 relay를 사용한다.
   검증 중 bash·eval에서 Chrome/Edge 실행 파일을 직접 띄우지 않는다(`Bun.spawn` 포함).
   브라우저 helper나 프로젝트의 지원 검증 명령을 사용한다. 지원 명령의 프로필은 절대경로의
   격리 위치를 써야 한다. headless라도 프로필 경로 오류는 초기화 중 사용자 데스크톱에 네이티브 창을 띄울 수 있다.
@@ -539,13 +539,17 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   자기 것을 새로 만들지 않고 그 산출물을 요청한다. owner는 재사용할 대상이 생길 예정인지 알 방법이
   없으므로, 적지 않으면 규칙을 지키려 해도 같은 빌드를 두 번 돌리게 된다. 정본은
   `implementationOwnership.writerValidation.heavyArtifactOwner`다.
-- 웹 화면 확인 경로는 `RULES.md` 브라우저 항목이 정한다. `ego_browser`를 쓸 수 있는 PC에서는 ego
-  TaskSpace의 검증 프로필(`profile: "verify"`), 없으면 **headless Chromium**(`app.relay: false`)이며,
+- 웹 화면 확인 경로는 `RULES.md` 브라우저 항목이 정한다. ego lite PC(`ego_browser` 도구가 도는 PC)에서는 브라우저를
+  여는 작업(로그인 작업·화면 검증·headless 확인 포함)을 모두 별도 ego TaskSpace에서 하고, relay(`browser.open`)는
+  사용자가 지목한 이미 열린 탭을 `app.target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
+  command-guard가 막는다). `web_search`와 URL을 그냥 `read`하는 일은 브라우저를 열지 않으므로 그대로 쓰고, 찾은
+  페이지를 열거나 렌더해야 하면(JS 렌더 페이지·로그인·스크린샷·조작) 그때 ego TaskSpace로 옮긴다. 검증은 ego
+  TaskSpace의 검증 프로필(`profile: "verify"`), ego lite가 없는 PC에서는 **headless Chromium**(`app.relay: false`)이며,
   localhost·격리 검증 서버·빌드 산출물처럼 로그인 세션이 필요 없는 대상과 Maker의 검증은 거의 전부
-  여기다. **`browser.open`에 `app.relay: false`를 빼면 relay가 기본이라 사용자 브라우저에 탭이 열린다** —
-  빌드가 깨진 중간 상태를 사용자 화면에 띄우는 사고가 실제로 있었다. 사용자 세션이 실제로
-  필요하거나 Main이 사용자 판단을 받으라고 지시한 **완성된** 표면만 사용자 프로필(ego `profile: "user"`
-  또는 relay 새 작업 탭)에서 연다. relay에서는 코어 패치가 `app.target` 없는 open을 새 탭 생성으로 만들므로
+  여기다. **ego lite가 없는 PC에서 `browser.open`에 `app.relay: false`를 빼면 relay가 기본이라 사용자 브라우저에 탭이
+  열린다** — 빌드가 깨진 중간 상태를 사용자 화면에 띄우는 사고가 실제로 있었다. 사용자 세션이 실제로
+  필요하거나 Main이 사용자 판단을 받으라고 지시한 **완성된** 표면만 사용자 프로필(ego lite PC는 ego
+  `profile: "user"`, 그 밖은 relay 새 작업 탭)에서 연다. relay에서는 코어 패치가 `app.target` 없는 open을 새 탭 생성으로 만들므로
   기존 탭·쿠키·로그인 세션은 건드리지 않고, 기존 탭을 대상으로 해야 하면 `app.target`을
   명시하고 그 사실을 보고한다. owner가 스스로 사용자 브라우저를 열어 판단을 요구하지 않는다.
 - 격리 검증 서버는 프로젝트의 `package.json` script를 그대로 쓰고 포트만 바꾼다. 명령을 손으로

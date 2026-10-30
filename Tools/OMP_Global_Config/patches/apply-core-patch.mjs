@@ -16964,6 +16964,73 @@ function probeLegacyBank(dbPath: string, cwd: string): "empty" | "safe" | "unsaf
 		return "unsafe";
 `,
 	},
+	// 2026-10-31 worktree 세션 기억 은행(doc/history/2026/10/31-git-integrate/worktree-memory): 은행 이름은 cwd 경로로만 정해져
+	// 사이드바 worktree(<repo>-worktrees/<branch>) 세션마다 새 은행이 생기고 메인 체크아웃의 프로젝트 은행을 회상하지 못했다(실측
+	// wt-trial-b-1q6zu3dn8uflz). linked worktree 안의 cwd 는 메인 체크아웃의 같은 자리 경로로 바꿔 쓰기·회상·legacy 스캔 은행을 고른다.
+	// 기억 줄의 metadata.cwd 는 세션 cwd(state.ts) 그대로다. worktree 가 아닌 cwd 는 그대로 통과한다. 검증: core-memory-bank-scope-test.ts [5].
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "// HANSE: a linked worktree resolves its memory banks from the main checkout",
+		anchor: "\tconst cwd = settings.getCwd();\n",
+		patched: "\t// HANSE: a linked worktree resolves its memory banks from the main checkout\n\tconst cwd = mainCheckoutPath(settings.getCwd());\n",
+	},
+	{
+		file: "src/mnemopi/config.ts",
+		marker: "function mainCheckoutPath(cwd: string): string {",
+		anchor: "function sharedBank(configured: string | undefined): string {\n",
+		patched: String.raw`/**
+ * HANSE: the main checkout path matching a cwd inside a linked git worktree, else cwd unchanged. A worktree's .git file
+ * names its admin dir (<common>/worktrees/<name>), whose commondir file leads back to the common git dir; the main
+ * checkout is that dir's parent when it is named .git and git does not call it bare (a bare repository has none, even one
+ * stored as <dir>/.git). Asking git reads quoted values, comments and includes in its config the way git does, in about a
+ * millisecond, and only for a cwd inside a linked worktree. A session in <repo>-worktrees/<branch> then uses the banks of
+ * the same folder in the main checkout instead of a new bank per worktree. A pointer this platform cannot open (dangling,
+ * or a Windows drive path read from WSL), a submodule's .git file (no commondir) and a failed git call keep cwd.
+ */
+function mainCheckoutPath(cwd: string): string {
+	try {
+		const start = path.resolve(cwd || ".");
+		let dir = start;
+		while (!fs.existsSync(path.join(dir, ".git"))) {
+			const parent = path.dirname(dir);
+			if (parent === dir) return cwd;
+			dir = parent;
+		}
+		const dotGit = path.join(dir, ".git");
+		if (!fs.statSync(dotGit).isFile()) return cwd;
+		const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, "utf8"))?.[1];
+		if (!gitdir) return cwd;
+		const admin = path.resolve(dir, gitdir);
+		const common = path.resolve(admin, fs.readFileSync(path.join(admin, "commondir"), "utf8").trim());
+		if (path.basename(common) !== ".git" || path.dirname(admin) !== path.join(common, "worktrees")) return cwd;
+		const bare = Bun.spawnSync(["git", "--git-dir", common, "rev-parse", "--is-bare-repository"], { stdout: "pipe", stderr: "ignore" });
+		if (bare.exitCode !== 0 || bare.stdout.toString().trim() !== "false") return cwd;
+		return path.join(path.dirname(common), path.relative(dir, start));
+	} catch {
+		return cwd;
+	}
+}
+
+function sharedBank(configured: string | undefined): string {
+`,
+	},
+	// 2026-10-31 사용자 결정 "API 키도 1시간 캐시": OAuth 좌석이 모두 몫을 넘어 Anthropic API 키로 넘어간 세션은 5분 캐시라 5~60분 쉬면
+	// 전체 문맥을 다시 썼다. 1시간 보존을 지원하는 모델은 API 키도 기본 1h 로 쓴다(API 키 요청에는 기존 경로가 extended-cache-ttl beta 를
+	// 붙이고, beta 를 거절하는 Vertex rawPredict·extendedCacheTtlBeta:false 경로는 그대로 뺀다). 전역 providers.cacheRetention·
+	// PI_CACHE_RETENTION 은 OpenAI 보존도 늘리므로 쓰지 않는다. 명시 cacheRetention·PI_CACHE_RETENTION 은 여전히 이긴다.
+	// cache warmer 의 tier 도 같은 기본값으로 맞춘다. 검증: core-anthropic-cache-ttl-test.ts.
+	{
+		file: "../pi-ai/src/providers/anthropic.ts",
+		marker: "// HANSE: Anthropic API-key requests default to the 1h prompt cache too",
+		anchor: "\t// Five-minute writes are the cheapest cache population strategy for pay-per-token API keys.\n\t// For OAuth (Claude Code subscriber seats), match Claude Code's native policy by defaulting\n\t// to 1h retention where supported, avoiding cold cache re-writes after 15m idle intervals.\n\t// An explicit cacheRetention ('short', 'long', 'none') or PI_CACHE_RETENTION always takes precedence.\n\tconst defaultRetention = isOAuthToken && model.compat.supportsLongCacheRetention ? \"long\" : \"short\";\n",
+		patched: "\t// HANSE: Anthropic API-key requests default to the 1h prompt cache too\n\t// Long retention is the default wherever the model supports it, OAuth seat or API key (user decision 2026-10-31):\n\t// an API-key session that waits 5-60 minutes between turns otherwise rewrites its whole context at the 5m tier.\n\t// isOAuthToken no longer changes the default. An explicit cacheRetention ('short', 'long', 'none') or\n\t// PI_CACHE_RETENTION always takes precedence.\n\tconst defaultRetention = model.compat.supportsLongCacheRetention ? \"long\" : \"short\";\n",
+	},
+	{
+		file: "src/session/cache-warmer.ts",
+		marker: "// HANSE: the warmer follows the Anthropic 1h default for API keys too",
+		anchor: " * Mirrors the Anthropic provider's retention default (`getCacheControl`):\n * OAuth subscriber seats write 1h entries where the model supports them.\n * `resolveCacheRetention` keeps an explicit option or `PI_CACHE_RETENTION`\n * ahead of that fallback.\n */\nexport function resolvePromptCacheTier(\n\tmodel: Model<Api>,\n\toptions: SimpleStreamOptions | undefined,\n\tisOAuthToken = false,\n): PromptCacheTier | undefined {\n\tconst longByDefault = isOAuthToken && model.api === \"anthropic-messages\" && supportsLongCacheRetention(model);\n",
+		patched: " * Mirrors the Anthropic provider's retention default (`getCacheControl`):\n * requests write 1h entries where the model supports them, OAuth seat or API key\n * (CUELO, 2026-10-31); `isOAuthToken` no longer changes the default.\n * `resolveCacheRetention` keeps an explicit option or `PI_CACHE_RETENTION`\n * ahead of that fallback.\n */\nexport function resolvePromptCacheTier(\n\tmodel: Model<Api>,\n\toptions: SimpleStreamOptions | undefined,\n\tisOAuthToken = false,\n): PromptCacheTier | undefined {\n\t// HANSE: the warmer follows the Anthropic 1h default for API keys too\n\tconst longByDefault = model.api === \"anthropic-messages\" && supportsLongCacheRetention(model);\n",
+	},
 	{
 		// MCP 코드 실행(2026-10-30 사용자 요청 "이미있는부분은 제외하고 추가해보자" / "MCP 발주가 의미있는거야"): eval 코드가
 		// 모델 도구 목록에 없는 MCP 서버의 도구를 찾아 부른다. 같은 차단·승인 경로를 지나도록 registry MCP 도구와 똑같이 감싼다.
@@ -17726,6 +17793,17 @@ export async function deleteManagedSkillScript(input: { name: string; script: st
 		marker: "- `action: \"write_script\"`",
 		anchor: "- `action: \"delete\"` — fails if skill absent.\n",
 		patched: "- `action: \"delete\"` — fails if skill absent.\n- `action: \"write_script\"` — saves `content` as `scripts/<script>` (`.ts`, `.mjs`, `.js`, `.py`; 64 KB, 16 files) in an existing managed skill; replaces a file of that name. Save code only after it ran correctly; later sessions load it in eval with `skills.load(\"skill://<name>/scripts/<script>\")`.\n- `action: \"delete_script\"` — removes `scripts/<script>`.\n",
+	},
+	{
+		// 2026-10-31 사용자 결정 「스페이스공간 따로 만들어서 그쪽에다 하는 건 기본으로 두자 하네스정책상」: 이 안내는 relay가 켜진
+		// 모든 세션에 실려 `browser.open`(relay)을 기본처럼 알렸다. 7일 집계에서 eval browser.open이 relay 21회·headless 6회였고
+		// 규칙의 TaskSpace 기본(wsl-windows-reference.md, 10-21)은 rule:// 파일에만 있었다. ego lite PC에서는 별도 TaskSpace가 기본이고
+		// relay는 사용자가 지목한 탭에만 쓴다고 같은 자리에서 알린다. command-guard BrowserSpaceGuard가 같은 경계를 막는다.
+		// 검증: core-browser-relay-prompt-test.ts.
+		file: "src/prompts/system/browser-relay.md",
+		marker: "Where ego lite is installed (the `ego_browser` tool runs)",
+		anchor: "for a throwaway managed browser.{{/if}}\n",
+		patched: "for a throwaway managed browser.{{/if}}\n\nWhere ego lite is installed (the `ego_browser` tool runs), browser work, headless checks included, runs in its own ego TaskSpace through `ego_browser`; use `browser.open` through the relay only for a tab the user named, passing it as `app.target`.\n",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
@@ -21635,6 +21713,19 @@ for (const marker of ["async function learnSimilarHint(", "// HANSE: recall fact
 	}
 	for (const candidate of originals) candidate.excludes = [...[candidate.excludes ?? []].flat(), ...historical.keys()];
 	entry.alternates = [...originals.slice(1), ...historical.values()];
+}
+
+// 2026-10-31 사용자 결정 「스페이스공간 따로 만들어서 그쪽에다 하는 건 기본으로 두자 하네스정책상」: system-prompt # 5. Verify 의 웹 줄이
+// 검증 경로로 `browser.open`만 알려 ego lite PC에서도 relay·headless 를 고르게 했다(browser-relay.md 문장·command-guard
+// BrowserSpaceGuard 와 같은 경계). 그 줄은 위 Verify 항목(marker "Scoped proof of your own change is yours:")이 소유하므로 새 항목을
+// 더하지 않고 그 본문을 고친다. 배포된 옛 본문은 legacyPatched 로 두어 재적용이 새 본문으로 올리고 --check 가 옛 본문을 미적용으로 본다.
+// 검증: core-browser-relay-prompt-test.ts [4].
+{
+	const verify = EDITS.find(entry => entry.file === "src/prompts/system/system-prompt.md" && entry.marker === "Scoped proof of your own change is yours:");
+	const web = "  - Web: `browser.open` tab, direct helpers for actions, `tab.run` for custom JS; visual proof; `tab.close`. No tests unless existing suite breaks.\n";
+	if (!verify || !verify.patched.includes(web) || verify.legacyPatched !== undefined) throw new Error("system-prompt Verify 웹 줄 후보를 만들 수 없다");
+	verify.legacyPatched = verify.patched;
+	verify.patched = verify.patched.replace(web, () => "  - Web: on an ego lite PC (the `ego_browser` tool runs), an ego TaskSpace via `ego_browser` (`profile: \"verify\"` for CUELO screens); elsewhere `browser.open` tab, direct helpers for actions, `tab.run` for custom JS; visual proof; `tab.close`. No tests unless existing suite breaks.\n");
 }
 
 
