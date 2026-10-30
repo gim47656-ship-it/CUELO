@@ -16964,6 +16964,769 @@ function probeLegacyBank(dbPath: string, cwd: string): "empty" | "safe" | "unsaf
 		return "unsafe";
 `,
 	},
+	{
+		// MCP 코드 실행(2026-10-30 사용자 요청 "이미있는부분은 제외하고 추가해보자" / "MCP 발주가 의미있는거야"): eval 코드가
+		// 모델 도구 목록에 없는 MCP 서버의 도구를 찾아 부른다. 같은 차단·승인 경로를 지나도록 registry MCP 도구와 똑같이 감싼다.
+		file: "src/session/session-tools.ts",
+		marker: "	wrapMCPToolForEval(tool: CustomTool): AgentTool {",
+		anchor: `	/** Canonical and unambiguous wire names accepted by the eval bridge. */
+	getEvalBridgeToolNames(): string[] {`,
+		patched: `	/**
+	 * Wraps a manager MCP tool with the gates a direct call passes (approval policy, extension
+	 * tool_call hooks, ACP permission) for eval's mcp prelude. The tool is neither registered nor
+	 * activated, so the model's tool list does not change.
+	 */
+	wrapMCPToolForEval(tool: CustomTool): AgentTool {
+		const wrapped = wrapToolWithMetaNotice(CustomToolAdapter.wrap(tool, this.#getCustomToolContext) as AgentTool);
+		const extensionRunner = this.#host.extensionRunner();
+		return this.#wrapToolForAcpPermission(extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped);
+	}
+
+	/** Servers whose tools an MCP refresh leaves as they were instead of activating them (connected from eval). */
+	#mcpRefreshHold: (server: string) => boolean = () => false;
+
+	/** Sets which servers' tools {@link refreshMCPTools} must not activate; their tools keep their previous state. */
+	setMCPRefreshHold(hold: (server: string) => boolean): void {
+		this.#mcpRefreshHold = hold;
+	}
+
+	/** Canonical and unambiguous wire names accepted by the eval bridge. */
+	getEvalBridgeToolNames(): string[] {`,
+	},
+	{
+		// MCP 코드 실행: eval이 연결한 서버는 연결 직후의 refresh(소유 세션 tools-changed 포함)가 켜지 않는다. 보류는 연결 시작 전에
+		// 걸리므로 refresh가 언제 끝나든 경합이 없다. 이전에 켜져 있던 도구는 그대로 둔다(선택이 노출한 경우).
+		file: "src/session/session-tools.ts",
+		marker: "		// Held servers (connected from eval) keep each tool's previous state instead of activating.",
+		anchor: `		const nextActive = [
+			...new Set([
+				...this.#getActiveNonMCPToolNames(),
+				...(vibeActive ? [] : this.#mcpManagerToolNames),
+				...retainedActiveMcpToolNames,
+			]),
+		];`,
+		patched: `		// Held servers (connected from eval) keep each tool's previous state instead of activating.
+		const heldInactive = new Set(
+			mcpTools
+				.filter(tool => tool.mcpServerName !== undefined && this.#mcpRefreshHold(tool.mcpServerName))
+				.map(tool => tool.name)
+				.filter(name => !previousActiveMcpToolNames.includes(name)),
+		);
+		const nextActive = [
+			...new Set([
+				...this.#getActiveNonMCPToolNames(),
+				...(vibeActive ? [] : [...this.#mcpManagerToolNames].filter(name => !heldInactive.has(name))),
+				...retainedActiveMcpToolNames,
+			]),
+		];`,
+	},
+	{
+		// MCP 코드 실행: 요청별 선택을 가진 세션만 deferred 서버를 eval에서 연결한다. 연결 전에 보류를 걸어 모델 도구 목록에 넣지 않는다.
+		file: "src/session/agent-session.ts",
+		marker: "	async connectMCPServerForEval(name: string, signal?: AbortSignal): Promise<void> {",
+		anchor: `	/** Replaces host-owned RPC tools before the next model call. */
+	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {`,
+		patched: `	/** Wraps a manager MCP tool with the gates a direct call passes, for eval's mcp prelude; never registers or activates it. */
+	wrapMCPToolForEval(tool: CustomTool): AgentTool {
+		return this.#tools.wrapMCPToolForEval(tool);
+	}
+
+	/** Deferred servers eval connected; their tools stay out of the model's tool list until a selection exposes them. */
+	#evalHeldMCPServers = new Set<string>();
+
+	/**
+	 * Connects one deferred per-request MCP server for eval's mcp prelude. The hold is set before the
+	 * connect starts, so no MCP refresh (the connect's own included) activates its tools: only a later
+	 * per-request selection exposes them, and a manual reconnect (which clears selection ownership)
+	 * releases the hold. Only the session owning per-request selection connects.
+	 */
+	async connectMCPServerForEval(name: string, signal?: AbortSignal): Promise<void> {
+		const manager = this.#mcpSelectionManager;
+		if (!manager) {
+			throw new Error(
+				'MCP server "' + name + '" is not connected, and only the session that owns per-request MCP selection can connect it.',
+			);
+		}
+		this.#evalHeldMCPServers.add(name);
+		this.#tools.setMCPRefreshHold(
+			server => this.#evalHeldMCPServers.has(server) && manager.isSelectionConnected(server),
+		);
+		const result = await manager.connectDeferred([name], signal);
+		signal?.throwIfAborted();
+		if (!manager.getConnectedServers().includes(name)) {
+			throw new Error('MCP server "' + name + '" failed to connect: ' + (result.errors.get(name) ?? "not connected"));
+		}
+	}
+
+	/** Replaces host-owned RPC tools before the next model call. */
+	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {`,
+	},
+	{
+		// MCP 코드 실행: ToolSession 계약(eval prelude가 쓰는 두 진입점).
+		file: "src/tools/index.ts",
+		marker: "	connectMCPServerForEval?: (name: string, signal?: AbortSignal) => Promise<void>;",
+		anchor: `	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */
+	getToolForEvalBridge?: (name: string) => AgentTool | undefined;`,
+		patched: `	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */
+	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
+	/** Wrap a manager MCP tool with the direct-call gates for eval's mcp prelude; never registers or activates it. */
+	wrapMCPToolForEval?: (tool: import("../extensibility/custom-tools/types").CustomTool) => AgentTool | undefined;
+	/** Connect a deferred per-request MCP server for eval without exposing its tools to the model. */
+	connectMCPServerForEval?: (name: string, signal?: AbortSignal) => Promise<void>;`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "			wrapMCPToolForEval: tool => session?.wrapMCPToolForEval(tool),",
+		anchor: `			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),`,
+		patched: `			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
+			wrapMCPToolForEval: tool => session?.wrapMCPToolForEval(tool),
+			connectMCPServerForEval: async (name, signal) => {
+				if (!session) throw new Error("The session is still starting; try again.");
+				await session.connectMCPServerForEval(name, signal);
+			},`,
+	},
+	{
+		// MCP 코드 실행·스킬 스크립트: 두 eval prelude를 내장 prelude 목록에 더한다. mcp는 세션에 MCP manager가 있을 때만(신뢰하지
+		// 않은 프로젝트는 enableMCP:false라 manager가 없다).
+		file: "src/sdk.ts",
+		marker: "import { createMcpEvalPrelude, createSkillScriptsEvalPrelude, getEnabledEvalPreludes, type EvalPreludeDefinition } from \"./eval/preludes\";",
+		anchor: `import { getEnabledEvalPreludes, type EvalPreludeDefinition } from "./eval/preludes";`,
+		patched: `import { createMcpEvalPrelude, createSkillScriptsEvalPrelude, getEnabledEvalPreludes, type EvalPreludeDefinition } from "./eval/preludes";`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "		let mcpPrelude: EvalPreludeDefinition | undefined;",
+		anchor: `		let archivePrelude: EvalPreludeDefinition | undefined;`,
+		patched: `		let archivePrelude: EvalPreludeDefinition | undefined;
+		let mcpPrelude: EvalPreludeDefinition | undefined;
+		let skillScriptsPrelude: EvalPreludeDefinition | undefined;`,
+	},
+	{
+		file: "src/sdk.ts",
+		marker: "				mcpPrelude ??= createMcpEvalPrelude(toolSession);",
+		anchor: `				archivePrelude ??= createArchivePrelude(toolSession);
+				builtins.push(archivePrelude);
+			}
+			return getEnabledEvalPreludes(builtins);`,
+		patched: `				archivePrelude ??= createArchivePrelude(toolSession);
+				builtins.push(archivePrelude);
+			}
+			if (toolSession.mcpManager) {
+				mcpPrelude ??= createMcpEvalPrelude(toolSession);
+				builtins.push(mcpPrelude);
+			}
+			skillScriptsPrelude ??= createSkillScriptsEvalPrelude(toolSession);
+			builtins.push(skillScriptsPrelude);
+			return getEnabledEvalPreludes(builtins);`,
+	},
+	{
+		file: "src/eval/preludes.ts",
+		marker: `import { sanitizeSkillScriptName } from "../autolearn/managed-skills";`,
+		anchor: `import { untilAborted } from "@oh-my-pi/pi-utils";
+import type { ToolSession } from "../tools";`,
+		patched: `import * as fs from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { untilAborted } from "@oh-my-pi/pi-utils";
+import { sanitizeSkillScriptName } from "../autolearn/managed-skills";
+import type { CustomTool } from "../extensibility/custom-tools/types";
+import { InternalUrlRouter, sessionResolveContext } from "../internal-urls";
+import type { ToolSession } from "../tools";`,
+	},
+	{
+		// mcp prelude: servers/tools/call. 결과는 eval 프로세스 안 변수로만 돌아가고 모델 대화에는 cell이 출력한 것만 남는다.
+		// skills prelude: skill://<name>/scripts/<file> 를 skill:// 해석(포함 경로 검사 포함)으로 찾아 경로를 주고 JS/Python이 모듈로 읽는다.
+		file: "src/eval/preludes.ts",
+		marker: "export function createMcpEvalPrelude(session: ToolSession): EvalPreludeDefinition {",
+		anchor: `		if (findEnabledEvalPrelude(context.session, name) !== definition) {
+			throw new Error(\`Eval prelude "\${name}" changed while authorizing the call.\`);
+		}
+	}
+	return definition.invoke(parameters, context);
+}`,
+		patched: `		if (findEnabledEvalPrelude(context.session, name) !== definition) {
+			throw new Error(\`Eval prelude "\${name}" changed while authorizing the call.\`);
+		}
+	}
+	return definition.invoke(parameters, context);
+}
+
+const MCP_PRELUDE_DOC = [
+	"Call MCP servers from code: their tools need not be in your tool list, and results stay in variables until you print them.",
+	"",
+	"- \`await mcp.servers()\` → \`[{ name, status, exposed, transport, tools }]\` for every enabled, allowed server. \`status\` is \`connected\`, \`connecting\` or \`deferred\` (not started yet); \`exposed\` says whether its tools are also in your direct tool list.",
+	"- \`await mcp.tools(server)\` → \`[{ name, description, inputSchema }]\`. Starts a deferred server on demand; its tools still stay out of your direct tool list.",
+	"- \`await mcp.call(server, tool, args)\` → \`{ isError, text, content, structured }\`; \`structured\` is the server's structured result when it sends one. Every call passes the same approval rules as a direct MCP tool call.",
+	"- Python uses the same names: \`await mcp.servers()\`, \`await mcp.tools(server)\`, \`await mcp.call(server, tool, {...})\`.",
+	"",
+	"Filter and join large results in code and print only what the task needs. Once code works, save it with \`manage_skill\` \`write_script\` and reuse it through \`skills.load\`.",
+].join("\\n");
+
+const MCP_PRELUDE_JAVASCRIPT = \`{
+	const call = async params => {
+		const response = await globalThis.__omp_prelude__('mcp', params);
+		return response && typeof response === 'object' ? response.details : undefined;
+	};
+	const named = (value, label) => {
+		if (typeof value !== 'string' || value.length === 0) throw new TypeError('mcp.' + label + ' expects a non-empty string');
+		return value;
+	};
+	globalThis.mcp = Object.freeze({
+		servers: () => call({ action: 'servers' }),
+		tools: server => call({ action: 'tools', server: named(server, 'tools(server)') }),
+		call: (server, tool, args) =>
+			call({ action: 'call', server: named(server, 'call(server)'), tool: named(tool, 'call(server, tool)'), args: args ?? {} }),
+	});
+}
+\`;
+
+const MCP_PRELUDE_PYTHON = \`def _make_mcp():
+    async def _call(params):
+        response = await _omp_prelude('mcp', params)
+        if not isinstance(response, dict):
+            raise RuntimeError('mcp returned an invalid response')
+        return response.get('details')
+
+    class _Mcp:
+        __slots__ = ()
+
+        def __repr__(self):
+            return 'mcp'
+
+        async def servers(self):
+            return await _call({'action': 'servers'})
+
+        async def tools(self, server):
+            return await _call({'action': 'tools', 'server': server})
+
+        async def call(self, server, tool, args=None):
+            return await _call({'action': 'call', 'server': server, 'tool': tool, 'args': args or {}})
+
+    return _Mcp()
+
+
+mcp = _make_mcp()
+del _make_mcp
+\`;
+
+type McpPreludeParams =
+	| { action: "servers" }
+	| { action: "tools"; server: string }
+	| { action: "call"; server: string; tool: string; args: Record<string, unknown> };
+
+function parseMcpPreludeParams(parameters: unknown): McpPreludeParams {
+	const p = (parameters && typeof parameters === "object" ? parameters : {}) as Record<string, unknown>;
+	const text = (key: string): string => {
+		const value = p[key];
+		if (typeof value !== "string" || value.length === 0) throw new Error("mcp " + String(p.action) + " needs a non-empty " + key);
+		return value;
+	};
+	if (p.action === "servers") return { action: "servers" };
+	if (p.action === "tools") return { action: "tools", server: text("server") };
+	if (p.action === "call") {
+		const args = p.args ?? {};
+		if (typeof args !== "object" || args === null || Array.isArray(args)) throw new Error("mcp.call args must be an object");
+		return { action: "call", server: text("server"), tool: text("tool"), args: args as Record<string, unknown> };
+	}
+	throw new Error("mcp received an unknown action: " + String(p.action));
+}
+
+/**
+ * Create the mcp prelude: list enabled, allowed MCP servers (deferred ones included), read tool
+ * schemas, and call tools from eval code. Calls go through {@link ToolSession.wrapMCPToolForEval},
+ * the same gates as a direct MCP call; a deferred server is connected without exposing its tools.
+ * Disabled, not allowed, and trust-filtered servers never reach the manager, so they stay unknown here.
+ */
+export function createMcpEvalPrelude(session: ToolSession): EvalPreludeDefinition {
+	const managerOf = () => {
+		const manager = session.mcpManager;
+		if (!manager) throw new Error("MCP is not available in this session.");
+		return manager;
+	};
+	const serverTools = (server: string): CustomTool[] =>
+		managerOf()
+			.getTools()
+			.filter(tool => tool.mcpServerName === server) as CustomTool[];
+	const ensureConnected = async (server: string, signal?: AbortSignal): Promise<void> => {
+		const manager = managerOf();
+		const status = manager.getConnectionStatus(server);
+		if (status === "connected") return;
+		if (status === "connecting") {
+			await manager.waitForConnection(server);
+			return;
+		}
+		const deferred = await manager.getDeferredServers();
+		if (!deferred.some(entry => entry.name === server)) {
+			const known = [...new Set([...manager.getConnectedServers(), ...deferred.map(entry => entry.name)])];
+			throw new Error(
+				'MCP server "' + server + '" is not available here (disabled, not allowed, or unknown). Available: ' + (known.join(", ") || "none"),
+			);
+		}
+		if (!session.connectMCPServerForEval) throw new Error('MCP server "' + server + '" is not connected in this session.');
+		await session.connectMCPServerForEval(server, signal);
+	};
+	return {
+		name: "mcp",
+		documentation: MCP_PRELUDE_DOC,
+		javascript: MCP_PRELUDE_JAVASCRIPT,
+		python: MCP_PRELUDE_PYTHON,
+		exports: ["mcp"],
+		approval: "read",
+		enabled: () => session.mcpManager !== undefined,
+		invoke: async (parameters, context) => {
+			const params = parseMcpPreludeParams(parameters);
+			if (params.action === "servers") {
+				const manager = managerOf();
+				const enabled = new Set(session.getEvalBridgeToolNames?.() ?? []);
+				const deferred = await manager.getDeferredServers();
+				const live = new Set<string>(manager.getConnectedServers());
+				for (const tool of manager.getTools()) if (tool.mcpServerName) live.add(tool.mcpServerName);
+				const servers: Array<{ name: string; status: string; exposed: boolean; transport: string; tools: string[] }> = [];
+				for (const name of live) {
+					const tools = serverTools(name);
+					servers.push({
+						name,
+						status: manager.getConnectionStatus(name),
+						exposed: tools.some(tool => enabled.has(tool.name)),
+						transport: manager.getServerConfig(name)?.type ?? "stdio",
+						tools: tools.map(tool => tool.mcpToolName ?? tool.name),
+					});
+				}
+				for (const entry of deferred) {
+					if (live.has(entry.name)) continue;
+					servers.push({
+						name: entry.name,
+						status: "deferred",
+						exposed: false,
+						transport: entry.transport,
+						tools: entry.cachedTools.map(tool => tool.name),
+					});
+				}
+				return { content: [{ type: "text", text: servers.length + " MCP servers" }], details: servers };
+			}
+			await ensureConnected(params.server, context.signal);
+			const tools = serverTools(params.server);
+			if (params.action === "tools") {
+				const listed = tools.map(tool => ({
+					name: tool.mcpToolName ?? tool.name,
+					description: tool.description,
+					inputSchema: tool.parameters,
+				}));
+				return { content: [{ type: "text", text: params.server + ": " + listed.length + " tools" }], details: listed };
+			}
+			const target = tools.find(tool => (tool.mcpToolName ?? tool.name) === params.tool) ?? tools.find(tool => tool.name === params.tool);
+			if (!target) {
+				throw new Error(
+					'MCP server "' + params.server + '" has no tool "' + params.tool + '". Tools: ' + (tools.map(tool => tool.mcpToolName ?? tool.name).join(", ") || "none"),
+				);
+			}
+			const wrapped = session.wrapMCPToolForEval?.(target);
+			if (!wrapped) throw new Error("This session cannot run MCP tools from eval.");
+			const result = await wrapped.execute(context.toolCallId, params.args, context.signal, undefined, context.context);
+			// MCP tool details (MCPToolDetails); other shapes leave these fields undefined.
+			const details: { isError?: boolean; rawContent?: unknown; structuredContent?: unknown } = result.details ?? {};
+			const text = result.content
+				.flatMap(block => (block.type === "text" ? [block.text] : []))
+				.join("\\n");
+			const isError = result.isError === true || details.isError === true;
+			return {
+				content: [{ type: "text", text: "mcp " + params.server + "/" + params.tool + (isError ? " failed" : " ok") }],
+				details: { isError, text, content: details.rawContent ?? result.content, structured: details.structuredContent },
+			};
+		},
+		status: parameters => {
+			try {
+				const params = parseMcpPreludeParams(parameters);
+				if (params.action === "call") return "mcp.call(" + params.server + "/" + params.tool + ")";
+				if (params.action === "tools") return "mcp.tools(" + params.server + ")";
+				return "mcp.servers()";
+			} catch {
+				return undefined;
+			}
+		},
+	};
+}
+
+const SKILL_SCRIPTS_PRELUDE_DOC = [
+	"Load code saved in a skill's scripts/ folder (\`manage_skill\` \`write_script\`) instead of writing it again.",
+	"",
+	"- \`await skills.path(\\"skill://<name>/scripts/<file>\\")\` (or \`skills.path(name, file)\`) → absolute path of the saved file.",
+	"- JavaScript: \`const mod = await skills.load(\\"skill://<name>/scripts/<file>.ts\\")\` imports a \`.ts\`, \`.mjs\` or \`.js\` script and returns its module.",
+	"- Python: \`mod = await skills.load(\\"skill://<name>/scripts/<file>.py\\")\` imports a \`.py\` script and returns its module.",
+	"",
+	"Read the script (\`read skill://<name>/scripts/<file>\`) first when you do not know its exports.",
+].join("\\n");
+
+const SKILL_SCRIPTS_PRELUDE_JAVASCRIPT = \`{
+	const resolve = async (ref, script) => {
+		const response = await globalThis.__omp_prelude__('skills', script === undefined ? { ref } : { name: ref, script });
+		const details = response && typeof response === 'object' ? response.details : undefined;
+		if (!details || typeof details.path !== 'string') throw new Error('skills returned an invalid response');
+		return details;
+	};
+	globalThis.skills = Object.freeze({
+		path: async (ref, script) => (await resolve(ref, script)).path,
+		load: async (ref, script) => {
+			const target = await resolve(ref, script);
+			if (target.path.endsWith('.py')) throw new TypeError('skills.load() in JavaScript imports .ts, .mjs or .js scripts; load .py scripts from Python');
+			const load = typeof globalThis.__omp_import__ === 'function' ? globalThis.__omp_import__ : specifier => import(specifier);
+			return await load(target.url);
+		},
+	});
+}
+\`;
+
+const SKILL_SCRIPTS_PRELUDE_PYTHON = \`def _make_skills():
+    async def _resolve(ref, script):
+        params = {'ref': ref} if script is None else {'name': ref, 'script': script}
+        response = await _omp_prelude('skills', params)
+        details = response.get('details') if isinstance(response, dict) else None
+        if not isinstance(details, dict) or not isinstance(details.get('path'), str):
+            raise RuntimeError('skills returned an invalid response')
+        return details
+
+    class _Skills:
+        __slots__ = ()
+
+        def __repr__(self):
+            return 'skills'
+
+        async def path(self, ref, script=None):
+            return (await _resolve(ref, script))['path']
+
+        async def load(self, ref, script=None):
+            import importlib.util
+            import sys
+
+            target = await _resolve(ref, script)
+            if not target['path'].endswith('.py'):
+                raise TypeError('skills.load() in Python imports .py scripts; load .ts, .mjs or .js scripts from JavaScript')
+            spec = importlib.util.spec_from_file_location(target['module'], target['path'])
+            module = importlib.util.module_from_spec(spec)
+            # Registered like a normal import so code that looks itself up (dataclasses, pickle) works.
+            sys.modules[target['module']] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(target['module'], None)
+                raise
+            return module
+
+    return _Skills()
+
+
+skills = _make_skills()
+del _make_skills
+\`;
+
+/** \`{ ref: "skill://<name>/scripts/<file>" }\` or \`{ name, script }\`; the file name is validated like a saved script. */
+function parseSkillScriptRef(parameters: unknown): { name: string; script: string } {
+	const p = (parameters && typeof parameters === "object" ? parameters : {}) as Record<string, unknown>;
+	let name: unknown = p.name;
+	let script: unknown = p.script;
+	if (typeof p.ref === "string") {
+		const prefix = "skill://";
+		const rest = p.ref.startsWith(prefix) ? p.ref.slice(prefix.length) : "";
+		const marker = rest.lastIndexOf("/scripts/");
+		if (marker <= 0) {
+			throw new Error('skills expects "skill://<name>/scripts/<file>" or (name, file); got ' + JSON.stringify(p.ref));
+		}
+		name = rest.slice(0, marker);
+		script = rest.slice(marker + "/scripts/".length);
+	}
+	if (typeof name !== "string" || name.length === 0 || typeof script !== "string") {
+		throw new Error('skills expects "skill://<name>/scripts/<file>" or (name, file)');
+	}
+	return { name, script: sanitizeSkillScriptName(script) };
+}
+
+/**
+ * Create the skills prelude: resolve a script saved under a loaded skill's scripts/ folder through the
+ * skill:// handler (traversal and symlink containment checked) and hand eval its path for import.
+ */
+export function createSkillScriptsEvalPrelude(session: ToolSession): EvalPreludeDefinition {
+	return {
+		name: "skills",
+		documentation: SKILL_SCRIPTS_PRELUDE_DOC,
+		javascript: SKILL_SCRIPTS_PRELUDE_JAVASCRIPT,
+		python: SKILL_SCRIPTS_PRELUDE_PYTHON,
+		exports: ["skills"],
+		approval: "read",
+		invoke: async (parameters, context) => {
+			const { name, script } = parseSkillScriptRef(parameters);
+			const url = "skill://" + name + "/scripts/" + script;
+			const located = await InternalUrlRouter.instance().locate(
+				url,
+				sessionResolveContext(session, { signal: context.signal, containSkillPaths: true }),
+				{ localOnly: true },
+			);
+			const stats = located ? await fs.stat(located) : undefined;
+			if (!located || !stats?.isFile()) throw new Error("No saved script at " + url + ".");
+			return {
+				content: [{ type: "text", text: url }],
+				details: {
+					path: located,
+					url: pathToFileURL(located).href + "?v=" + Math.trunc(stats.mtimeMs),
+					module: ("skill_script_" + name + "_" + script).replace(/[^A-Za-z0-9_]/g, "_"),
+				},
+			};
+		},
+		status: parameters => {
+			try {
+				const { name, script } = parseSkillScriptRef(parameters);
+				return "skills(" + name + "/scripts/" + script + ")";
+			} catch {
+				return undefined;
+			}
+		},
+	};
+}`,
+	},
+	{
+		// 스킬 스크립트: 관리 스킬 폴더의 scripts/<file> 하나만 만들고 바꾸고 지운다. 이름은 한 경로 조각·허용 확장자·크기·개수 상한,
+		// symlink·hard link·SKILL.md 없는 폴더는 거절한다. SKILL.md 생성·수정·삭제 경로는 그대로다.
+		file: "src/autolearn/managed-skills.ts",
+		marker: "export async function writeManagedSkillScript(",
+		anchor: `			if (isEnoent(err)) {
+				throw new Error(\`Managed skill "\${safe}" does not exist.\`);
+			}
+			throw err;
+		}
+	});
+}`,
+		patched: `			if (isEnoent(err)) {
+				throw new Error(\`Managed skill "\${safe}" does not exist.\`);
+			}
+			throw err;
+		}
+	});
+}
+
+/** Hard cap on one managed skill script file (UTF-8 bytes). */
+export const MAX_MANAGED_SKILL_SCRIPT_BYTES = 64_000;
+
+/** Most script files one managed skill may carry. */
+export const MAX_MANAGED_SKILL_SCRIPTS = 16;
+
+/** One file name under scripts/: lowercase letters, digits, "-" or "_", and a runnable extension. */
+const SKILL_SCRIPT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}\\.(?:ts|mjs|js|py)$/;
+
+/**
+ * Validate a skill script name. Only one file name directly under scripts/ is allowed (a leading
+ * "scripts/" is accepted), so the name can carry no path separator, "..", or other extension.
+ */
+export function sanitizeSkillScriptName(raw: string): string {
+	const trimmed = raw.trim();
+	const script = trimmed.startsWith("scripts/") ? trimmed.slice("scripts/".length) : trimmed;
+	if (!SKILL_SCRIPT_PATTERN.test(script)) {
+		throw new Error(
+			'Invalid script name "' +
+				raw +
+				'". Use one file name of lowercase letters, digits, "-" or "_" (1-64 chars) ending in .ts, .mjs, .js or .py; it is stored as scripts/<name>.',
+		);
+	}
+	return script;
+}
+
+async function lstatIfExists(file: string): Promise<Stats | null> {
+	return fs.lstat(file).catch(err => {
+		if (isEnoent(err)) return null;
+		throw err;
+	});
+}
+
+/** The scripts/ folder of an existing managed skill; refuses symlinks and a skill without SKILL.md. */
+async function managedSkillScriptsDir(name: string): Promise<{ dir: string; exists: boolean }> {
+	await assertManagedRootSafe();
+	const skillDir = path.join(getManagedSkillsDir(), name);
+	const skillDirStat = await lstatIfExists(skillDir);
+	if (skillDirStat?.isSymbolicLink()) {
+		throw new Error('Managed skill "' + name + '" resolves through a symlink; refusing to touch its scripts.');
+	}
+	const skillFileStat = skillDirStat?.isDirectory() ? await lstatIfExists(path.join(skillDir, "SKILL.md")) : null;
+	if (!skillFileStat?.isFile()) {
+		throw new Error('Managed skill "' + name + '" does not exist. Create it with action "create" first.');
+	}
+	const dir = path.join(skillDir, "scripts");
+	const dirStat = await lstatIfExists(dir);
+	if (dirStat && !dirStat.isDirectory()) {
+		throw new Error('Managed skill "' + name + '" scripts/ is not a plain directory; refusing to touch it.');
+	}
+	return { dir, exists: dirStat !== null };
+}
+
+export interface WriteManagedSkillScriptInput {
+	name: string;
+	script: string;
+	content: string;
+}
+
+/** Create or replace one file in a managed skill's scripts/ folder. Returns its path. */
+export async function writeManagedSkillScript(
+	input: WriteManagedSkillScriptInput,
+): Promise<{ path: string; created: boolean }> {
+	const name = sanitizeSkillName(input.name);
+	const script = sanitizeSkillScriptName(input.script);
+	if (!input.content.trim()) throw new Error('Script "' + script + '" needs non-empty content.');
+	const bytes = Buffer.byteLength(input.content, "utf8");
+	if (bytes > MAX_MANAGED_SKILL_SCRIPT_BYTES) {
+		throw new Error('Script "' + script + '" is ' + bytes + " bytes; the limit is " + MAX_MANAGED_SKILL_SCRIPT_BYTES + ".");
+	}
+	return serializeSkillMutation(name, async () => {
+		const { dir, exists } = await managedSkillScriptsDir(name);
+		if (!exists) await fs.mkdir(dir);
+		const file = path.join(dir, script);
+		const fileStat = await lstatIfExists(file);
+		if (fileStat === null) {
+			if ((await fs.readdir(dir)).length >= MAX_MANAGED_SKILL_SCRIPTS) {
+				throw new Error('Managed skill "' + name + '" already has ' + MAX_MANAGED_SKILL_SCRIPTS + " scripts; delete one first.");
+			}
+			// "wx": atomic create that refuses an existing file or symlink placed after the check.
+			await fs.writeFile(file, input.content, { flag: "wx" });
+			return { path: file, created: true };
+		}
+		if (fileStat.isSymbolicLink()) throw new Error('Script "scripts/' + script + '" is a symlink; refusing to overwrite it.');
+		const assertPlain = (stat: Stats) => {
+			if (!stat.isFile() || stat.nlink > 1) {
+				throw new Error('Script "scripts/' + script + '" is not a plain single-link file; refusing to overwrite it.');
+			}
+		};
+		assertPlain(fileStat);
+		const handle = await fs.open(file, UPDATE_FILE_OPEN_FLAGS).catch(err => {
+			if ((err as { code?: string }).code === "ELOOP") {
+				throw new Error('Script "scripts/' + script + '" is a symlink; refusing to overwrite it.');
+			}
+			throw err;
+		});
+		try {
+			assertPlain(await handle.stat());
+			await handle.truncate(0);
+			await handle.writeFile(input.content);
+		} finally {
+			await handle.close();
+		}
+		return { path: file, created: false };
+	});
+}
+
+/** Delete one file from a managed skill's scripts/ folder. Throws when it does not exist. */
+export async function deleteManagedSkillScript(input: { name: string; script: string }): Promise<void> {
+	const name = sanitizeSkillName(input.name);
+	const script = sanitizeSkillScriptName(input.script);
+	await serializeSkillMutation(name, async () => {
+		const { dir, exists } = await managedSkillScriptsDir(name);
+		const file = path.join(dir, script);
+		const fileStat = exists ? await lstatIfExists(file) : null;
+		if (!fileStat) throw new Error('Script "scripts/' + script + '" does not exist in managed skill "' + name + '".');
+		if (!fileStat.isFile()) throw new Error('Script "scripts/' + script + '" is not a regular file; refusing to delete it.');
+		await fs.unlink(file);
+	});
+}`,
+	},
+	{
+		// 스킬 스크립트: manage_skill 스키마에 write_script/delete_script와 script/content 두 칸만 더한다.
+		file: "src/tools/manage-skill.ts",
+		marker: "	writeManagedSkillScript,",
+		anchor: `import {
+	deleteManagedSkill,
+	getManagedSkillsDir,
+	sanitizeSkillName,
+	writeManagedSkill,
+} from "../autolearn/managed-skills";`,
+		patched: `import {
+	deleteManagedSkill,
+	deleteManagedSkillScript,
+	getManagedSkillsDir,
+	sanitizeSkillName,
+	sanitizeSkillScriptName,
+	writeManagedSkill,
+	writeManagedSkillScript,
+} from "../autolearn/managed-skills";`,
+	},
+	{
+		file: "src/tools/manage-skill.ts",
+		marker: `	action: "'create' | 'update' | 'delete' | 'write_script' | 'delete_script'",`,
+		anchor: `	action: "'create' | 'update' | 'delete'",
+	name: type("string").describe("kebab-case skill name"),
+	"description?": type("string").describe(
+		"one-line description of when to use the skill (required for create/update)",
+	),
+	"body?": type("string").describe("the SKILL.md body in markdown, no frontmatter (required for create/update)"),
+}).narrow(
+	(p, ctx) =>
+		p.action === "delete" ||`,
+		patched: `	action: "'create' | 'update' | 'delete' | 'write_script' | 'delete_script'",
+	name: type("string").describe("kebab-case skill name"),
+	"description?": type("string").describe(
+		"one-line description of when to use the skill (required for create/update)",
+	),
+	"body?": type("string").describe("the SKILL.md body in markdown, no frontmatter (required for create/update)"),
+	"script?": type("string").describe(
+		"script file name for write_script/delete_script, e.g. fetch-report.ts (.ts, .mjs, .js or .py); stored as scripts/<script>",
+	),
+	"content?": type("string").describe("full script source (required for write_script)"),
+}).narrow(
+	(p, ctx) =>
+		p.action === "write_script"
+			? (p.script !== undefined && p.content !== undefined) ||
+				ctx.mustBe('used with both "script" and "content" for "write_script"')
+			: p.action === "delete_script"
+				? p.script !== undefined || ctx.mustBe('used with "script" for "delete_script"')
+				: p.action === "delete" ||`,
+	},
+	{
+		file: "src/tools/manage-skill.ts",
+		marker: `		if (params.action === "write_script" || params.action === "delete_script") {`,
+		anchor: `	async execute(_id: string, params: ManageSkillParams): Promise<AgentToolResult> {
+		if (params.action === "delete") {`,
+		patched: `	async execute(_id: string, params: ManageSkillParams): Promise<AgentToolResult> {
+		if (params.action === "write_script" || params.action === "delete_script") {
+			if (params.script === undefined) throw new Error('"' + params.action + '" requires "script".');
+			const skillName = sanitizeSkillName(params.name);
+			const script = sanitizeSkillScriptName(params.script);
+			const url = "skill://" + skillName + "/scripts/" + script;
+			if (params.action === "delete_script") {
+				await deleteManagedSkillScript({ name: skillName, script });
+				return {
+					content: [{ type: "text", text: "Deleted " + url + "." }],
+					details: { action: params.action, name: skillName, script },
+				};
+			}
+			// skill:// resolves an authored skill first, so a script saved under a shadowed managed skill could never load.
+			if (isNameClaimedByAuthoredSkill(skillName)) {
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								'Cannot save scripts for "' +
+								params.name +
+								'": an authored skill of that name exists and managed skills cannot change or shadow it.',
+						},
+					],
+					isError: true,
+					details: { action: params.action, name: skillName, script, shadowed: true },
+				};
+			}
+			if (params.content === undefined) throw new Error('"write_script" requires "content".');
+			const { created } = await writeManagedSkillScript({ name: skillName, script, content: params.content });
+			return {
+				content: [
+					{
+						type: "text",
+						text: (created ? "Saved " : "Updated ") + url + ". Load it in eval with skills.load(" + JSON.stringify(url) + ").",
+					},
+				],
+				details: { action: params.action, name: skillName, script },
+			};
+		}
+		if (params.action === "delete") {`,
+	},
+	{
+		file: "src/prompts/tools/manage-skill.md",
+		marker: "- `action: \"write_script\"`",
+		anchor: "- `action: \"delete\"` — fails if skill absent.\n",
+		patched: "- `action: \"delete\"` — fails if skill absent.\n- `action: \"write_script\"` — saves `content` as `scripts/<script>` (`.ts`, `.mjs`, `.js`, `.py`; 64 KB, 16 files) in an existing managed skill; replaces a file of that name. Save code only after it ran correctly; later sessions load it in eval with `skills.load(\"skill://<name>/scripts/<script>\")`.\n- `action: \"delete_script\"` — removes `scripts/<script>`.\n",
+	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
