@@ -108,6 +108,22 @@ describe("runEgoBrowser results", () => {
     await expect(runEgoBrowser({ script: "1" }, { exec: failing.exec, sessionId: "s" })).rejects.toThrow("EPERM");
   });
 
+  test("a browser permission prompt failure tells the agent to hand off instead of retrying; other failures carry no such hint", async () => {
+    const prompt = fakeExec({ code: 1, stdout: "", stderr: "Error: A browser permission prompt for notifications has appeared.", killed: false });
+    const error = await runEgoBrowser({ script: "1" }, { exec: prompt.exec, sessionId: "s" }).catch((e: Error) => e);
+    expect(String(error)).toContain("permission prompt for notifications");
+    expect(String(error)).toContain("task.handOff()");
+    expect(String(error)).toContain("다시 보내거나 우회하지 않는다");
+    const plain = fakeExec({ code: 1, stdout: "", stderr: "SyntaxError: boom", killed: false });
+    const other = await runEgoBrowser({ script: "1" }, { exec: plain.exec, sessionId: "s" }).catch((e: Error) => e);
+    expect(String(other)).not.toContain("handOff");
+    // 표시용으로 앞뒤만 남기는 긴 출력에서도 가운데 묻힌 권한 팝업 문구로 안내를 붙인다(cross_review R1-OAI-1).
+    const buried = fakeExec({ code: 1, stdout: "", stderr: `${"a".repeat(60_000)}\nError: A browser permission prompt for camera has appeared.\n${"b".repeat(60_000)}`, killed: false });
+    const long = await runEgoBrowser({ script: "1" }, { exec: buried.exec, sessionId: "s" }).catch((e: Error) => e);
+    expect(String(long)).not.toContain("permission prompt for camera");
+    expect(String(long)).toContain("task.handOff()");
+  });
+
   test("a killed run reports the timeout and that the space may remain", async () => {
     const { exec } = fakeExec({ code: -1, stdout: "", stderr: "", killed: true });
     await expect(runEgoBrowser({ script: "1", timeoutMs: 5000 }, { exec, sessionId: "s" })).rejects.toThrow(/5초[\s\S]*남아 있을 수 있다/);

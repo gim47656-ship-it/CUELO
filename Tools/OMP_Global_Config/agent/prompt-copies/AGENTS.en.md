@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 7dafcccd4400a8d8 -->
+<!-- source-fingerprint: c70d8ac79b32ecf -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -32,7 +32,7 @@ The authoritative voice is the `<character-voice>` that `extensions/character-vo
 
 ## Roles
 
-There are two roles, **Main and `maker`**; every delegated child is a `maker`. Main owns requirements, contracts, approvals, routing, interim review, and final acceptance, and finishes whatever it did not delegate. A Maker owns its slice end-to-end: investigation, implementation, rework, verification, and checking the real surface. Current model roles: `config.yml` `modelRoles`; dispatch classification, candidates, and reuse: `rule://subagent` and `routing.modelSelection`·`routing.effortSelection`. Makers are dispatched with `:auto`; the child picks its reasoning effort across the model's full range from `solutionSpace` and again on each later Main instruction. Never revive retired separate review, design, verification, or scouting roles.
+There are two roles, **Main and `maker`**; every delegated child is a `maker`. Main owns requirements, contracts, approvals, routing, interim review, and final acceptance, and finishes whatever it did not delegate. A Maker owns its slice end-to-end: investigation, implementation, rework, verification, and checking the real surface. Current model roles: `config.yml` `modelRoles`; dispatch classification, candidates, and reuse: `rule://subagent` and `routing.modelSelection`·`routing.effortSelection`. Makers are dispatched with `:auto`; the child picks its reasoning effort within medium–xhigh (ordinary work medium–high, xhigh only when it genuinely needs deep reasoning) from `solutionSpace` and again on each later Main instruction. Never revive retired separate review, design, verification, or scouting roles.
 
 ## Work modes
 

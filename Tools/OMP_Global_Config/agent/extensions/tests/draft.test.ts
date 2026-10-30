@@ -91,7 +91,7 @@ describe("draft", () => {
       [join(outside, "abs.md"), "상대 경로만"],
       ["C:/Users/x/abs.md", "상대 경로만"],
       [".env.md", "비밀·관리 경로"],
-      ["secrets/plan.md", "비밀·관리 경로"],
+      ["notes/api-key.md", "비밀·관리 경로"],
       [".git/notes.md", "비밀·관리 경로"],
       ["linked/inner.md", "심볼릭 링크"],
       ["report.exe", "지원하지 않는 확장자"],
@@ -113,6 +113,11 @@ describe("draft", () => {
     const nested = await draftText({ instruction: "보고서", output: "docs/new/plan.md" }, context(cwd), signal, complete);
     expect(nested).toContain("저장: docs/new/plan.md");
     expect(nested).toContain("- # 새 보고서");
+    // 폴더 이름은 비밀 이름 검사 대상이 아니다(10-29 `29-token-saving/` 작업 기록이 거절됐다). 파일 이름만 본다.
+    const dated = await draftText({ instruction: "보고서", output: "doc/29-token-saving/maker-Note.md" }, context(cwd), signal, complete);
+    expect(dated).toContain("저장: doc/29-token-saving/maker-Note.md");
+    const folder = await draftText({ instruction: "보고서", output: "secrets/plan.md" }, context(cwd), signal, complete);
+    expect(folder).toContain("저장: secrets/plan.md");
   });
 
   test("Gemini 실패나 형식이 깨진 응답은 같은 prompt로 DeepSeek에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {

@@ -1967,22 +1967,26 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       }
     });
   });
-  test("위임 판단은 같은 배치에서 recommendations로만 돌아오고 등급·profile·placement를 바꾸지 않는다", async () => {
+  test("위임 판단은 같은 배치에서 묻되 결과에는 싣지 않고 발주 원장에만 남기며 등급·profile·placement를 바꾸지 않는다", async () => {
     const criteria = { MAIN: "Main 문맥이 유리한 단일 밀접 수정", MAKER: "독립·병렬 수행이 가능", UNKNOWN: "근거 부족" };
     const run = async (delegation: string) => {
-      const h = harness({ delegation });
+      const ledger = memoryLedger([]);
+      const h = harness({ delegation, ledger });
       h.policy.modelSelection.delegationCriteria = criteria;
       const batch = await h.prepareBatch("위임 판단", [h.task], {} as never);
-      return { h, route: batch.routes[0]! };
+      return { h, ledger, route: batch.routes[0]! };
     };
     const main = await run("MAIN");
     const maker = await run("MAKER");
     // 같은 배치에 delegation 질문이 들어간다(추가 round 없음).
     expect(main.h.requests).toHaveLength(1);
     expect(main.h.requests[0]!.questions.delegation).toMatchObject({ type: "choice", criteria });
-    // 답은 recommendations.delegation으로만 돌아온다.
-    expect(main.route.recommendations).toMatchObject({ delegation: { choice: "MAIN" } });
-    expect(maker.route.recommendations).toMatchObject({ delegation: { choice: "MAKER" } });
+    // 10-30 감사: 위임 조언 68건 중 60건이 MAIN이었고 그중 52건은 그대로 발주됐다. 결과에서는 빼고 원장에만 남긴다.
+    expect(main.route.recommendations).not.toHaveProperty("delegation");
+    expect(main.route.recommendations).toHaveProperty("workClass");
+    expect(await main.h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+    main.h.noteSpawned({ context: main.h.input.context, tasks: [{ ...main.h.input.tasks[0] }] });
+    expect(main.ledger.records.at(-1)).toMatchObject({ type: "dispatch", delegationAdvice: { choice: "MAIN", confidence: null } });
     // 등급·profile·placement는 위임 답과 무관하게 같다.
     expect(main.route.profile).toBe("NORMAL_SOL");
     expect(maker.route.profile).toBe("NORMAL_SOL");

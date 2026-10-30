@@ -48,8 +48,11 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
   if (!inside(rel)) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
   const segments = slash(rel).split("/");
   const lower = segments.map((part) => part.toLowerCase());
-  if (lower.some((part, i) => part === ".git" || part === "node_modules" || (part === ".omp" && lower[i + 1] === "agent")
-    || SECRET_NAME.test(part) || SECRET_EXTENSION.test(part))) {
+  // 관리 폴더는 경로 어디에 있든 막고, 비밀 이름·확장자는 파일 이름만 본다. 폴더 이름까지 보면
+  // `29-token-saving/` 같은 작업 기록 폴더가 `token`에 걸렸다(10-29 3건).
+  const name = segments[segments.length - 1]!;
+  if (lower.some((part, i) => part === ".git" || part === "node_modules" || (part === ".omp" && lower[i + 1] === "agent"))
+    || SECRET_NAME.test(name) || SECRET_EXTENSION.test(name)) {
     throw new Error(`비밀·관리 경로처럼 보이는 이름에는 쓸 수 없습니다: ${slash(rel)}`);
   }
   const format = FORMATS[extname(rel).toLowerCase()];

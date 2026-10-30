@@ -376,6 +376,8 @@ interface SettledJobMeta {
   unresolvedCount?: number;
   hasError: boolean;
   terminalRevision?: string;
+  /** 정산 job 행(core job snapshot)의 resolvedModel. 실행 끝에 실제로 응답한 모델이며 없으면 미관측이다. */
+  resolvedModel?: string;
   validation: Record<string, TerminalValidationItem>;
 }
 
@@ -512,6 +514,7 @@ function readSettledTaskJobs(
       hasData: data !== undefined,
       hasError: typeof schema?.error === "string" || record.status === "failed",
       ...(terminal.revision ? { terminalRevision: terminal.revision } : {}),
+      ...(typeof record.resolvedModel === "string" && record.resolvedModel.trim() ? { resolvedModel: record.resolvedModel.trim() } : {}),
       validation: terminal.validation,
     };
     const validationEntries = Object.values(terminal.validation);
@@ -532,6 +535,9 @@ interface InlineTaskResult {
   status: OutcomeRecord["status"];
   durationMs?: number;
   terminalRevision?: string;
+  /** SingleResult.resolvedModel·resolvedModelIsFallback. 실제로 응답한 모델과 그것이 대체 체인의 결과인지다. */
+  resolvedModel?: string;
+  resolvedModelIsFallback?: boolean;
 }
 
 /**
@@ -545,7 +551,7 @@ function readInlineResults(results: unknown): Map<number, InlineTaskResult> {
   if (!Array.isArray(results)) return inline;
   for (const [position, row] of results.entries()) {
     if (!row || typeof row !== "object") continue;
-    const record = row as { index?: unknown; id?: unknown; exitCode?: unknown; error?: unknown; aborted?: unknown; output?: unknown; durationMs?: unknown; structuredOutput?: unknown };
+    const record = row as { index?: unknown; id?: unknown; exitCode?: unknown; error?: unknown; aborted?: unknown; output?: unknown; durationMs?: unknown; structuredOutput?: unknown; resolvedModel?: unknown; resolvedModelIsFallback?: unknown };
     if (typeof record.id !== "string" || !record.id) continue;
     const structured = record.structuredOutput && typeof record.structuredOutput === "object"
       ? record.structuredOutput as { data?: unknown; error?: unknown }
@@ -557,6 +563,8 @@ function readInlineResults(results: unknown): Map<number, InlineTaskResult> {
       status: failed ? "failed" : "completed",
       ...(typeof record.durationMs === "number" ? { durationMs: record.durationMs } : {}),
       ...(terminal.revision ? { terminalRevision: terminal.revision } : {}),
+      ...(typeof record.resolvedModel === "string" && record.resolvedModel.trim() ? { resolvedModel: record.resolvedModel.trim() } : {}),
+      ...(typeof record.resolvedModelIsFallback === "boolean" ? { resolvedModelIsFallback: record.resolvedModelIsFallback } : {}),
     });
   }
   return inline;
@@ -1252,7 +1260,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
      * wait·`read proc://`의 권위 status 관측을 막지 않게 한다. 같은 실행 근거(snapshot row 시작 시각 일치)가 있을 때만 그 attempt에
      * outcome을 한 번 남긴다. core는 evict 뒤 같은 jobId를 재사용하므로 jobId만으로 옛 attempt에 status를 붙이지 않는다.
      */
-    const statusPending = new Map<string, { attemptId: string; runStart?: number; terminalRevision?: string; durationMs?: number }>();
+    const statusPending = new Map<string, { attemptId: string; runStart?: number; terminalRevision?: string; durationMs?: number; resolvedModel?: string }>();
     /** attempt 실행의 시작 시각: spawn·재개 binding 때 core snapshot의 exact jobId row에서 본 값. 같은 실행 판정의 근거다. */
     const runStarts = new Map<string, number>();
     /** 끝났지만 terminal status를 관측하지 못한 attempt. 실행 중이 아니므로 REWORK 재개를 연다. outcome은 미상으로 남는다. */
@@ -1594,8 +1602,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     /**
      * attempt 하나의 실행 상태를 원장에 한 번 남기고 관측 상태를 맞춘다. 정산 jobId를 durable outcome에 남겨 reload 뒤에도 중복 소비를 막는다.
      * 실행 상태일 뿐 품질 판정이 아니다. sourceRevision은 Maker terminal report가 낸 원 revision을 관측한 경우에만 남긴다.
+     * resolvedModel·resolvedModelIsFallback도 core 결과가 실어 보낸 경우에만 남긴다(발주 모델로 채우지 않는다).
      */
-    function appendOutcome(identity: AttemptIdentity, jobId: string, status: OutcomeRecord["status"], durationMs: number | undefined, terminalRevision: string | undefined): ObservedAttempt | undefined {
+    function appendOutcome(identity: AttemptIdentity, jobId: string, status: OutcomeRecord["status"], durationMs: number | undefined, terminalRevision: string | undefined, resolved: { model?: string; isFallback?: boolean } = {}): ObservedAttempt | undefined {
       statusPending.delete(jobId);
       pendingCancels.delete(jobId);
       unobservedEnds.delete(identity.attemptId);
@@ -1614,6 +1623,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         status,
         durationSec: durationMs === undefined ? null : Math.round(durationMs / 1000),
         ...(terminalRevision ? { sourceRevision: terminalRevision } : {}),
+        ...(resolved.model ? { resolvedModel: resolved.model } : {}),
+        ...(resolved.isFallback !== undefined ? { resolvedModelIsFallback: resolved.isFallback } : {}),
       });
       const observed = observedAttempts.get(identity.attemptId);
       if (observed) {
@@ -1899,12 +1910,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               : terminal === "completed" ? "completed" : undefined;
           const terminalRevision = job.terminalRevision ?? deferred?.terminalRevision;
           const durationMs = job.durationMs ?? deferred?.durationMs;
+          const resolvedModel = job.resolvedModel ?? deferred?.resolvedModel;
           if (!status) {
-            statusPending.set(job.jobId, { attemptId: identity.attemptId, ...(runStart !== undefined ? { runStart } : {}), terminalRevision, durationMs });
+            statusPending.set(job.jobId, { attemptId: identity.attemptId, ...(runStart !== undefined ? { runStart } : {}), terminalRevision, durationMs, ...(resolvedModel ? { resolvedModel } : {}) });
             unobservedEnds.add(identity.attemptId);
             identityNotes.push(`${spawned?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId} terminal status 미관측: outcome 보류(완료로 추정하지 않음), 같은 실행으로 확인된 wait·read proc:// 관측으로만 정산`);
           } else {
-            const observed = appendOutcome(identity, job.jobId, status, durationMs, terminalRevision);
+            const observed = appendOutcome(identity, job.jobId, status, durationMs, terminalRevision, { model: resolvedModel });
             identityNotes.push(`${spawned?.name ?? observed?.name ?? job.label ?? job.jobId} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}`);
           }
         }
@@ -2605,7 +2617,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           if (spawnStart !== undefined) runStarts.set(identity.attemptId, spawnStart);
           // inline 결과는 그 attempt의 terminal 관측이다. async 정산과 같은 함수로 그 attempt 하나에만 outcome을 남긴다(수용은 Main 명시 판정).
           if (inline && (task.agent === undefined || task.agent === "maker")) {
-            appendOutcome(identity, "", inline.status, inline.durationMs, inline.terminalRevision);
+            appendOutcome(identity, "", inline.status, inline.durationMs, inline.terminalRevision, { model: inline.resolvedModel, isFallback: inline.resolvedModelIsFallback });
           }
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}${inline ? ` inline=${inline.status}` : ""}`);
         }

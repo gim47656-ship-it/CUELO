@@ -55,6 +55,12 @@ export interface DispatchRecord extends AttemptIdentity {
   workClassConfidence?: number | null;
   /** Jev workClass 등급별 확률(각 0~1). 위와 같은 조건에서 null이거나 없다. */
   workClassProbabilities?: Record<string, number> | null;
+  /**
+   * Jev 위임 조언(MAIN·MAKER·UNKNOWN 중 choice와 confidence). maker_route 결과에는 싣지 않고 이 원장에만 남긴다
+   * (2026-10-30 사용자 결정: 68건 중 MAIN 60, 그중 52건이 그대로 발주돼 Main 판단을 바꾸지 못했다). Jev 불가·미제공이면 null이고,
+   * 이 필드가 생기기 전 기록에는 없다.
+   */
+  delegationAdvice?: { choice: string; confidence: number | null } | null;
   purpose: string | null;
   /** 이 필드가 생기기 전 기록에는 없다. 없으면 소유 미상이며 빈 소유가 아니다. */
   ownership?: DispatchOwnership;
@@ -68,6 +74,13 @@ export interface OutcomeRecord extends AttemptIdentity {
   durationSec: number | null;
   /** Maker terminal report가 낸 원 revision. 관측한 경우에만 있다. 이 필드가 생기기 전 기록과 미관측은 미상이다. */
   sourceRevision?: string;
+  /**
+   * 실행 끝에 실제로 응답한 모델 selector. core 결과가 실어 보낸 경우에만 있고, 이 필드가 생기기 전 기록과 미관측은 미상이다.
+   * dispatch의 chosenModel과 다르면 실행 중 대체 모델로 넘어갔다는 뜻이다(10-28 감사: 대체 전환 Maker가 발주 모델로만 남았다).
+   */
+  resolvedModel?: string;
+  /** 위 모델이 core 대체 체인의 결과인지. inline 결과처럼 core가 알려 준 경우에만 있다. */
+  resolvedModelIsFallback?: boolean;
 }
 
 /**

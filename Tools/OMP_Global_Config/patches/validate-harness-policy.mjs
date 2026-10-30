@@ -850,7 +850,7 @@ const taskBudgetRuntimeLimitKeys = ["primaryMaker", "reworkMaker", "total"];
 
 // 역할이 실제로 가질 수 있는 도구. 금지 목록만 두면 새 도구(git_finalize 등)가 조용히 통과한다.
 const roleToolAllowlists = {
-  maker: ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "windows_control", "computer_task", "ego_browser", "checkpoint", "cross_review", "slop_check"],
+  maker: ["read", "bash", "edit", "write", "grep", "glob", "skim", "draft", "lsp", "eval", "generate_image", "ast_grep", "ast_edit", "debug", "todo", "web_search", "windows_build", "windows_control", "ego_browser", "checkpoint", "cross_review", "slop_check"],
 };
 
 const modelOrProviderIdPattern = /(?:\b(?:anthropic|openai(?:-codex)?|opencode(?:-[a-z]+)?|cursor)\/|\b(?:gpt|claude|gemini|grok|deepseek|qwen|kimi|glm|llama|mistral)-[a-z0-9._-]+)/i;
@@ -1223,8 +1223,8 @@ if (policy !== null) {
     "Maker의 기본 추론은 auto여야 한다.",
   );
   check(
-    valueAt(policy, "roles.maker.effortLevels") === "child-auto-over-the-full-range-the-selected-model-supports-opus-up-to-max-with-no-policy-floor-or-ceiling",
-    "Maker 추론은 선택 모델이 지원하는 전체 단계의 child auto여야 한다.",
+    valueAt(policy, "roles.maker.effortLevels") === "child-auto-within-medium-to-xhigh-low-and-max-are-never-auto-picked",
+    "Maker 추론은 medium~xhigh 안의 child auto여야 한다(low·max는 auto가 고르지 않는다).",
   );
 
   const routing = isPlainObject(policy.routing) ? policy.routing : {};

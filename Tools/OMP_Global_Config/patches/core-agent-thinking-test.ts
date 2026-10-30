@@ -230,8 +230,8 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	console.log("  PASS  raise-only 재판정은 올리기만 하고, 다음 새 사용자 턴은 다시 내려갈 수 있다");
 }
 
-// [child-range] Maker auto 범위(2026-10-08 사용자 결정): child(createSubagentSettings overlay)의 auto 는 정책 하한·상한 없이
-// 그 모델 최대까지 오르내리고, Main 은 설정한 medium~xhigh 그대로다. concrete effort 로 띄운 child 는 auto 가 아니다.
+// [child-range] Maker auto 범위(2026-10-30 사용자 결정): child(createSubagentSettings overlay)의 auto 도 medium~xhigh 안에서
+// 고른다. Opus 처럼 max 가 있는 모델도 auto 는 max 를 묻지 않고, low 는 medium 으로 올린다. concrete effort 로 띄운 child 는 auto 가 아니다.
 {
 	const { createSubagentSettings } = await import(`${packages}/pi-coding-agent/src/task/executor.ts`);
 	const root = mkdtempSync(join(tmpdir(), "omp-child-range-"));
@@ -249,11 +249,11 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	const child = createSubagentSettings(main);
 	const opus = ladderModel(["low", "medium", "high", "xhigh", "max"]);
 	const childTurn = controls(opus, { settings: child }).turn;
-	assert.equal(await childTurn("max"), "max", "child Opus auto 는 max 를 고를 수 있다");
-	assert.ok(askedLevels.includes("max"), "child 분류 질문에 max 가 있다");
-	assert.equal(await childTurn("low"), "low", "child low 를 Main 하한 medium 으로 올리지 않는다");
-	assert.equal(await controls(full, { settings: child }).turn("xhigh"), "xhigh", "max 가 없는 모델은 그 모델 최대(xhigh)까지다");
-	assert.ok(!askedLevels.includes("max"), "max 가 없는 모델에는 max 를 묻지 않는다");
+	assert.equal(await childTurn("xhigh"), "xhigh", "child Opus auto 상한은 xhigh 다");
+	assert.ok(!askedLevels.includes("max"), "child 분류 질문에 Opus max 가 없다");
+	assert.equal(await childTurn("low"), "medium", "child low 는 하한 medium 으로 올린다");
+	assert.equal(await childTurn("high"), "high", "child 일반 작업 단계 high 는 그대로다");
+	assert.equal(await controls(full, { settings: child }).turn("xhigh"), "xhigh", "max 가 없는 모델도 상한 xhigh 까지다");
 	const mainTurn = controls(opus, { settings: main }).turn;
 	assert.equal(await mainTurn("low"), "medium", "Main 하한 medium 은 그대로다");
 	assert.equal(await mainTurn("xhigh"), "xhigh");
@@ -262,6 +262,6 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	assert.equal(await concrete.turn("max"), "high", "concrete effort child 는 분류 결과를 쓰지 않는다");
 	assert.equal(concrete.control.isAutoThinking, false);
 	rmSync(root, { recursive: true, force: true });
-	console.log("  PASS  child auto 는 low~모델 최대(Opus max)이고 Main medium~xhigh·concrete child 는 그대로다");
+	console.log("  PASS  child auto 는 medium~xhigh(Opus 도 max 없음)이고 Main medium~xhigh·concrete child 는 그대로다");
 }
 console.log("결과 11 pass");

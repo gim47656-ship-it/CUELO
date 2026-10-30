@@ -129,6 +129,11 @@ function probabilitiesOf(value: unknown): Record<string, number> | null {
     ? Object.fromEntries(entries) as Record<string, number>
     : null;
 }
+/** Main에게 보이는 recommendations. 위임 조언은 빼고 나머지 Jev 답은 그대로 둔다(원장 delegationAdvice에는 남는다). */
+function withoutDelegation(answers: Record<string, RoutingAnswer>): Record<string, RoutingAnswer> {
+  const { delegation: _delegation, ...visible } = answers;
+  return visible;
+}
 export interface RoutingPlacement {
   action: "dispatch-new" | "instruct-existing" | "retarget-existing" | "main-decision";
   ownerIndex: number | null;
@@ -1045,7 +1050,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
             ownershipOverlaps: overlapsByTask[index]!,
             status: prepared.status,
             error: prepared.error,
-            recommendations: prepared.answers,
+            // 위임 조언은 Main 결과에 싣지 않고 발주 원장(delegationAdvice)에만 남긴다(2026-10-30 사용자 결정).
+            recommendations: prepared.answers === null ? null : withoutDelegation(prepared.answers),
             placement: placementOf(prepared, owners),
             existingOwners: owners,
             normalAllocation: null as NormalAllocation | null,
@@ -1264,6 +1270,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         routingReasonText: reasonText === null ? null : clipped(reasonText, ROUTING_REASON_TEXT_LIMIT),
         workClassConfidence: probabilityOf(answers?.workClass?.confidence),
         workClassProbabilities: probabilitiesOf(answers?.workClass?.probabilities),
+        delegationAdvice: answers?.delegation?.choice
+          ? { choice: answers.delegation.choice, confidence: probabilityOf(answers.delegation.confidence) }
+          : null,
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
         ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
       }]);
@@ -1378,7 +1387,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 위임 적합성·난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 Terra를 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

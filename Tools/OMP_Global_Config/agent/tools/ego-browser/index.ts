@@ -142,7 +142,13 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     throw new Error(`ego_browser: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않아 중단했다(또는 취소됨). ${label}은 남아 있을 수 있다. 같은 공간에서 다시 시도하거나 finish: true로 정리한다.${body ? `\n${body}` : ""}`);
   }
   if (result.code !== 0) {
-    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}`);
+    // 권한 팝업은 브라우저가 띄운 것이라 사용자만 처리할 수 있다(ego-browser skill 「User control and completion」).
+    // 10-30 감사: 같은 스크립트 4회 재전송과 takeOverTaskSpace 우회 3회가 모두 실패했다.
+    // 표시용 body는 앞뒤만 남기므로 가운데 묻힌 문구를 놓치지 않게 원문 두 스트림에서 찾는다.
+    const hint = /permission prompt for .+ has appeared/i.test(`${result.stdout}\n${result.stderr}`)
+      ? "\n권한 팝업은 사용자가 허용·거부해야 한다. 같은 스크립트를 다시 보내거나 우회하지 않는다. `await task.handOff()`로 넘기고 사용자에게 무엇을 눌러야 하는지 알린 뒤, 사용자가 계속하라고 하면 이어 간다."
+      : "";
+    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}`);
   }
   const text = `${label}${finish ? " — 정리됨" : ""}\n${body || "(출력 없음)"}`;
   return { text, spaceName: name, profile, finished: finish, result };

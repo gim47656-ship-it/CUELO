@@ -1302,6 +1302,23 @@ describe("jev-runtime pre-dispatch", () => {
         expect(unlinked.diagnostic).toContain("integratedFrom='r1'");
       });
 
+      test("정산 job 행의 실제 응답 모델을 outcome에 남기고, 관측하지 못하면 필드를 쓰지 않는다", async () => {
+        // 10-28 감사: 실행 중 대체 모델로 넘어간 Maker 5개가 원장에는 발주 모델로만 남았다.
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        await harness.emit("message_start", {
+          type: "message_start",
+          message: { role: "custom", customType: "async-result", attribution: "agent", details: { jobs: [{
+            jobId: "job-alpha", agentId: "agent-alpha", type: "task", status: "completed", durationMs: 1_000, resolvedModel: "test/fallback",
+          }] } },
+        });
+        expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome")).toMatchObject({ ...alpha, status: "completed", resolvedModel: "test/fallback" });
+        const plain = createHarness({ judgeAnswers: NORMAL });
+        await spawn(plain, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
+        await settleWith(plain, "job-alpha", "agent-alpha", "r1");
+        expect(ledgerRows(plain.ledgerPath).find((row) => row.type === "outcome")).not.toHaveProperty("resolvedModel");
+      });
+
       test("원 revision 미관측과 과거 outcome은 unknown으로 두고 재작업 attempt의 revision은 섞지 않는다", async () => {
         const running: Array<Record<string, unknown>> = [];
         const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
@@ -1385,6 +1402,15 @@ describe("jev-runtime pre-dispatch", () => {
           expect([round, await dispatch(harness, `call-beta-${round}`, "Beta", BETA)]).toEqual([round, undefined]);
           await executionEnd(harness, `call-beta-${round}`);
         }
+      });
+
+      test("inline 결과의 실제 응답 모델과 대체 여부를 outcome에 남긴다", async () => {
+        const harness = createHarness({ judgeAnswers: NORMAL });
+        await harness.prepare(GUARDED_TASK, "Alpha");
+        await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }),
+          [singleResult("Alpha", { resolvedModel: "test/fallback", resolvedModelIsFallback: true })]);
+        expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome"))
+          .toMatchObject({ ...alpha, status: "completed", resolvedModel: "test/fallback", resolvedModelIsFallback: true });
       });
 
       test("실패·중단·schema 오류·실행 뒤 단계 실패 child는 running이 아니라 failed로 끝나 owner를 풀고 accepted는 거절된다", async () => {

@@ -141,7 +141,10 @@ export async function executeCrossReview(
     const input: ResolveInput = { reviewId: params.reviewId, resolutions: params.resolutions ?? [], unreviewedAcknowledgements: params.unreviewedAcknowledgements };
     return runResolve(input, deps);
   }
-  throw new Error(`Unknown action ${JSON.stringify(params.action)}; use "review" or "resolve".`);
+  const round = typeof params.action === "string" && ["initial", "delta", "probe"].includes(params.action);
+  throw new Error(round
+    ? `${JSON.stringify(params.action)} is a review round, not an action: call action "review" (initial: files, acceptance, authors; delta: previousReviewId; probe: previousReviewId and probeResults).`
+    : `Unknown action ${JSON.stringify(params.action)}; use "review" or "resolve".`);
 }
 
 /** edit·write 호출이 건드린 파일의 절대 경로. edit는 path 인자와 입력 본문의 `[경로#TAG]` 머리에서 읽는다. */
@@ -160,7 +163,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Cross-family review. Read rule://cross-review-procedure before calling. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses only the configured opposite-family required reviewer (Anthropic-authored code to the OpenAI reviewer, other authors to the Anthropic reviewer). initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused). probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security and unreviewed-change handling follow the referenced rule.",
+    description: "Cross-family review. Read rule://cross-review-procedure before calling. action is only review or resolve. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses only the configured opposite-family required reviewer (Anthropic-authored code to the OpenAI reviewer, other authors to the Anthropic reviewer). A review call is one of three rounds chosen by its fields, never by action: initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused); probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security and unreviewed-change handling follow the referenced rule.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),

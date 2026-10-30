@@ -50,7 +50,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 - 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 라우팅 슬롯을 식별한다.
-  모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 그 모델이 지원하는 가장 낮은 단계부터 가장 높은 단계(Opus는 max)까지에서 고른다. Main의 auto 범위(medium~xhigh)는 그대로다.
+  모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 medium~xhigh 안에서 고른다(2026-10-30 사용자 결정: 일반 작업은 medium~high, 정말 추론이 필요할 때만 xhigh, low와 Opus max는 auto가 고르지 않는다). Main의 auto 범위(medium~xhigh)도 그대로다.
   **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 구현자에게 아직 정해지지 않은 시각·상호작용 설계
   판단이 남는지 본다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
   접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. 코드 판단이 지배적인 혼합 작업도 포함한다.
@@ -103,9 +103,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   이 도구가 정본 criteria의 작업 분류·중심 난제·UI/UX 경계·중복 여부·`ownerTarget`과
   **위임 판단**(`routing.modelSelection.delegationCriteria`)을 한 번에 묻는다. 위임 판단은
   facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 적힌 사실만으로 답하고
-  등급·난이도·모델 강도와 독립이며 결과는 Main 조언이다: 작고 밀접한 조각에서 인계·설명·검수
+  등급·난이도·모델 강도와 독립이다: 작고 밀접한 조각에서 인계·설명·검수
   부담이 절약보다 크거나 Main이 이미 문맥을 가진 경우가 MAIN, 실제 독립 완결·병렬 이득이나 구체적
-  전문성·문맥 격리 이득이 MAKER, 근거가 부족하면 UNKNOWN이다. Main이 결과를 읽고 최종 selector를 결정한다. 같은 브리프에 별도 `judge()`를
+  전문성·문맥 격리 이득이 MAKER, 근거가 부족하면 UNKNOWN이다. 이 답은 `maker_route` 결과에 싣지 않고 발주 원장
+  dispatch 행의 `delegationAdvice`에만 남긴다(2026-10-30 사용자 결정: 68건 중 MAIN 60, 그중 52건이 그대로 발주돼 Main 판단을
+  바꾸지 못했다). 위임 여부는 Main이 AGENTS의 위임 기준으로 정하고 최종 selector를 결정한다. 같은 브리프에 별도 `judge()`를
   호출하지 않는다. `WORK_CLASS`·`PRIMARY_DELIVERABLE`을 브리프에 명시하고, 추천 변경·Jev 불가·
   중복 판정과 사실의 모순만 `TASK_GUARD`의 `ROUTING_REASON` 한 줄로 설명한다. task hook은 준비와
   발주를 session-local `name`과 `TASK_GUARD` 의미 필드(`WORK_CLASS`·`PRIMARY_DELIVERABLE`·
@@ -294,19 +296,10 @@ commit 전에 재생성 명령과 함께 멈추고, `maker_route`·`task`의 Tas
   묻는다. 직접 읽기는 그 경로로 질문을 한 번 한 뒤에만 통과한다(2026-10-04: 한 번 막은 뒤 재read를 통과시키던
   방식에서는 막힌 Maker 대부분이 질문 없이 바로 다시 읽었다). 이미지 입력 불가 모델과 `browser`·`computer`
   스크린샷은 대상이 아니다. 승인이나 권한을 만들지 않는다.
-- **여러 단계 데스크톱 조작(`computer_task`, 로컬 확장 도구, 2026-10-27 사용자 결정):** Main·Maker는 여러 단계 데스크톱 조작 목표를
-  `computer_task`에 넘긴다. 인자는 `goal`(달성할 일)·`target`(만져도 되는 창·앱, 자기가 띄웠거나 사용자가 지정한 것)·`done`
-  (조작 뒤 다시 읽어 확인할 관측 가능한 성공 조건)·선택 `timeoutSec`(기본 600, 10~1800)이다. 도구는 `modelRoles.computer`
-  모델(`:high`는 자식 `--thinking`)로 `$OMP_EXE -p --no-session --mode json --tools=eval,read,bash,windows_control` 자식
-  세션 하나를 돌리고(`computer_task`는 넣지 않고 `CUELO_COMPUTER_TASK_CHILD` 환경 변수로 재귀를 거절한다), 자식의 마지막 줄 JSON
-  `{"done","observed","issues"}`을 읽어 `computer_task: DONE|NOT DONE`, 실제 모델, 벽시계 시간, 도구 호출·오류 수와 함께 돌려준다.
-  `done:false`·시간 초과·중단·마지막 줄 형식 불량·빈 답은 모두 NOT DONE(isError)이고 성공으로 보고하지 않는다. 한 프로세스에서는
-  한 번에 하나만 돌고 뒤 호출은 도착 순서대로 기다리며, 기다리는 중 abort되면 시작하지 않는다. abort·시간 초과는 자식 프로세스
-  그룹을 SIGTERM한 뒤 SIGKILL한다(시간 초과·중단 뒤 데스크톱은 부분 상태일 수 있어 다시 관찰한다). 승인 경계는 `computer`와
-  같다(등록 시 `approval: { tier: "exec", policyKey: "computer" }`라 core가 `tools.approval.computer`를 그대로 적용하므로 권한을
-  넓히지 않는다). 자식은 임시 cwd에서 전역 설정으로 돌아 호출 세션의 프로젝트 설정 덮어쓰기는 자식에게 전달되지 않는다. 한 번의
-  읽기 전용 관찰은 `computer`를 직접 써도 되며, 막는
-  게이트는 없다. DONE은 작업자의 보고이므로 결과가 중요하면 `windows_control list` 등으로 따로 읽어 확인한다.
+- **여러 단계 데스크톱 조작은 Main이 `computer`로 직접 한다(2026-10-30 사용자 결정):** 목표를 별도 작업자 모델에 넘기던
+  `computer_task` 도구는 없앴다. 10-27~10-30에 실행된 18건 중 10건이 `NOT DONE`(중단 2건 포함)이었고 소요는 p50 75초·p90
+  299초(최대 3573초)였으며, 작업자가 멈추면 Main이 같은 일을 다시 했다. Main은 `eval`의 `computer` helper로 조작·대기·확인을 한 셀에 묶고,
+  결과는 AX 트리·`windows_control` 읽기·스크린샷으로 직접 확인한다. 승인 경계는 그대로다.
 
 Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·승인, test 결과, 배포 승인 같은
 결정론 검사가 우선한다. high-risk 분류·승인·최종 수용은 Main authority이고 judgment가 대신하지
