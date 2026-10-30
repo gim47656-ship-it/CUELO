@@ -1,4 +1,4 @@
-<!-- source-fingerprint: c70d8ac79b32ecf -->
+<!-- source-fingerprint: 44d00f8706d18359 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -133,16 +133,4 @@ When you show the user a comparison, trend or breakdown of three or more recorde
 
 ## What to open when
 
-Read the related rule **only once you have actually decided to do that action**. In routine work you finish alone, do not pre-read the rules below. Read `rule://task-guard` only right before actually dispatching a `task`. Read `rule://subagent` right before dispatching and when you review or accept the result of a child you launched (user decision, 2026-10-18).
-
-|Situation|Rule|
-|---|---|
-|SubAgent delegation, parallel runs, review contracts, model role allocation|`rule://subagent`|
-|`task` dispatch, per-request budget, side-quest limits|`rule://task-guard`|
-|Kickoff contract and completion verdict for multi-file/module work|`rule://verdict`|
-|Editing/syncing the OMP global settings mirror|`rule://omp-harness`|
-|Editing agent definitions/SOP (`agent/sop`, `agent/agents`)|`rule://meta-harness`|
-|UI visual design, layout, responsive, design systems|`rule://frontend`|
-|VB.NET·VB6·legacy settings/data encoding|`rule://legacy-encoding`|
-|ChatGPT 6 Pro (`SHION`) consult|`rule://web6-consult`|
-|Deploy confirmation, WSL deploy, CI watching, Windows checkout sync after publishing|`rule://deploy-ops`|
+Read the related rule **only once you have actually decided to do that action**; when to open each rule follows the descriptions in the injected domain-rules list, and in routine work you finish alone, do not pre-read them. Read `rule://task-guard` only right before actually dispatching a `task`. Read `rule://subagent` right before dispatching and when you review or accept the result of a child you launched (user decision, 2026-10-18).

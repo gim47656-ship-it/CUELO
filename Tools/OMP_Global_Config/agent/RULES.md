@@ -71,7 +71,6 @@
   구분해 적용 이유를 짧게 설명한다. routine Skill 사용에는 이런 설명을 반복하지 않는다.
 - 조사할 때는 영향받는 symbol·필요한 파일 구간·기존 artifact와 실제 유효 runtime context 증거를
   먼저 사용한다. 그 증거 없이 context 압축 proxy, 영구 gate 또는 설정 임계값을 추가하거나 바꾸지 않는다.
-  - 컨텍스트 창과 압축 시작점은 별개다. 먼저 실제 모델 ID에 적용된 창과 core의 `compaction.thresholdPercent`·`modelThresholds` 해석을 확인한다. 지원되는 core 설정으로 해결할 수 있으면 새 hook·JEV 호출을 붙이지 않는다. 임계값 조정은 같은 기준의 실제 요청·압축 후 재탐색·보고 비용과 품질 근거로 판단하며, cache read/write·압축 뒤 재작성 비용을 구분하고 없는 값은 unknown으로 남긴다. API 가격 환산을 구독 사용 한도로, 외부 개인 사례의 절감률을 이 하네스의 보장으로 바꾸지 않는다.
   - 압축·재개 뒤에는 기존 결정·보존 계약·미결 작업·검증 명령과 종료 코드·artifact locator를 먼저 이어받고 이미 검증된 범위를 다시 훑지 않는다. 결론에 영향을 주는 과거 지시가 불명확하면 사용 가능한 세션 원문 회수로 좁게 확인한다. 토큰 수만을 이유로 진행 중 작업을 끊거나 재시작 직전 강제 압축을 새 관행으로 만들지 않는다.
 - 알려진 공식 문서 URL은 직접 읽는다. 라이브러리·버전·API·migration 문서를 찾아야 하면 사용자에게
   묻지 않고 기존 Context7 CLI를 선택해도 되지만 모든 작업에 호출하지 않는다. `CTX7_TELEMETRY_DISABLED=1`을
@@ -82,7 +81,7 @@
 - 여러 파일을 훑거나 문서·README·저장소 구조를 조사할 때는 먼저 `skim`에 질문한다. 허용 텍스트 파일
   내용은 `skim` 역할 모델(기본 Codex의 GPT-6.1 Terra)로 전송된다. 실패 시 Hive의 DeepSeek 1017로 한 번 대체한다.
   처음부터 대체 모델을 썼다면 같은 모델로 재시도하지 않는다. 비밀 자료를 대상으로 삼지 말고, 수정할 정확한 줄은 `read`로 확인한다.
-- 새 글 또는 문단 단위 재작성 전에 Main·Maker 모두 `rule://writing-review-procedure`를 읽고 작성 범위별로 `draft`를 적용한다. 코드·설정·규칙·몇 줄의 정확한 수정·대화 답변은 제외다. `HANDOFF.md`·`doc/history` 산문은 draft 대상이지만 slop 게이트에서는 제외다. 사람이 실제로 보는 산출물(슬라이드·HTML·Office·PDF·보고서 csv·UI 문구·매뉴얼)은 공개 여부와 관계없이 `slop_check`를 통과해야 하며 면제는 사용자 명시 지시가 필요하다. 마크다운은 `.slop-gate.json` `visible`이 선언한 것만 대상이다. 실패한 검토를 통과로 바꾸지 않는다. 각 초안은 사실·형식과 해당 언어·UI 슬롭을 검토한 뒤 반영한다.
+- 새 글 또는 문단 단위 재작성 전에 Main·Maker 모두 `rule://writing-review-procedure`를 읽고 그 절차대로 `draft`와 `slop_check`를 적용한다. 코드·설정·규칙·몇 줄의 정확한 수정·대화 답변은 제외다. 사람이 실제로 보는 산출물의 `slop_check` 면제는 사용자 명시 지시가 필요하며, 대상 범위의 정본은 그 규칙과 `slop_check` 도구 설명이다. 실패한 검토를 통과로 바꾸지 않는다.
 - **문서 기본 편집 도구는 LibreOffice다(2026-10-15 사용자 결정).** 기존 Word·Excel·PowerPoint 문서의
   열기·편집·변환은 Writer·Calc·Impress를 우선 사용한다. 새 문서 초안은 위 `draft` 규칙을 따른다.
   MS Office는 사용자가 지정했거나, 매크로·외부 연결·전용 기능·서식 호환성 때문에 필요한 경우에 쓴다.
@@ -107,7 +106,7 @@
   `HANDOFF.md`·`doc/README.md`·`doc/history` 기록을 만들어 같은 커밋에 넣는다.
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
-- 코드 변경이 high-risk이거나 트리거 marker·결정적 10% 표본에 해당하면 `git_finalize` 전에 `cross_review`로 다른 모델 계열(Anthropic 작성분은 OpenAI, OpenAI·그 밖 제공자 작성분은 Anthropic)의 검토를 받고 모든 finding을 근거와 함께 닫는다. 문서·테스트·생성물, 게이트가 파서로 주석·공백만 바꿨다고 증명한 TS/JS 수정, 버전 문자열(semver)만 바꾼 수정, git이 바이너리로 본 이미지·미디어·오피스·글꼴 자산은 제외한다. 타입만 바꾼 수정, 지시 주석 수정, 다른 언어의 주석 수정은 코드로 본다(VB 주석 줄은 marker 판정에서만 빠진다). high-risk 선언은 `crossReviewHighRisk`에 적은 파일에만 걸리고, 표본은 프로젝트·스타일·디자이너 파일을 빼고 바뀐 줄이 많은 코드 파일 5개까지만 요구한다(2026-10-27 사용자 결정). 검토 대상은 바뀐 실행 코드·설정이고, 관련된 바뀌지 않은 호출부·계약은 `inputs`·`references`로 넘긴다. 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
+- 코드 변경을 `git_finalize`할 때 그 게이트가 고르는 파일(high-risk 선언·트리거 marker·결정적 10% 표본, 대상·제외 범위는 `git_finalize` 도구 설명이 정본)은 먼저 `cross_review`로 다른 모델 계열의 검토를 받고 모든 finding을 근거와 함께 닫는다(`rule://cross-review-procedure`). 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.
   **검토 모델은 사용자가 정한 교차검증 경로만 쓴다(2026-10-26 사용자 지적).** 코드·문서·산출물의 검토, 검증, 게이트 판정에 쓰는 모델은 `config.yml` `modelRoles`의 `crossReviewOpenAI`·`crossReviewAnthropic` 슬롯(`cross_review`와 같은 계열 규칙)에서 읽는다. 자문 슬롯은 2026-10-29 사용자 결정으로 없앴다. slop 점검만 전용 슬롯 `slopReviewOpenAI`(Luna 단독)를 쓴다. 새 검토 기능이나 Maker 지시서에 다른 모델(예: Sonnet)을 비용·속도를 이유로 직접 지정하지 않고, 그 경로 밖의 모델로 본 결과를 교차검증·검토 통과라고 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다(2026-10-26: Main이 슬롭 게이트 검토 모델을 Sonnet으로 지시서에 넣었다가 사용자가 바로잡았다).
 - `git_finalize`는 상대경로 canonical target만 받고 한 호출에서 저장소 하나만 마감한다. 경로
   해석과 거부 대상, cwd 밖 별도 Git 저장소 허용, Main의 raw Git fallback 4조건과 사전 확인,

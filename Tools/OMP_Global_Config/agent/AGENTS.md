@@ -130,16 +130,4 @@ Child·다른 모델을 쓰는 턴에 역할·개수·이유를 알리고, 완�
 
 ## 언제 무엇을 여는가
 
-해당 행위를 **실제로 하기로 정했을 때만** 관련 규칙을 읽는다. 혼자 끝내는 routine 작업에서는 아래 규칙을 미리 읽지 않는다. `rule://task-guard`는 `task`를 실제로 발주하기 직전에만 읽는다. `rule://subagent`는 발주 직전과, 띄운 child의 결과를 검수·수용할 때 읽는다(2026-10-18 사용자 결정).
-
-| 상황 | 규칙 |
-|---|---|
-| SubAgent 위임·병렬 실행·검수 계약·모델 역할 배분 | `rule://subagent` |
-| `task` dispatch·요청당 budget·side quest 제한 | `rule://task-guard` |
-| 여러 파일·모듈 작업의 착수 계약·완료 판정 | `rule://verdict` |
-| OMP 전역 설정 미러 수정·동기화 | `rule://omp-harness` |
-| Agent 정의·SOP(`agent/sop`, `agent/agents`) 수정 | `rule://meta-harness` |
-| UI 시각 디자인·레이아웃·반응형·디자인 시스템 | `rule://frontend` |
-| VB.NET·VB6·레거시 설정/데이터 인코딩 | `rule://legacy-encoding` |
-| ChatGPT 6 Pro(`SHION`) 상담 | `rule://web6-consult` |
-| 배포 확인·WSL 배포·CI 감시·게시 뒤 Windows 사본 반영 | `rule://deploy-ops` |
+해당 행위를 **실제로 하기로 정했을 때만** 관련 규칙을 읽는다. 규칙별 여는 시점은 시스템이 함께 싣는 규칙 목록(domain rules)의 설명을 따르며, 혼자 끝내는 routine 작업에서는 미리 읽지 않는다. `rule://task-guard`는 `task`를 실제로 발주하기 직전에만 읽는다. `rule://subagent`는 발주 직전과, 띄운 child의 결과를 검수·수용할 때 읽는다(2026-10-18 사용자 결정).
