@@ -1,9 +1,10 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, watch } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isSummonCall, taskGuardLockOf } from "./task-guard";
+import { setCharacterIntentJudgeResolver } from "../character-voice";
 import {
   clearPreparedTaskSession,
   storePreparedTaskBatch,
@@ -25,6 +26,24 @@ afterAll(async () => {
   else process.env.PI_CODING_AGENT_DIR = realAgentDir;
   await rm(isolatedAgentDir, { recursive: true, force: true });
 });
+
+// 호출 의도 확인은 JEV를 부른다. 기존 회귀는 판정기가 없는 경로(정규식 결과 그대로)로 결정적으로 돈다.
+beforeEach(() => setCharacterIntentJudgeResolver(async () => { throw new Error("judge unavailable in tests"); }));
+afterAll(() => setCharacterIntentJudgeResolver(undefined));
+
+/** 테스트가 정한 시점에 답하는 가짜 JEV. release(choice)를 부르기 전까지 판정이 끝나지 않는다. */
+function gatedIntentJudge() {
+  const gate = Promise.withResolvers<string>();
+  let calls = 0;
+  setCharacterIntentJudgeResolver(async () => ({
+    judge: async () => {
+      calls += 1;
+      const choice = await gate.promise;
+      return { answers: { intent: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
+    },
+  }));
+  return { release: gate.resolve, calls: () => calls };
+}
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -342,6 +361,94 @@ describe("command guard runtime gates", () => {
         input: { path: "file.ts", i: "Reading file" },
       })).toBeUndefined();
     }
+  });
+
+  // core의 agent `#emit`은 steering message_start listener promise를 기다리지 않는다. 그래서 tool_call이 호출 판정을 기다린다.
+  test("steering 호출 판정이 끝나기 전 tool_call은 판정을 기다리고, 캐릭터 이야기면 막지 않는다", async () => {
+    const text = "어제 히카리 호출했을 때 왜 실패했어?";
+    const judge = gatedIntentJudge();
+    const harness = createGuardHarness();
+    await harness.emit("message_start", { type: "message_start", message: { role: "user", content: text, steering: true } });
+    let settled = false;
+    const call = harness.emit("tool_call", {
+      type: "tool_call",
+      toolName: "read",
+      toolCallId: "read-while-judging",
+      input: { path: "file.ts", i: "Reading file" },
+    }).finally(() => { settled = true; });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(settled).toBe(false);
+    judge.release("about-character");
+    expect(await call).toBeUndefined();
+    expect(judge.calls()).toBe(1);
+  });
+
+  test("JEV가 지금 부르는 요청이라고 하면 steering·input 호출 경계를 그대로 지킨다", async () => {
+    for (const event of ["message_start", "input"] as const) {
+      const judge = gatedIntentJudge();
+      judge.release("summon-now");
+      const harness = createGuardHarness();
+      const text = "히카리 불러서 이 코드 검증시켜";
+      await harness.emit(event, event === "input"
+        ? { type: "input", text, source: "rpc" }
+        : { type: "message_start", message: { role: "user", content: text, steering: true } });
+      expect(await harness.emit("tool_call", {
+        type: "tool_call",
+        toolName: "read",
+        toolCallId: `read-${event}`,
+        input: { path: "file.ts", i: "Reading file" },
+      })).toMatchObject({ block: true });
+    }
+  });
+
+  test("input 판정 중 새 입력이 오면 늦게 끝난 옛 판정이 새 호출을 지우지 않는다", async () => {
+    const old = gatedIntentJudge();
+    const harness = createGuardHarness();
+    const first = harness.emit("input", { type: "input", text: "어제 히카리 호출했을 때 왜 실패했어?", source: "rpc" });
+    // 다음 입력은 판정기가 없어 정규식 결과(호출)를 그대로 쓴다.
+    setCharacterIntentJudgeResolver(async () => { throw new Error("judge unavailable in tests"); });
+    await harness.emit("input", { type: "input", text: "린 호출해서 이거 같이 봐줘", source: "rpc" });
+    old.release("about-character");
+    await first;
+    expect(await harness.emit("tool_call", {
+      type: "tool_call",
+      toolName: "read",
+      toolCallId: "read-after-stale",
+      input: { path: "file.ts", i: "Reading file" },
+    })).toMatchObject({ block: true });
+  });
+
+  // cross-review R1-OAI-2: tool_call이 기다리는 사이 새 steering이 판정을 걸면 그 판정까지 기다린다.
+  test("기다리는 동안 새 steering의 판정이 걸리면 그 판정이 끝난 뒤 경계를 읽는다", async () => {
+    const gates = new Map<string, PromiseWithResolvers<string>>();
+    const gateFor = (excerpt: string) => {
+      const gate = gates.get(excerpt) ?? Promise.withResolvers<string>();
+      gates.set(excerpt, gate);
+      return gate;
+    };
+    setCharacterIntentJudgeResolver(async () => ({
+      judge: async (request: { state: { excerpt: string } }) => {
+        const choice = await gateFor(request.state.excerpt).promise;
+        return { answers: { intent: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
+      },
+    }));
+    const first = "히카리 불러서 이 코드 검증시켜";
+    const second = "어제 히카리 호출했을 때 왜 실패했어?";
+    const harness = createGuardHarness();
+    await harness.emit("message_start", { type: "message_start", message: { role: "user", content: first, steering: true } });
+    let settled = false;
+    const call = harness.emit("tool_call", {
+      type: "tool_call",
+      toolName: "read",
+      toolCallId: "read-across-steering",
+      input: { path: "file.ts", i: "Reading file" },
+    }).finally(() => { settled = true; });
+    await harness.emit("message_start", { type: "message_start", message: { role: "user", content: second, steering: true } });
+    gateFor(first).resolve("summon-now");
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(settled).toBe(false);
+    gateFor(second).resolve("about-character");
+    expect(await call).toBeUndefined();
   });
 
   test("explicit multi-character summon requires exact markers and covers every pending alias", async () => {

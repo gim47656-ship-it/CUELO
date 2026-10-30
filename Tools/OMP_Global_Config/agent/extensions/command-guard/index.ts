@@ -3,10 +3,11 @@ import { appendFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import {
   characterTarget,
+  confirmCharacterIntent,
   malformedSummonMarkerReason,
   parseCharacterSummonMarker,
   parseCharacterIntent,
@@ -853,6 +854,28 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
   const summonCalls = new Map<string, CharacterAlias[]>();
   let pendingSummons: CharacterAlias[] = [];
   let ownershipGeneration = 0;
+  // 사용자 문장의 호출 의도는 정규식 후보를 JEV로 확인한다(character-voice confirmCharacterIntent; 같은 문장은 한 번만 판정).
+  // 확인 전과 판정 실패 때는 정규식 결과 그대로다. steering의 message_start는 core가 기다리지 않으므로
+  // (pi-agent-core agent.ts `#emit`이 listener promise를 기다리지 않는다) tool_call이 판정을 먼저 기다린 뒤 pendingSummons를 읽는다.
+  // 판정은 confirmCharacterIntent의 제한 시간(1.5초) 안에 끝난다.
+  let summonGeneration = 0;
+  let summonDecision: Promise<void> | undefined;
+  const decideSummons = (text: string, ctx: ExtensionContext, regexAliases: CharacterAlias[]): Promise<void> => {
+    const generation = ++summonGeneration;
+    pendingSummons = regexAliases;
+    if (regexAliases.length === 0) {
+      summonDecision = undefined;
+      return Promise.resolve();
+    }
+    const decision = confirmCharacterIntent(text, ctx).then(
+      (confirmed) => {
+        if (generation === summonGeneration && confirmed?.kind !== "summon") pendingSummons = [];
+      },
+      () => undefined,
+    );
+    summonDecision = decision;
+    return decision;
+  };
   const ownershipOutsideLog = deps.ownershipOutsideLog ?? OWNERSHIP_OUTSIDE_LOG_PATH;
 
   // OwnerWriteGuard: 이 세션이 띄운 공유 작업공간 Maker의 쓰기 소유. child 세션은 자기 parentId로 이 view를 찾는다.
@@ -1059,7 +1082,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
 
   // 실제 사용자 입력 하나를 budget 단위로 본다. extension 내부 주입은 같은 요청의
   // 연속이므로 reset하지 않는다. CUELO은 RPC 입력이므로 interactive와 rpc를 모두 포함한다.
-  pi.on("input", (event, ctx) => {
+  pi.on("input", async (event, ctx) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
     bindSession(ctx);
     ownershipGeneration += 1;
@@ -1067,9 +1090,16 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     noteUserRequestText(taskGuard, event.text ?? "");
     resetOwnershipState(ownership);
     summonCalls.clear();
+    // 다른 input handler가 이미 확인해 routing prompt로 바꾼 문장은 그 지시를 그대로 쓴다.
+    const directives = parseCharacterSummonDirectives(event.text);
+    if (directives.length > 0) {
+      summonGeneration += 1;
+      summonDecision = undefined;
+      pendingSummons = directives;
+      return;
+    }
     const intent = parseCharacterIntent(event.text);
-    pendingSummons =
-      intent?.kind === "summon" ? intent.aliases : parseCharacterSummonDirectives(event.text);
+    await decideSummons(event.text, ctx, intent?.kind === "summon" ? intent.aliases : []);
   });
 
   // 사람이 실행 중인 턴에 끼워 넣은 redirect는 모델이 위조할 수 없다. 이때는 deliverable lock만
@@ -1127,12 +1157,16 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
         ? message.content
         : "";
     const intent = parseCharacterIntent(messageText);
-    pendingSummons = intent?.kind === "summon" ? intent.aliases : [];
+    void decideSummons(messageText, ctx, intent?.kind === "summon" ? intent.aliases : []);
     noteUserRedirect(taskGuard);
     noteUserRequestText(taskGuard, messageText);
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    // 기다리는 동안 새 steering이 판정을 바꿔 걸 수 있으므로, 마지막으로 건 판정까지 끝난 뒤에 pendingSummons를 읽는다.
+    for (let decision = summonDecision; decision; decision = summonDecision === decision ? undefined : summonDecision) {
+      await decision;
+    }
     if (isToolCallEventType<"task", TaskCallInput>("task", event)) {
       let canonicalInput: TaskCallInput;
       try {

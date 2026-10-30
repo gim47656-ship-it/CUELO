@@ -782,6 +782,49 @@
             "all-unrelated-or-unknown-judge-failure-missing-credentials-or-the-eight-second-bounded-advisory-latency-timeout-sends-nothing-and-the-prompt-proceeds",
             "a-genuine-interactive-or-rpc-input-session-change-or-shutdown-aborts-the-pending-judgment-and-discards-late-results-only-completed-judgments-are-deduped-by-the-full-judged-input-so-an-aborted-or-timed-out-identical-input-is-retried"
           ]
+        },
+        "character-summon-intent": {
+          "owner": "the-session-receiving-the-input",
+          "when": "a-genuine-interactive-or-rpc-input-or-genuine-user-steering-message-whose-text-the-deterministic-character-intent-parser-already-matched-as-a-summon-or-switch-at-most-once-per-identical-text-shared-by-character-voice-and-command-guard-never-without-a-parser-match",
+          "questions": [
+            "is-the-user-asking-right-now-to-summon-or-switch-to-the-named-character-summon-now-or-switch-now-about-character-pasted-transcript-or-unknown"
+          ],
+          "decisionMapping": [
+            "input-is-the-parser-candidates-and-a-600-character-excerpt-with-code-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+            "only-about-character-or-pasted-transcript-chosen-at-probability-0.5-or-more-drops-the-routing-prompt-the-switch-and-the-pending-summon-boundary-for-that-text-and-every-other-answer-keeps-the-parser-result",
+            "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-parser-result-unchanged-and-never-falls-back-to-a-general-model",
+            "core-does-not-await-steering-message_start-listeners-so-command-guard-awaits-the-pending-judgment-at-the-next-tool_call-before-reading-pending-summons-and-a-newer-input-or-steering-message-discards-a-late-result",
+            "exact-character-summon-directives-and-markers-stay-deterministic-and-the-judgment-never-adds-a-summon-the-parser-did-not-find",
+            "the-judgment-is-memoised-in-process-for-60-seconds-by-text-and-never-written-to-disk-or-logs"
+          ]
+        },
+        "report-chart-applicability": {
+          "owner": "main",
+          "when": "a-main-assistant-message_end-that-the-deterministic-report-chart-candidate-already-selected-for-a-reminder-or-an-ask-hold-at-most-once-per-user-input",
+          "questions": [
+            "do-three-or-more-recorded-same-kind-values-in-the-reply-get-compared-broken-down-or-trended-chart-needed-not-needed-or-unknown"
+          ],
+          "decisionMapping": [
+            "input-is-a-1500-character-reply-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+            "only-not-needed-chosen-at-probability-0.5-or-more-sends-no-reminder-and-releases-the-held-ask-and-every-other-answer-keeps-the-existing-reminder-or-ask-hold",
+            "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-reminder-or-ask-hold",
+            "the-message_end-handler-never-waits-for-the-judgment-only-the-held-ask-tool_call-awaits-it-within-the-timeout-and-a-new-user-input-or-session-start-discards-a-late-reminder-or-held-ask-result",
+            "the-judgment-only-removes-reminders-the-deterministic-candidate-raised-and-never-changes-the-2026-10-19-chart-rule-text"
+          ]
+        },
+        "external-advice-source": {
+          "owner": "the-session-receiving-the-input",
+          "when": "a-genuine-interactive-or-rpc-input-that-the-deterministic-external-advice-detector-already-matched-judged-at-input-and-awaited-in-before_agent_start-of-that-prompt",
+          "questions": [
+            "do-the-pasted-claims-come-from-outside-advice-or-from-this-tools-own-report-or-status-text-external-advice-internal-report-or-status-or-unknown"
+          ],
+          "decisionMapping": [
+            "input-is-a-1000-character-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+            "only-internal-report-or-status-chosen-at-probability-0.5-or-more-adds-no-verification-message-and-every-other-answer-adds-the-existing-one",
+            "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-verification-message",
+            "a-newer-input-or-genuine-user-steering-message-discards-the-pending-judgment-so-before_agent_start-never-applies-a-stale-result",
+            "2026-10-31-user-instruction-reinstates-the-judgment-removed-on-2026-10-08-because-the-judge-now-answers-in-about-0.2-seconds-instead-of-the-2.5-second-wait-that-motivated-the-removal"
+          ]
         }
       },
       "observation": {

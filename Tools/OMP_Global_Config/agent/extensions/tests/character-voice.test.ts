@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,6 +35,7 @@ import characterVoice, {
   malformedSummonMarkerReason,
   renderCharacterVoice,
   rewriteTaskInputForCharacterSummon,
+  setCharacterIntentJudgeResolver,
 } from "../character-voice";
 import type { CharacterAlias } from "../character-voice";
 
@@ -48,6 +49,22 @@ afterAll(() => {
   else process.env.PI_CODING_AGENT_DIR = realAgentDir;
   rmSync(isolatedAgentDir, { recursive: true, force: true });
 });
+
+// 호출·교체 의도 확인은 JEV를 부른다. 기존 회귀는 판정기가 없는 경로(정규식 결과 그대로)로 결정적으로 돌고,
+// JEV 판정을 보는 테스트만 가짜 판정기를 따로 넣는다.
+const noJudge = async () => { throw new Error("judge unavailable in tests"); };
+beforeEach(() => setCharacterIntentJudgeResolver(noJudge));
+afterAll(() => setCharacterIntentJudgeResolver(undefined));
+
+/** 정해진 답을 돌려주는 가짜 JEV. 받은 state를 judged에 남긴다. */
+function fakeIntentJudge(choice: string, judged: unknown[] = []) {
+  return async () => ({
+    judge: async (request: { state: unknown }) => {
+      judged.push(request.state);
+      return { answers: { intent: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
+    },
+  });
+}
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -657,6 +674,118 @@ describe("character voice identity", () => {
       message: { role: "user", content: text, steering: true },
     });
     expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "pin:13:exact:MIO(미오)"]);
+    expect(harness.sent).toEqual([]);
+  });
+
+  // 2026-10-31 집 PC 7.23일 실측: 정규식이 호출로 본 문장이 붙여 넣은 다른 세션 답과 호출 코드 질문이었다.
+  const NOT_SUMMONS = [
+    "이사나와 히카리는 작업자가 아니라 검증자로 배치할게요. 히카리(제미나이)는 작업자 후보에 없어서 다른 경로로 불러야 하니, 먼저 이 PC에서 역할별로 묶인 모델을 확인해볼게요.",
+    "어제 히카리 호출했을 때 왜 실패했어?",
+    "이사나 호출 경로 코드 어디 있어?",
+  ];
+  const SUMMONS = ["히카리 불러서 이 코드 검증시켜", "린 호출해서 이거 같이 봐줘"];
+
+  test("JEV가 캐릭터 이야기나 붙여 넣은 글이라고 하면 input과 steering 모두 호출 지시를 넣지 않는다", async () => {
+    for (const text of NOT_SUMMONS) {
+      expect(parseCharacterIntent(text)?.kind).toBe("summon");
+      const judged: unknown[] = [];
+      setCharacterIntentJudgeResolver(fakeIntentJudge(text.length > 40 ? "pasted-transcript" : "about-character", judged));
+      const harness = createRuntimeHarness();
+      expect(await harness.emit("input", { type: "input", source: "rpc", text })).toBeUndefined();
+      await harness.emit("message_start", { type: "message_start", message: { role: "user", content: text, steering: true } });
+      expect(harness.sent).toEqual([]);
+      // input과 steering이 같은 문장을 받아도 판정은 한 번이다.
+      expect(judged).toHaveLength(1);
+    }
+  });
+
+  test("JEV가 지금 부르는 요청이라고 하거나 판정이 실패·unknown이면 지금처럼 호출 지시를 넣는다", async () => {
+    for (const resolver of [fakeIntentJudge("summon-now"), noJudge, fakeIntentJudge("unknown")]) {
+      for (const text of SUMMONS) {
+        setCharacterIntentJudgeResolver(resolver);
+        const harness = createRuntimeHarness();
+        const result = await harness.emit("input", { type: "input", source: "rpc", text }) as { text?: string } | undefined;
+        expect(result?.text).toContain(renderCharacterSummonRouting((parseCharacterIntent(text) as { aliases: CharacterAlias[] }).aliases));
+      }
+    }
+  });
+
+  test("판정기에는 코드·경로·주소를 가린 앞부분만 보내고 비밀처럼 보이는 문장은 보내지 않는다", async () => {
+    const judged: unknown[] = [];
+    setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", judged));
+    const harness = createRuntimeHarness();
+    await harness.emit("input", { type: "input", source: "rpc", text: `히카리 불러서 \`src/a.ts\` 와 https://example.com/x 봐줘 ${"가".repeat(900)}` });
+    const state = judged[0] as { excerpt: string };
+    expect(state.excerpt).not.toContain("src/a.ts");
+    expect(state.excerpt).not.toContain("example.com");
+    expect(state.excerpt.length).toBeLessThanOrEqual(600);
+    // cross-review R1-OAI-3: UNC 경로와 따옴표 안 경로도 가린다.
+    const uncJudged: unknown[] = [];
+    setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", uncJudged));
+    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: '히카리 불러서 \\\\server\\share\\report.txt 와 "/repo/alice/Client Acme acquisition.txt", "reports/Beta deal.txt", "/repo/bob/O\'Brien plan.txt", "/repo/bob/Acme \\"Project Cedar\\" plan.txt" 봐줘' });
+    const uncExcerpt = (uncJudged[0] as { excerpt: string }).excerpt;
+    expect(uncExcerpt).not.toContain("server");
+    expect(uncExcerpt).not.toContain("alice");
+    expect(uncExcerpt).not.toContain("Acme");
+    // cross-review R3-OAI-1: 따옴표 안 상대 경로와 아포스트로피가 든 경로도 끝까지 가린다.
+    expect(uncExcerpt).not.toContain("Beta");
+    expect(uncExcerpt).not.toContain("Brien");
+    // cross-review R4-OAI-1: 따옴표 안의 escape된 같은 따옴표에서 끊지 않는다.
+    expect(uncExcerpt).not.toContain("Cedar");
+    // 2차 체인(xr-20261030211626-f458f4) R1-OAI-4: ~~~ 펜스와 여러 backtick literal도 가린다.
+    const fenceJudged: unknown[] = [];
+    setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", fenceJudged));
+    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: "히카리 불러서 봐줘\n~~~\nprivate-fence-body\n~~~\n그리고 ``a `b` private-literal`` 와 `private-span\nsecond-line` 와 `alpha `` private-beta` 도" });
+    const fenceExcerpt = (fenceJudged[0] as { excerpt: string }).excerpt;
+    expect(fenceExcerpt).not.toContain("private-fence-body");
+    expect(fenceExcerpt).not.toContain("private-literal");
+    // 2차 체인 R2-OAI-3: 빈 줄을 넘지 않는 여러 줄 code span도 가린다.
+    expect(fenceExcerpt).not.toContain("private-span");
+    expect(fenceExcerpt).not.toContain("second-line");
+    // 2차 체인 R3-OAI-1: 더 긴 backtick 덩어리의 일부에서 span을 끝내지 않는다.
+    expect(fenceExcerpt).not.toContain("private-beta");
+
+    const secretJudged: unknown[] = [];
+    setCharacterIntentJudgeResolver(fakeIntentJudge("about-character", secretJudged));
+    const secret = createRuntimeHarness();
+    const result = await secret.emit("input", { type: "input", source: "rpc", text: "히카리 불러서 이 token 값 확인해" }) as { text?: string } | undefined;
+    expect(secretJudged).toHaveLength(0);
+    expect(result?.text).toContain("HIKARI");
+  });
+
+  // cross-review R1-OAI-4·R2-OAI-1: choice가 빠지거나 질문에 없는 답은 판정 실패와 같다.
+  // 2차 체인 R1-OAI-2: 지우는 label(about-character·pasted-transcript)을 고르고 0.5 이상일 때만 지운다.
+  test("choice가 빠지거나 질문에 없거나 확신이 낮은 판정 답이면 파서 결과를 그대로 쓴다", async () => {
+    for (const intent of [
+      { type: "choice" },
+      { type: "choice", choice: "" },
+      { type: "choice", choice: "constructor" },
+      { type: "choice", choice: "summon-now", probabilities: { "summon-now": 0.4, "about-character": 0.35, "pasted-transcript": 0.25 } },
+      { type: "choice", choice: "about-character", probabilities: { "about-character": 0.45, "summon-now": 0.3, "pasted-transcript": 0.25 } },
+      // 2차 체인 R2-OAI-2: 확률이 없거나 NaN이면 확신을 지어내지 않는다.
+      { type: "choice", choice: "about-character" },
+      { type: "choice", choice: "pasted-transcript", probabilities: { "pasted-transcript": Number.NaN } },
+    ]) {
+      setCharacterIntentJudgeResolver(async () => ({ judge: async () => ({ answers: { intent } }) as never }));
+      const result = await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: SUMMONS[0]! }) as { text?: string } | undefined;
+      expect(result?.text).toContain("HIKARI");
+    }
+  });
+
+  // cross-review R1-OAI-1: 판정을 기다리는 동안 새 steering이 오면 옛 문장의 호출 지시를 보내지 않는다.
+  test("판정 중 새 steering이 오면 옛 steering의 호출 지시를 버린다", async () => {
+    const gate = Promise.withResolvers<string>();
+    setCharacterIntentJudgeResolver(async () => ({
+      judge: async () => {
+        const choice = await gate.promise;
+        return { answers: { intent: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
+      },
+    }));
+    const harness = createRuntimeHarness();
+    const old = harness.emit("message_start", { type: "message_start", message: { role: "user", content: SUMMONS[0], steering: true } });
+    await harness.emit("message_start", { type: "message_start", message: { role: "user", content: "아니 부르지 말고 그냥 계속해", steering: true } });
+    gate.resolve("summon-now");
+    await old;
     expect(harness.sent).toEqual([]);
   });
 

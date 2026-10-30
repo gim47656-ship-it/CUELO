@@ -410,6 +410,39 @@ const requiredPolicyMembers = [
     "all-unrelated-or-unknown-judge-failure-missing-credentials-or-the-eight-second-bounded-advisory-latency-timeout-sends-nothing-and-the-prompt-proceeds",
     "a-genuine-interactive-or-rpc-input-session-change-or-shutdown-aborts-the-pending-judgment-and-discards-late-results-only-completed-judgments-are-deduped-by-the-full-judged-input-so-an-aborted-or-timed-out-identical-input-is-retried",
   ]],
+  // 2026-10-31 사용자 지시("판단이 필요한 부분은 JEV를 적극적으로"): 정규식 후보를 JEV로 확인하는 세 자리.
+  // 판정 실패는 지금 동작이고 일반 모델로 넘기지 않는다는 문구가 빠지면 판정기 장애가 호출·알림 동작을 바꾼다.
+  ["routing.typedJudgmentRouting.placements.character-summon-intent.questions", [
+    "is-the-user-asking-right-now-to-summon-or-switch-to-the-named-character-summon-now-or-switch-now-about-character-pasted-transcript-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.character-summon-intent.decisionMapping", [
+    "input-is-the-parser-candidates-and-a-600-character-excerpt-with-code-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "only-about-character-or-pasted-transcript-chosen-at-probability-0.5-or-more-drops-the-routing-prompt-the-switch-and-the-pending-summon-boundary-for-that-text-and-every-other-answer-keeps-the-parser-result",
+    "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-parser-result-unchanged-and-never-falls-back-to-a-general-model",
+    "core-does-not-await-steering-message_start-listeners-so-command-guard-awaits-the-pending-judgment-at-the-next-tool_call-before-reading-pending-summons-and-a-newer-input-or-steering-message-discards-a-late-result",
+    "exact-character-summon-directives-and-markers-stay-deterministic-and-the-judgment-never-adds-a-summon-the-parser-did-not-find",
+    "the-judgment-is-memoised-in-process-for-60-seconds-by-text-and-never-written-to-disk-or-logs",
+  ]],
+  ["routing.typedJudgmentRouting.placements.report-chart-applicability.questions", [
+    "do-three-or-more-recorded-same-kind-values-in-the-reply-get-compared-broken-down-or-trended-chart-needed-not-needed-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.report-chart-applicability.decisionMapping", [
+    "input-is-a-1500-character-reply-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "only-not-needed-chosen-at-probability-0.5-or-more-sends-no-reminder-and-releases-the-held-ask-and-every-other-answer-keeps-the-existing-reminder-or-ask-hold",
+    "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-reminder-or-ask-hold",
+    "the-message_end-handler-never-waits-for-the-judgment-only-the-held-ask-tool_call-awaits-it-within-the-timeout-and-a-new-user-input-or-session-start-discards-a-late-reminder-or-held-ask-result",
+    "the-judgment-only-removes-reminders-the-deterministic-candidate-raised-and-never-changes-the-2026-10-19-chart-rule-text",
+  ]],
+  ["routing.typedJudgmentRouting.placements.external-advice-source.questions", [
+    "do-the-pasted-claims-come-from-outside-advice-or-from-this-tools-own-report-or-status-text-external-advice-internal-report-or-status-or-unknown",
+  ]],
+  ["routing.typedJudgmentRouting.placements.external-advice-source.decisionMapping", [
+    "input-is-a-1000-character-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
+    "only-internal-report-or-status-chosen-at-probability-0.5-or-more-adds-no-verification-message-and-every-other-answer-adds-the-existing-one",
+    "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-verification-message",
+    "a-newer-input-or-genuine-user-steering-message-discards-the-pending-judgment-so-before_agent_start-never-applies-a-stale-result",
+    "2026-10-31-user-instruction-reinstates-the-judgment-removed-on-2026-10-08-because-the-judge-now-answers-in-about-0.2-seconds-instead-of-the-2.5-second-wait-that-motivated-the-removal",
+  ]],
   // 실장비 인계 한 통에 들어가야 하는 것. 이 항목이 줄면 "무엇을 켜고 무엇이 정상이며 언제 멈추는가"가
   // 빠진 인계가 되어, 사용자가 장비 앞에서 판단할 근거를 잃는다.
   ["implementationOwnership.writerValidation.deviceVerificationHandoff.packet", [
@@ -716,7 +749,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability", "external-advice-source"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1279,7 +1312,10 @@ if (policy !== null) {
       typedJudgmentPlacements["turn-end-unanswered-question"]?.owner === "main" &&
       typedJudgmentPlacements["turn-end-solo-stop"]?.owner === "main" &&
       typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
-      typedJudgmentPlacements["pre-turn-memory-application"]?.owner === "the-session-receiving-the-recall",
+      typedJudgmentPlacements["pre-turn-memory-application"]?.owner === "the-session-receiving-the-recall" &&
+      typedJudgmentPlacements["character-summon-intent"]?.owner === "the-session-receiving-the-input" &&
+      typedJudgmentPlacements["report-chart-applicability"]?.owner === "main" &&
+      typedJudgmentPlacements["external-advice-source"]?.owner === "the-session-receiving-the-input",
     "typed judgment placement의 실행 주체가 다르다.",
   );
   check(

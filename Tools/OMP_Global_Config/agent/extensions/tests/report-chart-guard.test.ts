@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import reportChartGuard, { chartCandidate, REMINDER_TYPE } from "../report-chart-guard";
+import { chartCandidate, createReportChartGuard, REMINDER_TYPE } from "../report-chart-guard";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 type Sent = { customType: string; content: string; display: boolean };
@@ -9,22 +9,53 @@ type Sent = { customType: string; content: string; display: boolean };
 const MISSED = "실측 결과 Sonnet 조각은 20.8분, 딥시크 두 조각은 각각 34.6분·42.0분 걸렸지만, Main이 04:48~05:01 사이 반복 대기한 건 사실이에요.";
 const CHARTED = `${MISSED}\n\n\`\`\`mermaid\nxychart-beta\n  bar [20.8, 34.6, 42.0]\n\`\`\``;
 
-function harness(kind: "main" | "sub" = "main") {
+/** choice: 가짜 JEV 판정. "fail"은 판정기 실패, "hang"은 응답 없음(제한 시간 경로). */
+function harness(kind: "main" | "sub" = "main", choice = "chart-needed") {
   const handlers: Record<string, Handler[]> = {};
   const sent: Sent[] = [];
   const deliveries: unknown[] = [];
-  reportChartGuard({
+  const judged: unknown[] = [];
+  createReportChartGuard({
+    judgeTimeoutMs: 50,
+    resolveJudge: async () => {
+      if (choice === "fail") throw new Error("no judge");
+      return {
+        judge: async (request, options) => {
+          judged.push(request.state);
+          if (choice === "hang") {
+            const { promise, reject } = Promise.withResolvers<never>();
+            options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+            await promise;
+          }
+          // "malformed": choice가 빠진 답(cross-review R1-OAI-4).
+          if (choice === "malformed") return { answers: { chart: { type: "choice" } } } as never;
+          // 2차 체인(xr-20261030211626-f458f4) R1-OAI-2: 어느 label도 0.5에 못 미치는 분포와 확신이 낮은 not-needed.
+          if (choice === "split") return { answers: { chart: { type: "choice", choice: "chart-needed", probabilities: { "chart-needed": 0.3, "not-needed": 0.4, unknown: 0.3 } } } } as never;
+          if (choice === "weak-not-needed") return { answers: { chart: { type: "choice", choice: "not-needed", probabilities: { "not-needed": 0.45, "chart-needed": 0.35, unknown: 0.2 } } } } as never;
+          // 2차 체인 R2-OAI-2: 확률 없는 not-needed와 NaN 확률.
+          if (choice === "bare-not-needed") return { answers: { chart: { type: "choice", choice: "not-needed" } } } as never;
+          if (choice === "nan-not-needed") return { answers: { chart: { type: "choice", choice: "not-needed", probabilities: { "not-needed": Number.NaN } } } } as never;
+          return { answers: { chart: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
+        },
+      };
+    },
+  })({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: Sent, options: unknown) => { sent.push(message); deliveries.push(options); },
   } as unknown as ExtensionAPI);
   const ctx = { agent: { kind } };
   const emit = (name: string, event: Record<string, unknown>) => handlers[name]?.map((h) => h(event, ctx)) ?? [];
+  // 판정은 message_end를 붙잡지 않고 뒤에서 끝난다. 가짜 판정은 바로 끝나므로 microtask를 비우면 알림 여부가 정해진다.
+  // "hang"의 제한 시간 경로는 ask 보류(tool_call이 판정 promise를 기다림)로만 본다.
+  const settle = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
   return {
-    sent, deliveries,
+    sent, deliveries, judged,
     user: (text: string, extra: Record<string, unknown> = {}) => emit("message_start", { message: { role: "user", content: text, ...extra } }),
-    assistant: (text: string, tools: string[] = []) =>
-      emit("message_end", { message: { role: "assistant", content: [{ type: "text", text }, ...tools.map((name) => ({ type: "toolCall", name }))] } }),
-    toolCall: (toolName: string) => emit("tool_call", { toolName, toolCallId: "t1", input: {} })[0],
+    assistant: async (text: string, tools: string[] = []) => {
+      emit("message_end", { message: { role: "assistant", content: [{ type: "text", text }, ...tools.map((name) => ({ type: "toolCall", name }))] } });
+      await settle();
+    },
+    toolCall: async (toolName: string) => await emit("tool_call", { toolName, toolCallId: "t1", input: {} })[0],
   };
 }
 
@@ -138,99 +169,151 @@ describe("chartCandidate", () => {
 });
 
 describe("report chart guard", () => {
-  test("답이 끝난 응답에서 걸리면 바로 이어 가는 숨김 알림을 한 번 보낸다", () => {
+  test("답이 끝난 응답에서 걸리면 바로 이어 가는 숨김 알림을 한 번 보낸다", async () => {
     const h = harness();
     h.user("월타임이 길어서 좀 문제이긴한데.");
-    h.assistant(MISSED);
+    await h.assistant(MISSED);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]).toMatchObject({ customType: REMINDER_TYPE, display: false });
     expect(h.sent[0]!.content).toContain("20.8분, 34.6분, 42.0분");
     expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn", triggerTurn: true });
   });
-  test("도구를 부르는 중간 보고면 다음 단계 경계로 전달한다", () => {
+  test("도구를 부르는 중간 보고면 다음 단계 경계로 전달한다", async () => {
     const h = harness();
-    h.assistant(MISSED, ["bash"]);
+    await h.assistant(MISSED, ["bash"]);
     expect(h.deliveries[0]).toEqual({ deliverAs: "aside" });
   });
-  test("같은 응답의 ask는 한 번 막고, 다시 보낸 ask는 통과시킨다", () => {
+  test("같은 응답의 ask는 한 번 막고, 다시 보낸 ask는 통과시킨다", async () => {
     const h = harness();
-    h.assistant(MISSED, ["ask"]);
+    await h.assistant(MISSED, ["ask"]);
     expect(h.sent).toHaveLength(0);
-    expect(h.toolCall("ask")).toMatchObject({ block: true, reason: expect.stringContaining("질문을 보내지 않았다") });
-    h.assistant(MISSED, ["ask"]);
-    expect(h.toolCall("ask")).toBeUndefined();
+    expect(await h.toolCall("ask")).toMatchObject({ block: true, reason: expect.stringContaining("질문을 보내지 않았다") });
+    await h.assistant(MISSED, ["ask"]);
+    expect(await h.toolCall("ask")).toBeUndefined();
   });
-  test("사용자 입력 하나에 한 번만 알리고, 에이전트가 만든 메시지로는 다시 무장하지 않는다", () => {
+  test("사용자 입력 하나에 한 번만 알리고, 에이전트가 만든 메시지로는 다시 무장하지 않는다", async () => {
     const h = harness();
-    h.assistant(MISSED);
+    await h.assistant(MISSED);
     h.user("[자동 재개]", { attribution: "agent" });
-    h.assistant(MISSED);
+    await h.assistant(MISSED);
     expect(h.sent).toHaveLength(1);
     h.user("다음 질문");
-    h.assistant(MISSED);
+    await h.assistant(MISSED);
     expect(h.sent).toHaveLength(2);
   });
   // 2026-10-26 알림이 실제로 걸렸던 끝난 답의 원문 문장(코드 표기만 뺌). 값은 0건·3건·1건으로 묶이지만 서로 견준 값이 아니다.
   const ORIGINAL_FILLER = "새 절 초안은 Gemini( ) 1회로 받았습니다.   기준으로는 S1 0건이었고, S2(연결어미 뒤 쉼표 3건, 줄표 1건, 콜론 1건)는 모두 고쳐서 자연도 A입니다.";
-  test("원문 오탐 문장: 끝난 답은 이어 가기를 만들지 않고, ask 차단 정책과 뒤따른 강한 비교는 그대로다", () => {
+  test("원문 오탐 문장: 끝난 답은 이어 가기를 만들지 않고, ask 차단 정책과 뒤따른 강한 비교는 그대로다", async () => {
     expect(chartCandidate(ORIGINAL_FILLER)).toEqual({ kind: "count-건", values: ["0건", "3건", "1건"], strong: false });
     const h = harness();
     h.user("정리해 줘");
-    h.assistant(ORIGINAL_FILLER);
+    await h.assistant(ORIGINAL_FILLER);
     expect(h.sent).toHaveLength(0);
-    h.assistant(MISSED);
+    await h.assistant(MISSED);
     expect(h.sent).toHaveLength(1);
     expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn", triggerTurn: true });
   });
   // 2026-10-28 표본(D5·D18): 뜻이 다른 값(경과·제한·캐시 전후)이 섞인 진행 문장은 도구 사이에 알리지 않는다. ask 차단은 그대로다.
-  test("모호한 후보는 도구를 부르는 중간 보고에서 조용하고, ask면 한 번 차단으로 기존 정책을 따른다", () => {
+  test("모호한 후보는 도구를 부르는 중간 보고에서 조용하고, ask면 한 번 차단으로 기존 정책을 따른다", async () => {
     const mid = harness();
-    mid.assistant(ORIGINAL_FILLER, ["bash"]);
-    mid.assistant("21분 시험은 10분이 넘었는데 아직 응답이 없어요. 서버 호출 제한을 150분으로 둔 이유가 바로 이거예요.", ["bash"]);
+    await mid.assistant(ORIGINAL_FILLER, ["bash"]);
+    await mid.assistant("21분 시험은 10분이 넘었는데 아직 응답이 없어요. 서버 호출 제한을 150분으로 둔 이유가 바로 이거예요.", ["bash"]);
     expect(mid.sent).toHaveLength(0);
-    mid.assistant(MISSED, ["bash"]);
+    await mid.assistant(MISSED, ["bash"]);
     expect(mid.deliveries).toEqual([{ deliverAs: "aside" }]);
     const asked = harness();
-    asked.assistant(ORIGINAL_FILLER, ["ask"]);
-    expect(asked.toolCall("ask")).toMatchObject({ block: true });
-    asked.assistant(ORIGINAL_FILLER, ["ask"]);
-    expect(asked.toolCall("ask")).toBeUndefined();
+    await asked.assistant(ORIGINAL_FILLER, ["ask"]);
+    expect(await asked.toolCall("ask")).toMatchObject({ block: true });
+    await asked.assistant(ORIGINAL_FILLER, ["ask"]);
+    expect(await asked.toolCall("ask")).toBeUndefined();
   });
   // Main 검수: 동사 없이 라벨+값이 쉼표로 이어진 분명한 비교는 끝난 답에서도 알리고, 같은 턴의 원문 오탐 문장은 조용하다.
-  test("라벨+값 반복 측정과 0건이 든 라벨 비교는 끝난 답에서도 이어 가기로 알리고, 원문 오탐 문장은 알리지 않는다", () => {
+  test("라벨+값 반복 측정과 0건이 든 라벨 비교는 끝난 답에서도 이어 가기로 알리고, 원문 오탐 문장은 알리지 않는다", async () => {
     for (const text of ["빌드 20.8분, 배포 34.6분, 검증 42.0분이 걸렸다.", "A 0건, B 5건, C 10건이었다."]) {
       const h = harness();
       h.user("결과 알려 줘");
-      h.assistant(ORIGINAL_FILLER);
+      await h.assistant(ORIGINAL_FILLER);
       expect(h.sent).toHaveLength(0);
-      h.assistant(text);
+      await h.assistant(text);
       expect(h.sent).toHaveLength(1);
       expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn", triggerTurn: true });
     }
   });
   // 2026-10-28 표본(D2·D19): "N건 중 M건" 분해는 비교 말씨가 없어도 강한 후보이고, 알림은 값을 채운 차트 뼈대를 싣는다.
-  test("전체 중 일부로 나눈 기록 수치는 강한 후보이고 알림에 채운 차트 뼈대가 붙는다", () => {
+  test("전체 중 일부로 나눈 기록 수치는 강한 후보이고 알림에 채운 차트 뼈대가 붙는다", async () => {
     const text = "finding 312건 중 240건은 실제 수정, 52건은 반박, 20건은 보류로 처리됐네요.";
     expect(chartCandidate(text)).toEqual({ kind: "count-건", values: ["240건", "52건", "20건"], strong: true });
     const h = harness();
-    h.assistant(text, ["bash"]);
+    await h.assistant(text, ["bash"]);
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
     expect(h.sent[0]!.content).toContain("```mermaid\nxychart-beta");
     expect(h.sent[0]!.content).toContain("bar [240, 52, 20]");
     expect(chartCandidate("지적 17건 중 16건은 수정, 1건은 철회했다.")).toBeNull();
     // 이어진 분·초 값은 한 숫자가 아니므로 앞 숫자만 채우지 않고 같은 단위로 바꿔 채울 자리만 둔다.
     const compound = harness();
-    compound.assistant("빌드 5분 30초, 배포 6분 30초, 검증 7분 30초가 걸렸다.", ["bash"]);
+    await compound.assistant("빌드 5분 30초, 배포 6분 30초, 검증 7분 30초가 걸렸다.", ["bash"]);
     expect(compound.sent[0]!.content).toContain("bar [<같은 단위 값>, <같은 단위 값>, <같은 단위 값>]");
     expect(compound.sent[0]!.content).toContain('y-axis "<단위>"');
   });
-  test("차트가 있거나 subagent 응답이면 알리지 않는다", () => {
+  test("차트가 있거나 subagent 응답이면 알리지 않는다", async () => {
     const main = harness();
-    main.assistant(CHARTED);
+    await main.assistant(CHARTED);
     expect(main.sent).toHaveLength(0);
     const sub = harness("sub");
-    sub.assistant(MISSED, ["ask"]);
+    await sub.assistant(MISSED, ["ask"]);
     expect(sub.sent).toHaveLength(0);
-    expect(sub.toolCall("ask")).toBeUndefined();
+    expect(await sub.toolCall("ask")).toBeUndefined();
+  });
+
+  // 2026-10-31 집 PC 표본: 알림을 받은 모델이 "차트 대상이 아니다"며 빈 턴으로 버린 끝난 답(D11)과 그 전 미완 답(D5)의 요지.
+  // 값은 서로 견준 기록이 아니라 지나가며 적은 경과·주기·제한 시간이다.
+  const DISMISSED_DONE = "Opus는 6초, Codex는 5초, Gemini는 2초 만에 답했습니다.";
+  const DISMISSED_ASK = "지난 배포 때는 정지 단계가 3초 만에 끝났습니다. 새 서버가 뜨고 30초가 지나면 서버가 깨웁니다. 55초 안에 응답이 없으면 5분 뒤 다시 봅니다.";
+  test("JEV가 비교할 기록 값이 아니라고 하면 이어 가기 알림도 ask 보류도 하지 않는다", async () => {
+    expect(chartCandidate(DISMISSED_DONE)?.strong).toBe(true);
+    const done = harness("main", "not-needed");
+    done.user("결과 알려 줘");
+    await done.assistant(DISMISSED_DONE);
+    expect(done.judged).toHaveLength(1);
+    expect(done.sent).toHaveLength(0);
+
+    expect(chartCandidate(DISMISSED_ASK)).not.toBeNull();
+    const asked = harness("main", "not-needed");
+    await asked.assistant(DISMISSED_ASK, ["ask"]);
+    expect(await asked.toolCall("ask")).toBeUndefined();
+  });
+  test("JEV가 차트 대상이라고 하거나 판정이 실패·unknown·choice 없는 답·시간 초과면 지금처럼 알린다", async () => {
+    // "": 질문에 없는 빈 choice(cross-review R2-OAI-1).
+    for (const choice of ["chart-needed", "fail", "unknown", "malformed", "", "split", "weak-not-needed", "bare-not-needed", "nan-not-needed"]) {
+      const h = harness("main", choice);
+      await h.assistant(DISMISSED_DONE);
+      expect(h.sent).toHaveLength(1);
+    }
+    const slow = harness("main", "hang");
+    await slow.assistant(DISMISSED_ASK, ["ask"]);
+    expect(await slow.toolCall("ask")).toMatchObject({ block: true });
+  });
+  test("판정 중에 새 사용자 입력이 오면 늦은 알림을 버린다", async () => {
+    const h = harness("main", "chart-needed");
+    h.user("결과 알려 줘");
+    const pending = h.assistant(DISMISSED_DONE);
+    h.user("다른 질문");
+    await pending;
+    expect(h.sent).toHaveLength(0);
+  });
+  // 2차 체인 R1-OAI-6: 보류한 ask가 판정을 기다리는 동안 새 사용자 입력이 오면 옛 보류를 쓰지 않는다.
+  test("보류한 ask가 판정을 기다리는 동안 새 사용자 입력이 오면 막지 않는다", async () => {
+    const slow = harness("main", "hang");
+    await slow.assistant(DISMISSED_ASK, ["ask"]);
+    const call = slow.toolCall("ask");
+    slow.user("다른 질문");
+    expect(await call).toBeUndefined();
+  });
+  // 2차 체인 R1-OAI-1: 비밀처럼 보이는 답변은 판정기에 보내지 않고 지금처럼 알린다.
+  test("비밀 패턴이 있으면 판정기를 부르지 않고 알린다", async () => {
+    const h = harness("main", "not-needed");
+    await h.assistant(`${DISMISSED_DONE} 토큰은 그대로 뒀습니다.`);
+    expect(h.judged).toHaveLength(0);
+    expect(h.sent).toHaveLength(1);
   });
 });
