@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
-  CACHE_WRITE_FLOOR, CI_STALE_MS, COST_FLOOR_USD, COST_TOP, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
-  OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
+  CACHE_WRITE_FLOOR, CI_STALE_MS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
+  MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
 import { readHandoffs } from "./handoff";
@@ -229,21 +229,30 @@ function memorySection(scan: ScanResult, handoffs: UpkeepDueItem[]): UpkeepSecti
   return section("memory", "기억 회상", [recallRate, gated, empty, saves, recallCalls, jev]);
 }
 
-function costMetric(id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined): UpkeepMetric {
-  const m = metric(id, label, "usd", current?.missingCost ? null : current?.cost ?? 0, previous?.missingCost ? null : previous?.cost ?? 0, "unknown");
+const usd = (value: number) => `$${value.toFixed(2)}`;
+
+/**
+ * 비용 행(2026-10-30 사용자 결정): 요청 100건당 금액으로 비교하고, 두 기간 모두 그 키의 호출이 MIN_SAMPLE 이상일 때만
+ * 판정한다. 원 금액·호출 수와 그중 OAuth(구독) 사용분은 판정에 쓰지 않고 메모로만 보여 준다.
+ */
+function costMetric(id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined, turns: [number, number]): UpkeepMetric {
+  const per = (u: UsageTotal | undefined, t: number) => (u?.missingCost || !t ? null : perTurns(u?.cost ?? 0, t));
+  const m = metric(id, `${label} (요청 100건당)`, "usd", per(current, turns[0]), per(previous, turns[1]), "unknown", COST_CRITERION);
+  const notes = [`원 금액 ${usd(current?.cost ?? 0)} / ${usd(previous?.cost ?? 0)}, 호출 ${current?.calls ?? 0} / ${previous?.calls ?? 0}건`];
+  if (current?.subscription) notes.push(`최근 7일 중 OAuth(구독) 사용분 ${usd(current.subscription)}는 실제 청구액이 아닙니다.`);
+  if (current?.unknownAuth) notes.push(`인증 종류가 기록되지 않은 Anthropic 사용분 ${usd(current.unknownAuth)}는 구독인지 알 수 없습니다.`);
+  const raw = Math.max(current?.cost ?? 0, previous?.cost ?? 0);
   if (m.current === null || m.previous === null) {
-    m.note = "일부 사용량 기록에 비용이 없습니다.";
-    return m;
-  }
-  if (Math.max(m.current, m.previous) < COST_FLOOR_USD) {
+    notes.push(!turns[0] || !turns[1] ? "사용자 요청 기록이 없는 기간이 있습니다." : "일부 사용량 기록에 비용이 없습니다.");
+  } else if (raw < COST_FLOOR_USD) {
     m.status = "ok";
-    m.note = `두 기간 모두 $${COST_FLOOR_USD} 미만이라 판정하지 않습니다.`;
-  } else if (!previous) {
-    m.status = "watch";
-    m.note = "직전 7일 기록 없음";
+    notes.push(`두 기간 모두 $${COST_FLOOR_USD} 미만이라 판정하지 않습니다.`);
   } else {
-    m.status = compare(m.current, m.previous, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+    m.status = compare(m.current, m.previous, current?.calls ?? 0, previous?.calls ?? 0);
+    if (!previous) notes.push("직전 7일 기록 없음");
+    if (m.status === "unknown") notes.push(`호출이 ${MIN_SAMPLE}건 미만인 기간이 있어 판정하지 않습니다.`);
   }
+  m.note = notes.join(" ");
   return m;
 }
 
@@ -269,25 +278,26 @@ export function costSection(scan: ScanResult, handoffs: UpkeepDueItem[]): Upkeep
   perTurn.note = "토큰 단가 환산 추정치입니다. OAuth 구독 사용분은 실제 청구액이 아닙니다.";
   perTurn.evidence = sessionRows(scan.topSessions.total);
 
-  const rows: { metric: UpkeepMetric; cache: UpkeepMetric }[] = [];
+  const rows: { metric: UpkeepMetric; cache: UpkeepMetric; label: string; cost: number; maxCost: number }[] = [];
+  const add = (id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined, cacheId: string, evidence: SessionCost[] | undefined) => {
+    const m = costMetric(id, label, current, previous, [a.turns, b.turns]);
+    m.evidence = sessionRows(evidence);
+    const cache = cacheWriteMetric(cacheId, `${label} 캐시 쓰기 비율`, current, previous);
+    rows.push({ metric: m, cache, label, cost: current?.cost ?? 0, maxCost: Math.max(current?.cost ?? 0, previous?.cost ?? 0) });
+  };
   for (const key of new Set([...Object.keys(a.purposes), ...Object.keys(b.purposes)])) {
-    const m = costMetric(`purpose:${key}`, `보조 호출 ${key}`, a.purposes[key], b.purposes[key]);
-    m.evidence = sessionRows(scan.topSessions[`purpose:${key}`]);
-    rows.push({ metric: m, cache: cacheWriteMetric(`purpose-cache:${key}`, `보조 호출 ${key} 캐시 쓰기 비율`, a.purposes[key], b.purposes[key]) });
+    add(`purpose:${key}`, `보조 호출 ${key}`, a.purposes[key], b.purposes[key], `purpose-cache:${key}`, scan.topSessions[`purpose:${key}`]);
   }
   for (const key of new Set([...Object.keys(a.models), ...Object.keys(b.models)])) {
-    const m = costMetric(`model:${key}`, `모델 ${key}`, a.models[key], b.models[key]);
-    m.evidence = sessionRows(scan.topSessions[`model:${key}`]);
-    m.note = [m.note, m.id.startsWith("model:openai-codex/") ? "ChatGPT 구독 사용분이라 실제 청구액이 아닙니다." : ""].filter(Boolean).join(" ");
-    rows.push({ metric: m, cache: cacheWriteMetric(`model-cache:${key}`, `모델 ${key} 캐시 쓰기 비율`, a.models[key], b.models[key]) });
+    add(`model:${key}`, `모델 ${key}`, a.models[key], b.models[key], `model-cache:${key}`, scan.topSessions[`model:${key}`]);
   }
-  rows.sort((x, y) => (y.metric.current ?? 0) - (x.metric.current ?? 0));
+  rows.sort((x, y) => y.cost - x.cost);
 
   const top = rows.slice(0, COST_TOP);
   const rest = rows.slice(COST_TOP);
-  // 캐시 쓰기 비율은 금액이 기준 이상이고 비율도 기준 이상인 항목만 보여 준다.
+  // 캐시 쓰기 비율은 원 금액이 기준 이상이고 비율도 기준 이상인 항목만 보여 준다.
   const caches = top
-    .filter((r) => Math.max(r.metric.current ?? 0, r.metric.previous ?? 0) >= COST_FLOOR_USD && (r.cache.current ?? 0) >= CACHE_WRITE_FLOOR)
+    .filter((r) => r.maxCost >= COST_FLOOR_USD && (r.cache.current ?? 0) >= CACHE_WRITE_FLOOR)
     .map((r) => r.cache);
   // 통역 캐시 쓰기 비율은 HANDOFF 「리뷰 게이트 다듬기 후속」의 관찰 대상이라, 기준을 넘겨 보일 때 그 항목과 기준선을 붙인다.
   const translation = caches.find((c) => c.id === "purpose-cache:user-input-translation");
@@ -299,9 +309,9 @@ export function costSection(scan: ScanResult, handoffs: UpkeepDueItem[]): Upkeep
   const metrics = [perTurn, ...top.map((r) => r.metric), ...caches];
   if (rest.length) {
     const sum = (pick: (m: UpkeepMetric) => number | null) => (rest.some((r) => pick(r.metric) === null) ? null : rest.reduce((n, r) => n + (pick(r.metric) ?? 0), 0));
-    const other = metric("cost-other", `그 밖의 ${rest.length}개 합계`, "usd", sum((m) => m.current), sum((m) => m.previous), "ok");
+    const other = metric("cost-other", `그 밖의 ${rest.length}개 합계 (요청 100건당)`, "usd", sum((m) => m.current), sum((m) => m.previous), "ok");
     other.criterion = "참고용(판정 안 함)";
-    other.note = rest.map((r) => r.metric.label).join(", ");
+    other.note = rest.map((r) => r.label).join(", ");
     metrics.push(other);
   }
   return section("cost", "불필요한 비용", metrics);

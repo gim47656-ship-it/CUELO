@@ -18,7 +18,7 @@ const YIELD_EVERY_MS = 8;
 const EVIDENCE_LIMIT = 10;
 const TOP_SESSIONS = 5;
 
-type Usage = { input?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
+type Usage = { input?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number }; credentialKind?: string };
 type ContentBlock = { type?: string; id?: string; name?: string; text?: string; arguments?: { command?: string; path?: string } };
 type Entry = {
   type?: string;
@@ -26,6 +26,7 @@ type Entry = {
   timestamp: string;
   customType?: string;
   purpose?: string;
+  provider?: string;
   content?: unknown;
   usage?: Usage;
   data?: { ids?: unknown[]; dense?: number; gate?: number };
@@ -43,8 +44,17 @@ type Entry = {
   };
 };
 
-/** 목적·모델 하나의 사용량 합계. 비용·캐시 필드가 빠진 기록이 있었는지도 기억한다. */
-export type UsageTotal = { cost: number; input: number; write: number; missingCost: boolean; missingCache: boolean };
+/**
+ * 목적·모델 하나의 사용량 합계. 비용·캐시 필드가 빠진 기록이 있었는지도 기억한다. `subscription`은 OAuth(구독) 사용분,
+ * `unknownAuth`는 인증 종류가 기록되지 않아 구독인지 모르는 Anthropic 사용분 금액이다.
+ */
+export type UsageTotal = {
+  cost: number; input: number; write: number; calls: number; subscription: number; unknownAuth: number;
+  missingCost: boolean; missingCache: boolean;
+};
+
+/** OAuth 로그인으로만 쓰는 provider. 다른 provider는 기록의 `credentialKind`로 가린다(10-29부터 기록됨). */
+const SUBSCRIPTION_PROVIDERS: Record<string, true> = { "openai-codex": true, "google-antigravity": true };
 
 /** 한 기간(7일)의 집계. */
 export type WindowCounts = {
@@ -153,11 +163,15 @@ function textOf(content: unknown): string {
   return content.map((x: ContentBlock | null) => x?.text ?? "").join("\n");
 }
 
-function addUsage(target: Record<string, UsageTotal>, key: string, usage: Usage) {
-  const row = target[key] ??= { cost: 0, input: 0, write: 0, missingCost: false, missingCache: false };
+function addUsage(target: Record<string, UsageTotal>, key: string, usage: Usage, provider: string | undefined) {
+  const row = target[key] ??= { cost: 0, input: 0, write: 0, calls: 0, subscription: 0, unknownAuth: 0, missingCost: false, missingCache: false };
   row.missingCost ||= typeof usage.cost?.total !== "number";
   row.missingCache ||= typeof usage.input !== "number" || typeof usage.cacheRead !== "number" || typeof usage.cacheWrite !== "number";
-  row.cost += Number(usage.cost?.total) || 0;
+  const cost = Number(usage.cost?.total) || 0;
+  row.cost += cost;
+  row.calls++;
+  if ((provider && Object.hasOwn(SUBSCRIPTION_PROVIDERS, provider)) || usage.credentialKind === "oauth") row.subscription += cost;
+  else if (provider === "anthropic" && usage.credentialKind === undefined) row.unknownAuth += cost;
   row.input += (Number(usage.input) || 0) + (Number(usage.cacheRead) || 0) + (Number(usage.cacheWrite) || 0);
   row.write += Number(usage.cacheWrite) || 0;
 }
@@ -298,7 +312,7 @@ export async function scanSessions(dir: string, now: number): Promise<ScanResult
 
         if (entry.type === "model_usage" && entry.usage) {
           const purpose = String(entry.purpose ?? "unknown");
-          addUsage(w.purposes, purpose, entry.usage);
+          addUsage(w.purposes, purpose, entry.usage, entry.provider);
           w.missingCost ||= typeof entry.usage.cost?.total !== "number";
           const cost = Number(entry.usage.cost?.total) || 0;
           w.cost += cost;
@@ -334,9 +348,9 @@ export async function scanSessions(dir: string, now: number): Promise<ScanResult
             lastResultAt = null;
           }
           if (m.usage) {
-            // 인증 종류(usage.credentialKind)는 대부분 기록되지 않아 키로 쓰지 않는다.
+            // 인증 종류(usage.credentialKind)는 10-29부터만 기록돼 키로 쓰지 않고, 구독 사용분 집계에만 쓴다.
             const key = `${m.provider ?? "unknown"}/${m.model ?? "unknown"}`;
-            addUsage(w.models, key, m.usage);
+            addUsage(w.models, key, m.usage, m.provider);
             w.missingCost ||= typeof m.usage.cost?.total !== "number";
             const cost = Number(m.usage.cost?.total) || 0;
             w.cost += cost;
