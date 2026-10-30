@@ -1774,6 +1774,9 @@ describe("OwnerWriteGuard", () => {
 describe("OwnershipGuard 쓰기 귀속", () => {
   test("sibling·Main이 edit·write로 쓴 경로는 완료한 child에 붙이지 않고, 쓴 사람을 모르는 경로는 unattributed다", async () => {
     const fixture = await createDelayedGitFixture();
+    // 이 테스트는 쓰기 귀속만 본다. release를 미리 써 두지 않으면 snapshot마다 fsmonitor hook이 1.5초 deadline까지 기다려
+    // 세 번의 snapshot만으로 bun 기본 제한 5초에 닿는다(공개 CI 41131952963에서 5002ms 시간 초과).
+    await writeFile(fixture.releasePath, "release\n");
     const cwd = fixture.workspace;
     const running: Array<Record<string, unknown>> = [];
     try {
