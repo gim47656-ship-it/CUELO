@@ -394,6 +394,7 @@ test("a new profile gets the safe defaults and exactly the named model roles; an
     assert.equal(config.mnemopi.autoRetain, false);
     assert.equal(config.task.enableLsp, true, "new Maker profiles must allow their declared LSP tool");
     assert.equal(config.task.structured, true, "Maker yield contract needs structured task results (core default is false)");
+    assert.deepEqual(config.retry, { fallbackOn: "usage-limit", fallbackRevertPolicy: "never" }, "fallback switches only on usage limits and does not revert (docs/harness.md)");
 
     // Without models the profile still gets the defaults, and no guessed modelRoles.
     const plain = createProfileConfig(bare, {});

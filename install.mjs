@@ -422,8 +422,9 @@ function harnessUpdate(options) {
  * local learning and project-scoped memory, the harness's Maker routing (isolated task runs,
  * its roles instead of the bundled agents) and request budget, long `eval` cells that yield
  * to steering (`eval.autoBackground`, off in omp), and nothing that spends provider requests
- * on its own (`autoContinue`, `autoRetain` stay off). Values equal to the omp defaults are
- * left out.
+ * on its own (`autoContinue`, `autoRetain` stay off). Model fallback, once a chain is configured,
+ * switches only on usage-limit errors and never reverts on its own (omp defaults are `any` and
+ * `cooldown-expiry`). Values equal to the omp defaults are left out.
  */
 export const PROFILE_DEFAULTS = {
   defaultThinkingLevel: "auto",
@@ -441,6 +442,7 @@ export const PROFILE_DEFAULTS = {
     disabledAgents: ["scout", "sonic", "task", "reviewer", "security-reviewer"],
   },
   eval: { autoBackground: { enabled: true } },
+  retry: { fallbackOn: "usage-limit", fallbackRevertPolicy: "never" },
 };
 
 /**
