@@ -57,6 +57,9 @@ export async function completeReviewer(
   }, {
     apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined,
     reasoning: "high" as never, // Effort은 const enum이라 문자열을 단언한다.
+    // reviewer 호출은 매번 다른 본문 한 통이라 캐시가 다시 읽히지 않는다. OAuth Anthropic 기본값(1시간 TTL)은 입력 전체를
+    // 2배 단가로 써 두기만 했다(10-23~10-30 Opus·Fable reviewer 137건 캐시 읽기 ≈0). OpenAI 쪽은 쓰기 비용이 없어 그대로 둔다.
+    ...(lane === "anthropic" ? { cacheRetention: "none" as const } : {}),
     signal: AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS)]),
   });
   // 응답이 돌아온 시도는 오류·빈 답도 청구되므로 먼저 장부에 남긴다(skim completeRole과 같다).
@@ -132,7 +135,7 @@ export async function executeCrossReview(
   if (params.action === "review") {
     const input: ReviewInput = {
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
-      highRisk: params.highRisk, previousReviewId: params.previousReviewId, base: params.base, inputs: params.inputs, references: params.references, probeResults: params.probeResults,
+      highRisk: params.highRisk, previousReviewId: params.previousReviewId, base: params.base, inputs: params.inputs, references: params.references, probeResults: params.probeResults, maker: sub,
     };
     return runReview(input, deps, signal);
   }

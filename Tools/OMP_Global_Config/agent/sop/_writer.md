@@ -141,6 +141,9 @@
   chain (newest last) and, per finding id, a proposed status `fixed|refuted|limit` with its
   evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
   reviewed file after your last round; if you must, run another round and report the new head.
+  A chain with no non-probe round left never ends your slice: fix or refute what remains, finish
+  the acceptance work, run the focused check on each changed code file's final content, and list
+  those files with that check as evidence so Main can resolve with `unreviewedAcknowledgements`.
   `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
   `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (and `slopReviewOpenAI` for `slop_check` only);

@@ -2204,6 +2204,34 @@ describe("Maker(subagent) 세션", () => {
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [`${OPUS}:high`] }, sub, signal, maker) as Reviewed;
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);
   });
+
+  test("Maker의 nextStep은 Main 전용 resolve 대신 보고를 안내하고, non-probe 라운드를 다 쓴 체인에서도 남은 수정을 끝내고 보고하라고 한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const maker = as(env, "maker-1", { openai: finding("two is wrong") });
+    type Next = Reviewed & { round: number; nextStep: string };
+    let last = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, maker) as Next;
+    expect(last.nextStep).toContain("resolve is Main-only");
+    expect(last.nextStep).not.toContain("action:\"resolve\"");
+    for (const version of [22, 222, 2222]) {
+      writeFileSync(join(env.work, "a.ts"), versionOf(version));
+      last = await executeCrossReview({ action: "review", previousReviewId: last.reviewId }, sub, signal, maker) as Next;
+    }
+    expect(last.round).toBe(4);
+    expect(last.nextStep).not.toContain("action:\"resolve\"");
+    expect(last.nextStep).toContain("unreviewedAcknowledgements");
+    const clean = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, as(env, "maker-1")) as Next;
+    expect(clean.findings).toHaveLength(0);
+    expect(clean.nextStep).toContain("resolve is Main-only");
+    expect(clean.nextStep).toContain("report the reviewId chain");
+    expect(clean.nextStep).not.toContain("action:\"resolve\"");
+    writeFileSync(join(env.work, "a.ts"), versionOf(22222));
+    const quietDelta = await executeCrossReview({ action: "review", previousReviewId: clean.reviewId }, sub, signal, as(env, "maker-1")) as Next;
+    expect(quietDelta.findings).toHaveLength(0);
+    expect(quietDelta.nextStep).toContain("report the reviewId chain");
+    const mainReview = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, main, signal, as(env, "main-1")) as Next;
+    expect(mainReview.nextStep).toContain("action:\"resolve\"");
+  });
 });
 
 describe("보조 자문 제거 뒤의 reviewer 자리", () => {

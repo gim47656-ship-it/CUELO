@@ -1699,7 +1699,8 @@ export const MAX_REFERENCE_TOTAL_BYTES = 100 * 1024;
  * probeResults: 앞 라운드 finding의 probe를 실제로 돌린 결과. 있으면 이 호출이 체인의 probe 라운드이며 코드 변경이 없어도 된다.
  */
 export interface ProbeResultInput { findingId: string; command: string; exitCode: number; output: string }
-export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[] }
+/** maker: subagent 세션의 호출. resolve는 Main 전용이라 다음 단계 안내가 resolve 대신 Main에게 보고하는 길을 적는다. */
+export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[]; maker?: boolean }
 export interface ReviewerCompletion { model: string; text: string }
 export class ReviewerCallError extends Error {
   /** partial: 모델이 중간까지 낸 답(출력 한도·오류로 끝난 경우). 통과는 못 하지만 원문은 기록한다. */
@@ -1846,9 +1847,14 @@ interface NextState {
   probeUsed: number;
   plainUsed: number;
   verdicts: readonly CrossReviewVerdict[];
+  /** subagent 세션: resolve를 부를 수 없으므로 보고와, 라운드 소진 뒤에도 남은 일을 끝내는 길을 안내한다. */
+  maker: boolean;
 }
 
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
+// 10-30 UpkeepCollector는 non-probe 라운드를 다 쓴 체인에 finding이 남자 Main 전용 resolve 안내만 받고 남은 일을 둔 채 partial로 끝났다.
+const MAKER_REPORT = "report the reviewId chain (newest last) to Main with a proposed status fixed|refuted|limit and evidence for every finding of the whole chain (resolve is Main-only)";
+const MAKER_AFTER_LIMIT = "Running out of rounds never ends your slice: fix or refute the remaining findings, finish the remaining acceptance work, run the focused check on each code file's final content, and list every file changed after this round with that check as evidence so Main can resolve with unreviewedAcknowledgements.";
 
 function describeNext(state: NextState): string {
   if (!state.passable) return "At least one required reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
@@ -1856,18 +1862,24 @@ function describeNext(state: NextState): string {
   const canProbe = roundsLeft && state.probeUsed < MAX_PROBE_ROUNDS;
   const canDelta = roundsLeft && state.plainUsed < MAX_PLAIN_ROUNDS;
   const delta = "run one more review with previousReviewId (reviews only the change since this round)";
-  const limit = "Round limit reached: no further review is allowed. Close every finding with resolve (fixed / refuted with evidence / limit documented).";
+  const close = state.maker ? MAKER_REPORT : RESOLVE_HINT;
+  const limit = state.maker
+    ? `Round limit reached: no further review is allowed in this chain. ${MAKER_AFTER_LIMIT}`
+    : "Round limit reached: no further review is allowed. Close every finding with resolve (fixed / refuted with evidence / limit documented).";
   if (state.probeRound) {
     const counts = (["confirmed", "withdrawn", "unresolved"] as const).map((kind) => `${state.verdicts.filter((verdict) => verdict.verdict === kind).length} ${kind}`).join(", ");
-    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${canDelta ? `, then ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left)` : ""}. Then ${RESOLVE_HINT} (withdrawn: refuted with the probe evidence; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}`;
+    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${canDelta ? `, then ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left)` : ""}. Then ${close} (withdrawn: refuted with the probe evidence; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}`;
   }
-  if (state.findings === 0) return "No findings. Call cross_review {action:\"resolve\", reviewId, resolutions:[]} to record the pass for the current file contents.";
-  if (!canProbe && !canDelta) return `${limit} Findings of this chain still open need resolve before the pass.`;
+  if (state.findings === 0) {
+    if (!state.maker) return "No findings. Call cross_review {action:\"resolve\", reviewId, resolutions:[]} to record the pass for the current file contents.";
+    return `No findings in this round. Then ${MAKER_REPORT}. ${canDelta ? "If you change a reviewed file afterwards, run one more review with previousReviewId and report the new head." : MAKER_AFTER_LIMIT}`;
+  }
+  if (!canProbe && !canDelta) return state.maker ? `${limit} Then ${close}.` : `${limit} Findings of this chain still open need resolve before the pass.`;
   const parts = ["Fix or refute each finding."];
   if (state.probeFindings > 0 && canProbe) parts.push(`${state.probeFindings} finding(s) carry a probe: run it yourself or through the existing Maker, then call cross_review review with previousReviewId and probeResults:[{findingId, command, exitCode, output}] (one probe round per chain; no code change needed; output is an excerpt of at most ${MAX_PROBE_OUTPUT_BYTES} bytes per result, ${MAX_PROBE_TOTAL_BYTES} in total).`);
   if (canDelta) parts.push(`After fixing, ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left): a finding closed as fixed with no later round leaves that fix unreviewed, and resolve reports the files that changed since the last reviewed round.`);
-  parts.push(`Then ${RESOLVE_HINT}.`);
-  if (!canDelta) parts.push("After this no further non-probe review is allowed: close any remaining finding with resolve (refuted with evidence, or limit documented).");
+  parts.push(`Then ${close}.`);
+  if (!canDelta) parts.push(state.maker ? MAKER_AFTER_LIMIT : "After this no further non-probe review is allowed: close any remaining finding with resolve (refuted with evidence, or limit documented).");
   return parts.join(" ");
 }
 
@@ -2444,7 +2456,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     ...(carriedOver.length > 0 ? { carriedOver } : {}), ...(prompts.length > 1 ? { batches: prompts.length } : {}),
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, probeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
-      probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1),
+      probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
     }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }

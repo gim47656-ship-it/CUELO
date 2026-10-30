@@ -287,7 +287,7 @@
           "authors": "the-makers-own-model-selector-main-is-refused-in-a-subagent-session-because-it-would-resolve-to-the-childs-model-and-a-first-round-whose-authors-list-no-model-of-the-sessions-own-family-is-refused",
           "rounds": "the-maker-fixes-or-refutes-each-finding-with-evidence-may-use-the-one-probe-round-and-runs-a-delta-round-after-fixes-within-the-same-chain-limits",
           "report": "the-reviewId-chain-and-per-finding-a-proposed-status-fixed-refuted-or-limit-with-an-evidence-locator-the-maker-never-calls-resolve",
-          "freeze": "reviewed-files-do-not-change-after-the-last-round-without-another-round-because-the-pass-binds-to-the-exact-blobs-at-resolve",
+          "freeze": "reviewed-files-do-not-change-after-the-last-round-without-another-round-because-the-pass-binds-to-the-exact-blobs-at-resolve-a-chain-with-no-non-probe-round-left-never-ends-the-slice-the-maker-fixes-or-refutes-what-remains-runs-the-focused-check-on-each-changed-code-file-s-final-content-and-lists-those-files-with-that-check-for-main-s-resolve-with-unreviewedAcknowledgements-and-the-cross_review-nextStep-in-a-subagent-session-names-this-path-instead-of-the-main-only-resolve-after-the-2026-10-30-upkeepcollector-partial",
           "main": "main-never-runs-cross_review-on-maker-owned-code-itself-because-a-round-takes-minutes-and-blocks-main-from-talking-to-the-user-it-forwards-findings-and-later-rounds-to-the-owning-maker-by-message-checks-the-reported-evidence-and-only-resolves-main-runs-a-round-itself-only-for-its-own-code-or-when-the-owner-can-no-longer-be-woken",
           "gate": "git_finalize-stage-cross-review-is-unchanged"
         },
