@@ -1008,14 +1008,24 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
     if (!result) return { ...core, stage: "commit", commit: null, docsOnly: false, ...titled, outcome: pending };
     // 성공은 결과가 밝힌 것만이다: `details.ok: true`, 커밋 SHA(details나 결과 글의 `Committed and pushed <SHA>`).
     // 오류이거나 `ok: false`면 실패이고, 그 밖은 결과 미관측이다.
-    const pushed = FINALIZED_COMMIT.exec(resultText(result));
-    const recordedSha = typeof details.commitSha === "string" && details.commitSha.trim() !== "" ? details.commitSha.trim() : null;
-    const sha = recordedSha ?? pushed?.[1] ?? pushed?.[2] ?? null;
+    const sha = publishedSha(result, details);
     const failed = result.isError || details.ok === false;
     const ok = !failed && (details.ok === true || sha !== null);
     const files: unknown = block.input.files;
     const docsOnly = ok && Array.isArray(files) && files.length > 0 && files.every((file) => typeof file === "string" && isDocFile(file));
     return { ...core, stage: "commit", commit: ok ? sha : null, docsOnly, ...titled, outcome: ok ? "done" : failed ? "failed" : "unobserved" };
+  }
+  if (name === "git_integrate") {
+    // 세션 worktree 브랜치를 대상 브랜치에 게시한 호출이다. 대상에 밀어 올린 SHA가 있을 때만 커밋 단계를 마쳤고, 충돌로 멈춘 결과
+    // (`ok: false`, 오류 아님)와 던진 오류는 실패다. 되돌리기(abort)와 올릴 것이 없던 호출(up-to-date)은 게시 시도가 아니다.
+    if (block.input.action === "abort" || details.stage === "up-to-date") return null;
+    if (!result) return { ...core, stage: "commit", commit: null, docsOnly: false, outcome: pending };
+    const sha = publishedSha(result, details);
+    const failed = result.isError || details.ok === false;
+    const ok = !failed && sha !== null;
+    const files: unknown = details.files;
+    const docsOnly = ok && Array.isArray(files) && files.length > 0 && files.every((file) => typeof file === "string" && isDocFile(file));
+    return { ...core, stage: "commit", commit: ok ? sha : null, docsOnly, outcome: ok ? "done" : failed ? "failed" : "unobserved" };
   }
   if (name === "eval") return readEvalCommit(block, result, pending);
   if (isEditCall(block, name)) {
@@ -1081,17 +1091,29 @@ function harnessSkip(result: ToolResultMessage | undefined): "notRun" | "interru
   return "__interrupted" in details && details.__interrupted === true ? "interrupted" : null;
 }
 
-/** eval 코드가 실제로 부르는 `tool.git_finalize(`. 이름을 글자로만 다루는 코드(`name === 'git_finalize'`)는 아니다. */
-const EVAL_FINALIZE_CALL = /\btool\.git_finalize\s*\(/;
-/** git_finalize 결과 글(`Committed and pushed <SHA> to …`)과 결과 details(`commitSha: '<SHA>'`). */
-const FINALIZED_COMMIT = /\bCommitted and pushed ([0-9a-f]{40})\b|\bcommitSha["']?\s*:\s*["']([0-9a-f]{40})["']/;
+/** eval 코드가 실제로 부르는 `tool.git_finalize(`·`tool.git_integrate(`. 이름을 글자로만 다루는 코드(`name === 'git_finalize'`)는 아니다. */
+const EVAL_FINALIZE_CALL = /\btool\.git_(?:finalize|integrate)\s*\(/;
 /**
- * git_finalize가 거절하거나 실패한 기록: 던진 오류(`git_finalize failed at cross-review: …`)와, 돌려준 결과의 `ok: false`나
- * complete가 아닌 stage(`stage: 'cross-review'`).
+ * 게시한 커밋: git_finalize 결과 글(`Committed and pushed <SHA> to …`), git_integrate 결과 글(`Integrated <브랜치> and pushed <SHA> to …`),
+ * 결과 details(`commitSha: '<SHA>'`).
  */
-const FINALIZE_FAILED = /\bgit_finalize failed\b|\bok["']?\s*:\s*false\b|\bstage["']?\s*:\s*["'](?!complete["'])[\w-]+["']/;
+const FINALIZED_COMMIT = /\b(?:Committed|Integrated \S+) and pushed ([0-9a-f]{40})\b|\bcommitSha["']?\s*:\s*["']([0-9a-f]{40})["']/;
+/**
+ * git_finalize·git_integrate가 거절하거나 실패한 기록: 던진 오류(`git_finalize failed at cross-review: …`)와, 돌려준 결과의 `ok: false`나
+ * complete가 아닌 stage(`stage: 'cross-review'`, git_integrate의 `stage: 'conflict'`).
+ */
+const FINALIZE_FAILED = /\bgit_(?:finalize|integrate) failed\b|\bok["']?\s*:\s*false\b|\bstage["']?\s*:\s*["'](?!complete["'])[\w-]+["']/;
+/** 게시 시도가 아닌 git_integrate 결과: 올릴 것이 없었거나(up-to-date) 되돌렸다(aborted). */
+const INTEGRATE_UNPUBLISHED = /\bstage["']?\s*:\s*["'](?:up-to-date|aborted)["']/;
 /** 코드에 글자 그대로 넘긴 커밋 메시지(`message: "…"`). 변수로 넘겼으면 읽지 않는다. */
 const MESSAGE_LITERAL = /["']?\bmessage["']?\s*:\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\])*)\1/;
+
+/** 결과가 밝힌 게시 커밋 SHA: details의 `commitSha`, 없거나 비었으면 결과 글(FINALIZED_COMMIT). */
+function publishedSha(result: ToolResultMessage, details: Record<string, unknown>): string | null {
+  if (typeof details.commitSha === "string" && details.commitSha.trim() !== "") return details.commitSha.trim();
+  const pushed = FINALIZED_COMMIT.exec(resultText(result));
+  return pushed?.[1] ?? pushed?.[2] ?? null;
+}
 
 function evalCode(input: Record<string, unknown>): string {
   if (typeof input.code === "string") return input.code;
@@ -1101,8 +1123,9 @@ function evalCode(input: Record<string, unknown>): string {
 }
 
 /**
- * eval에서 부른 git_finalize. 결과(백그라운드였으면 완료 기록)에 밀어 올린 커밋 SHA가 찍혔을 때만 완료다. 실패 기록이 찍혔거나
+ * eval에서 부른 git_finalize·git_integrate. 결과(백그라운드였으면 완료 기록)에 밀어 올린 커밋 SHA가 찍혔을 때만 완료다. 실패 기록이 찍혔거나
  * 셀이 오류로 끝났는데 SHA가 없으면 실패다. SHA와 실패 기록이 함께 있으면(셀 안의 다른 코드가 실패했을 수도 있다) 결과 미관측이다.
+ * git_integrate가 올릴 것이 없었거나 되돌린 결과(SHA 없음)는 게시 시도가 아니다.
  */
 function readEvalCommit(block: ToolCallContent, result: ToolResultMessage | undefined, pending: StepOutcome): CommitStep | null {
   const code = evalCode(block.input);
@@ -1114,6 +1137,7 @@ function readEvalCommit(block: ToolCallContent, result: ToolResultMessage | unde
   const text = resultText(result);
   const pushed = FINALIZED_COMMIT.exec(text);
   const sha = pushed ? (pushed[1] ?? pushed[2]).toLowerCase() : null;
+  if (!sha && INTEGRATE_UNPUBLISHED.test(text)) return null;
   const failed = FINALIZE_FAILED.test(text);
   if (sha && !failed) return { ...base, commit: sha, outcome: "done" };
   return { ...base, commit: null, outcome: !sha && (failed || result.isError) ? "failed" : "unobserved" };

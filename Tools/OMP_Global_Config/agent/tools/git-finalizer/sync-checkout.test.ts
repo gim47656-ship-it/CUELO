@@ -113,6 +113,16 @@ describe("syncCheckout", () => {
     expect(head(f.target)).toBe(f.old);
   });
 
+  test("--branch names the target branch when the source is a session branch published to it", async () => {
+    const f = fixture();
+    git(f.source, "checkout", "-q", "-b", "wt/topic");
+    expect(await syncCheckout({ source: f.source, target: f.target, revision: f.rev })).toMatchObject({ ok: false, status: "blocked" });
+    expect(await syncCheckout({ source: f.source, target: f.target, revision: f.rev, branch: "wt/topic" })).toMatchObject({ ok: false, status: "blocked" });
+    expect(head(f.target)).toBe(f.old);
+    expect(await syncCheckout({ source: f.source, target: f.target, revision: f.rev, branch: "main" })).toMatchObject({ ok: true, status: "updated", branch: "main" });
+    expect(head(f.target)).toBe(f.rev);
+  });
+
   test("network remotes differing only by trailing .git or / match; local origins stay exact", () => {
     expect(sameOrigin("https://github.com/o/r", "https://github.com/o/r.git")).toBe(true);
     expect(sameOrigin("https://github.com/o/r/", "https://github.com/o/r.git")).toBe(true);

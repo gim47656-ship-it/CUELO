@@ -1,7 +1,10 @@
 /**
  * 검증·게시가 끝난 커밋을 같은 프로젝트의 다른 체크아웃(예: WSL 작업본 → Windows 사본)에 fast-forward로 반영하는 CLI.
  *
- *   bun sync-checkout.ts --source <루트> --target <루트> --revision <40자 sha>
+ *   bun sync-checkout.ts --source <루트> --target <루트> --revision <40자 sha> [--branch <target 브랜치>]
+ *
+ * `--branch`가 없으면 source와 target이 같은 브랜치여야 한다. git_integrate로 세션 worktree 브랜치(wt/<주제>)를 게시했으면
+ * source 브랜치가 target(예: main)과 다르므로 `--branch main`으로 target 브랜치를 정한다. 게시 확인은 늘 target 브랜치로 한다.
  *
  * 모델 도구가 아니다. 상시 동기화·스케줄러·훅 없이, 호출될 때 한 번만 일한다. 빌드·설치·배포는 하지 않는다.
  * 대상 사본의 변경(tracked·staged·무시되지 않는 untracked)이나 갈라진/앞선 이력이 있으면 아무것도 바꾸지 않고 멈춘다.
@@ -17,6 +20,8 @@ export interface SyncCheckoutOptions {
   source: string;
   target: string;
   revision: string;
+  /** target 체크아웃이 있어야 하는 브랜치. 주면 source 브랜치와 같을 필요가 없다. */
+  branch?: string;
 }
 
 export type SyncCheckoutResult =
@@ -104,7 +109,7 @@ export function sameOrigin(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-async function run({ source, target, revision }: SyncCheckoutOptions): Promise<SyncCheckoutResult> {
+async function run({ source, target, revision, branch: expectedBranch }: SyncCheckoutOptions): Promise<SyncCheckoutResult> {
   if (!/^[0-9a-f]{40}$/.test(revision)) blocked("revision은 소문자 40자 전체 sha여야 한다");
   const src = await inspect("source", source);
   const dst = await inspect("target", target);
@@ -112,7 +117,11 @@ async function run({ source, target, revision }: SyncCheckoutOptions): Promise<S
     blocked(`source와 target이 같거나 겹친다: ${src.root} / ${dst.root}`);
   }
   if (!sameOrigin(src.origin, dst.origin)) blocked("source와 target의 origin이 다르다");
-  if (src.branch !== dst.branch) blocked(`브랜치가 다르다: source ${src.branch} / target ${dst.branch}`);
+  if (expectedBranch === undefined) {
+    if (src.branch !== dst.branch) blocked(`브랜치가 다르다: source ${src.branch} / target ${dst.branch}`);
+  } else if (dst.branch !== expectedBranch) {
+    blocked(`target 브랜치(${dst.branch})가 --branch ${expectedBranch}와 다르다`);
+  }
   if (src.head !== revision) blocked(`요청한 revision이 source HEAD(${src.head})와 다르다`);
 
   const { executor, root, branch } = dst;
@@ -156,20 +165,18 @@ export async function syncCheckout(options: SyncCheckoutOptions): Promise<SyncCh
   }
 }
 
+const USAGE = "usage: sync-checkout.ts --source <path> --target <path> --revision <sha> [--branch <name>]";
+
 function parseArgs(argv: string[]): SyncCheckoutOptions {
   const values: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
     const value = argv[i + 1];
-    if (!["--source", "--target", "--revision"].includes(key) || value === undefined) {
-      throw new Error("usage: sync-checkout.ts --source <path> --target <path> --revision <sha>");
-    }
+    if (!["--source", "--target", "--revision", "--branch"].includes(key) || value === undefined) throw new Error(USAGE);
     values[key.slice(2)] = value;
   }
-  if (!values.source || !values.target || !values.revision) {
-    throw new Error("usage: sync-checkout.ts --source <path> --target <path> --revision <sha>");
-  }
-  return { source: values.source, target: values.target, revision: values.revision };
+  if (!values.source || !values.target || !values.revision || values.branch === "") throw new Error(USAGE);
+  return { source: values.source, target: values.target, revision: values.revision, ...(values.branch ? { branch: values.branch } : {}) };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

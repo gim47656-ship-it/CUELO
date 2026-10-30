@@ -5,3 +5,8 @@ bun.lock text eol=lf
 
 # WSL entrypoints are also invoked from the Windows checkout.
 Tools/CUELO_Setup/wsl/**/*.sh text eol=lf
+
+# Several sessions append memory rows in their own worktrees. git_integrate rebases them onto
+# main; union keeps both sides' rows instead of stopping on a text conflict (memory-sync's
+# import tolerates the duplicate keys this can leave).
+Tools/OMP_Global_Config/memory-sync/memories.jsonl merge=union

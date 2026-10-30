@@ -113,5 +113,8 @@
   remote·upstream·ancestry·mutex 계약의 정본은 `rule://subagent`의 「프로젝트와 Git 경계」다.
   네 조건을 모두 확인하기 전에는 fallback을 쓰지 않는다.
 - lock·ancestry·경로·non-fast-forward 실패는 raw Git 명령으로 우회하거나 자동 rebase·reset·
-  통합하지 않고 상태를 보존해 보고한다. `index.lock`·워크트리 락은 같은 저장소에서 다른
+  통합하지 않고 상태를 보존해 보고한다. 자기 wt 브랜치(`wt/<주제>` worktree)를 `git_integrate`로
+  fetch한 `origin/main`(또는 지정한 대상) 위에 rebase하는 것만 예외다. 충돌이 나면 양쪽 커밋 의도를 보고
+  파일을 고친 뒤 `git_integrate` `continue`(포기는 `abort`)로 잇고 raw `git rebase`·`merge`·`pull`로 풀지
+  않으며, 검사나 교차검증이 실패하면 멈추고 보고한다. `index.lock`·워크트리 락은 같은 저장소에서 다른
   에이전트가 작업 중일 수 있으니 지우지 말고 잠시 뒤 한 번만 재시도한 뒤 그래도 실패하면 멈춘다.

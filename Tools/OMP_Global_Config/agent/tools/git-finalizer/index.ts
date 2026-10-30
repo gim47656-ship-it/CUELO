@@ -1,4 +1,4 @@
-import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
+import type { CustomTool, CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,9 +6,12 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
+import { integrateTool } from "./integrate";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
 
 export { hasPosixGitdirWorktree };
+/** 도구 로더가 넘기는 API. 한 factory가 git_finalize와 git_integrate를 함께 등록한다. */
+export type ToolApi = Parameters<CustomToolFactory>[0];
 
 interface FinalizerResult {
   ok: boolean;
@@ -218,7 +221,7 @@ export async function windowsDrivePaths(cwd: string, files: string[], paths: str
   return converted;
 }
 
-const factory: CustomToolFactory = (pi) => ({
+export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   name: "git_finalize",
   label: "Git Finalize",
   loadMode: "essential",
@@ -331,5 +334,7 @@ const factory: CustomToolFactory = (pi) => ({
     }
   },
 });
+
+const factory: CustomToolFactory = (pi) => [finalizeTool(pi), integrateTool(pi)];
 
 export default factory;

@@ -14,7 +14,7 @@ setAgentDir(root);
 const { createAgentSession } = await import(`${core}/sdk.ts`);
 const { Settings } = await import(`${core}/config/settings.ts`);
 const { getBundledModel } = await import(`${core}/../../pi-catalog/src/models.ts`);
-const blocked = ["git_finalize", "maker_route", "ci_chain", "routing_verdict", "deploy_verify"];
+const blocked = ["git_finalize", "git_integrate", "maker_route", "ci_chain", "routing_verdict", "deploy_verify"];
 try {
   for (const taskDepth of [0, 1, 2]) {
     const { session } = await createAgentSession({

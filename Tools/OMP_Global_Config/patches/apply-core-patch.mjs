@@ -20851,11 +20851,13 @@ EDITS.push({
 	});
 }
 // ToolCostTrim2: keep orchestrator-only tools out of Maker defaults.
+// 2026-10-31: git_integrate(세션 worktree 브랜치를 대상에 rebase해 게시)를 더했다. 옛 목록을 실은 설치본은 legacyPatched 로 이 목록으로 바뀐다.
 EDITS.push({
 	file: "src/sdk.ts",
 	marker: "// HANSE: main-only tools excluded from Maker alwaysInclude",
 	anchor: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name));\n\t\tfor (const name of alwaysInclude) {",
-	patched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
+	legacyPatched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
+	patched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"git_integrate\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
 });
 // ToolCostTrim2: batch complete verification passages across selected files.
 {

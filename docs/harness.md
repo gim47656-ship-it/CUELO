@@ -407,7 +407,7 @@ npm 배포본에는 `humanizer`·`stop-slop`·`kill-ai-slop`과 각 참조 파�
 
 [Task Guard 규칙](../Tools/OMP_Global_Config/agent/rules/task-guard.md)은 발주 brief에 `WORK_CLASS`, `PRIMARY_DELIVERABLE`, `OWNED_PATHS` 등 작업 계약을 담도록 정합니다. [`command-guard` 확장](../Tools/OMP_Global_Config/agent/extensions/command-guard/)은 task dispatch에서 maker 역할·요청별 budget·작업 잠금·소유 경로를 검사하고, 자식 작업에서 실제로 바뀐 경로를 advisory로 보고합니다. `bash` 명령에서는 삭제·데이터베이스 변경·배포·Git 마감처럼 보호 대상 동작도 검사합니다. 별도 eval 경로를 이용한 child budget 우회도 막습니다. WSL에서는 Windows 콘솔 프로그램(`git.exe` 제외)을 부르는 `bash` 명령을 새 bash로 감싸 실행해, CP949로 나온 한글 출력을 UTF-8로 바꿉니다. UTF-8로 나온 줄과 종료 코드는 그대로입니다. 감싸지 못한 명령의 출력이 깨졌거나 시스템 `python3`에 모듈이 없어 실패했으면, 다시 실행할 방법(`iconv`, 관리 Python 환경 경로)을 결과에 한 줄 덧붙입니다. 이것은 Main의 요구사항 판단이나 최종 검수를 대체하지 않습니다.
 
-명령 가드는 `eval` 셀 안에서 `tool.git_finalize`, `tool.cross_review`, `tool.slop_check`, `tool.deploy_verify`를 부르는 것을 막고 그 도구를 직접 부르도록 안내합니다. `eval` 셀은 300초가 지나면 끊깁니다. 7일 동안 이 방식으로 부른 `git_finalize` 27건 중 3건이 이렇게 끊겨, 커밋은 됐지만 SHA와 푸시 상태가 사라졌습니다. 이 장치는 사고를 막기 위한 정적 패턴 검사이며 보안 경계가 아닙니다.
+명령 가드는 `eval` 셀 안에서 `tool.git_finalize`, `tool.git_integrate`, `tool.cross_review`, `tool.slop_check`, `tool.deploy_verify`를 부르는 것을 막고 그 도구를 직접 부르도록 안내합니다. `eval` 셀은 300초가 지나면 끊깁니다. 7일 동안 이 방식으로 부른 `git_finalize` 27건 중 3건이 이렇게 끊겨, 커밋은 됐지만 SHA와 푸시 상태가 사라졌습니다. 이 장치는 사고를 막기 위한 정적 패턴 검사이며 보안 경계가 아닙니다.
 
 요청별 budget(primary 16, rework 8, 합계 24)은 실제로 시작한 Maker만 셉니다. 승인 거부, 승인 창 오류, 하류 guard 거절, 실행 전 중단·건너뛰기로 task가 실행되지 않은 호출과 작업 등록에 실패한 항목은 그 호출의 예약과 임시 소유 추적만 돌려놓습니다. 이미 시작한 Maker는 호출이 오류로 끝나도 계속 셉니다. 실행 도중 예외로 결과가 사라진 호출은 그 뒤 등록된 작업이 없다고 확인될 때만 돌려놓고, 확인할 수 없으면 그대로 남깁니다. `proc://<id>/kill`로 취소가 확인된 Maker는 이름이 같아도 런타임이 붙인 실제 id로 찾아 그 Maker의 primary·rework 몫만 한 번 돌려받습니다. 취소로 돌려받는 몫은 요청당 8개까지입니다.
 
@@ -594,6 +594,14 @@ command-guard는 세 가지 판정 범위를 좁혔습니다. 첫째, 같은 명
 저장소에 기억 동기화 스크립트(`Tools/OMP_Global_Config/memory-sync/sync.ts`)가 있으면 `git_finalize`는 커밋 전에 이 PC의 프로젝트 기억을 `memories.jsonl`로 내보내고, 바뀐 경우 그 파일을 같은 커밋에 넣습니다. 다른 PC는 설치(`setup`)나 WSL 앱 갱신 때 이 파일을 가져옵니다. 가져오기는 기존 기억을 지우지 않고 쓰기 전에 백업을 남깁니다. `memory_edit`로 고친 기억과 무효화한 기억도 다음 내보내기에서 수정 시각이 붙어 다른 PC에 전달됩니다. 아직 내보내지 않은 이 PC의 수정은 다른 PC가 더 나중에 같은 기억을 고쳤더라도 가져오기가 덮지 않고, 다음 내보내기에서 이 PC의 수정이 이깁니다. 무효화는 되돌리지 않는 방향으로만 전달되며, 활성 상태인 기억을 무효화할 때는 본문을 바꾸지 않습니다. 내보내기가 실패해도 요청한 파일의 커밋은 진행하고 결과 문구에 실패 이유를 남깁니다. 기억 파일은 공개 미러에 올라가지 않습니다.
 
 커밋할 소스·설정 파일(문서·그림 제외)의 폴더에서 저장소 루트까지 `HANDOFF.md`가 하나도 없으면, `git_finalize`는 커밋을 그대로 진행하고 결과 문구에 그 폴더와 함께 「작업한 프로젝트 폴더에 `HANDOFF.md`·`doc/README.md`·`doc/history` 기록을 만들어 이어서 커밋하라」는 알림을 한 줄 붙입니다. 프로젝트가 여럿인 저장소에서 문서가 없던 프로젝트의 첫 코드 커밋이 기록 없이 올라간 일을 커밋 순간에 다시 짚으려는 것입니다. 루트나 상위 폴더에 `HANDOFF.md`가 있으면 알림은 나오지 않습니다.
+
+같은 저장소에서 여러 CUELO 세션이 비슷한 파일을 고치면 서로 변경을 덮어쓸 수 있으므로 세션마다 linked worktree를 하나씩 씁니다. CUELO 사이드바의 worktree 만들기로 `wt/<주제>` branch와 `<저장소 루트>-worktrees/wt-<주제>` 폴더를 만들고 그 폴더에서 세션을 엽니다. 작업 중 커밋은 그 worktree에서 `git_finalize`로 하며 push 대상은 `origin/wt/<주제>`입니다. CI는 `main` push와 PR에서만 돌기 때문에 이 push에는 CI가 돌지 않습니다.
+
+[`git_integrate`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/integrate.ts)는 Main 전용 도구로, `action: "start"`에 그 worktree에서 돌릴 typecheck·test 명령 목록 `checks`를 받습니다. 도구는 `git_finalize`와 같은 잠금(공용 git 폴더·remote·대상 ref 단위) 안에서 대상 branch(기본 `main`)를 fetch한 뒤, 잠금을 놓은 채 자기 worktree만 그 위로 rebase하고 검사를 돌립니다. 다시 잠금을 잡고 fetch해서 대상이 그대로이면 rebase된 끝 커밋을 force 없이 fast-forward push하고 원격 ref를 확인합니다. 그 사이 다른 세션이 대상을 옮겼으면 다시 rebase하고 검사하며, 이렇게 따라가는 것은 3번까지입니다. 성공하면 세션 branch의 원격 사본도 같은 커밋으로 맞춥니다. rebase와 검사 동안에는 잠금을 잡지 않으므로 여러 세션이 함께 불러도 push 순간에만 한 줄로 섭니다. 잠금을 쥔 PowerShell 보조 프로세스는 도구 프로세스가 죽으면 표준 입력이 닫혀 곧 잠금을 놓고, 그렇지 않아도 100초가 지나면 스스로 놓습니다. `git_finalize`는 이 잠금을 120초까지 기다립니다.
+
+충돌이 나면 도구는 rebase를 그 자리에서 멈추고 충돌 파일, 다시 적용 중인 세션 커밋의 제목과 본문, 대상에 새로 들어온 관련 커밋을 결과로 돌려줍니다. 세션이 양쪽 의도를 보고 파일을 고친 뒤 `action: "continue"`를 부르면, 도구는 충돌 표시가 남은 파일이 있으면 거절하고, 푼 파일에 `git_finalize`와 같은 교차검증·slop 게이트를 건 뒤 rebase를 잇습니다. 풀 수 없으면 `action: "abort"`로 rebase 전 branch로 되돌립니다. 검사나 게이트가 실패하면 push하지 않고 실패 이유를 돌려줍니다.
+
+공용 파일인 `memory-sync/memories.jsonl`은 `.gitattributes`의 `merge=union`으로 양쪽 줄을 모두 남기고, 가져오기는 이때 생길 수 있는 중복 키를 견딥니다. `Tools/CUELO_Setup/files/source-integrity.json`이 충돌하면 도구가 합친 index 내용으로 다시 만들어 그 커밋에 넣습니다. `HANDOFF.md`·`doc/README.md`·`CHANGELOG.md`가 충돌하면 세션이 합친 상태에 맞게 다시 씁니다. command guard는 세션 저장소(같은 git 공용 폴더의 모든 worktree)에서 raw `git rebase`·`git merge`·`git pull`을 막고 `git_integrate`로 안내합니다. 앞선 원격을 따라가기만 하는 `--ff-only`와 `git merge --abort`는 허용하고, 다른 저장소를 향한 명령은 막지 않습니다.
 
 ## 스킬 비용 리포트
 

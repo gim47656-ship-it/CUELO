@@ -149,6 +149,13 @@ const FINALIZER_OWNED_GIT_COMMANDS: StringLookup = {
   "update-ref": true,
 };
 
+/** 세션 저장소의 이력을 다시 쓰거나 합치는 하위 명령. 세션 브랜치를 대상 위로 옮기는 일은 git_integrate가 맡는다. */
+const INTEGRATOR_OWNED_GIT_COMMANDS: StringLookup = {
+  merge: true,
+  pull: true,
+  rebase: true,
+};
+
 /** 저장소 없이 도는 git 하위 명령. 어느 git으로 돌려도 index를 건드리지 않는다. */
 const REPOSITORY_FREE_GIT_COMMANDS: StringLookup = {
   help: true,
@@ -442,6 +449,8 @@ const MYSQL_SHORT_OPTIONS: ShortQueryOptions = {
 const REASONS = {
   gitFinalize:
     "자동 staging·commit·push와 ref 갱신은 저장소 잠금과 경로·ancestry 검증을 수행하는 git_finalize 도구로만 실행하세요.",
+  gitIntegrate:
+    "세션 저장소의 rebase·merge·pull은 정책상 차단됩니다. worktree 브랜치를 대상 브랜치 위로 옮겨 게시하려면 git_integrate를, 앞선 원격을 따라가기만 하려면 `git pull --ff-only`·`git merge --ff-only`를 쓰세요. git_integrate가 충돌로 멈췄으면 파일을 고친 뒤 git_integrate continue(포기는 abort)를 부르세요.",
   gitReset:
     "작업 내용을 파괴할 수 있는 git reset --hard 명령은 정책상 차단됩니다.",
   gitClean:
@@ -1375,6 +1384,46 @@ function isIntentToAdd(git: GitInvocation): boolean {
   return shortFlags(git.args).has("N") || hasLongOption(git.args, ["--intent-to-add"], 8);
 }
 
+/**
+ * 세션 저장소에서 막는 merge·pull·rebase인가. fast-forward만 하는 `merge --ff-only`·`pull --ff-only`(rebase 없이)와
+ * 멈춘 merge를 되돌리는 `merge --abort`는 이력을 새로 만들지 않으므로 막지 않는다. 옵션은 축약 없이 정확한 이름만 본다.
+ * 뒤에 온 `--ff`·`--no-ff`가 `--ff-only`를 덮으므로 함께 있으면 막는다.
+ */
+function integratesHistory(git: GitInvocation): boolean {
+  if (git.subcommand === "rebase") return true;
+  const exact = (names: string[]) => hasLongOption(git.args, names, Number.POSITIVE_INFINITY);
+  if (git.subcommand === "merge" && exact(["--abort"])) return false;
+  const fastForwardOnly = exact(["--ff-only"]) && !exact(["--ff", "--no-ff", "--no-ff-only"]);
+  if (git.subcommand === "merge") return !fastForwardOnly;
+  return !fastForwardOnly || exact(["--rebase"]) || shortFlags(git.args).has("r");
+}
+
+/**
+ * 명령이 세션 저장소(같은 git common dir의 모든 작업 트리)를 가리키면 reason을 돌려준다. 판정할 수 없으면 막는다.
+ * 어느 저장소에도 속하지 않음이 증명된 곳(아직 없는 mktemp 폴더, 같은 명령의 git init 대상)은 세션 저장소가 아니다.
+ * push는 원격에 닿으므로, 같은 명령이 만든 worktree는 세션 저장소의 것이므로, 같은 명령이 링크·이동으로 바꾼 위치는
+ * 실행 전 관측과 다를 수 있으므로, 위치가 저장소를 정하지 않으면 그 증명을 쓰지 않는다.
+ */
+function sessionRepositoryReason(git: GitInvocation, context: SegmentContext | undefined, reason: string): string | undefined {
+  if (!context?.isSessionRepository) return reason;
+  const targetDirectory = gitTargetDirectory(git, context.cwd, context.variables);
+  if (!targetDirectory) return reason;
+  try {
+    if (!context.isSessionRepository(targetDirectory)) return undefined;
+    const effects = context.effects;
+    const provenOutside =
+      git.subcommand !== "push" &&
+      !withinAny(targetDirectory, effects?.addedWorktrees ?? []) &&
+      !withinAny(targetDirectory, effects?.relinked ?? []) &&
+      !effects?.repositoryRedirect &&
+      !context.locationOverridden &&
+      context.isOutsideRepository?.(targetDirectory) === true;
+    return provenOutside ? undefined : reason;
+  } catch {
+    return reason;
+  }
+}
+
 function matchGit(
   tokens: ShellToken[],
   invocation: Invocation,
@@ -1390,26 +1439,11 @@ function matchGit(
       (hasLongOption(git.args, ["--dry-run"]) ||
         (git.subcommand !== "commit" && shortFlags(git.args).has("n")));
     if (dryRun || isIntentToAdd(git)) return undefined;
-    if (!context?.isSessionRepository) return REASONS.gitFinalize;
-    const targetDirectory = gitTargetDirectory(git, context.cwd, context.variables);
-    if (!targetDirectory) return REASONS.gitFinalize;
-    try {
-      if (!context.isSessionRepository(targetDirectory)) return undefined;
-      // 어느 저장소에도 속하지 않음이 증명된 곳(아직 없는 mktemp 폴더, 같은 명령의 git init 대상)은 세션 저장소가 아니다.
-      // push는 원격에 닿으므로, 같은 명령이 만든 worktree는 세션 저장소의 것이므로, 같은 명령이 링크·이동으로 바꾼 위치는
-      // 실행 전 관측과 다를 수 있으므로, 위치가 저장소를 정하지 않으면 쓰지 않는다.
-      const effects = context.effects;
-      const provenOutside =
-        git.subcommand !== "push" &&
-        !withinAny(targetDirectory, effects?.addedWorktrees ?? []) &&
-        !withinAny(targetDirectory, effects?.relinked ?? []) &&
-        !effects?.repositoryRedirect &&
-        !context.locationOverridden &&
-        context.isOutsideRepository?.(targetDirectory) === true;
-      return provenOutside ? undefined : REASONS.gitFinalize;
-    } catch {
-      return REASONS.gitFinalize;
-    }
+    return sessionRepositoryReason(git, context, REASONS.gitFinalize);
+  }
+
+  if (INTEGRATOR_OWNED_GIT_COMMANDS[git.subcommand] && integratesHistory(git)) {
+    return sessionRepositoryReason(git, context, REASONS.gitIntegrate);
   }
 
   if (git.subcommand === "reset" && hasLongOption(git.args, ["--hard"], 3)) {

@@ -311,6 +311,7 @@ describe("eval spawn bypass", () => {
       "await (tool).git_finalize({})",
       "r = await tool.deploy_verify({})",
       "fin = tool.git_finalize\nawait fin({})",
+      'await tool.git_integrate({ checks: ["bun test"] })',
     ];
     for (const code of blocked) {
       for (const language of ["py", "js"] as const) {

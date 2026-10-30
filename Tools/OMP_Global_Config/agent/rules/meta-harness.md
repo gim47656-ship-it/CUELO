@@ -31,7 +31,7 @@ globs: ["Tools/OMP_Global_Config/**"]
 - 생성 파일 머리에는 `source-hash` 스탬프가 있다. 손편집과 조각 변경 후 미재생성이 서로 다른
   상태로 잡히고, 손편집은 병합되지 않는다.
 - 바꾸는 쪽 PC: `agent/sop/` 수정 → `node patches/build-agents.mjs` → `.\setup.ps1` → 모든 항목
-  PASS와 `READY` 확인 → 바뀐 경로만 명시해 커밋·푸시. 받는 쪽 PC: `git pull` → `.\setup.ps1` →
+  PASS와 `READY` 확인 → 바뀐 경로만 명시해 커밋·푸시. 받는 쪽 PC: `git pull --ff-only` → `.\setup.ps1` →
   `READY` 확인.
 - `agent/agents/*.md`는 직접 고치지 않는다. 적발 지점은 `verify.ps1`의 `Generated Agents` 항목과
   `export.ps1`의 `HAND-EDITED` 중단이고, 해결은 항상 `agent/sop/`를 고친 뒤 재생성하는 것이다.

@@ -333,6 +333,41 @@ describe("finalizer 전용 git 명령의 저장소 경계", () => {
       expect(matchBlockedCommand(command, contextFor(cwd)) !== undefined).toBe(blocked);
     });
   }
+
+  // 세션 브랜치를 대상 위로 옮기는 일은 git_integrate가 맡는다. fast-forward만 하는 갱신과 멈춘 merge 되돌리기는 남긴다.
+  const integrateCases = [
+    ["rebase", "git rebase origin/main", true],
+    ["rebase --continue", "git rebase --continue", true],
+    ["rebase --abort", "git -C . rebase --abort", true],
+    ["pull", "git pull", true],
+    ["pull --rebase", "git pull --ff-only --rebase", true],
+    ["pull -r", "git pull -r --ff-only", true],
+    ["merge", "git merge origin/main", true],
+    ["merge --no-ff", "git merge --no-ff topic", true],
+    ["ff-only 뒤 --ff", "git merge --ff-only --ff topic", true],
+    ["축약한 ff-only", "git merge --ff-o origin/main", true],
+    ["merge --continue", "git merge --continue", true],
+    ["pull --ff-only", "git pull --ff-only", false],
+    ["merge --ff-only", "git merge --ff-only origin/main", false],
+    ["merge --abort", "git merge --abort", false],
+    ["merge-base", "git merge-base --is-ancestor a b", false],
+  ] as const;
+  for (const [name, command, blocked] of integrateCases) {
+    test(`세션 저장소의 rebase·merge·pull은 git_integrate로 보낸다: ${name}`, () => {
+      const reason = matchBlockedCommand(command, sessionOnly);
+      expect(reason !== undefined).toBe(blocked);
+      if (blocked) expect(reason).toContain("git_integrate");
+    });
+  }
+
+  test("다른 저장소의 rebase·merge·pull은 막지 않는다", () => {
+    for (const command of ["git rebase main", "git pull", `git -C ${externalDirectory} merge topic`]) {
+      expect(matchBlockedCommand(command, contextFor(externalDirectory))).toBeUndefined();
+    }
+    expect(matchBlockedCommand(`git -C ${externalDirectory} rebase main`, contextFor(sessionDirectory))).toBeUndefined();
+    expect(matchBlockedCommand(`cd ${externalDirectory} && git pull`, contextFor(sessionDirectory))).toBeUndefined();
+    expect(matchBlockedCommand("git rebase main", contextFor(sessionDirectory))).toBeDefined();
+  });
 });
 
 describe("광범위한 파일 삭제", () => {

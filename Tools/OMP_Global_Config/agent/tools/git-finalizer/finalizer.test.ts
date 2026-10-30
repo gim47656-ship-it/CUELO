@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
 import { appendSlopRecord, readSlopRecords, runSlopGate, sha256 } from "../../extensions/lib/slop-gate";
-import factory, { hasPosixGitdirWorktree, windowsDrivePaths } from "./index";
+import { finalizeTool as factory, hasPosixGitdirWorktree, windowsDrivePaths } from "./index";
 import { selectGitExecutor, windowsPathToPosix } from "./wsl-git";
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));

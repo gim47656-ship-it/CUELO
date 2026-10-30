@@ -814,11 +814,31 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   staging 전에 거부한다. commit parent는 commit 직전 HEAD와 같아야 하고 push는 생성 SHA의
   non-force push로 remote ref까지 확인한다.
 - lock·ancestry·경로·non-fast-forward 실패는 우회하거나 자동 rebase·reset하지 않고 상태를 보존해
-  보고한다. `index.lock`이나 worktree lock은 지우지 않고 잠시 뒤 한 번만 재시도하며, 같은 실패가
-  두 번째면 중단해 보고한다.
+  보고한다. 자기 wt 브랜치를 `git_integrate`로 대상 위에 rebase하는 것만 예외다(아래). `index.lock`이나
+  worktree lock은 지우지 않고 잠시 뒤 한 번만 재시도하며, 같은 실패가 두 번째면 중단해 보고한다.
 - 서로 다른 Main 세션은 같은 `git common-dir`을 공유해도 프로젝트 허용 경로가 겹치지 않으면 동시에
   쓸 수 있다. 각 세션은 자기 프로젝트 밖과 저장소 공용 루트 파일을 수정하지 않고 마감 직전 경계를
-  다시 확인한다. 경로가 겹치면 한 Main 아래 Maker로 합치거나 명시적 격리 worktree를 쓴다.
+  다시 확인한다. 경로가 겹치면 한 Main 아래 Maker로 합치거나, 세션마다 linked worktree 하나를 쓴다.
+- worktree는 CUELO 사이드바의 worktree 만들기로 `wt/<주제>` branch와 `<repoRoot>-worktrees/wt-<주제>`
+  폴더를 만들고, 그 폴더를 cwd로 세션을 연다. 검사에 의존성이 필요하면 그 폴더에서 `bun install`을 한 번
+  한다. 작업 중 마감은 그 worktree에서 `git_finalize`로 하며 push 대상은 `origin/wt/<주제>`다. CI는
+  `main` push와 PR에서만 돈다.
+- 대상 branch(기본 `main`) 게시는 `git_integrate`로 한다. `start`는 그 worktree에서 돌릴 `checks`
+  (typecheck·test 명령)를 받는다. `git_finalize`와 같은 mutex 안에서 대상을 fetch하고, 잠금 밖에서 자기
+  worktree만 rebase하고 검사한다. 다시 잠금 안에서 fetch해 대상이 그대로면 rebase된 tip을 non-force
+  fast-forward push하고 원격 ref까지 확인한다. 그 사이 대상이 움직였으면 다시 rebase하고 검사한다.
+  성공하면 세션 branch의 원격 사본도 그 tip으로 맞춘다. 여러 세션이 함께 불러도 잠금 때문에 한 줄로 선다.
+- 충돌이 나면 `git_integrate`는 rebase를 그 자리에서 멈추고 충돌 파일, 다시 적용 중인 세션 커밋의
+  제목·본문, 대상에 새로 들어온 커밋을 돌려준다. 세션이 양쪽 의도를 보고 파일을 고친 뒤 `continue`를
+  부르면 충돌 표시가 남았는지 보고, 푼 파일에 `git_finalize`와 같은 교차검증·slop 게이트를 적용한 뒤
+  rebase를 잇는다. 풀 수 없으면 `abort`로 rebase 전 branch로 되돌린다. 검사나 게이트가 실패하면 push하지
+  않고 멈춰 보고한다.
+- 공용 파일은 텍스트로 합치지 않는다. `Tools/OMP_Global_Config/memory-sync/memories.jsonl`은
+  `.gitattributes`의 `merge=union`으로 양쪽 줄을 모두 남긴다. `Tools/CUELO_Setup/files/source-integrity.json`이
+  충돌하면 도구가 합친 index 내용으로 다시 만든다. `HANDOFF.md`·`doc/README.md`·`CHANGELOG.md`가 충돌하면
+  세션이 양쪽 내용을 보고 다시 쓴다.
+- 세션 저장소(같은 `git common-dir`의 모든 worktree)의 raw `git rebase`·`git merge`·`git pull`은 guard가
+  막는다. 앞선 원격을 따라가기만 하는 `--ff-only`와 멈춘 merge를 되돌리는 `git merge --abort`는 허용한다.
 - 레거시 파일은 브리프에 원래 인코딩과 검증 방법을 명시한다. CP949/BOM 편집은 기존 bytes와
   decoding을 증명하고 high-risk의 Main 검수 계약을 적용한다.
 
