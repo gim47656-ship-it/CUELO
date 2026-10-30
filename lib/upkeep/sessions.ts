@@ -141,6 +141,27 @@ function taskResults(text: string): Omit<MakerResult, "sessionId" | "timestamp">
   });
 }
 
+/**
+ * wait·hub 스냅샷의 작업 블록. OMP(`async/job-control.ts`)는 완료 작업마다 `### <id> [<type>] — <status>`와
+ * `Label:` 줄을 쓰고, 그 아래 `Delivery:` 줄과 결과 본문을 붙인다. 결과 본문 안의 마크다운 제목은 `Label:`이
+ * 뒤따르지 않으므로 블록 경계가 아니다.
+ */
+const SNAPSHOT_JOB = /^### \S+ \[[^\]\n]+\] — [^\n]*\nLabel: /gm;
+
+/**
+ * wait·hub가 이 스냅샷에서 새로 넘긴 결과만 고른다. 작업 블록마다 자기 `Delivery:` 줄로 판정하며, 자동 알림 등으로
+ * 이미 받은 결과를 다시 보여 주는 `already delivered or recovered`는 새 도착이 아니다(공개 이슈 #59).
+ * `Delivery:` 줄이 없는 블록(취소된 작업)도 세지 않는다.
+ */
+function snapshotDeliveries(text: string): Omit<MakerResult, "sessionId" | "timestamp">[] {
+  const starts = [...text.matchAll(SNAPSHOT_JOB)].map((match) => match.index ?? 0);
+  return starts.flatMap((start, i) => {
+    const block = text.slice(start, starts[i + 1] ?? text.length);
+    const delivery = /^Delivery: (.*)$/m.exec(block)?.[1];
+    return delivery && !delivery.startsWith("already delivered") ? taskResults(block) : [];
+  });
+}
+
 /** 오류 첫 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). */
 export function normalizeError(tool: string, text: string): string {
   const lines = text.split("\n");
@@ -370,10 +391,10 @@ export async function scanSessions(dir: string, now: number): Promise<ScanResult
 
         if (m.role === "toolResult") {
           lastResultAt = time;
-          // 자동 알림 대신 wait·hub가 회수한 결과는 `Delivery:` 줄과 함께 온다. 이미 받은 결과를 다시 읽은 출력(read 등)은 세지 않는다.
+          // 자동 알림 대신 wait·hub가 회수한 결과는 작업 블록마다 `Delivery:` 줄과 함께 온다. 이미 받은 결과를 다시 읽은
+          // 출력(read, 또는 wait·hub의 `already delivered or recovered` 블록)은 세지 않는다.
           if (m.toolName === "wait" || m.toolName === "hub") {
-            const text = textOf(m.content);
-            if (/^Delivery: /m.test(text)) for (const r of taskResults(text)) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
+            for (const r of snapshotDeliveries(textOf(m.content))) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
           }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;
           if (!call || !m.isError) continue;
