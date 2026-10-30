@@ -8,7 +8,7 @@
 export type UpkeepStatus = "ok" | "watch" | "problem" | "unknown";
 
 /** 섹션 순서는 화면 순서와 같다. */
-export const UPKEEP_SECTION_IDS = ["bottleneck", "memory", "cost", "due", "complaints", "deploy"] as const;
+export const UPKEEP_SECTION_IDS = ["bottleneck", "memory", "cost", "complaints", "ops"] as const;
 export type UpkeepSectionId = (typeof UPKEEP_SECTION_IDS)[number];
 
 export type UpkeepUnit = "count" | "ratio" | "usd" | "ms" | "tokens";
@@ -20,8 +20,10 @@ export interface UpkeepEvidence {
   sessionId?: string;
   /** 세션 파일 절대 경로. 프롬프트가 작업 세션에 그대로 넘긴다. */
   sessionPath?: string;
-  /** ISO 시각 */
+  /** ISO 시각. 기간에 걸친 사례(세션 비용 등)는 마지막 시각 */
   timestamp?: string;
+  /** 기간에 걸친 사례의 첫 시각(ISO). 고침 표시를 사이에 두면 고치기 전 사용이 섞인 사례다. */
+  since?: string;
   detail?: string;
 }
 
@@ -33,6 +35,21 @@ export interface UpkeepHandoffRef {
   title: string;
   /** 그 글머리표 본문 전체(하위 글머리표 포함) */
   text: string;
+}
+
+/** 「고침 표시」가 적용된 지표의 표시 정보. */
+export interface UpkeepFix {
+  /** 고친 시각(ISO). 이 시각 이후 기록만으로 `current`·`status`를 다시 낸다. */
+  markedAt: string;
+  /** 표시 전(최근 7일 시작부터 표시까지) 값. `current`와 같은 단위·정규화이며 측정 불가면 null */
+  before: number | null;
+  /** 표시 전 기간(최근 7일 시작부터 표시까지)과 표시 뒤 기간(표시부터 보고서 생성까지)의 길이(ms) */
+  beforeMs: number;
+  afterMs: number;
+  /** 값이 기간 합계(건수·금액)라 고침 전·뒤를 하루당으로 맞춰 견준다. 비율·요청 100건당 값이면 false */
+  perDay: boolean;
+  /** 표시 뒤 기간이 그 행의 최소 표본에 아직 못 미침. 이때는 고침 뒤 값과 고침 전 대비 변화를 숫자로 보이지 않고 「관찰 중」으로 둔다. */
+  observing: boolean;
 }
 
 export interface UpkeepMetric {
@@ -53,6 +70,10 @@ export interface UpkeepMetric {
   note?: string;
   /** 상위 사례. 최대 10개 */
   evidence: UpkeepEvidence[];
+  /** 사건 시각으로 나눠 다시 셀 수 있어 「고침 표시」를 받을 수 있는 지표 */
+  fixable?: boolean;
+  /** 고침 표시가 최근 7일 안에 있으면 그 정보. 이때 `current`는 표시 뒤 값이다. */
+  fix?: UpkeepFix;
 }
 
 /** HANDOFF의 「다음 행동」·「관찰 대기」·「남은 일」 글머리표 하나. */

@@ -34,6 +34,22 @@ export const CACHE_WRITE_FLOOR = 0.1;
 /** 비용 섹션에 따로 보이는 목적·모델 수. 나머지는 「기타 합계」로 묶는다. */
 export const COST_TOP = 12;
 
+/**
+ * 본 요청 캐시 다시 쓰기(2026-10-31 사용자 결정): 캐시 쓰기가 이 토큰 수 이상이고 캐시 읽기가 직전 요청 프롬프트
+ * (input+cacheRead+cacheWrite)의 이 비율 미만이면 다시 쓰기로 본다. 만료 판단은 이 요청이 1시간 캐시를 썼으면 1시간,
+ * 아니면 5분이다.
+ */
+export const REWRITE_MIN_WRITE = 20_000;
+export const REWRITE_READ_SHARE = 0.5;
+export const CACHE_TTL_LONG_MS = 3_600_000;
+export const CACHE_TTL_SHORT_MS = 300_000;
+
+/** 이 기간 동안 세션 기록이 없는 worktree는 남은 작업 공간으로 본다. */
+export const STALE_WORKTREE_MS = 3 * 86_400_000;
+
+/** 고침 표시한 행 중 분모가 없는 기간 합계 행은 표시 뒤 이 시간이 지나야 판정한다(그 전에는 관찰 중). */
+export const FIX_OBSERVE_MS = 86_400_000;
+
 /** 기한 초과 HANDOFF 항목 수 기준. */
 export const OVERDUE_WATCH = 1;
 export const OVERDUE_PROBLEM = 3;

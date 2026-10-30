@@ -9,6 +9,8 @@ import {
   buildMetricPrompt,
   buildSectionPrompt,
   describeDue,
+  fixComparison,
+  fixTag,
   formatUpkeepChange,
   formatUpkeepValue,
   hasFlaggedItems,
@@ -63,14 +65,15 @@ function commonCriterion(metrics: readonly UpkeepMetric[]): string | null {
   return best;
 }
 
-/** 「…새 세션」과 「복사」. 맨 위 전체 점검만 채운 주 버튼이고 섹션·행은 보조 모양이다. */
-function PromptActions({ build, onStart, target, label = T.startSession, primary = false }: {
+/** 「…새 세션」과 「복사」. 맨 위 전체 점검만 채운 주 버튼이고 섹션·행은 보조 모양이다. `children`은 같은 줄 뒤에 붙는 행 동작이다. */
+function PromptActions({ build, onStart, target, label = T.startSession, primary = false, children }: {
   build: () => string;
   onStart: (prompt: string) => void;
   /** 화면 낭독기에 붙여 읽을 대상 이름 */
   target: string;
   label?: string;
   primary?: boolean;
+  children?: ReactNode;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   useEffect(() => {
@@ -100,29 +103,63 @@ function PromptActions({ build, onStart, target, label = T.startSession, primary
       >
         <span aria-live="polite">{copyLabel}</span>
       </button>
+      {children}
     </div>
   );
 }
 
-function MetricRow({ report, section, metric, sectionCriterion, onStart }: {
+function MetricRow({ report, section, metric, sectionCriterion, onStart, onFix, busy }: {
   report: UpkeepReport;
   section: UpkeepSection;
   metric: UpkeepMetric;
   sectionCriterion: string | null;
   onStart: (prompt: string) => void;
+  /** 고침 표시를 남기거나(`mark` true) 지운다. 섹션 id는 행이 사라졌을 때 초점을 둘 곳이다. */
+  onFix: (metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => void;
+  busy: boolean;
 }) {
+  const { fix } = metric;
+  // 표시는 사건 시각으로 나눌 수 있는 주의·문제 행에만 새로 남기고, 이미 남긴 행은 판정과 관계없이 취소할 수 있다.
+  const fixAction = fix || (metric.fixable && (metric.status === "watch" || metric.status === "problem")) ? (
+    <button
+      type="button"
+      className="upkeep-button"
+      data-fix-metric={metric.id}
+      aria-label={T.fixActionFor(fix ? T.fixClear : T.fixMark, metric.label)}
+      disabled={busy}
+      onClick={() => onFix(metric.id, !fix, section.id)}
+    >
+      {fix ? T.fixClear : T.fixMark}
+    </button>
+  ) : null;
   const change = formatUpkeepChange(metric);
+  // 고침 표시한 행은 길이가 다른 고침 뒤 값을 직전 7일과 바로 견주지 않고, 고침 전 값과 같은 단위로 견준다.
+  const compared = fix ? fixComparison(metric, fix) : null;
   return (
-    <li className="upkeep-row" data-status={metric.status}>
+    <li className="upkeep-row" data-status={metric.status} data-metric-row={metric.id}>
       <div className="upkeep-row-head">
         <h4>{metric.label}</h4>
         <StatusLabel status={metric.status} text={UPKEEP_STATUS_LABELS[metric.status]} />
       </div>
-      <dl className="upkeep-values">
-        <div><dt>{T.current}</dt><dd>{formatUpkeepValue(metric.unit, metric.current)}</dd></div>
-        <div><dt>{T.previous}</dt><dd>{formatUpkeepValue(metric.unit, metric.previous)}</dd></div>
-        <div><dt>{T.change}</dt><dd>{change ?? "—"}</dd></div>
-      </dl>
+      {compared ? (
+        <dl className="upkeep-values">
+          <div><dt>{T.withWindow(T.afterFix, compared.afterWindow)}</dt><dd>{compared.after}</dd></div>
+          <div><dt>{T.withWindow(T.beforeFix, compared.beforeWindow)}</dt><dd>{compared.before}</dd></div>
+          <div><dt>{T.changeSinceFix}</dt><dd>{compared.change ?? "—"}</dd></div>
+          <div><dt>{T.previous}</dt><dd>{formatUpkeepValue(metric.unit, metric.previous)}</dd></div>
+        </dl>
+      ) : (
+        <dl className="upkeep-values">
+          <div><dt>{T.current}</dt><dd>{formatUpkeepValue(metric.unit, metric.current)}</dd></div>
+          <div><dt>{T.previous}</dt><dd>{formatUpkeepValue(metric.unit, metric.previous)}</dd></div>
+          <div><dt>{T.change}</dt><dd>{change ?? "—"}</dd></div>
+        </dl>
+      )}
+      {fix ? (
+        <p className="upkeep-line">
+          <span className="upkeep-line-label">{T.fixedSince(kstDateTime(fix.markedAt).slice(5))}</span>
+        </p>
+      ) : null}
       {metric.criterion !== sectionCriterion ? (
         <p className="upkeep-line"><span className="upkeep-line-label">{T.criterion}</span>{keepParens(metric.criterion)}</p>
       ) : null}
@@ -143,6 +180,7 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart }: {
                   {evidence.label}
                   {evidence.count !== undefined ? ` · ${evidence.count}회` : ""}
                   {evidence.timestamp ? ` · ${kstDateTime(evidence.timestamp)}` : ""}
+                  {fixTag(evidence, fix) ? ` · ${fixTag(evidence, fix)}` : ""}
                 </span>
                 {evidence.detail ? <span className="upkeep-evidence-detail">{evidence.detail}</span> : null}
                 {evidence.sessionId ? (
@@ -164,8 +202,10 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart }: {
         </details>
       ) : null}
       {isFlagged(metric.status) ? (
-        <PromptActions build={() => buildMetricPrompt(report, section.id, metric.id)} onStart={onStart} target={T.itemTarget(metric.label)} />
-      ) : null}
+        <PromptActions build={() => buildMetricPrompt(report, section.id, metric.id)} onStart={onStart} target={T.itemTarget(metric.label)}>
+          {fixAction}
+        </PromptActions>
+      ) : fixAction ? <div className="upkeep-actions">{fixAction}</div> : null}
     </li>
   );
 }
@@ -192,16 +232,19 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
   const [load, setLoad] = useState<LoadState>({ phase: "idle" });
   const rootRef = useRef<HTMLElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // 고침 표시를 바꾼 행은 판정이 바뀌어 자리가 옮겨질 수 있으므로, 새 보고서를 그린 뒤 그 행의 버튼으로 초점을 되돌린다.
+  const fixFocusRef = useRef<{ metricId: string; sectionId: UpkeepSection["id"] } | null>(null);
   // 조건부·날짜 없는 HANDOFF 항목(수십 건)은 접어 두고, 기한 지난 것과 날짜 있는 것만 먼저 보인다.
   const [dueFoldOpen, setDueFoldOpen] = useState(false);
 
-  const fetchReport = useCallback(async (refresh: boolean) => {
+  /** 보고서를 받는 모든 요청(읽기·고침 표시)의 공통 경로. 실패 문구는 요청 종류마다 다르다. */
+  const requestReport = useCallback(async (url: string, failed: (error: string) => string, init: RequestInit = {}) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setLoad({ phase: "loading" });
     try {
-      const response = await fetch(`/api/upkeep${refresh ? "?refresh=1" : ""}`, { cache: "no-store", signal: controller.signal });
+      const response = await fetch(url, { cache: "no-store", ...init, signal: controller.signal });
       const body = await response.json().catch(() => null) as (UpkeepReport & { error?: string }) | null;
       if (!response.ok || !body || !Array.isArray(body.sections)) {
         throw new Error(body?.error ?? `HTTP ${response.status}`);
@@ -210,9 +253,36 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
       setLoad({ phase: "ready" });
     } catch (error) {
       if (controller.signal.aborted) return;
-      setLoad({ phase: "error", error: error instanceof Error ? error.message : String(error) });
+      setLoad({ phase: "error", error: failed(error instanceof Error ? error.message : String(error)) });
     }
   }, []);
+
+  const fetchReport = useCallback(
+    (refresh: boolean) => requestReport(`/api/upkeep${refresh ? "?refresh=1" : ""}`, T.loadFailed),
+    [requestReport],
+  );
+
+  const changeFix = useCallback((metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => {
+    fixFocusRef.current = { metricId, sectionId };
+    void requestReport("/api/upkeep", T.fixFailed, {
+      method: mark ? "POST" : "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metricId }),
+    });
+  }, [requestReport]);
+
+  // 표시를 지워 버튼이 사라지면 같은 행의 다른 버튼으로, 행까지 사라지면(기준 밖 비용 행) 섹션 제목으로 보낸다.
+  useEffect(() => {
+    const target = fixFocusRef.current;
+    const root = rootRef.current;
+    if (!target || !root || load.phase === "loading") return;
+    fixFocusRef.current = null;
+    const id = CSS.escape(target.metricId);
+    const focusTarget = root.querySelector<HTMLElement>(`[data-fix-metric="${id}"]`)
+      ?? root.querySelector<HTMLElement>(`[data-metric-row="${id}"] :is(button:not([disabled]), summary)`)
+      ?? root.querySelector<HTMLElement>(`#upkeep-section-${target.sectionId} h3`);
+    focusTarget?.focus();
+  }, [report, load.phase]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
@@ -308,7 +378,7 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
         {!report ? (
           load.phase === "error" ? (
             <div className="upkeep-empty" role="alert">
-              <p>{T.loadFailed(load.error)}</p>
+              <p>{load.error}</p>
               <button type="button" className="upkeep-button" onClick={() => void fetchReport(false)}>{T.retry}</button>
             </div>
           ) : (
@@ -316,7 +386,7 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
           )
         ) : (
           <>
-            {load.phase === "error" ? <p className="upkeep-banner" role="alert">{T.loadFailed(load.error)}</p> : null}
+            {load.phase === "error" ? <p className="upkeep-banner" role="alert">{load.error}</p> : null}
             {report.repoCwd === null ? <p className="upkeep-banner">{T.noRepo}</p> : null}
 
             <nav className="upkeep-strip" aria-label={T.sectionStatus}>
@@ -370,11 +440,20 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
                   {section.metrics.length ? (
                     <ul className="upkeep-rows">
                       {[...section.metrics].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]).map((metric) => (
-                        <MetricRow key={metric.id} report={report} section={section} metric={metric} sectionCriterion={criterion} onStart={start} />
+                        <MetricRow
+                          key={metric.id}
+                          report={report}
+                          section={section}
+                          metric={metric}
+                          sectionCriterion={criterion}
+                          onStart={start}
+                          onFix={changeFix}
+                          busy={loading}
+                        />
                       ))}
                     </ul>
-                  ) : section.id !== "due" ? <p className="upkeep-note">{T.noMetrics}</p> : null}
-                  {section.id === "due" ? (
+                  ) : section.id !== "ops" ? <p className="upkeep-note">{T.noMetrics}</p> : null}
+                  {section.id === "ops" ? (
                     items.length ? (
                       <>
                         {dated.length ? <ul className="upkeep-rows">{dated.map(dueRow)}</ul> : null}

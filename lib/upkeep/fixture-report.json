@@ -120,37 +120,6 @@
       "warnings": []
     },
     {
-      "id": "due",
-      "title": "점검 기한",
-      "status": "problem",
-      "summary": "점검일이 지난 HANDOFF 항목 1건",
-      "metrics": [],
-      "items": [
-        {
-          "ref": { "path": "HANDOFF.md", "title": "회상 품질 재측정(11-05)", "text": "- **회상 품질 재측정(11-05)**: 문서지도 임계값을 바꾼 효과를 11-05에 다시 잰다." },
-          "section": "관찰 대기",
-          "dueDate": "2026-11-05",
-          "dueKind": "date",
-          "overdue": false
-        },
-        {
-          "ref": { "path": "HANDOFF.md", "title": "배포 7일 뒤 CI 시간 확인", "text": "- **배포 7일 뒤 CI 시간 확인**: 10-21 배포 7일 뒤 CI 평균 시간을 직전 주와 비교한다." },
-          "section": "관찰 대기",
-          "dueDate": "2026-10-28",
-          "dueKind": "after-deploy",
-          "overdue": true
-        },
-        {
-          "ref": { "path": "HANDOFF.md", "title": "폰 PWA 재접속 실패 재발 시", "text": "- **폰 PWA 재접속 실패 재발 시**: 다시 나오면 서비스 워커 로그를 받는다." },
-          "section": "다음 행동",
-          "dueDate": null,
-          "dueKind": "condition",
-          "overdue": false
-        }
-      ],
-      "warnings": []
-    },
-    {
       "id": "complaints",
       "title": "사용자 지적 반복",
       "status": "unknown",
@@ -173,10 +142,10 @@
       "warnings": ["2026-10-17 세션 파일 3개를 읽지 못함(JSON 오류)"]
     },
     {
-      "id": "deploy",
-      "title": "배포·CI",
-      "status": "ok",
-      "summary": "최근 CI 실패 없음",
+      "id": "ops",
+      "title": "운영",
+      "status": "problem",
+      "summary": "점검일이 지난 HANDOFF 항목 1건",
       "metrics": [
         {
           "id": "ci-failures",
@@ -187,6 +156,29 @@
           "status": "ok",
           "criterion": "1건 이상이면 주의",
           "evidence": []
+        }
+      ],
+      "items": [
+        {
+          "ref": { "path": "HANDOFF.md", "title": "회상 품질 재측정(11-05)", "text": "- **회상 품질 재측정(11-05)**: 문서지도 임계값을 바꾼 효과를 11-05에 다시 잰다." },
+          "section": "관찰 대기",
+          "dueDate": "2026-11-05",
+          "dueKind": "date",
+          "overdue": false
+        },
+        {
+          "ref": { "path": "HANDOFF.md", "title": "배포 7일 뒤 CI 시간 확인", "text": "- **배포 7일 뒤 CI 시간 확인**: 10-21 배포 7일 뒤 CI 평균 시간을 직전 주와 비교한다." },
+          "section": "관찰 대기",
+          "dueDate": "2026-10-28",
+          "dueKind": "after-deploy",
+          "overdue": true
+        },
+        {
+          "ref": { "path": "HANDOFF.md", "title": "폰 PWA 재접속 실패 재발 시", "text": "- **폰 PWA 재접속 실패 재발 시**: 다시 나오면 서비스 워커 로그를 받는다." },
+          "section": "다음 행동",
+          "dueDate": null,
+          "dueKind": "condition",
+          "overdue": false
         }
       ],
       "warnings": []

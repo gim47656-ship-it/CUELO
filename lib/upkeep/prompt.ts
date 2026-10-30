@@ -1,6 +1,7 @@
 import type {
   UpkeepDueItem,
   UpkeepEvidence,
+  UpkeepFix,
   UpkeepHandoffRef,
   UpkeepMetric,
   UpkeepReport,
@@ -85,8 +86,8 @@ export function formatUpkeepValue(unit: UpkeepUnit, value: number | null): strin
   }
 }
 
-/** 직전 7일 대비 변화. 둘 중 하나라도 없으면 null. ratio는 %p로 적는다. */
-export function formatUpkeepChange(metric: Pick<UpkeepMetric, "unit" | "current" | "previous">): string | null {
+/** 직전 7일 대비 변화. 둘 중 하나라도 없으면 null. ratio는 %p로 적는다. `per`는 금액 뒤에 붙는 단위(예: 「/일」). */
+export function formatUpkeepChange(metric: Pick<UpkeepMetric, "unit" | "current" | "previous">, per = ""): string | null {
   const { unit, current, previous } = metric;
   if (current === null || previous === null) return null;
   const delta = current - previous;
@@ -96,7 +97,36 @@ export function formatUpkeepChange(metric: Pick<UpkeepMetric, "unit" | "current"
   if (unit === "ratio") return `${sign}${(Math.abs(delta) * 100).toFixed(1)}%p`;
   const amount = formatUpkeepValue(unit, Math.abs(delta));
   const percent = previous === 0 ? "" : ` (${sign}${round((Math.abs(delta) / Math.abs(previous)) * 100, 0)}%)`;
-  return `${sign}${amount}${percent}`;
+  return `${sign}${amount}${per}${percent}`;
+}
+
+/** 기간 길이, 예: 「5분」, 「2시간」, 「6.5일」. */
+export function formatUpkeepDuration(ms: number): string {
+  if (ms < 3_600_000) return `${Math.max(0, Math.floor(ms / 60_000))}분`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}시간`;
+  return `${round(ms / 86_400_000, 1)}일`;
+}
+
+/** 표시 뒤 표본이 차기 전 고침 뒤 값·변화 칸에 숫자 대신 쓰는 말 */
+export const FIX_OBSERVING = "관찰 중";
+
+/**
+ * 고침 표시한 행의 고침 전·뒤 비교. 두 기간의 길이가 달라 기간 합계 값은 하루당으로 맞추고, 비율·요청 100건당 값은 그대로
+ * 견준다. 직전 7일과는 견주지 않는다(판정 기준은 그대로 직전 7일이다). 표시 뒤 표본이 차기 전(`fix.observing`)에는 고침 뒤
+ * 값과 변화를 숫자로 내지 않아 몇 분짜리 기간이 나아진 것처럼 읽히지 않게 한다.
+ */
+export function fixComparison(metric: Pick<UpkeepMetric, "unit" | "current">, fix: UpkeepFix) {
+  const per = fix.perDay ? "/일" : "";
+  const scale = (value: number | null, ms: number) => (value === null || !fix.perDay ? value : ms > 0 ? value / (ms / 86_400_000) : null);
+  const after = scale(metric.current, fix.afterMs), before = scale(fix.before, fix.beforeMs);
+  const text = (value: number | null) => `${formatUpkeepValue(metric.unit, value)}${value === null ? "" : per}`;
+  return {
+    after: fix.observing ? FIX_OBSERVING : text(after),
+    before: text(before),
+    afterWindow: formatUpkeepDuration(fix.afterMs),
+    beforeWindow: formatUpkeepDuration(fix.beforeMs),
+    change: fix.observing ? FIX_OBSERVING : formatUpkeepChange({ unit: metric.unit, current: after, previous: before }, per),
+  };
 }
 
 const DUE_KIND_ORDER: Record<UpkeepDueItem["dueKind"], number> = { date: 0, "after-deploy": 0, condition: 1, none: 2 };
@@ -149,12 +179,25 @@ function periodLines(report: UpkeepReport): string[] {
   ];
 }
 
-function evidenceLine(evidence: UpkeepEvidence): string {
+/**
+ * 근거 사례와 고침 표시의 관계를 화면·프롬프트에 붙일 꼬리표로. 표시보다 먼저 끝났으면 「고침 전」, 표시 전에 시작해
+ * 뒤까지 이어진 기간 사례(세션 비용)는 「고침 전 사용 포함」, 그 밖에는 null.
+ */
+export function fixTag(evidence: UpkeepEvidence, fix: UpkeepFix | undefined): string | null {
+  if (!fix || !evidence.timestamp) return null;
+  const mark = Date.parse(fix.markedAt);
+  if (Date.parse(evidence.timestamp) < mark) return "고침 전";
+  return evidence.since && Date.parse(evidence.since) < mark ? "고침 전 사용 포함" : null;
+}
+
+function evidenceLine(evidence: UpkeepEvidence, fix: UpkeepFix | undefined): string {
   const parts = [evidence.label];
   if (evidence.count !== undefined) parts.push(`${groupDigits(evidence.count)}회`);
   if (evidence.sessionId) parts.push(`세션 ${evidence.sessionId}`);
   if (evidence.sessionPath) parts.push(evidence.sessionPath);
   if (evidence.timestamp) parts.push(kstDateTime(evidence.timestamp));
+  const tag = fixTag(evidence, fix);
+  if (tag) parts.push(tag);
   if (evidence.detail) parts.push(evidence.detail);
   return `- ${parts.join(" · ")}`;
 }
@@ -164,17 +207,26 @@ function handoffBlock(ref: UpkeepHandoffRef, heading: string): string[] {
 }
 
 function metricBlock(metric: UpkeepMetric): string[] {
-  const change = formatUpkeepChange(metric);
-  const lines = [
-    `- 최근 7일 값: ${formatUpkeepValue(metric.unit, metric.current)}`,
+  const { fix } = metric;
+  // 고침 표시한 행은 길이가 다른 고침 뒤 값과 직전 7일을 바로 견주지 않고, 고침 전 값과 같은 단위로 견준다.
+  const change = fix ? null : formatUpkeepChange(metric);
+  const compared = fix ? fixComparison(metric, fix) : null;
+  const lines = fix && compared
+    ? [
+      `- 고침 표시: ${kstDateTime(fix.markedAt)}. 판정은 이 시각 이후 기록만으로 냈습니다.`,
+      `- 고침 뒤 값(표시 뒤 ${compared.afterWindow}): ${compared.after}`,
+      `- 고침 전 값(최근 7일 중 표시 전 ${compared.beforeWindow}): ${compared.before}${!fix.observing && compared.change ? ` (고침 전 대비 변화 ${compared.change})` : ""}`,
+    ]
+    : [`- 최근 7일 값: ${formatUpkeepValue(metric.unit, metric.current)}`];
+  lines.push(
     `- 직전 7일 값: ${formatUpkeepValue(metric.unit, metric.previous)}${change ? ` (변화 ${change})` : ""}`,
     `- 판정: ${UPKEEP_STATUS_LABELS[metric.status]}`,
     `- 판정 기준: ${metric.criterion}`,
-  ];
+  );
   if (metric.note) lines.push(`- 해석 주의: ${metric.note}`);
   if (metric.handoff) lines.push("", ...handoffBlock(metric.handoff, "이 기준을 적은 HANDOFF 항목"));
   lines.push("", "근거 사례:");
-  if (metric.evidence.length) lines.push(...metric.evidence.map(evidenceLine));
+  if (metric.evidence.length) lines.push(...metric.evidence.map((evidence) => evidenceLine(evidence, fix)));
   else lines.push("- 보고서에 사례가 없습니다. 아래 요청 1번에서 직접 찾아야 합니다.");
   return lines;
 }
