@@ -456,9 +456,10 @@ function complaintSection(scan: ScanResult): UpkeepSection {
 
 /** 배포 리비전과 공개 CI 행. */
 export function deployMetrics(deploy: DeployState, now: number): UpkeepMetric[] {
-  // 비교하지 못한(pending null) 다른 리비전은 예전처럼 다름으로 둔다.
+  // 비교하지 못하면(pending null) 미확인이다. 대개 개발 사본이 다른 곳에서 게시·배포한 커밋을 아직 받지 않은 경우라, 「배포 필요」로
+  // 두면 사실과 반대로 말한다(10-31 사무실: 배포 7139168d가 개발 사본 HEAD de202b74보다 앞섰다).
   const differs = deploy.head && deploy.deployed
-    ? !deploy.head.toLowerCase().startsWith(deploy.deployed.toLowerCase()) && (deploy.pending === null || deploy.pending.length > 0)
+    ? deploy.head.toLowerCase().startsWith(deploy.deployed.toLowerCase()) ? false : deploy.pending === null ? null : deploy.pending.length > 0
     : null;
   const revision = metric("revision-diff", "배포 리비전과 저장소 HEAD", "count", differs === null ? null : Number(differs), null,
     differs === null ? "unknown" : differs ? "watch" : "ok", "배포한 리비전 뒤 HEAD에 기록(doc/, HANDOFF.md, 기억 동기화 파일) 밖의 변경이 있으면 주의");

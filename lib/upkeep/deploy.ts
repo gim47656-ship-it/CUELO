@@ -40,6 +40,15 @@ export async function pendingDeployFiles(repo: string, deployed: string, head: s
   }
 }
 
+async function hasCommit(repo: string, rev: string): Promise<boolean> {
+  try {
+    await exec("git", ["-C", repo, "cat-file", "-e", `${rev}^{commit}`], { timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function inspectDeploy(agentDir: string, repo: string | null): Promise<DeployState> {
   const warnings: string[] = [];
   let deployed: string | null = null, head: string | null = null;
@@ -55,7 +64,9 @@ export async function inspectDeploy(agentDir: string, repo: string | null): Prom
   if (repo && head && deployed) {
     const diff = head.toLowerCase().startsWith(deployed.toLowerCase()) ? { pending: [], records: 0 } : await pendingDeployFiles(repo, deployed, head);
     if (diff) ({ pending, records } = diff);
-    else warnings.push(`배포 리비전 ${deployed.slice(0, 12)}을 저장소 HEAD와 비교하지 못했습니다.`);
+    else warnings.push((await hasCommit(repo, deployed))
+      ? `배포 리비전 ${deployed.slice(0, 12)}을 저장소 HEAD와 비교하지 못했습니다.`
+      : `개발 사본에 배포 리비전 ${deployed.slice(0, 12)}이 없어 HEAD와 비교하지 못했습니다. 다른 곳에서 게시·배포한 커밋을 아직 받지 않았을 수 있습니다(git fetch).`);
   }
   let ci: CiRun | null = null;
   try { const result = await exec("gh", ["run", "list", "--repo", "gim47656-ship-it/CUELO", "--limit", "1", "--json", "status,conclusion,headSha,createdAt,workflowName"], { timeout: 10000 }); ci = JSON.parse(result.stdout)[0] ?? null; } catch { /* reported below */ }

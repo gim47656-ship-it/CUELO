@@ -210,6 +210,16 @@ export function normalizeError(tool: string, text: string): string {
 /** 사용자 중단·보조 건너뜀·취소처럼 의도된 비결함 오류. */
 const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
 
+/**
+ * 도구 결과 뒤 이것이 끼면 다음 요청은 도구 결과가 아니라 새 입력(사용자·다른 agent의 메시지, 백그라운드 결과)이나 세션 재개를
+ * 기다린 것이라 느린 대기로 세지 않는다. 10-31 사무실 점검에서 20초 넘는 대기 222건 중 217건이 이런 대기였다(yield 뒤 재호출 130건 등).
+ */
+function isNewInput(entry: Entry): boolean {
+  if (entry.type === "message") return entry.message?.role === "user";
+  if (entry.type === "custom_message") return entry.customType === "irc:incoming" || entry.customType === "async-result";
+  return entry.type === "custom" && entry.customType === "session_exit";
+}
+
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -376,6 +386,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           else seenEntries.add(copyKey);
         }
         const rewrite = observeCache(entry, time);
+        if (isNewInput(entry)) lastResultAt = null;
         if (!counted) continue;
         if (cwd) cwdActivity[cwd] = Math.max(cwdActivity[cwd] ?? 0, time);
 
