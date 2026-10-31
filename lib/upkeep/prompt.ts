@@ -224,6 +224,7 @@ function metricBlock(metric: UpkeepMetric): string[] {
     `- 판정 기준: ${metric.criterion}`,
   );
   if (metric.note) lines.push(`- 해석 주의: ${metric.note}`);
+  if (metric.fixable) lines.push(`- 지표 id(고침 표시용): \`${metric.id}\``);
   if (metric.handoff) lines.push("", ...handoffBlock(metric.handoff, "이 기준을 적은 HANDOFF 항목"));
   lines.push("", "근거 사례:");
   if (metric.evidence.length) lines.push(...metric.evidence.map((evidence) => evidenceLine(evidence, fix)));
@@ -251,6 +252,7 @@ const REQUEST_LINES = [
   "2. 원인이 CUELO-private 저장소 범위 안이면 고치고, 고친 동작을 실제로 검증해 주세요.",
   "3. HANDOFF.md와 작업 기록(doc/history)에 원인·조치·검증 결과를 남겨 주세요.",
   "4. 사용자 결정이 필요한 일(기준 변경, 비용·배포·삭제 등)이면 고치지 말고 멈춰서 저에게 물어봐 주세요.",
+  "5. 고쳐서 live 배포와 검증까지 끝난 지표만 고침 표시를 남겨 주세요. 이 CUELO 서버의 `POST /api/upkeep`에 JSON `{\"metricId\": \"<지표 id>\", \"at\": \"<고친 동작이 live에 들어간 시각, ISO>\"}`을 보내면 됩니다(최근 7일 안, 미래 불가). 사용자 결정에 따른 사용량처럼 고친 게 아닌 지표는 표시하지 말고, 비밀번호 잠금 등으로 API를 부를 수 없으면 표시 대신 지표 id와 시각을 결과에 적어 주세요.",
 ];
 
 const DUE_REQUEST_LINES = [
@@ -356,7 +358,7 @@ export function buildFullPrompt(report: UpkeepReport): string {
   lines.push(
     "",
     ...REQUEST_LINES,
-    "5. 점검일이 지난 HANDOFF 항목은 원문에 적힌 조건과 기준으로 판정하고, 결과에 맞게 그 항목을 고쳐 주세요.",
+    "6. 점검일이 지난 HANDOFF 항목은 원문에 적힌 조건과 기준으로 판정하고, 결과에 맞게 그 항목을 고쳐 주세요.",
   );
   return join(lines);
 }

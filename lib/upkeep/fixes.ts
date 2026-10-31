@@ -32,6 +32,21 @@ export function fixMetricIdFrom(body: unknown): string | null {
   return typeof id === "string" && id.length <= MAX_ID_LENGTH && isFixableMetricId(id) ? id : null;
 }
 
+/** 보고서의 최근 7일 창. 그보다 오래된 표시는 `activeFixMarks`가 버리므로 남길 수 없다. */
+const FIX_WINDOW_MS = 7 * 86_400_000;
+
+/**
+ * 요청 본문의 선택 `at`: 고친 동작이 live에 들어간 시각(ISO). 없으면 `now`. 미래이거나 최근 7일 창보다 오래됐거나
+ * 해석할 수 없으면 null이다. 배포 시각으로 표시해야 배포와 표시 사이의 기록이 고침 뒤 표본에 들어간다.
+ */
+export function fixMarkTimeFrom(body: unknown, now: Date): Date | null {
+  const at = typeof body === "object" && body !== null && "at" in body ? body.at : undefined;
+  if (at === undefined) return now;
+  const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  if (!Number.isFinite(time) || time > now.getTime() || time < now.getTime() - FIX_WINDOW_MS) return null;
+  return new Date(time);
+}
+
 /**
  * 저장된 표시. 파일이 없으면 빈 표시다. 파일이 있는데 읽거나 해석할 수 없으면 던져서, 남기기·지우기가 다른 표시를
  * 덮어쓰거나 지우지 않은 채 성공한 것처럼 보이지 않게 한다. 시각을 읽을 수 없거나 표시할 수 없는 id는 버린다.
