@@ -3047,6 +3047,15 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		patched: `- \`app.relay: true\`: drive the user's Chrome through the omp relay. \`app.target\` selects a tab by URL/title substring; without it, the relay opens a new tab for this \`name\` and leaves the user's tabs alone. Reopening the same \`name\` reuses that tab; closing it releases the tab without closing the page.`,
 	},
 	{
+		// 2026-10-31 사용자 결정(효과 있는 held 항목 적용): 집 PC 최근 7일 Maker 요청 8,600회,
+		// 91세션 중 computer eval 사용 0회인데 매 요청에 computer.md 18,725자가 실렸다.
+		// Main은 60세션 중 12세션이 사용하므로 inline을 유지하고, Maker만 기존 xd topic으로 읽는다.
+		file: "src/tools/computer.ts",
+		marker: "inlineDocumentation: (session.taskDepth ?? 0) === 0",
+		anchor: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: true,",
+		patched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: (session.taskDepth ?? 0) === 0,",
+	},
+	{
 		// 2026-10-09 사용자 결정: computer 승인 창은 control.acquire에서만 뜬다. 모델이
 		// BackgroundUnavailable을 우회하려고 acquire를 불러 매번 승인을 묻게 됐다(Windows 시절
 		// 세션은 동작별 takeover만 썼다). 승인 게이트는 그대로 두고, 동작별 takeover를 먼저 쓰게 안내한다.
