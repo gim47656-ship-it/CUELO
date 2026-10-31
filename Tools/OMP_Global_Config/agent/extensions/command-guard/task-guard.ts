@@ -943,21 +943,20 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
 // 브라우저 작업을 별도 ego TaskSpace(`ego_browser`)에서 한다. 규칙(wsl-windows-reference.md)이 10-21부터 그렇게 말했지만
 // 7일 집계에서 eval `browser.open`이 relay 21회·headless 6회 나왔다(코어 relay 안내가 모든 세션에 relay를 기본으로 알린다).
 // relay는 사용자가 지목한 이미 열린 탭(`app.target`)에만 쓴다. ego lite가 없는 PC는 막지 않는다.
-// 패턴은 위 eval 가드처럼 원문에 맞춘다(문자열 안의 `browser.open(`도 호출로 본다). 옵션이 변수·spread라 정적으로
-// 못 보는 호출은 셀 어딘가에 target 키가 있으면 통과시킨다.
+// 패턴은 위 eval 가드처럼 원문에 맞춘다(문자열 안의 `browser.open(`도 호출로 본다). 이슈 #60: target은 호출 옵션의 최상위
+// `app` 항목 값(`{…}`·`dict(…)`)의 직속 키일 때만 인정한다(최상위 `target`은 코어가 relay 새 탭으로 연다). 직접 준 `app`이
+// spread보다 우선한다. 옵션 전체가 변수·spread라 정적으로 못 보는 호출은 셀 어딘가의 `app` 값에 직속 target이 있으면,
+// `app` 값만 변수인 호출은 이 호출 인자 밖에 target 키가 있으면 통과시킨다.
 const BROWSER_OPEN_CALLS = [
   /(?<![\w$.])browser\s*\.\s*open\s*\(/g,
   /(?<![\w$.])browser\s*\[\s*["'`]open["'`]\s*\]\s*\(/g,
   /\(\s*browser\s*\)\s*\.\s*open\s*\(/g,
 ] as const;
 const TARGET_KEY = /(?:(?<![\w$])target|["'`]target["'`])\s*(?::|=(?!=))/;
-const OPAQUE_OPTIONS = [
-  /\.\.\.|\*\*/,
-  // browser.open(opts) · (opts) · opts, 처럼 변수 하나만 넘기는 형태
-  /^[\s(]*[A-Za-z_$][\w$.]*[\s)]*,?\s*$/,
-  /(?<![\w$])["'`]?app["'`]?\s*(?::|=(?!=))\s*(?!dict\s*\()[A-Za-z_$]/,
-  /[{,]\s*app\s*[,}]/,
-] as const;
+// `app:`·`app=`·`"app":` 뒤 `{`·`(`·`dict(`로 시작하는 값. 끝은 값 시작 바로 앞이다.
+const APP_VALUE = /(?<![\w$])["'`]?app["'`]?\s*(?::|=(?!=))\s*(?=(?:dict\s*)?[({])/g;
+// 옵션 항목 `key: value`·`key=value`·`"key": value`
+const OPTION_ENTRY = /^["'`]?([A-Za-z_$][\w$]*)["'`]?\s*(?::|=(?!=))\s*([\s\S]*)$/;
 const EGO_PROBE_TIMEOUT_MS = 10_000;
 
 export type EgoLiteProbe = () => Promise<boolean>;
@@ -1007,13 +1006,114 @@ function browserOpenArguments(code: string): string[] {
   return calls.map((match) => callArguments(code, match.index! + match[0].length - 1));
 }
 
+/** 문자열은 그대로 두고 주석(js 줄·블록 주석, py `#`)만 공백 하나로 바꾼 원문. py의 `//`는 정수 나눗셈이다. */
+function stripComments(text: string, py: boolean): string {
+  let out = "";
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '"' || char === "'" || char === "`") {
+      const start = index;
+      for (index++; index < text.length && text[index] !== char; index++) {
+        if (text[index] === "\\") index++;
+      }
+      out += text.slice(start, index + 1);
+    } else if (!py && char === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      index = end < 0 ? text.length : end + 1;
+      out += " ";
+    } else if (py ? char === "#" : char === "/" && text[index + 1] === "/") {
+      const end = text.indexOf("\n", index);
+      index = end < 0 ? text.length : end - 1;
+      out += " ";
+    } else out += char;
+  }
+  return out;
+}
+
+/** 따옴표·괄호 밖의 쉼표로 나눈 빈칸 아닌 조각. 주석은 먼저 stripComments로 지운다. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '"' || char === "'" || char === "`") {
+      for (index++; index < text.length && text[index] !== char; index++) {
+        if (text[index] === "\\") index++;
+      }
+    } else if ("([{".includes(char)) depth++;
+    else if (")]}".includes(char)) depth--;
+    else if (char === "," && depth === 0) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/** 감싼 괄호를 벗긴 값. 괄호 안 쉼표는 js에선 마지막 값이 실제 값인 쉼표 식이고, py에선 튜플이라 undefined다. */
+function unwrapParens(text: string, py: boolean): string | undefined {
+  let value = text.trim();
+  while (value.startsWith("(")) {
+    const inner = callArguments(value, 0);
+    const items = splitTopLevel(inner);
+    if (py && (items.length > 1 || /,\s*$/.test(inner))) return undefined;
+    value = items.at(-1) ?? "";
+  }
+  return value;
+}
+
+/** `app` 값이 `{…}`·`dict(…)`(괄호로 감싼 것 포함)이면 직속 키에 target이 있는지, 변수 등 정적으로 못 보면 undefined. */
+function appValueHasTarget(value: string, py: boolean): boolean | undefined {
+  const text = unwrapParens(value, py);
+  if (text === undefined) return false;
+  const open = /^(?:dict\s*\(|\{)/.exec(text);
+  if (!open) return undefined;
+  return splitTopLevel(callArguments(text, open[0].length - 1)).some(
+    (entry) => entry === "target" || OPTION_ENTRY.exec(entry)?.[1] === "target",
+  );
+}
+
+type OpenOptions = { app?: string; target: boolean; opaque: boolean };
+
+/** 호출 인자의 최상위 옵션: 마지막 `app` 항목 값(shorthand는 그 이름), 최상위 target 유무, spread·변수처럼 못 보는 부분 유무. */
+function openOptions(args: string, py: boolean): OpenOptions {
+  const options: OpenOptions = { target: false, opaque: false };
+  for (const raw of splitTopLevel(args)) {
+    const part = unwrapParens(raw, py) ?? "";
+    const inObject = part.startsWith("{");
+    for (const entry of inObject ? splitTopLevel(callArguments(part, 0)) : [part]) {
+      const match = OPTION_ENTRY.exec(entry);
+      if (match) {
+        if (match[1] === "app") options.app = match[2]!.trim();
+        else if (match[1] === "target") options.target = true;
+      } else if (inObject && entry === "app") options.app = entry;
+      else if (inObject && entry === "target") options.target = true;
+      else if (!inObject || /^(?:\.\.\.|\*\*)/.test(entry)) options.opaque = true;
+    }
+  }
+  return options;
+}
+
 export async function matchRelayBrowserOpen(input: EvalCallInput, egoLiteAvailable: EgoLiteProbe): Promise<string | undefined> {
   if (typeof input.code !== "string") return undefined;
   const code = input.code;
-  const cellHasTarget = TARGET_KEY.test(code);
-  const untargeted = browserOpenArguments(code).some(
-    (args) => !TARGET_KEY.test(args) && !(cellHasTarget && OPAQUE_OPTIONS.some((pattern) => pattern.test(args))),
+  const py = input.language === "py";
+  const clean = stripComments(code, py);
+  const cellHasAppTarget = [...clean.matchAll(APP_VALUE)].some(
+    (match) => appValueHasTarget(clean.slice(match.index! + match[0].length), py) === true,
   );
+  const untargeted = browserOpenArguments(code).some((args) => {
+    const options = openOptions(stripComments(args, py), py);
+    // 최상위 target을 직접 쓴 호출은 app.target이 함께 있어도 잘못 쓴 호출이다.
+    if (options.target) return true;
+    if (options.app !== undefined) {
+      // app 값이 변수면 그 정의(이 호출 인자 밖)에 target 키가 있어야 한다.
+      return !(appValueHasTarget(options.app, py) ?? TARGET_KEY.test(code.replace(args, "")));
+    }
+    return !(options.opaque && cellHasAppTarget);
+  });
   if (!untargeted || !(await egoLiteAvailable())) return undefined;
   return (
     "[BrowserSpaceGuard] 이 PC에는 ego lite가 있어 브라우저 작업은 `ego_browser` 도구의 별도 TaskSpace에서 합니다" +
