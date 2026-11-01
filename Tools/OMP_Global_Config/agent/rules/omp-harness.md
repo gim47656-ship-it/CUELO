@@ -5,7 +5,7 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 
 # OMP 전역 설정 하네스
 - 저장소는 `gim47656-ship-it/CUELO-private`이며 앱 소스 루트는 저장소 루트, 전역 설정 미러는
-  `<repo>/Tools/OMP_Global_Config`다. 관례 경로 `F:/CUELO`는 예시일 뿐이며, 스크립트 경로는
+  `<repo>/Tools/OMP_Global_Config`다. 관례 경로 `D:/CUELO`는 예시일 뿐이며, 스크립트 경로는
   `$PSScriptRoot`에서 계산한다. 이 규칙의 `Tools/OMP_Global_Config/**` glob은 저장소 루트 기준이다.
 - 공개 npm 설치는 `cuelo harness-diff`·`cuelo harness-update`, 공개 소스 설치는 저장소 루트의 `node install.mjs harness-diff`·`node install.mjs harness-update`를 사용한다. 아래의 `setup.ps1`·`export.ps1`·source manifest 절차는 해당 도우미가 있는 유지보수 사본용이며, 공개본에 없는 파일을 실행하거나 개인 프로필을 복사하지 않는다. 앱 SDK 패치는 별도 설치한 `omp` CLI에 적용되지 않는다.
 

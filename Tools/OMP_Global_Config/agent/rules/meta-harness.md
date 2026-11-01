@@ -6,7 +6,7 @@ globs: ["Tools/OMP_Global_Config/**"]
 # 에이전트 정의 빌드 하네스
 - 저장소 루트가 CUELO 앱 소스 루트이며, 이 미러는
   `<repo>/Tools/OMP_Global_Config`에 있다. `Tools/OMP_Global_Config/**` glob은 저장소 루트
-  기준으로 유지하므로 `F:/CUELO`에서 현재 미러 경로와 일치한다.
+  기준으로 유지하므로 Windows 사본(집 `D:/CUELO`)에서도 현재 미러 경로와 일치한다.
 
 - `agent/agents/maker.md`는 `agent/sop/` 조각에서 `patches/build-agents.mjs`가 생성한다.
 - 위임 정의는 `maker` 하나이며 `_writer.md`와 `_common.md`를 합친다.

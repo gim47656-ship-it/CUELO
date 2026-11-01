@@ -1,19 +1,25 @@
 import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 
 /**
- * WSL 배포 완료를 읽기 전용으로 검증한다(deploy-ops.md WSL 배포 항목의 완료 기준 네 가지).
+ * CUELO 배포 완료를 읽기 전용으로 검증한다(deploy-ops.md 배포 항목의 완료 기준 네 가지). WSL과 네이티브 Linux 모두 같은
+ * `update.sh`로 갱신하므로 2)의 런처 상태 확인만 호스트에 따라 다르다.
  *  1) 가장 최근 `~/.omp/wsl-update/<UTC시각>.log`의 `READY <revision> ...` 줄이 요청한 revision과 같은가
- *  2) `launch.ps1 -Status`(Windows PowerShell)가 `matched:true`인가
+ *  2) 런처 상태가 `matched:true`인가 — WSL은 `launch.ps1 -Status`(Windows PowerShell), 네이티브 Linux는 `linux/launch.sh status`
  *  3) `node ~/cuelo-run/install.mjs health`가 서비스 4개 모두 OK인가
- *  4) `GET /api/models?cwd=<cwd>`의 `roles`(배열)가 WSL `~/.omp/agent/config.yml` `modelRoles`와 같은가
- * 서버를 띄우거나 내리거나 되돌리거나 배포하지 않는다. 실행하는 외부 명령은 정확히 세 가지다:
- *  - `wslpath -w <launch.ps1>`
- *  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <launch.ps1> -Status [-Distribution <배포판>]`  (`-Status` 없이 `-Run`/무인자 금지)
- *  - `node <~/cuelo-run>/install.mjs health`
+ *  4) `GET /api/models?cwd=<cwd>`의 `roles`(배열)가 `~/.omp/agent/config.yml` `modelRoles`와 같은가
+ * 서버를 띄우거나 내리거나 되돌리거나 배포하지 않는다. 실행하는 외부 명령은 호스트마다 정확히 다음뿐이다:
+ *  - WSL: `wslpath -w <launch.ps1>`, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <launch.ps1> -Status [-Distribution <배포판>]`
+ *    (`-Status` 없이 `-Run`/무인자 금지)
+ *  - 네이티브 Linux: `bash <~/cuelo-run>/Tools/CUELO_Setup/linux/launch.sh status --port-base <포트>` (`start`·`register` 금지)
+ *  - 공통: `node <~/cuelo-run>/install.mjs health`
  * 나머지는 파일 읽기와 로컬 GET 한 번이다. 각 구간은 던지지 않고 자기 실패를 `error`로 보고한다.
  */
+
+/** WSL이면 Windows 런처, 아니면 네이티브 런처로 상태를 본다. */
+export type HostKind = "wsl" | "linux";
 
 export interface DeployVerifyParams {
   revision: string;
@@ -38,6 +44,8 @@ export interface VerifyDeps {
   /** 현재 WSL 배포판 이름(WSL_DISTRO_NAME). 없으면 undefined. */
   envDistro?: string;
   portBase: number;
+  /** 실행 호스트. 없으면 WSL로 본다(기존 동작). */
+  hostKind?: HostKind;
 }
 
 export interface UpdateLogSection {
@@ -118,7 +126,7 @@ function field(value: unknown, key: string): unknown {
   return value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined;
 }
 
-/** `launch.ps1 -Status` 출력에서 JSON 객체를 찾는다. 종료 코드 3(불일치)도 JSON을 함께 낸다. */
+/** `launch.ps1 -Status`·`linux/launch.sh status` 출력에서 JSON 객체를 찾는다. 종료 코드 3(불일치)도 JSON을 함께 낸다. */
 export function parseLaunchStatus(stdout: string): LaunchStatusSection {
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
@@ -129,6 +137,14 @@ export function parseLaunchStatus(stdout: string): LaunchStatusSection {
   } catch (error) {
     return { matched: false, error: `JSON 해석 실패: ${message(error)}` };
   }
+}
+
+/**
+ * WSL 신호(`WSL_INTEROP`·`WSL_DISTRO_NAME`·`/proc/sys/fs/binfmt_misc/WSLInterop`(systemd 아래 새 WSL은 `WSLInterop-late`)) 중 하나라도 있으면 WSL이다.
+ * `Tools/CUELO_Setup` 셸 스크립트의 호스트 판별과 같은 신호를 쓴다.
+ */
+export function detectHostKind(env: Record<string, string | undefined>, wslInteropRegistered: boolean): HostKind {
+  return env.WSL_INTEROP || env.WSL_DISTRO_NAME || wslInteropRegistered ? "wsl" : "linux";
 }
 
 /** `install.mjs health` 출력(`OK   name ...` / `FAIL name ...`)에서 정상 서비스 수와 전체 수를 센다. */
@@ -192,7 +208,29 @@ export async function checkUpdateLog(revision: string, deps: VerifyDeps): Promis
   return { file, readyRevision: ready, matches: revisionMatches(revision, ready) };
 }
 
+/** 런처 상태 출력 판정은 두 호스트가 같다: 일치면 exit 0, 불일치면 exit 3이고 둘 다 JSON을 낸다. */
+function judgeLaunchStatus(label: string, result: ExecResult): LaunchStatusSection {
+  const parsed = parseLaunchStatus(result.stdout);
+  if (parsed.error) return result.code === 0 ? parsed : { ...parsed, error: `${describeFailure(label, result)}; ${parsed.error}` };
+  // kill·다른 종료 코드·코드와 JSON이 엇갈리면 실행이 끝났다고 보지 않는다.
+  const expectedCode = parsed.matched ? 0 : 3;
+  if (result.killed || result.code !== expectedCode) {
+    return { matched: false, raw: parsed.raw, error: `${describeFailure(label, result)}; JSON matched:${parsed.matched}인데 exit ${expectedCode}가 아닙니다.` };
+  }
+  return parsed;
+}
+
 export async function checkLaunchStatus(deps: VerifyDeps, distro: string | undefined): Promise<LaunchStatusSection> {
+  if (deps.hostKind === "linux") {
+    const script = `${deps.home}/cuelo-run/Tools/CUELO_Setup/linux/launch.sh`;
+    try {
+      // 반드시 status. start는 서버를 띄운다. 네이티브에는 배포판이 없으므로 distro는 쓰지 않는다.
+      const result = await deps.exec("bash", [script, "status", "--port-base", String(deps.portBase)], { cwd: deps.home, timeout: EXEC_TIMEOUT_MS });
+      return judgeLaunchStatus("linux/launch.sh status", result);
+    } catch (error) {
+      return { matched: false, error: `linux/launch.sh status 실행 실패: ${message(error)}` };
+    }
+  }
   const script = `${deps.home}/cuelo-run/Tools/CUELO_Setup/wsl/launch.ps1`;
   try {
     const conv = await deps.exec("wslpath", ["-w", script], { cwd: deps.home, timeout: EXEC_TIMEOUT_MS });
@@ -202,14 +240,7 @@ export async function checkLaunchStatus(deps: VerifyDeps, distro: string | undef
     const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowsPath, "-Status"];
     if (distro) args.push("-Distribution", distro);
     const result = await deps.exec("powershell.exe", args, { cwd: deps.home, timeout: EXEC_TIMEOUT_MS });
-    const parsed = parseLaunchStatus(result.stdout);
-    if (parsed.error) return result.code === 0 ? parsed : { ...parsed, error: `${describeFailure("launch.ps1 -Status", result)}; ${parsed.error}` };
-    // launch.ps1 -Status는 일치면 exit 0, 불일치면 exit 3이다. kill·다른 종료 코드·코드와 JSON이 엇갈리면 실행이 끝났다고 보지 않는다.
-    const expectedCode = parsed.matched ? 0 : 3;
-    if (result.killed || result.code !== expectedCode) {
-      return { matched: false, raw: parsed.raw, error: `${describeFailure("launch.ps1 -Status", result)}; JSON matched:${parsed.matched}인데 exit ${expectedCode}가 아닙니다.` };
-    }
-    return parsed;
+    return judgeLaunchStatus("launch.ps1 -Status", result);
   } catch (error) {
     return { matched: false, error: `launch.ps1 -Status 실행 실패: ${message(error)}` };
   }
@@ -302,6 +333,7 @@ const defaultDeps = (exec: Exec): VerifyDeps => ({
   home: homedir(),
   envDistro: process.env.WSL_DISTRO_NAME || undefined,
   portBase: DEFAULT_PORT_BASE,
+  hostKind: detectHostKind(process.env, ["WSLInterop", "WSLInterop-late"].some((name) => existsSync(`/proc/sys/fs/binfmt_misc/${name}`))),
 });
 
 const factory: CustomToolFactory = (pi) => ({
@@ -309,15 +341,15 @@ const factory: CustomToolFactory = (pi) => ({
   label: "Deploy Verify",
   loadMode: "essential",
   description:
-    "Read-only verification that a WSL CUELO deploy finished: (1) newest ~/.omp/wsl-update/*.log has `READY <revision>` matching the given revision (prefix ok), "
-    + "(2) `launch.ps1 -Status` reports matched:true, (3) `node ~/cuelo-run/install.mjs health` shows all services OK, "
+    "Read-only verification that a CUELO deploy (WSL or native Linux, both via wsl/update.sh) finished: (1) newest ~/.omp/wsl-update/*.log has `READY <revision>` matching the given revision (prefix ok), "
+    + "(2) the launcher status reports matched:true (`launch.ps1 -Status` on WSL, `linux/launch.sh status` on native Linux), (3) `node ~/cuelo-run/install.mjs health` shows all services OK, "
     + "(4) GET /api/models?cwd=<cwd> `roles` equal `modelRoles` in ~/.omp/agent/config.yml (cwd required; without it the route answers 403). "
     + "Returns JSON per section plus a one-line verdict; each section reports its own failure. "
-    + "Never starts, stops, restarts, rolls back or deploys anything: launch.ps1 is only ever called with -Status.",
+    + "Never starts, stops, restarts, rolls back or deploys anything: the launcher is only ever called in status mode.",
   parameters: pi.zod.object({
     revision: pi.zod.string().describe("Deployed revision to expect: full or prefix (>=7 hex) commit SHA"),
     cwd: pi.zod.string().optional().describe("A session cwd the CUELO server accepts (required for the roles check; e.g. ~/src/CUELO-private)"),
-    distro: pi.zod.string().optional().describe("WSL distribution for launch.ps1 -Distribution (default: current WSL_DISTRO_NAME; office PC: Ubuntu)"),
+    distro: pi.zod.string().optional().describe("WSL only: distribution for launch.ps1 -Distribution (default: current WSL_DISTRO_NAME; office PC: Ubuntu). Ignored on native Linux"),
   }),
 
   async execute(_toolCallId, params, _onUpdate, _ctx, signal) {

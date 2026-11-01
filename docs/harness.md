@@ -407,7 +407,7 @@ npm 배포본에는 `humanizer`·`stop-slop`·`kill-ai-slop`과 각 참조 파�
 
 [`deploy_verify`](../Tools/OMP_Global_Config/agent/tools/deploy-verify/)는 WSL에서 CUELO 배포를 마친 뒤 Main이 부르는 읽기 전용 세션 도구입니다. 입력은 7~40자 16진 커밋 SHA(접두어 가능)인 `revision`, 세션 `cwd`, 필요하면 WSL 배포판 이름 `distro`입니다. 한 번 부르면 네 가지를 확인합니다. 갱신 로그 폴더 `~/.omp/wsl-update/`에서 이름이 `<UTC시각>.log`인 가장 최근 로그의 `READY <revision>` 줄이 요청 `revision`과 같은지 봅니다. 복구 로그와 잠금 파일은 후보에서 뺍니다. `READY` 줄이 없으면 갱신이 끝나지 않았거나 실패한 것으로 봅니다. 이어서 `wsl\launch.ps1 -Status`가 `matched: true`인지, `install.mjs health`가 서비스 4개를 모두 OK로 보는지, `/api/models?cwd=<세션 cwd>`의 역할 selector가 WSL 프로필 `config.yml`의 `modelRoles`와 같은지 확인합니다. 서비스를 시작·중지·되돌리거나 배포하지 않습니다. `launch.ps1`은 `-Status` 없이 부르면 서버를 띄우거나 재시작하므로 언제나 `-Status`로만 부릅니다.
 
-결과는 구간별 JSON과 한 줄 판정(`PASS` 또는 `NOT VERIFIED`와 이유)입니다. 구간마다 실패를 따로 적으므로 도구 전체가 예외로 끝나지는 않습니다. 실행이 끝까지 됐는지도 봅니다. `-Status`는 일치면 exit 0, 불일치면 exit 3이어야 합니다. `health`는 모두 OK면 exit 0, 하나라도 FAIL이면 exit 1이어야 합니다. 종료 코드가 출력과 어긋나거나 시간 초과로 끊기면 그 구간은 오류입니다. `modelRoles`는 Bun 내장 YAML 파서로 읽으며 문자열이 아닌 값은 빠뜨리지 않고 오류로 알립니다. `cwd`가 없으면 서버가 403으로 답하므로 서버를 부르지 않고 `cwd`가 필요하다고 알립니다. 판정은 참고 자료일 뿐이며 배포 성공 여부는 Main이 이 결과를 확인한 뒤 보고합니다.
+결과는 구간별 JSON과 한 줄 판정(`PASS` 또는 `NOT VERIFIED`와 이유)입니다. 구간마다 실패를 따로 적으므로 도구 전체가 예외로 끝나지는 않습니다. 실행이 끝까지 됐는지도 봅니다. `-Status`는 일치면 exit 0, 불일치면 exit 3이어야 합니다. `health`는 모두 OK면 exit 0, 하나라도 FAIL이면 exit 1이어야 합니다. 종료 코드가 출력과 어긋나거나 시간 초과로 끊기면 그 구간은 오류입니다. `modelRoles`는 Bun 내장 YAML 파서로 읽으며 문자열이 아닌 값은 빠뜨리지 않고 오류로 알립니다. `cwd`가 없으면 서버가 403으로 답하므로 서버를 부르지 않고 `cwd`가 필요하다고 알립니다. WSL 신호(`WSL_INTEROP`, `WSL_DISTRO_NAME`, binfmt `WSLInterop`)가 하나도 없는 네이티브 Linux에서는 Windows를 부르지 않고 설치본의 `linux/launch.sh status`로 런처 상태를 보며, 종료 코드 기준(일치 0, 불일치 3)은 같습니다. 판정은 참고 자료일 뿐이며 배포 성공 여부는 Main이 이 결과를 확인한 뒤 보고합니다.
 
 ## Task Guard와 command guard
 
