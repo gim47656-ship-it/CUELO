@@ -19,22 +19,29 @@ export interface DeployState {
   pending: string[] | null;
   /** 같은 구간에서 기록만 바뀐 파일 수. */
   records: number;
+  /** 같은 구간에서 PC 서버에 배포되지 않는 폰 전용 경로만 바뀐 파일 수. */
+  offPc: number;
   ci: CiRun | null;
   warnings: string[];
 }
 
+/** PC의 update.sh·앱·하네스 프로필이 읽지 않고 폰에만 설치되는 프로젝트(11-01 사용자 결정으로 분리). */
+const OFF_PC_PREFIXES = ["Tools/CUELO_Phone_Bridge/"];
+
 /**
- * 배포 리비전 뒤 HEAD까지 바뀐 파일을 배포가 필요한 것과 기록으로 나눈다. 기록은 작업 기록(`doc/`), HANDOFF,
+ * 배포 리비전 뒤 HEAD까지 바뀐 파일을 배포가 필요한 것, 기록, PC 배포 밖 경로로 나눈다. 기록은 작업 기록(`doc/`), HANDOFF,
  * 기억 동기화 파일이다. 기억 동기화 파일은 update.sh가 배포 리비전이 아니라 개발 사본에서 바로 읽는다. 배포 뒤에는
  * 늘 이런 기록 커밋이 따라와서, 해시만 비교하면 이 지표가 거의 항상 「주의」였다(10-30 59dc49f6 → 4832bf87).
+ * 폰 브리지 커밋도 PC 배포 없이 폰에 설치되는데 배포 필요로 세어 「주의」가 났다(11-01 f6f957a0 → 0c5ccfb0).
  */
-export async function pendingDeployFiles(repo: string, deployed: string, head: string): Promise<{ pending: string[]; records: number } | null> {
+export async function pendingDeployFiles(repo: string, deployed: string, head: string): Promise<{ pending: string[]; records: number; offPc: number } | null> {
   try {
     // -z는 한글 등 특수 문자 경로를 따옴표 없이 주고, --no-renames는 lib→doc 이동이 삭제를 숨기지 않게 양쪽 경로를 다 준다.
     const { stdout } = await exec("git", ["-C", repo, "diff", "-z", "--no-renames", "--name-only", deployed, head], { timeout: 10000 });
     const files = stdout.split("\0").filter(Boolean);
-    const pending = files.filter((file) => !/(^|\/)doc\//.test(file) && !/(^|\/)HANDOFF\.md$/.test(file) && file !== "Tools/OMP_Global_Config/memory-sync/memories.jsonl");
-    return { pending, records: files.length - pending.length };
+    const nonRecords = files.filter((file) => !/(^|\/)doc\//.test(file) && !/(^|\/)HANDOFF\.md$/.test(file) && file !== "Tools/OMP_Global_Config/memory-sync/memories.jsonl");
+    const pending = nonRecords.filter((file) => !OFF_PC_PREFIXES.some((prefix) => file.startsWith(prefix)));
+    return { pending, records: files.length - nonRecords.length, offPc: nonRecords.length - pending.length };
   } catch {
     return null;
   }
@@ -60,10 +67,10 @@ export async function inspectDeploy(agentDir: string, repo: string | null): Prom
   } catch { warnings.push("배포 로그를 읽지 못했습니다."); }
   if (repo) { try { head = (await exec("git", ["-C", repo, "log", "-1", "--format=%H"], { timeout: 10000 })).stdout.trim(); } catch { /* reported below */ } }
   if (!head) warnings.push("저장소 HEAD를 확인하지 못했습니다.");
-  let pending: string[] | null = null, records = 0;
+  let pending: string[] | null = null, records = 0, offPc = 0;
   if (repo && head && deployed) {
-    const diff = head.toLowerCase().startsWith(deployed.toLowerCase()) ? { pending: [], records: 0 } : await pendingDeployFiles(repo, deployed, head);
-    if (diff) ({ pending, records } = diff);
+    const diff = head.toLowerCase().startsWith(deployed.toLowerCase()) ? { pending: [], records: 0, offPc: 0 } : await pendingDeployFiles(repo, deployed, head);
+    if (diff) ({ pending, records, offPc } = diff);
     else warnings.push((await hasCommit(repo, deployed))
       ? `배포 리비전 ${deployed.slice(0, 12)}을 저장소 HEAD와 비교하지 못했습니다.`
       : `개발 사본에 배포 리비전 ${deployed.slice(0, 12)}이 없어 HEAD와 비교하지 못했습니다. 다른 곳에서 게시·배포한 커밋을 아직 받지 않았을 수 있습니다(git fetch).`);
@@ -71,5 +78,5 @@ export async function inspectDeploy(agentDir: string, repo: string | null): Prom
   let ci: CiRun | null = null;
   try { const result = await exec("gh", ["run", "list", "--repo", "gim47656-ship-it/CUELO", "--limit", "1", "--json", "status,conclusion,headSha,createdAt,workflowName"], { timeout: 10000 }); ci = JSON.parse(result.stdout)[0] ?? null; } catch { /* reported below */ }
   if (!ci) warnings.push("공개 CI 상태를 확인하지 못했습니다.");
-  return { deployed, head, pending, records, ci, warnings };
+  return { deployed, head, pending, records, offPc, ci, warnings };
 }

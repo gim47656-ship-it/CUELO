@@ -473,11 +473,12 @@ export function deployMetrics(deploy: DeployState, now: number): UpkeepMetric[] 
     ? deploy.head.toLowerCase().startsWith(deploy.deployed.toLowerCase()) ? false : deploy.pending === null ? null : deploy.pending.length > 0
     : null;
   const revision = metric("revision-diff", "배포 리비전과 저장소 HEAD", "count", differs === null ? null : Number(differs), null,
-    differs === null ? "unknown" : differs ? "watch" : "ok", "배포한 리비전 뒤 HEAD에 기록(doc/, HANDOFF.md, 기억 동기화 파일) 밖의 변경이 있으면 주의");
-  revision.note = "1이면 배포가 필요한 변경이 남음, 0이면 같거나 기록만 다름.";
+    differs === null ? "unknown" : differs ? "watch" : "ok", "배포한 리비전 뒤 HEAD에 기록(doc/, HANDOFF.md, 기억 동기화 파일)과 폰 전용 경로(PC에 배포되지 않음) 밖의 변경이 있으면 주의");
+  revision.note = "1이면 배포가 필요한 변경이 남음, 0이면 같거나 기록·폰 전용 경로만 다름.";
   const pending = deploy.pending?.length ? ` · 배포 필요 ${deploy.pending.length}개: ${deploy.pending.slice(0, 5).join(", ")}${deploy.pending.length > 5 ? " 외" : ""}` : "";
   const records = deploy.records ? ` · 기록만 다름 ${deploy.records}개` : "";
-  revision.evidence = [{ label: `HEAD ${deploy.head?.slice(0, 12) ?? "미확인"} / 배포 ${deploy.deployed?.slice(0, 12) ?? "미확인"}${pending}${records}` }];
+  const offPc = deploy.offPc ? ` · PC 배포 밖 ${deploy.offPc}개` : "";
+  revision.evidence = [{ label: `HEAD ${deploy.head?.slice(0, 12) ?? "미확인"} / 배포 ${deploy.deployed?.slice(0, 12) ?? "미확인"}${pending}${records}${offPc}` }];
 
   const ci = deploy.ci;
   const age = Date.parse(ci?.createdAt ?? "");
