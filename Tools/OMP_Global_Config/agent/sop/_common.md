@@ -20,6 +20,8 @@
   the owner's immutable raw artifacts and locators, and never repeats the slice's focused check in
   the same environment or edits a path a live child owns. A slice never closes with no check at
   all. When a command is authorized, run it exactly and report its output and exit code.
+  Measurement, audit, and diagnostic reports are no exception: list each command or script you ran
+  and its exit code next to the result it produced.
 - Read exact edit ranges with `read` before patching. A declaration-only read or snapshot tag does not
   expose omitted lines; shell `cat`/`head`/`tail` is not an anchored read. Batch independent needed ranges,
   investigation reads included: ranges you already know go in one comma-range call (`path:5-16,960-973`)

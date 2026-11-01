@@ -250,7 +250,14 @@ console.log("\n[N] 일부 task schema만 model이 없을 때 다른 schema가 ma
 const typesRel = "src/task/types.ts";
 let baselineTypes = snapshot.get(typesRel)?.toString("utf8");
 if (baselineTypes === undefined) throw new Error("기준선에 src/task/types.ts 가 없다");
-for (const header of ["export const taskItemSchema = type({", "const taskItemSchemaIsolated = type({", "export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
+const staticSchemas = ["export const taskItemSchema = type({", "const taskItemSchemaIsolated = type({", "export const taskSchema = type({", "const taskSchemaNoIsolation = type({"];
+// 18.14.2 (#12229) declares `model` in every static schema itself; the patch no longer adds that line, so a
+// stripped upstream line is not ours to restore and this scenario does not apply.
+const upstreamOwnsModel = staticSchemas.every(header => {
+	const start = (baselineTypes as string).indexOf(header);
+	return /^\t"model\?": /m.test((baselineTypes as string).slice(start, (baselineTypes as string).indexOf("\n});", start)));
+});
+for (const header of staticSchemas) {
 	const start = baselineTypes.indexOf(header);
 	const end = baselineTypes.indexOf("\n});", start);
 	const block = baselineTypes.slice(start, end);
@@ -261,7 +268,8 @@ for (const header of ["export const taskItemSchema = type({", "const taskItemSch
 }
 const modelLine = /^\t"model\?": [^\n]*\n/m;
 const modelLineCount = (text: string) => text.split("\n").filter(line => /^\t"model\?": /.test(line)).length;
-for (const header of ["export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
+if (upstreamOwnsModel) console.log("  SKIP  upstream declares model in every static task schema (18.14.2+)");
+for (const header of upstreamOwnsModel ? [] : ["export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
 	const partialRoot = join(tmpRoot, `partial-${header.includes("NoIsolation") ? "noiso" : "plain"}`);
 	const partialTarget = join(partialRoot, "target");
 	const partialHome = join(partialRoot, "home");

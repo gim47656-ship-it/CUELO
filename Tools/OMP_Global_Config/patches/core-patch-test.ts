@@ -3123,7 +3123,9 @@ console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문�
 	const runCapture = async (failAfterSave: boolean) => {
 		const reports: string[][] = [];
 		const sourceAgent = {
-			state: { model: { id: "m" }, messages: [{ role: "user", content: "앞 턴" }], systemPrompt: [], thinkingLevel: "off", disableReasoning: false },
+			// 18.15.0 (#17418): the capture advertises the primary's tool list and copies its sent tool definitions.
+			state: { model: { id: "m" }, messages: [{ role: "user", content: "앞 턴" }], systemPrompt: [], thinkingLevel: "off", disableReasoning: false, tools: [] },
+			copySentToolDefinitions: () => ({ copy: () => undefined }),
 			getApiKey: () => undefined,
 			metadataForProvider: () => undefined,
 		};

@@ -342,8 +342,11 @@ const wireServer = Bun.serve({
 	},
 });
 
+// 18.15.0 remembers a refusing turn lane (url, model, credential) across sessions for 4h; each run gets its own
+// account so an earlier run's refusal does not switch steering off for the next.
+let wireLane = 0;
 function wireJwt(): string {
-	return `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_fixture" } })).toString("base64")}.s`;
+	return `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: `acct_fixture_${wireLane}` } })).toString("base64")}.s`;
 }
 const genuineSteer = (text: string, extra: Record<string, unknown> = {}) => ({
 	role: "user",
@@ -361,6 +364,7 @@ async function wireRun(
 	inject: (agent: InstanceType<typeof Agent>) => void,
 ): Promise<WireResult> {
 	wireMode = mode;
+	wireLane++;
 	wireCreates = [];
 	wireCreatedAt = [];
 	wireSteerFrames = 0;
@@ -545,6 +549,7 @@ try {
 	console.log("\n[12] 실제 AgentSession: 버린 partial 은 세션 기록·agent_end 에 남지 않는다");
 	// 위 실제 세션의 provider 호출만 같은 가짜 Codex(SSE)로 돌린다. persist 는 AgentSession 의 message_end 경로다.
 	wireMode = "hang";
+	wireLane++;
 	wireCreates = [];
 	const sessionBase = getBundledModel("openai-codex", "gpt-5.6-sol");
 	const sessionCodex = { ...sessionBase, baseUrl: `http://127.0.0.1:${wireServer.port}/codex`, preferWebsockets: false };
@@ -596,6 +601,7 @@ try {
 	// 삼아 signature 째 persist 되면 안 된다. 원래 오류 문구는 그대로 남아야 한다.
 	async function sessionRestartFailure(label: string, arm: () => () => void, expectedError: string): Promise<void> {
 		wireMode = "hang";
+		wireLane++;
 		wireCreates = [];
 		const assistantEnds: Array<{ stopReason?: string; errorMessage?: string; raw: string }> = [];
 		const unsubscribe = session.subscribe((event: { type: string; message?: { role: string; stopReason?: string; errorMessage?: string } }) => {
@@ -659,6 +665,7 @@ try {
 	console.log("\n[14] 실제 AgentSession + native accept: 서버가 멈추지 않아도 보인 답을 남기고 steer 를 바로 반영한다");
 	// 2026-10-01 사건 형태: Codex WebSocket 이 steer 를 accept 했지만 steered/completed 를 보내지 않았다.
 	wireMode = "accept-text";
+	wireLane++;
 	wireCreates = [];
 	wireCreatedAt = [];
 	wireSteerFrames = 0;
@@ -722,6 +729,7 @@ try {
 	// text 만의 error 는 provider·세션 재생이 모두 거부해 `Codex error event: ...(code=unsupported_native_inflight_message)`
 	// 가 사용자 오류로 남았고 steer 는 다음 run(queued-message-drain)으로 밀렸다.
 	wireMode = "reject-tool";
+	wireLane++;
 	wireCreates = [];
 	wireCreatedAt = [];
 	wireSteerFrames = 0;

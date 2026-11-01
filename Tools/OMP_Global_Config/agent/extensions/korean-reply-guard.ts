@@ -28,7 +28,22 @@ const MIN_HANGUL_FOR_KOREAN = 10;
 // 긴 답도 앞부분만 자르지 않고 통째로 번역한다. 출력은 tiny 모델 최대치이고 그 시간을 준다.
 const TRANSLATE_TIMEOUT_MS = 120_000;
 const SEEN_LIMIT = 50;
-const ENGLISH_REQUEST = /(?:in\s+english|answer\s+in\s+english|reply\s+in\s+english|영어로|영문으로|영어\s*(?:답|응답|번역))/i;
+// 산출물의 언어 지정은 대화 언어를 바꾸지 않는다. 대답·말하기·대화·설명을 직접 요청한 절이 있으면 면제한다.
+// 그 절이 산출물에 쓰라는 말(쓰기 동사·본문, 「README에 … 설명해」, "in the report")이면 산출물의 언어로 보고 면제하지 않는다.
+// 「이 코드에 대해 영어로 설명해줘」「README를 읽고 영어로 답해」처럼 산출물을 읽고 대답하라는 요청은 면제가 남는다
+// (교차검토 R2-ANT-2·R2-OAI-1·R3-ANT-1·R3-OAI-1). 다른 절의 산출물 작업은 대화 언어 요청을 지우지 않는다.
+const ENGLISH_REQUEST = /(?:\b(?:answer|reply|respond|talk|speak)(?:\s+(?:to\s+)?me)?\s+in\s+english\b|\bspeak\s+english\b|\b(?:switch|change)\s+to\s+english\b|\buse\s+english\s+(?:from\s+now|for\s+(?:your\s+)?(?:replies|answers))|(?:영어로|영문으로)\s*(?:(?:대답|응답|답변|답|설명|얘기|이야기|대화)(?:해|하(?!는))|말(?:해|하(?!는)))|(?:^|[\s,.!?])(?:대답|응답|답변|답)(?:은|는|을|를)?\s*(?:영어로|영문으로))/i;
+const ARTIFACT_NOUN = "(?:README|CHANGELOG|문서|파일|커밋|주석|코드|이슈|릴리스|메시지|보고서|\\bPR\\b)";
+const ARTIFACT_WRITE = new RegExp(`${ARTIFACT_NOUN}[^.?!\\n]{0,24}(?:본문|제목|써|쓰|작성|적어|적고|넣|추가|번역|만들)|\\b(?:write|put|add)\\b[^.?!\\n]{0,24}\\b(?:readme|changelog|file|commit|docs?|comment|report)\\b|\\bin\\s+(?:the|this|a|your)\\s+(?:report|file|readme|docs?|document|commit(?:\\s+message)?|changelog|comment)\\b`, "i");
+// 「README에 … 영어로 설명해」: 산출물 안에 설명을 쓰라는 말. 「…에 대해」「…에 있는」·읽고/보고는 읽기다.
+const ARTIFACT_INTO = new RegExp(`${ARTIFACT_NOUN}\\S{0,4}?(?:에|에는|에다|안에)\\s(?!\\s*(?:있|대해|대한|관해|관한))[^.?!\\n]*(?:영어로|영문으로)\\s*설명`, "i");
+const READING = /읽고|보고|검토하고|확인하고|살펴보고/;
+const CLAUSES = /[.!?。\n;]+|,\s*(?:and|그리고)\s+|\s그리고\s/i;
+
+function asksEnglishReply(text: string): boolean {
+  return text.split(CLAUSES).some(clause => ENGLISH_REQUEST.test(clause) && !ARTIFACT_WRITE.test(clause) &&
+    !(ARTIFACT_INTO.test(clause) && !READING.test(clause)));
+}
 
 type Message = { role?: string; content?: unknown; synthetic?: boolean; attribution?: string; timestamp?: number };
 export type DriftKind = "drift" | "korean" | "neutral";
@@ -64,7 +79,7 @@ export function classify(text: string): DriftKind {
 }
 
 function userWroteEnglish(text: string): boolean {
-  if (ENGLISH_REQUEST.test(text)) return true;
+  if (asksEnglishReply(text)) return true;
   const body = prose(text);
   const hangul = (body.match(/[가-힣]/g) ?? []).length;
   const latin = (body.match(/[A-Za-z]/g) ?? []).length;

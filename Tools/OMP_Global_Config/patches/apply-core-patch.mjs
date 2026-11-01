@@ -21704,6 +21704,149 @@ export function cueloIsFallbackKeyBillingRejection(
 	absorbed(bundle, 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&aNe(c))continue');
 }
 
+// 18.15.0: same rules as the 18.14.0 block. Older candidates stay byte-identical; each new
+// candidate requires a string only 18.15.0 carries, and every older candidate excludes it.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.15.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const excludeOld = (entry, discriminator) => {
+		for (const candidate of [entry, ...(entry.alternates ?? [])]) {
+			candidate.excludes = [...[candidate.excludes ?? []].flat(), discriminator];
+		}
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		excludeOld(entry, discriminator);
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.15.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const port = (entry, previous, from, to, discriminator) => alternate(entry, {
+		marker: previous.marker,
+		anchor: swap(previous.anchor, from, to),
+		patched: swap(previous.patched, from, to),
+	}, discriminator);
+	const absorbed = (entry, text, discriminator = text) =>
+		alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+
+	// 18.14.2 per-call model (#12229): `model` is declared in every task schema, the non-seance refusal moved from
+	// seance.ts into index.ts validateModel (gated by `task.perCallModel`, off by default), and spawnModelFields sends
+	// it as `perCallModel`. The Maker keeps its routed '<selector>:auto' as the host `model` (requestModel), outside
+	// that gate, exactly as on 18.14.0; every other agent keeps the upstream gate.
+	const PER_CALL = 'invalidModelSelectorReason(item.model, label, { settings, invocationKind: "task" })';
+	const VALIDATE_HEAD = "function validateModel(\n\titem: TaskItem | TaskParams,\n\tlabel: string,\n\tdefaultAgent: string,\n\tsettings: Settings,\n): string | undefined {\n";
+	const SPAWN_SEANCE = "\tif (params.model === undefined) return {};\n\tif (params.agent === SEANCE_AGENT_NAME) return { seanceModel: params.model };\n";
+	alternate(byMarker("// CUELO: the Maker carries its routed candidate"), {
+		file: "src/task/index.ts",
+		marker: "// CUELO: the Maker carries its routed candidate",
+		anchor: VALIDATE_HEAD +
+			`\treturn (item.agent?.trim() || defaultAgent) === SEANCE_AGENT_NAME\n\t\t? undefined\n\t\t: ${PER_CALL};\n}\n\n` +
+			'function spawnModelFields(params: TaskParams): Pick<StructuredSubagentRequest, "perCallModel" | "seanceModel"> {\n' +
+			SPAWN_SEANCE,
+		patched: VALIDATE_HEAD +
+			"\tconst agent = item.agent?.trim() || defaultAgent;\n" +
+			"\t// CUELO: the Maker carries its routed candidate as one `model` selector ('<selector>:auto'); the command-guard\n" +
+			"\t// maker-routing hook validates that selector and spawnModelFields passes it as the host `model`, outside the\n" +
+			"\t// `task.perCallModel` gate, as before 18.14.2. Every other agent keeps the per-call gate.\n" +
+			'\tif (agent === "maker" && item.model !== undefined) {\n' +
+			'\t\tif (typeof item.model === "string" && item.model.trim().length > 0) return undefined;\n' +
+			'\t\treturn "`model` for the `maker` agent must be one non-empty selector string.";\n\t}\n' +
+			`\treturn agent === SEANCE_AGENT_NAME\n\t\t? undefined\n\t\t: ${PER_CALL};\n}\n\n` +
+			"function spawnModelFields(\n\tparams: TaskParams,\n\tdefaultAgent: string,\n" +
+			'): Pick<StructuredSubagentRequest, "model" | "perCallModel" | "seanceModel"> {\n' +
+			SPAWN_SEANCE +
+			"\t// CUELO: the Maker's validated selector stays the host model (see validateModel).\n" +
+			'\tif ((params.agent?.trim() || defaultAgent) === "maker" && typeof params.model === "string") return { model: params.model };\n',
+	}, PER_CALL);
+	for (const indent of ["\t\t\t", "\t\t\t\t"]) {
+		const site = `\n${indent}sourceSession: params.sourceSession,\n${indent}...spawnModelFields(params`;
+		const patched = `${site}, this.#defaultAgent()),\n`;
+		alternate(one(e => e.file === "src/task/index.ts" && e.marker.startsWith("...(params.model !== undefined ? { model: params.model } : {}),") &&
+			e.anchor.startsWith(`${indent}...(params.effort`)), { marker: patched, anchor: `${site}),\n`, patched }, "function spawnModelFields(");
+	}
+	const SCHEMA_MODEL = '// `model` is always declared, and preflight decides whether a per-call model';
+	for (const header of ["export const taskItemSchema = type({", "const taskItemSchemaIsolated = type({", "export const taskSchema = type({", "const taskSchemaNoIsolation = type({"]) {
+		const entry = one(e => e.file === "src/task/types.ts" && e.marker.startsWith(`${header}\n`) && e.marker.endsWith('\n\t"model?": "string",'));
+		alternate(entry, {
+			marker: swap(entry.marker, '\n\t"model?": "string",', ""),
+			anchor: entry.anchor,
+			patched: swap(entry.patched, '\n\t"model?": "string",', ""),
+		}, SCHEMA_MODEL);
+	}
+	for (const indent of ["\t\t\t\t", "\t\t\t"]) {
+		absorbed(one(e => e.file === "src/task/types.ts" && e.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`)), SCHEMA_MODEL);
+	}
+	const optional = byMarker("// CUELO: task schema agent is optional on the wire.");
+	port(optional, optional.alternates.find(c => c.requires === 'const taskFields = options.file ? { "task?": "string", "taskFile?": "string" } : { task: "string" };'),
+		"/** Seance-only task fields; `seanceTaskSchemaFields` in ./seance must match it exactly. */",
+		"/** Task fields the seance schema adds or widens; `seanceTaskSchemaFields` in ./seance must match it exactly. */", SCHEMA_MODEL);
+
+	const evalDetails = one(e => e.file === "../pi-tui/src/tools/eval.ts" && e.marker === 'executionObservation?: "observed" | "rejected";');
+	port(evalDetails, evalDetails.alternates.find(c => c.requires === "statusEventsElided"),
+		"\tstatusEventsElided?: number;", "\treplies?: string[];", "\treplies?: string[];\n");
+
+	const procRow = byMarker("${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}");
+	const progressRow = procRow.alternates.find(c => c.requires === "runningTaskProgressSuffix(snapshots[index]");
+	const INTENT = '\t\t\t\t\tconst intent = job.intent ? `${job.intent} — ` : "";\n';
+	const withIntent = text => swap(swap(text, "{ duration: false });\n", `{ duration: false });\n${INTENT}`), "${duration} — ${job.label", "${duration} — ${intent}${job.label");
+	alternate(procRow, { marker: progressRow.marker, anchor: withIntent(progressRow.anchor), patched: withIntent(progressRow.patched) }, INTENT);
+
+	absorbed(byMarker('import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";'),
+		'import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";');
+	const fallbackGate = byMarker("const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined;");
+	alternate(fallbackGate, {
+		marker: "const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined && !this.#host.modelFallbackDisabled?.();",
+		anchor: swap(fallbackGate.anchor, "options?.allowModelFallback !== false;", "options?.allowModelFallback !== false && !this.#host.modelFallbackDisabled?.();"),
+		patched: swap(fallbackGate.patched, "exactAccountLabel === undefined;", "exactAccountLabel === undefined && !this.#host.modelFallbackDisabled?.();"),
+	}, "modelFallbackDisabled?.()");
+	const rotation = byMarker("\t\t}\n\t\tif (exactAccountLabel) return false;\n");
+	port(rotation, rotation.alternates.find(c => c.marker === "\t\t}\n\t\tif (exactAccountLabel) return { switched: false };\n"),
+		"return awaitSiblingUnblock(mark, options?.signal);", "return awaitSiblingUnblock(mark, options?.signal, options?.waitForSibling);", "options?.waitForSibling");
+
+	// 18.14.1 window({ wait }) (#17391): the listing became a polling loop; the object-filter check runs before it.
+	const windowLookup = byMarker('const byId = typeof selector === "number"');
+	const ID_LINE = '\t\t\t\tconst id = typeof selector === "string" || typeof selector === "number" ? String(selector) : undefined;';
+	alternate(windowLookup, {
+		marker: windowLookup.alternates[0].marker,
+		anchor: ID_LINE,
+		patched: `\t\t\t\tif (typeof selector !== "string" && typeof selector !== "number") assertWindowFilter(selector);\n${ID_LINE}`,
+	}, "windowWait(selector.wait)");
+
+	const autolearn = byMarker("\tif (first.length <= 120) return first;");
+	port(autolearn, autolearn,
+		"/** Build a private capture runner over a detached message snapshot and provider session. */",
+		"/** A tool the provider runs itself (a refused copy could not stop it); resolved headers can switch one on. */",
+		"function hostRunsTool(");
+
+	// Catalog and bundle: only the kdl source line and the minified advisor-name helper moved (no-op).
+	for (const [from, to] of [["kdl:219", "kdl:224"], ["kdl:332", "kdl:337"]]) {
+		const entry = one(e => e.file === "../pi-catalog/src/compat/rules.json" && candidates(e).some(c => c.marker.startsWith(`{"source":"classes/anthropic.${from}"`)));
+		const last = candidates(entry).find(c => c.marker.startsWith(`{"source":"classes/anthropic.${from}"`));
+		const text = swap(last.marker, from, to);
+		entry.alternates.push({ file: entry.file, marker: text, anchor: text, patched: text });
+	}
+	absorbed(one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"')),
+		'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&VNe(c))continue');
+
+	// 18.15.0 user steering closes ask (#17537): keep the waitingForUser wrapper around upstream's dialogSignal wait.
+	alternate(byMarker("\t\t\t\tconst richResult = await waitForUser(showRichDialog);"), {
+		marker: "\t\t\t\tconst richResult = await waitForUser(() => untilAborted(dialogSignal, showRichDialog));",
+		anchor: "\t\t\t\tconst richResult = await untilAborted(dialogSignal, showRichDialog);",
+		patched: "\t\t\t\tconst richResult = await waitForUser(() => untilAborted(dialogSignal, showRichDialog));",
+	}, "const dialogSignal = signal ?");
+
+	const billing = byMarker("this.#modelRegistry.authStorage.keys.cueloBeginTurn?.(this.sessionId);");
+	port(billing, billing.alternates.find(c => c.requires === 'logger.time("prompt:apiKey"'),
+		"\t\t\t// Validate API key\n", "\t\t\t// Validate API key; a provider without one walks the retry fallback chain first.\n",
+		"applyMissingCredentialFallback");
+}
+
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
 // keep future Node/Bun output identical. Accept only the exact previously emitted
 // helper bodies below, never normalize arbitrary installed source on revert.

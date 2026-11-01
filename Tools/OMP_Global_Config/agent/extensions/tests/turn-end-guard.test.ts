@@ -387,6 +387,22 @@ describe("turn-end guard", () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  test("연달아 쓴 물음표·물음표만 있는 조각은 따로 질문으로 세지 않는다", async () => {
+    const seen: string[] = [];
+    const h = harness([], undefined, async (summary) => {
+      seen.push(...summary.questions.map(item => item.question));
+      return summary.questions.map(() => true);
+    });
+    for (const text of ["내가 따로 어떻게여는방법이없냐?? 매번요청하기힘드러", "이게 뭐야?!? 왜 이래 ??", "정말？！ 다음 작업을 진행해.", "이거 뭐야！ 계속 진행할게."]) {
+      await h.emit("input", { source: "interactive", text });
+      await h.end("진행합니다.", { messages: [
+        { role: "user", content: text },
+        { role: "assistant", content: [{ type: "text", text: "진행합니다." }] },
+      ] });
+    }
+    expect(seen).toEqual(["내가 따로 어떻게여는방법이없냐??", "이게 뭐야?!?", "왜 이래 ??", "정말？！", "이거 뭐야！"]);
+  });
+
   test.each(["이건 뭐야.", "이건 뭔데", "이유는 왜", "어떻게", "가능한가", "가능한지", "맞냐", "했니", "했나요", "할까", "무슨 의미인지", "상태 알려줘", "작동을 설명해줘"])(
     "물음표 없는 한국어 질문형 어미도 판정한다: %s",
     async (text) => {

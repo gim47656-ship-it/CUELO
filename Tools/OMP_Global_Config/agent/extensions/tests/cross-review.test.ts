@@ -200,6 +200,35 @@ describe("reviewer 답 해석", () => {
       expect(parseReviewerOutput(raw).ok, raw).toBe(false);
     }
   });
+
+  test("짝 없는 닫는 중괄호가 끼어도 같은 finding으로 읽는다(Opus 실측 모양)", () => {
+    // 실측 4건: probe 없는 finding을 `}}`로 닫아 배열 안에 짝 없는 `}`가 남았다. 문자열 안의 `}`·이스케이프된 따옴표는 그대로다.
+    const probed = '{"severity":"major","file":"a.ts","claim":"c1","why":"w}","probe":{"steps":"run \\"x}\\"","expectIfReal":"fails"}}';
+    const plain = '{"severity":"minor","file":"b.ts","claim":"c2","why":"w2"}';
+    const clean = `{"findings":[${probed},${plain}],"summary":"s"}`;
+    const expected = parseReviewerOutput(clean);
+    expect(expected.ok).toBe(true);
+    if (expected.ok) expect(expected.findings).toHaveLength(2);
+    for (const raw of [
+      `\`\`\`json\n{"findings":[${probed},${plain}}],"summary":"s"}\n\`\`\``,
+      `{"findings":[${probed}},${plain}],"summary":"s"}`,
+      `{"findings":[${probed},${plain}],"summary":"s"}}`,
+      `Here:\n{"findings":[${probed},${plain}],"summary":"s"}}\nDone.`,
+    ]) expect(parseReviewerOutput(raw), raw).toEqual(expected);
+  });
+
+  test("잘렸거나 다른 괄호가 틀린 답은 짝 없는 `}`를 걷어 내도 ok:false다", () => {
+    for (const raw of [
+      '{"findings":[{"claim":"a"}}',
+      '{"findings":[{"claim":"a"}},{"claim":"b"',
+      '{"findings":[{"claim":"a"}]]}',
+      '{"findings":["claim":"a"}]}',
+      '{"findings":[{"severity":"major"}}]}',
+      // 바깥 배열이 닫히지 않은 답에서 안쪽 `{…}}` 조각만 고쳐 통과시키면 안 된다(교차검토 R1-OAI-5).
+      '[{"findings":[],"summary":"ok"}}',
+      '[{"findings":[],"summary":"ok"}',
+    ]) expect(parseReviewerOutput(raw).ok, raw).toBe(false);
+  });
 });
 
 function deps(env: RepoEnv, answers: Partial<Record<Lane, string | Error>>, calls: { family: Lane; prompt: string }[] = []): ReviewDeps {

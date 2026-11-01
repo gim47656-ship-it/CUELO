@@ -159,8 +159,12 @@ function liveSteering(active: boolean) {
 	};
 }
 
+// 18.15.0 remembers a refusing turn lane (url, model, credential) across sessions for 4h. Each case gets its own
+// account so one case's refusal does not switch steering off for the next; [7] checks the shared memory itself.
+const LANE_MEMORY = (await Bun.file(`${CORE_ROOT}/pi-ai/src/providers/openai-codex-responses.ts`).text()).includes("unsupportedSteeringLanes");
+let lane = 0;
 function fakeJwt(): string {
-	const claim = { "https://api.openai.com/auth": { chatgpt_account_id: "acct_fixture" } };
+	const claim = { "https://api.openai.com/auth": { chatgpt_account_id: `acct_fixture_${lane}` } };
 	return `h.${Buffer.from(JSON.stringify(claim)).toString("base64")}.s`;
 }
 
@@ -195,6 +199,7 @@ function fixtureModel() {
 
 function reset(next: Mode): void {
 	mode = next;
+	lane++;
 	received = [];
 	creates = [];
 	claims.rejected = 0;
@@ -249,11 +254,12 @@ try {
 	const other = await runTurn(new Map(), "native-inflight-6", true);
 	check("스트림 error 로 노출된다", failed(other) && why(other).includes("invalid_request_error"), why(other));
 
-	console.log("[7] 새 연결(새 소켓)은 지원을 다시 한 번 시도한다 — 전역 disable 없음");
+	console.log(LANE_MEMORY ? "[7] 거절한 lane 은 새 연결에서도 steer 를 다시 보내지 않는다(18.15.0 lane 기억)" : "[7] 새 연결(새 소켓)은 지원을 다시 한 번 시도한다 — 전역 disable 없음");
 	reset("native-lane");
-	await runTurn(new Map(), "native-inflight-7a", true);
-	await runTurn(new Map(), "native-inflight-7b", true);
-	check("소켓마다 response.steer 를 1회씩 전송했다", steerFrames() === 2, JSON.stringify(received));
+	const laneA = await runTurn(new Map(), "native-inflight-7a", true);
+	const laneB = await runTurn(new Map(), "native-inflight-7b", true);
+	check(LANE_MEMORY ? "같은 lane 의 두 번째 소켓은 steer 를 보내지 않는다" : "소켓마다 response.steer 를 1회씩 전송했다", steerFrames() === (LANE_MEMORY ? 1 : 2), JSON.stringify(received));
+	check("두 연결 모두 error 없이 끝난다", !failed(laneA) && !failed(laneB), `${why(laneA)} / ${why(laneB)}`);
 
 	console.log("[8] 거절 직후 abort 는 inflight 오류가 아니라 aborted 로 끝난다");
 	reset("native-lane");

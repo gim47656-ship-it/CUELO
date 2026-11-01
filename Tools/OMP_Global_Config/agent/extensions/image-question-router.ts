@@ -27,7 +27,8 @@ export function imageRead(path: unknown): { target: string; asked: boolean } | u
 export function blockReason(path: string): string {
   return [
     "image-question-router: 이미지는 먼저 vision 모델에게 묻는다. 직접 읽기를 막았다.",
-    `\`${path}?q=<구체적인 질문>\`으로 read하라. 글자·값뿐 아니라 레이아웃·간격·색·정렬·잘림도 질문으로 물을 수 있고, 이미지는 컨텍스트에 실리지 않는다. 글자를 그대로 옮겨 적는 판독(OCR)은 \`${path}?ocr=<질문>\`으로 묻는다.`,
+    `글자를 그대로 옮겨 적는 것이 목적이면(전사, 보이는 글자 전부 읽기, 값을 정확히 나열) \`${path}?ocr=<질문>\`으로 read하라.`,
+    `레이아웃·간격·색·정렬·잘림·상태 판단이나 특정 질문은 \`${path}?q=<구체적인 질문>\`으로 read하라. 이미지는 컨텍스트에 실리지 않는다.`,
     "그 질문의 답으로 판단할 수 없을 때만 같은 경로를 다시 read하면 직접 보게 통과한다. 질문 없이 다시 read해도 계속 막힌다.",
   ].join("\n");
 }

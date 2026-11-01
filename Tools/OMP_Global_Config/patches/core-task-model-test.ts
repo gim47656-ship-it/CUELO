@@ -6,7 +6,7 @@
 // 동적 import 예외: 정적 import는 bun 전역 캐시의 미패치 사본으로 해석될 수 있다.
 // 이 검사는 지정된 사본만 검증해야 하므로 디스크 경로를 고정한다.
 import { mock } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSettingsTestScope } from "./core-test-settings";
@@ -27,6 +27,10 @@ function resolveCore(): string {
 const CORE = resolveCore();
 console.log(`대상 ${CORE}`);
 const { getTaskSchema } = await import(`${CORE}/task/types.ts`);
+// 18.14.2 per-call model(#12229): the non-seance `model` refusal moved from seance.ts to index.ts validateModel behind
+// `task.perCallModel`(default off). The CUELO patch lets `maker` through there and passes its selector as the host model.
+const PER_CALL_GATE = existsSync(`${CORE}/task/index.ts`) && readFileSync(`${CORE}/task/index.ts`, "utf8").includes("function spawnModelFields(");
+const PER_CALL_OFF = "Per-call model is disabled for task calls";
 
 let pass = 0;
 let fail = 0;
@@ -179,7 +183,7 @@ if (!existsSync(`${CORE}/task/seance.ts`)) {
 	const SELECTOR = "anthropic/claude-sonnet-5-5:auto";
 	const item = { name: "SyntheticMaker", task: "Read-only fixture.", solutionSpace: SPACE, model: SELECTOR };
 	const seanceOnly = "`model` is only accepted for the `seance` agent.";
-	const cases: Array<[string, unknown, boolean, boolean, (output: string | null) => boolean]> = [
+	const cases: Array<[string, unknown, boolean, boolean, (output: string | null) => boolean, boolean?]> = [
 		["#33-1 flat 명시 Maker + model 통과", { ...item, agent: "maker" }, false, false, output => output === null],
 		["#33-2 flat 기본 Maker + model 통과", item, false, false, output => output === null],
 		["#33-3 batch 기본 Maker + item model 통과", { context: "Fixture", tasks: [item] }, true, false, output => output === null],
@@ -187,15 +191,18 @@ if (!existsSync(`${CORE}/task/seance.ts`)) {
 		["#33-5 Maker model 없음 통과", { ...item, agent: "maker", model: undefined }, false, false, output => output === null],
 		["#33-6 flat seance 통과", { ...item, agent: "seance", sourceSession: "synthetic.jsonl" }, false, true, output => output === null],
 		["#33-7 batch seance 통과", { tasks: [{ ...item, agent: "seance", sourceSession: "synthetic.jsonl" }] }, true, true, output => output === null],
-		["다른 비-seance agent 의 model 은 그대로 거절", { ...item, agent: "explore" }, false, true, output => output === seanceOnly],
-		["batch 의 다른 비-seance agent model 도 거절", { context: "Fixture", tasks: [item, { ...item, agent: "task" }] }, true, false, output => output === seanceOnly],
+		// 아래 셋은 18.14.2 이후 validateModel 로 옮겨 갔다(9절 TaskTool 경로가 본다).
+		["다른 비-seance agent 의 model 은 그대로 거절", { ...item, agent: "explore" }, false, true, output => output === seanceOnly, true],
+		["batch 의 다른 비-seance agent model 도 거절", { context: "Fixture", tasks: [item, { ...item, agent: "task" }] }, true, false, output => output === seanceOnly, true],
 		["Maker 의 sourceSession 은 그대로 거절", { ...item, agent: "maker", sourceSession: "synthetic.jsonl" }, false, true, output => output?.startsWith("`sourceSession` is only accepted") === true],
-		["Maker model 배열은 거절", { ...item, agent: "maker", model: [SELECTOR] }, false, false, output => output?.includes("`maker` agent must be one non-empty selector string") === true],
-		["Maker 빈 model 은 거절", { ...item, agent: "maker", model: "  " }, false, false, output => output?.includes("`maker` agent must be one non-empty selector string") === true],
-		["batch 최상위 model 은 그대로 거절", { context: "Fixture", model: SELECTOR, tasks: [{ ...item, model: undefined }] }, true, false, output => output?.startsWith("Put `sourceSession` and `model`") === true],
+		["Maker model 배열은 거절", { ...item, agent: "maker", model: [SELECTOR] }, false, false, output => output?.includes("`maker` agent must be one non-empty selector string") === true, true],
+		["Maker 빈 model 은 거절", { ...item, agent: "maker", model: "  " }, false, false, output => output?.includes("`maker` agent must be one non-empty selector string") === true, true],
+		["batch 최상위 model 은 그대로 거절", { context: "Fixture", model: SELECTOR, tasks: [{ ...item, model: undefined }] }, true, false,
+			output => output?.startsWith(PER_CALL_GATE ? "Put `model` on the individual items inside `tasks[]`." : "Put `sourceSession` and `model`") === true],
 		["seance 의 sourceSession 필수 검사 불변", { ...item, agent: "seance" }, false, true, output => output?.includes("requires a non-empty `sourceSession`") === true],
 	];
-	for (const [name, params, batchEnabled, seanceAdvertised, expected] of cases) {
+	for (const [name, params, batchEnabled, seanceAdvertised, expected, beforePerCallGate] of cases) {
+		if (beforePerCallGate && PER_CALL_GATE) continue;
 		const output = validateSeanceParams({ params, batchEnabled, defaultAgent: "maker", seanceAdvertised }) ?? null;
 		check(name, expected(output), `output=${JSON.stringify(output)}`);
 	}
@@ -280,7 +287,17 @@ if (!existsSync(`${CORE}/task/seance.ts`)) {
 		const otherAsked = await speculativeAsked(otherTool, otherArgs);
 		check("TaskTool speculative 다른 agent + model: spawn 을 만들지 않는다", otherAsked === 0, `asked=${otherAsked}`);
 		const otherResult = resultText(await otherTool.execute("call-other", otherArgs));
-		check("TaskTool dispatch 다른 agent + model: validator 가 거절한다", otherResult.includes("`model` is only accepted for the `seance` agent.") && !otherResult.includes(PREFLIGHT), otherResult.slice(0, 200));
+		const refusal = PER_CALL_GATE ? PER_CALL_OFF : "`model` is only accepted for the `seance` agent.";
+		check("TaskTool dispatch 다른 agent + model: validator 가 거절한다", otherResult.includes(refusal) && !otherResult.includes(PREFLIGHT), otherResult.slice(0, 200));
+		if (PER_CALL_GATE) {
+			// 18.14.2+: Maker 의 잘못된 model 은 validateModel 의 CUELO 분기가, 다른 agent 의 model 은 upstream 게이트가 거절한다.
+			for (const [label, model] of [["배열", [SELECTOR]], ["빈 문자열", "  "]] as const) {
+				const bad = resultText(await otherTool.execute(`call-bad-${label}`, { context: "Fixture", tasks: [{ name: "SyntheticMaker", agent: "maker", task: "Read-only fixture.", solutionSpace: SPACE, model }] }));
+				check(`TaskTool dispatch Maker model ${label}: 거절`, bad.includes("`maker` agent must be one non-empty selector string") && !bad.includes(PREFLIGHT), bad.slice(0, 200));
+			}
+			const flatOther = resultText(await (await makeTool("*", false)).execute("call-other-flat", { agent: "explore", task: "Read-only fixture.", solutionSpace: SPACE, model: SELECTOR }));
+			check("TaskTool dispatch flat 다른 agent + model: 게이트가 거절한다", flatOther.includes(PER_CALL_OFF) && !flatOther.includes(PREFLIGHT), flatOther.slice(0, 200));
+		}
 	} finally {
 		mock.restore();
 		rmSync(cwd, { recursive: true, force: true });

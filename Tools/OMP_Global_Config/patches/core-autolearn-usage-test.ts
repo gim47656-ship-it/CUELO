@@ -181,7 +181,10 @@ async function run(steps: Step[], opts: RunOptions = {}) {
 			], systemPrompt: [`SYSTEM-${SOURCE_CANARY}`],
 			thinkingLevel: "off",
 			disableReasoning: false,
+			// 18.15.0 (#17418): the capture advertises the primary's tool list and copies its sent tool definitions.
+			tools: [],
 		},
+		copySentToolDefinitions: () => ({ copy: () => undefined }),
 		getApiKey: () => undefined,
 		metadataForProvider: () => undefined,
 	};

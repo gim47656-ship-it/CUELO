@@ -77,11 +77,14 @@ const QUOTED_INSTRUCTION_LIMIT = 400;
 
 function questionParts(text: string): string[] {
   return safeExcerpt(text).replace(QUOTED_SPAN, span => span.length <= QUOTED_INSTRUCTION_LIMIT + 2 && /[?？]/.test(span) ? " " : span)
-    .split(/(?<=[?？])|(?<=[.!。…])(?=\s|[가-힣])|\n+/)
+    // 연달아 쓴 물음표·느낌표(「없냐??」「뭐야?!?」)는 한 번만 자르고, 글자 없는 조각은 버린다
+    // (2026-11-02 「…없냐??」의 두 번째 「?」를 미답 질문으로 알렸다).
+    .split(/(?<=[?？])(?![?？!！])|(?<=[.!！。…])(?=\s|[가-힣])|\n+/)
     .map(part => part.trim())
-    .filter(part => /[?？]$/.test(part)
+    .filter(part => /[\p{L}\p{N}]/u.test(part))
+    .filter(part => /[?？][?？!！]*$/.test(part)
       || /(?:뭐지|뭐야|뭐여|뭔데|왜|어떻게|인가|인지|한가|한지|냐|니|나요|까|는지|알려줘|설명해줘)$/
-        .test(part.replace(/[.!。…]+$/, "")))
+        .test(part.replace(/[.!！。…]+$/, "")))
     .map(part => part.slice(0, 300));
 }
 

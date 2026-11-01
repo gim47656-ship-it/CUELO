@@ -182,6 +182,55 @@ describe("korean reply guard", () => {
     expect(b.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE]);
   });
 
+  test.each([
+    "README를 영어로 써줘",
+    "커밋 메시지는 영어로",
+    "문서를 영문으로 작성해줘",
+    "이 문장을 영어로 번역해줘",
+    "영어 번역 파일을 만들어줘",
+    "문서에는 write in English라는 문구를 넣어줘",
+    "영어로 답변서를 작성해줘",
+    "README에 설치 과정을 영어로 설명해 줘.",
+    "커밋 메시지 본문은 영어로 설명해줘",
+    "퀴즈 정답을 영어로 파일에 적어",
+    "영어로 설명하는 보고서를 작성해 줘.",
+    "README에 설치 과정을 영어로 설명해줘",
+  ])("산출물의 영어 요청은 응답 언어를 면제하지 않는다: %s", async (request) => {
+    const h = harness(ok);
+    h.user(request);
+    await h.assistant(ENGLISH);
+    expect(h.sent.map((m) => m.customType)).toEqual([REMINDER_TYPE, TRANSLATION_TYPE]);
+  });
+
+  test.each([
+    "영어로 대답해",
+    "영어로 말해",
+    "영문으로 답변해줘",
+    "답변은 영어로 해줘",
+    "이 내용은 answer in English로 대답해줘",
+    "이 내용은 reply in English로 답해줘",
+    "이제 speak English로 대화해줘",
+    "영어로 답해줘",
+    "영어로 대화하자",
+    "answer me in English",
+    "talk to me in English please",
+    "switch to English",
+    "이 코드 영어로 설명해줘",
+    "코드를 검토하고 영어로 답변해 줘.",
+    "앞으로 영어로 대답해줘, 에러 메시지는 그대로 두고",
+    "이 코드에 대해 영어로 설명해줘",
+    "이 메시지에 영어로 답해줘",
+    "prompt에 대해 영어로 설명해줘",
+    "앞으로 영어로 대답해줘. 그리고 README에 설치 방법 추가해줘",
+    "Reply in English from now on, and add a comment to the file",
+    "README에 있는 내용을 읽고 영어로 답변해줘",
+  ])("대화의 영어 요청은 응답 언어를 면제한다: %s", async (request) => {
+    const h = harness(ok);
+    h.user(request);
+    await h.assistant(ENGLISH);
+    expect(h.sent).toEqual([]);
+  });
+
   test("비밀처럼 보이면 번역을 보내지 않고 생략 한 줄만 남긴다", async () => {
     let calls = 0;
     const h = harness(async () => { calls++; return "x"; });

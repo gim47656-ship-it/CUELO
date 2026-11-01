@@ -11,7 +11,7 @@ export function createSettingsTestScope(read: (key: string) => unknown) {
 		const value = read(key);
 		return value === undefined && key === "launch.enabled" ? false : value;
 	};
-	return {
+	const scope = {
 		revision: 0,
 		valueCache: [] as ({ revision: number; inputs: readonly unknown[]; value: unknown } | undefined)[],
 		warnState: { invalid: new Map<string, unknown>(), items: new Map<string, unknown>() },
@@ -22,7 +22,12 @@ export function createSettingsTestScope(read: (key: string) => unknown) {
 		getStorage() {
 			return null;
 		},
+		// 18.14.2+ per-call model gate reads the operator layers; this scope has no project layer, so it is its own view.
+		grantAuthority() {
+			return scope;
+		},
 	};
+	return scope;
 }
 
 /**

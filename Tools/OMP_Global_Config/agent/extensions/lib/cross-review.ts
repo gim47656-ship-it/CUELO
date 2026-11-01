@@ -1587,13 +1587,49 @@ function parseProbe(value: unknown): CrossReviewProbe | undefined {
   return { steps, expectIfReal, ...(expectIfNot ? { expectIfNot } : {}) };
 }
 
+/** 문자열 밖에서 열린 `{`와 짝이 없는 `}`(가장 안쪽이 `[`이거나 다 닫힌 뒤)를 지운 사본. 지운 게 없으면 undefined.
+ *  `]` 불일치·안 닫힌 괄호는 그대로 두어 JSON.parse가 거부하게 한다. */
+function dropUnmatchedBraces(text: string): string | undefined {
+  const stack: string[] = [];
+  let out = "";
+  let dropped = false;
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (inString) {
+      out += char;
+      if (char === "\\") out += text[++index] ?? "";
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{" || char === "[") stack.push(char);
+    else if (char === "]" && stack.at(-1) === "[") stack.pop();
+    else if (char === "}") {
+      if (stack.at(-1) !== "{") { dropped = true; continue; }
+      stack.pop();
+    }
+    out += char;
+  }
+  return dropped ? out : undefined;
+}
+
 /** reviewer 답에서 JSON을 읽는다. 코드 펜스·앞뒤 말은 걷어 내고, 모양이 틀리면 ok:false다. */
 export function parseReviewerOutput(raw: string): { ok: true; findings: ParsedFinding[]; summary: string; verdicts?: ParsedVerdict[] } | { ok: false } {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
   const candidates = [raw.trim(), fenced?.[1]?.trim() ?? ""];
   const first = raw.indexOf("{");
   const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(raw.slice(first, last + 1));
+  const slice = first >= 0 && last > first ? raw.slice(first, last + 1) : "";
+  // 잘라 낸 `{…}` 조각은 그 밖에 괄호가 없을 때만 쓴다. 밖에 닫히지 않은 `[`가 있으면 잘린 답이다(교차검토 R1-OAI-5·R2-OAI-6).
+  const outside = slice ? raw.slice(0, first) + raw.slice(last + 1) : "";
+  const usableSlice = slice && !/[[\]{}]/.test(outside) ? slice : "";
+  if (usableSlice) candidates.push(usableSlice);
+  // 앞 후보가 모두 틀렸을 때만 짝 없는 `}`를 걷어 낸 사본을 더 본다(실측: probe 없는 finding을 `}}`로 닫은 Opus 답).
+  for (const candidate of [...candidates]) {
+    const repaired = candidate ? dropUnmatchedBraces(candidate) : undefined;
+    if (repaired) candidates.push(repaired);
+  }
   for (const candidate of candidates) {
     if (!candidate) continue;
     let value: unknown;
