@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
+import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, LINUX_VERIFY_UNSUPPORTED, linuxExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
 
 // 검증 범위: 스크립트 조립(공간 이름·프로필 id·finish), 종료 코드별 결과 문구, stdin 전달과 ENOENT·시간 초과(가짜 ego-browser 실행 파일).
 // 가짜 경계: fakeExec는 ego-browser를 대신한다. 실제 TaskSpace·프로필 격리·페이지 동작은 여기서 증명하지 않는다(실제 스모크는 작업 기록 참고).
@@ -222,6 +222,100 @@ describe("session tool lifecycle", () => {
     const missing = await run([{ ...base, name: "unrelated" }]);
     expect(missing.created).toEqual([]);
     expect(missing.output).toContain("not found");
+  });
+});
+
+describe("native Linux host", () => {
+  // Linux SDK(오픈소스 ego-browser)의 실제 모양: taskSpaces.useOrCreate/handOff/takeOver/complete/list, page는 미리 넣은 전역이다.
+  function linuxSdk(spaces: object[] = []) {
+    const log: string[] = [];
+    const page = { kind: "global page" };
+    const taskSpaces = {
+      useOrCreate: async (name: string) => { log.push(`use:${name}`); return { id: 3, name }; },
+      handOff: async (id: unknown) => { log.push(`handOff:${id}`); return { done: true }; },
+      takeOver: async (id: unknown) => { log.push(`takeOver:${id}`); },
+      complete: async (id: unknown, options: { keep: boolean }) => { log.push(`complete:${id}:${options.keep}`); return { done: true }; },
+      list: async () => spaces,
+    };
+    const run = (source: string) =>
+      new Function("taskSpaces", "page", "console", `return (async () => { ${source} })()`)(taskSpaces, page, { log: (...parts: unknown[]) => log.push(parts.join(" ")) })
+        .then(() => "ok", (error: Error) => error.message);
+    return { log, page, run };
+  }
+
+  test("the prelude resumes the session's space by name and gives the Windows-shaped task; finish closes it even on error", async () => {
+    const sdk = linuxSdk();
+    const body = "if (task.page() !== page) throw new Error('page mismatch'); await task.handOff(); await task.takeOver(); throw new Error('script failed');";
+    expect(await sdk.run(buildScript("cuelo-s-user", "user", body, true, "linux"))).toBe("script failed");
+    expect(sdk.log).toEqual(["use:cuelo-s-user", "handOff:3", "takeOver:3", "complete:3:false"]);
+    const kept = linuxSdk();
+    expect(await kept.run(buildScript("n", "user", "await task.finish({ keep: ['p1'] });", false, "linux"))).toBe("ok");
+    expect(kept.log).toEqual(["use:n", "complete:3:true"]);
+  });
+
+  test("verify is refused before launching anything; an unreachable ego browser points at browser.open", async () => {
+    const { exec, calls } = fakeExec(ok(""));
+    await expect(runEgoBrowser({ script: "1", profile: "verify" }, { exec, sessionId: "s", host: "linux" })).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
+    expect(calls).toHaveLength(0);
+    const down = fakeExec({ code: 127, stdout: "", stderr: "CDP 127.0.0.1:32899에 연결할 수 없다", killed: false });
+    await expect(runEgoBrowser({ script: "1" }, { exec: down.exec, sessionId: "s", host: "linux" })).rejects.toThrow(/`browser.open`[\s\S]*32899에 연결할 수 없다/);
+  });
+
+  test("the Linux cleanup closes only agent-created, still agent-held spaces", async () => {
+    const base = { name: "target", id: 7, createdBy: "agent", ownership: "agent" };
+    const held = linuxSdk([base, { ...base, name: "other", id: 8 }]);
+    await held.run(buildCleanup("target", "linux"));
+    expect(held.log).toEqual(["complete:7:false", "closed 7"]);
+    const delegated = linuxSdk([{ ...base, ownership: "agentDelegatedToUser" }]);
+    await delegated.run(buildCleanup("target", "linux"));
+    expect(delegated.log).toEqual(["skipped agentDelegatedToUser"]);
+  });
+
+  test("the Linux shutdown cleanup uses the Linux SDK and never touches the refused verify profile", async () => {
+    const calls: string[] = [];
+    const exec: Exec = async (_args, input) => { calls.push(input); return ok(""); };
+    const chain: any = new Proxy(() => chain, { get: () => chain, apply: () => chain });
+    const tool = createFactory(exec, "linux")({ zod: { object: () => chain, string: () => chain, enum: () => chain, boolean: () => chain, number: () => chain } } as any) as any;
+    const ctx = { sessionManager: { getSessionId: () => UUID_A } } as any;
+    await tool.execute("1", { script: "1" }, undefined, ctx);
+    await expect(tool.execute("2", { script: "2", profile: "verify" }, undefined, ctx)).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
+    await tool.onSession({ reason: "shutdown", previousSessionFile: undefined }, ctx);
+    const cleaned = calls.filter((input) => input.includes("taskSpaces.list()"));
+    expect(cleaned).toHaveLength(1);
+    expect(cleaned[0]).toContain(`"cuelo-${UUID_A}-user"`);
+  });
+
+  test("linuxExec points the SDK host at the running ego browser and forbids launching another Chromium", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ego-linux-"));
+    const saved = { host: process.env.EGO_LITE_HOST, port: process.env.EGO_LITE_CDP_PORT, state: process.env.XDG_STATE_HOME };
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/abc-123" }) });
+    try {
+      const host = join(dir, "host.mjs");
+      writeFileSync(host, `import { readFileSync } from "node:fs";
+let input = ""; for await (const chunk of process.stdin) input += chunk;
+console.log(JSON.stringify({ input, port: readFileSync(process.env.EGO_LITE_PROFILE_DIR + "/DevToolsActivePort", "utf8"), exe: process.env.EGO_BROWSER_EXECUTABLE, state: process.env.EGO_LITE_STATE_PATH }));`);
+      process.env.EGO_LITE_HOST = host;
+      process.env.EGO_LITE_CDP_PORT = String(server.port);
+      process.env.XDG_STATE_HOME = dir;
+      const result = await linuxExec(["nodejs"], "console.log(1)", { timeoutMs: 20_000 });
+      expect(result.code).toBe(0);
+      const seen = JSON.parse(result.stdout);
+      expect(seen).toEqual({ input: "console.log(1)", port: `${server.port}\n/devtools/browser/abc-123\n`, exe: "/bin/false", state: join(dir, "cuelo-ego-browser", "state.json") });
+
+      process.env.EGO_LITE_CDP_PORT = "1";
+      const down = await linuxExec(["nodejs"], "1", { timeoutMs: 20_000 });
+      expect(down.code).toBe(127);
+      expect(down.stderr).toContain("127.0.0.1:1");
+      process.env.EGO_LITE_HOST = join(dir, "missing.mjs");
+      expect((await linuxExec(["nodejs"], "1", { timeoutMs: 20_000 })).code).toBe(127);
+    } finally {
+      server.stop(true);
+      for (const [key, value] of [["EGO_LITE_HOST", saved.host], ["EGO_LITE_CDP_PORT", saved.port], ["XDG_STATE_HOME", saved.state]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

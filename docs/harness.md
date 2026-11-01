@@ -403,6 +403,8 @@ npm 배포본에는 `humanizer`·`stop-slop`·`kill-ai-slop`과 각 참조 파�
 
 `profile: "user"`(기본)는 사용자의 ego 프로필이고, `profile: "verify"`는 CUELO 화면 검증 전용으로 따로 둔 프로필입니다. 검증 프로필은 PC마다 디렉터리 id가 다르므로 ego 프로필 이름 「CUELO 검증」으로 찾고, 그 이름의 프로필이 없으면 다른 프로필로 넘어가지 않고 실패합니다. 화면 검증은 사용자 프로필을 쓰지 않습니다. ego lite가 없는 PC에서는 이 PC에서 쓸 수 없다고 알리고 기존 `browser` 도구를 쓰도록 안내합니다. 쿠키·캐시·저장소 삭제는 프로필 전체에 닿으므로 하지 않습니다.
 
+WSL이 아닌 네이티브 Linux에서 `ego_browser`는 Windows용 ego lite 런타임을 쓰지 않고, 오픈소스 ego-browser SDK의 Linux 호스트 모듈을 Node로 실행해 원격 디버깅 포트(기본 `127.0.0.1:32899`, 모듈 경로와 포트는 환경 변수 `EGO_LITE_HOST`·`EGO_LITE_CDP_PORT`로 바꿀 수 있습니다)로 이미 떠 있는 사용자의 ego Chromium에 붙습니다. 각 TaskSpace는 사용자의 로그인 정보를 복사한 격리 브라우저 컨텍스트의 독립된 창으로 열리므로, 사용자의 기존 창이나 CUELO PWA 창에는 탭이 붙지 않습니다. 스크립트는 SDK의 `page`와 함께 Windows와 같은 모양의 `task`(`handOff()`, `finish()`, 사용자가 제어권을 돌려준 뒤 이어 가는 `takeOver()`)를 받습니다. 모든 공간이 사용자의 쿠키를 복사하므로 Linux에서는 `profile: "verify"`를 거절하고, 화면 검증은 headless `browser` 도구로 합니다. 그 브라우저가 떠 있지 않거나 SDK가 없으면 도구가 그 사실을 알리고 일반 `browser` 도구를 안내하며, 빈 브라우저를 따로 띄우지 않습니다.
+
 ## 배포 확인 `deploy_verify`
 
 [`deploy_verify`](../Tools/OMP_Global_Config/agent/tools/deploy-verify/)는 WSL에서 CUELO 배포를 마친 뒤 Main이 부르는 읽기 전용 세션 도구입니다. 입력은 7~40자 16진 커밋 SHA(접두어 가능)인 `revision`, 세션 `cwd`, 필요하면 WSL 배포판 이름 `distro`입니다. 한 번 부르면 네 가지를 확인합니다. 갱신 로그 폴더 `~/.omp/wsl-update/`에서 이름이 `<UTC시각>.log`인 가장 최근 로그의 `READY <revision>` 줄이 요청 `revision`과 같은지 봅니다. 복구 로그와 잠금 파일은 후보에서 뺍니다. `READY` 줄이 없으면 갱신이 끝나지 않았거나 실패한 것으로 봅니다. 이어서 `wsl\launch.ps1 -Status`가 `matched: true`인지, `install.mjs health`가 서비스 4개를 모두 OK로 보는지, `/api/models?cwd=<세션 cwd>`의 역할 selector가 WSL 프로필 `config.yml`의 `modelRoles`와 같은지 확인합니다. 서비스를 시작·중지·되돌리거나 배포하지 않습니다. `launch.ps1`은 `-Status` 없이 부르면 서버를 띄우거나 재시작하므로 언제나 `-Status`로만 부릅니다.
