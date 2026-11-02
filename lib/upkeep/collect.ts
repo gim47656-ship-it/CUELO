@@ -15,6 +15,7 @@ import {
   FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
+import { activeCheckMarks, type CheckMark } from "./checks";
 import { activeFixMarks, isFixableMetricId } from "./fixes";
 import { readHandoffs } from "./handoff";
 import {
@@ -642,11 +643,26 @@ export async function applyFixMarks(sections: UpkeepSection[], scan: ScanResult,
   }
 }
 
+/**
+ * 점검 표시(2026-11-02 사용자 결정)를 행에 붙인다. 판정은 바꾸지 않으므로 고침 표시를 반영한 뒤에 붙인다.
+ * `marks`는 7일 안의 것만 온다.
+ */
+export function applyCheckMarks(sections: UpkeepSection[], marks: Record<string, CheckMark>) {
+  for (const s of sections) {
+    for (const m of s.metrics) {
+      const mark = marks[m.id] ?? marks[maskSecrets(m.id)];
+      if (mark) m.check = { checkedAt: new Date(mark.at).toISOString(), note: mark.note };
+    }
+  }
+}
+
 function summarize(s: UpkeepSection): string {
   const count = (status: UpkeepStatus) => s.metrics.filter((m) => m.status === status).length;
   const parts = [`문제 ${count("problem")}`, `주의 ${count("watch")}`, `정상 ${count("ok")}`];
   if (count("unknown")) parts.push(`미확인 ${count("unknown")}`);
-  const worstMetric = s.status === "problem" || s.status === "watch" ? s.metrics.find((m) => m.status === s.status) : undefined;
+  // 한 줄 요약에는 아직 점검하지 않은 행을 먼저 이름으로 든다. 상태 개수와 섹션 판정은 점검 표시와 관계없이 그대로다.
+  const worstMetrics = s.status === "problem" || s.status === "watch" ? s.metrics.filter((m) => m.status === s.status) : [];
+  const worstMetric = worstMetrics.find((m) => !m.check) ?? worstMetrics[0];
   return parts.join(" · ") + (worstMetric ? ` — ${worstMetric.label}` : "");
 }
 
@@ -664,6 +680,7 @@ export function maskReport(report: UpkeepReport) {
       m.id = maskSecrets(m.id);
       m.label = maskSecrets(m.label);
       if (m.note) m.note = maskSecrets(m.note);
+      if (m.check?.note) m.check = { ...m.check, note: maskSecrets(m.check.note) };
       if (m.handoff) m.handoff = { ...m.handoff, title: maskSecrets(m.handoff.title), text: maskSecrets(m.handoff.text) };
       for (const e of m.evidence) {
         e.label = maskSecrets(e.label);
@@ -680,6 +697,7 @@ async function buildReport(): Promise<UpkeepReport> {
   const repo = findRepo();
   const handoffs = readHandoffs(repo, new Date(start));
   const marks = activeFixMarks(agentDir, start - 7 * DAY_MS);
+  const checks = activeCheckMarks(agentDir, start);
   const [scan, deploy] = await Promise.all([
     scanSessions(getSessionsDir(agentDir), start, Object.values(marks)),
     inspectDeploy(agentDir, repo),
@@ -697,6 +715,7 @@ async function buildReport(): Promise<UpkeepReport> {
     opsSection(handoffs.items, handoffs.warnings, deploy, workspace, start),
   ];
   await applyFixMarks(sections, scan, marks, { agentDir, now: start, handoffs: handoffs.items });
+  applyCheckMarks(sections, checks);
   for (const s of sections) s.summary = summarize(s);
   const report: UpkeepReport = {
     generatedAt: new Date(start).toISOString(),

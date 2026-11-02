@@ -224,7 +224,10 @@ function metricBlock(metric: UpkeepMetric): string[] {
     `- 판정 기준: ${metric.criterion}`,
   );
   if (metric.note) lines.push(`- 해석 주의: ${metric.note}`);
-  if (metric.fixable) lines.push(`- 지표 id(고침 표시용): \`${metric.id}\``);
+  if (metric.check) {
+    lines.push(`- 점검함: ${kstDateTime(metric.check.checkedAt)}${metric.check.note ? ` · ${metric.check.note}` : ""}. 원인을 확인했지만 고친 게 아니라 판정은 그대로입니다.`);
+  }
+  lines.push(`- 지표 id(${metric.fixable ? "고침·점검 표시용" : "점검 표시용"}): \`${metric.id}\``);
   if (metric.handoff) lines.push("", ...handoffBlock(metric.handoff, "이 기준을 적은 HANDOFF 항목"));
   lines.push("", "근거 사례:");
   if (metric.evidence.length) lines.push(...metric.evidence.map((evidence) => evidenceLine(evidence, fix)));
@@ -252,7 +255,7 @@ const REQUEST_LINES = [
   "2. 원인이 CUELO-private 저장소 범위 안이면 고치고, 고친 동작을 실제로 검증해 주세요.",
   "3. HANDOFF.md와 작업 기록(doc/history)에 원인·조치·검증 결과를 남겨 주세요.",
   "4. 사용자 결정이 필요한 일(기준 변경, 비용·배포·삭제 등)이면 고치지 말고 멈춰서 저에게 물어봐 주세요.",
-  "5. 고쳐서 live 배포와 검증까지 끝난 지표만 고침 표시를 남겨 주세요. 이 CUELO 서버의 `POST /api/upkeep`에 JSON `{\"metricId\": \"<지표 id>\", \"at\": \"<고친 동작이 live에 들어간 시각, ISO>\"}`을 보내면 됩니다(최근 7일 안, 미래 불가). 사용자 결정에 따른 사용량처럼 고친 게 아닌 지표는 표시하지 말고, 비밀번호 잠금 등으로 API를 부를 수 없으면 표시 대신 지표 id와 시각을 결과에 적어 주세요.",
+  "5. 고쳐서 live 배포와 검증까지 끝난 지표만 고침 표시를 남겨 주세요. 이 CUELO 서버의 `POST /api/upkeep`에 JSON `{\"metricId\": \"<지표 id>\", \"at\": \"<고친 동작이 live에 들어간 시각, ISO>\"}`을 보내면 됩니다(최근 7일 안, 미래 불가). 원인은 확인했지만 사용자 결정에 따른 사용량처럼 고친 게 아닌 지표는 고침 표시 대신 점검 표시를 남겨 주세요: `POST /api/upkeep/check`에 JSON `{\"metricId\": \"<지표 id>\", \"note\": \"<확인한 원인 한 줄>\"}`(판정은 그대로 두고 7일 동안 행에 붙습니다). 비밀번호 잠금 등으로 API를 부를 수 없으면 표시 대신 지표 id와 시각·사유를 결과에 적어 주세요.",
 ];
 
 const DUE_REQUEST_LINES = [

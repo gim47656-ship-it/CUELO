@@ -52,6 +52,14 @@ export interface UpkeepFix {
   observing: boolean;
 }
 
+/** 「점검함 표시」: 원인을 확인했지만 고친 것이 아닌 행. 판정은 그대로 두고 시각·사유만 붙인다. */
+export interface UpkeepCheck {
+  /** 점검한 시각(ISO) */
+  checkedAt: string;
+  /** 확인한 원인 한 줄. 없으면 null */
+  note: string | null;
+}
+
 export interface UpkeepMetric {
   /** 섹션 안에서 고유. 프롬프트·테스트가 이 값으로 지표를 찾는다. */
   id: string;
@@ -74,6 +82,8 @@ export interface UpkeepMetric {
   fixable?: boolean;
   /** 고침 표시가 최근 7일 안에 있으면 그 정보. 이때 `current`는 표시 뒤 값이다. */
   fix?: UpkeepFix;
+  /** 점검 표시가 7일 안에 있으면 그 정보. 판정(`status`)은 바꾸지 않는다. */
+  check?: UpkeepCheck;
 }
 
 /** HANDOFF의 「다음 행동」·「관찰 대기」·「남은 일」 글머리표 하나. */

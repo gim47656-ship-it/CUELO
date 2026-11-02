@@ -22,8 +22,12 @@ import {
 import type { UpkeepDueItem, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "@/lib/upkeep/types";
 import { UPKEEP_TEXT as T } from "./text";
 
-// 섹션 안에서는 문제·주의 행을 먼저 보여 준다. 같은 상태끼리는 수집기 순서(비용은 큰 순)를 지킨다.
-const STATUS_RANK: Record<UpkeepStatus, number> = { problem: 0, watch: 1, unknown: 2, ok: 3 };
+// 섹션 안에서는 문제·주의 행을 먼저 보여 준다. 점검함 표시한 문제·주의 행은 판정은 그대로 두고 점검하지 않은 문제·주의 행
+// 뒤로 보낸다. 같은 자리끼리는 수집기 순서(비용은 큰 순)를 지킨다.
+const STATUS_RANK: Record<UpkeepStatus, number> = { problem: 0, watch: 1, unknown: 3, ok: 4 };
+const rowRank = (metric: UpkeepMetric) => (metric.check && isFlagged(metric.status) ? 2 : STATUS_RANK[metric.status]);
+
+type MarkKind = "fix" | "check";
 
 /**
  * 보수 대시보드. 사이드바 「보수」나 `/?view=upkeep`로 열리고 화면 전체를 덮는다. 뒤의 작업 화면은
@@ -108,17 +112,17 @@ function PromptActions({ build, onStart, target, label = T.startSession, primary
   );
 }
 
-function MetricRow({ report, section, metric, sectionCriterion, onStart, onFix, busy }: {
+function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark, busy }: {
   report: UpkeepReport;
   section: UpkeepSection;
   metric: UpkeepMetric;
   sectionCriterion: string | null;
   onStart: (prompt: string) => void;
-  /** 고침 표시를 남기거나(`mark` true) 지운다. 섹션 id는 행이 사라졌을 때 초점을 둘 곳이다. */
-  onFix: (metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => void;
+  /** 고침·점검 표시를 남기거나(`mark` true) 지운다. 섹션 id는 행이 사라졌을 때 초점을 둘 곳이다. */
+  onMark: (kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => void;
   busy: boolean;
 }) {
-  const { fix } = metric;
+  const { fix, check } = metric;
   // 표시는 사건 시각으로 나눌 수 있는 주의·문제 행에만 새로 남기고, 이미 남긴 행은 판정과 관계없이 취소할 수 있다.
   const fixAction = fix || (metric.fixable && (metric.status === "watch" || metric.status === "problem")) ? (
     <button
@@ -127,11 +131,25 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onFix, 
       data-fix-metric={metric.id}
       aria-label={T.fixActionFor(fix ? T.fixClear : T.fixMark, metric.label)}
       disabled={busy}
-      onClick={() => onFix(metric.id, !fix, section.id)}
+      onClick={() => onMark("fix", metric.id, !fix, section.id)}
     >
       {fix ? T.fixClear : T.fixMark}
     </button>
   ) : null;
+  // 점검 표시는 판정을 바꾸지 않으므로 고칠 수 없는 행을 포함한 주의·문제 행 어디에나 남길 수 있다.
+  const checkAction = check || metric.status === "watch" || metric.status === "problem" ? (
+    <button
+      type="button"
+      className="upkeep-button"
+      data-check-metric={metric.id}
+      aria-label={T.fixActionFor(check ? T.checkClear : T.checkMark, metric.label)}
+      disabled={busy}
+      onClick={() => onMark("check", metric.id, !check, section.id)}
+    >
+      {check ? T.checkClear : T.checkMark}
+    </button>
+  ) : null;
+  const markActions = fixAction || checkAction ? <>{fixAction}{checkAction}</> : null;
   const change = formatUpkeepChange(metric);
   // 고침 표시한 행은 길이가 다른 고침 뒤 값을 직전 7일과 바로 견주지 않고, 고침 전 값과 같은 단위로 견준다.
   const compared = fix ? fixComparison(metric, fix) : null;
@@ -158,6 +176,12 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onFix, 
       {fix ? (
         <p className="upkeep-line">
           <span className="upkeep-line-label">{T.fixedSince(kstDateTime(fix.markedAt).slice(5))}</span>
+        </p>
+      ) : null}
+      {check ? (
+        <p className="upkeep-line">
+          <span className="upkeep-line-label">{T.checkedAt(kstDateTime(check.checkedAt).slice(5))}</span>
+          {check.note ?? ""}
         </p>
       ) : null}
       {metric.criterion !== sectionCriterion ? (
@@ -203,9 +227,9 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onFix, 
       ) : null}
       {isFlagged(metric.status) ? (
         <PromptActions build={() => buildMetricPrompt(report, section.id, metric.id)} onStart={onStart} target={T.itemTarget(metric.label)}>
-          {fixAction}
+          {markActions}
         </PromptActions>
-      ) : fixAction ? <div className="upkeep-actions">{fixAction}</div> : null}
+      ) : markActions ? <div className="upkeep-actions">{markActions}</div> : null}
     </li>
   );
 }
@@ -232,8 +256,8 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
   const [load, setLoad] = useState<LoadState>({ phase: "idle" });
   const rootRef = useRef<HTMLElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // 고침 표시를 바꾼 행은 판정이 바뀌어 자리가 옮겨질 수 있으므로, 새 보고서를 그린 뒤 그 행의 버튼으로 초점을 되돌린다.
-  const fixFocusRef = useRef<{ metricId: string; sectionId: UpkeepSection["id"] } | null>(null);
+  // 표시를 바꾼 행은 판정·자리가 바뀔 수 있으므로, 새 보고서를 그린 뒤 그 행의 같은 종류 버튼으로 초점을 되돌린다.
+  const markFocusRef = useRef<{ kind: MarkKind; metricId: string; sectionId: UpkeepSection["id"] } | null>(null);
   // 조건부·날짜 없는 HANDOFF 항목(수십 건)은 접어 두고, 기한 지난 것과 날짜 있는 것만 먼저 보인다.
   const [dueFoldOpen, setDueFoldOpen] = useState(false);
 
@@ -262,9 +286,9 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
     [requestReport],
   );
 
-  const changeFix = useCallback((metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => {
-    fixFocusRef.current = { metricId, sectionId };
-    void requestReport("/api/upkeep", T.fixFailed, {
+  const changeMark = useCallback((kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => {
+    markFocusRef.current = { kind, metricId, sectionId };
+    void requestReport(kind === "fix" ? "/api/upkeep" : "/api/upkeep/check", kind === "fix" ? T.fixFailed : T.checkFailed, {
       method: mark ? "POST" : "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ metricId }),
@@ -273,12 +297,12 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
 
   // 표시를 지워 버튼이 사라지면 같은 행의 다른 버튼으로, 행까지 사라지면(기준 밖 비용 행) 섹션 제목으로 보낸다.
   useEffect(() => {
-    const target = fixFocusRef.current;
+    const target = markFocusRef.current;
     const root = rootRef.current;
     if (!target || !root || load.phase === "loading") return;
-    fixFocusRef.current = null;
+    markFocusRef.current = null;
     const id = CSS.escape(target.metricId);
-    const focusTarget = root.querySelector<HTMLElement>(`[data-fix-metric="${id}"]`)
+    const focusTarget = root.querySelector<HTMLElement>(`[data-${target.kind}-metric="${id}"]`)
       ?? root.querySelector<HTMLElement>(`[data-metric-row="${id}"] :is(button:not([disabled]), summary)`)
       ?? root.querySelector<HTMLElement>(`#upkeep-section-${target.sectionId} h3`);
     focusTarget?.focus();
@@ -439,7 +463,7 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
                   ) : null}
                   {section.metrics.length ? (
                     <ul className="upkeep-rows">
-                      {[...section.metrics].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]).map((metric) => (
+                      {[...section.metrics].sort((a, b) => rowRank(a) - rowRank(b)).map((metric) => (
                         <MetricRow
                           key={metric.id}
                           report={report}
@@ -447,7 +471,7 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
                           metric={metric}
                           sectionCriterion={criterion}
                           onStart={start}
-                          onFix={changeFix}
+                          onMark={changeMark}
                           busy={loading}
                         />
                       ))}

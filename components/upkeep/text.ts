@@ -17,6 +17,7 @@ export const UPKEEP_TEXT = {
   loading: "세션 기록을 읽는 중입니다. 몇 초 걸립니다.",
   loadFailed: (error: string) => `보고서를 읽지 못했습니다: ${error}`,
   fixFailed: (error: string) => `고침 표시를 바꾸지 못했습니다: ${error}`,
+  checkFailed: (error: string) => `점검 표시를 바꾸지 못했습니다: ${error}`,
   retry: "다시 시도",
   fullPrompt: "전체 점검 프롬프트",
   fullPromptEmpty: "정상이 아닌 지표와 기한 지난 항목이 없습니다.",
@@ -41,9 +42,13 @@ export const UPKEEP_TEXT = {
   openSession: "세션 열기",
   /** 고친 뒤 그 시각 이후 기록만으로 다시 판정하게 하는 행 버튼과 표시 */
   fixMark: "고침 표시",
-  fixClear: "표시 취소",
+  fixClear: "고침 취소",
   fixActionFor: (visible: string, label: string) => `${visible} · 「${label}」`,
   fixedSince: (time: string) => `고침 ${time} 이후 기준`,
+  /** 원인을 확인했지만 고친 게 아닌 행에 남기는 버튼과 표시. 판정은 바꾸지 않는다. */
+  checkMark: "점검함 표시",
+  checkClear: "점검 취소",
+  checkedAt: (time: string) => `점검함 ${time}`,
   afterFix: "고침 뒤",
   beforeFix: "고침 전",
   /** 고침 전·뒤 칸 이름에 그 기간 길이를 붙인다, 예: 「고침 뒤 (5분)」 */
