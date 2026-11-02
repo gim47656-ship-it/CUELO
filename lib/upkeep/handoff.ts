@@ -19,9 +19,12 @@ export function parseHandoff(text: string, path: string, now = new Date()): Upke
     const title = /^-\s+\*\*(.+?)(?:[:：]\*\*|\*\*[:：])/.exec(lines[i - body.length + 1])?.[1] ?? lines[i - body.length + 1].replace(/^-\s+/, "");
     const titleDate = /\((\d{1,2})-(\d{1,2})/.exec(title);
     const titleDue = /(\d{1,2})-(\d{1,2})\s*(?:후속 점검|닫기 판정|점검)/.exec(title);
-    const bodyText = full.slice(full.indexOf("**", full.indexOf("**") + 2) + 2);
+    // 링크 글자(「[11-01 점검·발급 기록](…)」)의 날짜는 기록 이름이지 점검일이 아니다.
+    const bodyText = full.slice(full.indexOf("**", full.indexOf("**") + 2) + 2).replace(/\[[^\]]*\]\([^)]*\)/g, "[]");
     // 단서는 lookahead로 둬서 한 날짜의 단서 구간이 뒤 날짜를 삼키지 않게 하고, 「…에 … 다시 센다」는 한 문장 안에서만 본다.
     const bodyDates = [...bodyText.matchAll(/(\d{1,2})-(\d{1,2})(?=\s*(?:점검|판정|쯤|까지|뒤에|(?:오전|오후)?\s*에\s*(?:다시|만료))|에(?:(?![.。!?！？]\s|\n).){0,120}?(?:다시 센다|함께 센다))/g)];
+    const nextDue = /다음 점검일은[^.\n]{0,60}?(\d{1,2})-(\d{1,2})/.exec(bodyText);
+    if (nextDue) bodyDates.push(nextDue);
     const dateOrder = (x: RegExpExecArray) => +x[1] * 100 + +x[2] + (titleDate && +x[1] < +titleDate[1] - 6 ? 1200 : 0);
     // 제목 날짜(작성일)와 같은 날짜는 「그날 한 일」이므로 본문 날짜는 그보다 뒤일 때만 점검일로 본다.
     const titleOrder = titleDate ? +titleDate[1] * 100 + +titleDate[2] : 0;
