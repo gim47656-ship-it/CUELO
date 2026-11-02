@@ -8,7 +8,7 @@ import { type Hook, hookCapability } from "@oh-my-pi/pi-coding-agent/capability/
 import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
 import { discoverCustomToolPaths, type ToolPathWithSource } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { getAllPluginExtensionPaths } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
-import { cfgExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+import { cfgDisabledExtensions, cfgExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 import { resolvePath } from "@oh-my-pi/pi-coding-agent/extensibility/utils";
 import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
 import { writePrivateFileAtomicSync } from "./atomic-file";
@@ -146,7 +146,32 @@ function legacyProjectSettingsExtensionPaths(cwd: string): string[] {
 }
 
 /**
- * Whether `cwd` ships resources omp would import and execute on session start.
+ * The `disabledExtensions` list with the project settings layer left out: the
+ * effective value when a higher or user-level layer supplies it, otherwise the
+ * user-level layers' own list, which the project list replaced.
+ */
+function nonProjectDisabledExtensions(settings: Settings): string[] {
+  if (settings.getProvenance(cfgDisabledExtensions) !== "project") return [...cfgDisabledExtensions.get(settings)];
+  const raw = settings.getGlobalSettings().disabledExtensions;
+  return Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/**
+ * Whether the project settings layer changes which extensions, skills, rules,
+ * … are disabled. omp lets that layer's array replace the user's, so a
+ * repository could switch off user-level code (a guard extension, a skill) or
+ * switch back on what the user disabled.
+ */
+function projectSettingsChangeDisabledExtensions(settings: Settings): boolean {
+  if (settings.getProvenance(cfgDisabledExtensions) !== "project") return false;
+  const effective = new Set(cfgDisabledExtensions.get(settings));
+  const nonProject = new Set(nonProjectDisabledExtensions(settings));
+  return effective.size !== nonProject.size || [...effective].some((id) => !nonProject.has(id));
+}
+
+/**
+ * Whether `cwd` ships resources omp would import and execute on session start,
+ * or settings that change which user-level extensions omp loads.
  * `settings` is omp's settings for `cwd` (see {@link projectSettingsExtensionRoots}).
  */
 export function hasTrustRequiringProjectResources(cwd: string, settings: Settings): boolean {
@@ -157,7 +182,11 @@ export function hasTrustRequiringProjectResources(cwd: string, settings: Setting
   for (const file of MCP_MANIFEST_FILES) {
     if (existsSync(join(cwd, file))) return true;
   }
-  return projectSettingsExtensionRoots(settings, cwd).length > 0 || legacyProjectSettingsExtensionPaths(cwd).length > 0;
+  return (
+    projectSettingsExtensionRoots(settings, cwd).length > 0 ||
+    legacyProjectSettingsExtensionPaths(cwd).length > 0 ||
+    projectSettingsChangeDisabledExtensions(settings)
+  );
 }
 
 export function getProjectTrustStatus(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
@@ -217,6 +246,11 @@ export interface UntrustedProjectSessionOptions<TTool extends DiscoveredToolPath
   preloadedCustomToolPaths: TTool[];
   /** MCP servers are processes omp spawns from project manifests — off entirely. */
   enableMCP: false;
+  /**
+   * The session's own settings with the project's `disabledExtensions` left
+   * out; present only when the project layer changes that list.
+   */
+  settings?: Settings;
 }
 
 export interface DiscoveredProjectCode<TTool extends DiscoveredToolPath> {
@@ -307,6 +341,18 @@ export async function discoverCodeWithoutProjectSettingsExtensions(
 }
 
 /**
+ * A private copy of `settings` whose `disabledExtensions` is the non-project
+ * value, held as a runtime override on the copy so the instance other sessions
+ * share is never changed. Higher layers still win the way they do in omp: the
+ * project layer this replaces already shadowed later user-level edits.
+ */
+async function withoutProjectDisabledExtensions(settings: Settings, cwd: string): Promise<Settings> {
+  const own = await settings.cloneForCwd(cwd);
+  cfgDisabledExtensions.override(own, nonProjectDisabledExtensions(settings));
+  return own;
+}
+
+/**
  * Session options that keep an untrusted project's code dormant.
  *
  * Returns `undefined` when the project has nothing that requires trust, or when
@@ -314,26 +360,32 @@ export async function discoverCodeWithoutProjectSettingsExtensions(
  * CUELO sessions behave exactly like `omp` in a terminal, and `discover` is
  * never called for them.
  *
- * For a gated project `discover` supplies the paths, normally
- * {@link discoverCodeWithoutProjectSettingsExtensions}, so roots the project's
- * settings configure are already absent while user-level extensions keep
- * working; entries under the project root are dropped here.
+ * For a gated project `discover` supplies the paths from the settings the
+ * session will use, normally via {@link discoverCodeWithoutProjectSettingsExtensions},
+ * so roots the project's settings configure are already absent while
+ * user-level extensions keep working; entries under the project root are
+ * dropped here. When the project changes `disabledExtensions`, those settings
+ * are a private copy without that change (returned as `settings`).
  */
 export async function untrustedProjectSessionOptions<TTool extends DiscoveredToolPath>(
   cwd: string,
   agentDir: string,
   settings: Settings,
-  discover: () => Promise<DiscoveredProjectCode<TTool>>,
+  discover: (settings: Settings) => Promise<DiscoveredProjectCode<TTool>>,
 ): Promise<UntrustedProjectSessionOptions<TTool> | undefined> {
   const status = getProjectTrustStatus(cwd, agentDir, settings);
   if (!status.requiresTrust || status.trusted) return undefined;
 
-  const discovered = await discover();
+  const sessionSettings = projectSettingsChangeDisabledExtensions(settings)
+    ? await withoutProjectDisabledExtensions(settings, cwd)
+    : settings;
+  const discovered = await discover(sessionSettings);
   return {
     preloadedExtensionPaths: discovered.extensionPaths.filter((path) => !isInsideProject(path, cwd)),
     preloadedCustomToolPaths: discovered.customToolPaths.filter(
       (tool) => tool.source?.level !== "project" && !isInsideProject(tool.path, cwd),
     ),
     enableMCP: false,
+    ...(sessionSettings !== settings ? { settings: sessionSettings } : {}),
   };
 }

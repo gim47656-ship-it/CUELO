@@ -2703,13 +2703,17 @@ export async function startRpcSession(
 
       // Gate untrusted project code so opening a repository in a browser tab does
       // not run its `.omp/extensions`, `.omp/tools`, `.mcp.json` servers, or the
-      // extension roots its settings files configure (see lib/project-trust.ts).
-      // Only a gated project pays for the extra discovery, which runs without
-      // those roots and drops project-local entries, so user-level extensions
-      // keep working; trusted and clean projects take omp's own load path.
-      const untrusted = await untrustedProjectSessionOptions(sessionCwd, agentDir, settings, () =>
-        discoverCodeWithoutProjectSettingsExtensions(settings, sessionCwd),
+      // extension roots its settings files configure, nor let its settings switch
+      // off user-level extensions (see lib/project-trust.ts). Only a gated
+      // project pays for the extra discovery, which runs without those roots and
+      // drops project-local entries, so user-level extensions keep working;
+      // trusted and clean projects take omp's own load path.
+      const untrusted = await untrustedProjectSessionOptions(sessionCwd, agentDir, settings, (gatedSettings) =>
+        discoverCodeWithoutProjectSettingsExtensions(gatedSettings, sessionCwd),
       );
+      // An untrusted project whose settings change `disabledExtensions` gets a private
+      // copy without that change; revived children below must read the same copy.
+      const sessionSettings = untrusted?.settings ?? settings;
 
       // `SYSTEM.md` / `APPEND_SYSTEM.md` / `TITLE_SYSTEM.md`, resolved against this session's cwd the
       // way the CLI resolves them against its own (lib/session-system-prompt.ts).
@@ -2744,7 +2748,7 @@ export async function startRpcSession(
       const sessionOptions: CreateAgentSessionOptions = {
         cwd: sessionCwd,
         agentDir,
-        settings,
+        settings: sessionSettings,
         sessionManager,
         modelRegistry,
         hasUI: true,
@@ -2834,7 +2838,7 @@ export async function startRpcSession(
             session: inner,
             authStorage: runtime.authStorage,
             modelRegistry,
-            settings,
+            settings: sessionSettings,
             enableLsp: toolsOption === undefined,
             eventBus,
             subagentEventBus,

@@ -9,8 +9,6 @@ import type { CueloUpdateApplyState, CueloUpdateJob, CueloUpdateResponse } from 
 import { computePopupPlacement, preferredPopupHeight } from "@/lib/popup-placement";
 import { MarkdownBody } from "./MarkdownBody";
 
-type LoadState = "idle" | "loading" | "ready";
-
 /** 소스 체크아웃에서 수동으로 갱신할 때 안내하는 명령. */
 const SOURCE_UPDATE_COMMAND = "git pull --ff-only && node install.mjs setup";
 
@@ -23,6 +21,13 @@ const TERMINAL_PHASE: Record<string, true> = {
 /** 서버가 내려간 동안에도 진행 상황을 놓치지 않도록 계속 묻는다. 실패하면 간격을 늘린다. */
 const APPLY_POLL_MS = 2000;
 const APPLY_POLL_IDLE_MS = 5000;
+/**
+ * 열어 둔 화면도 새 릴리스를 알아차리도록 보이는 동안 다시 묻는 간격. 서버가 GitHub 릴리스 정보를
+ * 한 시간 캐시하므로(lib/omp-updates.ts `RELEASE_CACHE_SECONDS`) 더 자주 물어도 새 정보가 없다.
+ */
+const STATUS_REFRESH_MS = 60 * 60 * 1000;
+/** 탭으로 돌아올 때 visibilitychange·focus·online이 겹쳐 와도 한 번만 묻는다. */
+const STATUS_RETURN_GAP_MS = 10_000;
 
 
 function displayVersion(version: string): string {
@@ -33,7 +38,6 @@ export function OmpUpdateIndicator() {
   const { locale, t } = useI18n();
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<CueloUpdateResponse | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("idle");
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
@@ -90,24 +94,62 @@ export function OmpUpdateIndicator() {
   }, [open, updatePanelPosition]);
 
 
-  const loadStatus = useCallback(async (signal?: AbortSignal) => {
-    setLoadState("loading");
-    try {
-      const response = await fetch("/api/updates", { cache: "no-store", signal });
-      if (!response.ok) return;
-      const next = await response.json() as CueloUpdateResponse;
-      setStatus(next);
-      setLoadState("ready");
-    } catch {
-      if (!signal?.aborted) setLoadState("ready");
-    }
-  }, []);
-
+  // 처음 열 때만 물으면 그 뒤에 나온 릴리스는 새로 고침 전까지 보이지 않는다. 탭·창·네트워크로
+  // 돌아올 때와 보이는 동안 한 시간마다 다시 묻고, 다시 묻다 실패하면 마지막으로 받은 상태를 둔다.
   useEffect(() => {
-    const controller = new AbortController();
-    void loadStatus(controller.signal);
-    return () => controller.abort();
-  }, [loadStatus]);
+    let stopped = false;
+    let controller: AbortController | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastCheckAt = 0;
+    const stopTimer = () => {
+      clearTimeout(timer);
+      timer = undefined;
+    };
+    const schedule = () => {
+      stopTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = setTimeout(() => void check(), STATUS_REFRESH_MS);
+    };
+    const check = async () => {
+      if (stopped || controller) return;
+      const current = new AbortController();
+      controller = current;
+      lastCheckAt = Date.now();
+      try {
+        const response = await fetch("/api/updates", { cache: "no-store", signal: current.signal });
+        if (!response.ok) return;
+        const next = await response.json() as CueloUpdateResponse;
+        if (!stopped) setStatus(next);
+      } catch {
+        // 잠깐 끊겨도 마지막으로 받은 상태를 그대로 둔다.
+      } finally {
+        if (controller === current) controller = null;
+        schedule();
+      }
+    };
+    const onReturn = () => {
+      if (document.visibilityState !== "visible") {
+        stopTimer();
+        return;
+      }
+      if (controller) return;
+      if (Date.now() - lastCheckAt >= STATUS_RETURN_GAP_MS) void check();
+      else if (timer === undefined) schedule();
+    };
+
+    void check();
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
+    window.addEventListener("online", onReturn);
+    return () => {
+      stopped = true;
+      stopTimer();
+      controller?.abort();
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+      window.removeEventListener("online", onReturn);
+    };
+  }, []);
 
   const readApplyState = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -225,7 +267,7 @@ export function OmpUpdateIndicator() {
     };
   }, [open]);
 
-  if (loadState !== "ready" || !status?.updateAvailable || !status.latestRelease) return null;
+  if (!status?.updateAvailable || !status.latestRelease) return null;
 
   const release = status.latestRelease;
   const releaseDate = release.publishedAt

@@ -13,6 +13,7 @@ CUELO는 브라우저 세션에서 omp를 실행합니다. 프로젝트를 열 �
 | Custom tools | 위 설정 루트들의 `tools/` 디렉터리 |
 | MCP 설정 | `.mcp.json`, `.omp/.mcp.json`, `.omp/mcp.json`, `.claude/.mcp.json`, `.claude/mcp.json`, `.cursor/mcp.json` |
 | 설정의 extension 루트 | `.omp/config.yml`, `.omp/settings.json`, `.claude/settings.json` 등 omp가 병합하는 프로젝트 설정 파일의 `extensions` 경로(프로젝트 내부 및 외부 경로 모두 포함) |
+| 설정의 비활성화 목록 | 프로젝트 설정의 `disabledExtensions`가 사용자 수준 비활성화 목록과 다른 경우 |
 
 Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYSTEM.md`는 이 신뢰 확인으로 실행을 차단하는 대상이 아닙니다. 일부는 prompt 입력으로 처리되므로, 이 문서는 prompt injection을 막는다고 보장하지 않습니다. 신뢰할 수 없는 프로젝트의 지시문도 검토 없이 따라서는 안 됩니다.
 
@@ -21,6 +22,8 @@ Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYS
 ## 신뢰하지 않은 프로젝트의 세션
 
 신뢰하지 않은 프로젝트에서는 프로젝트 로컬 확장, custom tool, 프로젝트 MCP 실행이 비활성화되며, 프로젝트 설정 파일에 지정된 extension 루트도 해당 경로가 프로젝트 외부를 가리키더라도 로드되지 않습니다. 사용자 수준(`~/.omp/agent`)의 확장과 도구, 사용자 설정의 `extensions`는 프로젝트 설정의 `extensions`가 같은 폴더를 가리켜도 계속 로드됩니다. Windows에서 프로젝트와 사용자 폴더가 서로 다른 드라이브에 있어도 동일한 경계가 적용됩니다. 신뢰를 승인하면 프로젝트 설정의 `extensions`는 `omp` 터미널과 동일하게 로드되므로, 프로젝트별 리소스가 필요할 때만 CUELO의 신뢰 요청을 승인하세요.
+
+신뢰하지 않은 프로젝트 설정의 `disabledExtensions` 항목은 사용자 수준 확장을 비활성화하는 데 적용되지 않으며, 사용자 설정에 지정된 비활성화 목록만 유지됩니다. 프로젝트 설정의 `disabledExtensions`는 해당 프로젝트의 신뢰를 승인한 뒤에만 적용됩니다.
 
 입력창에서 `/` 명령을 실행할 때도 같은 세션 자원 경계를 따릅니다. 발견된 확장 명령은 신뢰 확인을 통과해 로드된 확장에서만 실행되고, 스킬·프롬프트 템플릿 명령은 위에서 설명한 대로 prompt 입력으로 처리됩니다. 실행 중이거나 대기 중이거나 이 신뢰 정책은 같습니다.
 
