@@ -38,14 +38,15 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
   `skill://kill-ai-slop`을 함께 사용한다. 그 밖의 스킬은 설치된 스킬 이름과 설명을 보고 이번
   과제와 현재 프로젝트에 실제로 필요한 최소 집합만 스스로 고른다. 브리프가 스킬 목록을 미리 다
   싣거나 사용자에게 고르라고 묻지 않는다.
-- 슬롭 정리는 먼저 정도를 가른다(`heydamir/unslop`의 polish 방식을 줄여 옮김). 징후가 여러 층에 퍼진 화면도 사용자가
-  승인한 범위 안에서만 정리한다. 징후가 많다고 리디자인 승인이 되지 않는다. 대체로 디자인된 화면은 감사에서 확정한
-  징후만 고치고, 기존 디자인 시스템·브랜드·팔레트·글꼴·레이아웃·상태색 의미를 그대로 둔다. 더 큰 아이디어는 바꾸지
-  않고 보고에 제안으로만 적는다. 징후가 없으면 그렇다고 말하고
-  고치지 않는다(no-op). 고칠 때는 감사·승인된 범주에 한해 spacing→color→icons→copy→type→layout→details→
-  visuals→motion 순서로 한 범주씩 화면 전체에 적용한다. 없앤 장식을 다른 유행 장식(glass, grain, neon, bento 등)으로
-  바꾸지 않는다. upstream의 수치 처방(4px 격자, 굵기 400/500, lucide, 이모지·이탤릭 금지, 차트 규칙)은 들이지
-  않는다.
+- 기존 화면의 AI 슬롭 정리·다듬기는 `skill://unslop-ui`(설치돼 있을 때)의 감사·방향·순서 있는 수정 패스와 그 스킬의
+  「OMP local contract」를 따른다. 새 화면과 전면 재구성은 `hallmark`이고, `kill-ai-slop` 스캔은 어느 쪽이든 감사 단서로
+  먼저 돌린다. unslop-ui가 없는 설치에서는 `kill-ai-slop`의 Fix 단계로 처리하되 다음 경계를 지킨다. 징후가 여러 층에
+  퍼진 화면도 사용자가 승인한 범위 안에서만 정리한다. 징후가 많다고 리디자인 승인이 되지 않는다. 대체로 디자인된
+  화면은 감사에서 확정한 징후만 고치고, 기존 디자인 시스템·브랜드·팔레트·글꼴·레이아웃·상태색 의미를 그대로 둔다.
+  더 큰 아이디어는 바꾸지 않고 보고에 제안으로만 적는다. 징후가 없으면 그렇다고 말하고 고치지 않는다(no-op).
+  고칠 때는 감사·승인된 범주에 한해 spacing→color→icons→copy→type→layout→details→visuals→motion 순서로 한 범주씩
+  화면 전체에 적용한다. 없앤 장식을 다른 유행 장식(glass, grain, neon, bento 등)으로 바꾸지 않는다. unslop-ui의 수치
+  토큰(4px 격자, 굵기, 아이콘 세트 등)은 프로젝트에 정본이 없을 때만 쓴다.
 - UI·문서 산출물(화면 코드, 강의·보고용 HTML·문서)을 사용자에게 넘기기 전에
   `node <kill-ai-slop 스킬 폴더>/scripts/scan.mjs <대상>`을 실행한다(프로필 기준
   `~/.omp/agent/skills/kill-ai-slop/scripts/scan.mjs`). 적중은 판정이 아니라 단서이므로 해당
@@ -92,7 +93,7 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
   통째 45종은 +2,054토큰(당시 주입 목록 943토큰의 두 배 이상)이었다. 설명은 한 문장 150자 이하로 줄인다.
 - **채택한 묶음.**
   - 필수 기본 셋(seed-design·frontend-design·ui-ux-pro-max)과 신규·분석 `hallmark`, 슬롭 감사 `kill-ai-slop`,
-    한국어 문구 `humanizer`.
+    기존 화면 다듬기 `unslop-ui`(2026-11-02, 비공개 선택 스킬), 한국어 문구 `humanizer`.
   - 제품 UX·업무 도구 12종(dembrandt-skills 선별, 2026-10-10): app-shell, coordinated-data-views,
     data-display-and-selection, domain-expert-configuration, modal-and-overlay-patterns,
     operational-expert-tool-ui, repeated-component-alignment, scroll-areas, status-colors-and-errors,
@@ -109,13 +110,11 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
     kill-ai-slop이 덮는다. 대비·작은 글자 같은 렌더링 검사가 필요할 때만 `detect`를 임시로 돌린다(2026-10-19
     시험에서 화면 5건을 찾아 고쳤다). 영구 gate·CI 검사로 만들지 않는다.
   - im-not-ai: 에이전트 정의 9개가 Main/Maker 두 역할 정책과 부딪힐 수 있어 들이지 않았다(분류 체계만 참고).
-  - `heydamir/unslop`·`theclaymethod/unslop` 스킬 통째: 스토리 영상·스냅샷 브라우저 스크립트, 고정 시각 처방,
-    Python 검증 스크립트가 기존 경로와 겹치거나 부딪친다. 수정 원칙만 이 규칙과 `writing-review-procedure`에 요약해
-    옮겼다. Taste 계열의 그림·모션 하한은 앱 화면에 맞지 않아 보편 기준으로 쓰지 않는다.
+  - Taste 계열의 그림·모션 하한은 앱 화면에 맞지 않아 보편 기준으로 쓰지 않는다.
   - 엔진·외부 도구가 필수인 스킬(extract-design, clone-website, generate-ui-from-brand): 설치가 비목표다.
 - **적용 범위.** 시각 판단이 없는 동작·백엔드·문구 작업은 대상이 아니다. 웹 코드 예시는 WPF·WinForms에서
   규칙만 적용한다. 장비 화면은 표시만 바꾸고 판정·공차·교정 계산은 바꾸지 않으며 실제 장비 확인으로 닫는다.
-- **출처와 기준일.** 아래는 결정일 기준이다. 설치한 스킬의 고정 commit과 라이선스는 `UPSTREAM.json`에 있고, 규칙에 원칙만 요약해 옮긴 출처(2026-11-02 행)는 표에 고정 commit 링크와 라이선스를 적는다.
+- **출처와 기준일.** 아래는 결정일 기준이다. 설치한 스킬의 고정 commit·라이선스·로컬 변경은 각 스킬의 `UPSTREAM.json`을 따른다.
 
   | 결정일 | 출처(upstream) | 결과 |
   |---|---|---|
@@ -124,8 +123,8 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
   | 2026-10-16 | `pbakaus/impeccable` 4.6.0 | 조사, 상시 설치 안 함 |
   | 2026-10-17 | `hamen/material-3-skill`, `s0xDk/refactoring-ui-skill`, `github/awesome-copilot`(mvvm-toolkit), `novotnyllc/dotnet-artisan`, `christian289/dotnet-with-claudecode`, `timhok/hmi-design`(고쳐 씀) | 들임 |
   | 2026-10-22 | `android/skills` | 들임(Android 앱 작업 한정) |
-  | 2026-11-02 | [`heydamir/unslop`](https://github.com/heydamir/unslop/blob/a6f121eee5f29c2f74976b75456feae8b66afb3a/skills/unslop/SKILL.md) (CC BY 4.0, Damir Sokolovsky) | polish 방식·수정 순서를 줄여 옮김(변경: 수치 처방 제외, 기존 디자인 시스템 우선) |
-  | 2026-11-02 | [`theclaymethod/unslop`](https://github.com/theclaymethod/unslop/blob/17ed39c9d0b522f44190ff0c6233867eadee192a/references/core-contract.md) (README 기준 MIT) | 최소 수정·보호 용법 원칙만 `writing-review-procedure`에 요약 |
+  | 2026-11-02 | [`heydamir/unslop`](https://github.com/heydamir/unslop/tree/a6f121eee5f29c2f74976b75456feae8b66afb3a/skills/unslop) (CC BY 4.0, Damir Sokolovsky) | 들임(`unslop-ui` 선택 스킬, 본문 그대로에 OMP local contract 추가, 스크립트는 보관만 하고 실행 안 함) |
+  | 2026-11-02 | [`theclaymethod/unslop`](https://github.com/theclaymethod/unslop/blob/17ed39c9d0b522f44190ff0c6233867eadee192a/references/core-contract.md) (README 기준 MIT) | 글쓰기 수리·보존 흐름은 `unslop-prose`와 `writing-review-procedure`에서 다룸 |
 
 ## 모델 폴백
 

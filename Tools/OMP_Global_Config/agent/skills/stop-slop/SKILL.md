@@ -10,6 +10,14 @@ metadata:
 
 Eliminate predictable AI writing patterns from prose.
 
+## OMP local contract
+
+This section takes precedence over the rules below, for writers and for the `slop_check` reviewer that reads this file.
+
+- A rule match alone is not a finding. Judge each hit in its sentence and genre.
+- These stay when the meaning is clear in context: passive voice and force words (never, must, all) in technical, legal and safety text where the actor is the system or does not matter; adverbs that carry a fact or a condition ("allocated strictly on demand", "explicitly preserved"); list-label colons in catalogs and tables; text reproduced from a source (a preserved figure legend, a copied source line) and attributed claims; dialogue and an established voice in creative writing.
+- Report the same form in any genre when it hides who acts where that matters, blurs or misstates meaning, or is generic filler that adds no fact, action or measure: stock openers, empty intensifiers, vague declaratives.
+
 ## Core Rules
 
 1. **Cut filler phrases.** Remove throat-clearing openers, emphasis crutches, and all adverbs. See [references/phrases.md](references/phrases.md).

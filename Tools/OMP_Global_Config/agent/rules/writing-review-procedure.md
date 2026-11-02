@@ -21,7 +21,10 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   고객용 덱이 빠진 사례를 사용자가 바로잡았다). 제외는 선언 없는 마크다운과 소스 내부다: 코드·주석·로그·테스트·fixture·
   생성물·vendor, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`. `.slop-gate.json` `visible`은
   대상을 더하기만 한다. 위 초안 작성·직접 교정 규칙과 코드 변경의 `cross_review`는 그대로 유지한다.
-  점검은 `slop_check`로 한다. 검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
+  점검은 `slop_check`로 한다. 짧거나 두 언어가 섞인 대상의 언어를 알면 `lang`(`ko`·`en`·`both`)을 직접 넘긴다. 자동
+  판별은 한글 20자·영어 단어 60개 이상일 때만 글 기준(`humanizer`·`stop-slop`)을 고르므로, 그보다 짧은 글 파일은
+  "no rubric applies"로 멈추고 HTML·UI 문구·슬라이드는 `kill-ai-slop`만으로 심사된다. 원래 점검 대상인 산출물에만
+  해당하며 대화 답변·내부 파일을 새로 점검하라는 뜻은 아니다. 검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
   (2026-10-29 사용자 결정: slop에는 Opus·Astra를 쓰지 않고 Gemini Flash와 모든 자문도 없앴다). Anthropic·Gemini·그 밖 저자는 Luna가 필수다.
   OpenAI 저자는 Luna를 못 쓰므로(같은 계열) 그 자리가 `crossReviewAnthropic`으로 간다. slot이 비었거나 풀리지 않으면 그
   자리는 `cross_review`와 같은 옛 slot(`crossReviewOpenAI`·`crossReviewAnthropic`)으로 돌아가고, 풀린
@@ -40,4 +43,10 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   never·must·all 같은 용법은 바꿔 쓰지 않는다. 자동 면제는 아니다: 같은 형식이라도 뜻을 흐리거나 오해를 부르면 결함이다.
   타당하다는 근거를 적어 Main에게 넘기고 Main이 `refuted`로 닫는다. 이것은 게이트를 건너뛰는
   길이 아니다. 고친 파일은 다시 점검한다. 사실·수치·날짜·조건·부정·범위·불확실성을 바꾸거나 새 주장·결론을 더하지 않는다.
+  `unslop-prose` Skill이 설치돼 있으면 영어 글의 감사·교정에 그 Skill(cleanup·rewrite)을 쓰고, 고친 뒤 그 Skill의
+  `validate_preservation.py`·`diff_check.py`로 전후를 대조한다(한국어 글에도 쓸 수 있다). 설치돼 있지 않으면 이 단계 없이
+  기존 `stop-slop`·`humanizer` 경로대로 고친다. 한국어 글 교정은 `humanizer` 교정 모드다. 대조 결과는 참고 증거일
+  뿐이다: 날짜·단위·인용은 놓칠 수 있으니 diff를 직접 읽고, 같은 값을 다르게 쓴 것(3,200,000원과 320만 원)은 오류가
+  아니다. 대화 답변과 코드는 대상이 아니다. 같은 맥락 판단 원칙이 `stop-slop`·`humanizer`의 OMP local contract에
+  있고, `slop_check` 검토 모델은 그 파일을 기준으로 읽는다.
 - **draft는 호출 횟수가 아니라 작성 범위로 적용한다(2026-10-27 사용자 지적).** 일부 문단의 초안만 받은 뒤 나머지 설명·표 문구·슬라이드 본문을 Main이나 Maker가 직접 써서 합치면 안 된다. 새로 쓰거나 문단 단위로 다시 쓰는 각 블록은 최종 파일에 반영하기 전에 `draft`로 작성한다. 작업을 여러 번 나누거나 HTML 한 줄에 넣어도 예외가 되지 않는다. 초안 밖의 새 설명·예시·결론을 덧붙이는 것은 사실 교정이나 슬롭 제거가 아니다. 기존 문구의 정확한 사실·오탈자 교정, 문구를 바꾸지 않는 코드·레이아웃 변경은 직접 수정할 수 있다. 적용 전에 초안과 반영할 문구를 대조하고 빠진 블록만 다시 작성한다. `slop_check` 통과는 draft 작성 범위를 증명하지 않는다.

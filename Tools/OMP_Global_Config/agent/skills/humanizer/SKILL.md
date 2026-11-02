@@ -38,6 +38,14 @@ Vendored from [DaleSeo/korean-skills](https://github.com/DaleSeo/korean-skills) 
   done until a 「분석 결과」 exists for each file in scope.
 - Exclusions are limited to direct quotes, official names and defined terms. List each one with
   its location. An S1 word in a sentence you wrote yourself is not an official term.
+- A pattern hit alone is not a finding; judge it in its sentence and genre. Besides the exclusions
+  above, these stay when they read correctly in context: text reproduced from a source artifact (a
+  preserved figure legend, a copied source line) and attributed claims; the established register of
+  technical, legal and safety documents (list-label colons in catalogs and tables, a nominalized
+  heading that names an object and its role); dialogue and an established voice in creative
+  writing. Report the same form in any genre when it hides who acts where that matters, blurs or
+  misstates meaning, or is generic filler that adds no fact, action or measure. S1 vocabulary in a
+  sentence newly written for the artifact stays decisive.
 - When the input is large or little context is left, split the work by file or delegate per file
   to a `maker`. Never shrink the criteria or the scope to make it fit.
 - The upstream link to `style-guide` points to a skill that is not installed here; ignore it.
