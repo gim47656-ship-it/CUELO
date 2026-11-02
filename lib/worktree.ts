@@ -87,10 +87,10 @@ export function rememberPlainSessionProject(cwd: string): SessionProjectGrouping
  * worktree add/remove는 항상 Linux git이다. Windows git이 만든 `.git` 파일(`gitdir: D:/...`)은 Linux git이 못 따라가고,
  * Linux git이 만든 `gitdir: /mnt/...` worktree는 Windows git이 못 따라간다. 이 앱이 만드는 worktree는 Linux 형식이다.
  */
-async function git(cwd: string, args: string[], executor?: GitExecutor): Promise<string> {
+async function git(cwd: string, args: string[], executor?: GitExecutor, timeout = 10_000): Promise<string> {
   const { stdout } = await execFileAsync(executor?.command ?? "git", args, {
     cwd,
-    timeout: 10_000,
+    timeout,
     maxBuffer: 1024 * 1024,
     // Pin the message locale so error-text matching (e.g. the dirty-worktree
     // detection in the DELETE route) works regardless of system language.
@@ -98,6 +98,12 @@ async function git(cwd: string, args: string[], executor?: GitExecutor): Promise
   });
   return stdout.trim();
 }
+
+/**
+ * worktree add/remove는 파일 전체를 풀거나 지운다. 11-03 클라우드(4 vCPU)에서 파일 1만 개 checkout이 19초 걸려
+ * 10초 제한에 끊겼다(반쯤 만든 폴더와 가지가 남았다). 이 둘만 길게 둔다.
+ */
+const WORKTREE_WRITE_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * addWorktree() places worktrees in `<repoRoot>-worktrees/<dir>`. When such a
@@ -245,9 +251,9 @@ export async function addWorktree(cwd: string, branch: string): Promise<{ path: 
 
   try {
     if (branchExists) {
-      await git(repoRoot, ["worktree", "add", "--", worktreePath, trimmed]);
+      await git(repoRoot, ["worktree", "add", "--", worktreePath, trimmed], undefined, WORKTREE_WRITE_TIMEOUT_MS);
     } else {
-      await git(repoRoot, ["worktree", "add", "-b", trimmed, "--", worktreePath]);
+      await git(repoRoot, ["worktree", "add", "-b", trimmed, "--", worktreePath], undefined, WORKTREE_WRITE_TIMEOUT_MS);
     }
   } catch (error) {
     throw new Error(extractGitError(error));
@@ -265,7 +271,7 @@ export async function removeWorktree(cwd: string, worktreePath: string, force = 
   if (target.isMain) throw new Error("Cannot remove the main worktree");
 
   try {
-    await git(cwd, ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath]);
+    await git(cwd, ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath], undefined, WORKTREE_WRITE_TIMEOUT_MS);
   } catch (error) {
     throw new Error(extractGitError(error));
   }
@@ -273,7 +279,13 @@ export async function removeWorktree(cwd: string, worktreePath: string, force = 
 }
 
 function extractGitError(error: unknown): string {
+  // 시간 제한으로 끊긴 git은 stderr에 「Preparing worktree」 같은 첫 줄만 남겨 실패 이유가 안 보인다.
+  // 출력 한도 초과(ERR_CHILD_PROCESS_STDIO_MAXBUFFER)도 killed를 세우므로 시간 제한과 구분한다.
+  const timedOut =
+    error instanceof Error && "killed" in error && error.killed === true &&
+    !("code" in error && error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+  const killed = timedOut ? " (git was stopped: time limit reached)" : "";
   const stderr = (error as { stderr?: string }).stderr;
-  if (typeof stderr === "string" && stderr.trim()) return stderr.trim();
-  return error instanceof Error ? error.message : String(error);
+  if (typeof stderr === "string" && stderr.trim()) return stderr.trim() + killed;
+  return (error instanceof Error ? error.message : String(error)) + killed;
 }
