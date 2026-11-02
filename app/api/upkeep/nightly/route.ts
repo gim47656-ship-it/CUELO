@@ -1,11 +1,12 @@
-import { getAgentDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { type AgentSessionWrapper, getRunningRpcSessionIds, startNewRpcSession } from "@/lib/rpc-manager";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
-import { planNightlyRun, readNightlyState, writeNightlyState } from "@/lib/upkeep/nightly";
+import { type NightlyJobs, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
+import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { addWorktree } from "@/lib/worktree";
 
 export const dynamic = "force-dynamic";
@@ -40,11 +41,24 @@ export async function POST(req: Request) {
   }
 }
 
+/** 로그 한 줄에 실을 오늘 할 일 */
+function describeJobs(jobs: NightlyJobs): string {
+  return [
+    jobs.problems.length ? `problems ${jobs.problems.join(", ")}` : null,
+    jobs.skillCandidates ? `${jobs.skillCandidates} procedure candidate(s)` : null,
+    jobs.weeklyReview ? "weekly performance review" : null,
+  ].filter(Boolean).join("; ");
+}
+
 async function planAndRun(dryRun: boolean) {
   const agentDir = getAgentDir();
   let plan;
+  let state;
   try {
-    plan = planNightlyRun(await collectUpkeep(true), readNightlyState(agentDir), new Date(), getRunningRpcSessionIds());
+    state = readNightlyState(agentDir);
+    const now = new Date();
+    const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
+    plan = planNightlyRun(await collectUpkeep(true), state, now, getRunningRpcSessionIds(), candidates);
   } catch (error) {
     log(`failed to plan: ${error instanceof Error ? error.message : String(error)}`);
     return NextResponse.json({ error: "Nightly plan failed" }, { status: 500 });
@@ -54,7 +68,7 @@ async function planAndRun(dryRun: boolean) {
     return NextResponse.json({ action: "skipped", reason: plan.reason, ...(dryRun ? { dryRun } : {}) });
   }
   if (dryRun) {
-    log(`dry run: would start ${plan.branch} for ${plan.problems.join(", ")}`);
+    log(`dry run: would start ${plan.branch} for ${describeJobs(plan.jobs)}`);
     return NextResponse.json({ action: "planned", dryRun, plan });
   }
   // 보고서를 모으는 사이 갱신이 시작됐을 수 있어 무엇이든 만들기 직전에 본다.
@@ -75,8 +89,8 @@ async function planAndRun(dryRun: boolean) {
     invalidateSessionListCache();
     await session.send({ type: "prompt", message: plan.prompt });
     accepted = true;
-    writeNightlyState(agentDir, { date: plan.date, sessionId: started.realSessionId, worktree, startedAt: new Date().toISOString() });
-    log(`started ${started.realSessionId} in ${worktree} for ${plan.problems.join(", ")}`);
+    writeNightlyState(agentDir, nightlyStateAfterRun(plan, state, started.realSessionId, worktree, new Date().toISOString()));
+    log(`started ${started.realSessionId} in ${worktree} for ${describeJobs(plan.jobs)}`);
     return NextResponse.json({ action: "started", sessionId: started.realSessionId, worktree });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
