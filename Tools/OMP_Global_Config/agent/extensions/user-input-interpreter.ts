@@ -6,8 +6,10 @@ import { onSessionLifecycle } from "./lib/session-identity";
  * 사용자 입력 통역(2026-10-30 사용자 결정). Main이 한국어 명령을 잘못 알아듣는 일이 있어, 사용자가 한국어로 쓴 메시지마다
  * 통역 자리(modelRoles.interpreter, 없으면 tiny)가 영어로 옮긴 글을 숨김 메시지로 바로 뒤에 붙인다.
  * - 원문은 바꾸지 않는다: 승인 판정·캐릭터 교체 명령·원문 인용 계약이 한국어 원문을 읽는다(사용자 선택: 원문 + 영어 덧붙임).
- * - 새 프롬프트는 before_agent_start에서 번역을 기다려 같은 요청에 싣는다. 실행 중 끼어든 메시지는 message_start에서 잡아
- *   번역이 오면 aside로 붙인다. 이미 프롬프트로 번역한 글은 다시 보내지 않는다.
+ * - 새 프롬프트는 before_agent_start에서 번역을 기다려 같은 요청에 싣는다. 실행 중 끼어든 메시지는 기다리지 않는다:
+ *   core는 대기열의 steering·follow-up도 넘기기 전에 before_agent_start를 돌리므로, 여기서 기다리면 끼어든 말이
+ *   번역 시간만큼 늦게 모델에 닿는다(2026-11-03 측정: 10-30 이후 steering 298건 중 295건이 번역 종료 직후 전달, 중앙값
+ *   3.2초). 그 메시지는 message_start에서 잡아 번역이 오면 aside로 붙인다. 이미 프롬프트로 번역한 글은 다시 보내지 않는다.
  * - Main만 대상이다(Maker는 Main의 영어 브리프를 받는다). 비밀처럼 보이는 글과 한글이 거의 없는 글은 보내지 않는다.
  * - 번역이 실패하거나 늦으면 덧붙이지 않고 원문만 간다. 번역 실패가 사용자 요청을 막지 않는다.
  */
@@ -57,6 +59,8 @@ export function createUserInputInterpreter(translate: TranslateInput = translate
   return function userInputInterpreter(pi: ExtensionAPI): void {
     let handled: string[] = [];
     let pending = new Set<AbortController>();
+    // 새 프롬프트의 before_agent_start는 실행 전에, 대기열 메시지의 것은 실행 중에 온다.
+    let running = false;
     const reset = () => {
       for (const controller of pending) controller.abort();
       pending = new Set();
@@ -83,11 +87,13 @@ export function createUserInputInterpreter(translate: TranslateInput = translate
       }
     };
 
-    onSessionLifecycle(pi, { start: reset });
-    pi.on("session_shutdown", reset);
+    onSessionLifecycle(pi, { start: () => { reset(); running = false; } });
+    pi.on("session_shutdown", () => { reset(); running = false; });
+    pi.on("agent_start", () => { running = true; });
+    pi.on("agent_end", (event) => { if (!event.willContinue) running = false; });
 
     pi.on("before_agent_start", async (event, ctx) => {
-      if (event.reason !== "prompt" || ctx.agent?.kind !== "main") return undefined;
+      if (event.reason !== "prompt" || ctx.agent?.kind !== "main" || running) return undefined;
       const text = event.prompt.trim();
       if (!needsInterpreting(text)) return undefined;
       remember(text);

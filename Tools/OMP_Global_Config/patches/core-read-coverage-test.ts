@@ -118,11 +118,24 @@ const row = (n: number, width: number) => `L${String(n).padStart(5, "0")} ${"x".
 // 첫 줄 200KB JSON + 짧은 줄 20개. read 예산은 max(50KB, 300줄 × 512B) = 150KB다.
 writeFileSync(join(files, "first.json"), `${JSON.stringify({ blob: "y".repeat(200_000) })}\n${Array.from({ length: 20 }, (_, i) => row(i + 2, 40)).join("\n")}\n`);
 const hashline = await delivered("first.json");
-check(
-	"hashline: 첫 줄을 내지 않았으면 전달량을 0B로 보고한다",
-	!hashline.includes("y".repeat(100)) && /partial, 0B of 195\.3KB/.test(hashline) && !/150\.0KB of/.test(hashline),
-	JSON.stringify(hashline.slice(-200)),
-);
+// 18.16.0 (#16595): a line wider than tools.outputMaxColumns is shown cut to that width and paging goes on past it,
+// so the first line is no longer withheld; the claim to guard is then that every row arrives with the :raw recovery
+// notice and nothing reports a partial or budget-sized delivery.
+if (readFileSync(join(core, "src/tools/read.ts"), "utf8").includes("column-capped")) {
+	check(
+		"hashline: 열 폭으로 자른 첫 줄 뒤 나머지 행을 모두 내고 :raw 복구 안내만 붙인다",
+		hashline.includes(`1:{"blob":"${"y".repeat(100)}`) && !hashline.includes("y".repeat(1000)) && hashline.includes("21:L00021") &&
+			/Use :raw:1-1 to read line 1 uncut/.test(hashline) &&
+			!/partial,/.test(hashline) && !/150\.0KB of/.test(hashline),
+		JSON.stringify(hashline.slice(-200)),
+	);
+} else {
+	check(
+		"hashline: 첫 줄을 내지 않았으면 전달량을 0B로 보고한다",
+		!hashline.includes("y".repeat(100)) && /partial, 0B of 195\.3KB/.test(hashline) && !/150\.0KB of/.test(hashline),
+		JSON.stringify(hashline.slice(-200)),
+	);
+}
 check("hashline: 첫 줄 미전달이면 다음 행 재개 offset을 권하지 않는다", !/Use :\d+ to continue/.test(hashline), JSON.stringify(hashline.slice(-200)));
 const raw = await delivered("first.json:raw");
 check(

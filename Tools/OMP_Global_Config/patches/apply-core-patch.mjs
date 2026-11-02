@@ -21847,6 +21847,49 @@ export function cueloIsFallbackKeyBillingRejection(
 		"applyMissingCredentialFallback");
 }
 
+// 18.16.0: same rules as the 18.15.0 block. Older candidates stay byte-identical; each new
+// candidate requires a string only 18.16.0 carries, and every older candidate excludes it.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.16.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.16.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+
+	// eval completion attempts (#17782): retainCompletionHandle hands each run its attempts list.
+	const ATTEMPTS = "export interface CompletionAttempt {";
+	const handle = list => [
+		`signal =>\n\t\texecuteCompletion(prompt, finalTier, system, schema, ${list}, options.session, signal),`,
+		`(signal, attempts) =>\n\t\texecuteCompletion(prompt, finalTier, system, schema, ${list}, options.session, signal, attempts),`,
+	];
+	const [oldPlain, newPlain] = handle("candidates");
+	const [oldEffort, newEffort] = handle("effectiveCandidates");
+	const web6 = byMarker(`const requestedModel: CompletionModel = model ?? "default";`);
+	alternate(web6, { marker: web6.marker, anchor: swap(web6.anchor, oldPlain, newPlain), patched: swap(web6.patched, oldPlain, newPlain) }, ATTEMPTS);
+	const effort = byMarker("const effectiveCandidates =");
+	alternate(effort, { marker: effort.marker, anchor: swap(effort.anchor, oldPlain, newPlain), patched: swap(effort.patched, oldEffort, newEffort) }, ATTEMPTS);
+
+	// Hindsight global scope (#17706): the guard now also lets the hindsight backend through.
+	const OLD_GUARD = '\t\tif (params.scope === "global" && backend !== "mnemopi") {\n';
+	const NEW_GUARD = '\t\tif (params.scope === "global" && backend !== "mnemopi" && backend !== "hindsight") {\n';
+	const learn = byMarker("// HANSE: learn evidence is validated before anything is written");
+	alternate(learn, { marker: learn.marker, anchor: swap(learn.anchor, OLD_GUARD, NEW_GUARD), patched: swap(learn.patched, OLD_GUARD, NEW_GUARD) }, NEW_GUARD);
+
+	// Bundle: only the minified advisor-name helper moved (no-op).
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&tLe(c))continue';
+	alternate(one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"')),
+		{ marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+}
+
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
 // keep future Node/Bun output identical. Accept only the exact previously emitted
 // helper bodies below, never normalize arbitrary installed source on revert.

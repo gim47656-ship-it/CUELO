@@ -24,7 +24,8 @@ function harness(translate: TranslateInput, kind: "main" | "sub" = "main", idle 
     emit("message_start", { message: { role: "user", content: [{ type: "text", text }] } });
     for (let i = 0; i < 10; i++) await Promise.resolve();
   };
-  return { prompt, userMessage, sent, deliveries, calls };
+  const lifecycle = (name: "agent_start" | "agent_end", event: Record<string, unknown> = {}) => emit(name, event);
+  return { prompt, userMessage, lifecycle, sent, deliveries, calls };
 }
 
 describe("user-input-interpreter", () => {
@@ -83,5 +84,25 @@ describe("user-input-interpreter", () => {
     await h.userMessage("디스크 임시파일");
     expect(h.calls).toEqual([KOREAN, "디스크 임시파일"]);
     expect(h.sent).toHaveLength(1);
+  });
+
+  test("실행 중 대기열 메시지의 before_agent_start는 번역을 기다리지 않고, 번역은 aside로 뒤따른다", async () => {
+    const { promise: gate, resolve: open } = Promise.withResolvers<string>();
+    const h = harness(() => gate);
+    h.lifecycle("agent_start");
+    const steer = "그럼 사무실 PC 는 어케점검됨?";
+    // 번역이 끝나지 않아도 곧바로 끝나야 한다: 기다리면 steering이 번역 시간만큼 늦게 모델에 닿는다.
+    expect(await h.prompt(steer)).toBeUndefined();
+    await h.userMessage(steer);
+    open("How is the office PC checked then?");
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(h.calls).toEqual([steer]);
+    expect(h.sent[0]!.content).toContain("How is the office PC checked then?");
+    expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
+    // willContinue인 agent_end 뒤는 같은 실행이고, 실행이 끝난 뒤의 새 프롬프트는 다시 같은 요청에 싣는다.
+    h.lifecycle("agent_end", { willContinue: true });
+    expect(await h.prompt("계속 이어서 해줘")).toBeUndefined();
+    h.lifecycle("agent_end", { willContinue: false });
+    expect((await h.prompt(KOREAN))?.message?.customType).toBe(INPUT_TRANSLATION_TYPE);
   });
 });
