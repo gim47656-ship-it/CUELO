@@ -42,9 +42,15 @@ export function needsInterpreting(text: string): boolean {
   return (text.match(/\p{Script=Hangul}/gu)?.length ?? 0) >= MIN_HANGUL && !SECRET_PATTERN.test(text) && !isHarnessNotice(text);
 }
 
-export function translationContent(english: string): string {
-  return "[interpreter] English rendering of the user's latest message (machine translation for you). The Korean original above stays "
-    + "authoritative for exact wording, quotes, names and approvals. Keep replying to the user in Korean.\n\n" + english;
+export function translationContent(english: string, late = false): string {
+  // 실행 중에 뒤늦게 붙는 번역은 모델이 이미 한국어 원문을 읽고 답한 뒤라, 새 질문으로 읽혀 같은 답이 반복됐다(11-03 실서버 시험).
+  const head = late
+    ? "[interpreter] Late English rendering of a user message you already received in Korean above (machine translation for you). "
+      + "It is not a new message: do not answer it again or redo work for it; continue what you were doing. If its meaning differs "
+      + "from the Korean, follow the Korean original, which stays authoritative for exact wording, quotes, names and approvals. "
+    : "[interpreter] English rendering of the user's latest message (machine translation for you). The Korean original above stays "
+      + "authoritative for exact wording, quotes, names and approvals. ";
+  return head + "Keep replying to the user in Korean.\n\n" + english;
 }
 
 export async function translateInput(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<string> {
@@ -112,9 +118,10 @@ export function createUserInputInterpreter(translate: TranslateInput = translate
       remember(text);
       void run(text, ctx).then((english) => {
         if (!english) return;
+        const late = !ctx.isIdle();
         pi.sendMessage(
-          { customType: INPUT_TRANSLATION_TYPE, content: translationContent(english), display: false, attribution: "agent" },
-          ctx.isIdle() ? undefined : { deliverAs: "aside" },
+          { customType: INPUT_TRANSLATION_TYPE, content: translationContent(english, late), display: false, attribution: "agent" },
+          late ? { deliverAs: "aside" } : undefined,
         );
       });
     });

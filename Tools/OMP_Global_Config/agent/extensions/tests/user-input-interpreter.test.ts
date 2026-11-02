@@ -34,6 +34,7 @@ describe("user-input-interpreter", () => {
     const result = await h.prompt(KOREAN);
     expect(result?.message).toMatchObject({ customType: INPUT_TRANSLATION_TYPE, display: false });
     expect(result?.message?.content).toContain("Clean up the disk temp files and compact it");
+    expect(result?.message?.content).not.toContain("do not answer it again");
     await h.userMessage(KOREAN);
     expect(h.calls).toEqual([KOREAN]);
     expect(h.sent).toHaveLength(0);
@@ -46,6 +47,12 @@ describe("user-input-interpreter", () => {
     expect(h.sent[0]).toMatchObject({ customType: INPUT_TRANSLATION_TYPE, display: false });
     expect(h.sent[0]!.content).toContain("But is npm really needed?");
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
+    // 모델은 한국어 원문을 이미 읽고 답했을 수 있다: 늦은 번역은 새 질문이 아니라고 밝힌다.
+    expect(h.sent[0]!.content).toContain("do not answer it again");
+    const idle = harness(async () => "But is npm really needed?", "main", true);
+    await idle.userMessage("근데 npm 이꼭필요해?");
+    expect(idle.deliveries).toEqual([undefined]);
+    expect(idle.sent[0]!.content).not.toContain("do not answer it again");
   });
 
   test("영어·비밀처럼 보이는 글·서브 에이전트는 번역하지 않고, 번역 실패는 원문만 보낸다", async () => {
