@@ -22,10 +22,10 @@ import {
 import type { UpkeepDueItem, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "@/lib/upkeep/types";
 import { UPKEEP_TEXT as T } from "./text";
 
-// 섹션 안에서는 문제·주의 행을 먼저 보여 준다. 점검함 표시한 문제·주의 행은 판정은 그대로 두고 점검하지 않은 문제·주의 행
-// 뒤로 보낸다. 같은 자리끼리는 수집기 순서(비용은 큰 순)를 지킨다.
-const STATUS_RANK: Record<UpkeepStatus, number> = { problem: 0, watch: 1, unknown: 3, ok: 4 };
-const rowRank = (metric: UpkeepMetric) => (metric.check && isFlagged(metric.status) ? 2 : STATUS_RANK[metric.status]);
+// 섹션 안에서는 섹션 판정을 정하는 점검 안 한 문제·주의·미확인 행을 먼저 보여 준다. 점검 완료 표시한 행은 섹션 판정에서
+// 빠지므로 그 뒤, 정상 행 앞에 둔다. 같은 자리끼리는 수집기 순서(비용은 큰 순)를 지킨다.
+const STATUS_RANK: Record<UpkeepStatus, number> = { problem: 0, watch: 1, unknown: 2, ok: 4 };
+const rowRank = (metric: UpkeepMetric) => (metric.check && isFlagged(metric.status) ? 3 : STATUS_RANK[metric.status]);
 
 type MarkKind = "fix" | "check";
 
@@ -157,7 +157,10 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
     <li className="upkeep-row" data-status={metric.status} data-metric-row={metric.id}>
       <div className="upkeep-row-head">
         <h4>{metric.label}</h4>
-        <StatusLabel status={metric.status} text={UPKEEP_STATUS_LABELS[metric.status]} />
+        <span className="upkeep-row-marks">
+          {check ? <span className="upkeep-checked">{T.checkedAt(kstDateTime(check.checkedAt).slice(5))}</span> : null}
+          <StatusLabel status={metric.status} text={UPKEEP_STATUS_LABELS[metric.status]} />
+        </span>
       </div>
       {compared ? (
         <dl className="upkeep-values">
@@ -178,10 +181,10 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
           <span className="upkeep-line-label">{T.fixedSince(kstDateTime(fix.markedAt).slice(5))}</span>
         </p>
       ) : null}
-      {check ? (
+      {check?.note ? (
         <p className="upkeep-line">
-          <span className="upkeep-line-label">{T.checkedAt(kstDateTime(check.checkedAt).slice(5))}</span>
-          {check.note ?? ""}
+          <span className="upkeep-line-label">{T.checkNote}</span>
+          {check.note}
         </p>
       ) : null}
       {metric.criterion !== sectionCriterion ? (

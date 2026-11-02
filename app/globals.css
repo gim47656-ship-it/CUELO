@@ -7093,6 +7093,24 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   overflow-wrap: anywhere;
 }
 
+.upkeep-row-marks {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* 점검 완료 표시한 행. 행 판정 색은 그대로 두고 옆에 확인했다는 표를 단다. */
+.upkeep-checked {
+  padding: 1px 8px;
+  border: 1px solid var(--success);
+  border-radius: 999px;
+  color: var(--success);
+  font-size: var(--readout-size);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .upkeep-values {
   display: flex;
   flex-wrap: wrap;

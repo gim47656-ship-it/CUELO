@@ -644,8 +644,9 @@ export async function applyFixMarks(sections: UpkeepSection[], scan: ScanResult,
 }
 
 /**
- * 점검 표시(2026-11-02 사용자 결정)를 행에 붙인다. 판정은 바꾸지 않으므로 고침 표시를 반영한 뒤에 붙인다.
- * `marks`는 7일 안의 것만 온다.
+ * 점검 표시(2026-11-02 사용자 결정)를 행에 붙인다. 행 판정은 그대로 두고, 섹션 판정은 점검 표시 없는 행만으로
+ * 다시 낸다(같은 날 사용자 결정: 점검 완료 행은 섹션 판정·개수와 전체·섹션 프롬프트에서 뺀다). 고침 표시를
+ * 반영한 뒤에 붙인다. `marks`는 7일 안의 것만 온다.
  */
 export function applyCheckMarks(sections: UpkeepSection[], marks: Record<string, CheckMark>) {
   for (const s of sections) {
@@ -653,16 +654,18 @@ export function applyCheckMarks(sections: UpkeepSection[], marks: Record<string,
       const mark = marks[m.id] ?? marks[maskSecrets(m.id)];
       if (mark) m.check = { checkedAt: new Date(mark.at).toISOString(), note: mark.note };
     }
+    s.status = worst(s.metrics.filter((m) => !m.check).map((m) => m.status));
   }
 }
 
 function summarize(s: UpkeepSection): string {
-  const count = (status: UpkeepStatus) => s.metrics.filter((m) => m.status === status).length;
+  const open = s.metrics.filter((m) => !m.check);
+  const count = (status: UpkeepStatus) => open.filter((m) => m.status === status).length;
   const parts = [`문제 ${count("problem")}`, `주의 ${count("watch")}`, `정상 ${count("ok")}`];
   if (count("unknown")) parts.push(`미확인 ${count("unknown")}`);
-  // 한 줄 요약에는 아직 점검하지 않은 행을 먼저 이름으로 든다. 상태 개수와 섹션 판정은 점검 표시와 관계없이 그대로다.
-  const worstMetrics = s.status === "problem" || s.status === "watch" ? s.metrics.filter((m) => m.status === s.status) : [];
-  const worstMetric = worstMetrics.find((m) => !m.check) ?? worstMetrics[0];
+  const checked = s.metrics.length - open.length;
+  if (checked) parts.push(`점검 완료 ${checked}`);
+  const worstMetric = s.status === "problem" || s.status === "watch" ? open.find((m) => m.status === s.status) : undefined;
   return parts.join(" · ") + (worstMetric ? ` — ${worstMetric.label}` : "");
 }
 

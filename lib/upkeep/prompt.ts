@@ -159,10 +159,21 @@ export function findSection(report: UpkeepReport, sectionId: UpkeepSectionId): U
   return section;
 }
 
+/** 섹션·전체 프롬프트에 실을 지표: 정상이 아니고 점검 완료 표시가 없는 행. 점검 완료 행은 행 프롬프트로만 다시 본다. */
+function openFlagged(section: UpkeepSection): UpkeepMetric[] {
+  return section.metrics.filter((metric) => isFlagged(metric.status) && !metric.check);
+}
+
+function checkedLines(metrics: readonly UpkeepMetric[]): string[] {
+  const checked = metrics.filter((metric) => metric.check);
+  if (!checked.length) return [];
+  return ["", `점검 완료 표시한 지표 ${checked.length}개는 뺐습니다: ${checked.map((metric) => metric.label).join(", ")}`];
+}
+
 /** 전체 점검 프롬프트에 실을 것이 있는지. 화면이 「전체 점검 프롬프트」를 켤지 정한다. */
 export function hasFlaggedItems(report: UpkeepReport): boolean {
   return report.sections.some((section) => (
-    section.metrics.some((metric) => isFlagged(metric.status))
+    openFlagged(section).length > 0
     || (section.items ?? []).some((item) => item.overdue)
     || section.warnings.length > 0
   ));
@@ -225,7 +236,7 @@ function metricBlock(metric: UpkeepMetric): string[] {
   );
   if (metric.note) lines.push(`- 해석 주의: ${metric.note}`);
   if (metric.check) {
-    lines.push(`- 점검함: ${kstDateTime(metric.check.checkedAt)}${metric.check.note ? ` · ${metric.check.note}` : ""}. 원인을 확인했지만 고친 게 아니라 판정은 그대로입니다.`);
+    lines.push(`- 점검 완료: ${kstDateTime(metric.check.checkedAt)}${metric.check.note ? ` · ${metric.check.note}` : ""}. 원인을 확인했지만 고친 게 아니라 행 판정은 그대로이고, 섹션 판정과 전체·섹션 프롬프트에서는 빠집니다.`);
   }
   lines.push(`- 지표 id(${metric.fixable ? "고침·점검 표시용" : "점검 표시용"}): \`${metric.id}\``);
   if (metric.handoff) lines.push("", ...handoffBlock(metric.handoff, "이 기준을 적은 HANDOFF 항목"));
@@ -255,7 +266,7 @@ const REQUEST_LINES = [
   "2. 원인이 CUELO-private 저장소 범위 안이면 고치고, 고친 동작을 실제로 검증해 주세요.",
   "3. HANDOFF.md와 작업 기록(doc/history)에 원인·조치·검증 결과를 남겨 주세요.",
   "4. 사용자 결정이 필요한 일(기준 변경, 비용·배포·삭제 등)이면 고치지 말고 멈춰서 저에게 물어봐 주세요.",
-  "5. 고쳐서 live 배포와 검증까지 끝난 지표만 고침 표시를 남겨 주세요. 이 CUELO 서버의 `POST /api/upkeep`에 JSON `{\"metricId\": \"<지표 id>\", \"at\": \"<고친 동작이 live에 들어간 시각, ISO>\"}`을 보내면 됩니다(최근 7일 안, 미래 불가). 원인은 확인했지만 사용자 결정에 따른 사용량처럼 고친 게 아닌 지표는 고침 표시 대신 점검 표시를 남겨 주세요: `POST /api/upkeep/check`에 JSON `{\"metricId\": \"<지표 id>\", \"note\": \"<확인한 원인 한 줄>\"}`(판정은 그대로 두고 7일 동안 행에 붙습니다). 비밀번호 잠금 등으로 API를 부를 수 없으면 표시 대신 지표 id와 시각·사유를 결과에 적어 주세요.",
+  "5. 고쳐서 live 배포와 검증까지 끝난 지표만 고침 표시를 남겨 주세요. 이 CUELO 서버의 `POST /api/upkeep`에 JSON `{\"metricId\": \"<지표 id>\", \"at\": \"<고친 동작이 live에 들어간 시각, ISO>\"}`을 보내면 됩니다(최근 7일 안, 미래 불가). 원인은 확인했지만 사용자 결정에 따른 사용량처럼 고친 게 아닌 지표는 고침 표시 대신 점검 표시를 남겨 주세요: `POST /api/upkeep/check`에 JSON `{\"metricId\": \"<지표 id>\", \"note\": \"<확인한 원인 한 줄>\"}`(행 판정은 그대로 두고, 7일 동안 「점검 완료」로 붙어 섹션 판정과 전체·섹션 프롬프트에서 빠집니다). 비밀번호 잠금 등으로 API를 부를 수 없으면 표시 대신 지표 id와 시각·사유를 결과에 적어 주세요.",
 ];
 
 const DUE_REQUEST_LINES = [
@@ -309,8 +320,8 @@ export function buildDuePrompt(report: UpkeepReport, item: UpkeepDueItem): strin
 
 export function buildSectionPrompt(report: UpkeepReport, sectionId: UpkeepSectionId): string {
   const section = findSection(report, sectionId);
-  const flagged = section.metrics.filter((metric) => isFlagged(metric.status));
-  const metrics = flagged.length ? flagged : section.metrics;
+  const flagged = openFlagged(section);
+  const metrics = flagged.length ? flagged : section.metrics.filter((metric) => !metric.check);
   const items = sortDueItems(section.items ?? []);
   const overdue = items.filter((item) => item.overdue);
   const dueItems = overdue.length ? overdue : items;
@@ -325,8 +336,9 @@ export function buildSectionPrompt(report: UpkeepReport, sectionId: UpkeepSectio
   if (metrics.length) {
     lines.push(flagged.length
       ? "아래는 이 섹션에서 정상이 아닌 지표입니다."
-      : "이 섹션의 지표가 모두 정상으로 나왔습니다. 판정이 맞는지 근거로 확인해 주세요.");
+      : "이 섹션에서 점검 완료 표시가 없는 지표는 모두 정상으로 나왔습니다. 판정이 맞는지 근거로 확인해 주세요.");
   }
+  lines.push(...checkedLines(section.metrics));
   for (const metric of metrics) lines.push("", `## ${metric.label}`, ...metricBlock(metric));
   if (dueItems.length) {
     lines.push("", overdue.length ? "점검일이 지난 HANDOFF 항목:" : "남아 있는 HANDOFF 점검 항목:");
@@ -345,10 +357,11 @@ export function buildFullPrompt(report: UpkeepReport): string {
     ...periodLines(report),
     "",
     "보수 대시보드에서 정상이 아닌 지표, 점검일이 지난 HANDOFF 항목, 읽지 못한 자료만 모았습니다. 섹션 순서대로 처리하고, 항목마다 원인과 조치를 따로 적어 주세요.",
+    ...checkedLines(report.sections.flatMap((section) => section.metrics)),
   ];
   let flaggedCount = 0;
   for (const section of report.sections) {
-    const metrics = section.metrics.filter((metric) => isFlagged(metric.status));
+    const metrics = openFlagged(section);
     const overdue = sortDueItems(section.items ?? []).filter((item) => item.overdue);
     if (!metrics.length && !overdue.length && !section.warnings.length) continue;
     flaggedCount += metrics.length + overdue.length;

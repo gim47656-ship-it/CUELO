@@ -45,10 +45,11 @@ export const UPKEEP_TEXT = {
   fixClear: "고침 취소",
   fixActionFor: (visible: string, label: string) => `${visible} · 「${label}」`,
   fixedSince: (time: string) => `고침 ${time} 이후 기준`,
-  /** 원인을 확인했지만 고친 게 아닌 행에 남기는 버튼과 표시. 판정은 바꾸지 않는다. */
-  checkMark: "점검함 표시",
+  /** 원인을 확인했지만 고친 게 아닌 행에 남기는 버튼과 표시. 행 판정은 그대로 두고 섹션 판정·전체 프롬프트에서 뺀다. */
+  checkMark: "점검 완료 표시",
   checkClear: "점검 취소",
-  checkedAt: (time: string) => `점검함 ${time}`,
+  checkedAt: (time: string) => `점검 완료 ${time}`,
+  checkNote: "점검 사유",
   afterFix: "고침 뒤",
   beforeFix: "고침 전",
   /** 고침 전·뒤 칸 이름에 그 기간 길이를 붙인다, 예: 「고침 뒤 (5분)」 */
