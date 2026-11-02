@@ -79,6 +79,8 @@ export type WindowCounts = {
   errors: number;
   rejects: number;
   compactions: number;
+  /** 토큰이 기록된 모델 응답 수(Maker 자식 세션 포함, 토큰 없이 오류로 끝난 응답 제외). 압축 행의 분모다. */
+  requests: number;
   nudges: number;
   recalls: number;
   emptyRecalls: number;
@@ -129,7 +131,7 @@ export type SplitCounts = { before: WindowCounts; after: WindowCounts };
 
 function emptyWindow(): WindowCounts {
   return {
-    turns: 0, calls: 0, errors: 0, rejects: 0, compactions: 0, nudges: 0, recalls: 0, emptyRecalls: 0,
+    turns: 0, calls: 0, errors: 0, rejects: 0, compactions: 0, requests: 0, nudges: 0, recalls: 0, emptyRecalls: 0,
     gated: 0, nearGate: 0, recallCalls: 0, exportFailures: 0, complaints: 0, cost: 0, missingCost: false,
     apiKeyCalls: 0, apiKeyCost: 0, cacheWriteCost: 0, missingRewriteCost: false,
     rewrites: Object.fromEntries(REWRITE_CAUSES.map((cause) => [cause, { count: 0, cost: 0 }])) as WindowCounts["rewrites"],
@@ -485,7 +487,9 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             const usage = m.usage;
             const cost = Number(usage.cost?.total) || 0;
             const writeCost = Number(usage.cost?.cacheWrite) || 0;
+            const prompt = (Number(usage.input) || 0) + (Number(usage.cacheRead) || 0) + (Number(usage.cacheWrite) || 0);
             each((w) => {
+              if (prompt > 0) w.requests++;
               addUsage(w.models, key, usage, m.provider);
               w.missingCost ||= typeof usage.cost?.total !== "number";
               w.cost += cost;

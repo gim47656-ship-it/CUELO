@@ -103,6 +103,20 @@ function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: Sc
   return m;
 }
 
+/**
+ * 압축은 요청 하나에 맡긴 일의 크기에 따라 사용자 요청당 값이 크게 흔들려 모델 요청 1000건당으로 비교한다(2026-11-03
+ * 사용자 결정: 압축 82/84건이 그대로인데 사용자 요청이 1064→660건으로 줄어 「주의」가 났다). 분자에 Maker 압축이 들어가므로
+ * 분모도 Maker 요청을 포함한다.
+ */
+function compactionMetric(scan: ScanResult): UpkeepMetric {
+  const [a, b] = scan.windows;
+  const per = (w: WindowCounts) => (w.requests ? (w.compactions / w.requests) * 1000 : null);
+  const m = metric("compactions", "컨텍스트 압축 (모델 요청 1000건당)", "count", per(a), per(b), compare(per(a), per(b), a.requests, b.requests));
+  m.note = `원 건수 ${a.compactions} / ${b.compactions}, 모델 요청 ${a.requests} / ${b.requests}건(Maker 포함), 사용자 요청 ${a.turns} / ${b.turns}건`;
+  m.evidence = scan.evidence.compactions ?? [];
+  return m;
+}
+
 type LedgerRow = {
   type?: string;
   ts?: string;
@@ -268,7 +282,7 @@ export function bottleneckSection(scan: ScanResult, maker: { exits: UpkeepMetric
     errorRate,
     perTurnMetric("dispatch-rejects", "작업 발주 거절", scan, (w) => w.rejects),
     slowGaps,
-    perTurnMetric("compactions", "컨텍스트 압축", scan, (w) => w.compactions),
+    compactionMetric(scan),
     perTurnMetric("todo-nudges", "할 일 갱신 알림", scan, (w) => w.nudges),
     maker.exits,
     maker.verdicts,
@@ -548,7 +562,7 @@ const FIX_DENOMINATORS: Record<string, [label: string, size: (w: WindowCounts) =
   "tool-error-rate": ["도구 호출", (w) => w.calls],
   "dispatch-rejects": ["사용자 요청", (w) => w.turns],
   "slow-gaps": ["사용자 요청", (w) => w.turns],
-  compactions: ["사용자 요청", (w) => w.turns],
+  compactions: ["모델 요청", (w) => w.requests],
   "todo-nudges": ["사용자 요청", (w) => w.turns],
   "recall-per-turn": ["사용자 요청", (w) => w.turns],
   "gated-ratio": ["회상", (w) => w.gated + w.recalls],
