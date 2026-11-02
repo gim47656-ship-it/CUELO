@@ -13,17 +13,23 @@ import type { UpkeepReport } from "./types";
 
 export const NIGHTLY_STATE_FILE = "cuelo-nightly-improve.json";
 
-export interface NightlyState {
+/** 출처(PC) 하나의 진행 기록. 클라우드 받은편지함 모드에서 출처마다 따로 둔다. */
+export interface NightlySourceState {
+  /** 그 출처 묶음에서 절차 후보를 읽은 상한(ISO, 그 묶음의 generatedAt) */
+  skillsScannedAt?: string;
+  /** 그 출처의 주간 성능 점검을 마지막으로 맡긴 날(KST) */
+  performanceReviewDate?: string;
+}
+
+export interface NightlyState extends NightlySourceState {
   /** 실행한 날(KST, YYYY-MM-DD) */
   date: string;
   sessionId: string;
   worktree: string;
   /** ISO 시각 */
   startedAt: string;
-  /** 그 실행이 절차 후보를 모은 상한(ISO). 다음 실행은 이 뒤부터 모은다. */
-  skillsScannedAt?: string;
-  /** 주간 성능 점검을 마지막으로 맡긴 날(KST). 점검을 맡긴 실행만 바꾼다. */
-  performanceReviewDate?: string;
+  /** 받은편지함 모드의 출처별 기록. 위 두 칸(skillsScannedAt·performanceReviewDate)은 이 PC 자신의 기록이다. */
+  sources?: Record<string, NightlySourceState>;
 }
 
 export type NightlySkipReason = "nothing-to-do" | "no-repo" | "already-ran-today" | "previous-still-running";
@@ -36,6 +42,13 @@ export interface NightlyJobs {
   weeklyReview: boolean;
 }
 
+/** 받은편지함 모드에서 출처 하나가 맡은 일 */
+export interface NightlySourcePlan {
+  source: string;
+  jobs: NightlyJobs;
+  skillsScannedAt: string;
+}
+
 export type NightlyPlan =
   | { action: "skip"; reason: NightlySkipReason }
   | {
@@ -45,9 +58,12 @@ export type NightlyPlan =
     repoCwd: string;
     /** `wt/nightly-YYYYMMDD` */
     branch: string;
+    /** 할 일 합계. 받은편지함 모드에서 problems는 `출처:섹션/지표`다. */
     jobs: NightlyJobs;
     /** 이번에 절차 후보를 모은 상한(ISO). 실행이 받아들여지면 상태에 남긴다. */
     skillsScannedAt: string;
+    /** 받은편지함 모드에서만: 출처별 할 일 */
+    sources?: NightlySourcePlan[];
     prompt: string;
   };
 
@@ -61,17 +77,34 @@ export function readNightlyState(agentDir: string): NightlyState | null {
     throw error;
   }
   const parsed = JSON.parse(text) as Partial<NightlyState> | null;
-  const optionalString = (value: unknown) => value === undefined || typeof value === "string";
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
     || typeof parsed.date !== "string" || typeof parsed.sessionId !== "string"
     || typeof parsed.worktree !== "string" || typeof parsed.startedAt !== "string"
-    || !optionalString(parsed.skillsScannedAt) || !optionalString(parsed.performanceReviewDate)) {
+    || !isSourceState(parsed) || !isSourceMap(parsed.sources)) {
     throw new Error(`${NIGHTLY_STATE_FILE} is not a nightly run record`);
   }
   return {
     date: parsed.date, sessionId: parsed.sessionId, worktree: parsed.worktree, startedAt: parsed.startedAt,
-    ...(parsed.skillsScannedAt ? { skillsScannedAt: parsed.skillsScannedAt } : {}),
-    ...(parsed.performanceReviewDate ? { performanceReviewDate: parsed.performanceReviewDate } : {}),
+    ...sourceState(parsed),
+    ...(parsed.sources ? { sources: Object.fromEntries(Object.entries(parsed.sources).map(([name, value]) => [name, sourceState(value)])) } : {}),
+  };
+}
+
+function isSourceState(value: unknown): value is NightlySourceState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const { skillsScannedAt, performanceReviewDate } = value as Record<string, unknown>;
+  return (skillsScannedAt === undefined || typeof skillsScannedAt === "string")
+    && (performanceReviewDate === undefined || typeof performanceReviewDate === "string");
+}
+
+function isSourceMap(value: unknown): value is Record<string, NightlySourceState> | undefined {
+  return value === undefined || (isSourceState(value) && Object.values(value).every(isSourceState));
+}
+
+function sourceState(value: NightlySourceState): NightlySourceState {
+  return {
+    ...(value.skillsScannedAt ? { skillsScannedAt: value.skillsScannedAt } : {}),
+    ...(value.performanceReviewDate ? { performanceReviewDate: value.performanceReviewDate } : {}),
   };
 }
 
@@ -87,10 +120,21 @@ type RunPlan = Extract<NightlyPlan, { action: "run" }>;
  * 바꾸며 그 밖에는 지난 기록의 날짜를 이어 둔다.
  */
 export function nightlyStateAfterRun(plan: RunPlan, previous: NightlyState | null, sessionId: string, worktree: string, startedAt: string): NightlyState {
+  const base = { date: plan.date, sessionId, worktree, startedAt };
+  if (plan.sources) {
+    // 받은편지함 모드: 이 PC 자신의 기록은 그대로 두고, 이번에 읽은 출처만 그 출처 기록을 옮긴다.
+    const sources = { ...previous?.sources };
+    for (const { source, jobs, skillsScannedAt } of plan.sources) {
+      const performanceReviewDate = jobs.weeklyReview ? plan.date : previous?.sources?.[source]?.performanceReviewDate;
+      sources[source] = { skillsScannedAt, ...(performanceReviewDate ? { performanceReviewDate } : {}) };
+    }
+    return { ...base, ...(previous ? sourceState(previous) : {}), sources };
+  }
   const performanceReviewDate = plan.jobs.weeklyReview ? plan.date : previous?.performanceReviewDate;
   return {
-    date: plan.date, sessionId, worktree, startedAt, skillsScannedAt: plan.skillsScannedAt,
+    ...base, skillsScannedAt: plan.skillsScannedAt,
     ...(performanceReviewDate ? { performanceReviewDate } : {}),
+    ...(previous?.sources ? { sources: previous.sources } : {}),
   };
 }
 
@@ -151,7 +195,7 @@ function kstDaysBetween(a: string, b: string): number {
 }
 
 /** 주간 성능 점검을 할 때인지: 한 번도 안 했거나 마지막 점검이 KST로 7일 이상 전이면. */
-export function weeklyReviewDue(state: NightlyState | null, today: string): boolean {
+export function weeklyReviewDue(state: NightlySourceState | null | undefined, today: string): boolean {
   const last = state?.performanceReviewDate;
   if (!last) return true;
   const days = kstDaysBetween(last, today);
@@ -159,7 +203,7 @@ export function weeklyReviewDue(state: NightlyState | null, today: string): bool
 }
 
 /** 절차 후보를 모을 시작 시각. 지난 실행이 남긴 스캔 상한, 없으면 최근 7일. */
-export function skillScanSince(state: NightlyState | null, now: Date): number {
+export function skillScanSince(state: NightlySourceState | null | undefined, now: Date): number {
   const at = state?.skillsScannedAt ? Date.parse(state.skillsScannedAt) : NaN;
   return Number.isFinite(at) ? at : now.getTime() - WEEK_DAYS * DAY_MS;
 }
@@ -171,9 +215,17 @@ export function openProblems(report: UpkeepReport): string[] {
     .map((metric) => `${section.id}/${metric.id}`));
 }
 
-function candidateLine(candidate: SkillCandidate): string {
+export function candidateLine(candidate: SkillCandidate): string {
   const topic = candidate.topic ? ` (${candidate.topic})` : "";
   return `- ${kstDateTime(candidate.timestamp)}${topic}, 세션 ${candidate.sessionId || "알 수 없음"}: ${candidate.memory.replace(/\s+/g, " ")}`;
+}
+
+/** 할 일이 있어도 오늘 열지 않을 이유. 로컬·받은편지함 두 모드가 같은 순서로 본다(할 일 없음 판정 다음). */
+export function nightlyGuard(repoCwd: string | null, state: NightlyState | null, date: string, runningSessionIds: readonly string[]): NightlySkipReason | null {
+  if (!repoCwd) return "no-repo";
+  if (state?.date === date) return "already-ran-today";
+  if (state && runningSessionIds.includes(state.sessionId)) return "previous-still-running";
+  return null;
 }
 
 export function planNightlyRun(
@@ -187,9 +239,8 @@ export function planNightlyRun(
   const problems = openProblems(report);
   const weeklyReview = weeklyReviewDue(state, date);
   if (!problems.length && !skillCandidates.length && !weeklyReview) return { action: "skip", reason: "nothing-to-do" };
-  if (!report.repoCwd) return { action: "skip", reason: "no-repo" };
-  if (state?.date === date) return { action: "skip", reason: "already-ran-today" };
-  if (state && runningSessionIds.includes(state.sessionId)) return { action: "skip", reason: "previous-still-running" };
+  const blocked = nightlyGuard(report.repoCwd, state, date, runningSessionIds);
+  if (blocked || !report.repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
   const sections = [NIGHTLY_PREAMBLE, "# 오늘 할 일"];
   if (problems.length) sections.push(NIGHTLY_PROBLEM_SECTION);
   if (skillCandidates.length) sections.push([NIGHTLY_SKILL_RULES, "", "후보:", ...skillCandidates.map(candidateLine)].join("\n"));

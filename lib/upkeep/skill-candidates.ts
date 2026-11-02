@@ -100,7 +100,7 @@ export async function collectSkillCandidates(sessionsDir: string, since: number,
             at,
             candidate: {
               memory: memory.length > MEMORY_LIMIT ? `${memory.slice(0, MEMORY_LIMIT)}…` : memory,
-              topic: typeof args.topic === "string" && args.topic ? args.topic : null,
+              topic: typeof args.topic === "string" && args.topic ? maskSecrets(args.topic).slice(0, 120) : null,
               sessionId,
               timestamp: new Date(at).toISOString(),
             },
