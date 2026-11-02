@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { canonicalProjectKey, getProjectTrustStatus, listProjectTrustDecisions } from "@/lib/project-trust";
+import { getSettingsForCwd } from "@/lib/omp-runtime";
 import {
   ProjectTrustNotRequiredError,
   describeProjectTrust,
@@ -56,17 +57,20 @@ async function validateCwd(value: unknown): Promise<
  * than disclosed.
  */
 async function listProjects(agentDir: string, include: string[]): Promise<ProjectTrustEntry[]> {
-  const candidates = new Set(Object.keys(listProjectTrustDecisions(agentDir)));
+  const allowedRoots = await getAllowedFileRoots();
+  const candidates = new Set<string>();
+  for (const cwd of Object.keys(listProjectTrustDecisions(agentDir))) {
+    if (await isAllowedDirectory(cwd, allowedRoots)) candidates.add(cwd);
+  }
   const open = [...include.map((path) => resolve(path)), ...[...projectTrustHost.sessions()].map((session) => session.cwd)];
   for (const path of open) {
     const key = canonicalProjectKey(path);
-    if (getProjectTrustStatus(key, agentDir).requiresTrust) candidates.add(key);
+    if (candidates.has(key) || !(await isAllowedDirectory(key, allowedRoots))) continue;
+    if (getProjectTrustStatus(key, agentDir, await getSettingsForCwd(key)).requiresTrust) candidates.add(key);
   }
-  const allowedRoots = await getAllowedFileRoots();
   const entries: ProjectTrustEntry[] = [];
   for (const cwd of candidates) {
-    if (!(await isAllowedDirectory(cwd, allowedRoots))) continue;
-    entries.push({ cwd, ...describeProjectTrust(projectTrustHost, cwd, agentDir) });
+    entries.push({ cwd, ...describeProjectTrust(projectTrustHost, cwd, agentDir, await getSettingsForCwd(cwd)) });
   }
   return entries.sort((left, right) => left.cwd.localeCompare(right.cwd));
 }
@@ -81,7 +85,9 @@ export async function GET(req: Request) {
 
   const result = await validateCwd(cwdParam);
   if ("response" in result) return result.response;
-  return NextResponse.json(describeProjectTrust(projectTrustHost, result.cwd, agentDir));
+  return NextResponse.json(
+    describeProjectTrust(projectTrustHost, result.cwd, agentDir, await getSettingsForCwd(result.cwd)),
+  );
 }
 
 export async function POST(req: Request) {
@@ -102,6 +108,7 @@ export async function POST(req: Request) {
       result.cwd,
       getAgentDir(),
       action as ProjectTrustAction,
+      await getSettingsForCwd(result.cwd),
     );
     // 202: accepted but not fully applied — a grant waits for the project's
     // sessions to go idle, a revoke for sessions still running project code.

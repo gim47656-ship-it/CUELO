@@ -1,3 +1,4 @@
+import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import { invalidateModelsCache } from "./models-cache";
 import { canonicalProjectKey, getProjectTrustStatus, setProjectTrust, trustProject } from "./project-trust";
 import type { ProjectTrustAction, ProjectTrustState } from "./api-types";
@@ -47,6 +48,12 @@ export interface ProjectTrustHost {
 
 interface TrustChange {
   agentDir: string;
+  /**
+   * omp's settings for the project when the change was requested. Reconciling
+   * runs synchronously from session notifications, so it reads whether the
+   * project's settings configure extension roots from this snapshot.
+   */
+  settings: Settings;
   /** A grant waiting for the project to go idle. */
   grant: boolean;
 }
@@ -85,7 +92,7 @@ function logShutdownFailure(error: unknown): void {
 
 function reconcileKey(host: ProjectTrustHost, key: string, change: TrustChange): void {
   const sessions = sessionsFor(host, key);
-  const stored = getProjectTrustStatus(key, change.agentDir);
+  const stored = getProjectTrustStatus(key, change.agentDir, change.settings);
 
   // Sessions still running project code the user no longer trusts: retire each
   // one the moment it is idle; the rest finish what they are doing first.
@@ -121,7 +128,7 @@ function reconcileKey(host: ProjectTrustHost, key: string, change: TrustChange):
     }
     changes().delete(key);
     try {
-      trustProject(key, change.agentDir);
+      trustProject(key, change.agentDir, change.settings);
     } catch (error) {
       for (const held of reserved) held.cancelClose();
       errors().set(key, error instanceof Error ? error.message : String(error));
@@ -167,12 +174,17 @@ export function isProjectTrustRevokedFor(cwd: string): boolean {
   const pending = changes();
   if (pending.size === 0) return false;
   const change = pending.get(canonicalProjectKey(cwd));
-  return change !== undefined && !getProjectTrustStatus(cwd, change.agentDir).trusted;
+  return change !== undefined && !getProjectTrustStatus(cwd, change.agentDir, change.settings).trusted;
 }
 
-export function describeProjectTrust(host: ProjectTrustHost, cwd: string, agentDir: string): ProjectTrustState {
+export function describeProjectTrust(
+  host: ProjectTrustHost,
+  cwd: string,
+  agentDir: string,
+  settings: Settings,
+): ProjectTrustState {
   const key = canonicalProjectKey(cwd);
-  const stored = getProjectTrustStatus(cwd, agentDir);
+  const stored = getProjectTrustStatus(cwd, agentDir, settings);
   const sessions = sessionsFor(host, key);
   const loaded = sessions.filter((session) => session.projectCodeLoaded).length;
   const error = errors().get(key);
@@ -194,27 +206,29 @@ export function describeProjectTrust(host: ProjectTrustHost, cwd: string, agentD
 /**
  * Record an explicit decision and apply as much of it as is safe now.
  * `cancel` withdraws a grant that has not been applied; withdrawing a revoke
- * is a new grant and needs its own confirmation.
+ * is a new grant and needs its own confirmation. `settings` is omp's settings
+ * for `cwd`, the same a session for it starts with.
  */
 export function requestProjectTrustChange(
   host: ProjectTrustHost,
   cwd: string,
   agentDir: string,
   action: ProjectTrustAction,
+  settings: Settings,
 ): ProjectTrustState {
   const key = canonicalProjectKey(cwd);
   const pending = changes();
   errors().delete(key);
   if (action === "grant") {
-    if (!getProjectTrustStatus(cwd, agentDir).requiresTrust) throw new ProjectTrustNotRequiredError();
-    pending.set(key, { agentDir, grant: true });
+    if (!getProjectTrustStatus(cwd, agentDir, settings).requiresTrust) throw new ProjectTrustNotRequiredError();
+    pending.set(key, { agentDir, settings, grant: true });
   } else if (action === "revoke") {
     pending.delete(key);
     setProjectTrust(cwd, agentDir, false);
     invalidateModelsCache();
-    pending.set(key, { agentDir, grant: false });
+    pending.set(key, { agentDir, settings, grant: false });
   } else if (pending.get(key)?.grant) {
-    pending.set(key, { agentDir, grant: false });
+    pending.set(key, { agentDir, settings, grant: false });
   }
   const change = pending.get(key);
   if (change) {
@@ -225,5 +239,5 @@ export function requestProjectTrustChange(
       reconciling = false;
     }
   }
-  return describeProjectTrust(host, cwd, agentDir);
+  return describeProjectTrust(host, cwd, agentDir, settings);
 }

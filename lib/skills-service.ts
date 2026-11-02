@@ -38,7 +38,7 @@ export async function loadSkillsWithInstallInfo(cwd: string): Promise<SkillsResp
       message: warning.message,
       path: warning.skillPath,
     })),
-    projectResourcesLoaded: getProjectTrustStatus(cwd, agentDir).trusted,
+    projectResourcesLoaded: getProjectTrustStatus(cwd, agentDir, settings).trusted,
   };
 }
 

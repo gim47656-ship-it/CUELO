@@ -349,6 +349,14 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   },
 });
 
-const factory: CustomToolFactory = (pi) => [finalizeTool(pi), integrateTool(pi)];
+/**
+ * 두 도구는 커밋·rebase·push를 한다. agent loop는 `concurrency`를 선언하지 않은 도구를 "shared"로 보고 같은 응답의
+ * 다른 shared 호출(`bash`로 기록 덧붙이기, source manifest 재생성 등)과 동시에 돌린다(2026-10-20·10-29에 실제로 겹쳤다).
+ * "exclusive"는 앞선 호출이 모두 끝난 뒤 시작하고 뒤 호출을 붙잡는다. `CustomTool` 타입에는 이 필드가 없지만
+ * `CustomToolAdapter`가 도구 객체의 자체 키를 그대로 넘기므로 스케줄러가 여기서 읽는다.
+ */
+const runAlone = (tool: CustomTool<any, any>): CustomTool<any, any> => Object.assign(tool, { concurrency: "exclusive" as const });
+
+const factory: CustomToolFactory = (pi) => [finalizeTool(pi), integrateTool(pi)].map(runAlone);
 
 export default factory;

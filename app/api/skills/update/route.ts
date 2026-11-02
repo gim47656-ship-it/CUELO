@@ -6,7 +6,7 @@ import { buildSkillUpdateArgs } from "@/lib/skill-updates";
 import { loadSkillsWithInstallInfo } from "@/lib/skills-service";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
-import { getProjectTrustStatus } from "@/lib/project-trust";
+import { loadProjectTrustStatus } from "@/lib/project-trust";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
-    if (scope === "project" && !getProjectTrustStatus(cwd, getAgentDir()).trusted) {
+    if (scope === "project" && !(await loadProjectTrustStatus(cwd, getAgentDir())).trusted) {
       return NextResponse.json(
         { error: "Project resources must be trusted before updating project skills" },
         { status: 403 },

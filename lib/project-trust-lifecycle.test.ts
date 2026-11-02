@@ -13,6 +13,10 @@ import {
 import { canonicalProjectKey, getProjectTrustStatus, setProjectTrust } from "./project-trust";
 import { AgentSessionWrapper, notifyRunningChange, projectTrustHost } from "./rpc-manager";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { Settings } from "@oh-my-pi/pi-coding-agent";
+
+/** These projects require trust through `.omp/extensions`; their settings add no project layer. */
+const noProjectSettings = Settings.isolated();
 
 let root = "";
 let cwd = "";
@@ -88,19 +92,37 @@ test("a grant requested while a session runs waits, then applies once every sess
   const busy = add(cwd, { running: true });
   const idle = add(cwd);
 
-  const scheduled = requestProjectTrustChange(host, cwd, agentDir, "grant");
+  const scheduled = requestProjectTrustChange(host, cwd, agentDir, "grant", noProjectSettings);
   expect(scheduled.pending).toBe("grant");
   expect(scheduled.trusted).toBe(false);
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(false);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(false);
   expect(busy.closing || idle.closing).toBe(false);
 
   busy.running = false;
   reconcileProjectTrust(host);
   await Promise.resolve();
 
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(true);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(true);
   expect([busy.shutdowns, idle.shutdowns]).toEqual([1, 1]);
-  expect(describeProjectTrust(host, cwd, agentDir).pending).toBeNull();
+  expect(describeProjectTrust(host, cwd, agentDir, noProjectSettings).pending).toBeNull();
+});
+
+test("a project that needs trust only for its settings-configured extensions can be granted it", async () => {
+  const settingsOnly = join(root, "settings-only");
+  const outside = join(root, "outside-ext");
+  mkdirSync(join(settingsOnly, ".omp"), { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "index.ts"), "export default () => {};\n");
+  writeFileSync(join(settingsOnly, ".omp", "settings.json"), JSON.stringify({ extensions: [outside] }));
+  const settings = await Settings.loadReadOnly({ cwd: settingsOnly, agentDir });
+  const { host, add } = fakeHost();
+  const idle = add(settingsOnly);
+
+  const applied = requestProjectTrustChange(host, settingsOnly, agentDir, "grant", settings);
+
+  expect(applied.requiresTrust).toBe(true);
+  expect(getProjectTrustStatus(settingsOnly, agentDir, settings).trusted).toBe(true);
+  expect(idle.shutdowns).toBe(1);
 });
 
 test("a pending grant waits for background work and for sessions still starting", () => {
@@ -108,15 +130,15 @@ test("a pending grant waits for background work and for sessions still starting"
   const session = add(cwd, { background: true });
   starting.add(canonicalProjectKey(cwd));
 
-  requestProjectTrustChange(host, cwd, agentDir, "grant");
+  requestProjectTrustChange(host, cwd, agentDir, "grant", noProjectSettings);
   starting.clear();
   reconcileProjectTrust(host);
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(false);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(false);
   expect(session.watched).toBeGreaterThan(0);
 
   session.background = false;
   reconcileProjectTrust(host);
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(true);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(true);
 });
 
 test("a session opened through another path to the project blocks the grant like the canonical one", () => {
@@ -125,34 +147,34 @@ test("a session opened through another path to the project blocks the grant like
   const { host, add } = fakeHost();
   const busy = add(link, { running: true });
 
-  requestProjectTrustChange(host, cwd, agentDir, "grant");
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(false);
+  requestProjectTrustChange(host, cwd, agentDir, "grant", noProjectSettings);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(false);
   busy.running = false;
   reconcileProjectTrust(host);
-  expect(getProjectTrustStatus(link, agentDir).trusted).toBe(true);
+  expect(getProjectTrustStatus(link, agentDir, noProjectSettings).trusted).toBe(true);
   expect(busy.shutdowns).toBe(1);
 });
 
 test("cancelling a scheduled grant leaves the project restricted", () => {
   const { host, add } = fakeHost();
   const busy = add(cwd, { running: true });
-  requestProjectTrustChange(host, cwd, agentDir, "grant");
+  requestProjectTrustChange(host, cwd, agentDir, "grant", noProjectSettings);
 
-  expect(requestProjectTrustChange(host, cwd, agentDir, "cancel").pending).toBeNull();
+  expect(requestProjectTrustChange(host, cwd, agentDir, "cancel", noProjectSettings).pending).toBeNull();
   busy.running = false;
   reconcileProjectTrust(host);
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(false);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(false);
   expect(busy.shutdowns).toBe(0);
 });
 
 test("a restart forgets a grant that was never applied", () => {
   const { host, add } = fakeHost();
   add(cwd, { running: true });
-  requestProjectTrustChange(host, cwd, agentDir, "grant");
+  requestProjectTrustChange(host, cwd, agentDir, "grant", noProjectSettings);
 
   globalThis.__cueloProjectTrustChanges = undefined;
   const fresh = fakeHost();
-  expect(describeProjectTrust(fresh.host, cwd, agentDir)).toMatchObject({ trusted: false, pending: null });
+  expect(describeProjectTrust(fresh.host, cwd, agentDir, noProjectSettings)).toMatchObject({ trusted: false, pending: null });
 });
 
 test("a grant that cannot be written stays restricted, releases the sessions, and reports why", () => {
@@ -162,7 +184,7 @@ test("a grant that cannot be written stays restricted, releases the sessions, an
   const { host, add } = fakeHost();
   const session = add(cwd);
 
-  const state = requestProjectTrustChange(host, cwd, unwritable, "grant");
+  const state = requestProjectTrustChange(host, cwd, unwritable, "grant", noProjectSettings);
   expect(state).toMatchObject({ trusted: false, pending: null });
   expect(state.error).toBeTruthy();
   expect(session).toMatchObject({ closing: false, shutdowns: 0 });
@@ -177,7 +199,7 @@ test("a revoke is stored at once while running sessions keep their work until th
   const running = add(cwd, { loaded: true, running: true });
   const idle = add(cwd, { loaded: true });
 
-  const state = requestProjectTrustChange(host, cwd, agentDir, "revoke");
+  const state = requestProjectTrustChange(host, cwd, agentDir, "revoke", noProjectSettings);
   expect(state.trusted).toBe(false);
   expect(JSON.parse(readFileSync(join(agentDir, "cuelo-trusted-projects.json"), "utf8")))
     .toEqual({ [canonicalProjectKey(cwd)]: false });
@@ -188,7 +210,7 @@ test("a revoke is stored at once while running sessions keep their work until th
   running.running = false;
   reconcileProjectTrust(host);
   expect(running.shutdowns).toBe(1);
-  expect(describeProjectTrust(host, cwd, agentDir).pending).toBeNull();
+  expect(describeProjectTrust(host, cwd, agentDir, noProjectSettings).pending).toBeNull();
 });
 
 test("a session that read the approval before a revoke is refused while it registers", () => {
@@ -196,7 +218,7 @@ test("a session that read the approval before a revoke is refused while it regis
   const { host, starting } = fakeHost();
   starting.add(canonicalProjectKey(cwd));
 
-  requestProjectTrustChange(host, cwd, agentDir, "revoke");
+  requestProjectTrustChange(host, cwd, agentDir, "revoke", noProjectSettings);
   expect(isProjectTrustRevokedFor(cwd)).toBe(true);
 
   starting.clear();
@@ -229,13 +251,13 @@ test("the end of a real prompt wakes the pending grant through the running-state
 
   await wrapper.send({ type: "prompt", message: "keep working" });
   expect(wrapper.isRunning()).toBe(true);
-  expect(requestProjectTrustChange(projectTrustHost, cwd, agentDir, "grant").pending).toBe("grant");
+  expect(requestProjectTrustChange(projectTrustHost, cwd, agentDir, "grant", noProjectSettings).pending).toBe("grant");
 
   release.resolve();
   await release.promise;
   await Promise.resolve();
 
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(true);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(true);
   await expect(wrapper.send({ type: "prompt", message: "late" })).rejects.toThrow(/Session is closing|not alive/i);
 });
 
@@ -247,14 +269,14 @@ test("a background job that finishes without waking a turn still releases the pe
 
   expect(wrapper.isRunning()).toBe(false);
   expect(wrapper.isSafelyIdle()).toBe(false);
-  requestProjectTrustChange(projectTrustHost, cwd, agentDir, "grant");
+  requestProjectTrustChange(projectTrustHost, cwd, agentDir, "grant", noProjectSettings);
   notifyRunningChange();
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(false);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(false);
 
   job.resolve("done");
   await manager.waitForAll();
-  for (let turn = 0; turn < 5 && !getProjectTrustStatus(cwd, agentDir).trusted; turn += 1) await Promise.resolve();
+  for (let turn = 0; turn < 5 && !getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted; turn += 1) await Promise.resolve();
 
-  expect(getProjectTrustStatus(cwd, agentDir).trusted).toBe(true);
+  expect(getProjectTrustStatus(cwd, agentDir, noProjectSettings).trusted).toBe(true);
   await manager.dispose({ timeoutMs: 1_000 });
 });

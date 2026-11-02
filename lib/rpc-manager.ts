@@ -4,7 +4,6 @@ import {
   applyResolvedSystemPromptInputs,
   createAgentSession,
   type CreateAgentSessionOptions,
-  discoverSessionExtensionPaths,
   getAgentDir,
   initTheme,
   SessionManager,
@@ -16,7 +15,6 @@ import { parseSlashCommand, parseSubcommand } from "@oh-my-pi/pi-coding-agent/sl
 import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { resolveRpcSkillInvocation } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { discoverCustomToolPaths } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -37,7 +35,7 @@ import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { createSessionRecallTool } from "./session-recall";
-import { canonicalProjectKey, untrustedProjectSessionOptions } from "./project-trust";
+import { canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, untrustedProjectSessionOptions } from "./project-trust";
 import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
@@ -2704,14 +2702,14 @@ export async function startRpcSession(
       }
 
       // Gate untrusted project code so opening a repository in a browser tab does
-      // not run its `.omp/extensions`, `.omp/tools`, or `.mcp.json` servers (see
-      // lib/project-trust.ts). Discovery still runs — only project-local entries
-      // are dropped, so user-level extensions keep working.
-      const [extensionPaths, customToolPaths] = await Promise.all([
-        discoverSessionExtensionPaths({}, sessionCwd, settings),
-        discoverCustomToolPaths([], sessionCwd),
-      ]);
-      const untrusted = untrustedProjectSessionOptions(sessionCwd, agentDir, { extensionPaths, customToolPaths });
+      // not run its `.omp/extensions`, `.omp/tools`, `.mcp.json` servers, or the
+      // extension roots its settings files configure (see lib/project-trust.ts).
+      // Only a gated project pays for the extra discovery, which runs without
+      // those roots and drops project-local entries, so user-level extensions
+      // keep working; trusted and clean projects take omp's own load path.
+      const untrusted = await untrustedProjectSessionOptions(sessionCwd, agentDir, settings, () =>
+        discoverCodeWithoutProjectSettingsExtensions(settings, sessionCwd),
+      );
 
       // `SYSTEM.md` / `APPEND_SYSTEM.md` / `TITLE_SYSTEM.md`, resolved against this session's cwd the
       // way the CLI resolves them against its own (lib/session-system-prompt.ts).

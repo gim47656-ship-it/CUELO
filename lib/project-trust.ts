@@ -1,14 +1,26 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
+import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
+import { discoverSessionExtensionPaths, type Settings } from "@oh-my-pi/pi-coding-agent";
+import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
+import { type ExtensionModule, extensionModuleCapability } from "@oh-my-pi/pi-coding-agent/capability/extension-module";
+import { type Hook, hookCapability } from "@oh-my-pi/pi-coding-agent/capability/hook";
+import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
+import { discoverCustomToolPaths, type ToolPathWithSource } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
+import { getAllPluginExtensionPaths } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
+import { cfgExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+import { resolvePath } from "@oh-my-pi/pi-coding-agent/extensibility/utils";
 import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
 import { writePrivateFileAtomicSync } from "./atomic-file";
+import { getSettingsForCwd } from "./omp-runtime";
 import type { ProjectTrustStatus } from "./api-types";
 
 /**
  * Project trust for CUELO.
  *
  * The `omp` CLI executes a repository's `.omp/extensions`, `.omp/hooks`,
- * `.omp/tools` and `.mcp.json` because the user deliberately ran it inside that
+ * `.omp/tools`, `.mcp.json` and the extension roots its project settings files
+ * list under `extensions:` because the user deliberately ran it inside that
  * repository. CUELO reaches the same code from a browser tab: merely opening
  * a project in the sidebar would otherwise run repository-controlled code on
  * the machine hosting the server.
@@ -81,10 +93,63 @@ function writeTrustedProjects(agentDir: string, trusted: Record<string, boolean>
   writePrivateFileAtomicSync(trustFilePath(agentDir), `${JSON.stringify(trusted, null, 2)}\n`);
 }
 
+/** Configured extension entries resolved the way omp resolves them, limited to paths that exist. */
+function existingExtensionPaths(entries: readonly unknown[], cwd: string): string[] {
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry.length === 0) continue;
+    let path: string;
+    try {
+      path = resolvePath(entry, cwd);
+    } catch {
+      // An internal-scheme entry makes omp's own discovery throw; nothing loads from it.
+      continue;
+    }
+    if (existsSync(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * Extension roots the project's own settings layer configures, resolved the way
+ * omp resolves them and limited to paths that exist.
+ *
+ * omp merges every project settings provider (`.omp/config.yml`,
+ * `.omp/settings.json`, `.claude/settings.json`, …) into one project layer and
+ * reports through `extensionsSourceLevel()` whether that layer supplies the
+ * effective `extensions` array; arrays replace rather than merge, so every
+ * entry then comes from the project. Reading omp's own provenance keeps this in
+ * step with whatever providers omp merges.
+ */
+function projectSettingsExtensionRoots(settings: Settings, cwd: string): string[] {
+  if (settings.extensionsSourceLevel() !== "project") return [];
+  return existingExtensionPaths(cfgExtensions.get(settings), cwd);
+}
+
+/**
+ * Existing paths in the legacy `extensions` list of the project's
+ * `.omp/settings.json`. omp's native extension-module provider loads these
+ * itself, independent of the merged setting, so another project settings file
+ * that empties or replaces `extensions` does not stop them. Like that provider,
+ * a project opened at the home directory has no project config dir.
+ */
+function legacyProjectSettingsExtensionPaths(cwd: string): string[] {
+  if (resolve(cwd) === resolve(homedir())) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(cwd, ".omp", "settings.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  const entries = (parsed as { extensions?: unknown } | null)?.extensions;
+  return Array.isArray(entries) ? existingExtensionPaths(entries, cwd) : [];
+}
+
 /**
  * Whether `cwd` ships resources omp would import and execute on session start.
+ * `settings` is omp's settings for `cwd` (see {@link projectSettingsExtensionRoots}).
  */
-export function hasTrustRequiringProjectResources(cwd: string): boolean {
+export function hasTrustRequiringProjectResources(cwd: string, settings: Settings): boolean {
   if (!cwd) return false;
   for (const dir of CODE_BEARING_PROJECT_DIRS) {
     if (existsSync(join(cwd, dir))) return true;
@@ -92,11 +157,11 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
   for (const file of MCP_MANIFEST_FILES) {
     if (existsSync(join(cwd, file))) return true;
   }
-  return false;
+  return projectSettingsExtensionRoots(settings, cwd).length > 0 || legacyProjectSettingsExtensionPaths(cwd).length > 0;
 }
 
-export function getProjectTrustStatus(cwd: string, agentDir: string): ProjectTrustStatus {
-  const requiresTrust = Boolean(cwd) && hasTrustRequiringProjectResources(cwd);
+export function getProjectTrustStatus(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
+  const requiresTrust = Boolean(cwd) && hasTrustRequiringProjectResources(cwd, settings);
   if (!requiresTrust) return { requiresTrust: false, trusted: true };
 
   return {
@@ -105,8 +170,13 @@ export function getProjectTrustStatus(cwd: string, agentDir: string): ProjectTru
   };
 }
 
-export function trustProject(cwd: string, agentDir: string): ProjectTrustStatus {
-  const status = getProjectTrustStatus(cwd, agentDir);
+/** {@link getProjectTrustStatus} with the same settings a session for `cwd` starts with. */
+export async function loadProjectTrustStatus(cwd: string, agentDir: string): Promise<ProjectTrustStatus> {
+  return getProjectTrustStatus(cwd, agentDir, await getSettingsForCwd(cwd));
+}
+
+export function trustProject(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
+  const status = getProjectTrustStatus(cwd, agentDir, settings);
   if (!status.requiresTrust) return status;
   setProjectTrust(cwd, agentDir, true);
   return { requiresTrust: true, trusted: true };
@@ -155,24 +225,110 @@ export interface DiscoveredProjectCode<TTool extends DiscoveredToolPath> {
 }
 
 /**
+ * The configured `extensions` lane with the project settings layer left out:
+ * the effective value when a user-level layer supplies it, otherwise the
+ * user-level layers' own array, which the project array replaced.
+ */
+function nonProjectConfiguredExtensions(settings: Settings): string[] {
+  if (settings.extensionsSourceLevel() !== "project") return [...cfgExtensions.get(settings)];
+  const raw = settings.getGlobalSettings().extensions;
+  return Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
+}
+
+/**
+ * Extension modules only the project contributes, keyed by real path.
+ *
+ * omp's native extension-module provider reads `.omp/extensions` and also the
+ * legacy `extensions` list of a project `settings.json` itself, wherever its
+ * entries point, so the configured lane alone does not keep those out of
+ * discovery. A module counts as the project's only when no other source omp
+ * loads extensions from yields it too: the user-level native modules, the
+ * non-project configured and explicit roots, user-level hooks, and installed
+ * plugins.
+ */
+async function projectOnlyNativeExtensionModules(
+  settings: Settings,
+  cwd: string,
+  configured: readonly string[],
+): Promise<Set<string>> {
+  const configuredRoots = { explicit: configured, mode: "explicit-only" as const, configured: [], configuredLevel: "user" as const };
+  const [modules, hooks, configuredPaths, pluginPaths] = await Promise.all([
+    loadCapability<ExtensionModule>(extensionModuleCapability.id, { cwd, providers: ["native"] }),
+    loadCapability<Hook>(hookCapability.id, { cwd }),
+    discoverSessionExtensionPaths({ extensionRoots: () => configuredRoots }, cwd, settings),
+    getAllPluginExtensionPaths(cwd),
+  ]);
+  const fromOtherSources = new Set(
+    [
+      ...modules.items.filter((item) => item.level !== "project").map((item) => item.path),
+      ...hooks.items.filter((item) => item.level !== "project").map((item) => item.path),
+      ...configuredPaths,
+      ...pluginPaths,
+    ].map(canonicalProjectKey),
+  );
+  return new Set(
+    modules.items
+      .filter((item) => item.level === "project")
+      .map((item) => canonicalProjectKey(item.path))
+      .filter((path) => !fromOtherSources.has(path)),
+  );
+}
+
+/**
+ * omp's own extension and custom-tool discovery for `cwd` as if the project's
+ * settings files configured no extension roots.
+ *
+ * Leaving those roots out of discovery, rather than dropping every path under
+ * them afterwards, means a project cannot unload user-level or explicit code
+ * by naming a root that also holds it (`~/.omp/agent/extensions`, `~`, `/`):
+ * such code is still contributed by its own source. The invocation scope
+ * carries the same configured lane into the sub-discovery of package hooks and
+ * tools; modules omp's native provider reads straight from a project
+ * `settings.json` are removed unless another source also yields them.
+ */
+export async function discoverCodeWithoutProjectSettingsExtensions(
+  settings: Settings,
+  cwd: string,
+): Promise<DiscoveredProjectCode<ToolPathWithSource>> {
+  const configured = nonProjectConfiguredExtensions(settings);
+  const extensionRoots = { explicit: [], mode: "merge" as const, configured, configuredLevel: "user" as const };
+  return withOmpExtensionRootScope([], "merge", async () => {
+    setInvocationConfiguredExtensions(configured, "user");
+    const [extensionPaths, customToolPaths, projectOnly] = await Promise.all([
+      discoverSessionExtensionPaths({ extensionRoots: () => extensionRoots }, cwd, settings),
+      discoverCustomToolPaths([], cwd),
+      projectOnlyNativeExtensionModules(settings, cwd, configured),
+    ]);
+    return {
+      extensionPaths: extensionPaths.filter((path) => !projectOnly.has(canonicalProjectKey(path))),
+      customToolPaths,
+    };
+  });
+}
+
+/**
  * Session options that keep an untrusted project's code dormant.
  *
  * Returns `undefined` when the project has nothing that requires trust, or when
  * the user already trusted it — both leave omp on its normal load path so
- * CUELO sessions behave exactly like `omp` in a terminal.
+ * CUELO sessions behave exactly like `omp` in a terminal, and `discover` is
+ * never called for them.
  *
- * The caller supplies the discovered paths (omp's own `discoverSessionExtensionPaths`
- * / `discoverCustomToolPaths` results) so user-level extensions keep working:
- * only entries under the project root are dropped.
+ * For a gated project `discover` supplies the paths, normally
+ * {@link discoverCodeWithoutProjectSettingsExtensions}, so roots the project's
+ * settings configure are already absent while user-level extensions keep
+ * working; entries under the project root are dropped here.
  */
-export function untrustedProjectSessionOptions<TTool extends DiscoveredToolPath>(
+export async function untrustedProjectSessionOptions<TTool extends DiscoveredToolPath>(
   cwd: string,
   agentDir: string,
-  discovered: DiscoveredProjectCode<TTool>,
-): UntrustedProjectSessionOptions<TTool> | undefined {
-  const status = getProjectTrustStatus(cwd, agentDir);
+  settings: Settings,
+  discover: () => Promise<DiscoveredProjectCode<TTool>>,
+): Promise<UntrustedProjectSessionOptions<TTool> | undefined> {
+  const status = getProjectTrustStatus(cwd, agentDir, settings);
   if (!status.requiresTrust || status.trusted) return undefined;
 
+  const discovered = await discover();
   return {
     preloadedExtensionPaths: discovered.extensionPaths.filter((path) => !isInsideProject(path, cwd)),
     preloadedCustomToolPaths: discovered.customToolPaths.filter(
