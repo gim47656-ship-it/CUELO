@@ -2616,14 +2616,18 @@ export function getRunningRpcSessionIds(): string[] {
   return [...ids];
 }
 
+/** 사람 답(ask·승인 등 확장 UI)을 기다리며 멈춘 세션. 사이드바 「확인할 결과」와 업데이트 영수증이 쓴다. */
+export function getWaitingRpcSessionIds(): string[] {
+  const ids = new Set<string>();
+  for (const [sessionId, session] of getRegistry()) {
+    if (session.isWaitingForUser()) ids.add(session.sessionId || sessionId);
+  }
+  return [...ids];
+}
+
 /** 실행 중인 세션 목록을 업데이트·롤백 복구용 영수증에 기록한다. */
 export function notifyRunningChange(): void {
-  const ids = getRunningRpcSessionIds();
-  const waiting: string[] = [];
-  for (const [sessionId, session] of getRegistry()) {
-    if (session.isWaitingForUser()) waiting.push(session.sessionId || sessionId);
-  }
-  recordRuntimeActivity(ids, waiting);
+  recordRuntimeActivity(getRunningRpcSessionIds(), getWaitingRpcSessionIds());
   // 보류된 신뢰 변경이 없으면 map 크기만 보고 돌아온다.
   reconcileProjectTrust(projectTrustHost);
 }

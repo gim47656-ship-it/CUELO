@@ -441,6 +441,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const projectMutationBusyRef = useRef(false);
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  // 사람 답(ask·승인)을 기다리며 멈춘 세션. 실행 중이지만 「확인할 결과」에 들고 줄에 「답 기다림」으로 보인다.
+  const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
   // 「확인할 결과」 필터: 세션마다 이 브라우저에서 마지막으로 연 때. 저장소는 hydration 뒤에 읽는다.
@@ -781,10 +783,11 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
           signal: current.signal,
         });
         if (!res.ok) return;
-        const data = await res.json() as { runningSessionIds?: string[] };
+        const data = await res.json() as { runningSessionIds?: string[]; waitingSessionIds?: string[] };
         if (stopped || controller !== current) return;
         runningPollAuthoritativeRef.current = true;
         setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+        setWaitingSessionIds(new Set(data.waitingSessionIds ?? []));
       } catch {
         // Keep the last known state; the next visible-tab poll retries.
       } finally {
@@ -1343,9 +1346,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   );
   const resultsToCheck = useMemo(
     () => (resultReview
-      ? sessionsForDisplay.filter((session) => isResultToCheck(session, runningSessionIds, resultReview))
+      ? sessionsForDisplay.filter((session) => isResultToCheck(session, runningSessionIds, resultReview, waitingSessionIds))
       : []),
-    [resultReview, runningSessionIds, sessionsForDisplay],
+    [resultReview, runningSessionIds, sessionsForDisplay, waitingSessionIds],
   );
   // 「확인할 결과」를 켜면 같은 목록·묶음 그대로, 이미 걸러 온 세션만 개수 제한 없이 보인다. 이 목록에서
   // 눌러 연 세션은 확인한 것이 되지만, 다른 세션을 누를 때까지 그 줄을 남겨 눈앞에서 사라지지 않게 한다.
@@ -2723,6 +2726,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   session={session}
                   selected={session.id === selectedSessionId}
                   running={runningSessionIds.has(session.id)}
+                  waiting={waitingSessionIds.has(session.id)}
                   unread={unreadSessionIds.has(session.id)}
                   pinned={pinnedSessionIds.has(session.id)}
                   onSelect={reviewFilterActive ? selectSessionFromReview : handleSelectSessionFromList}
@@ -2943,6 +2947,7 @@ function PrioritySessionRow({
   session,
   selected,
   running,
+  waiting,
   unread,
   pinned,
   onSelect,
@@ -2951,6 +2956,7 @@ function PrioritySessionRow({
   session: SessionInfo;
   selected: boolean;
   running: boolean;
+  waiting: boolean;
   unread: boolean;
   pinned: boolean;
   onSelect: (session: SessionInfo) => void;
@@ -3003,7 +3009,8 @@ function PrioritySessionRow({
           >
             {title}
           </span>
-          {running && <RunningSessionIndicator />}
+          {waiting && <WaitingSessionIndicator />}
+          {running && !waiting && <RunningSessionIndicator />}
           {!running && unread && <UnreadSessionIndicator />}
         </span>
         <span
@@ -3237,6 +3244,30 @@ function SessionTreeItem({
         </div>
       )}
     </div>
+  );
+}
+
+/** 사람 답(ask·승인)을 기다리며 멈춘 세션. 돌아가는 스피너 대신 글자로 알려, 답할 세션을 한눈에 고르게 한다. */
+function WaitingSessionIndicator() {
+  const { t } = useI18n();
+  return (
+    <span
+      title={t("sidebar.waitingForAnswerHint")}
+      style={{
+        flexShrink: 0,
+        padding: "0 6px",
+        borderRadius: 9,
+        border: "1px solid var(--warning-line)",
+        background: "var(--warning-soft)",
+        color: "var(--warning)",
+        fontSize: 10.5,
+        fontWeight: 600,
+        lineHeight: "16px",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {t("sidebar.waitingForAnswer")}
+    </span>
   );
 }
 

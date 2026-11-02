@@ -1,7 +1,9 @@
 import type { SessionInfo } from "./types";
 
 /**
- * 「확인할 결과」: 이 브라우저에서 마지막으로 연 뒤에 활동이 늘었고 지금 실행 중이 아닌 세션.
+ * 「확인할 결과」: 이 브라우저에서 마지막으로 연 뒤에 활동이 늘었고 지금 실행 중이 아닌 세션, 그리고
+ * 사람 답(ask·승인 등)을 기다리며 멈춘 세션. 답을 기다리는 세션은 실행 중이어도, 이미 열어 봤어도
+ * 답을 줄 때까지 남는다(2026-11-02 사용자 결정).
  * 연 시각은 세션마다 이 브라우저의 localStorage에만 남는다(다른 PC·브라우저와 나누지 않는다).
  * 처음 쓰는 브라우저는 그 시각(`since`)을 기준으로 삼아, 기능을 켜기 전의 기록이 모두 확인할
  * 결과로 쏟아지지 않게 한다.
@@ -84,12 +86,17 @@ export function markSessionOpened(state: ResultReviewState, session: Pick<Sessio
   return { since: state.since, opened: { ...state.opened, [session.id]: at } };
 }
 
+const NO_SESSIONS: ReadonlySet<string> = new Set();
+
 export function isResultToCheck(
   session: SessionInfo,
   runningSessionIds: ReadonlySet<string>,
   state: ResultReviewState,
+  waitingSessionIds: ReadonlySet<string> = NO_SESSIONS,
 ): boolean {
-  if (session.transient || runningSessionIds.has(session.id)) return false;
+  if (session.transient) return false;
+  if (waitingSessionIds.has(session.id)) return true;
+  if (runningSessionIds.has(session.id)) return false;
   const at = activityMs(session);
   if (at === null) return false;
   return at > (state.opened[session.id] ?? state.since);
