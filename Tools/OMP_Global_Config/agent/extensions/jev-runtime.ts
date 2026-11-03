@@ -14,6 +14,7 @@ import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { onSessionLifecycle } from "./lib/session-identity";
+import { readChildSkillReads, renderSkillEvidence, type SkillReadWindow } from "./lib/skill-evidence";
 import { assignTaskResultBlocks, createRoutingLedger, DEFAULT_LEDGER_PATH, deriveRevisionRelation, openHeldVerdicts, pickReportRevision, revisionRelationDiagnostic, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
   advanceTodoProgressState,
@@ -1806,6 +1807,28 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         return pending !== undefined && settledStatus(job, ctx, pending.runStart) !== undefined;
       });
     }
+    /**
+     * child 하나의 실제 skill:// 읽기 관측 한 줄. transcript는 core가 Main session artifacts에 `<agentId>.jsonl`로 남긴 그 child 파일만 읽는다
+     * (부모·형제·하위 child 읽기는 귀속하지 않는다). 기대 세트는 이 attempt의 발주 원장 행에서 읽는다. 관측한 실행 시작이 있으면 그 이후만
+     * 이번 근거로 세고(그 뒤 기록이 없으면 미관측), 시작을 모르는 첫 attempt만 transcript 전체를 그 attempt로 본다. 재개 attempt의 시작을
+     * 모르면 가르지 않고 이번 근거로 세지 않는다.
+     */
+    function skillReadLine(ctx: ExtensionContext, label: string, agentId: string | undefined, identity: AttemptIdentity | undefined): string {
+      const dispatch = identity
+        ? baseLedger.read().filter((record): record is DispatchRecord => record.type === "dispatch" && record.attemptId === identity.attemptId && record.sessionId === identity.sessionId).at(-1)
+        : undefined;
+      const start = identity ? runStarts.get(identity.attemptId) : undefined;
+      const window: SkillReadWindow = !identity ? { kind: "unknown", reason: "발주 identity 미관측" }
+        : start !== undefined ? { kind: "from", ms: start }
+          : identity.attempt === 1 ? { kind: "whole", reason: "첫 attempt, 실행 시작 미관측" } : { kind: "unknown", reason: "재개 attempt 시작 시각 미관측" };
+      return renderSkillEvidence({
+        label,
+        observation: readChildSkillReads(ctx.sessionManager.getSessionFile?.(), agentId),
+        window,
+        expected: dispatch?.requiredSkills,
+        expectedSource: !identity ? "발주 identity 미관측" : !dispatch ? "이 attempt의 발주 원장 행 없음" : "발주 원장 행에 requiredSkills 없음(maker_route 분류 이전 기록)",
+      });
+    }
     async function runPreReview(
       ctx: ExtensionContext,
       via: "async-result" | "wait" | "read proc://",
@@ -1814,6 +1837,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const todoAdvice: string[] = [];
       const identityNotes: string[] = [];
       const reviewSources: string[] = [];
+      const skillAdvice: string[] = [];
       const reports = settled.map((job): ReviewStructuralReport | null => {
         const ref = jobIndex.get(job.jobId);
         const spawned = ref
@@ -1873,8 +1897,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               workClassConfidence: sourceDispatch?.workClassConfidence ?? null,
               workClassProbabilities: sourceDispatch?.workClassProbabilities ?? null,
               purpose: sourceDispatch?.purpose ?? null,
-              // 재개 attempt는 원 attempt의 소유 계약을 그대로 잇는다. 미상이면 필드를 만들지 않는다.
+              // 재개 attempt는 원 attempt의 소유 계약과 필수 스킬 기대값을 그대로 잇는다. 미상이면 필드를 만들지 않는다.
               ...(source.ownership ? { ownership: source.ownership } : {}),
+              ...(sourceDispatch?.requiredSkills ? { requiredSkills: sourceDispatch.requiredSkills } : {}),
             });
             observedAttempts.set(identity.attemptId, { ...identity, name: source.name, status: "running", ownership: source.ownership, restored: source.restored, sourceRevision: null });
             if (rowStart !== undefined) runStarts.set(identity.attemptId, rowStart);
@@ -1929,6 +1954,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         if (reviewKey) advisedReviews.add(reviewKey);
         if (identity && runKey) advisedReviewRuns.add(runKey);
         reviewSources.push(`${job.jobId} request=${request?.original ?? "미관측"}${steering} brief=${origin?.briefSource ?? "미관측"}${origin?.conversationSource ? ` conversation=${origin.conversationSource}` : ""}`);
+        skillAdvice.push(skillReadLine(ctx, `${spawned?.name ?? job.label ?? job.jobId} ${identity?.attemptId ?? job.jobId}`, identity?.agentId || agentId, identity));
         const todoRevisionKey = spawned && job.terminalRevision
           ? `${spawned.name ?? job.jobId}:${job.terminalRevision}`
           : undefined;
@@ -2018,7 +2044,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // JEV 판정이 없는 구조 수치만 한 줄로 싣는다(2026-10-28 감사: 192건 전부 판정 생략, 중앙 3,052자). TODO 조치 안내만 이어 붙인다.
       sendAdvisory(
         "pre-review",
-        `[JevRuntime:pre-review] via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}; JEV 판정 없음: 수용·의미 대조는 Main이 원 요청 위치의 원문으로 한다(자동 수용·TODO 완료 아님).${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""} 원 요청 위치: ${reviewSources.join("; ")}. structuralSummary=${JSON.stringify(structuralSummary)}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""}`,
+        `[JevRuntime:pre-review] via=${via}, reports=${reports.length}, ${renderStructuralCount("unverified", unverifiedObservations)}, ${renderStructuralCount("unresolved", unresolvedObservations)}, ${renderStructuralCount("TODO gap", todoGapObservations)}, ${renderStructuralCount("Main 수용 후보", todoReadyObservations)}; JEV 판정 없음: 수용·의미 대조는 Main이 원 요청 위치의 원문으로 한다(자동 수용·TODO 완료 아님).${identityNotes.length > 0 ? ` route identity: ${identityNotes.join("; ")}.` : ""} 원 요청 위치: ${reviewSources.join("; ")}. structuralSummary=${JSON.stringify(structuralSummary)}${todoAdvice.length > 0 ? `\n${todoAdvice.join("\n")}` : ""}${skillAdvice.length > 0 ? `\n${skillAdvice.join("\n")}` : ""}`,
       );
     }
 
@@ -2618,6 +2644,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           // inline 결과는 그 attempt의 terminal 관측이다. async 정산과 같은 함수로 그 attempt 하나에만 outcome을 남긴다(수용은 Main 명시 판정).
           if (inline && (task.agent === undefined || task.agent === "maker")) {
             appendOutcome(identity, "", inline.status, inline.durationMs, inline.terminalRevision, { model: inline.resolvedModel, isFallback: inline.resolvedModelIsFallback });
+            // inline child는 async pre-review를 거치지 않으므로 같은 skill 읽기 관측을 여기서 한 번 싣는다.
+            sendAdvisory("skill-read", skillReadLine(ctx, `${task.name ?? "<unnamed>"} ${identity.attemptId}`, identity.agentId, identity));
           }
           identities.push(`${task.name ?? "<unnamed>"} agentId=${identity.agentId || "<unobserved>"} jobId=${identity.jobId || "<unobserved>"} ${identity.sessionId}|${identity.assignmentId}|${identity.attemptId}${inline ? ` inline=${inline.status}` : ""}`);
         }

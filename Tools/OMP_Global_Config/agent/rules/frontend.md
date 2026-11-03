@@ -21,23 +21,86 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
 명칭, 화면 내 배치, 표시·동작 트리거 조건, 반응형 거동 넷을 적는다. 이 넷이 비어 있으면
 시안부터 다시 만드는 재작업이 생긴다.
 
+## 산출물별 필수 스킬
+
+아래 블록이 UI·화면 산출물의 필수 세트 정본이다. 발주 점검과 완료 보고는 이 블록을 함께 읽으며
+다른 규칙·코드에 같은 목록을 복제하지 않는다. 일치하는 세트의 `skills`는 모두 적용한다.
+`hallmark 또는 ui-ux-pro-max`처럼 선택형으로 줄이지 않는다. 기존 플랫폼별 지침과 프로젝트 디자인
+시스템은 그대로 유지하며, 이 목록이 관련 없는 패키지 설치·기능 추가를 허용하지 않는다.
+
+<!-- required-skills:start -->
+```json
+{
+  "version": 1,
+  "sets": [
+    {
+      "id": "web-ui",
+      "when": "새 웹 UI·운영 목업 제작, 리디자인, 기존 웹 화면 분석처럼 시각·상호작용 판단이 있는 작업",
+      "skills": ["seed-design", "frontend-design", "ui-ux-pro-max", "hallmark", "kill-ai-slop"]
+    },
+    {
+      "id": "ui-polish",
+      "when": "기존 화면의 디자인을 보존하며 AI 슬롭을 감사하고 범위 안에서 다듬는 작업; 새 화면·전면 재구성은 해당 새 화면 세트",
+      "skills": ["seed-design", "frontend-design", "ui-ux-pro-max", "unslop-ui", "kill-ai-slop"]
+    },
+    {
+      "id": "html-slides",
+      "when": "HTML 발표·보고 슬라이드의 제작 또는 시각 디자인 수정",
+      "skills": ["frontend-slides", "seed-design", "frontend-design", "ui-ux-pro-max", "hallmark", "kill-ai-slop"]
+    },
+    {
+      "id": "native-ui",
+      "when": "네이티브 앱 화면의 신규 제작·리디자인·시각 분석; 기존 플랫폼 지침을 유지하고 웹 전용 구현은 채택하지 않음",
+      "skills": ["seed-design", "frontend-design", "ui-ux-pro-max", "hallmark", "kill-ai-slop"]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "operator-screen",
+      "when": "운영·관리·관제·현장 작업자가 쓰는 업무 화면의 시각·상호작용 설계",
+      "skills": ["operational-expert-tool-ui"]
+    },
+    {
+      "id": "ko-copy",
+      "when": "산출물 범위에 사람이 읽는 한국어 문구의 작성·수정·점검이 포함됨; 한국어 브리프나 코드 주석만 있다는 이유로 선택하지 않음",
+      "skills": ["humanizer"]
+    },
+    {
+      "id": "en-copy",
+      "when": "산출물 범위에 사람이 읽는 영어 문구의 작성·수정·점검이 포함됨; 코드 식별자·명령·원본 오류만으로 선택하지 않음",
+      "skills": ["stop-slop"]
+    }
+  ]
+}
+```
+<!-- required-skills:end -->
+
+일치하는 세트와 조건을 합친다. 한국어·영어 문구가 함께 있으면 두 언어 조건을 모두 적용한다.
+시각 판단 없는 로직·백엔드 수정은 UI 파일 안에 있어도 화면 세트 대상이 아니다. 문구만 바꾸면
+해당 언어 조건을 적용한다. 산출물을 판단할 근거가 없으면 미확인으로 알리고 임의로 전부 요구하거나
+누락 없음으로 단정하지 않는다. Office·PDF 등 화면 밖 산출물의 제작 경로는 `rule://creation-tools`를 따른다.
+
+적용되지 않거나 사용할 수 없는 스킬은 브리프의 `SKILL_EXCLUSIONS: {"스킬명":"이유와 보존할 확인 범위"}`에
+명시한다. 이 메타데이터는 `TASK_GUARD` 블록 밖에 두며 제외 사실을 알릴 뿐 승인·면제·읽기 증거가 아니다.
+사용자 요구를 줄이는 제외는 사용자 결정이 필요하다. 누락·선택형 축소·근거 없는 제외는 advisory로
+알리며 발주나 완료를 새로 차단하지 않는다.
+
+`slop_check` 통과는 `humanizer`·`kill-ai-slop`의 절차 수행 증거가 아니다. 스킬을 읽은 기록도
+문구 전수 점검·접근성·터치 영역 확인이나 수정의 완료를 증명하지 않는다. 담당자는 적용 범위와
+단계별 실행·검증 근거를 보고하고 Main은 그 근거로 수용한다.
+
 ## 디자인 경로
 
 - 웹 UI 제작·템플릿 재사용과 HTML 발표·보고 슬라이드는 사용자가 도구 이름을 말하지 않아도
   `rule://creation-tools`를 읽고 맞는 소스·스킬을 고른다. HTML 슬라이드는 웹페이지가 아닌
   발표·보고자료로 다루며, `skill://frontend-slides`의 고정 비율·키보드 넘김·인쇄 검증을 따른다.
 
-- 시각 디자인이 포함된 작업에서는 아래 세 기본 디자인 스킬의 지침을 **반드시** 읽고 그 판단을
-  디자인 계약에 반영한다. 세 스킬의 이름과 실제 출처는 다음과 같다: `skill://seed-design`(미러
-  vendored, upstream `daangn/seed-design`), `skill://frontend-design`(설치 플러그인
-  `frontend-design@claude-plugins-official`), `skill://ui-ux-pro-max`(미러 vendored, upstream
-  `nextlevelbuilder/ui-ux-pro-max-skill`). 그 밖의 설치 스킬과 출처는 미러
-  `agent/skills/registry.json`이 정본이다. 출처를 다른 벤더나 OMP 기본 제공으로 표기하지 않으며,
-  없는 설치·업그레이드·마이그레이션 절차를 만들지 않는다.
-- 신규 화면·리디자인·기존 화면 분석은 `skill://hallmark`, 제네릭한 AI 스타일 감사와 제거는
-  `skill://kill-ai-slop`을 함께 사용한다. 그 밖의 스킬은 설치된 스킬 이름과 설명을 보고 이번
-  과제와 현재 프로젝트에 실제로 필요한 최소 집합만 스스로 고른다. 브리프가 스킬 목록을 미리 다
-  싣거나 사용자에게 고르라고 묻지 않는다.
+- 필수 스킬은 위 「산출물별 필수 스킬」의 세트와 조건을 따른다. 관련 스킬을 직접 읽고
+  그 판단을 디자인 계약에 반영한다. 출처는 `agent/skills/registry.json`과 각 스킬의
+  `UPSTREAM.json`이 정본이다. 설치된 플러그인 `frontend-design`은
+  `frontend-design@claude-plugins-official`을 쓴다. 출처를 다른 벤더나 OMP 기본 제공으로
+  표기하지 않으며 없는 설치·업그레이드·마이그레이션 절차를 만들지 않는다.
+  필수 세트 밖의 참고만 이번 과제에 필요한 최소 집합으로 고른다.
 - 기존 화면의 AI 슬롭 정리·다듬기는 `skill://unslop-ui`(설치돼 있을 때)의 감사·방향·순서 있는 수정 패스와 그 스킬의
   「OMP local contract」를 따른다. 새 화면과 전면 재구성은 `hallmark`이고, `kill-ai-slop` 스캔은 어느 쪽이든 감사 단서로
   먼저 돌린다. unslop-ui가 없는 설치에서는 `kill-ai-slop`의 Fix 단계로 처리하되 다음 경계를 지킨다. 징후가 여러 층에
@@ -57,7 +120,7 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
   방식(「분석 결과」만 내고 파일은 고치지 않음)으로 점검한다. 사용자나 과제가 문구 수정을 요청하면
   같은 스킬의 교정 절차를 범위 안 모든 문자열에 끝까지 적용한다. 굵은 글씨 강조는 문단당 최대
   1개로 한다.
-- `skill://seed-design`은 위 셋 중 공통 설계 원칙 담당이다. 사용자가 SEED를 언급하지 않아도
+- `skill://seed-design`은 공통 설계 원칙 담당이다. 사용자가 SEED를 언급하지 않아도
   이번 화면에 해당하는 공통 Foundations(정보 위계, 색 역할, 타이포그래피, spacing, 컴포넌트
   상태, 접근성)와 영향받는 컴포넌트의 공통 가이드라인을 공식 인덱스에서 찾아 읽고, 적용 가능한
   판단을 디자인 계약에 반영한다. 매 작업마다 모든 공식 문서를 훑지 않고 이번 작업에 해당하는
@@ -92,8 +155,7 @@ description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인
 - **목록 비용도 기준이다.** 스킬마다 세션 목록에 설명이 실린다. 2026-10-10 측정으로 선별 12종은 +462토큰,
   통째 45종은 +2,054토큰(당시 주입 목록 943토큰의 두 배 이상)이었다. 설명은 한 문장 150자 이하로 줄인다.
 - **채택한 묶음.**
-  - 필수 기본 셋(seed-design·frontend-design·ui-ux-pro-max)과 신규·분석 `hallmark`, 슬롭 감사 `kill-ai-slop`,
-    기존 화면 다듬기 `unslop-ui`(2026-11-02, 비공개 선택 스킬), 한국어 문구 `humanizer`.
+  - UI·화면의 필수 세트와 언어·운영자 화면 조건은 위 「산출물별 필수 스킬」 블록이 정본이다.
   - 제품 UX·업무 도구 12종(dembrandt-skills 선별, 2026-10-10): app-shell, coordinated-data-views,
     data-display-and-selection, domain-expert-configuration, modal-and-overlay-patterns,
     operational-expert-tool-ui, repeated-component-alignment, scroll-areas, status-colors-and-errors,

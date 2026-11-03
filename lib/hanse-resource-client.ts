@@ -1,6 +1,8 @@
 import {
   isApiCreditsSnapshot,
   type ApiCreditsSnapshot,
+  type BalanceInput,
+  type BalanceWallet,
   type CreditSettingInput,
 } from "./api-credits";
 import { OFFICE_CUE_ROOT, parseCueManifest, type CueManifest } from "./completion-audio";
@@ -986,13 +988,26 @@ export async function saveApiCreditSetting(
   value: CreditSettingInput | null,
   options: CredentialActionOptions = {},
 ): Promise<void> {
+  await postCreditSettings({ wallet: "hive", value }, options);
+}
+
+/** 결제 화면에서 본 잔액과 그 시각을 지갑 하나에만 저장한다. value가 null이면 그 기록을 지운다. */
+export async function saveApiCreditBalance(
+  wallet: BalanceWallet,
+  value: BalanceInput | null,
+  options: CredentialActionOptions = {},
+): Promise<void> {
+  await postCreditSettings({ kind: "balance", wallet, value }, options);
+}
+
+async function postCreditSettings(body: object, options: CredentialActionOptions): Promise<void> {
   await requestJson<{ ok: true }>(`${HANSE_RESOURCE_ORIGIN}/credits/settings`, {
     ...options,
     timeoutMs: options.timeoutMs ?? CREDENTIAL_ACTION_TIMEOUT_MS,
     fetchImpl: async (url, init) => {
       const headers = new Headers(init?.headers);
       headers.set("Content-Type", "application/json");
-      return (options.fetchImpl ?? fetch)(url, { ...init, method: "POST", headers, body: JSON.stringify({ wallet: "hive", value }) });
+      return (options.fetchImpl ?? fetch)(url, { ...init, method: "POST", headers, body: JSON.stringify(body) });
     },
   });
 }

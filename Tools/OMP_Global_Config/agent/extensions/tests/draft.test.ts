@@ -79,6 +79,20 @@ function texts(xml: string, tag: string): string[] {
 }
 
 describe("draft", () => {
+  test("only real saves expose canonical savedPath; non-error no-save and failures do not", async () => {
+    const cwd = fixture();
+    const output = "doc/history/2026/11/03-save/maker-A.md";
+    const complete: DraftCompletion = async (_prompt, _ctx, _signal, model) => reply("# Saved\n\nProducer evidence.", model);
+    const saved = await draftDocument({ instruction: "record", output }, context(cwd), signal, complete);
+    expect(saved.savedPath).toBe(join(cwd, output));
+    expect(readFileSync(saved.savedPath!, "utf8")).toBe("# Saved\n\nProducer evidence.\n");
+    const noSave = await draftDocument({ instruction: "", output, overwrite: true }, context(cwd), signal, complete);
+    expect(noSave.isError).toBe(false);
+    expect(noSave.savedPath).toBeUndefined();
+    const refused = await draftDocument({ instruction: "record", output }, context(cwd), signal, complete);
+    expect(refused.isError).toBe(true);
+    expect(refused.savedPath).toBeUndefined();
+  });
   test("cwd 밖·절대·비밀·링크 경로와 기존 파일은 모델 호출 전에 거부하고 overwrite일 때만 덮어쓴다", async () => {
     const cwd = fixture();
     const outside = fixture();

@@ -1,4 +1,4 @@
-<!-- source-fingerprint: aad490c8710b8541 -->
+<!-- source-fingerprint: adb7e35924038d0e -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -18,6 +18,8 @@ Keep the user oriented during long turns where you chain tools alone. **When you
 |Receiving a subagent progress-supervision warning|Before another `wait`, compare the latest result, activity snapshot and relevant artifact. Distinguish model wait, tool execution, user approval and queued parent instructions; inspect the supervisor's own last check too. Tell the user the confirmed state and next action.|
 |Moving past a todo item|Confirm the job result that item waited on was collected.|
 |Right before `yield`|Collect or cancel every job you launched. Long-lived processes such as detached runs, `bash` `name` services and scheduled tasks are jobs too.|
+
+Resources registered in an explicitly retained `test_session` are distinct from ordinary jobs cancelled at turn end. Check their current state and disclose the next reuse/finish condition; clean them with ownership verification when the test is finished or discarded. Collection/cancellation rules for all other jobs remain unchanged.
 
 **Background notice:** Before launching a long-running process or queue, tell the user what it is, why, and when it should finish. Never chain "when that finishes, do the next thing" unless the user asked for or approved it. If you close a turn with something still running, say "in progress" and name it in the first sentence; never use completion words like "done" or "finished". Announce actions that cut off running work, such as a restart, before executing them.
 
@@ -45,6 +47,8 @@ There are two roles, **Main and `maker`**; every delegated child is a `maker`. M
 **Precedence:** overlapping modes → `high-risk` wins. `large` is the size/context-pollution axis and `high-risk` the consequence axis; both can hold at once. A small change does not lift risk, and a big consequence does not raise the model tier. Splitting and review by size/difficulty: `rule://subagent`.
 
 **When to delegate:** Do not delegate work you can finish yourself in a handful of tool calls, and never spawn a child to re-check or verify your own work. If one Maker can finish the job, use one. Conversely, when there are two or more genuinely independent tracks of sizeable work (a wide multi-file investigation, implementation slices on separate paths), do not drag them through serially yourself: dispatch them in parallel in one batch.
+
+For lightweight idea, explanation or option discussion, use `consult` with an explicit model and only the needed context. Tool-free, file-free consultation creates no child and does not use Maker candidate restrictions or `maker_route`. If the requested model is unavailable, report why without silently substituting it. Consultation cannot serve as code review, acceptance, approval or gate evidence; `cross_review` and Main's decision boundaries remain unchanged.
 
 **Seven code-nature triggers:** judged by the nature of the modified code, not the runtime environment. Fixtures, mocks, and eval code are not exempt; project-specific examples live in that project's `AGENTS.md`.
 

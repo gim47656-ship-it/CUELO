@@ -7,14 +7,20 @@ import { useI18n } from "@/hooks/useI18n";
 import { useOfficeCharacters } from "@/hooks/useAccountFaces";
 import { useNow } from "@/hooks/useNow";
 import {
+  balanceFromForm,
   creditMeter,
   creditSettingFromForm,
+  localDateTimeInput,
   spentIsMinimum,
   type ApiCreditsSnapshot,
+  type BalanceInput,
+  type BalanceWallet,
   type CreditSettingInput,
   type AnthropicPaidWallet,
   type HiveCreditSetting,
   type HiveCreditWallet,
+  type RecordedBalance,
+  type WalletBalance,
 } from "@/lib/api-credits";
 import type { TranslationParams } from "@/lib/i18n/types";
 import type { ApiKeyProviderListing, OAuthProviderListing } from "@/lib/provider-listing";
@@ -31,6 +37,7 @@ import {
   providerModelFace,
   redeemCredentialReset,
   ResourceClientError,
+  saveApiCreditBalance,
   saveApiCreditSetting,
   setCredentialEnabled,
   type AccountIdentity,
@@ -80,6 +87,8 @@ interface Pace {
 const DAY_MS = 86_400_000;
 
 const buttonClass = "min-h-9 border border-border bg-bg px-3 text-xs font-medium text-text transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50";
+// 터치 화면(굵은 포인터)이나 좁은 화면에서는 누르는 칸을 44px 이상으로 키운다. 데스크톱 마우스에서는 지금 크기를 둔다.
+const touchTargetClass = "pointer-coarse:min-h-11 pointer-coarse:min-w-11 max-sm:min-h-11 max-sm:min-w-11";
 
 function classNames(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -923,6 +932,7 @@ type Translate = (key: string, params?: TranslationParams) => string;
 const CREDIT_ERROR_CODES: Record<string, true> = {
   invalid_total: true, invalid_start_date: true, start_date_in_future: true,
   session_scan_failed: true, session_scan_partial: true, internal: true, settings_unreadable: true,
+  invalid_balance: true, invalid_observed_at: true, observed_at_in_future: true, routes_unreadable: true,
 };
 const CREDIT_PURPOSES: Record<string, true> = { session: true, memory: true, "korean-reply-translation": true };
 
@@ -1041,12 +1051,18 @@ function CreditEditor({
 function CreditWalletCard({
   wallet,
   setting,
+  balance,
+  now,
   onSave,
+  onSaveBalance,
   t,
 }: {
   wallet: HiveCreditWallet;
   setting: HiveCreditSetting | null;
+  balance: WalletBalance | null;
+  now: number;
   onSave: (value: CreditSettingInput | null) => Promise<void>;
+  onSaveBalance: (wallet: BalanceWallet, value: BalanceInput | null) => Promise<void>;
   t: Translate;
 }) {
   const headingId = useId();
@@ -1072,7 +1088,8 @@ function CreditWalletCard({
         ) : null}
         <BillingLink wallet="hive" walletName={walletName} t={t} />
       </div>
-      <div className="mt-0.5 text-xs text-text-muted">{`${t(`credits.scope.${wallet.wallet}`)} · ${since}`}</div>
+      {balance ? <BalanceRecord balance={balance} walletName={walletName} now={now} onSave={onSaveBalance} t={t} /> : null}
+      <div className={classNames("text-xs text-text-muted", balance ? "mt-2" : "mt-0.5")}>{`${t(`credits.scope.${wallet.wallet}`)} · ${since}`}</div>
       {wallet.status === "error" ? (
         <div className="mt-1.5 text-xs text-text" role="alert">{t("credits.walletError", { reason: creditReason(t, wallet.error) })}</div>
       ) : null}
@@ -1145,9 +1162,11 @@ function localDate(ms: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-/** 공급자는 잔액 API를 주지 않는다(2026-10-29 확인). 실제 잔액은 각 콘솔의 결제 화면에서만 볼 수 있다. */
+/** 지금 가진 키로는 잔액을 읽는 공식 API가 없다(2026-11-03 확인). 실제 잔액은 각 콘솔의 결제 화면에서만 볼 수 있다. */
 const BILLING_URLS = {
   hive: "https://portal.deploy.com/",
+  exa: "https://dashboard.exa.ai/billing",
+  typesafe: "https://console.typesafe.ai/billing",
   anthropic: "https://platform.claude.com/settings/billing",
 } as const;
 
@@ -1157,7 +1176,7 @@ function BillingLink({ wallet, walletName, t }: { wallet: keyof typeof BILLING_U
       href={BILLING_URLS[wallet]}
       target="_blank"
       rel="noopener noreferrer"
-      className="shrink-0 text-xs text-accent underline-offset-2 hover:underline"
+      className={classNames("inline-flex shrink-0 items-center text-xs text-accent underline-offset-2 hover:underline", touchTargetClass)}
       aria-label={t("credits.billingLinkLabel", { wallet: walletName })}
       data-billing-link={wallet}
     >
@@ -1168,9 +1187,15 @@ function BillingLink({ wallet, walletName, t }: { wallet: keyof typeof BILLING_U
 
 /**
  * Anthropic 유료 API 카드. core가 api-key로 나갔다고 기록한 요청만 보이고, 구독(OAuth)·자격 미기록 요청은 수만 보인다.
- * 잔액·총액 입력은 없다(청구서·잔액 자료가 아니다).
+ * 총액 입력은 없다(사용량은 청구서·잔액 자료가 아니다). 결제 화면 잔액 기록은 사용량과 따로 보인다.
  */
-function AnthropicPaidCard({ wallet, t }: { wallet: AnthropicPaidWallet; t: Translate }) {
+function AnthropicPaidCard({ wallet, balance, now, onSaveBalance, t }: {
+  wallet: AnthropicPaidWallet;
+  balance: WalletBalance | null;
+  now: number;
+  onSaveBalance: (wallet: BalanceWallet, value: BalanceInput | null) => Promise<void>;
+  t: Translate;
+}) {
   const headingId = useId();
   const scanFailed = wallet.status === "error" && wallet.error !== "session_scan_partial";
   const covered = wallet.coverageSince !== null;
@@ -1183,7 +1208,8 @@ function AnthropicPaidCard({ wallet, t }: { wallet: AnthropicPaidWallet; t: Tran
         <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{t("credits.wallet.anthropic")}</h3>
         <BillingLink wallet="anthropic" walletName={t("credits.wallet.anthropic")} t={t} />
       </div>
-      <div className="mt-0.5 text-xs text-text-muted">{`${t("credits.scope.anthropic")} · ${t("credits.sinceDefault")}`}</div>
+      {balance ? <BalanceRecord balance={balance} walletName={t("credits.wallet.anthropic")} now={now} onSave={onSaveBalance} t={t} /> : null}
+      <div className={classNames("text-xs text-text-muted", balance ? "mt-2" : "mt-0.5")}>{`${t("credits.scope.anthropic")} · ${t("credits.sinceDefault")}`}</div>
       <p className="m-0 mt-1 text-xs text-text-muted">{t("credits.anthropic.note")}</p>
       {wallet.status === "error" ? (
         <div className="mt-1.5 text-xs text-text" role="alert">{t("credits.walletError", { reason: creditReason(t, wallet.error) })}</div>
@@ -1241,19 +1267,254 @@ function AnthropicPaidCard({ wallet, t }: { wallet: AnthropicPaidWallet; t: Tran
   );
 }
 
+function formatLocalTime(ms: number): string {
+  return localDateTimeInput(ms).replace("T", " ");
+}
+
+function balanceAge(t: Translate, observedAt: number, now: number): string {
+  const minutes = Math.max(0, Math.floor((now - observedAt) / 60_000));
+  if (minutes < 1) return t("credits.balance.age.now");
+  if (minutes < 60) return t("credits.balance.age.minutes", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? t("credits.balance.age.hours", { count: hours }) : t("credits.balance.age.days", { count: Math.floor(hours / 24) });
+}
+
+type BalanceField = "amount" | "observedAt" | "form";
+
+function BalanceEditor({
+  walletName,
+  recorded,
+  onSave,
+  onClose,
+  t,
+}: {
+  walletName: string;
+  recorded: RecordedBalance | null;
+  onSave: (value: BalanceInput | null) => Promise<void>;
+  onClose: () => void;
+  t: Translate;
+}) {
+  const formId = useId();
+  const [amount, setAmount] = useState(recorded ? String(recorded.amountUsd) : "");
+  // 고칠 때는 처음 확인한 시각을 그대로 둔다. 다시 확인했으면 사용자가 시각을 바꾼다.
+  const [observedAt, setObservedAt] = useState(() => localDateTimeInput(recorded?.observedAt ?? Date.now()));
+  const [pending, setPending] = useState(false);
+  const [errors, setErrors] = useState<Partial<Record<BalanceField, string>>>({});
+  const inputClass = "min-h-8 w-full min-w-0 border border-border bg-bg px-2 font-mono text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent pointer-coarse:min-h-11 max-sm:min-h-11";
+  const ids = { amount: `${formId}-amount`, observedAt: `${formId}-observed`, hint: `${formId}-hint`,
+    amountError: `${formId}-amount-error`, observedAtError: `${formId}-observed-error` };
+  const submit = async (value: BalanceInput | null) => {
+    setPending(true);
+    setErrors({});
+    try {
+      await onSave(value);
+      onClose();
+    } catch (cause) {
+      const code = cause instanceof ResourceClientError ? cause.code : undefined;
+      const reason = creditReason(t, code, cause instanceof Error ? cause.message : String(cause));
+      const field: BalanceField = code === "invalid_balance" ? "amount"
+        : code === "invalid_observed_at" || code === "observed_at_in_future" ? "observedAt" : "form";
+      setErrors({ [field]: field === "form" ? t("credits.saveFailed", { reason }) : reason });
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <form
+      className="mt-2 grid gap-2 border border-border bg-bg-raised p-2.5"
+      aria-label={t("credits.balance.formLabel", { wallet: walletName })}
+      // 빈 칸도 브라우저 말풍선이 아니라 칸 아래 오류(aria-describedby)로 알린다.
+      noValidate
+      // 전역 단축키는 window capture 단계에서 Escape를 먼저 받아 리소스 화면을 닫는다. 이 표시가 있으면 편집 칸이 Escape를 받는다.
+      data-dismissible-layer
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !pending) {
+          event.preventDefault();
+          onClose();
+        }
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const parsed = balanceFromForm({ amountUsd: amount, observedAt });
+        if ("error" in parsed) {
+          setErrors({ [parsed.error]: t(parsed.error === "amount" ? "credits.invalid.amount" : "credits.invalid.observedAt") });
+          return;
+        }
+        void submit(parsed.value);
+      }}
+    >
+      <div className="grid gap-1">
+        <label className="text-[11px] text-text-muted" htmlFor={ids.amount}>{t("credits.balance.amount")}</label>
+        <input
+          id={ids.amount}
+          className={inputClass}
+          inputMode="decimal"
+          autoComplete="off"
+          value={amount}
+          onChange={(event) => setAmount(event.target.value)}
+          aria-invalid={errors.amount ? true : undefined}
+          aria-describedby={errors.amount ? ids.amountError : undefined}
+          autoFocus
+          required
+        />
+        {errors.amount ? <p id={ids.amountError} className="m-0 text-xs text-danger" role="alert">{errors.amount}</p> : null}
+      </div>
+      <div className="grid gap-1">
+        <label className="text-[11px] text-text-muted" htmlFor={ids.observedAt}>{t("credits.balance.observedAt")}</label>
+        <input
+          id={ids.observedAt}
+          className={inputClass}
+          type="datetime-local"
+          value={observedAt}
+          onChange={(event) => setObservedAt(event.target.value)}
+          aria-invalid={errors.observedAt ? true : undefined}
+          aria-describedby={errors.observedAt ? ids.observedAtError : ids.hint}
+          required
+        />
+        {errors.observedAt
+          ? <p id={ids.observedAtError} className="m-0 text-xs text-danger" role="alert">{errors.observedAt}</p>
+          : <p id={ids.hint} className="m-0 text-[11px] text-text-muted">{t("credits.balance.observedAtHint")}</p>}
+      </div>
+      {errors.form ? <div className="text-xs text-danger" role="alert">{errors.form}</div> : null}
+      <div className="flex flex-wrap justify-end gap-1.5">
+        {recorded ? (
+          <button type="button" className={classNames(buttonClass, touchTargetClass, "me-auto")} disabled={pending} onClick={() => { void submit(null); }}>
+            {t("credits.clear")}
+          </button>
+        ) : null}
+        <button type="button" className={classNames(buttonClass, touchTargetClass)} disabled={pending} onClick={onClose}>{t("credits.cancel")}</button>
+        <button type="submit" className={classNames(buttonClass, touchTargetClass)} disabled={pending}>{pending ? t("credits.saving") : t("credits.save")}</button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * 결제 화면에서 보고 적은 잔액. 추정 잔액과 섞지 않으려고 "직접 기록" 표시와 확인 시각을 늘 함께 보인다.
+ * 기록이 없으면 0이 아니라 "기록된 잔액 없음"이다.
+ */
+function BalanceRecord({
+  balance,
+  walletName,
+  now,
+  onSave,
+  t,
+}: {
+  balance: WalletBalance;
+  walletName: string;
+  now: number;
+  onSave: (wallet: BalanceWallet, value: BalanceInput | null) => Promise<void>;
+  t: Translate;
+}) {
+  const [editing, setEditing] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const recorded = balance.recorded;
+  // 편집 칸이 닫혀 버튼이 다시 그려진 바로 그 커밋에서 초점을 돌려준다. 다음 프레임에 미루면 그 전에 커밋되지 않아 초점이 body로 빠질 때가 있었다(30163 실측 3번 중 1번).
+  const returnFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (editing || !returnFocus.current) return;
+    returnFocus.current = false;
+    toggleRef.current?.focus();
+  }, [editing]);
+  const close = () => {
+    returnFocus.current = true;
+    setEditing(false);
+  };
+  const evidence = balance.evidence === "unverified"
+    ? t("credits.evidence.unverified")
+    : balance.lastPaidUseAt !== null ? t("credits.evidence.lastPaidUse", { time: formatLocalTime(balance.lastPaidUseAt) }) : null;
+  return (
+    <div data-balance-source={balance.source} data-balance-state={recorded ? "recorded" : "unknown"}>
+      <p className="m-0 mt-0.5 text-xs text-text-muted" data-balance-evidence={balance.evidence}>
+        {t(`credits.route.${balance.wallet}`)}
+        {evidence ? <><br />{evidence}</> : null}
+      </p>
+      <div className="mt-2 flex min-w-0 items-baseline justify-between gap-2">
+        <span className="min-w-0 text-[13px] text-text-muted">
+          {t("credits.balance.label")}
+          <span className="ms-1.5 border border-border px-1 text-[11px]">{t("credits.balance.source")}</span>
+        </span>
+        {recorded ? (
+          <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-text" data-balance-amount>
+            {`$${recorded.amountUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </span>
+        ) : (
+          <span className="shrink-0 text-xs text-text-muted">{t("credits.balance.none")}</span>
+        )}
+      </div>
+      <div className="mt-1 flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        {recorded ? (
+          <time className="min-w-0 text-[11px] tabular-nums text-text-muted" dateTime={new Date(recorded.observedAt).toISOString()}>
+            {`${t("credits.balance.observed", { time: formatLocalTime(recorded.observedAt) })} · ${balanceAge(t, recorded.observedAt, now)}`}
+          </time>
+        ) : <span />}
+        {!editing ? (
+          <ActionButton ref={toggleRef} variant="neutralWeak" size="xsmall" className={touchTargetClass} onClick={() => setEditing(true)}
+            aria-label={`${walletName} ${recorded ? t("credits.balance.edit") : t("credits.balance.record")}`}>
+            {recorded ? t("credits.balance.edit") : t("credits.balance.record")}
+          </ActionButton>
+        ) : null}
+      </div>
+      {editing ? (
+        <BalanceEditor walletName={walletName} recorded={recorded} onSave={(value) => onSave(balance.wallet, value)} onClose={close} t={t} />
+      ) : null}
+    </div>
+  );
+}
+
+/** 사용량 추정이 없는 지갑(Exa·TypeSafe). 결제 화면 잔액 기록만 보인다. */
+function BalanceOnlyCard({ balance, now, onSaveBalance, t }: {
+  balance: WalletBalance & { wallet: "exa" | "typesafe" };
+  now: number;
+  onSaveBalance: (wallet: BalanceWallet, value: BalanceInput | null) => Promise<void>;
+  t: Translate;
+}) {
+  const headingId = useId();
+  const walletName = t(`credits.wallet.${balance.wallet}`);
+  return (
+    <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet={balance.wallet}>
+      <div className="flex min-w-0 items-center gap-2">
+        <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{walletName}</h3>
+        <BillingLink wallet={balance.wallet} walletName={walletName} t={t} />
+      </div>
+      <BalanceRecord balance={balance} walletName={walletName} now={now} onSave={onSaveBalance} t={t} />
+    </section>
+  );
+}
+
 /** 순수 표시부. 테스트는 이 함수에 번역 함수와 상태를 직접 넣는다. */
 export function ApiCreditsCards({
   state,
   loading,
+  now,
   onSave,
+  onSaveBalance,
   t,
 }: {
   state: PanelState<ApiCreditsSnapshot>;
   loading: boolean;
+  /** 기록 경과 시간을 잴 현재 시각. 기록 시각(observedAt)은 바꾸지 않는다. */
+  now: number;
   onSave: (value: CreditSettingInput | null) => Promise<void>;
+  onSaveBalance: (wallet: BalanceWallet, value: BalanceInput | null) => Promise<void>;
   t: Translate;
 }) {
   const data = state.data;
+  // 잔액 목록은 지금 쓰는 지갑만 담는다. Hive·Anthropic의 기존 추정·사용량 카드는 목록과 상관없이 그대로 두고, 목록에 있을 때만 잔액 기록을 붙인다.
+  // 옛 사이드카이거나 설정 경로를 못 읽었으면 잔액 칸 없이 예전 두 카드만 보인다.
+  const listed = new Map((data?.balances && !data.balancesError ? data.balances : []).map((balance) => [balance.wallet, balance]));
+  const balanceOnly = (wallet: "exa" | "typesafe") => {
+    const balance = listed.get(wallet);
+    return balance ? <BalanceOnlyCard balance={balance as WalletBalance & { wallet: typeof wallet }} now={now} onSaveBalance={onSaveBalance} t={t} /> : null;
+  };
+  const cards = data ? (
+    <>
+      <CreditWalletCard wallet={data.hive} setting={data.settings.hive} balance={listed.get("hive") ?? null} now={now} onSave={onSave} onSaveBalance={onSaveBalance} t={t} />
+      {balanceOnly("exa")}
+      {balanceOnly("typesafe")}
+      {data.anthropic ? <AnthropicPaidCard wallet={data.anthropic} balance={listed.get("anthropic") ?? null} now={now} onSaveBalance={onSaveBalance} t={t} /> : null}
+    </>
+  ) : null;
   return (
     <>
       <h2 className="resource-group-heading">{t("credits.heading")}</h2>
@@ -1263,8 +1524,10 @@ export function ApiCreditsCards({
         <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.loadFailed", { reason: state.error.message })}</div>
       ) : null}
       {data?.settingsError ? <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.settingsError")}</div> : null}
-      {data ? <CreditWalletCard wallet={data.hive} setting={data.settings.hive} onSave={onSave} t={t} /> : null}
-      {data?.anthropic ? <AnthropicPaidCard wallet={data.anthropic} t={t} /> : null}
+      {data?.balancesError ? (
+        <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{creditReason(t, data.balancesError)}</div>
+      ) : null}
+      {cards}
     </>
   );
 }
@@ -1299,7 +1562,14 @@ export function ApiCreditsView({ refreshToken }: { refreshToken: number }) {
     await load(false);
   }, [load]);
 
-  return <ApiCreditsCards state={state} loading={loading} onSave={save} t={t} />;
+  const saveBalance = useCallback(async (wallet: BalanceWallet, value: BalanceInput | null) => {
+    await saveApiCreditBalance(wallet, value);
+    await load(false);
+  }, [load]);
+
+  // 기록 경과 시간("n분 전")은 화면을 열어 둔 동안에도 흐른다.
+  const now = useNow(60_000);
+  return <ApiCreditsCards state={state} loading={loading} now={now} onSave={save} onSaveBalance={saveBalance} t={t} />;
 }
 
 function ModelRow({ model }: { model: ModelAggregate }) {

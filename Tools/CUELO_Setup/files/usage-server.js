@@ -3,8 +3,8 @@
 //   GET  /usage                        CLI 사용량 + 로컬 계정 제어/저장 리셋
 //   GET  /models                       CLI 모델 집계 (기존 fallback 유지)
 //   POST /credential/<id>/{enable,disable,reset}
-//   GET  /credits                      API 크레딧 추정(이 PC의 Hive 기록)
-//   POST /credits/settings             크레딧 총액·시작일 저장 {wallet:"hive", value|null}
+//   GET  /credits                      API 크레딧 추정(이 PC의 Hive·Anthropic 기록)과 지금 쓰는 API의 결제 화면 잔액 기록
+//   POST /credits/settings             Hive 총액·시작일 {wallet:"hive", value|null} 또는 잔액 기록 {kind:"balance", wallet, value|null}
 // 추론 discovery/config는 건드리지 않는다. 관리 초기화 장애는 이 sidecar에만 국한한다.
 // 만료 1시간 전 리셋권 자동 사용은 agent 디렉터리의 cuelo-reset-expiry.json이 {"enabled":true}일 때만 돈다.
 'use strict';
@@ -658,7 +658,12 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         }
         return { enabled: true, outcomes };
     }
-    return { enrich, setDisabled, redeem, sweepExpiring, invalidate: invalidateAll };
+    // /credits가 "그 API를 키로 쓰고 있는가"만 묻는다. 공급자 이름만 내고 자격 증명 내용은 내지 않는다.
+    async function apiKeyProviders() {
+        const list = await credentials();
+        return new Set(list.filter(account => account.credentialType === 'api_key' && !account.disabled).map(account => account.provider));
+    }
+    return { enrich, setDisabled, redeem, sweepExpiring, invalidate: invalidateAll, apiKeyProviders };
 }
 
 let localControl;
@@ -1135,6 +1140,11 @@ async function buildStatsBody() {
 // (model_usage provider hive + provider hive assistant 메시지)로 센 추정 사용액을 빼서 추정 잔액을 낸다(2026-10-26 사용자 결정).
 // Google Cloud 지갑은 Gemini가 AI Studio 프록시로 옮겨 가 Cloud Monitoring 조회가 의미 없어 뺐다(2026-10-27 사용자 결정).
 // 금액은 모두 추정이다. 단가를 모르는 모델·토큰 종류는 0이 아니라 미상(null)이고, 그때 잔액은 상한(≤)이다.
+//
+// 잔액(balances, 2026-11-03 사용자 요청 "현재쓰이는것들만"): 이 PC가 선불 크레딧으로 쓰는 API 중 지금 설정된 경로가 가리키고
+// 기간 안에 유료(키) 사용 기록이 있는 것만 낸다. 잔액을 읽는 공식 API가 지금 가진 키로는 없어서(Exa는 별도 Team Management
+// 서비스 키, TypeSafe·Hive는 콘솔뿐, Anthropic 비용 API는 admin 키) 결제 화면에서 보고 적은 값과 그 확인 시각만 저장한다.
+// 공급자에 요청을 보내지 않는다. 지금 보이지 않는 지갑의 기록과 옛 google 항목은 파일에 그대로 둔다.
 const CREDITS_FILE_NAME = 'cuelo-api-credits.json';
 const USAGE_SCAN_MS = 30_000;
 const DEFAULT_WINDOW_DAYS = 30; // 시작일을 입력하기 전에 보여 줄 기간
@@ -1192,22 +1202,87 @@ function validateCreditSetting(value, today) {
     return { totalUsd, startDate };
 }
 
+const BALANCE_WALLETS = ['hive', 'exa', 'typesafe', 'anthropic'];
+const BALANCE_MIN_OBSERVED_MS = Date.UTC(2020, 0, 1);
+const BALANCE_CLOCK_SKEW_MS = 5 * 60_000;
+
+/** 결제 화면에서 본 잔액 하나를 검사한다. 0은 확인한 잔액이다. nowMs가 있으면 미래 시각을 거절한다(저장할 때만). */
+function validateBalance(value, nowMs) {
+    if (value === null) return null;
+    if (value === undefined || typeof value !== 'object' || Array.isArray(value)) throw creditError(400, 'invalid_balance');
+    const { amountUsd, observedAt } = value;
+    if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 0 || amountUsd > MAX_CREDIT_USD) {
+        throw creditError(400, 'invalid_balance');
+    }
+    if (!Number.isSafeInteger(observedAt) || observedAt < BALANCE_MIN_OBSERVED_MS) throw creditError(400, 'invalid_observed_at');
+    if (nowMs !== undefined && observedAt > nowMs + BALANCE_CLOCK_SKEW_MS) throw creditError(400, 'observed_at_in_future');
+    return { amountUsd, observedAt };
+}
+
 /**
- * 크레딧 설정을 읽는다. 옛 파일에 남은 google 항목은 쓰지 않고 무시한다(다음 저장에서 사라진다).
+ * 크레딧 설정을 읽는다. raw는 저장할 때 바꾸지 않는 항목(옛 google, 지금 안 보이는 지갑의 잔액)을 보존하려고 함께 낸다.
  * 파일을 읽는 것 자체가 실패하면(ENOENT 제외) ioError로 알려 저장이 덮어쓰지 않게 한다.
+ * 한 항목이 깨져도 다른 항목은 읽고, 깨진 항목은 미상(null)과 settings_unreadable로 알린다.
  */
 function readCreditSettings(file) {
     let text;
     try {
         text = fs.readFileSync(file, 'utf8');
     } catch (error) {
-        return error.code === 'ENOENT' ? { hive: null } : { hive: null, error: 'settings_unreadable', ioError: true };
+        return error.code === 'ENOENT'
+            ? { hive: null, balances: {}, raw: null }
+            : { hive: null, balances: {}, raw: null, error: 'settings_unreadable', ioError: true };
     }
     let raw = null;
     try { raw = JSON.parse(text); } catch { /* 문법이 깨진 파일은 되살릴 내용이 없다 */ }
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 1) return { hive: null, error: 'settings_unreadable' };
-    if ((raw.hive ?? null) === null) return { hive: null };
-    try { return { hive: validateCreditSetting(raw.hive) }; } catch { return { hive: null, error: 'settings_unreadable' }; }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 1) {
+        return { hive: null, balances: {}, raw: null, error: 'settings_unreadable' };
+    }
+    let error;
+    let hive = null;
+    try { hive = validateCreditSetting(raw.hive ?? null); } catch { error = 'settings_unreadable'; }
+    const balances = {};
+    const stored = raw.balances ?? {};
+    if (typeof stored !== 'object' || Array.isArray(stored)) error = 'settings_unreadable';
+    else {
+        for (const wallet of BALANCE_WALLETS) {
+            if (!Object.hasOwn(stored, wallet)) continue;
+            try { balances[wallet] = validateBalance(stored[wallet]); } catch { error = 'settings_unreadable'; }
+        }
+    }
+    return { hive, balances, raw, ...(error ? { error } : {}) };
+}
+
+/**
+ * 지금 설정된 경로. `<agentDir>/config.yml`을 core와 같은 해석기(Bun.YAML)로 읽어 최상위 modelRoles를 본다.
+ * 파일이 없거나, YAML로 읽히지 않거나, modelRoles가 매핑이 아니거나, Bun이 아닌 런타임(node 대체 실행)이면 지어내지 않고
+ * null(읽지 못함)이다. 설정이 없을 때의 core 기본값과 프로젝트별 설정 덮어쓰기는 보지 않는다(전역 설정 기준).
+ * Anthropic API 대체는 core가 쓰는 키 파일이 있는지만 본다(내용은 읽지 않는다).
+ */
+function readCreditRoutes(dir) {
+    const yaml = globalThis.Bun?.YAML;
+    if (typeof yaml?.parse !== 'function') return null;
+    let config;
+    try {
+        config = yaml.parse(fs.readFileSync(path.join(dir, 'config.yml'), 'utf8'));
+    } catch {
+        return null;
+    }
+    const roles = config?.modelRoles;
+    if (!roles || typeof roles !== 'object' || Array.isArray(roles)) return null;
+    let fallbackKey = false;
+    try {
+        fallbackKey = fs.statSync(path.join(dir, 'anthropic-fallback-api-key')).size > 0;
+    } catch (error) {
+        if (error.code !== 'ENOENT') return null;
+    }
+    const values = Object.values(roles).filter(value => typeof value === 'string');
+    return {
+        hive: values.some(value => value.startsWith('hive/')),
+        exa: roles.web === 'web/exa',
+        typesafe: typeof roles.judge === 'string' && roles.judge.startsWith('typesafe/'),
+        anthropic: fallbackKey,
+    };
 }
 
 // PC-local 파일. 0600으로 새 임시 파일을 만든 뒤 rename한다(쓰다 끊겨도 원본이 반쯤 바뀌지 않는다).
@@ -1362,7 +1437,8 @@ function anthropicUsage(events, sinceMs) {
 
 // 세션 기록에서 읽는 provider. Anthropic은 core가 요청마다 남긴 usage.credentialKind("oauth"|"api-key")로만
 // 유료 API를 가른다(2026-10-29 Main·CoreRemaining 합의). 이 값이 없는 기록은 어느 자격으로 나갔는지 모르는 것이다.
-const USAGE_PROVIDERS = new Set(['hive', 'anthropic']);
+// typesafe는 직통 키 판정(Jev)이라 기록 자체가 유료 사용이다. Exa는 web_search 결과(details.response.provider)로만 남는다.
+const USAGE_PROVIDERS = new Set(['hive', 'anthropic', 'typesafe']);
 const CREDENTIAL_KINDS = new Set(['oauth', 'api-key']);
 const COST_CATEGORIES = ['input', 'output', 'cacheRead', 'cacheWrite'];
 
@@ -1383,6 +1459,10 @@ function usageEvent(line) {
         usage = entry.message.usage;
         model = entry.message.model;
         purpose = 'session';
+    } else if (entry?.type === 'message' && entry.message?.role === 'toolResult' && entry.message.toolName === 'web_search'
+        && entry.message.details?.response?.provider === 'exa') {
+        const ts = Date.parse(entry.timestamp);
+        return Number.isFinite(ts) ? { provider: 'exa', ts, model: 'web_search', purpose: 'web_search', input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : null;
     } else {
         return null;
     }
@@ -1409,7 +1489,7 @@ function recordedCost(cost, tokens) {
     return Object.fromEntries(COST_CATEGORIES.map(key => [key, known(source[key], tokens[key])]));
 }
 
-const USAGE_MARKERS = [...USAGE_PROVIDERS].map(provider => Buffer.from(`"${provider}"`));
+const USAGE_MARKERS = [...USAGE_PROVIDERS, 'exa'].map(provider => Buffer.from(`"${provider}"`));
 
 /**
  * 세션 jsonl 증분 스캐너. 파일마다 읽은 바이트 위치와 뽑은 기록을 기억해, 다음 스캔은 늘어난 부분만 읽는다.
@@ -1523,8 +1603,10 @@ function createUsageScanner() {
 /**
  * /credits 서비스. 의존성은 주입한다(테스트는 임시 agent 디렉터리를 쓴다).
  *   agentDir(): agent 디렉터리. settingsFile(): 설정 파일 경로.
+ *   apiKeyProviders(): API 키 자격 증명이 있는 공급자 Set(관리 기능을 못 쓰면 null). Exa는 키가 없어도 무료 MCP로 검색되므로
+ *   검색 기록만으로는 유료 사용이라 할 수 없어 이 값을 함께 본다.
  */
-function createCreditsService({ agentDir, settingsFile, now = Date.now }) {
+function createCreditsService({ agentDir, settingsFile, now = Date.now, apiKeyProviders = async () => null }) {
     const scanner = createUsageScanner();
     let scanCache = null; // { at, events, sinceMs, error }
     let scanInflight = null;
@@ -1589,6 +1671,35 @@ function createCreditsService({ agentDir, settingsFile, now = Date.now }) {
         };
     }
 
+    /**
+     * 잔액 칸에 보일 지갑. 설정된 경로가 가리키고(readCreditRoutes) 사용 기간(DEFAULT_WINDOW_DAYS) 안에 유료 사용 기록이 있는 것만 낸다.
+     * 경로는 있는데 기록을 다 읽지 못해 판단할 수 없으면 숨기지도 지어내지도 않고 evidence 'unverified'로 낸다.
+     */
+    async function balanceWallets(stored, cached, at) {
+        const routes = readCreditRoutes(agentDir());
+        if (!routes) return { balances: [], balancesError: 'routes_unreadable' };
+        const sinceMs = dayStartMs(addDays(localDay(at), -DEFAULT_WINDOW_DAYS));
+        const keys = routes.exa ? await apiKeyProviders().catch(() => null) : null;
+        const complete = Boolean(cached) && !cached.error;
+        const balances = [];
+        for (const wallet of BALANCE_WALLETS) {
+            if (!routes[wallet]) continue;
+            let lastPaidUseAt = null;
+            for (const event of cached?.events ?? []) {
+                if (event.provider !== wallet || event.ts < sinceMs) continue;
+                // Anthropic은 구독(OAuth) 요청이 대부분이다. 토큰이 기록된 API 키 요청만 유료 사용이다.
+                if (wallet === 'anthropic' && (event.credentialKind !== 'api-key'
+                    || event.input + event.output + event.cacheRead + event.cacheWrite === 0)) continue;
+                lastPaidUseAt = Math.max(lastPaidUseAt ?? event.ts, event.ts);
+            }
+            let evidence = lastPaidUseAt !== null ? 'recent-paid-use' : complete ? null : 'unverified';
+            if (wallet === 'exa' && evidence) evidence = keys === null ? 'unverified' : keys.has('exa') ? evidence : null;
+            if (!evidence) continue;
+            balances.push({ wallet, source: 'dashboard-record', evidence, lastPaidUseAt, recorded: stored[wallet] ?? null });
+        }
+        return { balances, balancesError: null };
+    }
+
     async function snapshot({ refresh = false } = {}) {
         const settings = readCreditSettings(settingsFile());
         const at = now();
@@ -1601,22 +1712,35 @@ function createCreditsService({ agentDir, settingsFile, now = Date.now }) {
         };
         const hive = build(() => hiveWallet(settings.hive, hiveSince, cached), () => failedWallet(settings.hive, hiveSince, at));
         const anthropic = build(() => anthropicWallet(anthropicSince, cached), () => failedAnthropicWallet(anthropicSince, at));
+        const wallets = await balanceWallets(settings.balances, cached, at).catch(() => ({ balances: [], balancesError: 'internal' }));
         return { generatedAt: now(), settings: { hive: settings.hive },
-            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, hive, anthropic };
+            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, hive, anthropic, ...wallets };
     }
 
+    // 읽기·계산·쓰기를 모두 이 줄 안에서 한다. 서로 다른 지갑을 동시에 저장해도 앞 저장이 쓴 파일을 다시 읽고 고친다.
     let writing = Promise.resolve();
     function saveSettings(body) {
         const run = writing.then(() => {
-            if (body === null || typeof body !== 'object' || body.wallet !== 'hive') {
-                throw creditError(400, 'invalid_wallet');
-            }
-            const value = validateCreditSetting(body.value, localDay(now()));
+            if (body === null || typeof body !== 'object') throw creditError(400, 'invalid_wallet');
+            const balance = body.kind === 'balance';
+            if (balance ? !BALANCE_WALLETS.includes(body.wallet) : body.wallet !== 'hive') throw creditError(400, 'invalid_wallet');
+            const value = balance ? validateBalance(body.value, now()) : validateCreditSetting(body.value, localDay(now()));
             const file = settingsFile();
             const current = readCreditSettings(file);
             if (current.ioError) throw creditError(503, 'settings_unreadable');
-            writePrivateJson(file, { version: 1, hive: value });
-            return { ok: true, settings: { hive: value } };
+            // 바꾸는 항목 말고는 파일에 있던 그대로 둔다(옛 google, 다른 지갑, 지금 안 보이는 지갑).
+            const next = { ...(current.raw ?? {}), version: 1 };
+            if (!balance) {
+                next.hive = value;
+                writePrivateJson(file, next);
+                return { ok: true, settings: { hive: value } };
+            }
+            const stored = next.balances !== null && typeof next.balances === 'object' && !Array.isArray(next.balances) ? { ...next.balances } : {};
+            if (value === null) delete stored[body.wallet];
+            else stored[body.wallet] = value;
+            next.balances = stored;
+            writePrivateJson(file, next);
+            return { ok: true, balance: { wallet: body.wallet, recorded: value } };
         });
         writing = run.catch(() => {});
         return run;
@@ -1629,6 +1753,7 @@ const defaultAgentDir = () => localControl?.agentDir || process.env.PI_CODING_AG
 const credits = createCreditsService({
     agentDir: defaultAgentDir,
     settingsFile: () => process.env.CUELO_API_CREDITS_FILE || path.join(defaultAgentDir(), CREDITS_FILE_NAME),
+    apiKeyProviders: () => facade.apiKeyProviders(),
 });
 
 function corsHeaders(extra) {

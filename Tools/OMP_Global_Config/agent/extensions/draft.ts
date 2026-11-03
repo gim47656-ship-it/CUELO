@@ -125,8 +125,9 @@ function prepare(format: Format, text: string, title: string): Prepared {
   }
 }
 
+type DraftResult = HelperResult & { savedPath?: string };
 export async function draftDocument(input: DraftInput, ctx: ExtensionContext, signal: AbortSignal,
-  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<HelperResult> {
+  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<DraftResult> {
   if (!input.instruction?.trim() || !input.output?.trim()) return { text: "model: none\ninstruction과 output을 지정해 주세요.", isError: false };
   const overwrite = input.overwrite === true;
   let notes: string[] = [];
@@ -187,7 +188,7 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       `검토: 초안입니다. 사용 전에 파일을 직접 열어 사실·수치·형식을 확인하세요.${chunks.length ? ` 참고 자료 내용은 ${used}의 제공자로 전송됐습니다.` : ""}`,
       ...warned(),
       ...skipped(),
-    ].join("\n\n"), isError: false };
+    ].join("\n\n"), isError: false, savedPath: target.absolute };
   } catch (error) {
     return { text: ["model: none", `draft 실패: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
   }
@@ -205,7 +206,8 @@ export default function draft(pi: ExtensionAPI): void {
       overwrite: z.boolean().optional().describe("Overwrite an existing file (default false)"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
-      return toolResult(await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal));
+      const result = await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal);
+      return { ...toolResult(result), ...(result.savedPath ? { details: { savedPath: result.savedPath } } : {}) };
     },
   });
 }

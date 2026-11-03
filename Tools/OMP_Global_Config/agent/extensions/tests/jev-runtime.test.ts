@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
+import { AuthStorage, createAgentSession, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 
 import { createTaskGuardState, getTaskGuardUsage, reserveTaskCall, settleTaskCall } from "../command-guard/task-guard";
 import { createJevRuntime, type JevRuntimeDeps } from "../jev-runtime";
@@ -57,6 +59,8 @@ interface HarnessOptions {
   sessionEntries?: unknown[];
   judgeGate?: Promise<void>;
   ledgerPath?: string;
+  /** ctx.sessionManager.getSessionFile() 값. child transcript는 core 규칙대로 이 파일 옆 artifacts 폴더에서 읽힌다. */
+  sessionFile?: string;
   memoryApplicationTimeoutMs?: number;
   /** ctx.isIdle() 값. 기본은 실행 중(false)이다. */
   idle?: boolean;
@@ -172,7 +176,7 @@ function createHarness(options: HarnessOptions = {}) {
     isIdle: () => options.idle ?? false,
     sessionManager: {
       getSessionId: () => options.session?.current ?? "session-1",
-      getSessionFile: () => "/fixture/session-1.jsonl",
+      getSessionFile: () => options.sessionFile ?? "/fixture/session-1.jsonl",
       getBranch: () => options.sessionEntries ?? [],
     },
     getAsyncJobSnapshot: (request?: { jobIds?: readonly string[] }) => {
@@ -3074,8 +3078,182 @@ describe("jev-runtime pre-review", () => {
     const content = String(harness.sent.at(-1)?.message.content);
     expect(content).not.toContain("private");
     expect(content).not.toContain("criterion");
-    expect(content.split("\n")).toHaveLength(1);
+    // 구조 수치는 한 줄이고, 그 밖의 줄은 child별 skill 읽기 관측 한 줄뿐이다(원문 발췌 없음).
+    expect(content.split("\n").filter((line) => !line.startsWith("[skill-read] "))).toHaveLength(1);
     expect(reviewSources(harness)).toBe("job-Long request=session:session-1/message:301 brief=session:session-1/tool-call:spawn-Long/task conversation=/fixture/session-1.jsonl");
+  });
+
+  /**
+   * 실제 core session이 실제 read 도구로 skill://을 읽은 transcript. 모델만 고정 stream이며 도구 실행·기록은 SDK 그대로다.
+   * skills에 없는 이름을 읽으면 실제 실패 결과가 남는다.
+   */
+  async function realChildTranscript(root: string, skillNames: string[], paths: string[]): Promise<string> {
+    const work = join(root, "work");
+    const agentDir = join(root, "agent");
+    mkdirSync(work, { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+    const skills = skillNames.map((name) => {
+      const baseDir = join(root, "skills", name);
+      mkdirSync(join(baseDir, "references"), { recursive: true });
+      writeFileSync(join(baseDir, "SKILL.md"), `---\nname: ${name}\ndescription: fixture ${name}\n---\n# ${name}\nfirst\nsecond\n`);
+      writeFileSync(join(baseDir, "references", "x.md"), "# reference\n");
+      return { name, description: `fixture ${name}`, filePath: join(baseDir, "SKILL.md"), baseDir, source: "fixture" };
+    });
+    const auth = await AuthStorage.create(join(agentDir, "agent.db"));
+    const registry = new ModelRegistry(auth, join(agentDir, "models.yml"));
+    registry.registerProvider("fakechild", {
+      baseUrl: "http://127.0.0.1:9/v1", apiKey: "local", api: "openai-completions",
+      models: [{ id: "child", name: "child", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
+    });
+    const model = registry.find("fakechild", "child")!;
+    const sessionManager = SessionManager.create(work, join(root, "sessions"));
+    const { session } = await createAgentSession({
+      cwd: work, agentDir, model, modelRegistry: registry, sessionManager,
+      settings: Settings.isolated({ tools: { approvalMode: "yolo" } } as never),
+      disableExtensionDiscovery: true, enableMCP: false, enableLsp: false, skipPythonPreflight: true,
+      skills: skills as never, rules: [], contextFiles: [], toolNames: ["read"],
+    });
+    let turn = 0;
+    session.agent.streamFn = (() => {
+      const stream = createAssistantMessageEventStream();
+      const first = turn++ === 0;
+      const content = first
+        ? paths.map((path, index) => ({ type: "toolCall" as const, id: `read-${index}`, name: "read", arguments: { path } }))
+        : [{ type: "text" as const, text: "done" }];
+      const message = {
+        role: "assistant" as const, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        content, stopReason: first ? "toolUse" as const : "stop" as const,
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: message });
+        if (first) content.forEach((toolCall, contentIndex) => stream.push({ type: "toolcall_end", contentIndex, toolCall: toolCall as never, partial: message }));
+        stream.push({ type: "done", reason: first ? "toolUse" : "stop", message });
+        stream.end();
+      });
+      return stream;
+    }) as never;
+    try {
+      await session.prompt("read the skills");
+      await sessionManager.flush();
+      return sessionManager.getSessionFile()!;
+    } finally {
+      await session.dispose();
+      await sessionManager.close();
+      auth.close();
+    }
+  }
+
+  const skillAnswers = {
+    workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+    hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
+    requiredSkillDeliverable: { type: "choice", choice: "VISUAL", probabilities: { VISUAL: 1 }, confidence: 1 },
+    requiredSkillSet_web_ui: { type: "noul", noul: 1 },
+    requiredSkillModifier_ko_copy: { type: "noul", noul: 1 },
+  };
+  const uiTask = `${GUARDED_TASK}\nSKILL_EXCLUSIONS: {"kill-ai-slop":"이 조각은 시각 스캔 없음; 다음 조각에서 확인"}\n# Change\nskill://seed-design을 읽고 skill://hallmark 또는 skill://ui-ux-pro-max를 적용한다.`;
+  const skillLines = (harness: { sent: SentMessage[] }) =>
+    harness.sent.flatMap((entry) => String(entry.message.content).split("\n").filter((line) => line.startsWith("[skill-read] ")));
+
+  test("real child transcript: own successful reads with times and scope, failed/parent/sibling reads not attributed, wait after async adds nothing", async () => {
+    const root = fixtureDir("skill-read-");
+    const parent = join(root, "main.jsonl");
+    mkdirSync(join(root, "main"));
+    const child = await realChildTranscript(join(root, "child"), ["seed-design", "hallmark", "humanizer"],
+      ["skill://seed-design", "skill://hallmark:1-2", "skill://humanizer/references/x.md", "skill://frontend-design", "skill://"]);
+    copyFileSync(child, join(root, "main", "agent-Ui.jsonl"));
+    // 형제 child와 Main 자신이 읽은 스킬은 이 child 근거가 아니다.
+    const other = await realChildTranscript(join(root, "other"), ["ui-ux-pro-max", "frontend-design"], ["skill://ui-ux-pro-max", "skill://frontend-design"]);
+    copyFileSync(other, join(root, "main", "agent-Other.jsonl"));
+    copyFileSync(other, parent);
+    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers, asyncJobs: [{ id: "job-Ui", agentId: "agent-Ui", startTime: 100 }] });
+    await beginReviewTask(harness, "Ui", uiTask);
+    await finishReviewSpawn(harness, "Ui", uiTask);
+    const dispatch = readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((record) => record.type === "dispatch");
+    expect(dispatch.requiredSkills).toMatchObject({ state: "selected", sets: ["web-ui"], modifiers: ["ko-copy"], excluded: [{ skill: "kill-ai-slop" }] });
+    expect(dispatch.requiredSkills.skills).toContain("humanizer");
+
+    await harness.emit("message_start", asyncResult("job-Ui"));
+    const [line] = skillLines(harness);
+    expect(line).toMatch(/seed-design\[전체\]@\d{4}-\d\d-\d\dT[\d:.]+Z/);
+    expect(line).toMatch(/hallmark\[범위 :1-2\]@\d{4}-/);
+    expect(line).toMatch(/humanizer\[참고문서 references\/x\.md\]@\d{4}-/);
+    expect(line).toContain("실패한 skill 읽기 1건 제외");
+    expect(line).not.toContain("ui-ux-pro-max[");
+    expect(line).not.toContain("frontend-design[");
+    expect(line).toContain("전체 읽기 관측 seed-design;");
+    expect(line).toContain("부분 읽기만 hallmark, humanizer");
+    expect(line).toContain("읽기 관측 없음 frontend-design, ui-ux-pro-max");
+    expect(line).toContain("브리프 제외 신고 kill-ai-slop(이유 있음)");
+    expect(line).toContain("transcript=agent-Ui.jsonl");
+    expect(line).not.toContain(root);
+
+    // 같은 child의 완료를 wait가 다시 보여 줘도 identity가 섞이거나 두 번 실리지 않는다.
+    await harness.emit("tool_result", {
+      toolName: "wait", toolCallId: "settle", input: {}, isError: false, content: [],
+      details: { jobs: [{ id: "job-Ui", jobId: "job-Ui", type: "task", status: "completed", label: "Maker" }] },
+    });
+    expect(skillLines(harness)).toHaveLength(1);
+  });
+
+  test("wait-first completion gives the same evidence; missing or older-than-run transcript is unavailable, not zero reads", async () => {
+    const root = fixtureDir("skill-read-wait-");
+    const parent = join(root, "main.jsonl");
+    mkdirSync(join(root, "main"));
+    const child = await realChildTranscript(join(root, "child"), ["seed-design"], ["skill://seed-design"]);
+    copyFileSync(child, join(root, "main", "agent-Ui.jsonl"));
+    // 이 실행보다 먼저 끝난 같은 이름의 옛 transcript는 이번 attempt 근거가 아니다.
+    copyFileSync(child, join(root, "main", "agent-Old.jsonl"));
+    const later = Date.now() + 60_000;
+    const names = ["Ui", "Gone", "Old"];
+    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers, asyncJobs: names.map((name) => ({ id: `job-${name}`, agentId: `agent-${name}`, startTime: name === "Old" ? later : 100 })) });
+    for (const [index, name] of names.entries()) {
+      const task = uiTask.replace("OWNED_PATHS: a.ts,b.ts", `OWNED_PATHS: f${index}.ts`);
+      await beginReviewTask(harness, name, task);
+      await finishReviewSpawn(harness, name, task);
+    }
+    await harness.emit("tool_result", {
+      toolName: "wait", toolCallId: "settle", input: {}, isError: false, content: [],
+      details: { jobs: names.map((name) => ({ id: `job-${name}`, jobId: `job-${name}`, type: "task", status: "completed", label: "Maker" })) },
+    });
+    await harness.emit("message_start", asyncResult("job-Ui"));
+    const lines = skillLines(harness);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^\[skill-read\] Ui \S+#a1: 이 attempt\(1970-01-01T00:00:00\.100Z 이후\) 관측 읽기 seed-design\[전체\]@/);
+    expect(lines[1]).toStartWith("[skill-read] Gone ");
+    expect(lines[1]).toContain("읽기 증거 없음(미관측: transcript 읽기 실패: ENOENT; transcript=agent-Gone.jsonl)");
+    expect(lines[2]).toStartWith("[skill-read] Old ");
+    expect(lines[2]).toContain("읽기 증거 없음(미관측: transcript에 이 attempt 시작 뒤 기록이 없음");
+    for (const line of lines.slice(1)) expect(line).not.toContain("seed-design[");
+  });
+
+  test("inline task result (no async job) carries the same child's observed reads once, redelivery adds nothing", async () => {
+    const root = fixtureDir("skill-read-inline-");
+    const parent = join(root, "main.jsonl");
+    mkdirSync(join(root, "main"));
+    const child = await realChildTranscript(join(root, "child"), ["seed-design"], ["skill://seed-design"]);
+    copyFileSync(child, join(root, "main", "agent-Ui.jsonl"));
+    const other = await realChildTranscript(join(root, "other"), ["hallmark"], ["skill://hallmark"]);
+    copyFileSync(other, parent);
+    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers });
+    await beginReviewTask(harness, "Ui", uiTask);
+    const receipt = {
+      ...taskCall("spawn-Ui", uiTask, { name: "Ui", model: "test/local:auto" }),
+      type: "tool_result", isError: false, content: [{ type: "text", text: "inline done" }],
+      details: { projectAgentsDir: null, totalDurationMs: 5_000, results: [{
+        index: 0, id: "agent-Ui", agent: "maker", agentSource: "bundled", task: "", exitCode: 0,
+        output: JSON.stringify({ revision: "r1", validation: {}, unresolved: [] }), stderr: "", truncated: false, durationMs: 5_000, tokens: 0, requests: 1,
+      }] },
+    };
+    await harness.emit("tool_result", receipt);
+    await harness.emit("tool_result", receipt);
+    const lines = skillLines(harness);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith("[skill-read] Ui ");
+    expect(lines[0]).toMatch(/seed-design\[전체\]@\d{4}-\d\d-\d\dT[\d:.]+Z/);
+    expect(lines[0]).toContain("transcript=agent-Ui.jsonl");
+    expect(lines[0]).not.toContain("hallmark[");
+    expect(lines[0]).not.toContain(root);
   });
 });
 

@@ -456,14 +456,14 @@ function creditSnapshot({ hiveSetting = null, hiveExtra = {} } = {}) {
 
 function renderCredits(data) {
   return renderToStaticMarkup(createElement(ApiCreditsCards, {
-    state: { status: "fresh", data, error: null }, loading: false, onSave: async () => {}, t: tKo,
+    state: { status: "fresh", data, error: null }, loading: false, now: data.generatedAt, onSave: async () => {}, onSaveBalance: async () => {}, t: tKo,
   }));
 }
 
 test("API 크레딧은 Hive 카드 하나에 캐릭터 얼굴·범위·추정 잔액을 보여 주고 Google Cloud 칸은 없다", () => {
   const html = renderCredits(creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } }));
   assert.match(html, /API 크레딧/);
-  assert.match(html, /추정치입니다\. 청구서 금액이 아닙니다\./);
+  assert.match(html, /청구서 금액이 아닙니다\./);
   assert.equal(html.match(/<section[^>]*data-credit-wallet=/g)?.length, 1);
   const hive = html.match(/<section[^>]*data-credit-wallet="hive"[\s\S]*?<\/section>/)?.[0];
   assert.ok(hive);
@@ -503,7 +503,7 @@ test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나�
   }));
   assert.match(failed, /사용량을 읽지 못했습니다: 세션 기록을 읽지 못했습니다/);
   assert.doesNotMatch(failed, /role="progressbar"/, "잔액을 모르면 0% 막대를 그리지 않는다");
-  assert.doesNotMatch(failed, /추정 잔액/);
+  assert.doesNotMatch(cardOf(failed, "hive"), /추정 잔액/);
 });
 
 function anthropicWallet(extra = {}) {
@@ -553,6 +553,62 @@ test("두 크레딧 카드는 추정과 따로 각 공급자 결제 화면으로
     assert.match(attrs, /rel="noopener noreferrer"/);
   }
   assert.match(anthropic, /aria-label="Anthropic API 결제 화면에서 실제 잔액 보기\(새 탭\)"/);
+});
+
+const GENERATED_AT = new Date(2026, 10, 3, 18, 0).getTime();
+const walletBalance = (wallet, recorded, evidence = "recent-paid-use") =>
+  ({ wallet, source: "dashboard-record", evidence, lastPaidUseAt: evidence === "unverified" ? null : GENERATED_AT - 600_000, recorded });
+const cardOf = (html, wallet) => html.match(new RegExp(`<section[^>]*data-credit-wallet="${wallet}"[\\s\\S]*?</section>`))?.[0];
+
+test("잔액 목록이 오면 지금 쓰는 지갑만 그 순서로 보이고 기록한 잔액·0·기록 없음·추정이 서로 다르게 보인다", () => {
+  const html = renderCredits({
+    ...creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } }), generatedAt: GENERATED_AT, anthropic: anthropicWallet(),
+    balances: [
+      walletBalance("hive", { amountUsd: 40, observedAt: GENERATED_AT - 2 * 3_600_000 }),
+      walletBalance("exa", { amountUsd: 0, observedAt: GENERATED_AT - 5 * 60_000 }),
+      walletBalance("typesafe", null, "unverified"),
+      walletBalance("anthropic", { amountUsd: 1234.5, observedAt: GENERATED_AT - 3 * 86_400_000 }),
+    ],
+    balancesError: null,
+  });
+  assert.deepEqual([...html.matchAll(/<section[^>]*data-credit-wallet="([^"]+)"/g)].map((match) => match[1]), ["hive", "exa", "typesafe", "anthropic"]);
+
+  const hive = cardOf(html, "hive");
+  assert.match(hive, /data-balance-state="recorded"[\s\S]*결제 화면 잔액[\s\S]*직접 기록[\s\S]*\$40\.00[\s\S]*2026-11-03 16:00 확인 · 2시간 전/);
+  assert.match(hive, /추정 잔액[\s\S]*\$22\.39/, "the estimate stays its own labelled row next to the recorded balance");
+  assert.match(hive, /모델 역할\(기억·skim 등\)에 배정됨/);
+
+  const exa = cardOf(html, "exa");
+  assert.match(exa, /data-balance-state="recorded"[\s\S]*\$0\.00[\s\S]*5분 전/, "a checked zero is a balance, not a missing one");
+  assert.match(exa, /href="https:\/\/dashboard\.exa\.ai\/billing"/);
+  assert.match(exa, />잔액 변경</);
+  assert.doesNotMatch(exa, /추정/);
+
+  const typesafe = cardOf(html, "typesafe");
+  assert.match(typesafe, /data-balance-state="unknown"[\s\S]*기록된 잔액 없음/);
+  assert.doesNotMatch(typesafe, /\$0\.00|<time/, "an unrecorded balance never shows as zero");
+  assert.match(typesafe, /최근 유료 사용을 확인하지 못했습니다/);
+  assert.match(typesafe, />잔액 기록</);
+  assert.match(typesafe, /href="https:\/\/console\.typesafe\.ai\/billing"/);
+
+  const anthropic = cardOf(html, "anthropic");
+  assert.match(anthropic, /구독 주간 한도를 다 쓰면 쓰는 API 키 대체 경로/);
+  assert.match(anthropic, /\$1,234\.50[\s\S]*3일 전/);
+  assert.match(anthropic, /구독\(OAuth\) 요청과 토큰 없는 실패는 제외/, "the paid-usage card stays alongside the recorded balance");
+});
+
+test("지금 쓰지 않는 Exa·TypeSafe는 카드가 없고 Hive·Anthropic 기존 카드는 잔액 칸 없이 남는다; 설정을 못 읽으면 오류를 알린다", () => {
+  const base = { ...creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } }), generatedAt: GENERATED_AT, anthropic: anthropicWallet() };
+  const exaOnly = renderCredits({ ...base, balances: [walletBalance("exa", null)], balancesError: null });
+  assert.deepEqual([...exaOnly.matchAll(/<section[^>]*data-credit-wallet="([^"]+)"/g)].map((match) => match[1]), ["hive", "exa", "anthropic"]);
+  assert.doesNotMatch(cardOf(exaOnly, "hive"), /data-balance-state/);
+  assert.match(cardOf(exaOnly, "hive"), /추정 잔액[\s\S]*\$22\.39/, "the saved Hive total keeps its estimate even when Hive is not in the balance list");
+  assert.doesNotMatch(cardOf(exaOnly, "anthropic"), /data-balance-state/);
+
+  const unreadable = renderCredits({ ...base, balances: [], balancesError: "routes_unreadable" });
+  assert.match(unreadable, /role="alert">설정 파일을 읽지 못해 사용 중인 API를 확인할 수 없습니다</);
+  assert.deepEqual([...unreadable.matchAll(/<section[^>]*data-credit-wallet="([^"]+)"/g)].map((match) => match[1]), ["hive", "anthropic"]);
+  assert.doesNotMatch(unreadable, /data-balance-state/);
 });
 
 test("Anthropic API 카드는 기록 없음·요청 없음·조회 실패를 서로 다르게 보인다", () => {

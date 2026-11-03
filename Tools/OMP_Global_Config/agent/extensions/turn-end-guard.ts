@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { defaultLoadCore, resolveSessionJudge } from "./lib/native-judge";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
+import { createTurnDocuments } from "./lib/turn-documents";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
 // 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, blocked·승인 경계는 진행을 강제하지 않는다.
@@ -275,6 +276,8 @@ export function createTurnEndGuard(
   let sources: UserSource[] = [];
   let classifiedAnswersThisInput = false;
   let classifiedSoloThisInput = false;
+  let shuttingDown = false;
+  const documents = createTurnDocuments();
   const invalidate = () => {
     generation += 1;
     pendingJudge?.abort();
@@ -284,6 +287,8 @@ export function createTurnEndGuard(
   onSessionLifecycle(pi, {
     start: (ctx) => {
       invalidate();
+      documents.reset();
+      shuttingDown = false;
       classifiedThisInput = false;
       nudgedThisInput = false;
       classifiedSoloThisInput = false;
@@ -300,6 +305,8 @@ export function createTurnEndGuard(
   });
   pi.on("session_shutdown", () => {
     invalidate();
+    documents.reset();
+    shuttingDown = true;
     todos = [];
     classifiedAnswersThisInput = false;
     classifiedSoloThisInput = false;
@@ -307,8 +314,11 @@ export function createTurnEndGuard(
     inputTextAwaitingMessage = undefined;
     sources = [];
   });
-  pi.on("input", (event) => {
+  pi.on("input", (event, ctx) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
+    shuttingDown = false;
+    // A genuine in-run input/steer is still the same work; only confirmed idle input starts fresh evidence.
+    if (ctx.isIdle?.() === true) documents.reset();
     invalidate();
     nudgedThisInput = false;
     classifiedAnswersThisInput = false;
@@ -337,7 +347,9 @@ export function createTurnEndGuard(
       sources.push({ text, questions });
     }
   });
-  pi.on("tool_result", (event) => {
+  pi.on("tool_result", (event, ctx) => {
+    if (shuttingDown) return;
+    documents.observe(event, ctx.cwd);
     if (event.toolName !== "todo" || event.isError) return;
     const snapshot = readTodoSnapshot(event.details);
     if (snapshot) {
@@ -347,7 +359,7 @@ export function createTurnEndGuard(
     }
   });
   pi.on("agent_end", async (event, ctx) => {
-    if (event.willContinue || nudgedThisInput || pendingJudge) return;
+    if (shuttingDown || event.willContinue || nudgedThisInput || pendingJudge) return;
     // 사용자 정지·업데이트/재시작 interrupt 가 끊은 턴이다. 여기서 이어 가게 하면 drain 뒤 옛 서버에서 도구가 다시 돈다.
     const lastAssistant = [...event.messages].reverse().find((message) => (message as Message)?.role === "assistant") as
       (Message & { stopReason?: string }) | undefined;
@@ -405,7 +417,8 @@ export function createTurnEndGuard(
         todoNudge = true;
       }
     }
-    if (!todoNudge && !soloNudge && unanswered.length === 0) return;
+    const documentNudge = documents.note(ctx.cwd);
+    if (!todoNudge && !soloNudge && unanswered.length === 0 && !documentNudge) return;
     nudgedThisInput = true;
     const questionNudge = unanswered.length
       ? `사용자 중간 질문 ${unanswered.length}건에 아직 답하지 않았다: ${unanswered.join(", ")}. 본문으로 먼저 답하고 남은 작업을 이어라.`
@@ -414,7 +427,7 @@ export function createTurnEndGuard(
       ? `${NUDGE_TEXT} 이 안내와 JEV 분류는 사용자 승인이 아니며 권한을 추가하지 않는다. 기존 사용자 직접 지시로 허용된 작업만 수행하고, 공개·push·배포·삭제·결제·계정/권한 변경·provider 안전 확인은 필요한 실제 사용자 승인을 받기 전 실행하지 마라.`
       : soloNudge ? SOLO_NUDGE_TEXT : "";
     pi.sendMessage(
-      { customType: "turn-end-guard", content: [questionNudge, todoText].filter(Boolean).join(" "), display: false, attribution: "agent" },
+      { customType: "turn-end-guard", content: [questionNudge, todoText, documentNudge].filter(Boolean).join(" "), display: false, attribution: "agent" },
       { deliverAs: "aside" },
     );
   });

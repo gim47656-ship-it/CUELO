@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import turnEndGuard, { createTurnEndGuard } from "../turn-end-guard";
+import { draftDocument } from "../draft";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => void | Promise<void>;
 
@@ -8,11 +12,12 @@ function harness(
   classify?: Parameters<typeof createTurnEndGuard>[0],
   classifyAnswers?: NonNullable<Parameters<typeof createTurnEndGuard>[1]>,
   classifySolo?: NonNullable<Parameters<typeof createTurnEndGuard>[2]>,
+  cwd?: string,
 ) {
   const handlers: Record<string, Handler[]> = {};
   const sent: unknown[] = [];
   const deliveries: unknown[] = [];
-  const ctx = { sessionManager: { getBranch: () => branch, getSessionId: () => "main-session" } };
+  const ctx = { cwd, isIdle: () => true, sessionManager: { getBranch: () => branch, getSessionId: () => "main-session" } };
   createTurnEndGuard(classify, classifyAnswers, classifySolo ?? (async (summary, _excerpt, context, signal) => ({
     answered: summary && classifyAnswers ? await classifyAnswers(summary, context, signal) : [],
     solo: "unknown",
@@ -30,7 +35,7 @@ function harness(
     messages: [{ role: "assistant", content: [{ type: "text", text }] }], ...extra,
   });
   emit("session_start", {});
-  return { emit, todo, end, sent, deliveries };
+  return { emit, todo, end, sent, deliveries, ctx };
 }
 
 describe("turn-end guard", () => {
@@ -705,5 +710,95 @@ describe("turn-end guard 승인 경계와 일반 진행 문장", () => {
       "배포 계획 문서를 읽었습니다.\n\n로컬 검사는 통과했습니다.",
       "Deployment docs reviewed.\n\nLocal checks passed, continuing with the remaining tests.",
     ]) expect([text, await nudgeCount(text)]).toEqual([text, 1]);
+  });
+});
+
+describe("turn-end documentation", () => {
+  test("unsaved non-error draft cannot credit a concurrently modified old record", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "turn-docs-unsaved-"));
+    try {
+      const output = "doc/history/2026/11/03-existing/maker-A.md";
+      mkdirSync(join(cwd, "doc/history/2026/11/03-existing"), { recursive: true });
+      for (const file of ["index.ts", "HANDOFF.md", "doc/README.md", output]) writeFileSync(join(cwd, file), "old\n");
+      const h = harness([], undefined, undefined, undefined, cwd);
+      await h.emit("input", { source: "rpc", text: "수정해 줘" });
+      await h.emit("tool_result", { toolName: "write", input: { path: "index.ts" }, isError: false });
+      for (const path of ["HANDOFF.md", "doc/README.md"]) await h.emit("tool_result", { toolName: "read", input: { path }, isError: false });
+      const event = { toolName: "draft", toolCallId: "unsaved", input: { instruction: "", output, overwrite: true } };
+      await h.emit("tool_call", event);
+      writeFileSync(join(cwd, output), "an unrelated external writer changed this file\n");
+      const result = await draftDocument(event.input, { cwd } as Parameters<typeof draftDocument>[1], new AbortController().signal, async () => { throw Error("must not call completion"); });
+      expect(result.isError).toBe(false);
+      await h.emit("tool_result", { ...event, isError: result.isError });
+      await h.end("수정했습니다.");
+      expect(h.sent).toHaveLength(1);
+      const notice = h.sent[0];
+      if (!notice || typeof notice !== "object" || !("content" in notice)) throw Error("missing notice");
+      expect(notice.content).toContain("작업 기록 쓰기");
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+  test("successful source mutation without git_finalize gets one documentation aside", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "turn-docs-"));
+    try {
+      mkdirSync(join(cwd, ".git"));
+      writeFileSync(join(cwd, "index.ts"), "export const value = 1;\n");
+      const h = harness([], undefined, undefined, undefined, cwd);
+      await h.emit("input", { source: "rpc", text: "수정해 줘" });
+      await h.emit("tool_result", {
+        toolName: "write", input: { path: "index.ts" }, isError: false,
+        details: { resolvedPath: join(cwd, "index.ts") },
+      });
+      await h.end("수정했습니다.");
+      await h.end("수정했습니다.");
+      expect(h.sent).toHaveLength(1);
+      expect(h.sent[0]).toMatchObject({
+        content: expect.stringContaining("HANDOFF.md"),
+        customType: "turn-end-guard",
+      });
+      expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+  test("combines documentation with TODO and in-run questions without resetting mutation evidence", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "turn-docs-steer-"));
+    try {
+      writeFileSync(join(cwd, "index.ts"), "export {};\n");
+      const h = harness([], undefined, async () => [false], undefined, cwd);
+      await h.emit("input", { source: "rpc", text: "수정해 줘" });
+      await h.emit("tool_result", { toolName: "write", input: { path: "index.ts" }, isError: false });
+      h.ctx.isIdle = () => false;
+      await h.emit("input", { source: "rpc", text: "검사는 뭐?" });
+      await h.emit("message_start", { message: { role: "user", content: "검사는 뭐?", steering: true } });
+      await h.todo(["pending"]);
+      await h.end("수정했습니다.", { messages: [
+        { role: "user", content: "검사는 뭐?", steering: true },
+        { role: "assistant", content: [{ type: "text", text: "수정했습니다." }] },
+      ] });
+      expect(h.sent).toHaveLength(1);
+      const message = h.sent[0] as { content: string };
+      expect(message.content).toContain("HANDOFF.md");
+      expect(message.content).toContain("현재 TODO");
+      expect(message.content).toContain("사용자 중간 질문 1건");
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+  test("reload keeps evidence while new input, session and shutdown discard it; abort never sends", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "turn-docs-life-"));
+    try {
+      writeFileSync(join(cwd, "index.ts"), "export {};\n");
+      for (const reset of ["input", "session_start", "session_shutdown", "new-session", "reload", "abort"]) {
+        const h = harness([], undefined, undefined, undefined, cwd);
+        await h.emit("input", { source: "rpc", text: "수정해 줘" });
+        await h.emit("tool_result", { toolName: "write", input: { path: "index.ts" }, isError: false });
+        if (reset === "abort") {
+          await h.end("", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+          expect(h.sent).toHaveLength(0);
+          continue;
+        }
+        if (reset === "new-session") h.ctx.sessionManager.getSessionId = () => "other-session";
+        await h.emit(reset === "reload" || reset === "new-session" ? "session_switch" : reset, { source: "rpc", text: "새 작업" });
+        if (reset === "session_shutdown") await h.emit("tool_result", { toolName: "write", input: { path: "index.ts" }, isError: false });
+        await h.end("확인했습니다.");
+        expect([reset, h.sent.length]).toEqual([reset, reset === "reload" ? 1 : 0]);
+      }
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });

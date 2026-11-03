@@ -1,6 +1,7 @@
 /**
- * API 크레딧(Hive) 추정 응답의 모양과 화면용 계산.
+ * API 크레딧 응답의 모양과 화면용 계산.
  * 금액 계산은 사이드카(`Tools/CUELO_Setup/files/usage-server.js` /credits)가 하고, 여기서는 받은 값을 화면 값으로만 바꾼다.
+ * 잔액(`balances`)은 공급자 결제 화면에서 보고 적어 둔 값과 그 확인 시각이다. 자동 조회가 아니다.
  */
 
 export type CreditPricing = "exact" | "upper-bound" | "unknown";
@@ -100,6 +101,26 @@ export interface AnthropicPaidWallet {
   spentComplete: boolean;
 }
 
+/** 이 PC가 선불 크레딧으로 쓰는 API. 사이드카가 이 중 지금 설정된 경로와 유료 사용 기록이 있는 것만 순서대로 보낸다. */
+export type BalanceWallet = "hive" | "exa" | "typesafe" | "anthropic";
+
+/** 결제 화면에서 확인해 적어 둔 잔액. observedAt은 결제 화면을 본 시각(ms)이고 저장한 시각이 아니다. */
+export interface RecordedBalance {
+  amountUsd: number;
+  observedAt: number;
+}
+
+export interface WalletBalance {
+  wallet: BalanceWallet;
+  source: "dashboard-record";
+  /** recent-paid-use: 사용 기간 안에 유료 사용 기록이 있다. unverified: 경로는 있지만 기록을 다 읽지 못해 확인하지 못했다. */
+  evidence: "recent-paid-use" | "unverified";
+  /** 이 PC 기록에서 본 마지막 유료 사용 시각(ms). 없으면 null. */
+  lastPaidUseAt: number | null;
+  /** 아직 적지 않았으면 null(잔액 미상). 0은 확인한 잔액 0이다. */
+  recorded: RecordedBalance | null;
+}
+
 export interface ApiCreditsSnapshot {
   generatedAt: number;
   settings: { hive: HiveCreditSetting | null };
@@ -108,16 +129,25 @@ export interface ApiCreditsSnapshot {
   hive: HiveCreditWallet;
   /** 이 칸이 없는 옛 사이드카도 받는다. */
   anthropic?: AnthropicPaidWallet;
+  /** 이 칸이 없는 옛 사이드카도 받는다(그때는 Hive·Anthropic 카드만 보인다). */
+  balances?: WalletBalance[];
+  /** 설정 경로를 읽지 못하면 routes_unreadable이고 balances는 비어 있다. */
+  balancesError?: string | null;
 }
 
 export type CreditSettingInput = { totalUsd: number; startDate: string };
+export type BalanceInput = { amountUsd: number; observedAt: number };
 
 export function isApiCreditsSnapshot(value: unknown): value is ApiCreditsSnapshot {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ApiCreditsSnapshot>;
   return Boolean(record.settings && typeof record.settings === "object"
     && record.hive && Array.isArray(record.hive.rows)
-    && (record.anthropic === undefined || Array.isArray(record.anthropic?.rows)));
+    && (record.anthropic === undefined || Array.isArray(record.anthropic?.rows))
+    && (record.balances === undefined || (Array.isArray(record.balances)
+      && record.balances.every((item) => Boolean(item) && typeof item.wallet === "string"
+        && (item.recorded === null || (typeof item.recorded === "object"
+          && Number.isFinite(item.recorded?.amountUsd) && Number.isFinite(item.recorded?.observedAt)))))));
 }
 
 export interface CreditMeter {
@@ -142,4 +172,23 @@ export function creditSettingFromForm(form: { totalUsd: string; startDate: strin
   const total = Number(form.totalUsd.replace(/[$,\s]/g, ""));
   if (!form.totalUsd.trim() || !Number.isFinite(total)) return null;
   return { totalUsd: total, startDate: form.startDate.trim() };
+}
+
+/**
+ * 잔액 입력 칸을 저장 요청 값으로 바꾼다. 금액은 `$`·쉼표를 허용하고 0도 받는다. 시각은 `datetime-local` 값(이 PC의 현지 시각)이다.
+ * 범위·미래 시각은 사이드카가 최종 판정한다.
+ */
+export function balanceFromForm(form: { amountUsd: string; observedAt: string }): { value: BalanceInput } | { error: "amount" | "observedAt" } {
+  const amount = Number(form.amountUsd.replace(/[$,\s]/g, ""));
+  if (!form.amountUsd.trim() || !Number.isFinite(amount)) return { error: "amount" };
+  const observedAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(form.observedAt.trim()) ? new Date(form.observedAt.trim()).getTime() : Number.NaN;
+  if (!Number.isFinite(observedAt)) return { error: "observedAt" };
+  return { value: { amountUsd: amount, observedAt } };
+}
+
+/** `datetime-local` 칸에 넣을 현지 시각 문자열(분 단위). */
+export function localDateTimeInput(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

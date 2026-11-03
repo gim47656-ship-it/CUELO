@@ -13,6 +13,9 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
   하는 대화 답변은 대상이 아니다. draft와 OCR 모델은 PC별 `modelRoles.draft`·`ocr`이 정한다(사무실 PC는 2026-10-30
   사용자 결정으로 속도 때문에 Antigravity Gemini 3.8 Flash, 그 밖의 설치는 Vertex Gemini 4 Argon). 이미지 질문(vision)은 Opus를 유지한다.
+  `slop_check`가 같은 기준을 자동 적용해 통과했더라도 작성자가 `humanizer`·`kill-ai-slop` 등
+  스킬의 직접 읽기와 절차(범위 안 문구 전수 점검, 해당 화면 확인, 수정·의미 보존 확인)를 수행한
+  증거로 보지 않는다. 런타임의 읽기 목록도 읽었다는 관측일 뿐이며 수행 범위와 결과는 별도로 확인한다.
   **바깥에서 사람이 실제로 보는 산출물만 AI 슬롭 게이트를 통과한다(2026-10-26 사용자 지시, 2026-10-29 범위 축소로
   2026-10-27 결정을 대체).** 대상은 형식으로 정한다: 슬라이드·PPTX, HTML, DOCX·XLSX·PDF·HWPX, 보고서 csv, 언어 팩의
   화면·메뉴 문구, 매뉴얼이다. **마크다운은 README·CHANGELOG·`docs/`·문서 지도를 포함해 위치와 관계없이 대상이 아니다.**

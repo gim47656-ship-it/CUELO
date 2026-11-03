@@ -1,5 +1,6 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { DispatchRequiredSkills } from "./skill-evidence";
 
 /**
  * 발주 라우팅 이력. 추천·실제 선택·실행 상태·Main 수용 판정을 append-only JSON Lines로 남기고,
@@ -64,6 +65,11 @@ export interface DispatchRecord extends AttemptIdentity {
   purpose: string | null;
   /** 이 필드가 생기기 전 기록에는 없다. 없으면 소유 미상이며 빈 소유가 아니다. */
   ownership?: DispatchOwnership;
+  /**
+   * maker_route가 분류한 산출물별 필수 스킬 기대값과 브리프의 SKILL_EXCLUSIONS. 완료 advisory가 실제 읽기와 대조한다.
+   * 이 필드가 생기기 전 기록에는 없고, 없으면 기대값 미관측이다(필수 없음이 아니다).
+   */
+  requiredSkills?: DispatchRequiredSkills;
 }
 
 export interface OutcomeRecord extends AttemptIdentity {

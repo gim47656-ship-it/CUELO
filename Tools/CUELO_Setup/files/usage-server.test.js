@@ -809,11 +809,11 @@ const CREDIT_NOW = new Date(2026, 9, 26, 10, 30).getTime(); // 로컬 2026-10-26
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
-function creditFixture(t, { now = () => CREDIT_NOW } = {}) {
+function creditFixture(t, { now = () => CREDIT_NOW, apiKeyProviders } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'credits-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const settingsFile = path.join(dir, 'cuelo-api-credits.json');
-    const service = createCreditsService({ agentDir: () => dir, settingsFile: () => settingsFile, now });
+    const service = createCreditsService({ agentDir: () => dir, settingsFile: () => settingsFile, now, apiKeyProviders });
     return { dir, settingsFile, service };
 }
 
@@ -903,14 +903,15 @@ test('credit settings persist through the sidecar as a private file; bad input a
     assert.equal(broken.settingsError, 'settings_unreadable');
     assert.equal(broken.settings.hive, null);
 
-    // 옛 파일에 google 항목이 남아 있어도 Hive는 그대로 읽히고, 다음 저장에서 google 항목이 사라진다.
-    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google: { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' }, hive: { totalUsd: 25, startDate: '2026-10-18' } }));
+    // 옛 파일에 google 항목이 남아 있어도 Hive는 그대로 읽히고, Hive를 저장해도 google 항목은 파일에 그대로 남는다.
+    const google = { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' };
+    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google, hive: { totalUsd: 25, startDate: '2026-10-18' } }));
     const legacy = await (await fetch(`${base}/credits`)).json();
     assert.equal(legacy.settingsError, null);
     assert.deepEqual(legacy.settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
     response = await post({ wallet: 'hive', value: { totalUsd: 30, startDate: '2026-10-18' } });
     assert.equal(response.status, 200);
-    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')), { version: 1, hive: { totalUsd: 30, startDate: '2026-10-18' } });
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')), { version: 1, google, hive: { totalUsd: 30, startDate: '2026-10-18' } });
 
     // 파일을 읽을 수 없으면(일시적 I/O 실패) 저장이 덮어쓰지 않는다.
     if (process.getuid?.() === 0) return;
@@ -1086,6 +1087,162 @@ test('Anthropic usage with no credential records shows no coverage instead of a 
     assert.equal(paid.status, 'error');
     assert.equal(paid.error, 'session_scan_partial');
     assert.equal(paid.spentComplete, false);
+});
+
+test('dashboard balances: zero is a recorded value; saves keep every other entry, run in order, and failed saves leave the file alone', async t => {
+    const { settingsFile, service } = creditFixture(t);
+    const google = { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2027-01-24' };
+    const hive = { totalUsd: 106, startDate: '2026-10-12' };
+    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 } } }));
+    const server = startServer(0, undefined, undefined, service);
+    await once(server, 'listening');
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = body => fetch(`${base}/credits/settings`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:30141' }, body: JSON.stringify(body),
+    });
+    const exa = { amountUsd: 0, observedAt: CREDIT_NOW - 3_600_000 };
+    const typesafe = { amountUsd: 12.5, observedAt: CREDIT_NOW - 60_000 };
+    const [first, second] = await Promise.all([
+        post({ kind: 'balance', wallet: 'exa', value: exa }),
+        post({ kind: 'balance', wallet: 'typesafe', value: typesafe }),
+    ]);
+    assert.deepEqual([first.status, second.status], [200, 200]);
+    assert.deepEqual((await first.json()).balance, { wallet: 'exa', recorded: exa });
+    const stored = () => JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    assert.deepEqual(stored(), { version: 1, google, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 }, exa, typesafe } },
+        'both concurrent saves land and untouched entries stay as they were');
+    assert.equal(fs.statSync(settingsFile).mode & 0o777, 0o600);
+
+    // 새로 읽어도 기록 시각은 그대로다(저장한 시각이나 새로고침 시각으로 바뀌지 않는다).
+    const keyed = creditFixture(t, { apiKeyProviders: async () => new Set(['exa']) });
+    fs.copyFileSync(settingsFile, keyed.settingsFile);
+    fs.writeFileSync(path.join(keyed.dir, 'config.yml'), 'modelRoles:\n  web: web/exa\n');
+    writeSessionLines(keyed, 'a.jsonl', [{ type: 'message', timestamp: '2026-10-25T01:00:00Z',
+        message: { role: 'toolResult', toolName: 'web_search', details: { response: { provider: 'exa', requestId: 'r1' } } } }]);
+    for (const refresh of [false, true]) {
+        const { balances } = await keyed.service.snapshot({ refresh });
+        assert.deepEqual(balances.map(item => [item.wallet, item.recorded]), [['exa', exa]], 'a recorded zero is shown as zero');
+    }
+
+    const before = fs.readFileSync(settingsFile, 'utf8');
+    const rejected = [
+        [{ kind: 'balance', wallet: 'exa', value: { amountUsd: -1, observedAt: CREDIT_NOW } }, 'invalid_balance'],
+        [{ kind: 'balance', wallet: 'exa', value: { amountUsd: '5', observedAt: CREDIT_NOW } }, 'invalid_balance'],
+        [{ kind: 'balance', wallet: 'exa', value: { amountUsd: 5, observedAt: 'yesterday' } }, 'invalid_observed_at'],
+        [{ kind: 'balance', wallet: 'exa', value: { amountUsd: 5, observedAt: CREDIT_NOW + 3_600_000 } }, 'observed_at_in_future'],
+        [{ kind: 'balance', wallet: 'google', value: { amountUsd: 5, observedAt: CREDIT_NOW } }, 'invalid_wallet'],
+    ];
+    for (const [body, code] of rejected) {
+        const response = await post(body);
+        assert.equal(response.status, 400);
+        assert.equal((await response.json()).code, code);
+    }
+    assert.equal(fs.readFileSync(settingsFile, 'utf8'), before, 'rejected balances never touch the file');
+
+    const cleared = await post({ kind: 'balance', wallet: 'exa', value: null });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(stored().balances, { openrouter: { amountUsd: 4, observedAt: 1 }, typesafe });
+
+    if (process.getuid?.() === 0) return;
+    const kept = fs.readFileSync(settingsFile, 'utf8');
+    fs.chmodSync(settingsFile, 0o000);
+    let response;
+    try {
+        response = await post({ kind: 'balance', wallet: 'hive', value: { amountUsd: 98, observedAt: CREDIT_NOW } });
+    } finally {
+        fs.chmodSync(settingsFile, 0o600);
+    }
+    assert.equal(response.status, 503);
+    assert.equal(fs.readFileSync(settingsFile, 'utf8'), kept);
+});
+
+test('balance cards are the routed wallets with paid use in the usage window; keyless Exa, OAuth-only and old use stay out', async t => {
+    let keys = new Set(['exa', 'typesafe']);
+    const apiKeyProviders = async () => {
+        if (keys === 'fail') throw new Error('management_unavailable');
+        return keys;
+    };
+    const exaSearch = timestamp => ({ type: 'message', timestamp,
+        message: { role: 'toolResult', toolName: 'web_search', details: { response: { provider: 'exa', requestId: 'r' } } } });
+    const hiveUse = { type: 'model_usage', provider: 'hive', model: 'zai-org/glm-5.3-flash', purpose: 'memory', timestamp: '2026-10-20T01:00:00Z', usage: { input: 5, output: 5 } };
+    const typesafeUse = timestamp => ({ type: 'model_usage', provider: 'typesafe', model: 'jev-1.14.0', purpose: 'judge', timestamp, usage: { input: 5, output: 1 } });
+    const allRoutes = '  default: anthropic/claude-opus-5-5\n  memory: hive/zai-org/glm-5.3-flash\n  web: "web/exa"  # 검색\n  judge: typesafe/jev-1.14.0';
+    // 세션 기록은 덧붙기만 하므로(스캐너가 이어 읽는다) 경우마다 새 agent 디렉터리를 만든다.
+    const setup = (roles, lines) => {
+        const fixture = creditFixture(t, { apiKeyProviders });
+        fixture.config = path.join(fixture.dir, 'config.yml');
+        fs.writeFileSync(fixture.config, `defaultThinkingLevel: high\nmodelRoles:\n${roles}\nlater:\n  web: web/other\n`);
+        fs.writeFileSync(path.join(fixture.dir, 'anthropic-fallback-api-key'), 'k');
+        fixture.sessions = writeSessionLines(fixture, 'a.jsonl', lines);
+        return fixture;
+    };
+    const wallets = async fixture => {
+        const body = await fixture.service.snapshot({ refresh: true });
+        return { error: body.balancesError, list: body.balances.map(item => [item.wallet, item.evidence, item.lastPaidUseAt]) };
+    };
+    const used = setup(allRoutes, [hiveUse, typesafeUse('2026-10-21T01:00:00Z'), exaSearch('2026-10-22T01:00:00Z'),
+        anthropicMessage('2026-10-23T01:00:00Z', anthropicUsageOf('api-key', { input: 10, output: 10 }))]);
+    assert.deepEqual(await wallets(used), { error: null, list: [
+        ['hive', 'recent-paid-use', Date.parse('2026-10-20T01:00:00Z')],
+        ['exa', 'recent-paid-use', Date.parse('2026-10-22T01:00:00Z')],
+        ['typesafe', 'recent-paid-use', Date.parse('2026-10-21T01:00:00Z')],
+        ['anthropic', 'recent-paid-use', Date.parse('2026-10-23T01:00:00Z')],
+    ] });
+
+    // 키 없이 공개 MCP로 검색한 Exa는 유료 사용이 아니다. 키 목록을 못 읽으면 숨기지 않고 확인 못 함으로 낸다.
+    keys = new Set(['typesafe']);
+    assert.deepEqual((await wallets(used)).list.map(row => row[0]), ['hive', 'typesafe', 'anthropic']);
+    keys = 'fail';
+    assert.deepEqual((await wallets(used)).list.find(row => row[0] === 'exa'), ['exa', 'unverified', Date.parse('2026-10-22T01:00:00Z')]);
+    keys = new Set(['exa', 'typesafe']);
+
+    // 경로에서 뺀 Exa는 기록이 있어도 보이지 않는다.
+    fs.writeFileSync(used.config, 'modelRoles:\n  memory: hive/zai-org/glm-5.3-flash\n  web: web/brave\n  judge: typesafe/jev-1.14.0\n');
+    assert.deepEqual((await wallets(used)).list.map(row => row[0]), ['hive', 'typesafe', 'anthropic']);
+
+    // 설정은 core와 같은 YAML 해석기로 읽는다: 다른 들여쓰기·주석·흐름 매핑도 같은 경로다.
+    fs.writeFileSync(used.config, '# top\nmodelRoles:\n    memory: hive/zai-org/glm-5.3-flash\n# note\n    web: \'web/exa\' # 검색\n\n    judge: typesafe/jev-1.14.0\n');
+    assert.deepEqual((await wallets(used)).list.map(row => row[0]), ['hive', 'exa', 'typesafe', 'anthropic']);
+    fs.writeFileSync(used.config, 'modelRoles: { "web": web/exa, judge: typesafe/jev-1.14.0 }\n');
+    assert.deepEqual((await wallets(used)).list.map(row => row[0]), ['exa', 'typesafe', 'anthropic']);
+    // YAML로 읽히지 않거나 modelRoles가 매핑이 아니거나 없는 설정은 지어내지 않고 읽지 못함이다.
+    for (const text of [
+        'broken: [unterminated\nmodelRoles:\n  web: web/exa\n',
+        'modelRoles: web/exa\n',
+        'defaultThinkingLevel: high\n',
+    ]) {
+        fs.writeFileSync(used.config, text);
+        assert.deepEqual(await wallets(used), { error: 'routes_unreadable', list: [] }, text);
+    }
+    fs.rmSync(used.config);
+    assert.deepEqual(await wallets(used), { error: 'routes_unreadable', list: [] }, 'a missing config is not read as "no routes"');
+
+    // 구독(OAuth)·토큰 없는 실패만 남은 Anthropic, 기간 밖 TypeSafe는 보이지 않는다.
+    const idle = setup(allRoutes, [hiveUse, typesafeUse('2026-09-01T01:00:00Z'),
+        anthropicMessage('2026-10-23T01:00:00Z', anthropicUsageOf('oauth', { input: 10, output: 10 })),
+        anthropicMessage('2026-10-24T01:00:00Z', anthropicUsageOf('api-key', {}))]);
+    assert.deepEqual((await wallets(idle)).list.map(row => row[0]), ['hive']);
+    const { config, sessions } = idle;
+
+    // 기록 일부를 못 읽으면, 경로는 있는데 기록을 찾지 못한 지갑을 확인 못 함으로 낸다(0이나 사용 안 함으로 바꾸지 않는다).
+    if (process.getuid?.() !== 0) {
+        fs.mkdirSync(path.join(sessions, 'locked'));
+        fs.chmodSync(path.join(sessions, 'locked'), 0o000);
+        let partial;
+        try {
+            partial = await wallets(idle);
+        } finally {
+            fs.chmodSync(path.join(sessions, 'locked'), 0o755);
+        }
+        assert.deepEqual(partial.list.map(row => row.slice(0, 2)),
+            [['hive', 'recent-paid-use'], ['exa', 'unverified'], ['typesafe', 'unverified'], ['anthropic', 'unverified']]);
+    }
+
+    // 설정을 읽지 못하면 어느 지갑도 지어내지 않고 오류로 알린다.
+    fs.rmSync(config);
+    fs.mkdirSync(config);
+    assert.deepEqual(await wallets(idle), { error: 'routes_unreadable', list: [] });
 });
 
 test('the omp CLI is found without OMP_EXE: the package-owned binary on Linux/macOS, the default install or omp.exe on Windows', () => {

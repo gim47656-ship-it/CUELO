@@ -4,6 +4,7 @@ import { admitsUserRequestedDeliverable, extractGuardBlock, isPathOwned, isSummo
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
+import { briefSkillCoverage, dispatchRequiredSkills, isRequiredSkillAnswerKey, loadRequiredSkillContract, requiredSkillGaps, requiredSkillQuestions, selectRequiredSkills, type RequiredSkillSelection, type RequiredSkillSource } from "./skill-evidence";
 
 export interface RoutingFacts {
   goal: string;
@@ -175,6 +176,8 @@ export interface RoutingDeps {
   clock?: () => number;
   /** 발주 이력. 생략하면 기록·history 요약을 하지 않는다. 실패는 발주를 막지 않는다. */
   ledger?: RoutingLedger;
+  /** 산출물별 필수 스킬 정본. 생략하면 rules/frontend.md의 required-skills 블록을 준비마다 읽는다. */
+  requiredSkills?: () => RequiredSkillSource;
 }
 
 // 잔량은 참고 정보다. 실측: 사이드카 `/usage` 웜 응답 1-3ms, 콜드 경로가 실행하는
@@ -720,6 +723,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     owners: Owner[];
     publicationToken: symbol;
     refreshAttempts: RefreshAttempts;
+    /** 이 준비의 Jev 분류로 고른 필수 스킬 세트. 발주 원장 dispatch 행에 브리프의 제외 신고와 함께 남는다. */
+    requiredSkills: RequiredSkillSelection;
   };
   const bindings = new Map<string, Promise<Prepared>>();
   // 검사를 통과한 발주의 이력 초안. spawn 성공(noteSpawned) 때만 identity와 함께 ledger에 남긴다.
@@ -881,6 +886,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
+    // 필수 스킬 질문은 기존 decision 판단 묶음에 붙인다(별도 모델 호출 없음). 정본이 바뀌면 cache key도 바뀐다.
+    const skillSource = (deps.requiredSkills ?? loadRequiredSkillContract)();
+    const skillQuestions = requiredSkillQuestions(skillSource);
+    const skillSourceKey = JSON.stringify(skillSource);
     const allOwners = deps.owners(ctx);
     const atGeneration = generation;
     // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
@@ -971,9 +980,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const revision = revisionOf(current, candidates);
         const key = keys[index]!;
         const decisionState = routingFactsState(task.assessment);
-        const decisionKey = JSON.stringify([key, decisionState, revision]);
+        const decisionKey = JSON.stringify([key, decisionState, revision, skillSourceKey]);
         const placementKey = JSON.stringify([decisionKey, ownerRevision(owners)]);
-        const baseQuestions = decisionQuestions(current);
+        const baseQuestions = { ...decisionQuestions(current), ...skillQuestions };
         const ownerQuestions = placementQuestions(owners);
         let decisionPending = decisionCache.get(decisionKey);
         let placementPending = placementCache.get(placementKey);
@@ -1027,12 +1036,19 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const placement = placementPending
           ? await placementPending
           : { status: "judged" as const, answers: {} };
+        const requiredSkills = selectRequiredSkills(skillSource, decision.answers, decision.error);
+        // 필수 스킬 누락·선택형 축소·제외 문제도 같은 advisory 목록에 싣는다. 발주를 막지 않는다.
+        const gaps = [
+          ...(briefGaps(task.assessment, contracts[index]!.ownedPaths, contracts[index]!.findingId) ?? []),
+          ...requiredSkillGaps(requiredSkills, requiredSkills.skills.length > 0 ? briefSkillCoverage(task.task, requiredSkills) : null),
+        ];
         const prepared: Prepared = {
           revision,
           profile: null,
           candidates,
           publicationToken: publicationClaims[index]!.token,
           refreshAttempts: new Map(refreshAttempts),
+          requiredSkills,
           owners,
           status: decision.status === "judged" && placement.status === "judged" ? "judged" : "unavailable",
           error: [decision.error, placement.error].filter(Boolean).join("; ") || undefined,
@@ -1046,12 +1062,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           prepared,
           route: {
             name: task.name,
-            briefGaps: briefGaps(task.assessment, contracts[index]!.ownedPaths, contracts[index]!.findingId),
+            briefGaps: gaps.length > 0 ? gaps : null,
             ownershipOverlaps: overlapsByTask[index]!,
             status: prepared.status,
             error: prepared.error,
             // 위임 조언은 Main 결과에 싣지 않고 발주 원장(delegationAdvice)에만 남긴다(2026-10-30 사용자 결정).
-            recommendations: prepared.answers === null ? null : withoutDelegation(prepared.answers),
+            recommendations: prepared.answers === null ? null : Object.fromEntries(Object.entries(withoutDelegation(prepared.answers)).filter(([answerKey]) => !isRequiredSkillAnswerKey(answerKey))),
             placement: placementOf(prepared, owners),
             existingOwners: owners,
             normalAllocation: null as NormalAllocation | null,
@@ -1275,6 +1291,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           : null,
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
         ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
+        // 완료 때 실제 읽기와 대조할 기대값. 실제 발주한 브리프의 SKILL_EXCLUSIONS를 함께 남긴다(제외는 읽기가 아니다).
+        requiredSkills: dispatchRequiredSkills(prepared.requiredSkills, task),
       }]);
     }
     // 같은 배치의 공유 작업공간 항목끼리는 게시 전에 한꺼번에 비교한다. 하나라도 겹치면 어떤 초안도 게시하지 않는다.

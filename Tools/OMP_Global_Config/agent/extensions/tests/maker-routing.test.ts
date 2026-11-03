@@ -3,6 +3,7 @@ import { loadRoutingPolicy, registerMakerRouting, routingQuestions, routingState
 import { bindTaskGuardSession, createTaskGuardState, noteUserRequestText, releaseCancelledSpawns, reserveTaskCall, settleTaskCall, unbindTaskGuardSession, type TaskGuardState } from "../command-guard/task-guard";
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import type { LedgerRecord, RoutingLedger } from "../lib/routing-ledger";
+import { loadRequiredSkillContract, parseRequiredSkillContract } from "../lib/skill-evidence";
 
 const facts: RoutingFacts = {
   goal: "상태 표시 오류 수정", acceptance: ["오류 경로 정상 표시"], facts: ["한 화면에서 재현됨"],
@@ -85,6 +86,10 @@ function harness(options: {
   designOpen?: number | null;
   /** Jev의 crossReviewNeed 선택. 생략하면 답에 싣지 않는다. */
   crossReviewNeed?: string;
+  /** 필수 스킬 분류 답. 기본은 보이는 산출물 없음(NONVISUAL)이고 세트·조건 noul은 0이다. 준 키만 덮는다. */
+  skillAnswers?: Record<string, { choice?: string; noul?: number }>;
+  /** 필수 스킬 정본. 생략하면 실제 rules/frontend.md를 읽는다. */
+  requiredSkills?: RoutingDeps["requiredSkills"];
 } = {}) {
   const sessionId = "example".concat(String(++nextHarnessSession));
   const modelFamilies = options.families ?? families;
@@ -126,6 +131,7 @@ function harness(options: {
     quota: options.quota ?? (async () => ({ state: "unavailable", observedAt: 0, reason: "test harness" })),
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.ledger ? { ledger: options.ledger } : {}),
+    ...(options.requiredSkills ? { requiredSkills: options.requiredSkills } : {}),
     judge: async (_ctx, request) => {
       requests.push(request);
       const call = requests.length;
@@ -149,6 +155,9 @@ function harness(options: {
         ...(options.designOpen === null ? {} : { designOpen: { noul: options.designOpen ?? 0 } }),
         ...(options.ownerTarget ? { ownerTarget: { choice: options.ownerTarget } } : {}),
         ...(options.crossReviewNeed ? { crossReviewNeed: { choice: options.crossReviewNeed } } : {}),
+        ...Object.fromEntries(Object.entries(request.questions).filter(([key]) => key.startsWith("requiredSkill"))
+          .map(([key, question]) => [key, question.type === "choice" ? { choice: "NONVISUAL" } : { noul: 0 }])),
+        ...options.skillAnswers,
       } };
     },
   });
@@ -2545,5 +2554,85 @@ describe("비-UI NORMAL의 DeepSeek 우선 트리거(off-critical-path)", () => 
       expect(fallback.profile).toBe(expected);
       expect(fallback.normalAllocation).toMatchObject({ triggers: ["off-critical-path"], reason: expect.stringContaining("쓸 수 없어") });
     }
+  });
+});
+
+describe("산출물별 필수 스킬 advisory(rule://frontend 정본, 발주 비차단)", () => {
+  const mockup = [
+    "TASK_GUARD:", "WORK_CLASS: feature", "PRIMARY_DELIVERABLE: 입고 운영 화면 목업", "OWNED_PATHS: app/receiving/page.tsx", "",
+    "SKILL_EXCLUSIONS: {\"kill-ai-slop\":\"\"}",
+    "# Change", "skill://seed-design와 skill://frontend-design을 읽고 hallmark 또는 ui-ux-pro-max 중 하나를 적용한다.",
+  ].join("\n");
+  const visual = {
+    requiredSkillDeliverable: { choice: "VISUAL" },
+    requiredSkillSet_web_ui: { noul: 0.9 },
+    requiredSkillModifier_operator_screen: { noul: 0.8 },
+    requiredSkillModifier_ko_copy: { noul: 0.9 },
+  };
+
+  test("한국어 운영 목업 브리프의 누락·선택형 축소·이유 없는 제외를 briefGaps로 알리고 발주는 그대로 통과해 기대 세트를 원장에 남긴다", async () => {
+    const ledger = memoryLedger();
+    const h = harness({ ledger, uiUxBoundary: 1, designOpen: 1, skillAnswers: visual });
+    const task = { ...h.task, task: mockup };
+    const route = (await h.prepareBatch("목업", [task], {})).routes[0]!;
+    const gaps = route.briefGaps ?? [];
+    const missing = gaps.find((gap) => gap.startsWith("필수 스킬 누락"));
+    expect(missing).toContain("skill://operational-expert-tool-ui");
+    expect(missing).toContain("skill://humanizer");
+    for (const handed of ["seed-design", "frontend-design", "hallmark", "ui-ux-pro-max", "kill-ai-slop"]) expect(missing).not.toContain(`skill://${handed}`);
+    expect(gaps.some((gap) => gap.includes("선택형") && gap.includes("hallmark 또는 ui-ux-pro-max"))).toBe(true);
+    expect(gaps.some((gap) => gap.includes("kill-ai-slop") && gap.includes("이유가 없음"))).toBe(true);
+    // 분류 답은 Main용 recommendations에 섞지 않는다.
+    expect(Object.keys(route.recommendations ?? {}).some((key) => key.startsWith("requiredSkill"))).toBe(false);
+    expect(await h.dispatch("anthropic/claude-opus-5-5:auto", mockup)).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: mockup, model: "anthropic/claude-opus-5-5:auto" }] });
+    expect(ledger.records.at(-1)).toMatchObject({
+      type: "dispatch",
+      requiredSkills: {
+        state: "selected", sets: ["web-ui"], modifiers: ["operator-screen", "ko-copy"],
+        skills: ["seed-design", "frontend-design", "ui-ux-pro-max", "hallmark", "kill-ai-slop", "operational-expert-tool-ui", "humanizer"],
+        excluded: [{ skill: "kill-ai-slop", reason: "" }],
+      },
+    });
+  });
+
+  test("시각 판단 없는 코드 조각은 .tsx 경로여도 필수 스킬을 요구하지 않고, 세트 답과 모순되면 조용히 버리지 않고 알린다", async () => {
+    const plain = harness({ skillAnswers: { requiredSkillDeliverable: { choice: "NONVISUAL" } } });
+    const task = { ...plain.task, assessment: { ...facts, paths: ["app/receiving/page.tsx"] } };
+    expect((await plain.prepareBatch("로직", [task], {})).routes[0]!.briefGaps).toBeNull();
+
+    const conflict = harness({ skillAnswers: { requiredSkillDeliverable: { choice: "NONVISUAL" }, requiredSkillSet_web_ui: { noul: 1 } } });
+    const gaps = (await conflict.prepareBatch("로직", [{ ...conflict.task, assessment: task.assessment }], {})).routes[0]!.briefGaps ?? [];
+    expect(gaps.some((gap) => gap.startsWith("필수 스킬 세트 분류 미확인") && gap.includes("모순"))).toBe(true);
+    expect(gaps.some((gap) => gap.startsWith("필수 스킬 누락") || gap.startsWith("필수 스킬을 선택형으로 줄임"))).toBe(false);
+  });
+
+  test("분류 불가·정본 손상은 빈 성공이 아니라 미확인 advisory이며 발주를 막지 않는다", async () => {
+    const ambiguous = harness({ skillAnswers: { requiredSkillDeliverable: { choice: "VISUAL" } } });
+    const ambiguousGaps = (await ambiguous.prepareBatch("모호", [ambiguous.task], {})).routes[0]!.briefGaps ?? [];
+    expect(ambiguousGaps.some((gap) => gap.startsWith("필수 스킬 세트 분류 미확인"))).toBe(true);
+    expect(await ambiguous.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+
+    const broken = harness({ requiredSkills: () => parseRequiredSkillContract("<!-- required-skills:start -->\n```json\n{\"version\":1,\n```\n<!-- required-skills:end -->") });
+    const brokenRoute = (await broken.prepareBatch("손상", [broken.task], {})).routes[0]!;
+    expect(brokenRoute.briefGaps?.some((gap) => gap.startsWith("필수 스킬 세트 advisory 불가"))).toBe(true);
+    // 정본을 읽지 못하면 분류 질문을 보내지 않는다.
+    expect(Object.keys(broken.requests[0]!.questions).some((key) => key.startsWith("requiredSkill"))).toBe(false);
+    expect(await broken.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
+  });
+
+  test("정본이 바뀌면 같은 facts라도 이전 분류 cache를 쓰지 않고 같은 판단 묶음 한 번으로 다시 묻는다", async () => {
+    let source = loadRequiredSkillContract();
+    const h = harness({ requiredSkills: () => source });
+    await h.prepareBatch("같은", [h.task], {});
+    await h.prepareBatch("같은", [h.task], {});
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0]!.questions).toHaveProperty("workClass");
+    expect(h.requests[0]!.questions).toHaveProperty("requiredSkillDeliverable");
+    if (source.state !== "loaded") throw new Error(source.reason);
+    source = { ...source, contract: { ...source.contract, modifiers: [...source.contract.modifiers, { id: "extra", when: "추가 조건", skills: ["stop-slop"] }] } };
+    await h.prepareBatch("같은", [h.task], {});
+    expect(h.requests).toHaveLength(2);
+    expect(h.requests[1]!.questions).toHaveProperty("requiredSkillModifier_extra");
   });
 });
