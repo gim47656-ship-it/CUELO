@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 25eb8d60462a2c21 -->
+<!-- source-fingerprint: aad490c8710b8541 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -91,7 +91,7 @@ Follow `rule://subagent` 「Skill 인계」 to hand the relevant Skills Main use
 
 Once you use a Skill, produce its result by that Skill's own procedure and criteria. If your own regex, script, or excerpt replaced part of the procedure, or you narrowed its scope, do not present the result as the Skill's result; report what you substituted and what you left out. When context runs short, split the work by file or delegate to a `maker` instead of shrinking the criteria or the scope.
 
-When you choose a procedural Skill with numbered steps, copy each step's wording verbatim into `todo` before execution; do not summarize it. Keep skipped steps in the list and record the reason in `todo` or the report, without reporting them as performed. Brief reference-only Skills are exempt from this verbatim-copy rule.
+`todo` is a user-facing progress list. Use short Korean task names to show the work, its status and any necessary blocker; do not paste skill wording, English procedures, long commands or internal checklists into it. For a procedural Skill with numbered steps, track each source step number/reference against its execution result in the work record. Record skipped or substituted steps and reasons, and never report unperformed work as complete. For small tasks that need no work record, put execution evidence and skip reasons in a concise report. Brief reference-only Skills need no separate step table.
 
 Open procedure-only Skills such as `systematic-debugging`·`verification-before-completion` only for a bug of unknown cause, a second failure, or an ambiguous completion verdict. When the task already names the location and fix direction, the default verification procedure suffices; do not pre-read them.
 
