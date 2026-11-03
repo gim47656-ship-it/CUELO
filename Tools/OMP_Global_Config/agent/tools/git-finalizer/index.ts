@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
+import { currentBlobs, type Exec, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import { integrateTool } from "./integrate";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
@@ -99,6 +99,50 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * 공개 미러(`.publicignore`와 `.github/workflows/publish-public.yml`)가 있는 저장소에서, 방금 push한 커밋이 미러에 닿는지와
+ * 무엇을 기다려야 하는지 알려 준다. 2026-11-03: Main이 비공개 무결성 목록만 바꾼 커밋의 게시 실행을 10분 기다렸고(그런 커밋은
+ * 게시·공개 CI가 생기지 않는다) 같은 내용의 10-21 기억이 있었지만 회상되지 않았다. 게시 워크플로처럼
+ * `git ls-files -ci --exclude-from=.publicignore`로 비공개 파일을 가르되, 규칙과 경로는 작업 폴더가 아니라 push한
+ * 커밋에서 읽는다: 그 커밋의 `.publicignore`, 그 커밋과 부모 커밋 트리(`--with-tree`, 지운 파일은 부모에만 있다). 게시 기준 파일
+ * 자체는 워크플로가 건너뛰지 않으므로 늘 공개로 센다. 어느 조회든 실패하면 안내를 빼고 성공 응답은 그대로 둔다.
+ */
+export async function publicationNote(root: string, commitSha: string, resumedPush: boolean, exec: Exec): Promise<string | undefined> {
+  const git = (args: string[]) => exec("git", ["-C", root, ...args], { cwd: root });
+  if ((await git(["cat-file", "-e", `${commitSha}:.github/workflows/publish-public.yml`])).code !== 0) return undefined;
+  const rules = await git(["show", `${commitSha}:.publicignore`]);
+  if (rules.code !== 0) return undefined;
+  const waitPublicCi = "게시 실행(Publish public mirror)과 웹 릴리스는 기다리지 않는다";
+  if (resumedPush) return `공개 미러: 미전송 커밋을 함께 보내 이 커밋만으로는 판정하지 않았다. 공개 미러 CI를 run id로 찾아 그것만 기다리고, ${waitPublicCi}.`;
+  const changed = await git(["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", commitSha]);
+  if (changed.code !== 0) return undefined;
+  const files = changed.stdout.split("\0").filter(Boolean);
+  if (files.length === 0) return undefined;
+  // `rev-list --parents`는 커밋과 부모들을 한 줄로 낸다. 조회 실패와 첫 커밋(부모 없음)을 구분한다.
+  const lineage = await git(["rev-list", "--parents", "-n", "1", commitSha]);
+  if (lineage.code !== 0) return undefined;
+  const trees = [commitSha, ...lineage.stdout.trim().split(/\s+/).slice(1, 2)];
+  const dir = await mkdtemp(join(tmpdir(), "omp-publication-note-"));
+  try {
+    const rulesPath = join(dir, "publicignore");
+    await writeFile(rulesPath, rules.stdout, "utf8");
+    const privateFiles = new Set<string>();
+    for (const tree of trees) {
+      const ignored = await git(["ls-files", "-z", "-ci", `--exclude-from=${rulesPath}`, `--with-tree=${tree}`, "--", ...files]);
+      if (ignored.code !== 0) return undefined;
+      for (const file of ignored.stdout.split("\0")) if (file) privateFiles.add(file);
+    }
+    const publicationInputs = [".publicignore", ".publicdeny", ".github/workflows/publish-public.yml"];
+    const publicFiles = files.filter((file) => publicationInputs.includes(file) || !privateFiles.has(file));
+    if (publicFiles.length === 0) {
+      return "공개 미러: 이 커밋은 비공개 파일만 바꿨다. 게시·공개 CI 실행이 생기지 않으니 기다리지 않는다(배포가 필요하면 앞 커밋의 공개 CI 결과를 그대로 쓴다).";
+    }
+    return `공개 미러: 공개 파일 ${publicFiles.length}개가 바뀌어 게시 뒤 공개 미러 CI가 돈다. 그 CI 하나만 run id로 찾아 기다리고, ${waitPublicCi}.`;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 
@@ -322,11 +366,16 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       // Windows 드라이브 저장소는 그 자체가 Windows 사본이라 반영할 짝이 없다.
       // 커밋·push는 이미 끝났으므로 저장소 조회가 실패해도 힌트만 빼고 성공 응답은 그대로 둔다.
       let syncHint = "";
-      if (!windows && process.platform !== "win32" && parsed.commitSha) {
+      let publication: string | undefined;
+      if (parsed.commitSha) {
         const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
         if (repo && !("failure" in repo)) {
-          syncHint = `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
-            + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${parsed.commitSha}`;
+          // 기다릴 대상 안내는 Windows 저장소에도 붙인다. 대응 사본 명령만 WSL·Linux 저장소 전용이다.
+          publication = await publicationNote(repo.root, parsed.commitSha, Boolean(parsed.resumedPush), exec).catch(() => undefined);
+          if (!windows && process.platform !== "win32") {
+            syncHint = `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
+              + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${parsed.commitSha}`;
+          }
         }
       }
       return {
@@ -338,6 +387,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")
               + (handoffNote ? ` ${handoffNote}` : "")
+              + (publication ? `\n${publication}` : "")
               + syncHint
           },
         ],
