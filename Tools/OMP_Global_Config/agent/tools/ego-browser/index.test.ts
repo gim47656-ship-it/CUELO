@@ -124,6 +124,19 @@ describe("runEgoBrowser results", () => {
     expect(String(long)).toContain("task.handOff()");
   });
 
+  test("Node-side page globals and missing page methods get the correct call next to the error; other failures get none", async () => {
+    const run = async (stderr: string) => String(await runEgoBrowser({ script: "1" }, { exec: fakeExec({ code: 1, stdout: "", stderr, killed: false }).exec, sessionId: "s" }).catch((e: Error) => e));
+    const global = await run("ReferenceError: location is not defined\n    at script.mjs:3:1");
+    expect(global).toContain("`location`는 `page.evaluate(...)` 안에서만");
+    const method = await run("TypeError: page.fill is not a function");
+    expect(method).toContain("`page`에는 `fill`가 없다");
+    expect(method).toContain("page.locator(");
+    expect(await run("TypeError: page.$eval is not a function")).toContain("`page`에는 `$eval`가 없다");
+    const other = await run("ReferenceError: foo is not defined\nTypeError: locator.fill is not a function");
+    expect(other).not.toContain("page.evaluate(...)");
+    expect(other).not.toContain("`page`에는");
+  });
+
   test("a killed run reports the timeout and that the space may remain", async () => {
     const { exec } = fakeExec({ code: -1, stdout: "", stderr: "", killed: true });
     await expect(runEgoBrowser({ script: "1", timeoutMs: 5000 }, { exec, sessionId: "s" })).rejects.toThrow(/5초[\s\S]*남아 있을 수 있다/);

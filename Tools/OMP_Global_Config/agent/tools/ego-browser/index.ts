@@ -141,6 +141,19 @@ function clampTimeout(value: number | undefined): number {
   return Math.min(Math.floor(value), MAX_TIMEOUT_MS);
 }
 
+/**
+ * 10-27~11-02 ego_browser 실패 중 스크립트 API 오용이 반복됐다(Node 본문에서 `location` 사용, 없는 `page.fill`·`page.on` 호출).
+ * SDK 가이드에 답이 있지만 실패한 자리에서는 보이지 않으므로, 오류 원문이 그 모양일 때만 바른 호출을 붙인다.
+ */
+export function misuseHint(raw: string): string {
+  const hints: string[] = [];
+  const global = /ReferenceError: (document|window|location|navigator|localStorage|sessionStorage) is not defined/.exec(raw)?.[1];
+  if (global) hints.push(`스크립트 본문은 Node에서 돈다. 페이지의 \`${global}\`는 \`page.evaluate(...)\` 안에서만 쓴다(주소는 \`await page.evaluate('location.href')\`).`);
+  const missing = /TypeError: page\.([\w$]+) is not a function/.exec(raw)?.[1];
+  if (missing) hints.push(`\`page\`에는 \`${missing}\`가 없다. 요소 입력·클릭은 \`page.locator('@N' 또는 CSS 선택자)\`의 \`click\`·\`fill\`·\`press\`로 하고, 다른 API는 도구 설명의 ego-browser 가이드에서 이름을 확인한 뒤 쓴다.`);
+  return hints.length ? `\n${hints.join("\n")}` : "";
+}
+
 export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, signal?: AbortSignal): Promise<EgoRun> {
   if (!params.script || !params.script.trim()) throw new Error("ego_browser: script가 비어 있다.");
   const profile: EgoProfile = params.profile ?? "user";
@@ -177,10 +190,11 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     // 권한 팝업은 브라우저가 띄운 것이라 사용자만 처리할 수 있다(ego-browser skill 「User control and completion」).
     // 10-30 감사: 같은 스크립트 4회 재전송과 takeOverTaskSpace 우회 3회가 모두 실패했다.
     // 표시용 body는 앞뒤만 남기므로 가운데 묻힌 문구를 놓치지 않게 원문 두 스트림에서 찾는다.
-    const hint = /permission prompt for .+ has appeared/i.test(`${result.stdout}\n${result.stderr}`)
+    const raw = `${result.stdout}\n${result.stderr}`;
+    const hint = /permission prompt for .+ has appeared/i.test(raw)
       ? "\n권한 팝업은 사용자가 허용·거부해야 한다. 같은 스크립트를 다시 보내거나 우회하지 않는다. `await task.handOff()`로 넘기고 사용자에게 무엇을 눌러야 하는지 알린 뒤, 사용자가 계속하라고 하면 이어 간다."
       : "";
-    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}`);
+    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}${misuseHint(raw)}`);
   }
   const text = `${label}${finish ? " — 정리됨" : ""}\n${body || "(출력 없음)"}`;
   return { text, spaceName: name, profile, finished: finish, result };
