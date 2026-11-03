@@ -1346,7 +1346,7 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
 
   test("파일당·합계·개수 상한을 넘는 참고는 싣지 않거나 거절한다", async () => {
     const env = withReference();
-    for (const name of ["big.ts", "m1.ts", "m2.ts", "m3.ts"]) writeFileSync(join(env.work, name), name === "big.ts" ? `${"x".repeat(70 * 1024)}\n` : `${`// ${name}\n`.repeat(4500)}`);
+    for (const name of ["big.ts", "m1.ts", "m2.ts", "m3.ts"]) writeFileSync(join(env.work, name), name === "big.ts" ? `${"x".repeat(MAX_REFERENCE_FILE_BYTES)}\n` : `${`// ${name}\n`.repeat(8000)}`);
     const calls: { family: Lane; prompt: string }[] = [];
     const result = await runReview(input({ references: ["big.ts", "m1.ts", "m2.ts", "m3.ts", "ref.ts"] }), deps(env, {}, calls), signal);
     expect(result.skippedReferences.map((item) => item.path)).toEqual(["big.ts", "m3.ts"]);
@@ -1583,7 +1583,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     writeFileSync(join(env.work, ".gitignore"), "ignored.md\n");
     writeFileSync(join(env.work, ".env.local"), "X=hunter-env\n");
     writeFileSync(join(env.work, "ignored.md"), "ignored body\n");
-    writeFileSync(join(env.work, "big.md"), `${"x".repeat(70 * 1024)}\n`);
+    writeFileSync(join(env.work, "big.md"), `${"x".repeat(MAX_REFERENCE_FILE_BYTES)}\n`);
     sh(env.work, "add", "-f", ".env.local");
     const calls: Prompts = [];
     const result = await runReview(input({ inputs: ["spec.md", ".env.local", "ignored.md", "missing.md", "big.md"] }), deps(env, {}, calls), signal);
@@ -1594,6 +1594,47 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     expect(result.nextStep).toContain("4 declared input(s) were NOT bound");
     const [record] = readCrossReviewRecords(env.ledger) as { inputs: { path: string }[] }[];
     expect(record.inputs.map((item) => item.path)).toEqual(["spec.md"]);
+  });
+
+  // 맥락 예산(2026-11-03): 입력과 참고가 200 KiB 하나를 함께 쓰고 입력을 먼저 싣는다. 한 파일도 그 예산까지 실린다.
+  const block = (label: string, bytes: number) => `${`${label} ${"y".repeat(1000)}\n`.repeat(Math.floor(bytes / (label.length + 1002)))}${label}-TAIL\n`;
+
+  test("예전 상한 안의 조합(입력 100 KiB + 참고 100 KiB)은 그대로 모두 끝까지 실리고 입력이 통과에 묶인다", async () => {
+    const env = withInputs();
+    writeFileSync(join(env.work, "spec.md"), block("SPECLINE", 100 * 1024 - 64));
+    writeFileSync(join(env.work, "ref.ts"), block("REFLINE", 100 * 1024 - 64));
+    const calls: Prompts = [];
+    const result = await runReview(input({ inputs: ["spec.md"], references: ["ref.ts"] }), deps(env, {}, calls), signal);
+    expect(result.skippedInputs ?? []).toEqual([]);
+    expect(result.skippedReferences).toEqual([]);
+    expect(result.inputs!.map((item) => item.path)).toEqual(["spec.md"]);
+    expect(result.references.map((item) => item.path)).toEqual(["ref.ts"]);
+    expect(calls[0].prompt).toContain("SPECLINE-TAIL");
+    expect(calls[0].prompt).toContain("REFLINE-TAIL");
+  });
+
+  test("64 KiB를 넘는 한 입력도 200 KiB 예산 안이면 끝까지 실리고 묶인다", async () => {
+    const env = withInputs();
+    writeFileSync(join(env.work, "spec.md"), block("SPECLINE", 190 * 1024));
+    const calls: Prompts = [];
+    const result = await runReview(input({ inputs: ["spec.md"] }), deps(env, {}, calls), signal);
+    expect(result.skippedInputs ?? []).toEqual([]);
+    expect(calls[0].prompt).toContain("SPECLINE-TAIL");
+    const [record] = readCrossReviewRecords(env.ledger) as { inputs: { path: string }[] }[];
+    expect(record.inputs.map((item) => item.path)).toEqual(["spec.md"]);
+  });
+
+  test("입력이 예산을 먼저 쓰고, 남은 예산을 넘는 참고는 이유와 함께 빠진다(입력은 빠지지 않는다)", async () => {
+    const env = withInputs();
+    writeFileSync(join(env.work, "spec.md"), block("SPECLINE", 150 * 1024));
+    writeFileSync(join(env.work, "ref.ts"), block("REFLINE", 100 * 1024));
+    const calls: Prompts = [];
+    const result = await runReview(input({ references: ["ref.ts"], inputs: ["spec.md"] }), deps(env, {}, calls), signal);
+    expect(result.inputs!.map((item) => item.path)).toEqual(["spec.md"]);
+    expect(result.references).toEqual([]);
+    expect(result.skippedReferences).toMatchObject([{ path: "ref.ts", reason: expect.stringContaining("total context budget") }]);
+    expect(calls[0].prompt).toContain("SPECLINE-TAIL");
+    expect(calls[0].prompt).not.toContain("REFLINE");
   });
 
   test("입력은 10개까지이고, 이어받은 입력과 새 입력의 합도 10개를 넘을 수 없다", async () => {

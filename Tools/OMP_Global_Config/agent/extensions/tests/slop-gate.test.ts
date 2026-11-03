@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import slopGate, { CONTINUATION_TYPE, executeSlopCheck, WARNING_TYPE } from "../slop-gate";
 import { appendSlopRecord, candidatesOf, classify, loadSlopConfig, mergeGateBlobs, passFor, readSlopRecords, runSlopGate, sha256, SlopGateRefusal, trackable } from "../lib/slop-gate";
 import { htmlText, jsonStrings, literalStrings, pythonPath, extractVisible } from "../slop-gate/extract";
-import { buildReviewRequest, parseAnswer, planReviewers, resolveFiles, reviewFiles, resolveFindings, type Complete, type SlopDeps } from "../slop-gate/review";
+import { buildReviewRequest, MAX_BATCH_CHARS, MAX_FILE_CHARS, MAX_PARALLEL_BATCHES, parseAnswer, planReviewers, resolveFiles, reviewFiles, resolveFindings, segmentText, SPLIT_CHARS, type Complete, type SlopDeps } from "../slop-gate/review";
 import { ReviewerCallError } from "../lib/cross-review";
 
 // 모델은 가짜다(결정론). 심사 흐름·원장·추적은 실제 코드가 실제 파일로 돈다.
@@ -590,12 +590,12 @@ describe("심사 정확성: 같은 바이트·중복 id·html 크기와 속성",
     expect(text).toContain("[attr] 링크 설명");
   });
 
-  test("html 원문이 한도를 넘으면 잘라서 통과시키지 않고 통과 없음 오류를 낸다. 뒤쪽 슬롭도 보인다", async () => {
+  test("한도를 넘는 파일은 잘라서 통과시키지 않고 통과 없음 오류를 내며 모델을 부르지 않는다", async () => {
     const cwd = scratch();
-    const filler = "<p>저장 버튼을 누르면 파일이 내려받기 폴더에 들어갑니다.</p>\n".repeat(2000);
-    writeFileSync(join(cwd, "huge.html"), `<html><body>${filler}</body></html>`);
+    writeFileSync(join(cwd, "huge.md"), KO_PLAIN);
     const reviewer = fakeReviewer(clean);
-    const out = await reviewFiles(["huge.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    const over = "가".repeat(MAX_FILE_CHARS + 1);
+    const out = await reviewFiles(["huge.md"], undefined, deps(cwd, reviewer.complete, { extract: async () => ({ text: over, kind: "prose", leads: [] }) }), signal);
     expect(out.files[0]).toMatchObject({ status: "error" });
     expect(out.files[0]!.error).toContain("no pass");
     expect(reviewer.all).toHaveLength(0);
@@ -605,6 +605,195 @@ describe("심사 정확성: 같은 바이트·중복 id·html 크기와 속성",
     const mine = fakeReviewer(clean);
     await reviewFiles(["mid.html"], undefined, deps(cwd, mine.complete, { extract: undefined }), signal);
     expect(mine.calls[0]).toContain("linear-gradient(135deg,#6366f1,#8b5cf6)");
+  });
+});
+
+describe("큰 산출물: 겹치는 조각으로 나눠 빠짐없이 심사한다", () => {
+  /**
+   * 조각 id(a1p2)까지 읽는 가짜 reviewer. 동시에 진행 중인 호출 수의 최대값을 잰다. answer가 id·프롬프트로 finding을 정하고,
+   * fail이 true를 돌려주면 그 호출은 실패한다.
+   */
+  function partReviewer(answer: (id: string, prompt: string) => { quote: string; rule: string; fix: string }[] = () => [], fail: (prompt: string) => boolean = () => false) {
+    const calls: { system: string; prompt: string }[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const complete: Complete = async (family, system, prompt) => {
+      calls.push({ system, prompt });
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      if (fail(prompt)) throw new Error(`${family} outage`);
+      const ids = [...prompt.matchAll(/<artifact id="(a\d+(?:p\d+)?)"/g)].map((match) => match[1]!);
+      return { model: `fixture/${family}`, text: JSON.stringify({ files: ids.map((id) => ({ id, findings: answer(id, prompt) })) }) };
+    };
+    return { calls, complete, peak: () => peak };
+  }
+  const line = (i: number) => `<p>입고 화면 ${i}번 줄에서 품번을 입력하고 저장을 누르면 재고가 늘어납니다.</p>\n`;
+  const bigHtml = (count: number, head = "", tail = "") => `<html><head><style>.hero{background:linear-gradient(90deg,#111,#222)}</style></head><body>${head}${Array.from({ length: count }, (_, i) => line(i)).join("")}${tail}<p>마지막 안내 TAILMARK 문장입니다.</p></body><style>.tail{background:linear-gradient(135deg,#6366f1,#8b5cf6)}</style></html>`;
+  const ledgerPasses = (cwd: string) => readSlopRecords(join(cwd, "ledger.jsonl")).filter((record) => record.type === "slop-pass");
+
+  test("400k자를 넘는 html도 거절하지 않고, 보이는 글과 원문 끝(CSS)까지 모든 줄을 한도 안의 호출로 나눠 심사해 그 파일 sha256에 통과를 남긴다", async () => {
+    const cwd = scratch();
+    const html = bigHtml(4500);
+    expect(htmlText(html).length + html.length).toBeGreaterThan(400_000);
+    writeFileSync(join(cwd, "list.html"), html);
+    const reviewer = partReviewer();
+    const out = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    expect(out.files).toHaveLength(1);
+    expect(out.files[0]).toMatchObject({ status: "pass", sha256: sha256(html), scope: expect.stringMatching(/whole, \d+ parts/) });
+    expect(reviewer.calls.length).toBeGreaterThan(4);
+    for (const call of reviewer.calls) {
+      expect(call.prompt.length).toBeLessThanOrEqual(MAX_BATCH_CHARS + 2_000);
+      expect(call.system).toContain("one part of a larger file");
+    }
+    expect(reviewer.peak()).toBeGreaterThan(1);
+    expect(reviewer.peak()).toBeLessThanOrEqual(MAX_PARALLEL_BATCHES);
+    const shown = reviewer.calls.map((call) => call.prompt).join("\n");
+    for (let i = 0; i < 4500; i += 1) {
+      expect(shown).toContain(`입고 화면 ${i}번 줄에서`);
+      expect(shown).toContain(`<p>입고 화면 ${i}번 줄에서`);
+    }
+    for (const needle of ["TAILMARK", "linear-gradient(135deg,#6366f1,#8b5cf6)", "linear-gradient(90deg,#111,#222)"]) expect(shown).toContain(needle);
+    expect(ledgerPasses(cwd).map((record) => record.sha256)).toEqual([sha256(html)]);
+    const reviewed = reviewer.calls.length;
+    const again = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    expect(again.files[0]!.status).toBe("already-passed");
+    expect(reviewer.calls).toHaveLength(reviewed);
+  });
+
+  test("줄바꿈 없는 긴 원문(압축 html)도 줄 안에서 잘라 모든 표식을 통째로 보인다", async () => {
+    const cwd = scratch();
+    const spans = Array.from({ length: 9000 }, (_, i) => `<span class="c${i}">표시${i}끝</span>`).join("");
+    writeFileSync(join(cwd, "min.html"), `<html><body><p>저장 버튼을 누르면 파일이 내려받기 폴더에 들어갑니다. 한 번 더 누르면 이름 뒤에 번호가 붙습니다.</p>${spans}</body></html>`);
+    const reviewer = partReviewer();
+    const out = await reviewFiles(["min.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    expect(out.files[0]!.status).toBe("pass");
+    const shown = reviewer.calls.map((call) => call.prompt).join("\n");
+    for (let i = 0; i < 9000; i += 1) expect(shown).toContain(`<span class="c${i}">표시${i}끝</span>`);
+    for (const call of reviewer.calls) expect(call.prompt.length).toBeLessThanOrEqual(MAX_BATCH_CHARS + 2_000);
+  });
+
+  test("조각 경계: 조각의 [core,end)가 글 전체를 겹침 없이 덮고, 각 조각은 budget 이하이며, 경계에 걸친 짧은 표현은 한 조각 안에 통째로 있다", () => {
+    const text = Array.from({ length: 3000 }, (_, i) => (i % 97 === 0 ? `긴줄${"x".repeat(5000)}` : `줄 ${i} 경계를 넘는 표현 ${i}`)).join("\n");
+    const budget = 20_000;
+    const parts = segmentText(text, budget);
+    expect(parts.length).toBeGreaterThan(1);
+    let covered = 0;
+    for (const part of parts) {
+      expect(part.core).toBe(covered);
+      expect(part.end - part.start).toBeLessThanOrEqual(budget);
+      expect(part.start).toBeLessThanOrEqual(part.core);
+      covered = part.end;
+    }
+    expect(covered).toBe(text.length);
+    for (const part of parts.slice(1)) {
+      const spanning = text.slice(part.core - 40, part.core + 40);
+      expect(parts.some((other) => text.slice(other.start, other.end).includes(spanning))).toBe(true);
+    }
+  });
+
+  test("한 조각의 호출이 실패하거나 한 조각을 건너뛴 답이면 파일 전체가 통과 없음이다", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "list.html"), bigHtml(4500));
+    const failing = await reviewFiles(["list.html"], undefined, deps(cwd, partReviewer(() => [], (prompt) => prompt.includes('part="3/')).complete, { extract: undefined }), signal);
+    expect(failing.files[0]!.status).toBe("error");
+    expect(failing.files[0]!.error).toContain("part 3/");
+    expect(failing.files[0]!.error).toContain("required reviewer (openai)");
+    const skipping: Complete = async (family, _system, prompt) => {
+      const ids = [...prompt.matchAll(/<artifact id="(a\d+(?:p\d+)?)"/g)].map((match) => match[1]!).filter((id) => id !== "a1p2");
+      return { model: `fixture/${family}`, text: JSON.stringify({ files: ids.map((id) => ({ id, findings: [] })) }) };
+    };
+    const skipped = await reviewFiles(["list.html"], undefined, deps(cwd, skipping, { extract: undefined }), signal);
+    expect(skipped.files[0]!.status).toBe("error");
+    expect(skipped.files[0]!.error).toContain("part 2/");
+    expect(skipped.files[0]!.error).toContain("skipped");
+    expect(ledgerPasses(cwd)).toEqual([]);
+  });
+
+  test("여러 조각의 finding은 한 파일의 finding으로 합쳐지고, 겹친 줄의 같은 지적은 한 번이며, resolve와 sha256 신선도는 파일 단위로 그대로다", async () => {
+    const cwd = scratch();
+    const html = bigHtml(4500, "<p>이 도구는 혁신적인 솔루션입니다.</p>\n", "<p>결론적으로 지속가능한 경험을 제공합니다.</p>\n");
+    writeFileSync(join(cwd, "list.html"), html);
+    const reviewer = partReviewer((_id, prompt) => [
+      ...(prompt.includes("혁신적인 솔루션") ? [{ quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", fix: "무엇을 하는지 쓴다" }] : []),
+      ...(prompt.includes("결론적으로 지속가능한") ? [{ quote: "결론적으로 지속가능한 경험", rule: "humanizer:7 상투 결론", fix: "결론 표지를 뺀다" }] : []),
+      ...(prompt.includes("입고 화면 0번 줄") ? [{ quote: "입고 화면 0번 줄에서", rule: "humanizer:1 반복", fix: "줄인다" }] : []),
+    ]);
+    const out = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    const file = out.files[0]!;
+    expect(file.status).toBe("findings");
+    const quotes = file.findings!.map((finding) => finding.quote).sort();
+    expect(quotes).toEqual(["결론적으로 지속가능한 경험", "입고 화면 0번 줄에서", "혁신적인 솔루션"]);
+    expect(file.findings!.map((finding) => finding.id).sort()).toEqual(["R-OAI-1", "R-OAI-2", "R-OAI-3"]);
+    expect(file.findings!.every((finding) => finding.quoteFound)).toBe(true);
+    expect(ledgerPasses(cwd)).toEqual([]);
+    const resolved = resolveFindings(out.reviewId!, file.findings!.map((finding) => ({ id: finding.id, status: "refuted", evidence: "고객이 지정한 원문 문구라 바꿀 수 없다" })), deps(cwd, reviewer.complete));
+    expect(resolved).toMatchObject({ passed: [realpathSync(join(cwd, "list.html"))], open: [], stale: [] });
+    expect(ledgerPasses(cwd).map((record) => record.sha256)).toEqual([sha256(html)]);
+    writeFileSync(join(cwd, "list.html"), `${html}\n`);
+    const before = reviewer.calls.length;
+    const changed = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    expect(changed.files[0]!.status).not.toBe("already-passed");
+    expect(reviewer.calls.length).toBeGreaterThan(before);
+  });
+
+  test("office·일반 글 형식도 같은 길로 400k자 넘게 끝까지 심사한다", async () => {
+    const cwd = scratch();
+    const body = (tag: string) => Array.from({ length: 10_000 }, (_, i) => `${tag} ${i}번 항목: 저장 버튼을 누르면 파일이 내려받기 폴더에 들어간다.`).join("\n");
+    expect(body("문서").length).toBeGreaterThan(400_000);
+    writeFileSync(join(cwd, "report.docx"), "docx bytes");
+    const docx = partReviewer();
+    const office = await reviewFiles(["report.docx"], undefined, deps(cwd, docx.complete, { extract: async () => ({ text: `${body("문서")}\n문서 끝 OFFICETAIL`, kind: "office", leads: [] }) }), signal);
+    expect(office.files[0]).toMatchObject({ status: "pass", scope: expect.stringContaining("parts") });
+    const md = body("안내");
+    writeFileSync(join(cwd, "guide.md"), `${md}\n안내 끝 PLAINTAIL\n`);
+    const plain = partReviewer();
+    const prose = await reviewFiles(["guide.md"], undefined, deps(cwd, plain.complete, { extract: undefined }), signal);
+    expect(prose.files[0]).toMatchObject({ status: "pass", scope: expect.stringContaining("parts") });
+    for (const [reviewer, tag, tail] of [[docx, "문서", "OFFICETAIL"], [plain, "안내", "PLAINTAIL"]] as const) {
+      const shown = reviewer.calls.map((call) => call.prompt).join("\n");
+      for (let i = 0; i < 10_000; i += 1) expect(shown).toContain(`${tag} ${i}번 항목:`);
+      expect(shown).toContain(tail);
+      for (const call of reviewer.calls) expect(call.prompt.length).toBeLessThanOrEqual(MAX_BATCH_CHARS + 2_000);
+    }
+  });
+
+  test("앞 라운드 지적과 반박 근거가 많아도 조각 요청은 한도 안이고, 조각에 실린 지적은 인용이 그 조각 글에 있는 것이다", async () => {
+    const cwd = scratch();
+    const html = bigHtml(4500);
+    writeFileSync(join(cwd, "list.html"), html);
+    const abs = realpathSync(join(cwd, "list.html"));
+    const findings = Array.from({ length: 80 }, (_, k) => ({ id: `R-OAI-${k + 1}`, quote: `입고 화면 ${k * 55}번 줄에서`, rule: "humanizer:1 반복", fix: "줄인다" }));
+    appendSlopRecord(join(cwd, "ledger.jsonl"), { type: "slop-review", reviewId: "slop-old", ts: "t", model: "m", files: [{ path: abs, sha256: "older", scope: "whole", findings }] });
+    appendSlopRecord(join(cwd, "ledger.jsonl"), { type: "slop-resolve", reviewId: "slop-old", ts: "t", resolutions: findings.map((finding) => ({ id: finding.id, status: "refuted", evidence: `고객 원문 ${"근거".repeat(1000)}` })) });
+    const reviewer = partReviewer();
+    const out = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
+    expect(out.files[0]!.status).toBe("pass");
+    for (const call of reviewer.calls) expect(call.prompt.length).toBeLessThanOrEqual(MAX_BATCH_CHARS + 2_000);
+    let shownPrior = 0;
+    for (const call of reviewer.calls) {
+      const [body, prior = ""] = call.prompt.split("<previous-round");
+      for (const match of prior.matchAll(/R-OAI-\d+ humanizer:1 반복: "([^"]+)"/g)) {
+        shownPrior += 1;
+        expect(body).toContain(match[1]!);
+      }
+    }
+    expect(shownPrior).toBeGreaterThan(0);
+  });
+
+  test("예전 한도 이하(나누는 기준 SPLIT_CHARS 이하)의 파일은 예전처럼 한 호출이고 조각 표시가 없다", async () => {
+    const cwd = scratch();
+    const text = `${"저장 버튼을 누르면 파일이 내려받기 폴더에 들어간다.\n".repeat(Math.floor((SPLIT_CHARS - 500) / 30))}`;
+    expect(text.length).toBeGreaterThan(MAX_BATCH_CHARS);
+    expect(text.length).toBeLessThanOrEqual(SPLIT_CHARS);
+    writeFileSync(join(cwd, "near.md"), text);
+    const reviewer = partReviewer();
+    const out = await reviewFiles(["near.md"], undefined, deps(cwd, reviewer.complete, { extract: async () => ({ text, kind: "prose", leads: [] }) }), signal);
+    expect(out.files[0]).toMatchObject({ status: "pass", scope: "whole" });
+    expect(reviewer.calls).toHaveLength(1);
+    expect(reviewer.calls[0]!.prompt).not.toContain("part=");
+    expect(reviewer.calls[0]!.system).not.toContain("one part of a larger file");
   });
 });
 
@@ -907,8 +1096,8 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
     const cwd = scratch();
     writeFileSync(join(cwd, "a.md"), KO_PLAIN);
     writeFileSync(join(cwd, "b.md"), "Press Save to store the file in the Downloads folder. Press it again and the app adds a number to the name.\n".repeat(4));
-    // 첫 묶음은 한 번 다시 물은 답까지 해석할 수 없다(call 0·1). 뒤 묶음은 깨끗하다.
-    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((call, ids) => (call <= 1 ? "not json" : JSON.stringify(clean(ids)))), { authors: MIXED }), signal);
+    // 첫 묶음(a.md, a1)은 한 번 다시 물은 답까지 해석할 수 없다. 뒤 묶음은 깨끗하다. 묶음은 동시에 갈 수 있으므로 호출 순서가 아니라 묶음 내용으로 고른다.
+    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((_call, ids) => (ids.includes("a1") ? "not json" : JSON.stringify(clean(ids)))), { authors: MIXED }), signal);
     expect(out.reviewers!.find((status) => status.family === "openai")!.status).toBe("unparsable");
     expect(out.files.find((file) => file.file === "a.md")!.status).toBe("error");
     const b = out.files.find((file) => file.file === "b.md")!;

@@ -180,7 +180,7 @@ export const sha256 = (bytes: Uint8Array | string): string => createHash("sha256
 
 /**
  * 이 바이트를 넘는 csv는 사람이 읽는 보고 표가 아니라 원자료(센서·장비 로그 등)로 보고 슬롭 검사에서 뺀다(2026-10-28 사용자 결정: 59 MB 센서 로그가
- * 턴 끝 게이트를 띄우고 slop_check 오류를 냈다). 한 번에 심사할 수 있는 글(MAX_FILE_CHARS 100,000자)의 네 배라 통째로 보일 수도 없다. csv만이다.
+ * 턴 끝 게이트를 띄우고 slop_check 오류를 냈다). csv만이다.
  */
 export const MAX_REPORT_CSV_BYTES = 400_000;
 

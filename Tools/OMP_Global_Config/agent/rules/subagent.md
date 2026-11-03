@@ -694,8 +694,8 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   probe 라운드 → `confirmed`만 수정 → delta 라운드다.
   reviewer는 diff 앞뒤 12줄 밖을 보지 못하고 테스트도 돌리지 못한다. 그래서 변경이 diff 밖 코드와 맞물리면
   (큰 파일 안의 기존 함수·호출부·단계별 교체, 다른 파일의 호출자, 지켜야 할 계약) `review` 1라운드에 그 맥락을
-  `references`(최대 10개, 파일당 64 KB·합계 100 KB)로 함께 넘긴다. 64 KB를 넘는 파일은 빠지므로 큰 파일 자체가
-  아니라 호출부가 든 다른 파일·Maker 기록·계약 문서를 고른다. references는 심사 대상도 통과 지문도 아니므로
+  `references`(최대 10개, 파일당 200 KiB, `inputs`와 함께 쓰는 합계 200 KiB에서 `inputs`가 먼저 쓴다)로 함께 넘긴다.
+  예산을 넘는 파일은 빠지므로 큰 파일 자체가 아니라 호출부가 든 다른 파일·Maker 기록·계약 문서를 고른다. references는 심사 대상도 통과 지문도 아니므로
   diff 밖 동작의 근거는 여전히 Main·owner의 실행 검증이다.
   `fixed`로 닫은 finding은 owner에게 `finding_id=<review가 준 ID>`를 붙인 기존 `REWORK` 주문으로 보내고
   Main이 새 revision의 delta를 검토한다(후속 `cross_review`는 선택이며 필수가 아니다). 통과 지문은 `resolve` 시점

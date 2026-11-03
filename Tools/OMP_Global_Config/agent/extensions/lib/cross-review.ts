@@ -1083,7 +1083,7 @@ export function boundInputPaths(changes: readonly ChangedFile[], records: readon
 /**
  * 의존 입력의 지금 blob. 입력 하나를 열린 handle 하나에 묶어 읽는다: 열 때 O_NOFOLLOW(링크면 거절)·O_NONBLOCK(FIFO가 막지 않게)를 쓰고, 일반
  * 파일인지는 그 fd의 fstat로 보며, blob은 그 fd에서 읽은 바이트를 검토 때와 같은 hashBytes로 낸다. 그래서 확인과 해시 사이에 이름이 링크나
- * 다른 파일로 바뀌어도 바이트를 다시 읽지 않는다. 없으면 "deleted", 링크·디렉터리·읽을 수 없음은 NOT_REGULAR_BLOB이다. 검토 때는 64 KiB
+ * 다른 파일로 바뀌어도 바이트를 다시 읽지 않는다. 없으면 "deleted", 링크·디렉터리·읽을 수 없음은 NOT_REGULAR_BLOB이다. 검토 때는 MAX_REFERENCE_FILE_BYTES
  * 이하 일반 파일만 입력으로 묶이므로 그보다 큰 파일은 읽지 않고 기록과 다른 blob("oversize")으로 둔다. 모두 기록한 blob과 다른, 곧 바뀐 입력이다.
  */
 export async function currentInputBlobs(exec: Exec, git: string, root: string, paths: string[]): Promise<Map<string, string>> {
@@ -1727,8 +1727,13 @@ export function redactSecrets(text: string): { text: string; count: number; bloc
 
 export const MAX_REFERENCES = 10;
 export const MAX_INPUTS = 10;
-export const MAX_REFERENCE_FILE_BYTES = 64 * 1024;
-export const MAX_REFERENCE_TOTAL_BYTES = 100 * 1024;
+/**
+ * 한 라운드의 의존 입력과 참고를 합친 맥락 예산(UTF-8 바이트, 2026-11-03). 예전 상한(입력 100 KiB + 참고 100 KiB)과 같은 합계라 나눈 호출마다 싣는 공통 부분의
+ * 최대 크기는 그대로다. 입력(통과에 묶이는 계약)을 먼저 싣고 참고가 남은 예산을 쓴다. 한 파일도 이 예산까지 실을 수 있다: 예전 파일당 64 KiB 상한은
+ * 합계보다 작아 자리가 남아도 90~250 KB 호출부·계약 파일을 뺐다(세션 기록 26건).
+ */
+export const MAX_CONTEXT_TOTAL_BYTES = 200 * 1024;
+export const MAX_REFERENCE_FILE_BYTES = MAX_CONTEXT_TOTAL_BYTES;
 /**
  * references: 검토 대상이 아닌 맥락용 기존 파일(cwd 기준 상대 경로). 통과가 덮지 않고 변경 파일 심사를 대신하지 못한다.
  * inputs: 변경이 일관돼야 하는 의존 입력(명세·계약·스키마·호출자)의 기존 파일. 참고와 같은 읽기·필터를 쓰지만 통과에 묶인다: 입력이 통과 뒤에 바뀌면 게이트가 그 통과를 덮지 않는 것으로 본다. files와 겹칠 수 없고 이어지는 라운드가 이어받는다.
@@ -2034,13 +2039,13 @@ export function readReferenceFile(pinnedRoot: string, path: string, afterRead?: 
  * 심볼릭 링크·디렉터리·없는 경로는 싣지 않고 이유를 돌려준다. 추적되지 않은 새 파일은 허용한다. 자동 탐색은 하지 않는다. blob·본문·사본은
  * 모두 race-safe하게 한 번 읽은 같은 바이트에서 나온다.
  */
-async function collectContextFiles(deps: ReviewDeps, git: string, root: string, pinnedRoot: string, paths: string[], reviewed: ReadonlySet<string>, noun: "reference" | "input"): Promise<{ entries: ReferenceEntry[]; skipped: { path: string; reason: string }[] }> {
+async function collectContextFiles(deps: ReviewDeps, git: string, root: string, pinnedRoot: string, paths: string[], reviewed: ReadonlySet<string>, noun: "reference" | "input", budget: { used: number }): Promise<{ entries: ReferenceEntry[]; skipped: { path: string; reason: string }[] }> {
   const listed = await deps.exec(git, ["--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...paths], { cwd: root });
   if (listed.code !== 0) throw new Error(`git ls-files failed for ${noun}s: ${(listed.stderr || listed.stdout).trim()}`);
   const known = new Set(listed.stdout.split("\0").filter(Boolean));
   const entries: ReferenceEntry[] = [];
   const skipped: { path: string; reason: string }[] = [];
-  let total = 0;
+  // budget은 같은 라운드의 입력·참고가 함께 쓴다(입력을 먼저 모은다).
   for (const path of paths) {
     const skip = (reason: string) => { skipped.push({ path, reason }); };
     if (hardSecretPath(path)) { skip(POLICY_SKIP_REASON); continue; }
@@ -2049,11 +2054,11 @@ async function collectContextFiles(deps: ReviewDeps, git: string, root: string, 
     const read = readReferenceFile(pinnedRoot, path, undefined, noun);
     if ("skip" in read) { skip(read.skip); continue; }
     const content = read.content;
-    if (total + content.length > MAX_REFERENCE_TOTAL_BYTES) { skip(`total ${noun} budget (${MAX_REFERENCE_TOTAL_BYTES} bytes) exhausted`); continue; }
+    if (budget.used + content.length > MAX_CONTEXT_TOTAL_BYTES) { skip(`total context budget (${MAX_CONTEXT_TOTAL_BYTES} bytes shared by inputs and references, inputs loaded first) exhausted: ${budget.used} bytes already used`); continue; }
     if (content.includes(0)) { skip("binary file"); continue; }
     const safe = redactSecrets(numbered(content.toString("utf8").replace(/^\uFEFF/, "")));
     if (safe.blocked) { skip("private key block excluded by the safety filter"); continue; }
-    total += content.length;
+    budget.used += content.length;
     entries.push({ path, blob: await hashBytes(deps.exec, git, root, path, content), bytes: content.length, ...(safe.count > 0 ? { redacted: safe.count } : {}), text: safe.text, content });
   }
   return { entries, skipped };
@@ -2064,14 +2069,14 @@ async function collectContextFiles(deps: ReviewDeps, git: string, root: string, 
  * 필터를 쓰고, record.files·사본 manifest·통과 지문에는 들어가지 않으므로 어떤 통과도 덮지 않는다. 추적되지 않은 새 파일은 허용하되
  * .gitignore 대상·심볼릭 링크·디렉터리·없는 경로는 싣지 않는다. 자동 탐색은 하지 않는다.
  */
-async function collectReferences(deps: ReviewDeps, git: string, root: string, pinnedRoot: string, requested: string[], reviewed: ReadonlySet<string>): Promise<{ references: ReferenceEntry[]; skipped: { path: string; reason: string }[] }> {
+async function collectReferences(deps: ReviewDeps, git: string, root: string, pinnedRoot: string, requested: string[], reviewed: ReadonlySet<string>, budget: { used: number }): Promise<{ references: ReferenceEntry[]; skipped: { path: string; reason: string }[] }> {
   const asked = [...new Set(requested.map((item) => item.trim()).filter(Boolean))];
   if (asked.length > MAX_REFERENCES) throw new Error(`references lists ${asked.length} paths; at most ${MAX_REFERENCES} are allowed. Split the review or reference fewer files.`);
   if (asked.length === 0) return { references: [], skipped: [] };
   const resolved = await resolveRepoTargets(deps.cwd, asked, deps.exec);
   if ("failure" in resolved) throw new Error(`references must be cwd-relative paths of existing parents inside the same git repository as files: ${resolved.detail}`);
   if (pathKey(resolved.root) !== pathKey(root)) throw new Error(`references must be in the same repository as files (${root}), not ${resolved.root}.`);
-  const { entries, skipped } = await collectContextFiles(deps, git, root, pinnedRoot, [...new Set(resolved.targets.map((target) => target.path))], reviewed, "reference");
+  const { entries, skipped } = await collectContextFiles(deps, git, root, pinnedRoot, [...new Set(resolved.targets.map((target) => target.path))], reviewed, "reference", budget);
   return { references: entries, skipped };
 }
 
@@ -2330,19 +2335,10 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     throw new Error(`Nothing to review (${why}).${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
   }
 
-  const movable = docsDeferred ? [...new Map(docTargets.map((target) => [target.path, target] as const)).values()].filter((target) => !inputPaths.has(target.path) && !referencePaths.has(target.path)) : [];
-  const movedDocs = movable.slice(0, Math.max(0, MAX_REFERENCES - explicitReferences.length));
-  const droppedDocs = movable.slice(movedDocs.length).map((target) => target.path);
-  const referenceRequests = [...explicitReferences, ...movedDocs.map((target) => target.input)];
-  const referenceResult = referenceRequests.length
-    ? await collectReferences(deps, git, root, pinnedRoot!, referenceRequests, new Set(reviewedFiles.map((file) => file.path)))
-    : { references: [], skipped: [] };
-  const { references } = referenceResult;
-  const sentDocs = movedDocs.filter((target) => references.some((reference) => reference.path === target.path));
-  const skippedReferences = [...referenceResult.skipped, ...droppedDocs.map((path) => ({ path, reason: `references limit (${MAX_REFERENCES}) reached; the doc was removed from files but not sent as context` }))];
-  const policyReferences = skippedReferences.filter((item) => item.reason === POLICY_SKIP_REASON).map((item) => item.path);
+  // 입력(통과에 묶이는 계약)을 참고보다 먼저 맥락 예산에 싣는다. 이어받은 입력은 그중에서도 앞에 있다(planInputs).
+  const contextBudget = { used: 0 };
   const inputResult = inputPlan.paths.length > 0
-    ? await collectContextFiles(deps, git, root, pinnedRoot!, inputPlan.paths, new Set(), "input")
+    ? await collectContextFiles(deps, git, root, pinnedRoot!, inputPlan.paths, new Set(), "input", contextBudget)
     : { entries: [], skipped: [] };
   const { entries: inputEntries, skipped: skippedInputs } = inputResult;
   // 앞 라운드가 묶은 입력은 계속 reviewer에게 보일 수 있어야 한다. 조용히 빠지면 통과가 그 입력을 더는 묶지 않게 된다.
@@ -2350,6 +2346,17 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   if (lostInputs.length > 0) {
     throw new Error(`${lostInputs.map((item) => `input ${item.path} (${item.reason})`).join("; ")}: bound by an earlier round of this chain but it cannot be shown to the reviewer now. A pass keeps every input it was reviewed against, so it cannot be dropped silently. Restore it, or start a new review without previousReviewId and without this input.`);
   }
+  const movable = docsDeferred ? [...new Map(docTargets.map((target) => [target.path, target] as const)).values()].filter((target) => !inputPaths.has(target.path) && !referencePaths.has(target.path)) : [];
+  const movedDocs = movable.slice(0, Math.max(0, MAX_REFERENCES - explicitReferences.length));
+  const droppedDocs = movable.slice(movedDocs.length).map((target) => target.path);
+  const referenceRequests = [...explicitReferences, ...movedDocs.map((target) => target.input)];
+  const referenceResult = referenceRequests.length
+    ? await collectReferences(deps, git, root, pinnedRoot!, referenceRequests, new Set(reviewedFiles.map((file) => file.path)), contextBudget)
+    : { references: [], skipped: [] };
+  const { references } = referenceResult;
+  const sentDocs = movedDocs.filter((target) => references.some((reference) => reference.path === target.path));
+  const skippedReferences = [...referenceResult.skipped, ...droppedDocs.map((path) => ({ path, reason: `references limit (${MAX_REFERENCES}) reached; the doc was removed from files but not sent as context` }))];
+  const policyReferences = skippedReferences.filter((item) => item.reason === POLICY_SKIP_REASON).map((item) => item.path);
   const probesBefore = chain.filter((record) => record.probeResults?.length).length;
   // 숨김 단서는 이미 시작된 심사의 프롬프트에만 붙는다. 인용한 줄에서 비밀 값은 가리고 길이를 자른다.
   const hidingLeads = detectHidingLeads(leadSources).map((lead) => {
