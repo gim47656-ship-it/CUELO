@@ -69,6 +69,23 @@ const UP_TO_DATE: CueloUpdateResponse = {
 
 const SOURCE_MODE = { mode: "source" as const, supported: true, reason: null };
 
+test("cloud service hands off without GitHub release lookup or a cgroup child", async () => {
+  const mode = detectInstallMode({
+    appRoot: "/data/cuelo/app", homeDir: "/data/cuelo",
+    cgroupText: "0::/system.slice/cuelo.service",
+    exists: file => file === "/etc/cuelo/cloud-update-enabled",
+  });
+  expect(mode.mode).toBe("cloud");
+  const dir = tempDir("cloud");
+  const result = await startSelfUpdate({
+    dir, mode, env: { NEXT_PUBLIC_APP_VERSION: "0.10.134" },
+    status: async () => { throw Error("must not query GitHub"); },
+    spawnWorker: () => { throw Error("must not spawn a child"); },
+  });
+  expect(result.state).toBe("started");
+  expect(fs.existsSync(path.join(dir, "cloud-request"))).toBe(true);
+  expect(readSelfUpdateJob(dir).job?.phase).toBe("handed-off");
+});
 describe("install mode detection", () => {
   test("a WSL ops service is recognised from the unit in the cgroup and its update script", () => {
     const home = tempDir("wsl");

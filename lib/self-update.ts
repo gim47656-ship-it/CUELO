@@ -11,7 +11,7 @@ import { canonicalVersion, getCueloUpdateStatus } from "@/lib/omp-updates";
  * The browser sends no command, path, package spec, tag or revision.
  */
 
-export type SelfUpdateMode = "npm" | "source" | "wsl";
+export type SelfUpdateMode = "npm" | "source" | "wsl" | "cloud";
 
 /** Phases a detached worker writes; the last four are terminal. */
 export type SelfUpdatePhase =
@@ -125,6 +125,11 @@ export function detectInstallMode(input: DetectInput): SelfUpdateModeInfo {
   const serviceRoot = join(input.homeDir, "cuelo-run");
   const updateScript = join(serviceRoot, "Tools", "CUELO_Setup", "wsl", "update.sh");
   const inServiceUnit = /(?:^|\/)cuelo-\d+\.service(?:\/|$)/m.test(input.cgroupText);
+  if (/(?:^|\/)cuelo\.service(?:\/|$)/m.test(input.cgroupText)
+    && resolve(input.appRoot) === "/data/cuelo/app"
+    && exists("/etc/cuelo/cloud-update-enabled")) {
+    return { mode: "cloud", supported: true, reason: null };
+  }
   if (inServiceUnit && resolve(input.appRoot) === resolve(serviceRoot) && exists(updateScript)) {
     return { mode: "wsl", supported: true, reason: null };
   }
@@ -200,7 +205,7 @@ function normalizeJob(raw: unknown): SelfUpdateJob | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
   const phase = typeof value.phase === "string" ? value.phase : "";
-  const mode = value.mode === "npm" || value.mode === "source" || value.mode === "wsl" ? value.mode : null;
+  const mode = value.mode === "npm" || value.mode === "source" || value.mode === "wsl" || value.mode === "cloud" ? value.mode : null;
   if (!phase || !mode) return null;
   return {
     schemaVersion: 1,
@@ -252,6 +257,11 @@ export function readSelfUpdateJob(
 } {
   const job = normalizeJob(readJson<unknown>(join(dir, JOB_FILE)));
   if (!job) return { job: null, running: false };
+  if (job.mode === "cloud" && !isTerminalPhase(job.phase) || job.mode === "cloud" && job.phase === "handed-off") {
+    const result = spawnSync("systemctl", ["is-active", "cuelo-cloud-update.service"], { encoding: "utf8", timeout: 3000 });
+    const state = (result.stdout ?? "").trim();
+    return { job, running: ["active", "activating", "deactivating"].includes(state) || Date.now() - Date.parse(job.updatedAt) < 60_000 };
+  }
   // A WSL hand-off keeps the lock while update.sh works, even though this process is gone.
   if (job.phase === "handed-off") return { job, running: job.targetRef ? unitRunning(job.targetRef, job.updatedAt) : false };
   if (isTerminalPhase(job.phase)) return { job, running: false };
@@ -396,6 +406,19 @@ export async function startSelfUpdate(options: StartOptions = {}): Promise<SelfU
   if (existing.running && existing.job) return { state: "running", job: existing.job };
   clearStaleLock(dir, options.unitRunning);
 
+  // The root runner selects the newest remote tag itself, without the GitHub API rate limit.
+  if (installMode === "cloud") {
+    const now = new Date().toISOString();
+    const job: SelfUpdateJob = {
+      schemaVersion: 1, mode: "cloud", phase: "handed-off",
+      currentVersion: env.NEXT_PUBLIC_APP_VERSION ?? "unknown", targetVersion: "latest",
+      targetRef: "cuelo-cloud-update.service", pid: null, supervisorPid: null, relaunchedPid: null,
+      startedAt: now, updatedAt: now, error: null, logPath: join(dir, LOG_FILE),
+    };
+    writeFileSync(join(dir, JOB_FILE), `${JSON.stringify(job)}\n`);
+    writeFileSync(join(dir, "cloud-request"), "");
+    return { state: "started", job };
+  }
   const currentAppVersion = env.NEXT_PUBLIC_APP_VERSION ?? "";
   let status: CueloUpdateResponse;
   try {

@@ -198,7 +198,7 @@ export interface CueloUpdateResponse {
 }
 
 /** How the running CUELO was installed; `null` when the server could not recognise it. */
-export type CueloUpdateMode = "npm" | "source" | "wsl";
+export type CueloUpdateMode = "npm" | "source" | "wsl" | "cloud";
 
 export type CueloUpdatePhase =
   | "starting"

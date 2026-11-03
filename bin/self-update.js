@@ -513,6 +513,11 @@ async function main() {
   claimLock();
   if (plan.mode === "npm") return npmUpdate();
   if (plan.mode === "source") return sourceUpdate();
+  if (plan.mode === "cloud") {
+    updateJob({ phase: "handed-off", targetRef: "cuelo-cloud-update.service" });
+    fs.writeFileSync(path.join(dir, "cloud-request"), "");
+    return 0;
+  }
   if (plan.mode === "wsl") return wslUpdate();
   throw new Error(`unknown mode: ${plan.mode}`);
 }
