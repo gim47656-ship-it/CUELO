@@ -22,6 +22,7 @@ import { defaultExec as egoBrowserExec } from "../../tools/ego-browser/index";
 
 import { isNotRepositoryDiagnostic, matchBlockedCommand } from "./matcher";
 import { interopHint, windowsOutputCommand } from "./interop-hint";
+import { hostSystemChangeHint } from "./host-change-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
 import {
   bindSpawnAliases,
@@ -1405,8 +1406,10 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     if (event.toolName === "bash") {
       const command = typeof event.input.command === "string" ? event.input.command : "";
       const output = event.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-      const hint = interopHint(command, output, { managedPython: managedPythonPath() });
-      return hint ? { content: [...event.content, { type: "text", text: hint }] } : undefined;
+      const hints = [interopHint(command, output, { managedPython: managedPythonPath() }), hostSystemChangeHint(command)].filter(
+        (hint): hint is string => hint !== undefined,
+      );
+      return hints.length > 0 ? { content: [...event.content, { type: "text", text: hints.join("\n") }] } : undefined;
     }
     if (event.isError) return;
     const path = typeof event.input.path === "string" ? event.input.path.trim() : "";

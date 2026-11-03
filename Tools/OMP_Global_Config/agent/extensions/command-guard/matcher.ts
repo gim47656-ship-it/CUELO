@@ -2247,12 +2247,13 @@ function nestedScripts(
 }
 
 /**
- * 명령이 실제로 부르는 실행 파일 이름(따옴표를 벗긴 첫 낱말) 전부. 따옴표 안 언급·주석·heredoc 본문의 글자는 포함하지 않고,
- * 명령 치환·`bash -c '…'`·래퍼 뒤의 명령은 포함한다. 부르는 낱말이 `"$S"`처럼 변수면 무엇인지 정적으로 알 수 없으므로,
- * 같은 명령에서 앞서 `S=…`로 대입한 값을 그 호출 후보로 함께 돌려준다. WSL interop이 Windows 프로그램 호출을 알아보는 데 쓴다.
+ * 명령이 실제로 부르는 호출마다 부르는 낱말(따옴표를 벗긴 첫 낱말)·해석한 이름·인자를 넘긴다. 따옴표 안 언급·주석·heredoc 본문의
+ * 글자는 호출이 아니고, 명령 치환·`bash -c '…'`·래퍼 뒤의 명령은 호출이다. `assigned`는 그 호출까지 같은 명령에서 `S=…`로 대입한 값이다.
  */
-export function invokedCommands(command: string): string[] {
-  const invoked: string[] = [];
+function walkInvocations(
+  command: string,
+  onInvocation: (word: string, name: string, args: string[], assigned: readonly string[]) => void,
+): void {
   const assigned: string[] = [];
   const visit = (text: string, depth: number): void => {
     const tokenized = tokenizeShell(text);
@@ -2268,19 +2269,42 @@ export function invokedCommands(command: string): string[] {
       const invocation = resolveInvocation(segment.tokens);
       nestedScripts(segment, invocation, tokenized.segments[index - 1]).forEach(descend);
       if (!invocation) return;
-      const word = segment.tokens[invocation.index].value;
-      invoked.push(word);
-      if (word.startsWith("$")) invoked.push(...assigned);
-      if (invocation.name === "find") {
-        const args = segment.tokens.slice(invocation.index + 1).map((token) => token.value);
-        args.forEach((value, position) => {
-          if (/^-(?:exec|execdir|ok|okdir)$/.test(value) && args[position + 1]) invoked.push(args[position + 1]);
-        });
-      }
+      const values = segment.tokens.map((token) => token.value);
+      onInvocation(values[invocation.index]!, invocation.name, values.slice(invocation.index + 1), assigned);
     });
   };
   visit(command, 0);
+}
+
+/**
+ * 명령이 실제로 부르는 실행 파일 이름(따옴표를 벗긴 첫 낱말) 전부. 부르는 낱말이 `"$S"`처럼 변수면 무엇인지 정적으로 알 수 없으므로,
+ * 같은 명령에서 앞서 `S=…`로 대입한 값을 그 호출 후보로 함께 돌려준다. WSL interop이 Windows 프로그램 호출을 알아보는 데 쓴다.
+ */
+export function invokedCommands(command: string): string[] {
+  const invoked: string[] = [];
+  walkInvocations(command, (word, name, args, assigned) => {
+    invoked.push(word);
+    if (word.startsWith("$")) invoked.push(...assigned);
+    if (name === "find") {
+      args.forEach((value, position) => {
+        if (/^-(?:exec|execdir|ok|okdir)$/.test(value) && args[position + 1]) invoked.push(args[position + 1]!);
+      });
+    }
+  });
   return invoked;
+}
+
+/**
+ * 명령이 실제로 부르는 호출마다 부르는 낱말과 인자. 부르는 낱말이 `"$R"`처럼 변수면, 같은 명령에서 앞서 대입한 값마다
+ * 같은 인자로 부른 호출 후보를 함께 돌려준다({@link invokedCommands}와 같은 기준). 호스트 시스템 변경 명령을 인자까지 보고 알아보는 데 쓴다.
+ */
+export function invokedCommandLines(command: string): Array<{ word: string; args: string[] }> {
+  const lines: Array<{ word: string; args: string[] }> = [];
+  walkInvocations(command, (word, _name, args, assigned) => {
+    lines.push({ word, args });
+    if (word.startsWith("$")) lines.push(...assigned.map((value) => ({ word: value, args })));
+  });
+  return lines;
 }
 
 /** 같은 명령에서 `NAME=…`로 대입한 값 중 경로로 쓸 수 있는 것. 대입 시점의 위치(`cwd`)에 기대는 mktemp 결과만 미리 푼다. */
