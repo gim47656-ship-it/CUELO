@@ -155,6 +155,29 @@ export const NIGHTLY_PREAMBLE = [
   "9. 영구 게이트(빌드·병합·릴리스·시작·접근·동기화를 계속 막는 새 검사: CI 필수 검사, `git_finalize` gate, 시작을 막는 검사 등)는 직접 달지 않습니다. 근거와 달 위치를 적어 \"제안\"으로 보류 목록에 남기고, 지금은 게이트가 아닌 수단으로 할 수 있는 것만 합니다.",
 ].join("\n");
 
+/** 두 모드가 같은 날짜·기록·검토 계약을 사용한다. */
+export function nightlyAuditRules(date: string): string {
+  return [
+    "## 결정 기록과 검토",
+    "",
+    `이 worktree의 \`.audit/nightly-${date}.tsv\`에 결정 기록을 남깁니다(KST 실행 날짜). 기존 파일이면 이어 쓰며 행을 고치거나 지우지 않습니다(append-only).`,
+    "- 첫 행은 `ts\\tphase\\tdecision\\twhy\\tevidence\\tresult`인 TSV입니다. ts는 ISO8601 시각, 나머지 셀은 쉬운 한국어로 한 줄씩 씁니다. 셀 안 탭·줄바꿈은 공백으로 바꾸고, =·+·-·@로 시작하는 셀에는 작은따옴표를 앞에 붙입니다.",
+    "- 머리글은 파일이 없을 때 한 번만 씁니다. 행 번호는 머리글을 1행으로 세는 실제 파일 줄 번호입니다.",
+    "- 결정 지점, 작업 단위 완료, 방향 전환·되돌림, 막힌 일마다 한 행을 더합니다. evidence는 설명문 대신 commit, file:line, 테스트 명령과 exit code, artifact 경로처럼 확인할 수 있는 포인터를 씁니다.",
+    "- 재발 방지 수준을 고르기 전에 `rule://rule-enforcement`를 읽고, 고른 enforcer 수준과 더 위 수준을 쓰지 못한 이유를 해당 결정 행에도 남깁니다.",
+    "- 기록은 worktree에 추적하지 않은 상태로 둡니다. `.audit/`를 gitignore에 추가하지 않고, `git_finalize`에는 항상 커밋할 파일만 명시한 `files` 목록을 전달하며 `.audit/` 경로는 절대 넣지 않습니다. 일괄 staging은 하지 않습니다. `git_integrate`로 게시하기 전에도 기록이 staged·tracked 상태가 아닌지 확인합니다. 기록은 커밋하지 않습니다.",
+    "- `cross_review`를 부르기 전과 아침 요약 전에 이 실행의 실제 작업·도구 결과와 기록을 대조해 자체 감사합니다. 모든 행이 실제 결정이나 행동에 대응하고 evidence가 열리며 주장을 뒷받침하는지 확인합니다. 빠뜨린 방향 전환과 잘못된 행은 원래 행 번호를 가리키는 정정 행을 추가합니다. 행 수정·삭제는 하지 않습니다.",
+    "- 코드를 바꿨으면 기존 `cross_review` 호출의 `references`에 이 결정 기록 경로를 넣습니다. acceptance에는 근거가 약하거나 없는 결정, 건너뛴 검증, 위험한 선택과 기록의 빈틈을 행 번호와 함께 지적해 달라고 덧붙입니다. 다른 계열 reviewer는 `cross_review` 경로로만 고릅니다. `consult`나 별도 모델 호출로 검토를 대신하지 않습니다.",
+    "- 검토 결과의 skippedReferences를 확인합니다. 기록이 빠졌으면 복사본을 만들거나 기록을 커밋해 우회하지 않고 「주의할 점」 첫 줄에 `검토 없음: 기록이 리뷰에 실리지 않음`을 씁니다. 검토할 코드가 바뀌지 않았으면 다른 모델 검토를 실행하지 않은 이유를 씁니다. 검토 실패도 성공으로 보고하지 않습니다.",
+  ].join("\n");
+}
+
+export const NIGHTLY_ATTENTION_RULES = [
+  "요약 맨 마지막은 「주의할 점」 절로 끝냅니다. 절의 첫 줄은 `검토: <reviewer model>` 또는 `검토 없음: <reason>`이며, 실제 검토 결과의 모델 이름이나 검토하지 못한 이유를 적습니다.",
+  "그 뒤 지적마다 결정 기록의 행 번호를 가리킵니다. 지적이 없으면 「없음」도 가능합니다. 결정 기록 경로도 이 절에 적습니다.",
+  "검토자가 실제 읽은 기록의 마지막 행 번호를 적고, 이후 추가한 행(게시·CI 결과 등)은 다른 모델 미검토로 구분합니다. 뒤의 정정 행이 검토받은 코드나 결정을 바꾸면 기존 cross_review 절차대로 재검토합니다.",
+].join("\n");
+
 export const NIGHTLY_PROBLEM_SECTION = [
   "## 보수 점검판 문제 행",
   "",
@@ -188,6 +211,7 @@ export const NIGHTLY_SUMMARY_RULES = [
   "4. 승인이 필요해 보류한 일과 영구 게이트 제안을 씁니다.",
   "5. 고친 것마다 고른 수준(구조·검사·테스트·스킬·문서)과, 더 위 수준을 쓰지 못한 이유를 한 줄씩 씁니다.",
   "커밋 해시나 실행 번호는 맨 끝에 덧붙일 수만 있고 첫머리에 두지 않습니다.",
+  NIGHTLY_ATTENTION_RULES,
 ].join("\n");
 
 const WEEK_DAYS = 7;
@@ -245,7 +269,7 @@ export function planNightlyRun(
   if (!problems.length && !skillCandidates.length && !weeklyReview) return { action: "skip", reason: "nothing-to-do" };
   const blocked = nightlyGuard(report.repoCwd, state, date, runningSessionIds);
   if (blocked || !report.repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
-  const sections = [NIGHTLY_PREAMBLE, "# 오늘 할 일"];
+  const sections = [NIGHTLY_PREAMBLE, nightlyAuditRules(date), "# 오늘 할 일"];
   if (problems.length) sections.push(NIGHTLY_PROBLEM_SECTION);
   if (skillCandidates.length) sections.push([NIGHTLY_SKILL_RULES, "", "후보:", ...skillCandidates.map(candidateLine)].join("\n"));
   if (weeklyReview) sections.push(NIGHTLY_WEEKLY_SECTION);

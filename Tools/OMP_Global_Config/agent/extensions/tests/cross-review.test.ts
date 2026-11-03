@@ -16,6 +16,8 @@ import {
   redactSecrets,
   isCodeFile,
   MAX_INPUT_BYTES,
+  MAX_PROBE_TEXT_CHARS,
+  needsRun,
   MAX_REFERENCE_FILE_BYTES,
   parseChangedLines,
   parseReviewerOutput,
@@ -820,7 +822,7 @@ describe("probe 라운드", () => {
     expect(unparsable.verdicts).toEqual([{ id: "R1-OAI-1", verdict: "unresolved", why: expect.stringContaining("unusable (unparsable)"), reviewer: ASTRA }]);
   });
 
-  test("buildReviewPrompt: probe 라운드 출력 형식에 verdicts가 있고 probeAvailable:false면 probe를 요구하지 않는다", () => {
+  test("buildReviewPrompt: probe 라운드 출력 형식에 verdicts가 있고, probeAvailable:false여도 재현 방법은 요구하되 실행 판단은 하지 않는다고 알린다", () => {
     const finding = { id: "R1-OAI-1", severity: "major" as const, file: "a.ts", claim: "c", why: "w", reviewer: ASTRA };
     const probe = buildReviewPrompt({ acceptance: "A", round: 2, parts: [], previousFindings: [finding], probeResults: [{ finding, command: "x", exitCode: 0, output: "o", outputBytes: 1, truncated: false }] });
     expect(probe).toContain('"verdicts":[{"id":"R1-OAI-1","verdict":"confirmed|withdrawn|unresolved"');
@@ -830,6 +832,106 @@ describe("probe 라운드", () => {
     expect(plain).toContain("no probe round is available");
     expect(plain).not.toContain('"verdicts"');
     expect(plain).not.toContain("PROBE RESULTS");
+    expect(plain).toContain('Give EVERY finding a "probe"');
+    expect(plain).toContain("you will not judge any run");
+  });
+
+  // ── 재현 방법·증명 수준(2026-11-03): 지적마다 저자가 돌릴 재현 방법과 증명 수준을 받는다 ──
+  const recipe = (steps: string, expectIfReal = "FAIL") => ({ steps, expectIfReal, expectIfNot: "PASS" });
+  const provenAnswer = JSON.stringify({ findings: [
+    { severity: "major", file: "a.ts", line: 1, claim: "two is wrong", why: "quoted", proof: "cited-line", probe: recipe("bun test two.test.ts") },
+    { severity: "major", file: "a.ts", line: 1, claim: "two is racy", why: "timing", proof: "needs-run", probe: recipe("bun test race.test.ts --rerun-each 20") },
+    { severity: "minor", file: "a.ts", claim: "three is unused", why: "walked", proof: "reasoned" },
+  ], summary: "s" });
+
+  test("proof를 읽고 표기 차이는 받으며, 모르는 값·문자열 아닌 값은 수준만 버리고 finding은 남긴다", () => {
+    const parsed = parseReviewerOutput(JSON.stringify({ findings: ["cited-line", " Needs_Run ", "Reasoned", "certain", "constructor", 7].map((proof, index) => ({ claim: `c${index}`, proof })) }));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.findings.map((item) => item.proof)).toEqual(["cited-line", "needs-run", "reasoned", undefined, undefined, undefined]);
+    expect(parsed.findings.map((item) => item.claim)).toEqual(["c0", "c1", "c2", "c3", "c4", "c5"]);
+  });
+
+  test("재현 방법·증명 수준은 원장과 결과에 그대로 남아 저자에게 보이고, 실행이 필요한 지적만 probe 라운드 안내에 센다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const calls: { family: Lane; prompt: string }[] = [];
+    const first = await runReview(input(), scripted(deps(env, {}), [provenAnswer], calls), signal);
+    expect(first.findings.map((item) => [item.id, item.proof, item.probe?.steps])).toEqual([
+      ["R1-OAI-1", "cited-line", "bun test two.test.ts"],
+      ["R1-OAI-2", "needs-run", "bun test race.test.ts --rerun-each 20"],
+      ["R1-OAI-3", "reasoned", undefined],
+    ]);
+    const [record] = readCrossReviewRecords(env.ledger) as { findings: { proof?: string; probe?: { steps: string } }[] }[];
+    expect(record.findings.map((item) => item.proof)).toEqual(["cited-line", "needs-run", "reasoned"]);
+    expect(first.nextStep).toContain("1 finding(s) need a run to settle");
+    expect(first.nextStep).toContain("probeResults");
+    expect(first.nextStep).toContain("A recipe run that shows no defect is evidence for refuted");
+    expect(calls[0].prompt).toContain('Give EVERY finding a "probe" (its reproduction recipe) and a "proof" level');
+    expect(calls[0].prompt).toContain('"proof":"cited-line|reasoned|needs-run"');
+  });
+
+  test("옛 모양(proof 없음)의 답과 기록은 그대로 읽히고, probe만 붙은 옛 지적은 실행이 필요한 지적으로 센다", async () => {
+    const { env, base, first } = await firstWithProbe();
+    const [record] = readCrossReviewRecords(env.ledger) as { findings: { proof?: unknown }[] }[];
+    expect(record.findings[0]).not.toHaveProperty("proof");
+    expect(first.findings[0].probe).toBeDefined();
+    expect(first.nextStep).toContain("1 finding(s) need a run to settle");
+    expect([needsRun({ probe: recipe("x") }), needsRun({}), needsRun({ proof: "cited-line", probe: recipe("x") }), needsRun({ proof: "needs-run" })]).toEqual([true, false, false, true]);
+    const rd = { exec: spawnExec(), readAll: base.readAll, append: base.append };
+    expect(await runResolve({ reviewId: first.reviewId, resolutions: [{ id: "R1-OAI-1", status: "refuted", evidence: "bun test race.test.ts: 20/20 passed" }] }, rd)).toMatchObject({ pass: true, open: [] });
+  });
+
+  test("needs-run 지적의 재현 방법을 probe로 돌려 결함이 없으면 그 명령·출력으로 refuted 처리해 닫히고, 판정 없는 다른 지적은 계속 통과를 막는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const base = deps(env, {});
+    const first = await runReview(input(), scripted(base, [provenAnswer]), signal);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const run = { findingId: "R1-OAI-2", command: "bun test race.test.ts --rerun-each 20", exitCode: 0, output: "20 pass\n0 fail" };
+    const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: [run] }), scripted(base, [verdictAnswer([{ id: "R1-OAI-2", verdict: "withdrawn", why: "20/20 passed" }])], calls), signal);
+    expect(calls[0].prompt).toContain("proof: needs-run");
+    expect(calls[0].prompt).toContain("probe steps: bun test race.test.ts --rerun-each 20");
+    expect(probed.verdicts).toEqual([expect.objectContaining({ id: "R1-OAI-2", verdict: "withdrawn" })]);
+    const rd = { exec: spawnExec(), readAll: base.readAll, append: base.append };
+    const evidence = `${run.command} -> exit ${run.exitCode}: ${run.output}`;
+    const partial = await runResolve({ reviewId: probed.reviewId, resolutions: [{ id: "R1-OAI-2", status: "refuted", evidence }, { id: "R1-OAI-1", status: "fixed", evidence: "" }] }, rd);
+    expect(partial).toMatchObject({ pass: false, open: ["R1-OAI-1", "R1-OAI-3"] });
+    const closed = await runResolve({ reviewId: probed.reviewId, resolutions: [{ id: "R1-OAI-1", status: "limit", evidence: "documented" }, { id: "R1-OAI-3", status: "refuted", evidence: "three is exported and imported by b.ts" }] }, rd);
+    expect(closed).toMatchObject({ pass: true, open: [] });
+  });
+
+  test("지적이 많고 재현 방법이 길어도 답은 해석되고 지적 하나의 재현 방법은 필드당 상한까지만 남으며, 모든 지적이 resolve를 요구한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const long = "x".repeat(MAX_PROBE_TEXT_CHARS * 3);
+    const many = JSON.stringify({ findings: Array.from({ length: 60 }, (_, index) => ({ severity: "minor", file: "a.ts", claim: `claim ${index}`, why: "w", proof: "needs-run", probe: { steps: long, expectIfReal: long, expectIfNot: long } })), summary: "s" });
+    expect(many.length).toBeGreaterThan(1_000_000);
+    const base = deps(env, {});
+    const first = await runReview(input(), scripted(base, [many]), signal);
+    expect(first.reviewers[0].status).toBe("ok");
+    expect(first.findings).toHaveLength(60);
+    for (const item of first.findings) for (const field of [item.probe?.steps, item.probe?.expectIfReal, item.probe?.expectIfNot]) expect(field?.length).toBe(MAX_PROBE_TEXT_CHARS);
+    const [record] = readCrossReviewRecords(env.ledger) as { findings: unknown[] }[];
+    expect(JSON.stringify(record.findings).length).toBeLessThan(60 * (3 * MAX_PROBE_TEXT_CHARS + 300));
+    const rd = { exec: spawnExec(), readAll: base.readAll, append: base.append };
+    const resolved = await runResolve({ reviewId: first.reviewId, resolutions: first.findings.slice(1).map((item) => ({ id: item.id, status: "refuted", evidence: "ran recipe: no defect" })) }, rd);
+    expect(resolved).toMatchObject({ pass: false, open: ["R1-OAI-1"] });
+  });
+
+  test("probe 라운드나 마지막 라운드가 새로 낸 needs-run 지적도 세어, probe 라운드가 없으니 재현 방법을 직접 돌려 근거로 쓰라고 안내한다", async () => {
+    const { env, base, first } = await firstWithProbe();
+    const fresh = [{ severity: "major", file: "a.ts", claim: "new race", why: "w", proof: "needs-run", probe: recipe("bun test race.test.ts") }];
+    const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }], fresh)]), signal);
+    expect(probed.nextStep).toContain("1 finding(s) need a run to settle but this chain has no probe round left");
+    let last = probed;
+    for (const version of [22, 222, 2222]) {
+      writeFileSync(join(env.work, "a.ts"), versionOf(version));
+      last = await runReview(input({ previousReviewId: last.reviewId }), scripted(base, version === 2222 ? [JSON.stringify({ findings: fresh })] : []), signal);
+    }
+    expect(last.round).toBe(5);
+    expect(last.nextStep).toContain("Round limit reached");
+    expect(last.nextStep).toContain("1 finding(s) need a run to settle but this chain has no probe round left");
   });
 });
 

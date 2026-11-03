@@ -317,13 +317,23 @@ export interface CrossReviewFinding {
   why: string;
   /** 이 지적을 낸 reviewer 모델(provider/id). */
   reviewer: string;
-  /** 코드만으로 가릴 수 없는 의심에 reviewer가 붙인 실험. 없으면 코드 읽기만으로 낸 지적이다. */
+  /**
+   * reviewer가 붙인 재현 방법(저자가 실제 코드에 돌릴 명령·테스트·스크립트와 결함이 있으면 보일 출력). 2026-11-03부터 모든 지적에 요구하며,
+   * 그 전 지적은 코드만으로 가릴 수 없는 의심에만 붙었다. 없으면 코드 읽기만으로 낸 지적이다.
+   */
   probe?: CrossReviewProbe;
+  /**
+   * reviewer가 밝힌 증명 수준(2026-11-03 도입, 옛 기록에는 없다). cited-line: 인용한 줄만으로 결함이 보인다. reasoned: 인용한 코드를 따라
+   * 실패 경로를 한 단계씩 짚었다. needs-run: 재현 방법을 실제로 돌려야만 가려진다. 없는데 probe가 있으면 needs-run으로 읽는다.
+   */
+  proof?: CrossReviewProofLevel;
 }
 
-/** reviewer가 제안한 재현 실험. Main(또는 기존 Maker)이 돌려 결과를 probeResults로 되돌린다. */
+export type CrossReviewProofLevel = "cited-line" | "reasoned" | "needs-run";
+
+/** reviewer가 제안한 재현 방법. Main(또는 기존 Maker)이 돌려 결과를 probeResults로 되돌리거나 resolve 근거로 쓴다. */
 export interface CrossReviewProbe {
-  /** 구체적 재현 절차(이벤트 순서·입력·돌릴 테스트). */
+  /** 실제 코드에 돌릴 구체적 재현 절차(명령·테스트·스크립트, 입력·이벤트 순서). */
   steps: string;
   /** 지적이 사실이면 관찰될 결과. */
   expectIfReal: string;
