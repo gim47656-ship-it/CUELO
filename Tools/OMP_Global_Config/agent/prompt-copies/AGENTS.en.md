@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 5b7ad95d0d09b918 -->
+<!-- source-fingerprint: 25eb8d60462a2c21 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -90,6 +90,8 @@ Main first fixes user requirements, acceptance criteria, behavior to preserve, a
 Follow `rule://subagent` 「Skill 인계」 to hand the relevant Skills Main used to the Maker and verify their application. This applies without another user reminder.
 
 Once you use a Skill, produce its result by that Skill's own procedure and criteria. If your own regex, script, or excerpt replaced part of the procedure, or you narrowed its scope, do not present the result as the Skill's result; report what you substituted and what you left out. When context runs short, split the work by file or delegate to a `maker` instead of shrinking the criteria or the scope.
+
+When you choose a procedural Skill with numbered steps, copy each step's wording verbatim into `todo` before execution; do not summarize it. Keep skipped steps in the list and record the reason in `todo` or the report, without reporting them as performed. Brief reference-only Skills are exempt from this verbatim-copy rule.
 
 Open procedure-only Skills such as `systematic-debugging`·`verification-before-completion` only for a bug of unknown cause, a second failure, or an ambiguous completion verdict. When the task already names the location and fix direction, the default verification procedure suffices; do not pre-read them.
 
