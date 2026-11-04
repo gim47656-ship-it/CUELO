@@ -1,8 +1,15 @@
 name: Publish CUELO introduction
 
-# Publishing is an explicit action, not a side effect of a source push.
+# Publishing is an explicit action, not a side effect of a source push: a maintainer runs
+# it by hand, or `release.yml` calls it right after it publishes a new version.
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Released public main revision to publish"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +29,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

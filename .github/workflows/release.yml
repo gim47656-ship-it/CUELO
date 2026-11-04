@@ -4,7 +4,9 @@ name: Publish CUELO web release
 # GitHub source release first, then the npm `cuelo` package built the same way CI
 # builds it. A commit that keeps an already-released version is skipped. The npm
 # step uses Trusted Publishing (OIDC), so no npm token is stored in the repository.
-# `workflow_dispatch` re-runs the same steps for one explicit revision.
+# `workflow_dispatch` re-runs the same steps for one explicit revision. After a new version
+# is published, the introduction site is redeployed from that revision so it never lags
+# behind the release.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -136,6 +138,17 @@ jobs:
               make_latest: 'legacy',
             });
             core.info(`Published: ${release.html_url}`);
+
+  pages:
+    needs: release
+    if: needs.release.outputs.publish == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      ref: ${{ needs.release.outputs.sha }}
 
   npm:
     needs: release

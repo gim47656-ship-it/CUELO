@@ -98,6 +98,19 @@
     </div>
   </section>
 
+  <section aria-labelledby="differs">
+    <div class="wrap">
+      <h2 id="differs">CUELO가 다른 점</h2>
+      <p>CUELO는 omp(oh-my-pi)용 웹 UI이자, 일을 나누어 맡기고 그 과정을 들여다볼 수 있는 멀티 에이전트 하네스입니다. 따로 떨어진 대화 앱으로 바꾸지 않고 쓰던 터미널 작업 흐름을 그대로 이어 갑니다.</p>
+      <ul>
+        <li><strong>CLI와 같은 세션</strong> — CUELO는 로컬 웹 서버 안에서 omp SDK를 직접 실행하고, 터미널 CLI와 같은 <code>~/.omp/agent</code> 세션·계정·모델 설정을 씁니다. CLI 화면 출력을 긁어 오는 방식이 아니어서 터미널에서 시작한 세션을 브라우저에서 이어 가고 다시 터미널로 돌아갈 수 있습니다.</li>
+        <li><strong>들여다볼 수 있는 위임</strong> — Main 에이전트가 요구사항과 최종 판단을 맡고 세부 작업을 Maker 에이전트에게 나누어 맡기며, 두 Maker가 같은 파일을 고치지 못하게 막습니다. 맡긴 작업마다 실시간 상태, 바뀐 파일, Main의 검수 판정이 카드로 보이고, 한 모델 계열이 쓴 코드를 커밋 전에 다른 계열 모델이 검토하게 할 수 있습니다.</li>
+        <li><strong>자기 기록에서 배우기</strong> — 로컬 보수 점검판이 최근 7일과 직전 7일을 견주어 병목, 비용, 반복된 사용자 지적, 스킬을 연 뒤 도구 오류가 늘었는지를 보여 줍니다. 직접 마련한 머신에서 선택적으로 돌리는 야간 세션은 별도 git worktree에서 일하며, 서로 다른 두 세션 이상에서 나온 절차를 스킬로 정리하고 쉬운 말로 된 아침 요약을 남깁니다. 스스로 배포하지는 않습니다.</li>
+        <li><strong>재시작 없이 도구 시험</strong> — 시험용 도구·확장·샌드박스 사이드 패널을 사용자 프로필 폴더에 두고, 서버를 재시작하지 않은 채 <code>/reload</code>로 쉬고 있는 세션에 붙입니다. 서로 다른 날짜에 걸쳐 여러 세션에서 실패 없이 쓰인 시험 플러그인은 정식 플러그인 승격 후보가 됩니다.</li>
+      </ul>
+    </div>
+  </section>
+
   <section aria-labelledby="parts">
     <div class="wrap">
       <h2 id="parts">한 저장소의 두 부분</h2>
@@ -149,7 +162,7 @@
   <section id="run" aria-labelledby="run-h">
     <div class="wrap">
       <h2 id="run-h">소스에서 설치하고 실행하기</h2>
-      <p>CUELO의 개발·검증 환경은 Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux 전체 검사와 Windows 설치·빌드 스모크 확인을 실행하지만, 이것이 모든 네이티브 Linux 배포판의 종단 간 지원을 뜻하지는 않으며 macOS는 검증하지 않았습니다. <strong>Node.js 22.19.0 이상</strong>, <strong>Bun 1.4.2 이상</strong>이 필요하며, 소스 설치에는 Git도 필요합니다.</p>
+      <p>CUELO의 개발·검증 환경은 Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux 전체 검사와 Windows 설치·빌드 스모크 확인을 실행하지만, 이것이 모든 네이티브 Linux 배포판의 종단 간 지원을 뜻하지는 않으며 macOS는 검증하지 않았습니다. <strong>Node.js 22.19.0 이상</strong>, <strong>Bun 1.4.4 이상</strong>이 필요하며, 소스 설치에는 Git도 필요합니다.</p>
 <pre tabindex="0" aria-label="설치와 실행 명령"><code>git clone https://github.com/gim47656-ship-it/CUELO.git
 cd CUELO
 node install.mjs setup     <span class="c"># 설치·빌드·SDK 패치·공개 하네스 복사</span>

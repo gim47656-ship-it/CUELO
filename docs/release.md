@@ -41,7 +41,7 @@ npm global 설치에서는 SDK가 `cuelo` 패키지 **자체의** `node_modules/
 
 ## 소개 페이지 게시
 
-`site/`는 npm 패키지나 GitHub 소스 릴리스와 별도인 정적 소개 페이지입니다. 공개 저장소의 **Settings → Pages → Build and deployment → Source**를 **GitHub Actions**로 설정하고, 공개 `main`에서 **Publish CUELO introduction** (`pages.yml`)을 수동 실행합니다. 준비한 주소는 https://gim47656-ship-it.github.io/CUELO/ (한국어: `/ko/`)입니다.
+`site/`는 npm 패키지나 GitHub 소스 릴리스와 별도인 정적 소개 페이지입니다. 공개 저장소의 **Settings → Pages → Build and deployment → Source**를 **GitHub Actions**로 설정합니다. 새 버전의 GitHub 릴리스가 게시되면 `release.yml`이 같은 리비전으로 **Publish CUELO introduction** (`pages.yml`)을 이어서 실행하고, 버전을 올리지 않은 사이트 수정은 공개 `main`에서 이 워크플로를 수동 실행해 반영합니다. 준비한 주소는 https://gim47656-ship-it.github.io/CUELO/ (한국어: `/ko/`)입니다.
 
 ## 앱의 알림
 
