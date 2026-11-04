@@ -10,7 +10,7 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
-import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, COMPLAINT_EXPRESSIONS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
+import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, COMPLAINT_EXPRESSIONS, GENERATED_PROMPT_TITLES, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { emptySkillWindow, skillNameFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 
@@ -562,7 +562,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
         if (m.role === "user" && !childSession && (m.attribution === undefined || m.attribution === "user")) {
           each((w) => w.turns++);
           const text = textOf(m.content);
-          if (COMPLAINT_EXPRESSIONS.some((x) => text.includes(x))) {
+          if (!GENERATED_PROMPT_TITLES.some((title) => text.startsWith(title)) && COMPLAINT_EXPRESSIONS.some((x) => text.includes(x))) {
             each((w) => w.complaints++);
             note("repeat-complaints", maskSecrets(text).slice(0, 120));
             for (const [skill, openIndex] of previousTurnSkills) skillAt(openIndex, skill).usage.complaintTurns++;

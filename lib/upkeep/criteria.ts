@@ -20,6 +20,11 @@ export const SLOW_GAP_MS = 20_000;
 export const EARLY_EXIT_REPORT_COUNT = 2;
 
 export const COMPLAINT_EXPRESSIONS = ["또 ", "왜 안", "아까 말", "말했잖", "다시 말하", "몇 번", "그게 아니라", "안 되잖", "왜 이래", "아직도"];
+/**
+ * CUELO가 만들어 새 세션 첫 메시지로 넣는 지시문의 첫 줄(보수 점검 프롬프트, 아침 보고·야간 개선 세션 머리말).
+ * 사용자가 한 말이 아니고, 보수 점검 프롬프트는 지난 지적을 근거로 인용하므로 지적 표현으로 세지 않는다.
+ */
+export const GENERATED_PROMPT_TITLES = ["CUELO 보수 점검:", "CUELO 보수 전체 점검", "CUELO 클라우드 변경 보고 세션", "CUELO 야간 자율 개선 세션"];
 
 /** HANDOFF 「리뷰 게이트 다듬기 후속(10-29)」의 번역 캐시 재작성 비율: 수정 전 51.5%, 평소 0.8%. */
 export const TRANSLATION_CACHE_BEFORE = 0.515;
