@@ -1,0 +1,178 @@
+/* Plugin view of the auxiliary deck. Same tokens, header and density as the
+   other deck views (process log, subagents): 13px rows, muted metadata inline,
+   status as text beside its colour. */
+
+.view {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.hint {
+  flex: 1 1 12rem;
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x2);
+  margin: 0;
+  padding: var(--seed-dimension-x3);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+.errorText {
+  margin: 0;
+  color: var(--seed-color-fg-critical);
+  overflow-wrap: anywhere;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x1);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5);
+  min-inline-size: 0;
+}
+
+.name {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row[data-enabled="false"] .name {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+.id {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switch {
+  flex: none;
+  margin-inline-start: auto;
+}
+
+.switchLabel {
+  min-inline-size: 2.5em;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.description {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: var(--seed-line-height-t4-static);
+  overflow-wrap: anywhere;
+}
+
+.meta,
+.problem {
+  display: flex;
+  gap: var(--seed-dimension-x1_5);
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  overflow-wrap: anywhere;
+}
+
+.problem {
+  color: var(--seed-color-fg-critical);
+}
+
+.metaLabel {
+  flex: none;
+  font-weight: 600;
+}
+
+.tools {
+  min-inline-size: 0;
+  font-family: var(--font-mono);
+}
+
+.rowActions {
+  display: flex;
+  padding-block-start: var(--seed-dimension-x0_5);
+}
+
+.frame {
+  flex: 1 1 auto;
+  min-block-size: 12rem;
+  inline-size: 100%;
+  border: 0;
+  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  background: var(--seed-color-bg-layer-default);
+  color-scheme: normal;
+}
+
+.status {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x3);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.lines {
+  font-variant-numeric: tabular-nums;
+}
+
+.notice {
+  min-inline-size: 0;
+  color: var(--seed-color-fg-neutral);
+  overflow-wrap: anywhere;
+}

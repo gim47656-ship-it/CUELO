@@ -129,7 +129,9 @@ function readTaskJobRegistry(ctx: unknown): TaskJobRow[] | undefined {
 
 /**
  * 세션이 소유한 실행 중 task job만 읽는다. core snapshot은 소유 세션 기준이라 child가 아니라 부모 ctx로 읽어야 한다.
- * 조회 API가 없거나 실패하면 undefined(소유자 미상)이며, 빈 목록으로 대신하지 않는다.
+ * core cancel()은 status만 `cancelled`로 바꾸고 곧바로 running에서 빼며, endTime은 실행이 실제로 끝날 때 찍는다.
+ * 그래서 recent의 `cancelled`이면서 endTime이 없는 job도 아직 쓰고 있을 수 있는 실행으로 본다(jev-runtime의
+ * pendingCancels 판정과 같은 기준). 조회 API가 없거나 실패하면 undefined(소유자 미상)이며, 빈 목록으로 대신하지 않는다.
  */
 function readRunningTaskJobs(ctx: unknown): RunningTaskJob[] | undefined {
   if (!ctx || typeof ctx !== "object" || !("getAsyncJobSnapshot" in ctx)) return undefined;
@@ -137,15 +139,19 @@ function readRunningTaskJobs(ctx: unknown): RunningTaskJob[] | undefined {
   if (typeof read !== "function") return undefined;
   let snapshot: unknown;
   try {
-    snapshot = read.call(ctx, { recentLimit: 0 });
+    snapshot = read.call(ctx, { recentLimit: Number.MAX_SAFE_INTEGER });
   } catch {
     return undefined;
   }
   if (!snapshot || typeof snapshot !== "object" || !("running" in snapshot) || !Array.isArray(snapshot.running)) {
     return undefined;
   }
+  const recent: unknown[] = "recent" in snapshot && Array.isArray(snapshot.recent) ? snapshot.recent : [];
+  const cancelling = recent.filter((job) =>
+    !!job && typeof job === "object" && "status" in job && job.status === "cancelled" &&
+    !("endTime" in job && typeof job.endTime === "number"));
   const jobs: RunningTaskJob[] = [];
-  for (const job of snapshot.running) {
+  for (const job of [...snapshot.running, ...cancelling]) {
     if (!job || typeof job !== "object" || !("type" in job) || job.type !== "task") continue;
     if (!("id" in job) || typeof job.id !== "string" || !job.id) continue;
     const agentId = "agentId" in job && typeof job.agentId === "string" && job.agentId ? job.agentId : undefined;

@@ -42,6 +42,10 @@ export interface NightlyJobs {
   weeklyReview: boolean;
   /** 받은편지함 모드의 합계에서만: 맡긴 HANDOFF 클라우드 점검 항목(`경로 「제목」`) */
   handoff?: string[];
+  /** 받은편지함 모드에서만: 연 뒤 오류와 함께 나타나 살펴볼 관리 스킬(합계는 `출처:이름`) */
+  skillHealth?: string[];
+  /** 받은편지함 모드에서만: 승격 기준을 넘은 실험 플러그인 id(합계는 `출처:id`) */
+  labPromotions?: string[];
 }
 
 /** 받은편지함 모드에서 출처 하나가 맡은 일 */
@@ -255,7 +259,8 @@ export function openProblems(report: UpkeepReport): string[] {
 
 export function candidateLine(candidate: SkillCandidate): string {
   const topic = candidate.topic ? ` (${candidate.topic})` : "";
-  return `- ${kstDateTime(candidate.timestamp)}${topic}, 세션 ${candidate.sessionId || "알 수 없음"}: ${candidate.memory.replace(/\s+/g, " ")}`;
+  const seen = candidate.kind === "observed" ? `, 서로 다른 세션 ${candidate.sessionCount ?? "?"}곳에서 관찰(가장 최근 세션 ${candidate.sessionId || "알 수 없음"})` : `, 세션 ${candidate.sessionId || "알 수 없음"}`;
+  return `- ${kstDateTime(candidate.timestamp)}${topic}${seen}: ${candidate.memory.replace(/\s+/g, " ")}`;
 }
 
 /** 할 일이 있어도 오늘 열지 않을 이유. 로컬·받은편지함 두 모드가 같은 순서로 본다(할 일 없음 판정 다음). */

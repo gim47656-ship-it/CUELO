@@ -11,18 +11,25 @@ import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, COMPLAINT_EXPRESSIONS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
+import { emptySkillWindow, skillNameFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 
 const DAY_MS = 86_400_000;
 const YIELD_EVERY_MS = 8;
 const EVIDENCE_LIMIT = 10;
 const TOP_SESSIONS = 5;
+/** 실패 발췌(야간 묶음): 오류 묶음마다 최근 것 3개, 인자 요약 300자(값마다 80자), 오류 400자. */
+const EXCERPTS_PER_SIGNATURE = 3;
+const EXCERPT_ARGS = 300;
+const EXCERPT_ARG_VALUE = 80;
+const EXCERPT_ERROR = 400;
+const NO_SKILLS: readonly string[] = [];
 
 type Usage = {
   input?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number; cacheWrite?: number }; credentialKind?: string;
   cttl?: { ephemeral1h?: number };
 };
-type ContentBlock = { type?: string; id?: string; name?: string; text?: string; arguments?: { command?: string; path?: string } };
+type ContentBlock = { type?: string; id?: string; name?: string; text?: string; arguments?: { command?: string; path?: string; [key: string]: unknown } };
 type Entry = {
   type?: string;
   id?: string;
@@ -125,7 +132,29 @@ export type ScanResult = {
   splits: Map<number, SplitCounts>;
   /** 세션 헤더 cwd별 마지막 기록 시각(ms, 14일 안). worktree가 아직 쓰이는지 본다. */
   cwdActivity: Record<string, number>;
+  /** 스킬별 두 기간 사용과, 최근 7일 스킬을 연 세션(연 뒤 오류 많은 순 10개) */
+  skills: { windows: [Record<string, SkillWindowUsage>, Record<string, SkillWindowUsage>]; sessions: Record<string, SkillSessionUsage[]> };
+  /** 14일 안 오류 묶음(`도구: 키`)별 최근 발췌 최대 3개 */
+  failureExcerpts: Record<string, FailureExcerpt[]>;
+  /** 14일 안에 실패 뒤 같은 턴에서 같은 도구가 성공한 기록 */
+  recoveries: Recovery[];
 };
+
+/** 도구 실패 하나의 발췌. 모두 비밀을 가리고 자른 값이다. `recovery`는 같은 턴에서 같은 도구가 다음으로 성공한 호출의 인자 요약이다. */
+export interface FailureExcerpt {
+  args: string;
+  error: string;
+  recovery: string | null;
+}
+
+/** 실패 뒤 같은 턴에서 같은 도구가 성공한 기록. `shape`는 성공한 호출의 인자 모양(키 이름·명령 첫 단어·경로 종류)이다. */
+export interface Recovery {
+  signature: string;
+  shape: string;
+  sessionId: string;
+  sessionPath: string;
+  at: number;
+}
 
 export type SplitCounts = { before: WindowCounts; after: WindowCounts };
 
@@ -207,6 +236,39 @@ export function normalizeError(tool: string, text: string): string {
     .replace(/\b(?:0x)?[a-f\d]{8,}\b/gi, "<h>")
     .replace(/\d+/g, "N")
     .slice(0, 180);
+}
+
+/** 비밀을 가리고 공백을 접어 `limit`자로 자른다. 가리기 전에 넉넉히 잘라 큰 인자(파일 본문 등)를 통째로 훑지 않는다. */
+export function clipMasked(text: string, limit: number): string {
+  const masked = maskSecrets(text.slice(0, limit * 4)).replace(/\s+/g, " ").trim();
+  return masked.length > limit ? `${masked.slice(0, limit)}…` : masked;
+}
+
+/** 도구 인자 요약: `키=값`을 이어 붙이고 값마다 80자, 전체 300자로 자른다. */
+export function summarizeArgs(args: unknown): string {
+  if (typeof args === "string") return clipMasked(args, EXCERPT_ARGS);
+  if (!args || typeof args !== "object") return "";
+  const pairs = Object.entries(args).map(([key, value]) => {
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+    return `${key}=${clipMasked(text, EXCERPT_ARG_VALUE)}`;
+  });
+  return clipMasked(pairs.join(" "), EXCERPT_ARGS);
+}
+
+/**
+ * 성공한 호출의 인자 모양. 값은 버리고 키 이름(의도 `i` 제외), 명령의 첫 단어, 경로의 종류(`scheme://`·확장자)만 남겨
+ * 세션이 달라도 같은 넘김 방법이면 같은 문자열이 되게 한다.
+ */
+export function argumentShape(tool: string, args: unknown): string {
+  const record = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const parts = [`${tool}(${Object.keys(record).filter((key) => key !== "i").sort().join(",")})`];
+  if (typeof record.command === "string") parts.push(`command=${normalizeError(tool, record.command.trim().split(/\s+/)[0] ?? "")}`);
+  if (typeof record.path === "string") {
+    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(record.path);
+    const extension = /\.([A-Za-z0-9]{1,8})(?:[:?#][^/]*)?$/.exec(record.path);
+    parts.push(`path=${scheme ? `${scheme[1]}://` : extension ? `*.${extension[1]}` : "<p>"}`);
+  }
+  return parts.join(" ");
 }
 
 /** 사용자 중단·보조 건너뜀·취소처럼 의도된 비결함 오류. */
@@ -319,15 +381,36 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const seenCalls = new Set<string>();
   const seenEntries = new Set<string>();
   // fork 사본은 원래 호출 entry를 건너뛰므로 호출 표는 파일마다가 아니라 스캔 전체에서 하나로 둔다.
-  const calls = new Map<string, { name: string; command: string | null; index: number; targets: WindowCounts[] }>();
+  // `skills`는 그 호출 전에 같은 턴에서 연 스킬, `skill`은 이 호출이 여는 스킬(`read skill://…`)이다. `turn`은 파일 안 턴 번호다.
+  type Call = { name: string; command: string | null; index: 0 | 1; targets: WindowCounts[]; skills: readonly string[]; skill: string | null; path: string; sessionId: string; turn: number };
+  const calls = new Map<string, Call>();
   const makerResults: MakerResult[] = [];
   const warnings: string[] = [];
+  // 스킬 계기판: 기간·스킬별 사용과 스킬을 연 세션별 기록, 기간·세션별 호출 합계(연 뒤가 아닌 나머지를 셀 때 쓴다).
+  const skillAgg: [Map<string, SkillAgg>, Map<string, SkillAgg>] = [new Map(), new Map()];
+  const sessionTotals: [Map<string, CallTotals>, Map<string, CallTotals>] = [new Map(), new Map()];
+  const skillAt = (index: 0 | 1, name: string): SkillAgg => {
+    let agg = skillAgg[index].get(name);
+    if (!agg) skillAgg[index].set(name, (agg = { usage: emptySkillWindow(), lastAt: 0, sessions: new Map() }));
+    return agg;
+  };
+  const skillSessionAt = (index: 0 | 1, name: string, call: Call): SkillSession => {
+    const sessions = skillAt(index, name).sessions;
+    let row = sessions.get(call.path);
+    if (!row) sessions.set(call.path, (row = { sessionId: call.sessionId, opens: 0, afterCalls: 0, afterFailures: 0, lastAt: 0 }));
+    return row;
+  };
+  // 결과가 오기 전 호출의 인자. 실패 발췌·넘김 모양에만 쓰고 결과가 오면 지운다.
+  const pendingArgs = new Map<string, unknown>();
+  const failureExcerpts: Record<string, FailureExcerpt[]> = {};
+  const recoveries: Recovery[] = [];
+  const finish = (): Pick<ScanResult, "skills" | "failureExcerpts" | "recoveries"> => ({ skills: skillResult(skillAgg, sessionTotals), failureExcerpts, recoveries });
 
   let files: string[];
   try {
     files = await sessionFiles(dir, now - 14 * DAY_MS);
   } catch {
-    return { windows, scannedFiles: 0, warnings: ["세션 디렉터리를 읽지 못했습니다."], evidence, topSessions: {}, makerResults, splits, cwdActivity };
+    return { windows, scannedFiles: 0, warnings: ["세션 디렉터리를 읽지 못했습니다."], evidence, topSessions: {}, makerResults, splits, cwdActivity, ...finish() };
   }
 
   for (const path of files) {
@@ -335,6 +418,12 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let sessionId = "";
     let cwd = "";
     let lastResultAt: number | null = null;
+    // 지금 턴(사용자 요청 사이)에 연 스킬(→ 연 호출의 기간)과, 같은 도구의 다음 성공을 기다리는 실패. 지난 턴에 연 스킬은
+    // 지적 표현 판정에 쓰고, 지적은 연 쪽 기간에 센다. 턴 번호는 앞 턴 호출의 늦은 결과를 이 턴 일로 보지 않게 한다.
+    const openedThisTurn = new Map<string, 0 | 1>();
+    let previousTurnSkills: [string, 0 | 1][] = [];
+    let awaiting: { tool: string; signature: string; excerpt: FailureExcerpt | null }[] = [];
+    let turn = 0;
     // 캐시 다시 쓰기 판단용 상태. 창 밖·fork 사본 entry도 직전 요청으로는 쓰므로 세기 전에 갱신한다.
     let previousRequest: MainRequest | null = null;
     let compacted = false, promptChanged = false;
@@ -389,10 +478,17 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
         }
         const rewrite = observeCache(entry, time);
         if (isNewInput(entry)) lastResultAt = null;
+        // 사용자 요청이 새 턴을 연다. 지난 턴에 연 스킬은 이 요청의 지적 표현 판정에 쓴다(복사된 entry도 턴 경계로는 본다).
+        if (entry.type === "message" && entry.message?.role === "user") {
+          previousTurnSkills = [...openedThisTurn];
+          openedThisTurn.clear();
+          awaiting = [];
+          turn++;
+        }
         if (!counted) continue;
         if (cwd) cwdActivity[cwd] = Math.max(cwdActivity[cwd] ?? 0, time);
 
-        const index = time >= now - 7 * DAY_MS ? 0 : 1;
+        const index: 0 | 1 = time >= now - 7 * DAY_MS ? 0 : 1;
         // 이 사건을 세는 묶음들: 기간 묶음 하나와, 최근 7일이면 표시마다 전·후 중 하나.
         const targets = [windows[index]];
         if (index === 0) for (const [at, split] of splits) targets.push(time >= at ? split.after : split.before);
@@ -469,6 +565,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           if (COMPLAINT_EXPRESSIONS.some((x) => text.includes(x))) {
             each((w) => w.complaints++);
             note("repeat-complaints", maskSecrets(text).slice(0, 120));
+            for (const [skill, openIndex] of previousTurnSkills) skillAt(openIndex, skill).usage.complaintTurns++;
           }
         }
 
@@ -511,7 +608,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             if (block?.type !== "toolCall" || !block.id || seenCalls.has(block.id)) continue;
             seenCalls.add(block.id);
             each((w) => w.calls++);
-            calls.set(block.id, { name: block.name ?? "", command: block.arguments?.command ?? null, index, targets });
+            calls.set(block.id, {
+              name: block.name ?? "", command: block.arguments?.command ?? null, index, targets,
+              skills: openedThisTurn.size ? [...openedThisTurn.keys()] : NO_SKILLS,
+              skill: block.name === "read" ? skillNameFromPath(block.arguments?.path) : null,
+              path, sessionId, turn,
+            });
+            pendingArgs.set(block.id, block.arguments);
             if (block.name === "recall" || (block.name === "write" && block.arguments?.path === "xd://recall")) each((w) => w.recallCalls++);
           }
         }
@@ -532,9 +635,46 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             }
           }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;
-          if (!call || !m.isError) continue;
-          const text = textOf(m.content);
-          if (INTENDED_ERROR.test(text) || classifyToolError(call.name, call.command, text) !== "failed") continue;
+          if (!call || !m.toolCallId) continue;
+          const args = pendingArgs.get(m.toolCallId);
+          pendingArgs.delete(m.toolCallId);
+          const text = m.isError ? textOf(m.content) : "";
+          const failed = m.isError === true && !INTENDED_ERROR.test(text) && classifyToolError(call.name, call.command, text) === "failed";
+
+          // 스킬 계기판: 세션 합계와, 같은 턴에서 먼저 연 스킬마다 연 뒤 호출로 센다. 성공한 스킬 읽기는 열람이다.
+          const totals = sessionTotals[call.index].get(call.path) ?? { calls: 0, failures: 0 };
+          sessionTotals[call.index].set(call.path, totals);
+          totals.calls++;
+          if (failed) totals.failures++;
+          for (const skill of call.skills) {
+            const row = skillSessionAt(call.index, skill, call);
+            row.afterCalls++;
+            if (failed) row.afterFailures++;
+          }
+          if (call.skill && !m.isError) {
+            const agg = skillAt(call.index, call.skill);
+            const row = skillSessionAt(call.index, call.skill, call);
+            agg.usage.opens++;
+            agg.lastAt = Math.max(agg.lastAt, time);
+            row.opens++;
+            row.lastAt = Math.max(row.lastAt, time);
+            if (call.turn === turn && !openedThisTurn.has(call.skill)) {
+              openedThisTurn.set(call.skill, call.index);
+              agg.usage.openTurns++;
+            }
+          }
+
+          // 같은 턴에서 실패를 기다리던 같은 도구의 성공: 넘긴 방법으로 남긴다.
+          if (!m.isError && call.turn === turn && awaiting.some((a) => a.tool === call.name)) {
+            const shape = argumentShape(call.name, args);
+            const summary = summarizeArgs(args);
+            for (const a of awaiting.filter((x) => x.tool === call.name)) {
+              if (a.excerpt) a.excerpt.recovery = summary;
+              recoveries.push({ signature: a.signature, shape, sessionId, sessionPath: path, at: time });
+            }
+            awaiting = awaiting.filter((a) => a.tool !== call.name);
+          }
+          if (!failed) continue;
           // 호출이 일어난 기간(고침 표시 전·후 포함)으로 센다(결과가 경계를 넘어 와도 호출 쪽 묶음).
           const signature = `${call.name}: ${normalizeError(call.name, text)}`;
           const reject = call.name === "task" || call.name === "maker_route";
@@ -547,6 +687,12 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             const rows = (evidence["dispatch-rejects"] ??= []);
             if (rows.length < EVIDENCE_LIMIT) rows.push(example(signature));
           }
+          // 실패 발췌는 14일 전체에서 묶음마다 최근 것만 남긴다(관찰 후보가 직전 7일 실패에서도 나오므로).
+          const excerpt: FailureExcerpt = { args: summarizeArgs(args), error: clipMasked(text, EXCERPT_ERROR), recovery: null };
+          const rows = (failureExcerpts[signature] ??= []);
+          rows.push(excerpt);
+          if (rows.length > EXCERPTS_PER_SIGNATURE) rows.shift();
+          if (call.turn === turn) awaiting.push({ tool: call.name, signature, excerpt });
         }
       }
     } catch {
@@ -560,5 +706,44 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     .sort((a, b) => Number(a.first) - Number(b.first) || b.cost - a.cost)
     .slice(0, EVIDENCE_LIMIT)
     .map((x) => x.row);
-  return { windows, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity };
+  return { windows, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish() };
+}
+
+type SkillSession = { sessionId: string; opens: number; afterCalls: number; afterFailures: number; lastAt: number };
+type SkillAgg = { usage: SkillWindowUsage; lastAt: number; sessions: Map<string, SkillSession> };
+type CallTotals = { calls: number; failures: number };
+
+/**
+ * 스킬별 두 기간 사용을 마무리한다. 세션 수·연 뒤 호출은 그 기간에 스킬을 한 번이라도 연 세션만 센다. 나머지 호출은 그
+ * 세션들의 호출 합계에서 연 뒤 호출을 뺀 값이다. 최근 7일 연 세션은 연 뒤 오류가 많은 순으로 10개만 남긴다.
+ */
+function skillResult(aggs: [Map<string, SkillAgg>, Map<string, SkillAgg>], totals: [Map<string, CallTotals>, Map<string, CallTotals>]): ScanResult["skills"] {
+  const sessions: Record<string, SkillSessionUsage[]> = {};
+  const windows = aggs.map((byName, index) => {
+    const out: Record<string, SkillWindowUsage> = {};
+    for (const [name, agg] of byName) {
+      const opened = [...agg.sessions].filter(([, row]) => row.opens > 0);
+      if (!opened.length) continue;
+      const usage: SkillWindowUsage = { ...agg.usage, sessions: opened.length, lastOpenedAt: new Date(agg.lastAt).toISOString() };
+      for (const [path, row] of opened) {
+        const total = totals[index].get(path) ?? { calls: 0, failures: 0 };
+        usage.afterCalls += row.afterCalls;
+        usage.afterFailures += row.afterFailures;
+        usage.restCalls += Math.max(0, total.calls - row.afterCalls);
+        usage.restFailures += Math.max(0, total.failures - row.afterFailures);
+      }
+      out[name] = usage;
+      if (index === 0) {
+        sessions[name] = opened
+          .sort(([, a], [, b]) => b.afterFailures - a.afterFailures || b.opens - a.opens || b.lastAt - a.lastAt)
+          .slice(0, EVIDENCE_LIMIT)
+          .map(([path, row]) => ({
+            sessionId: row.sessionId, sessionPath: path, opens: row.opens, afterCalls: row.afterCalls, afterFailures: row.afterFailures,
+            lastOpenedAt: new Date(row.lastAt).toISOString(),
+          }));
+      }
+    }
+    return out;
+  });
+  return { windows: [windows[0], windows[1]], sessions };
 }

@@ -10,6 +10,7 @@ import type {
   CustomMessage,
   BlockingExtensionUiRequest,
   ExtensionUiRequest,
+  ExtensionWidgetItem,
   OpenRequestEvidence,
   SessionInfo,
   SessionTreeNode,
@@ -52,6 +53,7 @@ import {
   type InlineUtteranceContext,
 } from "@/lib/inline-utterance";
 import type { ProcessLogData } from "./workspace/ProcessLogPanel";
+import { splitLabWidgets } from "./workspace/plugin-lab-bridge";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -115,6 +117,8 @@ interface Props {
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
   onSubagentsChange?: (subagents: SubagentSnapshot[]) => void;
+  /** `lab:<id>` widgets of this session. They belong to the plugin panels, not to the text cards here. */
+  onLabWidgetsChange?: (sessionId: string | null, widgets: ExtensionWidgetItem[]) => void;
   /** Opens an existing detail panel (subagents, work log) from an in-answer status card. */
   onOpenWorkspaceView?: (view: "subagents" | "process") => void;
   /** Opens the existing session navigator; passed only while it is hidden, so the empty screen can offer it. */
@@ -530,7 +534,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onOpenWorkspaceView, onOpenSessionList, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
+export function ChatWindow({ session, newSessionCwd, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -1075,6 +1079,12 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     onSubagentsChange?.(subagents);
   }, [onSubagentsChange, subagents]);
   useEffect(() => () => { onSubagentsChange?.([]); }, [onSubagentsChange]);
+  const { regular: textWidgets, lab: labWidgets } = useMemo(() => splitLabWidgets(extensionWidgets), [extensionWidgets]);
+  const labSessionId = session?.id ?? null;
+  useEffect(() => {
+    onLabWidgetsChange?.(labSessionId, labWidgets);
+  }, [onLabWidgetsChange, labSessionId, labWidgets]);
+  useEffect(() => () => { onLabWidgetsChange?.(null, []); }, [onLabWidgetsChange]);
 
 
   const onDrop = useCallback((files: File[]) => {
@@ -1444,8 +1454,8 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
   // A session that unmounts leaves no work log behind in the panel.
   useEffect(() => () => onProcessLogChange?.(null), [onProcessLogChange]);
 
-  const aboveEditorWidgets = extensionWidgets.filter((widget) => widget.placement !== "belowEditor");
-  const belowEditorWidgets = extensionWidgets.filter((widget) => widget.placement === "belowEditor");
+  const aboveEditorWidgets = textWidgets.filter((widget) => widget.placement !== "belowEditor");
+  const belowEditorWidgets = textWidgets.filter((widget) => widget.placement === "belowEditor");
 
 
   if (error) {

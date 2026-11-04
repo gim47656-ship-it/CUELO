@@ -59,6 +59,8 @@ function createGuardHarness(
     agent?: Record<string, unknown>;
     /** 주면 ctx.getAsyncJobSnapshot이 이 배열을 실행 중 job으로 돌려준다(호출 시점의 내용). */
     runningJobs?: Array<Record<string, unknown>>;
+    /** 주면 같은 snapshot의 recent(끝났거나 취소된 job) 행이다. 없으면 빈 배열이다. */
+    recentJobs?: Array<Record<string, unknown>>;
     outsideLog?: string;
   } = {},
 ) {
@@ -75,11 +77,12 @@ function createGuardHarness(
   createCommandGuard({ ownershipOutsideLog: options.outsideLog ?? join(OUTSIDE_LOG_DIR, "default.jsonl") })(pi as never);
   let sessionId = options.sessionId ?? "runtime-guard-session";
   const runningJobs = options.runningJobs;
+  const recentJobs = options.recentJobs;
   const ctx = {
     cwd: options.cwd ?? process.cwd(),
     sessionManager: { getSessionId: () => sessionId },
     ...(options.agent ? { agent: options.agent } : {}),
-    ...(runningJobs ? { getAsyncJobSnapshot: () => ({ running: [...runningJobs], recent: [] }) } : {}),
+    ...(runningJobs ? { getAsyncJobSnapshot: () => ({ running: [...runningJobs], recent: [...(recentJobs ?? [])] }) } : {}),
   };
   return {
     sentMessages,
@@ -1736,6 +1739,34 @@ describe("OwnerWriteGuard", () => {
       // 완료한 Maker가 REWORK로 같은 agent id에서 다시 실행되면 다시 그 경로의 writer다.
       running.push({ id: "Alpha-rework", type: "task", status: "running", agentId: "Alpha" });
       expect(await beta.emit("tool_call", fileCall("edit", "ow1-rework", { path: "src/a.ts", paths: ["src/a.ts"] }))).toMatchObject({ block: true });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("취소 요청 뒤 프로세스가 아직 끝나지 않은 Maker는 그 경로의 writer로 남고, 실제로 끝나야 풀린다", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omp-owner-write-"));
+    const running: Array<Record<string, unknown>> = [];
+    const recent: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({
+        cwd,
+        agent: { kind: "main", id: "Main-OWC", name: "main", depth: 0 },
+        runningJobs: running,
+        recentJobs: recent,
+      });
+      await spawnRunningMaker(main, running, "owc-alpha", "Alpha", "src/a.ts");
+      const beta = makerChild(cwd, "Beta", "Main-OWC");
+      expect(await beta.emit("tool_call", fileCall("edit", "owc-live", { path: "src/a.ts" }))).toMatchObject({ block: true });
+
+      // core cancel()은 status만 cancelled로 바꾸고 running에서 뺀다. endTime은 실행이 실제로 끝날 때 찍힌다.
+      const [alpha] = running.splice(running.findIndex((job) => job.agentId === "Alpha"), 1);
+      const cancelled = { ...alpha, status: "cancelled", startTime: 1 };
+      recent.push(cancelled);
+      expect(await beta.emit("tool_call", fileCall("edit", "owc-cancelling", { path: "src/a.ts" }))).toMatchObject({ block: true });
+
+      Object.assign(cancelled, { endTime: 2 });
+      expect(await beta.emit("tool_call", fileCall("edit", "owc-ended", { path: "src/a.ts" }))).toBeUndefined();
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

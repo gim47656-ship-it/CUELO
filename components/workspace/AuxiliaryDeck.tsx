@@ -34,6 +34,8 @@ export interface AuxiliaryDeckProps {
   resourceSlot: ReactNode;
   /** Run history and config comparison. Lives in this panel so no second auxiliary surface exists. */
   efficiencySlot: ReactNode;
+  /** Plugin Lab: trial and promoted plugins and their sandboxed panels. */
+  pluginsSlot: ReactNode;
   visible?: boolean;
   onClose?: () => void;
   onReturnFocus?: () => void;
@@ -65,6 +67,7 @@ export function AuxiliaryDeck({
   sideChatSlot,
   resourceSlot,
   efficiencySlot,
+  pluginsSlot,
   visible = true,
   onClose,
   onReturnFocus,
@@ -168,6 +171,10 @@ export function AuxiliaryDeck({
 
         <Tabs.Content value="resource" className="auxiliary-deck-panel">
           {resourceSlot}
+        </Tabs.Content>
+
+        <Tabs.Content value="plugins" className="auxiliary-deck-panel">
+          {pluginsSlot}
         </Tabs.Content>
       </Tabs.Root>
     </aside>

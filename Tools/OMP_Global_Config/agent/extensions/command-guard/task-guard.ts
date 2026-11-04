@@ -1146,6 +1146,12 @@ export function collapseOwnedPath(value: string): string {
   return `${lead}${segments.join("/")}${trail}`;
 }
 
+/**
+ * 소유 판정 키. 대소문자는 OS와 관계없이 접는다(의도된 정책). Windows와 WSL `/mnt/<드라이브>` 작업 폴더는
+ * 대소문자를 가리지 않아, 접지 않으면 `Form1.vb`를 가진 owner를 `form1.vb` 표기로 같은 파일에 써서 우회할 수 있다.
+ * Linux ext4에서 접어서 생기는 차이는 대소문자만 다른 두 파일을 같은 소유로 보는 쪽(더 막거나 같은 child 소유로
+ * 셈)뿐이다. 그런 파일 쌍은 Windows checkout과 공유하는 저장소에 둘 수 없으므로 접는 쪽을 택한다.
+ */
 function normalizeOwnedPath(value: string): string {
   return collapseOwnedPath(value).toLowerCase();
 }

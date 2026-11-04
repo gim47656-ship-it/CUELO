@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.138",
+  "version": "0.10.139",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -61,6 +61,7 @@
     "Tools/OMP_Global_Config/agent/RULES.md",
     "Tools/OMP_Global_Config/agent/WATCHDOG.md",
     "Tools/OMP_Global_Config/agent/TITLE_SYSTEM.md",
+    "Tools/OMP_Global_Config/agent/cuelo-plugins",
     "Tools/OMP_Global_Config/agent/agents",
     "Tools/OMP_Global_Config/agent/extensions",
     "Tools/OMP_Global_Config/agent/prompt-copies",

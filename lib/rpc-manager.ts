@@ -35,7 +35,8 @@ import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { createSessionRecallTool } from "./session-recall";
-import { canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, untrustedProjectSessionOptions } from "./project-trust";
+import { canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, isInsideProject, untrustedProjectSessionOptions } from "./project-trust";
+import { labExtensionEntries, recordLabLoadResults, type LabExtensionEntry } from "./plugin-lab";
 import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
@@ -709,6 +710,11 @@ async function settlesBefore(work: Promise<unknown>, deadline: number): Promise<
   }
 }
 
+/** One string per loaded Plugin Lab set: ids, entry paths, and the newest file time of each plugin. */
+function labSignatureOf(entries: readonly LabExtensionEntry[]): string {
+  return entries.map((entry) => entry.signature).join("|");
+}
+
 // ============================================================================
 // AgentSessionWrapper
 // Wraps AgentSession with the same interface the rest of the app expects
@@ -764,6 +770,10 @@ export class AgentSessionWrapper {
    * 신뢰 저장소는 시작 때 한 번만 읽히므로, 저장된 승인과 실제 실행 상태를 가르는 값이다.
    */
   projectCodeLoaded = false;
+  /** Plugin Lab extension set this session loaded (`labSignatureOf`); `reload` restarts the session when it changed. */
+  labSignature = "";
+  /** The wrapper that took over this one's event listeners on a Plugin Lab restart. */
+  private handedOverTo: AgentSessionWrapper | null = null;
   private backgroundSettleWatch: Promise<void> | null = null;
 
   constructor(
@@ -1313,13 +1323,63 @@ export class AgentSessionWrapper {
     }
     for (const event of this.pendingUiRequests.values()) listener(event);
     return () => {
-      const i = this.listeners.indexOf(listener);
-      if (i !== -1) this.listeners.splice(i, 1);
-      const releasedKeepAlive = this.keepAliveListeners.delete(listener);
-      if (releasedKeepAlive && this.keepAliveListeners.size === 0 && this._alive) {
-        this.resetIdleTimer();
+      // After a Plugin Lab restart the listener lives on the wrapper that took over.
+      const host = this.listenerHost();
+      const i = host.listeners.indexOf(listener);
+      if (i !== -1) host.listeners.splice(i, 1);
+      const releasedKeepAlive = host.keepAliveListeners.delete(listener);
+      if (releasedKeepAlive && host.keepAliveListeners.size === 0 && host._alive) {
+        host.resetIdleTimer();
       }
     };
+  }
+
+  private listenerHost(): AgentSessionWrapper {
+    return this.handedOverTo ? this.handedOverTo.listenerHost() : this;
+  }
+
+  private adoptListeners(listeners: readonly EventListener[], keepAlive: ReadonlySet<EventListener>): void {
+    for (const listener of listeners) {
+      this.listeners.push(listener);
+      if (keepAlive.has(listener)) this.keepAliveListeners.add(listener);
+    }
+    this.resetIdleTimer();
+  }
+
+  /** Move this stopped wrapper's open event streams to the wrapper that now serves its session. */
+  handOverListenersTo(next: AgentSessionWrapper, keepAlive: ReadonlySet<EventListener>): void {
+    const listeners = this.listeners;
+    this.listeners = [];
+    this.handedOverTo = next;
+    next.adoptListeners(listeners, keepAlive);
+  }
+
+  /**
+   * omp binds extensions once per AgentSession, so a changed Plugin Lab set needs a new
+   * session object. Shut this one down and start it again through `startRpcSession` (same id
+   * and file, the path an idle-expired session revives through); that start moves the open
+   * event streams over. Returns false when the lab set is unchanged.
+   */
+  private async restartForLabPlugins(): Promise<boolean> {
+    const entries = await labExtensionEntries().catch((error: unknown) => {
+      console.error("[plugin-lab] failed to list lab extensions:", error instanceof Error ? error.message : error);
+      return null;
+    });
+    if (entries === null || labSignatureOf(entries) === this.labSignature) return false;
+    const sessionFile = this.inner.sessionFile as string | undefined;
+    if (!sessionFile || !existsSync(sessionFile)) {
+      throw new Error("Plugin Lab changes load once this session has a saved message. Send one or start a new session, then /reload.");
+    }
+    if (!this.isSafelyIdle()) {
+      throw new Error("Plugin Lab changes need an idle session. Wait for the running work to finish, then /reload again.");
+    }
+    const sessionId = this.sessionId;
+    // shutdown() clears the keep-alive set, so remember it first. The handover is parked before
+    // the start: if this start fails, the next request that revives the id still picks the streams up.
+    getListenerHandovers().set(sessionId, { from: this, keepAlive: new Set(this.keepAliveListeners) });
+    await this.shutdown();
+    await startRpcSession(sessionId, sessionFile, undefined);
+    return true;
   }
 
   onDestroy(cb: () => void): void {
@@ -1913,6 +1973,7 @@ export class AgentSessionWrapper {
 
       case "reload": {
         await this.waitForExtensionsBound();
+        if (await this.restartForLabPlugins()) return { success: true, restarted: true };
         this.extensionStatuses.clear();
         this.extensionWidgets.clear();
         await this.inner.reload();
@@ -2412,6 +2473,15 @@ declare global {
   var __ompNewSessionRequests: Map<string, NewSessionRequestEntry> | undefined;
   // 삭제 중인 worktree의 canonical 경로. 그 아래 cwd로는 새 세션을 띄우지 않는다.
   var __ompRemovingWorktrees: Set<string> | undefined;
+  // Plugin Lab restart: session id → stopped wrapper whose open event streams the next start adopts.
+  var __cueloLabListenerHandovers: Map<string, ListenerHandover> | undefined;
+}
+
+type ListenerHandover = { from: AgentSessionWrapper; keepAlive: ReadonlySet<EventListener> };
+
+function getListenerHandovers(): Map<string, ListenerHandover> {
+  if (!globalThis.__cueloLabListenerHandovers) globalThis.__cueloLabListenerHandovers = new Map();
+  return globalThis.__cueloLabListenerHandovers;
 }
 
 function getRegistry(): Map<string, AgentSessionWrapper> {
@@ -2719,6 +2789,22 @@ export async function startRpcSession(
       // copy without that change; revived children below must read the same copy.
       const sessionSettings = untrusted?.settings ?? settings;
 
+      // Plugin Lab extensions are user-level code like `~/.omp/agent/extensions`: they load for
+      // every project. A gated project's preloaded list wins over `additionalExtensionPaths`
+      // inside omp, so they join that list there, with the same project-path filter.
+      const labEntries = await labExtensionEntries(agentDir).catch((error: unknown) => {
+        console.error("[plugin-lab] failed to list lab extensions:", error instanceof Error ? error.message : error);
+        return [] as LabExtensionEntry[];
+      });
+      const labPaths = labEntries.map((entry) => entry.path);
+      if (untrusted && labPaths.length > 0) {
+        const kept = new Set(untrusted.preloadedExtensionPaths);
+        untrusted.preloadedExtensionPaths = [
+          ...untrusted.preloadedExtensionPaths,
+          ...labPaths.filter((path) => !kept.has(path) && !isInsideProject(path, sessionCwd)),
+        ];
+      }
+
       // `SYSTEM.md` / `APPEND_SYSTEM.md` / `TITLE_SYSTEM.md`, resolved against this session's cwd the
       // way the CLI resolves them against its own (lib/session-system-prompt.ts).
       const systemPrompts = await resolveSessionSystemPrompts(sessionCwd);
@@ -2765,6 +2851,7 @@ export async function startRpcSession(
         // subagents and revived children never inherit them.
         customTools: [createSessionRecallTool()],
         ...(untrusted ?? {}),
+        ...(!untrusted && labPaths.length > 0 ? { additionalExtensionPaths: labPaths } : {}),
         // The CLI hands `TITLE_SYSTEM.md` to the session the same way; without it the
         // core's automatic title uses its bundled prompt without language guidance.
         ...(systemPrompts.titlePrompt ? { titleSystemPrompt: systemPrompts.titlePrompt } : {}),
@@ -2772,7 +2859,18 @@ export async function startRpcSession(
       // omp's own applier, so a prompt file goes through the same templates the
       // CLI renders it with instead of overwriting the whole system prompt.
       applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, systemPrompts.appendPrompt);
-      const { session: inner, eventBus, subagentEventBus, setToolUIContext } = await createAgentSession(sessionOptions);
+      const { session: inner, eventBus, subagentEventBus, setToolUIContext, extensionsResult } = await createAgentSession(sessionOptions);
+      // A lab extension that fails to import or throws in its factory is skipped by omp;
+      // its error becomes the plugin's `problem`, and a clean load clears an old one.
+      if (labEntries.length > 0 && toolsOption === undefined) {
+        const errors = new Map(extensionsResult.errors.map(({ path, error }) => [path, error]));
+        void recordLabLoadResults(
+          Object.fromEntries(labEntries.map((entry) => [entry.id, errors.get(entry.path) ?? null])),
+          agentDir,
+        ).catch((error: unknown) => {
+          console.error("[plugin-lab] failed to record load results:", error instanceof Error ? error.message : error);
+        });
+      }
 
       const session = inner as unknown as AgentSessionLike;
       restoreThinkingCeiling(session);
@@ -2786,6 +2884,7 @@ export async function startRpcSession(
 
       const wrapper = new AgentSessionWrapper(session, eventBus);
       wrapper.projectCodeLoaded = untrusted === undefined;
+      wrapper.labSignature = labSignatureOf(labEntries);
       wrapper.bindToolUiContext(
         setToolUIContext as unknown as (uiContext: ExtensionUiContextLike, hasUI: boolean) => void,
       );
@@ -2855,6 +2954,12 @@ export async function startRpcSession(
         registry.delete(realSessionId);
       });
       registry.set(realSessionId, wrapper);
+      // A Plugin Lab restart parked the stopped wrapper's open event streams for this id.
+      const handover = getListenerHandovers().get(realSessionId);
+      if (handover) {
+        getListenerHandovers().delete(realSessionId);
+        handover.from.handOverListenersTo(wrapper, handover.keepAlive);
+      }
       wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
 
       return { session: wrapper, realSessionId };

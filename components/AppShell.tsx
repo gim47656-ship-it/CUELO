@@ -18,6 +18,7 @@ import { ProcessLogPanel, type ProcessLogData } from "./workspace/ProcessLogPane
 import { SideChatPanel } from "./workspace/SideChatPanel";
 import { ResourcePanel, type ResourceTab } from "./workspace/ResourcePanel";
 import { EfficiencyPanel } from "./workspace/EfficiencyPanel";
+import { PluginLabPanel, type LabWidgetReport } from "./workspace/PluginLabPanel";
 import { FileDocShortcuts } from "./workspace/FileDocShortcuts";
 import { BranchNavigator } from "./BranchNavigator";
 import { getContextIndicator } from "@/lib/context-usage";
@@ -66,7 +67,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from "@/lib/panel-layout";
-import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSnapshot } from "@/lib/types";
+import type { BlockingExtensionUiRequest, ExtensionWidgetItem, SessionInfo, SessionTreeNode, SubagentSnapshot } from "@/lib/types";
 import type { ProjectTrustState } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/omp-types";
@@ -235,6 +236,9 @@ export function AppShell({
   );
   const [resourceTab, setResourceTab] = useState<ResourceTab>("characters");
   const [efficiencyTab, setEfficiencyTab] = useState<WorkspaceEfficiencyTab>("governor");
+  // The `lab:` widgets of the session ChatWindow shows, for the plugin panels. Keyed by session so a
+  // panel never shows lines that arrived for another session.
+  const [labWidgets, setLabWidgets] = useState<LabWidgetReport>({ sessionId: null, widgets: [] });
   const [pinDecision, setPinDecision] = useState(() => getWorkspacePinDecision(0));
   const [sideChatStore] = useState(createAppSideChatStore);
   // 진행 중 /btw 요청의 소유권. 덱이 닫히거나 반응형으로 이동해 패널이
@@ -1035,6 +1039,9 @@ export function AppShell({
     chatInputRef.current?.insertText(text);
     returnToComposer();
   }, [returnToComposer]);
+  const handleLabWidgetsChange = useCallback((sessionId: string | null, widgets: ExtensionWidgetItem[]) => {
+    setLabWidgets({ sessionId, widgets });
+  }, []);
 
   const initialSessionId = initialNavigation.sessionId;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
@@ -1741,8 +1748,8 @@ export function AppShell({
     return () => observer.disconnect();
   }, [windowTitle]);
   const viewLabels: Record<WorkspaceViewId, string> = locale === "ko"
-    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗" }
-    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat" };
+    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인" }
+    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins" };
   const panelOpen = workspaceLayout.activeView !== "chat";
   const activePanelLabel = panelOpen
     ? viewLabels[workspaceLayout.activeView]
@@ -1832,6 +1839,15 @@ export function AppShell({
       onTabChange={setEfficiencyTab}
     />
   );
+  const pluginsSlot = (
+    <PluginLabPanel
+      title={viewLabels.plugins}
+      visible={workspaceLayout.activeView === "plugins"}
+      sessionId={selectedSession?.id ?? null}
+      labWidgets={labWidgets}
+      onInsertDraft={showChat ? insertIntoComposer : undefined}
+    />
+  );
   const processLogSlot = (
     <ProcessLogPanel
       title={viewLabels.process}
@@ -1874,6 +1890,7 @@ export function AppShell({
       sideChatSlot={sideChatSlot}
       resourceSlot={resourcePanelContent}
       efficiencySlot={efficiencyPanelContent}
+      pluginsSlot={pluginsSlot}
       visible
       onClose={() => dispatchWorkspaceLayout({ type: "select-view", view: "chat" })}
       onReturnFocus={requestComposerFocus}
@@ -2535,6 +2552,7 @@ export function AppShell({
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onSubagentsChange={setSubagents}
+              onLabWidgetsChange={handleLabWidgetsChange}
               onOpenWorkspaceView={openWorkspaceView}
               onOpenSessionList={navigatorPresentation.presented ? undefined : handleSidebarToggle}
               onOpenMaker={openMaker}

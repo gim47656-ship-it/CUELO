@@ -1,25 +1,38 @@
 /**
- * 야간 자율 개선의 절차서(스킬) 후보 수집. 세션 기록에서 `learn` 도구 호출 가운데 `kind: "procedure"`이면서 스킬로
- * 만들지 않은(`skill` 객체가 없는) 것만 모은다. 야간 세션은 같은 요령이 두 세션 이상에서 보일 때만 절차서로 만든다.
+ * 야간 자율 개선의 절차서(스킬) 후보 수집. 두 갈래다.
+ * - `learned`: 세션 기록에서 `learn` 도구 호출 가운데 `kind: "procedure"`이면서 스킬로 만들지 않은(`skill` 객체가 없는) 것.
+ *   야간 세션은 같은 요령이 두 세션 이상에서 보일 때만 절차서로 만든다.
+ * - `observed`: 같은 실패 뒤 같은 모양의 호출로 넘긴 흔적(`scanSessions`의 `recoveries`)이 서로 다른 세션 두 곳 이상에 있는 것.
+ *   두 세션 기준은 여기서 코드로 지킨다.
  * 읽지 못하는 파일·줄은 건너뛴다.
  */
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { maskSecrets } from "./sessions";
+import { clipMasked, maskSecrets, type Recovery } from "./sessions";
 
 export interface SkillCandidate {
-  /** 비밀을 가리고 600자로 줄인 기억 본문 */
+  /** 비밀을 가리고 600자로 줄인 기억 본문(관찰 후보는 실패와 넘긴 방법을 적은 한 줄) */
   memory: string;
   topic: string | null;
+  /** 관찰 후보는 가장 최근에 넘긴 세션 */
   sessionId: string;
-  /** ISO 시각 */
+  /** ISO 시각. 관찰 후보는 가장 최근에 넘긴 시각 */
   timestamp: string;
+  kind: "learned" | "observed";
+  /** 관찰 후보만: 넘긴 흔적이 있는 서로 다른 세션 수(2 이상) */
+  sessionCount?: number;
+  /** 관찰 후보만: 실패 묶음 키(`도구: 정규화한 오류`). 실패 발췌와 짝을 맞출 때 쓴다. */
+  signature?: string;
 }
 
 const MEMORY_LIMIT = 600;
 const CANDIDATE_LIMIT = 40;
+/** 관찰 후보가 되려면 넘긴 흔적이 이만큼 서로 다른 세션에 있어야 한다. */
+export const OBSERVED_MIN_SESSIONS = 2;
+export const OBSERVED_LIMIT = 20;
+
 const SESSION_HEADER = /"type"\s*:\s*"session"/;
 
 /** 먼저 만들어진 파일부터 돌려준다. fork·fixture 사본보다 원본이 중복 제거에서 이긴다(sessions.ts와 같은 순서). */
@@ -103,6 +116,7 @@ export async function collectSkillCandidates(sessionsDir: string, since: number,
               topic: typeof args.topic === "string" && args.topic ? maskSecrets(args.topic).slice(0, 120) : null,
               sessionId,
               timestamp: new Date(at).toISOString(),
+              kind: "learned",
             },
           });
         }
@@ -112,4 +126,35 @@ export async function collectSkillCandidates(sessionsDir: string, since: number,
     }
   }
   return found.sort((a, b) => b.at - a.at).slice(0, CANDIDATE_LIMIT).map((row) => row.candidate);
+}
+
+/**
+ * 관찰 후보: 같은 실패 묶음 뒤 같은 모양의 호출로 넘긴 흔적을 묶어, 서로 다른 세션이 OBSERVED_MIN_SESSIONS 이상인 것만
+ * 후보로 낸다. `since` 뒤(초과) 흔적만 센다. 세션이 많은 순, 같으면 최근 순으로 최대 20개.
+ */
+export function observedCandidates(recoveries: readonly Recovery[], since: number): SkillCandidate[] {
+  const groups = new Map<string, { signature: string; shape: string; sessions: Set<string>; count: number; latest: Recovery }>();
+  for (const r of recoveries) {
+    if (!(r.at > since)) continue;
+    const key = `${r.signature}\n${r.shape}`;
+    const group = groups.get(key) ?? { signature: r.signature, shape: r.shape, sessions: new Set<string>(), count: 0, latest: r };
+    groups.set(key, group);
+    group.sessions.add(r.sessionPath);
+    group.count++;
+    if (r.at >= group.latest.at) group.latest = r;
+  }
+  return [...groups.values()]
+    .filter((g) => g.sessions.size >= OBSERVED_MIN_SESSIONS)
+    .sort((a, b) => b.sessions.size - a.sessions.size || b.latest.at - a.latest.at)
+    .slice(0, OBSERVED_LIMIT)
+    .map((g) => ({
+      memory: clipMasked(`\`${g.signature}\` 실패 뒤 같은 턴에서 \`${g.shape}\` 호출로 넘어갔습니다(서로 다른 세션 ${g.sessions.size}곳, ${g.count}번).`, MEMORY_LIMIT),
+      topic: clipMasked(g.signature.split(": ")[0], 120),
+      sessionId: g.latest.sessionId,
+      timestamp: new Date(g.latest.at).toISOString(),
+      kind: "observed",
+      sessionCount: g.sessions.size,
+      // `normalizeError`가 이미 가린 묶음 키 그대로 둔다. 내보낼 때 같은 키로 실패 발췌를 찾고, 묶음 해석이 다시 자른다.
+      signature: g.signature,
+    }));
 }

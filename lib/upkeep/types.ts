@@ -8,7 +8,7 @@
 export type UpkeepStatus = "ok" | "watch" | "problem" | "unknown";
 
 /** 섹션 순서는 화면 순서와 같다. */
-export const UPKEEP_SECTION_IDS = ["bottleneck", "memory", "cost", "complaints", "ops"] as const;
+export const UPKEEP_SECTION_IDS = ["bottleneck", "memory", "cost", "complaints", "skills", "ops"] as const;
 export type UpkeepSectionId = (typeof UPKEEP_SECTION_IDS)[number];
 
 export type UpkeepUnit = "count" | "ratio" | "usd" | "ms" | "tokens";

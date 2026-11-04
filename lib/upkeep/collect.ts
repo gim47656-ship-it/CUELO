@@ -22,6 +22,8 @@ import {
   REWRITE_CAUSES, REWRITE_CAUSE_LABELS, maskSecrets, scanSessions,
   type MakerResult, type ScanResult, type SessionCost, type UsageTotal, type WindowCounts,
 } from "./sessions";
+import { kstDateTime } from "./prompt";
+import { buildSkillUsage, installedSkills, type InstalledSkill, type SkillUsageRow } from "./skill-usage";
 import { inspectWorkspace, type WorkspaceLeftovers } from "./workspace";
 import type { UpkeepDueItem, UpkeepEvidence, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "./types";
 
@@ -480,6 +482,55 @@ function complaintSection(scan: ScanResult): UpkeepSection {
   return section("complaints", "사용자 지적 반복", [m]);
 }
 
+const SKILL_SCOPE_LABELS: Record<SkillUsageRow["scope"], string> = { managed: "관리 스킬", user: "사용자 스킬", other: "설치 폴더에 없는 스킬" };
+const SKILL_CRITERION = `스킬을 연 턴에서 그 뒤 도구 오류율이 같은 세션의 나머지 호출보다 50% 넘게 높으면 주의, 2배 이상이면 문제 (양쪽 모두 호출 ${MIN_SAMPLE}건 이상일 때). 함께 나타난 정도만 볼 뿐, 스킬 때문에 오류가 났는지는 알 수 없습니다`;
+
+function skillMetric(row: SkillUsageRow): UpkeepMetric {
+  const a = row.current, b = row.previous;
+  const share = (failures: number, calls: number) => `${failures}/${calls}건${calls ? ` (${percent(failures / calls)})` : ""}`;
+  const m = metric(`skill:${row.name}`, `스킬 ${row.name} 열람 횟수`, "count", a.opens, b.opens, row.status, SKILL_CRITERION);
+  m.note = [
+    `${SKILL_SCOPE_LABELS[row.scope]}. 연 세션 ${a.sessions} / ${b.sessions}곳, 마지막 열람 ${a.lastOpenedAt ? kstDateTime(a.lastOpenedAt) : b.lastOpenedAt ? kstDateTime(b.lastOpenedAt) : "없음"}.`,
+    a.opens ? `최근 7일 연 뒤 도구 오류 ${share(a.afterFailures, a.afterCalls)}, 같은 세션의 나머지 ${share(a.restFailures, a.restCalls)}. 스킬을 연 턴 ${a.openTurns}번 중 다음 요청에 지적 표현이 나온 턴 ${a.complaintTurns}번.` : "최근 7일에는 열지 않았습니다.",
+    row.status === "unknown" && a.opens ? `호출이 ${MIN_SAMPLE}건 미만인 쪽이 있어 판정하지 않습니다.` : "",
+  ].filter(Boolean).join(" ");
+  m.evidence = (row.sessions ?? []).map((s) => ({
+    label: `열람 ${s.opens}번 · 연 뒤 오류 ${s.afterFailures}/${s.afterCalls}건`,
+    sessionId: s.sessionId,
+    sessionPath: s.sessionPath,
+    timestamp: s.lastOpenedAt,
+  }));
+  return m;
+}
+
+/**
+ * 스킬 사용(2026-11-04 사용자 결정): 스킬마다 열람 횟수를 두 기간으로 비교하고, 판정은 연 뒤 오류와의 연관으로 낸다. 오래 열지
+ * 않은 스킬은 참고 행 하나로 보이며, SKILL.md를 고친 지 30일이 안 된 스킬은 세지 않는다. 스캔이 14일이라 「열지 않음」도 14일 기준이다.
+ * 14일 안에 연 스킬은 모두 제 행을 가진다(열람이 많은 순).
+ */
+export function skillSection(scan: ScanResult, installed: readonly InstalledSkill[], now: number, warnings: string[] = []): UpkeepSection {
+  const complete = !scan.warnings.length;
+  const usage = buildSkillUsage(scan.skills.windows, scan.skills.sessions, installed, now, complete);
+  const metrics = usage.rows.map(skillMetric);
+  const stale = usage.unused.filter((s) => !s.young);
+  const young = usage.unused.filter((s) => s.young);
+  const unused = metric("skills-unused", "14일 동안 열지 않은 스킬", "count", complete ? stale.length : null, null, complete ? "ok" : "unknown",
+    "참고용(판정 안 함). 관리 스킬·사용자 스킬 폴더 기준이며, SKILL.md를 고친 지 30일이 안 된 스킬은 세지 않습니다");
+  const names = (list: typeof stale, scope: string) => list.filter((s) => s.scope === scope).map((s) => s.name);
+  const managed = names(stale, "managed"), user = names(stale, "user");
+  unused.note = complete
+    ? [
+      `관리 스킬 ${managed.length}개${managed.length ? `(${managed.join(", ")})` : ""}, 사용자 스킬 ${user.length}개${user.length ? `(${user.join(", ")})` : ""}.`,
+      `새로 만든 지 30일이 안 돼 아직 판정하지 않는 스킬 ${young.length}개${young.length ? `(${young.map((s) => s.name).join(", ")})` : ""}.`,
+      "야간 점검은 이 스킬들을 지우지 않고 아침 요약에 정리 제안으로만 적습니다.",
+    ].join(" ")
+    : "세션 기록을 다 읽지 못해 열지 않은 스킬을 가리지 않았습니다.";
+  unused.evidence = [...stale].sort((x, y) => Number(x.scope !== "managed") - Number(y.scope !== "managed") || x.name.localeCompare(y.name))
+    .slice(0, 10).map((s) => ({ label: `${s.name} · ${SKILL_SCOPE_LABELS[s.scope]}` }));
+  metrics.push(unused);
+  return section("skills", "스킬 사용", metrics, warnings);
+}
+
 /** 배포 리비전과 공개 CI 행. */
 export function deployMetrics(deploy: DeployState, now: number): UpkeepMetric[] {
   // 비교하지 못하면(pending null) 미확인이다. 대개 개발 사본이 다른 곳에서 게시·배포한 커밋을 아직 받지 않은 경우라, 「배포 필요」로
@@ -715,9 +766,10 @@ async function buildReport(): Promise<UpkeepReport> {
   const handoffs = readHandoffs(repo, new Date(start));
   const marks = activeFixMarks(agentDir, start - 7 * DAY_MS);
   const checks = activeCheckMarks(agentDir, start);
-  const [scan, deploy] = await Promise.all([
+  const [scan, deploy, skills] = await Promise.all([
     scanSessions(getSessionsDir(agentDir), start, Object.values(marks)),
     inspectDeploy(agentDir, repo),
+    installedSkills(agentDir),
   ]);
   // Maker 결과(partial)와 세션 cwd별 마지막 기록은 세션 스캔에서 나오므로 스캔 뒤에 센다.
   const [maker, workspace] = await Promise.all([
@@ -729,6 +781,7 @@ async function buildReport(): Promise<UpkeepReport> {
     memorySection(scan, handoffs.items),
     costSection(scan, handoffs.items),
     complaintSection(scan),
+    skillSection(scan, skills.skills, start, skills.warnings),
     opsSection(handoffs.items, handoffs.warnings, deploy, workspace, start),
   ];
   await applyFixMarks(sections, scan, marks, { agentDir, now: start, handoffs: handoffs.items });
