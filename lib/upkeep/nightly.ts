@@ -263,6 +263,11 @@ export function candidateLine(candidate: SkillCandidate): string {
   return `- ${kstDateTime(candidate.timestamp)}${topic}${seen}: ${candidate.memory.replace(/\s+/g, " ")}`;
 }
 
+/** 야간 세션의 worktree 브랜치 이름. `date`는 KST 실행 날짜(YYYY-MM-DD)다. */
+export function nightlyBranch(date: string): string {
+  return `wt/nightly-${date.replaceAll("-", "")}`;
+}
+
 /** 할 일이 있어도 오늘 열지 않을 이유. 로컬·받은편지함 두 모드가 같은 순서로 본다(할 일 없음 판정 다음). */
 export function nightlyGuard(repoCwd: string | null, state: NightlyState | null, date: string, runningSessionIds: readonly string[]): NightlySkipReason | null {
   if (!repoCwd) return "no-repo";
@@ -294,7 +299,7 @@ export function planNightlyRun(
     action: "run",
     date,
     repoCwd: report.repoCwd,
-    branch: `wt/nightly-${date.replaceAll("-", "")}`,
+    branch: nightlyBranch(date),
     jobs: { problems, skillCandidates: skillCandidates.length, weeklyReview },
     skillsScannedAt: now.toISOString(),
     prompt: sections.join("\n\n"),

@@ -7,7 +7,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { listWorktrees } from "../worktree";
-import { STALE_WORKTREE_MS } from "./criteria";
+import { nightlyBranchRetained, STALE_WORKTREE_MS } from "./criteria";
 
 const exec = promisify(execFile);
 
@@ -24,7 +24,7 @@ export type WorkspaceLeftovers = {
 /**
  * `cwdActivity`는 세션 스캔이 모은 세션 cwd별 마지막 기록 시각이다. 그 worktree나 하위 폴더에서 연 세션을 사용으로 본다.
  * 세션 기록을 다 읽지 못했으면 null을 받아 worktree는 확인하지 않는다(쓰이는 worktree를 남은 것으로 세지 않게).
- * 원격 브랜치는 받아 둔 origin 참조로만 본다(fetch 안 함).
+ * 원격 브랜치는 받아 둔 origin 참조로만 본다(fetch 안 함). 보존 기간 안의 야간 브랜치는 아침 보고가 쓰므로 세지 않는다.
  */
 export async function inspectWorkspace(repo: string | null, agentDir: string, cwdActivity: Record<string, number> | null, now: number): Promise<WorkspaceLeftovers> {
   const warnings: string[] = [];
@@ -46,7 +46,7 @@ export async function inspectWorkspace(repo: string | null, agentDir: string, cw
     }
     try {
       const { stdout } = await exec("git", ["-C", repo, "branch", "-r", "--merged", "origin/main", "--format=%(refname:short)"], { timeout: 10000 });
-      branches = stdout.split("\n").map((x) => x.trim()).filter((x) => x.startsWith("origin/wt/"));
+      branches = stdout.split("\n").map((x) => x.trim()).filter((x) => x.startsWith("origin/wt/") && !nightlyBranchRetained(x, now));
     } catch {
       warnings.push("origin/main에 병합된 원격 브랜치를 확인하지 못했습니다.");
     }

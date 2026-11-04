@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
-  CACHE_WRITE_FLOOR, CI_STALE_MS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
+  CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
   FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
@@ -478,7 +478,7 @@ function overdueMetric(items: UpkeepDueItem[], warnings: string[]): UpkeepMetric
 
 function complaintSection(scan: ScanResult): UpkeepSection {
   const m = perTurnMetric("repeat-complaints", "다시 지적하는 표현", scan, (w) => w.complaints);
-  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓칩니다.`;
+  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
   return section("complaints", "사용자 지적 반복", [m]);
 }
 

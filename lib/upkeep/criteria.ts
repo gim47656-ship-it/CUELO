@@ -21,10 +21,11 @@ export const EARLY_EXIT_REPORT_COUNT = 2;
 
 export const COMPLAINT_EXPRESSIONS = ["또 ", "왜 안", "아까 말", "말했잖", "다시 말하", "몇 번", "그게 아니라", "안 되잖", "왜 이래", "아직도"];
 /**
- * CUELO가 만들어 새 세션 첫 메시지로 넣는 지시문의 첫 줄(보수 점검 프롬프트, 아침 보고·야간 개선 세션 머리말).
- * 사용자가 한 말이 아니고, 보수 점검 프롬프트는 지난 지적을 근거로 인용하므로 지적 표현으로 세지 않는다.
+ * 이보다 긴 사용자 메시지는 지적 표현으로 세지 않는다(2026-11-04 사용자 결정). 붙여 넣은 글(조사 결과·다른 PC 요청)과 CUELO가
+ * 만든 지시문(보수 점검 프롬프트는 지난 지적을 근거로 인용한다)이 여기에 든다. 11-04 점검의 실제 지적은 12~43자, 붙여 넣은
+ * 글은 418자 이상이었다. 요청 수로는 그대로 센다.
  */
-export const GENERATED_PROMPT_TITLES = ["CUELO 보수 점검:", "CUELO 보수 전체 점검", "CUELO 클라우드 변경 보고 세션", "CUELO 야간 자율 개선 세션"];
+export const COMPLAINT_MAX_CHARS = 300;
 
 /** HANDOFF 「리뷰 게이트 다듬기 후속(10-29)」의 번역 캐시 재작성 비율: 수정 전 51.5%, 평소 0.8%. */
 export const TRANSLATION_CACHE_BEFORE = 0.515;
@@ -54,6 +55,32 @@ export const CACHE_TTL_SHORT_MS = 300_000;
 
 /** 이 기간 동안 세션 기록이 없는 worktree는 남은 작업 공간으로 본다. */
 export const STALE_WORKTREE_MS = 3 * 86_400_000;
+
+/**
+ * 원격 `wt/nightly-YYYYMMDD` 브랜치를 그 날짜(KST)부터 이 기간 남긴다. 각 PC의 아침 보고가 이 브랜치로 클라우드 변경을 모으므로,
+ * 며칠 꺼져 있던 PC도 보고를 받게 한다. 야간 정리와 「남은 작업 공간」이 같은 기준을 쓴다.
+ */
+export const NIGHTLY_BRANCH_RETENTION_DAYS = 7;
+
+/**
+ * 이름 전체가 `wt/nightly-YYYYMMDD`(앞에 `origin/`·`refs/heads/` 하나는 허용)인 브랜치의 날짜 KST 00:00(ms). 야간 브랜치 이름이
+ * 아니거나 달력에 없는 날짜(2월 30일 같은)면 null.
+ */
+export function nightlyBranchStart(branch: string): number | null {
+  const match = /^(?:origin\/|refs\/heads\/)?wt\/nightly-(\d{4})(\d{2})(\d{2})$/.exec(branch);
+  if (!match) return null;
+  const day = `${match[1]}-${match[2]}-${match[3]}`;
+  const start = Date.parse(`${day}T00:00:00+09:00`);
+  // Date.parse는 넘친 날짜를 다음 달로 넘기므로, 되돌린 KST 날짜가 같은지 본다.
+  if (Number.isNaN(start) || new Date(start + 9 * 3_600_000).toISOString().slice(0, 10) !== day) return null;
+  return start;
+}
+
+/** 날짜를 읽은 야간 브랜치가 아직 보존 기간 안이면 true. 야간 브랜치가 아니거나 날짜를 못 읽으면 false. */
+export function nightlyBranchRetained(branch: string, now: number): boolean {
+  const start = nightlyBranchStart(branch);
+  return start !== null && now - start < NIGHTLY_BRANCH_RETENTION_DAYS * 86_400_000;
+}
 
 /** 고침 표시한 행 중 분모가 없는 기간 합계 행은 표시 뒤 이 시간이 지나야 판정한다(그 전에는 관찰 중). */
 export const FIX_OBSERVE_MS = 86_400_000;

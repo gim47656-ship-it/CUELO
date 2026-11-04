@@ -8,10 +8,11 @@ import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
+import { NIGHTLY_BRANCH_RETENTION_DAYS, nightlyBranchStart } from "./criteria";
 import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
 import {
   candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyBase, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
-  nightlyAuditRules, nightlyGuard, skillScanSince, weeklyReviewDue,
+  nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue,
 } from "./nightly";
 import { isLabPluginId, LAB_EXPORT_LIMIT_BYTES, type LabExportEntry } from "../plugin-lab";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
@@ -399,7 +400,7 @@ async function commitOf(repo: string, ref: string): Promise<string | null> {
 export async function readCloudHandoffs(repo: string, now: Date): Promise<CloudHandoffs> {
   const warnings: string[] = [];
   try {
-    await git(repo, ["fetch", "--quiet", "origin"], 120_000);
+    await git(repo, ["fetch", "--quiet", "--prune", "origin"], 120_000);
   } catch {
     warnings.push("git fetch origin에 실패해 이미 받아 둔 origin/main으로 봤습니다.");
   }
@@ -443,6 +444,44 @@ export async function createNightlyBranch(repo: string, branch: string, base: st
   }
   await git(repo, ["branch", "-f", branch, target]);
   return "moved";
+}
+
+/**
+ * 지난 야간 세션이 origin에 남긴 `wt/nightly-*` 브랜치 가운데 `base`(origin/main)에 이미 들어간 것을 지운다(2026-11-04 사용자
+ * 결정). 세션의 `git_finalize`가 브랜치를 origin에 올리고 `git_integrate`는 그 사본을 맞춰 둘 뿐이라, 커밋한 날마다 하나씩
+ * 남았다. `keep`(아직 도는 세션의 브랜치)과 날짜가 `NIGHTLY_BRANCH_RETENTION_DAYS` 안인 브랜치(오늘 것 포함)는 남긴다. 각 PC의
+ * 아침 보고가 이 브랜치로 클라우드 변경을 모으기 때문이다. 받아 둔 커밋이 `base`의 조상이 아니면(병합 전·커밋을 받지 못함)
+ * 손대지 않고, 목록을 읽은 뒤 브랜치가 움직였으면 lease가 삭제를 막는다.
+ */
+export async function pruneMergedNightlyBranches(repo: string, base: string, keep: ReadonlySet<string>, now: Date): Promise<{ deleted: string[]; warnings: string[] }> {
+  const deleted: string[] = [], warnings: string[] = [];
+  let listed: string;
+  try {
+    listed = await git(repo, ["ls-remote", "--heads", "origin", "refs/heads/wt/nightly-*"], 60_000);
+  } catch {
+    return { deleted, warnings: ["origin의 야간 브랜치 목록을 읽지 못했습니다."] };
+  }
+  for (const line of listed.split("\n")) {
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (!sha || !ref?.startsWith("refs/heads/wt/nightly-")) continue;
+    const branch = ref.slice("refs/heads/".length);
+    // 날짜를 읽은 야간 브랜치만, 그 날짜가 보존 기간을 넘었을 때만 지운다.
+    const start = nightlyBranchStart(branch);
+    if (start === null || keep.has(branch) || now.getTime() - start < NIGHTLY_BRANCH_RETENTION_DAYS * 86_400_000) continue;
+    try {
+      await git(repo, ["merge-base", "--is-ancestor", sha, base]);
+    } catch {
+      continue;
+    }
+    try {
+      await git(repo, ["push", "--quiet", `--force-with-lease=${ref}:${sha}`, "origin", `:${ref}`], 60_000);
+      deleted.push(branch);
+    } catch (error) {
+      const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "";
+      warnings.push(`${branch}를 지우지 못했습니다: ${(stderr || String(error)).trim().split("\n")[0]}`);
+    }
+  }
+  return { deleted, warnings };
 }
 
 /** 정식 플러그인 폴더(저장소 기준). 프로필 동기화가 `~/.omp/agent/cuelo-plugins/`로 설치한다. */
@@ -740,7 +779,7 @@ export function planInboxRun(
     action: "run",
     date,
     repoCwd,
-    branch: `wt/nightly-${date.replaceAll("-", "")}`,
+    branch: nightlyBranch(date),
     jobs: {
       problems: active.flatMap(({ bundle }) => bundle.problems.map((p) => `${bundle.source}:${p.id}`)),
       skillCandidates: active.reduce((sum, { candidates }) => sum + candidates.length, 0),

@@ -5,8 +5,8 @@ import { type AgentSessionWrapper, getRunningRpcSessionIds, startNewRpcSession }
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
-import { type NightlyJobs, type NightlySourcePlan, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
-import { createNightlyBranch, planInboxRun, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
+import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
+import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { addWorktree } from "@/lib/worktree";
 
@@ -77,6 +77,15 @@ async function planAndRun(dryRun: boolean) {
       const handoffs = repoOverride ? await readCloudHandoffs(repoOverride, now) : null;
       for (const warning of handoffs?.warnings ?? []) log(`handoff: ${warning}`);
       if (handoffs) log(`handoff base: ${handoffs.base ? `${handoffs.base.ref} ${handoffs.base.sha}` : "working tree (no commit found)"}`);
+      // 지난 야간 브랜치 정리(2026-11-04 사용자 결정): origin/main에 들어간 원격 wt/nightly-* 가운데 보존 기간이 지난 것을 지운다.
+      // 아직 도는 세션의 브랜치는 남긴다. 할 일이 없는 날에도 정리한다.
+      if (!dryRun && repoOverride && handoffs?.base?.ref === "origin/main") {
+        const keep = new Set<string>();
+        if (state && getRunningRpcSessionIds().includes(state.sessionId)) keep.add(nightlyBranch(state.date));
+        const pruned = await pruneMergedNightlyBranches(repoOverride, handoffs.base.sha, keep, now);
+        for (const warning of pruned.warnings) log(`branch prune: ${warning}`);
+        if (pruned.deleted.length) log(`deleted merged ${pruned.deleted.join(", ")}`);
+      }
       // 저장소에 이미 정식 사본이 있는 실험 플러그인은 다시 승격하지 않는다(PC가 업데이트를 받기 전까지 묶음에 남는다).
       const promoted = repoOverride && handoffs?.base ? await readPromotedPluginIds(repoOverride, handoffs.base.sha) : new Set<string>();
       plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, handoffs, promoted);
