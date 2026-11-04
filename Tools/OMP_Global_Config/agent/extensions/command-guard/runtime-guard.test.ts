@@ -1596,6 +1596,24 @@ describe("wrangler 배포의 CUELO 안팎 판정", () => {
       await mkdir(relink);
       const linkThenDeploy = `ln -s ${join(worker, "wrangler.toml")} ${join(relink, "wrangler.toml")} && wrangler deploy --dry-run`;
       expect(await bash("relink-config", linkThenDeploy, relink)).toMatchObject({ block: true });
+
+      // 배포 스크립트: 스크립트와 작업 폴더가 CUELO 밖이면 통과(임시 세션의 `bash <프로젝트>/deploy.sh`), 아니면 막는다.
+      await writeFile(join(project, "deploy.sh"), "npx wrangler deploy\n");
+      await writeFile(join(worker, "deploy.sh"), "npx wrangler deploy\n");
+      await symlink(join(worker, "deploy.sh"), join(root, "deploy.sh"));
+      expect(await bash("outside-script", `bash ${join(project, "deploy.sh")}`, root)).toBeUndefined();
+      expect(await bash("outside-script-direct", "./deploy.sh", project)).toBeUndefined();
+      expect(await bash("inside-script", `bash ${join(worker, "deploy.sh")}`, project)).toMatchObject({ block: true });
+      expect(await bash("inside-cwd-script", `bash ${join(project, "deploy.sh")}`, worker)).toMatchObject({ block: true });
+      expect(await bash("linked-script", "bash deploy.sh", root)).toMatchObject({ block: true });
+      expect(await bash("missing-script", "bash ./release.sh", project)).toMatchObject({ block: true });
+      expect(await bash("expanded-script", "bash $DIR/deploy.sh", project)).toMatchObject({ block: true });
+      expect(await bash("known-expanded-script", `DIR=${project}; bash $DIR/deploy.sh`, project)).toMatchObject({ block: true });
+      // 셸은 `/` 없는 이름을 PATH에서 찾는다: 작업 폴더에 같은 이름이 있어도 PATH의 CUELO 스크립트일 수 있다.
+      expect(await bash("path-script", "deploy.sh", project)).toMatchObject({ block: true });
+      // PowerShell·cmd 배포 스크립트는 CUELO 밖이어도 막는다.
+      await writeFile(join(project, "deploy.ps1"), "#!/usr/bin/env pwsh\nWrite-Output ok\n", { mode: 0o755 });
+      expect(await bash("direct-ps1", "./deploy.ps1", project)).toMatchObject({ block: true });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

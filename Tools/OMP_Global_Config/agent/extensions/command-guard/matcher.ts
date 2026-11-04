@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 
 export interface GuardContext {
@@ -2146,6 +2147,31 @@ function wranglerOutsideCuelo(args: string[], context: SegmentContext | undefine
   }
 }
 
+/**
+ * 배포 스크립트(`./deploy.sh`, `bash ~/proj/deploy.sh`)와 셸 작업 폴더가 모두 지금 있고 CUELO 소스·설치본 밖임이 증명되는가.
+ * 스크립트 내용은 읽지 않는다: CUELO 밖 개인 프로젝트의 배포는 사용자 승인을 받는다는 규칙에 맡긴다(2026-11-05 사용자 결정).
+ * 맨 앞 `~/`만 홈 폴더로 풀고, 그 밖의 셸 확장(앞서 대입한 변수 포함)·같은 명령이 링크·이동·복사한 곳은 증명하지 못한 것이다.
+ * 직접 실행(`direct`)은 셸이 `/` 없는 이름을 PATH에서 찾으므로 `/`가 있는 경로만 본다. PowerShell·cmd 스크립트는 늘 막는다.
+ */
+function deployScriptOutsideCuelo(value: string, context: SegmentContext | undefined, direct: boolean): boolean {
+  const check = context?.isOutsideCuelo;
+  const cwd = context?.cwd;
+  if (!check || !cwd || context.locationOverridden) return false;
+  if (direct && !value.includes("/")) return false;
+  if (/\.(?:ps1|bat|cmd)$/i.test(value)) return false;
+  const home = /^~\//.test(value);
+  const rest = home ? value.slice(2) : value;
+  if (hasShellExpansion(rest)) return false;
+  const script = resolveFrom(cwd, home ? `${homedir()}/${rest}` : rest);
+  if (!script) return false;
+  const relinked = context.effects?.relinked ?? [];
+  try {
+    return !withinAny(script, relinked) && check(resolve(cwd), "directory") && check(script, "file");
+  } catch {
+    return false;
+  }
+}
+
 /** PowerShell 옵션(값을 받는 옵션 포함)을 지난 첫 위치 인자. `-Command`·`-File`에서 멈춘다(각각 따로 판정한다). */
 function firstPowerShellPositional(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
@@ -2214,10 +2240,14 @@ function matchDeployment(tokens: ShellToken[], invocation: Invocation, context: 
     return REASONS.deploy;
   }
 
-  if (isDeployScriptName(tokens[invocation.index].value)) return REASONS.deploy;
+  if (isDeployScriptName(tokens[invocation.index].value)) {
+    return deployScriptOutsideCuelo(tokens[invocation.index].value, context, true) ? undefined : REASONS.deploy;
+  }
 
   if (SCRIPT_INTERPRETERS[invocation.name]) {
-    if (positionals[0] && isDeployScriptName(positionals[0])) return REASONS.deploy;
+    if (positionals[0] && isDeployScriptName(positionals[0])) {
+      return deployScriptOutsideCuelo(positionals[0], context, false) ? undefined : REASONS.deploy;
+    }
   }
 
   if (invocation.name === "powershell" || invocation.name === "pwsh") {
