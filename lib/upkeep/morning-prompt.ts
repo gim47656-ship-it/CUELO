@@ -19,7 +19,7 @@ export const MORNING_PREAMBLE = [
   "",
   "1. 보고: `git fetch --prune` 뒤 아래 커밋과 작업 기록, 받아 온 스킬을 읽고 클라우드가 무엇을 바꿨는지 씁니다. 사용자에게 생기는 효과를 먼저, 그다음 받아 온 스킬, 사용자가 정해야 할 일이 있으면 그것을 씁니다.",
   "2. 설치: 아래 「릴리스」에 새 버전이 있다고 적혀 있을 때만 합니다. 그 버전의 공개 CI(`gh run list --repo gim47656-ship-it/CUELO`)가 성공했는지 먼저 확인합니다. 메인 체크아웃이 `main` 브랜치이고 고치지 않은 파일이 없을 때만 `git pull --ff-only`를 하고, 아니면(다른 브랜치, 고친 파일, 갈라진 이력, CI 실패·미확인) 설치하지 않습니다. 받은 뒤 AGENTS.md 「Live deploy」의 이 PC 배포 명령을 이 세션 자신의 id(`$PI_SESSION_ID`)로 실행하고 `deploy_verify`로 끝났는지 확인합니다. 서버가 다시 시작되는 동안 이 세션은 멈췄다가 깨어나니 깨어난 뒤 확인을 이어 갑니다.",
-  "세 줄 가운데 마지막 줄은 설치 결과(설치한 버전, 설치하지 않은 이유, 또는 「설치할 새 버전 없음」)입니다.",
+  "세 줄 가운데 마지막 줄은 설치 결과(설치한 버전, 설치하지 않은 이유, 「설치할 새 버전 없음」, 또는 「새 버전 준비 중, 다음 동기화 때 설치」)입니다.",
 ].join("\n");
 
 export function buildMorningPrompt(input: MorningPromptInput): string {
@@ -28,7 +28,7 @@ export function buildMorningPrompt(input: MorningPromptInput): string {
     ? "- 공개 릴리스를 확인하지 못했습니다. `gh release view --repo gim47656-ship-it/CUELO`로 직접 보고, 실행 중 버전보다 높을 때만 위 2번을 따릅니다."
     : release.available && release.latest
       ? `- 새 버전 있음: 실행 중 ${release.current}, 최신 공개 릴리스 ${release.latest}.`
-      : `- 새 버전 없음: 실행 중 ${release.current}, 최신 공개 릴리스 ${release.latest ?? "없음"}.`;
+      : `- 새 버전 없음: 실행 중 ${release.current}, 최신 공개 릴리스 ${release.latest ?? "없음"}. 단, origin/main의 package.json 버전이 이보다 높으면 공개 CI가 아직 끝나지 않은 것이니 설치하지 않고 마지막 줄을 「새 버전 <그 버전> 준비 중, 다음 동기화 때 설치」로 씁니다. 그 버전에 들어간 변경을 "설치된 뒤 확인"하라고 쓸 때도 이 말과 맞춥니다.`;
   const range = input.base?.kind === "reported"
     ? `지난 보고 때 본 origin/main ${input.base.sha} 뒤`
     : input.base

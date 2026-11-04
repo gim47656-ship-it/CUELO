@@ -1558,6 +1558,8 @@ describe("wrangler 배포의 CUELO 안팎 판정", () => {
       await writeFile(join(cuelo, "package.json"), JSON.stringify({ name: "cuelo" }));
       await writeFile(join(worker, "wrangler.toml"), "name = 'wake'\n");
       await writeFile(join(project, "package.json"), JSON.stringify({ name: "olympics-score" }));
+      // 실제 Worker 프로젝트처럼 자기 설정 파일이 있어도 밖이다(설정 파일 경로를 폴더처럼 올라가다 ENOTDIR로 막히던 회귀).
+      await writeFile(join(project, "wrangler.jsonc"), '{ "name": "olympics-score" }\n');
       await symlink(worker, join(root, "worker-link"));
       const harness = createGuardHarness({ cwd: project });
       const bash = (id: string, command: string, cwd: string) =>
@@ -1565,6 +1567,7 @@ describe("wrangler 배포의 CUELO 안팎 판정", () => {
 
       expect(await bash("outside-deploy", "npx wrangler deploy", project)).toBeUndefined();
       expect(await bash("outside-dry-run", "npx wrangler deploy --dry-run", project)).toBeUndefined();
+      expect(await bash("outside-config", `wrangler deploy --dry-run -c ${join(project, "wrangler.jsonc")}`, project)).toBeUndefined();
       expect(await bash("inside", "npx wrangler deploy --dry-run", worker)).toMatchObject({ block: true });
       expect(await bash("inside-config", `wrangler deploy -c ${join(worker, "wrangler.toml")}`, project)).toMatchObject({ block: true });
       expect(await bash("linked", "wrangler deploy", join(root, "worker-link"))).toMatchObject({ block: true });

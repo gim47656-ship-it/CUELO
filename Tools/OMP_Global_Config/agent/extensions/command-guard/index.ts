@@ -102,15 +102,16 @@ function eventSessionCwd(ctx: { cwd?: string } | undefined): string {
 const CUELO_PACKAGE_NAME = "cuelo";
 
 /**
- * `dir/package.json`이 CUELO 패키지인가. 그 자리에 아무것도 없을 때(lstat ENOENT)만 아니라고 본다. 깨진 링크·권한 오류·
- * 풀 수 없는 내용은 CUELO로 본다(증명하지 못한 쪽은 막는다).
+ * `dir/package.json`이 CUELO 패키지인가. 그 자리에 아무것도 없을 때(lstat ENOENT, `dir`이 설정 파일처럼 폴더가 아니면 ENOTDIR)만
+ * 아니라고 본다. 깨진 링크·권한 오류·풀 수 없는 내용은 CUELO로 본다(증명하지 못한 쪽은 막는다).
  */
 function isCueloPackageDirectory(dir: string): boolean {
   const manifest = join(dir, "package.json");
   try {
     lstatSync(manifest);
   } catch (error) {
-    return !(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    return code !== "ENOENT" && code !== "ENOTDIR";
   }
   let parsed: unknown;
   try {
