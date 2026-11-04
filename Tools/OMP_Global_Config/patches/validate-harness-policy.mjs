@@ -660,6 +660,7 @@ const requiredPolicyShapes = [
   ["implementationOwnership.writerValidation.scopeDecision", "string"],
   ["implementationOwnership.writerValidation.acceptanceCheck", "string"],
   ["implementationOwnership.writerValidation.reuseScope", "string"],
+  ["implementationOwnership.writerValidation.finalSuiteOrder", "string"],
   ["implementationOwnership.writerValidation.surfaceSetup", "string"],
   ["implementationOwnership.writerValidation.heavyArtifactOwner", "string"],
   ["implementationOwnership.writerValidation.staleEnvironment", "string"],
@@ -778,6 +779,7 @@ const writerValidationKeys = [
   "scopeDecision",
   "acceptanceCheck",
   "reuseScope",
+  "finalSuiteOrder",
   "surfaceSetup",
   "heavyArtifactOwner",
   "endConditions",
@@ -1594,6 +1596,7 @@ if (policy !== null) {
   for (const [member, needle, why] of [
     ["acceptanceCheck", "already-confirmed", "같은 revision·환경에서 이미 확인된 조건을 반복하지 않는다는 조건이 사라진다"],
     ["reuseScope", "rework-invalidated", "재작업이 무효화한 검사만 다시 한다는 조건이 사라진다"],
+    ["finalSuiteOrder", "after-the-cross-review-chain-converges", "최종 확인·N회 반복을 검토가 끝난 뒤 한 번만 돈다는 조건이 사라진다"],
     ["surfaceSetup", "never-the-default", "격리 서버·전체 production build가 기본 검증이 아니라는 문장이 사라진다"],
     ["heavyArtifactOwner", "requests-that-artifact", "Main이 곧 만들 산출물을 owner가 요청한다는 조건이 사라진다"],
     ["staleEnvironment", "never-verification", "오래된 운영 화면이 수정본 검증이 아니라는 문장이 사라진다"],

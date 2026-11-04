@@ -101,7 +101,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
 | A16 | 판단 경계는 `maker_route`·런타임 advisory | 구조 | `extensions/lib/maker-routing.ts`, `extensions/jev-runtime.ts` | |
 | A17 | Main은 Maker 경로를 고치지 않고 검사를 반복하지 않는다 | 문서 | — | OwnerWriteGuard는 Maker 쓰기만 본다 |
-| A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | 검사 | `patches/core-subagent-verify-test.ts`, `evals/cases/security/missing-evidence.json` | |
+| A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | 검사 | `patches/core-subagent-verify-test.ts`, `evals/cases/security/missing-evidence.json` | 최종 확인·N회 반복은 검토 수렴 뒤 한 번(`writerValidation.finalSuiteOrder`, Maker SOP)은 문서. 2026-11-04 지적(검토마다 10회 반복 재시작) |
 | A19 | `wait`는 Main 전용 | 구조 | `patches/core-subagent-wait-test.ts` | |
 | A20 | Maker가 도는 동안 Main 몫을 먼저 한다 | 문서 | — | 2026-10-19 지적. A4 차단은 Maker 대기를 보지 않음 |
 | A21 | TODO는 상태 전환 자리에서 바로 갱신 | 안내 | `extensions/todo-nudge.ts`, `extensions/lib/task-progress.ts` | |
