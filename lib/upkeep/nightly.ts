@@ -40,6 +40,8 @@ export interface NightlyJobs {
   /** 새 절차 후보 수 */
   skillCandidates: number;
   weeklyReview: boolean;
+  /** 받은편지함 모드의 합계에서만: 맡긴 HANDOFF 클라우드 점검 항목(`경로 「제목」`) */
+  handoff?: string[];
 }
 
 /** 받은편지함 모드에서 출처 하나가 맡은 일 */
@@ -47,6 +49,12 @@ export interface NightlySourcePlan {
   source: string;
   jobs: NightlyJobs;
   skillsScannedAt: string;
+}
+
+/** 받은편지함 모드에서 HANDOFF를 읽고 야간 브랜치를 둘 커밋. origin/main을 찾지 못하면 저장소 HEAD다. */
+export interface NightlyBase {
+  ref: "origin/main" | "HEAD";
+  sha: string;
 }
 
 export type NightlyPlan =
@@ -64,6 +72,8 @@ export type NightlyPlan =
     skillsScannedAt: string;
     /** 받은편지함 모드에서만: 출처별 할 일 */
     sources?: NightlySourcePlan[];
+    /** 받은편지함 모드에서만: HANDOFF를 읽은 커밋. worktree 브랜치를 이 커밋에 둔다. null이면 커밋을 찾지 못해 작업 사본을 읽었다. */
+    base?: NightlyBase | null;
     prompt: string;
   };
 

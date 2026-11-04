@@ -2,19 +2,26 @@
  * 클라우드에서 도는 야간 자율 개선(2026-11-02 사용자 결정). 집·사무실 PC(출처)는 자기 기록을 가린 묶음(JSON v1)으로
  * 내보내고, 클라우드는 `CUELO_NIGHTLY_INBOX_DIR`의 `<출처>.json`만 읽어 출처마다 따로 판정한다. 클라우드 자신의 세션
  * 기록은 쓰지 않는다. 하룻밤에 세션은 하나이고 프롬프트는 출처마다 `# <출처>` 절 하나를 둔다. 출처끼리 후보·순위를 섞지 않는다.
+ * 저장소 HANDOFF에서 제목에 「클라우드 점검」이 붙고 점검일이 지난 항목은 묶음과 상관없이 하나만 있어도 맡긴다(2026-11-04 사용자 결정).
  */
+import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { promisify } from "node:util";
+import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
 import {
-  candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
+  candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyBase, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
   nightlyAuditRules, nightlyGuard, skillScanSince, weeklyReviewDue,
 } from "./nightly";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import type { SkillCandidate } from "./skill-candidates";
 import { maskSecrets } from "./sessions";
-import type { UpkeepReport } from "./types";
+import type { UpkeepDueItem, UpkeepReport } from "./types";
 
+const exec = promisify(execFile);
 export const NIGHTLY_BUNDLE_VERSION = 1;
+/** HANDOFF 항목 제목에 이 글자가 있으면 클라우드가 스스로 확인할 수 있는 항목이다. */
+export const CLOUD_CHECK_MARKER = "클라우드 점검";
 const DAY_MS = 86_400_000;
 /** 이보다 오래된 묶음은 그 PC가 오래 꺼져 있었다는 뜻이라 판정에 쓰지 않는다. */
 const STALE_DAYS = 8;
@@ -174,6 +181,113 @@ export function readNightlyInbox(dir: string, now: Date): InboxRead {
   return { bundles, skipped };
 }
 
+export interface CloudHandoffs {
+  /** 읽은 HANDOFF 항목 전부. 맡길 항목은 `cloudCheckItems`가 고른다. */
+  items: UpkeepDueItem[];
+  /** HANDOFF를 읽은 커밋. 커밋을 하나도 찾지 못해 작업 사본을 읽었으면 null. */
+  base: NightlyBase | null;
+  warnings: string[];
+}
+
+async function git(repo: string, args: string[], timeout = 15_000): Promise<string> {
+  return (await exec("git", ["-C", repo, ...args], { timeout, maxBuffer: 8 * 1024 * 1024 })).stdout;
+}
+
+async function commitOf(repo: string, ref: string): Promise<string | null> {
+  try {
+    return (await git(repo, ["rev-parse", "--verify", `${ref}^{commit}`])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 세션이 실제로 고칠 HANDOFF를 읽는다. 클라우드 저장소 사본(CUELO_NIGHTLY_REPO)은 아무도 당겨 오지 않으므로 HEAD가 낡을 수
+ * 있다. 그래서 origin을 받아 origin/main 커밋의 HANDOFF를 읽고, route는 야간 브랜치를 그 커밋에 둔다. origin/main이 없으면
+ * 저장소 HEAD 커밋을 같은 방식으로 쓴다.
+ */
+export async function readCloudHandoffs(repo: string, now: Date): Promise<CloudHandoffs> {
+  const warnings: string[] = [];
+  try {
+    await git(repo, ["fetch", "--quiet", "origin"], 120_000);
+  } catch {
+    warnings.push("git fetch origin에 실패해 이미 받아 둔 origin/main으로 봤습니다.");
+  }
+  const origin = await commitOf(repo, "origin/main");
+  const head = origin ? null : await commitOf(repo, "HEAD");
+  const base: NightlyBase | null = origin ? { ref: "origin/main", sha: origin } : head ? { ref: "HEAD", sha: head } : null;
+  if (!base) {
+    const local = readHandoffs(repo, now);
+    return { items: local.items, base: null, warnings: [...warnings, "커밋을 찾지 못해 작업 사본의 HANDOFF를 읽었습니다.", ...local.warnings] };
+  }
+  if (base.ref === "HEAD") warnings.push("origin/main을 찾지 못해 저장소 HEAD의 HANDOFF를 읽었습니다.");
+  const items: UpkeepDueItem[] = [];
+  for (const path of HANDOFF_PATHS) {
+    try {
+      items.push(...parseHandoff(await git(repo, ["show", `${base.sha}:${path}`]), path, now));
+    } catch {
+      warnings.push(`${base.ref}의 ${path}을 읽을 수 없습니다.`);
+    }
+  }
+  return { items, base, warnings };
+}
+
+/**
+ * 야간 브랜치를 `base` 커밋에 둔다. 없으면 만들고, 이미 있으면(같은 날 시작 실패 뒤 다시 부름) base와 같을 때 그대로 쓰고
+ * base의 조상이면 base로 옮긴다(잃을 커밋이 없다). base에 없는 커밋이 있으면 덮지 않고 던진다.
+ */
+export async function createNightlyBranch(repo: string, branch: string, base: string): Promise<"created" | "reused" | "moved"> {
+  let current: string;
+  try {
+    current = (await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`])).trim();
+  } catch {
+    await git(repo, ["branch", branch, base]);
+    return "created";
+  }
+  const target = (await git(repo, ["rev-parse", "--verify", `${base}^{commit}`])).trim();
+  if (current === target) return "reused";
+  try {
+    await git(repo, ["merge-base", "--is-ancestor", current, target]);
+  } catch {
+    throw new Error(`${branch} already exists at ${current}, which has commits not in ${target}; not moving it`);
+  }
+  await git(repo, ["branch", "-f", branch, target]);
+  return "moved";
+}
+
+/** 클라우드가 맡을 HANDOFF 항목: 굵은 제목에 「클라우드 점검」이 있고 점검일이 지난 것. */
+export function cloudCheckItems(items: readonly UpkeepDueItem[]): UpkeepDueItem[] {
+  return items.filter((item) => item.overdue && /^-\s+\*\*(.+?)\*\*/.exec(item.ref.text)?.[1].includes(CLOUD_CHECK_MARKER));
+}
+
+const handoffLabel = (item: UpkeepDueItem) => `${item.ref.path} 「${item.ref.title}」`;
+
+const CLOUD_CHECK_COMMAND = `bun --no-install -e 'import { cloudCheckItems } from "./lib/upkeep/nightly-inbox.ts"; import { readHandoffs } from "./lib/upkeep/handoff.ts"; for (const i of cloudCheckItems(readHandoffs(".", new Date()).items)) console.log(i.ref.path, i.ref.title)'`;
+
+function cloudHandoffBlock(items: readonly UpkeepDueItem[], base: NightlyBase | null): string {
+  return [
+    "# 저장소 HANDOFF 클라우드 점검",
+    "",
+    `아래는 이 worktree가 시작한 커밋(${base ? `${base.ref} \`${base.sha.slice(0, 8)}\`` : "저장소 작업 사본"})의 HANDOFF에서 제목에 「${CLOUD_CHECK_MARKER}」이 붙고 점검일이 지난 항목입니다. PC가 보낸 기록이 아니라 이 worktree에 있는 파일이므로 출처 절과 섞지 않습니다. 결정 기록의 phase에는 \`HANDOFF\`와 항목 제목을 적습니다.`,
+    "1. 판정은 항목 원문에 적힌 조건과 기준으로만 내리고, 근거는 클라우드가 직접 확인할 수 있는 것만 씁니다: 이 기계의 로그와 journal(`journalctl`), 이 저장소와 git 기록, 공개 CI 결과, 공개 주소.",
+    "2. 결과에 맞게 이 worktree의 그 항목을 고칩니다. 끝났으면 항목을 정리하고 근거를 작업 기록(doc/history)에 남깁니다. 아직이면 제목의 점검일을 다음 점검일로 바꾸고 본문에 그 이유를 한 줄 적습니다. 본문에 새 날짜만 적으면 제목의 지난 날짜가 그대로 기한으로 남습니다.",
+    `3. 판정에 사용자 결정, 다른 PC, 실제 장비, 로그인이 필요한 화면처럼 클라우드가 확인할 수 없는 것이 필요하면 추측해 판정하지 않습니다. 제목에서 「${CLOUD_CHECK_MARKER}」만 빼고 본문에 그 이유를 한 줄 적은 뒤, 아침 요약에 누가 무엇을 확인해야 하는지 씁니다.`,
+    `4. 고친 뒤 이 worktree에서 아래 명령이 고친 항목을 더 내지 않는지 확인합니다: \`${CLOUD_CHECK_COMMAND}\``,
+    "5. HANDOFF·기록만 바뀌었으면 위 4번대로 버전은 그대로 두고, 5번대로 `git_integrate`로 게시합니다.",
+    "6. 아침 요약에 「HANDOFF 점검」 절을 따로 두고, 항목마다 판정(닫음·다음 점검일·사람 확인 필요)과 근거를 한 줄씩 씁니다.",
+    ...items.flatMap((item) => [
+      "",
+      `## ${item.ref.title}`,
+      `- 기한: ${item.dueDate} (${item.ref.path}의 「${item.section}」 절)`,
+      "",
+      `HANDOFF 원문 (${item.ref.path}, 「${item.ref.title}」):`,
+      "```text",
+      item.ref.text,
+      "```",
+    ]),
+  ].join("\n");
+}
+
 /** 받은편지함 모드의 규칙. 출처끼리 섞지 않는다는 것과 결과를 출처로 돌려보내는 길을 적는다. */
 export function inboxIntro(outboxDir: string | null): string {
   return [
@@ -235,7 +349,10 @@ export const INBOX_SUMMARY_RULES = [
   NIGHTLY_ATTENTION_RULES,
 ].join("\n");
 
-/** 출처마다 따로 판정해 하룻밤 세션 하나의 계획을 만든다. 할 일 있는 출처가 하나도 없으면 nothing-to-do. */
+/**
+ * 출처마다 따로 판정해 하룻밤 세션 하나의 계획을 만든다. 저장소 HANDOFF의 클라우드 점검 항목은 출처와 따로 한 절로 맡긴다.
+ * 할 일 있는 출처도 맡길 HANDOFF 항목도 없으면 nothing-to-do.
+ */
 export function planInboxRun(
   bundles: readonly NightlyBundle[],
   state: NightlyState | null,
@@ -243,6 +360,7 @@ export function planInboxRun(
   runningSessionIds: readonly string[],
   repoCwd: string | null,
   outboxDir: string | null,
+  handoffs: Pick<CloudHandoffs, "items" | "base"> | null = null,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   const active: { bundle: NightlyBundle; candidates: SkillCandidate[]; plan: NightlySourcePlan }[] = [];
@@ -260,7 +378,8 @@ export function planInboxRun(
     scanned.push(plan);
     if (jobs.problems.length || jobs.skillCandidates || jobs.weeklyReview) active.push({ bundle, candidates, plan });
   }
-  if (!active.length) return { action: "skip", reason: "nothing-to-do" };
+  const handoffItems = cloudCheckItems(handoffs?.items ?? []);
+  if (!active.length && !handoffItems.length) return { action: "skip", reason: "nothing-to-do" };
   const blocked = nightlyGuard(repoCwd, state, date, runningSessionIds);
   if (blocked || !repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
 
@@ -272,6 +391,7 @@ export function planInboxRun(
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));
     sections.push(block.join("\n"));
   }
+  if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));
   sections.push(INBOX_SUMMARY_RULES);
   return {
     action: "run",
@@ -282,8 +402,10 @@ export function planInboxRun(
       problems: active.flatMap(({ bundle }) => bundle.problems.map((p) => `${bundle.source}:${p.id}`)),
       skillCandidates: active.reduce((sum, { candidates }) => sum + candidates.length, 0),
       weeklyReview: active.some(({ plan }) => plan.jobs.weeklyReview),
+      handoff: handoffItems.map(handoffLabel),
     },
     skillsScannedAt: now.toISOString(),
+    ...(handoffs ? { base: handoffs.base } : {}),
     // 할 일 없는 출처도 읽은 상한은 옮겨 같은 후보를 다음 날 다시 보지 않게 한다. 주간 점검 날짜는 맡긴 출처만 바뀐다.
     sources: scanned,
     prompt: sections.join("\n\n"),

@@ -6,7 +6,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { type NightlyJobs, type NightlySourcePlan, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
-import { planInboxRun, readNightlyInbox } from "@/lib/upkeep/nightly-inbox";
+import { createNightlyBranch, planInboxRun, readCloudHandoffs, readNightlyInbox } from "@/lib/upkeep/nightly-inbox";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { addWorktree } from "@/lib/worktree";
 
@@ -22,7 +22,8 @@ declare global {
 /**
  * 야간 자율 개선 루프의 진입점(AGENTS.md 「Nightly self-improvement loop」). 클라우드의 시스템 타이머
  * `cuelo-nightly-improve.timer`(Tools/CUELO_Setup/cloud)가 매일 04:00(KST)에 부른다. `CUELO_NIGHTLY_INBOX_DIR`가 있으면
- * 받은편지함의 출처별 묶음으로, 없으면 이 기계의 기록으로 계획한다. `?dryRun=1`은 계획과 프롬프트만 돌려주고 아무것도 만들지 않는다.
+ * 받은편지함의 출처별 묶음과 저장소 origin/main HANDOFF의 「클라우드 점검」 항목으로, 없으면 이 기계의 기록으로 계획한다.
+ * `?dryRun=1`은 계획과 프롬프트만 돌려주고 브랜치·worktree·세션은 만들지 않는다(받은편지함 모드의 `git fetch origin`은 한다).
  */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
@@ -49,6 +50,7 @@ function describeJobs(jobs: NightlyJobs): string {
     jobs.problems.length ? `problems ${jobs.problems.join(", ")}` : null,
     jobs.skillCandidates ? `${jobs.skillCandidates} procedure candidate(s)` : null,
     jobs.weeklyReview ? "weekly performance review" : null,
+    jobs.handoff?.length ? `handoff ${jobs.handoff.join(", ")}` : null,
   ].filter(Boolean).join("; ");
 }
 
@@ -69,7 +71,11 @@ async function planAndRun(dryRun: boolean) {
       // 받은편지함 모드(클라우드): 이 기계 자신의 세션 기록과 보수 보고서는 쓰지 않는다.
       const inbox = readNightlyInbox(inboxDir, now);
       for (const { file, reason } of inbox.skipped) log(`inbox skipped ${file}: ${reason}`);
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null);
+      // 저장소 HANDOFF의 「클라우드 점검」 항목은 세션이 고칠 origin/main에서 읽는다. 받아 오지 못하면 HEAD로 돌아간다.
+      const handoffs = repoOverride ? await readCloudHandoffs(repoOverride, now) : null;
+      for (const warning of handoffs?.warnings ?? []) log(`handoff: ${warning}`);
+      if (handoffs) log(`handoff base: ${handoffs.base ? `${handoffs.base.ref} ${handoffs.base.sha}` : "working tree (no commit found)"}`);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, handoffs);
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);
@@ -100,6 +106,8 @@ async function planAndRun(dryRun: boolean) {
   try {
     // addWorktree가 새 경로를 allowFileRoot로 열어 두므로 /api/files가 곧바로 읽을 수 있다. 같은 날 이름이 같아 다시
     // 부르면 「Directory already exists」로 실패하므로 한 날에 두 번 열리지 않는다.
+    // 받은편지함 모드는 HANDOFF를 읽은 커밋(보통 origin/main)에 브랜치를 둔다. 아무도 당겨 오지 않는 저장소 HEAD는 낡을 수 있다.
+    if (plan.base) log(`${await createNightlyBranch(plan.repoCwd, plan.branch, plan.base.sha)} ${plan.branch} at ${plan.base.ref} ${plan.base.sha}`);
     worktree = (await addWorktree(plan.repoCwd, plan.branch)).path;
     const started = await startNewRpcSession(undefined, worktree);
     session = started.session;
