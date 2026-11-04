@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { isNotRepositoryDiagnostic, matchBlockedCommand, type GuardContext } from "./matcher";
+import { isNotRepositoryDiagnostic, matchBlockedCommand, type GuardContext, type WranglerPathUse } from "./matcher";
 
 function expectBlocked(command: string): void {
   const reason = matchBlockedCommand(command);
@@ -791,6 +791,48 @@ describe("wrangler 배포 하위 명령 정규화", () => {
   ] as const;
   for (const [name, command] of allowed) {
     test(`allows ${name}`, () => expectAllowed(command));
+  }
+});
+
+describe("CUELO 밖 프로젝트의 wrangler 배포 (2026-11-04 사용자 결정)", () => {
+  const CUELO = "/srv/CUELO";
+  const PROJECT = "/srv/olympics-score";
+  // 가짜 판정: CUELO 아래가 아니면 밖이고, 이름에 missing이 든 경로는 아직 없다.
+  const isOutsideCuelo = (path: string, use: WranglerPathUse) =>
+    path !== CUELO && !path.startsWith(`${CUELO}/`) && !(use !== "argument" && path.includes("missing"));
+  const at = (cwd: string): GuardContext => ({ cwd, isOutsideCuelo });
+
+  const allowed = [
+    ["deploy", "wrangler deploy", PROJECT],
+    ["dry run through npx", "npx wrangler deploy --dry-run", PROJECT],
+    ["versions deploy through pnpm dlx", "pnpm dlx wrangler versions deploy", PROJECT],
+    ["config and env inside the project", "wrangler deploy -c wrangler.toml --env prod", PROJECT],
+    ["cd into the project first", `cd ${PROJECT} && npx wrangler deploy`, CUELO],
+    ["attached config and env inside the project", "wrangler deploy -c=wrangler.toml -eprod", PROJECT],
+  ] as const;
+  for (const [name, command, cwd] of allowed) {
+    test(`allows ${name}`, () => expect(matchBlockedCommand(command, at(cwd))).toBeUndefined());
+  }
+
+  const blocked = [
+    ["dry run inside CUELO", "npx wrangler deploy --dry-run", CUELO],
+    ["deploy from a CUELO subfolder", "wrangler deploy", `${CUELO}/Tools/CUELO_Setup/cloud/wake-worker`],
+    ["config file inside CUELO", `wrangler deploy -c ${CUELO}/Tools/wake-worker/wrangler.toml`, PROJECT],
+    ["--cwd into CUELO", `wrangler deploy --cwd=${CUELO}`, PROJECT],
+    ["entry script inside CUELO", "wrangler deploy ../CUELO/worker.js", PROJECT],
+    ["pages deploy stays blocked", "wrangler pages deploy dist", PROJECT],
+    ["publish stays blocked", "wrangler publish", PROJECT],
+    ["npm publish stays blocked", "npm publish", PROJECT],
+    ["runner picks another folder", `pnpm -C ${CUELO} dlx wrangler deploy`, PROJECT],
+    ["cd that may fail before deploy", `cd ${PROJECT}; wrangler deploy`, PROJECT],
+    ["working folder that does not exist", "wrangler deploy", "/srv/missing"],
+    ["location from an unknown variable", "wrangler deploy --cwd $DIR", PROJECT],
+    ["--cwd outside while the shell runs inside CUELO", `wrangler deploy --cwd=${PROJECT}`, CUELO],
+    ["attached config inside CUELO", `wrangler deploy -c${CUELO}/wrangler.toml`, PROJECT],
+    ["attached config with = inside CUELO", `wrangler deploy -c=${CUELO}/wrangler.toml`, PROJECT],
+  ] as const;
+  for (const [name, command, cwd] of blocked) {
+    test(`blocks ${name}`, () => expect(matchBlockedCommand(command, at(cwd))).toBeDefined());
   }
 });
 

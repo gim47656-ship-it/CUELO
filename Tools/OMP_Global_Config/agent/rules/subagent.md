@@ -822,6 +822,12 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   저장소 밖의 별도 Git 저장소인 네 조건을 모두 충족할 때만 허용한다. 실행 전 branch/upstream,
   exact changed files, shared index 상태, remote/upstream ancestry를 확인하고 exact files만
   stage·commit·push하며 unrelated 변경은 포함하거나 되돌리지 않는다.
+- command-guard는 위 네 조건을 확인하지 못한다(사용자 요청 여부는 장치가 알 수 없다). 장치가 보는 것은 대상이 세션
+  저장소가 아니라는 것뿐이라, git이 여는 위치를 리터럴 경로(`git -C <경로> …` 또는 `cd <경로> && git …`)로 알 수 있고
+  그 위치와 세션 cwd의 `git common-dir`이 둘 다 조회되며 서로 다를 때만 통과한다. 세션 cwd가 Git 저장소가 아니거나
+  위치를 셸 확장·`;` 뒤 cd로 정하면 「git_finalize 도구로만」 사유로 막힌다. 막히면 명령을 바꿔 우회하지 않고, 그
+  저장소를 cwd로 둔 세션에서 `git_finalize`로 마감하거나 사용자에게 넘긴다(2026-11-05: 장치를 네 조건까지 넓히지 않고
+  규칙을 장치에 맞췄다).
 - 마감은 `git common-dir + remote + upstream ref` 단위 named mutex 안에서 한 번에 수행한다.
   remote는 push 가능한 `branch.<branch>.remote`, 없으면 `origin`, 그것도 없으면 유일한 remote를
   쓰고, 모호하면 remote URL을 바꾸지 않고 실패한다. upstream ref는 설정된 `refs/heads/*`, 없으면

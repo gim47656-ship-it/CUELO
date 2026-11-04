@@ -1293,7 +1293,9 @@
         "remote-upstream-ancestry"
       ],
       "scope": "stage-commit-push-exact-changed-files-only",
-      "unrelatedChanges": "never-include-or-revert"
+      "unrelatedChanges": "never-include-or-revert",
+      "commandGuardPassesOnlyWhen": "literal-target-location-and-both-target-and-session-cwd-git-common-dirs-resolve-and-differ",
+      "whenCommandGuardBlocks": "never-rewrite-the-command-to-get-past-it-finish-from-a-session-whose-cwd-is-the-target-repository-or-hand-to-the-user"
     },
     "lockFailure": {
       "deleteLock": "never",

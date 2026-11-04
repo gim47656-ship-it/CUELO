@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -20,7 +20,7 @@ import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 import { defaultExec as egoBrowserExec } from "../../tools/ego-browser/index";
 
-import { isNotRepositoryDiagnostic, matchBlockedCommand } from "./matcher";
+import { isNotRepositoryDiagnostic, matchBlockedCommand, WRANGLER_CONFIG_NAMES, type WranglerPathUse } from "./matcher";
 import { interopHint, windowsOutputCommand } from "./interop-hint";
 import { hostSystemChangeHint } from "./host-change-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
@@ -96,6 +96,83 @@ function normalizeRelativePath(value: string): string {
 /** 이벤트 컨텍스트의 세션 cwd. CUELO처럼 process.cwd()가 세션 cwd가 아닐 수 있어 우선한다. */
 function eventSessionCwd(ctx: { cwd?: string } | undefined): string {
   return typeof ctx?.cwd === "string" && ctx.cwd ? resolve(ctx.cwd) : process.cwd();
+}
+
+/** package.json 이름이 이것인 폴더는 CUELO 소스(비공개 저장소·worktree·공개 사본)나 설치본이다. */
+const CUELO_PACKAGE_NAME = "cuelo";
+
+/**
+ * `dir/package.json`이 CUELO 패키지인가. 그 자리에 아무것도 없을 때(lstat ENOENT)만 아니라고 본다. 깨진 링크·권한 오류·
+ * 풀 수 없는 내용은 CUELO로 본다(증명하지 못한 쪽은 막는다).
+ */
+function isCueloPackageDirectory(dir: string): boolean {
+  const manifest = join(dir, "package.json");
+  try {
+    lstatSync(manifest);
+  } catch (error) {
+    return !(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch {
+    return true;
+  }
+  return Boolean(parsed && typeof parsed === "object" && "name" in parsed && parsed.name === CUELO_PACKAGE_NAME);
+}
+
+/** 실제 경로(`argument`면 가장 가까운 기존 조상)의 어느 조상에도 CUELO package.json이 없고 `~/cuelo-run` 아래도 아닌가. */
+function isRealPathOutsideCuelo(real: string): boolean {
+  const install = join(homedir(), "cuelo-run");
+  const installReal = existsSync(install) ? realpathSync(install) : install;
+  if (real === installReal || real.startsWith(`${installReal}${sep}`)) return false;
+  for (let dir = real; ; dir = dirname(dir)) {
+    if (isCueloPackageDirectory(dir)) return false;
+    if (dirname(dir) === dir) return true;
+  }
+}
+
+/**
+ * 경로가 CUELO 소스·설치본 밖임이 증명되는가(command-guard의 wrangler 배포 판정, `use`는 `WranglerPathUse`). `project`면
+ * wrangler가 하듯 그 폴더의 실제 경로부터 위로 올라가며 설정 파일 자리를 보고, 있는 파일은 실제 경로도 밖이어야 한다.
+ * 그 자리에 아무것도 없을 때(ENOENT·ENOTDIR)만 건너뛰고, 깨진 링크·읽기 오류는 증명 실패다.
+ */
+function isOutsideCuelo(path: string, use: WranglerPathUse): boolean {
+  let current = resolve(path);
+  let real: string;
+  for (;;) {
+    try {
+      real = realpathSync(current);
+      break;
+    } catch {
+      if (use !== "argument") return false;
+      const parent = dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
+  }
+  if (!isRealPathOutsideCuelo(real)) return false;
+  if (use !== "project") return true;
+  for (let dir = real; ; dir = dirname(dir)) {
+    for (const name of WRANGLER_CONFIG_NAMES) {
+      const candidate = join(dir, name);
+      try {
+        lstatSync(candidate);
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        if (code === "ENOENT" || code === "ENOTDIR") continue;
+        return false;
+      }
+      let target: string;
+      try {
+        target = realpathSync(candidate);
+      } catch {
+        return false;
+      }
+      if (!isRealPathOutsideCuelo(target)) return false;
+    }
+    if (dirname(dir) === dir) return true;
+  }
 }
 
 /**
@@ -1338,6 +1415,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     const preliminaryReason = matchBlockedCommand(event.input.command, {
       cwd,
       temporaryRoot,
+      isOutsideCuelo,
       isSessionRepository: (directory) => {
         targetDirectories.push(directory);
         return false;
@@ -1367,6 +1445,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       reason = matchBlockedCommand(event.input.command, {
         cwd,
         temporaryRoot,
+        isOutsideCuelo,
         isSessionRepository,
         usesWindowsGit,
         isOutsideRepository,

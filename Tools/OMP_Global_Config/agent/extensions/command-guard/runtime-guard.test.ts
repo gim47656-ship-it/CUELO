@@ -1546,6 +1546,59 @@ describe("async repository matching", () => {
   });
 });
 
+describe("wrangler 배포의 CUELO 안팎 판정", () => {
+  test("CUELO package.json 아래(링크로 가리켜도)에서는 막고, 그 밖의 프로젝트에서는 deploy·dry-run을 통과시킨다", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omp-wrangler-"));
+    try {
+      const cuelo = join(root, "CUELO");
+      const worker = join(cuelo, "Tools", "wake-worker");
+      const project = join(root, "olympics-score");
+      await mkdir(worker, { recursive: true });
+      await mkdir(project);
+      await writeFile(join(cuelo, "package.json"), JSON.stringify({ name: "cuelo" }));
+      await writeFile(join(worker, "wrangler.toml"), "name = 'wake'\n");
+      await writeFile(join(project, "package.json"), JSON.stringify({ name: "olympics-score" }));
+      await symlink(worker, join(root, "worker-link"));
+      const harness = createGuardHarness({ cwd: project });
+      const bash = (id: string, command: string, cwd: string) =>
+        harness.emit("tool_call", { type: "tool_call", toolName: "bash", toolCallId: id, input: { command, cwd } });
+
+      expect(await bash("outside-deploy", "npx wrangler deploy", project)).toBeUndefined();
+      expect(await bash("outside-dry-run", "npx wrangler deploy --dry-run", project)).toBeUndefined();
+      expect(await bash("inside", "npx wrangler deploy --dry-run", worker)).toMatchObject({ block: true });
+      expect(await bash("inside-config", `wrangler deploy -c ${join(worker, "wrangler.toml")}`, project)).toMatchObject({ block: true });
+      expect(await bash("linked", "wrangler deploy", join(root, "worker-link"))).toMatchObject({ block: true });
+      expect(await bash("npm-publish", "npm publish", project)).toMatchObject({ block: true });
+
+      // -c 없이 wrangler가 스스로 찾는 설정 파일이 CUELO 쪽 링크면 막는다.
+      const implicit = join(root, "implicit-config");
+      await mkdir(implicit);
+      await symlink(join(worker, "wrangler.toml"), join(implicit, "wrangler.toml"));
+      expect(await bash("implicit-config-link", "wrangler deploy --dry-run", implicit)).toMatchObject({ block: true });
+
+      // 깨진 링크 package.json은 읽을 수 없으니 CUELO가 아님을 증명하지 못한다.
+      const broken = join(root, "broken-manifest");
+      await mkdir(broken);
+      await symlink(join(root, "missing.json"), join(broken, "package.json"));
+      expect(await bash("unreadable-manifest", "wrangler deploy", broken)).toMatchObject({ block: true });
+
+      // 작업 폴더가 링크면 wrangler는 실제 폴더의 조상에서 설정을 찾는다. 거기 놓인 CUELO 설정 링크도 막는다.
+      await mkdir(join(root, "real", "sub"), { recursive: true });
+      await symlink(join(root, "real", "sub"), join(root, "alias"));
+      await symlink(join(worker, "wrangler.toml"), join(root, "real", "wrangler.toml"));
+      expect(await bash("aliased-cwd-config", "wrangler deploy --dry-run", join(root, "alias"))).toMatchObject({ block: true });
+
+      // 같은 명령이 설정 파일 자리에 CUELO 설정 링크를 새로 만들고 배포해도 막는다.
+      const relink = join(root, "relink");
+      await mkdir(relink);
+      const linkThenDeploy = `ln -s ${join(worker, "wrangler.toml")} ${join(relink, "wrangler.toml")} && wrangler deploy --dry-run`;
+      expect(await bash("relink-config", linkThenDeploy, relink)).toMatchObject({ block: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 /** WSL에서 쓸 수 있는 drive mount 아래 디렉터리. interop git.exe가 없거나 쓸 수 있는 drive가 없으면 undefined다. */
 async function findWritableDriveBase(): Promise<string | undefined> {
   if (process.platform !== "linux" || !process.env.WSL_DISTRO_NAME || !Bun.which("git.exe")) return undefined;

@@ -19,9 +19,18 @@ export interface GuardContext {
    * 미제공이면 임시 면제를 쓰지 않는다. 그 아래 작업 트리를 버리는 checkout·switch·restore·worktree remove만 허용한다.
    */
   isTemporaryDirectory?: (dir: string) => boolean;
+  /**
+   * 주어진 경로가 실제 경로 기준으로 CUELO 소스·설치본 밖임이 증명되는지. `use`는 wrangler가 그 경로를 쓰는 방식이다:
+   * `directory`·`file`은 지금 있어야 하고, `project`는 거기에 더해 그 폴더부터 실제 경로의 조상으로 올라가며 찾는 설정 파일도
+   * 밖이어야 하며, `argument`는 아직 없어도 된다(가장 가까운 기존 조상으로 본다). 미제공이면 증명하지 않는다: 배포를 막는다.
+   */
+  isOutsideCuelo?: (path: string, use: WranglerPathUse) => boolean;
   /** 인자 없는 mktemp가 만드는 위치. 미제공이면 /tmp다. */
   temporaryRoot?: string;
 }
+
+/** wrangler 배포가 경로를 쓰는 방식. `GuardContext.isOutsideCuelo` 참고. */
+export type WranglerPathUse = "directory" | "project" | "file" | "argument";
 
 /**
  * 한 명령 전체(하위 셸 포함)가 앞 세그먼트에서 바꾼 파일 시스템 위치. 실행 전 관측에 기댄 판정을 그 위치에 쓰지 않는다.
@@ -404,6 +413,9 @@ const WRANGLER_OPTIONS_WITH_VALUE: StringLookup = {
   "--env": true,
   "-e": true,
 };
+
+/** `-c` 없이 wrangler가 폴더마다 찾는 설정 파일(배포 설정을 다른 파일로 돌리는 `.wrangler/deploy/config.json` 포함). */
+export const WRANGLER_CONFIG_NAMES = ["wrangler.toml", "wrangler.json", "wrangler.jsonc", ".wrangler/deploy/config.json"] as const;
 
 /** 패키지 러너가 도구 이름 앞에서 값을 받는 옵션. */
 const PACKAGE_RUNNER_OPTIONS_WITH_VALUE: StringLookup = {
@@ -2024,18 +2036,24 @@ function isWranglerName(value: string): boolean {
   return commandName(value).replace(/@[^/]*$/, "") === "wrangler";
 }
 
-/** 패키지 러너·매니저 인자에서 `wrangler` 도구 이름 뒤의 인자를 돌려준다(`@version`·`dlx`·`exec`·`x` 허용). */
-function argumentsAfterWrangler(args: string[], leaders: StringLookup): string[] | undefined {
+/**
+ * 패키지 러너·매니저 인자에서 `wrangler` 도구 이름 뒤의 인자를 돌려준다(`@version`·`dlx`·`exec`·`x` 허용). `relocated`는
+ * 도구 이름 앞에 다른 폴더·프로젝트를 고르는 옵션(`pnpm -C`, `yarn --cwd`, `npm --prefix` 등)이 있었다는 뜻이다.
+ */
+function argumentsAfterWrangler(args: string[], leaders: StringLookup): { rest: string[]; relocated: boolean } | undefined {
   let index = 0;
   let leaderSeen = false;
+  let relocated = false;
   while (index < args.length) {
     const value = args[index];
     if (value === "--") {
       index += 1;
     } else if (value.startsWith("-")) {
+      const option = value.includes("=") ? value.slice(0, value.indexOf("=")) : value;
+      if (CLI_OPTIONS_WITH_VALUE[option]) relocated = true;
       index += !value.includes("=") && PACKAGE_RUNNER_OPTIONS_WITH_VALUE[value] ? 2 : 1;
     } else if (isWranglerName(value)) {
-      return args.slice(index + 1);
+      return { rest: args.slice(index + 1), relocated };
     } else if (!leaderSeen && leaders[value.toLowerCase()]) {
       leaderSeen = true;
       index += 1;
@@ -2054,6 +2072,80 @@ function isWranglerDeploy(args: string[]): boolean {
   return first === "pages" && (second === "deploy" || second === "publish");
 }
 
+/** 배포를 막지 않는 wrangler 하위 명령: CUELO 밖 프로젝트의 `deploy`·`versions deploy`(2026-11-04 사용자 결정). */
+function isUnlockableWranglerDeploy(args: string[]): boolean {
+  const [first, second] = positionalArguments(args, WRANGLER_OPTIONS_WITH_VALUE).map((value) => value.toLowerCase());
+  return first === "deploy" || (first === "versions" && second === "deploy");
+}
+
+/**
+ * wrangler 배포가 읽는 위치(작업 폴더, `--cwd`, `-c`·`--config` 설정 파일, 그 밖의 모든 인자 값)가 전부 CUELO 소스·설치본
+ * 밖임이 증명되는가. 작업 폴더와 설정 파일은 지금 있어야 하고, 위치를 모르거나(셸 확장, 앞선 `;` 뒤의 cd) 같은 명령이
+ * 링크·이동으로 바꾼 곳이면 증명하지 못한 것이다. 경로가 아닌 낱말(`prod`)은 작업 폴더 아래로 풀려 그대로 밖이다.
+ */
+function wranglerOutsideCuelo(args: string[], context: SegmentContext | undefined): boolean {
+  const check = context?.isOutsideCuelo;
+  const cwd = context?.cwd;
+  if (!check || !cwd || context.locationOverridden) return false;
+  let cwdArgument: string | undefined;
+  let config: string | undefined;
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (value === "--") continue;
+    if (!value.startsWith("-")) {
+      values.push(value);
+      continue;
+    }
+    // `-c/path`·`-c=path`·`-eprod`처럼 붙여 쓴 짧은 옵션: 값을 받는 옵션이면 나누고(`=` 하나는 구분자), 모르는 묶음이면
+    // 나머지도 값으로 검사한다.
+    const attached = !value.startsWith("--") && value.length > 2;
+    const equals = attached ? -1 : value.indexOf("=");
+    const option = attached ? value.slice(0, 2) : equals > 0 ? value.slice(0, equals) : value;
+    const takesValue = Boolean(WRANGLER_OPTIONS_WITH_VALUE[option]);
+    const glued = attached ? value.slice(value[2] === "=" ? 3 : 2) : undefined;
+    if (glued !== undefined && !takesValue) {
+      values.push(glued);
+      continue;
+    }
+    const optionValue = glued ?? (equals > 0 ? value.slice(equals + 1) : takesValue ? args[(index += 1)] : undefined);
+    if (optionValue === undefined) {
+      if (takesValue) return false;
+      continue;
+    }
+    if (option === "--cwd") cwdArgument = optionValue;
+    else if (option === "-c" || option === "--config") config = optionValue;
+    else values.push(optionValue);
+  }
+  const at = (value: string, from: string): string | undefined => {
+    const expanded = expandPath(value, context.variables);
+    return expanded === undefined ? undefined : resolveFrom(from, expanded);
+  };
+  const root = cwdArgument === undefined ? resolve(cwd) : at(cwdArgument, cwd);
+  if (!root) return false;
+  // 원래 작업 폴더도 지금 있고 CUELO 밖이어야 한다(`--cwd`가 다른 곳을 가리켜도 셸은 여기서 돈다). `-c`가 없으면 wrangler가
+  // 작업 폴더부터 위로 설정 파일을 찾으므로 그 탐색은 실제 경로를 아는 쪽(`project`)에 맡긴다.
+  const targets: [string, WranglerPathUse][] = [[resolve(cwd), "directory"], [root, config === undefined ? "project" : "directory"]];
+  if (config !== undefined) {
+    const path = at(config, root);
+    if (!path) return false;
+    targets.push([path, "file"]);
+  }
+  for (const value of values) {
+    const path = at(value, root);
+    if (!path) return false;
+    targets.push([path, "argument"]);
+  }
+  const relinked = context.effects?.relinked ?? [];
+  // 위로 찾는 설정 파일 자리는 실행 전 관측뿐이라, 같은 명령이 무엇이든 링크·이동·복사하면 그 자리를 증명하지 못한다.
+  if (config === undefined && relinked.length > 0) return false;
+  try {
+    return targets.every(([path, use]) => !withinAny(path, relinked) && check(path, use));
+  } catch {
+    return false;
+  }
+}
+
 /** PowerShell 옵션(값을 받는 옵션 포함)을 지난 첫 위치 인자. `-Command`·`-File`에서 멈춘다(각각 따로 판정한다). */
 function firstPowerShellPositional(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
@@ -2065,17 +2157,21 @@ function firstPowerShellPositional(args: string[]): string | undefined {
   return undefined;
 }
 
-function matchDeployment(tokens: ShellToken[], invocation: Invocation): string | undefined {
+function matchDeployment(tokens: ShellToken[], invocation: Invocation, context: SegmentContext | undefined): string | undefined {
   const args = tokens.slice(invocation.index + 1).map((token) => token.value);
   const positionals = positionalArguments(args);
 
   if (invocation.name === "wrangler" && isWranglerDeploy(args)) {
-    return REASONS.deploy;
+    return isUnlockableWranglerDeploy(args) && wranglerOutsideCuelo(args, context) ? undefined : REASONS.deploy;
   }
 
   if (PACKAGE_EXECUTORS[invocation.name] || PACKAGE_MANAGERS[invocation.name]) {
     const afterTool = argumentsAfterWrangler(args, PACKAGE_EXECUTORS[invocation.name] ? {} : PACKAGE_MANAGER_EXEC_LEADERS);
-    if (afterTool && isWranglerDeploy(afterTool)) return REASONS.deploy;
+    if (afterTool && isWranglerDeploy(afterTool.rest)) {
+      const outside =
+        !afterTool.relocated && isUnlockableWranglerDeploy(afterTool.rest) && wranglerOutsideCuelo(afterTool.rest, context);
+      return outside ? undefined : REASONS.deploy;
+    }
   }
 
   if (PACKAGE_MANAGERS[invocation.name]) {
@@ -2587,7 +2683,7 @@ function matchBlockedCommandInternal(
     const databaseReason = matchDatabase(segment, invocation, segments[index - 1]);
     if (databaseReason) return databaseReason;
 
-    const deployReason = matchDeployment(segment.tokens, invocation);
+    const deployReason = matchDeployment(segment.tokens, invocation, gitContext);
     if (deployReason) return deployReason;
   }
 
