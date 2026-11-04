@@ -11,7 +11,7 @@ import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, COMPLAINT_EXPRESSIONS, COMPLAINT_MAX_CHARS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
-import { emptySkillWindow, skillNameFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
+import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 
 const DAY_MS = 86_400_000;
@@ -381,8 +381,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const seenCalls = new Set<string>();
   const seenEntries = new Set<string>();
   // fork 사본은 원래 호출 entry를 건너뛰므로 호출 표는 파일마다가 아니라 스캔 전체에서 하나로 둔다.
-  // `skills`는 그 호출 전에 같은 턴에서 연 스킬, `skill`은 이 호출이 여는 스킬(`read skill://…`)이다. `turn`은 파일 안 턴 번호다.
-  type Call = { name: string; command: string | null; index: 0 | 1; targets: WindowCounts[]; skills: readonly string[]; skill: string | null; path: string; sessionId: string; turn: number };
+  // `skills`는 그 호출 전에 같은 턴에서 연 스킬, `opens`는 이 호출이 여는 스킬들(`read skill://…`, `;`로 이은 경로 포함)이다. `turn`은 파일 안 턴 번호다.
+  type Call = { name: string; command: string | null; index: 0 | 1; targets: WindowCounts[]; skills: readonly string[]; opens: readonly string[]; path: string; sessionId: string; turn: number };
   const calls = new Map<string, Call>();
   const makerResults: MakerResult[] = [];
   const warnings: string[] = [];
@@ -611,7 +611,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             calls.set(block.id, {
               name: block.name ?? "", command: block.arguments?.command ?? null, index, targets,
               skills: openedThisTurn.size ? [...openedThisTurn.keys()] : NO_SKILLS,
-              skill: block.name === "read" ? skillNameFromPath(block.arguments?.path) : null,
+              opens: block.name === "read" ? skillNamesFromPath(block.arguments?.path) : NO_SKILLS,
               path, sessionId, turn,
             });
             pendingArgs.set(block.id, block.arguments);
@@ -651,15 +651,15 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             row.afterCalls++;
             if (failed) row.afterFailures++;
           }
-          if (call.skill && !m.isError) {
-            const agg = skillAt(call.index, call.skill);
-            const row = skillSessionAt(call.index, call.skill, call);
+          if (!m.isError) for (const skill of call.opens) {
+            const agg = skillAt(call.index, skill);
+            const row = skillSessionAt(call.index, skill, call);
             agg.usage.opens++;
             agg.lastAt = Math.max(agg.lastAt, time);
             row.opens++;
             row.lastAt = Math.max(row.lastAt, time);
-            if (call.turn === turn && !openedThisTurn.has(call.skill)) {
-              openedThisTurn.set(call.skill, call.index);
+            if (call.turn === turn && !openedThisTurn.has(skill)) {
+              openedThisTurn.set(skill, call.index);
               agg.usage.openTurns++;
             }
           }

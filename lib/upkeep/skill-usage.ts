@@ -68,11 +68,18 @@ export function emptySkillWindow(): SkillWindowUsage {
   return { opens: 0, sessions: 0, lastOpenedAt: null, afterCalls: 0, afterFailures: 0, restCalls: 0, restFailures: 0, openTurns: 0, complaintTurns: 0 };
 }
 
-/** `skill://name`, `skill://name/sub/file.md`, `skill://name:10-20` → `name`. 스킬 주소가 아니면 null. */
-export function skillNameFromPath(path: unknown): string | null {
-  if (typeof path !== "string") return null;
-  const match = /^skill:\/\/([^/:?#\s]+)/.exec(path.trim());
-  return match ? match[1] : null;
+/**
+ * `read` 경로가 여는 스킬 이름들. `skill://name`, `skill://name/sub/file.md`, `skill://name:10-20` → `name`이고,
+ * `;`로 이은 여러 경로(`skill://a;rule://b;skill://c`)는 조각마다 본다. 스킬 주소가 없으면 빈 배열이다.
+ */
+export function skillNamesFromPath(path: unknown): string[] {
+  if (typeof path !== "string") return [];
+  const names = new Set<string>();
+  for (const part of path.split(";")) {
+    const match = /^skill:\/\/([^/:?#\s]+)/.exec(part.trim());
+    if (match) names.add(match[1]);
+  }
+  return [...names];
 }
 
 /**
