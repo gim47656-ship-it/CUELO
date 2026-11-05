@@ -3206,7 +3206,7 @@ console.log("\n[25b] mnemopi — 중단된 임베딩 재구축은 16건 묶음�
 }
 
 // 2026-09-27 도구 오류 집계: 호출 형식 함정 두 가지가 매번 헛턴을 썼다. 실제 세션의 bash 도구와 todo 적용 함수로 본다.
-console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로 들어간다");
+console.log("\n[26] bash — service 이름 없는 env 는 그 호출에만 들어간다");
 {
 	const agentDir = csMkdtemp(csJoin(fixtureRoot, "omp-bash-env-agent-"));
 	const cwd = csMkdtemp(csJoin(fixtureRoot, "omp-bash-env-work-"));
@@ -3215,8 +3215,19 @@ console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로
 	const run = await bash.execute("env-1", { command: 'echo "A=[$A] B=[$B]"', env: { A: "x y", B: "it's $HOME" } });
 	const line = String(run.content?.[0]?.text ?? "").split("\n")[0];
 	check("값의 공백·따옴표·$ 가 글자 그대로 들어간다", line === "A=[x y] B=[it's $HOME]", `line=${line}`);
-	// 18.4.2 upstream 은 service 없는 env 를 "Ignored env" 알림과 함께 버린다. 우리 export 가 대신 적용돼야 한다.
+	// 18.4.2 upstream 은 service 없는 env 를 "Ignored env" 알림과 함께 버린다. 우리 env 덧씌우기가 대신 적용돼야 한다.
 	check("env 를 무시했다는 알림이 붙지 않는다", !JSON.stringify(run).includes("Ignored"), JSON.stringify(run).slice(0, 300));
+	// 2026-11-06: 명령 앞 export 였던 예전 판은 env 값이 지속 셸에 남아 env 를 주지 않은 다음 호출에도 보였다. 명령 안에서
+	// 직접 export 한 값은 지속 셸 계약대로 다음 호출에 남아야 한다. 시험을 돌린 환경에 A 가 있으면 그 값으로 돌아와야 한다.
+	await bash.execute("env-1b", { command: "export KEEP_MINE=kept", env: { A: "again" } });
+	const next = await bash.execute("env-1c", { command: 'echo "A=[${A-unset}] KEEP=[${KEEP_MINE-unset}]"' });
+	const nextText = String(next.content?.[0]?.text ?? "");
+	const inheritedA = process.env.A ?? "unset";
+	check("env 값은 다음 호출에 남지 않고, 명령 안 export 는 남는다", nextText.startsWith(`A=[${inheritedA}] KEEP=[kept]`), `text=${nextText.slice(0, 200)}`);
+	// JSON 으로 온 "__proto__" 도 올바른 셸 변수 이름이다. Object.assign 이면 프로토타입 설정으로 사라진다.
+	const proto = await bash.execute("env-1d", { command: 'printf "proto=[%s]\\n" "$__proto__"', env: JSON.parse('{"__proto__":"sentinel"}') });
+	const protoLine = String(proto.content?.[0]?.text ?? "").split("\n")[0];
+	check("__proto__ 이름의 env 도 그 호출에 들어간다", protoLine === "proto=[sentinel]", `line=${protoLine}`);
 	const rejected = async (args: Record<string, unknown>) => bash.execute("env-2", args).then(() => "no error", (error: Error) => error.message);
 	check("잘못된 변수 이름은 거절한다", (await rejected({ command: "echo hi", env: { "BAD-NAME": "1" } })) === "Invalid env name: BAD-NAME");
 	const readyRun = await bash.execute("env-3", { command: "echo hi", ready: { port: 1 } }).then(
@@ -3229,8 +3240,8 @@ console.log("\n[26] bash — service 이름 없는 env 는 명령 앞 export 로
 		readyRun === "ready requires a service name." || (readyRun.includes("Ignored ready:") && !readyRun.includes("Ignored ready and env")),
 		readyRun.slice(0, 300),
 	);
-	// 18.4.4 는 launch 가 env 를 받지 않는다. 공개 도구 경로(BashTool.execute name+env+ready)가 service 에도 env 를 명령 앞
-	// export 로 넣는지, 같은 키 검증·escaping 을 쓰는지 실제 broker service 로 본다.
+	// 공개 도구 경로(BashTool.execute name+env+ready)가 service 에도 env 를 launch 의 env 덧씌우기로 넣는지, 같은 키 검증을
+	// 쓰고 값의 공백·따옴표·$ 를 그대로 두는지 실제 broker service 로 본다.
 	const { closeDaemonClients: csCloseDaemonClients } = await import(`${CORE}/launch/client.ts`);
 	const svc = await bash.execute("env-svc", {
 		command: 'echo "SVC A=[$A] B=[$B]"',

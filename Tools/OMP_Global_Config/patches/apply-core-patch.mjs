@@ -9570,11 +9570,15 @@ function operationFromNative(op: string): Operation | undefined {
 		}],
 	},
 	{
-		// 위 항목의 짝. 명령 검사(interceptor)·승인·worktree 재작성이 끝난 원래 명령 앞에만 붙인다.
+		// 위 항목의 짝. 명령 검사(interceptor)·승인·worktree 재작성이 끝난 뒤, env 를 이 호출의 env 덧씌우기(sessionEnv)에 합친다.
+		// 2026-11-06: 예전 판은 env 를 명령 앞 export 로 붙여서 그 값이 지속 셸에 남아 다음 bash 호출까지 따라갔다(11-05 집 세션
+		// 01a1aace 에서 격리용 HOME·OMP_CORE_PATCH_TARGET 이 남아 다음 검사가 실패). sessionEnv 는 일반·백그라운드·PTY·client
+		// terminal·service 경로가 모두 받는 호출 단위 env 이고, 지속 셸은 이 값을 그 실행에만 쓴다. 배포된 옛 본문은
+		// legacyPatched 로 두어 재적용이 새 본문으로 바꾼다.
 		file: "src/tools/bash.ts",
-		marker: "// HANSE: non-service env becomes a leading export",
+		marker: "// HANSE: env joins this call's env overlay",
 		anchor: "\t\tinvalidateGithubCacheForBashCommand(command);\n",
-		patched: `		invalidateGithubCacheForBashCommand(command);
+		legacyPatched: `		invalidateGithubCacheForBashCommand(command);
 		// HANSE: non-service env becomes a leading export (18.4.4: service env too — upstream dropped launch env)
 		if (env) {
 			const exports: string[] = [];
@@ -9585,12 +9589,22 @@ function operationFromNative(op: string): Operation | undefined {
 			if (exports.length > 0) command = exports.join("; ") + "; " + command;
 		}
 `,
+		patched: `		invalidateGithubCacheForBashCommand(command);
+		// HANSE: env joins this call's env overlay (a leading export stayed in the persistent shell for later calls)
+		if (env) {
+			for (const key of Object.keys(env)) {
+				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ToolError("Invalid env name: " + key);
+			}
+			// defineProperty, not Object.assign: a JSON "__proto__" key would set the prototype and vanish.
+			for (const [key, value] of Object.entries(env)) Object.defineProperty(sessionEnv, key, { value, enumerable: true, writable: true, configurable: true });
+		}
+`,
 	},
 	// 18.4.4 는 bash 도구의 `env` 파라미터를 통째로 지웠다(pi-coding-agent CHANGELOG "Removed"). env 는 사용자의 기존 도구
 	// 계약이라 upstream 삭제 hunk 를 되돌린다(아래 여섯 항목). 각 항목의 본 후보는 18.4.4 원문에 `// HANSE: env restored` 를
 	// 붙여 복원하고, alternate 는 env 가 원래 있는 18.4.3 원문의 no-op 이다. 18.4.3 에서 --revert 가 upstream 의
 	// env 코드를 지우지 않도록 두 후보의 marker 가 서로의 결과에 들어 있지 않게 나눴다.
-	// service 는 launch 가 env 를 받지 않으므로 위 export 항목이 service·일반 명령 모두 명령 앞 export 로 넣는다.
+	// service 도 위 항목이 합친 호출 단위 env(sessionEnv)를 launch 의 env 덧씌우기로 받는다.
 	{
 		file: "src/tools/bash.ts",
 		marker: "\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({",
