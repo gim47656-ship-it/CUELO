@@ -417,10 +417,12 @@ describe("git finalizer", () => {
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
-  test("allows a source and its manifest in the same commit", async () => {
+  test("allows a source and its matching manifest in the same commit", async () => {
     const { work, manifestPath } = await createManifestRepository();
     await writeFile(join(work, "a.txt"), "changed-a\n");
-    await writeFile(manifestPath, JSON.stringify({ files: { "a.txt": "changed" } }));
+    const manifest = JSON.parse(await Bun.file(manifestPath).text()) as { files: Record<string, string> };
+    manifest.files["a.txt"] = createHash("sha256").update("changed-a\n").digest("hex");
+    await writeFile(manifestPath, JSON.stringify(manifest));
 
     const { error, output } = await startTool(work, ["a.txt", "Tools/CUELO_Setup/files/source-integrity.json"]);
     expect(error).toBeUndefined();
@@ -428,6 +430,45 @@ describe("git finalizer", () => {
     expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).split(/\r?\n/).sort()).toEqual([
       "Tools/CUELO_Setup/files/source-integrity.json", "a.txt",
     ]);
+  }, TEST_TIMEOUT_MS);
+
+  test("rejects a committed manifest that misses a new source or holds a stale hash", async () => {
+    const { work, remote, manifestPath } = await createManifestRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    const manifestFile = "Tools/CUELO_Setup/files/source-integrity.json";
+    const manifest = JSON.parse(await Bun.file(manifestPath).text()) as { files: Record<string, string> };
+    manifest.files["a.txt"] = createHash("sha256").update("changed-a\n").digest("hex");
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+    await writeFile(join(work, "new.txt"), "new source\n");
+
+    const missing = await startTool(work, ["a.txt", "new.txt", manifestFile]);
+    expect(missing.error?.message).toContain("source manifest is missing new.txt");
+    expect(missing.error?.message).toContain("git add -N new.txt");
+
+    await writeFile(join(work, "a.txt"), "edited-after-manifest\n");
+    const stale = await startTool(work, ["a.txt", manifestFile]);
+    expect(stale.error?.message).toContain("source manifest is stale for a.txt");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+  }, TEST_TIMEOUT_MS);
+
+  test("requires a deleted source to leave the committed manifest", async () => {
+    const { work, manifestPath } = await createManifestRepository();
+    const before = git(work, ["rev-parse", "HEAD"]);
+    const manifestFile = "Tools/CUELO_Setup/files/source-integrity.json";
+    await rm(join(work, "b.txt"));
+
+    const listed = await startTool(work, ["b.txt", manifestFile]);
+    expect(listed.error?.message).toContain("source manifest still lists deleted b.txt");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+
+    const manifest = JSON.parse(await Bun.file(manifestPath).text()) as { files: Record<string, string> };
+    delete manifest.files["b.txt"];
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const removed = await startTool(work, ["b.txt", manifestFile]);
+    expect(removed.error).toBeUndefined();
+    expect(git(work, ["ls-files", "--", "b.txt"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
   test("compares source hashes after CRLF normalization", async () => {

@@ -636,7 +636,7 @@ mcp:
 
 ## Git 마감 도구
 
-[`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면, 커밋할 source 파일이 `source-integrity.json`과 다른데 manifest를 함께 넣지 않은 경우 commit 전에 멈추고 재생성 명령을 알려 줍니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
+[`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면 커밋할 source 파일마다 `source-integrity.json`에 현재 해시로 들어 있는지 확인하고, 지운 source 파일은 목록에서 빠졌는지 봅니다. manifest를 같은 커밋에 넣어도 이 확인은 건너뛰지 않습니다. 맞지 않으면 commit 전에 멈추고 재생성 명령을 알려 줍니다. 목록에 없는 새 파일이면 생성기가 git이 추적하는 파일만 읽으므로 `git add -N <파일>`을 먼저 하라고 안내합니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
 WSL에서 Windows 드라이브(`/mnt/c`·`/mnt/v` 등) 위의 저장소를 마감할 때는 같은 finalizer를 Linux `pwsh` 대신 Windows `powershell.exe`로 돌리고, 경로는 `wslpath -w`로 바꿔 넘깁니다. 그래서 commit·push는 Windows Git과 그 자격 증명으로 실행됩니다. Linux Git은 Windows 드라이브의 파일을 하나씩 확인하느라 파일이 많은 저장소에서 수 분이 걸리고, 마감 제한 시간(3분)에 걸려 중단될 수 있기 때문입니다. 다만 Linux Git으로 만든 linked worktree는 `.git` 파일이 Linux 경로(`gitdir: /mnt/...`)를 가리켜 Windows Git이 열지 못하므로, 대상이 그런 worktree 안에 있으면 Linux `pwsh`와 Linux Git으로 마감합니다. WSL 디스크 안의 저장소는 이전처럼 Linux에서 실행합니다. 이 선택은 세션 작업 폴더가 아니라 마감할 파일의 위치로 정합니다. 그래서 작업 폴더가 Windows 드라이브의 사본(`/mnt/f/repo`)이어도 마감할 파일이 WSL 디스크의 다른 저장소(`~/src/repo`)에 있으면 Linux에서 마감합니다. Windows Git은 WSL 디스크의 저장소를 열지 못합니다.
 

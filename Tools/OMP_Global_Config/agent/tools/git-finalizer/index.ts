@@ -206,7 +206,8 @@ async function checkSourceManifest(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  if (targets.some(({ path }) => pathKey(path) === pathKey(manifestPath))) return;
+  // 매니페스트를 함께 커밋해도 건너뛰지 않는다: 추적 전 새 파일이 빠진 매니페스트가 세 출시 연속 후속 커밋을 낳았다
+  // (2026-11-04, doc/history/2026/11/04-nightly-manifest). 커밋하는 매니페스트는 작업 폴더의 그 파일이므로 같은 대조를 한다.
 
   let packagedTools: string[] = [];
   try {
@@ -235,11 +236,21 @@ async function checkSourceManifest(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const content = bytes && !bytes.includes(0) && bytes.includes("\r\n")
+    // JSON 객체의 상속 속성(`constructor` 등)을 목록 항목으로 읽지 않는다.
+    const recorded = manifest.files && Object.hasOwn(manifest.files, path) ? manifest.files[path] : undefined;
+    // 지운 파일은 매니페스트에서도 빠져 있어야 한다.
+    if (!bytes) {
+      if (recorded === undefined) continue;
+      throw new Error(`git_finalize: source manifest still lists deleted ${path}. ${manifestInstructions}`);
+    }
+    const content = !bytes.includes(0) && bytes.includes("\r\n")
       ? Buffer.from(bytes.toString("latin1").replace(/\r\n/g, "\n"), "latin1")
       : bytes;
-    const hash = content && createHash("sha256").update(content).digest("hex");
-    if (!hash || manifest.files?.[path] !== hash) {
+    const hash = createHash("sha256").update(content).digest("hex");
+    if (recorded === undefined) {
+      throw new Error(`git_finalize: source manifest is missing ${path}. create-manifest reads only tracked files, so run \`git add -N ${path}\` first. ${manifestInstructions}`);
+    }
+    if (recorded !== hash) {
       throw new Error(`git_finalize: source manifest is stale for ${path}. ${manifestInstructions}`);
     }
   }
