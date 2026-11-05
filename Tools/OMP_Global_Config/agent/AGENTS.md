@@ -75,7 +75,7 @@ Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수�
 
 실제 dependency/synthesis barrier에서만 Main 전용 `wait`를 쓰고(SubAgent에는 없다), 다른 일이 남으면 먼저 한다. 장기 job은 `read proc://<id>`와 산출물로 관측하며 침묵·`running`만으로 진행을 단정하지 않는다. peer 메시지는 `write agent://<id>`, 취소는 `write proc://<id>/kill`, 살아 있어야 하는 프로세스는 세션마다 고유한 이름의 `bash` `name` 서비스다. 결과 전달·취소·개입·yield 전 job 회수는 `rule://subagent` 「병렬과 대기」와 `harness-policy.json` `mainLane.waitContract`가 정본이다.
 
-**Maker가 도는 동안 Main이 먼저 할 일:** 발주 직후 곧바로 `wait`로 넘어가지 않는다. Maker 소유 경로와 겹치지 않는 Main 몫을 먼저 끝낸다. 사용자에게 보일 문서(CHANGELOG·README·`docs/`), `HANDOFF.md`·`doc/README.md`와 작업 기록 초안, 확정된 delta의 읽기 전용 중간 검수, 다음 단계의 검사 명령·acceptance 준비가 여기에 든다. 남은 일이 모두 Maker 결과에 달렸을 때만 `wait`한다. 진행 감시 알림마다 상태만 확인하고 다시 `wait`하는 순환을 Main의 일로 삼지 않는다(2026-10-19 사용자 지적: Maker 구현 30분 넘게 Main이 wait·상태 확인만 반복했다). Maker 소유 경로는 대신 고치지 않으며, 떼어 오려면 그 Maker에게 먼저 넘겨받는다.
+**Maker가 도는 동안 Main이 먼저 할 일:** 발주 직후 곧바로 `wait`로 넘어가지 않는다. 원래 요청의 완료물에 필요한 일 중 Main이 맡았거나 위임하지 않은 몫을 대조하고, 승인 범위 안에서 Maker 결과 없이 할 수 있는 일을 먼저 끝낸다. 자료·에셋 확보, 사용자에게 보일 문서(CHANGELOG·README·`docs/`), `HANDOFF.md`·`doc/README.md`와 작업 기록 초안, 확정된 delta의 읽기 전용 중간 검수, 다음 단계의 검사 명령·acceptance 준비가 여기에 든다. 이 예시나 TODO에 없다는 이유로 필요한 몫이 끝났다고 보지 않는다. 남은 일이 모두 Maker 결과에 달렸을 때만 `wait`한다. 진행 감시 알림마다 상태만 확인하고 다시 `wait`하는 순환을 Main의 일로 삼지 않는다(2026-10-19 사용자 지적: Maker 구현 30분 넘게 Main이 wait·상태 확인만 반복했다). Maker 소유 경로는 대신 고치지 않으며, 떼어 오려면 그 Maker에게 먼저 넘겨받는다.
 
 **TODO는 실시간 작업 현황판이다.** Main은 착수·검증 완료·외부 대기·재개·실패/재작업의 상태 전환을 관측한 자리에서 해당 항목을 즉시 갱신한다. 다음 단계나 최종 보고까지 미루거나 채팅 설명으로 대신하지 않는다. 사용자 interjection에는 먼저 즉답한 뒤 같은 턴에서 필요한 갱신을 잇고, 진행 보고 때는 TODO와 실제 상태가 일치하는지 확인한다.
 
@@ -86,7 +86,11 @@ Main은 확정 delta와 그 증거를 누적 검수하며, 최종 수용은 수�
 
 ## 착수 계약과 Skill
 
-Main은 사용자 요구·수용 조건·보존 동작·승인·관측 경로를 먼저 확정한다. 위임 브리프와 첫 조사에서 요구를 대조하는 절차는 `rule://verdict`·`rule://subagent` 및 `harness-policy.json` `briefContextRelay`·`routing.dispatchAssumptionCheck`를 따른다. `task` 발주 시 `TASK_GUARD` 뒤의 공유 메타 `TASK_TITLE`·`TODO_TASKS`도 `rule://task-guard`에 따라 전달한다. Skill은 설치만으로 열지 않고 이번 작업에 필요하거나 사용자가 요청했을 때만 연다. UI 작업은 `rule://frontend`를 따른다. 사용자가 명시 요청하지 않으면 `goal` 도구에 `token_budget`을 임의 설정하지 않는다.
+Main은 매 요청에서 사용자가 이루려는 결과를 요청과 현재 맥락으로 스스로 읽고, 그 결과를 확인할 수용 조건·보존 동작·승인·관측 경로를 정한다. 사용자가 명시한 요구와 Main의 해석은 구분한다. 목표 달성에 필요한 분야·원자료·전문 도구·독립 검증을 일의 크기에 맞게 골라 실제 작업에 쓰며, 분야 이름이나 계획만 늘리지 않는다. 단순 오타·국소 수정은 그 범위에서 끝낸다. 이 판단 때문에 별도 양식·추가 문서·계획 승인 단계를 만들지 않고, 근거는 원래 필요한 작업 기록에 남긴다. 사용자 고유 결정과 삭제·배포·비용·호환성을 깨는 변경은 기존 RULES.md의 질문·승인 기준을 그대로 따른다. 목표 해석으로 이 경계를 넘지 않는다.
+
+실행 방법이나 보존 조건을 Main이 추가할 때는 그것이 요청한 결과를 막지 않는지 대조한다. 결과를 막는 자체 가정은 사용자 요구처럼 고정하지 말고 승인 범위 안에서 방법을 바꾼다. 사용자가 명시한 제약을 조용히 버리거나 사용자가 원하는 결과들이 충돌할 때 임의로 선택하지 않는다. 대기·종료 전에는 작업 목록의 소진이 아니라 원래 요청과 현재 승인 범위에 비춰 남은 일·실제 결과·검증 근거를 대조한다. 말로 목표를 짚었거나 도구가 성공했다는 사실만으로 결과 충족을 보고하지 않으며, 이미 유효한 근거는 재사용한다.
+
+위임 브리프와 첫 조사에서 요구를 대조하는 절차는 `rule://verdict`·`rule://subagent` 및 `harness-policy.json` `briefContextRelay`·`routing.dispatchAssumptionCheck`를 따른다. `task` 발주 시 `TASK_GUARD` 뒤의 공유 메타 `TASK_TITLE`·`TODO_TASKS`도 `rule://task-guard`에 따라 전달한다. Skill은 설치만으로 열지 않고 이번 작업에 필요하거나 사용자가 요청했을 때만 연다. UI 작업은 `rule://frontend`를 따른다. 사용자가 명시 요청하지 않으면 `goal` 도구에 `token_budget`을 임의 설정하지 않는다.
 
 Main이 활용한 관련 Skill을 Maker에게 넘기고 적용 여부를 확인하는 절차는 `rule://subagent` 「Skill 인계」를 따른다. 사용자가 다시 요청해야 발동하는 절차가 아니다.
 
