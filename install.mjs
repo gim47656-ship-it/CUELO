@@ -302,6 +302,8 @@ export function diffHarness(sourceDir, agentDir, entries) {
  * write re-checks first: an overwrite happens only if the bytes read right now still hash to the recorded
  * installed hash (the backup is made from those same bytes), and an addition never replaces a file that
  * appeared meanwhile. A file that fails its re-check is reported as user-modified / untracked instead.
+ * A throw part-way (disk full, a permission) puts back every file this run wrote before it rethrows, and the
+ * record is left as it was, so the profile never ends up half old and half new with a record matching neither.
  */
 export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = false, now = new Date() } = {}) {
   const diff = diffHarness(sourceDir, agentDir, entries);
@@ -319,46 +321,84 @@ export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = 
     updated.push(...planned("update-available").map((file) => file.path));
     added.push(...planned("missing").map((file) => file.path));
   } else {
-    for (const file of planned("update-available")) {
-      const target = path.join(agentDir, ...file.path.split("/"));
-      let current = null;
-      if (isProfilePathSafe(agentDir, file.path) && fs.lstatSync(target, { throwIfNoEntry: false })?.isFile()) current = fs.readFileSync(target);
-      if (current === null) skipped.untracked.push(file.path);
-      else if (hashBytes(current) !== file.recorded) skipped["user-modified"].push(file.path);
-      else if (!isProfilePathSafe(agentDir, `${HARNESS_BACKUP_DIR}/${backupStamp}/${file.path}`)) skipped["backup-unsafe"].push(file.path);
-      else {
-        backupDir ??= path.join(agentDir, HARNESS_BACKUP_DIR, backupStamp);
-        const backup = path.join(backupDir, ...file.path.split("/"));
-        fs.mkdirSync(path.dirname(backup), { recursive: true });
-        fs.writeFileSync(backup, current, { flag: "wx" });
-        fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target);
-        updated.push(file.path);
+    const undo = [];
+    try {
+      for (const file of planned("update-available")) {
+        const target = path.join(agentDir, ...file.path.split("/"));
+        let current = null;
+        if (isProfilePathSafe(agentDir, file.path) && fs.lstatSync(target, { throwIfNoEntry: false })?.isFile()) current = fs.readFileSync(target);
+        if (current === null) skipped.untracked.push(file.path);
+        else if (hashBytes(current) !== file.recorded) skipped["user-modified"].push(file.path);
+        else if (!isProfilePathSafe(agentDir, `${HARNESS_BACKUP_DIR}/${backupStamp}/${file.path}`)) skipped["backup-unsafe"].push(file.path);
+        else {
+          backupDir ??= path.join(agentDir, HARNESS_BACKUP_DIR, backupStamp);
+          const backup = path.join(backupDir, ...file.path.split("/"));
+          fs.mkdirSync(path.dirname(backup), { recursive: true });
+          fs.writeFileSync(backup, current, { flag: "wx" });
+          const entry = { rel: file.path, target, backup, done: false };
+          undo.push(entry);
+          fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target);
+          entry.done = true;
+          updated.push(file.path);
+        }
       }
-    }
-    for (const file of planned("missing")) {
-      const target = path.join(agentDir, ...file.path.split("/"));
-      if (!isProfilePathSafe(agentDir, file.path)) {
-        skipped.untracked.push(file.path);
-        continue;
+      for (const file of planned("missing")) {
+        const target = path.join(agentDir, ...file.path.split("/"));
+        if (!isProfilePathSafe(agentDir, file.path)) {
+          skipped.untracked.push(file.path);
+          continue;
+        }
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        try {
+          fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target, fs.constants.COPYFILE_EXCL);
+          undo.push({ rel: file.path, target, backup: null, done: true });
+          added.push(file.path);
+        } catch (error) {
+          // Anything but EEXIST failed after the exclusive create, so a partial file there is this run's.
+          if (error.code !== "EEXIST") {
+            undo.push({ rel: file.path, target, backup: null, done: false });
+            throw error;
+          }
+          skipped.untracked.push(file.path);
+        }
       }
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      try {
-        fs.copyFileSync(path.join(sourceDir, ...file.path.split("/")), target, fs.constants.COPYFILE_EXCL);
-        added.push(file.path);
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        skipped.untracked.push(file.path);
+      // Records follow what is on disk now: written files and identical tracked files carry the distributed
+      // hash, every other file keeps the record it had.
+      const written = new Set([...updated, ...added]);
+      const files = {};
+      for (const file of diff.files) {
+        const tracked = file.status === "identical" && file.recorded !== null;
+        files[file.path] = written.has(file.path) || tracked ? file.distHash : file.recorded;
       }
+      writeHarnessManifest(agentDir, files, version);
+    } catch (error) {
+      // Only bytes this run wrote are undone, in a regular unlinked profile file: exactly the distributed bytes for a
+      // finished copy, or a cut-short start of them for the copy that failed. A file the user changed or replaced
+      // meanwhile is left and named in the error.
+      const left = [];
+      for (const { rel, target, backup, done } of undo.reverse()) {
+        try {
+          const safe = isProfilePathSafe(agentDir, rel);
+          const stat = safe ? fs.lstatSync(target, { throwIfNoEntry: false }) : undefined;
+          // Gone meanwhile: an addition needs nothing; an overwritten file the user removed stays removed.
+          if (safe && !stat) {
+            if (backup) left.push(rel);
+            continue;
+          }
+          const bytes = stat?.isFile() ? fs.readFileSync(target) : null;
+          const dist = fs.readFileSync(path.join(sourceDir, ...rel.split("/")));
+          if (bytes !== null && backup && bytes.equals(fs.readFileSync(backup))) continue;
+          const ours = bytes !== null && (done ? bytes.equals(dist) : bytes.length <= dist.length && dist.subarray(0, bytes.length).equals(bytes));
+          if (!ours) left.push(rel);
+          else if (backup) fs.copyFileSync(backup, target);
+          else fs.rmSync(target);
+        } catch {
+          left.push(rel);
+        }
+      }
+      if (left.length > 0) error.message += ` (not put back: ${left.join(", ")}; the previous versions are under ${backupDir})`;
+      throw error;
     }
-    // Records follow what is on disk now: written files and identical tracked files carry the distributed
-    // hash, every other file keeps the record it had.
-    const written = new Set([...updated, ...added]);
-    const files = {};
-    for (const file of diff.files) {
-      const tracked = file.status === "identical" && file.recorded !== null;
-      files[file.path] = written.has(file.path) || tracked ? file.distHash : file.recorded;
-    }
-    writeHarnessManifest(agentDir, files, version);
   }
   return { dryRun, updated, added, skipped, backupDir, identical: diff.counts.identical };
 }

@@ -3,13 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { copyHarness, createProfileConfig, harnessEntries, resolveProfile } from "../install.mjs";
+import { copyHarness, createProfileConfig, harnessEntries, recordHarnessInstall, resolveProfile } from "../install.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { agentDir } = resolveProfile();
 fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-copyHarness(path.join(root, "Tools/OMP_Global_Config/agent"), agentDir, harnessEntries(pkg.files));
+const harnessDir = path.join(root, "Tools/OMP_Global_Config/agent");
+// Recorded like setup does, so a later `install.mjs harness-update` can replace the files this copy added.
+const recorded = recordHarnessInstall(agentDir, copyHarness(harnessDir, agentDir, harnessEntries(pkg.files)), pkg.version);
+if (recorded.skipped) console.warn(`Warning: the harness install record was left unchanged (${recorded.skipped}).`);
 createProfileConfig(agentDir, {});
 const child = spawn(process.execPath, [path.join(root, "install.mjs"), "start", "--hostname", "0.0.0.0", ...process.argv.slice(2)], {
   cwd: root, env: process.env, stdio: "inherit",

@@ -309,7 +309,7 @@ function decisionQuestions(policy: RoutingPolicy) {
   questions.crossReviewNeed = {
     type: "choice",
     criteria: policy.modelSelection.crossReviewNeedCriteria,
-    instructions: "위 criteria를 정본으로 이 조각의 바뀔 실행 코드·설정이 다른 계열 교차검증을 필요로 하는지 facts·paths·invariants·remainingJudgments에 적힌 사실만으로 판단한다. 파일 확장자나 작업 크기만으로 정하지 않고, 위험을 적은 사실이 없으면 UNKNOWN이다. 결과는 Main의 조언이며 게이트 면제나 강제가 아니다.",
+    instructions: "위 criteria를 정본으로 이 조각의 바뀔 실행 코드·설정이 다른 계열 교차검증을 필요로 하는지 facts·paths·invariants·remainingJudgments에 적힌 사실만으로 판단한다. 파일 확장자나 작업 크기만으로 정하지 않는다. 실행 코드·설정을 전혀 바꾸지 않는다는 사실(읽기 전용 조사·보고)이 있으면 NOT_NEEDED이고, 코드·설정을 바꾸는데 그 코드가 하는 일을 적은 사실이 없으면 UNKNOWN이다. 조사·진단이라는 이름만으로 NOT_NEEDED로 정하지 않고, REQUIRED 사실이 하나라도 있으면 REQUIRED다. 결과는 Main의 조언이며 게이트 면제나 강제가 아니다.",
   };
   return questions;
 }

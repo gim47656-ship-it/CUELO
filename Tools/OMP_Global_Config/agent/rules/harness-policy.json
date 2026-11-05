@@ -1008,8 +1008,8 @@
       "crossReviewNeedCriteria": {
         "REQUIRED": "the-facts-say-the-slice-changes-executable-code-or-config-that-terminates-processes-deletes-files-or-records-runs-destructive-sql-deploys-releases-or-migrates-handles-credentials-or-auth-changes-encoding-talks-to-devices-defines-a-verdict-or-threshold-or-breaks-a-compatibility-contract",
         "RECOMMENDED": "the-facts-say-the-slice-changes-a-state-transition-concurrency-rule-or-a-contract-other-code-relies-on-without-any-required-trigger",
-        "NOT_NEEDED": "the-facts-say-the-slice-changes-only-local-behaviour-wording-docs-tests-or-display-with-no-trigger-and-no-shared-contract",
-        "UNKNOWN": "the-facts-do-not-say-what-the-changed-code-does-so-the-need-cannot-be-judged-advice-only-never-a-waiver-or-a-gate"
+        "NOT_NEEDED": "the-facts-say-the-slice-changes-only-local-behaviour-wording-docs-tests-or-display-with-no-trigger-and-no-shared-contract-or-the-facts-say-it-changes-no-executable-code-or-config-at-all-such-as-a-read-only-investigation-or-report-an-investigation-or-diagnostic-label-alone-is-not-such-a-fact",
+        "UNKNOWN": "the-facts-say-the-slice-changes-executable-code-or-config-but-not-what-the-changed-code-does-so-the-need-cannot-be-judged-advice-only-never-a-waiver-or-a-gate"
       },
       "hardFocusCriteria": {
         "UI_UX": "information-architecture-user-flow-interaction-or-visual-accessibility-design-is-the-dominant-unresolved-judgment",

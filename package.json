@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.151",
+  "version": "0.10.152",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -70,6 +70,7 @@
     "Tools/OMP_Global_Config/agent/skills/humanizer",
     "Tools/OMP_Global_Config/agent/skills/stop-slop",
     "Tools/OMP_Global_Config/agent/skills/kill-ai-slop",
+    "Tools/OMP_Global_Config/agent/skills/plugin-lab",
     "Tools/OMP_Global_Config/agent/tools",
     "!Tools/OMP_Global_Config/agent/**/tests",
     "!Tools/OMP_Global_Config/agent/**/*.test.*",

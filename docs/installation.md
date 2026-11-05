@@ -190,9 +190,11 @@ node install.mjs harness-update --dry-run
 node install.mjs harness-update
 ```
 
-`harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·skills는 바꾸지 않으며, `--dry-run`은 무엇이 바뀔지만 보여 줍니다. `--json`은 결과를 JSON으로 냅니다.
+`harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·별도로 설치한 개인 스킬은 바꾸지 않습니다. 배포 목록에 포함된 기본 스킬은 다른 하네스 파일과 같은 기준으로 갱신합니다. `--dry-run`은 무엇이 바뀔지만 보여 주며, `--json`은 결과를 JSON으로 냅니다.
 
-설치 기록은 이 기능이 생긴 뒤의 `setup`부터 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
+`harness-update` 실행 중 예외가 발생하면 이번 갱신 과정에서 작성된 파일을 되돌립니다. 그사이 사용자가 고친 파일과 기존 로컬 설정, 추적되지 않는 파일은 강제로 덮어쓰지 않습니다. 되돌리지 못한 파일은 오류에 경로를 남기며, 이전 내용은 백업 위치에서 확인할 수 있습니다.
+
+설치 기록은 이 기능이 적용된 `setup`과 컨테이너 기동에서 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
 `makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 지금 방향이 정해진 코드의 기본 후보(`NORMAL_SOL`·`HARD_CODE_TERRA`) 자리로 쓰이므로 이름을 바꾸지 말고, Sonnet 후보는 `implSonnet`에 따로 지정합니다. 역할 설정은 `harness-update`가 바꾸지 않습니다.
 

@@ -344,6 +344,75 @@ test("harness-update re-checks a file right before it writes: an edit or a new f
   }
 });
 
+test("harness-update that fails part-way puts back what it already wrote and keeps the old record", () => {
+  const { source, agentDir, entries, status, cleanup } = harnessFixture();
+  const realCopy = fs.copyFileSync;
+  try {
+    recordHarnessInstall(agentDir, copyHarness(source, agentDir, entries), "1.0.0");
+    const recordBefore = fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8");
+    write(source, "AGENTS.md", "agents v2\n");
+    write(source, "extensions/x.ts", "x v2\n");
+    write(source, "rules/b.md", "rule b v2\n");
+    fs.rmSync(path.join(agentDir, "rules", "b.md"));
+    const b = path.join(agentDir, "rules", "b.md");
+    // The disk fills up while the last file is being added: two overwrites are already done.
+    fs.copyFileSync = (from, to, ...rest) => {
+      if (to !== b) return realCopy(from, to, ...rest);
+      fs.writeFileSync(b, "rule");
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    };
+    assert.throws(() => updateHarness(source, agentDir, entries, "2.0.0", { now: new Date("2026-11-05T00:00:00.000Z") }), /ENOSPC/);
+    fs.copyFileSync = realCopy;
+
+    const read = (rel) => fs.readFileSync(path.join(agentDir, rel), "utf8");
+    assert.deepEqual([read("AGENTS.md"), read("extensions/x.ts"), fs.existsSync(b)], ["agents v1\n", "x v1\n", false]);
+    assert.equal(read(HARNESS_MANIFEST), recordBefore);
+    // The next run sees the same plan as before the failure and completes it.
+    assert.deepEqual(status(), { "AGENTS.md": "update-available", "extensions/x.ts": "update-available", "rules/a.md": "identical", "rules/b.md": "missing" });
+    const report = updateHarness(source, agentDir, entries, "2.0.0", { now: new Date("2026-11-05T00:00:01.000Z") });
+    assert.deepEqual([report.updated, report.added], [["AGENTS.md", "extensions/x.ts"], ["rules/b.md"]]);
+  } finally {
+    fs.copyFileSync = realCopy;
+    cleanup();
+  }
+});
+
+test("the rollback of a failed harness-update leaves a file the user saved or linked meanwhile alone", () => {
+  const realCopy = fs.copyFileSync;
+  // A truncation to the start of the new bytes is still the user's edit, not a cut-short copy.
+  const saved = { edit: "my agents\n", truncate: "agents" };
+  for (const change of ["edit", "truncate", "link"]) {
+    const { source, agentDir, entries, cleanup } = harnessFixture();
+    const outside = tempDir("rollback-outside");
+    try {
+      recordHarnessInstall(agentDir, copyHarness(source, agentDir, entries), "1.0.0");
+      write(source, "AGENTS.md", "agents v2\n");
+      write(source, "extensions/x.ts", "x v2\n");
+      const agents = path.join(agentDir, "AGENTS.md");
+      write(outside, "mine.md", "outside data\n");
+      // AGENTS.md is already replaced when the user saves it (or swaps in a link), then the next copy fails.
+      fs.copyFileSync = (from, to, ...rest) => {
+        if (to !== path.join(agentDir, "extensions", "x.ts")) return realCopy(from, to, ...rest);
+        if (saved[change] !== undefined) fs.writeFileSync(agents, saved[change]);
+        else {
+          fs.rmSync(agents);
+          fs.symlinkSync(path.join(outside, "mine.md"), agents);
+        }
+        throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+      };
+      assert.throws(() => updateHarness(source, agentDir, entries, "2.0.0"), /EIO.*not put back: AGENTS\.md/, change);
+      fs.copyFileSync = realCopy;
+      assert.equal(fs.readFileSync(path.join(outside, "mine.md"), "utf8"), "outside data\n", change);
+      assert.equal(fs.readFileSync(agents, "utf8"), saved[change] ?? "outside data\n", change);
+      assert.equal(fs.readFileSync(path.join(agentDir, "extensions", "x.ts"), "utf8"), "x v1\n", change);
+    } finally {
+      fs.copyFileSync = realCopy;
+      cleanup();
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  }
+});
+
 test("harness-diff and harness-update take --home, --json and (update only) --dry-run", () => {
   assert.deepEqual(
     [parseArgs(["harness-diff", "--json", "--home", "/h"]).json, parseArgs(["harness-update", "--dry-run"]).dryRun, parseArgs(["harness-update"]).dryRun],
@@ -534,7 +603,8 @@ test("the package ships the three slop-gate rubric skills, and a copied profile 
     }
     assert.equal(fs.existsSync(path.join(agentDir, "skills", "kill-ai-slop", "scripts", "scan.mjs")), true);
     assert.equal(fs.existsSync(path.join(agentDir, "skills", "kill-ai-slop", "scripts", "scan.test.mjs")), false);
-    assert.equal(fs.readdirSync(path.join(agentDir, "skills")).sort().join(), "humanizer,kill-ai-slop,stop-slop");
+    // Besides the rubrics only the Plugin Lab guide the plugin_lab tool points to; no private skill is shipped.
+    assert.equal(fs.readdirSync(path.join(agentDir, "skills")).sort().join(), "humanizer,kill-ai-slop,plugin-lab,stop-slop");
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });
   }
