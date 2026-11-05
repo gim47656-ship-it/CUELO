@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { currentBlobs, type Exec, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import { integrateTool } from "./integrate";
+import { syncBehindUpstream } from "./sync-upstream";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
 
 export { hasPosixGitdirWorktree };
@@ -295,7 +296,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Cross-family review gate (stage `cross-review`): when there is something new to commit, a code file needs a passed cross_review resolve for its exact current content if it is listed in crossReviewHighRisk (paths from files), a high-risk marker hits its changed lines, or the deterministic 10% sample selects the commit (then at most the 5 code files with the most changed lines, project/style/designer files excluded); otherwise the call is refused with the files, the reason and the next step. Docs, tests, generated files, binary media/office/font assets, TS/JS edits the TypeScript parser proves comment-only and edits that only change version strings (against HEAD or the last passed content) are not targets. crossReviewWaiver is allowed only on the user's explicit instruction and is recorded. AI-slop gate (stage `slop-gate`, after cross-review): every visible artifact among the files that has something new to commit (slides, html, pptx/docx/xlsx/pdf/hwpx, report csv, UI copy packs, manuals, plus markdown declared by a .slop-gate.json visible glob; no publication declaration is needed, and .publicignore does not exempt anything) needs a slop_check pass for its exact current content (sha256); otherwise the call is refused with the files and the next step. Markdown not declared that way (README, CHANGELOG, docs, doc maps), source code, comments, logs, tests, fixtures, generated files and internal records (rules, prompts, skills, HANDOFF.md, doc/history, doc/README.md) are not slop targets. slopGateWaiver is allowed only on the user's explicit instruction and is recorded. Main only.",
+    "Atomically finalize relative exact files in one repository. Resolve every target from its nearest existing parent. Treat matching git common-dir values as the same repository: restrict those targets to paths inside cwd or an exact direct child file of the cwd repository root, while allowing one distinct repository; reject mixed repositories before staging. Serialize by repository/upstream, verify exact paths and ancestry, commit, then push the created SHA. When the working copy is only behind the upstream (no local commits, nothing staged), it first fast-forwards to the remote commits before the gates (stage `upstream-sync`); uncommitted edits stay, and a file both sides changed is merged only when git's 3-way merge is conflict-free. A diverged branch, a conflict, or an incoming change to a locally new/deleted file leaves the working copy untouched and the call stops as before. If an earlier run committed but its push failed, call again with the same files: unchanged files found in unpushed upstream..HEAD commits are accepted and HEAD is pushed without a new commit. Cross-family review gate (stage `cross-review`): when there is something new to commit, a code file needs a passed cross_review resolve for its exact current content if it is listed in crossReviewHighRisk (paths from files), a high-risk marker hits its changed lines, or the deterministic 10% sample selects the commit (then at most the 5 code files with the most changed lines, project/style/designer files excluded); otherwise the call is refused with the files, the reason and the next step. Docs, tests, generated files, binary media/office/font assets, TS/JS edits the TypeScript parser proves comment-only and edits that only change version strings (against HEAD or the last passed content) are not targets. crossReviewWaiver is allowed only on the user's explicit instruction and is recorded. AI-slop gate (stage `slop-gate`, after cross-review): every visible artifact among the files that has something new to commit (slides, html, pptx/docx/xlsx/pdf/hwpx, report csv, UI copy packs, manuals, plus markdown declared by a .slop-gate.json visible glob; no publication declaration is needed, and .publicignore does not exempt anything) needs a slop_check pass for its exact current content (sha256); otherwise the call is refused with the files and the next step. Markdown not declared that way (README, CHANGELOG, docs, doc maps), source code, comments, logs, tests, fixtures, generated files and internal records (rules, prompts, skills, HANDOFF.md, doc/history, doc/README.md) are not slop targets. slopGateWaiver is allowed only on the user's explicit instruction and is recorded. Main only.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
@@ -311,6 +312,18 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     if (!message) throw new Error("git_finalize requires a non-empty commit message.");
 
     const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
+    // 뒤처지기만 한 작업 사본은 원격 커밋을 먼저 받는다(사용자 결정 2026-11-05). 게이트가 받은 뒤의 내용(합친 파일 포함)을 보도록 맨 앞에서 한다.
+    let upstreamNote = "";
+    const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
+    if (repo && !("failure" in repo)) {
+      try {
+        // 작업 사본을 바꾸는 단계는 취소 신호 없이 끝까지 돌려 반쯤 바뀐 채 남지 않게 한다(조회·fetch만 취소된다).
+        upstreamNote = (await syncBehindUpstream(spawnExec(signal), (await selectGitExecutor(repo.root)).command, repo.root, spawnExec())).note ?? "";
+      } catch (error) {
+        throw new Error(`git_finalize failed at upstream-sync: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (upstreamNote) onUpdate?.({ content: [{ type: "text", text: upstreamNote }], details: { phase: "upstream-sync" } });
+    }
     await checkSourceManifest(pi.cwd, requested, exec);
     // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.
     // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
@@ -370,7 +383,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       const parsed = parseResult(result.stdout);
       if (result.code !== 0 || !parsed?.ok) {
         const detail = parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
-        throw new Error(`git_finalize failed${parsed?.stage ? ` at ${parsed.stage}` : ""}: ${detail}`);
+        throw new Error(`git_finalize failed${parsed?.stage ? ` at ${parsed.stage}` : ""}: ${detail}${upstreamNote ? ` (${upstreamNote})` : ""}`);
       }
       // 게시 뒤 Windows 대응 사본 반영(deploy-ops)에 붙여 넣을 명령: 손으로 40자 리비전을 옮기던 일을 덜어 준다(10-25~27 54회).
       // 대응 사본은 PC·저장소마다 달라 정본이 없으므로 대상만 자리표시로 두고, 짝이 있는지는 Main이 운영 문서로 정한다.
@@ -394,6 +407,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
           {
             type: "text",
             text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
+              + (upstreamNote ? ` ${upstreamNote}` : "")
               + (parsed.resumedPush ? " 이미 커밋돼 있던 미전송 커밋을 함께 다시 보냈다." : "")
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")

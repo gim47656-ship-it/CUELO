@@ -47,6 +47,34 @@ afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+describe("문서 루트 이름", () => {
+  test("doc/이 없고 Docs/history를 쓰는 프로젝트는 Docs/를 지도·기록 루트로 읽고, history 없는 docs/는 지도로 보지 않는다", () => {
+    const dir = repo({
+      "HANDOFF.md": "# HANDOFF\n",
+      "Docs/README.md": "# 지도\n\n- [a](history/2026/10/01-a/main.md)\n- [공개](../sub/docs/README.md)\n",
+      "Docs/history/2026/10/01-a/main.md": record("a", "a scope"),
+      "Docs/history/2026/10/02-b/main.md": record("b", "b scope"),
+      "sub/docs/README.md": "# 공개 문서\n",
+    });
+    const r = lintDocmap(dir)!;
+    expect(r.maps).toEqual(["Docs/README.md"]);
+    expect(r.recordCount).toBe(2);
+    expect(r.unmapped.noInboundLink).toEqual(["Docs/history/2026/10/02-b"]);
+  });
+  test("지도가 기록을 링크 대신 코드 표기 경로로 적어도 지도에 있는 기록으로 세고, 없는 경로·소스 경로는 세지 않는다", () => {
+    const dir = repo({
+      "HANDOFF.md": "# HANDOFF\n",
+      "Docs/README.md": "# 지도\n\n- `Docs/history/2026/10/01-a/main.md` — a\n- `Docs/history/2026/10/09-gone/main.md` — 없음\n- `src/app.ts` 수정\n",
+      "Docs/history/2026/10/01-a/main.md": record("a", "a scope"),
+      "Docs/history/2026/10/02-b/main.md": record("b", "b scope"),
+      "src/app.ts": "x",
+    });
+    const r = lintDocmap(dir)!;
+    expect(r.unmapped.noInboundLink).toEqual(["Docs/history/2026/10/02-b"]);
+    expect(r.missingTargets.real).toEqual([]);
+  });
+});
+
 describe("지도에 없는 기록", () => {
   test("지도에 링크된 기록은 빼고, 다른 문서가 링크하는 기록과 아무도 링크하지 않는 기록을 가른다", () => {
     const dir = repo({

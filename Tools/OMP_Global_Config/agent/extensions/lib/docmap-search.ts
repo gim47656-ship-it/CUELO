@@ -3,7 +3,7 @@
 // 하위 지도에만 있던 정답 기록 2건을 놓쳤다. 본문까지 색인하면 무관 질문 점수가 같이 올라 헤더 전용이 낫다
 // (hit@3 37/45 대 31/45). 상시 색인·캐시·LLM 호출은 두지 않는다. 읽기 실패는 호출부가 조용히 버린다.
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 // 근거: doc/history/2026/10/16-rag-reinvestigation/maker-DocmapRoute.md(처음 보정),
 // doc/history/2026/10/17-rag-fixes/maker-DocmapFloor.md(기록 수·질의 길이에 묶이지 않는 두 조건으로 재보정).
@@ -177,28 +177,70 @@ function mapLinks(line: string, base: string): string[] {
   return out;
 }
 
-/** 루트·프로젝트 지도, 그 지도가 링크한 하위 지도, 루트 아래 1~2단 `*\/doc/README.md`(옆에 history가 있는 것). */
+/**
+ * 지도 줄에 코드 표기로 적은 기록 경로(`` `Docs/history/2026/10/19-x/main.md` ``). 링크 대신 이렇게 기록 목록을 쓰는 프로젝트가
+ * 있다(2026-11-05 한세ERP: 37건 전부 이 형식이라 "지도에 없음"으로 잡혔다). 지도 폴더 또는 그 위(프로젝트) 기준으로 풀어
+ * 그 지도의 history 안에 실제로 있는 것만 돌려준다. 소스 경로 같은 다른 코드 표기는 기록이 아니므로 버린다.
+ */
+export function mapCodeRecords(line: string, base: string): string[] {
+  const history = join(base, "history") + sep;
+  const out: string[] = [];
+  for (const m of line.matchAll(/`([^`\s]+)`/g)) {
+    const hit = [resolve(base, m[1]!), resolve(dirname(base), m[1]!)].find((path) => path.startsWith(history) && existsSync(path));
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
+const DOC_DIR = /^docs?$/i;
+
+/**
+ * 프로젝트 문서 루트(지도 README.md와 history/가 있는 폴더). 정확한 `doc`이 있으면 그것을 쓴다. 없으면 이름이 대소문자를
+ * 무시하고 `doc`·`docs`이면서 `history` 폴더를 가진 곳(예: `Docs/`), 그다음 대소문자만 다른 `doc`(예: `Doc/`)을 쓴다.
+ * 대소문자를 구분하는 드라이브에서 `Docs/`를 쓰는 프로젝트를 "기록 0건"으로 오판하지 않기 위함이다(2026-11-05).
+ * history 없는 `docs/`는 공개 문서일 수 있어 문서 루트로 보지 않는다.
+ */
+export function findDocRoot(project: string): string | undefined {
+  if (isDir(join(project, "doc"))) return join(project, "doc");
+  let names: string[];
+  try { names = readdirSync(project, { withFileTypes: true }).filter((e) => e.isDirectory() && DOC_DIR.test(e.name)).map((e) => e.name).sort(); }
+  catch { return undefined; }
+  const withHistory = names.find((n) => isDir(join(project, n, "history")));
+  if (withHistory) return join(project, withHistory);
+  const variant = names.find((n) => n.toLowerCase() === "doc");
+  return variant ? join(project, variant) : undefined;
+}
+
+/** 루트·프로젝트 지도, 그 지도가 링크한 하위 지도, 루트 아래 1~2단 문서 루트의 README.md(옆에 history가 있는 것). */
 export function findDocmapMaps(root: string, project: string): string[] {
   const maps = new Set<string>();
   const add = (path: string) => { if (isFile(path)) maps.add(path); };
-  add(join(root, "doc", "README.md"));
-  add(join(project, "doc", "README.md"));
+  for (const dir of [root, project]) {
+    const docRoot = findDocRoot(dir);
+    if (docRoot) add(join(docRoot, "README.md"));
+  }
   for (const map of [...maps]) {
     for (const line of readFileSync(map, "utf8").split("\n")) {
       for (const target of mapLinks(line, dirname(map))) {
-        if (target.endsWith(`${sep}doc${sep}README.md`) && target.startsWith(root + sep)) add(target);
+        // 링크된 하위 지도: 정확한 `doc`은 예전처럼 받고, 다른 표기(`Docs`·`docs`)는 옆에 history가 있을 때만(공개 docs/README.md 제외).
+        const folder = dirname(target);
+        const isMap = basename(target) === "README.md" && (basename(folder) === "doc" || (DOC_DIR.test(basename(folder)) && isDir(join(folder, "history"))));
+        if (isMap && target.startsWith(root + sep)) add(target);
       }
     }
   }
   const skip = (name: string) => name.startsWith(".") || name === "node_modules";
+  const addWithHistory = (dir: string) => {
+    const docRoot = findDocRoot(dir);
+    if (docRoot && isDir(join(docRoot, "history"))) add(join(docRoot, "README.md"));
+  };
   for (const a of readdirSync(root, { withFileTypes: true })) {
     if (!a.isDirectory() || skip(a.name)) continue;
     const first = join(root, a.name);
-    if (isDir(join(first, "doc", "history"))) add(join(first, "doc", "README.md"));
+    addWithHistory(first);
     for (const b of readdirSync(first, { withFileTypes: true })) {
       if (!b.isDirectory() || skip(b.name)) continue;
-      const second = join(first, b.name);
-      if (isDir(join(second, "doc", "history"))) add(join(second, "doc", "README.md"));
+      addWithHistory(join(first, b.name));
     }
   }
   return [...maps];
@@ -286,7 +328,7 @@ export function buildDocmapCorpus(root: string, maps: readonly string[]): Docmap
   for (const map of maps) {
     const base = dirname(map);
     for (const line of readFileSync(map, "utf8").split("\n")) {
-      for (const target of mapLinks(line, base)) {
+      for (const target of [...mapLinks(line, base), ...mapCodeRecords(line, base)]) {
         let unit = byKey.get(target) ?? byKey.get(dirname(target));
         // 지도 줄이 가리키는 history 밖의 정본 문서(HANDOFF·규칙·운영 문서)도 그 줄의 글로 찾을 수 있게 단위로 둔다.
         if (!unit && isCanonicalTarget(root, target, mapSet)) {

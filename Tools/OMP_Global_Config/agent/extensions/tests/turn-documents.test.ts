@@ -42,6 +42,15 @@ describe("turn documentation evidence", () => {
     });
     expect(f.docs.note(f.root)).toBeUndefined();
   });
+  test("a project whose document root is Docs/ (case-sensitive drive) is checked there, not reported as missing doc/", () => {
+    const f = fixture();
+    for (const path of ["HANDOFF.md", "Docs/README.md", "Docs/history/2026/11/05-work/main.md", "index.ts"]) f.put(path);
+    f.observe("write", "index.ts");
+    expect(f.docs.note(f.root)).not.toContain("없거나 확인 불가");
+    expect(f.docs.note(f.root)).toContain("Docs/README.md 읽기/쓰기");
+    f.observe("read", "HANDOFF.md"); f.observe("read", "Docs/README.md"); f.observe("write", "Docs/history/2026/11/05-work/main.md");
+    expect(f.docs.note(f.root)).toBeUndefined();
+  });
   test("documents created after source edits remove missing and unobserved claims", () => {
     const f = fixture(false); f.put("index.ts"); f.observe("write", "index.ts");
     expect(f.docs.note(f.root)).toContain("없거나 확인 불가");

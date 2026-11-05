@@ -49,8 +49,13 @@ const COPY_EXT = /\.(?:json|ts|js|mjs|ya?ml|po)$/i;
 
 /** 내부 기록만 면제: doc/history/**, doc/README.md. HANDOFF.md는 INTERNAL_NAME이 맡는다. 그 밖의 doc 폴더 파일은 형식으로 분류한다. */
 function internalRecord(segments: readonly string[]): boolean {
-  const at = segments.indexOf("doc");
-  return at >= 0 && ((segments[at + 1] === "history" && segments.length > at + 2) || (segments[at + 1] === "README.md" && segments.length === at + 2));
+  // 문서 루트 이름의 대소문자는 프로젝트마다 다르다(`Docs/`; docmap-search findDocRoot). `docs`는 공개 문서일 수 있어 history 아래만 기록이다.
+  return segments.some((segment, at) => {
+    const name = segment.toLowerCase();
+    if (name !== "doc" && name !== "docs") return false;
+    if (segments[at + 1] === "history" && segments.length > at + 2) return true;
+    return name === "doc" && segments[at + 1] === "README.md" && segments.length === at + 2;
+  });
 }
 
 /** 저장소 밖 절대 경로 중 보지 않는 곳: 임시·에이전트 내부·캐시·생성물·의존성. 이유를 돌려주고, 대상이면 undefined. */

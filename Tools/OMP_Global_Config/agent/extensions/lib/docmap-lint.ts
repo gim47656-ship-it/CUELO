@@ -13,7 +13,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { buildDocmapCorpus, docmapTokens, findDocmapMaps, findDocmapProject, type DocmapUnit } from "./docmap-search";
+import { buildDocmapCorpus, docmapTokens, findDocmapMaps, findDocmapProject, findDocRoot, mapCodeRecords, type DocmapUnit } from "./docmap-search";
 
 /** docmap-search의 SUPERSEDE_HOPS와 같다. 그보다 긴 사슬은 검색이 끝까지 따라가지 않는다. */
 const MAX_SUPERSEDE_HOPS = 3;
@@ -181,6 +181,13 @@ export function lintDocmap(cwd: string): DocmapLintReport | undefined {
     const base = dirname(file);
     linksBySource.set(file, extractRelativeLinks(readText(file, bad)).map((l) => ({ ...l, target: resolveHref(base, l.href) })));
   }
+  // 지도는 코드 표기로 적은 기록 경로도 그 기록을 가리키는 것으로 센다(실제로 있는 기록만이라 끊어진 링크에는 영향이 없다).
+  for (const map of maps) {
+    const lines = readText(map, bad).split("\n");
+    const own = linksBySource.get(map) ?? [];
+    lines.forEach((text, index) => { for (const target of mapCodeRecords(text, dirname(map))) own.push({ line: index + 1, href: target, target }); });
+    linksBySource.set(map, own);
+  }
 
   // 1. 지도에 없는 기록
   // 기록 폴더 자체나 그 폴더의 .md 기록 파일로 가는 링크만 센다. evidence/ 파일로만 가는 링크는 기록을 가리키지 않는다.
@@ -264,7 +271,7 @@ export function lintDocmap(cwd: string): DocmapLintReport | undefined {
     const text = readText(f, bad);
     coverText.push([/^#\s+(.+)$/m.exec(text)?.[1] ?? "", headings(text)].join(" "));
   }
-  const synthesis = synthesisCandidates(root, records, new Set(coverText.flatMap(docmapTokens)), loadAliases(join(project, "doc", ALIAS_FILE), bad));
+  const synthesis = synthesisCandidates(root, records, new Set(coverText.flatMap(docmapTokens)), loadAliases(join(findDocRoot(project) ?? join(project, "doc"), ALIAS_FILE), bad));
 
   return {
     root,

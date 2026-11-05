@@ -1,5 +1,6 @@
+import { statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { htmlText } from "../slop-gate/extract";
 
 /**
@@ -46,9 +47,17 @@ export function inScope(abs: string, cwd: string): boolean {
   if (!inside && (p.startsWith(`${slash(tmpdir())}/`) || p.startsWith("/tmp/") || p.startsWith(`${slash(homedir())}/.omp/`))) return false;
   const segments = p.split("/");
   if (RULE_NAME.test(segments.at(-1) ?? "")) return false;
-  // slop-gate internalRecord와 같은 기준: `doc` 바로 아래 history 폴더 안, 또는 `doc/README.md`.
-  const doc = segments.indexOf("doc");
-  if (doc >= 0 && ((segments[doc + 1] === "history" && segments.length > doc + 2) || (segments[doc + 1] === "README.md" && segments.length === doc + 2))) return false;
+  // slop-gate internalRecord와 같은 기준: 문서 루트(`doc`·`Doc`·`Docs` 등) 바로 아래 history 폴더 안, 또는 지도 README.md.
+  // `docs/README.md`는 공개 문서일 수 있어 옆에 history가 있을 때만 지도로 본다.
+  const record = segments.some((segment, at) => {
+    const name = segment.toLowerCase();
+    if (name !== "doc" && name !== "docs") return false;
+    if (segments[at + 1] === "history" && segments.length > at + 2) return true;
+    if (segments[at + 1] !== "README.md" || segments.length !== at + 2) return false;
+    if (name === "doc") return true;
+    try { return statSync(join(dirname(abs), "history")).isDirectory(); } catch { return false; }
+  });
+  if (record) return false;
   return !segments.slice(0, -1).some((segment) => SKIP_SEGMENT[segment]);
 }
 

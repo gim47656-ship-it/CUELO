@@ -123,13 +123,15 @@ const TEST_DIR: Record<string, true> = { test: true, tests: true, __tests__: tru
 const GENERATED_FILE = /(?:^|\/)(?:source-integrity\.json|runtime-integrity\.json|package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|memories\.jsonl)$/i;
 // 하위 프로젝트의 작업 기록(`Tools/X/doc/history/…`)에 남긴 측정·판정 데이터는 코드가 아니다(사용자 결정, 2026-10-23).
 // 같은 자리의 스크립트는 그대로 코드로 본다. 맨 위 `doc/`는 아래에서 통째로 빠진다.
-const RECORD_DATA_FILE = /(?:^|\/)doc\/history\/.+\.(?:jsonl|ndjson|json|csv|tsv|log)$/i;
+const RECORD_DATA_FILE = /(?:^|\/)docs?\/history\/.+\.(?:jsonl|ndjson|json|csv|tsv|log)$/i;
+// 맨 위 문서 폴더 이름의 대소문자는 프로젝트마다 다르다(`Docs/`).
+const TOP_DOC_DIR = /^docs?$/i;
 
 /** 문서·테스트·생성물·작업 기록 데이터는 게이트 대상이 아니다. 나머지는 모두 코드로 본다. */
 export function isCodeFile(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/");
-  if (DOC_FILE.test(normalized) || segments[0] === "doc" || segments[0] === "docs") return false;
+  if (DOC_FILE.test(normalized) || TOP_DOC_DIR.test(segments[0]!)) return false;
   if (RECORD_DATA_FILE.test(normalized)) return false;
   if (TEST_FILE.test(normalized) || segments.slice(0, -1).some((segment) => Object.hasOwn(TEST_DIR, segment))) return false;
   return !GENERATED_FILE.test(normalized);
@@ -139,7 +141,7 @@ export function isCodeFile(path: string): boolean {
 export function isDocFile(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/");
-  return DOC_FILE.test(normalized) || segments[0] === "doc" || segments[0] === "docs" || RECORD_DATA_FILE.test(normalized);
+  return DOC_FILE.test(normalized) || TOP_DOC_DIR.test(segments[0]!) || RECORD_DATA_FILE.test(normalized);
 }
 
 // git이 바이너리로 본 이 확장자의 파일은 사람이 읽는 실행 코드가 아니다(이미지·미디어·오피스·글꼴). 실행 파일·라이브러리는 그대로 코드다.

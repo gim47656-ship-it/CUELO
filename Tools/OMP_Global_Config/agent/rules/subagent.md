@@ -834,8 +834,8 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   같은 이름의 `refs/heads/<branch>`다.
 - 존재 확인은 read-only exact-ref 조회로 부재와 인증·네트워크 오류를 구분한다. 없는 remote branch는
   첫 ordinary push가 만들고 tracking은 push 성공 뒤 설정한다. 있는 branch는 fetch 후 upstream이
-  캡처한 로컬 HEAD의 ancestor인지 확인해 같거나 앞선 상태만 허용하고, 뒤처지거나 갈라진 상태는
-  staging 전에 거부한다. commit parent는 commit 직전 HEAD와 같아야 하고 push는 생성 SHA의
+  캡처한 로컬 HEAD의 ancestor인지 확인해 같거나 앞선 상태만 허용한다. 뒤처지기만 한 상태는 게이트 전에
+  fast-forward로 받고(양쪽 수정 파일은 충돌 없는 3-way만), 갈라졌거나 충돌하면 staging 전에 거부한다. commit parent는 commit 직전 HEAD와 같아야 하고 push는 생성 SHA의
   non-force push로 remote ref까지 확인한다.
 - lock·ancestry·경로·non-fast-forward 실패는 우회하거나 자동 rebase·reset하지 않고 상태를 보존해
   보고한다. 자기 wt 브랜치를 `git_integrate`로 대상 위에 rebase하는 것만 예외다(아래). `index.lock`이나

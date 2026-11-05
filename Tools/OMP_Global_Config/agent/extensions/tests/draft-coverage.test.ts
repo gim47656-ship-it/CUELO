@@ -248,6 +248,17 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("write", { path: "CHANGELOG.md", content: markdown(DIRECT) })?.block).toBe(true);
   });
 
+  test("Docs/처럼 대소문자가 다른 문서 루트의 기록·지도도 보지 않지만, history 없는 docs/README.md는 계속 멈춘다", () => {
+    const cwd = workdir();
+    mkdirSync(join(cwd, "Docs/history"), { recursive: true });
+    const s = session(cwd);
+    s.input();
+    for (const path of ["Docs/history/2026/11/05-x/main.md", "Docs/README.md"]) {
+      expect(s.call("write", { path, content: markdown(DIRECT) })?.block).toBeUndefined();
+    }
+    expect(s.call("write", { path: "site/docs/README.md", content: markdown(DIRECT) })?.block).toBe(true);
+  });
+
   test("bash가 바꾼 글 파일은 내용을 볼 수 없어 한 번만 알린다", () => {
     const cwd = workdir();
     const s = session(cwd);

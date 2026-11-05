@@ -2,12 +2,15 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findDocRoot } from "./docmap-search";
 
 // Only explicit filesystem tool contracts are observed; never inspect shell/eval code or result prose.
 type Result = { toolName: string; input?: unknown; details?: unknown; isError?: boolean };
 const SOURCE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?|css|scss|sass|less|jsonc?|ya?ml|toml|ini|cfg|conf|config|xml|resx|vb|frm|bas|cs|fs|csproj|vbproj|slnx?|props|targets|c|cc|cpp|cxx|h|hpp|rs|go|py|rb|php|java|kt|kts|swift|sh|bash|ps1|bat|cmd|sql|gradle|cmake|proto)$/i;
 const SOURCE_NAME = /^(?:Dockerfile|Makefile|CMakeLists\.txt|\.gitignore|\.gitattributes|\.editorconfig|\.npmrc|\.env(?:\..+)?)$/i;
 const EXCLUDED: Record<string, true> = { ".git": true, node_modules: true, dist: true, build: true, coverage: true, ".next": true, doc: true, docs: true, evidence: true };
+// 문서 루트 이름은 프로젝트마다 대소문자가 다르다(`Docs/`). findDocRoot와 같은 기준.
+const RECORD_PATH = /(?:^|\/)(?:HANDOFF\.md|docs?\/README\.md|docs?\/history\/\d{4}\/\d{2}\/\d{2}-[^/]+\/(?:main|maker-[^/]+)\.md)$/i;
 const URI = /^[A-Za-z][A-Za-z0-9+.-]+:\//;
 const PREFIXED_URI = /[\\/][A-Za-z][A-Za-z0-9+.-]+:\/\//;
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -90,7 +93,7 @@ export function createTurnDocuments() {
         try { base = realpathSync(cwd); } catch { return; }
         const path = localPath(savedPath, base, false);
         if (path && within(base, path) && isFile(path)
-          && /(?:^|\/)(?:HANDOFF\.md|doc\/README\.md|doc\/history\/\d{4}\/\d{2}\/\d{2}-[^/]+\/(?:main|maker-[^/]+)\.md)$/.test(path.split(sep).join("/"))) written.add(path);
+          && RECORD_PATH.test(path.split(sep).join("/"))) written.add(path);
         return;
       }
       if (!cwd || event.isError || !["read", "write", "edit"].includes(event.toolName)) return;
@@ -106,7 +109,7 @@ export function createTurnDocuments() {
         written.add(path);
         if (!within(base, path)) continue;
         const parts = relative(base, path).split(sep);
-        if (parts.some((part) => EXCLUDED[part])) continue;
+        if (parts.some((part) => EXCLUDED[part.toLowerCase()])) continue;
         if (SOURCE.test(path) || SOURCE_NAME.test(basename(path))) sources.add(path);
       }
     },
@@ -126,13 +129,15 @@ export function createTurnDocuments() {
       }
       const notices: string[] = [];
       for (const [project, uncertain] of projects) {
-        const handoff = join(project, "HANDOFF.md"), map = join(project, "doc/README.md"), history = join(project, "doc/history");
+        const docRoot = findDocRoot(project) ?? join(project, "doc");
+        const docName = relative(project, docRoot).split(sep).join("/");
+        const handoff = join(project, "HANDOFF.md"), map = join(docRoot, "README.md"), history = join(docRoot, "history");
         const absent: string[] = [], unseen: string[] = [];
-        for (const [path, name] of [[handoff, "HANDOFF.md"], [map, "doc/README.md"]] as const) {
+        for (const [path, name] of [[handoff, "HANDOFF.md"], [map, `${docName}/README.md`]] as const) {
           if (!isFile(path)) absent.push(name);
           else if (!reviewed.has(path) && !written.has(path)) unseen.push(`${name} 읽기/쓰기`);
         }
-        if (!isDir(history)) absent.push("doc/history 작업 기록");
+        if (!isDir(history)) absent.push(`${docName}/history 작업 기록`);
         else if (![...written].some((path) => within(history, path) && /^\d{4}\/\d{2}\/\d{2}-[^/]+\/(?:main|maker-[^/]+)\.md$/.test(relative(history, path).split(sep).join("/")) && isFile(path))) unseen.push("작업 기록 쓰기");
         if (!absent.length && !unseen.length) continue;
         const label = relative(base, project).split(sep).join("/") || ".";
