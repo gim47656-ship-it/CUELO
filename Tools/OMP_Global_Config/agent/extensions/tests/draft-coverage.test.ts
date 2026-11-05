@@ -317,6 +317,29 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("edit", edit(...drafted, `      summary: ${DIRECT[2]} ${DIRECT[1]};`))?.block).toBe(true);
   });
 
+  test.each([
+    ["HTML literal backticks", `<p>\`${DIRECT.join(" ")}\`</p>`],
+    ["script-line single quotes", `document.querySelector("#summary").textContent = '${DIRECT.join(" ")}';`],
+    ["script-line double quotes", `document.querySelector("#summary").textContent = "${DIRECT.join(" ")}";`],
+    ["script-line template string", `document.querySelector("#summary").textContent = \`${DIRECT.join(" ")}\`;`],
+  ])("%s blocks undrafted prose on the first write and edit", (_name, content) => {
+    for (const tool of ["write", "edit"]) {
+      const cwd = workdir();
+      writeFileSync(join(cwd, "report.html"), "<main></main>");
+      const s = session(cwd);
+      s.input();
+      const verdict = tool === "write" ? s.write("report.html", content!) : s.edit("report.html", content!);
+      expect(verdict?.block).toBe(true);
+    }
+  });
+
+  test("Markdown inline code and HTML code/pre remain outside the prose check", () => {
+    const s = session(workdir());
+    s.input();
+    expect(s.write("report.md", DIRECT.map((p) => `\`${p}\``).join("\n\n"))?.block).toBeUndefined();
+    expect(s.write("report.html", `<code>${DIRECT.join(" ")}</code><pre>${DIRECT.join(" ")}</pre>`)?.block).toBeUndefined();
+  });
+
   test("URI paths are not resolved or gated for writes and edits", () => {
     const s = session(workdir());
     s.input();

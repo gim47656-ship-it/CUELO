@@ -120,9 +120,10 @@ export function proseBlocks(source: string, path: string): string[] {
       paragraph.push(line);
     }
     flush();
+    lines = lines.map((line) => line.replace(/`[^`\n]*`/g, " "));
   }
   return lines
-    .map((line) => line.replace(/`[^`\n]*`/g, " ").replace(/\]\([^)\s]*\)/g, "]").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim())
+    .map((line) => line.replace(/\]\([^)\s]*\)/g, "]").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim())
     .filter((line) => letterCount(line) >= MIN_BLOCK_LETTERS);
 }
 
