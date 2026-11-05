@@ -13,6 +13,12 @@ export const GENERIC_CRITERION = "직전 7일 대비 50% 넘게 나빠지면 주
 /** 건수 지표는 작업량 차이를 빼려고 사용자 요청 100건당으로 비교한다. */
 export const PER_TURNS = 100;
 
+/**
+ * 건수 행은 두 기간 중 큰 쪽 원 건수가 이 수 이상일 때만 판정한다(2026-11-06 사용자 결정: 「20초 넘는 대기」가 원 건수 3 대 1만으로
+ * 「문제」가 됐다). 비용 행의 COST_FLOOR_USD와 같은 역할이다.
+ */
+export const COUNT_FLOOR = 5;
+
 /** 도구 결과 뒤 다음 모델 요청까지 이보다 오래 걸리면 느린 대기로 센다. */
 export const SLOW_GAP_MS = 20_000;
 

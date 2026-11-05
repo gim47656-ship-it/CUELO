@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
-  CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
+  CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, COUNT_FLOOR, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
   FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
@@ -96,11 +96,18 @@ function sessionRows(rows: SessionCost[] | undefined): UpkeepEvidence[] {
   }));
 }
 
-/** 건수 지표: 사용자 요청 100건당으로 비교하고 원 건수는 note에 남긴다. */
+/**
+ * 건수 지표: 사용자 요청 100건당으로 비교하고 원 건수는 note에 남긴다. 두 기간 중 큰 쪽 원 건수가 COUNT_FLOOR 미만이면
+ * 배수가 커 보여도 판정하지 않는다(2026-11-06 사용자 결정).
+ */
 function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: ScanResult["windows"][0]) => number): UpkeepMetric {
   const [a, b] = scan.windows;
-  const m = metric(id, `${label} (요청 100건당)`, "count", perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), compare(perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), a.turns, b.turns));
+  const status = compare(perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), a.turns, b.turns);
+  const belowFloor = status !== "unknown" && Math.max(pick(a), pick(b)) < COUNT_FLOOR;
+  const m = metric(id, `${label} (요청 100건당)`, "count", perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), belowFloor ? "ok" : status,
+    `${GENERIC_CRITERION}. 두 기간 중 큰 쪽 원 건수가 ${COUNT_FLOOR}건 이상일 때만 판정합니다`);
   m.note = `원 건수 ${pick(a)} / ${pick(b)}, 사용자 요청 ${a.turns} / ${b.turns}건`;
+  if (belowFloor) m.note += `. 두 기간 모두 원 건수가 ${COUNT_FLOOR}건 미만이라 판정하지 않습니다`;
   m.evidence = scan.evidence[id] ?? [];
   return m;
 }
@@ -276,7 +283,7 @@ export function bottleneckSection(scan: ScanResult, maker: { exits: UpkeepMetric
   const slowGaps = perTurnMetric("slow-gaps", `${SLOW_GAP_MS / 1000}초 넘는 대기`, scan, (w) => w.gaps.filter((g) => g > SLOW_GAP_MS).length);
   const p90 = (values: number[]) => (values.length ? [...values].sort((x, y) => x - y)[Math.ceil(values.length * 0.9) - 1] : null);
   const seconds = (ms: number | null) => (ms === null ? "기록 없음" : ms < 1000 ? `${Math.round(ms)}ms` : `${Math.round(ms / 1000)}초`);
-  slowGaps.criterion = `${GENERIC_CRITERION}. 도구 결과 뒤 다음 요청까지 걸린 시간의 p90도 같은 기준으로 보고 더 나쁜 쪽을 따릅니다`;
+  slowGaps.criterion = `${slowGaps.criterion}. 도구 결과 뒤 다음 요청까지 걸린 시간의 p90도 같은 기준으로 보고 더 나쁜 쪽을 따릅니다`;
   slowGaps.note = `${slowGaps.note}. 도구 결과 뒤 다음 요청까지 p90 ${seconds(p90(a.gaps))} / ${seconds(p90(b.gaps))}.`;
   adoptWorse(slowGaps, compare(p90(a.gaps), p90(b.gaps), a.gaps.length, b.gaps.length), "p90");
 
