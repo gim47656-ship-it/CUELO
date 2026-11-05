@@ -24,6 +24,9 @@ const MARKUP_FILE = /\.(?:html?|xhtml)$/i;
 // `--` 사용자 속성)만 받고, 세미콜론 없는 마지막 선언은 `}` 바로 앞일 때만 인정한다(`Summary: …;` 같은 산문 줄을 빼지 않게).
 const CSS_DECL = String.raw`(?:--[\w-]+|-?[a-z][a-z-]*)\s*:\s*[^;{}]+`;
 const CSS_LINE = new RegExp(String.raw`^\s*(?:[^{}]*\{|\}[\s;]*|(?:[^{}]*\{\s*)?(?:${CSS_DECL};\s*)+\}?|[^{}]*\{\s*(?:${CSS_DECL};\s*)*${CSS_DECL};?\s*\})\s*$`);
+// 태그가 섞인 조각(스타일 줄과 본문 줄을 한 edit에서 고친 경우)에서는 한 줄 완결 규칙(`선택자 { 선언; … }`)만 뺀다. 따옴표·꺾쇠가 든 줄은
+// script 문자열이나 마크업일 수 있어 남기고, 선택자 없는 `word: text;` 줄도 남긴다(doc/history/2026/11/05-draft-false-positive).
+const CSS_RULE_LINE = new RegExp(String.raw`^(?![^\n]*["'\x60<>])\s*[^\s{}][^{}]*\{\s*(?:${CSS_DECL};\s*)*${CSS_DECL};?\s*\}\s*$`);
 // 규칙·프롬프트·스킬은 draft 대상이 아니다(RULES: code, configuration, rule files 제외). 슬롭 게이트가 면제하는 내부 기록
 // (HANDOFF.md, doc/history/**, doc/README.md)도 이 확인에서 뺀다: 2026-10-28 감사에서 26회 차단 중 20회가 내부 기록이었고
 // 12회는 예외 사유를 적고 같은 호출을 다시 보냈다(doc/history/2026/10/28-guard-audit). 사용자 승인 2026-10-28.
@@ -100,7 +103,7 @@ export function shingles(text: string, into = new Set<string>()): Set<string> {
 export function proseBlocks(source: string, path: string): string[] {
   let lines: string[];
   if (MARKUP_FILE.test(path)) {
-    const fragment = /<[a-z!/][^>]*>/i.test(source) ? source : source
+    const fragment = /<[a-z!/][^>]*>/i.test(source) ? source.split(/\r?\n/).filter((line) => !CSS_RULE_LINE.test(line)).join("\n") : source
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split(/\r?\n/)
       .filter((line) => !CSS_LINE.test(line))

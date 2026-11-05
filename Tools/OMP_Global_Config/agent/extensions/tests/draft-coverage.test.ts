@@ -295,6 +295,28 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("edit", { input: `[report.html#AB12]\nPUT >1:\n+${[...oneLine, ...oneLine, ...oneLine].join("\n+")}` })?.block).toBeUndefined();
   });
 
+  // 2026-11-03 회의 슬라이드 edit(doc/history/2026/11/05-draft-false-positive): 스타일 줄과 draft한 본문 줄을 한 edit에서 고치자
+  // 태그가 섞였다는 이유로 CSS 규칙 줄이 새 글로 잡혀 멈췄다. 태그 섞인 조각에서는 따옴표 없는 한 줄 완결 규칙만 뺀다:
+  // `summary: …;` 같은 맨 글 줄, 따옴표가 든 줄(script 문자열의 보이는 문구), 새 문단은 계속 멈춘다.
+  test("한 edit에 CSS 규칙 줄과 draft한 HTML 줄이 섞여도 CSS는 새 글로 세지 않고, 새 문단과 script 문구는 계속 멈춘다", () => {
+    const s = session(workdir());
+    s.input();
+    s.draft("intro.md", markdown(DRAFTED));
+    const css = [
+      ".summary-panel { background: var(--paper); border: 1px solid var(--line); padding: 24px; }",
+      ".summary-panel .metric { font: 700 20px/1 var(--f-num); letter-spacing: 0; white-space: nowrap; }",
+      ".summary-panel .metric.warn { color: var(--caution); background: var(--caution-soft); }",
+    ];
+    const edit = (...body: string[]) => ({ input: `[deck.html#AB12]\nPUT 12.=14:\n+${css.join("\n+")}\nPUT 80.=81:\n+${body.join("\n+")}` });
+    const drafted = DRAFTED.slice(0, 2).map((p) => `      <p class="lead">${p}</p>`);
+    expect(s.call("edit", edit(...drafted))?.block).toBeUndefined();
+    const withParagraph = s.call("edit", edit(...drafted, `      <p>${DIRECT[0]}</p>`, `      <p>${DIRECT[1]}</p>`));
+    expect(withParagraph?.block).toBe(true);
+    expect(withParagraph?.reason).not.toContain("summary-panel");
+    expect(s.call("edit", edit(...drafted, `  {title:'${DIRECT[0]}', lead:'${DIRECT[2]}'},`))?.block).toBe(true);
+    expect(s.call("edit", edit(...drafted, `      summary: ${DIRECT[2]} ${DIRECT[1]};`))?.block).toBe(true);
+  });
+
   test("URI paths are not resolved or gated for writes and edits", () => {
     const s = session(workdir());
     s.input();
