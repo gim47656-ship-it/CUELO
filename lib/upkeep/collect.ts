@@ -478,7 +478,7 @@ function overdueMetric(items: UpkeepDueItem[], warnings: string[]): UpkeepMetric
 
 function complaintSection(scan: ScanResult): UpkeepSection {
   const m = perTurnMetric("repeat-complaints", "다시 지적하는 표현", scan, (w) => w.complaints);
-  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
+  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, 「또」는 메시지 첫머리일 때만 세며, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
   return section("complaints", "사용자 지적 반복", [m]);
 }
 
