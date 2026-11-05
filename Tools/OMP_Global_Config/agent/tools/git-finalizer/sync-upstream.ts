@@ -16,7 +16,7 @@ import type { Exec } from "../../extensions/lib/cross-review";
  *   새 파일·삭제가 겹치면 건드리지 않고, 무시 파일은 `--no-overwrite-ignore`로 git이 덮어쓰기를 거절한다.
  * - 작업 사본 쓰기는 모두 Node가 바이트로 하고, 받은 뒤에는 파일 바이트로 판정한다: 원격판이면 병합 결과, 기준판이면
  *   (받지 못했다) 원래 바이트, 그 밖이면 누가 고친 것이라 건드리지 않는다. git 조회·파일 쓰기가 실패해도 파일마다 따로
- *   되돌리며, 깨끗하게 끝나지 않으면 원래 바이트를 복사한 임시 폴더와 백업 객체를 알린다.
+ *   되돌리며, 깨끗하게 끝나지 않으면(받는 도중 다른 쪽이 새로 저장한 파일 포함) 원래 바이트를 복사한 임시 폴더와 백업 객체를 알린다.
  * - `commitExec`는 작업 사본을 바꾸는 fast-forward에 쓴다. 호출부가 취소 신호 없는 실행기를 주면 취소가 그 단계를 반쯤
  *   끊지 않는다(조회·fetch는 `exec`로 취소된다). `readBytes`는 바이트 그대로의 출력이 필요한 git 호출이다.
  */
@@ -123,17 +123,21 @@ export async function syncBehindUpstream(exec: Exec, git: string, root: string, 
     return skip(`병합을 준비하는 동안 ${changed.join(", ")}가 다시 바뀌어 원격 커밋을 받지 않았다. 작업 사본은 그대로다.`);
   }
 
-  // 파일 바이트로 상태를 판정해 한 파일씩 마무리한다: 원격판 → 병합 결과, 기준판 → 원래 바이트, 그 밖 → 건드리지 않는다.
-  // 받지 못했으면(HEAD가 원격이 아니거나 확인 실패) 기준판으로 바꾸려고 손댄 파일은 무엇이든(쓰다 잘린 내용 포함) 원래 바이트로
-  // 되돌린다. 받았으면 원격판이 아닌 파일은 받은 뒤 누가 고친 것이라 건드리지 않는다.
+  // 파일 바이트로 상태를 판정해 한 파일씩 마무리한다: 원격판 → 병합 결과(받았을 때만), 기준판 → 원래 바이트, 그 밖 → 건드리지 않는다.
+  // 받지 못했으면(HEAD가 원격이 아니거나 확인 실패) 기준판을 쓰다 잘린 내용(기준판의 앞부분)도 원래 바이트로 되돌린다.
+  // 그 밖의 바이트(받지 못했는데 원격판과 같은 내용 포함)는 받는 도중 편집기·다른 작업이 저장한 것이라 건드리지 않고 백업을 남긴다.
   const touched = new Set<string>();
   const settle = (received: boolean) => {
     const result = { merged: 0, restored: 0, untouched: [] as string[], errors: [] as string[] };
     for (const plan of plans) {
       try {
         const current = readFileSync(plan.abs);
-        if (current.equals(plan.theirs)) { writeFileSync(plan.abs, plan.merged); result.merged++; }
-        else if ((!received && touched.has(plan.path)) || current.equals(plan.base) || current.equals(plan.raw)) { if (!current.equals(plan.raw)) writeFileSync(plan.abs, plan.raw); result.restored++; }
+        if (received && current.equals(plan.theirs)) { writeFileSync(plan.abs, plan.merged); result.merged++; }
+        else if (current.equals(plan.base) || current.equals(plan.raw)
+          || (!received && touched.has(plan.path) && current.length < plan.base.length && plan.base.subarray(0, current.length).equals(current))) {
+          if (!current.equals(plan.raw)) writeFileSync(plan.abs, plan.raw);
+          result.restored++;
+        }
         else result.untouched.push(plan.path);
       } catch (error) {
         result.errors.push(`${plan.path}: ${message(error)}`);

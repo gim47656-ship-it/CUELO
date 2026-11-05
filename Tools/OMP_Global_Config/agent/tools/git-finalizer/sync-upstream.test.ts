@@ -228,6 +228,29 @@ describe("syncBehindUpstream", () => {
     expect(readFileSync(join(local, "B.md")).equals(mineB)).toBe(true);
   });
 
+  for (const [label, fresh] of [["새 내용", Buffer.from("받는 도중 편집기가 저장한 새 내용\n")], ["원격판과 같은 내용", Buffer.from("b1 remote\nb2\nb3\nb4\nb5\n")]] as const) {
+    test(`받기가 실패하는 동안 다른 쪽이 저장한 ${label}은 덮지 않고 원래 내용 백업도 남긴다`, async () => {
+      const { other, local } = fixture({ "B.md": "b1\nb2\nb3\nb4\nb5\n" });
+      push(other, { "B.md": "b1 remote\nb2\nb3\nb4\nb5\n" });
+      const mineB = Buffer.from("b1\nb2\nb3\nb4\nb5 local\n");
+      writeFileSync(join(local, "B.md"), mineB);
+      const base = spawnExec();
+      const editing: Exec = async (command, args, options) => {
+        if (args[0] === "merge") { writeFileSync(join(local, "B.md"), fresh); return { code: 1, stdout: "", stderr: "index.lock exists" }; }
+        return base(command, args, options);
+      };
+      const head = git(local, "rev-parse", "HEAD");
+      const error = await syncBehindUpstream(base, "git", local, editing).then(() => undefined, (e: Error) => e);
+      expect(error?.message).toContain("다시 바뀐 파일은 건드리지 않았다: B.md");
+      const backupDir = /원래 내용: (\S+)/.exec(error!.message)![1]!;
+      const backedUp = readFileSync(join(backupDir, "B.md"));
+      rmSync(backupDir, { recursive: true, force: true });
+      expect(backedUp.equals(mineB)).toBe(true);
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+      expect(readFileSync(join(local, "B.md")).equals(fresh)).toBe(true);
+    });
+  }
+
   test("백업 객체와 병합 입력은 확인한 바이트로 만든다(그 사이 고쳤다 되돌린 내용이 끼지 않는다)", async () => {
     const { other, local } = fixture();
     push(other, { "HANDOFF.md": handoff.replace("## 연차\n- 기존 줄\n", "## 연차\n- 기존 줄\n- 원격\n") });
