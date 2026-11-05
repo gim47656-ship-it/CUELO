@@ -94,7 +94,7 @@ export function isResultToCheck(
   state: ResultReviewState,
   waitingSessionIds: ReadonlySet<string> = NO_SESSIONS,
 ): boolean {
-  if (session.transient) return false;
+  if (session.transient || session.trial) return false;
   if (waitingSessionIds.has(session.id)) return true;
   if (runningSessionIds.has(session.id)) return false;
   const at = activityMs(session);
@@ -110,4 +110,14 @@ export function forgetSessions(state: ResultReviewState, ids: Iterable<string>):
     delete opened[id];
   }
   return opened ? { since: state.since, opened } : state;
+}
+
+/**
+ * 「모두 확인」: 지금 확인할 결과로 보이는 세션을 모두 연 것으로 남긴다. 답을 기다리는 세션은
+ * 열어 봐도 남으므로 여기서도 그대로다. 바뀐 게 없으면 같은 객체다.
+ */
+export function markSessionsOpened(state: ResultReviewState, sessions: Iterable<Pick<SessionInfo, "id" | "modified">>, now: number): ResultReviewState {
+  let next = state;
+  for (const session of sessions) next = markSessionOpened(next, session, now);
+  return next;
 }

@@ -7,7 +7,7 @@ import { Tokenizer, type AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-ag
 import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync } from "fs";
 import { stat } from "fs/promises";
-import { dirname, join, normalize as normalizePath } from "path";
+import { dirname, join, normalize as normalizePath, resolve, sep } from "path";
 import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext, TrackerTodoRecords } from "./types";
 import type { TodoPhase } from "./todo-state";
 import { reduceDispatchRecord } from "./answer-status/dispatch";
@@ -97,6 +97,14 @@ async function sessionProject(cwd: string, verdicts: Map<string, Promise<DirVerd
   return resolveProject(cwd);
 }
 
+/** `test_session` workspaces live under `<agentDir>/test-sessions/`; sessions opened there are trial runs. */
+export function isTrialSessionCwd(cwd: string, agentDir: string = getAgentDir()): boolean {
+  if (!cwd) return false;
+  const root = resolve(agentDir, "test-sessions");
+  const target = resolve(cwd);
+  return target === root || target.startsWith(root + sep);
+}
+
 export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
   const uniqueCwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
   const projectByCwd = new Map<string, SessionProjectGrouping>();
@@ -111,6 +119,7 @@ export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise
       ...session,
       projectRoot: project?.projectRoot ?? session.cwd,
       ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
+      ...(isTrialSessionCwd(session.cwd) ? { trial: true } : {}),
     };
   });
 }

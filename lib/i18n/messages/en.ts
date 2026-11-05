@@ -244,6 +244,8 @@ export const enLocale = {
     "navigator.resultsToCheckCount": "To review {count}",
     "navigator.resultsToCheckHint": "Finished conversations with new activity since you last opened them in this browser, and conversations waiting for your answer",
     "navigator.resultsToCheckEmpty": "Nothing to review.",
+    "navigator.acknowledgeResults": "Mark all reviewed",
+    "navigator.acknowledgeResultsHint": "Marks every conversation now listed to review as seen. Conversations waiting for your answer stay.",
     "sidebar.waitingForAnswer": "Needs answer",
     "sidebar.waitingForAnswerHint": "Paused until you answer its question or approval request",
     "sidebar.newScratchSession": "New session",

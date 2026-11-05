@@ -460,6 +460,9 @@ export interface SessionInfo {
   /** True while the runtime session exists only in memory and its JSONL file
    *  has not been created yet. Disk-backed actions must wait until this clears. */
   transient?: boolean;
+  /** True when cwd is a `test_session` workspace (`<agentDir>/test-sessions/…`): a trial run the
+   *  harness or a script drove, so it never counts as a result for the user to review. */
+  trial?: boolean;
 }
 
 /**

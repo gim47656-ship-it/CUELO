@@ -17,6 +17,7 @@ import {
 import {
   forgetSessions,
   isResultToCheck,
+  markSessionsOpened,
   markSessionOpened,
   parseResultReviewState,
   RESULT_REVIEW_STORAGE_KEY,
@@ -2654,7 +2655,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             );
           })()}
           {!loading && !error && resultReview && (
-            <div style={{ display: "flex", padding: "6px 2px 4px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 2px 4px" }}>
               <button
                 type="button"
                 aria-pressed={reviewFilterActive}
@@ -2694,6 +2695,19 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   {resultsToCheck.length}
                 </span>
               </button>
+              {resultsToCheck.some((session) => !waitingSessionIds.has(session.id)) && (
+                <button
+                  type="button"
+                  title={t("navigator.acknowledgeResultsHint")}
+                  onClick={() => {
+                    setKeptReviewId(null);
+                    setResultReview((prev) => prev && markSessionsOpened(prev, resultsToCheck, Date.now()));
+                  }}
+                  style={bulkClearButtonStyle(false, isMobile)}
+                >
+                  {t("navigator.acknowledgeResults")}
+                </button>
+              )}
             </div>
           )}
           {scratchSessionError && (

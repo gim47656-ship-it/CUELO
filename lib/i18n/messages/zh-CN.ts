@@ -244,6 +244,8 @@ export const zhCNLocale: LocalePlugin = {
     "navigator.resultsToCheckCount": "待查看 {count}",
     "navigator.resultsToCheckHint": "自你在此浏览器上次打开后又有新进展且已结束的对话，以及等待你回答的对话",
     "navigator.resultsToCheckEmpty": "没有待查看的结果。",
+    "navigator.acknowledgeResults": "全部标为已看",
+    "navigator.acknowledgeResultsHint": "将当前待查看的所有对话标为已看。等待你回答的对话会保留。",
     "sidebar.waitingForAnswer": "等待回答",
     "sidebar.waitingForAnswerHint": "在你回答其提问或批准请求之前已暂停",
     "sidebar.newScratchSession": "新建会话",
