@@ -140,6 +140,20 @@ if (hasSetter) {
 	check("[12] 직접 고른 high는 상한 low로 잘리고 auto가 되지 않는다", f.c.thinkingLevel === "low" && f.c.configuredThinkingLevel() === "low", `${f.c.thinkingLevel}/${f.c.configuredThinkingLevel()}`);
 }
 
+// chillax(18.17+)는 이 턴의 auto 결과를 모델 최저 effort로 내린다. 그 값이 상한 전 결과이므로 이후 상한을 바꿔도 chillax 전 결과가 되살아나지 않는다.
+if (hasSetter && typeof probe.c.applyChillax === "function") {
+	const x = controls({ thinkingLevel: "auto" });
+	await autoTurn(x.c);
+	const relaxed = x.c.applyChillax("chillax 이 요청");
+	check("[13] Opus 5.5 auto 턴에 chillax가 적용돼 최저 effort low가 된다", relaxed === true && x.c.thinkingLevel === "low", `${relaxed}/${x.c.thinkingLevel}`);
+	x.c.setThinkingLevelCeiling("xhigh");
+	check("[14] chillax 뒤 상한을 xhigh로 걸어도 low를 유지한다", x.c.thinkingLevel === "low" && x.c.configuredThinkingLevel() === "auto", `${x.c.thinkingLevel}/${x.c.configuredThinkingLevel()}`);
+	x.c.setThinkingLevelCeiling(undefined);
+	check("[15] chillax 뒤 상한을 지워도 low를 유지한다", x.c.thinkingLevel === "low", String(x.c.thinkingLevel));
+	await autoTurn(x.c);
+	check("[16] 다음 auto 턴은 다시 분류 결과 max를 따른다", x.c.thinkingLevel === "max", String(x.c.thinkingLevel));
+}
+
 // Windows는 열린 sqlite 핸들이 남아 있으면 임시 폴더 삭제가 EBUSY로 실패한다. 검증 결과와 무관한 정리다.
 try {
 	rmSync(workdir, { recursive: true, force: true });

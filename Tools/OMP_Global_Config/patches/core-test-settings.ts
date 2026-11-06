@@ -49,3 +49,25 @@ export function settingsLike<T extends { get: (key: string) => unknown; getGroup
 	delete surface.getGroup;
 	return surface as T;
 }
+
+/**
+ * In-process parent mnemopi state for a child (`parentMnemopiSessionState`) whose banks are the given stub store.
+ * It is a real MnemopiSessionState, as backend.start builds it: from 18.17.0 a child shares the parent's banks only when
+ * the parent is such an instance (anything else is a worker-thread remote parent). The stub stands in for every bank.
+ */
+export function mnemopiParentState(
+	stateMod: { MnemopiSessionState: new (options: never) => unknown },
+	config: Record<string, unknown>,
+	memory: unknown,
+	fields: Record<string, unknown> = {},
+) {
+	const state = new stateMod.MnemopiSessionState({ sessionId: "parent-session", config, session: {} } as never) as {
+		getScopedRetainTarget(): object;
+		getScopedRecallTargets(): readonly object[];
+	};
+	for (const target of [state.getScopedRetainTarget(), ...state.getScopedRecallTargets()]) {
+		Object.defineProperty(target, "memory", { value: memory, configurable: true });
+		Object.defineProperty(target, "exists", { value: () => true, configurable: true });
+	}
+	return Object.assign(state, fields);
+}

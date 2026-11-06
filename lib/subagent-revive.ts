@@ -14,7 +14,7 @@
  * root is not open in this process is left transcript-only (`history://`).
  */
 import path from "node:path";
-import { AgentRegistry, type AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi, type AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import {
   AgentLifecycleManager,
   type PersistedSubagentReviverFactory,
@@ -28,7 +28,7 @@ declare global {
   // Survives Next.js hot reload like the session registry itself.
   var __cueloRootRevivers: Revivers | undefined;
   var __cueloRootAgentIds: RootAgentIds | undefined;
-  var __cueloOwnershipRepairs: WeakMap<AgentRegistry, () => void> | undefined;
+  var __cueloOwnershipRepairs: WeakMap<AgentRegistryApi, () => void> | undefined;
 }
 
 function revivers(): Revivers {
@@ -79,7 +79,7 @@ export function createRootDispatchFactory(roots: Revivers): PersistedSubagentRev
 }
 
 /** registry에 child가 등록될 때마다 소유 root를 바로잡는다. registry당 한 번만 건다. */
-function ensureOwnershipRepair(registry: AgentRegistry): void {
+function ensureOwnershipRepair(registry: AgentRegistryApi): void {
   const repairs = (globalThis.__cueloOwnershipRepairs ??= new WeakMap());
   if (repairs.has(registry)) return;
   const agentIds = rootAgentIds();
@@ -99,7 +99,7 @@ export function registerRootReviver(
   agentId: string,
   factory: PersistedSubagentReviverFactory,
   idleTtlMs: () => number,
-  scope: { registry?: AgentRegistry; lifecycle?: AgentLifecycleManager } = {},
+  scope: { registry?: AgentRegistryApi; lifecycle?: AgentLifecycleManager } = {},
 ): () => void {
   const map = revivers();
   const agentIds = rootAgentIds();

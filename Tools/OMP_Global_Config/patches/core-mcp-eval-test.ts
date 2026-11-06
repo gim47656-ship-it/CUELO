@@ -361,7 +361,24 @@ const out7 = evalOutput(pyAfter);
 evidence.pythonOutput = out7;
 check("[7] Python eval: mcp.call 결과를 코드에서 쓴다", out7.includes("PY=5/False"), out7);
 
-for (const created of [child, owner, untrusted, denied, a]) {
+// [8] 모든 서버를 노출하는 선택("all"): 직접 도구 목록에 있는 서버는 eval 목록에서도 exposed 다(현재 eval bridge 이름 기준).
+const exposedAll = await open({ settings: { "mcp.selection": "all" } });
+await exposedAll.mcpManager?.waitForConnection("data-stub");
+const [, exposedAfter] = await evalTurn(
+	exposedAll.session,
+	"확인만",
+	"js",
+	`const s = await mcp.servers(); console.log("EXPOSED=" + JSON.stringify(s.map(x => ({ name: x.name, status: x.status, exposed: x.exposed }))));`,
+);
+const out8 = marked(evalOutput(exposedAfter), "EXPOSED=");
+check(
+	"[8] 직접 도구 목록에 있는 연결 서버는 exposed:true",
+	exposedAll.session.getEnabledToolNames().includes(createMCPToolName("data-stub", "fetch_rows")) &&
+		JSON.stringify(out8) === JSON.stringify([{ name: "data-stub", status: "connected", exposed: true }]),
+	{ out8, enabled: exposedAll.session.getEnabledToolNames().filter((name: string) => name.startsWith("mcp__")) },
+);
+
+for (const created of [exposedAll, child, owner, untrusted, denied, a]) {
 	await created.session.dispose();
 	if (created !== child) await created.mcpManager?.disconnectAll();
 }

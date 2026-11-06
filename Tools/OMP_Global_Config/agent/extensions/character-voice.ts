@@ -152,8 +152,8 @@ function characterSeats(): Record<string, unknown> {
   return seats;
 }
 
-function characterSeat(alias: BuiltinCharacterAlias): number | undefined {
-  const value = characterSeats()[alias];
+function characterSeat(alias: BuiltinCharacterAlias, seats = characterSeats()): number | undefined {
+  const value = seats[alias];
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 const ROLE_THINKING_SUFFIX = /:(?:auto|inherit|off|minimal|low|medium|high|xhigh|max)$/u;
@@ -216,10 +216,6 @@ const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {
   히카리: "HIKARI(히카리)",
 };
 
-const ANTHROPIC_POSITION_CHARACTER: Readonly<Record<number, BuiltinCharacterAlias>> = {
-  0: "RIN(린)",
-  1: "MIO(미오)",
-};
 const VOICE_OPEN = "<character-voice";
 const VOICE_CLOSE = "</character-voice>";
 const VOICE_BLOCK = /\n?<character-voice\b[^>]*>[\s\S]*?<\/character-voice>\n?/gu;
@@ -802,8 +798,16 @@ export function anthropicCharacterForAccounts(
   for (let index = 0; index < accounts.length; index += 1) {
     const account = accounts[index]!;
     if (!account.active) continue;
-    const seat = ANTHROPIC_POSITION_CHARACTER[accountPosition(account, index)];
-    return seat && canonicalAlias(seat, officeState());
+    const position = accountPosition(account, index);
+    const seats = characterSeats();
+    let matched: BuiltinCharacterAlias | undefined;
+    for (const alias of Object.keys(CHARACTER_TARGETS) as BuiltinCharacterAlias[]) {
+      if (!CHARACTER_TARGETS[alias].model.startsWith("anthropic/") || characterSeat(alias, seats) !== position) continue;
+      // A shared position cannot identify a character without an explicit retained selection.
+      if (matched !== undefined) return undefined;
+      matched = alias;
+    }
+    return matched && canonicalAlias(matched, officeState());
   }
   return undefined;
 }

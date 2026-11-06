@@ -6,10 +6,11 @@ import {
   type CommandStep,
   type StageView,
   type StepOutcome,
+  type UnknownReason,
   type WorkFlow,
   type WorkStep,
 } from "@/lib/answer-status/work-flow";
-import type { AnswerStatusTranslate } from "./i18n";
+import type { AnswerStatusMessageKey, AnswerStatusTranslate } from "./i18n";
 
 /**
  * 작업 흐름 표시의 공용 조각. 끝난 턴 카드의 그래프와 입력창 위 가로 단계 줄이 같은 단계 이름, 상태 말,
@@ -125,36 +126,62 @@ function stepLabel(step: WorkStep, st: AnswerStatusTranslate): string {
   return st(`flow.stage.${step.stage}`);
 }
 
+/** 판정 미확인·결과 미관측의 까닭마다 「없는 것」 말. `masked`·`compound`는 기존 말(`flow.why.check`·`flow.why.compoundMissing`)을 쓴다. */
+const MISSING_BY_REASON: Partial<Record<UnknownReason, AnswerStatusMessageKey>> = {
+  syntax: "flow.why.check.syntax",
+  optional: "flow.why.check.optional",
+  noExit: "flow.why.noExit",
+  noResult: "flow.why.noResult",
+  noCompletion: "flow.why.noCompletion",
+  interrupted: "flow.why.interrupted",
+};
+
+/** 까닭마다 판정을 남기려면 할 일. */
+const NEXT_BY_REASON: Record<UnknownReason, AnswerStatusMessageKey> = {
+  masked: "flow.next.rerun",
+  syntax: "flow.next.rerun",
+  optional: "flow.next.optional",
+  compound: "flow.next.compound",
+  noExit: "flow.next.again",
+  noResult: "flow.next.again",
+  noCompletion: "flow.next.again",
+  interrupted: "flow.next.again",
+};
+
 /**
  * 펼친 검사 행: 판정 미확인이면 무엇이 확인됐고 무엇이 없는지, 그리고 원래 명령과 셸 종료 코드. 여러 단계를 한 명령으로
  * 돌려 실패했으면 명령 전체의 실패만 확인됐고, 어느 단계의 실패인지는 없다. 기다린 실행이 이 커밋의 CI가 아니었으면 그 실행이
  * 끝난 결과만 확인됐다. 셸 종료 코드가 아닌 기록(echo한 종료 코드, 백그라운드 job의 완료, 배포 로그 줄, 이어진 CI 실행)으로
- * 판정했으면 그 기록 한 줄을 함께 보인다.
+ * 판정했으면 그 기록 한 줄을 함께 보인다. 검사 사건에 까닭(`reason`)이 있으면 그 까닭과 다음에 할 일을 보인다.
  */
 function CommandDetail({ step, label, st }: { step: CommandStep; label: string; st: AnswerStatusTranslate }) {
   const compoundFailed = isCompoundFailure(step);
   const stages = step.compound?.stages.map((stage) => st(`flow.stage.${stage}`)).join("·") ?? "";
   const other = step.otherRun;
+  const reasonMissing = step.reason ? MISSING_BY_REASON[step.reason] : undefined;
   const confirmed = compoundFailed ? st("flow.why.compoundConfirmed", { stages })
     : other?.kind === "unjudged" ? st("flow.why.watched.unjudged", { conclusion: other.conclusion })
     : other ? st(`flow.why.watched.${other.outcome}`)
     : st("flow.why.exitZero");
   const why = compoundFailed ? st("flow.why.compoundMissing")
+    : reasonMissing ? st(reasonMissing, { label })
     : step.stage === "check" ? st("flow.why.check", { label })
     : other?.kind === "commit" ? st("flow.why.ciOtherRun", { sha: other.sha })
     : other?.kind === "publish" ? st("flow.why.ciPublishRun")
     : other?.kind === "unjudged" ? st("flow.why.ciUnjudged", { conclusion: other.conclusion })
     : st(`flow.why.${step.stage}`);
+  const next = step.reason ? st(NEXT_BY_REASON[step.reason]) : compoundFailed ? st("flow.next.compound") : null;
+  const explained = step.outcome === "unverified" || (step.outcome === "unobserved" && step.reason !== undefined);
   const exit = step.exitCode !== null
     ? st("flow.exit", { code: step.exitCode })
     : st(step.outcome === "failed" ? "flow.exit.error" : step.outcome === "running" ? "flow.state.running" : "flow.exit.none");
   return (
     <div className="flow-raw">
-      {step.outcome === "unverified" && (
+      {explained && (
         <p className="flow-why">
-          <b>{st("flow.why.confirmed")}</b> {confirmed}
-          <br />
+          {step.outcome === "unverified" && <><b>{st("flow.why.confirmed")}</b> {confirmed}<br /></>}
           <b>{st("flow.why.missing")}</b> {why}
+          {next && <><br /><b>{st("flow.why.next")}</b> {next}</>}
         </p>
       )}
       {step.stale && <p className="flow-why">{st("flow.why.stale")}</p>}
@@ -218,6 +245,34 @@ export function EarlierAttempts({ steps, st }: { steps: readonly WorkStep[]; st:
       <summary className="flow-earlier-toggle">{st("flow.earlier", { count: steps.length })}{CHEVRON}</summary>
       <StepRows steps={steps} st={st} attempts />
     </details>
+  );
+}
+
+/**
+ * 이 회차의 사건 행. 검사 단계는 명령마다 유효한 결과(`latestChecks`) 하나를 주의가 필요한 것부터(단계 요약 말과 같은 차례)
+ * 위에 두고, 같은 명령의 나머지 실행은 접은 「반복 실행」 아래에 원래 판정 그대로 둔다. 풀리지 않은 실패 뒤의 판정 미확인처럼
+ * 더 나중 실행도 그 안에 들어갈 수 있다.
+ */
+export function StageRows({ view, steps, st }: { view: StageView; steps: readonly WorkStep[]; st: AnswerStatusTranslate }) {
+  if (steps.length === 0) return null;
+  if (view.stage !== "check") return <StepRows steps={steps} st={st} />;
+  const effective = latestChecks(steps);
+  const rank = (step: WorkStep) => {
+    const at = (CHECK_COUNT_ORDER as readonly string[]).indexOf(stepTone(step));
+    return at < 0 ? CHECK_COUNT_ORDER.length : at;
+  };
+  const primary = [...effective].sort((a, b) => rank(a) - rank(b));
+  const repeats = steps.filter((step) => !effective.includes(step as CommandStep));
+  return (
+    <>
+      <StepRows steps={primary} st={st} />
+      {repeats.length > 0 && (
+        <details className="flow-earlier">
+          <summary className="flow-earlier-toggle">{st("flow.repeats", { count: repeats.length })}{CHEVRON}</summary>
+          <StepRows steps={repeats} st={st} />
+        </details>
+      )}
+    </>
   );
 }
 

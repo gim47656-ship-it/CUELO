@@ -9,7 +9,7 @@ import { FlowMotionToggle, useFlowMotionPaused } from "./flow-motion";
 import { MakerRunFlow, MakerStatusPair, VERDICT_LABEL } from "./DispatchCard";
 import { useAnswerStatusText, type AnswerStatusTranslate } from "./i18n";
 import { elapsedText } from "./SubagentProgress";
-import { EarlierAttempts, StageNode, StageWord, stageLook, StepRows } from "./WorkFlow";
+import { EarlierAttempts, StageNode, StageRows, StageWord, stageLook } from "./WorkFlow";
 
 /** 그래프에서 고를 수 있는 노드: 단계, Maker 하나, 변경 파일 묶음, 변경 문서 묶음. */
 type NodeKey = `stage:${WorkStage}` | `maker:${string}` | "files" | "docs";
@@ -274,7 +274,7 @@ export function FlowGraph({ summary, makers, timings, live = false, onOpenFile }
             </p>
           )}
           {view.stage === "edit" && <TurnWrittenFiles files={summary.files} onOpenFile={onOpenFile} />}
-          {rows.length > 0 && <StepRows steps={rows} st={st} />}
+          <StageRows view={view} steps={rows} st={st} />
           <EarlierAttempts steps={view.earlier} st={st} />
         </>
       );

@@ -1206,6 +1206,98 @@ describe("characterSeats 설정 파싱", () => {
   });
 });
 
+describe("configured seat identity through runtime hooks", () => {
+  async function expectHookVoice(harness: { emit(name: string, event: unknown): Promise<unknown> }, alias: string | undefined) {
+    const started = await harness.emit("before_agent_start", { prompt: "hello", systemPrompt: ["base"] }) as
+      { systemPrompt: string[] } | undefined;
+    const wire = await harness.emit("before_provider_request", { payload: { system: "base" } }) as
+      { system: string } | undefined;
+    expect(started?.systemPrompt.join("\n").match(/<character-voice alias="([^"]+)">/u)?.[1]).toBe(alias);
+    expect(wire?.system.match(/<character-voice alias="([^"]+)">/u)?.[1]).toBe(alias);
+  }
+
+  test.each([[1, 0], [4, 7]])("unique positions %i/%i round trip without selecting a character", async (rin, mio) => {
+    await withOfficeProfile({}, async (dir) => {
+      writeFileSync(join(dir, "config.yml"), `characterSeats:\n  "RIN(린)": ${rin}\n  "MIO(미오)": ${mio}\n`);
+      const harness = createRuntimeHarness();
+      harness.selectModel("anthropic/claude-opus-5-5");
+      for (const [index, alias, position] of [[0, "RIN(린)", rin], [1, "MIO(미오)", mio]] as const) {
+        harness.accounts[index]!.position = position;
+        for (const [other, account] of harness.accounts.entries()) account.active = other === index;
+        expect(characterTarget(alias)?.oauthPosition).toBe(position);
+        expect(anthropicCharacterForAccounts(harness.accounts)).toBe(alias);
+        await expectHookVoice(harness, alias);
+      }
+      expect(harness.calls).toEqual([]);
+    });
+  });
+
+  test("hot config edits invalidate incompatible retention, while reset clears compatible explicit choice", async () => {
+    await withOfficeProfile({}, async (dir) => {
+      const harness = createRuntimeHarness();
+      await harness.emit("input", { text: "린으로 교체해", source: "rpc" });
+      await expectHookVoice(harness, "RIN(린)");
+      const calls = [...harness.calls];
+      // Same-size rewrite is intentional: identity must not depend on file stamps.
+      writeFileSync(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 0\n');
+      await expectHookVoice(harness, "MIO(미오)");
+      writeFileSync(join(dir, "config.yml"), "characterSeats:\n");
+      await expectHookVoice(harness, "RIN(린)");
+      await harness.emit("session_start", {});
+      await expectHookVoice(harness, undefined);
+      expect(harness.calls).toEqual(calls);
+    });
+  });
+
+  test("missing, invalid, duplicate and other-provider seats never invent an Anthropic identity", async () => {
+    await withOfficeProfile({}, async (dir) => {
+      const harness = createRuntimeHarness();
+      harness.selectModel("anthropic/claude-opus-5-5");
+      for (const content of [
+        "",
+        'characterSeats:\n  "RIN(린)": -1\n  "MIO(미오)": 9007199254740992\n',
+        'characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 1\n',
+        'characterSeats:\n  "YUKI(유키)": 1\n  "HIKARI(히카리)": 1\n',
+      ]) {
+        writeFileSync(join(dir, "config.yml"), content);
+        await expectHookVoice(harness, undefined);
+        harness.selectModel("openai-codex/gpt-6-astra");
+        await expectHookVoice(harness, "YUKI(유키)");
+        harness.selectModel("anthropic/claude-opus-5-5");
+      }
+      expect(characterTarget("RIN(린)")?.oauthPosition).toBeUndefined();
+      for (const account of harness.accounts) account.active = false;
+      await expectHookVoice(harness, "RIN(린)");
+      expect(harness.calls).toEqual([]);
+    });
+  });
+
+  test("duplicate positions preserve explicit choice until reset, then decline inference", async () => {
+    await withOfficeProfile({}, async (dir) => {
+      writeFileSync(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 1\n');
+      const harness = createRuntimeHarness();
+      await harness.emit("input", { text: "린으로 교체해", source: "rpc" });
+      await expectHookVoice(harness, "RIN(린)");
+      await harness.emit("session_start", {});
+      await expectHookVoice(harness, undefined);
+    });
+  });
+
+  test("configured Anthropic positions resolve through office aliases in both hooks", async () => {
+    const alias = "POTETO(포테이토)";
+    const roster = { seats: { "RIN(린)": { ...OFFICE_ROSTER.seats["YUKI(유키)"], alias, names: ["poteto"] } } };
+    await withOfficeProfile({ mode: "office", roster }, async (dir) => {
+      writeFileSync(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 4\n  "MIO(미오)": 7\n');
+      const harness = createRuntimeHarness();
+      harness.selectModel("anthropic/claude-opus-5-5");
+      harness.accounts[1]!.position = 4;
+      expect(characterTarget(alias)?.oauthPosition).toBe(4);
+      await expectHookVoice(harness, alias);
+      expect(harness.calls).toEqual([]);
+    });
+  });
+});
+
 describe("office mode character seat", () => {
   test("unselected Anthropic uses RIN or its office alias without pinning an account", async () => {
     for (const office of [false, true]) {

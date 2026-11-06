@@ -9,9 +9,9 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.10.163',
+    version: '0.10.164',
     distribution: 'cuelo',
-    coreVersion: '18.16.0',
+    coreVersion: '18.17.0',
 };
 
 // OMP core `src/sdk.ts`: session-scoped AsyncJobManager for a process that hosts
@@ -30,7 +30,8 @@ const SDK_UPSTREAM = [
         key: 'sessionAsyncChildOption',
         text: [
             '\t/** Parent\'s async jobs and delivery sinks; child sessions never resolve a process-global manager. */',
-            '\tasyncJobManager?: AsyncJobManager;',
+            // 18.17.0 types the parent's manager through its worker-thread interface; same contract.
+            '\tasyncJobManager?: AsyncJobManagerApi;',
             '',
         ].join('\n'),
     },
@@ -88,7 +89,7 @@ function readNativePackage(target) {
         throw new Error(`unexpected native package ${packageJson.name}@${packageJson.version}`);
     }
     if (!build || build.distribution !== EXPECTED.distribution || build.coreVersion !== EXPECTED.coreVersion) {
-        throw new Error('native cueloBuild metadata does not match cuelo / core 18.16.0');
+        throw new Error('native cueloBuild metadata does not match cuelo / core 18.17.0');
     }
     return packageJson;
 }

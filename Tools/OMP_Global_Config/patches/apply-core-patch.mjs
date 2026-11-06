@@ -21904,6 +21904,362 @@ export function cueloIsFallbackKeyBillingRejection(
 		{ marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
 }
 
+// 18.17.0: same rules as the 18.15.0/18.16.0 blocks. Older candidates stay byte-identical; each new
+// candidate requires a string only 18.17.0 carries in its file (every patch keeps it), and every
+// older candidate excludes it. Text-only moves reuse the previous candidate through swap().
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.17.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const excludeOld = (entry, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		excludeOld(entry, discriminator);
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.17.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const swaps = (text, pairs) => pairs.reduce((current, [from, to]) => swap(current, from, to), text);
+	// The one span from `start` through the next `end` becomes `to`.
+	const span = (text, start, end, to) => {
+		const from = text.indexOf(start);
+		const until = text.indexOf(end, from);
+		if (text.split(start).length !== 2 || until < 0) throw new Error(`18.17.0 span: ${JSON.stringify(start)}`);
+		return text.slice(0, from) + to + text.slice(until + end.length);
+	};
+	// Same edit on a renamed upstream line: the anchor and the patched body take the same swaps.
+	const port = (entry, previous, pairs, discriminator) =>
+		alternate(entry, { marker: previous.marker, anchor: swaps(previous.anchor, pairs), patched: swaps(previous.patched, pairs) }, discriminator);
+	// Upstream carries the change itself now: a no-op on the upstream text.
+	const absorbed = (entry, text, discriminator) => alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+
+	// Agent registry API (worker threads): registry parameters and imports take AgentRegistryApi.
+	const REGISTRY = "AgentRegistryApi";
+	const rootOwner = byMarker("function registeredRootOwnerId(registry: AgentRegistry, rootSessionFile: string)");
+	alternate(rootOwner, {
+		marker: "function registeredRootOwnerId(registry: AgentRegistryApi, rootSessionFile: string)",
+		anchor: swap(rootOwner.anchor, "resolveRootSessionFile(registry: AgentRegistry,", "resolveRootSessionFile(registry: AgentRegistryApi,"),
+		patched: swaps(rootOwner.patched, [
+			["registeredRootOwnerId(registry: AgentRegistry,", "registeredRootOwnerId(registry: AgentRegistryApi,"],
+			["resolveRootSessionFile(_registry: AgentRegistry,", "resolveRootSessionFile(_registry: AgentRegistryApi,"],
+		]),
+	}, REGISTRY);
+	const EXECUTOR_IMPORT = "import { type AgentActivityWatchSnapshot, type AgentRef, AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID }";
+	alternate(byMarker("import { type AgentActivityWatchSnapshot, type AgentRef, AgentRegistry, MAIN_AGENT_ID }"), {
+		marker: EXECUTOR_IMPORT,
+		anchor: "import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID }",
+		patched: EXECUTOR_IMPORT,
+	}, REGISTRY);
+	const PROTOCOL_IMPORT = 'import { type AgentRef, AgentRegistry, type AgentRegistryApi, formatAgentActivityWatch } from "../registry/agent-registry";';
+	alternate(byMarker('import { type AgentRef, AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";'), {
+		marker: PROTOCOL_IMPORT,
+		anchor: 'import { type AgentRef, AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";',
+		patched: PROTOCOL_IMPORT,
+	}, REGISTRY);
+
+	// IRC bus: upstream dropped suppressRelay and the send/#deliver options. The CUELO cancel signal and
+	// countsAsReply come back as the only options; the main-UI relay keeps upstream's call and skips
+	// only a cancelled delivery.
+	const BUS = "export interface IrcWaitFilter {";
+	const OPTS = "opts?: { signal?: AbortSignal; countsAsReply?: boolean }";
+	const CANCELLED = 'return { to: message.to, outcome: "failed", error: "IRC delivery cancelled." };';
+	const rootDeliver = byMarker("different top-level session");
+	port(rootDeliver, rootDeliver, [["\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean }): Promise<IrcDeliveryReceipt> {\n", "\tasync #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {\n"]], BUS);
+	const SEND_BODY = "\t\tconst message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };\n\t\t// Taken before delivery: a reply sent while this message is still being\n\t\t// delivered must still order after it.\n\t\tconst mark: SendMark = { ts: message.ts, seq: ++this.#sendSeq };\n";
+	alternate(byMarker("opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }"), {
+		marker: `\tasync send(msg: Omit<IrcMessage, "id" | "ts">, ${OPTS}): Promise<IrcDeliveryReceipt> {`,
+		anchor: `\tasync send(msg: Omit<IrcMessage, "id" | "ts">): Promise<IrcDeliveryReceipt> {\n${SEND_BODY}\t\tconst receipt = await this.#deliver(message);`,
+		patched: `\tasync send(msg: Omit<IrcMessage, "id" | "ts">, ${OPTS}): Promise<IrcDeliveryReceipt> {\n${SEND_BODY}\t\tconst receipt = await this.#deliver(message, opts);`,
+	}, BUS);
+	alternate(byMarker("\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }): Promise<IrcDeliveryReceipt> {"), {
+		marker: `\tasync #deliver(message: IrcMessage, ${OPTS}): Promise<IrcDeliveryReceipt> {`,
+		anchor: "\tasync #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {",
+		patched: `\tasync #deliver(message: IrcMessage, ${OPTS}): Promise<IrcDeliveryReceipt> {\n\t\tif (opts?.signal?.aborted) ${CANCELLED}`,
+	}, BUS);
+	const waiterCancel = byMarker("\t\t// CUELO: a completed/disposed child may cancel while its parent is being revived.");
+	port(waiterCancel, waiterCancel, [["this.#takeMatchingWaiter(message.to, message.from);", "this.#takeMatchingWaiter(message);"]], BUS);
+	alternate(byMarker("\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted)"), {
+		marker: "\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.signal?.aborted)",
+		anchor: "\t\t\twaiter.resolve(message);\n\t\t\tthis.#relayToMainUi(message);",
+		patched: "\t\t\twaiter.resolve(message);\n\t\t\tif (!opts?.signal?.aborted) this.#relayToMainUi(message);",
+	}, BUS);
+	alternate(byMarker("\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.suppressRelay && !opts?.signal?.aborted)"), {
+		marker: "\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.signal?.aborted)",
+		anchor: "\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tthis.#relayToMainUi(message);",
+		patched: `\t\t\tif (opts?.signal?.aborted) ${CANCELLED}\n\t\t\tconst delivery = await session.deliverIrcMessage(message);\n\t\t\tif (!opts?.signal?.aborted) this.#relayToMainUi(message);`,
+	}, BUS);
+
+	// bash: Spotlight-shaped output already leads with its exit status; every other observed exit code
+	// still gets the model-visible notice.
+	const SHAPED = '!shaped?.text?.startsWith("[exit code ")';
+	const exitNotice = byMarker("Model-visible exit status for every observed exit code");
+	alternate(exitNotice, {
+		marker: exitNotice.marker,
+		anchor: `\t\t// Shaped output already leads with its exit status.\n\t\tif (failedExit && ${SHAPED}) outputLines.push("", formatExitCodeNotice(exitCode));`,
+		patched: `\t\t// Model-visible exit status for every observed exit code (0 included), so a\n\t\t// successful standalone command can be quoted as observed evidence. The\n\t\t// TUI strips this line via details.exitCode (assigned below). Shaped output\n\t\t// already leads with its exit status.\n\t\tif (exitCode !== undefined && ${SHAPED}) outputLines.push("", formatExitCodeNotice(exitCode));`,
+	}, SHAPED);
+
+	// Todo reconcile: upstream now persists through commitTodoPhases; the reconcile stays removed.
+	const todoReconcile = byMarker("Main accepts TODO completion only through an explicit todo operation");
+	alternate(todoReconcile, {
+		marker: todoReconcile.marker,
+		anchor: swap(todoReconcile.anchor, "\t\towner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {\n\t\t\tphases: next,\n\t\t});\n\t\towner.setTodoPhases(next);\n", "\t\towner.commitTodoPhases(next);\n"),
+		patched: todoReconcile.patched,
+	}, 'import { loadPinnedSessionIds } from "../session/session-pins";');
+
+	// jfind: run() gained the Spotlight ranker and the call deadline. The hierarchy pass moves with it:
+	// #readAndVerify also returns the verification timeout, the baseline keeps upstream's deadline
+	// result, a deadline in the extra pass keeps the hits verified so far, and only the caller's
+	// cancel throws. Unanswered folder judgments count as unanswered, like upstream's filename ranking.
+	const FIND = "SPOTLIGHT_TIMEOUT_MS";
+	const PASSAGES = 'import { type HeatRange, mergeHeat, type Passage, plainContent, selectWindows, sketch, windows } from "./passages";\n';
+	const findImports = byMarker("// HANSE: find hierarchy imports (folder request builder)");
+	alternate(findImports, {
+		marker: findImports.marker,
+		anchor: `${PASSAGES}import {\n\tentryKey,\n`,
+		patched: `${PASSAGES}// HANSE: find hierarchy imports (folder request builder)\nimport {\n\ttype DirCard,\n\tdirBatch,\n\tentryKey,\n`,
+	}, FIND);
+	const SPOTLIGHT_DOC = "/**\n * Budget of the Spotlight ranking request;";
+	const findLimits = byMarker("// HANSE: find hierarchy directory pass limits (fixed by the jevgrep comparison experiment)");
+	alternate(findLimits, {
+		marker: findLimits.marker,
+		anchor: swap(findLimits.anchor, "const FAILURES_KEPT = 5;\n\n", `const FAILURES_KEPT = 5;\n${SPOTLIGHT_DOC}`),
+		patched: swap(findLimits.patched, "const EXTRA_FILES = 10;\n\n", `const EXTRA_FILES = 10;\n${SPOTLIGHT_DOC}`),
+	}, FIND);
+	const RUN_HEAD_OLD = "\t\tconst { root, filesystem, query, includeHidden, signal, onProgress } = this.#options;\n";
+	const RUN_HEAD = "\t\tconst { root, filesystem, query, includeHidden, onProgress } = this.#options;\n\t\tconst signal = this.#signal;\n";
+	const findMethods = byMarker("// HANSE: find hierarchical directory pass methods");
+	alternate(findMethods, {
+		marker: findMethods.marker,
+		anchor: swap(findMethods.anchor, RUN_HEAD_OLD, RUN_HEAD),
+		patched: swaps(findMethods.patched, [
+			[
+				"\t\tif (outside.length === 0) return;\n\t\tconst { signal } = this.#options;\n\t\ttry {\n\t\t\thits.push(...(await this.#extraHits(entries, outside, nameScore, keywords, weights)));\n\t\t} catch (error) {\n\t\t\tconst timedOut = signal?.reason instanceof DOMException && signal.reason.name === \"TimeoutError\";\n\t\t\tif (signal?.aborted && !timedOut) throw error;\n",
+				"\t\t// A deadline that already cut the baseline verification short leaves no time for this pass.\n\t\tif (outside.length === 0 || this.#options.deadline?.aborted) return;\n\t\ttry {\n\t\t\thits.push(...(await this.#extraHits(entries, outside, nameScore, keywords, weights)));\n\t\t} catch (error) {\n\t\t\t// The call deadline keeps the baseline hits; only the caller's cancel throws.\n\t\t\tif (this.#options.signal?.aborted) throw error;\n",
+			],
+			["\t\t\t\t\t\tif (outcome.ok) this.stats.errors++;\n", "\t\t\t\t\t\tif (outcome.ok) this.stats.unanswered++;\n"],
+		]),
+	}, FIND);
+	const RANK = "\t\t}));\n\t\tconst ranking: CascadeRanking = {\n\t\t\tranker: \"judge\",\n\t\t\tcandidates: ranked.length,\n\t\t\tread: [],\n\t\t\tjudgeRequestsSaved: 0,\n\t\t};\n\t\tif (this.#options.spotlight && ranked.length > 0) {\n\t\t\tranking.spotlight = await this.#spotlightNames(\n\t\t\t\tthis.#options.spotlight,\n\t\t\t\tranked.map(candidate => candidate.node),\n\t\t\t\tentries,\n\t\t\t\tnameScore,\n\t\t\t);\n\t\t\tif (ranking.spotlight.error === undefined) {\n\t\t\t\tranking.ranker = \"spotlight\";\n\t\t\t\tranking.judgeRequestsSaved = nameJobs.length;\n\t\t\t}\n\t\t}\n\t\tif (ranking.ranker === \"judge\") {\n\t\t\tlet named = 0;\n\t\t\tonProgress?.(`filename ranking 0/${ranked.length}`);\n\t\t\tawait this.#dispatch(nameJobs, (job, outcome) => {\n\t\t\t\tnamed += job.batch.length;\n\t\t\t\tif (!outcome.ok) this.#fail(\"filenames\", outcome.error);\n\t\t\t\tjob.batch.forEach((node, k) => {\n\t\t\t\t\tconst p = noul(outcome, entryKey(k));\n\t\t\t\t\tnameScore[node] = p;\n\t\t\t\t\tif (p === undefined) {\n\t\t\t\t\t\tif (outcome.ok) this.stats.unanswered++;\n\t\t\t\t\t} else {\n\t\t\t\t\t\tthis.stats.judged++;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\tonProgress?.(`filename ranking ${named}/${ranked.length}`);\n\t\t\t});\n\t\t}\n";
+	const findNames = byMarker('if (!outcome.ok) this.#fail("extra filenames", outcome.error);');
+	alternate(findNames, {
+		marker: findNames.marker,
+		anchor: RANK,
+		patched: "\t\t}));\n\t\tawait this.#dispatch(nameJobs, (job, outcome) => {\n\t\t\tif (!outcome.ok) this.#fail(\"extra filenames\", outcome.error);\n\t\t\tjob.batch.forEach((node, k) => {\n\t\t\t\tconst p = noul(outcome, entryKey(k));\n\t\t\t\tnameScore[node] = p;\n\t\t\t\tif (p === undefined) {\n\t\t\t\t\tif (outcome.ok) this.stats.unanswered++;\n\t\t\t\t} else {\n\t\t\t\t\tthis.stats.judged++;\n\t\t\t\t}\n\t\t\t});\n\t\t});\n",
+	}, FIND);
+	const READ_ALL = "await this.#readAndVerify(selected, entries, nameScore, keywords, weights);\n";
+	const findSelect = byMarker("// Stable sort: ties keep the lexical order of `extra`.");
+	alternate(findSelect, {
+		marker: findSelect.marker,
+		anchor: "\n\t\t// The two strongest lexical candidates are read regardless of the name\n\t\t// judgment; the rest of the budget follows name score, then lexical rank.\n\t\tconst selected = ranked.slice(0, Math.min(FILES, 2)).map(candidate => candidate.node);\n\t\tranked.sort((a, b) => (nameScore[b.node] ?? 0) - (nameScore[a.node] ?? 0) || b.lex - a.lex);\n\t\tfor (const candidate of ranked) {\n\t\t\tif (selected.length >= FILES) break;\n\t\t\tif (!selected.includes(candidate.node)) selected.push(candidate.node);\n\t\t}\n\t\tranking.read = selected.map(node => entries[node]!.rel);\n\t\tonProgress?.(`reading ${selected.length} files`);\n",
+		patched: swaps(findSelect.patched, [
+			["\t\t\t});\n\t\t});\n\t\t// Stable sort", "\t\t// Stable sort"],
+			[`\t\treturn this.#readAndVerify(selected, entries, nameScore, keywords, weights);\n`, `\t\tconst { hits, timeout } = ${READ_ALL}\t\t// A deadline inside this pass's verification keeps the extra hits verified so far.\n\t\tif (timeout) this.#fail("hierarchy", this.#options.deadline?.reason);\n\t\treturn hits;\n`],
+			["\t): Promise<FindHit[]> {\n", "\t): Promise<{ hits: FindHit[]; timeout?: FindTimeout }> {\n"],
+		]),
+	}, FIND);
+	const findRun = byMarker("// HANSE: lexRanked keeps the capped-out tail for the hierarchical directory pass");
+	alternate(findRun, {
+		marker: findRun.marker,
+		anchor: findRun.anchor,
+		patched: span(
+			swaps(findRun.patched, [
+				["\t\treturn hits;\n\t}\n", "\t\treturn { hits, timeout };\n\t}\n"],
+				[RUN_HEAD_OLD, RUN_HEAD],
+				[`\t\tconst hits = ${READ_ALL}`, `\t\tranking.read = selected.map(node => entries[node]!.rel);\n\t\tconst { hits, timeout } = ${READ_ALL}`],
+			]),
+			"\t\t}));\n\t\tlet named = 0;\n",
+			"\t\t\tonProgress?.(`filename ranking ${named}/${ranked.length}`);\n\t\t});\n",
+			RANK,
+		),
+	}, FIND);
+	// Upstream names its verification promise `verification`; the packed passage list takes another name.
+	const pack = byMarker("// HANSE: pack verification passages across files");
+	alternate(pack, {
+		marker: pack.marker,
+		anchor: pack.anchor,
+		patched: swaps(pack.patched, [
+			["const verification: {", "const packed: {"],
+			["\t\t\t\tverification.push(", "\t\t\t\tpacked.push("],
+			["chunks(verification,", "chunks(packed,"],
+		]),
+	}, FIND);
+
+	// computer: matchesFilter takes the app pid set; the window filter check is unchanged.
+	const WINDOW_CHECK = "Number.isSafeInteger(value)) continue;";
+	const windowFilter = one(entry => entry.file === "src/tools/computer/worker.ts" && candidates(entry).some(c => c.marker === WINDOW_CHECK));
+	port(windowFilter, candidates(windowFilter).find(c => c.marker === WINDOW_CHECK),
+		[["filter?: WindowFilter): boolean {", "filter?: WindowFilter, appPids?: ReadonlySet<number>): boolean {"]],
+		'import { describeWindowMiss, matchesWindowApp } from "./window-miss";');
+
+	// sdk: the deferred MCP manager is its own local now.
+	alternate(byMarker("\t\t\t\tmcpManager.setDeferConnect(mcpSelectionPerRequest);"), {
+		marker: "\t\t\t\tdeferredMCPManager.setDeferConnect(mcpSelectionPerRequest);",
+		anchor: "\t\t\t\tdeferredMCPManager.setAuthStorage(authStorage);\n\t\t\t\ttoolSession.mcpManager = deferredMCPManager;",
+		patched: "\t\t\t\tdeferredMCPManager.setAuthStorage(authStorage);\n\t\t\t\tdeferredMCPManager.setDeferConnect(mcpSelectionPerRequest);\n\t\t\t\ttoolSession.mcpManager = deferredMCPManager;",
+	}, "const deferredMCPManager = new MCPManager(");
+
+	// Eval mcp prelude: `exposed` reads the session's current eval-bridge names. 18.17 wires only the
+	// frozen advertised list into ToolSession, so the current list is wired back (a no-op on older
+	// versions, where upstream wires it).
+	const BRIDGE_DOC = "\t/** Names currently authorized for invocation through the eval bridge. */\n";
+	const BRIDGE_FIELD = "\tgetEvalBridgeToolNames?: () => readonly string[];\n";
+	const BRIDGE_WIRE = "getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],";
+	const ADVERTISED_FIELD = "\tgetAdvertisedEvalToolNames?: () => readonly string[];\n";
+	const ADVERTISED_WIRE = "\t\t\tgetAdvertisedEvalToolNames: () => session?.getAdvertisedEvalToolNames() ?? [],\n";
+	for (const [file, old, discriminator, anchor, patched] of [
+		["src/tools/index.ts", BRIDGE_DOC + BRIDGE_FIELD, ADVERTISED_FIELD, ADVERTISED_FIELD, ADVERTISED_FIELD + BRIDGE_DOC + BRIDGE_FIELD],
+		["src/sdk.ts", BRIDGE_WIRE, "const deferredMCPManager = new MCPManager(", ADVERTISED_WIRE, `${ADVERTISED_WIRE}\t\t\t${BRIDGE_WIRE}\n`],
+	]) {
+		EDITS.push({
+			file, marker: old, anchor: old, patched: old, excludes: discriminator,
+			alternates: [{ file, requires: discriminator, marker: old, anchor, patched }],
+		});
+	}
+
+	// Subagent worker threads (new in 18.17) host a subagent behind RPC stand-ins that lack the members
+	// CUELO patches call (registry rootOf, session hasPendingAsyncWork, MCP status, IRC send options),
+	// and the CUELO `omp` wrapper runs this patched src/cli.ts as a worker host. The upstream value 0
+	// ("Main thread only") keeps the 18.16 in-process placement; an explicit setting still opts in,
+	// unsupported by the CUELO patches. Older versions have no worker setting (no-op there).
+	const WORKER_SETTING = '\tid: "task.workerThreads",\n';
+	const WORKER_DEFAULT = `${WORKER_SETTING}\tprotocolDefault: ["rpc", "acp"],\n\ttype: "number",\n`;
+	const WORKER_NOTE = "\t// CUELO: subagents stay on the main thread unless configured; CUELO core patches are not worker-safe.\n";
+	const ISOLATION_SETTING = '\tid: "task.isolation.enabled",\n';
+	EDITS.push({
+		file: "src/task/settings.ts", marker: ISOLATION_SETTING, anchor: ISOLATION_SETTING, patched: ISOLATION_SETTING,
+		excludes: WORKER_SETTING,
+		alternates: [{
+			file: "src/task/settings.ts", requires: WORKER_SETTING, marker: WORKER_NOTE,
+			anchor: `${WORKER_DEFAULT}\tdefault: 4,\n`, patched: `${WORKER_DEFAULT}${WORKER_NOTE}\tdefault: 0,\n`,
+		}],
+	});
+
+	// chillax (new in 18.17) sets this turn's auto resolution to the model's lowest effort. That is the
+	// pre-ceiling resolution the CUELO ceiling restores from, so a later ceiling change keeps the relaxed
+	// level instead of reviving the classification from before chillax. Older versions have no chillax.
+	const CHILLAX = "applyChillax(promptText: string): boolean {";
+	const CHILLAX_AUTO = "\t\tif (this.#autoThinking) {\n\t\t\tthis.#resolveAutoThinkingLevel(floor);\n";
+	const CHILLAX_NOTE = "\t\t\t// CUELO: chillax is this turn's pre-ceiling auto resolution.\n";
+	const CONTROLS_CLASS = "export class ModelControls {\n";
+	EDITS.push({
+		file: "src/session/model-controls.ts", marker: CONTROLS_CLASS, anchor: CONTROLS_CLASS, patched: CONTROLS_CLASS,
+		excludes: CHILLAX,
+		alternates: [{
+			file: "src/session/model-controls.ts", requires: CHILLAX, marker: CHILLAX_NOTE, anchor: CHILLAX_AUTO,
+			patched: "\t\tif (this.#autoThinking) {\n" + CHILLAX_NOTE + "\t\t\tthis.#autoUncappedLevel = floor;\n\t\t\tthis.#resolveAutoThinkingLevel(floor);\n",
+		}],
+	});
+
+	// Codex native lane: upstream still refuses the steer waiters on the rejection frame (no-op).
+	const STEER_REFUSED = "frame.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE";
+	absorbed(byMarker("this.#steerWaiters.shift()?.resolve({"),
+		`\t\t\t\t\tif (frame.type === "error" && ${STEER_REFUSED}) {\n\t\t\t\t\t\tthis.#refuseSteerWaiters(`, STEER_REFUSED);
+
+	// Catalog and bundle: only the kdl source line and the minified advisor-name helper moved (no-op).
+	for (const [from, to] of [["kdl:224", "kdl:240"], ["kdl:337", "kdl:353"]]) {
+		const entry = one(e => e.file === "../pi-catalog/src/compat/rules.json" && candidates(e).some(c => c.marker.startsWith(`{"source":"classes/anthropic.${from}"`)));
+		const last = candidates(entry).find(c => c.marker.startsWith(`{"source":"classes/anthropic.${from}"`));
+		const text = swap(last.marker, from, to);
+		absorbed(entry, text, text);
+	}
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&iFe(c))continue';
+	absorbed(one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"')), bundleSkip, bundleSkip);
+
+	// Auto thinking: the resolution tail moved into #resolveAutoThinkingLevel (shared with chillax).
+	const ceiling = byMarker("// CUELO: remember the pre-ceiling resolution so raising the ceiling can restore it.");
+	port(ceiling, ceiling, [["\t\tconst shouldPersistResolution = this.#thinkingLevel !== effort;\n\t\tthis.#autoResolvedLevel = effort;", "\t\tthis.#resolveAutoThinkingLevel(effort);"]],
+		"#resolveAutoThinkingLevel(effort: Effort): void {");
+
+	// AgentSession: the async job snapshot moved to async-job-views; chillax may settle the turn's effort.
+	const JOB_VIEWS = '} from "./async-job-views";';
+	alternate(byMarker("\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,"), {
+		marker: "\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,",
+		anchor: "\tAsyncJobSnapshot,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
+		patched: "\tAsyncJobSnapshot,\n\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
+	}, JOB_VIEWS);
+	const exactJobs = byMarker("\t\treturn { running, recent, delivery, jobs };");
+	alternate(exactJobs, {
+		marker: "\t\treturn { ...snapshot, jobs };",
+		anchor: "\t\tconst manager = this.#asyncJobManager;\n\t\treturn manager ? asyncJobSnapshot(manager, this.#agentId, options) : null;",
+		patched: swaps(exactJobs.patched, [
+			[
+				"\t\tconst delivery = manager.getDeliveryState(ownerFilter);\n\t\tif (!options?.jobIds) return { running, recent, delivery };\n",
+				"\t\tconst manager = this.#asyncJobManager;\n\t\tif (!manager) return null;\n\t\tconst snapshot = asyncJobSnapshot(manager, this.#agentId, options);\n\t\tif (!options?.jobIds) return snapshot;\n",
+			],
+			["\t\tconst jobs = options.jobIds.flatMap(", "\t\tconst ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;\n\t\tconst jobs = options.jobIds.flatMap("],
+			["\t\treturn { running, recent, delivery, jobs };", "\t\treturn { ...snapshot, jobs };"],
+		]),
+	}, JOB_VIEWS);
+	const turnText = one(e => e.file === "src/session/agent-session.ts" && e.marker.includes("this.#autoThinkingSolutionSpace = options.solutionSpace;"));
+	const AUTO_TURN = ["if (this.isAutoThinking && isUserTurn) {", "if (this.isAutoThinking && isUserTurn && !relaxed) {"];
+	alternate(turnText, {
+		marker: turnText.marker,
+		anchor: swap(turnText.anchor, ...AUTO_TURN),
+		patched: swap(turnText.patched, ...AUTO_TURN),
+	}, "const relaxed = isUserTurn && this.#models.applyChillax(expandedText);");
+
+	// Mnemopi state: the scoped banks are private (#scoped, #local()) and memory/globalMemory are lazy
+	// getters upstream, which is what the eager-field patches did. The lazy-bank checks follow the banks.
+	const MNEMOPI = "#remoteParent(): MnemopiSessionStateApi | undefined {";
+	absorbed(byMarker("get memory(): Mnemopi"), "\tget memory(): Mnemopi {\n\t\treturn this.#local().retain.memory;\n\t}\n", MNEMOPI);
+	absorbed(byMarker("// HANSE: scoped handles stay lazy until read-existing or write"),
+		"\t\tthis.#scoped = parent\n\t\t\t? parent instanceof MnemopiSessionState\n\t\t\t\t? parent.#scoped\n\t\t\t\t: undefined\n\t\t\t: createScopedResources(options.config);\n\t}\n", MNEMOPI);
+	alternate(byMarker("this.scoped.close();"), {
+		marker: "\t\t\tscoped.close();\n",
+		anchor: "\t\t\tfor (const memory of scoped.owned) memory.close();\n",
+		patched: "\t\t\tscoped.close();\n",
+	}, MNEMOPI);
+	const recallSkip = byMarker("if (target.exists?.() === false) continue;");
+	port(recallSkip, recallSkip, [["this.scoped.recall", "scoped.recall"]], MNEMOPI);
+	const DEDUPE_TAIL = "\t\tseen.add(target.bank);\n\t\tunique.push(target);\n";
+	const dedupe = byMarker("if (target.exists?.() === false || seen.has(target.bank)) continue;");
+	alternate(dedupe, { marker: dedupe.marker, anchor: dedupe.anchor + DEDUPE_TAIL, patched: dedupe.patched + DEDUPE_TAIL }, MNEMOPI);
+	const formatTarget = byMarker("const target = this.scoped.recall.find");
+	alternate(formatTarget, {
+		marker: "const target = this.#local().recall.find",
+		anchor: formatTarget.anchor,
+		patched: swap(formatTarget.patched, "this.scoped.recall.find", "this.#local().recall.find"),
+	}, MNEMOPI);
+	const cursor = byMarker("if (this.scoped.retain.exists?.() === false) return;");
+	alternate(cursor, {
+		marker: "if (this.#local().retain.exists?.() === false) return;",
+		anchor: cursor.anchor,
+		patched: swap(cursor.patched, "this.scoped.retain", "this.#local().retain"),
+	}, MNEMOPI);
+	const recallScope = byMarker("// HANSE: recall result carries its bank scope");
+	const scopeCandidate = candidates(recallScope).find(candidate => candidate.requires === "findPersistedRecall");
+	alternate(recallScope, {
+		marker: recallScope.marker,
+		anchor: scopeCandidate.anchor,
+		patched: swap(scopeCandidate.patched, "this.scoped.global ? (target.bank === this.scoped.global.bank", "scoped.global ? (target.bank === scoped.global.bank"),
+	}, MNEMOPI);
+	// Stats moved from the backend into MnemopiSessionState.getScopedStats; the absent-bank filter follows.
+	const STATS = "function collectBankStats(";
+	const bankStats = byMarker("state.getScopedRecallTargets()].filter");
+	excludeOld(bankStats, STATS);
+	bankStats.alternates = [...(bankStats.alternates ?? []), {
+		file: "src/mnemopi/state.ts",
+		requires: MNEMOPI,
+		marker: "// HANSE: an absent lazy bank has no stats; reading them would create its database",
+		anchor: "\t\t\tif (seen.has(target.bank)) continue;\n\t\t\tseen.add(target.bank);\n\t\t\tstats.push({ bank: target.bank, stats: target.memory.getStats() });",
+		patched: "\t\t\t// HANSE: an absent lazy bank has no stats; reading them would create its database\n\t\t\tif (seen.has(target.bank) || target.exists?.() === false) continue;\n\t\t\tseen.add(target.bank);\n\t\t\tstats.push({ bank: target.bank, stats: target.memory.getStats() });",
+	}];
+	const statusLazy = byMarker("// HANSE: an initialized lazy bank is writable even before its first row");
+	alternate(statusLazy, {
+		marker: statusLazy.marker,
+		anchor: "\t\tconst banks = collectBankStats(agentDir, session);\n\t\tif (banks.length === 0) {\n\t\t\treturn {\n\t\t\t\tbackend: \"mnemopi\",\n\t\t\t\tactive: false,\n\t\t\t\twritable: false,\n\t\t\t\tsearchable: false,\n\t\t\t\tmessage: \"Mnemopi backend is configured but not initialised for this session.\",\n\t\t\t};\n\t\t}\n",
+		patched: "\t\tconst banks = collectBankStats(agentDir, session);\n\t\t// HANSE: an initialized lazy bank is writable even before its first row\n",
+	}, STATS);
+}
+
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
 // keep future Node/Bun output identical. Accept only the exact previously emitted
 // helper bodies below, never normalize arbitrary installed source on revert.

@@ -16,13 +16,13 @@ export type WorkStage = (typeof WORK_STAGES)[number];
 
 /* ---------- 셸 명령 읽기 ---------- */
 
-/** 따옴표를 벗긴 낱말과 원문 위치. */
-interface ShellWord { value: string; start: number; end: number }
+/** 따옴표를 벗긴 낱말과 원문 위치. `risky`는 치환·펼침(`$(…)`·`${…}`·백틱)이나 따옴표 밖 `{` `}` `!`가 든 낱말이다. */
+interface ShellWord { value: string; start: number; end: number; risky: boolean }
 type ShellOperator = "&&" | "||" | "|" | ";" | "&";
 type ShellToken = ShellWord | ShellOperator;
 
-/** 파이프와 목록 연산자 사이의 단순 명령 하나. `text`는 원문 그대로다. */
-interface ShellCommand { words: string[]; text: string }
+/** 파이프와 목록 연산자 사이의 단순 명령 하나. `text`는 원문 그대로다. `uncertain`은 그 명령에 증명 밖 구문이 있다는 뜻이다. */
+interface ShellCommand { words: string[]; text: string; uncertain: boolean }
 interface ShellPipeline { commands: ShellCommand[]; negated: boolean }
 /** `&&`·`||`로 이어진 파이프라인들. `&`로 끝났으면 배경 실행이다. */
 interface ShellList { pipelines: ShellPipeline[]; operators: ("&&" | "||")[]; background: boolean }
@@ -90,17 +90,29 @@ function skipBacktick(source: string, from: number): number {
 /**
  * 명령 문자열을 낱말과 연산자로 나눈다. 따옴표·`$(…)`·백틱 안의 연산자는 낱말에 남는다. 묶음은 단계 탐색에만
  * 평탄화하며, 그 범위와 치환·부정의 종료 코드는 증명하지 않는다. here-document 본문은 건너뛴다.
+ * 증명 밖 구문은 실제로 셸이 해석하는 자리에서만 센다: 낱말의 `risky`, 따옴표 밖 `(`·`)`의 자리(`groups`), 구분자를
+ * 따옴표로 감싸지 않은 here-document 본문의 치환(`expandingHeredoc`). 홑따옴표 안, 역슬래시로 막은 글자, 주석은 글자 그대로다.
  */
-function tokenizeShell(source: string): ShellToken[] {
+function tokenizeShell(source: string): { tokens: ShellToken[]; groups: number[]; expandingHeredoc: boolean } {
   const tokens: ShellToken[] = [];
-  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
+  const groups: number[] = [];
+  let expandingHeredoc = false;
+  // 본문이 펼쳐지면 그 here-document를 받은 명령의 낱말(`owner`)을 증명 밖으로 표시한다. `<<`가 명령 맨 앞이면 다음 낱말이 주인이다.
+  // 그 사이에 연산자(`;`·`&&`·`|`·`&` …)가 끼면 here-document만 있는 빈 명령이라 다음 명령은 주인이 아니다(`at`은 등록 때 토큰 수).
+  type Heredoc = { delimiter: string; stripTabs: boolean; quoted: boolean; owner: ShellWord | null; at: number };
+  const heredocs: Heredoc[] = [];
+  const ownerless: Heredoc[] = [];
   let value = "";
   let start = -1;
+  let risky = false;
   const flush = (end: number) => {
     if (start < 0) return;
-    tokens.push({ value, start, end });
+    const word = { value, start, end, risky };
+    tokens.push(word);
+    for (const heredoc of ownerless.splice(0)) if (heredoc.at === tokens.length - 1) heredoc.owner = word;
     value = "";
     start = -1;
+    risky = false;
   };
   let i = 0;
   while (i < source.length) {
@@ -120,17 +132,21 @@ function tokenizeShell(source: string): ShellToken[] {
     } else if (char === "\"") {
       if (start < 0) start = i;
       const quoted = readDoubleQuoted(source, i + 1);
+      // 큰따옴표 안에서도 `$(…)`·`${…}`·백틱은 펼쳐진다. 역슬래시로 막은 것까지 보수적으로 센다.
+      if (/\$[({]|`/.test(source.slice(i, quoted.end))) risky = true;
       value += quoted.text;
       i = quoted.end;
     } else if (char === "$" && (source[i + 1] === "(" || source[i + 1] === "{")) {
       if (start < 0) start = i;
       const end = skipGroup(source, i + 1);
       value += source.slice(i, end);
+      risky = true;
       i = end;
     } else if (char === "`") {
       if (start < 0) start = i;
       const end = skipBacktick(source, i + 1);
       value += source.slice(i, end);
+      risky = true;
       i = end;
     } else if (char === "#" && start < 0) {
       const lineEnd = source.indexOf("\n", i);
@@ -144,13 +160,19 @@ function tokenizeShell(source: string): ShellToken[] {
       // `&&`·`||`·`|` 뒤의 줄바꿈은 명령을 잇는다.
       if (last !== "&&" && last !== "||" && last !== "|") tokens.push(";");
       i += 1;
-      for (const { delimiter, stripTabs } of heredocs.splice(0)) {
+      ownerless.length = 0;
+      for (const heredoc of heredocs.splice(0)) {
         while (i < source.length) {
           const lineEnd = source.indexOf("\n", i);
           const stop = lineEnd < 0 ? source.length : lineEnd;
           const line = source.slice(i, stop);
           i = stop + 1;
-          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+          if ((heredoc.stripTabs ? line.replace(/^\t+/, "") : line) === heredoc.delimiter) break;
+          // 구분자를 따옴표로 감싸지 않은 본문은 펼쳐진다.
+          if (!heredoc.quoted && /\$[({]|`/.test(line)) {
+            if (heredoc.owner) heredoc.owner.risky = true;
+            else expandingHeredoc = true;
+          }
         }
       }
     } else if (char === "<" && source[i + 1] === "<" && source[i + 2] !== "<") {
@@ -161,19 +183,27 @@ function tokenizeShell(source: string): ShellToken[] {
       if (stripTabs) j += 1;
       while (source[j] === " " || source[j] === "\t") j += 1;
       let delimiter = "";
+      let quoted = false;
       while (j < source.length && !/[\s;&|<>()]/.test(source[j])) {
         const quote = source[j];
         if (quote === "'" || quote === "\"") {
+          quoted = true;
           const close = source.indexOf(quote, j + 1);
           const stop = close < 0 ? source.length : close;
           delimiter += source.slice(j + 1, stop);
           j = stop + 1;
         } else {
+          if (quote === "\\") quoted = true;
           delimiter += quote === "\\" ? source[j + 1] ?? "" : quote;
           j += quote === "\\" ? 2 : 1;
         }
       }
-      if (delimiter) heredocs.push({ delimiter, stripTabs });
+      if (delimiter) {
+        const last = tokens[tokens.length - 1];
+        const heredoc: Heredoc = { delimiter, stripTabs, quoted, owner: last !== undefined && typeof last !== "string" ? last : null, at: tokens.length };
+        heredocs.push(heredoc);
+        if (!heredoc.owner) ownerless.push(heredoc);
+      }
       i = j;
     } else if (char === ";") {
       flush(i);
@@ -209,18 +239,22 @@ function tokenizeShell(source: string): ShellToken[] {
       }
     } else if (char === "(" || char === ")") {
       flush(i);
+      groups.push(i);
       i += 1;
     } else {
       if (start < 0) start = i;
+      // 따옴표 밖의 `{` `}`는 묶음이나 중괄호 펼침, `!`는 부정이나 패턴이다.
+      if (char === "{" || char === "}" || char === "!") risky = true;
       value += char;
       i += 1;
     }
   }
   flush(source.length);
-  return tokens;
+  return { tokens, groups, expandingHeredoc };
 }
 
 function parseShell(source: string): ParsedShell {
+  const { tokens, groups, expandingHeredoc } = tokenizeShell(source);
   const lists: ShellList[] = [];
   const commands: ShellCommand[] = [];
   let list: ShellList = { pipelines: [], operators: [], background: false };
@@ -233,7 +267,10 @@ function parseShell(source: string): ParsedShell {
       values.shift();
     }
     if (values.length > 0) {
-      const command = { words: values, text: source.slice(words[0].start, words[words.length - 1].end) };
+      const start = words[0].start;
+      const end = words[words.length - 1].end;
+      const uncertain = words.some((word) => word.risky) || groups.some((at) => at >= start && at <= end);
+      const command = { words: values, text: source.slice(start, end), uncertain };
       pipeline.commands.push(command);
       commands.push(command);
     }
@@ -249,7 +286,7 @@ function parseShell(source: string): ParsedShell {
     if (list.pipelines.length > 0) lists.push({ ...list, background });
     list = { pipelines: [], operators: [], background: false };
   };
-  for (const token of tokenizeShell(source)) {
+  for (const token of tokens) {
     if (typeof token !== "string") words.push(token);
     else if (token === "|") endCommand();
     else if (token === "&&" || token === "||") {
@@ -258,9 +295,11 @@ function parseShell(source: string): ParsedShell {
     } else endList(token === "&");
   }
   endList(false);
-  // This is a display classifier, not a shell interpreter. Grouping, substitution and negation
-  // are outside its proof subset, even when they occur in a harmless quoted argument.
-  return { lists, commands, uncertain: /[(){}!`]/.test(source) };
+  // This is a display classifier, not a shell interpreter. Grouping, substitution, expansion and negation
+  // are outside its proof subset wherever the shell would interpret them. Quoted, escaped and commented
+  // characters are literal text, so they no longer count.
+  const uncertain = groups.length > 0 || expandingHeredoc || tokens.some((token) => typeof token !== "string" && token.risky);
+  return { lists, commands, uncertain };
 }
 
 function basename(word: string): string {
@@ -657,6 +696,17 @@ function readCheckLabels(commands: readonly ShellCommand[]): CheckLabel[] {
  */
 export type CheckState = "passed" | "unverified" | "failed" | "unobserved";
 
+/**
+ * 판정 미확인·결과 미관측의 까닭. 기록에서 읽은 사실만 담는다.
+ * - `masked`: 셸은 0으로 끝났지만 판정 명령 뒤의 명령(파이프·`;`·`||`·`&` …)이 그 종료 코드를 가릴 수 있다.
+ * - `syntax`: 셸이 해석하는 치환·묶음·펼침(`$(…)`·백틱·`( )`·`{ }`·`!`)이 있어 종료 코드를 따지지 않았다.
+ * - `optional`: `--if-present`로 돌려, 스크립트가 없어도 0으로 끝난다.
+ * - `compound`: 여러 단계를 한 명령으로 돌렸고 명령 전체가 실패했다.
+ * - `noExit`: 결과는 있지만 종료 코드가 기록되지 않았다. `noResult`: 결과 기록이 없다. `interrupted`: 끝나기 전에 끊겼다.
+ * - `noCompletion`: 백그라운드 job으로 넘어간 뒤 그 job의 완료 기록이 없다(흐름에서만 안다).
+ */
+export type UnknownReason = "masked" | "syntax" | "optional" | "compound" | "noExit" | "noResult" | "noCompletion" | "interrupted";
+
 type CommandStage = "check" | "ci" | "deploy";
 /** bash 명령 하나가 닿을 수 있는 단계: 검사·CI·배포와, 직접 실행한 커밋·푸시(`git commit`·`git push`). */
 type JudgedStage = CommandStage | "commit";
@@ -682,6 +732,8 @@ export interface CheckRun {
   labels: CheckLabel[];
   /** 검사와 CI·배포를 한 명령으로 실행했을 때만 있다. */
   compound?: CompoundCommand;
+  /** 판정 미확인·결과 미관측일 때 그 까닭. */
+  reason?: UnknownReason;
 }
 
 function readBashCommand(block: ToolCallContent | null | undefined): string | null {
@@ -698,6 +750,8 @@ interface CommandJudgement {
   compound?: CompoundCommand;
   /** 판정 명령의 종료 코드를 따로 찍은 줄(`exit=0`)로 판정했으면 그 줄. */
   evidence?: string;
+  /** 판정 미확인·결과 미관측일 때 그 까닭. */
+  reason?: UnknownReason;
 }
 
 /** 바로 앞 명령의 종료 코드만 펼쳐 찍는 echo의 틀. `first`는 `${PIPESTATUS[0]}` — 바로 앞 파이프라인 첫 명령의 종료 코드다. */
@@ -749,7 +803,7 @@ function readEchoedStatuses(
     const before = list.pipelines.slice(0, -1);
     if (last.negated || before.some((pipeline) => pipeline.negated || pipeline.commands.length !== 1 || !neutral(pipeline.commands[0].words))) return;
     const command = echo.first || last.commands.length === 1 ? last.commands[0] : undefined;
-    if (!command || !decides(command) || detaches(command.words) || /[(){}!`]/.test(command.text)) return;
+    if (!command || !decides(command) || detaches(command.words) || command.uncertain) return;
     const same = echoes.filter((other) => other?.prefix === echo.prefix && other.suffix === echo.suffix);
     const pattern = new RegExp(`^${escapeRegExp(echo.prefix)}(-?\\d+)${escapeRegExp(echo.suffix.trimEnd())}$`);
     const found = lines.flatMap((line) => {
@@ -799,6 +853,12 @@ function judgeCommand(command: string, recorded: ToolResultMessage | undefined):
       : failed ? (compound ? "unverified" : "failed")
       : exitCode === null ? "unobserved"
       : trace.reach === "carried" && !optional ? "passed" : "unverified";
+    const reason: UnknownReason | null = state === "unobserved" ? (skipped === "interrupted" ? "interrupted" : result ? "noExit" : "noResult")
+      : state !== "unverified" ? null
+      : optional ? "optional"
+      : failed && compound ? "compound"
+      : parsed.uncertain ? "syntax"
+      : "masked";
     return {
       stage,
       state,
@@ -806,6 +866,7 @@ function judgeCommand(command: string, recorded: ToolResultMessage | undefined):
       labels: stage === "check" ? readCheckLabels(trace.decisive) : [],
       ...(compound ? { compound } : {}),
       ...(deciding ? { evidence: deciding.line } : {}),
+      ...(reason ? { reason } : {}),
     };
   });
 }
@@ -815,7 +876,15 @@ export function readCheckRun(block: ToolCallContent | null | undefined, result: 
   const command = readBashCommand(block);
   const judged = command === null ? undefined : judgeCommand(command, result).find((entry) => entry.stage === "check");
   if (command === null || !judged) return null;
-  return { toolCallId: block!.toolCallId, command, state: judged.state, exitCode: judged.exitCode, labels: judged.labels, ...(judged.compound ? { compound: judged.compound } : {}) };
+  return {
+    toolCallId: block!.toolCallId,
+    command,
+    state: judged.state,
+    exitCode: judged.exitCode,
+    labels: judged.labels,
+    ...(judged.compound ? { compound: judged.compound } : {}),
+    ...(judged.reason ? { reason: judged.reason } : {}),
+  };
 }
 
 /* ---------- 단계 사건 ---------- */
@@ -867,6 +936,8 @@ export interface CommandStep extends StepCore {
    * conclusion(`unjudged`, skipped 등)으로 끝났다.
    */
   otherRun?: { kind: "commit"; sha: string; outcome: "passed" | "failed" } | { kind: "publish"; outcome: "passed" | "failed" } | { kind: "unjudged"; conclusion: string };
+  /** 검사 사건이 판정 미확인·결과 미관측이면 그 까닭(`UnknownReason`). */
+  reason?: UnknownReason;
 }
 
 /**
@@ -969,16 +1040,20 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
       const evidence = own && job ? `${job.jobId} · ${own}` : own;
       // 실패로 끝난 watch가 같은 명령에서 본 그 실행이 통과도 실패도 아닌 conclusion(skipped 등)이면 그 실패는 CI 판정이 아니다.
       const conclusion = judged.stage === "ci" && judged.state === "failed" && recorded ? unjudgedWatchedRun(command, recorded) : null;
+      const outcome: StepOutcome = conclusion ? "unverified" : recorded ? judged.state : pending;
+      // 까닭은 검사 단계에만 붙인다. CI·배포는 뒤에서 다른 기록으로 판정이 바뀔 수 있다.
+      const reason = judged.stage === "check" && outcome === judged.state ? judged.reason : undefined;
       return {
         ...core,
         stage: judged.stage,
         command,
         exitCode: judged.exitCode,
         labels: judged.labels,
-        outcome: conclusion ? "unverified" : recorded ? judged.state : pending,
+        outcome,
         ...(judged.compound ? { compound: judged.compound } : {}),
         ...(evidence ? { evidence: conclusion ? `${evidence} · ${conclusion}` : evidence } : {}),
         ...(conclusion ? { otherRun: { kind: "unjudged" as const, conclusion } } : {}),
+        ...(reason ? { reason } : {}),
       };
     });
   }
@@ -2035,7 +2110,12 @@ export function deriveWorkFlow(
     if (!block || block.type !== "toolCall") return;
     const result = results.get(block.toolCallId);
     observePublication(trail, block, result, order);
-    for (const step of readSteps(block, result, live, cwd)) read.push({ step, order });
+    for (const step of readSteps(block, result, live, cwd)) {
+      // 백그라운드로 넘어간 뒤 완료 기록이 없는 검사는 결과가 빠진 것이 아니라 job의 끝이 기록되지 않은 것이다.
+      const launch = result ? undefined : launches.get(block.toolCallId);
+      if (step.stage === "check" && step.reason === "noResult" && launch && launchedJob(launch)) step.reason = "noCompletion";
+      read.push({ step, order });
+    }
   });
   linkCiRuns(read, trail);
   closeDeploys(read, list, results, launches);

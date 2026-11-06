@@ -2,7 +2,7 @@
 // 실행: OMP_CORE_PATCH_TARGET=<isolated-patched-core> bun run patches/core-find-hierarchy-test.ts
 // 실제 외부 호출은 없다. judge 는 메모리 stub 이고, 파일 트리는 임시 디렉터리다. 라이브 프로필·credential 은 건드리지 않는다.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -36,6 +36,8 @@ interface StubOptions {
 	failKind?: Seen["kind"];
 	/** hang the folder request until the signal aborts */
 	hangFolder?: boolean;
+	/** hang this kind of content request about billing/ files until the signal aborts */
+	hangBilling?: "sketch" | "verify";
 }
 
 /** Decision stub: GOLD text is relevant, folders named billing/wide are relevant, file names starting with gold rank first. */
@@ -61,7 +63,7 @@ function stubJudge(seen: Seen[], options: StubOptions = {}) {
 						: "sketch";
 			seen.push({ kind, json: JSON.stringify(request), questions: keys.length });
 			if (options.failKind === kind) throw new Error(`stub ${kind} failure`);
-			if (kind === "folder" && options.hangFolder) {
+			if ((kind === "folder" && options.hangFolder) || (kind === options.hangBilling && JSON.stringify(request.state).includes("billing/"))) {
 				const { promise, reject } = Promise.withResolvers<never>();
 				if (opts?.signal?.aborted) reject(opts.signal.reason);
 				opts?.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true });
@@ -140,7 +142,9 @@ interface Result {
 	hits: Hit[];
 	stats: { failures: string[]; errors: number; requests: number; failed?: number };
 }
-async function search(root: string, judge: unknown, signal?: AbortSignal, query = "frobnicate widget pipeline"): Promise<Result> {
+// 18.17.0+ takes the call deadline apart from the caller's cancel signal; older cores time out through the signal.
+const HAS_DEADLINE = readFileSync(`${CORE}/tools/jfind/cascade.ts`, "utf8").includes("\tdeadline?: AbortSignal;\n");
+async function search(root: string, judge: unknown, signal?: AbortSignal, query = "frobnicate widget pipeline", deadline?: AbortSignal): Promise<Result> {
 	const filesystem = new InternalUrlFilesystem({ context: { cwd: root }, tier: "read" });
 	const searchRoot = await resolveSearchRoot(filesystem, root, root);
 	return runCascade({
@@ -151,8 +155,14 @@ async function search(root: string, judge: unknown, signal?: AbortSignal, query 
 		judge,
 		includeHidden: false,
 		signal,
+		deadline,
 	});
 }
+/** A search whose whole-call timeout fires after `ms`. */
+const timedSearch = (root: string, judge: unknown, ms: number) => {
+	const timeout = AbortSignal.timeout(ms);
+	return HAS_DEADLINE ? search(root, judge, undefined, undefined, timeout) : search(root, judge, timeout);
+};
 
 let pass = 0;
 function ok(name: string): void {
@@ -303,7 +313,7 @@ try {
 	{
 		const root = tree();
 		const seen: Seen[] = [];
-		const result = await search(root, stubJudge(seen, { hangFolder: true }), AbortSignal.timeout(1500));
+		const result = await timedSearch(root, stubJudge(seen, { hangFolder: true }), 1500);
 		assert.deepEqual(rels(result), ["core/target.ts"]);
 		assert.equal(result.stats.failures.some(message => message.startsWith("hierarchy:")), true);
 		ok("폴더 단계 중 timeout 이면 완료된 baseline hit 을 반환하고 실패를 기록한다");
@@ -314,6 +324,17 @@ try {
 		await assert.rejects(pending);
 		ok("폴더 단계 중 사용자 취소는 기존처럼 던진다");
 	}
+
+	// 9c. 상한 밖 파일의 sketch·검증 중 timeout 도 던지지 않고 baseline hit 을 남기며 hierarchy 실패로 기록한다.
+	for (const phase of ["sketch", "verify"] as const) {
+		const root = tree();
+		const seen: Seen[] = [];
+		const result = await timedSearch(root, stubJudge(seen, { hangBilling: phase }), 1500);
+		assert.equal(seen.some(entry => entry.kind === phase && entry.json.includes("billing/")), true, `상한 밖 ${phase} 요청까지 갔다`);
+		assert.deepEqual(rels(result), ["core/target.ts"]);
+		assert.equal(result.stats.failures.some(message => message.startsWith("hierarchy:")), true, `${phase} timeout 이 hierarchy 실패로 남는다`);
+	}
+	ok("상한 밖 파일 sketch·검증 중 timeout 이면 baseline hit 을 반환하고 실패를 기록한다");
 } finally {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 }

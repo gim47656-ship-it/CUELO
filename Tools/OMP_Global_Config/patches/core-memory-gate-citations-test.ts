@@ -6,7 +6,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { settingsLike } from "./core-test-settings";
+import { mnemopiParentState, settingsLike } from "./core-test-settings";
 
 function resolveCore(): string {
 	const env = process.env.OMP_CORE_PATCH_TARGET;
@@ -60,14 +60,11 @@ try {
 		const row = (id: string, dense: number | undefined) => ({ id, content: `기억 ${id}`, source: "coding-agent-learn", timestamp: "2026-10-01T00:00:00Z", score: 0.9, dense_score: dense });
 		const scenario = async (dense: Array<number | undefined>, options: { gate?: number; model?: string; compaction?: boolean; explicit?: boolean } = {}) => {
 			const rows = dense.map((d, i) => row(`m${i}`, d));
-			const target = { bank: "bank", memory: { recallEnhanced: async () => rows, get: () => null } };
-			const parentState = {
-				config: {
-					autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 1, recallMaxQueryChars: 2000, bank: "bank", globalBank: "bank",
-					dbPath: join(root, "gate.db"), recallDenseGate: options.gate ?? 0.8, providerOptions: { embeddingModel: options.model ?? E5, debug: false },
-				},
-				scoped: { recall: [target], retain: target },
-			};
+			const memory = { recallEnhanced: async () => rows, get: () => null };
+			const parentState = mnemopiParentState(stateMod, {
+				autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 1, recallMaxQueryChars: 2000, bank: "bank", globalBank: "bank",
+				dbPath: join(root, "gate.db"), recallDenseGate: options.gate ?? 0.8, providerOptions: { embeddingModel: options.model ?? E5, debug: false },
+			}, memory);
 			const recorded: Array<{ customType: string; data: unknown }> = [];
 			const session = {
 				sessionId: "gate-child",

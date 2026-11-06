@@ -49,11 +49,13 @@ export function TurnSummaryLine({ summary, live = false, onOpenFile }: {
     [makers, ledger],
   );
   const { flow, remaining } = summary;
-  const failedChecks = summary.checks.filter((check) => check.state === "failed").length;
-  const unconfirmedChecks = summary.checks.filter((check) => check.state === "failed" || check.state === "unobserved").length;
-  const compoundFailed = summary.checks.filter((check) => check.compound?.failed).length;
-  const unverifiedVerdicts = summary.checks.filter((check) => check.state === "unverified" && !check.compound?.failed).length;
-  const staleChecks = latestChecks(flow.steps).filter((step) => step.stale).length;
+  // 같은 명령을 다시 돌렸으면 그 명령의 유효한 결과 하나만 센다. 검사 단계의 맨 위 행과 같은 기준이다.
+  const checks = latestChecks(flow.steps);
+  const failedChecks = checks.filter((check) => check.outcome === "failed").length;
+  const unconfirmedChecks = checks.filter((check) => check.outcome === "failed" || check.outcome === "unobserved").length;
+  const compoundFailed = checks.filter((check) => check.compound?.failed).length;
+  const unverifiedVerdicts = checks.filter((check) => check.outcome === "unverified" && !check.compound?.failed).length;
+  const staleChecks = checks.filter((step) => step.stale).length;
   const unconfirmedMakers = makers.filter((maker) => (
     maker.run === "failed" || maker.run === "aborted" || maker.run === "unobserved"
     || maker.verdict?.verdict !== "accepted"
@@ -65,7 +67,7 @@ export function TurnSummaryLine({ summary, live = false, onOpenFile }: {
 
   const parts = [
     st(summary.files.length === 1 ? "summary.files.one" : "summary.files", { count: summary.files.length }),
-    st(summary.checks.length === 1 ? "summary.checks.one" : "summary.checks", { count: summary.checks.length }),
+    st(checks.length === 1 ? "summary.checks.one" : "summary.checks", { count: checks.length }),
   ];
   if (live) parts.unshift(st("summary.live"));
   if (failedChecks > 0) parts.push(st("summary.checksFailed", { count: failedChecks }));

@@ -106,6 +106,10 @@ Date.now = () => realNow() + clockOffsetMs;
 // Module roots are runtime-selected by OMP_CORE_PATCH_TARGET, so these cannot be static imports.
 const { setAgentDir } = await import(toUrl(join(dirname(core), "pi-utils/src/dirs.ts")));
 setAgentDir(join(process.env.HOME!, ".omp", "agent"));
+// Seat numbers come from the PC's agent config (`characterSeats`, #67), not from a public constant. The voice checks
+// below identify the account at position 0 as RIN, so the isolated agent dir carries that synthetic mapping.
+mkdirSync(join(process.env.HOME!, ".omp", "agent"), { recursive: true });
+writeFileSync(join(process.env.HOME!, ".omp", "agent", "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
 const { $env } = await import(toUrl(join(dirname(core), "pi-utils/src/env.ts")));
 const { AuthStorage } = await import(toUrl(join(aiRoot, "auth-storage.ts")));
 const { claudeRankingStrategy } = await import(toUrl(join(aiRoot, "usage/claude.ts")));

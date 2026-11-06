@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync }
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
-import { createSettingsTestScope, settingsLike } from "./core-test-settings";
+import { createSettingsTestScope, mnemopiParentState, settingsLike } from "./core-test-settings";
 
 // SQLite/model cache의 Windows 핸들은 세션 dispose 뒤에도 프로세스가 살아 있는 동안
 // 잠길 수 있다. 자식 종료 후 부모가 자기 fixture 전체를 지워 잔류물을 남기지 않는다.
@@ -911,15 +911,31 @@ const crossText = JSON.stringify(crossTree.content);
 check("교차 세션 전송은 거부된다", crossText.includes("different top-level session"), crossText.slice(0, 200));
 check("남의 트리 수신함은 비어 있다", solA.received.length === 0, `n=${solA.received.length}`);
 
-// (4) 브로드캐스트도 자기 트리의 live peer 에게만 간다(listVisibleTo).
-const beforeBroadcast = { a: mainA.received.length, sol: solA.received.length, b: mainB.received.length };
-await executeSend(deps11("Zeta"), { to: "all", message: "B 브로드캐스트" });
+// (4) 브로드캐스트도 자기 트리의 live peer 에게만 간다(listVisibleTo). 18.17.0 부터 upstream 은 main 만 broadcast 하게
+// 했으므로(subagent broadcast 는 거부되고 아무에게도 닿지 않는다), 그 판에서는 root B 의 main 이 보낸다.
+const beforeBroadcast = { a: mainA.received.length, sol: solA.received.length, b: mainB.received.length, zeta: zetaB.received.length, zeta2: zetaB2.received.length };
+const subBroadcast = JSON.stringify((await executeSend(deps11("Zeta"), { to: "all", message: "B 브로드캐스트" })).content);
+const mainOnlyBroadcast = subBroadcast.includes("Only the main agent can broadcast");
+if (mainOnlyBroadcast) {
+	check(
+		"subagent broadcast 는 거부되고 아무에게도 닿지 않는다",
+		mainB.received.length === beforeBroadcast.b && zetaB2.received.length === beforeBroadcast.zeta2,
+		`b=${mainB.received.length} zeta2=${zetaB2.received.length}`,
+	);
+	await executeSend(deps11("Main#2"), { to: "all", message: "B 브로드캐스트" });
+}
 check(
 	"브로드캐스트는 남의 트리에 닿지 않는다",
 	mainA.received.length === beforeBroadcast.a && solA.received.length === beforeBroadcast.sol,
 	`a=${mainA.received.length} sol=${solA.received.length}`,
 );
-check("브로드캐스트는 자기 root 에 닿는다", mainB.received.length === beforeBroadcast.b + 1, `b=${mainB.received.length}`);
+check(
+	"브로드캐스트는 자기 트리에 닿는다",
+	mainOnlyBroadcast
+		? zetaB.received.length === beforeBroadcast.zeta + 1 && zetaB2.received.length === beforeBroadcast.zeta2 + 1
+		: mainB.received.length === beforeBroadcast.b + 1,
+	`b=${mainB.received.length} zeta=${zetaB.received.length} zeta2=${zetaB2.received.length} sub=${subBroadcast.slice(0, 120)}`,
+);
 
 console.log("\n[12] wait 대기 근거 — 남의 트리 실행 중 에이전트가 이 세션의 wait 를 붙잡지 않는다");
 // 18.3.0 `wait` 는 job 이 없어도 실행 중 peer 가 있으면 첫 사건까지(최대 30분) 막는다
@@ -2804,21 +2820,19 @@ console.log("\n[23g] Mnemopi 회수 — 문자권이 다른 기억은 어휘 하
 
 // 2026-09-27 자가학습 점검: Maker(taskDepth>0) 세션은 자기 작업 brief 로 회상하지 않고 부모의 첫 턴
 // 회상만 물려받았다. 실제 backend.start(taskDepth 1) → beforeAgentStartPrompt → buildDeveloperInstructions
-// 경로를 태운다. 부모 state 는 구조만 맞춘 fixture 이며 회상 저장소(scoped)는 child 가 그대로 공유한다.
+// 경로를 태운다. 부모 state 는 실제 MnemopiSessionState 이고 bank 저장소만 stub 이며, child 는 그 저장소를 그대로 공유한다.
 console.log("\n[24] Maker 첫 턴 회상 — child 는 자기 작업 brief 로 회상하고 기억 id 를 싣는다");
 {
 	const recallQueries: string[] = [];
 	const lessonRow = { id: "lesson-ps-dollar", content: "PowerShell -Command 안의 $변수는 바깥 셸에 먹힌다", source: "coding-agent-learn", timestamp: "2026-09-25T00:00:00Z", score: 1 };
-	const parentState = {
-		// 18.9.1 첫 턴 회상은 회상 범위(bank·db 경로)로 transcript 의 저장본을 먼저 찾는다. 공유 bank 하나면 core 모듈 없이 dbPath 로 정해진다.
-		config: { autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 2, recallMaxQueryChars: 2000, bank: "bank", globalBank: "bank", dbPath: csJoin(fixtureRoot, "child-recall.db") },
-		// 18.9.1 은 회상한 기억을 범위 안 저장소에서 다시 찾아(memory.get) 변경 보고 대상으로 삼는다. 그 조회는 이 검사 밖이라 null 이다.
-		scoped: (() => {
-			const target = { bank: "bank", memory: { recallEnhanced: async (query: string) => { recallQueries.push(query); return [lessonRow]; }, get: () => null } };
-			return { recall: [target], retain: target };
-		})(),
-		lastRecallSnippet: "PARENT-FIRST-TURN-SNIPPET",
-	};
+	// 18.9.1 첫 턴 회상은 회상 범위(bank·db 경로)로 transcript 의 저장본을 먼저 찾는다. 공유 bank 하나면 core 모듈 없이 dbPath 로 정해진다.
+	// 18.9.1 은 회상한 기억을 범위 안 저장소에서 다시 찾아(memory.get) 변경 보고 대상으로 삼는다. 그 조회는 이 검사 밖이라 null 이다.
+	const parentState = mnemopiParentState(
+		await import(`${CORE}/mnemopi/state.ts`),
+		{ autoRecall: true, autoRetain: false, recallLimit: 8, recallContextTurns: 2, recallMaxQueryChars: 2000, bank: "bank", globalBank: "bank", dbPath: csJoin(fixtureRoot, "child-recall.db") },
+		{ recallEnhanced: async (query: string) => { recallQueries.push(query); return [lessonRow]; }, get: () => null },
+		{ lastRecallSnippet: "PARENT-FIRST-TURN-SNIPPET" },
+	);
 	const recorded: Array<{ customType: string; data: unknown }> = [];
 	const childSession = {
 		sessionId: "child-session",
@@ -3824,18 +3838,30 @@ console.log("\n[35] 재시작 뒤 root 동시 기동 — root 마다 자기 id, 
 		check("(2) 남의 root 자식 메시지가 이 root 의 wait 를 깨우지 않는다", caughtByB === null, JSON.stringify(caughtByB?.body));
 		check("(2) 그 메시지는 자기 root 가 받는다", JSON.stringify(inbox.get(rootA)) === JSON.stringify(["A-child-question"]), JSON.stringify(inbox.get(rootA)));
 
-		// (3) broadcast 는 자기 트리만, 등록 없는 호출자의 broadcast 는 아무에게도 가지 않는다.
+		// (3) broadcast 는 자기 트리만, 등록 없는 호출자의 broadcast 는 아무에게도 가지 않는다. 18.17.0 부터 subagent broadcast 는
+		// 거부되므로(아무에게도 닿지 않는다) 그 판에서는 root B 가 보낸다.
 		for (const root of roots) inbox.get(root)!.length = 0;
 		const kidsBefore = kids.map(kid => kid.received.length);
-		await executeSend({ registry: reg35, senderId: kidB.id }, { to: "all", message: "B-broadcast" });
+		const kidBroadcast = JSON.stringify((await executeSend({ registry: reg35, senderId: kidB.id }, { to: "all", message: "B-broadcast" })).content);
+		const mainOnly = kidBroadcast.includes("Only the main agent can broadcast");
+		if (mainOnly) {
+			check(
+				"(3) subagent broadcast 는 거부되고 아무에게도 닿지 않는다",
+				roots.every(root => inbox.get(root)!.length === 0) && kids.every((kid, i) => kid.received.length === kidsBefore[i]),
+				kidBroadcast.slice(0, 160),
+			);
+			await executeSend({ registry: reg35, senderId: rootB.getAgentId() }, { to: "all", message: "B-broadcast" });
+		}
 		check(
-			"(3) broadcast 는 자기 root 에 닿고 남의 root·자식에는 닿지 않는다",
-			JSON.stringify(inbox.get(rootB)) === JSON.stringify(["B-broadcast"]) &&
+			"(3) broadcast 는 자기 트리에 닿고 남의 root·자식에는 닿지 않는다",
+			(mainOnly
+				? kidB.received.length === kidsBefore[1]! + 1 && inbox.get(rootB)!.length === 0
+				: JSON.stringify(inbox.get(rootB)) === JSON.stringify(["B-broadcast"])) &&
 				inbox.get(rootA)!.length === 0 &&
 				inbox.get(rootC)!.length === 0 &&
 				kids[0]!.received.length === kidsBefore[0] &&
 				kids[2]!.received.length === kidsBefore[2],
-			JSON.stringify({ a: inbox.get(rootA), b: inbox.get(rootB), c: inbox.get(rootC) }),
+			JSON.stringify({ a: inbox.get(rootA), b: inbox.get(rootB), c: inbox.get(rootC), kidB: kidB.received.length - kidsBefore[1]! }),
 		);
 		await executeSend({ registry: reg35, senderId: "Ghost35" }, { to: "all", message: "ghost-broadcast" });
 		check(
