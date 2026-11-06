@@ -257,9 +257,13 @@ const STATE_LABEL: Record<DeliverableState, string> = { checked: "확인됨", ex
 /**
  * A deliverable counts as checked only through an evidence kind that carries the check itself: a command this session
  * ran, a URL that answered, or a vision read of the file. File evidence proves existence, not the check in `check`.
+ * Only the latest record of each kind+value counts, in array order (timestamps can tie): a later failure of the same
+ * check revokes its earlier success, while independent evidence for the deliverable stays.
  */
 function stateOf(frame: Frame, id: string): DeliverableState {
-  const rows = frame.evidence.filter((item) => item.id === id);
+  const latest = new Map<string, Evidence>();
+  for (const item of frame.evidence) if (item.id === id) latest.set(`${item.kind}\0${item.value}`, item);
+  const rows = [...latest.values()];
   if (rows.some((item) => item.verified && item.kind !== "file")) return "checked";
   if (rows.some((item) => item.verified)) return "exists";
   return rows.length ? "self" : "none";
