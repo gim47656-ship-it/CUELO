@@ -6,8 +6,8 @@
  * 공개 CUELO 저장소의 열린 이슈와 근거를 찾는 기존 기능 점검을 매일 맡기므로, 하루 한 번·이전 세션 가드만 실행을 막는다(2026-11-06 사용자 선택).
  */
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { NIGHTLY_BRANCH_RETENTION_DAYS, nightlyBranchStart } from "./criteria";
 import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
@@ -484,6 +484,66 @@ export async function pruneMergedNightlyBranches(repo: string, base: string, kee
     }
   }
   return { deleted, warnings };
+}
+
+/**
+ * 지난 야간 세션이 클라우드에 남긴 로컬 worktree(`<repo>-worktrees/wt-nightly-YYYYMMDD`)를 지운다(2026-11-07 사용자 결정:
+ * 「클라우드쪽도 자동정리」). 하나가 약 0.7 GiB라 /data(20 GiB)가 닷새 만에 84%가 찼다. 아침 보고는 원격 브랜치를 읽으므로
+ * 로컬 사본은 세션이 끝나면 쓸모가 없다. `keep`(아직 도는 세션의 브랜치)과 오늘 브랜치, HEAD가 `base`에 들어가지 않은 사본은
+ * 남긴다. 커밋하지 않는 결정 기록 `.audit/`는 `<repo 부모>/nightly-audit/<worktree 이름>/`에 옮긴 뒤 지운다(같은 이름이 이미
+ * 있으면 덮지도 지우지도 않는다). 삭제는 `--force` 없는 `git worktree remove`라, 추적 파일을 고쳤거나 다른 추적 안 한 파일이
+ * 남은 사본은 git이 거절해 경고로 남는다.
+ */
+export async function pruneNightlyWorktrees(repo: string, base: string, keep: ReadonlySet<string>, now: Date): Promise<{ removed: string[]; warnings: string[] }> {
+  const removed: string[] = [], warnings: string[] = [];
+  const firstLine = (error: unknown) => {
+    const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "";
+    return (stderr || (error instanceof Error ? error.message : String(error))).trim().split("\n")[0];
+  };
+  let listed: string;
+  try {
+    listed = await git(repo, ["worktree", "list", "--porcelain"]);
+  } catch {
+    return { removed, warnings: ["worktree 목록을 읽지 못했습니다."] };
+  }
+  const today = nightlyBranch(kstDate(now.toISOString()));
+  const auditDir = join(dirname(repo), "nightly-audit");
+  // 첫 블록은 메인 체크아웃이다. 어느 브랜치에 있든 건드리지 않는다.
+  for (const block of listed.split("\n\n").slice(1)) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    if (!path || !branch || nightlyBranchStart(branch) === null || keep.has(branch) || branch === today) continue;
+    try {
+      await git(repo, ["merge-base", "--is-ancestor", (await git(path, ["rev-parse", "HEAD"])).trim(), base]);
+    } catch (error) {
+      // --is-ancestor의 exit 1은 「병합 전」이라 조용히 남긴다. 그 밖의 실패는 확인하지 못한 것이다.
+      if (!(error && typeof error === "object" && "code" in error && error.code === 1)) warnings.push(`${path}를 확인하지 못했습니다: ${firstLine(error)}`);
+      continue;
+    }
+    try {
+      // 추적 안 한 결정 기록(`?? .audit/…`) 말고 무엇이든 남았으면(고친 추적 파일 포함) 아무것도 건드리지 않는다.
+      const leftovers = (await git(path, ["status", "--porcelain", "--untracked-files=all"])).split("\n").filter((line) => line && !line.startsWith("?? .audit/"));
+      if (leftovers.length) {
+        warnings.push(`${path}를 지우지 않았습니다: 고친 파일 ${leftovers.length}개가 남아 있습니다(${leftovers[0].trim()}).`);
+        continue;
+      }
+      const audit = join(path, ".audit");
+      // 추적하는 파일이 있는 `.audit`은 결정 기록이 아니라 저장소 내용이다. 지우지 않고 남긴다.
+      if ((await git(path, ["ls-files", "--", ".audit"])).trim()) {
+        warnings.push(`${path}를 지우지 않았습니다: .audit에 추적하는 파일이 있습니다.`);
+        continue;
+      }
+      if (existsSync(audit)) {
+        cpSync(audit, join(auditDir, basename(path)), { recursive: true, force: false, errorOnExist: true });
+        rmSync(audit, { recursive: true });
+      }
+      await git(repo, ["worktree", "remove", path], 5 * 60_000);
+      removed.push(path);
+    } catch (error) {
+      warnings.push(`${path}를 지우지 못했습니다: ${firstLine(error)}`);
+    }
+  }
+  return { removed, warnings };
 }
 
 /** 정식 플러그인 폴더(저장소 기준). 프로필 동기화가 `~/.omp/agent/cuelo-plugins/`로 설치한다. */

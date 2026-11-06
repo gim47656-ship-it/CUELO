@@ -6,7 +6,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
-import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
+import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { addWorktree } from "@/lib/worktree";
@@ -89,6 +89,10 @@ async function planAndRun(dryRun: boolean) {
         const pruned = await pruneMergedNightlyBranches(repoOverride, handoffs.base.sha, keep, now);
         for (const warning of pruned.warnings) log(`branch prune: ${warning}`);
         if (pruned.deleted.length) log(`deleted merged ${pruned.deleted.join(", ")}`);
+        // 지난 야간 로컬 worktree 정리(2026-11-07 사용자 결정): 디스크가 작아 하룻밤 사본(약 0.7 GiB)도 남기지 않는다.
+        const cleaned = await pruneNightlyWorktrees(repoOverride, handoffs.base.sha, keep, now);
+        for (const warning of cleaned.warnings) log(`worktree prune: ${warning}`);
+        if (cleaned.removed.length) log(`removed worktrees ${cleaned.removed.join(", ")}`);
       }
       // 저장소에 이미 정식 사본이 있는 실험 플러그인은 다시 승격하지 않는다(PC가 업데이트를 받기 전까지 묶음에 남는다).
       const promoted = repoOverride && handoffs?.base ? await readPromotedPluginIds(repoOverride, handoffs.base.sha) : new Set<string>();
