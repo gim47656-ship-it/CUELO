@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -44,6 +44,13 @@ import type { CharacterAlias } from "../character-voice";
 const realAgentDir = process.env.PI_CODING_AGENT_DIR;
 const isolatedAgentDir = mkdtempSync(join(tmpdir(), "character-voice-agent-"));
 process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+// 좌석 번호는 2026-11-06부터 공개 상수가 아니라 PC 설정(`config.yml` `characterSeats`)에서 온다.
+// 테스트는 격리 agent dir에 그 설정을 심어, 실제 프로필 값과 무관하게 같은 좌석을 검증한다.
+writeFileSync(
+  join(isolatedAgentDir, "config.yml"),
+  'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n',
+  "utf8",
+);
 afterAll(() => {
   if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = realAgentDir;
@@ -199,8 +206,8 @@ describe("character voice identity", () => {
     expect(CHARACTER_TARGETS).toEqual({
       "YUKI(유키)": { model: "openai-codex/gpt-6-astra", toolCapable: true },
       "ISANA(이사나)": { model: "hive/deepseek-ai/deepseek-v4.1-flash-1017", toolCapable: true },
-      "MIO(미오)": { model: "anthropic/claude-opus-5-5", oauthPosition: 1, toolCapable: true },
-      "RIN(린)": { model: "anthropic/claude-opus-5-5", oauthPosition: 0, toolCapable: true },
+      "MIO(미오)": { model: "anthropic/claude-opus-5-5", toolCapable: true },
+      "RIN(린)": { model: "anthropic/claude-opus-5-5", toolCapable: true },
       "MITSU(미츠)": { model: "hive/zai-org/glm-5.3-flash", toolCapable: true },
       "SHION(시온)": { model: "web6/gpt-6-pro", toolCapable: false },
       "HIKARI(히카리)": { model: "google-vertex/gemini-4-argon", toolCapable: true },
@@ -357,7 +364,7 @@ describe("character voice identity", () => {
         expect(malformedSummonMarkerReason(markerFor("google-vertex/gemini-4-argon"))).toContain(markerFor("localproxy/gemini-4-argon"));
         expect(parseCharacterSummonMarker(markerFor("localproxy/gemini-4-argon"))).toBe("HIKARI(히카리)");
         expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBeUndefined();
-        expect(characterTarget("MIO(미오)")).toEqual(CHARACTER_TARGETS["MIO(미오)"]);
+        expect(characterTarget("MIO(미오)")).toEqual({ ...CHARACTER_TARGETS["MIO(미오)"], oauthPosition: 1 });
       });
       withRole(undefined, () => {
         expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBe("HIKARI(히카리)");
@@ -1156,6 +1163,8 @@ async function withOfficeProfile<T>(
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
   try {
+    // 좌석 번호는 PC 설정에서 온다. 사무실 프로필 테스트도 같은 좌석을 보도록 여기에도 심는다.
+    writeFileSync(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
     if (profile.mode !== undefined) writeFileSync(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: profile.mode }));
     if (profile.roster !== undefined || profile.rosterRaw !== undefined) {
       mkdirSync(join(dir, "characters-office"));
@@ -1169,6 +1178,33 @@ async function withOfficeProfile<T>(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+describe("characterSeats 설정 파싱", () => {
+  const withSeatsFile = <T>(content: string, run: () => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), "seats-parse-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = dir;
+    try {
+      writeFileSync(join(dir, "config.yml"), content, "utf8");
+      return run();
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // 헤더 뒤 주석은 유효한 YAML이다. 이걸 놓치면 좌석이 조용히 사라져 두 캐릭터가 같은 계정으로 돈다.
+  test("헤더 줄에 붙은 주석을 무시하지 않는다", () => {
+    const pin = withSeatsFile('characterSeats:  # 좌석\n  "RIN(린)": 0\n', () => characterTarget("RIN(린)")?.oauthPosition);
+    expect(pin).toBe(0);
+  });
+
+  test("짧은 별칭이 아니라 내장 alias 전체로 매칭한다", () => {
+    const short = withSeatsFile('characterSeats:\n  RIN: 0\n', () => characterTarget("RIN(린)")?.oauthPosition);
+    expect(short).toBeUndefined();
+  });
+});
 
 describe("office mode character seat", () => {
   test("unselected Anthropic uses RIN or its office alias without pinning an account", async () => {
@@ -1309,8 +1345,8 @@ describe("office mode character seat", () => {
       expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
       expect(characterTarget("CEDAR(시더)")).toEqual(CHARACTER_TARGETS["SHION(시온)"]);
       expect(characterTarget("CEDAR(시더)")?.toolCapable).toBe(false);
-      expect(characterTarget("BIRCH(버치)")).toEqual(CHARACTER_TARGETS["RIN(린)"]);
-      expect(characterTarget("ALDER(앨더)")).toEqual(CHARACTER_TARGETS["MIO(미오)"]);
+      expect(characterTarget("BIRCH(버치)")).toEqual({ ...CHARACTER_TARGETS["RIN(린)"], oauthPosition: 0 });
+      expect(characterTarget("ALDER(앨더)")).toEqual({ ...CHARACTER_TARGETS["MIO(미오)"], oauthPosition: 1 });
       expect(characterTarget("TIBER(티버)")).toBeUndefined();
       for (const [alias, id] of [["ELM(엘름)", "elm"], ["DELTA(델타)", "delta"], ["BIRCH(버치)", "birch"]]) {
         expect(renderCharacterVoice(alias)).toContain(`FIXTURE-${id} 성향`);

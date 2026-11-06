@@ -92,12 +92,10 @@ export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, Character
   },
   "MIO(미오)": {
     model: "anthropic/claude-opus-5-5",
-    oauthPosition: 1,
     toolCapable: true,
   },
   "RIN(린)": {
     model: "anthropic/claude-opus-5-5",
-    oauthPosition: 0,
     toolCapable: true,
   },
   "MITSU(미츠)": {
@@ -117,6 +115,47 @@ export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, Character
 
 /** HIKARI의 호출 대상을 PC별로 정하는 모델 역할. 선택자를 공개 저장소에 적지 않고 각 PC의 config.yml이 정한다. */
 const HIKARI_ROLE = "implGemini";
+
+const CHARACTER_SEATS_KEY = "characterSeats";
+
+/**
+ * 캐릭터가 pin할 OAuth 좌석 번호는 공개 저장소에 적지 않는다(2026-11-06 사용자 결정).
+ * `~/.omp/agent/config.yml`의 `characterSeats`에서 읽고, 없으면 pin하지 않는다. 키는 내장 alias 전체다
+ * (`"RIN(린)": 0`, `"MIO(미오)": 1`). 짧은 이름(`RIN`)은 매칭되지 않으므로 쓰지 않는다.
+ * 좌석 번호는 PC마다 다를 수 있는 운영 정보라, 상수로 두면 공개 미러에 계정 배치가 드러난다.
+ * 설정 registry에는 이 키가 없어 `Settings`로는 읽히지 않으므로 파일에서 직접 읽는다(캐릭터 face·roster와 같은 방식).
+ */
+/**
+ * 캐시하지 않는다. `fileStamp`는 mtime·크기라 같은 크기로 값을 맞바꾼 편집(0↔1)을 놓치고,
+ * Windows는 파일 시각 눈금이 거칠어 같은 tick 안의 교체가 같은 스탬프가 된다(2026-10-20 face 캐시에서 실제로 겪었다).
+ * 이 파일은 작고 `characterTarget`은 호출·교체 때만 불리므로 매번 읽어도 부담이 없다.
+ */
+function characterSeats(): Record<string, unknown> {
+  const path = join(officeAgentDir(), "config.yml");
+  let seats: Record<string, unknown> = {};
+  try {
+    // YAML 의존성을 확장에 더하지 않는다. 이 한 키만 최상위 `characterSeats:` 블록에서 읽는다.
+    const lines = readFileSync(path, "utf8").replace(/^\uFEFF/u, "").split(/\r?\n/u);
+    // 헤더 뒤 주석(`characterSeats:  # 좌석`)도 유효한 YAML이므로 함께 받는다.
+    const start = lines.findIndex(line => new RegExp(`^${CHARACTER_SEATS_KEY}:\\s*(?:#.*)?$`, "u").test(line));
+    if (start >= 0) {
+      for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (!/^\s/u.test(line) && line.trim() !== "" && !line.startsWith("#")) break;
+        const match = /^\s+(?:"([^"]+)"|'([^']+)'|([^:\s]+)):\s*(-?\d+)\s*(?:#.*)?$/u.exec(line);
+        if (match) seats[match[1] ?? match[2] ?? match[3]!] = Number(match[4]);
+      }
+    }
+  } catch {
+    seats = {};
+  }
+  return seats;
+}
+
+function characterSeat(alias: BuiltinCharacterAlias): number | undefined {
+  const value = characterSeats()[alias];
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
 const ROLE_THINKING_SUFFIX = /:(?:auto|inherit|off|minimal|low|medium|high|xhigh|max)$/u;
 
 /** 역할 선택자에서 `:level` 접미사를 떼고 `provider/model`만 남긴다. 비었거나 `provider/model` 모양이 아니면 undefined. */
@@ -410,8 +449,12 @@ function canonicalAlias(alias: string, state: OfficeState): CharacterAlias | und
 export function characterTarget(alias: string): CharacterTarget | undefined {
   const seat = seatOf(alias, officeState());
   if (seat === undefined) return undefined;
-  const target = CHARACTER_TARGETS[seat];
-  return seat === "HIKARI(히카리)" ? { ...target, model: hikariModel() } : target;
+  const base = CHARACTER_TARGETS[seat];
+  const target: CharacterTarget = seat === "HIKARI(히카리)" ? { ...base, model: hikariModel() } : { ...base };
+  // 좌석 번호는 공개 상수가 아니라 PC 설정(`characterSeats`)에서 온다.
+  const pin = characterSeat(seat);
+  if (pin !== undefined) target.oauthPosition = pin;
+  return target;
 }
 
 function requireTarget(alias: string): CharacterTarget {

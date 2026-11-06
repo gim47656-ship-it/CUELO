@@ -23,6 +23,8 @@ const { createCommandGuard } = await import("./index");
 const realAgentDir = process.env.PI_CODING_AGENT_DIR;
 const isolatedAgentDir = await mkdtemp(join(tmpdir(), "runtime-guard-agent-"));
 process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+// 좌석 번호는 2026-11-06부터 공개 상수가 아니라 PC 설정(`config.yml` `characterSeats`)에서 온다.
+await writeFile(join(isolatedAgentDir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
 afterAll(async () => {
   if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = realAgentDir;
@@ -1071,6 +1073,7 @@ describe("command guard runtime gates", () => {
     const previous = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = dir;
     try {
+      await writeFile(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
       await writeFile(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "office" }));
       await mkdir(join(dir, "characters-office"));
       const voice = { temperament: "느긋한 선배형", expression: "낮은 반말" };
