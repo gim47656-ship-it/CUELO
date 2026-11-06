@@ -1,6 +1,7 @@
 import type { AgentMessage, OpenRequestEvidence, ToolResultMessage, TrackerTodoRecords } from "@/lib/types";
 import { continuesRequest } from "./delivery";
 import { collectPriorCiHeads, summarizeRequest } from "./turn-summary";
+import { checkIdentity } from "./work-flow";
 
 /** 같은 가지의 원 기록. 화면에 실리지 않는 tracker 변경도 기록 순서대로 읽는다. */
 export type RequestItem = { message: AgentMessage; entryId: string } | { trackerTodo: unknown[] };
@@ -44,18 +45,20 @@ export function readOpenRequest(
   const { files, checks, remaining, span, flow } = summarizeRequest(messages, toolResults, opener + 1, messages.length, cwd, prior);
   if (flow.steps.length === 0 && remaining === null) return null;
 
-  // 판정이 끝난 뒤에만 본문을 생략한다. 동일 명령의 재검사 묶음은 별도 식별자로 보존한다.
-  // stages는 steps의 같은 사건을 가리키므로 이 변경은 두 표현 모두에 적용된다.
+  // 판정이 끝난 뒤에만 본문과 실행 폴더를 생략한다. 같은 폴더에서 같은 명령을 다시 돌린 검사 묶음은 그 둘을 드러내지 않는
+  // 순번 식별자로 보존한다. stages는 steps의 같은 사건을 가리키므로 이 변경은 두 표현 모두에 적용된다.
   const commands = new Map<string, string>();
   for (const step of flow.steps) {
     if (!("command" in step)) continue;
-    let key = commands.get(step.command);
+    const identity = checkIdentity(step);
+    let key = commands.get(identity);
     if (key === undefined) {
       key = String(commands.size);
-      commands.set(step.command, key);
+      commands.set(identity, key);
     }
     step.commandKey = key;
     step.command = "";
+    delete step.cwd;
   }
   for (const check of checks) check.command = "";
   return {

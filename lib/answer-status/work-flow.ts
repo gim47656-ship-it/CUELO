@@ -919,8 +919,13 @@ export interface PlainStep extends StepCore {
 export interface CommandStep extends StepCore {
   stage: CommandStage;
   command: string;
-  /** 압축된 요청의 명령 본문을 생략해도 같은 검사 명령끼리 묶기 위한 요청 안의 식별자. */
+  /** 압축된 요청의 명령 본문을 생략해도 같은 검사끼리 묶기 위한 요청 안의 식별자. 명령과 실행 폴더(`cwd`)로 정한다. */
   commandKey?: string;
+  /**
+   * 검사가 실행된 폴더(`runDirectory`). 같은 명령이라도 폴더가 다르면 다른 검사다. 검사 단계에만 있고, 압축된 요약에서는
+   * `commandKey`에 담긴 뒤 지운다.
+   */
+  cwd?: string;
   exitCode: number | null;
   labels: CheckLabel[];
   /** 여러 단계에 걸친 명령이면 그 단계들과 명령 전체의 실패 여부. 같은 호출이 단계마다 사건 하나씩 남긴다. */
@@ -1047,6 +1052,7 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
         ...core,
         stage: judged.stage,
         command,
+        ...(judged.stage === "check" ? { cwd: runDirectory(block.input, cwd, block.toolCallId) } : {}),
         exitCode: judged.exitCode,
         labels: judged.labels,
         outcome,
@@ -1429,12 +1435,31 @@ function latestFailure(segment: ReadonlyMap<string, SegmentEntry>): VerifyStage 
   return found?.stage ?? null;
 }
 
-/** 같은 검사 명령을 다시 돌렸으면 마지막 결과만 남긴 검사 사건. 단계 요약의 수는 이것으로 센다. */
+/**
+ * 검사가 실행된 폴더. bash 입력의 `cwd`를 세션 폴더 기준으로 기존 경로 규칙(`resolveLocalFilePath`)대로 풀고, 없으면 세션
+ * 폴더다. 세션 폴더를 몰라 풀 수 없는 상대 경로는 같은 폴더인지 알 수 없으므로 그 호출에만 맞는 표지를 붙여 어떤 검사와도
+ * 합치지 않는다. 공백도 경로의 일부라 자르지 않고, 대소문자·드라이브는 바꾸지 않으며 파일 시스템도 보지 않는다.
+ */
+function runDirectory(input: Record<string, unknown>, sessionCwd: string | undefined, toolCallId: string): string {
+  const session = sessionCwd ? resolveLocalFilePath(sessionCwd) ?? sessionCwd : undefined;
+  const own = typeof input.cwd === "string" ? input.cwd : "";
+  if (!own) return session ?? "";
+  // 세션 폴더가 루트(`/`)면 해석기가 끝의 `/`를 지운 빈 기준을 모르는 폴더로 본다. 그때만 이어 붙여 다시 푼다.
+  const resolved = resolveLocalFilePath(own, session) ?? (session ? resolveLocalFilePath(`${session.replace(/\/+$/, "")}/${own}`) : null);
+  return resolved ?? `?${toolCallId}`;
+}
+
+/** 같은 검사인지 가르는 열쇠: 실행 폴더와 명령. 압축된 요약은 이 열쇠를 숨긴 `commandKey`로 대신한다. */
+export function checkIdentity(step: Pick<CommandStep, "command" | "cwd" | "commandKey">): string {
+  return step.commandKey ?? JSON.stringify([step.cwd ?? "", step.command]);
+}
+
+/** 같은 폴더에서 같은 검사 명령을 다시 돌렸으면 마지막 결과만 남긴 검사 사건. 단계 요약의 수는 이것으로 센다. */
 export function latestChecks(steps: readonly WorkStep[]): CommandStep[] {
   const latest = new Map<string, CommandStep>();
   for (const step of steps) {
     if (step.stage !== "check") continue;
-    const key = step.commandKey ?? step.command;
+    const key = checkIdentity(step);
     const previous = latest.get(key);
     if (previous?.outcome === "failed" && !settles(step.outcome)) continue;
     latest.set(key, step);
@@ -2144,7 +2169,7 @@ export function deriveWorkFlow(
       lastEdit = steps.length;
       if (!step.recordOnly) lastSourceEdit = steps.length;
     } else if (step.stage === "check" || step.stage === "review" || step.stage === "ci") {
-      const key = step.stage === "check" ? `check:${step.command}` : step.stage;
+      const key = step.stage === "check" ? `check:${checkIdentity(step)}` : step.stage;
       const previous = segment.get(key);
       if (previous?.outcome !== "failed" || settles(step.outcome)) {
         segment.set(key, { stage: step.stage, outcome: step.outcome, order: steps.length });

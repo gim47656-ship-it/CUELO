@@ -46,6 +46,11 @@ export interface NightlyJobs {
   skillHealth?: string[];
   /** 받은편지함 모드에서만: 승격 기준을 넘은 실험 플러그인 id(합계는 `출처:id`) */
   labPromotions?: string[];
+  /** 받은편지함 모드에서만: 공개 저장소 열린 이슈 조회 결과와 맡긴 이슈 번호 */
+  issueLookup?: "ok" | "partial" | "unavailable";
+  issues?: number[];
+  /** 받은편지함 모드에서만: 근거를 찾는 기존 기능 쓰기 편함·성능·메모리 점검을 맡겼는지 */
+  improvementReview?: boolean;
 }
 
 /** 받은편지함 모드에서 출처 하나가 맡은 일 */
@@ -159,7 +164,7 @@ export const NIGHTLY_PREAMBLE = [
   "이 세션은 사람 없이 시작됐습니다. AGENTS.md 「Nightly self-improvement loop (user decision, 2026-11-02)」를 따릅니다.",
   "",
   "1. 아래 「오늘 할 일」에 적힌 일만 합니다. 근거가 뒷받침하는 것만 고치고, 원인이 확인되지 않으면 고치지 말고 조사 결과만 남깁니다.",
-  "2. 이 worktree에서만 작업합니다. 메인 체크아웃이나 다른 저장소는 건드리지 않습니다.",
+  "2. 이 worktree에서만 작업합니다. 메인 체크아웃이나 다른 저장소는 건드리지 않습니다. 패치를 적용하거나 되돌려 보는 검증용 사본에는 설치된 런타임·이웃 패키지·공유 캐시로 이어지는 쓰기 가능한 심볼릭 링크나 하드 링크를 두지 않습니다. 고칠 패키지는 실제 파일로 복사하고 HOME도 따로 둡니다.",
   "3. 바꾼 범위에 맞는 집중 검사(테스트·typecheck·lint)를 돌리고 결과를 남깁니다.",
   "4. 변경이 런타임이나 공개 문서에 닿으면 다음 patch 버전을 붙입니다. `cuelo-release-deploy` 스킬을 따라 CHANGELOG에 사용자가 알아볼 말로 `## [x.y.z]` 절을 쓰고, `Tools/CUELO_Setup`에서 `node files/set-release-version.js x.y.z`를 실행한 뒤, gate가 요구하는 대로 버전을 올린 다음에 `cross_review`를 돌립니다. 기록·HANDOFF만 바뀌면 버전은 그대로 둡니다.",
   "5. `git_integrate`(대상 main)로 게시하고, 그 커밋의 공개 CI 결과를 끝까지 확인합니다.",

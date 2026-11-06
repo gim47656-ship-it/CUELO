@@ -7,6 +7,7 @@ import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
 import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
+import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { addWorktree } from "@/lib/worktree";
 
@@ -22,8 +23,9 @@ declare global {
 /**
  * 야간 자율 개선 루프의 진입점(AGENTS.md 「Nightly self-improvement loop」). 클라우드의 시스템 타이머
  * `cuelo-nightly-improve.timer`(Tools/CUELO_Setup/cloud)가 매일 04:00(KST)에 부른다. `CUELO_NIGHTLY_INBOX_DIR`가 있으면
- * 받은편지함의 출처별 묶음과 저장소 origin/main HANDOFF의 「클라우드 점검」 항목으로, 없으면 이 기계의 기록으로 계획한다.
- * `?dryRun=1`은 계획과 프롬프트만 돌려주고 브랜치·worktree·세션은 만들지 않는다(받은편지함 모드의 `git fetch origin`은 한다).
+ * 받은편지함의 출처별 묶음, 저장소 origin/main HANDOFF의 「클라우드 점검」 항목, 공개 저장소 열린 이슈로 매일 계획하고(기존 기능
+ * 점검을 매일 맡긴다), 없으면 이 기계의 기록으로 계획한다. `?dryRun=1`은 계획과 프롬프트만 돌려주고 브랜치·worktree·세션은
+ * 만들지 않는다(받은편지함 모드의 `git fetch origin`과 이슈 읽기는 한다).
  */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
@@ -53,6 +55,8 @@ function describeJobs(jobs: NightlyJobs): string {
     jobs.handoff?.length ? `handoff ${jobs.handoff.join(", ")}` : null,
     jobs.skillHealth?.length ? `skill health ${jobs.skillHealth.join(", ")}` : null,
     jobs.labPromotions?.length ? `lab promotion ${jobs.labPromotions.join(", ")}` : null,
+    jobs.issueLookup ? `issues ${jobs.issueLookup}${jobs.issues?.length ? ` #${jobs.issues.join(", #")}` : ""}` : null,
+    jobs.improvementReview ? "existing-feature review" : null,
   ].filter(Boolean).join("; ");
 }
 
@@ -88,7 +92,10 @@ async function planAndRun(dryRun: boolean) {
       }
       // 저장소에 이미 정식 사본이 있는 실험 플러그인은 다시 승격하지 않는다(PC가 업데이트를 받기 전까지 묶음에 남는다).
       const promoted = repoOverride && handoffs?.base ? await readPromotedPluginIds(repoOverride, handoffs.base.sha) : new Set<string>();
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, handoffs, promoted);
+      // 공개 저장소 열린 이슈(읽기 전용, 인증 없음). 읽지 못하면 unavailable로 프롬프트에 그대로 싣는다.
+      const issues = await collectOpenIssues();
+      log(`issues: ${issues.status === "ok" ? `${issues.issues.length} open${issues.partial ? " (partial)" : ""}` : `unavailable (${issues.reason})`}`);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, promoted);
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);
