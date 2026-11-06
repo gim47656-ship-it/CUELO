@@ -21,6 +21,10 @@ if (!process.env.OMP_ACCOUNT_ORDER_ROOT) {
 	const temp = join(root, "temp");
 	mkdirSync(home);
 	mkdirSync(temp);
+	// 캐릭터 summon의 OAuth 좌석은 2026-11-06부터 PC 설정(`config.yml` `characterSeats`)에서 온다.
+	// 이 fixture는 임시 HOME을 쓰므로, summon 테스트가 위치 0/1을 보도록 좌석을 여기에 심는다.
+	mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+	writeFileSync(join(home, ".omp", "agent", "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n');
 	let exitCode = 1;
 	try {
 		const child = Bun.spawnSync([process.execPath, import.meta.path], {
