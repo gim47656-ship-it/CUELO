@@ -478,6 +478,8 @@ describe("셸 구분자와 중첩 명령", () => {
     ["timeout option wrapper push", "timeout -k 5 60 git push --force origin main"],
     ["timeout long option wrapper publish", "timeout --signal=KILL 60 npm publish"],
     ["time wrapper database", "time psql app -c \"TRUNCATE TABLE audit_log\""],
+    ["systemd scope git", "systemd-run --user --scope --nice 10 -- git reset --hard"],
+    ["npx shell git", "npx -c 'git reset --hard'"],
   ] as const;
 
   for (const [name, command] of cases) {

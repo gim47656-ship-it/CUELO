@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ActionButton, Badge, Switch } from "@seed-design/react";
 import { useI18n } from "@/hooks/useI18n";
+import { useTheme } from "@/hooks/useTheme";
 import type { LabPlugin } from "@/lib/plugin-lab";
 import type { ExtensionWidgetItem } from "@/lib/types";
 import { PanelHeader } from "./PanelHeader";
-import { LAB_PANEL_SANDBOX, createLabPanelHost, labLinesFor } from "./plugin-lab-bridge";
+import { LAB_PANEL_SANDBOX, createLabPanelHost, labLinesFor, type LabPanelTheme } from "./plugin-lab-bridge";
 import styles from "./PluginLabPanel.module.css";
 
 const OPEN_PANEL_KEY = "cuelo-plugin-lab-open";
@@ -151,13 +152,19 @@ export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsert
 
   const trialCount = plugins.filter((plugin) => plugin.origin === "trial" && !plugin.promoted).length;
   const promotedCount = plugins.filter((plugin) => plugin.origin === "promoted").length;
+  // A trial copy whose id was promoted is listed but never loads; it is neither counted as a trial nor hidden.
+  const shadowedCount = plugins.filter((plugin) => plugin.origin === "trial" && plugin.promoted).length;
   const showApplyHint = plugins.some((plugin) => plugin.hasExtension);
 
   return (
     <section className={styles.view} aria-label={title}>
       <PanelHeader
         title={title}
-        subtitle={list.kind === "ready" ? t("pluginLab.counts", { trial: trialCount, promoted: promotedCount }) : undefined}
+        subtitle={list.kind === "ready"
+          ? shadowedCount > 0
+            ? t("pluginLab.countsShadowed", { trial: trialCount, promoted: promotedCount, shadowed: shadowedCount })
+            : t("pluginLab.counts", { trial: trialCount, promoted: promotedCount })
+          : undefined}
         actions={[{ id: "refresh", label: t("pluginLab.refresh"), icon: REFRESH_ICON, onClick: () => void load() }]}
       />
       <div className={styles.toolbar}>
@@ -209,48 +216,60 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
 }) {
   const { t } = useI18n();
   const shadowed = plugin.origin === "trial" && plugin.promoted;
+  const active = plugin.enabled && !shadowed;
+  const shadowNoteId = useId();
   return (
-    <li className={styles.row} data-enabled={plugin.enabled && !shadowed ? "true" : "false"}>
-      <div className={styles.rowHead}>
-        <span className={styles.name}>{plugin.name}</span>
-        <span className={styles.id}>{plugin.id}</span>
-        <Badge size="medium" variant="weak" tone={plugin.origin === "promoted" ? "positive" : "neutral"}>
-          {plugin.origin === "promoted" ? t("pluginLab.promoted") : t("pluginLab.trial")}
-        </Badge>
-        <Switch.Root
-          className={styles.switch}
-          size="24"
-          tone="brand"
-          checked={plugin.enabled}
-          disabled={busy || shadowed}
-          onCheckedChange={onToggle}
-          aria-label={t("pluginLab.toggleLabel", { name: plugin.name })}
-        >
-          <Switch.HiddenInput />
-          <Switch.Control>
-            <Switch.Thumb />
-          </Switch.Control>
-          <Switch.Label className={styles.switchLabel}>{plugin.enabled ? t("pluginLab.on") : t("pluginLab.off")}</Switch.Label>
-        </Switch.Root>
+    <li className={styles.card} data-enabled={active ? "true" : "false"} aria-busy={busy || undefined}>
+      <div className={styles.cardHead}>
+        <div className={styles.titleBlock}>
+          <div className={styles.titleLine}>
+            <span className={styles.name} title={plugin.name}>{plugin.name}</span>
+            <Badge size="medium" variant="weak" tone={plugin.origin === "promoted" ? "positive" : "neutral"}>
+              {plugin.origin === "promoted" ? t("pluginLab.promoted") : t("pluginLab.trial")}
+            </Badge>
+          </div>
+          <span className={styles.id} title={plugin.id}>{plugin.id}</span>
+        </div>
+        <div className={styles.control}>
+          <Switch.Root
+            className={styles.switch}
+            size="24"
+            tone="brand"
+            checked={plugin.enabled}
+            disabled={busy || shadowed}
+            onCheckedChange={onToggle}
+            aria-label={t("pluginLab.toggleLabel", { name: plugin.name })}
+          >
+            <Switch.HiddenInput aria-describedby={shadowed ? shadowNoteId : undefined} />
+            <Switch.Label className={styles.switchLabel}>
+              {busy ? t("pluginLab.saving") : plugin.enabled ? t("pluginLab.on") : t("pluginLab.off")}
+            </Switch.Label>
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+          </Switch.Root>
+          {shadowed && <p id={shadowNoteId} className={styles.controlNote}>{t("pluginLab.shadowed")}</p>}
+        </div>
       </div>
       {plugin.description && <p className={styles.description}>{plugin.description}</p>}
       {plugin.tools.length > 0 && (
-        <p className={styles.meta}>
+        <div className={styles.tools}>
           <span className={styles.metaLabel}>{t("pluginLab.tools")}</span>
-          <span className={styles.tools}>{plugin.tools.join(", ")}</span>
-        </p>
+          <ul className={styles.toolList} aria-label={t("pluginLab.tools")}>
+            {plugin.tools.map((tool) => <li key={tool} className={styles.tool}>{tool}</li>)}
+          </ul>
+        </div>
       )}
-      {shadowed && <p className={styles.meta}>{t("pluginLab.shadowed")}</p>}
       {plugin.problem && (
         <p className={styles.problem}>
-          <span className={styles.metaLabel}>{t("pluginLab.problem")}</span>
+          <span className={styles.problemLabel}>{t("pluginLab.problem")}</span>
           <span>{plugin.problem}</span>
         </p>
       )}
       {error && <p className={styles.problem} role="alert">{t("pluginLab.toggleFailed", { error })}</p>}
       {canOpenPanel(plugin) && (
-        <div className={styles.rowActions}>
-          <ActionButton variant="neutralOutline" size="small" onClick={onOpen} aria-label={t("pluginLab.openPanelLabel", { name: plugin.name })}>
+        <div className={styles.cardActions}>
+          <ActionButton variant="neutralWeak" size="small" onClick={onOpen} aria-label={t("pluginLab.openPanelLabel", { name: plugin.name })}>
             {t("pluginLab.openPanel")}
           </ActionButton>
         </div>
@@ -267,13 +286,14 @@ function PluginPanelHost({ plugin, sessionId, labWidgets, onInsertDraft, onBack 
   onBack: () => void;
 }) {
   const { t } = useI18n();
+  const { theme } = useTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
   // Lines reported for another session (the report lags a session switch by one effect) are not shown.
   const lines = useMemo(
     () => (labWidgets.sessionId === sessionId ? labLinesFor(labWidgets.widgets, plugin.id) : []),
     [labWidgets, sessionId, plugin.id],
   );
-  const stateRef = useRef<{ sessionId: string | null; lines: string[] }>({ sessionId: null, lines: [] });
+  const stateRef = useRef<{ sessionId: string | null; lines: string[]; theme: LabPanelTheme }>({ sessionId: null, lines: [], theme: "light" });
   const insertRef = useRef(onInsertDraft);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -312,27 +332,36 @@ function PluginPanelHost({ plugin, sessionId, labWidgets, onInsertDraft, onBack 
   }, [host]);
 
   useEffect(() => {
-    stateRef.current = { sessionId, lines };
+    stateRef.current = { sessionId, lines, theme };
     host.publishState();
-  }, [host, sessionId, lines]);
+  }, [host, sessionId, lines, theme]);
 
   return (
     <section className={styles.view} aria-label={t("pluginLab.frameTitle", { name: plugin.name })}>
       <PanelHeader
         back={{ label: t("pluginLab.back"), onClick: onBack }}
         title={plugin.name}
+        titleAdornment={(
+          <Badge size="medium" variant="weak" tone={plugin.origin === "promoted" ? "positive" : "neutral"}>
+            {plugin.origin === "promoted" ? t("pluginLab.promoted") : t("pluginLab.trial")}
+          </Badge>
+        )}
         subtitle={t("pluginLab.panelSubtitle", { id: plugin.id })}
       />
-      <iframe
-        ref={frameRef}
-        className={styles.frame}
-        title={t("pluginLab.frameTitle", { name: plugin.name })}
-        src={`${API}/${encodeURIComponent(plugin.id)}/panel`}
-        sandbox={LAB_PANEL_SANDBOX}
-        referrerPolicy="no-referrer"
-      />
+      <div className={styles.stage}>
+        <iframe
+          ref={frameRef}
+          className={styles.frame}
+          title={t("pluginLab.frameTitle", { name: plugin.name })}
+          src={`${API}/${encodeURIComponent(plugin.id)}/panel`}
+          sandbox={LAB_PANEL_SANDBOX}
+          referrerPolicy="no-referrer"
+        />
+      </div>
       <div className={styles.status}>
-        <span className={styles.lines}>{lines.length > 0 ? t("pluginLab.lines", { count: lines.length }) : t("pluginLab.noLines")}</span>
+        <span className={styles.lines} data-live={lines.length > 0 ? "true" : "false"}>
+          {lines.length > 0 ? t("pluginLab.lines", { count: lines.length }) : t("pluginLab.noLines")}
+        </span>
         <span role="status" className={styles.notice}>{notice}</span>
       </div>
     </section>

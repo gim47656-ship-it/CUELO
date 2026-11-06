@@ -121,3 +121,4 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A35 | 수치 셋 이상이면 Mermaid 차트 | 안내 | `extensions/report-chart-guard.ts`, `extensions/tests/report-chart-guard.test.ts` | 2026-10-19 누락 뒤 승격됨 |
 | A36 | 규칙은 실제로 할 때만 연다 | 구조 | core system prompt `<domain-rules>`(설명만 싣고 본문은 `rule://`로 읽음) | |
 | A37 | 요청 뒤 목표를 실행 조건·대기·완료 증거에 연결하고 작은 요청은 작게 처리 | 문서 | `AGENTS.md` 「착수 계약과 Skill」·「진행과 대기」 | 11-05 조사에서 목표를 이미 인지한 뒤 놓친 두 사례 확인. 오타 수정 범위는 확인했으나 목표 유지 개선은 미입증이다. 오푸스 후속 비교에서는 공용 학습 혼입·중간 지침 재구성으로 비교 수용을 보류했고 승인된 시험 부작용 복구를 완료했다. 자동 차단·목표 판정기는 추가하지 않는다. 평가 근거와 한계는 `../../doc/history/2026/11/05-goal-retention-stage2/main.md` |
+| A38 | 무거운 빌드·작업은 PC 전체 메모리를 넘기도록 겹치지 않는다(근거 없는 낮은 상한으로 단일 작업을 늦추지 않음) | 차단(부분) | `extensions/command-guard/build-concurrency.ts`, `extensions/command-guard/build-reservations.ts` | 2026-10-17 지적(기억 `25494699ff0ba595`), 2026-11-06 두 Maker 동시 `next build`로 집 PC 재부팅. Next 프로덕션 빌드만 막고 테스트·DB 집계 등 다른 무거운 작업은 문서 |

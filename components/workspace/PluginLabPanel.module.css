@@ -1,6 +1,7 @@
-/* Plugin view of the auxiliary deck. Same tokens, header and density as the
-   other deck views (process log, subagents): 13px rows, muted metadata inline,
-   status as text beside its colour. */
+/* Plugin view of the auxiliary deck. Same tokens and header as the other deck
+   views; each plugin is one card so its state, tools and problems read as a
+   unit. Surface radius and hairlines follow the app (`--radius-surface`,
+   `--radius-control`); status colour always sits beside its text. */
 
 .view {
   display: flex;
@@ -8,6 +9,9 @@
   flex-direction: column;
   min-block-size: 0;
   min-inline-size: 0;
+  /* Korean breaks between words, not between syllables; a long unbroken id or path still wraps. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .toolbar {
@@ -15,7 +19,7 @@
   flex: none;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
   border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
 }
@@ -26,6 +30,7 @@
   margin: 0;
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t2-static);
+  line-height: var(--seed-line-height-t3-static);
 }
 
 .body {
@@ -40,9 +45,10 @@
   align-items: flex-start;
   gap: var(--seed-dimension-x2);
   margin: 0;
-  padding: var(--seed-dimension-x3);
+  padding: var(--seed-dimension-x4) var(--seed-dimension-x3);
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t4-static);
+  line-height: var(--seed-line-height-t5-static);
 }
 
 .errorText {
@@ -52,20 +58,51 @@
 }
 
 .list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x2);
   margin: 0;
-  padding: 0;
+  padding: var(--seed-dimension-x3);
   list-style: none;
 }
 
-.row {
+/* One plugin */
+.card {
   display: flex;
   flex-direction: column;
-  gap: var(--seed-dimension-x1);
-  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+  padding: var(--seed-dimension-x3);
+  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border-radius: var(--radius-surface);
+  background: var(--seed-color-bg-layer-default);
+  transition: border-color var(--seed-duration-color-transition) var(--seed-timing-function-easing);
 }
 
-.rowHead {
+.card[data-enabled="false"] {
+  background: transparent;
+}
+
+.card[aria-busy="true"] {
+  border-color: var(--seed-color-stroke-neutral-muted);
+}
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x3);
+  min-inline-size: 0;
+}
+
+.titleBlock {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--seed-dimension-x0_5);
+  min-inline-size: 0;
+}
+
+.titleLine {
   display: flex;
   align-items: center;
   gap: var(--seed-dimension-x1_5);
@@ -77,18 +114,18 @@
   min-inline-size: 0;
   overflow: hidden;
   color: var(--seed-color-fg-neutral);
-  font-size: var(--seed-font-size-t4-static);
+  font-size: var(--seed-font-size-t5-static);
   font-weight: 600;
+  line-height: var(--seed-line-height-t5-static);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.row[data-enabled="false"] .name {
+.card[data-enabled="false"] .name {
   color: var(--seed-color-fg-neutral-muted);
 }
 
 .id {
-  flex: 0 1 auto;
   min-inline-size: 0;
   overflow: hidden;
   color: var(--seed-color-fg-neutral-subtle);
@@ -98,15 +135,35 @@
   white-space: nowrap;
 }
 
+.control {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--seed-dimension-x1);
+  max-inline-size: 45%;
+}
+
 .switch {
   flex: none;
-  margin-inline-start: auto;
+  gap: var(--seed-dimension-x1_5);
+  padding-block-start: var(--seed-dimension-x0_5);
+}
+
+.controlNote {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  line-height: var(--seed-line-height-t3-static);
+  text-align: end;
 }
 
 .switchLabel {
-  min-inline-size: 2.5em;
+  min-inline-size: 3.5em;
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 
 .description {
@@ -117,41 +174,84 @@
   overflow-wrap: anywhere;
 }
 
-.meta,
-.problem {
+.tools {
   display: flex;
-  gap: var(--seed-dimension-x1_5);
-  margin: 0;
-  color: var(--seed-color-fg-neutral-muted);
-  font-size: var(--seed-font-size-t2-static);
-  overflow-wrap: anywhere;
-}
-
-.problem {
-  color: var(--seed-color-fg-critical);
+  align-items: baseline;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
 }
 
 .metaLabel {
   flex: none;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: 500;
+}
+
+.toolList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--seed-dimension-x1);
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool {
+  max-inline-size: 100%;
+  overflow: hidden;
+  padding: 0 var(--seed-dimension-x1_5);
+  border-radius: var(--radius-control);
+  background: var(--seed-color-bg-neutral-weak);
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem {
+  display: flex;
+  gap: var(--seed-dimension-x1_5);
+  margin: 0;
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x2);
+  border-radius: var(--radius-control);
+  background: var(--seed-color-bg-critical-weak);
+  color: var(--seed-color-fg-critical);
+  font-size: var(--seed-font-size-t2-static);
+  line-height: var(--seed-line-height-t3-static);
+  overflow-wrap: anywhere;
+}
+
+.problemLabel {
+  flex: none;
   font-weight: 600;
 }
 
-.tools {
-  min-inline-size: 0;
-  font-family: var(--font-mono);
+.cardActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-start: var(--seed-dimension-x0_5);
+  padding-block-start: var(--seed-dimension-x2);
+  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
 }
 
-.rowActions {
+/* Open panel: the plugin's own page fills the deck between header and status line. */
+.stage {
   display: flex;
-  padding-block-start: var(--seed-dimension-x0_5);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x2) 0;
 }
 
 .frame {
   flex: 1 1 auto;
   min-block-size: 12rem;
   inline-size: 100%;
-  border: 0;
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
+  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border-radius: var(--radius-surface);
   background: var(--seed-color-bg-layer-default);
   color-scheme: normal;
 }
@@ -160,19 +260,41 @@
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
-  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x3);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t2-static);
 }
 
 .lines {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1_5);
   font-variant-numeric: tabular-nums;
+}
+
+.lines::before {
+  content: "";
+  flex: none;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--seed-color-fg-neutral-subtle);
+}
+
+.lines[data-live="true"]::before {
+  background: var(--seed-color-fg-positive);
 }
 
 .notice {
   min-inline-size: 0;
   color: var(--seed-color-fg-neutral);
   overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: none;
+  }
 }

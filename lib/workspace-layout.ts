@@ -3,7 +3,7 @@
  * 사용자가 이미 누르던 숫자가 다른 보기를 가리키게 된다. 덱 자체의 탭 순서는
  * WORKSPACE_PANEL_VIEW_IDS가 따로 정한다.
  */
-export const WORKSPACE_VIEW_IDS = ["chat", "process", "subagents", "files", "resource", "sidechat", "efficiency", "plugins"] as const;
+export const WORKSPACE_VIEW_IDS = ["chat", "process", "subagents", "files", "resource", "sidechat", "efficiency", "plugins", "memory"] as const;
 export type WorkspaceViewId = (typeof WORKSPACE_VIEW_IDS)[number];
 
 /**
@@ -11,7 +11,7 @@ export type WorkspaceViewId = (typeof WORKSPACE_VIEW_IDS)[number];
  * shows them. They all share that one panel region, so selecting one replaces
  * the previous one.
  */
-export const WORKSPACE_PANEL_VIEW_IDS = ["process", "efficiency", "subagents", "files", "resource", "sidechat", "plugins"] as const;
+export const WORKSPACE_PANEL_VIEW_IDS = ["process", "efficiency", "subagents", "files", "resource", "sidechat", "plugins", "memory"] as const;
 export type WorkspacePanelViewId = (typeof WORKSPACE_PANEL_VIEW_IDS)[number];
 
 export const WORKSPACE_RESOURCE_TABS = ["characters", "usage", "models"] as const;

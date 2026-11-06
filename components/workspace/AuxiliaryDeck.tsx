@@ -36,6 +36,8 @@ export interface AuxiliaryDeckProps {
   efficiencySlot: ReactNode;
   /** Plugin Lab: trial and promoted plugins and their sandboxed panels. */
   pluginsSlot: ReactNode;
+  /** Memory trace: how the selected session found memories and doc-map documents. */
+  memorySlot: ReactNode;
   visible?: boolean;
   onClose?: () => void;
   onReturnFocus?: () => void;
@@ -68,6 +70,7 @@ export function AuxiliaryDeck({
   resourceSlot,
   efficiencySlot,
   pluginsSlot,
+  memorySlot,
   visible = true,
   onClose,
   onReturnFocus,
@@ -175,6 +178,10 @@ export function AuxiliaryDeck({
 
         <Tabs.Content value="plugins" className="auxiliary-deck-panel">
           {pluginsSlot}
+        </Tabs.Content>
+
+        <Tabs.Content value="memory" className="auxiliary-deck-panel">
+          {memorySlot}
         </Tabs.Content>
       </Tabs.Root>
     </aside>

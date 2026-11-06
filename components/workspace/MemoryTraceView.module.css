@@ -1,0 +1,717 @@
+/* Memory trace view of the auxiliary deck. Uses the deck's header, surface tokens and
+   hairlines like the other views. The signature is the trace rail: six stations in
+   request order, filled when that step happened and dashed when it was skipped, so a
+   doc-map candidate that was never opened reads as a gap in the line. Graph node colour
+   always pairs with a distinct shape and a legend label. */
+
+.view {
+  --trace-memory: var(--seed-color-palette-purple-500);
+  --trace-doc: var(--seed-color-palette-green-500);
+  --trace-file: var(--seed-color-palette-carrot-500);
+  --trace-request: var(--seed-color-fg-neutral);
+  --trace-rail: var(--seed-color-fg-informative);
+  --trace-row: 30px;
+
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+  background: var(--bg-panel);
+  container: trace / inline-size;
+}
+
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--seed-dimension-x4);
+  min-block-size: 0;
+  padding-block: var(--seed-dimension-x3) var(--seed-dimension-x6);
+  overflow-y: auto;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--seed-dimension-x2);
+  margin: 0;
+  padding: var(--seed-dimension-x1) var(--seed-dimension-x3);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t4-static);
+  line-height: var(--seed-line-height-t5-static);
+}
+
+.errorText {
+  margin: 0;
+  color: var(--seed-color-fg-critical);
+  overflow-wrap: anywhere;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+  margin: 0 0 var(--seed-dimension-x2);
+  padding-inline: var(--seed-dimension-x3);
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+  font-weight: var(--seed-font-weight-bold);
+  line-height: var(--seed-line-height-t4-static);
+}
+
+.sectionCount {
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: var(--seed-font-weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Requests: compact rows, newest first, with the rail in miniature at the end. */
+.requests {
+  flex: none;
+}
+
+.requestScroller {
+  position: relative;
+}
+
+/* More rows below: fade the last visible row so the cut reads as scrollable. */
+.requestScroller[data-more="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: calc(var(--trace-row) * 1.2);
+  background: linear-gradient(to bottom, transparent, var(--bg-panel));
+  pointer-events: none;
+}
+
+.requestList {
+  max-block-size: calc(var(--trace-row) * 6.5);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border-block: 1px solid var(--seed-color-stroke-neutral-weak);
+  list-style: none;
+}
+
+.requestRow {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  inline-size: 100%;
+  min-block-size: var(--trace-row);
+  padding: 0 var(--seed-dimension-x3);
+  border: 0;
+  background: transparent;
+  color: var(--seed-color-fg-neutral);
+  font: inherit;
+  font-size: var(--seed-font-size-t3-static);
+  text-align: start;
+  cursor: pointer;
+}
+
+.requestRow:hover {
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.requestRow[aria-current="true"] {
+  background: var(--seed-color-bg-transparent-selected);
+  box-shadow: inset 2px 0 0 var(--trace-rail);
+}
+
+.requestRow:focus-visible,
+.stationButton:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring);
+  outline-offset: -2px;
+}
+
+.requestIndex,
+.requestTime {
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+}
+
+.requestIndex {
+  min-inline-size: 2.5ch;
+}
+
+.noticeChip {
+  display: inline-block;
+  margin-inline-end: var(--seed-dimension-x1_5);
+  padding: 0 var(--seed-dimension-x1_5);
+  border-radius: var(--radius-control);
+  background: var(--seed-color-bg-neutral-weak);
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t1-static);
+  line-height: 1.6;
+  vertical-align: 1px;
+}
+
+.requestPreview {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miniRail {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.miniRail > span {
+  inline-size: 8px;
+  block-size: 4px;
+  border-radius: 1px;
+  background: var(--seed-color-stroke-neutral-weak);
+}
+
+.miniRail > span[data-on="true"] {
+  background: var(--trace-rail);
+}
+
+/* Flow: the selected request's six stations. */
+.flow {
+  flex: none;
+}
+
+.titleText {
+  flex: none;
+  white-space: nowrap;
+}
+
+.flowPreview {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral-muted);
+  font-weight: var(--seed-font-weight-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin: 0;
+  padding: 0 var(--seed-dimension-x3);
+  list-style: none;
+}
+
+.station {
+  position: relative;
+  min-inline-size: 0;
+}
+
+/* The track: a segment on top of each station, solid when the step happened. */
+.station::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 9px;
+  inset-inline: 0;
+  border-block-start: 2px dashed var(--seed-color-stroke-neutral-muted);
+}
+
+.station[data-filled="true"]::before {
+  border-block-start-style: solid;
+  border-block-start-color: var(--trace-rail);
+}
+
+.stationButton {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  inline-size: 100%;
+  min-block-size: 76px;
+  padding: 0 var(--seed-dimension-x1_5) var(--seed-dimension-x2) 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--seed-color-fg-neutral-muted);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.stationStep {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 20px;
+  block-size: 20px;
+  margin-block-end: var(--seed-dimension-x1);
+  border: 1.5px dashed var(--seed-color-stroke-neutral-muted);
+  border-radius: 50%;
+  background: var(--bg-panel);
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.station[data-filled="true"] .stationStep {
+  border-style: solid;
+  border-color: var(--trace-rail);
+  color: var(--seed-color-fg-neutral);
+}
+
+.station[data-open="true"] .stationStep {
+  background: var(--trace-rail);
+  color: var(--seed-color-fg-neutral-inverted);
+}
+
+.stationCount {
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t6-static);
+  font-weight: var(--seed-font-weight-bold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.station[data-filled="true"] .stationCount {
+  color: var(--seed-color-fg-neutral);
+}
+
+.stationLabel {
+  max-inline-size: 100%;
+  overflow: hidden;
+  font-size: var(--seed-font-size-t2-static);
+  line-height: var(--seed-line-height-t2-static);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.station[data-open="true"] .stationLabel {
+  color: var(--seed-color-fg-neutral);
+  font-weight: var(--seed-font-weight-bold);
+}
+
+.stationNote {
+  max-inline-size: 100%;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stationButton:hover .stationLabel {
+  color: var(--seed-color-fg-neutral);
+}
+
+/* Detail of the open station. */
+.detail {
+  margin: var(--seed-dimension-x1) var(--seed-dimension-x3) 0;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border-radius: var(--radius-surface);
+  background: var(--seed-color-bg-layer-default);
+  max-block-size: 22rem;
+  overflow-y: auto;
+}
+
+.stageEmpty {
+  margin: 0;
+  padding: var(--seed-dimension-x2) 0;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.group + .group {
+  margin-block-start: var(--seed-dimension-x3);
+  padding-block-start: var(--seed-dimension-x3);
+  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.bucket + .bucket {
+  margin-block-start: var(--seed-dimension-x2);
+}
+
+.groupTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+  margin: 0 0 var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: var(--seed-font-weight-bold);
+}
+
+.groupCode {
+  color: var(--seed-color-fg-neutral-subtle);
+  font-family: var(--font-mono);
+  font-weight: var(--seed-font-weight-regular);
+}
+
+.query {
+  margin: 0 0 var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t3-static);
+  overflow-wrap: anywhere;
+}
+
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  padding: var(--seed-dimension-x1_5) var(--seed-dimension-x1);
+  border-radius: var(--radius-control);
+}
+
+.item + .item {
+  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+}
+
+.item[data-focused="true"],
+.group[data-focused="true"],
+.idList > li[data-focused="true"] {
+  background: var(--seed-color-bg-transparent-selected);
+  box-shadow: inset 2px 0 0 var(--trace-rail);
+}
+
+.item[data-skipped="true"] .path {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  min-inline-size: 0;
+}
+
+.memoryId {
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+}
+
+.itemMeta {
+  margin: 0;
+  color: var(--seed-color-fg-neutral-subtle);
+  font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+}
+
+.itemText {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: var(--seed-line-height-t3-static);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.itemText[data-empty="true"] {
+  color: var(--seed-color-fg-neutral-subtle);
+}
+
+.path {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--seed-dimension-x1);
+  margin: 0 0 var(--seed-dimension-x1);
+  padding: 0;
+  list-style: none;
+}
+
+.idList > li {
+  padding: 1px var(--seed-dimension-x1_5);
+  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border-radius: var(--radius-control);
+}
+
+/* Graph */
+.graph {
+  flex: none;
+}
+
+.graphHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+  padding-inline-end: var(--seed-dimension-x3);
+}
+
+.graphHead .sectionTitle {
+  margin-block-end: 0;
+}
+
+.scopeSwitch {
+  flex: none;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
+  margin: var(--seed-dimension-x2) 0;
+  padding: 0 var(--seed-dimension-x3);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  list-style: none;
+}
+
+.legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+}
+
+.legend > li[data-kind="memory"] .legendMark { fill: var(--trace-memory); }
+.legend > li[data-kind="doc"] .legendMark { fill: var(--trace-doc); }
+.legend > li[data-kind="file"] .legendMark { fill: var(--trace-file); }
+.legend > li[data-kind="request"] .legendMark { fill: none; stroke: var(--trace-request); stroke-width: 1.5; }
+
+.legend > li[data-kind^="edge"] line {
+  stroke: var(--seed-color-fg-neutral-subtle);
+  stroke-width: 2;
+}
+
+.legend > li[data-kind="edge-recalled"] line { stroke: var(--trace-memory); }
+.legend > li[data-kind="edge-lesson"] line { stroke: var(--trace-file); }
+.legend > li[data-kind="edge-candidate"] line { stroke-dasharray: 3 3; }
+
+.legend + .legend {
+  margin-block-start: 0;
+}
+
+.legendTitle {
+  color: var(--seed-color-fg-neutral-subtle);
+}
+
+.legendMemory {
+  fill: var(--trace-memory);
+}
+
+/* Full text of the pointed node; fixed two-line height so pointing never shifts the graph. */
+.graphCaption {
+  display: -webkit-box;
+  min-block-size: calc(2 * 1.45em);
+  margin: 0 var(--seed-dimension-x3) var(--seed-dimension-x2);
+  overflow: hidden;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.graphCaption:empty,
+.graphCaption:not(:has(.captionKind)) {
+  color: var(--seed-color-fg-neutral-subtle);
+}
+
+.captionKind {
+  margin-inline-end: var(--seed-dimension-x1_5);
+  color: var(--seed-color-fg-neutral-subtle);
+  font-weight: var(--seed-font-weight-bold);
+}
+
+.graphFrame {
+  margin-inline: var(--seed-dimension-x3);
+  min-inline-size: 0;
+  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border-radius: var(--radius-surface);
+  background: var(--seed-color-bg-layer-default);
+  overflow: hidden;
+}
+
+.graphFrame > .stageEmpty {
+  padding: var(--seed-dimension-x4) var(--seed-dimension-x3);
+}
+
+.graphSvg {
+  display: block;
+  font-family: var(--seed-font-family);
+}
+
+.columnHeads text {
+  fill: var(--seed-color-fg-neutral-subtle);
+  font-size: 11px;
+}
+
+.edges path {
+  fill: none;
+  stroke: var(--seed-color-stroke-neutral-muted);
+  stroke-width: 1.25;
+  transition: opacity 120ms var(--seed-timing-function-easing), stroke 120ms var(--seed-timing-function-easing);
+}
+
+/* Recall lines carry the memory colour so the fan from a request reads as "recalled". */
+.edges path[data-kind="recalled"] {
+  stroke: var(--trace-memory);
+  stroke-opacity: 0.7;
+}
+
+.edges path[data-kind="explicit"] {
+  stroke: var(--trace-memory);
+  stroke-width: 1.75;
+}
+
+.edges path[data-kind="opened"] {
+  stroke: var(--seed-color-fg-neutral-subtle);
+  stroke-width: 1.5;
+}
+
+/* Dotted is reserved for doc-map candidates that were never opened. */
+.edges path[data-kind="candidate"] {
+  stroke: var(--seed-color-fg-neutral-subtle);
+  stroke-dasharray: 3 3;
+}
+
+/* Pre-edit lessons: request → edited file → the memory shown before the edit, solid in the file colour. */
+.edges path[data-kind="edited"],
+.edges path[data-kind="lesson"] {
+  stroke: var(--trace-file);
+  stroke-width: 1.5;
+}
+
+.edges path[data-dim="true"] {
+  opacity: 0.15;
+}
+
+.edges path[data-on="true"] {
+  stroke-opacity: 1;
+  stroke-width: 2.5;
+}
+
+.node {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms var(--seed-timing-function-easing);
+}
+
+/* Session scope only: nodes not linked to the selected request (or the pointed node) step back. */
+.node[data-dim="true"] {
+  opacity: 0.55;
+}
+
+.hit {
+  fill: transparent;
+  rx: 4px;
+}
+
+.node[data-kind="memory"] .mark { fill: var(--trace-memory); }
+.node[data-kind="doc"] .mark { fill: var(--trace-doc); }
+.node[data-kind="file"] .mark { fill: var(--trace-file); }
+
+/* Opened and edited: one doc square with the edited-file colour as its outline. */
+.node[data-edited="true"] .mark,
+.legend > li[data-kind="edited"] .legendMark {
+  fill: var(--trace-doc);
+  stroke: var(--trace-file);
+  stroke-width: 2;
+}
+
+.arrow {
+  fill: var(--trace-file);
+}
+
+.node[data-kind="request"] .mark {
+  fill: var(--seed-color-bg-layer-default);
+  stroke: var(--trace-request);
+  stroke-width: 1.25;
+}
+
+.node[data-kind="request"][data-current="true"] .mark {
+  fill: var(--trace-rail);
+  stroke: var(--trace-rail);
+}
+
+.nodeText {
+  fill: var(--seed-color-fg-neutral-muted);
+  font-size: 12px;
+}
+
+.node[data-kind="request"] .nodeText {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.node[data-kind="request"][data-current="true"] .nodeText {
+  fill: var(--seed-color-fg-neutral-inverted);
+}
+
+.node:focus-visible .hit {
+  stroke: var(--seed-color-stroke-focus-ring);
+  stroke-width: 2;
+}
+
+/* Lit: the pointed node and its neighbours. Colour only, so wrapped label widths never change. */
+.node[data-on="true"] .nodeText {
+  fill: var(--seed-color-fg-neutral);
+}
+
+.node:hover .hit,
+.node:focus-visible .hit {
+  fill: var(--seed-color-bg-transparent-selected);
+}
+
+/* JEV verdict ring around a recalled memory. */
+.ring {
+  fill: none;
+  stroke-width: 2;
+}
+
+[data-verdict="apply"] .ring { stroke: var(--seed-color-fg-positive); }
+[data-verdict="excepted"] .ring { stroke: var(--seed-color-fg-warning); }
+[data-verdict="conflict"] .ring { stroke: var(--seed-color-fg-critical); }
+[data-verdict="unconfirmed"] .ring { stroke: var(--seed-color-fg-informative); stroke-dasharray: 3 2; }
+[data-verdict="unlisted"] .ring { stroke: var(--seed-color-fg-neutral-subtle); stroke-width: 1.25; stroke-dasharray: 2 2; }
+
+/* Narrow deck: six stations wrap to three per row, then two. */
+@container trace (max-width: 520px) {
+  .rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    row-gap: var(--seed-dimension-x2);
+  }
+}
+
+@container trace (max-width: 300px) {
+  .rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .requestTime {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edges path,
+  .node {
+    transition: none;
+  }
+}

@@ -1,28 +1,320 @@
 <!doctype html>
+<html lang="ko">
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>목표 레인</title>
 <style>
-  body { font: 13px/1.5 system-ui, sans-serif; margin: 8px; color: #222; }
-  pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
-  .ok { color: #1a7f37; }
-  .self { color: #9a6700; }
-  .none { color: #cf222e; }
+  /* Hallmark · component: plugin panel · genre: modern-minimal · theme: host (CUELO SEED tokens)
+   * pre-emit critique: P4 H4 E4 S4 R5 V4
+   * Colours are the CUELO app's resolved SEED tokens (light and dark). The host sends its
+   * resolved mode as `theme`; before that, or from an older host, the OS scheme decides. */
+  :root {
+    --bg: #fff;
+    --surface: #f7f8f9;
+    --track: #f3f4f5;
+    --line: #dcdee3;
+    --ink: #1a1c20;
+    --ink-2: #555d6d;
+    --ink-3: #868b94;
+    --ok: #079171;
+    --ok-bg: #edfaf6;
+    --ok-line: #b9e9d2;
+    --info: #217cf9;
+    --info-bg: #eff6ff;
+    --info-line: #cbdffa;
+    --warn: #9b7821;
+    --warn-bg: #fff7de;
+    --warn-line: #fbdc65;
+    --focus: #5e98fe;
+    --font: "Wanted Sans Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Noto Sans KR", "Noto Sans", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16171b; --surface: #1d2025; --track: #2b2e35; --line: #393d46;
+      --ink: #f3f4f5; --ink-2: #dcdee3; --ink-3: #b0b3ba;
+      --ok: #22b27f; --ok-bg: #202926; --ok-line: #20493b;
+      --info: #41a2f9; --info-bg: #202742; --info-line: #1a4275;
+      --warn: #ca901c; --warn-bg: #302819; --warn-line: #543e15;
+      --focus: #1e82eb;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16171b; --surface: #1d2025; --track: #2b2e35; --line: #393d46;
+    --ink: #f3f4f5; --ink-2: #dcdee3; --ink-3: #b0b3ba;
+    --ok: #22b27f; --ok-bg: #202926; --ok-line: #20493b;
+    --info: #41a2f9; --info-bg: #202742; --info-line: #1a4275;
+    --warn: #ca901c; --warn-bg: #302819; --warn-line: #543e15;
+    --focus: #1e82eb;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.5 var(--font);
+    -webkit-font-smoothing: antialiased;
+    /* Korean breaks between words; a long unbroken id or path still wraps. */
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+  }
+  main {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+    min-width: 0;
+  }
+
+  .label {
+    margin: 0;
+    color: var(--ink-3);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  /* Goal */
+  .goal { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .goal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .size {
+    flex: none;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink-2);
+    font: 11px/18px var(--mono);
+  }
+  .goal-text {
+    margin: 0;
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  /* Progress: one segment per deliverable, in its state colour */
+  .progress { display: flex; flex-direction: column; gap: 8px; }
+  .progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .tally { margin: 0; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .tally strong { color: var(--ink); font-size: 15px; font-weight: 600; }
+  .bar { display: flex; gap: 3px; height: 8px; }
+  .seg { flex: 1 1 0; min-width: 6px; border-radius: 2px; background: var(--track); }
+  .seg[data-state="checked"] { background: var(--ok); }
+  .seg[data-state="exists"] { background: var(--info); }
+  .seg[data-state="self"] { background: var(--warn); }
+
+  /* Deliverables */
+  .items { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px; }
+  .item + .item { border-top: 1px solid var(--line); }
+  .item-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .item-id {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    color: var(--ink-3);
+    font: 11px/1.5 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item-what { margin: 0; min-width: 0; color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+  .item-check, .item-proof { grid-column: 1 / -1; margin: 0; color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
+  .item-check span, .item-proof span { color: var(--ink-3); }
+  .item-proof {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--surface);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: start;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 3px; background: currentColor; }
+  .chip[data-state="checked"] { border-color: var(--ok-line); background: var(--ok-bg); color: var(--ok); }
+  .chip[data-state="exists"] { border-color: var(--info-line); background: var(--info-bg); color: var(--info); }
+  .chip[data-state="self"] { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn); }
+  .chip[data-state="none"] { color: var(--ink-3); }
+
+  /* Conditions: what the user said beside what the agent added */
+  .conditions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  @media (min-width: 520px) { .conditions.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  .cond { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border-radius: 8px; background: var(--surface); }
+  .cond ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding-left: 16px; }
+  .cond li { overflow-wrap: anywhere; }
+  .cond[data-kind="assumed"] li { color: var(--ink-2); }
+
+  .extra { margin: 0; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .empty { display: flex; flex-direction: column; gap: 4px; padding: 24px 16px; }
+  .empty-title { margin: 0; color: var(--ink); font-size: 14px; font-weight: 600; }
+  .empty-hint { margin: 0; color: var(--ink-2); }
+  .empty-hint code { font: 12px var(--mono); }
 </style>
-<pre id="out">목표 레인: 아직 frame이 없습니다.</pre>
+<main id="root" aria-live="polite">
+  <div class="empty">
+    <p class="empty-title">아직 세운 목표가 없습니다</p>
+    <p class="empty-hint">에이전트가 <code>lab_goal</code>로 목표를 세우면 산출물과 확인 상태가 여기에 나타납니다.</p>
+  </div>
+</main>
 <script>
+  "use strict";
+  // Reads the lines goal-lane's frameLines() writes (index.ts). Lines it does not recognise
+  // are shown as plain text at the end, so a format change degrades instead of vanishing.
+  const STATES = { "확인됨": "checked", "파일 존재만": "exists", "자기 보고만": "self", "근거 없음": "none" };
+  const DELIVERABLE = /^\[(확인됨|파일 존재만|자기 보고만|근거 없음)\] ([^:]+): ([\s\S]*)$/;
+  const PROOF = / — (file|command|url|observation): ([\s\S]*)$/;
+  const PROOF_LABEL = { file: "파일", command: "명령", url: "URL", observation: "관측" };
+
+  function parse(lines) {
+    const model = { goal: "", size: "", explicit: [], assumed: [], items: [], extra: [] };
+    for (const raw of lines) {
+      const line = String(raw);
+      let match;
+      if (line.startsWith("목표: ")) model.goal = line.slice(4);
+      else if (line.startsWith("크기: ")) model.size = line.slice(4);
+      else if (line.startsWith("사용자 명시: ")) model.explicit = line.slice(7).split(" / ");
+      else if (line.startsWith("Main 가정: ")) model.assumed = line.slice(9).split(" / ");
+      else if ((match = DELIVERABLE.exec(line))) {
+        let rest = match[3];
+        let proof = null;
+        const proofMatch = PROOF.exec(rest);
+        if (proofMatch) {
+          proof = { kind: proofMatch[1], detail: proofMatch[2] };
+          rest = rest.slice(0, proofMatch.index);
+        }
+        const cut = rest.indexOf(" — 확인: ");
+        model.items.push({
+          state: STATES[match[1]],
+          label: match[1],
+          id: match[2],
+          what: cut >= 0 ? rest.slice(0, cut) : rest,
+          check: cut >= 0 ? rest.slice(cut + 7) : "",
+          proof,
+        });
+      } else if (line.trim()) model.extra.push(line);
+    }
+    return model;
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function labelled(className, label, text) {
+    const node = el("p", className);
+    node.append(el("span", "", label + " "), document.createTextNode(text));
+    return node;
+  }
+
+  function render(lines) {
+    const root = document.getElementById("root");
+    const model = parse(lines);
+    if (!model.goal && !model.items.length && !model.extra.length) {
+      root.replaceChildren(...emptyNodes.map((node) => node.cloneNode(true)));
+      return;
+    }
+    root.replaceChildren();
+
+    if (model.goal) {
+      const goal = el("section", "goal");
+      const head = el("div", "goal-head");
+      head.append(el("h2", "label", "목표"));
+      if (model.size) head.append(el("span", "size", model.size));
+      goal.append(head, el("p", "goal-text", model.goal));
+      root.append(goal);
+    }
+
+    if (model.items.length) {
+      const done = model.items.filter((item) => item.state === "checked").length;
+      const progress = el("section", "progress");
+      const head = el("div", "progress-head");
+      const tally = el("p", "tally");
+      tally.append(el("strong", "", String(done)), document.createTextNode(` / ${model.items.length} 확인됨`));
+      head.append(el("h2", "label", "산출물"), tally);
+      const bar = el("div", "bar");
+      bar.setAttribute("aria-hidden", "true");
+      for (const item of model.items) {
+        const seg = el("span", "seg");
+        seg.dataset.state = item.state;
+        seg.title = `${item.id}: ${item.label}`;
+        bar.append(seg);
+      }
+      const list = el("ul", "items");
+      for (const item of model.items) {
+        const row = el("li", "item");
+        const title = el("div", "item-title");
+        title.append(el("span", "item-id", item.id), el("p", "item-what", item.what));
+        const chip = el("span", "chip", item.label);
+        chip.dataset.state = item.state;
+        row.append(title, chip);
+        if (item.check) row.append(labelled("item-check", "확인 방법", item.check));
+        if (item.proof) {
+          const proof = labelled("item-proof", PROOF_LABEL[item.proof.kind] ?? item.proof.kind, item.proof.detail);
+          proof.title = item.proof.detail;
+          row.append(proof);
+        }
+        list.append(row);
+      }
+      progress.append(head, bar, list);
+      root.append(progress);
+    }
+
+    if (model.explicit.length || model.assumed.length) {
+      const both = model.explicit.length && model.assumed.length;
+      const wrap = el("section", both ? "conditions two" : "conditions");
+      for (const [kind, title, items] of [["explicit", "사용자 명시", model.explicit], ["assumed", "Main 가정", model.assumed]]) {
+        if (!items.length) continue;
+        const box = el("div", "cond");
+        box.dataset.kind = kind;
+        const list = el("ul");
+        for (const text of items) list.append(el("li", "", text));
+        box.append(el("h2", "label", title), list);
+        wrap.append(box);
+      }
+      root.append(wrap);
+    }
+
+    if (model.extra.length) root.append(el("p", "extra", model.extra.join("\n")));
+  }
+
+  const emptyNodes = [...document.getElementById("root").childNodes].map((node) => node.cloneNode(true));
+  let shown = null;
   window.addEventListener("message", (event) => {
     const data = event.data;
     if (!data || data.type !== "cuelo-lab:state") return;
-    const out = document.getElementById("out");
-    out.textContent = "";
-    const lines = Array.isArray(data.lines) && data.lines.length ? data.lines : ["목표 레인: 아직 frame이 없습니다."];
-    for (const line of lines) {
-      const span = document.createElement("span");
-      span.textContent = line + "\n";
-      if (line.startsWith("[확인됨]")) span.className = "ok";
-      else if (line.startsWith("[자기 보고만]") || line.startsWith("[파일 존재만]")) span.className = "self";
-      else if (line.startsWith("[근거 없음]")) span.className = "none";
-      out.appendChild(span);
-    }
+    if (data.theme === "light" || data.theme === "dark") document.documentElement.dataset.theme = data.theme;
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    const key = JSON.stringify(lines);
+    if (key === shown) return;
+    shown = key;
+    render(lines);
   });
   parent.postMessage({ type: "cuelo-lab:ready" }, "*");
 </script>
+</html>

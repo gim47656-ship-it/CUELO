@@ -5,7 +5,8 @@
  * host accepts, so the React panel stays a thin wire and the rules stay testable.
  *
  * Panel → host: `{ type: "cuelo-lab:ready" }`, `{ type: "cuelo-lab:draft", text }`.
- * Host → panel: `{ type: "cuelo-lab:state", sessionId, lines }`.
+ * Host → panel: `{ type: "cuelo-lab:state", sessionId, lines, theme? }`; `theme` is the
+ * app's resolved colour mode, so a panel can follow it instead of the OS scheme.
  * Agent → panel: the plugin's extension calls `ctx.ui.setWidget("lab:<id>", lines)`
  * (or `lab:<id>:<part>`); the chat view routes those widgets here instead of
  * drawing them as text cards.
@@ -21,10 +22,13 @@ export type LabPanelMessage =
   | { type: "cuelo-lab:ready" }
   | { type: "cuelo-lab:draft"; text: string };
 
+export type LabPanelTheme = "light" | "dark";
+
 export interface LabStateMessage {
   type: "cuelo-lab:state";
   sessionId: string | null;
   lines: string[];
+  theme?: LabPanelTheme;
 }
 
 export function isLabWidgetKey(key: string): boolean {
@@ -89,8 +93,8 @@ export interface LabPanelFrame {
 export interface LabPanelHostOptions {
   /** The iframe's contentWindow, or null before it loads. */
   frame: () => LabPanelFrame | null;
-  /** Current session and that session's lines for this plugin. */
-  state: () => { sessionId: string | null; lines: string[] };
+  /** Current session, that session's lines for this plugin, and the app's resolved colour mode. */
+  state: () => { sessionId: string | null; lines: string[]; theme?: LabPanelTheme };
   /** Puts text into the chat input as an unsent draft. False when no message box is open. */
   insertDraft: (text: string) => boolean;
   /** Records the draft event for usage counts. Failures are the caller's to swallow. */
@@ -106,10 +110,10 @@ export function createLabPanelHost(options: LabPanelHostOptions): LabPanelHost {
   const publishState = () => {
     const frame = options.frame();
     if (!frame) return;
-    const { sessionId, lines } = options.state();
+    const { sessionId, lines, theme } = options.state();
     // An opaque origin cannot be named, so "*" is the only target that reaches it.
     // The message goes to this one frame's window, never broadcast.
-    frame.postMessage({ type: "cuelo-lab:state", sessionId, lines: [...lines] }, "*");
+    frame.postMessage({ type: "cuelo-lab:state", sessionId, lines: [...lines], ...(theme ? { theme } : {}) }, "*");
   };
   return {
     publishState,

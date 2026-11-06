@@ -19,6 +19,7 @@ import { SideChatPanel } from "./workspace/SideChatPanel";
 import { ResourcePanel, type ResourceTab } from "./workspace/ResourcePanel";
 import { EfficiencyPanel } from "./workspace/EfficiencyPanel";
 import { PluginLabPanel, type LabWidgetReport } from "./workspace/PluginLabPanel";
+import { MemoryTraceView } from "./workspace/MemoryTraceView";
 import { FileDocShortcuts } from "./workspace/FileDocShortcuts";
 import { BranchNavigator } from "./BranchNavigator";
 import { getContextIndicator } from "@/lib/context-usage";
@@ -1748,8 +1749,8 @@ export function AppShell({
     return () => observer.disconnect();
   }, [windowTitle]);
   const viewLabels: Record<WorkspaceViewId, string> = locale === "ko"
-    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인" }
-    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins" };
+    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적" }
+    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace" };
   const panelOpen = workspaceLayout.activeView !== "chat";
   const activePanelLabel = panelOpen
     ? viewLabels[workspaceLayout.activeView]
@@ -1848,6 +1849,13 @@ export function AppShell({
       onInsertDraft={showChat ? insertIntoComposer : undefined}
     />
   );
+  const memorySlot = (
+    <MemoryTraceView
+      title={viewLabels.memory}
+      visible={workspaceLayout.activeView === "memory"}
+      sessionId={selectedSession?.id ?? null}
+    />
+  );
   const processLogSlot = (
     <ProcessLogPanel
       title={viewLabels.process}
@@ -1891,6 +1899,7 @@ export function AppShell({
       resourceSlot={resourcePanelContent}
       efficiencySlot={efficiencyPanelContent}
       pluginsSlot={pluginsSlot}
+      memorySlot={memorySlot}
       visible
       onClose={() => dispatchWorkspaceLayout({ type: "select-view", view: "chat" })}
       onReturnFocus={requestComposerFocus}

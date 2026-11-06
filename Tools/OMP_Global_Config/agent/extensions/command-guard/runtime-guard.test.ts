@@ -4,6 +4,8 @@ import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isSummonCall, taskGuardLockOf } from "./task-guard";
+import { MIN_BUILD_AVAILABLE_BYTES, type BuildResourceReaders } from "./build-concurrency";
+import { createBuildReservationStore, BUILD_RESERVATION_MS, type BuildReservationStore } from "./build-reservations";
 import { setCharacterIntentJudgeResolver } from "../character-voice";
 import {
   clearPreparedTaskSession,
@@ -62,6 +64,8 @@ function createGuardHarness(
     /** 주면 같은 snapshot의 recent(끝났거나 취소된 job) 행이다. 없으면 빈 배열이다. */
     recentJobs?: Array<Record<string, unknown>>;
     outsideLog?: string;
+    buildResourceReaders?: BuildResourceReaders;
+    buildReservationStore?: BuildReservationStore;
   } = {},
 ) {
   const handlers: Record<string, Handler[]> = {};
@@ -74,7 +78,11 @@ function createGuardHarness(
       sentMessages.push({ message, options: sendOptions });
     },
   };
-  createCommandGuard({ ownershipOutsideLog: options.outsideLog ?? join(OUTSIDE_LOG_DIR, "default.jsonl") })(pi as never);
+  createCommandGuard({
+    ownershipOutsideLog: options.outsideLog ?? join(OUTSIDE_LOG_DIR, "default.jsonl"),
+    buildResourceReaders: options.buildResourceReaders,
+    buildReservationStore: options.buildReservationStore ?? { reserve: () => undefined },
+  })(pi as never);
   let sessionId = options.sessionId ?? "runtime-guard-session";
   const runningJobs = options.runningJobs;
   const recentJobs = options.recentJobs;
@@ -99,6 +107,56 @@ function createGuardHarness(
     },
   };
 }
+
+test("bash entry refuses low-memory builds, but permits a single build and non-build commands", async () => {
+  let bytes = MIN_BUILD_AVAILABLE_BYTES - 1024;
+  const buildResourceReaders: BuildResourceReaders = {
+    listPids: () => [],
+    readFile: () => `MemAvailable: ${bytes / 1024} kB\n`,
+    readLink: () => { throw new Error("no processes"); },
+    currentPid: 999,
+    log: () => { throw new Error("probe should succeed"); },
+  };
+  const harness = createGuardHarness({ buildResourceReaders });
+  const bash = (command: string) => harness.emit("tool_call", {
+    toolName: "bash", toolCallId: "build-resource-call", input: { command },
+  });
+  const refused = await bash("CUELO_DIST_DIR=.next-verify-test bun --bun next build --webpack") as { block?: boolean; reason?: string };
+  expect(refused.block).toBe(true);
+  expect(refused.reason).toContain("MemAvailable=");
+  for (const command of ["bun test", "bun run typecheck", "next dev", "next start"]) {
+    expect(await bash(command)).toBeUndefined();
+  }
+  bytes = MIN_BUILD_AVAILABLE_BYTES;
+  expect(await bash("bun run build")).toBeUndefined();
+});
+
+test("separate guard sessions atomically reserve the build start and expire the reservation", async () => {
+  const directory = await mkdtemp(join(OUTSIDE_LOG_DIR, "build-reservations-"));
+  let now = 1700000000000;
+  const readers: BuildResourceReaders = {
+    listPids: () => [],
+    readFile: () => `MemAvailable: ${MIN_BUILD_AVAILABLE_BYTES / 1024} kB\n`,
+    readLink: () => { throw new Error("no processes"); },
+    currentPid: 999,
+    log: () => { throw new Error("probe should succeed"); },
+  };
+  const first = createGuardHarness({
+    sessionId: "first", cwd: "/work/first",
+    buildResourceReaders: readers, buildReservationStore: createBuildReservationStore(directory, () => now),
+  });
+  const second = createGuardHarness({
+    sessionId: "second", buildResourceReaders: readers,
+    buildReservationStore: createBuildReservationStore(directory, () => now),
+  });
+  const event = { toolName: "bash", toolCallId: "reserved-build", input: { command: "bun run build" } };
+  expect(await first.emit("tool_call", event)).toBeUndefined();
+  const refused = await second.emit("tool_call", event) as { block: boolean; reason: string };
+  expect(refused.block).toBe(true);
+  expect(refused.reason).toContain("예약 session=first cwd=/work/first");
+  now += BUILD_RESERVATION_MS;
+  expect(await second.emit("tool_call", event)).toBeUndefined();
+});
 
 async function runFixtureGit(cwd: string, args: string[]): Promise<void> {
   const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });

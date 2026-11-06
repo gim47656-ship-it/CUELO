@@ -24,6 +24,8 @@ import { isNotRepositoryDiagnostic, matchBlockedCommand, WRANGLER_CONFIG_NAMES, 
 import { interopHint, windowsOutputCommand } from "./interop-hint";
 import { hostSystemChangeHint } from "./host-change-hint";
 import { matchPowerShellSyntax } from "./powershell-syntax";
+import { buildConcurrencyBlockReason, type BuildResourceReaders } from "./build-concurrency";
+import { createBuildReservationStore, type BuildReservationStore } from "./build-reservations";
 import {
   bindSpawnAliases,
   bindTaskGuardSession,
@@ -255,6 +257,8 @@ export const OWNERSHIP_OUTSIDE_LOG_PATH = join(import.meta.dir, "..", "..", "own
 export interface CommandGuardDeps {
   /** 범위 밖 변경 기록 파일. 테스트만 바꾼다. 기본은 OWNERSHIP_OUTSIDE_LOG_PATH다. */
   ownershipOutsideLog?: string;
+  buildResourceReaders?: BuildResourceReaders;
+  buildReservationStore?: BuildReservationStore;
 }
 
 /**
@@ -936,6 +940,7 @@ function hasOnlyExactCompletionCalls(input: EvalCallInput, target: string): bool
 function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
   const taskGuard = createTaskGuardState();
   const ownership = createOwnershipState();
+  const buildReservations = deps.buildReservationStore ?? createBuildReservationStore();
   const summonCalls = new Map<string, CharacterAlias[]>();
   let pendingSummons: CharacterAlias[] = [];
   let ownershipGeneration = 0;
@@ -1454,6 +1459,10 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       });
     }
     if (reason) return { block: true, reason };
+    const buildReason = buildConcurrencyBlockReason(event.input.command, deps.buildResourceReaders, {
+      cwd, sessionId: ctx.sessionManager.getSessionId(), store: buildReservations,
+    });
+    if (buildReason) return { block: true, reason: buildReason };
     // 통과한 명령 중 Windows 실행 파일을 부르는 것은 출력이 UTF-8로 오도록 감싸 실행한다(interop-hint.ts).
     const pty = (event.input as { pty?: unknown }).pty === true;
     const command = windowsOutputCommand(event.input.command, { wsl: WSL_INTEROP, pty });

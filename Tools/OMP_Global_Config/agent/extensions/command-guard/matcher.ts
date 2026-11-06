@@ -367,6 +367,17 @@ interface WrapperSpec {
 /** 뒤따르는 명령을 그대로 실행하는 래퍼. 옵션 형태는 각 명령의 실제 CLI를 따른다. */
 const EXEC_WRAPPERS: Readonly<Record<string, WrapperSpec>> = {
   exec: { optionsWithValue: { "-a": true }, positionals: 0 },
+  "systemd-run": {
+    optionsWithValue: {
+      "-p": true, "--property": true, "-E": true, "--setenv": true, "-u": true, "--unit": true,
+      "--slice": true, "--working-directory": true, "--uid": true, "--gid": true, "--description": true,
+      "--service-type": true, "-H": true, "--host": true, "-M": true, "--machine": true,
+      "--nice": true, "--on-calendar": true, "--on-active": true, "--on-boot": true, "--on-startup": true,
+      "--on-unit-active": true, "--on-unit-inactive": true, "--timer-property": true, "--path-property": true,
+      "--socket-property": true, "--expand-environment": true,
+    },
+    positionals: 0,
+  },
   nice: { optionsWithValue: { "-n": true, "--adjustment": true }, positionals: 0 },
   setsid: { optionsWithValue: {}, positionals: 0 },
   ionice: {
@@ -2368,6 +2379,18 @@ function nestedScripts(
   } else if (name === "su" || name === "script" || name === "flock") {
     const command = commandOptionValue(args);
     if (command !== undefined) scripts.push(command);
+  } else if (name === "npx" || (name === "npm" && args[0] === "exec")) {
+    for (let index = name === "npm" ? 1 : 0; index < args.length; index += 1) {
+      const value = args[index];
+      // npx flags end at the package name or '--'; a tool's own '-c config' is not a shell string.
+      if (value === "--" || !value.startsWith("-")) break;
+      if (value === "-c" || value === "--call" || value.startsWith("--call=")) {
+        const command = value.startsWith("--call=") ? value.slice("--call=".length) : args[index + 1];
+        if (command !== undefined) scripts.push(command);
+        break;
+      }
+      if (!value.includes("=") && PACKAGE_RUNNER_OPTIONS_WITH_VALUE[value]) index += 1;
+    }
   }
   return scripts;
 }

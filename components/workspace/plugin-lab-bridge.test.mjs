@@ -92,6 +92,16 @@ test("ready answers with the session's current lines", () => {
   assert.deepEqual(frame.posted, [{ message: { type: "cuelo-lab:state", sessionId: "s9", lines: ["one", "two"] }, origin: "*" }]);
 });
 
+test("the app's colour mode reaches the panel and follows a switch on the next publish", () => {
+  const frame = { posted: [], postMessage(message, origin) { this.posted.push({ message, origin }); } };
+  const state = { sessionId: "s1", lines: ["one"], theme: "dark" };
+  const host = createLabPanelHost({ frame: () => frame, state: () => state, insertDraft: () => true, recordDraft: () => {} });
+  host.handleMessage({ source: frame, origin: "null", data: { type: "cuelo-lab:ready" } });
+  state.theme = "light";
+  host.publishState();
+  assert.deepEqual(frame.posted.map((post) => post.message.theme), ["dark", "light"]);
+});
+
 test("lab widgets leave the text cards and route to their plugin only", () => {
   const widgets = [
     { key: "todo", lines: ["t"] },
