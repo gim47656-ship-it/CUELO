@@ -18,6 +18,8 @@ export const PER_TURNS = 100;
  * 「문제」가 됐다). 비용 행의 COST_FLOOR_USD와 같은 역할이다.
  */
 export const COUNT_FLOOR = 5;
+/** 「다시 지적하는 표현」은 평소 주당 1건 안팎이라 5건 바닥이면 실제로 늘어난 것도 놓쳐 3건으로 둔다(2026-11-06 사용자 결정). */
+export const COMPLAINT_COUNT_FLOOR = 3;
 
 /** 도구 결과 뒤 다음 모델 요청까지 이보다 오래 걸리면 느린 대기로 센다. */
 export const SLOW_GAP_MS = 20_000;

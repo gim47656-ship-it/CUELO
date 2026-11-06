@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
-  CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, COUNT_FLOOR, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
+  CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_COUNT_FLOOR, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, COUNT_FLOOR, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
   FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
@@ -97,17 +97,17 @@ function sessionRows(rows: SessionCost[] | undefined): UpkeepEvidence[] {
 }
 
 /**
- * 건수 지표: 사용자 요청 100건당으로 비교하고 원 건수는 note에 남긴다. 두 기간 중 큰 쪽 원 건수가 COUNT_FLOOR 미만이면
- * 배수가 커 보여도 판정하지 않는다(2026-11-06 사용자 결정).
+ * 건수 지표: 사용자 요청 100건당으로 비교하고 원 건수는 note에 남긴다. 두 기간 중 큰 쪽 원 건수가 `floor`(기본 COUNT_FLOOR)
+ * 미만이면 배수가 커 보여도 판정하지 않는다(2026-11-06 사용자 결정).
  */
-function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: ScanResult["windows"][0]) => number): UpkeepMetric {
+function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: ScanResult["windows"][0]) => number, floor = COUNT_FLOOR): UpkeepMetric {
   const [a, b] = scan.windows;
   const status = compare(perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), a.turns, b.turns);
-  const belowFloor = status !== "unknown" && Math.max(pick(a), pick(b)) < COUNT_FLOOR;
+  const belowFloor = status !== "unknown" && Math.max(pick(a), pick(b)) < floor;
   const m = metric(id, `${label} (요청 100건당)`, "count", perTurns(pick(a), a.turns), perTurns(pick(b), b.turns), belowFloor ? "ok" : status,
-    `${GENERIC_CRITERION}. 두 기간 중 큰 쪽 원 건수가 ${COUNT_FLOOR}건 이상일 때만 판정합니다`);
+    `${GENERIC_CRITERION}. 두 기간 중 큰 쪽 원 건수가 ${floor}건 이상일 때만 판정합니다`);
   m.note = `원 건수 ${pick(a)} / ${pick(b)}, 사용자 요청 ${a.turns} / ${b.turns}건`;
-  if (belowFloor) m.note += `. 두 기간 모두 원 건수가 ${COUNT_FLOOR}건 미만이라 판정하지 않습니다`;
+  if (belowFloor) m.note += `. 두 기간 모두 원 건수가 ${floor}건 미만이라 판정하지 않습니다`;
   m.evidence = scan.evidence[id] ?? [];
   return m;
 }
@@ -483,8 +483,8 @@ function overdueMetric(items: UpkeepDueItem[], warnings: string[]): UpkeepMetric
   return m;
 }
 
-function complaintSection(scan: ScanResult): UpkeepSection {
-  const m = perTurnMetric("repeat-complaints", "다시 지적하는 표현", scan, (w) => w.complaints);
+export function complaintSection(scan: ScanResult): UpkeepSection {
+  const m = perTurnMetric("repeat-complaints", "다시 지적하는 표현", scan, (w) => w.complaints, COMPLAINT_COUNT_FLOOR);
   m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, 「또」는 메시지 첫머리일 때만 세며, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
   return section("complaints", "사용자 지적 반복", [m]);
 }
