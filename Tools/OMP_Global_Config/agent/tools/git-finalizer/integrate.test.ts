@@ -133,8 +133,9 @@ describe("git_integrate", () => {
     expect(isAncestor(f, targetSha, pushed)).toBe(true);
     expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(pushed);
     expect(git(f.tree, ["log", "-1", "--format=%s"])).toBe("feat: session b");
-    // 세션 브랜치의 원격 사본도 rebase된 tip으로 맞춘다(다음 git_finalize의 ancestry 확인).
-    expect(remoteRef(f, "refs/heads/wt/x")).toBe(pushed);
+    // 대상에 들어간 세션 브랜치의 원격 사본은 지운다(병합된 원격 wt/*가 남지 않게).
+    expect(output?.details.branchSync).toBe("deleted origin refs/heads/wt/x (its work is in main)");
+    git(f.root, ["--git-dir", f.remote, "show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
     expect(existsSync(stateFile(f))).toBe(false);
     // 다시 부르면 올릴 것이 없다.
     const again = await integrate(f.tree, { checks: [] });
@@ -358,6 +359,32 @@ describe("git_integrate", () => {
     expect(done.output?.details).toMatchObject({ ok: true, stage: "complete" });
     expect(done.output?.details.branchSync).toContain("not its own refs/heads/wt/x");
     expect(remoteRef(f, "refs/heads/develop")).toBe(base);
+  }, TIMEOUT);
+
+  test("keeps wt/nightly-* (updated only) and a session copy that holds commits from elsewhere", async () => {
+    const f = await fixture();
+    // 야간 브랜치는 아침 보고가 읽으므로 지우지 않고 rebase된 tip으로 맞춘다.
+    git(f.tree, ["checkout", "-q", "-b", "wt/nightly-20261106"]);
+    await commitIn(f.tree, { "b.txt": "nightly-b\n" }, "feat: nightly b");
+    git(f.tree, ["push", "-q", "-u", "origin", "wt/nightly-20261106"]);
+    await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
+    const nightly = await integrate(f.tree, { checks: [] });
+    expect(nightly.output?.details).toMatchObject({ ok: true, stage: "complete" });
+    expect(remoteRef(f, "refs/heads/wt/nightly-20261106")).toBe(remoteRef(f));
+    // 다른 곳에서 세션 원격 사본에 커밋을 올렸으면 그 사본을 지우지 않는다.
+    git(f.tree, ["checkout", "-q", "wt/x"]);
+    git(f.tree, ["reset", "-q", "--hard", remoteRef(f)]);
+    await commitIn(f.tree, { "c.txt": "session-c\n" }, "feat: session c");
+    git(f.tree, ["push", "-q", "-u", "origin", "wt/x"]);
+    git(f.other, ["fetch", "-q", "origin", "wt/x"]);
+    git(f.other, ["checkout", "-q", "-b", "foreign", "FETCH_HEAD"]);
+    const foreign = await commitIn(f.other, { "d.txt": "foreign-d\n" }, "feat: foreign d");
+    git(f.other, ["push", "-q", "origin", "foreign:wt/x"]);
+    git(f.other, ["checkout", "-q", "main"]);
+    const kept = await integrate(f.tree, { checks: [] });
+    expect(kept.output?.details).toMatchObject({ ok: true, stage: "complete" });
+    expect(kept.output?.details.branchSync).toContain("has commits this worktree did not start from");
+    expect(remoteRef(f, "refs/heads/wt/x")).toBe(foreign);
   }, TIMEOUT);
 
   test("abort after a conflict in a re-rebase returns to the head from before start", async () => {

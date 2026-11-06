@@ -466,6 +466,27 @@ async function syncSessionBranch(repo: Repo, state: State, tip: string): Promise
   return pushed.code === 0 ? `updated ${branchRemote} ${merge} to ${head}` : `could not update ${branchRemote} ${merge}: ${(pushed.stderr || pushed.stdout).trim()}`;
 }
 
+/**
+ * 대상에 게시를 마친 `wt/<topic>` 세션 브랜치의 원격 사본을 지운다(2026-11-06 사용자 결정: 병합된 원격 `wt/*`가 게시마다 하나씩
+ * 남았다). `wt/nightly-YYYYMMDD`는 각 PC의 아침 보고가 읽으므로 야간 정리의 보존 기간에 맡기고 지금처럼 맞추기만 한다. 원격 tip이
+ * 이 worktree가 시작한 HEAD나 게시한 커밋의 조상일 때만(=다른 곳에서 올린 커밋이 없을 때만) lease를 걸고 지운다.
+ */
+async function retireSessionBranch(repo: Repo, state: State, pushed: string): Promise<string> {
+  if (!state.branch.startsWith("wt/") || /^wt\/nightly-\d{8}$/.test(state.branch)) return syncSessionBranch(repo, state, pushed);
+  const own = `refs/heads/${state.branch}`;
+  const merge = (await git(repo, ["config", "--get", `branch.${state.branch}.merge`])).stdout.trim();
+  if (merge !== own) return merge ? `the session branch tracks ${merge}, not its own ${own}; left unchanged` : "the session branch has no upstream";
+  const branchRemote = (await git(repo, ["config", "--get", `branch.${state.branch}.remote`])).stdout.trim() || state.remote;
+  const line = await git(repo, ["ls-remote", "--refs", branchRemote, merge]);
+  const remoteSha = line.stdout.trim().split(/\s+/)[0] ?? "";
+  if (line.code !== 0 || !remoteSha) return `${branchRemote} ${merge} was not found`;
+  if (!(await isAncestor(repo, remoteSha, pushed)) && !(await isAncestor(repo, remoteSha, state.origHead))) {
+    return `${branchRemote} ${merge} has commits this worktree did not start from; left unchanged`;
+  }
+  const deleted = await git(repo, ["push", `--force-with-lease=${merge}:${remoteSha}`, branchRemote, `:${merge}`]);
+  return deleted.code === 0 ? `deleted ${branchRemote} ${merge} (its work is in ${state.target})` : `could not delete ${branchRemote} ${merge}: ${(deleted.stderr || deleted.stdout).trim()}`;
+}
+
 async function ensureCleanTracked(repo: Repo, stage: string): Promise<void> {
   const dirty = await gitOk(repo, stage, ["status", "--porcelain=v1", "--untracked-files=no"]);
   if (dirty) throw new IntegrateFailure(stage, `tracked changes are present:\n${dirty}`);
@@ -514,7 +535,7 @@ async function checkAndPublish(repo: Repo, state: State) {
       if (!replay.done) return conflictResult(repo, state, replay.conflicts);
       continue;
     }
-    const branchNote = await syncSessionBranch(repo, state, outcome.pushed).catch((syncError) => `branch sync failed: ${String(syncError)}`);
+    const branchNote = await retireSessionBranch(repo, state, outcome.pushed).catch((syncError) => `branch cleanup failed: ${String(syncError)}`);
     const files = (await gitOk(repo, "complete", ["diff", "--name-only", "-z", "--no-renames", state.previousTarget, outcome.pushed])).split("\0").filter(Boolean);
     await clearState(repo);
     const syncHint = process.platform === "win32" ? "" : `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
@@ -657,7 +678,7 @@ export const integrateTool = (pi: ToolApi): CustomTool<any, any> => ({
   name: "git_integrate",
   label: "Git Integrate",
   description:
-    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, detached HEAD and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself.",
+    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, detached HEAD and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. After a successful push it deletes the session branch's own remote copy (wt/<topic>; wt/nightly-* is only updated) when that copy holds nothing beyond this worktree's work. On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself.",
   parameters: pi.zod.object({
     action: pi.zod.enum(["start", "continue", "abort"]).optional(),
     target: pi.zod.string().optional(),

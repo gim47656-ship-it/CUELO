@@ -853,7 +853,8 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   (typecheck·test 명령)를 받는다. `git_finalize`와 같은 mutex 안에서 대상을 fetch하고, 잠금 밖에서 자기
   worktree만 rebase하고 검사한다. 다시 잠금 안에서 fetch해 대상이 그대로면 rebase된 tip을 non-force
   fast-forward push하고 원격 ref까지 확인한다. 그 사이 대상이 움직였으면 다시 rebase하고 검사한다.
-  성공하면 세션 branch의 원격 사본도 그 tip으로 맞춘다. 여러 세션이 함께 불러도 잠금 때문에 한 줄로 선다.
+  성공하면 세션 branch(`wt/<주제>`)의 원격 사본을 지운다(2026-11-06 사용자 결정). 원격 사본에 이
+  worktree 밖 커밋이 있으면 남긴다. `wt/nightly-*`는 아침 보고가 읽으므로 그 tip으로 맞추기만 한다. 여러 세션이 함께 불러도 잠금 때문에 한 줄로 선다.
 - 충돌이 나면 `git_integrate`는 rebase를 그 자리에서 멈추고 충돌 파일, 다시 적용 중인 세션 커밋의
   제목·본문, 대상에 새로 들어온 커밋을 돌려준다. 세션이 양쪽 의도를 보고 파일을 고친 뒤 `continue`를
   부르면 충돌 표시가 남았는지 보고, 푼 파일에 `git_finalize`와 같은 교차검증·slop 게이트를 적용한 뒤
