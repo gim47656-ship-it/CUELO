@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 8px; color: #222; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .ok { color: #1a7f37; }
+  .self { color: #9a6700; }
+  .none { color: #cf222e; }
+</style>
+<pre id="out">목표 레인: 아직 frame이 없습니다.</pre>
+<script>
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "cuelo-lab:state") return;
+    const out = document.getElementById("out");
+    out.textContent = "";
+    const lines = Array.isArray(data.lines) && data.lines.length ? data.lines : ["목표 레인: 아직 frame이 없습니다."];
+    for (const line of lines) {
+      const span = document.createElement("span");
+      span.textContent = line + "\n";
+      if (line.startsWith("[확인됨]")) span.className = "ok";
+      else if (line.startsWith("[자기 보고만]") || line.startsWith("[파일 존재만]")) span.className = "self";
+      else if (line.startsWith("[근거 없음]")) span.className = "none";
+      out.appendChild(span);
+    }
+  });
+  parent.postMessage({ type: "cuelo-lab:ready" }, "*");
+</script>

@@ -8,7 +8,8 @@ description: "Build a trial plugin (a new tool and/or a side panel) for this use
 CUELO's Creator Mode. A trial plugin runs only in this user's profile on this PC, with the user's own privileges
 (it can read and write whatever the user can). Say so to the user before you write one. Nothing here is reviewed,
 committed or deployed: the nightly loop looks at trial plugins that proved useful over several days and promotes them
-through review, CI and deployment. Never copy a plugin into the repository or `cuelo-plugins/` yourself.
+through review, CI and deployment. Never copy a plugin into the repository or `cuelo-plugins/` yourself, unless the
+user explicitly asks to promote it now; then it takes the same review, version and CI path as a nightly promotion.
 
 ## Where it lives
 
