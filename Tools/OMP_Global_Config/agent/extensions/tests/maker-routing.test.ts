@@ -1,9 +1,32 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadRoutingPolicy, registerMakerRouting, routingQuestions, routingState, type Owner, type QuotaSnapshot, type RoutingDeps, type RoutingFacts } from "../lib/maker-routing";
 import { bindTaskGuardSession, createTaskGuardState, noteUserRequestText, releaseCancelledSpawns, reserveTaskCall, settleTaskCall, unbindTaskGuardSession, type TaskGuardState } from "../command-guard/task-guard";
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import type { LedgerRecord, RoutingLedger } from "../lib/routing-ledger";
 import { loadRequiredSkillContract, parseRequiredSkillContract } from "../lib/skill-evidence";
+
+// 캐릭터 summon marker의 oauth-position은 PC 설정(`config.yml` `characterSeats`)에서 온다(2026-11-06).
+// 이 파일은 그 값을 결정적으로 보도록 격리 agent dir에 좌석을 심는다(빈 dir인 CI에서 marker가 달라지지 않게).
+const realAgentDir = process.env.PI_CODING_AGENT_DIR;
+const isolatedAgentDir = mkdtempSync(join(tmpdir(), "maker-routing-agent-"));
+// 준비와 복원을 한 try에 묶는다. 준비가 실패하면 즉시 되돌리고 다시 던져, 임시 dir와 env가 남지 않게 한다
+// (afterAll은 모듈 로드 실패 시 불리지 않는다). 성공했을 때만 러너의 afterAll에 복원을 맡긴다.
+try {
+  writeFileSync(join(isolatedAgentDir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
+} catch (error) {
+  // 이 시점에 env는 아직 바꾸지 않았다. 임시 dir만 지우고 다시 던진다(env를 되돌리면 미설정이 "undefined"가 된다).
+  rmSync(isolatedAgentDir, { recursive: true, force: true });
+  throw error;
+}
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+afterAll(() => {
+  if (realAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = realAgentDir;
+  rmSync(isolatedAgentDir, { recursive: true, force: true });
+});
 
 const facts: RoutingFacts = {
   goal: "상태 표시 오류 수정", acceptance: ["오류 경로 정상 표시"], facts: ["한 화면에서 재현됨"],
