@@ -13,6 +13,7 @@ import { maskSecrets } from "./session-recall";
 import type {
   MemoryTrace,
   MemoryTraceDocCandidate,
+  MemoryTraceDocReadStep,
   MemoryTraceEdge,
   MemoryTraceEdgeKind,
   MemoryTraceExplicitRecallStep,
@@ -23,6 +24,7 @@ import type {
   MemoryTraceNodeKind,
   MemoryTraceRecallStep,
   MemoryTraceRequest,
+  MemoryTraceSavedStep,
   MemoryTraceStep,
 } from "./memory-trace-types";
 import { docNodeId, fileNodeId, memoryNodeId, requestNodeId, savedNodeId } from "./memory-trace-types";
@@ -57,6 +59,7 @@ interface Line {
     synthetic?: unknown;
     attribution?: unknown;
     toolCallId?: unknown;
+    isError?: unknown;
   };
 }
 
@@ -187,9 +190,32 @@ export function parseRecallResult(text: string): MemoryTraceMemoryRef[] {
   return memories;
 }
 
-interface PendingCall {
-  request: MemoryTraceRequest;
-  step: MemoryTraceExplicitRecallStep;
+/** 결과를 기다리는 호출. 지도 문서 읽기와 learn·retain은 결과가 성공을 알릴 때만 남긴다. */
+type PendingCall =
+  | { kind: "explicit"; step: MemoryTraceExplicitRecallStep }
+  | { kind: "read"; step: MemoryTraceDocReadStep }
+  | { kind: "learn"; step: MemoryTraceSavedStep }
+  | { kind: "retain"; steps: (MemoryTraceSavedStep | null)[] };
+
+/** learn 결과가 기억 저장을 알리는지. 코어는 저장 뒤 스킬 처리만 실패해도 이 문장으로 시작한다. */
+const LEARN_STORED_RE = /^Lesson stored\b/;
+/** retain 전체 성공(mnemopi). hindsight의 `queued`는 아직 저장된 것이 아니다. */
+const RETAIN_STORED_RE = /^\d+ (?:memory|memories) stored\.$/;
+/**
+ * retain 중간 실패: 앞에서 저장해 둔 항목 번호를 결과가 직접 밝힌다. 코어 문장은
+ * `Mnemopi did not store item N of M: <원인>. Stored before the failure and kept: item k (id …), … .[ Later items were not attempted.]`
+ * 이고 목록은 끝에 붙는다. 원인 안에서 같은 문장을 인용해도 끝에 오지 않으면 읽지 않는다.
+ */
+const RETAIN_PARTIAL_RE = /^Mnemopi did not store item (\d+) of \d+: [\s\S]* Stored before the failure and kept: ((?:item \d+ \(id [^)]+\), )*item \d+ \(id [^)]+\))\.(?: Later items were not attempted\.)?$/;
+
+/** 결과가 성공으로 확인한 저장 항목 번호(0부터). */
+function retainStored(text: string, isError: boolean, count: number): number[] {
+  if (!isError && RETAIN_STORED_RE.test(text)) return Array.from({ length: count }, (_, index) => index);
+  const partial = RETAIN_PARTIAL_RE.exec(text);
+  if (!partial) return [];
+  // 저장된 항목은 실패한 항목보다 앞에만 있다.
+  const failed = Number(partial[1]) - 1;
+  return [...partial[2].matchAll(/item (\d+) \(id /g)].map((match) => Number(match[1]) - 1).filter((index) => index >= 0 && index < failed && index < count);
 }
 
 function firstString(record: Record<string, unknown>, keys: readonly string[]): string | null {
@@ -207,6 +233,8 @@ export class MemoryTraceBuilder {
   private current: MemoryTraceRequest | null = null;
   private cwd: string | null = null;
   private readonly calls = new Map<string, PendingCall>();
+  /** 결과가 아직 성공을 확인하지 않은 단계. 끝에서 요청 단계에서 뺀다(실패·취소·결과 없음). */
+  private readonly unconfirmed = new Set<MemoryTraceStep>();
   /** 세션 어디서든 글이 보인 기억. `mnemopi-recall`처럼 id만 남은 회상의 앞부분을 채운다. */
   private readonly previews = new Map<string, string>();
   /** 진행 중인 요청의 지도 후보 경로. 이름 규칙 밖의 후보를 읽어도 연 문서로 남긴다. */
@@ -241,7 +269,11 @@ export class MemoryTraceBuilder {
 
   finish(): MemoryTrace {
     // 끝에 남은 회상은 아직 오지 않은 다음 요청의 것이다(사이에 assistant·toolResult가 없었다). 앞 요청에 붙이지 않는다.
-    for (const request of this.requests) this.finishRequest(request);
+    for (const request of this.requests) {
+      // 지도 문서 읽기·learn·retain은 결과가 성공을 확인한 것만 연 문서·새로 저장으로 남긴다.
+      if (this.unconfirmed.size > 0) request.steps = request.steps.filter((step) => !this.unconfirmed.has(step));
+      this.finishRequest(request);
+    }
     const { nodes, edges } = this.graph();
     return maskDeep({ sessionId: this.sessionId, requests: this.requests, nodes, edges });
   }
@@ -313,9 +345,25 @@ export class MemoryTraceBuilder {
       if (!call || !callId) return;
       this.calls.delete(callId);
       record ??= parse(line);
-      const memories = parseRecallResult(contentText(record?.message?.content));
-      for (const memory of memories) this.remember(memory);
-      if (call.step.memories.length === 0) call.step.memories = memories;
+      const message = record?.message;
+      // 읽을 수 없는 결과 줄은 성공을 확인하지 못한 것이다.
+      if (!message) return;
+      const isError = message.isError === true;
+      const text = contentText(message.content);
+      if (call.kind === "read") {
+        if (!isError) this.unconfirmed.delete(call.step);
+      } else if (call.kind === "learn") {
+        if (LEARN_STORED_RE.test(text.trimStart())) this.unconfirmed.delete(call.step);
+      } else if (call.kind === "retain") {
+        for (const index of retainStored(text.trim(), isError, call.steps.length)) {
+          const step = call.steps[index];
+          if (step) this.unconfirmed.delete(step);
+        }
+      } else {
+        const memories = parseRecallResult(text);
+        for (const memory of memories) this.remember(memory);
+        if (call.step.memories.length === 0) call.step.memories = memories;
+      }
       return;
     }
     if (role === "assistant") {
@@ -373,19 +421,41 @@ export class MemoryTraceBuilder {
         const relative = relativeTo(this.cwd, path);
         // 지도 후보로 받은 경로는 이름 규칙에 없어도 연 문서로 센다.
         if (isDocMapPath(relative) || this.candidatePaths.has(relative)) {
-          this.add({ kind: "doc-read", entryId, at, path: relative, selector, candidate: false });
+          const step: MemoryTraceDocReadStep = { kind: "doc-read", entryId, at, path: relative, selector, candidate: false };
+          this.pend(callId, [step], { kind: "read", step });
         }
-      } else if (name === "learn" || name === "retain") {
+      } else if (name === "learn") {
         const text = firstString(args, ["memory", "content", "text", "fact"]);
-        if (text) this.add({ kind: "saved", entryId, at, source: name, text: clip(text, SAVED_PREVIEW_CHARS) });
+        if (!text) continue;
+        const step: MemoryTraceSavedStep = { kind: "saved", entryId, at, source: name, text: clip(text, SAVED_PREVIEW_CHARS) };
+        this.pend(callId, [step], { kind: "learn", step });
+      } else if (name === "retain") {
+        // 코어 retain은 `items[].content`를 받는다. 항목 번호가 결과의 부분 저장 번호와 맞아야 하므로 빈 항목도 자리를 지킨다.
+        const items = Array.isArray(args.items) ? args.items : null;
+        const texts = items
+          ? items.map((item) => (isRecord(item) && typeof item.content === "string" && item.content.trim() ? item.content : null))
+          : [firstString(args, ["memory", "content", "text", "fact"])];
+        const steps = texts.map((text): MemoryTraceSavedStep | null => (text ? { kind: "saved", entryId, at, source: name, text: clip(text, SAVED_PREVIEW_CHARS) } : null));
+        const present = steps.filter((step): step is MemoryTraceSavedStep => step !== null);
+        if (present.length > 0) this.pend(callId, present, { kind: "retain", steps });
       }
     }
+  }
+
+  /** 결과로 성공이 확인돼야 남는 단계. 순서를 지키려고 지금 넣고, 확인되지 않으면 끝에서 뺀다. */
+  private pend(callId: string | null, steps: MemoryTraceStep[], call: PendingCall): void {
+    if (!this.current) return;
+    for (const step of steps) {
+      this.current.steps.push(step);
+      this.unconfirmed.add(step);
+    }
+    if (callId) this.calls.set(callId, call);
   }
 
   private explicit(entryId: string, at: number, callId: string | null, target: string, query: string | null): void {
     const step: MemoryTraceExplicitRecallStep = { kind: "explicit-recall", entryId, at, target, query: query ? clip(query, QUERY_PREVIEW_CHARS) : null, memories: [] };
     const request = this.add(step);
-    if (request && callId) this.calls.set(callId, { request, step });
+    if (request && callId) this.calls.set(callId, { kind: "explicit", step });
   }
 
   private addRecall(entryId: string, at: number, memories: MemoryTraceMemoryRef[]): void {

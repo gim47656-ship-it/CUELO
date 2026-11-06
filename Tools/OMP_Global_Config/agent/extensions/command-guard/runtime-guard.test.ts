@@ -158,6 +158,37 @@ test("separate guard sessions atomically reserve the build start and expire the 
   expect(await second.emit("tool_call", event)).toBeUndefined();
 });
 
+for (const command of [
+  "npm --offline exec --call='next build'",
+  "npm --prefix web exec --call='next build'",
+  "npx -c='next build'",
+  "npm exec -c='next build'",
+]) {
+  test(`bash call form acquires first reservation and blocks the next session: ${command}`, async () => {
+    const directory = await mkdtemp(join(OUTSIDE_LOG_DIR, "npm-call-"));
+    let bytes = MIN_BUILD_AVAILABLE_BYTES - 1024;
+    const readers: BuildResourceReaders = {
+      listPids: () => [],
+      readFile: () => `MemAvailable: ${bytes / 1024} kB\n`,
+      readLink: () => { throw new Error("no processes"); },
+      currentPid: 999,
+      log: () => { throw new Error("probe should succeed"); },
+    };
+    const store = createBuildReservationStore(directory, () => 1700000000000);
+    const first = createGuardHarness({ sessionId: "npm-owner", cwd: "/work/first", buildResourceReaders: readers, buildReservationStore: store });
+    const second = createGuardHarness({ sessionId: "npm-contender", buildResourceReaders: readers, buildReservationStore: store });
+    const event = { toolName: "bash", toolCallId: "npm-call-build", input: { command } };
+    const low = await first.emit("tool_call", event) as { block: boolean; reason: string };
+    expect(low.block).toBe(true);
+    expect(low.reason).toContain("MemAvailable=");
+    bytes = MIN_BUILD_AVAILABLE_BYTES;
+    expect(await first.emit("tool_call", event)).toBeUndefined();
+    const pending = await second.emit("tool_call", event) as { block: boolean; reason: string };
+    expect(pending.block).toBe(true);
+    expect(pending.reason).toContain("예약 session=npm-owner cwd=/work/first");
+  });
+}
+
 async function runFixtureGit(cwd: string, args: string[]): Promise<void> {
   const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   const [exitCode, stdout, stderr] = await Promise.all([

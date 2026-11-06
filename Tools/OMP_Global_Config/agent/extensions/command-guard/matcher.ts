@@ -436,6 +436,40 @@ const PACKAGE_RUNNER_OPTIONS_WITH_VALUE: StringLookup = {
   "-p": true,
 };
 
+// npm @npmcli/config definitions: non-boolean options and their value-taking short aliases.
+const NPM_OPTIONS_WITH_VALUE: StringLookup = {
+  "--_auth": true, "--access": true, "--allow-directory": true, "--allow-file": true,
+  "--allow-git": true, "--allow-remote": true, "--allow-scripts": true, "--also": true,
+  "--audit-level": true, "--auth-type": true, "--before": true, "--browser": true,
+  "--ca": true, "--cache": true, "--cache-max": true, "--cache-min": true, "--cafile": true,
+  "--call": true, "-c": true, "--cert": true, "--cidr": true, "--cpu": true,
+  "--depth": true, "--diff": true, "--diff-dst-prefix": true, "--diff-src-prefix": true,
+  "--diff-unified": true, "--editor": true, "--expect-result-count": true, "--expires": true,
+  "--fetch-retries": true, "--fetch-retry-factor": true, "--fetch-retry-maxtimeout": true,
+  "--fetch-retry-mintimeout": true, "--fetch-timeout": true, "--git": true, "--globalconfig": true,
+  "--heading": true, "--https-proxy": true, "--include": true,
+  "--init-author-email": true, "--init-author-name": true, "--init-author-url": true,
+  "--init-license": true, "--init-module": true, "--init-type": true, "--init-version": true,
+  "--init.author.email": true, "--init.author.name": true, "--init.author.url": true,
+  "--init.license": true, "--init.module": true, "--init.version": true,
+  "--install-strategy": true, "--key": true, "--libc": true, "--local-address": true,
+  "--location": true, "-L": true, "--lockfile-version": true, "--loglevel": true,
+  "--logs-dir": true, "--logs-max": true, "--name": true, "--maxsockets": true,
+  "--message": true, "-m": true, "--min-release-age": true, "--min-release-age-exclude": true,
+  "--node-gyp": true, "--node-options": true, "--noproxy": true, "--omit": true,
+  "--only": true, "--orgs": true, "--os": true, "--otp": true, "--package": true,
+  "--pack-destination": true, "--packages": true, "--prefix": true, "-C": true,
+  "--preid": true, "--provenance-file": true, "--proxy": true, "--registry": true,
+  "--replace-registry-host": true, "--save-prefix": true, "--sbom-format": true, "--sbom-type": true,
+  "--scope": true, "--scopes": true, "--packages-and-scopes-permission": true,
+  "--orgs-permission": true, "--password": true, "--token-description": true,
+  "--script-shell": true, "--searchexclude": true, "--searchlimit": true,
+  "--searchopts": true, "--searchstaleness": true, "--shell": true, "--tag": true,
+  "--tag-version-prefix": true, "--umask": true, "--user-agent": true, "--userconfig": true,
+  "--viewer": true, "--which": true, "--workspace": true, "-w": true,
+  "--reg": true, "-reg": true, "--enjoy-by": true, "-enjoy-by": true,
+};
+
 /** 패키지 매니저가 도구 이름 앞에 두는 실행 하위 명령(`pnpm dlx wrangler`, `bun x wrangler`). */
 const PACKAGE_MANAGER_EXEC_LEADERS: StringLookup = {
   dlx: true,
@@ -2379,17 +2413,34 @@ function nestedScripts(
   } else if (name === "su" || name === "script" || name === "flock") {
     const command = commandOptionValue(args);
     if (command !== undefined) scripts.push(command);
-  } else if (name === "npx" || (name === "npm" && args[0] === "exec")) {
-    for (let index = name === "npm" ? 1 : 0; index < args.length; index += 1) {
+  } else if (name === "npx" || name === "npm") {
+    let index = 0;
+    if (name === "npm") {
+      // Consume npm's global options before locating exec, never their values as subcommands.
+      while (index < args.length && args[index].startsWith("-") && args[index] !== "--") {
+        const value = args[index];
+        const next = args[index + 1];
+        const takesValue = NPM_OPTIONS_WITH_VALUE[value] || (value === "--color" && next === "always")
+          || next === "true" || next === "false";
+        index += !value.includes("=") && takesValue ? 2 : 1;
+      }
+      if (args[index] !== "exec" && args[index] !== "x") return scripts;
+      index += 1;
+    }
+    for (; index < args.length; index += 1) {
       const value = args[index];
       // npx flags end at the package name or '--'; a tool's own '-c config' is not a shell string.
       if (value === "--" || !value.startsWith("-")) break;
-      if (value === "-c" || value === "--call" || value.startsWith("--call=")) {
-        const command = value.startsWith("--call=") ? value.slice("--call=".length) : args[index + 1];
+      if (value === "-c" || value === "--call" || value.startsWith("--call=") || value.startsWith("-c=")) {
+        const equals = value.indexOf("=");
+        const command = equals >= 0 ? value.slice(equals + 1) : args[index + 1];
         if (command !== undefined) scripts.push(command);
         break;
       }
-      if (!value.includes("=") && PACKAGE_RUNNER_OPTIONS_WITH_VALUE[value]) index += 1;
+      const next = args[index + 1];
+      const takesValue = NPM_OPTIONS_WITH_VALUE[value] || (name === "npx" && PACKAGE_RUNNER_OPTIONS_WITH_VALUE[value])
+        || (value === "--color" && next === "always") || next === "true" || next === "false";
+      if (!value.includes("=") && takesValue) index += 1;
     }
   }
   return scripts;

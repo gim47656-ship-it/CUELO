@@ -64,6 +64,35 @@ describe("machine-wide production build guard", () => {
     expect(buildConcurrencyBlockReason("next build", fakeProc({ bytes: MIN_BUILD_AVAILABLE_BYTES + 1024 }).readers)).toBeUndefined();
   });
 
+  for (const command of [
+    "npm --offline exec --call='next build'",
+    "npm --prefix web exec --call='next build'",
+    "npx -c='next build'",
+    "npm exec -c='next build'",
+    "npm --offline --prefix=web exec --call 'next build'",
+    "npm --cache /tmp/cache --registry=https://registry.npmjs.org exec -c 'next build'",
+    "npm --workspace web --yes exec --package=next -c='next build'",
+    "env CI=1 nice npm --prefix web exec -c='next build'",
+    "bash -lc \"npm --offline exec -c='next build'\"",
+    "npm --scope @org exec -c='next build'",
+    "npm --proxy http://localhost:8080 --cafile cert.pem exec -c='next build'",
+    "npm --color always --depth 1 --auth-type legacy exec -c='next build'",
+    "npm x -c='next build'",
+    "npm --offline x --call='next build'",
+    "npm --offline false --color exec -c='next build'",
+    "npm --color always exec --offline false -c='next build'",
+    "npm -L project --userconfig config -C web exec -c='next build'",
+    "npm --reg https://registry.npmjs.org exec -c='next build'",
+    "npm --enjoy-by 2024-01-01 exec -c='next build'",
+    "npm -reg https://registry.npmjs.org x -c='next build'",
+    "npm -enjoy-by 2024-01-01 x -c='next build'",
+  ]) {
+    test(`call form enters low-memory and active-process checks: ${command}`, () => {
+      expect(buildConcurrencyBlockReason(command, fakeProc({ bytes: 1024 }).readers)).toContain("MemAvailable=0.00 GiB");
+      expect(buildConcurrencyBlockReason(command, fakeProc({ argv: [buildArgv] }).readers)).toContain("pid=100");
+    });
+  }
+
   test("runners, env, wrappers, nested shells and chains reach the same refusal", () => {
     const proc = fakeProc({ argv: [buildArgv] });
     for (const command of [
@@ -99,6 +128,17 @@ describe("machine-wide production build guard", () => {
       "bun --bun next start", "npx next dev", "pnpm test", "echo 'next build'",
       "printf '%s' 'bun run build'", "# next build\necho ok", "node -e 'console.log(\"next build\")'",
       "npx jest -c 'next build'", "npx -- jest -c 'next build'", "npm exec -- eslint -c 'next build'",
+      "npx jest -c='next build'", "npm exec jest -c='next build'",
+      "npm --prefix web exec -- jest -c='next build'",
+      "npm --offline exec -- -c='next build'", "npx -- -c='next build'",
+      "npm --prefix exec echo --call='next build'",
+      "npm --cache exec echo --call='next build'",
+      "npm run echo --call='next build'",
+      "npm --offline exec --call=\"echo 'next build'\"",
+      "echo \"npm --offline exec --call='next build'\"",
+      "npm --scope exec echo --call='next build'",
+      "npm --offline x jest -c='next build'",
+      "npm --scope @org x -- jest -c='next build'",
     ]) expect(buildConcurrencyBlockReason(command, proc.readers), command).toBeUndefined();
     expect(proc.reads()).toBe(before);
   });
