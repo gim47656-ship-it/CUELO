@@ -59,8 +59,15 @@
   locator); Main decides whether to store them with `learn`, link an existing lesson, or reject
   them. Maker sessions have no `learn` tool. Use an applicable existing Skill or rule only where
   guidance is missing, and if an existing rule was sufficient, report the execution correction
-  instead of a duplicate. Do not promote unresolved guesses or edit policy automatically from a
-  failure-rate threshold. Your first turn receives memories recalled for this task in
+  instead of a duplicate. Write a lesson so it still works when a different model reads it later:
+  name the condition and the observed behavior, not whoever was running. Model and character names
+  are not stable identities (two characters can share one model, and a Maker role can use several),
+  so "Opus missed the caller" leaves the next model unsure whether it was its turn, while "a
+  reviewer that had only in-app references missed the dynamic import in `instrumentation.ts`" does
+  not. Keep a model name only where the model is the subject (routing, dispatch, or cost
+  comparisons); otherwise record the failing behavior and the evidence locator. Do not promote
+  unresolved guesses or edit policy automatically from a failure-rate threshold. Your first turn
+  receives memories recalled for this task in
   `<memories>` with `(id: …)`; apply the matching ones before repeating that operation, and list
   the ids you actually applied with their evidence locators in the terminal report. Keep evidence
   locators and the changed action, not private raw output.
