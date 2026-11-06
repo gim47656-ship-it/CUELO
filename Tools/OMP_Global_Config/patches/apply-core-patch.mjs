@@ -22133,8 +22133,10 @@ export function cueloIsFallbackKeyBillingRejection(
 	const WORKER_DEFAULT = `${WORKER_SETTING}\tprotocolDefault: ["rpc", "acp"],\n\ttype: "number",\n`;
 	const WORKER_NOTE = "\t// CUELO: subagents stay on the main thread unless configured; CUELO core patches are not worker-safe.\n";
 	const ISOLATION_SETTING = '\tid: "task.isolation.enabled",\n';
+	// `file:` stays on its own line: the core fixture tests collect target files with that line pattern.
 	EDITS.push({
-		file: "src/task/settings.ts", marker: ISOLATION_SETTING, anchor: ISOLATION_SETTING, patched: ISOLATION_SETTING,
+		file: "src/task/settings.ts",
+		marker: ISOLATION_SETTING, anchor: ISOLATION_SETTING, patched: ISOLATION_SETTING,
 		excludes: WORKER_SETTING,
 		alternates: [{
 			file: "src/task/settings.ts", requires: WORKER_SETTING, marker: WORKER_NOTE,
@@ -22150,7 +22152,8 @@ export function cueloIsFallbackKeyBillingRejection(
 	const CHILLAX_NOTE = "\t\t\t// CUELO: chillax is this turn's pre-ceiling auto resolution.\n";
 	const CONTROLS_CLASS = "export class ModelControls {\n";
 	EDITS.push({
-		file: "src/session/model-controls.ts", marker: CONTROLS_CLASS, anchor: CONTROLS_CLASS, patched: CONTROLS_CLASS,
+		file: "src/session/model-controls.ts",
+		marker: CONTROLS_CLASS, anchor: CONTROLS_CLASS, patched: CONTROLS_CLASS,
 		excludes: CHILLAX,
 		alternates: [{
 			file: "src/session/model-controls.ts", requires: CHILLAX, marker: CHILLAX_NOTE, anchor: CHILLAX_AUTO,
