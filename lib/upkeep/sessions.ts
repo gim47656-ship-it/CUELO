@@ -477,7 +477,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           else seenEntries.add(copyKey);
         }
         const rewrite = observeCache(entry, time);
-        if (isNewInput(entry)) lastResultAt = null;
+        // 새 입력을 기다린 시간과 자동 압축 시간은 하네스 지연이 아니다. 압축은 「컨텍스트 압축」 행이 따로 센다(2026-11-07 사용자 결정).
+        if (isNewInput(entry) || entry.type === "compaction") lastResultAt = null;
         // 사용자 요청이 새 턴을 연다. 지난 턴에 연 스킬은 이 요청의 지적 표현 판정에 쓴다(복사된 entry도 턴 경계로는 본다).
         if (entry.type === "message" && entry.message?.role === "user") {
           previousTurnSkills = [...openedThisTurn];

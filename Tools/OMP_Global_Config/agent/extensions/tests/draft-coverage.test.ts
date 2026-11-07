@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import draftCoverage from "../draft-coverage";
-import { proseBlocks, proseChanges } from "../lib/draft-coverage";
+import { proseBlocks, proseChanges, scriptLineText } from "../lib/draft-coverage";
 
 // 사용자 보고(2026-10-27) 모양: HTML 앞 네 문단은 draft 결과를 옮기고, 뒤 세 문단은 직접 썼다.
 const DRAFTED = [
@@ -331,6 +331,41 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
       const verdict = tool === "write" ? s.write("report.html", content!) : s.edit("report.html", content!);
       expect(verdict?.block).toBe(true);
     }
+  });
+
+  // 2026-11-05~06 가계부 대시보드(doc/history/2026/11/07-upkeep-check-1748): 태그 없이 <script> 안쪽만 고친 edit의 코드·주석·CSS 줄을
+  // 새 글로 세어 여섯 번 멈췄다. 코드 줄은 빼고, 그 줄 문자열에 든 보이는 문구와 따옴표 밖 한국어 줄은 계속 멈춘다.
+  test("HTML 스크립트 코드·주석·CSS 줄은 새 글로 세지 않고, 그 안의 화면 문구는 계속 멈춘다", () => {
+    const code = [
+      "// 바이낸스 USDT: 실제 개수×시세를 원화로 바꿔, 계획상 바이낸스에 있어야 할 돈과 비교한다.",
+      "const entered=c.usdtQty>0&&c.usdtRate>0,krw=Math.round(c.usdtQty*c.usdtRate);",
+      "[\"travelAmount08\",\"travelAmount09\",\"travelAmount10\",\"travelAmount11\",\"travelBonus\",\"hanaSafe\"].forEach(id=>MANUAL.add(id));",
+      "$(\"usdtGap\").className=\"v\"+(entered?(gap>=0?\" good\":\" danger\"):\"\"); // 색만 바꾼다",
+      ".usdt-stat .k{font-size:12px;color:var(--muted)}.usdt-stat .v{font-size:20px;font-weight:800;margin-top:2px}",
+      "if(!(price>0))throw new Error(String(res.status));",
+    ];
+    expect(proseBlocks(code.join("\n"), "index.html")).toEqual([]);
+    const s = session(workdir());
+    s.input();
+    expect(s.call("edit", { input: `[index.html#AB12]\nPUT >1:\n+${code.join("\n+")}` })?.block).toBeUndefined();
+    const shown = `$("svFoot").textContent=entered?"${DIRECT[0]}":\`${DIRECT[2]}\`;`;
+    expect(proseBlocks(shown, "index.html")).toEqual([DIRECT[0], DIRECT[2]]);
+    expect(s.call("edit", { input: `[index.html#AB12]\nPUT >1:\n+${[...code, shown].join("\n+")}` })?.block).toBe(true);
+    expect(proseBlocks(DIRECT[1]!, "index.html")).toEqual([DIRECT[1]]);
+    // 교차검토 R1-OAI-1~4: 태그 안 `//` 화면 글, 줄 끝 주석 속 따옴표, 깊게 중첩된 `${…}`, 두 칸 띄운 영어 문장.
+    expect(proseBlocks(`<p>// ${DIRECT[0]}</p>`, "index.html").join("\n")).toContain(DIRECT[0]);
+    expect(proseBlocks(`const x=1; // "${DIRECT[0]}"`, "index.html")).toEqual([]);
+    expect(scriptLineText("const s = `화면 ${JSON.stringify({a:{b:payload}})} 표시`;")).toBe("화면 표시");
+    expect(proseBlocks("Summary: These  results  demonstrate  substantially  improved  performance;", "index.html").join(" "))
+      .toContain("These results demonstrate substantially improved performance");
+    // 교차검토 R2-OAI-1~3: 세미콜론이 든 화면 문단, 세미콜론 없는 호출 뒤 주석, 식 안 따옴표 속 중괄호.
+    expect(proseBlocks("<p>Status: ready; Retry: available; Connection: active; Authentication: verified;</p>", "index.html").join(" ")).toContain("Authentication: verified");
+    expect(scriptLineText('render() // "새로운 안내 문장을 화면에 표시합니다."')).toBe("");
+    expect(scriptLineText('const s = `${format("{")}새로운 안내 문장을 화면에 표시합니다.`;')).toBe("새로운 안내 문장을 화면에 표시합니다.");
+    expect(scriptLineText('location.href="https://example.com/a"; // 이동')).toBe("");
+    expect(scriptLineText('const x=1// "새로운 안내 문장을 화면에 표시합니다."')).toBe("");
+    const url = "https://example.com/docs//intro 새로운 안내 문장을 화면에 표시합니다.";
+    expect(scriptLineText(url)).toBe(url);
   });
 
   test("Markdown inline code and HTML code/pre remain outside the prose check", () => {

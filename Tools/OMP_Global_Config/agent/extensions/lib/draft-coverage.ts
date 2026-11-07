@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { htmlText } from "../slop-gate/extract";
+import { htmlText, literalStrings } from "../slop-gate/extract";
 
 /**
  * draft-first 범위 확인(RULES 「Gemini writes every piece of text content first」; 2026-10-27 사용자 보고: HTML 앞 네 문단만 draft하고
@@ -27,6 +27,55 @@ const CSS_LINE = new RegExp(String.raw`^\s*(?:[^{}]*\{|\}[\s;]*|(?:[^{}]*\{\s*)?
 // 태그가 섞인 조각(스타일 줄과 본문 줄을 한 edit에서 고친 경우)에서는 한 줄 완결 규칙(`선택자 { 선언; … }`)만 뺀다. 따옴표·꺾쇠가 든 줄은
 // script 문자열이나 마크업일 수 있어 남기고, 선택자 없는 `word: text;` 줄도 남긴다(doc/history/2026/11/05-draft-false-positive).
 const CSS_RULE_LINE = new RegExp(String.raw`^(?![^\n]*["'\x60<>])\s*[^\s{}][^{}]*\{\s*(?:${CSS_DECL};\s*)*${CSS_DECL};?\s*\}\s*$`);
+// HTML 안 스크립트·스타일 코드 줄(2026-11-07 사용자 결정, doc/history/2026/11/07-upkeep-check-1748): 태그 없이 `<script>` 안쪽만 고친
+// edit에서 `const …`, `$("…").textContent=…`, `// 주석`, 한 줄에 붙은 CSS 규칙을 새 글로 세어 한 세션에서 여섯 번 멈췄다. 실제 태그가
+// 없고, 따옴표 밖에 비ASCII 글자가 없고, 코드 표시(`; = { }`, `$(`)가 있으며, 다섯 단어 넘게 이어지는 영어 문장이 없는 줄은 코드로 본다.
+// 코드 줄에서는 보이는 문구일 수 있는 문자열 리터럴(공백이나 비ASCII 글자가 든 것)만 남겨, script 문자열의 문구는 계속 멈춘다.
+const HTML_TAG = /<\/?[a-z][a-z\d-]*(?:\s[^<>]*)?\/?>/i;
+const LITERAL = /(["'])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`/g;
+/**
+ * `${…}` 자리를 빈칸으로 바꾼다. 중괄호 깊이를 세어 중첩된 객체 리터럴도 한 자리로 지우고, 식 안 문자열의 괄호는 세지 않는다.
+ * 닫히지 않은 자리는 뒤 문구를 삼키지 않도록 그대로 둔다(교차검토 R1-OAI-3, R2-OAI-3).
+ */
+function dropInterpolations(value: string): string {
+  let out = "";
+  let i = 0;
+  while (i < value.length) {
+    if (value[i] !== "$" || value[i + 1] !== "{") { out += value[i++]; continue; }
+    let depth = 0;
+    let j = i + 1;
+    for (; j < value.length; j++) {
+      const ch = value[j]!;
+      if (ch === '"' || ch === "'" || ch === "`") {
+        for (j++; j < value.length && value[j] !== ch; j++) if (value[j] === "\\") j++;
+      } else if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) break;
+    }
+    if (j >= value.length) return out + value.slice(i);
+    out += " ";
+    i = j + 1;
+  }
+  return out;
+}
+/** 코드 줄이면 보이는 문구일 수 있는 문자열 리터럴만, 아니면 줄 그대로 돌려준다. 원문 줄에만 쓴다(태그를 벗긴 화면 글에는 쓰지 않는다, R1-OAI-1·R2-OAI-1). */
+export function scriptLineText(line: string): string {
+  if (line.trim().startsWith("//")) return "";
+  if (HTML_TAG.test(line)) return line;
+  // 따옴표 안을 같은 길이로 가려 문자열 밖 줄 끝 주석을 찾고, 그 뒤는 분류에도 문구 추출에도 쓰지 않는다(R1-OAI-2, R3-OAI-1).
+  // 앞부분에 코드 표시가 없으면 주석이 아니다: 따옴표 없는 주소 경로의 `//`(R4-OAI-1)와 `https://`.
+  const masked = line.replace(LITERAL, (literal) => `${literal[0]}${"_".repeat(literal.length - 2)}${literal.at(-1)}`);
+  const slash = masked.search(/(?<![:\\])\/\//);
+  const cut = slash >= 0 && /[;={}()[\]]|\$\(/.test(masked.slice(0, slash).replace(LITERAL, '""')) ? slash : -1;
+  const source = cut >= 0 ? line.slice(0, cut) : line;
+  const code = (cut >= 0 ? masked.slice(0, cut) : masked).replace(LITERAL, '""').replace(/\s+/g, " ");
+  if (/(?![A-Za-z])\p{L}/u.test(code) || /[A-Za-z]+(?: [A-Za-z]+){4,}/.test(code)) return line;
+  // 따옴표 밖이 ASCII뿐인 줄은 코드 표시가 있거나 줄 끝 주석이 붙었으면 코드다(R2-OAI-2: `render() // "…"`).
+  if (cut < 0 && !/[;={}]|\$\(/.test(code)) return line;
+  return literalStrings(source)
+    .map((value) => dropInterpolations(value).replace(/\s+/g, " ").trim())
+    .filter((value) => /\s|(?![A-Za-z])\p{L}/u.test(value))
+    .join("\n");
+}
 // 규칙·프롬프트·스킬은 draft 대상이 아니다(RULES: code, configuration, rule files 제외). 슬롭 게이트가 면제하는 내부 기록
 // (HANDOFF.md, doc/history/**, doc/README.md)도 이 확인에서 뺀다: 2026-10-28 감사에서 26회 차단 중 20회가 내부 기록이었고
 // 12회는 예외 사유를 적고 같은 호출을 다시 보냈다(doc/history/2026/10/28-guard-audit). 사용자 승인 2026-10-28.
@@ -108,7 +157,8 @@ export function proseBlocks(source: string, path: string): string[] {
       .split(/\r?\n/)
       .filter((line) => !CSS_LINE.test(line))
       .join("\n");
-    lines = htmlText(fragment.replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " ")).split("\n").map((line) => line.replace(/^\[attr\] /, ""));
+    const text = htmlText(fragment.split(/\r?\n/).map((line) => scriptLineText(line)).join("\n").replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " "));
+    lines = text.split("\n").map((line) => line.replace(/^\[attr\] /, ""));
   } else {
     lines = [];
     let paragraph: string[] = [];
