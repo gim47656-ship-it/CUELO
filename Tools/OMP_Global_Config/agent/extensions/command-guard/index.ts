@@ -1306,6 +1306,9 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
 
       const decision = reserveTaskCall(taskGuard, event.toolCallId, guardedInput);
       if (!decision.ok) return { block: true, reason: decision.reason };
+      if (decision.notices?.length) {
+        pi.sendMessage({ customType: "task-guard-advisory", content: decision.notices.join("\n"), display: true }, { triggerTurn: false });
+      }
       const makers = reservedMakers(taskGuard, event.toolCallId);
       if (claimedAliases.length > 0) {
         pendingSummons = pendingSummons.filter((alias) => !claimedAliases.includes(alias));

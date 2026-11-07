@@ -220,25 +220,25 @@ describe("SideQuestGuard", () => {
     expect(getTaskGuardUsage(state).total).toBe(0);
   });
 
-  test("요청 중 WORK_CLASS와 PRIMARY_DELIVERABLE 변경을 차단한다", () => {
+  test("추가 완료물은 알리고 같은 budget으로 센다", () => {
     const state = lockedState();
     for (const [label, drift] of [
       ["WORK_CLASS", brief({ WORK_CLASS: "diagnostic" })],
       ["PRIMARY_DELIVERABLE", brief({ PRIMARY_DELIVERABLE: "관측 로그를 정리한다" })],
     ] as const) {
       const decision = reserveTaskCall(state, `drift-${label}`, flat("maker", drift));
-      expect(decision.ok).toBe(false);
-      if (!decision.ok) expect(decision.reason).toMatch(/SideQuestGuard/);
+      expect(decision.ok).toBe(true);
+      if (decision.ok) expect(decision.notices?.join("\n")).toMatch(/SideQuestGuard/);
     }
-    expect(getTaskGuardUsage(state).primaryMaker).toBe(1);
+    expect(getTaskGuardUsage(state).primaryMaker).toBe(3);
   });
 
   test("lock 없는 첫 child의 미기재와 폐지된 역할을 차단한다", () => {
     const state = createTaskGuardState();
-    // lock이 없으면 사람이 판단해야 하는 두 값은 파생할 수 없다.
+    // No title/name is available as a fallback in this malformed input.
     const missing = reserveTaskCall(state, "1", flat("maker", "Do the work"));
     expect(missing.ok).toBe(false);
-    if (!missing.ok) expect(missing.reason).toMatch(/WORK_CLASS/);
+    if (!missing.ok) expect(missing.reason).toMatch(/PRIMARY_DELIVERABLE/);
 
     const unknown = reserveTaskCall(state, "2", flat("scout", brief()));
     expect(unknown.ok).toBe(false);
@@ -657,11 +657,11 @@ describe("사용자 redirect", () => {
 
     const redirected = brief({ PRIMARY_DELIVERABLE: "Run X-Ray 화면" });
     const drift = reserveTaskCall(state, "2", flat("maker", redirected));
-    expect(drift.ok).toBe(false);
+    expect(drift.ok).toBe(true);
 
     expect(noteUserRedirect(state)).toBe(true);
-    // 첫 발주는 그대로 소비된 상태여야 한다: 남은 자리는 한도 - 1 뿐이다.
-    for (let index = 1; index < TASK_BUDGET_LIMITS.primaryMaker; index += 1) {
+    // Both dispatches remain charged after redirect.
+    for (let index = 2; index < TASK_BUDGET_LIMITS.primaryMaker; index += 1) {
       expect(reserveTaskCall(state, `r${index}`, flat("maker", redirected)).ok).toBe(true);
     }
     expect(getTaskGuardUsage(state).primaryMaker).toBe(TASK_BUDGET_LIMITS.primaryMaker);
@@ -1204,7 +1204,7 @@ describe("TASK_GUARD 파생", () => {
     const wrong = reserveTaskCall(
       state,
       "2",
-      flat("maker", "TASK_GUARD:\nWORK_CLASS: feat\nOWNED_PATHS: a.ts\n\n작업."),
+      flat("maker", "TASK_GUARD:\nWORK_CLASS: impossible\nOWNED_PATHS: a.ts\n\n작업."),
     );
     expect(wrong.ok).toBe(false);
     if (!wrong.ok) expect(wrong.reason).toMatch(/WORK_CLASS는 feature\|maintenance\|diagnostic/);
@@ -1218,7 +1218,7 @@ describe("TASK_GUARD 파생", () => {
     if (!badPurpose.ok) expect(badPurpose.reason).toMatch(/PURPOSE는 primary\|rework/);
   });
 
-  test("lock 없는 첫 child가 PRIMARY_DELIVERABLE을 생략하면 거부한다", () => {
+  test("title도 name도 없는 첫 child는 PRIMARY_DELIVERABLE을 요구한다", () => {
     const state = createTaskGuardState();
     const decision = reserveTaskCall(
       state,
@@ -1229,15 +1229,15 @@ describe("TASK_GUARD 파생", () => {
     if (!decision.ok) expect(decision.reason).toMatch(/PRIMARY_DELIVERABLE이 비어 있습니다/);
   });
 
-  test("lock과 다른 PRIMARY_DELIVERABLE을 명시하면 side quest로 거부한다", () => {
+  test("lock과 다른 PRIMARY_DELIVERABLE은 추가 완료물로 받는다", () => {
     const state = lockedState();
     const decision = reserveTaskCall(
       state,
       "2",
       flat("maker", brief({ PRIMARY_DELIVERABLE: "관측 로그를 정리한다" })),
     );
-    expect(decision.ok).toBe(false);
-    if (!decision.ok) expect(decision.reason).toMatch(/SideQuestGuard/);
+    expect(decision.ok).toBe(true);
+    if (decision.ok) expect(decision.notices?.join("\n")).toMatch(/SideQuestGuard/);
   });
 
   test("모두 명시한 항목의 본문은 바꾸지 않는다", () => {

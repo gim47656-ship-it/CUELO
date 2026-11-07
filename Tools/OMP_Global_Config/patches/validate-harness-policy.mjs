@@ -817,7 +817,6 @@ const mainTakeoverKeys = [
 // 조용히 사라지고, 소비 경로가 바뀐 문장은 다음 발주를 막는다. 그래서 키 집합을 정확히 대조한다.
 const preparedReferenceKeys = ["produce", "consume", "restore", "linkage", "errors", "sessionScope", "preserved"];
 const preparedReferenceErrorKeys = [
-  "mixed-full-and-reference-in-one-call",
   "variant-reference-syntax",
   "different-session-or-batch",
   "unknown-or-cleared-reference",

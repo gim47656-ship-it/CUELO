@@ -123,7 +123,7 @@ export type TaskCallInput = Record<string, unknown>;
 export type EvalCallInput = Record<string, unknown>;
 
 export type TaskGuardDecision =
-  | { ok: true; input?: TaskCallInput }
+  | { ok: true; input?: TaskCallInput; notices?: string[] }
   | { ok: false; reason: string };
 
 /** 위임 정의는 maker 하나이며 같은 소유권·budget 계약을 사용한다. */
@@ -159,6 +159,18 @@ export function normalizeDeliverable(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
 
+/** Only unique enum prefixes are corrected; unrelated values remain invalid. */
+export function normalizeWorkClass(value: string): WorkClass | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  const matches = WORK_CLASSES.filter((candidate) => candidate.startsWith(normalized));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function defaultPrimaryDeliverable(task: string, name: string): string {
+  return /^[ \t]*TASK_TITLE:[ \t]*(.+)$/m.exec(task)?.[1]?.trim() || name.trim();
+}
+
 /** 이번 요청의 사용자 입력 원문을 USER_REQUEST 인용 기준에 더한다. 첫 입력은 reset 뒤에, steering은 그대로 더한다. */
 export function noteUserRequestText(state: TaskGuardState, text: string): void {
   if (text.trim()) state.requestTexts.push(text);
@@ -191,10 +203,6 @@ function sameLock(lock: Lock, workClass: string, deliverable: string): boolean {
   return lock.workClass === workClass && lock.deliverableKey === normalizeDeliverable(deliverable);
 }
 
-/** SideQuestGuard 거절 문구. TaskGuard와 maker_route 준비·발주가 같은 고치기 안내를 낸다. */
-export const USER_REQUEST_HINT =
-  "사용자가 이번 요청에서 이 완료물을 직접 요구했다면 TASK_GUARD 블록에 `USER_REQUEST: <그 요구 문장을 사용자 입력에서 글자 그대로 6자 이상>`을 더하면 별도 완료물로 받아들입니다. " +
-  "사용자가 요구하지 않은 곁가지라면 기준 값으로 맞추거나 backlog로 남기세요.";
 
 /**
  * OWNED_PATHS 값을 콤마로 나눠 빈 항목을 버리고 collapseOwnedPath로 동등 표기(`//`, `/./`, 선행 `./`)를
@@ -274,7 +282,7 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
   const purposeRaw = readGuardField(block, "PURPOSE")?.toLowerCase();
   const blocksPrimaryRaw = readGuardField(block, "BLOCKS_PRIMARY")?.toLowerCase();
 
-  if (workClassRaw && !WORK_CLASSES.includes(workClassRaw as WorkClass)) {
+  if (workClassRaw && !normalizeWorkClass(workClassRaw)) {
     return "[SpawnGuard] WORK_CLASS는 feature|maintenance|diagnostic 중 하나여야 합니다.";
   }
   if (purposeRaw && !PURPOSES.includes(purposeRaw as Purpose)) {
@@ -285,7 +293,7 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
   }
 
   return {
-    ...(workClassRaw ? { workClass: workClassRaw as WorkClass } : {}),
+    ...(workClassRaw ? { workClass: normalizeWorkClass(workClassRaw) } : {}),
     ...(purposeRaw ? { purpose: purposeRaw as Purpose } : {}),
     ...(blocksPrimaryRaw ? { blocksPrimary: blocksPrimaryRaw === "yes" } : {}),
     ...(readGuardField(block, "PRIMARY_DELIVERABLE")
@@ -298,23 +306,15 @@ function parseGuardMetadata(task: string): RawGuardMetadata | string {
   };
 }
 
-/**
- * raw + agent + 현재 lock으로 계약을 완성한다. lock이 확립돼 있으면 WORK_CLASS/PRIMARY_DELIVERABLE은
- * 그 lock 값으로, PURPOSE와 BLOCKS_PRIMARY는 FINDING_ID로 파생한다. lock이 없는 첫 child는
- * 사람이 판단해야 하는 두 값을 그대로 요구한다.
- */
+/** Complete omitted fields from the request lock, then first-dispatch defaults. */
 function resolveGuardMetadata(
   raw: RawGuardMetadata,
   lock: Lock | undefined,
+  fallbackDeliverable: string,
 ): GuardMetadata | string {
-  const workClass = raw.workClass ?? lock?.workClass;
-  if (!workClass) {
-    return "[SpawnGuard] WORK_CLASS는 feature|maintenance|diagnostic 중 하나여야 합니다.";
-  }
-  const primaryDeliverable = raw.primaryDeliverable ?? lock?.deliverable;
-  if (!primaryDeliverable) {
-    return "[SpawnGuard] PRIMARY_DELIVERABLE이 비어 있습니다.";
-  }
+  const workClass = raw.workClass ?? lock?.workClass ?? "feature";
+  const primaryDeliverable = raw.primaryDeliverable ?? lock?.deliverable ?? fallbackDeliverable;
+  if (!primaryDeliverable) return "[SpawnGuard] PRIMARY_DELIVERABLE이 비어 있습니다.";
 
   const purpose: Purpose = raw.purpose ?? (raw.findingId ? "rework" : "primary");
 
@@ -497,12 +497,13 @@ export function reserveTaskCall(
   const rewritten = new Map<number, string>();
   const agentFilled = new Set<number>();
   const admitted = [...state.admitted];
+  const notices: string[] = [];
 
   for (const [index, item] of normalized.entries()) {
     const raw = parseGuardMetadata(item.task);
     if (typeof raw === "string") return { ok: false, reason: raw };
 
-    const metadata = resolveGuardMetadata(raw, candidateLock);
+    const metadata = resolveGuardMetadata(raw, candidateLock, defaultPrimaryDeliverable(item.task, item.name ?? ""));
     if (typeof metadata === "string") return { ok: false, reason: metadata };
 
     // 같은 호출의 첫 항목이 확립한 lock을 2번째 이후 항목이 상속한다.
@@ -511,21 +512,12 @@ export function reserveTaskCall(
       deliverableKey: normalizeDeliverable(metadata.primaryDeliverable),
       deliverable: metadata.primaryDeliverable,
     };
-    // lock과 다른 완료물은 사용자가 이번 요청에서 직접 요구했다는 USER_REQUEST 인용이 맞을 때만 받는다(SideQuestGuard).
+    // Additional deliverables share the request budget; the first lock remains the inheritance default.
     if (
       isMakerAgent(item.agent) &&
       ![candidateLock, ...admitted].some((lock) => sameLock(lock, metadata.workClass, metadata.primaryDeliverable))
     ) {
-      if (!quotesUserRequest(state, raw.userRequest)) {
-        return {
-          ok: false,
-          reason:
-            "[SideQuestGuard] 한 사용자 요청 안에서 WORK_CLASS/PRIMARY_DELIVERABLE을 바꿀 수 없습니다. " +
-            `locked=${candidateLock.workClass}:${candidateLock.deliverable}` +
-            (raw.userRequest ? " (USER_REQUEST 인용이 이번 사용자 입력에 글자 그대로 없습니다.)" : "") +
-            ` ${USER_REQUEST_HINT}`,
-        };
-      }
+      notices.push(`[SideQuestGuard] 추가 완료물 허용: locked=${candidateLock.workClass}:${candidateLock.deliverable}, new=${metadata.workClass}:${metadata.primaryDeliverable}. 누적 budget은 유지됩니다.`);
       admitted.push({
         workClass: metadata.workClass,
         deliverableKey: normalizeDeliverable(metadata.primaryDeliverable),
@@ -548,7 +540,7 @@ export function reserveTaskCall(
 
     const derived =
       raw.span === undefined ||
-      raw.workClass === undefined ||
+      readGuardField(extractGuardBlock(item.task)?.block ?? "", "WORK_CLASS") !== metadata.workClass ||
       raw.purpose === undefined ||
       raw.blocksPrimary === undefined ||
       raw.primaryDeliverable === undefined;
@@ -563,8 +555,9 @@ export function reserveTaskCall(
   state.admitted = admitted;
   addDelta(state.usage, delta);
   state.reservations.set(toolCallId, { children, makers, reservedAt: Date.now(), executed: false });
-  if (rewritten.size === 0 && agentFilled.size === 0) return { ok: true };
-  return { ok: true, input: replaceTaskBodies(input, rewritten, agentFilled) };
+  const advisory = notices.length > 0 ? { notices } : {};
+  if (rewritten.size === 0 && agentFilled.size === 0) return { ok: true, ...advisory };
+  return { ok: true, input: replaceTaskBodies(input, rewritten, agentFilled), ...advisory };
 }
 
 /**

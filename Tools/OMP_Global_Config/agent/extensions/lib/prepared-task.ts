@@ -33,13 +33,9 @@ const shared = (() => {
 })();
 const sessions = shared.sessions;
 const CONTEXT_REFERENCE = "PREPARED_CONTEXT";
-/**
- * exact 참조 한 줄. 추천 변경 근거는 maker_route 결과를 본 뒤에 정해지므로, 다음 줄에 `ROUTING_REASON:` 한 줄만
- * 더 받아 복원한 원문 끝에 붙인다. 근거는 beforeTask 게이트(`\S.+`)와 같은 최소 길이이고, 그 줄 뒤에는 줄바꿈
- * 하나만 허용한다(U+2028·U+2029 같은 줄 구분자도 거절). 그 밖의 덧붙임은 원문 보존을 위해 계속 거절한다.
- */
+/** A reference line may be followed by Main's additions to the stored brief. */
 const TASK_REFERENCE =
-  /^PREPARED_TASK:\s*([A-Za-z0-9._-]+)(?:[ \t]*\r?\n[ \t]*(ROUTING_REASON:[ \t]*\S[^\r\n\u2028\u2029]*\S)[ \t]*(?:\r?\n)?|\s*)$/;
+  /^PREPARED_TASK:[ \t]*([A-Za-z0-9._-]+)[ \t]*(?:\r?\n([\s\S]*))?$/;
 /**
  * 근거를 task 참조 대신 context에 실은 형태(`PREPARED_CONTEXT` 다음 줄·같은 줄, 또는 근거 한 줄만). 2026-10-10~22에
  * 이 실수로 거절된 발주 6건 중 5건이 참조 하나, 1건이 참조 둘이었다. 호출 전체에 단 근거 한 줄이므로 자기 근거 줄이 없는
@@ -102,14 +98,11 @@ function clipped(value: string, limit = DIAGNOSTIC_VALUE_LIMIT): string {
   return single.length > limit ? `${single.slice(0, limit)}…` : single;
 }
 
-/**
- * 참조로 보이지만 exact 문법이 아닌 task 값이 어디서 벗어났는지 한 줄로 집는다. 본문은 에코하지 않고
- * 참조 뒤에 붙은 줄·글자 수와 preparedId 토큰만 싣는다.
- */
+/** Describe malformed reference syntax without echoing the brief body. */
 function describeReference(value: string): string {
   const trimmed = value.trim();
   const exact = TASK_REFERENCE.exec(trimmed);
-  if (exact) return `앞뒤 공백이나 줄바꿈이 있어 exact 참조가 아닙니다(정확히 'PREPARED_TASK: ${clipped(exact[1]!)}'${exact[2] ? "와 다음 줄 'ROUTING_REASON: <근거>' 하나" : ""})`;
+  if (exact) return `앞뒤 공백이 있어 참조가 아닙니다('PREPARED_TASK: ${clipped(exact[1]!)}'로 시작하세요)`;
   const notes: string[] = [];
   if (!trimmed.startsWith("PREPARED_TASK:")) notes.push("'PREPARED_TASK:' 접두 표기가 다릅니다(대문자 접두 뒤 바로 콜론)");
   const after = trimmed.replace(/^PREPARED_TASK\s*:\s*/i, "");
@@ -119,7 +112,7 @@ function describeReference(value: string): string {
   }
   const [id = "", ...rest] = after.split(/\s+/);
   const lines = trimmed.split(/\r?\n/).length;
-  if (lines > 1) notes.push(`참조 뒤에 본문 ${lines - 1}줄이 더 붙었습니다(덧붙일 수 있는 것은 다음 줄 'ROUTING_REASON: <근거>' 한 줄뿐)`);
+  if (lines > 1) notes.push(`참조 첫 줄의 preparedId 형식을 확인하세요`);
   if (!/^[A-Za-z0-9._-]+$/.test(id)) notes.push(`preparedId 형식이 아닙니다: '${clipped(id, 40)}' (허용 문자: A-Za-z0-9._-)`);
   else if (lines === 1 && rest.length > 0) notes.push(`참조 뒤에 다른 내용이 ${rest.join(" ").length}자 붙었습니다`);
   return notes.join(" · ") || "exact 참조 문법이 아닙니다";
@@ -145,33 +138,30 @@ export function resolvePreparedTaskInput(
     typeof value === "string" && /^PREPARED_TASK\s*:/i.test(value.trim()),
   );
   const hasReference = references.some((id) => id !== undefined);
-  const contextReason = hasReference && typeof input.context === "string"
-    ? CONTEXT_REASON.exec(input.context)?.[1]
-    : undefined;
-  const hasContextMarker = input.context === CONTEXT_REFERENCE || contextReason !== undefined;
+  const contextText = typeof input.context === "string" ? input.context : "";
+  const contextMatch = /^PREPARED_CONTEXT(?:[ \t]+|\r?\n)([\s\S]*)$/.exec(contextText);
+  const contextTail = contextMatch?.[1];
+  const reasonLine = contextTail?.match(/^[ \t]*(ROUTING_REASON:[ \t]*\S[^\r\n\u2028\u2029]*\S)[ \t]*\r?$/m);
+  const contextReason = hasReference ? CONTEXT_REASON.exec(contextText)?.[1] ?? reasonLine?.[1] : undefined;
+  const hasContextMarker = contextText === CONTEXT_REFERENCE || contextMatch !== null || contextReason !== undefined;
+  const contextAddition = reasonLine
+    ? contextTail!.replace(reasonLine[0], "").trim()
+    : contextReason === undefined ? contextTail?.trim() : undefined;
 
   if (!hasReference && !hasContextMarker && !referenceLike.some(Boolean)) return input;
   const malformedIndex = referenceLike.findIndex((like, index) => like && references[index] === undefined);
   if (malformedIndex >= 0) {
     throw new Error(
       `task[${malformedIndex}]의 task 값이 exact prepared 참조가 아닙니다: ${describeReference(taskValues[malformedIndex] as string)}. ` +
-      "참조는 task 문자열 전체를 'PREPARED_TASK: <preparedId>' 하나로 두고(추천 변경 근거만 다음 줄 'ROUTING_REASON: <근거>' 한 줄로 덧붙일 수 있음), 원문은 maker_route가 보관한 그대로 복원되므로 다른 내용은 덧붙이지 않습니다.",
+      "참조 첫 줄은 'PREPARED_TASK: <preparedId>'로 쓰고, 추가 지시는 다음 줄에 적으세요.",
     );
   }
   if (hasReference && !hasContextMarker) {
     const received = input.context;
     const label = typeof received === "string" && received.length > 0 ? `'${clipped(received)}'` : "<없음>";
     throw new Error(
-      `prepared 참조를 쓰려면 context를 정확히 '${CONTEXT_REFERENCE}'로 보내야 합니다: 받은 값 ${label}. ` +
-      "원문 context는 참조가 복원하므로 함께 보내지 않습니다. 추천 변경 근거는 context가 아니라 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로 보냅니다.",
-    );
-  }
-  // context의 근거 한 줄은 자기 근거 줄이 없는 참조 모두의 근거로 옮긴다(참조가 여럿이어도 뜻이 같다). 모든 참조가 이미 근거를
-  // 가졌으면 옮길 곳이 없어 어느 근거가 맞는지 모르므로 거절한다.
-  if (contextReason !== undefined && matches.every((match) => match?.[2] !== undefined)) {
-    throw new Error(
-      `context에 실은 'ROUTING_REASON:'을 옮길 참조가 없습니다: 참조 ${items.length}개 모두 이미 다음 줄 근거가 있습니다. ` +
-      `context는 정확히 '${CONTEXT_REFERENCE}'로 두고, 근거는 해당 task 참조의 다음 줄 'ROUTING_REASON: <근거>'로만 보냅니다.`,
+      `prepared 참조를 쓰려면 context를 '${CONTEXT_REFERENCE}'로 보내야 합니다: 받은 값 ${label}. ` +
+      "추가 context는 PREPARED_CONTEXT 다음에 적으면 복원한 context 뒤에 붙습니다.",
     );
   }
   if (!hasReference) {
@@ -180,20 +170,12 @@ export function resolvePreparedTaskInput(
       "참조 대신 full 원문을 그 context와 함께 보내야 합니다.",
     );
   }
-  if (references.some((id) => id === undefined)) {
-    const index = references.findIndex((id) => id === undefined);
-    const mixed = taskValues[index];
-    throw new Error(
-      `${typeof mixed === "string" ? `task[${index}]는 prepared 참조가 아니라 full 원문입니다` : `task[${index}]의 task 값이 문자열이 아닙니다`}. ` +
-      "한 호출에서 참조와 원문을 섞을 수 없습니다: 모든 task를 'PREPARED_TASK: <preparedId>'로 보내거나 모두 full 원문으로 보내세요.",
-    );
-  }
 
   const state = sessions.get(requireSessionId(sessionId));
   if (!state) throw new Error("현재 session에 prepared task 참조가 없습니다. 먼저 maker_route로 이 session의 발주를 준비하세요.");
-  const records = references.map((id) => state.records.get(id!));
-  if (records.some((record) => !record)) {
-    const missing = references.filter((id, index) => !records[index]).map((id) => `'${clipped(id!, 40)}'`);
+  const records = references.map((id) => id === undefined ? undefined : state.records.get(id));
+  if (records.some((record, index) => references[index] !== undefined && !record)) {
+    const missing = references.filter((id, index) => id !== undefined && !records[index]).map((id) => `'${clipped(id!, 40)}'`);
     const available = [...state.records.keys()];
     const shown = available.slice(0, DIAGNOSTIC_LIST_LIMIT);
     throw new Error(
@@ -202,7 +184,7 @@ export function resolvePreparedTaskInput(
       "maker_route가 돌려준 preparedId를 그대로 쓰세요.",
     );
   }
-  const resolved = records as PreparedTaskRecord[];
+  const resolved = records.filter((record): record is PreparedTaskRecord => record !== undefined);
   const batchId = resolved[0]!.batchId;
   const context = resolved[0]!.context;
   if (resolved.some((record) => record.batchId !== batchId || record.context !== context)) {
@@ -211,7 +193,8 @@ export function resolvePreparedTaskInput(
 
   const restoredItems = items.map((item, index) => {
     const source = item as Record<string, unknown>;
-    const record = resolved[index]!;
+    const record = records[index];
+    if (!record) return source;
     // 참조에 이미 session·batch·ref로 묶인 name이 있으므로 생략만 그 name으로 복원한다. 명시한 값은 일치해야 한다.
     if (source.name !== undefined && source.name !== record.name) {
       throw new Error(
@@ -219,11 +202,14 @@ export function resolvePreparedTaskInput(
         "참조 발주는 name을 생략하거나 준비한 이름을 그대로 써야 합니다.",
       );
     }
-    const reason = (matches[index]![2] ?? contextReason)?.trim();
-    return { ...source, name: record.name, task: reason ? `${record.task.trimEnd()}\n${reason}` : record.task };
+    const addition = matches[index]![2]?.trim();
+    const ownReason = addition && /^[ \t]*ROUTING_REASON:[ \t]*\S.+$/m.test(addition);
+    const appended = [addition, !ownReason ? contextReason?.trim() : undefined].filter(Boolean).join("\n");
+    return { ...source, name: record.name, task: appended ? `${record.task.trimEnd()}\n${appended}` : record.task };
   });
+  const restoredContext = contextAddition ? `${context.trimEnd()}\n${contextAddition}` : context;
   if (Array.isArray(input.tasks)) {
-    return { ...input, context, tasks: restoredItems };
+    return { ...input, context: restoredContext, tasks: restoredItems };
   }
-  return { ...restoredItems[0], context };
+  return { ...restoredItems[0], context: restoredContext };
 }

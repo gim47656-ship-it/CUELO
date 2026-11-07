@@ -214,6 +214,74 @@ function harness(options: {
   };
 }
 
+describe("2026-11-07 dispatch format normalization", () => {
+  type NormalizedDispatch = { block?: boolean; input: { context: string; tasks: Array<Record<string, unknown>> }; notices: string[] };
+  test("candidate selector suffix and coarse effort normalize without mutating input", async () => {
+    const h = harness();
+    await h.prepare("", [h.task], {});
+    for (const model of ["openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-sol:high", "openai-codex/gpt-6.1-sol:auto"]) {
+      const item = { ...h.input.tasks[0], model, effort: "hi" };
+      const result = await h.beforeTask({ ...h.input, tasks: [item] }, {}) as NormalizedDispatch;
+      expect(result?.block).not.toBe(true);
+      expect(result.input.tasks[0].model).toBe("openai-codex/gpt-6.1-sol:auto");
+      expect(result.input.tasks[0]).not.toHaveProperty("effort");
+      expect(result.notices.join("\n")).toContain("auto");
+      expect(item.effort).toBe("hi");
+    }
+    expect(await h.dispatch("unknown/not-a-candidate")).toMatchObject({ block: true });
+    const flat = await h.beforeTask({ context: "", name: h.task.name, task: brief, model: "openai-codex/gpt-6.1-sol:high", effort: "hi" }, {}) as { input: Record<string, unknown> };
+    expect(flat.input.model).toBe("openai-codex/gpt-6.1-sol:auto");
+    expect(flat.input).not.toHaveProperty("effort");
+  });
+  test("prepared additions and mixed full briefs dispatch with restored content", async () => {
+    const h = harness();
+    const other = { ...h.task, name: "Other", task: brief.replace("src/view.ts", "src/other.ts") };
+    const routes = await h.prepare("stored context", [h.task, other], {});
+    const full = { name: other.name, task: other.task, model: "openai-codex/gpt-6.1-sol:auto" };
+    const result = await h.beforeTask({
+      context: "PREPARED_CONTEXT\nMain context addition",
+      tasks: [{ task: `PREPARED_TASK: ${routes[0].preparedId}\nMain brief addition`, model: "openai-codex/gpt-6.1-sol:auto" }, full],
+    }, {}) as NormalizedDispatch;
+    expect(result?.block).not.toBe(true);
+    expect(result.input.context).toBe("stored context\nMain context addition");
+    expect(result.input.tasks[0].task).toBe(`${brief}\nMain brief addition`);
+    expect(result.input.tasks[1].task).toBe(full.task);
+    expect(await h.beforeTask({ context: "PREPARED_CONTEXT", task: "PREPARED_TASK: missing" }, {})).toMatchObject({ block: true });
+  });
+  test("first dispatch defaults and unambiguous prefixes are visible to the child", async () => {
+    for (const [value, expected] of [["", "feature"], ["feat", "feature"], ["maint", "maintenance"], ["diag", "diagnostic"]]) {
+      const h = harness();
+      const task = `TASK_GUARD:\n${value ? `WORK_CLASS: ${value}\n` : ""}OWNED_PATHS: src/view.ts\nTASK_TITLE: Normalize contract\n\nbody`;
+      await h.prepare("", [{ ...h.task, task }], {});
+      const routed = await h.dispatch("openai-codex/gpt-6.1-sol:auto", task);
+      expect(routed ?? {}).not.toMatchObject({ block: true });
+      const result = reserveTaskCall(createTaskGuardState(), "first", { name: h.task.name, agent: "maker", task });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.input?.task).toContain(`WORK_CLASS: ${expected}`);
+        expect(result.input?.task).toContain("PRIMARY_DELIVERABLE: Normalize contract");
+      }
+    }
+    const fallback = reserveTaskCall(createTaskGuardState(), "fallback", { name: "FallbackName", agent: "maker", task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts" });
+    expect(fallback).toMatchObject({ ok: true, input: { task: expect.stringContaining("PRIMARY_DELIVERABLE: FallbackName") } });
+  });
+  test("additional deliverables dispatch with advisory and retain budget accounting", async () => {
+    const h = harness();
+    const other = { ...h.task, name: "Other", task: brief.replace("maintenance", "feature").replace("표시 오류 수정", "another deliverable").replace("src/view.ts", "src/other.ts") };
+    const routes = await h.prepare("", [h.task, other], {});
+    expect(routes[1].briefGaps?.join("\n")).toContain("maintenance:표시 오류 수정");
+    const input = { tasks: [h.task, other].map((task) => ({ name: task.name, task: task.task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" })) };
+    const routed = await h.beforeTask(input, {});
+    expect(routed).not.toMatchObject({ block: true });
+    const state = createTaskGuardState();
+    const reserved = reserveTaskCall(state, "additional", input);
+    expect(reserved.ok).toBe(true);
+    if (reserved.ok) expect(reserved.notices?.join("\n")).toContain("feature:another deliverable");
+    expect(state.usage).toEqual({ primaryMaker: 2, reworkMaker: 0, total: 2 });
+    expect(state.admitted).toHaveLength(1);
+  });
+});
+
 describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => {
   test("동일 준비의 병렬 호출은 한 번만 판단하고 task 경계에서는 재호출하지 않는다", async () => {
     const h = harness();
@@ -521,7 +589,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:auto` }] };
     expect(await route.beforeTask(withSolutionSpace(blocked), ctx)).toMatchObject({ block: true });
   });
-  test("후보 강도는 registry 단계 전체이고 Jev에 강도를 묻지 않으며 발주는 '<후보 selector>:auto'만 통과한다", async () => {
+  test("registry 강도는 유지하고 발주 selector만 auto로 보정한다", async () => {
     const policy = loadRoutingPolicy();
     const modelRoles: Record<string, string> = {};
     for (const profile of Object.keys(policy.modelSelection.profiles)) {
@@ -558,7 +626,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const dispatch = (model: string) => withSolutionSpace({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
     for (const concrete of ["anthropic/claude-opus-5-5:low", "anthropic/claude-opus-5-5:max", "anthropic/claude-opus-5-5"]) {
       expect(await route.beforeTask(dispatch(concrete), ctx)).toMatchObject({
-        block: true, reason: expect.stringContaining("model:'anthropic/claude-opus-5-5:auto'"),
+        input: { tasks: [expect.objectContaining({ model: "anthropic/claude-opus-5-5:auto" })] },
       });
     }
     expect(await route.beforeTask(dispatch("anthropic/claude-opus-5-5:auto"), ctx)).toBeUndefined();
@@ -1097,12 +1165,10 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(h.requests).toHaveLength(2);
     expect(await h.beforeTask(h.input, {} as never)).toBeUndefined();
   });
-  test("concrete 강도와 coarse override 및 SWE 발주는 거절한다", async () => {
+  test("중단된 SWE 발주는 계속 거절한다", async () => {
     const h = harness();
     await h.prepare("같은 계약", [h.task], {} as never);
     for (const item of [
-      { ...h.input.tasks[0], model: "openai-codex/gpt-6.1-sol:medium" },
-      { ...h.input.tasks[0], effort: "hi" },
       { ...h.input.tasks[0], model: "devin/swe-2:auto" },
       { ...h.input.tasks[0], model: "", task: '[character-summon alias="TESTA" model="devin/swe-2"]' },
     ]) expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
@@ -1200,27 +1266,21 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await h.prepare("", [h.task], {} as never);
     expect(await h.beforeTask({
       ...h.input,
-      tasks: [{ ...h.input.tasks[0], model: "openai-codex/gpt-6.1-sol:medium" }],
+      tasks: [{ ...h.input.tasks[0], model: "unknown/unavailable:auto" }],
     }, {} as never)).toMatchObject({ block: true });
     const inheritedTask = {
       name: "Second",
       task: "TASK_GUARD:\nOWNED_PATHS: src/other.ts\n\n실패한 spawn의 lock을 상속하면 안 된다.",
       assessment: { ...facts, paths: ["src/other.ts"] },
     };
-    await expect(h.prepare("", [inheritedTask], {} as never)).rejects.toThrow();
-    expect(h.requests).toHaveLength(1);
+    await h.prepare("", [inheritedTask], {});
+    const explicitDefault = inheritedTask.task.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second");
+    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicitDefault, model: "openai-codex/gpt-6.1-sol:auto" }] }, {})).toBeUndefined();
   });
   test("TaskGuard 계약을 못 만들면 빠진 필드와 양식을 짚고 판정을 호출하지 않는다", async () => {
     const h = harness();
     const noBlock = { ...h.task, task: "브리프 본문만 있고 guard가 없다." };
     await expect(h.prepare("", [noBlock], {} as never)).rejects.toThrow("`TASK_GUARD:` 블록이 없습니다");
-    const pathsOnly = { ...h.task, task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts\n\n첫 child인데 lock 필드가 없다." };
-    const error = await h.prepare("", [pathsOnly], {} as never).then(() => undefined, (e: Error) => e.message);
-    expect(error).toContain("빠진 필드: WORK_CLASS");
-    expect(error).toContain("PRIMARY_DELIVERABLE");
-    expect(error).not.toContain("OWNED_PATHS(모든 child 필수)");
-    expect(error).toContain("rule://task-guard");
-    expect(error).not.toContain("첫 child인데");
     const noPaths = { ...h.task, task: brief.replace("OWNED_PATHS: src/view.ts\n", "") };
     await expect(h.prepare("", [noPaths], {} as never)).rejects.toThrow("빠진 필드: OWNED_PATHS(모든 child 필수)");
     expect(h.requests).toHaveLength(0);
@@ -1273,11 +1333,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }, {} as never)) as { block: boolean; reason: string };
 
     const appended = await dispatch(`PREPARED_TASK: ${preparedId}\n\n덧붙인 본문`);
-    expect(appended.block).toBe(true);
-    expect(appended.reason).toContain("exact prepared 참조가 아닙니다");
-    expect(appended.reason).toContain("참조 뒤에 본문 2줄이 더 붙었습니다");
-    expect(appended.reason).toContain("'PREPARED_TASK: <preparedId>' 하나");
-    expect(appended.reason).not.toContain("덧붙인 본문");
+    expect(appended).toMatchObject({ input: { tasks: [expect.objectContaining({ task: `${brief}\n덧붙인 본문` })] } });
 
     const badId = await dispatch(`PREPARED_TASK: ${preparedId}/x`);
     expect(badId.reason).toContain("preparedId 형식이 아닙니다");
@@ -1363,7 +1419,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     first.clearPreparedTaskSession(sessionId);
   });
 
-  test("한 batch 참조만 함께 복원하고 mixed full/ref와 다른 batch 조합은 거절한다", async () => {
+  test("mixed full/ref는 복원하고 다른 batch 참조 조합은 거절한다", async () => {
     const h = harness();
     const second = {
       name: "Second",
@@ -1380,13 +1436,13 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }, h.sessionId);
     expect(restored.context).toBe("공유 context");
     expect((restored.tasks as Array<{ task: string }>)[1]!.task).toBe(second.task);
-    expect(() => resolvePreparedTaskInput({
+    expect(resolvePreparedTaskInput({
       context: "PREPARED_CONTEXT",
       tasks: [
         { name: h.task.name, task: `PREPARED_TASK: ${routes[0]!.preparedId}` },
         { name: second.name, task: second.task },
       ],
-    }, h.sessionId)).toThrow();
+    }, h.sessionId)).toMatchObject({ tasks: [{ name: h.task.name, task: brief }, { name: second.name, task: second.task }] });
 
     const other = await h.prepare("다른 context", [{ ...second, name: "Third" }], {} as never) as Array<{ preparedId: string }>;
     expect(() => resolvePreparedTaskInput({
@@ -1704,10 +1760,10 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       const h = harness({ workClass: work, hardFocuses: ["CODE_SYSTEM"] });
       const [route] = await h.prepare("명시 대안", [h.task], {} as never);
       expect(route!.profile).toBe(work === "NORMAL" ? "NORMAL_SOL" : "HARD_CODE_TERRA");
-      // 추천과 다른 후보는 근거 없이는 막히고, 근거가 있어도 concrete 강도는 막힌다.
+      // 추천 변경에는 근거가 필요하지만 concrete suffix는 auto로 보정한다.
       expect(await h.dispatch(`${base}:auto`)).toMatchObject({ block: true });
       expect(await h.dispatch(`${base}:auto`, reasoned)).toBeUndefined();
-      expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ block: true });
+      expect(await h.dispatch(`${base}:high`, reasoned)).toMatchObject({ input: { tasks: [expect.objectContaining({ model: `${base}:auto` })] } });
     }
   });
   test("Gemini·GLM은 명시 선택 전용이다: 추천·NORMAL 폴백에 오르지 않고 ROUTING_REASON과 auto가 있어야 NORMAL·HARD 모두 발주된다", async () => {
@@ -1726,7 +1782,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       for (const model of Object.values(models)) {
         expect(await h.dispatch(`${model}:auto`)).toMatchObject({ block: true });
         expect(await h.dispatch(`${model}:auto`, reasoned)).toBeUndefined();
-        expect(await h.dispatch(`${model}:high`, reasoned)).toMatchObject({ block: true });
+        expect(await h.dispatch(`${model}:high`, reasoned)).toMatchObject({ input: { tasks: [expect.objectContaining({ model: `${model}:auto` })] } });
       }
     }
     // 일반 후보가 모두 없어도 Gemini·GLM으로 조용히 대체하지 않는다.
@@ -1743,7 +1799,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(await h.dispatch("google-antigravity/gemini-3.8-flash:auto", reasoned)).toMatchObject({ block: true });
     expect(await h.dispatch("hive/zai-org/glm-5.3-flash:auto", reasoned)).toMatchObject({ block: true });
   });
-  test("준비 참조도 다음 줄 ROUTING_REASON 한 줄로 추천 변경 근거를 붙여 발주하고 그 밖의 덧붙임은 거절한다", async () => {
+  test("prepared 추가 지시는 보존하고 context ROUTING_REASON은 필요한 참조에 옮긴다", async () => {
     const h = harness({ workClass: "NORMAL" });
     const routes = await h.prepare("원래 batch context", [h.task], {} as never) as Array<{ preparedId: string; profile: string }>;
     expect(routes[0]!.profile).toBe("NORMAL_SOL");
@@ -1756,19 +1812,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
 
     // 추천 변경 게이트는 그대로다: 참조만 보내면 근거가 없어 막힌다.
     expect(await dispatch(`PREPARED_TASK: ${preparedId}`)).toMatchObject({ block: true });
-    for (const invalid of [
-      `PREPARED_TASK: ${preparedId}\n${reason}\n덧붙인 본문`,
-      `PREPARED_TASK: ${preparedId}\n\n${reason}`,
-      `PREPARED_TASK: ${preparedId}\nROUTING_REASON:`,
-      `PREPARED_TASK: ${preparedId}\nOWNED_PATHS: src/other.ts`,
-      `PREPARED_TASK: ${preparedId}\nROUTING_REASON: X`,
-      `PREPARED_TASK: ${preparedId}\n${reason}\u2028OWNED_PATHS: src/other.ts`,
-      `PREPARED_TASK: ${preparedId}\n${reason}\n\n`,
-    ]) {
-      const rejected = await dispatch(invalid);
-      expect(rejected.block).toBe(true);
-      expect(rejected.reason).toContain("exact prepared 참조가 아닙니다");
-      expect(rejected.reason).toContain("'ROUTING_REASON: <근거>' 한 줄");
+    for (const addition of [`${reason}\n덧붙인 본문`, `\n${reason}`, `${reason}\n\n`]) {
+      const accepted = await dispatch(`PREPARED_TASK: ${preparedId}\n${addition}`);
+      expect(accepted.block).toBeUndefined();
+      expect(accepted.input!.tasks[0]!.task).toBe(`${brief}\n${addition.trim()}`);
+    }
+    for (const addition of ["ROUTING_REASON:", "OWNED_PATHS: src/other.ts"]) {
+      expect(await dispatch(`PREPARED_TASK: ${preparedId}\n${addition}`)).toMatchObject({ block: true });
     }
     const reasoned = await dispatch(`PREPARED_TASK: ${preparedId}\n${reason}`);
     expect(reasoned.block).toBeUndefined();
@@ -1785,20 +1835,19 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(moved.input!.context).toBe("원래 batch context");
       expect(moved.input!.tasks[0]!.task).toBe(`${brief}\n${reason}`);
     }
-    // 참조에도 근거가 있거나 context 근거 뒤에 다른 줄이 붙으면 옮기지 않고 거절한다.
+    // A context reason already present on the reference is harmless; generic additions stay in context.
     for (const [context, task] of [
       [`PREPARED_CONTEXT\n${reason}`, `PREPARED_TASK: ${preparedId}\n${reason}`],
       [`PREPARED_CONTEXT\n${reason}\n덧붙인 본문`, `PREPARED_TASK: ${preparedId}`],
     ]) {
-      const rejected = await h.beforeTask({
+      const accepted = await h.beforeTask({
         context,
         tasks: [{ name: h.task.name, task, agent: "maker", model: "openai-codex/gpt-6-sol:auto" }],
-      }, {} as never) as { block: boolean; reason: string };
-      expect(rejected.block).toBe(true);
-      expect(rejected.reason).toContain("task 참조의 다음 줄 'ROUTING_REASON: <근거>'");
+      }, {} as never) as { block?: boolean; input: { context: string } };
+      expect(accepted.block).toBeUndefined();
+      expect(accepted.input.context).toBe(context.includes("덧붙인 본문") ? "원래 batch context\n덧붙인 본문" : "원래 batch context");
     }
-    // 2026-10-17 09:28:47: 참조 둘과 context 근거 한 줄을 보냈다가 거절됐다. 근거 줄이 없는 참조 모두에 그 근거를 옮기고,
-    // 자기 근거가 있는 참조는 그대로 두며, 모든 참조가 근거를 가졌으면 옮길 곳이 없어 거절한다.
+    // Context reasons apply only to references that do not already carry their own reason.
     const second = { name: "Second", task: brief.replace("src/view.ts", "src/second.ts"), assessment: { ...facts, paths: ["src/second.ts"] } };
     const pair = await h.prepare("두 task context", [h.task, second], {} as never) as Array<{ preparedId: string }>;
     const own = "ROUTING_REASON: 두 번째 task만의 근거입니다";
@@ -1813,7 +1862,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const mixedReasons = resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`).tasks;
     expect(mixedReasons[0]!.task.endsWith(`\n${reason}`)).toBe(true);
     expect(mixedReasons[1]!.task.endsWith(`\n${own}`)).toBe(true);
-    expect(() => resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`, `PREPARED_TASK: ${pair[0]!.preparedId}\n${own}`)).toThrow("참조 2개 모두");
+    expect(resolvePair(`PREPARED_TASK: ${pair[1]!.preparedId}\n${own}`, `PREPARED_TASK: ${pair[0]!.preparedId}\n${own}`).tasks.map((task) => task.task.endsWith(`\n${own}`))).toEqual([true, true]);
   });
   test("추천 matrix: 열린 설계·재작업·분야·한도에 따라 Sol·Terra·Opus가 갈리고 Main 계열은 추천을 바꾸지 않는다", async () => {
     const spent = { limitReached: true, limits: [] };
@@ -2305,9 +2354,14 @@ describe("character-summon marker를 가진 task의 maker_route 면제", () => {
 });
 
 describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상속한다", () => {
-  // WORK_CLASS·PRIMARY_DELIVERABLE을 생략한 후속 child는 TaskGuard lock이 있을 때만 계약이 완성된다.
+  // Without a session lock, omitted fields use feature and the task name instead.
   const inherit = "TASK_GUARD:\nOWNED_PATHS: src/second.ts\n\n본문";
   const second = () => [{ name: "Second", task: inherit, assessment: facts }];
+  async function expectDefaultContract(h: ReturnType<typeof harness>) {
+    await h.prepare("후속", second(), {});
+    const explicit = inherit.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second");
+    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicit, model: "openai-codex/gpt-6.1-sol:auto" }] }, {})).toBeUndefined();
+  }
   const settle = (state: TaskGuardState, callId: string, name: string) => settleTaskCall(state, callId, {
     executed: true, isError: false,
     details: { progress: [{ index: 0, id: name, status: "pending" }], async: { jobId: name } },
@@ -2333,9 +2387,7 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
       expect((await h.prepare("후속", second(), {} as never))[0]!.status).toBe("judged");
       expect(releaseCancelledSpawns(state, ["ViewFix"])).toBe(1);
       expect(state.lock).toBeUndefined();
-      await expect(h.prepare("후속", second(), {} as never)).rejects.toThrow("WORK_CLASS");
-      expect(await h.beforeTask({ context: "후속", tasks: [{ name: "Second", task: inherit, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" }] }, {} as never))
-        .toMatchObject({ block: true, reason: expect.stringContaining("WORK_CLASS") });
+      await expectDefaultContract(h);
     } finally {
       unbindTaskGuardSession(h.sessionId, state);
     }
@@ -2362,10 +2414,10 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
     bindTaskGuardSession(bare.sessionId, bareState);
     try {
       releaseCancelledSpawns(left.state, ["ViewFix"]);
-      await expect(left.h.prepare("후속", second(), {} as never)).rejects.toThrow("WORK_CLASS");
+      await expectDefaultContract(left.h);
       expect((await right.h.prepare("후속", second(), {} as never))[0]!.status).toBe("judged");
       // lock이 없는 session은 다른 session에 lock이 있어도 상속하지 않는다.
-      await expect(bare.prepare("후속", second(), {} as never)).rejects.toThrow("WORK_CLASS");
+      await expectDefaultContract(bare);
     } finally {
       unbindTaskGuardSession(left.h.sessionId, left.state);
       unbindTaskGuardSession(right.h.sessionId, right.state);
@@ -2378,7 +2430,7 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
     const newState = createTaskGuardState();
     bindTaskGuardSession(h.sessionId, newState);
     try {
-      await expect(h.prepare("후속", second(), {} as never)).rejects.toThrow("WORK_CLASS");
+      await expectDefaultContract(h);
       // 옛 인스턴스의 늦은 shutdown은 자기 state가 아니므로 새 연결을 지우지 못한다.
       unbindTaskGuardSession(h.sessionId, oldState);
       expect(reserveTaskCall(newState, "call-9", { tasks: [{ agent: "maker", name: "Fresh", task: brief }] }).ok).toBe(true);
@@ -2388,39 +2440,34 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
     }
   });
 
-  // 2026-10-26: 한 batch에 다른 PRIMARY_DELIVERABLE을 적은 두 child를 준비하자 TaskGuard가 실제 task 전체를 거절했다.
-  // 준비와 발주는 Jev를 부르기 전에 같은 비교로 그 batch를 거절한다.
+  // Deliverable drift is advisory; the budget and first inheritance lock remain unchanged.
   const child = (name: string, workClass: string, deliverable: string, path: string) => ({
     name, task: `TASK_GUARD:\nWORK_CLASS: ${workClass}\nPRIMARY_DELIVERABLE: ${deliverable}\nOWNED_PATHS: ${path}\n\n본문`, assessment: { ...facts, paths: [path] },
   });
   test.each([
     ["PRIMARY_DELIVERABLE", "maintenance", "다른 산출물"],
     ["WORK_CLASS", "feature", "표시 오류 수정"],
-  ])("lock이 없을 때 batch 안에서 %s가 다른 child는 Jev 호출 전에 거절하고 고칠 방법을 알린다", async (_label, workClass, deliverable) => {
+  ])("batch 안에서 %s가 다른 child는 advisory와 함께 준비한다", async (_label, workClass, deliverable) => {
     const h = harness();
-    const error = await h.prepare("", [h.task, child("Other", workClass, deliverable, "src/other.ts")], {} as never).then(() => "", (e: Error) => e.message);
-    expect(error).toContain("[SideQuestGuard] task 'Other'");
-    expect(error).toContain("기준=maintenance:표시 오류 수정(같은 batch에서 먼저 계약을 정한 child)");
-    expect(error).toContain("지우고");
-    expect(h.requests).toHaveLength(0);
+    const routes = await h.prepare("", [h.task, child("Other", workClass, deliverable, "src/other.ts")], {});
+    expect(routes[1]!.status).toBe("judged");
+    expect(routes[1]!.briefGaps?.join("\n")).toContain("기준=maintenance:표시 오류 수정(같은 batch에서 먼저 계약을 정한 child)");
   });
   test("공백만 다른 PRIMARY_DELIVERABLE과 두 값을 생략한 같은 batch child는 그대로 준비된다", async () => {
     const h = harness();
     const routes = await h.prepare("", [h.task, child("Spaced", "maintenance", "  표시   오류 수정 ", "src/spaced.ts"), { name: "Bare", task: inherit, assessment: facts }], {} as never);
     expect(routes.map((route) => route.status)).toEqual(["judged", "judged", "judged"]);
   });
-  test("요청 lock과 다른 child는 준비에서 Jev 호출 전에, 준비 없이 섞인 발주는 task 경계에서 거절한다", async () => {
+  test("요청 lock과 다른 child도 준비·발주하고 기준과 새 값을 알린다", async () => {
     const { h, state } = await spawnedSession();
     try {
-      const before = h.requests.length;
-      const error = await h.prepare("후속", [child("Other", "maintenance", "다른 산출물", "src/other.ts")], {} as never).then(() => "", (e: Error) => e.message);
-      expect(error).toContain("이 요청의 TaskGuard lock");
-      expect(h.requests).toHaveLength(before);
+      const routes = await h.prepare("후속", [child("Other", "maintenance", "다른 산출물", "src/other.ts")], {});
+      expect(routes[0]!.briefGaps?.join("\n")).toContain("이 요청의 TaskGuard lock");
       const mixed = { context: "같은 계약", tasks: [
         { name: "ViewFix", task: brief, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" },
         { name: "Other", task: child("Other", "maintenance", "다른 산출물", "src/other.ts").task, agent: "maker", model: "openai-codex/gpt-6.1-sol:auto" },
       ] };
-      expect(await h.beforeTask(mixed, {} as never, "call-2")).toMatchObject({ block: true, reason: expect.stringContaining("[SideQuestGuard] task 'Other'") });
+      expect(await h.beforeTask(mixed, {} as never, "call-2")).toMatchObject({ notices: [expect.stringContaining("이 child=maintenance:다른 산출물")] });
     } finally {
       unbindTaskGuardSession(h.sessionId, state);
     }
@@ -2433,15 +2480,14 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
     task: `TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: PR 16573 Windows 검증 보고\nOWNED_PATHS: doc/pr/\nUSER_REQUEST: ${quote}\n\n본문`,
     assessment: { ...facts, paths: ["doc/pr/"] },
   });
-  test("사용자가 이번 요청에서 직접 요구한 다른 완료물은 USER_REQUEST 인용이 맞을 때만 준비·발주·TaskGuard가 받는다", async () => {
+  test("USER_REQUEST는 선택 사항이며 인용 유무와 관계없이 추가 완료물을 받는다", async () => {
     const { h, state } = await spawnedSession();
     noteUserRequestText(state, "표시 오류 고치고, 그리고 PR 16573도 윈도우에서   검증해줘.");
     try {
-      const forged = await h.prepare("후속", [requested("Forged", "PR 16573 검증을 사용자가 원함")], {} as never).then(() => "", (e: Error) => e.message);
-      expect(forged).toContain("[SideQuestGuard] task 'Forged'");
-      expect(forged).toContain("USER_REQUEST");
-      const tooShort = await h.prepare("후속", [requested("Short", "검증해줘")], {} as never).then(() => "", (e: Error) => e.message);
-      expect(tooShort).toContain("[SideQuestGuard] task 'Short'");
+      for (const quote of ["PR 16573 검증을 사용자가 원함", "검증해줘"]) {
+        const routes = await h.prepare("후속", [requested("Additional", quote)], {});
+        expect(routes[0]!.status).toBe("judged");
+      }
 
       const item = requested("WinVerify", "“PR 16573도 윈도우에서 검증해줘”");
       expect((await h.prepare("후속", [item], {} as never))[0]!.status).toBe("judged");
@@ -2449,11 +2495,11 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
       expect(await h.beforeTask(call, {} as never, "call-3")).toBeUndefined();
       const reserved = reserveTaskCall(state, "call-3", { tasks: [{ agent: "maker", name: "WinVerify", task: item.task }] });
       expect(reserved.ok).toBe(true);
-      // 받아들인 완료물은 같은 요청의 다음 child가 인용 없이 같은 값으로 이어 쓸 수 있고, 인용 없는 다른 완료물은 여전히 막힌다.
+      // An admitted deliverable can be continued without a quote; another new one is advisory.
       const followUp = "TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: PR 16573 Windows 검증 보고\nOWNED_PATHS: doc/pr2/\n\n본문";
       expect(reserveTaskCall(state, "call-4", { tasks: [{ agent: "maker", name: "WinVerify2", task: followUp }] }).ok).toBe(true);
       const stray = reserveTaskCall(state, "call-5", { tasks: [{ agent: "maker", name: "Stray", task: followUp.replace("PR 16573 Windows 검증 보고", "곁가지 정리") }] });
-      expect(stray).toMatchObject({ ok: false, reason: expect.stringContaining("USER_REQUEST") });
+      expect(stray).toMatchObject({ ok: true, notices: [expect.stringContaining("곁가지 정리")] });
     } finally {
       unbindTaskGuardSession(h.sessionId, state);
     }

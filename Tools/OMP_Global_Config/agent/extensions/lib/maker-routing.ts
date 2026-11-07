@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { admitsUserRequestedDeliverable, extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, parseOwnedPaths, readGuardField, taskGuardLockOf, USER_REQUEST_HINT, WORK_CLASSES } from "../command-guard/task-guard";
+import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
@@ -370,14 +370,13 @@ function guardFields(task: string): ((name: string) => string) | null {
   return (name) => readGuardField(extracted.block, name) ?? "";
 }
 
-function dispatchContract(task: string, lock: DispatchContractLock | undefined): DispatchContract | null {
+function dispatchContract(task: string, lock: DispatchContractLock | undefined, name: string): DispatchContract | null {
   const field = guardFields(task);
   if (!field) return null;
   const explicitWorkClass = field("WORK_CLASS").toLowerCase();
-  // 준비 경계도 task hook과 같은 enum 정본을 쓴다. 명시된 값이 enum 밖이면 계약을 만들지 않는다.
-  if (explicitWorkClass && !(WORK_CLASSES as readonly string[]).includes(explicitWorkClass)) return null;
-  const workClass = explicitWorkClass || lock?.workClass;
-  const primaryDeliverable = field("PRIMARY_DELIVERABLE") || lock?.primaryDeliverable;
+  if (explicitWorkClass && !normalizeWorkClass(explicitWorkClass)) return null;
+  const workClass = normalizeWorkClass(explicitWorkClass) || lock?.workClass || "feature";
+  const primaryDeliverable = field("PRIMARY_DELIVERABLE") || lock?.primaryDeliverable || defaultPrimaryDeliverable(task, name);
   const ownedPaths = parseOwnedPaths(field("OWNED_PATHS"));
   if (!workClass || !primaryDeliverable || ownedPaths.length === 0) return null;
   return {
@@ -389,7 +388,7 @@ function dispatchContract(task: string, lock: DispatchContractLock | undefined):
 }
 
 const GUARD_TEMPLATE =
-  `양식: 브리프 첫머리에 \`TASK_GUARD:\` 줄, 그 다음 줄부터 빈 줄 없이 \`WORK_CLASS: ${WORK_CLASSES.join("|")}\`(요청의 첫 child만 필수)·\`PRIMARY_DELIVERABLE: <완료물 한 줄>\`(첫 child만 필수)·\`OWNED_PATHS: <cwd 상대경로, 콤마 구분>\`, 그 뒤 \`TASK_TITLE\`·\`TODO_TASKS\`. 정본 rule://task-guard.`;
+  `양식: 브리프 첫머리에 \`TASK_GUARD:\` 줄, 그 다음 줄부터 빈 줄 없이 \`WORK_CLASS: ${WORK_CLASSES.join("|")}\`(생략 시 lock 또는 feature)·\`PRIMARY_DELIVERABLE: <완료물 한 줄>\`(생략 시 lock 또는 TASK_TITLE·task name)·\`OWNED_PATHS: <cwd 상대경로, 콤마 구분>\`, 그 뒤 \`TASK_TITLE\`·\`TODO_TASKS\`. 정본 rule://task-guard.`;
 
 /** 계약을 완성하지 못한 이유를 필드 단위로 짚는다. 브리프 본문은 싣지 않는다. */
 export function contractGapReason(task: string, lock: DispatchContractLock | undefined, name: string): string {
@@ -398,17 +397,15 @@ export function contractGapReason(task: string, lock: DispatchContractLock | und
   if (!field) return `task ${label}: \`TASK_GUARD:\` 블록이 없습니다. ${GUARD_TEMPLATE}`;
   const missing: string[] = [];
   const explicitWorkClass = field("WORK_CLASS").toLowerCase();
-  if (explicitWorkClass && !(WORK_CLASSES as readonly string[]).includes(explicitWorkClass)) {
+  if (explicitWorkClass && !normalizeWorkClass(explicitWorkClass)) {
     return `task ${label}: WORK_CLASS는 ${WORK_CLASSES.join("|")} 중 하나여야 합니다(받은 값 '${explicitWorkClass.slice(0, 40)}'). ${GUARD_TEMPLATE}`;
   }
-  if (!field("WORK_CLASS") && !lock?.workClass) missing.push("WORK_CLASS(아직 lock이 없어 이 child에 필요)");
-  if (!field("PRIMARY_DELIVERABLE") && !lock?.primaryDeliverable) missing.push("PRIMARY_DELIVERABLE(아직 lock이 없어 이 child에 필요)");
   if (parseOwnedPaths(field("OWNED_PATHS")).length === 0) missing.push("OWNED_PATHS(모든 child 필수)");
-  const inherit = !field("WORK_CLASS") || !field("PRIMARY_DELIVERABLE")
-    ? " 두 값을 생략한 child는 같은 maker_route·task batch에서 두 값을 적은 앞 child 뒤에 있거나, 이 요청의 첫 child가 이미 발주돼 TaskGuard lock이 있을 때만 상속합니다. 따로 준비한다면 요청의 WORK_CLASS·PRIMARY_DELIVERABLE을 글자 그대로 다시 적으세요."
-    : "";
+  if (!field("PRIMARY_DELIVERABLE") && !lock?.primaryDeliverable && !defaultPrimaryDeliverable(task, name)) {
+    missing.push("PRIMARY_DELIVERABLE(TASK_TITLE 또는 task name도 없음)");
+  }
   const detail = missing.length > 0
-    ? `빠진 필드: ${missing.join(", ")}.${inherit}`
+    ? `빠진 필드: ${missing.join(", ")}.`
     : "필드가 블록 안에서 읽히지 않습니다(`TASK_GUARD:` 뒤 빈 줄이나 guard 필드 사이에 끼어든 줄이 있는지 확인).";
   return `task ${label}: ${detail} ${GUARD_TEMPLATE}`;
 }
@@ -432,11 +429,7 @@ function userRequestAdmission(sessionId: string): (task: string, contract: Dispa
   };
 }
 
-/**
- * TaskGuard(SideQuestGuard)와 같은 비교로, 이 child의 WORK_CLASS·PRIMARY_DELIVERABLE이 요청 lock(없으면 같은 batch에서 먼저 계약을
- * 정한 child)과 다르면 거절 사유를 돌려준다. 사용자가 이번 요청에서 직접 요구한 완료물(admits)은 받아들인다. 준비와 발주가 같은
- * 함수를 써서 Jev 판단이나 spawn 전에 같은 결론을 낸다.
- */
+/** Return a non-blocking advisory when a child adds a deliverable to the request. */
 export function contractLockConflict(
   name: string,
   contract: DispatchContract,
@@ -448,7 +441,7 @@ export function contractLockConflict(
   if (sameContractLock(lock, contract) || admits()) return null;
   const label = name.trim() ? `'${name.trim().slice(0, 60)}'` : "(이름 없음)";
   const source = lockSource === "request" ? "이 요청의 TaskGuard lock" : "같은 batch에서 먼저 계약을 정한 child";
-  return `[SideQuestGuard] task ${label}: 한 사용자 요청의 모든 child는 같은 WORK_CLASS·PRIMARY_DELIVERABLE을 씁니다. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 이대로 발주하면 task 전체가 거절됩니다. ${USER_REQUEST_HINT} 같은 완료물의 조각이라면 이 child의 두 줄을 기준 값 그대로 적거나 지우고(같은 batch 안이거나 lock이 있을 때만 상속), 조각마다 다른 일은 TASK_TITLE·TODO_TASKS·# Acceptance로 구분하세요.`;
+  return `[SideQuestGuard] task ${label}: 추가 완료물 허용. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 누적 budget은 유지됩니다.`;
 }
 
 /**
@@ -897,17 +890,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     let candidateLock = lockFor(sessionIdOf(ctx));
     const lockSource = candidateLock ? "request" : "batch";
     const admission = userRequestAdmission(sessionIdOf(ctx));
-    const conflicts: string[] = [];
+    const advisories: (string | null)[] = [];
     const contracts = tasks.map((task) => {
-      const contract = dispatchContract(task.task, candidateLock);
+      const contract = dispatchContract(task.task, candidateLock, task.name);
       if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
-      // TaskGuard는 lock과 다른 child가 하나라도 있으면 batch 전체를 거절한다. Jev를 부르기 전에 같은 비교로 모두 알린다.
-      const conflict = contractLockConflict(task.name, contract, candidateLock, lockSource, () => admission(task.task, contract));
-      if (conflict) conflicts.push(conflict);
+      advisories.push(contractLockConflict(task.name, contract, candidateLock, lockSource, () => admission(task.task, contract)));
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
-    if (conflicts.length > 0) throw new Error(conflicts.join("\n"));
     const keys = tasks.map((task, index) => briefKey(task.name, contracts[index]!));
     // 준비 handle. 실제 발주 identity는 spawn에서 task 호출 id·index·session으로 캡처한다.
     // 이 값으로 실제 발주를 식별하지 않으며, 중첩 prepare가 서로를 덮지 않도록 공유 map에 두지 않는다.
@@ -1039,6 +1029,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const requiredSkills = selectRequiredSkills(skillSource, decision.answers, decision.error);
         // 필수 스킬 누락·선택형 축소·제외 문제도 같은 advisory 목록에 싣는다. 발주를 막지 않는다.
         const gaps = [
+          ...(advisories[index] ? [advisories[index]!] : []),
           ...(briefGaps(task.assessment, contracts[index]!.ownedPaths, contracts[index]!.findingId) ?? []),
           ...requiredSkillGaps(requiredSkills, requiredSkills.skills.length > 0 ? briefSkillCoverage(task.task, requiredSkills) : null),
         ];
@@ -1167,6 +1158,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       return { block: true, reason: error instanceof Error ? error.message : String(error) };
     }
     const tasks = (Array.isArray(canonicalInput.tasks) ? canonicalInput.tasks : [canonicalInput]) as Record<string, unknown>[];
+    const notices: string[] = [];
+    const normalizedItems = new Map<number, Record<string, unknown>>();
     const atGeneration = generation;
     // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.
     // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
@@ -1178,7 +1171,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
       locksBefore.push(candidateLock);
-      const contract = dispatchContract(task, candidateLock);
+      const contract = dispatchContract(task, candidateLock, String(item.name ?? ""));
       if (!contract) return null;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
@@ -1202,7 +1195,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
       const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource, () => admission(task, contract));
-      if (conflict) return { block: true, reason: conflict };
+      if (conflict) notices.push(conflict);
       const name = String(item.name ?? "").trim();
       const key = briefKey(String(item.name ?? ""), contract);
       const pending = bindings.get(key);
@@ -1251,8 +1244,13 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const selected = sameModel.find((candidate) => candidate.profile === prepared.profile)
         ?? sameGrade[0]
         ?? sameModel[0];
-      if (!selected || item.effort !== undefined) return { block: true, reason: "maker_route가 확인한 후보를 '<후보 selector>:auto'로 지정하세요. coarse effort는 전달하지 않습니다." };
-      if (requested.slice(cut + 1) !== "auto") return { block: true, reason: `Maker는 auto로만 발주합니다: model:'${selected.model}:auto'. concrete 강도('${cut > 0 ? requested.slice(cut + 1) : "<없음>"}')는 쓰지 않으며 강도는 solutionSpace와 이후 Main 지시로 child auto가 고릅니다.` };
+      if (!selected) return { block: true, reason: "maker_route가 확인한 후보를 지정하세요." };
+      const canonicalModel = `${selected.model}:auto`;
+      if (requested !== canonicalModel || item.effort !== undefined) {
+        const { effort: _effort, ...normalized } = item;
+        normalizedItems.set(itemIndex, { ...normalized, model: canonicalModel });
+        notices.push(`[MakerRoute] model '${requested}' → '${canonicalModel}'${item.effort !== undefined ? "; effort 제거" : ""}.`);
+      }
       const answers = prepared.answers;
       if (answers?.workClass?.choice === "NORMAL" && (answers.uiUxBoundary?.noul ?? 0) >= 0.5
         && selected.profile !== "NORMAL_OPUS" && selected.profile !== prepared.profile) {
@@ -1334,6 +1332,15 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       };
     }
     if (callId && drafts.length > 0) reservations.set(callId, drafts.map(([itemIndex, draft]) => ({ itemIndex, key: briefKey(draft.name, contracts[itemIndex]!), draft })));
+    if (normalizedItems.size > 0) {
+      canonicalInput = Array.isArray(canonicalInput.tasks)
+        ? { ...canonicalInput, tasks: tasks.map((item, index) => normalizedItems.get(index) ?? item) }
+        : normalizedItems.get(0)!;
+    }
+    if (notices.length > 0) {
+      pi.sendMessage?.({ customType: "maker-route-advisory", content: notices.join("\n"), display: true }, { triggerTurn: false });
+      return { ...(canonicalInput === input ? {} : { input: canonicalInput }), notices };
+    }
     return canonicalInput === input ? undefined : { input: canonicalInput };
   }
 
@@ -1365,7 +1372,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const reserved = reservations.get(callId) ?? [];
     for (const [index, item] of tasks.entries()) {
       const task = typeof item.task === "string" ? item.task : "";
-      const contract = dispatchContract(task, candidateLock);
+      const contract = dispatchContract(task, candidateLock, String(item.name ?? ""));
       if (!contract) continue;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       const name = String(item.name ?? "").trim();

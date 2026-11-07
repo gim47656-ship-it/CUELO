@@ -349,8 +349,9 @@ describe("jev-runtime pre-dispatch", () => {
     await harness.prepare();
     const reasoned = GUARDED_TASK.replace("OWNED_PATHS: a.ts,b.ts", "OWNED_PATHS: a.ts,b.ts\nROUTING_REASON: Main이 한도 참고로 대안 후보를 선택함");
     expect(await harness.emit("tool_call", taskCall("call-alternate", reasoned, { name: "Next", model: "test/broad:auto" }))).toBeUndefined();
+    await harness.emit("tool_execution_end", { toolName: "task", toolCallId: "call-alternate" });
     expect(await harness.emit("tool_call", taskCall("call-alternate-low", reasoned, { name: "Next", model: "test/broad:low" })))
-      .toMatchObject({ block: true, reason: expect.stringContaining("model:'test/broad:auto'") });
+      .toMatchObject({ input: expect.objectContaining({ model: "test/broad:auto" }) });
   });
   test("session reset은 prepared ref와 준비 판단을 함께 끊는다", async () => {
     const harness = createHarness();
@@ -437,13 +438,9 @@ describe("jev-runtime pre-dispatch", () => {
       content: [{ type: "text", text: "spawn failed" }],
       isError: true,
     });
-    let failure: unknown;
-    try {
-      await failed.prepare(inherited, "Second");
-    } catch (error) {
-      failure = error;
-    }
-    expect(String(failure)).toContain("TaskGuard lock");
+    await failed.prepare(inherited, "Second");
+    const explicitDefault = inherited.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second") + "\nROUTING_REASON: Main selects the local candidate";
+    expect(await failed.emit("tool_call", taskCall("default-after-failure", explicitDefault, { name: "Second", model: "test/local:auto" }))).toBeUndefined();
   });
   async function spawnAndSettle(
     harness: { prepare(task: string, name: string): Promise<unknown>; emit(name: string, event: unknown): Promise<unknown> },

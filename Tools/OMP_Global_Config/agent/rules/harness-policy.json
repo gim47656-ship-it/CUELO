@@ -903,7 +903,7 @@
     },
     "effortSelection": {
       "owner": "user-decision-2026-10-08-the-dispatched-maker-child-auto-classifier-chooses-the-level-main-chooses-only-the-candidate-model-and-never-a-concrete-maker-effort",
-      "mechanism": "tasks-item-model-is-the-candidate-selector-with-the-auto-suffix-task-enableEffort-false-keeps-coarse-effort-from-overriding-it-and-the-task-hook-blocks-a-concrete-suffix-or-coarse-effort",
+      "mechanism": "tasks-item-model-is-normalized-to-the-matching-candidate-selector-with-auto-suffix-and-coarse-effort-is-dropped-with-a-non-blocking-notice-only-non-candidate-models-are-rejected",
       "range": "user-decision-2026-10-30-maker-auto-spans-medium-to-xhigh-ordinary-work-ends-within-medium-to-high-and-only-genuinely-reasoning-heavy-work-reaches-xhigh-low-and-max-are-never-auto-picked-through-the-core-child-settings-overlay-a-model-lacking-a-level-clamps-to-a-supported-one-main-auto-stays-providers-autoThinkingMinEffort-medium-to-autoThinkingMaxEffort-xhigh",
       "decidedAt": "the-child-classifies-its-first-turn-from-the-dispatch-solutionSpace-and-reclassifies-at-every-later-main-instruction-from-that-solutionSpace-plus-the-main-instructions-since-user-decision-2026-10-11-never-from-the-short-instruction-or-a-truncated-brief-alone-never-on-every-tool-call",
       "gradingInput": "solutionSpace-is-the-classifier-input-main-states-how-open-the-remaining-judgment-is-whether-the-fix-or-design-is-given-or-which-causes-or-designs-remain-open-main-lists-as-open-only-decisions-with-several-viable-designs-or-unknown-causes-and-writes-local-details-an-existing-pattern-spec-or-main-direction-already-fixes-as-given-constraints-not-open-items-so-a-settled-slice-reads-settled-this-is-accurate-description-never-a-lever-to-push-the-level-up-or-down-work-volume-does-not-widen-it-and-it-never-names-a-model-grade-effort-or-sibling-coordination",
@@ -958,10 +958,9 @@
       "preparedReference": {
         "produce": "maker_route-receives-the-context-and-every-full-task-with-its-assessment-once-and-returns-one-session-local-preparedId-per-task",
         "consume": "the-real-task-call-may-send-context-PREPARED_CONTEXT-and-each-task-string-PREPARED_TASK-space-preparedId-with-the-candidate-model-selector-with-the-auto-suffix-and-solutionSpace-chosen-by-Main-and-name-and-agent-omitted-where-an-omitted-name-is-restored-from-the-prepared-record-and-an-omitted-agent-is-read-as-maker-while-an-explicit-mismatched-name-or-other-agent-is-rejected",
-        "restore": "the-task-hook-restores-the-original-context-guard-task-title-and-TODO-text-before-the-existing-checks-run-and-a-single-ROUTING_REASON-line-sent-directly-after-the-reference-is-appended-to-the-restored-task-while-any-other-appended-text-stays-rejected",
+        "restore": "the-task-hook-restores-original-context-and-brief-before-existing-checks-appends-main-additions-after-the-restored-brief-or-context-migrates-context-ROUTING_REASON-to-references-without-an-own-reason-and-allows-mixed-full-brief-and-reference-batches",
         "linkage": "the-binding-stays-the-session-local-task-name-and-the-task-guard-semantic-fields-the-preparedId-only-carries-the-original-text",
         "errors": [
-          "mixed-full-and-reference-in-one-call",
           "variant-reference-syntax",
           "different-session-or-batch",
           "unknown-or-cleared-reference",
@@ -970,6 +969,12 @@
         ],
         "sessionScope": "a-new-session-clears-the-references-and-the-full-brief-path-stays-valid",
         "preserved": "main-model-effort-approval-task-guard-budget-and-path-ownership-are-unchanged"
+      },
+      "dispatchFormat": {
+        "firstDispatchDefaults": "inherit-work-class-and-primary-deliverable-from-lock-otherwise-use-feature-and-task-title-or-task-name-rewrite-child-guard-with-applied-values",
+        "workClassCorrection": "normalize-unambiguous-enum-prefixes-reject-other-invalid-values",
+        "additionalDeliverables": "different-work-class-or-primary-deliverable-is-admitted-with-locked-and-new-values-in-an-advisory-user-request-quote-is-optional-keep-first-lock-for-inheritance-and-preserve-cumulative-budget",
+        "preservedGuards": ["owned-paths-required", "child-budget-caps", "maker-only", "blocks-primary-no", "rework-finding-id", "character-summon", "eval-spawn"]
       },
       "judgmentReuse": {
         "sameInputs": "reuse-the-prepared-judgment-when-the-facts-contract-policy-and-candidates-are-unchanged-the-main-model-family-is-not-a-routing-input-since-user-decision-2026-10-30-and-never-ask-again-for-an-unrelated-owner-change-or-a-plain-progress-question",
@@ -995,7 +1000,7 @@
         "NORMAL_GLM": { "modelConfigPath": "modelRoles.implGlm", "workClass": "NORMAL" },
         "HARD_CODE_GLM": { "modelConfigPath": "modelRoles.implGlm", "workClass": "HARD" }
       },
-      "candidateResolution": "each-candidate-lists-the-levels-its-registry-model-declares-for-maker-auto-a-model-without-declared-levels-is-unavailable-the-task-hook-accepts-only-the-auto-suffix-and-resolves-a-shared-model-to-the-recommended-profile-then-a-profile-of-the-recommended-work-class-then-its-first-profile",
+      "candidateResolution": "each-candidate-lists-registry-declared-levels-for-maker-auto-a-model-without-declared-levels-is-unavailable-the-task-hook-normalizes-missing-or-concrete-suffix-to-auto-drops-coarse-effort-with-notice-and-resolves-shared-model-to-recommended-profile-then-recommended-work-class-then-first-profile",
       "criteria": {
         "NORMAL": "goal-preserved-behavior-and-checks-are-clear-and-an-existing-specification-or-reusable-pattern-settles-the-approach-or-bounded-causal-diagnosis-or-implementation-choice-remains-within-existing-contracts-and-local-evidence-can-resolve-it-bounded-discovery-caller-lookup-implementation-validation-and-local-repair-are-allowed-without-main-pre-solving-every-line-a-slice-that-local-discovery-fix-and-verification-close-with-existing-solutions-is-NORMAL-and-unknown-cause-or-several-candidate-bugs-alone-is-normal",
         "HARD": "observed-evidence-identifies-an-unresolved-conflict-between-competing-explanations-or-coupled-state-concurrency-cross-module-invariants-or-user-flow-constraints-and-a-locally-plausible-fix-can-break-another-required-contract-name-the-conflict-and-the-affected-contract-a-conflict-does-not-have-to-be-reproduced-or-fully-specified-before-dispatch-and-the-slice-is-HARD-when-a-new-algorithm-protocol-state-rule-or-coupled-invariant-design-or-non-local-reasoning-that-must-satisfy-several-contracts-at-once-is-left-to-the-implementer-even-though-the-goal-tests-and-main-direction-are-set-main-direction-selection-is-not-a-settled-implementation-solution-not-hypothetical-complexity-file-count-risk-tool-calls-or-failure-rate-a-slice-that-authors-a-new-specification-its-reference-implementation-and-a-large-hidden-test-set-together-is-HARD-regardless-of-file-count"

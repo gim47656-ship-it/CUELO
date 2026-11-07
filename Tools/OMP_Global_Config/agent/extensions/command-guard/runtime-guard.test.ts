@@ -694,7 +694,8 @@ describe("command guard runtime gates", () => {
       expect(blocked(await harness.emit("tool_call", makerCall("first", "완료물 A")))).toBe(false);
 
       await harness.emit("session_switch", { type: "session_switch", reason: "resume", previousSessionFile: "a.jsonl" });
-      expect(blocked(await harness.emit("tool_call", makerCall("second", "완료물 B")))).toBe(true);
+      expect(blocked(await harness.emit("tool_call", makerCall("second", "완료물 B")))).toBe(false);
+      expect(taskGuardLockOf("session-a")?.primaryDeliverable).toBe("완료물 A");
     });
 
     test("maker_route가 읽는 TaskGuard lock은 session id별이며 확인된 취소 환불·session 전환·shutdown을 따라간다", async () => {
@@ -2012,7 +2013,7 @@ describe("OwnershipGuard 쓰기 귀속", () => {
 });
 
 describe("SideQuestGuard USER_REQUEST", () => {
-  test("사용자 입력과 steering 원문에 글자 그대로 있는 인용만 다른 완료물을 받는다", async () => {
+  test("사용자 인용은 선택 사항이며 steering 전후 추가 완료물을 받는다", async () => {
     const harness = createGuardHarness();
     await harness.emit("input", { type: "input", source: "interactive", text: "소유권 스냅샷 고쳐줘" });
     expect(blockReason(await harness.emit("tool_call", makerTaskEvent("sq-1", "First")))).toBe("");
@@ -2026,7 +2027,7 @@ describe("SideQuestGuard USER_REQUEST", () => {
         task: `TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 감사 보고서\nOWNED_PATHS: doc/\nUSER_REQUEST: ${quote}\n\n본문`,
       },
     });
-    expect(blockReason(await harness.emit("tool_call", second("sq-2", "가드 감사 보고서도 따로 써줘")))).toContain("USER_REQUEST");
+    expect(blockReason(await harness.emit("tool_call", second("sq-2", "가드 감사 보고서도 따로 써줘")))).toBe("");
     await harness.emit("message_start", {
       type: "message_start",
       message: { role: "user", steering: true, content: [{ type: "text", text: "아 그리고 가드 감사 보고서도 따로 써줘" }] },
