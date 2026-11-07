@@ -11,8 +11,8 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
-  하는 대화 답변은 대상이 아니다. draft와 OCR 모델은 PC별 `modelRoles.draft`·`ocr`이 정한다(사무실 PC는 2026-10-30
-  사용자 결정으로 속도 때문에 Antigravity Gemini 3.8 Flash, 그 밖의 설치는 Vertex Gemini 4 Argon). 이미지 질문(vision)은 Opus를 유지한다.
+  하는 대화 답변은 대상이 아니다. draft와 OCR 모델은 PC별 `modelRoles.draft`·`ocr`이 정한다(집과 사무실은 2026-11-07·11-08
+  사용자 결정으로 AI Studio 중계기의 Gemini 4 Argon, 폰은 Vertex Gemini 4 Argon). 이미지 질문(vision)은 Opus를 유지한다.
   `slop_check`가 같은 기준을 자동 적용해 통과했더라도 작성자가 `humanizer`·`kill-ai-slop` 등
   스킬의 직접 읽기와 절차(범위 안 문구 전수 점검, 해당 화면 확인, 수정·의미 보존 확인)를 수행한
   증거로 보지 않는다. 런타임의 읽기 목록도 읽었다는 관측일 뿐이며 수행 범위와 결과는 별도로 확인한다.
