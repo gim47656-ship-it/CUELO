@@ -12,7 +12,10 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 const SLOT = "preflight";
-const BLOCK_TIMEOUT_MS = 60_000;
+// The core bounds every tool_call handler (`extensionHandlers.toolCallTimeoutMs`, default 30 s) and blocks the tool
+// when it runs out, so the blocking question gives up first and lets the call through (2026-11-07 live test: a 39 s
+// answer turned the user's `lab_goal` into an error instead of passing).
+const BLOCK_TIMEOUT_MS = 25_000;
 const ASYNC_TIMEOUT_MS = 120_000;
 const ALLOW_WINDOW_MS = 20 * 60_000;
 const ACTIVE_WINDOW_MS = 6 * 60 * 60_000;
