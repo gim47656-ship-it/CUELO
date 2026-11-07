@@ -37,8 +37,8 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 |---|---|---|---|---|
 | R1 | 가장 작은 변경, 범위 밖 미변경 | 차단(부분) | `extensions/command-guard/index.ts` `ownerWriteBlockReason`(OwnerWriteGuard), `evals/cases/routine/scope-protection.json` | Maker끼리 OWNED_PATHS 침범만 막는다. 최소성 자체는 문서 |
 | R2 | AI가 더하는 개선은 실패·최소·완료 관측을 먼저 밝힌다 | 문서 | — | 2026-10-28 지적(완료 뒤 자발 측정, "그걸왜함?") |
-| R3 | 설계·수용 근거를 남기고 AI 재평가를 독립 검증으로 보지 않는다 | eval(부분) | `evals/cases/security/missing-evidence.json` | |
-| R4 | 테스트·helper·fallback 등은 규약이나 실제 실패 모드가 있을 때만 | 문서 | — | |
+| R3 | UX, DX, AX의 절충과 설계 및 수용 근거를 드러내고 AI 재평가를 독립 검증으로 보지 않는다 | eval(부분) | `evals/cases/security/missing-evidence.json` | AX는 에이전트 경험. 경험 간 균형 판단은 문서 수준이며 기존 eval이 이를 검증하지는 않는다 |
+| R4 | 테스트와 fallback 등은 규약이나 실제 실패 모드가 있을 때만 추가하고, helper는 추출 목적, 필드와 설정은 현재 요구나 소비자를 확인한다 | 문서 | — | helper는 재사용, 조합, 복잡한 경계, 호출부를 설명하는 이름이 기준이다. 도메인 사실을 만들지 않는다 |
 | R5 | 보장된 계약 중복 검증 금지, 회귀 테스트는 수정 전 실패 확인 | eval(부분) | `evals/cases/routine/routine-existing-test.json` | 수정 전 실패 확인은 문서 |
 | R6 | hash·checksum은 경계가 요구할 때만 | 문서 | — | |
 | R7 | 영구 gate는 Main이 근거·위치를 정한 뒤 | 문서 | — | |
@@ -55,7 +55,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R18 | MCP 설치·인증·권한 변경은 승인 뒤 에이전트가 실행 | 구조(부분) | `extensions/mcp-selection.ts`(허용된 서버만 연결, 설치·활성화 안 함) | 승인 요청·실행 순서는 문서 |
 | R19 | 호스트 OS 시스템 변경은 정확한 변경 승인 | 안내 | `extensions/command-guard/host-change-hint.ts`(`reg`·`sc`·`netsh`·`bcdedit` 쓰기 명령의 bash 결과에 규칙 안내), `extensions/command-guard/host-change-hint.test.ts` | 2026-10-06 지적(보안 필터 드라이버 비활성화 제안). 2026-11-03 사용자 결정: 막지 않고 경고만. 결과에 붙으므로 그 호출은 멈추지 못한다. 조회와 PowerShell cmdlet은 보지 않는다 |
 | R20 | 배포·CI·Windows 사본은 `rule://deploy-ops` | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.deploy`(CUELO 밖 wrangler 판정 `wranglerOutsideCuelo`, 배포 스크립트 판정 `deployScriptOutsideCuelo`, `index.ts` `isOutsideCuelo`; `matcher.test.ts`·`runtime-guard.test.ts`); Maker의 `git_finalize`·`deploy_verify` 부재는 `patches/core-maker-tool-scope-test.ts`; 기다릴 CI 안내는 `tools/git-finalizer/index.ts` `publicationNote`(`publication-note.test.ts`) | 절차 순서는 문서. 2026-11-03 지적(비공개 전용 커밋의 게시 실행을 10분 대기, 10-21 기억은 있었으나 미회상) 뒤 push 결과 안내로 승격. 2026-11-04 사용자 결정으로 CUELO 소스·설치본 밖임이 증명된 `wrangler deploy`·`versions deploy`(`--dry-run` 포함)는 통과한다. 2026-11-05 사용자 결정으로 스크립트와 작업 폴더가 CUELO 밖인 배포 스크립트 실행(`bash <경로>/deploy.sh`, `./deploy.sh`)도 통과한다. 배포 전 사용자 승인은 문서로 남는다 |
-| R21 | 구현 불확실성은 증거로 좁히고 사소한 선택은 묻지 않음 | 문서 | — | |
+| R21 | 변경 전 기존 구현과 상태 주인을 짚고, 구현 불확실성은 증거로 좁히며 사소한 선택은 묻지 않음 | 문서 | — | |
 | R22 | 사용자 고유 결정은 추천과 함께 묻고 자동선택 금지 | 차단 | `extensions/ask-autoselect-guard.ts`, `extensions/tests/ask-autoselect-guard.test.ts` | 키워드 휴리스틱. 결정 질문을 했는지는 문서 |
 | R23 | 일반 구현 선택 `ask`는 `autoSelectRecommended: true` | 문서 | 기능 자체는 `patches/core-ask-timeout-test.ts`(opt-in) | 켜라고 강제하는 장치 없음 |
 | R24 | 직접 원인·자기 회귀는 다시 지시 없이 수정, 범위 밖은 금지 | eval | `evals/cases/routine/adjacent-cause.json`, `evals/cases/routine/dispatch-path-mismatch.json` | |
@@ -79,6 +79,8 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R42 | 검토·게이트 모델은 `crossReview*`·`slopReviewOpenAI` 슬롯만 | 구조(부분) | `extensions/cross-review.ts`, `extensions/slop-gate.ts`(슬롯에서만 reviewer 해석) | 브리프에 다른 모델을 적는 실수는 문서(2026-10-26 지적) |
 | R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | |
 | R44 | lock·ancestry·non-ff 우회 금지, rebase·merge·pull·reset 금지 | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.gitIntegrate`·`gitReset`·`gitClean`·`gitDiscard`·`gitDelete` | `index.lock` 삭제는 막지 않음 |
+| R45 | 사용자 관찰은 수용하고 진단과 제안은 근거와 대조하며, 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | — | R37의 외부 조언 안내가 일반 사용자 진단 전체를 검사하지는 않는다. 선택적 주장 확인의 비용 제한은 필수 검증을 면제하지 않는다 |
+| R46 | 새 답변과 새 문서 산문에서 U+00B7 낱말 결합을 피하고 원문과 기존 내용을 보존한다 | 차단(부분) | `extensions/slop-gate/review.ts` `buildReviewRequest`, `tools/git-finalizer/index.ts` `runSlopGate` | 기존 검사 대상 산출물에 한해 reviewer가 판단한다. 채팅과 제외된 Markdown은 문서 수준이며 문자 필터나 일괄 치환은 없다 |
 
 ## 전역 AGENTS.md
 
