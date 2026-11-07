@@ -16,9 +16,9 @@
 | **Git** | Required for source checkouts and Git operations (worktrees, commits); optional for npm install and basic chat |
 
 **Verification status**:
-- **Developed & verified on**: Windows and Linux (WSL2 Ubuntu 24.04).
-- **CI coverage**: [Public CI](https://github.com/gim47656-ship-it/CUELO/actions) runs full checks on Linux and install/build smoke checks on Windows. These checks do not prove compatibility across all Linux distributions or verify end-to-end provider login on a clean OS.
-- **macOS**: Unverified; operation and support are not guaranteed.
+- **Developed & verified on**: Linux. Native Windows server installation is unsupported, with no Windows CI or native Windows release binaries. Accessing a Linux CUELO server from a Windows browser is a separate client use.
+- **CI coverage**: [Public CI](https://github.com/gim47656-ship-it/CUELO/actions) runs app and harness checks on Linux, plus native reader builds for `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. These checks do not prove compatibility across all Linux distributions or verify end-to-end provider login on a clean OS.
+- **macOS**: Native reader artifacts are built, but whole-app operation and support are not guaranteed.
 
 ## Quick Start (npm)
 

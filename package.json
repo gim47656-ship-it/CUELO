@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.173",
+  "version": "0.10.174",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -48,6 +48,10 @@
     "!.next/**/*.js.map",
     "public",
     "install.mjs",
+    "native/upkeep-reader/Cargo.toml",
+    "native/upkeep-reader/Cargo.lock",
+    "native/upkeep-reader/build.rs",
+    "native/upkeep-reader/src",
     "Tools/CUELO_Setup/files/native-runtime-patch.js",
     "Tools/CUELO_Setup/files/usage-server.js",
     "Tools/CUELO_Setup/files/btw-server.js",
@@ -74,6 +78,7 @@
     "Tools/OMP_Global_Config/agent/tools",
     "!Tools/OMP_Global_Config/agent/**/tests",
     "!Tools/OMP_Global_Config/agent/**/*.test.*",
+    "!bin/*.test.mjs",
     "!public/**/*.test.mjs",
     "next.config.ts",
     "package.json"

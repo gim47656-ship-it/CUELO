@@ -3,9 +3,7 @@
  * 직전 7일(index 1) 두 묶음으로 센다. 라이브 서버의 요청 처리를 막지 않도록 약 8ms마다 이벤트 루프에
  * 양보한다. 읽은 값이 없으면 0이 아니라 호출자가 미측정으로 다룰 수 있게 원 건수를 그대로 넘긴다.
  */
-import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
@@ -13,6 +11,7 @@ import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
+import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
 
 const DAY_MS = 86_400_000;
 const YIELD_EVERY_MS = 8;
@@ -406,6 +405,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const recoveries: Recovery[] = [];
   const finish = (): Pick<ScanResult, "skills" | "failureExcerpts" | "recoveries"> => ({ skills: skillResult(skillAgg, sessionTotals), failureExcerpts, recoveries });
 
+  // 바이너리가 없으면 디렉터리·파일 오류 경고로 바꾸지 않고 스캔 전체가 그 오류로 실패한다.
+  loadUpkeepReader();
   let files: string[];
   try {
     files = await sessionFiles(dir, now - 14 * DAY_MS);
@@ -450,17 +451,10 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let lastYield = performance.now();
 
     try {
-      for await (const line of createInterface({ input: createReadStream(path), crlfDelay: Infinity })) {
+      for await (const entry of readSessionEntries<Entry>(path)) {
         if (performance.now() - lastYield >= YIELD_EVERY_MS) {
           await yieldEventLoop();
           lastYield = performance.now();
-        }
-        let entry: Entry;
-        try {
-          entry = JSON.parse(line);
-          if (!entry || typeof entry !== "object") continue;
-        } catch {
-          continue;
         }
         if (entry.type === "session") {
           sessionId = String(entry.id ?? "");

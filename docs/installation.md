@@ -6,31 +6,33 @@
 
 - **소스 설치**: checkout 후 `node install.mjs setup`을 실행합니다(아래 절차).
 - **npm 설치**: 패키지명은 [`cuelo`](https://www.npmjs.com/package/cuelo)입니다. production 빌드가 포함되며 설치 때 패키지 자체 SDK를 준비합니다. `cuelo setup`은 빌드를 건너뛰고 준비된 런타임을 검사한 뒤 공개 하네스의 없는 파일만 추가합니다.
-- **개발·검증 환경**: Windows와 Linux(WSL2 Ubuntu 24.04)입니다. 공개 CI는 Linux에서 전체 검사를 실행하고, Windows에서는 설치·빌드 확인을 실행합니다. macOS는 개발·테스트 환경이 아니므로 동작과 지원을 보장하지 않습니다. 아래 단계별 안내는 Windows 기준이며, Linux에서는 Node.js·Bun·Git을 배포판의 공식 방법으로 설치한 뒤 같은 `setup`·`start` 명령을 씁니다.
+- **개발과 검증 환경**: Linux입니다. 공개 CI는 Linux에서 앱과 하네스를 검사하고 네이티브 리더를 플랫폼별로 빌드합니다. 네이티브 Windows 서버 설치는 지원하지 않으며 Windows CI와 Windows 릴리스 바이너리를 제공하지 않습니다. Windows 브라우저에서 Linux 서버에 접속하는 사용법과는 별개입니다. macOS는 전체 앱 동작과 지원을 보장하지 않습니다. 아래 안내는 Linux 기준이며, 모든 배포판과 새 OS의 제공자 로그인까지 검증한 것은 아닙니다.
 
-## 대표 경로: `omp`만 있는 Windows PC
+npm 패키지와 공개 릴리스에는 미리 빌드한 네이티브 리더(`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`)가 들어 있어 일반 npm 설치나 공개 릴리스 소스 설치에는 Rust 컴파일러가 필요하지 않습니다. Windows용 파일은 포함하지 않으며, `darwin` 파일이 있다고 macOS 전체 앱 지원을 보장하지는 않습니다. 아직 공개되지 않았거나 직접 수정한 네이티브 소스를 빌드할 때는 로컬 Rust와 Cargo가 필요합니다. 설치기는 컴파일러를 자동으로 내려받지 않으며, 바이너리가 없거나 손상된 경우 설치 오류로 알립니다.
 
-1. 기존 `omp --version`과 본인 `~/.omp/agent`의 `config.yml`·계정·세션이 있는지 확인합니다. **`omp-web`은 설치할 필요가 없습니다.** 독립 `omp.exe`가 있다고 Node.js/npm·Bun이 따라오는 것은 아니므로, 아래 필요 조건도 설치·확인합니다.
-2. `npm install -g cuelo` → `cuelo setup` → `cuelo start`를 실행합니다. `setup`은 기존 `config.yml`과 동명 하네스 파일을 **덮어쓰지 않고**, 현재 `omp` 프로필에 없는 공개 파일만 더합니다. 기존 `agent.db`, `models.yml`, skills, 세션도 보존합니다. 앱 패치는 설치된 `cuelo` 패키지의 SDK에만 적용되며, 별도 `omp.exe`에는 적용되지 않습니다.
+## 대표 경로: `omp`만 있는 Linux PC
+
+1. 기존 `omp --version`과 본인 `~/.omp/agent`의 `config.yml`, 계정, 세션이 있는지 확인합니다. **`omp-web`은 설치할 필요가 없습니다.** 독립 `omp`가 있다고 Node.js/npm과 Bun이 따라오는 것은 아니므로, 아래 필요 조건도 설치하고 확인합니다.
+2. `npm install -g cuelo` → `cuelo setup` → `cuelo start`를 실행합니다. `setup`은 기존 `config.yml`과 동명 하네스 파일을 **덮어쓰지 않고**, 현재 `omp` 프로필에 없는 공개 파일만 더합니다. 기존 `agent.db`, `models.yml`, skills, 세션도 보존합니다. 앱 패치는 설치된 `cuelo` 패키지의 SDK에만 적용되며, 별도 독립 `omp`에는 적용되지 않습니다.
 3. 브라우저에서 출력 주소를 열고 **설정 > 모델·계정**에서 기존 로그인 상태와 사용할 모델을 확인합니다. `cuelo health`는 네 서비스 응답만 검사하므로 로그인과 대화 성공을 뜻하지 않습니다.
 4. 기존 `config.yml`이면 `--model`·`--role`을 다시 줘도 설치기가 무시합니다. 아래 [기존 프로필의 역할과 Jev 보완](#기존-프로필의-역할과-jev-보완)대로 **현재 모델 역할과 제공자 자격을 직접 확인**해야 Main/Maker/Jev가 동작합니다. 기존 로그인·세션을 삭제하거나 프로필을 새로 복사할 필요는 없습니다.
 
-이 경로는 **기존 프로필을 흉내 낸 격리 HOME**에서 설정 보존/누락 보고를 확인하는 경계 검사입니다. 실제 사용자 `omp` 홈을 수정하거나 새 Windows OS를 부팅해 end-to-end로 검증한 결과는 아닙니다.
+이 경로는 **기존 프로필을 흉내 낸 격리 HOME**에서 설정 보존과 누락 보고를 확인한 경계 검사입니다. 실제 사용자 `omp` 홈을 수정하거나 새 Linux OS를 부팅해 처음부터 끝까지 검증한 결과는 아닙니다.
 
-## 새 Windows PC에서 먼저 준비할 것
+## 새 Linux PC에서 먼저 준비할 것
 
-Windows 10 1809 이상에서 다음을 사용자가 직접 설치합니다(Bun의 Windows 최소 버전). Node/Bun/Git은 OS별 설치·업데이트를 각 공식 배포처에서 관리하며, 사용자 계정 자격은 개인 정보이므로 CUELO에 동봉하지 않습니다. 설치 후 **새 PowerShell**에서 버전을 확인하세요.
+Linux에서 다음을 사용자가 직접 설치합니다. Node/Bun/Git은 배포판 패키지나 각 공식 배포처에서 관리하며, 사용자 계정 자격은 개인 정보이므로 CUELO에 동봉하지 않습니다. 설치 후 **새 셸**에서 버전을 확인하세요.
 
 | 항목 | 분류·마지막 사용자 행동 |
 | --- | --- |
-| [Node.js](https://nodejs.org/en/download) `>=22.19.0`와 동봉된 npm | 외부 필수. Windows 설치본을 설치하고 `node --version`, `npm --version`을 확인합니다. `install.mjs`와 npm 설치에 사용합니다. |
-| [Bun](https://bun.sh/docs/installation) `>=1.4.4` | 외부 필수. 공식 Windows 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`·`btw`가 사용합니다. |
-| [Git for Windows](https://git-scm.com/install/windows) | 전체 코딩·Git 기능 기준 외부 필수. 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화·내장 `bash`만 시험할 때는 생략할 수 있습니다. SDK는 Windows에서 Git Bash가 없어도 `cmd.exe`로 fallback하지만, Git 명령까지 제공하지는 않습니다. |
+| [Node.js](https://nodejs.org/en/download) `>=22.19.0`와 동봉된 npm | 외부 필수. 공식 Linux 설치 절차나 배포판 안내에 따라 설치하고 `node --version`, `npm --version`을 확인합니다. `install.mjs`와 npm 설치에 사용합니다. |
+| [Bun](https://bun.sh/docs/installation) `>=1.4.4` | 외부 필수. 공식 Linux 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`, `btw`가 사용합니다. |
+| [Git](https://git-scm.com/downloads/linux) | 전체 코딩과 Git 기능 기준 외부 필수. 공식 Linux 패키지 안내에 따라 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화만 시험할 때는 생략할 수 있으나 Git 명령은 제공되지 않습니다. |
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
 | Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 권장은 OpenRouter API 키로 `modelRoles.judge`에 OpenRouter의 Jev를 지정하는 방법입니다. |
-| 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업·usage의 CLI fallback·`stats` 집계가 필요할 때 [공식 Windows 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE`, Windows의 기본 위치 또는 PATH의 `omp.exe`를 실행합니다. Linux·macOS에서는 `OMP_EXE`가 없으면 CUELO 폴더의 `node_modules/.bin/omp`를 쓰고, 없을 때만 PATH의 `omp`를 찾습니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
+| 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업, usage의 CLI fallback, `stats` 집계가 필요할 때 [공식 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE`를 먼저 보며, 없으면 CUELO 폴더의 `node_modules/.bin/omp`를 쓰고 없을 때만 `PATH`의 `omp`를 찾습니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
 
-Windows에 `winget`이 있으면 Node·Git 설치에 써도 됩니다. 위 공식 링크의 설치본을 직접 받아도 됩니다. 네트워크와 설치 권한이 없는 PC에서는 먼저 설치본과 승인된 계정·접속 방법을 준비해야 합니다. 제공자 로그인, Git/CLI·OS 설치, 유료 모델 호출을 `setup`이 대신하지 않습니다.
+배포판 패키지 관리자나 공식 설치 스크립트를 써도 됩니다. 네트워크와 설치 권한이 없는 PC에서는 먼저 설치본과 승인된 계정, 접속 방법을 준비해야 합니다. 제공자 로그인, Git/CLI와 OS 설치, 유료 모델 호출을 `setup`이 대신하지 않습니다.
 
 ## 동봉 파일과 남은 외부 경계
 
@@ -47,7 +49,7 @@ Windows에 `winget`이 있으면 Node·Git 설치에 써도 됩니다. 위 공�
 
 Codex live 통화는 버튼으로 끝내거나, “끊어”, “알았어, 끊어봐”, “아니 통화 종료하라고”, “통화 종료해 줘”처럼 종료 요청만 말해 끝낼 수 있습니다. 사용자 발화가 최종 전사로 확정된 뒤 마이크와 연결을 닫습니다. “끊지 마”, “끊어라고 하면…”, “통화 종료가 안 먹네” 같은 말이나 AI의 발화에는 반응하지 않습니다. 이미 에이전트에 맡긴 코딩 작업은 통화 종료로 취소되지 않습니다. 통화 목소리는 설정에서 고르는 Codex 목소리이며 별도 키가 필요 없습니다. 자세한 내용은 [라이브 통화](./live-voice.md)를 확인하세요.
 
-현재 PC의 Node 24/Bun 1.4.2를 가진 빈 프로필·격리 npm prefix에서 설치와 네 서비스 경로를 시험했습니다. **운영체제 자체가 비어 있는 Windows VM/새 PC의 전체 설치, 외부 로그인, 유료 Jev 호출, 최초 임베딩 다운로드는 검증하지 않았습니다.** macOS 지원은 보장하지 않습니다.
+과거 Node 24와 Bun 1.4.2를 가진 빈 프로필과 격리 npm prefix에서 설치와 네 서비스 경로를 확인한 이력은 **당시의 경계 시험 기록**입니다. 새 Linux OS 전체 설치, 모든 배포판 호환성, 외부 로그인, 유료 Jev 호출, 최초 임베딩 다운로드를 새로 검증한 것은 아닙니다. 네이티브 Windows 서버 설치는 지원하지 않으며 macOS 지원은 보장하지 않습니다.
 
 ## npm으로 설치하기
 

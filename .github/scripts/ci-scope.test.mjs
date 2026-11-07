@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { APP_JOBS, classifyChanges, decide, parseRawDiff, pickBaseline, runGit } from "./ci-scope.mjs";
+import { classifyChanges, decide, parseRawDiff, pickBaseline, runGit } from "./ci-scope.mjs";
 
 const H = "Tools/OMP_Global_Config";
 const mod = (...paths) => paths.map((path) => ({ status: "M", path, oldMode: "100644", newMode: "100644" }));
@@ -117,21 +117,23 @@ describe("parseRawDiff", () => {
 
 describe("pickBaseline", () => {
   const sha = (c) => c.repeat(40);
-  const ok = APP_JOBS.map((name) => ({ name, conclusion: "success" }));
+  // Job names as ci.yml reports them; Windows smoke is retired and no longer required.
+  const LINUX = "Verify build (Linux)";
+  const ok = [{ name: LINUX, conclusion: "success" }];
   const run = (id, over = {}) => ({ id, head_sha: sha(String(id)), head_branch: "main", event: "push", conclusion: "success", ...over });
   const jobsFor = (table) => async (id) => table[id] ?? [];
 
-  test("takes the newest run whose app jobs both succeeded", async () => {
+  test("takes the newest run whose Linux app job succeeded", async () => {
     const jobs = { 3: ok, 2: ok };
     assert.equal(await pickBaseline({ runs: [run(3), run(2)], currentRunId: 9, jobsOf: jobsFor(jobs) }), sha("3"));
   });
 
-  test("skips runs whose app jobs were skipped, failed or cancelled, and one-sided passes", async () => {
+  test("skips runs whose Linux app job was skipped, failed, cancelled or missing", async () => {
     const jobs = {
-      5: APP_JOBS.map((name) => ({ name, conclusion: "skipped" })),
-      4: [{ name: APP_JOBS[0], conclusion: "success" }, { name: APP_JOBS[1], conclusion: "cancelled" }],
-      3: [{ name: APP_JOBS[0], conclusion: "failure" }, { name: APP_JOBS[1], conclusion: "success" }],
-      2: [{ name: APP_JOBS[0], conclusion: "success" }],
+      5: [{ name: LINUX, conclusion: "skipped" }],
+      4: [{ name: LINUX, conclusion: "cancelled" }, { name: "Verify harness (Linux, core)", conclusion: "success" }],
+      3: [{ name: LINUX, conclusion: "failure" }],
+      2: [{ name: "Verify build (Windows smoke)", conclusion: "success" }],
       1: ok,
     };
     const runs = [5, 4, 3, 2, 1].map((id) => run(id));
@@ -196,15 +198,16 @@ function fixture() {
   return { seed, base, write, commit, push, checkout };
 }
 
-const OK_JOBS = APP_JOBS.map((name) => ({ name, conclusion: "success" }));
-function stubApi(baselineSha) {
+// A verified baseline run as the jobs API reports it now that Linux is the only app job.
+const OK_JOBS = [{ name: "Verify build (Linux)", conclusion: "success" }, { name: "Verify harness (Linux, core)", conclusion: "success" }];
+function stubApi(baselineSha, jobs = OK_JOBS) {
   const calls = [];
   const api = async (path) => {
     calls.push(path);
     if (path.includes("/runs?")) {
       return { workflow_runs: baselineSha ? [{ id: 11, head_sha: baselineSha, head_branch: "main", event: "push", conclusion: "success" }] : [] };
     }
-    return { jobs: OK_JOBS };
+    return { jobs };
   };
   return { api, calls };
 }
@@ -297,6 +300,23 @@ describe("decide against real Git history", () => {
     const failing = await decideIn(dir, "push", async () => { throw new Error("GitHub API /runs answered 403"); });
     assert.equal(failing.app, true);
     assert.match(failing.reason, /403/);
+  });
+
+  test("a baseline run whose Linux app job is missing, failed or skipped runs everything", async () => {
+    const f = fixture();
+    f.write(f.seed, "docs/harness.md", "two\n");
+    const head = f.commit("docs only");
+    f.push();
+    const dir = f.checkout(head);
+    for (const jobs of [
+      [{ name: "Verify build (Windows smoke)", conclusion: "success" }],
+      [{ name: "Verify build (Linux)", conclusion: "failure" }],
+      [{ name: "Verify build (Linux)", conclusion: "skipped" }],
+    ]) {
+      const result = await decideIn(dir, "push", stubApi(f.base, jobs).api);
+      assert.equal(result.app, true, JSON.stringify(jobs));
+      assert.match(result.reason, /no earlier run/);
+    }
   });
 });
 

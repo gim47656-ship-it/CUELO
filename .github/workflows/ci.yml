@@ -1,26 +1,24 @@
 name: CI
 
-# Both live PCs run CUELO under WSL (Linux), so Linux carries the full checks:
-# `verify-linux` (install, typecheck, lint, app and sidecar tests, production build,
+# Both live PCs run CUELO under WSL (Linux), and CI runs no Windows jobs: Linux carries the
+# checks. `verify-linux` (install, typecheck, lint, app and sidecar tests, production build,
 # web runtime compatibility) and `harness-linux` (two runners side by side: the extension,
 # guard and finalizer tests, and the core patch tests including the user-shell PTY path,
-# which run several files at once). `verify-windows` is one smoke
-# job for native Windows installs: install, SDK preparation, typecheck, build and the
-# web runtime patch. Public jobs run only on the public mirror, where Actions minutes
-# are free. `scope` runs only for `main` pushes and decides whether the two app jobs run:
-# they are skipped only when every path differing from the last revision whose app jobs
+# which run several files at once). Public jobs run only on the public mirror, where Actions
+# minutes are free. `scope` runs only for `main` pushes and decides whether the app jobs run:
+# they are skipped only when every path differing from the last revision whose app job
 # passed is a known regular docs or harness-instruction file (see
 # .github/scripts/ci-scope.mjs). Pull requests, manual runs, anything unknown and any
-# classifier problem run everything. `harness-linux` always runs.
+# classifier problem run everything. `harness-linux` always runs. `upkeep-reader` builds,
+# loads and reads with native/upkeep-reader on the Linux and macOS targets the release
+# ships, under the same scope as the app jobs.
 #
 # CUELO-private is billed per minute. Its `private` job runs on Linux for every
 # `main` push except one that touches only files that job cannot read (`paths-ignore`
 # below: work records, handoff and setup notes, memory exports) and checks the files the
 # mirror does not carry: the setup source manifest, policy and generated agents, eval
-# analyzers, setup helpers and the WSL deploy tooling. `private-windows` (content scan,
-# which replays the PowerShell helper) needs Windows PowerShell and runs only when
-# started by hand. The mirror runs this same file and has none of the ignored paths, so
-# its pushes always start CI.
+# analyzers, setup helpers and the WSL deploy tooling. The mirror runs this same file and
+# has none of the ignored paths, so its pushes always start CI.
 on:
   pull_request:
   push:
@@ -133,6 +131,83 @@ jobs:
           node Tools/CUELO_Setup/files/native-runtime-patch.js --target . --check
           OMP_CORE_PATCH_TARGET="$PWD/node_modules/@oh-my-pi/pi-coding-agent" bun run Tools/CUELO_Setup/files/native-runtime-behavior-test.ts
 
+  upkeep-reader:
+    name: Upkeep reader (${{ matrix.target }})
+    needs: scope
+    if: >-
+      !cancelled() && github.repository == 'gim47656-ship-it/CUELO' &&
+      (github.event_name != 'push' || needs.scope.result != 'success' || needs.scope.outputs.app != 'false')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-22.04 }
+          - { target: linux-arm64, os: ubuntu-22.04-arm }
+          - { target: darwin-x64, os: macos-15-intel }
+          - { target: darwin-arm64, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Same toolchain and steps as the release's `native` job.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"
+
+      # Linux links with zig against glibc 2.17, the floor of the SDK's own native binaries; a plain
+      # cargo build would require the runner's glibc. Both archives are checked against pinned digests.
+      - name: Install the pinned Linux linker (zig, cargo-zigbuild)
+        if: runner.os == 'Linux'
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=x86_64; zig_sha=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a; czb_sha=32581c8e13f27a807bb244aaaac870522f5b51263c766cf77b1a99771ce9fa5c ;;
+            aarch64) arch=aarch64; zig_sha=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795; czb_sha=70bb4c9cc71a6d16211b9079996e3cd588671053312adeff4d043499ed887601 ;;
+          esac
+          tools="$RUNNER_TEMP/zig-tools"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/zig.tar.xz" "https://ziglang.org/download/0.17.1/zig-$arch-linux-0.17.1.tar.xz"
+          curl -fsSL -o "$tools/czb.tar.xz" "https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-$arch-unknown-linux-gnu.tar.xz"
+          printf '%s  %s\n' "$zig_sha" "$tools/zig.tar.xz" "$czb_sha" "$tools/czb.tar.xz" | sha256sum -c -
+          tar -xJf "$tools/zig.tar.xz" -C "$tools"
+          tar -xJf "$tools/czb.tar.xz" -C "$tools"
+          echo "$tools/zig-$arch-linux-0.17.1" >> "$GITHUB_PATH"
+          echo "$tools/cargo-zigbuild-$arch-unknown-linux-gnu" >> "$GITHUB_PATH"
+          echo "UPKEEP_BUILD_ARGS=--glibc 2.17" >> "$GITHUB_ENV"
+
+      - name: Build, load and read with the upkeep reader
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          out="$RUNNER_TEMP/upkeep-reader"
+          # shellcheck disable=SC2086 # UPKEEP_BUILD_ARGS is empty or two words
+          node bin/prepare-upkeep-reader.js --build --out "$out" $UPKEEP_BUILD_ARGS
+          if [ "$RUNNER_OS" = Linux ]; then
+            newest=$(objdump -T "$out/$TARGET.node" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "Newest glibc symbol version: $newest"
+            [ "$(printf '%s\n' "$newest" GLIBC_2.17 | sort -V | tail -1)" = GLIBC_2.17 ] || { echo "requires $newest, above glibc 2.17"; exit 1; }
+          fi
+          node bin/prepare-upkeep-reader.js --check --out "$out" --target "$TARGET"
+          node -e '
+            const fs = require("node:fs");
+            const file = require("node:path").join(process.env.RUNNER_TEMP, "upkeep-smoke.jsonl");
+            fs.writeFileSync(file, JSON.stringify({ type: "session", id: "s1", extra: 1 }) + "\n");
+            const reader = new (require(process.argv[1]).UpkeepReader)(file);
+            reader.next().then((batch) => {
+              reader.close();
+              if (JSON.stringify(JSON.parse(batch)) !== "[{\"type\":\"session\",\"id\":\"s1\"}]") throw new Error(`unexpected batch ${batch}`);
+            });
+          ' "$out/$TARGET.node"
+
   harness-linux:
     name: Verify harness (Linux, ${{ matrix.suite }})
     if: github.repository == 'gim47656-ship-it/CUELO'
@@ -225,63 +300,6 @@ jobs:
           grep -q "PASS  사용자 셸 PTY" "$RUNNER_TEMP/core-patch-test.ts.log" || failed+=("user-shell PTY check did not run")
           [ ${#failed[@]} -eq 0 ] || { echo "Failed: ${failed[*]}"; exit 1; }
 
-  verify-windows:
-    name: Verify build (Windows smoke)
-    # Native Windows installs (PC-SETUP, installation guide) still build from source.
-    # Behaviour tests run on Linux above; this job proves install, SDK preparation,
-    # typecheck, build and the web runtime patch still work on Windows.
-    needs: scope
-    if: >-
-      !cancelled() && github.repository == 'gim47656-ship-it/CUELO' &&
-      (github.event_name != 'push' || needs.scope.result != 'success' || needs.scope.outputs.app != 'false')
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile --backend=copyfile
-
-      - name: Prepare source SDK
-        run: bun run prepare:source
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      # Same as Tools/CUELO_Setup's build: an isolated home, because the build
-      # otherwise walks the real profile and fails on protected folders (EPERM).
-      - name: Build package
-        run: |
-          $buildHome = Join-Path $env:RUNNER_TEMP 'build-home'
-          New-Item -ItemType Directory -Path $buildHome -Force | Out-Null
-          $root = [IO.Path]::GetPathRoot($buildHome)
-          $env:USERPROFILE = $buildHome
-          $env:HOME = $buildHome
-          $env:HOMEDRIVE = $root.TrimEnd('\')
-          $env:HOMEPATH = $buildHome.Substring($root.Length - 1)
-          bun run build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Apply and verify web runtime compatibility
-        run: |
-          node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node Tools/CUELO_Setup/files/native-runtime-patch.js --target . --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
   # The mirror has no agent/config.yml, models.yml, evals/, setup source manifest,
   # setup helpers or WSL deploy tooling.
   private:
@@ -373,26 +391,3 @@ jobs:
         run: |
           sudo ln -sf "$(command -v node)" /usr/bin/node
           bun test ./wsl/migrate-profile.test.mjs ./wsl/run-service.test.mjs ./wsl/update-state.test.mjs ./wsl/update.test.mjs ./wsl/windows-bridge/bridge.test.mjs ./wsl/windows-bridge/profile.test.mjs
-
-  # content-scan.test.ts replays setup.ps1/verify.ps1 helpers through powershell.exe.
-  private-windows:
-    name: Verify private content scan (Windows)
-    if: github.repository == 'gim47656-ship-it/CUELO-private' && github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: Tools/OMP_Global_Config
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Content scan tests
-        run: |
-          bun test ./patches/content-scan.test.ts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

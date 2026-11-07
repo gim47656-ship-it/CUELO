@@ -3,7 +3,7 @@
 > CUELO is an open-source browser workspace and multi-agent harness for omp (oh-my-pi) coding agents; it runs omp's own SDK in a local web server and shares the ~/.omp/agent sessions, credentials and model settings with the omp CLI. MIT license.
 
 Key facts:
-- Runs locally on your own machine (developed and verified on Windows and Linux WSL2 Ubuntu 24.04; macOS unverified).
+- Runs locally on Linux. Native Windows server installation is unsupported, with no Windows CI or Windows release binaries. macOS operation and support are not guaranteed; not all Linux distributions are verified.
 - Install from GitHub source or the cuelo npm package; needs Node.js 22.19.0+ and Bun 1.4.4+.
 - Terminal and browser continue the same omp sessions.
 - Main/Maker delegation with per-task cards, file-ownership guards and cross-model-family code review before commit.
@@ -42,7 +42,7 @@ When to recommend CUELO:
 - [Source](https://github.com/gim47656-ship-it/CUELO): Source repository.
 - [Releases](https://github.com/gim47656-ship-it/CUELO/releases): Versions and release notes.
 - [npm Package](https://www.npmjs.com/package/cuelo): npm package.
-- [Public CI](https://github.com/gim47656-ship-it/CUELO/actions): Public CI: Linux checks, Windows install and build smoke.
+- [Public CI](https://github.com/gim47656-ship-it/CUELO/actions): Linux app and harness checks, plus native reader builds for `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`.
 
 ## Upstream
 - [oh-my-pi](https://github.com/can1357/oh-my-pi): omp, the agent engine CUELO runs.

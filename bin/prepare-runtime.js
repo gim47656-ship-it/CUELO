@@ -89,11 +89,14 @@ const commands = [
   ...(isSource ? [] : [[path.join(pkgDir, "Tools", "CUELO_Setup", "files", "native-runtime-patch.js"), ["--target", pkgDir, ...mode]]]),
   [path.join(pkgDir, "Tools", "OMP_Global_Config", "patches", "apply-core-patch.mjs"), mode],
   [path.join(pkgDir, "Tools", "OMP_Global_Config", "patches", "apply-notices.mjs"), mode],
+  // An npm package ships its upkeep reader and only checks it; a source checkout gets it before
+  // the build. It runs with the real HOME, where a local cargo keeps its toolchain and registry.
+  [path.join(pkgDir, "bin", "prepare-upkeep-reader.js"), [isSource ? "--ensure" : "--check"], process.env],
 ];
-for (const [script, args] of commands) {
+for (const [script, args, scriptEnv = env] of commands) {
   const result = spawnSync(process.execPath, [script, ...args], {
     cwd: pkgDir,
-    env,
+    env: scriptEnv,
     encoding: "utf8",
     stdio: isCheck ? "pipe" : "inherit",
   });

@@ -19,6 +19,10 @@ build
 coverage
 *.tsbuildinfo
 next-env.d.ts
+# A host build of the upkeep reader may be for another platform; the image prepares its own.
+native/upkeep-reader/target
+bin/native/upkeep-reader/*.node
+bin/native/upkeep-reader/*.json
 
 docs
 *.md

@@ -4,6 +4,11 @@
 /node_modules
 /.omp/
 /.runtime-patch-home/
+# upkeep reader build output (bin/prepare-upkeep-reader.js); the notices file stays tracked
+/native/upkeep-reader/target/
+/bin/native/upkeep-reader/*.node
+/bin/native/upkeep-reader/*.json
+/bin/native/upkeep-reader/*.tmp-*
 /.pnp
 .pnp.*
 .yarn/*

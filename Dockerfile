@@ -10,11 +10,22 @@ RUN apt-get update \
  && ln -s /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh \
  && rm -rf /var/lib/apt/lists/*
 
+# The upkeep reader binary is this version's release asset when its source matches, else built
+# here. The Rust toolchain stays in this stage; bookworm matches the runtime's glibc.
+FROM rust:1.99.1-slim-bookworm AS upkeep-reader
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /app
+COPY package.json ./
+COPY bin/prepare-upkeep-reader.js ./bin/
+COPY native/upkeep-reader ./native/upkeep-reader
+RUN bun bin/prepare-upkeep-reader.js --ensure
+
 FROM base AS build
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --ignore-scripts --backend=copyfile
 COPY . .
+COPY --from=upkeep-reader /app/bin/native/upkeep-reader ./bin/native/upkeep-reader
 ENV NEXT_TELEMETRY_DISABLED=1
 # .next/cache holds only the build-time webpack cache (~750MB); the server does not read it.
 RUN bun bin/prepare-runtime.js --source && bun run build \
@@ -33,6 +44,8 @@ COPY --from=build --chown=omp:node /app/.next ./.next
 COPY --from=build --chown=omp:node /app/public ./public
 COPY --from=build --chown=omp:node /app/bin ./bin
 COPY --from=build --chown=omp:node /app/Tools ./Tools
+COPY --from=build --chown=omp:node /app/native/upkeep-reader/Cargo.toml /app/native/upkeep-reader/Cargo.lock /app/native/upkeep-reader/build.rs ./native/upkeep-reader/
+COPY --from=build --chown=omp:node /app/native/upkeep-reader/src ./native/upkeep-reader/src
 COPY --from=build --chown=omp:node /app/next.config.ts /app/package.json /app/install.mjs ./
 RUN bun bin/prepare-runtime.js --check
 ENV HOME=/home/omp NODE_ENV=production PORT=30141 CUELO_NO_OPEN=1 OMP_EXE=/app/node_modules/.bin/omp

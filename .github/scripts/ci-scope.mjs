@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-// Decides whether the public CI app jobs (`Verify build (Linux)`, `Verify build
-// (Windows smoke)`) must run for this revision. The `harness-linux` job never depends on
-// this decision.
+// Decides whether the public CI app job (`Verify build (Linux)`) and the jobs that share its
+// condition must run for this revision. The `harness-linux` job never depends on this decision.
 //
 // The app jobs are skipped only when BOTH hold:
 //   1. A baseline exists: the newest successful `push` run of this workflow on `main`
-//      whose two app jobs both finished with `success` (skipped, failed or cancelled app
-//      jobs do not count, so an earlier unverified or cancelled commit can never be
+//      whose app job finished with `success` (a skipped, failed, cancelled or missing app
+//      job does not count, so an earlier unverified or cancelled commit can never be
 //      skipped past).
 //   2. Every path that differs between that baseline tree and this checkout is an added or
 //      modified regular file (git mode 100644) on the positive allowlist below. A deletion,
@@ -23,7 +22,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const APP_JOBS = ["Verify build (Linux)", "Verify build (Windows smoke)"];
+export const APP_JOBS = ["Verify build (Linux)"];
 
 // Files no app job reads. Evidence: app tests and the build read harness files only
 // through temp fixtures or `.ts`/`.js` modules; `prepare:source` reads patches/ and
@@ -78,7 +77,7 @@ export function classifyChanges(changes) {
   return { app: false, reason: `${changes.length} changed path(s), all regular docs or harness instruction files` };
 }
 
-/** Head SHA of the newest push run on main whose app jobs both succeeded, or null. */
+/** Head SHA of the newest push run on main whose app jobs all succeeded, or null. */
 export async function pickBaseline({ runs, currentRunId, jobsOf }) {
   for (const run of runs) {
     if (String(run.id) === String(currentRunId)) continue;

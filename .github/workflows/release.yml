@@ -6,7 +6,9 @@ name: Publish CUELO web release
 # step uses Trusted Publishing (OIDC), so no npm token is stored in the repository.
 # `workflow_dispatch` re-runs the same steps for one explicit revision. After a new version
 # is published, the introduction site is redeployed from that revision so it never lags
-# behind the release.
+# behind the release. The upkeep reader (native/upkeep-reader) is built for Linux and macOS
+# (x64 and arm64; no Windows binaries); the GitHub release is created as a draft, gets those
+# binaries as assets and only then becomes public, and the npm package carries the same files.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -40,6 +42,8 @@ jobs:
       publish: ${{ steps.release.outputs.publish }}
       sha: ${{ steps.release.outputs.sha }}
       version: ${{ steps.release.outputs.version }}
+      create: ${{ steps.release.outputs.create }}
+      body: ${{ steps.release.outputs.body }}
     steps:
       - name: Resolve the revision to release
         id: target
@@ -54,7 +58,7 @@ jobs:
           ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
 
-      - name: Publish the verified web source release
+      - name: Check the revision and version to release
         id: release
         uses: actions/github-script@v9
         env:
@@ -124,7 +128,13 @@ jobs:
                 throw new Error('Existing release needs an explicit maintainer decision');
               }
               core.info(`Already published: ${existing.html_url}`);
+              core.setOutput('create', 'false');
               return;
+            }
+            // The tag lookup does not return drafts, such as one left by an interrupted run.
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...repo, per_page: 100 });
+            if (releases.some(release => release.draft && release.tag_name === tag)) {
+              throw new Error('Existing release needs an explicit maintainer decision');
             }
             const lines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
             const start = lines.findIndex(line => line.startsWith(`## [${pkg.version}]`));
@@ -132,16 +142,151 @@ jobs:
             const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
             const body = lines.slice(start + 1, next < 0 ? undefined : next).join('\n').trim();
             if (!body) throw new Error(`Empty CHANGELOG entry for ${tag}`);
-            const { data: release } = await github.rest.repos.createRelease({
-              ...repo, tag_name: tag, target_commitish: sha, name: `CUELO ${tag}`,
-              body, draft: false, prerelease: false, generate_release_notes: false,
-              make_latest: 'legacy',
-            });
-            core.info(`Published: ${release.html_url}`);
+            core.setOutput('create', 'true');
+            core.setOutput('body', body);
 
-  pages:
+  native:
+    name: Upkeep reader (${{ matrix.target }})
     needs: release
     if: needs.release.outputs.publish == 'true'
+    strategy:
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-22.04 }
+          - { target: linux-arm64, os: ubuntu-22.04-arm }
+          - { target: darwin-x64, os: macos-15-intel }
+          - { target: darwin-arm64, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the released revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"
+
+      # Same pinned linker as ci.yml: published Linux binaries keep the SDK's glibc 2.17 floor.
+      - name: Install the pinned Linux linker (zig, cargo-zigbuild)
+        if: runner.os == 'Linux'
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=x86_64; zig_sha=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a; czb_sha=32581c8e13f27a807bb244aaaac870522f5b51263c766cf77b1a99771ce9fa5c ;;
+            aarch64) arch=aarch64; zig_sha=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795; czb_sha=70bb4c9cc71a6d16211b9079996e3cd588671053312adeff4d043499ed887601 ;;
+          esac
+          tools="$RUNNER_TEMP/zig-tools"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/zig.tar.xz" "https://ziglang.org/download/0.17.1/zig-$arch-linux-0.17.1.tar.xz"
+          curl -fsSL -o "$tools/czb.tar.xz" "https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-$arch-unknown-linux-gnu.tar.xz"
+          printf '%s  %s\n' "$zig_sha" "$tools/zig.tar.xz" "$czb_sha" "$tools/czb.tar.xz" | sha256sum -c -
+          tar -xJf "$tools/zig.tar.xz" -C "$tools"
+          tar -xJf "$tools/czb.tar.xz" -C "$tools"
+          echo "$tools/zig-$arch-linux-0.17.1" >> "$GITHUB_PATH"
+          echo "$tools/cargo-zigbuild-$arch-unknown-linux-gnu" >> "$GITHUB_PATH"
+          echo "UPKEEP_BUILD_ARGS=--glibc 2.17" >> "$GITHUB_ENV"
+
+      - name: Build, load and read with the upkeep reader
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          out="$RUNNER_TEMP/upkeep-reader"
+          # shellcheck disable=SC2086 # UPKEEP_BUILD_ARGS is empty or two words
+          node bin/prepare-upkeep-reader.js --build --out "$out" $UPKEEP_BUILD_ARGS
+          if [ "$RUNNER_OS" = Linux ]; then
+            newest=$(objdump -T "$out/$TARGET.node" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "Newest glibc symbol version: $newest"
+            [ "$(printf '%s\n' "$newest" GLIBC_2.17 | sort -V | tail -1)" = GLIBC_2.17 ] || { echo "requires $newest, above glibc 2.17"; exit 1; }
+          fi
+          node bin/prepare-upkeep-reader.js --check --out "$out" --target "$TARGET"
+          node -e '
+            const fs = require("node:fs");
+            const file = require("node:path").join(process.env.RUNNER_TEMP, "upkeep-smoke.jsonl");
+            fs.writeFileSync(file, JSON.stringify({ type: "session", id: "s1", extra: 1 }) + "\n");
+            const reader = new (require(process.argv[1]).UpkeepReader)(file);
+            reader.next().then((batch) => {
+              reader.close();
+              if (JSON.stringify(JSON.parse(batch)) !== "[{\"type\":\"session\",\"id\":\"s1\"}]") throw new Error(`unexpected batch ${batch}`);
+            });
+          ' "$out/$TARGET.node"
+
+      - name: Keep the binary for the release
+        uses: actions/upload-artifact@v7
+        with:
+          name: upkeep-reader-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/upkeep-reader/${{ matrix.target }}.node
+            ${{ runner.temp }}/upkeep-reader/${{ matrix.target }}.json
+          if-no-files-found: error
+
+  github-release:
+    needs: [release, native]
+    if: needs.release.outputs.create == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the upkeep reader binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: upkeep-reader-*
+          merge-multiple: true
+          path: upkeep-reader
+
+      - name: Publish the verified web source release
+        uses: actions/github-script@v9
+        env:
+          TARGET_SHA: ${{ needs.release.outputs.sha }}
+          VERSION: ${{ needs.release.outputs.version }}
+          BODY: ${{ needs.release.outputs.body }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const repo = context.repo;
+            const tag = `v${process.env.VERSION}`;
+            const files = fs.readdirSync('upkeep-reader').sort();
+            const expected = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']
+              .flatMap(target => [`${target}.json`, `${target}.node`]);
+            if (files.join() !== expected.join()) {
+              throw new Error(`Expected exactly ${expected.join(', ')}; got ${files.join(', ')}`);
+            }
+            // Draft until every asset is attached, so a public release never lacks a binary.
+            const { data: release } = await github.rest.repos.createRelease({
+              ...repo, tag_name: tag, target_commitish: process.env.TARGET_SHA, name: `CUELO ${tag}`,
+              body: process.env.BODY, draft: true, prerelease: false, generate_release_notes: false,
+            });
+            for (const name of files) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name: `upkeep-reader-${name}`,
+                data: fs.readFileSync(`upkeep-reader/${name}`),
+                headers: { 'content-type': 'application/octet-stream' },
+              });
+            }
+            const { data: published } = await github.rest.repos.updateRelease({
+              ...repo, release_id: release.id, draft: false, make_latest: 'legacy',
+            });
+            core.info(`Published: ${published.html_url}`);
+
+  pages:
+    needs: [release, github-release]
+    # github-release is skipped on purpose only when the release already exists
+    # (create != 'true'); a skip caused by a failed native build must not deploy the site.
+    if: >-
+      !cancelled() && needs.release.outputs.publish == 'true' &&
+      (needs.github-release.result == 'success' ||
+       (needs.github-release.result == 'skipped' && needs.release.outputs.create != 'true'))
     permissions:
       contents: read
       pages: write
@@ -151,8 +296,10 @@ jobs:
       ref: ${{ needs.release.outputs.sha }}
 
   npm:
-    needs: release
-    if: needs.release.outputs.publish == 'true'
+    needs: [release, native, github-release]
+    if: >-
+      !cancelled() && needs.release.outputs.publish == 'true' && needs.native.result == 'success' &&
+      (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
     # Same platform and build steps as the public CI Linux job that verified this revision.
     runs-on: ubuntu-latest
     permissions:
@@ -191,6 +338,22 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The same binaries the release got; the source preparation below then reuses linux-x64.
+      - name: Collect the upkeep reader binaries
+        if: steps.registry.outputs.exists != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: upkeep-reader-*
+          merge-multiple: true
+          path: bin/native/upkeep-reader
+
+      - name: Check every packaged upkeep reader against this source
+        if: steps.registry.outputs.exists != 'true'
+        run: |
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            node bin/prepare-upkeep-reader.js --check --target "$target"
+          done
+
       - name: Install dependencies
         if: steps.registry.outputs.exists != 'true'
         run: bun install --frozen-lockfile
@@ -210,6 +373,20 @@ jobs:
         run: |
           node Tools/CUELO_Setup/files/native-runtime-patch.js --target .
           node Tools/CUELO_Setup/files/native-runtime-patch.js --target . --check
+
+      - name: Check that the package carries exactly the released upkeep readers
+        if: steps.registry.outputs.exists != 'true'
+        run: |
+          npm pack --dry-run --json --ignore-scripts | node -e '
+            const packed = JSON.parse(require("node:fs").readFileSync(0, "utf8"))[0].files.map((file) => file.path);
+            const dir = "bin/native/upkeep-reader/";
+            const expected = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]
+              .flatMap((target) => [`${dir}${target}.node`, `${dir}${target}.json`]);
+            const missing = expected.concat(`${dir}THIRD-PARTY-NOTICES.txt`).filter((path) => !packed.includes(path));
+            const extra = packed.filter((path) => path.startsWith(dir) && /\.(node|json)$/.test(path) && !expected.includes(path));
+            if (missing.length) throw new Error(`npm package lacks ${missing.join(", ")}`);
+            if (extra.length) throw new Error(`npm package carries unreleased upkeep readers ${extra.join(", ")}`);
+          '
 
       - name: Publish to npm
         if: steps.registry.outputs.exists != 'true'
