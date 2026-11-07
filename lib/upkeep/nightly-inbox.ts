@@ -490,11 +490,19 @@ export async function pruneMergedNightlyBranches(repo: string, base: string, kee
  * 지난 야간 세션이 클라우드에 남긴 로컬 worktree(`<repo>-worktrees/wt-nightly-YYYYMMDD`)를 지운다(2026-11-07 사용자 결정:
  * 「클라우드쪽도 자동정리」). 하나가 약 0.7 GiB라 /data(20 GiB)가 닷새 만에 84%가 찼다. 아침 보고는 원격 브랜치를 읽으므로
  * 로컬 사본은 세션이 끝나면 쓸모가 없다. `keep`(아직 도는 세션의 브랜치)과 오늘 브랜치, HEAD가 `base`에 들어가지 않은 사본은
- * 남긴다. 커밋하지 않는 결정 기록 `.audit/`는 `<repo 부모>/nightly-audit/<worktree 이름>/`에 옮긴 뒤 지운다(같은 이름이 이미
+ * 남긴다. 그 경로나 하위 경로에 잃을 작업이 남은 세션·시작 중인 세션이 있으면 `reserve`(수동 worktree 삭제와 같은
+ * `reserveWorktreeRemoval`)가 막고, 예약은 확인부터 삭제가 끝날 때까지 잡아 그사이 새 세션이 그 경로로 뜨지 못한다.
+ * 커밋하지 않는 결정 기록 `.audit/`는 `<repo 부모>/nightly-audit/<worktree 이름>/`에 옮긴 뒤 지운다(같은 이름이 이미
  * 있으면 덮지도 지우지도 않는다). 삭제는 `--force` 없는 `git worktree remove`라, 추적 파일을 고쳤거나 다른 추적 안 한 파일이
  * 남은 사본은 git이 거절해 경고로 남는다.
  */
-export async function pruneNightlyWorktrees(repo: string, base: string, keep: ReadonlySet<string>, now: Date): Promise<{ removed: string[]; warnings: string[] }> {
+export async function pruneNightlyWorktrees(
+  repo: string,
+  base: string,
+  keep: ReadonlySet<string>,
+  now: Date,
+  reserve: (worktreePath: string) => { busy: string[]; release: () => void },
+): Promise<{ removed: string[]; warnings: string[] }> {
   const removed: string[] = [], warnings: string[] = [];
   const firstLine = (error: unknown) => {
     const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "";
@@ -520,6 +528,12 @@ export async function pruneNightlyWorktrees(repo: string, base: string, keep: Re
       if (!(error && typeof error === "object" && "code" in error && error.code === 1)) warnings.push(`${path}를 확인하지 못했습니다: ${firstLine(error)}`);
       continue;
     }
+    // 경로를 쓰는 세션 확인과 예약은 한 동기 구간이다. 바쁜 사본은 결정 기록 이동을 포함해 아무것도 건드리지 않는다.
+    const reservation = reserve(path);
+    if (reservation.busy.length) {
+      warnings.push(`${path}를 지우지 않았습니다: 그 경로를 쓰는 세션이 있습니다(${reservation.busy.join(", ")}).`);
+      continue;
+    }
     try {
       // 추적 안 한 결정 기록(`?? .audit/…`) 말고 무엇이든 남았으면(고친 추적 파일 포함) 아무것도 건드리지 않는다.
       const leftovers = (await git(path, ["status", "--porcelain", "--untracked-files=all"])).split("\n").filter((line) => line && !line.startsWith("?? .audit/"));
@@ -541,6 +555,8 @@ export async function pruneNightlyWorktrees(repo: string, base: string, keep: Re
       removed.push(path);
     } catch (error) {
       warnings.push(`${path}를 지우지 못했습니다: ${firstLine(error)}`);
+    } finally {
+      reservation.release();
     }
   }
   return { removed, warnings };

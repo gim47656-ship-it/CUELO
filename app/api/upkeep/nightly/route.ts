@@ -1,7 +1,7 @@
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
-import { type AgentSessionWrapper, getRunningRpcSessionIds, startNewRpcSession } from "@/lib/rpc-manager";
+import { type AgentSessionWrapper, getRunningRpcSessionIds, reserveWorktreeRemoval, startNewRpcSession } from "@/lib/rpc-manager";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
@@ -90,7 +90,8 @@ async function planAndRun(dryRun: boolean) {
         for (const warning of pruned.warnings) log(`branch prune: ${warning}`);
         if (pruned.deleted.length) log(`deleted merged ${pruned.deleted.join(", ")}`);
         // 지난 야간 로컬 worktree 정리(2026-11-07 사용자 결정): 디스크가 작아 하룻밤 사본(약 0.7 GiB)도 남기지 않는다.
-        const cleaned = await pruneNightlyWorktrees(repoOverride, handoffs.base.sha, keep, now);
+        // 그 경로를 쓰는 세션이 있으면 수동 삭제와 같은 예약이 막는다(공개 이슈 #69).
+        const cleaned = await pruneNightlyWorktrees(repoOverride, handoffs.base.sha, keep, now, reserveWorktreeRemoval);
         for (const warning of cleaned.warnings) log(`worktree prune: ${warning}`);
         if (cleaned.removed.length) log(`removed worktrees ${cleaned.removed.join(", ")}`);
       }

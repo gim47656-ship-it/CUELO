@@ -22276,6 +22276,44 @@ export function cueloIsFallbackKeyBillingRejection(
 	}, STATS);
 }
 
+// 18.18.0: only the minified advisor-name helper in the bundle's session scan moved (iFe → pFe). The
+// new candidate is a no-op on the 18.18.0 text and requires it; every older candidate excludes it.
+{
+	const entries = EDITS.filter(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
+	if (entries.length !== 1) throw new Error(`18.18.0 candidate: ${entries.length}/1 entries`);
+	const [advisor] = entries;
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&pFe(c))continue';
+	for (const old of [advisor, ...(advisor.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), bundleSkip];
+	advisor.alternates.push({ file: advisor.file, marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip, requires: bundleSkip });
+
+	// Mnemopi: 18.18.0 rebuilds a changed embedding model by calling embed() on the corpus directly instead of
+	// through scheduleEmbedding (which the e5 entry (6) prefixes), so the rebuilt vectors lost `passage:` and sat
+	// in a different cosine space from new memories and `query:` recalls. Prefix that batch the same way; the probe
+	// text is never stored and stays as upstream wrote it. Older cores have neither line: their primary is a no-op.
+	const STORE = "../pi-mnemopi/src/core/beam/store.ts";
+	const MIGRATE = 'const probe = await embed(["mnemopi embedding probe"]);';
+	const RECONCILE = "export function reconcileEmbeddingModel(beam: BeamMemoryState): void {\n";
+	EDITS.push({
+		file: STORE, marker: RECONCILE, anchor: RECONCILE, patched: RECONCILE, excludes: MIGRATE,
+		alternates: [{
+			file: STORE, requires: MIGRATE,
+			marker: "\t\t\t\t\tconst vectors = await embed(e5Prefixed(\"passage\", chunk.map(item => item.content)));\n",
+			anchor: "\t\t\t\t\tconst vectors = await embed(chunk.map(item => item.content));\n",
+			patched: "\t\t\t\t\tconst vectors = await embed(e5Prefixed(\"passage\", chunk.map(item => item.content)));\n",
+		}],
+	});
+	const IMPORT = 'import { currentEmbeddingModel, embeddingsDisabled } from "../embeddings";\n';
+	EDITS.push({
+		file: STORE, marker: IMPORT, anchor: IMPORT, patched: IMPORT, excludes: MIGRATE,
+		alternates: [{
+			file: STORE, requires: MIGRATE,
+			marker: 'import { currentEmbeddingModel, e5Prefixed, embed, embeddingsDisabled } from "../embeddings";\n',
+			anchor: 'import { currentEmbeddingModel, embed, embeddingsDisabled } from "../embeddings";\n',
+			patched: 'import { currentEmbeddingModel, e5Prefixed, embed, embeddingsDisabled } from "../embeddings";\n',
+		}],
+	});
+}
+
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
 // keep future Node/Bun output identical. Accept only the exact previously emitted
 // helper bodies below, never normalize arbitrary installed source on revert.
