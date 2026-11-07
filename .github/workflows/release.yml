@@ -213,6 +213,27 @@ jobs:
 
       - name: Publish to npm
         if: steps.registry.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
         run: |
+          set -o pipefail
           npm install --global npm@latest
-          npm publish --access public --ignore-scripts
+          # Rekor can store the provenance entry and lose its response; npm's own retry then
+          # gets 409 TLOG_CREATE_ENTRY_ERROR and gives up before uploading the package
+          # (0.10.171). A new `npm publish` signs with a new certificate, so only that error
+          # is retried, after checking that the version did not reach npm anyway.
+          log="$RUNNER_TEMP/npm-publish.log"
+          for attempt in 1 2 3; do
+            if npm publish --access public --ignore-scripts 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if [ "$(npm view "cuelo@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+              echo "::notice::cuelo@$VERSION reached npm despite the publish error"
+              exit 0
+            fi
+            if [ "$attempt" = 3 ] || ! grep -q TLOG_CREATE_ENTRY_ERROR "$log"; then
+              exit 1
+            fi
+            echo "::warning::Sigstore transparency log conflict on attempt $attempt; publishing again"
+            sleep 30
+          done
