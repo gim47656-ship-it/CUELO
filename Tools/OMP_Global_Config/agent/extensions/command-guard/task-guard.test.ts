@@ -16,6 +16,7 @@ import {
   isPathOwned,
   matchBlockedEvalModelBridge,
   matchRelayBrowserOpen,
+  matchUserEgoAppCdp,
   noteOwnershipWrites,
   noteUserRedirect,
   OWNERSHIP_MAIN_WRITER,
@@ -449,6 +450,48 @@ describe("BrowserSpaceGuard", () => {
       expect(await matchRelayBrowserOpen({ language: "py", code }, probe)).toBeUndefined();
       expect(failing.calls).toHaveLength(2);
     }
+  });
+});
+
+describe("UserEgoAppGuard", () => {
+  const userPort = () => "35219\n";
+
+  test("사용자 ego 앱의 포트 파일을 읽거나 지금 그 포트로 접속하는 명령을 막는다", () => {
+    const blocked = [
+      "cat ~/.local/share/ego-lite-gui/chromium-profile/DevToolsActivePort",
+      'p = open(os.path.expanduser("~/.local/share/ego-lite-gui/chromium-profile/DevToolsActivePort")).read()',
+      'const file = join(homedir(), ".local/share/ego-lite-gui", "chromium-profile", "DevToolsActivePort");',
+      "curl -s http://127.0.0.1:35219/json/version",
+      'const ws = new WebSocket("ws://localhost:35219/devtools/browser/abc");',
+      "chromium --remote-debugging-address=[::1]:35219",
+      "import socket; socket.create_connection(('127.0.0.1', 35219))",
+      'await fetch(new URL("/json", `http://localhost:${35219}`));',
+      'const conn = { host: "127.0.0.1", port: 35219 };',
+    ];
+    for (const text of blocked) {
+      const reason = matchUserEgoAppCdp(text, userPort);
+      expect(reason).toMatch(/UserEgoAppGuard/);
+      expect(reason).toMatch(/`ego_browser`/);
+    }
+  });
+
+  test("ego_browser CDP, 다른 포트, 임시 프로필 사본, 프로필 파일 복사는 막지 않는다", () => {
+    const allowed = [
+      "curl -s http://127.0.0.1:32899/json/version",
+      "curl -s http://127.0.0.1:352190/json",
+      "curl -s http://127.0.0.1:3521/json",
+      'const [port] = (await readFile(join(profileDir, "DevToolsActivePort"), "utf8")).split("\\n");',
+      "cp ~/.local/share/ego-lite-gui/chromium-profile/Default/Cookies /tmp/copy.db",
+      "echo 35219",
+    ];
+    for (const text of allowed) expect(matchUserEgoAppCdp(text, userPort)).toBeUndefined();
+  });
+
+  test("사용자 앱 포트를 모르면 포트 접속은 판정하지 않고 포트 파일 경로만 막는다", () => {
+    const noApp = () => undefined;
+    expect(matchUserEgoAppCdp("curl -s http://127.0.0.1:35219/json", noApp)).toBeUndefined();
+    expect(matchUserEgoAppCdp("cat ~/.local/share/ego-lite-gui/chromium-profile/DevToolsActivePort", noApp)).toMatch(/UserEgoAppGuard/);
+    expect(matchUserEgoAppCdp(undefined, userPort)).toBeUndefined();
   });
 });
 

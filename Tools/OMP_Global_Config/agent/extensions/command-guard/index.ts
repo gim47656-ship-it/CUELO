@@ -41,6 +41,7 @@ import {
   hasUnreportedChildren,
   matchBlockedEvalModelBridge,
   matchRelayBrowserOpen,
+  matchUserEgoAppCdp,
   noteUserRedirect,
   noteUserRequestText,
   readCancelledChildIds,
@@ -79,6 +80,16 @@ const WSL_INTEROP = process.platform === "linux" && existsSync("/proc/sys/fs/bin
 
 /** ego lite 설치 여부(프로세스당 한 번). `browser.open`이 든 eval 셀에서만 묻는다. */
 const egoLiteAvailable = createEgoLiteProbe(egoBrowserExec);
+
+/** 사용자 ego lite 앱(Linux `~/.local/bin/ego-lite`)의 DevTools 포트 파일. 다른 PC에는 없다. */
+const USER_EGO_PORT_PATH = join(homedir(), ".local", "share", "ego-lite-gui", "chromium-profile", "DevToolsActivePort");
+function readUserEgoDevToolsPort(): string | undefined {
+  try {
+    return readFileSync(USER_EGO_PORT_PATH, "utf8").split("\n")[0];
+  } catch {
+    return undefined;
+  }
+}
 
 /** eval이 자동으로 고르는 관리 Python 환경(코어 `getPythonEnvDir()` 기본값). WSL(Linux)에만 안내한다. */
 function managedPythonPath(): string | undefined {
@@ -1402,7 +1413,10 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       };
     }
     if (isToolCallEventType<"eval", EvalCallInput>("eval", event)) {
-      const reason = matchBlockedEvalModelBridge(event.input) ?? (await matchRelayBrowserOpen(event.input, egoLiteAvailable));
+      const reason =
+        matchBlockedEvalModelBridge(event.input) ??
+        matchUserEgoAppCdp(event.input.code, readUserEgoDevToolsPort) ??
+        (await matchRelayBrowserOpen(event.input, egoLiteAvailable));
       if (reason) return { block: true, reason };
       return;
     }
@@ -1411,6 +1425,8 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
 
     const powerShellReason = matchPowerShellSyntax(event.input.command);
     if (powerShellReason) return { block: true, reason: powerShellReason };
+    const userEgoAppReason = matchUserEgoAppCdp(event.input.command, readUserEgoDevToolsPort);
+    if (userEgoAppReason) return { block: true, reason: userEgoAppReason };
 
     const sessionCwd = eventSessionCwd(ctx);
     const cwd =

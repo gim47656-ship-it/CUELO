@@ -1116,6 +1116,35 @@ export async function matchRelayBrowserOpen(input: EvalCallInput, egoLiteAvailab
 }
 
 // ============================================================================
+// UserEgoAppGuard: 사용자가 쓰는 ego lite 앱(`ego-lite-gui` 프로필)의 CDP에는 붙지 않는다.
+// 2026-11-08 사용자 승인: 탭 측정이 사용자 앱에 붙어 사용자 화면과 Space를 건드렸다. 막는 것은 그 앱의
+// DevToolsActivePort를 읽는 명령과, 지금 그 파일에 적힌 포트로 접속하는 명령이다. `ego_browser` 도구(별도
+// ego Chromium)와 Xvfb 임시 프로필로 띄운 사본, 프로필 파일 복사는 그대로 둔다.
+// ============================================================================
+
+/** 사용자 ego 앱이 지금 쓰는 DevTools 포트(포트 파일 첫 줄). 파일이 없거나 못 읽으면 undefined. */
+export type UserEgoPortReader = () => string | undefined;
+
+export function matchUserEgoAppCdp(text: unknown, readPort: UserEgoPortReader): string | undefined {
+  if (typeof text !== "string" || text.length === 0) return undefined;
+  let hit = text.includes("ego-lite-gui") && text.includes("DevToolsActivePort");
+  if (!hit) {
+    const port = readPort()?.trim();
+    // 주소와 포트를 따로 넘기는 접속(`socket.create_connection(("127.0.0.1", 35219))`, `{ host, port }`)도
+    // 있어서, 루프백 주소와 그 포트 숫자가 한 명령에 함께 있으면 접속으로 본다.
+    if (port && /^\d{2,5}$/.test(port)) {
+      hit =
+        /127\.0\.0\.1|localhost|::1|0\.0\.0\.0/.test(text) && new RegExp(`(?<!\\d)${port}(?!\\d)`).test(text);
+    }
+  }
+  if (!hit) return undefined;
+  return (
+    "[UserEgoAppGuard] 사용자가 쓰는 ego lite 앱(ego-lite-gui 프로필)의 CDP에는 붙지 않습니다. " +
+    "측정과 시험은 Xvfb와 임시 프로필(EGO_LITE_PROFILE_DIR)로 띄운 사본에서, 브라우저 작업은 `ego_browser` 도구에서 하세요."
+  );
+}
+
+// ============================================================================
 // OwnershipGuard: maker 계열 child 완료 시 소유 경로 밖 변경을 보고한다.
 // 차단하지 않는 advisory 보고이며, git을 못 쓰면 추정하지 않고 unobserved로 남긴다.
 // ============================================================================
