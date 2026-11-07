@@ -327,6 +327,26 @@ export interface CrossReviewFinding {
    * 실패 경로를 한 단계씩 짚었다. needs-run: 재현 방법을 실제로 돌려야만 가려진다. 없는데 probe가 있으면 needs-run으로 읽는다.
    */
   proof?: CrossReviewProofLevel;
+  /** 보조 검토자(modelRoles.crossReviewAdvisory)가 필수 reviewer 뒤 유예 안에 낸 지적만 true(id R<n>-ADV-k). 다른 지적과 똑같이 닫아야 한다. */
+  advisory?: true;
+}
+
+/**
+ * 한 라운드의 보조 검토자 결과(2026-11-07 사용자 결정으로 복구). ok만 그 지적이 라운드 findings에 합쳐졌다. late(유예 안에 답이 없어 끊음)·truncated(출력
+ * 한도 잘림)·error·unparsable·skipped(미설정·probe 라운드·저자나 필수 reviewer와 같은 모델)는 기록만 하며 passable과 통과에 영향이 없고 다음 라운드로 넘어가지 않는다.
+ */
+export interface CrossReviewAdvisoryOutcome {
+  status: "ok" | "late" | "truncated" | "error" | "unparsable" | "skipped";
+  /** 해석한 provider/id(못 풀면 selector). 미설정으로 건너뛰었으면 없다. */
+  model?: string;
+  /** 호출 시작부터 답·실패·끊김까지. 부르지 않았으면 없다. */
+  elapsedMs?: number;
+  /** ok일 때 합친 지적 수. */
+  findings?: number;
+  /** ok가 아닐 때 이유. */
+  reason?: string;
+  /** 답 원문 파일(사본 디렉터리의 raw-advisory.txt). 부분 답이라도 있으면 남긴다. */
+  rawFile?: string;
 }
 
 export type CrossReviewProofLevel = "cited-line" | "reasoned" | "needs-run";
@@ -355,7 +375,7 @@ export interface CrossReviewVerdict {
 export interface CrossReviewProbeResultMeta { findingId: string; command: string; exitCode: number; outputBytes: number; truncated: boolean }
 
 export interface CrossReviewReviewer {
-  /** reviewer 자리. 새 기록은 openai·anthropic(필수)뿐이다. advisory·google은 2026-10-29 전 기록의 자문 자리로 읽기 전용이다. */
+  /** reviewer 자리. 새 기록은 openai·anthropic(필수)뿐이다(보조 검토자는 record.advisory). advisory·google은 2026-10-29 전 기록의 자문 자리로 읽기 전용이다. */
   family: "openai" | "anthropic" | "advisory" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
@@ -403,8 +423,10 @@ export interface CrossReviewRecord {
   verdicts?: CrossReviewVerdict[];
   /** 2회차 diff의 기준이 되는 검토 시점 내용 사본 위치. */
   snapshotDir: string;
-  /** advisory가 아닌(필수) reviewer가 모두 ok여야 true. false면 이 체인은 통과할 수 없다. */
+  /** 필수 reviewer가 모두 ok여야 true. false면 이 체인은 통과할 수 없다. 보조 검토자(advisory)는 이 값을 정하지 않는다. */
   passable: boolean;
+  /** 2026-11-07 이후 라운드: 보조 검토자 결과. 옛 기록에는 없다. */
+  advisory?: CrossReviewAdvisoryOutcome;
 }
 
 export interface CrossReviewResolution {

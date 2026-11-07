@@ -427,6 +427,7 @@ test("a new profile accepts explicitly selected review and document tool roles",
   const selected = {
     crossReviewOpenAI: "openai/fixture-review",
     crossReviewAnthropic: "anthropic/fixture-review",
+    crossReviewAdvisory: "fixture/advisory-review",
     skim: "fixture/reader",
     draft: "fixture/writer",
     ocr: "fixture/vision",

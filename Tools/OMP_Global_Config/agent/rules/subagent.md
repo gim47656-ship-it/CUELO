@@ -683,10 +683,11 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   프로젝트·스타일·디자이너 파일(`.sln`·`.vbproj`·`.csproj`·`.resx`·`.css`·`*.Designer.*` 등)을 빼고 바뀐 줄이 많은
   코드 파일 5개까지만 요구한다. marker나 high-risk가 걸린 파일은 이 제외·상한과 무관하게 요구된다(2026-10-27 사용자 결정).
   Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 2026-10-29 사용자 결정: 상시 자문 reviewer(`crossReviewAdvisory`)와
-  그 대체 slot은 없앴고 필수 검토자 둘만 쓴다. 이 날짜 전 원장의 자문 기록과 그 finding(`R*-ADV-*`, 더 옛 기록은 `R*-GGL-*`)은
-  그대로 읽히며 다른 지적처럼 근거로 닫아야 하고, `review`·`resolve`는 자문을 기다리지 않는다. 필수 검토의 실패를 대신 통과시키지
-  않는다. Main 또는 그 코드를 쓴 Maker가
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 2026-11-07 사용자 결정으로 보조 검토자(`crossReviewAdvisory`)를
+  되살렸다(2026-10-29에 없앴던 slot, 대체 slot은 없다). initial·delta 라운드에서 필수와 함께 부르되 필수가 끝난 뒤 최대 60초만 기다리고,
+  그 안에 온 지적(`R*-ADV-*`)은 다른 지적처럼 근거로 닫아야 한다. 늦음·잘림·실패는 기록만 하고 라운드·`resolve`를 막지 않는다.
+  2026-10-29 전 원장의 자문 기록과 그 finding(`R*-ADV-*`, 더 옛 기록은 `R*-GGL-*`)도 그대로 읽히며 닫아야 한다. 필수 검토의 실패를
+  대신 통과시키지 않는다. Main 또는 그 코드를 쓴 Maker가
   `cross_review` `review`를 호출하며(reviewer 입력은 diff와 수용 조건뿐, 프로필·persona 문구 없음) 이것은
   되살린 reviewer 역할이 아니라 도구다. reviewer의 finding은 자문 증거이므로 Main이 코드로 확인한 뒤
   각각 `cross_review` `resolve`로 `fixed`·`refuted`·`limit` 중 하나와 근거를 남겨 닫는다. `resolve`는

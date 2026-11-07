@@ -1,0 +1,9 @@
+{
+  "id": "argon-preflight",
+  "name": "아르곤 사전 점검",
+  "description": "Main이 Maker를 처음 발주하거나(task·maker_route) 큰 작업의 목표를 세울 때(lab_goal frame) 그 호출을 잠깐 세우고, 사용자 최근 말과 브리프를 modelRoles.preflight 모델(집 PC: Gemini 4 Argon)에 보내 빠진 요구·틀린 가정·더 나은 방법을 받아 Main에게 돌려준다. Main이 반영해 다시 부르면 통과한다. 작업 중 사용자가 방향을 바꾸면(실행 중 끼어든 말 포함) 멈추지 않고 비동기로 물어 결과를 알림으로 넣고, 다음 발주를 다시 점검한다. 그 자리가 없는 PC에서는 아무것도 하지 않고, 실패·60초 초과·비밀값 의심이면 막지 않고 통과한다.",
+  "createdAt": "2026-11-07T08:05:00.000Z",
+  "extension": "index.ts",
+  "tools": ["lab_preflight"],
+  "panel": "panel.html"
+}

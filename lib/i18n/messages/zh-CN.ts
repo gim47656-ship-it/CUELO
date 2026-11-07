@@ -449,6 +449,7 @@ export const zhCNLocale: LocalePlugin = {
     "roles.harness.makerHardCodeSonnet": "Maker · HARD 代码备选",
     "roles.harness.crossReviewOpenAI": "交叉审查 · OpenAI 必需审查（openai / openai-codex）",
     "roles.harness.crossReviewAnthropic": "交叉审查 · Anthropic 必需审查（anthropic）",
+    "roles.harness.crossReviewAdvisory": "交叉审查 · 辅助审查，非阻塞（任意提供商）",
     "roles.harness.skim": "工具 · 多文件源码阅读（skim）",
     "roles.harness.draft": "工具 · 文档草稿撰写（draft）",
     "roles.harness.ocr": "工具 · 图像文字转写（ocr）",

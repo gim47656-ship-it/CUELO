@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 10px; color: #1f2328; }
+  h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .empty { color: #6e7781; }
+</style>
+<h1>아르곤 사전 점검</h1>
+<pre id="out" class="empty">아직 점검한 발주가 없습니다.</pre>
+<script>
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "cuelo-lab:state") return;
+    const out = document.getElementById("out");
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    out.className = lines.length ? "" : "empty";
+    out.textContent = lines.length ? lines.slice().reverse().join("\n\n") : "아직 점검한 발주가 없습니다.";
+  });
+  parent.postMessage({ type: "cuelo-lab:ready" }, "*");
+</script>

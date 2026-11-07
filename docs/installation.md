@@ -171,6 +171,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | --- | --- | --- |
 | `crossReviewOpenAI` | 교차검토의 OpenAI 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
 | `crossReviewAnthropic` | 교차검토의 Anthropic 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `anthropic` 제공자의 모델을 고릅니다. |
+| `crossReviewAdvisory` | 교차검토의 보조 검토자(선택, 기다리지 않음). 필수 검토자가 끝난 뒤 최대 60초만 기다리며, 그 안에 온 지적은 다른 지적처럼 닫습니다. | 어느 제공자의 텍스트 모델이든 고를 수 있습니다. 작성자나 필수 검토자와 같은 모델이면 호출하지 않고, 비워 두면 보조 호출이 없습니다. |
 | `slopReviewOpenAI` | 슬롭 검사 검토자(선택) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. OpenAI 모델이 쓴 글은 이 슬롯 대신 `crossReviewAnthropic`이 검토합니다. 비우면 교차검토 슬롯을 씁니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
