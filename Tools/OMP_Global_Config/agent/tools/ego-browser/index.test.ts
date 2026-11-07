@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, LINUX_VERIFY_UNSUPPORTED, linuxExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
@@ -300,20 +300,40 @@ describe("native Linux host", () => {
 
   test("linuxExec points the SDK host at the running ego browser and forbids launching another Chromium", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ego-linux-"));
-    const saved = { host: process.env.EGO_LITE_HOST, port: process.env.EGO_LITE_CDP_PORT, state: process.env.XDG_STATE_HOME };
+    const saved = { host: process.env.EGO_LITE_HOST, port: process.env.EGO_LITE_CDP_PORT, state: process.env.XDG_STATE_HOME, app: process.env.EGO_LITE_APP_PROFILE_ROOT, root: process.env.EGO_LITE_PROFILE_ROOT };
+    delete process.env.EGO_LITE_PROFILE_ROOT;
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/abc-123" }) });
     try {
       const host = join(dir, "host.mjs");
       writeFileSync(host, `import { readFileSync } from "node:fs";
 let input = ""; for await (const chunk of process.stdin) input += chunk;
-console.log(JSON.stringify({ input, port: readFileSync(process.env.EGO_LITE_PROFILE_DIR + "/DevToolsActivePort", "utf8"), exe: process.env.EGO_BROWSER_EXECUTABLE, state: process.env.EGO_LITE_STATE_PATH }));`);
+const dir = process.env.EGO_LITE_PROFILE_DIR;
+console.log(JSON.stringify({ input, port: dir ? readFileSync(dir + "/DevToolsActivePort", "utf8") : null, exe: process.env.EGO_BROWSER_EXECUTABLE, state: process.env.EGO_LITE_STATE_PATH, root: process.env.EGO_LITE_PROFILE_ROOT }));`);
       process.env.EGO_LITE_HOST = host;
       process.env.EGO_LITE_CDP_PORT = String(server.port);
       process.env.XDG_STATE_HOME = dir;
+      const appRoot = join(dir, "app");
+      process.env.EGO_LITE_APP_PROFILE_ROOT = appRoot;
       const result = await linuxExec(["nodejs"], "console.log(1)", { timeoutMs: 20_000 });
       expect(result.code).toBe(0);
       const seen = JSON.parse(result.stdout);
       expect(seen).toEqual({ input: "console.log(1)", port: `${server.port}\n/devtools/browser/abc-123\n`, exe: "/bin/false", state: join(dir, "cuelo-ego-browser", "state.json") });
+
+      // A running Electron app (bridge file + live DevTools endpoint) takes precedence: the host uses the app's own profile and Spaces.
+      const appProfile = join(appRoot, "chromium-profile");
+      mkdirSync(appProfile, { recursive: true });
+      writeFileSync(join(appProfile, "ego-lite-bridge.json"), "{}");
+      writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\n/devtools/browser/abc-123\n`);
+      // Inherited per-path overrides must not steer the host away from the app's own profile and Space state.
+      process.env.EGO_LITE_PROFILE_DIR = appProfile;
+      process.env.EGO_LITE_STATE_PATH = "sentinel";
+      const app = JSON.parse((await linuxExec(["nodejs"], "2", { timeoutMs: 20_000 })).stdout);
+      delete process.env.EGO_LITE_PROFILE_DIR;
+      delete process.env.EGO_LITE_STATE_PATH;
+      expect(app).toEqual({ input: "2", port: null, exe: "/bin/false", root: appRoot });
+      // A stale bridge file from an app that is gone falls back to the Chromium path.
+      writeFileSync(join(appProfile, "DevToolsActivePort"), "1\n/devtools/browser/gone\n");
+      expect(JSON.parse((await linuxExec(["nodejs"], "3", { timeoutMs: 20_000 })).stdout).root).toBeUndefined();
 
       process.env.EGO_LITE_CDP_PORT = "1";
       const down = await linuxExec(["nodejs"], "1", { timeoutMs: 20_000 });
@@ -323,7 +343,7 @@ console.log(JSON.stringify({ input, port: readFileSync(process.env.EGO_LITE_PROF
       expect((await linuxExec(["nodejs"], "1", { timeoutMs: 20_000 })).code).toBe(127);
     } finally {
       server.stop(true);
-      for (const [key, value] of [["EGO_LITE_HOST", saved.host], ["EGO_LITE_CDP_PORT", saved.port], ["XDG_STATE_HOME", saved.state]] as const) {
+      for (const [key, value] of [["EGO_LITE_HOST", saved.host], ["EGO_LITE_CDP_PORT", saved.port], ["XDG_STATE_HOME", saved.state], ["EGO_LITE_APP_PROFILE_ROOT", saved.app], ["EGO_LITE_PROFILE_ROOT", saved.root]] as const) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }

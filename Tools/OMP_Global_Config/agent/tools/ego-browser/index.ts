@@ -269,28 +269,64 @@ export function linuxHostPath(): string {
   return process.env.EGO_LITE_HOST || join(homedir(), "Applications", "ego-lite-linux-source", "platform", "linux", "ego-browser.mjs");
 }
 
+/** Electron판 ego 앱의 프로필 루트(`~/.local/bin/ego-lite` 런처와 같은 값). `EGO_LITE_APP_PROFILE_ROOT`로 바꿀 수 있다. */
+export function linuxAppProfileRoot(): string {
+  return process.env.EGO_LITE_APP_PROFILE_ROOT || join(homedir(), ".local", "share", "ego-lite-gui");
+}
+
+/** `/json/version`이 답하면 브라우저 엔드포인트 경로를, 아니면 오류를 돌려준다. */
+async function cdpBrowserPath(port: number): Promise<string> {
+  const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3_000) });
+  const version: unknown = await response.json();
+  const endpoint = version && typeof version === "object" && "webSocketDebuggerUrl" in version ? version.webSocketDebuggerUrl : undefined;
+  if (typeof endpoint !== "string") throw new Error("/json/version에 webSocketDebuggerUrl이 없다");
+  return new URL(endpoint).pathname;
+}
+
+/** Electron 앱이 떠 있으면(브리지 파일과 살아 있는 DevToolsActivePort) 그 프로필 폴더를 돌려준다. */
+async function runningAppProfileDir(): Promise<string | undefined> {
+  const profileDir = join(linuxAppProfileRoot(), "chromium-profile");
+  if (!existsSync(join(profileDir, "ego-lite-bridge.json"))) return undefined;
+  try {
+    const port = Number(readFileSync(join(profileDir, "DevToolsActivePort"), "utf8").split("\n")[0]);
+    if (!Number.isInteger(port) || port <= 0) return undefined;
+    await cdpBrowserPath(port);
+    return profileDir;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Linux 실행기. `~/.local/bin/ego-browser`(Electron `--cli`)는 Electron 자신을 브라우저로 따로 띄워 사용자 창에 붙지 않는다.
- * 그래서 SDK 호스트 모듈을 node로 직접 돌리고, 호스트가 읽는 `DevToolsActivePort`를 사용자 ego Chromium의 CDP로 써 둔다.
- * 공간은 Target.createBrowserContext로 격리된 새 창에 열린다(사용자 창·PWA에 탭을 붙이지 않는다, 사용자 결정 2026-11-02).
- * 그 브라우저가 연결 직전에 꺼지면 호스트가 이 폴더로 빈 Chromium을 새로 띄우려 한다. `/bin/false`로 그 실행을 막는다.
+ * Linux 실행기. SDK 호스트 모듈을 node로 직접 돌린다.
+ * Electron판 ego 앱이 떠 있으면 그 앱에 붙는다. 공간은 앱 안의 Agent Space로 열리고 사용자 탭은 앞에 그대로 남는다(사용자 결정 2026-11-07).
+ * 앱이 없으면 사용자 ego Chromium(CDP)에 붙는다. 호스트가 읽는 `DevToolsActivePort`를 그 CDP로 써 두고,
+ * 공간은 Target.createBrowserContext로 격리된 새 창에 열린다(사용자 결정 2026-11-02).
+ * 어느 쪽이든 연결 직전에 브라우저가 꺼지면 호스트가 빈 Chromium을 새로 띄우려 한다. `/bin/false`로 그 실행을 막는다.
  */
 export const linuxExec: Exec = async (_args, input, options) => {
   const host = linuxHostPath();
   const fail = (stderr: string): ExecResult => ({ code: 127, stdout: "", stderr, killed: false });
   if (!existsSync(host)) return fail(`ego-browser SDK 호스트가 없다: ${host} (EGO_LITE_HOST로 지정할 수 있다)`);
+  const appProfileDir = await runningAppProfileDir();
+  if (appProfileDir) {
+    // 앱 자신의 프로필·Space 기록을 쓰게, 상속된 개별 경로 지정은 넘기지 않는다.
+    const { EGO_LITE_PROFILE_DIR: _profileDir, EGO_LITE_STATE_PATH: _statePath, ...inherited } = process.env;
+    return spawnScript("node", [host], input, options, {
+      ...inherited,
+      EGO_LITE_PROFILE_ROOT: linuxAppProfileRoot(),
+      EGO_BROWSER_EXECUTABLE: "/bin/false",
+      EGO_LITE_LAUNCH_TIMEOUT_MS: "1000",
+    });
+  }
   // 사용자의 ego Chromium(`ego-profile-browser`)이 여는 CDP 포트. opencue도 여기에 붙는다.
   const configuredPort = Number(process.env.EGO_LITE_CDP_PORT || 32899);
   const port = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 32899;
   let browserPath: string;
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3_000) });
-    const version: unknown = await response.json();
-    const endpoint = version && typeof version === "object" && "webSocketDebuggerUrl" in version ? version.webSocketDebuggerUrl : undefined;
-    if (typeof endpoint !== "string") throw new Error("/json/version에 webSocketDebuggerUrl이 없다");
-    browserPath = new URL(endpoint).pathname;
+    browserPath = await cdpBrowserPath(port);
   } catch (error) {
-    return fail(`ego 브라우저 CDP 127.0.0.1:${port}에 연결할 수 없다(ego-profile-browser가 떠 있지 않다): ${error instanceof Error ? error.message : String(error)}`);
+    return fail(`ego 브라우저 CDP 127.0.0.1:${port}에 연결할 수 없다(ego 앱도 ego-profile-browser도 떠 있지 않다): ${error instanceof Error ? error.message : String(error)}`);
   }
   const stateDir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "cuelo-ego-browser");
   mkdirSync(stateDir, { recursive: true });
