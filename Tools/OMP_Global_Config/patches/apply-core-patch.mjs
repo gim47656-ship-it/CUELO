@@ -1780,6 +1780,19 @@ const EDITS = [
 			}],
 	},
 	{
+		// CUELO 스티어링 안전 도구 선언(2026-11-07). 위 스티어링 분기가 읽는다. 동작 본문은 파일 끝 steeringSafe 블록.
+		file: "../pi-agent-core/src/types.ts",
+		marker: "\tsteeringSafe?: boolean;",
+		anchor: "\thandlesToolInterrupt?: boolean;\n",
+		patched: "\thandlesToolInterrupt?: boolean;\n\t/**\n\t * CUELO: side-effect-free bookkeeping (e.g. the goal lane) that still runs\n\t * when user steering arrived while its response was generated. Every other\n\t * unstarted call of that response is skipped.\n\t */\n\tsteeringSafe?: boolean;\n",
+	},
+	{
+		file: "src/extensibility/extensions/types.ts",
+		marker: "\tsteeringSafe?: boolean;",
+		anchor: "\t/** Authoritative originating file for a discovered custom-tool module. */\n\tsourcePath?: string;\n",
+		patched: "\t/** Authoritative originating file for a discovered custom-tool module. */\n\tsourcePath?: string;\n\t/** CUELO: run even when user steering arrived during the response; side-effect-free bookkeeping only. */\n\tsteeringSafe?: boolean;\n",
+	},
+	{
 		file: "../pi-agent-core/src/agent-loop.ts",
 		marker: "hasNewUserSteering?: () => boolean,",
 		anchor: "\tcanDispatchFinalToolCalls?: (message: AssistantMessage) => boolean,\n): Promise<AssistantMessage> {",
@@ -22296,6 +22309,47 @@ for (const marker of ["async function learnSimilarHint(", "// HANSE: recall fact
 	verify.patched = verify.patched.replace(web, () => "  - Web: on an ego lite PC (the `ego_browser` tool runs), an ego TaskSpace via `ego_browser` (`profile: \"verify\"` for CUELO screens); elsewhere `browser.open` tab, direct helpers for actions, `tab.run` for custom JS; visual proof; `tab.close`. No tests unless existing suite breaks.\n");
 }
 
+// 2026-11-07 사용자 요청 「스티어링 메시지가 응답 중간에 와도 목표 레인 플러그인이 동작하게」: 응답 생성 중 사용자 steer 가 오면
+// 위 스티어링 분기(marker "18.3.0 keeps the run-loop tool result branch inline")가 시작 안 된 호출을 전부 건너뛰어 goal-lane 의
+// lab_goal frame 이 세 번 사라졌다. 도구가 `steeringSafe: true`(부작용 없는 기록용)를 선언하면 그 호출만 평소 executeToolCalls 경로
+// (검증·beforeToolCall/확장 tool_call·이벤트·결과)로 한 호출씩 실행해 호출 순서를 지키고, 나머지 호출의 건너뜀 문구와
+// hasMoreToolCalls = true 는 그대로 둔다. 이미 시작한 speculative 호출(settleStartedForSteering)이 먼저다. 현재 설치되는 18.3.1+
+// 후보만 고친다(18.3.0 primary 는 더 이상 설치되지 않는다). 배포된 옛 본문은 legacyPatched 로 두어 재적용이 새 본문으로 올린다.
+// 검증: core-steering-safe-test.ts.
+{
+	const steering = EDITS.find(entry => entry.file === "../pi-agent-core/src/agent-loop.ts" && entry.marker === "18.3.0 keeps the run-loop tool result branch inline");
+	const live = steering?.alternates?.find(candidate => candidate.marker === "// 18.3.1 tool results are settled in the outer run loop.");
+	const loop = "\t\t\t\t\tfor (const toolCall of toolCalls) {\n\t\t\t\t\t\tconst actual = startedForSteering?.get(toolCall.id);\n";
+	const skip = "\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tconst result = createAbortedToolResult(\n";
+	const tail = "\t\t\t\t\thasMoreToolCalls = true;\n\t\t\t\t} else if (softNonCompliant";
+	const once = (text, part) => text.split(part).length === 2;
+	if (!live || live.legacyPatched !== undefined || !once(live.patched, loop) || !once(live.patched, skip) || !once(live.patched, tail)) {
+		throw new Error("steeringSafe 스티어링 분기 후보를 만들 수 없다");
+	}
+	live.legacyPatched = live.patched;
+	live.patched = live.patched
+		.replace(loop, () => `\t\t\t\t\tconst steeringSafeContext: (string | undefined)[] = [];\n${loop}`)
+		.replace(skip, () => `\t\t\t\t\t\t} else if (resolveToolForCall(currentContext.tools, toolCall, config.resolveFallbackTool)?.steeringSafe === true) {
+							// CUELO: a steeringSafe tool (side-effect-free bookkeeping such as
+							// the goal lane) still runs through ordinary dispatch: validation,
+							// hooks, events and result. One call per batch keeps call order.
+							const executed = await executeToolCalls(
+								currentContext, { ...message, content: [toolCall] }, signal, stream, config, telemetry, invokeAgentSpan,
+								[...liveAccepted, ...liveDeferred],
+							);
+							for (const result of executed.toolResults) {
+								currentContext.messages.push(result);
+								newMessages.push(result);
+								toolResults.push(result);
+							}
+							steeringSafeContext.push(executed.additionalContext);
+${skip}`)
+		.replace(tail, () => `\t\t\t\t\tconst steeringSafeInjected = injectExecutionAdditionalContext(
+						currentContext, newMessages, stream, joinAdditionalContext(steeringSafeContext),
+					);
+					if (steeringSafeInjected) additionalMessages.push(steeringSafeInjected);
+${tail}`);
+}
 
 
 /**

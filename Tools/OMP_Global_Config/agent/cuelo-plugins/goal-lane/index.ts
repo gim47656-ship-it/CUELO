@@ -505,6 +505,8 @@ export default function goalLane(pi: ExtensionAPI): void {
     name: "lab_goal",
     label: "Goal lane",
     loadMode: "essential",
+    // Bookkeeping only: the core runs this call even when user steering arrived mid-response (apply-core-patch steeringSafe).
+    steeringSafe: true,
     description:
       "요청 뒤의 목표를 실행과 완료 판단에 연결한다. op frame: goal(목적), explicit(사용자가 한 말 그대로의 조건), assumptions(Main이 더한 조건), deliverables(끝에 있어야 할 것과 외부 전문가가 납득할 확인 방법), size(small|normal|deep). explicit 항목은 이 세션의 사용자 원문과 대조해(부정·인용한 말은 판정기가 가려) 사용자가 말하지 않은 것은 assumptions로 옮긴다. op evidence: id와 kind(file|command|url|observation)·value로 근거를 남기면 플러그인이 파일 존재·이 세션에서 실행한 bash 종료 코드·URL 응답·vision read 결과로 확인하고, 확인하지 못한 것은 자기 보고로 남긴다. op status: 현재 상태. 차단 없음.",
     parameters: z.object({
