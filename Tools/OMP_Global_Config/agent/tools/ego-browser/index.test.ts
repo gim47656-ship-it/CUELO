@@ -331,6 +331,25 @@ console.log(JSON.stringify({ input, port: dir ? readFileSync(dir + "/DevToolsAct
       delete process.env.EGO_LITE_PROFILE_DIR;
       delete process.env.EGO_LITE_STATE_PATH;
       expect(app).toEqual({ input: "2", port: null, exe: "/bin/false", root: appRoot });
+      // A reused live port with a different browser identity must not suppress Chromium fallback.
+      writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\n/devtools/browser/closed-app\n`);
+      const reused = JSON.parse((await linuxExec(["nodejs"], "reused", { timeoutMs: 20_000 })).stdout);
+      expect(reused.root).toBeUndefined();
+      expect(reused.port).toBe(`${server.port}\n/devtools/browser/abc-123\n`);
+      // A CRLF file naming the same browser still selects the live app.
+      writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\r\n/devtools/browser/abc-123\r\n`);
+      expect(JSON.parse((await linuxExec(["nodejs"], "crlf", { timeoutMs: 20_000 })).stdout).root).toBe(appRoot);
+      // Without a browser path the app cannot be identified, so the Chromium path is used.
+      for (const content of [`${server.port}\n`, `${server.port}\n  \n`]) {
+        writeFileSync(join(appProfile, "DevToolsActivePort"), content);
+        expect(JSON.parse((await linuxExec(["nodejs"], "no-path", { timeoutMs: 20_000 })).stdout).root).toBeUndefined();
+      }
+      // Chromium writes "%d\n%s" with no trailing newline; that live app is still selected.
+      writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\n/devtools/browser/abc-123`);
+      expect(JSON.parse((await linuxExec(["nodejs"], "unterminated", { timeoutMs: 20_000 })).stdout).root).toBe(appRoot);
+      // A non-numeric port line is never trusted.
+      writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}x\n/devtools/browser/abc-123\n`);
+      expect(JSON.parse((await linuxExec(["nodejs"], "bad-port", { timeoutMs: 20_000 })).stdout).root).toBeUndefined();
       // A stale bridge file from an app that is gone falls back to the Chromium path.
       writeFileSync(join(appProfile, "DevToolsActivePort"), "1\n/devtools/browser/gone\n");
       expect(JSON.parse((await linuxExec(["nodejs"], "3", { timeoutMs: 20_000 })).stdout).root).toBeUndefined();

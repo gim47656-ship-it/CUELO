@@ -288,9 +288,10 @@ async function runningAppProfileDir(): Promise<string | undefined> {
   const profileDir = join(linuxAppProfileRoot(), "chromium-profile");
   if (!existsSync(join(profileDir, "ego-lite-bridge.json"))) return undefined;
   try {
-    const port = Number(readFileSync(join(profileDir, "DevToolsActivePort"), "utf8").split("\n")[0]);
-    if (!Number.isInteger(port) || port <= 0) return undefined;
-    await cdpBrowserPath(port);
+    const [portText, browserPath] = readFileSync(join(profileDir, "DevToolsActivePort"), "utf8").split(/\r?\n/);
+    const port = Number(portText);
+    if (!Number.isInteger(port) || port <= 0 || !browserPath?.trim()) return undefined;
+    if (await cdpBrowserPath(port) !== browserPath) return undefined;
     return profileDir;
   } catch {
     return undefined;
