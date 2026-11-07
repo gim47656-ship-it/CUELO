@@ -40,6 +40,29 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…(${text.length - max}자 생략)`;
 }
 
+/**
+ * The last six user turns within `max` characters. The budget fills from the newest turn, so long earlier turns never
+ * push out the latest instruction (issue #72); the kept turns stay oldest first under their numbers, and a leading line
+ * counts the earlier turns left out.
+ */
+function recentTurns(turns: readonly string[], max: number): string {
+  const recent = turns.slice(-6);
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const line = `(${i + 1}) ${recent[i]}`;
+    const cost = line.length + (kept.length ? 1 : 0);
+    if (used + cost > max) {
+      if (!kept.length) kept.push(clip(line, max));
+      break;
+    }
+    kept.unshift(line);
+    used += cost;
+  }
+  const dropped = recent.length - kept.length;
+  return dropped > 0 ? [`…(앞선 발언 ${dropped}개 생략)`, ...kept].join("\n") : kept.join("\n");
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -103,8 +126,6 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     try { ctx.ui.setWidget(WIDGET, history); } catch { /* panel optional */ }
   };
 
-  const recentUser = (): string => clip(userTurns.slice(-6).map((t, i) => `(${i + 1}) ${t}`).join("\n"), MAX_USER);
-
   /** Whether this PC set `modelRoles.preflight`; an unset or unreadable slot keeps the plugin silent. */
   async function slotSet(ctx: ExtensionContext): Promise<boolean> {
     try {
@@ -118,7 +139,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
 
   async function ask(ctx: ExtensionContext, plan: string, extra: string, timeoutMs: number, signal?: AbortSignal): Promise<Advice> {
     const t0 = Date.now();
-    const user = recentUser();
+    const user = recentTurns(userTurns, MAX_USER);
     const prompt = `# 사용자의 최근 말\n${user || "(기록 없음)"}\n\n${clip(plan, MAX_PLAN)}${extra ? `\n\n${extra}` : ""}`;
     if (SECRET.test(prompt)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다", ms: 0 };
     try {

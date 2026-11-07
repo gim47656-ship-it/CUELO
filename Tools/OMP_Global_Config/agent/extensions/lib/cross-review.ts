@@ -2496,7 +2496,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   // graceMs까지만 더 기다린다(2026-11-07 사용자 결정 「기다리지 않음」). 그때도 답이 없으면 끊고 late로 기록만 하며 다음 라운드로 넘기지 않는다.
   const graceMs = deps.advisoryGraceMs ?? ADVISORY_GRACE_MS;
   const advisor = deps.advisory;
-  const chainAuthors = (previous ? chain[0]!.authors : input.authors).map((author) => (author.trim().toLowerCase() === "main" ? deps.mainModel ?? "" : author.trim())).filter(Boolean);
+  // Every round's authors count, this round's included (issue #71). A recorded "main" keeps the model it stood for then; only
+  // records written before that field existed fall back to the current session model.
+  const chainAuthors = [...chain.map((item) => [item.authors, item.mainModel ?? deps.mainModel] as const), [input.authors, deps.mainModel] as const]
+    .flatMap(([authors, main]) => authors.map((author) => (author.trim().toLowerCase() === "main" ? main ?? "" : author.trim())))
+    .filter(Boolean);
   const advisorySkip = !advisor ? `modelRoles.${ADVISORY_SLOT} is not configured`
     : probeRound ? "probe round: the advisory reviewer is asked on initial and delta rounds only"
     : chainAuthors.some((author) => isSameModel(author, advisor.model)) ? `the advisory model ${advisor.model} is an author of this chain`
@@ -2636,7 +2640,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const record: CrossReviewRecord = {
     type: "cross-review", ts: now().toISOString(), reviewId, sessionId: deps.sessionId, root, round,
     ...(previous ? { previousReviewId: previous.reviewId } : {}),
-    authors: input.authors, highRisk: input.highRisk === true, triggers: [...triggers].sort(),
+    authors: input.authors, ...(deps.mainModel && input.authors.some((author) => author.trim().toLowerCase() === "main") ? { mainModel: deps.mainModel } : {}),
+    highRisk: input.highRisk === true, triggers: [...triggers].sort(),
     files: reviewedFiles, ...(inputEntries.length > 0 ? { inputs: inputEntries.map(({ path, blob }) => ({ path, blob })) } : {}), skipped, ...(redacted.length > 0 ? { redacted } : {}), reviewers, findings, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), snapshotDir, passable, advisory,
   };
   if (!deps.append(record)) throw new Error(`The review ran but could not be recorded in the routing ledger (${reviewId}); it cannot be resolved. Re-run it.`);

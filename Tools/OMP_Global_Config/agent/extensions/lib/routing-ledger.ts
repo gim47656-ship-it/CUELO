@@ -404,6 +404,8 @@ export interface CrossReviewRecord {
   round: number;
   previousReviewId?: string;
   authors: string[];
+  /** The model `"main"` in authors stood for when this round ran (the session's model then). Older records lack it. */
+  mainModel?: string;
   highRisk: boolean;
   /** 변경 줄이 걸린 trigger marker id 목록(정보용). */
   triggers: string[];

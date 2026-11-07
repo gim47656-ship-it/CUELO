@@ -204,4 +204,33 @@ describe("보조 slot이 없거나 쓸 수 없는 자리면 부르지 않는다"
     expect(same.advisory).toMatchObject({ status: "skipped" });
     expect(t.advisoryCalls).toBe(0);
   });
+
+  test("#71: delta 라운드의 저자가 보조 모델이면 1회차 저자가 달라도 그 라운드는 부르지 않는다", async () => {
+    const env = repo();
+    const t = trace();
+    const d = deps(env, t, { advisor: { ms: 10, text: finding("self review") } });
+    const first = await runReview(input, d, signal);
+    expect(t.advisoryCalls).toBe(1);
+    writeFileSync(join(env.work, "a.ts"), "import { rmSync } from \"node:fs\";\nrmSync(\"./x\");\n");
+    const delta = await runReview({ files: [], acceptance: "", authors: [ARGON], previousReviewId: first.reviewId }, d, signal);
+    expect(t.advisoryCalls).toBe(1);
+    expect(delta.advisory).toMatchObject({ status: "skipped" });
+    expect(delta.advisory?.reason).toContain("author");
+    expect(delta.findings.filter((item) => item.advisory)).toEqual([]);
+  });
+
+  test("#71: 기록된 \"main\"은 그때 세션 모델로 남아, 세션 모델이 바뀐 뒤 이어도 보조 모델을 저자로 본다", async () => {
+    const env = repo();
+    const t = trace();
+    const d = deps(env, t, { advisor: { ms: 10, text: finding("self review") } });
+    d.mainModel = ARGON;
+    const first = await runReview({ ...input, authors: ["main"] }, d, signal);
+    expect(first.advisory).toMatchObject({ status: "skipped" });
+    writeFileSync(join(env.work, "a.ts"), "import { rmSync } from \"node:fs\";\nrmSync(\"./x\");\n");
+    d.mainModel = OPUS;
+    const delta = await runReview({ files: [], acceptance: "", authors: ["main"], previousReviewId: first.reviewId }, d, signal);
+    expect(t.advisoryCalls).toBe(0);
+    expect(delta.advisory).toMatchObject({ status: "skipped" });
+    expect(delta.findings.filter((item) => item.advisory)).toEqual([]);
+  });
 });

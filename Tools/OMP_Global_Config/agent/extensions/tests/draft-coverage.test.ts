@@ -333,6 +333,27 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     }
   });
 
+  // 이슈 #70: 태그가 있는 조각에서 `<p>`와 `</p>` 사이 줄의 `//`는 주석이 아니라 화면 글이고, `${…}` 안에 직접 쓴 문자열도 화면 문구다.
+  test.each([
+    ["multiline HTML body line starting with //", ["<p>", `// ${DIRECT.join(" ")}`, "</p>"]],
+    ["string literal inside a template interpolation", [`element.textContent = \`\${ready ? "${DIRECT.join(" ")}" : ""}\`;`]],
+    ["interpolated literal between a prefix and a suffix", [`element.textContent = \`Notice: \${ready ? "${DIRECT.join(" ")}" : ""} End.\`;`]],
+  ])("#70: %s blocks undrafted prose on the first edit", (_name, lines) => {
+    const s = session(workdir());
+    s.input();
+    expect(s.call("edit", { input: `[report.html#AB12]\nPUT >1:\n+${lines.join("\n+")}` })?.block).toBe(true);
+  });
+
+  test("#70: 태그가 섞인 조각에서도 <script> 안쪽 코드·주석 줄은 새 글로 세지 않는다", () => {
+    const comment = `// ${DIRECT[0]}`;
+    expect(proseBlocks(["  const ready = true;", comment, "</script>", `<p>${DRAFTED[0]}</p>`].join("\n"), "index.html")).toEqual([DRAFTED[0]]);
+    expect(proseBlocks([`<p>${DRAFTED[0]}</p>`, "<script>", comment, "  const ready = true;"].join("\n"), "index.html")).toEqual([DRAFTED[0]]);
+    // 교차검토 R1-OAI-2·3: `<script-panel>` 같은 사용자 정의 요소 안 글은 본문이고, `${…}` 안 주석의 따옴표는 문자열이 아니다.
+    expect(proseBlocks(`<script-panel>\n${comment}\n</script-panel>`, "index.html").join("\n")).toContain(DIRECT[0]);
+    expect(scriptLineText('const s = `${ready /* "This is only a code comment" */}`;')).toBe("");
+    expect(scriptLineText('const s = `${x // "comment words"\u2028 ? "Visible words here" : ""}`;')).toBe("Visible words here");
+  });
+
   // 2026-11-05~06 가계부 대시보드(doc/history/2026/11/07-upkeep-check-1748): 태그 없이 <script> 안쪽만 고친 edit의 코드·주석·CSS 줄을
   // 새 글로 세어 여섯 번 멈췄다. 코드 줄은 빼고, 그 줄 문자열에 든 보이는 문구와 따옴표 밖 한국어 줄은 계속 멈춘다.
   test("HTML 스크립트 코드·주석·CSS 줄은 새 글로 세지 않고, 그 안의 화면 문구는 계속 멈춘다", () => {

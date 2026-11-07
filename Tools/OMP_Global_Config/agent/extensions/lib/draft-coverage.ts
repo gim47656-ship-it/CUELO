@@ -34,25 +34,37 @@ const CSS_RULE_LINE = new RegExp(String.raw`^(?![^\n]*["'\x60<>])\s*[^\s{}][^{}]
 const HTML_TAG = /<\/?[a-z][a-z\d-]*(?:\s[^<>]*)?\/?>/i;
 const LITERAL = /(["'])(?:\\.|(?!\1)[^\\\n])*\1|`(?:\\.|[^\\`])*`/g;
 /**
- * `${…}` 자리를 빈칸으로 바꾼다. 중괄호 깊이를 세어 중첩된 객체 리터럴도 한 자리로 지우고, 식 안 문자열의 괄호는 세지 않는다.
- * 닫히지 않은 자리는 뒤 문구를 삼키지 않도록 그대로 둔다(교차검토 R1-OAI-3, R2-OAI-3).
+ * `${…}` 자리를 그 식 안에 직접 쓴 문자열(글자·숫자가 든 것)로 바꾼다. 식의 코드(이름·호출·연산자)는 버리고, `${ready ? "안내 문구" : ""}`의
+ * 문구는 화면 글일 수 있어 남긴다(이슈 #70). 식 안 템플릿은 같은 방식으로 편다. 중괄호 깊이를 세어 중첩된 객체 리터럴도 한 자리로 보고,
+ * 식 안 문자열의 괄호는 세지 않는다. 닫히지 않은 자리는 뒤 문구를 삼키지 않도록 그대로 둔다(교차검토 R1-OAI-3, R2-OAI-3).
  */
-function dropInterpolations(value: string): string {
+function flattenInterpolations(value: string): string {
   let out = "";
   let i = 0;
   while (i < value.length) {
     if (value[i] !== "$" || value[i + 1] !== "{") { out += value[i++]; continue; }
     let depth = 0;
     let j = i + 1;
+    const kept: string[] = [];
     for (; j < value.length; j++) {
       const ch = value[j]!;
       if (ch === '"' || ch === "'" || ch === "`") {
+        const start = j + 1;
         for (j++; j < value.length && value[j] !== ch; j++) if (value[j] === "\\") j++;
+        const literal = ch === "`" ? flattenInterpolations(value.slice(start, j)) : value.slice(start, j);
+        if (/[\p{L}\p{N}]/u.test(literal)) kept.push(literal);
+      } else if (ch === "/" && (value[j + 1] === "*" || value[j + 1] === "/")) {
+        // 식 안 주석의 따옴표는 문자열이 아니다(교차검토 R1-OAI-3). 줄 주석은 JavaScript 줄 끝 문자 넷 중 하나에서 끝나고(R2-OAI-1),
+        // 닫히지 않은 주석은 닫히지 않은 자리로 남는다.
+        const block = value[j + 1] === "*";
+        const rest = value.slice(j + 2);
+        const end = block ? rest.indexOf("*/") : rest.search(/[\n\r\u2028\u2029]/);
+        j = end < 0 ? value.length : j + 2 + end + (block ? 1 : 0);
       } else if (ch === "{") depth++;
       else if (ch === "}" && --depth === 0) break;
     }
     if (j >= value.length) return out + value.slice(i);
-    out += " ";
+    out += ` ${kept.join(" ")} `;
     i = j + 1;
   }
   return out;
@@ -72,7 +84,7 @@ export function scriptLineText(line: string): string {
   // 따옴표 밖이 ASCII뿐인 줄은 코드 표시가 있거나 줄 끝 주석이 붙었으면 코드다(R2-OAI-2: `render() // "…"`).
   if (cut < 0 && !/[;={}]|\$\(/.test(code)) return line;
   return literalStrings(source)
-    .map((value) => dropInterpolations(value).replace(/\s+/g, " ").trim())
+    .map((value) => flattenInterpolations(value).replace(/\s+/g, " ").trim())
     .filter((value) => /\s|(?![A-Za-z])\p{L}/u.test(value))
     .join("\n");
 }
@@ -152,12 +164,22 @@ export function shingles(text: string, into = new Set<string>()): Set<string> {
 export function proseBlocks(source: string, path: string): string[] {
   let lines: string[];
   if (MARKUP_FILE.test(path)) {
-    const fragment = /<[a-z!/][^>]*>/i.test(source) ? source.split(/\r?\n/).filter((line) => !CSS_RULE_LINE.test(line)).join("\n") : source
+    const tagged = /<[a-z!/][^>]*>/i.test(source);
+    const fragment = tagged ? source.split(/\r?\n/).filter((line) => !CSS_RULE_LINE.test(line)).join("\n") : source
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split(/\r?\n/)
       .filter((line) => !CSS_LINE.test(line))
       .join("\n");
-    const text = htmlText(fragment.split(/\r?\n/).map((line) => scriptLineText(line)).join("\n").replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " "));
+    // 코드 줄 필터는 script·style 안쪽 줄에만 쓴다(이슈 #70: `<p>`와 `</p>` 사이 줄의 `// 문구`는 화면 글이다). 태그 없는 조각은 그 안쪽을
+    // 고친 edit로 보고(2026-11-07 결정), 태그가 있으면 여는 태그 뒤 줄과, 조각이 닫는 태그로 먼저 시작한 경우 그 앞 줄을 안쪽으로 본다.
+    // 태그 이름은 끝까지 맞춘다: `<script-panel>` 같은 사용자 정의 요소는 script가 아니다(교차검토 R1-OAI-2).
+    let inCode = !tagged || /<(\/?)(?:script|style)(?=[\s/>])/i.exec(fragment)?.[1] === "/";
+    const kept = fragment.split(/\r?\n/).map((line) => {
+      const out = inCode ? scriptLineText(line) : line;
+      for (const tag of line.matchAll(/<(\/?)(?:script|style)(?=[\s/>])/gi)) inCode = tag[1] !== "/";
+      return out;
+    });
+    const text = htmlText(kept.join("\n").replace(/<(pre|code)\b[\s\S]*?<\/\1>/gi, " "));
     lines = text.split("\n").map((line) => line.replace(/^\[attr\] /, ""));
   } else {
     lines = [];
