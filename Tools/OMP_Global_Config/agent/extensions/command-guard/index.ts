@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { connect } from "node:net";
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -18,7 +19,7 @@ import {
 import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
-import { defaultExec as egoBrowserExec } from "../../tools/ego-browser/index";
+import { defaultExec as egoBrowserExec, isNativeLinux, linuxHostPath } from "../../tools/ego-browser/index";
 
 import { isNotRepositoryDiagnostic, matchBlockedCommand, WRANGLER_CONFIG_NAMES, type WranglerPathUse } from "./matcher";
 import { interopHint, windowsOutputCommand } from "./interop-hint";
@@ -33,6 +34,7 @@ import {
   bindWriterOwners,
   claimSharedWriters,
   createEgoLiteProbe,
+  createLinuxEgoProbe,
   createOwnershipState,
   createTaskGuardState,
   createWriterClaimState,
@@ -78,9 +80,6 @@ import {
 /** WSL에서 Windows 실행 파일을 부를 수 있는지(binfmt interop 등록). Windows 출력 변환을 이때만 붙인다. */
 const WSL_INTEROP = process.platform === "linux" && existsSync("/proc/sys/fs/binfmt_misc/WSLInterop");
 
-/** ego lite 설치 여부(프로세스당 한 번). `browser.open`이 든 eval 셀에서만 묻는다. */
-const egoLiteAvailable = createEgoLiteProbe(egoBrowserExec);
-
 /** 사용자 ego lite 앱(Linux `~/.local/bin/ego-lite`)의 DevTools 포트 파일. 다른 PC에는 없다. */
 const USER_EGO_PORT_PATH = join(homedir(), ".local", "share", "ego-lite-gui", "chromium-profile", "DevToolsActivePort");
 function readUserEgoDevToolsPort(): string | undefined {
@@ -90,6 +89,34 @@ function readUserEgoDevToolsPort(): string | undefined {
     return undefined;
   }
 }
+
+/** ego Chromium CDP(`ego_browser` Linux 경로의 대체 대상)가 지금 연결을 받는지. 짧게만 기다린다. */
+function egoCdpListening(): Promise<boolean> {
+  const configured = Number(process.env.EGO_LITE_CDP_PORT || 32899);
+  const port = Number.isInteger(configured) && configured > 0 ? configured : 32899;
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const socket = connect({ host: "127.0.0.1", port });
+  const finish = (listening: boolean) => {
+    socket.destroy();
+    resolve(listening);
+  };
+  socket.setTimeout(500, () => finish(false));
+  socket.once("connect", () => finish(true));
+  socket.once("error", () => finish(false));
+  return promise;
+}
+
+/**
+ * ego가 있는 PC인지. `browser.open`이 든 eval 셀에서만 묻는다. Windows·WSL은 `ego-browser --version`을 프로세스당
+ * 한 번, 네이티브 Linux는 `ego_browser` 도구가 붙는 Linux 호스트와 떠 있는 ego를 매번 본다.
+ */
+const egoLiteAvailable = isNativeLinux()
+  ? createLinuxEgoProbe({
+      hostInstalled: () => existsSync(linuxHostPath()),
+      appPortFileExists: () => existsSync(USER_EGO_PORT_PATH),
+      cdpListening: egoCdpListening,
+    })
+  : createEgoLiteProbe(egoBrowserExec);
 
 /** eval이 자동으로 고르는 관리 Python 환경(코어 `getPythonEnvDir()` 기본값). WSL(Linux)에만 안내한다. */
 function managedPythonPath(): string | undefined {

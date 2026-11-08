@@ -6,6 +6,7 @@ import {
   CANCEL_REFUND_LIMIT,
   claimSharedWriters,
   createEgoLiteProbe,
+  createLinuxEgoProbe,
   createOwnershipState,
   createTaskGuardState,
   createWriterClaimState,
@@ -450,6 +451,41 @@ describe("BrowserSpaceGuard", () => {
       expect(await matchRelayBrowserOpen({ language: "py", code }, probe)).toBeUndefined();
       expect(failing.calls).toHaveLength(2);
     }
+  });
+
+  test("네이티브 Linux는 ego가 떠 있을 때만 headless까지 막고, 꺼지면 다시 허용한다", async () => {
+    const code = 'await browser.open({ name: "h", url, app: { relay: false } })';
+    let host = true;
+    let appPort = false;
+    let cdp = true;
+    const probe = createLinuxEgoProbe({
+      hostInstalled: () => host,
+      appPortFileExists: () => appPort,
+      cdpListening: async () => cdp,
+    });
+    expect(await matchRelayBrowserOpen({ language: "js", code }, probe)).toMatch(/BrowserSpaceGuard/);
+    cdp = false;
+    expect(await matchRelayBrowserOpen({ language: "js", code }, probe)).toBeUndefined();
+    appPort = true;
+    expect(await matchRelayBrowserOpen({ language: "js", code }, probe)).toMatch(/BrowserSpaceGuard/);
+    host = false;
+    expect(await matchRelayBrowserOpen({ language: "js", code }, probe)).toBeUndefined();
+    const throwing = createLinuxEgoProbe({
+      hostInstalled: () => true,
+      appPortFileExists: () => false,
+      cdpListening: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    });
+    expect(await matchRelayBrowserOpen({ language: "js", code }, throwing)).toBeUndefined();
+    const throwingHost = createLinuxEgoProbe({
+      hostInstalled: () => {
+        throw new Error("EACCES");
+      },
+      appPortFileExists: () => true,
+      cdpListening: async () => true,
+    });
+    expect(await matchRelayBrowserOpen({ language: "js", code }, throwingHost)).toBeUndefined();
   });
 });
 

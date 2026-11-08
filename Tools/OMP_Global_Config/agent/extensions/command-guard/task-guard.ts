@@ -974,6 +974,31 @@ export function createEgoLiteProbe(exec: Exec): EgoLiteProbe {
   };
 }
 
+/** 네이티브 Linux ego를 알아보는 데 쓰는 관찰값. 호스트 모듈은 설치, 나머지 둘은 지금 떠 있는지를 본다. */
+export interface LinuxEgoSignals {
+  hostInstalled: () => boolean;
+  appPortFileExists: () => boolean;
+  cdpListening: () => Promise<boolean>;
+}
+
+/**
+ * 네이티브 Linux에서 PATH의 `ego-browser`는 WSL shim이라 `--version`이 늘 실패(1)해, 이 PC에서는 BrowserSpaceGuard가
+ * 한 번도 걸리지 않았다(2026-11-08 사용자 지적: 시안 스크린샷을 headless로 엶). 대신 `ego_browser` 도구가 붙는 대상,
+ * 곧 Linux 호스트 모듈과 떠 있는 ego(사용자 ego 앱의 포트 파일이나 ego Chromium CDP)를 본다. ego가 꺼져 있으면
+ * 도구 안내대로 `browser.open`을 쓸 수 있게 false이고, 켜고 끄는 일이 잦아 기억하지 않는다.
+ */
+export function createLinuxEgoProbe(signals: LinuxEgoSignals): EgoLiteProbe {
+  return async () => {
+    try {
+      if (!signals.hostInstalled()) return false;
+      if (signals.appPortFileExists()) return true;
+      return await signals.cdpListening();
+    } catch {
+      return false;
+    }
+  };
+}
+
 /** `(`(open) 다음부터 짝이 맞는 `)` 앞까지의 인자 원문. 따옴표 문자열은 건너뛰고, 짝이 없으면 끝까지다. */
 function callArguments(code: string, open: number): string {
   let depth = 1;
@@ -1110,7 +1135,7 @@ export async function matchRelayBrowserOpen(input: EvalCallInput, egoLiteAvailab
   if (!untargeted || !(await egoLiteAvailable())) return undefined;
   return (
     "[BrowserSpaceGuard] 이 PC에는 ego lite가 있어 브라우저 작업은 `ego_browser` 도구의 별도 TaskSpace에서 합니다" +
-    '(기본 profile "user", CUELO 화면 검증은 profile: "verify"; relay·headless 모두 해당). ' +
+    '(기본 profile "user", CUELO 화면 검증은 profile: "verify"이고 그 프로필이 없는 PC는 "user"; relay·headless 모두 해당). ' +
     "사용자가 지목한 이미 열린 탭에서 할 때만 `browser.open`에 그 탭의 URL·제목을 `app.target`으로 넘기세요."
   );
 }

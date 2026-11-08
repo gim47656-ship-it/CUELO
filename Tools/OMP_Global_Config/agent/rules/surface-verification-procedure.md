@@ -7,8 +7,9 @@ description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분�
   지목한 이미 열린 탭을 `app.target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
   command-guard가 막는다). `web_search`와 URL을 그냥 `read`하는 일은 브라우저를 열지 않으므로 그대로 쓰고, 찾은
   페이지를 열거나 렌더해야 하면(JS 렌더 페이지·로그인·스크린샷·조작) 그때 ego TaskSpace로 옮긴다. CUELO 화면 검증은
-  검증 프로필(`profile: "verify"`)에서 한다. ego lite가 없는 PC에서 화면 검증은 `browser.open`에
-  `app: { relay: false }`를 준 headless로 한다. 이를 빼면 relay가 기본이라 **사용자의 실제
+  검증 프로필(`profile: "verify"`)에서 하고, 검증 프로필이 없는 ego PC(Linux ego)에서는 기본 프로필 TaskSpace에서 하며
+  로그아웃 상태가 필요한 확인만 미확인으로 남긴다(2026-11-08 사용자 지적). headless(`browser.open`에
+  `app: { relay: false }`)는 ego lite가 없는 PC나 ego 브라우저가 꺼진 때만 쓴다. `app.relay: false`를 빼면 relay가 기본이라 **사용자의 실제
   브라우저**에 탭이 열린다. relay 탭을 닫을 때는 `browser.close({ name })`로 자기 탭만
   닫고 `all`·`kill`·`app.path`는 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.
   빌드가 깨진 화면을 사용자에게 띄우지 않는다. HTML·웹 페이지를 PDF로 인쇄하는 것도 브라우저 작업이라 같은 경로를
@@ -31,7 +32,7 @@ description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분�
   작업자에게 넘기던 `computer_task`는 느리고 자주 멈춰 없앴다). 결과가 중요하면 `windows_control list`·AX로 다시 읽어
   확인하고, 띄운 창은 PID를 확인해 자기 것만 닫는다. 이 규칙은 막는 게이트가 아니라 권고다.
   **테스트·검증은 사용자 화면 밖에서 돌린다(2026-10-26 사용자 결정).** 웹 테스트는 사용자 탭과 떨어진 독립
-  공간(ego lite PC는 검증 프로필 TaskSpace, 그 밖은 headless)에서만 한다. 앱·Windows 프로그램 테스트는 사용자가
+  공간(ego lite PC는 TaskSpace, 검증 프로필이 있으면 그 프로필, ego가 없으면 headless)에서만 한다. 앱·Windows 프로그램 테스트는 사용자가
   보는 데스크톱에 창을 띄우지 않고 백그라운드에서 돌린다: 숨은 Windows 데스크톱(별도 desktop 객체), 화면 밖
   위치나 표시 없는 하네스, 장비 없는 로직 테스트 중 대상에 맞는 것을 쓴다. 이 방식으로 확인할 수 없는 항목(실제
   GPU·표시 장치가 필요한 렌더 등)은 미확인으로 남기고, 사용자 화면에 띄우는 건 사용자가 요청하거나 승인했을
