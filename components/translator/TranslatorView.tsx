@@ -56,8 +56,12 @@ interface Settings {
   face: boolean;
   /** `TEXT_SCALES`의 칸 번호. */
   size: number;
-  /** 통역 음성이 나오는 동안 마이크를 막는다(`lib/interpreter-echo-gate.ts`). 폰 스피커로 쓰는 것이 보통이라 처음 값은 켬이다. */
+  /** 통역 음성을 스피커로 낸다. 끄면 글로만 보고, 스피커가 조용하니 마이크도 막지 않는다. 처음 값은 끔이다. */
+  voice: boolean;
+  /** 음성을 켰을 때 통역 음성이 나오는 동안 마이크를 막는다(`lib/interpreter-echo-gate.ts`). 폰 스피커로 쓰는 것이 보통이라 처음 값은 켬이다. */
   echoGuard: boolean;
+  /** 마이크 소리를 RNNoise로 거른 뒤 통역에 보낸다(`lib/interpreter-noise-suppressor.ts`). 목소리가 뭉개질 수 있어 처음 값은 끔이다. */
+  noiseSuppression: boolean;
 }
 
 function readSettings(): Settings {
@@ -67,7 +71,9 @@ function readSettings(): Settings {
     profile: {},
     face: false,
     size: DEFAULT_TEXT_SIZE,
+    voice: false,
     echoGuard: true,
+    noiseSuppression: false,
   };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
@@ -83,7 +89,9 @@ function readSettings(): Settings {
       profile: parseInterpreterProfile(saved.profile),
       face: saved.face === true,
       size,
+      voice: saved.voice === true,
       echoGuard: saved.echoGuard !== false,
+      noiseSuppression: saved.noiseSuppression === true,
     };
   } catch {
     return fallback;
@@ -305,7 +313,7 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
-  const { mine, theirs, profile, face, size, echoGuard } = settings;
+  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression } = settings;
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
   const [setupOpen, setSetupOpen] = useState(false);
@@ -323,9 +331,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       profile,
       face,
       size,
+      voice,
       echoGuard,
+      noiseSuppression,
     }));
-  }, [echoGuard, face, mine, profile, size, theirs]);
+  }, [echoGuard, face, mine, noiseSuppression, profile, size, theirs, voice]);
 
   const handleTranscript = useCallback((transcript: InterpreterTranscript) => {
     transcriptRef.current = addTranscript(transcriptRef.current, transcript, pairRef.current);
@@ -339,7 +349,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setCurrentCall(transcriptRef.current.call);
   }, []);
 
-  const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard });
+  const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard, playVoice: voice, suppressNoise: noiseSuppression });
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
 
   const startCall = (next: Settings) => {
@@ -672,13 +682,37 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               <label className="translator-toggle">
                 <input
                   type="checkbox"
-                  checked={echoGuard}
-                  aria-describedby="translator-echo-guard-hint"
-                  onChange={(event) => setSettings({ ...settings, echoGuard: event.target.checked })}
+                  checked={voice}
+                  aria-describedby="translator-voice-hint"
+                  onChange={(event) => setSettings({ ...settings, voice: event.target.checked })}
                 />
-                <span>{tt("translator.echoGuard")}</span>
+                <span>{tt("translator.voice")}</span>
               </label>
-              <p id="translator-echo-guard-hint" className="translator-options-note">{tt("translator.echoGuardHint")}</p>
+              <p id="translator-voice-hint" className="translator-options-note">{tt("translator.voiceHint")}</p>
+              {voice ? (
+                <>
+                  <label className="translator-toggle">
+                    <input
+                      type="checkbox"
+                      checked={echoGuard}
+                      aria-describedby="translator-echo-guard-hint"
+                      onChange={(event) => setSettings({ ...settings, echoGuard: event.target.checked })}
+                    />
+                    <span>{tt("translator.echoGuard")}</span>
+                  </label>
+                  <p id="translator-echo-guard-hint" className="translator-options-note">{tt("translator.echoGuardHint")}</p>
+                </>
+              ) : null}
+              <label className="translator-toggle">
+                <input
+                  type="checkbox"
+                  checked={noiseSuppression}
+                  aria-describedby="translator-noise-suppression-hint"
+                  onChange={(event) => setSettings({ ...settings, noiseSuppression: event.target.checked })}
+                />
+                <span>{tt("translator.noiseSuppression")}</span>
+              </label>
+              <p id="translator-noise-suppression-hint" className="translator-options-note">{tt("translator.noiseSuppressionHint")}</p>
             </div>
             {segments.length > 0 ? (
               <ActionButton

@@ -5,6 +5,7 @@ import { failureFromOffer, isLiveState, waitForIceGathering, type LiveFailure } 
 import type { LiveState, LiveTranscriptRole } from "@/lib/live-types";
 import type { InterpreterProfile } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
+import { createNoiseSuppressor, type NoiseSuppressor } from "@/lib/interpreter-noise-suppressor";
 import { EchoGate, REMOTE_SPEECH_RMS, rms } from "@/lib/interpreter-echo-gate";
 import type { HistoryLine } from "./transcript-log";
 
@@ -36,6 +37,18 @@ export interface InterpreterCallOptions {
    * check, so turning it on or off applies to the call in progress.
    */
   muteMicWhilePlaying?: boolean;
+  /**
+   * Play the interpreted voice through the speaker. Off, the interpretation is read as text only:
+   * nothing reaches the speaker, so the echo guard has nothing to guard and the microphone stays
+   * open, hearing words spoken over an interpretation too. Applies to the call in progress.
+   */
+  playVoice?: boolean;
+  /**
+   * Send the microphone through RNNoise (`lib/interpreter-noise-suppressor.ts`). Read live: switching
+   * mid-call swaps the sender's track without renegotiation. When the denoiser cannot start or dies,
+   * the raw microphone stays on the call.
+   */
+  suppressNoise?: boolean;
 }
 
 export interface InterpreterCallController {
@@ -73,6 +86,27 @@ const hangUp = (callId: string) => {
 
 /** How often the hook measures the interpreted voice to open or block the microphone. */
 const ECHO_CHECK_MS = 50;
+
+/**
+ * Longest wait for the denoiser to start. The call hears nothing until a track is on the sender, so
+ * a stalled asset request must not hold the microphone back: past this the raw microphone is used.
+ */
+const SUPPRESSOR_SETUP_TIMEOUT_MS = 3_000;
+
+/**
+ * RNNoise is trained on raw noisy audio, and the browser's own suppression ahead of it would process
+ * the signal twice, so the browser's is off while RNNoise carries the call and on otherwise. A
+ * browser that does not report the setting is left alone.
+ */
+async function setBrowserNoiseSuppression(raw: MediaStreamTrack | null, on: boolean) {
+  const current = raw?.getSettings().noiseSuppression;
+  if (!raw || typeof current !== "boolean" || current === on) return;
+  try {
+    await raw.applyConstraints({ echoCancellation: true, noiseSuppression: on, autoGainControl: true });
+  } catch (error) {
+    console.warn("[interpreter] cannot change the browser noise suppression:", error instanceof Error ? error.message : String(error));
+  }
+}
 
 /** Measures the remote (interpreted) voice of a started call. */
 interface RemoteMonitor {
@@ -140,7 +174,7 @@ export interface CodexInterpreterCallController extends InterpreterCallControlle
   skipped: boolean;
 }
 
-export function useInterpreterCall({ onTranscript, getHistory, onReconnect, muteMicWhilePlaying = false }: InterpreterCallOptions): CodexInterpreterCallController {
+export function useInterpreterCall({ onTranscript, getHistory, onReconnect, muteMicWhilePlaying = false, playVoice = true, suppressNoise = false }: InterpreterCallOptions): CodexInterpreterCallController {
   const [state, setState] = useState<LiveState>("idle");
   const [failure, setFailure] = useState<LiveFailure | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
@@ -182,13 +216,26 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
   const getHistoryRef = useRef(getHistory);
   const onReconnectRef = useRef(onReconnect);
   const muteRef = useRef(muteMicWhilePlaying);
+  const voiceRef = useRef(playVoice);
+  const suppressRef = useRef(suppressNoise);
+  /** The RNNoise graph of `streamRef`'s microphone; built when first asked for, closed when not used. */
+  const suppressorRef = useRef<NoiseSuppressor | null>(null);
+  /** The microphone stream the denoiser failed on; it is not retried until the setting is toggled. */
+  const suppressFailedRef = useRef<MediaStream | null>(null);
+  /** Aborts a denoiser that is still starting; Stop and switching the setting off use it. */
+  const suppressAbortRef = useRef<AbortController | null>(null);
+  /** Sender track changes run one after another so a toggle never races a reconnect. */
+  const trackQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const placeTrackRef = useRef<(gen: number, stream: MediaStream) => Promise<void>>(async () => {});
 
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
     getHistoryRef.current = getHistory;
     onReconnectRef.current = onReconnect;
     muteRef.current = muteMicWhilePlaying;
-  }, [getHistory, muteMicWhilePlaying, onReconnect, onTranscript]);
+    voiceRef.current = playVoice;
+    if (audioRef.current) audioRef.current.muted = !playVoice;
+  }, [getHistory, muteMicWhilePlaying, onReconnect, onTranscript, playVoice]);
 
   useEffect(() => {
     setSupported(
@@ -227,6 +274,12 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     if (monitor.context.state !== "closed") void monitor.context.close().catch(() => {});
   }, []);
 
+  const closeSuppressor = useCallback(() => {
+    const current = suppressorRef.current;
+    suppressorRef.current = null;
+    current?.close();
+  }, []);
+
   /** One echo check: block the microphone track while the interpreted voice is audible, else open it. */
   const checkEcho = useCallback(() => {
     const monitor = monitorRef.current;
@@ -236,9 +289,12 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     // after an interpretation that just ended.
     monitor.analyser.getFloatTimeDomainData(monitor.samples);
     const held = monitor.gate.update(rms(monitor.samples) >= REMOTE_SPEECH_RMS, performance.now());
-    const blocked = muteRef.current && held;
+    const blocked = muteRef.current && voiceRef.current && held;
     // A disabled track sends silence on the same sender: no renegotiation, and the call keeps going.
     if (track.enabled === blocked) track.enabled = !blocked;
+    // The sender may carry the denoised track instead; its own mute does not depend on how a browser
+    // treats `enabled` on a track made by Web Audio.
+    suppressorRef.current?.setMuted(blocked);
   }, []);
 
   /**
@@ -278,6 +334,9 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
   const release = useCallback(() => {
     dropCall();
     stopMonitor();
+    suppressAbortRef.current?.abort();
+    closeSuppressor();
+    suppressFailedRef.current = null;
     targetRef.current = null;
     startedRef.current = false;
     for (const track of streamRef.current?.getTracks() ?? []) track.stop();
@@ -288,7 +347,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
       audio.srcObject = null;
       audio.remove();
     }
-  }, [dropCall, stopMonitor]);
+  }, [closeSuppressor, dropCall, stopMonitor]);
 
   const teardown = useCallback((next: LiveState) => {
     release();
@@ -340,12 +399,89 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     }
   }, []);
 
+  /**
+   * The track the sender should carry now: the denoised one when asked for and working, else the
+   * raw microphone. A denoiser that cannot start is remembered for this stream and warned about once.
+   * The echo guard switches the raw track off and mutes the denoised graph (`setMuted`).
+   */
+  const chooseTrack = useCallback(async (stream: MediaStream): Promise<MediaStreamTrack | null> => {
+    const raw = stream.getAudioTracks()[0] ?? null;
+    if (!raw) return null;
+    if (suppressRef.current && !suppressorRef.current && suppressFailedRef.current !== stream) {
+      const abort = new AbortController();
+      suppressAbortRef.current = abort;
+      const timer = window.setTimeout(() => abort.abort(), SUPPRESSOR_SETUP_TIMEOUT_MS);
+      try {
+        suppressorRef.current = await createNoiseSuppressor(stream, (reason) => {
+          if (streamRef.current !== stream) return;
+          console.warn("[interpreter] noise suppression stopped, using the raw microphone:", reason);
+          suppressFailedRef.current = stream;
+          closeSuppressor();
+          void placeTrackRef.current(genRef.current, stream).catch(() => {});
+        }, abort.signal);
+      } catch (error) {
+        // Switched off or released while it was starting: nothing to report.
+        if (suppressRef.current && streamRef.current === stream) {
+          suppressFailedRef.current = stream;
+          console.warn("[interpreter] noise suppression unavailable, using the raw microphone:", error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        window.clearTimeout(timer);
+        if (suppressAbortRef.current === abort) suppressAbortRef.current = null;
+      }
+      if (streamRef.current !== stream) closeSuppressor();
+    }
+    return suppressRef.current && streamRef.current === stream && suppressorRef.current ? suppressorRef.current.track : raw;
+  }, [closeSuppressor]);
+
+  /** Put the right microphone track on the current call's sender and close the denoiser when it is not the one. */
+  const placeTrack = useCallback((gen: number, stream: MediaStream): Promise<void> => {
+    const run = async () => {
+      const sender = senderRef.current;
+      if (genRef.current !== gen || !sender) return;
+      const track = await chooseTrack(stream);
+      if (genRef.current !== gen || senderRef.current !== sender) return;
+      const raw = stream.getAudioTracks()[0] ?? null;
+      await setBrowserNoiseSuppression(raw, track === raw);
+      try {
+        await sender.replaceTrack(track);
+      } catch (error) {
+        if (track === raw) throw error;
+        // The sender refused the processed track: the raw microphone carries the call instead.
+        console.warn("[interpreter] the call refused the denoised track, using the raw microphone:", error instanceof Error ? error.message : String(error));
+        suppressFailedRef.current = stream;
+        closeSuppressor();
+        await setBrowserNoiseSuppression(raw, true);
+        await sender.replaceTrack(raw);
+        return;
+      }
+      if (suppressorRef.current && suppressorRef.current.track !== track) closeSuppressor();
+    };
+    const next = trackQueueRef.current.then(run);
+    trackQueueRef.current = next.catch(() => {});
+    return next;
+  }, [chooseTrack, closeSuppressor]);
+
+  useEffect(() => {
+    placeTrackRef.current = placeTrack;
+  }, [placeTrack]);
+
+  useEffect(() => {
+    suppressRef.current = suppressNoise;
+    suppressFailedRef.current = null;
+    if (!suppressNoise) suppressAbortRef.current?.abort();
+    // Also while the first track is still attaching: the queue runs this after it and picks the new setting.
+    const stream = streamRef.current;
+    if (stream && senderRef.current) void placeTrack(genRef.current, stream).catch((error: unknown) => {
+      console.warn("[interpreter] cannot switch the microphone track:", error instanceof Error ? error.message : String(error));
+    });
+  }, [placeTrack, suppressNoise]);
+
   /** Put the microphone on the current call's sender: no renegotiation, the call hears it at once. */
   const attachTrack = useCallback(async (gen: number, stream: MediaStream) => {
-    const sender = senderRef.current;
-    if (genRef.current !== gen || !sender) return;
+    if (genRef.current !== gen || !senderRef.current) return;
     try {
-      await sender.replaceTrack(stream.getAudioTracks()[0] ?? null);
+      await placeTrack(gen, stream);
     } catch (error) {
       if (genRef.current === gen) fail("failed", error instanceof Error ? error.message : String(error));
       return;
@@ -354,7 +490,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     micAttachedRef.current = true;
     attachRemote();
     settleLive(gen);
-  }, [attachRemote, fail, settleLive]);
+  }, [attachRemote, fail, placeTrack, settleLive]);
 
   // Declared before `openCall` uses it; assigned below once `openCall` exists.
   const resumeRef = useRef<(failure?: LostCall) => void>(() => {});
@@ -549,7 +685,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: true, noiseSuppression: !suppressRef.current, autoGainControl: true },
       });
     } catch (error) {
       const name = error instanceof DOMException ? error.name : "";
@@ -606,6 +742,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     // Created inside the click so autoplay policy lets the interpreted voice play.
     const audio = document.createElement("audio");
     audio.autoplay = true;
+    audio.muted = !voiceRef.current;
     audioRef.current = audio;
     startMonitor();
     attachRemote();

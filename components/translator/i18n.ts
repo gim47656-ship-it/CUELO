@@ -73,8 +73,12 @@ const ko = {
   "translator.translation": "통역",
   "translator.unknownLanguage": "언어 모름",
   "translator.jumpLatest": "최근 말로",
+  "translator.voice": "통역 음성 듣기",
+  "translator.voiceHint": "끄면 통역을 글로만 보여 줍니다. 스피커가 조용하니 마이크를 막지 않아 통역 중에 끼어든 말도 들립니다.",
   "translator.echoGuard": "통역 음성이 나올 때 마이크 끄기",
   "translator.echoGuardHint": "스피커로 나온 통역이 다시 통역되지 않게 합니다. 그동안 상대가 한 말은 들리지 않으니 이어폰을 쓰면 꺼 두세요.",
+  "translator.noiseSuppression": "AI 소음 제거",
+  "translator.noiseSuppressionHint": "시끄러운 곳에서 마이크 소음을 줄여 통역이 말을 더 잘 알아듣게 합니다. 목소리가 뭉개지면 꺼 두세요.",
 } as const;
 
 type TranslatorMessageKey = keyof typeof ko;
@@ -143,8 +147,12 @@ const en: Record<TranslatorMessageKey, string> = {
   "translator.translation": "Interpretation",
   "translator.unknownLanguage": "Language unknown",
   "translator.jumpLatest": "Jump to latest",
+  "translator.voice": "Play the interpretation aloud",
+  "translator.voiceHint": "Off, the interpretation is shown as text only. With the speaker silent the mic stays open, so words spoken over an interpretation are heard too.",
   "translator.echoGuard": "Mute the mic while the interpretation plays",
   "translator.echoGuardHint": "Keeps the speaker's interpretation from being interpreted again. Words spoken meanwhile are not heard, so turn it off with earphones.",
+  "translator.noiseSuppression": "AI noise suppression",
+  "translator.noiseSuppressionHint": "Cuts background noise from the mic in a loud place so the interpreter hears you better. Turn it off if your voice sounds muffled.",
 };
 
 const zhCN: Record<TranslatorMessageKey, string> = {
@@ -211,8 +219,12 @@ const zhCN: Record<TranslatorMessageKey, string> = {
   "translator.translation": "译文",
   "translator.unknownLanguage": "语言不明",
   "translator.jumpLatest": "回到最新",
+  "translator.voice": "播放译文语音",
+  "translator.voiceHint": "关闭后只以文字显示译文。扬声器不出声，麦克风也不会被关闭，翻译时插话也能听到。",
   "translator.echoGuard": "播放译文时关闭麦克风",
   "translator.echoGuardHint": "避免扬声器播出的译文被再次翻译。这段时间说的话听不到，使用耳机时请关闭。",
+  "translator.noiseSuppression": "AI 降噪",
+  "translator.noiseSuppressionHint": "在嘈杂的地方降低麦克风的背景噪音，让翻译听得更清楚。如果声音发闷，请关闭。",
 };
 
 const TRANSLATOR_MESSAGES: Record<string, Record<string, string>> = { ko, en, "zh-CN": zhCN };

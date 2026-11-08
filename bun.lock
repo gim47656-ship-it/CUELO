@@ -10,6 +10,7 @@
         "@oh-my-pi/pi-coding-agent": "18.18.0",
         "@oh-my-pi/pi-tui": "18.18.0",
         "@oh-my-pi/pi-utils": "18.18.0",
+        "@sapphi-red/web-noise-suppressor": "^0.4.1",
         "@seed-design/css": "2.8.0",
         "@seed-design/react": "2.4.1",
         "@seed-design/tailwind4-theme": "2.4.0",
@@ -528,6 +529,8 @@
     "@rc-component/virtual-list": ["@rc-component/virtual-list@1.0.2", "", { "dependencies": { "@babel/runtime": "^7.20.0", "@rc-component/resize-observer": "^1.0.1", "@rc-component/util": "^1.4.0", "clsx": "^2.1.1" }, "peerDependencies": { "react": ">=16.9.0", "react-dom": ">=16.9.0" } }, "sha512-uvTol/mH74FYsn5loDGJxo+7kjkO4i+y4j87Re1pxJBs0FaeuMuLRzQRGaXwnMcV1CxpZLi2Z56Rerj2M00fjQ=="],
 
     "@rtsao/scc": ["@rtsao/scc@1.1.0", "", {}, "sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g=="],
+
+    "@sapphi-red/web-noise-suppressor": ["@sapphi-red/web-noise-suppressor@0.4.1", "", {}, "sha512-hy2GnF079+zi4n9BZUf+GGIQ1IofApAk6rgGMyMQ3soHfz/GKu1pcCsmePyIHVvUuv1LrFudw9BmmBqoOKay5w=="],
 
     "@seed-design/css": ["@seed-design/css@2.8.0", "", {}, "sha512-ihAaKKGKil1WwPTeGBDwxbTIswmI0cHWqIqWELtITOTd0VkUWCIeuS95zUE7Yq62YZX8hosNKGHSlSgYAb3y+A=="],
 

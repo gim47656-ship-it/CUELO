@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.176",
+  "version": "0.10.177",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -104,6 +104,7 @@
     "@oh-my-pi/pi-coding-agent": "18.18.0",
     "@oh-my-pi/pi-tui": "18.18.0",
     "@oh-my-pi/pi-utils": "18.18.0",
+    "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "@seed-design/css": "2.8.0",
     "@seed-design/react": "2.4.1",
     "@seed-design/tailwind4-theme": "2.4.0",
