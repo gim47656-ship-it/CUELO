@@ -10466,29 +10466,52 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 		);`,
 	},
 	{
-		// Maker auto 범위(2026-10-30 사용자 결정): child 의 auto 도 Main 과 같은 medium~xhigh 안에서 고른다. 일반 작업은
-		// medium~high 에서 끝나고 정말 추론이 필요한 경우만 xhigh 까지 가며, low 와 Opus max 는 auto 가 고르지 않는다.
-		// 2026-10-08 판(low~max, 정책 하한·상한 없음)을 쓰던 코어는 legacyPatched 로 이 본문으로 바뀐다.
-		// 모델이 없는 단계는 분류기 ceiling(지원 effort 확인)과 clamp 가 떨어뜨리고, concrete effort 로 띄운 child 는
-		// auto 가 아니라 영향이 없다. per-spawn overrides 가 뒤에 펼쳐지므로 여전히 이긴다.
+		// Maker auto 범위(2026-11-08 사용자 결정): child 의 auto 는 high~xhigh 안에서 고른다. Main 은 medium~xhigh 를 그대로 둔다.
+		// 일반 작업은 high 에서 끝나고 정말 추론이 필요한 경우만 xhigh 까지 가며, low·medium·Opus max 는 auto 가 고르지 않는다.
+		// 모델이 선언하지 않은 단계는 만들지 않는다: 분류기 ceiling(지원 effort 확인)과 clamp 가 떨어뜨리고, high~xhigh 사이에
+		// 선언된 단계가 없는 사다리는 resolve 단계에서 그대로 둔다(max 로 올리지 않는다).
+		// 옛 설치는 legacyPatched 로 이 본문으로 바뀐다: 2026-10-30 판(medium~xhigh)은 이 후보가, 2026-10-08 판(low~max)은 alternates 후보가 맡는다.
+		// concrete effort 로 띄운 child 는 auto 가 아니라 영향이 없다. per-spawn overrides 가 뒤에 펼쳐지므로 여전히 이긴다.
 		// 검증: core-agent-thinking-test.ts [child-range].
 		file: "src/task/executor.ts",
-		marker: "\t\t\"providers.autoThinkingMaxEffort\": \"xhigh\",\n",
+		marker: "\t\t\"providers.autoThinkingMinEffort\": \"high\",\n",
+		excludes: "\"providers.autoThinkingMaxEffort\": \"max\"",
 		anchor: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
 `,
 		legacyPatched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+		// CUELO: a child's \`auto\` stays within medium..xhigh like the parent default; low and max are
+		// never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
+		"providers.autoThinkingMinEffort": "medium",
+		"providers.autoThinkingMaxEffort": "xhigh",
+`,
+		patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+		// CUELO: a child's \`auto\` stays within high..xhigh; the parent keeps medium..xhigh. low, medium and
+		// max are never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
+		"providers.autoThinkingMinEffort": "high",
+		"providers.autoThinkingMaxEffort": "xhigh",
+`,
+		alternates: [
+			{
+				file: "src/task/executor.ts",
+				marker: "\t\t\"providers.autoThinkingMinEffort\": \"high\",\n",
+				requires: "\"providers.autoThinkingMaxEffort\": \"max\"",
+				anchor: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+`,
+				legacyPatched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
 		// CUELO: a child's \`auto\` has no policy floor or cap - from the lowest auto level up to the
 		// model's maximum. The classifier ceiling and clamp still drop levels the model lacks; the
 		// parent keeps its own configured range.
 		"providers.autoThinkingMinEffort": "low",
 		"providers.autoThinkingMaxEffort": "max",
 `,
-		patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-		// CUELO: a child's \`auto\` stays within medium..xhigh like the parent default; low and max are
-		// never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
-		"providers.autoThinkingMinEffort": "medium",
+				patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+		// CUELO: a child's \`auto\` stays within high..xhigh; the parent keeps medium..xhigh. low, medium and
+		// max are never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
+		"providers.autoThinkingMinEffort": "high",
 		"providers.autoThinkingMaxEffort": "xhigh",
 `,
+			},
+		],
 	},
 	{
 		// 2026-09-28 도구 오류 집계: `computer.window(65822)`처럼 숫자 id를 넘기면 필터 객체로 해석돼

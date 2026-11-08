@@ -11,17 +11,18 @@
       "thinkingConfigPath": "defaultThinkingLevel",
       "thinkingMode": "auto",
       "autoThinkingFloor": "medium",
-      "autoThinkingFloorConfigPath": "providers.autoThinkingMinEffort"
+      "autoThinkingFloorConfigPath": "providers.autoThinkingMinEffort",
+      "frontier": "user-decision-2026-11-08-the-opus-frontier-configured-in-modelRoles.default-thinks-prepares-and-accepts-work-an-explicit-session-model-or-alias-choice-is-never-overridden-and-a-running-main-or-child-is-never-switched"
     },
     "maker": {
       "kind": "delegated-end-to-end-implementation-owner",
-      "modelConfigPath": "modelRoles.implSonnet",
+      "modelConfigPath": "modelRoles.implDeepSeek",
       "thinkingMode": "auto",
       "defaultThinkingLevel": "auto",
       "definition": "agent/agents/maker.md",
       "dispatchBy": "agent-maker-with-per-item-model-selector-with-the-auto-suffix-without-coarse-task-effort",
       "effortConfigPath": "task.enableEffort",
-      "effortLevels": "child-auto-within-medium-to-xhigh-low-and-max-are-never-auto-picked"
+      "effortLevels": "child-auto-within-high-to-xhigh-declared-levels-only-low-medium-and-max-are-never-auto-picked"
     },
     "retired": ["planner", "scout", "designer", "interaction-tester", "validator", "maker-deep", "checker-deep", "sonic", "checker"],
     "retiredMeaning": "no-alias-no-automatic-role-hop-and-no-reintroduction-by-exception",
@@ -67,7 +68,7 @@
       "noFixedOrder": "never-a-global-one-way-gate-and-never-a-runtime-engine",
       "selectedOverlapDispatch": "when-main-selects-overlap-it-reviews-the-frozen-revision-itself-while-the-owner-check-still-runs-serial-dispatch-then-violates-the-selected-strategy"
     },
-    "modelConfigPath": "modelRoles.implSonnet",
+    "modelConfigPath": "modelRoles.implDeepSeek",
     "sourceAccess": "owner-writable-inside-its-brief-boundary-only",
     "allowedWrites": "its-own-slice-sources-plus-ordinary-build-cache-temp-artifacts",
     "forbidden": ["other-owners-files", "install", "deploy", "commit", "verdict"],
@@ -262,11 +263,12 @@
         "evidence": "recorded-with-the-model-slot-used-and-the-objections-raised-never-reported-as-a-passing-signal"
       },
       "crossFamilyReview": {
-        "purpose": "code-written-by-one-model-family-is-reviewed-by-the-other-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled",
+        "purpose": "code-written-by-one-model-family-is-reviewed-by-another-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled-user-decision-2026-11-08-the-cheap-default-maker-slot-implDeepSeek-is-reviewed-like-anthropic-by-the-configured-openai-reviewer-so-the-cheaper-author-never-reviews-itself-and-the-route-adds-no-model-name-to-the-gate-code",
         "tool": "cross_review-with-actions-review-and-resolve-a-tool-never-a-revived-reviewer-role-and-never-an-eval-completion-call-review-including-probe-and-delta-rounds-runs-from-main-or-a-maker-session-resolve-is-main-only-and-refused-in-subagent-sessions",
         "familyMapping": {
-          "anthropic-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
-          "openai-or-any-other-provider-authored": "reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
+          "anthropic-or-implDeepSeek-slot-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
+          "openai-authored": "reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
+          "google-or-unknown-provider-authored": "unchanged-reviewed-by-the-anthropic-reviewer-slot-modelRoles.crossReviewAnthropic",
           "mixed-authors": "reviewed-by-both-reviewers",
           "advisory-reviewer": "user-decision-2026-11-07-the-advisory-slot-modelRoles.crossReviewAdvisory-is-restored-as-a-non-blocking-reviewer-the-required-family-reviewers-are-unchanged-initial-and-delta-rounds-call-it-in-parallel-never-probe-rounds-and-wait-at-most-sixty-seconds-after-every-required-reviewer-has-finished-findings-it-returns-in-time-are-merged-into-the-round-findings-as-ADV-ids-marked-advisory-with-its-model-and-must-be-closed-at-resolve-like-any-other-finding-a-late-truncated-failed-unparsable-or-skipped-advisory-is-cancelled-and-only-recorded-on-the-review-record-with-status-model-latency-and-reason-never-sets-passable-never-blocks-and-is-not-carried-into-later-rounds-it-is-skipped-when-the-slot-is-unset-or-its-model-is-an-author-or-a-required-reviewer-of-the-round-there-is-no-advisory-fallback-slot-and-slop_check-is-unaffected-ledger-records-written-before-2026-10-29-with-an-advisory-or-google-reviewer-GGL-finding-ids-or-a-late-cross-review-advisory-record-stay-readable-and-their-findings-must-still-be-closed-at-resolve"
         },
@@ -904,7 +906,7 @@
     "effortSelection": {
       "owner": "user-decision-2026-10-08-the-dispatched-maker-child-auto-classifier-chooses-the-level-main-chooses-only-the-candidate-model-and-never-a-concrete-maker-effort",
       "mechanism": "tasks-item-model-is-normalized-to-the-matching-candidate-selector-with-auto-suffix-and-coarse-effort-is-dropped-with-a-non-blocking-notice-only-non-candidate-models-are-rejected",
-      "range": "user-decision-2026-10-30-maker-auto-spans-medium-to-xhigh-ordinary-work-ends-within-medium-to-high-and-only-genuinely-reasoning-heavy-work-reaches-xhigh-low-and-max-are-never-auto-picked-through-the-core-child-settings-overlay-a-model-lacking-a-level-clamps-to-a-supported-one-main-auto-stays-providers-autoThinkingMinEffort-medium-to-autoThinkingMaxEffort-xhigh",
+      "range": "user-decision-2026-11-08-maker-auto-spans-high-to-xhigh-within-the-levels-the-model-declares-ordinary-work-ends-at-high-and-only-genuinely-reasoning-heavy-work-reaches-xhigh-low-medium-and-max-are-never-auto-picked-through-the-core-child-settings-overlay-a-model-without-a-level-in-that-range-keeps-its-own-auto-result-and-never-snaps-to-an-unsupported-level-main-auto-stays-providers-autoThinkingMinEffort-medium-to-autoThinkingMaxEffort-xhigh",
       "decidedAt": "the-child-classifies-its-first-turn-from-the-dispatch-solutionSpace-and-reclassifies-at-every-later-main-instruction-from-that-solutionSpace-plus-the-main-instructions-since-user-decision-2026-10-11-never-from-the-short-instruction-or-a-truncated-brief-alone-never-on-every-tool-call",
       "gradingInput": "solutionSpace-is-the-classifier-input-main-states-how-open-the-remaining-judgment-is-whether-the-fix-or-design-is-given-or-which-causes-or-designs-remain-open-main-lists-as-open-only-decisions-with-several-viable-designs-or-unknown-causes-and-writes-local-details-an-existing-pattern-spec-or-main-direction-already-fixes-as-given-constraints-not-open-items-so-a-settled-slice-reads-settled-this-is-accurate-description-never-a-lever-to-push-the-level-up-or-down-work-volume-does-not-widen-it-and-it-never-names-a-model-grade-effort-or-sibling-coordination",
       "riskIsOrthogonal": "main-intervention-follows-code-nature-integration-risk-and-evidence-never-model-grade-or-effort",
@@ -983,7 +985,7 @@
         "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
         "sessionChange": "a-new-session-discards-every-previous-judgment"
       },
-      "defaultMakerModelConfigPath": "modelRoles.implSonnet",
+      "defaultMakerModelConfigPath": "modelRoles.implDeepSeek",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort-main-writes-maker_route-assessment-remainingJudgments-only-for-judgments-with-several-viable-designs-unknown-causes-or-evidence-confirmed-contract-conflicts-and-puts-local-details-an-existing-pattern-spec-or-main-direction-already-fixes-into-settledImplementation-or-facts-as-given-constraints-the-same-rule-as-effortSelection-gradingInput-this-is-accurate-description-never-a-lever-for-model-or-effort",
       "profiles": {
         "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL" },
@@ -991,7 +993,9 @@
         "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD" },
         "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD" },
         "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
+        "HARD_UI_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
         "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL" },
+        "HARD_CODE_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "HARD" },
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
         "HARD_CODE_TERRA": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" },
         "HARD_CODE_SOL61": { "modelConfigPath": "modelRoles.implSol61", "workClass": "HARD" },
@@ -1023,23 +1027,36 @@
         "UNKNOWN": "insufficient-evidence-for-dominant-judgment-main-decides-and-records-why-no-automatic-dual-dispatch"
       },
       "uiUxBoundaryCriteria": "an-unsettled-visual-or-interaction-design-decision-remains-for-the-implementer-layout-or-composition-of-a-new-or-restructured-screen-responsive-behavior-information-hierarchy-visual-styling-or-motion-accessibility-focus-or-touch-target-behavior-or-the-shape-of-a-user-interaction-flow-including-mixed-code-and-design-work-even-when-code-is-dominant-not-when-the-UI-files-only-host-code-judgment-such-as-a-state-serialization-race-or-data-semantics-bug-a-read-only-code-review-a-faithful-port-of-existing-UI-behavior-wiring-into-an-existing-screen-pattern-or-placement-and-wording-already-fixed-by-the-pattern-spec-or-main-and-not-file-extension-alone-or-copying-already-settled-wording",
-      "mainWaitsCriteria": "main-waits-when-it-must-use-this-slice-result-to-finish-the-current-user-request-including-integrating-reviewing-committing-publishing-deploying-or-reporting-it-in-the-same-request-even-while-main-or-sibling-slices-work-in-parallel-true-when-the-facts-say-the-next-step-or-the-final-answer-depends-on-it-false-only-when-the-facts-say-the-current-request-finishes-without-this-result-such-as-a-detached-background-or-long-batch-job-like-eval-reruns-or-bulk-classification-whose-result-is-reported-later-parallel-work-or-a-longer-sibling-alone-is-not-such-a-fact-user-decision-2026-10-19-no-such-fact-means-main-waits",
-      "designOpenCriteria": "the-implementer-still-must-choose-the-design-approach-or-root-cause-including-open-alternatives-unknown-cause-placement-or-contract-versus-direction-settled-when-the-fix-approach-and-contract-are-given-and-only-implementation-and-verification-remain-when-unclear-treat-as-open",
+      "reworkNatureCriteria": {
+        "NONE": "the-slice-is-not-a-redo-of-a-failed-implementation-attempt-or-no-failure-evidence-is-stated",
+        "BOUNDED_FAILURE": "a-prior-implementation-attempt-failed-for-a-stated-bounded-cause-and-the-remaining-fix-stays-inside-the-existing-design-and-contracts",
+        "RETURN_TO_MAIN": "the-facts-show-bounded-remediation-left-the-same-unresolved-cause-or-the-current-approach-itself-failed-or-the-cause-is-unknown-or-contradictory-while-a-historical-failure-that-main-has-already-resolved-by-changing-the-approach-scope-or-contract-does-not-count-and-no-numeric-retry-count-decides-this",
+        "NOT_FAILURE": "the-redo-is-an-intentional-RED-test-a-transient-infrastructure-failure-or-a-routine-verification-correction-and-not-a-failed-implementation"
+      },
+      "uiDifficultyCriteria": {
+        "NONE": "no-unsettled-visual-or-interaction-design-judgment-remains-for-the-implementer",
+        "ROUTINE": "some-UI-judgment-remains-but-an-existing-screen-pattern-a-spec-or-the-direction-main-prepared-fixes-the-layout-wording-and-behavior-or-the-remaining-choice-is-small-and-local",
+        "DIFFICULT": "the-facts-show-substantial-unsettled-visual-or-interaction-design-judgment-such-as-a-new-or-restructured-screen-responsive-or-information-hierarchy-design-accessibility-or-motion-behavior-or-a-user-flow-shape-that-neither-a-pattern-nor-main-direction-settles-a-UI-file-the-HARD-label-work-size-or-the-mere-existence-of-a-UI-boundary-is-not-such-a-fact",
+        "UNKNOWN": "the-facts-are-too-thin-to-tell-routine-from-difficult-never-guess-either-way-the-decision-returns-no-recommendation-without-blocking-and-main-decides-with-ROUTING_REASON-or-supplies-facts-and-re-runs-maker_route-and-unknown-is-never-a-reason-for-a-more-expensive-model"
+      },
+      "boundedDesignCriteria": {
+        "NONE": "no-unresolved-non-visual-design-judgment-remains-the-approach-and-contracts-are-given-and-only-implementation-and-verification-remain-even-if-the-state-handling-is-complex",
+        "BOUNDED": "the-implementer-must-still-choose-among-alternatives-for-an-algorithm-state-model-or-placement-or-find-a-root-cause-but-the-goal-acceptance-and-approved-contracts-are-clear-and-the-choice-stays-inside-the-existing-canonical-state-owner-public-contracts-and-module-boundaries-so-one-Sonnet-slice-can-decide-it-and-main-reviews",
+        "UNKNOWN": "the-facts-are-too-thin-to-tell-none-from-bounded-never-guess-either-way-the-decision-returns-no-recommendation-without-blocking-and-main-decides-with-ROUTING_REASON-or-supplies-facts-and-re-runs-maker_route-and-unknown-is-never-a-reason-for-a-more-expensive-model"
+      },
+      "designOpenCriteria": "a-large-cross-boundary-redesign-or-an-open-ended-product-or-architecture-direction-remains-the-approved-approach-cannot-meet-acceptance-without-an-unresolved-change-to-the-canonical-state-owner-ownership-a-cross-module-public-data-or-API-contract-or-module-boundaries-or-the-product-direction-itself-is-open-never-because-of-code-volume-file-count-or-complexity-alone-an-unresolved-design-choice-that-stays-inside-the-existing-state-owner-and-approved-contracts-with-a-clear-goal-and-acceptance-is-not-open-it-is-classified-by-boundedDesign-and-visual-or-interaction-design-by-uiDifficulty-direction-settled-implementation-is-not-open-even-when-the-state-handling-is-complex-when-the-facts-cannot-settle-which-it-is-leave-the-answer-empty-as-unknown-never-open",
       "normalAllocation": {
-        "selection": "user-decision-2026-10-30-ui-open-design-and-finding-id-rework-select-NORMAL_OPUS-settled-non-ui-selects-NORMAL_SOL-then-NORMAL_SONNET-then-NORMAL_DEEPSEEK",
-        "deepSeekTriggers": {
-          "offCriticalPath": "mainWaits-below-0.5-on-a-settled-non-ui-non-rework-slice-prefers-NORMAL_DEEPSEEK-then-NORMAL_SOL-then-NORMAL_SONNET",
-          "precedence": "ui-open-design-and-rework-precede-background-selection",
-          "override": "choosing-a-profile-other-than-the-prepared-recommendation-requires-ROUTING_REASON"
-        },
-        "missing": "missing-quota-is-unknown-not-exhausted-skip-unavailable-or-observed-exhausted-candidates-no-eligible-candidate-means-null-profile",
-        "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-newly-observed-UI-UX-boundary-requires-main-to-check-existing-owner-model-freeze-unfinished-delta-and-evidence-and-transfer-non-Opus-ownership-never-change-a-running-model-in-place-or-repeat-completed-non-UI-work",
-        "override": "main-may-override-the-prepared-recommendation-with-ROUTING_REASON-without-another-judge-call"
+        "selection": "user-decision-2026-11-08-final-main-opus-thinks-prepares-and-accepts-the-implDeepSeek-slot-implements-clear-scope-and-acceptance-work-including-prepared-complex-state-and-settled-HARD-slices-tests-and-iterative-correction-when-that-slot-is-absent-or-observed-exhausted-there-is-no-automatic-Sonnet-or-other-replacement-the-decision-returns-no-recommendation-with-a-main-decides-again-reason-and-does-not-block-and-main-may-explicitly-choose-an-alternative-with-ROUTING_REASON-after-checking-quota-and-Sonnet-takes-difficult-UI-uiDifficulty-DIFFICULT-bounded-open-design-or-complex-state-design-boundedDesign-BOUNDED-and-a-bounded-failed-implementation-rework-reworkNature-BOUNDED_FAILURE-not-every-failing-test-goes-to-Sonnet",
+        "returnToMain": "large-cross-boundary-redesign-that-needs-new-state-ownership-or-public-contracts-open-ended-product-or-architecture-direction-and-unresolved-repeated-implementation-failure-get-no-recommendation-regardless-of-UI-or-HARD-label-and-the-beforeTask-dispatch-boundary-blocks-every-candidate-for-that-prepared-decision-even-with-ROUTING_REASON-the-remedy-is-main-reviewing-the-cause-and-evidence-changing-approach-scope-contract-or-acceptance-and-re-running-maker_route-so-a-refreshed-decision-with-the-architecture-resolved-and-a-bounded-implementation-or-bounded-design-may-dispatch-failure-is-read-from-evidence-not-from-the-FINDING_ID-marker-or-task-name-unknown-or-judge-unavailable-is-UNKNOWN-never-a-block-and-keeps-the-existing-explicit-ROUTING_REASON-route-no-numeric-retry-cap-and-no-file-count-threshold-repeated-failure-precedes-large-redesign-which-precedes-unknown-and-then-difficult-UI-bounded-design-and-bounded-rework-never-endless-Sonnet-retry-or-frontier-maker-promotion",
+        "notFailure": "intentional-RED-tests-transient-infrastructure-failures-and-routine-verification-corrections-are-not-failed-implementation-rework",
+        "missing": "missing-quota-is-unknown-not-exhausted-skip-unavailable-or-observed-exhausted-candidates-no-eligible-candidate-means-null-profile-with-a-reason-that-asks-main-to-decide-again-and-an-unavailable-default-candidate-is-an-availability-case-not-a-large-architecture-block",
+        "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-same-owner-continuation-never-changes-a-running-model-in-place-and-never-repeats-completed-work-a-newly-observed-UI-UX-boundary-requires-main-to-check-the-existing-owner-freeze-unfinished-delta-and-evidence-and-decide-the-handover",
+        "override": "main-may-deliberately-pick-an-existing-frontier-candidate-with-ROUTING_REASON-as-an-exception-never-an-automatic-default-or-escalation"
       },
       "hardSelection": {
-        "explicitOnly": "user-decision-2026-10-25-the-four-profiles-sharing-the-implGemini-and-implGlm-slots-are-explicit-only-worker-or-verifier-candidates-never-recommended-excluded-from-the-NORMAL-fallback-and-trigger-first-orders-and-require-ROUTING_REASON-the-UI-UX-Opus-boundary-and-all-roles-are-unchanged",
-        "selection": "ui-selects-HARD_UI_OPUS-open-design-and-finding-id-rework-select-HARD_CODE_OPUS-settled-non-ui-selects-HARD_CODE_TERRA-then-HARD_CODE_OPUS-other-profiles-require-ROUTING_REASON",
-        "unknown": "unclear-designOpen-is-open-and-selects-Opus",
+        "explicitOnly": "user-decision-2026-11-08-the-Opus-Sol-Terra-implGemini-and-implGlm-profiles-are-explicit-only-never-recommended-and-require-ROUTING_REASON",
+        "selection": "settled-HARD-selects-HARD_CODE_DEEPSEEK-and-when-it-is-absent-or-exhausted-returns-no-recommendation-for-main-to-decide-again-difficult-UI-selects-HARD_UI_SONNET-bounded-design-and-bounded-failed-rework-select-HARD_CODE_SONNET-large-redesign-and-repeated-failure-return-to-main-the-HARD-label-alone-never-returns-a-slice-to-main",
+        "unknown": "unclear-or-missing-designOpen-uiDifficulty-or-boundedDesign-is-UNKNOWN-not-a-block-it-returns-no-recommendation-keeps-the-explicit-ROUTING_REASON-route-and-is-never-a-reason-for-a-costlier-model-and-a-known-large-redesign-or-repeated-failure-still-blocks-even-when-the-work-class-answer-is-missing",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-selection-only-effort-is-the-child-auto-and-access-program-fields-are-omitted"
       },

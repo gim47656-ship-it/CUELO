@@ -31,7 +31,7 @@
 
 ## 역할
 
-역할은 **Main·`maker`** 둘이며 위임 child도 `maker` 하나다. Main은 요구·계약·승인·라우팅·중간 검수·최종 수용을 소유하고 위임하지 않은 일은 직접 끝낸다. Maker는 맡은 조각을 조사부터 구현·재작업·검증·실제 표면 확인까지 end-to-end로 맡는다. 현재 model role은 `config.yml` `modelRoles`가 정본이고, 발주 분류·후보·재사용 규칙은 `rule://subagent` 및 `routing.modelSelection`·`routing.effortSelection`을 따른다. Maker는 `:auto`로 발주하며 추론 강도는 child가 `solutionSpace`와 이후 Main 지시마다 medium~xhigh 안에서 고른다(일반 작업은 medium~high, 정말 추론이 필요할 때만 xhigh). 폐지된 별도 검수·디자인·검증·정찰 역할을 되살리지 않는다.
+역할은 **Main·`maker`** 둘이며 위임 child도 `maker` 하나다. Main은 `modelRoles.default`의 Claude Opus 프론티어로 생각하고 요구·전체 설계·계약·승인·라우팅·중간 검수·최종 수용을 소유하며 위임하지 않은 일은 직접 끝낸다(사용자가 명시한 세션 모델·alias 선택과 실행 중인 Main·child는 바꾸지 않는다). Maker는 맡은 조각을 조사부터 구현·재작업·검증·실제 표면 확인까지 end-to-end로 맡는다. 기본 Maker는 DeepSeek가 범위와 수용 조건이 분명한 구현·테스트·반복 수정을 맡고, 어려운 UI·기존 소유자와 승인된 계약 안의 한정된 열린 설계·복잡 상태 설계·실패한 구현의 한정된 재작업은 Sonnet이 맡으며, 새 상태 소유권·공개 계약이 필요한 큰 교차 경계 재설계와 반복 실패는 Main으로 돌아온다. 현재 model role은 `config.yml` `modelRoles`가 정본이고, 발주 분류·후보·재사용 규칙은 `rule://subagent` 및 `routing.modelSelection`·`routing.effortSelection`을 따른다. Maker는 `:auto`로 발주하며 추론 강도는 child가 `solutionSpace`와 이후 Main 지시마다 모델이 선언한 단계 중 high~xhigh 안에서 고른다(일반 작업은 high, 정말 추론이 필요할 때만 xhigh). 폐지된 별도 검수·디자인·검증·정찰 역할을 되살리지 않는다.
 
 ## 작업 모드
 

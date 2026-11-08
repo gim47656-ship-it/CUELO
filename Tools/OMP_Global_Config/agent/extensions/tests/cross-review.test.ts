@@ -1,12 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuthStorage, ModelRegistry } from "@oh-my-pi/pi-coding-agent";
+import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 
 import {
   authorFamily,
   buildReviewPrompt,
+  codeReviewLanes,
   collectChanges,
   CrossReviewRefusal,
   decideGate,
@@ -44,6 +48,7 @@ const ASTRA = "openai-codex/gpt-6-astra";
 const GEMINI = "google-vertex/gemini-4-argon";
 const FABLE = "anthropic/claude-fable-5-1";
 const SONNET = "anthropic/claude-sonnet-5-5";
+const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 const modelOf = (lane: Lane) => (lane === "openai" ? ASTRA : OPUS);
 const roots: string[] = [];
 const signal = new AbortController().signal;
@@ -87,34 +92,50 @@ const MARKER_BASE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p
 const PLAIN_BASE = "export const add = (a: number, b: number) => a + b;\n";
 
 describe("계열 매핑", () => {
-  test("anthropic 저자는 OpenAI reviewer, openai·그 밖의 provider(google 포함)는 Anthropic reviewer로 가고 자문 자리는 없다", () => {
+  test("anthropic·deepseek 저자는 OpenAI reviewer, openai·그 밖의 provider(google 포함)는 Anthropic reviewer로 가고 자문 자리는 없다", () => {
     expect(authorFamily(`${OPUS}:high`)).toBe("anthropic");
     expect(authorFamily(ASTRA)).toBe("openai");
     expect(authorFamily("openai/gpt-5")).toBe("openai");
-    expect(authorFamily("b-ai/deepseek-v4.1-flash")).toBe("other");
+    expect(authorFamily("b-ai/deepseek-v4.1-flash")).toBe("deepseek");
+    expect(authorFamily("hive/deepseek-ai/deepseek-v4.1-flash-1017:auto")).toBe("deepseek");
+    expect(authorFamily("deepseek-v4.1-flash")).toBe("deepseek");
     expect(authorFamily("google-antigravity/gemini-3.8-flash")).toBe("google");
     expect(authorFamily(`${GEMINI}:auto`)).toBe("google");
     expect(authorFamily("gemini-4-argon")).toBe("google");
     expect(authorFamily("openrouter/google/gemini-2.5-pro")).toBe("google");
     expect(authorFamily("openai/gemini-4-argon")).toBe("google");
-    expect(reviewerLanes(["openai/gemini-4-argon"], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes([OPUS], undefined)).toEqual(["openai"]);
-    expect(reviewerLanes([SONNET], undefined)).toEqual(["openai"]);
-    expect(reviewerLanes([FABLE], undefined)).toEqual(["openai"]);
-    expect(reviewerLanes([ASTRA], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes(["google-antigravity/gemini-3.8-flash"], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes([GEMINI], undefined)).toEqual(["anthropic"]);
+    expect(codeReviewLanes(["openai/gemini-4-argon"], undefined)).toEqual(["anthropic"]);
+    expect(codeReviewLanes([OPUS], undefined)).toEqual(["openai"]);
+    expect(codeReviewLanes([SONNET], undefined)).toEqual(["openai"]);
+    expect(codeReviewLanes([FABLE], undefined)).toEqual(["openai"]);
+    expect(codeReviewLanes([ASTRA], undefined)).toEqual(["anthropic"]);
+    expect(codeReviewLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["openai"]);
+    expect(codeReviewLanes(["hive/deepseek-ai/deepseek-v4.1-flash-1017:auto"], undefined)).toEqual(["openai"]);
+    expect(codeReviewLanes(["google-antigravity/gemini-3.8-flash"], undefined)).toEqual(["anthropic"]);
+    expect(codeReviewLanes([GEMINI], undefined)).toEqual(["anthropic"]);
+    // 모르는 provider는 지금처럼 Anthropic reviewer다(계열을 추측해 GPT 검토로 보내지 않는다).
+    expect(codeReviewLanes(["unknown-provider/some-model"], undefined)).toEqual(["anthropic"]);
   });
 
   test("저자가 두 계열에 걸치면 둘 다 돌리고, main은 현재 모델로 풀며 풀 수 없으면 던진다", () => {
+    expect(codeReviewLanes([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
+    expect(codeReviewLanes(["main"], OPUS)).toEqual(["openai"]);
+    expect(codeReviewLanes(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai"]);
+    expect(codeReviewLanes([OPUS, GEMINI], undefined)).toEqual(["anthropic", "openai"]);
+    expect(codeReviewLanes(["main"], GEMINI)).toEqual(["anthropic"]);
+    expect(codeReviewLanes(["main"], DEEPSEEK)).toEqual(["openai"]);
+    expect(() => codeReviewLanes(["main"], undefined)).toThrow("current model");
+    expect(() => codeReviewLanes([], OPUS)).toThrow("at least one");
+  });
+
+  test("계열 중립 helper(reviewerLanes)는 slop·사전 점검 경로라 DeepSeek 저자도 Anthropic 자리를 유지한다", () => {
+    expect(reviewerLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes(["hive/deepseek-ai/deepseek-v4.1-flash-1017"], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes([OPUS], undefined)).toEqual(["openai"]);
+    expect(reviewerLanes([ASTRA], undefined)).toEqual(["anthropic"]);
+    expect(reviewerLanes([GEMINI], undefined)).toEqual(["anthropic"]);
     expect(reviewerLanes([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
-    expect(reviewerLanes(["main"], OPUS)).toEqual(["openai"]);
-    expect(reviewerLanes(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai"]);
-    expect(reviewerLanes([OPUS, GEMINI], undefined)).toEqual(["anthropic", "openai"]);
-    expect(reviewerLanes(["main"], GEMINI)).toEqual(["anthropic"]);
-    expect(() => reviewerLanes(["main"], undefined)).toThrow("current model");
-    expect(() => reviewerLanes([], OPUS)).toThrow("at least one");
+    expect(reviewerLanes(["main"], DEEPSEEK)).toEqual(["anthropic"]);
   });
 });
 
@@ -2377,6 +2398,17 @@ describe("Maker(subagent) 세션", () => {
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);
   });
 
+  test("DeepSeek Maker 세션은 자기 selector를 저자로 주면 GPT reviewer를 받고, 다른 계열만 적으면 거절된다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const maker = as(env, "maker-ds");
+    const deepseekMaker = subOn("hive", "deepseek-ai/deepseek-v4.1-flash-1017");
+    // 세션 자신의 계열(deepseek)을 authors에 적지 않으면 같은 계열 reviewer가 붙게 되므로 거절한다.
+    await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, deepseekMaker, signal, maker)).rejects.toThrow("hive/deepseek-ai/deepseek-v4.1-flash-1017");
+    const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [DEEPSEEK] }, deepseekMaker, signal, maker) as Reviewed;
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, authors: [DEEPSEEK], reviewers: [{ family: "openai" }] }]);
+  });
+
   test("Maker의 nextStep은 Main 전용 resolve 대신 보고를 안내하고, non-probe 라운드를 다 쓴 체인에서도 남은 수정을 끝내고 보고하라고 한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), versionOf(2));
@@ -2483,6 +2515,63 @@ describe("보조 자문 제거 뒤의 reviewer 자리", () => {
     const probed = await runReview(input({ authors: [FABLE], previousReviewId: first.reviewId, probeResults: probeOutput({ findingId: "R1-GGL-1" }) }), deps(env, {}, calls), signal);
     expect(calls.map((call) => call.family)).toEqual(["openai"]);
     expect(probed.verdicts).toEqual([{ id: "R1-GGL-1", verdict: "unresolved", why: expect.stringContaining("no usable verdict"), reviewer: ASTRA }]);
+  });
+});
+
+describe("DeepSeek 저자의 코드 검토 경로(2026-11-08 사용자 결정)", () => {
+  test("DeepSeek 저자의 코드는 설정된 GPT 자리 하나로 가고 기록·finding 표지도 그 자리를 쓴다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const review = await runReview(input({ authors: [DEEPSEEK] }), deps(env, { openai: finding("ds objection") }, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["openai"]);
+    expect(review.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
+    expect(review.findings).toMatchObject([{ id: "R1-OAI-1", reviewer: ASTRA }]);
+    // 저장된 저자 이력은 그대로 남는다(다음 라운드가 다시 계산하지 않는다).
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ authors: [DEEPSEEK], reviewers: [{ family: "openai" }] }]);
+  });
+
+  test("effort 접미사·provider 별 표기가 달라도 같은 결론이고, GPT 저자는 Opus 하나만 부른다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    for (const author of [`${DEEPSEEK}:high`, "deepseek-v4.1-flash", "b-ai/deepseek-v4.1-flash"]) {
+      const calls: { family: Lane; prompt: string }[] = [];
+      const review = await runReview(input({ authors: [author] }), deps(env, {}, calls), signal);
+      expect(calls.map((call) => call.family), author).toEqual(["openai"]);
+      expect(review.reviewers.map((item) => item.family)).toEqual(["openai"]);
+    }
+    const gpt = await runReview(input({ authors: [ASTRA] }), deps(env, {}, []), signal);
+    expect(gpt.reviewers.map((item) => item.family)).toEqual(["anthropic"]);
+  });
+
+  test("저자가 DeepSeek와 GPT에 걸치면 두 reviewer가 각각 따로 보고, DeepSeek+Anthropic은 GPT 하나면 충분하다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const both = await runReview(input({ authors: [DEEPSEEK, ASTRA] }), deps(env, {}, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["anthropic", "openai"]);
+    expect(both.reviewers.map((item) => item.family)).toEqual(["anthropic", "openai"]);
+    const noneOfThem = await runReview(input({ authors: [DEEPSEEK, OPUS] }), deps(env, {}, []), signal);
+    expect(noneOfThem.reviewers.map((item) => item.family)).toEqual(["openai"]);
+  });
+
+  test("옛 매핑으로 기록된 체인은 그 자리(Anthropic)로 이어 가고 새 매핑으로 바뀌지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    // 변경 전 매핑이 남긴 1회차 기록을 그대로 만든다: DeepSeek 저자, Anthropic reviewer.
+    const first = await runReview(input({ authors: [ASTRA] }), deps(env, {}), signal);
+    const text = readFileSync(env.ledger, "utf8").trim().split("\n").map((line) => {
+      const record = JSON.parse(line);
+      record.authors = [DEEPSEEK];
+      return JSON.stringify(record);
+    }).join("\n");
+    writeFileSync(env.ledger, `${text}\n`);
+    expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: first.reviewId, authors: [DEEPSEEK], reviewers: [{ family: "anthropic" }] }]);
+    writeFileSync(join(env.work, "a.ts"), versionOf(22));
+    const calls: { family: Lane; prompt: string }[] = [];
+    const second = await runReview(input({ authors: [DEEPSEEK], previousReviewId: first.reviewId }), deps(env, {}, calls), signal);
+    expect(calls.map((call) => call.family)).toEqual(["anthropic"]);
+    expect(second.reviewers.map((item) => item.family)).toEqual(["anthropic"]);
   });
 });
 
@@ -2786,5 +2875,117 @@ describe("자격 증명 파일 값 전송 차단(#50)", () => {
     expect(prompt).not.toMatch(/FAKE_[A-Z]+_SENTINEL/);
     expect(result.redacted.map((item) => item.path)).toEqual(["config/credentials.json"]);
     expect(result.skipped.map((item) => item.path).sort()).toEqual(["committed/auth.json", "config/.env.local", "ignored/auth.json"]);
+  });
+});
+
+// 2026-11-08 사용자 정정: 보조 검토자(modelRoles.crossReviewAdvisory)는 대체 없이 건너뛴다. 실제 도구 경로(executeCrossReview, reviewDeps,
+// completeReviewer)를 로컬 OpenAI 호환 서버로 돌려, 한도 오류가 보조 error 기록으로만 남고 필수 검토는 그대로 진행하며 다른 모델로의 요청이 없음을 본다.
+// 서버는 대체 후보가 될 만한 모델(반대 계열 필수 자리, Vertex 같은 Argon, Antigravity Flash, Terra)도 등록해 두어 요청이 가면 그대로 기록된다.
+describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
+  const hits: string[] = [];
+  let server: ReturnType<typeof Bun.serve>;
+  let modelRoot: string;
+  let registry: ModelRegistry;
+  const ARGON_AISTUDIO = "aistudio/gemini-4-argon";
+
+  beforeAll(async () => {
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const body = await request.json() as { model: string };
+      const provider = new URL(request.url).pathname.split("/")[1] ?? "";
+      hits.push(`${provider}/${body.model}`);
+      // 주 보조 모델만 한도 오류다. x-should-retry: false는 전송 계층이 이 429를 곧바로 올리게 한다(없으면 completeSimple이 15초 동안 6번 되풀이한다).
+      if (provider === "aistudio") {
+        return new Response(JSON.stringify({ error: { message: "You exceeded your current quota. RESOURCE_EXHAUSTED", code: 429 } }), { status: 429, headers: { "content-type": "application/json", "x-should-retry": "false" } });
+      }
+      const base = { id: "fake", object: "chat.completion.chunk", created: 0, model: body.model };
+      const chunks = [
+        { ...base, choices: [{ index: 0, delta: { role: "assistant", content: '{"findings":[],"summary":"clean"}' }, finish_reason: null }] },
+        { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      ];
+      return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    } });
+    modelRoot = mkdtempSync(join(tmpdir(), "advisory-quota-"));
+    registry = new ModelRegistry(await AuthStorage.create(join(modelRoot, "agent.db")), join(modelRoot, "models.yml"));
+    const catalog = (id: string) => ({ id, name: id, reasoning: false, input: ["text"] as ("text" | "image")[], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 });
+    const provider = (name: string, ids: string[]) => registry.registerProvider(name, { baseUrl: `http://127.0.0.1:${server.port}/${name}/v1`, apiKey: "local", api: "openai-completions", models: ids.map(catalog) });
+    provider("anthropic", ["claude-opus-5-5"]);
+    provider("openai-codex", ["gpt-6-astra", "gpt-6.1-terra"]);
+    provider("aistudio", ["gemini-4-argon"]);
+    provider("google-vertex", ["gemini-4-argon"]);
+    provider("google-antigravity", ["gemini-3.8-flash"]);
+    provider("hive", ["deepseek-ai/deepseek-v4.1-flash-1017"]);
+  });
+  afterAll(() => {
+    server.stop(true);
+    rmSync(modelRoot, { recursive: true, force: true });
+  });
+
+  test("한도 오류는 보조 error 기록으로만 남고 필수 검토는 통과하며 다른 모델로 가는 요청은 없다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    hits.length = 0;
+    const saved = { ledger: process.env.OMP_CROSS_REVIEW_LEDGER, dir: process.env.OMP_CROSS_REVIEW_DIR };
+    process.env.OMP_CROSS_REVIEW_LEDGER = env.ledger;
+    process.env.OMP_CROSS_REVIEW_DIR = env.snapshots;
+    try {
+      await withActiveSettings(Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: ARGON_AISTUDIO } }), async () => {
+        const model = registry.find("anthropic", "claude-opus-5-5");
+        const ctx = {
+          cwd: env.work, agent: { kind: "main" }, model, modelRegistry: registry,
+          models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => model),
+          sessionManager: { getSessionId: () => "advisory-quota", getLeafId: () => null },
+        } as never;
+        const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, ctx, signal) as {
+          reviewId: string; passable: boolean; findings: unknown[]; reviewers: { family: string; status: string }[]; advisory: { status: string; model?: string; reason?: string };
+        };
+        expect(review.passable).toBe(true);
+        expect(review.findings).toEqual([]);
+        expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
+        expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
+        expect(review.advisory.reason).toMatch(/quota|429/i);
+        // 필수 reviewer 한 번과 보조 한 번뿐이다. 같은 Argon의 Vertex 쪽, 반대 계열 필수 자리, Antigravity Flash, Terra로 가는 요청이 있으면 여기에 더 찍힌다.
+        expect([...hits].sort()).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
+        expect(await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions: [] }, ctx, signal)).toMatchObject({ pass: true, open: [] });
+      });
+    } finally {
+      if (saved.ledger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER; else process.env.OMP_CROSS_REVIEW_LEDGER = saved.ledger;
+      if (saved.dir === undefined) delete process.env.OMP_CROSS_REVIEW_DIR; else process.env.OMP_CROSS_REVIEW_DIR = saved.dir;
+    }
+  });
+
+  test("DeepSeek 저자는 실제 도구 경로에서도 설정된 OpenAI 슬롯 모델로만 요청이 가고 Opus로는 가지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    hits.length = 0;
+    const saved = { ledger: process.env.OMP_CROSS_REVIEW_LEDGER, dir: process.env.OMP_CROSS_REVIEW_DIR };
+    process.env.OMP_CROSS_REVIEW_LEDGER = env.ledger;
+    process.env.OMP_CROSS_REVIEW_DIR = env.snapshots;
+    try {
+      await withActiveSettings(Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS } }), async () => {
+        const model = registry.find("hive", "deepseek-ai/deepseek-v4.1-flash-1017");
+        const ctx = {
+          cwd: env.work, agent: { kind: "main" }, model, modelRegistry: registry,
+          models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => model),
+          sessionManager: { getSessionId: () => "deepseek-route", getLeafId: () => null },
+        } as never;
+        const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [DEEPSEEK] }, ctx, signal) as {
+          passable: boolean; findings: unknown[]; reviewers: { family: string; model: string; status: string }[]; advisory: { status: string };
+        };
+        expect(review.passable).toBe(true);
+        expect(review.findings).toEqual([]);
+        expect(review.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
+        expect(review.advisory).toMatchObject({ status: "skipped" });
+        expect([...hits].sort()).toEqual([ASTRA]);
+        expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ authors: [DEEPSEEK], reviewers: [{ family: "openai", model: ASTRA }] }]);
+        // 같은 세션 경로에서 GPT 저자는 Opus로 간다(교차 방향이 뒤집히지 않았다).
+        hits.length = 0;
+        const gpt = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [ASTRA] }, ctx, signal) as { reviewers: { family: string; model: string }[] };
+        expect(gpt.reviewers).toMatchObject([{ family: "anthropic", model: OPUS }]);
+        expect([...hits].sort()).toEqual([OPUS]);
+      });
+    } finally {
+      if (saved.ledger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER; else process.env.OMP_CROSS_REVIEW_LEDGER = saved.ledger;
+      if (saved.dir === undefined) delete process.env.OMP_CROSS_REVIEW_DIR; else process.env.OMP_CROSS_REVIEW_DIR = saved.dir;
+    }
   });
 });

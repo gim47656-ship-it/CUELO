@@ -49,34 +49,34 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 
 ## 발주 시점 추론 선택
 
-- 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
+- 단일 정의 `agent/sop/maker.md`는 `model:"@implDeepSeek"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 라우팅 슬롯을 식별한다.
-  모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 medium~xhigh 안에서 고른다(2026-10-30 사용자 결정: 일반 작업은 medium~high, 정말 추론이 필요할 때만 xhigh, low와 Opus max는 auto가 고르지 않는다). Main의 auto 범위(medium~xhigh)도 그대로다.
-  **NORMAL이라도 UI/UX 판단 경계에 걸리면 `NORMAL_OPUS`를 선택한다.** 구현자에게 아직 정해지지 않은 시각·상호작용 설계
-  판단이 남는지 본다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
-  접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. 코드 판단이 지배적인 혼합 작업도 포함한다.
-  UI 파일이 코드 판단만 담는 경우는 경계가 아니다: 상태·직렬화·경쟁·데이터 의미 버그, 읽기 전용 코드 검토,
-  기존 UI 동작의 충실한 이식, 기존 화면 패턴에 연결, 패턴·명세·Main이 이미 정한 배치·문구다.
-  파일 확장자나 이미 확정된 문구 복사만으로 판정하지 않고, Opus를 쓰려고 HARD로 등급을 부풀리지 않는다.
-  **2026-10-30 사용자 결정(HARD 4후보 비교 시험, `doc/history/2026/10/29-review-model-compare/hard-trial`):** 등급과 별개로
-  `maker_route`의 `designOpen` 질문(확률형 bool)이 구현자에게 설계·접근·근본 원인 선택이 남았는지 판정한다. 0.5 이상이거나 Jev 불가·답 없음이면 열린 설계다.
-  열린 설계와 `FINDING_ID` 재작업은 NORMAL이면 `NORMAL_OPUS`, HARD이면 `HARD_CODE_OPUS`를 추천한다(추천이므로 `ROUTING_REASON`이 필요 없다).
-  방향이 정해진 비-UI NORMAL은 `NORMAL_SOL`(GPT-6.1 Sol) → `NORMAL_SONNET` → `NORMAL_DEEPSEEK` 순서로 쓸 수 있는 첫 후보를 추천한다.
-  `NORMAL_DEEPSEEK`는 `maker_route`의 `mainWaits`가 0.5 미만일 때만 맨 앞에 온다: Main이 이 조각의 결과를 기다리지 않는다는 판단이다. 이번 요청이 이 결과 없이 끝나는 백그라운드·장시간 배치 작업(결과는 나중에 보고)만 해당하며, 그 사실을 assessment `facts`에 적는다(TASK_GUARD 필드나 task 인자는 없다). 같은 요청에서 Main이 그 결과를 통합·검수·커밋·게시·보고해야 하면 병렬로 돌거나 다른 조각이 더 오래 걸려도 기다리는 조각이다(2026-10-19 사용자 결정). DeepSeek는 벽시계 시간이 길어(SJF eval 중앙값 약 4.5배) 기다리는 조각에 쓰지 않는다. "Anthropic 계정이 모두 오늘 몫을 넘김" 트리거는 기본이 Anthropic이 아니게 되어 2026-10-30에 뺐다.
-  `SOL`·`NORMAL_SOL`·`implSol`·`HARD_CODE_TERRA`는 기존 계약의 식별자로 유지하지만, 그 Maker 슬롯의 실제 모델은 `openai-codex/gpt-6.1-sol:auto`다(2026-10-30 사용자 결정: Terra Maker가 실제 작업에서 두 번 연속 일찍 `partial`로 끝나 Maker 자리에서 뺐다. `skim`·`draftFallback`의 Terra는 그대로다). 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
-  한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다. 쓸 수 있는 후보가 없으면 null이다. 추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
-  UI/UX의 Opus unavailable은 명시하고 다른 모델로 조용히 대체하지 않는다.
-  HARD UI는 `HARD_UI_OPUS`, 방향이 정해진 비-UI 코드(`hardFocus`가 `CODE_SYSTEM`)는 `HARD_CODE_TERRA`(GPT-6.1 Sol, `implSol` 공용 slot)를 추천하고 그 후보를 쓸 수 없으면 `HARD_CODE_OPUS`로 내려간다.
-  `hardFocus`가 `MIXED`·`UNKNOWN`이면 `HARD_CODE_OPUS`다. GPT-6 Astra는 Maker 후보가 아니며 교차검토 slot `crossReviewOpenAI`로만 쓴다(2026-10-30 사용자 결정, Main 계열에 따른 Astra 우선도 없앴다).
-  `HARD_CODE_SONNET` 등 추천과 다른 후보를 선택하면 `ROUTING_REASON`이 필요하다.
-  GPT-6 Sol + 자동 Daybreak 명시 후보(`implDaybreak`, `NORMAL_DAYBREAK`·`HARD_CODE_DAYBREAK`)는 GPT-6 Sol이 은퇴(deprecated) 표시돼 2026-10-30 사용자 결정으로 없앴다.
-  `implSol61`(`HARD_CODE_SOL61`)은 2026-10-29 HARD 비교 시험용 명시 선택 후보로 남아 있으며, 2026-10-30부터 `implSol`과 같은 모델(GPT-6.1 Sol)이다. Main이 고르면 `ROUTING_REASON`이 필요하다.
-  Gemini 4 Argon(Vertex, `implGemini`, `NORMAL_GEMINI`·`HARD_CODE_GEMINI`)과 GLM 5.3 Flash(`implGlm`, `NORMAL_GLM`·`HARD_CODE_GLM`)도 같은 명시 선택 전용 후보다(2026-10-25 사용자 결정: 역할은 그대로 두고, 사용자가 그 모델을 작업자·검증자로 지목하면 우회 경로 없이 Maker로 발주한다). `ROUTING_REASON`이 필요하고 자동 추천·폴백 순서·UI/UX Opus 경계는 그대로다.
-  기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
-  강도 하한·상한은 정책에 두지 않는다. 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
-  작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인한다. 비-Opus owner의 미완 변경·증거를
-  freeze하고 소유권을 명시적으로 넘긴 뒤 Opus가 이어간다. active owner와 새 writer를 겹치거나 실행 중
-  모델을 바꾸지 않는다. 같은 Opus owner와 완료된 비-UI 작업은 재사용한다.
+  모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 그 모델이 선언한 단계 중 high~xhigh 안에서만 고른다(2026-11-08 사용자 결정: 일반 작업은 high, 정말 추론이 필요할 때만 xhigh, low·medium·max는 auto가 고르지 않는다. 모델이 그 범위의 단계를 선언하지 않으면 지원하지 않는 단계로 올리지 않는다). Main의 auto 범위(medium~xhigh)는 그대로다.
+  **2026-11-08 사용자 결정(최종 구성): Opus가 요구·전체 설계·발주·수용을 맡는다 → DeepSeek가 범위와 수용 조건이 분명한 구현·테스트·반복 수정을 맡는다 → 어려운 UI·한정된 열린 설계·복잡 상태 설계·DeepSeek 재작업은 Sonnet이 맡는다 → 필요할 때 GPT가 교차 검토한다.** 모델 슬롯 선택은 토큰·구독 한도와 별개이고, 500K/450K는 문맥 관리 값이지 구독 한도가 아니다.
+  Main의 프론티어는 `modelRoles.default`의 Claude Opus다. 사용자가 명시한 세션 모델·alias 선택과 실행 중인 Main·child는 바꾸지 않는다.
+  Main은 설계·원인·상태 소유자·호출 계약·수용 조건을 구현 가능한 범위로 먼저 정리한다(모든 줄을 미리 풀지는 않는다). Maker는 국소 탐색·구현·검증을 맡는다.
+  `maker_route`는 Jev 판단으로 다음을 추천한다. 우선순위는 반복 실패 → 큰 교차 경계 재설계 → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 일반 구현이다.
+  - 방향이 정해진 구현은 비-UI와 UI·상태 복잡도, NORMAL·HARD 등급과 상관없이 DeepSeek(`NORMAL_DEEPSEEK`, HARD면 `HARD_CODE_DEEPSEEK`)를 추천한다. 준비된 복잡한 상태 구현과 테스트·반복 수정도 포함한다. DeepSeek 후보가 없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않는다(2026-11-08 사용자 결정). 추천 없이(`profile: null`) "Main이 다시 판단" 사유만 돌려주며 발주는 막지 않는다. 구조 재설계가 아니라 가용성 사안이므로 Main이 한도를 확인한 뒤 다른 후보를 `ROUTING_REASON` 한 줄과 함께 직접 지정할 수 있다. 크기와 위험은 별개이고 HARD라는 이름만으로 Main에 돌려보내지 않는다. 요청 중 오류 폴백도 같다: 기본 Maker의 `retry.fallbackChains` exact 키는 빈 체인이라 Sonnet으로 자동 대체하지 않는다(Sonnet에서 DeepSeek로의 체인은 그대로).
+  - 어려운 UI/UX(`uiDifficulty`가 `DIFFICULT`)는 Sonnet(`NORMAL_SONNET`, HARD면 `HARD_UI_SONNET`)을 추천한다. `uiUxBoundary`는 남은 UI 판단의 존재일 뿐 어려움이 아니다.
+    `DIFFICULT`는 구현자에게 아직 정해지지 않은 큰 시각·상호작용 설계 판단이 있다는 사실이 있을 때다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
+    접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. UI 파일, HARD 등급, 작업 크기, UI 경계의 존재만으로는 아니다.
+    기존 화면 패턴·명세·Main이 준비한 방향이 배치·문구·동작을 정했으면 `ROUTINE`이며 DeepSeek로 간다. 사실이 너무 얇아 보통인지 어려운지 정할 수 없으면 둘 중 어느 쪽으로도 추측하지 않고 `UNKNOWN`이다(추천 없이 Main에게 알리고 막지 않는다).
+  - 한정된 설계(`boundedDesign`이 `BOUNDED`)도 Sonnet(`NORMAL_SONNET`, HARD면 `HARD_CODE_SONNET`)을 추천한다. 구현자가 알고리즘·상태 모델·배치·근본 원인 가운데 골라야 하지만 목표·수용 조건·승인된 계약이 분명하고 선택이 기존 상태 소유자·공개 계약·모듈 경계 안에서 끝나는 경우다.
+    Main이 접근과 계약을 정해 구현·검증만 남았으면 복잡한 상태 처리여도 `NONE`이라 DeepSeek다. 실패한 테스트나 반복 수정만으로 `BOUNDED`가 되지 않는다(실패 재작업은 `reworkNature`가 본다). 사실이 얇으면 `UNKNOWN`이며 추천 없이 Main에게 알리고 막지 않는다.
+  - `FINDING_ID` 재작업은 Jev의 `reworkNature`가 `BOUNDED_FAILURE`(이전 구현이 이름 붙은 한정된 원인으로 실패했고 남은 수정이 기존 설계 안)일 때만 Sonnet을 추천한다.
+    의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정(`NOT_FAILURE`)은 실패한 구현이 아니므로 일반 작업처럼 DeepSeek로 간다. 판단은 `failureEvidence`·facts·원장 이력(`history`)에 적힌 사실에서만 하고 재시도 횟수 같은 숫자 기준은 만들지 않는다.
+  - 큰 교차 경계 재설계(`designOpen` 0.5 이상. 새 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계 변경이 필요하거나 제품·구조 방향 자체가 열린 경우. 기존 소유자와 승인된 계약 안의 한정된 설계는 해당하지 않는다)와 같은 검사가 수정 뒤에도 다시 실패하거나 원인이 불명·모순인 반복 실패(`RETURN_TO_MAIN`, UI 여부와 무관)는 추천 없이(`profile: null`, 사유 포함) Main으로 돌아온다. Main이 근거·원인·남은 판단을 정리해 접근을 바꾸고 `maker_route`를 다시 실행하며, Sonnet이 난제를 끝없이 재시도하거나 frontier Maker로 올라가지 않는다.
+    이 두 결정만 `beforeTask`에서 발주를 막는다. 임의의 `ROUTING_REASON`이나 다른 후보 선택으로 우회할 수 없고, 사실이나 확정 구현이 바뀐 새 준비에서 결정이 풀렸을 때만 발주된다. 과거 실패 기록만으로 계속 막지 않으며 이미 실행 중인 owner와 모델은 바꾸지 않는다.
+    Jev가 불가이거나 답이 없거나 열린 설계·UI 난이도·한정된 설계를 `UNKNOWN`으로 두면 실패도 열린 설계도 어려운 UI도 아닌 모름이다. 추천 없이 Main에게 알리지만 막지 않고, 더 비싼 모델의 근거로도 쓰지 않으며 기존 `ROUTING_REASON` 경로로만 발주한다.
+  - 한도 여유 비교·과거 성공률만으로 후보를 바꾸지 않으며 미관측은 소진이 아니다. 해당 결정에 쓸 수 있는 후보가 없으면 null과 사유를 돌려준다(DeepSeek 쪽은 위처럼 Main 재판단, 어려운 UI·한정된 설계·실패 재작업의 Sonnet 쪽도 DeepSeek 등으로 내려가지 않는다).
+  - Opus(`NORMAL_OPUS`·`HARD_UI_OPUS`·`HARD_CODE_OPUS`), GPT-6.1 Sol(`NORMAL_SOL`·`HARD_CODE_TERRA`·`HARD_CODE_SOL61`, `implSol`·`implSol61` slot), Gemini(`implGemini`)와 GLM(`implGlm`) 후보는 명시 선택 전용이다. 자동 추천·폴백·승격에 쓰지 않고, Main이 의도한 예외로 고를 때만 `ROUTING_REASON`을 남긴다.
+    Sol 식별자는 기존 계약으로 유지하고 그 슬롯의 실제 모델은 `config.yml`이 정한다(`skim`·`draftFallback`의 Terra는 그대로다). GPT-6 Astra는 Maker 후보가 아니며 교차검토 slot `crossReviewOpenAI`로만 쓴다. 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
+    추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
+  - 기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
+  강도 하한·상한은 정책에 두지 않는다(child 하한은 core 설정 overlay가 건다). 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
+  작업 중 UI/UX 경계가 드러나면 기존 owner의 실제 모델을 확인한다. 그 owner가 이어가며 실행 중 모델은 바꾸지 않는다.
+  Sonnet이 아닌 owner에 새 UI/UX 경계가 드러났으면 Main이 미완 변경·증거를 freeze하고 소유권을 넘길지 정한다.
+  active owner와 새 writer를 겹치거나 완료된 작업을 되풀이하지 않는다. 같은 owner의 이어가기와 완료된 비-UI 작업은 재사용한다.
   계정 내부 전환·warm/exact pin·쿨다운·리셋은 기존 core 계약을 유지한다.
 - Jev는 Main이 분할한 뒤 Maker에게 남은 판단을 분류한다.
   - NORMAL: 목표·보존 동작·검사가 명확하고 기존 명세나 재사용 패턴이 방법을 정하는 경우부터,
@@ -682,8 +682,8 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   `git_finalize`의 `crossReviewHighRisk`는 high-risk인 파일 경로 목록이며 그 파일에만 걸린다. 표본에 뽑힌 커밋은
   프로젝트·스타일·디자이너 파일(`.sln`·`.vbproj`·`.csproj`·`.resx`·`.css`·`*.Designer.*` 등)을 빼고 바뀐 줄이 많은
   코드 파일 5개까지만 요구한다. marker나 high-risk가 걸린 파일은 이 제외·상한과 무관하게 요구된다(2026-10-27 사용자 결정).
-  Anthropic 계열이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI·그 밖 제공자가 쓴 코드는
-  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다. 2026-11-07 사용자 결정으로 보조 검토자(`crossReviewAdvisory`)를
+  Anthropic 계열과 기본 Maker slot(`implDeepSeek`)이 쓴 코드(Main 포함)는 `modelRoles.crossReviewOpenAI`, OpenAI가 쓴 코드와 Google·미상 제공자가 쓴 코드는
+  `modelRoles.crossReviewAnthropic`, 작성자가 섞이면 둘 다가 본다(2026-11-08 사용자 결정: 저비용 기본 Maker 코드도 GPT 검토를 받는다. 설정한 slot과 모델은 그대로이고 일반 preflight·`slop_check` 경로는 바꾸지 않는다). 2026-11-07 사용자 결정으로 보조 검토자(`crossReviewAdvisory`)를
   되살렸다(2026-10-29에 없앴던 slot, 대체 slot은 없다). initial·delta 라운드에서 필수와 함께 부르되 필수가 끝난 뒤 최대 60초만 기다리고,
   그 안에 온 지적(`R*-ADV-*`)은 다른 지적처럼 근거로 닫아야 한다. 늦음·잘림·실패는 기록만 하고 라운드·`resolve`를 막지 않는다.
   2026-10-29 전 원장의 자문 기록과 그 finding(`R*-ADV-*`, 더 옛 기록은 `R*-GGL-*`)도 그대로 읽히며 닫아야 한다. 필수 검토의 실패를

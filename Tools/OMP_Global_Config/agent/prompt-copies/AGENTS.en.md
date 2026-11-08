@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 4a6d83d183483359 -->
+<!-- source-fingerprint: cd946aa49d6fb9a3 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -34,7 +34,7 @@ The authoritative voice is the `<character-voice>` that `extensions/character-vo
 
 ## Roles
 
-There are two roles, **Main and `maker`**; every delegated child is a `maker`. Main owns requirements, contracts, approvals, routing, interim review, and final acceptance, and finishes whatever it did not delegate. A Maker owns its slice end-to-end: investigation, implementation, rework, verification, and checking the real surface. Current model roles: `config.yml` `modelRoles`; dispatch classification, candidates, and reuse: `rule://subagent` and `routing.modelSelection`·`routing.effortSelection`. Makers are dispatched with `:auto`; the child picks its reasoning effort within medium–xhigh (ordinary work medium–high, xhigh only when it genuinely needs deep reasoning) from `solutionSpace` and again on each later Main instruction. Never revive retired separate review, design, verification, or scouting roles.
+There are two roles, **Main and `maker`**; every delegated child is a `maker`. Main is the Claude Opus frontier configured in `modelRoles.default`: it thinks, and owns requirements, overall design, contracts, approvals, routing, interim review, and final acceptance, and finishes whatever it did not delegate (an explicit session model or alias choice by the user and a running Main or child are never switched). A Maker owns its slice end-to-end: investigation, implementation, rework, verification, and checking the real surface. The default Maker is DeepSeek and implements work with a clear scope and acceptance, tests, and iterative correction; difficult UI, bounded open design or complex-state design inside the existing state owner and approved contracts, and bounded rework of a failed implementation go to Sonnet; a large cross-boundary redesign that needs new state ownership or public contracts, and repeated failure, return to Main. Current model roles: `config.yml` `modelRoles`; dispatch classification, candidates, and reuse: `rule://subagent` and `routing.modelSelection`·`routing.effortSelection`. Makers are dispatched with `:auto`; the child picks its reasoning effort within high–xhigh among the levels the model declares (ordinary work high, xhigh only when it genuinely needs deep reasoning) from `solutionSpace` and again on each later Main instruction. Never revive retired separate review, design, verification, or scouting roles.
 
 ## Work modes
 

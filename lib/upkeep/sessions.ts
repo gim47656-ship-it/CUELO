@@ -224,12 +224,51 @@ function snapshotDeliveries(text: string): Omit<MakerResult, "sessionId" | "time
   });
 }
 
-/** 오류 첫 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). */
+const TRACEBACK_HEAD = /^Traceback \(most recent call last\):$/;
+const TRACEBACK_FRAME = /^\s+File "[^"]*", line \d+/;
+/**
+ * 예외 줄. 첫 칸에서 시작하고 마지막 마디가 대문자로 시작하는 CamelCase 이름이며(파이썬 클래스 관례: `ValueError`,
+ * `urllib.error.URLError`) 소문자를 하나 이상 품고, 그 뒤는 `: 메시지`이거나 줄 끝이다. pydantic 검증 오류의 필드
+ * 이름(`name`)과 예외 뒤에 찍힌 로그 줄(`INFO: Shutting down`처럼 전부 대문자인 표지)은 여기에 걸리지 않는다.
+ */
+const EXCEPTION_LINE = /^(?:[A-Za-z_]\w*\.)*(?=[\w]*[a-z])[A-Z]\w*(?::(?:\s.*)?)?$/;
+const NO_OUTPUT_LINE = /^\(no output\)$/;
+const RUN_NOISE = /^(?:Wall time: [\d.]+ seconds|Command exited with code \d+)$/;
+const EXIT_ONLY_LINE = /^Command exited with code (\d+)$/;
+/** bash 실패에서 원인을 말하는 줄의 표지. 배너(`bun test v1.1.0`)나 통과 집계 줄보다 먼저 본다. */
+const BASH_ERROR_MARK = /\b(?:error|errors|failed|failure|fatal|not found|no such|denied|cannot|can't|unable|Traceback|Exception)\b|오류|실패|없습니다|없다|차단/i;
+
+/**
+ * 실패를 대표하는 줄. Traceback 머리·프레임, 「(no output)」, 빈 줄, 실행 꼬리는 원인을 말하지 않으므로 건너뛴다.
+ * Traceback이 있으면 마지막 예외 줄(terminal exception)을, bash면 오류 표지가 있는 첫 줄을, 그 밖에는 첫 뜻 있는
+ * 줄을 쓴다. 뜻 있는 줄이 없으면 종료 코드 줄을 그대로 남겨 exit만 있는 실패도 근거를 잃지 않게 한다(2026-11-08:
+ * 14일 111건 (no output)과 Traceback 머리가 각각 한 묶음으로 뭉쳤다).
+ */
+function errorLine(tool: string, lines: string[]): string {
+  const usable = lines.filter((x) => {
+    const t = x.trim();
+    return t && !TRACEBACK_HEAD.test(t) && !TRACEBACK_FRAME.test(x) && !NO_OUTPUT_LINE.test(t) && !RUN_NOISE.test(t);
+  });
+  if (lines.some((x) => TRACEBACK_HEAD.test(x.trim()))) {
+    const exceptions = usable.filter((x) => EXCEPTION_LINE.test(x.trim()));
+    const terminal = (exceptions.at(-1) ?? usable.at(-1))?.trim();
+    if (terminal) return terminal;
+  }
+  if (tool === "bash") {
+    const marked = usable.find((x) => BASH_ERROR_MARK.test(x));
+    if (marked) return marked.trim();
+  }
+  return (usable[0] ?? lines.find((x) => EXIT_ONLY_LINE.test(x.trim())) ?? lines[0] ?? "").trim();
+}
+
+/** 오류 대표 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). exit만 있는 실패는 종료 코드를 남긴다. */
 export function normalizeError(tool: string, text: string): string {
-  const lines = text.split("\n");
+  const lines = text.split(/\r?\n/);
   const line = tool === "ego_browser"
     ? lines.find((x) => /Error|timed|not|failed/i.test(x)) ?? lines[0]
-    : tool === "skim" ? lines.at(-1) ?? lines[0] : lines[0];
+    : tool === "skim" ? lines.at(-1) ?? lines[0] : errorLine(tool, lines);
+  const exitOnly = EXIT_ONLY_LINE.exec(line.trim());
+  if (exitOnly) return `Command exited with code ${exitOnly[1]}`;
   return maskSecrets(line)
     .replace(/(?:[A-Za-z]:)?\/(?:[^\s:]+\/)*[^\s:]*/g, "<p>")
     .replace(/\b(?:0x)?[a-f\d]{8,}\b/gi, "<h>")
@@ -271,10 +310,17 @@ export function argumentShape(tool: string, args: unknown): string {
 }
 
 /**
- * 사용자 중단·보조 건너뜀·취소, 그리고 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언처럼 의도된 비결함 오류.
- * 사전 점검 조언은 "오류가 아니다"로 시작하고 다시 부르면 통과한다.
+ * 사용자 중단·보조 건너뜀·취소처럼 의도된 비결함 오류. 대소문자 표기가 흔들려도 같은 뜻이므로 가리지 않는다.
  */
-const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^\[사전 점검\] 오류가 아니다\.|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
+const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
+
+/**
+ * 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언. 결과 첫 줄이 정확히 `[사전 점검] 오류가 아니다.`,
+ * 도구 래퍼가 앞에 붙인 `Error: [사전 점검] 오류가 아니다.`, 옛 문구 `[아르곤 사전 점검] 오류가 아니다.` 중 하나일
+ * 때만 제외한다(14일에 7건). 대소문자를 가리지 않으면 `ERROR:` 같은 다른 표기의 실제 실패까지 조언으로 삼키고,
+ * 문구가 중간에 섞인 실패도 조언이 아니므로 대소문자를 그대로 본다(2026-11-08 점검판 오판정).
+ */
+const PREFLIGHT_ADVICE = /^(?:Error: )?\[사전 점검\] 오류가 아니다\.|^\[아르곤 사전 점검\] 오류가 아니다\./;
 
 /**
  * 도구 결과 뒤 이것이 끼면 다음 요청은 도구 결과가 아니라 새 입력(사용자·다른 agent의 메시지, 백그라운드 결과)이나 세션 재개를
@@ -637,7 +683,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);
           const text = m.isError ? textOf(m.content) : "";
-          const failed = m.isError === true && !INTENDED_ERROR.test(text) && classifyToolError(call.name, call.command, text) === "failed";
+          const failed = m.isError === true && !INTENDED_ERROR.test(text) && !PREFLIGHT_ADVICE.test(text) && classifyToolError(call.name, call.command, text) === "failed";
 
           // 스킬 계기판: 세션 합계와, 같은 턴에서 먼저 연 스킬마다 연 뒤 호출로 센다. 성공한 스킬 읽기는 열람이다.
           const totals = sessionTotals[call.index].get(call.path) ?? { calls: 0, failures: 0 };

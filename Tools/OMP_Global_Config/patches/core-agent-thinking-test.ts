@@ -230,8 +230,8 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	console.log("  PASS  raise-only 재판정은 올리기만 하고, 다음 새 사용자 턴은 다시 내려갈 수 있다");
 }
 
-// [child-range] Maker auto 범위(2026-10-30 사용자 결정): child(createSubagentSettings overlay)의 auto 도 medium~xhigh 안에서
-// 고른다. Opus 처럼 max 가 있는 모델도 auto 는 max 를 묻지 않고, low 는 medium 으로 올린다. concrete effort 로 띄운 child 는 auto 가 아니다.
+// [child-range] Maker auto 범위(2026-11-08 사용자 결정): child(createSubagentSettings overlay)의 auto 는 high~xhigh 안에서 고른다(Main 은 medium~xhigh).
+// Opus 처럼 max 가 있는 모델도 auto 는 max 를 묻지 않고, low·medium 은 high 로 올린다. 선언하지 않은 단계는 만들지 않고, concrete effort 로 띄운 child 는 auto 가 아니다.
 {
 	const { createSubagentSettings } = await import(`${packages}/pi-coding-agent/src/task/executor.ts`);
 	const root = mkdtempSync(join(tmpdir(), "omp-child-range-"));
@@ -251,7 +251,8 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	const childTurn = controls(opus, { settings: child }).turn;
 	assert.equal(await childTurn("xhigh"), "xhigh", "child Opus auto 상한은 xhigh 다");
 	assert.ok(!askedLevels.includes("max"), "child 분류 질문에 Opus max 가 없다");
-	assert.equal(await childTurn("low"), "medium", "child low 는 하한 medium 으로 올린다");
+	assert.equal(await childTurn("low"), "high", "child low 는 하한 high 로 올린다");
+	assert.equal(await childTurn("medium"), "high", "child medium 도 하한 high 로 올린다");
 	assert.equal(await childTurn("high"), "high", "child 일반 작업 단계 high 는 그대로다");
 	assert.equal(await controls(full, { settings: child }).turn("xhigh"), "xhigh", "max 가 없는 모델도 상한 xhigh 까지다");
 	const mainTurn = controls(opus, { settings: main }).turn;
@@ -262,6 +263,14 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	assert.equal(await concrete.turn("max"), "high", "concrete effort child 는 분류 결과를 쓰지 않는다");
 	assert.equal(concrete.control.isAutoThinking, false);
 	rmSync(root, { recursive: true, force: true });
-	console.log("  PASS  child auto 는 medium~xhigh(Opus 도 max 없음)이고 Main medium~xhigh·concrete child 는 그대로다");
+	// DeepSeek 처럼 low·high·max 만 선언한 사다리: low 는 high 로 올리고 max 는 상한 xhigh 에 막혀 선언된 high 로 남는다.
+	const sparse = ladderModel(["low", "high", "max"]);
+	assert.equal(await controls(sparse, { settings: child }).turn("low"), "high", "선언된 low 는 high 로 올린다");
+	assert.equal(await controls(sparse, { settings: child }).turn("xhigh"), "high", "선언하지 않은 xhigh 를 만들지 않고 max 로 올리지도 않는다");
+	// high~xhigh 사이에 선언된 단계가 없으면 하한을 올리지 못하므로 그대로 둔다.
+	const lowOnly = ladderModel(["low", "medium"]);
+	assert.equal(await controls(lowOnly, { settings: child }).turn("low"), "low", "high 이상이 없는 사다리는 그대로다");
+	assert.equal(await controls(lowOnly, { settings: child }).turn("medium"), "medium");
+	console.log("  PASS  child auto 는 high~xhigh(Opus 도 max 없음, 선언 단계만)이고 Main medium~xhigh·concrete child 는 그대로다");
 }
 console.log("결과 11 pass");

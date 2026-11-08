@@ -1257,8 +1257,8 @@ if (policy !== null) {
     "Maker의 기본 추론은 auto여야 한다.",
   );
   check(
-    valueAt(policy, "roles.maker.effortLevels") === "child-auto-within-medium-to-xhigh-low-and-max-are-never-auto-picked",
-    "Maker 추론은 medium~xhigh 안의 child auto여야 한다(low·max는 auto가 고르지 않는다).",
+    valueAt(policy, "roles.maker.effortLevels") === "child-auto-within-high-to-xhigh-declared-levels-only-low-medium-and-max-are-never-auto-picked",
+    "Maker 추론은 모델이 선언한 단계 중 high~xhigh 안의 child auto여야 한다(low·medium·max는 auto가 고르지 않는다).",
   );
 
   const routing = isPlainObject(policy.routing) ? policy.routing : {};

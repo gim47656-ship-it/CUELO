@@ -79,7 +79,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R42 | 검토·게이트 모델은 `crossReview*`·`slopReviewOpenAI` 슬롯만 | 구조(부분) | `extensions/cross-review.ts`, `extensions/slop-gate.ts`(슬롯에서만 reviewer 해석) | 브리프에 다른 모델을 적는 실수는 문서(2026-10-26 지적) |
 | R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | |
 | R44 | lock·ancestry·non-ff 우회 금지, rebase·merge·pull·reset 금지 | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.gitIntegrate`·`gitReset`·`gitClean`·`gitDiscard`·`gitDelete` | `index.lock` 삭제는 막지 않음 |
-| R45 | 사용자 관찰은 수용하고 진단과 제안은 근거와 대조하며, 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | — | R37의 외부 조언 안내가 일반 사용자 진단 전체를 검사하지는 않는다. 선택적 주장 확인의 비용 제한은 필수 검증을 면제하지 않는다 |
+| R45 | 사용자 관찰은 수용하고 진단과 제안은 근거와 대조하며, 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | 특정 호출 계약 회귀: `extensions/tests/argon-preflight.test.ts`, `extensions/tests/cross-review.test.ts` | 11-08 정정으로 Gemini 우선 사전 점검과 대체 없는 선택적 보조 검토를 회귀 검사한다. 이는 해당 계약의 재발 검사이며 일반적인 사용자 의도 해석을 강제하지는 않는다. R37 안내도 일반 사용자 진단 전체를 검사하지 않는다. 선택적 주장 확인의 비용 제한은 필수 검증을 면제하지 않는다 |
 | R46 | 새 답변과 새 문서 산문에서 U+00B7 낱말 결합을 피하고 원문과 기존 내용을 보존한다 | 차단(부분) | `extensions/slop-gate/review.ts` `buildReviewRequest`, `tools/git-finalizer/index.ts` `runSlopGate` | 기존 검사 대상 산출물에 한해 reviewer가 판단한다. 채팅과 제외된 Markdown은 문서 수준이며 문자 필터나 일괄 치환은 없다 |
 
 ## 전역 AGENTS.md
@@ -101,7 +101,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
 | A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내 | `extensions/lib/maker-routing.ts` `maker_route`, `evals/cases/routine/small-grouped.json`·`concurrency-eight-way.json`·`routine-simple.json` | 요청당 child 상한은 task-guard 차단 |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
-| A16 | 판단 경계는 `maker_route`·런타임 advisory | 구조 | `extensions/lib/maker-routing.ts`, `extensions/jev-runtime.ts` | |
+| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 차단(부분) | `extensions/lib/maker-routing.ts`의 `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts` | 큰 교차 경계 재설계와 반복 실패는 Main의 재준비 전 발주 차단. 한정된 설계는 Sonnet 추천, 모름과 후보 소진은 Main의 근거 있는 선택 허용 |
 | A17 | Main은 Maker 경로를 고치지 않고 검사를 반복하지 않는다 | 문서 | — | OwnerWriteGuard는 Maker 쓰기만 본다 |
 | A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | 검사 | `patches/core-subagent-verify-test.ts`, `evals/cases/security/missing-evidence.json` | 최종 확인·N회 반복은 검토 수렴 뒤 한 번(`writerValidation.finalSuiteOrder`, Maker SOP)은 문서. 2026-11-04 지적(검토마다 10회 반복 재시작) |
 | A19 | `wait`는 Main 전용 | 구조 | `patches/core-subagent-wait-test.ts` | |

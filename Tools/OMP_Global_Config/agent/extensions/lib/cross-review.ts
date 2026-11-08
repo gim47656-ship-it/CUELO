@@ -25,8 +25,9 @@ import {
 import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
 
 /**
- * 계열 교차검증. Anthropic 모델이 쓴 코드는 OpenAI reviewer(Astra)가, OpenAI 모델이 쓴 코드는 Anthropic reviewer(Opus)가
- * 보고, 지적이 모두 닫혀야 git_finalize가 커밋한다(사용자 결정 2026-10-11, 범위: trigger 필수 + 10% 표본).
+ * 계열 교차검증. Anthropic·DeepSeek 모델이 쓴 코드는 OpenAI reviewer(Astra)가, OpenAI 모델이 쓴 코드는 Anthropic reviewer(Opus)가,
+ * Google·unknown 저자는 지금처럼 Anthropic reviewer가 보고, 지적이 모두 닫혀야 git_finalize가 커밋한다
+ * (사용자 결정 2026-10-11, 범위: trigger 필수 + 10% 표본. 2026-11-08 사용자 결정: DeepSeek 작성분도 GPT 검토).
  *
  * 이 파일은 순수 논리(계열 매핑, marker, 표본, 체인/통과 판정, 게이트 판정)와 git 수집 helper를 담는다. 모델 호출과
  * 도구 등록은 cross-review.ts, 게이트 호출은 tools/git-finalizer/index.ts에 있다.
@@ -36,9 +37,9 @@ import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
  */
 
 /** 저자 모델의 계열. 필수 reviewer 자리를 정하는 데만 쓴다. */
-export type Family = "openai" | "anthropic" | "google";
+export type Family = "openai" | "anthropic" | "google" | "deepseek";
 /**
- * 필수 reviewer 자리. 저자의 반대 계열을 본다. slop_check도 이 자리를 그대로 쓴다.
+ * 필수 reviewer 자리. slop_check도 이 자리를 그대로 쓴다.
  * 보조 검토자(modelRoles.crossReviewAdvisory, 2026-11-07 사용자 결정으로 복구)는 자리가 아니다: runReview가 따로 부르고, record.reviewers·passable에
  * 들지 않으며 그 지적만 R<n>-ADV-k로 라운드 지적에 합친다. 2026-10-29 전 원장의 자문 기록(family advisory·google, GGL)은 읽기 전용이다.
  */
@@ -88,32 +89,54 @@ const RESULT_EXCERPT_CHARS = 2_000;
 
 // ── 계열 매핑 ────────────────────────────────────────────────────────────────
 
-/** `provider/model[:effort]` 또는 모델 id만 온 selector에서 저자의 계열을 읽는다. Gemini 모델 id는 어느 provider에 실려 있어도 google이고, 모르는 provider는 other다. */
+/**
+ * `provider/model[:effort]` 또는 모델 id만 온 selector에서 저자의 계열을 읽는다. Gemini·DeepSeek 모델 id는 어느 provider에 실려 있어도
+ * 각각 google·deepseek이고(저장소의 DeepSeek는 `hive`·`b-ai`·`opencode-go` 등 여러 provider로 온다), 모르는 provider는 other다.
+ */
 export function authorFamily(selector: string): Family | "other" {
   const base = selector.trim().toLowerCase().split(":")[0];
   const provider = base.includes("/") ? base.slice(0, base.indexOf("/")) : "";
   const id = base.includes("/") ? base.slice(base.indexOf("/") + 1) : base;
   if (/(^|\/)gemini/.test(id)) return "google";
+  if (/(^|\/)deepseek/.test(id)) return "deepseek";
   if (provider === "anthropic" || (!provider && id.startsWith("claude"))) return "anthropic";
   if (provider === "openai-codex" || provider === "openai" || (!provider && /^(gpt|o\d)/.test(id))) return "openai";
   if (provider === "google" || provider.startsWith("google-")) return "google";
   return "other";
 }
 
-/**
- * 저자 계열의 반대 계열이 필수 reviewer다. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google 포함)는 Anthropic이 본다.
- * "main"은 이 세션의 현재 모델로 풀고, 풀 수 없으면 추측하지 않고 던진다. 저자가 두 계열에 걸치면 둘 다 돌린다.
- */
-export function reviewerLanes(authors: string[], mainModel: string | undefined): Lane[] {
+/** authors를 "main"까지 풀어 검사한 selector 목록으로 만든다. 비어 있으면 던진다. */
+function authorSelectors(authors: string[], mainModel: string | undefined): string[] {
   const cleaned = authors.map((author) => author.trim()).filter(Boolean);
   if (cleaned.length === 0) throw new Error("authors must list at least one model selector (or \"main\").");
+  return cleaned.map((author) => {
+    if (author.toLowerCase() !== "main") return author;
+    if (!mainModel) throw new Error("authors includes \"main\" but the session's current model could not be resolved; pass its selector explicitly.");
+    return mainModel;
+  });
+}
+
+/**
+ * 코드 교차검증(`cross_review`)의 필수 reviewer 자리(2026-11-08 사용자 결정: DeepSeek가 쓴 코드도 GPT가 검토한다).
+ * Anthropic·DeepSeek 저자는 OpenAI 슬롯(crossReviewOpenAI)이, OpenAI와 그 밖의 계열(Google·unknown)은 Anthropic 슬롯이 본다.
+ * 저자가 두 자리에 걸치면 둘 다 돌린다.
+ */
+export function codeReviewLanes(authors: string[], mainModel: string | undefined): Lane[] {
   const out = new Set<Lane>();
-  for (const author of cleaned) {
-    let selector = author;
-    if (author.toLowerCase() === "main") {
-      if (!mainModel) throw new Error("authors includes \"main\" but the session's current model could not be resolved; pass its selector explicitly.");
-      selector = mainModel;
-    }
+  for (const selector of authorSelectors(authors, mainModel)) {
+    const family = authorFamily(selector);
+    out.add(family === "anthropic" || family === "deepseek" ? "openai" : "anthropic");
+  }
+  return [...out].sort();
+}
+
+/**
+ * 계열 중립적인 "반대 계열" 자리. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google·DeepSeek 포함)는 Anthropic이 본다.
+ * slop_check와 argon-preflight가 쓰는 경로이며 2026-11-08 DeepSeek 코드 검토 경로 추가 전후로 동작이 같다.
+ */
+export function reviewerLanes(authors: string[], mainModel: string | undefined): Lane[] {
+  const out = new Set<Lane>();
+  for (const selector of authorSelectors(authors, mainModel)) {
     out.add(authorFamily(selector) === "anthropic" ? "openai" : "anthropic");
   }
   return [...out].sort();
@@ -2267,7 +2290,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     round = previous.round + 1;
     families = continuedLanes(previous.reviewers);
   } else {
-    families = reviewerLanes(input.authors, deps.mainModel);
+    families = codeReviewLanes(input.authors, deps.mainModel);
   }
   // 이어지는 라운드가 files·acceptance를 생략하면 체인에서 이어받는다(2026-10-28 사용자 결정: 이어받지 않아 거절된 호출 4건). files는 체인의 모든
   // 라운드가 본 파일, acceptance는 바로 앞 라운드가 사본에 남긴 기준이다. 주면 준 값이 그대로 쓰인다(files는 앞 라운드 파일에 더해진다).

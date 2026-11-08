@@ -18,7 +18,12 @@ export function parseHandoff(text: string, path: string, now = new Date()): Upke
     const full = body.join("\n");
     const title = /^-\s+\*\*(.+?)(?:[:：]\*\*|\*\*[:：])/.exec(lines[i - body.length + 1])?.[1] ?? lines[i - body.length + 1].replace(/^-\s+/, "");
     const titleDate = /\((\d{1,2})-(\d{1,2})/.exec(title);
-    const titleDue = /(\d{1,2})-(\d{1,2})\s*(?:후속 점검|닫기 판정|점검)/.exec(title);
+    // 「11-10 실사용 관찰」·「11-09 확인」처럼 점검과 같은 뜻의 확인 행위를 적은 제목도 점검일이다. 다만 새 단서는 제목의
+    // 표지 자리(닫는 괄호, 쉼표, 목록 구분자, 제목 끝, 또는 앞으로 할 일을 뜻하는 `예정`)에 있어야 한다. 서술어가
+    // 이어지면(`11-05 확인 완료`·`11-05 확인됐다`) 그날 한 일을 적은 기록 날짜이고, 작성·등록·완료·배포일도 확인 행위가
+    // 아니다. 기존 단서(후속 점검·닫기 판정·점검)의 판정은 그대로 둔다.
+    const titleDue = /(\d{1,2})-(\d{1,2})\s*(?:후속 점검|닫기 판정|점검)/.exec(title)
+      ?? /(\d{1,2})-(\d{1,2})\s*(?:재?확인|(?:실사용\s*)?관찰)(?=\s*(?:[,，·)]|$|예정))/.exec(title);
     // 링크 글자(「[11-01 점검·발급 기록](…)」)의 날짜는 기록 이름이지 점검일이 아니다.
     const bodyText = full.slice(full.indexOf("**", full.indexOf("**") + 2) + 2).replace(/\[[^\]]*\]\([^)]*\)/g, "[]");
     // 단서는 lookahead로 둬서 한 날짜의 단서 구간이 뒤 날짜를 삼키지 않게 하고, 「…에 … 다시 센다」는 한 문장 안에서만 본다.

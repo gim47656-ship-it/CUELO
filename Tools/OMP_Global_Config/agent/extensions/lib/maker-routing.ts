@@ -84,14 +84,12 @@ interface Candidate { profile: string; model: string; efforts: readonly string[]
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
 interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
-/** Background slices can prefer DeepSeek. */
-export type DeepSeekTrigger = "off-critical-path";
 export interface NormalAllocation {
   state: "observed" | "unavailable";
   profile: string | null;
   reason: string;
-  /** 이 추천에서 걸린 트리거. 없으면 빈 배열이다. */
-  triggers: DeepSeekTrigger[];
+  /** true면 Main이 원인·접근을 정리해 다시 준비해야 하는 결정이다. beforeTask가 이 준비로는 어떤 후보도 발주하지 못하게 한다. */
+  returnToMain: boolean;
 }
 /** 같은 준비→발주 계약에서 공유하는 provider online 갱신 시도. 값은 실패 사유이고 null이면 성공이다. */
 type RefreshAttempts = Map<string, Promise<string | null>>;
@@ -101,9 +99,13 @@ interface RoutingPolicy {
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
     uiUxBoundaryCriteria: string;
-    /** Main이 이 조각의 결과를 기다리는지(mainWaits) 판정 기준. 확률형 bool이며 0.5 미만일 때만 기다리지 않는다고 본다. */
-    mainWaitsCriteria: string;
     designOpenCriteria: string;
+    /** FINDING_ID 재작업의 성격 choice 정본(NONE·BOUNDED_FAILURE·RETURN_TO_MAIN·NOT_FAILURE). */
+    reworkNatureCriteria: Record<string, string>;
+    /** 남은 UI 판단의 난이도 choice 정본(NONE·ROUTINE·DIFFICULT). uiUxBoundary(남은 UI 판단의 존재)와 별개다. */
+    uiDifficultyCriteria: Record<string, string>;
+    /** 남은 비시각 설계 판단(알고리즘·상태 모델·배치·근본 원인)이 기존 상태 소유자·승인된 계약 안에 한정되는지 choice 정본(NONE·BOUNDED·UNKNOWN). */
+    boundedDesignCriteria: Record<string, string>;
     /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
     delegationCriteria: Record<string, string>;
     /** 교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN). 답은 Main의 지시서 판단을 돕는 자문이며 게이트를 바꾸지 않는다. */
@@ -291,7 +293,19 @@ function decisionQuestions(policy: RoutingPolicy) {
     },
     designOpen: {
       type: "noul",
-      instructions: `${policy.modelSelection.designOpenCriteria}. 근거가 부족하면 열린 설계로 본다.`,
+      instructions: `${policy.modelSelection.designOpenCriteria}. 근거가 부족해 큰 재설계인지 정해진 방향인지 알 수 없으면 높은 값으로 채우지 말고 이 질문의 답을 비운다(모름). 모름은 열린 설계가 아니다. 여기서 높은 값은 새 정본 상태 소유권·모듈 간 공개 계약·모듈 경계를 바꿔야 하는 큰 교차 경계 재설계나 제품·구조 방향 자체가 열린 경우뿐이다. 기존 상태 소유자와 승인된 계약 안에서 목표와 수용 조건이 분명한 설계 선택은 낮은 값으로 두고 boundedDesign이 따로 분류한다. 화면의 시각·상호작용 설계 판단은 uiDifficulty가 분류한다. HARD 등급이라는 이름, 코드 양, 파일 수, 복잡도만으로 열린 설계로 보지 않는다. Main이 방향과 해법을 정했고 구현·검증만 남았으면 복잡한 상태 처리도 열린 설계가 아니다.`,
+    },
+    uiDifficulty: {
+      type: "choice", criteria: policy.modelSelection.uiDifficultyCriteria,
+      instructions: "위 criteria를 정본으로 facts·remainingJudgments·settledImplementation·reusedPatterns에 적힌 사실만으로 남은 UI/UX 판단의 난이도를 분류한다. UI 파일이거나 uiUxBoundary가 있다는 사실, HARD 등급, 작업 크기만으로 DIFFICULT로 정하지 않는다. 기존 화면 패턴·명세·Main이 준비한 방향이 배치·문구·동작을 정했으면 ROUTINE이다. 사실이 부족해 보통인지 어려운지 정할 수 없으면 DIFFICULT로 올리지도 ROUTINE으로 확정하지도 말고 UNKNOWN을 고른다.",
+    },
+    boundedDesign: {
+      type: "choice", criteria: policy.modelSelection.boundedDesignCriteria,
+      instructions: "위 criteria를 정본으로 facts·remainingJudgments·settledImplementation·hypotheses에 적힌 사실만으로 남은 비시각 설계 판단(알고리즘·상태 모델·배치·근본 원인 선택)을 분류한다. Main이 접근과 계약을 정해 구현·검증만 남았으면 복잡한 상태 처리여도 NONE이다. 구현자가 대안 가운데 골라야 하지만 목표·수용 조건·승인된 계약이 분명하고 기존 상태 소유자·공개 계약·모듈 경계 안에서 끝나면 BOUNDED다. 새 상태 소유권이나 공개 계약이 필요한 큰 재설계는 designOpen의 몫이므로 여기서 BOUNDED로 만들지 않는다. 테스트가 실패했다는 사실이나 반복 수정만으로 BOUNDED로 정하지 않는다(실패 재작업은 reworkNature가 본다). 사실이 부족해 NONE인지 BOUNDED인지 정할 수 없으면 둘 중 어느 쪽으로도 추측하지 말고 UNKNOWN을 고른다.",
+    },
+    reworkNature: {
+      type: "choice", criteria: policy.modelSelection.reworkNatureCriteria,
+      instructions: "위 criteria를 정본으로 failureEvidence·facts·hypotheses·remainingJudgments에 적힌 사실만으로 이 조각이 이전 구현 시도의 실패를 다시 하는 것인지 분류한다. FINDING_ID 표기 유무는 근거가 아니다. 의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정은 구현 실패가 아니다. 과거 실패 기록이 있어도 Main이 접근·범위·계약을 바꿔 지금 접근에는 그 실패가 해당하지 않는다고 적었으면 RETURN_TO_MAIN으로 정하지 않는다(과거 기록만으로 정하지 않고 지금 접근의 미해결 실패를 본다). 사실이 없으면 NONE이다. 재시도 횟수나 파일 수 같은 숫자 기준은 만들지 않는다.",
     },
   };
   // 위임 판정은 정책 정본(delegationCriteria = MAIN·MAKER·UNKNOWN)을 그대로 choice 선택지로 쓴다.
@@ -299,11 +313,6 @@ function decisionQuestions(policy: RoutingPolicy) {
     type: "choice",
     criteria: policy.modelSelection.delegationCriteria,
     instructions: "위 criteria를 정본으로 이 조각의 수행 주체를 독립적으로 판단한다. facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 있는 독립 완결성, Main 보유 문맥, 실제 병렬·전문성 이득, 설명·검수 부담을 대조한다. 난이도나 병렬 실행 가능성만으로 위임 이득을 단정하지 않는다. 결과는 Main의 조언이며 자동 발주·owner 변경이 아니다.",
-  };
-  // Main이 이 조각의 결과를 기다리는지. 낮을 때만(<0.5) NORMAL_DEEPSEEK 트리거이며, 답이 없거나 Jev가 불가하면 기다린다고 본다.
-  questions.mainWaits = {
-    type: "noul",
-    instructions: `${policy.modelSelection.mainWaitsCriteria}. facts·remainingJudgments·paths에 적힌 사실만 근거로 하고, 그런 사실이 없으면 Main이 기다린다고 본다.`,
   };
   // 교차검증 필요성은 같은 판단 묶음의 typed choice로만 묻는다(추가 모델 호출 없음). 답은 자문이며 git_finalize 게이트는 이 답을 읽지 않는다.
   questions.crossReviewNeed = {
@@ -632,16 +641,30 @@ function placementOf(
 
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-/** NORMAL이지만 일반 소진 대체 대상이 아니라 Main이 ROUTING_REASON으로 고르는 후보. */
-const EXPLICIT_ONLY_NORMAL_PROFILES: Readonly<Record<string, true>> = { NORMAL_OPUS: true, NORMAL_GEMINI: true, NORMAL_GLM: true };
-
-/** Settled non-UI work prefers the implSol slot (GPT-6.1 Sol); only background work prefers DeepSeek. */
-const NORMAL_FALLBACK_ORDER: readonly string[] = ["NORMAL_SOL", "NORMAL_SONNET", "NORMAL_DEEPSEEK"];
-const DEEPSEEK_FIRST_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SOL", "NORMAL_SONNET"];
-const TRIGGER_REASONS: Readonly<Record<DeepSeekTrigger, string>> = {
-  "off-critical-path": "Jev가 Main이 이 결과를 기다리지 않는다고 판단(mainWaits<0.5)",
-};
-const DEEPSEEK_TRIGGER_NOTE = "방향이 정해진 비-UI NORMAL 중 Main이 결과를 기다리지 않는 작업(mainWaits<0.5)만 DeepSeek를 먼저 추천합니다.";
+/**
+ * 자동 추천(2026-11-08 사용자 결정). Main(Claude Opus)이 생각·준비·검수하고 DeepSeek가 Main이 준비한 대부분의 구현을 맡는다. UI·상태 복잡도가
+ * 있어도 Main이 방향을 정했으면 DeepSeek다. Sonnet은 어려운 UI(uiDifficulty=DIFFICULT), 기존 상태 소유자·승인된 계약 안의 한정된 설계·복잡 상태
+ * 설계(boundedDesign=BOUNDED), 경계가 정해진 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)만 맡는다. 큰 교차 경계 재설계·열린 제품/구조 방향(designOpen)과
+ * 반복 실패(RETURN_TO_MAIN)는 UI 여부와 상관없이 Main이 먼저 갖는다.
+ * Sonnet 재시도나 frontier Maker로 올리지 않는다. 기본 후보(DeepSeek)가 없거나 관측 소진이어도 Sonnet으로 자동 대체하지 않는다(2026-11-08
+ * 사용자 결정): 추천 없음과 "Main이 다시 판단" 사유만 돌려주며 막지는 않는다. Opus·Sol·Gemini·GLM은 추천 순서에 없고 Main이 의도한
+ * 예외로 ROUTING_REASON과 함께 명시 선택한다. Jev가 모르면 모르는 것이며 더 비싼 모델의 근거가 아니다.
+ */
+const SETTLED_NORMAL_ORDER: readonly string[] = ["NORMAL_DEEPSEEK"];
+const SETTLED_HARD_ORDER: readonly string[] = ["HARD_CODE_DEEPSEEK"];
+const SONNET_NORMAL_ORDER: readonly string[] = ["NORMAL_SONNET"];
+const HARD_UI_ORDER: readonly string[] = ["HARD_UI_SONNET"];
+const HARD_REWORK_ORDER: readonly string[] = ["HARD_CODE_SONNET"];
+const SETTLED_BASIS = "Main이 방향을 정한 구현이라 DeepSeek가 먼저 맡습니다.";
+const DIFFICULT_UI_BASIS = "정말 어려운 UI/UX 판단이 남아 Sonnet이 맡습니다.";
+const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sonnet이 맡습니다.";
+const BOUNDED_REWORK_BASIS = "경계가 정해진 구현 실패 재작업은 Sonnet이 맡습니다.";
+const RETURN_REMEDY = "Main이 원인과 근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 maker_route를 다시 실행하세요. 갱신된 준비가 해결된 구조와 한정된 구현으로 판정되면 그 준비로 발주할 수 있습니다(임의의 ROUTING_REASON으로는 넘길 수 없습니다).";
+const RETURN_REWORK_REASON = `같은 원인의 한정된 수정이 남지 않았거나 현재 접근이 실패했다는 증거가 있어 반복 실패로 판단했습니다(의도한 RED 테스트·일시적 인프라 실패는 제외). Sonnet 재시도나 frontier Maker 승격으로 잇지 않습니다. ${RETURN_REMEDY}`;
+const OPEN_DESIGN_REASON = `승인된 접근이 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계의 미해결 변경 없이는 수용 조건을 만족하지 못하거나 제품·구조 방향 자체가 열려 있는 큰 교차 경계 재설계가 남았습니다. ${RETURN_REMEDY}`;
+const UNKNOWN_DESIGN_REASON = "Jev가 열린 설계 여부를 판단하지 못했습니다(모름). 모르는 것은 실패가 아니며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
+const UNKNOWN_UI_REASON = "Jev가 남은 UI/UX 판단의 난이도를 판단하지 못했습니다(모름). 어렵다고 올리지도 보통이라고 확정하지도 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
+const UNKNOWN_BOUNDED_REASON = "Jev가 남은 설계 판단이 한정된 것인지 정해진 것인지 판단하지 못했습니다(모름). 어느 쪽으로도 추측하지 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
 
 
 /** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
@@ -669,38 +692,32 @@ function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
 }
 
-/** Allocate settled non-UI NORMAL work among available candidates. */
-function normalAllocation(
-  policy: RoutingPolicy, candidates: readonly Candidate[], quota: QuotaSnapshot, triggers: readonly DeepSeekTrigger[],
+/** `order`의 첫 사용 가능 후보를 추천한다. 후보가 없거나 관측 소진이면 다음 후보로 내리지 않고 null과 Main 재판단 사유를 돌려준다(Opus·Sol·Sonnet으로 올리거나 내리지 않는다). */
+function allocate(
+  candidates: readonly Candidate[], quota: QuotaSnapshot, order: readonly string[], basis: string,
 ): NormalAllocation {
-  const order = triggers.length > 0 ? DEEPSEEK_FIRST_ORDER : NORMAL_FALLBACK_ORDER;
-  const rank = (candidate: Candidate) => {
-    const index = order.indexOf(candidate.profile);
-    return index < 0 ? order.length : index;
-  };
-  const normal = candidates
-    .filter((candidate) => policy.modelSelection.profiles[candidate.profile]?.workClass === "NORMAL" && !EXPLICIT_ONLY_NORMAL_PROFILES[candidate.profile])
-    .sort((a, b) => rank(a) - rank(b));
-  const selected = normal.find((candidate) => !modelQuotaExhausted(quota, candidate.model));
-  const state = quota.state === "observed" && selected ? "observed" as const : "unavailable" as const;
-  const fired = triggers.map((trigger) => TRIGGER_REASONS[trigger]).join("; ");
+  const selected = order
+    .map((profile) => candidates.find((candidate) => candidate.profile === profile))
+    .find((candidate): candidate is Candidate => candidate !== undefined && !modelQuotaExhausted(quota, candidate.model));
   const reason = !selected
-    ? triggers.length > 0
-      ? `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 사용 가능한 NORMAL 후보가 없습니다.`
-      : "사용 가능한 NORMAL 후보가 없습니다."
-    : triggers.length > 0
-      ? selected.profile === "NORMAL_DEEPSEEK"
-        ? `NORMAL_DEEPSEEK 트리거: ${fired}. 비-UI NORMAL이라 Hive의 DeepSeek 1017을 먼저 추천합니다(GPT-6.1 Sol보다 벽시계 시간이 길다). GPT-6.1 Sol을 고르면 ROUTING_REASON이 필요합니다.`
-        : `NORMAL_DEEPSEEK 트리거(${fired})가 걸렸지만 NORMAL_DEEPSEEK를 쓸 수 없어 ${selected.profile}를 추천합니다.`
-      : selected.profile !== NORMAL_FALLBACK_ORDER[0]
-        ? "GPT-6.1 Sol이 사용 불가·관측 소진되어 다음 사용 가능한 NORMAL 후보를 추천합니다."
-        : "방향이 정해진 비-UI NORMAL의 기본 추천은 GPT-6.1 Sol입니다.";
+    ? `${basis} 추천 가능한 후보(${order.join("→")})가 없거나 관측 소진입니다. 자동으로 다른 모델로 대체하지 않으니 Main이 한도를 확인해 다시 판단하세요. 다른 후보를 쓰려면 ROUTING_REASON 한 줄에 근거를 남겨 직접 지정할 수 있습니다(구조 재설계가 아니라 가용성 사안이라 발주를 막지는 않습니다).`
+    : `${basis} 기본 추천은 ${selected.profile}입니다.`;
   return {
-    state, profile: selected?.profile ?? null,
+    state: quota.state === "observed" && selected ? "observed" : "unavailable",
+    profile: selected?.profile ?? null,
     reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
-    triggers: [...triggers],
+    returnToMain: false,
   };
 }
+
+/** Main이 직접 정리해야 하는 결정이다. profile 없음과 함께 이 준비로는 발주를 막는다. */
+const returnToMain = (quota: QuotaSnapshot, reason: string): NormalAllocation => ({
+  state: quota.state === "observed" ? "observed" : "unavailable", profile: null, reason, returnToMain: true,
+});
+/** Jev가 모른다는 결정이다. 막지 않고 Main이 ROUTING_REASON으로 정하는 기존 경로에 남긴다. */
+const unknownDecision = (quota: QuotaSnapshot, reason: string): NormalAllocation => ({
+  state: quota.state === "observed" ? "observed" : "unavailable", profile: null, reason, returnToMain: false,
+});
 
 
 export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
@@ -712,6 +729,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   type Prepared = Judgment & {
     revision: string;
     profile: string | null;
+    returnToMain: string | null;
     candidates: Candidate[];
     owners: Owner[];
     publicationToken: symbol;
@@ -875,7 +893,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main은 profile·recommendations·placement·history·normalAllocation을 보고 후보를 지정합니다. UI/UX와 설계가 열린 작업(designOpen, Jev 불가·불명 포함)·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 GPT-6.1 Sol(implSol)을 추천하고 그 후보가 없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus로 내려갑니다. ${DEEPSEEK_TRIGGER_NOTE} 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 Opus owner와 완료된 비-UI 작업, 계정 쿨다운·리셋은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
+  const INSTRUCTION = `Main(Claude Opus)이 생각·준비·검수하고 DeepSeek가 범위와 수용 조건이 분명한 구현·테스트·반복 수정을 맡습니다. 준비된 복잡한 상태 구현도 Main이 방향을 정했으면 DeepSeek입니다. Main은 profile·recommendations·placement·history·normalAllocation·hardAllocation을 보고 후보를 지정합니다. 방향이 정해진 구현은 DeepSeek를 추천하며, 그 후보가 없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않고 추천 없이 'Main이 다시 판단' 사유만 돌려줍니다(구조 재설계가 아니라 가용성 사안이라 막지 않으며, Main이 한도를 확인해 다른 후보를 ROUTING_REASON과 함께 직접 지정할 수 있습니다). Sonnet은 어려운 UI/UX(uiDifficulty=DIFFICULT), 기존 상태 소유자와 승인된 계약 안에서 목표가 분명한 한정된 열린 설계·복잡 상태 설계(boundedDesign=BOUNDED), 경계가 정해진 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)에 추천하며, Sonnet을 쓸 수 없으면 추천 없이 사유만 돌려줍니다. 실패한 테스트마다 Sonnet으로 보내지 않습니다. 새 정본 상태 소유권·공개 계약·모듈 경계가 필요한 큰 교차 경계 재설계나 제품·구조 방향 자체가 열린 경우(designOpen)와 반복 실패(reworkNature=RETURN_TO_MAIN, FINDING_ID 표기와 무관하게 failureEvidence·facts로 판단, UI 여부와 무관)는 returnToMain=true이며 추천 없이 Main으로 돌아옵니다. 이 준비로는 ROUTING_REASON이 있어도 어떤 후보도 발주할 수 없고(beforeTask가 막음), Main이 원인·근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 maker_route를 다시 실행해 갱신된 판단이 해결된 구조와 한정된 구현·설계로 나오면 발주합니다. 의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정은 실패 재작업으로 세지 않습니다. Jev가 모르거나 불가하면 UNKNOWN이며 막지 않습니다. 더 비싼 모델의 근거도 아니고 기존처럼 Main이 ROUTING_REASON으로 정합니다. Opus·Sol은 자동으로 올리지 않으며 Main이 의도한 예외로 기존 frontier 후보를 ROUTING_REASON과 함께 지정할 때만 씁니다. 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운·리셋과 warm/exact pin은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1036,6 +1054,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const prepared: Prepared = {
           revision,
           profile: null,
+          returnToMain: null,
           candidates,
           publicationToken: publicationClaims[index]!.token,
           refreshAttempts: new Map(refreshAttempts),
@@ -1062,6 +1081,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
             placement: placementOf(prepared, owners),
             existingOwners: owners,
             normalAllocation: null as NormalAllocation | null,
+            hardAllocation: null as NormalAllocation | null,
           },
         };
       }));
@@ -1080,26 +1100,39 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const answers = publication.prepared.answers;
         const normal = answers?.workClass?.choice === "NORMAL";
         const hard = answers?.workClass?.choice === "HARD";
-        const ui = (answers?.uiUxBoundary?.noul ?? 0) >= 0.5 || (hard && answers?.hardFocus?.choice === "UI_UX");
         const design = answers?.designOpen?.noul;
-        const open = typeof design !== "number" || !Number.isFinite(design) || design >= 0.5;
-        const rework = contracts[index]!.findingId !== null;
-        const triggers: DeepSeekTrigger[] = [];
-        if (normal && !ui && !open && !rework && typeof answers?.mainWaits?.noul === "number" && answers.mainWaits.noul < 0.5) triggers.push("off-critical-path");
-        const allocation = normal && !ui && !open && !rework ? normalAllocation(current, candidates, quota, triggers) : null;
-        const present = (profile: string) => candidates.find((candidate) => candidate.profile === profile)?.profile ?? null;
-        const usable = (profile: string) => candidates.find((candidate) => candidate.profile === profile && !modelQuotaExhausted(quota, candidate.model))?.profile ?? null;
-        // 2026-10-30 사용자 결정: UI·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 implSol(같은 날 Terra에서 GPT-6.1 Sol로 교체). HARD의 MIXED·UNKNOWN 분야는 Opus로 둔다.
-        // Opus 자리는 한도와 무관하게 유지한다(UI/UX Opus 불가는 조용히 대체하지 않는다). implSol만 관측 소진이면 Opus로 내려간다.
-        const preferred = normal
-          ? (ui || open || rework ? present("NORMAL_OPUS") : null)
-          : hard
-            ? ui ? present("HARD_UI_OPUS")
-              : open || rework || answers?.hardFocus?.choice !== "CODE_SYSTEM" ? present("HARD_CODE_OPUS")
-                : usable("HARD_CODE_TERRA") ?? present("HARD_CODE_OPUS")
-            : null;
-        publication.prepared.profile = allocation ? allocation.profile : preferred;
-        publication.route.normalAllocation = allocation;
+        const designKnown = typeof design === "number" && Number.isFinite(design);
+        const architectureOpen = designKnown && design >= 0.5;
+        const uiChoice = answers?.uiDifficulty?.choice;
+        const uiKnown = uiChoice === "NONE" || uiChoice === "ROUTINE" || uiChoice === "DIFFICULT";
+        const difficultUi = uiChoice === "DIFFICULT";
+        const boundedChoice = answers?.boundedDesign?.choice;
+        const boundedKnown = boundedChoice === "NONE" || boundedChoice === "BOUNDED";
+        const boundedDesign = boundedChoice === "BOUNDED";
+        // 재작업은 FINDING_ID 표기가 아니라 failureEvidence·facts에 적힌 사실로 Jev가 본다. 표기를 빼도 반복 실패가 우회되지 않는다.
+        const nature = answers?.reworkNature?.choice;
+        const failedRework = nature === "BOUNDED_FAILURE";
+        const returnRework = nature === "RETURN_TO_MAIN";
+        // 우선순위: 반복 실패 → 큰 교차 경계 재설계 → (모름) → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 일반 구현.
+        // 앞의 둘은 UI 여부와 무관하게 Main이 갖는다. Sonnet은 어려운 UI·한정된 설계·한정된 실패 재작업이다.
+        const decide = (): NormalAllocation => {
+          if (returnRework) return returnToMain(quota, RETURN_REWORK_REASON);
+          if (architectureOpen) return returnToMain(quota, OPEN_DESIGN_REASON);
+          if (!designKnown) return unknownDecision(quota, UNKNOWN_DESIGN_REASON);
+          if (!uiKnown) return unknownDecision(quota, UNKNOWN_UI_REASON);
+          if (!boundedKnown) return unknownDecision(quota, UNKNOWN_BOUNDED_REASON);
+          if (difficultUi) return allocate(candidates, quota, hard ? HARD_UI_ORDER : SONNET_NORMAL_ORDER, DIFFICULT_UI_BASIS);
+          if (boundedDesign) return allocate(candidates, quota, hard ? HARD_REWORK_ORDER : SONNET_NORMAL_ORDER, BOUNDED_DESIGN_BASIS);
+          if (failedRework) return allocate(candidates, quota, hard ? HARD_REWORK_ORDER : SONNET_NORMAL_ORDER, BOUNDED_REWORK_BASIS);
+          return allocate(candidates, quota, hard ? SETTLED_HARD_ORDER : SETTLED_NORMAL_ORDER, SETTLED_BASIS);
+        };
+        // 등급(workClass) 답이 없어도 열린 구조 결정이나 반복 실패가 이미 드러났으면 그 결정은 Main의 것이다(부분 판정으로 차단을 우회하지 못한다).
+        const classified = normal || hard;
+        const decided = classified || returnRework || architectureOpen ? decide() : null;
+        publication.prepared.profile = decided?.profile ?? null;
+        publication.prepared.returnToMain = decided?.returnToMain ? decided.reason : null;
+        publication.route.normalAllocation = hard ? null : decided;
+        publication.route.hardAllocation = hard ? decided : null;
       }
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (typeof sessionId !== "string" || !sessionId.trim()) {
@@ -1128,8 +1161,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           ...publication.route,
           profile: publication.prepared.profile,
           normalAllocation: publication.route.normalAllocation,
+          hardAllocation: publication.route.hardAllocation,
           uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
-            ? "기존 owner가 Opus인지 확인하세요. 비-Opus면 미완 변경·증거를 freeze하고 소유권을 넘깁니다. active owner를 동시에 새 발주하거나 실행 중 모델을 바꾸지 않습니다."
+            ? "기존 owner가 있으면 그 owner가 이어 가며 실행 중 모델은 바꾸지 않습니다. Sonnet이 아닌 owner에 UI/UX 경계가 새로 드러났으면 Main이 미완 변경·증거를 freeze한 뒤 소유권을 넘길지 정합니다. active owner를 동시에 새 발주하거나 완료된 작업을 되풀이하지 않습니다."
             : null,
           history: historyOf(publication.prepared.answers),
           crossReviewAdvice: crossReviewAdviceOf(publication.prepared.answers, current.modelSelection.crossReviewNeedCriteria),
@@ -1252,15 +1286,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         notices.push(`[MakerRoute] model '${requested}' → '${canonicalModel}'${item.effort !== undefined ? "; effort 제거" : ""}.`);
       }
       const answers = prepared.answers;
-      if (answers?.workClass?.choice === "NORMAL" && (answers.uiUxBoundary?.noul ?? 0) >= 0.5
-        && selected.profile !== "NORMAL_OPUS" && selected.profile !== prepared.profile) {
-        return { block: true, reason: "NORMAL UI/UX 경계는 NORMAL_OPUS로 배정합니다(관측된 Anthropic 1주 한도 대체 추천은 예외). Opus가 없으면 unavailable로 보고하며 다른 후보로 조용히 대체하지 않습니다." };
-      }
       const profile = prepared.profile;
       const placement = placementOf(prepared, owners);
       const workspace = workspaceOf(canonicalInput, item);
       const conflicts = activeConflicts(contract.ownedPaths, workspace, allOwners);
       if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
+      // 신선한 prepared 정책·owner snapshot을 확인한 뒤, 예약·spawn 이전의 이 경계에서 Main 반환 결정을 강제한다.
+      // 임의의 ROUTING_REASON이나 후보 지정으로는 넘길 수 없고, 사실을 바꿔 다시 준비한 판단만 통과한다.
+      if (prepared.returnToMain) return { block: true, reason: `'${clipped(name, 40)}'은 Main으로 돌아온 결정입니다. ${prepared.returnToMain}` };
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
       const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
       const routingReason = /^\s*ROUTING_REASON:\s*\S.+$/m.test(task);
@@ -1412,7 +1445,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·UI/UX·HARD 분야·owner·mainWaits·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. UI/UX·열린 설계·FINDING_ID 재작업은 Opus, 방향이 정해진 비-UI 코드는 NORMAL·HARD 모두 GPT-6.1 Sol(implSol)을 추천한다(없거나 관측 소진이면 NORMAL은 Sonnet→DeepSeek, HARD는 Opus). ${DEEPSEEK_TRIGGER_NOTE} UI/UX는 Opus를 유지하고 unavailable을 조용히 대체하지 않는다. 한도 미관측은 소진이 아니다. 추천 변경·명시 선택 대안에는 ROUTING_REASON이 필요하다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 새 UI/UX 경계에서 기존 비-Opus owner의 미완 변경·증거를 freeze하고 소유권을 넘긴다. 실행 중 모델과 warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·한정된 설계·UI/UX와 그 난이도·HARD 분야·재작업 성격·owner·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. Main(Claude Opus)이 준비·검수하고 방향이 정해진 구현은 UI·상태 복잡도가 있어도 DeepSeek를 추천한다(없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않고 추천 없이 Main이 다시 판단하게 한다. 막지 않는다). Sonnet은 어려운 UI/UX, 기존 상태 소유자와 승인된 계약 안의 한정된 설계·복잡 상태 설계, 경계가 정해진 구현 실패 재작업에 추천한다. 큰 교차 경계 재설계(새 상태 소유권·공개 계약)와 반복 실패는 returnToMain이며 추천 없이 Main으로 돌아오고, 그 준비로는 ROUTING_REASON이 있어도 발주할 수 없다. Main이 원인·근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 다시 준비한 판단만 발주된다. 의도한 RED 테스트·일시적 인프라 실패·일상적 검증 보정은 실패 재작업이 아니다. Jev 불명·불가는 UNKNOWN이며 막지 않고 더 비싼 모델의 근거도 아니다. Main이 기존 frontier 후보를 의도한 예외로 고르면 ROUTING_REASON이 필요하다. 한도 미관측은 소진이 아니다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

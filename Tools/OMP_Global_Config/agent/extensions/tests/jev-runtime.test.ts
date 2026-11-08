@@ -115,9 +115,9 @@ function createHarness(options: HarnessOptions = {}) {
     ? undefined
     : {
         getModelRoles: () => (options.settings?.modelRoles as Record<string, string> | undefined) ?? {
-          implSonnet: "test/local:auto",
+          implSonnet: "test/sonnet:auto",
           implOpus: "test/broad:auto",
-          implDeepSeek: "test/deepseek:auto",
+          implDeepSeek: "test/local:auto",
           makerHardUiOpus: "test/interaction:auto",
           makerHardCodeOpus: "test/invariants:auto",
           makerHardCodeSonnet: "test/alternate:auto",
@@ -150,12 +150,15 @@ function createHarness(options: HarnessOptions = {}) {
             answers[id] =
               options.judgeAnswers?.[id] ??
               (question.type === "noul"
-                // mainWaits는 기다린다(1)가 기본이다. 0.1을 주면 DeepSeek 트리거가 걸려 추천이 바뀐다.
-                ? { type: "noul", noul: id === "mainWaits" ? 1 : 0.1 }
+                // 설계 방향이 정해진 일반 구현(designOpen 낮음)으로 답한다. mainWaits 질문은 더 이상 없다.
+                ? { type: "noul", noul: 0.1 }
                 // 강도 질문은 픽스처가 실제로 발주하는 high로 답한다.
                 : id.startsWith("effort")
                   ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }
-                  : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
+                  // UI 난이도와 재작업 성격은 해결된 일반 구현으로 답한다(모름이면 추천이 없다).
+                  : id === "uiDifficulty" || id === "reworkNature" || id === "boundedDesign"
+                    ? { type: "choice", choice: id === "uiDifficulty" ? "ROUTINE" : "NONE", probabilities: { ok: 1 }, confidence: 1 }
+                    : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
           }
           return { answers, provider: "fake", model: "jev" };
         },
@@ -524,7 +527,7 @@ describe("jev-runtime pre-dispatch", () => {
     expect(records).toMatchObject([
       {
         type: "dispatch", name: "Ledger", workClass: "NORMAL", focus: null,
-        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "auto",
+        recommendedProfile: "NORMAL_DEEPSEEK", recommendedModel: "test/local", recommendedEffort: "auto",
         chosenModel: "test/local", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
