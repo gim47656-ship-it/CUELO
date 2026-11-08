@@ -6638,6 +6638,19 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   line-height: 1.25;
 }
 
+/* 빠른 초안 자막: Codex 통역이 이 자리를 덮어쓸 때까지 흐리게 보인다. 글자 크기는 그대로 둬 덮어쓸 때 자리가 흔들리지 않는다. */
+.translator-face-line[data-draft="true"] {
+  color: var(--text-dim);
+}
+
+.translator-entry[data-draft="true"] .translator-bubble {
+  border-style: dashed;
+}
+
+.translator-entry[data-draft="true"] .translator-translation {
+  color: var(--text-dim);
+}
+
 .translator-face-bar {
   display: flex;
   flex-direction: column;

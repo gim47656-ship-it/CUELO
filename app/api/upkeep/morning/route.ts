@@ -7,6 +7,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { inspectDeploy } from "@/lib/upkeep/deploy";
 import { collectCloudChanges, findMorningRepo, type MorningPlan, morningStateAfterRun, parseSkillNames, planMorningRun, type ReleaseInfo, readMorningState, writeMorningState } from "@/lib/upkeep/morning";
+import { type NightlyResult, parseNightlyResult } from "@/lib/upkeep/nightly-result";
 
 export const dynamic = "force-dynamic";
 
@@ -29,22 +30,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
   let skills: string[] = [];
+  let nightlyResult: NightlyResult | null = null;
+  let nightlyInvalid = false;
   if (hasJsonContentType(req)) {
     try {
-      skills = parseSkillNames(((await req.json()) as { skills?: unknown } | null)?.skills);
+      const body = (await req.json()) as { skills?: unknown; nightlyResult?: unknown } | null;
+      skills = parseSkillNames(body?.skills);
+      nightlyResult = parseNightlyResult(body?.nightlyResult);
+      nightlyInvalid = nightlyResult === null && body?.nightlyResult !== undefined && body.nightlyResult !== null;
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
   }
   const dryRun = new URL(req.url).searchParams.get("dryRun") === "1";
-  if (dryRun) return planAndRun(true, skills);
+  if (dryRun) return planAndRun(true, skills, nightlyResult, nightlyInvalid);
   if (globalThis.__cueloMorningInFlight) {
     log("skipped: in-progress");
     return NextResponse.json({ action: "skipped", reason: "in-progress" });
   }
   globalThis.__cueloMorningInFlight = true;
   try {
-    return await planAndRun(false, skills);
+    return await planAndRun(false, skills, nightlyResult, nightlyInvalid);
   } finally {
     globalThis.__cueloMorningInFlight = false;
   }
@@ -61,11 +67,11 @@ async function readRelease(warnings: string[]): Promise<ReleaseInfo | null> {
 }
 
 function describe(plan: Extract<MorningPlan, { action: "run" }>): string {
-  const { cloudCommits, skills, release } = plan.triggers;
-  return `${cloudCommits} cloud commit(s), ${skills} skill(s), release ${release ?? "none"}`;
+  const { cloudCommits, skills, release, nightly } = plan.triggers;
+  return `${cloudCommits} cloud commit(s), ${skills} skill(s), release ${release ?? "none"}, nightly ${nightly ?? "none"}`;
 }
 
-async function planAndRun(dryRun: boolean, skills: string[]) {
+async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: NightlyResult | null, nightlyInvalid: boolean) {
   const agentDir = getAgentDir();
   let plan: MorningPlan;
   let state;
@@ -79,12 +85,15 @@ async function planAndRun(dryRun: boolean, skills: string[]) {
     const changes = repoCwd ? await collectCloudChanges(repoCwd, { reported: state?.reportedSha ?? null, deployed }, now) : null;
     if (changes) warnings.push(...changes.warnings);
     const release = await readRelease(warnings);
+    // 모양이 맞지 않는 결과는 빼고 나머지 보고는 그대로 한다.
+    if (nightlyInvalid) warnings.push("클라우드 야간 실행 결과 파일을 해석하지 못해 이번 보고에서 뺐습니다.");
     plan = planMorningRun({
       repoCwd,
       originHead: changes?.originHead ?? null,
       base: changes?.base ?? null,
       cloudCommits: changes?.commits ?? [],
       skills,
+      nightlyResult,
       release,
       state,
       runningSessionIds: getRunningRpcSessionIds(),

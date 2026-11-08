@@ -172,6 +172,12 @@ const targetKey = ({ mine, theirs, profile }: CallTarget) =>
 export interface CodexInterpreterCallController extends InterpreterCallController {
   /** Codex stopped the latest interpretation (moderation); cleared by the next interpretation. */
   skipped: boolean;
+  /** The microphone track on the call's sender (denoised or raw), `null` while the call has none. */
+  sendTrack: MediaStreamTrack | null;
+  /** The echo guard is silencing the microphone right now. Read on demand, not a render value. */
+  isBlocked: () => boolean;
+  /** Be told the moment the guard blocks or opens the microphone; returns the way to stop listening. */
+  onBlockedChange: (listener: (blocked: boolean) => void) => () => void;
 }
 
 export function useInterpreterCall({ onTranscript, getHistory, onReconnect, muteMicWhilePlaying = false, playVoice = true, suppressNoise = false }: InterpreterCallOptions): CodexInterpreterCallController {
@@ -182,6 +188,14 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
   const [reconnecting, setReconnecting] = useState(false);
   const [ended, setEnded] = useState<"idle" | null>(null);
   const [skipped, setSkipped] = useState(false);
+  const [sendTrack, setSendTrack] = useState<MediaStreamTrack | null>(null);
+  const blockedRef = useRef(false);
+  const blockedListenersRef = useRef(new Set<(blocked: boolean) => void>());
+  const setBlocked = useCallback((blocked: boolean) => {
+    if (blockedRef.current === blocked) return;
+    blockedRef.current = blocked;
+    for (const listener of blockedListenersRef.current) listener(blocked);
+  }, []);
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
   /** The audio sender; it carries no track until Start attaches the microphone. */
@@ -292,10 +306,11 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     const blocked = muteRef.current && voiceRef.current && held;
     // A disabled track sends silence on the same sender: no renegotiation, and the call keeps going.
     if (track.enabled === blocked) track.enabled = !blocked;
+    setBlocked(blocked);
     // The sender may carry the denoised track instead; its own mute does not depend on how a browser
     // treats `enabled` on a track made by Web Audio.
     suppressorRef.current?.setMuted(blocked);
-  }, []);
+  }, [setBlocked]);
 
   /**
    * Start measuring the interpreted voice. Without Web Audio the microphone simply stays open:
@@ -335,6 +350,8 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
     dropCall();
     stopMonitor();
     suppressAbortRef.current?.abort();
+    setSendTrack(null);
+    setBlocked(false);
     closeSuppressor();
     suppressFailedRef.current = null;
     targetRef.current = null;
@@ -347,7 +364,7 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
       audio.srcObject = null;
       audio.remove();
     }
-  }, [closeSuppressor, dropCall, stopMonitor]);
+  }, [closeSuppressor, dropCall, setBlocked, stopMonitor]);
 
   const teardown = useCallback((next: LiveState) => {
     release();
@@ -453,8 +470,10 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
         closeSuppressor();
         await setBrowserNoiseSuppression(raw, true);
         await sender.replaceTrack(raw);
+        setSendTrack(raw);
         return;
       }
+      setSendTrack(track);
       if (suppressorRef.current && suppressorRef.current.track !== track) closeSuppressor();
     };
     const next = trackQueueRef.current.then(run);
@@ -755,5 +774,11 @@ export function useInterpreterCall({ onTranscript, getHistory, onReconnect, mute
 
   useEffect(() => () => release(), [release]);
 
-  return { state, failure, detail, supported, reconnecting, ended, skipped, prepare, start, stop };
+  const isBlocked = useCallback(() => blockedRef.current, []);
+  const onBlockedChange = useCallback((listener: (blocked: boolean) => void) => {
+    blockedListenersRef.current.add(listener);
+    return () => void blockedListenersRef.current.delete(listener);
+  }, []);
+
+  return { state, failure, detail, supported, reconnecting, ended, skipped, sendTrack, isBlocked, onBlockedChange, prepare, start, stop };
 }

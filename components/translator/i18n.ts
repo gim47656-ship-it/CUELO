@@ -78,6 +78,8 @@ const ko = {
   "translator.echoGuard": "통역 음성이 나올 때 마이크 끄기",
   "translator.echoGuardHint": "스피커로 나온 통역이 다시 통역되지 않게 합니다. 그동안 상대가 한 말은 들리지 않으니 이어폰을 쓰면 꺼 두세요.",
   "translator.noiseSuppression": "AI 소음 제거",
+  "translator.fastDrafts": "빠른 초안 자막",
+  "translator.fastDraftsHint": "전용 번역 모델이 초안 자막을 먼저 띄우고 Codex가 곧 바로잡습니다. 켜 둔 동안 추가 요금이 들 수 있습니다.",
   "translator.noiseSuppressionHint": "시끄러운 곳에서 마이크 소음을 줄여 통역이 말을 더 잘 알아듣게 합니다. 목소리가 뭉개지면 꺼 두세요.",
 } as const;
 
@@ -152,6 +154,8 @@ const en: Record<TranslatorMessageKey, string> = {
   "translator.echoGuard": "Mute the mic while the interpretation plays",
   "translator.echoGuardHint": "Keeps the speaker's interpretation from being interpreted again. Words spoken meanwhile are not heard, so turn it off with earphones.",
   "translator.noiseSuppression": "AI noise suppression",
+  "translator.fastDrafts": "Quick draft captions",
+  "translator.fastDraftsHint": "A dedicated translation model shows a quick draft first and Codex corrects it. Extra charges may apply while this is on.",
   "translator.noiseSuppressionHint": "Cuts background noise from the mic in a loud place so the interpreter hears you better. Turn it off if your voice sounds muffled.",
 };
 
@@ -224,6 +228,8 @@ const zhCN: Record<TranslatorMessageKey, string> = {
   "translator.echoGuard": "播放译文时关闭麦克风",
   "translator.echoGuardHint": "避免扬声器播出的译文被再次翻译。这段时间说的话听不到，使用耳机时请关闭。",
   "translator.noiseSuppression": "AI 降噪",
+  "translator.fastDrafts": "快速草稿字幕",
+  "translator.fastDraftsHint": "专用翻译模型先显示快速草稿，随后由 Codex 修正。开启期间可能产生额外费用。",
   "translator.noiseSuppressionHint": "在嘈杂的地方降低麦克风的背景噪音，让翻译听得更清楚。如果声音发闷，请关闭。",
 };
 

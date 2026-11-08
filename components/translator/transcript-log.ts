@@ -98,7 +98,11 @@ export function segmentLanguage(segment: TranscriptSegment): TranslatorLanguage 
  */
 export function segmentSpeaker(segment: TranscriptSegment): "me" | "them" | undefined {
   const language = segmentLanguage(segment);
-  if (!language) return undefined;
+  return language ? speakerOf(segment, language) : undefined;
+}
+
+/** 조각이 `language`로 쓰였다고 알 때 그 조각을 낳은 사람. 초안 자막은 언어를 글자로 짐작하지 않고 안다. */
+export function speakerOf(segment: Pick<TranscriptSegment, "role" | "mine">, language: TranslatorLanguage): "me" | "them" {
   const mineLanguage = language.code === segment.mine.code;
   return (segment.role === "user") === mineLanguage ? "me" : "them";
 }

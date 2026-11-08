@@ -17,6 +17,7 @@ import {
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
 import { splitNumberSpans } from "@/lib/translator-numbers";
+import { mergeDisplay, type DisplayLine } from "@/lib/translator-draft";
 import { useTranslatorText, type TranslatorTranslate } from "./i18n";
 import {
   addTranscript,
@@ -24,12 +25,14 @@ import {
   clearTranscripts,
   emptyTranscriptLog,
   segmentLanguage,
+  speakerOf,
   segmentSpeaker,
   transcriptHistory,
   type HistoryLine,
   type TranscriptSegment,
 } from "./transcript-log";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
+import { useDraftCaptions } from "./useDraftCaptions";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
@@ -62,6 +65,8 @@ interface Settings {
   echoGuard: boolean;
   /** 마이크 소리를 RNNoise로 거른 뒤 통역에 보낸다(`lib/interpreter-noise-suppressor.ts`). 목소리가 뭉개질 수 있어 처음 값은 끔이다. */
   noiseSuppression: boolean;
+  /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
+  fastDrafts: boolean;
 }
 
 function readSettings(): Settings {
@@ -74,6 +79,7 @@ function readSettings(): Settings {
     voice: false,
     echoGuard: true,
     noiseSuppression: false,
+    fastDrafts: false,
   };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
@@ -92,6 +98,7 @@ function readSettings(): Settings {
       voice: saved.voice === true,
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
+      fastDrafts: saved.fastDrafts === true,
     };
   } catch {
     return fallback;
@@ -170,8 +177,14 @@ function failureText(tt: TranslatorTranslate, failure: string, detail: string | 
 /** 마주보기 화면에 한쪽마다 보이는 최근 말 수. */
 const FACE_LINES = 3;
 
+type Line = DisplayLine<TranscriptSegment>;
+
+/** 초안 자막은 언어를 알고, 그 밖의 조각은 글자로 가른다. */
+const lineLanguage = (line: Line) => line.language ?? segmentLanguage(line.segment);
+const lineSpeaker = (line: Line) => (line.language ? speakerOf(line.segment, line.language) : segmentSpeaker(line.segment));
+
 interface FacePaneProps {
-  segments: TranscriptSegment[];
+  lines: Line[];
   /** 이 칸의 지금 언어. 그 언어로 된 조각과 언어를 가를 수 없는 조각만 보인다. */
   language: TranslatorLanguage;
   /** 언어를 가를 수 없는 조각(숫자·이름만 있는 말)에 붙이는 표시. */
@@ -183,12 +196,13 @@ interface FacePaneProps {
 
 /**
  * 마주보기 한쪽: 들은 말이든 통역이든 이 칸 언어로 된 조각을 생긴 차례대로 보인다. 조각의 언어는 그
- * 조각의 글자로만 가르고, 가를 수 없으면 두 칸 모두에 「언어 모름」을 붙여 보인다.
+ * 조각의 글자로만 가르고, 가를 수 없으면 두 칸 모두에 「언어 모름」을 붙여 보인다. 초안 자막은
+ * 어느 언어로 옮긴 것인지 알고 있어 그 칸에만 보인다.
  */
-function FacePane({ segments, language, unknownLabel, flipped, emptyHint }: FacePaneProps) {
+function FacePane({ lines: allLines, language, unknownLabel, flipped, emptyHint }: FacePaneProps) {
   // 언어를 가를 수 없는 조각은 그 조각의 언어 짝과 상관없이 두 칸 모두에 보인다.
-  const lines = segments
-    .map((segment) => ({ segment, known: segmentLanguage(segment) }))
+  const lines = allLines
+    .map((line) => ({ line, known: lineLanguage(line) }))
     .filter(({ known }) => known === undefined || known.code === language.code)
     .slice(-FACE_LINES);
   return (
@@ -196,17 +210,18 @@ function FacePane({ segments, language, unknownLabel, flipped, emptyHint }: Face
       <p className="translator-face-label">{language.nativeName}</p>
       <div className="translator-face-lines">
         {lines.length === 0 && emptyHint ? <p className="translator-face-empty">{emptyHint}</p> : null}
-        {lines.map(({ segment, known }, index) => (
+        {lines.map(({ line, known }, index) => (
           <p
-            key={segment.id}
+            key={line.key}
             className="translator-face-line"
             data-latest={index === lines.length - 1 ? "true" : undefined}
-            data-side={segmentSpeaker(segment) ?? "them"}
+            data-side={lineSpeaker(line) ?? "them"}
+            data-draft={line.draft ? "true" : undefined}
             data-language={known ? undefined : "unknown"}
             lang={known ? undefined : ""}
           >
             {known ? null : <span className="translator-face-unknown">{unknownLabel}</span>}
-            <NumberMarked text={segment.text} />
+            <NumberMarked text={line.segment.text} />
           </p>
         ))}
       </div>
@@ -237,7 +252,7 @@ const STICK_THRESHOLD = 32;
 interface StreamLogProps {
   role: TranscriptSegment["role"];
   label: string;
-  segments: TranscriptSegment[];
+  lines: Line[];
   /** 이 흐름 맨 끝에 보일 진행 표시. */
   pending: string | null;
   jumpLabel: string;
@@ -249,7 +264,7 @@ interface StreamLogProps {
  * 한 역할의 흐름(통역 또는 원문). 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는
  * 중이면 자리를 지키고 「최근 말로」 단추를 보인다.
  */
-function StreamLog({ role, label, segments, pending, jumpLabel, layoutKey }: StreamLogProps) {
+function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey }: StreamLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
@@ -257,7 +272,7 @@ function StreamLog({ role, label, segments, pending, jumpLabel, layoutKey }: Str
   useEffect(() => {
     const log = logRef.current;
     if (log && stickRef.current) log.scrollTop = log.scrollHeight;
-  }, [segments, pending, layoutKey]);
+  }, [lines, pending, layoutKey]);
 
   const onScroll = () => {
     const log = logRef.current;
@@ -270,18 +285,19 @@ function StreamLog({ role, label, segments, pending, jumpLabel, layoutKey }: Str
     <section className="translator-stream" data-role={role} aria-label={label}>
       <h3 className="translator-stream-label">{label}</h3>
       <div ref={logRef} className="translator-log" role="log" aria-label={label} onScroll={onScroll}>
-        {segments.map((segment, index) => {
-          const language = segmentLanguage(segment);
+        {lines.map((line, index) => {
+          const language = lineLanguage(line);
           return (
             <div
-              key={segment.id}
+              key={line.key}
               className="translator-entry"
-              data-side={segmentSpeaker(segment) ?? "them"}
-              data-latest={index === segments.length - 1 ? "true" : undefined}
+              data-side={lineSpeaker(line) ?? "them"}
+              data-latest={index === lines.length - 1 ? "true" : undefined}
+              data-draft={line.draft ? "true" : undefined}
             >
               <div className="translator-bubble">
                 <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
-                  <NumberMarked text={segment.text} />
+                  <NumberMarked text={line.segment.text} />
                 </p>
               </div>
             </div>
@@ -313,7 +329,7 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
-  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression } = settings;
+  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts } = settings;
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
   const [setupOpen, setSetupOpen] = useState(false);
@@ -334,12 +350,17 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       voice,
       echoGuard,
       noiseSuppression,
+      fastDrafts,
     }));
-  }, [echoGuard, face, mine, noiseSuppression, profile, size, theirs, voice]);
+  }, [echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
+
+  const reconcileDraftsRef = useRef<(segments: TranscriptSegment[]) => void>(() => {});
 
   const handleTranscript = useCallback((transcript: InterpreterTranscript) => {
     transcriptRef.current = addTranscript(transcriptRef.current, transcript, pairRef.current);
     setSegments(transcriptRef.current.segments);
+    // Same event, so one render: a Codex segment and the draft it takes over never show together.
+    reconcileDraftsRef.current(transcriptRef.current.segments);
   }, []);
 
   const getHistory = useCallback((): HistoryLine[] => transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES), []);
@@ -351,6 +372,21 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard, playVoice: voice, suppressNoise: noiseSuppression });
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
+
+  // 켠 동안 통화가 열려 있으면 전용 모델의 초안 자막을 받는다. 재연결·새 통화마다 처음부터 다시 연다.
+  const drafts = useDraftCaptions({
+    enabled: fastDrafts && active,
+    epoch: currentCall,
+    pairRef,
+    segments,
+    sendTrack: call.sendTrack,
+    isBlocked: call.isBlocked, onBlockedChange: call.onBlockedChange,
+  });
+
+  const { reconcile: reconcileDrafts } = drafts;
+  useEffect(() => {
+    reconcileDraftsRef.current = reconcileDrafts;
+  }, [reconcileDrafts]);
 
   const startCall = (next: Settings) => {
     pairRef.current = next;
@@ -440,8 +476,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
   const canStart = active || !(unsupported || insecure || call.supported === null);
-  const translations = useMemo(() => segments.filter((segment) => segment.role === "assistant"), [segments]);
-  const originals = useMemo(() => segments.filter((segment) => segment.role === "user"), [segments]);
+  const displayLines = useMemo(() => mergeDisplay(segments, drafts.state), [segments, drafts.state]);
+  const translations = useMemo(() => displayLines.filter((line) => line.segment.role === "assistant"), [displayLines]);
+  const originals = useMemo(() => displayLines.filter((line) => line.segment.role === "user"), [displayLines]);
   const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
   const toggleCall = () => {
     if (active) {
@@ -482,7 +519,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       <section className="translator-view" data-face="true" aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
         <h2 className="sr-only">{tt("translator.title")}</h2>
         <div className="translator-face" role="log" aria-label={tt("translator.conversation")}>
-          <FacePane segments={segments} language={theirs} unknownLabel={tt("translator.unknownLanguage")} flipped />
+          <FacePane lines={displayLines} language={theirs} unknownLabel={tt("translator.unknownLanguage")} flipped />
           <div className="translator-face-bar">
             {notice ? (
               <p className="translator-face-notice" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
@@ -501,7 +538,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             </div>
           </div>
           <FacePane
-            segments={segments}
+            lines={displayLines}
             language={mine}
             unknownLabel={tt("translator.unknownLanguage")}
             emptyHint={active ? undefined : tt("translator.empty")}
@@ -713,6 +750,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <span>{tt("translator.noiseSuppression")}</span>
               </label>
               <p id="translator-noise-suppression-hint" className="translator-options-note">{tt("translator.noiseSuppressionHint")}</p>
+              <label className="translator-toggle">
+                <input
+                  type="checkbox"
+                  checked={fastDrafts}
+                  aria-describedby="translator-fast-drafts-hint"
+                  onChange={(event) => setSettings({ ...settings, fastDrafts: event.target.checked })}
+                />
+                <span>{tt("translator.fastDrafts")}</span>
+              </label>
+              <p id="translator-fast-drafts-hint" className="translator-options-note">{tt("translator.fastDraftsHint")}</p>
             </div>
             {segments.length > 0 ? (
               <ActionButton
@@ -722,6 +769,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 onClick={() => {
                   transcriptRef.current = clearTranscripts(transcriptRef.current);
                   setSegments([]);
+                  drafts.reset();
                 }}
               >
                 {tt("translator.clear")}
@@ -742,7 +790,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           <StreamLog
             role="assistant"
             label={tt("translator.translation")}
-            segments={translations}
+            lines={translations}
             pending={phase === "translating" ? tt("translator.translationPending") : null}
             jumpLabel={tt("translator.jumpLatest")}
             layoutKey={layoutKey}
@@ -750,7 +798,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           <StreamLog
             role="user"
             label={tt("translator.original")}
-            segments={originals}
+            lines={originals}
             pending={null}
             jumpLabel={tt("translator.jumpLatest")}
             layoutKey={layoutKey}

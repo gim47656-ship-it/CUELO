@@ -1,8 +1,9 @@
 /**
  * 아침 보고 세션(AGENTS.md 「Live deploy」 마지막 항목, 2026-11-04 사용자 결정). 각 PC의 `cuelo-cloud-sync.sh`가 2시간마다
  * 동기화 뒤 `POST /api/upkeep/morning`을 부르면, 지난 보고 뒤 클라우드 야간 루프가 바꾼 것(게시된 `wt/nightly-*` 커밋,
- * 이번에 받아 온 스킬)이나 새로 공개된 릴리스가 있을 때만 이 PC의 메인 체크아웃에서 새 세션을 연다. 그 세션은 바뀐 것을
- * 세 줄 안으로 알리고 새 릴리스를 이 PC에 설치한다. 마지막 보고는 agent 디렉터리의 `cuelo-morning-report.json`에 남긴다.
+ * 이번에 받아 온 스킬), 새로 공개된 릴리스, 게시까지 가지 못한 야간 실행 결과(`nightly-result.json`)가 있을 때만 이 PC의 메인
+ * 체크아웃에서 새 세션을 연다. 그 세션은 바뀐 것을 세 줄 안으로 알리고 새 릴리스를 이 PC에 설치한다. 마지막 보고는 agent
+ * 디렉터리의 `cuelo-morning-report.json`에 남긴다.
  */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { writePrivateFileAtomicSync } from "../atomic-file";
 import { buildMorningPrompt } from "./morning-prompt";
+import { type NightlyResult, parseNightlyResult, REPORTABLE_OUTCOMES } from "./nightly-result";
 
 const exec = promisify(execFile);
 
@@ -38,6 +40,8 @@ export interface MorningState {
   reportedSha?: string;
   /** 그때 알린 최신 공개 릴리스 버전 */
   releaseVersion?: string;
+  /** 그때 알린 클라우드 야간 실행 결과의 `finishedAt`(ISO). 같은 결과를 다시 알리지 않는다. */
+  nightlyResultAt?: string;
 }
 
 export interface CloudCommit {
@@ -66,6 +70,8 @@ export interface MorningInput {
   cloudCommits: readonly CloudCommit[];
   /** 이번 동기화가 받아 온 스킬 이름 */
   skills: readonly string[];
+  /** 클라우드가 남긴 마지막 야간 실행 결과. 없으면 null. */
+  nightlyResult?: NightlyResult | null;
   /** 릴리스를 확인하지 못했으면 null */
   release: ReleaseInfo | null;
   state: MorningState | null;
@@ -84,6 +90,8 @@ export interface MorningTriggers {
   skills: number;
   /** 새로 알릴 릴리스 버전 */
   release: string | null;
+  /** 새로 알릴 클라우드 야간 실행 결과. 깨끗하게 끝난 실행은 알리지 않으므로 null이다. */
+  nightly: NightlyResult["outcome"] | null;
 }
 
 export type MorningPlan =
@@ -95,6 +103,8 @@ export type MorningPlan =
     /** 세션이 프롬프트를 받으면 상태에 남길 origin/main(모르면 지난 값) */
     reportedSha: string | null;
     releaseVersion: string | null;
+    /** 세션이 프롬프트를 받으면 상태에 남길 야간 결과의 `finishedAt`. 알릴 결과가 없으면 null(지난 값 유지). */
+    nightlyResultAt: string | null;
     sessionName: string;
     prompt: string;
   };
@@ -115,13 +125,15 @@ export function readMorningState(agentDir: string): MorningState | null {
     || typeof parsed.sessionId !== "string" || !parsed.sessionId
     || typeof parsed.startedAt !== "string" || Number.isNaN(Date.parse(parsed.startedAt))
     || (parsed.reportedSha !== undefined && (typeof parsed.reportedSha !== "string" || !SHA_RE.test(parsed.reportedSha)))
-    || (parsed.releaseVersion !== undefined && (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion))) {
+    || (parsed.releaseVersion !== undefined && (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion))
+    || (parsed.nightlyResultAt !== undefined && (typeof parsed.nightlyResultAt !== "string" || !Number.isFinite(Date.parse(parsed.nightlyResultAt))))) {
     throw new Error(`${MORNING_STATE_FILE} is not a morning report record`);
   }
   return {
     sessionId: parsed.sessionId, startedAt: parsed.startedAt,
     ...(parsed.reportedSha ? { reportedSha: parsed.reportedSha } : {}),
     ...(parsed.releaseVersion ? { releaseVersion: parsed.releaseVersion } : {}),
+    ...(parsed.nightlyResultAt ? { nightlyResultAt: parsed.nightlyResultAt } : {}),
   };
 }
 
@@ -134,7 +146,13 @@ export function writeMorningState(agentDir: string, state: MorningState) {
 export function morningStateAfterRun(plan: RunPlan, previous: MorningState | null, sessionId: string, startedAt: string): MorningState {
   const reportedSha = plan.reportedSha ?? previous?.reportedSha;
   const releaseVersion = plan.releaseVersion ?? previous?.releaseVersion;
-  return { sessionId, startedAt, ...(reportedSha ? { reportedSha } : {}), ...(releaseVersion ? { releaseVersion } : {}) };
+  const nightlyResultAt = plan.nightlyResultAt ?? previous?.nightlyResultAt;
+  return {
+    sessionId, startedAt,
+    ...(reportedSha ? { reportedSha } : {}),
+    ...(releaseVersion ? { releaseVersion } : {}),
+    ...(nightlyResultAt ? { nightlyResultAt } : {}),
+  };
 }
 
 /** 요청 본문의 스킬 이름. 규칙에 맞는 것만 겹치지 않게 남긴다. */
@@ -146,15 +164,20 @@ export function parseSkillNames(value: unknown): string[] {
 export function planMorningRun(input: MorningInput): MorningPlan {
   const { state, release, skills, cloudCommits } = input;
   const newRelease = release?.available && release.latest && release.latest !== state?.releaseVersion ? release.latest : null;
-  if (!cloudCommits.length && !skills.length && !newRelease) return { action: "skip", reason: "nothing-new" };
+  // 게시까지 못 간 야간 실행은 커밋이 없으므로 이 결과가 유일한 계기다. 모양이 맞지 않는 결과와 같은 결과(finishedAt)는 알리지 않는다.
+  const nightlyResult = parseNightlyResult(input.nightlyResult);
+  const nightly = nightlyResult && REPORTABLE_OUTCOMES.includes(nightlyResult.outcome)
+    && nightlyResult.finishedAt !== state?.nightlyResultAt ? nightlyResult : null;
+  if (!cloudCommits.length && !skills.length && !newRelease && !nightly) return { action: "skip", reason: "nothing-new" };
   if (!input.repoCwd) return { action: "skip", reason: "no-repo" };
   if ([state?.sessionId, input.acceptedSessionId].some((id) => id && input.runningSessionIds.includes(id))) return { action: "skip", reason: "previous-still-running" };
   return {
     action: "run",
     repoCwd: input.repoCwd,
-    triggers: { cloudCommits: cloudCommits.length, skills: skills.length, release: newRelease },
+    triggers: { cloudCommits: cloudCommits.length, skills: skills.length, release: newRelease, nightly: nightly?.outcome ?? null },
     reportedSha: input.originHead,
     releaseVersion: release?.latest ?? null,
+    nightlyResultAt: nightly?.finishedAt ?? null,
     sessionName: `클라우드 변경 보고 ${kstStamp(input.now)}`,
     prompt: buildMorningPrompt({
       base: input.base,
@@ -162,6 +185,7 @@ export function planMorningRun(input: MorningInput): MorningPlan {
       cloudCommits,
       skills,
       release,
+      nightlyResult: nightly,
       warnings: input.warnings ?? [],
     }),
   };
