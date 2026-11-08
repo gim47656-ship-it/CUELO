@@ -5255,6 +5255,220 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 `,
 		}],
 	},
+	// --- Codex whitespace-only tool-call argument loop recovery (2026-11-08) ---
+	// 실측(2026-11-08, gpt-6-astra): provider breaker(openai-codex-responses.ts:924)가 보인 text 뒤의
+	// degenerate tool call 을 버리고 replay 를 거절(:2723-2737)한 뒤 오류를 errorId 0 으로 끝냈다(AIError.classify 가 이
+	// 오류 class 를 모른다). 그래서 retriable()=false 이고 문구가 mid-stream 목록에도 없어 replay·preserved stream-stall·
+	// committed-text continue 가 모두 거절하고 턴이 오류로 멈췄다. 고침: 분류를 Transient 로, 문구를 mid-stream 중단으로
+	// 인식(같은 모델 기존 경로). 사용자 결정(2026-11-08 '이 오류만 폴백 허용'): retry.codexWhitespaceLoopFallback(기본 false)
+	// 이 켜져 있으면 같은 모델 복구(replay·preserved 경로의 retry budget, committed text 의 stall-continue 3회)를 다 쓴 뒤에만
+	// 이 오류가 기존 retry.fallbackChains 를 탄다. retry.fallbackOn 은 그대로다. enum 값을 더하지 않은 이유: 패치 없는 core 는
+	// 모르는 fallbackOn 값을 무효로 보고 기본값 "any"(모든 오류 폴백)를 쓴다(config/registry.ts compute). 모르는 boolean 키는
+	// 무시돼 폴백이 넓어지지 않는다. 검증: core-codex-whitespace-recovery-test.ts.
+	{
+		file: "../pi-ai/src/error/flags.ts",
+		marker: `(link as { name: string }).name === "CodexWhitespaceToolCallLoopError"`,
+		anchor: `		} else if (
+			typeof link === "object" &&
+			"name" in link &&
+			(link as { name: string }).name === "CodexWebSocketTransportError"
+		) {
+`,
+		patched: `		} else if (
+			typeof link === "object" &&
+			"name" in link &&
+			((link as { name: string }).name === "CodexWebSocketTransportError" ||
+				// CUELO: the Codex whitespace-only tool-call argument breaker. The degenerate call is dropped and
+				// never runs; a fresh sample usually breaks the loop, so session recovery may retry it.
+				(link as { name: string }).name === "CodexWhitespaceToolCallLoopError")
+		) {
+`,
+	},
+	{
+		file: "src/session/settings.ts",
+		marker: `id: "retry.codexWhitespaceLoopFallback",`,
+		anchor: `export const cfgRetryRateLimitWalksChain = register({
+	id: "retry.rateLimitWalksChain",
+`,
+		patched: `// CUELO: opt-in exception to retry.fallbackOn for the Codex whitespace-only tool-call argument loop only. A
+// boolean key, not a new fallbackOn value: an unpatched core reads an unknown fallbackOn value as invalid and
+// uses its default "any", while it ignores an unknown key, so this config never widens fallback without the patch.
+export const cfgRetryCodexWhitespaceLoopFallback = register({
+	id: "retry.codexWhitespaceLoopFallback",
+	type: "boolean",
+	default: false,
+});
+
+export const cfgRetryRateLimitWalksChain = register({
+	id: "retry.rateLimitWalksChain",
+`,
+	},
+	{
+		file: "src/session/settings.ts",
+		marker: `codexWhitespaceLoopFallback: cfgRetryCodexWhitespaceLoopFallback,`,
+		anchor: `	fallbackOn: cfgRetryFallbackOn,
+	rateLimitWalksChain: cfgRetryRateLimitWalksChain,
+`,
+		patched: `	fallbackOn: cfgRetryFallbackOn,
+	codexWhitespaceLoopFallback: cfgRetryCodexWhitespaceLoopFallback,
+	rateLimitWalksChain: cfgRetryRateLimitWalksChain,
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `const CODEX_WHITESPACE_TOOL_CALL_LOOP_ERROR_RE =`,
+		anchor: `const PREMATURE_STREAM_CLOSE_ERROR_RE =
+	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+`,
+		patched: `const PREMATURE_STREAM_CLOSE_ERROR_RE =
+	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+// CUELO: the Codex provider's whitespace-only tool-call argument breaker
+// (openai-codex-responses.ts observeWhitespaceToolCallArgumentsDelta). The
+// degenerate call is dropped before the error surfaces and never runs, so the
+// interrupted turn recovers like a mid-stream transport failure. The whole
+// breaker message is matched (openai-codex-responses.ts:924 template), so an
+// error that quotes it before or after other text never qualifies.
+const CODEX_WHITESPACE_TOOL_CALL_LOOP_ERROR_RE =
+	/^Interrupted OpenAI Codex response after [0-9]+ consecutive whitespace-only tool-call argument delta events \\([0-9]+ chars(?:, sequence [0-9]+\\.\\.[0-9]+)?\\)(?: for item \\S+?)?\\.$/;
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `#codexWhitespaceLoopFallbackAdmits(
+		message: AssistantMessage,
+		id: number,`,
+		anchor: `			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+		);
+	}
+`,
+		patched: `			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			CODEX_WHITESPACE_TOOL_CALL_LOOP_ERROR_RE.test(errorMessage)
+		);
+	}
+
+	/**
+	 * CUELO retry.codexWhitespaceLoopFallback: the Codex whitespace-only
+	 * tool-call argument loop may walk the fallback chain once same-model
+	 * recovery is spent, whatever retry.fallbackOn says. Identity is the whole
+	 * breaker message from the Codex Responses provider plus the Transient
+	 * class the CodexWhitespaceToolCallLoopError name gets in AIError.classify.
+	 * Every other failure keeps retry.fallbackOn.
+	 */
+	#codexWhitespaceLoopFallbackAdmits(
+		message: AssistantMessage,
+		id: number,
+		retrySettings: { codexWhitespaceLoopFallback?: boolean },
+	): boolean {
+		return (
+			retrySettings.codexWhitespaceLoopFallback === true &&
+			message.stopReason === "error" &&
+			message.api === "openai-codex-responses" &&
+			AIError.retriable(id) &&
+			CODEX_WHITESPACE_TOOL_CALL_LOOP_ERROR_RE.test(message.errorMessage ?? "")
+		);
+	}
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `!codexWhitespaceCommittedText && this.#hasReplayUnsafeOutput(message)`,
+		anchor: `		if (!retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit))) return false;
+		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
+		const contextWindow = model.contextWindow ?? 0;
+		const textAmbiguousOverflow = AIError.isTextAmbiguousContextOverflow(id, message, contextWindow);
+		if (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) {
+			return false;
+		}
+		if (this.#hasReplayUnsafeOutput(message)) return false;
+`,
+		patched: `		// CUELO: a Codex whitespace loop with committed text reaches this consult only
+		// after handleCommittedTextStreamStall spent its cap. #applyRetryPolicy keeps
+		// its text and thinking in context, so neither veto below applies to it; a
+		// turn with a tool call, image or server tool keeps both.
+		const codexWhitespaceCommittedText =
+			this.#codexWhitespaceLoopFallbackAdmits(message, id, retrySettings) &&
+			message.content.every(block => block.type === "text" || block.type === "thinking");
+		if (
+			!codexWhitespaceCommittedText &&
+			!retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit))
+		) {
+			return false;
+		}
+		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
+		const contextWindow = model.contextWindow ?? 0;
+		const textAmbiguousOverflow = AIError.isTextAmbiguousContextOverflow(id, message, contextWindow);
+		if (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) {
+			return false;
+		}
+		if (!codexWhitespaceCommittedText && this.#hasReplayUnsafeOutput(message)) return false;
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `const codexWhitespaceLoopFallback = this.#codexWhitespaceLoopFallbackAdmits(message, id, retrySettings);`,
+		anchor: `		const preserveFailedTurn =
+			options?.preserveFailedTurn === true ||
+			((classifierRefusal || AIError.is(id, AIError.Flag.MalformedFunctionCall) || AIError.retriable(id)) &&
+				this.#unexecutedToolCallsReplaySafe(message));
+`,
+		patched: `		// CUELO retry.codexWhitespaceLoopFallback (#codexWhitespaceLoopFallbackAdmits).
+		const codexWhitespaceLoopFallback = this.#codexWhitespaceLoopFallbackAdmits(message, id, retrySettings);
+		// The committed-text whitespace loop arrives as a hard-error consult
+		// (isHardErrorFallbackEligible): keep its committed text in context; the
+		// reminder appended below makes the kept turn a legal continuation.
+		const codexWhitespaceCommittedText =
+			codexWhitespaceLoopFallback && options?.hardErrorFallback === true && this.#hasReplayUnsafeOutput(message);
+		const preserveFailedTurn =
+			options?.preserveFailedTurn === true ||
+			codexWhitespaceCommittedText ||
+			((classifierRefusal || AIError.is(id, AIError.Flag.MalformedFunctionCall) || AIError.retriable(id)) &&
+				this.#unexecutedToolCallsReplaySafe(message));
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `(codexWhitespaceLoopFallback && (retryBudgetExhausted || codexWhitespaceCommittedText))`,
+		anchor: `				retrySettings.modelFallback &&
+				retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit)) &&
+				!thinkingLoop &&
+`,
+		patched: `				retrySettings.modelFallback &&
+				(retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit)) ||
+					// CUELO: only after same-model recovery is spent - the retry budget on
+					// the replay/preserved paths, the stall-continue cap on committed text.
+					(codexWhitespaceLoopFallback && (retryBudgetExhausted || codexWhitespaceCommittedText))) &&
+				!thinkingLoop &&
+`,
+	},
+	{
+		file: "src/session/turn-recovery.ts",
+		marker: `if (codexWhitespaceCommittedText && switchedModel) {`,
+		anchor: `		this.#maybeInjectThinkingLoopRedirect(id);
+		this.#maybeInjectMalformedFunctionCallRedirect(id, maxRetries, preserveFailedTurn, switchedModel);
+`,
+		patched: `		this.#maybeInjectThinkingLoopRedirect(id);
+		this.#maybeInjectMalformedFunctionCallRedirect(id, maxRetries, preserveFailedTurn, switchedModel);
+		// CUELO: the kept committed-text turn ends in an assistant message, which
+		// continue() rejects and newer models refuse as a prefill. Append the
+		// reminder handleCommittedTextStreamStall uses so the fallback model picks
+		// up where the text stopped.
+		if (codexWhitespaceCommittedText && switchedModel) {
+			this.#host.agent.appendMessage({
+				role: "developer",
+				content: [
+					{
+						type: "text",
+						text: prompt.render(streamStallContinueTemplate, { retryCount: this.#retryAttempt, maxRetries }),
+					},
+				],
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+		}
+`,
+	},
 	{
 		file: "src/registry/agent-lifecycle.ts",
 		marker: "#scopeReleased = new WeakSet",

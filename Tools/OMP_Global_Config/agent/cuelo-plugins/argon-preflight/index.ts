@@ -2,16 +2,19 @@
  * argon-preflight (Main only; 2026-11-07 user request, promoted the same day by user decision).
  *
  * Before Main's first `task` dispatch or a non-small `lab_goal` frame, this hook holds the call once, asks the
- * model in `modelRoles.preflight` (Gemini 4 Argon on the home PC) what the plan misses against the user's recent
- * words, and returns the advice as the block reason. Main folds in what holds and calls again; that next call
- * passes. When the user steers mid-work, the same question runs in the background and arrives as an aside; the
- * next dispatch is checked again. A PC without that slot is untouched (user decision: home PC only); any failure,
- * timeout or secret-looking content lets the call through unchanged.
+ * existing opposite-family review role what the plan misses against the user's recent words, and returns the advice
+ * as the block reason. Main folds in what holds and calls again; that next call passes. When the user steers
+ * mid-work, the same question runs in the background and arrives as an aside; the next dispatch is checked again.
+ * The target is the same route `cross_review` uses (`reviewerLanes` + `SLOT`, 2026-11-08 user decision): an
+ * Anthropic Main asks `crossReviewOpenAI`, and every other Main asks `crossReviewAnthropic`. A missing Main identity,
+ * an unresolvable role, or a resolved target outside the lane's family keeps the plugin silent; any failure, timeout
+ * or secret-looking content lets the call through unchanged. The plugin's enable/disable state, not a separate model
+ * slot, decides whether a PC runs it.
  */
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { authorFamily, reviewerLanes, SLOT as REVIEW_SLOT, type Lane } from "../../extensions/lib/cross-review";
 
-const SLOT = "preflight";
 // The core bounds every tool_call handler (`extensionHandlers.toolCallTimeoutMs`, default 30 s) and blocks the tool
 // when it runs out, so the blocking question gives up first and lets the call through (2026-11-07 live test: a 39 s
 // answer turned the user's `lab_goal` into an error instead of passing).
@@ -126,25 +129,43 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     try { ctx.ui.setWidget(WIDGET, history); } catch { /* panel optional */ }
   };
 
-  /** Whether this PC set `modelRoles.preflight`; an unset or unreadable slot keeps the plugin silent. */
-  async function slotSet(ctx: ExtensionContext): Promise<boolean> {
+  /**
+   * The existing opposite-family review role for this Main, resolved through the shared `reviewerLanes`/`SLOT`
+   * mapping `cross_review` already uses (2026-11-08 user decision): an Anthropic Main asks `crossReviewOpenAI`, and
+   * every other author, including a Hive DeepSeek or Gemini Main, asks `crossReviewAnthropic`, exactly as
+   * `reviewerLanes` decides. A Main whose model this session cannot identify, or a role this PC cannot resolve,
+   * keeps the plugin silent instead of guessing a target. `ctx.models.resolve` does not check that the slot's model
+   * belongs to the lane's family (a same-family slot resolves fine), so the resolved target is compared with the lane
+   * here and a mismatch sends nothing, the way `cross_review` refuses a target of the wrong required family.
+   */
+  function counterpart(ctx: ExtensionContext): string | undefined {
+    const current = ctx.models.current() ?? ctx.model;
+    if (!current) return undefined;
+    let slot: string | undefined;
+    let lane: Lane | undefined;
     try {
-      // Plugins may not import runtime packages statically; the extension loader maps lazy imports to the host SDK.
-      const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-      return !!findScopedSettings(ctx.cwd)?.getModelRole(SLOT);
+      [lane] = reviewerLanes([`${current.provider}/${current.id}`], undefined);
+      slot = lane ? REVIEW_SLOT[lane] : undefined;
     } catch {
-      return false;
+      return undefined;
+    }
+    if (!slot || !lane) return undefined;
+    try {
+      const target = ctx.models.resolve(`@${slot}`);
+      return target && authorFamily(`${target.provider}/${target.id}`) === lane ? slot : undefined;
+    } catch {
+      return undefined;
     }
   }
 
-  async function ask(ctx: ExtensionContext, plan: string, extra: string, timeoutMs: number, signal?: AbortSignal): Promise<Advice> {
+  async function ask(ctx: ExtensionContext, slot: string, plan: string, extra: string, timeoutMs: number, signal?: AbortSignal): Promise<Advice> {
     const t0 = Date.now();
     const user = recentTurns(userTurns, MAX_USER);
     const prompt = `# 사용자의 최근 말\n${user || "(기록 없음)"}\n\n${clip(plan, MAX_PLAN)}${extra ? `\n\n${extra}` : ""}`;
     if (SECRET.test(prompt)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다", ms: 0 };
     try {
-      const target = ctx.models.resolve(`@${SLOT}`);
-      if (!target) return { ok: false, why: `modelRoles.${SLOT} 모델을 이 PC에서 해석하지 못했다`, ms: Date.now() - t0 };
+      const target = ctx.models.resolve(`@${slot}`);
+      if (!target) return { ok: false, why: `modelRoles.${slot} 모델을 이 PC에서 해석하지 못했다`, ms: Date.now() - t0 };
       const model = `${target.provider}/${target.id}`;
       const sessionId = crypto.randomUUID();
       const { completeSimple } = await import("@oh-my-pi/pi-ai");
@@ -217,9 +238,10 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     const plan = lastPlan;
     void (async () => {
       try {
-        if (!(await slotSet(ctx)) || myGen !== gen) return;
+        const slot = counterpart(ctx);
+        if (!slot || myGen !== gen) return;
         note(ctx, `방향 전환 감지: 비동기로 묻는 중 — ${clip(text, 60)}`);
-        const advice = await ask(ctx, plan, `# 방금 들어온 사용자의 새 지시\n${text}\n\n이 새 지시 때문에 위 계획에서 다시 세워야 할 발주·순서나 새로 빠진 것이 있는지만 답하라.`, ASYNC_TIMEOUT_MS);
+        const advice = await ask(ctx, slot, plan, `# 방금 들어온 사용자의 새 지시\n${text}\n\n이 새 지시 때문에 위 계획에서 다시 세워야 할 발주·순서나 새로 빠진 것이 있는지만 답하라.`, ASYNC_TIMEOUT_MS);
         // A newer user message or a session change since this question started makes the answer stale.
         if (myGen !== gen || !main) return;
         if (!advice.ok) { note(ctx, `방향 전환 점검 건너뜀: ${advice.why}`); return; }
@@ -241,7 +263,8 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     if (name === "task" || name === "maker_route") { plan = briefOf(event.input); what = "발주"; }
     else if (name === "lab_goal") { plan = frameOf(event.input); what = "작업 목표"; }
     const mySession = session;
-    if (!plan || !(await slotSet(ctx)) || mySession !== session) return;
+    const slot = plan ? counterpart(ctx) : undefined;
+    if (!plan || !slot || mySession !== session) return;
     // A full brief already checked passes when it is sent again unchanged, until a new user message clears it.
     if (plan === checkedPlan) { note(ctx, `${what} 통과(이미 점검한 브리프)`); return; }
     if (Date.now() < allowUntil) {
@@ -252,7 +275,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     }
     note(ctx, `${what} 점검 중: 묻는 중`);
     const myGen = gen;
-    const advice = await ask(ctx, plan, "", BLOCK_TIMEOUT_MS);
+    const advice = await ask(ctx, slot, plan, "", BLOCK_TIMEOUT_MS);
     if (mySession !== session) return;
     // A user message that arrived while asking makes this advice older than the user's latest words: it may still
     // be shown, but it grants no pass, so the next call is checked again.
@@ -278,7 +301,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     name: "lab_preflight",
     label: "사전 점검",
     loadMode: "essential",
-    description: "modelRoles.preflight 모델(집 PC: Gemini 4 Argon)에게 지금 계획(plan)을 사용자의 최근 말과 대 보게 해 빠진 요구·틀린 가정·더 나은 방법을 받는다. 발주(task)·큰 작업 목표(lab_goal frame) 직전에는 자동으로 돈다. 이 도구는 그 밖의 시점에 직접 물을 때 쓴다. 그 자리가 비어 있는 PC에서는 아무것도 하지 않는다. 참고 의견일 뿐 승인·검토 게이트가 아니다.",
+    description: "지금 계획(plan)을 사용자의 최근 말과 대 보게 해 빠진 요구·틀린 가정·더 나은 방법을 받는다. 묻는 모델은 이 세션 Main의 반대 계열 기존 교차 검토 역할이다(Anthropic Main이면 crossReviewOpenAI, GPT·Google 등 그 밖의 알려진 계열이면 crossReviewAnthropic). 발주(task)·큰 작업 목표(lab_goal frame) 직전에는 자동으로 돈다. 이 도구는 그 밖의 시점에 직접 물을 때 쓴다. Main 계열을 알 수 없거나 그 역할이 해석되지 않는 PC에서는 아무것도 하지 않는다. 참고 의견일 뿐 승인·검토 게이트가 아니다.",
     parameters: z.object({
       plan: z.string().describe("점검할 계획·브리프 전문"),
       question: z.string().optional().describe("특히 묻고 싶은 것(선택)"),
@@ -287,9 +310,10 @@ export default function argonPreflight(pi: ExtensionAPI): void {
       const { plan, question } = params as { plan: string; question?: string };
       if (!main) throw new Error("사전 점검은 Main 세션에서만 쓴다.");
       const mySession = session;
-      if (!(await slotSet(ctx))) throw new Error(`이 PC에는 modelRoles.${SLOT}가 설정되지 않아 사전 점검을 하지 않는다.`);
+      const slot = counterpart(ctx);
+      if (!slot) throw new Error("이 세션 Main의 반대 계열 교차 검토 역할(crossReviewOpenAI·crossReviewAnthropic)을 해석하지 못해 사전 점검을 하지 않는다.");
       if (mySession !== session) throw new Error("점검 중에 세션이 바뀌어 사전 점검을 멈췄다.");
-      const advice = await ask(ctx, `# 계획\n${plan}`, question ? `# 특히 묻는 것\n${question}` : "", ASYNC_TIMEOUT_MS, signal);
+      const advice = await ask(ctx, slot, `# 계획\n${plan}`, question ? `# 특히 묻는 것\n${question}` : "", ASYNC_TIMEOUT_MS, signal);
       if (mySession === session) note(ctx, advice.ok ? `직접 점검(${(advice.ms / 1000).toFixed(1)}초):\n${advice.text}` : `직접 점검 실패: ${advice.why}`);
       if (!advice.ok) throw new Error(`사전 점검 실패: ${advice.why}`);
       return { content: [{ type: "text", text: `${advice.model}(${(advice.ms / 1000).toFixed(1)}초) 조언 — 참고 의견:\n\n${advice.text}` }] };
